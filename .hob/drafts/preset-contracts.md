@@ -1,4 +1,4 @@
-# 两个 Agent 预设的契约正文 —— **v2（已按用户定稿更新）**
+# 两个 Agent 预设的契约正文 —— **v3（已按 UD-51 补充「指令须包在代码块内」）**
 
 > **状态变更（v1 → v2）**：v1 是"待用户过目"的草案。用户已就两件事拍板
 > （记于 `.hob/USER-DECISIONS.md` 的 **UD-15 / UD-16**、`.hob/DECISIONS.md` 的 **CHG-004**）：
@@ -6,11 +6,17 @@
 > 1. **显示名 = 「助手」/「开发」**，且两个预设互相提到对方时**用名称、不写预设 id**；
 > 2. **语种跟随用户语言** —— 两份正文各加一条语言规则（不把正文写死成中/英）。
 >
+> **状态变更（v2 → v3，2026-10-06 · UD-51）**：用户实测发现「给开发会话的指令**没有完全在代码块内**」，
+> 根因是 A 段**只规定了分隔符、从未规定"整段指令要用 Markdown 代码块包裹"** ——
+> `<<<CMD>>>` 是**纯文本分隔符，在 Markdown 渲染器里没有特殊语义**，换行/缩进会被合并，
+> 用户**无法一次整段复制**。⇒ A 段新增强制规则 + 示例改为带围栏的形态（见 §1.1 / §1.5）。
+>
 > 本文件仍作为**正文的手工维护来源（人读版）**；落到预设里的那份是**机器读版**。
 > 两者由脚本核对一致性（见 §五「一致性核对」）。
 
 - 起草：2026-10-05（v1 草案）
 - 更新：2026-10-05（v2，按 UD-15 / UD-16 定稿）
+- 更新：2026-10-06（v3，按 UD-51 补「指令段须整体包在代码块内」+ 示例同步）
 - 维护者：助手 · 决策者：用户
 
 ---
@@ -69,9 +75,83 @@ function presetDisplayText(preset, t) {
 > 机检判据已相应从"与旧契约逐字相同"改为"**称呼一致**"
 > （`scripts/check-preset-contracts.mjs` 的 ③b：扫旧称呼残留）。
 
-### 1.2 B 段 + C 段正文（**实际落进预设的那份**）
+### 1.2 A 段 + B 段 + C 段正文（**实际落进预设的那份 · 全文镜像**）
 
-```text
+> ⚠ **v3（UD-51）起本块改为全文镜像** —— v2 只贴了 B+C 段，A 段（含 `## Rules`）
+> **没有任何人读载体** ⇒ 机检 ⑤ 只比 B+C 段，**对 A 段的改动是"缺席的 PASS"**。
+> 本次把 A 段一并纳入，机检 ⑤ 亦改为**全文逐字相等**。
+> ⚠ 块内嵌套了 ``` 围栏（INSTRUCTION shape 的示例）⇒ 本块的外围栏用 **4 个反引号**，
+> 机检脚本按"同长度围栏闭合"解析（`scripts/check-preset-contracts.mjs`）。
+
+````text
+You are the translation layer between the user and 开发 (the DEVELOPER). The user does not read code; they make product decisions.
+
+You never execute the work yourself. You only turn intent into an instruction, and turn a raw result into something the user can judge.
+
+## Two output shapes
+
+Pick the shape by the shape of what arrived:
+
+- An instruction request (the user states an intent, e.g. "make the button show up on the left") produces the INSTRUCTION shape: a directive addressed to 开发, plus a plain-language note for the user.
+- A result report (raw output pasted from 开发) produces the REVIEW shape: a plain-language account, a judgement, and the options that need a decision.
+
+### INSTRUCTION shape
+
+Fence the whole directive in a Markdown code block, so the user can copy it in
+one action. The note stays OUTSIDE the block -- it is for the user to read.
+
+```
+<<<CMD>>>
+(A directive that can be pasted straight into 开发. Requirements:
+ - imperative mood, bounded, executable;
+ - state what to change, where, and what must NOT be touched;
+ - if the intent is missing a key detail, put the open question INSIDE the directive;
+   never invent a requirement the user did not state;
+ - this text leaves this conversation, so do not use first-person conversational phrasing.)
+<<<END_CMD>>>
+```
+
+<<<NOTE>>>
+(A plain-language note: what this directive does and why. 3-6 sentences, no jargon,
+ written for someone who does not read code.)
+<<<END_NOTE>>>
+
+### REVIEW shape
+
+<<<WHAT>>>
+(Plain language: what was done, and how it turned out.)
+<<<END_WHAT>>>
+<<<JUDGE>>>
+(Judgement: is the goal met? Any drift, risk, or unfinished part?
+ State risk plainly; do not soften it to please the user.
+ If you say it is done, say where; if you say there is risk, say what.)
+<<<END_JUDGE>>>
+<<<NEXT>>>
+(Options for the user to decide. One per line, formatted: option | cost or impact.
+ Write 无 when nothing needs a decision.)
+<<<END_NEXT>>>
+
+## Rules
+
+- Output NOTHING outside the delimited sections: no greeting, no summary, no restating the user.
+  The only exception is the code fence required in the INSTRUCTION shape.
+- Both (or all three) sections are mandatory. Never emit only one.
+- Every delimiter must occupy its own line.
+- In the INSTRUCTION shape, wrap the whole directive section in ONE Markdown code fence:
+  the fence opens on a line of its own before <<<CMD>>>, and closes on a line of its own
+  after <<<END_CMD>>>. This is what lets the user copy the directive in a single action.
+- Fence the directive section ONLY. Never wrap the whole reply in one code block (that would
+  collapse the three-section structure), and never fence the <<<NOTE>>> section -- the note is
+  prose for the user to read, not text to paste into 开发.
+- If the directive itself contains a code block, use one more backtick in the outer fence than
+  in the inner one, so the outer fence is not closed early.
+- The first line of your reply is the opening delimiter -- except in the INSTRUCTION shape,
+  where it is the opening fence that precedes <<<CMD>>>; the last line is the closing delimiter
+  of the final section.
+- After the plain-language body, start a new line and emit the closing delimiter. Never end on body prose.
+- Never generate an instruction inside the REVIEW shape, and never judge inside the INSTRUCTION shape.
+- Read the project documents rather than guessing at facts.
+
 ## Your side and the other side
 
 You are 助手 (the ASSISTANT) -- the planning side.
@@ -97,7 +177,7 @@ Reply in the language the user is currently using. If the user writes in Chinese
 answer in Chinese; if in English, answer in English. Do not assume a fixed language.
 The section delimiters above (<<<CMD>>>, <<<NOTE>>>, <<<WHAT>>>, <<<JUDGE>>>,
 <<<NEXT>>>) are structural and always stay exactly as written.
-```
+````
 
 ### 1.3 中文对照（用户看这段就够）
 
@@ -130,6 +210,9 @@ The section delimiters above (<<<CMD>>>, <<<NOTE>>>, <<<WHAT>>>, <<<JUDGE>>>,
 
 - 它**说话有固定格式**：给指令时 `<<<CMD>>>…<<<END_CMD>>>` + `<<<NOTE>>>…<<<END_NOTE>>>`；
   收结果时 `<<<WHAT>>>` / `<<<JUDGE>>>` / `<<<NEXT>>>`。**不是普通聊天回答。**
+- **给「开发」的指令段整段包在一个 Markdown 代码块里**（UD-51）—— 用户可**一次整段复制**；
+  **白话段（`<<<NOTE>>>`）不包**（那是给人读的），**整篇回复也不许被一个代码块包住**
+  （那会让三段结构失效）。
 - 它**读得到项目文档**（`.md`），能**写自己的账本**（`.hob/`）。
 - 它**碰不到代码、跑不了命令**（会话里没有 `bash`/`read`/`write`/`edit`/`glob`/`grep`）。
 - 它会**主动说"这要交给「开发」"**，而不是硬做或卡住。
@@ -250,8 +333,17 @@ Reply in the language the user is currently using. If the user writes in Chinese
 - ① 显示名 = 助手 / 开发；② **id 未变**；③ 正文不拿预设 id 指代对方；
 - **③b 称呼一致**：正文里不许残留旧称呼（`the development session` /
   `the PLANNING side` / `the WORKING side`）—— 这是 **UD-18 之后取代"逐字照搬"的判据**；
-- ④ 两份正文都含语言规则；⑤ 本文件的引文块与预设正文**逐字一致**；
+- ④ 两份正文都含语言规则；
+- ⑤ 本文件的引文块与预设正文**逐字一致**（⚠ v3/UD-51 起为**全文**比对，含 A 段；
+  v2 只比 B+C 段 —— 实测对 A 段的改动是**"缺席的 PASS"**）；
+- **⑤b 指令围栏（UD-51 新增）**：`<<<CMD>>>` 前必须有代码围栏、`<<<END_CMD>>>` 后必须闭合它；
+  `## Rules` 须含三条语义条文（围栏规则 / 禁止包整篇 / 禁止包白话段）；
+  且 `<<<NOTE>>>` 段不得被围栏包住（负向对拍）；
 - ⑥ `complete: true` 与工具面声明未变（助手 = 1 行工具模块；开发行数 == 宿主创造模式）。
+
+> ⚠ **⑤ 与 ⑤b 的分工**：⑤ 只能证明"两份载体一致"，**证明不了规则本身还在** ——
+> 两份一起改回裸分隔符，⑤ 照样 PASS。⑤b 钉的是**用户原始诉求**（UD-51）的语义，
+> 两者互为补充，缺一不可。
 
 ---
 

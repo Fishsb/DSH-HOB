@@ -14,7 +14,10 @@
  *      断言没有把 `dsh-hob` / `dsh-hob-work` 当称呼用（只允许出现在
  *      `Never print a preset id (...)` 这条**禁令句**里，那是"允许的例外"）
  *   ④ 两份正文都含语言规则（跟随用户语言）
- *   ⑤ 人读版引文块与预设正文逐字一致（把 .md 里的 ```text 块抽出来比对）
+ *   ⑤ 人读版引文块与预设正文**全文**逐字一致（把 .md 里的引文块抽出来比对；
+ *      ⚠ v3/UD-51 起含 A 段 —— 旧版只比 B+C 段，对 A 段是"缺席的 PASS"）
+ *   ⑤b **UD-51 语义断言**：`<<<CMD>>>…<<<END_CMD>>>` 必须被代码围栏包住、
+ *      规则条文在位、且未误包 `<<<NOTE>>>` / 未把整篇包住
  *   ⑥ `complete: true` 与工具面声明未变（规划 = 1 行工具模块；开发 = 照抄创造模式行数）
  *
  * 用法：node scripts/check-preset-contracts.mjs
@@ -66,10 +69,15 @@ function scalar(src, key) {
   return m[1].trim().replace(/^["']|["']$/g, '')
 }
 
-/** 从人读版抽第 n 个 ```text 块。 */
+/** 从人读版抽第 n 个 ```text 引文块。
+ * ⚠ 支持"外围栏比内围栏长"的嵌套（UD-51）：块内可以出现 ``` 示例围栏
+ *   （INSTRUCTION shape 的代码块示例），因此**开启围栏允许 3 个及以上的反引号**，
+ *   并**只由同长度的围栏闭合**（CommonMark 的围栏规则）。
+ *   取到的是"该次匹配里最短的那个" —— 这里靠的是**懒惰匹配 + 反向引用同长度**。 */
 function draftBlock(which) {
   const src = readFileSync(DRAFT, 'utf8')
-  const blocks = [...src.matchAll(/```text\n([\s\S]*?)```/g)].map((m) => m[1].replace(/\n$/, ''))
+  const re = /^(`{3,})text\n([\s\S]*?)^\1[ \t]*$/gm
+  const blocks = [...src.matchAll(re)].map((m) => m[2].replace(/\n$/, ''))
   return blocks[which]
 }
 
@@ -156,23 +164,31 @@ const STALE_APPELLATIONS = [
 }
 
 // ── ⑤ 人读版引文块与预设正文逐字一致 ───────────────────────────────────
+//
+// ⚠ **v3（UD-51）起改为"全文逐字相等"**：v2 只贴了 B+C 段，
+//   断言写成"人读版是预设正文的**尾部**"。实测（对照实验）把 A 段改一句、
+//   人读版不动 ⇒ **仍然 PASS** —— 即 A 段的改动**没有任何机检覆盖**
+//   （用户 2026-10-06 实测反馈的正是 A 段："指令没有完全在代码块内"）。
+//   ⇒ 人读版 1.2 块已扩为 A+B+C 全量镜像，这里同步改成全文比对。
 {
   const hoBody = literalBlock(hoSrc, 'prefix') ?? ''
   const workBody = literalBlock(workSrc, 'prefix') ?? ''
-  // 人读版：block0 = 助手 B+C 段；block1 = 开发正文
+  // 人读版：block0 = 助手 A+B+C 段（全文）；block1 = 开发正文
   const d0 = draftBlock(0)
   const d1 = draftBlock(1)
   if (d0 === undefined || d1 === undefined) {
-    bad('⑤ 人读版（.md）里没找到两个 ```text 引文块')
+    bad('⑤ 人读版（.md）里没找到两个引文块（期望 ````text / ```text 各一）')
   } else {
-    // 助手：人读版只贴 B+C 段，预设正文 = A 段 + B 段 + C 段 ⇒ 断言"人读版是预设正文的后缀"
-    if (!hoBody.endsWith(d0)) {
-      bad('⑤ 助手：人读版引文块与预设正文不一致（应为预设正文的尾部）')
+    // 助手：人读版 == 预设正文（全文，逐字）
+    if (hoBody.trimEnd() !== d0.trimEnd()) {
+      bad('⑤ 助手：人读版引文块与预设正文不一致（应全文逐字相同）')
       const a = hoBody.split('\n'), b = d0.split('\n')
-      for (let i = 0; i < Math.max(a.length, b.length); i++) {
-        if (a[a.length - b.length + i] !== b[i]) { bad(`     首个差异在第 ${i + 1} 行：\n       预设: ${JSON.stringify(a[a.length - b.length + i])}\n       人读: ${JSON.stringify(b[i])}`); break }
+      const n = Math.max(a.length, b.length)
+      for (let i = 0; i < n; i++) {
+        if (a[i] !== b[i]) { bad(`     首个差异在第 ${i + 1} 行：\n       预设: ${JSON.stringify(a[i])}\n       人读: ${JSON.stringify(b[i])}`); break }
       }
-    } else ok('⑤ 助手：人读版引文块 == 预设正文尾部（逐字）')
+      if (a.length !== b.length) bad(`     行数不同：预设 ${a.length} 行，人读 ${b.length} 行`)
+    } else ok('⑤ 助手：人读版引文块 == 预设正文（全文逐字）')
 
     if (workBody.trimEnd() !== d1.trimEnd()) {
       bad('⑤ 开发：人读版引文块与预设正文不一致（应逐字相同）')
@@ -182,6 +198,50 @@ const STALE_APPELLATIONS = [
       }
     } else ok('⑤ 开发：人读版引文块 == 预设正文（逐字）')
   }
+}
+
+// ── ⑤b UD-51：指令段必须包在代码块内（A 段的**语义**断言） ─────────────
+//
+// 为什么需要：⑤ 只能证明"两份载体一致"，**证明不了规则本身还在** ——
+// 两份一起被改回裸分隔符，⑤ 照样 PASS。本条把用户的**原始诉求**钉成断言：
+// `<<<CMD>>>` 之前必须有一个代码围栏，`<<<END_CMD>>>` 之后必须闭合它；
+// 且**不许**把整个回复包住（外围栏不得出现在 `<<<CMD>>>` 之外的第一行）
+// 与**不许**包 `<<<NOTE>>>` 段。
+{
+  const hoBody = literalBlock(hoSrc, 'prefix') ?? ''
+  // ① INSTRUCTION shape 的示例里，<<<CMD>>> 必须紧跟在一个围栏之后
+  const cmdOpen = hoBody.indexOf('<<<CMD>>>')
+  const beforeCmd = hoBody.slice(0, cmdOpen)
+  const lastFenceLine = beforeCmd.split('\n').reverse().find((l) => l.trim() !== '')
+  if (!/^`{3,}$/.test((lastFenceLine ?? '').trim())) {
+    bad(`⑤b 助手：<<<CMD>>> 之前一行应为代码围栏，实测 ${JSON.stringify(lastFenceLine)}`)
+  } else ok(`⑤b 助手：<<<CMD>>> 前有围栏（${JSON.stringify((lastFenceLine ?? '').trim())}）`)
+
+  // ② <<<END_CMD>>> 之后必须有关闭围栏
+  const endCmd = hoBody.indexOf('<<<END_CMD>>>')
+  const afterCmd = hoBody.slice(endCmd + '<<<END_CMD>>>'.length)
+  const nextFenceLine = afterCmd.split('\n').find((l) => l.trim() !== '')
+  if (!/^`{3,}$/.test((nextFenceLine ?? '').trim())) {
+    bad(`⑤b 助手：<<<END_CMD>>> 之后一行应为关闭围栏，实测 ${JSON.stringify(nextFenceLine)}`)
+  } else ok('⑤b 助手：<<<END_CMD>>> 后有闭合围栏')
+
+  // ③ 规则条文必须存在（防止"示例改了、规则没写"）
+  for (const [label, needle] of [
+    ['围栏规则', /wrap the whole directive section in ONE Markdown code fence/],
+    ['禁止包整篇', /Never wrap the whole reply in one code block/],
+    ['禁止包白话段', /never fence the <<<NOTE>>> section/],
+  ]) {
+    if (!needle.test(hoBody)) bad(`⑤b 助手：## Rules 缺「${label}」条文`)
+    else ok(`⑤b 助手：## Rules 含「${label}」条文`)
+  }
+
+  // ④ 负向对拍：示例里 <<<NOTE>>> 段**不得**被包进任何一个围栏
+  const noteIdx = hoBody.indexOf('<<<NOTE>>>')
+  // 统计 <<<NOTE>>> 之前的围栏数：INSTRUCTION 示例的那一对已开已闭 ⇒ 应为偶数
+  const fencesBeforeNote = hoBody.slice(0, noteIdx).split('\n').filter((l) => /^`{3,}$/.test(l.trim())).length
+  if (fencesBeforeNote % 2 !== 0) {
+    bad(`⑤b 助手：<<<NOTE>>> 被包在未闭合的围栏里（之前有 ${fencesBeforeNote} 条围栏，应为偶数）`)
+  } else ok(`⑤b 助手：<<<NOTE>>> 未被围栏包住（之前 ${fencesBeforeNote} 条围栏 = 成对）`)
 }
 
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────

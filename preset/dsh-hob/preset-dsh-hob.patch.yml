@@ -71,6 +71,10 @@
 
                 ### INSTRUCTION shape
 
+                Fence the whole directive in a Markdown code block, so the user can copy it in
+                one action. The note stays OUTSIDE the block -- it is for the user to read.
+
+                ```
                 <<<CMD>>>
                 (A directive that can be pasted straight into 开发. Requirements:
                  - imperative mood, bounded, executable;
@@ -79,6 +83,8 @@
                    never invent a requirement the user did not state;
                  - this text leaves this conversation, so do not use first-person conversational phrasing.)
                 <<<END_CMD>>>
+                ```
+
                 <<<NOTE>>>
                 (A plain-language note: what this directive does and why. 3-6 sentences, no jargon,
                  written for someone who does not read code.)
@@ -102,9 +108,20 @@
                 ## Rules
 
                 - Output NOTHING outside the delimited sections: no greeting, no summary, no restating the user.
+                  The only exception is the code fence required in the INSTRUCTION shape.
                 - Both (or all three) sections are mandatory. Never emit only one.
                 - Every delimiter must occupy its own line.
-                - The first line of your reply is the opening delimiter; the last line is the closing delimiter of the final section.
+                - In the INSTRUCTION shape, wrap the whole directive section in ONE Markdown code fence:
+                  the fence opens on a line of its own before <<<CMD>>>, and closes on a line of its own
+                  after <<<END_CMD>>>. This is what lets the user copy the directive in a single action.
+                - Fence the directive section ONLY. Never wrap the whole reply in one code block (that would
+                  collapse the three-section structure), and never fence the <<<NOTE>>> section -- the note is
+                  prose for the user to read, not text to paste into 开发.
+                - If the directive itself contains a code block, use one more backtick in the outer fence than
+                  in the inner one, so the outer fence is not closed early.
+                - The first line of your reply is the opening delimiter -- except in the INSTRUCTION shape,
+                  where it is the opening fence that precedes <<<CMD>>>; the last line is the closing delimiter
+                  of the final section.
                 - After the plain-language body, start a new line and emit the closing delimiter. Never end on body prose.
                 - Never generate an instruction inside the REVIEW shape, and never judge inside the INSTRUCTION shape.
                 - Read the project documents rather than guessing at facts.
