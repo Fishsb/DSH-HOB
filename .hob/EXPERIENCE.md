@@ -1578,6 +1578,262 @@ modules:
 
 
 
+## 6k. UI 优化轮新增（2026-10-05 · 宿主样式复用 / tsdown CSS / npm install 剪枝）
+
+### 🔴 E-76 · 同名"设置"组件有两个，**槽位决定用哪一个**：`SettingsForm` 是 `plugins.item` 的壳，不是 `settings.section` 的
+
+**现象（差点照着错判据做）**：要给「我们自己的设置分区」套上"宿主统一壳"，
+很自然会选 primitives 的 `SettingsForm`（它的文档标题就是"One plugin's settings form
+as its page on the Plugins page shows it"）。**但宿主自己的实践是否证的**。
+
+**根因（实测，逐包统计 `lib/client.js`）**：
+
+| 宿主包 | `settings.section` | `plugins.item` | 用 `SettingsForm` |
+|---|---|---|---|
+| ui-settings-subagent | 0 | **1** | **是** |
+| ui-settings-web-search | 0 | **1** | **是** |
+| ui-settings-agent-loop | 0 | **1** | **是** |
+| ui-settings-shell | 0 | **1** | **是** |
+| ui-settings-general | **1** | 0 | 否 |
+| ui-settings-models | **1** | 0 | 否 |
+| ui-settings-account | **1** | 0 | 否 |
+| ui-settings-plugins | **1** | 0 | 否 |
+
+⇒ **两个槽位是两套形态**：`plugins.item`（插件管理页的卡片，有 staged 编辑 + Save）
+用 `SettingsForm`；`settings.section`（独立设置页）**没有**统一壳，各页自己画布局
+（models 用 `.zGbnIq_*`、account 用 `.LcmJYa_*`、plugin-inventory 用 `.qSYn7G_*`）。
+
+**正确做法**：先确定自己在哪个槽位，再看"该槽位的既有页怎么做"。
+本项目注册的是 `settings.section`，且面板是**只读摘要** ⇒ 挂 `SettingsForm`
+只会凭空多出一个**永远禁用**的 Save（`blocked = !dirty || invalid || saving` 恒真）。
+故按 `settings.section` 各页的同一做法自己组织布局，
+但**组件与令牌全部复用宿主**（`StateDot` / `Tag` + `--dsw-*` 令牌）。
+
+**⚠ 可迁移的判据**：**"宿主提供了 X"不等于"X 用在我这个场景"** ——
+一个组件的**文档标题**可能比它的**实际归属**更显眼。
+判据要落在"宿主自己在**同一槽位**里怎么做"，而不是"这个组件看起来最合适"。
+
+**出处**：UI 优化轮实测（逐包 `grep -c 'slots.inject("…")'` 与 `SettingsForm` 命中统计）；
+`.hob/UI-REV-REPORT.md` 判据 5。
+
+### 🔴 E-77 · tsdown 0.15 **不能**编译 `.module.css`：吐出独立 CSS 文件 + 空映射，而插件路由**只服务 client.js**
+
+**现象**：client 半边若照常规写 `import css from './X.module.css'`，
+**构建成功、零报错**，但样式在页面上**完全没有**。
+
+**根因（复现，两步都有实证）**：
+① **tsdown 0.15.12 的实测输出**（`/tmp/cssprobe`，最小复现）：
+   ```
+   ℹ lib/client.js   0.15 kB
+   ℹ lib/client.css  0.05 kB      ← CSS 被拆成**独立文件**
+   ```
+   且模块里拿到的默认导出是 **`{}`**（class 名映射全丢）：
+   ```js
+   var x_module_default = {};        // ← 不是 { a: 'x_a1b2c' }
+   ```
+② **插件路由不服务它**：DSH 的 `/plugins` 路由只认
+   `<id>/client.js` 与 `client.<name>.js` 分片
+   （`dsh-client-modules/lib/index.js:169` 的
+   `CLIENT_CHUNK = /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/`）
+   ⇒ `lib/client.css` **根本送不到浏览器**（实测产物目录里它确实生成了，但无人请求）。
+
+**正确做法**：采用宿主自己产物的**同一形态** —— CSS 作为**字符串**打进 JS、
+运行时建 `<style>` 注入。宿主 `dsh-client-ui-theme` 的 `base.css`、
+`ui-settings-general` / `ui-settings-models` / `@linxin666/dsh-remote-web-ui`
+的产物都是 `const css = "…"` + 运行时 append。
+
+**两条注入约定（不遵守会静默出问题）**：
+· `style.dataset.plugin = <包名>` —— `client-modules` 的 `removeOwnedStyles(id)`
+  按它清理（`lib/client.js:194-196`）；不标 ⇒ 热重载后新旧样式**叠加**成孤儿标签。
+· `style.dataset.pluginCss = <唯一 id>` —— 幂等键，`querySelector` 命中即跳过。
+
+**⚠ 附带发现（同类）**：`--dump-config` 通过 ≠ 运行时可 import。
+`ConfigField` 在 primitives 的 `lib/types/ConfigField.d.ts` 里**有**，
+但**既不在**运行时 seed 导出表、**也不在** `lib/index.js` 里
+（实测：seed 顶层导出 **281** 项，`ConfigField` 不在其中）
+⇒ 只照 `.d.ts` 写会构建通过、运行时 `undefined`。
+
+⚠ **数这个导出表时别用"按逗号 split"**：导出值里有带逗号的表达式
+（函数调用、对象字面量），朴素 split 会把 **281** 数成 **2167**。
+必须按**括号深度**切分顶层条目（本轮的首次统计就是这么错的，当场复核纠正）。
+
+**出处**：UI 优化轮实测（tsdown 最小复现 + 前端产物 seed 导出表解析 + 路由正则原文）；
+`.hob/UI-REV-REPORT.md` 判据 4/5。
+
+### 🔴 E-78 · `npm install <新依赖>` 会**剪掉** lockfile 里没有、但磁盘上存在的包（本项目 typecheck 直接崩）
+
+**现象**：为拿 types 跑了一次
+`npm install --save-dev @deepseek-ai/dsh-client-ui-primitives@0.2.0-rc.2`，
+npm 输出 `added 1 package, removed 5 packages`。随后
+**`npm run typecheck` 从 exit 0 变成 exit 2**：
+```
+src/modules/tools.ts(49,28): error TS2307: Cannot find module '@deepseek-ai/dsh-tools'
+src/modules/tools.ts(50,37): error TS2307: Cannot find module '@deepseek-ai/dsh-tools'
+```
+
+**根因**：本项目的 `package.json` **没有声明** `@deepseek-ai/dsh-tools` 等
+（它们靠 DSH 运行时提供），但**磁盘 `node_modules/@deepseek-ai/` 下确实装着**
+`dsh-tools / dsh-agent / dsh-llm / dsh-scope / dsh-session` 五个包
+（是宿主同版本的传递/既往安装残留，**不在 lockfile 里**）。
+`npm install` 会按 lockfile **对齐**依赖树 ⇒ 把这五个"孤儿"当冗余**剪掉**。
+
+⇒ 于是"装一个 devDependency"这一个动作，**顺带把 typecheck 的隐式依赖拆了**。
+危险性在于：**npm 报的是 added/removed 计数，不会告诉你哪个源文件会因此编不过**。
+
+**正确做法**：
+① 加依赖前**先备份 `package-lock.json`**，装完**逐包 diff** 确认"只多了预期的那一个"
+   （本项目实测：REMOVED 为空、ADDED 只有一个 ⇒ 说明这五个包本来就不在库里，
+   不是本次删的，而是"从未被声明"）。
+② 被剪掉的用 `--no-save` 装回来（**不动 `package.json`**，避免把运行时依赖
+   固化成开发依赖）：
+   `npm install --no-save @deepseek-ai/dsh-tools@… @deepseek-ai/dsh-agent@… …`
+③ 装完**必须重跑 `npm run typecheck`** —— 这是唯一能发现"被剪"的判据。
+
+**⚠ 可迁移的判据**：**"磁盘上有" ≠ "依赖树里有"**。
+本项目真正的依赖清单是**三处**的并集：`package.json` + lockfile + 磁盘残留，
+而 `npm install` 只尊重前两者 ⇒ 任何一次 install 都可能动到第三类的包。
+**检查脚本（typecheck）是这件事唯一的报警器**，所以它必须每轮都跑。
+
+**出处**：UI 优化轮实测（`npm install` 后 typecheck exit 2；
+`--no-save` 装回后 exit 0；lockfile 逐包 diff 复核）。
+
+
+
+## 6l. 配置面清理轮新增（2026-10-06 · 空旋钮 / 可见性依赖 / 残留声明）
+
+### 🔴 E-79 · 删掉"最后一个顶层 volatile"**不会**让分区消失 —— 可见性可以由**嵌套的** volatile 子字段单独支撑
+
+**背景（本轮要判的风险）**：按 UD-43 删掉三个"空旋钮"字段
+（`persona` / `showEntry` / `delivery`）后，schema 里**再没有任何顶层 volatile**，
+只剩 `modules.tools` / `modules.preset` / `modules.settings` 三个**嵌套**的 volatile 子字段。
+宿主的规则是「一个 live 字段都没有 ⇒ `volatileForm` 返回 undefined ⇒
+`describe()` 对该 entry `return []` ⇒ **分区静默消失**」——
+那么"**父不标 + 子各标**"这个形状**单独**够不够？
+
+**结论：够。分区仍可见。**
+
+**证据（不靠推断，跑宿主自己的实现）**：
+判据脚本从 `dsh-settings/lib/index.js` **抽出 `volatileForm`/`plainSchema` 原文**
+（不自己按文档重写 —— 重写只能证明"我的理解"，不能证明"宿主的实现"），
+再喂**我们真产物** `lib/config.js` 的 `Config`：
+```
+volatileForm(schema) → 非 undefined
+form 顶层键 = ["modules"]；其子字段 = ["tools","preset","settings"]
+```
+（脚本：`.hob/archive/2026-10-06-config-cleanup-evidence/分区可见性验证.mjs`）
+
+**⚠ 判据必须自己带"牙"** —— 同脚本里有两条对照，缺了它们这条 PASS 没有意义：
+· **阴性对照**：全无 volatile 的 schema ⇒ `volatileForm` **返回 undefined**
+  （证明这条判据**能**判出"不可见"，不是恒真）；
+· **形状对照**：只写 `z.object({modules: z.object({tools: z.boolean().volatile()})})`
+  （即"父不标+子各标"的最小形状）⇒ 同样生成 form。
+
+**可迁移结论**：**volatile 的可见性由"路径上最近的 volatile 祖先"决定，与它是不是顶层无关。**
+⇒ 清理顶层字段时，**不必**为了"保住可见性"而保留一个空字段；
+但要**逐个确认**剩下的 volatile 子字段还在 —— 三个全摘才会真的消失（且**不报错**）。
+
+**余量实测（阈值）**：同一脚本另跑了"剩几个 volatile 才消失"：
+
+| volatile 子字段剩 | 结果 |
+|---|---|
+| 3 个 | 可见 |
+| 2 个 | 可见 |
+| **1 个** | **仍可见** |
+| **0 个** | **`undefined` ⇒ 分区消失** |
+
+⇒ 精确规则：**只要 ≥1 个 volatile 叶子（哪怕嵌套在非 volatile 父里）分区就可见；
+全摘才消失**。⚠ 但**别依赖"还剩一个"** —— 那等于**没有余量**，
+下一个删除动作就会让整个分区静默消失。
+
+这条已写进 `src/config.ts:71-83` 的 `modules` 注释（防后人误删那三个 `.volatile()`）。
+
+**出处**：配置面清理轮实测（抽宿主原文执行 + 三条对照 + 阈值四档）；
+`src/config.ts:71-83`（可见性依赖唯一支撑 + "不许摘 volatile"的告警）；本报告判据 2。
+
+### 🔴 E-80 · 删了 schema 字段，**配置里那份值还在** —— 它不会报错，但会"看起来还生效"
+
+**现象**：删掉 `persona` 后跑 `--dump-config`，`dsh-hob` 段里**仍然**有：
+```yaml
+    modules: { tools: true, preset: false, bus: false, settings: true }
+    persona: mentor          # ← schema 里已经没这个字段了
+```
+一眼看过去像是"没删干净"。**实测它无害，但成因值得记**。
+
+**根因（两件事叠加）**：
+① **schema 不校验未知键**：schemastery 对未声明的键**原样保留**（本项目
+   `config.ts` 早就写明这条，是有意的兼容性）；
+② **声明来自插件包的 `cordis.patch.yml`**（仓库根，`dsh.bundle.patch` 指向它），
+   那里手写了 `persona: mentor`。**删 schema 不会去改 patch 文件**。
+
+**于是产生一个"假象"**：`describe()` 的投影是**按 schema 走**的
+（`projectForm(form, …)` 只取 form 里声明的字段）⇒ 残留键
+**既不出现在设置页、也不影响读取**，但它在 `--dump-config` 里**肉眼可见**。
+
+**正确做法**：
+① 判"字段是否真删掉"要用 **schema / 渲染产物**做判据，
+   **不要**用 `--dump-config` 里"这个键还在不在" —— 那是 **composition 层的原始值**，
+   不是"设置页会呈现什么"（与 PROJECT.md §5.3.2b 同一条纪律：
+   `describe().value` 是投影视图，不是原始 config）。
+② 顺手把 `cordis.patch.yml` 里的残留声明**清掉**（本轮**未做**：它不在任务书
+   允许改动的文件清单里 —— 见本报告 §未验证/待确认第 1 条，
+   已作为 `[建议决策]` 上报，不擅自扩大改动面）。
+
+**⚠ 一个必须同时说清的边界**：残留键本身**不会**被"写入"路径清掉或放大 ——
+宿主 `write()` 里 `strip()` 只处理 **form 声明过的**路径
+（`dsh-settings/lib/index.js:524-533`），未声明的键在 `strip` 循环里**根本走不到**，
+故它既不会被自动删除、也不会造成冲突。**但它会一直留在 profile 的落盘配置里**，
+直到有人手工清 —— 属于"技术债可见但不致命"。
+
+**出处**：配置面清理轮实测（`--dump-config` 残留 + `projectForm` 投影复核 +
+`Config({persona:'mentor'})` 构造不抛错）；
+`cordis.patch.yml` 末段。
+
+### 🔴 E-81 · 删 schema 字段后，**声明该字段的 bundle patch 不会跟着变** —— 它是第二处真相源
+
+**现象（E-80 的收尾动作暴露的）**：清了 `cordis.patch.yml` 里的
+`persona: mentor` 之后，**`--dump-config` 的输出真的变了**
+（`dsh-hob` entry 块从 6 行变 5 行）。
+⇒ 这说明：**`src/config.ts` 的 schema 与 `cordis.patch.yml` 是两个都要改的地方**，
+只改 schema 会留下"声明了但 schema 不认"的键。
+
+**根因**：本插件的配置有**两处真相源**，职责不同：
+| 位置 | 作用 | 改了谁生效 |
+|---|---|---|
+| `src/config.ts` 的 `Config` | **schema**（类型/默认值/volatile/设置页呈现） | 决定"哪些字段存在、谁能编辑" |
+| `cordis.patch.yml` 的 `config:` | **打包时随插件分发的初始值** | 决定"这个 profile 初始拿到什么值" |
+
+宿主加载时按 `join(packageDir, file)` 读 patch（见该文件头部注释），
+**它随包分发到每一个装了本插件的 profile** ⇒ 残留键的**影响面是"所有实例"**，
+不是"本机这一次"。
+
+**为什么这次没在上一轮被发现**：上一轮的判据是
+「schema 里零命中 + 设置页零命中 + 渲染零命中」，三条**都不经过 patch 文件**
+⇒ 判据全过，脏声明却留着。
+（上一轮报告里把它记为"发现 1/未验证"，本轮才修 —— **这是判据覆盖面不足，不是执行失误**。）
+
+**正确做法（可迁移）**：
+① **删 schema 字段时，必须同时 grep 声明面**：`grep -rn "<字段名>" cordis.patch.yml
+   package.json preset/` —— **凡是能声明 config 的地方都要查**，
+   而不只是查 `src/`。
+② **判据要覆盖"配置的实际来源"**，不能只查"代码 + 界面"。
+   最直接的一条：**清完之后跑一次 `--dump-config`，看输出真的变了** ——
+   输出没变就说明你改的文件不是被加载的那一份（本轮正是这样确认 patch 确实生效的）。
+③ **别把"随包分发的声明文件"当注释无关**：它比注释危险，
+   注释不生效，**它会生效**。
+
+**⚠ 顺带一条（判据自伤的写法，与 E-71 同族）**：
+本轮给 patch 加解释注释时，差点把被删的三个键名**写进注释** ——
+那样 `grep -n "persona" cordis.patch.yml`（任务书判据 1 明写"应 0 命中"）
+就会被**我自己的注释**打中，判据再次被自伤。
+⇒ 修法是：**说明写在别处（EXPERIENCE/报告），文件里只写通用纪律、不点名**。
+"判据要求某文件对某字符串零命中"时，**该文件自己的注释也要受这条约束**。
+
+**出处**：提交轮实测（`grep -n persona cordis.patch.yml` → EXIT=1 零命中；
+`--dump-config` 前后 dsh-hob entry 块对比；YAML 解析复核 + stderr 归一化对照）；
+`cordis.patch.yml:17-41`。
+
+
+
 ## 7. 待核实（**不要当成已知**）
 
 以下条目在旧项目里**从未被验证**，带到新项目时**必须重新验证**，不许当既有结论引用：

@@ -68,8 +68,10 @@ export function apply(ctx: Context, config: ConfigShape): void {
 
   // ⚠ 日志不是「模块真的生效」的判据（零日志 ≠ 没执行 —— 见 .hob/EXPERIENCE.md E-29）。
   //   真判据是装配树里能看到条目、以及模块真的注册了它该注册的东西。
-  // ⚠ `persona` 也是 volatile ⇒ 取值必须 `.get()`，直读会静默得到 ref 对象。
+  // ⚠ 本行原先还打 `persona=...` 片段；该字段已按 UD-43 从配置面删除
+  //   （它是"空旋钮"：只被打进日志，不影响任何行为），故片段一并去掉。
+  //   **日志本身保留** —— 它是"哪些模块被登记"的唯一运行时线索。
   ctx.logger?.info?.(
-    `[${name}] 已加载（模块：${loaded.length ? loaded.join(', ') : '无'}；persona=${config.persona.get()}）`,
+    `[${name}] 已加载（模块：${loaded.length ? loaded.join(', ') : '无'}）`,
   )
 }

@@ -19,20 +19,26 @@
  *
  *   | 字段 | 类型 | 改后是否即时生效 |
  *   |---|---|---|
- *   | `persona` / `showEntry` / `delivery` | 值型 | ✅ **即时**（实测：运行时 config 当场变） |
  *   | `modules.*`（四个开关） | **拓扑型** | ❌ **需重载** |
  *
- *   为什么：宿主写入后只做 `resolveConfig(fiber.runtime, resolved)`
+ *   ⚠ **本插件已没有"值型字段"了**（2026-10-06 配置面清理轮，UD-43）：
+ *     原先的 `persona` / `showEntry` / `delivery` 三个字段**已删除** ——
+ *     它们是"空旋钮"（界面上有、背后无功能：`persona` 只进日志，
+ *     另两个无人消费），用户决定清掉，只留真开关。
+ *     ⇒ 所以本表只剩"拓扑型"一行。若将来新增**真有消费方**的值型字段，
+ *       这一行要连同"即时生效"那句一起加回来（别只加字段不加说明）。
+ *
+ *   为什么模块开关需重载：宿主写入后只做 `resolveConfig(fiber.runtime, resolved)`
  *   （`dsh-config-editor/lib/index.js:83`）—— 它**重新校验**配置对象，
  *   但**不会重新执行 `apply()`**。而模块的装载/卸载发生在 `apply()` 里
  *   （`src/index.ts` 的 `MODULE_REGISTRY` 循环），所以开关值变了、
  *   已装载的模块**不会被卸载**。
  *
  *   ⚠ 这不是缺陷，是宿主的既定语义：`volatile` 的定义就是
- *     *"editable **without remounting**"*（`dsh-settings/lib/types/schema.d.ts:7`）——
- *     即"改这个字段无需重挂插件"。要改变**挂载拓扑**，本来就需要重新挂载。
+ *     *"editable **without remounting**"*（`dsh-settings/lib/types/schema.d.ts:7`）。
+ *     要改变**挂载拓扑**，本来就需要重新挂载。
  *
- *   ⇒ 对用户的诚实说法：**「设置页里改了值当场生效；改了模块开关要重启实例」**。
+ *   ⇒ 对用户的诚实说法：**「改了模块开关要重启实例才生效」**。
  *     本模块把这句话在设置页可见的地方也说一遍（见 `client/settings-panel.tsx`）。
  *
  * 依赖语义：`settings` 服务由 `@deepseek-ai/dsh-settings` 提供，且在

@@ -58,44 +58,6 @@ export interface Config {
     bus: boolean
     settings: import('@deepseek-ai/cordis').Volatile<boolean>
   }
-  /**
-   * 人格/说话风格 —— **占位字段**，本轮没有任何代码读它。
-   *
-   * ⚠ 它带 `.volatile()` 是**刻意的**，用作「设置页可见」这条链路的**活样板**：
-   *   DSH 的 `SettingsForms.describe()` 对每个 entry 先跑 `volatileForm(schema)`，
-   *   **返回 undefined 就 `return []`** —— 该 entry 不出现在结果里，
-   *   `configForms.get('<ns>')` 永远拿不到 value。而 `volatileForm` 的规则是
-   *   **schema 里至少有一个字段带 `.volatile()`**。
-   *   ⇒ 一个 volatile 都没有时，插件在设置页里**完全不可见**（且不报错）。
-   *   详细踩坑见 `.hob/EXPERIENCE.md` E-08。
-   *
-   * ⚠ volatile 的两个硬约束（实测）：
-   *   ① **父子不能同时标** —— 父对象标了 volatile，再给它的子字段标，**解析时**抛
-   *      `ValidationError`：`volatile fields require a fixed object path without an
-   *      enclosing volatile field`（`schemastery/src/index.ts:488-509` 的
-   *      `validateVolatileSchema`）。
-   *      ⚠ 精确表述（2026-10-05 复核纠正）：抛错的是「**父子同标**」，
-   *        **不是**「给子字段各标」。**父不标 + 子字段各自标是完全合法的**，
-   *        而且正是"隐藏某个子字段"唯一可行的形状（见下方 `modules` 的说明）。
-   *      ⚠ 另一条曾被写错的表述：volatile **不必**是"顶层叶子" ——
-   *        嵌在**非 volatile** 父对象里的 volatile 叶子同样合法
-   *        （本项目的 `modules.tools` 就是这种，实测构造/解析都 OK）。
-   *        受限的只是"volatile 里面再套 volatile"。
-   *   ② 运行时它是 **ref 对象而非真值** ⇒ 读取必须 `.get()`，直读会**静默**得到 `{}`。
-   *      类型写 `Volatile<string>`（而非裸 `string`）才能让 TS 站到正确一边。
-   */
-  persona: import('@deepseek-ai/cordis').Volatile<'mentor' | 'executor'>
-
-  // ── M4 本轮新增：设置面板的字段（**已定字段，不接业务**）────────────────
-  // ⚠ 下面这几个字段**本轮没有任何代码读它们**（除设置面板的只读展示）。
-  //   它们的作用是让「设置页面板」这条链路有真实内容可渲染 —— 也就是
-  //   把 C1 的面板骨架立起来，而不是留一个空壳。
-  //   真接业务在后续批次，届时**不要**改字段名（会动 profile 里已落盘的配置键）。
-
-  /** 是否在界面上显示悬浮球/入口。默认关闭（骨架期无 UI 可显示）。 */
-  showEntry: import('@deepseek-ai/cordis').Volatile<boolean>
-  /** 会话之间传话时使用的投递方式。语义见 `.hob/EXPERIENCE.md` E-40。 */
-  delivery: import('@deepseek-ai/cordis').Volatile<'followup' | 'steer' | 'inject'>
 }
 
 export const Config = z.object({
@@ -106,13 +68,28 @@ export const Config = z.object({
    *   `bus` 刻意不标** —— 这是第 6 步修订实测逼出来的形状（**方案 D**），
    *   为的是"**在设置页隐藏 `bus`、但保留 `modules.bus` 这个配置键**"（UD-25）。
    *
-   * ── 为什么"隐藏一个子字段"需要这么绕（先看机制，别重走弯路）────────────
-   * 宿主 `volatileForm(schema)`（`dsh-settings/lib/index.js:122-131`）的规则是：
-   *   · schema **自己**带 `volatile` ⇒ `plainSchema(schema)` —— **整块原样呈现，子字段全显示**；
-   *   · schema 是 object 且自己不带 ⇒ 递归子字段，**返回 `undefined` 的会被过滤掉**；
-   *   · 一个 live 字段都没有 ⇒ 返回 `undefined` ⇒ 整块消失。
+   * ⚠⚠ **这个形状也是本项目"设置页分区可见"的**唯一**支撑**（2026-10-06 配置面清理轮实测）：
+   *   本 schema 里**已经没有顶层 volatile 字段了**（三个空旋钮 persona / showEntry /
+   *   delivery 已按 UD-43 删除）⇒ 可见性**完全**依赖
+   *   `modules` 里那三个带 `.volatile()` 的子字段。
+   *   实测（用**宿主 `volatileForm` 原文**跑真 schema，见
+   *   `.hob/archive/2026-10-06-config-cleanup-evidence/分区可见性验证.mjs`）：
+   *     · `volatileForm(schema)` 返回**非 undefined** ⇒ 分区仍可见 ✅
+   *     · 返回的 form 顶层键 = `["modules"]`，其子字段 = `{tools, preset, settings}`
+   *   ⇒ **"父不标 + 子各标"单独就足以让 entry 可见**，不需要任何顶层 volatile。
+   *     （更一般的规则见下方 "volatile 的三个形状规则"。）
+   *   ⚠ 因此：**任何人不许把这三个 `.volatile()` 从子字段上摘掉** ——
+   *     摘掉任何一个不影响可见性（还剩两个），但**三个全摘** ⇒
+   *     `volatileForm` 返回 undefined ⇒ `describe()` 对该 entry `return []`
+   *     ⇒ **整个 dsh-hob 分区在设置页静默消失**（宿主不报错）。
    *
-   * ⇒ 两条**已实测**的推论：
+   * ── volatile 的三个形状规则（宿主机读，逐条实测）─────────────────────
+   * 宿主 `volatileForm(schema)`（`dsh-settings/lib/index.js:122-131`）：
+   *   · schema **自己**带 `volatile` ⇒ `plainSchema(schema)` —— **整块原样呈现，子字段全显示**；
+   *   · schema 是 object 且自己不带 ⇒ 递归子字段，**返回 `undefined` 的子字段被过滤掉**；
+   *   · 一个 live 子字段都没有 ⇒ 返回 `undefined` ⇒ **该 entry 从设置面消失（静默）**。
+   *
+   * 由此三条（均已实测）：
    *   (a) **父子同标会直接抛** `ValidationError`（schemastery 的
    *       `validateVolatileSchema` 禁止 volatile 里再套 volatile，
    *       `schemastery/src/index.ts:488-509`）。
@@ -122,8 +99,12 @@ export const Config = z.object({
    *         "给子字段各标会抛"（那会把人引向错误的规避方案）。
    *   (b) **父整体标了 volatile 之后，schema 层无法让某个子字段单独消失**
    *       （整块走 `plainSchema`，子字段全在）。
+   *   (c) **volatile 不必是"顶层叶子"** —— 嵌在**非 volatile** 父对象里的
+   *       volatile 叶子同样合法（本 `modules.tools` 就是这种，实测构造/解析都 OK），
+   *       且**单独就足以让分区可见**。
+   *       受限的只是"volatile 里面再套 volatile"（即 (a)）。
    *
-   * （以上三条形状规则均可用 node 独立复现：构造阶段全 OK，差异只在**解析**阶段。
+   * （以上形状规则均可用 node 独立复现：构造阶段全 OK，差异只在**解析**阶段。
    *   复现脚本见 `.hob/archive/2026-10-05-step6rev2-evidence/volatile-三形状复现.mjs`。）
    *
    * ── 两种候选方案的实测对照（选 D 的理由）────────────────────────────
@@ -168,25 +149,6 @@ export const Config = z.object({
       .description('设置模块：登记本插件的配置面，使其出现在这个设置页里。')
       .volatile(),
   }).default({}),
-
-  // 顶层字段（这里放顶层只是为了可读性；volatile **不必**是顶层叶子 ——
-  // 嵌在非 volatile 父对象里的 volatile 叶子同样合法，见上方 persona 的说明）。
-  // 默认 'mentor'：与旧项目一致，便于对照。
-  persona: z.union(['mentor', 'executor'])
-    .default('mentor')
-    .description('人格档位：mentor＝引导式（先解释再动手）；executor＝执行式（直接干活）。')
-    .volatile(),
-
-  // M4 新增字段（同为顶层 volatile；"顶层"是布局选择，不是 volatile 的硬要求）。
-  showEntry: z.boolean().default(false)
-    .description('是否在界面上显示本插件的悬浮球入口。关闭时只保留设置页里的配置项。')
-    .volatile(),
-  // 默认 'followup'：语义最直白（开一个新 turn），且是三者中唯一
-  // 「排队 + 唤醒」都做的（见 M3 接口确认结论）。
-  delivery: z.union(['followup', 'steer', 'inject'])
-    .default('followup')
-    .description('会话之间传话时的投递方式：followup＝排队成下一个回合（默认）；steer＝插进当前回合的最近一步；inject＝只塞上下文、不唤醒对方。')
-    .volatile(),
 })
 
 /**

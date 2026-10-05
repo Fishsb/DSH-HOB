@@ -30,6 +30,7 @@
  */
 import { SettingsPanel } from './settings-panel.tsx'
 import { bindSettingsForm } from './settings.ts'
+import { ensurePanelStyles } from './panel-styles.ts'
 
 /** 包名：同时作为模块 id、槽位条目来源标识、settings namespace。 */
 const PACKAGE_NAME = 'dsh-hob'
@@ -44,6 +45,16 @@ export const inject = ['slots']
 
 export function apply(ctx: any): void {
   ctx.logger?.debug?.(`[${PACKAGE_NAME}] client 半边已加载`)
+
+  // 样式只注入一次（幂等），并挂在 `ctx.effect` 上：
+  // 卸载/热重载时把**本次新建的那一个** `<style>` 摘掉，避免累积成孤儿标签。
+  // ⚠ 宿主 `client-modules` 也会按 `data-plugin` 清理（`removeOwnedStyles`），
+  //   两条路径互不冲突：谁都可能先跑，先跑的那个删掉、后跑的查询命中 null 即跳过。
+  // ⚠ 为什么不是 `.module.css`：见 `./panel-styles.ts` 文件头（tsdown实测依据）。
+  ctx.effect(() => {
+    const tag = ensurePanelStyles()
+    return () => { tag?.remove() }
+  }, `${PACKAGE_NAME}: settings panel styles`)
 
   // 先把 configForms 反应式绑上：面板渲染时读它。
   // ⚠ 用 `ctx.inject` 反应式订阅，**不能**在 apply 里一次性 `ctx.get` ——
