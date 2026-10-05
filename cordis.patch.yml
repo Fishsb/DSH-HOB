@@ -1,0 +1,29 @@
+# dsh-hob 自带的 bundle patch —— **本文件属于插件，不是给 profile 用的**
+#
+# 它是什么：
+#   package.json 的 `dsh.bundle.patch` 指向本文件。宿主加载本插件时，按
+#   `join(packageDir, file)` 从**安装目录**读它，作为 bundle 层叠加进组合。
+#   因此本文件随包分发，**不需要**在 exports 里暴露。
+#
+# 它不是什么（三个不同位置、不同用途的文件，别混淆）：
+#   · 不是 profile 的用户 patch —— 那个在
+#     `$DSH_HOME/profiles/<name>/cordis.patch.yml`。
+#   · 不是家目录级 patch —— 那个在 `$DSH_HOME/cordis.patch.yml`（跨 profile 生效）。
+#
+# ⚠ 本包一旦进了 profile 的 `dsh.profile.bundles`（`dsh plugin add` 会自动追加），
+#   **不要**再在 profile 的 cordis.patch.yml 里重复写 insert（那是冗余声明）。
+#   profile 层写同 id 的条目是「**id 定向覆盖 config**」，不是重复挂载。
+#
+# 本轮为**最小声明**：先能加载、不写业务。
+- insert:
+    - id: dsh-hob
+      name: dsh-hob
+      config:
+        modules:
+          tools: true
+          preset: false
+          bus: false
+          settings: true
+        # ⚠ 这个字段带 .volatile() ⇒ 运行时是 **ref 对象**，读取必须 .get()。
+        #   这里给的是普通字符串，由 schema 负责物化。
+        persona: mentor

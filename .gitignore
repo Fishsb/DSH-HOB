@@ -1,0 +1,42 @@
+# ── 构建产物（由 npm run build 生成，不入库）─────────────────────────────
+# ⚠ lib/ 是 src/ 的编译产物。插件**运行时装的是 lib/**，所以 lib/ 与 src/ 的
+#   漂移在 git status 里是**看不见的** —— 改完 src 必须重新 build。
+#   （这条是旧项目实测踩出来的，见 .hob/EXPERIENCE.md E-24 / E-25。）
+node_modules/
+lib/
+dist/
+*.tsbuildinfo
+*.tgz
+
+# ── 账本：骨架进 git、运行数据不进 ─────────────────────────────────────
+# 依据 **`.hob/README.md` §1「骨架 vs 运行数据」**（它是本约定的**归属地**）：
+#
+#   骨架（格式契约，可复用可分发）        ✅ 进 git
+#     · `.hob/README.md`      —— README §1 表格第 1 行
+#     · `.hob/templates/`     —— README §1 表格第 1 行 + 目录树（第 42 行）
+#     · `.hob/EXPERIENCE.md`  —— README §1 表格第 1 行 + §1 的专节
+#                                「`EXPERIENCE.md` 是什么（本项目的特殊骨架）」（第 23-33 行）
+#
+#   运行数据（填充进格式的具体条目）      ❌ 不进 git
+#     · `.hob/{FACTS,DECISIONS,USER-DECISIONS,CONTEXT}.md` 四个账本 —— README §1 第 2 行
+#     · `.hob/archive/`                                    —— README §1 第 2 行
+#
+# 一句话口径：**格式进 git，内容不进。**（README 第 17 行）
+#
+# ⚠ 历史坑（2026-10-05 修，见 EXPERIENCE.md E-70）：
+#   `.hob/*` 会排除**整个** `.hob/`，而原先只有 `README.md` 与 `templates/` 两条 `!` 规则
+#   ⇒ **`EXPERIENCE.md` 被静默排除**（`git check-ignore -v` 指向 `.hob/*`），
+#   `git init` 后经验库**不入库且不报错**。根因：本条注释当时只写了
+#   "`README.md` + `templates/` 是格式契约"，**漏了 EXPERIENCE.md 这个特殊骨架**，
+#   规则与注释、注释与 README 三处不一致。
+#   ⇒ 修法：补 `!.hob/EXPERIENCE.md`，并把依据逐条对到 README 的行号（本注释上方）。
+#   ⚠ 教训：**`!` 例外必须与"骨架清单"逐项对齐** —— 列清单时漏一个，
+#     在下游表现为"文件静默消失"，在 git 里**没有任何提示**。
+.hob/*
+!.hob/README.md
+!.hob/templates/
+!.hob/templates/**
+!.hob/EXPERIENCE.md
+
+# 历史备份与日志
+*.log

@@ -1,0 +1,88 @@
+{
+  "name": "dsh-hob",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "dsh-hob：用户 ↔ DSH 开发会话之间的沟通/翻译层",
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "types": "./lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./preset/tools": {
+      "types": "./lib/types/preset/tools.d.ts",
+      "default": "./lib/preset/tools.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "preset"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "check:presets": "node scripts/check-preset-contracts.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0-rc <5",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/schemastery": "3.18.4",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "tsdown": "^0.15.12",
+    "typescript": "^5.9.0"
+  },
+  "dsh": {
+    "bundle": {
+      "//": [
+        "第 1 项 = 插件本体（模块开关等）。",
+        "第 2/3 项 = 两个 Agent 预设声明（M2）。",
+        "⚠ 预设的 patch 文件必须**列在这里**（本插件包内相对路径），不要另外把",
+        "  preset/dsh-hob 目录单独加进 profile 的 dsh.profile.bundles ——",
+        "  那会让两个 patch 挂载两次，宿主 loader 因 entry id 重复而崩。",
+        "⚠ 顺序有意义：本体在后两份之前，预设行引用本包 ./preset/tools 时包已解析。"
+      ],
+      "patch": [
+        "./cordis.patch.yml",
+        "./preset/dsh-hob/preset-dsh-hob.patch.yml",
+        "./preset/dsh-hob/preset-dsh-hob-work.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "//": [
+        "⚠ inject 里只能列**在 client 模块图里有 client 半边的包**（即自己声明了",
+        "  dsh.client 且 exports 里有 ./client 的包）。列一个没有 client 半边的包",
+        "  ⇒ 那一条依赖在客户端**被静默忽略**：加载器是",
+        "  `const dep = graphRows.get(packageName); if (dep !== void 0) await arrive(dep)`",
+        "  （dsh-client-modules/lib/client.js:656-659）—— 找不到就跳过，**不报错**。",
+        "  后果是**你以为声明了依赖，其实什么都没等到**：顺序不保证、且无任何提示。",
+        "  （第 6 步实测发现并修正，见 E-61。）",
+        "",
+        "  具体：本插件 client 半边用到两个服务、由两个**不同的**包提供 ——",
+        "    · slots       ← @deepseek-ai/dsh-client-ui-renderer（它 super(ctx,'slots')）",
+        "    · configForms ← @deepseek-ai/dsh-client-ui-settings",
+        "  而 @deepseek-ai/dsh-client-ui-slots **只有 host 半边**（无 ./client 导出、",
+        "  无 dsh.client 声明）—— 它只是 slots 的**类型/契约**包，**不能**列在这里。"
+      ],
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}
