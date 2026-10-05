@@ -11,17 +11,24 @@ dist/
 # ── 账本：骨架进 git、运行数据不进 ─────────────────────────────────────
 # 依据 **`.hob/README.md` §1「骨架 vs 运行数据」**（它是本约定的**归属地**）：
 #
-#   骨架（格式契约，可复用可分发）        ✅ 进 git
+#   骨架（格式契约 / 被机检脚本消费的规范源）   ✅ 进 git
 #     · `.hob/README.md`      —— README §1 表格第 1 行
-#     · `.hob/templates/`     —— README §1 表格第 1 行 + 目录树（第 42 行）
+#     · `.hob/templates/`     —— README §1 表格第 1 行 + §2 目录树
 #     · `.hob/EXPERIENCE.md`  —— README §1 表格第 1 行 + §1 的专节
-#                                「`EXPERIENCE.md` 是什么（本项目的特殊骨架）」（第 23-33 行）
+#                                「`EXPERIENCE.md` 是什么（本项目的特殊骨架）」
+#     · `.hob/drafts/`        —— README §1 表格第 1 行 + **§1.2（本次新增的归纠正）**
 #
-#   运行数据（填充进格式的具体条目）      ❌ 不进 git
+#   运行数据（填充进格式的具体条目 / 本项目专有的过程产物）  ❌ 不进 git
 #     · `.hob/{FACTS,DECISIONS,USER-DECISIONS,CONTEXT}.md` 四个账本 —— README §1 第 2 行
-#     · `.hob/archive/`                                    —— README §1 第 2 行
+#     · `.hob/archive/`      —— README §1 第 2 行（去向由 README §3 指针表留档）
+#     · `.hob/backups/`      —— README §1 第 2 行（逐类判定见 README **§1.1**）
+#     · `.hob/CARRYOVER.md`  —— README §1 第 2 行 + §1.1
+#     · `.hob/STEP*-REPORT.md` —— README §1 第 2 行 + §1.1
 #
-# 一句话口径：**格式进 git，内容不进。**（README 第 17 行）
+# 一句话口径：**格式进 git，内容不进。**（README §1）
+#
+# ⚠ 本清单与 README §1 是**同一份清单的两处载体** ⇒ 改一处必须同步另一处，
+#   并由 `npm run check:gitignore` 机检（scripts/check-gitignore.mjs）。
 #
 # ⚠ 历史坑（2026-10-05 修，见 EXPERIENCE.md E-70）：
 #   `.hob/*` 会排除**整个** `.hob/`，而原先只有 `README.md` 与 `templates/` 两条 `!` 规则
@@ -32,11 +39,21 @@ dist/
 #   ⇒ 修法：补 `!.hob/EXPERIENCE.md`，并把依据逐条对到 README 的行号（本注释上方）。
 #   ⚠ 教训：**`!` 例外必须与"骨架清单"逐项对齐** —— 列清单时漏一个，
 #     在下游表现为"文件静默消失"，在 git 里**没有任何提示**。
+#
+# ⚠ 第二处同类问题（2026-10-05 收尾第二轮修，见 EXPERIENCE.md E-73）：
+#   原先 `drafts/` 也在排除之列 —— 但 **`scripts/check-preset-contracts.mjs`
+#   （已入库、挂在 `npm run check:presets`）会无条件读取
+#   `.hob/drafts/preset-contracts.md`**（脚本 :32 定义路径、:71 读取）
+#   ⇒ **新 clone 里那个命令直接 ENOENT 崩掉**（实测 exit 1）。
+#   「入库脚本依赖不入库文件」是自相矛盾 ⇒ `drafts/` 归**骨架**，已加 `!` 放行。
+#   ⇒ 教训：归类时不能只看"是不是可复用"，还要看**有没有入库物依赖它**。
 .hob/*
 !.hob/README.md
 !.hob/templates/
 !.hob/templates/**
 !.hob/EXPERIENCE.md
+!.hob/drafts/
+!.hob/drafts/**
 
 # 历史备份与日志
 *.log

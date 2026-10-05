@@ -1461,6 +1461,81 @@ schema 默认值再补一个 `false`，读数**完全一样**。
 
 
 
+## 6j. 收尾第二轮新增（2026-10-05 · 排除清单补齐 / gitignore 断言脚本）
+
+### 🔴 E-73 · 入库脚本依赖**不入库**文件 ⇒ 新 clone 跑不了自己声明的命令
+
+**现象**：`scripts/check-preset-contracts.mjs`（**已入库**，挂在 `package.json` 的
+`npm run check:presets`）**无条件读取** `.hob/drafts/preset-contracts.md` ——
+而 `.hob/drafts/` 当时被 `.gitignore` 排除。
+⇒ **新 clone 里那条命令直接崩**（实测）：
+```
+$ git clone . /tmp/x && cd /tmp/x && node scripts/check-preset-contracts.mjs
+Error: ENOENT: no such file or directory, open '.../.hob/drafts/preset-contracts.md'
+EXIT=1
+```
+
+**根因（归类时漏了一个判据）**：判断"某文件该不该进 git"时，
+只用了"**是不是可复用的格式契约**"这一个尺子 —— `drafts/preset-contracts.md`
+是**本项目专有**的契约正文，按那把尺子自然被判成"运行数据"。
+**但漏了第二条尺子：有没有入库物依赖它。**
+一个入库脚本要能跑，它的输入就必须也在库里；
+"**入库物依赖不入库文件**"本身是自相矛盾的状态。
+
+**正确做法**：
+① 归类时必须问两个问题 ——「**它是可复用的格式契约吗**」**以及**
+   「**有入库物（脚本/配置/测试）依赖它吗**」；任一为真 ⇒ 进 git。
+② 本项目把 `.hob/drafts/` 归**骨架**并加 `!` 放行，同时把「骨架」的判定标准
+   从"格式契约"**扩写**为"格式契约 **/** 被机检脚本消费的规范源"，让归类有明文依据。
+③ **机检**：`scripts/check-gitignore.mjs` 的 MUST-TRACK 清单里显式包含
+   `scripts/check-preset-contracts.mjs` 与它读的 `drafts/preset-contracts.md`
+   —— 以后再出现"脚本入库、输入没入库"，断言直接 FAIL。
+
+**⚠ 与 E-70 是同一族**：E-70 是"`!` 例外少列一项 ⇒ 静默不入库"；
+本条是"归类尺子少了一把 ⇒ 静默断链"。共同点：**错误都表现为"文件不出现"，没有任何报错。**
+
+**出处**：收尾第二轮实测（`git clone` 后跑命令得 ENOENT exit 1）；
+`scripts/check-gitignore.mjs`；`.hob/README.md` §1.2。
+
+### 🔴 E-74 · 用 `git check-ignore` 做断言**必须带 `--no-index`**，否则断言恒真
+
+**现象（我自己的脚本写错了，且写错了还看不出来）**：
+`check-gitignore.mjs` 第一版用 `git check-ignore -q <path>` 断言"某文件未被排除"。
+自证时**故意删掉 `!.hob/EXPERIENCE.md`**，脚本**仍然 PASS** —— 断言**没有牙**。
+
+**根因**：`git check-ignore` **默认优先信任 index** ——
+一个**已被跟踪**的文件**永远不会**被报告为 "ignored"，
+**即使 `.gitignore` 里确实有规则排除它**。实测：
+```
+  git check-ignore -q            .hob/README.md  →  exit 1（"未被排除"）← 漏报
+  git check-ignore -q --no-index .hob/README.md  →  exit 0（"被排除"）  ← 抓到
+```
+⇒ 而本脚本要断言的恰恰是**规则本身**（"清单是否与 README §1 一致"），
+不是"index 当前是否看得见它"。**第一批要保护的文件恰恰都已入库** ⇒
+用默认行为时，断言对**最需要保护的那批文件**完全失效（恒真）。
+
+**正确做法**：
+① 断言"**规则是否排除某路径**"时**一律加 `--no-index`**（纯规则匹配、
+   不看 index、也**不要求路径存在**）。
+② **判据要三连**，任一条单独用都有假通过：
+   · 未被规则排除（`check-ignore --no-index` != 0）
+   · 磁盘上存在（`existsSync`）
+   · **确实在 index 里**（`git ls-files --error-unmatch`）
+   —— 只查前两条会把"文件在、规则也放行，但**从未 `git add`**"判成通过，
+   而"文件不在 git 里"正是 E-70 的失效模式。
+③ **反向同理**：断言"被排除"时，还要查它**没有**躺在 index 里 ——
+   规则对**已跟踪**文件不生效（加了 `.gitignore` git 也不会停止跟踪），
+   必须 `git rm --cached`（实测 `git add -f .hob/FACTS.md` 后脚本正确 FAIL 并提示这一点）。
+
+**⚠ 这条的教训最值得记**：**"断言没报错"不等于"断言在起作用"** ——
+自证（故意弄坏 ⇒ 必须 FAIL）才是唯一能发现"恒真断言"的手段。
+这与 E-67（用默认值测"保留"）同族：**判据必须能区分成功与"恰好看起来像成功"。**
+
+**出处**：收尾第二轮自证实测（4 个 FAIL 场景 + 恢复后 PASS）；
+`scripts/check-gitignore.mjs` 的 `ignoreExitCode()` 注释。
+
+
+
 ## 7. 待核实（**不要当成已知**）
 
 以下条目在旧项目里**从未被验证**，带到新项目时**必须重新验证**，不许当既有结论引用：

@@ -11,14 +11,57 @@
 
 | 类别 | 判定标准 | 进 git？ | 位置 |
 |---|---|---|---|
-| **骨架** | **格式契约** —— 表头、列定义、编号规则。可复用、可分发；新建工作区时用它初始化 | ✅ **进** | `.hob/README.md`、`.hob/templates/`、`.hob/EXPERIENCE.md` |
-| **运行数据** | **填充进格式的具体条目** —— 第 N 条事实 / 第 N 条决策 / 本轮进度 | ❌ **不进** | `.hob/*.md` 四个账本、`.hob/archive/` |
+| **骨架** | **格式契约 / 被机检脚本消费的规范源** —— 表头、列定义、编号规则、以及**入库脚本会读取的契约正文**。可复用、可分发；新建工作区时用它初始化 | ✅ **进** | `.hob/README.md`、`.hob/templates/`、`.hob/EXPERIENCE.md`、**`.hob/drafts/`**（见 §1.2） |
+| **运行数据** | **填充进格式的具体条目 / 本项目专有的过程产物** —— 第 N 条事实 / 第 N 条决策 / 本轮进度 / 改前备份 | ❌ **不进** | 四个账本（`FACTS.md` / `DECISIONS.md` / `USER-DECISIONS.md` / `CONTEXT.md`）、`.hob/archive/`、`.hob/backups/`、`.hob/CARRYOVER.md`、`.hob/STEP*-REPORT.md` |
 
 **一句话**：**格式进 git，内容不进。**
 
 > **为什么这样切**：`.gitignore` **按路径匹配、读不到文件内容**，
 > 所以「首行标记」在 git 上不可行；把运行数据下沉到子目录则要改目录结构定义。
 > 本方案零迁移。（沿用旧项目 CHG-006 的论证。）
+
+**⚠ 清单必须逐项列全，不许靠推断**（2026-10-05 修订，见 `EXPERIENCE.md` **E-70**）：
+`.gitignore` 的 `!` 例外**少列一项** ⇒ 该文件**静默不入库**，git **不报任何错**。
+⇒ 本表的「位置」栏就是 `.gitignore` 例外的**唯一权威清单**；
+改一处必须同步另一处，并由 `npm run check:gitignore` 机检（见 §1.3）。
+
+### 1.1 四类"运行数据"为什么进不了 git（逐类判定依据）
+
+| 类 | 判定依据（对照上方「运行数据」标准） |
+|---|---|
+| 四个账本 | 「**第 N 条事实 / 第 N 条决策**」—— 逐轮追加，内容本项目专有 |
+| `.hob/archive/` | 「**本项目专有的过程产物**」—— 历轮证据/归档；去向由 §3 的**指针表**留在骨架区 |
+| `.hob/backups/` | 「**本项目专有的过程产物**」—— 各轮**改前备份**，随工作区一次性消费，无跨项目价值 |
+| `.hob/CARRYOVER.md` | 「**本项目专有的过程产物**」—— 旧项目**可搬资产登记**，供本项目的后续批次决策；不是可复用的格式契约 |
+| `.hob/STEP*-REPORT.md` | 「**本轮进度**」—— 各步/各轮报告（§五 格式的交付物），内容本项目专有 |
+
+### 1.2 `drafts/` 为什么**进 git**（一次经复核的归纠正）
+
+`.hob/drafts/preset-contracts.md` 是**两个预设契约正文的人读版**，
+也是 `scripts/check-preset-contracts.mjs`（**已入库**、挂在 `npm run check:presets`）
+**无条件读取**的文件（`scripts/check-preset-contracts.mjs:32` 定义路径、`:71` 读取）。
+
+**决定性事实（实测）**：若把它排除，则**新 clone 跑不了已声明的命令** ——
+```
+$ git clone . /tmp/x && cd /tmp/x && node scripts/check-preset-contracts.mjs
+Error: ENOENT: no such file or directory, open '.../.hob/drafts/preset-contracts.md'
+EXIT=1
+```
+⇒ 一个**入库脚本**依赖一个**不入库文件**，是自相矛盾的状态。
+
+**判定**：它满足「**被机检脚本消费的规范源**」⇒ **归骨架**。
+（⚠ 诚实边界：它**不**满足本条原来的"可复用、可分发"措辞 —— 它是本项目专有的契约正文。
+因此本轮把「骨架」的判定标准**扩写**为"格式契约 **/** 被机检脚本消费的规范源"，
+正是为了让这条归类有明文依据，而不是靠推断。脚本头部注释亦称其为
+"**用户过目、将来改动的地方**" ⇒ 是**源**，源必须进版本控制。）
+
+### 1.3 机检：`npm run check:gitignore`
+
+`scripts/check-gitignore.mjs` 把「**排除漂移**」从**静默**变成**显式 FAIL**：
+它按 §1 的两栏清单逐条断言 `git check-ignore` 的结果，**违反任一条 ⇒ exit 1**。
+改 `.gitignore` 或改本表后**都应跑一次**。
+（⚠ 它用 `git check-ignore`（**纯规则匹配**）做断言 ⇒ 能区分
+"**被规则排除**"与"**不存在所以没出现**" —— 后者**不**算通过，见脚本内注释。）
 
 ### `EXPERIENCE.md` 是什么（**本项目的特殊骨架**）
 
@@ -41,12 +84,20 @@
 ├── EXPERIENCE.md        ← 经验库（骨架 · 进 git · 提炼自旧项目）
 ├── templates/           ← 空模板 4 份（骨架 · 进 git）
 │   ├── FACTS.md  ├── CONTEXT.md  ├── USER-DECISIONS.md  └── DECISIONS.md
+├── drafts/              ← 契约正文人读版（**骨架 · 进 git**；被 check:presets 读取，见 §1.2）
+│   └── preset-contracts.md
 ├── FACTS.md             ┐
 ├── CONTEXT.md           │ 运行数据（不进 git）
 ├── USER-DECISIONS.md    │ 每轮追加，内容本项目专有
 ├── DECISIONS.md         ┘
+├── CARRYOVER.md         ← 可搬资产登记（运行数据 · 不进 git）
+├── STEP*-REPORT.md      ← 各轮报告（运行数据 · 不进 git）
+├── backups/             ← 各轮改前备份（运行数据 · 不进 git）
 └── archive/             ← 历史归档（运行数据 · 不进 git；索引见 §3）
 ```
+
+> 上表由 `npm run check:gitignore` 机检（§1.3）——
+> 标「进 git」的在库内、标「不进 git」的被 `.gitignore` 排除，任一漂移即 FAIL。
 
 ### 四份账本各管什么（职责分离，避免两处漂移）
 
