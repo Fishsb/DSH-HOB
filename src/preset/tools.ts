@@ -123,6 +123,9 @@ export function apply(ctx: any, config: Config = {}): void {
     //   子 ctx 继承依赖 API 且**拥有它自己创建的注册** ⇒ 门禁消失时这些注册随之拆除，
     //   不用手写卸载逻辑（§3.3 第 3 条：资源靠 ctx.effect 挂，卸载自动清理）。
     registerTools(gatedCtx, config, log)
+    // ⚠ 装配期白名单也放在**门禁内**：`modules.tools` 关掉 ⇒ 不注册工具，
+    //   此时再限制清单只会让助手"什么都干不了"，与门禁语义不符。
+    filterModelToolList(gatedCtx, log)
   })
 }
 
@@ -176,6 +179,112 @@ function denyInheritedTools(ctx: any, config: Config, log: (m: string) => void):
     // `tools/change` 是**无参**事件（见 dsh-tools 的类型声明）。
     return ctx.on('tools/change', onToolsChange)
   }, 'dsh-hob preset: deny retry on tools/change')
+}
+
+/**
+ * 「助手」**发给模型的**工具清单 —— **装配期白名单**（11 个显式名字）。
+ *
+ * ── 为什么是这 11 个 ────────────────────────────────────────────────
+ * 「助手」只干两件事：**读项目文档、写自己的账本**，以及**查资料**、**安排自己的定时提醒**。
+ * 于是清单 = 本插件的 2 个 + 检索 5 个 + 定时 4 个，一个不多。
+ *
+ * ── 为什么**排除** roundtable / taskboard / team_task / 团队编排 ──────
+ * 这些是"**驱动他人干活、改动工作状态**"的工具（派活、认领、移卡、拉专家、发消息给别的会话）。
+ * 「助手」的职责是**只出指令**、由用户手工把指令带给「开发」——
+ * 一旦它自己就能指挥别的会话/改任务状态，这条职责边界当场失效
+ * （`preset-dsh-hob.patch.yml` 的 "You cannot message it, and it is not in this session."）。
+ *
+ * ⚠ **不用通配 / 前缀**：将来新装的插件**不得自动**进入「助手」的清单。
+ *   这正是 `restrict({ deny })` 黑名单的反面教训 —— 黑名单每装一个新插件都会漏。
+ * ⚠ 本清单是**装配期过滤**（看不见），不是 `restrict` 的硬摘除（拿不到）；
+ *   两者的差别与残余风险见 `filterModelToolList` 的注释。
+ */
+export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
+  'read_contracts',
+  'write_hob',
+  'advanced_search',
+  'multi_search',
+  'platform_search',
+  'video_search',
+  'free_search_test',
+  'schedule_create',
+  'schedule_list',
+  'schedule_update',
+  'schedule_delete',
+]
+
+/**
+ * 保留的传输名（PTC 模式的 `run_code`）。
+ *
+ * ⚠ **必须显式放行**：ptc 模式下 `wireSchemas()` 只返回 `run_code` 一个
+ *   （`dsh-tools/lib/index.js:2840-2843`）。若白名单把它滤掉，助手会拿到**空清单**
+ *   —— 那是比"多几个工具"严重得多的回归（会话直接失去全部能力）。
+ *   native 模式下它**根本不存在**（`view()` 只在 mode !== native 时加它），
+ *   故 native 下清单仍**恰好 11**。实测判据见阶段 C 报告 C3-1。
+ */
+const RESERVED_TRANSPORT_TOOL = 'run_code'
+
+/**
+ * 装配期白名单：把**发给模型的**工具清单收敛到 {@link MODEL_TOOL_ALLOWLIST}。
+ *
+ * ── 机制依据（为什么挂这里）──────────────────────────────────────────
+ *   ① 请求里的工具清单确实来自这次装配：`dsh-agent-loop/lib/index.js:907`
+ *      `await this.loopCtx.systemPrompt.assemble(...)`；
+ *   ② 装配是个**可拦截的瀑布**：`dsh-system-prompt/lib/types/index.d.ts:27`
+ *      声明 `'system-prompt/assemble'(assembly, context, next)`；
+ *   ③ 工具清单由 `dsh-tools/lib/index.js:2707`
+ *      `ctx.systemPrompt.tools((context) => this.wireSchemas(context.scope))` 提供。
+ *
+ * ── 为什么用装配期过滤而**不是** `restrict({ allow })`（阶段 B 实测结论）────
+ *   在 preset 行落点（真实落点）上，`restrict({ allow })`：
+ *   · 点名 `read_contracts`/`write_hob`/`schedule_*` 会**直接抛错**
+ *     （它们不在 `restrictableNames` 里 —— 那集合只含**继承来的**全局名）；
+ *   · 退让成"只写能点名的"⇒ 会**把本预设自己的 read_contracts/write_hob 一并摘掉**
+ *     （实测 57 ⇒ 18，两个工具都没了）。
+ *   根因是宿主明写的语义：`dsh-tools/lib/types/index.d.ts:639-641`
+ *   "Restrict **global** tools … scoped registrations remain visible"。
+ *   ⇒ 数量目标只能靠"装配期过滤"达成。
+ *
+ * ── ⚠ 这是「看不见」，**不是「拿不到」**（如实标注，不美化）────────────
+ *   被滤掉的工具**仍在注册表里**：装配期只改**送给模型的清单**，
+ *   不动 `tools.get(name, scope)` 的解析（它读的是 `view(scope).visible`）。
+ *   ⇒ 残余风险：若某条路径**绕过模型清单**直接点名调用，那些工具**仍可执行**。
+ *     本批已按要求做越权调用实测（阶段 C 报告 C3-4 附**原始输出**）。
+ *
+ * ── 作用半径 ────────────────────────────────────────────────────────
+ *   监听器注册在**本预设作用域**上；宿主的瀑布按 scope 链派发，
+ *   故它只参与"scope 链里含本预设 scope"的装配 ⇒ **只有「助手」受影响**。
+ *   `dsh-hob-work`（开发）与宿主自带的 minimal/standard/cordis **零影响**
+ *   （实测逐名对照见 C3-3）。
+ *
+ * @param gateCtx - 门禁就绪后的子 ctx（`modules.tools` 关闭时本函数不会被调用）。
+ * @param log - 诊断输出。
+ */
+function filterModelToolList(gateCtx: any, log: (m: string) => void): void {
+  const allow = new Set<string>(MODEL_TOOL_ALLOWLIST)
+
+  // ⚠ 走**反应式** `ctx.inject`（不是本模块的静态 `inject`）：
+  //   静态 inject 缺依赖 ⇒ fiber 停 PENDING ⇒ 预设被标 `broken`
+  //   ⇒ **在选择器里被静默过滤掉**（同本文件头部 E-21 的教训）。
+  //   反应式注入在依赖缺席时只是**不跑回调** ⇒ 预设照常可用、宿主零告警。
+  gateCtx.inject(['systemPrompt'], (spCtx: any) => {
+    const handler = async (assembly: any, _context: any, next: any): Promise<any> => {
+      // ⚠ 必须**先 `await next()`** 再过滤：后面的监听器可能还会往清单里加东西。
+      const assembled = await next()
+      const all: any[] = Array.isArray(assembled?.tools) ? assembled.tools : []
+      const kept = all.filter((t) => allow.has(t?.name) || t?.name === RESERVED_TRANSPORT_TOOL)
+      if (kept.length !== all.length) log(`装配期白名单：模型面工具 ${all.length} ⇒ ${kept.length}`)
+      return { ...assembled, tools: kept }
+    }
+    // ⚠ 监听器必须挂在 **ctx** 上，不能挂在服务实例上：`SystemPrompt` 是 cordis `Service`
+    //   子类，而 `Service` **不代理**事件 API（`cordis/lib/index.js:1742` 的类定义里没有
+    //   `on`/`effect`）—— 写 `sp.on(...)` 会直接 `TypeError`。宿主的先例也都是 ctx：
+    //   `dsh-agent/lib/index.js:167` 的 `agentCtx.on("system-prompt/assemble", …)`。
+    // ⚠ 资源靠 `ctx.effect` 挂（§3.3 第 3 条）：依赖消失/卸载时监听器自动拆除。
+    spCtx.effect(() => spCtx.on('system-prompt/assemble', handler),
+      'dsh-hob preset: model-facing tool allowlist')
+    log('已挂装配期白名单（' + MODEL_TOOL_ALLOWLIST.length + ' 个显式名字）')
+  })
 }
 
 /** 注册两个工具（工具**定义**来自 `modules/tools.ts`，此处不重写实现）。 */
