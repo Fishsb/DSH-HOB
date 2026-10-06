@@ -98,8 +98,29 @@ export interface HobToolsConfig {
    *
    * ⚠ 名字必须**在当前部署里已注册**，否则宿主的 restrict 会抛
    *   （挂载侧逐个 try，不存在的名字只记一条诊断，不会让预设挂载失败）。
+   * ⚠ **本键暂留**：原计划把它并入"允许清单"重写，但实测该重写在 preset 作用域
+   *   **做不到**（白名单里的 `read_contracts`/`write_hob` 是本作用域 own 注册，
+   *   不在 `restrictableNames` 里 ⇒ `restrict({ allow })` 直接抛错；详见阶段 B 报告）。
+   *   机制未定前删键会留下"黑名单还在、键没了"的半截状态，故此处保留。
    */
   denyTools?: string[]
+  /**
+   * 诊断日志开关。**默认关**（缺省/未给 = 不写任何文件）。
+   *
+   * ⚠ 为什么默认关：早期版本无条件 `appendFileSync('/tmp/…')`，实测真机 3 分钟写 508 KB、
+   *   累计 2.3 MB（见 `.hob/FACTS.md` F-J25）—— **一个只读用途的诊断不该有写盘副作用**。
+   * ⚠ 开关必须有**真实消费者**（挂载侧据此决定写不写）；只留配置键而不读，就是"空旋钮"。
+   */
+  debugLog?: boolean
+  /** 诊断日志路径；仅在 `debugLog: true` 时有意义。 */
+  debugLogPath?: string
+  /**
+   * 诊断日志的**磁盘上限**（字节）。
+   *
+   * ⚠ 判据是**文件现有大小**，不是内存计数器：宿主 fiber 会被重载/重挂，
+   *   内存计数随 reload 归零 ⇒ 上限形同虚设（旧项目的实测踩坑）。
+   */
+  debugLogMaxBytes?: number
 }
 
 /** 默认值集中在此，避免两处各写一套。 */
@@ -109,6 +130,7 @@ export const DEFAULTS = {
   maxWriteBytes: 262144,
   keepBackups: 20,
   shrinkGuard: 0.5,
+  debugLogMaxBytes: 262144,
 } as const
 
 /**

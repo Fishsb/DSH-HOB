@@ -16,8 +16,14 @@
  *   ④ 两份正文都含语言规则（跟随用户语言）
  *   ⑤ 人读版引文块与预设正文**全文**逐字一致（把 .md 里的引文块抽出来比对；
  *      ⚠ v3/UD-51 起含 A 段 —— 旧版只比 B+C 段，对 A 段是"缺席的 PASS"）
- *   ⑤b **UD-51 语义断言**：`<<<CMD>>>…<<<END_CMD>>>` 必须被代码围栏包住、
- *      规则条文在位、且未误包 `<<<NOTE>>>` / 未把整篇包住
+ *   ⑤b **两段式格式的语义断言**（UD-51 起步 → UD-55 定为两段式 → **v5/UD-57 改定围栏与排版**）：
+ *      两个二级标题在位且有序、第一段（指令）必须被代码围栏包住
+ *      （**恰好 4 个反引号 + 语言标记 `markdown`**，固定、无条件式）、
+ *      第二段（白话说明）不得被包住、五条规则条文在位，
+ *      且**旧分隔符一律不得残留**（负向断言 —— 只靠 ⑤ 的话，
+ *      "两份一起改回旧分隔符"照样 PASS）。
+ *      ⚠ v5 起**删去**「禁 emoji / 禁 ASCII 线 / 禁表格徽章」三条断言（装饰已放开）；
+ *        也不再要求"无开场引言"（v5 允许第一段之前有一两句引言）。
  *   ⑥ `complete: true` 与工具面声明未变（规划 = 1 行工具模块；开发 = 照抄创造模式行数）
  *
  * 用法：node scripts/check-preset-contracts.mjs
@@ -200,48 +206,171 @@ const STALE_APPELLATIONS = [
   }
 }
 
-// ── ⑤b UD-51：指令段必须包在代码块内（A 段的**语义**断言） ─────────────
+// ── ⑤b 两段式格式的**语义**断言（UD-51 起步 → UD-55 定为两段式 → v5/UD-57 改定围栏）──
 //
-// 为什么需要：⑤ 只能证明"两份载体一致"，**证明不了规则本身还在** ——
-// 两份一起被改回裸分隔符，⑤ 照样 PASS。本条把用户的**原始诉求**钉成断言：
-// `<<<CMD>>>` 之前必须有一个代码围栏，`<<<END_CMD>>>` 之后必须闭合它；
-// 且**不许**把整个回复包住（外围栏不得出现在 `<<<CMD>>>` 之外的第一行）
-// 与**不许**包 `<<<NOTE>>>` 段。
+// 为什么需要：⑤ 只能证明"两份载体一致"，**证明不了格式规则本身还在** ——
+// 两份一起被改回旧分隔符，⑤ 照样 PASS。本条把用户的**原始诉求**钉成断言。
+//
+// 形状沿革（**读懂这三行才不会把断言改回旧口径**）：
+//   · UD-51：`<<<CMD>>>` + 条件式围栏（含代码块时才加长）
+//   · UD-55：两段式标题驱动，围栏 3 反引号 + `text`，禁装饰、禁开场引言
+//   · **v5/UD-57（当前）**：围栏改 **4 反引号 + `markdown`**、**固定 4 个**（无条件式）、
+//     **放开装饰**（emoji / ASCII 线 / 表格均可）、**允许开场引言**；
+//     两段式结构、10 种分隔符禁令、两个标题与语言无关 —— **一律不变**。
 {
   const hoBody = literalBlock(hoSrc, 'prefix') ?? ''
-  // ① INSTRUCTION shape 的示例里，<<<CMD>>> 必须紧跟在一个围栏之后
-  const cmdOpen = hoBody.indexOf('<<<CMD>>>')
-  const beforeCmd = hoBody.slice(0, cmdOpen)
-  const lastFenceLine = beforeCmd.split('\n').reverse().find((l) => l.trim() !== '')
-  if (!/^`{3,}$/.test((lastFenceLine ?? '').trim())) {
-    bad(`⑤b 助手：<<<CMD>>> 之前一行应为代码围栏，实测 ${JSON.stringify(lastFenceLine)}`)
-  } else ok(`⑤b 助手：<<<CMD>>> 前有围栏（${JSON.stringify((lastFenceLine ?? '').trim())}）`)
 
-  // ② <<<END_CMD>>> 之后必须有关闭围栏
-  const endCmd = hoBody.indexOf('<<<END_CMD>>>')
-  const afterCmd = hoBody.slice(endCmd + '<<<END_CMD>>>'.length)
-  const nextFenceLine = afterCmd.split('\n').find((l) => l.trim() !== '')
-  if (!/^`{3,}$/.test((nextFenceLine ?? '').trim())) {
-    bad(`⑤b 助手：<<<END_CMD>>> 之后一行应为关闭围栏，实测 ${JSON.stringify(nextFenceLine)}`)
-  } else ok('⑤b 助手：<<<END_CMD>>> 后有闭合围栏')
+  // ① 两个二级标题在位，且**顺序**不可颠倒
+  const H1 = '## 给「开发」的指令'
+  const H2 = '## 白话说明'
+  const i1 = hoBody.indexOf(H1)
+  const i2 = hoBody.indexOf(H2)
+  if (i1 < 0) bad(`⑤b 助手：缺第一部分的二级标题 ${JSON.stringify(H1)}`)
+  else if (i2 < 0) bad(`⑤b 助手：缺第二部分的二级标题 ${JSON.stringify(H2)}`)
+  else if (i1 > i2) bad('⑤b 助手：两个二级标题顺序颠倒（第一部分应为「给「开发」的指令」）')
+  else ok(`⑤b 助手：两段标题在位且有序（${H1} → ${H2}）`)
 
-  // ③ 规则条文必须存在（防止"示例改了、规则没写"）
+  // ② 第一部分的实例块：标题之后的第一行必须开围栏（**标题在围栏外**）
+  //    ⚠ 取 `lastIndexOf` 而不是 `indexOf`：正文里这两个标题**当前各出现 1 次**，
+  //      但 `## Rules` 的条文行里**会以不带 `## ` 前缀的形式复述标题**，
+  //      将来若有人把复述写成带前缀的形态，取最后一个才能**仍然锚到实例**。
+  const FENCE = /^(`{4})markdown$/   // v5：恰好 4 个反引号 + 语言标记 markdown（固定）
+  const lastH1 = hoBody.lastIndexOf(H1)
+  if (lastH1 >= 0) {
+    const afterH1 = hoBody.slice(lastH1 + H1.length)
+    const fenceLine = afterH1.split('\n').find((l) => l.trim() !== '')
+    const fenceTrim = (fenceLine ?? '').trim()
+    if (!FENCE.test(fenceTrim)) {
+      bad(`⑤b 助手：${H1} 之后一行应为「4 个反引号 + markdown」的代码围栏，实测 ${JSON.stringify(fenceLine)}`)
+    } else ok(`⑤b 助手：${H1} 后紧跟 4 反引号 + markdown 围栏（${JSON.stringify(fenceTrim)}），且标题在围栏**外**`)
+
+    // ③ 该围栏必须闭合，且闭合发生在「白话说明」标题**之前**
+    //    （否则等于把白话段也包进去了）
+    const openLen = FENCE.exec(fenceTrim)?.[1].length ?? 0
+    const bodyLines = afterH1.split('\n')
+    let closeIdx = -1
+    for (let i = 1; i < bodyLines.length; i++) {
+      if (bodyLines[i].trim() === '`'.repeat(openLen)) { closeIdx = i; break }
+    }
+    const h2Line = bodyLines.findIndex((l) => l.trim() === H2)
+    if (closeIdx < 0) bad(`⑤b 助手：指令段的围栏未闭合（找不到同长度 ${openLen} 反引号的闭合行）`)
+    else if (h2Line >= 0 && closeIdx > h2Line) bad('⑤b 助手：围栏跨过了「白话说明」标题 ⇒ 白话段被包进代码块')
+    else ok('⑤b 助手：指令段围栏成对闭合，且未跨过「白话说明」标题（白话段未被包住）')
+
+    // ③b **围栏长度固定为 4**（v5 取消了"含代码块才加长"的条件式）——
+    //     旧口径会写 `{3,}`；这里是**精确 4**，写成 3 或 5 都算 FAIL。
+    //     ⚠ 只在围栏**格式合法**时才比对长度：否则 ② 已报"格式不对"，
+    //       这里再报"实测 0 个"属于**误导性读数**（0 是没匹配上，不是真有 0 个反引号）。
+    if (FENCE.test(fenceTrim)) {
+      if (openLen !== 4) bad(`⑤b 助手：围栏应为固定 4 个反引号，实测 ${openLen} 个`)
+      else ok('⑤b 助手：围栏长度 = 4（固定，无条件式）')
+    }
+
+    // ③c **指令正文内不得出现 4 个及以上连续反引号**（否则外层围栏提前闭合）。
+    //     判据：取第一段围栏**内部**的行，扫 `{4,}` 的连续反引号。
+    const openIdx = bodyLines.findIndex((l) => FENCE.test(l.trim()))
+    if (openIdx >= 0) {
+      const closeIdx2 = bodyLines.findIndex((l, k) => k > openIdx && l.trim() === '````')
+      const innerLines = closeIdx2 > openIdx ? bodyLines.slice(openIdx + 1, closeIdx2) : bodyLines.slice(openIdx + 1)
+      const longRuns = innerLines.filter((l) => /`{4,}/.test(l))
+      if (longRuns.length > 0) {
+        bad(`⑤b 助手：指令正文含 4 个及以上连续反引号（${longRuns.length} 行），会提前闭合外层围栏：${JSON.stringify(longRuns[0].slice(0, 60))}`)
+      } else ok('⑤b 助手：指令正文内无 4 个及以上连续反引号（外层围栏不会被提前闭合）')
+    }
+  }
+
+  // ④ 规则条文必须存在（防止"示例改了、规则没写"）
+  //    ⚠ v5 口径（UD-57）：第三条由"内嵌代码块时才用 4 个"改为"**固定 4 个**"，
+  //      故正则改钉 `exactly four backticks` + `never contain a run of four or more backticks`。
+  //    ⚠ v6 口径（UD-58）：**删去「两段强制」**（`Both parts are mandatory`）——
+  //      两段式改为**按需触发**，不再每轮强制。其余条文**全部保留**（v6 未放开）。
   for (const [label, needle] of [
-    ['围栏规则', /wrap the whole directive section in ONE Markdown code fence/],
-    ['禁止包整篇', /Never wrap the whole reply in one code block/],
-    ['禁止包白话段', /never fence the <<<NOTE>>> section/],
+    ['禁止包白话段', /Never fence part two/],
+    ['禁止包整篇', /never wrap the whole reply in one code block/],
+    ['标题为结构、不随语种变', /The two headings are structural/],
+    ['固定 4 个反引号', /exactly four backticks/],
+    ['指令内禁 4 个及以上反引号', /never contain a run of four or more backticks/],
   ]) {
     if (!needle.test(hoBody)) bad(`⑤b 助手：## Rules 缺「${label}」条文`)
     else ok(`⑤b 助手：## Rules 含「${label}」条文`)
   }
 
-  // ④ 负向对拍：示例里 <<<NOTE>>> 段**不得**被包进任何一个围栏
-  const noteIdx = hoBody.indexOf('<<<NOTE>>>')
-  // 统计 <<<NOTE>>> 之前的围栏数：INSTRUCTION 示例的那一对已开已闭 ⇒ 应为偶数
-  const fencesBeforeNote = hoBody.slice(0, noteIdx).split('\n').filter((l) => /^`{3,}$/.test(l.trim())).length
-  if (fencesBeforeNote % 2 !== 0) {
-    bad(`⑤b 助手：<<<NOTE>>> 被包在未闭合的围栏里（之前有 ${fencesBeforeNote} 条围栏，应为偶数）`)
-  } else ok(`⑤b 助手：<<<NOTE>>> 未被围栏包住（之前 ${fencesBeforeNote} 条围栏 = 成对）`)
+  // ④b **v6 新增：按需触发的两项断言**（UD-58）
+  //    (a) 默认正常回复 + 不得写空壳/占位句（防止"为填格式而编任务"）
+  //    (b) 触发条件存在（"仅在产生交给 开发 的活时才出两部分"）
+  //    ⚠ 与 (a) 配对的是**删除**「两段强制」：若有人把强制口径改回来，
+  //      (b) 的触发条件正则仍在（"produces work for 开发"），故另设 (c) 负向断言
+  //      「不得出现每轮强制的措辞」，见 ④c。
+  if (/ordinary Markdown by default/.test(hoBody)) ok('⑤b 助手：含「默认正常 Markdown 回复」条文')
+  else bad('⑤b 助手：缺「默认正常 Markdown 回复」条文（v6 按需触发的落点）')
+
+  if (/do not invent a task to fill the shape/.test(hoBody) && /do not emit a placeholder/.test(hoBody)) {
+    ok('⑤b 助手：含「不得编造任务 / 不得输出占位句」条文')
+  } else {
+    bad('⑤b 助手：缺「不得编造任务 / 不得输出占位句」条文（无活时不得写空壳）')
+  }
+
+  if (/ONLY when the turn actually produces work for 开发 to carry out/.test(hoBody)) {
+    ok('⑤b 助手：含「仅在该轮确产生交给 开发 的活时才用两部分」触发条件')
+  } else {
+    bad('⑤b 助手：缺按需触发的触发条件条文')
+  }
+
+  // ④c **v6 负向断言：每轮强制的措辞不得回归**
+  //     ⚠ 这两句正是 v6 要逐字删掉的那两条；只靠 ④ 的"条文存在"抓不到它们**复活**
+  //       （条文可以共存 —— 既写"按需触发"又写"每次必须两段"，那是自相矛盾）。
+  for (const [label, needle] of [
+    ['强制性首句（Every reply is exactly two parts）', /Every reply is exactly two parts/],
+    ['强制条（Both parts are mandatory）', /Both parts are mandatory/],
+  ]) {
+    if (needle.test(hoBody)) bad(`⑤b 助手：正文仍含已废除的强制条文「${label}」`)
+    else ok(`⑤b 助手：已废除的强制条文「${label}」为 0 残留`)
+  }
+
+  // ④d **v6 新增：「触发时结构不变」的四项仍在**（UD-58 明示：只取消强制，不改结构）
+  //     四项 = ① 标题在围栏外 ② 只包第一段 ③ 固定 4 反引号 ④ 围栏不跨白话标题。
+  //     ⚠ 这四项**上文各自已有独立断言**（②③③b 与 ④ 的"禁止包白话段/禁止包整篇"）；
+  //       这里再**聚合复述一次**，理由是 v6 改的是"是否强制"，
+  //       而"结构本身"必须**在同一处可见地未被改动** —— 分散断言在对比 v5/v6 时不易核对。
+  {
+    const structChecks = [
+      ['标题在围栏外', lastH1 >= 0 && FENCE.test((hoBody.slice(lastH1 + H1.length).split('\n').find((l) => l.trim() !== '') ?? '').trim())],
+      ['只包第一段（白话段未被包）', /Never fence part two/.test(hoBody)],
+      ['固定 4 反引号', /exactly four backticks/.test(hoBody)],
+      ['围栏不跨白话标题', /never run past the 白话说明 heading/.test(hoBody)],
+    ]
+    const missing = structChecks.filter(([, isOk]) => !isOk).map(([n]) => n)
+    if (missing.length > 0) bad(`⑤b 助手：触发时的结构细则缺项：${missing.join(' / ')}`)
+    else ok('⑤b 助手：触发时结构四项俱全（标题在围栏外 / 只包第一段 / 固定 4 反引号 / 围栏不跨白话标题）')
+  }
+
+  // ⑤ 负向断言：**旧分隔符一律不得残留**（UD-55「删除全部分隔符与包装」）
+  //    ⚠ 这条是本条存在的核心理由：⑤ 是"两份一致"，两份一起改回旧格式它照样 PASS。
+  //    ⚠ v5 未放开此禁令（用户明示"10 种旧分隔符禁令必须保留"）。
+  const LEGACY = ['<<<CMD>>>', '<<<END_CMD>>>', '<<<NOTE>>>', '<<<END_NOTE>>>',
+    '<<<WHAT>>>', '<<<END_WHAT>>>', '<<<JUDGE>>>', '<<<END_JUDGE>>>',
+    '<<<NEXT>>>', '<<<END_NEXT>>>']
+  const residue = LEGACY.filter((m) => hoBody.includes(m))
+  if (residue.length > 0) {
+    bad(`⑤b 助手：正文仍残留旧分隔符（${residue.length} 种）：${residue.join(' ')}`)
+  } else ok('⑤b 助手：10 种旧分隔符均为 0 处残留')
+
+  // ⑥ ⚠ **v5 已删除**原三条排版禁令断言（禁 emoji / 禁 ASCII 线 / 禁表格徽章）：
+  //    用户裁定"装饰放开"（UD-57）。此处**不再断言**，也**不反向断言必须出现装饰** ——
+  //    装饰是**允许**而非**要求**。
+  ok('⑤b 助手：排版禁令断言已按 v5 移除（装饰放开，非强制）')
+
+  // ⑦ 语言标记**不得**是 v4 的 `text`：与 ② 互为补充 —— ② 要求"是 4+markdown"，
+  //    本条要求"不是 text"，使"把 markdown 改回 text"这一具体回退**单独可观测**。
+  {
+    const h1Line = hoBody.lastIndexOf(H1)
+    if (h1Line >= 0) {
+      const fenceLine = hoBody.slice(h1Line).split('\n').find((l) => l.trim() !== '')
+      if (/^`{3,}text$/.test((fenceLine ?? '').trim())) {
+        bad('⑤b 助手：围栏语言标记仍是 v4 的 `text`（v5 应为 markdown）')
+      } else ok('⑤b 助手：围栏未使用 v4 的 `text` 标记')
+    }
+  }
 }
 
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────

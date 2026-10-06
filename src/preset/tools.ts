@@ -32,10 +32,11 @@
  *
  * ⚠ 本模块**不注册** DSH 原生 read/bash/write —— 与 `PROJECT.md` §5.2 同款纪律。
  */
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, statSync } from 'node:fs'
 import {
   GATE_SERVICE,
   DEFAULT_DENY,
+  DEFAULTS,
   createHobTools,
   type HobToolsConfig,
 } from '../modules/tools.ts'
@@ -54,19 +55,40 @@ export const inject = ['tools']
 /** preset 行传入的配置。 */
 export type Config = HobToolsConfig
 
-/** 诊断输出（**best-effort 写文件**）。 */
-let diagLines = 0
 /**
- * ⚠ 为什么诊断不用 `ctx.logger`：preset 作用域里的 ctx **可能根本没有 logger**
- *   （本模块跑在 preset 行，不是宿主插件行）—— `ctx.logger?.warn?.()` 会**静默无输出**，
- *   排查时表现为"代码明明加了日志却什么都没打印"（旧项目实测）。
- *   ⚠ 上限：诊断写不进去/被反复调用时不许把盘写爆（旧项目实测踩过上万行）。
+ * 诊断输出 —— **默认关闭**，由配置开关 `debugLog` 显式打开。
+ *
+ * ⚠ 为什么默认关：旧实现**无条件** `appendFileSync('/tmp/dsh-hob-preset-tools.log', …)`，
+ *   实测真机 3 分钟写 508 KB、累计 2.3 MB（`.hob/FACTS.md` F-J25）。
+ *   问题不在"写了多少"，而在**一个只读用途的诊断拥有写盘副作用**：
+ *   用户没要求、日志路径硬编码、且随运行时间无限增长。
+ *
+ * ⚠ `debugLog` 是**真实消费者**（不是空旋钮）：为 false 时本函数**一次 fs 调用都不发**。
+ *
+ * ⚠ 上限判据是**文件现有字节数**（`statSync`），**不是内存计数器** ——
+ *   宿主 fiber 会重载/重挂，内存计数随 reload 归零，上限形同虚设（旧项目实测踩坑）。
  */
-function diag(msg: string): void {
-  if (diagLines > 200) return
-  diagLines++
-  try { appendFileSync('/tmp/dsh-hob-preset-tools.log', new Date().toISOString() + ' ' + msg + '\n') }
-  catch { /* 诊断写不进去不该影响功能 */ }
+function makeDiag(config: Config): (msg: string) => void {
+  if (config.debugLog !== true) return (): void => { /* 开关关闭：不做任何 IO */ }
+
+  const path = config.debugLogPath ?? '/tmp/dsh-hob-preset-tools.log'
+  const maxBytes = config.debugLogMaxBytes ?? DEFAULTS.debugLogMaxBytes
+
+  return (msg: string): void => {
+    try {
+      // ⚠ 先按**磁盘现值**判（不是内存计数器）：跨 fiber reload 依然有效，
+      //   外部轮转/删除日志后也能自愈。
+      let size = 0
+      try { size = statSync(path).size } catch { /* 文件还不存在 ⇒ size=0 */ }
+      // ⚠ 判据必须把**本行自身字节数**算进去：只判 `size >= max` 会让单行把文件顶过上限
+      //   （实测：上限 600 B 时写成 796 B —— 末行 200 B 被整行追加）。
+      //   真正的硬上限是"写入后 ≤ maxBytes"，超了就整行丢弃。
+      const line = new Date().toISOString() + ' ' + msg + '\n'
+      const bytes = Buffer.byteLength(line)
+      if (size + bytes > maxBytes) return
+      appendFileSync(path, line)
+    } catch { /* 诊断写不进去不该影响功能 */ }
+  }
 }
 
 /**
@@ -80,6 +102,9 @@ function diag(msg: string): void {
  * @param config - preset 行给的配置。
  */
 export function apply(ctx: any, config: Config = {}): void {
+  // ⚠ 诊断器**每挂载构造一次**（不是模块级单例）：上限要按"这次挂载"读磁盘现值，
+  //   模块级可变状态在 fiber reload 后既不可靠、也让本模块带上跨实例状态。
+  const diag = makeDiag(config)
   const log = (m: string): void => {
     try { ctx.logger?.debug?.(m) } catch { /* 无 logger 时忽略 */ }
     diag(m)
