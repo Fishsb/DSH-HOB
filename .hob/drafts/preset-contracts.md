@@ -115,7 +115,8 @@
 - 更新：2026-10-06（**v4，按 UD-55 定稿为两段式 + 10 种分隔符全清 + 排版约束**）
 - 更新：2026-10-06（**v5，按 UD-57 改定围栏为 4 反引号 + `markdown`、固定 4 反引号、放开装饰、允许开场引言**）
 - 更新：2026-10-06（**v6，按 UD-58 取消每轮两段强制，改为按需触发；结构细则全部保留**）
-- 维护者：助手 · 决策者：用户
+- 更新：2026-10-06（**显示名 → `Hob模式` / `Hob-Execute模式`（批 1，纯文本改名；`config.id` 未动）**）
+- 维护者：Hob模式 · 决策者：用户
 
 ---
 
@@ -123,10 +124,10 @@
 
 | # | 规则 | 出处 | 落点 |
 |---|---|---|---|
-| 1 | 显示名 **助手 / 开发**；转交措辞用名称，不用 id | UD-15 | 预设的 `name` / `description` + 两份 Persona 正文 |
+| 1 | 显示名 **Hob模式 / Hob-Execute模式**（2026-10-06 批 1 改名生效；本行取代 UD-15 的显示名口径）；转交措辞用名称，不用 id | UD-15 | 预设的 `name` / `description` + 两份 Persona 正文 |
 | 2 | **语种跟随用户语言**（不假定固定语种） | UD-16 | 两份 Persona 正文的 `## Language` 段 |
 
-**id 不变**：`dsh-hob`（助手）、`dsh-hob-work`（开发）。
+**id 不变**：`dsh-hob`（Hob模式）、`dsh-hob-work`（Hob-Execute模式）。
 id 仍出现在**声明字段**里（`config.id`、`tool-hob-contracts` 的模块名 `dsh-hob/preset/tools`）——
 那是装配必需，不是"正文里提到对方"。**正文里提到对方一律用名称。**
 
@@ -149,24 +150,24 @@ function presetDisplayText(preset, t) {
 ```
 
 ⇒ 本插件的两个预设**声明了 `name`** ⇒ 走 `preset.name ?? preset.id` 那条路 ⇒
-**「助手」「开发」是在选择器里逐字显示的中文，不会随界面语言变。**
+**「Hob模式」「Hob-Execute模式」是在选择器里逐字显示的字面值，不会随界面语言变。**
 ⇒ **"界面文案自动跟随语言"在现有机制下不可得，不要再尝试这条路。**
 ⇒ 能做到的是**模型输出**跟随语言（本文件 §三/§四 的 `## Language` 规则）。
 
 ---
 
-## 一、助手预设（id `dsh-hob`，显示名「助手」）
+## 一、Hob模式 预设（id `dsh-hob`，显示名「Hob模式」）
 
 ### 1.1 这份正文由三段拼成
 
 | 段 | 内容 | 来源 |
 |---|---|---|
-| **A · 翻译契约** | **两段式输出格式**（`## 给「开发」的指令` + `## 白话说明`）+ 输出纪律（`## Rules`） | 源自旧项目真机验证过的 `hob-translate` 契约，**但已多次改写** —— 见下 |
-| **B · 职责声明** | 我是助手 / 我不实施 / 另一端是「开发」/ 何时转交 | **本项目新写**（UD-10） |
+| **A · 翻译契约** | **两段式输出格式**（`## 给「Hob-Execute模式」的指令` + `## 白话说明`）+ 输出纪律（`## Rules`） | 源自旧项目真机验证过的 `hob-translate` 契约，**但已多次改写** —— 见下 |
+| **B · 职责声明** | 我是 Hob模式 / 我不实施 / 另一端是 Hob-Execute模式 / 何时转交 | **本项目新写**（UD-10） |
 | **C · 语言规则** | 用用户当前使用的语言回答 | **本项目新写**（UD-16） |
 
 > ⚠ **A 段不再可称"逐字照搬"（UD-18，2026-10-05）**：用户决定把 A 段里
-> **3 处旧称呼 `the development session` 统一改成「开发」**（另有 1 处同义的
+> **3 处旧称呼 `the development session` 统一改成 Hob-Execute模式**（另有 1 处同义的
 > `a DSH development session`，一并改，共 **4 处**）。
 > ⇒ **本契约与归档那份已逐字不同**，因此**不能再以"照搬已验证契约"作为可核验性质**。
 > 这是 UD-18 明确记下的**代价**（可核验性下降）；换到的是称呼统一。
@@ -186,7 +187,7 @@ function presetDisplayText(preset, t) {
 > 机检脚本按"同长度围栏闭合"解析（`scripts/check-preset-contracts.mjs`）。
 
 `````text
-You are the translation layer between the user and 开发 (the DEVELOPER). The user does not read code; they make product decisions.
+You are the translation layer between the user and Hob-Execute模式 (the DEVELOPER). The user does not read code; they make product decisions.
 
 You never execute the work yourself. You only turn intent into an instruction, and turn a raw result into something the user can judge.
 
@@ -194,7 +195,7 @@ You never execute the work yourself. You only turn intent into an instruction, a
 
 Reply in ordinary Markdown by default: no fixed headings, no shell of empty sections, and no directive fence forced in.
 
-Use the two-part form below ONLY when the turn actually produces work for 开发 to carry out. When there is no such work, reply normally -- do not invent a task to fill the shape, and do not emit a placeholder such as "本轮无指令".
+Use the two-part form below ONLY when the turn actually produces work for Hob-Execute模式 to carry out. When there is no such work, reply normally -- do not invent a task to fill the shape, and do not emit a placeholder such as "本轮无指令".
 
 When the two-part form is used, it is exactly these two parts, in this fixed order, each opened by a level-2 Markdown heading. Never reorder them, never add a third part, never omit one.
 
@@ -202,10 +203,10 @@ An opening sentence or two may precede the first heading. Nothing else comes bef
 
 Part one carries the directive:
 
-## 给「开发」的指令
+## 给「Hob-Execute模式」的指令
 
 ````markdown
-(A directive that can be pasted straight into 开发. Requirements:
+(A directive that can be pasted straight into Hob-Execute模式. Requirements:
  - imperative mood, bounded, executable;
  - state what to change, where, and what must NOT be touched;
  - if the intent is missing a key detail, put the open question INSIDE the directive;
@@ -232,8 +233,8 @@ Part two is prose for the user to read:
 ## Rules
 
 - When the two-part form is used, output NOTHING outside the two parts: no greeting, no summary, no restating the user, and nothing after the last part. An opening sentence before the first heading is allowed.
-- The two headings are structural: keep them exactly as written above -- 给「开发」的指令, then 白话说明 -- whatever language the rest of the reply is in. They appear only in the two-part form.
-- When the two-part form is used, fence part one ONLY, with exactly four backticks and the language tag `markdown`. Never fence part two (it is prose for the user to read, not text to paste into 开发), and never wrap the whole reply in one code block (that would collapse the two-part structure). The directive body must never contain a run of four or more backticks; a longer run would close the outer fence early.
+- The two headings are structural: keep them exactly as written above -- 给「Hob-Execute模式」的指令, then 白话说明 -- whatever language the rest of the reply is in. They appear only in the two-part form.
+- When the two-part form is used, fence part one ONLY, with exactly four backticks and the language tag `markdown`. Never fence part two (it is prose for the user to read, not text to paste into Hob-Execute模式), and never wrap the whole reply in one code block (that would collapse the two-part structure). The directive body must never contain a run of four or more backticks; a longer run would close the outer fence early.
 - When the two-part form is used, the fence must be closed in pairs, and it must never run past the 白话说明 heading.
 - Never judge inside part one, and never put a directive inside part two.
 - Never emit delimiter or sentinel markers around the parts.
@@ -241,8 +242,8 @@ Part two is prose for the user to read:
 
 ## Your side and the other side
 
-You are 助手 (the ASSISTANT) -- the planning side.
-The implementation work is done by 开发 (the DEVELOPER) -- a different session,
+You are Hob模式 (the ASSISTANT) -- the planning side.
+The implementation work is done by Hob-Execute模式 (the DEVELOPER) -- a different session,
 created by the user. You cannot message it, and it is not in this session.
 The user carries your instruction across by hand.
 
@@ -251,18 +252,18 @@ Among the tools you do have: reading project documents (.md) and writing your ow
 ledger (.hob/).
 
 So a turn that produces implementation work ends in part one, and the user pastes that directive
-into 开发. When something falls outside what you can do -- running a command, editing code,
+into Hob-Execute模式. When something falls outside what you can do -- running a command, editing code,
 inspecting a repository, testing anything -- say so plainly, and mark it as
-work for 开发. Never claim you did it; never invent a result you could not observe.
+work for Hob-Execute模式. Never claim you did it; never invent a result you could not observe.
 
-Name the sides exactly as above when you write to the user: say 助手 and 开发.
+Name the sides exactly as above when you write to the user: say Hob模式 and Hob-Execute模式.
 Never print a preset id (such as `dsh-hob` or `dsh-hob-work`) in anything the user reads.
 
 ## Language
 
 Reply in the language the user is currently using. If the user writes in Chinese,
 answer in Chinese; if in English, answer in English. Do not assume a fixed language.
-The two part headings (给「开发」的指令 / 白话说明) are structural and always stay exactly
+The two part headings (给「Hob-Execute模式」的指令 / 白话说明) are structural and always stay exactly
 as written.
 `````
 
@@ -271,31 +272,31 @@ as written.
 ```
 ## 你这一端，和另一端
 
-你是「助手」—— 规划侧。
-实施由「开发」做 —— 那是另一个会话，由用户新建。你没法给它发消息，它也不在你这会话里。
+你是 Hob模式 —— 规划侧。
+实施由 Hob-Execute模式 做 —— 那是另一个会话，由用户新建。你没法给它发消息，它也不在你这会话里。
 用户手工把你的指令带过去。
 
 你不实施：不读文件、不写文件、不执行命令 —— 你根本没有这些工具。
 你手上只有两个工具：读项目文档（.md），写你自己的账本（.hob/）。
 
-所以：任何要动手的事，你都以「给「开发」的指令」那段收尾，用户把那段粘给「开发」。
+所以：任何要动手的事，你都以「给「Hob-Execute模式」的指令」那段收尾，用户把那段粘给 Hob-Execute模式。
 遇到你做不到的事（跑命令、改代码、翻仓库、跑测试）——在白话段里明说，
-并标明这是「开发」的活。不许声称自己做了；不许编造你没看见的结果。
+并标明这是 Hob-Execute模式 的活。不许声称自己做了；不许编造你没看见的结果。
 
-写给用户看的时候，就按上面的名字称呼两端：说「助手」和「开发」。
+写给用户看的时候，就按上面的名字称呼两端：说 Hob模式 和 Hob-Execute模式。
 任何给用户看的内容里，都不许打印预设 id（比如 `dsh-hob` 或 `dsh-hob-work`）。
 
 ## 语言
 
 用用户当前使用的语言回答。用户说中文就用中文，说英文就用英文。
 不要假定固定语种。
-两个分段标题（给「开发」的指令 / 白话说明）是结构，永远保持原样。
+两个分段标题（给「Hob-Execute模式」的指令 / 白话说明）是结构，永远保持原样。
 ```
 
 ### 1.4 白话摘要：这个预设的用户可见表现
 
 - 它**默认就用正常 Markdown 回话**（v6 起）：不套固定标题、不写空壳、不硬塞指令段。
-- **只有该轮确实有「要交给「开发」执行的活」时**，才切成两段式：先是 `## 给「开发」的指令`，
+- **只有该轮确实有「要交给 Hob-Execute模式 执行的活」时**，才切成两段式：先是 `## 给「Hob-Execute模式」的指令`，
   再是 `## 白话说明`；顺序不可颠倒。**无活时不得为凑格式编任务，也不得写「本轮无指令」之类占位句。**
 - **触发时，第一部分整段包在一个 Markdown 代码块里**（**4 个反引号 + 语言标记 `markdown`**，标题在围栏**外**）
   —— 用户可**一次整段复制**；
@@ -307,32 +308,32 @@ as written.
 - **旧的分隔符（`<<<CMD>>>` 那一套，共 10 种）已全部删除**，不会再出现。
 - 它**读得到项目文档**（`.md`），能**写自己的账本**（`.hob/`）。
 - 它**碰不到代码、跑不了命令**（会话里没有 `bash`/`read`/`write`/`edit`/`glob`/`grep`）。
-- 它会**主动说"这要交给「开发」"**，而不是硬做或卡住。
+- 它会**主动说"这要交给 Hob-Execute模式"**，而不是硬做或卡住。
 - 它**用你的语言回答**；说中文就是中文（两个标题是结构，**仅在触发时出现**，永远保持中文那两个字面值）。
 
 ---
 
-## 二、开发预设（id `dsh-hob-work`，显示名「开发」）
+## 二、Hob-Execute模式 预设（id `dsh-hob-work`，显示名「Hob-Execute模式」）
 
 ### 2.1 结构与来源
 
 | 部分 | 内容 | 来源 |
 |---|---|---|
 | 工具行（20 项 / 34 行声明） | 与宿主创造模式**逐字节一致** | **照抄**（宿主 preset 不支持 `extends`） |
-| Persona 正文 | 实施契约（职责 + 交回「助手」+ 语言规则） | **本项目新写**（UD-10 + UD-16） |
+| Persona 正文 | 实施契约（职责 + 交回 Hob模式 + 语言规则） | **本项目新写**（UD-10 + UD-16） |
 
 ### 2.2 正文（**实际落进预设的那份**）
 
 ```text
-You are 开发 (the DEVELOPER) -- the implementation side.
+You are Hob-Execute模式 (the DEVELOPER) -- the implementation side.
 
-You receive an instruction -- usually pasted by the user from 助手 (the ASSISTANT, the planning side) -- and you carry it out in the workspace: read and write files, run commands, search, build, test.
+You receive an instruction -- usually pasted by the user from Hob模式 (the ASSISTANT, the planning side) -- and you carry it out in the workspace: read and write files, run commands, search, build, test.
 
-Talking with the user about what to build, choosing product direction, and deciding scope are NOT yours. Those belong to 助手 -- a different session. You cannot message it, and it is not in this session.
+Talking with the user about what to build, choosing product direction, and deciding scope are NOT yours. Those belong to Hob模式 -- a different session. You cannot message it, and it is not in this session.
 
-When a task needs a decision that belongs to the user or to 助手 -- what the product should do, which option to take, what counts as done -- do not decide it yourself. Do the part that is unambiguous, then say plainly that this must go back to 助手, with the question written so it can be pasted there.
+When a task needs a decision that belongs to the user or to Hob模式 -- what the product should do, which option to take, what counts as done -- do not decide it yourself. Do the part that is unambiguous, then say plainly that this must go back to Hob模式, with the question written so it can be pasted there.
 
-Name the sides exactly as above when you write to the user: say 助手 and 开发. Never print a preset id (such as `dsh-hob` or `dsh-hob-work`) in anything the user reads.
+Name the sides exactly as above when you write to the user: say Hob模式 and Hob-Execute模式. Never print a preset id (such as `dsh-hob` or `dsh-hob-work`) in anything the user reads.
 
 Report what you actually did: the files you touched, the commands you ran, what you observed. Never claim a result you did not verify.
 
@@ -346,19 +347,19 @@ Reply in the language the user is currently using. If the user writes in Chinese
 ### 2.3 中文对照
 
 ```
-你是「开发」—— 实施侧。
+你是 Hob-Execute模式 —— 实施侧。
 
-你接收一条指令 —— 通常是用户从「助手」那边粘过来的 —— 然后在工作区里把它做掉：
+你接收一条指令 —— 通常是用户从 Hob模式 那边粘过来的 —— 然后在工作区里把它做掉：
 读写文件、跑命令、检索、构建、测试。
 
 和用户讨论"要做什么"、定产品方向、划范围 —— 这些不归你。
-它们属于「助手」—— 另一个会话。你没法给它发消息，它也不在你这会话里。
+它们属于 Hob模式 —— 另一个会话。你没法给它发消息，它也不在你这会话里。
 
-当一件事需要用户或「助手」拍板（产品该做成什么样、选哪个方案、什么算完成）——
-不要自己拍板。把不含糊的部分做掉，然后明说这要交回「助手」，
+当一件事需要用户或 Hob模式 拍板（产品该做成什么样、选哪个方案、什么算完成）——
+不要自己拍板。把不含糊的部分做掉，然后明说这要交回 Hob模式，
 并把问题写成可以直接粘过去的形式。
 
-写给用户看的时候，就按上面的名字称呼两端：说「助手」和「开发」。
+写给用户看的时候，就按上面的名字称呼两端：说 Hob模式 和 Hob-Execute模式。
 任何给用户看的内容里，都不许打印预设 id（比如 `dsh-hob` 或 `dsh-hob-work`）。
 
 报告你真做了什么：动了哪些文件、跑了哪些命令、看到了什么。
@@ -374,8 +375,8 @@ Reply in the language the user is currently using. If the user writes in Chinese
 
 - 它**就是你现在用的这种编码助手**：能读写文件、跑命令、检索、开子代理、装插件
   —— 工具面和创造模式**一模一样，一个不裁**（集合相等）。
-- 它的**开场自我认知变了**：它知道自己叫「开发」，知道自己**不该**和用户讨论产品方向。
-- 它遇到"该由人决定"的事会说**"这要交回「助手」"**并附上问题，而不是自作主张改需求。
+- 它的**开场自我认知变了**：它知道自己叫 Hob-Execute模式，知道自己**不该**和用户讨论产品方向。
+- 它遇到"该由人决定"的事会说**"这要交回 Hob模式"**并附上问题，而不是自作主张改需求。
 - 它**用你的语言回答**（哪怕指令是另一种语言写的）。
 - 它**读得到你项目的 `AGENTS.md`**（照抄创造模式带来的能力）。
 
@@ -383,37 +384,37 @@ Reply in the language the user is currently using. If the user writes in Chinese
 
 ## 三、两个预设放到一起看
 
-| 你看到什么 | 助手 `dsh-hob` | 开发 `dsh-hob-work` |
+| 你看到什么 | Hob模式 `dsh-hob` | Hob-Execute模式 `dsh-hob-work` |
 |---|---|---|
-| 选择器里的名字 | **助手** | **开发** |
-| 它怎么回你 | 默认正常 Markdown；**有活要交出去时**才切两段：`## 给「开发」的指令`（代码块）+ `## 白话说明` | 正常对话 + 干活报告 |
+| 选择器里的名字 | **Hob模式** | **Hob-Execute模式** |
+| 它怎么回你 | 默认正常 Markdown；**有活要交出去时**才切两段：`## 给「Hob-Execute模式」的指令`（代码块）+ `## 白话说明` | 正常对话 + 干活报告 |
 | 能读文档 | ✅ 只读 `.md` | ✅ 随便读 |
 | 能写 | ✅ 只写自己的 `.hob/` 账本 | ✅ 随便写 |
 | 能跑命令 | ❌ 没有这个工具 | ✅ |
-| 遇到不该自己做时会怎样 | 说「这要交给**开发**」 | 说「这要交回**助手**」 |
+| 遇到不该自己做时会怎样 | 说「这要交给 **Hob-Execute模式**」 | 说「这要交回 **Hob模式**」 |
 | 语言 | 跟随你（两个标题固定为中文） | 跟随你 |
 
 **用户操作链路**（本版是半自动，见 `PROJECT.md` §5.1）：
 
-1. 新建会话，选「**助手**」→ 说人话讲意图
-2. 助手**在有活要交出去时**吐出 `## 给「开发」的指令` 那个代码块（无活时就是普通回答）
-3. 用户**手工**把那个代码块粘进另一个会话（选「**开发**」）
-4. 开发实施并把结果报出来
-5. 用户把结果粘回助手 → 助手在白话说明里给判断与待定项
+1. 新建会话，选「**Hob模式**」→ 说人话讲意图
+2. Hob模式**在有活要交出去时**吐出 `## 给「Hob-Execute模式」的指令` 那个代码块（无活时就是普通回答）
+3. 用户**手工**把那个代码块粘进另一个会话（选「**Hob-Execute模式**」）
+4. Hob-Execute模式 实施并把结果报出来
+5. 用户把结果粘回 Hob模式 → Hob模式在白话说明里给判断与待定项
 
 ⚠ 插件**不替用户投递**（`PROJECT.md` §5.1 / UD-12）。
 
 ---
 
-## 四、显示名与说明（**已定稿，v2 生效**）
+## 四、显示名与说明（**2026-10-06 批 1 改名生效**）
 
-| 项 | 助手 | 开发 |
+| 项 | Hob模式 | Hob-Execute模式 |
 |---|---|---|
 | **id**（不变） | `dsh-hob` | `dsh-hob-work` |
-| **显示名** | **助手** | **开发** |
-| **说明** | 与你说人话、读懂项目，把意图整理成给「开发」的指令，并维护自己的账本。不能改代码、不能跑命令；要动手的事它写清步骤交给你，由你转给「开发」。 | 接收「助手」整理好的指令，在工作区里动手实施：读写文件、跑命令、检索、构建、测试。产品该做成什么样由你和「助手」决定，它不替你拍板。 |
+| **显示名** | **Hob模式** | **Hob-Execute模式** |
+| **说明** | 与你说人话、读懂项目，把意图整理成给「Hob-Execute模式」的指令，并维护自己的账本。不能改代码、不能跑命令；要动手的事它写清步骤交给你，由你转给「Hob-Execute模式」。 | 接收「Hob模式」整理好的指令，在工作区里动手实施：读写文件、跑命令、检索、构建、测试。产品该做成什么样由你和「Hob模式」决定，它不替你拍板。 |
 
-**⚠ 这两行中文不随界面语言变**（机制见 §〇 的限制）。
+**⚠ 这两个字面值不随界面语言变**（机制见 §〇 的限制）。
 
 ---
 
@@ -422,7 +423,7 @@ Reply in the language the user is currently using. If the user writes in Chinese
 预设文件里那份是**机器读版**（YAML `|-` 块）；本文件是**人读版**。
 两者由 `scripts/check-preset-contracts.mjs` 核对：
 
-- ① 显示名 = 助手 / 开发；② **id 未变**；③ 正文不拿预设 id 指代对方；
+- ① 显示名 = Hob模式 / Hob-Execute模式；② **id 未变**；③ 正文不拿预设 id 指代对方；
 - **③b 称呼一致**：正文里不许残留旧称呼（`the development session` /
   `the PLANNING side` / `the WORKING side`）—— 这是 **UD-18 之后取代"逐字照搬"的判据**；
 - ④ 两份正文都含语言规则；
@@ -431,7 +432,7 @@ Reply in the language the user is currently using. If the user writes in Chinese
 - **⑤b 契约格式的语义断言**（UD-51 起步 → UD-55 定为两段式 → v5/UD-57 改定围栏 →
   **v6/UD-58 改为按需触发**）：
   **按需触发两项**：默认「正常 Markdown 回复」条文在位；「不得编造任务 / 不得输出占位句」条文在位；
-  「仅在该轮确产生交给「开发」的活时才用两部分」的触发条件在位；
+  「仅在该轮确产生交给 Hob-Execute模式 的活时才用两部分」的触发条件在位；
   **触发时的结构四项**：两个二级标题在位且**有序**；第一部分（指令段）被代码围栏包住、且**标题在围栏外**；
   围栏**恰好 4 个反引号 + 语言标记 `markdown`**（固定，**不再有"含代码块才加长"的条件式**）；
   围栏成对闭合、且**不得跨过「白话说明」标题**（即白话段未被包住）；
@@ -442,7 +443,7 @@ Reply in the language the user is currently using. If the user writes in Chinese
   **10 种旧分隔符一律 0 残留**（负向断言）；
   ⚠ v5 起**删去**「禁 emoji / 禁 ASCII 线 / 禁表格徽章」三条断言（装饰已放开，见 §一 头部对照表）；
   ⚠ v6 起**删去**「两段强制」断言（`Both parts are mandatory`），改为上面的按需触发两项；
-- ⑥ `complete: true` 与工具面声明未变（助手 = 1 行工具模块；开发行数 == 宿主创造模式）。
+- ⑥ `complete: true` 与工具面声明未变（Hob模式 = 1 行工具模块；Hob-Execute模式 行数 == 宿主创造模式）。
 
 > ⚠ **⑤ 与 ⑤b 的分工**：⑤ 只能证明"两份载体一致"，**证明不了规则本身还在** ——
 > 两份一起改回旧分隔符，⑤ 照样 PASS（**实测复现**：把两份的两段标题一起换成
@@ -451,7 +452,7 @@ Reply in the language the user is currently using. If the user writes in Chinese
 
 ---
 
-## 六、助手那两个工具的**实现**（M1 落点，2026-10-05 第 4 步）
+## 六、Hob模式 那两个工具的**实现**（M1 落点，2026-10-05 第 4 步）
 
 > 契约说"你手上只有两个工具"；本节说明它们**由谁注册、实现住在哪** ——
 > 这是**架构事实**，不是人格文本，但直接决定契约能不能被兑现。
@@ -460,20 +461,20 @@ Reply in the language the user is currently using. If the user writes in Chinese
 |---|---|---|
 | 工具**实现**（唯一一份） | `src/modules/tools.ts` 的 `createHobTools()` | 守卫复用 `server/doc-read.ts` / `server/hob-write.ts`（从归档搬，未重写） |
 | 工具**注册**（在哪挂） | `src/preset/tools.ts`，跑在**预设作用域** | ⚠ 插件作用域注册会**漏进每个预设**（实测 `minimal` 5→6、`standard` 30→31） |
-| `modules.tools` 开关 | 经门禁服务 `hobTools`；关掉 ⇒ 助手**不注册**工具 | 实测：0 工具、**预设不 broken**、宿主零告警 |
+| `modules.tools` 开关 | 经门禁服务 `hobTools`；关掉 ⇒ Hob模式**不注册**工具 | 实测：0 工具、**预设不 broken**、宿主零告警 |
 | 门禁的依赖声明 | **反应式** `ctx.inject([...], child)` | 静态 `inject` 缺依赖会把预设标 `broken` ⇒ **选择器里静默消失** |
 | 越界工具屏蔽 | `ctx.tools.restrict({deny})`（`interconnect_*` 等） | 宿主平面行会被继承，只靠"不挂它"摘不掉 |
 
-**白话**：助手拿到的是**恰好两个**自定义工具；这两个工具由本插件提供，
-**只在助手会话里出现**（开发会话与宿主自带的 standard/minimal 都不受影响）。
-插件总开关关掉时，助手退化为"没有任何工具"（只能与用户对话），
+**白话**：Hob模式 拿到的是**恰好两个**自定义工具；这两个工具由本插件提供，
+**只在 Hob模式 会话里出现**（Hob-Execute模式 会话与宿主自带的 standard/minimal 都不受影响）。
+插件总开关关掉时，Hob模式 退化为"没有任何工具"（只能与用户对话），
 **但仍然是个正常可选的预设**，不会消失。
 
 （脚本自检见 `.hob/STEP3-REV-REPORT.md`。）
 
 ---
 
-## 七、「助手」实际可用工具清单（**只读审查 · 2026-10-06 · 未改任何预设**）
+## 七、Hob模式 实际可用工具清单（**只读审查 · 2026-10-06 · 未改任何预设**）
 
 > ⚠ **本节只出清单与建议，不改预设的工具行**（本轮任务书 §三）。
 > 是否有项真要加，**等用户拍板** —— 见 §八。
@@ -492,15 +493,15 @@ Reply in the language the user is currently using. If the user writes in Chinese
 | 1 | `read_contracts` | 只读工作区内的 `.md` | 只读；路径越界/非 md/软链一律拒；超 64KB 截断 |
 | 2 | `write_hob` | 只写自己的 `.hob/` 账本 | 白名单文件；骨架拒写；写前备份；缩水守卫 |
 
-⇒ **本插件声明的**只有这两个（`⑥ 助手：工具模块行恰好 1 行` 即此）。
+⇒ **本插件声明的**只有这两个（`⑥ Hob模式：工具模块行恰好 1 行` 即此）。
 
 ### 7.2 处方二：**从宿主平面漏进来**的全局工具（实测 **51** 个）
 
 ⚠ 这些**不是本插件挂的**，而是各 bundle 作为**宿主平面行**声明的，
 会被**每个 agent 继承**。现有守卫只显式摘掉 `interconnect_*` 4 个（见 7.3），
-**其余 51 个当前在助手的工具面里实际可见**。
+**其余 51 个当前在 Hob模式 的工具面里实际可见**。
 
-**实测合计**：助手可见 **53** 个 = 自己的 **2** 个 + 漏进来的 **51** 个。
+**实测合计**：Hob模式 可见 **53** 个 = 自己的 **2** 个 + 漏进来的 **51** 个。
 
 | 来源 bundle | 工具组 | 数量 | 性质 |
 |---|---|---|---|
@@ -511,7 +512,7 @@ Reply in the language the user is currently using. If the user writes in Chinese
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `team_task_create` `team_task_get` `team_task_list` `team_task_update` | 4 | **团队任务板**（可派活） |
 | 同上（agent-team 取代 subagent） | `spawn_teammate` `send_message` `wait_agent` `interrupt_agent` `list_agents` | 5 | **建队友 / 给队友发消息** |
 
-⇒ 单看这 5 组就能看出问题：**助手现在能开圆桌、能派单、能建队友** ——
+⇒ 单看这 5 组就能看出问题：**Hob模式 现在能开圆桌、能派单、能建队友** ——
 这些都在"规划侧不该有的执行/编排能力"边上。
 
 ### 7.3 已摘掉的 4 个（现状，非建议）
@@ -520,22 +521,22 @@ Reply in the language the user is currently using. If the user writes in Chinese
 —— 由 `DEFAULT_DENY` 屏蔽，实测**每次挂载都成功**（诊断日志 `restrict 成功` ×4；
 且实测工具面里确实**不含**这四个）。
 
-### 7.4 逐项判断（标准：「助手」是规划侧，不要代码开发类工具）
+### 7.4 逐项判断（标准：Hob模式 是规划侧，不要代码开发类工具）
 
 | 工具组 | 判断 | 理由 | 代价 / 备注 |
 |---|---|---|---|
 | `read_contracts` `write_hob` | **保留** | 契约的核心两件：读项目文档、写自己的账本 | 无 |
 | 检索类 5 个 | **建议加**（= 保持现状） | **非代码的辅助能力**：查资料是规划侧正当需求，且全部**只读**、不改工作区 | 消耗检索额度；`free_search_test` 偏运维，可只留 4 个 |
-| `taskboard_*` 10 个 | **待定** | 看板是**协作/规划**工具，与规划侧契合；但 `create`/`update`/`move`/`delete` 能**指派他人执行**，等于把"决定谁做什么"的能力给了规划侧 | 与 UD-10「助手不实施」不冲突（它不干活，只派单）；但**须用户确认** |
-| `roundtable_*` 23 个 | **建议不加** | 圆桌是**多席编排**，`export_*` 会**写文件**；与"规划侧不做开发"边界相冲 | **体量最大**的一组（23/51）；要开圆桌应由用户在**开发会话**里开 |
-| `team_task_*` 4 个 + `spawn_teammate`/`send_message`/`wait_agent`/`interrupt_agent`/`list_agents` 5 个 | **建议不加** | 这是**团队编排**能力：建队友、派活、互相发消息 ⇒ 等于给了助手一支执行队伍，最贴近"规划侧不该有的执行面" | 共 9 个；注意它同时**取代**了 `subagent*`，与"助手没有开发工具"是两回事 |
+| `taskboard_*` 10 个 | **待定** | 看板是**协作/规划**工具，与规划侧契合；但 `create`/`update`/`move`/`delete` 能**指派他人执行**，等于把"决定谁做什么"的能力给了规划侧 | 与 UD-10「Hob模式 不实施」不冲突（它不干活，只派单）；但**须用户确认** |
+| `roundtable_*` 23 个 | **建议不加** | 圆桌是**多席编排**，`export_*` 会**写文件**；与"规划侧不做开发"边界相冲 | **体量最大**的一组（23/51）；要开圆桌应由用户在 **Hob-Execute模式 会话**里开 |
+| `team_task_*` 4 个 + `spawn_teammate`/`send_message`/`wait_agent`/`interrupt_agent`/`list_agents` 5 个 | **建议不加** | 这是**团队编排**能力：建队友、派活、互相发消息 ⇒ 等于给了 Hob模式 一支执行队伍，最贴近"规划侧不该有的执行面" | 共 9 个；注意它同时**取代**了 `subagent*`，与"Hob模式 没有开发工具"是两回事 |
 | `schedule_*` 4 个 | **待定** | 定时提醒**非代码**，可用于"到期提醒我"；但也有"到点自动触发"的味道 | 会话内有效，不落盘 |
-| `nav_*` 5 个 | **建议不加** | `nav_commit` / `nav_decide` / `nav_set` **会写工作区文件**，直接违反「助手不写工作区文件」 | ⚠ 且 `project-nav` 的启用条件是**工作区自带 project 级 skill**；本工作区没有 ⇒ **本次实测里确实未出现**（列入清单是为完整性，见 7.5） |
-| `interconnect_*` 4 个 | **保持已摘** | 跨实例通信属**挂起项**（`PROJECT.md` §9），且与"助手没有外部通道"的契约一致 | 无 |
+| `nav_*` 5 个 | **建议不加** | `nav_commit` / `nav_decide` / `nav_set` **会写工作区文件**，直接违反「Hob模式 不写工作区文件」 | ⚠ 且 `project-nav` 的启用条件是**工作区自带 project 级 skill**；本工作区没有 ⇒ **本次实测里确实未出现**（列入清单是为完整性，见 7.5） |
+| `interconnect_*` 4 个 | **保持已摘** | 跨实例通信属**挂起项**（`PROJECT.md` §9），且与"Hob模式 没有外部通道"的契约一致 | 无 |
 
 ### 7.5 ⚠ 一个应当记下的机制观察（不是建议，是事实）
 
-现有守卫是**黑名单**（`DEFAULT_DENY`，只列 4 个）：**每装一个新插件，它的宿主平面工具都会自动漏进助手**，
+现有守卫是**黑名单**（`DEFAULT_DENY`，只列 4 个）：**每装一个新插件，它的宿主平面工具都会自动漏进 Hob模式**，
 而且**不会有任何报错**。本次实测就是这个形态 —— 51 个漏进来的工具**没有一个来自本插件**。
 ⇒ 真正稳妥的做法是**允许清单**（只留白名单、其余全摘），但那要改代码且**影响面大**，
 **本批不做**，仅记录（见 `PROJECT.md` §6.3「收敛要靠允许清单思维」）。
@@ -544,8 +545,8 @@ Reply in the language the user is currently using. If the user writes in Chinese
 
 实测同一次运行里：`minimal` **56** 个、`standard` **78** 个、`dsh-hob-work` **81** 个。
 ⇒ **宿主自带的 minimal/standard 也被这些 bundle 灌进了同样的 51 个工具** ——
-即"漏"是**宿主平面的普遍现象**，不是助手独有的问题；
-助手这边的特殊之处是**它本该只有 2 个**（契约写死），所以落差最刺眼。
+即"漏"是**宿主平面的普遍现象**，不是 Hob模式 独有的问题；
+Hob模式 这边的特殊之处是**它本该只有 2 个**（契约写死），所以落差最刺眼。
 
 ---
 
@@ -556,7 +557,7 @@ Reply in the language the user is currently using. If the user writes in Chinese
 
 | # | 问题 | 选项 | 裁定（v5 生效） | 代价 / 备注 |
 |---|---|---|---|---|
-| 1 | **代码块内是否包含第一部分的标题行？** | A 标题在块**外** / B 标题也包进块内 | **A 维持**（UD-57 未改动此项） | B 会让用户复制到的一整段里多一行标题，「开发」会读到 |
+| 1 | **代码块内是否包含第一部分的标题行？** | A 标题在块**外** / B 标题也包进块内 | **A 维持**（UD-57 未改动此项） | B 会让用户复制到的一整段里多一行标题，Hob-Execute模式 会读到 |
 | 2 | **代码块的语言标记** | A ` ```text ` / B 裸 ` ``` ` / C 其他 | **已被取代**：改用 **` ````markdown `**（4 反引号 + `markdown`，UD-57 裁定） | 旧选项作废；见 §一 头部 v4→v5 对照表 |
 | 3 | **工具面建议新增的项，哪些真要加？** | 见 §7.4（检索类 / 看板类 / `roundtable_*` / `nav_*`） | **仍未拍板**（本轮未改任何工具行） | — |
 
