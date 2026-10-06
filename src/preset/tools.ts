@@ -126,6 +126,8 @@ export function apply(ctx: any, config: Config = {}): void {
     // ⚠ 装配期白名单也放在**门禁内**：`modules.tools` 关掉 ⇒ 不注册工具，
     //   此时再限制清单只会让助手"什么都干不了"，与门禁语义不符。
     filterModelToolList(gatedCtx, log)
+    // ⚠ 执行路径拦截同上门禁内：清单看不见 + 点名也拿不到，两者是同一套收敛的两半。
+    enforceToolAllowlist(gatedCtx, log)
   })
 }
 
@@ -285,6 +287,65 @@ function filterModelToolList(gateCtx: any, log: (m: string) => void): void {
       'dsh-hob preset: model-facing tool allowlist')
     log('已挂装配期白名单（' + MODEL_TOOL_ALLOWLIST.length + ' 个显式名字）')
   })
+}
+
+/**
+ * 执行路径拦截：让 {@link MODEL_TOOL_ALLOWLIST} **拿不到**，而不只是**看不见**。
+ *
+ * ── 为什么需要 ─────────────────────────────────────────────────────
+ * 阶段 C 实测：装配期过滤只改"发给模型的清单"，**执行路径不看清单** ——
+ * 绕过清单直接点名，被滤掉的工具**照常执行**（`taskboard_list`/`list_agents` 都成功了）。
+ * 根因：`dsh-tools/lib/index.js:2995` 的 `get()` 读 `view(scope).visible`，与模型清单无关。
+ *
+ * ── 机制依据（为什么挂这里）──────────────────────────────────────────
+ *   · 宿主**官方** waterfall 事件：`dsh-tools/lib/types/index.d.ts:47`
+ *     `'tools/pre-execute'(exec, next): Promise<PreToolDecision>`，可返回 `{kind:'deny'}`；
+ *   · 派发点按 **agent scope** 过滤：`dsh-tools/lib/index.js:3224`
+ *     `const carrier = scopeTarget(this, exec.agent)` —— 类型注释亦明写
+ *     "agent-scoped listeners receive only that agent's calls"；
+ *   · 宿主先例：`dsh-experimental-auto-review/lib/index.js:462`
+ *     `ctx.on("tools/pre-execute", async (exec, next) => …)`（真机 profile 正装此 bundle）。
+ *
+ * ── ⚠⚠ 失败方向：宿主这里是 **fail-CLOSED**，所以本函数**必须自己兜住一切异常** ──
+ *   实测（阶段 D）：监听器**抛异常**时，`dsh-tools/lib/index.js:3267` 的 catch 把异常变成
+ *   `toolErrorResult` ⇒ 工具**不执行**（连 `read_contracts` 都失败）。
+ *   ⇒ 本拦截器**不是**安全边界，而是收敛措施：**把「助手」弄瘫比漏一个工具更糟**。
+ *   故：任何异常 / 不认识的 exec 形状 / 非本名单的名字 ⇒ **一律 `next()` 放行**。
+ *
+ * @param gateCtx - 门禁就绪后的子 ctx（`modules.tools` 关闭时本函数不会被调用）。
+ * @param log - 诊断输出（走 {@link makeDiag}：默认关、有磁盘上限，不新开日志）。
+ */
+function enforceToolAllowlist(gateCtx: any, log: (m: string) => void): void {
+  const allow = new Set<string>(MODEL_TOOL_ALLOWLIST)
+
+  gateCtx.effect(() => gateCtx.on('tools/pre-execute', async (exec: any, next: any) => {
+    // ⚠ 整个判定体包在 try/catch 里：宿主对它自己的 catch 是 **fail-closed**，
+    //   任何异常都会让**这次工具调用**失败（含白名单里的）。宁可放行。
+    try {
+      const name = exec?.name
+      // ① 认识的、且在名单里 ⇒ 放行（门槛 4：不阻断 11 名单）。
+      if (typeof name !== 'string') return await next()
+      if (allow.has(name)) return await next()
+      // ② 保留传输名（ptc 的 `run_code`）⇒ 放行：滤掉它会让助手彻底失去能力。
+      if (name === RESERVED_TRANSPORT_TOOL) return await next()
+      // ③ 嵌套子派发（`exec.parent` 存在）⇒ 放行：那是 `run_code` 内部调用，
+      //    不是"模型直接点名"，拦住会破坏传输自身（宿主先例同款判定）。
+      if (exec?.parent !== undefined) return await next()
+      // ④ 名单外的**模型直呼** ⇒ 拒绝（这才是本批要堵的越权路径）。
+      log('执行路径拦截：拒绝 ' + name)
+      return {
+        kind: 'deny',
+        reason: `"${name}" is not available in this session; work for another session is out of scope for 助手.`,
+        info: { name: 'ToolDeniedError', code: 'TOOL_NOT_ALLOWED' },
+      }
+    } catch (e) {
+      // ⚠ fail-open：**绝不**因为本拦截器自身的问题让工具失败。
+      log('执行路径拦截器异常（已放行）：' + String((e as Error)?.message ?? e))
+      return await next()
+    }
+  }), 'dsh-hob preset: enforce tool allowlist on pre-execute')
+
+  log('已挂执行路径拦截（' + MODEL_TOOL_ALLOWLIST.length + ' 个显式名字；名单外一律拒绝）')
 }
 
 /** 注册两个工具（工具**定义**来自 `modules/tools.ts`，此处不重写实现）。 */
