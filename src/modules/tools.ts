@@ -93,17 +93,13 @@ export interface HobToolsConfig {
   maxWriteBytes?: number
   /** 是否注册写工具（false = 只读模式，写工具**根本不出现**）。 */
   enableWrite?: boolean
-  /**
-   * 额外要屏蔽的继承工具名（追加到内置越界清单 {@link DEFAULT_DENY} 之后）。
-   *
-   * ⚠ 名字必须**在当前部署里已注册**，否则宿主的 restrict 会抛
-   *   （挂载侧逐个 try，不存在的名字只记一条诊断，不会让预设挂载失败）。
-   * ⚠ **本键暂留**：原计划把它并入"允许清单"重写，但实测该重写在 preset 作用域
-   *   **做不到**（白名单里的 `read_contracts`/`write_hob` 是本作用域 own 注册，
-   *   不在 `restrictableNames` 里 ⇒ `restrict({ allow })` 直接抛错；详见阶段 B 报告）。
-   *   机制未定前删键会留下"黑名单还在、键没了"的半截状态，故此处保留。
-   */
-  denyTools?: string[]
+  // ⚠ 此处原有 `denyTools?: string[]`（"额外屏蔽的继承工具名"）。**已删**（阶段 E2）：
+  //   它**无任何 patch 声明**（`grep -rn denyTools preset/ cordis.patch.yml` = 0 命中）
+  //   ⇒ 读取处恒为 `?? []`，是一个**死键**；用户口径「配置面只留真管用的字段」（UD-43 先例）。
+  //   当时保留的理由（"机制未定前删键会留下半截状态"）**已消失**：
+  //   收敛机制现为**代码内常量**（装配期过滤见 `MODEL_TOOL_ALLOWLIST` + 执行期拦截
+  //   见 `enforceToolAllowlist`），不再依赖配置项。
+  //   ⚠ `DEFAULT_DENY` 与现有 deny 路径**行为不变**（本批只删死键）。
   /**
    * 诊断日志开关。**默认关**（缺省/未给 = 不写任何文件）。
    *

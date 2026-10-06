@@ -109,7 +109,7 @@ export function apply(ctx: any, config: Config = {}): void {
     try { ctx.logger?.debug?.(m) } catch { /* 无 logger 时忽略 */ }
     diag(m)
   }
-  denyInheritedTools(ctx, config, log)
+  denyInheritedTools(ctx, log)
   log('apply 完成权限边界；等待门禁 ' + GATE_SERVICE)
 
   /**
@@ -138,8 +138,10 @@ export function apply(ctx: any, config: Config = {}): void {
  *   **宿主平面行**声明的，会被**每个 agent 继承** —— 只靠"预设不挂它"**摘不掉**
  *   （实测：不摘时助手会多出 4 个）。收敛要靠**允许清单**思维（§6.3）。
  */
-function denyInheritedTools(ctx: any, config: Config, log: (m: string) => void): void {
-  const deny = [...DEFAULT_DENY, ...(config.denyTools ?? [])]
+function denyInheritedTools(ctx: any, log: (m: string) => void): void {
+  // ⚠ 原先此处还拼接 `config.denyTools ?? []`；该配置键已在阶段 E2 **删除**（无 patch 声明 ⇒ 恒空）。
+  //   deny 名单现在**就是** `DEFAULT_DENY`（行为与删键前完全一致：删前它恒为 `[]`）。
+  const deny = [...DEFAULT_DENY]
   log('deny=' + JSON.stringify(deny))
 
   /** 已摘掉的名字（含"这套部署里没有"的 —— 不重复试，避免每次都抛一遍）。 */
