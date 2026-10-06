@@ -92,11 +92,20 @@ function makeDiag(config: Config): (msg: string) => void {
 }
 
 /**
- * 挂载：**先立权限边界**（屏蔽越界工具），再等门禁就绪后注册工具。
+ * 挂载：**先立权限边界**（屏蔽越界工具）与**收敛机制**（模型面白名单 + 执行前拦截），
+ * 再等门禁就绪后注册工具。
  *
- * 为什么屏蔽要放在门禁**外面**：它是这个预设的**权限边界**，不是"本插件工具模块"的
- * 附属物 —— 即使 `modules.tools` 关掉（门禁不在、不注册工具），
- * 助手会话也不该突然多出 4 个 `interconnect_*` 工具。
+ * 为什么**屏蔽**与**收敛**都要放在门禁**外面**：它们是这个预设的**权限边界**与
+ * **收敛措施**，不是"本插件工具模块"的附属物。即使 `modules.tools` 关掉
+ * （门禁不在、不注册工具），助手会话也不该
+ *   ① 突然多出 4 个 `interconnect_*` 工具（屏蔽）；
+ *   ② 突然从 11 个涨到 51 个、且能直接执行任务看板/圆桌类工具（收敛）。
+ *
+ * ⚠ **F1 修正的行为倒挂**（阶段 E3 实测暴露）：这两处原先挂在 `ctx.inject([GATE_SERVICE])`
+ *   回调内 ⇒ `modules.tools:false` 时**整段不执行** ⇒ 关掉门禁反而让助手
+ *   从 11 个工具**涨到 51 个**（含能派活、能改工作状态的工具）——
+ *   用户"减少能力"的意图被执行成了"放大权限"。与方案 §3.3「关掉只影响该模块自己」不符。
+ *   ⇒ 现在门禁**只继续管"工具注册"这一件事**。
  *
  * @param ctx - preset 作用域的上下文。
  * @param config - preset 行给的配置。
@@ -110,11 +119,22 @@ export function apply(ctx: any, config: Config = {}): void {
     diag(m)
   }
   denyInheritedTools(ctx, log)
-  log('apply 完成权限边界；等待门禁 ' + GATE_SERVICE)
+
+  // ⚠ **收敛机制的挂载点：直接在 preset scope 上**（不在门禁回调内）—— 见 apply 头部注释。
+  //   两处都只认**本 scope**（ctx 即 preset 作用域），因此不影响其它预设；
+  //   资源仍走 `ctx.effect`（卸载自动清理，§3.3 第 3 条）。
+  //   ⚠ 用**外层 ctx**（不是门禁子 ctx）：门禁消失时收敛**必须留下**，否则就是本批要修的倒挂。
+  filterModelToolList(ctx, log)
+  enforceToolAllowlist(ctx, log)
+
+  log('apply 完成权限边界与收敛；等待门禁 ' + GATE_SERVICE)
 
   /**
    * 反应式依赖：门禁（= `modules.tools` 模块）就绪时才注册工具。
    * 门禁不在 ⇒ 回调**不执行** ⇒ 助手退化为"无自定义工具"，但**预设不 broken**。
+   *
+   * ⚠ 门禁现在**只管工具注册**：收敛（模型面白名单 + 执行前拦截）已在上面挂好，
+   *   不随门禁的在场与否改变。
    */
   ctx.inject([GATE_SERVICE], (gatedCtx: any) => {
     log('门禁就绪 ⇒ 注册工具')
@@ -123,11 +143,6 @@ export function apply(ctx: any, config: Config = {}): void {
     //   子 ctx 继承依赖 API 且**拥有它自己创建的注册** ⇒ 门禁消失时这些注册随之拆除，
     //   不用手写卸载逻辑（§3.3 第 3 条：资源靠 ctx.effect 挂，卸载自动清理）。
     registerTools(gatedCtx, config, log)
-    // ⚠ 装配期白名单也放在**门禁内**：`modules.tools` 关掉 ⇒ 不注册工具，
-    //   此时再限制清单只会让助手"什么都干不了"，与门禁语义不符。
-    filterModelToolList(gatedCtx, log)
-    // ⚠ 执行路径拦截同上门禁内：清单看不见 + 点名也拿不到，两者是同一套收敛的两半。
-    enforceToolAllowlist(gatedCtx, log)
   })
 }
 
