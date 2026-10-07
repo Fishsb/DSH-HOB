@@ -1,4 +1,27 @@
-# 两个 Agent 预设的契约正文 —— **v9（批 9：Hob 能力扩展 S1+S2+S3 —— 三处失实句就地改对）**
+# 两个 Agent 预设的契约正文 —— **v10（批 11：Hob 决策自主 + 允许提问，Hob-Execute 侧一字未动）**
+
+> **状态变更（v9 → v10，2026-10-07 · 批 11 · UD-68 / CHG-015）**：Hob 契约**就地追加一段**
+> —— **决策自主 + 允许提问（但尽量不问）**，**未新起 `##` 小节**、未动围栏与结构条文：
+>
+> | # | 追加的语义 | 落点（Hob 正文） |
+> |---|---|---|
+> | 1 | **默认自行推进**：能按项目方案主线（`PROJECT.md` 与账本）判断的，**自己决策并推进** | `Decide on your own.` 一段 |
+> | 2 | **不要拿自己能定的事去问用户**（那是消耗用户注意力，不是勤勉） | 同上 |
+> | 3 | **只在"只有用户能定"时才问**：产品方向 / 取舍 / 范围 / 代价接受度；判不出属于哪类 ⇒ 就该自己定 | 同上 |
+> | 4 | **问的方式要克制**：优先把选项与代价摆在正常回复里、**一条一行、一行人话**；**不为能自己判断的事停下** | 同上 |
+>
+> ⚠ **同批的机制落地（工具面，不属于本契约文本）**：Hob 侧**恢复** `ask_user_question` ——
+> 声明面**指名增行** `tool-ask-user`（逐字取自宿主 `standard.patch.yml:131-132`）+
+> 白名单 **20 → 21**。⚠ **只限 Hob**：`Hob-Execute` 侧 `WORK_MODEL_DENY`（禁该工具）
+> **一个字未动**（UD-64 的禁弹窗纪律对实施侧**维持**）。
+> ⇒ 批 6 的「定点例外」在 **Hob 侧被撤回**（用户改裁），在 **Hob-Execute 侧继续有效**。
+>
+> ⚠ **逐字保留未动**：文件交接四条 · 委派门槛 · 指令自足 · 攒批 · 验收只认读数 ·
+> 接住待决问题 · 投递禁令句（`There is still NO automatic delivery`）· 两个结构标题与围栏细则。
+> ⚠ **未删任何断言、未放宽任何口径**；机检**唯一**的改动是 **⑤f 移除禁项清单里的
+> `ask_user_question`**（理由：该禁项的前提「S7 未定」已由用户裁定为"允许"，
+> 不移除则契约与机检互相矛盾），并**新增 ⑤g 组**与 **两条正向断言**兜底；
+> 同组**另 7 项禁止项一条未动**。详见 §五。
 
 > **状态变更（v8 → v9，2026-10-07 · 批 9 · CHG-014）**：Hob 增加了三类**只读**能力 ——
 > **编排只读查询**（`taskboard_list` / `taskboard_get` / `taskboard_comments` / `roundtable_status`）·
@@ -179,6 +202,8 @@
 - 更新：2026-10-07（**预设 id 与显示名同字面值 → `Hob` / `Hob-Execute`（批 2）；包名 `dsh-hob` 未跟改**）
 - 更新：2026-10-07（**批 5 · 交接文件化（UD-63）：指令落 `TASK.md`、回报落 `REPORT.md`，围栏内只放路径；投递机制不变**）
 - 更新：2026-10-07（**批 6 · 委派/验收规则（Hob）+ 禁交互提问 + 回报六段（Hob-Execute）；同批机制落地摘掉 `ask_user_question` 的模型面**）
+- 更新：2026-10-07（**v9，批 9 · CHG-014：Hob 三类只读能力落地，三处失实句就地改对；新增 ⑤f 组**）
+- 更新：2026-10-07（**v10，批 11 · UD-68 / CHG-015：Hob 决策自主 + 只在"只有用户能定"时才问；Hob 侧恢复 `ask_user_question`（白名单 21），Hob-Execute 侧一字未动；新增 ⑤g 组；⑤f 移除一处禁项并修一处假通过判据**）
 - 维护者：Hob · 决策者：用户
 
 ---
@@ -389,6 +414,17 @@ This changes how you delegate and how you accept; it does NOT change how work tr
 There is still NO automatic delivery for the directive -- the user carries it across by
 hand. Never describe the hand-off as automatic for this reason either.
 
+Decide on your own. What the project's own line of development settles, you settle:
+read PROJECT.md and the ledgers, work out what they support, and go ahead with it.
+Never carry such a question to the user as though only they could answer it -- asking
+what you could have settled yourself spends the user's attention, and that is a cost,
+not diligence. Ask only what genuinely belongs to the user and to no one else: the
+product direction, a choice between two acceptable paths, what is inside the scope
+and what is not, and how much cost or risk they will accept. If you cannot name which
+of those it is, it is yours to decide. And ask sparingly: put the options and their
+costs into your ordinary reply, one per line in plain words, so the user answers in
+passing and the work keeps moving. Never stop for what you can judge yourself.
+
 Name the sides exactly as above when you write to the user: say Hob and Hob-Execute.
 Never print an internal identifier (such as the package name `dsh-hob`, a module path,
 or a settings section title) in anything the user reads.
@@ -457,6 +493,17 @@ TASK.md 里是**完整指令**。回复里带的是**指针**而不是全文：�
 指令**依然没有自动投递**，用户手工带过去。
 也不得因为这个改动把转交描述成自动的。
 
+**自己拿主意**（批 11 · UD-68 / CHG-015，就地追加在 `## Your side and the other side` 段内）：
+
+**项目方案主线能定的事，你自己定。** 读 `PROJECT.md` 与账本，得出它们支持的结论，然后推进。
+**不要拿自己能定的事去问用户** —— 那花的是用户的注意力，那是**成本，不是勤勉**。
+
+**只问真正只属于用户、没别人能定的事**：产品方向、两条都可行的路之间的取舍、
+范围之内还是之外、能接受多少代价或风险。**如果你说不出它属于哪一类，那它就是你自己该定的。**
+
+**而且要少问**：优先把选项和代价写进你的**正常回复**里，**一条一行、说人话**，
+用户顺口就答了，活继续走。**能自己判断的事，绝不为它停下。**
+
 写给用户看的时候，就按上面的名字称呼两端：说 Hob 和 Hob-Execute。
 任何给用户看的内容里，都不许打印内部标识（比如包名 `dsh-hob`、模块子路径、设置分区标题）。
 **工作区里的文件路径**（比如 `.hob/archive/…/TASK.md`）**不属于内部标识**，可以直接给用户看。
@@ -491,6 +538,12 @@ TASK.md 里是**完整指令**。回复里带的是**指针**而不是全文：�
   **不认"声称完成"**；核不到的部分会明说"未验证"。
 - **它会接住回报里的「待决问题」**（批 6 · UD-64）：能定的定下来说依据；
   **只有用户能定的**，转成一行一个的选项摆给用户。
+- **它默认自己拿主意**（批 11 · UD-68 / CHG-015）：能按 `PROJECT.md` 与账本主线判断的，
+  **自己决策并推进**，不拿来问用户；**只在"只有用户能定"时**（产品方向 / 取舍 / 范围 /
+  代价接受度）才问，且**问得克制** —— 把选项与代价写进正常回复、一条一行；
+  **不为能自己判断的事停下**。
+- **它现在可以弹窗问你**（批 11 · D2，`ask_user_question`）—— **但这不是"要多问"的授权**，
+  而是"只有你能定时"的一个手段。⚠ **只限它**：Hob-Execute 侧仍**禁止提问**（UD-64 维持）。
 - 它**读得到项目文档**（`.md`）、**看得到工作区文件**、**打得开网页正文**
   （批 9 · CHG-014），能**写自己的账本与交接文件**（`.hob/`）。
 - **只读的活它自己直接做**（读文档 / 看工作区文件 / 取网页正文 / 查看板与圆桌的只读查询）；
@@ -764,20 +817,52 @@ Reply in the language the user is currently using. If the user writes in Chinese
   本组钉四类事实：
   · **白名单含 S1/S2/S3 的 9 个目标名**（`taskboard_list` · `taskboard_get` · `taskboard_comments` ·
     `roundtable_status` · `web_fetch` · `read` · `glob` · `grep` · `read_image`）—— 正向；
-  · **白名单不含 8 个禁止项**（`bash` · `write` · `edit` · `ask_user_question` ·
+  · **白名单不含 7 个禁止项**（`bash` · `write` · `edit` ·
     `spawn_teammate` · `send_message` · `taskboard_move` · `subagent`）—— **负向**；
+    ⚠⚠ **批 11 就地改动（本批唯一允许的断言改动，必须显式申报）**：
+    原第 8 项禁项 **`ask_user_question` 已移除**，并**新增两条正向断言**兜底 ——
+    「白名单**必须**含 `ask_user_question`」＋「声明面**必须**有 `tool-ask-user` 行」。
+    **理由（用户裁定）**：**UD-68 / CHG-015** —— 「允许 Hob 提问，但**尽量不问**；
+    按项目方案主线决策推进，除非只能由用户决策才可以提问」，**只限 Hob 预设**。
+    批 9 把该项列入禁项的前提是「**S7 未定 ⇒ 不碰**」；**S7 已被用户裁定为"允许"**，
+    前提消失。若不移除，则**契约（写着"只有用户能定时才问"）与机检（断言"不许有这个工具"）
+    互相矛盾** —— 契约失据比断言缺失更糟。
+    ⚠ **这不是放宽**：同组**另 7 项一条未动**；且移除配**负向对拍**证明"仍有牙" ——
+    把 `ask_user_question` 从白名单删掉 ⇒ 新增正向条**立即 FAIL**（原始读数见批 11 报告 §3）。
+    ⚠ **同款的第二处**：`DECL_BANNED`（声明面撞边界行）里也移除了
+    `@deepseek-ai/dsh-tool-ask-user`，理由同上、同批、同一次对拍覆盖。
   · **契约正文不再出现失实句**（`You never execute the work yourself` /
     `no file reads or writes` / `reading project documents (.md) and writing your own`）
     —— **负向**；**配对正向**：改动后的新表述四项必须都在
     （只读直接做 / 无改动能力 / 只读检索浏览 / 只写账本），
     否则"只删旧句、什么也不写"能骗过负向断言；
   · **声明面三个指名增行在位**（`tool-web` / `tool-fs` / `tool-fs-search`），
-    且**无撞边界行**（`tool-bash` / `tool-pwsh` / `tool-ask-user`）与**无分组容器行**
+    且**无撞边界行**（`tool-bash` / `tool-pwsh`）与**无分组容器行**
     （`group: true`）—— 后者是"**未整段照抄 standard**"的可机检落点。
     另 **复跑确认 ⑥ 未被破坏**（`dsh-hob/preset/tools` 仍恰好 1 行）。
+    ⚠⚠ **批 11 实测修正的一处判据（假通过，由负向对拍 D-2 抓出）**：
+    「声明面 `tool-ask-user` 行在位」这条**原始判据是错误的** —— 本 patch 的注释块
+    里**逐字引用了宿主那两行**（`# 131/132: … name: '…tool-ask-user'`），
+    只做字符串包含判定时，**把真正的声明行删掉仍然 PASS**（命中的是注释）。
+    修法：判定前**剔掉行首为 `#` 的注释行**，只留真正的声明行。
+    ⚠ **既有三条 `DECL_ROWS` 经复测未受影响**（它们引用的包名不出现在注释里，
+    删行即报 FAIL）—— 故本批只修了这一条的判据，**未动**既有三条。
   ⚠ 口径：钉的是**工具名集合**与**声明面行**（机检能判定的那一层），
   **不是"工具真能跑通"** —— 后者须隔离实例活体读数（见实施批报告）。
-  ⚠ **本组是新增断言，不是放宽**：⑥ 与其余各组的断言**一条未删、一条未改口径**。
+  ⚠ **本组是新增断言，不是放宽**：⑥ 与其余各组的断言**一条未删、一条未改口径**
+  （批 11 的那两处移除**逐项申报**在上面，且各有正向配对断言与负向对拍）。
+- **⑤g「决策自主」条文短钉**（2026-10-07 批 11 · UD-68 / CHG-015）：**新增组**，
+  缺失即 FAIL。Hob 契约**就地追加**一段（**不新起 `##` 小节** ⇒ 本组**不钉标题行**），
+  钉下列语义，并**负向断言**"追加不得挤掉既有条文"：
+  · 默认**自行推进**（`Decide on your own.`）；判据来源 = `PROJECT.md` 与账本；
+  · **不要拿自己能定的事去问用户**（那是消耗用户注意力，**不是勤勉**）；
+  · **只在"只有用户能定"时才问**；四类 = **产品方向 / 取舍 / 范围 / 代价接受度**；
+    **判不出属于哪一类 ⇒ 就该自己定**；
+  · **问的方式要克制**：摆在正常回复里、**一条一行、说人话**；**不为能自己判断的事停下**；
+  · **形态负向**：不得新起批 11 小节的标题（`## Deciding` / `## Autonomy` /
+    `## Asking the user` / `## When to ask`）；
+  · **兼容负向**：既有 7 条编排条文（文件交接 TASK.md 落点 / 委派门槛 / 指令自足 / 攒批 /
+    验收只认读数 / 接住问题 / 投递禁令句）**逐字仍在**（任务书 §D1 要求逐字保留）。
 - ⑥ `complete: true` 与工具面声明未变（Hob = 1 行工具模块；Hob-Execute 行数 == 宿主创造模式）。
 
 > ⚠ **⑤ 与 ⑤b 的分工**：⑤ 只能证明"两份载体一致"，**证明不了规则本身还在** ——

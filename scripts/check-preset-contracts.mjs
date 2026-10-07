@@ -40,6 +40,24 @@
  *        故本组不钉任何新标题行 —— 钉标题会把"就地追加"这一形态本身变成要求。
  *   ⑥ `complete: true` 与工具面声明未变（规划 = 1 行工具模块；实施 = 照抄创造模式行数）
  *
+ *   ⑤f **批 9 · Hob 能力扩展：白名单目标名 + 禁止项 + 失实句清除**。
+ *      ⚠ **批 11 就地改动一处（本批唯一允许的断言改动，须写明理由）：**
+ *        **把 `ask_user_question` 从"禁止项"清单里移除**，并**新增两条正向断言**
+ *        （白名单必须含该名 · 声明面必须有 `tool-ask-user` 行）。
+ *        · **理由**：用户裁定 **UD-68 / CHG-015** —— 「**允许 Hob 提问**，但**尽量不问**；
+ *          按项目方案主线决策推进，除非只能由用户决策才可以提问」，**只限 Hob 预设**。
+ *          批 9 列入禁项的前提是「S7 未定 ⇒ 不碰」；**S7 已由用户裁定为"允许"**，
+ *          前提消失。若不移除，则**契约（允许提问）与机检（禁止该工具）互相矛盾**。
+ *        · **不是放宽**：同组另 7 项一条未动；移除只发生在这**一处**，且配**负向对拍**
+ *          （把 `ask_user_question` 从白名单删掉 ⇒ 新增的正向断言 FAIL）。
+ *          本批另增 **⑤g** 组（Hob 契约"决策自主"两条语义的短钉）。
+ *   ⑤g **批 11 · Hob「决策自主」条文短钉（UD-68 / CHG-015）**：契约正文须含
+ *      「默认自行推进」与「只在只有用户能定时才问」**两条语义**（钉稳定短语），
+ *      并**负向断言**"尽量少问 / 不为能自己判断的事停下"的措辞在位。
+ *      ⚠ 与前几组同款纪律：这是**新增断言，不是放宽**（缺失即 FAIL）；
+ *        且**不钉标题行** —— 任务书要求**就地追加在既有段落内**，钉标题会把
+ *        "就地追加"这一形态本身变成要求（与批 5/批 6 同款）。
+ *
  * 用法：node scripts/check-preset-contracts.mjs
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
  * ⚠ 零第三方依赖（本仓纪律）：YAML 只做**行级**解析，不引 js-yaml。
@@ -646,16 +664,49 @@ const STALE_APPELLATIONS = [
         ['S5 跑命令', 'bash'],
         ['S4 写工作区文件', 'write'],
         ['S4 写工作区文件', 'edit'],
-        ['交互提问（UD-64 只对实施侧放开，Hob 侧本批 S7 未定 ⇒ 不碰）', 'ask_user_question'],
         ['S6/S8 派活与委派', 'spawn_teammate'],
         ['S6/S8 派活与委派', 'send_message'],
         ['S6 改共享状态', 'taskboard_move'],
         ['S8 委派', 'subagent'],
       ]
+      // ⚠⚠ **批 11 移除一项：`ask_user_question`（本批唯一允许的断言改动）** ──────
+      // **理由（用户裁定）**：UD-68 / CHG-015 —— 「**允许 Hob 提问**，但**尽量不问**；
+      //   按项目方案主线决策推进，除非只能由用户决策才可以提问」，且**只限 Hob 预设**。
+      //   批 9 时该项因「S7 未定 ⇒ 不碰」被列入禁项；**S7 现已由用户裁定为"允许"**
+      //   ⇒ 该禁项的前提消失，**必须**移除，否则机检会与既定契约**互相矛盾**
+      //   （契约写着"只有用户能定时才问"，机检却断言"不许有这个工具"）。
+      // ⚠ **这不是放宽**：同组另 7 项**一条未动**；且本条移除有**负向对拍**兜底 ——
+      //   把 `ask_user_question` 从白名单删掉 ⇒ 下面「正向必需」断言**立即 FAIL**
+      //   （见本函数上方 NEEDED 组与本批报告 §3 的原始读数）。
+      // ⚠ 同步落点（三处必须一致，已同批改）：`src/preset/tools.ts` 的白名单、
+      //   `preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `tool-ask-user` 声明行、
+      //   以及 `.hob/drafts/preset-contracts.md` 的引文块与 §五 断言清单。
       const present = FORBIDDEN.filter(([, n]) => allowSet.has(n))
       if (present.length > 0) {
         bad(`⑤f ${NAME_HO} 白名单**含禁止项**（${present.length} 个）：${present.map(([g, n]) => `${n}(${g})`).join(', ')}`)
-      } else ok(`⑤f ${NAME_HO}：白名单不含 8 个禁止项（${FORBIDDEN.map(([, n]) => n).join(', ')}）`)
+      } else ok(`⑤f ${NAME_HO}：白名单不含 ${FORBIDDEN.length} 个禁止项（${FORBIDDEN.map(([, n]) => n).join(', ')}）`)
+      // ⚠ 与上面成对的**正向**断言（批 11 新增，D2 的"有牙"证明）：
+      //   移出禁项**不等于**可以没有它 —— 白名单**必须**含 `ask_user_question`，
+      //   否则契约里"允许提问"这条**没有实现载体**（与 E-86 的「与门」同款：
+      //   契约说了能力、白名单没放行 ⇒ 能力不存在，而机检看不出来）。
+      if (!allowSet.has('ask_user_question')) {
+        bad(`⑤f ${NAME_HO} 白名单**缺** \`ask_user_question\`（批 11 / D2：UD-68 裁定允许 Hob 提问）`
+          + ' —— 契约里的「决策自主 + 只在只有用户能定时才问」将没有实现载体')
+      } else ok(`⑤f ${NAME_HO}：白名单含 \`ask_user_question\`（批 11 / D2 正向项，与"禁止项不含它"成对）`)
+      // ⚠ 配对的正向断言：声明面必须有 `tool-ask-user` 行（与门另一半，见 E-86）
+      // ⚠⚠ **必须先把 YAML 注释行剔掉再判**（本批实测的**假通过**，负向对拍 D-2 抓出）：
+      //   本文件里的注释块**逐字引用了宿主那两行**（`# 131/132: … name: '…tool-ask-user'`），
+      //   若不剔注释，则"声明行被删掉"时该断言**照样 PASS**（注释里那份还在）
+      //   ⇒ 断言退化成恒真，正是 E-67「判据不能区分成功与恰好看起来像成功」那一族。
+      //   判据：去掉**行首（允许缩进）为 `#`** 的行 ⇒ 只剩真正的声明行。
+      const stripYamlComments = (s) => s.split('\n')
+        .filter((l) => !/^\s*#/.test(l)).join('\n')
+      const hoDeclsOnly = stripYamlComments(hoSrc).replace(/'([^']*)'/g, '$1')
+      if (!hoDeclsOnly.includes('name: @deepseek-ai/dsh-tool-ask-user')) {
+        bad(`⑤f ${NAME_HO} 声明面缺指名增行 \`tool-ask-user\`（批 11 / D2）`
+          + ' —— 白名单放行了名字但作用域内没有该工具 ⇒ 执行期 `unknown tool`'
+          + '（⚠ 判据已剔除 YAML 注释行：注释里逐字引用的那一份不算声明）')
+      } else ok(`⑤f ${NAME_HO}：声明面 \`tool-ask-user\` 指名增行在位（与白名单成对，见 E-86；判据已剔注释）`)
 
       // ── 负向：失实句不得回归（契约自己说谎）──────────────────────────
       // 批 9 之前正文写「no file reads or writes, no commands」——
@@ -704,9 +755,15 @@ const STALE_APPELLATIONS = [
       const DECL_BANNED = [
         ['跑命令', '@deepseek-ai/dsh-tool-bash'],
         ['跑命令', '@deepseek-ai/dsh-tool-pwsh'],
-        ['交互提问（S7 未定 ⇒ 不碰）', '@deepseek-ai/dsh-tool-ask-user'],
         ['委派组（S8 不做）', 'cordis:group'],
       ]
+      // ⚠⚠ **批 11 移除一项：`@deepseek-ai/dsh-tool-ask-user`（同一处断言改动的另一面）** ──
+      // 与上面「白名单禁项」同步：该行的排除前提是「S7 未定 ⇒ 不碰」，
+      // 用户裁定 **UD-68 / CHG-015** 后 S7 = **允许**（**只限 Hob 预设**）⇒
+      // 该声明行**必须**在，否则白名单放行了名字而作用域内没有该工具
+      // ⇒ 执行期 `unknown tool`（E-86 的「与门」另一半）。
+      // ⚠ 同组另 3 项**一条未动**；且新增正向断言（见上）保证"它有牙"。
+      // ⚠ `cordis:group` 那条仍**必须**留着：它同时钉"没有整段照抄来的分组行"。
       // ⚠ `cordis:group` 单独判：Hob 侧**不得**出现任何分组行（standard 的 delegation 组
       //   就是 `cordis:group`）。本预设至今零分组 ⇒ 这条同时钉住"没有整段照抄来的组"。
       // ⚠⚠ **匹配必须容忍带引号与不带引号两种写法**（实测教训，负向对拍 F 首轮漏过）：
@@ -735,6 +792,66 @@ const STALE_APPELLATIONS = [
   const hoToolF = (hoSrc.split("name: '" + MODULE_PATH + "'").length - 1)
   if (hoToolF !== 1) bad(`⑤f 复跑：${NAME_HO} 的工具模块行应恰好 1 行，实测 ${hoToolF}（⑥ 被破坏）`)
   else ok(`⑤f 复跑：${NAME_HO} 的 ${JSON.stringify(MODULE_PATH)} 仍恰好 1 行（⑥ 未破坏）`)
+}
+
+// ── ⑤g 批 11 · Hob「决策自主」条文短钉（UD-68 / CHG-015）────────────────
+//
+// 为什么需要：批 11 给 Hob 契约**就地追加**一段（默认自行推进 / 只在只有用户能定时才问 /
+// 问的方式要克制），而 ⑤ 只能证明"两份载体一致"——**两条一起被删照样 PASS**。
+// 本条把用户诉求（UD-68）的**两条语义**各钉稳定短语，断言"该条文仍在"。
+//
+// ⚠ 口径说明（防误读）：
+//   · 钉的是**稳定短语**而不是整段逐字 —— 措辞可随文调整，只要该规则还在，句子就还在。
+//     **这是新增断言，不是放宽**：任何一条缺失即 FAIL。
+//   · **不钉标题行**：任务书要求**就地追加在既有段落正文内**、**不新起 `##` 小节**；
+//     钉标题会把"就地追加"这一形态本身变成要求（与批 5 / 批 6 同款纪律）。
+//     故下面另设**形态负向断言**：不得出现新起的小节标题。
+//   · 编号：任务书未指定编号；现有最大为 ⑤f ⇒ 顺延为 **⑤g**
+//     （与批 5「任务书写 ⑤b、实际落 ⑤d」同款：语义一致，区别只在编号；如实记于回报）。
+{
+  const hoBody6 = literalBlock(hoSrc, 'prefix') ?? ''
+
+  const AUTONOMY_PINS = [
+    ['默认自行推进（按项目主线自行决策）', 'Decide on your own.'],
+    ['判据来源 = PROJECT.md 与账本', "read PROJECT.md and the ledgers"],
+    ['不要拿自己能定的事去问用户', 'Never carry such a question to the user as though only they could answer it'],
+    ['"能自己定却去问"是消耗用户注意力（不是勤勉）', "spends the user's attention"],
+    ['只在"只有用户能定"时才问', 'Ask only what genuinely belongs to the user and to no one else'],
+    ['"只有用户能定"的四类（方向 / 取舍 / 范围 / 代价接受度）', 'the\nproduct direction, a choice between two acceptable paths'],
+    ['判不出属于哪一类 ⇒ 就该自己定', 'If you cannot name which\nof those it is, it is yours to decide'],
+    ['问的方式要克制（摆在正常回复里）', 'put the options and their\ncosts into your ordinary reply'],
+    ['摆成一行人话（一条一行）', 'one per line in plain words'],
+    ['不为能自己判断的事停下', 'Never stop for what you can judge yourself'],
+  ]
+  for (const [what, phrase] of AUTONOMY_PINS) {
+    if (hoBody6.includes(phrase)) ok(`⑤g ${NAME_HO}：决策自主条文在位（${what}）`)
+    else bad(`⑤g ${NAME_HO}：决策自主条文缺失（${what}）—— 期望短语 ${JSON.stringify(phrase)}`)
+  }
+
+  // 形态负向断言：批 11 条文必须**就地追加**，不得新起 `##` 小节
+  const newSections = ['## Deciding', '## Autonomy', '## Asking the user', '## When to ask']
+  const extra = newSections.filter((h) => hoBody6.includes(h))
+  if (extra.length > 0) bad(`⑤g ${NAME_HO}：批 11 条文新起了小节标题（${extra.join(', ')}）—— 应为就地追加`)
+  else ok(`⑤g ${NAME_HO}：批 11 条文未新起小节标题（就地追加在既有段落内）`)
+
+  // ⚠ **不得与既有条文冲突**（任务书 §D1 明令：文件交接四条 / 委派门槛 / 指令自足 /
+  //   攒批 / 验收只认读数 / 接住问题 / 投递禁令句 **逐字保留**）。
+  //   判据：这几条的稳定短语在**批复后**必须仍然在位（它们各自的专属断言在上文各组，
+  //   这里只把"决策自主追加**未把它们挤掉**"这一个事实**单独可见地复述一次**）。
+  const KEPT = [
+    ['文件交接（TASK.md 落点）', '.hob/archive/<YYYY-MM-DD-slug>/TASK.md'],
+    ['委派门槛', 'delegate only work that MUST be done by hand'],
+    ['指令自足', 'Every directive must stand on its own'],
+    ['攒批', 'Batch what can ride together'],
+    ['验收只认读数', 'Accept on readings only'],
+    ['接住问题', 'Catch the questions'],
+    ['投递禁令句（逐字保留）', 'There is still NO automatic delivery for the directive'],
+  ]
+  const broken = KEPT.filter(([, s]) => !hoBody6.includes(s))
+  if (broken.length > 0) {
+    bad(`⑤g ${NAME_HO}：批 11 追加**挤掉了既有条文**（${broken.length} 处）：${broken.map(([l]) => l).join(' / ')}`
+      + ' —— 任务书 §D1 要求既有条文**逐字保留**')
+  } else ok(`⑤g ${NAME_HO}：既有 7 条编排条文逐字保留（追加未挤掉任何一条）`)
 }
 
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────

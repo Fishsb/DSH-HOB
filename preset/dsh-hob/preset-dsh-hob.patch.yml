@@ -13,7 +13,10 @@
 #   ③ **批 9 新加三行**（指名，非整段照抄）：`tool-web` / `tool-fs` / `tool-fs-search`
 #      —— 带来 `web_fetch` / `read` / `read_image` / `glob` / `grep`；详见下方就地注释。
 #      ⚠ 这三行**只进声明面**；能不能真拿到还取决于白名单（**与门**，见 E-86）。
-#      ⚠ **不加** `tool-bash` / `tool-pwsh` / `tool-ask-user` / `delegation` 组
+#   ③b **批 11 再加一行**（指名）：`tool-ask-user`（来源 `standard.patch.yml:131-132`）
+#      —— 带来 `ask_user_question`，配合白名单 20 → **21**（UD-68 / CHG-015）。
+#      ⚠ **只进本预设**；`Hob-Execute` 侧 `WORK_MODEL_DENY` 禁该工具，**未动**。
+#   ④ ⚠ **不加** `tool-bash` / `tool-pwsh` / `delegation` 组
 #      —— 它们撞 UD-13 / UD-56（"无命令 + 不要代码开发类工具"）。
 #
 # 保留极简模式的：`@deepseek-ai/dsh-persona` + `complete: true`。
@@ -202,6 +205,17 @@
                 There is still NO automatic delivery for the directive -- the user carries it across by
                 hand. Never describe the hand-off as automatic for this reason either.
 
+                Decide on your own. What the project's own line of development settles, you settle:
+                read PROJECT.md and the ledgers, work out what they support, and go ahead with it.
+                Never carry such a question to the user as though only they could answer it -- asking
+                what you could have settled yourself spends the user's attention, and that is a cost,
+                not diligence. Ask only what genuinely belongs to the user and to no one else: the
+                product direction, a choice between two acceptable paths, what is inside the scope
+                and what is not, and how much cost or risk they will accept. If you cannot name which
+                of those it is, it is yours to decide. And ask sparingly: put the options and their
+                costs into your ordinary reply, one per line in plain words, so the user answers in
+                passing and the work keeps moving. Never stop for what you can judge yourself.
+
                 Name the sides exactly as above when you write to the user: say Hob and Hob-Execute.
                 Never print an internal identifier (such as the package name `dsh-hob`, a module path,
                 or a settings section title) in anything the user reads.
@@ -257,6 +271,23 @@
             name: '@deepseek-ai/dsh-tool-fs-search'
             config:
               sampleOverCapGlobResults: false
+
+          # ══ 批 11 · 指名增行（D2：允许 Hob 向用户提问）═════════════════════════
+          # 用户裁定（UD-68 / CHG-015）：**允许 Hob 提问，但尽量不问** ——
+          # 「按项目方案主线决策推进，除非只能由用户决策才可以提问」。
+          # ⚠ **只限本预设**：`Hob-Execute` 侧的 `WORK_MODEL_DENY`（禁 `ask_user_question`）
+          #   **一个字都不许动**（维持 UD-64 的禁弹窗纪律）。
+          #
+          # 逐字取自宿主 `standard.patch.yml:131-132`（指名取行，**非整段照抄**）：
+          #     131:          - id: tool-ask-user
+          #     132:            name: '@deepseek-ai/dsh-tool-ask-user'
+          # ⚠ 与批 9 的 S2/S3 同款理由：能力落点 = **声明面 与 白名单的「与门」**（E-86）。
+          #   白名单放行了名字，但若本预设作用域里根本没注册该工具，
+          #   调用时得到的是 `unknown tool "ask_user_question"`（作用域内没有），
+          #   而不是白名单的拒绝文本 ⇒ 必须**成对落**。
+          # ⚠ 本条**不改** `tool-web` / `tool-fs` / `tool-fs-search` 三行，也不加任何分组行。
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
 
           # ══ 本插件的工具行（未随批 9 改动）══════════════════════════════════
           # ── 权限收敛面：**一行**，恰好两个工具（read_contracts / write_hob）──
