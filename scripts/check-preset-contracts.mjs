@@ -8,11 +8,17 @@
  * 两份手工同步必然漂移（"守卫写两遍必然漂移"的同类）。本脚本把漂移变成 FAIL。
  *
  * ── 检查项 ──────────────────────────────────────────────────────────────
- *   ① 显示名：两个预设的 `config.name` = `Hob模式` / `Hob-Execute模式`（id 必须未变）
- *   ② id 不变：`dsh-hob` / `dsh-hob-work`
- *   ③ **正文里不拿预设 id 指代对方**：把 persona 正文按"提到对方"的句子扫一遍，
- *      断言没有把 `dsh-hob` / `dsh-hob-work` 当称呼用（只允许出现在
- *      `Never print a preset id (...)` 这条**禁令句**里，那是"允许的例外"）
+ *   ① 显示名：两个预设的 `config.name` = `Hob` / `Hob-Execute`
+ *   ② id：`config.id` = `Hob` / `Hob-Execute`（与显示名**同字面值**，2026-10-07 批 2 起）
+ *      ⚠ 包名（`dsh-hob`）、目录名、patch 文件名、loader 行 id、
+ *        工具行模块名、设置分区标题**一律未跟改**。
+ *   ② 见 ① 的期望值（名与 id 同字面值）。
+ *   ③ **正文里不出现内部标识**：把 persona 正文逐行扫一遍，断言没有把
+ *      **包名（`dsh-hob`）/ 模块子路径**打印给用户（只允许出现在**禁令句**里 ——
+ *      那句本身就是"不许打印内部标识"的规则，是"允许的例外"）。
+ *      ⚠ 2026-10-07 批 2 换扫描对象：名与 id 同字面值后，旧口径
+ *        「不拿 id 指代对方」已失效（正文里 `Hob` 就是名字，不是 id 指代）。
+ *        判据**未放宽** —— 见 ③ 的负向对拍。
  *   ④ 两份正文都含语言规则（跟随用户语言）
  *   ⑤ 人读版引文块与预设正文**全文**逐字一致（把 .md 里的引文块抽出来比对；
  *      ⚠ v3/UD-51 起含 A 段 —— 旧版只比 B+C 段，对 A 段是"缺席的 PASS"）
@@ -40,10 +46,19 @@ const HO = join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')
 const WORK = join(root, 'preset', 'dsh-hob', 'preset-dsh-hob-work.patch.yml')
 const DRAFT = join(root, '.hob', 'drafts', 'preset-contracts.md')
 
-// 两个预设的**显示名**唯一来源（2026-10-06 批 1 改名生效）。
-// ⚠ 不是 id：id 仍是 dsh-hob / dsh-hob-work（断言② 单独钉住，本批不动）。
-const NAME_HO = 'Hob模式'
-const NAME_WORK = 'Hob-Execute模式'
+// 两个预设的**名称与 id**唯一来源。
+// ⚠ 2026-10-07 批 2 起 `config.name` 与 `config.id` **同字面值**（Hob / Hob-Execute）。
+//   包名仍为 `dsh-hob`；目录名、patch 文件名、loader 行 id、工具行模块名、
+//   设置分区标题**均未跟改** —— 断言里凡出现它们，指的都是包名面，不是预设 id。
+const NAME_HO = 'Hob'
+const NAME_WORK = 'Hob-Execute'
+
+/** 包名（= 模块名前缀 = 分区标题；本批未跟改）。 */
+const HO_PKG = 'dsh-hob'
+/** 工具行模块子路径（按包名解析；本批未跟改）。 */
+const MODULE_PATH = 'dsh-hob/preset/tools'
+/** 允许的例外行：禁令句本身（它就是在教模型不许打印内部标识）。 */
+const ALLOWED_INTERNAL_SENTENCE = /Never print an internal identifier/
 
 const fail = []
 const note = []
@@ -98,35 +113,36 @@ const workSrc = readFileSync(WORK, 'utf8')
 // ── ① 显示名 + ② id ───────────────────────────────────────────────────
 {
   const cases = [
-    ['Hob模式', 'dsh-hob', hoSrc, HO],
-    ['Hob-Execute模式', 'dsh-hob-work', workSrc, WORK],
+    ['Hob', 'Hob', hoSrc, HO],
+    ['Hob-Execute', 'Hob-Execute', workSrc, WORK],
   ]
   for (const [wantName, wantId, src, path] of cases) {
     const gotName = scalar(src, 'name')
     const gotId = scalar(src, 'id')
     if (gotName !== wantName) bad(`① ${path}: 显示名应为「${wantName}」，实测「${gotName}」`)
-    if (gotId !== wantId) bad(`② ${path}: id 应保持「${wantId}」，实测「${gotId}」`)
-    if (gotName === wantName && gotId === wantId) ok(`①② ${wantName}（id ${wantId}）：显示名与 id 均正确`)
+    if (gotId !== wantId) bad(`② ${path}: id 应为「${wantId}」，实测「${gotId}」`)
+    if (gotName === wantName && gotId === wantId) ok(`①② ${wantName}（id ${wantId}）：显示名与 id 均为既定字面值`)
   }
 }
 
-// ── ③ 正文不拿 id 指代对方 ─────────────────────────────────────────────
-// 允许的例外：禁令句本身「Never print a preset id (such as `dsh-hob` or `dsh-hob-work`)」
-const ALLOWED_ID_SENTENCE = /Never print a preset id/
+// ── ③ 正文不出现内部标识（2026-10-07 批 2 换扫描对象）──────────────────
+// 允许的例外：禁令句本身（`Never print an internal identifier ...`）——
+// 它举例说明了包名，那是**规则条文**，不是把内部标识当称呼用。
 {
   for (const [label, src, path] of [[NAME_HO, hoSrc, HO], [NAME_WORK, workSrc, WORK]]) {
     const body = literalBlock(src, 'prefix')
     if (body === undefined) { bad(`③ ${path}: 找不到 prefix: |- 块`); continue }
     const offenders = body
       .split('\n')
-      .filter((l) => /dsh-hob(-work)?/.test(l))
-      .filter((l) => !ALLOWED_ID_SENTENCE.test(l))
+      .filter((l) => l.includes(HO_PKG) || l.includes(MODULE_PATH))
+      .filter((l) => !ALLOWED_INTERNAL_SENTENCE.test(l))
     if (offenders.length > 0) {
-      bad(`③ ${label} 正文仍拿预设 id 指代对方（${offenders.length} 行）：`)
+      bad(`③ ${label} 正文出现内部标识（包名 / 模块子路径）（${offenders.length} 行）：`)
       for (const o of offenders) bad(`     ${o.trim()}`)
     } else {
-      const banned = body.split('\n').filter((l) => ALLOWED_ID_SENTENCE.test(l)).length
-      ok(`③ ${label} 正文不提 preset id 指代对方（禁令句 ${banned} 行，为允许的例外）`)
+      const banned = body.split('\n').filter((l) => ALLOWED_INTERNAL_SENTENCE.test(l)).length
+      if (banned === 0) bad(`③ ${label} 正文缺「不许打印内部标识」的禁令句`)
+      else ok(`③ ${label} 正文不出现内部标识（禁令句 ${banned} 行，为允许的例外）`)
     }
     // 正向：必须用名称提到对方
     const other = label === NAME_HO ? NAME_WORK : NAME_HO
@@ -157,7 +173,7 @@ const STALE_APPELLATIONS = [
       ok(`③b ${label} 正文无旧称呼残留（称呼已统一为 ${NAME_HO} / ${NAME_WORK}）`)
     }
   }
-  // Hob模式：A 段的 3 处旧称呼必须已换成名称
+  // Hob：A 段的 3 处旧称呼必须已换成名称
   const hoBody = literalBlock(hoSrc, 'prefix') ?? ''
   const workMentions = (hoBody.split(NAME_WORK).length - 1)
   if (workMentions < 3) bad(`③b ${NAME_HO} 正文提到「${NAME_WORK}」仅 ${workMentions} 次（A 段 3 处 + B 段若干，应 ≥3）`)
@@ -184,13 +200,13 @@ const STALE_APPELLATIONS = [
 {
   const hoBody = literalBlock(hoSrc, 'prefix') ?? ''
   const workBody = literalBlock(workSrc, 'prefix') ?? ''
-  // 人读版：block0 = Hob模式 A+B+C 段（全文）；block1 = Hob-Execute模式 正文
+  // 人读版：block0 = Hob A+B+C 段（全文）；block1 = Hob-Execute 正文
   const d0 = draftBlock(0)
   const d1 = draftBlock(1)
   if (d0 === undefined || d1 === undefined) {
     bad('⑤ 人读版（.md）里没找到两个引文块（期望 ````text / ```text 各一）')
   } else {
-    // Hob模式：人读版 == 预设正文（全文，逐字）
+    // Hob：人读版 == 预设正文（全文，逐字）
     if (hoBody.trimEnd() !== d0.trimEnd()) {
       bad(`⑤ ${NAME_HO}：人读版引文块与预设正文不一致（应全文逐字相同）`)
       const a = hoBody.split('\n'), b = d0.split('\n')
@@ -383,7 +399,7 @@ const STALE_APPELLATIONS = [
   // 规划侧：complete: true + 恰好 1 行工具模块
   if (!/^\s+complete: true\s*$/m.test(hoSrc)) bad(`⑥ ${NAME_HO}：缺 complete: true`)
   else ok(`⑥ ${NAME_HO}：complete: true 在位`)
-  const hoTool = (hoSrc.match(/name: 'dsh-hob\/preset\/tools'/g) ?? []).length
+  const hoTool = (hoSrc.split("name: '" + MODULE_PATH + "'").length - 1)
   if (hoTool !== 1) bad(`⑥ ${NAME_HO}：工具模块行应恰好 1 行，实测 ${hoTool}`)
   else ok(`⑥ ${NAME_HO}：工具模块行恰好 1 行（read_contracts + write_hob）`)
 
@@ -399,7 +415,7 @@ const STALE_APPELLATIONS = [
 }
 
 // ── 输出 ────────────────────────────────────────────────────────────────
-console.log(`预设契约一致性核对 · ${NAME_HO} / ${NAME_WORK}`)
+console.log(`预设契约一致性核对 · 预设 ${NAME_HO} / ${NAME_WORK}（包名 ${HO_PKG}，本批未跟改）`)
 console.log('预设（机器读版）:', HO, '+', WORK)
 console.log('草案（人读版）  :', DRAFT)
 console.log('')
