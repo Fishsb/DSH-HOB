@@ -500,6 +500,87 @@ const STALE_APPELLATIONS = [
   }
 }
 
+// ── ⑤e 编排规则 / 回报格式 / 禁弹窗条文短钉（2026-10-07 批 6 · UD-64 / UD-65 · CHG-012）─
+//
+// 为什么需要：批 6 在两侧各**就地追加**一段正文（Hob 侧 = 委派门槛 / 指令自足 / 攒批 /
+// 验收只认读数 / 接住问题；Hob-Execute 侧 = 禁交互提问 + 回报固定六段），
+// 而 ⑤ 只能证明"两份载体一致"、⑤b 只管两段式格式、⑤c 只管职责句、⑤d 只管文件交接 ——
+// **编排规则与回报格式本身没有任何断言覆盖**（两份一起被删照样 PASS）。
+// 本条把用户诉求（UD-64 / UD-65）各钉若干**稳定短语**，断言"该条文仍在"。
+//
+// ⚠ 口径说明（防误读）：
+//   · 钉的是**稳定短语**而不是整段逐字 —— 措辞可随文调整，只要该规则还在，句子就还在。
+//     **这是新增断言，不是放宽**：任何一条缺失即 FAIL。
+//   · 编号：任务书只写「新增语义断言」、未指定编号。现最大为 ⑤d ⇒ 顺延为 **⑤e**
+//     （与批 5 的「任务书写 ⑤b、实际落 ⑤d」同款：语义一致，区别只在编号；如实记于回报）。
+//   · **不钉标题行**：任务书 §2.1/§2.2 要求**就地追加在既有段落正文内**、**不新起 `##` 小节**，
+//     钉标题会把"就地追加"这一形态本身变成要求。
+//   · **禁弹窗组的短语里不出现内部标识**（工具名）—— 那正是契约条文自己的要求
+//     （"以那类工具为代表，不列举内部标识"）。故断言用「弹出问题、等真人」这类描述性短语，
+//     而不是把工具名钉进机检。
+{
+  const hoBody4 = literalBlock(hoSrc, 'prefix') ?? ''
+  const workBody4 = literalBlock(workSrc, 'prefix') ?? ''
+  const ORCH_PINS = [
+    // [标签, 正文, 稳定短语]
+    [NAME_HO, hoBody4, [
+      ['委派门槛：只把"必须动手"的活交出去', 'delegate only work that MUST be done by hand'],
+      ['委派成本（交接 + 复核）', 'the hand-over itself, plus the review when it comes back'],
+      ['能自己问清/查清的先做掉', 'settle it first'],
+      ['不为转手而转手', 'Do not hand work over just to pass it along'],
+      ['指令自足（目标/边界/判据/前情）', 'Every directive must stand on its own'],
+      ['不得把产品决策留给下游猜', 'Never leave a\nproduct decision for the other side to guess'],
+      ['攒批（一条指令 + 一次重启）', 'Batch what can ride together'],
+      ['验收只认原始读数', 'Accept on readings only'],
+      ['读数 = 退出码/文件字节/日志字段', "a\ncommand's exit code, the bytes of a file, a log field"],
+      ['不认"声称完成"', 'never by the claim that it is'],
+      ['核不到就说"未验证"', 'say plainly which part is'],
+      ['接住回报里的待决问题', 'Catch the questions'],
+      ['逐条处理（能定的定、只有用户能定的转选项）', 'ones only the user can settle, turn into options'],
+      // ⚠ 负向口径：**逐字保留**的投递禁令（不得写成已具备自动投递能力）
+      ['投递禁令逐字保留（仍无自动投递）', 'There is still NO automatic delivery for the directive'],
+      ['不得声称自动投递（同段重申）', 'Never describe the hand-off as automatic for this reason either'],
+    ]],
+    [NAME_WORK, workBody4, [
+      ['禁交互提问（用描述、不列举内部标识）', 'no tool that pops up a question and waits for a live human to answer it'],
+      ['为什么禁：对接 Hob 不是用户 ⇒ 会堵塞', 'You answer to Hob, not to the user, so a question that waits for someone to type would stall the work'],
+      ['不含糊的部分照做', 'the part that is unambiguous, do it'],
+      ['问题记下来', 'the question, write it down'],
+      ['随完成回报一并交回（不中断/不阻塞）', 'hand both back together when you finish -- no interruption and no blocking'],
+      ['卡住 ⇒ 停在安全状态', 'stop in a safe state'],
+      ['不留半成品 / 不做不可逆动作', 'leave no half-finished work behind and take no irreversible action'],
+      ['卡点写进回报的待决问题段', 'the open-questions section of the report'],
+      ['问题写成可直接回答、一条一行', 'Write each question so it can be answered directly, one per line'],
+      ['回报六段：固定形状与顺序', 'in six sections, in this order'],
+      ['第1段 结论先行（成/不成/部分成）', 'Verdict first -- done / not done / partly done'],
+      ['第2段 前置读数（时间戳类判据）', 'Baseline readings -- the timestamp-style facts'],
+      ['第3段 做了什么（附原始证据）', 'with the raw evidence'],
+      ['第4段 未做到·未验证·与指令不符（不得埋）', 'never bury this; write "none" when there is none'],
+      ['第5段 待决问题（含建议默认取值）', 'with your suggested default where you have one'],
+      ['第6段 建议（可省）', 'Suggestions -- what to do next; may be omitted'],
+      ['会话里只有一行（结论 + 路径）', 'give only one line: the verdict plus the path of `REPORT.md`'],
+    ]],
+  ]
+  for (const [label, body, pins] of ORCH_PINS) {
+    for (const [what, phrase] of pins) {
+      if (body.includes(phrase)) ok(`⑤e ${label}：编排/回报条文在位（${what}）`)
+      else bad(`⑤e ${label}：编排/回报条文缺失（${what}）—— 期望短语 ${JSON.stringify(phrase)}`)
+    }
+  }
+
+  // ⚠ **形态负向断言**：批 6 条文**必须就地追加在既有段落正文内**，**不得新起 `##` 小节**。
+  //   本组不钉标题行（见上），但必须确认**没有人为这两段新起标题** ——
+  //   否则"就地追加"这一形态要求会被静默破坏（与批 5 同款纪律）。
+  for (const [label, body, forbidden] of [
+    [NAME_HO, hoBody4, ['## Delegation', '## How you delegate', '## Delegating']],
+    [NAME_WORK, workBody4, ['## Reporting', '## Report format', '## Open questions', '## Asking']],
+  ]) {
+    const extra = forbidden.filter((h) => body.includes(h))
+    if (extra.length > 0) bad(`⑤e ${label}：批 6 条文新起了小节标题（${extra.join(', ')}）—— 应为就地追加`)
+    else ok(`⑤e ${label}：批 6 条文未新起小节标题（就地追加在既有段落内）`)
+  }
+}
+
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────
 {
   // 规划侧：complete: true + 恰好 1 行工具模块

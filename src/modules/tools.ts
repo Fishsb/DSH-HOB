@@ -50,6 +50,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { readMarkdownCapped, resolveWorkspaceRoot } from '../server/doc-read.ts'
 import { LEDGER_FILES, writeHobFile } from '../server/hob-write.ts'
+import { installWorkPresetDeny } from './work-deny.ts'
 
 /** 模块名（同时是 fiber 显示名）。 */
 export const name = 'dsh-hob-tools'
@@ -137,6 +138,8 @@ export const DEFAULTS = {
  *   **被每个 agent 继承** —— 只靠"预设不挂它"**摘不掉**（实测：不摘时助手会多出 4 个，
  *   见 `.hob/archive/2026-10-05-step4-evidence/spike-leak-measurement.log` 的对照行）。
  *   ⇒ 必须用 `ctx.tools.restrict({ deny })` 屏蔽。收敛要靠**允许清单**思维（§6.3）。
+ *
+ * ⚠ **本常量只服务「Hob」（规划侧）那一个预设**，语义自本文件建立以来未变（2026-10-07 批 6 复核）。
  */
 export const DEFAULT_DENY = [
   'interconnect_send',
@@ -144,6 +147,76 @@ export const DEFAULT_DENY = [
   'interconnect_ping',
   'interconnect_list',
 ] as const
+
+/**
+ * Hob-Execute（实施侧）的**预设 id** —— 批 6 那条收窄规则的判据字面值。
+ *
+ * ⚠ 与 `preset/dsh-hob/preset-dsh-hob-work.patch.yml` 的 `config.id` 同字面值
+ *   （2026-10-07 批 2 起显示名与 id 同字面值）。**不是**包名 / 目录名 / loader 行 id。
+ */
+export const WORK_PRESET_ID = 'Hob-Execute'
+
+/**
+ * 要从 **Hob-Execute 的模型面**摘掉的工具名（UD-64 / CHG-012 · 2026-10-07 批 6）。
+ *
+ * ── 为什么要摘 ──────────────────────────────────────────────────────
+ *   Hob-Execute **对接的是 Hob，不是用户**（见它的 `## Your duties`）。
+ *   「弹出问题、等真人当场回答」这类工具会让它**中途停下来等人** ——
+ *   而它等的那个"人"根本不是它的上游 ⇒ 任务是**堵塞**而不是被澄清。
+ *   用户裁定（UD-64）：需要决策 ⇒ **把不含糊的部分做掉、把问题记录下来、
+ *   随完成回报一并交回**；整件事被卡住 ⇒ **停在安全状态**并写进回报。
+ *
+ * ── 为什么是**一个显式名字**而不是前缀/通配 ─────────────────────────
+ *   与「Hob」侧同款纪律（§6.3 允许清单思维）：将来新装的插件**不得自动**被摘。
+ *   本批只摘**契约条文指名的那一个代表**。
+ *
+ * ── ⚠ 与 CHG-003「Hob-Execute 工具全给」的关系（如实标注，不美化）─────
+ *   这是那条约定的**定点例外**：`ask_user_question` 一项不再适用"全给"。
+ *   代价已知并由用户拍板（`.hob/USER-DECISIONS.md` UD-64 记「强度待用户裁定」，
+ *   本批按"机制落地"执行）。
+ *
+ * ⚠ 本清单**只作用于 {@link WORK_PRESET_ID}**：判据见 {@link presetIdOf}，
+ *   对「Hob」与宿主自带的 standard / minimal / cordis **一律不生效**
+ *   （隔离实例逐预设对照读数见 `.hob/archive/2026-10-07-orchestration/evidence/`）。
+ */
+export const WORK_MODEL_DENY: readonly string[] = ['ask_user_question']
+
+/**
+ * 读出一个 **live Agent 当前所属的预设 id**（批 6 收窄规则的身份判据）。
+ *
+ * ── 为什么需要"当前"而不是"创建时"──────────────────────────────────
+ *   `session.header.agentPreset` 是**创建事实**且冻结；而宿主允许会话在**首个 turn 之前**
+ *   改预设（`agent-preset/selected`，见 `dsh-agent-preset-registry/lib/types/session.d.ts`：
+ *   "Current Session preset, initialized from its header and advanced by selection events"）。
+ *   用它当判据会在"改了预设但还没说话"这条窗口上判错。
+ *
+ * ── 两条路径（顺序有意义）──────────────────────────────────────────
+ *   ① **权威**：`ctx.agentPresets.composedPreset(agent.ctx)`
+ *      （`dsh-agent-preset-registry/lib/index.js:723-725` = `standingMountFor(ctx)?.presetId`，
+ *       读的是 agent scope 的**父链**指向的那个 standing mount ⇒ 改过预设也正确）；
+ *   ② **兜底**：`agent.session.header.agentPreset`（注册表读不到时的创建事实）。
+ *
+ * ⚠ 全程 fail-open：读不到 ⇒ 返回 `undefined` ⇒ 调用方**一律放行**。
+ *   本规则是**收窄措施**，不是安全边界；把某个会话弄瘫比漏一个工具更糟
+ *   （同 `src/preset/tools.ts` 的 `enforceToolAllowlist` 注释）。
+ *
+ * @param ctx - 任一能看到 `agentPresets` 服务的 ctx（插件平面即可）。
+ * @param agent - 被判定调用的主体 agent；缺失 ⇒ undefined。
+ * @returns 预设 id，读不到时为 `undefined`。
+ */
+export function presetIdOf(ctx: any, agent: any): string | undefined {
+  if (agent === undefined || agent === null) return undefined
+  try {
+    const registry = ctx?.get?.('agentPresets')
+    const viaRegistry = registry?.composedPreset?.(agent.ctx)
+    if (typeof viaRegistry === 'string' && viaRegistry !== '') return viaRegistry
+  } catch { /* 注册表缺席/抛错 ⇒ 退到创建事实 */ }
+  try {
+    const header = agent?.session?.header?.agentPreset
+    if (typeof header === 'string' && header !== '') return header
+  } catch { /* 结构不认识 ⇒ 视为未知 */ }
+  return undefined
+}
 
 /** 解析工作区根：显式配置优先，其次会话 cwd；都没有则 undefined（fail-closed）。 */
 export function rootOf(cfg: HobToolsConfig, exec: ToolRunContext): string | undefined {
@@ -272,6 +345,17 @@ export function apply(ctx: any): void {
       ctx.logger?.debug?.(`[${name}] 已卸载（门禁 ${GATE_SERVICE} 随之消失）`)
     }
   }, `${name}: gate`)
+
+  // ⚠ **批 6 新增**：实施侧专属收窄（UD-64 / CHG-012）挂在这里，理由**不是**"顺路"——
+  //   本模块正是插件平面（宿主平面行 `id: dsh-hob`）的那一个落点，而收窄**必须**
+  //   挂在插件平面才能覆盖到 Hob-Execute（它的预设行不引用本插件任何模块，够不到）。
+  //   为什么不另开一个 `MODULE_REGISTRY` 模块行：那会在 `src/index.ts` 的登记表里
+  //   多出一个模块键、进而进入设置面 `modules.*` —— 本批要求"改动有界、
+  //   不动既有配置语义"，故**就地挂载**、不新增开关。
+  //   ⚠ 位置在 `ctx.provide` 之后、`ctx.effect` 卸载钩子之后：两处监听器**不依赖门禁**
+  //     （门禁只管"工具注册"，见文件头）⇒ 不放进 `ctx.inject([GATE_SERVICE], …)` 回调，
+  //     否则关掉 `modules.tools` 会让收窄一起失效（那正是本文件头部 F1 修过的倒挂形态）。
+  installWorkPresetDeny(ctx, (m) => { try { ctx.logger?.debug?.(m) } catch { /* 无 logger 时忽略 */ } })
 
   ctx.logger?.debug?.(`[${name}] 已激活：已提供门禁 ${GATE_SERVICE}；工具定义由预设行在预设作用域注册`)
 }
