@@ -581,6 +581,162 @@ const STALE_APPELLATIONS = [
   }
 }
 
+// ── ⑤f 批 9 · Hob 能力扩展：白名单目标名 + 禁止项 + 失实句清除 ──────────────
+//
+// 为什么需要：批 9（范围 S1+S2+S3）给 Hob 加了 9 类只读能力，机制落点是
+//   **声明面 与 白名单 的「与门」**（见 EXPERIENCE E-86）：
+//   · 白名单 = `src/preset/tools.ts` 的 `MODEL_TOOL_ALLOWLIST`（模型面 + 执行前拦截共用那一份）；
+//   · 声明面 = `preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `plugins` 行。
+// ⑤/⑤b/⑤c/⑤d/⑤e 都只管**契约正文**（人读/机器读一致、格式、职责句、交接、编排），
+// **一条都不覆盖"白名单里到底有哪几个名字"** —— 有人把新增的 9 名删掉，上面全组照样 PASS。
+// 本条把它钉住；同时用**负向断言**钉住"禁止项不得混进来"与"失实句不得回归"。
+//
+// ⚠ 口径说明（防误读）：
+//   · 钉的是**工具名集合**（这是机检能判定的那一层），不是"工具真能跑通" ——
+//     后者须隔离实例活体读数（本批已在报告第 3 段给出原始输出）。
+//   · **这是新增断言，不是放宽**：任何一条缺失即 FAIL；⑥ 的两条既有断言**一条未动**。
+//   · 编号：任务书写「新增 ⑤f 组」；⑤e 已占 ⇒ 顺延落 **⑤f**，与任务书一致。
+{
+  const hoBody5 = literalBlock(hoSrc, 'prefix') ?? ''
+
+  // 从源码读白名单：只做**行级**抽取（本仓零第三方依赖纪律），不 eval 那个 TS 文件。
+  const toolsSrc = (() => {
+    try { return readFileSync(join(root, 'src', 'preset', 'tools.ts'), 'utf8') } catch { return undefined }
+  })()
+
+  if (toolsSrc === undefined) {
+    bad('⑤f 读不到 src/preset/tools.ts（白名单的唯一来源）')
+  } else {
+    // 抽取 `export const MODEL_TOOL_ALLOWLIST: readonly string[] = [ ... ]` 间的字符串字面量。
+    const m = /export const MODEL_TOOL_ALLOWLIST[^=]*=\s*\[([\s\S]*?)\n\]/.exec(toolsSrc)
+    if (m === null) {
+      bad('⑤f 在 src/preset/tools.ts 里找不到 MODEL_TOOL_ALLOWLIST 的字面量数组')
+    } else {
+      const allow = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+      const allowSet = new Set(allow)
+
+      // ── 正向：S1/S2/S3 的 9 个目标名**必须**在白名单里 ────────────────
+      // ⚠ 这 9 名分三类，各自的能力落点不同（见 E-86）：
+      //   · S1（4）声明面**零增量** —— 已在插件平面被继承；
+      //   · S2（1）/ S3（4）**必须**在声明面指名增行，否则执行时报 `unknown tool`。
+      //     声明面那一侧由下面「声明面增行」子断言覆盖。
+      const NEEDED = [
+        ['S1 编排只读查询', 'taskboard_list'],
+        ['S1 编排只读查询', 'taskboard_get'],
+        ['S1 编排只读查询', 'taskboard_comments'],
+        ['S1 编排只读查询', 'roundtable_status'],
+        ['S2 打开网页取正文', 'web_fetch'],
+        ['S3 只读看工作区文件', 'read'],
+        ['S3 只读看工作区文件', 'glob'],
+        ['S3 只读看工作区文件', 'grep'],
+        ['S3 只读看工作区文件', 'read_image'],
+      ]
+      const missing = NEEDED.filter(([, n]) => !allowSet.has(n))
+      if (missing.length > 0) {
+        bad(`⑤f ${NAME_HO} 白名单缺目标名（${missing.length} 个）：${missing.map(([g, n]) => `${n}(${g})`).join(', ')}`)
+      } else ok(`⑤f ${NAME_HO}：白名单含 S1/S2/S3 全部 9 个目标名（${NEEDED.map(([, n]) => n).join(', ')}）`)
+
+      // ── 负向：禁止项**一律不得**在白名单里 ──────────────────────────
+      // ⚠ 这份清单不是拍脑袋：S4（写工作区）/ S5（跑命令）/ S6（派活/改共享状态）/
+      //   S8（委派）**本批明确不做**（任务书 §1.1 第 20 行 + §4 末行），
+      //   加上 UD-13 / UD-56 早已排除的交互提问与代码开发类。
+      //   `write`/`edit` 属 S4（**本批不做**）；它们会随 `tool-fs` 落到**注册面**，
+      //   但**不得**进白名单 —— 这是 §1.3「不把 write/edit 放进声明面之外的第二道闸」的落点。
+      const FORBIDDEN = [
+        ['S5 跑命令', 'bash'],
+        ['S4 写工作区文件', 'write'],
+        ['S4 写工作区文件', 'edit'],
+        ['交互提问（UD-64 只对实施侧放开，Hob 侧本批 S7 未定 ⇒ 不碰）', 'ask_user_question'],
+        ['S6/S8 派活与委派', 'spawn_teammate'],
+        ['S6/S8 派活与委派', 'send_message'],
+        ['S6 改共享状态', 'taskboard_move'],
+        ['S8 委派', 'subagent'],
+      ]
+      const present = FORBIDDEN.filter(([, n]) => allowSet.has(n))
+      if (present.length > 0) {
+        bad(`⑤f ${NAME_HO} 白名单**含禁止项**（${present.length} 个）：${present.map(([g, n]) => `${n}(${g})`).join(', ')}`)
+      } else ok(`⑤f ${NAME_HO}：白名单不含 8 个禁止项（${FORBIDDEN.map(([, n]) => n).join(', ')}）`)
+
+      // ── 负向：失实句不得回归（契约自己说谎）──────────────────────────
+      // 批 9 之前正文写「no file reads or writes, no commands」——
+      // **本批之后该句不成立**（只读读文件已可用）。它若回来，就是契约失实。
+      const LIES = [
+        ['失实句①「你不执行任何工作」（读文件已可用）', 'You never execute the work yourself'],
+        ['失实句②「没有文件读写、没有命令」', 'no file reads or writes'],
+        ['失实句③「你手上只有读 .md 与写账本」', 'reading project documents (.md) and writing your own'],
+      ]
+      const back = LIES.filter(([, s]) => hoBody5.includes(s))
+      if (back.length > 0) {
+        bad(`⑤f ${NAME_HO} 契约正文**失实句回归**（${back.length} 处）：${back.map(([l]) => l).join('; ')}`)
+      } else ok(`⑤f ${NAME_HO}：契约正文 0 处失实句残留（三处均已就地改对）`)
+
+      // ── 正向：改动后的**新表述**在位（否则"删掉旧句"就能骗过上面那条）──
+      // ⚠ 这是负向断言的**配对项**：只删不写会让契约变成"什么也没说"，
+      //   比原来更糟（读者无法判断 Hob 到底能做什么）。
+      const NEW_WORDING = [
+        ['只读的事直接做 / 改动的活不做', 'What is read-only, you do directly'],
+        ['没有任何「改动」能力（四条并列）', 'you cannot edit code'],
+        ['只读检索与浏览（文档+工作区+网页+看板/圆桌只读查询）', 'read-only queries against the board and'],
+        ['只写自己的账本与交接文件', 'plus writing your own ledger and hand-off files'],
+      ]
+      const gone = NEW_WORDING.filter(([, s]) => !hoBody5.includes(s))
+      if (gone.length > 0) {
+        bad(`⑤f ${NAME_HO} 契约正文缺新表述（${gone.length} 处）：${gone.map(([l]) => l).join('; ')}`)
+      } else ok(`⑤f ${NAME_HO}：契约正文新表述四项俱全（只读直接做 / 无改动能力 / 只读检索浏览 / 只写账本）`)
+
+      // ── 声明面：S2/S3 指名增行在位，且**未整段照抄 standard** ──────────
+      // 判据（可机检的两条）：
+      //   ① 三个指名行的 `name` 都在（`tool-web` / `tool-fs` / `tool-fs-search`）；
+      //   ② 撞边界的行**不在**（`tool-bash` / `tool-pwsh` / `tool-ask-user` / `delegation`）。
+      // ⚠ ② 是"不许整段照抄"的**可机检落点**：字面照抄 standard 会把它们一并带进来。
+      const DECL_ROWS = [
+        ['S2 tool-web', '@deepseek-ai/dsh-tool-web'],
+        ['S3 tool-fs', '@deepseek-ai/dsh-tool-fs'],
+        ['S3 tool-fs-search', '@deepseek-ai/dsh-tool-fs-search'],
+      ]
+      // ⚠ 归一化后匹配（容忍 `name: 'X'` / `name: X` 两种 YAML 写法），理由同下面的禁令组。
+      const hoSrcNorm = hoSrc.replace(/'([^']*)'/g, '$1')
+      const decMissing = DECL_ROWS.filter(([, pk]) => !hoSrcNorm.includes(`name: ${pk}`))
+      if (decMissing.length > 0) {
+        bad(`⑤f ${NAME_HO} 声明面缺指名增行（${decMissing.length} 个）：${decMissing.map(([l, p]) => `${l}=${p}`).join(', ')} —— 白名单放行了名字但作用域内没有该工具 ⇒ 执行期 `+'`unknown tool`')
+      } else ok(`⑤f ${NAME_HO}：声明面三个指名增行在位（tool-web / tool-fs / tool-fs-search）`)
+
+      const DECL_BANNED = [
+        ['跑命令', '@deepseek-ai/dsh-tool-bash'],
+        ['跑命令', '@deepseek-ai/dsh-tool-pwsh'],
+        ['交互提问（S7 未定 ⇒ 不碰）', '@deepseek-ai/dsh-tool-ask-user'],
+        ['委派组（S8 不做）', 'cordis:group'],
+      ]
+      // ⚠ `cordis:group` 单独判：Hob 侧**不得**出现任何分组行（standard 的 delegation 组
+      //   就是 `cordis:group`）。本预设至今零分组 ⇒ 这条同时钉住"没有整段照抄来的组"。
+      // ⚠⚠ **匹配必须容忍带引号与不带引号两种写法**（实测教训，负向对拍 F 首轮漏过）：
+      //   YAML 里 `name: cordis:group` 与 `name: 'cordis:group'` **都合法**，
+      //   只钉带引号的形态 ⇒ 不带引号的写法会**静默通过**。
+      //   同理不许用"精确字符串 includes"来判"某一行**不存在**"—— 归一化后再比。
+      const normalizeName = (s) => s.replace(/'([^']*)'/g, '$1')
+      const hoSrcN = normalizeName(hoSrc)
+      const decBanned = DECL_BANNED.filter(([, pk]) => hoSrcN.includes(`name: ${pk}`))
+      if (decBanned.length > 0) {
+        bad(`⑤f ${NAME_HO} 声明面出现**撞边界/照抄残留**的行（${decBanned.length} 处）：${decBanned.map(([l, p]) => `${p}(${l})`).join(', ')}`)
+      } else ok(`⑤f ${NAME_HO}：声明面无撞边界行、无照抄来的分组行（未整段照抄 standard）`)
+
+      // ── 附：分组行形态的**独立**断言（不依赖上面那份 name 清单）──────────
+      // 判据取 YAML 结构事实而不是名字：出现 `group: true` 即说明多了一个分组容器。
+      const groupRows = (hoSrc.match(/^\s+group:\s*true\s*$/gm) ?? []).length
+      if (groupRows !== 0) {
+        bad(`⑤f ${NAME_HO} 声明面出现 ${groupRows} 个分组容器行（\`group: true\`）—— 本预设不含任何组，应就地单行声明`)
+      } else ok(`⑤f ${NAME_HO}：声明面 0 个分组容器行（\`group: true\`），全部为就地单行声明`)
+    }
+  }
+
+  // ── ⑥ 的两条既有断言**复跑确认未被破坏**（任务书 §3 第 4 条）────────────
+  // ⚠ 这里**不重复实现** ⑥，只**再断言一次**它依赖的两个事实，使 ⑤f 单独读也能确认；
+  //   ⑥ 本体的断言仍在下面原样保留（**未删、未放宽**）。
+  const hoToolF = (hoSrc.split("name: '" + MODULE_PATH + "'").length - 1)
+  if (hoToolF !== 1) bad(`⑤f 复跑：${NAME_HO} 的工具模块行应恰好 1 行，实测 ${hoToolF}（⑥ 被破坏）`)
+  else ok(`⑤f 复跑：${NAME_HO} 的 ${JSON.stringify(MODULE_PATH)} 仍恰好 1 行（⑥ 未破坏）`)
+}
+
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────
 {
   // 规划侧：complete: true + 恰好 1 行工具模块

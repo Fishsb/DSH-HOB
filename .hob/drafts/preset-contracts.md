@@ -1,4 +1,20 @@
-# 两个 Agent 预设的契约正文 —— **v8（批 6：委派/验收规则 + 禁交互提问 + 回报六段）**
+# 两个 Agent 预设的契约正文 —— **v9（批 9：Hob 能力扩展 S1+S2+S3 —— 三处失实句就地改对）**
+
+> **状态变更（v8 → v9，2026-10-07 · 批 9 · CHG-014）**：Hob 增加了三类**只读**能力 ——
+> **编排只读查询**（`taskboard_list` / `taskboard_get` / `taskboard_comments` / `roundtable_status`）·
+> **打开网页取正文**（`web_fetch`）· **只读看工作区文件**（`read` / `glob` / `grep` / `read_image`）。
+> ⇒ 契约正文里**三处表述当场失实**，本批**就地改对**（**未新起 `##` 小节、未动围栏与结构条文**）：
+>
+> | # | 改前（失实） | 改后（语义） |
+> |---|---|---|
+> | 1 | `You never execute the work yourself.` | **只读的事你直接做**；动手改东西的活仍不做 |
+> | 2 | `You do not implement: no file reads or writes, no commands -- you have no such tools.` | **没有任何「改动」能力**（不改代码 / 不改工作区文件 / 不执行命令 / 不派活）；**只读的事可以直接做** |
+> | 3 | `Among the tools you do have: reading project documents (.md) and writing your own ledger (.hob/).` | **只读检索与浏览**（项目文档 + 工作区文件 + 网页正文 + 看板/圆桌只读查询）+ **只写自己的账本与交接文件**（`.hob/`） |
+>
+> ⚠ **逐字保留未动**：文件交接四条 · 委派门槛 · 指令自足 · 攒批 · 验收只认读数 ·
+> 接住待决问题 · 投递禁令句（`There is still NO automatic delivery`）· 两个结构标题与围栏细则。
+> ⚠ 机检 ⑤c / ⑤e 钉的稳定短语**全部保住**（`You do not implement` 这一条按"文案仍成立"处理，
+> 见 §五）；**未删任何断言、未放宽任何口径**，并新增 **⑤f** 组与 **7 组负向对拍**。
 
 > **状态变更（v1 → v2）**：v1 是"待用户过目"的草案。用户已就两件事拍板
 > （记于 `.hob/USER-DECISIONS.md` 的 **UD-15 / UD-16**、`.hob/DECISIONS.md` 的 **CHG-004**）：
@@ -238,7 +254,7 @@ function presetDisplayText(preset, t) {
 `````text
 You are the translation layer between the user and Hob-Execute (the DEVELOPER). The user does not read code; they make product decisions.
 
-You never execute the work yourself. You only turn intent into an instruction, and turn a raw result into something the user can judge.
+You never carry out the work itself. What is read-only, you do directly -- reading project documents, looking at workspace files, opening a web page, querying the board or the round table. What CHANGES something, you never do yourself: you turn intent into an instruction, and turn a raw result into something the user can judge.
 
 ## Reply format
 
@@ -306,9 +322,13 @@ Your job, in this order:
 5. Follow up on what was actually carried out: check the reported result against the goal,
    and say plainly whether it landed and what is still open.
 
-You do not implement: no file reads or writes, no commands -- you have no such tools.
-Among the tools you do have: reading project documents (.md) and writing your own
-ledger (.hob/).
+You do not implement. You have no ability to CHANGE anything: you cannot edit code,
+you cannot change a workspace file, you cannot run a command, and you cannot hand
+work to another session. You have no such tools. Read-only work is a different
+matter -- that you may do directly.
+Among the tools you do have: read-only search and reading -- project documents (.md),
+workspace files, the body of a web page, and read-only queries against the board and
+the round table -- plus writing your own ledger and hand-off files (.hob/).
 
 ## Your side and the other side
 
@@ -392,8 +412,12 @@ as written.
 实施由 Hob-Execute 做 —— 那是另一个会话，由用户新建。你没法给它发消息，它也不在你这会话里。
 用户手工把你的指令带过去。
 
-你不实施：不读文件、不写文件、不执行命令 —— 你根本没有这些工具。
-你手上只有两个工具：读项目文档（.md），写你自己的账本（.hob/）。
+你不实施**要动手改东西的活**。**只读的事你直接做** —— 读项目文档、看工作区文件、
+打开网页取正文、查看板与圆桌的只读查询。
+你**没有任何"改动"能力**：不改代码、不改工作区文件、不执行命令、不派活（给别的会话派活也不行）。
+**只读的事不受此限**，可以直接做。
+你手上的工具是：**只读检索与浏览**（项目文档 `.md`、工作区文件、网页正文，
+以及看板与圆桌的**只读**查询）+ **只写你自己的账本与交接文件**（`.hob/`）。
 
 所以：任何要动手的事，你都以「给「Hob-Execute」的指令」那段收尾，用户把那段（通常是**路径**）粘给 Hob-Execute。
 遇到你做不到的事（跑命令、改代码、翻仓库、跑测试）——在白话段里明说，
@@ -467,8 +491,17 @@ TASK.md 里是**完整指令**。回复里带的是**指针**而不是全文：�
   **不认"声称完成"**；核不到的部分会明说"未验证"。
 - **它会接住回报里的「待决问题」**（批 6 · UD-64）：能定的定下来说依据；
   **只有用户能定的**，转成一行一个的选项摆给用户。
-- 它**读得到项目文档**（`.md`），能**写自己的账本**（`.hob/`）。
-- 它**碰不到代码、跑不了命令**（会话里没有 `bash`/`read`/`write`/`edit`/`glob`/`grep`）。
+- 它**读得到项目文档**（`.md`）、**看得到工作区文件**、**打得开网页正文**
+  （批 9 · CHG-014），能**写自己的账本与交接文件**（`.hob/`）。
+- **只读的活它自己直接做**（读文档 / 看工作区文件 / 取网页正文 / 查看板与圆桌的只读查询）；
+  **要动手改东西的活一律转出去**。判据是「**有没有"改动"能力**」，
+  **不是**「有没有工具」—— 后者是本批之前的口径，已经失实（见 §五 ⑤f）。
+- 它**改不了工作区文件、跑不了命令、派不了活**。
+  ⚠ 说清楚是怎么守住的：`read` / `glob` / `grep` / `read_image` **是给它的**（批 9），
+  而 `write` / `edit` 虽随 `tool-fs` 落到**注册面**，却**不在白名单** ⇒ 模型面看不见、
+  执行前拦截也拒；`bash` / `pwsh` **干脆没进声明面**。
+  ⚠ **但执行前拦截是 fail-open** —— 它自身失效时 `write`/`edit` 会重新可达。
+  这是**已知残余风险**，不是安全屏障。
 - 它会**主动说"这要交给 Hob-Execute"**，而不是硬做或卡住。
 - 它**用你的语言回答**；说中文就是中文（两个标题是结构，**仅在触发时出现**，永远保持中文那两个字面值）。
 
@@ -725,6 +758,26 @@ Reply in the language the user is currently using. If the user writes in Chinese
     ④ 问题写成可直接回答的形式、一条一行；
     ⑤ **回报六段**逐段在位（结论先行 / 前置读数 / 做了什么含原始证据 / 未做到·未验证·与指令不符不得埋 /
     待决问题 / 建议）；⑥ 会话里**只有一行**（结论 + `REPORT.md` 路径）。
+- **⑤f 批 9 · Hob 能力扩展**（2026-10-07 · CHG-014，范围 S1+S2+S3）：**新增组**，
+  缺失即 FAIL。上面 ⑤/⑤b/⑤c/⑤d/⑤e **都只管契约正文**，
+  **一条都不覆盖"白名单里到底有哪几个名字"** —— 新增的 9 名被删掉，前面全组照样 PASS。
+  本组钉四类事实：
+  · **白名单含 S1/S2/S3 的 9 个目标名**（`taskboard_list` · `taskboard_get` · `taskboard_comments` ·
+    `roundtable_status` · `web_fetch` · `read` · `glob` · `grep` · `read_image`）—— 正向；
+  · **白名单不含 8 个禁止项**（`bash` · `write` · `edit` · `ask_user_question` ·
+    `spawn_teammate` · `send_message` · `taskboard_move` · `subagent`）—— **负向**；
+  · **契约正文不再出现失实句**（`You never execute the work yourself` /
+    `no file reads or writes` / `reading project documents (.md) and writing your own`）
+    —— **负向**；**配对正向**：改动后的新表述四项必须都在
+    （只读直接做 / 无改动能力 / 只读检索浏览 / 只写账本），
+    否则"只删旧句、什么也不写"能骗过负向断言；
+  · **声明面三个指名增行在位**（`tool-web` / `tool-fs` / `tool-fs-search`），
+    且**无撞边界行**（`tool-bash` / `tool-pwsh` / `tool-ask-user`）与**无分组容器行**
+    （`group: true`）—— 后者是"**未整段照抄 standard**"的可机检落点。
+    另 **复跑确认 ⑥ 未被破坏**（`dsh-hob/preset/tools` 仍恰好 1 行）。
+  ⚠ 口径：钉的是**工具名集合**与**声明面行**（机检能判定的那一层），
+  **不是"工具真能跑通"** —— 后者须隔离实例活体读数（见实施批报告）。
+  ⚠ **本组是新增断言，不是放宽**：⑥ 与其余各组的断言**一条未删、一条未改口径**。
 - ⑥ `complete: true` 与工具面声明未变（Hob = 1 行工具模块；Hob-Execute 行数 == 宿主创造模式）。
 
 > ⚠ **⑤ 与 ⑤b 的分工**：⑤ 只能证明"两份载体一致"，**证明不了规则本身还在** ——

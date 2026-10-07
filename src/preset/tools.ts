@@ -99,13 +99,16 @@ function makeDiag(config: Config): (msg: string) => void {
  * **收敛措施**，不是"本插件工具模块"的附属物。即使 `modules.tools` 关掉
  * （门禁不在、不注册工具），助手会话也不该
  *   ① 突然多出 4 个 `interconnect_*` 工具（屏蔽）；
- *   ② 突然从 11 个涨到 51 个、且能直接执行任务看板/圆桌类工具（收敛）。
+ *   ② 突然拿到未被白名单放行的全部继承工具、且能直接执行任务看板/圆桌类工具（收敛）。
  *
  * ⚠ **F1 修正的行为倒挂**（阶段 E3 实测暴露）：这两处原先挂在 `ctx.inject([GATE_SERVICE])`
  *   回调内 ⇒ `modules.tools:false` 时**整段不执行** ⇒ 关掉门禁反而让助手
- *   从 11 个工具**涨到 51 个**（含能派活、能改工作状态的工具）——
+ *   从当时白名单的 11 个工具**涨到 51 个**（含能派活、能改工作状态的工具）——
  *   用户"减少能力"的意图被执行成了"放大权限"。与方案 §3.3「关掉只影响该模块自己」不符。
  *   ⇒ 现在门禁**只继续管"工具注册"这一件事**。
+ *   ⚠ 上面「11 → 51」是**阶段 E3 那次实测的历史读数**（当时的白名单是 11 项）；
+ *     批 9 起白名单为 **20** 项，同一构成的漏出数会随本机 bundle 构成漂移 ——
+ *     判据仍是"关掉门禁后助手**不得**多出白名单外的名字"，**不是**这两个绝对值。
  *
  * @param ctx - preset 作用域的上下文。
  * @param config - preset 行给的配置。
@@ -201,17 +204,36 @@ function denyInheritedTools(ctx: any, log: (m: string) => void): void {
 }
 
 /**
- * 「助手」**发给模型的**工具清单 —— **装配期白名单**（11 个显式名字）。
+ * 「助手」**发给模型的**工具清单 —— **装配期白名单**（**20** 个显式名字）。
  *
- * ── 为什么是这 11 个 ────────────────────────────────────────────────
- * 「助手」只干两件事：**读项目文档、写自己的账本**，以及**查资料**、**安排自己的定时提醒**。
- * 于是清单 = 本插件的 2 个 + 检索 5 个 + 定时 4 个，一个不多。
+ * ── 为什么是这些 ────────────────────────────────────────────────────
+ * 「助手」只干这几件事：**读项目文档 / 读工作区文件 / 写自己的账本**、
+ * **查资料**、**打开网页取正文**、**只读查询看板与圆桌**、**安排自己的定时提醒**。
+ * 于是清单 = 本插件的 2 个 + 检索 5 个 + 定时 4 个（既有 11）
+ *           + 编排只读查询 4 个 + 网页正文 1 个 + 文件只读 4 个（批 9 新增 9 = 20）。
  *
- * ── 为什么**排除** roundtable / taskboard / team_task / 团队编排 ──────
- * 这些是"**驱动他人干活、改动工作状态**"的工具（派活、认领、移卡、拉专家、发消息给别的会话）。
+ * ── ⚠ 能力落点 = **声明面 与 白名单 的「与门」**（批 8 审查实测，见 E-86）────
+ * 白名单**只**决定"这一项发不发给模型"；工具**还必须在该预设作用域里被注册**——
+ * 否则执行时得到的是 `unknown tool "X"`（作用域内根本没有），而不是白名单的拒绝文本。
+ * ⇒ 本批两类改动必须**成对**落：
+ *   · 编排只读查询 4 个 —— **零声明增量**（它们已在插件平面被继承到本预设作用域）；
+ *   · 网页正文 1 个 + 文件只读 4 个 —— **必须同时**在 `preset-dsh-hob.patch.yml` 里
+ *     指名增行（`tool-web` / `tool-fs` / `tool-fs-search`），否则只是"放行了名字"。
+ *
+ * ── 为什么**排除**「改动状态 / 派活」那一批 ─────────────────────────────
+ * `taskboard_create|move|update|delete` · `taskboard_checklist|comment_add|execution_report` ·
+ * `team_task_*` · `spawn_teammate` / `send_message` / `wait_agent` / `interrupt_agent` ·
+ * `roundtable_create|speak|next_round|…` 是"**驱动他人干活、改动工作状态**"的工具
+ * （派活、认领、移卡、拉专家、发消息给别的会话）。
  * 「助手」的职责是**只出指令**、由用户手工把指令带给「开发」——
  * 一旦它自己就能指挥别的会话/改任务状态，这条职责边界当场失效
  * （`preset-dsh-hob.patch.yml` 的 "You cannot message it, and it is not in this session."）。
+ *
+ * ── 为什么**排除** `write` / `edit` / `bash`（批 9 的核心取捨）────────────
+ * 见 `preset-dsh-hob.patch.yml` 的头部注释「批 9」一节：
+ * 白名单的粒度是**工具名**，**无法**用它闸"写到哪个路径 / 写什么类型"（E-87）。
+ * ⇒ 只要放行 `write` / `edit`，就等于把"改任意路径（含代码）"的能力给了「助手」。
+ * 它们**不在**本清单里；本批不改这条取捨。
  *
  * ⚠ **不用通配 / 前缀**：将来新装的插件**不得自动**进入「助手」的清单。
  *   这正是 `restrict({ deny })` 黑名单的反面教训 —— 黑名单每装一个新插件都会漏。
@@ -219,17 +241,32 @@ function denyInheritedTools(ctx: any, log: (m: string) => void): void {
  *   两者的差别与残余风险见 `filterModelToolList` 的注释。
  */
 export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
+  // ── 本插件的两个工具 ──────────────────────────────────────────────
   'read_contracts',
   'write_hob',
+  // ── 检索 5 个（既有）──────────────────────────────────────────────
   'advanced_search',
   'multi_search',
   'platform_search',
   'video_search',
   'free_search_test',
+  // ── 定时提醒 4 个（既有）──────────────────────────────────────────
   'schedule_create',
   'schedule_list',
   'schedule_update',
   'schedule_delete',
+  // ── 批 9 / S1：编排**只读查询** 4 个（声明面零增量，已在继承面）─────
+  'taskboard_list',
+  'taskboard_get',
+  'taskboard_comments',
+  'roundtable_status',
+  // ── 批 9 / S2：打开网页取正文 1 个（需 `tool-web` 指名增行）─────────
+  'web_fetch',
+  // ── 批 9 / S3：只读看工作区文件 4 个（需 `tool-fs` + `tool-fs-search`）─
+  'read',
+  'glob',
+  'grep',
+  'read_image',
 ]
 
 /**
@@ -239,7 +276,7 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
  *   （`dsh-tools/lib/index.js:2840-2843`）。若白名单把它滤掉，助手会拿到**空清单**
  *   —— 那是比"多几个工具"严重得多的回归（会话直接失去全部能力）。
  *   native 模式下它**根本不存在**（`view()` 只在 mode !== native 时加它），
- *   故 native 下清单仍**恰好 11**。实测判据见阶段 C 报告 C3-1。
+ *   故 native 下清单仍**恰好 20**。实测判据见阶段 C 报告 C3-1。
  */
 const RESERVED_TRANSPORT_TOOL = 'run_code'
 
@@ -340,7 +377,7 @@ function enforceToolAllowlist(gateCtx: any, log: (m: string) => void): void {
     //   任何异常都会让**这次工具调用**失败（含白名单里的）。宁可放行。
     try {
       const name = exec?.name
-      // ① 认识的、且在名单里 ⇒ 放行（门槛 4：不阻断 11 名单）。
+      // ① 认识的、且在名单里 ⇒ 放行（门槛 4：不阻断白名单内的名字）。
       if (typeof name !== 'string') return await next()
       if (allow.has(name)) return await next()
       // ② 保留传输名（ptc 的 `run_code`）⇒ 放行：滤掉它会让助手彻底失去能力。

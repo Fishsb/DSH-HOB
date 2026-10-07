@@ -5,11 +5,16 @@
 # 地基 = **宿主极简模式**（`dsh-web-app/presets/minimal.patch.yml`）。
 # 宿主 preset **不支持 `extends`**（`PROJECT.md` §4.3 / F-C3）⇒ "基于"只能照抄。
 #
-# 相对极简模式的**两处裁剪/加料**（对应 `PROJECT.md` §4.3 的表）：
+# 相对极简模式的**裁剪/加料**（对应 `PROJECT.md` §4.3 的表）：
 #   ① **去掉** persistent-shell 组（极简模式那一整段 pty / terminal-bash /
 #      persistent-bash / terminal-pwsh / persistent-pwsh）—— 这是"无命令"的落点：
 #      该组不挂 ⇒ `bash` / `pwsh` 这两个工具**根本不出现**在会话工具面里。
 #   ② **加**本插件的工具行 `tool-hob-contracts`（read_contracts + write_hob）。
+#   ③ **批 9 新加三行**（指名，非整段照抄）：`tool-web` / `tool-fs` / `tool-fs-search`
+#      —— 带来 `web_fetch` / `read` / `read_image` / `glob` / `grep`；详见下方就地注释。
+#      ⚠ 这三行**只进声明面**；能不能真拿到还取决于白名单（**与门**，见 E-86）。
+#      ⚠ **不加** `tool-bash` / `tool-pwsh` / `tool-ask-user` / `delegation` 组
+#      —— 它们撞 UD-13 / UD-56（"无命令 + 不要代码开发类工具"）。
 #
 # 保留极简模式的：`@deepseek-ai/dsh-persona` + `complete: true`。
 #
@@ -62,7 +67,7 @@
               prefix: |-
                 You are the translation layer between the user and Hob-Execute (the DEVELOPER). The user does not read code; they make product decisions.
 
-                You never execute the work yourself. You only turn intent into an instruction, and turn a raw result into something the user can judge.
+                You never carry out the work itself. What is read-only, you do directly -- reading project documents, looking at workspace files, opening a web page, querying the board or the round table. What CHANGES something, you never do yourself: you turn intent into an instruction, and turn a raw result into something the user can judge.
 
                 ## Reply format
 
@@ -130,9 +135,13 @@
                 5. Follow up on what was actually carried out: check the reported result against the goal,
                    and say plainly whether it landed and what is still open.
 
-                You do not implement: no file reads or writes, no commands -- you have no such tools.
-                Among the tools you do have: reading project documents (.md) and writing your own
-                ledger (.hob/).
+                You do not implement. You have no ability to CHANGE anything: you cannot edit code,
+                you cannot change a workspace file, you cannot run a command, and you cannot hand
+                work to another session. You have no such tools. Read-only work is a different
+                matter -- that you may do directly.
+                Among the tools you do have: read-only search and reading -- project documents (.md),
+                workspace files, the body of a web page, and read-only queries against the board and
+                the round table -- plus writing your own ledger and hand-off files (.hob/).
 
                 ## Your side and the other side
 
@@ -206,6 +215,50 @@
                 The two part headings (给「Hob-Execute」的指令 / 白话说明) are structural and always stay exactly
                 as written.
 
+          # ══ 批 9 · 指名增行（S2 + S3）══════════════════════════════════════
+          # ⚠ **只加指名的那几行**，**不整段照抄 standard**。理由（批 8 审查实测）：
+          #   · 字面照抄（含 persona）⇒ 机检 **52 条 FAIL**、Hob 契约正文**整段消失**
+          #     （standard 的 persona 用 `prefix: >-`，本预设用 `|-`）；
+          #   · 整段照抄插件行 ⇒ 会把 `tool-bash` / `ask_user_question` / `subagent` 等
+          #     **撞 UD-13 / UD-56 的工具一并带进声明面**。
+          # ⇒ `persona` 行与 `tool-hob-contracts` 工具行**一个字节都不动**；
+          #   下面三行是从宿主 standard 那份里**逐字取行、指名插入**的（非整段照抄）。
+          #
+          # 为什么这三行是"必须"的（**能力落点 = 声明面 与 白名单的「与门」**，见 E-86）：
+          #   白名单（`src/preset/tools.ts` 的 `MODEL_TOOL_ALLOWLIST`）**只**决定
+          #   "这一项发不发给模型"；工具本身还必须在**本预设作用域里被注册**，
+          #   否则调用时得到 `unknown tool "X"`（作用域内根本没有），而不是白名单的拒绝文本。
+          #   · S1 的 4 个（`taskboard_list|get|comments` / `roundtable_status`）
+          #     **零声明增量** —— 它们已在插件平面被继承到本预设作用域，故此处**不增行**；
+          #   · S2 的 `web_fetch`       ⇒ 需 `tool-web`（来源 `standard.patch.yml:137-141`）；
+          #   · S3 的 `read`/`read_image` ⇒ 需 `tool-fs`（来源 `standard.patch.yml:26-27`）；
+          #   · S3 的 `glob`/`grep`      ⇒ 需 `tool-fs-search`（来源 `standard.patch.yml:28-31`）。
+          #
+          # ⚠ **S3 的取捨（如实标注，不美化）**：`tool-fs` 在一个 `apply` 里注册
+          #   **四个**工具 —— `read` / `read_image` **及 `write` / `edit`**，宿主**没有**
+          #   只给 read 系的开关（`dsh-tool-fs` 的 `Config` 只有 readLimit / readMaxLineLength /
+          #   readMaxBytes / readStreamMinSize 四个读数参数，**无任何开关**；
+          #   `tool-fs-search` 只注册 `glob`/`grep`，不含写）。⇒ 按任务书 §1.3 的取舍规则
+          #   「做不到就加 `tool-fs` 并如实写明残余」，本预设采用后者：
+          #     · `write` / `edit` 在**注册面**存在（与 Tool 定义同来）；
+          #     · 但它们**不在** `MODEL_TOOL_ALLOWLIST` ⇒ **模型面看不见**（装配期过滤）；
+          #     · 且**执行前拦截**兜底：模型直呼会被 `{kind:'deny'}` 拒。
+          #   ⚠ 该拦截器是 **fail-open**（见 F-J90：异常一律放行）⇒ **若它自身失效，
+          #     `write` / `edit` 会重新可达**。这是**已知残余风险**，不是安全边界；
+          #     要"硬边界"须另做设计，本批**不做**（§5 硬边界：不新增机制、不改 fail-open 语义）。
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+
+          # ══ 本插件的工具行（未随批 9 改动）══════════════════════════════════
           # ── 权限收敛面：**一行**，恰好两个工具（read_contracts / write_hob）──
           # ⚠ 只能写一行：本模块在一个 `apply` 里注册两个工具，写成两行会在同一个
           #   preset 作用域里把同名工具注册两次（旧项目实测，见 EXPERIENCE E-22）。
