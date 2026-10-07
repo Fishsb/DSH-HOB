@@ -30,6 +30,14 @@
  *      "两份一起改回旧分隔符"照样 PASS）。
  *      ⚠ v5 起**删去**「禁 emoji / 禁 ASCII 线 / 禁表格徽章」三条断言（装饰已放开）；
  *        也不再要求"无开场引言"（v5 允许第一段之前有一两句引言）。
+ *   ⑤c **职责句短钉**（2026-10-07 批 3 职责重定义）：Hob / Hob-Execute 的职责句各钉若干
+ *      稳定短语，缺失即 FAIL（⑤ 只能证明"两份一致"，两份一起删照样 PASS）。
+ *   ⑤d **文件交接条文短钉**（2026-10-07 批 5 · UD-63 / CHG-011）：交接改为"指令与回报
+ *      落成文件、用户只转达路径"⇒ 两侧各钉若干稳定短语（TASK.md 落点 / 围栏内只放短指针 /
+ *      用户点名要全文时以用户为准 / 仍无自动投递；先读文件再执行 / 回报落同目录 REPORT.md /
+ *      路径一行告知 / 只在该目录内写回报 / 四本账本归 Hob / 该目录 git 忽略），缺失即 FAIL。
+ *      ⚠ 条文按任务书 §2.1/§2.2 追加在**既有段落正文内**（不新起 `##` 小节），
+ *        故本组不钉任何新标题行 —— 钉标题会把"就地追加"这一形态本身变成要求。
  *   ⑥ `complete: true` 与工具面声明未变（规划 = 1 行工具模块；实施 = 照抄创造模式行数）
  *
  * 用法：node scripts/check-preset-contracts.mjs
@@ -434,6 +442,60 @@ const STALE_APPELLATIONS = [
     for (const [what, phrase] of pins) {
       if (body.includes(phrase)) ok(`⑤c ${label}：职责句在位（${what}）`)
       else bad(`⑤c ${label}：职责句缺失（${what}）—— 期望短语 ${JSON.stringify(phrase)}`)
+    }
+  }
+}
+
+// ── ⑤d 文件交接条文短钉（2026-10-07 批 5 · UD-63 / CHG-011）───────────
+//
+// 为什么需要：批 5 把「整段正文」的交接改成「文件承载 + 用户转达路径」，
+// 而 ⑤ 只能证明"两份载体一致"、⑤b 只管两段式格式结构、⑤c 只管职责句 ——
+// **交接方式本身没有任何断言覆盖**（两份一起被删照样 PASS）。
+// 本条把用户诉求（UD-63）各钉一条**稳定短语**：
+//   · Hob 侧：有活时把完整指令写进 `.hob/archive/<YYYY-MM-DD-slug>/TASK.md`；
+//     围栏内只放**短指针**（路径 + 一句"读该文件并执行"）；用户点名要全文时以用户为准；
+//     **仍然没有自动投递**（不得因"文件化"而声称自动）。
+//   · Hob-Execute 侧：指令可能**以路径形式**给出 ⇒ 先读文件；
+//     回报写进**同目录** `REPORT.md`（过长拆 `REPORT-2.md` …）并把路径**一行**告诉用户；
+//     只在该交接目录内写回报，四本账本归 Hob；该目录被 `.gitignore` 覆盖、不进版本库。
+//
+// ⚠ 口径说明（防误读）：钉的是**稳定短语**而不是整段逐字 —— 措辞可随文调整，
+//   但只要该做法还在，句子就还在。**这是新增断言，不是放宽**：任何一条缺失即 FAIL。
+// ⚠ 编号说明：任务书写的是「⑤b 新增」，实际落在 **⑤d**（⑤c 已于批 3 占用，且语义上
+//   "交接条文"与 ⑤b 的"格式结构"不同类）。语义与任务书一致，区别只在编号，如实记于回报。
+{
+  const hoBody3 = literalBlock(hoSrc, 'prefix') ?? ''
+  const workBody3 = literalBlock(workSrc, 'prefix') ?? ''
+  const HANDOFF_PINS = [
+    // [标签, 正文, 稳定短语]
+    [NAME_HO, hoBody3, [
+      ['完整指令落 TASK.md（含目录名形状）', '.hob/archive/<YYYY-MM-DD-slug>/TASK.md'],
+      ['落文件在前（write ... first）', 'write the full\ndirective into `.hob/archive/<YYYY-MM-DD-slug>/TASK.md` first'],
+      ['围栏内只放短指针', 'part one holds only the short pointer'],
+      ['短指针 = 路径 + 一句"读该文件并执行"', 'plus one line telling Hob-Execute to read that file and carry'],
+      ['不再同时贴全文', 'Do not\npaste the full directive into the reply as well'],
+      ['用户点名要全文时以用户为准', "asks for the full\ntext in the reply, the user's request wins"],
+      ['文件化不改投递机制（仍无自动投递）', 'This changes only what the user carries, not how it gets there'],
+      ['不得声称已自动投递', 'Never describe the hand-off as automatic for this reason either'],
+      ['围栏口径同步为"短指针（或全文）"', 'the block holds the pointer alone (or the full text when the user asked for it)'],
+      ['工作区文件路径可给用户看', 'A workspace file path (such as `.hob/archive/.../TASK.md`) is NOT an internal'],
+    ]],
+    [NAME_WORK, workBody3, [
+      ['指令可能以路径形式给出 ⇒ 先读文件', 'A directive may arrive as a file path instead of as full text'],
+      ['先读后做（不得要求用户重贴）', 'read that\nfile first and then carry out what it says'],
+      ['回报落同目录 REPORT.md', 'write it into `REPORT.md` in the SAME\ndirectory as the directive file you were given'],
+      ['过长拆 REPORT-2.md 等', '`REPORT-2.md`, `REPORT-3.md` and so on'],
+      ['把路径一行告诉用户', 'Then tell\nthe user the path, in one line'],
+      ['只在该交接目录内写回报', 'Write report files only inside that hand-off directory'],
+      ['四本账本归 Hob、不得写', "are Hob's ledgers, and they are not yours to write"],
+      ['该目录被 .gitignore 覆盖、不进版本库', 'covered by `.gitignore`, so it does not enter the\nrepository'],
+      ['工作区文件路径可给用户看', 'A workspace file path (such as `.hob/archive/.../REPORT.md`) is NOT an internal'],
+    ]],
+  ]
+  for (const [label, body, pins] of HANDOFF_PINS) {
+    for (const [what, phrase] of pins) {
+      if (body.includes(phrase)) ok(`⑤d ${label}：文件交接条文在位（${what}）`)
+      else bad(`⑤d ${label}：文件交接条文缺失（${what}）—— 期望短语 ${JSON.stringify(phrase)}`)
     }
   }
 }
