@@ -394,6 +394,50 @@ const STALE_APPELLATIONS = [
   }
 }
 
+// ── ⑤c 职责句短钉（2026-10-07 批 3 职责重定义）─────────────────────────
+//
+// 为什么需要：批 3 重写了职责段，而 ⑤ 只能证明"两份载体一致"、⑤b 只管格式结构 ——
+// 职责条文本身**没有任何断言覆盖**（两份一起被删照样 PASS）。本条把用户诉求
+// （Hob = 沟通/理解需求/拆分/编排/分发/监督验收；Hob-Execute = 面向 Hob 执行落实）
+// 各钉 1 条**稳定短语**，断言"该句仍在"。
+//
+// ⚠ 口径说明（防误读）：钉的是**稳定短语**而不是整段逐字 —— 措辞可随文调整，
+//   但只要该职责还在，句子就还在。**这是新增断言，不是放宽**：任何一条缺失即 FAIL。
+{
+  const hoBody2 = literalBlock(hoSrc, 'prefix') ?? ''
+  const workBody2 = literalBlock(workSrc, 'prefix') ?? ''
+  const DUTY_PINS = [
+    // [标签, 正文, 稳定短语]
+    [NAME_HO, hoBody2, [
+      ['职责标题在位', '## Your duties'],
+      ['与用户沟通 + 理解需求', 'Talk with the user and understand what they actually need'],
+      ['拆分任务', 'Break that need into tasks'],
+      ['编排任务', 'Arrange the tasks'],
+      ['分发任务（产出给 Hob-Execute 的指令）', 'Turn the work into directives for ' + NAME_WORK],
+      ['监督验收落实情况', 'Follow up on what was actually carried out'],
+      ['不实施', 'You do not implement'],
+      ['无自动投递（如实声明）', 'There is NO automatic delivery'],
+      ['不得声称已自动投递', 'never claim you sent, dispatched'],
+      ['验收步骤在位', 'that is the acceptance step'],
+    ]],
+    [NAME_WORK, workBody2, [
+      ['职责标题在位', '## Your duties'],
+      ['面向 Hob（不是面向用户）', 'You answer to ' + NAME_HO + ', not to the user'],
+      ['承担执行落实', 'them out in the workspace: read and write files'],
+      ['执行 = 真做并报告', 'Carrying out means actually doing the work and reporting what happened'],
+      ['砍不到的部分交回 Hob', 'must go back to ' + NAME_HO],
+      ['报告纪律保留', 'Never claim a result you did not verify'],
+      ['语言规则保留', 'language the user is currently using'],
+    ]],
+  ]
+  for (const [label, body, pins] of DUTY_PINS) {
+    for (const [what, phrase] of pins) {
+      if (body.includes(phrase)) ok(`⑤c ${label}：职责句在位（${what}）`)
+      else bad(`⑤c ${label}：职责句缺失（${what}）—— 期望短语 ${JSON.stringify(phrase)}`)
+    }
+  }
+}
+
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────
 {
   // 规划侧：complete: true + 恰好 1 行工具模块
@@ -422,7 +466,7 @@ console.log('')
 for (const n of note) console.log('  ✓', n)
 console.log('')
 if (fail.length === 0) {
-  console.log('判定：PASS —— 显示名、id、正文措辞、语言规则、人读/机器读一致、工具面声明 全部通过。')
+  console.log('判定：PASS —— 显示名、id、正文措辞、职责句、语言规则、人读/机器读一致、工具面声明 全部通过。')
   process.exit(0)
 } else {
   console.log('判定：FAIL')
