@@ -101,7 +101,12 @@ const mustTrack = [
   ['.hob/templates/DECISIONS.md', '骨架 · 空模板'],
   ['.hob/templates/USER-DECISIONS.md', '骨架 · 空模板'],
   ['.hob/templates/CONTEXT.md', '骨架 · 空模板'],
+  ['.hob/templates/ROLES.md', '骨架 · 角色簇（README §1.3）'],
+  ['.hob/templates/GATES.md', '骨架 · 阶段与门禁（README §1.3）'],
+  ['.hob/roles/methods/qa.md', '骨架 · 角色方法论（README §1.3 · 代表项）'],
+  ['.hob/roles/methods/quality-gates.md', '骨架 · 门禁方法论源（README §1.3 · 代表项）'],
   ['.hob/drafts/preset-contracts.md', '骨架 · 被 check:presets 读取的规范源（README §1.2）'],
+  ['.hob/drafts/restructure-plan.md', '骨架 · 重构方案人读版（README §1.2）'],
   // ⚠ 顺带盯住"入库脚本不能依赖不入库文件"这条：这些脚本自己必须在库里
   ['scripts/check-preset-contracts.mjs', '入库脚本（被 package.json 的 check:presets 调用）'],
   ['scripts/check-gitignore.mjs', '本脚本自身也必须入库（否则 clone 后无从核对）'],

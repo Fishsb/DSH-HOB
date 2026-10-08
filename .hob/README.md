@@ -11,7 +11,7 @@
 
 | 类别 | 判定标准 | 进 git？ | 位置 |
 |---|---|---|---|
-| **骨架** | **格式契约 / 被机检脚本消费的规范源** —— 表头、列定义、编号规则、以及**入库脚本会读取的契约正文**。可复用、可分发；新建工作区时用它初始化 | ✅ **进** | `.hob/README.md`、`.hob/templates/`、`.hob/EXPERIENCE.md`、**`.hob/drafts/`**（见 §1.2） |
+| **骨架** | **格式契约 / 被机检脚本消费的规范源** —— 表头、列定义、编号规则、以及**入库脚本会读取的契约正文**。可复用、可分发；新建工作区时用它初始化 | ✅ **进** | `.hob/README.md`、`.hob/templates/`、`.hob/EXPERIENCE.md`、**`.hob/drafts/`**（见 §1.2）、**`.hob/roles/`**（见 §1.3） |
 | **运行数据** | **填充进格式的具体条目 / 本项目专有的过程产物** —— 第 N 条事实 / 第 N 条决策 / 本轮进度 / 改前备份 | ❌ **不进** | 四个账本（`FACTS.md` / `DECISIONS.md` / `USER-DECISIONS.md` / `CONTEXT.md`）、`.hob/archive/`、`.hob/backups/`、`.hob/CARRYOVER.md`、`.hob/STEP*-REPORT.md` |
 
 **一句话**：**格式进 git，内容不进。**
@@ -23,7 +23,7 @@
 **⚠ 清单必须逐项列全，不许靠推断**（2026-10-05 修订，见 `EXPERIENCE.md` **E-70**）：
 `.gitignore` 的 `!` 例外**少列一项** ⇒ 该文件**静默不入库**，git **不报任何错**。
 ⇒ 本表的「位置」栏就是 `.gitignore` 例外的**唯一权威清单**；
-改一处必须同步另一处，并由 `npm run check:gitignore` 机检（见 §1.3）。
+改一处必须同步另一处，并由 `npm run check:gitignore` 机检（见 §1.4）。
 
 ### 1.1 四类"运行数据"为什么进不了 git（逐类判定依据）
 
@@ -55,7 +55,32 @@ EXIT=1
 正是为了让这条归类有明文依据，而不是靠推断。脚本头部注释亦称其为
 "**用户过目、将来改动的地方**" ⇒ 是**源**，源必须进版本控制。）
 
-### 1.3 机检：`npm run check:gitignore`
+### 1.3 `roles/` 为什么**进 git**（2026-10-08 新增 · 角色簇）
+
+`.hob/roles/` 存**角色簇与方法论**：`methods/` 下 18 份
+（17 位角色的领域方法论 + `quality-gates.md`）；人读契约在
+`.hob/templates/ROLES.md`（角色）与 `.hob/templates/GATES.md`（门禁）。
+
+**来源与许可**：改编自 [dsh-expert-mode](https://github.com/Asher-2000/dsh-expert-mode)
+（**MIT**）的 `agent.cordis.yml` 内嵌 persona（17 段）与 `.expert-mode/methods/*.md`。
+每份文件头部带来源注释。
+
+**为什么归骨架**（对照上方标准）：
+
+| 判据 | 事实 |
+|---|---|
+| **可复用、可分发** | ✅ 是**通用角色定义**（架构师/后端/QA/安全…），**不含本项目专有内容** |
+| **被机检脚本消费** | ✅ 列入 `check:gitignore` 的 MUST-TRACK 清单，任一漂移即 FAIL |
+
+⚠ **与 `drafts/`（§1.2）的判据区别**：`drafts/` 因"**被入库脚本读取**"才归骨架（本项目专有）；
+`roles/` 是"**本身可分发**"（换项目直接复制可用）—— 两条判据**各自独立成立**。
+
+⚠ **为什么不直接安装该插件**（归档理由，防后来者重复调研）：它挂了一个
+86,952 字节的 `router-bootstrap-v34.mjs`，实测会 `import vm`（动态代码执行）
+并**写 `$DSH_HOME` 下的文件**（`:613` / `:629`）、**改写 YAML**（`:1118` / `:1271`）
+—— 撞本项目硬边界「**不动 `~/.dsh/**`**」。故**只取方法论层**，不装插件。
+
+### 1.4 机检：`npm run check:gitignore`
 
 `scripts/check-gitignore.mjs` 把「**排除漂移**」从**静默**变成**显式 FAIL**：
 它按 §1 的两栏清单逐条断言 `git check-ignore` 的结果，**违反任一条 ⇒ exit 1**。
@@ -96,7 +121,7 @@ EXIT=1
 └── archive/             ← 历史归档（运行数据 · 不进 git；索引见 §3）
 ```
 
-> 上表由 `npm run check:gitignore` 机检（§1.3）——
+> 上表由 `npm run check:gitignore` 机检（§1.4）——
 > 标「进 git」的在库内、标「不进 git」的被 `.gitignore` 排除，任一漂移即 FAIL。
 
 ### 四份账本各管什么（职责分离，避免两处漂移）
