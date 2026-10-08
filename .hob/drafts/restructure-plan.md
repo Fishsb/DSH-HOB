@@ -48,7 +48,7 @@
 | **F2** | **读侧边界画错了位置** | [doc-read.ts:118-119](src/server/doc-read.ts#L118-L119)：`resolveInside(root, relPath)` 的 `root` 传的是**工作区根** ⇒ 换成**账本目录**即可（**逻辑不动，只换传参**） |
 | **F3** | **静态 `hobDir` 做不到按工作区区分** | 实测三个项目 `resolve(工作区根, '../.hob')` **全落到同一目录** ⇒ 必须**按工作区名派生** |
 | **F4** | **删 Hob-Execute 顺带消灭循环依赖** | [tools.ts:58](src/modules/tools.ts#L58) ↔ [work-deny.ts:50](src/modules/work-deny.ts#L50)；`work-deny.ts` 唯一消费者 [tools.ts:363](src/modules/tools.ts#L363) ⇒ 删它则**两条边同时消失** |
-| **F5** | **三个机检脚本全部依赖 `.hob/` 内文件** | 三者 `root = join(here,'..')`；`check:presets` 读 [`.hob/drafts/preset-contracts.md`:73](scripts/check-preset-contracts.mjs#L73) · `check:experience` 读 [`.hob/EXPERIENCE.md`:59](scripts/check-experience.mjs#L59) · `check:gitignore` 断言 14 项 [`:98-104`](scripts/check-gitignore.mjs#L98-L104) ⇒ **账本一搬，三条全 exit 1** |
+| **F5** | **三个机检脚本都从 `.hob/` 读文件；但读的**全是骨架** | 三者 `root = join(here,'..')`；`check:presets` 读 [`.hob/drafts/preset-contracts.md`:73](scripts/check-preset-contracts.mjs#L73) · `check:experience` 读 [`.hob/EXPERIENCE.md`:59](scripts/check-experience.mjs#L59) · `check:gitignore` 断言 14 项 [`:98-104`](scripts/check-gitignore.mjs#L98-L104)。⚠️ **Q2=x 后这三处都属骨架、全部留库** ⇒ 前两个脚本**完全不受影响**，只有 `check:gitignore` 里**四本账本**那几条要动（§7.1） |
 | **F6** | **账本目录不能用软链** | [hob-write.ts:386-391](src/server/hob-write.ts#L386-L391)：`lstat(hobRoot).isSymbolicLink()` ⇒ 拒绝写入 |
 
 ---
@@ -84,15 +84,14 @@
 
 ```
 /home/lk/FF/
-├── dsh-hob/                          ← 插件本体（**不含账本了**）
+├── dsh-hob/                          ← 插件本体（**保留骨架 `.hob/`**）
+│   ├── .hob/                         ← **骨架**（README / templates / roles / drafts / EXPERIENCE.md）
 │   ├── src/  preset/  scripts/  lib/
-│   └── （.hob/ 已移出）
 │
 └── .hob-ledgers/                     ← 账本父目录（🆕 单独一个 git 仓）
-    ├── dsh-hob/                      ← 工作区「dsh-hob」的账本
+    ├── dsh-hob/                      ← 工作区「dsh-hob」的**账本数据**
     │   ├── FACTS.md / DECISIONS.md / USER-DECISIONS.md / CONTEXT.md
-    │   ├── EXPERIENCE.md / README.md
-    │   ├── templates/  roles/  drafts/  backups/
+    │   ├── backups/
     │   └── archive/<日期>-<slug>/{TASK.md, REPORT.md}
     └── <其它工作区>/                  ← 各自独立，零配置自动派生
 ```
@@ -180,23 +179,30 @@
 | `.hob/README.md` | **17 处** | 目录树 + §1 二分表 |
 | `scripts/check-experience.mjs` | **3 处** | 经验库路径 |
 
-### 7.1 ⚠️ 三个机检脚本的出路（F5：账本一搬全断）
+### 7.1 ✅ Q2 = x 已定：三个机检脚本的实际影响（**修正版**）
 
-| 脚本 | 现在读 | v4 后的建议 |
+**关键**：三个脚本读的都是**留库骨架**（不是账本数据）⇒ `check:presets` / `check:experience` **完全不受影响**。
+
+| 脚本 | 读什么 | 归属 | Q2=x 后 |
+|---|---|---|---|
+| `check:presets` | `.hob/drafts/preset-contracts.md` | **骨架（留库）** | ✅ **完全不受影响** |
+| `check:experience` | `.hob/EXPERIENCE.md` | **骨架（留库）** | ✅ **完全不受影响** |
+| `check:gitignore` | 断言 14 项 `.hob/*` | **混合** | ⚠️ 只需改**四本账本**相关断言 |
+
+**`check:gitignore` 的具体改法**（Q1 = a，**重构而非删除**）：
+
+| 现有断言 | 归属 | 处置 |
 |---|---|---|
-| `check:presets` | `.hob/drafts/preset-contracts.md` | 人读版**留在仓库**（它是契约镜像，不是运行数据）⇒ 脚本路径**不用大改** |
-| `check:experience` | `.hob/EXPERIENCE.md` | `EXPERIENCE.md` 是"跨项目经验库"（可分发）⇒ **建议留在仓库**，改路径常量 |
-| `check:gitignore` | 断言 14 项 `.hob/*` | 账本外置后**大部分断言失去对象** ⇒ 见 §9 Q1 |
+| `.hob/README.md` · `templates/*` · `roles/**` · `drafts/**` · `.hob/EXPERIENCE.md` | **骨架** | ✅ **保留**（仍在库，仍需防漂移 E-70/E-73） |
+| 四本账本（`FACTS`/`DECISIONS`/`USER-DECISIONS`/`CONTEXT`） | **数据，外置** | ⚠️ **断言方向反转**：从"必须入库"改为"**必须不在库**"（防回迁）· 或逐条标注理由后删 |
 
-**⇒ 关键洞察**：**"账本"与"骨架"可以分开搬** ——
-`drafts/`（契约镜像）、`EXPERIENCE.md`（经验库）、`templates/`、`roles/` 属**可分发骨架**，
-**建议留仓库**；只有**运行数据**（四本账本 + `archive/` + `backups/` + `CONTEXT`）**外置**。
-
-⚠️ **但这条与你的原话有出入**（你要的是"账本搬出去"）⇒ 见 §9 Q2。
+⚠️ **诚实修正**：§7 表里的 **`check:gitignore` 32 处**是**文件内 `.hob` 字符串出现次数**，
+**不等于都要改** —— 实际要动的只有**四本账本**那几条。**上表是"最大估计"，本表是实际范围。**
 
 ### 7.2 账本单独 git 仓
 
-外置的部分**不再受本仓版本控制** ⇒ 需在 `/home/lk/FF/.hob-ledgers/` **单独 `git init`**。
+外置的**数据**不再受本仓版本控制 ⇒ 需在 `/home/lk/FF/.hob-ledgers/` **单独 `git init`**。
+（资产仍在原仓，**遗产版本历史不丢**。）
 
 ---
 
@@ -210,25 +216,43 @@
 
 ---
 
-## 9. 需要你拍板（**2 项**）
+## 9. 决策已定（用户授权「你来决策」）
 
-**Q1：`check:gitignore` 怎么处置？**
+### Q1 = **a（重构 `check:gitignore`）**
 
-| 选项 | 做法 |
+**理由**：b（删除）会丢掉 **E-70 / E-73** 那类**静默漂移**的防线 —— 那两次是**实测踩过的真坑**
+（69 条经验不入库 / 已入库文件被静默排除）。本项目纪律是「**改判据，不放宽**」（§6）；
+删掉一个**已经抓过两次真问题**的守卫，属于拆东墙。
+
+### Q2 = **x（数据外置、骨架留库）**
+
+| 搬什么（**数据**） | 留什么（**骨架**） |
 |---|---|
-| **a** ⭐ | **重构**：断言改为"仓库内骨架仍在库"（保留防漂移能力） |
-| **b** | **删除**（排除漂移问题消失）—— ⚠️ 丢掉 E-70/E-73 那类静默坑的防线 |
-| **c** | 保留不改（会 FAIL，不可行） |
+| 四本账本（`FACTS` / `DECISIONS` / `USER-DECISIONS` / `CONTEXT`）· `archive/` · `backups/` | `README.md` · `templates/` · `roles/` · `drafts/` · **`EXPERIENCE.md`** |
 
-**Q2：搬多少？（§7.1 的洞察）**
+**理由三条**：
+1. **判据来自你项目自己的分类**（不是我发明的）：`.hob/README.md` §1 的两栏表已明写
+   「**骨架** = 格式契约 / 可复用、可分发、新建工作区时用它初始化 ⇒ **进 git**」
+   （[README.md:14](.hob/README.md#L14)），并把 `EXPERIENCE.md` / `templates/` / `drafts/` / `roles/`
+   明确列在**骨架**栏；[check-gitignore.mjs:99](scripts/check-gitignore.mjs#L99) 亦称其为「**骨架 · 经验库**」。
+2. **边界即代码**：`write_hob` 能写的**只有**四本账本 + `archive/` + 自管的 `backups/`
+   （[hob-write.ts:32-41](src/server/hob-write.ts#L32-L41)），且 `SKELETON_FILES`/`SKELETON_DIRS`
+   **显式拒绝**写骨架 ⇒ **「工具能写的 = 数据 / 工具拒写的 = 骨架」**，与 README §1 完全一致。
+3. **副作用最小**：三个机检脚本读的都是**骨架** ⇒ `check:presets` **完全不受影响**；
+   `check:experience`（读 `EXPERIENCE.md`，属骨架）**也不受影响**；
+   只有 `check:gitignore` 中**四本账本**的断言需要反转。
 
-| 选项 | 搬什么 | 留什么 |
-|---|---|---|
-| **x** ⭐ | **只搬运行数据**（四本账本 + `archive/` + `backups/`） | 骨架（`drafts/` `EXPERIENCE.md` `templates/` `roles/` `README.md`）**留仓库** |
-| **y** | **整个 `.hob/` 全搬**（你原话的字面意思） | 仓库不再有 `.hob/`；骨架进账本仓 |
+**⇒ 结果**：`<仓库>/.hob/` **保留**（放骨架）；账本数据在 `<ledgerHome>/<工作区名>/`。两边**物理分开**。
 
-⚠️ **x 的好处**：三个机检脚本**基本不用改**（它们读的都是骨架），`check:gitignore` 也还能用。
-⚠️ **y 的好处**：更彻底的隔离；**代价**：三个脚本全要改路径 + `.gitignore` 25 处重写。
+⚠️ **修正记录（诚实标注）**：本决策**初稿**曾把 `EXPERIENCE.md` 划入"数据（外置）"，
+并声称判据是"`write_hob` 能写什么就搬什么"。**该判据不适用于 `EXPERIENCE.md`**
+（grep 实测：它在 `hob-write.ts` 里 **0 命中**，本就不由 `write_hob` 写）；
+按项目既有分类它是**骨架**。初稿的分类**已修正**。
+⇒ 教训：**分类前先查项目自己的二分表，不要自己发明判据。**
+
+⚠️ **一个已知的命名困扰（非阻塞）**：`<仓库>/.hob/` 仍在，但它**不再是账本**
+⇒ 处置：在 `.hob/README.md` **首段写明**「本目录只放骨架；账本数据在 `<ledgerHome>/<工作区>/`」。
+**本轮不改目录名**（改名会牵动 100+ 处引用）。
 
 ---
 
@@ -238,15 +262,26 @@
 |---|---|---|
 | **1** | 抽取角色簇与门禁 → `ROLES.md` / `GATES.md` / `roles/methods/` | ✅ 已完成（`97bcf0e`） |
 | **2** | 隔离实测 `dsh-expert-mode` | ✅ 已完成（`F-J119`） |
-| **3** | 建账本父目录 + 迁移（按 Q2 的范围）+ 单独 `git init` | ⏳ 待办 |
+| **3** | 建 `/home/lk/FF/.hob-ledgers/dsh-hob/` + 迁移**数据**（四本账本 + `archive/` + `backups/`）+ 单独 `git init` | ⏳ 待办 |
 | **4** | 写派生逻辑（`ledgerHome` + 工作区名）+ 读侧换根 | ⏳ 待办 |
-| **5** | 删 Hob-Execute（patch + package.json + work-deny + 3 符号 + 循环依赖） | ⏳ 待办 |
-| **6** | 5 处失实句改正 + 2 处机检断言同步 + 三脚本路径 | ⏳ 待办 |
-| **7** | 建 `TASK.md` / `REPORT.md` 模板 | ⏳ 待办 |
-| **8** | 文档同步（§7 的 7 个文件）+ 四命令全 exit 0 + 一次提交 | ⏳ 待办 |
+| **5** | 删 Hob-Execute（patch + bundle 项 + work-deny + 3 符号 + 循环依赖）⚠ **先确认 `WORK_MODEL_DENY` 的其余引用点** | ⏳ 待办 |
+| **6** | 5 处失实句改正 + 2 处机检断言同步 + `check:gitignore` 四本账本断言反转 | ⏳ 待办 |
+| **7** | 建 `TASK.md` / `REPORT.md` 模板 + `.hob/README.md` 首段写明"只放骨架、账本在 ledgerHome" | ⏳ 待办 |
+| **8** | 文档同步（`PROJECT.md` / `preset-contracts.md` 等）+ 四命令全 exit 0 + 一次提交 | ⏳ 待办 |
 | **9** | **由你重启** ⇒ 真机复核 | ⏳ 待办 |
 
 ⚠️ **第 9 步前，一切"已生效"的说法都不成立**（R-1 / R-5）。
+
+### 10.1 🔒 实施时必须守住的三条（防拆东墙）
+
+1. **不删强于"改"**：`check:gitignore` 是重构（Q1=a），**不许为省事而删**；
+   若实施中发现某条断言**确实无对象**，逐条标注理由后删除，**不得整脚本删除**。
+2. **数据迁移必须逐文件校验**：迁移 = 复制 + **比对字节数** + 确认新路径可读 + **才**删旧文件；
+   迁移前后各跑一次四命令。**不许"搬完再看"**。
+3. **`~/.dsh/**` 一个字节不碰**（历批硬边界）。
+
+⚠️ **回滚路径**：迁移步骤若失败，旧 `.hob/` 数据**尚未删除**（因第 2 条是"先复制后删"）⇒
+直接删掉新目录即可回到现状，**不产生不可逆状态**。
 
 ---
 
