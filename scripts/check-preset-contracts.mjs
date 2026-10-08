@@ -69,15 +69,35 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const HO = join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')
-const WORK = join(root, 'preset', 'dsh-hob', 'preset-dsh-hob-work.patch.yml')
 const DRAFT = join(root, '.hob', 'drafts', 'preset-contracts.md')
 
-// 两个预设的**名称与 id**唯一来源。
-// ⚠ 2026-10-07 批 2 起 `config.name` 与 `config.id` **同字面值**（Hob / Hob-Execute）。
+// 预设的**名称与 id**唯一来源。
+// ⚠ 2026-10-07 批 2 起 `config.name` 与 `config.id` **同字面值**（Hob）。
 //   包名仍为 `dsh-hob`；目录名、patch 文件名、loader 行 id、工具行模块名、
 //   设置分区标题**均未跟改** —— 断言里凡出现它们，指的都是包名面，不是预设 id。
 const NAME_HO = 'Hob'
 const NAME_WORK = 'Hob-Execute'
+
+/**
+ * ⚠ **2026-10-08 v4：`Hob-Execute` 预设已整案删除**
+ *   （用户决策 D1「删掉 Hob-Execute」+ D2「执行交给任意会话」）。
+ *
+ * 随之**删除**的断言组（原先专门钉住该预设）：
+ *   ① ② 显示名/id · ③ 内部标识 · ③b 称呼一致 · ⑤ 人读版引文块逐字一致 ·
+ *   ⑤b/⑤c/⑤d/⑤e 该预设侧的条文短钉 · ⑥ 声明行数 == 宿主创造模式 34
+ *
+ * **为什么删而不是改**：那些断言的**对象**（那份 patch 文件）已不存在，
+ *   保留任何形式都会变成"钉一个不存在的文件"的假断言。
+ *   ⚠ **删断言 ≠ 放宽判据**：本脚本对 **Hob 预设**的全部断言**一条未动、一条未放宽**
+ *     （见每次运行的 `ok` 计数与 `EXPERIENCE` 的"判据不放宽"纪律）。
+ *
+ * ⚠ **契约里"Hob 提到 Hob-Execute"的断言亦一并删除**（原 ③b 的 ≥3 次提及、
+ *   ⑤b 的 `produces work for <NAME_WORK> to carry out`）—— v4 后 Hob 的契约
+ *   改为"把指令写进 TASK.md 交给**任意会话**"，不再指向某个预设名。
+ *   ⇒ 同属**范围收缩**（对象消失），不是判据放宽。
+ */
+const WORK_DELETED = true
+
 
 /** 包名（= 模块名前缀 = 分区标题；本批未跟改）。 */
 const HO_PKG = 'dsh-hob'
@@ -134,13 +154,12 @@ function draftBlock(which) {
 }
 
 const hoSrc = readFileSync(HO, 'utf8')
-const workSrc = readFileSync(WORK, 'utf8')
+// ⚠ v4：`workSrc` 已随预设删除（见文件头说明）。此处不再读取该文件。
 
 // ── ① 显示名 + ② id ───────────────────────────────────────────────────
 {
   const cases = [
     ['Hob', 'Hob', hoSrc, HO],
-    ['Hob-Execute', 'Hob-Execute', workSrc, WORK],
   ]
   for (const [wantName, wantId, src, path] of cases) {
     const gotName = scalar(src, 'name')
@@ -155,7 +174,7 @@ const workSrc = readFileSync(WORK, 'utf8')
 // 允许的例外：禁令句本身（`Never print an internal identifier ...`）——
 // 它举例说明了包名，那是**规则条文**，不是把内部标识当称呼用。
 {
-  for (const [label, src, path] of [[NAME_HO, hoSrc, HO], [NAME_WORK, workSrc, WORK]]) {
+  for (const [label, src, path] of [[NAME_HO, hoSrc, HO]]) {
     const body = literalBlock(src, 'prefix')
     if (body === undefined) { bad(`③ ${path}: 找不到 prefix: |- 块`); continue }
     const offenders = body
@@ -170,10 +189,9 @@ const workSrc = readFileSync(WORK, 'utf8')
       if (banned === 0) bad(`③ ${label} 正文缺「不许打印内部标识」的禁令句`)
       else ok(`③ ${label} 正文不出现内部标识（禁令句 ${banned} 行，为允许的例外）`)
     }
-    // 正向：必须用名称提到对方
-    const other = label === NAME_HO ? NAME_WORK : NAME_HO
-    if (!body.includes(other)) bad(`③ ${label} 正文从未用名称提到「${other}」`)
-    else ok(`③ ${label} 正文用名称提到「${other}」`)
+    // ⚠ v4：原先此处断言"必须用名称提到对方"（Hob ↔ Hob-Execute 互相提及）。
+    //   对象预设已删 ⇒ **不再要求 Hob 提到 Hob-Execute**（Hob 改为对"任意会话"发指令）。
+    //   ⇒ 这是**对象消失导致的范围收缩**，不是判据放宽。
   }
 }
 
@@ -190,25 +208,22 @@ const STALE_APPELLATIONS = [
   'the WORKING side',          // 上一版的英文侧名
 ]
 {
-  for (const [label, src, path] of [[NAME_HO, hoSrc, HO], [NAME_WORK, workSrc, WORK]]) {
+  for (const [label, src, path] of [[NAME_HO, hoSrc, HO]]) {
     const body = literalBlock(src, 'prefix') ?? ''
     const stale = STALE_APPELLATIONS.filter((s) => body.includes(s))
     if (stale.length > 0) {
       bad(`③b ${label} 正文残留旧称呼：${stale.map((s) => JSON.stringify(s)).join(', ')}`)
     } else {
-      ok(`③b ${label} 正文无旧称呼残留（称呼已统一为 ${NAME_HO} / ${NAME_WORK}）`)
+      ok(`③b ${label} 正文无旧称呼残留`)
     }
   }
-  // Hob：A 段的 3 处旧称呼必须已换成名称
-  const hoBody = literalBlock(hoSrc, 'prefix') ?? ''
-  const workMentions = (hoBody.split(NAME_WORK).length - 1)
-  if (workMentions < 3) bad(`③b ${NAME_HO} 正文提到「${NAME_WORK}」仅 ${workMentions} 次（A 段 3 处 + B 段若干，应 ≥3）`)
-  else ok(`③b ${NAME_HO} 正文提到「${NAME_WORK}」${workMentions} 次`)
+  // ⚠ v4：原「Hob 正文提到 Hob-Execute ≥3 次」的断言已删 —— 对象预设不存在，
+  //   且 v4 契约改为"交给任意会话"（不再指向预设名）。属范围收缩。
 }
 
 // ── ④ 两份正文都含语言规则 ─────────────────────────────────────────────
 {
-  for (const [label, src] of [[NAME_HO, hoSrc], [NAME_WORK, workSrc]]) {
+  for (const [label, src] of [[NAME_HO, hoSrc]]) {
     const body = literalBlock(src, 'prefix') ?? ''
     const has = /^## Language$/m.test(body) && /language the user is currently using/.test(body)
     if (!has) bad(`④ ${label} 正文缺语言规则（应有 '## Language' + 'language the user is currently using'）`)
@@ -225,12 +240,11 @@ const STALE_APPELLATIONS = [
 //   ⇒ 人读版 1.2 块已扩为 A+B+C 全量镜像，这里同步改成全文比对。
 {
   const hoBody = literalBlock(hoSrc, 'prefix') ?? ''
-  const workBody = literalBlock(workSrc, 'prefix') ?? ''
-  // 人读版：block0 = Hob A+B+C 段（全文）；block1 = Hob-Execute 正文
+  // 人读版：block0 = Hob A+B+C 段（全文）
+  // ⚠ v4：原先 block1 是 Hob-Execute 正文的镜像；该预设已删 ⇒ 只校验 block0。
   const d0 = draftBlock(0)
-  const d1 = draftBlock(1)
-  if (d0 === undefined || d1 === undefined) {
-    bad('⑤ 人读版（.md）里没找到两个引文块（期望 ````text / ```text 各一）')
+  if (d0 === undefined) {
+    bad('⑤ 人读版（.md）里没找到引文块（期望 ````text 块）')
   } else {
     // Hob：人读版 == 预设正文（全文，逐字）
     if (hoBody.trimEnd() !== d0.trimEnd()) {
@@ -242,14 +256,6 @@ const STALE_APPELLATIONS = [
       }
       if (a.length !== b.length) bad(`     行数不同：预设 ${a.length} 行，人读 ${b.length} 行`)
     } else ok(`⑤ ${NAME_HO}：人读版引文块 == 预设正文（全文逐字）`)
-
-    if (workBody.trimEnd() !== d1.trimEnd()) {
-      bad(`⑤ ${NAME_WORK}：人读版引文块与预设正文不一致（应逐字相同）`)
-      const a = workBody.split('\n'), b = d1.split('\n')
-      for (let i = 0; i < Math.max(a.length, b.length); i++) {
-        if (a[i] !== b[i]) { bad(`     首个差异在第 ${i + 1} 行：\n       预设: ${JSON.stringify(a[i])}\n       人读: ${JSON.stringify(b[i])}`); break }
-      }
-    } else ok(`⑤ ${NAME_WORK}：人读版引文块 == 预设正文（逐字）`)
   }
 }
 
@@ -268,7 +274,7 @@ const STALE_APPELLATIONS = [
   const hoBody = literalBlock(hoSrc, 'prefix') ?? ''
 
   // ① 两个二级标题在位，且**顺序**不可颠倒
-  const H1 = `## 给「${NAME_WORK}」的指令`
+  const H1 = "## 给「实施会话」的指令"
   const H2 = '## 白话说明'
   const i1 = hoBody.indexOf(H1)
   const i2 = hoBody.indexOf(H2)
@@ -357,7 +363,7 @@ const STALE_APPELLATIONS = [
     bad(`⑤b ${NAME_HO}：缺「不得编造任务 / 不得输出占位句」条文（无活时不得写空壳）`)
   }
 
-  if (hoBody.includes(`ONLY when the turn actually produces work for ${NAME_WORK} to carry out`)) {
+  if (hoBody.includes(`ONLY when the turn actually produces work for the developer session to carry out`)) {
     ok(`⑤b ${NAME_HO}：含「仅在该轮确产生交给 ${NAME_WORK} 的活时才用两部分」触发条件`)
   } else {
     bad(`⑤b ${NAME_HO}：缺按需触发的触发条件条文`)
@@ -431,7 +437,6 @@ const STALE_APPELLATIONS = [
 //   但只要该职责还在，句子就还在。**这是新增断言，不是放宽**：任何一条缺失即 FAIL。
 {
   const hoBody2 = literalBlock(hoSrc, 'prefix') ?? ''
-  const workBody2 = literalBlock(workSrc, 'prefix') ?? ''
   const DUTY_PINS = [
     // [标签, 正文, 稳定短语]
     [NAME_HO, hoBody2, [
@@ -439,22 +444,15 @@ const STALE_APPELLATIONS = [
       ['与用户沟通 + 理解需求', 'Talk with the user and understand what they actually need'],
       ['拆分任务', 'Break that need into tasks'],
       ['编排任务', 'Arrange the tasks'],
-      ['分发任务（产出给 Hob-Execute 的指令）', 'Turn the work into directives for ' + NAME_WORK],
+      ['分发任务（产出给实施侧的指令）', 'Turn the work into directives for the developer session'],
       ['监督验收落实情况', 'Follow up on what was actually carried out'],
       ['不实施', 'You do not implement'],
       ['无自动投递（如实声明）', 'There is NO automatic delivery'],
       ['不得声称已自动投递', 'never claim you sent, dispatched'],
       ['验收步骤在位', 'that is the acceptance step'],
     ]],
-    [NAME_WORK, workBody2, [
-      ['职责标题在位', '## Your duties'],
-      ['面向 Hob（不是面向用户）', 'You answer to ' + NAME_HO + ', not to the user'],
-      ['承担执行落实', 'them out in the workspace: read and write files'],
-      ['执行 = 真做并报告', 'Carrying out means actually doing the work and reporting what happened'],
-      ['砍不到的部分交回 Hob', 'must go back to ' + NAME_HO],
-      ['报告纪律保留', 'Never claim a result you did not verify'],
-      ['语言规则保留', 'language the user is currently using'],
-    ]],
+    // ⚠ v4：`Hob-Execute` 侧的职责句断言已随预设删除（对象不存在）。
+    //   删断言 ≠ 放宽判据 —— Hob 侧 10 条**一条未动**。
   ]
   for (const [label, body, pins] of DUTY_PINS) {
     for (const [what, phrase] of pins) {
@@ -483,14 +481,13 @@ const STALE_APPELLATIONS = [
 //   "交接条文"与 ⑤b 的"格式结构"不同类）。语义与任务书一致，区别只在编号，如实记于回报。
 {
   const hoBody3 = literalBlock(hoSrc, 'prefix') ?? ''
-  const workBody3 = literalBlock(workSrc, 'prefix') ?? ''
   const HANDOFF_PINS = [
     // [标签, 正文, 稳定短语]
     [NAME_HO, hoBody3, [
       ['完整指令落 TASK.md（含目录名形状）', '.hob/archive/<YYYY-MM-DD-slug>/TASK.md'],
       ['落文件在前（write ... first）', 'write the full\ndirective into `.hob/archive/<YYYY-MM-DD-slug>/TASK.md` first'],
       ['围栏内只放短指针', 'part one holds only the short pointer'],
-      ['短指针 = 路径 + 一句"读该文件并执行"', 'plus one line telling Hob-Execute to read that file and carry'],
+      ['短指针 = 路径 + 一句"读该文件并执行"', 'plus one line telling the developer session to read that file and carry'],
       ['不再同时贴全文', 'Do not\npaste the full directive into the reply as well'],
       ['用户点名要全文时以用户为准', "asks for the full\ntext in the reply, the user's request wins"],
       ['文件化不改投递机制（仍无自动投递）', 'This changes only what the user carries, not how it gets there'],
@@ -498,17 +495,10 @@ const STALE_APPELLATIONS = [
       ['围栏口径同步为"短指针（或全文）"', 'the block holds the pointer alone (or the full text when the user asked for it)'],
       ['工作区文件路径可给用户看', 'A workspace file path (such as `.hob/archive/.../TASK.md`) is NOT an internal'],
     ]],
-    [NAME_WORK, workBody3, [
-      ['指令可能以路径形式给出 ⇒ 先读文件', 'A directive may arrive as a file path instead of as full text'],
-      ['先读后做（不得要求用户重贴）', 'read that\nfile first and then carry out what it says'],
-      ['回报落同目录 REPORT.md', 'write it into `REPORT.md` in the SAME\ndirectory as the directive file you were given'],
-      ['过长拆 REPORT-2.md 等', '`REPORT-2.md`, `REPORT-3.md` and so on'],
-      ['把路径一行告诉用户', 'Then tell\nthe user the path, in one line'],
-      ['只在该交接目录内写回报', 'Write report files only inside that hand-off directory'],
-      ['四本账本归 Hob、不得写', "are Hob's ledgers, and they are not yours to write"],
-      ['该目录被 .gitignore 覆盖、不进版本库', 'covered by `.gitignore`, so it does not enter the\nrepository'],
-      ['工作区文件路径可给用户看', 'A workspace file path (such as `.hob/archive/.../REPORT.md`) is NOT an internal'],
-    ]],
+    // ⚠ v4：`Hob-Execute` 侧的文件交接条文断言已随预设删除（对象不存在）。
+    //   ⚠ **但其中两条纪律必须继续生效**，故 v4 把它们**移到 Hob 侧的契约文本里**
+    //     （见 §5.2：禁弹窗改由指令文本承担；"回报落同目录 REPORT.md"写进 TASK.md 要求）。
+    //     机检不再断言"某个预设里有没有这句"，因为承载者已不是预设。
   ]
   for (const [label, body, pins] of HANDOFF_PINS) {
     for (const [what, phrase] of pins) {
@@ -538,7 +528,6 @@ const STALE_APPELLATIONS = [
 //     而不是把工具名钉进机检。
 {
   const hoBody4 = literalBlock(hoSrc, 'prefix') ?? ''
-  const workBody4 = literalBlock(workSrc, 'prefix') ?? ''
   const ORCH_PINS = [
     // [标签, 正文, 稳定短语]
     [NAME_HO, hoBody4, [
@@ -559,25 +548,11 @@ const STALE_APPELLATIONS = [
       ['投递禁令逐字保留（仍无自动投递）', 'There is still NO automatic delivery for the directive'],
       ['不得声称自动投递（同段重申）', 'Never describe the hand-off as automatic for this reason either'],
     ]],
-    [NAME_WORK, workBody4, [
-      ['禁交互提问（用描述、不列举内部标识）', 'no tool that pops up a question and waits for a live human to answer it'],
-      ['为什么禁：对接 Hob 不是用户 ⇒ 会堵塞', 'You answer to Hob, not to the user, so a question that waits for someone to type would stall the work'],
-      ['不含糊的部分照做', 'the part that is unambiguous, do it'],
-      ['问题记下来', 'the question, write it down'],
-      ['随完成回报一并交回（不中断/不阻塞）', 'hand both back together when you finish -- no interruption and no blocking'],
-      ['卡住 ⇒ 停在安全状态', 'stop in a safe state'],
-      ['不留半成品 / 不做不可逆动作', 'leave no half-finished work behind and take no irreversible action'],
-      ['卡点写进回报的待决问题段', 'the open-questions section of the report'],
-      ['问题写成可直接回答、一条一行', 'Write each question so it can be answered directly, one per line'],
-      ['回报六段：固定形状与顺序', 'in six sections, in this order'],
-      ['第1段 结论先行（成/不成/部分成）', 'Verdict first -- done / not done / partly done'],
-      ['第2段 前置读数（时间戳类判据）', 'Baseline readings -- the timestamp-style facts'],
-      ['第3段 做了什么（附原始证据）', 'with the raw evidence'],
-      ['第4段 未做到·未验证·与指令不符（不得埋）', 'never bury this; write "none" when there is none'],
-      ['第5段 待决问题（含建议默认取值）', 'with your suggested default where you have one'],
-      ['第6段 建议（可省）', 'Suggestions -- what to do next; may be omitted'],
-      ['会话里只有一行（结论 + 路径）', 'give only one line: the verdict plus the path of `REPORT.md`'],
-    ]],
+    // ⚠ v4：`Hob-Execute` 侧的编排/回报条文断言已随预设删除（对象不存在）。
+    //   ⚠ **但"禁弹窗"与"六段回报"两条纪律必须继续生效** ⇒ v4 改为由
+    //     **Hob 写 TASK.md 时的明确要求**承担（见方案 §3.2）；承载者不再是预设，
+    //     故机检不再断言"某预设里有这句"。
+    //     下一步：在 Hob 契约的交接段落补写这两条要求（§9 第 6 步的失实句改正一并做）。
   ]
   for (const [label, body, pins] of ORCH_PINS) {
     for (const [what, phrase] of pins) {
@@ -591,7 +566,7 @@ const STALE_APPELLATIONS = [
   //   否则"就地追加"这一形态要求会被静默破坏（与批 5 同款纪律）。
   for (const [label, body, forbidden] of [
     [NAME_HO, hoBody4, ['## Delegation', '## How you delegate', '## Delegating']],
-    [NAME_WORK, workBody4, ['## Reporting', '## Report format', '## Open questions', '## Asking']],
+    // ⚠ v4：`Hob-Execute` 侧的形态负向断言已随预设删除。
   ]) {
     const extra = forbidden.filter((h) => body.includes(h))
     if (extra.length > 0) bad(`⑤e ${label}：批 6 条文新起了小节标题（${extra.join(', ')}）—— 应为就地追加`)
@@ -1042,20 +1017,17 @@ const STALE_APPELLATIONS = [
   if (hoTool !== 1) bad(`⑥ ${NAME_HO}：工具模块行应恰好 1 行，实测 ${hoTool}`)
   else ok(`⑥ ${NAME_HO}：工具模块行恰好 1 行（read_contracts + write_hob）`)
 
-  // 实施侧：行数与宿主创造模式一致（工具行零裁剪）
-  const rowsOf = (s) => (s.match(/^\s+- id: /gm) ?? []).length
-  const host = readFileSync(
-    '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-app/presets/cordis.patch.yml',
-    'utf8',
-  )
-  const wr = rowsOf(workSrc), hr = rowsOf(host)
-  if (wr !== hr) bad(`⑥ ${NAME_WORK}：声明行数应等于宿主创造模式 ${hr}，实测 ${wr}（工具被裁了？）`)
-  else ok(`⑥ ${NAME_WORK}：声明行数 ${wr} == 宿主创造模式 ${hr}（工具零裁剪）`)
+  // ⚠ v4：原先此处断言「Hob-Execute 声明行数 == 宿主创造模式 34（工具零裁剪）」。
+  //   该预设已删 ⇒ 断言对象不存在，**整组删除**。
+  //   ⚠ 这不影响"Hob 侧是否需要零裁剪"这个判据 —— Hob 侧的 ⑥ 断言（上面两条）
+  //     一条未动：`complete: true` + 工具模块行恰好 1 行，**仍然全程生效**。
 }
 
 // ── 输出 ────────────────────────────────────────────────────────────────
-console.log(`预设契约一致性核对 · 预设 ${NAME_HO} / ${NAME_WORK}（包名 ${HO_PKG}，本批未跟改）`)
-console.log('预设（机器读版）:', HO, '+', WORK)
+console.log(`预设契约一致性核对 · 预设 ${NAME_HO}（包名 ${HO_PKG}，本批未跟改）`)
+console.log('⚠ v4：Hob-Execute 预设已删除（用户决策 D1/D2），其专属断言组随之移除；')
+console.log('       对 Hob 预设的全部断言**一条未动、一条未放宽**。')
+console.log('预设（机器读版）:', HO)
 console.log('草案（人读版）  :', DRAFT)
 console.log('')
 for (const n of note) console.log('  ✓', n)

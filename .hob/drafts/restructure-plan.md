@@ -129,24 +129,25 @@
 
 ✅ **F2 已确认**：这是 v4 里**最小的改动**。
 
-### 5.2 ⚠️ 连带：**5 处契约文字会变失实**（必须同批改）
+### 5.2 ✅ 修正：**那 5 处契约文字并未失实**（实施时实测推翻，**不改**）
 
-依据你项目的既有纪律（[EXPERIENCE](.hob/EXPERIENCE.md) 的"**契约不得挂着失效内容**"，
-批 9 修过三处失实句）：
+> ⚠ **本节初稿判断错误，已按实测定正**（教训同 §9：**先查再断言，不要自己发明判据**）。
 
-| 位置 | 原文 | 问题 |
-|---|---|---|
-| [patch.yml:73](preset/dsh-hob/preset-dsh-hob.patch.yml#L73) | `reading project documents, looking at workspace files, ...` | ❌ 读不到项目文档了 |
-| [patch.yml:125](preset/dsh-hob/preset-dsh-hob.patch.yml#L125) | `Read the project documents rather than guessing at facts.` | ❌ **直接冲突** |
-| [patch.yml:145](preset/dsh-hob/preset-dsh-hob.patch.yml#L145) | `reading -- project documents (.md), ...` | ❌ 失实 |
-| [patch.yml:182](preset/dsh-hob/preset-dsh-hob.patch.yml#L182) | `or by reading the project documents you already have` | ❌ 失实 |
-| [patch.yml:209](preset/dsh-hob/preset-dsh-hob.patch.yml#L209) | `read PROJECT.md and the ledgers, ...` | ⚠️ 半失实（账本仍可读） |
+初稿声称放弃 `read_contracts` 读项目文档后，契约里 5 处「read the project documents」
+会失实、且 2 处被机检钉住必须同批改。**实测推翻了这个判断**：
 
-⚠️ **其中 2 处被机检钉住**，不同批改会 FAIL：
-[check-preset-contracts.mjs:717](scripts/check-preset-contracts.mjs#L717)（`reading project documents (.md) and writing your own`）
-· [:816](scripts/check-preset-contracts.mjs#L816)（`read PROJECT.md and the ledgers`）。
+| 事实 | 读数 |
+|---|---|
+| Hob 白名单里**仍有**通用 `read` / `glob` / `grep` / `read_image` | 实测（`MODEL_TOOL_ALLOWLIST` 抽取） |
+| 通用 `read` 按**会话 cwd** 解析路径 | `dsh-tool-fs` 的 `session-cwd` 段 |
+| 会话 cwd = 工作区根 ⇒ **项目文档照样读得到** | `PROJECT.md` 实测存在且可读 |
 
-**⇒ 处置**：把"读项目文档"改为"**读自己的账本**"，并同步更新这 2 条断言期望值。
+**⇒ 结论**：`read_contracts` 改为只读账本，**只是那条专用通道收窄**；
+Hob 读项目文档的能力**由通用 `read` 承担，并未消失**（这正是 D5「不限读」的结果）。
+⇒ **那 5 句无需改动**；`check-preset-contracts.mjs:692` 与 `:791` 两条断言**本来就 PASS**，一条未动。
+
+⚠ **诚实边界**：本修正依据的是**静态事实链**（白名单 + 路径解析 + 文件存在），
+**未做真机调用验证**（需重启后由 Hob 实际读一次 `PROJECT.md`）。
 
 ### 5.3 D5：`read`/`glob`/`grep` **不限读**（你选 i）
 

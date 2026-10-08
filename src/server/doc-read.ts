@@ -9,7 +9,7 @@
  *   只允许读工作区根目录下的 **.md**；非 .md 或越界一律拒绝。
  */
 import { lstat, readFile, stat } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 /** 被拒绝的统一话术：不区分「不存在」与「不允许」，避免泄露存在性。 */
 export const DENIED = '拒绝：只能读取工作区内的 .md 文档。'
@@ -26,6 +26,50 @@ export function resolveWorkspaceRoot(configuredRoot: string, sessionCwd?: string
   if (configured) return resolve(configured)
   if (sessionCwd) return resolve(sessionCwd)
   return undefined
+}
+
+/**
+ * 解析**账本目录**（v4：账本已迁出工作区，按工作区派生）。
+ *
+ * ── 为什么需要它 ──────────────────────────────────────────────────
+ *   账本不再落在 `<工作区>/.hob/`，而在**工作区之外**、**按工作区名独立**的目录里
+ *   （用户决策 D3/D4：`/home/lk/FF/.hob-ledgers/<工作区名>/`）。
+ *   隔离由**文件系统**保证，不靠契约约束。
+ *
+ * ── 为什么不能是静态配置值 ────────────────────────────────────────
+ *   实测：静态相对路径（如 `../.hob`）会让**所有工作区撞进同一个目录**
+ *   （`resolve('/FF/a','../.hob')` 与 `resolve('/FF/b','../.hob')` 都得到 `/FF/.hob`）
+ *   ⇒ 必须**按工作区名派生**，否则违反「每个工作区独立、不可放一起」。
+ *
+ * ── 取值口径（顺序有意义）──────────────────────────────────────────
+ *   ① 显式 `ledgerRoot` —— 直接指定，最高优先级（便于特殊工作区覆盖）；
+ *   ② `ledgerHome` + **工作区目录名** —— 派生（常规路径，零配置）；
+ *   ③ 都没有 ⇒ `undefined`（fail-closed：调用方拒绝，不猜）。
+ *
+ * ⚠ **刻意不在代码里硬编码缺省父目录**：那会让插件绑死在本机路径上，
+ *   换台机器/换个用户就写错地方（本项目一贯的可移植性口径，见 UD-73③）。
+ *   缺省值由**预设行的配置**给出，代码只负责「派生」这件事本身。
+ *
+ * @param ledgerRoot - 显式账本目录（绝对路径或含 `~` 的路径）。
+ * @param ledgerHome - 账本父目录。
+ * @param workspaceRoot - 已解析的工作区根（用来取目录名）。
+ * @returns 账本目录绝对路径；判不出时为 undefined。
+ */
+export function resolveLedgerRoot(
+  ledgerRoot: string,
+  ledgerHome: string,
+  workspaceRoot: string | undefined,
+): string | undefined {
+  const explicit = ledgerRoot.trim()
+  if (explicit) return resolve(explicit)
+
+  const home = ledgerHome.trim()
+  if (home === '') return undefined
+  // 工作区名 = 工作区根的 basename（归一化后；根目录本身没有名字 ⇒ 判不出）
+  if (workspaceRoot === undefined) return undefined
+  const base = basename(resolve(workspaceRoot))
+  if (base === '' || base === sep) return undefined
+  return resolve(home, base)
 }
 
 /**

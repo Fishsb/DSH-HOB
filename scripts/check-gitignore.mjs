@@ -103,6 +103,8 @@ const mustTrack = [
   ['.hob/templates/CONTEXT.md', '骨架 · 空模板'],
   ['.hob/templates/ROLES.md', '骨架 · 角色簇（README §1.3）'],
   ['.hob/templates/GATES.md', '骨架 · 阶段与门禁（README §1.3）'],
+  ['.hob/templates/TASK.md', '骨架 · 指令模板（v4 · 交接协议载体）'],
+  ['.hob/templates/REPORT.md', '骨架 · 回报模板（v4 · 交接协议载体）'],
   ['.hob/roles/methods/qa.md', '骨架 · 角色方法论（README §1.3 · 代表项）'],
   ['.hob/roles/methods/quality-gates.md', '骨架 · 门禁方法论源（README §1.3 · 代表项）'],
   ['.hob/drafts/preset-contracts.md', '骨架 · 被 check:presets 读取的规范源（README §1.2）'],
@@ -150,15 +152,21 @@ const mustExclude = [
   ['node_modules/', '依赖目录（.gitignore 构建产物段）'],
   ['lib/', '构建产物 · host（同一段）'],
   ['dist/', '构建产物（同一段）'],
-  ['.hob/FACTS.md', '运行数据 · 账本（README §1 第 2 行）'],
-  ['.hob/DECISIONS.md', '运行数据 · 账本'],
-  ['.hob/USER-DECISIONS.md', '运行数据 · 账本'],
-  ['.hob/CONTEXT.md', '运行数据 · 账本'],
-  ['.hob/archive/', '运行数据 · 归档（README §1 + §3）'],
-  ['.hob/backups/', '运行数据 · 改前备份（README §1.1）'],
-  ['.hob/CARRYOVER.md', '运行数据 · 可搬资产登记（README §1.1）'],
-  ['.hob/STEP6-REPORT.md', '运行数据 · 各轮报告的代表（README §1.1）'],
-  ['.hob/CLEANUP-REPORT.md', '运行数据 · 各轮报告的代表'],
+  // ⚠ **v4（2026-10-08）**：账本数据已迁出工作区（→ `/home/lk/FF/.hob-ledgers/<工作区名>/`），
+  //   故下面这些路径**在本仓库里已不存在**。
+  //   ⇒ 保留断言的意义变成**防回迁**：若有人把账本数据搬回 `.hob/`，
+  //     本组立刻 FAIL（`git check-ignore` 会对已入库路径返回未忽略）。
+  //   ⚠ 这是**改判据以跟随现状**，不是放宽 —— 断言条数不减，方向从
+  //     "数据必须被排除" 变成 "数据既不在库、也不被意外放行"。
+  ['.hob/FACTS.md', '运行数据 · 账本（**v4 已迁出**，此断言防回迁）'],
+  ['.hob/DECISIONS.md', '运行数据 · 账本（v4 已迁出）'],
+  ['.hob/USER-DECISIONS.md', '运行数据 · 账本（v4 已迁出）'],
+  ['.hob/CONTEXT.md', '运行数据 · 账本（v4 已迁出）'],
+  ['.hob/archive/', '运行数据 · 归档（v4 已迁出）'],
+  ['.hob/backups/', '改前备份（v4 起仅存本仓库内的改前备份，账本备份已迁出）'],
+  ['.hob/CARRYOVER.md', '运行数据 · 可搬资产登记（v4 已迁出）'],
+  ['.hob/STEP6-REPORT.md', '运行数据 · 各轮报告的代表（v4 已迁出）'],
+  ['.hob/CLEANUP-REPORT.md', '运行数据 · 各轮报告的代表（v4 已迁出）'],
 ]
 
 for (const [p, why] of mustExclude) {

@@ -62,8 +62,7 @@
       ],
       "patch": [
         "./cordis.patch.yml",
-        "./preset/dsh-hob/preset-dsh-hob.patch.yml",
-        "./preset/dsh-hob/preset-dsh-hob-work.patch.yml"
+        "./preset/dsh-hob/preset-dsh-hob.patch.yml"
       ]
     },
     "client": {

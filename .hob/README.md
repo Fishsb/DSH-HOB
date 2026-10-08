@@ -1,4 +1,25 @@
-# `.hob/` —— 工作区账本（骨架说明 + 归档索引）
+# `.hob/` —— **骨架目录**（v4 起账本已外置）
+
+> ## 🆕 **v4（2026-10-08）：账本已迁出本目录**
+>
+> **本目录现在只放骨架（进 git）**。**账本数据在工作区之外、按工作区名独立存放**：
+>
+> ```
+> /home/lk/FF/.hob-ledgers/<工作区名>/     ← 账本数据（四本账本 + archive/ + backups/）
+> ```
+>
+> **依据**：重构方案 v4 的用户决策 **D3/D4** —— 每个工作区**独立的账本目录、物理隔离**，
+> 且**在工作区之外**（隔离由**文件系统**保证，不靠契约约束）。
+> 派生规则：`<ledgerHome>/<工作区目录名>/`（`ledgerHome` 在预设行的 config 里给出）。
+>
+> **已迁出**（运行数据）：`FACTS.md` · `DECISIONS.md` · `USER-DECISIONS.md` · `CONTEXT.md` ·
+> 14 个批次报告（`STEP*-REPORT.md` 等）· `archive/` · `backups/`
+> ⇒ 现位于 `/home/lk/FF/.hob-ledgers/dsh-hob/`（**已单独 `git init`**，保住版本历史）。
+>
+> **仍在本目录**（骨架）：`README.md` · `EXPERIENCE.md` · `templates/` · `roles/` · `drafts/`。
+>
+> ⚠ **名称未改**：本目录仍叫 `.hob/`，但它**不再是账本**（只放骨架）。
+> 改名会牵动 100+ 处引用，**本轮不改** —— 故在此处显式说明，避免误读。
 
 > 本文件是 **骨架（进 git）**，不是运行数据。
 > 它回答三件事：**这里的文件各自是什么 / 哪些进 git / 东西归档去了哪。**
@@ -12,9 +33,9 @@
 | 类别 | 判定标准 | 进 git？ | 位置 |
 |---|---|---|---|
 | **骨架** | **格式契约 / 被机检脚本消费的规范源** —— 表头、列定义、编号规则、以及**入库脚本会读取的契约正文**。可复用、可分发；新建工作区时用它初始化 | ✅ **进** | `.hob/README.md`、`.hob/templates/`、`.hob/EXPERIENCE.md`、**`.hob/drafts/`**（见 §1.2）、**`.hob/roles/`**（见 §1.3） |
-| **运行数据** | **填充进格式的具体条目 / 本项目专有的过程产物** —— 第 N 条事实 / 第 N 条决策 / 本轮进度 / 改前备份 | ❌ **不进** | 四个账本（`FACTS.md` / `DECISIONS.md` / `USER-DECISIONS.md` / `CONTEXT.md`）、`.hob/archive/`、`.hob/backups/`、`.hob/CARRYOVER.md`、`.hob/STEP*-REPORT.md` |
+| **运行数据** | **填充进格式的具体条目 / 本项目专有的过程产物** —— 第 N 条事实 / 第 N 条决策 / 本轮进度 / 改前备份 | ❌ **不进**（**v4 起且不在本目录**，见顶部说明） | ~~四个账本~~ · ~~`.hob/archive/`~~ · ~~`.hob/backups/`~~ · ~~`.hob/CARRYOVER.md`~~ · ~~`.hob/STEP*-REPORT.md`~~ ⇒ **均在 `/home/lk/FF/.hob-ledgers/dsh-hob/`** |
 
-**一句话**：**格式进 git，内容不进。**
+**一句话**：**格式进 git，内容不进。**（v4 起内容更进一步：**不在本目录**。）
 
 > **为什么这样切**：`.gitignore` **按路径匹配、读不到文件内容**，
 > 所以「首行标记」在 git 上不可行；把运行数据下沉到子目录则要改目录结构定义。
@@ -104,21 +125,21 @@ EXIT=1
 ## 2. 目录内容一览
 
 ```
-.hob/
+.hob/                         ← **v4：本目录只放骨架；账本数据在工作区之外**
 ├── README.md            ← 本文件（骨架 · 进 git）
 ├── EXPERIENCE.md        ← 经验库（骨架 · 进 git · 提炼自旧项目）
-├── templates/           ← 空模板 4 份（骨架 · 进 git）
+├── templates/           ← 空模板 6 份（骨架 · 进 git）
 │   ├── FACTS.md  ├── CONTEXT.md  ├── USER-DECISIONS.md  └── DECISIONS.md
+│   ├── TASK.md          ← 指令模板（v4 · 交接协议）
+│   └── REPORT.md        ← 回报模板（v4 · 交接协议）
 ├── drafts/              ← 契约正文人读版（**骨架 · 进 git**；被 check:presets 读取，见 §1.2）
 │   └── preset-contracts.md
-├── FACTS.md             ┐
-├── CONTEXT.md           │ 运行数据（不进 git）
-├── USER-DECISIONS.md    │ 每轮追加，内容本项目专有
-├── DECISIONS.md         ┘
-├── CARRYOVER.md         ← 可搬资产登记（运行数据 · 不进 git）
-├── STEP*-REPORT.md      ← 各轮报告（运行数据 · 不进 git）
-├── backups/             ← 各轮改前备份（运行数据 · 不进 git）
-└── archive/             ← 历史归档（运行数据 · 不进 git；索引见 §3）
+└── roles/               ← 角色簇方法论 18 份（骨架 · 进 git，见 §1.3）
+
+/home/lk/FF/.hob-ledgers/dsh-hob/       ← **账本数据（v4 起在此，不在上述目录）**
+├── FACTS.md · DECISIONS.md · USER-DECISIONS.md · CONTEXT.md
+├── archive/             ← 交接归档（TASK.md / REPORT.md 落此处）
+└── backups/             ← 改前备份
 ```
 
 > 上表由 `npm run check:gitignore` 机检（§1.4）——
@@ -155,7 +176,7 @@ EXIT=1
 
 ## 4. 模板怎么用
 
-`templates/` 下 4 份是**空骨架**，只含格式，不含任何本项目内容：
+`templates/` 下 **6** 份是**空骨架**，只含格式，不含任何本项目内容：
 
 1. **新建账本**：以模板为蓝本创建运行数据文件，替换 `[日期]` / `[谁]` 等占位。
 2. **格式参照**：需要确认「某类条目该有哪些列」时，以模板为准。
@@ -166,9 +187,9 @@ EXIT=1
 
 ## 5. 相关纪律
 
-- **防漂移**：每轮开工先读 `CONTEXT.md`（其 `§0` 是摘要，**最新的 `§N` 优先于更早的**）。
-- **归档** = 移入 `.hob/archive/<日期>-<名>/` **并在 §3 表登记一行**。
-- **经验库**：动手前先扫 `.hob/EXPERIENCE.md` 对应主题；出问题先查有没有现成根因。
+- **防漂移**：每轮开工先读**账本目录**（`/home/lk/FF/.hob-ledgers/<工作区名>/`）的 `CONTEXT.md`（其 `§0` 是摘要，**最新的 `§N` 优先于更早的**）。⚠ **v4 起账本不在本目录**。
+- **归档** = 移入**账本目录**的 `archive/<日期>-<名>/` **并在 §3 表登记一行**。
+- **经验库**：动手前先扫 `.hob/EXPERIENCE.md`（**骨架，仍在本目录**）对应主题；出问题先查有没有现成根因。
 - **诚实边界**：没验的写「未验证」，不许把「我认为」写成「已验证」。
 
 ---

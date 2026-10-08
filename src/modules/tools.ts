@@ -53,9 +53,8 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
-import { readMarkdownCapped, resolveWorkspaceRoot } from '../server/doc-read.ts'
+import { readMarkdownCapped, resolveLedgerRoot, resolveWorkspaceRoot } from '../server/doc-read.ts'
 import { LEDGER_FILES, writeHobFile } from '../server/hob-write.ts'
-import { installWorkPresetDeny } from './work-deny.ts'
 
 /** 模块名（同时是 fiber 显示名）。 */
 export const name = 'dsh-hob-tools'
@@ -91,7 +90,16 @@ export const GATE_SERVICE = 'hobTools'
 export interface HobToolsConfig {
   /** 工作区根；留空 = 按会话 cwd 解析（不硬编码路径）。 */
   workspaceRoot?: string
-  /** 账本目录名，相对工作区根。 */
+  /**
+   * 账本父目录（**v4 新增**）。账本按 `<ledgerHome>/<工作区名>/` 派生。
+   *
+   * ⚠ 为什么父目录也不硬编码在代码里：那会把插件绑死在本机路径上
+   *   （可移植性口径 UD-73③）。缺省值由预设行的配置给出。
+   */
+  ledgerHome?: string
+  /** 直接指定本工作区的账本目录（覆盖派生；便于特殊工作区）。 */
+  ledgerRoot?: string
+  /** @deprecated v4 起账本已迁出工作区；保留仅为兼容旧配置的目录名。 */
   hobDir?: string
   /** 单个 `.md` 的读取上限（字节）。 */
   maxFileBytes?: number
@@ -127,7 +135,16 @@ export interface HobToolsConfig {
 
 /** 默认值集中在此，避免两处各写一套。 */
 export const DEFAULTS = {
+  /** @deprecated v4 起账本不在工作区内；仅作旧配置兼容。 */
   hobDir: '.hob',
+  /**
+   * 账本父目录缺省值（**v4 新增**）。
+   *
+   * ⚠ 这是**本机口径的缺省**，不写进代码常量而放在配置层会更纯粹；
+   *   但预设行若不给值，工具就会整体不可用（fail-closed）⇒ 给一个可用缺省，
+   *   并在预设行里显式写出来（两处一致由机检 ⑤ 系断言覆盖）。
+   */
+  ledgerHome: '/home/lk/FF/.hob-ledgers',
   maxFileBytes: 65536,
   maxWriteBytes: 262144,
   keepBackups: 20,
@@ -153,82 +170,28 @@ export const DEFAULT_DENY = [
   'interconnect_list',
 ] as const
 
-/**
- * Hob-Execute（实施侧）的**预设 id** —— 批 6 那条收窄规则的判据字面值。
- *
- * ⚠ 与 `preset/dsh-hob/preset-dsh-hob-work.patch.yml` 的 `config.id` 同字面值
- *   （2026-10-07 批 2 起显示名与 id 同字面值）。**不是**包名 / 目录名 / loader 行 id。
- */
-export const WORK_PRESET_ID = 'Hob-Execute'
-
-/**
- * 要从 **Hob-Execute 的模型面**摘掉的工具名（UD-64 / CHG-012 · 2026-10-07 批 6）。
- *
- * ── 为什么要摘 ──────────────────────────────────────────────────────
- *   Hob-Execute **对接的是 Hob，不是用户**（见它的 `## Your duties`）。
- *   「弹出问题、等真人当场回答」这类工具会让它**中途停下来等人** ——
- *   而它等的那个"人"根本不是它的上游 ⇒ 任务是**堵塞**而不是被澄清。
- *   用户裁定（UD-64）：需要决策 ⇒ **把不含糊的部分做掉、把问题记录下来、
- *   随完成回报一并交回**；整件事被卡住 ⇒ **停在安全状态**并写进回报。
- *
- * ── 为什么是**一个显式名字**而不是前缀/通配 ─────────────────────────
- *   与「Hob」侧同款纪律（§6.3 允许清单思维）：将来新装的插件**不得自动**被摘。
- *   本批只摘**契约条文指名的那一个代表**。
- *
- * ── ⚠ 与 CHG-003「Hob-Execute 工具全给」的关系（如实标注，不美化）─────
- *   这是那条约定的**定点例外**：`ask_user_question` 一项不再适用"全给"。
- *   代价已知并由用户拍板（`.hob/USER-DECISIONS.md` UD-64 记「强度待用户裁定」，
- *   本批按"机制落地"执行）。
- *
- * ⚠ 本清单**只作用于 {@link WORK_PRESET_ID}**：判据见 {@link presetIdOf}，
- *   对「Hob」与宿主自带的 standard / minimal / cordis **一律不生效**
- *   （隔离实例逐预设对照读数见 `.hob/archive/2026-10-07-orchestration/evidence/`）。
- */
-export const WORK_MODEL_DENY: readonly string[] = ['ask_user_question']
-
-/**
- * 读出一个 **live Agent 当前所属的预设 id**（批 6 收窄规则的身份判据）。
- *
- * ── 为什么需要"当前"而不是"创建时"──────────────────────────────────
- *   `session.header.agentPreset` 是**创建事实**且冻结；而宿主允许会话在**首个 turn 之前**
- *   改预设（`agent-preset/selected`，见 `dsh-agent-preset-registry/lib/types/session.d.ts`：
- *   "Current Session preset, initialized from its header and advanced by selection events"）。
- *   用它当判据会在"改了预设但还没说话"这条窗口上判错。
- *
- * ── 两条路径（顺序有意义）──────────────────────────────────────────
- *   ① **权威**：`ctx.agentPresets.composedPreset(agent.ctx)`
- *      （`dsh-agent-preset-registry/lib/index.js:723-725` = `standingMountFor(ctx)?.presetId`，
- *       读的是 agent scope 的**父链**指向的那个 standing mount ⇒ 改过预设也正确）；
- *   ② **兜底**：`agent.session.header.agentPreset`（注册表读不到时的创建事实）。
- *
- * ⚠ 全程 fail-open：读不到 ⇒ 返回 `undefined` ⇒ 调用方**一律放行**。
- *   本规则是**收窄措施**，不是安全边界；把某个会话弄瘫比漏一个工具更糟
- *   （同 `src/preset/tools.ts` 的 `enforceToolAllowlist` 注释）。
- *
- * @param ctx - 任一能看到 `agentPresets` 服务的 ctx（插件平面即可）。
- * @param agent - 被判定调用的主体 agent；缺失 ⇒ undefined。
- * @returns 预设 id，读不到时为 `undefined`。
- */
-export function presetIdOf(ctx: any, agent: any): string | undefined {
-  if (agent === undefined || agent === null) return undefined
-  try {
-    const registry = ctx?.get?.('agentPresets')
-    const viaRegistry = registry?.composedPreset?.(agent.ctx)
-    if (typeof viaRegistry === 'string' && viaRegistry !== '') return viaRegistry
-  } catch { /* 注册表缺席/抛错 ⇒ 退到创建事实 */ }
-  try {
-    const header = agent?.session?.header?.agentPreset
-    if (typeof header === 'string' && header !== '') return header
-  } catch { /* 结构不认识 ⇒ 视为未知 */ }
-  return undefined
-}
-
 /** 解析工作区根：显式配置优先，其次会话 cwd；都没有则 undefined（fail-closed）。 */
 export function rootOf(cfg: HobToolsConfig, exec: ToolRunContext): string | undefined {
   return resolveWorkspaceRoot(cfg.workspaceRoot ?? '', exec.agent?.session.header.cwd)
 }
 
-/** 账本目录名（带默认值）。 */
+/**
+ * 解析**账本目录**（v4：在工作区之外，按工作区名派生）。
+ *
+ * ⚠ 与 {@link rootOf} 的分工：工作区根是**读项目文件**的边界（v4 后已不再用于账本），
+ *   账本目录是**读写账本**的边界。两者**物理分开**，隔离由文件系统保证。
+ *
+ * fail-closed：判不出 ⇒ undefined ⇒ 调用方拒绝（不猜、不退回 cwd）。
+ */
+export function ledgerRootOf(cfg: HobToolsConfig, exec: ToolRunContext): string | undefined {
+  return resolveLedgerRoot(
+    cfg.ledgerRoot ?? '',
+    cfg.ledgerHome ?? DEFAULTS.ledgerHome,
+    rootOf(cfg, exec),
+  )
+}
+
+/** @deprecated v4 起账本已迁出工作区，账本位置改由 {@link ledgerRootOf} 解析。 */
 export function hobDirOf(cfg: HobToolsConfig): string {
   return cfg.hobDir ?? DEFAULTS.hobDir
 }
@@ -248,7 +211,7 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
-    description: '只读工作区内的 .md 文档（项目文档 / 决策记录）。',
+    description: '只读本工作区账本内的 .md（决策记录 / 事实账 / 上下文）。',
     parameters: {
       path: {
         type: 'string',
@@ -261,8 +224,9 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
     async execute(args: { path: string }, exec: ToolRunContext): Promise<string> {
-      const root = rootOf(cfg, exec)
-      if (root === undefined) return '拒绝：无法确定工作区根目录。'
+      // v4：边界改为**账本目录**（D7）—— 只读自己的账本，不读工作区内的项目文档（D6）。
+      const root = ledgerRootOf(cfg, exec)
+      if (root === undefined) return '拒绝：无法确定账本目录。'
       const r = await readMarkdownCapped(root, args.path, cfg.maxFileBytes ?? DEFAULTS.maxFileBytes)
       return r.text
     },
@@ -273,7 +237,7 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
   const writeHob = defineTool({
     name: 'write_hob',
     description:
-      '向 .hob/ 账本写入内容。'
+      '向本工作区的账本写入内容（账本在工作区之外，按工作区名独立存放）。'
       + '可写文件：' + LEDGER_FILES.join(' / ') + '，以及 archive/<YYYY-MM-DD-slug>/*.md；'
       + '骨架（README.md / templates/）只读。'
       + 'append=追加一条（默认，编号须与账本现有编号连续）；overwrite=整文件重写（受缩水守卫保护）。'
@@ -312,9 +276,10 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
       args: { file: string; content: string; mode?: 'append' | 'overwrite'; reason?: string; dryRun?: boolean },
       exec: ToolRunContext,
     ): Promise<string> {
-      const root = rootOf(cfg, exec)
+      // v4：账本目录按工作区派生（在工作区之外）⇒ 边界仍是「账本目录」，只是位置变了。
+      const root = ledgerRootOf(cfg, exec)
       if (root === undefined) {
-        return JSON.stringify({ ok: false, reason: 'no-workspace-root', message: '拒绝：无法确定工作区根目录。' })
+        return JSON.stringify({ ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' })
       }
       const r = await writeHobFile(root, {
         file: args.file,
@@ -323,7 +288,9 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
         ...(args.reason === undefined ? {} : { reason: args.reason }),
         ...(args.dryRun === undefined ? {} : { dryRun: args.dryRun }),
       }, {
-        hobDir: hobDirOf(cfg),
+        // v4：`root` 已是**账本目录本身** ⇒ hobDir 传空串，避免多套一层
+        // （否则 hobRoot = <账本目录>/.hob，写成 `<工作区名>/.hob/FACTS.md`）。
+        hobDir: '',
         keepBackups: DEFAULTS.keepBackups,
         shrinkGuard: DEFAULTS.shrinkGuard,
         maxFileBytes: cfg.maxWriteBytes ?? DEFAULTS.maxWriteBytes,
@@ -351,16 +318,15 @@ export function apply(ctx: any): void {
     }
   }, `${name}: gate`)
 
-  // ⚠ **批 6 新增**：实施侧专属收窄（UD-64 / CHG-012）挂在这里，理由**不是**"顺路"——
-  //   本模块正是插件平面（宿主平面行 `id: dsh-hob`）的那一个落点，而收窄**必须**
-  //   挂在插件平面才能覆盖到 Hob-Execute（它的预设行不引用本插件任何模块，够不到）。
-  //   为什么不另开一个 `MODULE_REGISTRY` 模块行：那会在 `src/index.ts` 的登记表里
-  //   多出一个模块键、进而进入设置面 `modules.*` —— 本批要求"改动有界、
-  //   不动既有配置语义"，故**就地挂载**、不新增开关。
-  //   ⚠ 位置在 `ctx.provide` 之后、`ctx.effect` 卸载钩子之后：两处监听器**不依赖门禁**
-  //     （门禁只管"工具注册"，见文件头）⇒ 不放进 `ctx.inject([GATE_SERVICE], …)` 回调，
-  //     否则关掉 `modules.tools` 会让收窄一起失效（那正是本文件头部 F1 修过的倒挂形态）。
-  installWorkPresetDeny(ctx, (m) => { try { ctx.logger?.debug?.(m) } catch { /* 无 logger 时忽略 */ } })
+  // ── v4：批 6 的「实施侧专属收窄」**已整段删除** ──────────────────────
+  //   它由 `installWorkPresetDeny` 提供，唯一服务对象是 **Hob-Execute** 预设。
+  //   v4 用户决策 D1「删掉 Hob-Execute」+ D2「执行交给任意会话」之后：
+  //   · 该预设已不存在（`preset-dsh-hob-work.patch.yml` 已删、bundle 项已摘）
+  //   · 收窄的判据 `WORK_PRESET_ID` / `presetIdOf` 随之失去对象
+  //   ⇒ 连同 `src/modules/work-deny.ts`（121 行）一并删除；顺带解除了
+  //     `tools.ts ↔ work-deny.ts` 的**循环依赖**（EXPERIENCE E-* 已记录该形态）。
+  //   ⚠ 契约的「禁弹窗」纪律**不因此消失**：它改由**指令文本**承担
+  //     —— Hob 写 TASK.md 时明写要求，不再依赖预设级收窄（见方案 §3.2）。
 
   ctx.logger?.debug?.(`[${name}] 已激活：已提供门禁 ${GATE_SERVICE}；工具定义由预设行在预设作用域注册`)
 }
