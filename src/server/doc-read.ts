@@ -9,10 +9,16 @@
  *   只允许读工作区根目录下的 **.md**；非 .md 或越界一律拒绝。
  */
 import { lstat, readFile, stat } from 'node:fs/promises'
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
-/** 被拒绝的统一话术：不区分「不存在」与「不允许」，避免泄露存在性。 */
-export const DENIED = '拒绝：只能读取工作区内的 .md 文档。'
+/**
+ * 被拒绝的统一话术：不区分「不存在」与「不允许」，避免泄露存在性。
+ *
+ * ⚠ **v4 起边界是「账本目录」而不是「工作区根」**（用户决策 D7）——
+ *   账本已迁出工作区（按工作区名派生到工作区之外）。
+ *   ⇒ 话术同步改为「本工作区的账本」，否则**说法与行为不符**（挂着失效内容）。
+ */
+export const DENIED = '拒绝：只能读取本工作区账本目录内的 .md 文档。'
 
 /**
  * 解析工作区根目录（fail-closed）。
@@ -43,16 +49,24 @@ export function resolveWorkspaceRoot(configuredRoot: string, sessionCwd?: string
  *
  * ── 取值口径（顺序有意义）──────────────────────────────────────────
  *   ① 显式 `ledgerRoot` —— 直接指定，最高优先级（便于特殊工作区覆盖）；
- *   ② `ledgerHome` + **工作区目录名** —— 派生（常规路径，零配置）；
- *   ③ 都没有 ⇒ `undefined`（fail-closed：调用方拒绝，不猜）。
+ *   ② `ledgerHome` + **工作区目录名** —— 派生（配了就用它）；
+ *   ③ 都没配 ⇒ **工作区的兄弟目录 `<工作区父目录>/.hob-ledgers/<工作区名>/`**
+ *      —— ⚠ **可移植**：不含任何本机绝对路径，换机器/换用户自动成立；
+ *   ④ 连工作区都判不出 ⇒ `undefined`（fail-closed：调用方拒绝，不猜）。
  *
- * ⚠ **刻意不在代码里硬编码缺省父目录**：那会让插件绑死在本机路径上，
- *   换台机器/换个用户就写错地方（本项目一贯的可移植性口径，见 UD-73③）。
- *   缺省值由**预设行的配置**给出，代码只负责「派生」这件事本身。
+ * ⚠ **为什么 ③ 用"兄弟目录"而不是硬编码 `/home/lk/FF/.hob-ledgers`**：
+ *   硬编码会把插件绑死在本机路径上 —— 实测（2026-10-08 重启后复核）在
+ *   `cwd=/home/bob/work/myproj` 的新环境里，账本会被写到 **`/home/lk/FF/...`**
+ *   （上一台机器的路径，可能不存在或无权限）。这撞本项目一贯的
+ *   **可移植性口径（UD-73③）**。⇒ 缺省值必须**从工作区推导**，不能是常量。
  *
- * @param ledgerRoot - 显式账本目录（绝对路径或含 `~` 的路径）。
- * @param ledgerHome - 账本父目录。
- * @param workspaceRoot - 已解析的工作区根（用来取目录名）。
+ * ── 为什么 ③ 仍然满足"不与代码混放" ─────────────────────────────
+ *   兄弟目录在**工作区之外**（`..` 一级），不是工作区内部 ⇒ 与代码物理分开，
+ *   且"每个工作区一个子目录"的隔离**不依赖任何配置**。
+ *
+ * @param ledgerRoot - 显式账本目录（绝对路径）。
+ * @param ledgerHome - 账本父目录；留空 ⇒ 用兄弟目录缺省。
+ * @param workspaceRoot - 已解析的工作区根（用来取目录名与父目录）。
  * @returns 账本目录绝对路径；判不出时为 undefined。
  */
 export function resolveLedgerRoot(
@@ -63,14 +77,27 @@ export function resolveLedgerRoot(
   const explicit = ledgerRoot.trim()
   if (explicit) return resolve(explicit)
 
-  const home = ledgerHome.trim()
-  if (home === '') return undefined
   // 工作区名 = 工作区根的 basename（归一化后；根目录本身没有名字 ⇒ 判不出）
   if (workspaceRoot === undefined) return undefined
-  const base = basename(resolve(workspaceRoot))
+  const ws = resolve(workspaceRoot)
+  const base = basename(ws)
   if (base === '' || base === sep) return undefined
-  return resolve(home, base)
+
+  const home = ledgerHome.trim()
+  if (home !== '') return resolve(home, base)   // ② 配了父目录 ⇒ 用它
+
+  // ③ 缺省：工作区的**兄弟目录**（可移植，不含本机绝对路径）
+  return resolve(dirname(ws), DEFAULT_LEDGER_DIR, base)
 }
+
+/**
+ * 缺省账本父目录名（**相对**工作区的父目录）。
+ *
+ * ⚠ 这是**常量名**而不是绝对路径 —— 与工作区推导结合后天然可移植。
+ *   `/home/lk/FF/dsh-hob`  ⇒ `/home/lk/FF/.hob-ledgers/dsh-hob`
+ *   `/home/bob/work/myproj` ⇒ `/home/bob/work/.hob-ledgers/myproj`
+ */
+export const DEFAULT_LEDGER_DIR = '.hob-ledgers'
 
 /**
  * 把请求路径落到绝对路径，并判断是否真的落在 root 之内。

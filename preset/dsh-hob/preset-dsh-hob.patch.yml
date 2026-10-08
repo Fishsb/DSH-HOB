@@ -430,10 +430,16 @@
             name: 'dsh-hob/preset/tools'
             config:
               workspaceRoot: ''
-              # v4：账本已迁出工作区，按工作区名派生到 ledgerHome 之下。
-              #   /home/lk/FF/dsh-hob  →  <ledgerHome>/dsh-hob
-              # 每个工作区自动有独立账本（物理隔离），无需逐项目配置。
-              ledgerHome: /home/lk/FF/.hob-ledgers
+              # v4：账本已迁出工作区，按工作区名派生（每个工作区独立、物理隔离）。
+              #
+              # ⚠ **这里刻意不配 `ledgerHome`**（留空即用缺省）。
+              #   缺省 = 「工作区的**兄弟目录**」：<工作区父目录>/.hob-ledgers/<工作区名>/
+              #   · /home/lk/FF/dsh-hob   → /home/lk/FF/.hob-ledgers/dsh-hob
+              #   · /home/bob/work/myproj → /home/bob/work/.hob-ledgers/myproj
+              #   ⇒ **不含任何本机绝对路径**，换机器/换用户自动成立（UD-73③ 可移植性）。
+              #   ⚠ 曾经写死 `/home/lk/FF/.hob-ledgers`，实测在新环境会把账本写到
+              #     **上一台机器的路径**上（2026-10-08 重启后复核发现，已修正）。
+              #   要改父目录就在此处显式给 `ledgerHome`（或给 `ledgerRoot` 直接指定）。
               maxFileBytes: 65536
               maxWriteBytes: 262144
               enableWrite: true

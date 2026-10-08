@@ -140,11 +140,16 @@ export const DEFAULTS = {
   /**
    * 账本父目录缺省值（**v4 新增**）。
    *
-   * ⚠ 这是**本机口径的缺省**，不写进代码常量而放在配置层会更纯粹；
-   *   但预设行若不给值，工具就会整体不可用（fail-closed）⇒ 给一个可用缺省，
-   *   并在预设行里显式写出来（两处一致由机检 ⑤ 系断言覆盖）。
+   * ⚠ **刻意留空** —— 留空时由 `resolveLedgerRoot` 退到「工作区的**兄弟目录**」
+   *   `<工作区父目录>/.hob-ledgers/<工作区名>/`，**不含任何本机绝对路径**。
+   *
+   *   实测教训（2026-10-08 重启后复核）：这里曾写死 `/home/lk/FF/.hob-ledgers`，
+   *   结果在 `cwd=/home/bob/work/myproj` 的环境里账本被写到 **`/home/lk/FF/...`**
+   *   （上一台机器的路径）—— 撞可移植性口径 **UD-73③**。
+   *
+   * ⇒ 想改父目录就**配这一项**（预设行给出）；不配也能正确工作。
    */
-  ledgerHome: '/home/lk/FF/.hob-ledgers',
+  ledgerHome: '',
   maxFileBytes: 65536,
   maxWriteBytes: 262144,
   keepBackups: 20,
