@@ -289,7 +289,134 @@
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
 
-          # ══ 本插件的工具行（未随批 9 改动）══════════════════════════════════
+          # ══ 批 13 · 指名增行（O4 / O3 / O2 + O5 取 present）══════════════════
+          # 依据批 12 报告 §4 的六个选项（用户多选裁定，见 UD-72 / CHG-017）：
+          #   **做** O4（agent-instructions）· O3（skill）· O2（/compact）· O5 中的 `present`；
+          #   **不做** O1（`/goal` + 目标类）与 O6（`/plan` + `exit_plan_mode`），
+          #   **不做** `todo_write` / `job_*`。
+          # ⚠ **本批硬禁（一条未加）**：`tool-bash` / `tool-pwsh` / 任何 `subagent*` /
+          #   `workflow-*` / `tool-ralph` / `tool-plugin-manager` —— 撞 UD-13 / UD-56。
+          #
+          # ⚠ **成对关系（缺一会半残，不是"少一点能力"）**：
+          #   · `skill-filesystem` + `tool-skill` **必须成对** —— 只加后者 ⇒ **目录恒空**
+          #     （没有 provider 供技能）；只加前者 ⇒ 有目录但**没有 `skill` 工具可加载**；
+          #   · `compaction-basic` + `command-compact` **必须成对** —— 只加后者 ⇒
+          #     `dsh-command-compact` 的 `inject = ["commands","compaction"]` 缺 `compaction`
+          #     ⇒ 该行 **never started**（命令不激活）。
+          #
+          # 逐字取自宿主 `standard.patch.yml`（指名取行，**非整段照抄**）：
+          #    16-19 agent-instructions（含 config.maxBytes: 65536）· 34-35 skill-filesystem
+          #    36-37 tool-skill · 70-71 compaction-basic · 72-73 command-compact · 142-143 present
+          # ⚠ 宿主那份 `compaction-basic` / `command-compact` 在 `compaction` **分组内**；
+          #   本预设**不加分组行**（批 9 起的一贯做法：分组不是能力载体）。
+          #
+          # ⚠ **`agent-instructions`（O4）的性质**：**无任何工具名**，注入的是**消息段**
+          #   （`agent.inbox.prepend("next-step", …)`，见 `dsh-agent-instructions/lib/index.js:1227`）
+          #   —— 即工作区 `AGENTS.md`（含用户全局 `~/.dsh/AGENTS.md`）。
+          #   Hob 契约写着「Read the project documents rather than guessing at facts.」，
+          #   而该条**此前无机制落点**（批 12 实测：Hob 会话的 `agent-instructions` 消息数 = **0**）
+          #   ⇒ 本行把它接上。⚠ **副作用如实标注**：Hob 的提示词面会多出该文件正文
+          #   （实测用户全局那份 **5555 B**），其中含面向**编码会话**的输出纪律条文，
+          #   与 Hob 的 `## Reply format` 存在张力 ⇒ 属**已知代价**（见回报第 4/5 段）。
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+
+          # ── O3 · skill（⚠ 本行的 `config` **有意不照抄宿主**，理由如下）──────
+          # 宿主 `standard` 那份**不带 config** ⇒ 走 schema 默认 `includeDefaultRoots: true`，
+          # 会把 `~/.dsh/skills/` 下**全部 5 个**技能一并给 Hob。
+          # ⚠ 逐名 + 分类（我实测读取各 `SKILL.md` 后的判断，**供用户覆写**）：
+          #   · `arch-view`        —— 架构文档；**主流程依赖 `nav_*` 六工具**
+          #                           （`nav_graph`/`nav_node`/…，实测 24 处引用）⇒ Hob 的
+          #                           模型面**没有**它们（不在白名单）⇒ 该技能**跑不起来**；
+          #   · `auto-task`        —— 拆解 + 派活；**依赖 `taskboard_create|move|checklist` 与
+          #                           `subagent*`**（14 处引用）⇒ 全在 UD-13 / UD-56 禁列 ⇒ 同样跑不起来；
+          #   · `cg-web-accessibility` · `cg-web-lighthouse-optimizer` · `frontend-design`
+          #                        —— **代码开发类**（改站点代码、跑 Lighthouse、做前端视觉设计），
+          #                           与 **UD-56**（不要代码开发类工具）**精神相抵**。
+          # ⇒ **5 个里没有一个既"与本项目规划侧相关"又"在 Hob 现有工具面下可用"**。
+          #   故按任务书 §2.1「收窄到明确挑选的目录」实现为：**关掉默认根、目录清单留空**
+          #   ⇒ **那 5 个全部不可见**（逐名清单与分类另见回报第 3/4 段）。
+          # ⚠⚠ **实测读数更正（本批实测；别照抄我原先的推断"生效技能 = 0 个"）**：
+          #   收窄后生效技能**不是 0 个，而是 1 个：`dsh-interconnect`**。
+          #   它**不来自任何文件系统发现根** —— 是 `dsh-interconnect` 这个**插件自己注册的
+          #   provider**（`ctx.skills.registerProvider`）⇒ `includeDefaultRoots: false`
+          #   **挡不住它**。⇒ 本行的准确效果 = **`~/.dsh/skills/` 那 5 个全部挡掉 +
+          #   插件自带的仍可见**。要挡 `dsh-interconnect` 须另议（本批**不动**）。
+          # ⚠ **对照实测**（隔离实例，同一 cwd，两次跑）：
+          #   · **不写 `config`**（= 照抄宿主 standard）⇒ **6 个**：
+          #     `arch-view` · `auto-task` · `cg-web-accessibility` ·
+          #     `cg-web-lighthouse-optimizer` · `frontend-design` · `dsh-interconnect`；
+          #   · **写本收窄** ⇒ **1 个**：仅 `dsh-interconnect`。
+          #   ⇒ 收窄**确实生效**（5 → 0 个文件系统技能），且**未动 `~/.dsh/**` 一个字节**。
+          # ⚠ 机制依据（`dsh-skill-filesystem/lib/index.js` 的 `roots()`）：默认根有**两处**，
+          #   各自被 `includeDefaultRoots` 把守 ——
+          #     `if (this.includeDefaultRoots && cwd !== undefined)` ⇒ 项目根
+          #       （`<projectRoot>/.dsh/skills` 与 `.agents/skills`，本项目**两者皆空**）；
+          #     `if (this.includeDefaultRoots)` ⇒ 用户根
+          #       （`join(this.dshHome,'skills')` 与 `<agentsHome>/skills`，即那 5 个）。
+          #   关掉它 ⇒ 文件系统 provider 只余 `customSkillDirs`（空）⇒ **无文件系统发现根**。
+          #   ⚠ 但 `bundledSkillDir` **另有一条旁路**：`:84-85` 的
+          #     `config.bundledSkillDir ?? (includeDefaultRoots ? process.env.DSH_BUNDLED_SKILL_DIR : void 0)`
+          #     —— 本预设**未设**该键，环境变量也未设 ⇒ 本次实测它**未**贡献技能；
+          #     `dsh-interconnect` 那条来自**独立 provider**，与此无关。
+          # ⚠ **这是"机制已就位、清单留空"，不是"能力不可用"**：将来要放某个技能，
+          #   只需往 `customSkillDirs` 里加**明确挑选的目录**，**不必改本行结构**。
+          # ⛔ 本批**未改动也未删除 `~/.dsh/**` 下任何技能目录**（硬边界）。
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+            config:
+              includeDefaultRoots: false
+              customSkillDirs: []
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+
+          # ── O2 · 压缩（⚠ **必须**隔离 `compaction`；本预设用「共享 realm 标签」而非组）──
+          # ⚠⚠ **实测硬约束（本批最重要的一处偏离，见回报第 4 段）**：
+          #   ① **裸声明**（两行就地单行、无 `isolate`）⇒ 预设**根本挂不上**：
+          #      `agentPresets.mount` 抛
+          #        `Preset services require isolate realms: compaction`
+          #      ⇒ 该预设被标 `broken` ⇒ **在选择器里被静默过滤掉**（E-21 的形态复现）。
+          #      机制依据：`dsh-agent-preset-registry/lib/index.js:123-137` 的 `leakedServices()`
+          #      —— 预设挂载时逐个检查"挂在本次挂载 fiber 内、且用的是**根 realm** 的 key 的
+          #      服务"，有一个就抛。`compaction` 是 `Service` 子类
+          #      （`dsh-compaction/lib/index.js:169-171` 的 `super(ctx, "compaction")`），
+          #      裸声明 ⇒ 用根 key ⇒ **被判泄漏**。
+          #   ② **只给叶子加 `compaction: true`**（各建各的 realm）⇒ 也挂不上：
+          #      `command-compact (@deepseek-ai/dsh-command-compact): waiting for compaction`
+          #      —— 叶子级 `true` 给**每一行各开一个新 realm**，于是两者**互相看不见**。
+          #   ③ **共享一个 realm 标签**（下面这个写法）⇒ **通过**。依据：组合参考的规则
+          #      「`isolate` maps service names to `true` or a realm label; a preset plugin
+          #      that provides a service isolates the provider **and all consumers together**」
+          #      —— 同一个**标签串**即同一个 realm ⇒ 提供者与消费者同在，`leakedServices`
+          #      不再命中，`command-compact` 也能拿到 `compaction`。
+          #   ⇒ 用 `b13realm` 这个**本预设自己的**标签（**不与宿主共用 realm 名**，
+          #     免得两边互相影响；宿主的组用的是 `true`，语义上不同）。
+          # ⚠⚠ **为什么不用宿主的「组 + isolate」写法**（`standard.patch.yml:63-79`）：
+          #   那会引入一个**分组容器行**（`group: true`）⇒ **撞本项目既有的 ⑤f 断言**
+          #   （`DECL_BANNED` 含该组名，且另有"零分组容器行"独立断言）。
+          # ⚠ 注：本文件里**连写出那两行的字面串都会**踩中 ⑤f —— 它的匹配**不剔注释**
+          #   （与 ⑤f 里"声明行"那条不同，那条已剔）。故此处**故意不写全**。
+          #   任务书 §6.5 明令「**不得放宽任何既有断言**」⇒ 组这条路**走不通**，
+          #   共享 realm 标签是**同时满足"能挂载"与"不放宽断言"**的写法（实测两者皆过）。
+          # ⚠ **未 isolate `toolResultPruner`**（宿主那份有）：本预设**没有**
+          #   `tool-result-pruner` 行 —— 用户裁定不做 ⇒ 不 isolate 它。
+          - id: compaction-basic
+            name: '@deepseek-ai/dsh-compaction-basic'
+            isolate:
+              compaction: b13realm
+          - id: command-compact
+            name: '@deepseek-ai/dsh-command-compact'
+            isolate:
+              compaction: b13realm
+
+          # ── O5 · 只取 `present` ──────────────────────────────────────────────
+          # ⚠ `todo_write` / `job_*` **本批不加**（用户只选 present）。
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+
+          # ══ 本插件的工具行（未随批 9 / 批 13 改动）══════════════════════════
           # ── 权限收敛面：**一行**，恰好两个工具（read_contracts / write_hob）──
           # ⚠ 只能写一行：本模块在一个 `apply` 里注册两个工具，写成两行会在同一个
           #   preset 作用域里把同名工具注册两次（旧项目实测，见 EXPERIENCE E-22）。

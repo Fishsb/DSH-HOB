@@ -1,4 +1,31 @@
-# 两个 Agent 预设的契约正文 —— **v10（批 11：Hob 决策自主 + 允许提问，Hob-Execute 侧一字未动）**
+# 两个 Agent 预设的契约正文 —— **v11（批 13：Hob 能力补足第二批 —— AGENTS.md / skill / 压缩 / present；契约正文一字未动）**
+
+> **状态变更（v10 → v11，2026-10-08 · 批 13 · UD-72 / CHG-017）**：本批加的是**能力与机制**，
+> **两个预设的契约正文一个字都没改**（Hob / Hob-Execute 的 persona 文本均未动）⇒
+> 下面的引文块**照旧逐字相同**。变的只是**工具面与声明面**：
+>
+> | # | 补足项 | 落点 | 机制 |
+> |---|---|---|---|
+> | 1 | **读工作区 `AGENTS.md`**（O4） | 声明面 `agent-instructions`（+`maxBytes: 65536`） | 【**消息段**】无工具名 |
+> | 2 | **按需加载技能指引**（O3） | 声明面 `skill-filesystem` + `tool-skill` ⇒ 白名单 + `skill` | 与门（E-86） |
+> | 3 | **`/compact` 历史压缩**（O2） | 声明面 `compaction-basic` + `command-compact` | 【**斜杠命令**】无工具名 |
+> | 4 | **把产出挂成交付卡**（O5 取 present） | 声明面 `present` ⇒ 白名单 + `present` | 与门（E-86） |
+>
+> ⚠ **白名单 21 → 23**（只增 `skill` · `present`）。**不做**：O1（`/goal` + 目标类）、
+> O6（`/plan` + `exit_plan_mode`）、`todo_write` / `job_*`；**硬禁未破**：无 `bash` / `pwsh` /
+> `subagent*` / `workflow-*`（撞 UD-13 / UD-56）。
+> ⚠ **`Hob-Execute` 侧零变化**（声明面 / `WORK_MODEL_DENY` / 契约 **diff 为空**，实测其模型面仍 **103**）。
+> ⚠ **两处需重点读的实现取舍**（详见批 13 报告第 4 段）：
+> · **OP2 技能目录收窄**：`includeDefaultRoots: false` + `customSkillDirs: []`
+>   ⇒ `~/.dsh/skills/` 那 **5 个全部挡掉**；**实测仍余 1 个** `dsh-interconnect`
+>   （该插件自己的 provider，**不属**文件系统发现根，本行管不到它）。
+> · **OP3 压缩的 isolate 是"必须"**：裸声明会让预设**挂不上**
+>   （`Preset services require isolate realms: compaction` ⇒ broken ⇒ 选择器里静默消失）。
+>   本预设用 **共享 realm 标签**（`compaction: b13realm` × 2）而非宿主那套「组 + isolate」，
+>   因为**组会撞 ⑤f 的零分组断言**（任务书 §6.5 禁止放宽既有断言）⇒ 这是同时满足两者的写法。
+>
+> ⚠ **以下 v10 及更早的各节内容维持原样**（本批不改契约、不改断言口径；仅**新增 ⑤h 组**）。
+>
 
 > **状态变更（v9 → v10，2026-10-07 · 批 11 · UD-68 / CHG-015）**：Hob 契约**就地追加一段**
 > —— **决策自主 + 允许提问（但尽量不问）**，**未新起 `##` 小节**、未动围栏与结构条文：
@@ -204,6 +231,7 @@
 - 更新：2026-10-07（**批 6 · 委派/验收规则（Hob）+ 禁交互提问 + 回报六段（Hob-Execute）；同批机制落地摘掉 `ask_user_question` 的模型面**）
 - 更新：2026-10-07（**v9，批 9 · CHG-014：Hob 三类只读能力落地，三处失实句就地改对；新增 ⑤f 组**）
 - 更新：2026-10-07（**v10，批 11 · UD-68 / CHG-015：Hob 决策自主 + 只在"只有用户能定"时才问；Hob 侧恢复 `ask_user_question`（白名单 21），Hob-Execute 侧一字未动；新增 ⑤g 组；⑤f 移除一处禁项并修一处假通过判据**）
+- 更新：2026-10-08（**v11，批 13 · UD-72 / CHG-017：Hob 补足 AGENTS.md 消息段 / skill 两行 + `skill` 工具 / `compaction-basic`+`command-compact` ⇒ `/compact` / `present` 工具；白名单 21 → 23；技能目录收窄到 0 个文件系统技能（实测仍余插件自带的 1 个）；压缩两行用共享 isolate realm 以规避分组行；Hob-Execute 侧 diff 为空；**契约正文一字未动**，新增 ⑤h 组**）**
 - 维护者：Hob · 决策者：用户
 
 ---
@@ -863,6 +891,36 @@ Reply in the language the user is currently using. If the user writes in Chinese
     `## Asking the user` / `## When to ask`）；
   · **兼容负向**：既有 7 条编排条文（文件交接 TASK.md 落点 / 委派门槛 / 指令自足 / 攒批 /
     验收只认读数 / 接住问题 / 投递禁令句）**逐字仍在**（任务书 §D1 要求逐字保留）。
+- **⑤h 批 13 · Hob 能力补足第二批**（2026-10-08 · UD-72 / CHG-017）：**新增组**，缺失即 FAIL。
+  上面 ⑤/⑤b/⑤c/⑤d/⑤e **都只管契约正文**、⑤f/⑤g 只管批 9/批 11 那两批；
+  **没有一条**覆盖本批的 2 个白名单名与 6 行声明面 —— 被删掉也照样 PASS。本组钉：
+  · **白名单含批 13 的 2 个目标名**（`skill` · `present`）—— 正向；
+  · **白名单恰好 23 名**（11 + 9 + 1 + 2）—— 正向（防止悄悄多放一个）；
+  · **白名单不含 18 个本批硬禁项**（`bash` · `pwsh` · `write` · `edit` · `web_search` ·
+    `todo_write` · `job_list|output|kill` · `create_goal|get_goal|update_goal` ·
+    `exit_plan_mode` · `subagent` · `subagent_fork` · `spawn_teammate` · `send_message` ·
+    `workflow`）—— **负向**；
+  · **声明面 6 行指名增行全在位**（`agent-instructions` · `skill-filesystem` · `tool-skill` ·
+    `compaction-basic` · `command-compact` · `present`）—— 正向；
+    ⚠ 判据**先剔 YAML 注释行**（同 ⑤f 那处已修的"假通过"纪律：本 patch 的注释块里**逐字引用**了
+    宿主那几行，不剔注释则"真行被删"仍会 PASS）；
+  · **声明面无 11 个本批硬禁行** —— **负向**（与白名单那条成对，堵"放行名字但作用域无该工具"）；
+  · **压缩两行共享同一 isolate realm 标签** —— 正向。
+    ⚠ 这条钉的是一条**实测硬约束**：裸声明（无 `isolate`）⇒ 预设**挂不上**
+    （`Preset services require isolate realms: compaction` ⇒ broken ⇒ **选择器里静默消失**）；
+    两行用**不同** realm ⇒ `command-compact: waiting for compaction`，同样挂不上。
+    另**负向**：不得引入压缩的**分组容器行**（那会撞 ⑤f 的零分组断言）。
+  · **`skill-filesystem` 处于收窄态**（`includeDefaultRoots: false` + `customSkillDirs: []`）
+    —— 正向（UD-72② 的落点，防"照抄宿主"把 5 个技能全放进来）。
+  · **两处 JSDoc 已改对** —— **负向**（不得再出现 `@param gateCtx` 与"门禁…关闭时本函数不会被调用"）
+    ＋**配对正向**（须有具名 `@param ctx`，免得"只删不写"骗过负向）。
+    ⚠ 判据**按函数名定位**（`filterModelToolList` / `enforceToolAllowlist`），**不按行号** ——
+    行号会因本批增行而移位。
+  ⚠ 口径：钉的是**名字集合 / 声明行 / 结构性 YAML 事实**（机检能判定的那一层），
+  **不是"工具真能跑通"**；后者见批 13 报告第 3 段的隔离实例活体读数。
+  ⚠ **本组是新增断言，不是放宽**：⑤f / ⑥ 与其余各组的断言**一条未删、一条未改口径**
+  （任务书 §6.5 明令）；本批**唯一**的机检行为改动就是**新增本组**。
+  另：本批**负向对拍 6 组**（≥3 达标）—— 逐组把"该 FAIL 的场景"造出来、确认 FAIL，再逐字节还原。
 - ⑥ `complete: true` 与工具面声明未变（Hob = 1 行工具模块；Hob-Execute 行数 == 宿主创造模式）。
 
 > ⚠ **⑤ 与 ⑤b 的分工**：⑤ 只能证明"两份载体一致"，**证明不了规则本身还在** ——

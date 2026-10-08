@@ -854,6 +854,185 @@ const STALE_APPELLATIONS = [
   } else ok(`⑤g ${NAME_HO}：既有 7 条编排条文逐字保留（追加未挤掉任何一条）`)
 }
 
+// ── ⑤h 批 13 · Hob 能力补足第二批：白名单 +2 名 + 声明面 6 行 + 禁项 + 文字面 ──
+//
+// 为什么需要：批 13（O4 / O3 / O2 / O5 取 present）给 Hob 加了四类能力，落点同样是
+//   **声明面 与 白名单 的「与门」**（E-86）。⑤f 只管**批 9 那 9 名 + 批 11 那 1 名** ——
+//   有人把批 13 的 2 名删掉、或把 6 行声明面全删，⑤f 与前各组**照样 PASS**。
+//   本条把它钉住，并**同时**钉住"本批硬禁项一个都没混进来"。
+//
+// ⚠ 口径说明（防误读）：
+//   · 钉的是**名字集合与声明行**（机检能判定的那一层），**不是**"工具真能跑通" ——
+//     后者须隔离实例活体读数（见批 13 报告第 3 段）。
+//   · **这是新增断言，不是放宽**：任何一条缺失即 FAIL；**⑤f 与 ⑥ 一条未动**。
+//   · `agent-instructions` / `command-compact`（+`compaction-basic`）**不产生工具名** ——
+//     它们**只**由下面的声明面断言覆盖；白名单那两条与此无关（免得后来人"补名字"）。
+{
+  const toolsSrc13 = (() => {
+    try { return readFileSync(join(root, 'src', 'preset', 'tools.ts'), 'utf8') } catch { return undefined }
+  })()
+  if (toolsSrc13 === undefined) {
+    bad('⑤h 读不到 src/preset/tools.ts（白名单的唯一来源）')
+  } else {
+    const m13 = /export const MODEL_TOOL_ALLOWLIST[^=]*=\s*\[([\s\S]*?)\n\]/.exec(toolsSrc13)
+    if (m13 === null) {
+      bad('⑤h 在 src/preset/tools.ts 里找不到 MODEL_TOOL_ALLOWLIST 的字面量数组')
+    } else {
+      const allow13 = [...m13[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+      const set13 = new Set(allow13)
+
+      // ── 正向：批 13 的 2 个目标名**必须**在白名单里 ────────────────────
+      const NEEDED13 = [
+        ['O3 按需加载技能指引', 'skill'],
+        ['O5 把产出挂成交付卡', 'present'],
+      ]
+      const miss13 = NEEDED13.filter(([, n]) => !set13.has(n))
+      if (miss13.length > 0) {
+        bad(`⑤h ${NAME_HO} 白名单缺目标名（${miss13.length} 个）：${miss13.map(([g, n]) => `${n}(${g})`).join(', ')}`)
+      } else ok(`⑤h ${NAME_HO}：白名单含批 13 的 2 个目标名（${NEEDED13.map(([, n]) => n).join(', ')}）`)
+
+      // ── 正向：白名单**恰好 23**（防止悄悄多放一个而无人察觉）──────────
+      // 23 = 既有 11 + 批 9 的 9 + 批 11 的 1 + 批 13 的 2。
+      if (allow13.length !== 23) {
+        bad(`⑤h ${NAME_HO} 白名单应恰好 23 名，实测 ${allow13.length}`
+          + `（多出：${allow13.filter((n) => !['read_contracts','write_hob','advanced_search','multi_search','platform_search','video_search','free_search_test','schedule_create','schedule_list','schedule_update','schedule_delete','taskboard_list','taskboard_get','taskboard_comments','roundtable_status','web_fetch','read','glob','grep','read_image','ask_user_question','skill','present'].includes(n)).join(', ') || '无'}）`)
+      } else ok(`⑤h ${NAME_HO}：白名单恰好 23 名（11 + 9 + 1 + 2）`)
+
+      // ── 负向：**本批硬禁项一律不得**在白名单里（任务书 §0 / §3）────────────
+      // ⚠ 与 ⑤f 的禁项清单**部分重叠是刻意的**：⑤f 钉的是"批 9 起就不许有的"，
+      //   本条钉的是"批 13 明确点名不许有的"（含 O1/O6/O5 其余那几类的具体工具名）。
+      const FORBIDDEN13 = [
+        ['S5 跑命令', 'bash'],
+        ['S5 跑命令', 'pwsh'],
+        ['S4 写工作区文件', 'write'],
+        ['S4 写工作区文件', 'edit'],
+        ['S2 宿主检索（未放行）', 'web_search'],
+        ['O5 其余（用户只选 present）', 'todo_write'],
+        ['O5 其余（用户只选 present）', 'job_list'],
+        ['O5 其余（用户只选 present）', 'job_output'],
+        ['O5 其余（用户只选 present）', 'job_kill'],
+        ['O1 目标类（用户裁定不做）', 'create_goal'],
+        ['O1 目标类（用户裁定不做）', 'get_goal'],
+        ['O1 目标类（用户裁定不做）', 'update_goal'],
+        ['O6 计划模式（用户裁定不做）', 'exit_plan_mode'],
+        ['S6/S8 派活与委派', 'subagent'],
+        ['S6/S8 派活与委派', 'subagent_fork'],
+        ['S6/S8 派活与委派', 'spawn_teammate'],
+        ['S6/S8 派活与委派', 'send_message'],
+        ['S6/S8 派活与委派', 'workflow'],
+      ]
+      const present13 = FORBIDDEN13.filter(([, n]) => set13.has(n))
+      if (present13.length > 0) {
+        bad(`⑤h ${NAME_HO} 白名单**含本批硬禁项**（${present13.length} 个）：${present13.map(([g, n]) => `${n}(${g})`).join(', ')}`)
+      } else ok(`⑤h ${NAME_HO}：白名单不含 ${FORBIDDEN13.length} 个本批硬禁项（${FORBIDDEN13.map(([, n]) => n).join(', ')}）`)
+
+      // ── 正向：声明面 6 行**必须**在位（判据**先剔 YAML 注释行**）────────
+      // ⚠⚠ 与 ⑤f 那处**假通过**同款纪律（E-67 族）：本文件与 patch 的注释块里
+      //   **逐字引用了宿主那几行**；若不剔注释，"声明行被删掉"时断言**照样 PASS**。
+      const strip13 = (s) => s.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+      const hoDecl13 = strip13(hoSrc).replace(/'([^']*)'/g, '$1')
+      const DECL13 = [
+        ['O4 工作区 AGENTS.md', 'agent-instructions', '@deepseek-ai/dsh-agent-instructions'],
+        ['O3 skill 提供者', 'skill-filesystem', '@deepseek-ai/dsh-skill-filesystem'],
+        ['O3 skill 工具', 'tool-skill', '@deepseek-ai/dsh-tool-skill'],
+        ['O2 压缩服务', 'compaction-basic', '@deepseek-ai/dsh-compaction-basic'],
+        ['O2 /compact 命令', 'command-compact', '@deepseek-ai/dsh-command-compact'],
+        ['O5 present 工具', 'present', '@deepseek-ai/dsh-tool-present'],
+      ]
+      const missDecl = DECL13.filter(([, , pkg]) => !hoDecl13.includes(`name: ${pkg}`))
+      if (missDecl.length > 0) {
+        bad(`⑤h ${NAME_HO} 声明面缺指名增行（${missDecl.length} 行）：${missDecl.map(([g, id, pkg]) => `${id}(${g})`).join(', ')}`
+          + ' —— 白名单放行了名字但作用域内没有该工具 ⇒ 执行期 `unknown tool`（判据已剔注释）')
+      } else ok(`⑤h ${NAME_HO}：声明面 6 行指名增行全在位（${DECL13.map(([, id]) => id).join(', ')}；判据已剔注释）`)
+
+      // ── 正向：本批硬禁的声明行**一律不得**出现（与白名单那条成对）────────
+      const DECL_FORBID = ['@deepseek-ai/dsh-tool-bash', '@deepseek-ai/dsh-tool-pwsh',
+        '@deepseek-ai/dsh-tool-subagent', '@deepseek-ai/dsh-tool-workflow',
+        '@deepseek-ai/dsh-tool-ralph', '@deepseek-ai/dsh-plugin-manager/tools',
+        '@deepseek-ai/dsh-command-goal', '@deepseek-ai/dsh-tool-goal',
+        '@deepseek-ai/dsh-plan-mode', '@deepseek-ai/dsh-tool-todo',
+        '@deepseek-ai/dsh-tool-jobs']
+      const declBad = DECL_FORBID.filter((p) => hoDecl13.includes(`name: ${p}`))
+      if (declBad.length > 0) {
+        bad(`⑤h ${NAME_HO} 声明面含本批硬禁行（${declBad.length} 个）：${declBad.join(', ')}`
+          + ' —— 任务书 §0 明列为硬禁（撞 UD-13 / UD-56 / 用户裁定不做）')
+      } else ok(`⑤h ${NAME_HO}：声明面无本批 ${DECL_FORBID.length} 个硬禁行`)
+
+      // ── 正向：压缩两行**必须**带 isolate（否则预设挂不上 —— 实测硬约束）────
+      // 判据取 YAML 结构事实：`compaction-basic` / `command-compact` 两块里
+      //   必须各自出现 `isolate:` 与 `compaction:`，且**标签串相同**（同一 realm）。
+      // ⚠ 为什么钉它：裸声明 ⇒ `Preset services require isolate realms: compaction`
+      //   ⇒ 预设标 broken ⇒ 选择器里静默消失（E-21 形态）。这条把"能挂载"这一事实固化，
+      //   免得后来人"简化"掉 isolate 而毫无察觉（机检是唯一会喊的地方）。
+      const blk = (id) => strip13(hoSrc).split(/\n(?=\s+- id: )/).find((b) => new RegExp('- id: ' + id + '\\b').test(b)) ?? ''
+      const cB = blk('compaction-basic'), cC = blk('command-compact')
+      if (cB === '' || cC === '') {
+        bad('⑤h ' + NAME_HO + '：找不到 compaction-basic / command-compact 声明块')
+      } else {
+        const realmOf = (b) => (/isolate:\s*\n\s+compaction:\s*(\S+)/.exec(b) ?? [])[1]
+        const rb = realmOf(cB), rc = realmOf(cC)
+        if (rb === undefined || rc === undefined) {
+          bad(`⑤h ${NAME_HO}：压缩两行缺 \`isolate: compaction:\` —— 裸声明会让预设**挂不上**`
+            + '（`Preset services require isolate realms: compaction` ⇒ broken ⇒ 选择器静默消失）')
+        } else if (rb !== rc) {
+          bad(`⑤h ${NAME_HO}：压缩两行的 isolate realm 标签**不一致**（${rb} vs ${rc}）`
+            + ' —— 不同 realm ⇒ `command-compact` 读不到 `compaction`（waiting for compaction）')
+        } else ok(`⑤h ${NAME_HO}：压缩两行共享 isolate realm \`${rb}\`（可挂载；裸声明会 broken）`)
+      }
+      // 配对负向：**不得**为此引入分组容器行（那会撞 ⑤f，且任务书禁止放宽断言）。
+      if (/^\s+- id: compaction\s*$/m.test(strip13(hoSrc))) {
+        bad(`⑤h ${NAME_HO}：出现了额外的 \`- id: compaction\` 容器行 —— 与 ⑤f 的零分组断言冲突（应改用共享 realm 标签）`)
+      } else ok(`⑤h ${NAME_HO}：未引入 compaction 分组容器行（用共享 realm 标签，未撞 ⑤f）`)
+
+      // ── 正向：skill 目录**必须**处于"收窄态"（UD-72② 的落点，非故障）──────
+      // 判据：`skill-filesystem` 行里必须同时有 `includeDefaultRoots: false`
+      //   与 `customSkillDirs: []`。理由：不这样写 ⇒ 默认根会把 ~/.dsh/skills 下
+      //   **全部 5 个**技能一并给 Hob，其中 3 个撞 UD-56（见任务书 §2）。
+      const skillRow = strip13(hoSrc).split(/\n(?=\s+- id: )/).find((b) => /- id: skill-filesystem\b/.test(b)) ?? ''
+      if (!/includeDefaultRoots:\s*false/.test(skillRow)) {
+        bad(`⑤h ${NAME_HO}：\`skill-filesystem\` 行未写 \`includeDefaultRoots: false\``
+          + ' —— UD-72② 要求收窄技能发现范围（否则 ~/.dsh/skills 的 5 个技能全进 Hob，3 个撞 UD-56）')
+      } else ok(`⑤h ${NAME_HO}：\`skill-filesystem\` 行已写 \`includeDefaultRoots: false\`（收窄生效）`)
+      if (!/customSkillDirs:\s*\[\s*\]/.test(skillRow)) {
+        bad(`⑤h ${NAME_HO}：\`skill-filesystem\` 行未写 \`customSkillDirs: []\``
+          + ' —— 与本批"清单留空"的口径不符（若已挑选目录，请一并更新本断言与报告第 4 段）')
+      } else ok(`⑤h ${NAME_HO}：\`skill-filesystem\` 行已写 \`customSkillDirs: []\`（收窄态：~/.dsh/skills 的 5 个全挡；插件自带的 dsh-interconnect 仍见）`)
+
+      // ── 正向：**JSDoc 与实现一致**（批 13 文字修正①，按函数名定位）────────
+      // ⚠ 判据按**函数名**而非行号（行号会因批 13 的增行而移位 —— E-91 那一族）：
+      //   取 `filterModelToolList` / `enforceToolAllowlist` 各自的 JSDoc 块，
+      //   里面**不得**再出现 `@param gateCtx` 与"门禁…关闭时本函数不会被调用"。
+      //   这是**负向**断言：旧措辞回归 ⇒ FAIL。
+      const jsdocOf = (fn) => {
+        const at = toolsSrc13.indexOf(`function ${fn}(`)
+        if (at < 0) return undefined
+        const start = toolsSrc13.lastIndexOf('/**', at)
+        return start < 0 ? undefined : toolsSrc13.slice(start, at)
+      }
+      const STALE = [
+        ['两处 JSDoc 的旧参数名', '@param gateCtx'],
+        ['两处 JSDoc 的失实说明', '门禁就绪后的子 ctx'],
+      ]
+      for (const fn of ['filterModelToolList', 'enforceToolAllowlist']) {
+        const doc = jsdocOf(fn)
+        if (doc === undefined) { bad(`⑤h 找不到函数 ${fn} 的 JSDoc（判据按函数名定位）`); continue }
+        const stale = STALE.filter(([, s]) => doc.includes(s))
+        if (stale.length > 0) {
+          bad(`⑤h ${NAME_HO}：\`${fn}\` 的 JSDoc 仍含失实措辞（${stale.map(([l]) => l).join(' / ')}）`
+            + ' —— 调用点已改为外层 ctx，且门禁关闭时该函数**照常执行**（批 13 文字修正①）')
+        } else ok(`⑤h ${NAME_HO}：\`${fn}\` 的 JSDoc 已不含失实措辞（参数名与"门禁关闭"说法均已改对）`)
+      }
+      // 配对正向：改对后的新措辞**必须**在位（只删不写会让人无法判断参数到底是什么）。
+      for (const fn of ['filterModelToolList', 'enforceToolAllowlist']) {
+        const doc = jsdocOf(fn) ?? ''
+        if (!doc.includes('@param ctx - ')) {
+          bad(`⑤h ${NAME_HO}：\`${fn}\` 的 JSDoc 缺 \`@param ctx\`（批 13 修正后的参数名）`)
+        } else ok(`⑤h ${NAME_HO}：\`${fn}\` 的 JSDoc 已改用具名 \`@param ctx\``)
+      }
+    }
+  }
+}
+
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────
 {
   // 规划侧：complete: true + 恰好 1 行工具模块

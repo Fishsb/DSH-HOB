@@ -228,7 +228,7 @@ dsh-hob/
 | 预设 | 显示名 | id | 基于 | 干什么 | 权限 |
 | （2026-10-07 批 2 起，显示名与 id **同字面值**：`Hob` / `Hob-Execute`） | | | | | |
 |---|---|---|---|---|---|
-| **Hob** | `Hob` | `Hob` | DSH **极简模式**（minimal）+ 批 9 三个指名增行 + **批 11 一个指名增行** | 与用户沟通、理解需求，**拆分任务 → 编排任务 → 分发任务 → 监督验收落实情况**；把活写成给 Hob-Execute 的指令；**只读的事自己直接做**；**能按项目主线判断的自己决策推进** | **只读**：项目 `.md` + 工作区文件（`read`/`glob`/`grep`/`read_image`）+ 网页正文（`web_fetch`）+ 看板与圆桌**只读**查询（`taskboard_list`/`get`/`comments`、`roundtable_status`）；**只写自己的 `.hob/`**；**可向用户提问**（`ask_user_question`，批 11）；**仍无**写工作区 / 无命令 / 无派活（批 9） |
+| **Hob** | `Hob` | `Hob` | DSH **极简模式**（minimal）+ 批 9 三个指名增行 + 批 11 一个指名增行 + **批 13 六个指名增行** | 与用户沟通、理解需求，**拆分任务 → 编排任务 → 分发任务 → 监督验收落实情况**；把活写成给 Hob-Execute 的指令；**只读的事自己直接做**；**能按项目主线判断的自己决策推进** | **只读**：项目 `.md` + 工作区文件（`read`/`glob`/`grep`/`read_image`）+ 网页正文（`web_fetch`）+ 看板与圆桌**只读**查询（`taskboard_list`/`get`/`comments`、`roundtable_status`）；**只写自己的 `.hob/`**；**可向用户提问**（`ask_user_question`，批 11）；**可加载技能指引**（`skill`，批 13）+ **可把产出挂成交付卡**（`present`，批 13）+ **读工作区 `AGENTS.md`**（`agent-instructions`，批 13）+ **`/compact`**（批 13，⚠ 声明面无工具名）；**仍无**写工作区 / 无命令 / 无派活 |
 | **Hob-Execute** | `Hob-Execute` | `Hob-Execute` | DSH **创造模式**（cordis） | **面向 Hob**（不是面向用户）承担**执行落实**：接收 Hob 产出的指令并在工作区实施 | **工具全给**（文件读写、命令、检索、子代理、插件管理等）—— ⚠ **一项定点例外**：禁交互提问类工具已从模型面摘掉（见下「一条硬要求」） |
 
 **命名规则**：两者互相称呼时**一律用名称（Hob / Hob-Execute）** —— 它们与预设 id 同字面值，
@@ -382,8 +382,21 @@ Hob-Execute **不能给 Hob 发消息**（`You cannot message it`），反向也
 | 层 | 含义 | Hob 的读数 | 判据（谁在断言） |
 |---|---|---|---|
 | **注册面** | 该预设作用域里**注册了**哪些名字（含被 `restrict` 摘掉、含装配期过滤看不见的） | 批 8 基线 **85**；批 9 加三行后见报告；批 11 再加一行后见批 11 报告 | `ctx.tools.view(scope).knownNames` |
-| **模型面** | **发给模型的**那一份清单（= 装配期白名单过滤的结果） | **21**（既有 11 + 批 9 新增 9 + **批 11 新增 1**） | `MODEL_TOOL_ALLOWLIST`（`src/preset/tools.ts`）；机检 ⑤f |
+| **模型面** | **发给模型的**那一份清单（= 装配期白名单过滤的结果） | **23**（既有 11 + 批 9 新增 9 + 批 11 新增 1 + **批 13 新增 2**） | `MODEL_TOOL_ALLOWLIST`（`src/preset/tools.ts`）；机检 ⑤f / ⑤h |
 | **执行面** | 真调能不能落地 | 白名单内可落地；名单外被拒（`TOOL_NOT_ALLOWED`） | `enforceToolAllowlist`（`tools/pre-execute`） |
+
+> ⚠ **批 13 的模型面增量（2 项）**：`skill`（按需加载技能指引）+ `present`（把产出挂成交付卡）
+> （用户裁定 UD-72 / CHG-017）。
+> 落点同样是「**声明面 与 白名单的与门**」（E-86）：声明面**指名增行**
+> `tool-skill`（+ `skill-filesystem` 供目录）与 `present`，白名单 **21 → 23**。
+> ⚠ **另有两项"只改声明面、不产生工具名"**，别误以为漏加：
+> · `agent-instructions` —— 注入的是**消息段**（工作区 `AGENTS.md`），无工具名；
+> · `command-compact`（+ 依赖 `compaction-basic`）—— **斜杠命令** `/compact`，无工具名。
+> ⚠ **skill 收窄态（隔离实例实测）**：`includeDefaultRoots: false` + 空 `customSkillDirs`
+> ⇒ `~/.dsh/skills/` 那 **5 个全部不可见**；仍可见的只剩 **1 个**（`dsh-interconnect`，
+> 由该插件自己的 provider 注册，**不来自**文件系统发现根）。对照读数：不写 config ⇒ **6 个**。
+> ⇒ 是**有意的收窄态**（UD-72②：那 5 个里没有一个"与本项目规划侧相关且在 Hob 工具面下可用"），
+> **不是故障**；要放技能只需往 `customSkillDirs` 加明确挑选的目录。
 
 > ⚠ **批 11 的模型面增量（1 项）**：向用户提问 —— `ask_user_question`
 > （用户裁定 UD-68 / CHG-015：**允许 Hob 提问，但尽量不问**）。
@@ -396,9 +409,9 @@ Hob-Execute **不能给 Hob 发消息**（`You cannot message it`），反向也
 > ⚠ **但那是收敛措施、不是安全边界** —— 拦截器 **fail-open**（异常一律放行）⇒
 > 它自身失效时 `write`/`edit` 会重新可达。**已知残余风险**，本批只如实登记、不新造机制。
 
-**本插件注册的工具 ⊆ 上面两个**（"只有规划预设挂本插件的工具"）。这一条**批 9 / 批 11 均未变**：
+**本插件注册的工具 ⊆ 上面两个**（"只有规划预设挂本插件的工具"）。这一条**批 9 / 批 11 / 批 13 均未变**：
 指名增行带进来的是**宿主自己的**工具（`dsh-tool-web` / `dsh-tool-fs` / `dsh-tool-fs-search` /
-**`dsh-tool-ask-user`（批 11）**），不是本插件注册的。⇒ 「工具的**定义**与**注册**分离」
+`dsh-tool-ask-user`（批 11）/ **`dsh-tool-skill` / `dsh-tool-present`（批 13）**），不是本插件注册的。⇒ 「工具的**定义**与**注册**分离」
 这条架构性质**仍然成立**（定义住 `src/modules/tools.ts`、注册住 `src/preset/tools.ts`；
 宿主工具的注册在宿主包里）。
 
@@ -527,6 +540,19 @@ Hob-Execute **不能给 Hob 发消息**（`You cannot message it`），反向也
 且 `dsh-hmr` 只 `watchConfig` 两个文件（profile 的 `cordis.patch.yml` 与
 `$DSH_HOME/cordis.patch.yml`）—— **bundle 自带的 patch 不在列表里**。
 
+> ⚠⚠ **批 13 §4.3 实测复证（2026-10-08；此前只是"读代码推断"，现为活体读数）**：
+> 给 **Hob 预设文本**注入哨兵串 `ZZPROBE_B13_A` ⇒ 在**同一进程内**（不重启）把该串改成 `B`
+> ⇒ 新建 Hob 会话的 `system-prompt/assemble` 正文（len **10254**）**仍含 `A`、不含 `B`**
+> （`R1: A=true B=false` → `R2: A=true B=false`）。
+> **正向对照**：另起一个新进程（= 重启）后同法新建会话 ⇒ **含 `B`、不含 `A`**
+> （`POSCTRL: A=false B=true`，len 仍 10254）⇒ **变量只有"是否重启"一个**，
+> 故结论成立：**本包的 `preset/*.patch.yml`（bundle 层）改动 ⇒ 必须重启才生效**。
+> ⇒ **口径维持原样，不改**（任务书 §4.3 的"标记不在"分支）。
+> ⚠ **与 F-J87③「不得再断言 profile 改动须重启」不矛盾** —— 那条讲的是
+> **profile 层**（`~/.dsh/profiles/*/cordis.patch.yml`，**在** `dsh-hmr` 监视列表内）；
+> 本条讲的是**本包自带的 bundle 层 patch**（**不在**列表内）。**两层结论相反、各自成立**，
+> 别把一条推广到另一条。哨兵测完已移除（`cmp` 与测前快照**逐字节相同**）。
+
 ⚠ **`--dump-config` 是离线读盘**，**与运行进程的内存无关** ——
 它显示新值**不等于**进程已生效。判断"是否已生效"要看**实例启动时刻 vs 产物构建时刻**。
 
@@ -563,7 +589,7 @@ Hob-Execute **不能给 Hob 发消息**（`You cannot message it`），反向也
 | 代码 | ❌ 禁区（**不能改**；读代码文件见下一行） | ✅ 读写 |
 | 工作区文件 | 👁 **只读**（批 9 起：`read` / `glob` / `grep` / `read_image`）—— **不能写** | ✅ 读写 |
 | `.md` 文档 | 👁 只读（原有 `read_contracts` + 批 9 的 `read`） | ✅ 读写 |
-| **网页正文** | 👁 只读（批 9 起 `web_fetch`）；检索另有既有 5 项 | ✅ 读写 |
+| **网页正文** | 👁 只读（批 9 起 `web_fetch`）；检索另有既有 5 项（**不含**宿主的 `web_search` —— 它在注册面、被白名单滤掉，实测 Hob 模型面无此名） | ✅ 读写 |
 | **看板 / 圆桌** | 👁 **只读查询**（批 9 起 `taskboard_list` / `taskboard_get` / `taskboard_comments` / `roundtable_status`）—— **不能建卡、移卡、开会、派活** | ✅ 读写（含改动状态） |
 | `.hob/` 账本 | ✅ 读写 | 👁 只读 |
 | **命令** | ❌ **无**（`bash` / `pwsh` 未进声明面，也未进白名单） | ✅ 有 |
@@ -601,7 +627,7 @@ Hob-Execute **不能给 Hob 发消息**（`You cannot message it`），反向也
 **三层收敛机制（实测现状）**
 
 1. **装配期过滤**（`system-prompt/assemble` waterfall）—— 决定**发给模型的工具清单**；
-   真机实测：Hob 模型面 **53 → 11**（批 6 基线；批 9 起白名单为 **20**，机制未变）。
+   真机实测：Hob 模型面 **53 → 11**（批 6 基线；批 13 起白名单为 **23**，机制未变）。
 2. **执行前拦截**（`tools/pre-execute` waterfall）—— 决定**调用能否落地**；
    隔离实测（21 bundle 与真机逐项相同）：被滤掉的工具**调用被拒**（`TOOL_NOT_ALLOWED`）。
 3. **历史 deny**（`restrict({ deny })`）—— 摘**继承来的全局工具**（如 `interconnect_*`）。
@@ -716,14 +742,23 @@ Orb 侧配置与预设**保留不动**。
 
 ### 10.1 收尾必跑（每轮完成前）
 
-四条命令**全部 exit 0** 才算收尾完成：
+**五条命令全部 exit 0** 才算收尾完成：
 
 | 命令 | 守什么 |
 |---|---|
-| `npm run typecheck` | 类型 |
-| `npm run check:presets` | 契约（人读版 vs 机器读版**逐字一致**） |
+| **`npm run build`** | **两个半边都重建** —— `tsc`（host：`lib/index.js` 等）+ **`tsdown`（client：`lib/client.js`）**。⚠ 批 13 起 `build` **已并入 client**（此前只跑 `tsc`） |
+| `npm run typecheck` | 类型（host + client 两份 tsconfig） |
+| `npm run check:presets` | 契约（人读版 vs 机器读版**逐字一致**）+ 工具面声明与白名单（⑤f / ⑤g / **⑤h**） |
 | **`npm run check:gitignore`** | **入库规则与 README 约定一致** —— 防 R-6 的**静默断链** |
 | **`npm run check:experience`** | **经验库自身**：编号唯一 / 连续 + 四要素齐备（`E-84` 起）+ 每条有根因句 |
+
+⚠ **为什么 `build` 必须进清单（批 13 §5 修的）**：**R-2** —— `lib/` 被 gitignore，
+`src → lib` 的漂移**在 `git status` 里看不见**，而宿主加载的是 `lib/`。
+更早的坑是：`lib/client.js` **不被 `build` 重建**（`tsdown` 只在 devDependencies，
+`scripts` 里没有 client 命令）⇒ 改了 `src/client/**` 而 `build` 照样 exit 0、
+界面**还是旧行为**，且**没有任何提示**。批 13 实测：tsdown 路径**离线可跑、
+产物确定**（连跑两次 md5 相同：`e2408b96…`，18404 B）⇒ 已并入 `build`。
+⚠ 只跑 `tsc` 想省时间时用 **`npm run build:client`** 单独补 client。
 
 ⚠ **为什么必须进清单**：排除漂移**不报错**。已实测：一个**入库的检查脚本**
 依赖一个**不入库的契约文件**，新 clone 上直接失败 ——

@@ -28,7 +28,8 @@
     "preset"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && npm run build:client",
+    "build:client": "tsdown --config tsdown.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "check:presets": "node scripts/check-preset-contracts.mjs",
     "check:gitignore": "node scripts/check-gitignore.mjs",

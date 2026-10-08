@@ -204,15 +204,16 @@ function denyInheritedTools(ctx: any, log: (m: string) => void): void {
 }
 
 /**
- * 「助手」**发给模型的**工具清单 —— **装配期白名单**（**21** 个显式名字）。
+ * 「助手」**发给模型的**工具清单 —— **装配期白名单**（**23** 个显式名字）。
  *
  * ── 为什么是这些 ────────────────────────────────────────────────────
  * 「助手」只干这几件事：**读项目文档 / 读工作区文件 / 写自己的账本**、
  * **查资料**、**打开网页取正文**、**只读查询看板与圆桌**、**安排自己的定时提醒**、
- * **在只有用户能定时向用户提问**。
+ * **在只有用户能定时向用户提问**、**按需加载技能指引**、**把产出挂成交付卡**。
  * 于是清单 = 本插件的 2 个 + 检索 5 个 + 定时 4 个（既有 11）
  *           + 编排只读查询 4 个 + 网页正文 1 个 + 文件只读 4 个（批 9 新增 9 = 20）
- *           + 向用户提问 1 个（**批 11 / D2 新增 1 = 21**）。
+ *           + 向用户提问 1 个（**批 11 / D2 新增 1 = 21**）
+ *           + 技能加载 1 个 + 产出挂卡 1 个（**批 13 新增 2 = 23**）。
  *
  * ── ⚠ 能力落点 = **声明面 与 白名单 的「与门」**（批 8 审查实测，见 E-86）────
  * 白名单**只**决定"这一项发不发给模型"；工具**还必须在该预设作用域里被注册**——
@@ -220,7 +221,9 @@ function denyInheritedTools(ctx: any, log: (m: string) => void): void {
  * ⇒ 本批两类改动必须**成对**落：
  *   · 编排只读查询 4 个 —— **零声明增量**（它们已在插件平面被继承到本预设作用域）；
  *   · 网页正文 1 个 + 文件只读 4 个 —— **必须同时**在 `preset-dsh-hob.patch.yml` 里
- *     指名增行（`tool-web` / `tool-fs` / `tool-fs-search`），否则只是"放行了名字"。
+ *     指名增行（`tool-web` / `tool-fs` / `tool-fs-search`），否则只是"放行了名字"；
+ *   · **批 13 同理**：`skill` 需 `tool-skill`（且 `skill-filesystem` 供目录）、
+ *     `present` 需 `present` 行 —— 两处**都已在**同批的声明面增行里落好。
  *
  * ── 为什么**排除**「改动状态 / 派活」那一批 ─────────────────────────────
  * `taskboard_create|move|update|delete` · `taskboard_checklist|comment_add|execution_report` ·
@@ -236,6 +239,15 @@ function denyInheritedTools(ctx: any, log: (m: string) => void): void {
  * 白名单的粒度是**工具名**，**无法**用它闸"写到哪个路径 / 写什么类型"（E-87）。
  * ⇒ 只要放行 `write` / `edit`，就等于把"改任意路径（含代码）"的能力给了「助手」。
  * 它们**不在**本清单里；本批不改这条取捨。
+ *
+ * ── 批 13 为何只增 `skill` / `present`（两个新名字都**不**带写权限）──────────
+ * 用户裁定（UD-72）：做 O4 / O3 / O2 / O5 中的 `present`，**不做** O1（`/goal` 目标类）、
+ * O6（`/plan` + `exit_plan_mode`）、`todo_write` / `job_*`。
+ * ⇒ 那几类**对应工具名一个都没进**本清单（`create_goal` / `get_goal` / `update_goal` /
+ * `todo_write` / `job_list` / `job_output` / `job_kill` / `exit_plan_mode` 全部零命中）。
+ * ⚠ 注意 **O4（`agent-instructions`）与 O2（`/compact`）本就不产生工具名** ——
+ *   前者注入**消息段**、后者是**斜杠命令** ⇒ 它们**只改声明面**，白名单这里**无从体现**。
+ *   这一点在回报里单列，免得后来人以为"漏加了名字"。
  *
  * ⚠ **不用通配 / 前缀**：将来新装的插件**不得自动**进入「助手」的清单。
  *   这正是 `restrict({ deny })` 黑名单的反面教训 —— 黑名单每装一个新插件都会漏。
@@ -277,6 +289,18 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
   // ⚠ **只限本预设（Hob）**：`Hob-Execute` 侧的 `WORK_MODEL_DENY` 仍禁该工具，
   //   **一个字未动**（UD-64 的禁弹窗纪律对实施侧继续生效）。
   'ask_user_question',
+  // ── 批 13 / O3：按需加载技能指引 1 个（需 `tool-skill` + `skill-filesystem`）─
+  // ⚠ 与 E-86 的「与门」同款：光放行名字不够，声明面必须同时有那两行
+  //   （本批已落，见 `preset-dsh-hob.patch.yml` 的「批 13」一节）。
+  // ⚠ **目录可能为空是正常的**：用户裁定要求**收窄技能发现范围**（UD-72②），
+  //   本预设把 `skill-filesystem` 配成 `includeDefaultRoots: false` + 空清单
+  //   ⇒ 生效技能 **0 个**。此时 `skill` 工具**仍在**（可调用），
+  //   只是调用会得到"技能未知或不再可用" ⇒ 这是**有意的收窄态**，不是故障。
+  'skill',
+  // ── 批 13 / O5：把产出挂成交付卡 1 个（需 `present` 指名增行）──────────
+  // ⚠ `present` **不写工作区**：它只声明"这些已存在的文件是交付物"，
+  //   让界面给出可预览/可打开的文件卡（`dsh-tool-present`）。⇒ 不撞 UD-13。
+  'present',
 ]
 
 /**
@@ -286,7 +310,7 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
  *   （`dsh-tools/lib/index.js:2840-2843`）。若白名单把它滤掉，助手会拿到**空清单**
  *   —— 那是比"多几个工具"严重得多的回归（会话直接失去全部能力）。
  *   native 模式下它**根本不存在**（`view()` 只在 mode !== native 时加它），
- *   故 native 下清单仍**恰好 21**（批 11 起；批 9 时为 20）。实测判据见阶段 C 报告 C3-1。
+ *   故 native 下清单仍**恰好 23**（批 13 起；批 11 为 21、批 9 为 20）。实测判据见阶段 C 报告 C3-1。
  */
 const RESERVED_TRANSPORT_TOOL = 'run_code'
 
@@ -323,17 +347,19 @@ const RESERVED_TRANSPORT_TOOL = 'run_code'
  *   `dsh-hob-work`（开发）与宿主自带的 minimal/standard/cordis **零影响**
  *   （实测逐名对照见 C3-3）。
  *
- * @param gateCtx - 门禁就绪后的子 ctx（`modules.tools` 关闭时本函数不会被调用）。
+ * @param ctx - **本预设作用域**的 ctx（`apply` 的入参，即**外层** ctx）。
+ *   ⚠ **不是**门禁子 ctx，也**不**随 `modules.tools` 开关消失 —— 见 `apply` 头部
+ *   「F1 修正的行为倒挂」一节：收敛机制**必须留下**，否则关掉门禁反而放权。
  * @param log - 诊断输出。
  */
-function filterModelToolList(gateCtx: any, log: (m: string) => void): void {
+function filterModelToolList(ctx: any, log: (m: string) => void): void {
   const allow = new Set<string>(MODEL_TOOL_ALLOWLIST)
 
   // ⚠ 走**反应式** `ctx.inject`（不是本模块的静态 `inject`）：
   //   静态 inject 缺依赖 ⇒ fiber 停 PENDING ⇒ 预设被标 `broken`
   //   ⇒ **在选择器里被静默过滤掉**（同本文件头部 E-21 的教训）。
   //   反应式注入在依赖缺席时只是**不跑回调** ⇒ 预设照常可用、宿主零告警。
-  gateCtx.inject(['systemPrompt'], (spCtx: any) => {
+  ctx.inject(['systemPrompt'], (spCtx: any) => {
     const handler = async (assembly: any, _context: any, next: any): Promise<any> => {
       // ⚠ 必须**先 `await next()`** 再过滤：后面的监听器可能还会往清单里加东西。
       const assembled = await next()
@@ -376,13 +402,15 @@ function filterModelToolList(gateCtx: any, log: (m: string) => void): void {
  *   ⇒ 本拦截器**不是**安全边界，而是收敛措施：**把「助手」弄瘫比漏一个工具更糟**。
  *   故：任何异常 / 不认识的 exec 形状 / 非本名单的名字 ⇒ **一律 `next()` 放行**。
  *
- * @param gateCtx - 门禁就绪后的子 ctx（`modules.tools` 关闭时本函数不会被调用）。
+ * @param ctx - **本预设作用域**的 ctx（`apply` 的入参，即**外层** ctx）。
+ *   ⚠ **不是**门禁子 ctx，也**不**随 `modules.tools` 开关消失 —— 见 `apply` 头部
+ *   「F1 修正的行为倒挂」一节：关掉门禁时本拦截器**照常执行**（这正是那处修正的目的）。
  * @param log - 诊断输出（走 {@link makeDiag}：默认关、有磁盘上限，不新开日志）。
  */
-function enforceToolAllowlist(gateCtx: any, log: (m: string) => void): void {
+function enforceToolAllowlist(ctx: any, log: (m: string) => void): void {
   const allow = new Set<string>(MODEL_TOOL_ALLOWLIST)
 
-  gateCtx.effect(() => gateCtx.on('tools/pre-execute', async (exec: any, next: any) => {
+  ctx.effect(() => ctx.on('tools/pre-execute', async (exec: any, next: any) => {
     // ⚠ 整个判定体包在 try/catch 里：宿主对它自己的 catch 是 **fail-closed**，
     //   任何异常都会让**这次工具调用**失败（含白名单里的）。宁可放行。
     try {
