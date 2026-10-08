@@ -1,316 +1,256 @@
-# Hob 重构方案（人读版 · 待用户过目）
+# Hob 重构方案 v4（人读版 · 待用户过目）
 
-> **出具方**：助手（Hob 侧）｜ **日期**：2026-10-08 ｜ **依据**：UD-73（授权）· UD-75（选 A）· CHG-018
+> **出具方**：助手（Hob 侧）｜ **日期**：2026-10-08 ｜ **依据**：UD-73 · UD-75 · CHG-018 · CHG-019（本次）
 > **性质**：**方案文档**。本文件**不改任何代码、不改任何预设、不改 PROJECT.md**。
-> **本次更新（v3）**：**框架反转** —— Hob-Execute 从"升级为项目组"改为
-> **"收缩为薄适配层"**。依据：隔离实测发现 `dsh-expert-mode` **执行层可用、接入层有毒**
-> （实跑证据见 §2 F5）。⇒ **执行能力不自造，也不整装外部插件；只保留本项目独有的协议。**
-> 落笔前状态：HEAD `453100a`，四命令全 exit 0，**待重启批次 = 空**。
+> **落笔前状态**：HEAD `d755bde`，四命令全 exit 0，**待重启批次 = 空**。
 >
-> ⚠ **命名澄清（防误读）**：本文件叫「重构」，但**不改架构、不加模块、不动 103 个工具**。
-> 改的是**契约的组织方式** + **契约的定位（从"能力清单"改为"协议适配"）**。
+> ## ⭐ v4 与 v3 的根本差别
+>
+> | | v3 | **v4（本次）** |
+> |---|---|---|
+> | Hob-Execute | **保留**，收缩为"薄适配层" | **删掉** |
+> | 执行者 | 仍是 Hob-Execute | **任意会话** |
+> | 账本位置 | 工作区内 `<项目>/.hob/` | **工作区外** `/home/lk/FF/.hob-ledgers/<工作区名>/` |
+> | 账本边界 | 防"执行侧写账本"（协议约束） | **物理边界**（不靠协议） |
+> | `read_contracts` | 读工作区内 `.md`（含项目文档） | **只读自己的账本** |
+>
+> **一句话**：**v3 靠"协议"约束边界，v4 把边界做成"物理位置"** —— 删掉第二个角色后，
+> 协议约束失去对象；把账本搬到工作区外，隔离由**文件系统**保证，比任何契约都硬。
 
 ---
 
 ## 0. 一句话方案
 
-**Hob 保持"电话"（对用户）不变；Hob-Execute 从"宿主编译版的复制品"收缩为"薄适配层"——
-它不提供执行能力（那是宿主与 DSH 原生 Agent Teams 的），只提供本项目独有的三样协议：
-交接协议、账本边界、验收纪律。**
-
-⭐ **框架反转的依据**：Hob-Execute 的 34 行声明 == 宿主创造模式 34 行（**零自研**），
-它唯一自有的是**persona 契约**与**两个钩子**。⇒ 让"零自研的复制品"承担执行能力是**定位错配**；
-正确做法是**把它做薄**，而非做厚。
+**Hob 从"两个预设的规划侧"变成"唯一的规划侧 + 账本管理员"；执行交给任意会话；
+账本按工作区派生到工作区之外的独立目录，物理隔离。**
 
 ---
 
-## 1. 不做什么（先划墙，防拆东墙）
+## 1. 决定清单（逐条对应你的原话）
 
-| 不做什么 | 理由 |
-|---|---|
-| **不加/不减 Hob-Execute 任何一个工具行** | 保持 34 行 == 宿主创造模式 34 行 ⇒ 机检 ⑥ **不用改** |
-| **不改 Hob 的白名单 23 名** | 用户未要求；且改它会牵动 ⑤f / ⑤h 两组断言 |
-| **不动 M3 会话总线 / 自动投递** | 挂起项（UD-11 / UD-12），本次不解冻 |
-| **不引入任何外部插件依赖作为必需项** | 用户明确：外部工具（搜索/看板/圆桌）**换环境就没有** |
-| **🔴 不整装 `dsh-expert-mode`** | **v3 新增**：隔离实测证实其接入层**会写 `$DSH_HOME`**（见 §2 F5） |
-| **不动包名 / 目录名 / loader 行 id / 设置分区标题** | 历批一贯，与预设 id 解耦 |
-| **不动 `~/.dsh/**`** | 历批硬边界 |
-
----
-
-## 2. 五个决定性事实（本方案的地基）
-
-| # | 事实 | 读数/证据 | 含义 |
-|---|---|---|---|
-| **F1** | **Hob-Execute 已有 103 个工具**，含 `spawn_teammate` / `send_message` / `wait_agent` / `list_agents` / `interrupt_agent` / `team_task_*` 4 个 / `subagent` 2 个 / `workflow` / `roundtable_*` 26 个 / `bash`+`write`+`edit` 全套 | `evidence/04-真机Hob-Execute模型面103.txt`（批 12 实测） | **执行能力的机制已就位，零新增** |
-| **F1b** | ⭐ **Hob-Execute 的 34 行 == 宿主创造模式 34 行（零自研）** | 机检 ⑥（`check-preset-contracts.mjs:1052`）；其唯一自有资产 = persona 契约 + `work-deny` 钩子 | **⇒ 它是"宿主编译版的复制品"，不该承担执行能力（v3 框架反转的依据）** |
-| **F2** | **工具分两层**：DSH 原生 vs 外部插件 | 原生：`web_fetch`/`read`/`glob`/`grep`/`read_image`/`ask_user_question`/`skill`/`present`/`schedule_*`/agent-team 全套。外部：`dsh-free-search`(5) / `dsh-taskboard`(3) / `dsh-plugin-roundtable`(26) / `dsh-interconnect`(4) | **方案必须做能力分层 + 降级路径**，否则换台机器就残废 |
-| **F3** | **`.hob/` 按会话 cwd 解析** | `src/server/doc-read.ts:24-29`：显式配置 → `sessionCwd` | **"在每个项目角落开 Hob 会话"天然成立**，无需改代码 |
-| **F4** | **生态有现成资产可用** | 官方索引 [awesome-dsh-plugin.com](https://awesome-dsh-plugin.com/)（4424 个插件）；主候选 `dsh-expert-mode`（MIT）**已抽取**为 §4 基础层 | **角色簇/门禁不必自己写**，直接引用 |
-| **F5** | 🔴 **`dsh-expert-mode` 隔离实测：执行层可用、接入层有毒** | **实跑**（`F-J119` / CONTEXT §66）：`taskboard.py` 六项声称全中（DAG 拒绝越权认领 / 原子认领 / 依赖完成自动解锁 / 冷启动恢复）；`bus.py` 全通。**但** `router-bootstrap-v34.mjs` 的 `apply()` 一跑就**创建 `~/.dsh/router-standard/`**（实跑证据，非推断） | **⇒ 执行层可取，接入层不可取**；**只取方法论层、不装插件**（v3 的直接依据） |
-
-> ⚠ **F1 的一个必须如实登记的例外（既有不一致）**：Hob-Execute 手里握着
-> `send_message`，而它的契约仍写 `You cannot message it`（不能给 Hob 发消息）。
-> **实测澄清**：`send_message` 的目标**必须在本 team 内**（`roster.js` 的
-> `resolveActiveMember` + `TEAM_INVALID_TARGET`）⇒ **够不到 Hob**，"手工转达"边界**仍成立**。
-> ⚠ 但它的 103 个工具里有 **`interconnect_send` / `interconnect_list` / `interconnect_ping` /
-> `interconnect_reply`**（外部插件 `dsh-interconnect`），那是**跨会话**通道 ⇒ **能绕过该边界**。
-> 该事实**既成、未登记**，本方案如实写入（见 §6 机检改动）。
-
-> ⚠ **F5 的另一半（必须一起说）**：`taskboard.py` 的**跨会话落盘持久化 + 崩溃恢复**
-> 是 Agent Teams 的 `team_task_*`（会话内内存态）**没有**的能力。
-> ⇒ 这是一处**真实的取舍点**，v3 把它列为**候选（§4.4）**，但**不在本方案内实施**。
-
----
-
-## 3. 决定一：Hob-Execute 收缩为**薄适配层**（v3 框架反转）
-
-### 3.0 ⭐ 反转到什么程度：它只保留**三样协议**，不提供执行能力
-
-| 保留什么 | 为什么不可外包 | 载体 |
+| # | 决定 | 你的原话 |
 |---|---|---|
-| **① 交接协议** | 上游插件各有自己的任务流（`.expert-mode/tasks/` + 协调官），**不认** `TASK.md → REPORT.md` | 契约正文（既有六段回报，本方案只**补引用**） |
-| **② 账本边界** | 四本账本是 Hob 的，执行侧**不许写** —— 上游没有这个概念 | 契约正文（**既有，一字不动**） |
-| **③ 验收纪律** | "只认读数 / 独立验证 / 不许自审" —— 上游有门禁但**不认本项目的读数口径** | 引用 `GATES.md`（本方案 §3.2） |
-
-**不保留什么**（→ 交给宿主 / DSH 原生）：
-- ❌ 不自己实现执行能力（`bash`/`write`/`edit` 是宿主的）
-- ❌ 不自己实现团队调度（`spawn_teammate` / `team_task_*` 是 **DSH 原生** Agent Teams 的）
-- ❌ 不自己实现角色定义（→ `ROLES.md`）
-- ❌ 不自己实现门禁规则（→ `GATES.md`）
-
-> 🔒 **一句话判据**：**凡是"宿主或 DSH 原生已经有的"，契约一律引用，不重述、不自造。**
-> 这同时把契约篇幅压到最小 —— 它只描述**本项目独有的差异**。
-
-**方式**：在现有 `prefix: |-` 里**追加三个章节**（引用式），**不动**既有六段（回报结构、禁弹窗、
-交回规则）——那几处被 ⑤c / ⑤e 机检钉住。
-
-> ⚠ **v2 → v3 的差别**：v2 说"给 Hob-Execute 一份能组织 103 个工具的契约"（**做厚**）；
-> v3 说"契约只写项目独有的差异，其余引用"（**做薄**）。
-> 两者**改的仍是同一个文件、同一个段落**，但**篇幅与定位不同** —— v3 更小、更可维护。
-
-### 3.1 新增 `## Your crew`（编制表）—— **引用 `ROLES.md`**
-
-**不再自己编角色**。17 位角色的 persona **已逐字抽取**到
-[`.hob/templates/ROLES.md`](.hob/templates/ROLES.md)（13,818 B）。
-契约里只需写**如何用它**：
-
-| 契约要点 | 内容 |
-|---|---|
-| **角色来源** | `.hob/templates/ROLES.md`（**零外部依赖**，随项目走） |
-| **怎么招人** | 需要多人时用 `spawn_teammate`，**把对应角色的 persona 段落作为 `prompt` 主体** |
-| **按阶段配员** | 照 `ROLES.md` §3 的「按 SDLC 阶段的推荐配员」表 |
-| **出勤规则** | 照 `ROLES.md` §4 —— **简单任务直通，不招人**（防"全员出动"） |
-| 🔒 **关键条款** | **做了改动的角色不得担任该改动的验证角色**（详见 §3.2 门禁） |
-
-> 依据：`ROLES.md` 17 位角色 = 架构师/产品经理/UI-UX/前端/后端/数据库/DevOps/
-> **QA**/**安全**/数据分析/文案/社交运营/增长/财务/量化/法务/**生图短视频**。
-> 每位含 **方法论 / 产出 / 铁律** 三要素（缺铁律的角色等于没写）。
-
-### 3.2 新增 `## The path`（阶段门禁）—— **引用 `GATES.md`**
-
-**不再自己定流程**。五段式门禁**已逐字采用**到
-[`.hob/templates/GATES.md`](.hob/templates/GATES.md)（6,820 B）。
-契约里只需写**本项目如何映射**：
-
-| SDLC 六阶段（本项目口径） | 对应 `GATES.md` 五段式 | 门禁判据（**可读数**） |
-|---|---|---|
-| **1 定需求** | ① 需求澄清 | 验收标准**可测试**（写不出 = 没想清）—— 🔒 **说不清完成标准就不开工** |
-| **2 出方案** | ①→② 之间 | 方案含：改什么 / 不动什么 / 怎么验 |
-| **3 实现** | ② 实现 | 遵循 `ROLES.md` 对应角色方法论 |
-| **4 验证** | ③ 验证（**机器可查**） | 编译/lint 零错误、核心路径全过、无矛盾数字、来源存在 |
-| **5 审查** | ④ 审查（**独立**） | **审查者 ≠ 实现者**；输出 `同意/部分同意/反对 + 理由` |
-| **6 发布交接** | ⑤ 集成 | 三板斧（见 §3.3）+ **交付时附"哪些过了门禁 / 哪些跳过及原因"** |
-
-🔒 **三条铁律（逐字采用上游）**：
-1. **「实现者自己说'没问题'不算数」** = 你的"禁止自产自审"
-2. **「最多回炉 2 轮，仍不过则上报用户决策」** = 你的"不许替用户拍板"
-3. **「跳过门禁需告知用户'本次跳过了门禁'」** = 你的诚实纪律
-
-> 依据（第一轮 SDLC 调研）：缺陷修复成本 设计 1x → 实现 6x → 测试 15x → 上线 **100x**；
-> Google SRE 发布协调清单；DORA「小批量 + 可靠测试」。
-
-### 3.3 新增 `## Ship discipline`（发布纪律）
-
-- **可灰度**：新版本先小流量
-- **可验证**：技术指标 + **一个真实业务流程**（技术正常 ≠ 业务正常）
-- **可回滚**：回滚**比发布快**，且演练过
+| **D1** | **删掉 Hob-Execute** | 「我就是觉得不需要保留 Hob-Execute 了」 |
+| **D2** | **执行交给任意会话** | 「2 任意会话」 |
+| **D3** | **账本外置，按工作区派生** | 「按工作区做区分就行了」 |
+| **D4** | **父目录共用**（`/home/lk/FF/.hob-ledgers/` 下各工作区独立子目录） | 「确认」 |
+| **D5** | **`read`/`glob`/`grep` 不限读** | 「Ai」 |
+| **D6** | **放弃"读项目文档"** | 「这个可以不需要不读不影响」 |
+| **D7** | **边界挂在账本目录**（不是工作区根） | 「在哪里调整边界就可以了」 |
 
 ---
 
-## 4. 决定二：角色簇的三层载体（按可移植性分层）
+## 2. 事实地基（全部实测）
 
-⚠ **这是你"外部工具换环境就没有"那条约束的直接落点。**
-
-| 层 | 载体 | 依赖 | 状态 | 缺外部插件时 |
-|---|---|---|---|---|
-| **基础层**（必须有） | `.hob/templates/ROLES.md`（17 角色）+ `.hob/templates/GATES.md`（门禁）+ `.hob/roles/methods/`（18 份方法论） | **零外部依赖** | ✅ **已落地**（`97bcf0e`） | ✅ 照常工作 |
-| **增强层**（DSH 原生） | Agent Teams：`spawn_teammate` / `team_task_*` / `wait_agent` | **DSH 原生**（`dsh-experimental-agent-team`） | ✅ 已在（103 工具面内） | ✅ 照常工作 |
-| **可选层**（有则用） | roundtable 26 个 / free-search 5 个 / taskboard 3 个 | **外部插件** | 视环境 | ⚠ **必须降级**，见下 |
-
-**降级路径**（**已写进 `GATES.md` §5**，使其可移植）：
-
-| 缺什么 | 降级做法 |
-|---|---|
-| 缺 **Agent Teams** | 串行执行 + 人工在 `.hob/` 账本记录进度 |
-| 缺 **roundtable** | 用 `spawn_teammate` 招独立成员做评审（Agent Teams 是 DSH 原生） |
-| 缺 **taskboard** | 用 `team_task_*`（DSH 原生）当任务板；或用 `.hob/archive/<日期>-<slug>/` 目录 |
-| 缺 **free-search** | 用原生 `web_fetch`（Hob 侧）/ 直接给 URL |
-| **完全没有子代理能力** | ⚠ **仍可执行**：角色化为"**同一会话内分阶段扮演**"，**门禁判据不变**，仅"独立性"降级为"分轮次"，**须在交付时如实说明** |
-
-🔒 **底线（`GATES.md` §5 已固化）**：**降级只影响"由谁执行"，不影响"判据"**。
-
-⚠ **Hob 侧同理**：Hob 白名单里那 4 个只读查询（`taskboard_list`/`get`/`comments` + `roundtable_status`）
-**全部来自外部插件** ⇒ 契约里须写明"没有它们时不查、如实说不具备"。
-
-> ⚠ **为什么基础层是"抽取"而不是"安装插件"**（**v3 已升级为实跑证据**，见 `F-J119`）：
-> 上游 `dsh-expert-mode` 的执行层**实测可用**（`taskboard.py` 六项全中、`bus.py` 全通），
-> **但其接入层实测有毒** —— 以最小假 ctx 调 `router-bootstrap-v34.mjs` 的 `apply()`，
-> **随即创建了 `~/.dsh/router-standard/`**（`bash-diag.json` 163 B + `last-mount.txt` 37 B）。
-> ⇒ **"会写 `$DSH_HOME`"从静态推断升级为实跑事实**，撞硬边界「不动 `~/.dsh/**`」。
-> 故**只取方法论层**（上游 MIT 许可，已带归属注释）。⚠ 更严重的 YAML 改写路径
-> （`:1118`/`:1271`）本次**未触发**，但代码路径仍在 —— 这是**为什么不能赌"它也许不写"**。
-
-### 4.4 候选（**评估过，不在本方案内实施**）：`taskboard.py`
-
-⚠ **这是 F5 的另一半，必须一起说清楚**：
-
-| 能力 | `taskboard.py`（上游，14 KB 纯 Python） | `team_task_*`（DSH 原生） |
+| # | 事实 | 证据 |
 |---|---|---|
-| 状态机 / 依赖 / 认领 | ✅ **实测通过** | ✅ 有（`blocked_by` + readiness） |
-| **跨会话落盘持久化** | ✅ **每个任务一个 `.task` JSON + `history`** | ❌ **会话内内存态** |
-| **崩溃恢复** | ✅ **实测通过**（`恢复 1 个 stale running: task-003 -> ready`） | ❌ 无 |
-| 可审计 | ✅ JSON 可读可回查 | ⚠ 弱 |
-| 依赖 | **零第三方**（Python 3） | DSH 原生 |
-
-**⇒ 它是 Agent Teams 缺的那块（跨会话持久化 + 崩溃恢复）。**
-
-**建议（不在本方案内做）**：本轮**不动**。若将来需要"任务板跨会话存活"，
-走**独立候选**：把它**单独复制进项目**（**不装插件**、零依赖、可移植），
-并先过一遍它的源码（它是独立脚本，与有毒的 router **无耦合**）。
-⚠ **未验证**：未测它与 Agent Teams 并用是否冲突；未审其全部源码。
+| **F1** | **写侧结构本来就正确** | [hob-write.ts:375-379](src/server/hob-write.ts#L375-L379)：先算 `hobRoot = resolveInside(root, hobDir).abs`（**只取 `.abs`，丢弃 inside**），再判 `file` 在其内 ⇒ **边界已是账本目录，一行不用改** |
+| **F2** | **读侧边界画错了位置** | [doc-read.ts:118-119](src/server/doc-read.ts#L118-L119)：`resolveInside(root, relPath)` 的 `root` 传的是**工作区根** ⇒ 换成**账本目录**即可（**逻辑不动，只换传参**） |
+| **F3** | **静态 `hobDir` 做不到按工作区区分** | 实测三个项目 `resolve(工作区根, '../.hob')` **全落到同一目录** ⇒ 必须**按工作区名派生** |
+| **F4** | **删 Hob-Execute 顺带消灭循环依赖** | [tools.ts:58](src/modules/tools.ts#L58) ↔ [work-deny.ts:50](src/modules/work-deny.ts#L50)；`work-deny.ts` 唯一消费者 [tools.ts:363](src/modules/tools.ts#L363) ⇒ 删它则**两条边同时消失** |
+| **F5** | **三个机检脚本全部依赖 `.hob/` 内文件** | 三者 `root = join(here,'..')`；`check:presets` 读 [`.hob/drafts/preset-contracts.md`:73](scripts/check-preset-contracts.mjs#L73) · `check:experience` 读 [`.hob/EXPERIENCE.md`:59](scripts/check-experience.mjs#L59) · `check:gitignore` 断言 14 项 [`:98-104`](scripts/check-gitignore.mjs#L98-L104) ⇒ **账本一搬，三条全 exit 1** |
+| **F6** | **账本目录不能用软链** | [hob-write.ts:386-391](src/server/hob-write.ts#L386-L391)：`lstat(hobRoot).isSymbolicLink()` ⇒ 拒绝写入 |
 
 ---
 
-## 5. 决定三：每个被协助项目各建自己的 `.hob/`（用户选 **X**）
+## 3. D1 + D2：删掉 Hob-Execute，执行交给任意会话
 
-### 5.1 目录约定
+### 3.1 删除清单（实测引用）
+
+| 物件 | 规模 | 处置 |
+|---|---|---|
+| `preset/dsh-hob/preset-dsh-hob-work.patch.yml` | **239 行** | 删文件 |
+| [package.json](package.json) 的 `dsh.bundle.patch[2]` | 1 项 | 删该数组项 |
+| `src/modules/work-deny.ts` | **121 行** | 删文件 |
+| `WORK_PRESET_ID` / `WORK_MODEL_DENY` / `presetIdOf()` | 3 导出 | 删（消费者全在 work-deny 或 Hob-Execute 路径） |
+| [tools.ts:58](src/modules/tools.ts#L58) import + [:363](src/modules/tools.ts#L363) 调用 | 2 处 | 删 |
+
+✅ **顺带修复**：循环依赖消失（F4）。
+
+⚠️ **`WORK_MODEL_DENY` 在 [preset/tools.ts](src/preset/tools.ts) 有消费者**（`grep` 实测）
+⇒ **实施前必须逐个确认引用点**，不能整文件删。
+
+### 3.2 交接协议保留（改为"对任意会话的约定"）
+
+`TASK.md` → 用户搬运 → `REPORT.md` 的**格式约定保留**（否则回来的报告不可读），
+但从"对 Hob-Execute 预设的约束"变成"**写在指令里的明确要求**"。
+⇒ **需要新载体**：`.hob/templates/TASK.md` + `.hob/templates/REPORT.md`（v3 已列待建）。
+
+---
+
+## 4. D3 + D4：账本外置 + 按工作区派生
+
+### 4.1 目标布局
 
 ```
-<被协助项目>/
-├── PROJECT.md                       ← 该项目的方案（Hob 维护）
-├── .hob/
-│   ├── FACTS.md                     ← 该项目的账本四本
-│   ├── DECISIONS.md
-│   ├── USER-DECISIONS.md
-│   ├── CONTEXT.md
-│   └── archive/<日期>-<slug>/
-│       ├── TASK.md                  ← Hob 写的指令
-│       └── REPORT.md                ← Hob-Execute 写的回报
-└── （该项目自己的代码）
+/home/lk/FF/
+├── dsh-hob/                          ← 插件本体（**不含账本了**）
+│   ├── src/  preset/  scripts/  lib/
+│   └── （.hob/ 已移出）
+│
+└── .hob-ledgers/                     ← 账本父目录（🆕 单独一个 git 仓）
+    ├── dsh-hob/                      ← 工作区「dsh-hob」的账本
+    │   ├── FACTS.md / DECISIONS.md / USER-DECISIONS.md / CONTEXT.md
+    │   ├── EXPERIENCE.md / README.md
+    │   ├── templates/  roles/  drafts/  backups/
+    │   └── archive/<日期>-<slug>/{TASK.md, REPORT.md}
+    └── <其它工作区>/                  ← 各自独立，零配置自动派生
 ```
 
-**机制依据（F3 实测）**：`resolveWorkspaceRoot` 优先取显式配置，否则取**会话 cwd**
-⇒ 在项目目录里开 Hob 会话，账本自然落那儿，**零代码改动**。
+### 4.2 派生规则（**必须按工作区名算，不能静态**）
 
-### 5.2 ⚠ 本方案要回答的空白（当前 PROJECT.md 零覆盖）
+```
+账本目录 = <父目录>/<工作区目录名>
+例：/home/lk/FF/dsh-hob → /home/lk/FF/.hob-ledgers/dsh-hob/
+```
 
-| 问题 | 本方案的回答 |
-|---|---|
-| 账本放哪？ | **被协助项目自己的 `.hob/`**（X 选项，用户已定） |
-| `dsh-hob` 仓库自己的 `.hob/` 是什么？ | **只记"插件本身的开发"**；不是别的项目的账本 |
-| 两边会不会串？ | 不会——**按会话 cwd 天然隔离**（F3） |
-| 模板从哪来？ | 从本仓 `.hob/templates/` **复制**过去（含新增的 `ROLES.md`） |
+⚠️ **F3 已实测证明**：静态 `hobDir`（如 `../.hob`）会让**所有项目撞进同一目录**。
+⇒ **必须新增派生逻辑**（v4 唯一的代码新增点）。
 
-### 5.3 模板状态
+### 4.3 新增配置项
 
-| 模板 | 状态 | 用途 |
+| 配置 | 含义 | 缺省 |
 |---|---|---|
-| `FACTS.md` / `DECISIONS.md` / `USER-DECISIONS.md` / `CONTEXT.md` | ✅ 已有 | 账本四本 |
-| **`ROLES.md`** | ✅ **已落地**（`97bcf0e`，13,818 B） | 17 角色 persona + SDLC 配员 + 出勤规则 |
-| **`GATES.md`** | ✅ **已落地**（`97bcf0e`，6,820 B） | 五段式门禁 + 规则速查 + **降级路径** |
-| **`roles/methods/`** | ✅ **已落地**（18 份，88 KB） | 各角色领域方法论 |
-| **`TASK.md`** | 🆕 **待建** | 指令模板 |
-| **`REPORT.md`** | 🆕 **待建** | 回报六段模板 |
+| **`ledgerHome`** | 账本父目录（绝对路径） | `/home/lk/FF/.hob-ledgers` |
+| **`ledgerRoot`**（可选） | 直接指定本工作区账本目录（覆盖派生） | 空 = 按 `ledgerHome` + 工作区名派生 |
 
-> **给被协助项目初始化时**：把 `.hob/templates/` 四份账本 + `ROLES.md` + `GATES.md`
-> 一并复制过去（`methods/` 按需），即可开一个新项目。
+⚠️ **`hobDir` 去留**：建议**保留但降级为"账本目录名"**（默认 = 工作区目录名），避免二次迁移。
+**实施时须逐个确认 `hobDir` 的 5 个引用点**：[tools.ts:95](src/modules/tools.ts#L95)/[:130](src/modules/tools.ts#L130)/[:233](src/modules/tools.ts#L233)/[:326](src/modules/tools.ts#L326) + [patch.yml:433](preset/dsh-hob/preset-dsh-hob.patch.yml#L433)。
 
 ---
 
-## 6. 决定四：机检钉子的处置（改判据，不放宽）
+## 5. D7 + D6：读侧边界改为账本目录
 
-| 机检 | 现状 | 本方案的处置 |
+### 5.1 改动（**只换传参，不动逻辑**）
+
+| 位置 | 现在 | 改成 |
 |---|---|---|
-| **⑥ 行数 == 34** | 钉住"工具零裁剪" | **不动**（本方案不加行） |
-| **⑤c Hob-Execute 7 条稳定短语** | 钉 `You answer to Hob, not to the user` 等 | **不动**（重写时**逐字保留这 7 句**） |
-| **⑤d 交接条文** | 钉"无自动投递" | **加一条**：钉住 `interconnect` 例外（如实声明它是**另一条路**） |
-| **新增 ⑤i** | — | 钉住新契约的**新章节在位**（`## Your crew` / `## The path` / `## Ship discipline`）+ **降级路径句** |
+| [tools.ts](src/modules/tools.ts) 的 `readContracts.execute` | `rootOf(cfg, exec)` → 工作区根 | **账本目录** |
+| [doc-read.ts:118-119](src/server/doc-read.ts#L118-L119) | `resolveInside(root, relPath)` | **不动**（逻辑通用） |
 
-> ⚠ **纪律**：新增断言是**加严**；`⑤c` / `⑥` **一条不放宽**。若实施中发现必须放宽，
-> **停手报回**，由用户裁定，不静默改。
+✅ **F2 已确认**：这是 v4 里**最小的改动**。
+
+### 5.2 ⚠️ 连带：**5 处契约文字会变失实**（必须同批改）
+
+依据你项目的既有纪律（[EXPERIENCE](.hob/EXPERIENCE.md) 的"**契约不得挂着失效内容**"，
+批 9 修过三处失实句）：
+
+| 位置 | 原文 | 问题 |
+|---|---|---|
+| [patch.yml:73](preset/dsh-hob/preset-dsh-hob.patch.yml#L73) | `reading project documents, looking at workspace files, ...` | ❌ 读不到项目文档了 |
+| [patch.yml:125](preset/dsh-hob/preset-dsh-hob.patch.yml#L125) | `Read the project documents rather than guessing at facts.` | ❌ **直接冲突** |
+| [patch.yml:145](preset/dsh-hob/preset-dsh-hob.patch.yml#L145) | `reading -- project documents (.md), ...` | ❌ 失实 |
+| [patch.yml:182](preset/dsh-hob/preset-dsh-hob.patch.yml#L182) | `or by reading the project documents you already have` | ❌ 失实 |
+| [patch.yml:209](preset/dsh-hob/preset-dsh-hob.patch.yml#L209) | `read PROJECT.md and the ledgers, ...` | ⚠️ 半失实（账本仍可读） |
+
+⚠️ **其中 2 处被机检钉住**，不同批改会 FAIL：
+[check-preset-contracts.mjs:717](scripts/check-preset-contracts.mjs#L717)（`reading project documents (.md) and writing your own`）
+· [:816](scripts/check-preset-contracts.mjs#L816)（`read PROJECT.md and the ledgers`）。
+
+**⇒ 处置**：把"读项目文档"改为"**读自己的账本**"，并同步更新这 2 条断言期望值。
+
+### 5.3 D5：`read`/`glob`/`grep` **不限读**（你选 i）
+
+依据你的判据「**只动能改账本、不动其他的**」——防的是**改**，不是**读**。
+⇒ 这三个通用工具**保持原样**。**本条为显式记录，避免将来被误当漏洞。**
 
 ---
 
-## 7. 影响面与代价（**v3 更新**）
+## 6. 保留的现存守卫（逐条说明）
 
-| 面 | 改动 | 需重启？ |
+| 守卫 | 现状 | v4 后 |
 |---|---|---|
-| **`.hob/templates/ROLES.md` · `GATES.md` · `roles/methods/`（18 份）** | ✅ **已完成并提交**（`97bcf0e`） | 否 |
-| `preset/dsh-hob/preset-dsh-hob-work.patch.yml`（Hob-Execute 契约） | 追加三章节（**引用式，做薄**） | ⚠ **是**（bundle patch） |
-| `.hob/drafts/preset-contracts.md`（人读版） | 同步镜像 | 否 |
-| `scripts/check-preset-contracts.mjs` | 新增 ⑤i | 否 |
-| `.hob/templates/TASK.md` · `REPORT.md` | 新增 2 份模板 | 否 |
-| `PROJECT.md` | 补空白节（被协助项目账本归属）+ **§4.3 定位更新**（v3 新增：说明 Hob-Execute 是薄适配层） | 否 |
-| **`dsh-expert-mode`** | 🔴 **不装**（实测否决，见 §2 F5） | — |
-| **`taskboard.py`** | ⏸ **不取**（列为候选，见 §4.4） | — |
-| `src/**` | **不动** | — |
+| 写白名单 [hob-write.ts:152-175](src/server/hob-write.ts#L152-L175) | 只允许四本账本 + `archive/<日期>-<slug>/*.md` | ✅ 保留 |
+| 骨架拒写（`README.md` / `templates/`） | 工具不可写骨架 | ✅ 保留 |
+| `backups/` 工具自管 | 模型不可写 | ✅ 保留 |
+| 软链守卫（读+写双侧） | 逐段 `lstat`，命中即拒 | ✅ 保留（F6） |
+| 归档不可 overwrite | `archive/` 只增不改 | ✅ 保留 |
 
-**总代价**：**一次重启**（攒批，由你决定时机）。
+---
 
-> ⚠ **v3 的代价变化**：与 v2 相比，**多了一个"不做什么"**（不装插件、不取 taskboard），
-> 少了一份"将来要维护外部依赖"的负担。契约篇幅进一步缩短（只写项目独有差异）。
+## 7. 影响面（**实测引用计数**）
+
+| 文件 | `.hob` 引用 | 影响 |
+|---|---|---|
+| `scripts/check-gitignore.mjs` | **32 处** | MUST-TRACK/MUST-EXCLUDE 重构 |
+| `.gitignore` | **25 处** | 账本不在仓库内 ⇒ 大批排除规则可删 |
+| `scripts/check-preset-contracts.mjs` | **39 处**（+9 处 `.hob/`） | 路径字面值 + Hob-Execute 断言整组删除 |
+| `.hob/drafts/preset-contracts.md` | **70 处** | 人读版镜像同步 |
+| `PROJECT.md` | **45 处** | §3/§4.3/§5/§6/§9/§12 多节 |
+| `.hob/README.md` | **17 处** | 目录树 + §1 二分表 |
+| `scripts/check-experience.mjs` | **3 处** | 经验库路径 |
+
+### 7.1 ⚠️ 三个机检脚本的出路（F5：账本一搬全断）
+
+| 脚本 | 现在读 | v4 后的建议 |
+|---|---|---|
+| `check:presets` | `.hob/drafts/preset-contracts.md` | 人读版**留在仓库**（它是契约镜像，不是运行数据）⇒ 脚本路径**不用大改** |
+| `check:experience` | `.hob/EXPERIENCE.md` | `EXPERIENCE.md` 是"跨项目经验库"（可分发）⇒ **建议留在仓库**，改路径常量 |
+| `check:gitignore` | 断言 14 项 `.hob/*` | 账本外置后**大部分断言失去对象** ⇒ 见 §9 Q1 |
+
+**⇒ 关键洞察**：**"账本"与"骨架"可以分开搬** ——
+`drafts/`（契约镜像）、`EXPERIENCE.md`（经验库）、`templates/`、`roles/` 属**可分发骨架**，
+**建议留仓库**；只有**运行数据**（四本账本 + `archive/` + `backups/` + `CONTEXT`）**外置**。
+
+⚠️ **但这条与你的原话有出入**（你要的是"账本搬出去"）⇒ 见 §9 Q2。
+
+### 7.2 账本单独 git 仓
+
+外置的部分**不再受本仓版本控制** ⇒ 需在 `/home/lk/FF/.hob-ledgers/` **单独 `git init`**。
 
 ---
 
 ## 8. 未验证项（如实标注）
 
-1. **`spawn_teammate` 未真跑过** —— 会创建真实队友，属需用户授权的动作；
-   本方案的"角色簇可用 Agent Teams 承载"只有 **schema 级证据**，无运行时证据。
-2. **Agent Teams 与 roundtable 同时调度是否冲突** —— 未做并发实验。
-3. **`interconnect` 能否真的够到 Hob 会话** —— 未实测（只确认它在工具面里）。
-4. **28 个圆桌角色预设的物理存储位置** —— 未定位到；若将来要把它们**导入**
-   每个项目的 `ROLES.md`，此位置必须先查清。
-5. **teammate 能否指定 model/provider** —— 只核了 `spawn_teammate` **入参**无此字段，
-   未追到 `roster.spawn` 内部是否从别处取默认值。
-6. **上游的五段式门禁仍是文档** —— `quality-gates.md` 已抽进 `GATES.md`，
-   但**无运行载体**（上游靠契约文字 + 协调官自律，没有强制机制）。
-   ⇒ 本项目若要有"牙"，得靠**契约条文 + 机检断言**，不能指望脚本。
-7. **17 位专家的 subagent 真调未测** —— 需真实宿主会话；本轮隔离实测**只跑了
-   `taskboard.py` / `bus.py` / `router`**，**未创建任何真实子代理**。
-8. **索引覆盖不全** —— 插件索引抓取超时，本地只解析 **2454 / 4424** 条，
-   剩余可能还有候选未评估。
+1. **`WORK_MODEL_DENY` 在 [preset/tools.ts](src/preset/tools.ts) 的引用点未定位** —— `grep` 显示有消费者，**实施前必须逐个确认**，否则编译失败。
+2. **`spawn_teammate` 未真跑** —— 但 v4 **不再依赖它**（执行交任意会话），**风险降低**。
+3. **派生逻辑实现方式未定** —— "`ledgerHome` + 工作区 basename" 还是 "配置显式指定"，实施时定。
+4. **账本外置后目录名是否仍叫 `.hob`** —— 建议保留（减少迁移），新目录名可另取。
+5. **未测跨工作区并发写** —— 物理隔离理论上无竞争，**未实测**。
 
 ---
 
-## 9. 实施顺序（**v3 更新**）
+## 9. 需要你拍板（**2 项**）
 
-| 步 | 内容 | 交付 | 状态 |
-|---|---|---|---|
-| **1** | 抽取角色簇与门禁 → `.hob/templates/ROLES.md` / `GATES.md` / `roles/methods/`（18 份） | 基础层资产 | ✅ **已完成**（`97bcf0e`） |
-| **2** | 隔离实测 `dsh-expert-mode`（执行层 / 接入层 / 污染举证） | 实测报告 | ✅ **已完成**（`F-J119` · CONTEXT §66） |
-| **3** | 建 `.hob/templates/TASK.md` / `REPORT.md` | 2 份模板 | ⏳ 待办 |
-| **4** | 写 Hob-Execute 契约三个新章节（**引用式，做薄**；英文正文 + 人读版同步） | patch 改动 | ⏳ 待办 |
-| **5** | 机检新增 ⑤i + ⑤d 补 interconnect 例外 | 断言 | ⏳ 待办 |
-| **6** | `PROJECT.md` 补空白节 + §4.3 定位更新 | 方案文档 | ⏳ 待办 |
-| **7** | 四条命令全 exit 0 + 一次提交 | 提交 | ⏳ 待办 |
-| **8** | **由你重启** ⇒ 真机读三层、验新章节在位 | 重启复核 | ⏳ 待办 |
+**Q1：`check:gitignore` 怎么处置？**
 
-⚠ **第 8 步前，一切"已生效"的说法都不成立**（R-1 / R-5：`src→lib→profile` 三级链 + 预设首轮锁定）。
+| 选项 | 做法 |
+|---|---|
+| **a** ⭐ | **重构**：断言改为"仓库内骨架仍在库"（保留防漂移能力） |
+| **b** | **删除**（排除漂移问题消失）—— ⚠️ 丢掉 E-70/E-73 那类静默坑的防线 |
+| **c** | 保留不改（会 FAIL，不可行） |
+
+**Q2：搬多少？（§7.1 的洞察）**
+
+| 选项 | 搬什么 | 留什么 |
+|---|---|---|
+| **x** ⭐ | **只搬运行数据**（四本账本 + `archive/` + `backups/`） | 骨架（`drafts/` `EXPERIENCE.md` `templates/` `roles/` `README.md`）**留仓库** |
+| **y** | **整个 `.hob/` 全搬**（你原话的字面意思） | 仓库不再有 `.hob/`；骨架进账本仓 |
+
+⚠️ **x 的好处**：三个机检脚本**基本不用改**（它们读的都是骨架），`check:gitignore` 也还能用。
+⚠️ **y 的好处**：更彻底的隔离；**代价**：三个脚本全要改路径 + `.gitignore` 25 处重写。
 
 ---
 
-<!-- v1 · 2026-10-08：初版（Hob-Execute 升级为项目组，三章节从零撰写）
-     v2 · 2026-10-08：§3/§4 改为引用已落地的 ROLES.md / GATES.md（依据 UD-75 · F-J116 · CONTEXT §63）
-     v3 · 2026-10-08：框架反转为「薄适配层」；新增 F1b/F5；不整装插件；
-                       taskboard 列为候选（依据 F-J119 · CONTEXT §66） -->
+## 10. 实施顺序（**9 步**）
+
+| 步 | 内容 | 状态 |
+|---|---|---|
+| **1** | 抽取角色簇与门禁 → `ROLES.md` / `GATES.md` / `roles/methods/` | ✅ 已完成（`97bcf0e`） |
+| **2** | 隔离实测 `dsh-expert-mode` | ✅ 已完成（`F-J119`） |
+| **3** | 建账本父目录 + 迁移（按 Q2 的范围）+ 单独 `git init` | ⏳ 待办 |
+| **4** | 写派生逻辑（`ledgerHome` + 工作区名）+ 读侧换根 | ⏳ 待办 |
+| **5** | 删 Hob-Execute（patch + package.json + work-deny + 3 符号 + 循环依赖） | ⏳ 待办 |
+| **6** | 5 处失实句改正 + 2 处机检断言同步 + 三脚本路径 | ⏳ 待办 |
+| **7** | 建 `TASK.md` / `REPORT.md` 模板 | ⏳ 待办 |
+| **8** | 文档同步（§7 的 7 个文件）+ 四命令全 exit 0 + 一次提交 | ⏳ 待办 |
+| **9** | **由你重启** ⇒ 真机复核 | ⏳ 待办 |
+
+⚠️ **第 9 步前，一切"已生效"的说法都不成立**（R-1 / R-5）。
+
+---
+
+<!-- v1 · 初版（Hob-Execute 升级为项目组）
+     v2 · §3/§4 改为引用 ROLES.md / GATES.md（UD-75）
+     v3 · 反转为「薄适配层」；F1b/F5（F-J119）
+     v4 · 删 Hob-Execute + 账本按工作区派生外置 + 读侧换根（用户 D1–D7） -->
