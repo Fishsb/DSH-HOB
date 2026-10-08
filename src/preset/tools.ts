@@ -40,6 +40,7 @@ import {
   createHobTools,
   type HobToolsConfig,
 } from '../modules/tools.ts'
+import { BUS_SERVICE, createHobBusTools, type HobBus } from '../modules/bus.ts'
 
 /** 模块名（preset 行的 `name` 指向本模块）。 */
 export const name = 'dsh-hob-tools'
@@ -147,6 +148,21 @@ export function apply(ctx: any, config: Config = {}): void {
     //   不用手写卸载逻辑（§3.3 第 3 条：资源靠 ctx.effect 挂，卸载自动清理）。
     registerTools(gatedCtx, config, log)
   })
+
+  // ── M3 · 会话总线工具（UD-77）────────────────────────────────────────
+  // ⚠ **与门禁无关**、单独的**反应式**订阅：`hobBus` 由 `modules/bus.ts` 在
+  //   `sessions`/`agents` 就绪后 provide。服务不在（模块关掉 / 服务未就绪）⇒
+  //   回调不跑 ⇒ **这两个工具根本不出现**（而不是出现后报错）。
+  //   ⇒ 关掉 `modules.bus` 只影响 M3 自己，与「模块可独立启停」一致（§3.3）。
+  ctx.inject([BUS_SERVICE], (busCtx: any) => {
+    const bus = busCtx[BUS_SERVICE] ?? busCtx.get?.(BUS_SERVICE)
+    if (bus === undefined) {
+      log('hobBus 已就绪但不可用（跳过 M3 工具注册）')
+      return
+    }
+    log('会话总线就绪 ⇒ 注册 M3 工具')
+    registerBusTools(busCtx, bus as HobBus, log)
+  })
 }
 
 /**
@@ -204,7 +220,7 @@ function denyInheritedTools(ctx: any, log: (m: string) => void): void {
 }
 
 /**
- * 「助手」**发给模型的**工具清单 —— **装配期白名单**（**23** 个显式名字）。
+ * 「助手」**发给模型的**工具清单 —— **装配期白名单**（**25** 个显式名字）。
  *
  * ── 为什么是这些 ────────────────────────────────────────────────────
  * 「助手」只干这几件事：**读项目文档 / 读工作区文件 / 写自己的账本**、
@@ -214,6 +230,7 @@ function denyInheritedTools(ctx: any, log: (m: string) => void): void {
  *           + 编排只读查询 4 个 + 网页正文 1 个 + 文件只读 4 个（批 9 新增 9 = 20）
  *           + 向用户提问 1 个（**批 11 / D2 新增 1 = 21**）
  *           + 技能加载 1 个 + 产出挂卡 1 个（**批 13 新增 2 = 23**）。
+ *           + **会话总线投递 2 个**（`hob_sessions` / `hob_send`，**批 14 / M3 新增 2 = 25**）。
  *
  * ── ⚠ 能力落点 = **声明面 与 白名单 的「与门」**（批 8 审查实测，见 E-86）────
  * 白名单**只**决定"这一项发不发给模型"；工具**还必须在该预设作用域里被注册**——
@@ -225,14 +242,19 @@ function denyInheritedTools(ctx: any, log: (m: string) => void): void {
  *   · **批 13 同理**：`skill` 需 `tool-skill`（且 `skill-filesystem` 供目录）、
  *     `present` 需 `present` 行 —— 两处**都已在**同批的声明面增行里落好。
  *
- * ── 为什么**排除**「改动状态 / 派活」那一批 ─────────────────────────────
+ * ── 为什么**排除**「改动共享状态 / 拉团队」那一批 ────────────────────────
  * `taskboard_create|move|update|delete` · `taskboard_checklist|comment_add|execution_report` ·
  * `team_task_*` · `spawn_teammate` / `send_message` / `wait_agent` / `interrupt_agent` ·
- * `roundtable_create|speak|next_round|…` 是"**驱动他人干活、改动工作状态**"的工具
- * （派活、认领、移卡、拉专家、发消息给别的会话）。
- * 「助手」的职责是**只出指令**、由用户手工把指令带给「开发」——
- * 一旦它自己就能指挥别的会话/改任务状态，这条职责边界当场失效
- * （`preset-dsh-hob.patch.yml` 的 "You cannot message it, and it is not in this session."）。
+ * `roundtable_create|speak|next_round|…` 是"**改共享工作状态 / 拉一支团队**"的工具
+ * （认领、移卡、开会、拉专家、组队）。
+ * ⚠ **批 14 / M3 的口径更正（UD-77）**：本项目原先的理由是"一旦能指挥别的会话，
+ *   职责边界当场失效"。用户 2026-10-08 决策 M3 之后，**边界改了口径** ——
+ *   「**投递**」是允许的（`hob_sessions` / `hob_send`，见清单末尾），
+ *   「**改共享工作状态**」仍不允许：派单不落到看板、不替人认领/移卡。
+ *   ⇒ 上面这批**继续排除**，理由从"不许指挥别的会话"改成
+ *     "**不许替人改动共享状态**"（`hob_send` 只发一条消息，不改任何卡的状态）。
+ *   ⚠ 契约同步改了那句 `You cannot message it`（见 `preset-dsh-hob.patch.yml`）——
+ *     它曾是本清单排除该项的**依据**，现在依据变了，注释不能留着旧理由。
  *
  * ── 为什么**排除** `write` / `edit` / `bash`（批 9 的核心取捨）────────────
  * 见 `preset-dsh-hob.patch.yml` 的头部注释「批 9」一节：
@@ -301,6 +323,16 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
   // ⚠ `present` **不写工作区**：它只声明"这些已存在的文件是交付物"，
   //   让界面给出可预览/可打开的文件卡（`dsh-tool-present`）。⇒ 不撞 UD-13。
   'present',
+  // ── 批 14 / M3：会话总线投递 2 个（UD-77）─────────────────────────────
+  // ⚠ **这是本项目第一条"能指挥别的会话"的能力** —— 它改的是 PROJECT.md §6.1
+  //   那行「派活 / 委派 ❌」。用户 2026-10-08 决策 UD-77 明确要它（方案 B），
+  //   并把口径从"绝对没有"改成"**投递 ≠ 完成**：交付是 agent 干的，不是它干的"。
+  //   落点仍是**与门**（E-86）：工具定义在 `modules/bus.ts`，注册在下面
+  //   `registerBusTools`（预设作用域）；只加名字不加注册 ⇒ `unknown tool`。
+  // ⚠ **不收 `inject` 语义**（第三种投递语义"只写上下文不唤醒"）：对派活无意义，
+  //   且它的失败是静默的（会话可能一直不读）⇒ 不在枚举里，工具层也拒。
+  'hob_sessions',
+  'hob_send',
 ]
 
 /**
@@ -310,7 +342,7 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
  *   （`dsh-tools/lib/index.js:2840-2843`）。若白名单把它滤掉，助手会拿到**空清单**
  *   —— 那是比"多几个工具"严重得多的回归（会话直接失去全部能力）。
  *   native 模式下它**根本不存在**（`view()` 只在 mode !== native 时加它），
- *   故 native 下清单仍**恰好 23**（批 13 起；批 11 为 21、批 9 为 20）。实测判据见阶段 C 报告 C3-1。
+ *   故 native 下清单仍**恰好 25**（批 14 / M3 起；批 13 为 23、批 11 为 21、批 9 为 20）。实测判据见阶段 C 报告 C3-1。
  */
 const RESERVED_TRANSPORT_TOOL = 'run_code'
 
@@ -453,4 +485,20 @@ function registerTools(ctx: any, config: Config, log: (m: string) => void): void
   }
   ctx.effect(() => ctx.tools.register(writeHob), 'dsh-hob preset: write_hob tool')
   log('已注册 write_hob')
+}
+
+/**
+ * 注册 M3 的两个工具（定义在 `modules/bus.ts`，此处只挂载）。
+ *
+ * ⚠ 触发条件是 **`hobBus` 服务在**（= `modules.bus` 开着 且 `sessions`/`agents` 已就绪）。
+ *   服务不在 ⇒ 本函数**根本不被调用** ⇒ 两个工具**不存在**，与"关掉模块只影响它自己"一致。
+ *
+ * ⚠ 与 `read_contracts`/`write_hob` 的**门禁不同源**：那两个跟 `hobTools`（= `modules.tools`），
+ *   这两个跟 `hobBus`（= `modules.bus`）。⇒ 两个开关各自管自己那一组，互不牵连。
+ */
+function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void): void {
+  const { sessions, send } = createHobBusTools(bus)
+  ctx.effect(() => ctx.tools.register(sessions), 'dsh-hob preset: hob_sessions tool')
+  ctx.effect(() => ctx.tools.register(send), 'dsh-hob preset: hob_send tool')
+  log('已注册 hob_sessions / hob_send')
 }

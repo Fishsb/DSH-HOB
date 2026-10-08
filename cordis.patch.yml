@@ -32,9 +32,10 @@
         modules:
           tools: true
           preset: false
-          bus: false
+          bus: true
           settings: true
 # ⚠ 上面四个值只是**声明默认值**，别在代码里直接读 `config.modules.x`：
-#   其中三个带 .volatile() ⇒ 运行时是 **ref 对象**（恒 truthy），另一个不是。
+#   四个字段**都带 .volatile()** ⇒ 运行时都是 **ref 对象**（恒 truthy）。
 #   唯一允许解 ref 的地方是 `src/config.ts` 的 `moduleSwitches()`。
-#   （同理不点名是"哪三个"—— 与上面同一条判据纪律。）
+#   ⚠ `bus` 自 **批 14 / M3** 起由 `false` 改 `true`（M3 已落地，投递真管用）；
+#     同期它从"设置页刻意隐藏"改为**可见**（旧口径 UD-25 的前提已消失）。

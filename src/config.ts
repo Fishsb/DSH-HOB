@@ -36,8 +36,7 @@ export interface ModulesConfig {
   /** M2 预设声明模块。 */
   preset: boolean
   /** M3 会话总线模块（同实例内会话之间传话）。 */
-  bus: boolean
-  /** M4 配置 schema 模块。 */
+  bus: boolean  /** M4 配置 schema 模块。 */
   settings: boolean
 }
 
@@ -54,8 +53,14 @@ export interface Config {
   modules: {
     tools: import('@deepseek-ai/cordis').Volatile<boolean>
     preset: import('@deepseek-ai/cordis').Volatile<boolean>
-    /** ⚠ 普通布尔（**不是** ref）—— 刻意不在设置页呈现，配置键保留待 M3。 */
-    bus: boolean
+    /**
+     * ⚠ **批 14 / M3 起改为 ref（volatile）** —— 它现在在设置页**可见**。
+     *   v1–v4 时期它是普通布尔且刻意隐藏（UD-25：「开了也不起作用」会误导用户）。
+     *   M3 落地后该模块**真管用**（提供 `hobBus` 服务 + 注册 2 个投递工具），
+     *   隐藏它反而变成"用户看不到这个真实开关"（PROJECT.md §5.3 的静默失败）。
+     *   ⇒ 与 `tools` / `preset` / `settings` 同形。
+     */
+    bus: import('@deepseek-ai/cordis').Volatile<boolean>
     settings: import('@deepseek-ai/cordis').Volatile<boolean>
   }
 }
@@ -64,22 +69,25 @@ export const Config = z.object({
   /**
    * 各模块开关。
    *
-   * ⚠⚠ **形状 = 父对象【不】标 volatile；`tools`/`preset`/`settings` 三个子字段各标；
-   *   `bus` 刻意不标** —— 这是第 6 步修订实测逼出来的形状（**方案 D**），
-   *   为的是"**在设置页隐藏 `bus`、但保留 `modules.bus` 这个配置键**"（UD-25）。
+   * ⚠⚠ **形状 = 父对象【不】标 volatile；四个子字段各标** —— 这是第 6 步修订实测
+   *   逼出来的形状（**方案 D**），原本为的是"**在设置页隐藏 `bus`、但保留
+   *   `modules.bus` 这个配置键**"（UD-25）。
+   *   ⚠ **批 14 / M3 起 `bus` 也标 volatile**（它真管用了 ⇒ 该可见，见下方字段注释）。
+   *   ⇒ 现在**四个子字段全标**，形状本身（父不标 + 子各标）**未变**。
    *
    * ⚠⚠ **这个形状也是本项目"设置页分区可见"的**唯一**支撑**（2026-10-06 配置面清理轮实测）：
    *   本 schema 里**已经没有顶层 volatile 字段了**（三个空旋钮 persona / showEntry /
    *   delivery 已按 UD-43 删除）⇒ 可见性**完全**依赖
-   *   `modules` 里那三个带 `.volatile()` 的子字段。
+   *   `modules` 里那四个带 `.volatile()` 的子字段。
    *   实测（用**宿主 `volatileForm` 原文**跑真 schema，见
    *   `.hob/archive/2026-10-06-config-cleanup-evidence/分区可见性验证.mjs`）：
    *     · `volatileForm(schema)` 返回**非 undefined** ⇒ 分区仍可见 ✅
-   *     · 返回的 form 顶层键 = `["modules"]`，其子字段 = `{tools, preset, settings}`
+   *     · 返回的 form 顶层键 = `["modules"]`，其子字段 = `{tools, preset, bus, settings}`
+   *       （批 14 起含 `bus`；此前为 `{tools, preset, settings}`）
    *   ⇒ **"父不标 + 子各标"单独就足以让 entry 可见**，不需要任何顶层 volatile。
    *     （更一般的规则见下方 "volatile 的三个形状规则"。）
-   *   ⚠ 因此：**任何人不许把这三个 `.volatile()` 从子字段上摘掉** ——
-   *     摘掉任何一个不影响可见性（还剩两个），但**三个全摘** ⇒
+   *   ⚠ 因此：**任何人不许把这四个 `.volatile()` 从子字段上摘掉** ——
+   *     摘掉一两个不影响可见性（还剩别的），但**全摘** ⇒
    *     `volatileForm` 返回 undefined ⇒ `describe()` 对该 entry `return []`
    *     ⇒ **整个 dsh-hob 分区在设置页静默消失**（宿主不报错）。
    *
@@ -111,18 +119,19 @@ export const Config = z.object({
    * | 方案 | 设置页 | `bus` 键是否保留 | 结论 |
    * |---|---|---|---|
    * | **E**：父 volatile + schema 里**不声明** `bus` | `tools/preset/settings` | ❌ **一次 UI 写入就被抹掉** | **不可用** |
-   * | **D**：父不标 + 三个可见子字段各标，`bus` 不标 | `tools/preset/settings` | ✅ **保留**（写入后仍在） | **采用** |
+   * | **D**：父不标 + 各子字段各标 | 四个都在 | ✅ **保留**（写入后仍在） | **采用** |
    *
    * **为什么 E 会丢**（实测复刻宿主写入路径得出）：`modules` 整体 volatile ⇒
-   * 宿主 `strip()` 对整块返回 `{}`（连同 `bus` 一起从旧值里删掉），
-   * 再 merge 进 `projectForm` 投影后的新值（其中**根本没有** `bus`）⇒ `bus` 被静默抹除。
-   * 而 D 的形状下 `strip()` 只删三个 volatile 子键，**`bus` 不是 volatile ⇒ 被保留**。
+   * 宿主 `strip()` 对整块返回 `{}`（连同被隐藏字段一起从旧值里删掉），
+   * 再 merge 进 `projectForm` 投影后的新值（其中**根本没有**那个字段）⇒ 被静默抹除。
+   * 而 D 的形状下 `strip()` 只删**.volatile() 标了的**子键，未标的子键被保留。
+   * ⚠ 批 14 起四个子字段**全标** ⇒ 上面这条"未标者被保留"的差别在本项目**当前无对象**，
+   *   但它仍是**形状规则**（将来若再要隐藏某个字段就靠它），故原样保留说明。
    * （复刻脚本与结论见 `.hob/archive/2026-10-05-step6rev-evidence/`。）
    *
-   * ⚠ **代价（同上一版，只是落点从父移到三个子字段）**：
-   *   `tools` / `preset` / `settings` 各自是 **ref 对象** ⇒ `cfg.modules.tools` 是 ref
-   *   （**恒 truthy**！直接当布尔用会**永远为真**，且不报错）。
-   *   而 `bus` **不是** ref，是**普通布尔** —— 同一层里**两种形态并存**。
+   * ⚠ **代价（批 14 起四个子字段同形）**：
+   *   `tools` / `preset` / `bus` / `settings` **各自都是 ref 对象** ⇒ `cfg.modules.tools`
+   *   是 ref（**恒 truthy**！直接当布尔用会**永远为真**，且不报错）。
    *   ⇒ 这件事**只能**由 {@link moduleSwitches} 收口，调用方一律不许自己解。
    */
   modules: z.object({
@@ -135,16 +144,17 @@ export const Config = z.object({
     /**
      * 会话总线开关（M3）。
      *
-     * ⚠ **刻意不标 `.volatile()` ⇒ 不在设置页呈现**（UD-25）。
-     *   理由：M3 已挂起（先做半自动转交），"开了也不起作用"，
+     * ⚠ **批 14 / M3 起：真管用，因此标 `.volatile()` 出现在设置页**。
+     *   v1–v4 时期它刻意隐藏（UD-25）：那时 M3 是骨架，"开了也不起作用"，
      *   显示出来会误导用户以为"开了就有效"。
-     *
-     * ⚠ **但配置键必须保留** —— M3 将来要用；它仍可被读（`moduleSwitches().bus`）、
-     *   也可在 profile 的 `cordis.patch.yml` 里手工设置。
-     *   本字段的 `.description()` 只服务于**读代码的人**（设置页不显示它）。
+     *   M3 落地后语义反转 —— 现在是"**开关真的控制一个真功能**"，
+     *   隐藏它就变成 PROJECT.md §5.3 那种**静默失败**（用户看不到真实开关）。
+     *   ⚠ 关掉它只影响 M3 自己：`hobBus` 服务不提供 ⇒ 预设行那两个投递工具
+     *     连同 `hob_sessions` / `hob_send` 一起不注册，其余三个模块照常。
      */
-    bus: z.boolean().default(false)
-      .description('会话总线（M3，当前挂起）：同实例内会话之间传话。刻意不在设置页呈现，配置键保留待 M3 使用。'),
+    bus: z.boolean().default(true)
+      .description('会话总线（M3）：提供 hob_sessions / hob_send，把指令投递给同实例内的另一个会话。关掉它只影响这两个工具。')
+      .volatile(),
     settings: z.boolean().default(true)
       .description('设置模块：登记本插件的配置面，使其出现在这个设置页里。')
       .volatile(),
@@ -168,15 +178,18 @@ function deref(value: unknown): unknown {
  * 读出模块开关的**普通对象**，屏蔽"每个开关是 ref 还是普通布尔"这件事。
  *
  * ── 为什么需要它（第 6 步实测的静默陷阱）────────────────────────────────
- * 为了"在设置页可见 / 隐藏某一个"，`modules` 的子字段**形态不一致**：
+ * 本函数诞生于"`modules` 的子字段**形态不一致**"那个时期（当时 `bus` 刻意不标
+ * volatile 以隐藏它）。**批 14 / M3 起四个子字段同形**（都标了 volatile ⇒ 都是 ref），
+ * 但本函数**仍然必须存在且仍是唯一入口**，理由有二：
+ *   ① 历史形状可能回来（将来若要再隐藏某个字段，就又是"两形态并存"）；
+ *   ② 兜底语义（读不出来给安全默认）是**独立的**，与字段是 ref 还是布尔无关。
  *
  * | 字段 | schema 上的 volatile | 运行时形态 | 直读 `modules.x` 得到 |
  * |---|---|---|---|
- * | `tools` / `preset` / `settings` | ✅ 有（为了显示） | **ref 对象** | **ref**（恒 truthy，`if (m.tools)` 永远为真） |
- * | `bus` | ❌ 无（为了隐藏，UD-25） | 普通布尔 | 真布尔 ✅ |
+ * | `tools` / `preset` / `bus` / `settings`（批 14 起） | ✅ 有（为了显示） | **ref 对象** | **ref**（恒 truthy，`if (m.tools)` 永远为真） |
  *
- * ⇒ **同一层里两种形态并存**，任何"直接读"的写法都会在**其中一半**上静默出错。
- * 本函数是**唯一**允许碰 `config.modules` 的地方：逐字段 `deref()`，
+ * ⇒ **任何"直接读 `config.modules.x` 当布尔用"的写法的后果都是静默的**（永远为真，
+ *   且不报错）。本函数是**唯一**允许碰 `config.modules` 的地方：逐字段 `deref()`，
  * 调用方（`src/index.ts` 的模块登记表）永远拿**普通布尔**，不必知情。
  *
  * ⚠ 兜底原则：读不出来的字段给**安全默认**（见下方返回值），
@@ -195,7 +208,10 @@ export function moduleSwitches(config: unknown): ModulesConfig {
   return {
     tools: pick('tools', true),
     preset: pick('preset', false),
-    bus: pick('bus', false),
+    // ⚠ 缺省 **true**（与 schema 的 `.default(true)` 一致）：读不出来时
+    //   宁可让 M3 可用（它是"投递"能力，失效表现为工具不出现，易于发现），
+    //   而不是静默把用户已经打开的模块关掉。
+    bus: pick('bus', true),
     settings: pick('settings', true),
   }
 }

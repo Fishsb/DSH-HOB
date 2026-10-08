@@ -447,12 +447,18 @@ const STALE_APPELLATIONS = [
       ['分发任务（产出给实施侧的指令）', 'Turn the work into directives for the developer session'],
       ['监督验收落实情况', 'Follow up on what was actually carried out'],
       ['不实施', 'You do not implement'],
-      ['无自动投递（如实声明）', 'There is NO automatic delivery'],
-      ['不得声称已自动投递', 'never claim you sent, dispatched'],
+      // ⚠ 批 14 / M3（UD-77）：原两条钉的是"**没有**投递能力"（`There is NO automatic
+      //   delivery` / `never claim you sent, dispatched`）。M3 落地后**该事实反了** ——
+      //   现在**能**投递。⇒ 钉点随事实换成"**投递 ≠ 执行**"这条**更强**的不变量。
+      //   ⚠ 这是**替换**、不是删除：旧断言原样留着会永远 FAIL（它钉的事实已不存在）；
+      //     新断言钉的比旧的多一层（不只"没投递"，而是"投了也不算做完"）。条数 10 → 11。
+      ['投递不等于执行（如实声明能力）', 'Delivering is not doing'],
+      ['不得把投递说成执行', 'never describe delivery as if it were execution'],
+      ['真正判据来自对方会话的读数', 'The reading that settles whether the work was'],
       ['验收步骤在位', 'that is the acceptance step'],
     ]],
     // ⚠ v4：`Hob-Execute` 侧的职责句断言已随预设删除（对象不存在）。
-    //   删断言 ≠ 放宽判据 —— Hob 侧 10 条**一条未动**。
+    //   删断言 ≠ 放宽判据 —— Hob 侧 10 条**一条未动**（批 14 起 11 条）。
   ]
   for (const [label, body, pins] of DUTY_PINS) {
     for (const [what, phrase] of pins) {
@@ -490,8 +496,12 @@ const STALE_APPELLATIONS = [
       ['短指针 = 路径 + 一句"读该文件并执行"', 'plus one line telling the developer session to read that file and carry'],
       ['不再同时贴全文', 'Do not\npaste the full directive into the reply as well'],
       ['用户点名要全文时以用户为准', "asks for the full\ntext in the reply, the user's request wins"],
-      ['文件化不改投递机制（仍无自动投递）', 'This changes only what the user carries, not how it gets there'],
-      ['不得声称已自动投递', 'Never describe the hand-off as automatic for this reason either'],
+      // ⚠ 批 14 / M3（UD-77）：原两条钉"文件化不改投递机制（仍无自动投递）"。
+      //   M3 之后投递**存在了** ⇒ 换成"**两条路都传路径、投递不改交接形态**"这条新不变量。
+      //   替换而非删除：旧句已失实，留着会永远 FAIL；新句钉的更多（2 条 → 3 条）。
+      ['文件是执行载体（两条路都传路径）', 'The file is what the other session executes from, so it travels as a path either way'],
+      ['投递时给路径、投不了由用户带', 'put that\npath in the delivered message when you deliver, and let the user carry it when you cannot'],
+      ['投递不是执行、也不是完成报告', 'Sending the message is not executing the directive, and it is not a report that anything was done'],
       ['围栏口径同步为"短指针（或全文）"', 'the block holds the pointer alone (or the full text when the user asked for it)'],
       ['工作区文件路径可给用户看', 'A workspace file path (such as `.hob/archive/.../TASK.md`) is NOT an internal'],
     ]],
@@ -544,9 +554,11 @@ const STALE_APPELLATIONS = [
       ['核不到就说"未验证"', 'say plainly which part is'],
       ['接住回报里的待决问题', 'Catch the questions'],
       ['逐条处理（能定的定、只有用户能定的转选项）', 'ones only the user can settle, turn into options'],
-      // ⚠ 负向口径：**逐字保留**的投递禁令（不得写成已具备自动投递能力）
-      ['投递禁令逐字保留（仍无自动投递）', 'There is still NO automatic delivery for the directive'],
-      ['不得声称自动投递（同段重申）', 'Never describe the hand-off as automatic for this reason either'],
+      // ⚠ 批 14 / M3（UD-77）：原两条钉"编排改动不改变工作如何travel（仍无自动投递）"。
+      //   M3 之后投递存在 ⇒ 换成本批要守的新不变量："投递不会把指令变成已完成"。
+      //   替换而非删除（旧句已失实）；同时**保留**"验收只认读数"一族不受影响。
+      ['投递不把指令变成执行', 'it does not turn delivery into execution'],
+      ['判据来自对方会话的读数、不是自己说了算', 'comes\nback as a reading from the other session, never as your own word'],
     ]],
     // ⚠ v4：`Hob-Execute` 侧的编排/回报条文断言已随预设删除（对象不存在）。
     //   ⚠ **但"禁弹窗"与"六段回报"两条纪律必须继续生效** ⇒ v4 改为由
@@ -810,9 +822,11 @@ const STALE_APPELLATIONS = [
   else ok(`⑤g ${NAME_HO}：批 11 条文未新起小节标题（就地追加在既有段落内）`)
 
   // ⚠ **不得与既有条文冲突**（任务书 §D1 明令：文件交接四条 / 委派门槛 / 指令自足 /
-  //   攒批 / 验收只认读数 / 接住问题 / 投递禁令句 **逐字保留**）。
+  //   攒批 / 验收只认读数 / 接住问题 / **投递口径** **逐字保留**）。
   //   判据：这几条的稳定短语在**批复后**必须仍然在位（它们各自的专属断言在上文各组，
   //   这里只把"决策自主追加**未把它们挤掉**"这一个事实**单独可见地复述一次**）。
+  //   ⚠ 批 14 / M3（UD-77）：末项由"投递禁令句"换成"**投递不等于执行句**"——
+  //     前者钉的事实已被 UD-77 推翻（M3 就是要能投递），后者是本批新立的更强口径。
   const KEPT = [
     ['文件交接（TASK.md 落点）', '.hob/archive/<YYYY-MM-DD-slug>/TASK.md'],
     ['委派门槛', 'delegate only work that MUST be done by hand'],
@@ -820,7 +834,7 @@ const STALE_APPELLATIONS = [
     ['攒批', 'Batch what can ride together'],
     ['验收只认读数', 'Accept on readings only'],
     ['接住问题', 'Catch the questions'],
-    ['投递禁令句（逐字保留）', 'There is still NO automatic delivery for the directive'],
+    ['投递口径（投递≠执行）', 'Delivering is not doing'],
   ]
   const broken = KEPT.filter(([, s]) => !hoBody6.includes(s))
   if (broken.length > 0) {
@@ -860,18 +874,21 @@ const STALE_APPELLATIONS = [
       const NEEDED13 = [
         ['O3 按需加载技能指引', 'skill'],
         ['O5 把产出挂成交付卡', 'present'],
+        // ⚠ 批 14 / M3（UD-77）：投递两件也**必须**在。
+        ['M3 列活会话', 'hob_sessions'],
+        ['M3 投递指令', 'hob_send'],
       ]
       const miss13 = NEEDED13.filter(([, n]) => !set13.has(n))
       if (miss13.length > 0) {
         bad(`⑤h ${NAME_HO} 白名单缺目标名（${miss13.length} 个）：${miss13.map(([g, n]) => `${n}(${g})`).join(', ')}`)
-      } else ok(`⑤h ${NAME_HO}：白名单含批 13 的 2 个目标名（${NEEDED13.map(([, n]) => n).join(', ')}）`)
+      } else ok(`⑤h ${NAME_HO}：白名单含批 13 的 2 个 + 批 14 的 2 个目标名（${NEEDED13.map(([, n]) => n).join(', ')}）`)
 
-      // ── 正向：白名单**恰好 23**（防止悄悄多放一个而无人察觉）──────────
-      // 23 = 既有 11 + 批 9 的 9 + 批 11 的 1 + 批 13 的 2。
-      if (allow13.length !== 23) {
-        bad(`⑤h ${NAME_HO} 白名单应恰好 23 名，实测 ${allow13.length}`
-          + `（多出：${allow13.filter((n) => !['read_contracts','write_hob','advanced_search','multi_search','platform_search','video_search','free_search_test','schedule_create','schedule_list','schedule_update','schedule_delete','taskboard_list','taskboard_get','taskboard_comments','roundtable_status','web_fetch','read','glob','grep','read_image','ask_user_question','skill','present'].includes(n)).join(', ') || '无'}）`)
-      } else ok(`⑤h ${NAME_HO}：白名单恰好 23 名（11 + 9 + 1 + 2）`)
+      // ── 正向：白名单**恰好 25**（防止悄悄多放一个而无人察觉）──────────
+      // 25 = 既有 11 + 批 9 的 9 + 批 11 的 1 + 批 13 的 2 + **批 14 的 2**（M3 投递）。
+      if (allow13.length !== 25) {
+        bad(`⑤h ${NAME_HO} 白名单应恰好 25 名，实测 ${allow13.length}`
+          + `（多出：${allow13.filter((n) => !['read_contracts','write_hob','advanced_search','multi_search','platform_search','video_search','free_search_test','schedule_create','schedule_list','schedule_update','schedule_delete','taskboard_list','taskboard_get','taskboard_comments','roundtable_status','web_fetch','read','glob','grep','read_image','ask_user_question','skill','present','hob_sessions','hob_send'].includes(n)).join(', ') || '无'}）`)
+      } else ok(`⑤h ${NAME_HO}：白名单恰好 25 名（11 + 9 + 1 + 2 + 2）`)
 
       // ── 负向：**本批硬禁项一律不得**在白名单里（任务书 §0 / §3）────────────
       // ⚠ 与 ⑤f 的禁项清单**部分重叠是刻意的**：⑤f 钉的是"批 9 起就不许有的"，
