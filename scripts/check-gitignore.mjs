@@ -214,6 +214,61 @@ for (const m of mentioned) {
 if (mentioned.length === 0) bad('读不到 README §1 的骨架行（约定归属地读不到 ⇒ 本断言失去基准）')
 else ok(`README §1 骨架栏提到的 ${mentioned.length} 项，均已纳入 MUST-TRACK 覆盖`)
 
+/**
+ * 反向自检（2026-10-09 新增）：**package.json 里声明的脚本必须都在 MUST-TRACK 里**。
+ *
+ * ── 为什么需要（这一条是本次补的，理由有实测出处）────────────────────
+ * 上面两条断言都是**正向**的（"清单里的必须满足"），它们**抓不到"清单漏了谁"**：
+ * `check-experience.mjs` / `next-experience-id.mjs` 被 `package.json` 声明为收尾命令，
+ * 却**长期不在 MUST-TRACK 里** —— 这个缺口是**人工排查**发现的，不是本脚本报的。
+ * 同形缺口（新加一条 `npm run xxx` ⇒ 忘记登记）会**再次静默发生**。
+ * ⇒ 用**数据源反查**把它从静默变显式：**能被 `npm run` 调到的脚本，必须受本脚本保护**。
+ *
+ * ── 判据（为什么读 package.json 而不是"硬编码一张期望表"）────────────
+ * 期望表的**唯一权威是 `package.json` 的 `scripts`** —— 手抄一份进本脚本，
+ * 等于再造一个会漂移的清单（与本脚本要防的 E-70 同族）。
+ * 故这里**解析** `package.json`，取所有 `node scripts/<x>.mjs` 形式的调用目标。
+ *
+ * ⚠ **只断言单向**：`scripts` 里被声明的 ⇒ 必须在 MUST-TRACK；
+ *   **不**反推"MUST-TRACK 里的每一脚本都必须被 scripts 声明"
+ *   （反方向不成立：`check-gitignore.mjs` 自己也被声明，但骨架文件类条目与 `npm run` 无关）。
+ * ⚠ 解析失败（`package.json` 读不到 / `scripts` 段缺失）⇒ **FAIL 而不是跳过** ——
+ *   跳过等于"基准读不到就默认通过"，那正是本脚本反复盯防的假通过形态。
+ */
+const PKG = join(root, 'package.json')
+{
+  let pkgSrc = ''
+  try { pkgSrc = execFileSync('cat', [PKG], { encoding: 'utf8' }) } catch { pkgSrc = '' }
+  if (pkgSrc === '') {
+    bad('读不到 package.json（脚本声明面读不到 ⇒ 本断言失去基准，不按通过处理）')
+  } else {
+    let scripts = undefined
+    try { scripts = JSON.parse(pkgSrc).scripts } catch { scripts = undefined }
+    if (scripts === undefined || typeof scripts !== 'object' || scripts === null) {
+      bad('package.json 里找不到可解析的 `scripts` 段（基准缺失 ⇒ 不按通过处理）')
+    } else {
+      // 抽 `node scripts/<x>.mjs`（允许路径前后有其它参数，如 `node scripts/x.mjs --flag`）
+      const declared = new Set()
+      for (const cmd of Object.values(scripts)) {
+        if (typeof cmd !== 'string') continue
+        for (const m of cmd.matchAll(/node\s+(scripts\/[A-Za-z0-9._-]+\.mjs)/g)) declared.add(m[1])
+      }
+      if (declared.size === 0) {
+        bad('package.json 的 scripts 里一个 `node scripts/*.mjs` 都没解析到（解析口径可能已漂 ⇒ 不按通过处理）')
+      } else {
+        const missing = [...declared].filter((p) => !trackedPaths.has(p))
+        for (const p of missing) {
+          bad(`package.json 声明的脚本不在 MUST-TRACK 里：${p}  —— 「被 npm run 调到」的脚本一旦被 .gitignore 静默排除，`
+            + 'clone 后该命令直接 ENOENT，而本脚本不会报（这正是 check-experience / next-experience-id 曾经漏掉的形态）')
+        }
+        if (missing.length === 0) {
+          ok(`package.json 声明的 ${declared.size} 个脚本（${[...declared].sort().join(' · ')}）全部已在 MUST-TRACK 里`)
+        }
+      }
+    }
+  }
+}
+
 // ── 输出 ────────────────────────────────────────────────────────────────
 console.log('`.gitignore` 一致性核对 · dsh-hob')
 console.log('约定归属地:', README)

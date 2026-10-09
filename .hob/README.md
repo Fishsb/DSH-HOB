@@ -58,7 +58,8 @@
 
 ### 1.2 `drafts/` 为什么**进 git**（一次经复核的归纠正）
 
-`.hob/drafts/preset-contracts.md` 是**两个预设契约正文的人读版**，
+`.hob/drafts/preset-contracts.md` 是**预设契约正文的人读版**（⚠ **v4 前为"两个预设"**；
+`Hob-Execute` 已随用户决策 D1/D2 删除 ⇒ **现状只有 `Hob` 一份**，见 `PROJECT.md` §4.3），
 也是 `scripts/check-preset-contracts.mjs`（**已入库**、挂在 `npm run check:presets`）
 **无条件读取**的文件（`scripts/check-preset-contracts.mjs:32` 定义路径、`:71` 读取）。
 

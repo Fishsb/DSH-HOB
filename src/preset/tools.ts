@@ -326,8 +326,10 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
   //   决策推进，除非只能由用户决策才可以提问」。契约里已就地追加「决策自主」条文
   //   （见 `preset-dsh-hob.patch.yml` 的 `Decide on your own.` 一段），
   //   本条只是把"能问"这个**手段**接上；它不是"要多问"的授权。
-  // ⚠ **只限本预设（Hob）**：`Hob-Execute` 侧的 `WORK_MODEL_DENY` 仍禁该工具，
-  //   **一个字未动**（UD-64 的禁弹窗纪律对实施侧继续生效）。
+  // ⚠ **v4 起本插件只剩 `Hob` 一个预设**：原句「只限本预设（Hob）——`Hob-Execute` 侧的
+  //   `WORK_MODEL_DENY` 仍禁该工具、一个字未动」是 **v4 之前的现状断言，现已失实**：
+  //   实施侧预设 `Hob-Execute` 与 `WORK_MODEL_DENY`（`src/modules/work-deny.ts`）**均已整段删除**
+  //   ⇒ 该禁项**随预设一并移除**，现无"另一侧"可言（UD-64 的禁弹窗纪律只在实施侧预设存在时成立）。
   'ask_user_question',
   // ── 批 13 / O3：按需加载技能指引 1 个（需 `tool-skill` + `skill-filesystem`）─
   // ⚠ 与 E-86 的「与门」同款：光放行名字不够，声明面必须同时有那两行

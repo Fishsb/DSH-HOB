@@ -69,9 +69,9 @@ DH-P01  dsh-hob（项目）
 
 | 码 | 功能名 | userView（一句话） | 代表性文件（磁盘实存） |
 |---|---|---|---|
-| **DH-F01** | **预设装配** | 选择器里能看到并用上 `Hob` / `Hob-Execute` 两个预设 | `src/modules/preset.ts`(16 行) · `preset/dsh-hob/preset-dsh-hob.patch.yml`(407 行) · `preset/dsh-hob/preset-dsh-hob-work.patch.yml`(239 行) |
+| **DH-F01** | **预设装配** | 选择器里能看到并用上 `Hob` 预设（⚠ **v4 起只剩一个**；原写 `Hob` / `Hob-Execute` **两个**，后者已随用户决策 D1/D2 删除） | `src/modules/preset.ts`(16 行) · `preset/dsh-hob/preset-dsh-hob.patch.yml`(407 行) |
 | **DH-F02** | **工具面收敛（与门）** | Hob 只拿到被允许的工具，写/命令类拿不到 | `src/preset/tools.ts`(456 行) · `src/modules/tools.ts`(366 行) |
-| **DH-F03** | **实施侧收窄** | Hob-Execute 的提问弹窗被摘掉，模型面按名单收窄 | `src/modules/work-deny.ts`(121 行) |
+| ~~**DH-F03**~~ | ~~**实施侧收窄**~~ | ⚠ **v4 已删除**：原为「`Hob-Execute` 的提问弹窗被摘掉，模型面按名单收窄」—— 该预设与 `src/modules/work-deny.ts`（121 行）**均已删除** ⇒ **本功能不再存在**，行保留划线供追溯 | ~~`src/modules/work-deny.ts`(121 行)~~（**文件已不存在**） |
 | **DH-F04** | **账本读写** | Hob 能读项目文档、写自己的 `.hob/` 账本（带越界/软链守卫） | `src/server/doc-read.ts`(155 行) · `src/server/hob-write.ts`(546 行) |
 | **DH-F05** | **设置面板** | 设置页能看到并改动本插件的配置项 | `src/client/index.ts`(79 行) · `src/client/settings-panel.tsx`(225 行) · `src/client/settings.ts`(99 行) · `src/modules/settings.ts`(115 行) |
 | **DH-F06** | **配置 schema** | 模块开关与字段的定义面（含 volatile 形状规则） | `src/config.ts`(201 行) |
