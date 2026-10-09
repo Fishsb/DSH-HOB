@@ -118,7 +118,8 @@ export interface HobToolsConfig {
    * 诊断日志开关。**默认关**（缺省/未给 = 不写任何文件）。
    *
    * ⚠ 为什么默认关：早期版本无条件 `appendFileSync('/tmp/…')`，实测真机 3 分钟写 508 KB、
-   *   累计 2.3 MB（见 `.hob/FACTS.md` F-J25）—— **一个只读用途的诊断不该有写盘副作用**。
+   *   累计 2.3 MB（原 `FACTS.md` 的 F-J25，现已退场并入归档
+   *   `archive/2026-10-09-ledger-history/FACTS-final.md`）—— **一个只读用途的诊断不该有写盘副作用**。
    * ⚠ 开关必须有**真实消费者**（挂载侧据此决定写不写）；只留配置键而不读，就是"空旋钮"。
    */
   debugLog?: boolean
@@ -252,7 +253,7 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
       file: {
         type: 'string',
         required: true,
-        description: '相对 .hob/ 的路径，如 FACTS.md、USER-DECISIONS.md、archive/2026-10-03-xxx/A.md',
+        description: '相对 .hob/ 的路径，如 CONTEXT.md、USER-DECISIONS.md、archive/2026-10-03-xxx/A.md',
       },
       content: {
         type: 'string',
@@ -294,7 +295,7 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
         ...(args.dryRun === undefined ? {} : { dryRun: args.dryRun }),
       }, {
         // v4：`root` 已是**账本目录本身** ⇒ hobDir 传空串，避免多套一层
-        // （否则 hobRoot = <账本目录>/.hob，写成 `<工作区名>/.hob/FACTS.md`）。
+        // （否则 hobRoot = <账本目录>/.hob，写成 `<工作区名>/.hob/CONTEXT.md`）。
         hobDir: '',
         keepBackups: DEFAULTS.keepBackups,
         shrinkGuard: DEFAULTS.shrinkGuard,

@@ -94,7 +94,7 @@ export interface WriteHobOptions {
 }
 
 export interface WriteHobInput {
-  /** 相对 `.hob/` 的路径，如 `FACTS.md`、`archive/2026-10-03-x/A.md`。 */
+  /** 相对 `.hob/` 的路径，如 `CONTEXT.md`、`archive/2026-10-03-x/A.md`。 */
   file: string
   /** Markdown 文本（**由调用方按模板产出，本模块只校验、不构造**）。 */
   content: string
