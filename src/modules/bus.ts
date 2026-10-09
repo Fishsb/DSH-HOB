@@ -75,6 +75,32 @@ export interface DeliveryResult {
   reason?: string
 }
 
+/** 建会话结果（批 16）。`ok=false` 时 `reason` 给出可读原因。 */
+export interface SpawnResult {
+  ok: boolean
+  /** 新会话 id（建成功才有）。 */
+  sessionId?: string
+  /** 它被放进的工作区 id（**必填项**，本能力的设计核心）。 */
+  workspaceId?: string
+  /** 该工作区的路径（回执里带上，便于核对）。 */
+  workspacePath?: string
+  agentPreset?: string
+  reason?: string
+  /** 可选：给错 `workspace` 时回带的可选清单，便于改对而不是乱猜。 */
+  available?: string[]
+}
+
+/** 一个可选的建会话目标工作区（给模型看的最小集）。 */
+export interface WorkspaceInfo {
+  id: string
+  path: string
+  title?: string
+  /** 该工作区当前有多少会话（0 不代表不能用）。 */
+  sessions: number
+  /** 是发起调用的会话自己所在的工作区吗（默认目标，省得每次点名）。 */
+  self: boolean
+}
+
 /** 会话忙闲：投递给 `running` 的会话会排到它下一轮/下一 step。 */
 const BUSY = 'running'
 
@@ -125,27 +151,87 @@ function makeArchivedLookup(svcCtx: any): (sessionId: string) => boolean {
     return () => false
   }
   if (registry === undefined || registry === null) return () => false
-  try {
-    const ids = registry.archivedSessionIds
-    if (ids === undefined || ids === null) return () => false
-    // 宿主给的是**数组**（实测 `Array.isArray === true`，且无 `has`）⇒ 先建 Set 再查，
-    // 避免每次 `includes` 都线性扫一遍。
-    const set = typeof ids.has === 'function' ? ids : new Set(Array.isArray(ids) ? ids : [...ids])
-    return (sessionId: string) => {
-      try { return set.has(sessionId) } catch { return false }
+
+  // ⚠⚠ **必须每次现读，不能在闭包里快照**（2026-10-09 真机抓到的第二个缺陷）。
+  //
+  //   第一版写的是：把 `registry.archivedSessionIds` 取出来**建一次 Set**，
+  //   闭包捕获那个 Set。真机症状：**在服务构建之后新归档的会话照旧出现在
+  //   `hob_sessions` 里**（实测：`session-a15c0f5d` 明明已在归档集里，
+  //   `list()` 仍把它列出来），而构建之前归档的那批过滤得好好的
+  //   —— 于是这个 bug **极难从"归档功能不工作"的表面症状归因**。
+  //
+  //   根因：归档集是**活数据**（宿主原地改同一个数组对象：实测
+  //   `archivedSessionIds` 前后**同一引用**、内容增长），而我在构建时**拍了个快照**。
+  //   ⇒ 每次调用现取；宿主给的是**数组**（实测无 `has`，且长度会变），
+  //     所以现读时再判断"有没有 `has`"，两条路都支持。
+  return (sessionId: string) => {
+    try {
+      const ids = registry.archivedSessionIds
+      if (ids === undefined || ids === null) return false
+      if (typeof ids.has === 'function') return ids.has(sessionId)
+      return Array.isArray(ids) ? ids.includes(sessionId) : [...ids].includes(sessionId)
+    } catch {
+      return false
     }
+  }
+}
+
+/**
+ * 可选读 `workspaceRegistry`（批 16）。
+ *
+ * ⚠ 与 {@link makeArchivedLookup} 同一条纪律：**不进 `inject` 依赖表**，用 `ctx.get`
+ *   免 inject 读。它是**建会话归属**这个能力的依赖 —— 拿不到时 `spawn` 会**明确拒绝**
+ *   （而不是建出孤儿会话），但 `list()` / `deliver()` 照常工作。
+ */
+function makeRegistryLookup(svcCtx: any): any {
+  try {
+    return typeof svcCtx.get === 'function' ? svcCtx.get('workspaceRegistry') : svcCtx.workspaceRegistry
   } catch {
-    return () => false
+    return undefined
+  }
+}
+
+/**
+ * 可选读 `sessionController`（批 16）—— 建会话的**唯一**入口。
+ *
+ * ⚠ 文档明写它是 *"Owns every operation that may create, resume, or configure a Web Agent"*
+ *   （`dsh-api-session-controller/lib/types/agent.d.ts:65`）。本模块**不自己拼**建会话
+ *   的底层调用（那会绕过归档门禁、默认模型解析、preset 挂载等一串宿主不变量）。
+ *   拿不到它 ⇒ `spawn` 明确拒绝。
+ */
+function makeControllerLookup(svcCtx: any): any {
+  try {
+    return typeof svcCtx.get === 'function' ? svcCtx.get('sessionController') : svcCtx.sessionController
+  } catch {
+    return undefined
   }
 }
 
 /** `hobBus` 服务的形状。 */
 export interface HobBus {
   readonly version: number
-  /** 列**活**会话（按最近更新排序）。 */
+  /** 列**可投递的活**会话（已归档的不列）。 */
   list(selfSessionId: string | undefined): SessionInfo[]
   /** 向指定会话投递一条 user 消息。 */
   deliver(sessionId: string, text: string, mode: DeliveryMode): Promise<DeliveryResult>
+  /**
+   * 列可选的工作区（批 16）。给 `spawn` 挑目标用。
+   *
+   * @param selfSessionId - 调用方自己的会话 id；用来标出"本会话所在工作区"
+   *   （那是 `spawn` 的默认归属，省得每次点名）。
+   */
+  listWorkspaces(selfSessionId: string | undefined): Promise<WorkspaceInfo[]>
+  /**
+   * 新建一个会话并**强制归属到某个工作区**（批 16）。
+   *
+   * @param workspace - 目标工作区：**id 或路径**。缺省 = 调用方自己的工作区。
+   * ⚠ 这是本能力的**设计核心**：宿主 `sessionController.create` 的
+   *   `workspaceId` 是**可选**字段，不传就建出"不属于任何工作区"的孤儿会话
+   *   （2026-10-09 实测：只传 `cwd` 建出的会话在 `workspace.json` 里查无归属）。
+   *   本方法**不接受"不指定"**：要么显式给，要么落到调用方自己的工作区；
+   *   拿不准就拒，**绝不造孤儿**。
+   */
+  spawn(workspace: string | undefined, agentPreset: string | undefined, selfSessionId: string | undefined): Promise<SpawnResult>
 }
 
 /** 就绪时挂上的实现（`apply` 里构造，服务缺席时不会存在）。 */
@@ -164,6 +250,10 @@ export function apply(ctx: any): void {
     }
     // 可选读：拿不到归档集就退化成"没有归档概念"，本模块照常工作。详见该函数注释。
     const isArchived = makeArchivedLookup(svcCtx)
+    // 可选读：`workspaceRegistry`（批 16 建会话要它）。同样的纪律 —— 不进 inject 表。
+    const registry = makeRegistryLookup(svcCtx)
+    // 可选读：`sessionController`（建会话的真正入口）。缺席 ⇒ `spawn` 明确拒绝。
+    const controller = makeControllerLookup(svcCtx)
 
     const bus: HobBus = {
       version: 1,
@@ -271,6 +361,140 @@ export function apply(ctx: any): void {
         }
         return { ok: true, messageId: message?.id, mode }
       },
+
+      // ── 批 16：建会话（强制归属工作区）────────────────────────────────
+      async listWorkspaces(selfSessionId: string | undefined): Promise<WorkspaceInfo[]> {
+        if (registry === undefined || registry === null) return []
+        let raw: any[] = []
+        try {
+          const l = registry.list()
+          raw = Array.isArray(l) ? l : l === undefined || l === null ? [] : [...l]
+        } catch {
+          return []
+        }
+        // 本会话所在的工作区：会话 → 路径（`sessionPaths` 索引）→ 工作区记录。
+        // ⚠ 走 sessionPaths 而不是 header.workspaceId —— 后者实测恒为 null
+        //   （归属由注册表按 canonical-cwd 登记，不在会话 header 里）。
+        let selfPath: string | undefined
+        if (selfSessionId !== undefined) {
+          try {
+            const p = registry.sessionPaths?.get?.(selfSessionId)
+            if (typeof p === 'string') selfPath = p
+          } catch { /* 读不到就不标 self */ }
+        }
+        const rows: WorkspaceInfo[] = []
+        for (const w of raw as any[]) {
+          try {
+            const id = String(w?.id ?? '')
+            const path = String((w?.path ?? w?.record?.path) ?? '')
+            if (id === '' || path === '') continue
+            rows.push({
+              id,
+              path,
+              ...(typeof (w?.title ?? w?.record?.title) === 'string' ? { title: String(w.title ?? w.record.title) } : {}),
+              sessions: Array.isArray(w?.sessionIds ?? w?.record?.sessionIds) ? (w.sessionIds ?? w.record.sessionIds).length : 0,
+              self: selfPath !== undefined && path === selfPath,
+            })
+          } catch { /* 单条坏掉不影响整表 */ }
+        }
+        return rows.sort((a, b) => (a.self !== b.self ? (a.self ? -1 : 1) : a.path.localeCompare(b.path)))
+      },
+
+      async spawn(
+        workspace: string | undefined,
+        agentPreset: string | undefined,
+        selfSessionId: string | undefined,
+      ): Promise<SpawnResult> {
+        // ① 服务齐不齐 —— 缺一个都**明确拒绝**，绝不降级成"建个孤儿"。
+        if (registry === undefined || registry === null) {
+          return { ok: false, reason: 'workspace registry unavailable: cannot resolve a workspace, and creating a session without one is refused.' }
+        }
+        if (controller === undefined || controller === null || typeof controller.create !== 'function') {
+          return { ok: false, reason: 'session controller unavailable: the host owns session creation; this module does not create sessions by itself.' }
+        }
+
+        /** 读回可选清单（给错目标时回带，便于改对）。 */
+        const available = async (): Promise<string[] | undefined> => {
+          try {
+            const ws = await (bus as any).listWorkspaces(selfSessionId)
+            return (ws as WorkspaceInfo[]).map((w) => `${w.path}${w.self ? ' (this session\'s workspace)' : ''}`)
+          } catch { return undefined }
+        }
+
+        // ② 解析目标工作区：**显式给的**（id 或路径）→ 否则**本会话自己的**。
+        //    ⚠ 两条路都必须落到一个**真实存在**的工作区上。
+        let wsId: string | undefined
+        let wsPath: string | undefined
+        if (typeof workspace === 'string' && workspace.trim() !== '') {
+          const want = workspace.trim()
+          // 先当 id 试（宿主会校验存在性）；拿不到就走路径。
+          try {
+            const byId = registry.get?.(want)
+            if (byId !== undefined && byId !== null) {
+              wsId = String(byId.id ?? want)
+              wsPath = String(byId.path ?? byId.record?.path ?? '')
+            }
+          } catch { /* 不是 id，继续按路径试 */ }
+          if (wsId === undefined) {
+            try {
+              // ⚠ `resolveByPath` 是**异步**的，且**未命中抛 ENOENT**（实测），
+              //   不是返回空 —— 必须 try/catch，否则一个错路径会把工具打崩。
+              const byPath = await registry.resolveByPath?.(want)
+              if (byPath !== undefined && byPath !== null) {
+                wsId = String(byPath.id)
+                wsPath = String(byPath.path ?? byPath.record?.path ?? want)
+              }
+            } catch (e) {
+              return {
+                ok: false,
+                reason: `no workspace matches "${want}" (not an id and not an existing registered path): `
+                  + String((e as Error)?.message ?? e),
+                available: await available(),
+              }
+            }
+          }
+          if (wsId === undefined) {
+            return { ok: false, reason: `no workspace matches "${want}".`, available: await available() }
+          }
+        } else {
+          // 缺省 = 本会话自己的工作区。判据同 listWorkspaces：sessionPaths → 路径 → 记录。
+          const rows = await (bus as any).listWorkspaces(selfSessionId)
+          const own = rows.find((r: WorkspaceInfo) => r.self)
+          if (own === undefined) {
+            return {
+              ok: false,
+              reason: 'no workspace given and this session has no resolvable workspace; '
+                + 'name a target workspace explicitly (see hob_workspaces).',
+              available: rows.map((r: WorkspaceInfo) => r.path),
+            }
+          }
+          wsId = own.id
+          wsPath = own.path
+        }
+
+        // ③ 建会话 —— 只走宿主 controller（它管归档门禁/默认模型/preset 挂载等不变量）。
+        try {
+          const created = await controller.create({
+            workspaceId: wsId,
+            ...(typeof agentPreset === 'string' && agentPreset.trim() !== '' ? { agentPreset: agentPreset.trim() } : {}),
+          })
+          return {
+            ok: true,
+            sessionId: created?.sessionId,
+            workspaceId: wsId,
+            ...(wsPath === undefined || wsPath === '' ? {} : { workspacePath: wsPath }),
+            ...(created?.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }),
+          }
+        } catch (e) {
+          // ⚠ 宿主对**不存在的 workspaceId 会直接抛**（实测："workspace \"…\" not found"）
+          //   ⇒ 原样带回，不吞。
+          return {
+            ok: false,
+            reason: 'session create failed: ' + String((e as Error)?.message ?? e),
+            available: await available(),
+          }
+        }
+      },
     }
 
     // ⚠ `provide` 是 effect：模块卸载/依赖消失 ⇒ 服务随之消失 ⇒ 预设行那两个工具自动拆除。
@@ -283,10 +507,11 @@ export function apply(ctx: any): void {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// M3 的两个工具 —— **定义**在本模块（能力在那，工具跟着走），
+// M3 的四个工具 —— **定义**在本模块（能力在那，工具跟着走），
 //   **注册**在 `src/preset/tools.ts`（预设作用域，只对 Hob 可见）。
 //   ⚠ 与 `modules/tools.ts` 的 read_contracts/write_hob 同款纪律：
 //     绝不在插件作用域注册（会漏进每一个预设，见 tools.ts 文件头的实测表）。
+//   ⚠ 批 16 起由 2 个变 4 个（+ `hob_workspaces` / `hob_spawn`）。
 // ══════════════════════════════════════════════════════════════════════
 
 /**
@@ -310,6 +535,8 @@ function selfSessionIdOf(exec: any): string | undefined {
 export function createHobBusTools(bus: HobBus): {
   sessions: ReturnType<typeof defineTool>
   send: ReturnType<typeof defineTool>
+  workspaces: ReturnType<typeof defineTool>
+  spawn: ReturnType<typeof defineTool>
 } {
   const sessionsTool = defineTool({
     name: 'hob_sessions',
@@ -400,5 +627,78 @@ export function createHobBusTools(bus: HobBus): {
     },
   })
 
-  return { sessions: sessionsTool, send: sendTool }
+  const workspacesTool = defineTool({
+    name: 'hob_workspaces',
+    description:
+      '列出**本实例里已登记的工作区**（id / 路径 / 标题 / 会话数），用于给 `hob_spawn` 挑归属。'
+      + '标 `(本会话工作区)` 的那个是**缺省目标**（`hob_spawn` 不点名时落到它）。'
+      + '⚠ 只有**已登记**的工作区在这里：路径没被登记过的工作区**建不出会话**（宿主会拒）。',
+    parameters: {},
+    output: {
+      schema: { type: 'string' },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
+    },
+    async execute(_args: unknown, exec: any): Promise<string> {
+      const rows = await bus.listWorkspaces(selfSessionIdOf(exec))
+      if (rows.length === 0) return '没有可用的工作区（或工作区服务不可用）。'
+      const lines = rows.map((w) => '- ' + [
+        w.id,
+        w.self ? '(本会话工作区·缺省目标)' : '',
+        `title=${w.title ?? '(无)'}`,
+        `cwd=${w.path}`,
+        `会话=${w.sessions}`,
+      ].filter((x) => x !== '').join(' · '))
+      return ['工作区 ' + rows.length + ' 个：', ...lines].join('\n')
+    },
+  })
+
+  const spawnTool = defineTool({
+    name: 'hob_spawn',
+    description:
+      '**新建一个会话**（交给实施方用），并**强制归属到某个工作区**。'
+      + '⚠ 这是本能力的核心：新会话**必须有工作区归属** —— 不属于任何工作区的会话'
+      + '不会出现在项目视图里，用户也找不到它。'
+      + '`workspace` 可以是**工作区路径**或 **id**；**不填则落到本会话自己的工作区**'
+      + '（那正是"给这个项目派一个新会话"的常见意图）。'
+      + '目标必须是**已登记**的工作区（拿不准先调 `hob_workspaces` 看）。'
+      + '⚠ 建会话 ≠ 派活：建完还要用 `hob_send` 把指令投给它；'
+      + '而且**新会话需要用户先打开/发一句话才会真正开始**（首轮之后预设锁定）。',
+    parameters: {
+      workspace: {
+        type: 'string',
+        description:
+          '目标工作区：路径（如 `/home/lk/FF/dsh-hob`）或 id。'
+          + '**不填 = 本会话自己的工作区**（最常见的选择）。',
+      },
+      agentPreset: {
+        type: 'string',
+        description: '新会话用的预设 id（如 `standard`）。不填则用宿主的默认预设。',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
+    },
+    async execute(args: { workspace?: string; agentPreset?: string }, exec: any): Promise<string> {
+      const r = await bus.spawn(args?.workspace, args?.agentPreset, selfSessionIdOf(exec))
+      if (!r.ok) {
+        return JSON.stringify({
+          ok: false,
+          reason: r.reason ?? 'spawn failed',
+          ...(r.available === undefined ? {} : { availableWorkspaces: r.available }),
+        })
+      }
+      return JSON.stringify({
+        ok: true,
+        sessionId: r.sessionId,
+        workspaceId: r.workspaceId,
+        ...(r.workspacePath === undefined ? {} : { workspacePath: r.workspacePath }),
+        ...(r.agentPreset === undefined ? {} : { agentPreset: r.agentPreset }),
+        note2: 'Created only: the session exists but has not started. Deliver a directive with hob_send, '
+          + 'and expect the user to open it / send one line before it really runs.',
+      })
+    },
+  })
+
+  return { sessions: sessionsTool, send: sendTool, workspaces: workspacesTool, spawn: spawnTool }
 }

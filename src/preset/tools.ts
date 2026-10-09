@@ -231,6 +231,7 @@ function denyInheritedTools(ctx: any, log: (m: string) => void): void {
  *           + 向用户提问 1 个（**批 11 / D2 新增 1 = 21**）
  *           + 技能加载 1 个 + 产出挂卡 1 个（**批 13 新增 2 = 23**）。
  *           + **会话总线投递 2 个**（`hob_sessions` / `hob_send`，**批 14 / M3 新增 2 = 25**）。
+ *           + **建会话 2 个**（`hob_workspaces` / `hob_spawn`，**批 16 新增 2 = 27**）。
  *
  * ── ⚠ 能力落点 = **声明面 与 白名单 的「与门」**（批 8 审查实测，见 E-86）────
  * 白名单**只**决定"这一项发不发给模型"；工具**还必须在该预设作用域里被注册**——
@@ -333,6 +334,17 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
   //   且它的失败是静默的（会话可能一直不读）⇒ 不在枚举里，工具层也拒。
   'hob_sessions',
   'hob_send',
+  // ── 批 16：建会话能力 2 个（UD-79）────────────────────────────────────
+  // ⚠ 用户 2026-10-09 决策：Hob 派活/编排时**如需新建会话，新建的会话必须注意
+  //   工作区归属**。落法是 `hob_workspaces`（看可选工作区）+ `hob_spawn`
+  //   （建会话，**强制带 `workspaceId`**）。
+  // ⚠ 为什么必须强制：宿主 `sessionController.create` 的 `workspaceId` 是**可选**字段，
+  //   不传就建出"不属于任何工作区"的孤儿会话（2026-10-09 实测：只传 cwd 建出的
+  //   会话在 workspace.json 里查无归属）。⇒ 本工具**不接受"不指定"**：
+  //   要么显式给，要么落到调用方自己的工作区，解析不出就**拒**，绝不造孤儿。
+  // ⚠ 与门（E-86）同前：定义在 `modules/bus.ts`，注册在 `registerBusTools`。
+  'hob_workspaces',
+  'hob_spawn',
 ]
 
 /**
@@ -342,7 +354,7 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
  *   （`dsh-tools/lib/index.js:2840-2843`）。若白名单把它滤掉，助手会拿到**空清单**
  *   —— 那是比"多几个工具"严重得多的回归（会话直接失去全部能力）。
  *   native 模式下它**根本不存在**（`view()` 只在 mode !== native 时加它），
- *   故 native 下清单仍**恰好 25**（批 14 / M3 起；批 13 为 23、批 11 为 21、批 9 为 20）。实测判据见阶段 C 报告 C3-1。
+ *   故 native 下清单仍**恰好 27**（批 16 起；批 14 为 25、批 13 为 23、批 11 为 21、批 9 为 20）。实测判据见阶段 C 报告 C3-1。
  */
 const RESERVED_TRANSPORT_TOOL = 'run_code'
 
@@ -497,8 +509,10 @@ function registerTools(ctx: any, config: Config, log: (m: string) => void): void
  *   这两个跟 `hobBus`（= `modules.bus`）。⇒ 两个开关各自管自己那一组，互不牵连。
  */
 function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void): void {
-  const { sessions, send } = createHobBusTools(bus)
+  const { sessions, send, workspaces, spawn } = createHobBusTools(bus)
   ctx.effect(() => ctx.tools.register(sessions), 'dsh-hob preset: hob_sessions tool')
   ctx.effect(() => ctx.tools.register(send), 'dsh-hob preset: hob_send tool')
-  log('已注册 hob_sessions / hob_send')
+  ctx.effect(() => ctx.tools.register(workspaces), 'dsh-hob preset: hob_workspaces tool')
+  ctx.effect(() => ctx.tools.register(spawn), 'dsh-hob preset: hob_spawn tool')
+  log('已注册 hob_sessions / hob_send / hob_workspaces / hob_spawn')
 }

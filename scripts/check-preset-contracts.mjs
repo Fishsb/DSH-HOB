@@ -559,6 +559,13 @@ const STALE_APPELLATIONS = [
       //   替换而非删除（旧句已失实）；同时**保留**"验收只认读数"一族不受影响。
       ['投递不把指令变成执行', 'it does not turn delivery into execution'],
       ['判据来自对方会话的读数、不是自己说了算', 'comes\nback as a reading from the other session, never as your own word'],
+      // ⚠ 批 16（UD-79）：用户要求"Hob 新建会话时注意工作区归属"。三条新不变量：
+      //   · 新会话**必须有工作区**（没有工作区的会话用户找不到）—— 这是本批的**核心约束**；
+      //   · 解析不出就**拒**，不许"照建不误"（防的是"降级成造孤儿"）；
+      //   · **建会话 ≠ 委派**（与 M3 的"投递 ≠ 执行"同族，防把"建好了"说成"活干上了"）。
+      ['新会话必须有工作区', 'MUST belong to a workspace'],
+      ['解析不出工作区就拒绝、不得照建', 'refuse and say why -- do not create it anyway'],
+      ['建会话不等于委派', 'Creating a\nsession is not delegation either'],
     ]],
     // ⚠ v4：`Hob-Execute` 侧的编排/回报条文断言已随预设删除（对象不存在）。
     //   ⚠ **但"禁弹窗"与"六段回报"两条纪律必须继续生效** ⇒ v4 改为由
@@ -870,25 +877,28 @@ const STALE_APPELLATIONS = [
       const allow13 = [...m13[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
       const set13 = new Set(allow13)
 
-      // ── 正向：批 13 的 2 个目标名**必须**在白名单里 ────────────────────
+      // ── 正向：批 13/14/16 的目标名**必须**在白名单里 ────────────────────
       const NEEDED13 = [
         ['O3 按需加载技能指引', 'skill'],
         ['O5 把产出挂成交付卡', 'present'],
         // ⚠ 批 14 / M3（UD-77）：投递两件也**必须**在。
         ['M3 列活会话', 'hob_sessions'],
         ['M3 投递指令', 'hob_send'],
+        // ⚠ 批 16（UD-79）：建会话两件也**必须**在 —— 用户要求"Hob 新建会话须注意工作区归属"。
+        ['批16 列工作区', 'hob_workspaces'],
+        ['批16 建会话（强制带工作区）', 'hob_spawn'],
       ]
       const miss13 = NEEDED13.filter(([, n]) => !set13.has(n))
       if (miss13.length > 0) {
         bad(`⑤h ${NAME_HO} 白名单缺目标名（${miss13.length} 个）：${miss13.map(([g, n]) => `${n}(${g})`).join(', ')}`)
-      } else ok(`⑤h ${NAME_HO}：白名单含批 13 的 2 个 + 批 14 的 2 个目标名（${NEEDED13.map(([, n]) => n).join(', ')}）`)
+      } else ok(`⑤h ${NAME_HO}：白名单含批 13 的 2 个 + 批 14 的 2 个 + 批 16 的 2 个目标名（${NEEDED13.map(([, n]) => n).join(', ')}）`)
 
-      // ── 正向：白名单**恰好 25**（防止悄悄多放一个而无人察觉）──────────
-      // 25 = 既有 11 + 批 9 的 9 + 批 11 的 1 + 批 13 的 2 + **批 14 的 2**（M3 投递）。
-      if (allow13.length !== 25) {
-        bad(`⑤h ${NAME_HO} 白名单应恰好 25 名，实测 ${allow13.length}`
-          + `（多出：${allow13.filter((n) => !['read_contracts','write_hob','advanced_search','multi_search','platform_search','video_search','free_search_test','schedule_create','schedule_list','schedule_update','schedule_delete','taskboard_list','taskboard_get','taskboard_comments','roundtable_status','web_fetch','read','glob','grep','read_image','ask_user_question','skill','present','hob_sessions','hob_send'].includes(n)).join(', ') || '无'}）`)
-      } else ok(`⑤h ${NAME_HO}：白名单恰好 25 名（11 + 9 + 1 + 2 + 2）`)
+      // ── 正向：白名单**恰好 27**（防止悄悄多放一个而无人察觉）──────────
+      // 27 = 既有 11 + 批 9 的 9 + 批 11 的 1 + 批 13 的 2 + 批 14 的 2（M3 投递）+ **批 16 的 2**（建会话）。
+      if (allow13.length !== 27) {
+        bad(`⑤h ${NAME_HO} 白名单应恰好 27 名，实测 ${allow13.length}`
+          + `（多出：${allow13.filter((n) => !['read_contracts','write_hob','advanced_search','multi_search','platform_search','video_search','free_search_test','schedule_create','schedule_list','schedule_update','schedule_delete','taskboard_list','taskboard_get','taskboard_comments','roundtable_status','web_fetch','read','glob','grep','read_image','ask_user_question','skill','present','hob_sessions','hob_send','hob_workspaces','hob_spawn'].includes(n)).join(', ') || '无'}）`)
+      } else ok(`⑤h ${NAME_HO}：白名单恰好 27 名（11 + 9 + 1 + 2 + 2 + 2）`)
 
       // ── 负向：**本批硬禁项一律不得**在白名单里（任务书 §0 / §3）────────────
       // ⚠ 与 ⑤f 的禁项清单**部分重叠是刻意的**：⑤f 钉的是"批 9 起就不许有的"，
