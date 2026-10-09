@@ -837,6 +837,65 @@ D1/D2 删除）：下表第二列**保留为历史对照** —— **读当前行
 - 路径校验用 `path.relative`（**不用 `startsWith`**）
 - 不跟随符号链接
 
+### 6.2.1 宿主平台硬事实（原 `FACTS.md` 主体）
+
+> **来源 = 原 `FACTS.md` 主体（2026-10-09 按 UD-84 并入）**。
+> 这些是"**平台/宿主现在就是这样**"的约束（含少量本项目自身的运行环境事实）——
+> 原编号（`F-xxx`）逐条保留以便追溯；原文完整版见账本区
+> `/home/lk/FF/.hob-ledgers/dsh-hob/FACTS.md`（第 2 步退场前仍在磁盘）。
+
+| 编号 | 事实 | 依据（原「来源」列） |
+|---|---|---|
+| **F-A1** | 项目路径 `/home/lk/FF/dsh-hob`；包名 `dsh-hob`；预设 id `dsh-hob`（与包名一致） | 方案 §2 / §4.3（原 FACTS.md） |
+| **F-A2** | 形态为装在宿主 profile 内的插件：不是独立实例、不占独立 profile、不占端口 | 方案 §2（原 FACTS.md） |
+| **F-A3** | 旧项目已原地归档至 `/home/lk/FF/dsh-hob-archive-20261005`（`mv`，未删除；含完整 `.git` 与当时 37 项未提交改动） | 归档基线清单（`.hob/archive/2026-10-05-step1-archive-baseline/`）（原 FACTS.md） |
+| **F-B1** | 软链引用面：WSL `system` profile 的 `node_modules/dsh-hob` → `/home/lk/FF/dsh-hob`（原路径） | 实测（原 FACTS.md） |
+| **F-B6** | ⚠ PCL 启动器的 Windows 侧"启动 Harness"按钮已失效：启动器把 profile 名写死在二进制里（日志原文 `win:pack:hob`），而 `Setup.ini` 只有窗口尺寸、无 profile 配置项 ⇒ 改不了。`hob` 已删 ⇒ 该按钮持久失效（重装启动器或改其源码才能恢复）。WSL 侧不受影响（走 `wsl -d Ubuntu-26.04 --profile system` 独立路径） | 启动器日志 `Log1.txt` + `Setup.ini` 实读（原 FACTS.md） |
+| **F-B7** | 实例端口事实：WSL 实例命令行写 `--port 3081`，实际监听 3088；Windows 实例（已随 `hob` 删除而消失）曾监听 3080。⚠ 不得凭命令行参数判断实例端口 | 实测（`ss` + `ps` 对照）（原 FACTS.md） |
+| **F-C1** | 同实例内会话通信为宿主原生能力：`sessions.list()` / `sessions.get(id)` / `agents.get(sessionId)` / `agent.followup\ | steer\（原 FACTS.md） |
+| **F-C2** | 三种投递语义：`followup`=排在当前轮之后并唤醒；`steer`=插进当前轮最近 step 边界并唤醒；`inject`=只写上下文不唤醒 | 方案 §4.2（原 FACTS.md） |
+| **F-C3** | 宿主 preset 不支持 `extends` 继承（类型定义中无该字段）⇒ "基于 minimal" = 照抄其内容 + 加料 | 方案 §4.3（原 FACTS.md） |
+| **F-C4** | `dsh-persona` 的 `complete: true` 使该段成为唯一 prompt 段（"压制宿主默认 prompt"的机制化做法） | 方案 §4.3（原 FACTS.md） |
+| **F-C5** | 预设在会话首个 turn 之后锁定（`agent-preset/locked`）⇒ 若做模式切换，只能以"换会话"实现 | 方案 §4.4（原 FACTS.md） |
+| **F-C6** | 设置字段必须带 `.volatile()`，否则设置页完全不可见且不报错；且 volatile 不能嵌套（须为顶层叶子） | 方案 §5.3（原 FACTS.md） |
+| **F-C7** | 配置分层：profile 层同 id 条目整体覆盖 bundle 层（不是逐字段合并） | 方案 §7.1（原 FACTS.md） |
+| **F-D1** | 经验库位于 `.hob/EXPERIENCE.md`，为跨项目经验库（从旧项目 1652 行账本提炼），含现象/根因/做法/出处 | `.hob/README.md`（原 FACTS.md） |
+| **F-D2** | 账本切分约定：格式进 git，内容不进（骨架 = `.hob/README.md` + `templates/` + `EXPERIENCE.md`） | `.hob/README.md`（原 FACTS.md） |
+| **F-D3** | 归档基线清单位于 `.hob/archive/2026-10-05-step1-archive-baseline/`（11 文件，可复算完整性） | 实测（原 FACTS.md） |
+| **F-E8** | 语言跟随生效 —— 以中文回答（契约含"跟随用户语言"规则） | 真机实测（原 FACTS.md） |
+| **F-E12** | 运行实例的 `DSH_HOME` = `/home/lk/.dsh` —— `ps` 中的判定逻辑：先试 `/home/lk/.dsh-packs/system/profiles/system`（不存在），回落到 `.dsh`。⇒ 软链 `/home/lk/.dsh/profiles/system/node_modules/dsh-hob → /home/lk/FF/dsh-hob` 是实际生效的那条 | 实测（原 FACTS.md） |
+| **F-E14** | 设置面板的自述文案与实现一致：说明里含"改值当场生效""模块开关改完需重启实例"（截图中可见），用户困惑点已在界面上写明 | 用户截图（原 FACTS.md） |
+| **F-F1** | `read_contracts` 原本能读穿符号链接读到工作区外的文件（实测：`escape.md -> /tmp/.../secret.md` 真读出） | 实测（第 4 步）（原 FACTS.md） |
+| **F-F2** | 已修：读侧逐段 lstat，命中软链即拒（与写侧同口径）。口径取"一律拒"（UD-22） | `src/server/doc-read.ts:124`（原 FACTS.md） |
+| **F-F3** | 修法守住"守卫只写一份"：把写侧已有的走链函数上提到 `doc-read.ts` 导出、两侧共用（`hob-write.ts:27` import）——未另写实现 | 实测（原 FACTS.md） |
+| **F-F4** | 插件作用域注册的工具会漏进每一个预设（实测 `minimal` 5→6、`standard` 30→31、助手 2→3、开发 33→34）⇒ 工具"定义"与"注册"必须分开 | 实测（第 4 步）（原 FACTS.md） |
+| **F-F5** | 静态 `inject` 缺依赖会把预设标 `broken`；而 `broken` 预设在选择器里被静默过滤⇒ 门禁改用反应式 `ctx.inject` | 实测（第 4 步）（原 FACTS.md） |
+| **F-F6** | 用户自建预设的显示名/说明不参与界面本地化 —— 判据 `isBuiltInPreset` 要求 `name === undefined` 且 id 在内置白名单内；源码注释 "without making user-authored metadata translatable" | 逐字核源码 `dsh-client-ui-agent-preset/lib/client.js:249-256`（原 FACTS.md） |
+| **F-F7** | `.volatile()` 三条写法规则（实测复现）：① 只标父 ⇒ 整块呈现，子字段全显示（藏不住）；② 父不标 + 子各标 ⇒ 未标的子字段被滤掉（能隐藏 ✅）；③ 父子同标 ⇒ 解析时抛 `ValidationError`（`require a fixed object path without an enclosing volatile field`）。⚠ 抛错的是"父子同标"，不是"给子字段各标" | 实测 `node` 复现（构造 + parse 两阶段分别验）（原 FACTS.md） |
+| **F-F8** | 父整体标 volatile + schema 不声明某子字段 ⇒ 能隐藏，但会静默抹掉该字段的值（宿主 `strip()` 把整块从旧值删掉再 merge 进只含 volatile 子键的投影）。实测：`bus=true` → 一次 UI 写入 → `bus` 消失 | DSH 复刻宿主写入路径实测（STEP6-REV 报告）（原 FACTS.md） |
+| **F-F9** | 验证"某配置键是否还在"时不可用默认值测 —— 默认值下"保住了"与"被抹掉后由默认值补回"读数完全一样，结论无法区分 | DSH 自报（差点交出假证据）· 记 `EXPERIENCE.md` E-67（原 FACTS.md） |
+| **F-H2** | ⚠ `lib/` 被 gitignore ⇒ 源码与产物漂移在 `git status` 里不可见（旧项目已实测，见 `EXPERIENCE.md` E-24/E-25）。本项目沿用同一规则，⇒ 改完 `src` 必须重新 build，否则运行的是旧产物而 git 看不出 | `.gitignore:6` + 经验库 E-24（原 FACTS.md） |
+| **F-H3** | 实例命令行参数 `--port 3081` 与实际监听端口 3088 不符（已记 F-E13）；且当前只跑一个 dsh 进程（不存在双实例冲突） | 实测（原 FACTS.md） |
+| **F-I2** | ⚠ `SettingsForm` 不适用于 `settings.section` 槽位（实测统计，非偏好）：用它的 4 个包（subagent / web-search / agent-loop / shell）全部注册进 `plugins.item`；而注册进 `settings.section` 的 4 个包（general / models / account / plugins）全部不用它。它是插件管理页卡片的壳（契约＝暂存编辑 + Save），挂到只读摘要上会凭空多一个永远禁用的 Save | DSH 逐包统计宿主 `lib/client.js`（原 FACTS.md） |
+| **F-I3** | ⚠ `ConfigField` 运行时不可用：只有 `.d.ts`，宿主运行时 seed 导出表（281 项）里没有它 | DSH 实测（原 FACTS.md） |
+| **F-I4** | 样式必须"字符串注入"而非 `.module.css`：实测 tsdown 0.15 会吐出独立 `lib/client.css` 且 class 映射为 `{}`，而插件路由只服务 `client.js` / `client..js`（`CLIENT_CHUNK` 正则）⇒ 那个 CSS 根本送不到浏览器 | DSH 实测（原 FACTS.md） |
+| **F-I5** | UI 改动不需要重启：`dsh-client-hmr` 以 500ms 轮询 mtimeMs 热替换 client 半边。主持人核实该模块存在且内含 `500` + `mtimeMs` 判据。⇒ 刷新浏览器即可见 | DSH 实测 + 主持人核验（原 FACTS.md） |
+| **F-I6** | ⚠ `npm install` 会静默剪掉未声明的依赖：实测 `npm install --save-dev` 报 `removed 5 packages`，`typecheck` 从 exit 0 变 exit 2。根因：`@deepseek-ai/dsh-tools` 等 5 包磁盘上有、lockfile 里没有（未在 `package.json` 声明），install 按 lockfile 对齐时剪掉。修法：`--no-save` 装回。已记 `EXPERIENCE.md` E-78 | DSH 自报（自己造成又修回）（原 FACTS.md） |
+| **F-I8** | 三个"空旋钮"字段已删除：`persona`（只进日志）· `showEntry`（无人读）· `delivery`（无人读，等 M3 而 M3 挂起）。配置面只剩 `modules.`。⇒ 设置面板不再展示背后无功能的旋钮 | DSH 实施（UD-43）+ 主持人核验（`src/` 活代码零命中）（原 FACTS.md） |
+| **F-I9** | ⚠ 生效性必须按"半边"判断（实测教训，此前一条错误结论已纠正）：client 半边有 HMR（`dsh-client-hmr` 轮询产物 mtime）；host 半边与 bundle patch 无 HMR ⇒ 必须重启。依据：实例里 `hmr` 配置为 `root: []`（不监视任何模块根），且 `dsh-hmr` 只 `watchConfig` 两个文件（profile 的 `cordis.patch.yml` + `$DSH_HOME/cordis.patch.yml`），bundle 自带的 patch 不在列表内 | 主持人独立核验（`--dump-config` 实测 `root: []`）（原 FACTS.md） |
+| **F-I10** | ⚠ `--dump-config` 是离线读盘，与运行进程内存无关 —— 它显示新值不等于进程已生效。判"是否生效"应看实例启动时刻 vs 产物构建时刻 | DSH 自报 + 主持人核验（原 FACTS.md） |
+| **F-J5** | `tools.restrict({deny})` 对宿主平面注册的工具确实有效：`interconnect_` 4 个实测被摘掉。⇒ 与 F-C8 括号句字面主张冲突（该句称"摘不掉"） | 开发实测（诊断日志 `restrict 成功` ×4）（原 FACTS.md） |
+| **F-J6** | 补摘机制存在且生效：屏蔽时名字尚未注册 ⇒ 报"未就绪"（`names unknown global tool`）；宿主平面工具晚注册后经 `tools/change` 事件补摘成功 | 开发实测（诊断日志 `未就绪` → `成功`）（原 FACTS.md） |
+| **F-J7** | `restrict()` 报错打印的 `known global tools` 是可限制名单，不等于"该会话看得见的工具"；用它当工具面会把已摘掉的也算进去（开发一度据此取草稿，实测后修正） | 开发自报（自查修正）（原 FACTS.md） |
+| **F-J18** | ⚠ 判「契约是否生效」必须锚定 `system/message`：全库整文件 grep 四反引号加 `markdown` 在 4 个会话命中，逐条定位后全部落在 `assistant/message` / `tool/result`（对话正文与自己写的报告文本），`system/message` 0 命中 ⇒ 整文件 grep 会把「我们讨论过这个格式」误判成「已经生效」 | 开发实测（原 FACTS.md） |
+| **F-J23** | `restrict({allow})` 白名单实测可行且更强：`allow=[]` 把 standard 26→1、cordis 29→1（各余 1 个 `subagent`，属 own 注册）；构成 2 助手 40 →（allow=自有 2）→ 恰好 2，晚注册工具不漏。正面对拍：白名单 40→2（晚注册后仍 2）vs 封禁名单 40→2→3（漏进 `late_tool_for_deny`） | 同上（两套隔离构成，逐项读数）（原 FACTS.md） |
+| **F-J25** | 模块化四条纪律核对（对照方案 §3.3）：①一模块一文件 ✅（4 模块各 1 个 `apply`）；②半符合（仅 `tools` 走静态 `inject` ⇒ 缺依赖 PENDING；`bus`/`settings` 走反应式 ⇒ 缺依赖仍 ACTIVE、回调不跑、不 broken）；③一处裸资源：`src/preset/tools.ts:68` 裸 `appendFileSync('/tmp/dsh-hob-preset-tools.log')`，无跨重启上限（实测 1,880,415 B，3 分钟内 +508 KB）；④不符：加模块实际动 4–5 处（`index.ts` import + `MODULE_REGISTRY`、`config.ts` 接口 + schema + `moduleSwitches`） | 开发阶段 A 实测（真 boot `lib/index.js` + 真 cordis）（原 FACTS.md） |
+| **F-J26** | 补丁专项：bundle 层 1 条 insert、根 `dsh.bundle.patch` 3 项数组、profile 层 0 条（⇒ 生效的是 bundle 层，不存在整体覆盖）；声明↔实现无漂移（5 个 config 键逐一对上）；脏声明 0；`preset/dsh-hob/package.json` 未重复声明 patch；profile `bundles` 里 `dsh-hob` 出现 1 次、无重复项。⚠ `duplicate loader entry id` 场景未构造 ⇒ 维持"规避建议"而非"已验证结论" | 同上（原 FACTS.md） |
+| **F-J31** | ⚠ B1 机制障碍（实测）：「恰好 11」用 `restrict` 达不到。在真实落点（预设行自己的 scope）：`restrict({allow:11})` 抛错 `names unknown global tools "read_contracts","write_hob","schedule_"`；该落点可限制名单只有 39 个继承来的全局名；退让 `allow=5` 成功但结果 18 个，且 `read_contracts=false` / `write_hob=false`（把自己的两个工具也摘掉了）；顺序对照两种顺序结果相同 ⇒ 层语义，非时序假象。⇒ `read_contracts`/`write_hob`（本预设行注册）与 `schedule_`（`dsh-schedule` 注册进 `agent.ctx`）/ team 类（`dsh-experimental-tool-agent-team` 注册进 `agent.ctx`）既点不到名也摘不掉 | 开发阶段 B 实测（隔离实例）（原 FACTS.md） |
+| **F-J37** | ⚠ C3-4 越权调用实测：被滤掉的工具能被调用 —— 「助手」会话里绕过模型清单直接点名：`taskboard_list`（正常返回真实数据）· `roundtable_status`（工具被找到，报业务错误 "you do not belong to any active meeting"）· `list_agents`（正常返回）3 个成功；`interconnect_ping` 报 `UNKNOWN_TOOL`（本就未在该构成注册，非过滤所致）。代码依据（只读）：`dsh-tools/lib/index.js:2995-2997` 的 `get(name, scope)` 读 `view().visible`、不看模型清单；`dsh-agent-loop/lib/index.js:506-517` 派发只按 `block.name` 构造 exec、不校验清单 ⇒ 装配期过滤 = "看不见"，不是"拿不到"。⚠ 模型路径未测（"模型只能发出清单内的名字"属推断，非实测） | 开发阶段 C（原 FACTS.md） |
+| **F-J41** | D 落地机制：全树枚举 waterfall 23 个；采用 `tools/pre-execute`（`dsh-tools/lib/types/index.d.ts:47`，官方 waterfall、可返 `{kind:'deny'}`；宿主先例 `dsh-experimental-auto-review/lib/index.js:462`；派发点 `dsh-tools/lib/index.js:3224` 的 `scopeTarget(this, exec.agent)`）。排除：`tools/execute`（只能改 signal、不能拒）· `tools/post-execute`（太晚）· `tools/result`（emit 观测）· `tools.guard()`（全局生效，违反"可按 scope 分辨"门槛） · `agent/pre-step`（拦步骤非工具名，粒度太粗）· `approval/request`（是 ask 的支撑，缺支持会变拒绝、与 fail-open 冲突）。结论：`restrict` 之外没有第二个"硬摘除"机制 | 开发阶段 D（原 FACTS.md） |
+| **F-J81** | profile 默认值已改并即时生效：`~/.dsh/profiles/system/cordis.patch.yml` 的 `selectedDefault: dsh-hob` → `Hob`（改前备份 `cordis.patch.yml.bak-hobrename-20261007-090347`；`diff` 仅 `463c463` 一行）。机制更正（与先前预期不同）：profile patch 确被 HMR 监视（`dsh-hmr/lib/index.js:354` 列入 `patchFiles`、`:375` `watchConfig`）；`selectedDefault` 为 `.volatile()` ⇒ 热应用走 `_commitVolatile()`（`cordis-plugin-loader/lib/index.js:380-382`，`pending=[]`）不重挂、不抛错；实例存活（PID 65354、HTTP 401 正常）。⇒ 默认值已即时生效，但其指向的 `Hob` 尚未注册 ⇒ 窗口期内新建会话会 `agent-preset/not-found` 失败（现有会话不受影响） | 开发批 3 报告（原 FACTS.md） |
+
 ### 6.3 权限收敛的一个硬事实
 
 **预设会话拿到的是"它自己声明的工具 + 宿主平面继承来的工具"。**

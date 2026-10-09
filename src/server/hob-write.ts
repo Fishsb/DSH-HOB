@@ -28,8 +28,8 @@ import { resolveInside } from './doc-read.ts'
 
 // ── 白名单：骨架只读，运行数据可写（与 UD-05 的切分同一条线）─────────────────
 
-/** 可写的四个账本（**运行数据**）。 */
-export const LEDGER_FILES = ['FACTS.md', 'DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md'] as const
+/** 可写的三个账本（**运行数据**）。⚠ UD-84：原第四个 `FACTS.md` 已退场（四本 → 三本）。 */
+export const LEDGER_FILES = ['DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md'] as const
 
 /** 骨架文件（**拒写**）：格式契约，进 git，变更须人工 + commit。 */
 export const SKELETON_FILES = ['README.md'] as const
@@ -189,39 +189,28 @@ interface IdSpec {
   label: string
 }
 
-/** 带编号的三个文件各自的编号规则（CONTEXT.md 无编号，不入此表）。 */
+/** 带编号的两个文件各自的编号规则（`CONTEXT.md` 无编号，不入此表）。 */
 const ID_SPECS: Record<string, IdSpec> = {
-  'FACTS.md': { full: /\bF-([A-Z]+)(\d+)\b/, family: /F-([A-Z]+)(\d+)/g, label: 'F' },
   'USER-DECISIONS.md': { full: /\bUD-(\d+)\b/, family: /UD-(\d+)/g, label: 'UD' },
   'DECISIONS.md': { full: /\bCHG-(\d+)\b/, family: /CHG-(\d+)/g, label: 'CHG' },
 }
 
-/** 从 content 里抽出编号（返回展示串 + 序号；FACTS 还带组字母）。 */
-function extractId(file: string, content: string): { id: string; num: number; group?: string } | null {
+/** 从 content 里抽出编号（返回展示串 + 序号）。 */
+function extractId(file: string, content: string): { id: string; num: number } | null {
   const spec = ID_SPECS[file]
   if (spec === undefined) return null
   const m = spec.full.exec(content)
   if (m === null) return null
-  if (file === 'FACTS.md') {
-    const group = m[1]!
-    const num = Number(m[2])
-    return { id: `F-${group}${num}`, num, group }
-  }
   return { id: m[0], num: Number(m[1]) }
 }
 
-/** 存量文件里同族的最大序号（FACTS 按组分别取最大）。 */
-function maxSeq(text: string, file: string, group?: string): number {
+/** 存量文件里同族的最大序号。 */
+function maxSeq(text: string, file: string): number {
   const spec = ID_SPECS[file]
   if (spec === undefined) return 0
   let max = 0
   for (const m of text.matchAll(spec.family)) {
-    if (file === 'FACTS.md') {
-      if (group !== undefined && m[1] !== group) continue
-      max = Math.max(max, Number(m[2]))
-    } else {
-      max = Math.max(max, Number(m[1]))
-    }
+    max = Math.max(max, Number(m[1]))
   }
   return max
 }
@@ -266,12 +255,6 @@ function checkFormat(file: string, content: string): WriteHobResult | null {
   const body = normalize(content)
   if (body === '') return refuse(file, 'bad-format', '拒绝：content 为空。')
 
-  if (file === 'FACTS.md') {
-    const offending = body.split('\n').find((l) => l.trim() !== '' && tableCols(l) !== 5)
-    if (offending !== undefined) {
-      return refuse(file, 'bad-format', `拒绝：FACTS.md 条目须为 5 列表格行（# | 事实 | 来源 | 时间戳 | 状态）。问题行：${offending.slice(0, 80)}`)
-    }
-  }
   if (file === 'USER-DECISIONS.md') {
     const isBlock = /^#{1,6}\s+UD-\d+/.test(body)
     if (!isBlock) {
@@ -440,12 +423,13 @@ export async function writeHobFile(
         }
         return refuse(file, 'id-conflict', `拒绝：编号 ${got.id} 已存在但内容不同。换一个新编号，或显式用 overwrite 整文件重写。`)
       }
-      const max = exists ? maxSeq(existing, file, got.group) : 0
+      const max = exists ? maxSeq(existing, file) : 0
       if (got.num !== max + 1) {
-        const expected = file === 'FACTS.md' ? `F-${got.group}${max + 1}` : `${ID_SPECS[file]!.label}-${String(max + 1).padStart(2, '0')}`
+        const label = ID_SPECS[file]!.label
+        const expected = `${label}-${String(max + 1).padStart(2, '0')}`
         return refuse(file, 'id-not-sequential', `拒绝：编号不连续。${
-          file === 'FACTS.md' ? `F-${got.group} 组` : ID_SPECS[file]!.label
-        } 当前最大为 ${file === 'FACTS.md' ? `F-${got.group}${max}` : `${ID_SPECS[file]!.label}-${String(max).padStart(2, '0')}`}，应写 ${expected}（你写的 ${got.id}）。`)
+          label
+        } 当前最大为 ${`${label}-${String(max).padStart(2, '0')}`}，应写 ${expected}（你写的 ${got.id}）。`)
       }
     }
   }
