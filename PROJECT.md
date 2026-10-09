@@ -118,7 +118,8 @@
 >
 > **现状一句话**：本插件只自带 **1 个预设（Hob）**；执行交给**任意会话**，
 > 交接靠 `TASK.md`（**批 14 起可由 Hob 直接投递送达**）→ `REPORT.md`；账本在
-> `/home/lk/FF/.hob-ledgers/<工作区名>/`（**工作区之外，物理隔离**）。
+> `/home/lk/.dsh/hob-ledgers/<工作区名>/`（**工作区之外，物理隔离**；2026-10-09 按 UD-86/87
+> 迁自 `/home/lk/FF/.hob-ledgers/<工作区名>/`，落点由预设行的 `ledgerHome` 显式给出）。
 >
 > ⚠ **详细依据**见 `.hob/drafts/restructure-plan.md`（v4）与归档 `archive/2026-10-09-ledger-history/FACTS-final.md` 的 F-J121/F-J122。
 
@@ -848,7 +849,8 @@ D1/D2 删除）：下表第二列**保留为历史对照** —— **读当前行
 > **来源 = 原 `FACTS.md` 主体（2026-10-09 按 UD-84 并入）**。
 > 这些是"**平台/宿主现在就是这样**"的约束（含少量本项目自身的运行环境事实）——
 > 原编号（`F-xxx`）逐条保留以便追溯；**全文**见
-> `/home/lk/FF/.hob-ledgers/dsh-hob/archive/2026-10-09-ledger-history/FACTS-final.md`。
+> `/home/lk/.dsh/hob-ledgers/dsh-hob/archive/2026-10-09-ledger-history/FACTS-final.md`
+> （2026-10-09 按 UD-86/87 随账本迁自 `/home/lk/FF/.hob-ledgers/dsh-hob/…`）。
 
 | 编号 | 事实 | 依据（原「来源」列） |
 |---|---|---|

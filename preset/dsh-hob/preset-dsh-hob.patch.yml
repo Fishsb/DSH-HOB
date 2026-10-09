@@ -482,14 +482,19 @@
               workspaceRoot: ''
               # v4：账本已迁出工作区，按工作区名派生（每个工作区独立、物理隔离）。
               #
-              # ⚠ **这里刻意不配 `ledgerHome`**（留空即用缺省）。
-              #   缺省 = 「工作区的**兄弟目录**」：<工作区父目录>/.hob-ledgers/<工作区名>/
-              #   · /home/lk/FF/dsh-hob   → /home/lk/FF/.hob-ledgers/dsh-hob
-              #   · /home/bob/work/myproj → /home/bob/work/.hob-ledgers/myproj
-              #   ⇒ **不含任何本机绝对路径**，换机器/换用户自动成立（UD-73③ 可移植性）。
-              #   ⚠ 曾经写死 `/home/lk/FF/.hob-ledgers`，实测在新环境会把账本写到
+              # ⚠ **现已显式配置** `ledgerHome`（不再是缺省）。落点 `~/.dsh/hob-ledgers`
+              #   —— 其下**每个工作区一个独立仓**：<ledgerHome>/<工作区名>/，
+              #   且该目录**自己就是仓根**（不再是"一个父仓管多个工作区"）。
+              #   · /home/lk/FF/dsh-hob → /home/lk/.dsh/hob-ledgers/dsh-hob（独立仓根）
+              #   ⚠ **代价**：该值是**本机绝对路径** ⇒ **放弃"不含本机绝对路径"的
+              #     可移植性口径（UD-73③）**，换机器/换用户**须重配**此值。
+              #   ⚠ 沿革：曾用「工作区的**兄弟目录**」缺省
+              #     （<工作区父目录>/.hob-ledgers/<工作区名>/，不含本机绝对路径）；
+              #     更早曾写死 `/home/lk/FF/.hob-ledgers`，实测在新环境会把账本写到
               #     **上一台机器的路径**上（2026-10-08 重启后复核发现，已修正）。
-              #   要改父目录就在此处显式给 `ledgerHome`（或给 `ledgerRoot` 直接指定）。
+              #     2026-10-09 按 **UD-86 / UD-87** 改为显式配置 `~/.dsh/hob-ledgers`。
+              #   要再改父目录就在此处改 `ledgerHome`（或给 `ledgerRoot` 直接指定）。
+              ledgerHome: /home/lk/.dsh/hob-ledgers
               maxFileBytes: 65536
               maxWriteBytes: 262144
               enableWrite: true

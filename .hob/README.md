@@ -5,17 +5,20 @@
 > **本目录现在只放骨架（进 git）**。**账本数据在工作区之外、按工作区名独立存放**：
 >
 > ```
-> /home/lk/FF/.hob-ledgers/<工作区名>/     ← 账本数据（**三本账本** + archive/ + backups/）
+> /home/lk/.dsh/hob-ledgers/<工作区名>/     ← 账本数据（**三本账本** + archive/ + backups/）
 > ```
 >
 > **依据**：重构方案 v4 的用户决策 **D3/D4** —— 每个工作区**独立的账本目录、物理隔离**，
 > 且**在工作区之外**（隔离由**文件系统**保证，不靠契约约束）。
 > 派生规则：`<ledgerHome>/<工作区目录名>/`（`ledgerHome` 在预设行的 config 里给出）。
+> ⚠ **2026-10-09 再迁（UD-86/87）**：`ledgerHome` 由缺省（工作区兄弟目录）改为**显式配置**
+> `/home/lk/.dsh/hob-ledgers`，且**其下每个工作区一个独立仓**（该目录**自己即仓根**，
+> 不再是"一个父仓管多个工作区"）。
 >
 > **已迁出**（运行数据）：`DECISIONS.md` · `USER-DECISIONS.md` · `CONTEXT.md` ·
 > （⚠ 原 `FACTS.md` **已于 2026-10-09 退场**，UD-84：四本 → 三本）
 > 14 个批次报告（`STEP*-REPORT.md` 等）· `archive/` · `backups/`
-> ⇒ 现位于 `/home/lk/FF/.hob-ledgers/dsh-hob/`（**已单独 `git init`**，保住版本历史）。
+> ⇒ 现位于 `/home/lk/.dsh/hob-ledgers/dsh-hob/`（**独立仓根**，历史随迁，保住版本历史）。
 >
 > **仍在本目录**（骨架）：`README.md` · `EXPERIENCE.md` · `templates/` · `roles/` · `drafts/`。
 >
@@ -34,7 +37,7 @@
 | 类别 | 判定标准 | 进 git？ | 位置 |
 |---|---|---|---|
 | **骨架** | **格式契约 / 被机检脚本消费的规范源** —— 表头、列定义、编号规则、以及**入库脚本会读取的契约正文**。可复用、可分发；新建工作区时用它初始化 | ✅ **进** | `.hob/README.md`、`.hob/templates/`、`.hob/EXPERIENCE.md`、**`.hob/drafts/`**（见 §1.2）、**`.hob/roles/`**（见 §1.3） |
-| **运行数据** | **填充进格式的具体条目 / 本项目专有的过程产物** —— 第 N 条事实 / 第 N 条决策 / 本轮进度 / 改前备份 | ❌ **不进**（**v4 起且不在本目录**，见顶部说明） | ~~三本账本（原四本）~~ · ~~`.hob/archive/`~~ · ~~`.hob/backups/`~~ · ~~`.hob/CARRYOVER.md`~~ · ~~`.hob/STEP*-REPORT.md`~~ ⇒ **均在 `/home/lk/FF/.hob-ledgers/dsh-hob/`** |
+| **运行数据** | **填充进格式的具体条目 / 本项目专有的过程产物** —— 第 N 条事实 / 第 N 条决策 / 本轮进度 / 改前备份 | ❌ **不进**（**v4 起且不在本目录**，见顶部说明） | ~~三本账本（原四本）~~ · ~~`.hob/archive/`~~ · ~~`.hob/backups/`~~ · ~~`.hob/CARRYOVER.md`~~ · ~~`.hob/STEP*-REPORT.md`~~ ⇒ **均在 `/home/lk/.dsh/hob-ledgers/dsh-hob/`**（2026-10-09 按 UD-86/87 迁自 `/home/lk/FF/.hob-ledgers/dsh-hob/`） |
 
 **一句话**：**格式进 git，内容不进。**（v4 起内容更进一步：**不在本目录**。）
 
@@ -152,7 +155,7 @@ EXIT=1
 │   └── preset-contracts.md（另有 restructure-plan.md / nav-intake-draft.md / 架构总览）
 └── roles/               ← 角色簇方法论 18 份（骨架 · 进 git，见 §1.3）
 
-/home/lk/FF/.hob-ledgers/dsh-hob/       ← **账本数据（v4 起在此，不在上述目录）**
+/home/lk/.dsh/hob-ledgers/dsh-hob/       ← **账本数据（v4 起外置；2026-10-09 按 UD-86/87 迁至此处）**
 ├── DECISIONS.md · USER-DECISIONS.md · CONTEXT.md
 ├── archive/             ← 交接归档（TASK.md / REPORT.md 落此处）
 └── backups/             ← 改前备份
@@ -184,6 +187,7 @@ EXIT=1
 |---|---|---|---|---|
 | 2026-10-05 | **整个旧 `dsh-hob` 项目**（71 MB；`.git` HEAD `4d57945`；**37 项未提交改动**完整保留） | 用户拍板「旧项目原地归档，新项目用原路径」 | `/home/lk/FF/dsh-hob-archive-20261005/`（**原地 `mv`**，非复制） | 新项目用原路径 `/home/lk/FF/dsh-hob` 重建骨架；经验已提炼为 `.hob/EXPERIENCE.md`。**注意这是在仓库之外**（新仓库里没有它的副本），故本行只是**指针** |
 | 2026-10-08 | **账本数据整体迁出本仓库** —— **439 个文件**（**当时为四本**账本 + 14 个批次报告 + `archive/`（26 个批次目录）+ `backups/`） | 重构方案 v4 用户决策 **D3 / D4**：账本按工作区派生、**物理隔离在工作区之外**（隔离由文件系统保证，不靠契约约束） | `/home/lk/FF/.hob-ledgers/dsh-hob/`（**迁出**，非复制；该目录**已单独 `git init`** 以保住版本历史） | ⚠ **本行登记的是「迁移」，不是严格意义的「归档」** —— 补登理由：本表的存在理由是「**出了本仓库、本仓库 git 就看不见去向**」，而这次迁正是如此（439 文件离开本仓，`git status` 只看得到删除）。迁出后本目录只剩骨架；**今后交接归档**（`TASK.md` / `REPORT.md`）落**账本目录**的 `archive/<日期>-<名>/`。账本自身的历史由其独立仓的 `git log` 保证 |
+| 2026-10-09 | **账本区再迁** —— `/home/lk/FF/.hob-ledgers/dsh-hob/` → `/home/lk/.dsh/hob-ledgers/dsh-hob/`（**516 个文件**，md5 差异 0；`git subtree split` 抽出 **37 个提交**接进新仓） | 用户决策 **UD-86 + UD-87（更正）**：`ledgerHome` 改为**显式配置** `~/.dsh/hob-ledgers`，且其下**每工作区一个独立仓**（仓根即工作区目录本身） | `/home/lk/.dsh/hob-ledgers/dsh-hob/`（**迁出**，非复制；**历史随迁**；旧父仓 `/home/lk/FF/.hob-ledgers/` 原地保留，仍管 `prompt-enhancer-release/`） | ⚠ **本行同样是「迁移」登记**（理由同上行）。代价已明写：该值是**本机绝对路径** ⇒ 放弃 UD-73③ 的可移植性口径，换机器须重配 |
 
 > **未被本表覆盖的既有归档**：账本目录内的 `archive/`（2026-10-05 起各批次证据目录）
 > —— 它们在**账本仓内部**，去向由账本仓自己的 `git` 记录保证，故不经本表；
@@ -205,7 +209,7 @@ EXIT=1
 
 ## 5. 相关纪律
 
-- **防漂移**：每轮开工先读**账本目录**（`/home/lk/FF/.hob-ledgers/<工作区名>/`）的 `CONTEXT.md` —— 它**只呈现当前状态**：`§0` 防漂移摘要（一屏）+ 一张「历史一览表」（`日期 · 轮次 · 一句话 · archive 路径`）。**逐轮详述不再堆在同一文件**，按日期落 `archive/<日期>-ledger-history/CONTEXT-history.md`。⚠ **v4 起账本不在本目录**。
+- **防漂移**：每轮开工先读**账本目录**（`/home/lk/.dsh/hob-ledgers/<工作区名>/`）的 `CONTEXT.md` —— 它**只呈现当前状态**：`§0` 防漂移摘要（一屏）+ 一张「历史一览表」（`日期 · 轮次 · 一句话 · archive 路径`）。**逐轮详述不再堆在同一文件**，按日期落 `archive/<日期>-ledger-history/CONTEXT-history.md`。⚠ **v4 起账本不在本目录**。
 - **归档** = 移入**账本目录**的 `archive/<日期>-<名>/` **并在 §3 表登记一行**。
 - **经验库**：动手前先扫 `.hob/EXPERIENCE.md`（**骨架，仍在本目录**）对应主题；出问题先查有没有现成根因。
 - **诚实边界**：没验的写「未验证」，不许把「我认为」写成「已验证」。
@@ -221,7 +225,7 @@ EXIT=1
 
 | 项 | 状态 | 依据 |
 |---|---|---|
-| 三本账本（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`；原四本，`FACTS` 于 2026-10-09 按 UD-84 退场） | ✅ **已建立并在用**；**v4（2026-10-08）起外置**到 `/home/lk/FF/.hob-ledgers/<工作区名>/`（本工作区 = `/home/lk/FF/.hob-ledgers/dsh-hob/`，已单独 `git init`，迁移时快照 **439 个文件**，此后随记账增长）。当前进度：`CONTEXT` 至 **§84** · `DECISIONS` 至 **CHG-023** · `USER-DECISIONS` 至 **UD-81**〔`FACTS` 已退场，末条为 **F-J156**〕 | `ls` 该目录；账本仓 `git log` |
+| 三本账本（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`；原四本，`FACTS` 于 2026-10-09 按 UD-84 退场） | ✅ **已建立并在用**；**v4（2026-10-08）起外置**，**2026-10-09 按 UD-86/87 迁至** `/home/lk/.dsh/hob-ledgers/<工作区名>/`（本工作区 = `/home/lk/.dsh/hob-ledgers/dsh-hob/`，**独立仓根**、历史随迁）〔迁出前快照 **439 个文件**，此后随记账增长；迁后实测 **516 个文件**〕。当前进度：`CONTEXT` 至 **§84** · `DECISIONS` 至 **CHG-023** · `USER-DECISIONS` 至 **UD-81**〔`FACTS` 已退场，末条为 **F-J156**〕 | `ls` 该目录；账本仓 `git log` |
 | `templates/` 空模板 | ✅ 已就位，**7 份** —— 三账本空模板（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`）+ `ROLES.md`（角色簇）+ `GATES.md`（阶段与门禁）+ `TASK.md` / `REPORT.md`（v4 交接协议载体）〔⚠ 原 8 份含 `FACTS` 空模板，2026-10-09 退场〕 | `ls -la .hob/templates/` |
 | `EXPERIENCE.md` 经验库 | ✅ 已就位，**98 条**（`E-01`…`E-98`）；写作纪律：新坑续编不重排、**不许丢根因**、未验证项进 §7 | `.hob/EXPERIENCE.md`；`npm run exp:next-id` 报「条目总数（标题行）：98」 |
 | `archive/` | **v4 起不在本目录** —— 交接归档（`TASK.md` / `REPORT.md`）落在**账本目录**的 `archive/<日期>-<名>/`，并须在 §3 指针表登记一行 | `ls` 工作区 `.hob/`（无 archive）；账本目录 `ls archive/` |
