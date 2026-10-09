@@ -701,7 +701,8 @@ export function createHobBusTools(bus: HobBus): {
       + '（那正是"给这个项目派一个新会话"的常见意图）。'
       + '目标必须是**已登记**的工作区（拿不准先调 `hob_workspaces` 看）。'
       + '⚠ 建会话 ≠ 派活：建完还要用 `hob_send` 把指令投给它；'
-      + '而且**新会话需要用户先打开/发一句话才会真正开始**（首轮之后预设锁定）。',
+      + '而且**新会话不会自己开跑** —— 投递（`hob_send` / `hob_dispatch`）即唤醒，'
+      + '无需用户操作；**只有不投递时**才需要用户打开它并发一句话（首轮之后预设锁定）。',
     parameters: {
       workspace: {
         type: 'string',
@@ -733,8 +734,9 @@ export function createHobBusTools(bus: HobBus): {
         workspaceId: r.workspaceId,
         ...(r.workspacePath === undefined ? {} : { workspacePath: r.workspacePath }),
         ...(r.agentPreset === undefined ? {} : { agentPreset: r.agentPreset }),
-        note2: 'Created only: the session exists but has not started. Deliver a directive with hob_send, '
-          + 'and expect the user to open it / send one line before it really runs.',
+        note2: 'Created only: the session exists but has not started yet. A directive delivered with '
+          + 'hob_send or hob_dispatch wakes it — no user action is needed. Only if no directive is '
+          + 'delivered does the user need to open it and send one line.',
       })
     },
   })
