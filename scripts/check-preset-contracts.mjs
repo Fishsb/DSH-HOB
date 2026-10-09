@@ -1051,6 +1051,65 @@ const STALE_APPELLATIONS = [
   }
 }
 
+// ── ⑤i 2026-10-09（第 2 轮 · 用户报障驱动）· Hob「原始读数」纪律条文短钉 ────────
+//
+// 为什么需要：用户报障——**Hob 把工具提示（`note1` / `note2` 之类的通用说明）
+//   当成了当前状态**，据此向用户提了一个**无效要求**（"请去打开那个会话"）。
+//   契约据此**就地追加**了两段纪律（落点：`## Your side and the other side` 段内，
+//   `## Language` 之前，**不新起小节**）：
+//     ① `State nothing to the user without a reading behind it.` —— 陈述事实**或**要求用户
+//        做事之前，必须有一个可执行的原始读数支撑；无读数则两者都不许。
+//     ② `Tool hints are not status.` —— 工具返回的说明文字**不等于现在的状态**，转述前先核状态。
+//   ⚠ 与前几组同款纪律：这是**新增断言，不是放宽**（缺失即 FAIL）。
+//   ⚠ **不钉标题行** —— 任务书要求**就地追加在既有段落内**，钉标题会把
+//     "就地追加"这一形态本身变成要求（与批 5/6/11 同款）。
+//   ⚠ 编号：任务书未指定编号；现有最大为 ⑤h ⇒ 顺延为 **⑤i**
+//     （与批 5「任务书写 ⑤b、实际落 ⑤d」同款：语义一致，区别只在编号；如实记于回报）。
+{
+  const hoBody7 = literalBlock(hoSrc, 'prefix') ?? ''
+
+  const READING_PINS = [
+    ['陈述前须有读数（总句）', 'State nothing to the user without a reading behind it'],
+    ['读数 = 工具自己的回执 / 文件字节 / 检索输出', "a tool's own\nreturn, a session or orchestration listing, the bytes of a file you actually read, the\noutput of a search"],
+    ['无读数 ⇒ 既不得陈述为事实', 'with no reading you may neither state\nit as a fact'],
+    ['无读数 ⇒ 也不得转成对用户的要求', 'nor turn it into something the user must do'],
+    ['"描述悄悄变成要求"仍是无支撑的要求', 'A sentence that starts as a\ndescription and quietly becomes an instruction is still an unsupported instruction'],
+    ['工具提示不等于现状（总句）', 'Tool hints are not status'],
+    ['提示描述的是能力本身、不是此刻为真的事', 'describes the capability in general,\nnot what is true right now'],
+    ['转述前先核实际状态', 'check the actual state before you pass any of it on'],
+    ['把提示当现状转述 = 假话变事实的路径', 'is how a statement that was never true reaches the user as though it\nwere one'],
+  ]
+  for (const [what, phrase] of READING_PINS) {
+    if (hoBody7.includes(phrase)) ok(`⑤i ${NAME_HO}：原始读数纪律条文在位（${what}）`)
+    else bad(`⑤i ${NAME_HO}：原始读数纪律条文缺失（${what}）—— 期望短语 ${JSON.stringify(phrase)}`)
+  }
+
+  // 形态负向断言：该纪律必须**就地追加**，不得新起 `##` 小节
+  const readingSections = ['## Readings', '## Evidence', '## Tool hints', '## State before you speak']
+  const extraReading = readingSections.filter((h) => hoBody7.includes(h))
+  if (extraReading.length > 0) {
+    bad(`⑤i ${NAME_HO}：原始读数纪律新起了小节标题（${extraReading.join(', ')}）—— 应为就地追加`)
+  } else ok(`⑤i ${NAME_HO}：原始读数纪律未新起小节标题（就地追加在既有段落内）`)
+
+  // ⚠ **不得与既有条文冲突**：本批追加**不得挤掉**既有编排条文（同 ⑤g 的 KEPT 口径）。
+  //   判据：这几条的稳定短语在**追加后**必须仍然在位。
+  const KEPT_READING = [
+    ['文件交接（TASK.md 落点 = 自己的交接区）', 'holding a TASK.md with the complete directive'],
+    ['委派门槛', 'delegate only work that MUST be done by hand'],
+    ['指令自足', 'Every directive must stand on its own'],
+    ['攒批', 'Batch what can ride together'],
+    ['验收只认读数', 'Accept on readings only'],
+    ['接住问题', 'Catch the questions'],
+    ['投递口径（投递≠执行）', 'Delivering is not doing'],
+    ['决策自主', 'Decide on your own.'],
+  ]
+  const brokenReading = KEPT_READING.filter(([, s]) => !hoBody7.includes(s))
+  if (brokenReading.length > 0) {
+    bad(`⑤i ${NAME_HO}：本批追加**挤掉了既有条文**（${brokenReading.length} 处）：`
+      + `${brokenReading.map(([l]) => l).join(' / ')} —— 追加不得挤掉既有条文`)
+  } else ok(`⑤i ${NAME_HO}：既有 8 条条文逐字保留（原始读数纪律的追加未挤掉任何一条）`)
+}
+
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────
 {
   // 规划侧：complete: true + 恰好 1 行工具模块

@@ -204,7 +204,14 @@ export function apply(ctx: any): void {
       return
     }
 
-    /** 在等的派发：按**执行方会话 id** 索引（一个执行方同时只有一条 watch）。 */
+    /**
+     * 在等的派发：按**执行方会话 id** 索引。
+     *
+     * ⚠ **不变量（2026-10-09 起由 `dispatch` 的闸门强制）**：同一 target **至多一条未结算
+     *   （`!reported`）的 watch** —— 有则 `dispatch` **拒绝**新派发（见该处注释）。
+     *   这条不变量是"回传不丢也不错配"的前提：`agent/status` 事件**不带轮次**，
+     *   两轮同时挂着时无法判断这次 `running → idle` 属于谁。
+     */
     const watches = new Map<string, Watch>()
     /** 上一次见到的状态，用来识别 `running → idle` **跳变**（而不是"看到 idle"）。 */
     const lastStatus = new Map<string, string>()
@@ -227,6 +234,40 @@ export function apply(ctx: any): void {
         }
         if (typeof message !== 'string' || message.trim() === '') {
           return { ok: false, reason: 'empty message' }
+        }
+        // ── ⚠⚠ 同目标重复派发闸门（2026-10-09 修）──────────────────────────
+        //   病灶：`watches` 以**目标会话 id** 为键（`watches.set(target, w)`）。
+        //   同一会话在**上一轮尚未回传**时又被派一轮 ⇒ **后一轮直接覆盖前一轮的 watch**
+        //   ⇒ 前一轮的 idle 事件结算的是**后一轮的 watch** ⇒ **回传永久丢失**
+        //   （而且不是"丢一条"那么干净：产出会被贴上**后一轮的轮次/任务**，错配着送回来）。
+        //
+        //   为什么选「明确拒绝」而不是"键改唯一 + 逐个结算"：
+        //   `agent/status` 事件只带 `{ agent: { id }, status }` —— **不带轮次**。
+        //   两轮同时未结算时，一次 `running → idle` **无法区分**它是哪一轮结束；
+        //   按 FIFO 逐个结算会在宿主把两轮并成一次运行时把第 1 轮的产出配到第 2 轮头上
+        //   —— 把"丢失"换成"静默错配"，那是更坏的失败。
+        //   拒绝则把不确定性交回派单方（它自己决定：等回传，还是换一个会话派）。
+        //
+        //   ⚠ 检查必须在**投递之前**：投出去了却不登记 watch ⇒ 那一轮的回传**必然丢**，
+        //     比"拒绝"更糟（一个假成功 + 一个静默空洞）。
+        //
+        //   ⚠ 只拦**还在等**的那一份（`!reported`）。一个 `reported` 却带回传错误的 watch
+        //     是**已尝试过、不会再回来**的残骸（回传时总线不可用等），把它也算作"未结算"
+        //     会让该会话**永久不能再派** —— 那是另一个方向的坏掉。
+        const pending = watches.get(target)
+        if (pending !== undefined && !pending.reported) {
+          return {
+            ok: false,
+            sessionId: target,
+            reason: `session "${target}" already has an unsettled round (round ${pending.round ?? '?'}`
+              + `${pending.task === undefined ? '' : `: ${pending.task}`}); its result has not come back yet. `
+              + 'Wait for that relay (hob_orch_status shows it), or dispatch to a different live session.',
+          }
+        }
+        if (pending !== undefined) {
+          svcCtx.logger?.warn?.(
+            `[${name}] 覆盖一条回传失败的残骸：${target}（${pending.error ?? 'unknown error'}）`,
+          )
         }
         // 走会话总线投递（复用它的全部闸门：活会话校验、归档拒绝、落库确认）。
         // ⚠ 这里**不用 `ctx.get('hobBus')` 判空后再调** —— 总线缺席时应当**明确拒绝**，
