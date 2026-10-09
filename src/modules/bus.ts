@@ -78,6 +78,67 @@ export interface DeliveryResult {
 /** 会话忙闲：投递给 `running` 的会话会排到它下一轮/下一 step。 */
 const BUSY = 'running'
 
+/**
+ * 取"已归档会话"集合（只读）。
+ *
+ * ── 它为什么必须存在（2026-10-09 实测暴露的问题）─────────────────────────
+ *   `archiveSession()` **只往归档集里写一个 id**，它**不会 dispose 已在跑的
+ *   agent**（`dsh-workspace` 的语义注释明写：归档写的是"durable archive set"，
+ *   供 provider 的 `agent/pre-step` 门禁读取）。后果是**归档会话仍然出现在
+ *   `sessions.list()` 里、`agents.get(id)` 也仍然返回实体** ⇒ 只按
+ *   "`agents.get` 有值"过滤的 `list()` 会把它们**照样列给 Hob 看**。
+ *
+ *   更危险的是 `deliver()`：往归档会话投递会 `ok: true` 回来（消息真进了 inbox、
+ *   `followup` 也真唤醒了它），但**执行被 `agent/pre-step` 门禁挡下**
+ *   （实测转写：有 `turn/start`、`step/start` 计数为 **0**）⇒ 调用方拿到"成功"
+ *   却**永远等不到活**。这是一个**静默失败**：投递回执与实际效果不一致。
+ *
+ *   ⇒ 本模块两头都要认这个集合：`list()` 不再列它、`deliver()` 直接拒它。
+ *
+ * ── 为什么用**可选**服务而不是写进 `inject` 门禁（⚠ 这里踩过一次）─────────
+ *   `workspaceRegistry` 是宿主另一个插件提供的服务，与本模块**没有硬依赖**。
+ *
+ *   ⚠ **`ctx.inject([...], cb)` 的依赖表里没有"可选"这一档** ——
+ *   读过 cordis 源码确认：`Fiber._refresh()`（`cordis/lib/index.js:1320-1327`）对
+ *   `inject` 里的**每一个**名字做检查，**缺任何一个就把 epoch 置为 INACTIVE、整个
+ *   fiber 不激活**。所以把 `workspaceRegistry` 写进那张表，等于宣布
+ *   "没有它本模块就不工作" —— 那是拿一个**收纳功能**去换**核心功能**（会话总线）。
+ *
+ *   ⇒ 正确做法是**根本不声明它**，改用 `ctx.get(name)` 读：
+ *     cordis 对该方法的文档明写 *"Read a service from the store **without the
+ *     inject requirement**"*（`cordis/lib/index.js:756-763`）。
+ *     服务缺席 ⇒ 拿到 `undefined` ⇒ 降级成"没有归档概念"，本模块**照常激活**。
+ *
+ *   ⚠ 本注释的存在理由：我第一版**正是把它写进了 inject 依赖表**，并据此写了
+ *     "缺席时降级"的说明 —— 而那个写法**根本进不了降级分支**（fiber 直接不激活）。
+ *     假 ctx 的探针测不出这一点（假 `inject` 无条件调回调），**只有读 cordis 源码
+ *     或跑真 fiber 才能发现**。教训记在 EXPERIENCE **E-95**。
+ */
+function makeArchivedLookup(svcCtx: any): (sessionId: string) => boolean {
+  // ⚠ 用 `get` 而**不是**属性访问：`ctx.workspaceRegistry` 在没有 inject 声明时
+  //   会抛 `cannot get property "…" without inject`（cordis 的 Proxy handler,
+  //   `lib/index.js:676`）；`get` 是明确的"免 inject"读法。
+  let registry: any
+  try {
+    registry = typeof svcCtx.get === 'function' ? svcCtx.get('workspaceRegistry') : svcCtx.workspaceRegistry
+  } catch {
+    return () => false
+  }
+  if (registry === undefined || registry === null) return () => false
+  try {
+    const ids = registry.archivedSessionIds
+    if (ids === undefined || ids === null) return () => false
+    // 宿主给的是**数组**（实测 `Array.isArray === true`，且无 `has`）⇒ 先建 Set 再查，
+    // 避免每次 `includes` 都线性扫一遍。
+    const set = typeof ids.has === 'function' ? ids : new Set(Array.isArray(ids) ? ids : [...ids])
+    return (sessionId: string) => {
+      try { return set.has(sessionId) } catch { return false }
+    }
+  } catch {
+    return () => false
+  }
+}
+
 /** `hobBus` 服务的形状。 */
 export interface HobBus {
   readonly version: number
@@ -91,6 +152,9 @@ export interface HobBus {
 export function apply(ctx: any): void {
   ctx.logger?.debug?.(`[${name}] 已激活，等待 sessions/agents`)
 
+  // ⚠ 依赖表里**只有这两个**。`workspaceRegistry` **绝不能加进来**：
+  //   cordis 的 `inject` 是"全部必需"（`_refresh` 缺一即 INACTIVE）⇒ 加进来就等于
+  //   宣布"没有它本模块不激活"。它由 `makeArchivedLookup` 用 `ctx.get` **可选**读取。
   ctx.inject(['sessions', 'agents'], (svcCtx: any) => {
     const sessions = svcCtx.sessions ?? svcCtx.get?.('sessions')
     const agents = svcCtx.agents ?? svcCtx.get?.('agents')
@@ -98,6 +162,8 @@ export function apply(ctx: any): void {
       svcCtx.logger?.warn?.(`[${name}] sessions/agents 已就绪但不可用。`)
       return
     }
+    // 可选读：拿不到归档集就退化成"没有归档概念"，本模块照常工作。详见该函数注释。
+    const isArchived = makeArchivedLookup(svcCtx)
 
     const bus: HobBus = {
       version: 1,
@@ -116,6 +182,10 @@ export function apply(ctx: any): void {
           try {
             const id = String(s?.id ?? s?.header?.id ?? '')
             if (id === '') continue
+            // ⚠ 归档会话**不列**：归档只写归档集、不 dispose agent，所以它们此刻
+            //   仍会出现在 `sessions.list()` 里。列出去 = 让 Hob 挑一个投了也没人
+            //   执行的靶（`agent/pre-step` 门禁会挡下）。判据见 `makeArchivedLookup`。
+            if (isArchived(id)) continue
             const header = s?.header ?? {}
             const agent = typeof agents.get === 'function' ? agents.get(id) : undefined
             rows.push({
@@ -141,6 +211,19 @@ export function apply(ctx: any): void {
       async deliver(sessionId: string, text: string, mode: DeliveryMode): Promise<DeliveryResult> {
         if (typeof sessionId !== 'string' || sessionId === '') {
           return { ok: false, reason: 'no-session-id' }
+        }
+        // ⓪ 归档会话**明确拒绝**（不能只是"列表里不显示"）。
+        //    ⚠ 这一步是**静默失败的收口**：往归档会话投递在技术上会成功
+        //      （消息进 inbox、`followup` 唤醒），但执行会被宿主
+        //      `agent/pre-step` 门禁挡下 —— 投递回执说 ok、活却永远不发生。
+        //      宁可在这里**明确说不**，也不要让调用方拿一个假成功。
+        if (isArchived(sessionId)) {
+          return {
+            ok: false,
+            reason: `session "${sessionId}" is archived; an archived session is woken by a delivery `
+              + 'but its execution is gated off (agent/pre-step), so the work would never run. '
+              + 'Pick another live target, or unarchive it first.',
+          }
         }
         // ① 目标必须在**活**会话里 —— `agents.get` 的语义就是"活 agent"。
         const agent = typeof agents.get === 'function' ? agents.get(sessionId) : undefined
@@ -231,8 +314,9 @@ export function createHobBusTools(bus: HobBus): {
   const sessionsTool = defineTool({
     name: 'hob_sessions',
     description:
-      '列出**本实例内活着的会话**（id / 工作目录 / 预设 / 忙闲），用于找一个把指令投递过去的目标。'
-      + '只列活会话：已归档或没有运行实体的历史会话收不到消息。'
+      '列出**本实例内可投递的活会话**（id / 工作目录 / 预设 / 忙闲），用于找一个把指令投递过去的目标。'
+      + '只列活会话：**已归档的会话不会出现在这里**，没有运行实体的历史会话也不列'
+      + '（这两类都收不到会执行的活，列出去只会让你挑到一个投了也白投的靶）。'
       + '⚠ 目标由用户/你指定，本工具**不替你挑**。',
     parameters: {},
     output: {
@@ -254,7 +338,7 @@ export function createHobBusTools(bus: HobBus): {
         return '- ' + bits.join(' · ')
       })
       if (lines.length === 0) return '没有可投递的活会话。'
-      return ['活会话 ' + rows.length + ' 个：', ...lines].join('\n')
+      return ['可投递的活会话 ' + rows.length + ' 个：', ...lines].join('\n')
     },
   })
 
@@ -265,7 +349,8 @@ export function createHobBusTools(bus: HobBus): {
       + '投递后该会话会被唤醒、把这段话当成你的指令来读，它的回复出现在**它自己的会话里**——'
       + '不会自动回到本会话。'
       + '⚠ 投递≠完成：这不是"我做了"，而是"我把它交给了那个会话"。'
-      + '目标必须是 `hob_sessions` 列出的活会话；投给已归档的历史会被明确拒绝。'
+      + '目标必须是 `hob_sessions` 列出的活会话；投给**已归档**的会话会被明确拒绝'
+      + '（归档后执行被宿主门禁挡下，投了也不会跑）。'
       + '⚠ 有实质改动的工作，指令仍应先按交接格式写成文件（`.hob/archive/<日期>/TASK.md`），'
       + '投递的文本里给路径而不是整篇正文。',
     parameters: {

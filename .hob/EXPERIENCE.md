@@ -2395,3 +2395,69 @@ SESSION Hob: FAIL Preset services require isolate realms: compaction
 账本 `DECISIONS.md` **CHG-019** · `USER-DECISIONS.md` **UD-77**；
 实际读取的旧句在 `preset/dsh-hob/preset-dsh-hob.patch.yml` 的三处（`## Your duties` /
 `## Your side and the other side` / 编排段末）。
+
+---
+
+### E-94 · **"某操作成功返回"不等于"那个效果发生了"** —— 归档会话投递 `ok:true` 但执行被门禁挡死
+
+**现象**：批 15 前，`hob_send` 投递给**已归档**的会话会返回
+`{"ok":true,"delivered":true,"messageId":"…"}` —— 回执一切正常。但**那个会话永远不会跑**：
+消息确实进了 inbox、`followup` 确实把它唤醒了，可执行被宿主 `agent/pre-step` 门禁挡下。
+真机转写给出铁证：该会话有 **`turn/start` 计数 2**、而 **`step/start` 计数 0**
+（唤醒发生了，步进一次都没有）。⇒ 调用方拿到"成功"，然后**永远在等一个不会来的结果**。
+
+**根因**：把"投递这个动作的返回值"当成了"对方会执行"的证据。两者之间隔着**宿主的一道门禁**
+（`archiveSession` 写的 durable archive set 正是那道门的判据），而**这道门对本模块不可见**
+—— 除非主动去读 `workspaceRegistry.archivedSessionIds`。
+⚠ 更根上的问题：**归档不 dispose agent**。所以任何"按 `agents.get(id) !== undefined` 判断
+还活着"的写法，对归档会话**一律误判为活**。我原来的 `list()` 正是这么写的。
+
+**正确做法**：
+① **回执只证明"动作发出去了"，不证明"效果会发生"** —— 凡是有下游门禁的动作，回执里
+   必须把"我确认到了哪一步"写清楚，或干脆**在源头拒掉不可能生效的目标**。
+   本例选了后者：`deliver()` 前置拒绝归档目标（`list()` 同步不列）。
+② **"看起来还活着"要用真正表达存活的服务判**，别拿"对象还在"代替。
+   归档会话的对象在、agent 在、状态 idle —— 全都像好的。
+③ **识别门禁要读门禁的**判据源**（这里是 `archivedSessionIds`），别自己另立一套"归档"定义。
+④ **拿到一个静默失败要顺着"谁本该报错却没报"往下查**：本例里 `list()`、`deliver()`、
+   宿主门禁**三处都合规**，合起来才产生"成功但没发生"。**单个组件无错 ≠ 组合无错。**
+
+**出处**：批 15（本次）· `src/modules/bus.ts` 的 `makeArchivedLookup` / `list()` / `deliver()`；
+真机证据见账本 `FACTS.md` **F-J139**（含 17 条探针里 B 组的空白对照法：
+把归档集置空 ⇒ 归档会话又出现、投递又"成功"，以此证明过滤/拒绝断言**真的有牙**）。
+
+---
+
+### E-95 · **探针的假 ctx 必须模拟真框架语义，否则它保护的是"我以为的框架"** —— `inject` 是"全部必需"，没有"可选"这一档
+
+**现象**：批 15 第一版给 `ctx.inject(['sessions','agents','workspaceRegistry'], cb)`
+**把可选依赖写进了必需表**，并在注释里写了一大段"缺席时降级成没有归档概念"。
+**那段降级逻辑根本进不去**：cordis 的 `Fiber._refresh()`（`cordis/lib/index.js:1320-1327`）
+对 `inject` 里**每一个**名字检查，**缺任何一个就把 epoch 置 `INACTIVE`、整个 fiber 不激活**
+⇒ `workspaceRegistry` 一缺席，**整个会话总线都不提供**，不是"降级"而是"停用"。
+
+**为什么没被发现**：我的探针用一个**手工写的假 ctx**，它的 `inject` 是
+`(deps, cb) => { cb(fakeCtx) }` —— **无条件调回调**。于是"可选服务缺席"这条分支
+在我造的假世界里**永远走得通**，探针 C 组三条断言**全部 PASS**，而真机行为是反的。
+⚠ 这是**探针替被测代码挡了子弹**：假 ctx 把框架的门禁语义**抹平**了，
+测出来的是"我以为 cordis 会怎么做"，不是"cordis 实际怎么做"。
+
+**根因**：**假替身的宽容度决定了探针能发现什么**。替身越宽松，探针越"绿"，但越假。
+本例里 `inject` 的语义（全部必需 vs 部分必需）**正是被测逻辑的承重点**，
+把它模拟错了 ⇒ 该测的分支根本没被执行。
+
+**正确做法**：
+① **替身必须按真语义实现，且只"放过"与本次改动无关的部分**。本例一旦把假 `inject`
+   改成"依赖表里有缺项就不调回调"，**C 组立刻 FAIL**（我实测：改探针后对旧产物跑出
+   **14/17**，C1/C2/C3 三条红；对新产物 **17/17**）⇒ 断言**当场就有了牙**。
+② **"可选依赖"在 cordis 里的正确写法是根本不声明**，改用 `ctx.get(name)`
+   （文档明写 *"Read a service from the store **without the inject requirement**"*）。
+   ⚠ 而且**不能用属性访问**：`ctx.workspaceRegistry` 在未声明时会抛
+   `cannot get property "…" without inject`（Proxy handler, `lib/index.js:676`）。
+   ⇒ **`get` 读、且 try/catch**，缺席返回 `undefined` 再降级。
+③ **凡是要"证明降级路径成立"的断言，都必须让该服务真的缺席**（不是"置空"）——
+   置空只测了数据分支，没测**框架级缺失**。
+
+**出处**：批 15（本次）· `src/modules/bus.ts` 的 `makeArchivedLookup` 与 `apply` 的 inject 行；
+探针 `/tmp/b15-archived-probe.mjs` 的 C 组（改假 `inject` 语义后从恒 PASS 变成能咬人）；
+账本 `FACTS.md` **F-J139** · `DECISIONS.md` **CHG-020**。
