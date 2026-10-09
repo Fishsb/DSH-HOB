@@ -72,7 +72,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { StateDot, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
-import { getSettingsForm, subscribeSettingsForm, writeSpawnField, type WriteResult } from './settings.ts'
+import { getSettingsForm, subscribeSettingsForm, writeSpawnFields, type WriteResult } from './settings.ts'
 import {
   findModel, findPreset, getCatalogSnapshot, loadCatalog, subscribeCatalog,
   type CatalogSnapshot, type ModelRow, type PresetRow,
@@ -217,17 +217,22 @@ function SpawnDefaultsCard(props: {
   //   内联会被依赖捕获成自持循环，见文件头）。失败时用户可点「重试」。
   useEffect(() => { void loadCatalog() }, [])
 
-  /** 统一写入入口：失败**一定**有可读原因（writeSpawnField 保证）。 */
-  const write = async (field: 'agentPreset' | 'provider' | 'model' | 'reasoningEffort', next: string): Promise<void> => {
+  /** 统一写入入口：失败**一定**有可读原因（writeSpawnFields 保证）。 */
+  const writeMany = async (
+    writes: ReadonlyArray<{ field: 'agentPreset' | 'provider' | 'model' | 'reasoningEffort'; value: string }>,
+  ): Promise<void> => {
     setBusy(true)
     try {
-      const r: WriteResult = await writeSpawnField(formRef.current, field, next)
+      const r: WriteResult = await writeSpawnFields(formRef.current, writes)
       if (r.ok) setNotice({ tone: 'ok', text: '已写入（本插件建出的会话下次生效）。' })
       else setNotice({ tone: 'bad', text: r.reason ?? '写入被拒（未说明原因）。' })
     } finally {
       setBusy(false)
     }
   }
+  /** 单字段写入（选中预设 / 单独改档位时用）。 */
+  const write = (field: 'agentPreset' | 'provider' | 'model' | 'reasoningEffort', next: string): Promise<void> =>
+    writeMany([{ field, value: next }])
 
   const catalogStatusText =
     snapshot.status === 'loading' ? '候选读取中…'
@@ -281,20 +286,20 @@ function SpawnDefaultsCard(props: {
           value={provider === '' || model === '' ? '' : `${provider}\u0000${model}`}
           onChange={(e) => {
             const v = e.target.value
-            if (v === '') { void write('provider', ''); return }
+            if (v === '') { void writeMany([{ field: 'provider', value: '' }, { field: 'model', value: '' }, { field: 'reasoningEffort', value: '' }]); return }
             const [p, m] = v.split('\u0000')
-            // ⚠ 两步写入是**刻意的**（宿主 mutate 每次只是一组 op）：
-            //   先写 provider 再 model；中间态（新 provider + 旧 model）不被消费，
-            //   因为读值只在"两者都齐备"时才组装选择（见 bus.ts 的 wantModel 判据）。
-            void (async () => {
-              await write('provider', p)
-              await write('model', m)
-              // provider 变了 ⇒ 旧档位可能不属于新模型 ⇒ 清掉（= 用新模型默认档）。
-              const nextModel = findModel(catalog, p, m)
-              if (effort !== '' && !(nextModel?.reasoning?.efforts ?? []).some((x) => x.id === effort)) {
-                await write('reasoningEffort', '')
-              }
-            })()
+            const nextModel = findModel(catalog, p, m)
+            // ⚠ **一次 mutate 原子下发**（不是连着写两次）：选模型本质是
+            //   (provider, model[, effort]) 一起变；分开写会产生"新 provider + 旧 model"
+            //   的中间态，且推两次 revision、触发两次重渲染。
+            //   档位：旧档位不属于新模型 ⇒ 一并清掉（= 用新模型默认档）；
+            //   仍适用则保留（不必重写）。
+            const keepEffort = effort !== '' && (nextModel?.reasoning?.efforts ?? []).some((x) => x.id === effort)
+            void writeMany([
+              { field: 'provider', value: p },
+              { field: 'model', value: m },
+              ...(keepEffort ? [] : [{ field: 'reasoningEffort' as const, value: '' }]),
+            ])
           }}
         >
           <option value="">（用宿主默认模型）</option>

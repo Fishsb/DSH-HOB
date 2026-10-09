@@ -138,14 +138,19 @@ export interface WriteResult {
  *   ② `writable === false`（非回环 ⇒ 宿主的 `memory` 模式）⇒ **如实拒写**，
  *      返回原因而**不是**假装成功（宿主 `ConfigFormController.enqueue` 在
  *      `persistence==='memory'` 时直接 `Promise.resolve(false)`）。
- *   ③ 空值 ⇒ 用 **`unset`**（不是 `set('')`）：把该字段**还回合成层**，
- *      语义 = "用宿主默认"。这与 schema 的"空串 = 用宿主默认"一致，
- *      但走 `unset` 才能让宿主把用户层那一行**真正去掉**（`set('')` 会留下
- *      一条空串覆盖，界面显示"已覆盖"而实际行为相同 —— 那是误导性状态）。
+ *   ③ 空值 ⇒ 用 **`unset`**：语义 = "用宿主默认"（与 schema 的"空串 = 用宿主默认"一致）。
+ *      ⚠ **实测澄清（别把 unset 当成"删掉那一行"）**：宿主 `SettingsService.mutate`
+ *        （`dsh-settings/lib/index.js:489-502`）对 `unset` 的处理是
+ *        *"取继承值，若继承值不是 undefined 就改成 `set 继承值`"*。
+ *        而本插件 schema 给四个 spawn 字段的 `.default('')` **就是**那个继承值
+ *        ⇒ 一次 `unset` 的最终效果是 **`set ""`**（用户层留下一行空串），
+ *        **不是**把键删掉。这与宿主自己的设置页行为**同源**（它们也走同一个 mutate）。
+ *      ⇒ 空串与"键缺席"在本插件里**行为等价**（`spawnDefaults()` 两者都归一到空串），
+ *        故这里**不需要**、也**无法**靠 unset 去追求"键消失"那种更干净的形态。
  *
  * @param form - 当前 settings form（`null` = 还没就绪）。
  * @param field - `spawn` 的子字段名。
- * @param value - 要写的值；**空串 ⇒ `unset`**（= 用宿主默认）。
+ * @param value - 要写的值；**空串 ⇒ `unset`**（最终落到 `set ""`，行为 = 用宿主默认）。
  * @returns 写入结果（含失败原因）。
  */
 export async function writeSpawnField(
@@ -153,7 +158,31 @@ export async function writeSpawnField(
   field: 'agentPreset' | 'provider' | 'model' | 'reasoningEffort',
   value: string,
 ): Promise<WriteResult> {
+  return writeSpawnFields(form, [{ field, value }])
+}
+
+/**
+ * **一次 mutate 写多个** spawn 子字段（批 18）。
+ *
+ * ⚠ 为什么需要它（而不是连着调几次 {@link writeSpawnField}）：宿主 `mutate` 每次是
+ *   **一次原子写入 + 一次 revision 推进**（`ConfigFormController.mutate`）。
+ *   分开调会写两笔、推两次 revision 并触发两次重渲染；更关键的是**中间态可被读到**
+ *   （例如"新 provider + 旧 model"那一瞬）。选一个模型本质是
+ *   **(provider, model[, effort]) 三个字段一起变**，故用一个 op 数组原子下发。
+ *
+ * ⚠ 每个 op 仍**必须**是**子字段路径**（`['spawn', 字段]`）—— 整块写 `spawn`
+ *   会被宿主 `isVolatilePath` 拒（父对象不标 volatile，见该函数注释）。
+ *
+ * @param form - 当前 settings form（`null` = 还没就绪）。
+ * @param writes - 要写的字段与值（空串 ⇒ `unset`）。
+ * @returns 写入结果（含失败原因；任一前置检查不过就**一个字段也不写**）。
+ */
+export async function writeSpawnFields(
+  form: ConfigForm | null,
+  writes: ReadonlyArray<{ field: 'agentPreset' | 'provider' | 'model' | 'reasoningEffort'; value: string }>,
+): Promise<WriteResult> {
   if (form === null) return { ok: false, reason: '配置面尚未就绪（读不到本插件的 form），未写入。' }
+  if (writes.length === 0) return { ok: false, reason: '没有要写入的字段（未做任何修改）。' }
   const snapshot = form.getSnapshot()
   if (snapshot.writable !== true) {
     return {
@@ -165,10 +194,12 @@ export async function writeSpawnField(
     return { ok: false, reason: '该配置面不支持写入（宿主 form 未提供 mutate）。' }
   }
   try {
-    const op: ConfigMutationOp = value === ''
-      ? { op: 'unset', path: ['spawn', field] }
-      : { op: 'set', path: ['spawn', field], value }
-    const accepted = await form.mutate([op])
+    const ops: ConfigMutationOp[] = writes.map(({ field, value }) => (
+      value === ''
+        ? { op: 'unset', path: ['spawn', field] }
+        : { op: 'set', path: ['spawn', field], value }
+    ))
+    const accepted = await form.mutate(ops)
     return accepted === true ? { ok: true } : { ok: false, reason: '宿主拒绝了这次写入（版本冲突或该字段不可写）。' }
   } catch (e) {
     return { ok: false, reason: `写入失败：${String((e as Error)?.message ?? e)}` }
