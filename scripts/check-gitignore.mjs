@@ -112,6 +112,12 @@ const mustTrack = [
   // ⚠ 顺带盯住"入库脚本不能依赖不入库文件"这条：这些脚本自己必须在库里
   ['scripts/check-preset-contracts.mjs', '入库脚本（被 package.json 的 check:presets 调用）'],
   ['scripts/check-gitignore.mjs', '本脚本自身也必须入库（否则 clone 后无从核对）'],
+  // ⚠ 2026-10-09 补：另两条**已声明**的命令脚本原先**没被盯住** ——
+  //   与 E-70 / E-73 同族：脚本一旦被 `.gitignore` 静默排除，
+  //   **clone 后收尾命令直接 ENOENT**，而当时的机检**不会报**。
+  //   `check:experience` 自批 11 起是**收尾必跑四条命令之一** ⇒ 这个缺口的影响面比前两条更大。
+  ['scripts/check-experience.mjs', '入库脚本（被 package.json 的 check:experience 调用 · 收尾四条命令之一）'],
+  ['scripts/next-experience-id.mjs', '入库脚本（被 package.json 的 exp:next-id 调用 · 取下一个经验编号）'],
 ]
 
 /** 该路径是否已在 git index 里（= 已 `git add`）。 */
