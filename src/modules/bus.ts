@@ -33,7 +33,7 @@
  *     与"关掉一个模块只影响它自己"这条架构性质一致（PROJECT.md §3.3）。
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { spawnDefaults, type SpawnDefaults } from '../config.ts'
+import { type SpawnDefaults } from '../config.ts'
 import { appendSessionModelSelection, installSessionModelSelection } from '../model-selection.ts'
 
 /** 模块名。 */
