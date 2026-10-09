@@ -982,6 +982,7 @@ Orb 侧配置与预设**保留不动**。
 | R-9 | DSH 是预发布版，持续改动 | **只对标最新**，不做向后兼容 |
 | R-10 | **archify 交付不带 `ARCHIFY_CHROME=` ⇒ `browser-check` 静默 skipped**（宿主 `PATH` 无 `chrome`/`chromium`；`gates.browser-check = "skipped"`、**exit 2，不是成功**） | 交付前显式指定 Chrome 可执行文件：`ARCHIFY_CHROME=~/.cache/puppeteer/chrome/154.0.8037.57/chrome-linux64/chrome`（**本机可用值，实测 `--version` = `Google Chrome for Testing 154.0.8037.57`**）。见 §10.4 |
 | R-11 | **本仓是纯本地仓、没有 `origin`** ⇒ archify 的 `nodes[].sources` / `meta.repository` **证据链整条用不了**（写 `sources` 必要求 `origin`） | **图表证据一律以图内卡片承载**（列 `路径:行号`）；**不要**为过门禁给本仓加 `origin`。见 §10.4 |
+| R-12 | **`write_hob` 的缩水守卫不可配**：`shrinkGuard` 是**纯代码常量**（`src/modules/tools.ts:156` 值 `0.5`），**不在 `HobToolsConfig`** ⇒ 配置面改不动；而其拒绝文案（`src/server/hob-write.ts:459`）提示「**请分两次写**」**对"砍到 1/4"不够**（实测需 **3 次**：`256138 → 128069 → 64034 → 61440`） | 账本瘦身走「**先归档、后逐级减半 `overwrite`**」：先写 `archive/<日期>-ledger-history/*.md`（归档**不受**缩水守卫），再对主体逐级减半。**不改代码、不放宽阈值**。⚠ 要**单步**完成须另开单（`src/modules/tools.ts` + `src/server/hob-write.ts`，属 **host 半边 ⇒ 需 build + 重启**） |
 
 ### 10.1 收尾必跑（每轮完成前）
 
