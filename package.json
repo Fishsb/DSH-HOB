@@ -33,6 +33,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "check:presets": "node scripts/check-preset-contracts.mjs",
     "check:config": "node scripts/check-config-face.mjs",
+    "check:orch": "node scripts/check-orch-state.mjs",
     "check:gitignore": "node scripts/check-gitignore.mjs",
     "check:experience": "node scripts/check-experience.mjs",
     "exp:next-id": "node scripts/next-experience-id.mjs"

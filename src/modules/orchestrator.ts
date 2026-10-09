@@ -51,7 +51,20 @@
  *   `sessions` / `agents` 是**必需**（写进 `inject`）；其余一律 `ctx.get` 可选读。
  *   缺席 ⇒ 相关能力**明确拒绝**，绝不静默降级成"看起来在工作"的状态。
  */
+import { existsSync, readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { resolveLedgerRoot } from '../server/doc-read.ts'
+import {
+  ORCH_STATE_FILENAME,
+  ORCH_STATE_SUBDIR,
+  ensureRuntimeIgnored,
+  markLost,
+  orchStateFileOf,
+  readOrchState,
+  writePending,
+  type PersistedWatch,
+} from '../server/orch-state.ts'
 
 /** 模块名（同时是 fiber 显示名）。 */
 export const name = 'dsh-hob-orchestrator'
@@ -89,6 +102,15 @@ export interface OrchStatus {
   relaysDone: number
   /** 被闸门拦下的回传次数（停了之后对方又跑完的次数）。 */
   relaysBlocked: number
+  /**
+   * **本代就绪时发现的、上一代遗留的丢失派发数**（本批新增）。
+   *
+   * ⚠ 它**不是** `watches` 的一部分 —— 那些派发**已经不在等了**
+   *   （宿主重载把 watch 抹了，而 `running → idle` 是事件、永不再来）。
+   *   这个数的唯一用途是让"曾经派过、却没回传"**可观测**：
+   *   没有它，重载后的读数与"从来没派过"完全一样。
+   */
+  lostPending: number
 }
 
 /** `hobOrchestrator` 服务的形状。 */
@@ -192,6 +214,135 @@ function buildReceipt(w: Watch, session: any): string {
   return lines.join('\n')
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// 跨重载的"未结算派发"落盘（本批缺陷修复）
+//
+// ⚠ 病灶（对照实验已证，2026-10-09）：
+//   包一被重载（`dev_reload_package` / 宿主重建），cordis 把它的 fiber **全量重建**
+//   （实测 `dsh-hob#521…#525` 全消失、`#529…#533` 全出现），
+//   而 `watches` 建在 `apply()` 的 inject 回调**内部** ⇒ 新回调建的是**空 Map**。
+//   结果是「在等回传 0 · 已回传 0 · 被停闸拦下 0」—— **与"从来没派过"无法区分**。
+//   `relaysBlocked` 为 0 说明不是被刹车吞掉：**记录本身没了**。
+//
+// ⇒ 修法（**只加可观测，不替派活方做决定**）：
+//   · 活着的 watch 落一份盘（`<账本目录>/runtime/orch-watches.json`）；
+//   · 新一代就绪时，把上一代留下的 `pending` 判为"丢失"，报给工具输出并唤醒派活方；
+//   · **不自动续上 watch** —— `running → idle` 是事件不是可轮询状态，
+//     目标若在重载前就跑完了，那条事件永不再来；自动续上会留一个**永不结算**的
+//     watch，命中 `dispatch` 的"同目标至多一条未结算"闸门 ⇒ 该会话**永久不能再派**。
+//     那是比"丢失"更坏的失败。⇒ 交回派活方：它看到"丢过"后自己决定重派或问。
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * 读出**声明的**账本父目录（`ledgerHome`）。
+ *
+ * ⚠ 为什么从 loader 的条目里读，而不是写死 `~/.dsh/hob-ledgers`：
+ *   写死本机绝对路径撞**可移植性口径 UD-73③**（换机器/换用户就写到
+ *   "上一台机器的路径"，本项目有过实测教训，见 `doc-read.ts:57-61`）。
+ *   `ledgerHome` 由**预设行**（`preset/dsh-hob/preset-dsh-hob.patch.yml`）
+ *   显式声明，正是"这个部署把账本放哪"的**唯一权威值** —— 这里只是把它读出来用。
+ *
+ * ⚠ 判据是**字符串且非空**：条目配置里可能没有这个键（别的部署）、
+ *   也可能是空串（= 用 `doc-read.ts` 的兄弟目录缺省）。两种都返回 `''`，
+ *   由 `resolveLedgerRoot` 决定落点。
+ */
+function declaredLedgerHome(svcCtx: any): string {
+  try {
+    const loader = typeof svcCtx.get === 'function' ? svcCtx.get('loader') : undefined
+    const entries = loader?.entries?.()
+    if (entries === undefined) return ''
+    // 深度受限的深搜：条目配置是嵌套结构（`config.plugins[i].config`），
+    // 但不能无界递归（对象可能有环）。找到第一个非空 `ledgerHome` 即返回。
+    const walk = (node: unknown, depth: number): string => {
+      if (depth > 8 || node === null || typeof node !== 'object') return ''
+      if (Array.isArray(node)) {
+        for (const v of node) { const hit = walk(v, depth + 1); if (hit !== '') return hit }
+        return ''
+      }
+      const o = node as Record<string, unknown>
+      const direct = o.ledgerHome
+      if (typeof direct === 'string' && direct.trim() !== '') return direct.trim()
+      for (const v of Object.values(o)) {
+        const hit = walk(v, depth + 1)
+        if (hit !== '') return hit
+      }
+      return ''
+    }
+    for (const e of entries) {
+      const hit = walk(e?.options, 0)
+      if (hit !== '') return hit
+    }
+    return ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 解析**运行态文件**的路径（`<账本目录>/runtime/orch-watches.json`）。
+ *
+ * @param svcCtx - 本模块作用域（用来读 loader 与 sessions）。
+ * @param wsRoot - 工作区根（决定账本目录；判不出 ⇒ 返回 undefined，fail-closed）。
+ */
+function runtimeFileOf(svcCtx: any, wsRoot: string | undefined): string | undefined {
+  const ledgerRoot = resolveLedgerRoot('', declaredLedgerHome(svcCtx), wsRoot)
+  if (ledgerRoot === undefined) return undefined
+  return orchStateFileOf(ledgerRoot)
+}
+
+/**
+ * 扫出**所有**候选运行态文件（跨工作区）。
+ *
+ * ⚠ 用途只有一个：**插件刚就绪、还没有任何 watch** 时（= 重载后的新代）
+ *   要找出上一代留下的记录 —— 那时没有"这一轮的 workspace"可依据，
+ *   只能按 `ledgerHome` 扫一层 `<ledgerHome>/*​/runtime/orch-watches.json`。
+ *   这一层扫描是**确定的**（不是全盘搜索），且只在重载后跑一次。
+ */
+function scanStateFiles(svcCtx: any): string[] {
+  const out: string[] = []
+  try {
+    const home = declaredLedgerHome(svcCtx)
+    if (home === '') return out
+    for (const name of readdirSync(home)) {
+      const f = join(home, name, ORCH_STATE_SUBDIR, ORCH_STATE_FILENAME)
+      if (existsSync(f)) out.push(f)
+    }
+  } catch {
+    /* 父目录不在/不可读 ⇒ 没有可扫的（不是错误：可能从未派过） */
+  }
+  return out
+}
+
+/** 把一个内存 watch 收窄成可序列化的一条（带工作区归属）。 */
+function toPersisted(w: Watch, wsRoot: string | undefined): PersistedWatch {
+  return {
+    target: w.target,
+    watcher: w.watcher,
+    ...(w.round === undefined ? {} : { round: w.round }),
+    ...(w.task === undefined ? {} : { task: w.task }),
+    at: w.at,
+    sawRunning: w.sawRunning,
+    ...(w.error === undefined ? {} : { error: w.error }),
+    ...(wsRoot === undefined || wsRoot === '' ? {} : { wsRoot }),
+  }
+}
+
+/**
+ * 落盘"这一代还活着的 watch"（保留既有 `lost`）。
+ *
+ * ⚠ 写失败**必须留痕**（返回 false ⇒ 调用方记 warn）——
+ *   一个"记不上账"的诊断若静默，就又回到本批要修的失败模式。
+ */
+function persistWatches(file: string | undefined, pending: PersistedWatch[]): boolean {
+  if (file === undefined) return false
+  try {
+    const prev = readOrchState(file)
+    return writePending(file, pending, prev.lost)
+  } catch {
+    return false
+  }
+}
+
 /** 就绪时挂上的实现。 */
 export function apply(ctx: any): void {
   ctx.logger?.debug?.(`[${name}] 已激活，等待 sessions/agents`)
@@ -218,6 +369,146 @@ export function apply(ctx: any): void {
     let stopped = false
     let relaysDone = 0
     let relaysBlocked = 0
+
+    // ══════════════════════════════════════════════════════════════════
+    // 重载后接手：把**上一代**留下的未结算派发判为"丢失"
+    // ══════════════════════════════════════════════════════════════════
+    // ⚠ 此刻 `watches` 一定是**空的**（本回调刚建它）⇒ 落盘里任何 `pending`
+    //   都是**上一代**留下的（见 `markLost` 的 `known` 判据注释）。
+    // ⚠ 这一段**不写 watches**：只记账 + 报告。理由（为什么"不自动续上"）
+    //   写在本文件顶部的修复段注释里 —— 简言之，`running → idle` 是事件，
+    //   目标若在重载前就跑完则永不再来，续上会留一个**永不结算**的 watch。
+    let lostLatch: PersistedWatch[] = []
+    try {
+      for (const file of scanStateFiles(svcCtx)) {
+        const r = markLost(file, () => false)
+        if (r.lost.length > 0) {
+          lostLatch = [...lostLatch, ...r.lost]
+          svcCtx.logger?.warn?.(
+            `[${name}] 重载后发现 ${r.lost.length} 条未结算派发丢失（${file}）：`
+            + r.lost.map((w) => `${w.target}${w.round === undefined ? '' : `(第${w.round}轮)`}`).join(', '),
+          )
+        }
+      }
+    } catch (e) {
+      svcCtx.logger?.warn?.(`[${name}] 读取运行态时出错：${String((e as Error)?.message ?? e)}`)
+    }
+
+    /**
+     * **累计**丢失数（= 落盘 `lost` 的总量，不是"本代新发现"的条数）。
+     *
+     * ⚠ 为什么必须用累计值而不是 `lostLatch.length`（**实测过的一次回归**）：
+     *   丢失项被挪进 `lost` 后就不在 `pending` 里了。第二、三代若没派过活，
+     *   `pending` 恒空 ⇒ `markLost` 什么也发现不了 ⇒ 若报"本代新发现"，
+     *   `hob_orch_status` 会在**第二次重载后**又变回"从来没派过"——
+     *   正是本批要修的那个失败模式，只是晚了一代。
+     *   ⇒ 报**盘上累计**（`lost`），它在 `writePending` 里被显式保留。
+     */
+    let lostCount = 0
+    /** 重新统计盘上累计丢失（启动时与每次落盘后各跑一次）。 */
+    const refreshLostCount = (): void => {
+      let total = 0
+      try {
+        for (const file of scanStateFiles(svcCtx)) total += readOrchState(file).lost.length
+      } catch { /* 读不到就当 0；不因诊断用途让模块起不来 */ }
+      lostCount = total
+    }
+    refreshLostCount()
+
+    // ── 尽力唤醒派活方（任务书 §2.1 第 2 条的"最好"档）──────────────────
+    //   ⚠ 用 `hobBus` 投一条**说明自己丢了什么**的消息 —— 复用它的全部闸门
+    //     （活会话校验、归档拒绝）。总线不在 ⇒ 不唤醒，但 `lostCount` 仍会
+    //     经 `hob_orch_status` 报出（**至少不是静默**）。
+    //   ⚠ 去重：同一 watcher 只唤醒一次（可能丢了多条给同一个人）；
+    //     且**用 `followup`** —— 它是"叫醒一个活会话"，不是 `/steer` 打断。
+    //   ⚠ 唤醒失败只记 debug：这不是主流程，别让它把模块启动搞挂。
+    try {
+      const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
+      if (lostLatch.length > 0 && bus !== undefined && typeof bus.deliver === 'function') {
+        const byWatcher = new Map<string, PersistedWatch[]>()
+        for (const w of lostLatch) {
+          if (w.watcher === '') continue
+          const arr = byWatcher.get(w.watcher) ?? []
+          arr.push(w)
+          byWatcher.set(w.watcher, arr)
+        }
+        for (const [watcher, items] of byWatcher) {
+          const body = [
+            '【编排通知】宿主重载把"等回传"的记录抹掉了 —— 以下派发**已经不在等**。',
+            '',
+            ...items.map((w) => '- ' + [
+              `目标会话：${w.target}`,
+              ...(w.round === undefined ? [] : [`第 ${w.round} 轮`]),
+              ...(w.task === undefined ? [] : [`你派的事：${w.task}`]),
+              `派出时间：${new Date(w.at).toISOString()}`,
+            ].join(' · ')),
+            '',
+            '⚠ 这不是回传，是**丢失通知**：对方的结果**不会**再自动送回来了',
+            '（`running → idle` 是事件，重载前跑完的那次永不再来）。',
+            '需要结果就**重新派一次**（`hob_dispatch`），或直接去那个会话看它的记录。',
+            '`hob_orch_status` 也会报出这一条。',
+          ].join('\n')
+          Promise.resolve(bus.deliver(watcher, body, 'followup'))
+            .then((res: any) => {
+              if (!res?.ok) {
+                svcCtx.logger?.debug?.(`[${name}] 丢失通知未能送达 ${watcher}：${res?.reason ?? 'unknown'}`)
+              }
+            })
+            .catch((e: any) => {
+              svcCtx.logger?.debug?.(`[${name}] 丢失通知出错 ${watcher}：${String(e?.message ?? e)}`)
+            })
+        }
+      }
+    } catch (e) {
+      svcCtx.logger?.warn?.(`[${name}] 丢失通知发送失败：${String((e as Error)?.message ?? e)}`)
+    }
+
+    /** 目标会话 → 运行态文件（登记时定下来；结算时按同一个文件改）。 */
+    const stateFileFor = new Map<string, string>()
+
+    /**
+     * 取某会话的**工作区根**（= 它的 `header.cwd`）。
+     *
+     * ⚠ 这就是 `modules/tools.ts` 的 `rootOf` 的同源读法
+     *   （那边读 `exec.agent?.session.header.cwd`）。账本目录按**工作区名**派生
+     *   （`resolveLedgerRoot`），所以必须拿到它才能判出落点。
+     *   ⚠ 在**派发时**取（那时目标会话一定在），而不是在重载后取 ——
+     *   重载后新代可能还没有任何目标会话可问。
+     */
+    const wsRootOfSession = (sessionId: string): string | undefined => {
+      try {
+        const s = sessions.get?.(sessionId)
+        const cwd = s?.header?.cwd
+        return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    /**
+     * 把当前活着的 watch 落盘（结算/清理后调用）。
+     *
+     * ⚠ 只对**已经登记过落点**的 target 写（`stateFileFor`）——
+     *   否则会拿着"判不出的空路径"去写，或在错误的工作区目录里建文件。
+     */
+    const flushWatches = (): void => {
+      const files = new Set<string>()
+      for (const v of stateFileFor.values()) if (v !== '') files.add(v)
+      for (const file of files) {
+        const ws = (() => {
+          try {
+            // 用该文件对应的任一会话反推工作区根（同一工作区的账本是同一个）。
+            for (const [t, f] of stateFileFor) if (f === file) { const r = wsRootOfSession(t); if (r !== undefined) return r }
+            return undefined
+          } catch { return undefined }
+        })()
+        const alive = [...watches.values()].filter((x) => stateFileFor.get(x.target) === file)
+        if (!persistWatches(file, alive.map((x) => toPersisted(x, ws)))) {
+          svcCtx.logger?.warn?.(`[${name}] 运行态落盘失败（${file}）。`)
+        }
+      }
+      refreshLostCount()
+    }
 
     const orch: HobOrchestrator = {
       version: 1,
@@ -296,6 +587,23 @@ export function apply(ctx: any): void {
         watches.set(target, w)
         lastStatus.set(target, cur ?? 'unknown')
         svcCtx.logger?.debug?.(`[${name}] 已登记回传 watch：${target} → ${w.watcher}`)
+        // ── 落盘（**本批新增**）：让"有未结算派发"这件事活过下一次重载 ──
+        //   ⚠ 写失败必须留 warn：静默的"记不上账"正是本批要修的失败模式。
+        try {
+          const ws = wsRootOfSession(target)
+          const file = runtimeFileOf(svcCtx, ws)
+          stateFileFor.set(target, file ?? '')
+          if (file !== undefined) {
+            ensureRuntimeIgnored(dirname(file))
+            if (!persistWatches(file, [...watches.values()].map((x) => toPersisted(x, ws)))) {
+              svcCtx.logger?.warn?.(`[${name}] 运行态落盘失败（${file}）—— 重载后这次派发将不可观测。`)
+            }
+          } else {
+            svcCtx.logger?.warn?.(`[${name}] 判不出运行态落点（工作区根未知）⇒ 本次派发不可观测。`)
+          }
+        } catch (e) {
+          svcCtx.logger?.warn?.(`[${name}] 落盘时出错：${String((e as Error)?.message ?? e)}`)
+        }
         return {
           ok: true,
           sessionId: target,
@@ -310,6 +618,7 @@ export function apply(ctx: any): void {
           watches: [...watches.values()].sort((a, b) => a.at - b.at),
           relaysDone,
           relaysBlocked,
+          lostPending: lostCount,
         }
       },
 
@@ -326,6 +635,7 @@ export function apply(ctx: any): void {
           watches: [...watches.values()].sort((a, b) => a.at - b.at),
           relaysDone,
           relaysBlocked,
+          lostPending: lostCount,
         }
       },
     }
@@ -367,6 +677,7 @@ export function apply(ctx: any): void {
         const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
         if (bus === undefined || typeof bus.deliver !== 'function') {
           w.error = 'session bus unavailable at relay time'
+          flushWatches()
           return
         }
         Promise.resolve(bus.deliver(w.watcher, receipt, 'followup'))
@@ -375,6 +686,9 @@ export function apply(ctx: any): void {
             else { w.error = res?.reason ?? 'relay delivery failed' }
           })
           .catch((e: any) => { w.error = String(e?.message ?? e) })
+          // ⚠ 无论成败都要同步落盘（本批新增）：成功 ⇒ 该条从 pending 消失
+          //   （下次重载不该再报它"丢失"）；失败 ⇒ 留 error 残骸，同样如实落盘。
+          .finally(() => { flushWatches() })
       } catch (e) {
         svcCtx.logger?.warn?.(`[${name}] 状态监听出错：${String((e as Error)?.message ?? e)}`)
       }
@@ -482,6 +796,17 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         `在等回传：${s.watches.length} 个`,
         ...lines,
         `已回传：${s.relaysDone} 次 · 被停闸拦下：${s.relaysBlocked} 次`,
+        // ── ⚠ 以下是**本批新增的行**（原有行一字未改、未删）─────────────
+        //   它们存在的唯一理由：宿主重载会把内存里的 watch 抹掉，
+        //   没有这两行，重载后的读数与"从来没派过"**完全一样**。
+        ...(s.lostPending === 0
+          ? []
+          : [
+            `⚠ 重载丢失：${s.lostPending} 条派发因宿主重载而丢失（插件重新就绪时判出）`,
+            '  ↳ 它们**已经不在等**：`running → idle` 是事件而非可轮询状态，'
+            + '目标若在重载前就跑完，那条事件永不再来。',
+            '  ↳ 需要结果就**重新派一次**（`hob_dispatch`），或直接去那个会话问/看它的记录。',
+          ]),
       ].join('\n')
     },
   })

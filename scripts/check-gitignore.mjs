@@ -127,6 +127,11 @@ const mustTrack = [
   //   的 scripts 反查）**当场就抓到遗漏**（加完 script 未登记时直接 FAIL，读数见回报），
   //   说明这条自检形态确实有效 —— 此处登记即为那次的修正结果。
   ['scripts/check-config-face.mjs', '入库脚本（被 package.json 的 check:config 调用 · 配置面三处一致性机检）'],
+  // ⚠ 2026-10-09 补（第 2 轮 · 闭环回传丢失修复）：编排运行态跨重载可观测性机检。
+  //   同族的又一次现场抓获 —— 加完 `check:orch` 未登记时，本脚本的"反向自检"
+  //   （读 package.json 的 scripts 反查 MUST-TRACK）**当场 FAIL**，
+  //   这条登记就是那次的修正结果。
+  ['scripts/check-orch-state.mjs', '入库脚本（被 package.json 的 check:orch 调用 · 编排运行态跨重载可观测性机检）'],
 ]
 
 /** 该路径是否已在 git index 里（= 已 `git add`）。 */
