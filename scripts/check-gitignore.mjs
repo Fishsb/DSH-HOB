@@ -97,7 +97,6 @@ try {
 const mustTrack = [
   ['.hob/README.md', '骨架 · 约定归属地（README §1）'],
   ['.hob/EXPERIENCE.md', '骨架 · 经验库（README §1 + 专节）'],
-  ['.hob/templates/FACTS.md', '骨架 · 空模板（README §1 + §2）'],
   ['.hob/templates/DECISIONS.md', '骨架 · 空模板'],
   ['.hob/templates/USER-DECISIONS.md', '骨架 · 空模板'],
   ['.hob/templates/CONTEXT.md', '骨架 · 空模板'],
@@ -164,7 +163,6 @@ const mustExclude = [
   //     本组立刻 FAIL（`git check-ignore` 会对已入库路径返回未忽略）。
   //   ⚠ 这是**改判据以跟随现状**，不是放宽 —— 断言条数不减，方向从
   //     "数据必须被排除" 变成 "数据既不在库、也不被意外放行"。
-  ['.hob/FACTS.md', '运行数据 · 账本（**v4 已迁出**，此断言防回迁）'],
   ['.hob/DECISIONS.md', '运行数据 · 账本（v4 已迁出）'],
   ['.hob/USER-DECISIONS.md', '运行数据 · 账本（v4 已迁出）'],
   ['.hob/CONTEXT.md', '运行数据 · 账本（v4 已迁出）'],
