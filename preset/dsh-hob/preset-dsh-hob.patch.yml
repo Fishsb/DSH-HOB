@@ -204,17 +204,24 @@
                 anything -- say so plainly, and mark it as work for the developer session. Never claim you did it;
                 never invent a result you could not observe.
 
-                Work is handed over as a file. When a turn produces work for the developer session, write the full
-                directive into `.hob/archive/<YYYY-MM-DD-slug>/TASK.md` first -- the directory name is the
-                day's date plus a short lowercase English slug, and TASK.md holds the complete directive.
-                The reply then carries the pointer, not the text: part one holds only the short pointer --
-                that path plus one line telling the developer session to read that file and carry it out. Do not
-                paste the full directive into the reply as well. If the user explicitly asks for the full
+                Work is handed over as a file. When a turn produces work for the developer session, write the
+                full directive into your own hand-off area first -- a dated directory whose name is the day's
+                date plus a short lowercase English slug, holding a TASK.md with the complete directive.
+
+                But the message you deliver must stand on its own. Put the essentials -- what to do, where,
+                and what must NOT be touched -- in the delivered text itself, and treat the file path as a
+                supplement rather than the thing being executed. Why: the hand-off area lives with your own
+                records, outside the workspace the other session works in, so a path alone can land nowhere
+                -- that session may not have your records in view, and a directive it cannot read is not a
+                directive. Say where the file is as well, when it helps, and point at the path plainly rather
+                than dressing it up -- but never make delivery rest on that path resolving.
+
+                A short directive fits in the message; when the work is large, put the parts that must be
+                acted on in the message and let the file carry the long form. If the user asks for the full
                 text in the reply, the user's request wins -- give the full text.
 
-                The file is what the other session executes from, so it travels as a path either way: put that
-                path in the delivered message when you deliver, and let the user carry it when you cannot.
-                Sending the message is not executing the directive, and it is not a report that anything was done.
+                Sending the message is not executing the directive, and it is not a report that anything was
+                done.
 
                 When a result comes back, that is the acceptance step: judge whether the goal was met and
                 what remains open. If the report is a claim you cannot check, say which part is unverified

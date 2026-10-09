@@ -490,18 +490,22 @@ const STALE_APPELLATIONS = [
   const HANDOFF_PINS = [
     // [标签, 正文, 稳定短语]
     [NAME_HO, hoBody3, [
-      ['完整指令落 TASK.md（含目录名形状）', '.hob/archive/<YYYY-MM-DD-slug>/TASK.md'],
-      ['落文件在前（write ... first）', 'write the full\ndirective into `.hob/archive/<YYYY-MM-DD-slug>/TASK.md` first'],
-      ['围栏内只放短指针', 'part one holds only the short pointer'],
-      ['短指针 = 路径 + 一句"读该文件并执行"', 'plus one line telling the developer session to read that file and carry'],
-      ['不再同时贴全文', 'Do not\npaste the full directive into the reply as well'],
+      ['完整指令落自己的交接区（含目录名形状）', "a dated directory whose name is the day's\ndate plus a short lowercase English slug, holding a TASK.md with the complete directive"],
+      ['落文件在前（write ... first）', 'write the\nfull directive into your own hand-off area first'],
+      // ⚠ 批 18（UD-81）：**原四条钉的是"文件是执行载体、消息只带指针"** —— 实测该口径
+      //   **会落空**：交接区在**工作区之外**（v4「账本外置」的派生位置），执行方未必读得到
+      //   （2026-10-09 真机：Hob 写的 TASK.md 落在 `.hob-ledgers/<工作区名>/archive/…`，
+      //   而执行方探的是工作区内的 `.hob/archive/…`，**该目录不存在**）。
+      //   ⇒ 换成"**消息必须自带可独立执行的要点、路径只作补充**"这条新不变量。
+      //   **替换而非删除**：旧句已被现实推翻，留着会永远 FAIL；新句钉得更多且更准。
+      ['派单消息必须自带可独立执行的要点', 'the message you deliver must stand on its own'],
+      ['要点 = 做什么/在哪/不许动什么', 'what to do, where,\nand what must NOT be touched -- in the delivered text itself'],
+      ['路径只是补充、不是被执行的东西', 'treat the file path as a\nsupplement rather than the thing being executed'],
+      ['给路径的原因写明（工作区外、对方可能看不到）', 'the hand-off area lives with your own\nrecords, outside the workspace the other session works in, so a path alone can land nowhere'],
+      ['读不到的指令不算指令', 'a directive it cannot read is not a\ndirective'],
+      ['长指令：要点进消息、长文进文件', 'put the parts that must be\nacted on in the message and let the file carry the long form'],
       ['用户点名要全文时以用户为准', "asks for the full\ntext in the reply, the user's request wins"],
-      // ⚠ 批 14 / M3（UD-77）：原两条钉"文件化不改投递机制（仍无自动投递）"。
-      //   M3 之后投递**存在了** ⇒ 换成"**两条路都传路径、投递不改交接形态**"这条新不变量。
-      //   替换而非删除：旧句已失实，留着会永远 FAIL；新句钉的更多（2 条 → 3 条）。
-      ['文件是执行载体（两条路都传路径）', 'The file is what the other session executes from, so it travels as a path either way'],
-      ['投递时给路径、投不了由用户带', 'put that\npath in the delivered message when you deliver, and let the user carry it when you cannot'],
-      ['投递不是执行、也不是完成报告', 'Sending the message is not executing the directive, and it is not a report that anything was done'],
+      ['投递不是执行、也不是完成报告', 'Sending the message is not executing the directive, and it is not a report that anything was\ndone'],
       ['围栏口径同步为"短指针（或全文）"', 'the block holds the pointer alone (or the full text when the user asked for it)'],
       ['工作区文件路径可给用户看', 'A workspace file path (such as `.hob/archive/.../TASK.md`) is NOT an internal'],
     ]],
@@ -841,7 +845,7 @@ const STALE_APPELLATIONS = [
   //   ⚠ 批 14 / M3（UD-77）：末项由"投递禁令句"换成"**投递不等于执行句**"——
   //     前者钉的事实已被 UD-77 推翻（M3 就是要能投递），后者是本批新立的更强口径。
   const KEPT = [
-    ['文件交接（TASK.md 落点）', '.hob/archive/<YYYY-MM-DD-slug>/TASK.md'],
+    ['文件交接（TASK.md 落点 = 自己的交接区）', 'holding a TASK.md with the complete directive'],
     ['委派门槛', 'delegate only work that MUST be done by hand'],
     ['指令自足', 'Every directive must stand on its own'],
     ['攒批', 'Batch what can ride together'],
