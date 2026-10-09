@@ -10,7 +10,7 @@
  * ⚠ 本轮是**骨架**：只把上面这条形状立起来，**不注册任何业务能力**。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { Config, moduleSwitches } from './config.ts'
+import { Config, moduleSwitches, spawnDefaults } from './config.ts'
 import type { Config as ConfigShape, ModulesConfig } from './config.ts'
 
 import * as toolsModule from './modules/tools.ts'
@@ -42,11 +42,27 @@ export const name = 'dsh-hob'
  *   **不是**整个 config —— 因为 `modules` 标了 `.volatile()`（为了设置页可见），
  *   运行时它是 ref 对象，直接 `c.modules.tools` 会**静默**得到 `undefined`，
  *   四个模块会全部不加载（详见 `config.ts` 的 `moduleSwitches` 注释）。
+ *
+ * ⚠ `configFor()`（可选）把该模块需要的**已解 ref 的普通值**传给它。
+ *   目前只有 `bus` 需要（`spawn` 的四个默认值）—— 同样是因为 `spawn.*` 是 volatile ref，
+ *   模块内直读会**静默**拿到 ref。收口点仍只有 `config.ts` 的 `spawnDefaults()`。
  */
 const MODULE_REGISTRY = [
   { key: 'tools', mod: toolsModule, enabled: (m: ModulesConfig) => m.tools },
   { key: 'preset', mod: presetModule, enabled: (m: ModulesConfig) => m.preset },
-  { key: 'bus', mod: busModule, enabled: (m: ModulesConfig) => m.bus },
+  {
+    key: 'bus',
+    mod: busModule,
+    enabled: (m: ModulesConfig) => m.bus,
+    // ⚠ **传的是"现读"函数，不是解好的快照** —— 这是实测逼出来的：
+    // 设置页写入**不会重启插件**（宿主 `volatile` 的定义就是 "editable without remounting"，
+    // 实测写入前后 `dsh-hob` / `dsh-hob-bus` 的 fiber uid **未变**），
+    // 而 volatile ref 是**原地更新**的 ⇒ 在 `apply` 时快照一次会拿到**旧值**，
+    // 且**静默不报错**（表现为"设置页改了，但建会话仍用旧默认"）。
+    // ⇒ 每次 `spawn()` 现读，值永远与设置页一致。
+    // 收口点仍是 `config.ts` 的 `spawnDefaults()`（模块内**不**直接读 `config.spawn.x`）。
+    configFor: (c: ConfigShape) => ({ spawnDefaults: () => spawnDefaults(c) }),
+  },
   // ⚠ M5 编排（批 17）：**缺省关**（见 config.ts 该字段注释 —— 它会在无人看管时推进）。
   { key: 'orch', mod: orchModule, enabled: (m: ModulesConfig) => m.orch },
   { key: 'settings', mod: settingsModule, enabled: (m: ModulesConfig) => m.settings },
@@ -64,7 +80,9 @@ export function apply(ctx: Context, config: ConfigShape): void {
     // 经 `ctx.plugin` 装载：模块自己的 `inject` 生效为加载门禁
     // （依赖不在 ⇒ 该 fiber 不激活，宿主不报错、其余模块照常）。
     // 用模块名作为 fiber 的显示名，便于 `dev_plugin_status` 之类诊断定位。
-    ctx.plugin({ ...entry.mod, name: entry.mod.name })
+    // ⚠ `configFor` 传的是**普通值**（已解 ref）；没有它的模块保持原样（不传 config）。
+    const modConfig = 'configFor' in entry ? entry.configFor(config) : undefined
+    ctx.plugin({ ...entry.mod, name: entry.mod.name }, modConfig)
 
     loaded.push(entry.key)
   }

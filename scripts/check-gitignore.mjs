@@ -122,6 +122,11 @@ const mustTrack = [
   //   与上面两条**同族**：一旦被 `.gitignore` 静默排除，clone 后 `npm run build`
   //   会在最后一步 ENOENT —— 而**产物已经编译完**，失败点离现场很远。
   ['scripts/write-build-stamp.mjs', '入库脚本（被 package.json 的 build 调用 · 产物构建戳 lib/BUILD-STAMP）'],
+  // ⚠ 2026-10-09 补（批 18 · 新建会话默认值）：配置面一致性机检。
+  //   与上面几条同族；它由 `check:config` 调用。本脚本的"反向自检"（读 package.json
+  //   的 scripts 反查）**当场就抓到遗漏**（加完 script 未登记时直接 FAIL，读数见回报），
+  //   说明这条自检形态确实有效 —— 此处登记即为那次的修正结果。
+  ['scripts/check-config-face.mjs', '入库脚本（被 package.json 的 check:config 调用 · 配置面三处一致性机检）'],
 ]
 
 /** 该路径是否已在 git index 里（= 已 `git add`）。 */

@@ -30,6 +30,7 @@
  */
 import { SettingsPanel } from './settings-panel.tsx'
 import { bindSettingsForm } from './settings.ts'
+import { setCatalogContext } from './catalog.ts'
 import { ensurePanelStyles } from './panel-styles.ts'
 
 /** 包名：同时作为模块 id、槽位条目来源标识、settings namespace。 */
@@ -63,6 +64,11 @@ export function apply(ctx: any): void {
     () => bindSettingsForm(ctx),
     `${PACKAGE_NAME}: configForms binding`,
   )
+
+  // 候选来源（宿主预设清单 / 模型目录）经 `ctx.remote.*` 读 —— 把 ctx 交给
+  // `catalog.ts` 存起来，由面板在**首次渲染时**触发一次加载（不是这里立即读：
+  // remote 命名空间可能还没挂载，那属于"加载失败可重试"的正常状态，见该文件头）。
+  setCatalogContext(ctx)
 
   // ⚠ `ctx.slots.inject` 本身就是"等槽位存在再注册"的反应式封装：
   //   槽位缺席时**不注册、不报错**（宿主其它界面插件未装载时也不该炸）。

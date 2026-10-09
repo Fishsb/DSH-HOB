@@ -43,7 +43,46 @@ export interface ModulesConfig {
   settings: boolean
 }
 
+/**
+ * 「新建会话默认值」（{@link Config.spawn} 的**普通值**形态）。
+ *
+ * ⚠ 与 {@link ModulesConfig} 同一条纪律：schema 上四个子字段**各标 `.volatile()`**，
+ *   运行时它们都是 **ref 对象** ⇒ **调用方一律不许直接读 `config.spawn.x`**
+ *   （直读恒真/恒为 ref，且不报错）。唯一入口是 {@link spawnDefaults}。
+ */
+export interface SpawnDefaults {
+  /** 新会话默认 Agent 预设 id；空串 = 用宿主默认预设。 */
+  agentPreset: string
+  /** 新会话默认模型 provider；空串 = 用宿主默认模型。 */
+  provider: string
+  /** 新会话默认模型 id；空串 = 用宿主默认模型。 */
+  model: string
+  /** 该模型的思考档位；空串 = 用模型自身默认档。 */
+  reasoningEffort: string
+}
+
 export interface Config {
+  /**
+   * 「新建会话默认值」——只影响**本插件建出的会话**（`hob_spawn`），
+   * 不影响用户在宿主界面里手工新建的会话（后者由宿主自己的设置页管）。
+   *
+   * ⚠ **形状与 `modules` 同款**：父对象 `spawn` **不**标 `.volatile()`，
+   *   四个子字段**各标** —— 父子同标会抛 `ValidationError`
+   *   （`validateVolatileSchema` 禁止 volatile 里再套 volatile），
+   *   且**非 volatile 路径会被宿主写入通道拒**
+   *   （`dsh-settings` 的 `isVolatilePath` 校验 `mutate` 的每一个 path）。
+   *   与 `modules` 唯一的差别是**父对象也不同**：这里四个子字段全是字符串，
+   *   没有"隐藏某个子字段"的需求，故四者同形。
+   *
+   * ⚠ **本段落地后，下面 `modules` 那段"唯一支撑"的说法要按同一批更新** ——
+   *   见 {@link moduleSwitches} 上方 schema 注释里的"两处支撑"。
+   */
+  spawn: {
+    agentPreset: import('@deepseek-ai/cordis').Volatile<string>
+    provider: import('@deepseek-ai/cordis').Volatile<string>
+    model: import('@deepseek-ai/cordis').Volatile<string>
+    reasoningEffort: import('@deepseek-ai/cordis').Volatile<string>
+  }
   /**
    * 各模块开关。
    *
@@ -78,15 +117,25 @@ export const Config = z.object({
    *   ⚠ **批 14 / M3 起 `bus` 也标 volatile**（它真管用了 ⇒ 该可见，见下方字段注释）。
    *   ⇒ 现在**四个子字段全标**，形状本身（父不标 + 子各标）**未变**。
    *
-   * ⚠⚠ **这个形状也是本项目"设置页分区可见"的**唯一**支撑**（2026-10-06 配置面清理轮实测）：
-   *   本 schema 里**已经没有顶层 volatile 字段了**（三个空旋钮 persona / showEntry /
-   *   delivery 已按 UD-43 删除）⇒ 可见性**完全**依赖
-   *   `modules` 里那四个带 `.volatile()` 的子字段。
+   * ⚠⚠ **这个形状是"设置页分区可见"的两处支撑之一**（2026-10-06 配置面清理轮首次实测；
+   *   **2026-10-09 本轮新增 `spawn` 段后改为"两处"**）：
+   *   本 schema 里**没有顶层 volatile 字段**（三个空旋钮 persona / showEntry /
+   *   delivery 已按 UD-43 删除）⇒ 可见性依赖**两个都带 volatile 子字段的父对象**：
+   *     · `modules` —— 四个子字段各标 `.volatile()`；
+   *     · `spawn`   —— 四个子字段各标 `.volatile()`（**本轮新增**，见该段注释）。
+   *   ⚠ **改动只是把"唯一支撑"改说成"两处支撑之一"，结论没有变**：
+   *     下面那条"任何人不许把这四个 `.volatile()` 从子字段上摘掉"**仍然逐字成立** ——
+   *     摘掉 `modules` 的四个、`spawn` 的四个**全摘**，`volatileForm` 仍会
+   *     返回 `undefined` ⇒ 整个 dsh-hob 分区照样静默消失。
+   *   （`spawn` 段的加入**不减轻** `modules` 的约束，只是让"全摘才消失"这条
+   *     在崩掉之前多一层缓冲；反过来说，"只靠 `spawn` 撑住"也**不算**通过。）
    *   实测（用**宿主 `volatileForm` 原文**跑真 schema，见
    *   `.hob/archive/2026-10-06-config-cleanup-evidence/分区可见性验证.mjs`）：
    *     · `volatileForm(schema)` 返回**非 undefined** ⇒ 分区仍可见 ✅
    *     · 返回的 form 顶层键 = `["modules"]`，其子字段 = `{tools, preset, bus, settings}`
    *       （批 14 起含 `bus`；此前为 `{tools, preset, settings}`）
+   *       ⚠ 那是**该次实测当时的**返回值；本轮加了 `spawn` ⇒ 顶层键应为
+   *         `["modules", "spawn"]`（**已按真 schema 复测**，读数在回报里）。
    *   ⇒ **"父不标 + 子各标"单独就足以让 entry 可见**，不需要任何顶层 volatile。
    *     （更一般的规则见下方 "volatile 的三个形状规则"。）
    *   ⚠ 因此：**任何人不许把这四个 `.volatile()` 从子字段上摘掉** ——
@@ -179,7 +228,91 @@ export const Config = z.object({
       .description('设置模块：登记本插件的配置面，使其出现在这个设置页里。')
       .volatile(),
   }).default({}),
+
+  /**
+   * 「新建会话默认值」（2026-10-09 · 本轮新增）。
+   *
+   * ── 它管什么 ────────────────────────────────────────────────────────
+   *   `hob_spawn` 建出的会话套用这四个默认值；**只影响本插件建出的会话**，
+   *   **不影响**用户在宿主界面里手工新建的会话（后者由宿主自己的设置页管）。
+   *
+   * ── 形状（与 `modules` 同形，**不是**随手选的）──────────────────────
+   *   · 父对象 `spawn` **不标** `.volatile()`；
+   *   · 四个子字段**各标** `.volatile()`。
+   *   这是**被宿主的两条硬约束逼出来的**（都在 `dsh-settings/lib/index.js` 实测过）：
+   *     ① **父子同标会直接抛** `ValidationError`（`validateVolatileSchema`
+   *        禁止 volatile 里再套 volatile，`schemastery` 的 `validateVolatileSchema`）；
+   *     ② **写入路径必须逐级 volatile** —— `mutate()` 对每个 path 调
+   *        `isVolatilePath(schema, path)`，非 volatile 路径直接
+   *        `throw new Error('Config field "…" is not volatile')`。
+   *        ⇒ 设置面**必须写子字段路径**（如 `['spawn','provider']`），
+   *        **不得整块写 `spawn`**（`spawn` 自己不 volatile ⇒ 被拒）。
+   *
+   * ── 空串语义（**不是**"没配置"的隐式形态，而是显式约定）──────────────
+   *   四个字段**空串 = 用宿主默认**。选择这一形态的理由：
+   *   · schema 层**无法**给"未设置"配一个可写的空值（`.default('')` 是**继承值**，
+   *     用户层的"清空"由设置面的 `unset` 承担 —— 那在宿主侧表现为**键缺席**）；
+   *   · `spawnDefaults()` 把"空串 / 缺席 / ref 读不出来"**三种都归一到空串**，
+   *     调用方只面对一种语义（见该函数）。
+   *
+   * ⚠ **本段落地后 `modules` 那段"设置页分区可见的【唯一】支撑"不再准确** ——
+   *   `spawn` 的四个子字段同样带 volatile、同样会呈现在设置面上。**这只是说法变了，
+   *   结论没变**：`modules` 的形状（父不标 + 子各标）**仍然一个字不许动**，
+   *   理由见那段注释本身（它讲的是形状规则，与本段无关）。
+   */
+  spawn: z.object({
+    agentPreset: z.string().default('')
+      .description('新建会话默认预设（id，如 `Hob`）。留空 = 用宿主默认预设。只影响本插件建出的会话，不影响手工新建的会话。')
+      .volatile(),
+    provider: z.string().default('')
+      .description('新建会话默认模型的 provider 路由（如 `dshapi`）。留空 = 用宿主默认模型。')
+      .volatile(),
+    model: z.string().default('')
+      .description('新建会话默认模型 id（如 `deepseek-v4.1-flash`）。留空 = 用宿主默认模型。')
+      .volatile(),
+    reasoningEffort: z.string().default('')
+      .description('默认模型的思考档位（如 `high`）。留空 = 用该模型自身默认档。')
+      .volatile(),
+  }).default({}),
 })
+
+/**
+ * 读出「新建会话默认值」的**普通对象**，屏蔽 volatile ref 形态。
+ *
+ * ⚠ **调用方一律不许直接读 `config.spawn.x`**（与 {@link moduleSwitches} 同一条纪律）：
+ *   `spawn` 的四个子字段都标了 `.volatile()` ⇒ 运行时都是 **ref 对象**
+ *   （`createVolatile()` 的产物，`Object.freeze({ get, [write] })`）。
+ *   直接拿 `config.spawn.provider` 当字符串用**会静默得到 ref**（不是字符串、恒 truthy），
+ *   拼进 `hob_spawn` 的默认值里就会变成一个 `[object Object]` 之类的垃圾值，
+ *   **且不报错** —— 这正是本函数存在的唯一理由。
+ *
+ * ── 归一语义（三种输入形态都收口到"空串 = 用宿主默认"）────────────────
+ *   · ref 且 `.get()` 给字符串 ⇒ 用它（空白字符串也归一到空串）；
+ *   · 键缺席 / ref 读不出来 / 读到非字符串 ⇒ **空串**（= 用宿主默认）；
+ *   · 普通裸对象（测试里的 `Config({…})` 或 fake config）⇒ 直读同一套判据。
+ *   ⇒ 调用方只面对一种语义，不必知情字段是 ref 还是普通值。
+ *
+ * ⚠ 兜底方向：读不出来给**空串**（= 交还宿主默认），
+ *   而不是"给某个猜出来的模型/预设" —— 后者会在配置面坏掉时**悄悄改变**
+ *   用户建出的会话用哪个模型。空串的后果只是"回到本批之前的行为"，最轻。
+ *
+ * @param config - 插件配置（来自 Loader 时是 ref 形态；测试里的裸对象是普通形态）。
+ * @returns 四个默认值的普通字符串对象（空串 = 用宿主默认）。
+ */
+export function spawnDefaults(config: unknown): SpawnDefaults {
+  const raw = deref((config as { spawn?: unknown } | undefined)?.spawn)
+  const pick = (key: keyof SpawnDefaults): string => {
+    if (raw === null || typeof raw !== 'object') return ''
+    const v = deref((raw as Record<string, unknown>)[key])
+    return typeof v === 'string' && v.trim() !== '' ? v.trim() : ''
+  }
+  return {
+    agentPreset: pick('agentPreset'),
+    provider: pick('provider'),
+    model: pick('model'),
+    reasoningEffort: pick('reasoningEffort'),
+  }
+}
 
 /**
  * 解出 volatile ref 的普通值；非 ref 原样返回。

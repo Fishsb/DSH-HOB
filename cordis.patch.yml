@@ -40,6 +40,20 @@
           #   关掉它只影响 M5：会话总线仍在（手工投递路不受影响）。
           orch: false
           settings: true
+        # ── 新建会话默认值（2026-10-09 本轮新增；与 src/config.ts 的 `spawn` 段一一对应）──
+        # ⚠ 四个字段**都带 .volatile()** ⇒ 运行时都是 **ref 对象**，
+        #   唯一允许解 ref 的地方是 `src/config.ts` 的 `spawnDefaults()`；
+        #   调用方（`src/modules/bus.ts` 的 spawn）一律不许直接读 `config.spawn.x`。
+        # ⚠ 空串 = **用宿主默认**（预设 = 宿主默认预设；模型 = 宿主默认模型；
+        #   档位 = 该模型自身默认档）。只影响**本插件建出的会话**，
+        #   不影响用户在宿主界面里手工新建的会话。
+        # ⚠ 设置面写入必须走**子字段路径**（如 `['spawn','provider']`）——
+        #   父对象 `spawn` 自己不 volatile，宿主 `isVolatilePath` 会拒整块写。
+        spawn:
+          agentPreset: ""
+          provider: ""
+          model: ""
+          reasoningEffort: ""
 # ⚠ 上面四个值只是**声明默认值**，别在代码里直接读 `config.modules.x`：
 #   四个字段**都带 .volatile()** ⇒ 运行时都是 **ref 对象**（恒 truthy）。
 #   唯一允许解 ref 的地方是 `src/config.ts` 的 `moduleSwitches()`。

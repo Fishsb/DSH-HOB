@@ -33,6 +33,8 @@
  *     与"关掉一个模块只影响它自己"这条架构性质一致（PROJECT.md §3.3）。
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { spawnDefaults, type SpawnDefaults } from '../config.ts'
+import { appendSessionModelSelection, installSessionModelSelection } from '../model-selection.ts'
 
 /** 模块名。 */
 export const name = 'dsh-hob-bus'
@@ -85,6 +87,13 @@ export interface SpawnResult {
   /** 该工作区的路径（回执里带上，便于核对）。 */
   workspacePath?: string
   agentPreset?: string
+  /**
+   * 模型默认值的**如实标注**（批 18）。
+   *
+   * ⚠ 只在"配了模型默认值、但**没能装上**"时出现 —— 会话已建成功，
+   *   失败的是那一步增强。**不静默**（E-29 同族：失败必须可见）。
+   */
+  modelNote?: string
   reason?: string
   /** 可选：给错 `workspace` 时回带的可选清单，便于改对而不是乱猜。 */
   available?: string[]
@@ -230,13 +239,45 @@ export interface HobBus {
    *   （2026-10-09 实测：只传 `cwd` 建出的会话在 `workspace.json` 里查无归属）。
    *   本方法**不接受"不指定"**：要么显式给，要么落到调用方自己的工作区；
    *   拿不准就拒，**绝不造孤儿**。
+   *
+   * ⚠ **批 18（2026-10-09）起本方法还套用「新建会话默认值」**（{@link HobBusConfig.spawn}）：
+   *   · **预设**：工具显式给了 `agentPreset` ⇒ **以它为准**（原语义不变）；
+   *     没给 ⇒ 用配置里的 `spawn.agentPreset`；配置也为空 ⇒ 保持现状（交宿主默认）。
+   *   · **模型**：配置里 `spawn.provider` / `spawn.model` 齐备 ⇒ 建会话后给**该会话**
+   *     装一个**会话级**模型选择（见 `src/model-selection.ts` 的文件头：
+   *     判定两条判据、为什么不能调 `controller.selectModel`）。
+   *     **一次也不碰宿主的全局默认模型**。
    */
   spawn(workspace: string | undefined, agentPreset: string | undefined, selfSessionId: string | undefined): Promise<SpawnResult>
 }
 
+/**
+ * `hobBus` 模块收到的配置（由 `src/index.ts` 交进来）。
+ *
+ * ⚠ **刻意传"现读函数"而不是解好的值**（实测依据）：设置页写配置**不会重启插件**
+ *   （宿主 volatile 的定义就是 "editable without remounting"；实测写入前后
+ *   `dsh-hob-bus` 的 fiber uid 未变），而 volatile ref 是**原地更新**的
+ *   ⇒ 若在 `apply` 那一刻快照一次，之后设置页再改就**永远读不到**，
+ *   且**静默不报错**（症状：设置页改了、建会话仍用旧默认）。
+ *   ⇒ 每次 `spawn()` 调一次 `spawnDefaults()` 现读。
+ *
+ * ⚠ 模块内**不得**直接读 `config.spawn.x`（那是 volatile ref，直读恒为 ref）。
+ */
+export interface HobBusConfig {
+  /** 现读「新建会话默认值」（`config.ts` 的 `spawnDefaults()` 收口）。 */
+  spawnDefaults?: () => SpawnDefaults
+}
+
 /** 就绪时挂上的实现（`apply` 里构造，服务缺席时不会存在）。 */
-export function apply(ctx: any): void {
+export function apply(ctx: any, config: HobBusConfig = {}): void {
   ctx.logger?.debug?.(`[${name}] 已激活，等待 sessions/agents`)
+
+  // ⚠ 配置**每次现读**（不是装载时快照）：设置页写入不会重启插件，
+  //   而 `spawn` 的四个子字段是**原地更新**的 volatile ref（实测 fiber uid 未变）。
+  //   快照一次的后果是"设置页改了、spawn 仍用旧默认"，且**静默**。
+  //   收口点仍是 `config.ts` 的 `spawnDefaults()`；模块内不直接读 `config.spawn.x`。
+  const readSpawn = (): SpawnDefaults =>
+    config?.spawnDefaults?.() ?? { agentPreset: '', provider: '', model: '', reasoningEffort: '' }
 
   // ⚠ 依赖表里**只有这两个**。`workspaceRegistry` **绝不能加进来**：
   //   cordis 的 `inject` 是"全部必需"（`_refresh` 缺一即 INACTIVE）⇒ 加进来就等于
@@ -512,17 +553,62 @@ export function apply(ctx: any): void {
         }
 
         // ③ 建会话 —— 只走宿主 controller（它管归档门禁/默认模型/preset 挂载等不变量）。
+        //
+        // ⚠ **批 18：预设默认值**（任务书 §4）——
+        //   工具**显式**给了 `agentPreset` ⇒ **以它为准**（原语义一字不动）；
+        //   没给 ⇒ 用配置里的 `spawn.agentPreset`；配置也为空 ⇒ **不传该字段**
+        //   （保持现状：交宿主默认预设）。三者是**优先级链**，不是"合并"。
+        const spawnCfg = readSpawn()
+        const explicitPreset =
+          typeof agentPreset === 'string' && agentPreset.trim() !== '' ? agentPreset.trim() : undefined
+        const presetId = explicitPreset ?? (spawnCfg.agentPreset !== '' ? spawnCfg.agentPreset : undefined)
+
+        // ⚠ **批 18：模型默认值**（任务书 §4 / §1 判定分支）——
+        //   只有 provider/model **都**非空时才实施（缺一无法组装一条有效选择；
+        //   宿主 `llm.resolveCallConfig` 要两者同时在场）。
+        //   装的是**会话级**选择（`src/model-selection.ts`），**不改全局默认**。
+        //   档位为空 ⇒ 不传 `reasoningEffort`（= 用该模型自身默认档）。
+        const wantModel =
+          spawnCfg.provider !== '' && spawnCfg.model !== ''
+            ? {
+                provider: spawnCfg.provider,
+                model: spawnCfg.model,
+                ...(spawnCfg.reasoningEffort === '' ? {} : { reasoningEffort: spawnCfg.reasoningEffort }),
+              }
+            : undefined
+
         try {
           const created = await controller.create({
             workspaceId: wsId,
-            ...(typeof agentPreset === 'string' && agentPreset.trim() !== '' ? { agentPreset: agentPreset.trim() } : {}),
+            ...(presetId === undefined ? {} : { agentPreset: presetId }),
           })
+          const sessionId: string | undefined = created?.sessionId
+
+          // 模型默认值：**建完才装**（`create` 的入参没有模型字段）。
+          // ⚠ 装不上**不该**让建会话失败 —— 会话已真实存在，
+          //   把失败如实带回（`modelNote`）比"建到一半丢了会话"好得多。
+          let modelNote: string | undefined
+          if (wantModel !== undefined && typeof sessionId === 'string' && sessionId !== '') {
+            try {
+              const agent = typeof agents.get === 'function' ? agents.get(sessionId) : undefined
+              if (agent === undefined) {
+                modelNote = 'session created but its agent was not found; the model default was not applied'
+              } else {
+                installSessionModelSelection(agent.ctx, agent.session, wantModel)
+                appendSessionModelSelection(agent, wantModel)
+              }
+            } catch (e) {
+              modelNote = 'model default not applied: ' + String((e as Error)?.message ?? e)
+            }
+          }
+
           return {
             ok: true,
-            sessionId: created?.sessionId,
+            sessionId,
             workspaceId: wsId,
             ...(wsPath === undefined || wsPath === '' ? {} : { workspacePath: wsPath }),
             ...(created?.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }),
+            ...(modelNote === undefined ? {} : { modelNote }),
           }
         } catch (e) {
           // ⚠ 宿主对**不存在的 workspaceId 会直接抛**（实测："workspace \"…\" not found"）
@@ -712,7 +798,7 @@ export function createHobBusTools(bus: HobBus): {
       },
       agentPreset: {
         type: 'string',
-        description: '新会话用的预设 id（如 `standard`）。不填则用宿主的默认预设。',
+        description: '新会话用的预设 id（如 `standard`）。不填则用「新建会话默认」里配的预设；那里也为空则用宿主的默认预设。',
       },
     },
     output: {
@@ -734,6 +820,9 @@ export function createHobBusTools(bus: HobBus): {
         workspaceId: r.workspaceId,
         ...(r.workspacePath === undefined ? {} : { workspacePath: r.workspacePath }),
         ...(r.agentPreset === undefined ? {} : { agentPreset: r.agentPreset }),
+        // ⚠ 模型默认值装不上时**如实回带**（不静默）：会话已建成，
+        //   只是那一步增强失败了，调用方与用户都该看得见。
+        ...(r.modelNote === undefined ? {} : { modelNote: r.modelNote }),
         note2: 'Created only: the session exists but has not started yet. A directive delivered with '
           + 'hob_send or hob_dispatch wakes it — no user action is needed. Only if no directive is '
           + 'delivered does the user need to open it and send one line.',

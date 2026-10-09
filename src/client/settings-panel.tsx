@@ -69,15 +69,20 @@
  *   不是每次渲染都调 —— 见 `./panel-styles.ts` 的文件头（含"为什么不能用
  *   `.module.css`"的实测依据）。
  */
-import { useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { StateDot, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
-import { getSettingsForm, subscribeSettingsForm } from './settings.ts'
+import { getSettingsForm, subscribeSettingsForm, writeSpawnField, type WriteResult } from './settings.ts'
+import {
+  findModel, findPreset, getCatalogSnapshot, loadCatalog, subscribeCatalog,
+  type CatalogSnapshot, type ModelRow, type PresetRow,
+} from './catalog.ts'
 import { S } from './panel-styles.ts'
 
 /** 展示用的配置形状（只取本插件 schema 里真实存在的字段）。 */
 interface PanelValue {
   modules?: Record<string, unknown>
+  spawn?: Record<string, unknown>
 }
 
 /** 解 volatile ref（`{ get() }`）或普通值。 */
@@ -160,6 +165,219 @@ function Row(props: { label: string; children: ReactNode }): ReactElement {
   )
 }
 
+/** 从快照里取一个普通字符串（volatile ref 与裸值都收口到这里）。 */
+function readString(value: unknown): string {
+  const v = deref(value)
+  return typeof v === 'string' ? v : ''
+}
+
+/**
+ * 「新建会话默认」卡片（批 18 · 2026-10-09）。
+ *
+ * ── 它写什么 ──────────────────────────────────────────────────────────
+ *   本插件建出的会话（`hob_spawn`）套用的**预设 / 模型 / 思考档位**默认值。
+ *   写入走宿主 `configForms` 的 `mutate`（**子字段路径**，见
+ *   `settings.ts` 的 {@link writeSpawnField} 注释）。
+ *
+ * ── 三条**必须写在界面上**的边界（用户看不到就等于没有）───────────────
+ *   ① 只影响**本插件建出的会话**，**不影响**手工新建的会话；
+ *   ② 模型/预设**下线或删除**时，已存值**如实标"不可用"**（不静默吞）；
+ *   ③ 当前页面**不允许写入**时，如实说明原因（**不假装保存成功**）。
+ *
+ * ── 候选来源（都是宿主既有 RPC，不自造）─────────────────────────────
+ *   预设 ← `ctx.remote.agentPresets.list()`；模型 ← `ctx.remote.session.modelCatalog()`。
+ *   ⚠ `broken` 的预设**照样列出**并标"不可用"（E-46：宿主的静默过滤是教训）。
+ *   ⚠ 选中模型**没有** `reasoning.efforts` ⇒ **不呈现**档位控件（不留空旋钮）。
+ */
+function SpawnDefaultsCard(props: {
+  form: ReturnType<typeof getSettingsForm>
+  value: PanelValue
+  snapshot: CatalogSnapshot
+}): ReactElement {
+  const { form, value, snapshot } = props
+  const spawn = (deref(value.spawn) ?? {}) as Record<string, unknown>
+  const preset = readString(spawn.agentPreset)
+  const provider = readString(spawn.provider)
+  const model = readString(spawn.model)
+  const effort = readString(spawn.reasoningEffort)
+
+  // 目录里的选中项（找不到 ⇒ "不可用"，**不静默**）。
+  const presetRow: PresetRow | undefined = preset === '' ? undefined : findPreset(snapshot.presets, preset)
+  const catalog = snapshot.catalog
+  const modelRow: ModelRow | undefined = (provider === '' || model === '') ? undefined : findModel(catalog, provider, model)
+  const efforts = modelRow?.reasoning?.efforts ?? []
+
+  // 写入反馈（成功/失败都**如实**显示在这里；失败带原因）。
+  const [notice, setNotice] = useState<{ tone: 'ok' | 'bad'; text: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const formRef = useRef(form)
+  formRef.current = form
+
+  // ⚠ 只在面板**第一次**渲染时读一次候选（不是每次渲染，也不是内联 promise ——
+  //   内联会被依赖捕获成自持循环，见文件头）。失败时用户可点「重试」。
+  useEffect(() => { void loadCatalog() }, [])
+
+  /** 统一写入入口：失败**一定**有可读原因（writeSpawnField 保证）。 */
+  const write = async (field: 'agentPreset' | 'provider' | 'model' | 'reasoningEffort', next: string): Promise<void> => {
+    setBusy(true)
+    try {
+      const r: WriteResult = await writeSpawnField(formRef.current, field, next)
+      if (r.ok) setNotice({ tone: 'ok', text: '已写入（本插件建出的会话下次生效）。' })
+      else setNotice({ tone: 'bad', text: r.reason ?? '写入被拒（未说明原因）。' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const catalogStatusText =
+    snapshot.status === 'loading' ? '候选读取中…'
+      : snapshot.status === 'error' ? `候选读取失败 —— ${snapshot.error ?? '未知原因'}`
+        : snapshot.status === 'idle' ? '候选未加载'
+          : `候选已就绪（预设 ${snapshot.presets.length} 个 / 模型 ${catalog?.groups.reduce((n, g) => n + g.models.length, 0) ?? 0} 个）`
+
+  return (
+    <div className={S.card}>
+      <div className={S.cardHead}>
+        <span className={S.cardTitle}>新建会话默认</span>
+        <span className={S.cardNote}>
+          仅影响本插件建出的会话（Hob 派活时经 <code>hob_spawn</code> 新建的那些）；
+          <b>不影响</b>你手工新建的会话 —— 后者的默认由宿主自己的设置页管。
+        </span>
+      </div>
+
+      {/* ── 预设 ───────────────────────────────────────────────────── */}
+      <Row label="默认预设">
+        <select
+          className={S.select}
+          disabled={busy}
+          value={preset}
+          onChange={(e) => { void write('agentPreset', e.target.value) }}
+        >
+          <option value="">（用宿主默认预设）</option>
+          {/* ⚠ broken **照样列出**、标"不可用"（不静默过滤）。 */}
+          {snapshot.presets.map((p) => (
+            <option key={p.id} value={p.id}>
+              {`${p.name ?? p.id}${p.broken === undefined ? '' : '（不可用）'}${p.isDefault === true ? ' · 宿主默认' : ''}`}
+            </option>
+          ))}
+          {/* ⚠ 已存值不在清单里（预设被删/下线）⇒ **如实标"不可用"**，且仍可选中它以便改掉。 */}
+          {preset !== '' && presetRow === undefined ? (
+            <option value={preset}>{`${preset}（不可用 · 不在当前预设清单里）`}</option>
+          ) : null}
+        </select>
+        {preset !== '' && presetRow?.broken !== undefined ? (
+          <span className={S.warn}>{`该预设被宿主标为不可用：${presetRow.broken}`}</span>
+        ) : null}
+        {preset !== '' && presetRow === undefined ? (
+          <span className={S.warn}>已存预设「{preset}」不在当前清单里（可能已被删除）—— 仍保留原值，可在此改掉。</span>
+        ) : null}
+      </Row>
+
+      {/* ── 模型（按 provider 分组）────────────────────────────────── */}
+      <Row label="默认模型">
+        <select
+          className={S.select}
+          disabled={busy}
+          value={provider === '' || model === '' ? '' : `${provider}\u0000${model}`}
+          onChange={(e) => {
+            const v = e.target.value
+            if (v === '') { void write('provider', ''); return }
+            const [p, m] = v.split('\u0000')
+            // ⚠ 两步写入是**刻意的**（宿主 mutate 每次只是一组 op）：
+            //   先写 provider 再 model；中间态（新 provider + 旧 model）不被消费，
+            //   因为读值只在"两者都齐备"时才组装选择（见 bus.ts 的 wantModel 判据）。
+            void (async () => {
+              await write('provider', p)
+              await write('model', m)
+              // provider 变了 ⇒ 旧档位可能不属于新模型 ⇒ 清掉（= 用新模型默认档）。
+              const nextModel = findModel(catalog, p, m)
+              if (effort !== '' && !(nextModel?.reasoning?.efforts ?? []).some((x) => x.id === effort)) {
+                await write('reasoningEffort', '')
+              }
+            })()
+          }}
+        >
+          <option value="">（用宿主默认模型）</option>
+          {catalog?.groups.map((g) => (
+            <optgroup key={g.id} label={`${g.name}（${g.id}）`}>
+              {g.models.map((m) => (
+                <option key={`${g.id}\u0000${m.id}`} value={`${g.id}\u0000${m.id}`}>
+                  {m.name === m.id ? m.id : `${m.name}（${m.id}）`}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+          {/* ⚠ 已存值不在目录里（模型下线）⇒ **如实标"不可用"**。 */}
+          {provider !== '' && model !== '' && modelRow === undefined ? (
+            <option value={`${provider}\u0000${model}`}>{`${provider} / ${model}（不可用 · 不在当前模型目录里）`}</option>
+          ) : null}
+        </select>
+        {provider !== '' && model !== '' && modelRow === undefined ? (
+          <span className={S.warn}>
+            已存模型「{provider} / {model}」不在当前目录里（可能已下线）—— 仍保留原值，可在此改掉。
+          </span>
+        ) : null}
+        {/* ⚠ 只有选中模型**带** efforts 才呈现档位选择；没有就**不留空旋钮**。 */}
+        {modelRow !== undefined && efforts.length > 0 ? (
+          <span className={S.inline}>
+            <span className={S.subLabel}>思考档位</span>
+            <select
+              className={S.select}
+              disabled={busy}
+              value={effort}
+              onChange={(e) => { void write('reasoningEffort', e.target.value) }}
+            >
+              <option value="">{`（用模型默认${modelRow.reasoning?.defaultEffort === undefined ? '' : `：${modelRow.reasoning.defaultEffort}`}）`}</option>
+              {efforts.map((x) => (
+                <option key={x.id} value={x.id}>{x.description === undefined ? x.name : `${x.name} — ${x.description}`}</option>
+              ))}
+            </select>
+          </span>
+        ) : null}
+      </Row>
+
+      {/* ── 候选状态 / 失败如实显示 / 重试 ─────────────────────────── */}
+      <Row label="候选来源">
+        <span className={S.inline}>
+          <span className={snapshot.status === 'error' ? S.warn : S.subNote}>{catalogStatusText}</span>
+          <button
+            type="button"
+            className={S.linkBtn}
+            disabled={snapshot.status === 'loading'}
+            onClick={() => { void loadCatalog() }}
+          >
+            重新读取
+          </button>
+        </span>
+      </Row>
+
+      {/* ── 写入反馈（成功与失败都显示；失败必有原因）─────────────── */}
+      {notice === null ? null : (
+        <div className={S.row}>
+          <div className={S.rowLabel}>写入结果</div>
+          <div className={S.rowValue}>
+            <span className={notice.tone === 'ok' ? S.ok : S.warn}>{notice.text}</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── 不可写时如实说明（**不假装保存成功**）────────────────── */}
+      {form?.getSnapshot?.().writable !== true ? (
+        <div className={S.row}>
+          <div className={S.rowLabel}>写入</div>
+          <div className={S.rowValue}>
+            <span className={S.warn}>
+              当前页面<b>不允许写入</b>（宿主持久化模式 =
+              <code>{form?.getSnapshot?.().mode ?? '未知'}</code>）——
+              非本机回环访问时宿主只在内存里改、不落盘，故这里会如实拒写而不是假装保存。
+            </span>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 /**
  * 设置分区组件。
  *
@@ -168,6 +386,7 @@ function Row(props: { label: string; children: ReactNode }): ReactElement {
  */
 export function SettingsPanel(): ReactElement {
   const form = useSyncExternalStore(subscribeSettingsForm, getSettingsForm, getSettingsForm)
+  const catalog = useSyncExternalStore(subscribeCatalog, getCatalogSnapshot, getCatalogSnapshot)
   const snapshot = form?.getSnapshot?.()
   const status = snapshot?.status ?? 'unavailable'
   const value = (snapshot?.value ?? {}) as PanelValue
@@ -191,8 +410,9 @@ export function SettingsPanel(): ReactElement {
       <div>
         <h2 className={S.title} id="dsh-hob-panel-title">dsh-hob · 人机翻译层</h2>
         <p className={S.intro}>
-          本插件把「与你说人话的助手」和「动手干活的开发」分成两个 Agent 预设，
-          并提供一个只读文档、只写账本的工具面。下面是当前配置摘要。
+          本插件提供一个只读文档、只写账本的工具面，并让「Hob」这个 Agent 预设
+          把你说的话整理成给实施会话的指令（实施侧预设 Hob-Execute 已于 v4 删除，
+          现只剩 Hob 一个）。下面是当前配置摘要。
         </p>
       </div>
 
@@ -218,13 +438,20 @@ export function SettingsPanel(): ReactElement {
         </Row>
       </div>
 
+      <SpawnDefaultsCard form={form} value={value} snapshot={catalog} />
+
       <ul className={S.notes}>
         <li className={S.note}>
-          · 模块开关（工具 / 预设 / 设置）：改完需要<b>重启实例</b>才生效 ——
+          · 模块开关（工具 / 预设 / 会话总线 / 闭环编排 / 设置，共五个）：改完需要<b>重启实例</b>才生效 ——
           宿主的规定是"改这些值不重挂插件"，而模块的装载发生在插件装载那一刻。
         </li>
         <li className={S.note}>
-          · 修改入口：插件管理页里由宿主为每个插件自动生成的配置表单（本插件不自建编辑器）。
+          · 「新建会话默认」是<b>即改即生效</b>的值型配置（宿主写入后不必重启）——
+          它和上面的模块开关是两条不同的路径，别把两者的生效条件混起来。
+        </li>
+        <li className={S.note}>
+          · 修改入口：本分区直接可改「新建会话默认」；其余字段仍可在插件管理页里
+          由宿主自动生成的配置表单中改。
         </li>
       </ul>
     </section>

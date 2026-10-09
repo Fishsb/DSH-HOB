@@ -12,7 +12,10 @@
  *    对该 entry `return []`，这里拿到的 form 永远 `loading`。（见 config.ts）
  * ② **非回环访问时写入不落盘**（宿主硬编码
  *    `persistence = ctx.remote.$host.isLoopback ? "host" : "memory"`）。
- *    本模块本轮**只读**，不受影响。
+ *    ⚠ **批 18（2026-10-09）起本模块不再只读**：设置面板新增「新建会话默认」卡片，
+ *    首次引入**写入路径**（经宿主 `ConfigForm.mutate`，见 {@link ConfigForm.mutate}）。
+ *    在这条约束下 ⇒ `writable === false`（非回环 / memory 模式）时
+ *    **必须如实拒写并说明原因**，**不许假装保存成功**。
  */
 
 /**
@@ -39,6 +42,27 @@ export interface SettingsSnapshot {
 export interface ConfigForm {
   getSnapshot(): SettingsSnapshot
   subscribe(listener: () => void): () => void
+  /**
+   * 写**一个或多个子字段**（宿主 `ConfigForm.mutate`）。
+   *
+   * ⚠ **必须写子字段路径**（如 `['spawn','provider']`），**不得整块写 `spawn`**：
+   *   宿主 `dsh-settings` 的 `mutate()` 对每个 path 调 `isVolatilePath(schema, path)`
+   *   （`lib/index.js:78-84`、`:507`），而本插件 schema 里**父对象 `spawn` 自己不标 volatile**
+   *   （父子同标会抛 `ValidationError`）⇒ 整块写会被
+   *   `throw new Error('Config field "spawn" is not volatile')` **拒掉**。
+   *
+   * @param ops - 宿主 `mutate` 的操作数组（`{op:'set'|'unset', path, value?}`）。
+   * @returns 宿主是否接受（`false` = 被拒或持久化模式不允许；**不抛**）。
+   */
+  mutate(ops: readonly ConfigMutationOp[]): Promise<boolean>
+}
+
+/** 一条宿主配置写入操作（与 `dsh-settings` 的 `ConfigMutation` 同形）。 */
+export interface ConfigMutationOp {
+  op: 'set' | 'unset'
+  /** **子字段路径**（相对本插件 namespace），如 `['spawn','provider']`。 */
+  path: string[]
+  value?: unknown
 }
 
 /**
@@ -95,5 +119,58 @@ export function bindSettingsForm(ctx: any, onReady?: (form: ConfigForm) => void)
   return () => {
     setSettingsForm(null)
     off?.()
+  }
+}
+
+/** 一次写入的结果（**如实带原因**，供面板显示；不抛）。 */
+export interface WriteResult {
+  ok: boolean
+  /** `ok=false` 时的可读原因（**必须**显示给用户，不许静默）。 */
+  reason?: string
+}
+
+/**
+ * 写「新建会话默认」的一个**子字段**（批 18 新增的写入路径）。
+ *
+ * ── 三条口径（都来自任务书 §3.1，逐条落在代码里）──────────────────────
+ *   ① **写子字段路径**：`mutate([{op:'set', path:['spawn', field], value}])`；
+ *      **不得整块写 `spawn`**（父对象不 volatile ⇒ 宿主 `isVolatilePath` 会拒）。
+ *   ② `writable === false`（非回环 ⇒ 宿主的 `memory` 模式）⇒ **如实拒写**，
+ *      返回原因而**不是**假装成功（宿主 `ConfigFormController.enqueue` 在
+ *      `persistence==='memory'` 时直接 `Promise.resolve(false)`）。
+ *   ③ 空值 ⇒ 用 **`unset`**（不是 `set('')`）：把该字段**还回合成层**，
+ *      语义 = "用宿主默认"。这与 schema 的"空串 = 用宿主默认"一致，
+ *      但走 `unset` 才能让宿主把用户层那一行**真正去掉**（`set('')` 会留下
+ *      一条空串覆盖，界面显示"已覆盖"而实际行为相同 —— 那是误导性状态）。
+ *
+ * @param form - 当前 settings form（`null` = 还没就绪）。
+ * @param field - `spawn` 的子字段名。
+ * @param value - 要写的值；**空串 ⇒ `unset`**（= 用宿主默认）。
+ * @returns 写入结果（含失败原因）。
+ */
+export async function writeSpawnField(
+  form: ConfigForm | null,
+  field: 'agentPreset' | 'provider' | 'model' | 'reasoningEffort',
+  value: string,
+): Promise<WriteResult> {
+  if (form === null) return { ok: false, reason: '配置面尚未就绪（读不到本插件的 form），未写入。' }
+  const snapshot = form.getSnapshot()
+  if (snapshot.writable !== true) {
+    return {
+      ok: false,
+      reason: `当前页面不允许写入（持久化模式 = ${snapshot.mode}；非本机回环访问时宿主只在内存里改，不落盘）⇒ 已拒写，未做任何修改。`,
+    }
+  }
+  if (typeof form.mutate !== 'function') {
+    return { ok: false, reason: '该配置面不支持写入（宿主 form 未提供 mutate）。' }
+  }
+  try {
+    const op: ConfigMutationOp = value === ''
+      ? { op: 'unset', path: ['spawn', field] }
+      : { op: 'set', path: ['spawn', field], value }
+    const accepted = await form.mutate([op])
+    return accepted === true ? { ok: true } : { ok: false, reason: '宿主拒绝了这次写入（版本冲突或该字段不可写）。' }
+  } catch (e) {
+    return { ok: false, reason: `写入失败：${String((e as Error)?.message ?? e)}` }
   }
 }

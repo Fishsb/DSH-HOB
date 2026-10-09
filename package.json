@@ -32,6 +32,7 @@
     "build:client": "tsdown --config tsdown.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "check:presets": "node scripts/check-preset-contracts.mjs",
+    "check:config": "node scripts/check-config-face.mjs",
     "check:gitignore": "node scripts/check-gitignore.mjs",
     "check:experience": "node scripts/check-experience.mjs",
     "exp:next-id": "node scripts/next-experience-id.mjs"
@@ -81,11 +82,24 @@
         "    · slots       ← @deepseek-ai/dsh-client-ui-renderer（它 super(ctx,'slots')）",
         "    · configForms ← @deepseek-ai/dsh-client-ui-settings",
         "  而 @deepseek-ai/dsh-client-ui-slots **只有 host 半边**（无 ./client 导出、",
-        "  无 dsh.client 声明）—— 它只是 slots 的**类型/契约**包，**不能**列在这里。"
+        "  无 dsh.client 声明）—— 它只是 slots 的**类型/契约**包，**不能**列在这里。",
+        "",
+        "  ⚠ 批 18（2026-10-09）新增一项（「新建会话默认」卡片要读宿主预设清单与模型目录）：",
+        "    · ctx.remote.agentPresets.list()      ← 命名空间由 @deepseek-ai/dsh-api-remotes 的 client 半边挂载",
+        "    · ctx.remote.session.modelCatalog()   ← 同上（同一个命名空间装配器）",
+        "  两者的实际提供方都是 **@deepseek-ai/dsh-api-remotes**（它 $mount 了",
+        "  agentPresets / session / settings… 一批 Typert Remote 命名空间，见其 client.js 的",
+        "  TYPERT_REMOTE 表）—— 所以**只需要列它**一条；`ctx.remote` 服务本身由",
+        "  @deepseek-ai/dsh-api-gateway 提供，而 api-remotes 自己已经声明了那条 inject，",
+        "  依赖链随之成立。",
+        "  ⚠ 这里**没有**列 @deepseek-ai/dsh-api-session-controller / dsh-agent-preset-registry：",
+        "    它们是那两个 RPC 的**宿主**（host 半边）提供方，**没有** client 半边可供依赖",
+        "    （实测：dsh.client 段为空、无 ./client 导出）⇒ 列了会被静默忽略（E-61）。"
       ],
       "inject": [
         "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-api-remotes"
       ]
     }
   }

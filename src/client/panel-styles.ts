@@ -91,6 +91,31 @@ const CSS = [
 
   // 屏读专用文本（宿主同款写法，见 `ui-settings-general` 的 `.VOzbGW_hiddenLabel`）。
   `.dsh-hob-sr-only{position:absolute;width:1px;height:1px;white-space:nowrap;overflow:hidden;clip:rect(0 0 0 0)}`,
+
+  // ── 批 18 新增：「新建会话默认」卡片 ───────────────────────────────────
+  // 卡片头：标题 + 一句边界说明（两者同排、允许换行）。
+  `.dsh-hob-card-head{display:flex;flex-direction:column;gap:2px;padding:12px 0 4px}`,
+  `.dsh-hob-card-title{font-weight:500;color:var(--dsw-alias-label-primary)}`,
+  `.dsh-hob-card-note{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}`,
+  // 选择控件：宿主设置页字段控件的观感（描边 + 圆角 + 卡片底 + 主色文字）。
+  // ⚠ 令牌逐条取自宿主主题（`dsh-client-ui-theme`）：`--dsw-radius-md` 存在、
+  //   `--dsw-radius-m` 不存在（曾写错，已按实况改正）。
+  `.dsh-hob-select{min-width:220px;max-width:100%;height:28px;padding:0 6px;font:inherit;`,
+  `color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);`,
+  `border:0.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md)}`,
+  `.dsh-hob-select:disabled{opacity:.6;cursor:not-allowed}`,
+  // 行内小标签（如「思考档位」）与次级说明。
+  `.dsh-hob-sub-label{color:var(--dsw-alias-label-secondary);flex:none}`,
+  `.dsh-hob-sub-note{color:var(--dsw-alias-label-tertiary)}`,
+  // 如实告警 / 成功：用宿主**既有**的状态色令牌，不自造色。
+  // ⚠ 宿主没有 `state-danger-primary`；承载"错误"语义的是 `state-error-primary`
+  //   （实测 `ui-settings-models` / `ui-plugin-manager` 都用它），故照它写。
+  `.dsh-hob-warn{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:1.6}`,
+  `.dsh-hob-ok{color:var(--dsw-alias-state-success-primary);font-size:12px;line-height:1.6}`,
+  // 链接式按钮（「重新读取」）：无边框、按下划线示意可点。
+  // ⚠ 链接色令牌名是 `--dsw-alias-link`（不是 `label-link`，实测）。
+  `.dsh-hob-link-btn{padding:0;font:inherit;color:var(--dsw-alias-link);background:none;border:0;cursor:pointer;text-decoration:underline}`,
+  `.dsh-hob-link-btn:disabled{color:var(--dsw-alias-label-tertiary);cursor:default;text-decoration:none}`,
 ].join('')
 
 /**
@@ -130,4 +155,13 @@ export const S = {
   notes: 'dsh-hob-notes',
   note: 'dsh-hob-note',
   srOnly: 'dsh-hob-sr-only',
+  cardHead: 'dsh-hob-card-head',
+  cardTitle: 'dsh-hob-card-title',
+  cardNote: 'dsh-hob-card-note',
+  select: 'dsh-hob-select',
+  subLabel: 'dsh-hob-sub-label',
+  subNote: 'dsh-hob-sub-note',
+  warn: 'dsh-hob-warn',
+  ok: 'dsh-hob-ok',
+  linkBtn: 'dsh-hob-link-btn',
 } as const
