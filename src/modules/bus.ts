@@ -251,9 +251,20 @@ export function apply(ctx: any): void {
     // 可选读：拿不到归档集就退化成"没有归档概念"，本模块照常工作。详见该函数注释。
     const isArchived = makeArchivedLookup(svcCtx)
     // 可选读：`workspaceRegistry`（批 16 建会话要它）。同样的纪律 —— 不进 inject 表。
-    const registry = makeRegistryLookup(svcCtx)
+    //
+    // ⚠⚠ **必须惰性读、不能在这里取一次存起来**（2026-10-09 真机抓到的缺陷）。
+    //   原先写的是 `const registry = makeRegistryLookup(svcCtx)` —— 在**本模块构建那一刻**
+    //   读一次。而 `workspaceRegistry` 由**另一个插件的 fiber** 提供，与本模块**并行激活**，
+    //   谁先就绪不保证 ⇒ 若本模块先到，这里取到的就是 `undefined`，**从此永远 `undefined`**。
+    //   真机症状（重启后必现）：`hob_spawn` 一律返回
+    //   `workspace registry unavailable: cannot resolve a workspace…`，
+    //   而**同一个服务在 probe 里 `ctx.get('workspaceRegistry')` 明明读得到** ⇒
+    //   服务在、只是本模块**记错了它不在**。
+    //   ⇒ 与 `makeArchivedLookup` 同一条纪律（E-96）：**外部活状态一律每次现读**。
+    const registryOf = () => makeRegistryLookup(svcCtx)
     // 可选读：`sessionController`（建会话的真正入口）。缺席 ⇒ `spawn` 明确拒绝。
-    const controller = makeControllerLookup(svcCtx)
+    // ⚠ 同样惰性：理由与上一行完全相同（它也是并行激活的别的 fiber 提供的）。
+    const controllerOf = () => makeControllerLookup(svcCtx)
 
     const bus: HobBus = {
       version: 1,
@@ -386,6 +397,8 @@ export function apply(ctx: any): void {
 
       // ── 批 16：建会话（强制归属工作区）────────────────────────────────
       async listWorkspaces(selfSessionId: string | undefined): Promise<WorkspaceInfo[]> {
+        // ⚠ 每次现读（不缓存）—— 服务可能在本模块构建之后才就绪，见 `registryOf` 注释。
+        const registry = registryOf()
         if (registry === undefined || registry === null) return []
         let raw: any[] = []
         try {
@@ -428,6 +441,10 @@ export function apply(ctx: any): void {
         selfSessionId: string | undefined,
       ): Promise<SpawnResult> {
         // ① 服务齐不齐 —— 缺一个都**明确拒绝**，绝不降级成"建个孤儿"。
+        // ⚠ 两者都**每次现读**（不缓存）：它们是并行激活的别的 fiber 提供的，
+        //   可能在本模块构建之后才就绪（见 `registryOf` 注释）。
+        const registry = registryOf()
+        const controller = controllerOf()
         if (registry === undefined || registry === null) {
           return { ok: false, reason: 'workspace registry unavailable: cannot resolve a workspace, and creating a session without one is refused.' }
         }
