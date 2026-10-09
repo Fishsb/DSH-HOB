@@ -980,6 +980,8 @@ Orb 侧配置与预设**保留不动**。
 | R-7 | **入库物依赖不入库文件** ⇒ 新 clone 上**必然失败**（实测：脚本入库、其读的契约文件不入库 ⇒ `check:presets` 直接 `ENOENT`） | 归类纠正 + §10.2 纪律 |
 | R-8 | **断言对已跟踪文件恒真**：`git check-ignore` 默认信任 index ⇒ 被跟踪的文件**永不报 ignored**，保护失效且**看不出来** | 断言必须带 `--no-index`（经验库 E-74） |
 | R-9 | DSH 是预发布版，持续改动 | **只对标最新**，不做向后兼容 |
+| R-10 | **archify 交付不带 `ARCHIFY_CHROME=` ⇒ `browser-check` 静默 skipped**（宿主 `PATH` 无 `chrome`/`chromium`；`gates.browser-check = "skipped"`、**exit 2，不是成功**） | 交付前显式指定 Chrome 可执行文件：`ARCHIFY_CHROME=~/.cache/puppeteer/chrome/154.0.8037.57/chrome-linux64/chrome`（**本机可用值，实测 `--version` = `Google Chrome for Testing 154.0.8037.57`**）。见 §10.4 |
+| R-11 | **本仓是纯本地仓、没有 `origin`** ⇒ archify 的 `nodes[].sources` / `meta.repository` **证据链整条用不了**（写 `sources` 必要求 `origin`） | **图表证据一律以图内卡片承载**（列 `路径:行号`）；**不要**为过门禁给本仓加 `origin`。见 §10.4 |
 
 ### 10.1 收尾必跑（每轮完成前）
 
@@ -1040,6 +1042,56 @@ Orb 侧配置与预设**保留不动**。
 ⚠ 只改一处 ⇒ **其余处静默不一致**。`check:gitignore` 就是为了抓这类漂移。
 
 ---
+
+### 10.4 两条 archify 交付环境事实（2026-10-09 · 事件流程图交付实测）
+
+**性质**：**当前事实 + 踩坑记录**，供后续任何 archify 图表交付直接照用。两条都是**环境缺项**，
+不是图的内容问题；本仓现状下**两条都不会自愈**，交付时必须显式处置。
+
+**① archify 交付必须显式指定 Chrome（否则 `browser-check` 静默 skipped）**
+
+- **现象**：`finalize` 在 `browser-check` 环节返回 `viewer/chrome-unavailable`
+  （`{"executable": null}`），`gates.browser-check = "skipped"`、**退出码 2** —— **这不是成功**，
+  但若只看 `gates` 里前三个 `pass` 容易误读为"差不多过了"。
+- **根因**：archify 在宿主 `PATH` 上找 `chrome`/`chromium`；**本机 `PATH` 里没有**
+  （`which google-chrome chromium chromium-browser` 全部无输出）。
+- **正确做法**：交付前显式指路 ——
+  `ARCHIFY_CHROME=~/.cache/puppeteer/chrome/154.0.8037.57/chrome-linux64/chrome`
+  （本机实际可用的那份；来自 puppeteer 缓存，**实测 `--version` → `Google Chrome for Testing 154.0.8037.57`**）。
+- **出处**：2026-10-09 事件流程图交付（`.archify/workflow-hob-event-flow-20261009-135700/`）
+  `hob-event-flow.finalize.json` 的 `gates.browser-check` 与 `diagnostics[].code = viewer/chrome-unavailable`；
+  同批 `visual-check` 回执 `chrome.status = "available"`、`chrome.executable` 指向该路径。
+
+**② 本仓没有 `origin` ⇒ archify 的 `sources` / `meta.repository` 证据链用不了**
+
+- **现象**：图里一写 `nodes[].sources`，renderer 直接失败 ——
+  `repository-evidence/root-required`（未给 `--repo-root`）或
+  `repository-evidence/git-command: Evidence repository must have an origin remote.`（给了也失败）。
+- **根因（源码判据）**：`renderers/shared/repository-evidence.mjs:220` ——
+  ```
+  const origin = gitValue(realRoot, ['remote', 'get-url', 'origin'],
+                  'Evidence repository must have an origin remote.');
+  ```
+  即**只要声明了仓库证据（`sources` 或 `meta.repository`），就必须有一个能被解析的 `origin`**；
+  而**本仓是纯本地仓**（`git remote get-url origin` → `No such remote 'origin'`；
+  `.git/config` 里**完全没有 `[remote …]` 段**，`.git/refs/remotes` 不存在）。
+  ⇒ **两条路同时被堵**：加 `repository` 要 origin，不加 `repository` 又不许有 `sources`
+  （反向判据 `repository-evidence/repository-required`）。
+- **本仓的口径（决策）**：**图表证据一律以图内卡片承载** —— 把要引的**路径 + 行号区间**
+  写进图的 `cards[]`（人读、随图一起交付），**不走 `sources` 字段**。
+  ⚠ **不要**为了过门禁给本仓加 `origin` —— 那属于**改仓库配置去迁就工具**，
+  且"该给哪个 URL"不是仓内能推出的事实（`repository-authoring.md` 也禁止把内部仓改写成 HTTPS、
+  或把本地路径当远程身份）。
+- **补充实测（可复现）**：把本仓 `git clone` 到别处（克隆自带 `origin`），
+  用**同一份带 `sources` 的候选**跑 renderer ⇒ **exit 0、产物生成**。
+  ⇒ 确认**唯一缺口 = 原仓缺 `origin`**，与 `sources` 的写法/行号/path 无关。
+  另实测：`GIT_CONFIG_COUNT/KEY_0/VALUE_0` 与临时 `GIT_CONFIG_GLOBAL` 两条**不落盘的注入途径在本机 git 2.53.0 上均无效**
+  （独立测试仓同样报 `No such remote 'origin'`）⇒ 不存在"不改 `.git/config` 就能过"的做法。
+- **出处**：2026-10-09 事件流程图交付的四种组合探针（有/无 `repository` × 有/无 `sources`）
+  与 `git clone` 对照实验；报告见账本目录
+  `archive/2026-10-09-hob-event-flow/REPORT.md` §四.1。
+- **`.archify/` 本身**：生成物（候选 JSON / HTML / 截图 / 回执）**不入库** ——
+  已在 `.gitignore:10` 加 `.archify/`（见同批 `.gitignore` 改动，仅新增这一行）。
 
 ## 11. 待定稿项
 
