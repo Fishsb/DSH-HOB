@@ -10,7 +10,7 @@
  *   2. 路径校验用 `path.relative`（复用 `doc-read.ts` 的 `resolveInside`，防 `..` 穿越）；
  *   3. **不跟随符号链接**：`.hob/` 自身与目标路径的**每一段**都 lstat 检查（读侧允许，
  *      写侧必须更严 —— 写穿软链会逃出 `.hob/`）；
- *   4. **白名单穷举**：四个账本 + `archive/<日期目录>/*.md`；
+ *   4. **白名单穷举**：三个账本 + `archive/<日期目录>/*.md`；
  *   5. **骨架只读**：`README.md` / `templates/**` 一律拒写（骨架进 git，变更走人工 + commit）。
  *
  * 写入安全：
@@ -28,7 +28,7 @@ import { resolveInside } from './doc-read.ts'
 
 // ── 白名单：骨架只读，运行数据可写（与 UD-05 的切分同一条线）─────────────────
 
-/** 可写的三个账本（**运行数据**）。⚠ UD-84：原第四个 `FACTS.md` 已退场（四本 → 三本）。 */
+/** 可写的三个账本（**运行数据**）。沿革：原含 `FACTS.md`，2026-10-09 按 UD-84 退场（四本 → 三本）。 */
 export const LEDGER_FILES = ['DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md'] as const
 
 /** 骨架文件（**拒写**）：格式契约，进 git，变更须人工 + commit。 */
@@ -161,7 +161,7 @@ function checkWhitelist(file: string): WriteHobResult | null {
   if (file === BACKUP_DIR || file.startsWith(BACKUP_DIR + '/')) {
     return refuse(file, 'not-whitelisted', `拒绝：${BACKUP_DIR}/ 由 write_hob 自管，不接受写入。`)
   }
-  // 四个账本
+  // 三个账本
   if ((LEDGER_FILES as readonly string[]).includes(file)) return null
   // 归档：只允许 archive/<日期目录>/<名>.md，且只一层
   const m = ARCHIVE_PATH_RE.exec(file)

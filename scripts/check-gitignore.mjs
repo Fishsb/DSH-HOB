@@ -117,6 +117,11 @@ const mustTrack = [
   //   `check:experience` 自批 11 起是**收尾必跑四条命令之一** ⇒ 这个缺口的影响面比前两条更大。
   ['scripts/check-experience.mjs', '入库脚本（被 package.json 的 check:experience 调用 · 收尾四条命令之一）'],
   ['scripts/next-experience-id.mjs', '入库脚本（被 package.json 的 exp:next-id 调用 · 取下一个经验编号）'],
+  // ⚠ 2026-10-09 补（本批 · 用户裁定 A 方案）：build 末尾新增的构建戳脚本。
+  //   它由 `build` 串联调用（`node scripts/write-build-stamp.mjs`），
+  //   与上面两条**同族**：一旦被 `.gitignore` 静默排除，clone 后 `npm run build`
+  //   会在最后一步 ENOENT —— 而**产物已经编译完**，失败点离现场很远。
+  ['scripts/write-build-stamp.mjs', '入库脚本（被 package.json 的 build 调用 · 产物构建戳 lib/BUILD-STAMP）'],
 ]
 
 /** 该路径是否已在 git index 里（= 已 `git add`）。 */
