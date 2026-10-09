@@ -108,7 +108,13 @@ function deref(value: unknown): unknown {
  *   遍历会把它一并列出，白名单才能决定"给用户看哪几个"。
  */
 const VISIBLE_SWITCHES: Record<string, string> = {
-  tools: '工具', preset: '预设', bus: '会话总线', settings: '设置',
+  tools: '工具', preset: '预设', bus: '会话总线',
+  // ⚠ 批 17：`orch`（闭环编排）**也在设置页可见**。它缺省关，且它是一条会在
+  //   无人看管时继续推进的能力 —— **越是这样越不能藏**：用户必须能一眼看到
+  //   它现在是开是关，否则就成了"有个会自己跑的东西，但我不知道它在跑"
+  //   （PROJECT.md §5.3 的静默失败形态）。
+  orch: '闭环编排',
+  settings: '设置',
 }
 
 function moduleSummary(modules: Record<string, unknown> | undefined): string {

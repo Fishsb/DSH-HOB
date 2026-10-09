@@ -41,6 +41,7 @@ import {
   type HobToolsConfig,
 } from '../modules/tools.ts'
 import { BUS_SERVICE, createHobBusTools, type HobBus } from '../modules/bus.ts'
+import { ORCH_SERVICE, createHobOrchTools, type HobOrchestrator } from '../modules/orchestrator.ts'
 
 /** 模块名（preset 行的 `name` 指向本模块）。 */
 export const name = 'dsh-hob-tools'
@@ -163,6 +164,21 @@ export function apply(ctx: any, config: Config = {}): void {
     log('会话总线就绪 ⇒ 注册 M3 工具')
     registerBusTools(busCtx, bus as HobBus, log)
   })
+
+  // ── M5 · 闭环编排工具（UD-80 · 批 17）────────────────────────────────
+  // ⚠ 同 M3 的反应式订阅纪律：`hobOrchestrator` 由 `modules/orchestrator.ts` 在
+  //   `sessions`/`agents` 就绪后 provide。服务不在（`modules.orch` 关掉 / 未就绪）
+  //   ⇒ 回调不跑 ⇒ **三个编排工具根本不出现**。
+  //   ⇒ 关掉 `modules.orch` 只影响 M5 自己：**会话总线仍在**（手工投递路不受影响）。
+  ctx.inject([ORCH_SERVICE], (orchCtx: any) => {
+    const orch = orchCtx[ORCH_SERVICE] ?? orchCtx.get?.(ORCH_SERVICE)
+    if (orch === undefined) {
+      log('hobOrchestrator 已就绪但不可用（跳过 M5 工具注册）')
+      return
+    }
+    log('闭环编排就绪 ⇒ 注册 M5 工具')
+    registerOrchTools(orchCtx, orch as HobOrchestrator, log)
+  })
 }
 
 /**
@@ -232,6 +248,7 @@ function denyInheritedTools(ctx: any, log: (m: string) => void): void {
  *           + 技能加载 1 个 + 产出挂卡 1 个（**批 13 新增 2 = 23**）。
  *           + **会话总线投递 2 个**（`hob_sessions` / `hob_send`，**批 14 / M3 新增 2 = 25**）。
  *           + **建会话 2 个**（`hob_workspaces` / `hob_spawn`，**批 16 新增 2 = 27**）。
+ *           + **闭环编排 3 个**（`hob_dispatch` / `hob_orch_status` / `hob_orch_control`，**批 17 新增 3 = 30**）。
  *
  * ── ⚠ 能力落点 = **声明面 与 白名单 的「与门」**（批 8 审查实测，见 E-86）────
  * 白名单**只**决定"这一项发不发给模型"；工具**还必须在该预设作用域里被注册**——
@@ -345,6 +362,15 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
   // ⚠ 与门（E-86）同前：定义在 `modules/bus.ts`，注册在 `registerBusTools`。
   'hob_workspaces',
   'hob_spawn',
+  // ── 批 17：闭环编排 3 个（UD-80）──────────────────────────────────────
+  // ⚠ 用户 2026-10-09 要求：会话任务完成后**自动回传**给对应的 Hob 会话，Hob 分析后
+  //   继续推进并下发下一步；**续用还是新建由 Hob 自己判断**。
+  // ⚠ 这条能力**会自己在无人看管时往下转**（用户明确选了"不设上限、只能手动停"）
+  //   ⇒ `modules.orch` **缺省关**；开了才有这三个工具。
+  // ⚠ 与门（E-86）同前：定义在 `modules/orchestrator.ts`，注册在 `registerOrchTools`。
+  'hob_dispatch',
+  'hob_orch_status',
+  'hob_orch_control',
 ]
 
 /**
@@ -354,7 +380,7 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
  *   （`dsh-tools/lib/index.js:2840-2843`）。若白名单把它滤掉，助手会拿到**空清单**
  *   —— 那是比"多几个工具"严重得多的回归（会话直接失去全部能力）。
  *   native 模式下它**根本不存在**（`view()` 只在 mode !== native 时加它），
- *   故 native 下清单仍**恰好 27**（批 16 起；批 14 为 25、批 13 为 23、批 11 为 21、批 9 为 20）。实测判据见阶段 C 报告 C3-1。
+ *   故 native 下清单仍**恰好 30**（批 17 起；批 16 为 27、批 14 为 25、批 13 为 23、批 11 为 21、批 9 为 20）。实测判据见阶段 C 报告 C3-1。
  */
 const RESERVED_TRANSPORT_TOOL = 'run_code'
 
@@ -515,4 +541,19 @@ function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void): void
   ctx.effect(() => ctx.tools.register(workspaces), 'dsh-hob preset: hob_workspaces tool')
   ctx.effect(() => ctx.tools.register(spawn), 'dsh-hob preset: hob_spawn tool')
   log('已注册 hob_sessions / hob_send / hob_workspaces / hob_spawn')
+}
+
+/**
+ * 注册闭环编排的三个工具（工具**定义**来自 `modules/orchestrator.ts`）。
+ *
+ * ⚠ 只有三个：`dispatch`（派活并登记回传）+ `status`（看编排状态）+ `control`（停/恢复）。
+ *   stop 与 resume 合成一个带 `action` 枚举的工具 —— **每个工具名都占白名单的一个位置**，
+ *   两个反义动作不值得占两个名字。
+ */
+function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => void): void {
+  const { dispatch, status, control } = createHobOrchTools(orch)
+  ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')
+  ctx.effect(() => ctx.tools.register(status), 'dsh-hob preset: hob_orch_status tool')
+  ctx.effect(() => ctx.tools.register(control), 'dsh-hob preset: hob_orch_control tool')
+  log('已注册 hob_dispatch / hob_orch_status / hob_orch_control')
 }

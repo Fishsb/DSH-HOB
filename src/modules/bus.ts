@@ -302,6 +302,28 @@ export function apply(ctx: any): void {
         if (typeof sessionId !== 'string' || sessionId === '') {
           return { ok: false, reason: 'no-session-id' }
         }
+        // ⓪-1 **拒投给自己** —— 这道自检原先**只在工具层**（`hob_send` 的 execute）有，
+        //   服务层没有 ⇒ **任何绕过工具的调用方**都能重犯。2026-10-09 实测踩过：
+        //   一个探针用 `bus.list(undefined).filter(r => !r.self)` 挑"别的会话"，
+        //   而 `self` 是 **list 入参的派生字段**（传 undefined 时所有行都是 false）
+        //   ⇒ 过滤等于没写 ⇒ 投给了本会话，一条探针消息混进了用户的对话（F-J141 / E-97）。
+        //   ⇒ 把保护下沉到服务层：**单层设防等于绕过去就没保护**。
+        //
+        //   ⚠ 调用者身份**不靠传参**（传参就会被绕过，且探针/未来模块未必知道自己的 id）：
+        //     用宿主的 `agents.currentInitiator()` —— 它由 `AsyncLocalStorage` 实现
+        //     （`dsh-agent/lib/index.js:325,368`），在工具执行的作用域内**天然可用**，
+        //     与 `selfSessionIdOf(exec)` 读的是同一个实体，但**不需要调用方配合**。
+        const callerId = (() => {
+          try {
+            const a = agents.currentInitiator?.()
+            return a?.id ?? a?.session?.id
+          } catch {
+            return undefined
+          }
+        })()
+        if (typeof callerId === 'string' && sessionId === callerId) {
+          return { ok: false, reason: 'refusing to deliver to this session itself' }
+        }
         // ⓪ 归档会话**明确拒绝**（不能只是"列表里不显示"）。
         //    ⚠ 这一步是**静默失败的收口**：往归档会话投递在技术上会成功
         //      （消息进 inbox、`followup` 唤醒），但执行会被宿主

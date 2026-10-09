@@ -16,6 +16,7 @@ import type { Config as ConfigShape, ModulesConfig } from './config.ts'
 import * as toolsModule from './modules/tools.ts'
 import * as presetModule from './modules/preset.ts'
 import * as busModule from './modules/bus.ts'
+import * as orchModule from './modules/orchestrator.ts'
 import * as settingsModule from './modules/settings.ts'
 
 export { Config }
@@ -46,6 +47,8 @@ const MODULE_REGISTRY = [
   { key: 'tools', mod: toolsModule, enabled: (m: ModulesConfig) => m.tools },
   { key: 'preset', mod: presetModule, enabled: (m: ModulesConfig) => m.preset },
   { key: 'bus', mod: busModule, enabled: (m: ModulesConfig) => m.bus },
+  // ⚠ M5 编排（批 17）：**缺省关**（见 config.ts 该字段注释 —— 它会在无人看管时推进）。
+  { key: 'orch', mod: orchModule, enabled: (m: ModulesConfig) => m.orch },
   { key: 'settings', mod: settingsModule, enabled: (m: ModulesConfig) => m.settings },
 ] as const
 

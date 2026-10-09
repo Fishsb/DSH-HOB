@@ -36,7 +36,10 @@ export interface ModulesConfig {
   /** M2 预设声明模块。 */
   preset: boolean
   /** M3 会话总线模块（同实例内会话之间传话）。 */
-  bus: boolean  /** M4 配置 schema 模块。 */
+  bus: boolean
+  /** M5 编排模块（闭环派活：投递 → 等对方跑完 → 回传结果 → 唤醒派活方）。 */
+  orch: boolean
+  /** M4 配置 schema 模块。 */
   settings: boolean
 }
 
@@ -155,6 +158,23 @@ export const Config = z.object({
     bus: z.boolean().default(true)
       .description('会话总线（M3）：提供 hob_sessions / hob_send，把指令投递给同实例内的另一个会话。关掉它只影响这两个工具。')
       .volatile(),
+    /**
+     * 编排开关（M5 · 批 17）。
+     *
+     * ⚠ **缺省 `false`（与 `bus` 的 `true` 不同）** —— 两者风险等级不同：
+     *   · `bus` 只是"多两个投递工具"，**每次调用都由模型显式发起**；
+     *   · `orch` 会**在被派发的会话跑完后自动唤醒派活方** ⇒ 一旦转起来，
+     *     循环会**在用户看不到的时候**持续投递/建会话/烧 token（用户 2026-10-09
+     *     明确选择了"不设上限、只能手动停"）。
+     *   ⇒ 默认不装：要用的人**显式打开**，并在打开时就知道自己在开什么。
+     *
+     * ⚠ 关掉它只影响 M5 自己：`hobOrchestrator` 服务不提供 ⇒ 预设行那三个编排工具
+     *   连同 `hob_dispatch` / `hob_orch_status` / `hob_orch_control` 一起不注册，
+     *   其余四个模块照常（会话总线仍在，手工投递路不受影响）。
+     */
+    orch: z.boolean().default(false)
+      .description('闭环编排（M5）：对方跑完自动回传并唤醒派活方（hob_dispatch / hob_orch_status / hob_orch_control）。⚠ 它会在无人看管时继续推进 —— 默认关闭，要用请显式打开。')
+      .volatile(),
     settings: z.boolean().default(true)
       .description('设置模块：登记本插件的配置面，使其出现在这个设置页里。')
       .volatile(),
@@ -212,6 +232,11 @@ export function moduleSwitches(config: unknown): ModulesConfig {
     //   宁可让 M3 可用（它是"投递"能力，失效表现为工具不出现，易于发现），
     //   而不是静默把用户已经打开的模块关掉。
     bus: pick('bus', true),
+    // ⚠ 缺省 **false**（与 schema 的 `.default(false)` 一致）：读不出来时
+    //   宁可**不**开闭环 —— 它的失效模式是"在无人看管时继续推进"，
+    //   反向的误判（把用户开着的模块关掉）只是少三个工具，代价小得多。
+    //   ⇒ **两个方向的兜底都取"后果更轻"的那一边**，不取"更保守"或"更激进"。
+    orch: pick('orch', false),
     settings: pick('settings', true),
   }
 }
