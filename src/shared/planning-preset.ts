@@ -31,3 +31,37 @@
  *   同时 `check:client` 钉住"client 侧经本常量判定，而不是自己写一个字面量"。
  */
 export const PLANNING_PRESET_ID = 'Hob'
+
+/**
+ * 宿主**出厂默认**预设 id —— 「标准模式」，**全仓唯一一处字面值**（第 10 轮新增）。
+ *
+ * ── 为什么需要它（用户报障 · 2026-10-10 · 第 10 轮）──────────────────────
+ *   用户原话：
+ *   > 「还有这个默认预设，如果默认预设是 hob 呢，所以这样不行，用户第一次安装
+ *   >   没有调节过的话默认档位是标准模式」
+ *
+ *   上一轮（第 9 轮）只兜住了"**配置**里的默认预设 == 规划侧预设"这一条路；
+ *   而「（用宿主默认预设）」（= 本插件不传 `agentPreset`）这条路**没有兜底** ——
+ *   宿主会自己解析它的**有效默认**：
+ *     `dsh-agent-preset-registry/lib/index.js:492-495`
+ *       `get defaultId() { return this.config.selectedDefault.get() ?? this.config.default }`
+ *     同文件 `:603-604` `async resolve(id) { const wanted = id ?? this.defaultId … }`
+ *   ⇒ **传 `undefined` 就是拿那个 `defaultId`**；而本机
+ *     `~/.dsh/profiles/web/cordis.patch.yml` = `default: standard` +
+ *     **`selectedDefault: Hob`** ⇒ 本机 `defaultId` = **`Hob`**
+ *     ⇒ 走「不指定预设」会**建出一个规划侧会话** = 用户说的死循环。
+ *   用户另一句也对：**第一次安装、没调过**时 `selectedDefault` 为空 ⇒ 落到出厂值
+ *   —— 就是本常量。
+ *
+ * ── ⚠⚠ 它与 {@link PLANNING_PRESET_ID} **是两种性质的东西，别混**────────
+ *   · {@link PLANNING_PRESET_ID}：**本插件自己的**规划侧预设（本仓声明，
+ *     与 `preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `config.id` **逐字交叉核对**）；
+ *   · {@link FACTORY_DEFAULT_PRESET_ID}：**宿主自带的**出厂默认预设（**本仓不声明它**，
+ *     它由宿主 `agent-preset-registry` 的 `config.default` 提供；我们只是**知道**这个值）。
+ *   ⇒ 两个常量**必须不是同一个值**（`check:presets` 的 ⑧ 组钉住这一条）——
+ *     若相等，"兜底"就变成了"用规划侧预设兜底规划侧预设"，**兜底失效**。
+ *   ⚠ 它**不**由本仓的假设决定，而是**探测**得到的：spawn 时先读宿主名册，
+ *     确认 `standard` **确实在清单里**（不在就退回不指定 + 如实报告，见 `bus.ts`）。
+ *     本常量只是"我们打算退回的那个名字"的**唯一字面值**，不是"它一定存在"的断言。
+ */
+export const FACTORY_DEFAULT_PRESET_ID = 'standard'

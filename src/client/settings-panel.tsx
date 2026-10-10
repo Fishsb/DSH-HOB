@@ -346,9 +346,31 @@ function SpawnDefaultsCard(props: {
                 : t('catalog.status.excluded', { count: snapshot.excludedPresets.length }),
             })
 
+  // ── 宿主**有效默认预设**的解析（第 10 轮 · 用户报障）─────────────────────
+  //   ⚠ 为什么必须解析到底：第一项「（用宿主默认预设）」= 本插件**不传** `agentPreset`
+  //     ⇒ 宿主自己解析它的有效默认（`dsh-agent-preset-registry/lib/index.js:492-495`
+  //     的 `defaultId = selectedDefault ?? default`）。它**可能是规划侧预设** ——
+  //     本机 profile 就是 `selectedDefault: Hob` ⇒ 用户看这一项"好像没问题"，
+  //     实际会建出规划侧会话 = **死循环**。
+  //   ⚠ 判据来源：宿主名册给每条打了 `isDefault`（同文件 `:598-604`），
+  //     而 `catalog.ts` 已把**被排除项**单独收进 `excludedPresets`（单源在那边）。
+  //     ⇒ "宿主默认就是被排除的规划侧预设" = `isDefault` 那条**在被排除集里**。
+  //   ⚠ **拿不到名字就不许编**：宿主没报 `isDefault`（或名册未就绪）⇒ 保持原文案。
+  const hostDefaultRow = [...snapshot.presets, ...snapshot.excludedPresets].find((p) => p.isDefault === true)
+  const hostDefaultName = hostDefaultRow === undefined ? undefined : presetDisplayName(hostDefaultRow)
+  const hostDefaultIsPlanning = hostDefaultRow !== undefined
+    && snapshot.excludedPresets.some((p) => p.id === hostDefaultRow.id)
+
   // ── 预设候选（**显示名走本地化解析**：内置四个与 DSH 逐字一致且随语言切换）──
   const presetItems: { id: string; label: string; note?: string }[] = [
-    { id: '', label: t('opt.hostDefaultPreset') },
+    {
+      id: '',
+      // ⚠ 第一项把**解析结果**显示出来（用户不必瞎猜它会落到哪）：
+      //   拿得到名字 ⇒「用宿主默认预设（标准模式）」；拿不到 ⇒ 照旧只显示原文案。
+      label: hostDefaultName === undefined
+        ? t('opt.hostDefaultPreset')
+        : t('opt.hostDefaultResolved', { name: hostDefaultName }),
+    },
     ...snapshot.presets.map((p) => {
       const marks: string[] = []
       if (p.broken !== undefined) marks.push(t('tag.unavailable'))
@@ -438,6 +460,22 @@ function SpawnDefaultsCard(props: {
         ) : null}
         {!presetIsExcluded && preset !== '' && presetRow === undefined ? (
           <span className={S.warn}>{t('warn.presetMissing', { id: preset })}</span>
+        ) : null}
+        {/* ── 第 10 轮：宿主默认**恰好是规划侧预设**时的可见警告（**不许静默**）────
+            ⚠ 这是用户报的那个洞：第一项「（用宿主默认预设）」看起来人畜无害，
+              而本机宿主的 `selectedDefault` 正是 `Hob` ⇒ 选它（= 不传预设）
+              会建出**只能再规划**的会话。
+            ⚠ 只有**真的探明**才显示（`hostDefaultRow` 拿到了、且它确实在被排除集里）；
+              探不到时**不编**、也不吓唬用户（保持沉默比说假话好）。 */}
+        {hostDefaultIsPlanning ? (
+          <span className={S.warn}>
+            {t('warn.hostDefaultIsPlanning', {
+              // ⚠ 名字取**被排除项自己的**显示名（走同一套解析），拿不到才退回 id ——
+              //   **不**在这里另写一个字面量 id（单源纪律：`planning-preset.ts`）。
+              planning: hostDefaultName ?? hostDefaultRow?.id ?? '',
+              factory: t('preset.factoryName'),
+            })}
+          </span>
         ) : null}
         {/* ── 常驻说明：为什么某个预设**不在**候选里（**不许静默过滤** · E-46）────
             ⚠ 它**常驻**（不是只在异常时出现）：用户拉开下拉看不见 Hob 时，
@@ -667,6 +705,9 @@ const PANEL_EN: Record<string, string> = {
   'label.writeResult': 'Write result',
   'label.write': 'Write',
   'opt.hostDefaultPreset': '(Use the host default preset)',
+  'opt.hostDefaultResolved': '(Use the host default preset — {name})',
+  'preset.factoryName': 'the factory default preset (Standard mode)',
+  'warn.hostDefaultIsPlanning': 'The host default preset is {planning} — this plugin’s planning-side preset. It is not used: that preset plans work but cannot carry it out, so a session started with it would only plan again. This plugin uses {factory} instead. Choosing a preset yourself is unaffected.',
   'opt.hostDefaultModel': '(Use the host default model)',
   'opt.modelDefaultEffort': '(Model default{effort})',
   'tag.unavailable': ' · unavailable',
@@ -737,6 +778,9 @@ const PANEL_ZH: Record<string, string> = {
   'label.writeResult': '写入结果',
   'label.write': '写入',
   'opt.hostDefaultPreset': '（用宿主默认预设）',
+  'opt.hostDefaultResolved': '（用宿主默认预设 —— {name}）',
+  'preset.factoryName': '出厂默认预设（标准模式）',
+  'warn.hostDefaultIsPlanning': '宿主的默认预设是{planning} —— 这是本插件的规划侧预设。它**不会被采用**：它负责规划、不能施工，用它建出的会话只会再规划一次。本插件改用{factory}。你自己选的预设不受影响。',
   'opt.hostDefaultModel': '（用宿主默认模型）',
   'opt.modelDefaultEffort': '（用模型默认{effort}）',
   'tag.unavailable': '（不可用）',

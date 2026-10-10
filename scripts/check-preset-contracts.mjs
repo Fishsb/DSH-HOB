@@ -1397,14 +1397,159 @@ const STALE_APPELLATIONS = [
         //   （第 9 轮负向对拍当场抓到的第二个真缺口：只判 `/presetNote/` 时，
         //    把赋值改成 `const presetNote = undefined` 仍 **PASS** ——
         //    因为**返回对象里的透传那一行**也叫 presetNote）。
-        //   ⇒ 必须看到 `const presetNote = <非 undefined 的表达式>` **起始**。
+        //   ⇒ 必须看到 `presetNote = <非 undefined 的表达式>` **起始**。
         //   ⚠ 写法上要**先把空白吃掉再取首字符**：写成 `=\s*(?!undefined)` 时
         //     `\s*` 可以**回溯**到零长度，于是断言落在空格上 ⇒ 恒真（本轮实测）。
-        const noteAssign = /const\s+presetNote\s*=\s*(\S[^\n]*)/.exec(stripCommentsOnlyLocal(busSrc7))
+        //   ⚠ 第 10 轮订正：声明从 `const` 变成 `let`（兜底分支要**再赋值**），
+        //     故接受 `const|let` —— 这**不是放宽**：判据仍是"首次赋值给了非 undefined
+        //     的表达式"（强度不变，只是跟上合法的代码形态）。兜底分支那几笔
+        //     **另由 ⑧(e) 钉住**（它要求出现 `presetNote = '<非空>'` 的直接赋值）。
+        const noteAssign = /(?:const|let)\s+presetNote\s*=\s*(\S[^\n]*)/.exec(stripCommentsOnlyLocal(busSrc7))
         if (noteAssign === null || noteAssign[1].startsWith('undefined')) {
-          bad('⑦ bus.ts 里没有真的算出兜底说明（缺 `const presetNote = <表达式>`）—— '
+          bad('⑦ bus.ts 里没有真的算出兜底说明（缺 `presetNote = <表达式>`）—— '
             + '兜底发生了却不说明（与 `modelNote` 同款纪律：少做了一件事必须说出来）')
         } else ok('⑦ ✓ 兜底在成功返回里如实带一句（`presetNote` 有实际内容，不静默）')
+      }
+    }
+  }
+}
+
+// ── ⑧ 2026-10-10（第 10 轮 · 用户报障）· 「用宿主默认预设」这条路也要兜底 ──────
+//
+// 用户原话：「还有这个默认预设，如果默认预设是 hob 呢，所以这样不行，用户第一次安装
+//   没有调节过的话默认档位是标准模式」
+// 洞：第 9 轮只兜住"**配置**默认值 == 规划侧预设"；而「（用宿主默认预设）」
+//   （= 本插件不传 `agentPreset`）这条路**没有兜底** —— 宿主自己解析有效默认：
+//   `dsh-agent-preset-registry/lib/index.js:492-495`
+//     `get defaultId() { return this.config.selectedDefault.get() ?? this.config.default }`
+//   同文件 `:603-604` `resolve(id) { const wanted = id ?? this.defaultId … }`
+//   ⇒ **传 `undefined` 就是拿那个 `defaultId`**；本机 profile 是 `selectedDefault: Hob`。
+//
+// ⚠ **口径（只钉可判的事）**：
+//   ① 出厂默认 id **单源**（`src/shared/planning-preset.ts` 的 `FACTORY_DEFAULT_PRESET_ID`），
+//      且与规划侧常量**不是同一个值**（相等 ⇒ 兜底变成"用规划侧兜规划侧"，**失效**）；
+//   ② 派活侧对"**未指定 + 宿主默认 == 规划侧**"这条路**有兜底**，且
+//      **比较真的发生**（不是只"提到了常量" —— 第 9 轮负向对拍抓过这个假通过形态）；
+//   ③ 兜底**不静默**（走 `presetNote`）且**不让 spawn 失败**（探不清 ⇒ 退回不指定）；
+//   ④ 面板第一项**含解析结果**、且解析==规划侧时有**可见警告**（词典键在位）。
+{
+  const sharedPath8 = join(root, 'src', 'shared', 'planning-preset.ts')
+  const busPath8 = join(root, 'src', 'modules', 'bus.ts')
+  const panelPath8 = join(root, 'src', 'client', 'settings-panel.tsx')
+  const read8 = (p) => { try { return readFileSync(p, 'utf8') } catch { return undefined } }
+  const sharedSrc8 = read8(sharedPath8)
+  const busSrc8Raw = read8(busPath8)
+  const panelSrc8 = read8(panelPath8)
+
+  if (sharedSrc8 === undefined) {
+    bad('⑧ 读不到 src/shared/planning-preset.ts —— 出厂默认常量无从核对（不按通过处理）')
+  } else {
+    const mPlan = /export\s+const\s+PLANNING_PRESET_ID\s*=\s*'([^']*)'/.exec(sharedSrc8)
+    const mFactory = /export\s+const\s+FACTORY_DEFAULT_PRESET_ID\s*=\s*'([^']*)'/.exec(sharedSrc8)
+    if (mFactory === null) {
+      bad("⑧ src/shared/planning-preset.ts 里找不到 `export const FACTORY_DEFAULT_PRESET_ID = '…'`"
+        + ' —— 出厂默认 id 没有单源（会被各处硬编码，改不动）')
+    } else if (mPlan === null) {
+      bad('⑧ 读不到 PLANNING_PRESET_ID —— 两个常量的"不相等"判据无从核对（不按通过处理）')
+    } else if (mPlan[1] === mFactory[1]) {
+      bad(`⑧ 出厂默认常量与规划侧常量**是同一个值**（都是 ${JSON.stringify(mFactory[1])}）—— `
+        + '那样的"兜底"等于用规划侧预设兜规划侧预设，**兜底失效**；两者必须不同')
+    } else {
+      ok(`⑧ ✓ 出厂默认 ${JSON.stringify(mFactory[1])} 与规划侧 ${JSON.stringify(mPlan[1])} 是两个值（兜底有意义）`)
+      // ① 单源：该字面值在 src/** 里只有一处（复用 ⑦ 的"只剥注释"剥离器）
+      {
+        const offenders8 = []
+        const walk8 = (dir) => {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const full = join(dir, e.name)
+            if (e.isDirectory()) { walk8(full); continue }
+            if (!/\.tsx?$/.test(e.name)) continue
+            if (full === sharedPath8) continue
+            const stripped = stripCommentsOnlyLocal(readFileSync(full, 'utf8'))
+            if (new RegExp(`=\\s*'${mFactory[1]}'`).test(stripped)
+              || new RegExp(`===\\s*'${mFactory[1]}'`).test(stripped)) {
+              offenders8.push(full.slice(root.length + 1))
+            }
+          }
+        }
+        try { walk8(join(root, 'src')) } catch (e) {
+          bad(`⑧ 遍历 src/ 失败（${String(e?.message ?? e)}）⇒ 单源无从判定，不按通过处理`)
+        }
+        if (offenders8.length > 0) {
+          bad(`⑧ 出厂默认 id 的字面值**不止一处**（另有 ${offenders8.join(' / ')}）—— 必须都 import 同一常量`)
+        } else ok('⑧ ✓ 出厂默认 id 的字面值全仓只有一处')
+      }
+
+      // ② 派活侧：对"未指定 + 宿主默认 == 规划侧"这条路有兜底，且**比较真的发生**
+      if (busSrc8Raw === undefined) {
+        bad('⑧ 读不到 src/modules/bus.ts —— 派活侧兜底判据无从核对')
+      } else {
+        const busCode8 = stripCommentsOnlyLocal(busSrc8Raw)
+        //   (a) 真的去**探**宿主默认（而不是凭空假设）
+        if (!/readHostDefaultPresetId\s*\(/.test(busCode8)) {
+          bad('⑧ bus.ts 里没有"读宿主有效默认"的调用 —— 只判自己的配置值就会漏掉'
+            + '「不指定预设 ⇒ 宿主默认恰好是规划侧预设」这条路')
+        } else ok('⑧ ✓ bus.ts 真的去读宿主有效默认（`readHostDefaultPresetId(...)`）')
+        //   (b) **比较真的发生**：拿到的宿主默认要与规划侧常量比
+        if (!/hostDefault\s*===\s*PLANNING_PRESET_ID/.test(busCode8)) {
+          bad('⑧ bus.ts 里没有 `hostDefault === PLANNING_PRESET_ID` 的**比较** —— '
+            + '只"提到常量"不算兜底生效（第 9 轮负向对拍抓过这个假通过形态）')
+        } else ok('⑧ ✓ 宿主默认与规划侧常量**真的做了比较**（不是只提到常量）')
+        //   (c) 命中后**显式改用出厂默认**（而不是干脆不传）
+        if (!/presetId\s*=\s*FACTORY_DEFAULT_PRESET_ID/.test(busCode8)) {
+          bad('⑧ bus.ts 命中后没有 `presetId = FACTORY_DEFAULT_PRESET_ID` —— '
+            + '兜底要么没落地、要么只是空转')
+        } else ok('⑧ ✓ 命中后显式改用出厂默认（`presetId = FACTORY_DEFAULT_PRESET_ID`）')
+        //   (d) 出厂默认**必须先确认在名册里**（否则显式传它会让宿主抛 ⇒ spawn 失败）
+        //   ⚠ 判据钉**被 await 的调用**（`await presetExists(...)`）而非"这个词出现过"：
+        //     写成 `void presetExists` 时上版判据仍 PASS（第 10 轮负向对拍抓到）。
+        if (!/await\s+presetExists\s*\(/.test(busCode8)) {
+          bad('⑧ bus.ts 没有"确认出厂默认真的在宿主名册里"这一步（缺 `await presetExists(...)`）—— '
+            + '显式传一个不存在的预设会让宿主 `resolve()` 抛 `Unknown agent preset` ⇒ '
+            + '**spawn 失败**（本轮硬禁）')
+        } else ok('⑧ ✓ 落地前先确认出厂默认在宿主名册里（`await presetExists(...)`，不让 spawn 失败）')
+        //   (e) 不静默：改了行为就写 presetNote
+        if (!/presetNote\s*=/.test(busCode8)) {
+          bad('⑧ bus.ts 的这条兜底**静默**（没有往 `presetNote` 里写说明）')
+        } else ok('⑧ ✓ 这条兜底不静默（写进 `presetNote`）')
+        //   (f) 显式传参不受影响：兜底分支必须在"无显式传参"的条件下
+        //   ⚠⚠ 判据必须**钉住这个分支真的可达**（第 10 轮负向对拍抓到的真缺口）：
+        //     把条件改成 `if (false && explicitPreset === undefined && …)` 时，
+        //     条件文本**仍然在**、`readHostDefaultPresetId` 的调用**也仍然在**
+        //     ⇒ 上一版判据**假通过**（它只判"这些词出现过"，不判"门是开的"）。
+        //   ⇒ 这里要求该 `if` 的条件**不以 `false` 之类的死条件开头**。
+        const branchRe = /if\s*\(\s*([^)]*explicitPreset\s*===\s*undefined[^)]*)\)\s*\{/.exec(busCode8)
+        if (branchRe === null) {
+          bad('⑧ 兜底分支没有挂在"`explicitPreset === undefined`"条件上 —— '
+            + '可能拦到了显式传参（那是调用方的明确选择，**不许**改）')
+        } else if (/^\s*(false|0|null|undefined)\s*(&&|\|\||\))/.test(branchRe[1])) {
+          bad('⑧ 兜底分支的条件以**死条件**开头（如 `false && …`）—— 分支永远不执行，'
+            + '等于没有兜底（这是"提到常量但比较不发生"的同一类假通过）')
+        } else ok('⑧ ✓ 兜底只作用于"本次未指定预设"，且分支**真的可达**（条件不是死条件）')
+      }
+
+      // ④ 面板：第一项含解析结果 + 解析==规划侧时有可见警告
+      if (panelSrc8 === undefined) {
+        bad('⑧ 读不到 src/client/settings-panel.tsx —— 面板判据无从核对')
+      } else {
+        if (!/t\(\s*'opt\.hostDefaultResolved'/.test(panelSrc8)) {
+          bad("⑧ 面板第一项没有显示**解析结果**（缺 `t('opt.hostDefaultResolved', …)`）—— "
+            + '用户只能看到「（用宿主默认预设）」，看不出它会落到哪个预设')
+        } else ok("⑧ ✓ 面板第一项显示解析结果（`t('opt.hostDefaultResolved', …)`）")
+        //   ⚠⚠ 必须钉住"**这句话真的会渲染**"，而不是"源码里有这个键名字符串"
+        //     （第 10 轮负向对拍抓到的真缺口：把调用改成 `'' && t('warn.…')` 时，
+        //      键名字符串**仍在**、但短路后**什么都不渲染** ⇒ 上版判据**假通过**）。
+        //   ⇒ 要求它是 **JSX 子表达式**（`{t('warn.hostDefaultIsPlanning'`），
+        //     而不是被 `&&` / `||` 挂在前面（那种形态求值后不是这个节点）。
+        if (!/\{\s*t\(\s*'warn\.hostDefaultIsPlanning'/.test(panelSrc8)) {
+          bad("⑧ 宿主默认 == 规划侧预设时面板**没有可见警告**（缺**作为 JSX 子表达式**的 "
+            + "`{t('warn.hostDefaultIsPlanning', …)}`）—— 用户看不见"
+            + '"这一项看起来能用、实际不会那样"（E-46：不许静默）')
+        } else ok('⑧ ✓ 解析出规划侧预设时有**真的会渲染**的可见警告（JSX 子表达式形态）')
+        //   判据链来源：必须用 isDefault 的读数判，而不是自己猜一个默认
+        if (!/isDefault\s*===\s*true/.test(panelSrc8)) {
+          bad('⑧ 面板没有用宿主名册的 `isDefault` 判"谁是默认" —— 自己猜默认会与宿主漂移')
+        } else ok('⑧ ✓ 面板用宿主名册的 `isDefault` 判默认（与宿主同源）')
       }
     }
   }

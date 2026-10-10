@@ -34,7 +34,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { type SpawnDefaults } from '../config.ts'
-import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
+import { FACTORY_DEFAULT_PRESET_ID, PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
 import { appendSessionModelSelection, installSessionModelSelection } from '../model-selection.ts'
 
 /** 模块名。 */
@@ -218,6 +218,94 @@ function makeRegistryLookup(svcCtx: any): any {
  *   的底层调用（那会绕过归档门禁、默认模型解析、preset 挂载等一串宿主不变量）。
  *   拿不到它 ⇒ `spawn` 明确拒绝。
  */
+/**
+ * 可选读 `agentPresets`（宿主预设注册表 · 第 10 轮新增）。
+ *
+ * ⚠ 与 {@link makeRegistryLookup} / {@link makeControllerLookup} **同一条纪律**：
+ *   **不进 `inject` 依赖表**、也不进模块级 `export const inject` —— 那两种都是
+ *   **加载门禁**（缺依赖 ⇒ 本模块 fiber 停在 PENDING ⇒ 插件整体不激活）。
+ *   用 `ctx.get('<逐字服务名>')` **免 inject 现读**（E-100：免 inject 的只有"读服务"
+ *   这一步，读到之后**不要**再对它做属性访问之外的花样）。
+ *
+ * 服务名逐字来源（**读出来的，不是猜的**）：
+ *   `dsh-agent-preset-registry/lib/index.js:481` 的 `super(ctx, "agentPresets")`
+ *   ⇒ 注册名就是 `agentPresets`（该文件 `:492-495` 的 `defaultId` getter 与
+ *     `:598-604` 的 `remoteExportList()` / `resolve()` 是它的判据入口）。
+ *
+ * ⚠ **运行时现读、不缓存**（与 `registryOf` 同款实测理由）：它是并行激活的别的 fiber
+ *   提供的服务，可能晚于本模块就绪；缓存一次会让"后来才就绪"永久读不到。
+ *   ⚠ 实测补充（第 10 轮 · 真 cordis 4.0.4）：`Service` 子类的注册挂在 `ctx.provide`
+ *     的 effect 上 ⇒ **apply 里同步读拿到 `undefined`、下一个 tick 才可见**。
+ *     `spawn` 是**运行时**调用（早过了 boot），故这里不受影响；但探针若在 apply 里
+ *     同步读会看到 `undefined`（本轮踩过，见 EXPERIENCE E-106）。
+ */
+function makePresetRegistryLookup(svcCtx: any): any {
+  try {
+    return typeof svcCtx.get === 'function' ? svcCtx.get('agentPresets') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 读宿主的**有效默认预设**（第 10 轮新增）—— 判"不指定预设会落到哪"的唯一手段。
+ *
+ * ⚠ **为什么必须问宿主，不能自己推算**：宿主 `defaultId` 的判据是
+ *   `selectedDefault.get() ?? default`（`dsh-agent-preset-registry/lib/index.js:492-495`），
+ *   两个字段都在**宿主的配置**里（本机 profile `cordis.patch.yml` 的
+ *   `agent-preset-registry.config`）—— 本仓**读不到也不该去读** `~/.dsh/**`。
+ *   ⇒ 唯一正路是**问注册表**：`remoteExportList()` 会给每条打 `isDefault`（同文件 `:598-604`）。
+ *
+ * @param registry - `agentPresets` 服务（可能 `undefined`）。
+ * @returns 有效默认预设的 id，或 `undefined`（服务缺席 / 读失败 / 名册里没有默认）。
+ *   ⚠ 返回 `undefined` 一律按"**探不清**"处理 ⇒ 调用方退回不指定并如实报告（**不猜**）。
+ */
+async function readHostDefaultPresetId(registry: any): Promise<string | undefined> {
+  if (registry === undefined || registry === null) return undefined
+  try {
+    // 优先用名册（它与面板同源：`catalog.ts` 读的也是这个方法的 presets）。
+    if (typeof registry.remoteExportList === 'function') {
+      const roster = await registry.remoteExportList()
+      const rows = Array.isArray(roster?.presets) ? roster.presets : []
+      const def = rows.find((r: any) => r?.isDefault === true)
+      if (def !== undefined && typeof def.id === 'string' && def.id !== '') return def.id
+    }
+    // 退化路径：注册表自己的 getter（同一判据的另一处出口）。
+    const direct = registry.defaultId
+    if (typeof direct === 'string' && direct !== '') return direct
+  } catch {
+    // 读失败 = 探不清（**不猜**）；由调用方如实报告。
+  }
+  return undefined
+}
+
+/**
+ * 该 id 是否**确实在**宿主当前名册里（第 10 轮新增）。
+ *
+ * ⚠ 用途：退回 {@link FACTORY_DEFAULT_PRESET_ID} 之后要**确认它真的存在** ——
+ *   若宿主里没有这个预设，显式传它会让 `controller.create` 抛
+ *   `Unknown agent preset`（宿主 `resolve()` 的行为，见
+ *   `dsh-agent-preset-registry/lib/index.js:604-608`）⇒ **那是 spawn 失败**，
+ *   而本轮硬约束是"**绝不让 spawn 失败**"。
+ *
+ * @param registry - `agentPresets` 服务。
+ * @param id - 待确认的预设 id。
+ * @returns `true` = 名册里有它（可以安全显式传）。
+ */
+async function presetExists(registry: any, id: string): Promise<boolean> {
+  if (registry === undefined || registry === null) return false
+  try {
+    if (typeof registry.remoteExportList === 'function') {
+      const roster = await registry.remoteExportList()
+      const rows = Array.isArray(roster?.presets) ? roster.presets : []
+      return rows.some((r: any) => r?.id === id)
+    }
+  } catch {
+    // 读不到 ⇒ 当作"不确定 ⇒ 不显式传"（宁可退回不指定，也不冒 spawn 失败的风险）。
+  }
+  return false
+}
+
 function makeControllerLookup(svcCtx: any): any {
   try {
     return typeof svcCtx.get === 'function' ? svcCtx.get('sessionController') : svcCtx.sessionController
@@ -316,6 +404,10 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
     // 可选读：`sessionController`（建会话的真正入口）。缺席 ⇒ `spawn` 明确拒绝。
     // ⚠ 同样惰性：理由与上一行完全相同（它也是并行激活的别的 fiber 提供的）。
     const controllerOf = () => makeControllerLookup(svcCtx)
+    // 可选读：`agentPresets`（宿主预设注册表 · 第 10 轮）。**只在"不指定预设"那条路上用**，
+    //   用来解析"宿主的有效默认预设是谁"。缺席 ⇒ **不拒绝 spawn**，退回不指定 + 如实报告
+    //   （见 spawn 里的兜底分支）—— 它只是一个**增强判据**，不是建会话的必需品。
+    const presetRegistryOf = () => makePresetRegistryLookup(svcCtx)
 
     const bus: HobBus = {
       version: 1,
@@ -583,13 +675,81 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
         //     并在成功返回里如实带一句（{@link SpawnResult.presetNote}），**不静默**。
         const configuredPreset = spawnCfg.agentPreset !== '' ? spawnCfg.agentPreset : undefined
         const configuredIsPlanning = configuredPreset === PLANNING_PRESET_ID
-        const presetId = explicitPreset ?? (configuredIsPlanning ? undefined : configuredPreset)
-        const presetNote = configuredIsPlanning && explicitPreset === undefined
+        // ── 第 10 轮（2026-10-10 · 用户报障）：**"不指定预设"这条路也要兜底** ──────
+        //   ⚠ 上一轮只兜住了"配置默认值 == 规划侧预设"。但**配置为空**时本模块**不传**
+        //     `agentPreset` ⇒ 宿主自己解析它的**有效默认**：
+        //       `dsh-agent-preset-registry/lib/index.js:492-495`
+        //         `get defaultId() { return this.config.selectedDefault.get() ?? this.config.default }`
+        //       同文件 `:603-604` `async resolve(id) { const wanted = id ?? this.defaultId … }`
+        //     ⇒ **传 `undefined` 就是拿那个 `defaultId`**。
+        //   ⚠ **本机现况**：profile `cordis.patch.yml` 的 `agent-preset-registry.config`
+        //     = `default: standard` + **`selectedDefault: Hob`** ⇒ `defaultId` = `Hob`
+        //     ⇒ 走「（用宿主默认预设）」会**建出一个规划侧会话**（用户说的死循环）。
+        //     用户另一句也对：**第一次安装没调过** ⇒ `selectedDefault` 空 ⇒ 落到出厂值。
+        //   ⇒ 判据 = **本次未指定**（既无显式传参、配置也为空）**且**宿主有效默认 == 规划侧预设
+        //     ⇒ 显式改用宿主**出厂默认**（{@link FACTORY_DEFAULT_PRESET_ID}）。
+        //   ⚠ 三条硬约束：
+        //     ① **显式传参那半边一字不动** —— 它优先，且**从不**进下面这个分支；
+        //     ② **绝不加重 spawn 失败面** —— 探不清 / 出厂默认不在名册里 ⇒ **退回不指定**
+        //        （就是本轮之前的行为）并**如实报告**；探这层本身用 try/catch 兜住；
+        //     ③ **不许静默** —— 只要改了行为就往 `presetNote` 里写清。
+        let presetId = explicitPreset ?? (configuredIsPlanning ? undefined : configuredPreset)
+        let presetNote = configuredIsPlanning && explicitPreset === undefined
           ? 'The configured new-session default preset is this plugin\'s planning-side preset ('
             + PLANNING_PRESET_ID + '). It was NOT applied: that preset plans work but cannot carry '
             + 'it out, so a session started with it would only plan again. The session was created '
             + 'with the host default preset instead. An explicitly passed agentPreset is unaffected.'
           : undefined
+        if (explicitPreset === undefined && presetId === undefined) {
+          // 走到这里 = **本次没有可用的指定预设** ⇒ 宿主会用它自己的有效默认 ⇒ 必须先探清。
+          //   ⚠ 两种来路**都能到这儿**，措辞必须都对得上（别写成"没指定预设"就完事）：
+          //     · `configuredIsPlanning`：配置**指定了**规划侧预设，被上面拦下 ⇒ 退回不指定；
+          //     · 配置本来**为空** ⇒ 真的没人指定。
+          //   ⚠ 实测抓到的措辞错误（第 10 轮探针）：原先无论哪种来路都写
+          //     "No preset was specified" —— 配置明明写着 `Hob` 时**这句是假话**。
+          //     ⇒ 按来路分别说明（"配置指定的默认是…" / "没有指定预设"），再讲宿主默认那一层。
+          const origin = configuredIsPlanning
+            ? 'The configured new-session default preset is this plugin\'s planning-side preset ('
+              + PLANNING_PRESET_ID + '), so it was not applied. '
+            : 'No preset was specified. '
+          const presetRegistry = presetRegistryOf()
+          if (presetRegistry === undefined || presetRegistry === null) {
+            // 探不清（服务缺席）：**保持原行为**（不指定 = 交宿主默认），但**说出来**。
+            presetNote = origin + 'The host agent-preset registry could not be read, so the host '
+              + 'default preset applies unchanged. If that default is a planning-side preset, the '
+              + 'new session would only be able to plan; an explicitly passed agentPreset is unaffected.'
+          } else {
+            const hostDefault = await readHostDefaultPresetId(presetRegistry)
+            if (hostDefault === PLANNING_PRESET_ID) {
+              const factoryOk = await presetExists(presetRegistry, FACTORY_DEFAULT_PRESET_ID)
+              if (factoryOk) {
+                presetId = FACTORY_DEFAULT_PRESET_ID
+                presetNote = origin + 'The host default preset is also this plugin\'s planning-side '
+                  + 'preset (' + PLANNING_PRESET_ID + '). That preset plans work but cannot carry it '
+                  + 'out, so it was NOT used: the session was created with the host factory default '
+                  + 'preset (' + FACTORY_DEFAULT_PRESET_ID + ') instead. An explicitly passed '
+                  + 'agentPreset is unaffected.'
+              } else {
+                presetNote = origin + 'The host default preset is also this plugin\'s planning-side '
+                  + 'preset (' + PLANNING_PRESET_ID + '). The host factory default ('
+                  + FACTORY_DEFAULT_PRESET_ID + ') is not in the current preset roster, so no preset '
+                  + 'was passed and the host default applies unchanged. An explicitly passed '
+                  + 'agentPreset is unaffected.'
+              }
+            } else if (hostDefault === undefined) {
+              // 读到了服务、但名册里读不出默认 ⇒ 同样如实说明（**不猜**）。
+              presetNote = origin + 'The host agent-preset registry did not report which preset is '
+                + 'the default, so the host default applies unchanged. An explicitly passed '
+                + 'agentPreset is unaffected.'
+            } else if (configuredIsPlanning) {
+              // 配置指定的是规划侧预设、被拦下；宿主默认**不是**规划侧预设 ⇒ 正常可用。
+              //   ⚠ 这句必须留：否则"配置被拦了"这件事对调用方**不可见**（第 9 轮的语义）。
+              presetNote = origin + 'The host default preset (' + hostDefault + ') applies instead. '
+                + 'An explicitly passed agentPreset is unaffected.'
+            }
+            // 配置为空 + 宿主默认是普通预设 ⇒ 正常，不插手、不留 NOTE。
+          }
+        }
 
         // ⚠ **批 18：模型默认值**（任务书 §4 / §1 判定分支）——
         //   只有 provider/model **都**非空时才实施（缺一无法组装一条有效选择；
