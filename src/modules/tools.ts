@@ -55,6 +55,12 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { readMarkdownCapped, resolveLedgerRoot, resolveWorkspaceRoot } from '../server/doc-read.ts'
 import { LEDGER_FILES, writeHobFile } from '../server/hob-write.ts'
+// ── 待投递中间态记账（2026-10-10 · 用户报障修复）──────────────────────────
+//   ⚠ **分层纪律**：`hob-write.ts`（落盘层）**不 import** 运行态模块 ——
+//     它只回一个可判定的 `handoff` 字段，**由本层（工具层）决定记不记**。
+//     工具层已持有账本根（`ledgerRootOf`），正是记账该在的地方。
+import { ensureRuntimeIgnored, orchStateFileOf, recordHandoff } from '../server/orch-state.ts'
+import { dirname } from 'node:path'
 
 /** 模块名（同时是 fiber 显示名）。 */
 export const name = 'dsh-hob-tools'
@@ -308,6 +314,43 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
         shrinkGuard: DEFAULTS.shrinkGuard,
         maxFileBytes: cfg.maxWriteBytes ?? DEFAULTS.maxWriteBytes,
       })
+      // ── 记账：交给了交接文件 ⇒ 记一条"待投递"（2026-10-10 新增）────────────
+      //   ⚠ 为什么在这一层：落盘层（hob-write）刻意不碰运行态；本层有账本根。
+      //   ⚠ 为什么必须记：`watches` 只在**投递成功之后**登记 ⇒ 不记这一条，
+      //     "写了文件却没投"在系统里**根本不存在**（第 9 / 21 轮实测漏派两次，
+      //     两次都是用户发现的，现场读数与"从来没派过"逐字相同）。
+      //   ⚠ 记账失败**不掩盖**、但也**不改写结果**：只**新增**两个字段如实回带
+      //     （`handoffRecorded` / `handoffNote`），既有字段一个不动 ——
+      //     写入本身已经落盘，记账是**附加可观测**，不该把成功报成失败。
+      //   ⚠ 只在**真写成功**且判定为交接文件时记（`r.ok && r.handoff`）——
+      //     幂等跳过 / 拒绝 / dryRun 都不算"写了一份新交接文件"
+      //     （⚠ `dryRun` 单独再判：它返回 `ok: true` 但**没落盘**）。
+      //   ⚠ 不引 `console.*`：本模块（乃至 `src/**`）零 console 先例，
+      //     日志走工具返回值 / `ctx.logger`；这里没有 ctx，故走返回值。
+      if (r.ok === true && r.handoff !== undefined && args.dryRun !== true) {
+        let recorded = false
+        let handoffNote: string | undefined
+        try {
+          const stateFile = orchStateFileOf(root)
+          ensureRuntimeIgnored(dirname(stateFile))
+          const res = recordHandoff(stateFile, {
+            kind: r.handoff.kind,
+            ref: r.handoff.ref,
+            at: Date.now(),
+          })
+          recorded = res.wrote
+          if (!res.wrote) {
+            handoffNote = '待投递记录未能落盘（写入本身已成功）⇒ 这次交接文件在状态输出里可能不可见。'
+          }
+        } catch (e) {
+          handoffNote = `待投递记录出错：${String((e as Error)?.message ?? e)}（写入本身已成功）`
+        }
+        return JSON.stringify({
+          ...r,
+          handoffRecorded: recorded,
+          ...(handoffNote === undefined ? {} : { handoffNote }),
+        })
+      }
       return JSON.stringify(r)
     },
   })

@@ -58,11 +58,13 @@ import { resolveLedgerRoot } from '../server/doc-read.ts'
 import {
   ORCH_STATE_FILENAME,
   ORCH_STATE_SUBDIR,
+  clearHandoffs,
   ensureRuntimeIgnored,
   markLost,
   orchStateFileOf,
   readOrchState,
   writePending,
+  type PersistedHandoff,
   type PersistedWatch,
 } from '../server/orch-state.ts'
 
@@ -111,6 +113,20 @@ export interface OrchStatus {
    *   没有它，重载后的读数与"从来没派过"完全一样。
    */
   lostPending: number
+  /**
+   * **待投递**的中间态（2026-10-10 新增）—— "写了/建了，但还没投出去"。
+   *
+   * ⚠ 与 `lostPending` 的区别（别混）：
+   *   · `lostPending` = **派过、但回传没了**（重载抹 watch 那次）；
+   *   · `handoffs`    = **还没派出去**（写了交接文件 / 建了会话，却没投）。
+   *   两者是同一病的两面（"该记的事没记"），但**发生的时刻不同**：
+   *   前者在"等回传"之后，后者在"投递"之前。
+   *
+   * ⚠ 它是**从盘上读的**（不是内存）—— 因为记账的每一处（写文件 / 建会话）
+   *   与这里（读状态）不在同一个模块作用域，盘是它们唯一的共同点，
+   *   而且这也让它**跨重载可见**（与 `lost` 同理）。
+   */
+  handoffs: PersistedHandoff[]
 }
 
 /** `hobOrchestrator` 服务的形状。 */
@@ -245,8 +261,12 @@ function buildReceipt(w: Watch, session: any): string {
  * ⚠ 判据是**字符串且非空**：条目配置里可能没有这个键（别的部署）、
  *   也可能是空串（= 用 `doc-read.ts` 的兄弟目录缺省）。两种都返回 `''`，
  *   由 `resolveLedgerRoot` 决定落点。
+ *
+ * ⚠ **2026-10-10 起导出**：`bus.ts` 的「待投递」记账（`hob_spawn` / `hob_send`）
+ *   也要解析账本落点 —— 复用**同一个**解析入口，避免出现第二个实现点
+ *   （两处各写一份的话，改一处就会漂）。函数体与位置**未动**，只是加了 `export`。
  */
-function declaredLedgerHome(svcCtx: any): string {
+export function declaredLedgerHome(svcCtx: any): string {
   try {
     const loader = typeof svcCtx.get === 'function' ? svcCtx.get('loader') : undefined
     const entries = loader?.entries?.()
@@ -414,6 +434,26 @@ export function apply(ctx: any): void {
       lostCount = total
     }
     refreshLostCount()
+
+    /**
+     * **待投递**记录（2026-10-10 新增）—— 每次 `status()` 时**现读盘**。
+     *
+     * ⚠ 为什么**不缓存**而现读：记账发生在**另外两个模块**（工具层写文件、
+     *   总线层建会话/投递），本模块收不到它们的事件 ⇒ 缓存必然滞后，
+     *   而"滞后"的表现就是**刚写的交接文件不出现在待投递里**
+     *   —— 那与本缺陷的失败**长得一样**，等于没修。
+     *   读盘是几十字节的本地文件，`status()` 是低频调用，代价可忽略。
+     *
+     * ⚠ 读不到 ⇒ 空数组（不抛）：诊断用途不该让 status 崩掉（同 `readOrchState` 纪律）。
+     */
+    const readHandoffs = (): PersistedHandoff[] => {
+      const out: PersistedHandoff[] = []
+      try {
+        for (const file of scanStateFiles(svcCtx)) out.push(...readOrchState(file).handoffs)
+      } catch { /* 读不到就当空 */ }
+      // 新的在前（最近的漏派最要紧）。
+      return out.sort((a, b) => b.at - a.at)
+    }
 
     // ── 尽力唤醒派活方（任务书 §2.1 第 2 条的"最好"档）──────────────────
     //   ⚠ 用 `hobBus` 投一条**说明自己丢了什么**的消息 —— 复用它的全部闸门
@@ -598,6 +638,24 @@ export function apply(ctx: any): void {
             if (!persistWatches(file, [...watches.values()].map((x) => toPersisted(x, ws)))) {
               svcCtx.logger?.warn?.(`[${name}] 运行态落盘失败（${file}）—— 重载后这次派发将不可观测。`)
             }
+            // ── 清"待投递"（2026-10-10 新增）：这次投递成功 ⇒ 之前的欠账已还 ──
+            //   ⚠ 匹配细则（见回报说明）：
+            //     · `spawned-session`：**目标会话 id === ref**（它已被投过）；
+            //     · `task-file`：**投递发生在其 `at` 之后**（`h.at <= w.at`）——
+            //       不去猜"这条消息投的是哪个文件"（按文本匹配会误判），
+            //       只问"这份文件写出之后，**有没有发生过一次投递**"。
+            //   ⚠ 保守方向：宁可少清（多报一条待投递 = 多一句提示，无害），
+            //     **不清错**（清错 = 把真漏派抹掉 = 本缺陷复现）。
+            const cleared = clearHandoffs(file, (h) => {
+              if (h.wsRoot !== undefined && ws !== undefined && h.wsRoot !== ws) return false
+              if (h.kind === 'spawned-session') return h.ref === target
+              return h.at <= w.at
+            })
+            if (cleared.cleared.length > 0) {
+              svcCtx.logger?.debug?.(
+                `[${name}] 已清 ${cleared.cleared.length} 条待投递记录（本次投递：${target}）`,
+              )
+            }
           } else {
             svcCtx.logger?.warn?.(`[${name}] 判不出运行态落点（工作区根未知）⇒ 本次派发不可观测。`)
           }
@@ -619,6 +677,8 @@ export function apply(ctx: any): void {
           relaysDone,
           relaysBlocked,
           lostPending: lostCount,
+          // ⚠ 现读盘（不缓存）：记账在别的模块做，缓存会滞后 —— 见 `readHandoffs` 注释。
+          handoffs: readHandoffs(),
         }
       },
 
@@ -636,6 +696,8 @@ export function apply(ctx: any): void {
           relaysDone,
           relaysBlocked,
           lostPending: lostCount,
+          // ⚠ 与 `status()` 同源同值（两处返回**同一个形状**，调用方不必分情况）。
+          handoffs: readHandoffs(),
         }
       },
     }
@@ -791,6 +853,13 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         w.sawRunning ? '已开跑' : '尚未开跑',
         ...(w.error === undefined ? [] : [`⚠ 回传失败：${w.error}`]),
       ].join(' · '))
+      const hh = s.handoffs.map((h) => {
+        const when = new Date(h.at).toLocaleString('zh-CN', { hour12: false })
+        const what = h.kind === 'spawned-session'
+          ? `新会话 ${h.ref}（建会话后未见投递）`
+          : `${h.ref}（写于 ${when}${h.note === undefined ? '' : `，${h.note}`}）`
+        return '  · ' + what
+      })
       return [
         s.stopped ? '⏸ 已停（不回传、不接受新派发）' : '▶ 在跑',
         `在等回传：${s.watches.length} 个`,
@@ -806,6 +875,21 @@ export function createHobOrchTools(orch: HobOrchestrator): {
             '  ↳ 它们**已经不在等**：`running → idle` 是事件而非可轮询状态，'
             + '目标若在重载前就跑完，那条事件永不再来。',
             '  ↳ 需要结果就**重新派一次**（`hob_dispatch`），或直接去那个会话问/看它的记录。',
+          ]),
+        // ── ⚠ 以下是 2026-10-10 **新增的行**（原有行一字未改、未删）──────────
+        //   它们存在的唯一理由：`watches` 只在**投递成功之后**才登记 ⇒
+        //   "写了交接文件却没投"在系统里**根本不存在** ⇒ 读数与"没事干"**无法区分**。
+        //   ⚠ **空态也要给读数**（`待投递：0 份`）—— 让"没有漏"**也是可读的**；
+        //     这正是本缺陷的病根（"0"与"没记录"必须能分开）。故**不**用
+        //     `s.handoffs.length === 0 ? [] : […]` 那种"空就不打印"的写法。
+        ...(s.handoffs.length === 0
+          ? ['待投递：0 份']
+          : [
+            `⚠ 待投递：${s.handoffs.length} 份 ——`,
+            ...hh,
+            '  ↳ 这些是**已写出、但还没投出去**的（写了交接文件 / 建了会话）。',
+            '  ↳ **若本轮打算人工转达可忽略；否则说明漏了投递** —— '
+            + '用 `hob_dispatch` / `hob_send` 投出去，或明确告知用户需手工转达。',
           ]),
       ].join('\n')
     },

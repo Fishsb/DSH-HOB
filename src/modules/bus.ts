@@ -36,6 +36,14 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { type SpawnDefaults } from '../config.ts'
 import { FACTORY_DEFAULT_PRESET_ID, PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
 import { appendSessionModelSelection, installSessionModelSelection } from '../model-selection.ts'
+// ── 待投递中间态记账（2026-10-10 · 用户报障修复）──────────────────────────
+//   ⚠ 为什么在**工具层**（而不是服务实现 `spawn()` 里）：服务被别的路径调用时
+//     不该产生"用户可见的欠账"；"没投出去就看不见"这件事只对**模型发起的动作**成立。
+//     与 `modules/tools.ts` 的 write_hob 记账同款分工：**能力层不记账，工具层记账**。
+//   ⚠ 账本根**不由本模块解析**（否则就是第二个路径解析实现点）：由挂载方
+//     （`preset/tools.ts`）把 `ledgerRootOf` 闭包传进来 —— 那里已有 config 与 ctx。
+import { clearHandoffs, ensureRuntimeIgnored, orchStateFileOf, recordHandoff } from '../server/orch-state.ts'
+import { dirname } from 'node:path'
 
 /** 模块名。 */
 export const name = 'dsh-hob-bus'
@@ -795,18 +803,73 @@ function selfSessionIdOf(exec: any): string | undefined {
 }
 
 /**
- * 造 M3 的两个工具定义。
+ * 造 M3 的四个工具定义。
  *
  * @param bus - `hobBus` 服务（由 `ctx.inject([BUS_SERVICE], …)` 交进来）。
  *   ⚠ 传**值**而不是每次 `ctx.get`：注册发生在服务就绪之后，
  *     拿到的就是本模块刚 provide 的那一个；服务消失时注册随之拆除。
+ * @param ledgerRootOf - **现读**本工作区账本根的闭包（2026-10-10 新增，可缺省）。
+ *   ⚠ 由挂载方（`preset/tools.ts`）传入：账本路径解析（`resolveLedgerRoot`）
+ *     与 config 都在**那一层**，本模块不该再持有第二份解析逻辑。
+ *   ⚠ 是**函数**不是值：账本落点随会话 cwd 变，快照会拿错工作区。
+ *   ⚠ 缺省（`undefined`）= 不记账 —— 但**功能照常**（记账是附加可观测，
+ *     不该因为拿不到账本根而让 `hob_spawn` / `hob_send` 失效）。
  */
-export function createHobBusTools(bus: HobBus): {
+export function createHobBusTools(
+  bus: HobBus,
+  ledgerRootOf?: (exec: any) => string | undefined,
+): {
   sessions: ReturnType<typeof defineTool>
   send: ReturnType<typeof defineTool>
   workspaces: ReturnType<typeof defineTool>
   spawn: ReturnType<typeof defineTool>
 } {
+  /**
+   * 取本工作区的运行态文件路径（拿不到 ⇒ undefined，调用方跳过记账）。
+   * ⚠ 全程 try：记账是**附加可观测**，绝不该让工具本体失败。
+   */
+  const stateFileOf = (exec: any): string | undefined => {
+    try {
+      const root = ledgerRootOf?.(exec)
+      if (typeof root !== 'string' || root === '') return undefined
+      return orchStateFileOf(root)
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 记一条"待投递"（**只记，不报错**）。
+   * ⚠ 记账失败**不改工具结果**：调用方拿到的是"建会话/投递成功"这个事实，
+   *   记账是附加可观测（同 `tools.ts` 的 write_hob 记账纪律）。
+   */
+  const noteHandoff = (exec: any, kind: 'spawned-session' | 'task-file', ref: string): void => {
+    const file = stateFileOf(exec)
+    if (file === undefined) return
+    try {
+      ensureRuntimeIgnored(dirname(file))
+      recordHandoff(file, { kind, ref, at: Date.now() })
+    } catch { /* 记账失败不掩盖主结果 */ }
+  }
+
+  /**
+   * 投递成功后清匹配的"待投递"（**只清，不报错**）。
+   * ⚠ 匹配细则（见回报说明，与 orchestrator 侧**同一口径**）：
+   *   · `spawned-session`：目标会话 id === `ref`（那个会话已被投过）；
+   *   · `task-file`：投递发生在它 `at` **之后**（`h.at <= at`）——
+   *     **不按消息文本匹配**（脆、会误判）。
+   */
+  const clearAfterDelivery = (exec: any, targetSessionId: string): void => {
+    const file = stateFileOf(exec)
+    if (file === undefined) return
+    try {
+      const now = Date.now()
+      clearHandoffs(file, (h) => (h.kind === 'spawned-session'
+        ? h.ref === targetSessionId
+        : h.at <= now))
+    } catch { /* 清理失败不掩盖主结果 */ }
+  }
+
   const sessionsTool = defineTool({
     name: 'hob_sessions',
     description:
@@ -884,6 +947,10 @@ export function createHobBusTools(bus: HobBus): {
       }
       const r = await bus.deliver(args.sessionId, text, args.mode === 'steer' ? 'steer' : 'followup')
       if (!r.ok) return JSON.stringify({ ok: false, reason: r.reason ?? 'delivery failed' })
+      // ── 投递成功 ⇒ 清匹配的"待投递"（2026-10-10 新增）────────────────────
+      //   ⚠ 只清**本工作区**那份运行态（`stateFileOf` 按 exec 的 cwd 解析）。
+      //   ⚠ 失败不影响结果：投递本身已经成功（附加可观测，不是主流程）。
+      clearAfterDelivery(exec, args.sessionId)
       return JSON.stringify({
         ok: true,
         delivered: true,
@@ -968,6 +1035,13 @@ export function createHobBusTools(bus: HobBus): {
           ...(r.available === undefined ? {} : { availableWorkspaces: r.available }),
         })
       }
+      // ── 建会话成功 ⇒ 记一条"待投递"（2026-10-10 新增）────────────────────
+      //   ⚠ 为什么必须记：**建完不投递，用户看不见它**（空白会话被宿主有意过滤，
+      //     见下面的 `visibilityNote`）。若派活方只建不投，那就既看不见、也收不到，
+      //     而系统里**没有任何记录**——正是第 9 / 21 轮漏派的形态。
+      //   ⚠ 与下面的 `visibilityNote` **互补、不重复**：那条说的是"它现在看不见"，
+      //     本条说的是"你已经欠了一次投递"。两件事都真。
+      noteHandoff(exec, 'spawned-session', r.sessionId ?? '')
       return JSON.stringify({
         ok: true,
         sessionId: r.sessionId,

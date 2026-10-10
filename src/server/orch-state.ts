@@ -79,6 +79,31 @@ export interface PersistedWatch {
   wsRoot?: string
 }
 
+/**
+ * 落盘的一条**待投递**中间态（2026-10-10 · 用户报障修复）。
+ *
+ * ── 为什么需要它（与上面的"重载抹 watch"是**同一个病的两面**）──────────
+ *   `write_hob`（写 `archive/<日期>/TASK.md`）与 `hob_dispatch`（投递）是
+ *   **两个独立工具调用**，中间没有耦合；而 `watches` **只在投递成功之后**才登记
+ *   （见 `orchestrator.ts` 的 `dispatch`）⇒ **"写了文件但没投"这件事，
+ *   系统里根本不存在** ⇒ 状态输出无法把它与"无事可做"区分开。
+ *   实测：第 9 轮与第 21 轮各发生一次，**两次都是用户发现的**，
+ *   现场读数逐字相同（`在等回传：0 个`）。
+ *   ⇒ 本结构把**第一步做完、第二步没做**这件事**落一份记录**。
+ */
+export interface PersistedHandoff {
+  /** 待投递的是什么：交接文件 / 新建但尚未派指令的会话。 */
+  kind: 'task-file' | 'spawned-session'
+  /** 交接文件的账本区相对路径，或新会话 id。 */
+  ref: string
+  /** 记录产生时刻（毫秒）。 */
+  at: number
+  /** 可选备注（如"第 21 轮"，由调用方给）。 */
+  note?: string
+  /** 这条记录属于哪个**工作区根**（决定它落在哪个账本目录下）。 */
+  wsRoot?: string
+}
+
 /** 落盘文件的整体结构。 */
 export interface OrchStateFile {
   version: number
@@ -90,11 +115,18 @@ export interface OrchStateFile {
   lost: PersistedWatch[]
   /** 最近一次"发现丢失"的时刻（毫秒）。 */
   lostAt?: number
+  /**
+   * **待投递**的中间态（2026-10-10 新增）—— "写了/建了，但还没投出去"。
+   *
+   * ⚠ **向后兼容**：旧文件没有这个字段 ⇒ 读成**空数组**（不抛、不判坏）。
+   *   理由同 `lost`：一份**诊断用途**的运行态不该因缺字段而读不进来。
+   */
+  handoffs: PersistedHandoff[]
 }
 
 /** 空态（文件不存在/坏了时的返回值）。 */
 export function emptyOrchState(): OrchStateFile {
-  return { version: ORCH_STATE_VERSION, updatedAt: 0, pending: [], lost: [] }
+  return { version: ORCH_STATE_VERSION, updatedAt: 0, pending: [], lost: [], handoffs: [] }
 }
 
 /** `<账本目录>` ⇒ 本模块的落盘文件路径。 */
@@ -140,6 +172,43 @@ function asWatchList(v: unknown): PersistedWatch[] {
   return out
 }
 
+/** 待投递记录的两种 kind（与 {@link PersistedHandoff.kind} 同源，运行时也要判）。 */
+const HANDOFF_KINDS = ['task-file', 'spawned-session'] as const
+
+/**
+ * 宽容地把一条 JSON 记录**收窄**成 {@link PersistedHandoff}（纪律同 {@link asWatch}）。
+ *
+ * ⚠ `kind` 必须**在集合内**：一个拼错的 `kind`（如 `'taskfile'`）若放行，
+ *   就会漂到状态输出里，表现为"有一条待投递，但看不出是什么"。
+ */
+function asHandoff(v: unknown): PersistedHandoff | undefined {
+  if (v === null || typeof v !== 'object') return undefined
+  const o = v as Record<string, unknown>
+  if (typeof o.kind !== 'string') return undefined
+  if (!(HANDOFF_KINDS as readonly string[]).includes(o.kind)) return undefined
+  if (typeof o.ref !== 'string' || o.ref === '') return undefined
+  if (typeof o.at !== 'number' || !Number.isFinite(o.at)) return undefined
+  const out: PersistedHandoff = {
+    kind: o.kind as PersistedHandoff['kind'],
+    ref: o.ref,
+    at: o.at,
+  }
+  if (typeof o.note === 'string' && o.note !== '') out.note = o.note
+  if (typeof o.wsRoot === 'string' && o.wsRoot !== '') out.wsRoot = o.wsRoot
+  return out
+}
+
+/** 把数组字段读成 `PersistedHandoff[]`（逐条收窄，坏的丢掉）。 */
+function asHandoffList(v: unknown): PersistedHandoff[] {
+  if (!Array.isArray(v)) return []
+  const out: PersistedHandoff[] = []
+  for (const item of v) {
+    const h = asHandoff(item)
+    if (h !== undefined) out.push(h)
+  }
+  return out
+}
+
 /**
  * 读落盘状态（**宽容**：文件不在/坏了/结构不对 ⇒ 空态，绝不抛）。
  *
@@ -158,6 +227,10 @@ export function readOrchState(file: string): OrchStateFile {
       updatedAt: typeof o.updatedAt === 'number' ? o.updatedAt : 0,
       pending: asWatchList(o.pending),
       lost: asWatchList(o.lost),
+      // ⚠ **向后兼容**（本轮核心要求之一）：旧文件没有 `handoffs` 字段 ⇒
+      //   `asHandoffList(undefined)` = `[]` ⇒ 读成**空数组**，**不抛、不判坏**。
+      //   这正与 `lost` 同款纪律：缺字段 ≠ 文件坏了（运行态是诊断用途）。
+      handoffs: asHandoffList(o.handoffs),
     }
     if (typeof o.lostAt === 'number' && Number.isFinite(o.lostAt)) out.lostAt = o.lostAt
     return out
@@ -272,21 +345,94 @@ export function markLost(
 }
 
 /**
- * 把这一代**活着的** watch 落成 `pending`（保留既有 `lost`）。
+ * 把这一代**活着的** watch 落成 `pending`（保留既有 `lost` 与 `handoffs`）。
  *
  * ⚠ 必须保留 `lost`：它是"曾经丢过"的唯一在盘记录 ——
- *   覆盖掉它，重启后就又变成"从来没派过"，正是本批要修的失败。
+ *   覆盖掉它，重启后就又变成"从来没派过"，正是第 19 轮要修的失败。
+ *
+ * ⚠ **同样必须保留 `handoffs`**（2026-10-10 新增）：它是"写了但还没投"的
+ *   唯一在盘记录。⚠ 覆盖掉它，就等于**又变成"从来没写过"** ——
+ *   那正是本轮要修的那个失败本身（见 `PersistedHandoff` 的注释）。
+ *   这与 `lost` 是**同一条纪律**，不是顺手加的一行。
+ *
+ * ⚠ 实现上**在函数内读回既有文件**取 `handoffs`（而不是加第 4 个参数）：
+ *   ① 既有调用点（`orchestrator.ts` 的 `persistWatches`）传的是
+ *      `(file, pending, prev.lost)`，签名一变就得同批改调用点；
+ *   ② `check-orch-state.mjs` 的 **D4** 断言锚在**调用点的实参形状**
+ *      （`writePending(…, …, prev.lost)`）—— 加参数会让它 FAIL，
+ *      而"为了让新代码过得去而改既有断言"是红线。
+ *   ⇒ 在函数内读回，既有调用点与既有断言**一字不动**。
  */
 export function writePending(
   file: string,
   pending: PersistedWatch[],
   lost: PersistedWatch[],
 ): boolean {
+  // 读回既有 handoffs（读不到 ⇒ 空数组，与 `readOrchState` 的宽容口径一致）。
+  const prevHandoffs = readOrchState(file).handoffs
   const state: OrchStateFile = {
     version: ORCH_STATE_VERSION,
     updatedAt: Date.now(),
     pending,
     lost: lost.slice(0, MAX_LOST),
+    handoffs: prevHandoffs.slice(0, MAX_HANDOFFS),
   }
   return writeOrchState(file, state)
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 待投递中间态：记 / 清 / 读（2026-10-10 新增 · 用户报障修复）
+// ══════════════════════════════════════════════════════════════════════
+
+/** 保留的"待投递"记录上限（同 `MAX_LOST` 的理由：运行态，不是审计日志）。 */
+export const MAX_HANDOFFS = 50
+
+/** {@link recordHandoff} / {@link clearHandoffs} 的结果。 */
+export interface HandoffWriteResult {
+  /** 是否真的写盘了。 */
+  wrote: boolean
+  /** 落盘后的完整状态。 */
+  state: OrchStateFile
+}
+
+/**
+ * 记一条**待投递**（"写了/建了，但还没投出去"）。
+ *
+ * ⚠ **幂等去重**：同一 `(kind, ref)` 只保留**最新一条** ——
+ *   否则"写了同一个 TASK 两次"会在状态输出里变成两条待投递（虚报）。
+ *   ⚠ 去重键**不含 `at`**（与 `watchKey` 相反）：`watch` 要区分"同一会话的第几轮"，
+ *   而待投递问的是"这个文件/会话**现在**还没投出去吗" ⇒ 是**布尔状态**，不是流水。
+ *
+ * ⚠ **失败不抛**：返回 `wrote: false`，由调用方记日志（同 `writeOrchState` 纪律）。
+ */
+export function recordHandoff(file: string, h: PersistedHandoff): HandoffWriteResult {
+  const state = readOrchState(file)
+  const rest = state.handoffs.filter((x) => !(x.kind === h.kind && x.ref === h.ref))
+  // 新的在前；超过上限丢最老的（运行态，不是审计留档）。
+  state.handoffs = [h, ...rest].slice(0, MAX_HANDOFFS)
+  state.updatedAt = Date.now()
+  return { wrote: writeOrchState(file, state), state }
+}
+
+/**
+ * 清掉**匹配**的待投递记录（投递成功之后调）。
+ *
+ * @param match - 判"这条记录是否已被投出"。
+ *   ⚠ 匹配细则由**调用方**给（投递路径各自知道自己能证明什么）：
+ *   `task-file` 用"投递发生在其 `at` 之后"，`spawned-session` 用"目标会话 id === ref"。
+ *   ⚠ **绝不按"消息文本里含路径"匹配** —— 脆、会误判（把别的话题里提到路径当成投递）。
+ *
+ * @returns 清掉了哪几条（供调用方记日志）与是否写盘。
+ *   ⚠ **没有匹配项时不写盘**（`wrote: false`）：避免每次投递都无谓改文件。
+ */
+export function clearHandoffs(
+  file: string,
+  match: (h: PersistedHandoff) => boolean,
+): { cleared: PersistedHandoff[]; wrote: boolean; state: OrchStateFile } {
+  const state = readOrchState(file)
+  const cleared = state.handoffs.filter(match)
+  if (cleared.length === 0) return { cleared: [], wrote: false, state }
+  state.handoffs = state.handoffs.filter((h) => !match(h))
+  state.updatedAt = Date.now()
+  return { cleared, wrote: writeOrchState(file, state), state }
 }

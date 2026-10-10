@@ -58,6 +58,26 @@ const ARCHIVE_DIR_RE = /^\d{4}-\d{2}-\d{2}-[a-z0-9-]+$/
 /** 归档路径：`archive/<日期目录>/<名字>.md`（**只允许一层**子目录）。 */
 const ARCHIVE_PATH_RE = /^archive\/([^/]+)\/([^/]+\.md)$/
 
+/**
+ * 交接文件判据（2026-10-10 新增）：`archive/<日期目录>/TASK*.md`。
+ *
+ * ── 为什么是**路径形状**而不是内容 ──────────────────────────────────────
+ *   本模块的职责是「守卫 + 落地」，**不解析正文语义** —— 若改成"看正文里有没有
+ *   指令段"，就多出一个**会漂移的判据点**（正文格式由另一侧决定）。
+ *   而"交接文件叫什么名字"是**本项目已有的事实**：`.hob/README.md` §1 与
+ *   `preset/dsh-hob/preset-dsh-hob.patch.yml` 都写着交接文件落
+ *   `archive/<日期>/TASK.md`（沿革：`TASK-*.md` / `TASK-Rn.md` 同族）。
+ *
+ * ⚠ 判据**宁可宽**（多提示一次无害）：`TASK*.md` 大小写不敏感、允许
+ *   `TASK.md` / `TASK-R22.md` / `TASK-R22-ADDENDUM.md` ——
+ *   漏判 = 该提示不出现（本缺陷的形态）；误判 = 多一句提示（无害）。
+ */
+export function isHandoffPath(file: string): boolean {
+  const m = ARCHIVE_PATH_RE.exec(file)
+  if (m === null) return false
+  return /^task/i.test(m[2]!)
+}
+
 // ── 结果与原因码（原因码供机器判定；验收测试直接断言它）─────────────────────
 
 export type WriteAction = 'appended' | 'overwritten' | 'skipped' | 'refused'
@@ -93,6 +113,17 @@ export interface WriteHobResult {
   message: string
   /** 机器可判的原因（refused / skipped 时给出）。 */
   reason?: RefuseReason | 'idempotent'
+  /**
+   * **交接文件判定**（2026-10-10 新增 · 用户报障修复）—— 只描述事实：
+   * "这个路径看起来是交接文件"。**由调用方决定记不记**（本模块**不碰** orch-state，
+   * 它刻意不 import config / 不碰运行态，见文件头分层纪律）。
+   *
+   * ⚠ 这是**新增字段**，既有字段一个未动（`ok` / `action` / `file` / `id` /
+   *   `backup` / `bytesBefore` / `bytesAfter` / `message` / `reason` 名字与语义都不变）。
+   * ⚠ 判据是**路径形状**（`archive/<日期目录>/TASK*.md`），不是内容 ——
+   *   本模块的职责是"守卫 + 落地"，不该解析正文语义（那会引入第二个判据点）。
+   */
+  handoff?: { kind: 'task-file'; ref: string }
 }
 
 export interface WriteHobOptions {
@@ -536,8 +567,21 @@ export async function writeHobFile(
     ...(backupName === undefined ? {} : { backup: `${BACKUP_DIR}/${backupName}` }),
     bytesBefore: Buffer.byteLength(existing, 'utf8'),
     bytesAfter: nextBytes,
+    ...(isHandoffPath(file) ? { handoff: { kind: 'task-file' as const, ref: file } } : {}),
     message: `✅ 已${mode === 'overwrite' ? '覆盖' : '追加'} ${file}${id === undefined ? '' : `：${id}`}`
       + `（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节）`
-      + (backupName === undefined ? '' : `；备份 ${BACKUP_DIR}/${backupName}`),
+      + (backupName === undefined ? '' : `；备份 ${BACKUP_DIR}/${backupName}`)
+      // ── 那一刻的提醒（2026-10-10 新增 · 本轮**最高价值**的一处）────────────
+      //   ⚠ 为什么必须在这里：这份文件写完后**还要再调一次投递**才算交付。
+      //     实测漏了两次（第 9 / 21 轮），两次都是用户发现的 ——
+      //     而"写成功"的返回值此前**只报写成功**，读的人看不出还有第二步。
+      //   ⚠ 它是**提示、不是闸门**：不改写入语义、不拒绝写入、不影响任何既有字段
+      //     （本条是 `message` 的**追加**文本）。
+      //   ⚠ 措辞里**不出现内部标识**（包名 / 模块路径 / 文件路径）—— 这句话会被
+      //     派活方读到并可能**复述给用户**。
+      + (isHandoffPath(file)
+        ? '\n⚠ 这是交接文件：**尚未投递** —— 写完本轮回复前先 hob_dispatch / hob_send'
+          + '（或明确告知用户需手工转达）。'
+        : ''),
   }
 }

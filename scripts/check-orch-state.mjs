@@ -28,9 +28,21 @@
  *      判据 = `markLost` 的返回值**只**流向计数/日志/通知，**不**流向 `watches`。
  *   E. **闸门未动**：`stopped` 的两处闸门位置**语义未变**（回传前 + 派发前），
  *      `hob_dispatch` 的"同目标至多一条未结算"拒绝**仍在**。
+ *   F. **待投递中间态**（2026-10-10 新增 · 用户报障修复）：写了交接文件 ⇒ 出现 `handoffs`
+ *      记录 · **`writePending` 保留既有 `handoffs`** · 投递成功 ⇒ 该记录消失 ·
+ *      **旧结构文件（无 `handoffs`）读得进且读成空数组** · 坏记录逐条丢弃 ·
+ *      状态输出**空态也给读数**（`待投递：0 份`）· 提醒落在写入返回值里 ·
+ *      落盘层不 import 运行态模块（分层未破）。
+ *      ⚠ **F 组是"真跑函数"而不是文本匹配**（与 A~E 不同）—— 理由见该组注释：
+ *      这里要保的是**数据结构的行为**，而"`writePending` 忘了保留 `handoffs`"这类缺陷
+ *      在源码里**字样仍在**、文本断言照样 PASS。故 F 组用 Node ≥22 直载 `.ts` 实跑，
+ *      且该 import 失败时 **FAIL 而不是跳过**（"基准跑不起来就默认通过"是假通过）。
  *
  *   ⚠ 每条断言都**必须能失败**（E-27：永远 PASS 的检查比没有更危险）。
  *     交付时逐条做过负向对拍（故意破坏 → FAIL → 还原 → PASS），读数见回报。
+ *     ⚠ F 组的负向对拍**当场抓到本脚本自己的一个缺陷**：坏产物会让脚本抛
+ *     `TypeError` 而**不给可读 FAIL**（只剩堆栈，看不出违反了哪条断言）
+ *     ⇒ 已改为防御式取值（`Array.isArray` 后才访问，见该组注释）。
  *
  * 用法：node scripts/check-orch-state.mjs      （或 npm run check:orch）
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
@@ -265,6 +277,189 @@ const orchCode = stripComments(orchSrc)
     ok('E4 只造三个编排工具（未新增）')
   } else {
     bad(`E4 工具面变化：实测 ${JSON.stringify(uniq)}，应为 ${JSON.stringify(expect)}`)
+  }
+}
+
+// ── F. 待投递中间态（2026-10-10 新增 · 用户报障修复）─────────────────────
+//
+// ⚠ **为什么这一组是"真跑"而不是文本匹配**（与 A~E 不同）：
+//   本轮要保的性质是**数据结构的行为**（记 → 读得到；清 → 读不到；旧结构读成空），
+//   而不是"某行代码还在不在"。文本断言在这里**咬不住真缺陷**：
+//   比如"`writePending` 忘了保留 `handoffs`"——源码里 `handoffs` 字样仍在，
+//   正则照样 PASS，而行为已经坏了（**那正是本轮修的那个失败本身**）。
+//   ⇒ 这一组**直接 import `src/server/orch-state.ts` 跑函数**（Node ≥22 可直载 TS），
+//     在**系统临时目录**建文件（不落工作区，不进 git）。
+//   ⚠ 若这条 import 失败（Node 太老 / TS 语法变化）⇒ **FAIL 而不是跳过**：
+//     "基准跑不起来就默认通过"是本项目反复盯防的假通过（同 check-gitignore 口径）。
+{
+  const { mkdtempSync, rmSync, writeFileSync, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { pathToFileURL } = await import('node:url')
+
+  let mod
+  try {
+    mod = await import(pathToFileURL(STATE_TS).href)
+  } catch (e) {
+    bad(`F 无法加载运行态模块（${String(e?.message ?? e)}）⇒ 行为断言失去基准（不按通过处理）`)
+  }
+  if (mod !== undefined) {
+    const {
+      emptyOrchState, readOrchState, recordHandoff, clearHandoffs, writePending, orchStateFileOf,
+    } = mod
+    /** 临时沙箱：一个空的"账本目录"，用后即删（不落工作区）。 */
+    const dir = mkdtempSync(join(tmpdir(), 'hob-orchcheck-'))
+    const file = orchStateFileOf(dir)
+    try {
+      // ── F0 前置：空态必须带 handoffs（否则后面前提不成立）──
+      const empty = emptyOrchState()
+      if (Array.isArray(empty.handoffs) && empty.handoffs.length === 0) {
+        ok('F0 空态含 handoffs（空数组）')
+      } else {
+        bad(`F0 空态的 handoffs 不是空数组：${JSON.stringify(empty.handoffs)}`)
+      }
+
+      // ── F1 **记**：写了交接文件 ⇒ 出现 handoffs 记录 ──
+      //   ⚠ 这是本轮的核心断言：它失败 = "写了但没投"在系统里又消失了。
+      const rec = recordHandoff(file, { kind: 'task-file', ref: 'archive/2026-10-10-x/TASK.md', at: 1111 })
+      const after1 = readOrchState(file)
+      // ⚠ 防御式取值（同 F3）：坏了要给可读 FAIL，不要让脚本自己崩。
+      const list1 = Array.isArray(after1?.handoffs) ? after1.handoffs : []
+      const hit1 = list1.some((h) => h.kind === 'task-file' && h.ref === 'archive/2026-10-10-x/TASK.md')
+      if (rec.wrote && hit1) {
+        ok('F1 记一条待投递 ⇒ 读回出现该记录（"写了没投"可观测）')
+      } else {
+        bad(`F1 记了一条待投递但读不回（wrote=${rec.wrote}，handoffs=${JSON.stringify(after1?.handoffs)}）`
+          + ' —— "写了交接文件却没投"又变成不可观测')
+      }
+
+      // ── F1b 幂等去重：同一 (kind, ref) 只留一条（防虚报）──
+      recordHandoff(file, { kind: 'task-file', ref: 'archive/2026-10-10-x/TASK.md', at: 2222 })
+      const after1b = readOrchState(file)
+      const list1b = Array.isArray(after1b?.handoffs) ? after1b.handoffs : []
+      const dup = list1b.filter((h) => h.ref === 'archive/2026-10-10-x/TASK.md')
+      if (dup.length === 1 && dup[0]?.at === 2222) {
+        ok('F1b 同一 (kind, ref) 重复记 ⇒ 只留最新一条（不虚报）')
+      } else {
+        bad(`F1b 去重失败：同 ref 有 ${dup.length} 条（${JSON.stringify(dup)}）`)
+      }
+
+      // ── F1c **writePending 必须保留 handoffs**（本轮最易漏的一处）──
+      //   ⚠ 漏了它 ⇒ 任何一次 watch 落盘都会把待投递记录抹掉 ⇒
+      //     又变回"从来没写过"。这条正是"负向对拍必须能咬到"的那一处。
+      const keep = writePending(file, [], [])
+      const after1c = readOrchState(file)
+      const list1c = Array.isArray(after1c?.handoffs) ? after1c.handoffs : []
+      if (keep && list1c.length === 1) {
+        ok('F1c writePending 保留既有 handoffs（不会被 watch 落盘顺带抹掉）')
+      } else {
+        bad(`F1c writePending 把 handoffs 抹掉了（剩 ${list1c.length} 条）`
+          + ' —— 下一次 watch 落盘就会让待投递记录消失，等于本缺陷复现')
+      }
+
+      // ── F2 **清**：投递成功 ⇒ 该记录消失 ──
+      const cl = clearHandoffs(file, (h) => h.kind === 'task-file' && h.ref === 'archive/2026-10-10-x/TASK.md')
+      const after2 = readOrchState(file)
+      const list2 = Array.isArray(after2?.handoffs) ? after2.handoffs : []
+      if (cl.cleared.length === 1 && cl.wrote && list2.length === 0) {
+        ok('F2 投递成功 ⇒ 匹配的待投递记录消失')
+      } else {
+        bad(`F2 清除未生效（cleared=${cl.cleared.length}，wrote=${cl.wrote}，`
+          + `剩 ${list2.length} 条）—— 投过了仍报"待投递"`)
+      }
+
+      // ── F2b 无匹配时不写盘（不制造无谓的文件改动）──
+      const cl2 = clearHandoffs(file, () => false)
+      if (cl2.cleared.length === 0 && cl2.wrote === false) {
+        ok('F2b 无匹配记录时不写盘（不产生无谓 diff）')
+      } else {
+        bad(`F2b 空匹配也写了盘（cleared=${cl2.cleared.length}，wrote=${cl2.wrote}）`)
+      }
+
+      // ── F3 **向后兼容**：旧结构文件（无 handoffs 字段）读得进、读成空数组 ──
+      //   ⚠ 这是任务书明写的硬要求：**不许抛、不许判坏**。
+      const legacyFile = join(dir, 'runtime', 'legacy-orch-watches.json')
+      writeFileSync(legacyFile, JSON.stringify({
+        version: 1,
+        updatedAt: 1,
+        pending: [{ target: 's1', watcher: 'w1', at: 5, sawRunning: false }],
+        lost: [],
+      }), 'utf8')
+      let legacyRead
+      let legacyErr
+      try { legacyRead = readOrchState(legacyFile) } catch (e) { legacyErr = e }
+      // ⚠ **防御式取值**（本轮负向对拍当场暴露）：若"向后兼容"被改坏成
+      //   直接 `as` 断言，`legacyRead.handoffs` 会是 `undefined` ——
+      //   裸访问 `.length` 会让**检查脚本自己崩掉**（未捕获 TypeError、exit 1 但
+      //   没有任何可读的 FAIL 行）。那比"报错"更糟：看日志的人只看到一段堆栈，
+      //   不知道违反了哪条断言。⇒ 这里一律经 `Array.isArray` 取值。
+      const legacyHandoffs = Array.isArray(legacyRead?.handoffs) ? legacyRead.handoffs : undefined
+      const legacyPending = Array.isArray(legacyRead?.pending) ? legacyRead.pending : undefined
+      if (legacyErr === undefined && legacyRead !== undefined
+        && legacyHandoffs !== undefined && legacyHandoffs.length === 0
+        && legacyPending !== undefined && legacyPending.length === 1) {
+        ok('F3 旧结构文件（无 handoffs）读得进：handoffs 读成空数组、既有 pending 不受影响')
+      } else {
+        bad(`F3 旧结构文件读不进来或 handoffs 不是空数组：`
+          + `err=${String(legacyErr?.message ?? legacyErr)}，`
+          + `handoffs=${JSON.stringify(legacyRead?.handoffs)}，pending=${JSON.stringify(legacyRead?.pending)}`
+          + ' —— 旧运行态文件必须**读得进**（缺字段 ⇒ 空数组，不许抛、不许判坏）')
+      }
+
+      // ── F3b 坏记录被逐条丢弃（不因一条坏数据丢掉整批）──
+      const badFile = join(dir, 'runtime', 'bad-orch-watches.json')
+      writeFileSync(badFile, JSON.stringify({
+        version: 1,
+        updatedAt: 1,
+        pending: [],
+        lost: [],
+        // kind 不在集合内 / ref 空 / at 非数 ⇒ 三条都该被丢
+        handoffs: [
+          { kind: 'taskfile', ref: 'x', at: 1 },
+          { kind: 'task-file', ref: '', at: 1 },
+          { kind: 'task-file', ref: 'y', at: 'x' },
+          { kind: 'spawned-session', ref: 'ok', at: 9 },
+        ],
+      }), 'utf8')
+      const badRead = readOrchState(badFile)
+      const badList = Array.isArray(badRead?.handoffs) ? badRead.handoffs : []
+      if (badList.length === 1 && badList[0]?.ref === 'ok') {
+        ok('F3b 坏 handoffs 记录逐条丢弃（只留合法那条，不整批失败）')
+      } else {
+        bad(`F3b 坏记录未被逐条丢弃：${JSON.stringify(badRead?.handoffs)}`)
+      }
+
+      // ── F4 状态输出必须**空态也给读数**（"0 份"与"没记录"必须可区分）──
+      //   ⚠ 与 C5 相反：C5 要求"无丢失时不额外输出"，这里要求"无待投递时**也要**输出"。
+      //     两者不矛盾 —— `lostPending` 是**累计历史**（没有就不必报），
+      //     `handoffs` 是**当下状态**（"0"本身就是要给的信息）。
+      if (/待投递：\$\{s\.handoffs\.length\} 份/.test(orchCode)
+        && !/s\.handoffs\.length === 0\s*\?\s*\[\]/.test(orchCode)) {
+        ok('F4 待投递**空态也给读数**（`待投递：0 份`，不与"没记录"混淆）')
+      } else {
+        bad('F4 待投递行未做到"空态也给读数" —— 那样"0 份"与"没记录"仍不可区分（本缺陷病根）')
+      }
+
+      // ── F5 提醒落在**写入成功的那一刻**（写进返回值，不是纪律文档）──
+      const hobWriteSrc = (() => {
+        try { return readFileSync(join(root, 'src', 'server', 'hob-write.ts'), 'utf8') } catch { return '' }
+      })()
+      if (/尚未投递/.test(hobWriteSrc) && /hob_dispatch/.test(hobWriteSrc)) {
+        ok('F5 写交接文件成功的返回值带"尚未投递"提醒（落在动作发生那一刻）')
+      } else {
+        bad('F5 写入返回值没有"尚未投递"提醒 —— 提醒只写在纪律文档里＝靠人记')
+      }
+
+      // ── F6 分层纪律：落盘层（hob-write）**不得** import 运行态模块 ──
+      //   ⚠ 它是本轮设计的核心分工（`hob-write.ts` 刻意不 import config / 运行态）：
+      //     一旦它开始碰 orch-state，记账就散落进两层、且写工具会在无账本根时也去写运行态。
+      if (!/from ['"].*orch-state/.test(hobWriteSrc)) {
+        ok('F6 落盘层不 import 运行态模块（记账只在工具层，分层未破）')
+      } else {
+        bad('F6 `hob-write.ts` import 了运行态模块 —— 分层被打破（记账该在工具层）')
+      }
+    } finally {
+      try { rmSync(dir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+    }
   }
 }
 

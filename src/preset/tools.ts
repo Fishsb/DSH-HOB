@@ -38,6 +38,7 @@ import {
   DEFAULT_DENY,
   DEFAULTS,
   createHobTools,
+  ledgerRootOf,
   type HobToolsConfig,
 } from '../modules/tools.ts'
 import { BUS_SERVICE, createHobBusTools, type HobBus } from '../modules/bus.ts'
@@ -162,7 +163,7 @@ export function apply(ctx: any, config: Config = {}): void {
       return
     }
     log('会话总线就绪 ⇒ 注册 M3 工具')
-    registerBusTools(busCtx, bus as HobBus, log)
+    registerBusTools(busCtx, bus as HobBus, log, config)
   })
 
   // ── M5 · 闭环编排工具（UD-80 · 批 17）────────────────────────────────
@@ -536,8 +537,20 @@ function registerTools(ctx: any, config: Config, log: (m: string) => void): void
  * ⚠ 与 `read_contracts`/`write_hob` 的**门禁不同源**：那两个跟 `hobTools`（= `modules.tools`），
  *   这两个跟 `hobBus`（= `modules.bus`）。⇒ 两个开关各自管自己那一组，互不牵连。
  */
-function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void): void {
-  const { sessions, send, workspaces, spawn } = createHobBusTools(bus)
+function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, config: Config): void {
+  // ⚠ 把**账本根解析闭包**交给 bus 工具（2026-10-10 新增）：`hob_spawn` / `hob_send`
+  //   要用它记 / 清"待投递"。理由：解析逻辑（`ledgerRootOf` + config）**只在本层**，
+  //   传给 bus 层就不必在那里再造一份 —— 两处各写一份必然漂（见 `EXPERIENCE.md` E-110）。
+  //   ⚠ 传**函数**而不是值：账本落点按 exec 的 cwd 派生，快照会拿错工作区。
+  //   ⚠ 闭包内 fail-closed（`ledgerRootOf` 判不出 ⇒ `undefined`）⇒ 记账被跳过，
+  //     但工具的**功能照常**（记账是附加可观测，不是前置条件）。
+  const { sessions, send, workspaces, spawn } = createHobBusTools(bus, (exec: any) => {
+    try {
+      return ledgerRootOf(config, exec)
+    } catch {
+      return undefined
+    }
+  })
   ctx.effect(() => ctx.tools.register(sessions), 'dsh-hob preset: hob_sessions tool')
   ctx.effect(() => ctx.tools.register(send), 'dsh-hob preset: hob_send tool')
   ctx.effect(() => ctx.tools.register(workspaces), 'dsh-hob preset: hob_workspaces tool')
