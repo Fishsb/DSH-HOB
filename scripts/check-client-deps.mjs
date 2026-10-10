@@ -924,6 +924,32 @@ function balancedBlock(src, startIndex) {
       if (!/\bt\(\s*'/.test(panelCodeJ)) {
         bad('J-5 · 面板里找不到 `t(\'…\')` 取词调用 —— 词典存在却没接上取词入口')
       } else ok('J-5 ✓ 面板经 `t(…)` 取词（词典真的被消费）')
+
+      // ── J-6（第 11 轮新增）：词典的**用户可见字符串**里零 markdown 标记 ──────
+      //   ⚠ 为什么单独立一条（用户截图实证 · 2026-10-10）：
+      //     词典值会被**当纯文本**渲染（`t()` 返回字符串，React 按文本节点插入），
+      //     所以 `它**不会被采用**` 会**字面显示两个星号** —— 用户看到的就是那串星号，
+      //     并直接问"你搞得这是什么东西"。
+      //   ⚠ 判据只扫**字符串字面量内部**（本仓注释里用 markdown 是书写习惯、也是允许的）；
+      //     并跳过"键"那种形态（`'a.b.c'` / `'abc'` 无空格）。
+      {
+        const offenders = []
+        // ⚠ 分别取两份词典的**块**（各自 matchAll 字面量）
+        for (const dictName of ['PANEL_EN', 'PANEL_ZH']) {
+          const m = new RegExp(`const\\s+${dictName}\\s*:\\s*Record<string,\\s*string>\\s*=\\s*\\{([\\s\\S]*?)\\n\\}`).exec(panelRawJ)
+          if (m === null) continue
+          for (const lit of m[1].matchAll(/'((?:[^'\\]|\\.)*)'/g)) {
+            const v = lit[1]
+            if (/^[A-Za-z][\w.]*$/.test(v)) continue // 跳过"键"形态
+            if (v.includes('**') || v.includes('`') || v.includes('__')) {
+              offenders.push(`${dictName}: ${JSON.stringify(v.slice(0, 50))}`)
+            }
+          }
+        }
+        if (offenders.length > 0) {
+          bad(`J-6 · 词典的用户可见字符串含 **markdown 标记**（会被字面渲染成字符）：${offenders.join(' ; ')}`)
+        } else ok('J-6 ✓ 词典用户可见字符串零 markdown 标记（`**` / 反引号 / `__`）')
+      }
     }
   }
 }

@@ -248,36 +248,18 @@ function makePresetRegistryLookup(svcCtx: any): any {
 }
 
 /**
- * 读宿主的**有效默认预设**（第 10 轮新增）—— 判"不指定预设会落到哪"的唯一手段。
+ * ⚠ **第 11 轮删除**：原先这里有一个 `readHostDefaultPresetId()`，
+ *   用来读宿主的**有效默认预设**（`remoteExportList()` 里 `isDefault` 那条，
+ *   或注册表的 `defaultId` getter）。
  *
- * ⚠ **为什么必须问宿主，不能自己推算**：宿主 `defaultId` 的判据是
- *   `selectedDefault.get() ?? default`（`dsh-agent-preset-registry/lib/index.js:492-495`），
- *   两个字段都在**宿主的配置**里（本机 profile `cordis.patch.yml` 的
- *   `agent-preset-registry.config`）—— 本仓**读不到也不该去读** `~/.dsh/**`。
- *   ⇒ 唯一正路是**问注册表**：`remoteExportList()` 会给每条打 `isDefault`（同文件 `:598-604`）。
- *
- * @param registry - `agentPresets` 服务（可能 `undefined`）。
- * @returns 有效默认预设的 id，或 `undefined`（服务缺席 / 读失败 / 名册里没有默认）。
- *   ⚠ 返回 `undefined` 一律按"**探不清**"处理 ⇒ 调用方退回不指定并如实报告（**不猜**）。
+ *   **为什么删**（用户裁定 · 2026-10-10）：那个函数只为服务「（用宿主默认预设）」
+ *   这个选项的兜底而存在 —— 而该选项**本身已被删除**（面板不再提供它，
+ *   空值直接按 {link FACTORY_DEFAULT_PRESET_ID} 走）。
+ *   ⇒ 留着一个"读宿主默认"的函数，等于留一条**没人该走的路**：
+ *     它读到的值（本机 = `Hob`）恰恰是我们要绕开的东西。
+ *   ⚠ "删干净"是判据的一部分：`check:presets` 的 ⑨ 组会钉住这个函数**不得回来**
+ *     （除非连带把选项语义一起重新设计 —— 那要走用户决策，不是在代码里悄悄补）。
  */
-async function readHostDefaultPresetId(registry: any): Promise<string | undefined> {
-  if (registry === undefined || registry === null) return undefined
-  try {
-    // 优先用名册（它与面板同源：`catalog.ts` 读的也是这个方法的 presets）。
-    if (typeof registry.remoteExportList === 'function') {
-      const roster = await registry.remoteExportList()
-      const rows = Array.isArray(roster?.presets) ? roster.presets : []
-      const def = rows.find((r: any) => r?.isDefault === true)
-      if (def !== undefined && typeof def.id === 'string' && def.id !== '') return def.id
-    }
-    // 退化路径：注册表自己的 getter（同一判据的另一处出口）。
-    const direct = registry.defaultId
-    if (typeof direct === 'string' && direct !== '') return direct
-  } catch {
-    // 读失败 = 探不清（**不猜**）；由调用方如实报告。
-  }
-  return undefined
-}
 
 /**
  * 该 id 是否**确实在**宿主当前名册里（第 10 轮新增）。
@@ -663,91 +645,64 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
         const spawnCfg = readSpawn()
         const explicitPreset =
           typeof agentPreset === 'string' && agentPreset.trim() !== '' ? agentPreset.trim() : undefined
-        // ── 第 9 轮（2026-10-10 · 用户裁定）：规划侧预设**不作默认值** ──────────
-        //   ⚠⚠ **只作用于"从配置取来的默认值"这半边** —— 那是一条**兜底链**的最后一级，
-        //     用户/配置可能把它留成了规划侧预设（{@link PLANNING_PRESET_ID}，现为 `Hob`）。
-        //     拿它当新会话的默认预设 ⇒ 新会话**只能再规划、不能施工** = **死循环**
-        //     （该预设无 bash/pwsh、白名单无 write/edit，契约原文
-        //      *"you cannot edit code, you cannot run a command."*）。
-        //   ⚠ **显式传参那半边一字不动**（`explicitPreset`）：那是调用方的**明确选择**，
-        //     不是兜底 —— 拦它等于改语义。（本模块只对**默认值**做这一层。）
-        //   ⚠ **绝不让 spawn 失败**：命中就**退回"不指定预设"**（= 交宿主默认预设），
-        //     并在成功返回里如实带一句（{@link SpawnResult.presetNote}），**不静默**。
+        // ── 第 11 轮（2026-10-10 · 用户裁定）：**空值 == 出厂默认（标准模式）** ──────
+        //   ⚠ 用户原话：「说了出厂默认设置成标准模式 …… 不要宿主默认预设」。
+        //   ⚠ **上一轮那套"读宿主有效默认 + 命中规划侧就改口"整块撤销** —— 那是一段
+        //     **给不该存在的选项打的补丁**。用户裁定删除那个选项（面板侧同时删）后，
+        //     这里就只剩一条**直路**：
+        //       显式传参 ⇒ 以它为准（**一字不动**，那是调用方的明确选择）；
+        //       否则有配置值 ⇒ 用它；
+        //       **否则（未指定 / 配置为空）⇒ 直接出厂默认**（{@link FACTORY_DEFAULT_PRESET_ID}）。
+        //   ⚠ 为什么不再读宿主有效默认：宿主 `defaultId` 是
+        //     `selectedDefault.get() ?? default`（`dsh-agent-preset-registry/lib/index.js:492-495`），
+        //     `selectedDefault` 是**可被改的 volatile 项** ⇒ 它**可能是规划侧预设**
+        //     （本机 profile 就是 `selectedDefault: Hob`）。既然用户要求"默认就是标准模式"，
+        //     我们就**不问宿主**、直接显式传标准模式 —— 语义确定，且没有"宿主改一次就变"的不确定性。
+        //   ⚠ 两条硬约束：
+        //     ① **显式传参那半边一字不动**；
+        //     ② **绝不加重 spawn 失败面**：显式传一个**不存在**的预设会被宿主
+        //        `resolve()` 抛 `Unknown agent preset`（同文件 `:603-608`）
+        //        ⇒ 落地前**必须**确认出厂默认在名册里；不在 ⇒ **退回不指定**（= 交宿主默认，
+        //        即本模块第 11 轮之前的行为）并**如实报告**，**绝不静默、绝不让 spawn 失败**。
         const configuredPreset = spawnCfg.agentPreset !== '' ? spawnCfg.agentPreset : undefined
         const configuredIsPlanning = configuredPreset === PLANNING_PRESET_ID
-        // ── 第 10 轮（2026-10-10 · 用户报障）：**"不指定预设"这条路也要兜底** ──────
-        //   ⚠ 上一轮只兜住了"配置默认值 == 规划侧预设"。但**配置为空**时本模块**不传**
-        //     `agentPreset` ⇒ 宿主自己解析它的**有效默认**：
-        //       `dsh-agent-preset-registry/lib/index.js:492-495`
-        //         `get defaultId() { return this.config.selectedDefault.get() ?? this.config.default }`
-        //       同文件 `:603-604` `async resolve(id) { const wanted = id ?? this.defaultId … }`
-        //     ⇒ **传 `undefined` 就是拿那个 `defaultId`**。
-        //   ⚠ **本机现况**：profile `cordis.patch.yml` 的 `agent-preset-registry.config`
-        //     = `default: standard` + **`selectedDefault: Hob`** ⇒ `defaultId` = `Hob`
-        //     ⇒ 走「（用宿主默认预设）」会**建出一个规划侧会话**（用户说的死循环）。
-        //     用户另一句也对：**第一次安装没调过** ⇒ `selectedDefault` 空 ⇒ 落到出厂值。
-        //   ⇒ 判据 = **本次未指定**（既无显式传参、配置也为空）**且**宿主有效默认 == 规划侧预设
-        //     ⇒ 显式改用宿主**出厂默认**（{@link FACTORY_DEFAULT_PRESET_ID}）。
-        //   ⚠ 三条硬约束：
-        //     ① **显式传参那半边一字不动** —— 它优先，且**从不**进下面这个分支；
-        //     ② **绝不加重 spawn 失败面** —— 探不清 / 出厂默认不在名册里 ⇒ **退回不指定**
-        //        （就是本轮之前的行为）并**如实报告**；探这层本身用 try/catch 兜住；
-        //     ③ **不许静默** —— 只要改了行为就往 `presetNote` 里写清。
         let presetId = explicitPreset ?? (configuredIsPlanning ? undefined : configuredPreset)
         let presetNote = configuredIsPlanning && explicitPreset === undefined
           ? 'The configured new-session default preset is this plugin\'s planning-side preset ('
             + PLANNING_PRESET_ID + '). It was NOT applied: that preset plans work but cannot carry '
-            + 'it out, so a session started with it would only plan again. The session was created '
-            + 'with the host default preset instead. An explicitly passed agentPreset is unaffected.'
+            + 'it out, so a session started with it would only plan again. An explicitly passed '
+            + 'agentPreset is unaffected.'
           : undefined
         if (explicitPreset === undefined && presetId === undefined) {
-          // 走到这里 = **本次没有可用的指定预设** ⇒ 宿主会用它自己的有效默认 ⇒ 必须先探清。
-          //   ⚠ 两种来路**都能到这儿**，措辞必须都对得上（别写成"没指定预设"就完事）：
-          //     · `configuredIsPlanning`：配置**指定了**规划侧预设，被上面拦下 ⇒ 退回不指定；
-          //     · 配置本来**为空** ⇒ 真的没人指定。
-          //   ⚠ 实测抓到的措辞错误（第 10 轮探针）：原先无论哪种来路都写
-          //     "No preset was specified" —— 配置明明写着 `Hob` 时**这句是假话**。
-          //     ⇒ 按来路分别说明（"配置指定的默认是…" / "没有指定预设"），再讲宿主默认那一层。
-          const origin = configuredIsPlanning
-            ? 'The configured new-session default preset is this plugin\'s planning-side preset ('
-              + PLANNING_PRESET_ID + '), so it was not applied. '
-            : 'No preset was specified. '
+          // 未指定（无显式传参；配置为空 **或** 配置值是被拦下的规划侧预设）
+          //   ⇒ **一律按出厂默认**（用户口径：默认就是标准模式）。
           const presetRegistry = presetRegistryOf()
-          if (presetRegistry === undefined || presetRegistry === null) {
-            // 探不清（服务缺席）：**保持原行为**（不指定 = 交宿主默认），但**说出来**。
-            presetNote = origin + 'The host agent-preset registry could not be read, so the host '
-              + 'default preset applies unchanged. If that default is a planning-side preset, the '
-              + 'new session would only be able to plan; an explicitly passed agentPreset is unaffected.'
-          } else {
-            const hostDefault = await readHostDefaultPresetId(presetRegistry)
-            if (hostDefault === PLANNING_PRESET_ID) {
-              const factoryOk = await presetExists(presetRegistry, FACTORY_DEFAULT_PRESET_ID)
-              if (factoryOk) {
-                presetId = FACTORY_DEFAULT_PRESET_ID
-                presetNote = origin + 'The host default preset is also this plugin\'s planning-side '
-                  + 'preset (' + PLANNING_PRESET_ID + '). That preset plans work but cannot carry it '
-                  + 'out, so it was NOT used: the session was created with the host factory default '
-                  + 'preset (' + FACTORY_DEFAULT_PRESET_ID + ') instead. An explicitly passed '
-                  + 'agentPreset is unaffected.'
-              } else {
-                presetNote = origin + 'The host default preset is also this plugin\'s planning-side '
-                  + 'preset (' + PLANNING_PRESET_ID + '). The host factory default ('
-                  + FACTORY_DEFAULT_PRESET_ID + ') is not in the current preset roster, so no preset '
-                  + 'was passed and the host default applies unchanged. An explicitly passed '
-                  + 'agentPreset is unaffected.'
-              }
-            } else if (hostDefault === undefined) {
-              // 读到了服务、但名册里读不出默认 ⇒ 同样如实说明（**不猜**）。
-              presetNote = origin + 'The host agent-preset registry did not report which preset is '
-                + 'the default, so the host default applies unchanged. An explicitly passed '
-                + 'agentPreset is unaffected.'
-            } else if (configuredIsPlanning) {
-              // 配置指定的是规划侧预设、被拦下；宿主默认**不是**规划侧预设 ⇒ 正常可用。
-              //   ⚠ 这句必须留：否则"配置被拦了"这件事对调用方**不可见**（第 9 轮的语义）。
-              presetNote = origin + 'The host default preset (' + hostDefault + ') applies instead. '
+          // ⚠ 在册校验：出厂默认**必须真的存在**才显式传（否则会让宿主抛 ⇒ spawn 失败）。
+          //   服务读不到 ⇒ 同样退不指定（不冒失败风险），但也**如实说出来**。
+          const factoryOk = presetRegistry === undefined || presetRegistry === null
+            ? false
+            : await presetExists(presetRegistry, FACTORY_DEFAULT_PRESET_ID)
+          if (factoryOk) {
+            presetId = FACTORY_DEFAULT_PRESET_ID
+            if (configuredIsPlanning) {
+              presetNote = 'The configured new-session default preset is this plugin\'s planning-side '
+                + 'preset (' + PLANNING_PRESET_ID + '), so it was not applied. The session was created '
+                + 'with the factory default preset (' + FACTORY_DEFAULT_PRESET_ID + ') instead. '
                 + 'An explicitly passed agentPreset is unaffected.'
             }
-            // 配置为空 + 宿主默认是普通预设 ⇒ 正常，不插手、不留 NOTE。
+            // 配置本来为空 ⇒ 这是**正常路径**（不是"少做了一件事"）⇒ 不留 NOTE，不打扰调用方。
+          } else if (configuredIsPlanning) {
+            presetNote = 'The configured new-session default preset is this plugin\'s planning-side '
+              + 'preset (' + PLANNING_PRESET_ID + '), so it was not applied. The factory default '
+              + 'preset (' + FACTORY_DEFAULT_PRESET_ID + ') is not in the current preset roster, so '
+              + 'no preset was passed and the host default applies. An explicitly passed agentPreset '
+              + 'is unaffected.'
+          } else {
+            // 配置为空、但出厂默认不在名册（或缺注册表服务）⇒ 退回不指定 + **响亮如实**说明。
+            presetNote = 'No preset was specified. The factory default preset ('
+              + FACTORY_DEFAULT_PRESET_ID + ') is not visible in the host preset roster, so no preset '
+              + 'was passed and the host default applies. An explicitly passed agentPreset is '
+              + 'unaffected.'
           }
         }
 

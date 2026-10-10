@@ -80,6 +80,9 @@ import {
   subscribeLocale, t, type Params,
 } from './i18n.ts'
 import { S } from './panel-styles.ts'
+// ⚠ 第 11 轮：空值 == 标准模式，**显示与派活同源** —— 两边都取这个单源常量
+//   （`src/modules/bus.ts` 派活时也用它），不各写一个 `'standard'` 字面量。
+import { FACTORY_DEFAULT_PRESET_ID } from '../shared/planning-preset.ts'
 
 /** 展示用的配置形状（只取本插件 schema 里真实存在的字段）。 */
 interface PanelValue {
@@ -298,8 +301,17 @@ function SpawnDefaultsCard(props: {
   const model = readString(spawn.model)
   const effort = readString(spawn.reasoningEffort)
 
+  // ── 第 11 轮（2026-10-10 · 用户裁定）：**空值 == 标准模式**（显示与派活同一口径）──
+  //   ⚠ 用户原话：「说了出厂默认设置成标准模式 …… 不要宿主默认预设」。
+  //   ⚠ 上一轮那套"把空值当'不指定'、交给宿主解析它的有效默认"是**在给一个不该存在的
+  //     选项打补丁** —— 宿主的有效默认**可能是规划侧预设**（本机 `selectedDefault: Hob`）
+  //     ⇒ 越补越乱。现在直接**不给这个选项**：空值就按出厂默认（标准模式）显示与派活。
+  //   ⚠ 与 `bus.ts` 的派活口径**必须同源**：两边都用 `FACTORY_DEFAULT_PRESET_ID`
+  //     （`src/shared/planning-preset.ts` 的单源常量），不是各写一个 `'standard'`。
+  const effectivePreset = preset === '' ? FACTORY_DEFAULT_PRESET_ID : preset
+
   // 目录里的选中项（找不到 ⇒ "不可用"，**不静默**）。
-  const presetRow: PresetRow | undefined = preset === '' ? undefined : findPreset(snapshot.presets, preset)
+  const presetRow: PresetRow | undefined = findPreset(snapshot.presets, effectivePreset)
   const catalog = snapshot.catalog
   const modelRow: ModelRow | undefined = (provider === '' || model === '') ? undefined : findModel(catalog, provider, model)
   const efforts = modelRow?.reasoning?.efforts ?? []
@@ -346,31 +358,21 @@ function SpawnDefaultsCard(props: {
                 : t('catalog.status.excluded', { count: snapshot.excludedPresets.length }),
             })
 
-  // ── 宿主**有效默认预设**的解析（第 10 轮 · 用户报障）─────────────────────
-  //   ⚠ 为什么必须解析到底：第一项「（用宿主默认预设）」= 本插件**不传** `agentPreset`
-  //     ⇒ 宿主自己解析它的有效默认（`dsh-agent-preset-registry/lib/index.js:492-495`
-  //     的 `defaultId = selectedDefault ?? default`）。它**可能是规划侧预设** ——
-  //     本机 profile 就是 `selectedDefault: Hob` ⇒ 用户看这一项"好像没问题"，
-  //     实际会建出规划侧会话 = **死循环**。
-  //   ⚠ 判据来源：宿主名册给每条打了 `isDefault`（同文件 `:598-604`），
-  //     而 `catalog.ts` 已把**被排除项**单独收进 `excludedPresets`（单源在那边）。
-  //     ⇒ "宿主默认就是被排除的规划侧预设" = `isDefault` 那条**在被排除集里**。
-  //   ⚠ **拿不到名字就不许编**：宿主没报 `isDefault`（或名册未就绪）⇒ 保持原文案。
-  const hostDefaultRow = [...snapshot.presets, ...snapshot.excludedPresets].find((p) => p.isDefault === true)
-  const hostDefaultName = hostDefaultRow === undefined ? undefined : presetDisplayName(hostDefaultRow)
-  const hostDefaultIsPlanning = hostDefaultRow !== undefined
-    && snapshot.excludedPresets.some((p) => p.id === hostDefaultRow.id)
+  // ── 第 11 轮：**整块撤销**上一轮的"解析宿主有效默认 + 警告"（用户裁定）───────────
+  //   ⚠ 上一轮在这里解析"宿主会落到哪个预设"并据此显示/警告。用户裁定：那个选项
+  //     （「用宿主默认预设」）**本来就不该存在** ⇒ 该做的是**删掉选项**，
+  //     而不是给它加解析与警告（**给不该存在的选项打补丁，越补越乱**）。
+  //   ⇒ 现在空值直接按出厂默认（标准模式）走（见 `effectivePreset`），
+  //     因此这里**不再**需要读 `isDefault`、不再需要 `hostDefault*` 三个量。
+  //   ⚠ 教训与判据留在 EXPERIENCE E-107；机检 ⑨ 组钉"这些残留不得回来"。
 
-  // ── 预设候选（**显示名走本地化解析**：内置四个与 DSH 逐字一致且随语言切换）──
+  // ── 预设候选：**只列真实预设**（第 11 轮：第一项「（用宿主默认预设）」已删除）─────
+  //   ⚠ 删除理由（用户裁定）：那个选项把空值当"不指定"交给宿主，而宿主的有效默认
+  //     **可能是规划侧预设**（本机 `selectedDefault: Hob`）⇒ 会建出只能再规划的会话。
+  //     上一轮给它加了"解析 + 警告"，那是**给不该存在的选项打补丁**；本轮的修法是
+  //     **删掉选项本身**，空值按出厂默认（标准模式）走（见上面的 `effectivePreset`）。
+  //   ⚠ `Hob` **仍不在候选**（第 9 轮语义不变），且排除**仍可见地说明**（见下面的 `note.excluded`）。
   const presetItems: { id: string; label: string; note?: string }[] = [
-    {
-      id: '',
-      // ⚠ 第一项把**解析结果**显示出来（用户不必瞎猜它会落到哪）：
-      //   拿得到名字 ⇒「用宿主默认预设（标准模式）」；拿不到 ⇒ 照旧只显示原文案。
-      label: hostDefaultName === undefined
-        ? t('opt.hostDefaultPreset')
-        : t('opt.hostDefaultResolved', { name: hostDefaultName }),
-    },
     ...snapshot.presets.map((p) => {
       const marks: string[] = []
       if (p.broken !== undefined) marks.push(t('tag.unavailable'))
@@ -378,16 +380,20 @@ function SpawnDefaultsCard(props: {
       return { id: p.id, label: presetDisplayName(p), note: marks.join('') || undefined }
     }),
   ]
-  // ⚠ 已存值恰好是**被排除**的那个（规划侧预设）⇒ **如实显示 + 标「不作候选」**，
-  //   并说明**实际效果**（派活时不会套用它，见 `bus.ts` 的兜底）。
-  //   ⚠ 与下面那条"不在清单里（可能已被删除）"**必须分开** —— 它没被删除，
-  //     是被本项目**有意排除**的；混为一谈会让用户以为预设丢了（E-46 同族）。
-  const presetIsExcluded = preset !== '' && snapshot.excludedPresets.some((p) => p.id === preset)
+  // ⚠ 已存值**不在可选清单**里（被排除的规划侧预设、或已被删除的预设）⇒ **如实显示**，
+  //   并**仍可选中它以便改掉**（沿用第 9 轮做法）。
+  //   ⚠ 两种情形**必须分开说**：被本项目有意排除 vs 已被删除 —— 混为一谈会让用户
+  //     以为预设丢了（E-46 同族）。
+  const presetIsExcluded = snapshot.excludedPresets.some((p) => p.id === effectivePreset)
   if (presetIsExcluded) {
-    const row = snapshot.excludedPresets.find((p) => p.id === preset)
-    presetItems.push({ id: preset, label: row === undefined ? preset : presetDisplayName(row), note: t('tag.notACandidate') })
-  } else if (preset !== '' && presetRow === undefined) {
-    presetItems.push({ id: preset, label: preset, note: t('tag.unavailableNotInPresetList') })
+    const row = snapshot.excludedPresets.find((p) => p.id === effectivePreset)
+    presetItems.push({
+      id: effectivePreset,
+      label: row === undefined ? effectivePreset : presetDisplayName(row),
+      note: t('tag.notACandidate'),
+    })
+  } else if (presetRow === undefined) {
+    presetItems.push({ id: effectivePreset, label: effectivePreset, note: t('tag.unavailableNotInPresetList') })
   }
   // 被排除项的显示名（说明行要用）—— 取不到就退回 id，**不留空白**。
   const excludedNames = snapshot.excludedPresets.map((p) => presetDisplayName(p))
@@ -442,40 +448,28 @@ function SpawnDefaultsCard(props: {
       {/* ── 预设 ───────────────────────────────────────────────────── */}
       <Row label={t('label.preset')}>
         <MenuSelect
-          value={preset}
-          placeholder={t('opt.hostDefaultPreset')}
+          // ⚠ 第 11 轮：空值**不再**显示成「（用宿主默认预设）」，而是**解析到出厂默认**
+          //   （标准模式）—— 与派活口径同源（`FACTORY_DEFAULT_PRESET_ID`）。
+          //   这样"没设过"的用户看到的与**实际会用到的**是同一个预设，不会两处不一致。
+          value={effectivePreset}
+          // placeholder 只在"清单里连标准模式都没有"时兜底显示（正常不该出现）。
+          placeholder={t('preset.factoryName')}
           groups={[{ key: 'preset', label: '', items: presetItems }]}
           onSelect={(id) => { void write('agentPreset', id) }}
           disabled={busy}
           ariaLabel={t('label.preset')}
         />
-        {preset !== '' && presetRow?.broken !== undefined ? (
+        {presetRow?.broken !== undefined ? (
           <span className={S.warn}>{t('warn.presetBroken', { reason: presetRow.broken })}</span>
         ) : null}
         {/* ⚠ 已存值 = 被排除项 ⇒ 如实说明"它是谁排的 + 实际效果"，不与"已被删除"混为一谈 */}
         {presetIsExcluded ? (
           <span className={S.warn}>
-            {t('warn.presetExcluded', { id: preset, names: excludedNames.join(' / ') })}
+            {t('warn.presetExcluded', { id: effectivePreset, names: excludedNames.join(' / ') })}
           </span>
         ) : null}
-        {!presetIsExcluded && preset !== '' && presetRow === undefined ? (
-          <span className={S.warn}>{t('warn.presetMissing', { id: preset })}</span>
-        ) : null}
-        {/* ── 第 10 轮：宿主默认**恰好是规划侧预设**时的可见警告（**不许静默**）────
-            ⚠ 这是用户报的那个洞：第一项「（用宿主默认预设）」看起来人畜无害，
-              而本机宿主的 `selectedDefault` 正是 `Hob` ⇒ 选它（= 不传预设）
-              会建出**只能再规划**的会话。
-            ⚠ 只有**真的探明**才显示（`hostDefaultRow` 拿到了、且它确实在被排除集里）；
-              探不到时**不编**、也不吓唬用户（保持沉默比说假话好）。 */}
-        {hostDefaultIsPlanning ? (
-          <span className={S.warn}>
-            {t('warn.hostDefaultIsPlanning', {
-              // ⚠ 名字取**被排除项自己的**显示名（走同一套解析），拿不到才退回 id ——
-              //   **不**在这里另写一个字面量 id（单源纪律：`planning-preset.ts`）。
-              planning: hostDefaultName ?? hostDefaultRow?.id ?? '',
-              factory: t('preset.factoryName'),
-            })}
-          </span>
+        {!presetIsExcluded && presetRow === undefined ? (
+          <span className={S.warn}>{t('warn.presetMissing', { id: effectivePreset })}</span>
         ) : null}
         {/* ── 常驻说明：为什么某个预设**不在**候选里（**不许静默过滤** · E-46）────
             ⚠ 它**常驻**（不是只在异常时出现）：用户拉开下拉看不见 Hob 时，
@@ -704,10 +698,7 @@ const PANEL_EN: Record<string, string> = {
   'label.catalog': 'Candidate sources',
   'label.writeResult': 'Write result',
   'label.write': 'Write',
-  'opt.hostDefaultPreset': '(Use the host default preset)',
-  'opt.hostDefaultResolved': '(Use the host default preset — {name})',
   'preset.factoryName': 'the factory default preset (Standard mode)',
-  'warn.hostDefaultIsPlanning': 'The host default preset is {planning} — this plugin’s planning-side preset. It is not used: that preset plans work but cannot carry it out, so a session started with it would only plan again. This plugin uses {factory} instead. Choosing a preset yourself is unaffected.',
   'opt.hostDefaultModel': '(Use the host default model)',
   'opt.modelDefaultEffort': '(Model default{effort})',
   'tag.unavailable': ' · unavailable',
@@ -717,8 +708,8 @@ const PANEL_EN: Record<string, string> = {
   'tag.notACandidate': ' · not offered as a new-session default',
   'warn.presetBroken': 'The host marks this preset unavailable: {reason}',
   'warn.presetMissing': 'The stored preset “{id}” is not in the current list (it may have been deleted) — the value is kept so you can change it here.',
-  'warn.presetExcluded': 'The stored preset “{id}” is this plugin’s planning-side preset ({names}) — it is not offered as a new-session default, because it cannot carry out the work and a session started with it would only plan again. The value is kept so you can change it here; hob_spawn will not apply it as a default.',
-  'note.excluded': 'Not offered as a new-session default: {names} — the planning-side preset of this plugin. It plans work but cannot carry it out, so it is deliberately kept out of the candidates above.',
+  'warn.presetExcluded': 'The stored preset “{id}” is not offered as a new-session default; hob_spawn will use the factory default (Standard mode) instead. The value is kept so you can change it here.',
+  'note.excluded': 'Not offered as a new-session default: {names} — this plugin’s planning-side preset cannot carry out work.',
   'warn.modelMissing': 'The stored model “{provider} / {model}” is not in the current catalog (it may be retired) — the value is kept so you can change it here.',
   'catalog.status.loading': 'Reading candidates…',
   'catalog.status.idle': 'Candidates not loaded',
@@ -777,10 +768,7 @@ const PANEL_ZH: Record<string, string> = {
   'label.catalog': '候选来源',
   'label.writeResult': '写入结果',
   'label.write': '写入',
-  'opt.hostDefaultPreset': '（用宿主默认预设）',
-  'opt.hostDefaultResolved': '（用宿主默认预设 —— {name}）',
   'preset.factoryName': '出厂默认预设（标准模式）',
-  'warn.hostDefaultIsPlanning': '宿主的默认预设是{planning} —— 这是本插件的规划侧预设。它**不会被采用**：它负责规划、不能施工，用它建出的会话只会再规划一次。本插件改用{factory}。你自己选的预设不受影响。',
   'opt.hostDefaultModel': '（用宿主默认模型）',
   'opt.modelDefaultEffort': '（用模型默认{effort}）',
   'tag.unavailable': '（不可用）',
@@ -790,8 +778,8 @@ const PANEL_ZH: Record<string, string> = {
   'tag.notACandidate': '（不作候选）',
   'warn.presetBroken': '该预设被宿主标为不可用：{reason}',
   'warn.presetMissing': '已存预设「{id}」不在当前清单里（可能已被删除）—— 仍保留原值，可在此改掉。',
-  'warn.presetExcluded': '已存预设「{id}」是本插件的规划侧预设（{names}）—— 它不作为「新建会话默认」的候选，因为它没有施工能力，用它建出的会话只会再规划一次。原值仍保留，可在此改掉；派活时也不会套用它。',
-  'note.excluded': '以下预设不作为「新建会话默认」的候选：{names} —— 这是本插件的规划侧预设。它负责规划、不能施工，故有意不在上面的候选之列。',
+  'warn.presetExcluded': '已存预设「{id}」不作候选；派活时改用出厂默认（标准模式）。原值仍保留，可在此改掉。',
+  'note.excluded': '以下预设不作候选：{names} —— 本插件的规划侧预设，不能施工。',
   'warn.modelMissing': '已存模型「{provider} / {model}」不在当前目录里（可能已下线）—— 仍保留原值，可在此改掉。',
   'catalog.status.loading': '候选读取中…',
   'catalog.status.idle': '候选未加载',
