@@ -38,6 +38,7 @@
     "check:gitignore": "node scripts/check-gitignore.mjs",
     "check:experience": "node scripts/check-experience.mjs",
     "check:host": "node scripts/host-probe.mjs",
+    "check:modules": "node scripts/module-independence-probe.mjs",
     "exp:next-id": "node scripts/next-experience-id.mjs"
   },
   "peerDependencies": {

@@ -376,6 +376,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 | 归档须登记 | 归档后**必须在 §3 表加一行**（否则归档本身成隐性堆积） | 未机器化 |
 | 经验库先查 | 动手前先扫 `EXPERIENCE.md` 对应主题，查有没有现成根因 | 未机器化 |
 | 诚实边界 | 没验的写「未验证」，⛔ 不许把「我认为」写成「已验证」 | 未机器化 |
+| **入库脚本必须有落点** | `scripts/**` 下的脚本**必须被 `package.json` 调用**（进收尾集合），否则它**没人为它跑**、期望过期也**无人发现**（**E-122**；第 51 轮已是**第 5 次**现场抓获） | 未机器化 |
 | **新增纪律须同步登记本表** | 新增一条纪律 ⇒ 本表**必须同步加一行**（含"谁来查"）；查不了的照实写 `未机器化`（⛔ 不许乱指检查名） | 未机器化 |
 | **清理类改动必须含 `build`** | 动不可见字符 / 删字符后**必须 `build`** —— 扫描器 PASS ≠ 文件能编译 | 未机器化 |
 | **文档里不写死会漂移的计数** | 计数型陈述（组数 / 条数 / 份数 / 行数 / 编号范围 …）一律改**口径式**：写"以 `<命令>` 实测为准"（**E-116 / E-117**） | 未机器化 |
@@ -440,7 +441,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 | `EXPERIENCE.md` 经验库 | ✅ 已就位；条目数与下一个可用编号**以 `npm run exp:next-id` 实测为准**（该命令同时与 git 版本对账）；写作纪律：新坑续编不重排、**不许丢根因**、未验证项进 §7 | `.hob/EXPERIENCE.md`；`npm run exp:next-id` |
 | `archive/` | **不在本目录** —— 交接归档（`TASK.md` / `REPORT.md`）落在**账本目录**的 `archive/<日期>-<名>/`，并须在 §3 指针表登记一行 | `ls` 工作区 `.hob/`（无 archive）；账本目录 `ls archive/` |
 | **写账本的工具** | ✅ **已在用且真机验证过** —— `read_contracts`（读账本 `.md`）+ `write_hob`（写账本）；`write_hob` 真机写入与自动备份已实测 | `src/server/hob-write.ts`、`src/modules/tools.ts` |
-| **骨架 ↔ 实例漂移检查** | ✅ **已在跑** —— 收尾必跑（**条数以 `package.json` 的 `scripts` 实测为准**）= `npm run build` + `npm run typecheck` + 各个 `check:*`：`check:presets`（预设契约）· `check:config`（配置面三处不漂移）· `check:orch`（编排运行态跨重载；⚠ **含「结构改造 ① ②」真跑组 G**）· `check:client`（client 半边宿主服务取用）· `check:gitignore`（**排除漂移 + 文档形态机检多组 A/B/C/D/D′/E/F/G/H/I**，⚠ 组与条数以其实测输出为准）· `check:experience`（经验库编号/四要素）· `check:host`（**真产物** `lib/` 的 host 半边探针：schema 形状/默认值 + **逐开关独立启停**；⚠ **须在 `build` 之后**，`lib/` 缺失时**可读报错并 exit 2**）；另 `exp:next-id` 负责取号 | `package.json` 的 `scripts`；§1.4；`PROJECT.md` §10.2 |
+| **骨架 ↔ 实例漂移检查** | ✅ **已在跑** —— 收尾必跑（**条数以 `package.json` 的 `scripts` 实测为准**）= `npm run build` + `npm run typecheck` + 各个 `check:*`：`check:presets`（预设契约）· `check:config`（配置面三处不漂移）· `check:orch`（编排运行态跨重载；⚠ **含「结构改造 ① ②」真跑组 G**）· `check:client`（client 半边宿主服务取用）· `check:gitignore`（**排除漂移 + 文档形态机检多组 A/B/C/D/D′/E/F/G/H/I**，⚠ 组与条数以其实测输出为准）· `check:experience`（经验库编号/四要素）· `check:host`（**真产物** `lib/` 的 host 半边探针：schema 形状/默认值 + **逐开关独立启停**；⚠ **须在 `build` 之后**，`lib/` 缺失时**可读报错并 exit 2**）· `check:modules`（**真产物** `lib/` 的模块独立启停探针：真调 cordis `ctx.plugin` ⇒ 配置开关使模块**未装载** · 缺依赖 ⇒ fiber **PENDING** · **两种 inject 的不同后果**；⚠ 与 `check:host` **覆盖面不重叠**（后者只验 schema 与登记表）；同样须在 `build` 之后、缺 `lib/` 则 exit 2）；另 `exp:next-id` 负责取号 | `package.json` 的 `scripts`；§1.4；`PROJECT.md` §10.2 |
 
 ⚠ **仍未做（不许假设它存在）**：旧项目那份**通用**骨架 ↔ 实例母版比对脚本
 （`scripts/check-hob-skeleton.mjs`）**未搬运** —— 现役机检是**针对本仓库具体清单**的断言
