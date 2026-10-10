@@ -546,6 +546,30 @@ const orchCode = stripComments(orchSrc)
           + ' —— 这正是 E-114 的形态：判据被"描述它自己的文本"打挂')
       }
 
+      // ── G3b **收紧后的真牙口**（2026-10-11 第 54 轮）：**slug 不合规的路径也要被点名** ──
+      //   ⚠ 第 54 轮的真缺口：slug 字符集原为 `[a-z0-9-]` ⇒
+      //     `archive/2026-10-11-plan-v2.2/PROJECT.md`（**含点号**）**整条不被当引用** ⇒
+      //     写入侧一声不响，而写侧 `ARCHIVE_DIR_RE` 会**拒写**那种目录
+      //     ⇒ 一条永远创建不出来的路径，全程无人提醒。本组钉住"收紧后认得出来"。
+      //   ⚠ **成对**（E-126）：G3 验"不该咬的不咬"、G3b 验"该咬的会咬" —— 两侧都要有。
+      {
+        const content = [
+          '含点号：`archive/2026-10-11-plan-v2.2-nonexistent/PROJECT.md`',
+          '含大写：`archive/2026-10-11-Plan-V2-nonexistent/PROJECT.md`',
+        ].join('\n')
+        const refs = collectDanglingRefs(gdir, content)
+        const list = Array.isArray(refs) ? refs : []
+        const gotDot = list.some((r) => r.ref === 'archive/2026-10-11-plan-v2.2-nonexistent/PROJECT.md')
+        const gotUpper = list.some((r) => r.ref === 'archive/2026-10-11-Plan-V2-nonexistent/PROJECT.md')
+        if (gotDot && gotUpper && list.length === 2) {
+          ok('G3b slug 不合规（含点号 / 大写）的归档路径**当场点名**（第 54 轮收紧，既有能力未丢）')
+        } else {
+          bad(`G3b slug 不合规的路径**没被点名**（list=${JSON.stringify(list)}）`
+            + '\n      ⇒ 那一类路径**永远创建不出来**（ARCHIVE_DIR_RE 会拒写）却全程无人提醒'
+            + '\n      ⇒ 这正是第 54 轮修的真缺口形态（`archive/2026-10-11-plan-v2.2/PROJECT.md`）')
+        }
+      }
+
       // ── G4 **写即投**：给 dispatchTo ⇒ 投递被调用 + 该条 handoff 被清 ──
       {
         const stateFile = join(gdir, 'runtime', 'orch-watches.json')
