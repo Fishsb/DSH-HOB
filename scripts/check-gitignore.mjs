@@ -32,7 +32,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -728,6 +728,149 @@ if (LEDGER_ROOT === undefined) {
   if (eBad === 0) {
     ok(`E ✓ 元讨论容忍：${META_TOLERANCE_SAMPLES.length} 个"不该被当成引用"的样本，`
       + '**全部未被** D / D′ 咬到（自带样本，不依赖正本内容）')
+  }
+}
+
+// ── 断言 F · 纪律登记表（2026-10-10 新增 · 第 45 轮 · 结构改造③）────────────
+/**
+ * **每条纪律必须声明"谁来查"。**
+ *
+ * ── 为什么需要它（缺口 3 · 规矩没有执行器）─────────────────────────────
+ *   纪律写在文档里、**靠立规矩的人记得遵守** ⇒ 实测失败 2 次：
+ *     · 第 36 轮立"不写失效状态字"，而**该纪律的落点文本自己就犯了**；
+ *     · 第 42 轮立"计数要带口径"，而**派单时又写死"预期 11 处"**。
+ *   ⚠ 共同点：**立规矩的人与守规矩的人是同一个**，没有第三方核对。
+ *
+ * ── 设计要点（为什么不判断"什么算一条纪律"）────────────────────────────
+ *   那是**语义判断**，机器做不到（也做不稳）。⇒ 改为**建一张登记表**，
+ *   并断言**表里每个"机检归属"都真实存在** ⇒
+ *   真正的牙口是「**指向一个不存在的检查**会被当场抓住」。
+ *   ⚠ **可判、不依赖语义、也不需要数条数**（**E-117**：计数会漂移，不当判据）。
+ *
+ * ── 判据 ─────────────────────────────────────────────────────────────
+ *   ① 表读不到 / 0 行 ⇒ **FAIL**（"失去基准 ⇒ 不按通过处理"，**不许静默**）；
+ *   ② 每行第 3 列非空，空 ⇒ **FAIL 并打印是哪一行**；
+ *   ③ 第 3 列须为 `` `check:<name>` ``（且该 name **在 package.json scripts 里存在**）
+ *      或 `未机器化`，其余一律 **FAIL + 打印该行原文**；
+ *   ④ 尤其：`` `check:不存在的名字` `` ⇒ **FAIL**（**本组主牙口**）。
+ *
+ * ⚠ **只解析 README §5.1 的表**（列名行 + 其后的 `| … | … | … |` 行）——
+ *   不扫全文件，避免把别处的表格当登记表（那会让判据依赖无关内容）。
+ */
+const ZERO_WIDTH_RE = /[\u200B\uFEFF\u200E\u200F]/
+{
+  const src = readmeSrc
+  const lines = src.split('\n')
+  // 表头行：三列表头里含「机检归属」
+  const headIdx = lines.findIndex((l) => l.startsWith('|') && l.includes('机检归属'))
+  let rows = []
+  if (headIdx >= 0) {
+    for (let i = headIdx + 1; i < lines.length; i++) {
+      const l = lines[i]
+      if (!l.startsWith('|')) break // 表结束
+      if (/^\|[\s:|-]+\|$/.test(l.trim())) continue // 分隔行
+      rows.push({ no: i + 1, raw: l })
+    }
+  }
+  if (headIdx < 0 || rows.length === 0) {
+    bad('F 读不到「纪律登记表」（README §5.1）⇒ 归属核验失去基准，**不按通过处理**'
+      + '\n      ⇒ 该表的判据是"每条纪律必须有归属"，表没了则纪律**重新变回没人管**（本组要防的正是这个）')
+  } else {
+    // package.json 的 scripts **键名**（判据 ③ 要拿它当唯一权威；不硬编码期望表）
+    let scriptNames = null
+    try {
+      const pkgRaw = execFileSync('cat', [PKG], { encoding: 'utf8' })
+      const sc = JSON.parse(pkgRaw).scripts
+      if (sc !== null && typeof sc === 'object') scriptNames = new Set(Object.keys(sc))
+    } catch { scriptNames = null }
+    if (scriptNames === null) {
+      bad('F 读不到 package.json 的 scripts（归属判据的唯一权威缺失 ⇒ 不按通过处理）')
+    } else {
+      let fBad = 0
+      let manualCount = 0
+      for (const r of rows) {
+        // 第 3 列 = 第 3 个 `|` 分隔的单元格
+        const cells = r.raw.split('|').map((c) => c.trim())
+        // cells[0] 是行首 `|` 前的空串 ⇒ 数据列从 cells[1] 起
+        const third = cells[3] ?? ''
+        if (third === '') {
+          fBad++
+          bad(`F 第 ${r.no} 行的「机检归属」为空 ⇒ **每条纪律都必须声明"谁来查"**`
+            + `\n      ⇒ 该行原文：${r.raw}`
+            + '\n      ⇒ 填 `check:<名字>`（须真实存在）或 `未机器化`（如实登记，不是失败）')
+          continue
+        }
+        if (third === '未机器化') { manualCount++; continue }
+        const m = /^`check:([A-Za-z0-9:._-]+)`$/.exec(third)
+        if (m === null) {
+          fBad++
+          bad(`F 第 ${r.no} 行的「机检归属」不是合法值：\`${third}\``
+            + `\n      ⇒ 该行原文：${r.raw}`
+            + '\n      ⇒ 合法值只有两种：`` `check:<name>` ``（name 须在 package.json scripts 里）或 `未机器化`')
+          continue
+        }
+        const name = `check:${m[1]}`
+        if (!scriptNames.has(name)) {
+          fBad++
+          bad(`F 第 ${r.no} 行的「机检归属」指向**不存在的检查**：\`${name}\``
+            + `\n      ⇒ 该行原文：${r.raw}`
+            + `\n      ⇒ package.json 的 scripts 里没有 \`${name}\`（现有：${[...scriptNames].sort().join(' · ')}）`
+            + '\n      ⇒ 这正是本组的主牙口：**指向一个不存在的检查会被当场抓住**'
+            + '（否则纪律会挂着"有人管"的名义，实际没人管）')
+          continue
+        }
+      }
+      if (fBad === 0) {
+        ok(`F ✓ 纪律登记表：${rows.length} 行，第 3 列**全部合法**`
+          + `（\`check:<存在的名字>\` ${rows.length - manualCount} 行 · \`未机器化\` ${manualCount} 行）`)
+      }
+    }
+  }
+}
+
+// ── 断言 G · 零宽 / 不可见字符（2026-10-10 新增 · 第 45 轮）────────────────
+/**
+ * **`src/**` 与 `scripts/**` 内不得含零宽 / 不可见字符。**
+ *
+ * ⛔ **不扫 `.md`**（**有意取舍**）：文档里**必然**会"**描述这个禁令本身**" ——
+ *   本节的注释、README 与正本的纪律段都要写下那四个码位（如上面的 `[\u200B…]`）。
+ *   若把 `.md` 也纳入，**讲这条禁令的那几行会把自己打挂**（**E-114 家族**：
+ *   判据被"描述它自己的文本"咬到）。⇒ 只扫**代码**（那里没有"描述禁令"的正当需求）。
+ *
+ * ⚠ 为什么要有它：本条纪律（"不许零宽字符"）此前是**人守**的
+ *   —— 实测在 `src/modules/orchestrator.ts` 的一句注释里**留了一个 U+200B**
+ *   直到第 44 轮才被人工发现 ⇒ 本轮把它**机器化**（纪律登记表的归属随之上移）。
+ */
+{
+  const SKIP_DIRS = new Set(['node_modules', '.git'])
+  const hits = []
+  const walk = (dir) => {
+    let entries = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (SKIP_DIRS.has(e.name)) continue
+      const p = join(dir, e.name)
+      if (e.isDirectory()) { walk(p); continue }
+      if (!/\.(ts|mjs|js|tsx)$/.test(e.name)) continue
+      let src = ''
+      try { src = readFileSync(p, 'utf8') } catch { continue }
+      src.split('\n').forEach((line, i) => {
+        if (ZERO_WIDTH_RE.test(line)) {
+          hits.push(`${relative(root, p).replace(/\\/g, '/')}:${i + 1}`)
+        }
+      })
+    }
+  }
+  walk(join(root, 'src'))
+  walk(join(root, 'scripts'))
+  if (hits.length === 0) {
+    ok('G ✓ `src/**` 与 `scripts/**` 内零宽/不可见字符（U+200B / U+FEFF / U+200E / U+200F）：**0 处**'
+      + '（⛔ 不扫 `.md` —— 文档要"描述这条禁令本身"，扫了会自我打挂，见 E-114）')
+  } else {
+    bad(`G \`src/**\` 或 \`scripts/**\` 里出现零宽/不可见字符（${hits.length} 处）：`
+      + ` ${hits.join(' · ')}`
+      + '\n      ⇒ 这类字符**不可见却参与匹配/比较** ⇒ 会造成"看着一样、字节不同"的诡异缺陷'
+      + '\n      ⇒ 清理后重跑；若确需在代码里引用这些码位，请用转义（`\\u200B`）而非字面量')
   }
 }
 

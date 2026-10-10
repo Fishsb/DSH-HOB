@@ -315,7 +315,11 @@ function runtimeFileOf(svcCtx: any, wsRoot: string | undefined): string | undefi
  *
  * ⚠ 用途只有一个：**插件刚就绪、还没有任何 watch** 时（= 重载后的新代）
  *   要找出上一代留下的记录 —— 那时没有"这一轮的 workspace"可依据，
- *   只能按 `ledgerHome` 扫一层 `<ledgerHome>/*​/runtime/orch-watches.json`。
+ *   只能按 `ledgerHome` 扫一层：`<ledgerHome>/<工作区名>/runtime/orch-watches.json`。
+ *   （⚠ 这里**刻意不写 glob 星号形态**：星号紧跟斜杠会在**块注释**里拼出注释结束符
+ *   ⇒ **提前闭合注释**，把后面的代码全变成语法垃圾。
+ *   沿革：此处原先靠一个 U+200B 夹在星号与斜杠之间**碰巧**挡住了这个缺陷，
+ *   2026-10-10 第 45 轮清理零宽字符时才暴露 ⇒ 改为**用文字描述路径**，不写 glob。）
  *   这一层扫描是**确定的**（不是全盘搜索），且只在重载后跑一次。
  */
 function scanStateFiles(svcCtx: any): string[] {
