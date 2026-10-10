@@ -508,6 +508,178 @@ const SCRIPT_LANDING_EXEMPT = []
 }
 
 /**
+ * ── 断言 K · **同源判据的字面量必须逐字相同**（2026-10-11 第 55 轮）────────────
+ *
+ * ── 为什么需要它（缺口有实测出处）──────────────────────────────────────
+ *   同一条判据写在**两处**（写入侧 `src/server/hob-write.ts` · 检查侧本脚本），
+ *   因为 `src/` 与 `scripts/` 是**两棵互不依赖的树**（`src/` 不能 import `scripts/`，
+ *   反之亦然 —— 那会把检查脚本变成产品依赖）⇒ 只能**照抄 + 在两侧注释里互相指名**。
+ *   ⇒ 后果："照抄"这件事**全靠人守**，谁忘了对一眼，两侧就会**各写一套**。
+ *   ⚠ **实测发生的正是这个**（第 54 轮 · **E-130**）：两侧的归档路径正则都写 `[a-z0-9-]`
+ *     （**不含点号**）⇒ 含点号的路径在**两侧同时**不被当引用 ⇒
+ *     **写下一个永远创建不出来的路径，全程无人提醒**。
+ *     ⚠ 危险之处在于：**两侧一致地错**时，"两边一致"会被误当成"两边都对"。
+ *   ⇒ 本断言把"照抄"从**人守**变成**机检**：两侧的字面量必须**逐字相同**；
+ *     不同 ⇒ FAIL 并**打印两侧各自的字面量与所在文件**。
+ *
+ * ── 判据（口径：**只比字面量文本**，不比"行为等价"）──────────────────────
+ *   · 目标是**防各写一套**，不是判"两种写法是否等价" ⇒ **逐字文本比对**最简单、不误报；
+ *     ⚠ **刻意不做"语义等价"判断**（那要写一个正则解析器，且会引入误报面）。
+ *   · ⚠ **提取失败（找不到 / 换了写法）⇒ FAIL 并明说"提取不到"** ——
+ *     ⛔ **不许静默通过**：静默通过等于这条机检不存在（与断言 I 的教训同族）。
+ *
+ * ── 覆盖范围（**照实登记**，见 `.hob/README.md` §1.4）────────────────────
+ *   · **管**：两对**正则字面量** —— 归档路径（`REF_PATH_RE` ↔ `D_REF_RE`）·
+ *     作业书文件名（`REF_TASK_RE` ↔ `D_TASK_RE`）。
+ *     这些都是**具名声明**（`const X = /…/g`）⇒ 提取稳定。
+ *   · **不管（已知边界）**：`hob-render.ts` 的 `fencedMask` ↔ 本脚本的 `fencedMaskBelow`
+ *     —— 那是**函数体照抄**，不是字面量。⚠ 比对函数体**极易脆**（空白 / 注释 / 改名
+ *     都会误报），故**判不可机检**，如实登记边界，⛔ **不为"看起来全护住"而写一条会误报的机检**。
+ *     ⚠ **但它内含的那个正则（围栏开标记）是可机检的** ⇒ 本断言**顺带**比对它：
+ *       检查侧有具名 `FENCE_OPEN_RE`，写侧是**内联字面量**（`const m = /…/.exec(...)`），
+ *       故对写侧改用"**字面量文本是否在文件中出现**"的判据（见 K_LITERAL_CHECKS 的第 3 项）。
+ *   · ⚠ **只覆盖"两侧都在的文件"**：将来若有**第三处**也抄一份，本断言**不自动覆盖**
+ *     ⇒ 记进已知边界（与"脚本落点只扫一层"同族）。
+ */
+{
+  /** 声明式正则提取：`[export] const|let|var NAME = /…/flags`。 */
+  const DECL_RE = /(?:^|\s)(?:const|let|var|export\s+const)\s+([A-Za-z_$][\w$]*)\s*=\s*(\/(?:\\.|\[[^\]]*\]|[^/\n\\])+\/[gimsuy]*)/g
+  /** 从源码里取某个具名声明的正则字面量；找不到返回 `null`（**不静默**）。 */
+  const grabDeclared = (src, name) => {
+    DECL_RE.lastIndex = 0
+    let m
+    while ((m = DECL_RE.exec(src)) !== null) if (m[1] === name) return m[2]
+    return null
+  }
+  const rel = (p) => relative(root, p).replace(/\\/g, '/')
+
+  /**
+   * 同源对清单：`[标签, 写侧文件, 写侧取法, 检查侧文件, 检查侧取法]`。
+   * ⚠ 取法两种：`['decl', 名字]` = 具名声明；`['contains', 字面量]` = 文本包含。
+   */
+  const WRITE_TS = join(root, 'src', 'server', 'hob-write.ts')
+  const RENDER_TS_K = join(root, 'src', 'server', 'hob-render.ts')
+  const CHECK_MJS = join(root, 'scripts', 'check-gitignore.mjs')
+  const K_LITERAL_CHECKS = [
+    ['归档路径（REF_PATH_RE ↔ D_REF_RE）', WRITE_TS, ['decl', 'REF_PATH_RE'], CHECK_MJS, ['decl', 'D_REF_RE']],
+    ['作业书文件名（REF_TASK_RE ↔ D_TASK_RE）', WRITE_TS, ['decl', 'REF_TASK_RE'], CHECK_MJS, ['decl', 'D_TASK_RE']],
+  ]
+  const readOrNull = (p) => { try { return readFileSync(p, 'utf8') } catch { return null } }
+  const srcW = readOrNull(WRITE_TS)
+  const srcR = readOrNull(RENDER_TS_K)
+  const srcC = readOrNull(CHECK_MJS)
+  if (srcW === null || srcR === null || srcC === null) {
+    bad('K 同源字面量比对【基准缺失】：读不到源码文件 '
+      + `${[WRITE_TS, RENDER_TS_K, CHECK_MJS].map(rel).join(' / ')} ⇒ 不按通过处理（不许静默）`)
+  } else {
+    const srcOf = (p) => (p === WRITE_TS ? srcW : p === RENDER_TS_K ? srcR : srcC)
+    let kBad = 0
+    for (const [label, wFile, wHow, cFile, cHow] of K_LITERAL_CHECKS) {
+      const wSrc = srcOf(wFile)
+      const cSrc = srcOf(cFile)
+      // 写侧：具名声明，或"该字面量出现在文件中"（内联写法）
+      let wLit = null
+      let cLit = null
+      try {
+        if (wHow[0] === 'decl') wLit = grabDeclared(wSrc, wHow[1])
+        else { wLit = cHow[0] === 'decl' ? grabDeclared(cSrc, cHow[1]) : null }
+        if (cHow[0] === 'decl') cLit = grabDeclared(cSrc, cHow[1])
+        else cLit = wLit
+      } catch { /* 下面按"提取不到"处理 */ }
+      // ⚠ 提取失败 ⇒ FAIL 并明说（⛔ 不许静默通过）
+      if (wHow[0] === 'decl' && wLit === null) {
+        kBad++
+        bad(`K 同源对【提取不到】：\`${label}\` 在写侧 ${rel(wFile)} 里找不到具名声明的正则字面量 `
+          + `\`${wHow[1]}\`（写法变了？）— ⛔ 不许静默通过：提取不到 = 这条机检等于不存在`)
+        continue
+      }
+      if (cHow[0] === 'decl' && cLit === null) {
+        kBad++
+        bad(`K 同源对【提取不到】：\`${label}\` 在检查侧 ${rel(cFile)} 里找不到具名声明的正则字面量 `
+          + `\`${cHow[1]}\`（写法变了？）— ⛔ 不许静默通过：提取不到 = 这条机检等于不存在`)
+        continue
+      }
+      if (wLit !== cLit) {
+        kBad++
+        bad(`K 同源对**不一致**：\`${label}\` —— 两侧的字面量**必须逐字相同**（改一处必须改另一处）`
+          + `\n      · ${rel(wFile)}: \`${wLit}\``
+          + `\n      · ${rel(cFile)}: \`${cLit}\``
+          + '\n      ⇒ 这两处是**同一处口径的两个副本**（`src/` 与 `scripts/` 互不 import，只能照抄）'
+          + `\n      ⇒ 后果实测过（第 54 轮 · E-130）：两侧各写一套时，含点号的路径在**两侧同时**`
+          + `\n        不被当引用 ⇒ 一条永远创建不出来的路径全程无人提醒 —— "两边一致地错"`
+          + `\n      ⇒ 修法：把两侧改成**同一个字面量**（改完请对一眼另一处）`)
+      }
+    }
+    // ── 围栏开标记：写侧是**内联**字面量（非具名声明）⇒ 用"文本包含"判据 ──
+    {
+      const cLit = grabDeclared(srcC, 'FENCE_OPEN_RE')
+      const wInline = /const\s+m\s*=\s*(\/(?:\\.|\[[^\]]*\]|[^/\n\\])+\/[gimsuy]*)\s*\.exec\s*\(/.exec(srcR)
+      if (cLit === null) {
+        kBad++
+        bad('K 同源对【提取不到】：检查侧 `FENCE_OPEN_RE` 找不到（写法变了？）— ⛔ 不许静默通过')
+      } else if (wInline === null) {
+        kBad++
+        bad('K 同源对【提取不到】：写侧围栏正则不是**内联字面量**形态（`const m = /…/.exec(…)`）——'
+          + '写法变了 ⇒ 提取不到。⛔ 不许静默通过：请把本断言的取法同步到新写法（或改回内联）')
+      } else if (wInline[1] !== cLit) {
+        kBad++
+        bad(`K 同源对**不一致**：\`围栏开标记（fencedMask 内联 ↔ FENCE_OPEN_RE）\` —— 两侧必须逐字相同`
+          + `\n      · ${rel(RENDER_TS_K)}（内联）: \`${wInline[1]}\``
+          + `\n      · ${rel(CHECK_MJS)}: \`${cLit}\``
+          + `\n      ⇒ 两侧对"什么算围栏"必须同口径，否则文档里能安全写的例子，机检会报残留（E-114 家族）`)
+      }
+    }
+
+    // ── K 的自带样本（**E-126**：成对，且**不依赖真实源码当前状态**）──
+    //   ⚠ 判据 = **该咬的全咬、不该咬的全不咬**；数照实记（**E-117**：⛔ 不写死"预期几个"）。
+    //   这里把"比对逻辑"抽成一个小函数（与主体同口径），再把样本喂它 —— 样本不受源码现状影响。
+    const sameLiteral = (a, b) => a === b
+    const K_BITE_SAMPLES = [
+      ['/archive\\/\\d{4}-[a-z0-9-]+\\/X/g', '/archive\\/\\d{4}-[A-Za-z0-9._-]+\\/X/g', 'S1 只有字符集不同（第 54 轮真事故的最小复现）'],
+      ['/TASK-R\\d+\\.md/g', '/TASK-R\\d+[A-Za-z0-9-]*\\.md/g', 'S2 量词不同（少了一段）'],
+      ['/^\\s{0,3}(`{3,}|~{3,})(.*)$/', '/^\\s{0,3}(`{3,}|~{3,})+(.*)$/', 'S3 只差一个 `+`'],
+    ]
+    const K_SAFE_SAMPLES = [
+      ['/archive\\/\\d{4}-\\d{2}-\\d{2}-[A-Za-z0-9._-]+\\/[A-Za-z0-9._/-]*/g', '/archive\\/\\d{4}-\\d{2}-\\d{2}-[A-Za-z0-9._-]+\\/[A-Za-z0-9._/-]*/g', 'S4 完全相同的字面量'],
+      ['/TASK-R\\d+[A-Za-z0-9-]*\\.md/g', '/TASK-R\\d+[A-Za-z0-9-]*\\.md/g', 'S5 完全相同的字面量（另一对）'],
+    ]
+    for (const [a, b, why] of K_BITE_SAMPLES) {
+      if (sameLiteral(a, b)) {
+        kBad++
+        bad(`K 自带样本**没被咬**：${why} —— 两个**不同**的字面量被判成"相同" ⇒ 判据**改哑**（永远通过）`)
+      }
+    }
+    for (const [a, b, why] of K_SAFE_SAMPLES) {
+      if (!sameLiteral(a, b)) {
+        kBad++
+        bad(`K 自带样本**被误咬**：${why} —— 两个**相同**的字面量被判成"不同" ⇒ 判据过宽（会误报）`)
+      }
+    }
+    // ── 口径判定（§1⑤ 要求"先判口径并说明"）：**只比字面量文本，不比语义等价** ──
+    //   ⚠ 下面这个样本是**刻意**的："语序/空白不同、语义可能相同" ⇒ **判为"不同"（该咬）**。
+    //     理由：本断言要防的是"**各写一套**"，不是"判两种写法等价"—— 后者要写正则解析器、
+    //     且必然引入误报面（正是本条注释开头点名"极易脆"的那类）。⇒ 口径 = **逐字文本**。
+    {
+      const a = '/TASK-R\\d+ [A-Za-z0-9-]*\\.md/g'
+      const b = '/TASK-R\\d+[A-Za-z0-9-]*\\.md/g'
+      if (sameLiteral(a, b)) {
+        kBad++
+        bad('K 口径样本异常：插入空白后仍被判"相同" ⇒ 说明比对不是"逐字文本"口径（与注释不符）')
+      }
+      // ⚠ 反过来说：**空白不同就该咬** ⇒ 若它"不咬"才是问题；这里断言它**确实咬**、
+      //   并在输出里说明这是**有意口径**（不是误报）。
+    }
+    if (kBad === 0) {
+      ok(`K ✓ 同源字面量：${K_LITERAL_CHECKS.length} 对具名声明**全部逐字相同**`
+        + `（${K_LITERAL_CHECKS.map((x) => x[0].replace(/（.*$/, '')).join(' · ')}）`
+        + '；另比 1 处**内联**字面量（围栏开标记：写侧内联 ↔ 检查侧 FENCE_OPEN_RE）**逐字相同**'
+        + `；自带样本 ${K_BITE_SAMPLES.length} 该咬 / ${K_SAFE_SAMPLES.length} 不该咬 全过`
+        + `；口径 = **只比字面量文本**（空白/语序不同即判不同 —— 有意如此）`)
+    }
+  }
+}
+
+/**
  * ── 文档形态机检（2026-10-10 新增 · UD-88 / CHG-025）────────────────────────
  *
  * 背景：用户裁定四份文档（方案 + 三本账本）一律**「只写当前状态」** ——
