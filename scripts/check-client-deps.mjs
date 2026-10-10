@@ -69,8 +69,24 @@
  *      本脚本须证明"已声明"这条路径**认得出**（否则 A 就成了"凡 ctx.X 一律禁"的错误口径）。
  *      判据：`configForms` 必须出现在某条 `ctx.inject([...])` 里。
  *
+ *   **I（渲染值必须来自外部存储 · 本轮新增）** 设置面板渲染用的值**不得**在渲染期
+ *      直调 `form.getSnapshot()`：那样值的变化**进不了 React 的订阅**，宿主写入成功后
+ *      不重渲染，界面停在旧值（用户报障「写入成功但下拉不回显」的形态）。
+ *      判据三件（缺一即 FAIL）：
+ *        · I-1 `settings-panel.tsx` 必须有 `useSyncExternalStore(subscribeSettingsForm,
+ *              getSettingsSnapshot, …)`，且该文件里**零** `form.getSnapshot()`；
+ *        · I-2 `settings.ts` 必须把 **form 自身**接上订阅
+ *              （`formUnsubscribe = form.subscribe(...)`），有释放口 `releaseForm()`
+ *              且 `setSettingsForm()` 换 form 前**先**调它（不泄漏）；
+ *        · I-3 `getSettingsSnapshot()` 必须**透传**宿主快照
+ *              （`currentForm?.getSnapshot()`），**不得**自己新建对象
+ *              （引用每次新建 ⇒ `useSyncExternalStore` 无限重渲染）。
+ *      ⚠ 为什么必须机检：宿主那半边的通知链**在类型与构建层面完全看不出来**
+ *        （`subscribe` 存在但不被调用照样编译通过、构建通过、只在运行时表现为旧值）。
+ *
  *   ⚠ **每条断言都必须能失败**（E-27：恒真的检查比没有更危险）。
- *      交付时逐条做过负向对拍：见本脚本 §自检 与回报中的原始读数。
+ *      交付时逐条做过负向对拍（原始读数见回报）：本断言 I 用"**摘掉订阅再跑**"做了
+ *      真实文件的**摘除/还原**对拍 —— 摘掉 `form.subscribe(...)` ⇒ I-2 FAIL；还原 ⇒ PASS。
  *
  * ══ 与既有脚本的关系（**不得互相影响**）════════════════════════════════════
  *   **只读** `src/client/**` 与 `node_modules/@deepseek-ai/cordis`（后者只用于取
@@ -94,6 +110,7 @@ const CORDIS_DIR = join(root, 'node_modules', '@deepseek-ai', 'cordis')
 const INDEX_TS = join(CLIENT_DIR, 'index.ts')
 const CATALOG_TS = join(CLIENT_DIR, 'catalog.ts')
 const SETTINGS_TS = join(CLIENT_DIR, 'settings.ts')
+const PANEL_TSX = join(CLIENT_DIR, 'settings-panel.tsx')
 
 const fail = []
 const note = []
@@ -275,6 +292,7 @@ if (clientFiles.length === 0) {
 const indexSrc = readOr(INDEX_TS, 'client 入口（index.ts）')
 const catalogSrc = readOr(CATALOG_TS, '候选来源（catalog.ts）')
 const settingsSrc = readOr(SETTINGS_TS, '设置绑定（settings.ts）')
+const panelSrc = readOr(PANEL_TSX, '设置面板（settings-panel.tsx）')
 
 /**
  * 每份源码的**两种视图** —— 这是本脚本的关键区分，混用就会造出"假通过/假失败"：
@@ -365,6 +383,25 @@ const CTX_REMOTE = /\bctxRef?\.remote\b|\bctx\.remote\b/g
 
 /** E 的**唯一**检测器（把 ctx.inject 返回值当函数调，含可选链 `?.()`）。 */
 const FIBER_CALLED = /\b(off|disposer|subscription|sub)\s*\??\.?\s*\(\s*\)/g
+
+/**
+ * I 组的**唯一**检测器（本轮新增）—— 与 §11c 自证**共用同一份常量**。
+ *
+ * ⚠ 为什么必须共用（本脚本 §5 的实测教训）：同一条判据若在断言与自证里各抄一份，
+ *   改坏断言那份后自证**仍用自己的完好副本** ⇒ 自证报"通过"而断言已哑 ⇒ **双向失效**。
+ */
+/** I-1：渲染期直调宿主快照（**必须为 0**）。 */
+const GETSNAP = /\bform\s*\??\.\s*getSnapshot\b/g
+/** I-2a：规范的订阅赋值（disposer 必须被存下来，否则没有释放口）。 */
+const FORM_SUBSCRIBE = /formUnsubscribe\s*=\s*form\s*\.\s*subscribe\s*\(/
+/** I-2b：只要调了 `form.subscribe(` 就算（用来区分"完全没接"与"接了但没存 disposer"）。 */
+const FORM_SUBSCRIBE_ANY = /\bform\s*\.\s*subscribe\s*\(/
+/** I-3a：`getSettingsSnapshot()` 的函数体（用于判"透传 vs 自建对象"）。 */
+const SNAP_FN = /export\s+function\s+getSettingsSnapshot\s*\([^)]*\)\s*:[^{]*\{([\s\S]*?)\n\}/
+/** I-3b：体内有**透传**宿主快照。 */
+const SNAP_PASSTHRU = /currentForm\s*\??\.\s*getSnapshot\s*\(/
+/** I-3c：体内**新建对象**（展开或字面量）—— 引用会每次变 ⇒ 无限重渲染。 */
+const SNAP_NEW_OBJECT = /\{\s*\.\.\.|\{\s*(status|value|writable|mode)\s*:/
 
 const ctxFree = deriveCtxFreeMembers()
 
@@ -613,6 +650,125 @@ function balancedBlock(src, startIndex) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// §11b 断言 I —— 渲染值来自外部存储，且该存储**订阅了 form 自身**（本轮新增）
+// ══════════════════════════════════════════════════════════════════════════
+/**
+ * 防的是**第 7 轮那个用户报障**的形态：设置面板写入成功（有回显文案），
+ * 但切换后的**下拉框不回显** —— 用户看到"已写入"却看不到选中项变了。
+ *
+ * ⚠ **为什么类型/构建抓不住**：宿主 `ConfigForm.subscribe()` **存在但不被调用**
+ *   照样编译通过、构建通过（`lib/client.js` 照常出产物），只在运行时表现为"永远旧值"。
+ *   能抓住它的只有"读代码看那根线接没接上" —— 正是本节。
+ *
+ * 判据三件（各自能独立失败，**不许合并成一条**）：
+ *   · I-1 面板必须经 `useSyncExternalStore` 消费**值快照**，且**零** `form.getSnapshot()`
+ *         —— 渲染期直调宿主快照＝值的变化进不了 React 订阅。
+ *   · I-2 `settings.ts` 必须**调** `form.subscribe(...)` 并把 disposer 存下来，
+ *         且在**换 form 之前**释放旧订阅（否则泄漏 / 宿主通知进不来）。
+ *   · I-3 `getSettingsSnapshot()` 必须**透传**宿主快照的缓存引用，
+ *         **不得**自己新建对象（引用每次都变 ⇒ `useSyncExternalStore` 无限重渲染）。
+ */
+{
+  const panelCode = codeOf.get('settings-panel.tsx') ?? ''
+  const panelRaw = rawOf.get('settings-panel.tsx') ?? ''
+  const settingsCode2 = codeOf.get('settings.ts') ?? ''
+  const settingsRaw2 = rawOf.get('settings.ts') ?? ''
+
+  // ── I-1 面板消费 value 快照，且不再渲染期直调 form.getSnapshot() ──────────
+  //   定位在**剥离态**（注释里刻意写了"不能再写成 form?.getSnapshot?.()"这句话，
+  //   若用原始态检测会**假失败**）—— 这正是本脚本 §3 区分两种视图的原因。
+  if (!/useSyncExternalStore\s*\(\s*subscribeSettingsForm\s*,\s*getSettingsSnapshot\b/.test(panelCode)) {
+    bad('I-1 · settings-panel.tsx 没有 `useSyncExternalStore(subscribeSettingsForm, getSettingsSnapshot, …)`'
+      + ' —— 渲染值没接外部存储 ⇒ 宿主写入后不重渲染，下拉框停在旧值')
+  } else ok('I-1a ✓ 面板经 `useSyncExternalStore` 消费值快照 `getSettingsSnapshot`')
+  {
+    const badCalls = hitsWithLines(panelCode, GETSNAP)
+    if (badCalls.length > 0) {
+      bad(`I-1 · settings-panel.tsx:${badCalls[0].line} 仍在渲染期直调 \`form.getSnapshot()\`（${badCalls[0].text}）`
+        + ' —— 值的变化**进不了 React 的订阅**，写入成功后不会重渲染（用户报障形态）；'
+        + '应改从 `getSettingsSnapshot` 的值快照取')
+    } else ok('I-1b ✓ 面板里零 `form.getSnapshot()`（值只从外部存储的快照取）')
+  }
+  //   正向：面板确实把快照传下去了（不是拿到却不用）
+  if (!/settings=\{settings\}/.test(panelRaw)) {
+    bad('I-1 · settings-panel.tsx 里看不到把值快照传给 `SpawnDefaultsCard`（`settings={settings}`）'
+      + ' —— 消费了却不往下传，下半张卡片仍是旧值')
+  } else ok('I-1c ✓ 值快照确实下传给「新建会话默认」卡片（`settings={settings}`）')
+
+  // ── I-2 settings.ts 真的订阅了 form 自身，且换 form 前释放 ────────────────
+  if (!FORM_SUBSCRIBE_ANY.test(settingsCode2)) {
+    bad('I-2 · settings.ts 里没有 `form.subscribe(...)` —— **宿主那半边没订阅**；'
+      + '宿主 `ConfigForm.subscribe`（dsh-client-ui-settings/lib/client.js:1142-1144 → store.subscribe）'
+      + '写入成功后会经 `mirror.acceptView`（:1190）→ `mirror.subscribe(() => derive())`（:1127-1131）'
+      + '→ `store.update`（:1221-1243）通知；不订阅则本模块只在"form 就绪那一次"通知过 ⇒ 永远旧值')
+  } else ok('I-2a ✓ `form.subscribe(...)` 在位（接上了宿主那半边的通知链）')
+  if (!FORM_SUBSCRIBE.test(settingsCode2)) {
+    bad('I-2 · `form.subscribe(...)` 的返回值没有存进 `formUnsubscribe` —— '
+      + '订阅没有释放口（换 form / 卸载时泄漏，且无法先释放旧订阅）')
+  } else ok('I-2b ✓ disposer 存进 `formUnsubscribe`（换 form 前可释放）')
+  if (!/function\s+releaseForm\s*\(/.test(settingsCode2)) {
+    bad('I-2 · settings.ts 里找不到释放函数 `releaseForm()` —— 释放路径缺失')
+  } else {
+    // 换 form 分支里必须**先**释放再挂新订阅（顺序错 = 旧订阅泄漏）
+    const setStart = settingsCode2.indexOf('export function setSettingsForm')
+    if (setStart < 0) bad('I-2 · 找不到 `setSettingsForm` —— 订阅接线点被改没了')
+    else {
+      const body = settingsCode2.slice(setStart)
+      const releaseAt = body.indexOf('releaseForm()')
+      const subscribeAt = body.search(FORM_SUBSCRIBE)
+      if (releaseAt < 0) bad('I-2 · `setSettingsForm` 体内没有调 `releaseForm()` —— 换 form 时旧订阅不被释放（泄漏）')
+      else if (subscribeAt >= 0 && releaseAt > subscribeAt) {
+        bad('I-2 · `setSettingsForm` 里**先**订阅新 form、**后**释放旧订阅 —— 顺序反了，旧订阅泄漏')
+      } else ok('I-2c ✓ `setSettingsForm` 换 form 时先 `releaseForm()` 再挂新订阅（不泄漏）')
+      // 幂等：同一个 form 重复设置必须提前返回（不叠加订阅）
+      if (!/form\s*===\s*currentForm/.test(body)) {
+        bad('I-2 · `setSettingsForm` 没有"同一个 form 幂等"的守卫（`form === currentForm`）'
+          + ' —— 重复设置会**叠加订阅**（宿主 form 被同一份回调订阅多次，成倍重渲染）')
+      } else ok('I-2d ✓ `setSettingsForm` 对同一个 form 幂等（不叠加订阅）')
+    }
+  }
+
+  // ── I-3 getSettingsSnapshot 必须透传（不新建对象）─────────────────────────
+  const snapFn = SNAP_FN.exec(settingsCode2)
+  if (snapFn === null) {
+    bad('I-3 · settings.ts 里找不到 `getSettingsSnapshot()` —— `useSyncExternalStore` 的值入口不在了')
+  } else if (!SNAP_PASSTHRU.test(snapFn[1])) {
+    bad('I-3 · `getSettingsSnapshot()` 体内没有**透传** `currentForm?.getSnapshot()` —— '
+      + '值入口没接宿主快照（等于没有外部存储）')
+  } else if (SNAP_NEW_OBJECT.test(snapFn[1])) {
+    bad('I-3 · `getSettingsSnapshot()` 体内**新建了对象**（展开/字面量）—— '
+      + '引用每次都变 ⇒ `useSyncExternalStore` 会无限重渲染；应**直接透传**宿主快照')
+  } else ok('I-3 ✓ `getSettingsSnapshot()` 直接透传宿主快照（引用稳定：变才换）')
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// §11c 断言 I 的自证 —— 检测器必须**能各自证伪**（不许恒真）
+// ══════════════════════════════════════════════════════════════════════════
+{
+  const selfFailI = []
+  // GETSNAP 检测器（渲染期直调宿主快照）：带 `form?.getSnapshot?.()` 的样例必须**被检出**；
+  // 注释里的那句反例（本仓刻意写着"不能再写成 form?.getSnapshot?.()"）必须**不被检出**。
+  if (hitsWithLines(stripCommentsAndStrings('const s = form?.getSnapshot?.()\n'), GETSNAP).length !== 1) {
+    selfFailI.push('I-1 检测器匹配不到 `form?.getSnapshot?.()`（⇒ 摘掉外部存储会假通过）')
+  }
+  if (hitsWithLines(stripCommentsAndStrings('// 不能再写成 form?.getSnapshot?.()\n'), GETSNAP).length !== 0) {
+    selfFailI.push('I-1 检测器对**注释里**的反例误报（注释里刻意写着这句话 ⇒ 会造出假失败）')
+  }
+  // 订阅/释放的样例必须命中
+  const sOk = 'formUnsubscribe = form.subscribe(() => { emit() })'
+  if (!FORM_SUBSCRIBE.test(sOk)) selfFailI.push('I-2 检测器匹配不到规范的订阅赋值')
+  if (!FORM_SUBSCRIBE_ANY.test(sOk)) selfFailI.push('I-2 检测器匹配不到 `form.subscribe(...)`')
+  // 透传样例必须过、自建对象样例必须被拒（判据与断言 I-3 用**同一对正则**）
+  const mOk = SNAP_FN.exec('export function getSettingsSnapshot(): SettingsSnapshot | null {\n  return currentForm?.getSnapshot() ?? null\n}')
+  const mBad = SNAP_FN.exec('export function getSettingsSnapshot(): SettingsSnapshot | null {\n  const s = currentForm?.getSnapshot()\n  return { ...s }\n}')
+  if (mOk === null || !SNAP_PASSTHRU.test(mOk[1])) selfFailI.push('I-3 检测器对**透传**样例判不出"有透传"')
+  if (mBad === null || !SNAP_NEW_OBJECT.test(mBad[1])) selfFailI.push('I-3 检测器对"自建对象"样例漏报（⇒ 无限重渲染那个坑会溜过去）')
+  if (selfFailI.length > 0) {
+    bad(`断言 I 的自证失败（**检测器本身不可信** ⇒ 不按通过处理）：${selfFailI.join('；')}`)
+  } else ok('自证 I ✓ 三个检测器双向对拍（命中样例 / 不误报注释 / 拒自建对象）')
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // §12 自检（**让"检查自己"也有牙**）：剥离器与检测器必须能各自证伪
 // ══════════════════════════════════════════════════════════════════════════
 {
@@ -665,7 +821,8 @@ function balancedBlock(src, startIndex) {
 console.log('client 半边「宿主服务取用」核对 · dsh-hob')
 console.log(`扫描范围：src/client/**（${clientFiles.length} 个文件：${clientFiles.join(' · ')}）`)
 console.log('断言：A 零裸属性访问 · B 免 inject 读法在位 · C 逐字名锚定 · D 模块级 inject 不含命名空间 ·')
-console.log('      E Fiber 用 dispose · F 失败不静默 · G inflight 复位挂 promise · H configForms 正例')
+console.log('      E Fiber 用 dispose · F 失败不静默 · G inflight 复位挂 promise · H configForms 正例 ·')
+console.log('      I 渲染值来自外部存储且该存储订阅了 form 自身（写入后回落显）')
 console.log('')
 for (const n of note) console.log('  ✓', n)
 console.log('')

@@ -73,20 +73,84 @@ export interface ConfigMutationOp {
  * 用 `useSyncExternalStore` 消费它 —— React 官方认可的接法。
  */
 let currentForm: ConfigForm | null = null
+/** 当前 form 自身订阅的 disposer（宿主 `subscribe()` 的返回值）；`null` = 无订阅。 */
+let formUnsubscribe: (() => void) | null = null
 const listeners = new Set<() => void>()
 
-/** 登记就绪的 form。 */
-export function setSettingsForm(form: ConfigForm | null): void {
-  currentForm = form
-  for (const fn of listeners) fn()
+/** 通知本模块的订阅者（form 换了 / 宿主快照变了）。 */
+function emit(): void {
+  for (const fn of [...listeners]) fn()
 }
 
-/** `useSyncExternalStore` 的 getSnapshot —— 返回稳定引用。 */
+/** 释放当前 form **自身**的订阅（幂等：没有订阅时什么都不做）。 */
+function releaseForm(): void {
+  // ⚠ 这个 disposer **不能**命名成 `off` / `disposer` / `subscription` / `sub`：
+  //   本仓机检（`scripts/check-client-deps.mjs` 的 E 组）把那几个名字**约定为**
+  //   "`ctx.inject(...)` 的返回值（Fiber 对象）"的专用名，用来抓
+  //   `off()` 这种"把 Fiber 当函数调"的写法。重名会让 E 断言**误报**
+  //   （实测：命名为 `off` 时 `npm run check:client` 直接 FAIL）。
+  const unsubscribe = formUnsubscribe
+  formUnsubscribe = null
+  if (unsubscribe === null) return
+  try {
+    unsubscribe()
+  } catch {
+    // 释放失败不该让整个面板挂掉（**但绝不静默吞掉"订阅没接上"** —— 那由下面的正向路径保证）。
+  }
+}
+
+/**
+ * 登记就绪的 form，**并接上 form 自身的订阅**（本轮修的就是这半根线）。
+ *
+ * ⚠ **为什么必须订阅 form 自身**：`form.getSnapshot()` 是宿主 mirror store 的
+ *   **稳定快照**（`dsh-client-ui-settings/lib/client.js:1136-1138` = `store.getSnapshot()`），
+ *   而 host 写入成功后经 `mutate()` → `mirror.acceptView()`（`:1190`）→
+ *   `mirror` 的 store 更新（`:1435-1447`）→ 构造函数里注册的
+ *   `mirror.subscribe(() => this.derive())`（`:1127-1131`）→ `derive()` 里
+ *   `this.store.update(...)`（`:1221-1243`）—— 而 `subscribe` 就是
+ *   `this.store.subscribe(listener)`（`:1142-1144`）。
+ *   ⇒ **宿主会通知**；不接这根线的话，本模块只在"form 就绪那一次"通知过
+ *   （`bindSettingsForm` 的 inject 回调），此后写入成功也**没有任何重渲染**，
+ *   界面永远停在旧值 —— 这正是用户报的"写入成功但下框不回显"。
+ *
+ * ⚠ 幂等：**同一个 form 重复设置不叠加订阅**（提前返回），但**仍通知一次**
+ *   （首次就绪 / 重复登记时 React 需要一次重渲染）。
+ *
+ * ⚠ 不许泄漏：换成另一个 form（或 `null`）时**先**用 disposer 释放旧订阅。
+ */
+export function setSettingsForm(form: ConfigForm | null): void {
+  if (form === currentForm) {
+    emit()
+    return
+  }
+  releaseForm()
+  currentForm = form
+  if (form !== null && typeof form.subscribe === 'function') {
+    formUnsubscribe = form.subscribe(() => { emit() })
+  }
+  emit()
+}
+
+/** 当前的 form（**写入路径**用：`writeSpawnFields` 要调它的 `mutate`）。 */
 export function getSettingsForm(): ConfigForm | null {
   return currentForm
 }
 
-/** `useSyncExternalStore` 的 subscribe。 */
+/**
+ * `useSyncExternalStore` 的 **getSnapshot（值）** —— 渲染用的值来源。
+ *
+ * ⚠⚠ **硬约束**：引用**在值未变化时必须恒定**，否则 `useSyncExternalStore`
+ *   会判定"每次渲染都变了"⇒ 无限重渲染。
+ *   宿主 `ConfigForm.getSnapshot()` 的契约恰好是
+ *   *"stable reference until the next change"*（`config-form.d.ts:52-53`）
+ *   ⇒ **直接透传**，**不要**自己每次新建对象（也不要 `{ ...snapshot }`）。
+ *   无 form 时返回 `null`（字面量，同样是稳定引用）。
+ */
+export function getSettingsSnapshot(): SettingsSnapshot | null {
+  return currentForm?.getSnapshot() ?? null
+}
+
+/** `useSyncExternalStore` 的 subscribe（本模块自身的订阅集合）。 */
 export function subscribeSettingsForm(fn: () => void): () => void {
   listeners.add(fn)
   return () => { listeners.delete(fn) }

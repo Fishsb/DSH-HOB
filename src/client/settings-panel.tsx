@@ -72,7 +72,10 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { StateDot, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
-import { getSettingsForm, subscribeSettingsForm, writeSpawnFields, type WriteResult } from './settings.ts'
+import {
+  getSettingsForm, getSettingsSnapshot, subscribeSettingsForm, writeSpawnFields,
+  type SettingsSnapshot, type WriteResult,
+} from './settings.ts'
 import {
   findModel, findPreset, getCatalogSnapshot, loadCatalog, subscribeCatalog,
   type CatalogSnapshot, type ModelRow, type PresetRow,
@@ -191,10 +194,12 @@ function readString(value: unknown): string {
  */
 function SpawnDefaultsCard(props: {
   form: ReturnType<typeof getSettingsForm>
+  /** 宿主快照（**外部存储的当前值**）—— 渲染用的值只能来自这里。 */
+  settings: SettingsSnapshot | null
   value: PanelValue
   snapshot: CatalogSnapshot
 }): ReactElement {
-  const { form, value, snapshot } = props
+  const { form, settings, value, snapshot } = props
   const spawn = (deref(value.spawn) ?? {}) as Record<string, unknown>
   const preset = readString(spawn.agentPreset)
   const provider = readString(spawn.provider)
@@ -367,13 +372,15 @@ function SpawnDefaultsCard(props: {
       )}
 
       {/* ── 不可写时如实说明（**不假装保存成功**）────────────────── */}
-      {form?.getSnapshot?.().writable !== true ? (
+      {/* ⚠ 读的是**外部存储的快照**（`settings`），不是渲染期直调 `form.getSnapshot()`
+          —— 后者与 form 的订阅脱钩，写入成功后这一行不会跟着变（本轮同源收益）。 */}
+      {settings?.writable !== true ? (
         <div className={S.row}>
           <div className={S.rowLabel}>写入</div>
           <div className={S.rowValue}>
             <span className={S.warn}>
               当前页面<b>不允许写入</b>（宿主持久化模式 =
-              <code>{form?.getSnapshot?.().mode ?? '未知'}</code>）——
+              <code>{settings?.mode ?? '未知'}</code>）——
               非本机回环访问时宿主只在内存里改、不落盘，故这里会如实拒写而不是假装保存。
             </span>
           </div>
@@ -392,9 +399,12 @@ function SpawnDefaultsCard(props: {
 export function SettingsPanel(): ReactElement {
   const form = useSyncExternalStore(subscribeSettingsForm, getSettingsForm, getSettingsForm)
   const catalog = useSyncExternalStore(subscribeCatalog, getCatalogSnapshot, getCatalogSnapshot)
-  const snapshot = form?.getSnapshot?.()
-  const status = snapshot?.status ?? 'unavailable'
-  const value = (snapshot?.value ?? {}) as PanelValue
+  // ⚠ 渲染用的值是**外部存储的快照**（本模块已在 form 自身的订阅回调里刷新它）；
+  //   不能再写成 `form?.getSnapshot?.()` —— 那样值的变化**进不了 React 的订阅**，
+  //   宿主写入成功后不会有任何重渲染 ⇒ 下拉框继续显示旧值（本轮用户报的那个现象）。
+  const settings = useSyncExternalStore(subscribeSettingsForm, getSettingsSnapshot, getSettingsSnapshot)
+  const status = settings?.status ?? 'unavailable'
+  const value = (settings?.value ?? {}) as PanelValue
 
   const statusText =
     status === 'ready' ? '已就绪'
@@ -443,7 +453,7 @@ export function SettingsPanel(): ReactElement {
         </Row>
       </div>
 
-      <SpawnDefaultsCard form={form} value={value} snapshot={catalog} />
+      <SpawnDefaultsCard form={form} settings={settings} value={value} snapshot={catalog} />
 
       <ul className={S.notes}>
         <li className={S.note}>

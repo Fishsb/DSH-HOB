@@ -2791,3 +2791,64 @@ function sessionVisible(session, current, archived, archivedFilter) {
 与返回字段 `visibilityNote`（**`:847`**）；真机会话 **`session-c89d7dfa-eefb-46ce-8cec-ad20c4fe85ad`**
 （`blank: true`/`turns: 0` ⇒ 投递后 `blank: false`/`turns: 1`）；
 契约既有纪律 `.hob/drafts/preset-contracts.md:548` / `:649`；同族教训 **E-29 / E-44 / E-84（失败不可观测）**。
+
+---
+
+### E-103 · **"写入成功"不等于"界面回显"** —— 订阅的是自己那层壳，没订阅宿主那半边
+
+**现象**：用户在设置面板切换「新建会话默认」的下拉框，界面立刻显示
+「写入结果 已写入（本插件建出的会话下次生效）。」—— **写入确实成功了**，
+但**下拉框本身仍显示旧选项**，用户看不出"选中项已经变了"（报障原话：
+"切换的选项框不会立即看到切换后的状态，感觉使用上体感不好"）。
+
+**根因**：本模块的 `useSyncExternalStore` 接的是**自己那层壳**，不是宿主存储：
+`src/client/settings.ts` 只有模块级 `currentForm` + 本地 `listeners`，
+而 `setSettingsForm()` 只在 **form 就绪那一次**被调用（`bindSettingsForm` 的 inject 回调）；
+面板 `useSyncExternalStore(subscribeSettingsForm, getSettingsForm, …)` 订阅的就是那个 `listeners`，
+`getSettingsForm()` 返回的又是 **form 对象本身（引用恒定）**，`value` 还在**渲染期**直调
+`form?.getSnapshot?.()`。⇒ 宿主侧怎么变，`listeners` 都不响、`getSettingsForm()` 的返回值也不变
+⇒ **React 永远不重渲染** ⇒ 界面永远停在旧值。
+⚠ **宿主本来是会通知的**（不是宿主不给通知）：`dsh-client-ui-settings/lib/client.js` 的
+`mutate()` 成功后 `this.mirror.acceptView(response.value)`（**`:1190`**）→ mirror store 更新
+（**`:1435-1447`**）→ 构造函数里注册的 `mirror.subscribe(() => this.derive())`（**`:1127-1131`**）
+→ `derive()` 里 `this.store.update(...)`（**`:1221-1243`**），而 `subscribe` 就是
+`this.store.subscribe(listener)`（**`:1142-1144`**）。契约也对得上：
+`config-form.d.ts:52`「stable reference until the next change」、
+`dsh-client-store/lib/index.js:60`「Flush default is 'sync'（controlled inputs need same-tick echo）」。
+⇒ **我们只是没把那根线接上**。
+
+**正确做法**：
+① `setSettingsForm(form)` 里对 **form 自身** `subscribe`，回调里刷新值快照并通知本模块的 `listeners`；
+② 换 form（或 `null`）时**先**用 disposer 释放旧订阅 —— 且**同一 form 重复设置要幂等**
+（`if (form === currentForm) { 仍通知一次; return }`），否则会**叠加订阅**、成倍重渲染；
+③ 对外暴露的**值快照入口必须直接透传**宿主 `form.getSnapshot()`，
+**不得**自己 `{ ...snapshot }` 新建对象 —— 该入口的引用**值未变时必须恒定**，
+否则 `useSyncExternalStore` 会**无限重渲染**（宿主那个"stable reference until the next change"
+恰好满足，透传即可）；无 form 时返回 `null` 字面量（同样是稳定引用）；
+④ 渲染值**一律从该外部存储取**，不许在渲染期直调 `form.getSnapshot()`；
+⑤ **不许加乐观回声**：值的来源仍只有宿主一个，写入期间控件保持 `disabled`，
+失败必须回退到宿主真值并显示原因（不许假装成功）。
+⑥ ⚠ 命名坑（本轮真踩到）：`settings.ts` 里那个"`form.subscribe()` 返回的 disposer"
+**不能**命名成 `off` / `disposer` / `subscription` / `sub` ——
+本仓 `scripts/check-client-deps.mjs` 的 **E 组**把那几个名字**约定为**
+"`ctx.inject(...)` 返回的 Fiber 对象"专用名（用来抓 `off()` 这类"把 Fiber 当函数调"的写法）。
+实测命名为 `off` 时 `npm run check:client` **误报 FAIL**；改名 `unsubscribe` 后即过
+——**不放宽 E 断言**（它抓的是真缺陷），改的是自己的命名。
+
+**出处**：第 7 轮（2026-10-10）· 宿主
+`@deepseek-ai/dsh-client-ui-settings/lib/client.js` 的 **`:1127-1131`**（`mirror.subscribe(() => this.derive())`）
+/ **`:1142-1144`**（`subscribe(listener) { return this.store.subscribe(listener) }`）
+/ **`:1190`**（`mirror.acceptView(response.value)`）/ **`:1221-1243`**（`derive()` 里 `store.update`）
+与 `lib/types/client/config-form.d.ts` **`:52`**；
+`@deepseek-ai/dsh-client-store/lib/index.js` **`:60`**（sync flush）与 **`:91`**（`getSnapshot: () => api.getState()`）；
+本仓 `src/client/settings.ts`（**改前 `:75-93`，改后 `:75-156`**：`formUnsubscribe` **`:77`** /
+`releaseForm()` **`:86`** / `setSettingsForm` 订阅接线 **`:121-131`** / `getSettingsSnapshot` 透传 **`:149-151`**）
+与 `src/client/settings-panel.tsx`（**改前 `:393-397`，改后 `:399-411`**：值改从外部存储取 **`:405`**、
+`settings?.writable` **`:377`**、下传 **`:456`**）；
+机检 `scripts/check-client-deps.mjs` 新增**断言 I**（`I-1`/`I-2`/`I-3` + §11c 自证）；
+负向对拍（原始读数）：摘掉 `form.subscribe(...)` ⇒ **FAIL**（exit 1），还原 ⇒ **PASS**（exit 0）；
+把 `form?.getSnapshot?.()` 放回渲染期 ⇒ **FAIL**，还原 ⇒ **PASS**；
+把 `GETSNAP` 检测器改哑 ⇒ **自证 FAIL**（证明"检查自己有牙"）；
+运行时语义探针（编译真 `settings.ts` 到 `/tmp` + 模拟宿主 sync-flush 快照店）**15/15 PASS**
+（含"写入后订阅者被通知 3→4"、"快照换新引用"、"换 form 后宿主侧订阅数仍为 1"、"设 null 后为 0"）；
+同族教训 **E-27（恒真的检查比没有更危险）· E-99（服务句柄是活数据）· E-101（Fiber 用 dispose）**。
