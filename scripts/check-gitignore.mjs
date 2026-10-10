@@ -308,13 +308,18 @@ const PKG = join(root, 'package.json')
  *      ⇒ 只认**行首**的补丁注记形态（`订正（2026-…` / `原文此处` / `已失实` / `原写`），
  *        且**不**把 `**加粗**` 里的词、句子中段的引述算进来。
  *   ② **不弱化**：这不是"把正则调弱到永远 PASS" —— 它仍对**真实违规**有牙
- *      （实测：`PROJECT.md` 现有 2 处真违规被抓出，读数见回报）。
+ *      （实测：纳入前 `PROJECT.md` 曾被抓出 2 处真违规，读数见回报；
+ *        第 20 轮负向对拍又当场抓着一次 —— 见该轮回报的插补丁句读数）。
  *
- * ⚠ **`PROJECT.md` 本轮【排除】在外**（刻意，非疏漏）：
- *   它**尚未改写**（卡在重载：运行中的插件仍是旧版，`write_hob` 的可写名单还是旧三项）
- *   ⇒ 它**满是**补丁式说明，纳入会**当场 FAIL**。而"不许为了让检查通过而放宽断言"
- *   是本项目红线 ⇒ 正确做法是**显式排除 + 标注待办**，改完后**必须纳入**。
- *   ⇒ 待办登记在 `CONTEXT.md` §2.2「未修的缺口」；改写完成后把下面的 `B_FILES` 加回 `PROJECT.md`。
+ * ⚠ **`PROJECT.md` 已于 2026-10-10 纳入**（第 20 轮 · UD-88 / CHG-025）：
+ *   它原为**旧形态**（正文里成片「订正（日期）：原文此处……」式补丁说明），
+ *   当时纳入会**当场 FAIL**；而"不许为了让检查通过而放宽断言"是本项目红线
+ *   ⇒ 上一轮采取**显式排除 + 标注待办**，待办登记在 `CONTEXT.md` §2.2「未修的缺口」。
+ *   2026-10-10 用户重载实例（解除旧插件 `write_hob` 可写名单的封锁）后，
+ *   Hob 已把它**整份改写为 v2.0「只写当前状态」**：122455 → 67876 字节，
+ *   旧整份存 `archive/2026-10-10-project-plan-move/PROJECT.md`（逐字节）。
+ *   ⇒ 排除的**理由已消失**：`B_FILES` 现含 `PROJECT.md`，四份正本**全部纳入**形态机检，
+ *     本文件里**不再有任何"待纳入"的例外**。
  */
 const LEDGER_ROOT = (() => {
   // ⚠ 与其它脚本同口径：账本父目录**不硬编码本机绝对路径**（UD-73③），
@@ -334,8 +339,23 @@ const LEDGER_ROOT = (() => {
   return undefined
 })()
 
-/** A + B 共用的：正本文件名（四份文档里本轮**纳入**检查的三本）。 */
-const B_FILES = ['DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md']
+/**
+ * A 用的：正本文件名（**有配套空模板**的那三本 —— 断言 A 比的是「正本节名 ↔ 模板节名」）。
+ * ⚠ 为什么 `PROJECT.md` **不在 A 里**（第 20 轮实测，非疏漏）：
+ *   账本区 `templates/` 下**没有** `PROJECT.md` 空模板（`ls .hob/templates/` = 7 份：
+ *   `DECISIONS` / `USER-DECISIONS` / `CONTEXT` / `ROLES` / `GATES` / `TASK` / `REPORT`）。
+ *   方案是**逐项目唯一**的整篇文档，与三本账本"同构空模板 + 每项目填条目"的形态不同
+ *   ⇒ 现状**无模板可比**。若把 `PROJECT.md` 塞进 A 的循环，A 会立刻报
+ *   「模板读不到 … 不按通过处理」⇒ FAIL（实测读数见本轮回报）。
+ *   ⚠ 而"不许为了让检查通过而放宽断言"是本项目红线 ⇒ 正确做法是
+ *   **A 只覆盖有模板的三本**（判定逻辑一字未改），**B 覆盖全部四份正本**。
+ *   ⇒ 把 `PROJECT.md` 纳入 A 的**前置条件**是账本区先出现配套模板（归 Hob/用户），
+ *     已登记为待决问题，不在本轮擅自新建（`.hob/templates/**` 是本轮红线）。
+ */
+const A_FILES = ['DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md']
+
+/** B 用的：正本文件名（账本区**四份文档全部纳入**，2026-10-10 起无例外）。 */
+const B_FILES = ['PROJECT.md', 'DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md']
 
 if (LEDGER_ROOT === undefined) {
   // ⚠ **明确跳过并说明**（不静默 PASS）：这一支不计入 fail，但**打印为什么跳过**。
@@ -359,7 +379,7 @@ if (LEDGER_ROOT === undefined) {
   }
   const secKeys = (src) => src.split('\n').filter((l) => /^##\s+\S/.test(l)).map(secKey)
 
-  for (const f of B_FILES) {
+  for (const f of A_FILES) {
     const mp = join(LEDGER_ROOT, f)
     const tp = join(root, '.hob', 'templates', f)
     let msrc = ''
@@ -422,8 +442,8 @@ if (LEDGER_ROOT === undefined) {
     }
   }
   ok(`文档形态机检【已执行】—— 正本根 = ${LEDGER_ROOT}；`
-    + `纳入 ${B_FILES.join(' / ')}；`
-    + '⚠ `PROJECT.md` **本轮刻意排除**（尚未改写，纳入会当场 FAIL）⇒ 改写后须加回 B_FILES')
+    + `四份正本**全部纳入** ${B_FILES.join(' / ')}`
+    + `（2026-10-10 起无例外：\`PROJECT.md\` 已改写为 v2.0「只写当前状态」，故纳入）`)
 
   /**
    * ── 断言 C（2026-10-10 新增 · 第 19 轮 · UD-88 / CHG-025）────────────────
