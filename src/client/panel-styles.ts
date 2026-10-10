@@ -40,8 +40,8 @@
  *        `font-size:12px;font-weight:500;line-height:18px`）；
  *     ② 分区 `gap` 16→12、卡片内边距/行间距对齐 `.zGbnIq_rowCard` 的
  *        `padding:12px 14px;gap:12px`（同处 `:58`）。
- *   ⚠ 原生 `<select>` **已全部删除**（改宿主 `Menu`）⇒ 下面的 `.dsh-hob-select`
- *     只保留"触发按钮"那一支的观感，选择器本体由宿主组件负责。
+ *   ⚠ 原生 `<select>` 与它的 `.dsh-hob-select` 规则**已整体删除**（改宿主 `Menu`）——
+ *     触发按钮的观感改由下面的 `.dsh-hob-trigger` 承担（逐条抄宿主模型选择器的 `.trigger`）。
  */
 const PLUGIN_ID = 'dsh-hob'
 
