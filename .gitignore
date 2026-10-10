@@ -47,7 +47,9 @@ dist/
 # ⚠ 第二处同类问题（2026-10-05 收尾第二轮修，见 EXPERIENCE.md E-73）：
 #   原先 `drafts/` 也在排除之列 —— 但 **`scripts/check-preset-contracts.mjs`
 #   （已入库、挂在 `npm run check:presets`）会无条件读取
-#   `.hob/drafts/preset-contracts.md`**（脚本 :32 定义路径、:71 读取）
+#   `.hob/drafts/preset-contracts.md`**（该脚本里 `const DRAFT` 定义路径、
+#   `readFileSync(DRAFT, …)` 读取 —— ⚠ 此处用**符号名**而非行号：行号会随脚本改动
+#   漂移，而"刷新行号"用的常是**改前**的坐标、会产出**新的错值**，见 EXPERIENCE.md **E-123**）
 #   ⇒ **新 clone 里那个命令直接 ENOENT 崩掉**（实测 exit 1）。
 #   「入库脚本依赖不入库文件」是自相矛盾 ⇒ `drafts/` 归**骨架**，已加 `!` 放行。
 #   ⇒ 教训：归类时不能只看"是不是可复用"，还要看**有没有入库物依赖它**。

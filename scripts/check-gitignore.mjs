@@ -874,6 +874,235 @@ const ZERO_WIDTH_RE = /[\u200B\uFEFF\u200E\u200F]/
   }
 }
 
+// ── 断言 H · 读数渲染（2026-10-11 新增 · 第 47 轮 · 结构改造④）──────────────
+/**
+ * **正本里"会漂移的读数"改由写入工具在落盘前渲染** —— 本组验它**真的有牙**。
+ *
+ * ── 治哪条根因（缺口 4 · 值靠手抄）─────────────────────────────────────
+ *   计数 / 字节数此前**手写进文本**，靠"快照口径"声明"会过期"兜住漂移
+ *   —— ⚠ 那是**免责**，不是**解决**。⇒ 值改由写入工具当场取。
+ *
+ * ── 为什么本组必须**真跑函数**而不是文本匹配 ─────────────────────────
+ *   与 F 组同款理由：`src/**` 里 `renderReadings` 字样**还在**、实现被掏空时，
+ *   文本断言照样 PASS。⇒ 用 Node ≥22 **直载 `.ts`** 实跑；import 失败即 **FAIL**
+ *   （"基准跑不起来就默认通过"是假通过）。
+ *
+ * ── 判据（六条，逐条**真跑**）──────────────────────────────────────────
+ *   H1 渲染正确：指向**真实存在**目标的标记 ⇒ 落盘内容是**实值**（与当场 `fs` 实测一致）；
+ *   H2 值会变：目标文件**改大**后重写 ⇒ 渲染值**随之变**（与新实测一致）；
+ *   H3 自引用拒绝：标记指向**正在写的那个文件自身**（`bytes`）⇒ **拒绝 + 点名**；
+ *   H4 父目录拒绝：标记指向**正在写文件的父目录**（`count`）⇒ **拒绝 + 点名**；
+ *   H5 围栏豁免：标记写在**围栏代码块内** ⇒ **不渲染、原样保留**（**E-114 家族**：
+ *      "讲这个标记怎么写"的文档必须能安全存在）；
+ *   H6 幂等保住：**同一份含标记的输入写两次** ⇒ 第二次 **skipped**
+ *      （⚠ 渲染必须**先于**幂等比对，否则"标记原文"与"存量实值"永不相等 ⇒ 幂等失效）。
+ *
+ * ⚠ **判据同源**：本组用的 `scanMarkers` / `renderReadings` 与 `write_hob` 落盘时
+ *   用的是**同一份实现**（`src/server/hob-render.ts`）—— 不在这里重写一套正则。
+ *   理由：若各写一套，"文档里能安全写例子"与"机检报残留"会自相矛盾。
+ */
+const RENDER_TS = join(root, 'src', 'server', 'hob-render.ts')
+const HOBWRITE_TS = join(root, 'src', 'server', 'hob-write.ts')
+
+/** 断言 I 的扫描口径：**四份正本**（与 `B_FILES` 同源 —— 值就写在它们身上）。 */
+{
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { pathToFileURL } = await import('node:url')
+
+  let hr
+  let hw
+  let loadErr = null
+  try {
+    hr = await import(pathToFileURL(RENDER_TS).href)
+    hw = await import(pathToFileURL(HOBWRITE_TS).href)
+  } catch (e) {
+    loadErr = e
+    bad(`H 无法加载渲染 / 写入模块（${String(e?.message ?? e)}）⇒ 读数渲染的行为断言失去基准（不按通过处理）`)
+  }
+
+  if (loadErr === null && hr !== undefined && hw !== undefined) {
+    const { scanMarkers } = hr
+    const { writeHobFile } = hw
+    /** 与 `src/modules/tools.ts` 的 DEFAULTS 同口径；上限调小以便本地沙箱够用。 */
+    const opts = { hobDir: '', keepBackups: 3, shrinkGuard: 0.5, maxFileBytes: 262144 }
+    const dir = mkdtempSync(join(tmpdir(), 'hob-hcheck-'))
+    try {
+      // 沙箱账本区：一个真目录（7 个条目）+ 一个大文件，供 H1/H2 取实测。
+      mkdirSync(join(dir, 'templates'), { recursive: true })
+      for (let i = 0; i < 7; i++) writeFileSync(join(dir, 'templates', `t${i}.md`), 'x', 'utf8')
+      writeFileSync(join(dir, 'big.md'), 'a'.repeat(1234), 'utf8')
+
+      // ── H1 **渲染正确**：落盘内容是实值（与当场 fs 实测一致）──
+      {
+        const c = '共 <!-- hob:count | templates --> 份 · <!-- hob:bytes | big.md --> 字节\n'
+        const r = await writeHobFile(dir, { file: 'CONTEXT.md', content: c, mode: 'overwrite' }, opts)
+        let disk = ''
+        try { disk = readFileSync(join(dir, 'CONTEXT.md'), 'utf8') } catch { disk = '' }
+        const wantCount = readdirSync(join(dir, 'templates')).length
+        const wantBytes = readFileSync(join(dir, 'big.md')).length
+        const okDisk = disk.includes(`共 ${wantCount} 份`) && disk.includes(`${wantBytes} 字节`)
+        const noMarker = !disk.includes('<!-- hob:')
+        if (r.ok === true && okDisk && noMarker) {
+          ok(`H1 ✓ 渲染正确：落盘内容里是**实值**（count(templates)=${wantCount} · bytes(big.md)=${wantBytes}，`
+            + '与当场 `fs` 实测一致），**标记不残留**')
+        } else {
+          bad(`H1 渲染未生效：ok=${r.ok} 落盘=${JSON.stringify(disk)}（期望 count=${wantCount} / bytes=${wantBytes}）`
+            + ' ⇒ 标记没被替换成实值，或替换值不对')
+        }
+      }
+
+      // ── H2 **值会变**：目标改大后重写 ⇒ 渲染值随之变 ──
+      //   ⚠ 改写的内容**不短于**原内容：缩水守卫（`shrinkGuard`）会在"新内容 < 旧 × 0.5"时拒绝，
+      //     那是**另一条**断言的地盘 —— 本组要验的是"渲染值跟着树走"，别让它被缩水守卫挡在门外。
+      {
+        writeFileSync(join(dir, 'big.md'), 'b'.repeat(4321), 'utf8')
+        const pad = '（本条只验渲染值随目标变化，内容长度故意与上一版相当，避开缩水守卫。）\n'
+        const r = await writeHobFile(dir, { file: 'CONTEXT.md', content: `<!-- hob:bytes | big.md --> 字节\n${pad}`, mode: 'overwrite' }, opts)
+        let disk = ''
+        try { disk = readFileSync(join(dir, 'CONTEXT.md'), 'utf8') } catch { disk = '' }
+        const want = readFileSync(join(dir, 'big.md')).length
+        if (r.ok === true && disk.trimStart().startsWith(`${want} 字节`)) {
+          ok(`H2 ✓ 值会变：目标从 1234 改大到 ${want} 后重写 ⇒ 渲染值随之变为 ${want}（与新实测一致）`
+            + ' —— 值取自**写入时**，不是写死在文本里')
+        } else {
+          bad(`H2 渲染值**没跟着变**：落盘=${JSON.stringify(disk)}（期望 ${want}）`
+            + ' ⇒ 若渲染的是缓存/写死的值，本机制就退化成它要取代的"手抄"')
+        }
+      }
+
+      // ── H3 **自引用拒绝**：指向正在写的那个文件自身（bytes）⇒ 拒绝 + 点名 + 原样保留 ──
+      {
+        const marker = '<!-- hob:bytes | PROJECT.md -->'
+        const r = await writeHobFile(dir, { file: 'PROJECT.md', content: `自测：${marker}\n`, mode: 'overwrite' }, opts)
+        let disk = ''
+        try { disk = readFileSync(join(dir, 'PROJECT.md'), 'utf8') } catch { disk = '' }
+        const refused = Array.isArray(r.readings?.refused) ? r.readings.refused : []
+        const hit = refused.some((x) => x.reason === 'self-bytes' && x.line === 1)
+        const msgHas = /读数\*\*未渲染\*\*|读数\*\*未渲染\*\*|未渲染/.test(r.message) && /第 1 行/.test(r.message)
+        if (r.ok === true && hit && disk.includes(marker) && msgHas) {
+          ok('H3 ✓ 自引用拒绝：指向**自身**且取 `bytes` ⇒ 拒绝渲染 + 点名（含**第 1 行** + 理由），'
+            + '标记**原样保留**、**写入照常**（只提示、不拒写）')
+        } else {
+          bad(`H3 自引用未被拒绝或未被点名：ok=${r.ok} refused=${JSON.stringify(refused)} `
+            + `标记还在盘上=${disk.includes(marker)} 消息含行号=${msgHas}`
+            + ' ⇒ 这是"文件包含自身长度"的不可能任务，**必须**拒绝而不是渲染一个永远错的数')
+        }
+      }
+
+      // ── H4 **父目录拒绝**：指向正在写文件的父目录（count）⇒ 拒绝 + 点名 ──
+      {
+        const marker = '<!-- hob:count | archive/2026-10-11-hcheck -->'
+        const f = 'archive/2026-10-11-hcheck/TASK-R1.md'
+        mkdirSync(join(dir, 'archive', '2026-10-11-hcheck'), { recursive: true })
+        //   ⚠ 归档**拒 overwrite**（"归档是只增不改的历史"）⇒ 用 `append`（首写即创建）；
+        //     否则本组会被**另一条**断言（archive-overwrite-denied）挡在门外，验不到父目录拒绝。
+        const r = await writeHobFile(dir, { file: f, content: `自测：${marker}\n`, mode: 'append' }, opts)
+        let disk = ''
+        try { disk = readFileSync(join(dir, f), 'utf8') } catch { disk = '' }
+        const refused = Array.isArray(r.readings?.refused) ? r.readings.refused : []
+        const hit = refused.some((x) => x.reason === 'parent-count' && x.line === 1)
+        if (r.ok === true && hit && disk.includes(marker)) {
+          ok('H4 ✓ 父目录拒绝：指向**正在写文件的父目录**且取 `count` ⇒ 拒绝 + 点名（含第 1 行），'
+            + '标记原样保留（写这份文件会改变该目录的条目数 ⇒ 同族的不可能任务）')
+        } else {
+          bad(`H4 父目录未被拒绝或未被点名：ok=${r.ok} refused=${JSON.stringify(refused)} 标记还在盘上=${disk.includes(marker)}`)
+        }
+      }
+
+      // ── H5 **围栏豁免**（E-114 家族）：围栏内的标记不渲染、不报错 ──
+      {
+        const fenced = ['说明如下：', '```md', '<!-- hob:count | templates -->', '```', '结束。'].join('\n')
+        const hits = scanMarkers(fenced)
+        const r = await writeHobFile(dir, { file: 'CONTEXT.md', content: `${fenced}\n`, mode: 'overwrite' }, opts)
+        let disk = ''
+        try { disk = readFileSync(join(dir, 'CONTEXT.md'), 'utf8') } catch { disk = '' }
+        const refused = Array.isArray(r.readings?.refused) ? r.readings.refused : []
+        if (hits.length === 0 && refused.length === 0 && disk.includes('<!-- hob:count | templates -->')) {
+          ok('H5 ✓ 围栏豁免：写在 ``` 围栏内的标记**不渲染、原样保留**、**不报 FAIL**'
+            + '（**E-114 家族** —— "讲这个标记怎么写"的文档必须能安全存在，否则文档会被自己的例子打挂）')
+        } else {
+          bad(`H5 围栏豁免未生效：scanMarkers=${hits.length} refused=${JSON.stringify(refused.map((x) => x.reason))} `
+            + `盘上还在=${disk.includes('<!-- hob:count | templates -->')}`
+            + ' ⇒ 判据被"描述它自己的文本"咬到（E-114：必须调精度，⛔ 不许靠放宽判据绕开）')
+        }
+      }
+
+      // ── H6 **幂等保住**：同一份含标记的输入写两次 ⇒ 第二次 skipped ──
+      //   ⚠ 这条是本轮**最容易悄悄破的**：渲染若排在幂等比对**之后**，
+      //     "标记原文"永远不等于"存量里的实值" ⇒ 每次写都"有变化"，幂等跳过失效。
+      {
+        const c = '共 <!-- hob:count | templates --> 份\n'
+        const r1 = await writeHobFile(dir, { file: 'USER-DECISIONS.md', content: c, mode: 'overwrite' }, opts)
+        const r2 = await writeHobFile(dir, { file: 'USER-DECISIONS.md', content: c, mode: 'overwrite' }, opts)
+        let disk = ''
+        try { disk = readFileSync(join(dir, 'USER-DECISIONS.md'), 'utf8') } catch { disk = '' }
+        if (r1.ok === true && r2.action === 'skipped' && r2.reason === 'idempotent' && disk.trim().startsWith('共 ')) {
+          ok('H6 ✓ 幂等保住：同一份**含标记**的输入写两次 ⇒ 第二次 `skipped`（渲染**先于**幂等比对）'
+            + ' —— 否则幂等跳过失效、备份被反复刷屏')
+        } else {
+          bad(`H6 幂等被破坏：第一次=${r1.action} 第二次=${r2.action}/${r2.reason} 盘上=${JSON.stringify(disk)}`
+            + ' ⇒ 渲染顺序错了（必须先渲染、再比对），这是本轮的**停手条件①**')
+        }
+      }
+    } finally {
+      try { rmSync(dir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+    }
+  }
+}
+
+// ── 断言 I · 正本无残留标记（2026-10-11 新增 · 第 47 轮 · 结构改造④）────────
+/**
+ * **四份正本里不得存在未渲染的占位标记。**
+ *
+ * ── 为什么这条是"结构性拒绝"的**另一半** ────────────────────────────────
+ *   渲染器对"做不到的渲染"（自引用 / 父目录 / 目标不存在 …）采取**只提示、不拒写**
+ *   —— 与结构改造① 的既有口径一致。⇒ 于是**非法状态仍然写得进去**：
+ *   标记会**留在正本里**，而"它本该是个数字"这件事**没人看得见**。
+ *   ⇒ 本条把那个状态**变成机检能当场抓住的 FAIL**：
+ *     "渲染被拒绝"与"正本里有残留标记"由此**一一对应**，跳过不了。
+ *
+ * ⚠ **判据与渲染器同源**：用 `hob-render.ts` 的 `scanMarkers`（**含围栏豁免**）。
+ *   若这里自己写一套正则，就会出现"文档里写的例子合法、机检却报残留"的自相矛盾。
+ * ⚠ **空态给读数**（正本里没有标记是**正常状态**，不是"没查"）。
+ */
+if (LEDGER_ROOT === undefined) {
+  ok('I ✓ 正本无残留标记【跳过】—— 账本区读不到（工作区之外），**不代表通过**'
+    + '（跳过位置：scripts/check-gitignore.mjs 的 LEDGER_ROOT 解析）')
+} else {
+  const RENDER_TS_I = join(root, 'src', 'server', 'hob-render.ts')
+  let scan = null
+  try {
+    const { pathToFileURL } = await import('node:url')
+    scan = (await import(pathToFileURL(RENDER_TS_I).href)).scanMarkers
+  } catch (e) {
+    bad(`I 无法加载渲染模块（${String(e?.message ?? e)}）⇒ 残留标记扫描失去基准（不按通过处理）`)
+  }
+  if (typeof scan === 'function') {
+    const hits = []
+    for (const f of B_FILES) {
+      let src = ''
+      try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch {
+        bad(`I 正本读不到：${join(LEDGER_ROOT, f)} —— 残留标记扫描失去基准（不按通过处理）`)
+        continue
+      }
+      for (const h of scan(src)) {
+        hits.push(`${f}:${h.line} \`${h.raw}\``)
+      }
+    }
+    if (hits.length === 0) {
+      ok(`I ✓ 四份正本里**没有**未渲染的占位标记（${B_FILES.length} 份逐份扫描，命中 0 处）`
+        + ' ⇒ "渲染被拒绝"不会悄悄留在正本里（渲染器的"只提示、不拒写"由此有了收尾兜底）')
+    } else {
+      bad(`I 四份正本里存在**未渲染的占位标记**（${hits.length} 处）：${hits.join(' · ')}`
+        + '\n      ⇒ 标记没被渲染成实值就落盘了（渲染被拒绝，或写入绕过了渲染器）'
+        + '\n      ⇒ 处置：看写入返回值里的「读数**未渲染**」清单（含行号 + 理由），'
+        + '改成可渲染的表述（最常见：目标是**该文件自身**取 `bytes`，或**其父目录**取 `count` —— 两者结构上不可能）'
+        + '\n      ⇒ ⛔ 不许为本条放宽判据、也不许把标记留在正本里当"待办"')
+    }
+  }
+}
+
 // ── 输出 ────────────────────────────────────────────────────────────────
 console.log('`.gitignore` 一致性核对 · dsh-hob')
 console.log('约定归属地:', README)

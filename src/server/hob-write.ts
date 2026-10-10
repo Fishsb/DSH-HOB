@@ -26,6 +26,7 @@ import { lstat, readFile, writeFile, rename, readdir, unlink, mkdir, rm } from '
 import { existsSync, readdirSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { resolveInside } from './doc-read.ts'
+import { renderReadings, renderReadingsNote, type RenderResult } from './hob-render.ts'
 
 // ── 白名单：骨架只读，运行数据/方案可写（与 UD-05 的切分同一条线）─────────────
 
@@ -241,6 +242,15 @@ export interface WriteHobResult {
    * ⚠ 与 `handoff` 同款分层：本模块**不碰**运行态、不 import 配置，只回事实。
    */
   danglingRefs?: DanglingRef[]
+  /**
+   * **读数渲染**（2026-10-11 第 47 轮 · 结构改造④）—— 本次写入里
+   * 「占位标记 → 实值」的渲染清单与拒绝清单。**只描述事实**。
+   *
+   * ⚠ 这是**新增字段**，既有字段一个未动；⚠ **不影响 `ok`** ——
+   *   渲染了值、或拒绝了某个标记，**都不改写入语义**（"如实写"不是"内容合规才写"）。
+   * ⚠ 与 `danglingRefs` 同款分层：本模块只回事实，措辞由调用方拼。
+   */
+  readings?: RenderResult
 }
 
 export interface WriteHobOptions {
@@ -546,7 +556,17 @@ export async function writeHobFile(
     return refuse(file, 'archive-overwrite-denied', '拒绝：归档是只增不改的历史，不允许 overwrite（需覆盖请人工处理）。')
   }
 
-  const contentBytes = Buffer.byteLength(input.content, 'utf8')
+  // ── 6.5：**读数渲染**（2026-10-11 第 47 轮 · 结构改造④）──────────────────
+  //   ⚠ **必须在幂等比对之前**：存量里是**上次渲染出的实值**，而本次输入是**标记原文**
+  //     ⇒ 若先比对再渲染，`normalize(existing) !== normalize(标记原文)` **永远成立**
+  //     ⇒ **幂等跳过被破坏**（同一份内容每写一次都"有变化"）。
+  //   ⚠ 也必须在 `contentBytes` 之前：落盘的是**渲染后**的内容，尺寸上限该按最终值算。
+  //   ⚠ **纯函数**：同样输入 + 同样树 ⇒ 同样输出（⛔ 不渲染时间戳 / 随机数 / 本次操作产生的量）
+  //     —— 这正是"幂等性必须保住"对渲染器的要求。
+  const rendered = renderReadings(hobRoot, file, input.content)
+  const content = rendered.content
+
+  const contentBytes = Buffer.byteLength(content, 'utf8')
   if (contentBytes > opts.maxFileBytes) {
     return refuse(file, 'too-large', `拒绝：content ${contentBytes} 字节，超过上限 ${opts.maxFileBytes}。`)
   }
@@ -567,15 +587,15 @@ export async function writeHobFile(
   // ── 8：编号校验 + 幂等（append 才需要）────────────────────────────────
   let id: string | undefined
   if (mode === 'append') {
-    const fmt = checkFormat(file, input.content)
+    const fmt = checkFormat(file, content)
     if (fmt !== null) return fmt
 
-    const got = extractId(file, input.content)
+    const got = extractId(file, content)
     if (got !== null) {
       id = got.id
       const prev = exists ? findEntryById(existing, got.id) : null
       if (prev !== null) {
-        if (normalize(prev) === normalize(input.content)) {
+        if (normalize(prev) === normalize(content)) {
           return {
             ok: true, action: 'skipped', file, id,
             message: `⏭ 幂等跳过：${got.id} 已存在且内容一致（未改动文件、未建备份）。`,
@@ -606,7 +626,7 @@ export async function writeHobFile(
   }
 
   // ── 10：幂等（overwrite：结果与现状一致则跳过）──────────────────────────
-  if (mode === 'overwrite' && exists && normalize(existing) === normalize(input.content)) {
+  if (mode === 'overwrite' && exists && normalize(existing) === normalize(content)) {
     return {
       ok: true, action: 'skipped', file,
       message: '⏭ 幂等跳过：overwrite 内容与现有文件一致（未改动文件、未建备份）。',
@@ -616,7 +636,7 @@ export async function writeHobFile(
 
   // ── 11：组装最终内容 ────────────────────────────────────────────────────
   const eol = exists ? dominantEol(existing) : '\n'
-  const body = eol === '\r\n' ? input.content.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n') : input.content.replace(/\r\n/g, '\n')
+  const body = eol === '\r\n' ? content.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n') : content.replace(/\r\n/g, '\n')
   let next: string
   if (mode === 'overwrite') {
     next = body.endsWith(eol) ? body : body + eol
@@ -637,8 +657,12 @@ export async function writeHobFile(
       ok: true, action: mode === 'overwrite' ? 'overwritten' : 'appended', file, id,
       bytesBefore: Buffer.byteLength(existing, 'utf8'), bytesAfter: nextBytes,
       ...(dRefs.length === 0 ? {} : { danglingRefs: dRefs }),
+      ...(rendered.rendered.length === 0 && rendered.refused.length === 0 ? {} : { readings: rendered }),
       message: `[dryRun] 校验全过，将${mode === 'overwrite' ? '覆盖' : '追加'} ${file}（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节），未落盘。`
-        + renderDanglingRefsNote(dRefs),
+        + renderDanglingRefsNote(dRefs)
+        // ⚠ `dryRun` **也要渲染**（否则试跑与真跑不一致）：本函数在 §6.5 已渲染，
+        //   这里只是**如实报出**它渲染了哪些值 —— 而**未落盘**。
+        + renderReadingsNote(rendered),
     }
   }
 
@@ -694,10 +718,13 @@ export async function writeHobFile(
     bytesAfter: nextBytes,
     ...(isHandoffPath(file) ? { handoff: { kind: 'task-file' as const, ref: file } } : {}),
     ...(danglingRefs.length === 0 ? {} : { danglingRefs }),
+    ...(rendered.rendered.length === 0 && rendered.refused.length === 0 ? {} : { readings: rendered }),
     message: `✅ 已${mode === 'overwrite' ? '覆盖' : '追加'} ${file}${id === undefined ? '' : `：${id}`}`
       + `（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节）`
       + (backupName === undefined ? '' : `；备份 ${BACKUP_DIR}/${backupName}`)
       + renderDanglingRefsNote(danglingRefs)
+      // ── 读数渲染的**出处**（E-118：值是工具算的，就要说得出是哪些值）────────
+      + renderReadingsNote(rendered)
       // ── 那一刻的提醒（2026-10-10 新增 · 本轮**最高价值**的一处）────────────
       //   ⚠ 为什么必须在这里：这份文件写完后**还要再调一次投递**才算交付。
       //     实测漏了两次（第 9 / 21 轮），两次都是用户发现的 ——
