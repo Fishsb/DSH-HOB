@@ -20,7 +20,7 @@
 > **仍在本目录**（骨架）：`README.md` · `EXPERIENCE.md` · `templates/` · `roles/` · `drafts/`。
 >
 > ⚠ **名称未改**：本目录仍叫 `.hob/`，但它**不再是账本**（只放骨架）。
-> 改名会牵动 100+ 处引用 ⇒ **不改名** —— 故在此处显式说明，避免误读。
+> 改名会牵动**大量引用**（⚠ 属**漂移型计数，此处不写死**；要最新值以 `grep -r '\.hob/'` 实测为准）⇒ **不改名** —— 故在此处显式说明，避免误读。
 
 > 本文件是 **骨架（进 git）**，不是运行数据。
 > 它回答三件事：**这里的文件各自是什么 / 哪些进 git / 东西归档去了哪。**
@@ -47,7 +47,7 @@
 ⇒ 本表的「位置」栏就是 `.gitignore` 例外的**唯一权威清单**；
 改一处必须同步另一处，并由 `npm run check:gitignore` 机检（见 §1.4）。
 
-### 1.1 四类"运行数据"为什么进不了 git（逐类判定依据）
+### 1.1 各类"运行数据"为什么进不了 git（逐类判定依据）
 
 | 类 | 判定依据（对照上方「运行数据」标准） |
 |---|---|
@@ -61,7 +61,7 @@
 
 `.hob/drafts/preset-contracts.md` 是**预设契约正文的人读版**（现状只有 `Hob` 一份），
 也是 `scripts/check-preset-contracts.mjs`（**已入库**、挂在 `npm run check:presets`）
-**无条件读取**的文件（`scripts/check-preset-contracts.mjs:72` 定义路径、`:150` 读取）。
+**无条件读取**的文件（该脚本里 `const DRAFT` 定义路径、`readFileSync(DRAFT, …)` 读取 —— ⚠ 引用用**符号锚**而非行号：行号会随脚本改动漂移，见 `EXPERIENCE.md` **E-91**）。
 
 **决定性事实（实测）**：若把它排除，则**新 clone 跑不了已声明的命令** ——
 ```
@@ -79,8 +79,8 @@ EXIT=1
 
 ### 1.3 `roles/` 为什么**进 git**（角色簇）
 
-`.hob/roles/` 存**角色簇与方法论**：`methods/` 下 18 份
-（17 位角色的领域方法论 + `quality-gates.md`）；人读契约在
+`.hob/roles/` 存**角色簇与方法论**：`methods/` 下**随角色数增长的多份**
+（各角色的领域方法论 + `quality-gates.md`；**份数以 `ls .hob/roles/methods/` 实测为准**）；人读契约在
 `.hob/templates/ROLES.md`（角色）与 `.hob/templates/GATES.md`（门禁）。
 
 **来源与许可**：改编自 [dsh-expert-mode](https://github.com/Asher-2000/dsh-expert-mode)
@@ -202,7 +202,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 | 仓 | 规则文件 | 忽略什么 |
 |---|---|---|
 | **工作区仓**（本仓） | `.gitignore` | 见 §1 两栏清单（§1.4 机检逐条断言） |
-| **账本仓**（`<账本区>/`） | **该仓根自己的 `.gitignore`** | **只忽略 `backups/`**（**一条规则**） |
+| **账本仓**（`<账本区>/`） | **该仓根自己的 `.gitignore`** | **只忽略 `backups/`**（⚠ **规则条数以该仓 `.gitignore` 实测为准**） |
 
 **依据**：§1 已把 `backups/` 归为**运行数据 · ❌ 不进 git**（理由：各轮**改前备份**、随工作区一次性消费、
 无跨项目价值）。账本仓是同一批运行数据的新居所 ⇒ **同口径延续**（"半进库半不进"会
@@ -250,7 +250,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 .hob/                         ← **本目录只放骨架；账本数据在工作区之外**
 ├── README.md            ← 本文件（骨架 · 进 git）
 ├── EXPERIENCE.md        ← 经验库（骨架 · 进 git · 提炼自旧项目）
-├── templates/           ← 空模板 7 份（骨架 · 进 git）
+├── templates/           ← 空模板（骨架 · 进 git；份数以 `ls .hob/templates/` 实测为准）
 │   ├── CONTEXT.md  ├── USER-DECISIONS.md  └── DECISIONS.md
 │   ├── ROLES.md         ← 角色簇人读契约（§1.3）
 │   ├── GATES.md         ← 阶段与门禁人读契约（§1.3）
@@ -258,7 +258,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 │   └── REPORT.md        ← 回报模板（v4 · 交接协议）
 ├── drafts/              ← 契约正文人读版（**骨架 · 进 git**；被 check:presets 读取，见 §1.2）
 │   └── preset-contracts.md（另有 restructure-plan.md / nav-intake-draft.md / 架构总览）
-└── roles/               ← 角色簇方法论 18 份（骨架 · 进 git，见 §1.3）
+└── roles/               ← 角色簇方法论（骨架 · 进 git，见 §1.3；份数以 `ls .hob/roles/methods/` 实测为准）
 
 /home/lk/.dsh/hob-ledgers/dsh-hob/       ← **账本数据（外置）**
 ├── PROJECT.md · DECISIONS.md · USER-DECISIONS.md · CONTEXT.md   ← **四份正本 = 全部"当前状态"**
@@ -280,7 +280,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 | `PROJECT.md` | **项目方案（唯一事实源）** —— 现状 + 纪律。⚠ **只有用户能批准变更，Hob 只提议**（程序纪律） | 章节号（`§N`） |
 | `DECISIONS.md` | **方案变更记录** —— 「影响项目方案本身」的变更 | `CHG-nn` |
 | `USER-DECISIONS.md` | **用户决策记录** —— 用户拍板、影响后续开发的决策 | `UD-nn` |
-| `CONTEXT.md` | **当前上下文** —— `§0` 防漂移摘要（一屏）+ **文档面现状表** + **还欠的活**（等用户 / 未修的缺口 / 未验证三张表）+ **关键约束速查** + **开工检查单** + **本批登记**；**只写当前状态**，历史与原始读数落 `archive/` | `§0`～`§5` |
+| `CONTEXT.md` | **当前上下文** —— `§0` 防漂移摘要（一屏）+ **文档面现状表** + **还欠的活**（等用户 / 未修的缺口 / 未验证三张表）+ **关键约束速查** + **开工检查单** + **本批登记**；**只写当前状态**，历史与原始读数落 `archive/` | `§N` |
 
 > ⚠ 上表描述的是**格式契约** —— 账本是运行数据，按模板创建与维护。
 
@@ -299,7 +299,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 | 2026-10-10 | **项目方案迁入账本区** —— `PROJECT.md`（**122455 字节**，`md5 ac5d2bcb…` 迁移前后一致） | 用户决策 **UD-88** + 变更 **CHG-025**：「这些都是 hob 的账本，不要放工作区，**包括项目方案**」 | `/home/lk/.dsh/hob-ledgers/dsh-hob/PROJECT.md`（**迁出**，非复制；旧整份另存同仓 `archive/2026-10-10-project-plan-move/PROJECT.md`） | ⚠ 本行同样是「**迁移**」登记（理由同上面两行）。⇒ 工作区里**不再保留任何项目文档**。`PROJECT.md` 同时纳入 `write_hob` 可写面；但**方案只有用户能批准变更、Hob 只提议**（程序纪律，非工具闸门） |
 | 2026-10-10 | **重构前的整份快照（三本账本）** —— `DECISIONS.md` / `USER-DECISIONS.md` / `CONTEXT.md` 各一份（158948 字节 / 1314 行合计，md5 逐份一致） | 用户决策 **UD-88** + 变更 **CHG-025**（「改动即重构、旧的归档」—— 重写前冻结基线） | 账本区 `archive/2026-10-10-docs-restructure/`（**副本**，非迁移；源文件一字未改） | ⚠ 这是「**重构前快照**」，供回溯；**四份文档均已完成改写为「当前状态」形态**。`PROJECT.md` 不重复归档 —— 它的改写前整份已在 `archive/2026-10-10-project-plan-move/PROJECT.md`（逐字节同原文件，已对拍一致） |
 | 2026-10-09 | **账本区再迁** —— `/home/lk/FF/.hob-ledgers/dsh-hob/` → `/home/lk/.dsh/hob-ledgers/dsh-hob/`（**516 个文件**，md5 差异 0；`git subtree split` 抽出 **37 个提交**接进新仓） | 用户决策 **UD-86 + UD-87（更正）**：`ledgerHome` 改为**显式配置** `~/.dsh/hob-ledgers`，且其下**每工作区一个独立仓**（仓根即工作区目录本身） | `/home/lk/.dsh/hob-ledgers/dsh-hob/`（**迁出**，非复制；**历史随迁**；旧父仓 `/home/lk/FF/.hob-ledgers/` 原地保留，仍管 `prompt-enhancer-release/`） | ⚠ **本行同样是「迁移」登记**（理由同上行）。代价已明写：该值是**本机绝对路径** ⇒ 放弃 UD-73③ 的可移植性口径，换机器须重配 |
-| 2026-10-10 | **账本区根目录遗留的 15 份过程产物** —— 8 份 `STEP*-REPORT.md` + `CLEANUP-REPORT.md` / `CLEANUP2-REPORT.md` / `CONFIG-CLEANUP-REPORT.md` / `COMMIT-ROUND-REPORT.md` / `UI-REV-REPORT.md` + `CARRYOVER.md` + 经验库碎片 `EXPERIENCE.md` | 用户指令（逐字）：「整个账本目录所有账本文件都应该是最新的状态，其他遗留的东西都应该归档到archive历史文档」 | 账本区 `archive/2026-10-10-ledger-root-housekeeping/`（**原地 `git mv`**，历史随迁；**非删除**；该目录带 README.md） | ⚠ 这是**账本区内部**的收口（不是"离开本仓库"）：根目录 `.md` 由 **19 → 4**，只留四份正本；口径见 §1.6。⚠ 其中 `EXPERIENCE.md` 是**碎片**（全文件仅 1 条 `E-97`），**正本在工作区** `.hob/EXPERIENCE.md`（**115 条**，取号以 `npm run exp:next-id` 实测为准） |
+| 2026-10-10 | **账本区根目录遗留的 15 份过程产物** —— 8 份 `STEP*-REPORT.md` + `CLEANUP-REPORT.md` / `CLEANUP2-REPORT.md` / `CONFIG-CLEANUP-REPORT.md` / `COMMIT-ROUND-REPORT.md` / `UI-REV-REPORT.md` + `CARRYOVER.md` + 经验库碎片 `EXPERIENCE.md` | 用户指令（逐字）：「整个账本目录所有账本文件都应该是最新的状态，其他遗留的东西都应该归档到archive历史文档」 | 账本区 `archive/2026-10-10-ledger-root-housekeeping/`（**原地 `git mv`**，历史随迁；**非删除**；该目录带 README.md） | ⚠ 这是**账本区内部**的收口（不是"离开本仓库"）：根目录 `.md` 由 **19 → 4**，只留四份正本；口径见 §1.6。⚠ 其中 `EXPERIENCE.md` 是**碎片**（全文件仅 1 条 `E-97`），**正本在工作区** `.hob/EXPERIENCE.md`（**条数与取号以 `npm run exp:next-id` 实测为准**） |
 | 2026-10-10 | **骨架侧"历史堆积"重构前的六份旧整份** —— `.hob/README.md` · `.hob/drafts/preset-contracts.md` · `.hob/templates/ROLES.md` · `.hob/drafts/restructure-plan.md` · `.hob/drafts/nav-intake-draft.md` · `scripts/check-preset-contracts.mjs` | 用户指令「梳理项目本身的契约约束等信息是否也有类似的历史变更堆积问题…如果有的话从项目档案出发作为目标进行分析重构」+ Hob 只读审计（口径 = **UD-88 / CHG-025** 在**骨架侧**的补齐执行） | 账本区 `archive/2026-10-10-skeleton-restructure/sources/`（**副本**，非迁移；源文件随即被改写为「只写当前状态」） | ⚠ 该目录带自己的 `README.md`（逐份字节数 + md5 + "删的是什么性质的东西" + 三条硬约束）。**判据**：归档前逐字节 `cmp` 全 OK；改写只**删历史注解**，**不动现行条文**（§1 清单 / §一 契约 / 引文块实质一字未改） |
 
 > **未被本表覆盖的既有归档**：账本目录内的 `archive/`（各批次证据目录）
@@ -311,7 +311,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 
 ## 4. 模板怎么用
 
-`templates/` 下 **7** 份是**空骨架**，只含格式，不含任何本项目内容：
+`templates/` 下是**空骨架**，只含格式，不含任何本项目内容（**份数以 `ls .hob/templates/` 实测为准**）：
 
 1. **新建账本**：以模板为蓝本创建运行数据文件，替换 `[日期]` / `[谁]` 等占位。
 2. **格式参照**：需要确认「某类条目该有哪些列」时，以模板为准。
@@ -352,7 +352,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 | 配置面三处不漂移 | `config.ts` schema ↔ patch 的 config ↔ 设置面板 | `check:config` |
 | 编排运行态可观测 | 等回传 / 重载丢失 / 待投递**跨重载**可见 | `check:orch` |
 | client 半边宿主服务取用 | 零裸属性访问、失败不静默、Fiber 用 `.dispose` | `check:client` |
-| 骨架 ↔ 实例漂移检查必跑 | 收尾八条命令全 exit 0 才算收尾完成 | 未机器化 |
+| 骨架 ↔ 实例漂移检查必跑 | 收尾命令**全部** exit 0 才算收尾完成（**条数以 `package.json` 的 `scripts` 实测为准**） | 未机器化 |
 | 负向对拍 | 通过判据 = **退出码非零 且 有可读断言行**（不只是退出码） | 未机器化 |
 | 样本登记 | 新增"引用类"断言必须自带"**不该被咬**"的样本 | 未机器化 |
 | 标准姿势（先建输出目录） | 跑收尾命令前先 `mkdir -p`；取完退出码核对**日志落盘数** | 未机器化 |
@@ -364,6 +364,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 | 诚实边界 | 没验的写「未验证」，⛔ 不许把「我认为」写成「已验证」 | 未机器化 |
 | **新增纪律须同步登记本表** | 新增一条纪律 ⇒ 本表**必须同步加一行**（含"谁来查"）；查不了的照实写 `未机器化`（⛔ 不许乱指检查名） | 未机器化 |
 | **清理类改动必须含 `build`** | 动不可见字符 / 删字符后**必须 `build`** —— 扫描器 PASS ≠ 文件能编译 | 未机器化 |
+| **文档里不写死会漂移的计数** | 计数型陈述（组数 / 条数 / 份数 / 行数 / 编号范围 …）一律改**口径式**：写"以 `<命令>` 实测为准"（**E-116 / E-117**） | 未机器化 |
 
 > ⚠ **维护规则（本表自身的"喂食机制"）**：**新增一条纪律 ⇒ 本表必须同步加一行**（含"谁来查"）；
 > **查不了的照实写 `未机器化`**（⛔ 不许乱指检查名）。⚠ 这条规则**本身也在表里登记**（它是"必须"语义 ⇒
@@ -393,11 +394,11 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 | 项 | 状态 | 依据 |
 |---|---|---|
 | 三本账本（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`） | ✅ **已建立并在用**，**外置**于 `/home/lk/.dsh/hob-ledgers/<工作区名>/`（本工作区 = `/home/lk/.dsh/hob-ledgers/dsh-hob/`，**独立仓根**、历史随迁）。当前进度：**四份文档一律「只写当前状态」形态**（不带补丁式历史说明，旧版**整份**存 `archive/<日期>-<名>/`）；编号以 `git log` / 正本实测为准 | `ls` 该目录；账本仓 `git log` |
-| `templates/` 空模板 | ✅ 已就位，**7 份** —— 三账本空模板（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`）+ `ROLES.md`（角色簇）+ `GATES.md`（阶段与门禁）+ `TASK.md` / `REPORT.md`（交接协议载体） | `ls -la .hob/templates/` |
+| `templates/` 空模板 | ✅ 已就位（**份数以 `ls -la .hob/templates/` 实测为准**）—— 三账本空模板（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`）+ `ROLES.md`（角色簇）+ `GATES.md`（阶段与门禁）+ `TASK.md` / `REPORT.md`（交接协议载体） | `ls -la .hob/templates/` |
 | `EXPERIENCE.md` 经验库 | ✅ 已就位；条目数与下一个可用编号**以 `npm run exp:next-id` 实测为准**（该命令同时与 git 版本对账）；写作纪律：新坑续编不重排、**不许丢根因**、未验证项进 §7 | `.hob/EXPERIENCE.md`；`npm run exp:next-id` |
 | `archive/` | **不在本目录** —— 交接归档（`TASK.md` / `REPORT.md`）落在**账本目录**的 `archive/<日期>-<名>/`，并须在 §3 指针表登记一行 | `ls` 工作区 `.hob/`（无 archive）；账本目录 `ls archive/` |
 | **写账本的工具** | ✅ **已在用且真机验证过** —— `read_contracts`（读账本 `.md`）+ `write_hob`（写账本）；`write_hob` 真机写入与自动备份已实测 | `src/server/hob-write.ts`、`src/modules/tools.ts` |
-| **骨架 ↔ 实例漂移检查** | ✅ **已在跑** —— 收尾必跑八条 = `npm run build` + `npm run typecheck` + 六个 `check:*`：`check:presets`（预设契约）· `check:config`（配置面三处不漂移）· `check:orch`（编排运行态跨重载；⚠ **含「结构改造 ① ②」真跑组 G**）· `check:client`（client 半边宿主服务取用）· `check:gitignore`（**排除漂移 + 文档形态机检多组 A/B/C/D/D′/E/F/G**，⚠ 组与条数以其实测输出为准）· `check:experience`（经验库编号/四要素）；另 `exp:next-id` 负责取号 | `package.json` 的 `scripts`；§1.4；`PROJECT.md` §10.2 |
+| **骨架 ↔ 实例漂移检查** | ✅ **已在跑** —— 收尾必跑（**条数以 `package.json` 的 `scripts` 实测为准**）= `npm run build` + `npm run typecheck` + 各个 `check:*`：`check:presets`（预设契约）· `check:config`（配置面三处不漂移）· `check:orch`（编排运行态跨重载；⚠ **含「结构改造 ① ②」真跑组 G**）· `check:client`（client 半边宿主服务取用）· `check:gitignore`（**排除漂移 + 文档形态机检多组 A/B/C/D/D′/E/F/G**，⚠ 组与条数以其实测输出为准）· `check:experience`（经验库编号/四要素）；另 `exp:next-id` 负责取号 | `package.json` 的 `scripts`；§1.4；`PROJECT.md` §10.2 |
 
 ⚠ **仍未做（不许假设它存在）**：旧项目那份**通用**骨架 ↔ 实例母版比对脚本
 （`scripts/check-hob-skeleton.mjs`）**未搬运** —— 现役机检是**针对本仓库具体清单**的断言

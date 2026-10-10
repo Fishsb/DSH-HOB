@@ -2,10 +2,10 @@
 
 > **性质**：**骨架 · 进 git**（可复用、可分发、零外部依赖）。
 > **来源**：改编自 [dsh-expert-mode](https://github.com/Asher-2000/dsh-expert-mode)（**MIT 许可**）
-> 的 `.expert-mode/methods/quality-gates.md`（103 行，**逐字采用其规则表**）。
+> 的 `.expert-mode/methods/quality-gates.md`（**逐字采用其规则表**；⚠ 该文件的**行数不引用** —— 行数会随它自身改动漂移，见 `EXPERIENCE.md` **E-91**）。
 > **配套**：角色见 `.hob/templates/ROLES.md`；指令与回报见 `TASK.md` / `REPORT.md`。
 >
-> ⚠ **本文件不是"再写一套流程"** —— 它是把 SDLC 六阶段**变成可判定的门禁**，
+> ⚠ **本文件不是"再写一套流程"** —— 它是把 SDLC 的各个阶段**变成可判定的门禁**，
 > 且**每条判据都能落到读数**（命令退出码 / 文件字节 / 审计态）。
 
 ---
