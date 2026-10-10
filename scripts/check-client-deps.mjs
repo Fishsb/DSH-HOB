@@ -135,6 +135,8 @@ const INDEX_TS = join(CLIENT_DIR, 'index.ts')
 const CATALOG_TS = join(CLIENT_DIR, 'catalog.ts')
 const SETTINGS_TS = join(CLIENT_DIR, 'settings.ts')
 const PANEL_TSX = join(CLIENT_DIR, 'settings-panel.tsx')
+/** 面板样式（第 9 轮断言 K 要在里面读 CSS 规则）。 */
+const PANEL_STYLES_TS = join(CLIENT_DIR, 'panel-styles.ts')
 
 const fail = []
 const note = []
@@ -317,6 +319,7 @@ const indexSrc = readOr(INDEX_TS, 'client 入口（index.ts）')
 const catalogSrc = readOr(CATALOG_TS, '候选来源（catalog.ts）')
 const settingsSrc = readOr(SETTINGS_TS, '设置绑定（settings.ts）')
 const panelSrc = readOr(PANEL_TSX, '设置面板（settings-panel.tsx）')
+const panelStylesSrc = readOr(PANEL_STYLES_TS, '面板样式（panel-styles.ts）')
 
 /**
  * 每份源码的**两种视图** —— 这是本脚本的关键区分，混用就会造出"假通过/假失败"：
@@ -961,6 +964,106 @@ function balancedBlock(src, startIndex) {
   if (selfFailJ.length > 0) {
     bad(`断言 J 的自证失败（**检测器本身不可信** ⇒ 不按通过处理）：${selfFailJ.join('；')}`)
   } else ok('自证 J ✓ 四个检测器双向对拍（select / ctx.locale / 键名判据 / 词典键抽取）')
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// §11f 断言 K —— 下拉触发按钮**必须有控件外观**（第 9 轮新增）
+// ══════════════════════════════════════════════════════════════════════════
+/**
+ * 防的是**第 9 轮那个用户报障**的形态：「下拉框看不到样式就是可以点，
+ * 但是按钮没有凸显样式」—— 三个触控件看着就是"一行灰字 + 一个箭头"，
+ * 无描边、无底色，看不出是能点的控件。
+ *
+ * ⚠ **根因不是"没抄准"，是"抄错了对象"**：第 8 轮逐条抄的是宿主
+ *   `ui-model-selection` 的 `.trigger`，那份样式**本身就是无边框无底色的**
+ *   （`background:0 0;border:none;padding:0 4px 0 8px`）—— 它在宿主里之所以能看，
+ *   是因为**嵌在输入框内部**，那圈描边与底色由外层提供
+ *   （`dsh-client-ui-primitives/lib/Input.module.css:1-14` 的 `.wrap`）。
+ *   搬进设置页单独用 ⇒ 丢了外层 ⇒ 看着就是一段灰字。
+ *   ⇒ 该抄的是宿主**设置页控件**的度量：
+ *     `dsh-client-ui-primitives/lib/settings-form/fields.module.css`
+ *       `.input` **`:107-117`**：描边 `border:0.5px solid var(--dsw-alias-border-l4)`、
+ *         底色 `background:var(--dsw-alias-bg-layer-3)`、`border-radius`、内边距、高度。
+ *
+ * 判据两件（各自能独立失败）：
+ *   · K-1 **必须有描边与底色**：`.dsh-hob-trigger` 规则体内**必须**出现
+ *         `border:` 声明（且值里含 `solid` 或非 `none`）**与** `background:` 声明
+ *         （且值不是 `0 0` / `none` / `transparent`）。
+ *   · K-2 **不得再出现"无边框"写法**：该规则内不得有 `border:none` / `border:0` /
+ *         `background:0 0` / `background:none` —— 那正是本轮的缺陷形态。
+ *   ⚠ 判据只看**该选择器的规则体**（不扫全文件）：`panel-styles.ts` 里别的规则
+ *     （如链接式按钮 `.dsh-hob-link-btn`）**本来就该**无边框，误伤会造出假失败。
+ */
+{
+  const css = panelStylesSrc
+  // 取 `.dsh-hob-trigger{…}` 的规则体 —— 该规则在模板串里被拼成**多条相邻片段**，
+  // 故用"从选择器起到下一个选择器 `.dsh-hob-trigger[-:]` 之前"的窗口，
+  // 再在所有片段里找声明（不去解析完整 CSS，够用且不脆）。
+  const at = css.indexOf('.dsh-hob-trigger{')
+  if (at < 0) {
+    bad('K-1 · panel-styles.ts 里找不到 `.dsh-hob-trigger{` 规则 —— 触发按钮的样式落点不见了')
+  } else {
+    // 到下一个 `.dsh-hob-trigger` 选择器（含 :hover / :focus-visible / :disabled）或文件尾
+    const rest = css.slice(at + 1)
+    const nextAt = rest.indexOf('.dsh-hob-trigger')
+    const body = nextAt < 0 ? rest : rest.slice(0, nextAt)
+    // 该规则的"基本态"体：从 `.dsh-hob-trigger{` 到本片段拼接结束（下一个选择器前）
+    //   ⚠ 模板串把基本态拆成了 6 个相邻片段，窗口里同时含这些片段。
+    // ⚠ `border:0` 的判据**必须用 `(?![:digit:].)`**（本轮实测抓到的真缺口）：
+    //   写成 `\b` 时 `border:0.5px solid …` 也会命中（`0` 后面是 `.`，`\b` 成立）
+    //   ⇒ **正确写法被判成缺陷**、自证当场报误报。
+    const isNoBorder = /border\s*:\s*(none|0)(?![\d.])/.test(body) || /background\s*:\s*(0\s+0|none|transparent)\b/.test(body)
+    const hasBorder = /border\s*:\s*[^;]*(solid|border-l\d)/.test(body)
+    const hasBg = /background\s*:\s*var\(--dsw-/.test(body)
+    if (!hasBorder) {
+      bad('K-1 · `.dsh-hob-trigger` 规则里没有**描边**声明 —— 上轮抄的 `.trigger` 是'
+        + '"嵌在输入框里的无边框按钮"，单独放进设置页就没有边框了（用户报障的形态）。'
+        + '应照宿主设置页控件 `settings-form/fields.module.css:107-117` 的 `.input` 加'
+        + '`border:0.5px solid var(--dsw-alias-border-l4)`')
+    } else ok('K-1 ✓ 触发按钮有描边声明（`border: … solid …`）')
+    if (!hasBg) {
+      bad('K-1 · `.dsh-hob-trigger` 规则里没有**底色**（`background:var(--dsw-…)`）—— '
+        + '应照 `.input` 的 `background:var(--dsw-alias-bg-layer-3)`')
+    } else ok('K-1 ✓ 触发按钮有底色（`background:var(--dsw-…)`）')
+    if (isNoBorder) {
+      bad('K-2 · `.dsh-hob-trigger` 规则里仍出现**无边框写法**（`border:none` / `border:0` / '
+        + '`background:0 0` / `background:none`）—— 那正是"看着不像控件"的形态，'
+        + '必须整体替换成带描边+底色的度量')
+    } else ok('K-2 ✓ 触发按钮规则里零"无边框/无底色"写法')
+    //   正向：三态齐（hover / focus-visible / disabled）—— 用户要求"三态齐"
+    const states = [
+      ['.dsh-hob-trigger:hover', 'hover'],
+      ['.dsh-hob-trigger:focus-visible', 'focus-visible'],
+      ['.dsh-hob-trigger:disabled', 'disabled'],
+    ]
+    const missingStates = states.filter(([sel]) => !css.includes(sel))
+    if (missingStates.length > 0) {
+      bad(`K-1 · 触发按钮缺状态样式：${missingStates.map(([, l]) => l).join(' / ')} —— 三态要齐`)
+    } else ok('K-1 ✓ 触发按钮三态齐（hover / focus-visible / disabled）')
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// §11g 断言 K 的自证 —— 检测器必须**能各自证伪**（不许恒真）
+// ══════════════════════════════════════════════════════════════════════════
+{
+  const selfFailK = []
+  // 无边框样例必须被检出；带描边样例不得误报
+  const badSample = '.dsh-hob-trigger{cursor:pointer;background:0 0;border:none;padding:0 4px 0 8px}'
+  const goodSample = '.dsh-hob-trigger{height:34px;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3)}'
+  const noBorderRe = /border\s*:\s*(none|0)(?![\d.])/
+  const bgNoneRe = /background\s*:\s*(0\s+0|none|transparent)\b/
+  const borderRe = /border\s*:\s*[^;]*(solid|border-l\d)/
+  const bgRe = /background\s*:\s*var\(--dsw-/
+  if (!(noBorderRe.test(badSample) && bgNoneRe.test(badSample))) selfFailK.push('K-2 检测器认不出无边框样例')
+  if (!(borderRe.test(badSample) === false)) selfFailK.push('K-1 检测器把 `border:none` 当成了描边（会假通过）')
+  if (!bgRe.test(badSample)) { /* 期望为 false */ } else selfFailK.push('K-1 检测器把 `background:0 0` 当成了底色')
+  if (!borderRe.test(goodSample)) selfFailK.push('K-1 检测器对带描边样例漏报')
+  if (!bgRe.test(goodSample)) selfFailK.push('K-1 检测器对带底色样例漏报')
+  if (noBorderRe.test(goodSample) || bgNoneRe.test(goodSample)) selfFailK.push('K-2 检测器对正确样例误报')
+  if (selfFailK.length > 0) {
+    bad(`断言 K 的自证失败（**检测器本身不可信** ⇒ 不按通过处理）：${selfFailK.join('；')}`)
+  } else ok('自证 K ✓ 描边检测器与"无边框"检测器双向对拍（含 `border:none` 不得被当成描边）')
 }
 
 // ══════════════════════════════════════════════════════════════════════════

@@ -123,22 +123,38 @@ const CSS = [
   `.dsh-hob-card-title{font-weight:500;color:var(--dsw-alias-label-primary)}`,
   `.dsh-hob-card-note{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}`,
 
-  // ── 下拉触发按钮（第 8 轮新增）：宿主 `ui-model-selection` 的 `.trigger` 同源 ──
-  // 逐条出处：`dsh-client-ui-model-selection/lib/client.js:330` 的 CSS 串
-  //   `.trigger{border-radius:var(--dsw-radius-sm);height:28px;color:var(--dsw-alias-label-secondary);
-  //    cursor:pointer;background:0 0;border:none;align-items:center;gap:4px;padding:0 4px 0 8px;
-  //    font-size:13px;font-weight:400;line-height:20px;display:flex}`
-  //   + `:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}`
-  //   + `:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,…)}`
-  //   + `.chevron{color:var(--dsw-alias-label-caption);transition:transform .12s}` /
-  //     `.chevronOpen{transform:rotate(180deg)}`
-  // ⚠ 这是**宿主自己的度量**，不是自造；`max-width` 用 360px 同 `.trigger`。
-  `.dsh-hob-trigger{min-width:0;max-width:min(360px,100%);height:28px;color:var(--dsw-alias-label-secondary);`,
-  `cursor:pointer;background:0 0;border:none;outline:none;align-items:center;gap:4px;`,
-  `padding:0 4px 0 8px;font:inherit;font-size:13px;font-weight:400;line-height:20px;display:inline-flex}`,
+  // ── 下拉触发按钮 ────────────────────────────────────────────────────────
+  // ⚠⚠ **第 9 轮订正（用户报障「按钮没有凸显样式」）—— 上轮抄错了对象。**
+  //   上轮逐条抄的是 `ui-model-selection` 的 `.trigger`，而那份样式里写的是
+  //   `background:0 0;border:none;padding:0 4px 0 8px`（**无边框无底色**）。
+  //   它在宿主里之所以看着像个控件，是因为**嵌在输入框内部**，那圈描边与底色
+  //   由**外层**提供 —— `dsh-client-ui-primitives/lib/Input.module.css:1-14` 的 `.wrap`：
+  //     `height:32px;padding:0 8px;border:0.5px solid var(--dsw-alias-border-l4);
+  //      border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1)`
+  //   我们把那个按钮**单独**放进设置页 ⇒ **丢了外层那圈描边与底色** ⇒ 看着就是一段灰字。
+  //   ⇒ **该抄的是宿主"设置页控件"的度量**：
+  //     `dsh-client-ui-primitives/lib/settings-form/fields.module.css`
+  //       `.input` **`:107-117`**：`height:34px;padding:0 12px;`
+  //         `border:0.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);`
+  //         `background:var(--dsw-alias-bg-layer-3);font-size:13px;line-height:1.5;color:label-primary`
+  //       `.input:focus-visible` **`:119-122`**：`outline:none;border-color:state-business-primary`
+  //       `.input:disabled` **`:124-127`**：`color:label-tertiary;cursor:default`
+  //   旁证：宿主 `ui-settings-models` 页自己的下拉也是 `input + selectInput` 的带边框组合
+  //     （该文件 CSS 串内 `:1358`/`:1767`/`:2288` 三处用的是同一个 `input` 类）。
+  //   ⚠ **文字层级**照旧用次级色（`label-secondary`）保持"这是当前值"的观感，
+  //     但**边框与底色必须有**（用户要的就是这个）；箭头保留（第 8 轮既有行为）。
+  //   ⚠ 颜色尺寸一律走 `--dsw-*`，**不自造令牌**（上面各条都取自宿主原文）。
+  `.dsh-hob-trigger{min-width:180px;max-width:min(360px,100%);height:34px;box-sizing:border-box;`,
+  `color:var(--dsw-alias-label-secondary);cursor:pointer;`,
+  `border:0.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);`,
+  `background:var(--dsw-alias-bg-layer-3);`,
+  `align-items:center;gap:4px;padding:0 12px;`,
+  `font:inherit;font-size:13px;font-weight:400;line-height:1.5;display:inline-flex}`,
+  // hover：底色提亮（宿主设置页按钮的同一手法 —— 交互底色令牌）。
   `.dsh-hob-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}`,
-  `.dsh-hob-trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}`,
-  `.dsh-hob-trigger:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}`,
+  // focus-visible：宿主 `.input:focus-visible` 的**换描边色**写法（不是自造的 box-shadow）。
+  `.dsh-hob-trigger:focus-visible{outline:none;border-color:var(--dsw-alias-state-business-primary)}`,
+  `.dsh-hob-trigger:disabled{color:var(--dsw-alias-label-tertiary);cursor:default}`,
   `.dsh-hob-trigger-value{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}`,
   `.dsh-hob-trigger-icon{flex:none;color:var(--dsw-alias-menu-icon)}`,
   `.dsh-hob-chevron{color:var(--dsw-alias-label-caption);flex:none;transition:transform .12s}`,

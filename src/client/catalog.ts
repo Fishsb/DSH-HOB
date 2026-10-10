@@ -46,6 +46,7 @@
  *      如实列出并标"不可用"（E-46 的教训：静默过滤让用户以为预设不存在）。
  */
 import type { ReactNode } from 'react'
+import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
 
 /** 宿主预设清单里的一行（只取本面板用到的字段）。 */
 export interface PresetRow {
@@ -112,14 +113,27 @@ export interface CatalogError {
 /** 外部存储的快照（**稳定引用**，只在内容变化时替换）。 */
 export interface CatalogSnapshot {
   status: 'idle' | 'loading' | 'ready' | 'error'
+  /**
+   * **可选**预设（已排除规划侧预设 —— 见 {@link excludedPresets}）。
+   *
+   * ⚠ 排除**不是**静默过滤（本项目 E-46 的教训：宿主的静默过滤让用户以为预设不存在）：
+   *   被排除的那几条原样收在 {@link excludedPresets} 里，面板**常驻一行**说明为什么排除。
+   */
   presets: PresetRow[]
+  /**
+   * 被排除的预设（当前 = 本插件的规划侧预设，`Hob`）——**仍然带出来**，不丢。
+   *
+   * 用途：① 面板常驻说明行要报出它的**显示名**；② 已存值恰好是它时，面板能**如实标"不作候选"**
+   * 并说明实际效果（沿用既有"已存值不在清单里"的做法，不静默隐藏）。
+   */
+  excludedPresets: PresetRow[]
   catalog: ModelCatalogRow | null
   /** 读取失败的原因（**如实显示**，不吞；**结构化**，由面板取词）。 */
   error: CatalogError | null
 }
 
 let ctxRef: any
-let snapshot: CatalogSnapshot = { status: 'idle', presets: [], catalog: null, error: null }
+let snapshot: CatalogSnapshot = { status: 'idle', presets: [], excludedPresets: [], catalog: null, error: null }
 let inflight: Promise<void> | null = null
 const listeners = new Set<() => void>()
 
@@ -305,16 +319,26 @@ export function loadCatalog(): Promise<void> {
       }
       const rows: PresetRow[] = Array.isArray(presetResult.value?.presets) ? presetResult.value.presets : []
       // ⚠ **刻意不过滤 `broken`**（见文件头纪律 ③）：原样带出去，由面板标"不可用"。
+      const mapped: PresetRow[] = rows.map((r: any) => ({
+        id: String(r?.id ?? ''),
+        ...(typeof r?.name === 'string' ? { name: r.name } : {}),
+        ...(typeof r?.description === 'string' ? { description: r.description } : {}),
+        ...(typeof r?.broken === 'string' ? { broken: r.broken } : {}),
+        ...(r?.isDefault === true ? { isDefault: true } : {}),
+      })).filter((r) => r.id !== '')
+      // ── 「新建会话默认」**不作候选**的预设（用户裁定 · 第 9 轮）────────────
+      //   ⚠⚠ **这不是静默过滤**（那正是 E-46 的教训：宿主的静默过滤让用户以为预设不存在）：
+      //     排除掉的几条**原样留在 `excludedPresets`** 里，面板据此**常驻一行**说明原因，
+      //     并且「候选来源」的计数会讲清"可选 N 个（已排除规划侧预设）"。
+      //   ⚠ 判据只用**逐字 id**（不看 name / broken），且 id 取自全仓唯一的
+      //     `src/shared/planning-preset.ts` —— 与预设声明逐字交叉核对由 `check:presets` 钉住。
+      const excluded: PresetRow[] = mapped.filter((p) => p.id === PLANNING_PRESET_ID)
+      const selectable: PresetRow[] = mapped.filter((p) => p.id !== PLANNING_PRESET_ID)
       update({
         status: 'ready',
         error: null,
-        presets: rows.map((r: any) => ({
-          id: String(r?.id ?? ''),
-          ...(typeof r?.name === 'string' ? { name: r.name } : {}),
-          ...(typeof r?.description === 'string' ? { description: r.description } : {}),
-          ...(typeof r?.broken === 'string' ? { broken: r.broken } : {}),
-          ...(r?.isDefault === true ? { isDefault: true } : {}),
-        })).filter((r) => r.id !== ''),
+        presets: selectable,
+        excludedPresets: excluded,
         catalog: normalizeCatalog(catalogResult.value),
       })
     } catch (e) {

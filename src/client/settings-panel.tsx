@@ -336,8 +336,14 @@ function SpawnDefaultsCard(props: {
       : snapshot.status === 'error' ? catalogErrorText(snapshot.error)
         : snapshot.status === 'idle' ? t('catalog.status.idle')
           : t('catalog.status.ready', {
+              // ⚠ 口径（用户要求「计数与可选数一致，别让用户数不上」）：
+              //   正文那个数**就是可选数**（已排除项不算在内）；有排除时**另起一句**
+              //   说明排除了几项，且与被排除项的名字（见下面的说明行）互相对得上。
               presets: snapshot.presets.length,
               models: catalog?.groups.reduce((n, g) => n + g.models.length, 0) ?? 0,
+              excluded: snapshot.excludedPresets.length === 0
+                ? ''
+                : t('catalog.status.excluded', { count: snapshot.excludedPresets.length }),
             })
 
   // ── 预设候选（**显示名走本地化解析**：内置四个与 DSH 逐字一致且随语言切换）──
@@ -347,13 +353,22 @@ function SpawnDefaultsCard(props: {
       const marks: string[] = []
       if (p.broken !== undefined) marks.push(t('tag.unavailable'))
       if (p.isDefault === true) marks.push(t('tag.hostDefault'))
-      // ⚠ 已存值不在清单里（预设被删/下线）⇒ **如实标"不可用"**，且仍可选中它以便改掉。
       return { id: p.id, label: presetDisplayName(p), note: marks.join('') || undefined }
     }),
   ]
-  if (preset !== '' && presetRow === undefined) {
+  // ⚠ 已存值恰好是**被排除**的那个（规划侧预设）⇒ **如实显示 + 标「不作候选」**，
+  //   并说明**实际效果**（派活时不会套用它，见 `bus.ts` 的兜底）。
+  //   ⚠ 与下面那条"不在清单里（可能已被删除）"**必须分开** —— 它没被删除，
+  //     是被本项目**有意排除**的；混为一谈会让用户以为预设丢了（E-46 同族）。
+  const presetIsExcluded = preset !== '' && snapshot.excludedPresets.some((p) => p.id === preset)
+  if (presetIsExcluded) {
+    const row = snapshot.excludedPresets.find((p) => p.id === preset)
+    presetItems.push({ id: preset, label: row === undefined ? preset : presetDisplayName(row), note: t('tag.notACandidate') })
+  } else if (preset !== '' && presetRow === undefined) {
     presetItems.push({ id: preset, label: preset, note: t('tag.unavailableNotInPresetList') })
   }
+  // 被排除项的显示名（说明行要用）—— 取不到就退回 id，**不留空白**。
+  const excludedNames = snapshot.excludedPresets.map((p) => presetDisplayName(p))
 
   // ── 模型候选（**provider 分组保留**：用宿主 `MenuGroup` 的组标签）────────
   const modelGroups: { key: string; label: string; items: { id: string; label: string; note?: string }[] }[] = [
@@ -415,8 +430,22 @@ function SpawnDefaultsCard(props: {
         {preset !== '' && presetRow?.broken !== undefined ? (
           <span className={S.warn}>{t('warn.presetBroken', { reason: presetRow.broken })}</span>
         ) : null}
-        {preset !== '' && presetRow === undefined ? (
+        {/* ⚠ 已存值 = 被排除项 ⇒ 如实说明"它是谁排的 + 实际效果"，不与"已被删除"混为一谈 */}
+        {presetIsExcluded ? (
+          <span className={S.warn}>
+            {t('warn.presetExcluded', { id: preset, names: excludedNames.join(' / ') })}
+          </span>
+        ) : null}
+        {!presetIsExcluded && preset !== '' && presetRow === undefined ? (
           <span className={S.warn}>{t('warn.presetMissing', { id: preset })}</span>
+        ) : null}
+        {/* ── 常驻说明：为什么某个预设**不在**候选里（**不许静默过滤** · E-46）────
+            ⚠ 它**常驻**（不是只在异常时出现）：用户拉开下拉看不见 Hob 时，
+              必须当场能读到"为什么没有"，而不是以为预设不存在。
+            ⚠ 只在宿主**确实返回了**该预设时才显示（`excludedPresets` 非空）——
+              宿主里没有它时显示"已排除 X"反而是假话。 */}
+        {excludedNames.length > 0 ? (
+          <span className={S.subNote}>{t('note.excluded', { names: excludedNames.join(' / ') })}</span>
         ) : null}
       </Row>
 
@@ -644,12 +673,16 @@ const PANEL_EN: Record<string, string> = {
   'tag.hostDefault': ' · host default',
   'tag.unavailableNotInPresetList': ' · unavailable · not in the current preset list',
   'tag.unavailableNotInModelCatalog': ' · unavailable · not in the current model catalog',
+  'tag.notACandidate': ' · not offered as a new-session default',
   'warn.presetBroken': 'The host marks this preset unavailable: {reason}',
   'warn.presetMissing': 'The stored preset “{id}” is not in the current list (it may have been deleted) — the value is kept so you can change it here.',
+  'warn.presetExcluded': 'The stored preset “{id}” is this plugin’s planning-side preset ({names}) — it is not offered as a new-session default, because it cannot carry out the work and a session started with it would only plan again. The value is kept so you can change it here; hob_spawn will not apply it as a default.',
+  'note.excluded': 'Not offered as a new-session default: {names} — the planning-side preset of this plugin. It plans work but cannot carry it out, so it is deliberately kept out of the candidates above.',
   'warn.modelMissing': 'The stored model “{provider} / {model}” is not in the current catalog (it may be retired) — the value is kept so you can change it here.',
   'catalog.status.loading': 'Reading candidates…',
   'catalog.status.idle': 'Candidates not loaded',
   'catalog.status.ready': 'Candidates ready ({presets} presets / {models} models)',
+  'catalog.status.excluded': ' ({count} planning-side preset(s) not offered here)',
   'catalog.fail': 'Reading candidates failed — {message}',
   'catalog.fail.host': '{code}: {message}',
   'catalog.fail.noResult': 'The host returned no result (its namespace may not be mounted yet)',
@@ -710,12 +743,16 @@ const PANEL_ZH: Record<string, string> = {
   'tag.hostDefault': ' · 宿主默认',
   'tag.unavailableNotInPresetList': '（不可用 · 不在当前预设清单里）',
   'tag.unavailableNotInModelCatalog': '（不可用 · 不在当前模型目录里）',
+  'tag.notACandidate': '（不作候选）',
   'warn.presetBroken': '该预设被宿主标为不可用：{reason}',
   'warn.presetMissing': '已存预设「{id}」不在当前清单里（可能已被删除）—— 仍保留原值，可在此改掉。',
+  'warn.presetExcluded': '已存预设「{id}」是本插件的规划侧预设（{names}）—— 它不作为「新建会话默认」的候选，因为它没有施工能力，用它建出的会话只会再规划一次。原值仍保留，可在此改掉；派活时也不会套用它。',
+  'note.excluded': '以下预设不作为「新建会话默认」的候选：{names} —— 这是本插件的规划侧预设。它负责规划、不能施工，故有意不在上面的候选之列。',
   'warn.modelMissing': '已存模型「{provider} / {model}」不在当前目录里（可能已下线）—— 仍保留原值，可在此改掉。',
   'catalog.status.loading': '候选读取中…',
   'catalog.status.idle': '候选未加载',
   'catalog.status.ready': '候选已就绪（预设 {presets} 个 / 模型 {models} 个）',
+  'catalog.status.excluded': '（另有 {count} 个规划侧预设不作候选）',
   'catalog.fail': '候选读取失败 —— {message}',
   'catalog.fail.host': '{code}: {message}',
   'catalog.fail.noResult': '宿主未返回结果（命名空间可能尚未挂载）',

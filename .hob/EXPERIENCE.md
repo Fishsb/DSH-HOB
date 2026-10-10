@@ -2946,3 +2946,85 @@ J-3 语言服务零裸属性访问 / J-4 不得进模块级 inject / J-5 中英�
 （含四条预设名中英逐字、切语言当场变、宿主词条缺席时不显示键名、服务缺席仍可用）；
 第 7 轮回归探针重跑 **15/15 PASS**（写入回显红线未破）。
 同族教训 **E-100（get 之后仍是属性访问）· E-101（Fiber 用 dispose）· E-103（订阅要接到宿主那半边）· E-27（恒真的检查比没有更危险）**。
+
+---
+
+### E-105 · **抄宿主样式之前，先问"它在宿主语境里靠什么成立"** —— 嵌在输入框里的无边框按钮，搬到设置页就只剩一行灰字；另附"候选清单不收规划侧预设"与两个检测器自身的假通过
+
+**现象**（用户报障，两条）：
+① 「下拉框看不到样式就是可以点，但是按钮没有凸显样式」—— 设置页「新建会话默认」的三个触控件
+   看着就是"**一行灰字 + 一个箭头**"：无描边、无底色、无内边距，看不出能点。
+② 「新建预设的选项不应该有 hob 模式了吧 …… hob 本身没有施工能力，这不是死循环了吗」
+   —— 候选下拉里能选到本插件的**规划侧预设** `Hob`。
+
+**根因**：
+② 先成立：`Hob` 去掉 persistent-shell 组 ⇒ 无 `bash`/`pwsh`；不加 `tool-bash`/`pwsh`/`delegation`；
+   白名单不含 `write`/`edit`；契约开头即 *"you cannot edit code, you cannot run a command."*
+   ⇒ 拿它当**新会话默认**，新会话只能再规划 = **死循环**。
+   而本仓 `catalog.ts` 的 `loadCatalog()` **只逐字段 map + 过滤空 id**，宿主返回几个就列几个
+   ⇒ 5 个（宿主内置四个 + 本插件的 `Hob`）**全部**进了候选。
+① **不是"没抄准"，是"抄错了对象"**：第 8 轮逐条抄的是宿主
+   `ui-model-selection/lib/client.js:330` 的 `.trigger`，那份样式**本身就写着**
+   `background:0 0;border:none;padding:0 4px 0 8px`（**无边框无底色**）。
+   它在宿主里之所以看着像控件，是因为**嵌在输入框内部** —— 那圈描边与底色由**外层**提供：
+   `@deepseek-ai/dsh-client-ui-primitives/lib/Input.module.css:1-14` 的 `.wrap`
+   （`height:32px;padding:0 8px;border:0.5px solid var(--dsw-alias-border-l4);`
+   `border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1)`）。
+   ⇒ **单独**搬进设置页，外层没了 ⇒ 那段样式就不成立。
+   该抄的是宿主**设置页控件**的度量：同包
+   `lib/settings-form/fields.module.css` 的 `.input`（**`:107-117`**
+   `border:0.5px solid var(--dsw-alias-border-l4)` + `background:var(--dsw-alias-bg-layer-3)`、
+   `:119-122` 焦点换描边色、`:124-127` 禁用）；旁证：宿主 `ui-settings-models` 页自己的下拉
+   也是 `input + selectInput` 的**带边框**组合（该文件 CSS 串内三处）。
+
+**正确做法**：
+① 排除**只写一处**：新建 `src/shared/planning-preset.ts` 的 `PLANNING_PRESET_ID`（**唯一字面值**），
+   client 侧（`catalog.ts`）与 host 侧（`bus.ts`）**都 import 它**；
+   并由机检与预设声明 `preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `config.id` **逐字交叉核对**
+   —— 将来预设改名而常量没跟上 ⇒ **直接 FAIL**（防漂移）。
+② **绝不静默过滤**（E-46 的教训：静默过滤会让用户以为预设不存在）：
+   被排除项**原样收进**快照的 `excludedPresets`，面板**常驻一行**说明为什么排除（走词典、中英双语），
+   且「候选来源」的计数讲清"可选 N 个（另有 M 个规划侧预设不作候选）"。
+③ **已存值兜底**：配置里现存值恰好是被排除项 ⇒ **如实显示 + 标「不作候选」+ 说明实际效果**，
+   并允许改掉（与既有"已存值不在清单里 ⇒ 标不可用"分开表述 —— 它**没被删除**，是**有意排除**）。
+④ **派活侧兜底只作用于默认值**：`hob_spawn` 解析"配置里的默认预设"时命中它 ⇒ **不套用**
+   （退回宿主默认），成功返回**新增** `presetNote` 说明这件事；
+   ⚠ **显式传 `agentPreset` 一字不动**（那是调用方的明确选择，拦它等于改语义）；
+   ⚠ **绝不让 spawn 失败**（会话照建，只是不套那个默认）。
+
+**⚠ 本轮三个"检查自己没牙"的实测（都靠负向对拍抓出来，别只记结论）**：
+- **剥离器选错**：`check:presets` 新增的"该 id 只写一处"判据，首版照抄了
+  `check-client-deps.mjs` 那份**把注释与字符串一起抹空**的剥离器 ⇒ 待查的 `'Hob'`
+  **也被抹成空格** ⇒ 断言**恒 PASS**（假通过）。⇒ 本组必须用**只剥注释、保留字符串**的版本。
+- **只判"提到了常量"不够**：把 `mapped.filter(p => p.id === PLANNING_PRESET_ID)` 换成 `[]`
+  并 `void PLANNING_PRESET_ID` ⇒ 常量**仍被提到** ⇒ 假通过。
+  ⇒ 判据必须钉住"**比较真的发生了**"（成对看到 `.id === PLANNING_PRESET_ID`
+  与 `.id !== PLANNING_PRESET_ID`）。
+- **正则的回溯陷阱**：`border\s*:\s*(none|0)\b` 会把**正确写法** `border:0.5px solid …`
+  判成缺陷（`0` 后跟 `.`，`\b` 成立）⇒ 自证当场报误报；
+  改成 `(?![\d.])`。同族：`\s*(?!undefined)` 里 `\s*` 可**回溯到零长度** ⇒ 断言落在空格上恒真；
+  改成先捕获 `(\S[^\n]*)` 再判首段。
+
+**出处**：第 9 轮（2026-10-10）· 宿主
+`@deepseek-ai/dsh-client-ui-model-selection/lib/client.js` **`:330`**（那份**无边框** `.trigger`）；
+`@deepseek-ai/dsh-client-ui-primitives/lib/Input.module.css` **`:1-14`**（`.wrap` = 边框底色的真正来源）；
+同包 `lib/settings-form/fields.module.css` **`:107-117` / `:119-122` / `:124-127`**（该抄的度量）；
+`@deepseek-ai/dsh-client-ui-settings-models/lib/client.js` **`:58`** 的 CSS 串（`input + selectInput` 旁证）。
+本仓：新增 `src/shared/planning-preset.ts`（**`:33`** 唯一常量）；
+`src/client/catalog.ts`（**`:49`** import、**`:335-336`** 成对比较、`excludedPresets` 字段）；
+`src/client/settings-panel.tsx`（**`:346`** 计数句、**`:363-364`** 已存值兜底、**`:448`** 常驻说明行、
+**`:680` / `:750`** 中英词条、**`:685` / `:755`** 计数词条）；
+`src/modules/bus.ts`（**`:37`** import、**`:585-589`** 兜底与说明、`presetNote` **`:106`** 字段 +
+**`:639` / `:866`** 两处返回）；
+`src/client/panel-styles.ts`（**`:147`** 起的 `.dsh-hob-trigger`，改前的那份无边框写法在
+**`:136-141`**）；预设声明 `preset/dsh-hob/preset-dsh-hob.patch.yml` **`:53`**（`id: Hob`）。
+机检：`scripts/check-preset-contracts.mjs` 新增 **⑦ 组**（唯一值 / 逐字交叉核对 / 真的排除 /
+可见说明 / 兜底与显式传参不受影响 / 不静默）；`scripts/check-client-deps.mjs` 新增 **断言 K**
+（描边+底色必须存在、不得有 `border:none`/`background:0 0`、三态齐）+ §11g 自证。
+负向对拍（原始读数，逐条 FAIL→PASS）：改回无边框 ⇒ K FAIL；改常量 ⇒ ⑦ 漂移 FAIL；
+把排除换成 `[]` ⇒ ⑦ FAIL（**首版假通过、已加严**）；删面板说明 ⇒ ⑦ FAIL；
+去掉兜底 ⇒ ⑦ FAIL；硬编码 id ⇒ ⑦ 唯一性 FAIL；`presetNote = undefined` ⇒ ⑦ FAIL（**首版假通过、已加严**）。
+语义探针：spawn 优先级链四种组合 **8/8 PASS**（显式传 `Hob` 不被拦）；真编译产物上的排除语义 **4/4 PASS**；
+第 7 轮回归（写入回显）**15/15 PASS**、第 8 轮回归（i18n / 预设名 / 降级）**22/22 + 7/7 PASS**。
+同族教训 **E-46（静默过滤让用户以为预设不存在）· E-27（恒真的检查比没有更危险）·
+E-100（get 之后仍是属性访问）· E-103（订阅要接到宿主那半边）· E-104（取词不许返回键名）**。

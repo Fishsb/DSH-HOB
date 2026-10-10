@@ -62,7 +62,7 @@
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
  * ⚠ 零第三方依赖（本仓纪律）：YAML 只做**行级**解析，不引 js-yaml。
  */
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -1257,6 +1257,207 @@ const STALE_APPELLATIONS = [
   //   该预设已删 ⇒ 断言对象不存在，**整组删除**。
   //   ⚠ 这不影响"Hob 侧是否需要零裁剪"这个判据 —— Hob 侧的 ⑥ 断言（上面两条）
   //     一条未动：`complete: true` + 工具模块行恰好 1 行，**仍然全程生效**。
+}
+
+// ── ⑦ 2026-10-10（第 9 轮 · 用户裁定）· 规划侧预设**不作「新建会话默认」候选** ──
+//
+// 用户原话：「新建预设的选项不应该有 hob 模式了吧 …… hob 本身没有施工能力，这不是死循环了吗」
+// 理由：该预设无 bash/pwsh、白名单无 write/edit，契约原文
+//   *"You never carry out the work itself … you cannot edit code, you cannot run a command."*
+//   ⇒ 拿它当新会话默认 ⇒ 新会话只能再规划 = **死循环**。
+//
+// ⚠ **口径（不钉整句，只钉可判的四件事）**：
+//   ① **唯一值**：排除用的 id 在**全仓只有一处字面值**（`src/shared/planning-preset.ts`）；
+//   ② **逐字交叉核对**：该常量必须与预设声明（`HO` 的 `config.id`）**逐字一致**
+//      —— 将来预设改名而常量没跟上 ⇒ 这里 **FAIL**（本组存在的核心理由）；
+//   ③ **两个消费方都只用常量、不另写字面量**：client 侧 `catalog.ts` 排除候选、
+//      host 侧 `bus.ts` 的 spawn 兜底（且**只作用于配置默认值**，显式传参不受影响）；
+//   ④ **不许静默过滤**：`catalog.ts` 必须把被排除项**带出来**（`excludedPresets`），
+//      面板必须有**可见说明**（词典键 `note.excluded` 真的被渲染）。
+{
+  const sharedPath = join(root, 'src', 'shared', 'planning-preset.ts')
+  const hoPath = join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')
+  const busPath7 = join(root, 'src', 'modules', 'bus.ts')
+  const catalogPath7 = join(root, 'src', 'client', 'catalog.ts')
+  const panelPath7 = join(root, 'src', 'client', 'settings-panel.tsx')
+  const read7 = (p) => { try { return readFileSync(p, 'utf8') } catch { return undefined } }
+
+  const sharedSrc7 = read7(sharedPath)
+  const hoSrc7 = read7(hoPath)
+  const busSrc7 = read7(busPath7)
+  const catalogSrc7 = read7(catalogPath7)
+  const panelSrc7 = read7(panelPath7)
+
+  if (sharedSrc7 === undefined) {
+    bad('⑦ 读不到 src/shared/planning-preset.ts —— 「不作候选的预设 id」的唯一值来源不在，'
+      + '本组无从判定（**不按通过处理**）')
+  } else {
+    // ── ① 常量值（**原始态取字面量**；本文件其它组同款口径）────────────────
+    const m7 = /export\s+const\s+PLANNING_PRESET_ID\s*=\s*'([^']*)'/.exec(sharedSrc7)
+      ?? /export\s+const\s+PLANNING_PRESET_ID\s*=\s*"([^"]*)"/.exec(sharedSrc7)
+    if (m7 === null) {
+      bad("⑦ src/shared/planning-preset.ts 里找不到 `export const PLANNING_PRESET_ID = '…'`"
+        + ' —— 唯一值不见了（两个消费方会各自硬编码，漂移无从发现）')
+    } else {
+      const excludedId = m7[1]
+
+      // ── ② 与预设声明**逐字交叉核对**（本组核心）────────────────────────
+      if (hoSrc7 === undefined) {
+        bad('⑦ 读不到预设声明 preset-dsh-hob.patch.yml —— 逐字核对无从进行（不按通过处理）')
+      } else {
+        // 取 `config:` 块下第一处 `id:`（缩进 8 空格 = preset 条目的 config.id）
+        const declared7 = /^\s{8}id:\s*(\S+)\s*$/m.exec(hoSrc7)
+        if (declared7 === null) {
+          bad('⑦ 从预设声明里读不到 `config.id`（解析口径可能已漂 ⇒ 不按通过处理）')
+        } else if (declared7[1] !== excludedId) {
+          bad(`⑦ **漂移**：排除常量 PLANNING_PRESET_ID = ${JSON.stringify(excludedId)}，`
+            + `而预设声明的 config.id = ${JSON.stringify(declared7[1])}`
+            + ' —— 预设改名后必须同步改这一个常量（不一致 ⇒ 排除失效或排错东西）')
+        } else {
+          ok(`⑦ ✓ 排除常量与预设声明逐字一致（config.id = ${JSON.stringify(excludedId)}）`)
+        }
+      }
+
+      // ── ①b **全仓只有一处字面值**（防"两个消费方各写一份"漂移）──────────
+      {
+        const offenders = []
+        const walk7 = (dir) => {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const full = join(dir, e.name)
+            if (e.isDirectory()) { walk7(full); continue }
+            if (!/\.tsx?$/.test(e.name)) continue
+            if (full === sharedPath) continue
+            const stripped = stripCommentsOnlyLocal(readFileSync(full, 'utf8'))
+            // 只看"把它当值用"的两种形态（注释里写作说明允许，故先剥离）
+            if (new RegExp(`=\\s*'${excludedId}'`).test(stripped)
+              || new RegExp(`===\\s*'${excludedId}'`).test(stripped)) {
+              offenders.push(full.slice(root.length + 1))
+            }
+          }
+        }
+        try {
+          walk7(join(root, 'src'))
+        } catch (e) {
+          bad(`⑦ 遍历 src/ 失败（${String(e?.message ?? e)}）⇒ 唯一性无从判定，不按通过处理`)
+        }
+        if (offenders.length > 0) {
+          bad(`⑦ 排除用的 id 字面值**不止一处**（另有 ${offenders.join(' / ')}）—— `
+            + '两个消费方必须都 import `src/shared/planning-preset.ts`，否则改名时必漏一处')
+        } else {
+          ok('⑦ ✓ 该 id 的字面值全仓只有一处（两个消费方都 import 同一常量）')
+        }
+      }
+
+      // ── ③ client 侧：排除**真的发生了**，且**不是静默** ──────────────────
+      //   ⚠⚠ 判据必须**钉住"比较发生了"**，不能只钉"常量被提到了"
+      //     （第 9 轮负向对拍当场抓到的真缺口：只判 `/PLANNING_PRESET_ID/` 时，
+      //      把 `mapped.filter(p => p.id === PLANNING_PRESET_ID)` 换成 `[]`
+      //      ——常量仍"被提到"（`void PLANNING_PRESET_ID`）⇒ **假通过**）。
+      //   ⇒ 必须看到 `.id === PLANNING_PRESET_ID`（排除项）**与**
+      //     `.id !== PLANNING_PRESET_ID`（可选集）这**一对**比较。
+      if (catalogSrc7 === undefined) {
+        bad('⑦ 读不到 src/client/catalog.ts —— client 侧排除判据无从核对')
+      } else {
+        const catalogCode7 = stripCommentsOnlyLocal(catalogSrc7)
+        const hasEq = /\.id\s*===\s*PLANNING_PRESET_ID/.test(catalogCode7)
+        const hasNe = /\.id\s*!==\s*PLANNING_PRESET_ID/.test(catalogCode7)
+        if (!hasEq || !hasNe) {
+          bad('⑦ catalog.ts 里没有**真的做排除比较**'
+            + `（${hasEq ? '' : '缺 `.id === PLANNING_PRESET_ID`' }`
+            + `${!hasEq && !hasNe ? ' 且 ' : ''}${hasNe ? '' : '缺 `.id !== PLANNING_PRESET_ID`'}）`
+            + ' —— 只提到常量不算排除生效；候选会照旧列出规划侧预设（死循环）')
+        } else ok('⑦ ✓ catalog.ts 真的做了排除比较（`===` 收被排除项 / `!==` 收可选集）')
+        if (!/excludedPresets/.test(catalogSrc7)) {
+          bad('⑦ catalog.ts 里找不到 `excludedPresets` —— 排除成了**静默过滤**'
+            + '（E-46 的教训：用户会以为那个预设根本不存在）')
+        } else ok('⑦ ✓ 被排除项原样收进 `excludedPresets`（不静默丢弃）')
+      }
+
+      // ── ③b 面板有**可见说明**（词典键 `note.excluded` 真的被渲染）────────
+      if (panelSrc7 === undefined) {
+        bad('⑦ 读不到 src/client/settings-panel.tsx —— 「可见说明」判据无从核对')
+      } else if (!/t\(\s*'note\.excluded'/.test(panelSrc7)) {
+        bad("⑦ 面板没有渲染 `t('note.excluded')` —— 排除没有**可见说明**"
+          + '（用户拉开下拉看不见它会莫名其妙）')
+      } else ok("⑦ ✓ 面板渲染 `t('note.excluded')`（排除了什么是可见的）")
+
+      // ── ④ host 侧：spawn 兜底**只作用于默认值**，且不静默 ────────────────
+      if (busSrc7 === undefined) {
+        bad('⑦ 读不到 src/modules/bus.ts —— spawn 兜底判据无从核对')
+      } else {
+        if (!/PLANNING_PRESET_ID/.test(busSrc7)) {
+          bad('⑦ bus.ts 没有引用 PLANNING_PRESET_ID —— 派活侧没有兜底'
+            + '（配了规划侧预设就照套 ⇒ 死循环）')
+        } else ok('⑦ ✓ bus.ts 的 spawn 经 PLANNING_PRESET_ID 做兜底')
+        if (!/explicitPreset\s*\?\?\s*\(/.test(busSrc7)) {
+          bad('⑦ 找不到 `explicitPreset ?? (…)` 的优先级链 —— 显式传参可能被兜底覆盖'
+            + '（那是调用方的明确选择，**不许**拦）')
+        } else ok('⑦ ✓ 优先级链仍是 `explicitPreset ?? (兜底后的默认值)`（显式传参不受影响）')
+        // ⚠ 判据必须**钉住"真的算出一句说明"**，不能只钉"`presetNote` 这个词出现过"
+        //   （第 9 轮负向对拍当场抓到的第二个真缺口：只判 `/presetNote/` 时，
+        //    把赋值改成 `const presetNote = undefined` 仍 **PASS** ——
+        //    因为**返回对象里的透传那一行**也叫 presetNote）。
+        //   ⇒ 必须看到 `const presetNote = <非 undefined 的表达式>` **起始**。
+        //   ⚠ 写法上要**先把空白吃掉再取首字符**：写成 `=\s*(?!undefined)` 时
+        //     `\s*` 可以**回溯**到零长度，于是断言落在空格上 ⇒ 恒真（本轮实测）。
+        const noteAssign = /const\s+presetNote\s*=\s*(\S[^\n]*)/.exec(stripCommentsOnlyLocal(busSrc7))
+        if (noteAssign === null || noteAssign[1].startsWith('undefined')) {
+          bad('⑦ bus.ts 里没有真的算出兜底说明（缺 `const presetNote = <表达式>`）—— '
+            + '兜底发生了却不说明（与 `modelNote` 同款纪律：少做了一件事必须说出来）')
+        } else ok('⑦ ✓ 兜底在成功返回里如实带一句（`presetNote` 有实际内容，不静默）')
+      }
+    }
+  }
+}
+
+/**
+ * 本组专用的**注释剥离器** —— 只服务"这个 id 是不是被当值写了"这一条判据。
+ *
+ * ⚠ **它只剥注释、不剥字符串**（第 9 轮实测教训，别照抄别的脚本）：
+ *   本判据要找的正是"**被当值写的字面量**"（`= 'Hob'` / `=== 'Hob'`）。
+ *   若照 `check-client-deps.mjs` 那份"注释+字符串一起抹"的写法，
+ *   待查的 `'Hob'` **也被抹成空格** ⇒ 断言恒 PASS（**假通过**）。
+ *   首版本函数就是这么写的，**负向对拍当场抓出来**。
+ *   ⇒ 字符串/模板串**原样保留**，只把注释覆盖成等长空格（保留换行）。
+ *
+ * ⚠ 与 `check-client-deps.mjs` 里那份**有意分开**：那份自带双向自证、
+ *   且与它自己的断言组绑在一起；跨脚本 import 会让两条机检互相牵制。
+ *
+ * @param src - 源码全文。
+ * @returns 等长、**只把注释**抹空的串。
+ */
+function stripCommentsOnlyLocal(src) {
+  const out = Array.from(src)
+  const n = src.length
+  const blank = (from, to) => { for (let k = from; k < to && k < n; k++) if (out[k] !== '\n') out[k] = ' ' }
+  let i = 0
+  while (i < n) {
+    const c = src[i]
+    const c2 = src[i + 1]
+    // 行注释
+    if (c === '/' && c2 === '/') { let j = i + 2; while (j < n && src[j] !== '\n') j++; blank(i, j); i = j; continue }
+    // 块注释
+    if (c === '/' && c2 === '*') {
+      let j = i + 2
+      while (j < n && !(src[j] === '*' && src[j + 1] === '/')) j++
+      j = Math.min(j + 2, n); blank(i, j); i = j; continue
+    }
+    // 字符串/模板串：**跳过但保留**（本判据要找的正是"被当值写的字面量"，
+    //   把它抹掉就等于把要抓的东西删了 —— 这是本函数与 check-client-deps 那份
+    //   剥离器的**关键差别**，别照抄那边）。
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1
+      while (j < n) {
+        if (src[j] === '\\') { j += 2; continue }
+        if (src[j] === c) { j++; break }
+        if (src[j] === '\n') break
+        j++
+      }
+      i = j; continue
+    }
+    i++
+  }
+  return out.join('')
 }
 
 // ── 输出 ────────────────────────────────────────────────────────────────

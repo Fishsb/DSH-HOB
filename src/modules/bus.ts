@@ -34,6 +34,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { type SpawnDefaults } from '../config.ts'
+import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
 import { appendSessionModelSelection, installSessionModelSelection } from '../model-selection.ts'
 
 /** 模块名。 */
@@ -94,6 +95,15 @@ export interface SpawnResult {
    *   失败的是那一步增强。**不静默**（E-29 同族：失败必须可见）。
    */
   modelNote?: string
+  /**
+   * 预设默认值的**如实标注**（第 9 轮新增）。
+   *
+   * ⚠ 只在"配置里的默认预设是**规划侧预设**、因而**没被套用**"时出现 ——
+   *   会话已建成功（退回了宿主默认预设），**不静默**（与 `modelNote` 同款纪律：
+   *   少做了一件事就必须说出来）。
+   * ⚠ 与"显式传 `agentPreset`"无关：显式传参时**不会**产生本条（那是调用方的明确选择）。
+   */
+  presetNote?: string
   reason?: string
   /** 可选：给错 `workspace` 时回带的可选清单，便于改对而不是乱猜。 */
   available?: string[]
@@ -561,7 +571,25 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
         const spawnCfg = readSpawn()
         const explicitPreset =
           typeof agentPreset === 'string' && agentPreset.trim() !== '' ? agentPreset.trim() : undefined
-        const presetId = explicitPreset ?? (spawnCfg.agentPreset !== '' ? spawnCfg.agentPreset : undefined)
+        // ── 第 9 轮（2026-10-10 · 用户裁定）：规划侧预设**不作默认值** ──────────
+        //   ⚠⚠ **只作用于"从配置取来的默认值"这半边** —— 那是一条**兜底链**的最后一级，
+        //     用户/配置可能把它留成了规划侧预设（{@link PLANNING_PRESET_ID}，现为 `Hob`）。
+        //     拿它当新会话的默认预设 ⇒ 新会话**只能再规划、不能施工** = **死循环**
+        //     （该预设无 bash/pwsh、白名单无 write/edit，契约原文
+        //      *"you cannot edit code, you cannot run a command."*）。
+        //   ⚠ **显式传参那半边一字不动**（`explicitPreset`）：那是调用方的**明确选择**，
+        //     不是兜底 —— 拦它等于改语义。（本模块只对**默认值**做这一层。）
+        //   ⚠ **绝不让 spawn 失败**：命中就**退回"不指定预设"**（= 交宿主默认预设），
+        //     并在成功返回里如实带一句（{@link SpawnResult.presetNote}），**不静默**。
+        const configuredPreset = spawnCfg.agentPreset !== '' ? spawnCfg.agentPreset : undefined
+        const configuredIsPlanning = configuredPreset === PLANNING_PRESET_ID
+        const presetId = explicitPreset ?? (configuredIsPlanning ? undefined : configuredPreset)
+        const presetNote = configuredIsPlanning && explicitPreset === undefined
+          ? 'The configured new-session default preset is this plugin\'s planning-side preset ('
+            + PLANNING_PRESET_ID + '). It was NOT applied: that preset plans work but cannot carry '
+            + 'it out, so a session started with it would only plan again. The session was created '
+            + 'with the host default preset instead. An explicitly passed agentPreset is unaffected.'
+          : undefined
 
         // ⚠ **批 18：模型默认值**（任务书 §4 / §1 判定分支）——
         //   只有 provider/model **都**非空时才实施（缺一无法组装一条有效选择；
@@ -608,6 +636,7 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
             workspaceId: wsId,
             ...(wsPath === undefined || wsPath === '' ? {} : { workspacePath: wsPath }),
             ...(created?.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }),
+            ...(presetNote === undefined ? {} : { presetNote }),
             ...(modelNote === undefined ? {} : { modelNote }),
           }
         } catch (e) {
@@ -830,6 +859,11 @@ export function createHobBusTools(bus: HobBus): {
         workspaceId: r.workspaceId,
         ...(r.workspacePath === undefined ? {} : { workspacePath: r.workspacePath }),
         ...(r.agentPreset === undefined ? {} : { agentPreset: r.agentPreset }),
+        // ── 预设默认值未套用的如实标注（第 9 轮新增）────────────────────────
+        //   ⚠ 只在"配置里的默认预设是规划侧预设、因而被跳过"时出现。
+        //   ⚠ 既有 7 个字段（ok/sessionId/workspaceId/workspacePath/agentPreset/
+        //     modelNote/note2）**一个未动**；本条是**新增**，与 `visibilityNote` 同款纪律。
+        ...(r.presetNote === undefined ? {} : { presetNote: r.presetNote }),
         // ⚠ 模型默认值装不上时**如实回带**（不静默）：会话已建成，
         //   只是那一步增强失败了，调用方与用户都该看得见。
         ...(r.modelNote === undefined ? {} : { modelNote: r.modelNote }),
