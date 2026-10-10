@@ -28,7 +28,18 @@
  *
  * 用法：node scripts/check-gitignore.mjs      （或 npm run check:gitignore）
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
+ * ⚠ 附加退出码（第 53 轮新增的直接调用入口）：2 = 用法错 / 目标读不到（**基准缺失不算通过**）。
  * ⚠ 零第三方依赖（本仓纪律）。
+ *
+ * ⚠⚠ **已知：本脚本职责膨胀（照实登记，本轮不动）** ────────────────────────
+ *   它现在同时承担：排除漂移（MUST-TRACK / MUST-EXCLUDE）· 骨架覆盖 · **脚本落点双向自检** ·
+ *   以及文档形态机检 **A / B / J / C / D / D′ / E / F / G / H / I** 多组。
+ *   ⇒ **脚本名与实际职责已明显偏离**（`check-gitignore` 远不止 gitignore）。
+ *   ⚠ 这**不是本轮引入的**，也**不是本轮该修的**：Hob 已把它登记为
+ *   **待评估项**（正本 `CONTEXT.md` §2.2「`check:gitignore` 职责膨胀」），
+ *   **拆分须用户拍板** ⇒ 本轮**只在注释里记已知**，⛔ **不拆分、不改结构**。
+ *   ⚠ 之所以继续往这里加：**同族判据放同一消费点**，不制造第二张需要同步的期望表
+ *   （**E-110**：一个常量只服务一条断言 / 同类判据不要散落多处）。
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
@@ -70,6 +81,110 @@ const fail = []
 const note = []
 const bad = (m) => fail.push(m)
 const ok = (m) => note.push(m)
+
+// ── 判据函数：正本里的节标题不得重复（2026-10-11 第 53 轮 · 断言 J）──────────
+/**
+ * **找出同一份 Markdown 里重复出现的二级节标题（`^## `）。**
+ *
+ * ── 为什么需要它（缺口有实测出处）──────────────────────────────────
+ *   第 52 轮 Hob 写 `USER-DECISIONS.md` 时，第一版把两条新决定**追加到文件末尾**
+ *   （`## 十一、归档清单` **之后**），并在尾部留下一个**重复的** `## 五、回复格式`。
+ *   ⇒ 那一版**结构已坏**，而**当时跑遍所有检查都不会红** ——
+ *   它是被第 52 轮的「备份 diff 判读」**偶然撞见**的，**不是任何判据抓到的**。
+ *   ⚠ 这正是 **E-122**（机制没有喂养端）的又一形态：**"标题唯一"从来没被当成可判的事**。
+ *   ⇒ 本函数把它变成一条可判的事，并把**那次真实坏快照**当活体夹具（见断言 J 的实证块）。
+ *
+ * ── 判据（只咬"该咬"的一侧）───────────────────────────────────────
+ *   · 只看**行首** `^## `（二级）⇒ **行内提及**（如 `` `## 五、回复格式` ``）**不在行首，天然不咬**；
+ *   · **围栏代码块内**的标题**不参与**（那是**示例**，见 `fencedMaskBelow`）——
+ *     与断言 E / I 的围栏豁免**同族口径**（**E-114**：判据必须容忍元讨论）。
+ *
+ * ── 已知边界（照实登记，**不要试图消灭**）──────────────────────────
+ *   · ⛔ **`### `（三级）重复不在本轮范围** —— 只认 `^## `；
+ *   · ⛔ **只扫四份正本**（与 `B_FILES` 同集合）；**骨架文件（`.hob/**`）暂不扫**；
+ *   · ⚠ **与 `hob-render.ts` 的围栏实现同源**：下面 `fencedMaskBelow` 用的
+ *     `FENCE_OPEN_RE` / 开闭判据**照抄**该文件的 `fencedMask`（**不重写一套正则**，
+ *     否则会重演"文档里能安全写例子、机检却报残留"的自相矛盾）。
+ *
+ * @param content - 整份 Markdown 文本。
+ * @returns 每个重复标题一条：`{ title, lines }`（`lines` 为 1 基行号，升序）。
+ */
+export function findDuplicateSectionHeadings(content) {
+  const lines = String(content ?? '').replace(/\r\n/g, '\n').split('\n')
+  const fenced = fencedMaskBelow(lines)
+  const byTitle = new Map()
+  for (let i = 0; i < lines.length; i++) {
+    if (fenced[i]) continue // 围栏内的标题是示例，不参与判据
+    const m = /^##\s+(\S.*)$/.exec(lines[i])
+    if (m === null) continue // 行内提及 / 三级标题 / 普通正文：天然不匹配
+    const title = m[1].trim()
+    if (!byTitle.has(title)) byTitle.set(title, [])
+    byTitle.get(title).push(i + 1)
+  }
+  const dup = []
+  for (const [title, ls] of byTitle) if (ls.length >= 2) dup.push({ title, lines: ls })
+  return dup
+}
+
+/** 围栏开标记（⚠ 与 `src/server/hob-render.ts` 的 `fencedMask` **逐字同源**）。 */
+const FENCE_OPEN_RE = /^\s{0,3}(`{3,}|~{3,})(.*)$/
+
+/**
+ * 计算**围栏代码块**覆盖的行（`true` = 该行不参与标题判据）。
+ * ⚠ 与 `src/server/hob-render.ts` 的 `fencedMask` 同口径（**未闭合 ⇒ 延伸到文末**，
+ *   与 CommonMark 一致）—— 这里**照抄**而不 import：`scripts/` 与 `src/` 是两棵
+ *   互不依赖的树（`src/` 不能 import `scripts/`，反之亦然，见 `hob-write.ts` 的注释）。
+ */
+function fencedMaskBelow(lines) {
+  const mask = new Array(lines.length).fill(false)
+  let fence = null
+  for (let i = 0; i < lines.length; i++) {
+    const m = FENCE_OPEN_RE.exec(lines[i])
+    if (fence === null) {
+      if (m !== null && !(m[1][0] === '`' && m[2].includes('`'))) {
+        fence = { char: m[1][0], len: m[1].length }
+        mask[i] = true
+      }
+      continue
+    }
+    mask[i] = true
+    if (m !== null && m[1][0] === fence.char && m[1].length >= fence.len && m[2].trim() === '') {
+      fence = null
+    }
+  }
+  return mask
+}
+
+// ── 判据函数的**直接调用入口**（第 53 轮 · §1③ 的"可单测"要求）──────────────
+// ⚠ 只在**被直接执行**时生效（import 本模块做断言时**不会**触发）：
+//   把"找重复标题"从"只能对整个仓跑"变成"能对任意一份 .md 跑" ——
+//   否则历史坏快照那份**没法当活体夹具**（它不在四份正本里）。
+// 用法：node scripts/check-gitignore.mjs --dup-headings <某份.md 的路径>
+if (process.argv[1] !== undefined && process.argv[1].endsWith('check-gitignore.mjs')
+  && process.argv.includes('--dup-headings')) {
+  const target = process.argv[process.argv.indexOf('--dup-headings') + 1]
+  if (target === undefined) {
+    console.error('用法：node scripts/check-gitignore.mjs --dup-headings <markdown 路径>')
+    process.exit(2)
+  }
+  let src = ''
+  try {
+    src = readFileSync(target, 'utf8')
+  } catch (e) {
+    console.error(`读不到 ${target}：${String(e?.message ?? e)}`)
+    process.exit(2)
+  }
+  const dup = findDuplicateSectionHeadings(src)
+  if (dup.length === 0) {
+    console.log(`PASS —— ${target} 里无重复的二级节标题`)
+    process.exit(0)
+  }
+  console.log(`FAIL —— ${target} 里有 ${dup.length} 个重复的二级节标题：`)
+  for (const d of dup) {
+    console.log(`  ✗ 「${d.title}」出现在第 ${d.lines.join(' 与第 ')} 行（共 ${d.lines.length} 次）`)
+  }
+  process.exit(1)
+}
 
 // ── 前置：必须是 git 仓库（否则 check-ignore 无意义）──────────────────
 try {
@@ -560,6 +675,108 @@ if (LEDGER_ROOT === undefined) {
   ok(`文档形态机检【已执行】—— 正本根 = ${LEDGER_ROOT}；`
     + `四份正本**全部纳入** ${B_FILES.join(' / ')}`
     + `（2026-10-10 起无例外：\`PROJECT.md\` 已改写为 v2.0「只写当前状态」，故纳入）`)
+
+  /**
+   * ── 断言 J（2026-10-11 新增 · 第 53 轮）：**四份正本里同一节标题不得出现两次** ──
+   *
+   * 背景见文件顶部的 `findDuplicateSectionHeadings`：第 52 轮 Hob 写 `USER-DECISIONS.md`
+   * 时留过一个**重复的** `## 五、回复格式`，那一版**结构已坏而全部检查都不红** ——
+   * 它是被「备份 diff 判读」**偶然撞见**的。本条把那次事故变成**可判的事**。
+   *
+   * ⚠ **判据成对**（**E-126**：只验一侧 ⇒ 判据写对与写错输出相同）
+   *   ⇒ 下面**自带样本**：`N 该咬` + `M 不该咬`（**写死、不依赖正本内容**）。
+   * ⚠ **另对"真实发生过的坏快照"做活体实证**（见 J-B 段）—— 比自造样本更强。
+   * ⚠ **范围**：只扫四份正本（`B_FILES`）· 只认 `^## `（二级）· 围栏内不参与。
+   */
+  {
+    // ── J-A 自带样本（写死在断言里，不依赖正本内容）──
+    // ⚠ 数照实记（**E-117**：⛔ 不写死"预期几个"）；判据 = **该咬的全咬、不该咬的全不咬**。
+    const J_BITE_SAMPLES = [
+      ['## 一、甲\n## 二、乙\n## 一、甲\n', 'S1 行首二级标题**重复一次**（最朴素形态）'],
+      ['## 一、甲\n正文\n## 二、乙\n## 一、甲\n## 一、甲\n', 'S2 同一标题**出现三次**（重复计数必须 ≥2）'],
+      ['## 一、甲\n## 一、甲\n## 二、乙\n', 'S3 重复**相邻**（中间无正文）'],
+      ['## 一、甲\n' + '```md\n' + '## 一、甲\n' + '```\n' + '## 一、甲\n',
+        'S4 夹着一段围栏：**围栏内那份豁免、围栏外的两处仍须被咬**'],
+    ]
+    const J_EXEMPT_SAMPLES = [
+      ['## 一、甲\n## 二、乙\n## 三、丙\n', 'S5 每个标题**只出现一次** ⇒ 不咬'],
+      ['## 一、甲\n\n' + '```md\n' + '## 一、甲\n' + '```\n', 'S6 第二处在**围栏代码块内**（那是示例）⇒ 不咬'],
+      ['同一行里提到 `## 一、甲` 与 `## 一、甲` ⇒ **不在行首**。\n', 'S7 行内提及（不在行首）⇒ 不咬'],
+      ['### 一、甲\n### 一、甲\n', 'S8 三级标题重复 ⇒ **本轮范围外**（只认 `^## `）⇒ 不咬'],
+      ['## 一、甲\n# 一、甲\n', 'S9 一级标题不属于本判据（只认 `^## `）⇒ 不咬'],
+    ]
+    let jBad = 0
+    for (const [sample, why] of J_BITE_SAMPLES) {
+      const d = findDuplicateSectionHeadings(sample)
+      if (d.length === 0) {
+        jBad++
+        bad(`J 自带样本**没被咬**：${why} —— 期望 ≥1 个重复标题，实测 0 个`
+          + '\n      ⇒ 判据**过窄/改哑**：真出现重复标题时它不会报 ⇒ 断言 J **失效**')
+      }
+    }
+    for (const [sample, why] of J_EXEMPT_SAMPLES) {
+      const d = findDuplicateSectionHeadings(sample)
+      if (d.length !== 0) {
+        jBad++
+        bad(`J 自带样本**被误咬**：${why} —— 期望 0 个重复标题，实测 ${d.length} 个：`
+          + ` ${d.map((x) => `「${x.title}」@${x.lines.join(',')}`).join(' · ')}`
+          + '\n      ⇒ 判据**过宽**：把示例 / 行内提及 / 范围外标题当成违规 ⇒ 文档会被自己的例子打挂'
+          + '（**E-114** 家族）')
+      }
+    }
+    if (jBad === 0) {
+      ok(`J ✓ 自带样本：${J_BITE_SAMPLES.length} 个"该咬"的样本**全部咬到**，`
+        + `${J_EXEMPT_SAMPLES.length} 个"不该咬"的样本**全部未**被咬（自带样本，不依赖正本内容）`)
+    }
+
+    // ── J-B 活体实证：对**真实发生过的坏快照**跑同一函数（形同单测）──
+    // ⚠ 备份**只读、只复制**（⛔ 绝不写 backups/）；坏的这份是 2026-10-11 第 52 轮
+    //    Hob 写坏的那一版，`## 五、回复格式` 在第 200 与第 425 行各一个。
+    // ⚠ 这条样本若**读不到**（别的机器上账本区可能不在）⇒ **明说"未取"，不静默当成通过**。
+    const BAD_SNAPSHOT = join(LEDGER_ROOT, 'backups', 'USER-DECISIONS.md.20261011-022744.bak')
+    let snapSrc = ''
+    try {
+      snapSrc = readFileSync(BAD_SNAPSHOT, 'utf8')
+    } catch { snapSrc = '' }
+    if (snapSrc === '') {
+      ok(`J ⏳ 活体实证【未取】—— 读不到历史坏快照 ${BAD_SNAPSHOT}`
+        + '（账本区 backups/ 可能不在本机）⛔ **这不代表通过**')
+    } else {
+      const dup = findDuplicateSectionHeadings(snapSrc)
+      const hit = dup.find((x) => x.title === '五、回复格式')
+      if (hit === undefined) {
+        bad(`J 活体实证失败：历史坏快照 ${basename(BAD_SNAPSHOT)} 里没找出「五、回复格式」的重复`
+          + `（实测重复标题 = ${dup.length === 0 ? '0 个' : dup.map((x) => `「${x.title}」`).join(' · ')}）`
+          + '\n      ⇒ **判据没抓住真实发生过的错** ⇒ 判据写错了（不是夹具的问题）')
+      } else if (hit.lines.length < 2) {
+        bad(`J 活体实证失败：坏快照里「五、回复格式」只被找到 ${hit.lines.length} 处`
+          + `（第 ${hit.lines.join(',')} 行）—— 期望 ≥2 处`)
+      } else {
+        ok(`J ✓ 活体实证（真实坏快照 ${basename(BAD_SNAPSHOT)}）：`
+          + `「${hit.title}」重复，命中第 ${hit.lines.join(' 与第 ')} 行（共 ${hit.lines.length} 次）`
+          + ' ⇒ 判据抓住了**真实发生过的那次错**，不是自造样本')
+      }
+    }
+
+    // ── J-C 主体：四份正本逐份跑 ──
+    for (const f of B_FILES) {
+      let src = ''
+      try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch {
+        bad(`J 正本读不到：${join(LEDGER_ROOT, f)} —— 标题重复比对失去基准（不按通过处理）`)
+        continue
+      }
+      const dup = findDuplicateSectionHeadings(src)
+      if (dup.length > 0) {
+        bad(`J 正本 ${f} 出现**重复的二级节标题** —— `
+          + dup.map((x) => `\n        ✗ 「${x.title}」出现在第 ${x.lines.join(' 与第 ')} 行（共 ${x.lines.length} 次）`).join('')
+          + `\n      ⇒ 一份文档里同一节只能有一处：重复标题多半是**追加写**留下的残骸`
+          + `（第 52 轮实测：决定被追加到文件末尾、尾部重复了「五、回复格式」）`
+          + ` ⇒ 修法：**整份重写**（正本改动必须整份重写），⛔ 不追加订正段`)
+      } else {
+        ok(`J ✓ ${f}：无重复的二级节标题（${(src.match(/^##\s+\S/gm) ?? []).length} 个标题，逐一唯一）`)
+      }
+    }
+  }
 
   /**
    * ── 断言 C（2026-10-10 新增 · 第 19 轮 · UD-88 / CHG-025）────────────────
