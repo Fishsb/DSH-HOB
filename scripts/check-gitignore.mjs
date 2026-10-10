@@ -305,6 +305,94 @@ const PKG = join(root, 'package.json')
 }
 
 /**
+ * ── 反向自检（2026-10-11 新增 · 第 52 轮）：**`scripts/*.mjs` 必须都有落点** ──────
+ *
+ * ── 为什么需要（缺口有实测出处）──────────────────────────────────────
+ * 上面那段是**正方向**的一条半：`package.json` 声明的 ⇒ 必须在 MUST-TRACK 里。
+ * 它仍然**抓不到反方向**：`scripts/` 下**存在一个 `.mjs`、却没被任何 `npm run` 调到** ——
+ * 那个脚本**没有任何东西会跑它**，它的期望值过期后**无人发现**（E-127 实证：`host-probe`
+ * 的 5 条期望过期六轮；`module-independence-probe` 同病，第 49 / 51 轮各清一个）。
+ * ⇒ 上加断言：**每个 `scripts/*.mjs` 都必须在 `package.json` 的 `scripts` 里找到落点**。
+ * 这正是 **E-122**（"机制建好，却没人往里送东西"）的收口 —— 把"忘记登记"从静默变显式 FAIL。
+ *
+ * ── 判据（为什么以 package.json 为唯一权威）─────────────────────────────
+ * 与上面那段同源：**声明的唯一权威是 `package.json` 的 `scripts`**；手抄一张期望表
+ * 等于再造一个会漂移的清单（E-70 同族）。
+ *
+ * ⛔ **不许放宽既有断言** —— 本段**只追加**，上面那段（正方向）一字未动。
+ *
+ * ── 显式白名单（⛔ 不是"扫不到就算了"）───────────────────────────────
+ * 有些 `.mjs` 可能是**纯库 / 被别的脚本 import**（本就不该单独进 `npm run`）⇒
+ * 它们必须**逐条显式登记在下面这张表里**，而不是靠"规则扫不到"。
+ * ⚠ 白名单**当前为空**（实测 10/10 全部有落点）；表存在的意义是：将来越过规则时
+ * **必须留下一条带理由的记录**，而不是悄悄漏掉。
+ * ⚠ 白名单自身也**不许腐烂**（E-122 同族）：表里的路径若**已不在磁盘**、或**反而被
+ * package.json 声明了**（自相矛盾）⇒ 同样 **FAIL**，逼人删掉或修正，不留幽灵条目。
+ */
+const SCRIPTS_DIR = join(root, 'scripts')
+/**
+ * 白名单：本就不该被 `npm run` 单独调到的 `scripts/*.mjs`（相对仓库根的路径）。
+ * 每条形如 `[path, 理由]`。⛔ 理由必须写清"为什么它不需要落点"。
+ */
+const SCRIPT_LANDING_EXEMPT = []
+{
+  let onDisk = []
+  try {
+    onDisk = readdirSync(SCRIPTS_DIR, { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.endsWith('.mjs'))
+      .map((d) => `scripts/${d.name}`)
+      .sort()
+  } catch {
+    onDisk = []
+  }
+  if (onDisk.length === 0) {
+    bad('读不到 scripts/ 下的任何 .mjs（基准读不到 ⇒ 本断言不按通过处理；'
+      + '跳过等于"扫不到就默认通过"，那正是本脚本反复盯防的形态）')
+  } else {
+    let pkgSrc2 = ''
+    try { pkgSrc2 = readFileSync(PKG, 'utf8') } catch { pkgSrc2 = '' }
+    let declared2 = undefined
+    try { declared2 = JSON.parse(pkgSrc2).scripts } catch { declared2 = undefined }
+    if (pkgSrc2 === '' || declared2 === undefined || typeof declared2 !== 'object' || declared2 === null) {
+      bad('反向自检读不到 package.json 的 `scripts` 段（基准缺失 ⇒ 不按通过处理）')
+    } else {
+      const declaredSet = new Set()
+      for (const cmd of Object.values(declared2)) {
+        if (typeof cmd !== 'string') continue
+        for (const m of cmd.matchAll(/node\s+(scripts\/[A-Za-z0-9._-]+\.mjs)/g)) declaredSet.add(m[1])
+      }
+      const exemptSet = new Set(SCRIPT_LANDING_EXEMPT.map(([p]) => p))
+      // ① 白名单不许腐烂：幽灵条目 / 自相矛盾条目都 FAIL
+      for (const [p, why] of SCRIPT_LANDING_EXEMPT) {
+        if (!onDisk.includes(p)) {
+          bad(`白名单里有幽灵条目（磁盘上已无此文件）：${p}  —— ${why}`
+            + '（E-122：白名单自己也会腐烂 ⇒ 过期条目必须清掉，不能静默留着）')
+        }
+        if (declaredSet.has(p)) {
+          bad(`白名单条目与事实矛盾（该文件其实已被 package.json 声明）：${p}  —— ${why}`
+            + '（既已声明就不该再豁免 ⇒ 二者只能留一个）')
+        }
+      }
+      // ② 主体：每个 scripts/*.mjs 必须有落点
+      const orphan = onDisk.filter((p) => !declaredSet.has(p) && !exemptSet.has(p))
+      for (const p of orphan) {
+        bad(`scripts/ 下的脚本没有落点（不在 package.json 的 scripts 里）：${p}`
+          + '\n      ⇒ 没有任何 `npm run` 会调到它 ⇒ 它的期望值过期也**无人发现**'
+          + '\n      ⇒ 这正是 **E-122 / E-127** 的形态（host-probe 5 条期望过期六轮无人发现）'
+          + '\n      ⇒ 修法：要么把它接进 `package.json` 的某个 script（并在 MUST-TRACK 里登记），'
+          + '\n        要么——若它本就不该单独跑（纯库 / 被别的脚本 import）——'
+          + '\n        在 `SCRIPT_LANDING_EXEMPT` 里**显式登记 + 写明理由**（⛔ 不许靠"扫不到就算了"）')
+      }
+      if (orphan.length === 0) {
+        ok(`反向自检 ✓ scripts/ 下 ${onDisk.length} 个 .mjs **全部有落点**`
+          + `（都在 package.json 的 scripts 里${exemptSet.size > 0 ? `，另有 ${exemptSet.size} 个显式豁免` : ''}）`
+          + ' ⇒ "新加脚本忘了登记"这种静默缺口已被机检收口')
+      }
+    }
+  }
+}
+
+/**
  * ── 文档形态机检（2026-10-10 新增 · UD-88 / CHG-025）────────────────────────
  *
  * 背景：用户裁定四份文档（方案 + 三本账本）一律**「只写当前状态」** ——
