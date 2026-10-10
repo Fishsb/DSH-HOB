@@ -156,7 +156,7 @@ EXIT=1
 .hob/                         ← **v4：本目录只放骨架；账本数据在工作区之外**
 ├── README.md            ← 本文件（骨架 · 进 git）
 ├── EXPERIENCE.md        ← 经验库（骨架 · 进 git · 提炼自旧项目）
-├── templates/           ← 空模板 8 份（骨架 · 进 git）
+├── templates/           ← 空模板 7 份（骨架 · 进 git）
 │   ├── CONTEXT.md  ├── USER-DECISIONS.md  └── DECISIONS.md
 │   ├── ROLES.md         ← 角色簇人读契约（§1.3）
 │   ├── GATES.md         ← 阶段与门禁人读契约（§1.3）
@@ -204,6 +204,7 @@ EXIT=1
 | 2026-10-05 | **整个旧 `dsh-hob` 项目**（71 MB；`.git` HEAD `4d57945`；**37 项未提交改动**完整保留） | 用户拍板「旧项目原地归档，新项目用原路径」 | `/home/lk/FF/dsh-hob-archive-20261005/`（**原地 `mv`**，非复制） | 新项目用原路径 `/home/lk/FF/dsh-hob` 重建骨架；经验已提炼为 `.hob/EXPERIENCE.md`。**注意这是在仓库之外**（新仓库里没有它的副本），故本行只是**指针** |
 | 2026-10-08 | **账本数据整体迁出本仓库** —— **439 个文件**（**当时为四本**账本 + 14 个批次报告 + `archive/`（26 个批次目录）+ `backups/`） | 重构方案 v4 用户决策 **D3 / D4**：账本按工作区派生、**物理隔离在工作区之外**（隔离由文件系统保证，不靠契约约束） | `/home/lk/FF/.hob-ledgers/dsh-hob/`（**迁出**，非复制；该目录**已单独 `git init`** 以保住版本历史） | ⚠ **本行登记的是「迁移」，不是严格意义的「归档」** —— 补登理由：本表的存在理由是「**出了本仓库、本仓库 git 就看不见去向**」，而这次迁正是如此（439 文件离开本仓，`git status` 只看得到删除）。迁出后本目录只剩骨架；**今后交接归档**（`TASK.md` / `REPORT.md`）落**账本目录**的 `archive/<日期>-<名>/`。账本自身的历史由其独立仓的 `git log` 保证 |
 | 2026-10-10 | **项目方案迁入账本区** —— `PROJECT.md`（**122455 字节**，`md5 ac5d2bcb…` 迁移前后一致） | 用户决策 **UD-88** + 变更 **CHG-025**：「这些都是 hob 的账本，不要放工作区，**包括项目方案**」 | `/home/lk/.dsh/hob-ledgers/dsh-hob/PROJECT.md`（**迁出**，非复制；旧整份另存同仓 `archive/2026-10-10-project-plan-move/PROJECT.md`） | ⚠ 本行同样是「**迁移**」登记（理由同上面两行）。⇒ 工作区里**不再保留任何项目文档**。`PROJECT.md` 同时纳入 `write_hob` 可写面；但**方案只有用户能批准变更、Hob 只提议**（程序纪律，非工具闸门） |
+| 2026-10-10 | **重构前的整份快照（三本账本）** —— `DECISIONS.md` / `USER-DECISIONS.md` / `CONTEXT.md` 各一份（158948 字节 / 1314 行合计，md5 逐份一致） | 用户决策 **UD-88** + 变更 **CHG-025**（「改动即重构、旧的归档」—— 重写前冻结基线） | 账本区 `archive/2026-10-10-docs-restructure/`（**副本**，非迁移；源文件一字未改） | ⚠ 这是「**重构前快照**」，供回溯；下一轮由 Hob 将四份文档重写为「当前状态」形态。`PROJECT.md` 不重复归档 —— 它的重写前整份已在 `archive/2026-10-10-project-plan-move/`（本轮已对拍一致） |
 | 2026-10-09 | **账本区再迁** —— `/home/lk/FF/.hob-ledgers/dsh-hob/` → `/home/lk/.dsh/hob-ledgers/dsh-hob/`（**516 个文件**，md5 差异 0；`git subtree split` 抽出 **37 个提交**接进新仓） | 用户决策 **UD-86 + UD-87（更正）**：`ledgerHome` 改为**显式配置** `~/.dsh/hob-ledgers`，且其下**每工作区一个独立仓**（仓根即工作区目录本身） | `/home/lk/.dsh/hob-ledgers/dsh-hob/`（**迁出**，非复制；**历史随迁**；旧父仓 `/home/lk/FF/.hob-ledgers/` 原地保留，仍管 `prompt-enhancer-release/`） | ⚠ **本行同样是「迁移」登记**（理由同上行）。代价已明写：该值是**本机绝对路径** ⇒ 放弃 UD-73③ 的可移植性口径，换机器须重配 |
 
 > **未被本表覆盖的既有归档**：账本目录内的 `archive/`（2026-10-05 起各批次证据目录）
@@ -242,9 +243,9 @@ EXIT=1
 
 | 项 | 状态 | 依据 |
 |---|---|---|
-| 三本账本（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`；原四本，`FACTS` 于 2026-10-09 按 UD-84 退场） | ✅ **已建立并在用**；**v4（2026-10-08）起外置**，**2026-10-09 按 UD-86/87 迁至** `/home/lk/.dsh/hob-ledgers/<工作区名>/`（本工作区 = `/home/lk/.dsh/hob-ledgers/dsh-hob/`，**独立仓根**、历史随迁）〔迁出前快照 **439 个文件**，此后随记账增长；迁后实测 **516 个文件**〕。当前进度：`CONTEXT` 至 **§85** · `DECISIONS` 至 **CHG-024** · `USER-DECISIONS` 至 **UD-87**〔`FACTS` 已退场，末条为 **F-J156**〕 | `ls` 该目录；账本仓 `git log` |
+| 三本账本（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`；原四本，`FACTS` 于 2026-10-09 按 UD-84 退场） | ✅ **已建立并在用**；**v4（2026-10-08）起外置**，**2026-10-09 按 UD-86/87 迁至** `/home/lk/.dsh/hob-ledgers/<工作区名>/`（本工作区 = `/home/lk/.dsh/hob-ledgers/dsh-hob/`，**独立仓根**、历史随迁）〔迁出前快照 **439 个文件**，此后随记账增长；迁后实测 **516 个文件**〕。当前进度：`CONTEXT` **已改为「§0 防漂移摘要 + 历史一览表」形态**（`§1…§85` 整体移入 `archive/2026-10-09-ledger-history/`，2026-10-09 按 UD-83）· `DECISIONS` 至 **CHG-025** · `USER-DECISIONS` 至 **UD-88**〔`FACTS` 已退场，末条为 **F-J156**〕 | `ls` 该目录；账本仓 `git log` |
 | `templates/` 空模板 | ✅ 已就位，**7 份** —— 三账本空模板（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`）+ `ROLES.md`（角色簇）+ `GATES.md`（阶段与门禁）+ `TASK.md` / `REPORT.md`（v4 交接协议载体）〔⚠ 原 8 份含 `FACTS` 空模板，2026-10-09 退场〕 | `ls -la .hob/templates/` |
-| `EXPERIENCE.md` 经验库 | ✅ 已就位，**101 条**（`E-01`…`E-101`）；写作纪律：新坑续编不重排、**不许丢根因**、未验证项进 §7 | `.hob/EXPERIENCE.md`；`npm run exp:next-id` 报「条目总数（标题行）：101」 |
+| `EXPERIENCE.md` 经验库 | ✅ 已就位，**107 条**（`E-01`…`E-107`）；写作纪律：新坑续编不重排、**不许丢根因**、未验证项进 §7 | `.hob/EXPERIENCE.md`；`npm run exp:next-id` 报「条目总数（标题行）：107」 |
 | `archive/` | **v4 起不在本目录** —— 交接归档（`TASK.md` / `REPORT.md`）落在**账本目录**的 `archive/<日期>-<名>/`，并须在 §3 指针表登记一行 | `ls` 工作区 `.hob/`（无 archive）；账本目录 `ls archive/` |
 | **写账本的工具** | ✅ **已在用且真机验证过** —— `read_contracts`（读账本 `.md`）+ `write_hob`（写账本）；`write_hob` 真机写入实测见账本 **F-J14**（含写前自动备份）与 **F-J127**（v4 外置账本下的写入通道复测） | `src/server/hob-write.ts`、`src/modules/tools.ts`；账本归档 `archive/2026-10-09-ledger-history/FACTS-final.md` |
 | **骨架 ↔ 实例漂移检查** | ✅ **已在跑，且有七条** —— `npm run typecheck` + 六个 `check:*`：`check:presets`（预设契约）· `check:config`（配置面三处不漂移）· `check:orch`（编排运行态跨重载）· `check:client`（client 半边宿主服务取用）· `check:gitignore`（排除漂移）· `check:experience`（经验库编号/四要素）；**连同 `build` 共八条自 2026-10-10 起是收尾必跑**；另 `exp:next-id` 负责取号 | `package.json` 的 `scripts`；§1.4；`PROJECT.md` §10.1 |
