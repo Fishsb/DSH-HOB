@@ -30,6 +30,18 @@
  *   而是**跟宿主走**：下面这些声明是从宿主**自己的 `settings.section` 页**
  *   逐一对照抄来的（出处写在每个规则上方），因此主题切换/尺寸调整会
  *   自动跟随宿主，不会漂移。
+ *
+ * ── 第 8 轮（2026-10-10）：间距节奏与控件改宿主口径 ────────────────────
+ *   用户报「间隔不一致，排版不美观，下拉框是默认样式不好看」。
+ *   改法两条（都对宿主**逐条对照抄**，不自造）：
+ *     ① 字段行从"标签定宽 76px + baseline 单行"改成宿主设置页的
+ *        **字段式「标签在上、控件在下」**（`ui-settings-models` 的 `.zGbnIq_field`
+ *        `:58`：`flex-direction:column;gap:6px`，标签 `.zGbnIq_fieldLabel`
+ *        `font-size:12px;font-weight:500;line-height:18px`）；
+ *     ② 分区 `gap` 16→12、卡片内边距/行间距对齐 `.zGbnIq_rowCard` 的
+ *        `padding:12px 14px;gap:12px`（同处 `:58`）。
+ *   ⚠ 原生 `<select>` **已全部删除**（改宿主 `Menu`）⇒ 下面的 `.dsh-hob-select`
+ *     只保留"触发按钮"那一支的观感，选择器本体由宿主组件负责。
  */
 const PLUGIN_ID = 'dsh-hob'
 
@@ -57,7 +69,10 @@ const STYLE_TAG_ID = `${PLUGIN_ID}/settings-panel.css`
  */
 const CSS = [
   // 分区容器：纵向堆叠 + 最大宽度 720px（与 models 页同宽，避免宽屏拉散）。
-  `.dsh-hob-section{display:flex;flex-direction:column;gap:16px;max-width:720px;padding:8px 0;`,
+  // ⚠ gap 16→12：对齐 `ui-settings-models` 的 `.zGbnIq_section{gap:12px}`
+  //   （`dsh-client-ui-settings-models/lib/client.js:58`）。宿主设置页整页的节奏
+  //   就是 12px 一档，本面板原来 16px ⇒ 与相邻分区"间隔不一致"（用户报障③）。
+  `.dsh-hob-section{display:flex;flex-direction:column;gap:12px;max-width:720px;padding:8px 0;`,
   `font-size:13px;line-height:22px;color:var(--dsw-alias-label-primary)}`,
 
   // 分区标题：16px/500（宿主 settings.section 页的统一标题级）。
@@ -67,17 +82,25 @@ const CSS = [
   `.dsh-hob-intro{margin:0;font-size:14px;line-height:22px;color:var(--dsw-alias-label-tertiary)}`,
 
   // 卡片：宿主设置页卡片的统一观感（半像素描边 + xl 圆角 + 卡片底）。
-  `.dsh-hob-card{display:flex;flex-direction:column;padding:4px 16px;`,
+  // ⚠ 内边距 4px 16px → 12px 14px、行间距由 gap 承担：逐字对齐
+  //   `.zGbnIq_rowCard{padding:12px 14px;gap:12px}`（同处 `:58`）。
+  `.dsh-hob-card{display:flex;flex-direction:column;padding:12px 14px;gap:12px;`,
   `border:0.5px solid var(--dsw-alias-settings-card-stroke);`,
   `border-radius:var(--dsw-radius-xl);background:var(--dsw-alias-settings-card-fill)}`,
 
-  // 字段行：行间用半像素分隔线（宿主字段列表的同一手法），末行不留线。
-  `.dsh-hob-row{display:flex;align-items:baseline;gap:16px;padding:12px 0}`,
-  `.dsh-hob-row+.dsh-hob-row{border-top:0.5px solid var(--dsw-alias-border-l2)}`,
+  // ── 字段式行（第 8 轮改）：**标签在上、控件在下** ───────────────────────
+  // 逐字对齐宿主 `ui-settings-models` 的 `.zGbnIq_field{flex-direction:column;gap:6px}`
+  // 与本仓既有的字段列表分隔线手法（`.dsh-hob-row+.dsh-hob-row` 的 l2 半像素线）。
+  // ⚠ 原来的 `align-items:baseline;gap:16px` + 标签定宽 76px 是"单行两列"，
+  //   与宿主字段式不是一套节奏（任务书 §2-C.2 明令按宿主改）。现改为纵向。
+  `.dsh-hob-row{display:flex;flex-direction:column;gap:6px}`,
+  `.dsh-hob-row+.dsh-hob-row{border-top:0.5px solid var(--dsw-alias-border-l2);padding-top:12px}`,
 
-  // 字段名：定宽次级色；字段值：主色、可换行。
-  `.dsh-hob-row-label{flex:none;width:76px;color:var(--dsw-alias-label-secondary)}`,
-  `.dsh-hob-row-value{flex:1;min-width:0;overflow-wrap:anywhere}`,
+  // 字段名：**次级色 + 12px/500/18px** —— 宿主 `.zGbnIq_fieldLabel` 的同一级
+  // （`font-size:12px;font-weight:500;line-height:18px;color:var(--dsw-alias-label-secondary)`）。
+  `.dsh-hob-row-label{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500;line-height:18px}`,
+  // 字段值：主色、可换行（不再 `flex:1` —— 纵向布局里它本来就占满一行）。
+  `.dsh-hob-row-value{min-width:0;overflow-wrap:anywhere}`,
 
   // 行内「状态点 + 文本」与「状态标记 chips」。
   `.dsh-hob-inline{display:inline-flex;align-items:center;gap:6px}`,
@@ -92,18 +115,37 @@ const CSS = [
   // 屏读专用文本（宿主同款写法，见 `ui-settings-general` 的 `.VOzbGW_hiddenLabel`）。
   `.dsh-hob-sr-only{position:absolute;width:1px;height:1px;white-space:nowrap;overflow:hidden;clip:rect(0 0 0 0)}`,
 
-  // ── 批 18 新增：「新建会话默认」卡片 ───────────────────────────────────
-  // 卡片头：标题 + 一句边界说明（两者同排、允许换行）。
-  `.dsh-hob-card-head{display:flex;flex-direction:column;gap:2px;padding:12px 0 4px}`,
+  // ── 批 18 新增 / 第 8 轮改：「新建会话默认」卡片 ───────────────────────
+  // 卡片头：标题 + 一句边界说明。
+  // ⚠ 间距改由外层 `.dsh-hob-card` 的 `gap:12px` 统一承担 ⇒ 这里不再自加 padding
+  //   （原来 `padding:12px 0 4px` 与外层 gap 叠成 16/4 两种间距 = 用户说的"间隔不一致"）。
+  `.dsh-hob-card-head{display:flex;flex-direction:column;gap:2px}`,
   `.dsh-hob-card-title{font-weight:500;color:var(--dsw-alias-label-primary)}`,
   `.dsh-hob-card-note{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}`,
-  // 选择控件：宿主设置页字段控件的观感（描边 + 圆角 + 卡片底 + 主色文字）。
-  // ⚠ 令牌逐条取自宿主主题（`dsh-client-ui-theme`）：`--dsw-radius-md` 存在、
-  //   `--dsw-radius-m` 不存在（曾写错，已按实况改正）。
-  `.dsh-hob-select{min-width:220px;max-width:100%;height:28px;padding:0 6px;font:inherit;`,
-  `color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);`,
-  `border:0.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md)}`,
-  `.dsh-hob-select:disabled{opacity:.6;cursor:not-allowed}`,
+
+  // ── 下拉触发按钮（第 8 轮新增）：宿主 `ui-model-selection` 的 `.trigger` 同源 ──
+  // 逐条出处：`dsh-client-ui-model-selection/lib/client.js:330` 的 CSS 串
+  //   `.trigger{border-radius:var(--dsw-radius-sm);height:28px;color:var(--dsw-alias-label-secondary);
+  //    cursor:pointer;background:0 0;border:none;align-items:center;gap:4px;padding:0 4px 0 8px;
+  //    font-size:13px;font-weight:400;line-height:20px;display:flex}`
+  //   + `:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}`
+  //   + `:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,…)}`
+  //   + `.chevron{color:var(--dsw-alias-label-caption);transition:transform .12s}` /
+  //     `.chevronOpen{transform:rotate(180deg)}`
+  // ⚠ 这是**宿主自己的度量**，不是自造；`max-width` 用 360px 同 `.trigger`。
+  `.dsh-hob-trigger{min-width:0;max-width:min(360px,100%);height:28px;color:var(--dsw-alias-label-secondary);`,
+  `cursor:pointer;background:0 0;border:none;outline:none;align-items:center;gap:4px;`,
+  `padding:0 4px 0 8px;font:inherit;font-size:13px;font-weight:400;line-height:20px;display:inline-flex}`,
+  `.dsh-hob-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}`,
+  `.dsh-hob-trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}`,
+  `.dsh-hob-trigger:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}`,
+  `.dsh-hob-trigger-value{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}`,
+  `.dsh-hob-trigger-icon{flex:none;color:var(--dsw-alias-menu-icon)}`,
+  `.dsh-hob-chevron{color:var(--dsw-alias-label-caption);flex:none;transition:transform .12s}`,
+  `.dsh-hob-chevron-open{transform:rotate(180deg)}`,
+  // 菜单行内的次级文本（预设「不可用」、模型 id、档位说明）——
+  // 用宿主菜单的 caption 层级（`Menu.module.css` 的 `.shortcut` 用同一令牌）。
+  `.dsh-hob-item-note{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}`,
   // 行内小标签（如「思考档位」）与次级说明。
   `.dsh-hob-sub-label{color:var(--dsw-alias-label-secondary);flex:none}`,
   `.dsh-hob-sub-note{color:var(--dsw-alias-label-tertiary)}`,
@@ -158,7 +200,14 @@ export const S = {
   cardHead: 'dsh-hob-card-head',
   cardTitle: 'dsh-hob-card-title',
   cardNote: 'dsh-hob-card-note',
-  select: 'dsh-hob-select',
+  // ⚠ `select` 已**删除**（第 8 轮：原生 `<select>` 全换成宿主 `Menu`）——
+  //   保留这个键会让"零原生 select"的机检与代码对不上（键在、用法没了）。
+  trigger: 'dsh-hob-trigger',
+  triggerValue: 'dsh-hob-trigger-value',
+  triggerIcon: 'dsh-hob-trigger-icon',
+  chevron: 'dsh-hob-chevron',
+  chevronOpen: 'dsh-hob-chevron-open',
+  itemNote: 'dsh-hob-item-note',
   subLabel: 'dsh-hob-sub-label',
   subNote: 'dsh-hob-sub-note',
   warn: 'dsh-hob-warn',

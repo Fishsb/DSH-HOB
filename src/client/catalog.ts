@@ -91,13 +91,31 @@ export interface ModelCatalogRow {
   failures: { id: string; name: string; message: string }[]
 }
 
+/**
+ * 一条**结构化的**失败原因。
+ *
+ * ⚠ 为什么不是一句写死的中文（第 8 轮 · 2026-10-10）：本文件在 **client 半边**
+ *   但**不**依赖语言服务，而它产生的错误句**会**被面板渲染给用户
+ *   ⇒ 若这里写死中文，切英文后这几行仍是中文（**语言跟随就有洞**）。
+ *   ⇒ 改成"**给键 + 给参数**"，由面板经语言服务取词（见 `i18n.ts` 的 `t()`）。
+ *   这与宿主 `ui-model-selection` 的做法同源：它把失败存成
+ *   `state.failures[].message` 并在渲染处套 `t("warning.groupLoad", {…})`
+ *   （`dsh-client-ui-model-selection/lib/client.js:975-980`）。
+ */
+export interface CatalogError {
+  /** 词条键（`i18n.ts` 的词典里必须有；缺了会退化成显示键名，由机检钉住）。 */
+  key: string
+  /** `{name}` 占位符参数。 */
+  params?: Record<string, string | number>
+}
+
 /** 外部存储的快照（**稳定引用**，只在内容变化时替换）。 */
 export interface CatalogSnapshot {
   status: 'idle' | 'loading' | 'ready' | 'error'
   presets: PresetRow[]
   catalog: ModelCatalogRow | null
-  /** 读取失败的原因（**如实显示**，不吞）。 */
-  error: string | null
+  /** 读取失败的原因（**如实显示**，不吞；**结构化**，由面板取词）。 */
+  error: CatalogError | null
 }
 
 let ctxRef: any
@@ -215,13 +233,17 @@ function serviceOf(name: string): any {
   }
 }
 
-/** 把一次 Remote 调用结果归一成"值或错误消息"（**不静默吞错**）。 */
-function unwrap(response: any): { ok: true; value: any } | { ok: false; message: string } {
-  if (response === undefined || response === null) return { ok: false, message: '宿主未返回结果（命名空间可能尚未挂载）' }
+/** 把一次 Remote 调用结果归一成"值或错误"（**不静默吞错**，错误结构化）。 */
+function unwrap(response: any): { ok: true; value: any } | { ok: false; error: CatalogError } {
+  if (response === undefined || response === null) {
+    return { ok: false, error: { key: 'catalog.fail.noResult' } }
+  }
   if (response.ok === true) return { ok: true, value: response.value }
-  const code = response.error?.code ?? 'unknown'
-  const message = response.error?.message ?? String(response)
-  return { ok: false, message: `${code}: ${message}` }
+  const code = String(response.error?.code ?? 'unknown')
+  // ⚠ 宿主给的原句**不翻译**（那是宿主的文本，逐字透传才是"如实"）；
+  //   这里翻译的只是**我们自己的**包裹句。
+  const message = String(response.error?.message ?? String(response))
+  return { ok: false, error: { key: 'catalog.fail.host', params: { code, message } } }
 }
 
 /**
@@ -267,18 +289,18 @@ export function loadCatalog(): Promise<void> {
         ].filter((x) => x !== null).join(' / ')
         update({
           status: 'error',
-          error: `宿主 Remote 命名空间未就绪：${missing}（页面加载中或服务未挂载）—— 点「重新读取」重试`,
+          error: { key: 'catalog.fail.nsNotReady', params: { missing } },
         })
         return
       }
       const presetResult = unwrap(await presetsNs.list())
       if (!presetResult.ok) {
-        update({ status: 'error', error: `预设清单读取失败 —— ${presetResult.message}` })
+        update({ status: 'error', error: { key: 'catalog.fail.preset', params: { message: presetResult.error.params?.message ?? '' } } })
         return
       }
       const catalogResult = unwrap(await catalogNs.modelCatalog())
       if (!catalogResult.ok) {
-        update({ status: 'error', error: `模型目录读取失败 —— ${catalogResult.message}` })
+        update({ status: 'error', error: { key: 'catalog.fail.model', params: { message: catalogResult.error.params?.message ?? '' } } })
         return
       }
       const rows: PresetRow[] = Array.isArray(presetResult.value?.presets) ? presetResult.value.presets : []
@@ -296,8 +318,8 @@ export function loadCatalog(): Promise<void> {
         catalog: normalizeCatalog(catalogResult.value),
       })
     } catch (e) {
-      // 抛异常与"返回失败"同级处理：都如实记成 error。
-      update({ status: 'error', error: `候选读取异常 —— ${String((e as Error)?.message ?? e)}` })
+      // 抛异常与"返回失败"同级处理：都如实记成 error（结构化，由面板取词）。
+      update({ status: 'error', error: { key: 'catalog.fail.exception', params: { message: String((e as Error)?.message ?? e) } } })
     }
   })()
 

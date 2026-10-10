@@ -46,7 +46,7 @@
  *   所以本文件 `apply` **只有 ctx 一个参数**；配置必须启动后经 DSH 原生
  *   `configForms`（Remote RPC）拉取，**不要**自己造 HTTP 路由（E-10）。
  */
-import { SettingsPanel } from './settings-panel.tsx'
+import { SettingsPanel, bindLocale } from './settings-panel.tsx'
 import { bindSettingsForm } from './settings.ts'
 import { bindCatalog, setCatalogContext } from './catalog.ts'
 import { ensurePanelStyles } from './panel-styles.ts'
@@ -92,6 +92,16 @@ export function apply(ctx: any): void {
     `${PACKAGE_NAME}: remote catalog binding`,
   )
   setCatalogContext(ctx)
+
+  // 语言服务（第 8 轮新增）：**反应式**绑定 + 在本插件 ns 注册中英词典。
+  // ⚠ 用 `ctx.inject(['locale'], cb)` 而**不是**模块级 `inject` ——
+  //   后者是**加载门禁**：`dsh-client-locale` 缺席会让**整个 client 插件不激活**
+  //   ⇒ 设置分区整体消失（回归，见 E-02 / E-41 与上面 ① 的说明）。
+  //   本插件的文案在语言服务缺席时走本地词典（固定中文），**面板照常可用**。
+  ctx.effect(
+    () => bindLocale(ctx),
+    `${PACKAGE_NAME}: locale binding`,
+  )
 
   // ⚠ `ctx.slots.inject` 本身就是"等槽位存在再注册"的反应式封装：
   //   槽位缺席时**不注册、不报错**（宿主其它界面插件未装载时也不该炸）。

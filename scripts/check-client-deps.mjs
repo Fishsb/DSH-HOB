@@ -84,9 +84,33 @@
  *      ⚠ 为什么必须机检：宿主那半边的通知链**在类型与构建层面完全看不出来**
  *        （`subscribe` 存在但不被调用照样编译通过、构建通过、只在运行时表现为旧值）。
  *
+ *   **J（预设名与 DSH 一致 + 面板跟随语言 + 控件改宿主样式 · 第 8 轮新增）**
+ *      用户报障三条（预设名与 DSH 不一致 / 不跟随语言 / 下拉框是默认样式）的机检。
+ *      判据四件（各自能独立失败，**不许合并**）：
+ *        · J-1 **零原生 `<select`**：面板源码里不得出现 `<select` —— 三个控件必须走
+ *              宿主 `Menu`（`@deepseek-ai/dsh-client-ui-primitives`），
+ *              键盘/焦点语义由它负责（另有 `<select` 就说明有人又写回了原生控件）。
+ *        · J-2 **预设名走本地化解析且键名回退有兜底**：`i18n.ts` 必须有
+ *              `presetDisplayName()`，且其中**必须**出现"取回键名即判为取不到"的判据
+ *              （`out !== key`）**与**逐级兜底（宿主 ns → 本插件 ns → 自备词条 → 裸 id）。
+ *              ⚠ 宿主 `translate()` 取不到时**返回键名本身**
+ *              （`dsh-client-locale/lib/client.js:1425` 的 `?? key`）——
+ *              少了这条判据，面板会把 `presetStandardName` 当名字显示给用户。
+ *        · J-3 **语言服务取用零裸属性访问**：`locale` 只能经 `ctx.inject(['locale'], cb)`
+ *              + `cb.get('locale')` 取；出现 `ctx.locale` / `.locale.` 这类属性访问即 FAIL
+ *              （会撞 cordis 门禁 —— E-100；A-3 已覆盖 `ctx.<名>`，这里补"服务成员"那一层）。
+ *        · J-4 **不得进模块级 inject**：`index.ts` 的 `export const inject` 里
+ *              **不得**出现 `locale` —— 那是**加载门禁**：`dsh-client-locale` 缺席会让
+ *              整个 client 插件不激活 ⇒ 设置分区整体消失（E-02 / E-41）。
+ *        · J-5 **两份词典键集一致**：面板导出的 `PANEL_DICTIONARIES` 中英键集必须
+ *              **完全相同**（宿主 `register` 做双语平衡校验；键集不一致会让某语言下
+ *              静默显示键名）。判据 = 从源码字面量解析两份键名并逐键比对。
+ *
  *   ⚠ **每条断言都必须能失败**（E-27：恒真的检查比没有更危险）。
  *      交付时逐条做过负向对拍（原始读数见回报）：本断言 I 用"**摘掉订阅再跑**"做了
  *      真实文件的**摘除/还原**对拍 —— 摘掉 `form.subscribe(...)` ⇒ I-2 FAIL；还原 ⇒ PASS。
+ *      J 组同样逐条对拍：`<select` 放回 ⇒ J-1 FAIL；删掉键名判据 ⇒ J-2 FAIL；
+ *      写 `ctx.locale` ⇒ J-3 FAIL；`inject` 加 `locale` ⇒ J-4 FAIL；键集删一键 ⇒ J-5 FAIL。
  *
  * ══ 与既有脚本的关系（**不得互相影响**）════════════════════════════════════
  *   **只读** `src/client/**` 与 `node_modules/@deepseek-ai/cordis`（后者只用于取
@@ -769,6 +793,177 @@ function balancedBlock(src, startIndex) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// §11d 断言 J —— 预设名与 DSH 一致 + 面板跟随语言 + 控件改宿主样式（第 8 轮新增）
+// ══════════════════════════════════════════════════════════════════════════
+{
+  const panelCodeJ = codeOf.get('settings-panel.tsx') ?? ''
+  const panelRawJ = rawOf.get('settings-panel.tsx') ?? ''
+  const i18nCode = codeOf.get('i18n.ts') ?? ''
+  const i18nRaw = rawOf.get('i18n.ts') ?? ''
+
+  // ── J-1 零原生 `<select` ─────────────────────────────────────────────────
+  //   判据在**剥离态**（注释里刻意写着"原生 `<select>` 已全部删除"这类句子，
+  //   用原始态检测会**假失败** —— 这正是本脚本区分两种视图的原因）。
+  {
+    const hits = hitsWithLines(panelCodeJ, /<\s*select\b/g)
+    if (hits.length > 0) {
+      bad(`J-1 · settings-panel.tsx:${hits[0].line} 出现原生 \`<select\`（${hits[0].text}）—— `
+        + '第 8 轮已把三个控件换成宿主 `Menu`（与 DSH 模型选择器同源）；'
+        + '原生控件会退回到"浏览器默认样式"（用户报障③）')
+    } else ok('J-1 ✓ 面板零原生 `<select`（三个控件走宿主 Menu）')
+    //   正向：宿主 Menu 真的被用上了（不是"删了 select 但什么都没换"）
+    if (!/\bMenu\b/.test(panelCodeJ) || !/MenuItemButton/.test(panelCodeJ)) {
+      bad('J-1 · settings-panel.tsx 里找不到 `Menu` / `MenuItemButton` —— '
+        + '控件换成宿主套件的另一半没做（只删了 `<select` 不等于换控件）')
+    } else ok('J-1 ✓ 面板经 `Menu` + `MenuItemButton` 渲染选项（宿主套件在位）')
+  }
+
+  // ── J-2 预设名走本地化解析，且**键名回退有兜底** ─────────────────────────
+  {
+    const fnStart = i18nCode.indexOf('export function presetDisplayName')
+    if (fnStart < 0) {
+      bad('J-2 · i18n.ts 里找不到 `presetDisplayName()` —— 预设名不再走本地化解析'
+        + '（内置四个会退回裸 id，用户报障①复发）')
+    } else {
+      const body = i18nCode.slice(fnStart, i18nCode.indexOf('\n}', fnStart))
+      // ① 内置判定：**name 缺席**且 id 在表里（与宿主 `isBuiltInPreset()` 同判据）
+      if (!/row\.name\s*===\s*undefined/.test(body) || !/BUILT_IN_PRESET_KEYS\s*\[/.test(body)) {
+        bad('J-2 · `presetDisplayName()` 没有"`name === undefined` 且 id 在表里"的内置判定 —— '
+          + '与宿主 `isBuiltInPreset()`（dsh-client-ui-agent-preset/lib/client.js:249-251）不同口径')
+      } else ok('J-2a ✓ 内置判定与宿主同口径（name 缺席 + id 在 BUILT_IN_PRESET_KEYS 表里）')
+      // ② **键名回退兜底**：宿主 translate() 取不到时返回键名，必须判成"没取到"
+      if (!/out\s*!==\s*key/.test(i18nCode)) {
+        bad('J-2 · i18n.ts 里没有"取回键名即判为取不到"的判据（`out !== key`）—— '
+          + '宿主 `translate()` 查不到时**返回键名本身**（dsh-client-locale/lib/client.js:1425 的 `?? key`），'
+          + '少了这条就会把 `presetStandardName` 当名字显示给用户（任务书 §2-A.2 红线）')
+      } else ok('J-2b ✓ 有"返回键名 ⇒ 判为没取到"的兜底判据（`out !== key`）')
+      // ③ 逐级兜底：宿主 ns → 本插件 ns → 自备词条
+      if (!/HOST_PRESET_NS/.test(i18nCode) || !/PRESET_FALLBACK/.test(i18nCode)) {
+        bad('J-2 · i18n.ts 缺少逐级兜底（宿主 ns `settings.agentPreset` + 自备词条表）—— '
+          + '宿主插件缺席时预设名会变成裸 id 或键名')
+      } else ok('J-2c ✓ 逐级兜底在位（宿主 ns → 本插件 ns → 自备词条 → 裸 id）')
+      // ④ 四条自备词条**逐字同宿主**（宿主 :309/:311/:313/:315）。
+      //    判据取**原始态**（剥离态里字符串已成空格 ⇒ 什么都抽不到，是本脚本 §3 的实测教训）。
+      const WANT = { presetStandardName: '标准模式', presetPtcName: 'PTC 模式', presetMinimalName: '极简模式', presetCordisName: '创造模式' }
+      const missing = Object.entries(WANT).filter(([k, v]) => !new RegExp(`${k}:\\s*\\{\\s*zh:\\s*'${v}'`).test(i18nRaw))
+      if (missing.length > 0) {
+        bad(`J-2 · 自备词条与宿主不逐字一致：${missing.map(([k, v]) => `${k} 期望 '${v}'`).join('；')}`
+          + '（出处：dsh-client-ui-agent-preset/lib/client.js:309/311/313/315）')
+      } else ok('J-2d ✓ 四条自备词条与宿主逐字一致（标准模式 / PTC 模式 / 极简模式 / 创造模式）')
+    }
+  }
+
+  // ── J-3 语言服务取用零裸属性访问 ─────────────────────────────────────────
+  {
+    // ⚠ 判据必须**收得够宽**（本轮负向对拍抓出来的真缺口）：
+    //   第一版只写 `\bctx\s*\.\s*locale\b`，于是把
+    //   `const locale = localeCtx.locale`（用 inject 回调参数的裸属性访问）
+    //   **漏了过去** —— 而这恰恰是"以为走了免 inject、其实还是属性访问"的真实形态
+    //   （与 E-100 的原始缺陷同型：`ctx.get('remote')` 之后 `remote.agentPresets`）。
+    //   ⇒ 判据改成"**任何接收者**上的 `.locale` 成员访问"（`X.locale`），
+    //     因为语言服务在本仓只允许经 `get('locale')` 取；注释已在剥离态抹掉，
+    //     故文档里刻意写的反例（`ctx.locale.register`）不会造成假失败。
+    let hits = 0
+    for (const [f, code] of codeOf) {
+      for (const h of hitsWithLines(code, /\b[A-Za-z_$][\w$]*\s*\.\s*locale\b/g)) {
+        bad(`J-3 · ${f}:${h.line} 出现语言服务的**裸属性访问**（${h.text}）—— `
+          + '会撞 cordis 门禁（E-100：免 inject 的只有"把服务读出来"这一步）；'
+          + '应改用 `cb.get(\'locale\')` 读出来之后再调它的方法')
+        hits++
+      }
+    }
+    if (hits === 0) ok('J-3a ✓ client 代码零语言服务裸属性访问（`X.locale` 与 `ctx.locale` 都零命中）')
+    //   正向：确实经 ctx.inject(['locale']) + get('locale') 取用
+    //   ⚠ 这两条必须在**原始态**取 —— 剥离态把 `'locale'` 里的引号内容换成空格了
+    //     （本脚本 §3 的实测教训：用剥离态抽字面量 ⇒ 什么都抽不到而**不报错**）。
+    if (!/inject\s*\(\s*\[\s*['"]locale['"]\s*\]/.test(i18nRaw)) {
+      bad('J-3 · i18n.ts 里没有 `ctx.inject([\'locale\'], …)` —— 反应式绑定缺失'
+        + '（语言服务晚就绪时会静默拿不到，E-01）')
+    } else ok('J-3b ✓ 经 `ctx.inject([\'locale\'], …)` 反应式订阅（E-01）')
+    if (!/get\(\s*['"]locale['"]\s*\)/.test(i18nRaw)) {
+      bad('J-3 · i18n.ts 里没有 `get(\'locale\')` —— 取用没走免 inject 读法（E-100）')
+    } else ok('J-3c ✓ 经 `get(\'locale\')` 免 inject 现读（E-100）')
+  }
+
+  // ── J-4 locale 不得进模块级 inject（加载门禁）────────────────────────────
+  {
+    if (declaredModule !== null && declaredModule.includes('locale')) {
+      bad('J-4 · index.ts 的模块级 `export const inject` 含 `locale` —— 那是**加载门禁**：'
+        + 'dsh-client-locale 缺席时**整个 client 插件不激活** ⇒ 设置分区整体消失（回归，E-02/E-41）')
+    } else ok(`J-4 ✓ 模块级 inject = [${(declaredModule ?? []).join(', ')}] —— 不含 \`locale\`（分区不会整体消失）`)
+  }
+
+  // ── J-5 两份词典键集完全一致（宿主 register 的双语平衡）──────────────────
+  {
+    // ⚠ 取键名必须回**原始态**（剥离态里引号内容已成空格 ⇒ 抽出空集而静默失真）。
+    const keysOf = (name) => {
+      const at = i18nRaw.length
+      void at
+      const m = new RegExp(`const\\s+${name}\\s*:\\s*Record<string,\\s*string>\\s*=\\s*\\{([\\s\\S]*?)\\n\\}`).exec(panelRawJ)
+      if (m === null) return null
+      return [...m[1].matchAll(/(?:^|\n)\s*(?:'([^']+)'|([A-Za-z_$][\w$]*))\s*:/g)].map((x) => x[1] ?? x[2])
+    }
+    const zhKeys = keysOf('PANEL_ZH')
+    const enKeys = keysOf('PANEL_EN')
+    if (zhKeys === null || enKeys === null) {
+      bad('J-5 · 面板里找不到 `PANEL_ZH` / `PANEL_EN` 两份词典字面量 —— 语言跟随无从判定（不按通过处理）')
+    } else {
+      const zhSet = new Set(zhKeys), enSet = new Set(enKeys)
+      const onlyZh = [...zhSet].filter((k) => !enSet.has(k))
+      const onlyEn = [...enSet].filter((k) => !zhSet.has(k))
+      if (onlyZh.length > 0 || onlyEn.length > 0) {
+        bad(`J-5 · 两份词典键集不一致（zh 独有：${onlyZh.join(', ') || '无'}；en 独有：${onlyEn.join(', ') || '无'}）`
+          + ' —— 键集不一致会让某语言下**静默显示键名**（宿主 register 做双语平衡校验）')
+      } else if (zhSet.size === 0) {
+        bad('J-5 · 两份词典都解析到 0 个键（解析口径可能已漂 ⇒ 不按通过处理）')
+      } else ok(`J-5 ✓ 两份词典键集一致（各 ${zhSet.size} 键）`)
+      // 正向：面板**必须**经 t() 取词（不是把字典放着不用）
+      if (!/\bt\(\s*'/.test(panelCodeJ)) {
+        bad('J-5 · 面板里找不到 `t(\'…\')` 取词调用 —— 词典存在却没接上取词入口')
+      } else ok('J-5 ✓ 面板经 `t(…)` 取词（词典真的被消费）')
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// §11e 断言 J 的自证 —— 检测器必须**能各自证伪**（不许恒真）
+// ══════════════════════════════════════════════════════════════════════════
+{
+  const selfFailJ = []
+  // J-1：`<select` 必须命中；注释里的那句反例必须不命中
+  if (hitsWithLines(stripCommentsAndStrings('<select value={x} />\n'), /<\s*select\b/g).length !== 1) {
+    selfFailJ.push('J-1 检测器匹配不到 `<select`（⇒ 原生控件放回会假通过）')
+  }
+  if (hitsWithLines(stripCommentsAndStrings('// 原生 `<select>` 已全部删除\n'), /<\s*select\b/g).length !== 0) {
+    selfFailJ.push('J-1 检测器对**注释里**的反例误报（会造出假失败）')
+  }
+  // J-3：语言服务的**任何**裸属性访问都必须命中（含 inject 回调参数那一形态）
+  if (hitsWithLines(stripCommentsAndStrings('const x = ctx.locale.bind(ns)\n'), /\b[A-Za-z_$][\w$]*\s*\.\s*locale\b/g).length !== 1) {
+    selfFailJ.push('J-3 检测器匹配不到 `ctx.locale`（⇒ 属性访问会漏报）')
+  }
+  //   ⚠ 这条是**本轮负向对拍抓出来的真缺口**：第一版判据只认 `ctx.locale`，
+  //     于是 `localeCtx.locale`（inject 回调参数的裸访问）**假通过**。
+  if (hitsWithLines(stripCommentsAndStrings('const locale = localeCtx.locale\n'), /\b[A-Za-z_$][\w$]*\s*\.\s*locale\b/g).length !== 1) {
+    selfFailJ.push('J-3 检测器匹配不到 `localeCtx.locale`（回调参数上的裸属性访问 ⇒ 会假通过）')
+  }
+  //   正确写法不得误报
+  if (hitsWithLines(stripCommentsAndStrings("const locale = localeCtx.get('locale')\n"), /\b[A-Za-z_$][\w$]*\s*\.\s*locale\b/g).length !== 0) {
+    selfFailJ.push('J-3 检测器对正确写法 `get(\'locale\')` 误报')
+  }
+  // J-2：键名判据与兜底的样例必须命中
+  if (!/out\s*!==\s*key/.test('const out = bound(key)\nif (typeof out === "string" && out !== key) return out')) {
+    selfFailJ.push('J-2 检测器匹配不到 `out !== key` 的键名判据样例')
+  }
+  // J-5：键名抽取器对两份键集样例必须都解析得出
+  const sample = "const PANEL_ZH: Record<string, string> = {\n  a: '阿',\n  'b.c': '波',\n}\n"
+  const got = [...(/const\s+PANEL_ZH\s*:\s*Record<string,\s*string>\s*=\s*\{([\s\S]*?)\n\}/.exec(sample)?.[1] ?? '').matchAll(/(?:^|\n)\s*(?:'([^']+)'|([A-Za-z_$][\w$]*))\s*:/g)].map((x) => x[1] ?? x[2])
+  if (got.length !== 2 || got[0] !== 'a' || got[1] !== 'b.c') selfFailJ.push(`J-5 键名抽取器解析不到样例键（得到 ${JSON.stringify(got)}）`)
+  if (selfFailJ.length > 0) {
+    bad(`断言 J 的自证失败（**检测器本身不可信** ⇒ 不按通过处理）：${selfFailJ.join('；')}`)
+  } else ok('自证 J ✓ 四个检测器双向对拍（select / ctx.locale / 键名判据 / 词典键抽取）')
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // §12 自检（**让"检查自己"也有牙**）：剥离器与检测器必须能各自证伪
 // ══════════════════════════════════════════════════════════════════════════
 {
@@ -822,7 +1017,8 @@ console.log('client 半边「宿主服务取用」核对 · dsh-hob')
 console.log(`扫描范围：src/client/**（${clientFiles.length} 个文件：${clientFiles.join(' · ')}）`)
 console.log('断言：A 零裸属性访问 · B 免 inject 读法在位 · C 逐字名锚定 · D 模块级 inject 不含命名空间 ·')
 console.log('      E Fiber 用 dispose · F 失败不静默 · G inflight 复位挂 promise · H configForms 正例 ·')
-console.log('      I 渲染值来自外部存储且该存储订阅了 form 自身（写入后回落显）')
+console.log('      I 渲染值来自外部存储且该存储订阅了 form 自身（写入后回落显） ·')
+console.log('      J 零原生 select + 预设名本地化（键名有兜底）+ locale 零裸访问/不进 inject + 中英键集一致')
 console.log('')
 for (const n of note) console.log('  ✓', n)
 console.log('')
