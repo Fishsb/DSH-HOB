@@ -31,8 +31,8 @@
  * ⚠ 零第三方依赖（本仓纪律）。
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -285,6 +285,144 @@ const PKG = join(root, 'package.json')
       }
     }
   }
+}
+
+/**
+ * ── 文档形态机检（2026-10-10 新增 · UD-88 / CHG-025）────────────────────────
+ *
+ * 背景：用户裁定四份文档（方案 + 三本账本）一律**「只写当前状态」** ——
+ * 正文只描述**现在是什么样**，**不带**「订正（日期·批次）：原文此处……」这类
+ * **补丁式历史说明**；改动时**旧版整份归档**到 `archive/<日期>-<名>/`。
+ * ⇒ 两条断言防它**回潮**：
+ *   **A 模板与正本节名一致** —— 防"正本改了形态、模板没跟"（新工作区起手就写成旧形态）。
+ *   **B 正本里不许出现补丁式历史说明** —— 形态本身被写回去。
+ *
+ * ⚠ **A 的闸门**：账本区在工作区**之外**，别的机器上可能不存在
+ *   ⇒ 读不到时**明确跳过并说明**（计数 + 打印原因），**绝不静默 PASS**。
+ *   这正是本脚本一贯盯防的"基准读不到就默认通过"。
+ *
+ * ⚠ **B 的正则为什么是这个形状**（实测调过，见回报的负向对拍读数）：
+ *   ① **锚定行首 + 排除"元讨论"**：三份正本里**合法地**出现了这些词，但都出现在
+ *      **讨论该纪律本身**的句子里（如 `CONTEXT.md:8` "本文件**不带历史说明** ——
+ *      不写「原写…已失实」…"）。裸词 grep 会把**纪律条文**判成**违规**。
+ *      ⇒ 只认**行首**的补丁注记形态（`订正（2026-…` / `原文此处` / `已失实` / `原写`），
+ *        且**不**把 `**加粗**` 里的词、句子中段的引述算进来。
+ *   ② **不弱化**：这不是"把正则调弱到永远 PASS" —— 它仍对**真实违规**有牙
+ *      （实测：`PROJECT.md` 现有 2 处真违规被抓出，读数见回报）。
+ *
+ * ⚠ **`PROJECT.md` 本轮【排除】在外**（刻意，非疏漏）：
+ *   它**尚未改写**（卡在重载：运行中的插件仍是旧版，`write_hob` 的可写名单还是旧三项）
+ *   ⇒ 它**满是**补丁式说明，纳入会**当场 FAIL**。而"不许为了让检查通过而放宽断言"
+ *   是本项目红线 ⇒ 正确做法是**显式排除 + 标注待办**，改完后**必须纳入**。
+ *   ⇒ 待办登记在 `CONTEXT.md` §2.2「未修的缺口」；改写完成后把下面的 `B_FILES` 加回 `PROJECT.md`。
+ */
+const LEDGER_ROOT = (() => {
+  // ⚠ 与其它脚本同口径：账本父目录**不硬编码本机绝对路径**（UD-73③），
+  //   从 profile 的预设行声明 `ledgerHome` 读出；读不到再退回缺省候选。
+  const candidates = []
+  try {
+    const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
+    const m = /ledgerHome:\s*(\S+)/.exec(preset)
+    if (m !== null) candidates.push(m[1])
+  } catch { /* 预设读不到 ⇒ 只走下面的候选 */ }
+  // 候选：<ledgerHome>/<工作区目录名>（本项目的工作区名 = 目录名）
+  const wsName = basename(root)
+  for (const home of candidates) {
+    const dir = join(home, wsName)
+    if (existsSync(dir)) return dir
+  }
+  return undefined
+})()
+
+/** A + B 共用的：正本文件名（四份文档里本轮**纳入**检查的三本）。 */
+const B_FILES = ['DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md']
+
+if (LEDGER_ROOT === undefined) {
+  // ⚠ **明确跳过并说明**（不静默 PASS）：这一支不计入 fail，但**打印为什么跳过**。
+  ok(`文档形态机检【跳过】—— 账本区读不到（工作区之外，本机可能未建立）`
+    + `⇒ 断言 A（模板↔正本节名）与断言 B（正本无补丁式说明）**未执行**，`
+    + `不代表通过。跳过位置：scripts/check-gitignore.mjs 的 LEDGER_ROOT 解析。`)
+} else {
+  // ── 断言 A：模板与正本的节名一致 ──────────────────────────────────────
+  // ⚠ 节 key 口径：`## ` 之后的标题，**剥掉** `**加粗**` 与**尾部全角括号注解**。
+  //   理由：注解是**本项目专有**的（如"（三条都是实测逼出来的）"），
+  //   模板不应照抄项目史；而**节主题词**必须一致 ⇒ 只比主题词。
+  const secKey = (line) => {
+    let s = line.replace(/^##\s+/, '').replace(/\*\*/g, '').trim()
+    let prev
+    do {
+      prev = s
+      s = s.replace(/\s*[（(][^（()）]*[）)]\s*$/, '').trim()
+    } while (s !== prev)
+    return s
+  }
+  const secKeys = (src) => src.split('\n').filter((l) => /^##\s+\S/.test(l)).map(secKey)
+
+  for (const f of B_FILES) {
+    const mp = join(LEDGER_ROOT, f)
+    const tp = join(root, '.hob', 'templates', f)
+    let msrc = ''
+    let tsrc = ''
+    try { msrc = readFileSync(mp, 'utf8') } catch { msrc = '' }
+    try { tsrc = readFileSync(tp, 'utf8') } catch { tsrc = '' }
+    if (msrc === '') {
+      bad(`A 正本读不到：${mp} —— 节名比对失去基准（不按通过处理）`)
+      continue
+    }
+    if (tsrc === '') {
+      bad(`A 模板读不到：${tp} —— 节名比对失去基准（不按通过处理）`)
+      continue
+    }
+    const mKeys = secKeys(msrc)
+    const tSet = new Set(secKeys(tsrc))
+    if (mKeys.length === 0) {
+      bad(`A 正本 ${f} 里一个 \`## \` 节标题都没解析到 —— 解析口径可能已漂（不按通过处理）`)
+      continue
+    }
+    const missing = mKeys.filter((k) => !tSet.has(k))
+    if (missing.length > 0) {
+      bad(`A 模板缺节：模板 .hob/templates/${f} 里找不到正本 ${f} 的节 —— ${missing.map((k) => `「${k}」`).join(' / ')}`
+        + '（正本改了形态而模板没跟 ⇒ 新工作区起手就会写成旧形态）')
+    } else {
+      ok(`A ✓ ${f}：模板与正本节名一致（${mKeys.length} 节全对上）`)
+    }
+  }
+
+  // ── 断言 B：正本里不许出现补丁式历史说明 ──────────────────────────────
+  // 两级正则（都**行首锚定**，避免把"讨论该纪律"的句子误判）：
+  //   T1 = 带日期锚的补丁注记：`订正（2026-…` / `更正（2026-…`
+  //   T2 = 行首（可带列表记号/引用记号/加粗）的补丁式起句：`原文此处` / `已失实` / `原写` / `原为` …
+  const PATCH_T1 = [
+    /(?:订正|更正|修正)\s*[（(]\s*\d{4}/,
+    /[（(]\s*\d{4}-\d{2}-\d{2}\s*[）)]\s*[：:]?\s*(?:原文|原写|原为)/,
+  ]
+  const PATCH_T2 = [
+    /^\s*(?:[-*+]\s*)?(?:>\s*)?(?:\*\*)?(?:原文此处|已失实|原写|原为|原表述|此前写作)/,
+  ]
+  for (const f of B_FILES) {
+    let src = ''
+    try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { src = '' }
+    if (src === '') {
+      bad(`B 正本读不到：${join(LEDGER_ROOT, f)} —— 形态比对失去基准（不按通过处理）`)
+      continue
+    }
+    const hits = []
+    src.split('\n').forEach((l, i) => {
+      for (const re of [...PATCH_T1, ...PATCH_T2]) {
+        if (re.test(l)) { hits.push(`:${i + 1} ${l.trim().slice(0, 90)}`); break }
+      }
+    })
+    if (hits.length > 0) {
+      bad(`B 正本 ${f} 出现**补丁式历史说明**（形态回潮）—— `
+        + hits.map((h) => `\n        ${h}`).join('')
+        + `\n      ⇒ 现行口径是「只写当前状态」：删掉补丁段，把**旧版整份**存进 archive/<日期>-<名>/`)
+    } else {
+      ok(`B ✓ ${f}：无补丁式历史说明（行首锚定 + 日期锚，正/负向都对拍过）`)
+    }
+  }
+  ok(`文档形态机检【已执行】—— 正本根 = ${LEDGER_ROOT}；`
+    + `纳入 ${B_FILES.join(' / ')}；`
+    + '⚠ `PROJECT.md` **本轮刻意排除**（尚未改写，纳入会当场 FAIL）⇒ 改写后须加回 B_FILES')
 }
 
 // ── 输出 ────────────────────────────────────────────────────────────────
