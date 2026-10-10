@@ -31,7 +31,7 @@
  * ⚠ 零第三方依赖（本仓纪律）。
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -518,6 +518,126 @@ if (LEDGER_ROOT === undefined) {
     } else {
       ok('C ✓ 账本仓：`backups/` 确被忽略（反向判据，规则真的生效）')
     }
+  }
+
+  /**
+   * ── 断言 D（2026-10-10 新增 · 第 25 轮 · UD-89/90 / CHG-026/027）──────────
+   * **正本里"具名的"归档路径引用，必须真的存在。**
+   *
+   * 背景（本条的出处，实测）：第 24 轮执行方发现 `CONTEXT.md` 写着
+   *   「各轮作业书（R21 系 / R22 系 / **R23 系**）」，而按 `TASK-R23` 通配
+   *   **零命中** —— R23 系作业书**根本不存在**（Hob 把"轮次号"写成了"文件名"）。
+   *   ⚠ 这是**同族第三次**（E-108 字段名 · E-109 数字口径 · 本次文件名），
+   *   共同点是"**写的是我以为它叫什么，而不是我去看一眼它叫什么**"。
+   *   ⚠ 关键：这类错误**当时没有任何机检能发现** —— 只能靠人读文档。
+   *   ⇒ 把它变成机器盯的（E-108③：**能机器核的不要靠人记**）。
+   *
+   * ── 判据（为什么是这个形状）──────────────────────────────────────────
+   *   在四份**正本**里扫 `archive/<具体字符>` 形式的引用，**逐条核实磁盘上存在**。
+   *
+   *   ⚠ **只认"具体路径"**，靠正则的字符集**天然排除占位形态**（不需要另写排除表）：
+   *   · `archive/<日期>-<名>/` —— `<` 与 CJK 不在 `[A-Za-z0-9._/-]` 里 ⇒ **不匹配**；
+   *   · `archive/<YYYY-MM-DD-slug>/TASK.md` —— 同理 ⇒ **不匹配**；
+   *   · `TASK-*.md` / `TASK-R*.md` —— 含 `*`，另有显式跳过 ⇒ **不匹配**。
+   *   ⇒ 这样既**不会把散文里的词当成引用**（指令 §1② 的防误报要求），
+   *     也不会因为"文档里出现了示例路径"而误判。
+   *
+   *   ⚠ **为什么用 `existsSync` 而不是"在 git 里"**：正本引用的是**账本区里的事实文件**
+   *   （可能尚未 `git add`，如本轮刚写的作业书）—— 问"文件在不在磁盘上"才是原意；
+   *   "在不在 git 里"是**另一条判据**（断言 C 与 MUST-TRACK 已在管）。
+   *
+   *   ⚠ **举证形态**：一条引用都不存在 ⇒ 不是 FAIL，而是**打印计数说明**（见下）——
+   *     "四份正本里没有任何具名引用"是**合法现状**（本批实测：`TASK-R*.md` 为 0 处），
+   *     此时断言**无对象可查**，必须如实说明，**不许硬造**、也不许假装通过。
+   */
+  const D_REF_RE = /archive\/[A-Za-z0-9][A-Za-z0-9._/-]*/g
+  let dTotal = 0
+  let dMissing = 0
+  for (const f of B_FILES) {
+    let src = ''
+    try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { src = '' }
+    if (src === '') {
+      bad(`D 正本读不到：${join(LEDGER_ROOT, f)} —— 引用核验失去基准（不按通过处理）`)
+      continue
+    }
+    src.split('\n').forEach((line, i) => {
+      for (const m of line.matchAll(D_REF_RE)) {
+        const ref = m[0]
+        // 通配（`TASK-*.md` 之类）不是具名引用 —— 跳过，不算数。
+        if (ref.includes('*')) continue
+        dTotal++
+        if (!existsSync(join(LEDGER_ROOT, ref))) {
+          dMissing++
+          bad(`D 正本 ${f}:${i + 1} 引用了**不存在**的路径：\`${ref}\``
+            + '\n      ⇒ 正本里的具名引用必须真的存在（凭记忆写文件名已踩坑三次：E-108 / E-109 / 本条的出处）'
+            + `\n      ⇒ 核实方式：在 ${LEDGER_ROOT} 跑 \`ls ${ref}\``)
+        }
+      }
+    })
+  }
+  if (dTotal === 0) {
+    // ⚠ **不判 FAIL**：这一支是"没有可查对象"，不是"查出来有问题"。
+    //   但也**不静默** —— 必须打印说明，否则读者会把"没输出"当成"查过了、没问题"。
+    ok('D ✓ 四份正本里**没有**具名的 `archive/…` 路径引用（0 处）⇒'
+      + ' 本断言**无对象可查**（已扫描，非跳过；占位形态 `archive/<日期>-<名>/` 按设计不计）')
+  } else if (dMissing === 0) {
+    ok(`D ✓ 四份正本里的 ${dTotal} 处具名归档路径引用，**全部真实存在**（逐条 ${dTotal} 次 existsSync）`)
+  }
+
+  /**
+   * ── 断言 D′：**作业书文件名引用**（`TASK-R*.md`）必须真的存在 ──────────────
+   *
+   * ⚠ 为什么要单独一支：这条**正是本轮缺陷的原形态** ——
+   *   `CONTEXT.md` 曾写「各轮作业书（R21 系 / R22 系 / **R23 系**）」，
+   *   而 `archive/` 下按 `TASK-R23` 通配**零命中**。⚠ 那种写法（"R23 系"）**不带 `.md` 后缀**，
+   *   上面的 `archive/…` 正则**抓不到它**；但要防住这类错误，判据只能是
+   *   「**写成文件名就必须存在**」（叙事里的"第 23 轮"不必有文件，
+   *   可一旦落笔成 `TASK-R23.md` 就必须有 —— 见经验 E-113 的正确做法②）。
+   *   ⇒ 本支扫**带 `.md` 后缀的 `TASK-R*` 具名引用**，逐条核实账本区里存在。
+   *
+   * ⚠ **判据：按 basename 在 archive 的各日期子目录下找**（不要求写全路径）——
+   *   因为正本里引用作业书时通常只写文件名（如 `TASK-R21.md`），
+   *   而它实际落在 `archive/<日期>-<名>/` 下；要求写全路径会把**正确写法**判成违规。
+   */
+  const D_TASK_RE = /TASK-R[A-Za-z0-9-]*\.md/g
+  let tTotal = 0
+  let tMissing = 0
+  /** 账本区 `archive/` 下所有文件的 basename 集合（扫一次，供逐条比对）。 */
+  const archiveBasenames = (() => {
+    const set = new Set()
+    try {
+      for (const d of readdirSync(join(LEDGER_ROOT, 'archive'))) {
+        let entries = []
+        try { entries = readdirSync(join(LEDGER_ROOT, 'archive', d)) } catch { continue }
+        for (const e of entries) set.add(e)
+      }
+    } catch { /* archive 不可读 ⇒ 空集（下面的比对会因此全部报"不存在"，宁可报也不静默） */ }
+    return set
+  })()
+  for (const f of B_FILES) {
+    let src = ''
+    try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { continue }
+    src.split('\n').forEach((line, i) => {
+      for (const m of line.matchAll(D_TASK_RE)) {
+        const name = m[0]
+        tTotal++
+        if (!archiveBasenames.has(name)) {
+          tMissing++
+          bad(`D 正本 ${f}:${i + 1} 引用了**不存在**的作业书：\`${name}\``
+            + `\n      ⇒ 账本区 \`archive/*/\` 下没有这个 basename（实测 ${archiveBasenames.size} 个候选）`
+            + '\n      ⇒ 写成文件名就**必须存在**：轮次号可以只叙事，但 `TASK-Rn.md` 是**具名物**'
+            + `\n      ⇒ 核实方式：在 ${LEDGER_ROOT} 跑 \`ls archive/*/${name}\``)
+        }
+      }
+    })
+  }
+  if (tTotal === 0) {
+    // ⚠ 同上：**无对象可查 ≠ 通过**，但不判 FAIL（如实打印读数）。
+    ok('D′ ✓ 四份正本里**没有** `TASK-R*.md` 形式的作业书文件名引用（0 处）⇒'
+      + ' 本支**无对象可查**（已扫描，非跳过）')
+  } else if (tMissing === 0) {
+    ok(`D′ ✓ 四份正本里的 ${tTotal} 处作业书文件名引用，**全部真实存在**`
+      + `（按 basename 在 archive/*/ 下比对，候选 ${archiveBasenames.size} 个）`)
   }
 }
 
