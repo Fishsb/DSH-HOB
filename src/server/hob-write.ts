@@ -26,10 +26,23 @@ import { lstat, readFile, writeFile, rename, readdir, unlink, mkdir, rm } from '
 import { dirname, join, relative, sep } from 'node:path'
 import { resolveInside } from './doc-read.ts'
 
-// ── 白名单：骨架只读，运行数据可写（与 UD-05 的切分同一条线）─────────────────
+// ── 白名单：骨架只读，运行数据/方案可写（与 UD-05 的切分同一条线）─────────────
 
-/** 可写的三个账本（**运行数据**）。沿革：原含 `FACTS.md`，2026-10-09 按 UD-84 退场（四本 → 三本）。 */
-export const LEDGER_FILES = ['DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md'] as const
+/**
+ * 可写的账本文件（**运行数据 + 项目方案**）。
+ *
+ * 沿革：
+ *   · 原含 `FACTS.md`，2026-10-09 按 **UD-84** 退场（四本 → 三本）；
+ *   · **2026-10-10 按 UD-88 / CHG-025 加入 `PROJECT.md`** —— 用户裁定
+ *     「这些都是 hob 的账本，不要放工作区，**包括项目方案**」
+ *     ⇒ 方案随账本一起住在账本区（工作区里**不再有任何项目文档**）。
+ *
+ * ⚠ **纪律（不加技术闸门）**：方案**只有用户能批准变更、Hob 只提议**。
+ *   这条是**程序纪律**，写在方案自身与 `.hob/README.md` 里 ——
+ *   **不**在这里写"禁止写方案"的代码：那会把该由人守的规矩变成静默的拒绝，
+ *   而 `write_hob` 的语义是"按你给的路径与内容如实写"。
+ */
+export const LEDGER_FILES = ['PROJECT.md', 'DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md'] as const
 
 /** 骨架文件（**拒写**）：格式契约，进 git，变更须人工 + commit。 */
 export const SKELETON_FILES = ['README.md'] as const
@@ -161,7 +174,7 @@ function checkWhitelist(file: string): WriteHobResult | null {
   if (file === BACKUP_DIR || file.startsWith(BACKUP_DIR + '/')) {
     return refuse(file, 'not-whitelisted', `拒绝：${BACKUP_DIR}/ 由 write_hob 自管，不接受写入。`)
   }
-  // 三个账本
+  // 账本 + 项目方案（PROJECT.md 自 2026-10-10 / UD-88 起与账本同级）
   if ((LEDGER_FILES as readonly string[]).includes(file)) return null
   // 归档：只允许 archive/<日期目录>/<名>.md，且只一层
   const m = ARCHIVE_PATH_RE.exec(file)

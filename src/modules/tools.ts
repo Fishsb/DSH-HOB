@@ -217,12 +217,15 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
-    description: '只读本工作区账本内的 .md（决策记录 / 事实账 / 上下文）。',
+    description: '只读本工作区账本内的 .md（项目方案 / 决策记录 / 用户决策 / 工作上下文）。',
     parameters: {
       path: {
         type: 'string',
         required: true,
-        description: '相对工作区根目录的 .md 路径，如 README.md、PROJECT.md',
+        // ⚠ 2026-10-10（UD-88 / CHG-025）：原文写「相对**工作区根目录**…如 README.md、PROJECT.md」
+        //    ——**两处都不实**：解析根**一直是账本区**（v4 / D7），工作区根本读不到（D6）；
+        //    而 `PROJECT.md` 也**已于本批移入账本区**。⇒ 改准：根 = 账本区，示例换成账本区里真实存在的文件。
+        description: '相对**账本区根目录**的 .md 路径，如 PROJECT.md、CONTEXT.md、DECISIONS.md、USER-DECISIONS.md',
       },
     },
     output: {
@@ -246,6 +249,8 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
       '向本工作区的账本写入内容（账本在工作区之外，按工作区名独立存放）。'
       + '可写文件：' + LEDGER_FILES.join(' / ') + '，以及 archive/<YYYY-MM-DD-slug>/*.md；'
       + '骨架（README.md / templates/）只读。'
+      + '⚠ `PROJECT.md`（项目方案）自 2026-10-10（UD-88 / CHG-025）起与账本同级、同在此可写面内；'
+      + '但**方案只有用户能批准变更、Hob 只提议**（程序纪律，不是工具闸门）。'
       + 'append=追加一条（默认，编号须与账本现有编号连续）；overwrite=整文件重写（受缩水守卫保护）。'
       + '写入前自动备份到 .hob/backups/；相同编号+相同内容会被幂等跳过。'
       + '建议先用 dryRun:true 预演。',
@@ -253,7 +258,9 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
       file: {
         type: 'string',
         required: true,
-        description: '相对 .hob/ 的路径，如 CONTEXT.md、USER-DECISIONS.md、archive/2026-10-03-xxx/A.md',
+        // ⚠ 原文写「相对 `.hob/` 的路径」——v4 起账本已外置，**没有 `.hob/` 这个前缀了**，
+        //   那句话会让人以为要写 `.hob/CONTEXT.md`。改成与实现一致的措辞（根 = 账本区）。
+        description: '账本区内的相对路径，如 CONTEXT.md、USER-DECISIONS.md、PROJECT.md、archive/2026-10-03-xxx/A.md',
       },
       content: {
         type: 'string',
