@@ -167,11 +167,69 @@ function fencedMask(lines: string[]): boolean[] {
 }
 
 /**
- * 扫描内容里的**占位标记**（**跳过围栏代码块**）。
+ * 计算一行里**行内代码段（code span）**覆盖的**字符区间**（左闭右开）。
+ *
+ * ── 为什么需要它（**E-125** 的根因）────────────────────────────────────────
+ *   围栏豁免只挡**块级**形态。文档在**行内**引用这个标记的写法（`` `…` ``）
+ *   过去**照旧被渲染 / 被断言 I 咬** ⇒ "讲这个机制怎么用"的正文天然会写出这个形态，
+ *   于是文档被**自己**打挂（**E-114** 家族）。
+ *   ⇒ 本函数把**行内代码段**也算进"形状可排除"的一侧（**调精度，不是放宽**）。
+ *
+ * ── 口径（CommonMark，够用即可；**以本文件的行为为准**）────────────────────
+ *   · 开、闭都是**反引号串**（连续 `` ` ``），且**长度必须相等**才配对
+ *     —— `` ` `` 不会被 ``` `` ``` 闭合，反之亦然；
+ *   · 配对取**同长度的最近一个**串；跨不同长度的串**继续向后找**；
+ *   · ⚠ **未闭合** ⇒ **该行从此处到行尾都不豁免**（本轮选定的口径，偏保守：
+ *     宁可多咬、不可漏咬 —— 漏咬会让"真残留"变成看不见的假通过）；
+ *   · **围栏优先**：围栏内的行内反引号**不参与**围栏判定（调用方先做围栏过滤，
+ *     再对**未落围栏**的行调用本函数 ⇒ 两条豁免互不干扰）。
+ *
+ * @param line - 单行文本（不含换行符）。
+ * @returns 豁免区间数组（空数组 = 该行没有行内代码段）。
+ */
+function inlineCodeRanges(line: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  let i = 0
+  while (i < line.length) {
+    if (line[i] !== '`') {
+      i += 1
+      continue
+    }
+    let j = i
+    while (j < line.length && line[j] === '`') j += 1
+    const open = j - i
+    // 向后找**同长度**的闭合串（长度不同的串一律略过，继续找）
+    let k = j
+    let close = -1
+    while (k < line.length) {
+      if (line[k] !== '`') {
+        k += 1
+        continue
+      }
+      let p = k
+      while (p < line.length && line[p] === '`') p += 1
+      if (p - k === open) {
+        close = k
+        break
+      }
+      k = p
+    }
+    if (close === -1) break // 未闭合 ⇒ 行尾不豁免（不登记任何区间，且不再往后找）
+    ranges.push([i, close + open])
+    i = close + open
+  }
+  return ranges
+}
+
+/**
+ * 扫描内容里的**占位标记**（**跳过围栏代码块与行内代码段**）。
  *
  * ⚠ 这是**唯一的**标记识别实现：渲染（{@link renderReadings}）与
  *   机检的"正本无残留标记"（断言 I）**必须**共用它 ——
  *   否则会出现"文档里能安全写例子，但机检照样报残留"的自相矛盾。
+ *
+ * ⚠ **裸写的标记照旧被咬**（那是**真残留**，正是本函数存在的意义）：
+ *   豁免只覆盖"形状上可排除"的两类 —— 围栏内、行内代码段内（**E-125**）。
  *
  * @param content - 待扫描文本。
  * @returns 命中的标记（**含**形状非法的；空数组 = 一处也没有）。
@@ -182,7 +240,13 @@ export function scanMarkers(content: string): MarkerHit[] {
   const hits: MarkerHit[] = []
   lines.forEach((line, i) => {
     if (mask[i] === true) return
+    const exempt = inlineCodeRanges(line)
     for (const m of line.matchAll(MARKER_ANY_RE)) {
+      const at = m.index
+      // ⚠ **必须整段落在**行内代码段内才豁免（只起点在内不算 —— 那种"半截裸写"
+      //   仍会被咬，宁可多咬不可漏咬）；段外照旧。
+      const end = at + m[0].length
+      if (exempt.some(([a, b]) => at >= a && end <= b)) continue
       const raw = m[0]
       const p = MARKER_PARSE_RE.exec(raw)
       if (p === null) {
