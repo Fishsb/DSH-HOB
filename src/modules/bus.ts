@@ -782,11 +782,21 @@ export function createHobBusTools(bus: HobBus): {
     description:
       '**新建一个会话**（交给实施方用），并**强制归属到某个工作区**。'
       + '⚠ 这是本能力的核心：新会话**必须有工作区归属** —— 不属于任何工作区的会话'
-      + '不会出现在项目视图里，用户也找不到它。'
+      + '**进不了任何一个工作区分组**（项目视图按工作区归属分区，没有归属就没有组可进；'
+      + '它只会掉进「未分组」桶 —— 那还是能看见的，但它不属于任何项目）。'
       + '`workspace` 可以是**工作区路径**或 **id**；**不填则落到本会话自己的工作区**'
       + '（那正是"给这个项目派一个新会话"的常见意图）。'
       + '目标必须是**已登记**的工作区（拿不准先调 `hob_workspaces` 看）。'
-      + '⚠ 建会话 ≠ 派活：建完还要用 `hob_send` 把指令投给它；'
+      + '⚠⚠ **有归属 ≠ 用户眼前就能看见**（这两件事常被混为一谈，别搞错）：'
+      + '会话**在收到第一条消息之前是"空白会话"**，而宿主**有意**把空白会话从会话列表里过滤掉'
+      + '（只显示"当前会话"这一个例外，搜索面同样过滤）。'
+      + '**所以：建完不投递，用户看不见它** —— 不是建失败，也不是归属没生效，'
+      + '而是"它还没有内容可显示"。**投递一条消息之后**（它因此有了首轮内容）**才会出现在列表里**。'
+      + '⚠ 由此得到一条**操作规则**，二选一，别含糊：'
+      + '① **建完立刻投递**（`hob_send` / `hob_dispatch` 即唤醒，**无需用户操作**）；'
+      + '② 若是**故意先不投递**，就**明确告诉用户"它现在看不见"**（并说明投一条消息后就会出现），'
+      + '**不要**让用户去列表里找一个还不存在的东西。'
+      + '⚠ 建会话 ≠ 派活：建完还要把指令投给它；'
       + '而且**新会话不会自己开跑** —— 投递（`hob_send` / `hob_dispatch`）即唤醒，'
       + '无需用户操作；**只有不投递时**才需要用户打开它并发一句话（首轮之后预设锁定）。',
     parameters: {
@@ -826,6 +836,20 @@ export function createHobBusTools(bus: HobBus): {
         note2: 'Created only: the session exists but has not started yet. A directive delivered with '
           + 'hob_send or hob_dispatch wakes it — no user action is needed. Only if no directive is '
           + 'delivered does the user need to open it and send one line.',
+        // ── 可见性提示（2026-10-10 · 第 5 轮新增）──────────────────────────
+        //   ⚠ 为什么必须有：这是**用户实测撞上过**的坑 —— 派活方读 `hob_spawn` 的说明
+        //     以为"有归属 ⇒ 用户看得见"，于是对用户说"刷新就能看到"，而用户**看不到**
+        //     （空白会话被宿主有意过滤，见该工具 description 与 E-102）。
+        //   ⚠ 与上面的 `note2` **语义不同、不重叠**：`note2` 说的是"它还没开跑"，
+        //     本条说的是"它现在还看不见"。两件事都真，各说各的，**不是重复**。
+        //   ⚠ 这是**新增**字段：既有的 `ok` / `sessionId` / `workspaceId` / `workspacePath` /
+        //     `agentPreset` / `modelNote` / `note2` **一个未动**（名字与语义都不变）。
+        visibilityNote: 'Not visible to the user yet: a session that has received no message is a '
+          + '"blank" session, and the host deliberately hides blank sessions from the session list '
+          + '(only the current one is exempt; search is filtered the same way). So right after '
+          + 'creation the user CANNOT see it — this is not a failed creation and not a missing '
+          + 'workspace link. It appears as soon as one message is delivered. Either deliver now '
+          + '(hob_send / hob_dispatch) or tell the user plainly that it is not visible yet.',
       })
     },
   })

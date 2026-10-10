@@ -1110,6 +1110,140 @@ const STALE_APPELLATIONS = [
   } else ok(`⑤i ${NAME_HO}：既有 8 条条文逐字保留（原始读数纪律的追加未挤掉任何一条）`)
 }
 
+// ── ⑤j 2026-10-10（第 5 轮 · 用户实测报障驱动）· `hob_spawn` 的「归属 ≠ 可见」文本 ──
+//
+// 为什么需要（**这是本条存在的唯一理由，别删**）：用户实测撞上过 ——
+//   本插件建出的会话**在收到第一条消息之前，用户在界面里看不到它**
+//   （宿主**有意**过滤空白会话），而 `hob_spawn` 的说明把
+//   「有工作区归属」与「用户此刻看得见」**混成了一句因果**
+//   （原文：「不属于任何工作区的会话不会出现在项目视图里，用户也找不到它」），
+//   成功返回里也**没有**任何提醒 ⇒ 派活方以为建完就在项目里了，对用户说"刷新就能看到"
+//   —— **而用户看不到**，白找一趟（2026-10-10 真机发生过一次）。
+//
+// ⚠ 为什么它以前**不可能**被任何机检抓到（读这段注释的人请记住）：
+//   ① `check:presets` 的镜像断言读的是 `DRAFT`（`.hob/drafts/preset-contracts.md`）与
+//      `HO`（`preset/dsh-hob/preset-dsh-hob.patch.yml`）**这两个文件**，
+//      **不读 `src/modules/bus.ts` 的工具 description** ⇒ 那句自然语言**零断言覆盖**。
+//   ② 那句错话**不是全错**（"必须有工作区归属"半句是对的），且**只在
+//      "建完 → 投递"那段窗口里错**，窗口一过就自证清白 ⇒ 人工复查也容易放过。
+//   本条把这个缺口补上 —— 这是**新增断言，不是放宽**。
+//
+// ⚠ **口径（为什么不去钉整句）**：文本断言天然脆。本条**不钉完整句子**，只钉**三件可判的事**：
+//   ① **窗口条件在位**：说明里必须交代"空白会话 / 收到第一条消息之前"这个**条件**；
+//   ② **操作规则两分支在位**：立刻投递 / 或告诉用户"看不见"（只描述不给动作，读的人照样做错）；
+//   ③ **旧失实句 0 残留**（**负向断言**）—— 只靠①②的话，"新旧并存"照样 PASS。
+//   ⚠ 与 ⑤f/⑤h/⑤i 同款：**不钉标题行、不钉排版**，钉的是语义要点。
+{
+  const busPath = join(root, 'src', 'modules', 'bus.ts')
+  const busSrc14 = (() => {
+    try { return readFileSync(busPath, 'utf8') } catch { return undefined }
+  })()
+
+  if (busSrc14 === undefined) {
+    bad('⑤j 读不到 src/modules/bus.ts（`hob_spawn` 说明与返回字段的唯一来源）')
+  } else {
+    // 只截取 `hob_spawn` 那个工具定义块，避免把文档里别处的词当成证据。
+    const spawnIdx = busSrc14.indexOf("name: 'hob_spawn'")
+    if (spawnIdx < 0) {
+      bad("⑤j 在 src/modules/bus.ts 里找不到 `name: 'hob_spawn'`（工具被改名或删了）")
+    } else {
+      // ⚠⚠ **必须把「说明」与「返回值」切成两块**（本组前两版都栽在这里，如实记下）：
+      //   `hob_spawn` 是本文件**最后一个**工具 ⇒ "到下一个 `defineTool({`" 取不到右界。
+      //   · 首版取到**文件末** ⇒ 一路吃进 `execute` 里的返回字段文案；
+      //   · 第二版切在尾部 `return { sessions: … }` 之前 ⇒ **仍然**包含 `execute` 的返回体
+      //     （`visibilityNote` 就在 `execute` 里，它的英文文案含 `blank session` /
+      //      `host deliberately hides`）。
+      //   两次的后果一样：**把说明里的窗口条件删掉，断言照样 PASS** ——
+      //   它匹配到的是**返回值里的同义英文**，不是说明里的中文。负向对拍当场抓到。
+      //   ⇒ 现在以 **`parameters:`** 为界：之前 = 说明（本组①②③只认这块），之后 = 参数与返回（④⑤用）。
+      const rest = busSrc14.slice(spawnIdx)
+      const paramIdx = rest.indexOf('parameters: {')
+      const descBlock = paramIdx < 0 ? rest : rest.slice(0, paramIdx)
+      const spawnBlock = rest // 供 ④⑤（返回字段 / 入参）用；它们不关心说明
+
+      // ── ① 窗口条件在位（说明里必须交代"空白会话/首条消息之前"这个条件）────
+      //   判据用**宽正则**：只要交代了"空白"/"第一条消息之前"这一层即可，
+      //   不绑定我在本轮选的具体措辞（否则下次改字就得改断言，那是脆的来源）。
+      const WINDOW_PINS = [
+        ['说明点出"空白会话"这个概念', /空白会话/],
+        ['说明点出时间窗口（收到第一条消息之前 / 未收到消息 / 开口前）', /(?:收到|发|投)[^。]{0,6}消息之前|未(?:收到|投递)消息|开口前/],
+        ['说明点出"看不见/不可见"这个后果', /看不见|不可见|看不到|不出现/],
+        ['说明点出这是**宿主有意**过滤（不是故障）', /宿主[^。]{0,10}(?:有意|刻意)|有意[^。]{0,6}过滤|刻意[^。]{0,6}过滤/],
+      ]
+      const windowMissing = WINDOW_PINS.filter(([, re]) => !re.test(descBlock))
+      if (windowMissing.length > 0) {
+        bad(`⑤j \`hob_spawn\` 说明缺「可见性窗口」要件（${windowMissing.length} 处）：`
+          + `${windowMissing.map(([l]) => l).join(' / ')} —— `
+          + '缺它就会重演"建完不投递 ⇒ 用户看不见却没人说"那次报障')
+      } else ok(`⑤j \`hob_spawn\` 说明交代了可见性窗口（${WINDOW_PINS.map(([l]) => l).join(' · ')}）`)
+
+      // ── ② 操作规则两分支在位 ──────────────────────────────────────────
+      const hasDeliverBranch = /立刻投递/.test(descBlock)
+      const hasTellBranch = /明确告诉用户|告诉用户[^。]{0,10}看不见/.test(descBlock)
+      if (!hasDeliverBranch) {
+        bad('⑤j `hob_spawn` 说明缺操作规则分支①「建完立刻投递」'
+          + '—— 只描述现象不给动作，读的人仍会在错误时机对用户说错话')
+      } else ok('⑤j `hob_spawn` 说明有操作规则分支①（建完立刻投递）')
+      if (!hasTellBranch) {
+        bad('⑤j `hob_spawn` 说明缺操作规则分支②「不投递时明确告诉用户它看不见」')
+      } else ok('⑤j `hob_spawn` 说明有操作规则分支②（不投递时明确告诉用户看不见）')
+
+      // ── ③ 旧失实句 0 残留（**负向断言**）────────────────────────────────
+      //   ⚠ 为什么必须有这一条：只靠①②的话，若有人**把旧句加回来**（新旧并存），
+      //     ①② 照样 PASS —— 那正是"失实句回归"。同 ⑤f 的"三处均已就地改对"口径。
+      //
+      //   ⚠⚠ **判据的精确边界（本组首版在这里判错过，如实记下）**：
+      //     旧句是**两半**，只有**后半是假的**：
+      //       · 前半「**不属于任何工作区的会话**」= **真的**（它确实挂不进项目），
+      //         改后的正确文本**合法地保留了这半句** ⇒ **不得把它当失实句钉掉**。
+      //         ⚠ 首版正是把它列进了 STALE 列表 ⇒ **误报自己的正确文本**为回归
+      //         （跑出来"改对了却 FAIL"）。判据得**精确到假的那半句**。
+      //       · 后半「**不会出现在项目视图里，用户也找不到它**」= **假的** ——
+      //         它把"没有归属"说成"用户看不见"，而后者实际由**空白会话**决定。**这才是失实句。**
+      //     ⇒ 判据 = ①后半字面 0 残留；**且** ②前半之后 ~40 字内**不得**紧跟可见性措辞
+      //        （= 同一条假因果换个词重写）。这样既钉住真缺陷，又不钉掉那半句真话。
+      const staleLiteral = '不会出现在项目视图里'
+      const FALSE_CAUSAL = /不属于任何工作区的会话[^。]{0,40}?(?:看不见|看不到|不可见|不会出现|找不到)/
+      const staleHits = []
+      if (descBlock.includes(staleLiteral)) staleHits.push('旧句后半字面残留（"不会出现在项目视图里"）')
+      if (FALSE_CAUSAL.test(descBlock)) staleHits.push('把"无归属"重新绑成"用户看不见"的因果句（换词形态）')
+      if (staleHits.length > 0) {
+        bad(`⑤j \`hob_spawn\` 说明**失实句回归**（${staleHits.length} 处）：`
+          + `${staleHits.join('; ')} —— `
+          + '「有归属」不等于「用户看得见」；可见性由宿主的空白会话过滤决定，与归属无关')
+      } else ok('⑤j `hob_spawn` 说明 0 处失实句残留（假因果的字面与换词两种形态都已清除）')
+
+      // ── ④ 成功返回新增 `visibilityNote` 字段（且**既有字段一个未动**）──
+      const RETURNED = [
+        ['ok', /^\s+ok: true,/m],
+        ['sessionId', /^\s+sessionId: r\.sessionId,/m],
+        ['workspaceId', /^\s+workspaceId: r\.workspaceId,/m],
+        ['workspacePath', /r\.workspacePath === undefined \? \{\} : \{ workspacePath: r\.workspacePath \}/],
+        ['agentPreset', /r\.agentPreset === undefined \? \{\} : \{ agentPreset: r\.agentPreset \}/],
+        ['modelNote', /r\.modelNote === undefined \? \{\} : \{ modelNote: r\.modelNote \}/],
+        ['note2', /note2: 'Created only:/],
+      ]
+      const brokenFields = RETURNED.filter(([, re]) => !re.test(spawnBlock))
+      if (brokenFields.length > 0) {
+        bad(`⑤j \`hob_spawn\` 成功返回**动了既有字段**（${brokenFields.length} 个）：`
+          + `${brokenFields.map(([l]) => l).join(' / ')} —— 本批只许**新增**字段，不许改既有的名字与语义`)
+      } else ok(`⑤j \`hob_spawn\` 成功返回既有 ${RETURNED.length} 个字段（ok/sessionId/workspaceId/workspacePath/agentPreset/modelNote/note2）一个未动`)
+
+      if (!/visibilityNote:/.test(spawnBlock)) {
+        bad('⑤j `hob_spawn` 成功返回缺「未投递前不可见」提示字段（visibilityNote）'
+          + '—— 说明是给读文档的人，返回值才是给**此刻正在调用**的那个 agent 的，两者都要有')
+      } else ok('⑤j `hob_spawn` 成功返回含可见性提示字段 `visibilityNote`')
+
+      // ── ⑤ 入参不得变（本批明确禁止改 hob_spawn 的入参）────────────────
+      const PARAMS = [['workspace', /^\s+workspace: \{$/m], ['agentPreset', /^\s+agentPreset: \{$/m]]
+      const paramMissing = PARAMS.filter(([, re]) => !re.test(spawnBlock))
+      if (paramMissing.length > 0) {
+        bad(`⑤j \`hob_spawn\` 入参缺（${paramMissing.map(([l]) => l).join(' / ')}）—— 本批禁止改入参`)
+      } else ok(`⑤j \`hob_spawn\` 入参两个（${PARAMS.map(([l]) => l).join(' / ')}）仍在`)
+    }
+  }
+}
+
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────
 {
   // 规划侧：complete: true + 恰好 1 行工具模块
