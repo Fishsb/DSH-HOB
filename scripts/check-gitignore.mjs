@@ -340,7 +340,8 @@ const B_FILES = ['DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md']
 if (LEDGER_ROOT === undefined) {
   // ⚠ **明确跳过并说明**（不静默 PASS）：这一支不计入 fail，但**打印为什么跳过**。
   ok(`文档形态机检【跳过】—— 账本区读不到（工作区之外，本机可能未建立）`
-    + `⇒ 断言 A（模板↔正本节名）与断言 B（正本无补丁式说明）**未执行**，`
+    + `⇒ 断言 A（模板↔正本节名）、断言 B（正本无补丁式说明）、`
+    + `断言 C（账本仓忽略规则不许写宽）**三条均未执行**，`
     + `不代表通过。跳过位置：scripts/check-gitignore.mjs 的 LEDGER_ROOT 解析。`)
 } else {
   // ── 断言 A：模板与正本的节名一致 ──────────────────────────────────────
@@ -423,6 +424,70 @@ if (LEDGER_ROOT === undefined) {
   ok(`文档形态机检【已执行】—— 正本根 = ${LEDGER_ROOT}；`
     + `纳入 ${B_FILES.join(' / ')}；`
     + '⚠ `PROJECT.md` **本轮刻意排除**（尚未改写，纳入会当场 FAIL）⇒ 改写后须加回 B_FILES')
+
+  /**
+   * ── 断言 C（2026-10-10 新增 · 第 19 轮 · UD-88 / CHG-025）────────────────
+   * **账本仓自己的 `.gitignore` 不许写宽。**
+   *
+   * 背景：账本仓（`<ledgerRoot>/`）在 2026-10-10 新增了自己的 `.gitignore`，
+   *   规则**只有一条** `backups/`（依据 README §1 的归类：改前备份属运行数据 · 不进 git）。
+   *   ⚠ 风险：若有人图省事写成 `*`（或 `**` 之类宽规则），会把**四份文档与 `archive/`**
+   *   一起**静默排除** —— git **不报任何错**，直到某天发现仓库里没有文档（E-70 / E-73 同族）。
+   *
+   * ⚠ **判据用"行为"而不是"解析文本"**（刻意）：
+   *   解析 `.gitignore` 语法要重写一套 git 的匹配语义（取反、目录匹配、`**`），
+   *   写出来**必然与 git 本身有偏差**；而这里要问的问题**git 自己就能回答** ——
+   *   ⇒ 直接在**账本仓里**跑 `git check-ignore --no-index`，**以 git 的答案为准**。
+   *   （同 §1.4 的既有口径：判"规则"而不是判"当下 index 看得见什么"。）
+   *
+   * 正反两向都验（缺一即假通过）：
+   *   正向：四份文档 + `archive/` **必须都不被忽略**（任一被忽略 ⇒ FAIL）
+   *   反向：`backups/` **必须被忽略**（否则"整目录不进库"没生效，噪音会回来）
+   */
+  const ignoreIn = (cwd, target) => {
+    try {
+      execFileSync('git', ['check-ignore', '-q', '--no-index', '--', target], { cwd, stdio: 'ignore' })
+      return 0 // 被规则排除
+    } catch (e) {
+      if (typeof e.status === 'number') return e.status // 1 = 未被排除
+      throw e
+    }
+  }
+  // ⚠ 四份文档是**具体文件**、`archive/` 是**目录** —— 目录用「带尾斜杠 + 内嵌一个已知文件」两法都探，
+  //   防"目录本身不匹配规则、但内部文件被排掉"这类偏差（与 `git check-ignore` 的目录语义有关）。
+  const C_MUST_NOT_IGNORE = [
+    ['PROJECT.md', '项目方案（唯一事实源）'],
+    ['DECISIONS.md', '方案变更记录'],
+    ['USER-DECISIONS.md', '用户决策记录'],
+    ['CONTEXT.md', '当前工作上下文'],
+    ['archive/', '各批归档（§3 指针表说它由账本仓 git 记录保证）'],
+  ]
+  // ⚠ 前置：账本仓**必须是 git 仓库**（否则 check-ignore 无意义，会一律报 exit 128 ⇒ 假 PASS）
+  let ledgerIsRepo = false
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: LEDGER_ROOT, encoding: 'utf8' }).trim()
+    ledgerIsRepo = top !== ''
+  } catch { ledgerIsRepo = false }
+  if (!ledgerIsRepo) {
+    bad(`C 账本仓不是 git 仓库（${LEDGER_ROOT}）⇒ 忽略规则无从判定（不按通过处理）`)
+  } else {
+    const wronglyIgnored = C_MUST_NOT_IGNORE.filter(([p]) => ignoreIn(LEDGER_ROOT, p) === 0)
+    if (wronglyIgnored.length > 0) {
+      bad('C 账本仓的忽略规则**写宽了** —— 下列路径被判为"被忽略"：'
+        + wronglyIgnored.map(([p, why]) => `\n        ${p}（${why}）`).join('')
+        + '\n      ⇒ 它们会被**静默排除**（git 不报错）；规则应**只忽略 `backups/`**。'
+        + `\n      判据：在 ${LEDGER_ROOT} 跑 \`git check-ignore --no-index <路径>\` 应为 1（未被排除）`)
+    } else {
+      ok(`C ✓ 账本仓：四份文档与 archive/ **均未被忽略**（${C_MUST_NOT_IGNORE.length} 项逐条实测）`)
+    }
+    // 反向：backups/ 必须被忽略
+    if (ignoreIn(LEDGER_ROOT, 'backups/') !== 0) {
+      bad('C 账本仓的 `backups/` **没有被忽略** —— "整目录不进库"（README §1 口径）未生效，'
+        + '下一轮起 `git status` 会重新冒出"N 删 + M 增"的噪音')
+    } else {
+      ok('C ✓ 账本仓：`backups/` 确被忽略（反向判据，规则真的生效）')
+    }
+  }
 }
 
 // ── 输出 ────────────────────────────────────────────────────────────────
