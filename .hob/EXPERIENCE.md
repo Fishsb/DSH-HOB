@@ -2602,3 +2602,116 @@ workspace registry unavailable: cannot resolve a workspace, and creating a sessi
 
 **出处**：批 19 之后的修复轮 · `src/modules/bus.ts` 的 `registryOf` / `controllerOf`；
 探针 `/tmp/b16-spawn-probe.mjs` 的 I 组；账本 `FACTS.md` **F-J144**；同族教训 **E-96**。
+
+---
+
+### E-100 · **`ctx.get()` 拿到服务之后，那个服务上的点号仍是"属性访问"** —— 免 inject 的只有"读服务"这一步，不是"读服务的成员"
+
+**现象**：设置面板「新建会话默认」卡片「候选来源」一行**红字**，两个下拉都选不了：
+
+```
+候选读取失败 —— 候选读取异常 —— cannot get property "remote.agentPresets" without inject
+```
+
+点开「默认模型」下拉**只有 `(用宿主默认模型)` 一项**，没有任何模型可选。
+
+**根因**：`src/client/catalog.ts` 的原写法是
+
+```ts
+const remote = ctx.get('remote')   // ← 这一步**免 inject**，完全正常
+await remote.agentPresets.list()   // ← 这一步是**属性访问**，撞门禁抛错
+```
+
+`ctx.get(name)` 与 `ctx.name` 是**两条完全不同的代码路径**：
+· `ctx.get(name)` → `reflect.get()`，文档原文 *"Read a service from the store **without the inject requirement**"*（`cordis/src/reflect.ts:226-233`），**不抛**；
+· `ctx.name` → reflect 的 **get 陷阱**（`cordis/src/reflect.ts:136-168`），未声明就抛，
+  抛出点实测 = `:144` 造错 → `:163` `throw error`（`lib/index.js:676` / `:691`）。
+
+⇒ **免 inject 的只是"把服务读出来"这一步**；读出来之后，`remote.<namespace>` 依然是一次
+属性访问、依然要过门禁。**"我先用过 get 了"不构成豁免。**
+
+**⚠ 三条判据（这条最容易误判的地方）**：
+① **与"宿主有没有数据"无关**。同期实测两条 RPC 在宿主侧都**成功返回**
+   （预设 5 条 / 模型 3 组 6 个）—— **宿主有数据 ≠ 面板能取到**。两条不是一回事。
+② **与"是否重启"无关**。门禁是**声明**问题，不是可用性问题 ⇒ **重启不会让它变好**。
+③ **修法不是"补进模块级 `export const inject`"**（本仓 E-02 / E-41 的深层后果）：
+
+   | 修法 | 后果 |
+   |---|---|
+   | 把命名空间加进**模块级** `inject` | 缺席 ⇒ **整个 client 插件不激活** ⇒ **设置分区整体消失**（回归） |
+   | `ctx.inject([ns], cb)` **反应式订阅** | 缺席 ⇒ 只回调不跑，**面板照常**（fiber 仍 ACTIVE）；到齐自动补读 |
+   | **免 inject 现读** `ctx.get('<逐字名>')` | 不抛；缺席返回 `undefined`，由调用方**如实报错** |
+
+   实测（cordis 4.0.4 · 命名空间缺席）：`ctx.inject` 的 fiber **state=2（ACTIVE）**，
+   apply 照常跑、回调未触发；**补挂**后回调**自动触发**。而模块级 inject 写这两个名字的
+   对照实验：fiber **停在 state=0（PENDING）**，`apply` 整块不跑 —— 即"设置分区消失"。
+
+**正确做法**：**两种 inject 按"你想哪种降级"选**（E-02/E-41 的判据）+ 取用一律走免 inject 读：
+① 对外部能力的**取用**统一写 `ctx.get('<逐字服务名>')`，**永不写点号**；
+② 名字**收在常量里**，且必须与宿主实际注册名逐字一致 —— 命名空间服务名由
+   `dsh-api-gateway/lib/client.js:2040-2042` 的 `remoteServiceKey(ns) => \`remote.${ns}\`` 派生，
+   `ns` 取自 `dsh-api-remotes/lib/client.js` 的 `TYPERT_REMOTE` 表（本例：`agentPresets` / `session`）；
+③ 想要"到齐自动重读"就**另挂一条 `ctx.inject` 反应式订阅**（它管**何时**读，`ctx.get` 管**怎么**读，两者不冲突）；
+④ 缺席**必须如实报错 + 可重试**，**不许静默当空清单**（否则"加载失败"看起来像"宿主里一个都没有"）。
+
+**⚠ 判据要落成机检才防得住**（本仓 E-27/E-70 同族）：这类缺陷在**类型层面合法**（`any` 无约束）、
+**构建期静默通过**、**运行时只表现为红字** ⇒ 只有"读代码看有没有裸属性访问"这一层能抓。
+故本轮新增 `scripts/check-client-deps.mjs`（`npm run check:client`），做**逐字符剥离**（注释/字符串/
+模板串插值分别处理）后判"零裸属性访问"，并带**自检**证明剥离器与检测器都能各自证伪。
+
+**出处**：第 3 轮（2026-10-10）· `src/client/catalog.ts` 的 `serviceOf` / `bindCatalog`；
+机检 `scripts/check-client-deps.mjs`；复现探针（真 gateway + 真 api-remotes client 半边 +
+真插件源码，在**插件 fiber 作用域**里跑）；账本 `TASK-R3.md`；同族教训 **E-02 / E-41 / E-95**。
+
+---
+
+### E-101 · **`ctx.inject()` 的返回值是 Fiber 对象**：它既不能当函数调，写"依赖已满足"的 `ctx.X` 也一样要过门禁；另附"验证作用域"与"`inflight` 复位"两个静默陷阱
+
+**现象**：本条是 E-100 修复过程中**顺带实测出的三个独立陷阱**，各自都会**静默**失效。
+
+**根因**：本条是 E-100 修复过程中**顺带实测出的三个独立陷阱**，各自都会**静默**失效。
+
+**三条 + 各自根因**：
+
+**① `ctx.inject(...)` 的返回值不可调用。** 实测（cordis 4.0.4）：
+`typeof off === 'object'`、`off.constructor.name === 'Fiber'`、`off.dispose` 是函数、
+`off[Symbol.dispose]` 是 `undefined`。故清理必须写 `.dispose?.()`。
+写成 `off?.()` 抛 `TypeError: off is not a function`。
+⚠ **特别阴**：该清理函数挂在 `ctx.effect` 上 ⇒ **卸载/热重载时才会被调用** ⇒
+错误发生在"装卸载期"，**日常操作看不到**，只在热重载日志里一闪而过。
+本仓 `src/client/settings.ts` 就**原本**是 `off?.()` —— 本轮顺手修掉（属"同族潜伏缺陷"）。
+
+**② "验证作用域"错了会让结论整体失真 —— 根 ctx 会**绕开**门禁。**
+reflect 的 get 陷阱里有一条 `if (!ctx.fiber.runtime) return ctx.reflect.get(prop, false)`
+（`cordis/src/reflect.ts:152`、`lib/index.js:680`）—— **root fiber 的 `runtime` 是 `null`**，
+于是 `ctx.remote.agentPresets` 在**根 ctx** 上**不抛**（走的是非严格 `get`）。
+⇒ 拿 root ctx 去复现本缺陷会得到"**假通过**"。**必须用插件 fiber 的 ctx**（= `apply(ctx)` 收到的那个），
+因为 `src/client/index.ts` 里 `setCatalogContext(ctx)` 收到的正是它。
+**判据**：复现客户端缺陷时，先问"我这把 ctx 是谁的？"——`root` 与 `plugin fiber` **语义不同**。
+
+**③ `inflight` 复位写在 async IIFE 的 `finally` 里 ⇒ 同步分支会把它吃掉。**
+`async` 箭头函数体**同步执行到第一个 `await`**；若"前置检查失败"分支在**任何 await 之前**就 `return`
+（本例：`ctx.get` 是同步的），则：
+
+```
+① 体内 finally { inflight = null }   先跑  ⇒ inflight = null
+② inflight = (async () => …)()       后跑  ⇒ 把 null 覆盖成"已完成的 promise"
+③ ⇒ inflight 永久非 null ⇒ 之后每次 load() 都返回那个作废的 promise
+```
+
+表现为**用户点「重试」毫无反应**，而 `status` 还停在 error（看着像"重试没生效"）。
+实测复现：同步 early return 后 `inflight === null` 读数为 **false**。
+⇒ 复位必须挂在 **promise 链**上（`run.then(clear, clear)`），且用**守卫**（`if (inflight === run)`）
+以免抹掉别的在飞请求。
+
+**正确做法**：
+① 清理一律 `.dispose?.()`，并**为它写一条能咬人的机检**（正则要认可选链 —— 首版 `\??\(` 匹配不到 `?.()`，负向对拍**假通过**，改 `\s*\??\.?\s*\(` 才咬住）；
+② 复现/验证**必须站在与真机相同的作用域**上（这里 = 插件 fiber，不是 root）；
+③ 凡"前置检查 + 异步主体 + 一次性闸门"三件套，**闸门复位一律放 promise 链、不放函数体**；
+④ **负向对拍要连"机检自己"一起对拍**：本轮把断言用的正则抄了两份（断言一份、自检一份），
+   改坏断言那份后**自检仍用完好副本**⇒ 双双失效、还报"通过"。**提为共享常量**后，
+   改坏它自检立刻 FAIL。
+
+**出处**：第 3 轮（2026-10-10）· `src/client/catalog.ts` 的 `bindCatalog` / `loadCatalog`、
+`src/client/settings.ts` 的 `bindSettingsForm`；机检 `scripts/check-client-deps.mjs` 的 E/G 断言与 §12 自检；
+同族教训 **E-27（恒真的检查比没有更危险）· E-95（假替身保护的是"我以为的框架"）**。

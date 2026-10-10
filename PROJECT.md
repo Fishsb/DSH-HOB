@@ -22,6 +22,41 @@
 > ⚠ 口径不变：**投递 ≠ 执行**（批 14 契约改写继续成立）；**目标会话仍由人指定**。
 > 详见 §5.2 工具表与账本归档 `archive/2026-10-09-ledger-history/FACTS-final.md` 的 **F-J139**。
 
+> ## 🆕 **（2026-10-10）：新建会话默认值 + 设置面板卡片 —— 并把「候选来源」的红字修掉**
+>
+> **本批两件事**（前者是功能，后者是真机故障修复）：
+>
+> **① 新建会话默认值**（`spawn.*` 四字段：`agentPreset` / `provider` / `model` /
+> `reasoningEffort`）—— 设置页多一张「新建会话默认」卡片，两个下拉（预设 / 模型）
+> 从宿主 RPC 取候选。**只影响本插件建出的会话**（`hob_spawn`），
+> **不影响手工新建的会话**；四字段留空 = 交还宿主默认。
+> ⚠ 形状与 `modules` 同款：**父对象 `spawn` 不标 volatile、四个子字段各标**
+> （宿主 `validateVolatileSchema` 禁止 volatile 里再套 volatile）；
+> 模块侧**一律不许直读 `config.spawn.x`**（那是 ref 对象，直读恒 truthy 且不报错），
+> 唯一入口是 `config.ts` 的 **`spawnDefaults()`**。机检 `check:config` 钉住这条形状。
+>
+> **② 修「候选来源」红字**（真机故障）：面板显示
+> `cannot get property "remote.agentPresets" without inject`，两个下拉都只有占位项。
+> **根因**：`src/client/catalog.ts` 先 `ctx.get('remote')`（这一步**免 inject**，正常），
+> 随后对它做**属性访问** `remote.agentPresets` —— 而模块级 `export const inject`
+> 未声明这两个命名空间 ⇒ 撞 cordis 的 reflect get 陷阱。
+> ⚠ **两条不是一回事**：`ctx.get(name)` 免 inject；`ctx.name` **不**免。
+> **修法**：**订阅**用 `ctx.inject([两个命名空间], cb)`（缺席则只回调不跑、面板照常；
+> 到齐自动补读）—— **绝不**把命名空间加进模块级 `inject`（那是**加载门禁**，
+> 缺席会让**整个 client 插件不激活 ⇒ 设置分区整体消失**）；**读数**用
+> `ctx.get('<逐字名>')`，全程零属性访问。
+> ⚠ **重启不会让它变好**（门禁是**声明**问题），**宿主有数据 ≠ 面板能取到**。
+>
+> **新增机检 `npm run check:client`**：静态核对 client 半边的宿主服务取用
+> （零裸属性访问 + 逐字名锚定 + 失败不静默 + Fiber 用 `.dispose`）——
+> 防的是**类型合法、构建静默通过、只在运行时出红字**这一类。
+> **收尾必跑表同步由五条补至八条**（见 §10.1）。经验库新增 **E-100 / E-101**。
+>
+> ⚠ **本条目未编批次号**：工作区仓的「批 N」在本批之前**已出现重号**
+> （`c362d72` 与 `77a490d` **都标「批 19」**），且 `PROJECT.md` 内最大为 **批 18**
+> 而账本记到 **批 20** ⇒ **判不出唯一的下一个编号**，故按纪律**不编号**（记入待决）。
+> 详见 §10.1 与本批报告。
+
 > ## 🆕 **批 18（2026-10-09）：交接口径订正 —— 派单消息必须自带要点，路径只作补充（UD-81）**
 >
 > **背景（真机实测暴露）**：批 17 闭环实跑时，Hob 按契约把 `TASK.md` 写进了**自己的交接区**
@@ -1053,15 +1088,22 @@ Orb 侧配置与预设**保留不动**。
 
 ### 10.1 收尾必跑（每轮完成前）
 
-**五条命令全部 exit 0** 才算收尾完成：
+**八条命令全部 exit 0** 才算收尾完成：
 
 | 命令 | 守什么 |
 |---|---|
 | **`npm run build`** | **两个半边都重建** —— `tsc`（host：`lib/index.js` 等）+ **`tsdown`（client：`lib/client.js`）**。⚠ 批 13 起 `build` **已并入 client**（此前只跑 `tsc`） |
 | `npm run typecheck` | 类型（host + client 两份 tsconfig） |
 | `npm run check:presets` | 契约（人读版 vs 机器读版**逐字一致**）+ 工具面声明与白名单（⑤f / ⑤g / **⑤h**） |
+| **`npm run check:config`** | **配置面三处不漂移** —— `src/config.ts` 的 schema ↔ `cordis.patch.yml` 的 config 段 ↔ 设置面板实际呈现；并钉住「新建会话默认值」的形状（父对象不标 volatile + 四个子字段各标） |
+| **`npm run check:orch`** | **编排运行态** —— 钉住「"等回传"这件事能被**跨重载**观测到」这条面：`pending` / `lost` 的落盘语义、`hob_orch_status` 报**累计**而非"本代新发现" |
 | **`npm run check:gitignore`** | **入库规则与 README 约定一致** —— 防 R-6 的**静默断链** |
+| **`npm run check:client`** | **client 半边「宿主服务取用」** —— 零裸属性访问（免 inject 读法 + 逐字名锚定）、失败不静默、Fiber 用 `.dispose`；防 `cannot get property "…" without inject` 那类**类型合法、构建通过、只在运行时出红字**的缺陷 |
 | **`npm run check:experience`** | **经验库自身**：编号唯一 / 连续 + 四要素齐备（`E-84` 起）+ 每条有根因句 |
+
+⚠ **本表于 2026-10-10（收尾批）由五条补至八条**：`check:config` / `check:orch` 随各自批次落地、
+`check:client` 随第 3 轮落地，但**本表当时未同步** ⇒ 出现"清单少列三条"的漂移（本轮修正）。
+三条各守什么，取的是**脚本文件头自述**，与上面五条同款口径。
 
 ⚠ **为什么 `build` 必须进清单（批 13 §5 修的）**：**R-2** —— `lib/` 被 gitignore，
 `src → lib` 的漂移**在 `git status` 里看不见**，而宿主加载的是 `lib/`。

@@ -16,6 +16,24 @@
  *   ① `apply` 里要用 `ctx.slots` 就必须 `export const inject = ['slots']`
  *      （cordis 的 inject 是**加载门禁**：列进来的服务缺失会让组合不挂载）。
  *
+ *   ①-b ⚠ **门禁不是"到处都要声明"**：`ctx.get(name)` 与 `ctx.inject([name], cb)`
+ *      都**不需要**模块级声明，也**不会**抛 `cannot get property "…" without inject`
+ *      —— 会抛的只有**属性访问** `ctx.name`。
+ *      第 3 轮实测的原始缺陷正是这个：`catalog.ts` 先 `ctx.get('remote')`（免 inject，OK），
+ *      再**属性访问** `remote.agentPresets` ⇒ 抛
+ *      `cannot get property "remote.agentPresets" without inject`
+ *      （cordis `src/reflect.ts:144` 造错 / `:163` 抛出）。
+ *      ⚠ **不许**用"把两个命名空间加进本文件的模块级 `inject`"去修 ——
+ *      那是**加载门禁**：`dsh-api-remotes` 缺席时整块 client 插件不激活，
+ *      **设置分区会整体消失**（回归，见 E-02 / E-41）。
+ *      现改为：**订阅**用 `bindCatalog()`（`ctx.inject` 反应式，①-b 的 ①）、
+ *      **读数**用 `ctx.get('<逐字名>')`（免 inject）—— 全程无属性访问。
+ *
+ *   ①-c 另一个同族实测（本轮顺手修）：`ctx.inject(...)` 的返回值是 **Fiber**，
+ *      **不可调用**（`typeof === 'object'`，要 `off.dispose?.()`）——
+ *      写成 `off?.()` 会在卸载/热重载时抛 `TypeError: off is not a function`。
+ *      本文件与 `settings.ts` 的清理函数都已按 `dispose()` 写。
+ *
  *   ② `ctx.slots.register` **必须带 `name` 字段**（= 槽位名），缺它报
  *      "slot undefined is not declared"；list 槽还必须给**唯一 `id`** ——
  *      复用官方 id 会顶掉那一格，新增自己的 id 才是"加一个条目"。
@@ -30,7 +48,7 @@
  */
 import { SettingsPanel } from './settings-panel.tsx'
 import { bindSettingsForm } from './settings.ts'
-import { setCatalogContext } from './catalog.ts'
+import { bindCatalog, setCatalogContext } from './catalog.ts'
 import { ensurePanelStyles } from './panel-styles.ts'
 
 /** 包名：同时作为模块 id、槽位条目来源标识、settings namespace。 */
@@ -65,9 +83,14 @@ export function apply(ctx: any): void {
     `${PACKAGE_NAME}: configForms binding`,
   )
 
-  // 候选来源（宿主预设清单 / 模型目录）经 `ctx.remote.*` 读 —— 把 ctx 交给
-  // `catalog.ts` 存起来，由面板在**首次渲染时**触发一次加载（不是这里立即读：
-  // remote 命名空间可能还没挂载，那属于"加载失败可重试"的正常状态，见该文件头）。
+  // 候选来源（宿主预设清单 / 模型目录）经两个 Remote 命名空间读。
+  // ⚠ 顺序有意义：先 `bindCatalog`（反应式订阅）再交 ctx —— 订阅是"到齐就重读"的
+  //   驱动，而 `setCatalogContext` 里的首读在命名空间未就绪时会如实记成可重试的失败。
+  //   两条合起来：命名空间**来得早** ⇒ 首读即成；**来得晚** ⇒ 订阅触发自动补读。
+  ctx.effect(
+    () => bindCatalog(ctx),
+    `${PACKAGE_NAME}: remote catalog binding`,
+  )
   setCatalogContext(ctx)
 
   // ⚠ `ctx.slots.inject` 本身就是"等槽位存在再注册"的反应式封装：

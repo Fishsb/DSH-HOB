@@ -227,10 +227,10 @@ EXIT=1
 |---|---|---|
 | 三本账本（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`；原四本，`FACTS` 于 2026-10-09 按 UD-84 退场） | ✅ **已建立并在用**；**v4（2026-10-08）起外置**，**2026-10-09 按 UD-86/87 迁至** `/home/lk/.dsh/hob-ledgers/<工作区名>/`（本工作区 = `/home/lk/.dsh/hob-ledgers/dsh-hob/`，**独立仓根**、历史随迁）〔迁出前快照 **439 个文件**，此后随记账增长；迁后实测 **516 个文件**〕。当前进度：`CONTEXT` 至 **§84** · `DECISIONS` 至 **CHG-023** · `USER-DECISIONS` 至 **UD-81**〔`FACTS` 已退场，末条为 **F-J156**〕 | `ls` 该目录；账本仓 `git log` |
 | `templates/` 空模板 | ✅ 已就位，**7 份** —— 三账本空模板（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`）+ `ROLES.md`（角色簇）+ `GATES.md`（阶段与门禁）+ `TASK.md` / `REPORT.md`（v4 交接协议载体）〔⚠ 原 8 份含 `FACTS` 空模板，2026-10-09 退场〕 | `ls -la .hob/templates/` |
-| `EXPERIENCE.md` 经验库 | ✅ 已就位，**98 条**（`E-01`…`E-98`）；写作纪律：新坑续编不重排、**不许丢根因**、未验证项进 §7 | `.hob/EXPERIENCE.md`；`npm run exp:next-id` 报「条目总数（标题行）：98」 |
+| `EXPERIENCE.md` 经验库 | ✅ 已就位，**101 条**（`E-01`…`E-101`）；写作纪律：新坑续编不重排、**不许丢根因**、未验证项进 §7 | `.hob/EXPERIENCE.md`；`npm run exp:next-id` 报「条目总数（标题行）：101」 |
 | `archive/` | **v4 起不在本目录** —— 交接归档（`TASK.md` / `REPORT.md`）落在**账本目录**的 `archive/<日期>-<名>/`，并须在 §3 指针表登记一行 | `ls` 工作区 `.hob/`（无 archive）；账本目录 `ls archive/` |
 | **写账本的工具** | ✅ **已在用且真机验证过** —— `read_contracts`（读账本 `.md`）+ `write_hob`（写账本）；`write_hob` 真机写入实测见账本 **F-J14**（含写前自动备份）与 **F-J127**（v4 外置账本下的写入通道复测） | `src/server/hob-write.ts`、`src/modules/tools.ts`；账本归档 `archive/2026-10-09-ledger-history/FACTS-final.md` |
-| **骨架 ↔ 实例漂移检查** | ✅ **已在跑，且有四条** —— `npm run typecheck` · `check:presets`（预设契约）· `check:gitignore`（排除漂移）· `check:experience`（经验库编号/四要素）；前三条 + `check:experience` 自批 11 起是**收尾必跑**；另 `exp:next-id` 负责取号 | `package.json` 的 `scripts`；§1.4 |
+| **骨架 ↔ 实例漂移检查** | ✅ **已在跑，且有七条** —— `npm run typecheck` + 六个 `check:*`：`check:presets`（预设契约）· `check:config`（配置面三处不漂移）· `check:orch`（编排运行态跨重载）· `check:client`（client 半边宿主服务取用）· `check:gitignore`（排除漂移）· `check:experience`（经验库编号/四要素）；**连同 `build` 共八条自 2026-10-10 起是收尾必跑**；另 `exp:next-id` 负责取号 | `package.json` 的 `scripts`；§1.4；`PROJECT.md` §10.1 |
 
 ⚠ **仍未做（不许假设它存在）**：旧项目那份**通用**骨架 ↔ 实例母版比对脚本
 （`scripts/check-hob-skeleton.mjs`）**未搬运** —— 现役机检是**针对本仓库具体清单**的断言
@@ -257,4 +257,10 @@ EXIT=1
 > **沿革（后补，2026-10-09）**：上表逐项已被后续批次推翻 ——
 > 四账本随第 1 步之后的记账批次建立、v4 外置；`write_hob` 于批 4 落实现、真机验证；
 > `check:gitignore` 于收尾第二轮（E-73 之后）落地并覆盖骨架清单；
-> `check:experience` / `exp:next-id` 于批 11 落地；经验库随时间续编至 `E-98`。
+> `check:experience` / `exp:next-id` 于批 11 落地；经验库随时间续编至 `E-101`。
+
+> **沿革（后补，2026-10-10 · 收尾批）**：机检由四条增至**七条** ——
+> `check:config` / `check:orch` / `check:client` 依次落地（最后一条随第 3 轮的
+> 「候选来源」修复引入），并**一并补进** `PROJECT.md` §10.1 的收尾必跑表（五条 → 八条）。
+> ⚠ 本条是**更正**：本文件此前写"四条"、§6 写"续编至 `E-98`"，均属**清单与经验库各自跑在前面、
+> 叙述没跟上**的计数漂移 —— 与 `E-70` / `E-73` 同型（骨架登记滞后）。

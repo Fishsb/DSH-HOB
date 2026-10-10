@@ -118,7 +118,13 @@ export function bindSettingsForm(ctx: any, onReady?: (form: ConfigForm) => void)
 
   return () => {
     setSettingsForm(null)
-    off?.()
+    // ⚠ `ctx.inject(...)` 返回的是 **Fiber**，**不是函数** —— 写成 `off?.()` 会抛
+    //   `TypeError: off is not a function`（实测 cordis 4.0.4：`typeof off === 'object'`、
+    //   `off.constructor.name === 'Fiber'`、`off.dispose` 是函数）。
+    //   该清理函数挂在 `ctx.effect` 上 ⇒ 卸载 / **热重载**时必被调用 ⇒
+    //   写错会让"本插件的清理路径"每次都抛，却因为发生在卸载期而不易被发现。
+    //   （`Symbol.dispose` 也可用，但本仓 tsconfig 的 lib 不含 esnext.disposable ⇒ 只取 `.dispose`。）
+    if (typeof off?.dispose === 'function') void off.dispose()
   }
 }
 

@@ -34,6 +34,7 @@
     "check:presets": "node scripts/check-preset-contracts.mjs",
     "check:config": "node scripts/check-config-face.mjs",
     "check:orch": "node scripts/check-orch-state.mjs",
+    "check:client": "node scripts/check-client-deps.mjs",
     "check:gitignore": "node scripts/check-gitignore.mjs",
     "check:experience": "node scripts/check-experience.mjs",
     "exp:next-id": "node scripts/next-experience-id.mjs"

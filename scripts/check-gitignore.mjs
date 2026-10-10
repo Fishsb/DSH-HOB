@@ -132,6 +132,10 @@ const mustTrack = [
   //   （读 package.json 的 scripts 反查 MUST-TRACK）**当场 FAIL**，
   //   这条登记就是那次的修正结果。
   ['scripts/check-orch-state.mjs', '入库脚本（被 package.json 的 check:orch 调用 · 编排运行态跨重载可观测性机检）'],
+  // ⚠ 2026-10-10 补（第 3 轮 · 「候选来源读取失败」修复）：client 半边宿主服务取用机检。
+  //   同族的**第三次**现场抓获 —— 加完 `check:client` 未登记时，本脚本的"反向自检"
+  //   （读 package.json 的 scripts 反查 MUST-TRACK）**当场 FAIL**，这条登记就是修正结果。
+  ['scripts/check-client-deps.mjs', '入库脚本（被 package.json 的 check:client 调用 · client 半边 ctx 取用/免 inject 读法机检）'],
 ]
 
 /** 该路径是否已在 git index 里（= 已 `git add`）。 */
