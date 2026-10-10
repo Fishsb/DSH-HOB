@@ -102,6 +102,18 @@ export interface PersistedHandoff {
   note?: string
   /** 这条记录属于哪个**工作区根**（决定它落在哪个账本目录下）。 */
   wsRoot?: string
+  /**
+   * **有意人工转达**（2026-10-10 第 44 轮 · 结构改造②）—— `true` = 这是**有意**
+   * 交给用户手工带过去的，**不是忘了投**。
+   *
+   * ⚠ 它存在的唯一理由：让"**有意转达**"与"**漏投**"**可区分** ——
+   *   后者才是缺陷。没有它，两种情形在状态输出里长得**逐字一样**
+   *   （都是"待投递：N 份"），于是"有意转达"会持续制造**假告警**，
+   *   而**假告警会训练人忽略真告警**（这才是它真正的代价）。
+   *
+   * ⚠ **向后兼容**：旧文件没有这个字段 ⇒ 读成 `false`（不抛、不判坏）。
+   */
+  manual?: true
 }
 
 /** 落盘文件的整体结构。 */
@@ -195,6 +207,9 @@ function asHandoff(v: unknown): PersistedHandoff | undefined {
   }
   if (typeof o.note === 'string' && o.note !== '') out.note = o.note
   if (typeof o.wsRoot === 'string' && o.wsRoot !== '') out.wsRoot = o.wsRoot
+  // ⚠ **严格只认 `true`**（`o.manual === true`）：`"true"` / `1` 这类宽松值**不收**
+  //   —— 判宽了会让"漏投"被误标成"有意转达"，那比缺字段更坏（把缺陷说成设计）。
+  if (o.manual === true) out.manual = true
   return out
 }
 

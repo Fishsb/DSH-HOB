@@ -23,6 +23,7 @@
  *   这样它可以被独立测试，也避免 core/server 反向依赖配置类型。
  */
 import { lstat, readFile, writeFile, rename, readdir, unlink, mkdir, rm } from 'node:fs/promises'
+import { existsSync, readdirSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { resolveInside } from './doc-read.ts'
 
@@ -78,7 +79,114 @@ export function isHandoffPath(file: string): boolean {
   return /^task/i.test(m[2]!)
 }
 
+// ── 改 1 · 写入边界校验：具名引用存在性（2026-10-10 第 44 轮 · 结构改造①）──────
+
+/**
+ * 具名归档路径（与 `check-gitignore.mjs` 的**断言 D** 同源）。
+ *
+ * ⚠ **同源纪律**（E-110：一个常量只服务一条断言 —— 这里是"一处口径两处用"，
+ *   与断言 D 必须**逐字同源**）：改这里请对一眼
+ *   `scripts/check-gitignore.mjs` 的 `D_REF_RE`，反之亦然。
+ *   ⚠ 为什么**照抄而不 import**：写侧（`src/`）与检查侧（`scripts/`）是两棵
+ *   互不依赖的树，`src/` 不能 import `scripts/`（那会把检查脚本变成产品依赖）。
+ *   ⇒ 照抄 + 在两侧注释里互相指名。
+ *
+ * ⚠ **只认** `archive/<YYYY-MM-DD-slug>/…` ⇒ 占位形态（`archive/<日期>-<名>/`）
+ *   **天然落选**（`<` 与 CJK 不匹配 `\d{4}-\d{2}-\d{2}`）。见 **E-114**。
+ */
+const REF_PATH_RE = /archive\/\d{4}-\d{2}-\d{2}-[a-z0-9-]+\/[A-Za-z0-9._/-]*/g
+
+/**
+ * 作业书文件名（与 `check-gitignore.mjs` 的**断言 D′** 同源）。
+ *
+ * ⚠ **编号必须是数字**（`TASK-R\d+…`）—— 第 26 轮修出来的精度：
+ *   原判据 `TASK-R[A-Za-z0-9-]*\.md` 会把「别为了齐整给每轮都编一个
+ *   `TASK-Rnn.md`」这种**反例示意名**判成"不存在的引用"（**E-114 / E-113**）。
+ *   `Rnn` 不是文件名形态（真作业书是 `TASK-R21.md`）⇒ 排除。
+ */
+const REF_TASK_RE = /TASK-R\d+[A-Za-z0-9-]*\.md/g
+
+/** 一条**指不到实体**的具名引用。 */
+export interface DanglingRef {
+  /** 引用的字面文本。 */
+  ref: string
+  /** 在**新写入内容**里的行号（1 起；便于调用方点名）。 */
+  line: number
+  /** 引用类型：归档路径 / 作业书文件名。 */
+  kind: 'archive-path' | 'task-file'
+}
+
+/**
+ * **写入边界校验**（2026-10-10 第 44 轮 · 结构改造①）：扫新写入的内容，
+ * 逐条核实**具名引用**（归档路径 / 作业书文件名）是否**真的存在**。
+ *
+ * ── 为什么放在写入工具里（而不是只靠事后收尾检查）─────────────────────
+ *   既有防线是**断言 D / D′**，它扫的是**账本区四份正本**、且**在收尾时**才跑 ⇒
+ *   引用写错要等到那一轮收尾**才被发现**（跨动作、跨时间、跨人）。
+ *   ⇒ 本函数把同一条判据**搬到写入的那一刻、当场**（"Parse, don't validate"
+ *     的落地：校验放在**数据产生的边界**上）。
+ *
+ * ⚠ **只报告、不拒绝**：写入语义是"按你给的路径与内容如实写"。
+ *   本函数**不改 `ok`、不改 `action`**，只回一个可读清单。
+ *
+ * ⚠ **判据同源**：与断言 D / D′ 用**同一条正则语义**（见上面两个常量的注释）。
+ *
+ * ⚠ **不许咬到的形态**（E-114 家族 —— "描述这条校验自身"的句子必须能安全存在）：
+ *   · `archive/<日期>-<名>/`（占位：含 `<` 与 CJK ⇒ 不匹配 `\d{4}-\d{2}-\d{2}`）
+ *   · `TASK-*.md` / `TASK-R*.md`（通配：含 `*` ⇒ 显式跳过）
+ *   · `TASK-Rnn.md`（示意名：编号非数字 ⇒ 不匹配 `\d+`）
+ *   ⇒ 三类**按设计不计**。
+ *
+ * @param ledgerRoot - 账本区根（引用相对它解析）。
+ * @param content - 刚写入（或即将写入）的文本。
+ * @returns 指不到实体的引用清单（**空数组 = 全部指得到**）。
+ */
+export function collectDanglingRefs(ledgerRoot: string, content: string): DanglingRef[] {
+  const out: DanglingRef[] = []
+  const lines = content.replace(/\r\n/g, '\n').split('\n')
+
+  // 账本区 `archive/` 下所有文件的 basename 集合（扫一次，供 D′ 逐条比对）。
+  // ⚠ 与断言 D′ 同款：作业书通常只写文件名，故**按 basename 在 archive 各日期子目录下找**
+  //   （要求写全路径会把正确写法判成违规）。
+  const archiveBasenames = ((): Set<string> => {
+    const set = new Set<string>()
+    try {
+      for (const d of readdirSync(join(ledgerRoot, 'archive'))) {
+        let entries: string[] = []
+        try { entries = readdirSync(join(ledgerRoot, 'archive', d)) } catch { continue }
+        for (const e of entries) set.add(e)
+      }
+    } catch { /* archive 不可读 ⇒ 空集（比对会因此全部报"不存在"，宁可报也不静默） */ }
+    return set
+  })()
+
+  lines.forEach((line, i) => {
+    for (const m of line.matchAll(REF_PATH_RE)) {
+      const ref = m[0]
+      if (ref.includes('*')) continue // 通配不是具名引用
+      if (!existsSync(join(ledgerRoot, ref))) out.push({ ref, line: i + 1, kind: 'archive-path' })
+    }
+    for (const m of line.matchAll(REF_TASK_RE)) {
+      const ref = m[0]
+      if (ref.includes('*')) continue
+      if (!archiveBasenames.has(ref)) out.push({ ref, line: i + 1, kind: 'task-file' })
+    }
+  })
+  return out
+}
+
+/** 把悬空引用清单渲染成一句**能直接贴进返回值**的提醒（空清单 ⇒ 空串）。 */
+export function renderDanglingRefsNote(refs: DanglingRef[]): string {
+  if (refs.length === 0) return ''
+  const items = refs.map((r) => `\`${r.ref}\`（第 ${r.line} 行）`).join(' · ')
+  return `\n⚠ 引用核验：本次写入含 ${refs.length} 处**指不到实体**的具名引用（**只提示、未拒写**）——`
+    + ` ${items}`
+    + '\n  ↳ 核实：在账本区根跑 `ls` 逐条确认；形如 `archive/<日期>-<名>/`、`TASK-Rnn.md`、'
+    + '`TASK-R*.md` 属**占位/示意/通配**，按设计不计。'
+}
+
 // ── 结果与原因码（原因码供机器判定；验收测试直接断言它）─────────────────────
+
 
 export type WriteAction = 'appended' | 'overwritten' | 'skipped' | 'refused'
 
@@ -124,6 +232,15 @@ export interface WriteHobResult {
    *   本模块的职责是"守卫 + 落地"，不该解析正文语义（那会引入第二个判据点）。
    */
   handoff?: { kind: 'task-file'; ref: string }
+  /**
+   * **悬空具名引用**（2026-10-10 第 44 轮 · 结构改造①）—— 本次写入里
+   * "指不到实体"的归档路径 / 作业书文件名。**只描述事实，由调用方决定怎么提示**。
+   *
+   * ⚠ 这是**新增字段**，既有字段一个未动；⚠ **不影响 `ok`** ——
+   *   写入了就还是 `ok: true`（写入语义是"如实写"，**不是**"内容合规才写"）。
+   * ⚠ 与 `handoff` 同款分层：本模块**不碰**运行态、不 import 配置，只回事实。
+   */
+  danglingRefs?: DanglingRef[]
 }
 
 export interface WriteHobOptions {
@@ -515,10 +632,13 @@ export async function writeHobFile(
   }
 
   if (input.dryRun === true) {
+    const dRefs = collectDanglingRefs(hobRoot, body)
     return {
       ok: true, action: mode === 'overwrite' ? 'overwritten' : 'appended', file, id,
       bytesBefore: Buffer.byteLength(existing, 'utf8'), bytesAfter: nextBytes,
-      message: `[dryRun] 校验全过，将${mode === 'overwrite' ? '覆盖' : '追加'} ${file}（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节），未落盘。`,
+      ...(dRefs.length === 0 ? {} : { danglingRefs: dRefs }),
+      message: `[dryRun] 校验全过，将${mode === 'overwrite' ? '覆盖' : '追加'} ${file}（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节），未落盘。`
+        + renderDanglingRefsNote(dRefs),
     }
   }
 
@@ -559,6 +679,11 @@ export async function writeHobFile(
     return refuse(file, 'readback-mismatch', `写入后回读校验失败（${e instanceof Error ? e.message : String(e)}）；${rolled ? '已从备份回滚' : '回滚未成功，请人工检查'}。`)
   }
 
+  // ── 14.5：**改 1 · 写入边界校验**（2026-10-10 第 44 轮 · 结构改造①）────────
+  //   ⚠ **只报告、不拒绝**：文件已经落盘且回读通过 ⇒ `ok` 仍为 true。
+  //     本清单只是把"引用是否真实存在"这件事**从收尾时提前到写入时**。
+  const danglingRefs = collectDanglingRefs(hobRoot, body)
+
   return {
     ok: true,
     action: mode === 'overwrite' ? 'overwritten' : 'appended',
@@ -568,9 +693,11 @@ export async function writeHobFile(
     bytesBefore: Buffer.byteLength(existing, 'utf8'),
     bytesAfter: nextBytes,
     ...(isHandoffPath(file) ? { handoff: { kind: 'task-file' as const, ref: file } } : {}),
+    ...(danglingRefs.length === 0 ? {} : { danglingRefs }),
     message: `✅ 已${mode === 'overwrite' ? '覆盖' : '追加'} ${file}${id === undefined ? '' : `：${id}`}`
       + `（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节）`
       + (backupName === undefined ? '' : `；备份 ${BACKUP_DIR}/${backupName}`)
+      + renderDanglingRefsNote(danglingRefs)
       // ── 那一刻的提醒（2026-10-10 新增 · 本轮**最高价值**的一处）────────────
       //   ⚠ 为什么必须在这里：这份文件写完后**还要再调一次投递**才算交付。
       //     实测漏了两次（第 9 / 21 轮），两次都是用户发现的 ——

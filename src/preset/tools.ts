@@ -515,7 +515,19 @@ function enforceToolAllowlist(ctx: any, log: (m: string) => void): void {
 
 /** 注册两个工具（工具**定义**来自 `modules/tools.ts`，此处不重写实现）。 */
 function registerTools(ctx: any, config: Config, log: (m: string) => void): void {
-  const { readContracts, writeHob } = createHobTools(config)
+  // ── 改 2 · 写入即投递（2026-10-10 第 44 轮 · 结构改造②）────────────────
+  //   ⚠ 把**编排服务**注入工具定义，让 `write_hob(dispatchTo=…)` 能走
+  //     `hob_dispatch` 的同一条路径（登记回传 + 清"待投递"）。
+  //   ⚠ 用 **惰性取值**（每次执行时才 `ctx.get`）而不是在这里取一次快照：
+  //     `write_hob` 与编排服务**挂载时机不同**（前者跟 `hobTools` 门禁、
+  //     后者跟 `hobOrchestrator`），快照会取到 `undefined` 并**永久**定格成"不能投"。
+  //     惰性取值让"编排迟到"也能用上（与 `ledgerRootOf` 传**函数**而非值是同款理由）。
+  //   ⚠ 取不到 ⇒ 传 `undefined` ⇒ 只记账、不投递（fail-closed，返回值里如实带原因）。
+  const { readContracts, writeHob } = createHobTools(config, {
+    orchOf: () => {
+      try { return ctx.get?.(ORCH_SERVICE) as HobOrchestrator | undefined } catch { return undefined }
+    },
+  })
 
   ctx.effect(() => ctx.tools.register(readContracts), 'dsh-hob preset: read_contracts tool')
   log('已注册 read_contracts')
@@ -525,7 +537,7 @@ function registerTools(ctx: any, config: Config, log: (m: string) => void): void
     return
   }
   ctx.effect(() => ctx.tools.register(writeHob), 'dsh-hob preset: write_hob tool')
-  log('已注册 write_hob')
+  log('已注册 write_hob（支持 dispatchTo / delivery 参数：写入即投递）')
 }
 
 /**

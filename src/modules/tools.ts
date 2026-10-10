@@ -59,8 +59,14 @@ import { LEDGER_FILES, writeHobFile } from '../server/hob-write.ts'
 //   ⚠ **分层纪律**：`hob-write.ts`（落盘层）**不 import** 运行态模块 ——
 //     它只回一个可判定的 `handoff` 字段，**由本层（工具层）决定记不记**。
 //     工具层已持有账本根（`ledgerRootOf`），正是记账该在的地方。
-import { ensureRuntimeIgnored, orchStateFileOf, recordHandoff } from '../server/orch-state.ts'
-import { dirname } from 'node:path'
+// ── 改 2 · 写入即投递（2026-10-10 第 44 轮 · 结构改造②）──────────────────
+//   ⚠ 桥接逻辑放在 `server/write-delivery.ts`：它只依赖 `node:fs` 与 `orch-state.ts`，
+//     既守住"落盘层不碰运行态"（机检 F6），又能被机检**直接 import 真跑**。
+//   ⚠ 记账（记一条"待投递"）**已从本层移进 `write-delivery.ts`** ——
+//     它与投递必须是**一次调用里的两步**（否则又回到"两个独立动作"的缺陷形态）；
+//     故 `ensureRuntimeIgnored` / `orchStateFileOf` / `recordHandoff` / `dirname`
+//     在本模块**已不再直接使用**（由该模块统一持有）。
+import { deliverHandoff, renderHandoffReading, type DispatchLike } from '../server/write-delivery.ts'
 
 /** 模块名（同时是 fiber 显示名）。 */
 export const name = 'dsh-hob-tools'
@@ -209,6 +215,36 @@ export function hobDirOf(cfg: HobToolsConfig): string {
 }
 
 /**
+ * **可注入的依赖缝**（2026-10-10 第 44 轮 · 结构改造②）—— 让"写入即投递"
+ * 能在**不启宿主**的前提下被机检真跑（机检传**假编排**；真机由 `preset/tools.ts` 传真服务）。
+ *
+ * ⚠ 为什么用注入而不是让本模块直接 `ctx.get('hobOrchestrator')`：
+ *   本模块**没有 ctx**（工具定义工厂是纯函数，定义在模块作用域、注册在预设作用域）。
+ *   编排服务在**预设作用域**才可见 ⇒ 由挂载方（`registerTools`）把它传进来，
+ *   与 `ledgerRootOf` 交给 bus 层是**同一条纪律**（一处解析、传函数/服务，不各写一份）。
+ *
+ * ⚠ **缺省 = 不投递**（`orchOf` 不给 ⇒ 只记账）：fail-closed，不猜、不装作投了。
+ *   这不是"功能降级静默" —— 返回值里会如实带 `deliverReason`。
+ */
+export interface HobToolsDeps {
+  /** 按执行上下文取编排服务（`hob_dispatch` 的同一条路径）。缺席 ⇒ 不投递。 */
+  orchOf?: (exec: ToolRunContext) => DispatchLike | undefined
+}
+
+/**
+ * 取本会话 id（= 调工具的 agent 自己）。
+ *
+ * ⚠ 与 `orchestrator.ts` 的 `selfSessionIdOf` **同源**（两处都要"我是谁"）：
+ *   它用于编排层的"不派给自己"那道闸。⚠ 不复用不 import —— 那会造出
+ *   `tools.ts ↔ orchestrator.ts` 的依赖方向问题（工具层不该 import 编排实现）；
+ *   两行判据，照抄并在两侧互相指名（同 `ARCHIVE_DIR_RE` 的口径）。
+ */
+function sessionIdOf(exec: any): string | undefined {
+  const id = exec?.agent?.id ?? exec?.agent?.session?.id
+  return typeof id === 'string' && id !== '' ? id : undefined
+}
+
+/**
  * 工具定义工厂 —— **两个工具的唯一实现处**。
  *
  * 返回 `{ readContracts, writeHob }` 两个 `defineTool` 结果（写工具在
@@ -216,8 +252,9 @@ export function hobDirOf(cfg: HobToolsConfig): string {
  * 调用方（预设行模块）负责在**正确的（预设）作用域**里注册它们。
  *
  * @param cfg - 该挂载点的配置（预设行传入）。
+ * @param deps - 可注入依赖（缺省 = 无编排服务 ⇒ 只写不投）。
  */
-export function createHobTools(cfg: HobToolsConfig = {}): {
+export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}): {
   readContracts: ReturnType<typeof defineTool>
   writeHob: ReturnType<typeof defineTool> | undefined
 } {
@@ -286,13 +323,35 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
         type: 'boolean',
         description: 'true=只跑全部校验、不落盘（推荐先试）。',
       },
+      // ── 改 2 · 写入即投递（2026-10-10 第 44 轮 · 结构改造②）──────────────
+      //   ⚠ 两个参数**都不强制**：不给就照旧"只写不投"（并附「尚未投递」提醒）。
+      //     ⛔ 这不是硬闸门 —— 写入语义不变（见 `hob-write.ts` 文件头的纪律）。
+      dispatchTo: {
+        type: 'string',
+        description: '（可选）写完**紧接着投递**给这个会话 id（取自 hob_sessions；不自动挑会话）。'
+          + '投递走与 hob_dispatch 同一条路径（登记回传 + 清"待投递"），返回值会附投递后的"待投递"读数。',
+      },
+      delivery: {
+        type: 'string',
+        enum: ['manual'],
+        description: '（可选）`manual` = 本轮**有意人工转达**（不自动投）⇒ 该条待投递记录带标注，'
+          + '状态行会把"有意转达"与"漏投"分开报。⚠ 与 dispatchTo 同时给时以 dispatchTo（真投）为准。',
+      },
     },
     output: {
       schema: { type: 'string' },
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
     async execute(
-      args: { file: string; content: string; mode?: 'append' | 'overwrite'; reason?: string; dryRun?: boolean },
+      args: {
+        file: string
+        content: string
+        mode?: 'append' | 'overwrite'
+        reason?: string
+        dryRun?: boolean
+        dispatchTo?: string
+        delivery?: 'manual'
+      },
       exec: ToolRunContext,
     ): Promise<string> {
       // v4：账本目录按工作区派生（在工作区之外）⇒ 边界仍是「账本目录」，只是位置变了。
@@ -314,12 +373,12 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
         shrinkGuard: DEFAULTS.shrinkGuard,
         maxFileBytes: cfg.maxWriteBytes ?? DEFAULTS.maxWriteBytes,
       })
-      // ── 记账：交给了交接文件 ⇒ 记一条"待投递"（2026-10-10 新增）────────────
+      // ── 记账 + 投递：交给了交接文件（2026-10-10 新增；第 44 轮扩展为"写入即投递"）──
       //   ⚠ 为什么在这一层：落盘层（hob-write）刻意不碰运行态；本层有账本根。
       //   ⚠ 为什么必须记：`watches` 只在**投递成功之后**登记 ⇒ 不记这一条，
-      //     "写了文件却没投"在系统里**根本不存在**（第 9 / 21 轮实测漏派两次，
-      //     两次都是用户发现的，现场读数与"从来没派过"逐字相同）。
-      //   ⚠ 记账失败**不掩盖**、但也**不改写结果**：只**新增**两个字段如实回带
+      //     "写了文件却没投"在系统里**根本不存在**（第 9 / 21 / 40 轮实测漏派三次，
+      //     其中两次是用户发现的，现场读数与"从来没派过"逐字相同）。
+      //   ⚠ 记账失败**不掩盖**、但也**不改写结果**：只**新增**字段如实回带
       //     （`handoffRecorded` / `handoffNote`），既有字段一个不动 ——
       //     写入本身已经落盘，记账是**附加可观测**，不该把成功报成失败。
       //   ⚠ 只在**真写成功**且判定为交接文件时记（`r.ok && r.handoff`）——
@@ -327,28 +386,33 @@ export function createHobTools(cfg: HobToolsConfig = {}): {
       //     （⚠ `dryRun` 单独再判：它返回 `ok: true` 但**没落盘**）。
       //   ⚠ 不引 `console.*`：本模块（乃至 `src/**`）零 console 先例，
       //     日志走工具返回值 / `ctx.logger`；这里没有 ctx，故走返回值。
+      //   ⚠ **改 2**：投递**不是**硬闸门 —— 不给 `dispatchTo` 就只记账（现状不变）。
       if (r.ok === true && r.handoff !== undefined && args.dryRun !== true) {
-        let recorded = false
-        let handoffNote: string | undefined
-        try {
-          const stateFile = orchStateFileOf(root)
-          ensureRuntimeIgnored(dirname(stateFile))
-          const res = recordHandoff(stateFile, {
-            kind: r.handoff.kind,
-            ref: r.handoff.ref,
-            at: Date.now(),
-          })
-          recorded = res.wrote
-          if (!res.wrote) {
-            handoffNote = '待投递记录未能落盘（写入本身已成功）⇒ 这次交接文件在状态输出里可能不可见。'
-          }
-        } catch (e) {
-          handoffNote = `待投递记录出错：${String((e as Error)?.message ?? e)}（写入本身已成功）`
-        }
+        const orch = deps.orchOf?.(exec)
+        const res = await deliverHandoff({
+          ledgerRoot: root,
+          ref: r.handoff.ref,
+          at: Date.now(),
+          ...(args.dispatchTo === undefined ? {} : { dispatchTo: args.dispatchTo }),
+          // ⚠ 与 `dispatchTo` 同时给时**以真投为准**（`manual` 只描述"没自动投"）：
+          //   否则会出现"既投了、又标注为有意人工转达"的自相矛盾记录。
+          ...(args.delivery === 'manual' && args.dispatchTo === undefined ? { delivery: 'manual' as const } : {}),
+          self: sessionIdOf(exec),
+          ...(orch === undefined ? {} : { orch }),
+        })
         return JSON.stringify({
           ...r,
-          handoffRecorded: recorded,
-          ...(handoffNote === undefined ? {} : { handoffNote }),
+          handoffRecorded: res.recorded,
+          ...(res.note === undefined ? {} : { handoffNote: res.note }),
+          // 改 2 · 投递结果（只在**给了 dispatchTo** 时出现，避免给返回值添噪音）
+          ...(args.dispatchTo === undefined
+            ? {}
+            : {
+              delivered: res.dispatched,
+              ...(res.dispatchReason === undefined ? {} : { deliverReason: res.dispatchReason }),
+            }),
+          // ⚠ 投递后（或直接标注后）的**待投递读数** —— 让"清干净了没有"当场可见
+          handoffReading: renderHandoffReading(res.handoffs),
         })
       }
       return JSON.stringify(r)

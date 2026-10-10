@@ -44,6 +44,14 @@
  *     `TypeError` 而**不给可读 FAIL**（只剩堆栈，看不出违反了哪条断言）
  *     ⇒ 已改为防御式取值（`Array.isArray` 后才访问，见该组注释）。
  *
+ *   G. **结构改造 ① ②**（2026-10-10 第 44 轮）—— 同款"真跑函数"（Node ≥22 直载 `.ts`）：
+ *      **① 写入边界校验**：写的内容含**不存在**的具名引用 ⇒ 当场点名；
+ *        含**真实存在**的 ⇒ 不点名；含**占位 / 示意 / 通配**形态 ⇒ **不点名**（**E-114 家族**）。
+ *      **② 写入即投递**：给 `dispatchTo` ⇒ 投递被调用 + 该条 handoff 被清；
+ *        给 `delivery:'manual'` ⇒ 记录保留**且带标注**；状态行**分开报**；
+ *        旧运行态（无新字段）⇒ 读得进、`handoffs` 读成空。
+ *      ⚠ 判据同 **E-112**：负向对拍**不只看退出码**，还要有**可读的 ✗ 行**。
+ *
  * 用法：node scripts/check-orch-state.mjs      （或 npm run check:orch）
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
  * ⚠ 零第三方依赖（本仓纪律）：只做文本级解析，不引 YAML 库。
@@ -57,6 +65,8 @@ const root = join(here, '..')
 
 const STATE_TS = join(root, 'src', 'server', 'orch-state.ts')
 const ORCH_TS = join(root, 'src', 'modules', 'orchestrator.ts')
+const HOBWRITE_TS = join(root, 'src', 'server', 'hob-write.ts')
+const DELIVERY_TS = join(root, 'src', 'server', 'write-delivery.ts')
 
 const fail = []
 const note = []
@@ -459,6 +469,160 @@ const orchCode = stripComments(orchSrc)
       }
     } finally {
       try { rmSync(dir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+    }
+  }
+}
+
+// ── G. 结构改造 ① ②（2026-10-10 第 44 轮）—— 真跑函数 ────────────────────
+//
+// ⚠ **为什么也是"真跑"而不是文本匹配**：本组要保的是**行为** ——
+//   "写进去的引用当场被核"与"写了就投出去"都是**运行时才成立**的性质；
+//   源码里 `collectDanglingRefs` / `deliverHandoff` 字样还在，而实现被掏空，
+//   文本断言照样 PASS（与 F 组同一个理由）。
+//
+// ⚠ **判据同源**：G1/G2/G3 用的正则语义与断言 D / D′ **逐字同源**
+//   （`hob-write.ts` 的 `REF_PATH_RE` / `REF_TASK_RE`），故本组的"防误报"
+//   与"举例豁免"两组，同时也在**替断言 D′ 守它的两条精度边界**。
+{
+  const { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { pathToFileURL } = await import('node:url')
+
+  let hw
+  let dl
+  let stMod
+  try {
+    hw = await import(pathToFileURL(HOBWRITE_TS).href)
+    dl = await import(pathToFileURL(DELIVERY_TS).href)
+    stMod = await import(pathToFileURL(STATE_TS).href)
+  } catch (e) {
+    bad(`G 无法加载写入/投递模块（${String(e?.message ?? e)}）⇒ 行为断言失去基准（不按通过处理）`)
+  }
+  if (hw !== undefined && dl !== undefined && stMod !== undefined) {
+    const { collectDanglingRefs } = hw
+    const { deliverHandoff, renderHandoffReading } = dl
+
+    /** 沙箱账本区：建一个真实存在的归档目录与一份真实作业书，供"防误报"组用。 */
+    const gdir = mkdtempSync(join(tmpdir(), 'hob-gcheck-'))
+    try {
+      const REAL_DIR = 'archive/2026-10-10-real-fixture'
+      mkdirSync(join(gdir, REAL_DIR), { recursive: true })
+      writeFileSync(join(gdir, REAL_DIR, 'TASK-R99.md'), '# real\n', 'utf8')
+      writeFileSync(join(gdir, REAL_DIR, 'NOPE-ISH.md'), '# x\n', 'utf8')
+
+      // ── G1 **真牙口**：不存在的 archive 路径必须被点名 ──
+      {
+        const content = '前情：见 `archive/2026-10-10-nonexistent-xyz/NOPE.md`。\n'
+        const refs = collectDanglingRefs(gdir, content)
+        const hit = Array.isArray(refs) && refs.some((r) => r.ref === 'archive/2026-10-10-nonexistent-xyz/NOPE.md')
+        if (hit) ok('G1 写入含**不存在**的归档路径 ⇒ 当场点名（写入边界校验有牙）')
+        else bad(`G1 不存在的归档路径**没被点名**：${JSON.stringify(refs)} —— 写入边界校验是哑的`)
+      }
+
+      // ── G2 **防误报**：真实存在的路径与作业书**不得**被点名 ──
+      //   ⚠ 两条一起验：D 类（全路径）与 D′ 类（只写 basename 的作业书）。
+      {
+        const content = `见 \`${REAL_DIR}/NOPE-ISH.md\` 与 \`TASK-R99.md\`。\n`
+        const refs = collectDanglingRefs(gdir, content)
+        const list = Array.isArray(refs) ? refs : []
+        if (list.length === 0) ok('G2 真实存在的路径 / 作业书**不点名**（防误报）')
+        else bad(`G2 真实存在的东西被误报为悬空引用：${JSON.stringify(list)}`
+          + ' —— 误报会训练人忽略提示（这才是真正的代价）')
+      }
+
+      // ── G3 **举例豁免**（E-114 家族）：占位 / 示意名 / 通配**一律不点名** ──
+      //   ⚠ 这一组是硬要求：**"描述这条校验自身"的句子必须能安全存在**
+      //     （本脚本的注释、正本的纪律段里都写着这些形态）。
+      {
+        const content = [
+          '占位：`archive/<日期>-<名>/` 与 `archive/<YYYY-MM-DD-slug>/TASK.md`',
+          '示意名：`TASK-Rnn.md`',
+          '通配：`TASK-*.md` 与 `TASK-R*.md`',
+        ].join('\n')
+        const refs = collectDanglingRefs(gdir, content)
+        const list = Array.isArray(refs) ? refs : []
+        if (list.length === 0) ok('G3 占位 / 示意名 / 通配形态**不点名**（E-114 家族，描述校验自身的句子不被咬）')
+        else bad(`G3 举例形态被误判成悬空引用：${JSON.stringify(list)}`
+          + ' —— 这正是 E-114 的形态：判据被"描述它自己的文本"打挂')
+      }
+
+      // ── G4 **写即投**：给 dispatchTo ⇒ 投递被调用 + 该条 handoff 被清 ──
+      {
+        const stateFile = join(gdir, 'runtime', 'orch-watches.json')
+        try { rmSync(stateFile, { force: true }) } catch { /* 首次不存在 */ }
+        let called = 0
+        let sawTarget
+        /** 假编排：记下被调用的事实，并复刻 orchestration 的"成功"契约。 */
+        const fakeOrch = {
+          async dispatch(target) {
+            called++
+            sawTarget = target
+            return { ok: true, sessionId: target, watching: true }
+          },
+          status() { return { handoffs: [] } },
+        }
+        const at = Date.now()
+        const res = await deliverHandoff({
+          ledgerRoot: gdir,
+          ref: 'archive/2026-10-10-real-fixture/TASK-R99.md',
+          at,
+          dispatchTo: 'session-target-1',
+          self: 'session-me',
+          orch: fakeOrch,
+        })
+        const left = Array.isArray(res.handoffs) ? res.handoffs : []
+        if (called === 1 && sawTarget === 'session-target-1' && res.dispatched === true && left.length === 0) {
+          ok('G4 给 dispatchTo ⇒ 投递被调用 + 该条待投递记录被清（写入即投递）')
+        } else {
+          bad(`G4 写即投未成立：called=${called} target=${sawTarget} dispatched=${res.dispatched} `
+            + `剩 ${left.length} 条（${JSON.stringify(left)}）`)
+        }
+      }
+
+      // ── G5 **人工转达**：记录保留 + 带标注；状态行**分开报** ──
+      {
+        const stateFile = join(gdir, 'runtime', 'orch-watches.json')
+        try { rmSync(stateFile, { force: true }) } catch { /* 忽略 */ }
+        const at = Date.now()
+        const res = await deliverHandoff({
+          ledgerRoot: gdir,
+          ref: 'archive/2026-10-10-real-fixture/TASK-R99.md',
+          at,
+          delivery: 'manual',
+        })
+        const list = Array.isArray(res.handoffs) ? res.handoffs : []
+        const kept = list.length === 1 && list[0]?.manual === true
+        // 状态行必须能**分开报**：非空且含人工转达时，文本须带"其中 N 份已标注为人工转达"。
+        const line = renderHandoffReading(list)
+        const splitOk = /其中\s*1\s*份已标注为人工转达/.test(line)
+        if (kept && res.manual === true && splitOk) {
+          ok(`G5 delivery:'manual' ⇒ 记录保留且带标注 + 状态行分开报（${line}）`)
+        } else {
+          bad(`G5 人工转达未成立：manual=${res.manual} kept=${kept} 状态行=${JSON.stringify(line)}`
+            + ' —— 不分报的话，"有意转达"会持续制造假告警（假告警会训练人忽略真告警）')
+        }
+      }
+
+      // ── G6 **向后兼容**：旧运行态（无 manual 字段）读得进、handoffs 读成空 ──
+      {
+        const legacy = join(gdir, 'runtime', 'legacy2.json')
+        writeFileSync(legacy, JSON.stringify({
+          version: 1, updatedAt: 1,
+          pending: [],
+          lost: [],
+          handoffs: [{ kind: 'task-file', ref: 'archive/x/TASK.md', at: 7 }],
+        }), 'utf8')
+        const st = stMod.readOrchState(legacy)
+        const list = Array.isArray(st?.handoffs) ? st.handoffs : undefined
+        if (list !== undefined && list.length === 1 && list[0]?.manual === undefined) {
+          ok('G6 旧运行态（handoff 无 manual 字段）读得进：记录保留、manual 读成 undefined（向后兼容）')
+        } else {
+          bad(`G6 旧运行态读不进来或 manual 被误判：${JSON.stringify(st?.handoffs)}`
+            + ' —— 缺字段必须读成"不是人工转达"（否则漏投会被说成设计）')
+        }
+      }
+    } finally {
+      try { rmSync(gdir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
     }
   }
 }

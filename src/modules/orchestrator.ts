@@ -860,6 +860,12 @@ export function createHobOrchTools(orch: HobOrchestrator): {
           : `${h.ref}（写于 ${when}${h.note === undefined ? '' : `，${h.note}`}）`
         return '  · ' + what
       })
+      // ── 2026-10-10 第 44 轮 · 结构改造②：把"有意人工转达"与"漏投"**分开报** ──
+      //   ⚠ 为什么必须分开：两者在输出里**逐字一样** ⇒ "有意转达"会持续制造**假告警**，
+      //     而**假告警会训练人忽略真告警** —— 后者才是本缺陷。
+      //   ⚠ **空态照旧**（`待投递：0 份`）：判据是"空态也给读数"，**不许**改成
+      //     `length === 0 ? []` 那种"空就不打印"（那正是本缺陷的病根）。
+      const manualCount = s.handoffs.filter((h) => h.manual === true).length
       return [
         s.stopped ? '⏸ 已停（不回传、不接受新派发）' : '▶ 在跑',
         `在等回传：${s.watches.length} 个`,
@@ -885,11 +891,15 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         ...(s.handoffs.length === 0
           ? ['待投递：0 份']
           : [
-            `⚠ 待投递：${s.handoffs.length} 份 ——`,
+            manualCount > 0
+              ? `⚠ 待投递：${s.handoffs.length} 份（其中 ${manualCount} 份已标注为人工转达） ——`
+              : `⚠ 待投递：${s.handoffs.length} 份 ——`,
             ...hh,
             '  ↳ 这些是**已写出、但还没投出去**的（写了交接文件 / 建了会话）。',
-            '  ↳ **若本轮打算人工转达可忽略；否则说明漏了投递** —— '
-            + '用 `hob_dispatch` / `hob_send` 投出去，或明确告知用户需手工转达。',
+            manualCount > 0
+              ? '  ↳ 标注为**人工转达**的那些是**有意的**（不是漏投）；**其余**若本轮没打算人工带过去 ⇒ 说明漏了投递。'
+              : '  ↳ **若本轮打算人工转达可忽略；否则说明漏了投递** —— '
+                + '用 `hob_dispatch` / `hob_send` 投出去，或明确告知用户需手工转达。',
           ]),
       ].join('\n')
     },
