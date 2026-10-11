@@ -34,7 +34,7 @@
 
 | 类别 | 判定标准 | 进 git？ | 位置 |
 |---|---|---|---|
-| **骨架** | **格式契约 / 被机检脚本消费的规范源** —— 表头、列定义、编号规则、以及**入库脚本会读取的契约正文**。可复用、可分发；新建工作区时用它初始化 | ✅ **进** | `.hob/README.md`、`.hob/templates/`、`.hob/EXPERIENCE.md`、**`.hob/experience/`**（条目目录 —— UD-95 / CHG-032，见 §1.7）、**`.hob/drafts/`**（见 §1.2）、**`.hob/roles/`**（见 §1.3） |
+| **骨架** | **格式契约 / 被机检脚本消费的规范源** —— 表头、列定义、编号规则、以及**入库脚本会读取的契约正文**。可复用、可分发；新建工作区时用它初始化 | ✅ **进** | `.hob/README.md`、`.hob/templates/`、`.hob/EXPERIENCE.md`、**`.hob/drafts/`**（见 §1.2）、**`.hob/roles/`**（见 §1.3） |
 | **运行数据 / 方案** | **填充进格式的具体条目 / 本项目专有的过程产物** —— 第 N 条事实 / 第 N 条决策 / 本轮进度 / 改前备份 / **项目方案** | ❌ **不进**（且**不在本目录**，见顶部说明） | `PROJECT.md`（已迁入账本区）· 各本账本 · `.hob/archive/` · `.hob/backups/` · `.hob/CARRYOVER.md` · `.hob/STEP*-REPORT.md` ⇒ 各本正本在 `/home/lk/.dsh/hob-ledgers/dsh-hob/` **根目录**；**过程产物（`CARRYOVER.md` / `STEP*-REPORT.md` / 经验库碎片等 15 份）在该区 `archive/2026-10-10-ledger-root-housekeeping/`**（见 §1.6） |
 
 **一句话**：**格式进 git，内容不进** —— 且内容**不在本目录**。

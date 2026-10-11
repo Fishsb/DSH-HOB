@@ -11,6 +11,7 @@
  *
  * ⚠ 累计顺序**必须**与拆分前逐行一致（判定行的两个计数也来自本文件累计的清单）。
  */
+import { readFileSync } from 'node:fs'
 import { runRepoRules } from './check-repo-rules.mjs'
 import { findDuplicateSectionHeadings, runDocShape, runResidualMarkers } from './check-doc-shape.mjs'
 import { runDiscipline, runRender, runSameSource, runZeroWidth } from './check-code-face.mjs'
