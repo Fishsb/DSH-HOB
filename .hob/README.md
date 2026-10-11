@@ -105,6 +105,14 @@ EXIT=1
 
 ### 1.4 机检：`npm run check:gitignore`
 
+⚠ **入口名不变，实现已按族拆开**（2026-10-11 第 60 轮 · 用户拍板「① 拆分那个检查脚本」）：
+`scripts/check-gitignore.mjs` 现是**薄调度**，判据按**族**搬进三个模块 ——
+`check-repo-rules.mjs`（族 ① 入库 / 排除 / 骨架覆盖 / 脚本落点双向自检）·
+`check-doc-shape.mjs`（族 ② 四份正本形态 A / B / J / C / D / D′ / E / I）·
+`check-code-face.mjs`（族 ③ 静态面 K / F / G / H）。
+⛔ **判据一条未改**（纯搬运）；⚠ 三个模块是**纯库**（只被入口 `import`）⇒ 已在
+`SCRIPT_LANDING_EXEMPT` 里**逐条显式登记 + 写明理由**（⛔ 不靠"扫不到就算了"）。
+
 `scripts/check-gitignore.mjs` 把「**排除漂移**」从**静默**变成**显式 FAIL**：
 它按 §1 的两栏清单逐条断言 `git check-ignore` 的结果，**违反任一条 ⇒ exit 1**。
 改 `.gitignore` 或改本表后**都应跑一次**。
@@ -115,10 +123,11 @@ EXIT=1
 + **脚本落点双向自检**（正方向：`package.json` 声明的 ⇒ 必须在 `MUST-TRACK`；
 反方向：`scripts/*.mjs` ⇒ 必须被 `package.json` 的 `scripts` 调到）—— 别以为它只管排除。
 ⚠ **另加断言 J**（第 53 轮）：**正本里同一 `## ` 节标题不得重复**（只认行首；围栏内的标题不参与；只扫四份正本）
-—— 判据函数 `findDuplicateSectionHeadings` 可对任意 `.md` 单跑：
+—— 判据函数 `findDuplicateSectionHeadings`（现位于 `check-doc-shape.mjs`）可对任意 `.md` 单跑：
 `node scripts/check-gitignore.mjs --dup-headings <某份.md>`。
 ⚠ **另加断言 K**（第 55 轮）：**同源判据的字面量必须逐字相同** —— 同一处口径写在两侧
-（写入侧 `src/server/hob-write.ts` · 检查侧本脚本）时，**正则字面量必须逐字一致**；
+（写入侧 `src/server/hob-write.ts` · 检查侧原 `check-gitignore.mjs`，第 60 轮起为
+`check-doc-shape.mjs`）时，**正则字面量必须逐字一致**；
 不同 ⇒ FAIL 并打印两侧字面量。⚠ **提取不到也 FAIL**（⛔ 不许静默通过）。
 ⚠ **组数现已不止 A–I**：**J**（节标题不得重复）与 **K**（同源字面量）均已并入本脚本
 （⛔ 此处**不补写死组清单** —— 以实测输出为准，**E-117**）。
@@ -126,8 +135,8 @@ EXIT=1
 - **管**：**2 对具名正则字面量** —— 归档路径（`REF_PATH_RE` ↔ `D_REF_RE`）·
   作业书文件名（`REF_TASK_RE` ↔ `D_TASK_RE`）；**另比 1 处内联字面量** —— 围栏开标记
   （`hob-render.ts` 内联 ↔ `FENCE_OPEN_RE`，写侧非具名声明 ⇒ 用"文本包含"判据）。
-- ⛔ **不管（已知边界）**：**函数体照抄**（`hob-render.ts` 的 `fencedMask` ↔ 本脚本的
-  `fencedMaskBelow`）—— 那是**函数体**、不是字面量 ⇒ 比对函数体**极易脆**
+- ⛔ **不管（已知边界）**：**函数体照抄**（`hob-render.ts` 的 `fencedMask` ↔
+  `check-doc-shape.mjs` 的 `fencedMaskBelow`）—— 那是**函数体**、不是字面量 ⇒ 比对函数体**极易脆**
   （空白 / 注释 / 改名都会误报）⇒ **判不可机检**，登记为边界。
 - ⚠ **只覆盖"两侧都在的文件"**：将来若有**第三处**也抄一份，**本断言不自动覆盖**。
 - ⚠ **改那两处正则的写法之前，先看断言 K 的取法** —— K 只认 `const X = /…/flags` 形态；
@@ -410,13 +419,14 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 | 诚实边界 | 没验的写「未验证」，⛔ 不许把「我认为」写成「已验证」 | 未机器化 |
 | **入库脚本必须有落点** | `scripts/*.mjs` **必须被 `package.json` 的 `scripts` 调到**（进收尾集合），否则它**没人为它跑**、期望过期也**无人发现**（**E-122 / E-127**；第 51 轮已是**第 5 次**现场抓获）。⛔ 反方向也已机器化：**没落点的 `.mjs` 当场 FAIL**；本就不该单独跑的（纯库 / 被别的脚本 import）**必须在白名单里显式登记 + 写理由** | `check:gitignore` |
 | **正本里不得出现重复的节标题** | 一份正本里同一 `## ` 节标题**只能有一处**；重复多半是**追加写**留下的残骸（第 52 轮实测）。⚠ 围栏内的标题**不参与**（那是示例）；⚠ 只扫四份正本、只认 `^## ` | `check:gitignore` |
-| **写在两侧的同源判据，字面量必须相同** | 同一处口径写在**两处**（写入侧 `src/server/hob-write.ts` · 检查侧 `check-gitignore.mjs`）时，**正则字面量必须逐字一致**；⛔ **提取不到也 FAIL**（不许静默通过）。⚠ **函数体照抄**那一类（`fencedMask`）**不可机检** ⇒ 已知边界 | `check:gitignore` |
+| **写在两侧的同源判据，字面量必须相同** | 同一处口径写在**两处**（写入侧 `src/server/hob-write.ts` · 检查侧 `check-doc-shape.mjs`，第 60 轮拆分后的新家）时，**正则字面量必须逐字一致**；⛔ **提取不到也 FAIL**（不许静默通过）。⚠ **函数体照抄**那一类（`fencedMask`）**不可机检** ⇒ 已知边界 | `check:gitignore` |
 | **新增纪律须同步登记本表** | 新增一条纪律 ⇒ 本表**必须同步加一行**（含"谁来查"）；查不了的照实写 `未机器化`（⛔ 不许乱指检查名） | 未机器化 |
 | **清理类改动必须含 `build`** | 动不可见字符 / 删字符后**必须 `build`** —— 扫描器 PASS ≠ 文件能编译 | 未机器化 |
 | **文档里不写死会漂移的计数** | 计数型陈述（组数 / 条数 / 份数 / 行数 / 编号范围 …）一律改**口径式**：写"以 `<命令>` 实测为准"（**E-116 / E-117**） | 未机器化 |
 | **正本读数由写入工具渲染** | 会漂移的读数（目录条目数 / 文件字节数）写成 `hob:count` / `hob:bytes` **占位标记**（HTML 注释形态，语法见 §5.2）⇒ `write_hob` **落盘前替换成当场实值**；⛔ 正本里**不许留未渲染的标记** | `check:gitignore` |
 | **写渲染标记的示例必须放围栏或行内代码内** | ⛔ **裸写会被渲染器与断言打挂**（**E-114**）；⚠ 豁免只覆盖**形状可排除**的两类：围栏代码块内 + 行内代码段内（第 50 轮补） | `check:gitignore` |
 | **重载前不放渲染标记** | ④ 机制**待重载**时，正本里放标记会渲染不出、静默留下 ⇒ 断言 I FAIL；判据 = 返回值里**有没有** `🖩 读数渲染` 那一行（**第 36 轮**：看行为读数，不看产物戳） | 未机器化 |
+| **机械搬运要用"会跑的尺子"验收** | 拆分 / 搬家类改动**先存基线**（逐字落盘 + 不可变副本）、再以**逐行 diff** 判"没弄坏"（⛔ 不用 exit code 代替）；⚠ **行号区间是文本位置、不是作用域边界**：夹在两块之间的模块级声明会被吞进函数体，而 `node --check` 与逐段首尾核对**都放行**（第 60 轮实测 `ReferenceError`） | 未机器化 |
 
 > ⚠ **维护规则（本表自身的"喂食机制"）**：**新增一条纪律 ⇒ 本表必须同步加一行**（含"谁来查"）；
 > **查不了的照实写 `未机器化`**（⛔ 不许乱指检查名）。⚠ 这条规则**本身也在表里登记**（它是"必须"语义 ⇒
@@ -475,7 +485,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 | `EXPERIENCE.md` 经验库 | ✅ 已就位；条目数与下一个可用编号**以 `npm run exp:next-id` 实测为准**（该命令同时与 git 版本对账）；写作纪律：新坑续编不重排、**不许丢根因**、未验证项进 §7 | `.hob/EXPERIENCE.md`；`npm run exp:next-id` |
 | `archive/` | **不在本目录** —— 交接归档（`TASK.md` / `REPORT.md`）落在**账本目录**的 `archive/<日期>-<名>/`，并须在 §3 指针表登记一行 | `ls` 工作区 `.hob/`（无 archive）；账本目录 `ls archive/` |
 | **写账本的工具** | ✅ **已在用且真机验证过** —— `read_contracts`（读账本 `.md`）+ `write_hob`（写账本）；`write_hob` 真机写入与自动备份已实测 | `src/server/hob-write.ts`、`src/modules/tools.ts` |
-| **骨架 ↔ 实例漂移检查** | ✅ **已在跑** —— 收尾必跑（**条数以 `package.json` 的 `scripts` 实测为准**）= `npm run build` + `npm run typecheck` + 各个 `check:*`：`check:presets`（预设契约）· `check:config`（配置面三处不漂移）· `check:orch`（编排运行态跨重载；⚠ **含「结构改造 ① ②」真跑组 G**）· `check:client`（client 半边宿主服务取用）· `check:gitignore`（**排除漂移 + 文档形态机检多组 A/B/C/D/D′/E/F/G/H/I**，⚠ 组与条数以其实测输出为准）· `check:experience`（经验库编号/四要素）· `check:host`（**真产物** `lib/` 的 host 半边探针：schema 形状/默认值 + **逐开关独立启停**；⚠ **须在 `build` 之后**，`lib/` 缺失时**可读报错并 exit 2**）· `check:modules`（**真产物** `lib/` 的模块独立启停探针：真调 cordis `ctx.plugin` ⇒ 配置开关使模块**未装载** · 缺依赖 ⇒ fiber **PENDING** · **两种 inject 的不同后果**；⚠ 与 `check:host` **覆盖面不重叠**（后者只验 schema 与登记表）；同样须在 `build` 之后、缺 `lib/` 则 exit 2）；另 `exp:next-id` 负责取号 | `package.json` 的 `scripts`；§1.4；`PROJECT.md` §10.2 |
+| **骨架 ↔ 实例漂移检查** | ✅ **已在跑** —— 收尾必跑（**条数以 `package.json` 的 `scripts` 实测为准**）= `npm run build` + `npm run typecheck` + 各个 `check:*`：`check:presets`（预设契约）· `check:config`（配置面三处不漂移）· `check:orch`（编排运行态跨重载；⚠ **含「结构改造 ① ②」真跑组 G**）· `check:client`（client 半边宿主服务取用）· `check:gitignore`（**排除漂移 + 文档形态机检多组 A/B/C/D/D′/E/F/G/H/I**，⚠ 组与条数以其实测输出为准；⚠ **第 60 轮起已是「薄调度入口 + 三个模块」**，见 §1.4）· `check:experience`（经验库编号/四要素）· `check:host`（**真产物** `lib/` 的 host 半边探针：schema 形状/默认值 + **逐开关独立启停**；⚠ **须在 `build` 之后**，`lib/` 缺失时**可读报错并 exit 2**）· `check:modules`（**真产物** `lib/` 的模块独立启停探针：真调 cordis `ctx.plugin` ⇒ 配置开关使模块**未装载** · 缺依赖 ⇒ fiber **PENDING** · **两种 inject 的不同后果**；⚠ 与 `check:host` **覆盖面不重叠**（后者只验 schema 与登记表）；同样须在 `build` 之后、缺 `lib/` 则 exit 2）；另 `exp:next-id` 负责取号 | `package.json` 的 `scripts`；§1.4；`PROJECT.md` §10.2 |
 
 ⚠ **仍未做（不许假设它存在）**：旧项目那份**通用**骨架 ↔ 实例母版比对脚本
 （`scripts/check-hob-skeleton.mjs`）**未搬运** —— 现役机检是**针对本仓库具体清单**的断言

@@ -83,11 +83,14 @@ export function isHandoffPath(file: string): boolean {
 // ── 改 1 · 写入边界校验：具名引用存在性（2026-10-10 第 44 轮 · 结构改造①）──────
 
 /**
- * 具名归档路径（与 `check-gitignore.mjs` 的**断言 D** 同源）。
+ * 具名归档路径（与 `scripts/check-doc-shape.mjs` 的**断言 D** 同源）。
+ *
+ * ⚠ 2026-10-11 第 60 轮：`check-gitignore.mjs` 已拆为「薄调度 + 三个模块」，
+ *   **本正则的检查侧同源点搬到了 `scripts/check-doc-shape.mjs`**（入口名不变）。
  *
  * ⚠ **同源纪律**（E-110：一个常量只服务一条断言 —— 这里是"一处口径两处用"，
  *   与断言 D 必须**逐字同源**）：改这里请对一眼
- *   `scripts/check-gitignore.mjs` 的 `D_REF_RE`，反之亦然。
+ *   `scripts/check-doc-shape.mjs` 的 `D_REF_RE`，反之亦然。
  *   ⚠ 为什么**照抄而不 import**：写侧（`src/`）与检查侧（`scripts/`）是两棵
  *   互不依赖的树，`src/` 不能 import `scripts/`（那会把检查脚本变成产品依赖）。
  *   ⇒ 照抄 + 在两侧注释里互相指名。
@@ -113,7 +116,10 @@ export function isHandoffPath(file: string): boolean {
 const REF_PATH_RE = /archive\/\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+\/[A-Za-z0-9._/-]*/g
 
 /**
- * 作业书文件名（与 `check-gitignore.mjs` 的**断言 D′** 同源）。
+ * 作业书文件名（与 `scripts/check-doc-shape.mjs` 的**断言 D′** 同源）。
+ *
+ * ⚠ 2026-10-11 第 60 轮：`check-gitignore.mjs` 拆分后，本正则的检查侧同源点
+ *   搬到了 `scripts/check-doc-shape.mjs`（入口名 `check:gitignore` 不变）。
  *
  * ⚠ **编号必须是数字**（`TASK-R\d+…`）—— 第 26 轮修出来的精度：
  *   原判据 `TASK-R[A-Za-z0-9-]*\.md` 会把「别为了齐整给每轮都编一个
