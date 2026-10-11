@@ -360,6 +360,180 @@ export function runDocShape({ bad, ok }) {
       }
     }
 
+    // ── 断言 N：模板必须镜像正本的「结构 + 会约束行为的正文」（补断言 A 的盲区）──
+    // ⚠ **A 只管节名**：模板里少一行表行 / 少一条必跑命令，A **照样全绿** ⇒ 新工作区
+    //   照模板起手就会**写成旧形态或漏跑命令**（第四判 F1/F2/F4/F6 实测证实）。
+    // ⚠ **收录口径**（第 95 轮裁定）：模板镜像正本的【**结构 + 会约束行为的正文**】
+    //   （表行集 / 必跑的收尾命令 / 归口说明），⛔ **不搬项目现状**（具体编号 / 字节数 / 本项目史）。
+    //   ⇒ 判据：**照模板起手的新工作区，不该因为模板缺东西而写成旧形态或漏跑命令**。
+    //
+    // ⚠ **扫描面派生**（⛔ 不手抄清单）：参与比对的正本 = 有配套模板的那几份（`A_FILES` 的同一来源）。
+    // ⚠ **有配套模板的正本才比**：没模板的正本不参与，⛔ 不许因此报红。
+    //
+    // 两组：
+    //   N1 表行集：模板里**有对应表**的，模板表行集 **⊇** 正本对应表的「结构行」集。
+    //   N2 无硬编码阈值：三份模板里⛔ 不许出现写死的阈值 / 字节数。
+    // ⚠ 归一化（去空白 / 统一引号 / 去反引号加粗）之后仍不能归一的（如正本行含具体字节数）
+    //   ⇒ **如实列为已知边界**，⛔ 不为过而放宽整条。
+    const N_HARD = [
+      [/\d[\d,]*\s*字节/, '写死的字节数'],
+      [/\d+(?:\.\d+)?\s*%/, '写死的百分数阈值'],
+      [/maxFileBytes\s*[:=]\s*\d+/, '写死的读上限'],
+      [/\b65536\b/, '写死的读上限字面量'],
+    ]
+    const nNorm = (v) => v.replace(/[`*]/g, '').replace(/[「」“”"'’]/g, '"').replace(/\s+/g, '').trim()
+    const nTokenish = (t) => /\.md$/.test(t) || /\/$/.test(t) || /^npm run [a-z][\w:-]*$/i.test(t)
+    // 「结构行」= 首格是**纯 token 列表**（只由反引号 token + 分隔符组成），且每个 token 都是**产物形状**。
+    //   ⚠ 这刻意**排除散文行**（如"经验库：索引 + 条目目录"）与**读数行**（含字节 / %）
+    //     —— 前者是**项目史**、后者是**项目现状**，都属"⛔ 不搬"的一侧（收录口径）。
+    const nStructRows = (lines) => {
+      const out = []
+      let fence = false
+      for (const l of lines) {
+        if (/^\s*```/.test(l)) { fence = !fence; continue }
+        if (fence) continue
+        if (!l.trim().startsWith('|')) continue
+        const raw = l.trim().replace(/^\|/, '').replace(/\|$/, '')
+        const first = (raw.split('|')[0] || '').trim()
+        if (/^:?-{2,}:?$/.test(first)) continue
+        if (!first.includes('`')) continue
+        if (/\d/.test(l)) continue
+        if (N_HARD.some(([re]) => re.test(l))) continue
+        const toks = [...first.matchAll(/`([^`]+)`/g)].map((m) => m[1])
+        if (!toks.length) continue
+        const stripped = first.replace(/\*\*/g, '').replace(/`[^`]*`/g, '@').replace(/[\s·+、/,]/g, '')
+        if (stripped !== '@'.repeat(toks.length)) continue
+        if (!toks.every(nTokenish)) continue
+        out.push(nNorm(first))
+      }
+      return out
+    }
+    const nSplitSections = (src) => {
+      const lines = src.split('\n'); const out = []; let cur = null
+      for (const l of lines) {
+        if (/^##\s+\S/.test(l)) { cur = { key: secKey(l), lines: [] }; out.push(cur); continue }
+        if (cur) cur.lines.push(l)
+      }
+      return out
+    }
+    // ⚠ 判据核心：吃的是**内容**，不是文件 —— 这样负向对拍可以在内存里造坏样本，
+    //   ⛔ 不需要真去改仓库文件（改仓库再还原正是"判据可能把自己写坏"的老病）。
+    const nCompare = (msrc, tsrc) => {
+      const msecs = nSplitSections(msrc)
+      const tsecs = nSplitSections(tsrc)
+      const missing = []
+      let comparedTables = 0
+      for (const ms of msecs) {
+        const ts = tsecs.find((x) => x.key === ms.key)
+        if (!ts) continue                    // 节缺失由断言 A 管，本组不重复报
+        const mRows = nStructRows(ms.lines)
+        if (!mRows.length) continue
+        comparedTables++
+        const tSet = new Set(nStructRows(ts.lines))
+        for (const r of mRows) if (!tSet.has(r)) missing.push([ms.key, r])
+      }
+      return { missing, comparedTables }
+    }
+    let nBad = 0
+    let nTables = 0
+    for (const f of A_FILES) {
+      let msrc = ''
+      let tsrc = ''
+      try { msrc = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { msrc = '' }
+      try { tsrc = readFileSync(join(root, '.hob', 'templates', f), 'utf8') } catch { tsrc = '' }
+      // ⚠ 「有配套模板的正本才比」：任一侧读不到 ⇒ 本组退出（节名已由 A 报"失去基准"）
+      if (msrc === '' || tsrc === '') continue
+      const { missing, comparedTables } = nCompare(msrc, tsrc)
+      nTables += comparedTables
+      if (missing.length > 0) {
+        nBad++
+        bad(`N 模板缺表行：模板 .hob/templates/${f} 里缺 ${missing.length} 行「正本有、模板没有」的结构行`
+          + missing.slice(0, 8).map(([k, r]) => `\n        §「${k}」缺行：${r}`).join('')
+          + (missing.length > 8 ? `\n        …另有 ${missing.length - 8} 行` : '')
+          + '\n      ⇒ 模板只镜像了"节名"（断言 A 已管）而**没镜像表行集**'
+          + '\n      ⇒ 后果：**照模板起手的新工作区会缺行**（写成旧形态 / 漏跑命令）'
+          + '\n      ⇒ 口径：模板必须镜像正本的「结构 + 会约束行为的正文」，⛔ 不搬项目现状')
+      }
+      // N3：模板⛔ 不许出现「正本没有、且不是「附：」的」节
+      //   （断言 A 只核 正本 ⊆ 模板，管不到"模板凭空多一节" ⇒ 本组补上）
+      {
+        const mKeys = new Set(nSplitSections(msrc).map((x) => x.key))
+        const extras = nSplitSections(tsrc)
+          .map((x) => x.key)
+          .filter((k) => !mKeys.has(k) && !k.startsWith('附：'))
+        if (extras.length > 0) {
+          nBad++
+          bad(`N 模板多出节：模板 .hob/templates/${f} 里有正本没有、且非「附：」的节`
+            + extras.map((k) => `\n        「${k}」`).join('')
+            + '\n      ⇒ 断言 A 只核「正本 ⊆ 模板」，管不到模板凭空多一节'
+            + '\n      ⇒ 新工作区会把这一节照抄成**不存在的规矩**'
+            + '\n      ⇒ 修法：要么删掉，要么改用「附：…」前缀（"附"节是模板允许自带的）')
+        }
+      }
+      // N2：模板里⛔ 不许出现写死的阈值 / 字节数
+      for (const [i, l] of tsrc.split('\n').entries()) {
+        for (const [re, why] of N_HARD) {
+          if (!re.test(l)) continue
+          nBad++
+          bad(`N 模板写了硬阈值（${why}）：.hob/templates/${f}:${i + 1}`
+            + `\n        ${l.trim().slice(0, 120)}`
+            + '\n      ⇒ 模板是**可分发**的：写死的阈值会**随新工作区一起复制**，'
+            + '\n        而该阈值在别的项目里几乎必然不成立（本仓已因一个百分数阈值错过一次 = CHG-034）'
+            + '\n      ⇒ 修法：改成"**从预设行读**"或**留占位**（如 `[上限]`），⛔ 不写字面量')
+        }
+      }
+    }
+    // ── B3 自带坏样本（**内存里造**，⛔ 不碰仓库文件 ⇒ 不存在"改了忘了还原"）──
+    //   四组必须**真被咬住**：① 删正本有的一行 ② 改错成员（漏 volumes/）③ 注入写死阈值 ④ 加瞎编的节。
+    //   ⚠ 与 I 组的自带样本同法：**判据改哑与判据改对必须输出不同**（E-126）。
+    {
+      const tRef = ['.hob/templates/CONTEXT.md', '.hob/templates/DECISIONS.md', '.hob/templates/USER-DECISIONS.md']
+        .map((rp) => { try { return readFileSync(join(root, rp), 'utf8') } catch { return '' } }).join('\n')
+      const mRef = A_FILES.map((f) => { try { return readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { return '' } }).join('\n')
+      const mCTX = (() => { try { return readFileSync(join(LEDGER_ROOT, 'CONTEXT.md'), 'utf8') } catch { return '' } })()
+      const tCTX = (() => { try { return readFileSync(join(root, '.hob', 'templates', 'CONTEXT.md'), 'utf8') } catch { return '' } })()
+      // ① 模板删掉正本有的一行（拿 §4.1 的 check:modules 那行做靶）
+      const N_S1 = tCTX.replace(/^\| `npm run check:modules` \|.*$/m, '')
+      // ② 模板给某行改个错成员（§1 骨架行漏 `.hob/experience/`）
+      const N_S2 = tCTX.replace('+ **`.hob/experience/`**', '')
+      // ③ 模板注入写死阈值
+      const N_S3 = tCTX + '\n> ⚠ 本文件上限 65536 字节。\n'
+      // ④ 模板加一个瞎编的节
+      const N_S4 = tCTX + '\n## 77. 瞎编的节（正本没有、也不带「附：」）\n\n| 项 | 读 |\n|---|---|\n| `x.md` | ... |\n'
+      const probes = [
+        ['① 删掉正本有的一行（§4.1 check:modules）', () => { const r = nCompare(mCTX, N_S1); return r.missing.length > 0 }],
+        ['② 改错成员（§1 骨架行漏 `.hob/experience/`）', () => { const r = nCompare(mCTX, N_S2); return r.missing.length > 0 }],
+        ['③ 注入写死阈值（"上限 65536 字节"）', () => N_S3.split('\n').some((l) => N_HARD.some(([re]) => re.test(l)))],
+        ['④ 加瞎编的节（"## 77. 瞎编的节"）', () => {
+          const mK = new Set(nSplitSections(mCTX).map((x) => x.key))
+          return nSplitSections(N_S4).map((x) => x.key).filter((k) => !mK.has(k) && !k.startsWith('附：')).length > 0
+        }],
+      ]
+      let nSampleBad = 0
+      for (const [why, fn] of probes) {
+        let bit = false
+        try { bit = fn() } catch { bit = false }
+        if (!bit) {
+          nSampleBad++
+          bad(`N 自带坏样本**没被咬**：${why}` + '\n      ⇒ 该组判据**改哑了**（坏样本都放过去了，真缺陷更会溜）'
+            + '\n      ⇒ 与 I 组同法：**判据改哑与判据改对必须输出不同**（E-126）')
+        }
+      }
+      if (nSampleBad === 0) {
+        ok('N ✓ 自带坏样本：4 组（删行 / 改错成员 / 注入硬阈值 / 瞎编节）**全部被咬住**'
+          + ' ⇒ 本组还长着牙（样本在内存里造，⛔ 未改仓库文件）')
+      }
+      // ⚠ 参照面必须真的读到东西（否则上面四条会"因两侧皆空而误判为咬住"）
+      if (tRef === '' || mRef === '') {
+        bad('N 自带样本的参照面**读不到** ⇒ 上面四条自检失去意义（不按通过处理）')
+      }
+    }
+    if (nBad === 0 && nTables > 0) {
+      ok(`N ✓ 模板镜像（结构行）：${A_FILES.length} 份有模板的正本里 ${nTables} 张表**逐行比对**，`
+        + `模板表行集 **⊇ 正本**（0 缺行）；且三份模板里**无写死的阈值 / 字节数**`
+        + ' ⇒ 照模板起手不会缺行、也不会把本项目阈值复制出去（口径：只镜像结构，⛔ 不搬项目现状）')
+    }
+
     // ── 断言 B：正本里不许出现补丁式历史说明 ──────────────────────────────
     // 两级正则（都**行首锚定**，避免把"讨论该纪律"的句子误判）：
     //   T1 = 带日期锚的补丁注记：`订正（2026-…` / `更正（2026-…`
