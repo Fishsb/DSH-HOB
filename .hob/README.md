@@ -3,7 +3,7 @@
 > **本目录只放骨架**（进 git）。**账本数据在工作区之外、按工作区名独立存放**：
 >
 > ```
-> /home/lk/.dsh/hob-ledgers/<工作区名>/     ← 账本数据（**正本：项目方案 + 各本账本** + archive/ + backups/ + runtime/）
+> /home/lk/.dsh/hob-ledgers/<工作区名>/     ← 账本数据（**正本：项目方案 + 各本账本** + volumes/ + archive/ + backups/ + runtime/）
 > ```
 >
 > **派生规则**：`<ledgerHome>/<工作区目录名>/`；`ledgerHome` 由**预设行的 config 显式配置**
@@ -12,7 +12,7 @@
 > 且**在工作区之外**（隔离由**文件系统**保证，不靠契约约束）。
 >
 > **账本区里有什么**：`PROJECT.md`（项目方案 · 唯一事实源）· `DECISIONS.md` · `USER-DECISIONS.md` ·
-> `CONTEXT.md`，以及 `archive/` · `backups/` · `runtime/`。**账本区根目录只放正本 + `archive/` · `backups/` · `runtime/`**（见 §1.6）。
+> `CONTEXT.md`，以及 `archive/` · `backups/` · `runtime/`。**账本区根上 = 正本 + `volumes/`（卷：一事一文件）+ `archive/` · `backups/` · `runtime/`**（见 §1.6）。
 > ⚠ **成员与条数一律以账本根实测为准**（⛔ 不在此写死 —— 机检侧的清单同理，见 §1.4）。
 > ⚠ **工作区里不再保留任何项目文档**。
 > ⚠ **可写面**：`PROJECT.md` 已加入 `write_hob` 的可写清单；
@@ -290,7 +290,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 
 ### 1.6 账本区根目录**只放"当前状态"**
 
-> **账本区根目录只放"当前状态"** —— 正本（`PROJECT.md` + 各本账本）+ `archive/` · `backups/` · `runtime/`。
+> **账本区根上只放"当前状态"** —— 正本（`PROJECT.md` + 各本账本）+ `volumes/`（卷：一事一文件）+ `archive/` · `backups/` · `runtime/`。
 > **任何过程产物（批次报告 / 阶段记录 / 快照）一律进 `archive/<日期>-<名>/`**，不进根目录。
 
 **依据（用户原话，逐字）**：
@@ -354,6 +354,9 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 
 /home/lk/.dsh/hob-ledgers/dsh-hob/       ← **账本数据（外置）**
 ├── PROJECT.md · DECISIONS.md · USER-DECISIONS.md · CONTEXT.md   ← **正本 = 全部"当前状态"**
+├── volumes/             ← **卷：条目正文一事一文件**（⚠ 一卷一份索引）
+│   ├── decisions/       ← 方案变更记录（`CHG-<编号>.md`）+ `INDEX.md`（卷索引）
+│   └── user-decisions/  ← 用户决策记录（`UD-<编号>.md`）+ `INDEX.md`（卷索引）
 ├── archive/             ← 交接归档 + 历史（含 2026-10-10-ledger-root-housekeeping/，见 §1.6）
 ├── backups/             ← 改前备份
 └── runtime/             ← 运行态（如 orch-watches.json）
@@ -481,7 +484,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 
 ### 5.2 各条纪律的详细说明
 
-- **防漂移**：每轮开工先读**账本目录**（`/home/lk/.dsh/hob-ledgers/<工作区名>/`）的 **`PROJECT.md`（唯一事实源，与账本同级）** 与 `CONTEXT.md` —— 后者**只写当前状态**：`§0` 防漂移摘要（一屏）+ 文档面现状 + 还欠的活 + 关键约束速查 + 开工检查单 + 本批登记。**历史与原始读数不堆在同一文件**，落 `archive/<日期>-<名>/`。⚠ **账本不在本目录**；⚠ **账本区根目录只放正本 + `archive/` · `backups/` · `runtime/`**（见 §1.6）。
+- **防漂移**：每轮开工先读**账本目录**（`/home/lk/.dsh/hob-ledgers/<工作区名>/`）的 **`PROJECT.md`（唯一事实源，与账本同级）** 与 `CONTEXT.md` —— 后者**只写当前状态**：`§0` 防漂移摘要（一屏）+ 文档面现状 + 还欠的活 + 关键约束速查 + 开工检查单 + 本批登记。**历史与原始读数不堆在同一文件**，落 `archive/<日期>-<名>/`。⚠ **账本不在本目录**；⚠ **账本区根上 = 正本 + `volumes/`（卷：一事一文件）+ `archive/` · `backups/` · `runtime/`**（见 §1.6）。
 - **归档** = 移入**账本目录**的 `archive/<日期>-<名>/` **并在 §3 表登记一行**。
 - **经验库**：动手前先扫 `.hob/EXPERIENCE.md`（**骨架，仍在本目录**）对应主题；出问题先查有没有现成根因。
 - **诚实边界**：没验的写「未验证」，不许把「我认为」写成「已验证」。
