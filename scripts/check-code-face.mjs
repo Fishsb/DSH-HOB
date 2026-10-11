@@ -369,7 +369,7 @@ export async function runRender({ bad, ok }) {
   const RENDER_TS = join(root, 'src', 'server', 'hob-render.ts')
   const HOBWRITE_TS = join(root, 'src', 'server', 'hob-write.ts')
 
-  /** 断言 I 的扫描口径：**四份正本**（与 `B_FILES` 同源 —— 值就写在它们身上）。 */
+  /** H1–H6 的夹具：全部在临时目录里自造（不读真账本 ⇒ 不依赖账本根有几份正本）。 */
   {
     const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } = await import('node:fs')
     const { tmpdir } = await import('node:os')

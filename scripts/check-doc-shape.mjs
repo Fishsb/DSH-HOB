@@ -1,8 +1,9 @@
 /**
- * 四份**正本**的形态机检（族 ②）—— A / B / J / C / D / D′ / E / I。
+ * **正本**的形态机检（族 ②）—— A / B / J / C / D / D′ / E / I。
  *
  * ⚠ 2026-10-11（第 60 轮）从 `check-gitignore.mjs` 拆分而来。
- *   读的全是账本区的四份正本，外加账本仓自己的忽略规则。
+ *   读的全是账本区的正本（⚠ **第 71 轮起为"派生"清单**，见 `derivePrimaryFiles()`），
+ *   外加账本仓自己的忽略规则。
  *   ⚠ 导出 `findDuplicateSectionHeadings` 供入口的 `--dup-headings` 单测入口复用。
  *   ⚠ `D_REF_RE` / `D_TASK_RE` / `FENCE_OPEN_RE` 的**新家就在这里** ——
  *     断言 K 的检查侧基准点必须指向本文件（否则 K 会因"提取不到"而 FAIL）。
@@ -33,7 +34,7 @@ const root = join(here, '..')
  *
  * ── 已知边界（照实登记，**不要试图消灭**）──────────────────────────
  *   · ⛔ **`### `（三级）重复不在本轮范围** —— 只认 `^## `；
- *   · ⛔ **只扫四份正本**（与 `B_FILES` 同集合）；**骨架文件（`.hob/**`）暂不扫**；
+ *   · ⛔ **只扫正本**（= `B_FILES`，**第 71 轮起派生自账本根**）；**骨架文件（`.hob/**`）暂不扫**；
  *   · ⚠ **与 `hob-render.ts` 的围栏实现同源**：下面 `fencedMaskBelow` 用的
  *     `FENCE_OPEN_RE` / 开闭判据**照抄**该文件的 `fencedMask`（**不重写一套正则**，
  *     否则会重演"文档里能安全写例子、机检却报残留"的自相矛盾）。
@@ -90,7 +91,7 @@ function fencedMaskBelow(lines) {
 /**
  * ── 文档形态机检（2026-10-10 新增 · UD-88 / CHG-025）────────────────────────
  *
- * 背景：用户裁定四份文档（方案 + 三本账本）一律**「只写当前状态」** ——
+ * 背景：用户裁定账本区的正本（方案 + 各本账本）一律**「只写当前状态」** ——
  * 正文只描述**现在是什么样**，**不带**「订正（日期·批次）：原文此处……」这类
  * **补丁式历史说明**；改动时**旧版整份归档**到 `archive/<日期>-<名>/`。
  * ⇒ 两条断言防它**回潮**：
@@ -118,8 +119,8 @@ function fencedMaskBelow(lines) {
  *   2026-10-10 用户重载实例（解除旧插件 `write_hob` 可写名单的封锁）后，
  *   Hob 已把它**整份改写为 v2.0「只写当前状态」**：122455 → 67876 字节，
  *   旧整份存 `archive/2026-10-10-project-plan-move/PROJECT.md`（逐字节）。
- *   ⇒ 排除的**理由已消失**：`B_FILES` 现含 `PROJECT.md`，四份正本**全部纳入**形态机检，
- *     本文件里**不再有任何"待纳入"的例外**。
+ *   ⇒ 排除的**理由已消失**：`B_FILES`（第 71 轮起派生自账本根）**必然含 `PROJECT.md`**，
+ *     账本根的正本**全部纳入**形态机检，本文件里**不再有任何"待纳入"的例外**。
  */
 const LEDGER_ROOT = (() => {
   // ⚠ 与其它脚本同口径：账本父目录**不硬编码本机绝对路径**（UD-73③），
@@ -153,7 +154,7 @@ const LEDGER_ROOT = (() => {
  *   ⚠ 反证：若把 `PROJECT.md` 塞进 A 的循环，A 会立刻报
  *   「A 模板读不到：…/.hob/templates/PROJECT.md —— 节名比对失去基准」⇒ **FAIL、exit 1**
  *   （第 20 轮实测）。而"不许为了让检查通过而放宽断言"是本项目红线
- *   ⇒ 正确做法是 **A 只覆盖有模板的三本**（判定逻辑一字未改），**B 覆盖全部四份正本**。
+ *   ⇒ 正确做法是 **A 只覆盖有模板的三本**（判定逻辑一字未改），**B 覆盖全部正本**（第 71 轮起为派生值）。
  *
  * ⚠ **A / B 两个常量的基准不同 ⇒ 不可合并**（这正是第 20 轮暴露的缺陷）：
  *   · `A_FILES` 的基准 = **模板**（`templates/<同名>.md` 必须存在，没有就没法比）；
@@ -165,8 +166,54 @@ const LEDGER_ROOT = (() => {
  */
 const A_FILES = ['DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md']
 
-/** B 用的：正本文件名（账本区**四份文档全部纳入**，2026-10-10 起无例外）。 */
-const B_FILES = ['PROJECT.md', 'DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md']
+/**
+ * ── 正本清单的**派生点**（第 71 轮 · 结构改造 ④「值派生而非手抄」）──────────────
+ *
+ * **为什么派生**：原先是 `const B_FILES = ['PROJECT.md', …]` —— 一张**手抄的清单**。
+ *   手抄的后果第 70 轮实测过：**账本根加第 5 份 `*.md` ⇒ D / I / J / B 一个都不扫它**
+ *   （C 组也只数那 4 个名字）—— **一整类文件逃出机检**，而全部检查照旧全绿。
+ *   ⇒ 这里把"账本根有哪些正本"改成**从账本根实测**：清单**无处可手抄**（结构解）。
+ *
+ * **口径**（照它逐字执行，别在这里加条件）：
+ *   · `readdirSync(LEDGER_ROOT)` —— **一层、非递归**；
+ *   · **只认 `.md`**，且**只认普通文件**（目录名恰好以 `.md` 结尾也不收）；
+ *   · **排序稳定**（`sort()`，同输入 ⇒ 同顺序 ⇒ 输出可逐字比对）。
+ *   `archive/` / `backups/` / `runtime/` 都是**子目录** ⇒ 结构上不可能进这张清单。
+ *
+ * **空结果 = FAIL，不是 PASS**：清单为空时每个消费方都会"扫 0 份然后报 ✓"
+ *   —— 那正是 **E-126** 说的"判据改哑"与"判据改对"输出相同。
+ *   ⇒ 本函数**不自行判死**，只把 `reason` 交出去，由消费方（`runDocShape`）
+ *     打成**可读断言行**（**E-112**：判据不只是 exit ≠ 0）。
+ */
+function derivePrimaryFiles() {
+  if (LEDGER_ROOT === undefined) {
+    return { files: [], reason: '账本根**解析不到**（`LEDGER_ROOT === undefined`）' }
+  }
+  let entries = []
+  try {
+    entries = readdirSync(LEDGER_ROOT, { withFileTypes: true })
+  } catch (e) {
+    return { files: [], reason: `账本根**不可读**：\`${String(e?.message ?? e)}\`（${LEDGER_ROOT}）` }
+  }
+  const files = entries
+    .filter((d) => d.isFile() && d.name.endsWith('.md'))
+    .map((d) => d.name)
+    .sort()
+  if (files.length === 0) {
+    return { files: [], reason: `账本根**一层下没有任何 \`.md\` 文件**（${LEDGER_ROOT}）` }
+  }
+  return { files, reason: '' }
+}
+
+const PRIMARY_FILES = derivePrimaryFiles()
+
+/**
+ * B / J / D / D′ / I 用的：正本文件名 —— **派生值，⛔ 不再手抄**（第 71 轮）。
+ * ⚠ 与 `A_FILES` **不可合并**：A 的基准是**模板**（`templates/<同名>.md` 必须存在，
+ *   没有就没法比），B 的基准是**正本本身** —— 两者**判据不同**
+ *   （**E-110**：一个常量只服务一条断言；扩范围前先搜该常量的全部消费点）。
+ */
+const B_FILES = PRIMARY_FILES.files
 
 /** 形态机检主体：A / B / J / C / D / D′ / E（累计顺序与拆前一致）。 */
 export function runDocShape({ bad, ok }) {
@@ -177,6 +224,21 @@ export function runDocShape({ bad, ok }) {
       + `断言 C（账本仓忽略规则不许写宽）**三条均未执行**，`
       + `不代表通过。跳过位置：scripts/check-gitignore.mjs 的 LEDGER_ROOT 解析。`)
   } else {
+    /**
+     * ── 前置：**正本清单必须非空**（第 71 轮 · 派生点的兜底）───────────────────
+     * ⚠ 这一支**判 FAIL，不判跳过**：清单派生不出来时，下面 B / J / D / D′ / I
+     *   五个消费方都会"扫 0 份 ⇒ 报 ✓" —— 那会把**派生断链**伪装成**全绿**
+     *   （**E-126**：判据改哑与判据改对必须输出不同）。
+     * ⚠ 判据**不只是 exit ≠ 0**：必须打印**可读断言行**（**E-112**）。
+     */
+    if (B_FILES.length === 0) {
+      bad('正本清单**派生为空** ⇒ B / J / C / D / D′ / I **全部未执行**（不按通过处理）'
+        + `\n      派生点：scripts/check-doc-shape.mjs 的 derivePrimaryFiles()`
+        + `\n      原因：${PRIMARY_FILES.reason}`
+        + '\n      ⇒ 正本清单的口径 = **账本根一层下的 `*.md`（非递归、只认普通文件、排序稳定）**'
+        + '\n      ⇒ 清单为空时若照常报 ✓，等于"这份清单永远为空也 PASS" —— ⛔ 那是判据假绿')
+    }
+
     // ── 断言 A：模板与正本的节名一致 ──────────────────────────────────────
     // ⚠ 节 key 口径：`## ` 之后的标题，**剥掉** `**加粗**` 与**尾部全角括号注解**。
     //   理由：注解是**本项目专有**的（如"（三条都是实测逼出来的）"），
@@ -255,11 +317,11 @@ export function runDocShape({ bad, ok }) {
       }
     }
     ok(`文档形态机检【已执行】—— 正本根 = ${LEDGER_ROOT}；`
-      + `四份正本**全部纳入** ${B_FILES.join(' / ')}`
-      + `（2026-10-10 起无例外：\`PROJECT.md\` 已改写为 v2.0「只写当前状态」，故纳入）`)
+      + `共 ${B_FILES.length} 份正本**全部纳入**（**实测派生**，非手抄）：${B_FILES.join(' / ')}`
+      + `（口径 = 账本根一层下的 \`*.md\`，见 derivePrimaryFiles()）`)
 
     /**
-     * ── 断言 J（2026-10-11 新增 · 第 53 轮）：**四份正本里同一节标题不得出现两次** ──
+     * ── 断言 J（2026-10-11 新增 · 第 53 轮）：**正本里同一节标题不得出现两次** ──
      *
      * 背景见文件顶部的 `findDuplicateSectionHeadings`：第 52 轮 Hob 写 `USER-DECISIONS.md`
      * 时留过一个**重复的** `## 五、回复格式`，那一版**结构已坏而全部检查都不红** ——
@@ -268,7 +330,7 @@ export function runDocShape({ bad, ok }) {
      * ⚠ **判据成对**（**E-126**：只验一侧 ⇒ 判据写对与写错输出相同）
      *   ⇒ 下面**自带样本**：`N 该咬` + `M 不该咬`（**写死、不依赖正本内容**）。
      * ⚠ **另对"真实发生过的坏快照"做活体实证**（见 J-B 段）—— 比自造样本更强。
-     * ⚠ **范围**：只扫四份正本（`B_FILES`）· 只认 `^## `（二级）· 围栏内不参与。
+     * ⚠ **范围**：只扫正本（`B_FILES`，第 71 轮起派生）· 只认 `^## `（二级）· 围栏内不参与。
      */
     {
       // ── J-A 自带样本（写死在断言里，不依赖正本内容）──
@@ -340,7 +402,7 @@ export function runDocShape({ bad, ok }) {
         }
       }
 
-      // ── J-C 主体：四份正本逐份跑 ──
+      // ── J-C 主体：正本逐份跑（清单派生自账本根）──
       for (const f of B_FILES) {
         let src = ''
         try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch {
@@ -366,7 +428,7 @@ export function runDocShape({ bad, ok }) {
      *
      * 背景：账本仓（`<ledgerRoot>/`）在 2026-10-10 新增了自己的 `.gitignore`，
      *   规则**只有一条** `backups/`（依据 README §1 的归类：改前备份属运行数据 · 不进 git）。
-     *   ⚠ 风险：若有人图省事写成 `*`（或 `**` 之类宽规则），会把**四份文档与 `archive/`**
+     *   ⚠ 风险：若有人图省事写成 `*`（或 `**` 之类宽规则），会把**正本与 `archive/`**
      *   一起**静默排除** —— git **不报任何错**，直到某天发现仓库里没有文档（E-70 / E-73 同族）。
      *
      * ⚠ **判据用"行为"而不是"解析文本"**（刻意）：
@@ -376,7 +438,7 @@ export function runDocShape({ bad, ok }) {
      *   （同 §1.4 的既有口径：判"规则"而不是判"当下 index 看得见什么"。）
      *
      * 正反两向都验（缺一即假通过）：
-     *   正向：四份文档 + `archive/` **必须都不被忽略**（任一被忽略 ⇒ FAIL）
+     *   正向：正本（派生清单）+ `archive/` **必须都不被忽略**（任一被忽略 ⇒ FAIL）
      *   反向：`backups/` **必须被忽略**（否则"整目录不进库"没生效，噪音会回来）
      */
     const ignoreIn = (cwd, target) => {
@@ -388,13 +450,13 @@ export function runDocShape({ bad, ok }) {
         throw e
       }
     }
-    // ⚠ 四份文档是**具体文件**、`archive/` 是**目录** —— 目录用「带尾斜杠 + 内嵌一个已知文件」两法都探，
+    // ⚠ 正本是**具体文件**、`archive/` 是**目录** —— 目录用「带尾斜杠 + 内嵌一个已知文件」两法都探，
     //   防"目录本身不匹配规则、但内部文件被排掉"这类偏差（与 `git check-ignore` 的目录语义有关）。
+    // ⚠ **文件那部分从派生点取**（第 71 轮）：原先这里另抄了一份 4 个文件名的清单 ——
+    //   同一个事实写两处 = **E-130 同病**（一处改了另一处没改，两面一起瞎）。
+    //   ⇒ 现在 `B_FILES` 是**唯一**的正本清单来源，本组只补上它的"目录"那一项。
     const C_MUST_NOT_IGNORE = [
-      ['PROJECT.md', '项目方案（唯一事实源）'],
-      ['DECISIONS.md', '方案变更记录'],
-      ['USER-DECISIONS.md', '用户决策记录'],
-      ['CONTEXT.md', '当前工作上下文'],
+      ...B_FILES.map((f) => [f, '账本根正本（派生自 derivePrimaryFiles()）']),
       ['archive/', '各批归档（§3 指针表说它由账本仓 git 记录保证）'],
     ]
     // ⚠ 前置：账本仓**必须是 git 仓库**（否则 check-ignore 无意义，会一律报 exit 128 ⇒ 假 PASS）
@@ -413,7 +475,7 @@ export function runDocShape({ bad, ok }) {
           + '\n      ⇒ 它们会被**静默排除**（git 不报错）；规则应**只忽略 `backups/`**。'
           + `\n      判据：在 ${LEDGER_ROOT} 跑 \`git check-ignore --no-index <路径>\` 应为 1（未被排除）`)
       } else {
-        ok(`C ✓ 账本仓：四份文档与 archive/ **均未被忽略**（${C_MUST_NOT_IGNORE.length} 项逐条实测）`)
+        ok(`C ✓ 账本仓：${B_FILES.length} 份正本（派生）与 archive/ **均未被忽略**（${C_MUST_NOT_IGNORE.length} 项逐条实测）`)
       }
       // 反向：backups/ 必须被忽略
       if (ignoreIn(LEDGER_ROOT, 'backups/') !== 0) {
@@ -437,7 +499,7 @@ export function runDocShape({ bad, ok }) {
      *   ⇒ 把它变成机器盯的（E-108③：**能机器核的不要靠人记**）。
      *
      * ── 判据（为什么是这个形状）──────────────────────────────────────────
-     *   在四份**正本**里扫 `archive/<YYYY-MM-DD-slug>/…` 形式的引用，**逐条核实磁盘上存在**。
+     *   在**派生出的正本清单**里扫 `archive/<YYYY-MM-DD-slug>/…` 形式的引用，**逐条核实磁盘上存在**。
      *
      *   ⚠ **只认"具名路径"** —— 判据**与既有权威口径同源**：
      *   `src/server/hob-write.ts` 的 `ARCHIVE_DIR_RE = /^\d{4}-\d{2}-\d{2}-[a-z0-9-]+$/`
@@ -463,7 +525,7 @@ export function runDocShape({ bad, ok }) {
      *   "在不在 git 里"是**另一条判据**（断言 C 与 MUST-TRACK 已在管）。
      *
      *   ⚠ **举证形态**：一条引用都不存在 ⇒ 不是 FAIL，而是**打印计数说明**（见下）——
-     *     "四份正本里没有任何具名引用"是**合法现状**（本批实测：`TASK-R*.md` 为 0 处），
+     *     "正本清单里没有任何具名引用"是**合法现状**（本批实测：`TASK-R*.md` 为 0 处），
      *     此时断言**无对象可查**，必须如实说明，**不许硬造**、也不许假装通过。
      */
     // ⚠ 与 `src/server/hob-write.ts:57` 的 `ARCHIVE_DIR_RE` **同源**（改一处请对一眼另一处）。
@@ -504,10 +566,10 @@ export function runDocShape({ bad, ok }) {
     if (dTotal === 0) {
       // ⚠ **不判 FAIL**：这一支是"没有可查对象"，不是"查出来有问题"。
       //   但也**不静默** —— 必须打印说明，否则读者会把"没输出"当成"查过了、没问题"。
-      ok('D ✓ 四份正本里**没有**具名的 `archive/…` 路径引用（0 处）⇒'
+      ok(`D ✓ ${B_FILES.length} 份正本里**没有**具名的 \`archive/…\` 路径引用（0 处）⇒`
         + ' 本断言**无对象可查**（已扫描，非跳过；占位形态 `archive/<日期>-<名>/` 按设计不计）')
     } else if (dMissing === 0) {
-      ok(`D ✓ 四份正本里的 ${dTotal} 处具名归档路径引用，**全部真实存在**（逐条 ${dTotal} 次 existsSync）`)
+      ok(`D ✓ ${B_FILES.length} 份正本里的 ${dTotal} 处具名归档路径引用，**全部真实存在**（逐条 ${dTotal} 次 existsSync）`)
     }
 
     /**
@@ -618,11 +680,11 @@ export function runDocShape({ bad, ok }) {
       // ⚠ 同上：**无对象可查 ≠ 通过**，但不判 FAIL（如实打印读数）。
       //   ⚠ 措辞与收紧后的判据一致：认的是 `TASK-R<数字>…md`（不是任意 `TASK-R*`），
       //     否则读者会以为"我写了 `TASK-Rnn.md` 却没被查" —— 文案与实现必须相符。
-      ok('D′ ✓ 四份正本里**没有** `TASK-R<数字>...md` 形式的作业书文件名引用（0 处；'
+      ok(`D′ ✓ ${B_FILES.length} 份正本里**没有** \`TASK-R<数字>...md\` 形式的作业书文件名引用（0 处；`
         + '示意名如 `TASK-Rnn.md`、通配如 `TASK-R*.md` **按设计不计**）⇒'
         + ' 本支**无对象可查**（已扫描，非跳过）')
     } else if (tMissing === 0) {
-      ok(`D′ ✓ 四份正本里的 ${tTotal} 处作业书文件名引用，**全部真实存在**`
+      ok(`D′ ✓ ${B_FILES.length} 份正本里的 ${tTotal} 处作业书文件名引用，**全部真实存在**`
         + `（按 basename 在 archive 的各日期子目录下比对，候选 ${archiveBasenames.size} 个）`)
     }
 
@@ -694,11 +756,11 @@ export function runDocShape({ bad, ok }) {
   }
 }
 
-/** 断言 I：四份正本无未渲染占位标记（需 `await import` 渲染器 ⇒ async）。 */
+/** 断言 I：正本无未渲染占位标记（需 `await import` 渲染器 ⇒ async）。 */
 export async function runResidualMarkers({ bad, ok }) {
   // ── 断言 I · 正本无残留标记（2026-10-11 新增 · 第 47 轮 · 结构改造④）────────
   /**
-   * **四份正本里不得存在未渲染的占位标记。**
+   * **正本里不得存在未渲染的占位标记**（清单派生自账本根，见 `derivePrimaryFiles()`）。
    *
    * ── 为什么这条是"结构性拒绝"的**另一半** ────────────────────────────────
    *   渲染器对"做不到的渲染"（自引用 / 父目录 / 目标不存在 …）采取**只提示、不拒写**
@@ -736,10 +798,10 @@ export async function runResidualMarkers({ bad, ok }) {
         }
       }
       if (hits.length === 0) {
-        ok(`I ✓ 四份正本里**没有**未渲染的占位标记（${B_FILES.length} 份逐份扫描，命中 0 处）`
+        ok(`I ✓ ${B_FILES.length} 份正本里**没有**未渲染的占位标记（逐份扫描，命中 0 处）`
           + ' ⇒ "渲染被拒绝"不会悄悄留在正本里（渲染器的"只提示、不拒写"由此有了收尾兜底）')
       } else {
-        bad(`I 四份正本里存在**未渲染的占位标记**（${hits.length} 处）：${hits.join(' · ')}`
+        bad(`I ${B_FILES.length} 份正本里存在**未渲染的占位标记**（${hits.length} 处）：${hits.join(' · ')}`
           + '\n      ⇒ 标记没被渲染成实值就落盘了（渲染被拒绝，或写入绕过了渲染器）'
           + '\n      ⇒ 处置：看写入返回值里的「读数**未渲染**」清单（含行号 + 理由），'
           + '改成可渲染的表述（最常见：目标是**该文件自身**取 `bytes`，或**其父目录**取 `count` —— 两者结构上不可能）'
@@ -752,7 +814,7 @@ export async function runResidualMarkers({ bad, ok }) {
        *   **必须自带"不该被咬"的样本**。断言 I 第 47 轮上线时**缺了这一组**，
        *   于是第 49 轮被**真实文档**引爆（Hob 在 `CONTEXT.md` 复述标记形态，见 **E-125**）。
        *
-       * ⚠ **样本写死在断言里**（学**断言 E** 的做法）：⛔ **不写进四份正本** ——
+       * ⚠ **样本写死在断言里**（学**断言 E** 的做法）：⛔ **不写进正本** ——
        *   否则就是"又拿真实文档当样本"，同一个坑会再踩一次。
        *
        * ⚠ **正向 + 反向都要有**：只验"不该咬的不咬"、不验"该咬的还咬不咬"，
@@ -798,7 +860,7 @@ export async function runResidualMarkers({ bad, ok }) {
       if (iBad === 0) {
         ok(`I ✓ 自带样本：${I_EXEMPT_SAMPLES.length} 个"不该被咬"的样本**全部未**被咬，`
           + `${I_BITE_SAMPLES.length} 个"该咬"的对照样本**全部照旧被咬**`
-          + ' ⇒ 豁免在起作用、且没有把裸写也放过（自带样本，不依赖四份正本内容）')
+          + ' ⇒ 豁免在起作用、且没有把裸写也放过（自带样本，不依赖正本内容）')
       }
     }
   }
