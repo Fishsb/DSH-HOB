@@ -264,14 +264,25 @@ const noRootAll = []     // [{n}]        —— 全册缺根因（含旧条目�
 
 // ── ⑤ 索引与条目目录的**两向完整**（2026-10-11 第 78 轮 · UD-95 / CHG-032）──────
 /**
- * **两向**：① 索引里点名（形如 `E-200` / `200.md`）的条目**必须真的有对应文件**；
+ * **两向**：① 索引里点名（表格「文件」列）的条目**必须真的有对应文件**；
  *   ② 条目目录里每一份 `*.md` **必须在索引里被点名**。
  *
- * ⚠ **条目目录缺席 ⇒ 打印「未执行（条目目录尚未建立），不代表通过」**（迁移期正常态）：
- *   本轮（机制轮）**明确不建该目录**，所以今天必然走这一支。
+ * ⚠ **条目目录缺席 ⇒ 打印「未执行（条目目录尚未建立），不代表通过」**（迁移期正常态）。
  *   ⚠ 它与 `check-doc-shape.mjs` 的正本清单**口径不同**：那里"派生为空"判 FAIL
- *   （因为正本清单**任何时候都不该为空**）；这里"目录不存在"只表示**还没搬家**，
- *   ⛔ 提前判 FAIL 会让本轮（机制轮）当场红 —— 那不是本断言要防的事。
+ *   （因为正本清单**任何时候都不该为空**）；这里"目录不存在"只表示**还没搬家**。
+ *
+ * ── 点名面**只认表格「文件」列**（2026-10-11 · 第 83 轮收紧 · R82 复核 D3/D4）──────
+ * **改前**：`matchAll(/\bE-(\d+)\b/g)` **通扫整份索引** ⇒ 两类假绿：
+ *   · **漏行**：表里删掉某行，只要该编号**在别处出现过**（如头部示例 `` `E-01` → `1.md` ``），
+ *     仍算"被点名" ⇒ **PASS**（实测：删 `E-88` 行 ⇒ PASS）；
+ *   · **指错行**：某行「文件」列指向**另一条真实存在**的文件（`E-02` → `21.md`）⇒ **PASS**。
+ *   ⇒ 通扫 = 判据面**比意图宽**，于是**整类真缺陷被静默放过**。
+ * **改后**：只认**表格行最后一格**里反引号包裹的 `*.md`（取 basename）——
+ *   与 `check-doc-shape.mjs` 的 L 断言**口径一致**（同类判据在两个脚本里不再分叉）。
+ *   ⚠ **加一条正向对账**：行内「编号」列必须与文件名主干一致（`E-02` ↔ `2.md`）——
+ *   这一条专治"指错行"（两处都存在、只是对不上号）。
+ *   ⚠ 非表格区的 `E-nn` / `<号>.md` 提及**改为提示**（**不是 FAIL**，**0 处也打印**）——
+ *   收紧采样面**不许把信息一起收掉**。
  */
 if (!ENTRIES_DIR_EXISTS) {
   note.push('⑤ 索引两向完整【未执行】—— **条目目录尚未建立**（`.hob/experience/`），'
@@ -280,28 +291,73 @@ if (!ENTRIES_DIR_EXISTS) {
 } else {
   const idxSrc = readFileSync(EXP, 'utf8')
   const namedInIndex = new Set()
-  // 索引里点名条目的两种写法：`E-200` 或 `200.md`
-  for (const m of idxSrc.matchAll(/\bE-(\d+)\b/g)) namedInIndex.add(Number(m[1]))
-  for (const m of idxSrc.matchAll(/\b(\d+)\.md\b/g)) namedInIndex.add(Number(m[1]))
+  let vBad = 0                   // 正向对账（编号 ↔ 文件名主干）失败数
+  const outsiders = []          // 非表格区的提及（提示用）
+  let idxTableRows = 0
+  idxSrc.split('\n').forEach((ln, li) => {
+    const lineNo = li + 1
+    const isTable = ln.trimStart().startsWith('|') && ln.trim().endsWith('|')
+    if (!isTable) {
+      for (const m of ln.matchAll(/\bE-(\d+)\b/g)) outsiders.push({ lineNo, kind: 'E-nn', text: m[0] })
+      for (const m of ln.matchAll(/\b(\d+)\.md\b/g)) outsiders.push({ lineNo, kind: '<n>.md', text: m[0] })
+      return
+    }
+    const cells = ln.trim().slice(1, -1).split('|').map((c) => c.trim())
+    const isSep = cells.every((c) => /^:?-{2,}:?$/.test(c))
+    const isHeader = cells[0] === '编号'
+    const last = cells[cells.length - 1] ?? ''
+    const inFileCell = [...last.matchAll(/`([A-Za-z0-9._/-]+\.md)`/g)]
+      .map((m) => m[1].split('/').pop())
+      .filter((nm) => /^\d+\.md$/.test(nm))   // ⚠ 只认 `<数字>.md`（本索引条目文件名口径）
+    if (!isSep && !isHeader && inFileCell.length > 0) {
+      idxTableRows++
+      for (const nm of inFileCell) {
+        const stem = Number(nm.replace(/\.md$/, ''))
+        namedInIndex.add(stem)
+        // 正向对账：编号列 ↔ 文件名主干
+        const numCell = (cells[0] ?? '').replace(/`/g, '').replace(/^E-/, '').trim()
+        if (numCell !== '' && Number(numCell) !== stem) {
+          vBad++
+          bad(`⑤ 索引第 ${lineNo} 行**编号与文件名主干不一致**：`
+            + `编号列 \`${cells[0]}\` ↔ 文件列 \`${nm}\``
+            + '\n      ⇒ 两列必须对得上（`E-02` ↔ `2.md`）—— 否则索引指着一份对不上号的记录')
+        }
+      }
+    } else if (!isSep && !isHeader) {
+      // 表格里有内容但文件格没给反引号文件名 ⇒ 记提示
+      for (const m of ln.matchAll(/\bE-(\d+)\b/g)) outsiders.push({ lineNo, kind: 'E-nn', text: m[0] })
+      for (const m of ln.matchAll(/\b(\d+)\.md\b/g)) outsiders.push({ lineNo, kind: '<n>.md', text: m[0] })
+    }
+  })
   const onDisk = new Set(entryFileNums.filter((e) => Number.isFinite(e.num)).map((e) => e.num))
-  let vBad = 0
+  let vBadCount = 0
   // ① 索引点名 ⇒ 文件必须存在
   for (const n of [...namedInIndex].sort((a, b) => a - b)) {
     if (!onDisk.has(n)) {
-      vBad++
-      bad(`⑤ 索引点名了 E-${n}，但 \`.hob/experience/${n}.md\` **不存在**`)
+      vBadCount++
+      bad(`⑤ 索引点名了 \`.hob/experience/${n}.md\`，但该文件**不存在**`)
     }
   }
   // ② 文件存在 ⇒ 必须被索引点名
   for (const n of [...onDisk].sort((a, b) => a - b)) {
     if (!namedInIndex.has(n)) {
-      vBad++
-      bad(`⑤ 条目文件 \`.hob/experience/${n}.md\` **没有被索引点名**（EXPERIENCE.md 里找不到 E-${n}）`)
+      vBadCount++
+      bad(`⑤ 条目文件 \`.hob/experience/${n}.md\` **没有被索引点名**`
+        + `（EXPERIENCE.md 的主题分节表里找不到 \`${n}.md\`）`)
     }
   }
-  if (vBad === 0) {
-    note.push(`⑤ 索引两向完整：索引点名 ${namedInIndex.size} 个编号 · 条目目录 ${onDisk.size} 份，`
-      + '**两向都齐** ✓')
+  if (vBad === 0 && vBadCount === 0) {
+    note.push(`⑤ 索引两向完整：索引点名 ${namedInIndex.size} 个编号（表格行 ${idxTableRows} 行）`
+      + ` · 条目目录 ${onDisk.size} 份，**两向都齐** ✓`)
+  }
+  // ⚠ 提示（不是 FAIL）：非表格区的提及 —— **0 处也打印**（"没有"与"没查"可区分）
+  if (outsiders.length === 0) {
+    note.push('⑤ 提示：非表格区（主题分节表之外）的 `E-nn` / `<号>.md` 提及 **0 处**'
+      + '（已逐行扫描；点名面 = 表格最后一格的反引号 `<数字>.md`）')
+  } else {
+    note.push(`⑤ 提示：非表格区的 \`E-nn\` / \`<号>.md\` 提及 **${outsiders.length} 处**`
+      + '（**不计入失败**，仅供人工核对是否该改成表格行）：'
+      + outsiders.map((o) => `\n        · 第 ${o.lineNo} 行 → ${o.text}`).join(''))
   }
 }
 

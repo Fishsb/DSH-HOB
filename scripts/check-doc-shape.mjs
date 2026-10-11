@@ -989,8 +989,14 @@ export function runDocShape({ bad, ok }) {
           }
         }
         if (lBad === 0) {
+          // ⚠ 构成标注（第 83 轮 · R82 复核 D6）：本行数的是**条目**（只数表格「文件」列），
+          //   ⛔ 不含各卷的 `INDEX.md`，也⛔ 不含根上的地图 —— 与 M 的分母**不同**，
+          //   并排出现时容易被当成同一个集合在变 ⇒ 各自写清构成。
           ok(`L ✓ 索引两向完整：${vols.length} 个卷 · 索引点名 ${indexedTotal} 份，`
             + '**全部真实存在**；卷内每一份（除 INDEX.md）**都被索引点名**')
+          ok(`     构成（L 的分母 = **条目**）：卷内条目 ${indexedTotal} 份`
+            + `（不含 ${vols.length} 个 \`INDEX.md\`，也不含根上地图）——`
+            + ` ⚠ 它与 M 的分母（地图 + 卷内全部 \`.md\`）不是同一个集合，别并排比`)
         }
         // ⚠ 提示（不是 FAIL）：非「文件」列的 .md 提及 —— **0 处也打印**（"没有"与"没查"可区分）
         if (outsidersTotal === 0) {
@@ -1054,7 +1060,17 @@ export function runDocShape({ bad, ok }) {
           }
         }
         if (mBad === 0) {
+          // ⚠ 构成标注（第 83 轮 · R82 复核 D6）：本行的分母 = **地图 + 卷内全部 .md**，
+          //   与 L 的分母（只数条目）**不同** ⇒ 各自写清，防并排误读。
+          const mapN = B_FILES.length
+          const volAllN = (VOLUME_FILES_RESULT.files ?? []).length
+          const volIdxN = indexNamesForM.length
+          const volEntryN = volAllN - volIdxN
           ok(`M ✓ 读上限：${mTargets.length} 份**全部在内**（上限 ${limit} 字节，实测逐份：${sizes.join(' · ')}）`)
+          ok(`     构成（M 的分母 = **地图 + 卷内全部 \`.md\`**）：地图 ${mapN} 份 + 卷内条目 ${volEntryN} 份`
+            + ` + 卷索引 ${volIdxN} 份 = ${mTargets.length} ——`
+            + ` ⚠ 与 L 同口径的只有"卷内条目 ${volEntryN}"；`
+            + ` L 另外不数那 ${volIdxN} 个卷索引、也不数那 ${mapN} 份地图`)
         } else {
           // ⚠ **有超限时也把逐份读数打出来** —— 否则"哪几份接近上限"这个
           //   决定拆分优先级的信息就丢了（第 78 轮追加说明明确要这组读数）。
