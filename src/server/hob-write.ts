@@ -61,6 +61,30 @@ const ARCHIVE_DIR_RE = /^\d{4}-\d{2}-\d{2}-[a-z0-9-]+$/
 const ARCHIVE_PATH_RE = /^archive\/([^/]+)\/([^/]+\.md)$/
 
 /**
+ * 卷路径：`volumes/<卷>/<文件>.md`（**只允许一层**子目录）—— 2026-10-11 第 78 轮 ·
+ * **UD-95 / CHG-032**：账本与方案改为「**地图＋分卷、一事一文件**」。
+ *
+ * ⚠ **只放开卷目录，不放宽其余任何白名单**：账本根那几份仍是 `LEDGER_FILES` 原样，
+ *   `archive/` 仍走 `ARCHIVE_PATH_RE`，骨架仍拒写。
+ *
+ * ⚠ **两条命名规则与归档目录"同档"**：
+ *   · 卷目录名 slug：**只允许小写字母 / 数字 / 连字符**（`^[a-z0-9-]+$`，与
+ *     `ARCHIVE_DIR_RE` **同字符集**）—— 理由见 **R-16**：写侧守卫是**窄**的那一档
+ *     （"能不能建"），判据侧是**宽**的那一档（"认不认得出"），两档**别混**。
+ *   · 卷内文件名：`^[A-Za-z0-9._-]+\.md$` —— 允许点号/大写（条目文件名是人给的事实名，
+ *     不像卷 slug 那样参与路径构造）。
+ *
+ * ⚠ **有意留下的已知边界（本轮不修，如实登记）**：**卷内路径本轮不加入「具名引用」判据**
+ *   —— `REF_PATH_RE` / `REF_TASK_RE` **一字不改**。后果：正文里写
+ *   `volumes/<卷>/<文件>.md` 这种**指不到实体**的引用，写侧不会当场点名
+ *   （归档路径那一路仍然会）。⇒ 记入 `DECISIONS.md` CHG-032 的"不做（边界）"，
+ *   留待搬家轮或后续单独立项时再收紧。
+ */
+const VOLUME_DIR_RE = /^[a-z0-9-]+$/
+/** 卷路径：`volumes/<卷>/<文件>.md`（**只允许一层**子目录）。 */
+const VOLUME_PATH_RE = /^volumes\/([^/]+)\/([A-Za-z0-9._-]+\.md)$/
+
+/**
  * 交接文件判据（2026-10-10 新增）：`archive/<日期目录>/TASK*.md`。
  *
  * ── 为什么是**路径形状**而不是内容 ──────────────────────────────────────
@@ -363,10 +387,22 @@ function checkWhitelist(file: string): WriteHobResult | null {
     }
     return null
   }
+  // 卷：只允许 volumes/<卷>/<文件>.md，且只一层（2026-10-11 第 78 轮 · UD-95 / CHG-032）
+  const v = VOLUME_PATH_RE.exec(file)
+  if (v !== null) {
+    if (!VOLUME_DIR_RE.test(v[1]!)) {
+      return refuse(
+        file,
+        'not-whitelisted',
+        `拒绝：卷目录名只允许小写字母 / 数字 / 连字符（你给的是 ${v[1]}）。`,
+      )
+    }
+    return null
+  }
   return refuse(
     file,
     'not-whitelisted',
-    `拒绝：${file} 不在白名单内。可写：${LEDGER_FILES.join(' / ')} / archive/<YYYY-MM-DD-slug>/*.md。`,
+    `拒绝：${file} 不在白名单内。可写：${LEDGER_FILES.join(' / ')} / archive/<YYYY-MM-DD-slug>/*.md / volumes/<卷>/*.md。`,
   )
 }
 

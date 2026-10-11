@@ -50,13 +50,52 @@
  * 退出码：0 = 全通过（提示项允许非空）；1 = 有强制项失败（逐条打印）
  * ⚠ 零第三方依赖（本仓纪律）。
  */
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
-const EXP = join(root, '.hob', 'EXPERIENCE.md')
+const HOB = join(root, '.hob')
+const EXP = join(HOB, 'EXPERIENCE.md')
+
+/**
+ * ── 扫描面 = 索引 + 条目目录（2026-10-11 第 78 轮 · UD-95 / CHG-032）─────────────
+ *
+ * **目标形态**：`EXPERIENCE.md` 今后是**索引**（小、每轮必读），条目落
+ *   `.hob/experience/<编号>.md`（**一事一文件**，写一次固定）。
+ *
+ * ⚠ **本轮（机制轮）不建 `.hob/experience/`、不动 `EXPERIENCE.md` 正文** ——
+ *   所以这里必须**两种形态都能查**：
+ *   · 条目目录**存在** ⇒ 扫描面 = `EXPERIENCE.md` + 目录里每个 `*.md`；
+ *   · 条目目录**不存在** ⇒ 扫描面 = `EXPERIENCE.md`（**= 现行为，一字不改**），
+ *     并**打印"未执行（条目目录尚未建立），不代表通过"**。
+ *
+ * ⚠ **为什么不"派生为空即 FAIL"**（区别于 `check-doc-shape.mjs` 的正本清单）：
+ *   条目目录缺席是**迁移期的正常态**（本轮明确不建），而索引 `EXPERIENCE.md`
+ *   **任何时候都必须存在且非空** —— 后者为空仍然判 FAIL（见下面的前置）。
+ *   ⇒ "未执行"只针对**条目目录**那一条（两向完整），**不是**整份自检跳过。
+ */
+const EXPERIENCE_DIR = join(HOB, 'experience')
+const ENTRIES_DIR_EXISTS = existsSync(EXPERIENCE_DIR)
+
+/** 扫出条目目录里的 `*.md`（**一层、非递归、只认普通文件、排序稳定**）。 */
+function deriveEntryFiles() {
+  if (!ENTRIES_DIR_EXISTS) return { files: [], exists: false, reason: `条目目录尚未建立（${EXPERIENCE_DIR}）` }
+  let entries = []
+  try {
+    entries = readdirSync(EXPERIENCE_DIR, { withFileTypes: true })
+  } catch (e) {
+    return { files: [], exists: true, reason: `条目目录**不可读**：\`${String(e?.message ?? e)}\`` }
+  }
+  const files = entries
+    .filter((d) => d.isFile() && d.name.endsWith('.md'))
+    .map((d) => d.name)
+    .sort()
+  return { files, exists: true, reason: '' }
+}
+
+const ENTRY_FILES_RESULT = deriveEntryFiles()
 
 /** **条目标题行**的判据（宽：允许 `### 🔴 E-01`、`#### E-100` 等前缀/层级差异）。 */
 const HEADING_RE = /^#{3,4}\s+.*?E-(\d+)\b/
@@ -84,19 +123,58 @@ if (!existsSync(EXP)) {
 
 const lines = readFileSync(EXP, 'utf8').split('\n')
 
-/** 抽出所有条目的 `{ n, line, body }`（正文 = 本标题行到下一个标题行之间）。 */
+/**
+ * 抽出所有条目的 `{ n, line, body, from }`（正文 = 本标题行到下一个标题行之间）。
+ *
+ * ⚠ **第 78 轮（UD-95 / CHG-032）**：扫描面扩为「**索引 + 条目目录**」——
+ *   · **索引**（`EXPERIENCE.md`）：照旧按标题行抽条目（现行为，一字不改）；
+ *   · **条目目录**（`.hob/experience/*.md`）：**每个文件算一条**（文件名即编号，
+ *     `name = <编号>.md`；编号也从正文标题行里抽，两处**都要对得上**）。
+ *
+ * ⚠ **编号来源的分工**：条目文件的**编号以文件名为准**（那是"一事一文件"的键），
+ *   正文标题行里的 `E-<n>` 用于 ③④ 的**四要素**判定与"文件名 ↔ 标题号不一致"的报错。
+ *   ⚠ 文件名与标题号不一致 ⇒ **FAIL**（否则"文件叫 E-200、里面写 E-199"会静默）。
+ */
 const entries = []
 for (let i = 0; i < lines.length; i++) {
   const m = HEADING_RE.exec(lines[i])
   if (!m) continue
-  entries.push({ n: Number(m[1]), line: i + 1 })
+  entries.push({ n: Number(m[1]), line: i + 1, from: 'EXPERIENCE.md' })
 }
 for (let k = 0; k < entries.length; k++) {
   const end = k + 1 < entries.length ? entries[k + 1].line - 1 : lines.length
   entries[k].body = lines.slice(entries[k].line - 1, end).join('\n')
 }
 
-note.push(`条目标题行 ${entries.length} 条；强制起始号 = E-${String(STRICT_FROM).padStart(2, '0')}`)
+// 条目目录：一层 *.md，每个文件一条（文件名 = `<编号>.md`）
+const entryFileNums = []   // [{ file, num, titleNum, body }]
+for (const file of ENTRY_FILES_RESULT.files) {
+  const src = readFileSync(join(EXPERIENCE_DIR, file), 'utf8')
+  const fm = /^(\d+)\.md$/.exec(file)
+  const tm = HEADING_RE.exec(src.split('\n').find((l) => HEADING_RE.test(l)) ?? '')
+  entryFileNums.push({
+    file,
+    num: fm === null ? NaN : Number(fm[1]),
+    titleNum: tm === null ? NaN : Number(tm[1]),
+    body: src,
+  })
+}
+// ⚠ 文件名不合规 ⇒ FAIL（不是静默忽略）
+for (const e of entryFileNums) {
+  if (!Number.isFinite(e.num)) {
+    bad(`条目目录里的文件名 \`${e.file}\` **不合规** —— 期望 \`<编号>.md\`（如 \`200.md\`）`)
+  } else if (!Number.isFinite(e.titleNum)) {
+    bad(`条目文件 \`${e.file}\` 正文里**找不到条目标题行**（如 \`### E-200 · …\`）`)
+  } else if (e.num !== e.titleNum) {
+    bad(`条目文件 \`${e.file}\` 的**文件名与正文编号不一致**：文件名 E-${e.num} · 正文 E-${e.titleNum}`)
+  } else {
+    entries.push({ n: e.num, line: 1, body: e.body, from: `experience/${e.file}` })
+  }
+}
+
+note.push(`条目标题行 ${entries.length} 条（索引 ${entries.filter((e) => e.from === 'EXPERIENCE.md').length}`
+  + ` · 条目目录 ${entries.filter((e) => e.from !== 'EXPERIENCE.md').length}）`
+  + `；强制起始号 = E-${String(STRICT_FROM).padStart(2, '0')}`)
 
 // ── ① 编号唯一 ──────────────────────────────────────────────────────────
 {
@@ -181,6 +259,49 @@ const noRootAll = []     // [{n}]        —— 全册缺根因（含旧条目�
   if (noRootAll.length > oldLack.length) {
     hint.push(`全册「缺根因」共 ${noRootAll.length} 条：${noRootAll.map((n) => `E-${n}`).join(', ')}`
       + `（其中 E-${STRICT_FROM} 起的已在 ④ 计为失败）`)
+  }
+}
+
+// ── ⑤ 索引与条目目录的**两向完整**（2026-10-11 第 78 轮 · UD-95 / CHG-032）──────
+/**
+ * **两向**：① 索引里点名（形如 `E-200` / `200.md`）的条目**必须真的有对应文件**；
+ *   ② 条目目录里每一份 `*.md` **必须在索引里被点名**。
+ *
+ * ⚠ **条目目录缺席 ⇒ 打印「未执行（条目目录尚未建立），不代表通过」**（迁移期正常态）：
+ *   本轮（机制轮）**明确不建该目录**，所以今天必然走这一支。
+ *   ⚠ 它与 `check-doc-shape.mjs` 的正本清单**口径不同**：那里"派生为空"判 FAIL
+ *   （因为正本清单**任何时候都不该为空**）；这里"目录不存在"只表示**还没搬家**，
+ *   ⛔ 提前判 FAIL 会让本轮（机制轮）当场红 —— 那不是本断言要防的事。
+ */
+if (!ENTRIES_DIR_EXISTS) {
+  note.push('⑤ 索引两向完整【未执行】—— **条目目录尚未建立**（`.hob/experience/`），'
+    + '**不代表通过**')
+  note.push(`     原因：${ENTRY_FILES_RESULT.reason}`)
+} else {
+  const idxSrc = readFileSync(EXP, 'utf8')
+  const namedInIndex = new Set()
+  // 索引里点名条目的两种写法：`E-200` 或 `200.md`
+  for (const m of idxSrc.matchAll(/\bE-(\d+)\b/g)) namedInIndex.add(Number(m[1]))
+  for (const m of idxSrc.matchAll(/\b(\d+)\.md\b/g)) namedInIndex.add(Number(m[1]))
+  const onDisk = new Set(entryFileNums.filter((e) => Number.isFinite(e.num)).map((e) => e.num))
+  let vBad = 0
+  // ① 索引点名 ⇒ 文件必须存在
+  for (const n of [...namedInIndex].sort((a, b) => a - b)) {
+    if (!onDisk.has(n)) {
+      vBad++
+      bad(`⑤ 索引点名了 E-${n}，但 \`.hob/experience/${n}.md\` **不存在**`)
+    }
+  }
+  // ② 文件存在 ⇒ 必须被索引点名
+  for (const n of [...onDisk].sort((a, b) => a - b)) {
+    if (!namedInIndex.has(n)) {
+      vBad++
+      bad(`⑤ 条目文件 \`.hob/experience/${n}.md\` **没有被索引点名**（EXPERIENCE.md 里找不到 E-${n}）`)
+    }
+  }
+  if (vBad === 0) {
+    note.push(`⑤ 索引两向完整：索引点名 ${namedInIndex.size} 个编号 · 条目目录 ${onDisk.size} 份，`
+      + '**两向都齐** ✓')
   }
 }
 

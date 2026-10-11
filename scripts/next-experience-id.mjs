@@ -59,13 +59,39 @@
  * ⚠ 零第三方依赖（本仓纪律）：正则与字符串处理，不引库。
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const EXP = join(root, '.hob', 'EXPERIENCE.md')
+
+/**
+ * ── 取号面 = 索引 + 条目目录（2026-10-11 第 78 轮 · UD-95 / CHG-032）─────────────
+ *
+ * **目标形态**：`EXPERIENCE.md` 是索引，条目落 `.hob/experience/<编号>.md`。
+ *   ⇒ 取号必须**同时看两处**，否则条目目录里的号会**看不见** ⇒ 取号偏小 ⇒ **撞号**。
+ *
+ * ⚠ **条目目录缺席 ⇒ 退回现行为**（只读索引）—— 本轮（机制轮）明确不建该目录。
+ * ⚠ **仍必须宽正则**（本脚本的核心判据，见文件头）：条目目录里的号**从文件名 + 正文**
+ *   两处都收；文件名用 `^(\d+)\.md$`（结构化、无盲区），正文仍走宽正则 `E-(\d+)`。
+ */
+const EXPERIENCE_DIR = join(root, '.hob', 'experience')
+
+/** 扫条目目录：返回 `{ files, dirExists }`（一层、非递归、排序稳定）。 */
+function entryFiles() {
+  if (!existsSync(EXPERIENCE_DIR)) return { files: [], dirExists: false }
+  let entries = []
+  try {
+    entries = readdirSync(EXPERIENCE_DIR, { withFileTypes: true })
+  } catch { return { files: [], dirExists: true } }
+  return {
+    files: entries.filter((d) => d.isFile() && d.name.endsWith('.md')).map((d) => d.name).sort(),
+    dirExists: true,
+  }
+}
+const ENTRIES = entryFiles()
 
 /**
  * **宽正则**：全文任意位置的 `E-<数字>`（数字后须为词边界）。
@@ -128,6 +154,26 @@ if (!existsSync(EXP)) {
 const workText = readFileSync(EXP, 'utf8')
 const work = summarize(workText)
 
+/**
+ * ⚠ **取号面必须含条目目录**（第 78 轮 · UD-95 / CHG-032）——
+ *   否则"条目落在 `.hob/experience/`、索引还没更新"这个**中间态**里，
+ *   取号会**偏小** ⇒ 新条目**撞上已有条目**（本仓已两次踩过同形坑：窄正则 ⇒ 取号偏小）。
+ *   两处来源：
+ *   · **文件名** `^(\d+)\.md$` —— 结构化，最可靠；
+ *   · **正文** 宽正则 `E-(\d+)` —— 兜住"文件名不合规但正文有号"的写法。
+ */
+const entryNums = []
+for (const f of ENTRIES.files) {
+  const fm = /^(\d+)\.md$/.exec(f)
+  if (fm !== null) entryNums.push(Number(fm[1]))
+  let src = ''
+  try { src = readFileSync(join(EXPERIENCE_DIR, f), 'utf8') } catch { src = '' }
+  entryNums.push(...numbersIn(src))
+}
+const entryMax = entryNums.length > 0 ? Math.max(...entryNums) : undefined
+const entryMaxAll = entryMax === undefined ? work.max
+  : (work.max === undefined ? entryMax : Math.max(work.max, entryMax))
+
 const head = headText()
 const headSum = head === undefined ? undefined : summarize(head)
 
@@ -138,12 +184,16 @@ else if (headSum.max === undefined) reconcile = { result: '无法对账', why: '
 else if (headSum.max === work.max) reconcile = { result: '一致', headMax: headSum.max, workMax: work.max }
 else reconcile = { result: '不一致', headMax: headSum.max, workMax: work.max }
 
-const id = nextId(work.max)
+const id = nextId(entryMaxAll)
 
 const payload = {
   file: EXP,
   nextId: id,
-  workMax: work.max,
+  workMax: entryMaxAll,
+  indexMax: work.max,
+  entryDirExists: ENTRIES.dirExists,
+  entryFileCount: ENTRIES.files.length,
+  entriesMax: entryMax,
   workEntries: work.total,
   workOccurrences: work.occurrences,
   headMax: headSum?.max,
@@ -157,8 +207,10 @@ if (process.argv.includes('--json')) {
 } else {
   console.log(`经验库：${EXP}`)
   console.log(`下一个可用编号：${id}`)
-  console.log(`当前最大号：${work.max === undefined ? '（无）' : 'E-' + work.max}`)
-  console.log(`条目总数（标题行）：${work.total}`)
+  console.log(`当前最大号：${entryMaxAll === undefined ? '（无）' : 'E-' + entryMaxAll}`
+    + `（索引 E-${work.max ?? '（无）'} · 条目目录 ${ENTRIES.dirExists ? (entryMax === undefined ? '（无）' : 'E-' + entryMax) : '**未建立（本条未执行）**'}）`)
+  console.log(`条目总数（索引标题行）：${work.total} · 条目目录 *.md：${ENTRIES.files.length}`
+    + (ENTRIES.dirExists ? '' : '（**目录未建立 ⇒ 取号只覆盖索引**）'))
   console.log(`E-n 出现次数（全文，含正文互指）：${work.occurrences}`)
   console.log(`与 git show HEAD:.hob/EXPERIENCE.md 的对账：${reconcile.result}`
     + (reconcile.why ? `（${reconcile.why}）` : '')

@@ -9,7 +9,7 @@
  *     断言 K 的检查侧基准点必须指向本文件（否则 K 会因"提取不到"而 FAIL）。
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -208,12 +208,88 @@ function derivePrimaryFiles() {
 const PRIMARY_FILES = derivePrimaryFiles()
 
 /**
+ * ── 卷文件清单的**派生点**（2026-10-11 第 78 轮 · UD-95 / CHG-032）─────────────
+ *
+ * **背景**：账本与方案改为「**地图＋分卷、一事一文件**」—— 根上那几份是**地图**，
+ *   正文按卷落进 `<账本根>/volumes/<卷>/`，**一卷一目录、一事一文件**。
+ *
+ * **为什么也派生**：与 `derivePrimaryFiles()` **同一条理由** —— 手抄清单会让
+ *   **新成员静默逃出机检**（第 70 轮实测形态，**E-133**）。⇒ 卷成员一律**从目录实测**。
+ *
+ * **口径**（照它逐字执行，别在这里加条件）：
+ *   · `readdirSync(<账本根>/volumes)` 取**卷目录**（一层，只认目录、排序稳定）；
+ *   · 每个卷目录下 `readdirSync` 取**一层** `*.md`（**非递归**、只认普通文件）；
+ *   · 路径记成**相对账本根**的 POSIX 形（`volumes/<卷>/<文件>.md`）——
+ *     与 `B_FILES`（根上文件名）拼在一起后，消费方只当"一串相对路径"用。
+ *
+ * **卷根不存在 = 迁移期正常态，交消费方打印"未执行"**（⛔ 不是放宽）：
+ *   `exists: false` 时 `files` 为空且 `exists === false`，由 §断言 L 显式打印
+ *   「未执行、不代表通过」；⚠ **这与"卷根存在但没有卷"不同** —— 后者是**空卷**，判 FAIL。
+ */
+function deriveVolumeFiles() {
+  if (LEDGER_ROOT === undefined) {
+    return { files: [], exists: false, reason: '账本根**解析不到**（`LEDGER_ROOT === undefined`）' }
+  }
+  const volumesRoot = join(LEDGER_ROOT, 'volumes')
+  if (!existsSync(volumesRoot)) {
+    return { files: [], exists: false, reason: `卷根尚未建立（${volumesRoot}）` }
+  }
+  let volDirs = []
+  try {
+    volDirs = readdirSync(volumesRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort()
+  } catch (e) {
+    return { files: [], exists: true, reason: `卷根**不可读**：\`${String(e?.message ?? e)}\`（${volumesRoot}）` }
+  }
+  const files = []
+  const emptyVolumes = []
+  for (const vol of volDirs) {
+    let entries = []
+    try {
+      entries = readdirSync(join(volumesRoot, vol), { withFileTypes: true })
+    } catch { continue }
+    const mds = entries
+      .filter((d) => d.isFile() && d.name.endsWith('.md'))
+      .map((d) => d.name)
+      .sort()
+    if (mds.length === 0) emptyVolumes.push(vol)
+    for (const f of mds) files.push(`volumes/${vol}/${f}`)
+  }
+  return { files, exists: true, volumes: volDirs, emptyVolumes, volumesRoot, reason: '' }
+}
+
+const VOLUME_FILES_RESULT = deriveVolumeFiles()
+
+/**
  * B / J / D / D′ / I 用的：正本文件名 —— **派生值，⛔ 不再手抄**（第 71 轮）。
  * ⚠ 与 `A_FILES` **不可合并**：A 的基准是**模板**（`templates/<同名>.md` 必须存在，
  *   没有就没法比），B 的基准是**正本本身** —— 两者**判据不同**
  *   （**E-110**：一个常量只服务一条断言；扩范围前先搜该常量的全部消费点）。
+ *
+ * ⚠ **2026-10-11 第 78 轮扩范围（UD-95 / CHG-032）**：本条由"账本根一层"扩为
+ *   **「账本根上的 + 卷里的」** —— 见下面的 `SCAN_FILES`。⚠ **A 不动**（它只管
+ *   有模板的那三本，与卷无关）。
  */
 const B_FILES = PRIMARY_FILES.files
+
+/**
+ * ── 扫描面 = 地图 + 卷（2026-10-11 第 78 轮 · UD-95 / CHG-032）─────────────────
+ *
+ * ⚠ **这是本轮唯一允许"扩范围"的地方**（作业书 §5 末条）：既有断言 B / J / D / D′ / I
+ *   的**判据语义一字未改**，只是**成员清单多了卷里那几份**。
+ *
+ * 成员顺序：先根上的（`B_FILES`，已 `sort()`），再卷里的（`VOLUME_FILES_RESULT.files`，
+ *   按卷名 + 文件名 `sort()`）—— **排序稳定**，同输入 ⇒ 同顺序 ⇒ 输出可逐字比对。
+ *
+ * ⚠ **消费点清单（扩范围前已 `grep`，逐条见回报）**：
+ *   `B_FILES` 的消费者 = B 组（`runDocShape` 内 `for (const f of B_FILES)`）·
+ *   J 组 · C 组（`C_MUST_NOT_IGNORE` 的拼装）· D 组 · D′ 组 · I 组（`runResidualMarkers`）。
+ *   ⇒ 它们**全部**应当随之扩到卷；**没有**消费者需要"只看根、不看卷"。
+ *   ⇒ 故这里**直接**把 `B_FILES` 的语义定为"扫描面"，并把原名保留（避免两套清单漂移）。
+ */
+const SCAN_FILES = [...B_FILES, ...VOLUME_FILES_RESULT.files]
 
 /** 形态机检主体：A / B / J / C / D / D′ / E（累计顺序与拆前一致）。 */
 export function runDocShape({ bad, ok }) {
@@ -295,7 +371,7 @@ export function runDocShape({ bad, ok }) {
     const PATCH_T2 = [
       /^\s*(?:[-*+]\s*)?(?:>\s*)?(?:\*\*)?(?:原文此处|已失实|原写|原为|原表述|此前写作)/,
     ]
-    for (const f of B_FILES) {
+    for (const f of SCAN_FILES) {
       let src = ''
       try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { src = '' }
       if (src === '') {
@@ -317,8 +393,9 @@ export function runDocShape({ bad, ok }) {
       }
     }
     ok(`文档形态机检【已执行】—— 正本根 = ${LEDGER_ROOT}；`
-      + `共 ${B_FILES.length} 份正本**全部纳入**（**实测派生**，非手抄）：${B_FILES.join(' / ')}`
-      + `（口径 = 账本根一层下的 \`*.md\`，见 derivePrimaryFiles()）`)
+      + `共 ${SCAN_FILES.length} 份（地图 + 卷）**全部纳入**（**实测派生**，非手抄）：${SCAN_FILES.join(' / ')}`
+      + `（口径 = 账本根一层下的 \`*.md\` + \`volumes/<卷>/\` 一层的 \`*.md\`，`
+      + `见 derivePrimaryFiles() / deriveVolumeFiles()）`)
 
     /**
      * ── 断言 J（2026-10-11 新增 · 第 53 轮）：**正本里同一节标题不得出现两次** ──
@@ -330,7 +407,7 @@ export function runDocShape({ bad, ok }) {
      * ⚠ **判据成对**（**E-126**：只验一侧 ⇒ 判据写对与写错输出相同）
      *   ⇒ 下面**自带样本**：`N 该咬` + `M 不该咬`（**写死、不依赖正本内容**）。
      * ⚠ **另对"真实发生过的坏快照"做活体实证**（见 J-B 段）—— 比自造样本更强。
-     * ⚠ **范围**：只扫正本（`B_FILES`，第 71 轮起派生）· 只认 `^## `（二级）· 围栏内不参与。
+     * ⚠ **范围**：扫「地图 + 卷」（`SCAN_FILES`，第 78 轮扩范围）· 只认 `^## `（二级）· 围栏内不参与。
      */
     {
       // ── J-A 自带样本（写死在断言里，不依赖正本内容）──
@@ -402,8 +479,8 @@ export function runDocShape({ bad, ok }) {
         }
       }
 
-      // ── J-C 主体：正本逐份跑（清单派生自账本根）──
-      for (const f of B_FILES) {
+      // ── J-C 主体：正本逐份跑（清单派生自账本根 + 卷，第 78 轮扩范围）──
+      for (const f of SCAN_FILES) {
         let src = ''
         try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch {
           bad(`J 正本读不到：${join(LEDGER_ROOT, f)} —— 标题重复比对失去基准（不按通过处理）`)
@@ -454,10 +531,12 @@ export function runDocShape({ bad, ok }) {
     //   防"目录本身不匹配规则、但内部文件被排掉"这类偏差（与 `git check-ignore` 的目录语义有关）。
     // ⚠ **文件那部分从派生点取**（第 71 轮）：原先这里另抄了一份 4 个文件名的清单 ——
     //   同一个事实写两处 = **E-130 同病**（一处改了另一处没改，两面一起瞎）。
-    //   ⇒ 现在 `B_FILES` 是**唯一**的正本清单来源，本组只补上它的"目录"那一项。
+    //   ⇒ 现在 `SCAN_FILES` 是**唯一**的正本清单来源，本组只补上它的"目录"那一项。
+    //   ⚠ 第 78 轮（UD-95 / CHG-032）：`SCAN_FILES` = 根上 + 卷里 ⇒ 卷根也纳入**同一条**口径。
     const C_MUST_NOT_IGNORE = [
-      ...B_FILES.map((f) => [f, '账本根正本（派生自 derivePrimaryFiles()）']),
+      ...SCAN_FILES.map((f) => [f, '正本（派生自 derivePrimaryFiles() / deriveVolumeFiles()）']),
       ['archive/', '各批归档（§3 指针表说它由账本仓 git 记录保证）'],
+      ['volumes/', '账本分卷根（UD-95 / CHG-032：卷与地图同权，都不许被忽略）'],
     ]
     // ⚠ 前置：账本仓**必须是 git 仓库**（否则 check-ignore 无意义，会一律报 exit 128 ⇒ 假 PASS）
     let ledgerIsRepo = false
@@ -475,7 +554,7 @@ export function runDocShape({ bad, ok }) {
           + '\n      ⇒ 它们会被**静默排除**（git 不报错）；规则应**只忽略 `backups/`**。'
           + `\n      判据：在 ${LEDGER_ROOT} 跑 \`git check-ignore --no-index <路径>\` 应为 1（未被排除）`)
       } else {
-        ok(`C ✓ 账本仓：${B_FILES.length} 份正本（派生）与 archive/ **均未被忽略**（${C_MUST_NOT_IGNORE.length} 项逐条实测）`)
+        ok(`C ✓ 账本仓：${SCAN_FILES.length} 份正本（派生）与 archive/ / volumes/ **均未被忽略**（${C_MUST_NOT_IGNORE.length} 项逐条实测）`)
       }
       // 反向：backups/ 必须被忽略
       if (ignoreIn(LEDGER_ROOT, 'backups/') !== 0) {
@@ -541,7 +620,7 @@ export function runDocShape({ bad, ok }) {
     const D_REF_RE = /archive\/\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+\/[A-Za-z0-9._/-]*/g
     let dTotal = 0
     let dMissing = 0
-    for (const f of B_FILES) {
+    for (const f of SCAN_FILES) {
       let src = ''
       try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { src = '' }
       if (src === '') {
@@ -566,10 +645,10 @@ export function runDocShape({ bad, ok }) {
     if (dTotal === 0) {
       // ⚠ **不判 FAIL**：这一支是"没有可查对象"，不是"查出来有问题"。
       //   但也**不静默** —— 必须打印说明，否则读者会把"没输出"当成"查过了、没问题"。
-      ok(`D ✓ ${B_FILES.length} 份正本里**没有**具名的 \`archive/…\` 路径引用（0 处）⇒`
+      ok(`D ✓ ${SCAN_FILES.length} 份里**没有**具名的 \`archive/…\` 路径引用（0 处）⇒`
         + ' 本断言**无对象可查**（已扫描，非跳过；占位形态 `archive/<日期>-<名>/` 按设计不计）')
     } else if (dMissing === 0) {
-      ok(`D ✓ ${B_FILES.length} 份正本里的 ${dTotal} 处具名归档路径引用，**全部真实存在**（逐条 ${dTotal} 次 existsSync）`)
+      ok(`D ✓ ${SCAN_FILES.length} 份里的 ${dTotal} 处具名归档路径引用，**全部真实存在**（逐条 ${dTotal} 次 existsSync）`)
     }
 
     /**
@@ -659,7 +738,7 @@ export function runDocShape({ bad, ok }) {
       } catch { /* archive 不可读 ⇒ 空集（下面的比对会因此全部报"不存在"，宁可报也不静默） */ }
       return set
     })()
-    for (const f of B_FILES) {
+    for (const f of SCAN_FILES) {
       let src = ''
       try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { continue }
       src.split('\n').forEach((line, i) => {
@@ -680,11 +759,11 @@ export function runDocShape({ bad, ok }) {
       // ⚠ 同上：**无对象可查 ≠ 通过**，但不判 FAIL（如实打印读数）。
       //   ⚠ 措辞与收紧后的判据一致：认的是 `TASK-R<数字>…md`（不是任意 `TASK-R*`），
       //     否则读者会以为"我写了 `TASK-Rnn.md` 却没被查" —— 文案与实现必须相符。
-      ok(`D′ ✓ ${B_FILES.length} 份正本里**没有** \`TASK-R<数字>...md\` 形式的作业书文件名引用（0 处；`
+      ok(`D′ ✓ ${SCAN_FILES.length} 份里**没有** \`TASK-R<数字>...md\` 形式的作业书文件名引用（0 处；`
         + '示意名如 `TASK-Rnn.md`、通配如 `TASK-R*.md` **按设计不计**）⇒'
         + ' 本支**无对象可查**（已扫描，非跳过）')
     } else if (tMissing === 0) {
-      ok(`D′ ✓ ${B_FILES.length} 份正本里的 ${tTotal} 处作业书文件名引用，**全部真实存在**`
+      ok(`D′ ✓ ${SCAN_FILES.length} 份里的 ${tTotal} 处作业书文件名引用，**全部真实存在**`
         + `（按 basename 在 archive 的各日期子目录下比对，候选 ${archiveBasenames.size} 个）`)
     }
 
@@ -753,6 +832,159 @@ export function runDocShape({ bad, ok }) {
       ok(`E ✓ 元讨论容忍：${META_TOLERANCE_SAMPLES.length} 个"不该被当成引用"的样本，`
         + '**全部未被** D / D′ 咬到（自带样本，不依赖正本内容）')
     }
+
+    /**
+     * ── 断言 L（2026-10-11 新增 · 第 78 轮 · UD-95 / CHG-032）：**索引两向完整** ──
+     *
+     * **为什么**：分卷后，"卷里有什么"与"索引里写了什么"是**两处事实**
+     *   —— 只要没有东西钉住它们，**新增条目就会从索引里漏掉**（或索引点着一份不存在的文件），
+     *   而全部检查照旧全绿（**E-133** 的实测形态）。
+     *
+     * **两向**：① 每卷**必须有** `INDEX.md`；② `INDEX.md` 点名的每份 `*.md` **必须真实存在**；
+     *   ③ 卷内每份 `*.md`（除 `INDEX.md` 自身）**必须被 `INDEX.md` 点名**。
+     *
+     * ⚠ **卷根不存在 ⇒ 打印「未执行」并跳过**（迁移期的正常态，**不是放宽**）：
+     *   本轮（机制轮）**明确不建 `volumes/`**，所以这里必然走这一支。
+     *   ⚠ **但"卷根存在却没有卷"是另一回事** ⇒ **空卷/空卷根判 FAIL**
+     *   （否则"扫 0 份然后报 ✓"就是**假绿**——正是 UD-95 点名要防的形态）。
+     */
+    // ⚠ 断言 M 也要看各 INDEX.md ⇒ 这个集合在 L 里收集、在 M 里消费。
+    //   卷根不存在 ⇒ 保持为空（M 仍会查根上那几份，M 没有"跳过"档）。
+    const indexNamesForM = []
+    if (!VOLUME_FILES_RESULT.exists) {
+      ok('L 【未执行】—— 卷根尚未建立，**不代表通过**'
+        + `\n      ⇒ 口径：<账本根>/volumes/ 不存在时本断言跳过（迁移期正常态）`
+        + `\n      ⇒ 原因：${VOLUME_FILES_RESULT.reason}`)
+    } else {
+      const volRoot = VOLUME_FILES_RESULT.volumesRoot
+      const vols = VOLUME_FILES_RESULT.volumes ?? []
+      if (vols.length === 0) {
+        bad('L **卷根存在但一个卷目录都没有** —— 空卷根会让本断言"扫 0 份报 ✓"（假绿）'
+          + `\n      ⇒ 卷根：${volRoot}`
+          + '\n      ⇒ 要么**别建卷根**（迁移期就该不建），要么卷里得有真内容 —— ⛔ 不许建空壳')
+      } else {
+        let lBad = 0
+        const indexNames = new Set()
+        let indexedTotal = 0
+        const listedInIndex = []
+        for (const vol of vols) {
+          const volDir = join(volRoot, vol)
+          const idxPath = join(volDir, 'INDEX.md')
+          let idxSrc = ''
+          try { idxSrc = readFileSync(idxPath, 'utf8') } catch { idxSrc = '' }
+          if (idxSrc === '') {
+            lBad++
+            bad(`L 卷 \`${vol}\` **缺 INDEX.md**（或读不到）：${idxPath}`
+              + '\n      ⇒ 每卷必须有自己那份索引（UD-95 / CHG-032 的目标形态）')
+            continue
+          }
+          indexNames.add(`volumes/${vol}/INDEX.md`)
+          indexNamesForM.push(`volumes/${vol}/INDEX.md`)
+          // ② 索引点名的 *.md 必须真实存在
+          let entries = []
+          try {
+            entries = readdirSync(volDir, { withFileTypes: true })
+              .filter((d) => d.isFile() && d.name.endsWith('.md'))
+              .map((d) => d.name)
+          } catch { entries = [] }
+          const realSet = new Set(entries)
+          const named = new Set()
+          for (const m of idxSrc.matchAll(/[A-Za-z0-9._-]+\.md/g)) {
+            const nm = m[0]
+            if (nm === 'INDEX.md') continue
+            named.add(nm)
+            listedInIndex.push(`volumes/${vol}/${nm}`)
+            indexedTotal++
+            if (!realSet.has(nm)) {
+              lBad++
+              bad(`L 索引点名了**不存在的文件**：volumes/${vol}/${nm}`
+                + `\n      ⇒ 索引：${idxPath}`
+                + `\n      ⇒ 该卷实际有：${entries.length === 0 ? '（无）' : entries.join(' · ')}`)
+            }
+          }
+          // ③ 卷内每份 *.md（除 INDEX.md）必须被索引点名
+          for (const nm of entries) {
+            if (nm === 'INDEX.md') continue
+            if (!named.has(nm)) {
+              lBad++
+              bad(`L 卷 \`${vol}\` 里的 \`${nm}\` **没有被 INDEX.md 点名**`
+                + `\n      ⇒ 索引：${idxPath}`
+                + '\n      ⇒ 新增条目必须同步写入该卷索引（否则它从此无人发现）')
+            }
+          }
+          if (entries.length <= 1) {
+            lBad++
+            bad(`L 卷 \`${vol}\` 是**空卷**（除 INDEX.md 外没有任何条目）`
+              + `\n      ⇒ 空卷 = "扫 0 份报 ✓" 的假绿源头（UD-95 明确要防）`)
+          }
+        }
+        if (lBad === 0) {
+          ok(`L ✓ 索引两向完整：${vols.length} 个卷 · 索引点名 ${indexedTotal} 份，`
+            + '**全部真实存在**；卷内每一份（除 INDEX.md）**都被索引点名**')
+        }
+      }
+    }
+
+    /**
+     * ── 断言 M（2026-10-11 新增 · 第 78 轮 · UD-95 / CHG-032）：**每份 ≤ 读上限** ──
+     *
+     * **为什么**：读上限 65536 是**默认读取路径**的门槛 —— 超限时
+     *   `read_contracts` 给的是**截断视图**（默认路径只给部分信息），而**没有任何东西报警**。
+     *   现有机检一条都不看字节数 ⇒ 允许写出"自己读不完的账本"。
+     *
+     * ⚠ **上限值从预设行读**（`preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `maxFileBytes`，
+     *   与 `LEDGER_ROOT` 解析**同一处读法**）—— ⛔ **不硬编码**：硬编码会在预设改值的当天过期，
+     *   而且**过期后它会主动制造假冲突**（**E-117**）。
+     * ⚠ **读不到上限 ⇒ FAIL**（"判不出"不许静默）。⚠ **M 没有"跳过"档** ——
+     *   根上那几份**任何时候都要查**（它们是否存在与卷根无关）。
+     */
+    {
+      let limit = NaN
+      try {
+        const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
+        const m = /maxFileBytes:\s*(\d+)/.exec(preset)
+        if (m !== null) limit = Number(m[1])
+      } catch { /* 下面统一判 FAIL */ }
+      if (!Number.isFinite(limit) || limit <= 0) {
+        bad('M **读不到读上限**（`maxFileBytes`）⇒ 本断言判不了（不按通过处理）'
+          + '\n      ⇒ 期望位置：preset/dsh-hob/preset-dsh-hob.patch.yml 的 `maxFileBytes`'
+          + '\n      ⇒ ⛔ 不硬编码上限：判不出就必须 FAIL，不许静默 —— 那正是本断言要防的形态')
+      } else {
+        // 对象 = 地图（B_FILES） + 卷内文件 + 各 INDEX.md
+        //   ⚠ `indexNamesForM` 由断言 L 收集（卷根不存在时为空集）——
+        //     它与 `VOLUME_FILES_RESULT.files` 有重叠（INDEX.md 也在卷文件清单里），
+        //     故下面用 `new Set(...)` 去重，⛔ 不重复计数。
+        const mTargets = [...new Set([...B_FILES, ...VOLUME_FILES_RESULT.files, ...indexNamesForM])]
+          .sort()
+        const sizes = []
+        let mBad = 0
+        for (const f of mTargets) {
+          let sz = -1
+          try { sz = statSync(join(LEDGER_ROOT, f)).size } catch { sz = -1 }
+          if (sz < 0) {
+            mBad++
+            bad(`M **读不到**：${f} —— 大小判不了（不按通过处理）`)
+            continue
+          }
+          sizes.push(`${f}=${sz}`)
+          if (sz > limit) {
+            mBad++
+            bad(`M **超过读上限**：\`${f}\` —— 实测 ${sz} 字节，上限 ${limit} 字节`
+              + `（超 ${sz - limit} 字节）`
+              + '\n      ⇒ 超限后 `read_contracts` 给的是**截断视图**（默认路径只给部分信息）'
+              + '\n      ⇒ 处置：按 UD-95 / CHG-032 拆成多卷，⛔ 不是压缩（压必然丢信息）')
+          }
+        }
+        if (mBad === 0) {
+          ok(`M ✓ 读上限：${mTargets.length} 份**全部在内**（上限 ${limit} 字节，实测逐份：${sizes.join(' · ')}）`)
+        } else {
+          // ⚠ **有超限时也把逐份读数打出来** —— 否则"哪几份接近上限"这个
+          //   决定拆分优先级的信息就丢了（第 78 轮追加说明明确要这组读数）。
+          ok(`M 读上限（${limit} 字节）逐份实测：${sizes.join(' · ')}`
+            + `\n      ⇒ 其中 ${mBad} 项未过（见上面的 ✗ 行）`)
+        }
+      }
+    }
   }
 }
 
@@ -787,7 +1019,7 @@ export async function runResidualMarkers({ bad, ok }) {
     }
     if (typeof scan === 'function') {
       const hits = []
-      for (const f of B_FILES) {
+      for (const f of SCAN_FILES) {
         let src = ''
         try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch {
           bad(`I 正本读不到：${join(LEDGER_ROOT, f)} —— 残留标记扫描失去基准（不按通过处理）`)
@@ -798,10 +1030,10 @@ export async function runResidualMarkers({ bad, ok }) {
         }
       }
       if (hits.length === 0) {
-        ok(`I ✓ ${B_FILES.length} 份正本里**没有**未渲染的占位标记（逐份扫描，命中 0 处）`
+        ok(`I ✓ ${SCAN_FILES.length} 份里**没有**未渲染的占位标记（逐份扫描，命中 0 处）`
           + ' ⇒ "渲染被拒绝"不会悄悄留在正本里（渲染器的"只提示、不拒写"由此有了收尾兜底）')
       } else {
-        bad(`I ${B_FILES.length} 份正本里存在**未渲染的占位标记**（${hits.length} 处）：${hits.join(' · ')}`
+        bad(`I ${SCAN_FILES.length} 份里存在**未渲染的占位标记**（${hits.length} 处）：${hits.join(' · ')}`
           + '\n      ⇒ 标记没被渲染成实值就落盘了（渲染被拒绝，或写入绕过了渲染器）'
           + '\n      ⇒ 处置：看写入返回值里的「读数**未渲染**」清单（含行号 + 理由），'
           + '改成可渲染的表述（最常见：目标是**该文件自身**取 `bytes`，或**其父目录**取 `count` —— 两者结构上不可能）'
