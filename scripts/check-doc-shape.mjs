@@ -867,6 +867,9 @@ export function runDocShape({ bad, ok }) {
         const indexNames = new Set()
         let indexedTotal = 0
         const listedInIndex = []
+        // ⚠ 非「文件」列的 .md 提及（**提示用，不是 FAIL**）：0 处也要打印
+        let outsidersTotal = 0
+        const outsidersAll = []
         for (const vol of vols) {
           const volDir = join(volRoot, vol)
           const idxPath = join(volDir, 'INDEX.md')
@@ -889,18 +892,85 @@ export function runDocShape({ bad, ok }) {
           } catch { entries = [] }
           const realSet = new Set(entries)
           const named = new Set()
-          for (const m of idxSrc.matchAll(/[A-Za-z0-9._-]+\.md/g)) {
-            const nm = m[0]
-            if (nm === 'INDEX.md') continue
-            named.add(nm)
-            listedInIndex.push(`volumes/${vol}/${nm}`)
-            indexedTotal++
-            if (!realSet.has(nm)) {
-              lBad++
-              bad(`L 索引点名了**不存在的文件**：volumes/${vol}/${nm}`
-                + `\n      ⇒ 索引：${idxPath}`
-                + `\n      ⇒ 该卷实际有：${entries.length === 0 ? '（无）' : entries.join(' · ')}`)
+          /**
+           * ── 点名面**只认表格「文件」列**（2026-10-11 · 第 80 轮收紧）────────────────
+           * **改前**：通扫整份 `idxSrc` 里任何 `xxx.md` ⇒ **标题里顺带写个文件名就会被咬**，
+           *   于是内容被迫**为通过而变形**（实测：`AGENTS.md` 被写成 `AGENTS`）。
+           *   ⚠ 那正是本仓禁止的形态 —— **判据过宽 ⇒ 反过来塑造内容**。
+           * **改后**：逐行解析 `|` 表格，**只取最后一格**里反引号包裹的 `*.md`。
+           *   ⛔ 不再通扫全文。⚠ 非表格行 / 其它格里的提及**改走提示**（见下方 `outsiders`），
+           *   **信息不许被一起收掉**。
+           */
+          const tableRows = []
+          const outsiders = []
+          idxSrc.split('\n').forEach((ln, li) => {
+            const lineNo = li + 1
+            const isTable = ln.trimStart().startsWith('|') && ln.trim().endsWith('|')
+            if (!isTable) {
+              // 非表格行：其中的 .md 提及全部计入"非文件列"
+              for (const m of ln.matchAll(/[A-Za-z0-9._-]+\.md/g)) {
+                if (m[0] !== 'INDEX.md') outsiders.push({ lineNo, name: m[0] })
+              }
+              return
             }
+            const cells = ln.trim().slice(1, -1).split('|').map((c) => c.trim())
+            const last = cells[cells.length - 1] ?? ''
+            // 点名对象 = 最后一格里**反引号包裹**的 *.md
+            const inFileCell = [...last.matchAll(/`([A-Za-z0-9._/-]+\.md)`/g)]
+              .map((m) => m[1].split('/').pop())
+            // 表头行 / 分隔行（分隔行形如 |---|---|）
+            const isSep = cells.every((c) => /^:?-{2,}:?$/.test(c))
+            const isHeader = cells[0] === '编号'
+            if (!isSep && !isHeader && inFileCell.length > 0) {
+              tableRows.push({ lineNo, cells, fileCell: last, names: inFileCell })
+            } else if (!isSep && !isHeader) {
+              // 有内容但文件格没给反引号文件名 ⇒ 也记提示
+              for (const m of ln.matchAll(/[A-Za-z0-9._-]+\.md/g)) {
+                if (m[0] !== 'INDEX.md') outsiders.push({ lineNo, name: m[0] })
+              }
+            }
+            // 除最后一格之外的所有格里，若有 .md 提及 ⇒ 提示
+            const others = cells.slice(0, -1).join(' | ')
+            for (const m of others.matchAll(/[A-Za-z0-9._-]+\.md/g)) {
+              if (m[0] !== 'INDEX.md') outsiders.push({ lineNo, name: m[0] })
+            }
+          })
+          for (const row of tableRows) {
+            for (const nm of row.names) {
+              named.add(nm)
+              listedInIndex.push(`volumes/${vol}/${nm}`)
+              indexedTotal++
+              if (!realSet.has(nm)) {
+                lBad++
+                bad(`L 索引点名了**不存在的文件**：volumes/${vol}/${nm}`
+                  + `\n      ⇒ 索引：${idxPath}（第 ${row.lineNo} 行）`
+                  + `\n      ⇒ 该卷实际有：${entries.length === 0 ? '（无）' : entries.join(' · ')}`)
+              }
+              /**
+               * ── 正向对账：行内「编号」列必须与文件名主干一致 ──────────────────────────
+               * `CHG-017` ↔ `CHG-017.md`。**不一致 ⇒ FAIL**（含两侧实值）。
+               * **为什么**：只查"点名的文件在不在"是**单向**的 —— 编号写错、文件名写对，
+               *   那份文件照样"存在"，索引却**指着一份对不上号的记录**。
+               *   ⚠ 判据精度靠这一条补齐（点名面收窄后，必须同时加一条正向核）。
+               */
+              const numCell = (row.cells[0] ?? '').replace(/`/g, '').trim()
+              const stem = nm.replace(/\.md$/, '')
+              if (numCell !== '' && numCell !== stem) {
+                lBad++
+                bad(`L 索引第 ${row.lineNo} 行**编号与文件名主干不一致**：`
+                  + `编号列 \`${numCell}\` ↔ 文件列 \`${nm}\``
+                  + `\n      ⇒ 索引：${idxPath}`
+                  + '\n      ⇒ 两列必须对得上（`CHG-017` ↔ `CHG-017.md`）—— 否则索引指着一份对不上号的记录')
+              }
+            }
+          }
+          /**
+           * ── 提示（**不是 FAIL**）：非「文件」列出现的 `.md` 提及**逐条列出行号** ──────
+           * ⚠ **0 处也要打印** —— "没有"与"没查"必须可区分（收紧扫描面**不许把信息一起收掉**）。
+           */
+          outsidersTotal += outsiders.length
+          for (const o of outsiders) {
+            outsidersAll.push(`volumes/${vol}/INDEX.md:${o.lineNo} → \`${o.name}\``)
           }
           // ③ 卷内每份 *.md（除 INDEX.md）必须被索引点名
           for (const nm of entries) {
@@ -921,6 +991,14 @@ export function runDocShape({ bad, ok }) {
         if (lBad === 0) {
           ok(`L ✓ 索引两向完整：${vols.length} 个卷 · 索引点名 ${indexedTotal} 份，`
             + '**全部真实存在**；卷内每一份（除 INDEX.md）**都被索引点名**')
+        }
+        // ⚠ 提示（不是 FAIL）：非「文件」列的 .md 提及 —— **0 处也打印**（"没有"与"没查"可区分）
+        if (outsidersTotal === 0) {
+          ok('L 提示：非「文件」列的 `.md` 提及 **0 处**（已逐行扫描全部索引；'
+            + '点名面 = 表格最后一格的反引号 `*.md`）')
+        } else {
+          ok(`L 提示：非「文件」列的 \`.md\` 提及 **${outsidersTotal} 处**（**不计入失败**，仅供人工核对是否该改成点名）：`
+            + outsidersAll.map((s) => `\n        · ${s}`).join(''))
         }
       }
     }
