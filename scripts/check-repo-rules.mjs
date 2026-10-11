@@ -68,7 +68,11 @@ export function runRepoRules({ bad, ok }) {
    */
   const mustTrack = [
     ['.hob/README.md', '骨架 · 约定归属地（README §1）'],
-    ['.hob/EXPERIENCE.md', '骨架 · 经验库（README §1 + 专节）'],
+    ['.hob/EXPERIENCE.md', '骨架 · 经验库**索引**（README §1 + §1.7）'],
+    // ⚠ 2026-10-11（第 81 轮）**原样加回** —— 第 80 轮曾因「目录尚不存在、.gitignore 也没放行」
+    //   把它撤下；本轮目录真的建了、`!` 例外真的加了、文件真的入库了 ⇒ 三处同批恢复。
+    //   ⚠ 目录形态的判据见 `inIndexDir()`（`git ls-files --error-unmatch` 对目录恒 false）。
+    ['.hob/experience/', '骨架 · 经验库条目目录（README §1 + §1.7；一条一个 <编号数字>.md）'],
     ['.hob/templates/DECISIONS.md', '骨架 · 空模板'],
     ['.hob/templates/USER-DECISIONS.md', '骨架 · 空模板'],
     ['.hob/templates/CONTEXT.md', '骨架 · 空模板'],
@@ -138,7 +142,30 @@ export function runRepoRules({ bad, ok }) {
     }
   }
 
+  /**
+   * 目录形态的 MUST-TRACK 判据（2026-10-11 · 第 81 轮新增）。
+   *
+   * **为什么不能直接用 `inIndex()`**：`git ls-files --error-unmatch -- <目录>/`
+   *   **永远 exit 1**（实测：`error: pathspec '.hob/experience/' did not match any file(s) known to git`）
+   *   —— git 只跟踪**文件**，目录本身不在 index 里。
+   *   ⇒ 若照搬文件判据，本项会**常红**，而"常红"会让它被无视（**E-117** 同族）。
+   *
+   * ⚠ **这不是放宽**：改成的判据**更严** —— 不满足于"目录在那儿"，而是要求
+   *   **该目录下至少有一个文件真的进了 index**。即它拦的正是本项要拦的东西
+   *   （E-70 的失效模式：文件静默不入库）。
+   */
+  function inIndexDir(dir) {
+    try {
+      const out = execFileSync('git', ['ls-files', '--', dir], { cwd: root, encoding: 'utf8' })
+      return out.trim() !== ''
+    } catch (e) {
+      if (typeof e.status === 'number') return false
+      throw e
+    }
+  }
+
   for (const [p, why] of mustTrack) {
+    const isDir = p.endsWith('/')
     const code = ignoreExitCode(p)
     if (code === 0) {
       bad(`MUST-TRACK 却被规则排除：${p}  —— ${why}`)
@@ -148,8 +175,10 @@ export function runRepoRules({ bad, ok }) {
       bad(`MUST-TRACK 但磁盘上不存在：${p}  —— ${why}（不存在无法证明"规则放行"，不算通过）`)
       continue
     }
-    if (!inIndex(p)) {
-      bad(`MUST-TRACK 但未加入 git index：${p}  —— ${why}（规则放行且文件在，但从未 git add ⇒ 仓库里仍没有它）`)
+    if (isDir ? !inIndexDir(p) : !inIndex(p)) {
+      bad(isDir
+        ? `MUST-TRACK（目录）但其中没有任何文件加入 git index：${p}  —— ${why}（目录在、规则也放行，但目录**空**或其中文件从未 git add ⇒ 仓库里仍没有它）`
+        : `MUST-TRACK 但未加入 git index：${p}  —— ${why}（规则放行且文件在，但从未 git add ⇒ 仓库里仍没有它）`)
       continue
     }
     ok(`MUST-TRACK ✓ ${p}`)

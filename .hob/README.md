@@ -18,7 +18,7 @@
 > ⚠ **可写面**：`PROJECT.md` 已加入 `write_hob` 的可写清单；
 > 但**方案只有用户能批准变更、Hob 只提议** —— 那是**程序纪律**，不是工具闸门。
 >
-> **仍在本目录**（骨架）：`README.md` · `EXPERIENCE.md` · `templates/` · `roles/` · `drafts/`。
+> **仍在本目录**（骨架）：`README.md` · `EXPERIENCE.md` · `experience/` · `templates/` · `roles/` · `drafts/`。
 >
 > ⚠ **名称未改**：本目录仍叫 `.hob/`，但它**不再是账本**（只放骨架）。
 > 改名会牵动**大量引用**（⚠ 属**漂移型计数，此处不写死**；要最新值以 `grep -r '\.hob/'` 实测为准）⇒ **不改名** —— 故在此处显式说明，避免误读。
@@ -34,7 +34,7 @@
 
 | 类别 | 判定标准 | 进 git？ | 位置 |
 |---|---|---|---|
-| **骨架** | **格式契约 / 被机检脚本消费的规范源** —— 表头、列定义、编号规则、以及**入库脚本会读取的契约正文**。可复用、可分发；新建工作区时用它初始化 | ✅ **进** | `.hob/README.md`、`.hob/templates/`、`.hob/EXPERIENCE.md`、**`.hob/drafts/`**（见 §1.2）、**`.hob/roles/`**（见 §1.3） |
+| **骨架** | **格式契约 / 被机检脚本消费的规范源** —— 表头、列定义、编号规则、以及**入库脚本会读取的契约正文**。可复用、可分发；新建工作区时用它初始化 | ✅ **进** | `.hob/README.md`、`.hob/templates/`、`.hob/EXPERIENCE.md`、**`.hob/experience/`**（条目目录 —— UD-95 / CHG-032，见 §1.7）、**`.hob/drafts/`**（见 §1.2）、**`.hob/roles/`**（见 §1.3） |
 | **运行数据 / 方案** | **填充进格式的具体条目 / 本项目专有的过程产物** —— 第 N 条事实 / 第 N 条决策 / 本轮进度 / 改前备份 / **项目方案** | ❌ **不进**（且**不在本目录**，见顶部说明） | `PROJECT.md`（已迁入账本区）· 各本账本 · `.hob/archive/` · `.hob/backups/` · `.hob/CARRYOVER.md` · `.hob/STEP*-REPORT.md` ⇒ 各本正本在 `/home/lk/.dsh/hob-ledgers/dsh-hob/` **根目录**；**过程产物（`CARRYOVER.md` / `STEP*-REPORT.md` / 经验库碎片等 15 份）在该区 `archive/2026-10-10-ledger-root-housekeeping/`**（见 §1.6） |
 
 **一句话**：**格式进 git，内容不进** —— 且内容**不在本目录**。
@@ -314,23 +314,24 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 - **维护**：新坑进本册，编号 `E-nn` 续编**不重排**；**不许丢「根因」**（只写现象等于没写）。
 - **未验证项进 §7**，不许混进正文当已知。
 
-### 1.7 `.hob/experience/` —— 经验库的**条目目录**（**已立机制 · 尚未建目录**）
+### 1.7 `.hob/experience/` —— 经验库的**条目目录**（**已建立**）
 
-> **目标形态**（**UD-95 / CHG-032**）：`EXPERIENCE.md` 是**索引**（小、每轮必读），
-> **一条经验 = 一个文件**，落 `.hob/experience/<编号>.md` —— **写一次固定**，要改就新写一条取代。
+> **现行形态**（**UD-95 / CHG-032**）：`EXPERIENCE.md` 是**索引**（小、每轮必读），
+> **一条经验 = 一个文件**，落 `.hob/experience/<编号数字>.md` —— **写一次固定**，要改就新写一条取代。
 
-⚠ **当前状态（如实）：该目录尚未建立**，条目仍全部在 `EXPERIENCE.md` 正文里
-（第 78 轮是**机制轮**，⛔ 明确**不搬内容、不建目录**；搬家在下一轮）。
+⚠ **文件名口径**：`<编号数字>.md`，**不补零**（`E-01` → `1.md` · `E-133` → `133.md`）。
+依据：`check:experience.mjs` 的判据正则就是 `^(\d+)\.md$`。
 
-**已生效的机制（第 78 轮）**：
+**机制（第 78 轮立 · 第 81 轮随目录建立启用）**：
 
 | 脚本 | 扫描面 |
 |---|---|
-| `check:experience` | **索引 + 条目目录**（两处都查）：编号唯一 / 连续 + `E-84` 起四要素 + **索引两向完整**。⚠ 条目目录**缺席 ⇒ 该项打印「未执行、不代表通过」**（迁移期正常态）；`EXPERIENCE.md` 本体**照旧强制检查** |
-| `exp:next-id` | 取号面**同扩到条目目录**（文件名 `^(\d+)\.md$` **+** 正文宽正则 `E-(\d+)`，⛔ 两个都收 —— 窄正则会**取号偏小 ⇒ 撞号**，本仓已两次踩坑）；目录缺席 ⇒ **退回现行为** |
+| `check:experience` | **索引 + 条目目录**（两处都查）：编号唯一 / 连续 + `E-84` 起四要素 + **索引两向完整**。⚠ 目录**存在时 ⑤ 真跑**；目录**缺席**才打印「未执行、不代表通过」（迁移期口径，现已不走这一支） |
+| `exp:next-id` | 取号面含条目目录（文件名 `^(\d+)\.md$` **+** 正文宽正则 `E-(\d+)`，⛔ 两个都收 —— 窄正则会**取号偏小 ⇒ 撞号**，本仓已两次踩坑） |
 
-⚠ **两向完整**（目录建立后强制）：索引点名的条目**必须真的有文件** · 目录里每份文件
-**必须被索引点名** · 文件名与正文编号**必须一致**（不一致 ⇒ FAIL）。
+⚠ **两向完整**（现强制）：索引点名的条目**必须真的有文件** · 目录里每份文件
+**必须被索引点名**。
+⚠ **新增一条经验 = 新增一个 `.hob/experience/<n>.md` + 在 `EXPERIENCE.md` 对应主题分节加一行**（两处同批）。
 
 ---
 
@@ -339,7 +340,8 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 ```
 .hob/                         ← **本目录只放骨架；账本数据在工作区之外**
 ├── README.md            ← 本文件（骨架 · 进 git）
-├── EXPERIENCE.md        ← 经验库（骨架 · 进 git · 提炼自旧项目）
+├── EXPERIENCE.md        ← 经验库**索引**（骨架 · 进 git · 提炼自旧项目）
+├── experience/          ← 经验库**条目目录**（骨架 · 进 git，见 §1.7；一条一个 `<编号数字>.md`）
 ├── templates/           ← 空模板（骨架 · 进 git；份数以 `ls .hob/templates/` 实测为准）
 │   ├── CONTEXT.md  ├── USER-DECISIONS.md  └── DECISIONS.md
 │   ├── ROLES.md         ← 角色簇人读契约（§1.3）
@@ -437,6 +439,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 | **纪律登记表归属必须真实** | 本表每行第 3 列须为存在的 `check:` 或 `未机器化` | `check:gitignore` |
 | **不许零宽/不可见字符** | `src/**` 与 `scripts/**` 内不得含 U+200B / U+FEFF / U+200E / U+200F | `check:gitignore` |
 | 经验库编号与四要素 | 编号唯一且连续 + `E-84` 起四要素与根因句齐备 | `check:experience` |
+| **经验库索引两向完整** | 索引点名的条目**必须真有文件** · `experience/` 里每份 **必须被索引点名**（⛔ 目录缺席才「未执行」，**现不走这一支**） | `check:experience` |
 | 预设契约人读版 ↔ 机器读版一致 | 引文块与预设正文**全文逐字**一致 | `check:presets` |
 | 工具面白名单固定 | 模型面可见名字集合（**30 名**）不悄悄变 | `check:presets` |
 | 配置面三处不漂移 | `config.ts` schema ↔ patch 的 config ↔ 设置面板 | `check:config` |
@@ -521,7 +524,7 @@ shell 把**整条命令**报成失败 ⇒ `EXIT=1` 会被误当成**命令报错
 |---|---|---|
 | 账本（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`） | ✅ **已建立并在用**，**外置**于 `/home/lk/.dsh/hob-ledgers/<工作区名>/`（本工作区 = `/home/lk/.dsh/hob-ledgers/dsh-hob/`，**独立仓根**、历史随迁）。当前进度：**正本一律「只写当前状态」形态**（不带补丁式历史说明，旧版**整份**存 `archive/<日期>-<名>/`）；编号以 `git log` / 正本实测为准 | `ls` 该目录；账本仓 `git log` |
 | `templates/` 空模板 | ✅ 已就位（**份数以 `ls -la .hob/templates/` 实测为准**）—— 三账本空模板（`DECISIONS` / `USER-DECISIONS` / `CONTEXT`）+ `ROLES.md`（角色簇）+ `GATES.md`（阶段与门禁）+ `TASK.md` / `REPORT.md`（交接协议载体） | `ls -la .hob/templates/` |
-| `EXPERIENCE.md` 经验库 | ✅ 已就位；条目数与下一个可用编号**以 `npm run exp:next-id` 实测为准**（该命令同时与 git 版本对账）；写作纪律：新坑续编不重排、**不许丢根因**、未验证项进 §7 | `.hob/EXPERIENCE.md`；`npm run exp:next-id` |
+| `EXPERIENCE.md` 经验库（**索引**） | ✅ 已就位；条目数与下一个可用编号**以 `npm run exp:next-id` 实测为准**（该命令同时与 git 版本对账）；**条目正文在** `.hob/experience/<编号数字>.md`（一条一个文件、文件名不补零）；写作纪律：新坑续编不重排、**不许丢根因**、未验证项进 §7 | `.hob/EXPERIENCE.md`；`.hob/experience/`；`npm run exp:next-id` |
 | `archive/` | **不在本目录** —— 交接归档（`TASK.md` / `REPORT.md`）落在**账本目录**的 `archive/<日期>-<名>/`，并须在 §3 指针表登记一行 | `ls` 工作区 `.hob/`（无 archive）；账本目录 `ls archive/` |
 | **写账本的工具** | ✅ **已在用且真机验证过** —— `read_contracts`（读账本 `.md`）+ `write_hob`（写账本）；`write_hob` 真机写入与自动备份已实测 | `src/server/hob-write.ts`、`src/modules/tools.ts` |
 | **骨架 ↔ 实例漂移检查** | ✅ **已在跑** —— 收尾必跑（**条数以 `package.json` 的 `scripts` 实测为准**）= `npm run build` + `npm run typecheck` + 各个 `check:*`：`check:presets`（预设契约）· `check:config`（配置面三处不漂移）· `check:orch`（编排运行态跨重载；⚠ **含「结构改造 ① ②」真跑组 G**）· `check:client`（client 半边宿主服务取用）· `check:gitignore`（**排除漂移 + 文档形态机检多组 A/B/C/D/D′/E/F/G/H/I**，⚠ 组与条数以其实测输出为准；⚠ **第 60 轮起已是「薄调度入口 + 按族拆开的模块」**，见 §1.4）· `check:experience`（经验库编号/四要素）· `check:host`（**真产物** `lib/` 的 host 半边探针：schema 形状/默认值 + **逐开关独立启停**；⚠ **须在 `build` 之后**，`lib/` 缺失时**可读报错并 exit 2**）· `check:modules`（**真产物** `lib/` 的模块独立启停探针：真调 cordis `ctx.plugin` ⇒ 配置开关使模块**未装载** · 缺依赖 ⇒ fiber **PENDING** · **两种 inject 的不同后果**；⚠ 与 `check:host` **覆盖面不重叠**（后者只验 schema 与登记表）；同样须在 `build` 之后、缺 `lib/` 则 exit 2）；另 `exp:next-id` 负责取号 | `package.json` 的 `scripts`；§1.4；`PROJECT.md` §10.2 |

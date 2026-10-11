@@ -17,6 +17,8 @@ dist/
 #     · `.hob/templates/`     —— README §1 表格第 1 行 + §2 目录树
 #     · `.hob/EXPERIENCE.md`  —— README §1 表格第 1 行 + §1 的专节
 #                                「`EXPERIENCE.md` 是什么（本项目的特殊骨架）」
+#     · `.hob/experience/`    —— README §1 表格第 1 行 + **§1.7**（2026-10-11 建立：
+#                                经验库条目目录，一条一个 `<编号数字>.md`）
 #     · `.hob/drafts/`        —— README §1 表格第 1 行 + **§1.2（本次新增的归纠正）**
 #     · `.hob/roles/`         —— README §1 表格第 1 行 + **§1.3（2026-10-08 新增）**
 #                                角色簇与方法论（改编自 dsh-expert-mode，MIT）——
@@ -58,6 +60,8 @@ dist/
 !.hob/templates/
 !.hob/templates/**
 !.hob/EXPERIENCE.md
+!.hob/experience/
+!.hob/experience/**
 !.hob/drafts/
 !.hob/drafts/**
 !.hob/roles/
