@@ -62,7 +62,7 @@
 
 ### 0.5 账本与方案（同住账本区）
 
-**四份文档**：`PROJECT.md`（方案）+ `DECISIONS.md` + `USER-DECISIONS.md` + `CONTEXT.md`（本文件）。
+**四份文档**：`PROJECT.md`（方案 —— **地图**：只留**文件头 + §0**；**正文按节**在 `volumes/plan/`，索引 `volumes/plan/INDEX.md`）+ `DECISIONS.md` + `USER-DECISIONS.md` + `CONTEXT.md`（本文件）。
 
 **条目正文在哪**：四份正本都是**地图**（在根上、每轮必读）；**条目正文按卷落、一事一文件** ——
 变更记录全文在 `volumes/decisions/<编号>.md`、用户决策全文在 `volumes/user-decisions/<编号>.md`、
@@ -91,7 +91,7 @@
 
 | 文档 | 位置 | 管什么 | 谁写 |
 |---|---|---|---|
-| **`PROJECT.md`** | 账本区根 | **方案 / 唯一事实源**（⚠ **不按节分卷** —— 见文件头触发点） | **只有用户能批准变更，Hob 只提议** |
+| **`PROJECT.md`** | 账本区根 | **方案 / 唯一事实源**（⚠ **地图**：只留**文件头 + §0**）；**正文按节**：`volumes/plan/`（索引 `volumes/plan/INDEX.md`） | **只有用户能批准变更，Hob 只提议** |
 | **`CONTEXT.md`** | 账本区根 | **本文件**（⚠ 单档，**不按节分卷**）；当前状态 + 还欠的活 + 开工检查单 | Hob |
 | **`DECISIONS.md`** | 账本区根 | 影响**方案本身**的变更（`CHG-nn`）；⚠ **正文按卷**：`volumes/decisions/` | Hob（变更须用户批准） |
 | **`USER-DECISIONS.md`** | 账本区根 | **用户决策**（`UD-nn`，逐条附用户原话）；⚠ **正文按卷**：`volumes/user-decisions/` | Hob |
