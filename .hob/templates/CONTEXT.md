@@ -15,9 +15,9 @@
 > **条目正文按卷落、一事一文件** —— 变更记录在 `volumes/decisions/<编号>.md`、
 > 用户决策在 `volumes/user-decisions/<编号>.md`、经验在 `.hob/experience/<编号数字>.md`；
 > **一卷一份索引**（`volumes/decisions/INDEX.md` · `volumes/user-decisions/INDEX.md`；经验库的索引就是 `EXPERIENCE.md`）。
-> ⚠ **`PROJECT.md` 是唯一不按节分卷的一份**（它是"当前方案"、不是历史）—— **触发点**：
+> ⚠ **`PROJECT.md` = 地图**（只留**文件头 + §0**）；**正文按节**在 `volumes/plan/`（索引 `volumes/plan/INDEX.md`）—— **触发点**：
 > **写它之前先算一次** —— 若**加上本次内容就会超过读上限**（上限值**从预设行读**，⛔ 不硬编码），
-> 就**先把超出部分按节搬进 `volumes/plan/`**（**由 Hob 出稿、用户过目**）。
+> 就**继续按节分卷**（**由 Hob 出稿、用户过目**）。
 
 ---
 
@@ -93,10 +93,10 @@
 |---|---|---|---|
 | **`PROJECT.md`** | 账本区根 | **方案 / 唯一事实源**（⚠ **地图**：只留**文件头 + §0**）；**正文按节**：`volumes/plan/`（索引 `volumes/plan/INDEX.md`） | **只有用户能批准变更，Hob 只提议** |
 | **`CONTEXT.md`** | 账本区根 | **本文件**（⚠ 单档，**不按节分卷**）；当前状态 + 还欠的活 + 开工检查单 | Hob |
-| **`DECISIONS.md`** | 账本区根 | 影响**方案本身**的变更（`CHG-nn`）；⚠ **正文按卷**：`volumes/decisions/` | Hob（变更须用户批准） |
+| **`DECISIONS.md`** | 账本区根 | 影响**方案本身**的变更（`CHG-nn`）+ **现行规约（§八 口径速查）**；⚠ **正文按卷**：`volumes/decisions/` | Hob（变更须用户批准） |
 | **`USER-DECISIONS.md`** | 账本区根 | **用户决策**（`UD-nn`，逐条附用户原话）；⚠ **正文按卷**：`volumes/user-decisions/` | Hob |
-| **`.hob/EXPERIENCE.md`** + **`.hob/experience/`** | 工作区（骨架，进 git） | 经验库：**索引 + 条目目录**（⚠ **正文按卷**：`.hob/experience/<编号数字>.md`） | Hob |
-| **`.hob/README.md`** | 工作区（骨架，进 git） | 骨架说明 + **§3 归档指针表** | Hob（骨架改动走人工 + 提交） |
+| **`.hob/EXPERIENCE.md`** + **`.hob/experience/`** | 工作区（骨架，进 git） | **经验库**：**索引 + 条目目录** —— **机制细节与教训的唯一来源**（⚠ **正文按卷**：`.hob/experience/<编号数字>.md`，**文件名不补零**；⚠ **条数以 `exp:next-id` 实测为准**） | Hob |
+| **`.hob/README.md`** | 工作区（骨架，进 git） | 骨架说明 · **§1.4 机检（各组守什么）** · **§5.1 纪律登记表** · §3 归档表 | Hob（骨架改动走人工 + 提交） |
 | **`.hob/templates/`** · **`roles/`** · **`drafts/`** | 工作区（骨架，进 git） | 空模板 · 角色方法论 · 契约人读版 | 同上 |
 | **归档目录 · `backups/` · `runtime/`** | 账本区 | 交接归档 + **改前整份** · 自动备份（**不进 git · 是快照不是已知良好态**）· 编排运行态（**自忽略**） | Hob / 工具自动 |
 
