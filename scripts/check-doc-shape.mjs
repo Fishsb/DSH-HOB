@@ -883,27 +883,40 @@ export function runDocShape({ bad, ok }) {
     const D_REF_RE = /archive\/\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+\/[A-Za-z0-9._/-]*/g
     let dTotal = 0
     let dMissing = 0
+    /**
+     * ⚠ **R108 卡2「断言语义面收口」新增（只增输出）**：分文件计数。
+     *   `[文件名, 命中处数 | null, 缺失处数 | null]`（`null` = 该份正本读不到）。
+     *   ⛔ **它只喂下面的 `ok()` 输出行** —— 不参与任何 FAIL 判定、不改变 `bad()` 触发条件，
+     *   也不改 `dTotal` / `dMissing` 的累加口径（两者仍是原来的逐条累加）。
+     */
+    const dPerFile = []
     for (const f of SCAN_FILES) {
       let src = ''
       try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { src = '' }
       if (src === '') {
         bad(`D 正本读不到：${join(LEDGER_ROOT, f)} —— 引用核验失去基准（不按通过处理）`)
+        dPerFile.push([f, null, null])
         continue
       }
+      let dFileHits = 0
+      let dFileMissing = 0
       src.split('\n').forEach((line, i) => {
         for (const m of line.matchAll(D_REF_RE)) {
           const ref = m[0]
           // 通配（`TASK-*.md` 之类）不是具名引用 —— 跳过，不算数。
           if (ref.includes('*')) continue
           dTotal++
+          dFileHits++
           if (!existsSync(join(LEDGER_ROOT, ref))) {
             dMissing++
+            dFileMissing++
             bad(`D 正本 ${f}:${i + 1} 引用了**不存在**的路径：\`${ref}\``
               + '\n      ⇒ 正本里的具名引用必须真的存在（凭记忆写文件名已踩坑三次：E-108 / E-109 / 本条的出处）'
               + `\n      ⇒ 核实方式：在 ${LEDGER_ROOT} 跑 \`ls ${ref}\``)
           }
         }
       })
+      dPerFile.push([f, dFileHits, dFileMissing])
     }
     if (dTotal === 0) {
       // ⚠ **不判 FAIL**：这一支是"没有可查对象"，不是"查出来有问题"。
@@ -913,6 +926,15 @@ export function runDocShape({ bad, ok }) {
     } else if (dMissing === 0) {
       ok(`D ✓ ${SCAN_FILES.length} 份里的 ${dTotal} 处具名归档路径引用，**全部真实存在**（逐条 ${dTotal} 次 existsSync）`)
     }
+    // ⚠ R108 卡2「断言语义面收口」**只增输出**：**分文件计数** —— 逐份正本给出
+    //   「命中 N 处 / 缺失 M 处」（缺失为 0 也照实打印 0；该份读不到则照实标"读不到"）。
+    //   ⛔ 这一行**不参与任何判据**：FAIL 与否只由上面的 `bad()`（`dTotal` / `dMissing` 那两支）
+    //   决定，本行只是把同一批扫描读数**摊到每份文件**上；⛔ 也不写死任何"预期 N"（E-117）。
+    ok(`D ✓ 分文件计数（逐份，共 ${dPerFile.length} 份）：`
+      + dPerFile.map(([f, h, m]) => (h === null
+        ? `\n      · ${f} 读不到（已在上方逐条点名）`
+        : `\n      · ${f} 命中 ${h} 处 / 缺失 ${m} 处`)).join('')
+      + '\n      （读数取自本次扫描，非文档写死的预期值）')
 
     /**
      * ── D 的**自带样本**（2026-10-11 第 54 轮收紧后补 · **E-126** 成对纪律）────────
@@ -1001,15 +1023,22 @@ export function runDocShape({ bad, ok }) {
       } catch { /* archive 不可读 ⇒ 空集（下面的比对会因此全部报"不存在"，宁可报也不静默） */ }
       return set
     })()
+    const tPerFile = []
     for (const f of SCAN_FILES) {
       let src = ''
-      try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { continue }
+      // ⚠ 原口径：读不到 ⇒ `continue`（**不报**，与 D 支的 `bad()` 不同）—— 这一支**原样保留**，
+      //   分文件计数只在"读到的那几份"上统计（读不到记 `null`，供输出行如实标注）。
+      try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { tPerFile.push([f, null, null]); continue }
+      let tFileHits = 0
+      let tFileMissing = 0
       src.split('\n').forEach((line, i) => {
         for (const m of line.matchAll(D_TASK_RE)) {
           const name = m[0]
           tTotal++
+          tFileHits++
           if (!archiveBasenames.has(name)) {
             tMissing++
+            tFileMissing++
             bad(`D 正本 ${f}:${i + 1} 引用了**不存在**的作业书：\`${name}\``
               + `\n      ⇒ 账本区 \`archive/*/\` 下没有这个 basename（实测 ${archiveBasenames.size} 个候选）`
               + '\n      ⇒ 写成文件名就**必须存在**：轮次号可以只叙事，但 `TASK-Rn.md` 是**具名物**'
@@ -1017,6 +1046,7 @@ export function runDocShape({ bad, ok }) {
           }
         }
       })
+      tPerFile.push([f, tFileHits, tFileMissing])
     }
     if (tTotal === 0) {
       // ⚠ 同上：**无对象可查 ≠ 通过**，但不判 FAIL（如实打印读数）。
@@ -1029,6 +1059,14 @@ export function runDocShape({ bad, ok }) {
       ok(`D′ ✓ ${SCAN_FILES.length} 份里的 ${tTotal} 处作业书文件名引用，**全部真实存在**`
         + `（按 basename 在 archive 的各日期子目录下比对，候选 ${archiveBasenames.size} 个）`)
     }
+    // ⚠ R108 卡2「断言语义面收口」**只增输出**：D′ 的**分文件计数** —— 口径与 D 支一致
+    //   （逐份「命中 N 处 / 缺失 M 处」，0 也照实打印；读不到的份照实标"读不到"）。
+    //   ⛔ 不参与判据（FAIL 只由上面的 `bad()` / `tMissing` 决定），⛔ 不写死"预期 N"（E-117）。
+    ok(`D′ ✓ 分文件计数（逐份，共 ${tPerFile.length} 份）：`
+      + tPerFile.map(([f, h, m]) => (h === null
+        ? `\n      · ${f} 读不到（本支原口径：读不到不报，仅不计）`
+        : `\n      · ${f} 命中 ${h} 处 / 缺失 ${m} 处`)).join('')
+      + '\n      （读数取自本次扫描，非文档写死的预期值）')
 
     /**
      * ── 断言 E：**元讨论容忍**（2026-10-10 新增 · 第 28 轮 · 采纳第 27 轮建议 2）────
