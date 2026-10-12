@@ -58,6 +58,15 @@
  *      ⚠ 与前几组同款纪律：这是**新增断言，不是放宽**（缺失即 FAIL）；
  *        且**不钉标题行** —— 任务书要求**就地追加在既有段落内**，钉标题会把
  *        "就地追加"这一形态本身变成要求（与批 5/批 6 同款）。
+ *   ⑤k **2026-10-13（第 111 轮 · 用户本轮原话）· 显式职责边界块短钉**：
+ *      契约正文须**有一块显式的职责边界**（`## Your duty boundary`，位置在
+ *      `## Your duties` 之后、`## Your side and the other side` 之前）——
+ *      正向钉**五类语义各至少一条**（①边界块自身 · ②做什么 · ③不做什么 ·
+ *      ④三条不变量「投递 ≠ 执行 / 建会话 ≠ 委派 / 回传 ≠ 验收」·
+ *      ⑤靠什么守住：本预设工具面 + fail-open 读法 + "无命令 ≠ 不能读文件"）；
+ *      负向钉"不得起用被禁标题名"（Delegation 一族，与 ⑤e 同款）；
+ *      并复述"本次追加未挤掉既有条文"（KEPT 口径，与 ⑤g/⑤i 同款）。
+ *      ⚠ 判据**不写"预期 N 条"**（只判缺项，不设预期计数）。
  *
  * 用法：node scripts/check-preset-contracts.mjs
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
@@ -1243,6 +1252,89 @@ const STALE_APPELLATIONS = [
       } else ok(`⑤j \`hob_spawn\` 入参两个（${PARAMS.map(([l]) => l).join(' / ')}）仍在`)
     }
   }
+}
+
+// ── ⑤k 2026-10-13（第 111 轮 · 用户本轮原话）· Hob 契约的**显式职责边界**块 ──
+//
+// 为什么需要（本组存在的唯一理由，别删）：用户本轮原话是
+//   「搭建项目时，**预设模式不只是完成自身功能，还要明确写出自身的职责边界**」。
+//   实测（本轮开工读数）：批 111 之前，契约里**没有一块显式的职责边界** ——
+//   边界只以「不实施」「投递不是做完了」「不许打印内部标识」这类句子**散落**在各段里。
+//   ⇒ 而 ⑤ 只能证明"两份载体一致"：**两份一起把这块删掉，⑤ 照样 PASS**。
+//   本组把用户诉求钉成**可判的断言**。
+//
+// ⚠ 口径（防误读）：
+//   · 钉的是**稳定短语**，不是整段逐字 —— 措辞可随文调整，只要该语义还在，句子就还在。
+//     **这是新增断言，不是放宽**：任一条缺失即 FAIL。
+//   · 分组口令:五类语义**各至少一条**（任务书 §1 第 4 步原始列表）——
+//     ① 显式的边界块（标题 + 正文）· ② 做什么 · ③ 不做什么 · ④ 三条不变量 ·
+//     ⑤ 靠什么守住（工具面 + fail-open 读法 + "无命令 ≠ 不能读文件"）。
+//   · **不写"预期 N 条"**（任务书明令）：下面两条 `filter` 判**缺项**，
+//     ⛔ 不设任何**预期计数**字面量。
+//   · 编号：现有最大为 ⑤j ⇒ 顺延为 **⑤k**（与批 5 / 批 6 同款：语义一致，区别只在编号）。
+{
+  const hoBody8 = literalBlock(hoSrc, 'prefix') ?? ''
+
+  // ── ① 正向：五类语义各钉稳定短语（任一缺失即 FAIL）──────────────────
+  const BOUNDARY_PINS = [
+    // ① 显式的边界块（自己的标题 + 正文）
+    ['①边界块标题在位（`## Your duty boundary`）', '## Your duty boundary'],
+    ['①边界块有自己的正文（"一次说清"起句）', 'What you do, once and for all'],
+    // ② 做什么（沟通与理解需求 → 拆分 → 编排 → 分发 → 监督验收；只读自己直接做；维护自己的账本）
+    ['②做什么：沟通与理解需求 → 拆分 → 编排 → 分发 → 监督验收', 'talk with the user and understand the need, break it'],
+    ['②做什么：只读的事自己直接做 + 维护自己的账本与交接文件', 'Read-only work you do yourself, and you keep your own ledger and hand-off files'],
+    // ③ 不做什么（不实施 · 不改代码 · 不改工作区文件 · 不执行命令 · 不组队 · 不替人挑目标会话）
+    ['③不做什么：不实施 + 不改代码 + 不改工作区文件并列', 'you do not implement, you do not change code, you do not change a'],
+    ['③不做什么：不执行命令', 'you do not run a'],
+    ['③不做什么：不组队', 'you do not raise a team of your own'],
+    ['③不做什么：不替人挑目标会话', "you do not pick a target session on"],
+    // ④ 三条不变量（投递 ≠ 执行 · 建会话 ≠ 委派 · 回传 ≠ 验收）
+    ['④不变量：投递 ≠ 执行', 'delivering is'],
+    ['④不变量：建会话 ≠ 委派', 'creating a session is not delegating'],
+    ['④不变量：回传 ≠ 验收', 'a result coming back is not'],
+    // ⑤ 靠什么守住（工具面 + fail-open 读法 + "无命令 ≠ 不能读文件"）
+    ['⑤靠什么守住：本预设的工具面（发给模型的清单 + 执行前拦截）', 'by the tool face of this preset alone'],
+    ['⑤靠什么守住：拦截是 fail-open ⇒ 读作"现有机制下不可达"', 'fail-open'],
+    ['⑤靠什么守住：明确"不是安全边界"', 'not as a'],
+    ['⑤靠什么守住："无命令"≠"插件不能读文件"，两条不混', 'is not the same as "the plugin cannot read'],
+  ]
+  const boundaryMissing = BOUNDARY_PINS.filter(([, s]) => !hoBody8.includes(s))
+  if (boundaryMissing.length > 0) {
+    bad(`⑤k ${NAME_HO}：职责边界块缺语义（${boundaryMissing.length} 处）：`
+      + `${boundaryMissing.map(([l]) => l).join(' / ')} —— `
+      + '用户 2026-10-13 原话要求"预设必须明确写出自身的职责边界"，缺一条即未兑现')
+  } else ok(`⑤k ${NAME_HO}：职责边界块五类语义俱全（${BOUNDARY_PINS.map(([l]) => l).join(' · ')}）`)
+
+  // ── ② 负向：正文不得出现被禁的标题名（与 ⑤e 的形态负向同款）──────────
+  //   理由：这块**必须是"职责边界"**，不是"怎么委派"。若以 Delegation 一族起标题，
+  //   等于把委派教程当成边界声明（用户要的是**职责边界**，不是又一份派活说明）。
+  const BANNED_TITLES = ['## Delegation', '## How you delegate', '## Delegating']
+  const bannedHit = BANNED_TITLES.filter((h) => hoBody8.includes(h))
+  if (bannedHit.length > 0) {
+    bad(`⑤k ${NAME_HO}：职责边界块起用了被禁的标题名（${bannedHit.join(', ')}）`
+      + ' —— 这块必须是"职责边界"声明，不是"怎么委派"教程')
+  } else ok(`⑤k ${NAME_HO}：职责边界块未起用被禁标题名（${BANNED_TITLES.length} 个扫描项均为 0）`)
+
+  // ── ③ 既有条文逐字保留（本批追加**不许挤掉**任何一条既有条文）────────
+  //   ⚠ 与 ⑤g / ⑤i 的 KEPT 口径同款：这里**单独可见地复述一次**"本批追加没把既有的挤掉"，
+  //    而不是依赖别组的断言替它背书。
+  const KEPT_BY_111 = [
+    ['职责句（不实施 / 只读直接做）', 'What is read-only, you do directly'],
+    ['投递 ≠ 执行（既有句）', 'Delivering is not doing'],
+    ['建会话 ≠ 委派（既有句）', 'Creating a'],
+    ['回传 ≠ 验收（既有句）', 'A returned result is not acceptance'],
+    ['文件交接（TASK.md 落点）', 'holding a TASK.md with the complete directive'],
+    ['委派门槛', 'delegate only work that MUST be done by hand'],
+    ['指令自足', 'Every directive must stand on its own'],
+    ['验收只认读数', 'Accept on readings only'],
+    ['决策自主', 'Decide on your own.'],
+    ['原始读数纪律', 'State nothing to the user without a reading behind it'],
+  ]
+  const squeezed = KEPT_BY_111.filter(([, s]) => !hoBody8.includes(s))
+  if (squeezed.length > 0) {
+    bad(`⑤k ${NAME_HO}：职责边界块的追加**挤掉了既有条文**（${squeezed.length} 处）：`
+      + `${squeezed.map(([l]) => l).join(' / ')} —— 本批只许追加，不许顶掉既有的`)
+  } else ok(`⑤k ${NAME_HO}：既有 ${KEPT_BY_111.length} 组条文逐字保留（职责边界块的追加未挤掉任何一条）`)
 }
 
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────

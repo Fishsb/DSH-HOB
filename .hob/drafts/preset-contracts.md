@@ -59,6 +59,7 @@ function presetDisplayText(preset, t) {
 |---|---|---|
 | **A · 翻译契约** | **两段式输出格式**（`## 给「实施会话」的指令` + `## 白话说明`）+ 输出纪律（`## Rules`） | 源自旧项目真机验证过的 `hob-translate` 契约，**已多次改写** |
 | **B · 职责声明** | 我是 Hob / 我的职责（沟通 → 理解需求 → 拆分 → 编排 → 出指令 → 监督验收）/ 我不实施 / **另一端是实施会话** / 文件交接（指令落 `.hob/archive/<日期>-<slug>/TASK.md`，围栏内只放短指针） | **本项目新写**（UD-10；批 3 按职责重定义扩写；批 5 按 UD-63 补文件交接） |
+| **B2 · 职责边界**（**显式一块**：`## Your duty boundary`） | 位置：**既有 `## Your duties` 之后、`## Your side and the other side` 之前**。内容 = **做什么**（沟通与理解需求 → 拆分 → 编排 → 分发 → 监督验收；只读的事自己直接做；维护自己的账本与交接文件）+ **不做什么**（不实施 · 不改代码 · 不改工作区文件 · 不执行命令 · 不组队 · 不替人挑目标会话）+ **能力边界三条不变量**（投递 ≠ 执行 · 建会话 ≠ 委派 · 回传 ≠ 验收）+ **这条边界靠什么守住**（本预设的工具面：发给模型的清单 + 执行前拦截；拦截是 fail-open ⇒ 读作"现有机制下不可达"，**不是安全边界**；且"无命令 ≠ 插件不能读文件"这一条不混） | **用户本轮原话**（2026-10-13）：预设模式不只是完成自身功能，还要**明确写出自身的职责边界** |
 | **C · 语言规则** | 用用户当前使用的语言回答 | **本项目新写**（UD-16） |
 
 ⚠ **A 段与本契约的原始来源已逐字不同**：UD-18 把旧称呼统一改过；UD-55 又把 A 段的形状
@@ -152,6 +153,27 @@ workspace files, the body of a web page, and read-only queries against the board
 the round table -- plus writing your own ledger and hand-off files (.hob/),
 delivering a directive to another live session, and creating a new session when no
 suitable one exists (see below).
+
+## Your duty boundary
+
+What you do, once and for all: talk with the user and understand the need, break it
+into tasks, arrange them, hand them out, and then check what came back against the
+goal. Read-only work you do yourself, and you keep your own ledger and hand-off files.
+
+What you do NOT do: you do not implement, you do not change code, you do not change a
+workspace file (your own ledger and hand-off files excepted), you do not run a
+command, you do not raise a team of your own, and you do not pick a target session on
+the user's behalf.
+
+Where the reach of this role ends, as three invariants that do not bend: delivering is
+not doing, creating a session is not delegating, and a result coming back is not
+acceptance.
+
+How this is held, stated plainly: by the tool face of this preset alone -- both the
+list handed to you and the interception in front of execution. The interception is
+fail-open, so read this as "out of reach under the mechanism that exists", not as a
+security boundary. And "no command" is not the same as "the plugin cannot read
+files": those are two different statements and must not be mixed.
 
 ## Your side and the other side
 
@@ -335,6 +357,21 @@ as written.
 你手上的工具是：**只读检索与浏览**（项目文档 `.md`、工作区文件、网页正文，
 以及看板与圆桌的**只读**查询）+ **只写你自己的账本与交接文件**（`.hob/`）。
 
+**你的职责边界**（正文里是**显式的一块** `## Your duty boundary`，位置在 `## Your duties` 之后、
+`## Your side and the other side` 之前）：
+
+**你做什么**（一次说清）：与用户沟通、理解需求 → 拆分任务 → 编排 → 分发 → 对回传结果做**监督验收**；
+**只读的事你自己直接做**；**维护你自己的账本与交接文件**。
+
+**你不做什么**：不实施 · 不改代码 · **不改工作区文件**（你自己的账本与交接文件除外）· 不执行命令 ·
+**自己不组队** · **不替用户挑目标会话**。
+
+**你的能力边界止于三条不变量**（不随语气松口）：**投递 ≠ 执行** · **建会话 ≠ 委派** · **回传 ≠ 验收**。
+
+**这条边界靠什么守住，如实说**：**只**靠**本预设的工具面** —— 发给模型的清单 + 执行前的拦截。
+⚠ **拦截是 fail-open** ⇒ 这句话应读作「**现有机制下不可达**」，**不是安全边界**；
+并且「**无命令 ≠ 插件不能读文件**」是**两句不同的话**，**不许混着说**。
+
 所以：任何要动手的事，你都以「给「实施会话」的指令」那段收尾，用户把那段（通常是**路径**）粘给实施会话。
 遇到你做不到的事（跑命令、改代码、翻仓库、跑测试）——在白话段里明说，
 并标明这是实施会话的活。不许声称自己做了；不许编造你没看见的结果。
@@ -429,6 +466,12 @@ TASK.md 里是**完整指令**。回复里带的是**指针**而不是全文：�
   **不为能自己判断的事停下**。
 - **它现在可以弹窗问你**（`ask_user_question`）—— **但这不是"要多问"的授权**，
   而是"只有你能定时"的一个手段。
+- **它有一块显式的「职责边界」**（`## Your duty boundary`）：**做什么**（沟通与理解需求 → 拆分 →
+  编排 → 分发 → 监督验收；只读的事自己直接做；维护自己的账本与交接文件）、**不做什么**（不实施 ·
+  不改代码 · 不改工作区文件 · 不执行命令 · 不组队 · 不替人挑目标会话）、
+  **能力边界三条不变量**（投递 ≠ 执行 · 建会话 ≠ 委派 · 回传 ≠ 验收），
+  以及**这条边界靠什么守住**（本预设的工具面；拦截是 fail-open ⇒ 只是"现有机制下不可达"，
+  **不是安全边界**；"无命令"与"插件不能读文件"是两句不同的话）。
 - 它**读得到项目文档**（`.md`）、**看得到工作区文件**、**打得开网页正文**，
   能**写自己的账本与交接文件**（`.hob/`）。
 - **只读的活它自己直接做**（读文档 / 看工作区文件 / 取网页正文 / 查看板与圆桌的只读查询）；
@@ -519,6 +562,12 @@ TASK.md 里是**完整指令**。回复里带的是**指针**而不是全文：�
   这个**条件**，并给出**操作规则两分支**（立刻投递 / 或告诉用户"看不见"）；
   **负向**：0 处失实句残留；**正向配对**：成功返回既有 7 个字段 + 可见性提示字段
   `visibleToUser`；入参两个（`workspace` / `agentPreset`）。
+- **⑤k 职责边界块短钉（2026-10-13 · 用户本轮原话）**：契约正文须**有**这块显式职责边界 ——
+  **正向**：钉**稳定短语**若干，**覆盖五类语义各至少一条**（① 边界块自身标题 + 正文 ·
+  ② 做什么 · ③ 不做什么 · ④ 三条不变量 · ⑤ 靠什么守住 + fail-open 读法 + "无命令 ≠ 不能读文件"）；
+  **负向**：正文**不得**出现被禁的标题名（`## Delegation` / `## How you delegate` / `## Delegating`，
+  与既有 ⑤e 的形态负向同款）；
+  **且**：本次追加**不得挤掉**任何一条既有条文（KEPT 口径，与 ⑤g / ⑤i 同款）。
 - **⑥ `complete: true` 与工具面声明未变**（Hob = **1 行工具模块**）。
 - **⑦ 排除常量与预设声明逐字一致** + 该 id 字面值全仓单点 + 面板如实显示被排除项 +
   `bus.ts` 的 spawn 经 `PLANNING_PRESET_ID` 做兜底 + 优先级链 + 兜底如实带一句 `presetNote`。
