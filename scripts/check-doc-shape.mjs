@@ -540,6 +540,89 @@ export function runDocShape({ bad, ok }) {
         + '**不**代表"模板与正本逐字一致"（名单不写死：口径如上，以实测输出的表数为准）')
     }
 
+    // ── 断言 O：地图 ↔ 卷 两向完整 + 说明列非空（第 99 轮 · UD-98 / CHG-038）──
+    // ⚠ **只为"地图漏了某个板块"这一件事**加判据（⛔ 不扩到别的对象）。
+    // ⚠ **扫描面派生**：读卷目录实测，⛔ 不手抄板块清单（E-133 同族）。
+    // ⚠ **只对"有卷的地图"生效**：卷根不存在 ⇒ 打印「未执行、不代表通过」（迁移期口径，⛔ 不是放宽）。
+    // ⚠ **新组、新常量**：⛔ 不改任何既有断言的语义；⛔ 不加"跳过"档。
+    const oMapPath = join(LEDGER_ROOT, 'PROJECT.md')
+    const oVolDir = join(LEDGER_ROOT, 'volumes', 'plan')
+    if (!existsSync(oVolDir)) {
+      // ⚠ 打印「未执行」—— **不报通过**（本仓口径：『没有』与『没查』必须可区分）
+      ok('O 【未执行、不代表通过】`volumes/plan/` 卷根不存在 ⇒ '
+        + '「地图 ↔ 卷 两向完整 + 说明列非空」这一组**没有查**，不是通过'
+        + `\n      （卷根：${oVolDir}）`)
+    } else {
+      // ① 扫描面派生：卷目录里的节文件（排除 INDEX.md）
+      let oVols = []
+      try {
+        oVols = readdirSync(oVolDir).filter((f) => f.endsWith('.md') && f !== 'INDEX.md').sort()
+      } catch { oVols = [] }
+      if (oVols.length === 0) {
+        bad('O 卷目录里**一份节文件都没有**（或读不到）⇒ 「地图点到每一个卷」无从判定（不按通过处理）'
+          + `\n      ⇒ 卷根：${oVolDir}`)
+      } else if (!existsSync(oMapPath)) {
+        bad(`O 地图读不到：${oMapPath} ⇒ 「地图 ↔ 卷 两向完整」失去基准（不按通过处理）`)
+      } else {
+        const oMapSrc = readFileSync(oMapPath, 'utf8')
+        // ② 抽出「板块总览」表：三列 = 板块 / 这一块讲什么 / 去哪读
+        const oRows = []
+        for (const [i, l] of oMapSrc.split('\n').entries()) {
+          if (!l.trim().startsWith('|')) continue
+          const cells = l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((x) => x.trim())
+          if (cells.length !== 3) continue
+          if (cells[0] === '板块' || /^-{2,}$/.test(cells[0].replace(/:/g, ''))) continue
+          const paths = [...cells[2].matchAll(/`([^`]+\.md)`/g)].map((m) => m[1])
+          if (paths.length === 0) continue
+          oRows.push({ lineNo: i + 1, name: cells[0], desc: cells[1], paths })
+        }
+        const oStripped = (v) => v.replace(/[`*\s｜|]/g, '')
+        let oBad = 0
+        // ③ 问一：卷里每一份节文件都必须被地图点到
+        const oNamed = new Set()
+        for (const r of oRows) for (const pa of r.paths) oNamed.add(pa.split('/').pop())
+        const oMissing = oVols.filter((v) => !oNamed.has(v))
+        if (oMissing.length > 0) {
+          oBad++
+          bad(`O 地图**漏了板块**：卷里有 ${oVols.length} 份节文件，地图的「板块总览」表只点到 ${oNamed.size} 份`
+            + oMissing.map((v) => `\n        漏：volumes/plan/${v}`).join('')
+            + '\n      ⇒ 「读完地图知道项目由哪些板块组成」这条标准**静默失效**'
+            + '\n      ⇒ 修法：在 `PROJECT.md` 的「板块总览」表里补上该板块行')
+        }
+        // ④ 问二：说明列必须有实质内容（空 / 仅标点 / 与板块名逐字相同 ⇒ FAIL）
+        for (const r of oRows) {
+          const nameStripped = oStripped(r.name)
+          const descStripped = oStripped(r.desc)
+          const noSubstance = descStripped === ''
+            || /^[，。、；：·—\-。！？\s]*$/.test(descStripped)
+            || descStripped === nameStripped
+          if (noSubstance) {
+            oBad++
+            bad(`O 「这一块讲什么」**没有实质内容**：PROJECT.md:${r.lineNo}`
+              + `\n        板块：${r.name}`
+              + `\n        说明列：${r.desc === '' ? '（空）' : r.desc}`
+              + '\n      ⇒ 地图只剩板块名 ⇒ **读者不知道这一块是什么**（那正是本判据要防的）'
+              + '\n      ⇒ 修法：写一到两句"解决什么问题 / 里面有什么"（写给人看，⛔ 不是关键词堆）')
+          }
+        }
+        // ⑤ 问三：地图点到的路径必须真实存在
+        for (const r of oRows) {
+          for (const pa of r.paths) {
+            if (!existsSync(join(LEDGER_ROOT, pa))) {
+              oBad++
+              bad(`O 地图点到**不存在的卷文件**：PROJECT.md:${r.lineNo} → \`${pa}\``
+                + '\n      ⇒ "去哪读"指不到实体 ⇒ 读者照它去找会落空'
+                + '\n      ⇒ 判据同既有「具名引用必须先实测存在」口径')
+            }
+          }
+        }
+        if (oBad === 0) {
+          ok(`O ✓ 地图 ↔ 卷 两向完整：卷里 ${oVols.length} 份节文件**全部**被地图「板块总览」表点到；`
+            + `${oRows.length} 行的"这一块讲什么"**均有实质内容**；地图点到的路径**全部真实存在**`
+            + ' ⇒ 「读完地图知道项目由哪些板块组成」不再静默失效（覆盖面对照：卷目录实测派生，⛔ 非手抄）')
+        }
+      }
+    }
     // ── 断言 B：正本里不许出现补丁式历史说明 ──────────────────────────────
     // 两级正则（都**行首锚定**，避免把"讨论该纪律"的句子误判）：
     //   T1 = 带日期锚的补丁注记：`订正（2026-…` / `更正（2026-…`
