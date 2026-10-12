@@ -36,6 +36,7 @@
     "check:orch": "node scripts/check-orch-state.mjs",
     "check:client": "node scripts/check-client-deps.mjs",
     "check:gitignore": "node scripts/check-gitignore.mjs",
+    "check:archive": "node scripts/check-archive-consistency.mjs",
     "check:experience": "node scripts/check-experience.mjs",
     "check:host": "node scripts/host-probe.mjs",
     "check:modules": "node scripts/module-independence-probe.mjs",
