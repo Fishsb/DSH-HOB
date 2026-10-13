@@ -54,6 +54,7 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
 import { resolveLedgerRoot } from '../server/doc-read.ts'
 import {
   ORCH_STATE_FILENAME,
@@ -92,6 +93,15 @@ export interface Watch {
   reported: boolean
   /** 回传失败时的原因（有值 = 试过但没送回去）。 */
   error?: string
+  /**
+   * **目标会话的预设 id**（第 129 轮新增 · 判据 4）。
+   *
+   * ⚠ 它是 `status()` **现读**出来的（`targetPresetOf`），**不是**登记 watch 时存的 ——
+   *   ⛔ 别把它当成 `w` 的持久字段在别处写：本字段只由 `status()` 填充，
+   *   任何"存一份"的写法都会在会话被换/重载后**悄悄过期**（**E-117**）。
+   * ⚠ 读不到时**不填本字段**（调用方渲染成 `(读不到)`）—— 不编造、不猜默认值。
+   */
+  targetPreset?: string
 }
 
 /** 编排状态快照（给工具与探针读）。 */
@@ -137,7 +147,20 @@ export interface HobOrchestrator {
     target: string,
     message: string,
     opts: { self: string | undefined; round?: number; task?: string; mode?: 'followup' | 'steer' },
-  ): Promise<{ ok: boolean; sessionId?: string; messageId?: string; reason?: string; watching?: boolean }>
+  ): Promise<{
+    ok: boolean
+    sessionId?: string
+    messageId?: string
+    reason?: string
+    watching?: boolean
+    /**
+     * 目标预设预警（第 129 轮）—— **由 `bus.deliver()` 算出，这里只透传**。
+     *
+     * ⚠ 判据 3：`hob_dispatch` 的返回里也要看得见它。⛔ 编排器**不重写措辞**
+     *   （措辞的唯一来源是服务层 ⇒ 改一处两个工具同步）。
+     */
+    presetNotice?: string
+  }>
   /** 读状态。 */
   status(): OrchStatus
   /** 停 / 恢复。 */
@@ -377,6 +400,29 @@ export function apply(ctx: any): void {
     if (sessions === undefined || agents === undefined) {
       svcCtx.logger?.warn?.(`[${name}] sessions/agents 已就绪但不可用。`)
       return
+    }
+
+    /**
+     * 现读**目标会话的预设 id**（第 129 轮 · 判据 4）。
+     *
+     * ── 为什么是"每次现读"而不是"登记 watch 时存一份"──────────────────────
+     *   `hob_orch_status` 的那一行读数，存在的唯一理由就是**此刻**它准不准。
+     *   存一份到 `w` 上 ⇒ 会话被换掉 / 插件重载 / 目标重启之后，
+     *   那行会**悄悄变成旧值**，而它正是用来发现"派错了人"的**唯一可见面**
+     *   ⇒ 过期值比没有更坏（**E-117**：把某一时刻的读数当成了判据）。
+     *   ⚠ 与 `list()` 读的是**同一个实体**（`session.header.agentPreset`，见 `bus.ts`）。
+     *
+     * @returns 预设 id；读不到（服务缺席 / 会话没了 / 该字段空）⇒ `undefined`，
+     *   由调用方渲染成 `(读不到)` —— ⛔ 不编造、不猜默认值。
+     */
+    const targetPresetOf = (target: string): string | undefined => {
+      try {
+        const session = typeof sessions.get === 'function' ? sessions.get(target) : undefined
+        const p = session?.header?.agentPreset
+        return typeof p === 'string' && p !== '' ? p : undefined
+      } catch {
+        return undefined
+      }
     }
 
     /**
@@ -671,13 +717,26 @@ export function apply(ctx: any): void {
           sessionId: target,
           ...(r.messageId === undefined ? {} : { messageId: r.messageId }),
           watching: w.watcher !== '',
+          // ── 目标预设预警（第 129 轮）—— **透传服务层的判定**，⛔ 不重写措辞 ────
+          //   ⚠ 编排器**自己不去读预设**：`deliver()` 已经读过了（那是服务层的活），
+          //     在这里再读一次 = 同一事实两个来源 ⇒ 必然漂移（E-128 的口径）。
+          ...(r.presetNotice === undefined ? {} : { presetNotice: r.presetNotice }),
         }
       },
 
       status() {
         return {
           stopped,
-          watches: [...watches.values()].sort((a, b) => a.at - b.at),
+          // ⚠ **现读**每个在等目标的预设（不缓存、不回落到 `w` 上存一份）——
+          //   见 `targetPresetOf` 的注释：这条读数的价值全在"此刻准不准"。
+          watches: [...watches.values()]
+            .sort((a, b) => a.at - b.at)
+            .map((w) => ({
+              ...w,
+              ...(targetPresetOf(w.target) === undefined
+                ? {}
+                : { targetPreset: targetPresetOf(w.target) }),
+            })),
           relaysDone,
           relaysBlocked,
           lostPending: lostCount,
@@ -831,6 +890,8 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         sessionId: r.sessionId,
         ...(r.messageId === undefined ? {} : { messageId: r.messageId }),
         watching: r.watching,
+        // ── 目标预设预警（判据 3）—— 与 `hob_send` **同源同措辞**（都来自服务层）──
+        ...(r.presetNotice === undefined ? {} : { presetNotice: r.presetNotice }),
         note2: 'Dispatched only: the work is not done. You will be woken with its result; '
           + 'until then do not claim anything was carried out.',
       })
@@ -852,6 +913,14 @@ export function createHobOrchTools(orch: HobOrchestrator): {
       const lines = s.watches.map((w) => '- ' + [
         `target=${w.target}`,
         `watcher=${w.watcher || '(无)'}`,
+        // ── 目标预设（第 129 轮新增 · 判据 4）──────────────────────────────
+        //   ⚠ 值由 `status()` **现读**填充（见 `targetPresetOf`）；这里只渲染，
+        //     ⛔ **不在这里再读一次** —— 同一事实两个来源必然漂移（E-128）。
+        //   ⚠ **为什么这一行是必需的**：别的项目实测那次事故里，`hob_orch_status` 只报
+        //     「已开跑」⇒ 派活方读不出"目标是个不能施工的会话"，于是**一直等**一个
+        //     永不会来的产出（症状「看在跑、永远没有产出」）。预设列是那个坑的**唯一可见面**。
+        `预设=${w.targetPreset ?? '(读不到)'}`,
+        ...(w.targetPreset === PLANNING_PRESET_ID ? ['⚠ 规划侧预设·不能施工'] : []),
         ...(w.round === undefined ? [] : [`轮次=${w.round}`]),
         ...(w.task === undefined ? [] : [`任务=${w.task}`]),
         w.sawRunning ? '已开跑' : '尚未开跑',

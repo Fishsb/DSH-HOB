@@ -51,7 +51,7 @@ export interface ModulesConfig {
  *   （直读恒真/恒为 ref，且不报错）。唯一入口是 {@link spawnDefaults}。
  */
 export interface SpawnDefaults {
-  /** 新会话默认 Agent 预设 id；空串 = 用宿主默认预设。 */
+  /** 新会话默认 Agent 预设 id；空串 = **出厂默认 `standard`**（⛔ 不是"用宿主默认预设"）。 */
   agentPreset: string
   /** 新会话默认模型 provider；空串 = 用宿主默认模型。 */
   provider: string
@@ -262,7 +262,7 @@ export const Config = z.object({
    */
   spawn: z.object({
     agentPreset: z.string().default('')
-      .description('新建会话默认预设（id，如 `Hob`）。留空 = 用宿主默认预设。只影响本插件建出的会话，不影响手工新建的会话。')
+      .description('新建会话默认预设（id，如 `standard`）。⚠ 留空 = **出厂默认 `standard`**（标准模式），**不是**「用宿主默认预设」。⚠ 若这里填的是本插件的规划侧预设（`Hob`）⇒ 不套用它（它只规划、不施工），改走出厂默认并在返回里说明。只影响本插件建出的会话，不影响手工新建的会话。')
       .volatile(),
     provider: z.string().default('')
       .description('新建会话默认模型的 provider 路由（如 `dshapi`）。留空 = 用宿主默认模型。')

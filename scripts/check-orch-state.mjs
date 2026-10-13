@@ -651,6 +651,138 @@ const orchCode = stripComments(orchSrc)
   }
 }
 
+// ── H. **投给规划侧预设的会话 ⇒ 响亮预警**（2026-10-13 第 129 轮）—— 真跑函数 ──
+//
+// ⚠ **为什么也是"真跑"**（与 F / G 同一条纪律）：
+//   本组要保的是**运行时的行为** —— "目标是规划侧预设时返回值里带那条预警"
+//   是**执行才成立**的性质。文本断言咬不住真缺陷：源码里
+//   `PLANNING_PRESET_ID` / `presetNotice` 字样还在、而判定被掏空（比如把条件写成
+//   永假、或把字段漏在 return 之外），正则照样 PASS（这正是 F/G 组存在的理由）。
+//
+// ⚠ **成对样本（正例 + 反例）**：只验"规划侧目标有预警"是**单向**的 ——
+//   把预警写成**无条件**触发（`presetNotice` 恒有值）照样能让正例通过，
+//   而那会让每一条正常投递都背上噪音（**假告警会训练人忽略真告警**，同 F4/G5 口径）。
+//   ⇒ **反例必须一起验**：实施侧目标**不得**出现该字段。
+//
+// ⚠ **判据同源**：本组不另写 `Hob` 字面量，从 `src/shared/planning-preset.ts` 取
+//   `PLANNING_PRESET_ID`（`bus.ts` 自己也只认这一处，⛔ 两处写死必然漂移）。
+{
+  const { pathToFileURL } = await import('node:url')
+
+  let presetMod
+  let busMod
+  try {
+    presetMod = await import(pathToFileURL(join(root, 'src', 'shared', 'planning-preset.ts')).href)
+    busMod = await import(pathToFileURL(join(root, 'src', 'modules', 'bus.ts')).href)
+  } catch (e) {
+    bad(`H 无法加载 bus / planning-preset 模块（${String(e?.message ?? e)}）⇒ 行为断言失去基准（不按通过处理）`)
+  }
+  if (presetMod !== undefined && busMod !== undefined) {
+    const { PLANNING_PRESET_ID } = presetMod
+
+    /**
+     * 起一个**只够跑 `deliver()`** 的 mock 宿主：一个目标会话 + 它的预设。
+     *
+     * ⚠ 一切现读（`sessions.get`），不缓存 —— 与 `bus.ts` 的读法一致。
+     */
+    const driveDeliver = async (targetPreset) => {
+      const target = 'session-h-fixture'
+      const session = { id: target, header: { agentPreset: targetPreset }, log: [] }
+      const sessions = {
+        get: (id) => (id === target ? session : undefined),
+        list: () => [session],
+        flush: async () => true,
+      }
+      const agent = { status: 'idle', followup() {}, steer() {}, inject() {}, ctx: {}, session }
+      const agents = {
+        currentInitiator: () => undefined,
+        get: (id) => (id === target ? agent : undefined),
+      }
+      const provided = {}
+      const svcCtx = {
+        sessions,
+        agents,
+        logger: { debug() {}, warn() {}, info() {} },
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+        provide: (k, v) => { provided[k] = v },
+        effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
+        inject: (_deps, cb) => cb(svcCtx),
+      }
+      busMod.apply(svcCtx, {
+        spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }),
+      })
+      const bus = provided.hobBus
+      if (bus === undefined) return undefined
+      return bus.deliver(target, 'do the work', 'followup')
+    }
+
+    // ── H1 **正例**：目标是规划侧预设 ⇒ 返回带预警（且投递**仍然成功**）──
+    //   ⚠ 两个条件都必须成立：只验"有预警"会让"把投递拦掉"也通过 ——
+    //     而本单的明文要求是 **⛔ 不拦、不改投递成败**（给规划侧会话发消息本身可能合法）。
+    {
+      const r = await driveDeliver(PLANNING_PRESET_ID)
+      if (r === undefined) {
+        bad('H1 服务未 provide（`hobBus` 拿不到）⇒ 断言失去基准')
+      } else {
+        const notice = typeof r.presetNotice === 'string' ? r.presetNotice : undefined
+        const saysConsequence = notice !== undefined
+          && /cannot carry it out/i.test(notice) && /NEVER produce/i.test(notice)
+        const saysNextStep = notice !== undefined && /NEXT STEP/i.test(notice)
+        if (r.ok === true && saysConsequence && saysNextStep) {
+          ok('H1 目标预设 = 规划侧 ⇒ 投递成功**且**返回值带预警（点明"不能施工 / 永远没产出" + 下一步）')
+        } else {
+          bad(`H1 规划侧目标未给出可用预警：ok=${r.ok} presetNotice=${JSON.stringify(notice)}`
+            + `（需含后果句=${saysConsequence} 下一步=${saysNextStep}）`
+            + ' —— 没有它，派活方会一直等一个永不会来的产出（症状「看在跑、永远没有产出」）')
+        }
+      }
+    }
+
+    // ── H2 **反例**：目标是实施侧预设 ⇒ **不得**出现该字段 ──
+    //   ⚠ 缺了本组，把预警写成无条件触发也能过 H1 ⇒ 每条正常投递都背噪音。
+    {
+      const r = await driveDeliver('standard')
+      if (r === undefined) {
+        bad('H2 服务未 provide（`hobBus` 拿不到）⇒ 断言失去基准')
+      } else if (r.ok === true && r.presetNotice === undefined) {
+        ok('H2 目标预设 = 实施侧 ⇒ 投递成功且**无**预警（成对反例：预警不是无条件触发）')
+      } else {
+        bad(`H2 实施侧目标不该有预警：ok=${r.ok} presetNotice=${JSON.stringify(r.presetNotice)}`
+          + ' —— 无条件预警会制造假告警，而假告警会训练人忽略真告警')
+      }
+    }
+
+    // ── H3 **服务层设防**（不是只在工具层）：绕过工具直接调 `bus.deliver` 也带预警 ──
+    //   ⚠ 这正是 H1 的**构造方式**（H1 就是直接调服务层的），故本条与 H1 同源；
+    //     单列一条是为了把"**下沉到服务层**"这个设计约束**显式钉住**：
+    //     若将来有人把预警挪回 `hob_send` 的工具层，H1 会立刻 FAIL（服务层没了它）。
+    {
+      const r = await driveDeliver(PLANNING_PRESET_ID)
+      if (r !== undefined && typeof r.presetNotice === 'string') {
+        ok('H3 预警在**服务层**（`bus.deliver`）即可观测 ⇒ 绕过工具也防得住（非单层设防）')
+      } else {
+        bad('H3 服务层读不到预警 —— 它只在工具层的话，任何绕过工具的调用方都重犯（E-97 同族）')
+      }
+    }
+
+    // ── H4 **口径同源**：判定用的是 `PLANNING_PRESET_ID`，⛔ 没有第二个字面量 ──
+    //   ⚠ 若 `bus.ts` 另写一个字面 `'Hob'`，改预设名时两处必然漂移。
+    {
+      const busSrc = (() => {
+        try { return readFileSync(join(root, 'src', 'modules', 'bus.ts'), 'utf8') } catch { return '' }
+      })()
+      // 去掉注释后再找裸写：注释里出现 `Hob` 是正常的（说明文字），断言只看**代码**。
+      const codeOnly = stripComments(busSrc)
+      const hardcoded = new RegExp(`['"\`]${PLANNING_PRESET_ID}['"\`]`).test(codeOnly)
+      if (!hardcoded) {
+        ok(`H4 判定经 PLANNING_PRESET_ID 单点（bus.ts 代码里没有硬编码 \`${PLANNING_PRESET_ID}\` 字面量）`)
+      } else {
+        bad(`H4 bus.ts 代码里硬编码了 '${PLANNING_PRESET_ID}' —— 预设改名时两处必然漂移（口径不同源）`)
+      }
+    }
+  }
+}
+
 // ── 输出 ───────────────────────────────────────────────────────────────
 if (note.length > 0) console.log(note.join('\n'))
 if (fail.length > 0) {

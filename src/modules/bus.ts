@@ -84,6 +84,23 @@ export interface DeliveryResult {
   /** 实际使用的语义。 */
   mode?: DeliveryMode
   reason?: string
+  /**
+   * **目标会话的预设是规划侧预设**（{@link PLANNING_PRESET_ID}）⇒ 响亮提示（第 129 轮新增）。
+   *
+   * ⚠ **只提示、不拦**：投递**照常成功**（`ok` 不受影响）—— 给规划侧会话发消息**本身可能合法**
+   *   （问它状态、让它规划、传个读数）。本字段是"你这一步大概率不会得到实施产出"的**预警**，
+   *   不是拒绝。
+   *
+   * ── 为什么必须是"预警"而不是"拒绝"（2026-10-13 第 129 轮 · 实测出处）────────
+   *   别的项目（`prompt-enhancer-release`）实测：轮次 21 被派给一个**预设 = `Hob`** 的会话，
+   *   `hob_orch_status` 显示"已开跑"、`hob_sessions` 显示 `running` —— **但永远没有产出**。
+   *   症状原文：「**看在跑、永远没有产出**」（该区 `ROUND-NOTE.md` §一）。
+   *   ⇒ 真因不是"投错了"（投递成功），而是**投递方不知道**目标不能施工 ⇒ **静默失败**。
+   *     本字段把那个静默变成**响亮**。
+   *
+   * ⚠ **口径同源**：判定用 {@link PLANNING_PRESET_ID}，⛔ **不另写字面量**。
+   */
+  presetNotice?: string
 }
 
 /** 建会话结果（批 16）。`ok=false` 时 `reason` 给出可读原因。 */
@@ -490,7 +507,42 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
               + 'do not wake archived history — pick another target or let the user open that session first.',
           }
         }
-        // ② 造消息：与 `dsh-schedule` 同款（`createUserMessage` + 自定义 source kind）。
+        // ② **目标预设预警**（第 129 轮新增）—— 只提示、不拦、不改投递成败。
+        //
+        //   ⚠ **为什么下沉到服务层**（而不是只在 `hob_send` / `hob_dispatch` 的工具层）：
+        //     与本文件 ⓪-1 那条自检**同一条纪律**（见上方 `:449-454` 的既有注释）：
+        //     **单层设防等于绕过去就没保护**。`deliver()` 有**三个调用点**
+        //     （`hob_send` · `hob_dispatch` · 编排器内部的回传/丢失通知），
+        //     只在工具层写 ⇒ 另外两条路照旧静默。
+        //   ⚠ **为什么"提示"而不是"拦截"**：给规划侧会话发消息**本身可能合法**
+        //     （问它状态 / 让它规划 / 传个读数）⇒ 拦投递会**误伤**合法用法，
+        //     且会把"投递成功与否"这个既有语义改掉（那是**零放宽**的反面：改宽/改严都不行）。
+        //     ⇒ 如实**预警**，把决定权留给调用方。
+        //   ⚠ **读法**：目标预设取自**会话头**（`session.header.agentPreset`），
+        //     与 `list()` 用的是**同一个实体**（见上方 `:428`）—— ⛔ 不缓存、不猜。
+        const targetPreset = (() => {
+          try {
+            const session = typeof sessions.get === 'function' ? sessions.get(sessionId) : undefined
+            const p = session?.header?.agentPreset
+            return typeof p === 'string' && p !== '' ? p : undefined
+          } catch {
+            return undefined
+          }
+        })()
+        const presetNotice = targetPreset === PLANNING_PRESET_ID
+          ? 'WARNING: the target session ' + sessionId + ' is running the PLANNING-side preset ('
+            + PLANNING_PRESET_ID + '). That preset plans work but CANNOT carry it out — it has no shell '
+            + 'and no write/edit tool, and its charter says so. A directive that asks it to implement, '
+            + 'run, or verify something by doing the work will look like it is running (hob_orch_status '
+            + 'shows "started", hob_sessions shows "running") but will NEVER produce the implementation — '
+            + 'you will get planning text at best, and often no deliverable at all. '
+            + 'NEXT STEP: if this message is meant to get work DONE, send it to a session whose preset '
+            + 'can implement (check the preset column in hob_sessions), or hob_spawn one with an explicit '
+            + 'agentPreset; do not wait for a deliverable from this target. '
+            + 'This delivery itself succeeded — the notice does not block it, because messaging a '
+            + 'planning session can still be legitimate.'
+          : undefined
+        // ③ 造消息：与 `dsh-schedule` 同款（`createUserMessage` + 自定义 source kind）。
         //    ⚠ 导入走**运行时动态 import**：本模块在宿主进程里跑，`@deepseek-ai/dsh-llm`
         //      从插件自己的 node_modules 解析（与宿主那份同版本、逐字节相同）。
         //      用动态导入是为了让"这一条路径坏了"不至于让整个模块装载失败。
@@ -519,13 +571,24 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
           if (session !== undefined && typeof sessions.flush === 'function') {
             const durable = await sessions.flush(session)
             if (durable === false) {
-              return { ok: true, messageId: message?.id, mode, reason: 'delivered but persistence did not acknowledge' }
+              return {
+                ok: true,
+                messageId: message?.id,
+                mode,
+                reason: 'delivered but persistence did not acknowledge',
+                ...(presetNotice === undefined ? {} : { presetNotice }),
+              }
             }
           }
         } catch {
           // 落库确认失败不否定投递本身。
         }
-        return { ok: true, messageId: message?.id, mode }
+        return {
+          ok: true,
+          messageId: message?.id,
+          mode,
+          ...(presetNotice === undefined ? {} : { presetNotice }),
+        }
       },
 
       // ── 批 16：建会话（强制归属工作区）────────────────────────────────
@@ -958,6 +1021,11 @@ export function createHobBusTools(
         mode: r.mode ?? 'followup',
         ...(r.messageId === undefined ? {} : { messageId: r.messageId }),
         ...(r.reason === undefined ? {} : { note: r.reason }),
+        // ── 目标预设预警（第 129 轮新增）—— **服务层算出来的，这里只透传** ──────
+        //   ⚠ 判据 3 要求 `hob_send` **与** `hob_dispatch` 的返回里都看得见它。
+        //   ⚠ 字段名与服务层一致（`presetNotice`），⛔ 不在这里重写措辞 ——
+        //     措辞是**服务层单点**（含后果与下一步），改一处即可两工具同步。
+        ...(r.presetNotice === undefined ? {} : { presetNotice: r.presetNotice }),
         note2: 'Delivered only: the reply lands in that session, not here. Do not claim the work itself was done.',
       })
     },
@@ -1019,7 +1087,16 @@ export function createHobBusTools(
       },
       agentPreset: {
         type: 'string',
-        description: '新会话用的预设 id（如 `standard`）。不填则用「新建会话默认」里配的预设；那里也为空则用宿主的默认预设。',
+        description:
+          '新会话用的预设 id（如 `' + FACTORY_DEFAULT_PRESET_ID + '`）。'
+          + '⚠ **不填时的真实取值顺序**（`显式 > 配置 > 出厂默认`，⛔ **不问宿主默认**）：'
+          + '① 本参数（显式传）> ② 设置里「新建会话默认」配的 `spawn.agentPreset` > '
+          + '③ **出厂默认 `' + FACTORY_DEFAULT_PRESET_ID + '`**（标准模式）。'
+          + '⚠ ②若恰好是**本插件的规划侧预设**（`' + PLANNING_PRESET_ID + '`）⇒ **不套用**它'
+          + '（它只规划、不施工），改走 ③，并在返回里带 `presetNote` 说明。'
+          + '⚠ **唯一的例外**：只有当**名册读不到**（或 `' + FACTORY_DEFAULT_PRESET_ID
+          + '` 不在册）时，才退回**不传给宿主**（那时才由宿主默认决定），'
+          + '同样在 `presetNote` 里如实说明。',
       },
     },
     output: {
