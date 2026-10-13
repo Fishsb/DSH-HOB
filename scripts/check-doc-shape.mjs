@@ -1383,9 +1383,137 @@ export function runDocShape({ bad, ok }) {
   }
 }
 
+/**
+ * ── 断言 P（2026-10-14 新增 · 第 131 轮 · 用户授权）：**表结构完整性** ──────────
+ *
+ * ── 为什么是它（两条出处都是实测，不是推测）────────────────────────────
+ *   · **P1 表内重复行**：第 124 轮实测（R124）**真发生过一回**，靠人当场自查发现；
+ *     且第 125 / 126 轮的报告**两度把它登记为「仍属人守」**（无任何机检保它）——
+ *     即：**这是一条被反复承认的观测盲区**，正是 §10.5「会让真实缺陷静默逃逸」那一档。
+ *   · **P2 表结构（分隔行在位）**：2026-10-14 探针实测 —— 两份卷索引里**共 5 处**
+ *     表行被空行夹成"孤立块"⇒ 缺分隔行 ⇒ **在 markdown 里不渲染成表**。
+ *     内容还在（所以任何查内容的断言都不报），**形态静默失效** —— 同一档。
+ *
+ * ── 判据口径（只认可判的形态，⛔ 不判"内容写得好不好"）──────────────────
+ *   · P1：同一张表内，两行**归一化后逐字相同** ⇒ 报出（并指出与哪一行重复）。
+ *   · P2：一个表块的第 2 行**必须是分隔行**（`|---|---|`）；
+ *     块只有 1 行 ⇒ 报"孤立表行"（它必是缺分隔行的那一类）。
+ *   ⚠ **归一化**：去加粗 / 去反引号 / 去空白 —— 否则"标点重排"会假阳。
+ *   ⚠ **围栏代码块内不扫**（与断言 E / I 同口径）：文档要能安全地**讲"表格怎么写"**。
+ *   ⚠ **豁免只到"不渲染"这一层，不延展** —— ⛔ 不引入"是否该有这一行"之类不可判的问题。
+ *
+ * ── 覆盖面（照实登记，见 `.hob/README.md` §1.4）─────────────────────────
+ *   · **在辖**：`## ` 级文件（地图 + 卷内全部 `.md`）**正文里**的管道表。
+ *   · **不在辖**：`.hob/**`（骨架层 —— ⚠ **已知边界**，与断言 D / D′ 同；
+ *     扩到骨架**须先处理"举例式占位"豁免**，另议）。
+ *   · **不判**：列数是否一致、表头语义、行序 —— 那些不可判 / 会假阳。
+ */
+export function runTableIntegrity({ bad, ok }) {
+  /** 切表块：连续以 `|` 开头的行 = 一个块（围栏内跳过）。 */
+  const pSplitTables = (src) => {
+    const lines = src.split('\n')
+    const tables = []
+    let fence = false
+    let i = 0
+    while (i < lines.length) {
+      if (/^\s*```/.test(lines[i])) { fence = !fence; i++; continue }
+      if (fence) { i++; continue }
+      if (!lines[i].trim().startsWith('|')) { i++; continue }
+      const startLine = i + 1
+      const rows = []
+      while (i < lines.length && lines[i].trim().startsWith('|')) { rows.push(lines[i]); i++ }
+      tables.push({ startLine, rows })
+    }
+    return tables
+  }
+  const pIsSep = (l) => /^\|[\s:|-]+\|$/.test(l.trim())
+  const pNorm = (l) => l.trim().replace(/[`*]/g, '').replace(/\s+/g, '')
+  /** 纯函数：吃内容吐问题清单 —— 自带样本可在内存里造，⛔ 不必真改仓库文件。 */
+  const pScan = (src) => {
+    const dup = []
+    const sepr = []
+    for (const t of pSplitTables(src)) {
+      if (t.rows.length === 1) {
+        sepr.push({ line: t.startLine, why: '孤立表行（前后被空行夹住 ⇒ 该块无分隔行）' })
+      } else if (!pIsSep(t.rows[1])) {
+        sepr.push({ line: t.startLine + 1, why: '第 2 行不是分隔行' })
+      }
+      const seen = new Map()
+      t.rows.forEach((r, idx) => {
+        if (pIsSep(r)) return
+        const k = pNorm(r)
+        if (seen.has(k)) {
+          dup.push({ line: t.startLine + idx, firstLine: t.startLine + seen.get(k), text: r.trim().slice(0, 90) })
+        } else seen.set(k, idx)
+      })
+    }
+    return { dup, sepr, tables: pSplitTables(src).length }
+  }
+
+  let pBad = 0
+  let pTables = 0
+  for (const f of SCAN_FILES) {
+    let src = ''
+    try { src = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { continue }
+    const { dup, sepr, tables } = pScan(src)
+    pTables += tables
+    for (const d of dup) {
+      pBad++
+      bad(`P1 表内重复行：${f}:${d.line}` + `\n        ${d.text}`
+        + `\n      ⇒ 与第 ${d.firstLine} 行**逐字重复**（归一化后）`
+        + '\n      ⇒ 本类**第 124 轮真发生一回**，当时靠人自查；第 125 / 126 轮报告**两度登记为"仍属人守"**'
+        + '\n      ⇒ 修法：删掉多出来的那一行（⛔ 别"改个措辞让它看起来不同"）')
+    }
+    for (const s of sepr) {
+      pBad++
+      bad(`P2 表结构：${f}:${s.line} —— ${s.why}`
+        + '\n      ⇒ 该块在 markdown 里**不渲染成表**（内容还在，**形态静默失效**）'
+        + '\n      ⇒ 修法：把夹在中间的空行去掉，让它回到所属表块；或补上表头 + 分隔行')
+    }
+  }
+  if (pTables === 0) {
+    bad('P **没有扫到任何表块** ⇒ 「表结构完整性」无从判定（不按通过处理）')
+  }
+
+  // ── P 的自带样本（**内存里造**，⛔ 不碰仓库文件 ⇒ 无"改了忘了还原"）──
+  {
+    const GOOD = '| a | b |\n|---|---|\n| x | y |\n'
+    const DUP = '| a | b |\n|---|---|\n| x | y |\n| **x** | `y` |\n'
+    const LONE = '| a | b |\n\n| x | y |\n'
+    const FENCED = '```\n| a | b |\n| x | y |\n```\n'
+    const FENCED_DUP = '```\n| a | b |\n|---|---|\n| x | y |\n| x | y |\n```\n'
+    const probes = [
+      ['① 正常表（**不该被咬**）', () => pScan(GOOD).dup.length === 0 && pScan(GOOD).sepr.length === 0],
+      ['② 表内重复行（**该被咬**）', () => pScan(DUP).dup.length === 1],
+      ['③ 孤立表行（**该被咬**）', () => pScan(LONE).sepr.length === 2],
+      ['④ 围栏内的坏表（**不该被咬** —— 文档要能讲怎么写）', () => pScan(FENCED).sepr.length === 0],
+      ['⑤ 围栏内的重复行（**不该被咬**）', () => pScan(FENCED_DUP).dup.length === 0],
+    ]
+    let pSampleBad = 0
+    for (const [why, fn] of probes) {
+      let bit = false
+      try { bit = fn() } catch { bit = false }
+      if (!bit) {
+        pSampleBad++
+        bad(`P 自带样本**不符合预期**：${why}`
+          + '\n      ⇒ 与 I / N 组同法：**判据改哑与判据改对必须输出不同**（E-126）——'
+          + '\n        只验"该咬的"，会把"判据改哑"与"判据改对"变成同样输出')
+      }
+    }
+    if (pSampleBad === 0) {
+      ok('P ✓ 自带样本：5 组（正常表 / 重复行 / 孤立行 / 围栏内坏表 / 围栏内重复行）'
+        + '**全部符合预期**（2 组"该咬"真被咬 · 3 组"不该被咬"真没被咬）⇒ 本组还长着牙且不过咬')
+    }
+  }
+
+  if (pBad === 0 && pTables > 0) {
+    ok(`P ✓ 表结构完整性：${SCAN_FILES.length} 份（地图 + 卷）里 ${pTables} 张表 ——`
+      + ' **表内无重复行**；**每张表的分隔行在位**（无孤立表行）')
+  }
+}
+
 /** 断言 I：正本无未渲染占位标记（需 `await import` 渲染器 ⇒ async）。 */
-export async function runResidualMarkers({ bad, ok }) {
-  // ── 断言 I · 正本无残留标记（2026-10-11 新增 · 第 47 轮 · 结构改造④）────────
+export async function runResidualMarkers({ bad, ok }) {  // ── 断言 I · 正本无残留标记（2026-10-11 新增 · 第 47 轮 · 结构改造④）────────
   /**
    * **正本里不得存在未渲染的占位标记**（清单派生自账本根，见 `derivePrimaryFiles()`）。
    *

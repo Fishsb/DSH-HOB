@@ -13,7 +13,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { runRepoRules } from './check-repo-rules.mjs'
-import { findDuplicateSectionHeadings, runDocShape, runResidualMarkers } from './check-doc-shape.mjs'
+import { findDuplicateSectionHeadings, runDocShape, runResidualMarkers, runTableIntegrity } from './check-doc-shape.mjs'
 import { runDiscipline, runRender, runSameSource, runZeroWidth } from './check-code-face.mjs'
 
 const fail = []
@@ -68,6 +68,9 @@ await runRender({ bad, ok })
 
 // ── ② I：正本无残留标记（需 await 载入渲染器）──────────────────────────
 await runResidualMarkers({ bad, ok })
+
+// ── ② P：表结构完整性（表内重复行 / 分隔行在位）────────────────────────
+runTableIntegrity({ bad, ok })
 
 // ── 输出 ────────────────────────────────────────────────────────────────
 console.log('`.gitignore` 一致性核对 · dsh-hob')
