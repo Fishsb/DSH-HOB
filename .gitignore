@@ -57,6 +57,7 @@ dist/
 #   ⇒ 教训：归类时不能只看"是不是可复用"，还要看**有没有入库物依赖它**。
 .hob/*
 !.hob/README.md
+!.hob/INIT.md
 !.hob/templates/
 !.hob/templates/**
 !.hob/EXPERIENCE.md
