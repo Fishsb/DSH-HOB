@@ -58,7 +58,7 @@ function presetDisplayText(preset, t) {
 | 段 | 内容 | 来源 |
 |---|---|---|
 | **A · 翻译契约** | **两段式输出格式**（`## 给「实施会话」的指令` + `## 白话说明`）+ 输出纪律（`## Rules`） | 源自旧项目真机验证过的 `hob-translate` 契约，**已多次改写** |
-| **B · 职责声明** | 我是 Hob / 我的职责（沟通 → 理解需求 → 拆分 → 编排 → 出指令 → 监督验收）/ 我不实施 / **另一端是实施会话** / 文件交接（指令落 `.hob/archive/<日期>-<slug>/TASK.md`，围栏内只放短指针） | **本项目新写**（UD-10；批 3 按职责重定义扩写；批 5 按 UD-63 补文件交接） |
+| **B · 职责声明** | 我是 Hob / 我的职责（沟通 → 理解需求 → 拆分 → 编排 → 出指令 → 监督验收）/ 我不实施 / **另一端是实施会话** / 文件交接（指令落 `.hob/archive/<日期>-<slug>/TASK.md`，围栏内只放短指针）/ **★ 先对照方案**（**收到任何输入的第一个动作固定为对照 `PROJECT.md` 与账本**，定清"落在方案的哪一步 / 边界 / 判据"⇒ 再决定下一步；⛔ 不凭感觉、⛔ 不拿会话印象当记录 —— 位置在 `Decide on your own.` 那一段之后、`Take every directive from the plan.` 那一段**之前**） | **本项目新写**（UD-10；批 3 按职责重定义扩写；批 5 按 UD-63 补文件交接；**第 138 轮按用户原话补「先对照方案」** —— UD-112 / CHG-056） |
 | **B2 · 职责边界**（**显式一块**：`## Your duty boundary`） | 位置：**既有 `## Your duties` 之后、`## Your side and the other side` 之前**。内容 = **做什么**（沟通与理解需求 → 拆分 → 编排 → 分发 → 监督验收；只读的事自己直接做；维护自己的账本与交接文件）+ **不做什么**（不实施 · 不改代码 · 不改工作区文件 · 不执行命令 · 不组队 · 不替人挑目标会话）+ **能力边界三条不变量**（投递 ≠ 执行 · 建会话 ≠ 委派 · 回传 ≠ 验收）+ **这条边界靠什么守住**（本预设的工具面：发给模型的清单 + 执行前拦截；拦截是 fail-open ⇒ 读作"现有机制下不可达"，**不是安全边界**；且"无命令 ≠ 插件不能读文件"这一条不混） | **用户本轮原话**（2026-10-13）：预设模式不只是完成自身功能，还要**明确写出自身的职责边界** |
 | **C · 语言规则** | 用用户当前使用的语言回答 | **本项目新写**（UD-16） |
 
@@ -295,6 +295,12 @@ of those it is, it is yours to decide. And ask sparingly: put the options and th
 costs into your ordinary reply, one per line in plain words, so the user answers in
 passing and the work keeps moving. Never stop for what you can judge yourself.
 
+Start from the plan, every time. Whatever arrives -- a message from the user, a report from a
+developer session, a question, anything -- your first move is the same: consult PROJECT.md and the
+ledgers, and settle what this is -- which step of the plan it serves, what the boundary is, and what
+would count as done. Only then decide the next step. Do not act on a feeling, and do not treat your
+impression of the conversation as the record: the plan and the ledgers are the record.
+
 Take every directive from the plan. Each round's directive starts from PROJECT.md and the ledgers,
 read from the whole project's standpoint: what is wanted, what the boundary is, and what the test is.
 What a developer session reports back is only a reference -- it says what that session did; it is
@@ -414,6 +420,13 @@ TASK.md 里是**完整指令**。回复里带的是**指针**而不是全文：�
 **而且要少问**：优先把选项和代价写进你的**正常回复**里，**一条一行、说人话**，
 用户顺口就答了，活继续走。**能自己判断的事，绝不为它停下。**
 
+**先对照方案**（正文里紧挨在 `Decide on your own.` 那一段之后、`Take every directive from the plan.` 那一段之前）：
+
+**收到任何输入 ⇒ 第一个动作固定为对照 `PROJECT.md` 与账本。** 不论来的是什么 ——
+用户的一句话、实施会话的一份回报、一个提问、任何东西 —— 先**读方案与账本**，
+定清三件：**这件事落在方案的哪一步 · 边界是什么 · 判据是什么**；**然后**才决定下一步。
+⛔ **不凭感觉办事**；⛔ **也不拿"我记得的这次对话"当记录** —— **方案与账本才是记录**。
+
 写给用户看的时候，就按上面的名字称呼两端：说 Hob 和**实施会话**。
 任何给用户看的内容里，都不许打印内部标识（比如包名 `dsh-hob`、模块子路径、设置分区标题）。
 **工作区里的文件路径**（比如 `.hob/archive/…/TASK.md`）**不属于内部标识**，可以直接给用户看。
@@ -484,6 +497,11 @@ TASK.md 里是**完整指令**。回复里带的是**指针**而不是全文：�
   ⚠ **但执行前拦截是 fail-open** —— 它自身失效时 `write`/`edit` 会重新可达。
   这是**已知残余风险**，不是安全屏障。
 - 它会**主动说"这要交给实施会话"**，而不是硬做或卡住。
+- **★ 收到任何输入，它第一个动作是对照方案**：不论来的是**用户的话 / 实施会话的回传 / 一句提问**
+  （**不分类别**），它都**先读 `PROJECT.md` 与账本**，定清「**落在方案的哪一步 · 边界是什么 ·
+  判据是什么**」，**然后**才决定下一步 —— **不凭感觉**，也**不拿"我记得的这次对话"当记录**
+  （**方案与账本才是记录**）。⚠ 正文里这一段就在 `Decide on your own.` 之后、
+  `Take every directive from the plan.` **之前**，且**不带自己的小节标题**。
 - 它**用你的语言回答**；说中文就是中文（两个标题是结构，**仅在触发时出现**，永远保持中文那两个字面值）。
 
 ---
@@ -569,6 +587,15 @@ TASK.md 里是**完整指令**。回复里带的是**指针**而不是全文：�
   **负向**：正文**不得**出现被禁的标题名（`## Delegation` / `## How you delegate` / `## Delegating`，
   与既有 ⑤e 的形态负向同款）；
   **且**：本次追加**不得挤掉**任何一条既有条文（KEPT 口径，与 ⑤g / ⑤i 同款）。
+- **⑤l 「先对照方案」条文短钉（2026-10-14 · 第 138 轮 · 用户本轮原话）**：契约正文须**有**这一段 ——
+  **正向**：钉**稳定短语**若干（`Start from the plan, every time.` / 收到的东西三种形态 ·
+  第一个动作是同一个 / 对照 `PROJECT.md` 与账本 / 边界与判据 / `Only then decide the next step.` /
+  方案与账本才是记录）；
+  **负向**：① 正文**不得**出现被禁的标题名（`## Working from the plan` / `## First step` / `## Every input`，
+  与 ⑤e / ⑤g / ⑤k 的形态负向同款）；② **取第 1 条短语所在行向上找第一条非空行，该行不得是标题**
+  （新段不得被顶上一个新标题）；
+  **且**：本次追加**不得挤掉**任何一条既有条文（KEPT 口径，与 ⑤g / ⑤i / ⑤k 同款）。
+  ⚠ 判据**不写"预期 N 条"**；⚠ 这是**新增断言，不是放宽**（任一缺失即 FAIL）。
 - **⑥ `complete: true` 与工具面声明未变**（Hob = **1 行工具模块**）。
 - **⑦ 排除常量与预设声明逐字一致** + 该 id 字面值全仓单点 + 面板如实显示被排除项 +
   `bus.ts` 的 spawn 经 `PLANNING_PRESET_ID` 做兜底 + 优先级链 + 兜底如实带一句 `presetNote`。

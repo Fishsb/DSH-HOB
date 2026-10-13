@@ -67,6 +67,14 @@
  *      负向钉"不得起用被禁标题名"（Delegation 一族，与 ⑤e 同款）；
  *      并复述"本次追加未挤掉既有条文"（KEPT 口径，与 ⑤g/⑤i 同款）。
  *      ⚠ 判据**不写"预期 N 条"**（只判缺项，不设预期计数）。
+ *   ⑤l **2026-10-14（第 138 轮 · 用户本轮原话）· 「先对照方案」条文短钉**：
+ *      契约正文须**有**一段「收到任何输入 ⇒ 第一个动作固定为对照方案与账本」的运行口径 ——
+ *      正向钉 **7 条稳定短语**（起句 / 输入三种形态 · 第一个动作是同一个 · 对照 `PROJECT.md` 与账本 ·
+ *      边界与判据 · `Only then decide the next step.` · 方案与账本才是记录）；
+ *      负向钉**两条形态**（① 不得起用被禁标题名 `## Working from the plan` / `## First step` /
+ *      `## Every input`，与 ⑤e / ⑤g / ⑤k 同款；② 第 1 条短语**上方第一条非空行不得是标题**）；
+ *      并复述"本次追加未挤掉既有条文"（KEPT 口径，与 ⑤g / ⑤i / ⑤k 同款）。
+ *      ⚠ 判据**不写"预期 N 条"**（只判缺项，不设预期计数）。
  *
  * 用法：node scripts/check-preset-contracts.mjs
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
@@ -1383,6 +1391,92 @@ const STALE_APPELLATIONS = [
     bad(`⑤k ${NAME_HO}：职责边界块的追加**挤掉了既有条文**（${squeezed.length} 处）：`
       + `${squeezed.map(([l]) => l).join(' / ')} —— 本批只许追加，不许顶掉既有的`)
   } else ok(`⑤k ${NAME_HO}：既有 ${KEPT_BY_111.length} 组条文逐字保留（职责边界块的追加未挤掉任何一条）`)
+}
+
+// ── ⑤l 2026-10-14（第 138 轮 · 用户本轮原话）· Hob 契约的**「先对照方案」**段 ──
+//
+// 为什么需要（本组存在的唯一理由，别删）：用户本轮原话是
+//   「hob预设模式的整个运行逻辑，在接到用户会话之后要根据方案去做任务编排，不能靠感觉，
+//     接到任何会话信息任务之后都是先对照方案然后在进行下一步」。
+//   ⇒ 这段运行口径**此前只以散句存在**（`Take every directive from the plan.` 管的是"派出去的指令"，
+//     `Decide on your own.` 管的是"能自己定的自己定"）—— **"收到任何输入的第一个动作"没有任何一条明文**。
+//   而 ⑤ 只能证明"两份载体一致"：**两份一起把这段删掉，⑤ 照样 PASS**。
+//   本组把用户诉求钉成**可判的断言**。
+//
+// ⚠ 口径（防误读）：
+//   · 钉的是**稳定短语**，不是整段逐字 —— 措辞可随文调整，只要该语义还在，句子就还在。
+//     **这是新增断言，不是放宽**：任一条缺失即 FAIL。
+//   · 本段**就地插在既有段落之间**（`Decide on your own.` 之后、`Take every directive from the plan.` 之前），
+//     ⛔ **不新起 `## ` 小节标题** —— 故本组同时负向钉"未起标题/上方非标题"两条形态。
+//   · **不写"预期 N 条"**（任务书明令）：下面 `filter` 判**缺项**，⛔ 不设任何**预期计数**字面量。
+//   · 编号：现有最大为 ⑤k ⇒ 顺延为 **⑤l**（与批 5 / 批 6 / 批 111 同款：语义一致，区别只在编号）。
+{
+  const hoBody9 = literalBlock(hoSrc, 'prefix') ?? ''
+
+  // ── ① 正向：钉 7 条稳定短语（任一缺失即 FAIL）──────────────────────
+  const CONSULT_PINS = [
+    ['起句「每次都从方案出发」', 'Start from the plan, every time.'],
+    ['输入三种形态（用户的话 / 回传 / 提问，不分类别）', 'a message from the user, a report from a'],
+    ['第一个动作是同一个', 'your first move is the same'],
+    ['对照 PROJECT.md 与账本', 'consult PROJECT.md and the'],
+    ['边界与判据', 'what the boundary is, and what'],
+    ['再决定下一步', 'Only then decide the next step.'],
+    ['方案与账本才是记录', 'the plan and the ledgers are the record'],
+  ]
+  const consultMissing = CONSULT_PINS.filter(([, s]) => !hoBody9.includes(s))
+  if (consultMissing.length > 0) {
+    bad(`⑤l ${NAME_HO}：契约缺「先对照方案」条文（${consultMissing.length} 处）：`
+      + `${consultMissing.map(([l]) => l).join(' / ')} —— `
+      + '用户 2026-10-14 原话要求"接到任何会话信息任务之后都是先对照方案然后再进行下一步"，缺一条即未兑现')
+  } else ok(`⑤l ${NAME_HO}：先对照方案七条稳定短语俱全（${CONSULT_PINS.map(([l]) => l).join(' · ')}）`)
+
+  // ── ② 形态负向①：正文不得出现被禁的标题名（与 ⑤e / ⑤g / ⑤k 同款）──
+  //   理由：这一条是**运行口径**、就地写在既有的 `## Running the loop` 段里，
+  //   起一个小节标题会把"就地追加"这一形态本身变成要求。
+  const BANNED_CONSULT_TITLES = ['## Working from the plan', '## First step', '## Every input']
+  const consultTitleHit = BANNED_CONSULT_TITLES.filter((h) => hoBody9.includes(h))
+  if (consultTitleHit.length > 0) {
+    bad(`⑤l ${NAME_HO}：先对照方案段起用了被禁的标题名（${consultTitleHit.join(', ')}）`
+      + ' —— 这一条是运行口径，须就地追加在既有段落内')
+  } else ok(`⑤l ${NAME_HO}：先对照方案段未起用被禁标题名（${BANNED_CONSULT_TITLES.length} 个扫描项均为 0）`)
+
+  // ── ③ 形态负向②：第 1 条短语所在行，**向上第一条非空行不得是标题**──
+  //   理由：负向①只挡三个**点名**标题名；换个名字的标题照样能把它顶上。
+  //   故这里从**结构**上再钉一刀：新段上方那条非空行必须是**正文**（不得匹配 `/^#{1,6}\s/`）。
+  const consultLines = hoBody9.split('\n')
+  const startLine = consultLines.findIndex((l) => l.includes(CONSULT_PINS[0][1]))
+  if (startLine < 0) {
+    // 上面①已经报过缺失；此处不重复报
+  } else {
+    let prevNonEmpty = null
+    for (let i = startLine - 1; i >= 0; i--) {
+      if (consultLines[i].trim() === '') continue
+      prevNonEmpty = { idx: i, text: consultLines[i] }
+      break
+    }
+    if (prevNonEmpty === null) {
+      bad(`⑤l ${NAME_HO}：先对照方案段上方找不到任何非空行（它必须是就地追加在既有段落内，不是段首）`)
+    } else if (/^#{1,6}\s/.test(prevNonEmpty.text.trim())) {
+      bad(`⑤l ${NAME_HO}：先对照方案段被顶上了一个新标题（上一非空行 = ${JSON.stringify(prevNonEmpty.text.trim().slice(0, 60))}）`
+        + ' —— 本段须就地追加在既有段落内，⛔ 不许新起小节')
+    } else ok(`⑤l ${NAME_HO}：先对照方案段上方是正文而非标题（上一非空行 = ${JSON.stringify(prevNonEmpty.text.trim().slice(0, 48))}…）`)
+  }
+
+  // ── ④ KEPT：本次追加**不许挤掉**既有条文（与 ⑤g / ⑤i / ⑤k 同款）──────
+  const KEPT_BY_138 = [
+    ['派出去指令的来源（既有句）', 'Take every directive from the plan'],
+    ['决策自主（既有句）', 'Decide on your own.'],
+    ['接住待决问题（既有句）', 'Catch the questions'],
+    ['验收只认读数（既有句）', 'Accept on readings only'],
+    ['投递 ≠ 执行（既有句）', 'Delivering is not doing'],
+    ['职责边界块标题（既有块）', '## Your duty boundary'],
+    ['原始读数纪律（既有句）', 'State nothing to the user without a reading behind it'],
+  ]
+  const squeezedBy138 = KEPT_BY_138.filter(([, s]) => !hoBody9.includes(s))
+  if (squeezedBy138.length > 0) {
+    bad(`⑤l ${NAME_HO}：先对照方案段的追加**挤掉了既有条文**（${squeezedBy138.length} 处）：`
+      + `${squeezedBy138.map(([l]) => l).join(' / ')} —— 本批只许追加，不许顶掉既有的`)
+  } else ok(`⑤l ${NAME_HO}：既有 ${KEPT_BY_138.length} 组条文逐字保留（先对照方案段的追加未挤掉任何一条）`)
 }
 
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────
