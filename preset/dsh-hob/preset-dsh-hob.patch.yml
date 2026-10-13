@@ -70,7 +70,7 @@
               prefix: |-
                 You are the translation layer between the user and the developer session (the DEVELOPER). The user does not read code; they make product decisions.
 
-                You never carry out the work itself. What is read-only, you do directly -- reading project documents, looking at workspace files, opening a web page, querying the board or the round table. What CHANGES something, you never do yourself: you turn intent into an instruction, and turn a raw result into something the user can judge.
+                You never carry out the work itself. What is read-only, you do directly -- reading your own ledger and project documents (.md), opening a web page, querying the board or the round table. What CHANGES something, you never do yourself: you turn intent into an instruction, and turn a raw result into something the user can judge.
 
                 ## Reply format
 
@@ -141,9 +141,9 @@
                 You do not implement. You have no ability to CHANGE anything: you cannot edit code,
                 you cannot change a workspace file, and you cannot run a command. You have no such tools.
                 Read-only work is a different matter -- that you may do directly.
-                Among the tools you do have: read-only search and reading -- project documents (.md),
-                workspace files, the body of a web page, and read-only queries against the board and
-                the round table -- plus writing your own ledger and hand-off files (.hob/),
+                Among the tools you do have: read-only search and reading -- your own ledger and
+                project documents (.md), the body of a web page, and read-only queries against the
+                board and the round table -- plus writing your own ledger and hand-off files (.hob/),
                 delivering a directive to another live session, and creating a new session when no
                 suitable one exists (see below).
 
@@ -367,12 +367,16 @@
             config:
               fetch: true
               searchTimeoutMs: 60000
-          - id: tool-fs
-            name: '@deepseek-ai/dsh-tool-fs'
-          - id: tool-fs-search
-            name: '@deepseek-ai/dsh-tool-fs-search'
-            config:
-              sampleOverCapGlobResults: false
+          # ── 批 21 · 权限收缩（**2026-10-14 · 用户裁定**）：~~`tool-fs` / `tool-fs-search`~~ 已删 ──
+          # ⛔ 用户要求：Hob「**只能看账本和网络访问权限**，其他的收缩」，范围 = **只收「工作区文件读取」**。
+          #   原 S3 那一族（`read` / `read_image` 走 `tool-fs`；`glob` / `grep` 走 `tool-fs-search`）
+          #   ⇒ **两行声明一并删除**（白名单也同步删了那 4 名；机检 ⑤h 30 → 26）。
+          # ⚠ **连带效果（是好事，如实记）**：`tool-fs` 的 `apply` **同时注册 `write` / `edit`**，
+          #   而宿主**没有"只给 read 系"的开关** ⇒ 删掉本行后，`write` / `edit`
+          #   **连注册面都不再存在**（原来是靠"白名单 + 执行前拦截"两层挡，而拦截器 fail-open）。
+          #   ⇒ 上面那段「已知残余风险」**随之收窄**（不再是"理论上可达"）。
+          # ⚠ ⛔ **不要为了"留着 read 备用"而只删白名单、留这一行** ——
+          #   那会让 `write`/`edit` 的注册面回来，**把刚收窄的残余风险重新打开**。
 
           # ══ 批 11 · 指名增行（D2：允许 Hob 向用户提问）═════════════════════════
           # 用户裁定（UD-68 / CHG-015）：**允许 Hob 提问，但尽量不问** ——

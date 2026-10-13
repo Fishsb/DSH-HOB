@@ -658,15 +658,23 @@ const STALE_APPELLATIONS = [
         ['S1 编排只读查询', 'taskboard_comments'],
         ['S1 编排只读查询', 'roundtable_status'],
         ['S2 打开网页取正文', 'web_fetch'],
-        ['S3 只读看工作区文件', 'read'],
-        ['S3 只读看工作区文件', 'glob'],
-        ['S3 只读看工作区文件', 'grep'],
-        ['S3 只读看工作区文件', 'read_image'],
+        // ⚠ **S3 那 4 项已由批 21（2026-10-14 · 用户裁定）收缩掉** —— 它们**不再属于**"必须有"，
+        //   改为下面的"**必须没有**"组。⛔ 别把它们加回本清单。
       ]
       const missing = NEEDED.filter(([, n]) => !allowSet.has(n))
       if (missing.length > 0) {
         bad(`⑤f ${NAME_HO} 白名单缺目标名（${missing.length} 个）：${missing.map(([g, n]) => `${n}(${g})`).join(', ')}`)
-      } else ok(`⑤f ${NAME_HO}：白名单含 S1/S2/S3 全部 9 个目标名（${NEEDED.map(([, n]) => n).join(', ')}）`)
+      } else ok(`⑤f ${NAME_HO}：白名单含 S1/S2 的 ${NEEDED.length} 个目标名（${NEEDED.map(([, n]) => n).join(', ')}）`)
+
+      // ── ⑤f · 批 21 收缩（**必须没有**）：S3 那 4 项不得出现在白名单 ──────
+      //   ⚠ 与上面 NEEDED 是**成对**判据（E-126：只验一侧 ⇒ "判据改哑"与"判据改对"输出相同）。
+      const SHRUNK21_F = [['S3（已收缩）只读看工作区文件', 'read'], ['S3（已收缩）', 'glob'],
+                          ['S3（已收缩）', 'grep'], ['S3（已收缩）', 'read_image']]
+      const back5f = SHRUNK21_F.filter(([, n]) => allowSet.has(n))
+      if (back5f.length > 0) {
+        bad(`⑤f ${NAME_HO} 白名单**不该含**已收缩项（${back5f.length} 个）：${back5f.map(([g, n]) => `${n}(${g})`).join(', ')}`
+          + '\n      ⇒ 用户 2026-10-14 裁定：Hob 只能看账本 + 网络；工作区文件读取这 4 个应已移除')
+      } else ok(`⑤f ${NAME_HO}：S3 的 4 个（read/glob/grep/read_image）**逐名均不在**白名单（批 21 收缩生效）`)
 
       // ── 负向：禁止项**一律不得**在白名单里 ──────────────────────────
       // ⚠ 这份清单不是拍脑袋：S4（写工作区）/ S5（跑命令）/ S6（派活/改共享状态）/
@@ -741,7 +749,8 @@ const STALE_APPELLATIONS = [
       const NEW_WORDING = [
         ['只读的事直接做 / 改动的活不做', 'What is read-only, you do directly'],
         ['没有任何「改动」能力（四条并列）', 'you cannot edit code'],
-        ['只读检索与浏览（文档+工作区+网页+看板/圆桌只读查询）', 'read-only queries against the board and'],
+        // ⚠ 锚点**不得跨行**（本轮实测：原锚点跨行 ⇒ 改述后行断点一变就判不出，属假红）
+        ['只读检索与浏览（账本+文档+网页+看板/圆桌只读查询）', 'read-only search and reading -- your own ledger and'],
         ['只写自己的账本与交接文件', 'plus writing your own ledger and hand-off files'],
       ]
       const gone = NEW_WORDING.filter(([, s]) => !hoBody5.includes(s))
@@ -756,15 +765,32 @@ const STALE_APPELLATIONS = [
       // ⚠ ② 是"不许整段照抄"的**可机检落点**：字面照抄 standard 会把它们一并带进来。
       const DECL_ROWS = [
         ['S2 tool-web', '@deepseek-ai/dsh-tool-web'],
-        ['S3 tool-fs', '@deepseek-ai/dsh-tool-fs'],
-        ['S3 tool-fs-search', '@deepseek-ai/dsh-tool-fs-search'],
+        // ⚠ **批 21 收缩**：`tool-fs` / `tool-fs-search` **两行已删** ——
+        //   它们正是为 S3 那 4 个（read/read_image/glob/grep）才加的。
+        //   ⛔ 删了白名单却留着声明行 ⇒ `write`/`edit` 的注册面会回来（见 preset 那段注释）。
       ]
+      // ── ⑤f · 批 21 收缩（**声明面必须没有**）：那两行不得回来 ────────────
+      const DECL_GONE21 = [['S3（已收缩）', '@deepseek-ai/dsh-tool-fs'],
+                           ['S3（已收缩）', '@deepseek-ai/dsh-tool-fs-search']]
       // ⚠ 归一化后匹配（容忍 `name: 'X'` / `name: X` 两种 YAML 写法），理由同下面的禁令组。
       const hoSrcNorm = hoSrc.replace(/'([^']*)'/g, '$1')
       const decMissing = DECL_ROWS.filter(([, pk]) => !hoSrcNorm.includes(`name: ${pk}`))
       if (decMissing.length > 0) {
         bad(`⑤f ${NAME_HO} 声明面缺指名增行（${decMissing.length} 个）：${decMissing.map(([l, p]) => `${l}=${p}`).join(', ')} —— 白名单放行了名字但作用域内没有该工具 ⇒ 执行期 `+'`unknown tool`')
-      } else ok(`⑤f ${NAME_HO}：声明面三个指名增行在位（tool-web / tool-fs / tool-fs-search）`)
+      } else ok(`⑤f ${NAME_HO}：声明面指名增行在位（tool-web）`)
+
+      // ── ⑤f · 批 21 收缩（执行）：那两行**不得回来** ─────────────────────
+      {
+        const decBack = DECL_GONE21.filter(([, pk]) => hoSrcNorm.includes(`name: ${pk}`))
+        if (decBack.length > 0) {
+          bad(`⑤f ${NAME_HO} 声明面**不该含**已收缩行（${decBack.length} 个）：${decBack.map(([l, p]) => `${l}=${p}`).join(', ')}`
+            + '\n      ⇒ 批 21（2026-10-14）删这两行正是为了连带收掉 `write`/`edit` 的注册面'
+            + '\n      ⇒ 只删白名单、留声明行 ⇒ 那族工具回到注册面，刚收窄的残余风险被重新打开')
+        } else {
+          ok(`⑤f ${NAME_HO}：声明面的 tool-fs / tool-fs-search **两行均不在**（批 21 收缩生效，`
+            + '`write`/`edit` 的注册面随之消失）')
+        }
+      }
 
       const DECL_BANNED = [
         ['跑命令', '@deepseek-ai/dsh-tool-bash'],
@@ -918,13 +944,35 @@ const STALE_APPELLATIONS = [
         bad(`⑤h ${NAME_HO} 白名单缺目标名（${miss13.length} 个）：${miss13.map(([g, n]) => `${n}(${g})`).join(', ')}`)
       } else ok(`⑤h ${NAME_HO}：白名单含批 13 的 2 个 + 批 14 的 2 个 + 批 16 的 2 个目标名（${NEEDED13.map(([, n]) => n).join(', ')}）`)
 
-      // ── 正向：白名单**恰好 30**（防止悄悄多放一个而无人察觉）──────────
-      // 30 = 既有 11 + 批 9 的 9 + 批 11 的 1 + 批 13 的 2 + 批 14 的 2（M3 投递）
-      //      + 批 16 的 2（建会话）+ **批 17 的 3**（闭环编排）。
-      if (allow13.length !== 30) {
-        bad(`⑤h ${NAME_HO} 白名单应恰好 30 名，实测 ${allow13.length}`
-          + `（多出：${allow13.filter((n) => !['read_contracts','write_hob','advanced_search','multi_search','platform_search','video_search','free_search_test','schedule_create','schedule_list','schedule_update','schedule_delete','taskboard_list','taskboard_get','taskboard_comments','roundtable_status','web_fetch','read','glob','grep','read_image','ask_user_question','skill','present','hob_sessions','hob_send','hob_workspaces','hob_spawn','hob_dispatch','hob_orch_status','hob_orch_control'].includes(n)).join(', ') || '无'}）`)
-      } else ok(`⑤h ${NAME_HO}：白名单恰好 30 名（11 + 9 + 1 + 2 + 2 + 2 + 3）`)
+      // ── 正向：白名单**恰好 26**（防止悄悄多放一个而无人察觉）──────────
+      // 26 = 既有 11 + 批 9 的 9 + 批 11 的 1 + 批 13 的 2 + 批 14 的 2（M3 投递）
+      //      + 批 16 的 2（建会话）+ 批 17 的 3（闭环编排）**− 批 21 收掉的 4**。
+      // ⚠ **批 21（2026-10-14 · 用户裁定）权限收缩**：`read` / `glob` / `grep` / `read_image`
+      //   从白名单移除（用户要求"只能看账本和网络"）⇒ 30 → 26。**这是收紧，不是放宽。**
+      // ⚠ 名字提成常量：模板串里**不能直接写反引号**（本轮实测踩过一次语法错误）。
+      const SHRUNK21 = ['read', 'glob', 'grep', 'read_image']
+      const SHRUNK21_NAMES = SHRUNK21.join(' / ')
+      if (allow13.length !== 26) {
+        bad(`⑤h ${NAME_HO} 白名单应恰好 26 名，实测 ${allow13.length}`
+          + `（多出：${allow13.filter((n) => !['read_contracts','write_hob','advanced_search','multi_search','platform_search','video_search','free_search_test','schedule_create','schedule_list','schedule_update','schedule_delete','taskboard_list','taskboard_get','taskboard_comments','roundtable_status','web_fetch','ask_user_question','skill','present','hob_sessions','hob_send','hob_workspaces','hob_spawn','hob_dispatch','hob_orch_status','hob_orch_control'].includes(n)).join(', ') || '无'}）`
+          + `\n      ⇒ ⚠ **批 21 起 ${SHRUNK21_NAMES} 属"已被收缩"项** ——`
+          + `\n        它们出现即说明收缩被回退（用户的权限裁定失效），**须查明是谁加回来的**`)
+      } else ok(`⑤h ${NAME_HO}：白名单恰好 26 名（11 + 9 + 1 + 2 + 2 + 2 + 3 − 4[批21 收缩]）`)
+
+      // ── 正向·批 21 专项：**被收缩的 4 个必须确实不在**（防"收了个寂寞"）──────
+      //   ⚠ 只靠总数不够：30 → 26 也可能是"删错 4 个、漏删目标 4 个"恰好凑成 26。
+      //   ⇒ 按 E-126「判据改哑与改对必须输出不同」的口径，**逐名点验**。
+      {
+        const back = SHRUNK21.filter((n) => allow13.includes(n))
+        if (back.length > 0) {
+          bad(`⑤h 批 21 收缩**未生效**：${back.join(', ')} 仍在白名单里`
+            + '\n      ⇒ 用户 2026-10-14 的权限裁定：Hob **只能看账本 + 网络**，'
+            + '\n        「工作区文件读取」这 4 个应当**已移除**'
+            + '\n      ⇒ 修法：白名单删这 4 名，并核声明面 `tool-fs` / `tool-fs-search` 是否同步删行')
+        } else {
+          ok(`⑤h 批 21 ✓ 收缩实测生效：${SHRUNK21.join(' / ')} **逐名均不在**白名单里（不是靠总数凑巧）`)
+        }
+      }
 
       // ── 负向：**本批硬禁项一律不得**在白名单里（任务书 §0 / §3）────────────
       // ⚠ 与 ⑤f 的禁项清单**部分重叠是刻意的**：⑤f 钉的是"批 9 起就不许有的"，
