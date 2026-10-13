@@ -19,7 +19,7 @@
 > ⚠ **可写面**：`PROJECT.md` 已加入 `write_hob` 的可写清单；
 > 但**方案只有用户能批准变更、Hob 只提议** —— 那是**程序纪律**，不是工具闸门。
 >
-> **仍在本目录**（骨架）：`README.md` · `EXPERIENCE.md` · `experience/` · `templates/` · `roles/` · `drafts/`。
+> **仍在本目录**（骨架）：`README.md` · `INIT.md`（**新工作区初始化清单**，见 §1.8）· `EXPERIENCE.md` · `experience/` · `templates/` · `roles/` · `drafts/`。
 >
 > ⚠ **名称未改**：本目录仍叫 `.hob/`，但它**不再是账本**（只放骨架）。
 > 改名会牵动**大量引用**（⚠ 属**漂移型计数，此处不写死**；要最新值以 `grep -r '\.hob/'` 实测为准）⇒ **不改名** —— 故在此处显式说明，避免误读。

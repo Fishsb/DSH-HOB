@@ -79,7 +79,7 @@ done
 ls -1 "$NEW"      # 期望：CONTEXT.md DECISIONS.md USER-DECISIONS.md volumes archive backups runtime
 ```
 
-⚠ **`PROJECT.md` 要自己写**：**建议只留文件头 + §0**（它是**地图**），正文按节落 `volumes/plan/`。
+⚠ **`PROJECT.md` 要自己写**：**建议只留 文件头 + 项目概览 + §0**（它是**地图**），正文按节落 `volumes/plan/`。
 
 ### 3.2 卷怎么建 —— **按需建，一卷一份索引**
 
