@@ -447,14 +447,45 @@ function archiveMembers(ledgerRoot, relDir) {
   return set
 }
 
+/**
+ * 从盘上**派生**要核的归档目录（⛔ 不依赖"某处正文正好点名了它" —— E-133 / E-142 同族）。
+ * 收录判据（**二选一，取并集**）：
+ *   (i) 该目录**存在且有 `README.md`** —— README 就是该目录的**清单载体**（与半 ① 同源）；
+ *   (ii) 该目录**含 `sources/`** —— 与半 ① 的核对象**同类**。
+ * ⚠ 实测（第 121 轮）：本账本区里 (ii) ⊂ (i)，故并集 = (i)；取并集是为了**换一台机器也成立**。
+ */
+function deriveArchiveDirs(ledgerRoot) {
+  const out = []
+  const arcRoot = join(ledgerRoot, 'archive')
+  try {
+    for (const e of readdirSync(arcRoot, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue
+      const rel = `archive/${e.name}`
+      const abs = join(arcRoot, e.name)
+      const hasReadme = existsSync(join(abs, 'README.md'))
+      let hasSources = false
+      try { hasSources = statSync(join(abs, 'sources')).isDirectory() } catch { hasSources = false }
+      if (hasReadme || hasSources) out.push(rel)
+    }
+  } catch { /* 无 archive/ ⇒ 派生面为空 */ }
+  return out.sort()
+}
+
 function checkDirRefs({ ledgerRoot, bad, ok }) {
-  const stat = { scanFiles: 0, refs: 0, dirRefs: 0, memberPairs: 0, missing: 0, dirsWithoutMembers: 0 }
+  const stat = {
+    scanFiles: 0, refs: 0, dirRefs: 0, dirRefsNamed: 0, dirRefsDerived: 0,
+    memberPairs: 0, missing: 0, dirsWithoutMembers: 0, overlapSkipped: 0,
+  }
   const files = deriveScanFiles(ledgerRoot)
   stat.scanFiles = files.length
   if (files.length === 0) {
     ok('② 目录成员核【未执行】—— 账本区读不到任何正本 / 卷 `.md` ⇒ 无对象可查，「不代表通过」')
     return { executed: false, ...stat }
   }
+
+  // (a) **正文点名**的目录 —— 保留原路；顺带记下它已覆盖的成员（供 (b) 去重）
+  const namedDirs = new Set()
+  const namedCovered = new Set()
   for (const f of files) {
     let src = ''
     try { src = readFileSync(join(ledgerRoot, f), 'utf8') } catch { continue }
@@ -468,7 +499,10 @@ function checkDirRefs({ ledgerRoot, bad, ok }) {
         // 文件形态 / 不存在 ⇒ 归**断言 D**（本脚本不重复它的活，也不打折它）
         if (!existsSync(abs) || !statSync(abs).isDirectory()) continue
         stat.dirRefs += 1
+        stat.dirRefsNamed += 1
+        namedDirs.add(rel)
         const members = archiveMembers(ledgerRoot, rel)
+        for (const memRel of members) namedCovered.add(memRel)
         if (members.size === 0) {
           stat.dirsWithoutMembers += 1
           ok(`② ${f}:${i + 1} 引用的目录 \`${ref}\` **无清单、index 里也无成员** ⇒ 无成员可核（⛔ 不报 ✓）`)
@@ -488,12 +522,44 @@ function checkDirRefs({ ledgerRoot, bad, ok }) {
       }
     })
   }
+
+  // (b) **盘上派生**的目录 —— 谁在盘上就核谁（⚠ 与 (a) **同路径去重**；⚠ 另按**成员**去重，
+  //     免得 (a) 点名 `…/sources` 而 (b) 派生其父目录时同一个成员被计两遍 ⇒ 读数虚高）。
+  const derived = []
+  for (const rel of deriveArchiveDirs(ledgerRoot)) {
+    if (namedDirs.has(rel)) continue          // (a) 已按同一路径覆盖 ⇒ 只计一次
+    stat.dirRefs += 1
+    stat.dirRefsDerived += 1
+    derived.push(rel)
+    const members = archiveMembers(ledgerRoot, rel)
+    if (members.size === 0) {
+      stat.dirsWithoutMembers += 1
+      ok(`② 盘上派生目录 \`${rel}/\` **无清单、index 里也无成员** ⇒ 无成员可核（⛔ 不报 ✓）`)
+      continue
+    }
+    const fresh = [...members].filter((m) => !namedCovered.has(m))
+    stat.overlapSkipped += members.size - fresh.length
+    for (const memRel of fresh.sort()) {
+      stat.memberPairs += 1
+      if (!existsSync(join(ledgerRoot, memRel))) {
+        stat.missing += 1
+        bad(`② 目录形态引用**缺成员**（**盘上派生、无正文点名**）：\`${rel}/\` 里缺 \`${memRel}\``
+          + '\n      ⇒ 实测：\`' + memRel + '\` **不存在**（成员清单来自该归档 README 的清单 / 账本仓 index）'
+          + '\n      ⇒ 该目录**没有任何正文点名它** ⇒ 只靠这条**派生**覆盖；⛔ 不许因为"没人引用"就跳过'
+          + `\n      ⇒ 核实方式：在 ${ledgerRoot} 跑 \`ls ${memRel}\``)
+      }
+    }
+  }
+
   if (stat.dirRefs > 0 && stat.memberPairs === 0) {
     bad('② 账本区**有目录形态的引用**，但**成员比对对数 = 0** ⇒ **无对象可查**'
       + '\n      ⇒ ⛔ 不许报 ✓（E-126 口径）')
   } else if (stat.memberPairs > 0 && stat.missing === 0) {
-    ok(`② 目录成员核【已执行】—— ${stat.scanFiles} 份正本/卷里 ${stat.refs} 处归档引用`
-      + `（其中**目录形态** ${stat.dirRefs} 处 ⇒ 逐目录核成员，共比对 ${stat.memberPairs} 个成员）`
+    ok(`② 目录成员核【已执行】—— ${stat.scanFiles} 份正本/卷里 ${stat.refs} 处**正文**归档引用；`
+      + `**目录形态** ${stat.dirRefs} 处 = **正文点名 ${stat.dirRefsNamed}** + **盘上派生 ${stat.dirRefsDerived}**`
+      + `${namedDirs.size > 0 ? `（正文点名去重后 ${namedDirs.size} 个目录）` : ''}`
+      + `${stat.overlapSkipped > 0 ? ` ⇒ ⚠ 派生面与点名面重叠、已按成员去重 ${stat.overlapSkipped} 个` : ''}`
+      + ` ⇒ 逐目录核成员，共比对 ${stat.memberPairs} 个成员`
       + `${stat.dirsWithoutMembers > 0 ? `；⚠ 另有 ${stat.dirsWithoutMembers} 处引用目录无清单无成员 ⇒ 无成员可核（已如实打印）` : ''}`
       + '，**成员齐备**')
   } else if (stat.refs === 0) {
@@ -548,6 +614,18 @@ function buildFixture() {
     `> 来源：账本仓提交 **\`${rev}\`** 时的改动前整份。`, '',
   ].join('\n'))
 
+  // ⚠ 第 121 轮新增：一个**没有任何正文点名**、但有 `README.md` 的目录
+  //   ⇒ 只能靠**盘上派生**覆盖它（正文点名那条路看不见它）。⛔ 它不出现在任何 `.md` 正文里。
+  mkdirSync(join(L, 'archive', '2026-01-03-nonameref'), { recursive: true })
+  writeFileSync(join(L, 'archive', '2026-01-03-nonameref', 'TASK-R9.md'), '# fixture task (no named ref)\n')
+  writeFileSync(join(L, 'archive', '2026-01-03-nonameref', 'README.md'), [
+    '# fixture（无正文点名 ⇒ 盘上派生）', '',
+    '| # | 件 | 是什么 |',
+    '|---|---|---|',
+    '| 1 | `TASK-R9.md` | 只在盘上、没人点名 |',
+    '',
+  ].join('\n'))
+
   // 半 ② 的引用面：正本里指向那个目录
   writeFileSync(join(L, 'PROJECT.md'), [
     '# fixture project', '',
@@ -563,6 +641,8 @@ function buildFixture() {
     aBuf,
     memberPath: join(L, 'archive', '2026-01-01-fixture', 'TASK-R1.md'),
     memberBuf: Buffer.from('# fixture task\n'),
+    derivedMemberPath: join(L, 'archive', '2026-01-03-nonameref', 'TASK-R9.md'),
+    derivedMemberBuf: Buffer.from('# fixture task (no named ref)\n'),
   }
 }
 
@@ -612,6 +692,18 @@ function selfTest() {
   r = runChecks(fx.L)
   expect('半 ② 还原后', r, 0, '②')
 
+  // ── 半 ②【新增档 · 第 121 轮】**盘上派生**面：一个**没有任何正文点名**的目录，
+  //    破坏其成员 ⇒ 必须 FAIL（而"正文点名"那条路**看不见它**）——
+  //    ⚠ 这一档正是第 120 轮那个静默缩水的**回归闸门**。
+  unlinkSync(fx.derivedMemberPath)
+  r = runChecks(fx.L)
+  const other3 = expect('半 ②【派生面】破坏后（无正文点名的目录缺一份成员）', r, 1, '②')
+  const half2DerivedBroken = lineOf(r, '②')
+  // 还原
+  writeFileSync(fx.derivedMemberPath, fx.derivedMemberBuf)
+  r = runChecks(fx.L)
+  const other3b = expect('半 ②【派生面】还原后', r, 0, '②')
+
   // ── 反假绿：把"含 sources/ 的归档目录"整个撤掉 ⇒ 必须走「无对象可查」而不是报 ✓ ──
   rmSync(join(fx.L, 'archive'), { recursive: true, force: true })
   r = runChecks(fx.L)
@@ -636,7 +728,8 @@ function selfTest() {
   console.log('')
   console.log(`  半 ① 破坏时点名的断言行：${half1Broken}`)
   console.log(`  半 ② 破坏时点名的断言行：${half2Broken}`)
-  for (const [tag, other] of [['半 ① 破坏档', other1], ['半 ② 破坏档', other2]]) {
+  console.log(`  半 ②【派生面】破坏时点名的断言行：${half2DerivedBroken}`)
+  for (const [tag, other] of [['半 ① 破坏档', other1], ['半 ② 破坏档', other2], ['半 ② 派生面破坏档', other3], ['半 ② 派生面还原档', other3b]]) {
     if (other.length > 0) console.log(`  ⚠ ${tag}里**另一半也红了**（对本档是噪音，须查）：${other[0].split('\n')[0]}`)
   }
 
@@ -676,7 +769,8 @@ console.log('')
 if (bad.length === 0) {
   console.log(`判定：PASS —— ① 比较对数 ${a.pairs}（形态 S ${a.formS} · 形态 M ${a.formM}`
     + `${a.globGroups > 0 ? ` · 通配组 ${a.globGroups}` : ''}），①c 历史对上 ${c.matched}/${c.checked}；`
-    + `② 目录形态引用 ${d.dirRefs} 处 / 成员比对 ${d.memberPairs} 对，全部齐备。`)
+    + `② 目录形态引用 ${d.dirRefs} 处（正文点名 ${d.dirRefsNamed} · 盘上派生 ${d.dirRefsDerived}）`
+    + ` / 成员比对 ${d.memberPairs} 对，全部齐备。`)
   process.exit(0)
 }
 console.log('判定：FAIL')
