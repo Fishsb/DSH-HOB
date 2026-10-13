@@ -424,8 +424,11 @@ function deriveScanFiles(ledgerRoot) {
  */
 function archiveMembers(ledgerRoot, relDir) {
   const set = new Set()
-  const tracked = tryGit(['ls-files', '--', relDir], ledgerRoot)
-  if (tracked !== null) for (const t of tracked.split('\n').map((x) => x.trim()).filter(Boolean)) set.add(t)
+  // ⚠ **必须用 `-z`（NUL 分隔）**：`git ls-files` 默认 `core.quotePath=true` ⇒ **非 ASCII 路径**
+  //   会被 C 式引号化（`"…\350\264\237…"`）⇒ 拿去做 `existsSync` **恒 false** ⇒ 把**存在**的成员
+  //   报成"缺成员"（**第 122 轮实测 105/554 全是假报**）。`-z` 关闭引号化，逐字节给出真实路径。
+  const tracked = tryGit(['ls-files', '-z', '--', relDir], ledgerRoot)
+  if (tracked !== null) for (const t of tracked.split('\0').filter(Boolean)) set.add(t)
   const m = /^(archive\/[^/]+)/.exec(relDir)
   if (m !== null) {
     const arcRel = m[1]
@@ -449,10 +452,15 @@ function archiveMembers(ledgerRoot, relDir) {
 
 /**
  * 从盘上**派生**要核的归档目录（⛔ 不依赖"某处正文正好点名了它" —— E-133 / E-142 同族）。
- * 收录判据（**二选一，取并集**）：
- *   (i) 该目录**存在且有 `README.md`** —— README 就是该目录的**清单载体**（与半 ① 同源）；
- *   (ii) 该目录**含 `sources/`** —— 与半 ① 的核对象**同类**。
- * ⚠ 实测（第 121 轮）：本账本区里 (ii) ⊂ (i)，故并集 = (i)；取并集是为了**换一台机器也成立**。
+ * 收录判据 = **`archive/` 下的每一个子目录**（⛔ **不再**按 `README.md` / `sources/` 过滤）。
+ *
+ * ⚠ **为什么"不过滤"**（第 122 轮实测）：凡"收录判据"都自带一个**被排除面** ——
+ *   第 121 轮的判据是"有 `README.md` **或** 含 `sources/`"⇒ **两者都不具备的目录**（`rounds-*` 系列 9 个）
+ *   **整个不被核**，而**收尾命令逐条仍全绿**。⇒ 口径 = 「说"**谁在盘上就核谁**"，就要真的覆盖盘上**全部**」；
+ *   ⚠ **立任何"收录判据"之前，先问一句"谁被它排除在外"**。
+ * ⚠ **代价（照实）**：那批目录**无清单载体** ⇒ 成员只来自**账本仓 index**（`git ls-files`）；
+ *   ⚠ **若某目录既无 README 又未入库 ⇒ 成员为 0** ⇒ 按既有口径打印"**无成员可核**"（⛔ **不报 ✓**，**E-126**）。
+ *   ⚠ 这**不是放宽** —— 覆盖面**只增不减**。
  */
 function deriveArchiveDirs(ledgerRoot) {
   const out = []
@@ -460,12 +468,7 @@ function deriveArchiveDirs(ledgerRoot) {
   try {
     for (const e of readdirSync(arcRoot, { withFileTypes: true })) {
       if (!e.isDirectory()) continue
-      const rel = `archive/${e.name}`
-      const abs = join(arcRoot, e.name)
-      const hasReadme = existsSync(join(abs, 'README.md'))
-      let hasSources = false
-      try { hasSources = statSync(join(abs, 'sources')).isDirectory() } catch { hasSources = false }
-      if (hasReadme || hasSources) out.push(rel)
+      out.push(`archive/${e.name}`)
     }
   } catch { /* 无 archive/ ⇒ 派生面为空 */ }
   return out.sort()
@@ -626,6 +629,11 @@ function buildFixture() {
     '',
   ].join('\n'))
 
+  // ⚠ 第 122 轮新增：一个**既无 `README.md`、又无 `sources/`** 的子目录
+  //   ⇒ 只能靠**盘上派生（全子目录口径）**覆盖；成员**只来自 index**（⛔ 无清单载体）。
+  mkdirSync(join(L, 'archive', '2026-01-04-bareindex'), { recursive: true })
+  writeFileSync(join(L, 'archive', '2026-01-04-bareindex', 'TASK-R10.md'), '# fixture task (bare index only)\n')
+
   // 半 ② 的引用面：正本里指向那个目录
   writeFileSync(join(L, 'PROJECT.md'), [
     '# fixture project', '',
@@ -643,6 +651,8 @@ function buildFixture() {
     memberBuf: Buffer.from('# fixture task\n'),
     derivedMemberPath: join(L, 'archive', '2026-01-03-nonameref', 'TASK-R9.md'),
     derivedMemberBuf: Buffer.from('# fixture task (no named ref)\n'),
+    bareMemberPath: join(L, 'archive', '2026-01-04-bareindex', 'TASK-R10.md'),
+    bareMemberBuf: Buffer.from('# fixture task (bare index only)\n'),
   }
 }
 
@@ -704,6 +714,17 @@ function selfTest() {
   r = runChecks(fx.L)
   const other3b = expect('半 ②【派生面】还原后', r, 0, '②')
 
+  // ── 半 ②【新增档 · 第 122 轮】**无清单载体**的目录（既无 README 又无 sources/），
+  //    成员**只来自 index** ⇒ 破坏它 ⇒ 必须 FAIL；还原 ⇒ PASS。
+  //    ⚠ 这一档正是"收录判据自带排除面"那处口子的**回归闸门**。
+  unlinkSync(fx.bareMemberPath)
+  r = runChecks(fx.L)
+  const other4 = expect('半 ②【无清单载体档】破坏后（既无 README 又无 sources/ 的目录缺成员）', r, 1, '②')
+  const half2BareBroken = lineOf(r, '②')
+  writeFileSync(fx.bareMemberPath, fx.bareMemberBuf)
+  r = runChecks(fx.L)
+  const other4b = expect('半 ②【无清单载体档】还原后', r, 0, '②')
+
   // ── 反假绿：把"含 sources/ 的归档目录"整个撤掉 ⇒ 必须走「无对象可查」而不是报 ✓ ──
   rmSync(join(fx.L, 'archive'), { recursive: true, force: true })
   r = runChecks(fx.L)
@@ -729,7 +750,8 @@ function selfTest() {
   console.log(`  半 ① 破坏时点名的断言行：${half1Broken}`)
   console.log(`  半 ② 破坏时点名的断言行：${half2Broken}`)
   console.log(`  半 ②【派生面】破坏时点名的断言行：${half2DerivedBroken}`)
-  for (const [tag, other] of [['半 ① 破坏档', other1], ['半 ② 破坏档', other2], ['半 ② 派生面破坏档', other3], ['半 ② 派生面还原档', other3b]]) {
+  console.log(`  半 ②【无清单载体档】破坏时点名的断言行：${half2BareBroken}`)
+  for (const [tag, other] of [['半 ① 破坏档', other1], ['半 ② 破坏档', other2], ['半 ② 派生面破坏档', other3], ['半 ② 派生面还原档', other3b], ['半 ② 无清单载体破坏档', other4], ['半 ② 无清单载体还原档', other4b]]) {
     if (other.length > 0) console.log(`  ⚠ ${tag}里**另一半也红了**（对本档是噪音，须查）：${other[0].split('\n')[0]}`)
   }
 
