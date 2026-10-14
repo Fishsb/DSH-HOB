@@ -420,7 +420,7 @@ const RESERVED_TRANSPORT_TOOL = 'run_code'
  *     ⚠ **与批 21 收缩后的现状逐名一致**（机检 ⑤m-2 用双向差集钉这条）。
  *   · `project`（项目）= 档1 **+** `hob_read_doc`（**只 `.md`** 模式）。
  *   · `workspace`（工作区）= 档2 **+** `hob_glob` + `hob_grep` + `hob_read_image`
- *     （并把 `hob_read_doc` 切到**文本类**模式）。
+ *     （且 `hob_read_doc` 在档3 **不设类型白名单** —— 工作区里的文件都可读取查看）。
  *
  * ── ⛔ 写类 / 命令类名字在三档里**一个都没有** ───────────────────────────
  *   `write` / `edit` / `bash` / `pwsh` / `str_replace_editor` **不在任何一档**
@@ -662,6 +662,31 @@ function enforceToolAllowlist(ctx: any, levelOf: () => string, log: (m: string) 
  * @param levelOf - 现读档位的函数（每次调用现取）。
  * @param log - 诊断输出。
  */
+/**
+ * 从一次工具调用里**尽可能**取出"要读哪个路径"（哨兵的类型规则用）。
+ *
+ * ⚠ 为什么写得这么防御性：哨兵跑在**任何工具**的调用前，参数形状由各工具自己定义
+ *   （`path` / `file_path` / 别的）；取不到就返回 `undefined`（**放行**）——
+ *   因为"取不到"是**哨兵不认识这次调用**，不是"用户越权"。
+ *   ⛔ 不许在这里 `throw`（硬性③）。
+ *
+ * @param exec - 宿主给的执行上下文。
+ * @returns 路径字符串；取不到时为 undefined。
+ */
+function readPathArg(exec: any): string | undefined {
+  try {
+    const args = exec?.arguments ?? exec?.args
+    if (args === null || typeof args !== 'object') return undefined
+    for (const key of ['path', 'file_path', 'file']) {
+      const v = (args as Record<string, unknown>)[key]
+      if (typeof v === 'string') return v
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
 function installPermissionGuard(ctx: any, levelOf: () => string, log: (m: string) => void): void {
   const guarded = new Set<string>(GUARDED_TOOLS)
   const forbidden = new Set<string>(SHARED_FORBIDDEN_TOOLS)
@@ -691,6 +716,24 @@ function installPermissionGuard(ctx: any, levelOf: () => string, log: (m: string
       const names = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
       if (!names.includes(name)) {
         return `"${name}" is not available at the current permission level (${level}).`
+      }
+
+      // ── **类型规则：只在档2**（2026-10-14 第 145 轮 · 用户裁定「档3的都加」）──
+      //   · **档2 `project`**：只许 `.md` —— 用户原话「档2不给」「不可以读代码」；
+      //   · **档3 `workspace`**：**不设类型规则**（任意文件都可读可看）
+      //     ⇒ 这一档只剩**包含性 + 软链**，它们由工具自己的 `execute` 守
+      //       （`workspace-read.ts` 的 `resolveGuarded`，复用 `doc-read.ts` 的同一份实现）。
+      //   ⚠ 哨兵**只看扩展名**（可判、不猜内容）：内容层面的"文本 / 二进制 / 图片"
+      //     三态由 `hob_read_doc` 的 `execute` 决定怎么回（短提示 / 提示改用图片工具）。
+      //     哨兵在这里的职责是**权限**（档2 不许读非 `.md`），不是**呈现**。
+      if (level === 'project') {
+        const requested = readPathArg(exec)
+        if (typeof requested === 'string' && requested.trim() !== '') {
+          const lower = requested.trim().toLowerCase()
+          if (!lower.endsWith('.md')) {
+            return `"${requested}" is not available at the project level: this level reads only .md documents.`
+          }
+        }
       }
       return undefined
     } catch (e) {

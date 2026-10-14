@@ -56,7 +56,6 @@ import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { readMarkdownCapped, resolveLedgerRoot, resolveWorkspaceRoot } from '../server/doc-read.ts'
 import {
-  TEXT_EXTENSIONS,
   grepWorkspace as grepWorkspaceText,
   globWorkspace as globWorkspacePaths,
   readWorkspaceImage as readWorkspaceImageBytes,
@@ -356,11 +355,13 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
   const readWorkspaceDoc = defineTool({
     name: 'hob_read_doc',
     description:
-      '只读本工作区内的**文档 / 文本类文件**（⛔ 不能写、不能改）。'
+      '只读本工作区内的文件（⛔ 不能写、不能改）。'
       + '⚠ 可读范围**随本会话的权限档位变**：'
-      + `「项目」档只可读 .md；「工作区」档可读 ${TEXT_EXTENSIONS.length} 类文本（.md .txt .json .yaml .ts .py 等）。`
-      + '越出工作区、软链、二进制 / 非 UTF-8 一律拒绝。'
-      + '⚠ 大文件会被截断并在尾部标注；需要后续内容用 offset/limit 分段读。',
+      + '「项目」档**只可读 .md**；「工作区」档**工作区里的文件都可读取查看**（含代码与图片）。'
+      + '越出工作区、软链一律拒绝。'
+      + '⚠ 三种内容分别处理：文本 ⇒ 返回正文；二进制 / 非 UTF-8 ⇒ 只给一句短提示（⛔ 不吐乱码）；'
+      + '图片 ⇒ 提示改用 hob_read_image。'
+      + `⚠ 大文件会被截断并在尾部标注（单文件上限 ${65536} 字节）；需要后续内容用 offset/limit 分段读。`,
     parameters: {
       path: { type: 'string', required: true, description: '工作区内的相对路径（也可给工作区内的绝对路径），如 src/config.ts、.hob/README.md' },
       offset: { type: 'integer', description: '起始行（1 基）。缺省 = 从第 1 行。' },
@@ -402,8 +403,9 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
   const grepWorkspaceTool = defineTool({
     name: 'hob_grep',
     description:
-      '在本工作区的**文本类文件里**按正则搜索，返回**命中行**（⛔ 只读、不能写）。'
-      + `⚠ 搜索范围**受类型限制**：只搜 ${TEXT_EXTENSIONS.length} 类文本（.md .txt .json .yaml .ts .py 等），⛔ 不搜二进制 / 图片。`
+      '在本工作区**全部文件**里按正则搜索，返回**命中行**（⛔ 只读、不能写）。'
+      + '⚠ 读不成文本的文件（二进制 / 非 UTF-8）**会被跳过**，并在结果里**注明跳过了几个**'
+      + '（⛔ 不会把二进制正文当命中）。'
       + '⚠ 单文件与总量都有上限，被截断时会明说；软链不跟随。',
     parameters: {
       pattern: { type: 'string', required: true, description: '正则源（大小写敏感），如 "function\\s+\\w+"、TODO|FIXME' },
@@ -419,9 +421,14 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       if (root === undefined) return '拒绝：无法确定工作区目录。'
       const r = await grepWorkspaceText(root, args.pattern, args.path ?? '', args.limit ?? 200)
       if (!r.ok) return r.reason ?? '搜索失败。'
-      if (r.hits.length === 0) return `没有命中「${args.pattern}」（扫了 ${r.scanned} 个文本文件）。`
+      // ⚠ 跳过的二进制**必须报出**（用户裁定"文件都可以读取查看"，读者要知道
+      //   哪些没被搜到、以及为什么 —— ⛔ 不许静默少搜）。
+      const skipped = r.skippedBinary > 0
+        ? `\n（另有 ${r.skippedBinary} 个文件读不成文本、已跳过 —— 二进制 / 非 UTF-8，未按文本搜索。）`
+        : ''
+      if (r.hits.length === 0) return `没有命中「${args.pattern}」（扫了 ${r.scanned} 个文件）。${skipped}`
       const body = r.hits.map((h) => `${h.path}:${h.line}: ${h.text}`).join('\n')
-      return body + (r.capped ? `\n\n---\n[已截断] 命中数达到上限 ${args.limit ?? 200}。` : '')
+      return body + skipped + (r.capped ? `\n\n---\n[已截断] 命中数达到上限 ${args.limit ?? 200}。` : '')
     },
   })
 

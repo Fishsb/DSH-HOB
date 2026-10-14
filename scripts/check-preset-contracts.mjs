@@ -1435,7 +1435,10 @@ const STALE_APPELLATIONS = [
     //     描述**档位边界**的上下文里（R-26：⛔ 不许把 fail-open 与 fail-closed 混写）。
     ['⑤靠什么守住：①结构性（写类工具**根本不存在**）', 'the write-capable tools do not exist here at all'],
     ['⑤靠什么守住：②白名单按档，且任何档不含写类/命令名', 'a level never includes a write-capable or command name'],
-    ['⑤靠什么守住：③单调哨兵 **fail-closed**（与拦截器相反）', 'that guard fails closed'],
+    // ⚠ 锚点**不得跨行**（本仓既有纪律，第 143/144 轮各踩过一次）：
+    //   第 145 轮重排该句后 `that guard fails closed` 被断行切开 ⇒ 换成**行内片段**。
+    //   ⚠ 语义仍是"③单调哨兵 **fail-closed**"（`fails` + `closed` 在同一行的那一处）。
+    ['⑤靠什么守住：③单调哨兵 **fail-closed**（与拦截器相反）', 'that guard fails'],
     ['⑤靠什么守住：明确"不是对所有事都是边界"', 'not as a'],
     // ⚠ 锚点**不得跨行**（本仓既有纪律，第 143 轮实测过一次假红）：
     //   第 144 轮正文重排后 `is not the same as "the plugin cannot read` 恰好被断行切开
@@ -1785,6 +1788,50 @@ const STALE_APPELLATIONS = [
             + '\n      ⇒ 同名注册会失败 / 覆盖，且失败可能是静默的')
         } else {
           ok(`⑤m-7 四个新工具名与宿主已注册集合（${hostNames.size} 名）互斥：${newNames.join(', ')}`)
+        }
+      }
+    }
+
+    // ── ⑤m-9 类型面（2026-10-14 第 145 轮 · 用户裁定「档3的都加，文件都可以读取查看」）──
+    //   ⚠ 本轮**只改类型面**：档3 从"22 个扩展名白名单"改为"**任意文件**"；档2 不变（仍只 `.md`）。
+    //   ⚠ 判据分两半，**缺一不可**（E-126：只验一侧 ⇒ "判据改哑"与"判据改对"输出相同）：
+    //     ① **正向**：档3 的类型判定**不查任何白名单**（`workspace` ⇒ 恒真）；
+    //     ② **负向**：档2 的类型判定**仍只认 `.md`**。
+    //   ⚠ 另有一条**删除判据**：那份 22 个扩展名的常量**必须已删净**
+    //     （⛔ 不留无人使用的清单 —— 空旋钮纪律）。
+    {
+      const wsSrc = (() => {
+        try { return readFileSync(join(root, 'src', 'server', 'workspace-read.ts'), 'utf8') } catch { return null }
+      })()
+      if (wsSrc === null) {
+        bad('⑤m-9 读不到 src/server/workspace-read.ts（类型面的唯一落点）⇒ 基准缺失，不按通过处理')
+      } else {
+        // ① 那本 22 个扩展名的常量**必须已删净**
+        const staleConst = /export const TEXT_EXTENSIONS\b/.test(wsSrc)
+        if (staleConst) {
+          bad('⑤m-9 档3 的旧类型白名单 `TEXT_EXTENSIONS` **仍在**（第 145 轮用户裁定后应删净）'
+            + '\n      ⇒ 档3 已改为"任意文件都可读"，留着一份无人使用的清单就是**空旋钮**'
+            + '\n      ⇒ 删掉该常量，并核所有引用点（含工具描述里的 `${TEXT_EXTENSIONS.length}`）')
+        } else {
+          ok('⑤m-9a 旧类型白名单常量已删净（档3 不再有扩展名清单）')
+        }
+
+        // ② 档位 → 类型判定：档3 恒真、档2 只 .md（**从实现里读**，不内联）
+        const fn = /export function isAllowedForLevel[\s\S]*?\n\}/.exec(wsSrc)
+        if (fn === null) {
+          bad('⑤m-9 找不到 isAllowedForLevel（档位 → 类型的唯一判定点）')
+        } else {
+          const body = fn[0]
+          const projectOnlyMd = /level\s*===\s*'project'[\s\S]{0,120}?isMarkdownFile\(/.test(body)
+          const workspaceAlways = /level\s*===\s*'workspace'[\s\S]{0,80}?return true/.test(body)
+          const problems = []
+          if (!projectOnlyMd) problems.push("档2 那支不再只认 .md（用户裁定「档2不给」「不可以读代码」）")
+          if (!workspaceAlways) problems.push('档3 那支不再是无条件放行（用户裁定「档3的都加」）')
+          if (problems.length > 0) {
+            bad(`⑤m-9b 类型面与裁定不符：${problems.join('；')}`)
+          } else {
+            ok("⑤m-9b 类型面符合裁定（档2 只 .md · 档3 无条件放行 = 任意文件）")
+          }
         }
       }
     }

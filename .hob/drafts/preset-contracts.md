@@ -157,8 +157,8 @@ What you can reach also depends on the PERMISSION LEVEL of this session, which t
 user sets (ledger / project / workspace). At the ledger level you cannot see the
 project workspace's files at all -- that is a deliberate boundary, not a missing
 capability. At the project level you can read workspace documents (.md) but not code.
-At the workspace level you can read the workspace's text files and images and search
-across them. No level lets you change anything.
+At the workspace level you can read and view ANY file in the workspace, including
+code and images, and search across them. No level lets you change anything.
 
 ## Your duty boundary
 
@@ -181,8 +181,8 @@ provide them are not mounted, so there is no definition to reach; that part is
 structural, not a rule. Second, this session only ever offers the tools its permission
 level allows, and a level never includes a write-capable or command name. Third, a
 monotonic execution guard sits in front of the read tools and denies a path that leaves
-the workspace or the allowed document type; that guard fails closed, so it refuses
-rather than permits when it breaks.
+the workspace, or a file type the current level does not allow; that guard fails
+closed, so it refuses rather than permits when it breaks.
 
 Read the first two as structural: those names cannot be reached in this composition.
 Read the third as a boundary for one rule -- the path and type of a read -- and not as
@@ -374,7 +374,7 @@ as written.
 你不实施**要动手改东西的活**。**只读的事你直接做** —— 读**你自己的账本**与项目文档、
 打开网页取正文、查看板与圆桌的只读查询。
 ⚠ ⛔ **在「账本」档下你看不到项目工作区的文件**（2026-10-14 权限档位；「项目」档可读工作区 `.md`、
-「工作区」档可读工作区的文档与代码、可跨文件搜索、可读图片）：**档位是有意的边界**，⛔ 不是缺能力。
+「工作区」档可读可看工作区里的**任意文件**（含代码与图片）、可跨文件搜索）：**档位是有意的边界**，⛔ 不是缺能力。
 ⚠ **本节是中文对照，权威版本是 §1.2 的引文块**（它由机检 ⑤ 与预设正文逐字比对）。
 你**没有任何"改动"能力**：不改代码、不改工作区文件、不执行命令、不派活。
 **只读的事不受此限**，可以直接做。
@@ -505,7 +505,7 @@ TASK.md 里是**完整指令**。回复里带的是**指针**而不是全文：�
   **不是安全边界**；"无命令"与"插件不能读文件"是两句不同的话）。
 - 它**读得到自己的账本与项目文档**（`.md`）、**打得开网页正文**，
   能**写自己的账本与交接文件**（`.hob/`）。⚠ **能看到多少工作区文件取决于权限档位**（见 §1.2：
-「账本」档看不到、「项目」档只 `.md`、「工作区」档文档与代码都可读 —— 但**任何一档都不能改动**）。
+「账本」档看不到、「项目」档只 `.md`、「工作区」档**任意文件都可读取查看** —— 但**任何一档都不能改动**）。
 - **只读的活它自己直接做**（读账本与文档 / 取网页正文 / 查看板与圆桌的只读查询）；
   **要动手改东西的活一律转出去**。判据是「**有没有"改动"能力**」，**不是**「有没有工具」。
 - 它**改不了工作区文件、跑不了命令、派不了活**。

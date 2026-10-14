@@ -4,11 +4,11 @@
  * ── 与 `doc-read.ts` 的分工（⛔ 别混）──────────────────────────────────
  *   · `doc-read.ts` —— 读**账本区**（账本在工作区之外，按工作区名派生）。
  *     它是 `read_contracts` / `write_hob` 的边界，**不管**工作区内的文件。
- *   · 本文件 —— 读**工作区**内的文件（档2 只 `.md`；档3 文本类 + 图片），
+ *   · 本文件 —— 读**工作区**内的文件（档2 只 `.md`；档3 **任意文件**），
  *     是三个自注册只读工具（`hob_read_doc` / `hob_grep` / `hob_read_image`）的边界。
  *
  * ── 为什么独立一个文件（而不是塞进 `doc-read.ts`）────────────────────
- *   两者的**根目录不同**（账本区 vs 工作区）、**允许的类型不同**（`.md` vs 文本类 + 图片）。
+ *   两者的**根目录不同**（账本区 vs 工作区）、**允许的类型不同**（`.md` vs 任意文件）。
  *   混在一个文件里，日后改一侧会误伤另一侧。守卫的三块（包含性 / 软链 / 上限）
  *   则**复用 `doc-read.ts` 的同一份实现**（`resolveInside` / `findSymlinkOnPath`），
  *   ⛔ 不重写第二份 —— 重写必然漂移（本项目既有纪律：守卫逻辑只写一份）。
@@ -16,33 +16,19 @@
  * ── 权限口径（硬约束，三处都在本文件）────────────────────────────────
  *   ① **包含性**：目标必须落在工作区根之内（`path.relative`，⛔ 不用 `startsWith`）；
  *   ② **软链**：路径上任一段是符号链接即拒（软链的真实目标可能在区外）；
- *   ③ **类型**：档2 只认 `.md`；档3 认 {@link TEXT_EXTENSIONS}（**22 个**）
- *      —— 二进制 / 图片**不**走文本读（图片有单独的工具）。
- *   ④ **编码**：非 UTF-8 一律拒（⛔ 不静默把坏字节替换成 U+FFFD）。
+ *   ③ **类型**：档2 只认 `.md`；**档3 不设类型白名单**（任意文件都可读可看）。
+ *      ⚠ 但"能读"不等于"按文本读"：`hob_read_doc` 会**先看内容**再决定怎么回 ——
+ *        文本 ⇒ 正文；二进制 ⇒ **短提示**；图片 ⇒ 提示改用 `hob_read_image`。
+ *   ④ **编码**：非 UTF-8 **不静默替换**（⛔ 不留 U+FFFD）—— 走二进制那条路，给短提示。
+ *
+ * ── ⚠ 与第 144 轮的口径差异（用户 2026-10-14 追加裁定「档3的都加，文件都可以读取查看」）──
+ *   第 144 轮档3 曾用**扩展名白名单**；本轮改为**任意文件**（白名单已删）。
+ *   ⇒ 原来那份 `TEXT_EXTENSIONS` 常量**已删净**（⛔ 不留无人使用的清单 —— 空旋钮纪律）。
+ *   ⚠ **档2 不变**（仍只 `.md`）⇒ 类型面**只剩一处判定**：{@link isAllowedForLevel}。
  */
 import { lstat, readdir, readFile, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep, basename, extname } from 'node:path'
 import { findSymlinkOnPath, resolveInside } from './doc-read.ts'
-
-/**
- * **档3 的文本类名单**（22 个扩展名）—— `hob_read_doc`（文本模式）与 `hob_grep`
- * 的搜索范围**共用这一份常量**。
- *
- * ⚠ **⛔ 不许在别处再写一份**（E-110 / 用户 2026-10-14 补遗 A4 明文要求）：
- *   两处各写一份 ⇒ 改一处忘另一处时，`hob_read_doc` 能读的文件 `hob_grep`
- *   搜不到（或反之），而这种不一致**没有任何现象**会提示。
- *
- * ⚠ 口径 = **扩展名白名单**（不是"非二进制即可"）：
- *   "如何判二进制"本身没有稳定判据（`doc-read.ts` 现在也不判），
- *   而扩展名白名单是**可判、可列、可机检**的。
- */
-export const TEXT_EXTENSIONS: readonly string[] = [
-  '.md', '.txt', '.json', '.yaml', '.yml', '.toml', '.ini', '.csv',
-  '.ts', '.tsx', '.js', '.mjs', '.cjs',
-  '.py', '.sh',
-  '.go', '.rs', '.java', '.sql',
-  '.html', '.css', '.xml',
-] as const
 
 /**
  * **图片类名单**（档3）—— 与宿主 `read_image` 的支持面**逐项一致**。
@@ -64,32 +50,55 @@ export const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
 /** 被拒绝的统一话术（⛔ 不区分"不存在"与"不允许"，避免泄露存在性）。 */
 export const DENIED_WORKSPACE = '拒绝：只能读取本工作区内允许的文件。'
 
-/** {@link TEXT_EXTENSIONS} 的 Set 形态（判定用；保持与常量同源）。 */
-const TEXT_EXT_SET = new Set(TEXT_EXTENSIONS)
-
-/** 是否为文本类（档3 口径）。⚠ 大小写不敏感。 */
-export function isTextFile(p: string): boolean {
-  return TEXT_EXT_SET.has(extname(p).toLowerCase())
-}
-
 /** 是否为档2 可读的 `.md`。 */
 export function isMarkdownFile(p: string): boolean {
   return extname(p).toLowerCase() === '.md'
 }
 
 /**
- * 按**档位**判类型：`project` 只认 `.md`；`workspace` 认 {@link TEXT_EXTENSIONS}。
+ * 按**档位**判类型：`project` 只认 `.md`；**`workspace` 不设类型白名单**。
  *
  * ⚠ 这是"档位只改**读**的范围"这条口径的**唯一**落点 ——
  *   `hob_read_doc` 的两种模式差异**只在这里**，别在别处再判一次。
  *
- * @param p - 文件路径（取扩展名）。
+ * ⚠⚠ **类型面只剩这一处**（第 145 轮）：原来档3 还查一份扩展名白名单，
+ *   用户 2026-10-14 裁定「档3的都加，文件都可以读取查看」后**该白名单已删净**。
+ *   ⇒ 档3 的类型判定 = **恒真**（只受包含性与软链约束）。
+ *
+ * @param p - 文件路径（取扩展名；档3 不再看它）。
  * @param level - 当前档位（`ledger` 下两个工具都不可见，故这里只处理 2 / 3）。
  */
-export function isAllowedTextFor(p: string, level: string): boolean {
+export function isAllowedForLevel(p: string, level: string): boolean {
   if (level === 'project') return isMarkdownFile(p)
-  if (level === 'workspace') return isTextFile(p)
+  if (level === 'workspace') return true   // ⚠ 任意文件（用户裁定）
   return false
+}
+
+/**
+ * 判一段字节**是不是可读的文本**（`hob_read_doc` 用来分"文本 / 二进制"两态）。
+ *
+ * ⚠ 判据（两条，都可判、都不猜编码）：
+ *   ① 前 8 KB 内含 NUL 字节 ⇒ 二进制（文本文件里出现 NUL 极不正常）；
+ *   ② **严格** UTF-8 解码失败 ⇒ 二进制 / 非 UTF-8。
+ * ⚠ ⛔ **绝不用"解码失败就替换成 U+FFFD"的宽松口径** —— 那正是本项目一直在防的
+ *   "静默替换"（`doc-read.ts:211` 的既有缺口，本模块**不继承**）。
+ *
+ * @param bytes - 原始字节。
+ * @returns 能解码成文本时返回文本；否则 `undefined`。
+ */
+function decodeStrictUtf8(bytes: Uint8Array): string | undefined {
+  const probe = bytes.subarray(0, Math.min(bytes.length, 8192))
+  for (let i = 0; i < probe.length; i++) if (probe[i] === 0) return undefined
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return undefined
+  }
+}
+
+/** 图片扩展名（`hob_read_doc` 用它给"改用 hob_read_image"的提示），与宿主支持面一致。 */
+export function isImageFile(p: string): boolean {
+  return IMAGE_EXTENSIONS[extname(p).toLowerCase()] !== undefined
 }
 
 export interface WorkspaceReadResult {
@@ -123,34 +132,22 @@ async function resolveGuarded(
   return { abs, ok: true }
 }
 
-/**
- * 解码并**显式校验** UTF-8：坏字节一律拒（⛔ 不静默替换成 U+FFFD）。
- *
- * ⚠ 为什么必须显式判（本项目既有缺口）：`doc-read.ts:211` 用的是
- *   `readFile(abs, 'utf8')` —— Node 对非法序列会**静默替换**成 U+FFFD 且不报错
- *   ⇒ 模型拿到的是"看起来正常、实则被改过"的正文。本模块不继承这个行为。
- *
- * @param bytes - 原始字节。
- * @returns 解码后的文本；非法 UTF-8 / 含 NUL 时为 undefined。
- */
-function decodeStrictUtf8(bytes: Uint8Array): string | undefined {
-  // 二进制快筛：文本类文件里出现 NUL 字节极不正常（且是 tar/可执行文件的特征）。
-  const probe = bytes.subarray(0, Math.min(bytes.length, 8192))
-  for (let i = 0; i < probe.length; i++) if (probe[i] === 0) return undefined
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-  } catch {
-    return undefined
-  }
-}
 
 /**
- * 读工作区内的**文本类**文件（档2 = 只 `.md`；档3 = {@link TEXT_EXTENSIONS}）。
+ * 读工作区内的一个文件，**按内容分三态回**（档2 仍只 `.md`；档3 任意文件）。
+ *
+ * ── 三态（用户 2026-10-14 裁定「文件都可以读取查看」的落点）──────────────
+ *   ① **文本** ⇒ 返回正文（受 `maxBytes` 上限，超限**截断并在尾部标注**）；
+ *   ② **二进制 / 非 UTF-8** ⇒ **短提示**（⛔ 不吐乱码、⛔ **不静默替换成 U+FFFD**）；
+ *   ③ **图片** ⇒ 提示**改用 `hob_read_image`**（图片走附件通道，不经文本读）。
+ *   ⚠ 三态的判定顺序有讲究：**先判图片**（按扩展名，可判），再**按内容**判文本 / 二进制。
+ *
+ * ⚠ **"类型拒绝"只在档2 发生**（只允许 `.md`）；档3 **不因类型拒绝**（只受包含性与软链约束）。
  *
  * @param root - 工作区根（绝对路径）。
  * @param relPath - 相对（或工作区内绝对）路径。
- * @param maxBytes - 单文件字节上限；超出则**截断并在尾部明确标注**（⛔ 不静默截断）。
- * @param level - 当前档位（决定类型口径）。
+ * @param maxBytes - 单文件字节上限（`hob_read_doc` 传 **65536**）；超出则截断并标注。
+ * @param level - 当前档位（决定类型口径；档3 = 任意文件）。
  * @param offset - 起始行（1 基）；缺省 1。
  * @param limit - 最多返回行数；缺省 = 不按行切（只受字节上限约束）。
  */
@@ -166,9 +163,9 @@ export async function readWorkspaceText(
   if (!g.ok) return { ok: false, text: g.reason, truncated: false, bytes: 0, reason: g.reason }
   const abs = g.abs
 
-  if (!isAllowedTextFor(abs, level)) {
-    const want = level === 'project' ? '只允许 .md' : `只允许文本类（${TEXT_EXTENSIONS.join(' ')}）`
-    return { ok: false, text: `拒绝：${want}。`, truncated: false, bytes: 0, reason: 'type' }
+  // ⚠ 类型拒绝**只在档2**（档3 = 任意文件 ⇒ 这一句对它是恒假的）。
+  if (!isAllowedForLevel(abs, level)) {
+    return { ok: false, text: '拒绝：本档只允许读 .md（「项目」档）。', truncated: false, bytes: 0, reason: 'type' }
   }
 
   let bytes = 0
@@ -199,14 +196,28 @@ export async function readWorkspaceText(
     return { ok: false, text: '读取失败：文件不存在或不可读。', truncated: false, bytes, reason: 'read-error' }
   }
 
-  const text = decodeStrictUtf8(raw)
-  if (text === undefined) {
+  // ── 三态之二 / 之三：图片与二进制 ────────────────────────────────────
+  //   ⚠ **先判图片**（按扩展名，确定性判据），再按内容判文本 / 二进制。
+  if (isImageFile(abs)) {
     return {
       ok: false,
-      text: '拒绝：该文件不是有效的 UTF-8 文本（可能是二进制，或编码不是 UTF-8）。',
+      text: `该文件是图片（${extname(abs).toLowerCase()}）—— 请改用 hob_read_image 读取它（图片走附件通道，不经文本读）。`,
       truncated: false,
       bytes,
-      reason: 'binary-or-encoding',
+      reason: 'image-use-image-tool',
+    }
+  }
+  const text = decodeStrictUtf8(raw)
+  if (text === undefined) {
+    // ⚠ **短提示**：不说"拒绝"（它**没有**被拒 —— 档3 允许读任意文件），
+    //   只说"这不是文本、看不了正文"。⛔ 不吐乱码、⛔ 不留 U+FFFD。
+    return {
+      ok: false,
+      text: `该文件不是可读的文本（二进制或非 UTF-8 编码），无法展示正文。`
+        + `文件大小 ${bytes} 字节。`,
+      truncated: false,
+      bytes,
+      reason: 'binary',
     }
   }
 
@@ -243,25 +254,27 @@ const GREP_MAX_FILES = 4000
 const GREP_MAX_BYTES_PER_FILE = 512 * 1024
 
 /**
- * 在工作区内**按扩展名白名单**搜索（档3 的 `hob_grep`）。
+ * 在工作区内搜索（档3 的 `hob_grep`）—— 范围 = **全部文件**，**跳过二进制并计数**。
  *
- * ── 为什么必须带类型过滤 ──────────────────────────────────────────────
- *   用户裁定「档3 的都给」，但档3 的语义是"**文本类**都可读"
- *   ⇒ 搜索范围 = {@link TEXT_EXTENSIONS}，⛔ **不搜二进制 / 图片**。
- *   本函数与 `readWorkspaceText`（文本模式）**共用同一份常量**。
+ * ── 范围口径（用户 2026-10-14 裁定「文件都可以读取查看」）───────────────
+ *   ⚠ 第 144 轮的范围是**扩展名白名单**；本轮改为**全部文件**。
+ *   ⛔ **但二进制不能按文本搜** —— 对二进制求正则命中会得到**乱码行**，
+ *     那既不是用户要的"命中了"，也不是可用的读数。
+ *   ⇒ 口径 =「**扫全部文件；读不成文本的跳过，并在结果里如实报出跳过了几个**」。
+ *     这一条是本模块**唯一**还看内容（而非扩展名）的地方，⚠ 它**不是**类型白名单：
+ *     任何文件都**会被尝试**，只是"读不成文本"的那些留给 `hob_read_doc` 去给短提示。
  *
  * ── 为什么不用宿主 `grep`（`dsh-tool-fs-search`）──────────────────────
- *   ① 它读**任意**文件正文（无扩展名过滤）⇒ 直接给会把"档3 只读文本类"
- *      这条口径变成只靠调用方自觉；
+ *   ① 它没有"跳过二进制并计数"这一层 ⇒ 结果里会混进乱码行；
  *   ② 声明它就得连 `tool-fs-search` 一起声明 ⇒ 宿主 `write`/`edit` 也会回来。
- *   ⇒ 自建一个**范围受控**的搜索（本条是设计 §b 与补遗 A2 的落点）。
+ *   ⇒ 自建一个**范围受控**的搜索。
  *
  * ── 判据（可判、有界）────────────────────────────────────────────────
  *   · `pattern` = 正则源（大小写敏感，与 `grep` 默认一致）；
- *   · 只搜 {@link TEXT_EXTENSIONS}；跳过 {@link SKIP_DIRS}；
+ *   · 遍历时跳过 {@link SKIP_DIRS}；
  *   · 单文件 ≤ {@link GREP_MAX_BYTES_PER_FILE}、总量 ≤ {@link GREP_MAX_FILES}；
  *   · 软链**不跟随**（`readdir` 给的是 `Dirent`，软链不是 `isFile()` ⇒ 天然跳过）；
- *   · 返回最多 `maxHits` 条，**并在被截断时明说**。
+ *   · 返回最多 `maxHits` 条，**并在被截断时明说**；**跳过的二进制个数一并返回**。
  *
  * @param root - 工作区根（绝对路径）。
  * @param pattern - 正则源。
@@ -273,23 +286,24 @@ export async function grepWorkspace(
   pattern: string,
   subPath = '',
   maxHits = 200,
-): Promise<{ ok: boolean; hits: GrepHit[]; scanned: number; capped: boolean; reason?: string }> {
+): Promise<{ ok: boolean; hits: GrepHit[]; scanned: number; skippedBinary: number; capped: boolean; reason?: string }> {
   let re: RegExp
   try {
     re = new RegExp(pattern)
   } catch (e) {
-    return { ok: false, hits: [], scanned: 0, capped: false, reason: `正则无效：${String((e as Error)?.message ?? e)}` }
+    return { ok: false, hits: [], scanned: 0, skippedBinary: 0, capped: false, reason: `正则无效：${String((e as Error)?.message ?? e)}` }
   }
 
   let base = root
   if (subPath.trim() !== '') {
     const g = await resolveGuarded(root, subPath)
-    if (!g.ok) return { ok: false, hits: [], scanned: 0, capped: false, reason: g.reason }
+    if (!g.ok) return { ok: false, hits: [], scanned: 0, skippedBinary: 0, capped: false, reason: g.reason }
     base = g.abs
   }
 
   const hits: GrepHit[] = []
   let scanned = 0
+  let skippedBinary = 0
   let capped = false
 
   const walk = async (dir: string): Promise<void> => {
@@ -309,18 +323,20 @@ export async function grepWorkspace(
         continue
       }
       if (!ent.isFile()) continue
-      if (!isTextFile(ent.name)) continue
+      // ⚠ **不再按扩展名筛**（第 145 轮：范围 = 全部文件）。
       const abs = join(dir, ent.name)
       scanned++
       let text: string | undefined
       try {
         const st = await lstat(abs)
-        if (st.size > GREP_MAX_BYTES_PER_FILE) continue
+        if (st.size > GREP_MAX_BYTES_PER_FILE) { skippedBinary++; continue }
         text = decodeStrictUtf8(await readFile(abs))
       } catch {
+        skippedBinary++
         continue
       }
-      if (text === undefined) continue
+      // 读不成文本（含二进制 / 非 UTF-8）⇒ **跳过并计数**，⛔ 不把它的正文当命中。
+      if (text === undefined) { skippedBinary++; continue }
       const lines = text.split('\n')
       for (let i = 0; i < lines.length; i++) {
         // 每行都测同一个正则；`lastIndex` 对无 g 标志的正则无影响。
@@ -336,7 +352,7 @@ export async function grepWorkspace(
     }
   }
   await walk(base)
-  return { ok: true, hits, scanned, capped }
+  return { ok: true, hits, scanned, skippedBinary, capped }
 }
 
 /** `hob_read_image` 的读取结果。 */
