@@ -7,7 +7,7 @@
  *   入口仍是 `scripts/check-gitignore.mjs`（`npm run check:gitignore`）。
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -506,6 +506,296 @@ export function runRepoRules({ bad, ok }) {
             + ' ⇒ "新加脚本忘了登记"这种静默缺口已被机检收口')
         }
       }
+    }
+  }
+
+  /**
+   * ── 断言 A（2026-10-14 第 148 轮）：骨架**活规矩层**的**引用闭合** ─────────────
+   *
+   * ── 为什么需要（缺口有实测出处）──────────────────────────────────────
+   *   第 146 轮审计的结论是「**骨架层完全没有判据**」：骨架里的路径 / 文件名引用
+   *   **可以随便断，而全部收尾命令一条都不会红**（`check-doc-shape.mjs` 自陈
+   *   "只扫正本"、`.hob/**` "不在辖"）。P-2 / R-1 / C-1 / C-3 **全是它的直接后果**。
+   *
+   * ── ⚠⚠ 必须**分层**（这是本条最关键的设计，⛔ 不是可有可无）────────────────
+   *   **记录层**（`.hob/experience/**`）里的"断"是**历史** —— 第 146 轮实测 **80 处**，
+   *   那些路径**当时存在、现已退场**，改了就是**伪造历史**。
+   *   ⇒ 若把记录层纳入判据，这条断言**会恒红**（比没有更糟：恒红的判据等于没有判据）。
+   *   **只扫活规矩层** = `.hob/{README.md,INIT.md,EXPERIENCE.md}` + `templates/` + `roles/` + `drafts/`。
+   *
+   * ── 判据（**派生式**，⛔ 不写死清单）──────────────────────────────────
+   *   ① 抽活规矩层里**具名引用**两族：`src/… · scripts/… · preset/… · lib/… · package.json`
+   *      （工作区相对路径）与 `archive/… · volumes/…`（账本区相对路径）；
+   *   ② 逐条 `existsSync`（工作区族查工作区、账本区族查账本根 —— 账本根取自
+   *      `LEDGER` 的解析，读不到 ⇒ **FAIL**，⛔ 不静默跳过）；
+   *   ③ ⚠ **排除**：以 `/` 结尾的**目录简称**（正文里"归档区/某目录"的泛指）、含 `...` 或 `*` 的
+   *      **示意形态**、以及**账本区在当前机器上不存在**时的账本族整体（打印"未执行、不代表通过"）；
+   *   ④ 每族**都报计数**（核了多少 / 排除多少 / 为什么）—— 防"覆盖面静默缩水"（第 121 轮的教训）。
+   */
+  {
+    const liveFiles = (() => {
+      const out = []
+      const roots = ['.hob/templates', '.hob/roles', '.hob/drafts']
+      for (const r of roots) {
+        const abs = join(root, r)
+        let es = []
+        try { es = readdirSync(abs, { withFileTypes: true }) } catch { continue }
+        const dig = (dir) => {
+          let ds = []
+          try { ds = readdirSync(dir, { withFileTypes: true }) } catch { return }
+          for (const d of ds) {
+            const p = join(dir, d.name)
+            if (d.isDirectory()) dig(p)
+            else if (/\.(md|html)$/.test(d.name)) out.push(p)
+          }
+        }
+        for (const e of es) {
+          const p = join(abs, e.name)
+          if (e.isDirectory()) dig(p)
+          else if (/\.(md|html)$/.test(e.name)) out.push(p)
+        }
+      }
+      for (const f of ['.hob/README.md', '.hob/INIT.md', '.hob/EXPERIENCE.md']) {
+        const p = join(root, f)
+        try { readFileSync(p); out.push(p) } catch { /* 不在就跳过 */ }
+      }
+      return out
+    })()
+
+    if (liveFiles.length === 0) {
+      bad('断言 A：骨架活规矩层一份文件也读不到（基准缺失 ⇒ 不按通过处理）')
+    } else {
+      // 账本根：⚠ **与 check-doc-shape 同口径**（唯一权威 = 预设行声明的 `ledgerHome`）
+      //   ⛔ **不硬编码本机绝对路径**（UD-73③）：从预设行读 `ledgerHome`，取 `<ledgerHome>/<工作区名>`。
+      const ledgerRoot = (() => {
+        const candidates = []
+        try {
+          const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
+          const m = /ledgerHome:\s*(\S+)/.exec(preset)
+          if (m !== null) candidates.push(m[1])
+        } catch { /* 预设读不到 ⇒ 下面的候选为空 ⇒ 走"未执行"分支 */ }
+        const wsName = basename(root)
+        for (const home of candidates) {
+          const dir = join(home, wsName)
+          if (existsSync(dir)) return dir
+        }
+        return undefined
+      })()
+      const ledgerExists = ledgerRoot !== undefined
+      const wsRe = /`((?:src|scripts|preset|lib)\/[A-Za-z0-9._\/-]+)`/g
+      const ledgerRe = /`((?:archive|volumes)\/[A-Za-z0-9._\/-]+)`/g
+      /**
+       * ⚠⚠ **不该咬的**（第 126 轮口径：禁词判据必须点名"只在哪个格子里找"）──────────
+       * 这两类**不是"断裂的引用"**，判据**必须**能区分它们（否则会误报、进而逼人删真信息）：
+       *
+       * ① **明示缺失 / 历史的叙述**：同一行里带这些标记词 ⇒ 该路径**本来就说的是"曾经/不在"**。
+       *    例：`.hob/README.md:647`（`…**未搬运** —— 现役机检是…`）、
+       *        `.hob/drafts/restructure-plan.md:62`（`… | 删文件 |`）。
+       *    ⚠ 清单**逐条列出**而不是"看着像就算了"；新增豁免必须在这里显式登记 + 写理由。
+       *
+       * ② **声明为"外部/历史归档"的整节**：`.hob/EXPERIENCE.md` 的 `## 8. 可搬资产清单`
+       *    那一节的路径**指向工作区之外的旧项目归档**（`archive/…` 是**那份副本内部的**相对路径，
+       *    ⛔ 不是本账本区的路径）⇒ 该节整体**不在辖**（理由写在 `EXPERIENCE.md` 表头："全部在归档目录里可查"）。
+       *    ⚠ 用**节标题**定位而不是行号（行号会漂）。
+       */
+      const ABSENCE_MARKERS = ['未搬运', '未做', '不许假设', '删文件', '已删', '已退场', '曾是', '曾于', '原口径', '历史上', '拟删']
+      const isAbsenceNarrative = (line) => ABSENCE_MARKERS.some((w) => line.includes(w))
+      // 整节豁免：按**节标题**起止（`## N. 标题` 到下一个 `## `），⛔ 不按行号
+      const sectionExempt = (src) => {
+        const lines = src.split('\n')
+        const marks = []
+        for (let i = 0; i < lines.length; i++) if (/^## /.test(lines[i])) marks.push(i)
+        const out = new Set()
+        for (let k = 0; k < marks.length; k++) {
+          const title = lines[marks[k]]
+          if (title.includes('可搬资产清单')) {
+            const end = k + 1 < marks.length ? marks[k + 1] : lines.length
+            for (let j = marks[k]; j < end; j++) out.add(j)
+          }
+        }
+        return out
+      }
+      const wsHits = []
+      const ledgerHits = []
+      let skippedDir = 0
+      let skippedPattern = 0
+      let skippedAbsence = 0
+      for (const f of liveFiles) {
+        const rel = relative(root, f).split('\\').join('/')
+        const src = readFileSync(f, 'utf8')
+        const exemptLines = sectionExempt(src)
+        src.split('\n').forEach((line, i) => {
+          const at = `${rel}:${i + 1}`
+          // ⚠ 整节豁免（按节标题定位）与"明示缺失叙述"逐行豁免 —— 见上面那段注释
+          const lineExempt = exemptLines.has(i) || isAbsenceNarrative(line)
+          for (const m of line.matchAll(wsRe)) {
+            const p = m[1]
+            if (p.endsWith('/')) { skippedDir++; continue }
+            if (lineExempt) { skippedAbsence++; continue }
+            wsHits.push({ at, p, ok: existsSync(join(root, p)) })
+          }
+          for (const m of line.matchAll(ledgerRe)) {
+            const p = m[1]
+            if (p.endsWith('/') || p.includes('...') || p.includes('*')) { skippedPattern++; continue }
+            if (lineExempt) { skippedAbsence++; continue }
+            ledgerHits.push({ at, p, ok: ledgerExists ? existsSync(join(ledgerRoot, p)) : null })
+          }
+        })
+      }
+      const wsBad = wsHits.filter((x) => !x.ok)
+      for (const x of wsBad) {
+        bad(`断言 A · 工作区引用断裂：${x.at} → \`${x.p}\`（该路径不存在）`
+          + '\n      ⇒ 骨架活规矩层里的具名引用必须指向**存在的实体**'
+          + '\n      ⇒ 修法：改对路径，或把"这是历史/示意"写明（⛔ 不要删真引用）')
+      }
+      if (wsBad.length === 0) {
+        ok(`断言 A · 工作区引用闭合：核 ${wsHits.length} 处，**全部存在**`
+          + `（排除：目录简称 ${skippedDir} 处 · **明示缺失/历史叙述与整节豁免 ${skippedAbsence} 处**`
+        + ` —— 后者见判据内的 ABSENCE_MARKERS 与"可搬资产清单"整节豁免，⛔ 都是**点名登记**的）`)
+      }
+      if (!ledgerExists) {
+        // ⚠ 与 check-doc-shape 同款口径：账本区不在本机 ⇒ **打印"未执行"，⛔ 不报 ✓**
+        ok(`断言 A · 账本区引用：**未执行、不代表通过**（账本根解析不到 —— 预设行的 \`ledgerHome\` 读不到 / 目录不在本机）`
+          + ` —— 已收 ${ledgerHits.length} 处留待届时核`)
+      } else {
+        const ledgerBad = ledgerHits.filter((x) => x.ok === false)
+        for (const x of ledgerBad) {
+          bad(`断言 A · 账本区引用断裂：${x.at} → \`${x.p}\``
+            + '\n      ⇒ 与工作区引用同一条判据（账本区路径也要指向存在的实体）')
+        }
+        if (ledgerBad.length === 0) {
+          ok(`断言 A · 账本区引用闭合：核 ${ledgerHits.length} 处，**全部存在**`
+            + `（排除示意形态/目录简称 ${skippedPattern} 处）`)
+        }
+      }
+      ok(`断言 A · 覆盖面：活规矩层 ${liveFiles.length} 份（含根 3 件 + templates/ + roles/ + drafts/）；`
+        + `⛔ **记录层 .hob/experience/** 不在辖**（那里 80 处"断"是历史，纳入会恒红）`)
+    }
+  }
+
+  /**
+   * ── 断言 B（2026-10-14 第 148 轮）：**可分发层不得含"开箱即错"族** ────────────
+   *
+   * ── 为什么需要（缺口有实测出处）──────────────────────────────────────
+   *   骨架的**存在理由**是「拿去管别的项目」。而 `templates/**` 与 `roles/**` 正是
+   *   **拿去开箱的那两层** —— 里面若写着本项目的编号 / 项目名 / 本机路径 /「第 N 轮」，
+   *   新项目**开箱即错**（第 146/147 两轮各修过一批，且第 147 轮**实测过兜底网有洞**：
+   *   「第 N 轮」那族 **0/2 命中**）。
+   *
+   * ── ⚠⚠ 豁免面**逐层点名 + 写明理由**（⛔ 不许用"通扫全文 = 0 命中"当判据）──────
+   *   · `.hob/templates/**` —— **在辖**（开箱层）；
+   *   · `.hob/roles/**`     —— **在辖**（开箱层，README §1.3 明写"可复用、可分发"）；
+   *   · `.hob/README.md` / `.hob/INIT.md` —— **豁免**：它们是**本项目骨架的说明书**，
+   *     已由第 147 轮的**节级标注**声明"其中编号是本项目账本条目号、开箱不带"
+   *     （标注位置：`README.md` 文件头、`INIT.md` 文件头）；
+   *   · `.hob/drafts/**`    —— **豁免**：它是**本项目自己的契约正文 / 草案**
+   *     （README §1.2），**不是拿给别的项目用的模板**；
+   *   · `.hob/EXPERIENCE.md` + `experience/**` —— **豁免**：**记录层**，历史读数**永久不改**。
+   *   ⇒ ⛔ 这条判据**只扫两个在辖层**，并对豁免层**逐条打印理由**（让"没扫"可见）。
+   *
+   * ── 判据（**分族计数**）────────────────────────────────────────────────
+   *   族 = ① 项目专有编号**具体值**（`CHG-nn`/`UD-nn`/`E-nn`，⚠ **占位号 `CHG-000`/`UD-00` 除外**）
+   *        · ② 项目名（`dsh-hob` / `hob-ledgers` / `prompt-enhancer`）
+   *        · ③ 本机路径（`/home/lk` · `/mnt/<盘>/` · `C:\\Users`）
+   *        · ④「第 N 轮」项目史引用。
+   *   ⚠ **每族都报计数**（核了多少 / 命中多少），⛔ 「命中 0」不得单独当"干净"的证据。
+   */
+  {
+    const PLACEHOLDER = /^(?:CHG-0{3}|UD-0{2})$/
+    /**
+     * ⚠⚠ **分族 × 分层的在辖面**（⛔ 不是"整个文件豁免"）─────────────────────
+     * 为什么不能用"整文件豁免"：`.hob/EXPERIENCE.md` 是**记录层索引**，
+     *   它引**自己账本的条目编号**（`E-nn` 165 处）是**索引的本职** ⇒ 那一族**必须豁免**；
+     *   但它的**本机路径 / 「第 N 轮」**是**换机必断**的形态（第 148 轮 ① 刚把它修净）
+     *   ⇒ 那两族**必须留在辖**，否则**刚修好的东西会被下次改动注回去而无人报**（这正是回归对拍要证的事）。
+     * ⇒ 故在辖面按**族**给，而不是按"文件"给。
+     */
+    const FAMILIES = [
+      ['项目专有编号具体值', /\b(?:CHG|UD|E)-\d{1,3}\b/g, PLACEHOLDER, ['.hob/templates', '.hob/roles']],
+      ['项目名', /dsh-hob|hob-ledgers|prompt-enhancer/g, null, ['.hob/templates', '.hob/roles']],
+      ['本机路径', /\/home\/lk\b|\/mnt\/[a-z]\//g, null,
+        ['.hob/templates', '.hob/roles', '.hob/EXPERIENCE.md']],
+      ['第N轮引用', /第 *\d+ *轮/g, null,
+        ['.hob/templates', '.hob/roles', '.hob/EXPERIENCE.md']],
+    ]
+    const IN_SCOPE = ['.hob/templates', '.hob/roles', '.hob/EXPERIENCE.md']
+    const EXEMPT = [
+      ['.hob/README.md', '本项目骨架**说明书** —— 第 147 轮已加节级标注声明"编号是本项目账本条目号、开箱不带"'],
+      ['.hob/INIT.md', '同上（文件头已有节级标注）'],
+      ['.hob/drafts/', '本项目**自己的契约正文 / 草案**（README §1.2）—— 不是拿给别项目用的模板'],
+      ['.hob/EXPERIENCE.md', '**记录层索引** —— ⚠ **按族分**：其"编号具体值/项目名"两族**豁免**（引自己账本条目的编号是索引本职）；'
+        + '"本机路径/第N轮"两族**在辖**（换机必断，且第 148 轮 ① 刚修净 ⇒ 必须留回归守卫）'],
+      ['.hob/experience/', '**记录层** —— 历史读数永久不改'],
+      ['.hob/backups/', '改前备份（不进 git）'],
+      ['.gitignore', '仓库自身配置，不是骨架件'],
+    ]
+    // ⚠ 既收**目录**也收**单文件**（否则像 `.hob/EXPERIENCE.md` 这样的在辖项会被静默漏掉：
+    //   `readdirSync(文件)` 抛异常 ⇒ 被 catch 吞掉 ⇒ 返回空表 ⇒ 该族"核 0 行"却报 ✓）
+    const collect = (target) => {
+      const abs = join(root, target)
+      let st = null
+      try { st = statSync(abs) } catch { return [] }
+      if (!st.isDirectory()) return /\.(md|html)$/.test(target) ? [abs] : []
+      const out = []
+      const dig = (d) => {
+        let es = []
+        try { es = readdirSync(d, { withFileTypes: true }) } catch { return }
+        for (const e of es) {
+          const p = join(d, e.name)
+          if (e.isDirectory()) dig(p)
+          else if (/\.(md|html)$/.test(e.name)) out.push(p)
+        }
+      }
+      dig(abs)
+      return out
+    }
+    const files = IN_SCOPE.flatMap(collect)
+    if (files.length === 0) {
+      bad('断言 B：在辖层（templates/ + roles/）一份文件也读不到（基准缺失 ⇒ 不按通过处理）')
+    } else {
+      // 在辖判定：`rel`（当前文件）落在该族的哪个在辖前缀下
+      const applies = (rel, scopes) => scopes.some((sc) => rel === sc || rel.startsWith(sc + '/'))
+      const counts = new Map(FAMILIES.map(([n]) => [n, 0]))
+      const checked = new Map(FAMILIES.map(([n]) => [n, 0]))
+      const bads = []
+      for (const f of files) {
+        const rel = relative(root, f).split('\\').join('/')
+        readFileSync(f, 'utf8').split('\n').forEach((line, i) => {
+          for (const [name, re, isPlaceholder, scopes] of FAMILIES) {
+            if (!applies(rel, scopes)) continue   // ⚠ 该族在这份文件上**不在辖**（见上：分族给在辖面）
+            checked.set(name, checked.get(name) + 1)
+            re.lastIndex = 0
+            const ms = [...line.matchAll(re)]
+            const real = ms.filter((m) => (isPlaceholder === null ? true : !isPlaceholder.test(m[0])))
+            if (real.length === 0) continue
+            counts.set(name, counts.get(name) + real.length)
+            if (bads.length < 20) {
+              bads.push(`${rel}:${i + 1} [${name}] 「${real.map((m) => m[0]).join(' / ')}」`)
+            } else if (bads.length === 20) {
+              bads.push('…（更多略）')
+            }
+          }
+        })
+      }
+      const total = [...counts.values()].reduce((a, b) => a + b, 0)
+      if (total > 0) {
+        bad('断言 B · **可分发层含"开箱即错"族**（新项目开箱即错）：'
+          + '\n      ' + bads.join('\n      ')
+          + '\n      ⇒ templates/ 与 roles/ 是**拿去开箱的两层**：本项目专有编号 / 项目名 / 本机路径 /'
+          + '\n        「第 N 轮」在其中出现 ⇒ 新项目开箱即错'
+          + '\n      ⇒ 修法：删具体值、把**规则本身**写出来（第 147 轮教训：换一个编号会**造出新的悬空引用**）'
+          + '\n      ⇒ 分族覆盖读数（核了多少行）：'
+          + FAMILIES.map(([n]) => `${n} 核${checked.get(n)}行`).join(' · '))
+      } else {
+        ok(`断言 B · 可分发层（templates/ ${collect('.hob/templates').length} 份 + roles/ ${collect('.hob/roles').length} 份`
+          + ` + EXPERIENCE.md 索引）四族命中**全 0**；**分族覆盖读数**（核了多少行 / 命中多少）：`
+          + FAMILIES.map(([n]) => `${n} 核${checked.get(n)}行/命中0`).join(' · ')
+          + `（⚠ 占位号 CHG-000/UD-00 **不计**，见 INIT.md 明文"有意占位"；`
+          + `⚠ 「命中 0」**不是**"干净"的证据 —— 覆盖读数才是，见上面每族的"核 N 行"）`)
+      }
+      // ⚠ 豁免面**逐层点名 + 理由**：让"没扫"可见（⛔ 不是静默跳过）
+      ok('断言 B · 豁免面（逐层点名，⛔ 未扫但已说明理由）：'
+        + EXEMPT.map(([p, why]) => `${p}（${why}）`).join('；'))
     }
   }
 
