@@ -259,6 +259,106 @@ export function runRepoRules({ bad, ok }) {
   else ok(`README §1 骨架栏提到的 ${mentioned.length} 项，均已纳入 MUST-TRACK 覆盖`)
 
   /**
+   * 两向对账：**`.gitignore` 注释里的骨架清单 ↔ README §1 骨架栏**（2026-10-14 第 147 轮新增）。
+   *
+   * ── 为什么需要（缺口有实测出处）──────────────────────────────────────
+   *   `.gitignore` 头部那条注释**自称**：「本清单与 README §1 是**同一份清单的两处载体**
+   *   ⇒ 改一处必须同步另一处，并由 `npm run check:gitignore` 机检」。
+   *   ⚠ **而它其实没有任何判据管** —— 上面那条断言读的是**README 与 `!` 规则**，
+   *   注释是**第三种载体**。第 146 轮实测：第 128 轮加 `.hob/INIT.md` 时改了
+   *   README + `!` 规则 + 本脚本清单，**唯独漏了注释** ⇒ 注释停在 6 项、README 是 7 项，
+   *   **静默漂了很久**；并**现场实证**（往注释里塞一行噪音 ⇒ 判据输出与退出码**都不变**）。
+   *
+   * ── 判据（**两向**，E-126：只验一侧 ⇒ "改哑"与"改对"输出相同）────────────────
+   *   ① 抽取：README §1 骨架行的 `` `.hob/xxx` `` 提及 ↔ `.gitignore` 注释**骨架段**里的同形提及；
+   *   ② 两向差集**都必须为空**，任一非空 ⇒ FAIL 并**逐个点名**；
+   *   ③ ⚠ **基准缺失 ⇒ FAIL**（抽不到任一侧 / 定位锚点不在 ⇒ **不按通过处理**，⛔ 不许静默跳过）。
+   *
+   * ⚠ 抽取口径与上面那条**同源**（都取 `.hob/xxx` 形态）—— 同一处口径写两遍会漂。
+   */
+  {
+    const giSrc = (() => {
+      try { return execFileSync('cat', [join(root, '.gitignore')], { encoding: 'utf8' }) } catch { return '' }
+    })()
+    const giLines = giSrc.split('\n')
+    const startAt = giLines.findIndex((l) => l.includes('账本：骨架进 git'))
+    const endAt = giLines.findIndex((l) => l.includes('运行数据（填充进格式'))
+    if (startAt < 0 || endAt < 0 || endAt <= startAt) {
+      bad('`.gitignore` 注释里的骨架清单读不到（基准缺失 ⇒ 不按通过处理）：'
+        + '未找到「账本：骨架进 git」/「运行数据（填充进格式」两个定位锚点')
+    } else {
+      const giComment = giLines.slice(startAt, endAt).join('\n')
+      const inComment = [...new Set([...giComment.matchAll(/`(\.hob\/[A-Za-z0-9._-]+\/?)`/g)].map((m) => m[1]))]
+      const inReadme = [...new Set(mentioned)]
+      if (inComment.length === 0) {
+        bad('`.gitignore` 注释的骨架段里抽不到任何 `.hob/xxx` 提及（基准缺失 ⇒ 不按通过处理）')
+      } else {
+        const onlyReadme = inReadme.filter((p) => !inComment.includes(p))
+        const onlyComment = inComment.filter((p) => !inReadme.includes(p))
+        if (onlyReadme.length > 0 || onlyComment.length > 0) {
+          bad('`.gitignore` 注释的骨架清单与 README §1 骨架栏**不一致**（两向对账）：'
+            + `\n       README 有、注释缺：${onlyReadme.join(', ') || '无'}`
+            + `\n       注释有、README 缺：${onlyComment.join(', ') || '无'}`
+            + '\n      ⇒ 那条注释自称"本清单与 README §1 是同一份清单的两处载体"'
+            + '\n        ⇒ 改一处必须同步另一处（第 128 轮加 `.hob/INIT.md` 时漏的正是注释）')
+        } else {
+          ok('`.gitignore` 注释的骨架清单与 README §1 骨架栏**两向一致**'
+            + `（各 ${inComment.length} 项：${inComment.join(' ')}）`)
+        }
+      }
+    }
+  }
+
+  /**
+   * `roles/` 的**存在性断言**（2026-10-14 第 147 轮新增，**派生式**）。
+   *
+   * ── 为什么需要（缺口有实测出处）──────────────────────────────────────
+   *   第 146 轮审计实测：`roles/` 有 **18 份**，而本脚本 MUST-TRACK 只登记了 **2 份**
+   *   （`qa.md` / `quality-gates.md` 两条"代表项"）⇒ **其余 16 份删掉一半不会有任何红**。
+   *   而 README §1.3 把 `roles/` 归骨架的理由是「**可复用、可分发**的格式+知识契约」
+   *   —— 一份"可分发契约"少了成员却无人报，与 E-70 同族（**清单有、机检没有**）。
+   *
+   * ── 判据（**派生式**，⛔ 不写死成员数）──────────────────────────────
+   *   ① 目录 `roles/methods/` **必须存在且非空**（否则 FAIL，⛔ 不按通过处理）；
+   *   ② 盘上每一份成员**必须逐个可读**，且**不得是空文件**；
+   *   ③ 成员数**必须 ≥ 上面 MUST-TRACK 里已登记的 `roles/` 条数**
+   *      （防止"登记的还在、别的成员已被删"）；
+   *   ④ ⚠ **不写死任何数字**（E-117：写死会漂）—— 报的是**实测值**。
+   */
+  {
+    const rolesDir = join(root, '.hob', 'roles', 'methods')
+    let names = []
+    let dirOk = true
+    try { names = readdirSync(rolesDir).filter((n) => n.endsWith('.md')) } catch { dirOk = false }
+    if (!dirOk) {
+      bad('`.hob/roles/methods/` 读不到（目录不在 / 不可读 ⇒ 基准缺失，不按通过处理）')
+    } else if (names.length === 0) {
+      bad('`.hob/roles/methods/` 里一份 `.md` 也没有（README §1.3 说它是"随角色数增长的多份" ⇒ 与约定不符）')
+    } else {
+      const unreadable = []
+      const empty = []
+      for (const n of names) {
+        try {
+          const body = readFileSync(join(rolesDir, n), 'utf8')
+          if (body.trim() === '') empty.push(n)
+        } catch { unreadable.push(n) }
+      }
+      const registered = mustTrack.filter(([p]) => p.startsWith('.hob/roles/')).length
+      if (unreadable.length > 0) bad('`.hob/roles/methods/` 有读不到的成员：' + unreadable.join(', '))
+      if (empty.length > 0) bad('`.hob/roles/methods/` 有空成员（0 字节）：' + empty.join(', '))
+      if (names.length < registered) {
+        bad('`.hob/roles/methods/` 成员数（' + names.length + '）少于 MUST-TRACK 登记的 roles 条数（'
+          + registered + '）⇒ 登记的还在、别的成员已被删（或目录被截断）')
+      }
+      if (unreadable.length === 0 && empty.length === 0 && names.length >= registered) {
+        ok('`.hob/roles/methods/` 存在性断言通过：' + names.length + ' 份成员**逐个可读**、无空文件'
+          + '（⚠ 数字是**实测值**，⛔ 不写死）')
+      }
+    }
+  }
+
+
+  /**
    * 反向自检（2026-10-09 新增）：**package.json 里声明的脚本必须都在 MUST-TRACK 里**。
    *
    * ── 为什么需要（这一条是本次补的，理由有实测出处）────────────────────

@@ -14,6 +14,7 @@ dist/
 #
 #   骨架（格式契约 / 被机检脚本消费的规范源）   ✅ 进 git
 #     · `.hob/README.md`      —— README §1 表格第 1 行
+#     · `.hob/INIT.md`        —— README §1 表格第 1 行 + §1.8（新工作区初始化清单）
 #     · `.hob/templates/`     —— README §1 表格第 1 行 + §2 目录树
 #     · `.hob/EXPERIENCE.md`  —— README §1 表格第 1 行 + §1 的专节
 #                                「`EXPERIENCE.md` 是什么（本项目的特殊骨架）」

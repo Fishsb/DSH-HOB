@@ -11,7 +11,7 @@
 >
 > **这不是账本副本，是提炼。** 每条含 **现象 / 根因 / 正确做法 / 出处**。
 > 出处编号 = 旧账本 `FACTS.md` 的条目号（另有 `README.md` 第 N 坑、`batchN-report.md`）。
-> 复核原文：`/home/lk/FF/dsh-hob-archive-20261005/.hob/FACTS.md`（217 条）、`README.md`、`batch1..8-report.md`。
+> 复核原文：**一份外部的旧项目归档**（⛔ 不在本仓、骨架不带；其 `.hob/FACTS.md` 共 **217 条**，另含 `README.md` 与 `batch1..8-report.md`）。
 >
 > ⚠ **提炼纪律（用户明确要求）**：**不许丢「根因」**。只留现象等于没留——
 > 现象会随环境变化，根因才是可迁移的判据。

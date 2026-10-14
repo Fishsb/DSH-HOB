@@ -2,7 +2,7 @@
 
 > **性质**：**骨架 · 进 git**（可复用、可分发、零外部依赖）。
 > **来源**：改编自 [dsh-expert-mode](https://github.com/Asher-2000/dsh-expert-mode)（**MIT 许可**）
-> 的 `.expert-mode/methods/quality-gates.md`（**逐字采用其规则表**；⚠ 该文件的**行数不引用** —— 行数会随它自身改动漂移，见 `EXPERIENCE.md` **E-91**）。
+> 的 `.expert-mode/methods/quality-gates.md`（**逐字采用其规则表**；⚠ 该文件的**行数不引用** —— 行数会随它自身改动漂移）。
 > **配套**：角色见 `.hob/templates/ROLES.md`；指令与回报见 `TASK.md` / `REPORT.md`。
 >
 > ⚠ **本文件不是"再写一套流程"** —— 它是把 SDLC 的各个阶段**变成可判定的门禁**，
@@ -138,7 +138,7 @@ taskboard recover   # 崩溃后恢复 stale running
 |---|---|
 | 缺 **Agent Teams** | 串行执行 + 人工在 `.hob/` 账本记录进度 |
 | 缺 **圆桌（roundtable）** | 用 `spawn_teammate` 招独立成员做评审 |
-| 缺 **看板（taskboard）** | 用 `.hob/archive/<日期>-<slug>/` 目录 + `TASK.md` 当任务板 |
+| 缺 **看板（taskboard）** | 用 `archive/<日期>-<slug>/` 目录 + `TASK.md` 当任务板（⚠ 归档目录在**账本区**，不在工作区） |
 | 缺 **搜索类工具** | 用原生 `web_fetch` 直接取 URL |
 | **完全没有子代理能力** | ⚠ **仍可执行**：角色化为"**同一会话内分阶段扮演**"，门禁不改——**只有"独立性"降级为"分轮次"**，须在交付时**如实说明** |
 
