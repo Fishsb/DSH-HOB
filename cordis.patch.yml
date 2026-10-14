@@ -54,6 +54,18 @@
           provider: ""
           model: ""
           reasoningEffort: ""
+        # ── 权限档位（2026-10-14 第 144 轮新增；与 src/config.ts 的 `permission` 段一一对应）──
+        # ⚠ 与 `spawn` **同形**：父对象 `permission` 自己不 volatile，子字段 `level` 带
+        #   `.volatile()` ⇒ 设置面写入必须走**子字段路径** `['permission','level']`。
+        # ⚠ 三个值 = 包含链里的三档（账本 ⊂ 项目 ⊂ 工作区）：
+        #   账本 = 只读自己的账本 + 网络（**默认**）；项目 = 另可读工作区的 `.md`
+        #   文档、不可读代码；工作区 = 另可读工作区的文档与代码（文本类）、
+        #   可跨文件搜索、可读图片。
+        # ⚠ **任何一档都不能改动**：写类 / 命令类工具在三档里都不存在
+        #   （`src/preset/tools.ts` 的三档表 + 哨兵守着）。
+        # ⚠ 它带 `.volatile()` ⇒ 改档位走 volatile-only 通道、**不必重启**。
+        permission:
+          level: ledger
 # ⚠ 上面四个值只是**声明默认值**，别在代码里直接读 `config.modules.x`：
 #   四个字段**都带 .volatile()** ⇒ 运行时都是 **ref 对象**（恒 truthy）。
 #   唯一允许解 ref 的地方是 `src/config.ts` 的 `moduleSwitches()`。

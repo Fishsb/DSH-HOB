@@ -168,7 +168,47 @@ function patchConfigGroups(src) {
   return { groups, keys }
 }
 
-// ── B. 一一对应：patch 的每个键都在 schema 里；modules/spawn 子键集合相等 ──
+/**
+ * 从 `src/config.ts` 文本里抽出**顶层 `z.object` 组**及其**子键**。
+ *
+ * ── 为什么需要它（2026-10-14 第 143 轮实测的缺口）──────────────────────
+ *   旧版 B 组只认识 `modules` / `spawn` **两组写死的清单** ——
+ *   新增一个顶层组（如 `permission`）时，**它的子键集合没有任何判据**：
+ *   往 patch 里塞一个 schema 没有的子键，检查**照样 PASS**（实测）。
+ *   ⇒ 改为**从 schema 派生**：哪个组、每组的子键，一律以 `src/config.ts` 为准。
+ *
+ * ── 口径 ─────────────────────────────────────────────────────────────
+ *   · 顶层组 = 行首两空格 + `名字: z.object(`（组的一行）；
+ *   · 子键 = 组起始之后、**同级或更浅**的下一行之前，行首**四空格** + `名字: z.`
+ *     （四空格是各组统一的缩进档位，与文件现有形态一致）；
+ *   · ⚠ **只认 `z.object(` 形态的组**：顶层**标量**既不是组、也不会出现在设置面
+ *     （`volatileForm` 要求顶层是 object 或自带 volatile）⇒ 若有人把配置写成顶层标量，
+ *     由本组的「patch 键必须在 schema 里」那一半去咬（见下）。
+ *
+ * @param src - `src/config.ts` 全文。
+ * @returns 组名 → 子键数组（保持文件里的先后顺序）。
+ */
+function schemaTopGroups(src) {
+  const out = {}
+  const lines = src.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^ {2}([A-Za-z0-9_]+): z\.object\(/.exec(lines[i])
+    if (m === null) continue
+    const name = m[1]
+    const subs = []
+    for (let j = i + 1; j < lines.length; j++) {
+      const l = lines[j]
+      if (/^ {2}[A-Za-z0-9_]+: z\.object\(/.test(l)) break // 下一个顶层组
+      if (/^\}\)/.test(l) || /^export /.test(l)) break     // schema 收尾
+      const s = /^ {4}([A-Za-z0-9_]+):\s*z\./.exec(l)
+      if (s !== null) subs.push(s[1])
+    }
+    out[name] = subs
+  }
+  return out
+}
+
+// ── B. 一一对应：schema ↔ patch **双向**成立（顶层键 + 每组子键集合） ──────
 {
   const parsed = patchConfigGroups(patchSrc)
   if (parsed === null) {
@@ -185,23 +225,34 @@ function patchConfigGroups(src) {
         + ' —— 本文件头部纪律：config 段必须与 config.ts 一一对应')
     } else ok(`B patch 的 ${keys.length} 个顶层键都在 schema 里`)
 
-    // modules：schema 的 5 个子键必须全部出现在 patch 里。
-    const schemaModules = ['tools', 'preset', 'bus', 'orch', 'settings']
-    const patchModules = groups.modules ?? []
-    const missModules = schemaModules.filter((k) => !patchModules.includes(k))
-    const extraModules = patchModules.filter((k) => !schemaModules.includes(k))
-    if (missModules.length > 0 || extraModules.length > 0) {
-      bad(`B modules 子键与 schema 不一致（缺：${missModules.join(', ') || '无'}；多：${extraModules.join(', ') || '无'}）`)
-    } else ok('B modules 子键与 schema 一致（tools/preset/bus/orch/settings 五项）')
+    // ★ 反向：schema 里**每一个**顶层组都必须在 patch 里出现（否则该字段
+    //   在随包分发的默认配置里缺失，用户层拿不到基准值）。
+    const schemaGroups = schemaTopGroups(cfgSrc)
+    const schemaNames = Object.keys(schemaGroups)
+    const missTop = schemaNames.filter((k) => !keys.includes(k))
+    if (schemaNames.length === 0) {
+      bad('B schema 里一个顶层 `z.object` 组都抽不出来（基准缺失 ⇒ 不按通过处理）')
+    } else if (missTop.length > 0) {
+      bad(`B schema 声明了、patch 里没有的顶层组：${missTop.join(', ')}`
+        + ' —— 双向判据的另一半：只查"patch 不脏"会漏掉"schema 有而 patch 缺"')
+    } else ok(`B schema 的 ${schemaNames.length} 个顶层组在 patch 里都有（${schemaNames.join(', ')}）`)
 
-    // spawn：schema 的 4 个子键必须出现在 patch 里，且 patch 不得多写。
-    const schemaSpawn = ['agentPreset', 'provider', 'model', 'reasoningEffort']
-    const patchSpawn = groups.spawn ?? []
-    const missSpawn = schemaSpawn.filter((k) => !patchSpawn.includes(k))
-    const extraSpawn = patchSpawn.filter((k) => !schemaSpawn.includes(k))
-    if (missSpawn.length > 0 || extraSpawn.length > 0) {
-      bad(`B spawn 子键与 schema 不一致（缺：${missSpawn.join(', ') || '无'}；多：${extraSpawn.join(', ') || '无'}）`)
-    } else ok('B spawn 子键与 schema 一致（agentPreset/provider/model/reasoningEffort 四项）')
+    // ★ 逐组比对**子键集合**（双向）—— 不再只认 modules/spawn 两组写死的清单。
+    //   ⚠ **派生**而非写死：新增一个组时它自动被纳入判定（这正是旧版的缺口）。
+    for (const g of schemaNames) {
+      const schemaSubs = schemaGroups[g]
+      const patchSubs = groups[g] ?? []
+      if (!keys.includes(g)) continue // 顶层已缺 ⇒ 上面已报，不重复
+      const miss = schemaSubs.filter((k) => !patchSubs.includes(k))
+      const extra = patchSubs.filter((k) => !schemaSubs.includes(k))
+      if (schemaSubs.length === 0) {
+        bad(`B ${g} 组在 schema 里抽不出任何子键（基准缺失 ⇒ 不按通过处理）`)
+      } else if (miss.length > 0 || extra.length > 0) {
+        bad(`B ${g} 子键与 schema 不一致（缺：${miss.join(', ') || '无'}；多：${extra.join(', ') || '无'}）`)
+      } else {
+        ok(`B ${g} 子键与 schema 一致（${schemaSubs.join('/')}，共 ${schemaSubs.length} 项）`)
+      }
+    }
   }
 }
 

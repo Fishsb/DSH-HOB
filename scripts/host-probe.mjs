@@ -38,8 +38,9 @@
  *       ⚠ `orch` 缺省 **false**（M5 会在无人看管时推进 ⇒ 宁可不开）；`bus` 缺省 **true**。
  *   · `modules` **本身不是 ref**（`typeof modules.get === 'undefined'`）—— 父对象不标 volatile，
  *     只有子字段各标（`src/config.ts` 的"方案 D"形状）。
- *   · `Config(undefined)` 的顶层键 === `['modules', 'spawn']`
- *       —— ⚠ `spawn` 段自 2026-10-09 加入后成为第二个顶层键（本条期望**原先只列 modules**，已过期）。
+ *   · `Config(undefined)` 的顶层键 === `['modules', 'spawn', 'permission']`
+ *       —— ⚠ `spawn` 段自 2026-10-09 加入后成为第二个顶层键（本条期望**原先只列 modules**，已过期）；
+ *         `permission`（权限档位）自 2026-10-14 第 144 轮加入，成为**第三**键。
  *   · 未知键（profile 旧配置段）被原样保留在**顶层**（`role` / `deliveryMode` / `autoSend` /
  *     `workspaceRoot` …），**不并入 `modules`** ⇒ `modules` 形状不受污染。
  *   · 默认配置 `apply` ⇒ 登记 `dsh-hob-tools` + `dsh-hob-bus` + `dsh-hob-settings`，
@@ -108,13 +109,19 @@ function check(name, fn) {
 /** 造一份最小 fakeCtx（与 module-independence-probe.mjs 同款），返回登记到的插件名与 info 日志。 */
 function fakeCtx() {
   const plugins = []
+  const provided = new Map()
   const logs = []
   const ctx = {
     logger: { info: (m) => logs.push(String(m)), debug: () => {}, warn: () => {} },
     plugin: (p) => { plugins.push(p.name ?? '(anon)'); return { then() {} } },
     effect: (fn) => { const d = fn(); return { dispose: () => d?.() } },
+    // ⚠ 第 144 轮新增：入口用 `ctx.provide` 挂「权限档位现读服务」
+    //   （`hobPermission`）。假 ctx 必须跟着长这个方法，否则 apply 直接抛
+    //   `ctx.provide is not a function` —— 那是**夹具缺能力**，不是实现错。
+    provide: (name, value) => { provided.set(name, value); return { dispose: () => provided.delete(name) } },
+    get: (name) => provided.get(name),
   }
-  return { ctx, plugins, logs }
+  return { ctx, plugins, logs, provided }
 }
 
 /** 五个模块开关的 key（**唯一权威 = `src/config.ts` 的 `modules` schema**；此处只列名，不写默认值）。 */
@@ -136,7 +143,7 @@ const DEFAULT_SWITCH_VALUES = { tools: true, preset: false, bus: true, orch: fal
 const DEFAULT_MODULES_JSON = '{"tools":{},"preset":{},"bus":{},"orch":{},"settings":{}}'
 
 /** 实测的默认顶层键。 */
-const DEFAULT_TOP_KEYS = ['modules', 'spawn']
+const DEFAULT_TOP_KEYS = ['modules', 'spawn', 'permission']
 
 // ── 1) 默认配置：modules 的形状（五子字段全 ref）──────────────────────────
 check('schema 校验：undefined → modules 形状 = {tools:{}, preset:{}, bus:{}, orch:{}, settings:{}}', () => {
@@ -178,8 +185,8 @@ check('schema 兼容：未知键（profile 旧配置段）原样保留在顶层�
   return true
 })
 
-// ── 5) 默认顶层键（modules + spawn）───────────────────────────────────────
-check(`schema 校验：Config(undefined) 的顶层键 = ${JSON.stringify(DEFAULT_TOP_KEYS)}（spawn 段自 2026-10-09 起为第二键）`, () => {
+// ── 5) 默认顶层键（modules + spawn + permission）────────────────────────────
+check(`schema 校验：Config(undefined) 的顶层键 = ${JSON.stringify(DEFAULT_TOP_KEYS)}（spawn 自 2026-10-09 起为第二键；permission 自 2026-10-14 第 144 轮起为第三键）`, () => {
   const got = Object.keys(mod.Config(undefined))
   return JSON.stringify(got) === JSON.stringify(DEFAULT_TOP_KEYS) ? true : `got=${JSON.stringify(got)}`
 })

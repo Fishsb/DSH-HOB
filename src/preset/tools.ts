@@ -41,6 +41,7 @@ import {
   ledgerRootOf,
   type HobToolsConfig,
 } from '../modules/tools.ts'
+import { PERMISSION_SERVICE } from '../config.ts'
 import { BUS_SERVICE, createHobBusTools, type HobBus } from '../modules/bus.ts'
 import { ORCH_SERVICE, createHobOrchTools, type HobOrchestrator } from '../modules/orchestrator.ts'
 
@@ -124,14 +125,30 @@ export function apply(ctx: any, config: Config = {}): void {
     try { ctx.logger?.debug?.(m) } catch { /* 无 logger 时忽略 */ }
     diag(m)
   }
+  /**
+   * **现读**当前权限档位（每次调用现取，⛔ 不是快照）。
+   *
+   * ⚠ 走插件入口 provide 的 {@link PERMISSION_SERVICE}（闭包，每次现读 `config.permission.level`），
+   *   因为 `permission.level` 是 volatile ref，**本预设作用域不该自己捅 config**。
+   * ⚠ 服务不在（模块关掉 / 旧版本组合）⇒ 退到 `ledger`（**最保守**档，fail-closed）。
+   */
+  const levelOf = (): string => {
+    try {
+      const svc = ctx.get?.(PERMISSION_SERVICE) ?? ctx[PERMISSION_SERVICE]
+      return typeof svc === 'function' ? String(svc()) : 'ledger'
+    } catch {
+      return 'ledger'
+    }
+  }
   denyInheritedTools(ctx, log)
 
   // ⚠ **收敛机制的挂载点：直接在 preset scope 上**（不在门禁回调内）—— 见 apply 头部注释。
   //   两处都只认**本 scope**（ctx 即 preset 作用域），因此不影响其它预设；
   //   资源仍走 `ctx.effect`（卸载自动清理，§3.3 第 3 条）。
   //   ⚠ 用**外层 ctx**（不是门禁子 ctx）：门禁消失时收敛**必须留下**，否则就是本批要修的倒挂。
-  filterModelToolList(ctx, log)
-  enforceToolAllowlist(ctx, log)
+  filterModelToolList(ctx, levelOf, log)
+  enforceToolAllowlist(ctx, levelOf, log)
+  installPermissionGuard(ctx, levelOf, log)
 
   log('apply 完成权限边界与收敛；等待门禁 ' + GATE_SERVICE)
 
@@ -148,7 +165,7 @@ export function apply(ctx: any, config: Config = {}): void {
     //   （`dsh-agent-preset-registry/lib/index.js:485` 的 `ctx.inject(["settings"], (child) => child.effect(...))`）。
     //   子 ctx 继承依赖 API 且**拥有它自己创建的注册** ⇒ 门禁消失时这些注册随之拆除，
     //   不用手写卸载逻辑（§3.3 第 3 条：资源靠 ctx.effect 挂，卸载自动清理）。
-    registerTools(gatedCtx, config, log)
+    registerTools(gatedCtx, config, levelOf, log)
   })
 
   // ── M3 · 会话总线工具（UD-77）────────────────────────────────────────
@@ -237,7 +254,8 @@ function denyInheritedTools(ctx: any, log: (m: string) => void): void {
 }
 
 /**
- * 「助手」**发给模型的**工具清单 —— **装配期白名单**（**25** 个显式名字）。
+ * 「助手」**发给模型的**工具清单 —— **装配期白名单**（**档1 的 26 个显式名字**；
+ *   三档的名字集见 {@link PERMISSION_TIERS}，**逐档名数以 `check:presets` 的判定为准**）。
  *
  * ── 为什么是这些 ────────────────────────────────────────────────────
  * 「助手」只干这几件事：**读项目文档 / 读工作区文件 / 写自己的账本**、
@@ -385,14 +403,91 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
 
 /**
  * 保留的传输名（PTC 模式的 `run_code`）。
- *
  * ⚠ **必须显式放行**：ptc 模式下 `wireSchemas()` 只返回 `run_code` 一个
  *   （`dsh-tools/lib/index.js:2840-2843`）。若白名单把它滤掉，助手会拿到**空清单**
  *   —— 那是比"多几个工具"严重得多的回归（会话直接失去全部能力）。
- *   native 模式下它**根本不存在**（`view()` 只在 mode !== native 时加它），
- *   故 native 下清单仍**恰好 30**（批 17 起；批 16 为 27、批 14 为 25、批 13 为 23、批 11 为 21、批 9 为 20）。实测判据见阶段 C 报告 C3-1。
+ *   native 模式下它**根本不存在**（`view()` 只在 mode !== native 时加它）。
+ *   ⚠ **名数不再写死在这里**（旧文本写「恰好 30」，而批 21 收缩后真值已变 —— 这正是
+ *     「文档里的名数会静默变旧」的实例）⇒ 一律引用 **`check:presets` 的 ⑤m 组实测**。
  */
 const RESERVED_TRANSPORT_TOOL = 'run_code'
+
+/**
+ * **权限三档的名字集**（2026-10-14 第 144 轮 · 用户裁定「档3 要真硬机制」+「档2不给，档3的都给」）。
+ *
+ * ── 三档是什么（包含链）────────────────────────────────────────────────
+ *   · `ledger`（账本，**默认**）= **只读自己的账本 + 网络** —— 看不到项目工作区的文件。
+ *     ⚠ **与批 21 收缩后的现状逐名一致**（机检 ⑤m-2 用双向差集钉这条）。
+ *   · `project`（项目）= 档1 **+** `hob_read_doc`（**只 `.md`** 模式）。
+ *   · `workspace`（工作区）= 档2 **+** `hob_glob` + `hob_grep` + `hob_read_image`
+ *     （并把 `hob_read_doc` 切到**文本类**模式）。
+ *
+ * ── ⛔ 写类 / 命令类名字在三档里**一个都没有** ───────────────────────────
+ *   `write` / `edit` / `bash` / `pwsh` / `str_replace_editor` **不在任何一档**
+ *   （机检 ⑤m-4 逐个点验）。
+ *   ⚠ **这不只是"没放行"** —— 它们**根本不注册**（`tool-fs` / `tool-bash` /
+ *     `tool-pwsh` / `str-replace-editor` 在声明面一行都没有）⇒ 结构性不可达。
+ *     机检 ⑤m-6 另有一条盯**宿主平面**：那 4 个包必须仍处 `disabled: true`，
+ *     否则写类工具会**静默回到注册面**而三档白名单照样 PASS。
+ *
+ * ── ⚠ 这份表是**唯一**的名字集来源（E-110）──────────────────────────────
+ *   `MODEL_TOOL_ALLOWLIST`（档1 的历史常量）与各档必须是**同一份事实**：
+ *   ⛔ 不许在别处再抄一份名字清单（机检 ⑤m-2 拿它与那份常量做**双向差集**）。
+ *
+ * ── 为什么档1 不直接用 `MODEL_TOOL_ALLOWLIST` ────────────────────────────
+ *   留那个常量是为了**兼容既有断言与既有语义**（批 21 收缩后的那一档），
+ *   而两档之上的档是**同一张表的切片**。二者由机检钉成"逐名相等"而不是"看起来差不多"。
+ */
+export const PERMISSION_TIERS: Readonly<Record<'ledger' | 'project' | 'workspace', readonly string[]>> = {
+  /** 档1 账本 = 批 21 收缩后的现状（只读账本 + 网络 + 编排全家）。 */
+  ledger: MODEL_TOOL_ALLOWLIST,
+  /** 档2 项目 = 档1 + 只读 `.md`（自注册工具，**不声明 `tool-fs`**）。 */
+  project: [
+    ...MODEL_TOOL_ALLOWLIST,
+    'hob_read_doc',
+  ],
+  /** 档3 工作区 = 档2 + 目录列举 + 文本搜索 + 图片（全部自注册只读）。 */
+  workspace: [
+    ...MODEL_TOOL_ALLOWLIST,
+    'hob_read_doc',
+    'hob_glob',
+    'hob_grep',
+    'hob_read_image',
+  ],
+}
+
+/**
+ * 三档里**一律不许出现**的名字（共享禁项）。
+ *
+ * ⚠ 这份清单的**来源是实测**（第 144 轮全机扫描，见 `REPORT-R148.md`）：
+ *   全机只有这 5 个写类 / 命令类工具名，出自 5 个包
+ *   （`dsh-tool-fs` → `write`/`edit`；`dsh-tool-bash`/`-persistent` → `bash`；
+ *    `dsh-tool-pwsh`/`-persistent` → `pwsh`；`dsh-tool-str-replace-editor` → `str_replace_editor`）。
+ *   ⛔ **不许凭记忆**增减 —— 将来新装插件带进新的写类名字时，**应当把它加进来**，
+ *     这也正是 ⑤m-4 要盯的那件事。
+ */
+export const SHARED_FORBIDDEN_TOOLS: readonly string[] = [
+  'write',
+  'edit',
+  'bash',
+  'pwsh',
+  'str_replace_editor',
+]
+
+/**
+ * 哨兵**要罩**的名字（写类 / 命令类 + 两个范围可变的读工具）。
+ *
+ * ⚠ 罩的范围**刻意最小**：账本两件（`read_contracts` / `write_hob`）与编排七件
+ *   **一律不罩** —— 哨兵自己出问题时，账本与编排**必须照常**（实测反例：
+ *   裸哨兵抛异常会把 `read_contracts` 一起弄瘫，见 `REPORT-R147.md` §c-3）。
+ */
+export const GUARDED_TOOLS: readonly string[] = [
+  ...SHARED_FORBIDDEN_TOOLS,
+  'hob_read_doc',
+  'hob_glob',
+  'hob_grep',
+  'hob_read_image',
+]
 
 /**
  * 装配期白名单：把**发给模型的**工具清单收敛到 {@link MODEL_TOOL_ALLOWLIST}。
@@ -432,8 +527,16 @@ const RESERVED_TRANSPORT_TOOL = 'run_code'
  *   「F1 修正的行为倒挂」一节：收敛机制**必须留下**，否则关掉门禁反而放权。
  * @param log - 诊断输出。
  */
-function filterModelToolList(ctx: any, log: (m: string) => void): void {
-  const allow = new Set<string>(MODEL_TOOL_ALLOWLIST)
+function filterModelToolList(ctx: any, levelOf: () => string, log: (m: string) => void): void {
+  // ⚠ **⛔ 不许在这里建 Set 快照**（2026-10-14 第 144 轮修的点）：
+  //   旧版写 `const allow = new Set(MODEL_TOOL_ALLOWLIST)` —— 那是**装配期快照**，
+  //   用户改完档位后**已开的会话仍按旧档**走到重挂载为止。
+  //   档位是 volatile 值型配置（宿主原地更新、不重挂载）⇒ **必须每次装配现读**。
+  const allowFor = (): Set<string> => {
+    const level = levelOf()
+    const names = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
+    return new Set<string>(names)
+  }
 
   // ⚠ 走**反应式** `ctx.inject`（不是本模块的静态 `inject`）：
   //   静态 inject 缺依赖 ⇒ fiber 停 PENDING ⇒ 预设被标 `broken`
@@ -444,8 +547,10 @@ function filterModelToolList(ctx: any, log: (m: string) => void): void {
       // ⚠ 必须**先 `await next()`** 再过滤：后面的监听器可能还会往清单里加东西。
       const assembled = await next()
       const all: any[] = Array.isArray(assembled?.tools) ? assembled.tools : []
+      // ⚠ 现读档位发生在**这一步**（每次装配）—— 这是"改档位不必重启"的落点。
+      const allow = allowFor()
       const kept = all.filter((t) => allow.has(t?.name) || t?.name === RESERVED_TRANSPORT_TOOL)
-      if (kept.length !== all.length) log(`装配期白名单：模型面工具 ${all.length} ⇒ ${kept.length}`)
+      if (kept.length !== all.length) log(`装配期白名单（档=${levelOf()}）：模型面工具 ${all.length} ⇒ ${kept.length}`)
       return { ...assembled, tools: kept }
     }
     // ⚠ 监听器必须挂在 **ctx** 上，不能挂在服务实例上：`SystemPrompt` 是 cordis `Service`
@@ -455,7 +560,7 @@ function filterModelToolList(ctx: any, log: (m: string) => void): void {
     // ⚠ 资源靠 `ctx.effect` 挂（§3.3 第 3 条）：依赖消失/卸载时监听器自动拆除。
     spCtx.effect(() => spCtx.on('system-prompt/assemble', handler),
       'dsh-hob preset: model-facing tool allowlist')
-    log('已挂装配期白名单（' + MODEL_TOOL_ALLOWLIST.length + ' 个显式名字）')
+    log('已挂装配期白名单（逐 step 现读档位；名数以 check:presets 的 ⑤m 判定为准）')
   })
 }
 
@@ -487,17 +592,23 @@ function filterModelToolList(ctx: any, log: (m: string) => void): void {
  *   「F1 修正的行为倒挂」一节：关掉门禁时本拦截器**照常执行**（这正是那处修正的目的）。
  * @param log - 诊断输出（走 {@link makeDiag}：默认关、有磁盘上限，不新开日志）。
  */
-function enforceToolAllowlist(ctx: any, log: (m: string) => void): void {
-  const allow = new Set<string>(MODEL_TOOL_ALLOWLIST)
+function enforceToolAllowlist(ctx: any, levelOf: () => string, log: (m: string) => void): void {
+  // ⚠ 同上：**⛔ 不许快照**。执行期也要按**当次**档位判 ——
+  //   否则"档2 会话调用档3 才有的名字"会被旧快照放行（或反向误拒）。
+  const allowFor = (): Set<string> => {
+    const level = levelOf()
+    const names = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
+    return new Set<string>(names)
+  }
 
   ctx.effect(() => ctx.on('tools/pre-execute', async (exec: any, next: any) => {
     // ⚠ 整个判定体包在 try/catch 里：宿主对它自己的 catch 是 **fail-closed**，
     //   任何异常都会让**这次工具调用**失败（含白名单里的）。宁可放行。
     try {
       const name = exec?.name
-      // ① 认识的、且在名单里 ⇒ 放行（门槛 4：不阻断白名单内的名字）。
+      // ① 认识的、且在**当前档位**的名单里 ⇒ 放行（门槛 4：不阻断白名单内的名字）。
       if (typeof name !== 'string') return await next()
-      if (allow.has(name)) return await next()
+      if (allowFor().has(name)) return await next()
       // ② 保留传输名（ptc 的 `run_code`）⇒ 放行：滤掉它会让助手彻底失去能力。
       if (name === RESERVED_TRANSPORT_TOOL) return await next()
       // ③ 嵌套子派发（`exec.parent` 存在）⇒ 放行：那是 `run_code` 内部调用，
@@ -517,11 +628,84 @@ function enforceToolAllowlist(ctx: any, log: (m: string) => void): void {
     }
   }), 'dsh-hob preset: enforce tool allowlist on pre-execute')
 
-  log('已挂执行路径拦截（' + MODEL_TOOL_ALLOWLIST.length + ' 个显式名字；名单外一律拒绝）')
+  log('已挂执行路径拦截（逐 step 现读档位；名单外一律拒绝）')
+}
+
+/**
+ * **单调执行哨兵**（2026-10-14 第 144 轮 · 用户裁定「档3 要真硬机制」）。
+ *
+ * ── 它补的是哪一层 ────────────────────────────────────────────────────
+ *   工具面三层（`volumes/plan/05-features.md` §5.2）：
+ *   · **注册面** —— 写类工具**根本不存在**（声明面没有 `tool-fs` / `tool-bash` /
+ *     `tool-pwsh` / `str-replace-editor`）⇒ 结构性不可达（**主机制**）；
+ *   · **模型面** —— 三档白名单（{@link PERMISSION_TIERS}）⇒ 看不见；
+ *   · **执行面** —— 本哨兵（**次机制**）：名字在名单内但**参数越界**时拒。
+ *
+ * ── ⚠⚠ 为什么用 `ctx.tools.guard()` 而不是 `tools/pre-execute` ─────────
+ *   ① **单调拒**：guard 的返回值**没有 allow 形态** —— 返回理由即拒，
+ *      后面的监听器**无法把它翻回放行**（`dsh-tools/lib/index.js:2910-2921`）；
+ *      而 `pre-execute` 瀑布的 `{kind:'allow'}` 可以被后续监听器改写。
+ *   ② **fail-CLOSED**：哨兵**抛异常**时宿主让工具**不执行**
+ *      （实测：`{"isError":true,"error":{"message":"GUARD-BLEW-UP"}}`，见
+ *      `REPORT-R147.md` §c-3）。⚠ 这与上面那个拦截器的取向**相反** ——
+ *      那个是收敛措施、fail-open；**本哨兵是边界、fail-closed**。
+ *
+ * ── ⚠⚠ 三条硬性（⛔ 缺一条就是事故，实测反例见 `REPORT-R147.md` §c-3）──
+ *   ① **先判名短路**：`GUARDED_TOOLS` 之外**立即 `return undefined`**，
+ *      **先于任何可能抛的代码** —— 这是"不罩瘫账本与编排"的**结构保证**。
+ *      实测反例：裸哨兵（任何异常直接冒泡）会让 `read_contracts` **也**被拒 ⇒ Hob 瘫。
+ *   ② **名单内判定体整题包 try/catch**，异常收敛到 **`return <拒绝理由>`**
+ *      （安全的一侧：拒）。⛔ 不许 finally 里放行、不许 catch 后 return undefined。
+ *   ③ **绝不 `throw`**：本函数体内不得出现 `throw`（机检 ⑤m-8 盯这条）。
+ *
+ * @param ctx - **本预设作用域**的 ctx（`apply` 的入参）。
+ * @param levelOf - 现读档位的函数（每次调用现取）。
+ * @param log - 诊断输出。
+ */
+function installPermissionGuard(ctx: any, levelOf: () => string, log: (m: string) => void): void {
+  const guarded = new Set<string>(GUARDED_TOOLS)
+  const forbidden = new Set<string>(SHARED_FORBIDDEN_TOOLS)
+
+  ctx.effect(() => ctx.tools.guard((exec: any): string | undefined => {
+    // ── 硬性①：**先判名短路**（名单外一律放行；先于一切可能抛的代码）──────
+    const name = exec?.name
+    if (typeof name !== 'string' || name === '') return undefined
+    if (!guarded.has(name)) return undefined
+
+    // ── 名单内：判定体包 try/catch（硬性②），异常收敛到"拒"（硬性③：不 throw）
+    try {
+      // 写类 / 命令类：**任何一档**都不许执行。
+      // ⚠ 它们本不该到达这里（注册面不存在 ⇒ 大概率是 `unknown tool`）——
+      //   但"到达不了"这个判断**依赖声明面**（别人改 profile 就失效，见 ⑤m-6）
+      //   ⇒ 本层作为**第二道**，宁拒不放。
+      if (forbidden.has(name)) {
+        return `"${name}" cannot change anything in this session: this preset has no write-capable tools.`
+      }
+
+      // 读工具：名字本身没问题（白名单已筛过），此处只兜住"参数越界"。
+      // ⚠ 参数检查交给工具自己的 `execute`（它返回可读的拒绝文本）；
+      //   本哨兵在这里**只确认"这个档位看得见它"** —— 因为 guard 是按**调用名**
+      //   生效的，而档位可能在会话中途**变窄**（workspace ⇒ ledger）：
+      //   变窄后**已发出的调用**不该还能落地。
+      const level = levelOf()
+      const names = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
+      if (!names.includes(name)) {
+        return `"${name}" is not available at the current permission level (${level}).`
+      }
+      return undefined
+    } catch (e) {
+      // 硬性②③：哨兵自身出问题 ⇒ 收敛到**拒**（安全的一侧），且**不往外抛**。
+      // ⚠ 实测：抛异常会让宿主 fail-closed ⇒ **连账本工具一起拒**（Hob 瘫）。
+      log('权限哨兵异常（收敛为拒）：' + String((e as Error)?.message ?? e))
+      return 'the permission guard failed internally; this call was refused rather than allowed.'
+    }
+  }), 'dsh-hob preset: monotonic permission guard')
+
+  log('已挂单调权限哨兵（名册 ' + GUARDED_TOOLS.length + ' 个；名单外一律放行）')
 }
 
 /** 注册两个工具（工具**定义**来自 `modules/tools.ts`，此处不重写实现）。 */
-function registerTools(ctx: any, config: Config, log: (m: string) => void): void {
+function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m: string) => void): void {
   // ── 改 2 · 写入即投递（2026-10-10 第 44 轮 · 结构改造②）────────────────
   //   ⚠ 把**编排服务**注入工具定义，让 `write_hob(dispatchTo=…)` 能走
   //     `hob_dispatch` 的同一条路径（登记回传 + 清"待投递"）。
@@ -530,14 +714,46 @@ function registerTools(ctx: any, config: Config, log: (m: string) => void): void
   //     后者跟 `hobOrchestrator`），快照会取到 `undefined` 并**永久**定格成"不能投"。
   //     惰性取值让"编排迟到"也能用上（与 `ledgerRootOf` 传**函数**而非值是同款理由）。
   //   ⚠ 取不到 ⇒ 传 `undefined` ⇒ 只记账、不投递（fail-closed，返回值里如实带原因）。
-  const { readContracts, writeHob } = createHobTools(config, {
+  const {
+    readContracts, writeHob,
+    readWorkspaceDoc, globWorkspace: globTool, grepWorkspaceTool, readWorkspaceImage,
+  } = createHobTools(config, {
+    // ⚠ **惰性取值**（每次执行时才 `ctx.get`），见上面那段注释的同一个理由。
     orchOf: () => {
       try { return ctx.get?.(ORCH_SERVICE) as HobOrchestrator | undefined } catch { return undefined }
+    },
+    // ⚠ **现读档位**（不是快照）：档位是 volatile 值型配置，宿主原地更新、不重挂载
+    //   ⇒ 在 `createHobTools` 时读一次会让"改档位即生效"失效。
+    levelOf: () => levelOf(),
+    // ⚠ 图片的存储走宿主 `attachments` 服务（实测：宿主平面 provide，
+    //   **预设作用域取得到**）。⚠ 惰性取值 + 取不到时返回 undefined
+    //   （工具会如实回"没有附件服务"，而不是假装图片已交给模型）。
+    saveImage: async (input) => {
+      try {
+        const att = ctx.get?.('attachments')
+        if (att === undefined || typeof att.saveImage !== 'function') return undefined
+        return await att.saveImage(input)
+      } catch (e) {
+        log('saveImage 失败：' + String((e as Error)?.message ?? e))
+        return undefined
+      }
     },
   })
 
   ctx.effect(() => ctx.tools.register(readContracts), 'dsh-hob preset: read_contracts tool')
   log('已注册 read_contracts')
+
+  // ── 四个自注册**只读**工具（2026-10-14 第 144 轮）─────────────────────
+  //   ⚠ 它们**始终注册**（三档都注册），可见性由**装配期过滤**按档决定
+  //     （`PERMISSION_TIERS`）—— 这是"换档不必重挂载"的前提：
+  //     若按档增删注册，换档就得重挂载（撞"改档位即生效"那条）。
+  //     ⚠ 代价如实登记：档1 的**注册面**因此比今天多这 4 个只读名
+  //     （模型面仍与今天逐名一致 —— 机检 ⑤m-2 钉的是模型面）。
+  ctx.effect(() => ctx.tools.register(readWorkspaceDoc), 'dsh-hob preset: hob_read_doc tool')
+  ctx.effect(() => ctx.tools.register(globTool), 'dsh-hob preset: hob_glob tool')
+  ctx.effect(() => ctx.tools.register(grepWorkspaceTool), 'dsh-hob preset: hob_grep tool')
+  ctx.effect(() => ctx.tools.register(readWorkspaceImage), 'dsh-hob preset: hob_read_image tool')
+  log('已注册 hob_read_doc / hob_glob / hob_grep / hob_read_image（只读；按档可见）')
 
   if (writeHob === undefined) {
     log('enableWrite=false ⇒ 不注册 write_hob（该工具根本不出现）')

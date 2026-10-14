@@ -275,3 +275,71 @@ export async function writeSpawnFields(
     return { ok: false, reason: `写入失败：${String((e as Error)?.message ?? e)}` }
   }
 }
+
+/** 权限档位的三个值（与 `src/config.ts` 的 `PERMISSION_LEVELS` 同源口径）。 */
+export type PermissionLevel = 'ledger' | 'project' | 'workspace'
+
+/** 档位的展示顺序（= 包含链从窄到宽；面板按这个顺序渲染）。 */
+export const PERMISSION_LEVEL_ORDER: readonly PermissionLevel[] = ['ledger', 'project', 'workspace']
+
+/**
+ * 写**权限档位**（`permission.level`）。
+ *
+ * ⚠ 与 {@link writeSpawnField} 同形的三条纪律（照抄，别各写一份）：
+ *   ① **必须写子字段路径** `['permission', 'level']` —— 父对象 `permission`
+ *      自己不 volatile，宿主 `isVolatilePath` 会拒整块写；
+ *   ② `snapshot.writable !== true` ⇒ **拒写并说清为什么**（非本机回环访问时，
+ *      宿主只在内存里改、不落盘）—— 静默"看起来改了"是这里最坏的失败形态；
+ *   ③ 走宿主 `form.mutate`（Remote RPC），**不自己实现写入**（E-10）。
+ *
+ * ⚠ 为什么档位**没有** `unset` 分支（与 spawn 四个字段不同）：
+ *   档位有 `.default('ledger')`，而"缺省"本身就是 `ledger` 这一档
+ *   ⇒ 清空没有独立语义，一律写成显式三值之一。
+ *
+ * @param form - 当前 settings form（`null` = 还没就绪）。
+ * @param level - 要写入的档位。
+ * @returns 写入结果（含失败原因；前置检查不过就**一个字也不写**）。
+ */
+export async function writePermissionLevel(
+  form: ConfigForm | null,
+  level: PermissionLevel,
+): Promise<WriteResult> {
+  if (form === null) return { ok: false, reason: '配置面尚未就绪（读不到本插件的 form），未写入。' }
+  if (!PERMISSION_LEVEL_ORDER.includes(level)) {
+    return { ok: false, reason: `档位 ${String(level)} 不是三档之一（ledger / project / workspace），未写入。` }
+  }
+  const snapshot = form.getSnapshot()
+  if (snapshot.writable !== true) {
+    return {
+      ok: false,
+      reason: `当前页面不允许写入（持久化模式 = ${snapshot.mode}；非本机回环访问时宿主只在内存里改，不落盘）⇒ 已拒写，未做任何修改。`,
+    }
+  }
+  if (typeof form.mutate !== 'function') {
+    return { ok: false, reason: '该配置面不支持写入（宿主 form 未提供 mutate）。' }
+  }
+  try {
+    const ops: ConfigMutationOp[] = [{ op: 'set', path: ['permission', 'level'], value: level }]
+    const accepted = await form.mutate(ops)
+    return accepted === true ? { ok: true } : { ok: false, reason: '宿主拒绝了这次写入（版本冲突或该字段不可写）。' }
+  } catch (e) {
+    return { ok: false, reason: `写入失败：${String((e as Error)?.message ?? e)}` }
+  }
+}
+
+/**
+ * 从 settings snapshot 里读出**当前档位**（面板用来显示选中态）。
+ *
+ * ⚠ 兜底 = `ledger`（**最保守**档）：读不出来时不能让面板显示成更宽的档 ——
+ *   那会让用户以为"已经放开了"，而实际生效的是保守档。
+ *
+ * @param snapshot - 宿主 form 的快照（`null` = 未就绪）。
+ */
+export function readPermissionLevel(snapshot: SettingsSnapshot | null): PermissionLevel {
+  const raw = (snapshot as { value?: unknown } | null)?.value
+  const perm = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>).permission : undefined
+  const lvl = perm !== null && typeof perm === 'object' ? (perm as Record<string, unknown>).level : undefined
+  return typeof lvl === 'string' && (PERMISSION_LEVEL_ORDER as readonly string[]).includes(lvl)
+    ? (lvl as PermissionLevel)
+    : 'ledger'
+}

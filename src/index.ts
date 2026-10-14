@@ -10,7 +10,8 @@
  * ⚠ 本轮是**骨架**：只把上面这条形状立起来，**不注册任何业务能力**。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { Config, moduleSwitches, spawnDefaults } from './config.ts'
+import { Config, moduleSwitches, spawnDefaults, permissionLevel, PERMISSION_SERVICE } from './config.ts'
+export { PERMISSION_SERVICE }
 import type { Config as ConfigShape, ModulesConfig } from './config.ts'
 
 import * as toolsModule from './modules/tools.ts'
@@ -30,6 +31,7 @@ export { Config }
  *   client 按新名请求路由，两边对不上（旧项目实测，见 .hob/EXPERIENCE.md E-03）。
  */
 export const name = 'dsh-hob'
+
 
 /**
  * 模块登记表：**加模块只改这里一行**。
@@ -72,6 +74,17 @@ export function apply(ctx: Context, config: ConfigShape): void {
   const loaded: string[] = []
   // 开关一次性解出普通对象：把 volatile 的 ref 形态收口在 moduleSwitches 里。
   const switches = moduleSwitches(config)
+
+  // ── 权限档位的**现读**服务（2026-10-14 第 144 轮）─────────────────────
+  //   ⚠ **为什么在入口 provide 而不是在模块里**：档位要同时对**两个半边**生效 ——
+  //     · 预设行（`preset/dsh-hob/preset-tools` 的装配期过滤 + 哨兵）在**预设作用域**；
+  //     · 模块层（四个读工具的 `execute`）在**模块作用域**。
+  //     两处都不该各自去捅 `config`（`permission.level` 是 volatile ref，
+  //     直读会静默拿到 ref 对象）⇒ 由入口 provide 一个**闭包每次现读**的函数，
+  //     两侧都用它。这与 `spawnDefaults: () => spawnDefaults(c)` 是同一条纪律。
+  //   ⚠ **必须是闭包不是快照**：档位改完要"即改即生效"（volatile 原地更新，
+  //     宿主不重挂载）⇒ 快照会让改完的档位对已开会话不可见。
+  ctx.provide(PERMISSION_SERVICE, () => permissionLevel(config))
 
   for (const entry of MODULE_REGISTRY) {
     // 开关关闭 ⇒ 不注册该模块。**只影响它自己**，不影响其他模块。

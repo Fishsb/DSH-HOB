@@ -65,11 +65,12 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import {
   IconChevronDownOutlineRegular, IconCheckOutlineRegular, IconDataOutlineRegular,
-  Menu, MenuGroup, MenuItemButton, StateDot, Tag,
+  Menu, MenuGroup, MenuItemButton, SegmentedControl, StateDot, Tag,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   getSettingsForm, getSettingsSnapshot, subscribeSettingsForm, writeSpawnFields,
-  type SettingsSnapshot, type WriteResult,
+  writePermissionLevel, readPermissionLevel, PERMISSION_LEVEL_ORDER,
+  type PermissionLevel, type SettingsSnapshot, type WriteResult,
 } from './settings.ts'
 import {
   findModel, findPreset, getCatalogSnapshot, loadCatalog, subscribeCatalog,
@@ -570,6 +571,77 @@ function SpawnDefaultsCard(props: {
   )
 }
 
+
+/**
+ * **权限档位卡片**（2026-10-14 第 144 轮新增）。
+ *
+ * ── 为什么用 `SegmentedControl`（而不是 `Menu` 或自造滑块）──────────────
+ *   用户原话是"一个设置**滑块**选项分为三个权限"，而宿主原语里：
+ *   · `Switch` 是**二态** —— 三档要两个开关，语义不贴；
+ *   · `Menu` + `MenuItemButton` 是**下拉**，面板里已有先例（模型选择），
+ *     但"滑块"的观感差得最远；
+ *   · **`SegmentedControl`**（宿主已导出，`SegmentedControl.d.ts` 要求 ≥2 段）
+ *     是三段并排、一次点选、键盘走位由宿主负责 —— 语义最贴，且**不引入原生 `<select>`**
+ *     （机检 J-1 盯这个）。
+ *
+ * ── ⚠ 档位是**值型**配置，但**三档的生效方式与模块开关不同** ──────────────
+ *   模块开关是**拓扑型**（改完要重启实例）；档位带 `.volatile()`，
+ *   宿主走 volatile-only 通道、**不重挂载**，且装配期过滤是**逐 step 现算**的
+ *   ⇒ **改完即生效**。这两句必须分开说（见下方两条 note），
+ *   ⛔ 不许把两者的生效条件混起来（R-26 同款纪律）。
+ */
+function PermissionCard(props: {
+  form: ReturnType<typeof getSettingsForm>
+  settings: SettingsSnapshot | null
+}): ReactElement {
+  const { form, settings } = props
+  const current = readPermissionLevel(settings)
+  const [pending, setPending] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  const onChange = async (next: PermissionLevel): Promise<void> => {
+    if (next === current) return
+    setPending(true); setResult(null); setFailed(false)
+    const r: WriteResult = await writePermissionLevel(form, next)
+    setFailed(!r.ok)
+    setResult(r.ok ? t('perm.saved', { level: t(`perm.level.${next}`) }) : (r.reason ?? t('perm.writeFailed')))
+    setPending(false)
+  }
+
+  return (
+    <div className={S.card}>
+      <div className={S.cardHead}>
+        <span className={S.cardTitle}>{t('perm.title')}</span>
+        <span className={S.cardNote}>{t('perm.note')}</span>
+      </div>
+      <Row label={t('perm.label')}>
+        <span className={S.inline}>
+          {/* ⚠ 受控组件：`value` 来自**外部存储的快照**（不是渲染期直调 form），
+              否则宿主写入成功后这一处不会跟着重渲染（第 7 轮的同源收益）。 */}
+          <SegmentedControl
+            id="dsh-hob-permission-level"
+            label={t('perm.label')}
+            value={current}
+            disabled={pending}
+            options={PERMISSION_LEVEL_ORDER.map((lv) => ({ value: lv, label: t(`perm.level.${lv}`) }))}
+            onChange={(next) => { void onChange(next as PermissionLevel) }}
+          />
+          {pending ? <span className={S.cardNote}>{t('perm.writing')}</span> : null}
+        </span>
+      </Row>
+      <Row label={t('perm.meaning')}>
+        <span className={S.cardNote}>{t(`perm.level.note.${current}`)}</span>
+      </Row>
+      {result !== null ? (
+        <Row label={t('perm.result')}>
+          <span className={failed ? S.warn : S.cardNote}>{result}</span>
+        </Row>
+      ) : null}
+    </div>
+  )
+}
+
 /**
  * 设置分区组件。
  *
@@ -634,6 +706,8 @@ export function SettingsPanel(): ReactElement {
 
       <SpawnDefaultsCard form={form} settings={settings} value={value} snapshot={catalog} />
 
+      <PermissionCard form={form} settings={settings} />
+
       <ul className={S.notes}>
         <li className={S.note}>
           {t('note.restart.pre', {
@@ -646,6 +720,9 @@ export function SettingsPanel(): ReactElement {
         </li>
         <li className={S.note}>
           {t('note.effective.pre', { card: t('cardTitle') })}<b>{t('note.effective.strong')}</b>{t('note.effective.post')}
+        </li>
+        <li className={S.note}>
+          {t('note.permission.pre')}<b>{t('note.permission.strong')}</b>{t('note.permission.post')}
         </li>
         <li className={S.note}>
           {t('note.entry', { card: t('cardTitle') })}
@@ -729,6 +806,25 @@ const PANEL_EN: Record<string, string> = {
   'write.notWritable.noWrite': 'not allow writes',
   'write.notWritable.mid': ' (host persistence mode = ',
   'write.notWritable.post': ') — on non-loopback access the host only changes settings in memory, so this panel refuses the write instead of pretending it saved.',
+  // ── 权限档位（2026-10-14 第 144 轮）──────────────────────────────────
+  // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
+  'perm.title': 'Permission level',
+  'perm.note': 'It changes which files this preset can READ. No level can change anything.',
+  'perm.label': 'Level',
+  'perm.level.ledger': 'Ledger',
+  'perm.level.project': 'Project',
+  'perm.level.workspace': 'Workspace',
+  'perm.level.note.ledger': 'Only its own ledger and the web; it cannot see the project workspace files.',
+  'perm.level.note.project': 'Reads documents (.md) in the workspace; cannot read code.',
+  'perm.level.note.workspace': "Reads the workspace's documents, code and images, and can search across files; no level can change anything.",
+  'perm.meaning': 'What this level allows',
+  'perm.result': 'Result',
+  'perm.saved': 'Saved: now at the {level} level.',
+  'perm.writing': 'Writing…',
+  'perm.writeFailed': 'Write failed (no reason returned).',
+  'note.permission.pre': '· «Permission level» is a ',
+  'note.permission.strong': 'takes-effect-immediately',
+  'note.permission.post': ' value-type configuration — an open session follows the new level from its next step, and it is a different path from the module switches above.',
   'note.restart.pre': '· Module switches ({tools} / {preset} / {bus} / {orch} / {settings}, five in total): a change needs ',
   'note.restart.strong': 'an instance restart',
   'note.restart.post': ' to take effect — the host’s rule is that changing these values does not remount the plugin, and modules are loaded at plugin-load time.',
@@ -799,6 +895,24 @@ const PANEL_ZH: Record<string, string> = {
   'write.notWritable.noWrite': '不允许写入',
   'write.notWritable.mid': '（宿主持久化模式 = ',
   'write.notWritable.post': '）—— 非本机回环访问时宿主只在内存里改、不落盘，故这里会如实拒写而不是假装保存。',
+  // ── 权限档位（2026-10-14 第 144 轮）──────────────────────────────────
+  'perm.title': '权限档位',
+  'perm.note': '它只改本预设能「读」哪些文件；任何一档都不能改动。',
+  'perm.label': '档位',
+  'perm.level.ledger': '账本',
+  'perm.level.project': '项目',
+  'perm.level.workspace': '工作区',
+  'perm.level.note.ledger': '只读自己的账本与网络；看不到项目工作区的文件。',
+  'perm.level.note.project': '可读工作区里的文档（.md），不可读代码。',
+  'perm.level.note.workspace': '工作区的文档、代码与图片都可读，并能在文件里搜索；任何一档都不能改动。',
+  'perm.meaning': '这一档允许什么',
+  'perm.result': '结果',
+  'perm.saved': '已保存：现在是「{level}」档。',
+  'perm.writing': '正在写入…',
+  'perm.writeFailed': '写入失败（宿主未给原因）。',
+  'note.permission.pre': '· 「权限档位」是',
+  'note.permission.strong': '即改即生效',
+  'note.permission.post': '的值型配置 —— 已开的会话在它的下一步就按新档位走；它和上面的模块开关是两条不同的路径。',
   'note.restart.pre': '· 模块开关（{tools} / {preset} / {bus} / {orch} / {settings}，共五个）：改完需要',
   'note.restart.strong': '重启实例',
   'note.restart.post': '才生效 —— 宿主的规定是"改这些值不重挂插件"，而模块的装载发生在插件装载那一刻。',

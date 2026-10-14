@@ -53,7 +53,16 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { readMarkdownCapped, resolveLedgerRoot, resolveWorkspaceRoot } from '../server/doc-read.ts'
+import {
+  TEXT_EXTENSIONS,
+  grepWorkspace as grepWorkspaceText,
+  globWorkspace as globWorkspacePaths,
+  readWorkspaceImage as readWorkspaceImageBytes,
+  readWorkspaceText,
+} from '../server/workspace-read.ts'
+import { basename } from 'node:path'
 import { LEDGER_FILES, writeHobFile } from '../server/hob-write.ts'
 // ── 待投递中间态记账（2026-10-10 · 用户报障修复）──────────────────────────
 //   ⚠ **分层纪律**：`hob-write.ts`（落盘层）**不 import** 运行态模块 ——
@@ -168,6 +177,8 @@ export const DEFAULTS = {
   keepBackups: 20,
   shrinkGuard: 0.5,
   debugLogMaxBytes: 262144,
+  /** 单张图片的读取上限（字节）。⚠ 图片**不做截断**（截断即损坏）。 */
+  maxImageBytes: 8 * 1024 * 1024,
 } as const
 
 /**
@@ -229,6 +240,37 @@ export function hobDirOf(cfg: HobToolsConfig): string {
 export interface HobToolsDeps {
   /** 按执行上下文取编排服务（`hob_dispatch` 的同一条路径）。缺席 ⇒ 不投递。 */
   orchOf?: (exec: ToolRunContext) => DispatchLike | undefined
+  /**
+   * **现读**当前权限档位（`ledger` / `project` / `workspace`）。
+   *
+   * ⚠ 必须是**函数**（不是值）：档位可以**随时改**（volatile 值型配置，改完即生效），
+   *   若在 `createHobTools` 时读一次存起来，就成了"装配期快照"——
+   *   用户改完档位后**已开的会话仍按旧档**走到重挂载为止。
+   *   ⇒ 四个读工具在**每次 execute** 时调它（与 `src/preset/tools.ts` 的
+   *   装配期过滤"现读档位"是同一口径）。
+   *
+   * 缺席 / 抛异常 / 返回值不是三档之一 ⇒ 按**最保守**的 `ledger` 处理（fail-closed）。
+   */
+  levelOf?: () => string
+  /**
+   * 把图片字节**存成附件**并取回引用（`hob_read_image` 用）。
+   *
+   * ⚠ 为什么是注入而不是本模块直接 `ctx.get('attachments')`：与 `orchOf` 同一理由
+   *   —— 本模块**没有 ctx**（工具定义是纯函数，定义在模块作用域、注册在预设作用域）。
+   *   实测（第 144 轮）：`attachments` 由宿主平面 provide，**预设作用域取得到**，
+   *   故由 `registerTools` 把 `ctx.get('attachments').saveImage` 绑好传进来。
+   *
+   * ⚠ 缺席 ⇒ `hob_read_image` **照常注册**，但调用时如实返回"没有附件服务"
+   *   （fail-closed：不假装图片已交给模型）。
+   */
+  saveImage?: (input: { data: Uint8Array; mediaType: string; name: string }) => Promise<{
+    attachmentId: string
+    mediaType: string
+    bytes: number
+    width: number
+    height: number
+    name?: string
+  } | undefined>
 }
 
 /**
@@ -257,6 +299,10 @@ function sessionIdOf(exec: any): string | undefined {
 export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}): {
   readContracts: ReturnType<typeof defineTool>
   writeHob: ReturnType<typeof defineTool> | undefined
+  readWorkspaceDoc: ReturnType<typeof defineTool>
+  globWorkspace: ReturnType<typeof defineTool>
+  grepWorkspaceTool: ReturnType<typeof defineTool>
+  readWorkspaceImage: ReturnType<typeof defineTool>
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
@@ -284,7 +330,169 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
     },
   })
 
-  if (cfg.enableWrite === false) return { readContracts, writeHob: undefined }
+  // ── 权限档位的**读能力**四个工具（2026-10-14 第 144 轮）─────────────────
+  //   ⚠ **为什么这四个在这里定义、却由预设行注册**：与 `read_contracts` 同一条分层
+  //     —— 工具**定义**在本模块（可被机检直接 import 真跑），**注册**在预设作用域
+  //     （`src/preset/tools.ts` 的 `registerTools`），因为"哪些档看得见"是预设的权限面。
+  //
+  //   ⚠ **档位必须"现读"**：`deps.levelOf()` 在**每次 execute 时**调，
+  //     ⛔ **不许**在 `createHobTools` 时读一次存起来 —— 那会让"改档位不必重启"
+  //     变成"改档位要重挂载"（本项目第 143 轮设计 §a 的反例）。
+  //
+  //   ⚠ **写类工具不在这里**：本模块只定义**只读**工具；写类 / 命令类的名字
+  //     在三档里都不存在（不声明 + 不注册），见 `src/preset/tools.ts` 的三档表与哨兵。
+  const levelNow = (): string => {
+    try {
+      const v = deps.levelOf?.()
+      return typeof v === 'string' && v !== '' ? v : 'ledger'
+    } catch {
+      // ⚠ 判不出档位 ⇒ 按**最保守**的档处理（与 `doc-read.ts` 的 fail-closed 同口径）。
+      return 'ledger'
+    }
+  }
+  const workspaceRootOf = (exec: ToolRunContext): string | undefined => rootOf(cfg, exec)
+  const maxReadBytes = cfg.maxFileBytes ?? DEFAULTS.maxFileBytes
+
+  const readWorkspaceDoc = defineTool({
+    name: 'hob_read_doc',
+    description:
+      '只读本工作区内的**文档 / 文本类文件**（⛔ 不能写、不能改）。'
+      + '⚠ 可读范围**随本会话的权限档位变**：'
+      + `「项目」档只可读 .md；「工作区」档可读 ${TEXT_EXTENSIONS.length} 类文本（.md .txt .json .yaml .ts .py 等）。`
+      + '越出工作区、软链、二进制 / 非 UTF-8 一律拒绝。'
+      + '⚠ 大文件会被截断并在尾部标注；需要后续内容用 offset/limit 分段读。',
+    parameters: {
+      path: { type: 'string', required: true, description: '工作区内的相对路径（也可给工作区内的绝对路径），如 src/config.ts、.hob/README.md' },
+      offset: { type: 'integer', description: '起始行（1 基）。缺省 = 从第 1 行。' },
+      limit: { type: 'integer', description: '最多返回多少行。缺省 = 不按行切（只受字节上限约束）。' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
+    },
+    async execute(args: { path: string; offset?: number; limit?: number }, exec: ToolRunContext): Promise<string> {
+      const root = workspaceRootOf(exec)
+      if (root === undefined) return '拒绝：无法确定工作区目录。'
+      const r = await readWorkspaceText(root, args.path, maxReadBytes, levelNow(), args.offset ?? 1, args.limit ?? 0)
+      return r.text
+    },
+  })
+
+  const globWorkspace = defineTool({
+    name: 'hob_glob',
+    description:
+      '只列本工作区内的**文件路径**（⛔ 不读正文、不能写）。用于找文件 / 摸清目录结构。'
+      + '⚠ 跳过 .git / node_modules / dist 等目录；软链不跟随；结果有上限。',
+    parameters: {
+      pattern: { type: 'string', required: true, description: 'glob 模式（相对工作区根），如 **/*.ts、docs/*.md、src/**/*.json' },
+      limit: { type: 'integer', description: '最多返回多少条（缺省 200）。' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
+    },
+    async execute(args: { pattern: string; limit?: number }, exec: ToolRunContext): Promise<string> {
+      const root = workspaceRootOf(exec)
+      if (root === undefined) return '拒绝：无法确定工作区目录。'
+      const r = await globWorkspacePaths(root, args.pattern, args.limit ?? 200)
+      return r.text
+    },
+  })
+
+  const grepWorkspaceTool = defineTool({
+    name: 'hob_grep',
+    description:
+      '在本工作区的**文本类文件里**按正则搜索，返回**命中行**（⛔ 只读、不能写）。'
+      + `⚠ 搜索范围**受类型限制**：只搜 ${TEXT_EXTENSIONS.length} 类文本（.md .txt .json .yaml .ts .py 等），⛔ 不搜二进制 / 图片。`
+      + '⚠ 单文件与总量都有上限，被截断时会明说；软链不跟随。',
+    parameters: {
+      pattern: { type: 'string', required: true, description: '正则源（大小写敏感），如 "function\\s+\\w+"、TODO|FIXME' },
+      path: { type: 'string', description: '限定在工作区内的某个子路径下搜（缺省 = 整个工作区）。' },
+      limit: { type: 'integer', description: '最多返回多少条命中（缺省 200）。' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
+    },
+    async execute(args: { pattern: string; path?: string; limit?: number }, exec: ToolRunContext): Promise<string> {
+      const root = workspaceRootOf(exec)
+      if (root === undefined) return '拒绝：无法确定工作区目录。'
+      const r = await grepWorkspaceText(root, args.pattern, args.path ?? '', args.limit ?? 200)
+      if (!r.ok) return r.reason ?? '搜索失败。'
+      if (r.hits.length === 0) return `没有命中「${args.pattern}」（扫了 ${r.scanned} 个文本文件）。`
+      const body = r.hits.map((h) => `${h.path}:${h.line}: ${h.text}`).join('\n')
+      return body + (r.capped ? `\n\n---\n[已截断] 命中数达到上限 ${args.limit ?? 200}。` : '')
+    },
+  })
+
+  /**
+   * `hob_read_image` —— 读数形态**实测结论**（见 `REPORT-R148.md`）：
+   *   宿主 `read_image`（`dsh-tool-fs/lib/index.js:987-1057`）把图片经
+   *   `attachments.saveImage()` 存成附件，工具输出 `{path, image}`，`render` 给出
+   *   **两个内容块**：一个 `text` 信封 + 一个 `{type:'image', attachment}`。
+   *   ⚠ 图片**不走文本通道** —— 它必须作为 image 块交给模型。
+   *
+   *   实测：`attachments` 服务由宿主平面 provide，预设作用域**取得到**
+   *   （`/tmp/r148-logs/probe-scope-services3.mjs`：`saveImage = function` 且实调成功）。
+   *   ⇒ 自注册版能做到**与宿主等价**，故 `needsImage` 标记走"要 attachments"的注册路径。
+   */
+  const readWorkspaceImageTool = defineTool({
+    name: 'hob_read_image',
+    description:
+      '读本工作区内的一张图片（PNG / JPEG / WebP / GIF）并把**图片本身**交给模型'
+      + '（⛔ 只读、不能写、不能改图）。大图由宿主的附件服务自动缩小。'
+      + '⚠ 只认工作区内的路径；不支持的类型 / 越界 / 软链 / 超上限一律拒绝。',
+    parameters: {
+      path: { type: 'string', required: true, description: '工作区内的图片路径，如 docs/shot.png、.hob/drafts/diagram.webp' },
+    },
+    output: {
+      // ⚠ 用 `json` 根而不是 `object`：`{path, image}` 里的 `image` 是宿主
+      //   附件引用（`attachmentId` 是品牌类型），在 author-facing schema 里
+      //   无法干净复刻 ⇒ 取"无损 JSON 根"，由 `render` 决定实际块形状。
+      schema: { type: 'json' },
+      render: (_args: unknown, value: unknown) => {
+        const v = value as { path?: string; image?: Record<string, unknown>; envelope?: string }
+        const blocks: unknown[] = [{ type: 'text', text: v.envelope ?? `<path>${v.path ?? ''}</path>` }]
+        if (v.image !== undefined) blocks.push({ type: 'image', attachment: v.image })
+        return blocks as never
+      },
+    },
+    async execute(args: { path: string }, exec: ToolRunContext): Promise<JsonValue> {
+      const root = workspaceRootOf(exec)
+      if (root === undefined) return { path: String(args.path), envelope: '拒绝：无法确定工作区目录。' }
+      const r = await readWorkspaceImageBytes(root, args.path, DEFAULTS.maxImageBytes)
+      if (!r.ok) return { path: String(args.path), envelope: r.reason ?? '拒绝。' }
+      const saved = await deps.saveImage?.({
+        data: r.data as Uint8Array,
+        mediaType: r.mediaType as string,
+        name: basename(r.displayPath as string),
+      })
+      if (saved === undefined) {
+        return {
+          path: r.displayPath as string,
+          envelope: '拒绝：当前组合没有挂载附件服务（attachments），无法把图片交给模型。'
+            + '请让宿主装上附件后端，或改用文本读取。',
+        }
+      }
+      const displayPath = String(r.displayPath ?? args.path)
+      const envelope = `<path>${displayPath}</path>\n<type>image</type>\n<content>\n`
+        + `${r.mediaType} image, ${saved.width}x${saved.height} px, ${saved.bytes} bytes\n</content>`
+      // ⚠ 逐字段显式拷贝（不是 `...saved`）：`JsonValue` 不接受 `undefined` 字段，
+      //   而 `saved.name` 是可选的 ⇒ 展开会把 `undefined` 带进去。
+      return {
+        path: displayPath,
+        image: {
+          attachmentId: saved.attachmentId,
+          mediaType: saved.mediaType,
+          bytes: saved.bytes,
+          width: saved.width,
+          height: saved.height,
+          ...(saved.name === undefined ? {} : { name: saved.name }),
+        },
+        envelope,
+      }
+    },
+  })
 
   const writeHob = defineTool({
     name: 'write_hob',
@@ -419,15 +627,16 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
     },
   })
 
-  return { readContracts, writeHob }
+  return {
+    readContracts,
+    writeHob: cfg.enableWrite === false ? undefined : writeHob,
+    readWorkspaceDoc,
+    globWorkspace,
+    grepWorkspaceTool,
+    readWorkspaceImage: readWorkspaceImageTool,
+  }
 }
 
-/**
- * 模块入口：**提供门禁服务**（不注册工具，理由见文件头）。
- *
- * 资源纪律：门禁用 `ctx.provide` 挂（它自己就是 effect）；另用 `ctx.effect`
- * 挂一条卸载钩子，保证热重载/卸载时**没有任何残留**（§3.3 第 3 条）。
- */
 export function apply(ctx: any): void {
   ctx.provide(GATE_SERVICE, { version: 1, module: name })
 

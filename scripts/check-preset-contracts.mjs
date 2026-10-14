@@ -80,14 +80,71 @@
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
  * ⚠ 零第三方依赖（本仓纪律）：YAML 只做**行级**解析，不引 js-yaml。
  */
-import { readFileSync, readdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const HO = join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')
 const DRAFT = join(root, '.hob', 'drafts', 'preset-contracts.md')
+/** 权限三档表的落点（⑤m 组的唯一来源）。 */
+const TOOLS_TS = join(root, 'src', 'preset', 'tools.ts')
+/**
+ * 宿主包的 `node_modules` 根（⑤m-6 读宿主平面 patch 用）。
+ *
+ * ⚠ 兜底顺序：先按本仓 `node_modules` 解析（开发/机检环境），
+ *   再退到宿主全局 checkout 的 `node_modules`。
+ *   ⚠ **读不到 ⇒ 报 FAIL**（"基准缺失不按通过处理"），⛔ 不静默跳过。
+ */
+const HOST_NODE_MODULES_CANDIDATES = [
+  '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai',
+  '/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai',
+  join(root, 'node_modules', '@deepseek-ai'),
+]
+/**
+ * 解析宿主包的 `@deepseek-ai` 根：**取第一个真有 `dsh-web-app` 的那一个**。
+ *
+ * ⚠ 为什么要"探"而不是写死一个：本仓自己的 `node_modules` 只有开发依赖
+ *   （21 个包、**没有** `dsh-web-app`），宿主 checkout 才有（288 个包）。
+ *   ⚠ 都探不到 ⇒ 返回首个候选，由 ⑤m-6 报 **FAIL（基准缺失不按通过处理）**。
+ */
+const HOST_NODE_MODULES = (() => {
+  for (const c of HOST_NODE_MODULES_CANDIDATES) {
+    try { if (existsSync(join(c, 'dsh-web-app', 'cordis.patch.yml'))) return c } catch { /* 继续 */ }
+  }
+  return HOST_NODE_MODULES_CANDIDATES[0]
+})()
+
+/**
+ * 收集**宿主平面已注册的工具名**（⑤m-7 用）。
+ *
+ * ⚠ 口径：扫全部已装 `@deepseek-ai/dsh-*` 包的 `lib/index.js`，抽
+ *   `tools.register({ name: "..." })` 与 `name: "...",\n description:` 两种形态。
+ *   ⚠ 这是**只读扫描**，不 import 任何宿主代码（机检不许启动宿主）。
+ *   ⚠ 扫不到任何名字 ⇒ 返回 `null`（消费方报 FAIL，不按通过处理）。
+ *
+ * @returns 名字集合；一个都扫不到时为 null。
+ */
+function collectHostToolNames() {
+  const names = new Set()
+  // ⚠ **合并全部存在的候选根**（不是"第一个非空就停"）：本仓 node_modules 与
+  //   宿主 checkout 的包集合**不重叠**（前者只有开发依赖）⇒ 只扫一个会漏掉一半名字，
+  //   而"漏掉"恰好会让互斥判据**假通过**（漏掉的那个名字撞不上）。
+  for (const base of HOST_NODE_MODULES_CANDIDATES) {
+    let entries = []
+    try { entries = readdirSync(base, { withFileTypes: true }) } catch { continue }
+    for (const ent of entries) {
+      if (!ent.isDirectory() && !ent.isSymbolicLink()) continue
+      const idx = join(base, ent.name, 'lib', 'index.js')
+      let src = null
+      try { src = readFileSync(idx, 'utf8') } catch { continue }
+      for (const m of src.matchAll(/tools\.register\(\s*(?:defineTool\(\s*)?\{\s*name:\s*["']([^"']+)["']/g)) names.add(m[1])
+      for (const m of src.matchAll(/\bname:\s*["']([a-z][a-z0-9_]*)["'],\s*\n\s*description:/g)) names.add(m[1])
+    }
+  }
+  return names.size === 0 ? null : names
+}
 
 // 预设的**名称与 id**唯一来源。
 // ⚠ 2026-10-07 批 2 起 `config.name` 与 `config.id` **同字面值**（Hob）。
@@ -757,9 +814,14 @@ const STALE_APPELLATIONS = [
       const NEW_WORDING = [
         ['只读的事直接做 / 改动的活不做', 'What is read-only, you do directly'],
         ['没有任何「改动」能力（四条并列）', 'you cannot edit code'],
-        // ⚠ 锚点**不得跨行**（本轮实测：原锚点跨行 ⇒ 改述后行断点一变就判不出，属假红）
-        ['只读检索与浏览（账本+文档+网页+看板/圆桌只读查询）', 'read-only search and reading -- your own ledger and'],
-        ['只写自己的账本与交接文件', 'plus writing your own ledger and hand-off files'],
+        // ⚠ 锚点**不得跨行**（第 143 轮实测：原锚点跨行 ⇒ 改述后行断点一变就判不出，属假红）
+        // ⚠⚠ **第 144 轮替换**（不是删除）：能力句改成"按档位"表述 ——
+        //   旧锚点 `read-only search and reading -- your own ledger and` 与
+        //   `plus writing your own ledger and hand-off files` 随措辞变化**已不在**，
+        //   换成新措辞里的两条**等价锚点**（读账本/网页/看板 + 写账本与交接文件）。
+        //   ⛔ 只删不加会让本条退化成"什么也没验"（读者无法判断 Hob 能做什么）。
+        ['按档位读（账本 / 网页 / 看板与圆桌只读查询）', 'Among the tools you do have: reading your own ledger'],
+        ['只写自己的账本与交接文件', 'ledger and hand-off files (.hob/)'],
       ]
       const gone = NEW_WORDING.filter(([, s]) => !hoBody5.includes(s))
       if (gone.length > 0) {
@@ -960,9 +1022,23 @@ const STALE_APPELLATIONS = [
       // ⚠ 名字提成常量：模板串里**不能直接写反引号**（本轮实测踩过一次语法错误）。
       const SHRUNK21 = ['read', 'glob', 'grep', 'read_image']
       const SHRUNK21_NAMES = SHRUNK21.join(' / ')
+      // ⚠⚠ **P-2（第 144 轮）**：这里原先内联了**第二份 26 名清单** ——
+      //   它与 `src/preset/tools.ts` 的那份是**两个副本**（E-110 的典型形态：
+      //   改一处忘另一处，两边说法不同却都不会报错）。
+      //   ⇒ 改成**从源码那份派生**：`未知名` 只用于**报错时指出多出来的是哪几个**，
+      //     **不是**判据本身（判据仍是上面的"恰好 26"与下面的"档1 ≡ 常量"）。
+      const known26 = (() => {
+        try {
+          const m = /export const PERMISSION_TIERS[\s\S]*?ledger:\s*MODEL_TOOL_ALLOWLIST/.exec(toolsSrc13)
+          if (m === null) return null
+          const m2 = /export const MODEL_TOOL_ALLOWLIST[^=]*=\s*\[([\s\S]*?)\n\]/.exec(toolsSrc13)
+          return m2 === null ? null : new Set([...m2[1].matchAll(/'([^']+)'/g)].map((x) => x[1]))
+        } catch { return null }
+      })()
       if (allow13.length !== 26) {
+        const extra = known26 === null ? allow13 : allow13.filter((n) => !known26.has(n))
         bad(`⑤h ${NAME_HO} 白名单应恰好 26 名，实测 ${allow13.length}`
-          + `（多出：${allow13.filter((n) => !['read_contracts','write_hob','advanced_search','multi_search','platform_search','video_search','free_search_test','schedule_create','schedule_list','schedule_update','schedule_delete','taskboard_list','taskboard_get','taskboard_comments','roundtable_status','web_fetch','ask_user_question','skill','present','hob_sessions','hob_send','hob_workspaces','hob_spawn','hob_dispatch','hob_orch_status','hob_orch_control'].includes(n)).join(', ') || '无'}）`
+          + `（多出：${extra.join(', ') || '无'}）`
           + `\n      ⇒ ⚠ **批 21 起 ${SHRUNK21_NAMES} 属"已被收缩"项** ——`
           + `\n        它们出现即说明收缩被回退（用户的权限裁定失效），**须查明是谁加回来的**`)
       } else ok(`⑤h ${NAME_HO}：白名单恰好 26 名（11 + 9 + 1 + 2 + 2 + 2 + 3 − 4[批21 收缩]）`)
@@ -1348,12 +1424,40 @@ const STALE_APPELLATIONS = [
     ['④不变量：投递 ≠ 执行', 'delivering is'],
     ['④不变量：建会话 ≠ 委派', 'creating a session is not delegating'],
     ['④不变量：回传 ≠ 验收', 'a result coming back is not'],
-    // ⑤ 靠什么守住（工具面 + fail-open 读法 + "无命令 ≠ 不能读文件"）
-    ['⑤靠什么守住：本预设的工具面（发给模型的清单 + 执行前拦截）', 'by the tool face of this preset alone'],
-    ['⑤靠什么守住：拦截是 fail-open ⇒ 读作"现有机制下不可达"', 'fail-open'],
-    ['⑤靠什么守住：明确"不是安全边界"', 'not as a'],
-    ['⑤靠什么守住："无命令"≠"插件不能读文件"，两条不混', 'is not the same as "the plugin cannot read'],
+    // ⑤ 靠什么守住（**三条分开写**：结构性 / 白名单 / 单调哨兵）
+    // ⚠⚠ **第 144 轮替换**（不是删除）：旧版三条锚点是
+    //   `by the tool face of this preset alone` / `fail-open` / `not as a` ——
+    //   它们描述的是**旧**机制（"只有工具面 + 拦截，且拦截 fail-open"）。
+    //   第 144 轮落"真硬机制"后，正文改成**三条不同性质**的并列说法
+    //   （① 结构性：写类工具**根本不存在**；② 白名单按档；③ 单调哨兵 fail-closed）
+    //   ⇒ 旧锚点**必然消失**。⛔ 只删不加会让"职责边界块有语义"这条退化成恒真。
+    //   ⚠ 新增一条**负向**锚点（下面的 NO_LONGER_TRUE），防"fail-open"那句回到
+    //     描述**档位边界**的上下文里（R-26：⛔ 不许把 fail-open 与 fail-closed 混写）。
+    ['⑤靠什么守住：①结构性（写类工具**根本不存在**）', 'the write-capable tools do not exist here at all'],
+    ['⑤靠什么守住：②白名单按档，且任何档不含写类/命令名', 'a level never includes a write-capable or command name'],
+    ['⑤靠什么守住：③单调哨兵 **fail-closed**（与拦截器相反）', 'that guard fails closed'],
+    ['⑤靠什么守住：明确"不是对所有事都是边界"', 'not as a'],
+    // ⚠ 锚点**不得跨行**（本仓既有纪律，第 143 轮实测过一次假红）：
+    //   第 144 轮正文重排后 `is not the same as "the plugin cannot read` 恰好被断行切开
+    //   ⇒ 换成**同一句的行内前半段**（语义不变，仍是"两条不混"）。
+    ['⑤靠什么守住："无命令"≠"插件不能读文件"，两条不混', '"no command" is not the same'],
   ]
+  // ⚠⚠ **成对的负向锚点**（R-26）：旧机制那句 `The interception is fail-open`
+  //   在描述**档位边界**时**已失实**（档位那条边界是单调哨兵、fail-closed）。
+  //   ⇒ 它若回来，说明有人把两套性质混着写 —— 正是本项目反复强调的混写形态。
+  //   ⚠ 与上面三条**成对**：只验"新句在位"会漏掉"旧句也还在"（E-126：判据只验一侧）。
+  const NO_LONGER_TRUE = [
+    ['旧机制句「拦截是 fail-open」不得回来（档位边界是 fail-closed 的哨兵）',
+      'The interception is fail-open'],
+  ]
+  const revived = NO_LONGER_TRUE.filter(([, s]) => hoBody8.includes(s))
+  if (revived.length > 0) {
+    bad(`⑤k ${NAME_HO}：描写**档位边界**时不得再用 fail-open 措辞（${revived.length} 处）：`
+      + `${revived.map(([l]) => l).join(' / ')}`
+      + '\n      ⇒ R-26：靠什么守住必须同句写明；fail-open（拦截器）与 fail-closed（单调哨兵）'
+      + '\n        是**两种不同性质**，混写会让读者以为边界是敞的')
+  } else ok(`⑤k ${NAME_HO}：档位边界段未用 fail-open 措辞（${NO_LONGER_TRUE.length} 个负向锚点均不在）`)
+
   const boundaryMissing = BOUNDARY_PINS.filter(([, s]) => !hoBody8.includes(s))
   if (boundaryMissing.length > 0) {
     bad(`⑤k ${NAME_HO}：职责边界块缺语义（${boundaryMissing.length} 处）：`
@@ -1477,6 +1581,346 @@ const STALE_APPELLATIONS = [
     bad(`⑤l ${NAME_HO}：先对照方案段的追加**挤掉了既有条文**（${squeezedBy138.length} 处）：`
       + `${squeezedBy138.map(([l]) => l).join(' / ')} —— 本批只许追加，不许顶掉既有的`)
   } else ok(`⑤l ${NAME_HO}：既有 ${KEPT_BY_138.length} 组条文逐字保留（先对照方案段的追加未挤掉任何一条）`)
+}
+
+// ── ⑤m 2026-10-14（第 144 轮 · 用户裁定「档3 要真硬机制」+「档2不给，档3的都给」）──
+//    权限**三档**：名字集 / 单调性 / 共享禁项 / 声明面与门 / 宿主平面 / 名字互斥 / 哨兵形态 ──
+//
+// ⚠ **为什么需要它**（承接上一轮的两处实测缺口）─────────────────────────
+//   ① 旧 ⑤f/⑤h 把"白名单"当**一个**数组判（"恰好 26 名"、"这 4 个不许在"）——
+//      三档化后改档2 的名字会**当场打挂**档1/档3 的断言（E-110：两条断言共用一个常量）。
+//      ⇒ 判据必须从"一个数"变成"**一张表**"，且**逐条只读自己那一组**。
+//   ② 旧的声明面断言只看"预设自己声明了哪些行"——
+//      **它看不见宿主平面**。而写类工具在当前 profile 里正是靠
+//      `dsh-web-app/cordis.patch.yml` 把 `tool-fs` / `tool-bash` / `tool-pwsh`
+//      标 `disabled: true` 才不可达的（实测）。**别人改 profile ⇒ 写类工具静默
+//      回到注册面，而三档白名单照样 PASS** ⇒ ⑤m-6 专门盯这一条。
+//
+// ── 判据口径（不许放宽）────────────────────────────────────────────────
+//   · 名字集**一律从 `src/preset/tools.ts` 的 `PERMISSION_TIERS` 实测抽取**，
+//     ⛔ **不许在脚本里内联第二份清单**（P-2 判据管的就是这件事）；
+//   · 档1 必须与 `MODEL_TOOL_ALLOWLIST` **双向差集都为空**（逐名，不是数条数）。
+{
+  let tierSrc = ''
+  try { tierSrc = readFileSync(TOOLS_TS, 'utf8') } catch { /* 下面统一报 */ }
+
+  // ── 抽出 `PERMISSION_TIERS` 的三组名字 ────────────────────────────────
+  //   口径：`ledger: MODEL_TOOL_ALLOWLIST`（引用档1 常量）与
+  //         `project: [ ...MODEL_TOOL_ALLOWLIST, 'a', 'b' ]` 两种形态并存。
+  //   ⚠ 两种形态都**必须**支持 —— 只认字面量数组会让 ⑤m-2 的"档1 ≡ 常量"变成空判。
+  const tiers = {}
+  if (tierSrc !== '') {
+    const tierBlock = /export const PERMISSION_TIERS[^=]*=\s*\{([\s\S]*?)\n\}/.exec(tierSrc)
+    if (tierBlock === null) {
+      bad('⑤m 在 src/preset/tools.ts 里找不到 PERMISSION_TIERS 的字面量对象（基准缺失 ⇒ 不按通过处理）')
+    } else {
+      for (const key of ['ledger', 'project', 'workspace']) {
+        const re = new RegExp(`\\b${key}:\\s*\\[([\\s\\S]*?)\\]`, 'm')
+        const m = re.exec(tierBlock[1])
+        if (m === null) { tiers[key] = null; continue }
+        const spread = /\.\.\.MODEL_TOOL_ALLOWLIST/.test(m[1])
+        const own = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+        tiers[key] = { own, spread }
+      }
+      // `ledger: MODEL_TOOL_ALLOWLIST`（不带方括号）这一形态单独认。
+      if (tiers.ledger === null && /\bledger:\s*MODEL_TOOL_ALLOWLIST\b/.test(tierBlock[1])) {
+        tiers.ledger = { own: [], spread: true }
+      }
+    }
+  }
+
+  // 档1 的基准 = MODEL_TOOL_ALLOWLIST（唯一来源）。
+  const mAllow = /export const MODEL_TOOL_ALLOWLIST[^=]*=\s*\[([\s\S]*?)\n\]/.exec(tierSrc)
+  const allow26 = mAllow === null ? null : [...mAllow[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+
+  const missingTiers = ['ledger', 'project', 'workspace'].filter((k) => tiers[k] === null || tiers[k] === undefined)
+  if (missingTiers.length > 0) {
+    bad(`⑤m-1 PERMISSION_TIERS 缺档位：${missingTiers.join(', ')}（三档必须齐）`)
+  } else if (allow26 === null) {
+    bad('⑤m-1 抽不出 MODEL_TOOL_ALLOWLIST（档1 的基准缺失 ⇒ 不按通过处理）')
+  } else {
+    ok(`⑤m-1 三档表在位且自洽（ledger / project / workspace）`)
+
+    // 展开成完整名字集（`spread` ⇒ 前置 allow26）。
+    const full = {}
+    for (const k of ['ledger', 'project', 'workspace']) {
+      full[k] = tiers[k].spread ? [...allow26, ...tiers[k].own] : [...tiers[k].own]
+    }
+
+    // ── ⑤m-2 档1 ≡ MODEL_TOOL_ALLOWLIST（**双向差集**，逐名）────────────
+    {
+      const a = new Set(full.ledger), b = new Set(allow26)
+      const onlyA = [...a].filter((n) => !b.has(n))
+      const onlyB = [...b].filter((n) => !a.has(n))
+      if (a.size !== b.size) {
+        bad(`⑤m-2 档1 名数与 MODEL_TOOL_ALLOWLIST 不等（档1 ${a.size} vs 常量 ${b.size}）`)
+      } else if (onlyA.length > 0 || onlyB.length > 0) {
+        bad(`⑤m-2 档1 与 MODEL_TOOL_ALLOWLIST **不是逐名相等**`
+          + `（档1 多：${onlyA.join(', ') || '无'}；常量多：${onlyB.join(', ') || '无'}）`)
+      } else {
+        ok(`⑤m-2 档1 ≡ MODEL_TOOL_ALLOWLIST（逐名相等，共 ${a.size} 名）`)
+      }
+    }
+
+    // ── ⑤m-3 三档**单调性**：ledger ⊆ project ⊆ workspace ────────────────
+    {
+      const sub = (x, y) => x.every((n) => y.includes(n))
+      const p1 = sub(full.ledger, full.project)
+      const p2 = sub(full.project, full.workspace)
+      const back1 = full.project.filter((n) => !full.ledger.includes(n))
+      const back2 = full.workspace.filter((n) => !full.project.includes(n))
+      if (!p1 || !p2) {
+        bad('⑤m-3 三档**不满足包含链** ledger ⊆ project ⊆ workspace'
+          + `（${p1 ? '' : '档2 缺档1 的：' + full.ledger.filter((n) => !full.project.includes(n)).join(', ')}`
+          + `${p2 ? '' : '；档3 缺档2 的：' + full.project.filter((n) => !full.workspace.includes(n)).join(', ')}）`)
+      } else {
+        ok(`⑤m-3 三档单调性成立（档2 比档1 多 ${back1.length} 名：${back1.join(', ') || '无'}`
+          + `；档3 比档2 多 ${back2.length} 名：${back2.join(', ') || '无'}）`)
+      }
+      // 名数也钉住（26 / 27 / 30）—— ⚠ 与包含链是**两条**判据：
+      //   包含链能抓"档2 被抽走"，名数能抓"档2 被多加"（包含链对后者是哑的）。
+      const want = { ledger: 26, project: 27, workspace: 30 }
+      const wrong = ['ledger', 'project', 'workspace'].filter((k) => full[k].length !== want[k])
+      if (wrong.length > 0) {
+        bad(`⑤m-3b 三档名数与裁定不符（${wrong.map((k) => `${k}=${full[k].length}（应 ${want[k]}）`).join('；')}）`)
+      } else {
+        ok('⑤m-3b 三档名数 = 26 / 27 / 30（与裁定一致）')
+      }
+    }
+
+    // ── ⑤m-4 共享禁项：三档**逐个**不得含写类 / 命令类 ────────────────────
+    {
+      let forbidden = []
+      const mf = /export const SHARED_FORBIDDEN_TOOLS[^=]*=\s*\[([\s\S]*?)\n\]/.exec(tierSrc)
+      if (mf !== null) forbidden = [...mf[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+      if (forbidden.length === 0) {
+        bad('⑤m-4 抽不出 SHARED_FORBIDDEN_TOOLS（基准缺失 ⇒ 不按通过处理）')
+      } else {
+        const hits = []
+        for (const k of ['ledger', 'project', 'workspace']) {
+          for (const n of forbidden) if (full[k].includes(n)) hits.push(`${k}:${n}`)
+        }
+        if (hits.length > 0) {
+          bad(`⑤m-4 三档里出现了**写类 / 命令类**名字：${hits.join(', ')}`
+            + '\n      ⇒ 用户裁定「任何一档都不能操作改动」：这些名字在任何一档都不许有')
+        } else {
+          ok(`⑤m-4 共享禁项三档均不含（逐档点验 ${forbidden.length} 名 × 3 档：${forbidden.join(' / ')}）`)
+        }
+      }
+    }
+
+    // ── ⑤m-5 声明面与门：三档下那 5 个包**都不得**被声明 ──────────────────
+    {
+      const bannedPkgs = [
+        '@deepseek-ai/dsh-tool-fs',
+        '@deepseek-ai/dsh-tool-fs-search',
+        '@deepseek-ai/dsh-tool-bash',
+        '@deepseek-ai/dsh-tool-pwsh',
+        '@deepseek-ai/dsh-tool-str-replace-editor',
+      ]
+      const hoSrcNorm5 = hoSrc.replace(/^\s*#.*$/gm, '')
+      const declared = bannedPkgs.filter((pk) => hoSrcNorm5.includes(`name: ${pk}`))
+      if (declared.length > 0) {
+        bad(`⑤m-5 Hob 声明面**声明了写类 / 命令类的包**：${declared.join(', ')}`
+          + '\n      ⇒ 与门（E-86）的另一半：只扩白名单不加声明行不会给能力，'
+          + '\n        但**加了声明行就会把 write/edit 送回注册面** ⇒ 该行永远不许出现')
+      } else {
+        ok(`⑤m-5 声明面不含任何写类 / 命令类的包（逐包点验 ${bannedPkgs.length} 个）`)
+      }
+    }
+
+    // ── ⑤m-6 ★ **宿主平面仍关着写类行**（本组最有价值的一条）──────────────
+    //   ⚠ 这是唯一能抓"**别人改 profile ⇒ 写类工具静默回到注册面**"的判据。
+    //     三档白名单与预设声明面**都看不见**这件事（它们只看自己那一层）。
+    {
+      const WEB_PATCH = join(HOST_NODE_MODULES, 'dsh-web-app', 'cordis.patch.yml')
+      let webSrc = null
+      try { webSrc = readFileSync(WEB_PATCH, 'utf8') } catch { /* 基准缺失 */ }
+      if (webSrc === null) {
+        // ⚠ 读不到宿主包 ⇒ **不按通过处理**（基准缺失不许静默 PASS）。
+        bad(`⑤m-6 读不到宿主平面 patch（${WEB_PATCH}）—— 基准缺失 ⇒ 不按通过处理`)
+      } else {
+        const mustBeDisabled = ['tool-fs', 'tool-fs-search', 'tool-bash', 'tool-pwsh']
+        const lines = webSrc.split('\n')
+        const notDisabled = []
+        for (const id of mustBeDisabled) {
+          const at = lines.findIndex((l) => new RegExp(`^-\\s*id:\\s*${id}\\s*$`).test(l))
+          if (at < 0) { notDisabled.push(`${id}(行不在)`); continue }
+          const next = (lines[at + 1] ?? '').trim()
+          if (next !== 'disabled: true') notDisabled.push(`${id}(下一行是「${next || '空'}」)`)
+        }
+        if (notDisabled.length > 0) {
+          bad(`⑤m-6 宿主平面里这些写类 / 命令类行**不再 disabled**：${notDisabled.join(', ')}`
+            + '\n      ⇒ 它们一旦启用，`write` / `edit` / `bash` / `pwsh` 会回到**注册面**，'
+            + '\n        而三档白名单与预设声明面**照样 PASS**（两层都看不见宿主平面）'
+            + '\n      ⇒ 要么恢复 disabled，要么按用户裁定重新论证"写类工具可达"这件事')
+        } else {
+          ok(`⑤m-6 宿主平面仍关着写类 / 命令类 4 行（${mustBeDisabled.join(' / ')} 均 disabled: true）`)
+        }
+      }
+    }
+
+    // ── ⑤m-7 四个新工具名与**宿主已注册名字集合**互斥 ──────────────────────
+    //   ⚠ 依据：宿主集合里 `read` / `glob` / `grep` / `write` / `edit` **已被占用**
+    //     （第 144 轮实测）⇒ 裸名会撞，必须带 `hob_` 前缀。
+    {
+      // ⚠⚠ **必须从源码派生**（第 144 轮负向对拍抓出的自身缺陷）：
+      //   初版把四个名字**硬编码**在这里 ⇒ 把源码里的 `hob_read_doc` 改名成 `read`
+      //   时，本判据**照样检查那四个旧名字**（它们仍互斥）⇒ **假通过**。
+      //   ⇒ 改成：新名 = 三档表里**除档1 之外**出现的名字（= 本插件自注册的那几个）。
+      const newNames = [...new Set([
+        ...full.project.filter((n) => !full.ledger.includes(n)),
+        ...full.workspace.filter((n) => !full.project.includes(n)),
+      ])]
+      const hostNames = collectHostToolNames()
+      if (hostNames === null) {
+        bad('⑤m-7 收集不到宿主已注册工具名（基准缺失 ⇒ 不按通过处理）')
+      } else {
+        if (newNames.length === 0) {
+          bad('⑤m-7 三档表里抽不出任何"新名字"（基准缺失 ⇒ 不按通过处理）')
+        }
+        const clash = newNames.filter((n) => hostNames.has(n))
+        if (clash.length > 0) {
+          bad(`⑤m-7 新工具名与宿主已注册名字**冲突**：${clash.join(', ')}`
+            + '\n      ⇒ 同名注册会失败 / 覆盖，且失败可能是静默的')
+        } else {
+          ok(`⑤m-7 四个新工具名与宿主已注册集合（${hostNames.size} 名）互斥：${newNames.join(', ')}`)
+        }
+      }
+    }
+
+    // ── ⑤m-8 哨兵形态：三条硬性（⛔ 裸哨兵会把账本与编排一起弄瘫）─────────
+    //   ⚠ 这是**源码级**判据：只判形态，不判语义（语义判不稳）。
+    //     三条：① 名单外 `return undefined` 出现在 `try` **之前**；
+    //           ② 名单内判定体包在 `try/catch` 里且 catch **返回拒绝**；
+    //           ③ 哨兵体内**无 `throw`**。
+    {
+      const gFn = /function installPermissionGuard[\s\S]*?\n\}/.exec(tierSrc)
+      if (gFn === null) {
+        bad('⑤m-8 找不到 installPermissionGuard（权限哨兵的落点）')
+      } else {
+        const body = gFn[0]
+        const guardAt = body.indexOf('ctx.tools.guard(')
+        const bodyInner = guardAt < 0 ? '' : body.slice(guardAt)
+        const earlyOut = bodyInner.search(/if\s*\(\s*!guarded\.has\(name\)\s*\)\s*return undefined/)
+        const tryAt = bodyInner.indexOf('try {')
+        const catchAt = bodyInner.indexOf('catch')
+        const throwInGuard = /\bthrow\b/.test(bodyInner.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''))
+        const problems = []
+        if (bodyInner === '') problems.push('找不到 ctx.tools.guard(...) 调用')
+        if (earlyOut < 0) problems.push('硬性① 不在：缺"名单外 return undefined"的按名短路')
+        else if (tryAt >= 0 && earlyOut > tryAt) problems.push('硬性① 顺序错：按名短路出现在 try 之后（异常会罩到名单外）')
+        if (tryAt < 0) problems.push('硬性② 不在：判定体没有 try')
+        if (catchAt < 0) problems.push('硬性② 不在：没有 catch')
+        if (throwInGuard) problems.push('硬性③ 被破：哨兵体内出现 throw（异常会让宿主 fail-closed ⇒ 连账本一起拒）')
+        if (problems.length > 0) {
+          bad(`⑤m-8 权限哨兵形态不合三条硬性：${problems.join('；')}`
+            + '\n      ⇒ 实测反例：裸哨兵抛异常时 `read_contracts` **也被拒** ⇒ Hob 被弄瘫'
+            + '\n      ⇒ 正确写法见 src/preset/tools.ts 的 installPermissionGuard 注释')
+        } else {
+          ok('⑤m-8 权限哨兵形态合规（① 按名短路在 try 之前 · ② 名单内 try/catch · ③ 体内无 throw）')
+        }
+      }
+    }
+  }
+}
+
+// ── P 组 2026-10-14（第 144 轮 · 两笔旧账的**防再漂判据**）─────────────────
+//
+// ⚠ **为什么需要它**（实测缺口，不是假想）──────────────────────────────
+//   第 143 轮实测：真值 26，而**6 个"数字载体"**里 5 个写的不是 26
+//   （`.hob/README.md` 与 `preset-contracts.md` 写「30 名」、`src/preset/tools.ts`
+//   的 JSDoc 写「25」与「恰好 30」、脚本内联清单是**同一名字集的第二副本**）。
+//   ⚠ **它们全都没有任何判据盯着** ⇒ CHG-054 把 30 改成 26 时，这 5 处**没跟**、
+//     也**没有任何红**。这正是"文档里的数字会静默变旧"那一族的实例。
+//
+// ── 判据口径 ─────────────────────────────────────────────────────────
+//   P-1：文档 / 注释里**不得出现独立的名数**（`N 名` / `恰好 N`）——
+//        名数**只允许**出现在源码的档位表本体附近，其余一律**口径式**
+//        （写"以 check:presets 的判定为准"）。
+//   P-2：名字清单**不得有第二个副本** —— 脚本里不许内联一份 26 名的字面量数组。
+{
+  // ── P-1：扫文档与注释里的独立名数 ────────────────────────────────────
+  //   ⚠ 扫的对象：`.hob/**/*.md`（可复用层与人读版）、`src/**/*.ts`（源码注释）。
+  //   ⚠ **不扫**本脚本自身：它作为**执行器**必须能写出那个数才能做判据
+  //     （豁免是**在注释里写明**的，不是静默放过）。
+  // ⚠ **声明的豁免（不是静默跳过）**：**历史记录**里的名数**不许改** ——
+  //   它们记的是"当时是几名"，重写等于伪造历史（本项目对归档件的既定纪律）。
+  //   ⇒ 豁免目录**逐个列出并写明理由**，新增豁免必须在这里显式登记。
+  const P1_EXEMPT_DIRS = [
+    // 经验库：条目记的是**当时**的读数（如"批 9 白名单从 11 名扩到 20 名"）。
+    ['\.hob/experience/', '历史读数：记的是当时的名字数，重写即伪造历史'],
+    // 归档件：同上（`.hob/archive/**` 是已封存的证据副本）。
+    ['\.hob/archive/', '已封存证据副本：内容原样保留'],
+  ]
+  const p1Exempt = (relPosix) => P1_EXEMPT_DIRS.some(([pre]) => relPosix.startsWith(pre.replace(/\\/g, '/').replace(/^\./, '.')))
+
+  const P1_TARGETS = []
+  const walkMd = (dir) => {
+    let entries = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) { walkMd(p); continue }
+      if (e.name.endsWith('.md')) P1_TARGETS.push(p)
+    }
+  }
+  walkMd(join(root, '.hob'))
+  const walkTs = (dir) => {
+    let entries = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) { walkTs(p); continue }
+      if (e.name.endsWith('.ts') || e.name.endsWith('.tsx')) P1_TARGETS.push(p)
+    }
+  }
+  walkTs(join(root, 'src'))
+
+  // 形式：`恰好 N 名` / `**N 名**` / `（**N 名**）` / `名字集合（**N 名**）`
+  //   ⚠ 刻意**只认"名"这个量词**：其它数字（行数 / 字节 / 编号）与本判据无关。
+  const COUNT_RE = /(?:恰好\s*)?\*{0,2}(\d{1,3})\s*名\*{0,2}/g
+  const p1Hits = []
+  for (const f of P1_TARGETS) {
+    const relPosix = relative(root, f).split(sep).join('/')
+    if (p1Exempt(relPosix)) continue          // ⚠ 声明的豁免，见上（历史记录不许改）
+    let src = null
+    try { src = readFileSync(f, 'utf8') } catch { continue }
+    const lines = src.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      // ⚠ **豁免：口径式句**（它引用的不是"数"而是"以实测为准"）——
+      //   判据是"是否写死了一个数"，故含"以 … 判定为准"/"以实测为准"的行不算。
+      if (/以\s*「?`?check:presets`?」?\s*的?\s*(判定|实测)\s*为准/.test(line)) continue
+      COUNT_RE.lastIndex = 0
+      const m = COUNT_RE.exec(line)
+      if (m !== null) p1Hits.push(`${relPosix}:${i + 1} —— 「${m[0]}」`)
+    }
+  }
+  if (p1Hits.length > 0) {
+    bad(`P-1 文档 / 注释里仍有**独立名数**（${p1Hits.length} 处）：`
+      + `\n      ${p1Hits.join('\n      ')}`
+      + '\n      ⇒ 口径：名数**只在源码的档位表本体写一次**，文档一律**口径式**'
+      + '\n        （"逐档名数以 check:presets 的判定为准"）—— 写死数会**静默变旧**')
+  } else {
+    ok(`P-1 文档 / 注释里 0 处独立名数（扫 ${P1_TARGETS.length} 份；豁免 ${P1_EXEMPT_DIRS.length} 类历史目录，理由见源码注释）`)
+  }
+
+  // ── P-2：名字清单**只有一个副本** ────────────────────────────────────
+  //   判据：脚本里**不得**出现"26 个工具名的字面量数组"（第二副本）。
+  //   ⚠ 可判的写法：找脚本里**连续 ≥ 10 个单引号名字**的数组字面量 ⇒ 那就是一份清单副本。
+  //     （源码那份在 `src/preset/tools.ts`，不扫本脚本。）
+  const selfSrc = readFileSync(fileURLToPath(import.meta.url), 'utf8')
+  const inner = /\[\s*(?:'[a-z][a-z0-9_]*'\s*,\s*){9,}'[a-z][a-z0-9_]*'\s*\]/g
+  const dup = [...selfSrc.matchAll(inner)].map((m) => m[0].replace(/\s+/g, ' ').slice(0, 120))
+  if (dup.length > 0) {
+    bad(`P-2 本脚本里仍有**名字清单的第二副本**（${dup.length} 处）：`
+      + `\n      ${dup.join('\n      ')}`
+      + '\n      ⇒ E-110：同一名字集的第二个副本改一处忘另一处 ⇒ 两边说法不同却不报错'
+      + '\n      ⇒ 改为从 src/preset/tools.ts 的 PERMISSION_TIERS / MODEL_TOOL_ALLOWLIST 派生')
+  } else {
+    ok('P-2 本脚本内 0 处名字清单副本（判据一律从 src/preset/tools.ts 派生）')
+  }
 }
 
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────

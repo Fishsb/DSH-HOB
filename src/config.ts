@@ -274,6 +274,52 @@ export const Config = z.object({
       .description('默认模型的思考档位（如 `high`）。留空 = 用该模型自身默认档。')
       .volatile(),
   }).default({}),
+
+  /**
+   * 「权限档位」（2026-10-14 第 144 轮 · 用户裁定「档3 要真硬机制」+「档2不给，档3的都给」）。
+   *
+   * ── 它管什么 ────────────────────────────────────────────────────────
+   *   「助手」预设这一档会话**能看到哪些工具**。三档是**包含链**：
+   *   · `ledger`（账本，默认）= **只读自己的账本 + 网络**，看不到项目工作区的文件；
+   *   · `project`（项目）= 上面那些 **+** 读工作区里的**文档（`.md`）**，不可读代码；
+   *   · `workspace`（工作区）= 上面那些 **+** 工作区的文档与代码（**文本类**）、
+   *     跨文件搜索、图片。
+   *   ⚠ **任何一档都不能改动**：写类 / 命令类工具在三档里**都不存在**
+   *     （不声明 + 不注册 —— 见 `src/preset/tools.ts` 的三档表与哨兵）。
+   *   ⚠ **档位只改「读」的范围**，不改「写」的边界。
+   *
+   * ── 形状（与 `spawn` 同形，**不是**随手选的）──────────────────────
+   *   · 父对象 `permission` **不标** `.volatile()`；
+   *   · 子字段 `level` **标** `.volatile()`。
+   *   理由与 `spawn` 那段完全同源（父子同标会抛 `ValidationError`；
+   *   写入路径必须逐级 volatile，故设置面**必须写 `['permission','level']`**）。
+   *
+   * ── 为什么是 `.volatile()`（而不只是普通配置）──────────────────────
+   *   档位要求「**改完即生效、不必重启**」。`.volatile()` 让宿主写入走
+   *   **volatile-only 通道**（`cordis-plugin-loader` 的 `equalExceptVolatile` 判定为真
+   *   ⇒ 只换 `fiber._config`、**不重挂载**）⇒ 已开的会话在**下一次模型 step**
+   *   就按新档位走（装配期过滤是**逐 step 现算**的，见 `src/preset/tools.ts`）。
+   *   ⚠ 若档位改成普通（非 volatile）字段 ⇒ 宿主走重挂载通道 ⇒ **必须重载/重启**。
+   *
+   * ── 为什么是 `z.union([z.const(…), …])` 而不是 `z.string()` ─────────
+   *   `z.string()` 在设置面会退化成**自由文本输入**（用户能填出三档之外的值）；
+   *   `z.union` 的 const 列表在宿主 form 里是**选项**形态（`volatileForm` 保留
+   *   `{type:'union', list:[{type:'const',value}…]}`）⇒ 用户只能三选一。
+   *
+   * ── ⛔ 不许改成顶层标量 ─────────────────────────────────────────────
+   *   顶层标量（`permission: z.string()`）会让 `volatileForm` 返回 `undefined`
+   *   ⇒ **整个本插件分区在设置页静默消失**（宿主不报错）。
+   *   `check:config` 的 B 组对此有断言（子键集合双向比对 + 顶层组必须双向在位）。
+   */
+  permission: z.object({
+    level: z.union([
+      z.const('ledger'),
+      z.const('project'),
+      z.const('workspace'),
+    ]).default('ledger')
+      .description('「助手」会话的权限档位（三选一）：账本 = 只读自己的账本与网络；项目 = 另可读工作区的 .md 文档，不可读代码；工作区 = 另可读工作区的文档与代码（文本类）、可跨文件搜索、可读图片。⚠ 任何一档都不能改动（写类工具三档都不存在）。改完即生效，不必重启实例。')
+      .volatile(),
+  }).default({}),
 })
 
 /**
@@ -371,5 +417,52 @@ export function moduleSwitches(config: unknown): ModulesConfig {
     //   ⇒ **两个方向的兜底都取"后果更轻"的那一边**，不取"更保守"或"更激进"。
     orch: pick('orch', false),
     settings: pick('settings', true),
+  }
+}
+
+/**
+ * 权限档位的**现读**服务名（2026-10-14 第 144 轮）。
+ *
+ * ⚠ 它是一个**函数**（返回 `'ledger' | 'project' | 'workspace'`），不是值：
+ *   调用方**必须每次调**，不许存起来（见 {@link permissionLevel} 的注释）。
+ * ⚠ 定义在 `config.ts`（而不是 `index.ts`）：**两侧都要用它** ——
+ *   插件入口（provide 方）与预设作用域（消费方），放这里不会造成循环 import。
+ */
+export const PERMISSION_SERVICE = 'hobPermission'
+
+/** 权限档位的三个合法值（**唯一**枚举来源）。 */
+export const PERMISSION_LEVELS = ['ledger', 'project', 'workspace'] as const
+
+/** 权限档位类型。 */
+export type PermissionLevel = (typeof PERMISSION_LEVELS)[number]
+
+/** 缺省档位 = `ledger`（与 schema 的 `.default('ledger')` 一致）。 */
+export const DEFAULT_PERMISSION_LEVEL: PermissionLevel = 'ledger'
+
+/**
+ * 读出当前**权限档位**（`ledger` / `project` / `workspace`）。
+ *
+ * ── 为什么必须是**函数**、且调用方必须**每次现读**────────────────────
+ *   `permission.level` 标了 `.volatile()` ⇒ 运行时是 **ref 对象**，
+ *   宿主写入走 volatile-only 通道**原地更新**（不重挂载）。
+ *   ⇒ 若在挂载时读一次存起来，用户改完档位后**已开的会话仍按旧档**走到重挂载为止 ——
+ *     正是"设置页改了但行为没变"那个静默失败（与 `spawnDefaults` 的注释同一条教训）。
+ *
+ * ── 兜底口径（fail-closed）────────────────────────────────────────────
+ *   读不出来 / 不是三档之一 / 抛异常 ⇒ 一律归到**最保守**的 {@link DEFAULT_PERMISSION_LEVEL}
+ *   （档1 账本）。理由：档位的失效方向应当是**收窄**而不是放大权限。
+ *
+ * @param config - 插件配置（或任何带 `permission.level` 的对象）。
+ */
+export function permissionLevel(config: unknown): PermissionLevel {
+  try {
+    const raw = deref((config as { permission?: unknown } | undefined)?.permission)
+    if (raw === null || typeof raw !== 'object') return DEFAULT_PERMISSION_LEVEL
+    const v = deref((raw as Record<string, unknown>).level)
+    return typeof v === 'string' && (PERMISSION_LEVELS as readonly string[]).includes(v)
+      ? (v as PermissionLevel)
+      : DEFAULT_PERMISSION_LEVEL
+  } catch {
+    return DEFAULT_PERMISSION_LEVEL
   }
 }
