@@ -137,6 +137,11 @@ export function runRepoRules({ bad, ok }) {
     //     （配置开关 ⇒ 未装载 · 缺依赖 ⇒ PENDING · 两种 inject 的不同后果）。
     //   ⚠ 同样**依赖 `lib/`** ⇒ 必须在 `build` 之后跑；缺 `lib/` 时同样 exit 2。
     ['scripts/module-independence-probe.mjs', '入库脚本（被 package.json 的 check:modules 调用 · 真产物 lib/ 的模块独立启停探针）'],
+    // ⚠ 2026-10-15 补（第 210 轮 · 根治「滚出行丢失」）：轮次号集「只增不减」对账。
+    //   本脚本的"反向自检"**又一次当场 FAIL** 抓出本行缺失（与上面五条同族的**第六次**现场抓获）——
+    //   这正是"加完 script 未登记 ⇒ 直接红"这条自检形态有效的又一次证据。
+    //   ⚠ 它由 `check:rounds` 调用；⚠ 覆盖面 = **轮次号这一类标识**（⚠ 归纳，⛔ 非穷举）。
+    ['scripts/check-rounds-records.mjs', '入库脚本（被 package.json 的 check:rounds 调用 · 轮次号集只增不减对账）'],
   ]
 
   /** 该路径是否已在 git index 里（= 已 `git add`）。 */
