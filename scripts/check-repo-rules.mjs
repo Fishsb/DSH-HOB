@@ -142,6 +142,13 @@ export function runRepoRules({ bad, ok }) {
     //   这正是"加完 script 未登记 ⇒ 直接红"这条自检形态有效的又一次证据。
     //   ⚠ 它由 `check:rounds` 调用；⚠ 覆盖面 = **轮次号这一类标识**（⚠ 归纳，⛔ 非穷举）。
     ['scripts/check-rounds-records.mjs', '入库脚本（被 package.json 的 check:rounds 调用 · 轮次号集只增不减对账）'],
+    // ⚠ 2026-10-16 补（第 224 轮 · `UD-118`「C」）：骨架「同源」机制**生成派生物**那一半。
+    //   ⚠ 它由 `npm run gen:skeleton` 调用（⚠ 是一个**真入口**：有自己的入参 `--check`、
+    //     输出行与退出码 ⇒ ⛔ 不进 `SCRIPT_LANDING_EXEMPT`，那份只放"纯库"）。
+    //   ⚠ **本脚本的"反向自检"当场 FAIL 抓出本行缺失**（与上面六条同族的**第七次**现场抓获）——
+    //     这正是"加完 script 未登记 ⇒ 直接红"这条自检形态有效的又一次证据。
+    //   ⚠ 它生成 `src/server/skeleton-manifest.ts`；⚠ 由 `check:gitignore` 的断言 **R** 反向核（同源）。
+    ['scripts/gen-skeleton-manifest.mjs', '入库脚本（被 package.json 的 gen:skeleton 调用 · 由 .gitignore 的 ! 例外派生骨架清单）'],
   ]
 
   /** 该路径是否已在 git index 里（= 已 `git add`）。 */

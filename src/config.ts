@@ -320,6 +320,34 @@ export const Config = z.object({
       .description('「助手」会话的权限档位（三选一）：账本 = 只读自己的账本与网络；项目 = 另可读工作区的 .md 文档，不可读代码；工作区 = 另可读工作区里的任意文件（含代码与图片）、可跨文件搜索。⚠ 任何一档都不能改动（写类工具三档都不存在）。改完即生效，不必重启实例。')
       .volatile(),
   }).default({}),
+
+  /**
+   * ── 「首次使用时铺骨架」（2026-10-16 第 224 轮 · **`UD-118` 用户裁定「C」**）───────
+   *
+   * **它管什么**：⚠ 插件**首次**在一个工作区里干活时，把骨架（`.hob/**` 的**结构层**）
+   *   铺进那个工作区 —— ⚠ 免得"装到别的实例"这件事**依赖人记得复制**
+   *   （⚠ 由来见 `UD-118`：第 221 轮实测 `npm pack` 里 `.hob/` 命中 0）。
+   *
+   * ⚠ ⚠ **这不是 agent 的工具**（**约束 ⑥**）：⚠ Hob 的工具面**一个都不多**
+   *   ⇒ ⛔ **别把它接到 `write_hob` 的入参上**，也⛔ 别在预设里声明它。
+   *   ⚠ 它是**插件的初始化行为**（与"注册模块"同一档）。
+   *
+   * ⚠ **形状**（与 `spawn` / `permission` 同形，**不是**随手选的）：
+   *   · 父对象 `skeleton` **不标** `.volatile()`；
+   *   · 子字段 `enabled` **标** —— ⚠ 父子同标会抛 `ValidationError`，
+   *     且非 volatile 路径会被宿主写入通道拒（`isVolatilePath`）。
+   *
+   * ⚠ **缺省 `true`（默认开）** —— ⚠ 理由：⚠ 用户要的是**省心**（`UD-118` 的原话就是「C」）；
+   *   ⚠ 而它的失效方向**可观测且无害**：⛔ **永不覆盖已存在的 `.hob/`**（只补缺）
+   *   ⇒ ⚠ 对**已经有骨架**的工作区，它是**空操作**（只打一行"已存在 ⇒ 跳过"）。
+   *   ⚠ 与 `orch` 的"缺省 false"不矛盾：⚠ 那个的失效方向是**在无人看管时继续烧 token**，
+   *     方向不同 ⇒ 兜底取值不同（同一条"取后果更轻的那一边"纪律）。
+   */
+  skeleton: z.object({
+    enabled: z.boolean().default(true)
+      .description('首次在某工作区干活时，把骨架（`.hob/**` 结构层）铺进那个工作区。⚠ 只补缺：目标已存在 ⇒ 一个字节都不动。⚠ 这不是工具，是插件的初始化行为。')
+      .volatile(),
+  }).default({}),
 })
 
 /**
@@ -465,4 +493,27 @@ export function permissionLevel(config: unknown): PermissionLevel {
   } catch {
     return DEFAULT_PERMISSION_LEVEL
   }
+}
+
+/**
+ * 读出「首次铺骨架」开关的**普通布尔**（2026-10-16 第 224 轮 · `UD-118`「C」）。
+ *
+ * ⚠ **调用方一律不许直接读 `config.skeleton.enabled`**（与 {@link moduleSwitches} /
+ *   {@link spawnDefaults} 同一条纪律）：该子字段标了 `.volatile()` ⇒ 运行时是 **ref 对象**
+ *   ⇒ 直读会拿到 ref（**恒 truthy 且不报错**）。
+ *
+ * ── 兜底口径 ──────────────────────────────────────────────────────────
+ *   读不出来 ⇒ **`true`**（与 schema 的 `.default(true)` 一致）。
+ *   ⚠ 理由 = 取**后果更轻**的那一边：⚠ 这个功能的失效方向是"多铺一次"，
+ *   而 ⛔ **永不覆盖已存在的 `.hob/`**（只补缺）⇒ ⚠ **多铺的后果是空操作**；
+ *   反过来（读不出来就关掉）会让"装到别的实例"**重新依赖人记得复制** ——
+ *   那正是 `UD-118` 要治的形态。
+ *
+ * @param config - 插件配置（来自 Loader 时是 ref 形态；测试里的裸对象是普通形态）。
+ */
+export function skeletonEnabled(config: unknown): boolean {
+  const raw = deref((config as { skeleton?: unknown } | undefined)?.skeleton)
+  if (raw === null || typeof raw !== 'object') return true
+  const v = deref((raw as Record<string, unknown>).enabled)
+  return typeof v === 'boolean' ? v : true
 }

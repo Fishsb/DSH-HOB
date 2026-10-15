@@ -5,6 +5,7 @@
  *   读 `src/**` · `scripts/**` · 账本区（F 读 README §5.1；H 自建沙箱真跑写入器）。
  */
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -667,5 +668,199 @@ export async function runWriteScope({ bad, ok }) {
     }
   } finally {
     rmSync(wsRoot, { recursive: true, force: true })
+  }
+}
+
+/**
+ * ── 断言 R · 骨架「同源」（2026-10-16 · 第 224 轮 · `UD-118`「C」· 约束 ⑤）──────────────
+ *
+ * **它防的是什么**（⚠ 这是「C」的**第二个判据点**风险）：⚠ **仓库的 `.hob/**` 是唯一来源**，
+ *   而随包发出去的那份（`src/server/skeleton-manifest.ts`）是**派生物** ⇒
+ *   ⚠ ⚠ **两份会各自漂** —— ⚠ 改了一侧忘了另一侧时，⚠ **没有任何东西会报**
+ *   （⚠ 而这正是 **E-130 / E-131** 记的形态："提取不到 ⇒ 静默通过"）。
+ *
+ * ── 判据（⚠ 逐条，⛔ 一条都不许静默）──────────────────────────────────────────
+ *   ① ⚠ **提取不到即 FAIL**：清单文件读不到 / 抽不出 `SKELETON_ENTRIES` / 条数为 0
+ *      ⇒ **FAIL**（⛔ 不按通过处理 —— **E-130 / E-131**）；
+ *   ② ⚠ **逐件比对 `sha256`**：清单里每一条 `{path, sha256}` 都要与**仓库那份**重算值相等；
+ *      ⚠ 仓库**缺该件** ⇒ FAIL；⚠ **值不等** ⇒ FAIL（并点名路径 + 两个值）；
+ *   ③ ⚠ **反向完整性**（⚠ 防"漏登记"）：⚠ 按**同一个派生口径**（`.gitignore` 的 `!` 例外，
+ *      剔除记录层）从仓库重算的文件集，必须与清单的**路径集逐名相等**
+ *      ⇒ ⚠ 仓库**新增**一件而清单没跟 ⇒ FAIL（⚠ 这正是"漂"的主方向）；
+ *   ④ ⚠ **派生口径同源**（⚠ 防"两套口径"）：⚠ `allowlist` 必须与该口径算出的集合相等。
+ *
+ * ⚠ ⚠ **判据读的是"仓库那份"，⛔ 不是"包内那份"** —— ⚠ 因为**唯一来源是仓库**；
+ *   ⚠ 包内那份是**它的拷贝**（⚠ 由 `package.json` 的 `files` 带出去）。
+ * ⚠ **本函数不 import 被测模块**（⚠ 与 `Q` 组不同）：⚠ 它要判的**恰恰是"清单本身对不对"** ⇒
+ *   ⚠ 只能**独立重算**（⚠ 若调 `skeleton.ts` 的 `skeletonAllowlist()` 就等于**拿被测物自证**）。
+ */
+export function runSkeletonSource({ bad, ok }) {
+  const MANIFEST = join(root, 'src', 'server', 'skeleton-manifest.ts')
+  const HOB = join(root, '.hob')
+
+  // ── ① 提取（⚠ 提取不到 ⇒ FAIL，⛔ 不许静默）────────────────────────────────
+  let src = ''
+  try {
+    src = readFileSync(MANIFEST, 'utf8')
+  } catch {
+    bad('R **读不到骨架清单** `src/server/skeleton-manifest.ts` ⇒ 同源判据失去基准（**不按通过处理**）'
+      + '\n      ⇒ 修法：跑 `node scripts/gen-skeleton-manifest.mjs` 重新生成')
+    return
+  }
+  const entriesBlock = /\bSKELETON_ENTRIES[^=]*=\s*\[([\s\S]*?)\n\]/.exec(src)
+  const allowBlock = /\bSKELETON_ALLOWLIST[^=]*=\s*\[([\s\S]*?)\n\]/.exec(src)
+  if (entriesBlock === null || allowBlock === null) {
+    bad('R **抽不出**清单里的 `SKELETON_ENTRIES` / `SKELETON_ALLOWLIST` ⇒ 同源判据失去基准（**不按通过处理**）'
+      + '\n      ⇒ ⛔ 提取不到即 FAIL，⛔ 不许静默通过（**E-130 / E-131**）')
+    return
+  }
+  // ⚠ 行级抽取（本仓零第三方依赖纪律：⛔ 不 eval 那个 TS 文件）
+  const entries = []
+  for (const line of entriesBlock[1].split('\n')) {
+    const m = /path:\s*'([^']+)'\s*,\s*sha256:\s*'([0-9a-f]{64})'/.exec(line)
+    if (m !== null) entries.push({ path: m[1], sha256: m[2] })
+  }
+  // ⚠ ⚠ **引号口径**（2026-10-16 当场抓到）：⚠ 生成器用 `JSON.stringify` 落的是**双引号**，
+  //   而本抽取一开始只认单引号 ⇒ ⚠ **抽出 0 项**（⚠ 那会让本条**误报"清单为空"**）。
+  //   ⇒ ⚠ 两种引号都认；⚠ **抽到 0 项 ⇒ FAIL**（⛔ 不许把它读成"清单本来就是空的"）。
+  const manifestAllow = [...allowBlock[1].matchAll(/["']([^"']+)["']/g)].map((m) => m[1])
+  if (manifestAllow.length === 0) {
+    bad('R `SKELETON_ALLOWLIST` **抽到 0 项** ⇒ 同上，同源判据失去基准（**不按通过处理**）'
+      + '\n      ⇒ ⚠ 若清单确实是空的 ⇒ 生成器或提取口径坏了（⛔ 不按通过处理）')
+    return
+  }
+  if (entries.length === 0) {
+    bad('R 清单里**一条 `SKELETON_ENTRIES` 都抽不到**（条数 0）⇒ 同源判据失去基准（**不按通过处理**）')
+    return
+  }
+
+  // ── ④ 派生口径（⚠ 与生成器**同一口径**：`.gitignore` 的 `!` 例外 − 记录层）──────
+  const EXCLUDE = ['.hob/EXPERIENCE.md', '.hob/experience']
+  const isExcluded = (p) => EXCLUDE.some((x) => p === x || p.startsWith(`${x}/`))
+  let giSrc = ''
+  try {
+    giSrc = readFileSync(join(root, '.gitignore'), 'utf8')
+  } catch {
+    bad('R 读不到 `.gitignore` ⇒ 派生口径失去基准（**不按通过处理**）')
+    return
+  }
+  const expectAllow = []
+  for (const line of giSrc.split('\n')) {
+    const m = /^!(\.hob\/.+)$/.exec(line.trim())
+    if (m !== null) expectAllow.push(m[1].replace(/\/$/, ''))
+  }
+  const expectAllowFiltered = expectAllow.filter((p) => !isExcluded(p))
+  const setEq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i])
+  if (!setEq(manifestAllow, expectAllowFiltered)) {
+    bad('R **清单的 `allowlist` 与派生口径不一致**（⚠ 两套口径 = 会各自漂）'
+      + `\n      ⇒ 清单：${manifestAllow.join(' · ')}`
+      + `\n      ⇒ 口径：${expectAllowFiltered.join(' · ')}`
+      + '\n      ⇒ 修法：跑 `node scripts/gen-skeleton-manifest.mjs`（⛔ 不许手改清单）')
+  }
+
+  // ── ⑤ ⚠ **打包面**：`package.json` 的 `files` 必须**带得走**清单里的每一条 ──────────
+  //   ⚠ **为什么这一条必须有**（⚠ 第三份会漂的地方）：⚠ `files` 与清单是**两处独立声明**
+  //     ⇒ ⚠ 清单里加了件、`files` 忘了加 ⇒ ⚠ **装机态读不到那份骨架**，
+  //       而**本机的开发态照样正常**（⚠ 因为开发态走的是仓库那份）⇒ ⚠ **测不出来**。
+  //     ⚠ 这正是 `UD-118` 要治的形态（"装到别处就少了东西"）。
+  //   ⚠ 判据：清单 `allowlist` 的**每一项**都要被 `files` 里某一项**覆盖**
+  //     （⚠ `files` 项是**前缀**语义：`.hob/templates` 覆盖 `.hob/templates/**`）。
+  //   ⚠ 读不到 `files`（文件缺失 / 段缺失）⇒ **FAIL**（⛔ 基准读不到不按通过处理）。
+  let pkgFiles = undefined
+  try {
+    pkgFiles = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).files
+  } catch { pkgFiles = undefined }
+  if (!Array.isArray(pkgFiles)) {
+    bad('R 读不到 `package.json` 的 `files` 段 ⇒ 打包面判据失去基准（**不按通过处理**）'
+      + '\n      ⇒ ⚠ 跳过等于"基准读不到就默认通过"，那正是本条盯防的形态')
+  } else {
+    const uncovered = expectAllowFiltered.filter((a) => !pkgFiles.some((f) => typeof f === 'string' && (f === a || a.startsWith(`${f}/`))))
+    if (uncovered.length > 0) {
+      bad('R **清单里的骨架件打不进包**（`package.json` 的 `files` 没覆盖）'
+        + `\n      ⇒ 未覆盖：${uncovered.join(' · ')}`
+        + '\n      ⇒ 实测后果：⚠ 装机态（装进别的实例）读不到那份骨架，而本机开发态**照样正常** ⇒ 测不出来'
+        + '\n      ⇒ 修法：把缺的那几条加进 `package.json` 的 `files`（⚠ 只加白名单里的，⛔ 别整个 `.hob` 加进去 —— 那会连带打进 `backups/` 与本项目记录层）')
+    } else {
+      ok(`R ✓ 打包面：清单 **${expectAllowFiltered.length} 项**全部被 \`files\` 覆盖（⚠ 装机态拿得到骨架）`)
+    }
+    // ⚠ 反向：⛔ **不许把整个 `.hob` 加进 `files`** —— 那会连带打进本项目记录层与备份。
+    if (pkgFiles.some((f) => f === '.hob' || f === '.hob/' || f === '.hob/**')) {
+      bad('R `package.json` 的 `files` 里出现了整个 `.hob` ⇒ ⚠ 会连带打进**本项目记录层**'
+        + '（`.hob/experience/**`）与**本项目的改前备份**（`.hob/backups/**`）'
+        + '\n      ⇒ ⚠ 前者是"本项目自己的历史"（⚠ 换项目不该照抄）、后者是本机产物'
+        + '\n      ⇒ 修法：改成逐项白名单（`README.md` / `INIT.md` / `templates` / `drafts` / `roles`）')
+    }
+  }
+
+  // ── ③ 反向完整性：按同一口径从仓库重算路径集 ────────────────────────────────
+  const walkMd = (dir, base, acc) => {
+    let es = []
+    try { es = readdirSync(dir, { withFileTypes: true }) } catch { return acc }
+    for (const e of es) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walkMd(p, base, acc)
+      else if (e.isFile()) acc.push(relative(base, p).split('\\').join('/'))
+    }
+    return acc
+  }
+  const expectPaths = []
+  for (const a of expectAllowFiltered) {
+    const rel = a.replace(/^\.hob\//, '')
+    const abs = join(HOB, rel)
+    if (!existsSync(abs)) continue
+    const st = readdirSync(dirname(abs), { withFileTypes: true }).find((e) => e.name === basename(abs))
+    if (st !== undefined && st.isDirectory()) {
+      for (const f of walkMd(abs, abs, []).sort()) expectPaths.push(`${rel}/${f}`)
+    } else {
+      expectPaths.push(rel)
+    }
+  }
+  expectPaths.sort()
+  const manifestPaths = entries.map((e) => e.path).sort()
+  const missingInManifest = expectPaths.filter((p) => !manifestPaths.includes(p))
+  const extraInManifest = manifestPaths.filter((p) => !expectPaths.includes(p))
+  if (missingInManifest.length > 0) {
+    bad('R **仓库有、清单没有**（⚠ 新增了骨架件而清单没跟 ⇒ 会漂）'
+      + `\n      ⇒ ${missingInManifest.slice(0, 10).join(' · ')}${missingInManifest.length > 10 ? ` …另有 ${missingInManifest.length - 10} 件` : ''}`
+      + '\n      ⇒ 修法：跑 `node scripts/gen-skeleton-manifest.mjs`（⛔ 不许手改清单）')
+  }
+  if (extraInManifest.length > 0) {
+    bad('R **清单有、仓库没有**（⚠ 清单登记了一件源里已不存在的件）'
+      + `\n      ⇒ ${extraInManifest.slice(0, 10).join(' · ')}`
+      + '\n      ⇒ 修法：同上（重新生成）')
+  }
+
+  // ── ② 逐件 sha256（⚠ 判据的主体）───────────────────────────────────────────
+  let compared = 0
+  let mismatch = 0
+  for (const e of entries) {
+    const abs = join(HOB, e.path)
+    if (!existsSync(abs)) {
+      mismatch++
+      bad(`R **仓库里缺该件**：\`.hob/${e.path}\` —— 清单登记了它，而源里读不到（⛔ 不按通过处理）`)
+      continue
+    }
+    let buf = null
+    try { buf = readFileSync(abs) } catch { buf = null }
+    if (buf === null) {
+      mismatch++
+      bad(`R **读不到源件**：\`.hob/${e.path}\`（⛔ 不按通过处理）`)
+      continue
+    }
+    compared++
+    const actual = createHash('sha256').update(buf).digest('hex')
+    if (actual !== e.sha256) {
+      mismatch++
+      bad(`R **同源漂了**：\`.hob/${e.path}\``
+        + `\n      ⇒ 清单 sha256：${e.sha256}`
+        + `\n      ⇒ 仓库 sha256：${actual}`
+        + '\n      ⇒ 修法：⚠ **以仓库那份为准**（它是唯一来源）⇒ 跑 `node scripts/gen-skeleton-manifest.mjs` 重生成')
+    }
+  }
+  if (mismatch === 0 && missingInManifest.length === 0 && extraInManifest.length === 0) {
+    ok(`R ✓ 骨架同源：清单 **${entries.length} 件**（逐件 sha256 比对 **${compared} 件全等**）·`
+      + ` 反向完整性 **${expectPaths.length} 件逐名相等** ·`
+      + ` 派生口径（\`.gitignore\` 的 \`!\` 例外 − 记录层）**${expectAllowFiltered.length} 项一致**`
+      + ' ⇒ ⚠ **仓库那份是唯一来源**，清单是它的派生物；⚠ 两侧任一漂 ⇒ 本条当场红')
   }
 }

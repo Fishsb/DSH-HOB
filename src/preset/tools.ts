@@ -41,7 +41,7 @@ import {
   ledgerRootOf,
   type HobToolsConfig,
 } from '../modules/tools.ts'
-import { PERMISSION_SERVICE } from '../config.ts'
+import { PERMISSION_SERVICE, skeletonEnabled } from '../config.ts'
 import { BUS_SERVICE, createHobBusTools, type HobBus } from '../modules/bus.ts'
 import { ORCH_SERVICE, createHobOrchTools, type HobOrchestrator } from '../modules/orchestrator.ts'
 
@@ -768,6 +768,10 @@ function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m:
     // ⚠ **现读档位**（不是快照）：档位是 volatile 值型配置，宿主原地更新、不重挂载
     //   ⇒ 在 `createHobTools` 时读一次会让"改档位即生效"失效。
     levelOf: () => levelOf(),
+    // ⚠ **现读开关**（⛔ 不是快照）：`skeleton.enabled` 是 volatile（ref 对象）
+    //   ⇒ 在 `createHobTools` 时读一次会让"改开关即生效"失效（与上面档位同一条教训）。
+    // ⚠ 收口点 = `config.ts` 的 `skeletonEnabled()`（本作用域⛔ 不直接读 `config.skeleton.enabled`）。
+    skeletonEnabledOf: () => skeletonEnabled(config),
     // ⚠ 图片的存储走宿主 `attachments` 服务（实测：宿主平面 provide，
     //   **预设作用域取得到**）。⚠ 惰性取值 + 取不到时返回 undefined
     //   （工具会如实回"没有附件服务"，而不是假装图片已交给模型）。

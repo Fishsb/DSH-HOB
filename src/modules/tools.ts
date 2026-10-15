@@ -63,6 +63,9 @@ import {
 } from '../server/workspace-read.ts'
 import { basename } from 'node:path'
 import { LEDGER_FILES, writeHobFile } from '../server/hob-write.ts'
+// ── 首次铺骨架（2026-10-16 第 224 轮 · `UD-118`「C」）──────────────────────
+//   ⚠ 它是**插件的初始化行为**，⛔ 不是工具：⚠ 本模块的参数表**一个字段都没加**。
+import { scaffoldSkeletonForWorkspace } from '../server/skeleton.ts'
 // ── 待投递中间态记账（2026-10-10 · 用户报障修复）──────────────────────────
 //   ⚠ **分层纪律**：`hob-write.ts`（落盘层）**不 import** 运行态模块 ——
 //     它只回一个可判定的 `handoff` 字段，**由本层（工具层）决定记不记**。
@@ -239,6 +242,16 @@ export function hobDirOf(cfg: HobToolsConfig): string {
 export interface HobToolsDeps {
   /** 按执行上下文取编排服务（`hob_dispatch` 的同一条路径）。缺席 ⇒ 不投递。 */
   orchOf?: (exec: ToolRunContext) => DispatchLike | undefined
+  /**
+   * **现读**「首次铺骨架」开关（2026-10-16 第 224 轮 · `UD-118`「C」）。
+   *
+   * ⚠ 与 `levelOf` 同一条纪律：必须是**函数**（⛔ 不是值）——
+   *   `skeleton.enabled` 标了 `.volatile()`（运行时是 ref 对象），
+   *   ⚠ 在 `createHobTools` 时读一次就是**装配期快照** ⇒ 用户改完开关后
+   *   **已开的会话仍按旧值**走到重挂载为止（正是 `spawnDefaults` 那条教训）。
+   * ⚠ 缺席 ⇒ 按 schema 的 `.default(true)` 处理（理由见 `skeleton.ts` 的兜底注释）。
+   */
+  skeletonEnabledOf?: () => boolean
   /**
    * **现读**当前权限档位（`ledger` / `project` / `workspace`）。
    *
@@ -589,6 +602,33 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         shrinkGuard: DEFAULTS.shrinkGuard,
         maxFileBytes: cfg.maxWriteBytes ?? DEFAULTS.maxWriteBytes,
       })
+      // ── ⚠ 触发点：**首次在某工作区干活时铺骨架**（2026-10-16 第 224 轮 · `UD-118`「C」）──
+      //   ⚠ **为什么挂在这里**：本工具是插件**唯一**会在"某个工作区"里干活的动作
+      //     （`rootOf(cfg, exec)` 从**本会话**解析出那个工作区根）⇒ ⚠ 它就是
+      //     "插件为该工作区初始化"这句话的**物理落点**，⛔ 不必另造一个触发器。
+      //   ⚠ **"什么叫首次"** = ⚠ **那个工作区根的 `.hob/` 目录还不存在**
+      //     （⚠ 判据在 `skeleton.ts` 的 `scaffoldSkeletonOnce`：已存在 ⇒ 整目录跳过、
+      //     ⛔ 一个字节都不动）⇒ ⚠ **重复调用是空操作**（幂等靠**盘上的既成事实**，
+      //     ⛔ 不靠这里记"铺过了"）。
+      //   ⚠ ⚠ **⛔ 它不是一个工具**（**约束 ⑥**）：⚠ 本工具的参数表**一个字段都没加**，
+      //     Hob 的工具面**不扩** —— ⚠ 这是**插件的初始化行为**，与"注册模块"同一档。
+      //   ⚠ **只在真写时触发**（`dryRun` 除外）：⚠ dryRun 的语义是"只看会发生什么、⛔ 不落盘"
+      //     ⇒ ⚠ 在 dryRun 上真去建目录会**违背它自己的承诺**。
+      //   ⚠ ⚠ **不改写写入语义**：⚠ 骨架铺没铺、铺成没铺成，⛔ **都不影响**写入的结果字段 ——
+      //     只在返回值里**新增**一个 `skeletonScaffold` 字段如实回带（⛔ 不掩盖、⛔ 不冒充成功）。
+      let skeletonNote: { ok: boolean; wrote: boolean; written: readonly string[]; notes: readonly { kind: string; message: string }[] } | undefined
+      if (args.dryRun !== true) {
+        const wsRoot = rootOf(cfg, exec)
+        if (wsRoot === undefined) {
+          // ⚠ 判不出工作区根 ⇒ **如实说**，⛔ 不猜、⛔ 不拿账本区顶上（fail-closed）。
+          skeletonNote = {
+            ok: false, wrote: false, written: [],
+            notes: [{ kind: 'source-missing', message: '首次铺骨架：判不出工作区根 ⇒ ⛔ 未铺任何文件（fail-closed，不猜）。' }],
+          }
+        } else {
+          skeletonNote = scaffoldSkeletonForWorkspace(wsRoot, deps.skeletonEnabledOf?.() ?? true)
+        }
+      }
       // ── 记账 + 投递：交给了交接文件（2026-10-10 新增；第 44 轮扩展为"写入即投递"）──
       //   ⚠ 为什么在这一层：落盘层（hob-write）刻意不碰运行态；本层有账本根。
       //   ⚠ 为什么必须记：`watches` 只在**投递成功之后**登记 ⇒ 不记这一条，
@@ -629,9 +669,13 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
             }),
           // ⚠ 投递后（或直接标注后）的**待投递读数** —— 让"清干净了没有"当场可见
           handoffReading: renderHandoffReading(res.handoffs),
+          ...(skeletonNote === undefined ? {} : { skeletonScaffold: skeletonNote }),
         })
       }
-      return JSON.stringify(r)
+      return JSON.stringify({
+        ...r,
+        ...(skeletonNote === undefined ? {} : { skeletonScaffold: skeletonNote }),
+      })
     },
   })
 

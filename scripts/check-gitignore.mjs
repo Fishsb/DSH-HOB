@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs'
 import { runRepoRules } from './check-repo-rules.mjs'
 import { findDuplicateSectionHeadings, runDocShape, runResidualMarkers, runTableIntegrity } from './check-doc-shape.mjs'
-import { runDiscipline, runRender, runSameSource, runWriteScope, runZeroWidth } from './check-code-face.mjs'
+import { runDiscipline, runRender, runSameSource, runSkeletonSource, runWriteScope, runZeroWidth } from './check-code-face.mjs'
 
 const fail = []
 const note = []
@@ -74,6 +74,12 @@ await runWriteScope({ bad, ok })
 
 // ── ② P：表结构完整性（表内重复行 / 分隔行在位）────────────────────────
 runTableIntegrity({ bad, ok })
+
+// ── ③ R：骨架同源（仓库 `.hob/**` ↔ 派生物 `skeleton-manifest.ts`）──────
+//   ⚠ 2026-10-16 第 224 轮 · `UD-118`「C」· 约束 ⑤：⚠ **唯一来源 = 仓库**，
+//     随包出去的那份是**派生物** ⇒ ⚠ **两份会各自漂** ⇒ 本条盯它。
+//   ⚠ ⚠ **提取不到即 FAIL**（E-130 / E-131），⛔ 不许静默通过。
+runSkeletonSource({ bad, ok })
 
 // ── 输出 ────────────────────────────────────────────────────────────────
 console.log('`.gitignore` 一致性核对 · dsh-hob')

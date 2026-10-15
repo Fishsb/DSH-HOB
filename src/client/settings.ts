@@ -343,3 +343,52 @@ export function readPermissionLevel(snapshot: SettingsSnapshot | null): Permissi
     ? (lvl as PermissionLevel)
     : 'ledger'
 }
+
+/**
+ * 读出「首次铺骨架」开关（2026-10-16 第 224 轮 · `UD-118`「C」）。
+ *
+ * ⚠ 与 {@link readPermissionLevel} 同一条纪律：**从快照读、⛔ 不在渲染期直调 form**
+ *   （否则宿主写入成功后这一处不会跟着重渲染）。
+ * ⚠ 兜底 = `true`（与 schema 的 `.default(true)` 一致）：⚠ 它的失效方向是"多铺一次"，
+ *   而铺骨架**永不覆盖已存在的 `.hob/`** ⇒ 多铺的后果是**空操作**。
+ *
+ * @param snapshot - `configForms.get()` 的快照（或 `null`）。
+ */
+export function readSkeletonEnabled(snapshot: SettingsSnapshot | null): boolean {
+  const raw = (snapshot as { value?: unknown } | null)?.value
+  const sk = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>).skeleton : undefined
+  const v = sk !== null && typeof sk === 'object' ? (sk as Record<string, unknown>).enabled : undefined
+  return typeof v === 'boolean' ? v : true
+}
+
+/**
+ * 写「首次铺骨架」开关（2026-10-16 第 224 轮 · `UD-118`「C」）。
+ *
+ * ⚠ **必须写子字段路径** `['skeleton','enabled']` —— ⛔ 不得整块写 `['skeleton']`：
+ *   父对象 `skeleton` 自己不 volatile ⇒ 宿主 `isVolatilePath` 会拒
+ *   （`Config field "skeleton" is not volatile`）。
+ * ⚠ 与 {@link writePermissionLevel} 同形：**先判可写性**，⛔ 不许假装保存成功。
+ *
+ * @param form - 就绪的 settings form（`null` = 配置面尚未就绪）。
+ * @param enabled - 目标开关值。
+ */
+export async function writeSkeletonEnabled(form: ConfigForm | null, enabled: boolean): Promise<WriteResult> {
+  if (form === null) return { ok: false, reason: '配置面尚未就绪（读不到本插件的 form），未写入。' }
+  const snapshot = form.getSnapshot()
+  if (snapshot.writable !== true) {
+    return {
+      ok: false,
+      reason: `当前页面不允许写入（持久化模式 = ${snapshot.mode}；非本机回环访问时宿主只在内存里改），未写入。`,
+    }
+  }
+  if (typeof form.mutate !== 'function') {
+    return { ok: false, reason: '该配置面不支持写入（宿主 form 未提供 mutate）。' }
+  }
+  try {
+    const ops: ConfigMutationOp[] = [{ op: 'set', path: ['skeleton', 'enabled'], value: enabled }]
+    const accepted = await form.mutate(ops)
+    return accepted === true ? { ok: true } : { ok: false, reason: '宿主拒绝了这次写入（版本冲突或该字段不可写）。' }
+  } catch (e) {
+    return { ok: false, reason: `写入失败：${String((e as Error)?.message ?? e)}` }
+  }
+}

@@ -66,6 +66,20 @@
         # ⚠ 它带 `.volatile()` ⇒ 改档位走 volatile-only 通道、**不必重启**。
         permission:
           level: ledger
+        # ── 「首次使用时铺骨架」（2026-10-16 第 224 轮 · `UD-118` 用户裁定「C」）──
+        # ⚠ 它管的是：插件**首次**在某工作区干活时，把骨架（`.hob/**` 结构层）铺进去 ——
+        #   ⚠ 免得"装到别的实例"这件事**依赖人记得复制**（由来：第 221 轮实测
+        #   `npm pack` 里 `.hob/` 命中 0）。
+        # ⚠ ⚠ **它不是 agent 的工具**：Hob 的工具面一个都不多（约束 ⑥）——
+        #   ⛔ 别把它接到 `write_hob` 的入参上，也⛔ 别在预设里声明它；
+        #   它是**插件的初始化行为**（与"注册模块"同一档）。
+        # ⚠ **缺省 true（默认开）**：它**永不覆盖已存在的 `.hob/`**（只补缺）
+        #   ⇒ 对已有骨架的工作区是**空操作**（只打一行"已存在 ⇒ 跳过"）。
+        # ⚠ 形状与 `spawn` / `permission` 同形：父不标 volatile、子字段标
+        #   （父子同标会抛 ValidationError；非 volatile 路径会被宿主写入通道拒）。
+        # ⚠ 唯一允许解 ref 的地方是 `src/config.ts` 的 `skeletonEnabled()`。
+        skeleton:
+          enabled: true
 # ⚠ 上面四个值只是**声明默认值**，别在代码里直接读 `config.modules.x`：
 #   四个字段**都带 .volatile()** ⇒ 运行时都是 **ref 对象**（恒 truthy）。
 #   唯一允许解 ref 的地方是 `src/config.ts` 的 `moduleSwitches()`。

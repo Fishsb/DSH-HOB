@@ -53,7 +53,7 @@
  *   · **每个开关单独关** ⇒ 只少它自己那一个模块（其余四个照常）——
  *     这正是「模块可独立启停」这条架构性质的**逐开关实测**（本项为本轮新增，覆盖 v5 全五模块）。
  */
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -142,9 +142,6 @@ const DEFAULT_SWITCH_VALUES = { tools: true, preset: false, bus: true, orch: fal
 /** 实测的默认 modules 形状（多处引用，收口成常量）。 */
 const DEFAULT_MODULES_JSON = '{"tools":{},"preset":{},"bus":{},"orch":{},"settings":{}}'
 
-/** 实测的默认顶层键。 */
-const DEFAULT_TOP_KEYS = ['modules', 'spawn', 'permission']
-
 // ── 1) 默认配置：modules 的形状（五子字段全 ref）──────────────────────────
 check('schema 校验：undefined → modules 形状 = {tools:{}, preset:{}, bus:{}, orch:{}, settings:{}}', () => {
   const got = JSON.stringify(mod.Config(undefined).modules)
@@ -185,8 +182,30 @@ check('schema 兼容：未知键（profile 旧配置段）原样保留在顶层�
   return true
 })
 
-// ── 5) 默认顶层键（modules + spawn + permission）────────────────────────────
-check(`schema 校验：Config(undefined) 的顶层键 = ${JSON.stringify(DEFAULT_TOP_KEYS)}（spawn 自 2026-10-09 起为第二键；permission 自 2026-10-14 第 144 轮起为第三键）`, () => {
+// ── 5) 默认顶层键（⚠ **派生**，⛔ 不手抄一张会过期的表）───────────────────────
+//   ⚠ ⚠ **本判据原来手抄了一份 `['modules','spawn','permission']`**（2026-10-16 第 224 轮之前），
+//     结果本轮**新增 `skeleton` 顶层组**时它当场 FAIL —— ⚠ 那正是 **E-117** 的形态
+//     （清单会过期，过期后要么假红、要么被人顺手改宽）。
+//   ⇒ 与 `check-config-face.mjs` 的 `schemaTopGroups()` **同口径**：⚠ **从 `src/config.ts`
+//     抽**顶层 `z.object(` 组名 ⇒ ⚠ 新增一个组时它**自动纳入**，⛔ 不必回来改本文件。
+//   ⚠ 抽不到 ⇒ **FAIL**（⛔ 基准读不到不按通过处理 —— 与 `check-config-face` 同一条纪律）。
+const CONFIG_TS = join(root, 'src', 'config.ts')
+const DEFAULT_TOP_KEYS = (() => {
+  let src = ''
+  try { src = readFileSync(CONFIG_TS, 'utf8') } catch { return [] }
+  const out = []
+  for (const line of src.split('\n')) {
+    const m = /^ {2}([A-Za-z0-9_]+): z\.object\(/.exec(line)
+    if (m !== null) out.push(m[1])
+  }
+  return out
+})()
+
+check('schema 校验：`src/config.ts` 里抽得出顶层 `z.object` 组（⛔ 手抄表已删）', () => {
+  return DEFAULT_TOP_KEYS.length > 0 ? true : `抽到 0 个顶层组（基准读不到 ⇒ 不按通过处理）`
+})
+
+check(`schema 校验：Config(undefined) 的顶层键 === 从 \`src/config.ts\` 抽出的顶层组 ${JSON.stringify(DEFAULT_TOP_KEYS)}（⚠ 派生，⛔ 不手抄）`, () => {
   const got = Object.keys(mod.Config(undefined))
   return JSON.stringify(got) === JSON.stringify(DEFAULT_TOP_KEYS) ? true : `got=${JSON.stringify(got)}`
 })

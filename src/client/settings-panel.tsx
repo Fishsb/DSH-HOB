@@ -70,6 +70,7 @@ import {
 import {
   getSettingsForm, getSettingsSnapshot, subscribeSettingsForm, writeSpawnFields,
   writePermissionLevel, readPermissionLevel, PERMISSION_LEVEL_ORDER,
+  readSkeletonEnabled, writeSkeletonEnabled,
   type PermissionLevel, type SettingsSnapshot, type WriteResult,
 } from './settings.ts'
 import {
@@ -643,6 +644,70 @@ function PermissionCard(props: {
 }
 
 /**
+ * 「首次使用时铺骨架」开关卡片（2026-10-16 第 224 轮 · **`UD-118` 用户裁定「C」**）。
+ *
+ * ⚠ ⚠ **为什么它必须出现在面板上**（而不是藏在配置文件里）：
+ *   它是**默认开**的行为 ⇒ ⚠ 用户有权看见"有这么个东西、且能关掉它"
+ *   （PROJECT.md §5.3 的**静默失败**形态：真实开关不呈现 = 把真实能力藏起来）。
+ *
+ * ⚠ 与 {@link PermissionCard} 同形：受控组件（`value` 来自**外部存储快照**）·
+ *   **先判可写性**（`writable !== true` ⇒ 如实拒写，⛔ 不假装保存）·
+ *   写入必须走**子字段路径** `['skeleton','enabled']`。
+ */
+function SkeletonCard(props: {
+  form: ReturnType<typeof getSettingsForm>
+  settings: SettingsSnapshot | null
+}): ReactElement {
+  const { form, settings } = props
+  const current = readSkeletonEnabled(settings)
+  const [pending, setPending] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  const onChange = async (next: boolean): Promise<void> => {
+    if (next === current) return
+    setPending(true); setResult(null); setFailed(false)
+    const r: WriteResult = await writeSkeletonEnabled(form, next)
+    setFailed(!r.ok)
+    setResult(r.ok ? t('skel.saved', { state: next ? t('skel.on') : t('skel.off') }) : (r.reason ?? t('perm.writeFailed')))
+    setPending(false)
+  }
+
+  return (
+    <div className={S.card}>
+      <div className={S.cardHead}>
+        <span className={S.cardTitle}>{t('skel.title')}</span>
+        <span className={S.cardNote}>{t('skel.note')}</span>
+      </div>
+      <Row label={t('skel.label')}>
+        <span className={S.inline}>
+          <SegmentedControl
+            id="dsh-hob-skeleton-enabled"
+            label={t('skel.label')}
+            value={current ? 'on' : 'off'}
+            disabled={pending}
+            options={[
+              { value: 'on', label: t('skel.on') },
+              { value: 'off', label: t('skel.off') },
+            ]}
+            onChange={(next) => { void onChange(next === 'on') }}
+          />
+          {pending ? <span className={S.cardNote}>{t('perm.writing')}</span> : null}
+        </span>
+      </Row>
+      <Row label={t('skel.meaning')}>
+        <span className={S.cardNote}>{current ? t('skel.note.on') : t('skel.note.off')}</span>
+      </Row>
+      {result !== null ? (
+        <Row label={t('skel.result')}>
+          <span className={failed ? S.warn : S.cardNote}>{result}</span>
+        </Row>
+      ) : null}
+    </div>
+  )
+}
+
+/**
  * 设置分区组件。
  *
  * 数据源：`configForms.get('dsh-hob')` 的快照（经 `useSyncExternalStore` 消费）。
@@ -708,6 +773,8 @@ export function SettingsPanel(): ReactElement {
 
       <PermissionCard form={form} settings={settings} />
 
+      <SkeletonCard form={form} settings={settings} />
+
       <ul className={S.notes}>
         <li className={S.note}>
           {t('note.restart.pre', {
@@ -723,6 +790,9 @@ export function SettingsPanel(): ReactElement {
         </li>
         <li className={S.note}>
           {t('note.permission.pre')}<b>{t('note.permission.strong')}</b>{t('note.permission.post')}
+        </li>
+        <li className={S.note}>
+          {t('note.skeleton.pre')}<b>{t('note.skeleton.strong')}</b>{t('note.skeleton.post')}
         </li>
         <li className={S.note}>
           {t('note.entry', { card: t('cardTitle') })}
@@ -822,6 +892,21 @@ const PANEL_EN: Record<string, string> = {
   'perm.saved': 'Saved: now at the {level} level.',
   'perm.writing': 'Writing…',
   'perm.writeFailed': 'Write failed (no reason returned).',
+  // ── 首次铺骨架（2026-10-16 第 224 轮 · UD-118「C」）───────────────────
+  // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
+  'skel.title': 'Scaffold on first use',
+  'skel.note': 'Fills the skeleton into a workspace the first time the plugin works there.',
+  'skel.label': 'Enabled',
+  'skel.on': 'On',
+  'skel.off': 'Off',
+  'skel.meaning': 'What it does when off',
+  'skel.note.on': 'If the workspace has no .hob yet, the skeleton is filled in; if it already exists, not one byte is touched.',
+  'skel.note.off': 'Nothing is ever filled in. A new workspace keeps whatever skeleton you copied by hand, or none at all.',
+  'skel.result': 'Result',
+  'skel.saved': 'Saved: scaffold-on-first-use is now {state}.',
+  'note.skeleton.pre': '· «Scaffold on first use» is a ',
+  'note.skeleton.strong': 'never-overwrites',
+  'note.skeleton.post': ' behaviour — it fills the skeleton only where no .hob exists yet; when one already exists it reports the skip and touches nothing. It creates no tool, and it is not a conversation-facing capability.',
   'note.permission.pre': '· «Permission level» is a ',
   'note.permission.strong': 'takes-effect-immediately',
   'note.permission.post': ' value-type configuration — an open session follows the new level from its next step, and it is a different path from the module switches above.',
@@ -910,6 +995,21 @@ const PANEL_ZH: Record<string, string> = {
   'perm.saved': '已保存：现在是「{level}」档。',
   'perm.writing': '正在写入…',
   'perm.writeFailed': '写入失败（宿主未给原因）。',
+  // ── 首次铺骨架（2026-10-16 第 224 轮 · UD-118「C」）───────────────────
+  // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
+  'skel.title': '首次使用时铺骨架',
+  'skel.note': '首次在某工作区干活时，把骨架铺进那个工作区。',
+  'skel.label': '开关',
+  'skel.on': '开',
+  'skel.off': '关',
+  'skel.meaning': '关掉之后的行为',
+  'skel.note.on': '工作区里还没有 .hob 时才铺；已经有了就一个字节都不动。',
+  'skel.note.off': '什么都不铺。新工作区就保持你手工复制的那份骨架（或者干脆没有）。',
+  'skel.result': '结果',
+  'skel.saved': '已保存：首次铺骨架现在是「{state}」。',
+  'note.skeleton.pre': '· 「首次使用时铺骨架」是',
+  'note.skeleton.strong': '永不覆盖',
+  'note.skeleton.post': '的行为 —— 只在还没有 .hob 时铺；已经有了就报一行跳过、一个字节都不动。它不建任何工具，也不是面向对话的能力。',
   'note.permission.pre': '· 「权限档位」是',
   'note.permission.strong': '即改即生效',
   'note.permission.post': '的值型配置 —— 已开的会话在它的下一步就按新档位走；它和上面的模块开关是两条不同的路径。',
