@@ -238,8 +238,17 @@ function atNow(ledgerRoot) {
     }
     // (b) 新载体：记录件目录里的**文件名本身就是标识**
     if (p.startsWith(`${RECORDS_DIR}/`)) {
-      const id = p.slice(RECORDS_DIR.length + 1).replace(/\.md$/, '').replace(/-/, '–')
-      if (idToRange(id) !== null) s.add(id)
+      const base = p.slice(RECORDS_DIR.length + 1).replace(/\.md$/, '')
+      const c = classifyRecordName(base)
+      // ⚠ ⚠ **只 `single` / `range` 进标识集**：⚠ 更正件（`224-C1`）**必须挂回 `224`、
+      //   ⛔ 不产生新标识**（⚠ 要求 ①）⇒ ⚠ 这里 **⛔ 不 `add`** 它 ——
+      //   ⚠ 而它**也不再被静默略过**：⚠ 分类结果在 `runCheck` 里**单列一行报出来**（⚠ 要求 ③）。
+      // ⚠ ⚠ **必须归一成 `–` 再加**（2026-10-16 第 233 轮**当场抓到的自伤**）：
+      //   ⚠ `idsInSection()` 对区间产出的是 **en-dash 形**（`55–178` ⇒ `` `${m[1]}–${m[2]}` ``），
+      //   ⚠ 而记录件目录给的是**连字符形**（`55-178.md`）⇒ ⚠ 两者**归一后才能去重**。
+      //   ⚠ 实测：⚠ 去掉这一步归一 ⇒ ⚠ **同一个区间被计两次**（`现可查到` **140 → 160**，⚠ 差正好 = 20 个区间件）
+      //   ⇒ ⚠ 本行**逐字沿用旧版的归一**（`replace(/-/, '–')`，⚠ 只换**第一个**连字符）。
+      if (c.kind === 'single' || c.kind === 'range') s.add(base.replace(/-/, '–'))
     }
   }
   return s
@@ -251,6 +260,57 @@ function idToRange(id) {
   return { a: Number(m[1]), b: m[2] === undefined ? Number(m[1]) : Number(m[2]) }
 }
 
+/**
+ * ── ③ 记录件名的**显式分类**（2026-10-16 第 233 轮 · `UD-119`）──────────────────────
+ *
+ * ⚠ ⚠ **它堵的是什么**（⚠ 第 227 轮实测，⛔ 不是推测）：⚠ 更正件 `224-C1.md` 经 `-`→`–` 变换后
+ *   **尾段不是纯数字** ⇒ 旧正则匹配 `null` ⇒ ⚠ ⚠ **判据既不把它当标识、也不报缺件，直接跳过**
+ *   （⚠ 所以 `check:rounds` 照旧 `PASS`）⇒ ⚠ **`224-C1.md` 的通过是"恰好没被拦"，⛔ 不是"被判据认得"**。
+ *   ⚠ ⚠ **它属于哪一类**：⚠ **判据"没报错"有三种成因 —— 认得它 / 明确拒绝 /
+ *   根本不认识、静默略过**；⚠ ⚠ **而第三种与"通过"长得一模一样**（⚠ **第 227 轮立的教训 ⑩**）。
+ *   ⚠ **后果**：⚠ **任何形如 `<轮次>-<非数字>` 的件都会被同样略过**（⚠ 不管它是不是更正件）。
+ *
+ * ── 分类（⚠ 四档，⛔ 没有"不认识就放过"这一档）──────────────────────────────
+ *   · `correction` —— ⚠ `<轮次>-C<n>`（例 `224-C1.md`）⇒ ① **挂回** `attachesTo` 那一轮，
+ *     ⚠ ⛔ **不产生新标识**（⚠ 本函数**只报它挂回哪一轮**，⚠ 由调用方决定怎么用 ——
+ *     见 {@link coverageFromFiles} 的注释：⚠ **它既不加标识、也不算覆盖**，⛔ 不借此放宽）；
+ *   · `single` / `range` —— ⚠ **既有形态**（`224.md` / `55-178.md`）⇒ ⚠ 行为**逐字照旧**；
+ *   · `wild` —— ⚠ ⚠ **形如 `<轮次>-<非数字且非更正件>` 的野文件**（例 `224-xyz.md`）⇒ ⚠ **必须 FAIL 并点名**
+ *     （⚠ 这正是"会被静默略过"的那一类）；
+ *   · `other` —— ⚠ 不以数字开头的 `.md`（⚠ 记录件目录里本不该有）⇒ ⚠ 同样**报出来**，
+ *     ⛔ **不退化成静默略过**。
+ *
+ * ⚠ **本函数是纯函数**（⛔ 不读盘、⛔ 不碰 git）⇒ ⚠ **可自带负向对拍**（见 `selfTest` ⑥⑦⑧）。
+ * @param base - 记录件**文件名去掉 `.md`**（⚠ 原样，⛔ 不必先做 `-`→`–` 变换）。
+ */
+export function classifyRecordName(base) {
+  const corr = /^(\d{1,4})[–-]C(\d{1,4})$/.exec(base)
+  if (corr !== null) return { kind: 'correction', attachesTo: Number(corr[1]), n: Number(corr[2]) }
+  const r = idToRange(base)
+  if (r !== null) return r.a === r.b ? { kind: 'single', a: r.a } : { kind: 'range', a: r.a, b: r.b }
+  // ⚠ ⛔ 以下两档都**不许静默**：⚠ 它们就是旧版"跳过"的那一类。
+  if (/^\d{1,4}/.test(base)) return { kind: 'wild', base }
+  return { kind: 'other', base }
+}
+
+/**
+ * ⚠ 把一批**记录件文件名**分类（⚠ 供 `atNow` 与 `coverageFromFiles` **共用一份口径** ——
+ *   ⚠ 两个消费点各写一份正则正是 **E-110** 那种"改一处漏一处"的形态）。
+ * @param bases - 文件名**去掉 `.md`**（⚠ 原样）。
+ */
+function classifyRecordNames(bases) {
+  const corrections = []
+  const wild = []
+  const other = []
+  for (const b of bases) {
+    const c = classifyRecordName(b)
+    if (c.kind === 'correction') corrections.push(c)
+    else if (c.kind === 'wild') wild.push(c.base)
+    else if (c.kind === 'other') other.push(c.base)
+  }
+  return { corrections, wild, other }
+}
+
 /** ② 记录件目录里的覆盖（⚠ 文件名 = 标识 ⇒ `55-178.md` 覆盖 55..178）。 */
 function coverageFromFiles(ledgerRoot) {
   const set = new Set()
@@ -258,14 +318,16 @@ function coverageFromFiles(ledgerRoot) {
   try {
     files = readdirSync(join(ledgerRoot, RECORDS_DIR)).filter((f) => f.endsWith('.md'))
   } catch {
-    return { set, files, missingDir: true }
+    return { set, files, missingDir: true, corrections: [], wild: [], other: [] }
   }
   for (const f of files) {
-    const r = idToRange(f.replace(/\.md$/, '').replace(/-/, '–'))
-    if (r === null) continue
-    for (const n of expand(r.a, r.b)) set.add(n)
+    const c = classifyRecordName(f.replace(/\.md$/, ''))
+    // ⚠ ⚠ **只有 `single` / `range` 进覆盖集**：⚠ 更正件 **⛔ 既不产生标识、也不顶替覆盖**
+    //   （⚠ 它挂回的那一轮**本来就该有自己的 `NNN.md`**；⚠ 让更正件顶替覆盖 = **放宽判据**）。
+    if (c.kind !== 'single' && c.kind !== 'range') continue
+    for (const n of expand(c.a, c.b)) set.add(n)
   }
-  return { set, files, missingDir: false }
+  return { set, files, missingDir: false, ...classifyRecordNames(files.map((f) => f.replace(/\.md$/, ''))) }
 }
 
 function countCommits(ledgerRoot) {
@@ -353,6 +415,24 @@ function runCheck(ledgerRoot) {
       + '\n      ⇒ ⚠ 补该轮的记录件（⚠ 打包行建一件即可覆盖整个区间）。')
   }
 
+  // ⚠ ⚠ **③ 野文件必须 FAIL 并点名**（第 233 轮 · `UD-119` 要求 ②）：
+  //   ⚠ **形如 `<轮次>-<非数字且非更正件>` 的件**（例 `224-xyz.md`）⚠ **正是旧版"静默略过"的那一类** ——
+  //   ⚠ ⚠ 它**过去与"通过"长得一模一样**（第 227 轮教训 ⑩）⇒ 现在**显式拒绝并点名**。
+  if (cov.wild.length > 0) {
+    bad.push(`✗ **记录件目录里有"野文件"**（⚠ 形如 \`<轮次>-<非数字>\` 而**不是**更正件 \`<轮次>-C<n>\`）：`
+      + ` ${cov.wild.map((w) => `${w}.md`).join(' / ')}`
+      + '\n      ⇒ ⚠ 这一形态**正是过去会被静默略过的那种**（⚠ 判据既不把它当标识、也不报缺件）。'
+      + '\n      ⇒ 修法：⚠ **要么改名成"更正件"形状**（`<轮次>-C<n>.md`，⚠ 并指回被更正的那一轮），'
+      + '\n         ⚠ **要么删掉/改成规范的记录件名**（`NNN.md` 或 `AA-BB.md`）。⛔ 不许靠"它没被拦"蒙过去。')
+  }
+  // ⚠ ⚠ **`other` 档同样不许静默**（⚠ 不以数字开头的 `.md` —— 记录件目录里本不该有）。
+  if (cov.other.length > 0) {
+    bad.push(`✗ **记录件目录里有不以轮次号开头的 \`.md\`**：`
+      + ` ${cov.other.map((w) => `${w}.md`).join(' / ')}`
+      + `\n      ⇒ ⚠ 本目录的约定是"文件名 = 轮次标识"（⚠ 更正件形如 \`<轮次>-C<n>\`）`
+      + '\n      ⇒ 修法：改名成规范形状，或把它挪出本目录。')
+  }
+
   // ⚠ ⚠ **③ 落点号可判据化**（第 220 轮新增 · `UD-117` 第 ③ 组）：见 `landingShas()` 的注释。
   //   ⚠ 逐件读记录件 → 取「落点」行里的号 → 到它标注的仓核"是不是真提交"。
   const landing = { checked: 0, byRepo: { ledger: 0, workspace: 0 }, missing: [], files: 0, placeholders: 0, dashes: 0 }
@@ -413,7 +493,21 @@ function runCheck(ledgerRoot) {
     + `**都不进要核的清单** —— ⚠ **计数面 = 「落点」行本身**（⛔ 不通扫整份，见下）：`
     + `**落点行里含 \`<h1>\` 的 ${landing.placeholders} 份 · 含 \`—\` 的 ${landing.dashes} 份**；`
     + `⚠ 但「**没号**」豁免 ≠ 「**号写错**」豁免：⚠ 写了号就必须真的存在`
-  return { bad, note, surface, landingLine, landing, ever, now, commits, missing, uncovered, cov, ev }
+  // ⚠ ⚠ **③ 更正件形态的判定行**（第 233 轮 · `UD-119` 要求 ③）：
+  //   ⚠ 报三样 —— **认得几个更正件 · 各自挂回哪一轮 · 有无野文件**。
+  //   ⚠ ⚠ **为什么必须单列一行**：⚠ 过去这一形态**既不进任何计数、也不进任何差集**
+  //   ⇒ ⚠ 它"被判据认得"这件事**没有任何读数能证明**（⚠ 而它恰恰是第 227 轮那个洞的核心）。
+  const corrLine = `✓ 更正件形态（③ 第 233 轮新增 · \`UD-119\`）：认出更正件 **${cov.corrections.length} 件**`
+    + (cov.corrections.length > 0
+      ? `（${cov.corrections.map((c) => `\`${c.attachesTo}-C${c.n}.md\` → 挂回 **${c.attachesTo}**`).join(' · ')}）`
+      : '')
+    + ` · ⚠ **都不产生新标识**（⚠ 挂回被更正的那一轮）`
+    + ` · 野文件（\`<轮次>-<非数字>\` 而非更正件）**${cov.wild.length === 0 ? '无' : cov.wild.map((w) => `\`${w}.md\``).join(' / ')}**`
+    + (cov.other.length > 0 ? ` · ⚠ 不以数字开头的：${cov.other.map((w) => `\`${w}.md\``).join(' / ')}` : '')
+    + `\n      ⇒ ⚠ **它防的形态**（第 227 轮实测）：\`224-C1.md\` 经 \`-\`→\`–\` 变换后尾段不是纯数字 ⇒ 旧正则 \`null\``
+    + `\n         ⇒ ⚠ ⚠ **判据既不把它当标识、也不报缺件，直接跳过** ⇒ ⚠ **"认识它"与"通过"长得一模一样**（教训 ⑩）`
+    + `\n      ⇒ ⚠ **三种成因必须分得开**：**认得它**（本条计数）/ **明确拒绝**（野文件 ⇒ FAIL）/ **不认识就略过**（本轮已堵死）`
+  return { bad, note, surface, landingLine, corrLine, landing, ever, now, commits, missing, uncovered, cov, ev, corrections: cov.corrections, wild: cov.wild }
 }
 
 // ── 自带负向对拍（⛔ 不依赖账本区内容 · ⛔ 不触碰真账本）──────────────────
@@ -461,7 +555,22 @@ function buildFixture() {
   git(['add', '-A']); git(['commit', '-qm', 'row-without-record-file'])
   const noFile = git(['rev-parse', 'HEAD']).trim()
 
-  return { base, L, good, badRev, noFile }
+  // ⚠ ⚠ 提交 5（第 233 轮新增 · `UD-119`）：**野文件**（⚠ 形如 `<轮次>-<非数字>` 而**不是**更正件）
+  //   ⚠ ⚠ 它**正是旧版会被静默略过的那一类**（⚠ 判据既不把它当标识、也不报缺件 ⇒ 照旧 PASS）
+  //   ⇒ ⚠ 本档要证明：⚠ **现在它会 FAIL 并点名**。
+  writeFileSync(join(L, RECORDS_DIR, '103-xyz.md'), '# 野文件\n')
+  git(['add', '-A']); git(['commit', '-qm', 'wild-file-103-xyz'])
+  const wildRev = git(['rev-parse', 'HEAD']).trim()
+  rmSync(join(L, RECORDS_DIR, '103-xyz.md'), { force: true })
+
+  // ⚠ ⚠ 提交 6（第 233 轮新增）：**更正件**（`104-C1.md`）—— ⚠ 它**必须被认得**：
+  //   ⚠ ① 挂回 `104`、⛔ 不产生新标识；⚠ ② **不许被当成野文件**（⚠ 这是与上一档的成对那一半）。
+  writeFileSync(join(L, RECORDS_DIR, '104.md'), '# 轮次记录 · 104\n')
+  writeFileSync(join(L, RECORDS_DIR, '104-C1.md'), '# 轮次记录更正 · 104（C1）\n')
+  git(['add', '-A']); git(['commit', '-qm', 'correction-file-104-C1'])
+  const corrRev = git(['rev-parse', 'HEAD']).trim()
+
+  return { base, L, good, badRev, noFile, wildRev, corrRev }
 }
 
 function selfTest() {
@@ -509,6 +618,39 @@ function selfTest() {
     if (!ok5) failed++
   }
 
+  // ⚠ ⚠ ⑥ 第 233 轮新增（`UD-119` 要求 ②/④）：**野文件 ⇒ 必须 FAIL 并点名**
+  //   ⚠ 本档是"旧版会静默略过"的直接对拍 —— ⚠ 它过去**照旧 PASS**（⚠ 因为根本没被解析到）。
+  at(fx.wildRev)
+  r = runCheck(fx.L)
+  const ok6 = r.bad.length > 0 && r.wild.includes('103-xyz')
+  readings.push({ label: '⑥ 野文件 `103-xyz.md`（非更正件的 `<轮次>-<非数字>`）', expect: 'FAIL · 点名 103-xyz',
+    got: ok6 ? 'FAIL · 咬住并点名' : `未咬（假绿）· wild=${JSON.stringify(r.wild)}`, pass: ok6 })
+  if (!ok6) failed++
+
+  // ⚠ ⚠ ⑦ 成对（E-126）：⚠ **更正件⛔ 不许被当成野文件** —— ⚠ 它必须"被认得"而不是"被拒绝"。
+  at(fx.corrRev)
+  r = runCheck(fx.L)
+  //   ⚠ ⚠ **本档只判"更正件这一形态被判据认得且⛔ 不误报成野文件"** ——
+  //   ⚠ ⛔ **不判"整轮没有别的红"**：⚠ 该夹具**自带的** `missing=100` 来自它自己的提交 3/4
+  //   （⚠ 那是②③两档的靶子）⇒ ⚠ 拿 `bad.length === 0` 当条件是**本档自己的错**
+  //   （⚠ 2026-10-16 当场抓到：⚠ 首版就是这么写的，⚠ 于是⑦假红）。
+  const ok7 = r.wild.length === 0 && r.corrections.length === 1 && r.corrections[0].attachesTo === 104
+  readings.push({ label: '⑦ 更正件 `104-C1.md`（⚠ 成对那一半：⛔ 不许误报成野文件）', expect: '不算野文件 · 认出 1 件 · 挂回 104',
+    got: ok7 ? '未误报 · 认出并挂回 104' : `误咬或漏认 · wild=${JSON.stringify(r.wild)} corr=${JSON.stringify(r.corrections)}`, pass: ok7 })
+  if (!ok7) failed++
+
+  // ⚠ ⚠ ⑧ 纯函数级边界（⚠ 不依赖 git）：⚠ 分类口径的**四档**各给一个代表。
+  {
+    const cases = [
+      ['224', 'single'], ['55-178', 'range'], ['224-C1', 'correction'], ['224-xyz', 'wild'], ['abc', 'other'],
+    ]
+    const wrong = cases.filter(([b, want]) => classifyRecordName(b).kind !== want)
+    const ok8 = wrong.length === 0
+    readings.push({ label: '⑧ 分类口径四档（224/55-178/224-C1/224-xyz/abc）', expect: '逐档归类正确',
+      got: ok8 ? '四档全对（含 `abc` 归 other ⛔ 不静默）' : `错档：${wrong.map(([b, w]) => `${b}→应为 ${w}`).join(' · ')}`, pass: ok8 })
+    if (!ok8) failed++
+  }
+
   rmSync(fx.base, { recursive: true, force: true })
 
   console.log('轮次标识只增不减 · 自带负向对拍')
@@ -541,10 +683,11 @@ if (ledgerRoot === undefined) {
 console.log(`账本区：${ledgerRoot}`)
 console.log('')
 
-const { bad, note, surface, landingLine } = runCheck(ledgerRoot)
+const { bad, note, surface, landingLine, corrLine } = runCheck(ledgerRoot)
 console.log('  ✓', note)
 console.log('  ✓', surface)
 console.log('  ✓', landingLine)
+console.log('  ✓', corrLine)
 console.log('')
 console.log('⚠ 覆盖面（归纳，⛔ 非穷举）：只管**轮次标识**这一类 · 取数面限于轮次登记的载体 '
   + '（`CONTEXT*.md` 整份 + `08-round-table.md`）· ⛔ 不管"号还在但内容被换掉" · ⛔ 不管"记录件起好了而指针没点到它"。')

@@ -63,14 +63,14 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'templates/CONTEXT.md', sha256: '248d786a55b5b881173258902c04cd1364e8d778d0137a16d660a71939060fb6', bytes: 11946 },
   { path: 'templates/DECISIONS.md', sha256: '35cbf204ad4131e0222f2fd4e711391ceff843d09f155da8af1f772b7d418c33', bytes: 3558 },
   { path: 'templates/GATES.md', sha256: '82a42c346cffc0b5007be9dc72dd7dcf5c2825f11cbe800c6756a3fa259fec49', bytes: 7025 },
-  { path: 'templates/REPORT.md', sha256: 'd0a815a8668efb3a2e1cd251b14f694986179ca6a51a71a26eda7c5f6b69d06a', bytes: 4453 },
+  { path: 'templates/REPORT.md', sha256: '79ea38aa481743d5c197e9c60793d6df5a0522da3bc2bfcc4774158fdd61b136', bytes: 5870 },
   { path: 'templates/ROLES.md', sha256: 'e4ac160b5e521a4396edbdb5e39663d34b1c7d1e74da96a4baec24deca6ad326', bytes: 14476 },
   { path: 'templates/TASK.md', sha256: '122e80396c7a7c9688f3496cd9c151ffa3992ef293fd439784badce047cd48c9', bytes: 13826 },
   { path: 'templates/USER-DECISIONS.md', sha256: '4714d0d400459eb6cc4fe1d79f2701e2f0cc1aa999e5c6373626d75171625931', bytes: 3887 },
 ]
 
 /** 生成时刻（⚠ 只作追溯，⛔ 不作判据 —— 判据是 sha256）。 */
-export const SKELETON_GENERATED_AT = '2026-10-15T16:56:44.981Z'
+export const SKELETON_GENERATED_AT = '2026-10-15T18:50:22.832Z'
 
 export interface SkeletonManifest {
   allowlist: readonly string[]
