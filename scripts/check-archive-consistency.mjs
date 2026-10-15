@@ -478,6 +478,7 @@ function checkDirRefs({ ledgerRoot, bad, ok }) {
   const stat = {
     scanFiles: 0, refs: 0, dirRefs: 0, dirRefsNamed: 0, dirRefsDerived: 0,
     memberPairs: 0, missing: 0, dirsWithoutMembers: 0, overlapSkipped: 0,
+    dirsNotIndexed: 0, notIndexedMembers: 0,
   }
   const files = deriveScanFiles(ledgerRoot)
   stat.scanFiles = files.length
@@ -507,8 +508,20 @@ function checkDirRefs({ ledgerRoot, bad, ok }) {
         const members = archiveMembers(ledgerRoot, rel)
         for (const memRel of members) namedCovered.add(memRel)
         if (members.size === 0) {
+          // ⚠ ⚠ ⑥(b) 第 220 轮：**正文点名**这一侧同样要区分"尚未入库"与"真无成员"
+          const onDiskNamed = walkFiles(join(ledgerRoot, rel))
+            .map((p) => posix(relative(ledgerRoot, p))).sort()
+          if (onDiskNamed.length > 0) {
+            stat.dirsNotIndexed += 1
+            stat.notIndexedMembers += onDiskNamed.length
+            ok(`② ${f}:${i + 1} 引用的目录 \`${ref}\` —— ⚠ **盘上有 ${onDiskNamed.length} 份、但 index 里 0 份** ⇒ `
+              + `**"尚未入库"，⛔ 不是"无成员"**`
+              + `\n      ⇒ 逐份：${onDiskNamed.slice(0, 8).join(' · ')}${onDiskNamed.length > 8 ? ` …另有 ${onDiskNamed.length - 8} 份` : ''}`
+              + `\n      ⇒ ⚠ 成员面取自 \`git ls-files\`（index）⇒ "提交"这个动作会改变本断言的分母`)
+            continue
+          }
           stat.dirsWithoutMembers += 1
-          ok(`② ${f}:${i + 1} 引用的目录 \`${ref}\` **无清单、index 里也无成员** ⇒ 无成员可核（⛔ 不报 ✓）`)
+          ok(`② ${f}:${i + 1} 引用的目录 \`${ref}\` **无清单、index 里也无成员、盘上也没有文件** ⇒ 无成员可核（⛔ 不报 ✓）`)
           continue
         }
         for (const memRel of [...members].sort()) {
@@ -536,8 +549,30 @@ function checkDirRefs({ ledgerRoot, bad, ok }) {
     derived.push(rel)
     const members = archiveMembers(ledgerRoot, rel)
     if (members.size === 0) {
+      // ⚠ ⚠ **⑥(b) 第 220 轮（`UD-117`）：把"盘上有而未入库"与"真无成员"分开** ─────────────
+      //   ⚠ 背景（第 215 / 217 轮实测）：⚠ 本断言的成员面取自 **`git ls-files`（index）**
+      //   ⇒ ⚠ ⚠ **"提交"这个动作本身就在它的取数面上**（同一轮里分母动过两次：786 → 787 → 788）；
+      //   ⚠ ⚠ **且"盘上有、index 无"原先表现为"0 成员"** —— ⚠ **不是"看不出来"，而是"看起来像没有"**。
+      //   ⇒ ⚠ 现在：⚠ **若该目录在盘上真的有文件**，就把那一批**点名报出来**
+      //     （⚠ **不算 FAIL** —— "尚未入库"是**正常中间态**，正是本单第一件那种"在途产物"），
+      //     ⚠ ⚠ **但它 ⛔ 不许再混进"无成员可核"那句话里**（⚠ 那句会让人以为"目录是空的"）。
+      const onDisk = walkFiles(join(ledgerRoot, rel))
+        .map((p) => posix(relative(ledgerRoot, p)))
+        .sort()
+      if (onDisk.length > 0) {
+        stat.dirsNotIndexed += 1
+        stat.notIndexedMembers += onDisk.length
+        ok(`② 盘上派生目录 \`${rel}/\` —— ⚠ **盘上有 ${onDisk.length} 份、但 index 里 0 份** ⇒ `
+          + `**"尚未入库"，⛔ 不是"无成员"**（⚠ 这两件事以前分不开）`
+          + `\n      ⇒ 逐份：${onDisk.slice(0, 8).join(' · ')}${onDisk.length > 8 ? ` …另有 ${onDisk.length - 8} 份` : ''}`
+          + `\n      ⇒ ⚠ **成员面取自 \`git ls-files\`（index）** ⇒ ⚠ **"提交"这个动作会改变本断言的分母**`
+          + `（第 215 / 217 轮实测：同一轮里 786 → 787 → 788）`
+          + `\n      ⇒ ⚠ 处置：⛔ 不改判据（那会放宽）；⚠ **让这一批可见就是它的用处** ——`
+          + `⚠ 入库之后同一目录就会开始产生成员比对对数`)
+        continue
+      }
       stat.dirsWithoutMembers += 1
-      ok(`② 盘上派生目录 \`${rel}/\` **无清单、index 里也无成员** ⇒ 无成员可核（⛔ 不报 ✓）`)
+      ok(`② 盘上派生目录 \`${rel}/\` **无清单、index 里也无成员、盘上也没有文件** ⇒ 无成员可核（⛔ 不报 ✓）`)
       continue
     }
     const fresh = [...members].filter((m) => !namedCovered.has(m))
@@ -564,6 +599,7 @@ function checkDirRefs({ ledgerRoot, bad, ok }) {
       + `${stat.overlapSkipped > 0 ? ` ⇒ ⚠ 派生面与点名面重叠、已按成员去重 ${stat.overlapSkipped} 个` : ''}`
       + ` ⇒ 逐目录核成员，共比对 ${stat.memberPairs} 个成员`
       + `${stat.dirsWithoutMembers > 0 ? `；⚠ 另有 ${stat.dirsWithoutMembers} 处引用目录无清单无成员 ⇒ 无成员可核（已如实打印）` : ''}`
+      + `${stat.dirsNotIndexed > 0 ? `；⚠ ⚠ **另有 ${stat.dirsNotIndexed} 处目录「盘上有、index 里 0 份」（共 ${stat.notIndexedMembers} 个文件）”—— 该状态 = **尚未入库**，⛔ 不是“无成员”（已逐份点名打印）` : ''}`
       + '，**成员齐备**')
   } else if (stat.refs === 0) {
     ok('② 目录成员核【已执行】—— 账本区里**没有** `archive/<日期>-<名>/…` 形态的引用（0 处）'

@@ -88,6 +88,50 @@ function resolveLedgerRoot(cliLedger) {
   return existsSync(cand) ? cand : undefined
 }
 
+// ── ③ 落点号可判据化（2026-10-15 · 第 220 轮新增 · `UD-117` 第 ③ 组）──────────────
+/**
+ * **背景（为什么要有这一条）**：⚠ **第 176 / 181 / 184 轮各查出一处落点号错**，
+ *   而 ⚠ **该档位下 Hob 无命令能力 ⇒ 填号只能靠对方回报** ⇒ ⚠ **错了没人能当场核**。
+ * ⚠ ⚠ **载体已变**（**第 210 轮**按 `UD-114` 改成"一轮一文件"）⇒ **"落点列"已不存在**
+ *   ⇒ ⚠ **等价物 = 每件记录里的 `**落点**：…` 那一行**。
+ *
+ * ── 判据（可判的形态，⛔ 不判"这个号对不对得上那一轮"——那是语义）─────────────
+ *   ⚠ 从每件记录件里取**反引号包着的、形如 `<7..40 位十六进制>` 的 token** ⇒
+ *   逐个到**它标注的那个仓**里核 `git cat-file -e <sha>^{commit}`。
+ *   ⚠ **标注哪个仓**：行里 `` 工作区 `` 之后出现的号算工作区仓；⚠ 其余（`` 账本 `` 段内）算账本仓。
+ *
+ * ── ⚠ ⚠ **两条豁免（成对 · `E-126`）** ────────────────────────────────────────
+ *   ① ⚠ **`<h1>` 占位须被容忍** —— 报告 / 记录件按**自指禁令**留占位，
+ *      ⚠ **⛔ 不许因占位而 FAIL**（⚠ 占位**不是号**，它 ⛔ 不进"要核的清单"）；
+ *   ② ⚠ **`—`（未入库）须被容忍** —— ⚠ 那是"本页写定后尚未入库"的**结构性待提交**标记。
+ *   ⚠ 两条都是**豁免"没有号"**，⛔ **不是豁免"号写错了"**：⚠ 写了号就必须真的存在。
+ */
+const LANDING_SHA = /`([0-9a-f]{7,40})`/g
+const LANDING_WS_MARK = '工作区'
+
+/** 从一份记录件里取（仓, 号）对。⚠ 纯函数 ⇒ 可自带负向对拍。 */
+export function landingShas(src) {
+  const out = []
+  for (const raw of String(src).split('\n')) {
+    const l = raw.trim()
+    if (!l.startsWith('**落点**')) continue
+    // ⚠ 先按「工作区」这个标记把行切成两段：标记之后 = 工作区仓，之前 = 账本仓
+    const i = l.indexOf(LANDING_WS_MARK)
+    const ledgerSeg = i < 0 ? l : l.slice(0, i)
+    const wsSeg = i < 0 ? '' : l.slice(i)
+    for (const m of ledgerSeg.matchAll(LANDING_SHA)) out.push({ repo: 'ledger', sha: m[1], line: l })
+    for (const m of wsSeg.matchAll(LANDING_SHA)) out.push({ repo: 'workspace', sha: m[1], line: l })
+  }
+  return out
+}
+
+/** 核一个号在某仓里是不是**真提交**。⚠ 返回 'ok' | 'missing' | 'unresolved'。 */
+function shaExists(repoRoot, sha) {
+  if (repoRoot === undefined) return 'unresolved'
+  const r = tryGit(['cat-file', '-e', `${sha}^{commit}`], repoRoot)
+  return r === null ? 'missing' : 'ok'
+}
+
 // ── 取数 ──────────────────────────────────────────────────────────────────
 const DEL_ROW = /^-\|\s*(\d{1,4})\s*(?:[–-]\s*(\d{1,4}))?\s*\|/
 const ROW = /^\|\s*(\d{1,4})\s*(?:[–-]\s*(\d{1,4}))?\s*\|/
@@ -124,7 +168,8 @@ function expand(a, b) {
 function everSeen(ledgerRoot) {
   const s = new Set()
   const objs = tryGit(['rev-list', '--all', '--objects'], ledgerRoot)
-  if (objs === null) return s
+  if (objs === null) return { set: s, blobs: 0, parsedBlobs: 0, revs: 0, ids: 0 }
+  const revs = (tryGit(['rev-list', '--all'], ledgerRoot) ?? '').split('\n').filter(Boolean).length
   const blobs = new Set()
   for (const line of objs.split('\n')) {
     if (line === '' || !line.includes(' ')) continue
@@ -135,7 +180,8 @@ function everSeen(ledgerRoot) {
     if (path.includes('/') && !path.startsWith('volumes/') && !path.startsWith('archive/')) continue
     blobs.add(sha)
   }
-  if (blobs.size === 0) return s
+  if (blobs.size === 0) return { set: s, blobs: 0, parsedBlobs: 0, revs, ids: 0 }
+  let parsedBlobs = 0
   const list = [...blobs]
   for (let i = 0; i < list.length; i += 200) {
     const chunk = list.slice(i, i + 200)
@@ -143,7 +189,7 @@ function everSeen(ledgerRoot) {
     if (out === null) continue
     // ⚠ ⚠ **必须按字节切**（`cat-file --batch` 报的 size 是**字节数**）：
     //   ⚠ 若先把整块转成 JS 字符串再按 size 切，⚠ **多字节字符会让偏移越切越歪** ——
-    //   实测（本单）：231 个 blob 只解析出 **2** 个 ⇒ ⚠ 历史并集被算成 29 个标识（**静默变小**，
+    //   实测（第 210 轮）：231 个 blob 只解析出 **2** 个 ⇒ ⚠ 历史并集被算成 29 个标识（**静默变小**，
     //   而那正好会让本检查**变哑**：历史集太小 ⇒ 差集近乎恒空）⇒ ⚠ 一律在 Buffer 上按 byte 偏移切。
     let pos = 0
     while (pos < out.length) {
@@ -154,11 +200,12 @@ function everSeen(ledgerRoot) {
       const size = Number(parts[2])
       if (!Number.isFinite(size)) break
       const body = out.subarray(nl + 1, nl + 1 + size).toString('utf8')
+      parsedBlobs++
       for (const id of idsInSection(body)) s.add(id)
       pos = nl + 1 + size + 1
     }
   }
-  return s
+  return { set: s, blobs: blobs.size, parsedBlobs, revs, ids: s.size }
 }
 
 /** 从 §5.1 段里取标识（⚠ 该段是轮次登记的权威面）。 */
@@ -236,8 +283,44 @@ function expandAll(ids) {
 }
 
 // ── 判据本体 ──────────────────────────────────────────────────────────────
+/**
+ * ⚠ ⚠ **取数面健全性**（第 220 轮新增 · `UD-117` 第 ⑥(a) 组 · 纯函数 ⇒ 可自带负向对拍）。
+ *
+ * **它防的是什么**（第 210 轮实测，⛔ 不是推测）：`everSeen()` 用 `cat-file --batch` 读历史
+ *   blob 时，`size` 是**字节数** —— ⚠ 若先转成 JS 字符串再按 `size` 切，**多字节字符会让偏移越切越歪**
+ *   ⇒ 实测 231 个 blob **只解析出 2 个** ⇒ ⚠ 历史并集 243 → **29**（**静默变小**）。
+ *   ⚠ ⚠ **而那次"差集"照样是空的**（历史集太小 ⇒ 差集近乎恒空）⇒ **判据绿着，几乎没在跑**。
+ *
+ * **判据**：⚠ 命中 blob > 0 **而真解析出 0 个** ⇒ FAIL；⚠ 命中 blob > 0 **而标识并集为空** ⇒ FAIL。
+ *   ⚠ 返回值 = `null`（健全）或**可读的 bad 文案**。
+ *   ⚠ **加这一条 ⛔ 不是放宽**：它**新增**一个会让本检查红的条件（原先这种情况全绿）。
+ */
+export function surfaceGuard(ev, everSize) {
+  const blobs = Number(ev?.blobs ?? 0)
+  const parsed = Number(ev?.parsedBlobs ?? 0)
+  const revs = Number(ev?.revs ?? 0)
+  if (blobs > 0 && parsed === 0) {
+    return '✗ **历史取数面没有真的在跑**（⚠ 差集即便是空的也不代表通过）：'
+      + `\n      ⇒ 扫描提交 ${revs} 个 · 历史 blob 命中 **${blobs} 个** · **真解析出 ${parsed} 个** · 标识并集 ${everSize} 个`
+      + '\n      ⇒ ⚠ 这正是第 210 轮那个形态（多字节偏移切错 ⇒ 静默变小 ⇒ 差集恒空 ⇒ "绿着但没在跑"）'
+      + '\n      ⇒ 修法：核 `everSeen()` 里 `cat-file --batch` 的**按字节切**（⛔ 不许先转字符串再按 size 切）'
+  }
+  if (blobs > 0 && everSize === 0) {
+    return '✗ **历史取数面解析出 0 个标识**（⛔ "解析到 0 个"不许当"历史干净"）：'
+      + `\n      ⇒ 扫描提交 ${revs} 个 · 历史 blob 命中 ${blobs} 个 · 真解析出 ${parsed} 个 · **标识并集 0 个**`
+      + '\n      ⇒ ⚠ 载体存在却取不到任何标识 ⇒ 取数面（或它的节解析口径）已经失效'
+      + '\n      ⇒ ⛔ 不许因为"差集是空的"就报通过 —— 空差集在"取数面为 0"时**必然成立**（E-126 假绿）'
+  }
+  return null
+}
+
 function runCheck(ledgerRoot) {
-  const ever = everSeen(ledgerRoot)
+  // ⚠ ⚠ 第 220 轮（`UD-117` 第 ⑥(a) 组）：`everSeen` 现在**带回取数面的规模** ——
+  //   ⚠ 背景（第 210 轮实测）：该集合曾因**多字节偏移切错**而**静默变小**（243 → 29），
+  //   ⚠ ⚠ **而差集照样是空的**（历史集太小 ⇒ 差集近乎恒空 ⇒ 判据绿着但几乎没在跑）。
+  //   ⇒ ⚠ 故判定行必须能把"取数面的来源与规模"报出来，⛔ 不能只报"差集空"。
+  const ev = everSeen(ledgerRoot)
+  const ever = ev.set
   const now = atNow(ledgerRoot)
   const commits = countCommits(ledgerRoot)
 
@@ -248,7 +331,15 @@ function runCheck(ledgerRoot) {
   const cov = coverageFromFiles(ledgerRoot)
   const uncovered = [...nowExpanded].filter((n) => !cov.set.has(n)).sort((a, b) => a - b)
 
+  // ⚠ ⚠ **取数面健全性**（第 220 轮新增）：⚠ "历史 blob 找到了几个" 与 "真解析出几个" 必须对得上 ——
+  //   ⚠ 实测过的形态：`parsedBlobs` 远小于 `blobs`（多字节偏移切错）⇒ ⚠ **那次差集也是空的**。
+  //   ⚠ 判据 = **解析率**：⚠ 只要有 blob 而一个都没解析出来 ⇒ **FAIL**（"取数面没在跑"不许静默）。
+  const surfaceBad = surfaceGuard(ev, ever.size)
+
   const bad = []
+  if (surfaceBad !== null) {
+    bad.push(surfaceBad)
+  }
   if (missing.length > 0) {
     bad.push('✗ **轮次标识集变小了** —— 这些号曾在载体里有过记录，而**现在再也查不到**：'
       + ` ${missing.join(' / ')}`
@@ -262,11 +353,61 @@ function runCheck(ledgerRoot) {
       + '\n      ⇒ ⚠ 补该轮的记录件（⚠ 打包行建一件即可覆盖整个区间）。')
   }
 
+  // ⚠ ⚠ **③ 落点号可判据化**（第 220 轮新增 · `UD-117` 第 ③ 组）：见 `landingShas()` 的注释。
+  //   ⚠ 逐件读记录件 → 取「落点」行里的号 → 到它标注的仓核"是不是真提交"。
+  const landing = { checked: 0, byRepo: { ledger: 0, workspace: 0 }, missing: [], files: 0, placeholders: 0 }
+  for (const f of cov.files) {
+    let src = ''
+    try { src = readFileSync(join(ledgerRoot, RECORDS_DIR, f), 'utf8') } catch { continue }
+    landing.files++
+    // ⚠ 豁免计数（**成对数"没被咬"的那一半**）：占位与破折号**都不进要核的清单**
+    if (/<h1>/.test(src)) landing.placeholders++
+    const pairs = landingShas(src)
+    for (const p of pairs) {
+      landing.checked++
+      landing.byRepo[p.repo]++
+      const repoRoot = p.repo === 'workspace' ? root : ledgerRoot
+      const st = shaExists(repoRoot, p.sha)
+      if (st === 'missing') landing.missing.push({ file: f, ...p })
+    }
+  }
+  if (landing.missing.length > 0) {
+    bad.push(`✗ **落点号在它标注的仓里查不到**（${landing.missing.length} 个）：`
+      + landing.missing.slice(0, 10).map((x) =>
+        `\n        · \`${x.sha}\`（${x.repo === 'workspace' ? '工作区仓' : '账本仓'}）← ${RECORDS_DIR}/${x.file}`).join('')
+      + (landing.missing.length > 10 ? `\n        …另有 ${landing.missing.length - 10} 个` : '')
+      + '\n      ⇒ ⚠ 落点号写错**没人能当场核**是这个档位的老问题（第 176 / 181 / 184 轮各一处）'
+      + '\n      ⇒ ⚠ 载体已变（一轮一文件）⇒ 等价物 = 记录件里的「落点」行，本条按它核'
+      + '\n      ⇒ 修法：把号改成**该仓里真实存在的提交**（⛔ 不许只删号；⚠ 确属未入库就写 `—`）')
+  }
+
   const note = `✓ 轮次标识只增不减 · 且每个标识都有记录件 —— 扫描提交 ${commits} 个 · `
     + `曾出现过的标识 ${ever.size} 个（展开 ${everExpanded.size} 个号）· 现可查到 ${now.size} 个（展开 ${nowExpanded.size} 个号）· `
     + `记录件 ${cov.files.length} 个 · 差集（曾出现过而现查不到）**${missing.length === 0 ? '空' : missing.join(' / ')}** · `
     + `未被记录件覆盖**${uncovered.length === 0 ? '空' : uncovered.join(' / ')}**`
-  return { bad, note, ever, now, commits, missing, uncovered, cov }
+  // ⚠ ⚠ **⑥(a) 取数面来源与规模**（第 220 轮新增 · `E-148`：判定行须报"核了多少 / 取数面来自哪"）：
+  //   ⚠ 本条**单列一行** —— ⚠ 因为上面那行报的是**结果**（差集空不空），
+  //   而本行报的是**那个结果是在多大的取数面上得出的**（⚠ 两者缺一，读数就会被误读）。
+  const surface = `✓ 取数面（⑥(a) 第 220 轮新增 · \`E-148\`）：`
+    + `**历史集**来自 \`git rev-list --all --objects\` 里的载体 blob ⇒ `
+    + `**${ev.revs} 个提交** · 命中载体 blob **${ev.blobs} 个** · **真解析出 ${ev.parsedBlobs} 个** · `
+    + `标识并集 **${ever.size} 个**（展开 ${everExpanded.size} 个号）；`
+    + `**现状集**来自 \`git ls-tree -r HEAD\`（同名载体）+ 记录件目录 ⇒ `
+    + `**${now.size} 个标识**（展开 ${nowExpanded.size} 个号）· 记录件 **${cov.files.length} 份**`
+    + `\n      ⇒ ⚠ 健全性对账：**命中 blob ${ev.blobs} vs 真解析 ${ev.parsedBlobs}** —— `
+    + `${ev.blobs > 0 && ev.parsedBlobs === 0 ? '**0 个解析出 ⇒ 已判 FAIL**' : '一致率 100%（0 个解析出的情况会 FAIL）'}`
+    + `\n      ⇒ ⚠ 本行是"那条绿是在多大的面上得出的"的凭据：`
+    + `⚠ **历史上真发生过**"blob 231 个而只解析出 2 个"⇒ 历史集 243 → **29**，**而差集照样是空的**（第 210 轮实测）`
+  // ⚠ ⚠ **③ 落点号核验的读数**（`E-148`：报"核了多少 / 来源哪些仓 / 差集是什么"）
+  const landingLine = `✓ 落点号核验（③ 第 220 轮新增）：读记录件 **${landing.files} 份** · `
+    + `取到落点号 **${landing.checked} 个**（**账本仓 ${landing.byRepo.ledger} 个 · 工作区仓 ${landing.byRepo.workspace} 个**）· `
+    + `**差集（查不到的号）= ${landing.missing.length === 0 ? '空' : landing.missing.map((x) => x.sha).join(' / ')}**`
+    + `\n      ⇒ 来源：① 号取自记录件 \`**落点**：…\` 行里**反引号包着的 7–40 位十六进制**；`
+    + `② 核法 = 到**它标注的那个仓**跑 \`git cat-file -e <sha>^{commit}\``
+    + `\n      ⇒ ⚠ **成对豁免（E-126）**：\`<h1>\` 占位（**自指禁令**要求留的）与 \`—\`（**未入库**的结构性标记）`
+    + `**都不进要核的清单** —— 本批记录件里含占位的有 **${landing.placeholders} 份**；`
+    + `⚠ 但「**没号**」豁免 ≠ 「**号写错**」豁免：⚠ 写了号就必须真的存在`
+  return { bad, note, surface, landingLine, landing, ever, now, commits, missing, uncovered, cov, ev }
 }
 
 // ── 自带负向对拍（⛔ 不依赖账本区内容 · ⛔ 不触碰真账本）──────────────────
@@ -345,6 +486,23 @@ function selfTest() {
     got: r.uncovered.includes(101) ? `FAIL · 点名 ${r.uncovered.join(',')}` : '未咬（假绿）', pass: ok3 })
   if (!ok3) failed++
 
+  // ⚠ ⚠ ④ 第 220 轮新增（⑥(a)）：**取数面被截断 ⇒ 必须红**（⚠ 这正是第 210 轮那个形态）
+  //   ⚠ 手法：⚠ **纯函数级对拍** —— 直接把"命中 N 个 blob 而解析出 0 个"喂给 `surfaceGuard`，
+  //   ⛔ 不必真去改 `everSeen`（改它再还原正是"判据可能把自己写坏"的老病）。
+  {
+    const truncated = surfaceGuard({ blobs: 231, parsedBlobs: 0, revs: 300 }, 0)
+    const ok4 = truncated !== null
+    readings.push({ label: '④ 取数面被截断（命中 231 blob · 解析出 0 个）', expect: 'FAIL · 点名取数面没在跑',
+      got: ok4 ? 'FAIL · 咬住（差集即便为空也判红）' : '未咬（假绿 —— 这正是第 210 轮的形态）', pass: ok4 })
+    if (!ok4) failed++
+    // ⚠ 成对（E-126）：⚠ **不该咬的**（健康取数面）⛔ 不许报红
+    const healthy = surfaceGuard({ blobs: 231, parsedBlobs: 231, revs: 300 }, 243)
+    const ok5 = healthy === null
+    readings.push({ label: '⑤ 对照：取数面健康（命中 231 · 解析 231 · 并集 243）', expect: '不咬（null）',
+      got: ok5 ? '未咬（正确）' : '误咬（判据过咬）', pass: ok5 })
+    if (!ok5) failed++
+  }
+
   rmSync(fx.base, { recursive: true, force: true })
 
   console.log('轮次标识只增不减 · 自带负向对拍')
@@ -352,7 +510,9 @@ function selfTest() {
   const okAll = failed === 0
   console.log('')
   console.log(okAll
-    ? `判定：PASS —— ${readings.length} 档**全部符合预期**（1 档"不该咬"未被咬 · 2 档"该咬"真被咬且**点名了号**）`
+    ? `判定：PASS —— ${readings.length} 档**全部符合预期**（⚠ 档数**从实测数出来**：`
+      + `${readings.filter((x) => x.expect.startsWith('不咬')).length} 档"不该咬"未被咬 · `
+      + `${readings.filter((x) => x.expect.startsWith('FAIL')).length} 档"该咬"真被咬且**点名了对象**）`
     : `判定：FAIL —— ${failed}/${readings.length} 档不符（⚠ 判据改哑了：坏状态都放过去了）`)
   return okAll ? 0 : 1
 }
@@ -375,8 +535,10 @@ if (ledgerRoot === undefined) {
 console.log(`账本区：${ledgerRoot}`)
 console.log('')
 
-const { bad, note } = runCheck(ledgerRoot)
+const { bad, note, surface, landingLine } = runCheck(ledgerRoot)
 console.log('  ✓', note)
+console.log('  ✓', surface)
+console.log('  ✓', landingLine)
 console.log('')
 console.log('⚠ 覆盖面（归纳，⛔ 非穷举）：只管**轮次标识**这一类 · 取数面限于轮次登记的载体 '
   + '（`CONTEXT*.md` 整份 + `08-round-table.md`）· ⛔ 不管"号还在但内容被换掉" · ⛔ 不管"记录件起好了而指针没点到它"。')

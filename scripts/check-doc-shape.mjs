@@ -291,6 +291,56 @@ const B_FILES = PRIMARY_FILES.files
  */
 const SCAN_FILES = [...B_FILES, ...VOLUME_FILES_RESULT.files]
 
+/**
+ * ── 骨架侧扫描面（2026-10-15 · 第 220 轮新增 · `UD-117` 第 ⑤ 组）────────────────
+ *
+ * **为什么需要（第 217 轮读实现实测的洞）**：读上限断言 **M** 的 `mTargets`
+ *   原先只取 `B_FILES`（账本根）+ 卷内 + 卷索引 ⇒ ⚠ ⚠ **`.hob/**` 完全不在扫描面内** ⇒
+ *   ⚠ **骨架侧的文件撞上同一个 `maxFileBytes` 时不会有任何红**。
+ *   ⚠ 第 217 轮**实测**：`.hob/README.md` 余量只剩 2762 字节，⚠ **没有任何机检盯它**，
+ *   是执行方**人工算**才发现的 ⇒ 该轮立了"到顶动作在设计期就写"的口径（`UD-115`）。
+ *
+ * ── 口径（⛔ 不许手抄数组：**派生**，与账本侧同一条理由）────────────────────────
+ *   · 根 = `<工作区>/.hob`（工作区根由 `import.meta.url` 推导，⛔ 不硬编码绝对路径）；
+ *   · **递归**取 `*.md`（⚠ 与账本侧的"一层 / 两层"不同 —— 骨架侧的目录是固定的几层：
+ *     根 3 件 + `drafts/` + `experience/` + `roles/methods/` + `templates/`，
+ *     ⚠ **递归才能不随目录增减而漏件**）；
+ *   · 路径记成**相对工作区根**的 POSIX 形（`statSync(join(root, f))` 即用）；
+ *   · **排序稳定**（`sort()`）⇒ 同输入同顺序 ⇒ 输出可逐字比对；
+ *   · ⚠ **空结果不在这里判死**：把 `reason` 交出去，由断言 M 打成 FAIL
+ *     （**E-112**：判据要可读；**E-126**：空结果⛔ 不许当 ✓）。
+ *
+ * ⚠ ⚠ **不进这个圈 ≠ 没后果**：⚠ `.hob/backups/` 里的 `.bak` **不是 `.md`**（⚠ 实测 0 份 `*.md`）
+ *   ⇒ ⚠ **结构上不可能进这张清单**（它们本来也不走读取路径）。
+ */
+function collectSkeletonMdFiles() {
+  const hobRoot = join(root, '.hob')
+  if (!existsSync(hobRoot)) {
+    return { files: [], reason: `骨架目录不存在（${hobRoot}）` }
+  }
+  const out = []
+  const walk = (dir) => {
+    let entries = []
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch { return }        // ⚠ 不可读的子目录**不静默跳过** —— 由"总数对不上"侧写出来见 M 行
+    for (const e of entries) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) {
+        walk(p)
+      } else if (e.isFile() && e.name.endsWith('.md')) {
+        out.push(relative(root, p).split('\\').join('/'))
+      }
+    }
+  }
+  walk(hobRoot)
+  out.sort()
+  if (out.length === 0) {
+    return { files: [], reason: `\`${hobRoot}\` 下递归扫描 **0 份** \`*.md\`` }
+  }
+  return { files: out, reason: '' }
+}
+
 /** 形态机检主体：A / B / J / C / D / D′ / E（累计顺序与拆前一致）。 */
 export function runDocShape({ bad, ok }) {
   if (LEDGER_ROOT === undefined) {
@@ -486,46 +536,94 @@ export function runDocShape({ bad, ok }) {
     // ── B3 自带坏样本（**内存里造**，⛔ 不碰仓库文件 ⇒ 不存在"改了忘了还原"）──
     //   四组必须**真被咬住**：① 删正本有的一行 ② 改错成员（漏 volumes/）③ 注入写死阈值 ④ 加瞎编的节。
     //   ⚠ 与 I 组的自带样本同法：**判据改哑与判据改对必须输出不同**（E-126）。
+    //
+    // ── ⚠ ⚠ **第 220 轮改法（`UD-117` 第 ② 组）：靶点由"正本原文"改为"机检自造样本"** ──────
+    // **背景（第 179 轮实测）**：⚠ 本条原先的样本 ①② **拿真正本 `CONTEXT.md` 当基准**
+    //   （`nCompare(mCTX, N_S1)`）⇒ ⚠ ⚠ **一旦正本里那条靶行被搬走，坏样本就"无从生效"**，
+    //   探针会报「**判据改哑了**」，⚠ **而它实际想说的是"我找不到靶点了"**（⚠ 两者修法完全不同）。
+    //   实测：第 178 轮把正本 §4 与 §4.1 整节移出 ⇒ **`check:gitignore` 当场 `EXIT=1`**，
+    //   报的正是两句看不懂根因的话（⚠ 见 `E-151` 并入段）。
+    // ⇒ ⚠ ⚠ **改后**：样本 ①②③④ 一律取**机检自己拼出来的样本对**（`N_SAMPLE_PAIR`），
+    //   ⚠ **正本只作"被扫描对象"（上面那个 `for (const f of A_FILES)` 循环），⛔ 不再作基准**。
+    //   ⚠ 于是：**正本怎么搬，这里的牙口都不受影响**。
+    //   ⚠ ⛔ 并且**不许**因此放宽上面那条真断言（它照旧逐行比对正本 ↔ 模板）。
     {
       const tRef = ['.hob/templates/CONTEXT.md', '.hob/templates/DECISIONS.md', '.hob/templates/USER-DECISIONS.md']
         .map((rp) => { try { return readFileSync(join(root, rp), 'utf8') } catch { return '' } }).join('\n')
       const mRef = A_FILES.map((f) => { try { return readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { return '' } }).join('\n')
-      const mCTX = (() => { try { return readFileSync(join(LEDGER_ROOT, 'CONTEXT.md'), 'utf8') } catch { return '' } })()
-      const tCTX = (() => { try { return readFileSync(join(root, '.hob', 'templates', 'CONTEXT.md'), 'utf8') } catch { return '' } })()
-      // ① 模板删掉正本有的一行（拿 §4.1 的 check:modules 那行做靶）
-      const N_S1 = tCTX.replace(/^\| `npm run check:modules` \|.*$/m, '')
-      // ② 模板给某行改个错成员（§1 骨架行漏 `.hob/experience/`）
-      const N_S2 = tCTX.replace('+ **`.hob/experience/`**', '')
-      // ③ 模板注入写死阈值
-      const N_S3 = tCTX + '\n> ⚠ 本文件上限 65536 字节。\n'
-      // ④ 模板加一个瞎编的节
-      const N_S4 = tCTX + '\n## 77. 瞎编的节（正本没有、也不带「附：」）\n\n| 项 | 读 |\n|---|---|\n| `x.md` | ... |\n'
+      // ⚠ ⚠ **机检自造的样本对**（⛔ 与真正本内容无关）：一份"正本样本" + 它的"模板样本"。
+      //   形状要与真件同构：`## ` 节 + 首格为纯 token 列表的表行（nCompare 的收录口径）。
+      const N_SAMPLE_M = [
+        '## 4. 收尾必跑命令表',
+        '',
+        '| 命令 | 读 |',
+        '|---|---|',
+        '| `npm run build` | 构建 |',
+        '| `npm run check:modules` | 模块探针 |',
+        '| `npm run check:host` | 宿主探针 |',
+        '',
+        '## 1. 骨架',
+        '',
+        '| 归属 | 说明 |',
+        '|---|---|',
+        '| `templates/` `experience/` | 骨架两处 |',
+        '',
+        '## 5. 尾巴',
+        '',
+      ].join('\n')
+      const N_SAMPLE_T = N_SAMPLE_M   // ⚠ 自造模板样本 = 自造正本样本（初始一致 ⇒ 本当 PASS）
+      // ① 模板样本删掉一行（正本样本里有 ⇒ 必须报 missing）
+      const N_S1 = N_SAMPLE_T.replace(/^\| `npm run check:modules` \|.*$/m, '')
+      // ② 模板样本给某行改个错成员（骨架行漏 `experience/` —— 该 token 是 `*/` 形态，属结构行）
+      const N_S2 = N_SAMPLE_T.replace('| `templates/` `experience/` | 骨架两处 |',
+        '| `templates/` | 骨架一处 |')
+      // ③ 模板样本注入写死阈值
+      const N_S3 = N_SAMPLE_T + '\n> ⚠ 本文件上限 65536 字节。\n'
+      // ④ 模板样本加一个瞎编的节
+      const N_S4 = N_SAMPLE_T + '\n## 77. 瞎编的节（正本没有、也不带「附：」）\n\n| 项 | 读 |\n|---|---|\n| `x.md` | ... |\n'
       const probes = [
-        ['① 删掉正本有的一行（§4.1 check:modules）', () => { const r = nCompare(mCTX, N_S1); return r.missing.length > 0 }],
-        ['② 改错成员（§1 骨架行漏 `.hob/experience/`）', () => { const r = nCompare(mCTX, N_S2); return r.missing.length > 0 }],
-        ['③ 注入写死阈值（"上限 65536 字节"）', () => N_S3.split('\n').some((l) => N_HARD.some(([re]) => re.test(l)))],
-        ['④ 加瞎编的节（"## 77. 瞎编的节"）', () => {
-          const mK = new Set(nSplitSections(mCTX).map((x) => x.key))
+        ['① 模板样本删掉正本样本有的一行（§4 的 check:modules）',
+          () => { const r = nCompare(N_SAMPLE_M, N_S1); return r.missing.length > 0 }],
+        ['② 模板样本改错成员（§1 骨架行漏 `.hob/experience/`）',
+          () => { const r = nCompare(N_SAMPLE_M, N_S2); return r.missing.length > 0 }],
+        ['③ 模板样本注入写死阈值（"上限 65536 字节"）',
+          () => N_S3.split('\n').some((l) => N_HARD.some(([re]) => re.test(l)))],
+        ['④ 模板样本加瞎编的节（"## 77. 瞎编的节"）', () => {
+          const mK = new Set(nSplitSections(N_SAMPLE_M).map((x) => x.key))
           return nSplitSections(N_S4).map((x) => x.key).filter((k) => !mK.has(k) && !k.startsWith('附：')).length > 0
         }],
       ]
+      // ⚠ ⚠ **另加一条"不该被咬"的对照**（**E-126** 成对）：⚠ 样本对**原样**时
+      //   ⛔ 不许报 missing（否则"该咬的恒咬"这种恒红同样会让判据失去意义）。
+      const safeBite = nCompare(N_SAMPLE_M, N_SAMPLE_T)
       let nSampleBad = 0
+      if (safeBite.missing.length !== 0) {
+        nSampleBad++
+        bad('N 自带**不该咬**的样本被咬了：样本对**逐字相同**时报出了 missing'
+          + `\n      ⇒ 实测 missing=${safeBite.missing.length} 行 —— 判据**过咬**了`
+          + '\n      ⇒ 成对纪律（E-126）："该咬的真被咬"与"不该咬的真没被咬"**两条都要过**')
+      }
       for (const [why, fn] of probes) {
         let bit = false
         try { bit = fn() } catch { bit = false }
         if (!bit) {
           nSampleBad++
           bad(`N 自带坏样本**没被咬**：${why}` + '\n      ⇒ 该组判据**改哑了**（坏样本都放过去了，真缺陷更会溜）'
-            + '\n      ⇒ 与 I 组同法：**判据改哑与判据改对必须输出不同**（E-126）')
+            + '\n      ⇒ 与 I 组同法：**判据改哑与判据改对必须输出不同**（E-126）'
+            + '\n      ⇒ ⚠ 本样本对**由机检自造**（第 220 轮改法）⇒ 报出本条**就是判据自己的问题**，'
+            + '⛔ **不再是"正本里那条靶行被搬走了"**（第 179 轮那种误导性报错）')
         }
       }
       if (nSampleBad === 0) {
-        ok('N ✓ 自带坏样本：4 组（删行 / 改错成员 / 注入硬阈值 / 瞎编节）**全部被咬住**'
-          + ' ⇒ 本组还长着牙（样本在内存里造，⛔ 未改仓库文件）')
+        ok(`N ✓ 自带坏样本：4 组（删行 / 改错成员 / 注入硬阈值 / 瞎编节）**全部被咬住** + 1 组"不该咬"`
+          + `（样本对逐字相同时不报 missing）**全对**`
+          + ' ⇒ 本组还长着牙、且不过咬（⚠ ⚠ **样本由机检自造 · 第 220 轮改法 · ⛔ 不依赖正本原文**，'
+          + '⚠ 于是"正本那段被搬走 ⇒ 探针误报改哑"这一形态**不会再现**）')
       }
-      // ⚠ 参照面必须真的读到东西（否则上面四条会"因两侧皆空而误判为咬住"）
+      // ⚠ 参照面（真件）必须真的读到东西 —— ⚠ 它已**不再**是自造样本的基准，
+      //   但上面那条**真断言**（逐个 `A_FILES` 比对）仍需两侧非空才有对象可查。
       if (tRef === '' || mRef === '') {
-        bad('N 自带样本的参照面**读不到** ⇒ 上面四条自检失去意义（不按通过处理）')
+        bad('N 真断言的参照面**读不到**（模板 / 正本两侧任一为空）⇒ 上面那条"模板缺表行"失去对象（不按通过处理）')
       }
     }
     if (nBad === 0 && nTables > 0) {
@@ -1322,6 +1420,25 @@ export function runDocShape({ bad, ok }) {
      *   而且**过期后它会主动制造假冲突**（**E-117**）。
      * ⚠ **读不到上限 ⇒ FAIL**（"判不出"不许静默）。⚠ **M 没有"跳过"档** ——
      *   根上那几份**任何时候都要查**（它们是否存在与卷根无关）。
+     *
+     * ── ⚠ ⚠ **第 220 轮扩范围（`UD-117` 第 ⑤ 组）：账本侧 + 骨架侧都进扫描面** ──────────
+     * **背景（第 217 轮读实现实测）**：本条原先只取 `B_FILES + 卷内 + 卷索引`
+     *   ⇒ ⚠ ⚠ **`.hob/**` 撞上限时不会有任何红**（⚠ 该轮**正是靠人工算余量才发现的**）。
+     * **做法**：把骨架侧的 `.md` 也纳入同一个循环 —— ⚠ **判据面与账本侧逐条一致**
+     *   （同一条 `bad` 文案 · 同一个 `limit` · ⛔ **不是两套口径**）。
+     * ⚠ ⚠ **成员清单派生**（⛔ 不手抄数组）：走 `collectSkeletonMdFiles()`，从
+     *   `<root>/.hob` 实测递归取 `*.md`；⚠ **空结果 ⇒ FAIL**（**E-126** 假绿）。
+     *
+     * ⚠ ⚠ **据实说明：`.hob/EXPERIENCE.md` 与 `.hob/experience/**`（记录层）进这个圈** ——
+     *   **理由**：⚠ 它们**同样走 `read_contracts` 那条默认读取路径**（`readMarkdownCapped`
+     *   按 `maxFileBytes` 截断，与账本侧**同一个上限、同一个函数**）⇒
+     *   ⚠ **超限的后果一模一样**（给的是截断视图，而没有任何东西报警）。
+     *   ⚠ **且账本侧那几份正本（`CONTEXT.md` 等）本身也是"记录性"文件，它们本来就进来了** ⇒
+     *   ⚠ **若把记录层排除出去，同一后果会在两侧得到不同待遇**（⚠ 那正是本组要治的分叉）。
+     *   ⚠ **代价照实写**：⚠ 记录层**只增不改**（历史读数保留）⇒ ⚠ **它一旦接近上限，
+     *   处置办法⛔ 不是"删旧读数"**（那会撞 `E-142`：核的对象悄悄变少）⇒
+     *   ⚠ **应当按族再分册 / 另起索引**（⚠ 与 `.hob/README.md` §5.2 末节同一套办法）。
+     *   ⚠ **在扩范围之前，这一侧 ⛔ 无人盯**（这就是本组要补的洞）。
      */
     {
       let limit = NaN
@@ -1341,7 +1458,17 @@ export function runDocShape({ bad, ok }) {
         //     故下面用 `new Set(...)` 去重，⛔ 不重复计数。
         const mTargets = [...new Set([...B_FILES, ...VOLUME_FILES_RESULT.files, ...indexNamesForM])]
           .sort()
+        // ⚠ ⚠ 第 220 轮：骨架侧进同一个循环（⛔ 不另起一套口径）
+        const skelResult = collectSkeletonMdFiles()
+        if (skelResult.files.length === 0) {
+          // ⚠ **空结果 ⇒ FAIL**（E-126）：⛔ 不许"扫 0 份然后报 ✓"
+          bad('M **骨架侧扫描面为空** ⇒ 本组对 `.hob/**` 的覆盖**不成立**（不按通过处理）'
+            + `\n      ⇒ 期望：\`<工作区>/.hob\` 下递归存在 \`*.md\`；实测 ${skelResult.files.length} 份`
+            + `\n      ⇒ 原因：${skelResult.reason}`
+            + '\n      ⇒ ⛔ 绝不把"0 份"当"都合规"（这正是 E-126 的假绿形态）')
+        }
         const sizes = []
+        const skelSizes = []
         let mBad = 0
         for (const f of mTargets) {
           let sz = -1
@@ -1360,6 +1487,26 @@ export function runDocShape({ bad, ok }) {
               + '\n      ⇒ 处置：按 UD-95 / CHG-032 拆成多卷，⛔ 不是压缩（压必然丢信息）')
           }
         }
+        // ⚠ 骨架侧：**逐条与账本侧同口径**（同一条 bad 文案、同一个 limit）
+        for (const f of skelResult.files) {
+          let sz = -1
+          try { sz = statSync(join(root, f)).size } catch { sz = -1 }
+          if (sz < 0) {
+            mBad++
+            bad(`M **读不到**（骨架侧）：${f} —— 大小判不了（不按通过处理）`)
+            continue
+          }
+          skelSizes.push(`${f}=${sz}`)
+          if (sz > limit) {
+            mBad++
+            bad(`M **超过读上限**：\`${f}\` —— 实测 ${sz} 字节，上限 ${limit} 字节`
+              + `（超 ${sz - limit} 字节）`
+              + '\n      ⇒ ⚠ **这一侧原先 ⛔ 不在扫描面内**（第 217 轮读实现实测）⇒ 撞上限不会有任何红'
+              + '\n      ⇒ 超限后 `read_contracts` / `hob_read_doc` 给的是**截断视图**（同一条默认读取路径）'
+              + '\n      ⇒ 处置：⚠ 骨架侧⛔ 不可"压缩"（压必然丢信息）⇒ 按族**整块搬走 + 原位留指针**'
+              + '（先例：`.hob/README.md` §5.2 → `.hob/drafts/discipline-details.md` · 第 217 轮）')
+          }
+        }
         if (mBad === 0) {
           // ⚠ 构成标注（第 83 轮 · R82 复核 D6）：本行的分母 = **地图 + 卷内全部 .md**，
           //   与 L 的分母（只数条目）**不同** ⇒ 各自写清，防并排误读。
@@ -1372,11 +1519,44 @@ export function runDocShape({ bad, ok }) {
             + ` + 卷索引 ${volIdxN} 份 = ${mTargets.length} ——`
             + ` ⚠ 与 L 同口径的只有"卷内条目 ${volEntryN}"；`
             + ` L 另外不数那 ${volIdxN} 个卷索引、也不数那 ${mapN} 份地图`)
+          // ⚠ 骨架侧**独立一行**（⛔ 不并进上面那行：两侧根不同、口径要能分开读）
+          ok(`M ✓ 读上限（**骨架侧** \`.hob/**\` · 第 220 轮扩范围）：${skelResult.files.length} 份`
+            + `**全部在内**（同一个上限 ${limit} 字节；逐份：${skelSizes.join(' · ')}）`)
         } else {
           // ⚠ **有超限时也把逐份读数打出来** —— 否则"哪几份接近上限"这个
           //   决定拆分优先级的信息就丢了（第 78 轮追加说明明确要这组读数）。
           ok(`M 读上限（${limit} 字节）逐份实测：${sizes.join(' · ')}`
             + `\n      ⇒ 其中 ${mBad} 项未过（见上面的 ✗ 行）`)
+          if (skelSizes.length > 0) {
+            ok(`M 读上限（${limit} 字节）**骨架侧**逐份实测：${skelSizes.join(' · ')}`)
+          }
+        }
+        // ⚠ ⚠ **① 正本余量进收尾读数**（`UD-117` 第 ① 组）：⚠ ⛔ 不写死数字（**E-117**）·
+        //   ⚠ **上限一律从预设行读**（上面的 `limit` 就是读出来的）。
+        //   ⚠ 读法 = **按"距上限还剩多少字节"升序**（最紧的排前面）⇒ 一眼看出"谁快到了"。
+        //   ⚠ 两侧都给；⛔ 不只报"没超限"。
+        {
+          const withHead = [
+            ...sizes.map((s) => {
+              const i = s.lastIndexOf('=')
+              return { f: s.slice(0, i), sz: Number(s.slice(i + 1)), side: '账本侧' }
+            }),
+            ...skelSizes.map((s) => {
+              const i = s.lastIndexOf('=')
+              return { f: s.slice(0, i), sz: Number(s.slice(i + 1)), side: '骨架侧' }
+            }),
+          ].filter((x) => Number.isFinite(x.sz) && x.sz >= 0)
+          withHead.sort((a, b) => (limit - a.sz) - (limit - b.sz))
+          const topN = withHead.slice(0, 5)
+            .map((x) => `${x.f} 还剩 ${limit - x.sz}`).join(' · ')
+          const minOne = withHead[0]
+          ok(`M 余量（① 第 220 轮新增 · 上限读自预设行 ${limit} 字节）：核 ${withHead.length} 份`
+            + `（账本侧 ${sizes.length} 份 + 骨架侧 ${skelSizes.length} 份）——`
+            + ` ⚠ **最紧的 ${Math.min(5, withHead.length)} 份**：${topN}`
+            + `\n      ⇒ 最紧 = \`${minOne.f}\`（${minOne.side}）：还剩 **${limit - minOne.sz}** 字节`
+            + `\n      ⇒ ⚠ 这一行只报读数，⛔ 不判红（判红由上面的超限分支负责）；`
+            + ` ⚠ 它的用处 = **"还差多少"可读**，⛔ 不是"没超限就没事"`
+            + `（先例：第 217 轮靠人工算"余量 2762 < 上一轮消耗 3131"才发现要腾）`)
         }
       }
     }
