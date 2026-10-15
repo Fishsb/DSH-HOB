@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs'
 import { runRepoRules } from './check-repo-rules.mjs'
 import { findDuplicateSectionHeadings, runDocShape, runResidualMarkers, runTableIntegrity } from './check-doc-shape.mjs'
-import { runDiscipline, runRender, runSameSource, runZeroWidth } from './check-code-face.mjs'
+import { runDiscipline, runRender, runSameSource, runWriteScope, runZeroWidth } from './check-code-face.mjs'
 
 const fail = []
 const note = []
@@ -68,6 +68,9 @@ await runRender({ bad, ok })
 
 // ── ② I：正本无残留标记（需 await 载入渲染器）──────────────────────────
 await runResidualMarkers({ bad, ok })
+
+// ── ③ Q：卷下两层子目录的写侧白名单（成对 + 强制登记）──────────────
+await runWriteScope({ bad, ok })
 
 // ── ② P：表结构完整性（表内重复行 / 分隔行在位）────────────────────────
 runTableIntegrity({ bad, ok })

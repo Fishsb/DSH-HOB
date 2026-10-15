@@ -85,6 +85,34 @@ const VOLUME_DIR_RE = /^[a-z0-9-]+$/
 const VOLUME_PATH_RE = /^volumes\/([^/]+)\/([A-Za-z0-9._-]+\.md)$/
 
 /**
+ * ⚠ ⚠ **卷下的「具名两层子目录」白名单** —— 2026-10-15 第 213 轮 · **UD-116（用户裁定「A」）**。
+ *
+ * ── 为什么有这一条（缺口有实测出处）──────────────────────────────────
+ *   **第 210 轮**按 `UD-114` 把轮次登记换成「**一轮一文件**」，落在
+ *   `volumes/context/rounds/`（**118 件**）—— ⚠ 那是**两层**。
+ *   ⚠ ⚠ **第 211 轮实测：`write_hob` 写那个目录被工具当场拒绝**（上面的 `VOLUME_PATH_RE`
+ *   **只到一层**）⇒ ⚠ **Hob 写不了自己的轮次记录**，第 211 轮那件只能暂存进 `archive/`。
+ *   ⇒ ⚠ 本清单就是**把那个目录收进白名单**，且**只收这一个**。
+ *
+ * ── ⚠ ⚠ 「下次再出现一个新的两层目录怎么办」（`UD-115` 的核心 · ⛔ 别当特例读）
+ *   ① **动作 = 把它的相对路径（如 `context/rounds`）加进本数组** —— ⚠ **一行**，⛔ 不改任何正则；
+ *   ② ⚠ **且有东西强制你登记**：`npm run check:gitignore` 的 **Q 组**会**扫账本区**里
+ *      实际存在的 `volumes/<卷>/<子目录>/`，⚠ **凡不在本数组里的，当场 FAIL 并点名那条路径**；
+ *   ③ ⇒ ⚠ **只把 `rounds` 写成特例这件事，⛔ 不会重演**：⚠ 下一条新两层目录**不登记就跑不过收尾**。
+ *   ⚠ **为什么不直接放开成 `volumes/**`**（⛔ 那是被明确否掉的做法）：那会把
+ *   `volumes/<卷>/<任意深>/<任意名>` 一并放进来 ⇒ **边界白设**；本清单是**窄**的那一档。
+ *
+ * ⚠ **只放开这两处，⛔ 不放宽其余任何白名单**：账本根那几份仍是 `LEDGER_FILES` 原样，
+ *   `archive/` 仍走 `ARCHIVE_PATH_RE`，骨架仍拒写，软链 / 缩水守卫 / 归档禁 overwrite **一条未动**。
+ * ⚠ **命名规则与卷 slug 同档**：⚠ 子目录的**每一层**都只允许小写字母 / 数字 / 连字符
+ *   （`^[a-z0-9-]+$`，与 `VOLUME_DIR_RE` / `ARCHIVE_DIR_RE` **同字符集** · 理由见 **R-16**）。
+ */
+export const VOLUME_SUBDIRS = ['context/rounds'] as const
+
+/** 具名两层子目录下的路径：`volumes/<卷>/<子目录>/<文件>.md`（⚠ 登记名含"卷/子目录"两层）。 */
+const VOLUME_SUBDIR_PATH_RE = /^volumes\/([a-z0-9-]+\/[a-z0-9-]+)\/([A-Za-z0-9._-]+\.md)$/
+
+/**
  * 交接文件判据（2026-10-10 新增）：`archive/<日期目录>/TASK*.md`。
  *
  * ── 为什么是**路径形状**而不是内容 ──────────────────────────────────────
@@ -399,10 +427,25 @@ function checkWhitelist(file: string): WriteHobResult | null {
     }
     return null
   }
+  // 卷下的**具名两层**子目录（2026-10-15 第 213 轮 · UD-116）—— ⚠ 只认 `VOLUME_SUBDIRS` 里登记的那些
+  const vs = VOLUME_SUBDIR_PATH_RE.exec(file)
+  if (vs !== null) {
+    const subDir = vs[1]!
+    if (!(VOLUME_SUBDIRS as readonly string[]).includes(subDir)) {
+      return refuse(
+        file,
+        'not-whitelisted',
+        `拒绝：卷下两层子目录 \`${subDir}\` **未登记**（可写的是：${VOLUME_SUBDIRS.join(' / ')}）。`
+          + `\n      ⇒ ⚠ 新增一个这样的目录 ⇒ **把它的相对路径加进 \`src/server/hob-write.ts\` 的 \`VOLUME_SUBDIRS\`**（一行）；`
+          + `\n      ⚠ 且有断言强制登记：\`npm run check:gitignore\` 的 **Q 组**会扫出未登记的两层目录并 FAIL。`,
+      )
+    }
+    return null
+  }
   return refuse(
     file,
     'not-whitelisted',
-    `拒绝：${file} 不在白名单内。可写：${LEDGER_FILES.join(' / ')} / archive/<YYYY-MM-DD-slug>/*.md / volumes/<卷>/*.md。`,
+    `拒绝：${file} 不在白名单内。可写：${LEDGER_FILES.join(' / ')} / archive/<YYYY-MM-DD-slug>/*.md / volumes/<卷>/*.md / volumes/<卷>/<具名两层子目录>/*.md（${VOLUME_SUBDIRS.join(' / ')}）。`,
   )
 }
 

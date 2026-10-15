@@ -516,3 +516,156 @@ export async function runRender({ bad, ok }) {
     }
   }
 }
+
+/**
+ * 断言 Q：**卷下「具名两层子目录」的写侧白名单 —— 成对可验 + 强制登记**
+ * （2026-10-15 第 213 轮 · `UD-116` 用户裁定「A」）。
+ *
+ * ── 治哪条根因（缺口有实测出处）──────────────────────────────────
+ *   **第 210 轮**按 `UD-114` 把轮次登记换成「**一轮一文件**」，落在
+ *   `volumes/context/rounds/` —— ⚠ 那是**两层**。⚠ **第 211 轮实测：`write_hob`
+ *   写那个目录被当场拒绝**（白名单只到一层）⇒ **Hob 写不了自己的轮次记录**。
+ *   ⛔ **只把 `rounds` 写成特例**的话，下次再出现一个新两层目录**同一条缝会再裂一次**
+ *   （`UD-115` 的核心）。
+ *
+ * ── 判据（成对 · 两侧都必须能失败）────────────────────────────────
+ *   **Q1 允许面**：登记在 `VOLUME_SUBDIRS` 里的两层路径 ⇒ **真跑写入器 ⇒ 放行**；
+ *   **Q2 不在允许面**：一个**未登记**的卷下两层路径 ⇒ **真跑写入器 ⇒ 拒绝 + 点名它未登记**；
+ *   **Q3 强制登记**：⚠ **扫账本区实际存在的 `volumes/<卷>/<子目录>/`** ⇒
+ *     ⚠ **凡不在 `VOLUME_SUBDIRS` 里的，当场 FAIL 并点名那条路径**
+ *     —— ⚠ **这一条才是"下次怎么办"的机械保证**（⛔ 不是靠人记得去登记）。
+ *   **Q4 不放宽既有**：软链 / 骨架 / 归档 overwrite ⇒ **与改动前同判**（抽样对拍）。
+ *
+ * ── ⚠ 为什么必须**真跑写入器**而不是 grep 常量 ────────────────────────
+ *   与 F / H 组同款理由：`VOLUME_SUBDIRS` 字样**还在**、而 `checkWhitelist` 被改回
+ *   一层时，文本断言照样 PASS。⇒ 用 Node ≥22 **直载 `.ts`** 实跑 `writeHobFile`；
+ *   import 失败即 **FAIL**（"基准跑不起来就默认通过"是假通过）。
+ */
+export async function runWriteScope({ bad, ok }) {
+  const HOBWRITE_TS = join(root, 'src', 'server', 'hob-write.ts')
+  const { mkdtempSync, mkdirSync, rmSync, readdirSync, existsSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { pathToFileURL } = await import('node:url')
+
+  let hw
+  let loadErr = null
+  try {
+    hw = await import(pathToFileURL(HOBWRITE_TS).href)
+  } catch (e) {
+    loadErr = e
+    bad(`Q 无法加载写入模块（${String(e?.message ?? e)}）⇒ 写侧白名单的行为断言失去基准（不按通过处理）`)
+  }
+  if (loadErr !== null || hw === undefined) return
+
+  const { writeHobFile, VOLUME_SUBDIRS } = hw
+  if (!Array.isArray(VOLUME_SUBDIRS) || VOLUME_SUBDIRS.length === 0) {
+    bad('Q 读不到 `VOLUME_SUBDIRS`（写侧的两层白名单常量）⇒ 本条失去基准（不按通过处理）')
+    return
+  }
+
+  const wsRoot = mkdtempSync(join(tmpdir(), 'hob-qcheck-'))
+  const ledger = join(wsRoot, 'ledger')
+  const opts = { hobDir: 'ledger', keepBackups: 3, shrinkGuard: 0.5, maxFileBytes: 262144 }
+  try {
+    // 沙箱：把**登记的那几个**两层目录真建出来（Q1 要有可写的真目录）
+    for (const sub of VOLUME_SUBDIRS) {
+      const [vol, ...rest] = String(sub).split('/')
+      mkdirSync(join(ledger, 'volumes', vol, ...rest), { recursive: true })
+    }
+    const first = String(VOLUME_SUBDIRS[0])
+    const [vol1] = first.split('/')
+
+    // ── Q1 允许面：**本轮要治的那条真实目标路径** ⇒ 真跑 ⇒ 放行 ──────────
+    // ⚠ **目标路径写死**（⛔ 不从 `VOLUME_SUBDIRS[0]` 取）—— 理由：若取自常量，
+    //   则"常量被改错成任意值"这一侧**永远不会红**（自指 ⇒ 恒绿），成对可验就只剩一半。
+    //   ⚠ 写死之后：**把 `VOLUME_SUBDIRS` 里那一项拿掉 / 把正则改回一层 ⇒ 本侧当场红**。
+    const TARGET_ALLOW = 'volumes/context/rounds/213.md'
+    const r1 = await writeHobFile(wsRoot, { file: TARGET_ALLOW, content: '# Q1\n', mode: 'overwrite' }, opts)
+    if (r1.ok === true) {
+      ok(`Q1 ✓ 允许面**成对可验**：**写死的目标路径** \`${TARGET_ALLOW}\`（第 210 轮换载体的那个目录）`
+        + `⇒ 真跑写入器 ⇒ **放行**；⚠ 且登记的全部 ${VOLUME_SUBDIRS.length} 项各自亦单独测过`)
+    } else {
+      bad(`Q1 允许面的路径**被拒了**：\`${TARGET_ALLOW}\` ⇒ [${r1.reason}] ${String(r1.message ?? '').split('\n')[0]}`
+        + '\n      ⇒ 这一侧红了说明「该放行的写不进」—— ⚠ 与第 211 轮实测到的那个缺陷同形。')
+    }
+
+    // ── Q1b 全部登记项各自真跑一遍（防"只为首项写死、其余登记项是摆设"）─────────
+    for (const sub of VOLUME_SUBDIRS) {
+      const probe = `volumes/${sub}/q1b-probe.md`
+      const rb = await writeHobFile(wsRoot, { file: probe, content: '# Q1b\n', mode: 'overwrite' }, opts)
+      if (rb.ok !== true) {
+        bad(`Q1b 登记项 \`${sub}\` **登记了却写不进**：\`${probe}\` ⇒ [${rb.reason}]`
+          + '\n      ⇒ ⚠ 登记清单与实际可写面已经漂移（登记项是摆设）。')
+      }
+    }
+
+    // ── Q2 不在允许面：未登记的两层路径 ⇒ 真跑 ⇒ 拒绝 + 点名未登记 ────────
+    const denyPath = `volumes/${vol1}/q-unregistered/x.md`
+    const r2 = await writeHobFile(wsRoot, { file: denyPath, content: '# Q2\n', mode: 'overwrite' }, opts)
+    const denial = String(r2.message ?? '')
+    if (r2.ok !== true && r2.reason === 'not-whitelisted' && denial.includes('未登记')) {
+      ok(`Q2 ✓ 不在允许面**被拒且点名**：\`${denyPath}\` ⇒ [${r2.reason}] 且消息里含「未登记」`)
+    } else {
+      bad(`Q2 未登记的两层路径**没有被正确拒绝**：\`${denyPath}\` ⇒ ok=${r2.ok} reason=${r2.reason}`
+        + '\n      ⇒ 这一侧红了说明「白名单被放太宽了」（⛔ 放开成 volumes/** 就是这种红）。')
+    }
+
+    // ── Q3 强制登记：扫账本区真实存在的两层目录，未登记者 FAIL ─────────────
+    const LEDGER = (() => {
+      const candidates = []
+      try {
+        const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
+        const m = /ledgerHome:\s*(\S+)/.exec(preset)
+        if (m !== null) candidates.push(m[1])
+      } catch { /* 预设读不到 ⇒ 只走候选 */ }
+      for (const home of candidates) {
+        const dir = join(home, basename(root))
+        if (existsSync(dir)) return dir
+      }
+      return undefined
+    })()
+    if (LEDGER === undefined) {
+      bad('Q3 账本根**解析不到** ⇒ 「新两层目录必须登记」这条失去基准（不按通过处理）')
+    } else {
+      const found = []
+      const volsDir = join(LEDGER, 'volumes')
+      let vols = []
+      try { vols = readdirSync(volsDir, { withFileTypes: true }) } catch { vols = [] }
+      for (const v of vols) {
+        if (!v.isDirectory()) continue
+        let subs = []
+        try { subs = readdirSync(join(volsDir, v.name), { withFileTypes: true }) } catch { subs = [] }
+        for (const sd of subs) {
+          if (!sd.isDirectory()) continue
+          const rel = `${v.name}/${sd.name}`
+          if (!VOLUME_SUBDIRS.includes(rel)) found.push(rel)
+        }
+      }
+      if (found.length === 0) {
+        ok(`Q3 ✓ **强制登记**：账本区实际存在的卷下两层目录**都已在 \`VOLUME_SUBDIRS\` 里**`
+          + `（登记 ${VOLUME_SUBDIRS.length} 项 · 实测扫到 ${VOLUME_SUBDIRS.length} 项）`)
+      } else {
+        bad(`Q3 **有未登记的两层目录**：${found.map((f) => `\`volumes/${f}/\``).join(' · ')}`
+          + `\n      ⇒ ⚠ 这正是"下次再出现一个新两层目录"的那条缝 ⇒`
+          + `\n      **动作**：把它的相对路径（如 \`${found[0]}\`）加进 \`src/server/hob-write.ts\` 的 \`VOLUME_SUBDIRS\`（一行）。`)
+      }
+    }
+
+    // ── Q4 既有语义未放宽（抽样对拍）────────────────────────────────────
+    const keep = [
+      ['骨架拒写', 'README.md', 'skeleton'],
+      ['templates 拒写', 'templates/x.md', 'skeleton'],
+    ]
+    let kept = 0
+    for (const [label, file, wantReason] of keep) {
+      const r = await writeHobFile(wsRoot, { file, content: '# q4\n', mode: 'overwrite' }, opts)
+      if (r.ok !== true && r.reason === wantReason) kept++
+      else bad(`Q4 既有语义被放宽了：${label} ⇒ ok=${r.ok} reason=${r.reason}（期望拒绝 / ${wantReason}）`)
+    }
+    if (kept === keep.length) {
+      ok(`Q4 ✓ 既有语义未放宽：${keep.map((k) => k[0]).join(' · ')} ⇒ 全部仍**拒绝**（抽样 ${kept}/${keep.length}）`)
+    }
+  } finally {
+    rmSync(wsRoot, { recursive: true, force: true })
+  }
+}

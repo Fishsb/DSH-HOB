@@ -572,6 +572,15 @@
               #     2026-10-09 按 **UD-86 / UD-87** 改为显式配置 `~/.dsh/hob-ledgers`。
               #   要再改父目录就在此处改 `ledgerHome`（或给 `ledgerRoot` 直接指定）。
               ledgerHome: /home/lk/.dsh/hob-ledgers
+              # ⚠ ⚠ **写侧可写面里有一处「两层」—— 新增这类目录时的动作（2026-10-15 第 213 轮 · UD-116）**
+              #   `write_hob` 的白名单在 `src/server/hob-write.ts`：账本根那几份 + `archive/<日期>/` 一层
+              #   + `volumes/<卷>/` **一层**；⚠ 另有 `VOLUME_SUBDIRS` —— **卷下具名两层目录**清单
+              #   （当前 = `context/rounds`，即第 210 轮按 UD-114 换的「一轮一文件」载体）。
+              #   ⚠ ⚠ **下次再出现一个新的两层目录 ⇒ 动作 = 把它的相对路径（如 `context/rounds`）加进
+              #   `VOLUME_SUBDIRS`（一行）**；⚠ **且有断言强制你登记**：`npm run check:gitignore` 的
+              #   **Q 组**会扫账本区实际存在的 `<卷>/<子目录>/`，**未登记 ⇒ 当场 FAIL 并点名那条路径**
+              #   ⇒ ⚠ **"只写成特例、下次再裂一次"这条路被机械堵住**（UD-115 的核心）。
+              #   ⚠ 未登记的两层路径会被拒并附同一段指引（错误消息里就写着这四行）。
               maxFileBytes: 65536
               maxWriteBytes: 262144
               enableWrite: true
