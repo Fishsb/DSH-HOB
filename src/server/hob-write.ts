@@ -132,6 +132,29 @@ export function isHandoffPath(file: string): boolean {
   return /^task/i.test(m[2]!)
 }
 
+/**
+ * ── ②「先落副本」提醒的**判据**（2026-10-15 · 第 221 轮 · `UD-117` 第 ② 组）──────────
+ *
+ * **背景（R-17「先落副本」本批三度未做到）**：⚠ **三份副本全是"重写之后才补"**
+ *   ⇒ ⚠ 根因 = **"重写正本"那一刻没有任何东西提醒先落副本**。
+ * ⚠ **触发条件（作业书 §2② 指定）**：⚠ **被覆盖的是一份「已存在且未归档」的正本**。
+ *   · **已存在** ⇒ `exists === true`（⚠ ⛔ 不含"用 overwrite 创建新文件"那一支）；
+ *   · **未归档** ⇒ ⚠ **路径不在 `archive/` 下**（⚠ 归档是只增不改的历史：
+ *     它连 `overwrite` 都已被 `:655` 那条拒绝 ⇒ ⚠ **本提醒对归档路径永不适用**）；
+ *   · **是"正本"** ⇒ ⚠ 判据 = **账本根上的一层 `.md`**（⚠ 与 `check-doc-shape.mjs` 的
+ *     `derivePrimaryFiles()` 同口径：根上那些就是**地图 / 正本**那一档）。
+ *     ⚠ 卷内文件（`volumes/**`）**不算**"正本" —— 它们是**分卷正文**。
+ *
+ * ⚠ **判据宁可窄**（⚠ 与 `isHandoffPath` 的"宁可宽"相反）：⚠
+ *   **误报**会让"该提醒"这件事**贬值**（每次都提醒 = 每次都忽略）；
+ *   ⚠ **漏报**的代价 = 回到本组要治的老形态。⚠ 故只圈**最典型的那一档**：根上正本。
+ * ⚠ ⛔ **本函数只判"要不要提醒"，⛔ 不判"写不写"** —— **只提示、不拒写**（作业书 §2② 明令）。
+ */
+export function isPrimaryRootDoc(file: string): boolean {
+  if (file.includes('/')) return false            // ⚠ 只认根上一层（卷 / 归档 / 备份全排除）
+  return /^[A-Za-z0-9._-]+\.md$/.test(file)
+}
+
 // ── 改 1 · 写入边界校验：具名引用存在性（2026-10-10 第 44 轮 · 结构改造①）──────
 
 /**
@@ -324,6 +347,19 @@ export interface WriteHobResult {
    * ⚠ 与 `danglingRefs` 同款分层：本模块只回事实，措辞由调用方拼。
    */
   readings?: RenderResult
+  /**
+   * ── ②「先落副本」提醒（2026-10-15 · 第 221 轮 · `UD-117` 第 ② 组）────────────────
+   *
+   * ⚠ **只描述事实**：本次 `overwrite` 覆盖的是一份**已存在且未归档的根上正本**
+   *   ⇒ ⚠ **该先落副本**（R-17）。⚠ **调用方决定怎么提示**（本模块不拼长文案）。
+   *
+   * ⚠ 这是**新增字段**，既有字段一个未动；⚠ ⛔ **不影响 `ok`**（⚠ **只提示、不拒写**）。
+   * ⚠ 与 `danglingRefs` / `readings` 同款分层：**只回事实**。
+   * ⚠ ⚠ **它在何时为真**：⚠ 仅当 `mode === 'overwrite'` **且** `exists === true`
+   *   **且** `isPrimaryRootDoc(file)`。⚠ 缩水守卫 / 骨架拒写 / 归档禁 overwrite
+   *   **一条都不因它而变**（⚠ 它在那些守卫**之后**、落盘**之前**判）。
+   */
+  preOverwriteBackupReminder?: { file: string; bytesBefore: number }
 }
 
 export interface WriteHobOptions {
@@ -734,6 +770,18 @@ export async function writeHobFile(
     }
   }
 
+  // ── 10.5：②「先落副本」提醒（⚠ **只判事实，⛔ 不拒写**）──────────────────────
+  //   ⚠ 位置：⚠ **在缩水守卫（§9）与幂等跳过（§10）之后** ⇒
+  //     · 被拒的写**根本不会走到这里**（⛔ 不会为一次拒绝发提醒）；
+  //     · 幂等跳过的写也**已提前 return**（⛔ 没改动文件就没必要提醒落副本）。
+  //   ⚠ 条件（作业书 §2②）= **overwrite + 已存在 + 未归档的根上正本**；
+  //     ⚠ `archive/` 走不到这里（`:655` 已把 `archive + overwrite` 拒掉）⇒
+  //     "未归档"这一半由**上游那道拒绝**保证，⚠ 但这里仍显式再判一次（⛔ 不靠隐式）。
+  const needsCopyReminder = mode === 'overwrite' && exists && isPrimaryRootDoc(file)
+  const copyReminder = needsCopyReminder
+    ? { file, bytesBefore: Buffer.byteLength(existing, 'utf8') }
+    : undefined
+
   // ── 11：组装最终内容 ────────────────────────────────────────────────────
   const eol = exists ? dominantEol(existing) : '\n'
   const body = eol === '\r\n' ? content.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n') : content.replace(/\r\n/g, '\n')
@@ -758,11 +806,14 @@ export async function writeHobFile(
       bytesBefore: Buffer.byteLength(existing, 'utf8'), bytesAfter: nextBytes,
       ...(dRefs.length === 0 ? {} : { danglingRefs: dRefs }),
       ...(rendered.rendered.length === 0 && rendered.refused.length === 0 ? {} : { readings: rendered }),
+      // ⚠ ⚠ **dryRun 也要给同一条提醒**（⚠ 否则试跑与真跑不一致 —— 与 `readings` 同一条纪律）
+      ...(copyReminder === undefined ? {} : { preOverwriteBackupReminder: copyReminder }),
       message: `[dryRun] 校验全过，将${mode === 'overwrite' ? '覆盖' : '追加'} ${file}（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节），未落盘。`
         + renderDanglingRefsNote(dRefs)
         // ⚠ `dryRun` **也要渲染**（否则试跑与真跑不一致）：本函数在 §6.5 已渲染，
         //   这里只是**如实报出**它渲染了哪些值 —— 而**未落盘**。
-        + renderReadingsNote(rendered),
+        + renderReadingsNote(rendered)
+        + renderCopyReminderNote(copyReminder),
     }
   }
 
@@ -819,13 +870,17 @@ export async function writeHobFile(
     ...(isHandoffPath(file) ? { handoff: { kind: 'task-file' as const, ref: file } } : {}),
     ...(danglingRefs.length === 0 ? {} : { danglingRefs }),
     ...(rendered.rendered.length === 0 && rendered.refused.length === 0 ? {} : { readings: rendered }),
+    // ⚠ ⚠ **②「先落副本」提醒**（⚠ 只提示、⛔ 不拒写 —— 同 `danglingRefs` / `rendered` 那一族）
+    ...(copyReminder === undefined ? {} : { preOverwriteBackupReminder: copyReminder }),
     message: `✅ 已${mode === 'overwrite' ? '覆盖' : '追加'} ${file}${id === undefined ? '' : `：${id}`}`
       + `（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节）`
       + (backupName === undefined ? '' : `；备份 ${BACKUP_DIR}/${backupName}`)
       + renderDanglingRefsNote(danglingRefs)
       // ── 读数渲染的**出处**（E-118：值是工具算的，就要说得出是哪些值）────────
       + renderReadingsNote(rendered)
-      // ── 那一刻的提醒（2026-10-10 新增 · 本轮**最高价值**的一处）────────────
+      // ── ②「先落副本」提醒的**文案**（⚠ 只提示、⛔ 不拒写 —— 含"归属说清"那一句）
+      + renderCopyReminderNote(copyReminder)
+      // ── 那一刻的提醒（2026-10-10 新增 · 那一轮**最高价值**的一处）────────────
       //   ⚠ 为什么必须在这里：这份文件写完后**还要再调一次投递**才算交付。
       //     实测漏了两次（第 9 / 21 轮），两次都是用户发现的 ——
       //     而"写成功"的返回值此前**只报写成功**，读的人看不出还有第二步。
@@ -838,4 +893,21 @@ export async function writeHobFile(
           + '（或明确告知用户需手工转达）。'
         : ''),
   }
+}
+
+/**
+ * ── ② 提醒文案（⚠ 只提示、⛔ 不拒写）──────────────────────────────────────────
+ *
+ * **必须含的三件（作业书 §2② 明令）**：
+ *   ① **它现在是什么**（⚠ 例：这份正本要动手了）；
+ *   ② **该先做什么**（⚠ 先把当时的整份**逐字节**归档 —— ⚠ **R-17**）；
+ *   ③ **归属说清**（⚠ **"只提示、不拒写"**）。
+ * ⚠ 措辞里**不出现内部标识**（包名 / 模块路径 / 绝对路径）—— 这句会被派活方读到并可能**复述给用户**
+ *   （⚠ 与上面那条交接提醒同一条纪律）。
+ */
+function renderCopyReminderNote(r: WriteHobResult['preOverwriteBackupReminder']): string {
+  if (r === undefined) return ''
+  return `\n⚠ 提醒：这份正本（${r.file} · 现 ${r.bytesBefore} 字节）**要被整份重写了** ——`
+    + '动手前**先把当时的整份逐字节落一份副本**（本项目 R-17：副本必须**先于**重写，不是事后补）。'
+    + '\n   ⇒ ⚠ **只提示、不拒写**：本条不影响写入语义，写入仍按你的指令执行。'
 }
