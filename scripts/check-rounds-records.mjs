@@ -355,13 +355,18 @@ function runCheck(ledgerRoot) {
 
   // ⚠ ⚠ **③ 落点号可判据化**（第 220 轮新增 · `UD-117` 第 ③ 组）：见 `landingShas()` 的注释。
   //   ⚠ 逐件读记录件 → 取「落点」行里的号 → 到它标注的仓核"是不是真提交"。
-  const landing = { checked: 0, byRepo: { ledger: 0, workspace: 0 }, missing: [], files: 0, placeholders: 0 }
+  const landing = { checked: 0, byRepo: { ledger: 0, workspace: 0 }, missing: [], files: 0, placeholders: 0, dashes: 0 }
   for (const f of cov.files) {
     let src = ''
     try { src = readFileSync(join(ledgerRoot, RECORDS_DIR, f), 'utf8') } catch { continue }
     landing.files++
-    // ⚠ 豁免计数（**成对数"没被咬"的那一半**）：占位与破折号**都不进要核的清单**
-    if (/<h1>/.test(src)) landing.placeholders++
+    // ⚠ 豁免计数（**成对数"没被咬"的那一半**）：占位与破折号**都不进要核的清单**。
+    //   ⚠ ⚠ **计数面必须限定在「落点」行上**（第 220 轮当场修正）：⚠ 若通扫整份，
+    //   则**正文里引用了 `<h1>` 这个写法**的件（如本轮的 `220.md` 自己）也会被算成"含占位"
+    //   ⇒ ⚠ 读数会被读成"有 N 份记录留了占位"，⚠ **而真相是"只有落点行留了才算"**。
+    const landingLines = src.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('**落点**'))
+    if (landingLines.some((l) => l.includes('<h1>'))) landing.placeholders++
+    if (landingLines.some((l) => l.includes('`—`'))) landing.dashes++
     const pairs = landingShas(src)
     for (const p of pairs) {
       landing.checked++
@@ -405,7 +410,8 @@ function runCheck(ledgerRoot) {
     + `\n      ⇒ 来源：① 号取自记录件 \`**落点**：…\` 行里**反引号包着的 7–40 位十六进制**；`
     + `② 核法 = 到**它标注的那个仓**跑 \`git cat-file -e <sha>^{commit}\``
     + `\n      ⇒ ⚠ **成对豁免（E-126）**：\`<h1>\` 占位（**自指禁令**要求留的）与 \`—\`（**未入库**的结构性标记）`
-    + `**都不进要核的清单** —— 本批记录件里含占位的有 **${landing.placeholders} 份**；`
+    + `**都不进要核的清单** —— ⚠ **计数面 = 「落点」行本身**（⛔ 不通扫整份，见下）：`
+    + `**落点行里含 \`<h1>\` 的 ${landing.placeholders} 份 · 含 \`—\` 的 ${landing.dashes} 份**；`
     + `⚠ 但「**没号**」豁免 ≠ 「**号写错**」豁免：⚠ 写了号就必须真的存在`
   return { bad, note, surface, landingLine, landing, ever, now, commits, missing, uncovered, cov, ev }
 }
