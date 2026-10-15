@@ -116,7 +116,7 @@ function deref(value: unknown): unknown {
  * ⚠ 显示名从第 8 轮起**走语言服务**（键 `module.<配置键>`）——
  *   本常量只保留**顺序与配置键**，中文名在 `PANEL_ZH` 里。
  */
-const VISIBLE_SWITCHES = ['tools', 'preset', 'bus', 'orch', 'settings'] as const
+const VISIBLE_SWITCHES = ['tools', 'preset', 'bus', 'orch', 'settings', 'interconnect'] as const
 
 /** 一个开关的显示名（经语言服务）。 */
 function switchName(key: string): string {
@@ -783,6 +783,7 @@ export function SettingsPanel(): ReactElement {
             bus: t('module.bus'),
             orch: t('module.orch'),
             settings: t('module.settings'),
+            interconnect: t('module.interconnect'),
           })}<b>{t('note.restart.strong')}</b>{t('note.restart.post')}
         </li>
         <li className={S.note}>
@@ -834,6 +835,7 @@ const PANEL_EN: Record<string, string> = {
   'module.bus': 'Session bus',
   'module.orch': 'Closed-loop orchestration',
   'module.settings': 'Settings',
+  'module.interconnect': 'Cross-instance',
   cardTitle: 'New-session defaults',
   'cardNote.pre': 'Affects only sessions this plugin creates (the ones Hob starts via ',
   'cardNote.mid': '); ',
@@ -910,7 +912,7 @@ const PANEL_EN: Record<string, string> = {
   'note.permission.pre': '· «Permission level» is a ',
   'note.permission.strong': 'takes-effect-immediately',
   'note.permission.post': ' value-type configuration — an open session follows the new level from its next step, and it is a different path from the module switches above.',
-  'note.restart.pre': '· Module switches ({tools} / {preset} / {bus} / {orch} / {settings}, five in total): a change needs ',
+  'note.restart.pre': '· Module switches ({tools} / {preset} / {bus} / {orch} / {settings} / {interconnect}, six in total): a change needs ',
   'note.restart.strong': 'an instance restart',
   'note.restart.post': ' to take effect — the host’s rule is that changing these values does not remount the plugin, and modules are loaded at plugin-load time.',
   'note.effective.pre': '· «{card}» is a ',
@@ -938,6 +940,7 @@ const PANEL_ZH: Record<string, string> = {
   'module.bus': '会话总线',
   'module.orch': '闭环编排',
   'module.settings': '设置',
+  'module.interconnect': '跨实例投递',
   cardTitle: '新建会话默认',
   'cardNote.pre': '仅影响本插件建出的会话（Hob 派活时经 ',
   'cardNote.mid': ' 新建的那些）；',
@@ -1013,7 +1016,7 @@ const PANEL_ZH: Record<string, string> = {
   'note.permission.pre': '· 「权限档位」是',
   'note.permission.strong': '即改即生效',
   'note.permission.post': '的值型配置 —— 已开的会话在它的下一步就按新档位走；它和上面的模块开关是两条不同的路径。',
-  'note.restart.pre': '· 模块开关（{tools} / {preset} / {bus} / {orch} / {settings}，共五个）：改完需要',
+  'note.restart.pre': '· 模块开关（{tools} / {preset} / {bus} / {orch} / {settings} / {interconnect}，共六个）：改完需要',
   'note.restart.strong': '重启实例',
   'note.restart.post': '才生效 —— 宿主的规定是"改这些值不重挂插件"，而模块的装载发生在插件装载那一刻。',
   'note.effective.pre': '· 「{card}」是',

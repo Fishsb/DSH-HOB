@@ -41,6 +41,14 @@ export interface ModulesConfig {
   orch: boolean
   /** M4 配置 schema 模块。 */
   settings: boolean
+  /**
+   * M6a 跨实例投递模块（2026-10-16 第 237 轮 · `UD-119` 裁定）。
+   *
+   * ⚠ ⚠ **缺省 `false`** —— ⚠ 它会在**无人看管时向另一个实例投递**（⚠ 与 `orch` 同风险档）。
+   * ⚠ ⚠ **且它另有一道并列的闸门**：⚠ **权限档位 = 账本时，即便这里是 `true` 也不注册**
+   *   （⚠ 跨实例投递是"影响外部状态"的动作 ⇒ 只读档不做）。
+   */
+  interconnect: boolean
 }
 
 /**
@@ -227,6 +235,25 @@ export const Config = z.object({
     settings: z.boolean().default(true)
       .description('设置模块：登记本插件的配置面，使其出现在这个设置页里。')
       .volatile(),
+    /**
+     * ── 跨实例投递开关（M6a · 2026-10-16 第 237 轮 · `UD-119` 裁定）─────────────
+     *
+     * **它管什么**：⚠ 允许把一条任务**投递给另一个 DSH 实例**（⚠ 走宿主原生
+     *   `dsh headless` —— ⚠ **一次性进程 + stdout**；⛔ 不写任何自研协议）。
+     *
+     * ⚠ ⚠ **缺省 `false`（与 `bus` 的 `true` 不同）** —— ⚠ 理由与 `orch` 同档：
+     *   ⚠ **它一旦转起来会在无人看管时向别处投递**（⚠ 而这次的"别处"是**另一个实例**）
+     *   ⇒ ⚠ 要用的人**显式打开**，且打开时就知道自己在开什么。
+     *   ⚠ **并据实说明**：⚠ **地址只能从白名单来** ⇒ ⛔ 它不是"能写任意远端"
+     *     （⚠ 白名单为空 ⇒ 每个对端都被拒，⚠ 且拒的时候**点名**说清楚）。
+     *
+     * ⚠ 关掉它只影响 M6a 自己：⚠ 投递服务不提供，⚠ 其余模块照常。
+     *   ⚠ ⚠ **且档位规则仍然生效**：⚠ 即便这里开着，**档位 = 账本时服务也不提供**
+     *     （⚠ 与"只读档不做影响外部状态的动作"同一条判据）。
+     */
+    interconnect: z.boolean().default(false)
+      .description('跨实例投递（M6a）：允许把任务投递给白名单里的另一个 DSH 实例（走宿主原生 dsh headless）。⚠ 缺省关；⚠ 地址只从白名单来。')
+      .volatile(),
   }).default({}),
 
   /**
@@ -348,6 +375,29 @@ export const Config = z.object({
       .description('首次在某工作区干活时，把骨架（`.hob/**` 结构层）铺进那个工作区。⚠ 只补缺：目标已存在 ⇒ 一个字节都不动。⚠ 这不是工具，是插件的初始化行为。')
       .volatile(),
   }).default({}),
+
+  /**
+   * ── 跨实例投递的**对端白名单**（M6a · 2026-10-16 第 237 轮 · `UD-119` 裁定）──────
+   *
+   * ⚠ ⚠ **它是那条硬边界的载体**：⚠ **对端地址只从这里来** ⇒ ⛔ **不接受任意远端**
+   *   （⚠ 与"能写任意远端"是两回事 —— ⚠ 前者是点名的、有限的、可审计的）。
+   *
+   * ⚠ **形状（⚠ 与 `spawn` / `permission` / `skeleton` 同形）**：
+   *   · 父对象 `interconnectTargets` **不标** `.volatile()`；
+   *   · 子字段 `list` **标** ⇒ ⚠ 改白名单**即改即生效**（⛔ 不必重启）；
+   *   ⚠ 父子同标会抛 `ValidationError`；⚠ 写入必须走子字段路径 `['interconnectTargets','list']`。
+   *
+   * ⚠ ⚠ **为什么是"一行一个字符串"而不是结构化对象**：⚠ 本仓的配置面用的是
+   *   schemastery 的 `z.string()` 形态（⚠ 结构化数组在宿主设置页上的呈现未经实测）
+   *   ⇒ ⚠ **取已验证的形态**：⚠ **每行一个对端**，格式 `名字=<launcher>`，⚠ 或只写 `名字`
+   *     （⚠ 后者用 `DEFAULT_LAUNCHER`）。⚠ 解析器见 {@link interconnectTargets}。
+   *   ⚠ ⚠ **空的含义**：⚠ **空 = 白名单为空** ⇒ ⚠ **每个对端都会被拒**（⚠ 而拒的时候会**点名**说明）。
+   */
+  interconnectTargets: z.object({
+    list: z.array(z.string()).default([])
+      .description('跨实例投递的对端白名单：每行一个，格式 `名字` 或 `名字=<launcher 路径>`。⚠ 空 = 谁都不许投（拒绝时会点名）。')
+      .volatile(),
+  }).default({}),
 })
 
 /**
@@ -445,6 +495,10 @@ export function moduleSwitches(config: unknown): ModulesConfig {
     //   ⇒ **两个方向的兜底都取"后果更轻"的那一边**，不取"更保守"或"更激进"。
     orch: pick('orch', false),
     settings: pick('settings', true),
+    // ⚠ 缺省 **false**（与 schema 的 `.default(false)` 一致）：读不出来时**宁可不开** ——
+    //   它的失效方向是**在无人看管时向另一个实例投递**（⚠ 而"别处"是另一台机器/实例）
+    //   ⇒ 与 `orch` 同一条"取后果更轻的那一边"纪律。
+    interconnect: pick('interconnect', false),
   }
 }
 
@@ -516,4 +570,60 @@ export function skeletonEnabled(config: unknown): boolean {
   if (raw === null || typeof raw !== 'object') return true
   const v = deref((raw as Record<string, unknown>).enabled)
   return typeof v === 'boolean' ? v : true
+}
+
+/**
+ * 读出「跨实例投递」开关的**普通布尔**（M6a · 2026-10-16 第 237 轮 · `UD-119` 裁定）。
+ *
+ * ⚠ **调用方一律不许直接读 `config.modules.interconnect`**（与 `moduleSwitches` 同一条纪律）：
+ *   该子字段标了 `.volatile()` ⇒ 运行时是 **ref 对象** ⇒ 直读会拿到 ref（**恒 truthy 且不报错**）。
+ *
+ * ── 兜底口径 ──────────────────────────────────────────────────────────────
+ *   读不出来 ⇒ **`false`**（与 schema 的 `.default(false)` 一致）。
+ *   ⚠ 理由：⚠ **它的失效方向是"在无人看管时向别处投递"** ⇒ ⚠ **宁可不开**
+ *     （⚠ 与 `orch` 同一条"取后果更轻的那一边"纪律；⚠ 与 `skeletonEnabled` 的方向相反，
+ *     因为那两个功能的失效方向本身相反）。
+ *
+ * @param config - 插件配置（来自 Loader 时是 ref 形态；测试里的裸对象是普通形态）。
+ */
+export function interconnectEnabled(config: unknown): boolean {
+  const raw = deref((config as { modules?: unknown } | undefined)?.modules)
+  if (raw === null || typeof raw !== 'object') return false
+  const v = deref((raw as Record<string, unknown>).interconnect)
+  return typeof v === 'boolean' ? v : false
+}
+
+/**
+ * 读出**对端白名单**（⚠ 那条"⛔ 不接受任意远端"硬边界的载体）。
+ *
+ * ── 解析口径（⚠ 一行一个对端）──────────────────────────────────────────────
+ *   · `名字` ⇒ ⚠ 对端名 = 名字，⚠ launcher 用缺省（{@link DEFAULT_LAUNCHER}）；
+ *   · `名字=<launcher>` ⇒ ⚠ 显式给启动器；
+ *   · ⚠ 空行 / 名字里有非法字符（空格、`=` 之外的分隔符）⇒ **跳过该行**（⚠ 但**不报错** ——
+ *     ⚠ 因为"跳过"在这里的后果只是"少一个对端"，⚠ 而**投递时会因为"不在白名单"而被拒并点名**
+ *     ⇒ ⚠ **⛔ 不会静默地投到别处**）。
+ *   ⚠ ⚠ **名字唯一**：⚠ 同名后者覆盖前者（⚠ 保持"点名的那个"是确定的）。
+ *
+ * ⚠ **兜底**：⚠ 读不出来 ⇒ **空数组**（⚠ = 谁都不许投 ⇒ ⚠ 每个对端都被拒、且拒的时候点名）。
+ *
+ * ⚠ ⚠ **本函数是白名单的**唯一**解析点** —— ⚠ 消费方（`interconnect.ts`）⛔ 不自己解析字符串。
+ */
+export function interconnectTargets(config: unknown): { name: string; launcher?: string }[] {
+  const raw = deref((config as { interconnectTargets?: unknown } | undefined)?.interconnectTargets)
+  if (raw === null || typeof raw !== 'object') return []
+  const list = deref((raw as Record<string, unknown>).list)
+  if (!Array.isArray(list)) return []
+  const out = new Map<string, { name: string; launcher?: string }>()
+  for (const item of list) {
+    if (typeof item !== 'string') continue
+    const line = item.trim()
+    if (line === '') continue
+    const eq = line.indexOf('=')
+    const name = (eq < 0 ? line : line.slice(0, eq)).trim()
+    const launcher = eq < 0 ? undefined : line.slice(eq + 1).trim()
+    // ⚠ 名字里不许有空白（⚠ 那会让"显式点名"变得不可靠）—— ⚠ 这样的行跳过。
+    if (name === '' || /\s/.test(name)) continue
+    out.set(name, { name, ...(launcher === undefined || launcher === '' ? {} : { launcher }) })
+  }
+  return [...out.values()]
 }

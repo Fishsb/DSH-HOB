@@ -10,7 +10,7 @@
  * ⚠ 本轮是**骨架**：只把上面这条形状立起来，**不注册任何业务能力**。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { Config, moduleSwitches, spawnDefaults, permissionLevel, PERMISSION_SERVICE } from './config.ts'
+import { Config, moduleSwitches, spawnDefaults, permissionLevel, PERMISSION_SERVICE, interconnectEnabled, interconnectTargets } from './config.ts'
 export { PERMISSION_SERVICE }
 import type { Config as ConfigShape, ModulesConfig } from './config.ts'
 
@@ -19,6 +19,8 @@ import * as presetModule from './modules/preset.ts'
 import * as busModule from './modules/bus.ts'
 import * as orchModule from './modules/orchestrator.ts'
 import * as settingsModule from './modules/settings.ts'
+// ⚠ M6a 跨实例投递（2026-10-16 第 237 轮 · `UD-119` 裁定）
+import * as interconnectModule from './modules/interconnect.ts'
 
 export { Config }
 
@@ -68,6 +70,23 @@ const MODULE_REGISTRY = [
   // ⚠ M5 编排（批 17）：**缺省关**（见 config.ts 该字段注释 —— 它会在无人看管时推进）。
   { key: 'orch', mod: orchModule, enabled: (m: ModulesConfig) => m.orch },
   { key: 'settings', mod: settingsModule, enabled: (m: ModulesConfig) => m.settings },
+  // ⚠ M6a 跨实例投递（2026-10-16 第 237 轮 · `UD-119` 裁定）：
+  //   ⚠ **缺省关**（⚠ 它会在无人看管时向另一个实例投递 ⇒ 与 `orch` 同风险档）。
+  //   ⚠ ⚠ **它 `provide` 的是一条"能力"，⛔ 不是一个面向模型的新工具**
+  //     ⇒ ⚠ **⛔ 不动 `MODEL_TOOL_ALLOWLIST`、⛔ 不动三档白名单**（⚠ 避开第 234 轮点名的第 ④ 处外溢）。
+  //   ⚠ ⚠ **两个"现读"**（⛔ 不是快照）：⚠ 开关与白名单都会随设置面改 ⇒
+  //     在 `apply` 时快照一次会让"改完不生效"（⚠ 与 `bus.ts` 的 `spawnDefaults` 同条教训）。
+  {
+    key: 'interconnect',
+    mod: interconnectModule,
+    // ⚠ ⚠ **档位闸门**（⚠ 与开关**并列**的第二道）：⚠ 档位 = 账本时**⛔ 不注册**
+    //   —— 跨实例投递是"影响外部状态"的动作，只读档不做（⚠ 见 §1.3 的判据"有没有改动能力"）。
+    // ⚠ ⚠ **档位闸门**（⚠ 与开关**并列**的第二道）：⚠ 档位 = 账本时**⛔ 不注册**
+    //   —— 跨实例投递是"影响外部状态"的动作，只读档不做（⚠ §1.3 判据：**有没有改动能力**）。
+    //   ⚠ `switches` 是**入口 apply 里**解出的普通布尔（⚠ 设计如此：注册表本身在模块作用域，
+    //     拿不到 `config`/`ctx`）⇒ ⚠ 档位那一半在 `apply` 的循环里判（⚠ 见下 `gate`）。
+    enabled: (m: ModulesConfig) => m.interconnect,
+  },
 ] as const
 
 export function apply(ctx: Context, config: ConfigShape): void {
@@ -86,16 +105,39 @@ export function apply(ctx: Context, config: ConfigShape): void {
   //     宿主不重挂载）⇒ 快照会让改完的档位对已开会话不可见。
   ctx.provide(PERMISSION_SERVICE, () => permissionLevel(config))
 
+  // ⚠ M6a 的**档位闸门**（2026-10-16 第 237 轮 · `UD-119` 裁定）：
+  //   ⚠ ⚠ 它**在开关之外**再加一道：⚠ **档位 = 账本 ⇒ 不注册**（⚠ 跨实例投递是"影响外部状态"的动作）。
+  //   ⚠ 判据照 §1.3："判据是**有没有改动能力**" —— ⚠ 只读档不做影响外部状态的事。
+  //   ⚠ ⚠ **现读**（⛔ 不是快照）：⚠ 档位可随时改（volatile 原地更新、宿主不重挂载）
+  //     ⇒ ⚠ 在 `apply` 时快照会让"升档之后仍不提供"（⚠ 与 `spawnDefaults` 同条教训）。
+  const interconnectAllowed = () => permissionLevel(config) !== 'ledger'
+
   for (const entry of MODULE_REGISTRY) {
     // 开关关闭 ⇒ 不注册该模块。**只影响它自己**，不影响其他模块。
     if (!entry.enabled(switches)) continue
+    // ⚠ M6a：第二道闸门（档位）—— ⚠ 只在**它自己**身上生效，⛔ 不影响别的模块。
+    if (entry.key === 'interconnect' && !interconnectAllowed()) {
+      ctx.logger?.info?.(`[${name}] 跨实例投递**未注册**：权限档位 = 账本（⚠ 只读档不做影响外部状态的动作）。`)
+      continue
+    }
 
     // 经 `ctx.plugin` 装载：模块自己的 `inject` 生效为加载门禁
     // （依赖不在 ⇒ 该 fiber 不激活，宿主不报错、其余模块照常）。
     // 用模块名作为 fiber 的显示名，便于 `dev_plugin_status` 之类诊断定位。
     // ⚠ `configFor` 传的是**普通值**（已解 ref）；没有它的模块保持原样（不传 config）。
     const modConfig = 'configFor' in entry ? entry.configFor(config) : undefined
-    ctx.plugin({ ...entry.mod, name: entry.mod.name }, modConfig)
+    // ⚠ M6a 的运行态依赖（⚠ **现读**开关与白名单 —— ⛔ 不缓存）：⚠ 只有它需要，故按 key 给。
+    const modConfigFinal = entry.key === 'interconnect'
+      ? {
+        deps: {
+          enabledOf: () => interconnectEnabled(config),
+          targetsOf: () => interconnectTargets(config),
+          log: (msg: string) => { try { ctx.logger?.debug?.(msg) } catch { /* 无 logger 时忽略 */ } },
+        },
+        levelOf: () => permissionLevel(config),
+      }
+      : modConfig
+    ctx.plugin({ ...entry.mod, name: entry.mod.name }, modConfigFinal)
 
     loaded.push(entry.key)
   }

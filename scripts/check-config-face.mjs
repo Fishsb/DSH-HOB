@@ -297,15 +297,41 @@ function schemaTopGroups(src) {
     bad('D 面板引言仍写"两个 Agent 预设"—— 实施侧预设 Hob-Execute 已于 v4 删除，现只剩 Hob')
   } else ok('D 面板引言已不再主张"两个 Agent 预设"（过时文案 ①已修）')
 
-  // ② 页脚五开关清单必须在位（缺一个就是把真实开关藏起来）。
-  const FIVE = [
-    ['工具', 'tools'], ['预设', 'preset'], ['会话总线', 'bus'],
-    ['闭环编排', 'orch'], ['设置', 'settings'],
-  ]
-  const missingFive = FIVE.filter(([zh]) => !panelSrc.includes(zh))
-  if (missingFive.length > 0) {
-    bad(`D 页脚开关清单缺中文名（${missingFive.map(([zh]) => zh).join(', ')}）—— 实际有五个开关，少一个就是把它藏起来`)
-  } else ok('D 页脚开关清单含五个（工具 / 预设 / 会话总线 / 闭环编排 / 设置）（过时文案 ②已修）')
+  // ② 页脚开关清单必须在位（缺一个就是把真实开关藏起来）。
+  //   ⚠ ⚠ **2026-10-16 第 237 轮改为派生**（⚠ 原先是手抄的 `FIVE` 数组）。
+  //     ⚠ **为什么要改**：⚠ 本轮给面板加了第六个开关（`interconnect`）⇒
+  //     ⚠ ⚠ **手抄的"五个"当场过期**（⚠ 而它的失败方式是**报一条与事实不符的判定行**，
+  //     ⚠ 或者更糟：⚠ 有人为了让它过而**把一个真开关藏回面板外**）。
+  //     ⚠ ⚠ **这正是 `E-117` 同族**（⚠ 与第 224 轮 `check:host` 那处手抄顶层键表**同形**）。
+  //   ⚠ **判据从哪来**：⚠ **`VISIBLE_SWITCHES`（面板那份唯一白名单）** ——
+  //     ⚠ 它才是"该显示哪几个开关"的**唯一来源**（⚠ 手抄一份等于**再造一个会漂的判据**）。
+  //   ⚠ 提取不到（面板里读不到 `VISIBLE_SWITCHES` / 抽不出键）⇒ **FAIL**（⛔ 基准读不到不按通过处理）。
+  const visMatch = /const VISIBLE_SWITCHES\s*=\s*\[([^\]]*)\]/.exec(panelSrc)
+  if (visMatch === null) {
+    bad('D 面板里抽不出 `VISIBLE_SWITCHES`（开关白名单）⇒ 本条失去基准（**不按通过处理**）')
+  } else {
+    const keys = [...visMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
+    if (keys.length === 0) {
+      bad('D `VISIBLE_SWITCHES` 抽到 0 个键 ⇒ 本条失去基准（**不按通过处理**）')
+    } else {
+      // ⚠ 逐键核：① 面板词典里得有它的中文名（⚠ 否则该开关在页面上**没有名字**）；
+      //   ② 页脚那句 `note.restart` 的参数表里得提到它（⚠ 否则"改完要重启"那句话漏了它）。
+      const noName = keys.filter((k) => !new RegExp(`'module\\.${k}'\\s*:`).test(panelSrc))
+      const notInFooter = keys.filter((k) => !new RegExp(`\\b${k}\\s*:`).test(panelSrc.slice(panelSrc.indexOf("t('note.restart.pre'"), panelSrc.indexOf("note.restart.strong"))))
+      if (noName.length > 0) {
+        bad(`D 开关没中文名（面板词典里缺 \`module.<key>\`）：${noName.join(', ')}`
+          + '\n      ⇒ ⚠ 页面上会显示**键名**而不是人话（⚠ 等于把这个真开关藏起来）')
+      }
+      if (notInFooter.length > 0) {
+        bad(`D 页脚"改完要重启"那句没点到这些开关：${notInFooter.join(', ')}`
+          + '\n      ⇒ ⚠ 页脚那句话列举的是**全部模块开关**；⚠ 漏一个 ⇒ 用户以为改了它不用重启')
+      }
+      if (noName.length === 0 && notInFooter.length === 0) {
+        ok(`D 页脚开关清单**派生自面板的 \`VISIBLE_SWITCHES\`**：${keys.length} 个（${keys.join(' / ')}）`
+          + ' —— ⚠ 逐键核过"有中文名 + 在页脚那句话里"（⛔ 手抄表已删）')
+      }
+    }
+  }
 }
 
 // ── E. 写入必须走子字段路径（不得整块写 spawn）────────────────────────────

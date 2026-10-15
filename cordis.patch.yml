@@ -40,6 +40,12 @@
           #   关掉它只影响 M5：会话总线仍在（手工投递路不受影响）。
           orch: false
           settings: true
+          # ⚠ **缺省 false**（2026-10-16 第 237 轮 · M6a · `UD-119` 裁定）：跨实例投递
+          #   会**在无人看管时向另一个实例投递** ⇒ 与 `orch` 同风险档 ⇒ 显式打开。
+          #   ⚠ 另有一条**独立**的闸门：**权限档位 = 账本时，即便这里开着也不提供投递服务**
+          #     （跨实例投递是"影响外部状态"的动作，只读档不做）。
+          #   ⚠ 关掉它只影响 M6a：投递服务不提供，其余模块照常。
+          interconnect: false
         # ── 新建会话默认值（2026-10-09 本轮新增；与 src/config.ts 的 `spawn` 段一一对应）──
         # ⚠ 四个字段**都带 .volatile()** ⇒ 运行时都是 **ref 对象**，
         #   唯一允许解 ref 的地方是 `src/config.ts` 的 `spawnDefaults()`；
@@ -80,6 +86,15 @@
         # ⚠ 唯一允许解 ref 的地方是 `src/config.ts` 的 `skeletonEnabled()`。
         skeleton:
           enabled: true
+        # ── 跨实例投递的对端白名单（2026-10-16 第 237 轮 · M6a · `UD-119` 裁定）──
+        # ⚠ ⚠ **它是"⛔ 不做成能写任意远端"这条硬边界的载体**：对端地址**只从这里来**。
+        # ⚠ 格式：每行一个对端 —— `名字` 或 `名字=<launcher 路径>`（⚠ 不给 launcher 就用缺省）。
+        # ⚠ **空 = 谁都不许投**（⚠ 而拒的时候会**点名**说明"不在白名单内"，⛔ 不静默）。
+        # ⚠ 形状与 `spawn` / `permission` / `skeleton` 同形：父不标 volatile、子字段标
+        #   ⇒ ⚠ 改白名单**即改即生效**（⛔ 不必重启）；⚠ 写入走子字段路径。
+        # ⚠ 唯一允许解 ref 的地方是 `src/config.ts` 的 `interconnectTargets()`。
+        interconnectTargets:
+          list: []
 # ⚠ 上面四个值只是**声明默认值**，别在代码里直接读 `config.modules.x`：
 #   四个字段**都带 .volatile()** ⇒ 运行时都是 **ref 对象**（恒 truthy）。
 #   唯一允许解 ref 的地方是 `src/config.ts` 的 `moduleSwitches()`。

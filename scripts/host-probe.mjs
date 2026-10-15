@@ -124,32 +124,59 @@ function fakeCtx() {
   return { ctx, plugins, logs, provided }
 }
 
-/** 五个模块开关的 key（**唯一权威 = `src/config.ts` 的 `modules` schema**；此处只列名，不写默认值）。 */
-const SWITCH_KEYS = ['tools', 'preset', 'bus', 'orch', 'settings']
+// ── ⚠ ⚠ 模块开关清单：**派生，⛔ 不手抄**（2026-10-16 第 237 轮）──────────────────
+//   ⚠ **为什么要改**：⚠ 本轮加了第六个开关（`interconnect`）⇒
+//     ⚠ ⚠ **手抄的五个 key / 五个默认值 / 五个模块名【当场全部过期】**
+//     ⇒ ⚠ 判据红（⚠ 而它红得**对**：⚠ 是本判据的手抄表旧了，⛔ 不是实现坏了）。
+//   ⚠ ⚠ **这正是 `E-117` 同族**（⚠ 与第 224 轮本文件那处"手抄顶层键表"**同一个病**，
+//     ⚠ 那一处当时已改成派生；⚠ 本轮发现**同一份文件里还剩三处手抄**）。
+//   ⚠ **权威来源**：⚠ **`src/config.ts` 的 `modules` schema** ——
+//     ⚠ 从它**抽**字段名与 `.default(x)`，⛔ 不在这里再抄一份。
+//   ⚠ 抽不到 ⇒ **直接抛**（⚠ 基准读不到就不该有判定行 —— ⛔ 不按通过处理）。
+const modSchemaSrc = readFileSync(new URL('../src/config.ts', import.meta.url), 'utf8')
+const modBlock = /modules:\s*z\.object\(\{([\s\S]*?)\n  \}\)\.default\(\{\}\)/.exec(modSchemaSrc)
+if (modBlock === null) throw new Error('host-probe: 从 src/config.ts 抽不出 `modules` schema 块')
 
-/** key → 该模块的 `name` 常量（登记时出现在 `plugins` 里的名字）。 */
-const MODULE_NAMES = {
-  tools: 'dsh-hob-tools',
-  preset: 'dsh-hob-preset',
-  bus: 'dsh-hob-bus',
-  orch: 'dsh-hob-orchestrator',
-  settings: 'dsh-hob-settings',
-}
+/** 派生：key → 默认值（⚠ 逐字段抽 `key: z.boolean().default(<bool>)`）。 */
+const SWITCH_DEFAULTS = (() => {
+  const out = {}
+  for (const m of modBlock[1].matchAll(/(\w+):\s*z\.boolean\(\)\.default\((true|false)\)/g)) out[m[1]] = m[2] === 'true'
+  return out
+})()
+if (Object.keys(SWITCH_DEFAULTS).length === 0) throw new Error('host-probe: `modules` 块里抽到 0 个开关')
 
-/** 实测默认值（volatile ⇒ 取 `.get()` 才是真值）。 */
-const DEFAULT_SWITCH_VALUES = { tools: true, preset: false, bus: true, orch: false, settings: true }
+/** ⚠ 模块开关的 key（**派生**）。 */
+const SWITCH_KEYS = Object.keys(SWITCH_DEFAULTS)
 
-/** 实测的默认 modules 形状（多处引用，收口成常量）。 */
-const DEFAULT_MODULES_JSON = '{"tools":{},"preset":{},"bus":{},"orch":{},"settings":{}}'
+/**
+ * 派生：key → 该模块的 `name` 常量（登记时出现在 `plugins` 里的名字）。
+ * ⚠ 来源 = `src/index.ts` 的 `MODULE_REGISTRY`（⚠ 那是"哪个 key 装哪个模块"的唯一权威）。
+ * ⚠ 抽不到某个 key ⇒ ⚠ **该项留空**，⚠ 由下面的判据**如实报出来**（⛔ 不静默跳过）。
+ */
+const MODULE_NAMES = (() => {
+  const idxSrc = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
+  const out = {}
+  // ⚠ 注册表条目形态：`{ key: '<k>', mod: <modVar>, ... }` ⇒ 再反查 `import * as <modVar> from './modules/<file>.ts'`
+  //   ⚠ 模块的 `name` 常量 = `dsh-hob-<file>`（⚠ 各模块文件里带的 `name`；⚠ 这里按**约定**推，并由下方判据实测校验）。
+  // ⚠ 两种形态都要吃：⚠ 单行 `{ key: 'x', mod: y, ... }` 与多行（⚠ 实测注册表里两种并存）。
+  for (const m of idxSrc.matchAll(/key:\s*'(\w+)',\s*\n?\s*mod:\s*(\w+)/g)) {
+    const file = new RegExp(`import \\* as ${m[2]} from '\\./modules/([\\w-]+)\\.ts'`).exec(idxSrc)
+    if (file !== null) out[m[1]] = `dsh-hob-${file[1]}`
+  }
+  return out
+})()
+
+/** 实测的默认 modules 形状（⚠ **派生**自上面的 key 清单）。 */
+const DEFAULT_MODULES_JSON = JSON.stringify(Object.fromEntries(SWITCH_KEYS.map((k) => [k, {}])))
 
 // ── 1) 默认配置：modules 的形状（五子字段全 ref）──────────────────────────
-check('schema 校验：undefined → modules 形状 = {tools:{}, preset:{}, bus:{}, orch:{}, settings:{}}', () => {
+check(`schema 校验：undefined → modules 形状 = ${DEFAULT_MODULES_JSON}`, () => {
   const got = JSON.stringify(mod.Config(undefined).modules)
   return got === DEFAULT_MODULES_JSON ? true : `got=${got} want=${DEFAULT_MODULES_JSON}`
 })
 
 // ── 2) 五个开关都是 volatile ref（须 .get()），默认值实测 ─────────────────
-check('schema 校验：五个开关都是 volatile ref（{} 且 .get() 返回布尔）且默认值与实测一致', () => {
+check(`schema 校验：${SWITCH_KEYS.length} 个开关都是 volatile ref（{} 且 .get() 返回布尔）且默认值与 schema 一致`, () => {
   const c = mod.Config(undefined)
   const shape = {}
   const bad = []
@@ -158,7 +185,7 @@ check('schema 校验：五个开关都是 volatile ref（{} 且 .get() 返回布
     const isRef = v !== null && typeof v === 'object' && typeof v.get === 'function'
     shape[k] = `${isRef ? 'ref' : 'NOT-ref'}:${isRef ? JSON.stringify(v.get()) : '?'}`
     if (!isRef) bad.push(`${k} 不是 ref`)
-    else if (v.get() !== DEFAULT_SWITCH_VALUES[k]) bad.push(`${k} 默认值 ${JSON.stringify(v.get())} ≠ ${JSON.stringify(DEFAULT_SWITCH_VALUES[k])}`)
+    else if (v.get() !== SWITCH_DEFAULTS[k]) bad.push(`${k} 默认值 ${JSON.stringify(v.get())} ≠ ${JSON.stringify(SWITCH_DEFAULTS[k])}`)
   }
   return bad.length === 0 ? true : `${bad.join('；')}（形状：${JSON.stringify(shape)}）`
 })
@@ -223,14 +250,20 @@ check("apply：默认配置 ⇒ 登记 tools + bus + settings，日志含「模�
 // ── 7) 模块可独立启停：**逐个**单独关 ⇒ 只少它自己 ────────────────────────
 //   ⚠ 本轮把原来"只测 tools=false 一条"扩成**五个开关逐个实测** ——
 //     因为它守的是"**模块可独立启停**"这条架构性质，而单测一个开关证明不了其余四个。
-check('apply：五个开关**逐个**单独关 ⇒ 只少该模块自己，其余四个照常登记（模块可独立启停）', () => {
+check(`apply：${SWITCH_KEYS.length} 个开关**逐个**单独关 ⇒ 只少该模块自己，其余照常登记（模块可独立启停）`, () => {
   const problems = []
   for (const off of SWITCH_KEYS) {
     const m = {}
     for (const k of SWITCH_KEYS) m[k] = true
     m[off] = false
     const { ctx, plugins, logs } = fakeCtx()
-    mod.apply(ctx, mod.Config({ modules: m }))
+    // ⚠ ⚠ **本条只测"开关"这一道闸门** ⇒ 必须把**另一道**（档位）开到位。
+    //   ⚠ 为什么：⚠ `interconnect` 有**两道并列**闸门（开关 + 档位）；
+    //     ⚠ 默认档位 = 账本 ⇒ 它不登记 ⇒ ⚠ 而那是**档位闸门**在起作用，⛔ 不是开关坏了。
+    //   ⚠ ⚠ 若不把档位开到"项目"，本条会把**正确的双重闸门**误报成"开关不管用"
+    //     （⚠ 本轮实测撞到过：⚠ 见报告 §3.6）。
+    //   ⚠ 档位闸门本身由**下一条**判据单独守（⚠ 别让一条判据同时测两件事）。
+    mod.apply(ctx, mod.Config({ modules: m, permission: { level: 'project' } }))
     const want = SWITCH_KEYS.filter((k) => k !== off).map((k) => MODULE_NAMES[k]).sort()
     const got = [...plugins].sort()
     if (JSON.stringify(got) !== JSON.stringify(want)) {
@@ -245,7 +278,7 @@ check('apply：五个开关**逐个**单独关 ⇒ 只少该模块自己，其�
 })
 
 // ── 8) 五开关全关 ⇒ 不登记任何模块 ───────────────────────────────────────
-check('apply：五个开关全关 ⇒ 不登记任何子模块（日志「模块：无」）', () => {
+check(`apply：${SWITCH_KEYS.length} 个开关全关 ⇒ 不登记任何子模块（日志「模块：无」）`, () => {
   const { ctx, plugins, logs } = fakeCtx()
   const all = {}
   for (const k of SWITCH_KEYS) all[k] = false
@@ -253,6 +286,24 @@ check('apply：五个开关全关 ⇒ 不登记任何子模块（日志「模块
   if (plugins.length !== 0) return `仍登记了=${JSON.stringify(plugins)}`
   if (!logs.some((m) => m.includes('模块：无'))) return `logs=${JSON.stringify(logs)}`
   return true
+})
+
+// ── 8b) ⚠ ⚠ **档位闸门（M6a 的第二道）成对对拍的实测**（2026-10-16 第 237 轮）──────
+//   ⚠ **它守什么**：⚠ `interconnect` 除了"开关"还有一道**并列**的闸门 ——
+//     ⚠ **权限档位 = 账本 ⇒ 不登记**（⚠ 跨实例投递是"影响外部状态"的动作，只读档不做）。
+//   ⚠ ⚠ **成对**：⚠ 账本档 ⇒ **不**登记；⚠ 项目档 ⇒ **要**登记（⚠ 两边都测，⛔ 只测一边证明不了闸门）。
+//   ⚠ 条件：⚠ 开关**开着** —— ⚠ 否则测的是开关闸门，⛔ 不是档位闸门。
+check('apply：⚠ 档位闸门成对 —— 开关开着时，档位=账本 ⇒ 不登记 interconnect；档位=项目 ⇒ 登记', () => {
+  const problems = []
+  for (const [level, shouldRegister] of [['ledger', false], ['project', true]]) {
+    const { ctx, plugins } = fakeCtx()
+    mod.apply(ctx, mod.Config({ modules: { interconnect: true }, permission: { level } }))
+    const got = plugins.includes('dsh-hob-interconnect')
+    if (got !== shouldRegister) {
+      problems.push(`档位=${level} ⇒ ${got ? '登记了' : '未登记'}（期望 ${shouldRegister ? '登记' : '未登记'}）plugins=${JSON.stringify([...plugins])}`)
+    }
+  }
+  return problems.length === 0 ? true : problems.join('；')
 })
 
 // ── 9) name 常量（entry id / 路由前缀 / settings ns 三契约）───────────────
