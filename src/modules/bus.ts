@@ -66,8 +66,29 @@ export interface SessionInfo {
   id: string
   /** 会话的工作目录（判断"这是哪个项目的会话"的主要依据）。 */
   cwd?: string
-  /** 组成该会话的预设 id（如 `Hob` / `standard`），用于区分身份。 */
+  /**
+   * 会话**当前实际运行**的预设 id（如 `Hob` / `standard`），用于区分身份。
+   *
+   * ⚠ ⚠ **第 292 轮改**：原先这里取的是 `session.header.agentPreset` —— 而宿主明写那只是
+   *   **建档那一刻**的事实（改过预设的会话，header **不会再变**）。现在改取**宿主的
+   *   `agentPreset` 投影**（= header 起步 + 最后一条 `agent-preset/selected`）——
+   *   ⚠ **这正是宿主自己的读法**（`dsh-api-session-controller` 的 `presetForSession()`）。
+   *   ⚠ 投影不可用时**退回 header 值**，并置 {@link presetSource} 如实标明来源。
+   */
   agentPreset?: string
+  /**
+   * {@link agentPreset} 的**取自哪里**（⚠ 让"降级"可见，⛔ 不静默）。
+   *   · `'projection'` —— 取自宿主 `agentPreset` 投影（**权威**）；
+   *   · `'header'` —— 投影缺位，退回建档头（⚠ **可能不是当前值**）。
+   */
+  presetSource?: 'projection' | 'header'
+  /**
+   * 该会话在**哪一侧**（依 {@link agentPreset} 判定，口径同源 {@link PLANNING_PRESET_ID}）。
+   *   · `'planning'` —— 规划侧（**不能施工**：无 shell、无 write/edit）；
+   *   · `'implementation'` —— 实施侧；
+   *   · ⛔ **不给值**（预设读不到）—— 如实留空，⛔ 不猜。
+   */
+  side?: 'planning' | 'implementation'
   /** `idle` / `running`；`running` 的会话仍可投递（排队到下一轮/下一 step）。 */
   status?: string
   /** 是否有活着的 agent（false = 只有历史、没有运行实体 ⇒ 不可投递）。 */
@@ -273,6 +294,41 @@ function makePresetRegistryLookup(svcCtx: any): any {
 }
 
 /**
+ * 可选读 `sessionProjections`（宿主投影表）—— 用来读**会话当前实际运行的预设**。
+ *
+ * ── ⚠ ⚠ 为什么需要它（实测 · 第 292 轮那单的洞）─────────────────────────
+ *   原先 `list()` 报的"预设"取自 **`session.header.agentPreset`** —— 而**宿主自己的定义**
+ *   明写那只是**建档那一刻**的事实（`dsh-agent-preset-registry/lib/types/session.js`）：
+ *     *"The creation header names the preset a session STARTED with, and it is deep-frozen
+ *      because that is a creation fact. A session may still change preset while it is blank …
+ *      Reconstruction reads the `agentPreset` Session projection, never the header alone."*
+ *   ⇒ ⚠ ⚠ **实测后果**（本项目账本区 8 条会话逐条量过）：`header.agentPreset` **全部 = `standard`**，
+ *     而其中 `session-0757b4c6-…`（**Hob 自己那条 · 规划侧**）在 **seq 3** 有一条
+ *     `agent-preset/selected = Hob` ⇒ ⚠ ⚠ **它被报成实施侧**，⚠ **正是本单要修的那个缺陷**。
+ *   ⚠ 宿主读法是**唯一权威**（`dsh-headless/lib/index.js` 的 `currentPreset(header, events, id)`）：
+ *     **header 起步、由最后一条 `agent-preset/selected` 事件推进** ——
+ *     与投影表 `agentPreset` 的定义（`init: header.agentPreset ?? null` +
+ *     `apply: 只在 agent-preset/selected 上改写`）**逐字同义**。
+ *
+ * ── ⚠ 为什么走投影表而不是自己重放事件 ─────────────────────────────────
+ *   宿主已把这个归约**注册成投影单元**（`dsh-api-session-controller/lib/index.js:340` 的
+ *   `presetForSession()` 就是 `ctx.sessionProjections.stateOf(session, "agentPreset") ?? void 0`）。
+ *   本模块**照抄宿主的读法**：⛔ 不自己扫事件流（那是第二条归约实现 ⇒ 必然漂），
+ *   ⛔ 不读注册表的 `defaultId`（那是**部署默认** ⇒ 本单明禁用它顶替）。
+ *
+ * ── ⚠ 与 `makePresetRegistryLookup` 同一条纪律 ─────────────────────────
+ *   **不进 `inject` 依赖表**、**运行时现读、不缓存**（理由见上一条注释）。
+ *   缺席 ⇒ 返回 `undefined` ⇒ 该列退回 header 值（并如实标明来源），⛔ 不编造。
+ */
+function makeProjectionsLookup(svcCtx: any): any {
+  try {
+    return typeof svcCtx.get === 'function' ? svcCtx.get('sessionProjections') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * ⚠ **第 11 轮删除**：原先这里有一个 `readHostDefaultPresetId()`，
  *   用来读宿主的**有效默认预设**（`remoteExportList()` 里 `isDefault` 那条，
  *   或注册表的 `defaultId` getter）。
@@ -415,6 +471,31 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
     //   用来解析"宿主的有效默认预设是谁"。缺席 ⇒ **不拒绝 spawn**，退回不指定 + 如实报告
     //   （见 spawn 里的兜底分支）—— 它只是一个**增强判据**，不是建会话的必需品。
     const presetRegistryOf = () => makePresetRegistryLookup(svcCtx)
+    // 可选读：`sessionProjections`（宿主投影表 · 第 292 轮）。用来读**会话当前运行的预设**。
+    //   见 `makeProjectionsLookup` 的注释：宿主明写 header 只是建档事实，当前值在投影里。
+    //   缺席 ⇒ 退回 header 值并如实标明（⛔ 不静默、⛔ 不编造）。
+    const projectionsOf = () => makeProjectionsLookup(svcCtx)
+
+    /**
+     * 读一个会话的**当前**预设（⚠ 权威 = 宿主投影；缺席 ⇒ 退回 header 并标来源）。
+     * @returns `[preset, source]`；两者都读不到 ⇒ `[undefined, undefined]`。
+     */
+    const currentPresetOf = (session: any): [string | undefined, 'projection' | 'header' | undefined] => {
+      // ① 权威来源：宿主 `agentPreset` 投影（= header + 最后一条 agent-preset/selected）。
+      try {
+        const projections = projectionsOf()
+        if (projections !== undefined && typeof projections.stateOf === 'function') {
+          const v = projections.stateOf(session, 'agentPreset')
+          if (typeof v === 'string' && v !== '') return [v, 'projection']
+        }
+      } catch {
+        // 投影读失败 ⇒ 走下面的降级，⛔ 不让单个会话把整张表带崩。
+      }
+      // ② 降级：建档头（⚠ 只是"它建的时候是什么"，可能不是当前值）。
+      const h = session?.header?.agentPreset
+      if (typeof h === 'string' && h !== '') return [h, 'header']
+      return [undefined, undefined]
+    }
 
     const bus: HobBus = {
       version: 1,
@@ -439,10 +520,16 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
             if (isArchived(id)) continue
             const header = s?.header ?? {}
             const agent = typeof agents.get === 'function' ? agents.get(id) : undefined
+            // ⚠ ⚠ 预设取**当前运行值**（宿主投影），⛔ 不是建档头 —— 见 `currentPresetOf`。
+            const [preset, presetSource] = currentPresetOf(s)
             rows.push({
               id,
               ...(typeof header.cwd === 'string' ? { cwd: header.cwd } : {}),
-              ...(typeof header.agentPreset === 'string' ? { agentPreset: header.agentPreset } : {}),
+              ...(preset === undefined ? {} : { agentPreset: preset, presetSource }),
+              // ⚠ 「在哪一侧」由**同一个值**派生（口径同源 PLANNING_PRESET_ID，⛔ 不另写字面量）。
+              ...(preset === undefined
+                ? {}
+                : { side: preset === PLANNING_PRESET_ID ? 'planning' as const : 'implementation' as const }),
               ...(agent?.status === undefined ? {} : { status: String(agent.status) }),
               live: agent !== undefined,
               self: selfSessionId !== undefined && id === selfSessionId,
@@ -518,13 +605,16 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
         //     （问它状态 / 让它规划 / 传个读数）⇒ 拦投递会**误伤**合法用法，
         //     且会把"投递成功与否"这个既有语义改掉（那是**零放宽**的反面：改宽/改严都不行）。
         //     ⇒ 如实**预警**，把决定权留给调用方。
-        //   ⚠ **读法**：目标预设取自**会话头**（`session.header.agentPreset`），
-        //     与 `list()` 用的是**同一个实体**（见上方 `:428`）—— ⛔ 不缓存、不猜。
+        //   ⚠ **读法（第 292 轮改）**：目标预设取自**宿主 `agentPreset` 投影**
+        //     （= header 起步 + 最后一条 `agent-preset/selected`），⚠ 与 `list()` 用的是
+        //     **同一个读数函数**（见上方 `currentPresetOf`）—— ⛔ 不缓存、不猜。
+        //     ⚠ ⚠ **原实现只读 `session.header.agentPreset`** ⇒ ⚠ 对"建后改过预设"的会话
+        //     （实测：Hob 那条正是）会**读到陈旧值** ⇒ 该预警会**对真正的规划侧会话不报**
+        //     （那正是这条预警存在的理由），也会**对已改成实施侧的会话误报**。
         const targetPreset = (() => {
           try {
             const session = typeof sessions.get === 'function' ? sessions.get(sessionId) : undefined
-            const p = session?.header?.agentPreset
-            return typeof p === 'string' && p !== '' ? p : undefined
+            return currentPresetOf(session)[0]
           } catch {
             return undefined
           }
@@ -937,6 +1027,8 @@ export function createHobBusTools(
     name: 'hob_sessions',
     description:
       '列出**本实例内可投递的活会话**（id / 工作目录 / 预设 / 忙闲），用于找一个把指令投递过去的目标。'
+      + '⚠ **每行带「侧」**（`规划侧` / `实施侧`）—— 规划侧预设**不能施工**（无 shell、无 write/edit），'
+      + '派它会"看在跑、永远没有产出"。'
       + '只列活会话：**已归档的会话不会出现在这里**，没有运行实体的历史会话也不列'
       + '（这两类都收不到会执行的活，列出去只会让你挑到一个投了也白投的靶）。'
       + '⚠ 目标由用户/你指定，本工具**不替你挑**。',
@@ -948,19 +1040,40 @@ export function createHobBusTools(
     async execute(_args: unknown, exec: any): Promise<string> {
       const rows = bus.list(selfSessionIdOf(exec))
       // 把自己标出来：投给自己是无效动作。
+      // ⚠ ⚠ **投影缺位时置顶声明**（⚠ 否则读的人会把降级值当权威值用 —— 那正是本单要修的形态）。
+      //   判据：`bus.list()` 的行是不是**全都**来自保留头（⚠ 有一条来自投影就不算降级）。
+      const degraded = rows.length > 0 && rows.every((r) => r.presetSource === 'header')
       const lines = rows.map((r) => {
+        // ⚠ ⚠ 第 292 轮：**侧** 与 **预设** 都要能分辨（依据 CHG-058）——
+        //   ⚠ 侧由 `agentPreset` 派生（同一口径 PLANNING_PRESET_ID），⛔ 不另立判据；
+        //   ⚠ 预设读不到 ⇒ 该列**留空并说明**，⛔ 不拿部署默认顶替、⛔ 不猜。
+        const side = r.side === 'planning' ? '规划侧'
+          : r.side === 'implementation' ? '实施侧'
+            : undefined
         const bits = [
           r.id,
           r.self ? '(本会话)' : '',
           r.live ? '' : '[无运行实体·不可投递]',
           r.status === undefined ? '' : r.status,
-          r.agentPreset === undefined ? '' : `预设=${r.agentPreset}`,
+          side === undefined ? '' : `侧=${side}`,
+          // ⚠ 依据必须可核：降级到建档头时**当场标明**（否则会把陈旧值当真值用）。
+          r.agentPreset === undefined
+            ? '预设=（读不到：投影与建档头都为空）'
+            : `预设=${r.agentPreset}${r.presetSource === 'header' ? '（降级：取自建档头，可能非当前值）' : ''}`,
           r.cwd === undefined ? '' : `cwd=${r.cwd}`,
         ].filter((x) => x !== '')
         return '- ' + bits.join(' · ')
       })
       if (lines.length === 0) return '没有可投递的活会话。'
-      return ['可投递的活会话 ' + rows.length + ' 个：', ...lines].join('\n')
+      return [
+        ...(degraded
+          ? ['⚠ ⚠ **本列表的「侧」与「预设」取自建档头（降级）** —— 宿主的 `agentPreset` 投影读不到，'
+            + '而建档头只是"该会话建档时是什么"，**建后改过预设的会话它不会再变** ⇒ '
+            + '⚠ **这些读数可能不是当前值**，⛔ 不要据此断定某一侧。']
+          : []),
+        '可投递的活会话 ' + rows.length + ' 个：',
+        ...lines,
+      ].join('\n')
     },
   })
 
