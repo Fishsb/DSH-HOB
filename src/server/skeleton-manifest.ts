@@ -65,12 +65,12 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'templates/GATES.md', sha256: '82a42c346cffc0b5007be9dc72dd7dcf5c2825f11cbe800c6756a3fa259fec49', bytes: 7025 },
   { path: 'templates/REPORT.md', sha256: '0375d39ec33b0d736ce4f2227316414a55348cf5a89e441529c26a8a253faf0f', bytes: 6849 },
   { path: 'templates/ROLES.md', sha256: 'e4ac160b5e521a4396edbdb5e39663d34b1c7d1e74da96a4baec24deca6ad326', bytes: 14476 },
-  { path: 'templates/TASK.md', sha256: '78bfb62c5a38164cb00146821057bbc5946af1f6d041e146d9decf65a36d5c40', bytes: 14205 },
+  { path: 'templates/TASK.md', sha256: '1b9230f32f0c7e95eeadc555fdf7481a3a5541deb1d94c2a47722e5e52bf49a0', bytes: 15704 },
   { path: 'templates/USER-DECISIONS.md', sha256: '4714d0d400459eb6cc4fe1d79f2701e2f0cc1aa999e5c6373626d75171625931', bytes: 3887 },
 ]
 
 /** 生成时刻（⚠ 只作追溯，⛔ 不作判据 —— 判据是 sha256）。 */
-export const SKELETON_GENERATED_AT = '2026-10-16T17:16:08.952Z'
+export const SKELETON_GENERATED_AT = '2026-10-16T17:35:02.637Z'
 
 export interface SkeletonManifest {
   allowlist: readonly string[]
