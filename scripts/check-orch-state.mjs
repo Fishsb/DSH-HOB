@@ -924,6 +924,95 @@ const orchCode = stripComments(orchSrc)
           bad(`I7 拒绝话术里根路径仍是空的 / 未点名：${JSON.stringify(msg3)}`)
         }
       }
+
+      // ── I8 / I9 ⚠ ⚠ **`unresolved` 那一档的成对断言**（第 249 轮 · `TASK-R208`）──
+      //   ⚠ **为什么补它**：⚠ 第 247 轮报告 §4.2 第 4 条 / §4.3 末段**自己指出** ——
+      //     `I0~I7` 覆盖了 `ok` / `no-records-yet` / `ledger-unreachable` / `unreadable`，
+      //     ⚠ ⚠ **而四档里的 `unresolved` **一条断言都没有****
+      //     （⚠ 该轮自述"**没造出那个形态**"）⇒ ⚠ **那是 `E-160` 那类"看起来全覆盖"的形状**。
+      //   ⚠ ⚠ **本单实测：那一档**构造得出****（见报告 §3.3 的命令与原文）——
+      //     它由 `reachabilityFor` 在"**调用方没给工作区根**"（或给了空串）时返回
+      //     ⇒ ⚠ **可用"挂真模块 `apply` + 假宿主 ctx"** 造出来，⚠ **⛔ 不必改 `src/**`、⛔ 不必碰真账本**。
+      //   ⚠ ⚠ **成对**：**I8 正例**（该档出现 ⇒ 读数与渲染都点名它）·
+      //     **I9 负例**（正常两档⛔ **不许**被标成该档 —— 防"把好账本误报成判不出来"）。
+      {
+        const { pathToFileURL: p2u } = await import('node:url')
+        let orchMod
+        try {
+          orchMod = await import(p2u(ORCH_TS).href)
+        } catch (e) {
+          bad(`I8 无法加载编排模块（${String(e?.message ?? e)}）⇒ unresolved 那一档失去基准（不按通过处理）`)
+        }
+        if (orchMod !== undefined && typeof orchMod.apply === 'function'
+          && typeof orchMod.createHobOrchTools === 'function') {
+          /** 挂**真** `apply`，只给最小假宿主 ⇒ 拿到**真** `hobOrchestrator` 服务。 */
+          const mountOrch = (ledgerHome) => {
+            let svc
+            const loader = {
+              entries: () => (ledgerHome === undefined ? [] : [{ options: { config: { ledgerHome } } }]),
+            }
+            const svcCtx = {
+              sessions: { get: () => undefined },
+              agents: {},
+              logger: { debug() {}, info() {}, warn() {} },
+              get: (k) => (k === 'loader' ? loader : undefined),
+              effect: (fn) => { try { fn() } catch { /* 假 ctx 的最小实现 */ } },
+              provide: (k, v) => { if (k === orchMod.ORCH_SERVICE) svc = v },
+            }
+            orchMod.apply({
+              logger: { debug() {}, info() {}, warn() {} },
+              inject: (_deps, cb) => cb(svcCtx),
+              on: () => {},
+            })
+            return svc
+          }
+
+          const orch = mountOrch(join(idir, 'ledgers-i8'))
+          // ── I8 **正例**：不给工作区根 ⇒ 必须是 `unresolved`（+ 渲染出可读标记）──
+          const stMissingIt = orch?.status?.()
+          const stEmptyIt = orch?.status?.({ wsRoot: '' })
+          const ctrlMissingIt = orch?.control?.('stop')
+          const tierOk = stMissingIt?.reachability === 'unresolved'
+            && stEmptyIt?.reachability === 'unresolved'
+            && ctrlMissingIt?.reachability === 'unresolved'
+          // ⚠ 渲染面：拿**真**工具执行一次，确认那句标记真被渲染出来
+          let rendered = ''
+          try {
+            const tools = orchMod.createHobOrchTools(orch)
+            rendered = String(await tools.status.execute({}, { agent: { session: { header: {} } } }))
+          } catch (e) {
+            bad(`I8 状态工具执行失败（${String(e?.message ?? e)}）—— 渲染面失去基准`)
+          }
+          const saysUnresolved = /账本可达性/.test(rendered) && /连该查哪个账本都判不出/.test(rendered)
+          if (tierOk && saysUnresolved) {
+            ok('I8 unresolved 正例：不给工作区根 ⇒ status()/control() 都判 unresolved，且工具渲染出可读标记')
+          } else {
+            bad(`I8 unresolved 未被判出或未被渲染：status()=${stMissingIt?.reachability}`
+              + ` · status("")=${stEmptyIt?.reachability} · control()=${ctrlMissingIt?.reachability}`
+              + ` · 渲染含标记=${saysUnresolved} ⇒ 该档仍无覆盖（E-160 那类"看起来全覆盖"）`)
+          }
+
+          // ── I9 **负例**：正常几档⛔ 不许被标成 `unresolved`（防误标）──
+          //   ⚠ 造两个真账本根：① 有运行态文件（⇒ `ok`）② 有根无文件（⇒ `no-records-yet`）。
+          const lh = join(idir, 'ledgers-i9')
+          const wsOkCase = join(idir, 'ws-i9-ok')
+          const wsEmptyCase = join(idir, 'ws-i9-empty')
+          mkdirSync(join(lh, 'ws-i9-ok', 'runtime'), { recursive: true })
+          mkdirSync(join(lh, 'ws-i9-empty'), { recursive: true })
+          writeFileSync(join(lh, 'ws-i9-ok', 'runtime', 'orch-watches.json'), JSON.stringify({
+            version: 1, updatedAt: 1, pending: [], lost: [], handoffs: [],
+          }), 'utf8')
+          const orch2 = mountOrch(lh)
+          const tierOkCase = orch2?.status?.({ wsRoot: wsOkCase })?.reachability
+          const tierEmptyCase = orch2?.status?.({ wsRoot: wsEmptyCase })?.reachability
+          if (tierOkCase === 'ok' && tierEmptyCase === 'no-records-yet') {
+            ok('I9 成对阴性：正常两档（ok / no-records-yet）⛔ 未被误标成 unresolved')
+          } else {
+            bad(`I9 误标：正常两档被标成了 unresolved（ok 面=${tierOkCase} · 空面=${tierEmptyCase}）`
+              + ' ⇒ 会把"账本好着呢"误报成"判不出账本"（假信号）')
+          }
+        }
+      }
     } finally {
       try { rmSync(idir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
     }
