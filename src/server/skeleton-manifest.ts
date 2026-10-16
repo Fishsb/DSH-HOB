@@ -36,7 +36,7 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'drafts/archive-index.md', sha256: '5926b04f828bb1de6f4874133862affefabebd6e65b2b9d7e512c1914d2157d9', bytes: 7967 },
   { path: 'drafts/check-gitignore-guide.md', sha256: 'f68f45639fde88ada30635df480d1ce23f2b6c9f9ba584b383a2a0db4bbadb04', bytes: 19714 },
   { path: 'drafts/discipline-details.md', sha256: '551ca449193338c0b9c541f484c1f1f605921460ab2e055dd305a0678075046c', bytes: 35992 },
-  { path: 'drafts/growth-registry.md', sha256: 'abcc4bfb9192e3d859bec67cecc0b25ff4d54f736095470078dfebff276e29b1', bytes: 7721 },
+  { path: 'drafts/growth-registry.md', sha256: '681942ba3dced811833db858f8b83b9456c3c9b0b67cd949305a0f4926e832a2', bytes: 11639 },
   { path: 'drafts/nav-intake-draft.md', sha256: 'd9d7d1a82002038fa619bff69efe18e689becabbe7bef71b23efbd06f172ff6f', bytes: 11028 },
   { path: 'drafts/preset-contracts.md', sha256: '1e8b0ad0d0e92e4290db48e8406df5fe6c8c7bd7f9af5c15854914a1baed877e', bytes: 56754 },
   { path: 'drafts/restructure-plan.md', sha256: '38bfa48e573f5b527d278e6ee8b3c7c29a545d439dcd462ce9bd4289a26eb710', bytes: 18638 },
@@ -70,7 +70,7 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
 ]
 
 /** 生成时刻（⚠ 只作追溯，⛔ 不作判据 —— 判据是 sha256）。 */
-export const SKELETON_GENERATED_AT = '2026-10-16T16:59:04.344Z'
+export const SKELETON_GENERATED_AT = '2026-10-16T17:16:08.952Z'
 
 export interface SkeletonManifest {
   allowlist: readonly string[]
