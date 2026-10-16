@@ -783,6 +783,153 @@ const orchCode = stripComments(orchSrc)
   }
 }
 
+// ── I. **"够不到账本"可分辨**（2026-10-16 第 247 轮 · `TASK-R207`）—— 真跑函数 ──
+//
+// ⚠ **它守的两件事**（第 243 轮实测的坏消息 · `REPORT-R205.md` §3.2-c/d）：
+//   ⚠ ⚠ **乙**：`readOrchState` 把"够不到账本"与"真的没有记录"读成**同一个空态**
+//     ⇒ 读数**逐字相同**，读者以为"就是 0"。
+//   ⚠ ⚠ **丙**：`write_hob` 在账本根不存在时**静默新建一份账本**并返回 `ok: true`。
+//
+// ⚠ **为什么必须"真跑"**（同 F/G 的理由）：本组保的是**行为** ——
+//   源码里 `readOrchStateDetailed` / `ledgerRootCreated` 字样还在，而实现被掏空，
+//   文本断言照样 PASS。⇒ 一律实跑，⚠ 且 import 失败 **FAIL 而不是跳过**。
+//
+// ⚠ ⚠ **两条不许破的口径**（作业书 §3(a)）：
+//   **I2 = "真的没有记录"那一侧必须与改前逐字相同**（⛔ 不许加任何标记）——
+//   那是**真实状态**；给它加标记＝把一类假信号换成另一类。
+{
+  const { mkdtempSync, rmSync, mkdirSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { pathToFileURL } = await import('node:url')
+
+  let st2
+  let hw2
+  try {
+    st2 = await import(pathToFileURL(STATE_TS).href)
+    hw2 = await import(pathToFileURL(HOBWRITE_TS).href)
+  } catch (e) {
+    bad(`I 无法加载运行态/写入模块（${String(e?.message ?? e)}）⇒ 行为断言失去基准（不按通过处理）`)
+  }
+
+  if (st2 !== undefined && hw2 !== undefined) {
+    const idir = mkdtempSync(join(tmpdir(), 'hob-icheck-'))
+    try {
+      // ── I0 前置：判别入口必须存在 ──────────────────────────────────────
+      const hasDetailed = typeof st2.readOrchStateDetailed === 'function'
+      const hasRootOf = typeof st2.ledgerRootOfStateFile === 'function'
+      if (hasDetailed && hasRootOf) {
+        ok('I0 判别入口在位（readOrchStateDetailed + ledgerRootOfStateFile）')
+      } else {
+        bad('I0 判别入口缺失 —— 没有它，"够不到"与"没有记录"必然同形（本缺陷病根）')
+      }
+
+      if (hasDetailed && hasRootOf) {
+        // 造三个都**合法**的账本根：① 有记录 ② 有根无记录 ③ 根不存在（= 够不到）
+        const wsRec = join(idir, 'ws-rec')
+        const wsEmpty = join(idir, 'ws-empty')
+        const wsMiss = join(idir, 'ws-miss')
+        mkdirSync(join(wsRec, 'runtime'), { recursive: true })
+        mkdirSync(wsEmpty, { recursive: true })
+        const fRec = join(wsRec, 'runtime', 'orch-watches.json')
+        const fEmpty = join(wsEmpty, 'runtime', 'orch-watches.json')
+        const fMiss = join(wsMiss, 'runtime', 'orch-watches.json')
+        writeFileSync(fRec, JSON.stringify({
+          version: 1, updatedAt: 1,
+          pending: [{ target: 't1', watcher: 'w1', at: 1, sawRunning: true }],
+          lost: [], handoffs: [{ kind: 'task-file', ref: 'archive/x/TASK.md', at: 1 }],
+        }), 'utf8')
+
+        // ── I1 三态判别（⚠ 这是本组的核心：② 与 ③ 必须**分得开**）──────
+        const rRec = st2.readOrchStateDetailed(fRec)
+        const rEmpty = st2.readOrchStateDetailed(fEmpty)
+        const rMiss = st2.readOrchStateDetailed(fMiss)
+        if (rRec.reachability === 'ok' && rEmpty.reachability === 'no-records-yet'
+          && rMiss.reachability === 'ledger-unreachable') {
+          ok('I1 三态分得开：有记录=ok · 有根无记录=no-records-yet · 根不存在=ledger-unreachable')
+        } else {
+          bad(`I1 三态未分开：rec=${rRec.reachability} · empty=${rEmpty.reachability} · miss=${rMiss.reachability}`
+            + ' ⇒ "够不到"与"真的没记录"仍同形（本缺陷病根）')
+        }
+
+        // ── I2 ⚠ ⚠ **"真的没记录"那一侧的输出必须未被改变** ──────────────
+        //   ⚠ 判据 = 它与**改前那一版**（`readOrchState`）**逐字同值**
+        //     **且**它自己的档位是 `no-records-yet`（⛔ **不许**被标成"够不到"）。
+        //   ⚠ ⚠ **本断言的负向对拍当场抓到过它自己的一处不足**（据实登记）：
+        //     初版只比 `state`（两版的 `state` 恒等）⇒ ⚠ **把 `no-records-yet`
+        //     改写成 `ledger-unreachable` 时它照样 PASS** —— 那正是"把一类假信号
+        //     换成另一类"。⇒ 已补上**档位**这一半。
+        const legacyEmpty = st2.readOrchState(fEmpty)
+        const sameShape = JSON.stringify(legacyEmpty) === JSON.stringify(rEmpty.state)
+        const rightTier = rEmpty.reachability === 'no-records-yet'
+        if (sameShape && rightTier && rEmpty.state.handoffs.length === 0) {
+          ok('I2 "真的没记录"那一侧输出未被改变（state 与 readOrchState 逐字同值 **且**档位仍为 no-records-yet）')
+        } else {
+          bad(`I2 "真的没记录"那一侧被改动了：state 同值=${sameShape} 档位=${rEmpty.reachability}（应为 no-records-yet）`
+            + `；legacy=${JSON.stringify(legacyEmpty)} vs new=${JSON.stringify(rEmpty.state)}`)
+        }
+
+        // ── I3 **坏 JSON 也必须可分辨**（⛔ 不许与"没有记录"混）──────────
+        const wsBad = join(idir, 'ws-bad')
+        mkdirSync(join(wsBad, 'runtime'), { recursive: true })
+        const fBad = join(wsBad, 'runtime', 'orch-watches.json')
+        writeFileSync(fBad, '{ this is not json', 'utf8')
+        const rBad = st2.readOrchStateDetailed(fBad)
+        if (rBad.reachability === 'unreadable') {
+          ok('I3 坏 JSON 报 unreadable（⛔ 不与"没有记录"混）')
+        } else {
+          bad(`I3 坏 JSON 未被判为 unreadable（得到 ${rBad.reachability}）—— 与"没有记录"同形`)
+        }
+
+        // ── I4 **宽容口径一条未松**：判别入口同样⛔ 不抛 ───────────────────
+        let threw = false
+        try { st2.readOrchStateDetailed('/nonexistent-root/a/b/runtime/orch-watches.json') } catch { threw = true }
+        if (!threw) {
+          ok('I4 判别入口沿用宽容口径（坏路径不抛 —— 一个坏文件不该让 status() 崩掉）')
+        } else {
+          bad('I4 判别入口抛异常了 —— 宽容口径被破坏（status() 会被一个坏文件搞崩）')
+        }
+
+        // ── I5 ⚠ ⚠ **丙：账本根不存在时，写入返回值必须带可读标记** ────────
+        const wsNew = join(idir, 'ledgers', 'ws-new')          // ⚠ 刻意**不建**这个目录
+        const wopts = { hobDir: '', keepBackups: 3, shrinkGuard: 0.5, maxFileBytes: 262144 }
+        const wr = await hw2.writeHobFile(wsNew, { file: 'CONTEXT.md', content: '# x\n', mode: 'overwrite' }, wopts)
+        const marked = wr?.ledgerRootCreated !== undefined
+        const inMsg = /账本目录原本不存在/.test(String(wr?.message ?? ''))
+        if (wr?.ok === true && marked && inMsg) {
+          ok('I5 丙：「账本根原先不存在」时返回值**点名**该事实（结构化字段 + 可读行，⚠ ok 仍为 true —— ⛔ 不改写入语义）')
+        } else {
+          bad(`I5 丙未被标出：ok=${wr?.ok} ledgerRootCreated=${JSON.stringify(wr?.ledgerRootCreated)}`
+            + ` ⇒ "静默新建一份账本"仍不可读（本缺陷病根）`)
+        }
+
+        // ── I6 **成对**：账本根**已存在**时⛔ 不许出现该标记（防误报）──────
+        const wsYes = join(idir, 'ledgers2', 'ws-yes')
+        mkdirSync(wsYes, { recursive: true })
+        const wr2 = await hw2.writeHobFile(wsYes, { file: 'CONTEXT.md', content: '# x\n', mode: 'overwrite' }, wopts)
+        if (wr2?.ok === true && wr2?.ledgerRootCreated === undefined
+          && !/账本目录原本不存在/.test(String(wr2?.message ?? ''))) {
+          ok('I6 成对阴性：账本根已存在 ⇒ ⛔ 不出该标记（不与"正常写入"混淆）')
+        } else {
+          bad(`I6 误报：账本根已存在却出了标记（ledgerRootCreated=${JSON.stringify(wr2?.ledgerRootCreated)}）`)
+        }
+
+        // ── I7 ⚠ **次级项：拒绝话术里根路径不得为空**（第 243 轮 §3.2-f）────
+        //   ⚠ 真实调用形态是 `hobDir: ''`（账本根**本身**就是 root）——
+        //     改前那句话渲染成 `拒绝：只能写 / 目录内的文件。`（看不到"哪个根"）。
+        const wr3 = await hw2.writeHobFile(wsYes, { file: '../../pwned.md', content: 'x', mode: 'overwrite' }, wopts)
+        const msg3 = String(wr3?.message ?? '')
+        if (wr3?.reason === 'outside-hob' && msg3.includes(wsYes) && !/只能写\s*\/\s*目录内的文件/.test(msg3)) {
+          ok('I7 拒绝话术点名了根路径（⛔ 不再渲染成空 —— "失败也要可读"）')
+        } else {
+          bad(`I7 拒绝话术里根路径仍是空的 / 未点名：${JSON.stringify(msg3)}`)
+        }
+      }
+    } finally {
+      try { rmSync(idir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+    }
+  }
+}
+
 // ── 输出 ───────────────────────────────────────────────────────────────
 if (note.length > 0) console.log(note.join('\n'))
 if (fail.length > 0) {

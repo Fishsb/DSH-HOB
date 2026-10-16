@@ -668,7 +668,10 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
               ...(res.dispatchReason === undefined ? {} : { deliverReason: res.dispatchReason }),
             }),
           // ⚠ 投递后（或直接标注后）的**待投递读数** —— 让"清干净了没有"当场可见
-          handoffReading: renderHandoffReading(res.handoffs),
+          // ⚠ ⚠ **并把可达性带上**（2026-10-16 第 247 轮 · `TASK-R207`）——
+          //   治的是"**够不到账本**"与"**真的没有待投递**"给同一读数这个缺陷
+          //   （第 243 轮实测 · `REPORT-R205.md` §3.2-c）。
+          handoffReading: renderHandoffReading(res.handoffs, res.reachability),
           ...(skeletonNote === undefined ? {} : { skeletonScaffold: skeletonNote }),
         })
       }

@@ -64,9 +64,11 @@ import {
   markLost,
   orchStateFileOf,
   readOrchState,
+  readOrchStateDetailed,
   writePending,
   type PersistedHandoff,
   type PersistedWatch,
+  type StateReachability,
 } from '../server/orch-state.ts'
 
 /** 模块名（同时是 fiber 显示名）。 */
@@ -137,6 +139,25 @@ export interface OrchStatus {
    *   而且这也让它**跨重载可见**（与 `lost` 同理）。
    */
   handoffs: PersistedHandoff[]
+  /**
+   * ── ⚠ ⚠ **账本可达性**（2026-10-16 · 第 247 轮 · `TASK-R207` 新增）────────────
+   *
+   * ⚠ **它治的缺陷**（第 243 轮实测 · `REPORT-R205.md` §3.2-c）：`readOrchState` 把
+   *   "**够不到账本**"与"**真的没有记录**"读成**同一个空态**
+   *   ⇒ ⚠ ⚠ 读 `handoffs` / `lostPending` 的人**分不出**这两种情形。
+   *
+   * ⚠ ⚠ **取值**（见 `orch-state.ts` 的 `StateReachability`）：
+   *   · `'ok'`                 —— 读到且解析成功；
+   *   · `'no-records-yet'`     —— **账本在、只是还没有记录** ⇒ ⚠ **真实状态，⛔ 不是失败**
+   *                              （⚠ 这一档**不许**加任何标记 —— 作业书 §3(a)）；
+   *   · `'ledger-unreachable'` —— **账本目录不存在** ⇒ ⚠ 这才是"够不到" ⇒ **要有可读标记**；
+   *   · `'unreadable'`         —— 文件在、读不了或 JSON 坏 ⇒ **要有可读标记**；
+   *   · `'unresolved'`         —— **本单新增**：连"该查哪个账本"都判不出
+   *                              （工作区根不可得 / 账本解析为 `undefined`）。
+   *
+   * ⚠ **缺省 `'ok'`** ⇒ ⛔ 不动既有调用点的行为（向后兼容）。
+   */
+  reachability: StateReachability | 'unresolved'
 }
 
 /** `hobOrchestrator` 服务的形状。 */
@@ -161,10 +182,10 @@ export interface HobOrchestrator {
      */
     presetNotice?: string
   }>
-  /** 读状态。 */
-  status(): OrchStatus
+  /** 读状态。⚠ `opts.wsRoot` = 调用方的工作区根（用来判"本会话那份账本够不够得到"）。 */
+  status(opts?: { wsRoot?: string }): OrchStatus
   /** 停 / 恢复。 */
-  control(action: 'stop' | 'resume'): OrchStatus
+  control(action: 'stop' | 'resume', opts?: { wsRoot?: string }): OrchStatus
 }
 
 /** 从会话里取"最后一条 assistant 的文本"（跳过 reasoning / tool 块）。 */
@@ -505,6 +526,29 @@ export function apply(ctx: any): void {
       return out.sort((a, b) => b.at - a.at)
     }
 
+    /**
+     * ⚠ ⚠ **本会话那一份账本的可达性**（2026-10-16 · 第 247 轮 · `TASK-R207`）。
+     *
+     * ⚠ **为什么不能复用 `readHandoffs()`**：它**跨工作区汇总**（扫 `ledgerHome` 下全部
+     *   子目录）⇒ ⚠ ⚠ **只要有任何一个工作区的账本在，它就"读得到东西"** ——
+     *   那会**掩盖**"本会话的账本够不到"这件事（⚠ 正是本单要治的形态）。
+     *   ⇒ ⚠ 本函数按**调用方给的**工作区根**现算（⛔ 不从汇总结果反推）。
+     *
+     * ⚠ 判不出工作区根 / 账本解析为 `undefined` ⇒ `'unresolved'`
+     *   （⚠ **这本身也是一种"够不到"** ⇒ 调用方**必须**把它当标记报出来，⛔ 不许静默当 `'ok'`）。
+     */
+    const reachabilityFor = (wsRoot: string | undefined): StateReachability | 'unresolved' => {
+      try {
+        if (typeof wsRoot !== 'string' || wsRoot === '') return 'unresolved'
+        const ledgerRoot = resolveLedgerRoot('', declaredLedgerHome(svcCtx), wsRoot)
+        if (ledgerRoot === undefined) return 'unresolved'
+        return readOrchStateDetailed(orchStateFileOf(ledgerRoot)).reachability
+      } catch {
+        // ⚠ 判不出 ⇒ 如实报"未解析"（⛔ 不许回成 `'ok'` —— 那正是本单要治的盲区）
+        return 'unresolved'
+      }
+    }
+
     // ── 尽力唤醒派活方（任务书 §2.1 第 2 条的"最好"档）──────────────────
     //   ⚠ 用 `hobBus` 投一条**说明自己丢了什么**的消息 —— 复用它的全部闸门
     //     （活会话校验、归档拒绝）。总线不在 ⇒ 不唤醒，但 `lostCount` 仍会
@@ -724,7 +768,7 @@ export function apply(ctx: any): void {
         }
       },
 
-      status() {
+      status(opts?: { wsRoot?: string }) {
         return {
           stopped,
           // ⚠ **现读**每个在等目标的预设（不缓存、不回落到 `w` 上存一份）——
@@ -742,10 +786,15 @@ export function apply(ctx: any): void {
           lostPending: lostCount,
           // ⚠ 现读盘（不缓存）：记账在别的模块做，缓存会滞后 —— 见 `readHandoffs` 注释。
           handoffs: readHandoffs(),
+          // ⚠ ⚠ **可达性**（第 247 轮）：⚠ 它与 `handoffs` **同一次读**吗？
+          //   ⛔ 不是 —— `readHandoffs()` 扫**所有**工作区（跨工作区汇总），
+          //   而可达性问的是"**本会话这一份**账本够不够得到"（那才是"够不到"的形态）。
+          //   ⇒ 故它按**调用方给的工作区根**现算（⛔ 不从 `readHandoffs` 反推）。
+          reachability: reachabilityFor(opts?.wsRoot),
         }
       },
 
-      control(action) {
+      control(action, opts?: { wsRoot?: string }) {
         if (action === 'stop') {
           stopped = true
           svcCtx.logger?.info?.(`[${name}] 已停：不再回传、不再接收新派发`)
@@ -761,6 +810,7 @@ export function apply(ctx: any): void {
           lostPending: lostCount,
           // ⚠ 与 `status()` 同源同值（两处返回**同一个形状**，调用方不必分情况）。
           handoffs: readHandoffs(),
+          reachability: reachabilityFor(opts?.wsRoot),
         }
       },
     }
@@ -833,10 +883,55 @@ export function apply(ctx: any): void {
 //   同 M3 的纪律：绝不在插件作用域注册（会漏进每一个预设）。
 // ══════════════════════════════════════════════════════════════════════
 
+/**
+ * ⚠ ⚠ **"够不到账本"的可读标记行**（2026-10-16 · 第 247 轮 · `TASK-R207`）。
+ *
+ * ⚠ **只在"够不到"时返回行**（⛔ `'ok'` 与 `'no-records-yet'` 都返回**空数组**）：
+ *   · `'ok'`                 ⇒ 读到东西了，无话可说；
+ *   · `'no-records-yet'`     ⇒ ⚠ **这是真实状态**（"从来没派过"）⇒ ⛔ **不许加标记**
+ *                             （⚠ 作业书 §3(a)：改了它就是**把一类假信号换成另一类**）；
+ *   · `'ledger-unreachable'` ⇒ **账本目录不存在** ⇒ ⚠ **这才是"够不到"** ⇒ 给标记；
+ *   · `'unreadable'`         ⇒ 文件在但读不了 / JSON 坏 ⇒ 给标记；
+ *   · `'unresolved'`         ⇒ 连该查哪个账本都判不出 ⇒ 给标记。
+ *
+ * ⚠ ⚠ **措辞里必须说清"这不等于 0"** —— 那正是本单要治的误解
+ *   （读者看到 `在等回传：0 个` 会以为"没事"，而真相是"**看不到**"）。
+ */
+function reachabilityLines(r: OrchStatus['reachability']): string[] {
+  if (r === 'ok' || r === 'no-records-yet') return []
+  const why = r === 'ledger-unreachable'
+    ? '**账本目录不存在**（按工作区名解析出的那个路径上没有东西）'
+    : r === 'unreadable'
+      ? '**运行态文件在、但读不了**（读失败或内容不是合法 JSON）'
+      : '**连该查哪个账本都判不出**（工作区根或账本路径解析不出来）'
+  return [
+    `⚠⚠ 账本可达性：**够不到** —— ${why}`,
+    '  ↳ ⚠ ⚠ **上面那些 0 不是"没有"，而是"看不到"** —— '
+    + '⛔ 不许把它们当作"从来没派过 / 没有待投递"来读。',
+    '  ↳ ⚠ 这多半说明**当前解析到的账本位置不是本工作区的那一份**'
+    + '（账本按工作区名解析到工作区之外；换机器 / 换目录名就会落到别处）。',
+  ]
+}
+
 /** 取本会话 id（= 调工具的 agent 自己）。 */
 function selfSessionIdOf(exec: any): string | undefined {
   const id = exec?.agent?.id ?? exec?.agent?.session?.id
   return typeof id === 'string' && id !== '' ? id : undefined
+}
+
+/**
+ * ⚠ **本会话自己的工作区根**（2026-10-16 · 第 247 轮 · `TASK-R207` 新增）。
+ *
+ * ⚠ 取法与 `modules/tools.ts` 的 `rootOf` **同源**（`exec.agent?.session.header.cwd`）——
+ *   ⛔ 不另写一份解析（同一事实两个来源必然漂移）。
+ *
+ * ⚠ **为什么状态读数需要它**：⚠ "够不到账本"这件事**是逐工作区的** ——
+ *   ⚠ 不传它，`reachability` 就只能是 `'unresolved'`（⚠ 那也是一种"够不到"，
+ *   但**说不出是哪一个账本**）。
+ */
+function selfWorkspaceRootOf(exec: any): string | undefined {
+  const cwd = exec?.agent?.session?.header?.cwd
+  return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
 }
 
 /**
@@ -908,8 +1003,8 @@ export function createHobOrchTools(orch: HobOrchestrator): {
       schema: { type: 'string' },
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
-    async execute(): Promise<string> {
-      const s = orch.status()
+    async execute(_args: unknown, exec: any): Promise<string> {
+      const s = orch.status({ wsRoot: selfWorkspaceRootOf(exec) })
       const lines = s.watches.map((w) => '- ' + [
         `target=${w.target}`,
         `watcher=${w.watcher || '(无)'}`,
@@ -944,6 +1039,14 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         `在等回传：${s.watches.length} 个`,
         ...lines,
         `已回传：${s.relaysDone} 次 · 被停闸拦下：${s.relaysBlocked} 次`,
+        // ── ⚠ ⚠ 以下是 2026-10-16 第 247 轮（`TASK-R207`）**新增的行** ─────────
+        //   ⚠ **只在"够不到"时才出现**（`'no-records-yet'` / `'ok'` ⇒ 一行都不加）。
+        //   ⚠ ⚠ **为什么它必需**（第 243 轮实测 · `REPORT-R205.md` §3.2-c）：
+        //     改前"够不到账本"与"真的没有记录"给出**逐字相同**的读数
+        //     （在等回传 0 · 已回传 0 · 待投递 0）⇒ ⚠ **读者以为"就是 0"**。
+        //   ⚠ ⚠ **为什么⛔ 不能改"真的没有记录"那一侧**（作业书 §3(a)）：
+        //     那是**真实状态**；给它加标记＝把一类假信号换成另一类。
+        ...reachabilityLines(s.reachability),
         // ── ⚠ 以下是**本批新增的行**（原有行一字未改、未删）─────────────
         //   它们存在的唯一理由：宿主重载会把内存里的 watch 抹掉，
         //   没有这两行，重载后的读数与"从来没派过"**完全一样**。
@@ -991,11 +1094,11 @@ export function createHobOrchTools(orch: HobOrchestrator): {
       schema: { type: 'string' },
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
-    async execute(args: { action: 'stop' | 'resume' }): Promise<string> {
+    async execute(args: { action: 'stop' | 'resume' }, exec: any): Promise<string> {
       if (args?.action !== 'stop' && args?.action !== 'resume') {
         return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume'" })
       }
-      const s = orch.control(args.action)
+      const s = orch.control(args.action, { wsRoot: selfWorkspaceRootOf(exec) })
       return JSON.stringify({
         ok: true,
         stopped: s.stopped,

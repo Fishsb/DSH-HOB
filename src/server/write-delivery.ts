@@ -28,8 +28,10 @@ import {
   ensureRuntimeIgnored,
   orchStateFileOf,
   readOrchState,
+  readOrchStateDetailed,
   recordHandoff,
   type PersistedHandoff,
+  type StateReachability,
 } from './orch-state.ts'
 
 /**
@@ -77,6 +79,15 @@ export interface HandoffDeliveryResult {
   dispatchReason?: string
   /** 投递后（或记账后）的**待投递**记录快照。 */
   handoffs: PersistedHandoff[]
+  /**
+   * ⚠ **这次读回的"可可达性"**（2026-10-16 第 247 轮 · `TASK-R207` 新增）。
+   *
+   * ⚠ 它治的是**"够不到账本"与"没有待投递"给同一个读数**这个缺陷
+   *   （第 243 轮实测 · `REPORT-R205.md` §3.2-c）。
+   * ⚠ ⚠ **`'no-records-yet'`（账本在、只是还没有记录）是真实状态**，
+   *   ⇒ 调用方**必须**照旧渲染 `待投递：0 份`（⛔ 不加标记 —— 作业书 §3(a)）。
+   */
+  reachability: StateReachability
   /** 记账或投递过程中的**异常说明**（不改主结果，只如实回带）。 */
   note?: string
 }
@@ -123,8 +134,14 @@ export async function deliverHandoff(
     note = `待投递记录出错：${String((e as Error)?.message ?? e)}（写入本身已成功）`
   }
 
-  const readHandoffs = (): PersistedHandoff[] => {
-    try { return readOrchState(stateFile).handoffs } catch { return [] }
+  const readHandoffsDetailed = (): { handoffs: PersistedHandoff[]; reachability: StateReachability } => {
+    try {
+      const r = readOrchStateDetailed(stateFile)
+      return { handoffs: r.state.handoffs, reachability: r.reachability }
+    } catch {
+      // ⚠ 取不到 ⇒ 如实报"读不了"（⛔ 不许静默回成 `'ok'` —— 那就是本单要治的缺陷）
+      return { handoffs: [], reachability: 'unreadable' }
+    }
   }
 
   // ── 2：投递（**只有给了 dispatchTo 且编排服务在**才投）──────────────────
@@ -155,21 +172,58 @@ export async function deliverHandoff(
     } catch { /* 清理失败不掩盖主结果；下面的读数会如实显示"还在" */ }
   }
 
+  const reading = readHandoffsDetailed()
   return {
     recorded,
     manual,
     dispatched,
     ...(dispatchReason === undefined ? {} : { dispatchReason }),
-    handoffs: readHandoffs(),
+    handoffs: reading.handoffs,
+    reachability: reading.reachability,
     ...(note === undefined ? {} : { note }),
   }
 }
 
-/** 待投递读数的一句话（空态也给读数 —— **让"没有漏"也是可读的**）。 */
-export function renderHandoffReading(handoffs: PersistedHandoff[]): string {
+/**
+ * 待投递读数的一句话（空态也给读数 —— **让"没有漏"也是可读的**）。
+ *
+ * ⚠ ⚠ **2026-10-16 第 247 轮 / `TASK-R207` 新增 `reachability`（可选）** ——
+ *   治的缺陷（第 243 轮实测 · `REPORT-R205.md` §3.2-c）：**"够不到账本"与
+ *   "真的没有待投递"给出逐字相同的读数**（都是 `待投递：0 份`）。
+ *
+ * ⚠ ⚠ **三条口径（⛔ 一条都不许松）**：
+ *   **(a) 不改变"真的没派过"那一侧的输出** —— ⚠ `'no-records-yet'`（账本在、只是
+ *       还没有记录）**照旧返回 `待投递：0 份`**（⛔ 不加任何标记）。
+ *       理由：那是**真实状态**；给它加标记就是**把一类假信号换成另一类**（作业书 §3）。
+ *   **(b) 失败路径⛔ 不静默** —— `'ledger-unreachable'` / `'unreadable'` **必须**带可读标记。
+ *   **(c) 成对可验** —— 两侧都走本函数，读数**并列可比**（⛔ 不是单侧加一句）。
+ *
+ * @param handoffs - 读到的待投递清单。
+ * @param reachability - 该次读取的可达性（⚠ **缺省 = `'ok'`** ⇒ 旧调用点行为不变）。
+ */
+export function renderHandoffReading(
+  handoffs: PersistedHandoff[],
+  reachability: StateReachability = 'ok',
+): string {
   const manual = handoffs.filter((h) => h.manual === true).length
-  if (handoffs.length === 0) return '待投递：0 份'
-  return manual > 0
+  if (handoffs.length === 0) {
+    // ⚠ ⚠ **只有"够不到"与"读不了"才加标记**（⛔ `'no-records-yet'` **不加** —— 见口径 (a)）。
+    if (reachability === 'ledger-unreachable') {
+      return '待投递：0 份 ⚠ **但这是"够不到账本"**（账本目录不存在）—— '
+        + '⚠ 本读数**不能**当作"没有待投递"：真实值可能非零。'
+    }
+    if (reachability === 'unreadable') {
+      return '待投递：0 份 ⚠ **但这是"运行态读不了"**（文件在、读不到或 JSON 坏）—— '
+        + '⚠ 本读数**不能**当作"没有待投递"：真实值未知。'
+    }
+    return '待投递：0 份'
+  }
+  const tail = reachability === 'ledger-unreachable'
+    ? '（⚠ 本条来自**够不到账本**这一次读取）'
+    : reachability === 'unreadable'
+      ? '（⚠ 本条来自**运行态读不了**这一次读取）'
+      : ''
+  return (manual > 0
     ? `⚠ 待投递：${handoffs.length} 份（其中 ${manual} 份已标注为人工转达）`
-    : `⚠ 待投递：${handoffs.length} 份`
+    : `⚠ 待投递：${handoffs.length} 份`) + tail
 }

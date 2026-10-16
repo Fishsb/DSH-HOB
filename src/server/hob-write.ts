@@ -360,6 +360,25 @@ export interface WriteHobResult {
    *   **一条都不因它而变**（⚠ 它在那些守卫**之后**、落盘**之前**判）。
    */
   preOverwriteBackupReminder?: { file: string; bytesBefore: number }
+  /**
+   * ── ⚠ ⚠ **账本根原先不存在**（2026-10-16 · 第 247 轮 · `TASK-R207`）────────────
+   *
+   * ⚠ **它治的缺陷**（第 243 轮实测 · `REPORT-R205.md` §3.2-d）：`write_hob` 在
+   *   **账本根整个不存在**时会 `mkdir -p` **静默新建一份账本**，⚠ 并返回 **`ok: true`**
+   *   ⇒ ⚠ ⚠ 在"够不到账本"的部署里，读者以为"写成功了"，其实**建了一份新的空账本**
+   *   （⚠ 两份账本各自漂 = `M6-PLAN` **R1** 的形态）。
+   *
+   * ⚠ ⚠ **本字段只描述事实，⛔ 不改写入语义**（⛔ 不拒绝、⛔ 不改 `ok`）——
+   *   与 `danglingRefs` / `readings` / `preOverwriteBackupReminder` **同款分层**。
+   *
+   * ⚠ ⚠ **为什么⛔ 不能直接把它变成拒绝**（本单实测的结论，见报告 §3.3）：
+   *   ① **"首次为一个新工作区建账本"是正当路径**，而它由**人工**做
+   *      （`.hob/INIT.md` §3.1 的 `mkdir -p "$NEW"/{…}` + `cp` 模板）；
+   *   ② ⚠ **"正当新建"与"够不到而误建"在本函数里区分不了** ——
+   *      两者都是"账本根不存在 + 有人来写"（⚠ 本函数**看不到**调用方是谁、意图是什么）。
+   *   ⇒ ⚠ 按作业书 §3③ 的明令：**只报读数 + 登记，⛔ 不硬改**。
+   */
+  ledgerRootCreated?: { ledgerRoot: string }
 }
 
 export interface WriteHobOptions {
@@ -660,12 +679,28 @@ export async function writeHobFile(
   if (root === undefined || root.trim() === '') {
     return refuse(file, 'no-workspace-root', '拒绝：无法确定工作区根目录。')
   }
+  /**
+   * ⚠ ⚠ **写之前**账本根在不在（2026-10-16 第 247 轮 · `TASK-R207`）。
+   *
+   * ⚠ **必须在任何写动作之前取**：本函数稍后会 `ensureDir(dirname(absTarget))`
+   *   **递归建目录** ⇒ ⚠ 之后再看就永远为 `true`（量不到事实）。
+   * ⚠ 取法用 `existsSync(hobRoot)`（`hobRoot` 即 `resolveInside(root, hobDir).abs`
+   *   —— ⛔ 不另写一份路径解析）。
+   */
+  const ledgerRootExistedBefore = existsSync(resolveInside(root, opts.hobDir).abs)
 
   // ── 1~6：静态守卫（全在动手之前）────────────────────────────────────────
   const hobRoot = resolveInside(root, opts.hobDir).abs
   const { abs: absTarget, inside } = resolveInside(hobRoot, file)
   if (!inside || file === '') {
-    return refuse(file, 'outside-hob', `拒绝：只能写 ${opts.hobDir}/ 目录内的文件。`)
+    // ⚠ ⚠ **话术里的根路径**（2026-10-16 第 247 轮 / `TASK-R207` 修 · 作业书 §3④）：
+    //   原字符串写 `${opts.hobDir}/` —— ⚠ 而 v4 起调用方传的是 `hobDir: ''`
+    //   （账本根**本身**就是 `root`，见 `modules/tools.ts:600`）⇒
+    //   ⚠ ⚠ **渲染出来是 `拒绝：只能写 / 目录内的文件。`** —— 读者看不到"哪个根"
+    //   （第 243 轮实测原文 · `REPORT-R205.md` §3.2-f）。
+    //   ⇒ 空 `hobDir` 时**改用真正判过的根**（`root`），⛔ 不改任何判据、⛔ 不改 reason 码。
+    const shown = opts.hobDir === '' ? root : `${opts.hobDir}/`
+    return refuse(file, 'outside-hob', `拒绝：只能写 ${shown}/ 目录内的文件。`)
   }
   if (!file.toLowerCase().endsWith('.md')) {
     return refuse(file, 'not-markdown', '拒绝：只允许写 .md 文件。')
@@ -872,6 +907,8 @@ export async function writeHobFile(
     ...(rendered.rendered.length === 0 && rendered.refused.length === 0 ? {} : { readings: rendered }),
     // ⚠ ⚠ **②「先落副本」提醒**（⚠ 只提示、⛔ 不拒写 —— 同 `danglingRefs` / `rendered` 那一族）
     ...(copyReminder === undefined ? {} : { preOverwriteBackupReminder: copyReminder }),
+    // ⚠ ⚠ **账本根原先不存在**（第 247 轮 · 形态丙的机器可读面 —— ⚠ 只报事实、⛔ 不拒写）
+    ...(ledgerRootExistedBefore ? {} : { ledgerRootCreated: { ledgerRoot: root } }),
     message: `✅ 已${mode === 'overwrite' ? '覆盖' : '追加'} ${file}${id === undefined ? '' : `：${id}`}`
       + `（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节）`
       + (backupName === undefined ? '' : `；备份 ${BACKUP_DIR}/${backupName}`)
@@ -891,8 +928,36 @@ export async function writeHobFile(
       + (isHandoffPath(file)
         ? '\n⚠ 这是交接文件：**尚未投递** —— 写完本轮回复前先 hob_dispatch / hob_send'
           + '（或明确告知用户需手工转达）。'
-        : ''),
+        : '')
+      // ── ⚠ ⚠ 形态【丙】的**可读标记**（2026-10-16 第 247 轮 · `TASK-R207`）──────
+      //   ⚠ 只在"**写之前账本根本不存在**"时出现（`ledgerRootExistedBefore`）。
+      //   ⚠ ⚠ **它不改写入语义**（`ok` 照旧 true —— 写入确实成功了）：
+      //     它只是把"**刚刚发生了一次账本根新建**"这件事**说出来**。
+      + renderLedgerRootCreatedNote(ledgerRootExistedBefore, root),
   }
+}
+
+/**
+ * ⚠ ⚠ **形态【丙】的提醒文案**（2026-10-16 第 247 轮 · `TASK-R207`）。
+ *
+ * ⚠ **只提示、⛔ 不拒写**（与 `renderCopyReminderNote` / `renderReadingsNote` 同款分层）。
+ *
+ * ⚠ ⚠ **为什么⛔ 不做成闸门 / 拒绝**（本单实测结论 · 报告 §3.3）：
+ *   ⚠ **"首次为一个新工作区建账本"是正当路径**（`.hob/INIT.md` §3.1 由**人工** `mkdir -p`），
+ *   ⚠ ⚠ 而**"正当新建"与"够不到而误建"在本函数里区分不了** ——
+ *   两者都是"账本根不存在 + 有人来写"。
+ *   ⇒ ⚠ 故**只报事实**，把判断交回读者（⚠ 作业书 §3③ 的明令：说不清就**只报读数 + 登记**）。
+ *
+ * ⚠ 措辞里**不出现内部标识**（包名 / 模块路径）—— 与上面两条提醒同一纪律。
+ *   ⚠ 但**必须出现账本根**：⚠ 本标记的**全部价值**就在于告诉读者"新建的是哪一个根"
+ *   （⚠ 与 §3④ 那处"根渲染成空"正是同一条病 —— **失败/异常路径必须可读**）。
+ */
+function renderLedgerRootCreatedNote(existedBefore: boolean, ledgerRoot: string): string {
+  if (existedBefore) return ''
+  return `\n⚠⚠ 注意：**本次写入时账本目录原本不存在** —— 现在它被**新建**出来了（\`${ledgerRoot}\`）。`
+    + '\n   ⇒ ⚠ 若这**不是**你要的账本（例如它本该在别的位置），'
+    + '那说明**当前解析到的账本位置不对**：本读数**不能**当作一次正常写入接受。'
+    + '\n   ⇒ ⚠ **只提示、不拒写**：本条不改写入语义，写入仍按你的指令执行。'
 }
 
 /**

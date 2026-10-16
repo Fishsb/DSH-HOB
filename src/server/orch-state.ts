@@ -47,7 +47,7 @@
  * ⚠ 本模块**不 import `config.ts`**（同 `hob-write.ts` 的纪律）：
  *   配置由调用方以参数传入，便于独立测试、也避免模块间反向依赖。
  */
-import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 /** 运行态子目录名（账本目录**之内**、非账本）。 */
@@ -141,6 +141,80 @@ export function emptyOrchState(): OrchStateFile {
   return { version: ORCH_STATE_VERSION, updatedAt: 0, pending: [], lost: [], handoffs: [] }
 }
 
+/**
+ * ── ⚠ ⚠ **可达性**（2026-10-16 · 第 247 轮 / `TASK-R207`）────────────────────
+ *
+ * ⚠ **它治的缺陷**（第 243 轮实测 · `REPORT-R205.md` §3.2-c）：`readOrchState` 把
+ *   **"文件不存在 / 读不了 / JSON 坏"** 三种情形**一律** `catch ⇒ emptyOrchState()` ——
+ *   ⚠ ⚠ 于是"**够不到账本**"与"**这个工作区真的从来没派过**"给出**逐字相同**的读数
+ *   （`pending: 0 · lost: 0 · handoffs: 0`）。⚠ 读者以为"就是 0"。
+ *
+ * ⚠ ⚠ **为什么不能只看"文件在不在"**（本单实测的关键）：⚠ 改前实测三态 ——
+ *   ① **真派过**（账本在 + 运行态文件在）· ② **真的没派过**（账本在 + 运行态文件**不在**）·
+ *   ③ **够不到**（**账本根都不在**）⇒ ⚠ ② 与 ③ 的**运行态文件都不存在** ⇒
+ *   ⚠ ⚠ **只看文件存在性区分不了 ② 与 ③**。
+ *   ⇒ ⚠ **判别量必须是"账本根在不在"** —— 它正是"够不到"这件事本身
+ *     （⚠ 而账本根**按本机路径解析**、⛔ 不核存在性，见 `doc-read.ts:72-91`）。
+ *
+ * ⚠ ⚠ **四条取值（⛔ 不许合并）**：
+ *   · `ok`                 —— 文件读到且解析成功（**有过记录**）；
+ *   · `no-records-yet`     —— **账本根在**、但运行态文件**还不存在** ⇒ ⚠ **这是真实状态**
+ *                            （"从来没派过"），⛔ **不是失败** ⇒ ⛔ 不改它的输出（作业书 §3(a)）；
+ *   · `ledger-unreachable` —— **账本根不存在** ⇒ ⚠ ⚠ **这才是"够不到"** ⇒ **要给可读标记**；
+ *   · `unreadable`         —— 账本根在、文件也在，但**读不了 / JSON 坏** ⇒ **要给可读标记**。
+ */
+export type StateReachability = 'ok' | 'no-records-yet' | 'ledger-unreachable' | 'unreadable'
+
+/** 带可达性的读数结果（{@link readOrchStateDetailed} 的返回）。 */
+export interface OrchStateReading {
+  state: OrchStateFile
+  /** ⚠ **"够不到"与"空"就是靠它分开的**（⛔ 不要把它丢掉只留 `state`）。 */
+  reachability: StateReachability
+}
+
+/**
+ * 由运行态**文件路径**反推它所属的**账本根**。
+ *
+ * ⚠ 依据 {@link orchStateFileOf}：`file = join(ledgerRoot, 'runtime', 'orch-watches.json')`
+ *   ⇒ **倒推两级**即账本根。⚠ 本函数是**唯一**的倒推实现点 ——
+ *   若将来 {@link ORCH_STATE_SUBDIR} 改深度，这里必须同批改（否则判别量失效）。
+ */
+export function ledgerRootOfStateFile(file: string): string {
+  return dirname(dirname(file))
+}
+
+/**
+ * 读落盘状态 **并如实报出可达性**（⚠ 这是本单新增的**唯一**取数入口）。
+ *
+ * ⚠ 与 {@link readOrchState} 的关系：后者**原样保留**（= 本函数 `.state`），
+ *   ⚠ 因为既有调用点与既有判据（`check:orch` 的 F1/F3）都按它的形状取值 ⇒
+ *   ⛔ **不动它的签名与返回形状**，只**新增**一个更详细的入口。
+ *
+ * ⚠ `readOrchState` 的**宽容口径一条不放松**：本函数同样**绝不抛**
+ *   （一个坏文件不该让 `status()` 崩掉）；⚠ 它只是**把"为什么是空"如实带上**。
+ */
+export function readOrchStateDetailed(file: string): OrchStateReading {
+  // ── 判别量：**账本根在不在**（⚠ 不是"文件在不在" —— 见 `StateReachability` 注释）──
+  if (!existsSync(ledgerRootOfStateFile(file))) {
+    return { state: emptyOrchState(), reachability: 'ledger-unreachable' }
+  }
+  if (!existsSync(file)) {
+    // ⚠ **账本在、只是还没有记录** ⇒ 真实状态（"从来没派过"），⛔ 不是失败。
+    return { state: emptyOrchState(), reachability: 'no-records-yet' }
+  }
+  try {
+    const raw = readFileSync(file, 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object') {
+      return { state: emptyOrchState(), reachability: 'unreadable' }
+    }
+    return { state: narrowOrchState(parsed as Record<string, unknown>), reachability: 'ok' }
+  } catch {
+    // ⚠ 文件在却读不了 / JSON 坏 ⇒ **可读地报出来**（⛔ 不与"没有记录"混）
+    return { state: emptyOrchState(), reachability: 'unreadable' }
+  }
+}
+
 /** `<账本目录>` ⇒ 本模块的落盘文件路径。 */
 export function orchStateFileOf(ledgerRoot: string): string {
   return join(ledgerRoot, ORCH_STATE_SUBDIR, ORCH_STATE_FILENAME)
@@ -225,30 +299,44 @@ function asHandoffList(v: unknown): PersistedHandoff[] {
 }
 
 /**
+ * 把一个**已解析的普通对象**收窄成 {@link OrchStateFile}（⚠ 缺字段一律按宽容口径读）。
+ *
+ * ⚠ 抽出来是为了让 {@link readOrchState} 与 {@link readOrchStateDetailed}
+ *   **共用同一份收窄实现** —— 否则"两处各写一份"必然漂移（本仓分层纪律）。
+ */
+function narrowOrchState(o: Record<string, unknown>): OrchStateFile {
+  const out: OrchStateFile = {
+    version: typeof o.version === 'number' ? o.version : ORCH_STATE_VERSION,
+    updatedAt: typeof o.updatedAt === 'number' ? o.updatedAt : 0,
+    pending: asWatchList(o.pending),
+    lost: asWatchList(o.lost),
+    // ⚠ **向后兼容**（本轮核心要求之一）：旧文件没有 `handoffs` 字段 ⇒
+    //   `asHandoffList(undefined)` = `[]` ⇒ 读成**空数组**，**不抛、不判坏**。
+    //   这正与 `lost` 同款纪律：缺字段 ≠ 文件坏了（运行态是诊断用途）。
+    handoffs: asHandoffList(o.handoffs),
+  }
+  if (typeof o.lostAt === 'number' && Number.isFinite(o.lostAt)) out.lostAt = o.lostAt
+  return out
+}
+
+/**
  * 读落盘状态（**宽容**：文件不在/坏了/结构不对 ⇒ 空态，绝不抛）。
  *
  * ⚠ 判据是"能不能用"，不是"文件在不在"：`readFileSync` 成功但内容不是 JSON
  *   必须与"文件不存在"走同一条路 —— 否则一个被写坏的文件会让编排模块
  *   在每次 `status()` 时抛异常。
+ *
+ * ⚠ ⚠ **本函数的分辨力已知不足**（2026-10-16 第 247 轮 · `TASK-R207`）：
+ *   它把"**够不到账本**"与"**真的没有记录**"读成**同一个空态**。
+ *   ⚠ **要分辨 ⇒ 用 {@link readOrchStateDetailed}**（⚠ 本函数**原样保留**：
+ *   既有调用点与 `check:orch` 的 F1/F3 都按它的形状取值，⛔ 不改签名）。
  */
 export function readOrchState(file: string): OrchStateFile {
   try {
     const raw = readFileSync(file, 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (parsed === null || typeof parsed !== 'object') return emptyOrchState()
-    const o = parsed as Record<string, unknown>
-    const out: OrchStateFile = {
-      version: typeof o.version === 'number' ? o.version : ORCH_STATE_VERSION,
-      updatedAt: typeof o.updatedAt === 'number' ? o.updatedAt : 0,
-      pending: asWatchList(o.pending),
-      lost: asWatchList(o.lost),
-      // ⚠ **向后兼容**（本轮核心要求之一）：旧文件没有 `handoffs` 字段 ⇒
-      //   `asHandoffList(undefined)` = `[]` ⇒ 读成**空数组**，**不抛、不判坏**。
-      //   这正与 `lost` 同款纪律：缺字段 ≠ 文件坏了（运行态是诊断用途）。
-      handoffs: asHandoffList(o.handoffs),
-    }
-    if (typeof o.lostAt === 'number' && Number.isFinite(o.lostAt)) out.lostAt = o.lostAt
-    return out
+    return narrowOrchState(parsed as Record<string, unknown>)
   } catch {
     return emptyOrchState()
   }
