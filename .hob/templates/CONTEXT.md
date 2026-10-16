@@ -198,6 +198,7 @@
 | `npm run check:host` | ... |
 | `npm run check:modules` | ... |
 | `npm run check:rounds` | ... |
+| `npm run check:readings` | ... |
 
 只读辅助（**不是判据**）：`npm run exp:next-id`（报下一个可用编号，不写任何文件）。
 

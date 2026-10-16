@@ -149,6 +149,12 @@ export function runRepoRules({ bad, ok }) {
     //     这正是"加完 script 未登记 ⇒ 直接红"这条自检形态有效的又一次证据。
     //   ⚠ 它生成 `src/server/skeleton-manifest.ts`；⚠ 由 `check:gitignore` 的断言 **R** 反向核（同源）。
     ['scripts/gen-skeleton-manifest.mjs', '入库脚本（被 package.json 的 gen:skeleton 调用 · 由 .gitignore 的 ! 例外派生骨架清单）'],
+    // ⚠ 2026-10-17 补（第 288 轮 · `UD-130` 放行「动判据脚本」）：**读数可指认**机检。
+    //   ⚠ 同族的**第八次**现场抓获 —— 加完 `check:readings` 未登记时，
+    //     本脚本的"反向自检"（读 package.json 的 scripts 反查 MUST-TRACK）**当场 FAIL**：
+    //     `✗ package.json 声明的脚本不在 MUST-TRACK 里：scripts/check-readings-citable.mjs`。
+    //   ⚠ ⇒ 本条即那次的修正结果；⛔ **未放松任何既有断言**（`UD-130` 的边界）。
+    ['scripts/check-readings-citable.mjs', '入库脚本（被 package.json 的 check:readings 调用 · 报告读数可指认机检）'],
   ]
 
   /** 该路径是否已在 git index 里（= 已 `git add`）。 */

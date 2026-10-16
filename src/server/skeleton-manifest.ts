@@ -32,7 +32,7 @@ export const SKELETON_ALLOWLIST: readonly string[] = [
 /** ⚠ 逐件 sha256（⚠ 与仓库不一致 ⇒ 收尾断言 FAIL）。 */
 export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'INIT.md', sha256: '00fdff85ece55d208cb98046ef84b36e1e536a29f77a1c806c9e45418348ac4e', bytes: 21955 },
-  { path: 'README.md', sha256: '1fb228909ecb7f75445a4d5be401f4c0091074fb5be830c4e5b6b288fc2fc9ba', bytes: 55382 },
+  { path: 'README.md', sha256: 'ee24ba8f792baf8c0cc7520565667850ceddb691035ee679284211822057da9c', bytes: 55386 },
   { path: 'drafts/archive-index.md', sha256: '5926b04f828bb1de6f4874133862affefabebd6e65b2b9d7e512c1914d2157d9', bytes: 7967 },
   { path: 'drafts/check-gitignore-guide.md', sha256: 'f68f45639fde88ada30635df480d1ce23f2b6c9f9ba584b383a2a0db4bbadb04', bytes: 19714 },
   { path: 'drafts/discipline-details.md', sha256: '551ca449193338c0b9c541f484c1f1f605921460ab2e055dd305a0678075046c', bytes: 35992 },
@@ -60,7 +60,7 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'roles/methods/security.md', sha256: 'c12f6947057de131b009ca4ac6de61c639dd140807c4d5b7f1b983c764156396', bytes: 591 },
   { path: 'roles/methods/social-media.md', sha256: '472f25ccd78fee649b96c1c51f2f56ef7417134bb23fe86f0f33fe7a65c51a0b', bytes: 1930 },
   { path: 'roles/methods/uiux-design.md', sha256: 'aa48f1a5f166b001e5f9d4352d03d44f2f82a8081c1dfd6fe6e126917a4b95c5', bytes: 2127 },
-  { path: 'templates/CONTEXT.md', sha256: '98dc001c1d3d38abb2e8f1865b451594b36d9121cdcab7c3d971335bd99d3001', bytes: 14035 },
+  { path: 'templates/CONTEXT.md', sha256: 'fc8944718feb0d47dabf05aad9bfd96c930f1f9eac47c2d6ccd451ccb013c6d1', bytes: 14070 },
   { path: 'templates/DECISIONS.md', sha256: '35cbf204ad4131e0222f2fd4e711391ceff843d09f155da8af1f772b7d418c33', bytes: 3558 },
   { path: 'templates/GATES.md', sha256: '82a42c346cffc0b5007be9dc72dd7dcf5c2825f11cbe800c6756a3fa259fec49', bytes: 7025 },
   { path: 'templates/REPORT.md', sha256: '0375d39ec33b0d736ce4f2227316414a55348cf5a89e441529c26a8a253faf0f', bytes: 6849 },
@@ -70,7 +70,7 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
 ]
 
 /** 生成时刻（⚠ 只作追溯，⛔ 不作判据 —— 判据是 sha256）。 */
-export const SKELETON_GENERATED_AT = '2026-10-16T18:08:32.817Z'
+export const SKELETON_GENERATED_AT = '2026-10-16T18:52:13.818Z'
 
 export interface SkeletonManifest {
   allowlist: readonly string[]
