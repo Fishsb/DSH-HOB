@@ -155,6 +155,17 @@ export function runRepoRules({ bad, ok }) {
     //     `✗ package.json 声明的脚本不在 MUST-TRACK 里：scripts/check-readings-citable.mjs`。
     //   ⚠ ⇒ 本条即那次的修正结果；⛔ **未放松任何既有断言**（`UD-130` 的边界）。
     ['scripts/check-readings-citable.mjs', '入库脚本（被 package.json 的 check:readings 调用 · 报告读数可指认机检）'],
+    // ⚠ 2026-10-17 补（第 292 轮 · `TASK-R226` (c) · 依 `REPORT-R225.md` §3.4-b 首批 `#11`）：
+    //   **`lib/` 同步自检**。⚠ 由来有实测：⚠ `lib/BUILD-STAMP` 停在 `26302ff`（= 第 272 轮），
+    //   ⚠ ⚠ **而 `R219`/`R220`/`R221`/`R223` 四份报告都写了"`build` 已跑"**
+    //   ⇒ ⚠ "跑了 `build`"与"产物真的跟上了"是两件事。
+    //   ⚠ ⚠ **它只报不拦**（落后只打印、**永远 exit 0**）—— ⚠ 因为"`lib/` 落后"也可能是未提交态，
+    //     拦了**恒红**（⚠ `REPORT-R225.md` §3.4-b 明写的难点）⇒ ⚠ 它不是"断言的牙口"，是**报警器**。
+    //   ⚠ 同族的**第九次**现场抓获 —— 加完 `check:build` 未登记时，本脚本的"反向自检"
+    //     （读 package.json 的 scripts 反查 MUST-TRACK）**当场 FAIL**：
+    //     `✗ package.json 声明的脚本不在 MUST-TRACK 里：scripts/check-build-sync.mjs`。
+    //   ⚠ ⇒ 本条即那次的修正结果；⛔ **未放松任何既有断言**（`UD-130` 的边界）。
+    ['scripts/check-build-sync.mjs', '入库脚本（被 package.json 的 check:build 调用 · lib/ 同步只报不拦自检）'],
   ]
 
   /** 该路径是否已在 git index 里（= 已 `git add`）。 */
@@ -707,7 +718,9 @@ export function runRepoRules({ bad, ok }) {
    *     已由第 147 轮的**节级标注**声明"其中编号是本项目账本条目号、开箱不带"
    *     （标注位置：`README.md` 文件头、`INIT.md` 文件头）；
    *   · `.hob/drafts/**`    —— **豁免**：它是**本项目自己的契约正文 / 草案**
-   *     （README §1.2），**不是拿给别的项目用的模板**；
+   *     （README §1.2）—— ⚠ ⚠ **它确实随包分发**（在 `package.json` 的 `files` 里、
+   *     也铺进新工作区）；⚠ ⚠ **豁免的真实理由是「随包分发的是本项目自己的契约正文、
+   *     ⛔ 不是给别项目复用的模板」**（⚠ 第 292 轮更正：原措辞与「它随包发出」这一事实不一致）；
    *   · `.hob/EXPERIENCE.md` + `experience/**` —— **豁免**：**记录层**，历史读数**永久不改**。
    *   ⇒ ⛔ 这条判据**只扫两个在辖层**，并对豁免层**逐条打印理由**（让"没扫"可见）。
    *
@@ -728,6 +741,25 @@ export function runRepoRules({ bad, ok }) {
      *   ⇒ 那两族**必须留在辖**，否则**刚修好的东西会被下次改动注回去而无人报**（这正是回归对拍要证的事）。
      * ⇒ 故在辖面按**族**给，而不是按"文件"给。
      */
+    /**
+     * ⚠⚠ **第 5 族（第 292 轮新增 · `TASK-R226` (b) · 依 `REPORT-R224.md` §3.5 ②）** ──────
+     * **要堵的洞（有实测出处）**：`templates/TASK.md` 里写着**本项目真实归档路径**
+     *   （例：`archive/<本项目某日期>-<slug>/REPORT-R<号>.md`）—— ⚠ ⚠ **在别的项目里必断**
+     *   （那个目录**不存在**），⚠ **而原 4 族一条都咬不到它**（它既无编号具体值中的 `E-/UD-/CHG-`，
+     *   也不含项目名 / 本机路径 / 「第 N 轮」）。
+     * ⚠ **为什么不能靠断言 A**：⚠ 断言 A（引用闭合）**扫**这一族，⚠ **而它拿「本项目账本」当基准**
+     *   （`:545-560`：`existsSync(join(ledgerRoot, p))`）⇒ ⚠ ⚠ **在本项目里两条都通、换项目就断
+     *   ⇒ A 证不了"别的项目里不断"**（这正是 R224 把它判成"盲区"的理由）。
+     * ⚠ **口径（⛔ 不是"凡 archive/ 就咬"）**：⚠ 只咬**具体实例**，**放过通用形状** ——
+     *   · **咬**：路径里出现**本项目的具体标识** —— 日期戳（`YYYY-MM-DD`）· 条目/报告号
+     *     （`REPORT-R<号>`/`TASK-R<号>`/`UD-<号>`/`CHG-<号>`）· 轮次件（`rounds/<号>.md`）。
+     *   · **放过**：`archive/<日期>-<名>/` 这类**尖括号占位**、`volumes/plan/INDEX.md` 这类
+     *     **通用结构卷**、目录简称（`volumes/plan/`）—— ⚠ **新项目也会建同名卷** ⇒ **不算错**
+     *     （⚠ 与 `REPORT-R224.md` §3.3-d 的（甲）/（乙）之分**逐字同口径**）。
+     * ⚠ **占位号同样不计**（`UD-00` / `CHG-000` 形态）—— 与族 ① 同一把尺子。
+     */
+    const PLACEHOLDER_PTR = /(?:UD-0{2}|CHG-0{3})(?![\d])/
+    const PTR_RE = /(?:^|[^A-Za-z0-9._/-])((?:archive|volumes)\/[A-Za-z0-9._/-]*(?:\d{4}-\d{2}-\d{2}|(?:REPORT-R|TASK-R|UD-|CHG-)\d{1,4}|rounds\/\d{1,4}\.md)[A-Za-z0-9._/-]*)/g
     const FAMILIES = [
       ['项目专有编号具体值', /\b(?:CHG|UD|E)-\d{1,3}\b/g, PLACEHOLDER, ['.hob/templates', '.hob/roles']],
       ['项目名', /dsh-hob|hob-ledgers|prompt-enhancer/g, null, ['.hob/templates', '.hob/roles']],
@@ -735,12 +767,18 @@ export function runRepoRules({ bad, ok }) {
         ['.hob/templates', '.hob/roles', '.hob/EXPERIENCE.md']],
       ['第N轮引用', /第 *\d+ *轮/g, null,
         ['.hob/templates', '.hob/roles', '.hob/EXPERIENCE.md']],
+      // ⚠ 第 5 族：⚠ **在辖面与 `IN_SCOPE` 逐字相同**（模板 + roles + 索引）——
+      //   ⚠ 它**不**扫 `.hob/drafts/**`（那是**本项目自己的契约正文**，见 `EXEMPT` 那行：
+      //   它逐条引本项目归档件是**本职**，纳入会**恒红** ⇒ 与"恒红的判据等于没有判据"同族）。
+      ['具体归档/账本指针', PTR_RE, PLACEHOLDER_PTR,
+        ['.hob/templates', '.hob/roles', '.hob/EXPERIENCE.md']],
     ]
     const IN_SCOPE = ['.hob/templates', '.hob/roles', '.hob/EXPERIENCE.md']
     const EXEMPT = [
       ['.hob/README.md', '本项目骨架**说明书** —— 第 147 轮已加节级标注声明"编号是本项目账本条目号、开箱不带"'],
       ['.hob/INIT.md', '同上（文件头已有节级标注）'],
-      ['.hob/drafts/', '本项目**自己的契约正文 / 草案**（README §1.2）—— 不是拿给别项目用的模板'],
+      ['.hob/drafts/', '本项目**自己的契约正文 / 草案**（README §1.2）—— ⚠ ⚠ **随包分发**'
+        + '（在 `package.json` 的 `files` 里、也铺进新工作区）；⚠ **分发的是本项目自己的契约正文，⛔ 不是给别项目复用的模板**'],
       ['.hob/EXPERIENCE.md', '**记录层索引** —— ⚠ **按族分**：其"编号具体值/项目名"两族**豁免**（引自己账本条目的编号是索引本职）；'
         + '"本机路径/第N轮"两族**在辖**（换机必断，且第 148 轮 ① 刚修净 ⇒ 必须留回归守卫）'],
       ['.hob/experience/', '**记录层** —— 历史读数永久不改'],
@@ -773,6 +811,13 @@ export function runRepoRules({ bad, ok }) {
     } else {
       // 在辖判定：`rel`（当前文件）落在该族的哪个在辖前缀下
       const applies = (rel, scopes) => scopes.some((sc) => rel === sc || rel.startsWith(sc + '/'))
+      /**
+       * ⚠⚠ **命中行打印取组 ①** —— 族 ⑤ 的正则**带一个前导边界字符**
+       *   （`(?:^|[^A-Za-z0-9._/-])`，⚠ 否则行首/紧邻反引号的形态会漏配），
+       *   ⚠ 故取 `m[1]` 才等于**路径本身**；其余族无捕获组 ⇒ 回落到 `m[0]`。
+       *   ⚠ 这是**取值面**的修正（⛔ 不改任何一族的牙口）。
+       */
+      const hitText = (m) => (m[1] !== undefined ? m[1] : m[0])
       const counts = new Map(FAMILIES.map(([n]) => [n, 0]))
       const checked = new Map(FAMILIES.map(([n]) => [n, 0]))
       const bads = []
@@ -788,7 +833,7 @@ export function runRepoRules({ bad, ok }) {
             if (real.length === 0) continue
             counts.set(name, counts.get(name) + real.length)
             if (bads.length < 20) {
-              bads.push(`${rel}:${i + 1} [${name}] 「${real.map((m) => m[0]).join(' / ')}」`)
+              bads.push(`${rel}:${i + 1} [${name}] 「${real.map(hitText).join(' / ')}」`)
             } else if (bads.length === 20) {
               bads.push('…（更多略）')
             }
@@ -800,20 +845,68 @@ export function runRepoRules({ bad, ok }) {
         bad('断言 B · **可分发层含"开箱即错"族**（新项目开箱即错）：'
           + '\n      ' + bads.join('\n      ')
           + '\n      ⇒ templates/ 与 roles/ 是**拿去开箱的两层**：本项目专有编号 / 项目名 / 本机路径 /'
-          + '\n        「第 N 轮」在其中出现 ⇒ 新项目开箱即错'
+          + '\n        「第 N 轮」/ **指向本项目具体归档·账本件的指针** 在其中出现 ⇒ 新项目开箱即错'
           + '\n      ⇒ 修法：删具体值、把**规则本身**写出来（第 147 轮教训：换一个编号会**造出新的悬空引用**）'
           + '\n      ⇒ 分族覆盖读数（核了多少行）：'
           + FAMILIES.map(([n]) => `${n} 核${checked.get(n)}行`).join(' · '))
       } else {
         ok(`断言 B · 可分发层（templates/ ${collect('.hob/templates').length} 份 + roles/ ${collect('.hob/roles').length} 份`
-          + ` + EXPERIENCE.md 索引）四族命中**全 0**；**分族覆盖读数**（核了多少行 / 命中多少）：`
+          + ` + EXPERIENCE.md 索引）**${FAMILIES.length} 族**命中**全 0**；**分族覆盖读数**（核了多少行 / 命中多少）：`
           + FAMILIES.map(([n]) => `${n} 核${checked.get(n)}行/命中0`).join(' · ')
           + `（⚠ 占位号 CHG-000/UD-00 **不计**，见 INIT.md 明文"有意占位"；`
+          + `⚠ 族 ⑤「具体归档/账本指针」**只咬具体实例**（日期戳 / 报告号 / 轮次件），`
+          + `**放过**占位形状 \`archive/<日期>-<名>/\` 与通用结构卷 \`volumes/plan/INDEX.md\`；`
+          + `⚠ ⛔ 它**不**扫 \`.hob/drafts/**\`（那是本项目自己的契约正文，纳入会恒红）；`
           + `⚠ 「命中 0」**不是**"干净"的证据 —— 覆盖读数才是，见上面每族的"核 N 行"）`)
       }
       // ⚠ 豁免面**逐层点名 + 理由**：让"没扫"可见（⛔ 不是静默跳过）
       ok('断言 B · 豁免面（逐层点名，⛔ 未扫但已说明理由）：'
         + EXEMPT.map(([p, why]) => `${p}（${why}）`).join('；'))
+
+      /**
+       * ── ⚠ ⚠ **断言 B · 自带样本（第 292 轮新增 · 只针对第 ⑤ 族）** ──────────────
+       *   **为什么要**：⚠ ⚠ **"命中 0"不等于"这一族长着牙"** —— ⚠ 一条正则写错（漏配）时
+       *     它在**在辖面上照样报"命中 0"**、照样 ✓ ⇒ ⚠ ⚠ **判据改哑与判据改对必须输出不同**
+       *     （⚠ `E-126` 口径；⚠ 与断言 `I` / `P` / `Q` 的自带样本同法）。
+       *   **自造样本对**（⛔ 与真件内容无关）：⚠ 3 条**该咬**（具体归档指针的两类形态 + 卷内具体编号件）·
+       *     ⚠ 4 条**不该咬**（占位形状 / 通用结构卷 / 目录简称 —— ⚠ 它们**正是模板里真实存在的形态**）。
+       *   ⚠ **不要求"样本里那两条被判 False"才通过**：⚠ 样本读的是**族 ⑤ 的同一个正则**，
+       *     所以它证的是**牙口**（该咬的咬住 / 不该咬的放过），⛔ 不是"真仓干净"。
+       */
+      {
+        const f5 = FAMILIES.find(([n]) => n === '具体归档/账本指针')
+        const bite = (line) => {
+          f5[1].lastIndex = 0
+          const ms = [...line.matchAll(f5[1])]
+          return ms.filter((m) => !f5[2].test(m[0])).length
+        }
+        const SAMPLES_BITE = [
+          ['具体归档目录 + 报告号', '⚠ **占位 + 落定后回填** ⇒ `archive/2026-10-15-context-pre-194/REPORT-R177.md`；'],
+          ['具体归档目录 + 报告号（另一条）', '⚠ **占位 + 不回填（也合格）** ⇒ `archive/2026-10-15-check-surface/REPORT-R192.md`。'],
+          ['卷内具体编号件', '见 `volumes/user-decisions/UD-130.md` 的边界（⚠ 具体条目号 ⇒ 换项目即悬空）'],
+        ]
+        const SAMPLES_SAFE = [
+          ['占位形状（日期/名）', '> 落点：`<账本目录>/archive/<YYYY-MM-DD-slug>/TASK.md`。'],
+          ['占位形状（卷 + 编号占位）', '**全文**在 `volumes/user-decisions/<编号>.md` —— 一事一文件。'],
+          ['通用结构卷（新项目也有）', '索引 `volumes/plan/INDEX.md`；轮次在 `volumes/context/rounds/<轮次标识>.md`'],
+          ['目录简称', '**正文按节**在 `volumes/plan/`（索引 `volumes/plan/INDEX.md`）'],
+        ]
+        const missed = SAMPLES_BITE.filter(([, l]) => bite(l) === 0).map(([n]) => n)
+        const overbit = SAMPLES_SAFE.filter(([, l]) => bite(l) > 0).map(([n]) => n)
+        if (f5 === undefined) {
+          bad('断言 B · 自带样本：找不到第 ⑤ 族「具体归档/账本指针」（⛔ 不按通过处理）')
+        } else if (missed.length > 0 || overbit.length > 0) {
+          bad('断言 B · 第 ⑤ 族自带样本**不符合预期**（牙口松了 / 过咬了）：'
+            + (missed.length > 0 ? `\n      ⇒ 该咬而**没咬住**：${missed.join(' · ')}` : '')
+            + (overbit.length > 0 ? `\n      ⇒ 不该咬而**咬了**：${overbit.join(' · ')}` : '')
+            + '\n      ⇒ 修法：照 `REPORT-R224.md` §3.3-d 的（甲）/（乙）之分校 `PTR_RE` / `PLACEHOLDER_PTR`'
+            + '（⚠ 族只咬**具体实例**：日期戳 / 报告号 / 卷内编号件）')
+        } else {
+          ok(`断言 B · 第 ⑤ 族自带样本：**${SAMPLES_BITE.length}** 个"该咬"样本**全部咬住** ·`
+            + ` **${SAMPLES_SAFE.length}** 个"不该咬"样本**全部放过**`
+            + '（⚠ 它们正是模板里**真实存在**的形态 ⇒ 证的是**牙口**，⛔ 不依赖真件内容）')
+        }
+      }
     }
   }
 

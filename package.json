@@ -44,6 +44,7 @@
     "check:archive": "node scripts/check-archive-consistency.mjs",
     "check:rounds": "node scripts/check-rounds-records.mjs",
     "check:readings": "node scripts/check-readings-citable.mjs",
+    "check:build": "node scripts/check-build-sync.mjs",
     "check:experience": "node scripts/check-experience.mjs",
     "check:host": "node scripts/host-probe.mjs",
     "check:modules": "node scripts/module-independence-probe.mjs",
