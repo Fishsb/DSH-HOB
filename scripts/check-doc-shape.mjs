@@ -436,6 +436,19 @@ export function runDocShape({ bad, ok }) {
     // 「结构行」= 首格是**纯 token 列表**（只由反引号 token + 分隔符组成），且每个 token 都是**产物形状**。
     //   ⚠ 这刻意**排除散文行**（如"经验库：索引 + 条目目录"）与**读数行**（含字节 / %）
     //     —— 前者是**项目史**、后者是**项目现状**，都属"⛔ 不搬"的一侧（收录口径）。
+    //   ⚠ ⚠ **第 238 轮收窄**（本处原为 `if (/\d/.test(l)) continue` —— **整行**含数字即跳过）：
+    //     ⚠ 比对**只吃首格**（本函数末行 `out.push(nNorm(first))`，`first` 即上面逐行取出的首格）
+    //     ⇒ ⚠ 说明列里的数字（如"自第 224 轮起派生"）**根本进不了比对**，却被整行规则**连坐** ——
+    //     ⚠ 那是**规则比它要守的东西更宽**，不是"读数行"。
+    //     ⚠ **实测代价（第 238 轮 · 用本函数原文跑）**：正本 §4 的 `npm run check:host` 与
+    //     `npm run check:rounds` **首格都是纯命令 token**（`npm run <名>` 形态），
+    //     却因**说明列**含轮次号被**整行跳过** ⇒ ⚠ **模板缺 `check:rounds` 那一行，判据照旧绿**
+    //     —— ⚠ **与第 235 轮那次假绿同族**：**"判据没报错" ≠ "被检查过"**。
+    //   ⇒ **收窄为只判首格**：只有**首格本身**含数字的行才排除（即"读数写在首格"那一类）；
+    //     ⚠ 说明列的数字不再连坐。⚠ 本处**替换而非删除**（原规则守的事由下面那条负向样本接着守）。
+    //   ⚠ ⚠ **残余排除面（据实登记，⛔ 不当"已解决"）**：首格本身是"含数字的产物形状 token"时
+    //     **仍被排除** ⇒ ⚠ 实测正本 §2 的 `volumes/plan/11-pending-drafts.md` 一行即属此列
+    //     （⚠ 收窄后它仍不进比对）⇒ ⚠ 见 `REPORT-R203.md` §4「残余排除面」。
     const nStructRows = (lines) => {
       const out = []
       let fence = false
@@ -447,7 +460,7 @@ export function runDocShape({ bad, ok }) {
         const first = (raw.split('|')[0] || '').trim()
         if (/^:?-{2,}:?$/.test(first)) continue
         if (!first.includes('`')) continue
-        if (/\d/.test(l)) continue
+        if (/\d/.test(first)) continue
         if (N_HARD.some(([re]) => re.test(l))) continue
         const toks = [...first.matchAll(/`([^`]+)`/g)].map((m) => m[1])
         if (!toks.length) continue
@@ -561,6 +574,11 @@ export function runDocShape({ bad, ok }) {
         '| `npm run build` | 构建 |',
         '| `npm run check:modules` | 模块探针 |',
         '| `npm run check:host` | 宿主探针 |',
+        // ⚠ ⚠ **第 238 轮加的两行样本（成对，守"只判首格"这次收窄）**：
+        //   ⑤ 首格是**纯命令 token**、**说明列含数字**（轮次号）⇒ 必须**被收录**（该咬）；
+        //   ⑥ 首格**自己含数字**（读数写在首格）⇒ 必须**仍被排除**（不该咬）。
+        '| `npm run check:rounds` | 轮次记录探针（第 233 轮新增） |',
+        '| `volumes/plan/11-pending-drafts.md` | 待定稿项（3 档） |',
         '',
         '## 1. 骨架',
         '',
@@ -581,6 +599,13 @@ export function runDocShape({ bad, ok }) {
       const N_S3 = N_SAMPLE_T + '\n> ⚠ 本文件上限 65536 字节。\n'
       // ④ 模板样本加一个瞎编的节
       const N_S4 = N_SAMPLE_T + '\n## 77. 瞎编的节（正本没有、也不带「附：」）\n\n| 项 | 读 |\n|---|---|\n| `x.md` | ... |\n'
+      // ⚠ ⑤（第 238 轮 · **守"只判首格"这次收窄**）：删掉那行"首格纯 token + 说明列含数字"的行
+      //   ⇒ ⚠ **必须报 missing**。⚠ 它是一条**回归守卫**：若有人把规则改回"整行含数字即跳过"，
+      //   ⚠ 这一行会被**静默跳过** ⇒ 本样本**当场失效**（probe 报"没被咬"）⇒ 收窄被撤销会被抓住。
+      const N_S5 = N_SAMPLE_T.replace(/^\| `npm run check:rounds` \|.*$/m, '')
+      // ⚠ ⑥（第 238 轮 · **配对"不该咬"**）：删掉那行"首格自己含数字"的行 ⇒ ⚠ **必须仍不报 missing**
+      //   （读数行写在首格 ⇒ 仍属"模板有意不搬"的一侧）⇒ 守"别把排除面一刀删光"。
+      const N_S6 = N_SAMPLE_T.replace(/^\| `volumes\/plan\/11-pending-drafts\.md` \|.*$/m, '')
       const probes = [
         ['① 模板样本删掉正本样本有的一行（§4 的 check:modules）',
           () => { const r = nCompare(N_SAMPLE_M, N_S1); return r.missing.length > 0 }],
@@ -592,16 +617,34 @@ export function runDocShape({ bad, ok }) {
           const mK = new Set(nSplitSections(N_SAMPLE_M).map((x) => x.key))
           return nSplitSections(N_S4).map((x) => x.key).filter((k) => !mK.has(k) && !k.startsWith('附：')).length > 0
         }],
+        ['⑤ 模板样本删掉"首格纯 token + 说明列含数字"的行（§4 的 check:rounds）'
+          + ' ⇒ **第 238 轮收窄的回归守卫**',
+          () => {
+            const r = nCompare(N_SAMPLE_M, N_S5)
+            return r.missing.some(([, row]) => row === nNorm('`npm run check:rounds`'))
+          }],
       ]
-      // ⚠ ⚠ **另加一条"不该被咬"的对照**（**E-126** 成对）：⚠ 样本对**原样**时
-      //   ⛔ 不许报 missing（否则"该咬的恒咬"这种恒红同样会让判据失去意义）。
+      // ⚠ ⚠ **另加两条"不该被咬"的对照**（**E-126** 成对）：⚠ 样本对**原样**时
+      //   ⛔ 不许报 missing（否则"该咬的恒咬"这种恒红同样会让判据失去意义）；
+      //   ⚠ ⑥ 另守"首格含数字的读数行**仍被排除**"（收窄的形状：只收窄到首格，⛔ 不是全放开）。
       const safeBite = nCompare(N_SAMPLE_M, N_SAMPLE_T)
+      const safeBite2 = nCompare(N_SAMPLE_M, N_S6)
       let nSampleBad = 0
       if (safeBite.missing.length !== 0) {
         nSampleBad++
         bad('N 自带**不该咬**的样本被咬了：样本对**逐字相同**时报出了 missing'
           + `\n      ⇒ 实测 missing=${safeBite.missing.length} 行 —— 判据**过咬**了`
           + '\n      ⇒ 成对纪律（E-126）："该咬的真被咬"与"不该咬的真没被咬"**两条都要过**')
+      }
+      // ⚠ ⑥（第 238 轮 · 配对）：**首格自己含数字**的读数行，即便模板里没有，⛔ 也不许报 missing
+      //   ⇒ ⚠ 守的是"收窄的形状"：**只收窄到首格**，⛔ 不是把排除面一刀删光
+      //   （若有人把 `if (/\d/.test(first)) continue` 整条删掉 ⇒ 本样本当场报 missing ⇒ 被抓）。
+      if (safeBite2.missing.length !== 0) {
+        nSampleBad++
+        bad('N 自带**不该咬**的样本（首格含数字的读数行）被咬了：模板样本里没有它却报出 missing'
+          + `\n      ⇒ 实测 missing=${safeBite2.missing.length} 行：${safeBite2.missing.map(([, r]) => r).join(' · ')}`
+          + '\n      ⇒ ⚠ 说明**排除面被一刀删光**（第 238 轮的收窄形状是"只判首格"，⛔ 不是"全放开"）'
+          + '\n      ⇒ 成对纪律（E-126）：收窄与放宽**必须输出不同**')
       }
       for (const [why, fn] of probes) {
         let bit = false
@@ -615,10 +658,11 @@ export function runDocShape({ bad, ok }) {
         }
       }
       if (nSampleBad === 0) {
-        ok(`N ✓ 自带坏样本：4 组（删行 / 改错成员 / 注入硬阈值 / 瞎编节）**全部被咬住** + 1 组"不该咬"`
-          + `（样本对逐字相同时不报 missing）**全对**`
-          + ' ⇒ 本组还长着牙、且不过咬（⚠ ⚠ **样本由机检自造 · 第 220 轮改法 · ⛔ 不依赖正本原文**，'
-          + '⚠ 于是"正本那段被搬走 ⇒ 探针误报改哑"这一形态**不会再现**）')
+        ok(`N ✓ 自带坏样本：5 组（删行 / 改错成员 / 注入硬阈值 / 瞎编节 / 删"首格纯 token+说明列含数字"行）`
+          + `**全部被咬住** + 2 组"不该咬"（样本对逐字相同 · 删"首格含数字的读数行"）**全对**`
+          + ' ⇒ 本组还长着牙、且不过咬（⚠ ⚠ **样本由机检自造 · 第 220 轮改法 · 第 238 轮加 ⑤⑥ 成对**，'
+          + '⛔ **不依赖正本原文**）⇒ ⚠ 于是"正本那段被搬走 ⇒ 探针误报改哑"这一形态**不会再现**，'
+          + '且**"整行含数字即跳过"若被改回去 ⇒ ⑤ 当场报没被咬**')
       }
       // ⚠ 参照面（真件）必须真的读到东西 —— ⚠ 它已**不再**是自造样本的基准，
       //   但上面那条**真断言**（逐个 `A_FILES` 比对）仍需两侧非空才有对象可查。
