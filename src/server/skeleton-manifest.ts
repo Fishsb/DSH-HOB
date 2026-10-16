@@ -32,7 +32,7 @@ export const SKELETON_ALLOWLIST: readonly string[] = [
 /** ⚠ 逐件 sha256（⚠ 与仓库不一致 ⇒ 收尾断言 FAIL）。 */
 export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'INIT.md', sha256: 'f732b7e34d71a254c76add134622d0328110508287c145451cf1a63e11238a54', bytes: 23110 },
-  { path: 'README.md', sha256: 'a80af1905492a52d344d4a6cf4d951937b9cd69ba0d5ffd13819017fcda62e64', bytes: 63078 },
+  { path: 'README.md', sha256: 'a4a5d3e9093921e45742a8fe4e5828bac8b3ad4a0f248df0f2f773c7f9a8c20f', bytes: 63154 },
   { path: 'drafts/archive-index.md', sha256: '5926b04f828bb1de6f4874133862affefabebd6e65b2b9d7e512c1914d2157d9', bytes: 7967 },
   { path: 'drafts/check-gitignore-guide.md', sha256: 'f68f45639fde88ada30635df480d1ce23f2b6c9f9ba584b383a2a0db4bbadb04', bytes: 19714 },
   { path: 'drafts/discipline-details.md', sha256: '2fa25f5158dbbb99bf1025db8e7865259e04f58dbabf64b1b500d2ac5a2861e8', bytes: 6095 },
@@ -63,14 +63,14 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'templates/CONTEXT.md', sha256: '98dc001c1d3d38abb2e8f1865b451594b36d9121cdcab7c3d971335bd99d3001', bytes: 14035 },
   { path: 'templates/DECISIONS.md', sha256: '35cbf204ad4131e0222f2fd4e711391ceff843d09f155da8af1f772b7d418c33', bytes: 3558 },
   { path: 'templates/GATES.md', sha256: '82a42c346cffc0b5007be9dc72dd7dcf5c2825f11cbe800c6756a3fa259fec49', bytes: 7025 },
-  { path: 'templates/REPORT.md', sha256: '9efee4c0233845418171d5d295010da07a94227877ce8cd69308c3277d4ef9d4', bytes: 6734 },
+  { path: 'templates/REPORT.md', sha256: '0375d39ec33b0d736ce4f2227316414a55348cf5a89e441529c26a8a253faf0f', bytes: 6849 },
   { path: 'templates/ROLES.md', sha256: 'e4ac160b5e521a4396edbdb5e39663d34b1c7d1e74da96a4baec24deca6ad326', bytes: 14476 },
-  { path: 'templates/TASK.md', sha256: '4b998448aea9383f606c3baa68923e40561191381c080963e3664373a99ee873', bytes: 16367 },
+  { path: 'templates/TASK.md', sha256: 'bb2c59df516f6250ba1fc604b777edd2cd54a3a3034fdafa3527397422a44023', bytes: 15826 },
   { path: 'templates/USER-DECISIONS.md', sha256: '4714d0d400459eb6cc4fe1d79f2701e2f0cc1aa999e5c6373626d75171625931', bytes: 3887 },
 ]
 
 /** 生成时刻（⚠ 只作追溯，⛔ 不作判据 —— 判据是 sha256）。 */
-export const SKELETON_GENERATED_AT = '2026-10-16T15:47:43.220Z'
+export const SKELETON_GENERATED_AT = '2026-10-16T15:58:34.663Z'
 
 export interface SkeletonManifest {
   allowlist: readonly string[]
