@@ -1011,6 +1011,65 @@ const orchCode = stripComments(orchSrc)
             bad(`I9 误标：正常两档被标成了 unresolved（ok 面=${tierOkCase} · 空面=${tierEmptyCase}）`
               + ' ⇒ 会把"账本好着呢"误报成"判不出账本"（假信号）')
           }
+
+          // ── I10 / I11 ⚠ ⚠ **`unreadable` 那一档的**渲染面**断言**（第 251 轮 · `TASK-R209`）──
+          //   ⚠ **为什么补它**：⚠ 第 249 轮报告 §4.2 第 4 条 / §4.4 第 2 条**自己指出** ——
+          //     `I3` 只测了 `unreadable` 的**判别**（`readOrchStateDetailed` 返回该档），
+          //     ⚠ ⚠ **而它在 `hob_orch_status` 里**渲染出的那一行没有断言**
+          //     ⇒ ⚠ **四档里有一档只守到一半**（⚠ 与第 247 轮同族 ⇒ **`E-160`**）。
+          //   ⚠ ⚠ **本单实测：那一档**构造得出****（见报告 §3.3 的命令与原文）——
+          //     ⚠ 它 = "**账本根在、运行态文件也在，但内容不是合法 JSON**"
+          //     ⇒ ⚠ 与 `unresolved` 用的**同一套挂载手法**（真 `apply` + 假宿主）即可造出。
+          //   ⚠ ⚠ **⚠ 两条口径（⚠ 一条都不许松）**：
+          //     · **⛔ 不把 `I8` 收紧成"逐字对齐文案"** —— ⚠ Hob 已裁定"先让文案跑几轮"
+          //       （`CONTEXT.md` §2.4 第 35 项）⇒ ⚠ 本组同样**只判"该档有它**自己那句原因**"**，
+          //       ⛔ **不逐字锚定整行**；
+          //     · ⚠ ⚠ **但必须判"它渲染的是**这一档**、⛔ 不是别的档"** ——
+          //       ⚠ 否则四档的措辞互换（含义反转）照样绿（⚠ 那正是"看起来全覆盖"）。
+          const lhBad = join(idir, 'ledgers-i10')
+          const wsBadCase = join(idir, 'ws-i10-bad')
+          mkdirSync(join(lhBad, 'ws-i10-bad', 'runtime'), { recursive: true })
+          // ⚠ 账本根**在**（这一点把本档与 `ledger-unreachable` 分开）·
+          //   ⚠ 运行态文件**也在**（这一点把它与 `no-records-yet` 分开）· ⚠ 但内容是坏 JSON。
+          writeFileSync(join(lhBad, 'ws-i10-bad', 'runtime', 'orch-watches.json'), '{ this is not json', 'utf8')
+          const orch3 = mountOrch(lhBad)
+          const tierBad = orch3?.status?.({ wsRoot: wsBadCase })?.reachability
+          // ⚠ 渲染面：拿**真**工具执行一次
+          let renderedBad = ''
+          try {
+            const tools3 = orchMod.createHobOrchTools(orch3)
+            renderedBad = String(await tools3.status.execute({}, {
+              agent: { session: { header: { cwd: wsBadCase } } },
+            }))
+          } catch (e) {
+            bad(`I10 状态工具执行失败（${String(e?.message ?? e)}）—— unreadable 的渲染面失去基准`)
+          }
+          // ⚠ **该档自己那句原因**（⚠ 判"它说了自己的原因"，⛔ 不锚定整行）
+          const saysUnreadable = /账本可达性/.test(renderedBad)
+            && /运行态文件在、但读不了/.test(renderedBad)
+          // ⚠ ⚠ **反向：⛔ 不许带别的档的原因**（⚠ 这一半才是"四档分得开"的判据）
+          const notOtherTier = !/连该查哪个账本都判不出/.test(renderedBad)
+            && !/账本目录不存在/.test(renderedBad)
+          if (tierBad === 'unreadable' && saysUnreadable && notOtherTier) {
+            ok('I10 unreadable 正例：坏 JSON ⇒ 判该档 **且**工具渲染出**该档自己那句原因**（⛔ 不带别档措辞）')
+          } else {
+            bad(`I10 unreadable 未被判出或渲染错档：reachability=${tierBad}`
+              + ` · 渲染含本档原因=${saysUnreadable} · ⛔未带别档=${notOtherTier}`
+              + ` ⇒ 该档的渲染面仍无覆盖（E-160 那类"看起来全覆盖"）`)
+          }
+
+          // ── I11 **成对阴性**：别的档⛔ 不许被标成 `unreadable`（防误标）────
+          //   ⚠ 造**账本根不在**的两态（⚠ 这正是最容易与 `unreadable` 混淆的一档：
+          //     两者都"读不到东西"）⇒ ⚠ 期望它们仍是 `ledger-unreachable`。
+          const orch4 = mountOrch(lhBad)
+          const tierMissOk = orch4?.status?.({ wsRoot: join(idir, 'ws-i11-none') })?.reachability
+          const tierMissEmpty = orch4?.status?.({ wsRoot: join(idir, 'ws-i11-none-2') })?.reachability
+          if (tierMissOk === 'ledger-unreachable' && tierMissEmpty === 'ledger-unreachable') {
+            ok('I11 成对阴性：账本根不在 ⛔ 未被误标成 unreadable（各档归各档）')
+          } else {
+            bad(`I11 误标：账本根不在却被标成别的档（${tierMissOk} / ${tierMissEmpty}，应为 ledger-unreachable）`
+              + ' ⇒ 会把"账本目录都没有"误报成"文件读不了"（假信号）')
+          }
         }
       }
     } finally {
