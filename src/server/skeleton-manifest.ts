@@ -32,7 +32,7 @@ export const SKELETON_ALLOWLIST: readonly string[] = [
 /** ⚠ 逐件 sha256（⚠ 与仓库不一致 ⇒ 收尾断言 FAIL）。 */
 export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'INIT.md', sha256: '00fdff85ece55d208cb98046ef84b36e1e536a29f77a1c806c9e45418348ac4e', bytes: 21955 },
-  { path: 'README.md', sha256: '056bfc009495aca3aa92df3438e92c785371b152b45a5ef99aa3ddf00da2eca6', bytes: 53691 },
+  { path: 'README.md', sha256: '1fb228909ecb7f75445a4d5be401f4c0091074fb5be830c4e5b6b288fc2fc9ba', bytes: 55382 },
   { path: 'drafts/archive-index.md', sha256: '5926b04f828bb1de6f4874133862affefabebd6e65b2b9d7e512c1914d2157d9', bytes: 7967 },
   { path: 'drafts/check-gitignore-guide.md', sha256: 'f68f45639fde88ada30635df480d1ce23f2b6c9f9ba584b383a2a0db4bbadb04', bytes: 19714 },
   { path: 'drafts/discipline-details.md', sha256: '551ca449193338c0b9c541f484c1f1f605921460ab2e055dd305a0678075046c', bytes: 35992 },
@@ -65,12 +65,12 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'templates/GATES.md', sha256: '82a42c346cffc0b5007be9dc72dd7dcf5c2825f11cbe800c6756a3fa259fec49', bytes: 7025 },
   { path: 'templates/REPORT.md', sha256: '0375d39ec33b0d736ce4f2227316414a55348cf5a89e441529c26a8a253faf0f', bytes: 6849 },
   { path: 'templates/ROLES.md', sha256: 'e4ac160b5e521a4396edbdb5e39663d34b1c7d1e74da96a4baec24deca6ad326', bytes: 14476 },
-  { path: 'templates/TASK.md', sha256: '1b9230f32f0c7e95eeadc555fdf7481a3a5541deb1d94c2a47722e5e52bf49a0', bytes: 15704 },
+  { path: 'templates/TASK.md', sha256: '08875bb20648d9703678ba8b297f0b020b63d2399ba1abc2837b8d44ab151560', bytes: 14895 },
   { path: 'templates/USER-DECISIONS.md', sha256: '4714d0d400459eb6cc4fe1d79f2701e2f0cc1aa999e5c6373626d75171625931', bytes: 3887 },
 ]
 
 /** 生成时刻（⚠ 只作追溯，⛔ 不作判据 —— 判据是 sha256）。 */
-export const SKELETON_GENERATED_AT = '2026-10-16T17:35:02.637Z'
+export const SKELETON_GENERATED_AT = '2026-10-16T18:08:32.817Z'
 
 export interface SkeletonManifest {
   allowlist: readonly string[]
