@@ -910,5 +910,147 @@ export function runRepoRules({ bad, ok }) {
     }
   }
 
+  /**
+   * ── 断言 C（2026-10-17 第 299 轮）：**类型基准与运行时同代** ─────────────────────
+   *
+   * ── 为什么需要（缺口有本机实测出处）──────────────────────────────────
+   *   第 298 轮上游差异核对（`archive/2026-10-17-upstream-diff/UPSTREAM-REPORT.md` §2.3）实测：
+   *     · **宿主运行时**装的是 `0.2.1-rc.2`（`$DSH_HOME/profiles/node_modules/@deepseek-ai/`）；
+   *     · **工作区**装的却是 `0.2.0-rc.2`，且 `package.json` **没声明** `@deepseek-ai/dsh-tools`
+   *       （而 `src/modules/*.ts` 确实 `import { defineTool } from '@deepseek-ai/dsh-tools'`）
+   *       ⇒ `tsc` 解析到**工作区**那份 0.2.0-rc.2，而**跑起来的是** 0.2.1-rc.2。
+   *   ⇒ 后果：**`typecheck` 绿不证明对运行时兼容**。上游改一个签名，`tsc` 会继续报绿，
+   *     而运行时已断 —— 且 `lib/` 被 gitignore，**`git status` 也看不见**（R-1 / R-2 同族）。
+   *   ⚠ 这条与 `check:build`（产物 vs 源）**不重叠**：那条管"src 改了 lib 没跟上"，
+   *     本条管"**编译时看到的宿主**与**运行时是同一个宿主**吗"。两条缺口各自独立。
+   *
+   * ── 判据（⚠ 只比"代"，不比补丁号）──────────────────────────────────
+   *   · **代** = 版本串里**第一个 `-` 之前**的部分（`0.2.1-rc.2` ⇒ `0.2.1`；
+   *     `0.1.0` ⇒ `0.1.0`）。⚠ 用"代"而不是全等：`rc.2` / `rc.3` 之间签名通常不变，
+   *     把它们判红会让本断言**恒红**（恒红判据等于没有判据 —— 见 A 组注释同款告诫）。
+   *   · 对拍集合 = **两边都有**的 `@deepseek-ai/*` 包名（⚠ 单边出现**不判**：
+   *     工作区不需要装齐宿主那 300 个包；宿主也不装本项目的开发依赖）。
+   *   · 不同代 ⇒ **FAIL 并点名包**（包名 + 两边版本），逐包一行。
+   *   · ⚠ **覆盖面必须 > 0**：两边一份都对不上 ⇒ **不按通过处理**（`E-126` 口径：
+   *     不许"扫 0 份报 ✓"）。
+   *
+   * ── 运行时的位置（⚠ 不硬编码本机绝对路径，UD-73③）──────────────────
+   *   `$DSH_HOME/profiles/node_modules/@deepseek-ai`，`DSH_HOME` 缺省 `~/.dsh`。
+   *   ⚠ 解析不到 ⇒ **如实报"未执行、不代表通过"**（与断言 A 的账本区同款口径），
+   *   ⛔ 不按 PASS、也不假装 FAIL —— 那是"没测到"，不是"测到了且不对"。
+   *
+   * ── 负向对拍（⚠ ⛔ 缺这条就等于没写）────────────────────────────────
+   *   ⚠ `E-27`：**每条断言都必须能失败**。上式写错（例如恒取同一边、或比错了字段）
+   *   会让它**永远绿**，而绿的样子跟"真的同代"**一模一样**。
+   *   ⇒ 本条末尾用**同一份比较器**跑一组人造输入：把某个已知包故意改成旧代，
+   *     **必须**报出那一个包；全都同代 ⇒ **必须**零告警。
+   *   ⚠ 比较器只写**一份**（`diffGenerations`），断言与自证共用它 ——
+   *     若各抄一份，改坏断言那份后自证仍用完好副本 ⇒ 双向失效（本脚本 §5 与
+   *     `check-client-deps` I 组的同款教训）。
+   */
+  {
+    /** 版本串的"代"：第一个 `-` 之前。`0.2.1-rc.2` ⇒ `0.2.1`。 */
+    const generationOf = (v) => String(v).split('-')[0]
+
+    /**
+     * 对拍两份 `包名 ⇒ 版本` 表，返回**不同代**的条目。
+     * ⚠ 断言与负向自证**共用这一份**（见上方"负向对拍"）。
+     * @param workspace - 工作区实装版本表。
+     * @param runtime - 宿主运行时实装版本表。
+     * @returns `[{ name, ws, rt }]`，按包名排序；空数组 = 全部同代。
+     */
+    const diffGenerations = (workspace, runtime) => {
+      const out = []
+      for (const name of Object.keys(workspace).sort()) {
+        if (!(name in runtime)) continue // 单边出现 ⇒ 不判（见判据）
+        const ws = workspace[name]
+        const rt = runtime[name]
+        if (generationOf(ws) !== generationOf(rt)) out.push({ name, ws, rt })
+      }
+      return out
+    }
+
+    /** 读一个 `@deepseek-ai` 目录下的 `包名 ⇒ 版本` 表（只看顶层直接包）。 */
+    const readScopeVersions = (dir) => {
+      const table = {}
+      for (const d of readdirSync(dir, { withFileTypes: true })) {
+        // ⚠ 符号链接也要算（profile 里 link: 进来的包是 dir 但有的宿主用 symlink）
+        if (!d.isDirectory() && !d.isSymbolicLink()) continue
+        const pj = join(dir, d.name, 'package.json')
+        try {
+          const v = JSON.parse(readFileSync(pj, 'utf8')).version
+          if (typeof v === 'string' && v !== '') table[d.name] = v
+        } catch { /* 包缺 package.json ⇒ 跳过（不是本断言的判据面） */ }
+      }
+      return table
+    }
+
+    const WS_SCOPE = join(root, 'node_modules', '@deepseek-ai')
+    const dshHome = process.env.DSH_HOME ?? join(process.env.HOME ?? '', '.dsh')
+    const RT_SCOPE = join(dshHome, 'profiles', 'node_modules', '@deepseek-ai')
+
+    // ── 负向对拍（先跑：它不依赖本机实际装了什么）────────────────────────
+    {
+      const selfFail = []
+      const ws = { 'pkg-alpha': '0.2.0-rc.2', 'pkg-beta': '0.2.1-rc.2', 'pkg-gamma': '0.2.1-rc.2' }
+      const rt = { 'pkg-alpha': '0.2.1-rc.2', 'pkg-beta': '0.2.1-rc.2', 'pkg-gamma': '0.2.1-rc.2' }
+      const hit = diffGenerations(ws, rt)
+      // ① 该咬：只有 pkg-alpha 不同代 ⇒ 必须**恰好**报它一个
+      if (hit.length !== 1 || hit[0].name !== 'pkg-alpha') {
+        selfFail.push(`不同代时没咬住（期望只报 pkg-alpha，实测 ${JSON.stringify(hit.map((x) => x.name))}）`)
+      }
+      // ② 不该咬：**全都同代**（仅补丁号不同）⇒ 必须零告警（防"恒红"那一侧）
+      //   ⚠ 两句都要**同代**：`0.2.1-rc.2` ⇄ `0.2.1-rc.3` 属同一代 ⇒ 报出来就是口径写错。
+      if (diffGenerations({ 'pkg-a': '0.2.1-rc.2' }, { 'pkg-a': '0.2.1-rc.3' }).length !== 0) {
+        selfFail.push('同代但补丁号不同时误报了（"代"的口径写错 ⇒ 本断言会恒红）')
+      }
+      // ③ 单边不判：只在工作区出现的包不许报
+      if (diffGenerations({ ...ws, 'only-ws': '9.9.9' }, rt).length !== 1) {
+        selfFail.push('单边出现的包被算进去了（宿主不装本项目开发依赖 ⇒ 会误报）')
+      }
+      if (selfFail.length > 0) {
+        bad(`断言 C · 负向对拍失败（判据牙口不对，⛔ 本断言不成立）：${selfFail.join(' / ')}`)
+      } else {
+        ok('断言 C · 负向对拍：不同代**咬住**（故意把 1 个包改成旧代 ⇒ 恰好报出它）· '
+          + '同代不误报（补丁号不同不报）· 单边出现不报（3 项双向对拍）')
+      }
+    }
+
+    // ── 正向：读两边实况并对拍 ──────────────────────────────────────────
+    let wsTable = undefined
+    let rtTable = undefined
+    try {
+      if (existsSync(WS_SCOPE)) wsTable = readScopeVersions(WS_SCOPE)
+    } catch { wsTable = undefined }
+    try {
+      if (existsSync(RT_SCOPE)) rtTable = readScopeVersions(RT_SCOPE)
+    } catch { rtTable = undefined }
+
+    if (wsTable === undefined || Object.keys(wsTable).length === 0) {
+      bad('断言 C · 工作区 `node_modules/@deepseek-ai` 读不到任何包（基准缺失 ⇒ 不按通过处理）')
+    } else if (rtTable === undefined || Object.keys(rtTable).length === 0) {
+      // ⚠ "没测到"≠"测到了且不对"：如实报未执行，⛔ 不混进 PASS 也不假装 FAIL
+      ok(`断言 C · **未执行、不代表通过**（宿主运行时目录解析不到：\`${RT_SCOPE}\`；`
+        + '⚠ 换台机器/换 profile 时可能如此 —— 这条要的是"至少一边基准缺失就说清"，⛔ 不是绿灯）')
+    } else {
+      const compared = Object.keys(wsTable).filter((n) => n in rtTable)
+      const diffs = diffGenerations(wsTable, rtTable)
+      if (compared.length === 0) {
+        bad('断言 C · 工作区与宿主运行时**一个 `@deepseek-ai/*` 包都没对上**（覆盖面无 ⇒ 不按通过处理）')
+      } else if (diffs.length > 0) {
+        bad(`断言 C · **类型基准与运行时不同代**（${diffs.length} / ${compared.length} 个包）：`
+          + diffs.map((d) => `\n      · ${d.name}：工作区 ${d.ws} ≠ 运行时 ${d.rt}`).join('')
+          + '\n      ⇒ 后果：`typecheck` 判的是工作区那份、**跑的是运行时那份** ⇒'
+          + '\n         `typecheck` 绿**不证明**运行时兼容（`UPSTREAM-REPORT.md` §2.3）'
+          + '\n      ⇒ 修法：按运行时同代升齐工作区 `devDependencies` 并显式声明 `src/**` 直接 import 的包')
+      } else {
+        ok(`断言 C · 类型基准与运行时同代：核了 **${compared.length}** 个 \`@deepseek-ai/*\` 包`
+          + `（工作区 ⇄ \`${RT_SCOPE}\`），**逐包同代**、零告警`
+          + `（⚠ 工作区共 ${Object.keys(wsTable).length} 个、运行时共 ${Object.keys(rtTable).length} 个，`
+          + '取**交集**对拍；单边出现不判）')
+      }
+    }
+  }
+
   return { mustTrack, mustExclude, README, readmeSrc, PKG }
 }

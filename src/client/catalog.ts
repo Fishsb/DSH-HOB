@@ -7,8 +7,9 @@
  *     · 预设清单 ← `<NS_AGENT_PRESETS>.list()`（宿主 `dsh-agent-preset-registry`）
  *     · 模型目录 ← `<NS_SESSION>.modelCatalog()`（宿主 `dsh-api-session-controller`）
  *   两条的返回形状都按宿主 client 的原生用法消费（对照
- *   `dsh-client-ui-agent-preset/lib/client.js:1082` 与
- *   `dsh-client-ui-model-selection/lib/client.js:118`），**不使用**未在
+ *   `ctx.remote.agentPresets.list()` 在 `dsh-client-ui-agent-preset/lib/client.js`、
+ *   `ctx.remote.session.modelCatalog()` 在 `dsh-client-ui-model-selection/lib/client.js`
+ *   —— ⚠ 用**符号锚**，⛔ 不钉行号：宿主把 client 打成一个 bundle，行号会整体位移），**不使用**未在
  *   宿主 `dsh.client` 声明里出现的字段。
  *
  * ── ⚠ 这两个命名空间**怎么读**（第 3 轮修正，2026-10-10 · 必读）──────────
@@ -19,6 +20,9 @@
  *   `:163`（`lib/index.js:676` 造错、`:691`）抛出 —— 触发分支是
  *   `while` 走链时 `if (!fiber.runtime) throw error`
  *   （readonly 反射层逐级向上找实现，走到本 fiber 仍无声明 ⇒ 抛）。
+ *   （⚠ 这四个锚点 2026-10-17 在 0.2.1-rc.2 上**逐行核过、仍准** —— `src/` 随包发布，
+ *    不像打包后的 client bundle 那样整体位移；核法：`src/reflect.ts` 的
+ *    `cannot get property "${prop}" without inject` / `if (!fiber.runtime) throw error`。）
  *   ⚠ **与"宿主有没有数据"无关**：第 2 轮读数（5 预设 / 3 组 6 模型）
  *   证明的是**宿主侧有数据**，不证明面板能取到 —— 两条不是一回事。
  *   ⚠ **与是否重启无关**：门禁是**声明**问题，重启不会让它变好。
@@ -29,7 +33,7 @@
  *        自动重读一次（用户不必点重试）。这就是 E-01 / E-41 的纪律。
  *     ② **免 inject 现读**：`ctx.get('<命名空间逐字名>')` —— cordis 的 `get()` 文档
  *        原文就是 *"Read a service from the store without the inject requirement"*
- *        （`src/reflect.ts:226-233`），不要求先声明依赖，也不会抛。
+ *        （`src/reflect.ts:226-233`；⚠ 2026-10-17 核过仍准），不要求先声明依赖，也不会抛。
  *   ⚠ **禁止**把这两个名字写进 `src/client/index.ts` 的**模块级** `export const inject` ——
  *     那是**加载门禁**（E-02 / E-41）：缺席会让**整个 client 插件不激活** ⇒
  *     设置分区整体消失，属回归。两种 inject 的后果差异见 `.hob/EXPERIENCE.md` E-41。
@@ -101,7 +105,8 @@ export interface ModelCatalogRow {
  *   ⇒ 改成"**给键 + 给参数**"，由面板经语言服务取词（见 `i18n.ts` 的 `t()`）。
  *   这与宿主 `ui-model-selection` 的做法同源：它把失败存成
  *   `state.failures[].message` 并在渲染处套 `t("warning.groupLoad", {…})`
- *   （`dsh-client-ui-model-selection/lib/client.js:975-980`）。
+ *   （`dsh-client-ui-model-selection/lib/client.js` —— ⚠ **符号锚**：
+ *   渲染处 `t("warning.groupLoad"` 与词典键 `"warning.groupLoad"`；⛔ 不钉行号）。
  */
 export interface CatalogError {
   /** 词条键（`i18n.ts` 的词典里必须有；缺了会退化成显示键名，由机检钉住）。 */
@@ -140,18 +145,24 @@ const listeners = new Set<() => void>()
 /**
  * 两个 Remote 命名空间的**逐字服务名**。
  *
- * ⚠ 名字不是猜的，是**读出来的**（第 3 轮实测，2026-10-10）：
- *   `@deepseek-ai/dsh-api-gateway/lib/client.js:2040-2042`
+ * ⚠ 名字不是猜的，是**读出来的**（第 3 轮实测，2026-10-10；2026-10-17 在 0.2.1-rc.2 上复核）：
+ *   `@deepseek-ai/dsh-api-gateway` 的 client bundle 里
  *     `function remoteServiceKey(namespace) { return \`remote.${namespace}\` }`
- *   `:1743` 起 `createNamespace()` 用 `this.ownerCtx.plugin({ name: remoteServiceKey(name), … })`
+ *   而 `createNamespace()` 用 `this.ownerCtx.plugin({ name: remoteServiceKey(name), … })`
  *   把命名空间装成一个 `Service`，其 `name` 即下面这两个串。
+ *   ⚠ **全部按符号锚**，⛔ 不钉行号 —— 这份 bundle 会重排（本行原先的
+ *   `:2040-2042` / `:1743` 在 0.2.1-rc.2 上已对不上，实测 `remoteServiceKey` 在 `:2074`、
+ *   `name: remoteServiceKey(name)` 在 `:1777`；⚠ 那些数**只用来说明"漂了"**，⛔ 不要再当锚）。
  *   命名空间名本身来自 `@deepseek-ai/dsh-api-remotes/lib/client.js` 的
- *   `TYPERT_REMOTE` 表：预设 = `TYPERT_REMOTE$23` 的 `namespace: "agentPresets"`
- *   （`:4631`），模型 = `session`（`:11475` 的 `session/modelCatalog` 描述符）。
+ *   `TYPERT_REMOTE` 表：预设 = 描述符 `"agentPresets/list"` 的 `service: "agentPresets"`；
+ *   模型 = 描述符 `"session/modelCatalog"` 的 `service: "sessionController"`。
+ *   （⚠ 原先写的是 `:4631` / `:11475` 与 `TYPERT_REMOTE$23` —— 前者已漂，后者是**打包序号**、
+ *    换一版就会变号，⛔ 不该当锚。）
  *
  * ⚠ 与宿主自己的 UI 用法**一致**（可对照）：
- *   `dsh-client-ui-agent-preset/lib/client.js:1532` 声明 `"remote.agentPresets"`；
- *   `dsh-client-ui-model-selection/lib/client.js:357` 声明 `"remote.session"`。
+ *   `dsh-client-ui-agent-preset/lib/client.js` 的模块级 inject 含 `"remote.agentPresets"`；
+ *   `dsh-client-ui-model-selection/lib/client.js` 的模块级 inject 含 `"remote.session"`。
+ *   （⚠ 同样按符号锚：原 `:1532` / `:357` 已对不上，实测在 `:2257` / `:991`。）
  *   宿主是在**模块级 inject** 里声明的 —— 本插件**不那样做**（理由见文件头）。
  */
 const NS_AGENT_PRESETS = 'remote.agentPresets'
@@ -233,7 +244,7 @@ function update(next: Partial<CatalogSnapshot>): void {
  *   `cannot get property "..." without inject`（本文件的原始缺陷，见文件头）。
  *   判据：`ctx.get('...')` 走的是 `reflect.get()`，文档写明
  *   *"without the inject requirement"*；属性访问走的是 reflect 的 **get 陷阱**
- *   （`src/reflect.ts:136-168`），未声明即抛。
+ *   （`src/reflect.ts:136-168`，⚠ 2026-10-17 核过仍准），未声明即抛。
  *
  * @param name - **逐字**服务名（如 `'remote.agentPresets'`）。
  * @returns 服务实例，或 `undefined`（未挂载/未就绪 —— 由调用方如实报错）。

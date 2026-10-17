@@ -162,7 +162,8 @@ export function apply(ctx: any, config: Config = {}): void {
   ctx.inject([GATE_SERVICE], (gatedCtx: any) => {
     log('门禁就绪 ⇒ 注册工具')
     // ⚠ 用**回调给的子 ctx**注册（不是外层 ctx）：这是宿主的既有用法
-    //   （`dsh-agent-preset-registry/lib/index.js:485` 的 `ctx.inject(["settings"], (child) => child.effect(...))`）。
+    //   （`dsh-agent-preset-registry/lib/index.js` 里
+    //   `ctx.inject(["settings"], (child) => {` 那一段 —— ⚠ 按**符号锚**定位，⛔ 别按行号）。
     //   子 ctx 继承依赖 API 且**拥有它自己创建的注册** ⇒ 门禁消失时这些注册随之拆除，
     //   不用手写卸载逻辑（§3.3 第 3 条：资源靠 ctx.effect 挂，卸载自动清理）。
     registerTools(gatedCtx, config, levelOf, log)
@@ -404,7 +405,8 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
 /**
  * 保留的传输名（PTC 模式的 `run_code`）。
  * ⚠ **必须显式放行**：ptc 模式下 `wireSchemas()` 只返回 `run_code` 一个
- *   （`dsh-tools/lib/index.js:2840-2843`）。若白名单把它滤掉，助手会拿到**空清单**
+ *   （`dsh-tools/lib/index.js` 的 `wireSchemas(scope)` 里，非 native 分支
+ *   `.filter((schema) => schema.name === RUN_CODE_NAME)` —— ⚠ 按**符号锚**定位）。若白名单把它滤掉，助手会拿到**空清单**
  *   —— 那是比"多几个工具"严重得多的回归（会话直接失去全部能力）。
  *   native 模式下它**根本不存在**（`view()` 只在 mode !== native 时加它）。
  *   ⚠ **名数不再写死在这里**（旧文本写「恰好 30」，而批 21 收缩后真值已变 —— 这正是
@@ -494,11 +496,11 @@ export const GUARDED_TOOLS: readonly string[] = [
  *
  * ── 机制依据（为什么挂这里）──────────────────────────────────────────
  *   ① 请求里的工具清单确实来自这次装配：`dsh-agent-loop/lib/index.js:907`
- *      `await this.loopCtx.systemPrompt.assemble(...)`；
+ *      `await this.loopCtx.systemPrompt.assemble(...)`（⚠ 本行号 2026-10-17 在 0.2.1-rc.2 上核过，仍在位）；
  *   ② 装配是个**可拦截的瀑布**：`dsh-system-prompt/lib/types/index.d.ts:27`
- *      声明 `'system-prompt/assemble'(assembly, context, next)`；
- *   ③ 工具清单由 `dsh-tools/lib/index.js:2707`
- *      `ctx.systemPrompt.tools((context) => this.wireSchemas(context.scope))` 提供。
+ *      声明 `'system-prompt/assemble'(assembly, context, next)`（⚠ 同上，仍在位）；
+ *   ③ 工具清单由 `dsh-tools/lib/index.js` 的 `ctx.systemPrompt.tools((context) => this.wireSchemas(context.scope))`
+ *      提供 —— ⚠ 按**符号锚**定位（0.2.1-rc.2 上在 `:2802`，但它会随重排漂移）。
  *
  * ── 为什么用装配期过滤而**不是** `restrict({ allow })`（阶段 B 实测结论）────
  *   在 preset 行落点（真实落点）上，`restrict({ allow })`：
@@ -554,9 +556,10 @@ function filterModelToolList(ctx: any, levelOf: () => string, log: (m: string) =
       return { ...assembled, tools: kept }
     }
     // ⚠ 监听器必须挂在 **ctx** 上，不能挂在服务实例上：`SystemPrompt` 是 cordis `Service`
-    //   子类，而 `Service` **不代理**事件 API（`cordis/lib/index.js:1742` 的类定义里没有
-    //   `on`/`effect`）—— 写 `sp.on(...)` 会直接 `TypeError`。宿主的先例也都是 ctx：
-    //   `dsh-agent/lib/index.js:167` 的 `agentCtx.on("system-prompt/assemble", …)`。
+    //   子类，而 `Service` **不代理**事件 API（⚠ **符号锚**：`cordis/lib/index.js` 里
+    //   `var Service = class Service {` 的类体没有 `on`/`effect`；0.2.1-rc.2 上在 `:1742`）
+    //   —— 写 `sp.on(...)` 会直接 `TypeError`。宿主的先例也都是 ctx：
+    //   `dsh-agent/lib/index.js:167` 的 `agentCtx.on("system-prompt/assemble", …)`（⚠ 本行号核过，仍在位）。
     // ⚠ 资源靠 `ctx.effect` 挂（§3.3 第 3 条）：依赖消失/卸载时监听器自动拆除。
     spCtx.effect(() => spCtx.on('system-prompt/assemble', handler),
       'dsh-hob preset: model-facing tool allowlist')
@@ -570,20 +573,23 @@ function filterModelToolList(ctx: any, levelOf: () => string, log: (m: string) =
  * ── 为什么需要 ─────────────────────────────────────────────────────
  * 阶段 C 实测：装配期过滤只改"发给模型的清单"，**执行路径不看清单** ——
  * 绕过清单直接点名，被滤掉的工具**照常执行**（`taskboard_list`/`list_agents` 都成功了）。
- * 根因：`dsh-tools/lib/index.js:2995` 的 `get()` 读 `view(scope).visible`，与模型清单无关。
+ * 根因：`dsh-tools/lib/index.js` 的 `get(name, scope)` 读 `view(scope).visible`，与模型清单无关
+ *   （⚠ 按**符号锚**：`get(name, scope)` → `return this.view(scope).visible.get(name);`；0.2.1-rc.2 上在 `:3091`）。
  *
  * ── 机制依据（为什么挂这里）──────────────────────────────────────────
  *   · 宿主**官方** waterfall 事件：`dsh-tools/lib/types/index.d.ts:47`
  *     `'tools/pre-execute'(exec, next): Promise<PreToolDecision>`，可返回 `{kind:'deny'}`；
- *   · 派发点按 **agent scope** 过滤：`dsh-tools/lib/index.js:3224`
- *     `const carrier = scopeTarget(this, exec.agent)` —— 类型注释亦明写
+ *   · 派发点按 **agent scope** 过滤：`dsh-tools/lib/index.js` 的 `prepareExecution()` 里
+ *     `const carrier = scopeTarget(this, exec.agent)`（⚠ **符号锚**：`prepareExecution` + `scopeTarget(this, exec.agent)`）—— 类型注释亦明写
  *     "agent-scoped listeners receive only that agent's calls"；
- *   · 宿主先例：`dsh-experimental-auto-review/lib/index.js:462`
- *     `ctx.on("tools/pre-execute", async (exec, next) => …)`（真机 profile 正装此 bundle）。
+ *   · 宿主先例：`dsh-experimental-auto-review/lib/index.js` 里的
+ *     `ctx.on("tools/pre-execute", async (exec, next) => …)`（真机 profile 正装此 bundle；⚠ **符号锚**，⛔ 不钉行号 —— 实测该调用在 0.2.1-rc.2 上是 `:461`，原先写的 `:462` 指的已是 `const agent = exec.agent;` 那一行）。
  *
  * ── ⚠⚠ 失败方向：宿主这里是 **fail-CLOSED**，所以本函数**必须自己兜住一切异常** ──
- *   实测（阶段 D）：监听器**抛异常**时，`dsh-tools/lib/index.js:3267` 的 catch 把异常变成
+ *   实测（阶段 D）：监听器**抛异常**时，`dsh-tools/lib/index.js` 的 `prepareExecution()`
+ *   外层 `catch (error) { … result: toolErrorResult(error) }` 把异常变成
  *   `toolErrorResult` ⇒ 工具**不执行**（连 `read_contracts` 都失败）。
+ *   ⚠ **符号锚**：`prepareExecution` 内的 `catch` + `toolErrorResult(error)`（0.2.1-rc.2 上在 `:3363`）。
  *   ⇒ 本拦截器**不是**安全边界，而是收敛措施：**把「助手」弄瘫比漏一个工具更糟**。
  *   故：任何异常 / 不认识的 exec 形状 / 非本名单的名字 ⇒ **一律 `next()` 放行**。
  *
@@ -643,7 +649,9 @@ function enforceToolAllowlist(ctx: any, levelOf: () => string, log: (m: string) 
  *
  * ── ⚠⚠ 为什么用 `ctx.tools.guard()` 而不是 `tools/pre-execute` ─────────
  *   ① **单调拒**：guard 的返回值**没有 allow 形态** —— 返回理由即拒，
- *      后面的监听器**无法把它翻回放行**（`dsh-tools/lib/index.js:2910-2921`）；
+ *      后面的监听器**无法把它翻回放行**（⚠ **符号锚**：`dsh-tools/lib/index.js` 的 `guard()` 处
+ *      JSDoc —— "while no guard can force-allow a call another guard denied"；
+ *      0.2.1-rc.2 上在 `:3008-3012`；类型声明同句在 `lib/types/index.d.ts:647`）；
  *      而 `pre-execute` 瀑布的 `{kind:'allow'}` 可以被后续监听器改写。
  *   ② **fail-CLOSED**：哨兵**抛异常**时宿主让工具**不执行**
  *      （实测：`{"isError":true,"error":{"message":"GUARD-BLEW-UP"}}`，见
