@@ -522,7 +522,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       + '可写文件：' + LEDGER_FILES.join(' / ') + '，以及 archive/<YYYY-MM-DD-slug>/*.md；'
       + '卷：volumes/<卷>/*.md；⚠ 卷下**具名两层**子目录另有一说（见 VOLUME_SUBDIRS）—— 本句是给人读的摘要，判据以写入侧常量为准。'
       + '骨架（README.md / templates/）只读。'
-      + '⚠ `PROJECT.md`（项目方案）自 2026-10-10（UD-88 / CHG-025）起与账本同级、同在此可写面内；'
+      + '⚠ `PROJECT.md`（项目方案）与账本同级、同在此可写面内；'
       + '但**方案只有用户能批准变更、Hob 只提议**（程序纪律，不是工具闸门）。'
       + 'append=追加一条（默认，编号须与账本现有编号连续）；overwrite=整文件重写（受缩水守卫保护）。'
       + '写入前自动备份到 .hob/backups/；相同编号+相同内容会被幂等跳过。'

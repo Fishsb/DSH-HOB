@@ -16,7 +16,8 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "inlineSources": false
   },
   "include": ["src"],
   "exclude": ["src/client"]
