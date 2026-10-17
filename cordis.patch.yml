@@ -31,7 +31,6 @@
       config:
         modules:
           tools: true
-          preset: false
           bus: true
           # ⚠ **缺省 false**（与其它三个不同，刻意如此）：闭环编排会**在被派发的
           #   会话跑完后自动唤醒派活方** ⇒ 一旦转起来会在用户看不到的时候持续

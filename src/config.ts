@@ -33,8 +33,6 @@ import z from '@deepseek-ai/schemastery'
 export interface ModulesConfig {
   /** M1 工具模块（Host 半边）。 */
   tools: boolean
-  /** M2 预设声明模块。 */
-  preset: boolean
   /** M3 会话总线模块（同实例内会话之间传话）。 */
   bus: boolean
   /** M5 编排模块（闭环派活：投递 → 等对方跑完 → 回传结果 → 唤醒派活方）。 */
@@ -95,20 +93,19 @@ export interface Config {
    * 各模块开关。
    *
    * ⚠ **运行时形态是混合的**（这是"隐藏 bus"逼出来的，见 {@link Config} 的 schema 注释）：
-   *   · `tools` / `preset` / `settings` = `Volatile<boolean>`（ref 对象，为了在设置页可见）；
+   *   · `tools` / `settings` = `Volatile<boolean>`（ref 对象，为了在设置页可见）；
    *   · `bus` = 普通 `boolean`（刻意不标 volatile ⇒ 设置页不呈现，UD-25）。
-   * ⇒ **绝不要直接读 `config.modules.x`**：三个 ref 恒 truthy、且不报错。
+   * ⇒ **绝不要直接读 `config.modules.x`**：两个 ref 恒 truthy、且不报错。
    *   一律经 {@link moduleSwitches} 取普通布尔。
    */
   modules: {
     tools: import('@deepseek-ai/cordis').Volatile<boolean>
-    preset: import('@deepseek-ai/cordis').Volatile<boolean>
     /**
      * ⚠ **批 14 / M3 起改为 ref（volatile）** —— 它现在在设置页**可见**。
      *   v1–v4 时期它是普通布尔且刻意隐藏（UD-25：「开了也不起作用」会误导用户）。
      *   M3 落地后该模块**真管用**（提供 `hobBus` 服务 + 注册 2 个投递工具），
      *   隐藏它反而变成"用户看不到这个真实开关"（PROJECT.md §5.3 的静默失败）。
-     *   ⇒ 与 `tools` / `preset` / `settings` 同形。
+     *   ⇒ 与 `tools` / `settings` 同形。
      */
     bus: import('@deepseek-ai/cordis').Volatile<boolean>
     settings: import('@deepseek-ai/cordis').Volatile<boolean>
@@ -140,8 +137,8 @@ export const Config = z.object({
    *   实测（用**宿主 `volatileForm` 原文**跑真 schema，见
    *   `.hob/archive/2026-10-06-config-cleanup-evidence/分区可见性验证.mjs`）：
    *     · `volatileForm(schema)` 返回**非 undefined** ⇒ 分区仍可见 ✅
-   *     · 返回的 form 顶层键 = `["modules"]`，其子字段 = `{tools, preset, bus, settings}`
-   *       （批 14 起含 `bus`；此前为 `{tools, preset, settings}`）
+   *     · 返回的 form 顶层键 = `["modules"]`，其子字段 = `{tools, bus, settings}`
+   *       （批 14 起含 `bus`；后续批次又相继加入 `orch` / `interconnect`）
    *       ⚠ 那是**该次实测当时的**返回值；本轮加了 `spawn` ⇒ 顶层键应为
    *         `["modules", "spawn"]`（**已按真 schema 复测**，读数在回报里）。
    *   ⇒ **"父不标 + 子各标"单独就足以让 entry 可见**，不需要任何顶层 volatile。
@@ -178,7 +175,7 @@ export const Config = z.object({
    * ── 两种候选方案的实测对照（选 D 的理由）────────────────────────────
    * | 方案 | 设置页 | `bus` 键是否保留 | 结论 |
    * |---|---|---|---|
-   * | **E**：父 volatile + schema 里**不声明** `bus` | `tools/preset/settings` | ❌ **一次 UI 写入就被抹掉** | **不可用** |
+   * | **E**：父 volatile + schema 里**不声明** `bus` | `tools/settings` | ❌ **一次 UI 写入就被抹掉** | **不可用** |
    * | **D**：父不标 + 各子字段各标 | 四个都在 | ✅ **保留**（写入后仍在） | **采用** |
    *
    * **为什么 E 会丢**（实测复刻宿主写入路径得出）：`modules` 整体 volatile ⇒
@@ -190,16 +187,14 @@ export const Config = z.object({
    * （复刻脚本与结论见 `.hob/archive/2026-10-05-step6rev-evidence/`。）
    *
    * ⚠ **代价（批 14 起四个子字段同形）**：
-   *   `tools` / `preset` / `bus` / `settings` **各自都是 ref 对象** ⇒ `cfg.modules.tools`
+   *   `tools` / `bus` / `settings`（及后续加入的 `orch` / `interconnect`）
+   *   **各自都是 ref 对象** ⇒ `cfg.modules.tools`
    *   是 ref（**恒 truthy**！直接当布尔用会**永远为真**，且不报错）。
    *   ⇒ 这件事**只能**由 {@link moduleSwitches} 收口，调用方一律不许自己解。
    */
   modules: z.object({
     tools: z.boolean().default(true)
       .description('工具模块：提供「助手」会话里的两个工具（读文档 / 写账本）。')
-      .volatile(),
-    preset: z.boolean().default(false)
-      .description('预设模块：以编程方式登记 / 查询 Agent 预设（预设本身由插件包自带，不依赖本开关）。')
       .volatile(),
     /**
      * 会话总线开关（M3）。
@@ -391,7 +386,8 @@ export const Config = z.object({
    * ⚠ ⚠ **为什么是"一行一个字符串"而不是结构化对象**：⚠ 本仓的配置面用的是
    *   schemastery 的 `z.string()` 形态（⚠ 结构化数组在宿主设置页上的呈现未经实测）
    *   ⇒ ⚠ **取已验证的形态**：⚠ **每行一个对端**，格式 `名字=<launcher>`，⚠ 或只写 `名字`
-   *     （⚠ 后者用 `DEFAULT_LAUNCHER`）。⚠ 解析器见 {@link interconnectTargets}。
+   *     （⚠ 后者用**运行时解析**出来的宿主入口，见 `interconnect.ts` 的 `resolveDefaultLauncher()`）。
+   *     ⚠ 解析器见 {@link interconnectTargets}。
    *   ⚠ ⚠ **空的含义**：⚠ **空 = 白名单为空** ⇒ ⚠ **每个对端都会被拒**（⚠ 而拒的时候会**点名**说明）。
    */
   interconnectTargets: z.object({
@@ -464,7 +460,7 @@ function deref(value: unknown): unknown {
  *
  * | 字段 | schema 上的 volatile | 运行时形态 | 直读 `modules.x` 得到 |
  * |---|---|---|---|
- * | `tools` / `preset` / `bus` / `settings`（批 14 起） | ✅ 有（为了显示） | **ref 对象** | **ref**（恒 truthy，`if (m.tools)` 永远为真） |
+ * | `tools` / `bus` / `settings`（批 14 起；`orch` / `interconnect` 同形） | ✅ 有（为了显示） | **ref 对象** | **ref**（恒 truthy，`if (m.tools)` 永远为真） |
  *
  * ⇒ **任何"直接读 `config.modules.x` 当布尔用"的写法的后果都是静默的**（永远为真，
  *   且不报错）。本函数是**唯一**允许碰 `config.modules` 的地方：逐字段 `deref()`，
@@ -474,7 +470,7 @@ function deref(value: unknown): unknown {
  *   宁可模块多加载也不因读配置失败而整插件停摆。
  *
  * @param config - 插件配置（来自 Loader 时是 ref 形态；测试里的裸对象是普通形态）。
- * @returns 四个模块开关的普通布尔对象。
+ * @returns 各模块开关的普通布尔对象。
  */
 export function moduleSwitches(config: unknown): ModulesConfig {
   const raw = deref((config as { modules?: unknown } | undefined)?.modules)
@@ -485,7 +481,6 @@ export function moduleSwitches(config: unknown): ModulesConfig {
   }
   return {
     tools: pick('tools', true),
-    preset: pick('preset', false),
     // ⚠ 缺省 **true**（与 schema 的 `.default(true)` 一致）：读不出来时
     //   宁可让 M3 可用（它是"投递"能力，失效表现为工具不出现，易于发现），
     //   而不是静默把用户已经打开的模块关掉。
@@ -598,7 +593,7 @@ export function interconnectEnabled(config: unknown): boolean {
  * 读出**对端白名单**（⚠ 那条"⛔ 不接受任意远端"硬边界的载体）。
  *
  * ── 解析口径（⚠ 一行一个对端）──────────────────────────────────────────────
- *   · `名字` ⇒ ⚠ 对端名 = 名字，⚠ launcher 用缺省（{@link DEFAULT_LAUNCHER}）；
+ *   · `名字` ⇒ ⚠ 对端名 = 名字，⚠ launcher 用缺省（**运行时解析**，⛔ 不是写死的安装路径）；
  *   · `名字=<launcher>` ⇒ ⚠ 显式给启动器；
  *   · ⚠ 空行 / 名字里有非法字符（空格、`=` 之外的分隔符）⇒ **跳过该行**（⚠ 但**不报错** ——
  *     ⚠ 因为"跳过"在这里的后果只是"少一个对端"，⚠ 而**投递时会因为"不在白名单"而被拒并点名**

@@ -15,7 +15,6 @@ export { PERMISSION_SERVICE }
 import type { Config as ConfigShape, ModulesConfig } from './config.ts'
 
 import * as toolsModule from './modules/tools.ts'
-import * as presetModule from './modules/preset.ts'
 import * as busModule from './modules/bus.ts'
 import * as orchModule from './modules/orchestrator.ts'
 import * as settingsModule from './modules/settings.ts'
@@ -53,7 +52,6 @@ export const name = 'dsh-hob'
  */
 const MODULE_REGISTRY = [
   { key: 'tools', mod: toolsModule, enabled: (m: ModulesConfig) => m.tools },
-  { key: 'preset', mod: presetModule, enabled: (m: ModulesConfig) => m.preset },
   {
     key: 'bus',
     mod: busModule,

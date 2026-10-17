@@ -103,20 +103,20 @@ function deref(value: unknown): unknown {
 /**
  * 模块开关 → 一句人话。
  *
- * ⚠ **列设置页真正呈现的五个开关**（工具 / 预设 / 会话总线 / 闭环编排 / 设置）。
+ * ⚠ **列设置页真正呈现的五个开关**（工具 / 会话总线 / 闭环编排 / 设置 / 跨实例投递）。
  *   `bus`（会话总线）自 **批 14 / M3** 起**列入** —— 用户 2026-10-08 决策 UD-77
  *   落地 M3 后它**真管用**（提供 `hobBus` 服务 + 注册 `hob_sessions` / `hob_send`）。
  *   而 `orch`（闭环编排）是**缺省关**、且会在无人看管时继续推进的能力 ——
  *   越是这种越不能藏（PROJECT.md §5.3 的静默失败形态）。
  *
  * ⚠ 摘要**不能用"遍历 m 的所有键"** 来生成 —— 必须用**显式白名单**（本常量）：
- *   配置键 `preset` 仍在 `modules` 里但值为 false，遍历会把它一并列出，
+ *   遍历会把 schema 里所有开关一并列出（含将来新增、未在本面板定义显示名的），
  *   白名单才能决定"给用户看哪几个"。
  *
  * ⚠ 显示名从第 8 轮起**走语言服务**（键 `module.<配置键>`）——
  *   本常量只保留**顺序与配置键**，中文名在 `PANEL_ZH` 里。
  */
-const VISIBLE_SWITCHES = ['tools', 'preset', 'bus', 'orch', 'settings', 'interconnect'] as const
+const VISIBLE_SWITCHES = ['tools', 'bus', 'orch', 'settings', 'interconnect'] as const
 
 /** 一个开关的显示名（经语言服务）。 */
 function switchName(key: string): string {
@@ -793,7 +793,6 @@ export function SettingsPanel(): ReactElement {
         <li className={S.note}>
           {t('note.restart.pre', {
             tools: t('module.tools'),
-            preset: t('module.preset'),
             bus: t('module.bus'),
             orch: t('module.orch'),
             settings: t('module.settings'),
@@ -845,7 +844,6 @@ const PANEL_EN: Record<string, string> = {
   moduleOff: 'off',
   moduleUnread: '(not read)',
   'module.tools': 'Tools',
-  'module.preset': 'Presets',
   'module.bus': 'Session bus',
   'module.orch': 'Closed-loop orchestration',
   'module.settings': 'Settings',
@@ -928,7 +926,7 @@ const PANEL_EN: Record<string, string> = {
   'note.permission.pre': '· «Readable-permission control» is a ',
   'note.permission.strong': 'takes-effect-immediately',
   'note.permission.post': ' value-type configuration — an open session follows the new level from its next step, and it is a different path from the module switches above. ⚠ «Full permission» widens the READABLE range only: every file in the workspace can be read, and it still cannot write, run a command, or raise a team.',
-  'note.restart.pre': '· Module switches ({tools} / {preset} / {bus} / {orch} / {settings} / {interconnect}, six in total): a change needs ',
+  'note.restart.pre': '· Module switches ({tools} / {bus} / {orch} / {settings} / {interconnect}, five in total): a change needs ',
   'note.restart.strong': 'an instance restart',
   'note.restart.post': ' to take effect — the host’s rule is that changing these values does not remount the plugin, and modules are loaded at plugin-load time.',
   'note.effective.pre': '· «{card}» is a ',
@@ -952,7 +950,6 @@ const PANEL_ZH: Record<string, string> = {
   moduleOff: '关',
   moduleUnread: '(未读到)',
   'module.tools': '工具',
-  'module.preset': '预设',
   'module.bus': '会话总线',
   'module.orch': '闭环编排',
   'module.settings': '设置',
@@ -1034,7 +1031,7 @@ const PANEL_ZH: Record<string, string> = {
   'note.permission.pre': '· 「可读权限控制」是',
   'note.permission.strong': '即改即生效',
   'note.permission.post': '的值型配置 —— 已开的会话在它的下一步就按新档位走；它和上面的模块开关是两条不同的路径。⚠ 「完全权限」只放宽可读范围：工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队。',
-  'note.restart.pre': '· 模块开关（{tools} / {preset} / {bus} / {orch} / {settings} / {interconnect}，共六个）：改完需要',
+  'note.restart.pre': '· 模块开关（{tools} / {bus} / {orch} / {settings} / {interconnect}，共五个）：改完需要',
   'note.restart.strong': '重启实例',
   'note.restart.post': '才生效 —— 宿主的规定是"改这些值不重挂插件"，而模块的装载发生在插件装载那一刻。',
   'note.effective.pre': '· 「{card}」是',

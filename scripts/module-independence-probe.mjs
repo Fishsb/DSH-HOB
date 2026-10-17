@@ -25,7 +25,7 @@
  *   出处：`PROJECT.md` **R-10**「静默 skipped ⇒ exit 2，不是成功」。
  *
  * ── 断言口径的实测出处（2026-10-11 第 51 轮 · 用**真产物** `lib/` 复测，非推断）──
- *   · 默认 `modules` 五开关（解 ref）=== `{tools:true, preset:false, bus:true, orch:false, settings:true}`
+ *   · 默认 `modules` 开关（解 ref）=== `{tools:true, bus:true, orch:false, settings:true, interconnect:false}`
  *     ⚠ `bus` **自 M3（`a89111f` · 2026-10-08 · UD-77）起默认 `true`** ——
  *       本探针原先写在基线期（`a850ae6` · 2026-10-05），那时默认是 `false`
  *       ⇒ 本条期望**已过期**，第 51 轮按实测订正（⛔ **不是放宽，是订正事实**）。
@@ -97,20 +97,20 @@ console.log('=== 路径 A：配置开关（默认 modules.bus=true，自 M3 / UD
   const { root } = await boot({})
   const names = registryNames(root)
   check(
-    '默认配置下，tools / bus / settings 三个模块被装载（preset / orch 默认关）',
+    '默认配置下，tools / bus / settings 三个模块被装载（orch 默认关）',
     names.includes('dsh-hob-tools') && names.includes('dsh-hob-bus') && names.includes('dsh-hob-settings'),
     JSON.stringify(names),
   )
   check(
-    '默认配置下，preset / orch 模块**未**被装载（默认 modules.preset=false · modules.orch=false）',
-    !names.includes('dsh-hob-preset') && !names.includes('dsh-hob-orchestrator'),
+    '默认配置下，orch 模块**未**被装载（默认 modules.orch=false）',
+    !names.includes('dsh-hob-orchestrator'),
     JSON.stringify(names),
   )
 }
 
 console.log('\n=== 路径 A2：开 bus 但关 tools（验证彼此独立）===')
 {
-  const { root } = await boot({ modules: { tools: false, bus: true, settings: true, preset: false } })
+  const { root } = await boot({ modules: { tools: false, bus: true, settings: true } })
   const names = registryNames(root)
   check('tools=false ⇒ tools 未被装载', !names.includes('dsh-hob-tools'), JSON.stringify(names))
   check('同一配置下 settings 仍被装载（互不影响）', names.includes('dsh-hob-settings'), JSON.stringify(names))
@@ -121,7 +121,7 @@ console.log('\n=== 路径 B：依赖门禁（缺服务 ⇒ 该模块 PENDING，�
 {
   // 该根 context 没有任何宿主服务 ⇒ 有模块级 inject 的模块都该 PENDING，
   // 且**插件整体不报错**（boot() 没抛错就已经证明了后者）。
-  const { root } = await boot({ modules: { tools: true, settings: true, bus: false, preset: false } })
+  const { root } = await boot({ modules: { tools: true, settings: true, bus: false } })
   check('缺依赖时插件整体加载完成（未抛错）', true)
   let pending = 0
   for (const rt of (root.registry?.values?.() ?? [])) {
@@ -136,7 +136,7 @@ console.log('\n=== 路径 B2：两种 inject 的**不同后果**（E-02 的实�
   root.provide?.('tools', {}) // 只提供 tools，**不提供** settings
   const logs = []
   root.logger = { ...root.logger, info: (...a) => logs.push(a.join(' ')), warn: () => {}, error: () => {}, debug: () => {} }
-  const f = root.plugin(mod, { modules: { tools: true, settings: true, bus: false, preset: false } })
+  const f = root.plugin(mod, { modules: { tools: true, settings: true, bus: false } })
   await f
   await sleep(30)
   const states = []

@@ -32,8 +32,9 @@
  *   ⚠ 日志经传进来的 `log` 回调（与 `bus.ts` / `orchestrator.ts` 同款）。
  */
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { isAbsolute, resolve } from 'node:path'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, isAbsolute, resolve, sep } from 'node:path'
 
 /** 一个对端（⚠ **只从配置来** —— ⛔ 不接受任意地址）。 */
 export interface InterconnectTarget {
@@ -41,7 +42,7 @@ export interface InterconnectTarget {
   name: string
   /**
    * ⚠ 对端要用的 DSH 启动器（可执行文件的绝对路径，或 PATH 里的名字）。
-   * ⚠ 缺省 = 本仓实测的那条宿主路径（⚠ 见 {@link DEFAULT_LAUNCHER}）。
+   * ⚠ 缺省 = **运行时解析**出来的宿主入口（⚠ 见 {@link resolveDefaultLauncher}；⛔ 不写死安装路径）。
    */
   launcher?: string
   /** ⚠ 对端的 profile 名（⚠ 缺省 `headless` —— ⚠ 那是宿主自带的"答一个任务就退"形态）。 */
@@ -79,11 +80,99 @@ export interface DeliverRemoteResult {
 }
 
 /**
- * ⚠ 宿主启动器的**实测缺省值**（⚠ `M6-PLAN.md` §1 候选 B 的命令里用的就是这条）。
- * ⚠ 它**不是"本机绝对路径硬编码"**的坏形态 —— ⚠ 它是**可被配置覆盖**的缺省，
- *   且 ⚠ 用户机器上若不同，**配 `launcher` 即可**（⚠ `resolveLauncher()` 会如实报"找不到"）。
+ * 宿主启动器的**解析结果**。
+ *
+ * `path` 恒为绝对路径（**只有在真解析出来时才有值**）；`reason` 是**解析不出来时**
+ * 的可读原因 —— 三者**必有其一**，⛔ 不会出现"既没路径也没原因"的静默空值。
  */
-export const DEFAULT_LAUNCHER = '/usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js'
+export interface LauncherResolution {
+  /** 解析到的启动器绝对路径；解析不出 ⇒ `''`（⚠ 调用方据此走 `launcher-missing`）。 */
+  path: string
+  /** 解析不出来的一句话原因（成功时为空串）。 */
+  reason: string
+}
+
+/**
+ * 从**运行时**解析宿主启动器（⛔ **不写死任何安装路径**）。
+ *
+ * ── 为什么不能再写死（本函数存在的理由）──────────────────────────────
+ *   ⚠ 原实现是 `'/usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js'` ——
+ *   ⚠ 那是**某一台机器**的安装落点（npm 全局 / 版本管理器 / 容器镜像各不相同）。
+ *   ⇒ 换机后它要么**不存在**（对端起不来），要么碰巧存在但是**另一个版本**的入口。
+ *
+ * ── 解析顺序（⚠ 每一档都是"运行时事实"，⛔ 没有常量兜底）──────────────
+ *   ① **本进程自己的入口**：`process.argv[1]` 解析成绝对路径后，若它就是
+ *      `.../@deepseek-ai/dsh/lib/bin.js`（或同包内 bin），直接用它 ——
+ *      这是"**我现在就跑在这个宿主上**"的**最硬证据**；
+ *   ② ① 不是宿主入口（例如被别的东西启动 / 被测试夹具加载）⇒ 走**包解析**：
+ *      从本模块解析 `@deepseek-ai/dsh/package.json`，取其 `bin` 字段指向的文件；
+ *   ③ 都拿不到 ⇒ **不猜路径**，返回 `path: ''` + 一句**可读原因**。
+ *
+ * ⚠ ⚠ **为什么 ③ 不许"给个像是的路径"**：⚠ 走到一条不存在的路径时，
+ *   失败会表现成 `spawn-failed`（"起不来"）—— ⚠ 而真实原因是"根本没解析出启动器"。
+ *   ⇒ 保持 `launcher-missing` 这一族（⚠ 判据不放宽），且把**为什么**说清楚。
+ *
+ * ⚠ 本函数是**纯读**：不写文件、不改环境、不 spawn。可被机检直接 import 真跑。
+ *
+ * @param argv1 - 本进程入口（缺省取 `process.argv[1]`；可注入以便实测"解析不出"那一档）。
+ * @param resolvePkg - 包解析器（缺省走 `createRequire`；可注入以便实测）。
+ * @returns 绝对路径（成功）或空串 + 可读原因（失败）。
+ */
+export function resolveDefaultLauncher(
+  argv1: string | undefined = process.argv[1],
+  resolvePkg: (id: string) => string = (id) => createRequire(import.meta.url).resolve(id),
+): LauncherResolution {
+  // ── ① 本进程入口是不是宿主 bin ─────────────────────────────────────
+  //   ⚠ 只认**能解析成真实文件**的那条；`argv[1]` 可能是 `dsh`（PATH 里的软链名，
+  //     例如 `/usr/local/bin/dsh`）⇒ 用 realpath 之后再看它落在哪里。
+  const entryReason = (() => {
+    const raw = (argv1 ?? '').trim()
+    if (raw === '') return '本进程没有 `process.argv[1]`'
+    let abs: string
+    try {
+      abs = realpathSync(raw)
+    } catch {
+      return `本进程入口 \`${raw}\` 解析不到真实文件`
+    }
+    // 判据 = 它就在 @deepseek-ai/dsh 包里、且文件名是 bin.js（宿主 bin 的实测形态）。
+    const marker = `${sep}@deepseek-ai${sep}dsh${sep}`
+    if (abs.includes(marker) && /[\\/]bin\.js$/.test(abs) && existsSync(abs)) return { abs }
+    return `本进程入口 \`${abs}\` 不是宿主 \`@deepseek-ai/dsh/lib/bin.js\``
+  })()
+  if (typeof entryReason !== 'string') return { path: entryReason.abs, reason: '' }
+
+  // ── ② 包解析：`@deepseek-ai/dsh/package.json` 的 `bin.dsh` ────────────
+  try {
+    const pkgPath = resolvePkg('@deepseek-ai/dsh/package.json')
+    const pkgDir = dirname(pkgPath)
+    let binRel: unknown
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { bin?: unknown }
+      const b = pkg.bin
+      binRel = typeof b === 'string' ? b : (b !== null && typeof b === 'object' ? (b as Record<string, unknown>).dsh : undefined)
+    } catch {
+      binRel = undefined
+    }
+    if (typeof binRel === 'string' && binRel !== '') {
+      const abs = resolve(pkgDir, binRel)
+      if (existsSync(abs)) return { path: abs, reason: '' }
+      return { path: '', reason: `${entryReason}；且 \`@deepseek-ai/dsh\` 的 \`bin\` 声明的 \`${abs}\` **不存在**` }
+    }
+    return {
+      path: '',
+      reason: `${entryReason}；且 \`@deepseek-ai/dsh/package.json\` 里读不到 \`bin\` 字段`
+        + '（⇒ 无法确定入口文件，**不猜路径**）；请在对端配置里显式给 `launcher`',
+    }
+  } catch (e) {
+    const code = (e as { code?: unknown })?.code
+    return {
+      path: '',
+      reason: `${entryReason}；且解析 \`@deepseek-ai/dsh/package.json\` 失败`
+        + `${typeof code === 'string' ? `（${code}）` : ''}`
+        + '（⚠ 本插件跑在宿主进程外，或该包没装在可达位置）；请在对端配置里显式给 `launcher`',
+    }
+  }
+}
 
 /** ⚠ 只读用途：判断一个启动器路径像不像"node 脚本"（⚠ 决定要不要前面补 `node`）。 */
 function looksLikeScript(p: string): boolean {
@@ -157,11 +246,18 @@ export function deliverRemote(
     })
   }
   // ── ③ 启动器（⚠ 找不到 ⇒ 可读，⛔ 不静默；⛔ 不猜别的路径）──────────────
-  const launcher = (found.launcher ?? DEFAULT_LAUNCHER).trim()
+  //   ⚠ 缺省值**运行时解析**（⛔ 不写死安装路径，见 {@link resolveDefaultLauncher}）。
+  //   ⚠ 解析不出时**落进同一族** `launcher-missing` —— ⛔ 不走到一条不存在的路径，
+  //     且把"为什么解析不出"（`resolution.reason`）带进对外那句话里。
+  const resolution = found.launcher === undefined ? resolveDefaultLauncher() : undefined
+  const launcher = (found.launcher ?? resolution?.path ?? '').trim()
   if (launcher === '') {
+    const why = resolution !== undefined && resolution.reason !== ''
+      ? `（⚠ 缺省启动器**解析不出**：${resolution.reason}）`
+      : ''
     return Promise.resolve({
       ok: false, reason: 'launcher-missing', target,
-      message: `对端 \`${target}\` 的 \`launcher\` 为空 ⇒ ⛔ 未投递（⚠ 请给它一个可执行的启动器路径）。`,
+      message: `对端 \`${target}\` 的 \`launcher\` 为空${why} ⇒ ⛔ 未投递（⚠ 请给它一个可执行的启动器路径）。`,
     })
   }
   // ⚠ 绝对路径要先存在才用；⚠ PATH 里的名字（非绝对）交给宿主解析 —— ⚠ 两种都不猜。

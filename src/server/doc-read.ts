@@ -167,9 +167,26 @@ export interface ReadResult {
   truncated: boolean
   /** 文件实际大小（字节）；读失败时为 0。 */
   bytes: number
-  /** 失败原因（ok=false 时给用户/模型看的一句话）。 */
-  reason?: string
+  /**
+   * 失败原因的**机器可判类别**（ok=false 时给；成功时不设）。
+   *
+   * ⚠ ⚠ **它只用于内部结构化返回，⛔ 不进对外文案** —— `text` 仍是同一句 `DENIED`
+   *   （不区分"不存在"与"不允许"是**有意的**安全考量：不泄露存在性）。
+   *   ⇒ 两种消费者各取所需：**模型/调用方**按 `reason` 分类处理，
+   *     **用户**看到的话术仍不泄露存在性。
+   *
+   * 五族互不重叠（⛔ 不许把两族并成一个值 —— 那正是"原因取不到"的另一种形态）：
+   *   · `not-md`       —— 不是 `.md`（后缀不符）；
+   *   · `outside-root` —— 路径越出账本根（`../` 穿越、绝对路径越界等）；
+   *   · `symlink`      —— 路径链上有符号链接（不跟随）；
+   *   · `not-found`    —— `.md` 且在界内，但文件不存在 / 不可 stat；
+   *   · `read-error`   —— 文件在，但读取过程失败（权限 / IO）。
+   */
+  reason?: ReadReason
 }
+
+/** {@link ReadResult.reason} 的取值族（⛔ 只增不并：每族必须能单独分辨）。 */
+export type ReadReason = 'not-md' | 'outside-root' | 'symlink' | 'not-found' | 'read-error'
 
 /**
  * 读一个工作区内的 .md，带字节上限。
@@ -187,8 +204,14 @@ export async function readMarkdownCapped(
   maxBytes: number,
 ): Promise<ReadResult> {
   const { abs, inside } = resolveInside(root, relPath)
-  if (!isMarkdown(abs) || !inside) {
-    return { ok: false, text: DENIED, truncated: false, bytes: 0, reason: DENIED }
+  // ⚠ 两种拒绝**必须分开报**（⛔ 不再共用 `DENIED` 当 reason）：
+  //   非 .md 与越界是**不同原因**，按类分辨是 D-4 的判据。
+  //   ⚠ 但**对外 `text` 仍一字不改**（同一句 `DENIED`）—— 不泄露存在性。
+  if (!inside) {
+    return { ok: false, text: DENIED, truncated: false, bytes: 0, reason: 'outside-root' }
+  }
+  if (!isMarkdown(abs)) {
+    return { ok: false, text: DENIED, truncated: false, bytes: 0, reason: 'not-md' }
   }
 
   // ⚠ 字符串层的越界判断挡不住软链（软链路径仍在 root 内，真实目标在区外）。

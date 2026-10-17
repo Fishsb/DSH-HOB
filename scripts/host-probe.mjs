@@ -30,12 +30,11 @@
  * ══ 断言口径的实测出处（2026-10-11 第 49 轮 · 用**真产物** `lib/index.js` 复测，非推断）══
  *   ⚠ 本轮**逐条重测并改正了 5 条过期期望**（清单见回报 §3）：它们停在 v4 时期
  *     （"两个预设 / `bus` 是布尔 false"那版），与现状脱节。**以下为现状真值**：
- *   · `Config(undefined).modules` === `{tools:{}, preset:{}, bus:{}, orch:{}, settings:{}}`
- *     ⇒ **五个子字段全是 volatile ref**（默认形态为 `{}`，须 `.get()` 取布尔）。
+ *   · `Config(undefined).modules` 的子字段**全是 volatile ref**（默认形态为 `{}`，须 `.get()`
+ *     取布尔）。⚠ **开关清单与条数从 `src/config.ts` 的 `modules` schema 派生**（见下方
+ *     `SWITCH_DEFAULTS`）⇒ 增删开关时上面这条期望不会过期。
  *       ⚠ 沿革：`bus` **原是普通布尔**（v1–v4 刻意隐藏，UD-25）；**批 14 / M3 起改为 ref**
- *          —— 它真管用了，于是与其余四个同形（见 `src/config.ts` 该字段注释）。
- *   · 默认值（`.get()`）实测：`tools=true` · `preset=false` · `bus=true` · `orch=false` · `settings=true`。
- *       ⚠ `orch` 缺省 **false**（M5 会在无人看管时推进 ⇒ 宁可不开）；`bus` 缺省 **true**。
+ *          —— 它真管用了，于是与其余几个同形（见 `src/config.ts` 该字段注释）。
  *   · `modules` **本身不是 ref**（`typeof modules.get === 'undefined'`）—— 父对象不标 volatile，
  *     只有子字段各标（`src/config.ts` 的"方案 D"形状）。
  *   · `Config(undefined)` 的顶层键 === `['modules', 'spawn', 'permission']`
@@ -49,9 +48,9 @@
  *         故它本来就在默认登记里。
  *   · `modules:{tools:false}` ⇒ 登记 `dsh-hob-bus` + `dsh-hob-settings`，
  *     日志「模块：bus, settings」。⚠ 同理（原期望写"只剩 settings"）。
- *   · 五个开关**全关** ⇒ 登记 0 个，日志「模块：无」。
- *   · **每个开关单独关** ⇒ 只少它自己那一个模块（其余四个照常）——
- *     这正是「模块可独立启停」这条架构性质的**逐开关实测**（本项为本轮新增，覆盖 v5 全五模块）。
+ *   · **全部开关**都关 ⇒ 登记 0 个，日志「模块：无」。
+ *   · **每个开关单独关** ⇒ 只少它自己那一个模块（其余照常）——
+ *     这正是「模块可独立启停」这条架构性质的**逐开关实测**。
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -125,8 +124,8 @@ function fakeCtx() {
 }
 
 // ── ⚠ ⚠ 模块开关清单：**派生，⛔ 不手抄**（2026-10-16 第 237 轮）──────────────────
-//   ⚠ **为什么要改**：⚠ 本轮加了第六个开关（`interconnect`）⇒
-//     ⚠ ⚠ **手抄的五个 key / 五个默认值 / 五个模块名【当场全部过期】**
+//   ⚠ **为什么要改**：⚠ 某一轮加了一个开关（`interconnect`）⇒
+//     ⚠ ⚠ **手抄的 key 表 / 默认值表 / 模块名表【当场全部过期】**
 //     ⇒ ⚠ 判据红（⚠ 而它红得**对**：⚠ 是本判据的手抄表旧了，⛔ 不是实现坏了）。
 //   ⚠ ⚠ **这正是 `E-117` 同族**（⚠ 与第 224 轮本文件那处"手抄顶层键表"**同一个病**，
 //     ⚠ 那一处当时已改成派生；⚠ 本轮发现**同一份文件里还剩三处手抄**）。
@@ -175,7 +174,7 @@ check(`schema 校验：undefined → modules 形状 = ${DEFAULT_MODULES_JSON}`, 
   return got === DEFAULT_MODULES_JSON ? true : `got=${got} want=${DEFAULT_MODULES_JSON}`
 })
 
-// ── 2) 五个开关都是 volatile ref（须 .get()），默认值实测 ─────────────────
+// ── 2) 各开关都是 volatile ref（须 .get()），默认值实测 ─────────────────
 check(`schema 校验：${SWITCH_KEYS.length} 个开关都是 volatile ref（{} 且 .get() 返回布尔）且默认值与 schema 一致`, () => {
   const c = mod.Config(undefined)
   const shape = {}
@@ -248,7 +247,7 @@ check("apply：默认配置 ⇒ 登记 tools + bus + settings，日志含「模�
 })
 
 // ── 7) 模块可独立启停：**逐个**单独关 ⇒ 只少它自己 ────────────────────────
-//   ⚠ 本轮把原来"只测 tools=false 一条"扩成**五个开关逐个实测** ——
+//   ⚠ 原先把"只测 tools=false 一条"扩成**每个开关逐个实测** ——
 //     因为它守的是"**模块可独立启停**"这条架构性质，而单测一个开关证明不了其余四个。
 check(`apply：${SWITCH_KEYS.length} 个开关**逐个**单独关 ⇒ 只少该模块自己，其余照常登记（模块可独立启停）`, () => {
   const problems = []
@@ -277,7 +276,7 @@ check(`apply：${SWITCH_KEYS.length} 个开关**逐个**单独关 ⇒ 只少该�
   return problems.length === 0 ? true : problems.join('；')
 })
 
-// ── 8) 五开关全关 ⇒ 不登记任何模块 ───────────────────────────────────────
+// ── 8) 全部开关全关 ⇒ 不登记任何模块 ─────────────────────────────────────
 check(`apply：${SWITCH_KEYS.length} 个开关全关 ⇒ 不登记任何子模块（日志「模块：无」）`, () => {
   const { ctx, plugins, logs } = fakeCtx()
   const all = {}

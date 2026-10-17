@@ -330,15 +330,36 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       },
     },
     output: {
-      schema: { type: 'string' },
-      render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
+      // ⚠ **结构化输出**（照 `write_hob` 的模式）：成功给 `{ok:true, ...}`，
+      //   失败给 `{ok:false, reason, message}` ⇒ **原因取得到**（D-4 的判据）。
+      //   ⚠ 根用 `json` 而不是 `object`：成功时带 `truncated` / `bytes` / `text`，
+      //     由 `render` 决定实际块形状（与 `hob_read_image` 取同一档口径）。
+      schema: { type: 'json' },
+      render: (_args: unknown, value: unknown) => {
+        const v = value as { ok?: boolean; text?: string; message?: string }
+        // ⚠ 成功 ⇒ 正文原样给模型（**行为与改前一致**：正文仍是它读到的那一份）。
+        //   失败 ⇒ 给对外那句 `message`（⚠ 与改前的 `r.text` **同一句**）。
+        return [{ type: 'text', text: v.ok === true ? String(v.text ?? '') : String(v.message ?? '') }]
+      },
     },
-    async execute(args: { path: string }, exec: ToolRunContext): Promise<string> {
+    async execute(args: { path: string }, exec: ToolRunContext): Promise<JsonValue> {
       // v4：边界改为**账本目录**（D7）—— 只读自己的账本，不读工作区内的项目文档（D6）。
       const root = ledgerRootOf(cfg, exec)
-      if (root === undefined) return '拒绝：无法确定账本目录。'
+      if (root === undefined) {
+        return { ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' }
+      }
       const r = await readMarkdownCapped(root, args.path, cfg.maxFileBytes ?? DEFAULTS.maxFileBytes)
-      return r.text
+      if (r.ok) {
+        return { ok: true, text: r.text, truncated: r.truncated, bytes: r.bytes }
+      }
+      // ⚠ ⚠ **对外文案仍同一句**（`r.text`，即 `DENIED` 那族）——
+      //   ⛔ 不把"不存在"与"不允许"拆成两句：不泄露存在性是**有意的**安全考量。
+      //   ⚠ 要修的是**"原因取不到"** ⇒ 把 `doc-read` 已经算出来的 `reason` **传出去**。
+      return {
+        ok: false,
+        reason: r.reason ?? 'read-error',
+        message: r.text,
+      }
     },
   })
 
