@@ -55,6 +55,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
+import type { PresetSource } from './bus.ts'
 import { resolveLedgerRoot } from '../server/doc-read.ts'
 import {
   ORCH_STATE_FILENAME,
@@ -104,6 +105,19 @@ export interface Watch {
    * ⚠ 读不到时**不填本字段**（调用方渲染成 `(读不到)`）—— 不编造、不猜默认值。
    */
   targetPreset?: string
+  /**
+   * {@link targetPreset} 的**取自哪里**（2026-10-17 第 2 轮新增 · `CHG-058` 收口）。
+   *
+   * ⚠ 与 `bus.ts` 的 `presetSource`（{@link PresetSource}）**同一口径**：
+   *   · `'projection'` —— 宿主 `agentPreset` 投影（**权威**）；
+   *   · `'header'`     —— 投影缺位，退回建档头（⚠ **可能不是当前值** ⇒ 渲染层必须标「降级」）。
+   *
+   * ⚠ 为什么这一列**必须有来源标记**：本列的唯一用途是"发现派错了人"，
+   *   而**降级后的 header 值恰恰会掩盖"这个人其实是规划侧"** ——
+   *   不标来源，降级读数与权威读数在输出里**逐字一样**（正是 `CHG-058` 要治的形态）。
+   * ⚠ 只在 {@link targetPreset} 有值时才可能带本字段。
+   */
+  targetPresetSource?: PresetSource
 }
 
 /** 编排状态快照（给工具与探针读）。 */
@@ -431,18 +445,37 @@ export function apply(ctx: any): void {
      *   存一份到 `w` 上 ⇒ 会话被换掉 / 插件重载 / 目标重启之后，
      *   那行会**悄悄变成旧值**，而它正是用来发现"派错了人"的**唯一可见面**
      *   ⇒ 过期值比没有更坏（**E-117**：把某一时刻的读数当成了判据）。
-     *   ⚠ 与 `list()` 读的是**同一个实体**（`session.header.agentPreset`，见 `bus.ts`）。
      *
-     * @returns 预设 id；读不到（服务缺席 / 会话没了 / 该字段空）⇒ `undefined`，
-     *   由调用方渲染成 `(读不到)` —— ⛔ 不编造、不猜默认值。
+     * ── ⚠ ⚠ 读数**不再在这里读**（2026-10-17 第 2 轮 · `CHG-058` 收口）───────────
+     *   ⚠ 原文（本行原先）写的是"与 `list()` 读的是**同一个实体**
+     *   （`session.header.agentPreset`，见 `bus.ts`）" —— **那句话现在是错的**：
+     *   `bus.ts` 自第 292 轮起已改走宿主 **`agentPreset` 投影**
+     *   （= header 起步 + 最后一条 `agent-preset/selected`），而本模块**仍在读建档头**
+     *   ⇒ ⚠ 实测后果（本工作区 13 条会话）：**4 条 `header=standard / 投影=Hob`**
+     *   （**含 Hob 自己**）⇒ 这一列**给错值**，且「⚠ 规划侧预设·不能施工」
+     *   对这 4 条**不会触发**。
+     *   ⚠ ⚠ 修法**不是**在这里再写一份 `stateOf(...)` —— 那是"守卫写两遍必然漂"
+     *   （本仓纪律），而且这次事故的**成因正是**两处各自读。⇒ 唯一入口 =
+     *   `hobBus.presetOf(id)`，读法与 `list()` / `deliver()` **同一个函数**。
+     *
+     * ⚠ **降级语义原样保留且可分辨**：投影读不到 ⇒ 总线退回建档头并给
+     *   `source='header'`；本模块把来源**透传**到 `status()`，由渲染层标「降级」。
+     *   ⛔ 不许把降级值当真值用（那正是 `CHG-058` 要治的形态）。
+     *
+     * @returns `[preset, source]`；读不到（总线缺席 / 会话没了 / 两个来源都空）⇒
+     *   `[undefined, undefined]`，由调用方渲染成 `(读不到)` —— ⛔ 不编造、不猜默认值。
      */
-    const targetPresetOf = (target: string): string | undefined => {
+    const targetPresetOf = (target: string): [string | undefined, PresetSource | undefined] => {
       try {
-        const session = typeof sessions.get === 'function' ? sessions.get(target) : undefined
-        const p = session?.header?.agentPreset
-        return typeof p === 'string' && p !== '' ? p : undefined
+        const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
+        if (bus === undefined || typeof bus.presetOf !== 'function') return [undefined, undefined]
+        const r = bus.presetOf(target)
+        if (r === undefined || r === null) return [undefined, undefined]
+        const preset = typeof r.preset === 'string' && r.preset !== '' ? r.preset : undefined
+        const source = r.source === 'projection' || r.source === 'header' ? r.source : undefined
+        return [preset, preset === undefined ? undefined : source]
       } catch {
-        return undefined
+        return [undefined, undefined]
       }
     }
 
@@ -773,14 +806,19 @@ export function apply(ctx: any): void {
           stopped,
           // ⚠ **现读**每个在等目标的预设（不缓存、不回落到 `w` 上存一份）——
           //   见 `targetPresetOf` 的注释：这条读数的价值全在"此刻准不准"。
+          // ⚠ ⚠ 2026-10-17 第 2 轮：读数改由 `hobBus.presetOf()` **单点**给出，
+          //   且**来源标记一起透传**（`targetPresetSource`）—— 渲染层据此标「降级」。
+          //   ⛔ 这里**不再**调 `sessions.get(...).header`：那正是本单要治的第二来源。
           watches: [...watches.values()]
             .sort((a, b) => a.at - b.at)
-            .map((w) => ({
-              ...w,
-              ...(targetPresetOf(w.target) === undefined
-                ? {}
-                : { targetPreset: targetPresetOf(w.target) }),
-            })),
+            .map((w) => {
+              const [preset, source] = targetPresetOf(w.target)
+              return {
+                ...w,
+                ...(preset === undefined ? {} : { targetPreset: preset }),
+                ...(preset === undefined || source === undefined ? {} : { targetPresetSource: source }),
+              }
+            }),
           relaysDone,
           relaysBlocked,
           lostPending: lostCount,
@@ -1014,7 +1052,12 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         //   ⚠ **为什么这一行是必需的**：别的项目实测那次事故里，`hob_orch_status` 只报
         //     「已开跑」⇒ 派活方读不出"目标是个不能施工的会话"，于是**一直等**一个
         //     永不会来的产出（症状「看在跑、永远没有产出」）。预设列是那个坑的**唯一可见面**。
-        `预设=${w.targetPreset ?? '(读不到)'}`,
+        //   ⚠ ⚠ 2026-10-17 第 2 轮：**降级必须可见**（`targetPresetSource === 'header'`）
+        //     —— 否则"退回建档头的陈旧值"与"权威投影值"在输出里**逐字一样**，
+        //     而降级值恰恰会把规划侧会话**掩盖成实施侧**（`CHG-058` 要治的正是这个）。
+        `预设=${w.targetPreset ?? '(读不到)'}`
+          + (w.targetPreset !== undefined && w.targetPresetSource === 'header'
+            ? '（降级：取自建档头，可能非当前值）' : ''),
         ...(w.targetPreset === PLANNING_PRESET_ID ? ['⚠ 规划侧预设·不能施工'] : []),
         ...(w.round === undefined ? [] : [`轮次=${w.round}`]),
         ...(w.task === undefined ? [] : [`任务=${w.task}`]),

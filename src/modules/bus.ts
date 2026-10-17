@@ -80,8 +80,11 @@ export interface SessionInfo {
    * {@link agentPreset} 的**取自哪里**（⚠ 让"降级"可见，⛔ 不静默）。
    *   · `'projection'` —— 取自宿主 `agentPreset` 投影（**权威**）；
    *   · `'header'` —— 投影缺位，退回建档头（⚠ **可能不是当前值**）。
+   *
+   * ⚠ 类型是 {@link PresetSource}（与 {@link HobBus.presetOf} 的 `source` **同一个**）：
+   *   ⛔ 别在这里另写一遍 `'projection' | 'header'` —— 两个出口各自写一份必然漂。
    */
-  presetSource?: 'projection' | 'header'
+  presetSource?: PresetSource
   /**
    * 该会话在**哪一侧**（依 {@link agentPreset} 判定，口径同源 {@link PLANNING_PRESET_ID}）。
    *   · `'planning'` —— 规划侧（**不能施工**：无 shell、无 write/edit）；
@@ -377,11 +380,50 @@ function makeControllerLookup(svcCtx: any): any {
   }
 }
 
+/**
+ * 预设读数的**来源标记**（⚠ 让"降级"可见，⛔ 不静默）。
+ *
+ * · `'projection'` —— 取自宿主 `agentPreset` 投影（**权威**）；
+ * · `'header'`     —— 投影缺位，退回建档头（⚠ **可能不是当前值**）。
+ *
+ * ⚠ 与 {@link SessionInfo.presetSource} 是**同一个口径的两个出口**：
+ *   那个给列表行、这个给"按会话 id 现读"的调用方（`hob_orch_status`）。
+ *   ⛔ 两处各立一套来源名词必然漂 —— 故共用本类型。
+ */
+export type PresetSource = 'projection' | 'header'
+
+/** 一次**按会话 id** 的预设读数（{@link HobBus.presetOf} 的返回）。 */
+export interface PresetReading {
+  /** 预设 id；投影与建档头都读不到 ⇒ 缺失。 */
+  preset?: string
+  /** 取自哪里（见 {@link PresetSource}）；两者都读不到 ⇒ 缺失。 */
+  source?: PresetSource
+}
+
 /** `hobBus` 服务的形状。 */
 export interface HobBus {
   readonly version: number
   /** 列**可投递的活**会话（已归档的不列）。 */
   list(selfSessionId: string | undefined): SessionInfo[]
+  /**
+   * 现读**指定会话当前运行的预设**（⚠ **全仓唯一实现点**，2026-10-17 第 2 轮）。
+   *
+   * ── 为什么必须从总线暴露，而不是各模块自读（**这是本方法存在的唯一理由**）──
+   *   ⚠ 宿主明写建档头只是"建档那一刻"的事实（见本文件 `:300-317`），当前值在
+   *   **`agentPreset` 投影**里。`list()` / `deliver()` 早已改走投影，而
+   *   `hob_orch_status` 的「预设=」列**仍在读建档头** ⇒ 同一事实两个来源，
+   *   **必然漂**（实测：本工作区 13 条会话里 4 条 `header=standard / 投影=Hob`，
+   *   含 Hob 自己 ⇒ 那一列给错值，且「⚠ 规划侧预设·不能施工」不触发）。
+   *   ⚠ 若让 `orchestrator` 也写一份 `stateOf(...)`，就是"守卫写两遍"的翻版
+   *   —— 故**读数只在这里**，那边的唯一入口是**本方法**。
+   *
+   * ⚠ **降级语义原样保留**：投影读不到 ⇒ 退回建档头，且 `source='header'`
+   *   —— 调用方**必须**能据此把"这是降级"渲染出来（⛔ 不许静默当真值用）。
+   *
+   * @param sessionId - 目标会话 id。
+   * @returns 见 {@link PresetReading}；会话不存在 / 两个来源都读不到 ⇒ `{}`（⛔ 不猜默认值）。
+   */
+  presetOf(sessionId: string): PresetReading
   /** 向指定会话投递一条 user 消息。 */
   deliver(sessionId: string, text: string, mode: DeliveryMode): Promise<DeliveryResult>
   /**
@@ -499,6 +541,28 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
 
     const bus: HobBus = {
       version: 1,
+      /**
+       * ⚠ **全仓唯一**的"按会话 id 现读预设"入口（本方法体本身也只有这一份实现）。
+       *
+       * 读法与 {@link SessionInfo.agentPreset} **完全同源**（都走 `currentPresetOf`）：
+       *   ⛔ 这里如果再写一遍 `stateOf(...)` / `header?.agentPreset`，就是第二份归约
+       *   ⇒ 必然漂（本方法的由来正是"两处读法已经漂了一次"）。
+       */
+      presetOf(sessionId: string): PresetReading {
+        if (typeof sessionId !== 'string' || sessionId === '') return {}
+        try {
+          const session = typeof sessions.get === 'function' ? sessions.get(sessionId) : undefined
+          if (session === undefined || session === null) return {}
+          const [preset, source] = currentPresetOf(session)
+          return {
+            ...(preset === undefined ? {} : { preset }),
+            ...(source === undefined ? {} : { source }),
+          }
+        } catch {
+          // 单个会话读不出来 ⇒ 空读数（调用方渲染成 `(读不到)`，⛔ 不编造、不猜默认值）。
+          return {}
+        }
+      },
       list(selfSessionId: string | undefined): SessionInfo[] {
         const rows: SessionInfo[] = []
         // `list()` 返回的是**活会话**（创建顺序）；失败一律当作"列不出来"，

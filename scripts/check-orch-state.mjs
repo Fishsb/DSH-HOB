@@ -90,6 +90,25 @@ const orchSrc = must(ORCH_TS, '编排模块')
 function stripComments(s) {
   return s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 }
+
+/**
+ * 同 {@link stripComments} 的**语义**，但**保留行数**（2026-10-17 第 2 轮 · J4 新增）。
+ *
+ * ⚠ 为什么需要第二个剥离器：`stripComments()` 把整行注释**删掉** ⇒ 后续行号**全部前移**
+ *   （实测：`bus.ts` 的真实 `:537` 被报成 `:268`，差 269 行）。
+ *   判定行里给一个**指错的行号**比不给更坏 —— 读者按它跳过去会看到无关代码。
+ *   ⇒ 本版把注释内容替换成**等量空白**、**保留所有换行**，行号与原文逐行对齐。
+ *
+ * ⚠ 两者**语义等价**（都不让注释里的名字冒充代码），可直接对拍：
+ *   把两者的空白归一后应逐字节相同（J 组不使用这条对拍，理由见该组注释）。
+ */
+function stripCommentsKeepLines(s) {
+  return s
+    // 块注释：保留其内部换行，其余字符换空白
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    // 行注释：保留行首缩进与换行
+    .replace(/^([ \t]*)\/\/.*$/gm, (_m, lead) => lead)
+}
 const stateCode = stripComments(stateSrc)
 const orchCode = stripComments(orchSrc)
 
@@ -1074,6 +1093,272 @@ const orchCode = stripComments(orchSrc)
       }
     } finally {
       try { rmSync(idir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+    }
+  }
+}
+
+// ── J. **预设读数同源**（2026-10-17 第 2 轮 · `CHG-058` 收口）—— 真跑函数 + 静态面 ──
+//
+// ⚠ **它守的是哪条缺陷**（第 1 轮复验 `B-bus-orch.md` §1.3 · D-3）：
+//   `bus.ts` 自第 292 轮起已改走宿主 **`agentPreset` 投影**（= header 起步 +
+//   最后一条 `agent-preset/selected`），而 `orchestrator.ts` 的「预设=」列
+//   **仍在读建档头** ⇒ **同一事实两个来源**。实测后果（本工作区 13 条会话）：
+//   **4 条 `header=standard / 投影=Hob`**（**含 Hob 自己**）⇒ 那一列**给错值**，
+//   且「⚠ 规划侧预设·不能施工」对这 4 条**不会触发**。
+//
+// ⚠ **为什么必须"真跑"**（同 F/G/H/I）：本组保的是**行为** ——
+//   源码里 `presetOf` / `targetPreset` 字样还在、而读法被改回 `header`，
+//   纯文本断言**照样 PASS**（这正是本单要防的复现路径）。
+//   ⇒ 造一组 **`header=standard / 投影=Hob`** 的现场，直接断言**渲染出来的那一行**
+//     是投影值、并触发「⚠ 规划侧预设·不能施工」。
+//
+// ⚠ ⚠ **本组自带"能失败"的证据**（E-27：永远 PASS 的检查比没有更危险）：
+//   把 `orchestrator.ts` 的读法改回 `session.header.agentPreset` ⇒
+//   **J1 / J2 / J3 / J4 四条同时 FAIL**。反证原始输出见 `R2-FIX.md` §3.3。
+//
+// ⚠ 判据同源：本组**不另写** `Hob` 字面量，从 `src/shared/planning-preset.ts` 取。
+{
+  const { mkdtempSync, mkdirSync, rmSync, readdirSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { pathToFileURL } = await import('node:url')
+
+  let jPresetMod
+  let jBusMod
+  let jOrchMod
+  try {
+    jPresetMod = await import(pathToFileURL(join(root, 'src', 'shared', 'planning-preset.ts')).href)
+    jBusMod = await import(pathToFileURL(join(root, 'src', 'modules', 'bus.ts')).href)
+    jOrchMod = await import(pathToFileURL(join(root, 'src', 'modules', 'orchestrator.ts')).href)
+  } catch (e) {
+    bad(`J 无法加载 bus / orchestrator / planning-preset 模块（${String(e?.message ?? e)}）`
+      + ' ⇒ 同源断言失去基准（不按通过处理）')
+  }
+
+  if (jPresetMod !== undefined && jBusMod !== undefined && jOrchMod !== undefined) {
+    const { PLANNING_PRESET_ID } = jPresetMod
+
+    /**
+     * 起一个**最小宿主**：`sessions` + `agents` + 可选的 `sessionProjections`。
+     *
+     * ⚠ `projectionPreset` 为 `undefined` ⇒ **模拟"投影读不到"**（服务缺席），
+     *   用来验降级路径；给值 ⇒ 投影读得出（权威路径）。
+     *
+     * ⚠ `session.header.agentPreset` **恒为 `standard`** —— 这正是真实缺陷现场的形状
+     *   （建后改成 `Hob` 的会话，建档头永远停在 `standard`）。
+     */
+    const mountHost = (opts) => {
+      const target = opts.target
+      const cwd = opts.cwd
+      const session = { id: target, header: { agentPreset: 'standard', cwd }, log: [] }
+      const sessions = {
+        get: (id) => (id === target ? session : undefined),
+        list: () => [session],
+        flush: async () => true,
+      }
+      const agent = {
+        status: 'idle',
+        followup: () => {},
+        steer: () => {},
+        inject: () => {},
+        ctx: {},
+        session,
+      }
+      const agents = {
+        currentInitiator: () => undefined,
+        get: (id) => (id === target ? agent : undefined),
+      }
+      const projections = opts.projectionPreset === undefined
+        ? undefined
+        : { stateOf: (_s, key) => (key === 'agentPreset' ? opts.projectionPreset : undefined) }
+
+      // ① 先装**真的** bus 模块，拿它 provide 出来的服务
+      const busProvided = {}
+      const busCtx = {
+        sessions,
+        agents,
+        logger: { debug() {}, warn() {}, info() {} },
+        get: (k) => (k === 'sessions' ? sessions
+          : k === 'agents' ? agents
+            : k === 'sessionProjections' ? projections
+              : undefined),
+        provide: (k, v) => { busProvided[k] = v },
+        effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
+        inject: (_deps, cb) => cb(busCtx),
+      }
+      jBusMod.apply(busCtx, {
+        spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }),
+      })
+      const bus = busProvided.hobBus
+
+      // ② 再装**真的** orchestrator 模块，`get('hobBus')` 交真的 bus
+      const orchProvided = {}
+      const orchCtx = {
+        sessions,
+        agents,
+        logger: { debug() {}, warn() {}, info() {} },
+        get: (k) => (k === 'sessions' ? sessions
+          : k === 'agents' ? agents
+            : k === 'hobBus' ? bus
+              : undefined),
+        provide: (k, v) => { orchProvided[k] = v },
+        effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
+        inject: (_deps, cb) => cb(orchCtx),
+        on: () => {},
+      }
+      jOrchMod.apply(orchCtx)
+      return { bus, orch: orchProvided.hobOrchestrator }
+    }
+
+    /**
+     * 走完整链路：**派一发** ⇒ 登记 watch ⇒ 读 `status()` ⇒ **渲染出那一行**。
+     *
+     * ⚠ 只断言 `status()` 的字段**不够** —— 真正给用户看的是**渲染行**，
+     *   而"字段对了但渲染面漏了标记"是一条完全可能的实现
+     *   （第 1 轮那条缺陷就同时在字段与渲染面）。
+     */
+    const drive = async (opts) => {
+      const host = mountHost(opts)
+      if (host.orch === undefined) return { err: '`hobOrchestrator` 未 provide（断言失去基准）' }
+      const d = await host.orch.dispatch(opts.target, 'do the work', { self: 'session-j-self' })
+      if (d?.ok !== true) return { err: `dispatch 未成功：${JSON.stringify(d)}` }
+      const s = host.orch.status({ wsRoot: opts.cwd })
+      const w = Array.isArray(s.watches) ? s.watches[0] : undefined
+      const tools = jOrchMod.createHobOrchTools(host.orch)
+      const rendered = String(await tools.status.execute({}, {
+        agent: { session: { header: { cwd: opts.cwd } } },
+      }))
+      return { watch: w, rendered, status: s }
+    }
+
+    let jRoot
+    try {
+      jRoot = mkdtempSync(join(tmpdir(), 'hob-jcheck-'))
+    } catch (e) {
+      bad(`J 造不出临时现场（${String(e?.message ?? e)}）⇒ 同源断言失去基准（不按通过处理）`)
+    }
+
+    if (jRoot !== undefined) {
+      try {
+        const wsA = join(jRoot, 'ws-authoritative')
+        const wsB = join(jRoot, 'ws-degraded')
+        mkdirSync(wsA, { recursive: true })
+        mkdirSync(wsB, { recursive: true })
+
+        // ── J1 ⭐ **核心**：`header=standard / 投影=Hob` ⇒ 列里必须是 **Hob** + 预警 ──
+        //   ⚠ 这一条就是"改回 header 读法必须 FAIL"的那一条：改回去拿到的是 `standard`。
+        {
+          const r = await drive({ target: 'session-j1', cwd: wsA, projectionPreset: PLANNING_PRESET_ID })
+          if (r.err !== undefined) {
+            bad(`J1 ${r.err}`)
+          } else {
+            const gotPreset = r.watch?.targetPreset
+            const gotSource = r.watch?.targetPresetSource
+            const lineHasProjection = r.rendered.includes(`预设=${PLANNING_PRESET_ID}`)
+            const lineWarns = r.rendered.includes('⚠ 规划侧预设·不能施工')
+            const notHeaderValue = !r.rendered.includes('预设=standard')
+            if (gotPreset === PLANNING_PRESET_ID && gotSource === 'projection'
+              && lineHasProjection && lineWarns && notHeaderValue) {
+              ok(`J1 现场 header=standard / 投影=${PLANNING_PRESET_ID} ⇒ 预设列报**投影值** + `
+                + '来源=projection + **触发「⚠ 规划侧预设·不能施工」**（渲染行为证，非字段推断）')
+            } else {
+              bad(`J1 预设列**没走投影**（这正是 D-3 的复现）：targetPreset=${JSON.stringify(gotPreset)}`
+                + ` · 来源=${JSON.stringify(gotSource)} · 行含投影值=${lineHasProjection}`
+                + ` · 行含预警=${lineWarns} · ⛔未报建档头值=${notHeaderValue}`
+                + ' ⇒ 派活方会把规划侧会话读成实施侧，并一直等一个永不会来的产出')
+            }
+          }
+        }
+
+        // ── J2 **降级必须可见**：投影读不到 ⇒ 退回 header，且行里标「降级」────
+        //   ⚠ 缺了本组，"降级"会与"权威值"在输出里**逐字一样**
+        //     —— 而降级值恰恰会把规划侧会话掩盖成实施侧。
+        {
+          const r = await drive({ target: 'session-j2', cwd: wsB, projectionPreset: undefined })
+          if (r.err !== undefined) {
+            bad(`J2 ${r.err}`)
+          } else {
+            const gotSource = r.watch?.targetPresetSource
+            const saysDegraded = r.rendered.includes('降级')
+            const reportsHeaderValue = r.rendered.includes('预设=standard')
+            if (gotSource === 'header' && saysDegraded && reportsHeaderValue) {
+              ok('J2 投影读不到 ⇒ 退回建档头（source=header）**且渲染行标「降级」**（⛔ 不静默当真值用）')
+            } else {
+              bad(`J2 降级路径不可分辨：source=${JSON.stringify(gotSource)}`
+                + ` · 行含「降级」=${saysDegraded} · 行报了建档头值=${reportsHeaderValue}`
+                + ' ⇒ 降级读数与权威读数同形，"可能非当前值"这件事对读者不可见')
+            }
+          }
+        }
+
+        // ── J3 **单点实现**：编排模块⛔ 不许自己读投影 / 读建档头 ────────────
+        //   ⚠ 判据是"编排侧有没有第二份归约"，⛔ 不是"字样在不在"。
+        {
+          const orchCode = stripComments(orchSrc)
+          const readsProjection = /\.stateOf\s*\(/.test(orchCode)
+          const readsHeader = /header\s*\??\.\s*agentPreset/.test(orchCode)
+          const callsBus = /\.presetOf\s*\(/.test(orchCode)
+          if (!readsProjection && !readsHeader && callsBus) {
+            ok('J3 编排侧的预设读数经 `hobBus.presetOf()` 单点进入'
+              + '（⛔ 无 `stateOf(` 第二份归约 · ⛔ 无 `header.agentPreset` 主路径读法）')
+          } else {
+            bad(`J3 编排侧存在第二份预设读数：自己读投影=${readsProjection}`
+              + ` · 自己读建档头=${readsHeader} · 经总线入口=${callsBus}`
+              + ' ⇒ 同一事实两个来源必然漂（本次事故的成因就是它）')
+          }
+        }
+
+        // ── J4 **全仓静态面**：`header.agentPreset` 剩余命中必须**只在降级分支** ──
+        //   ⚠ 判定行**必须报「核了多少处」** —— 只报"通过"不报覆盖面，
+        //     是"看起来全覆盖"的常见来源（E-160 同族）。
+        {
+          const walk = (dir) => {
+            const out = []
+            let ents = []
+            try { ents = readdirSync(dir, { withFileTypes: true }) } catch { return out }
+            for (const ent of ents) {
+              const p = join(dir, ent.name)
+              if (ent.isDirectory()) out.push(...walk(p))
+              else if (ent.name.endsWith('.ts')) out.push(p)
+            }
+            return out
+          }
+          const files = walk(join(root, 'src'))
+          const hits = []
+          for (const f of files) {
+            let src = ''
+            try { src = readFileSync(f, 'utf8') } catch { continue }
+            // ⚠ ⚠ **行号必须可指认**：`stripComments()` 会**删掉整行注释**
+            //   ⇒ 行号会往前偏移（实测：真实 `bus.ts:537` 被报成 `:268`，差 269 行）。
+            //   ⇒ 这里用**保行数**的剥离器：把注释内容**替换成等量空白**、保留换行，
+            //     行号与原文**逐行对齐**（判定行里的 `文件:行号` 才能被人直接跳过去看）。
+            //   ⚠ 两种剥离器**在语义上等价**（都不让注释里的名字冒充代码），
+            //     差别只在"行号是否可指认" ⇒ 静态面扫描一律用这一个。
+            const lines = stripCommentsKeepLines(src).split('\n')
+            for (let i = 0; i < lines.length; i++) {
+              if (/header\s*\??\.\s*agentPreset/.test(lines[i])) {
+                hits.push({ file: f.slice(root.length + 1), line: i + 1, text: lines[i].replace(/\s+/g, ' ').trim() })
+              }
+            }
+          }
+          // ⚠ 唯一允许的落点：`bus.ts` 的**降级分支**（`currentPresetOf` 的第 ② 步）。
+          //   判据 = "文件集合 ⊆ {bus.ts}" + "命中恰好 1 处"：
+          //     多于 1 处 ⇒ 又冒出第二个读法；别的文件 ⇒ 主路径读法。
+          const filesWithHits = [...new Set(hits.map((h) => h.file))]
+          const onlyBus = filesWithHits.length === 1 && filesWithHits[0] === 'src/modules/bus.ts'
+          const exactlyOne = hits.length === 1
+          if (onlyBus && exactlyOne) {
+            ok(`J4 \`header.agentPreset\` 全仓只剩 ${hits.length} 处`
+              + `（${hits[0].file}:${hits[0].line} = 降级分支）· **核了 ${files.length} 个 .ts 文件 / ${hits.length} 处命中**`)
+          } else {
+            bad(`J4 \`header.agentPreset\` 的剩余命中不合格：**核了 ${files.length} 个 .ts 文件**，`
+              + `命中 ${hits.length} 处、分布在 ${filesWithHits.length} 个文件`
+              + '（允许 = 仅 src/modules/bus.ts 降级分支 1 处）：'
+              + hits.map((h) => `${h.file}:${h.line} → ${h.text}`).join(' | '))
+          }
+        }
+      } finally {
+        try { rmSync(jRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+      }
     }
   }
 }
