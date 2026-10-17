@@ -5,6 +5,17 @@
   "type": "module",
   "description": "dsh-hob：用户 ↔ DSH 开发会话之间的沟通/翻译层",
   "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "agent-preset",
+    "assistant",
+    "planning"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
   "exports": {
@@ -49,7 +60,10 @@
     "check:host": "node scripts/host-probe.mjs",
     "check:modules": "node scripts/module-independence-probe.mjs",
     "exp:next-id": "node scripts/next-experience-id.mjs",
-    "gen:skeleton": "node scripts/gen-skeleton-manifest.mjs"
+    "gen:skeleton": "node scripts/gen-skeleton-manifest.mjs",
+    "check:all": "node scripts/check-all.mjs",
+    "check:preflight": "node scripts/preflight.mjs",
+    "check": "npm run check:all"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0-rc <5",

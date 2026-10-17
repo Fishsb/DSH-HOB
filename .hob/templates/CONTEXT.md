@@ -45,11 +45,11 @@
 |---|---|---|---|
 | **`PROJECT.md`** | **方案**（唯一事实源）：定位 · 形态 · 架构 · 能力 · 权限 · 风险 · 术语 | 地图（文件头 + 项目概览 + §0）；**正文按节**在 `volumes/plan/` | `volumes/plan/INDEX.md` |
 | **`DECISIONS.md` 变更记录** | **方案变更**（`CHG-nn`）+ 现行通用规约 + 口径速查 | 地图；**条目**在 `volumes/decisions/` | `volumes/decisions/INDEX.md` |
-| **`USER-DECISIONS.md` 用户决策** | **用户决策**（`UD-nn`，逐条附用户原话） | 地图；**条目**在 `volumes/user-decisions/` | `volumes/user-decisions/INDEX.md` |
+| **`USER-DECISIONS.md`** | **用户决策**（`UD-nn`，逐条附用户原话） | 地图；**条目**在 `volumes/user-decisions/` | `volumes/user-decisions/INDEX.md` |
 | **`CONTEXT.md`**（本文件） | **当前状态**：防漂移摘要 + 文档面 + 还欠的活 + 检查单 + 本批登记 | 本文件（**默认单档**；**撞读上限时按节移出**） | 本文件自身即地图；**移出件**见 `volumes/context/INDEX.md` |
 | **`volumes/*/` 各卷** | **`PROJECT.md` 的正文按节** · **`CHG-nn`** · **`UD-nn`** · **本文件的正文按节** —— 皆**一事一文件**；⚠ ⚠ **`volumes/context/rounds/` = 轮次记录（一轮一文件）** | `volumes/<卷>/<nn>-<slug>.md`；⚠ 轮次在 `volumes/context/rounds/<轮次标识>.md` | 各卷自带 `INDEX.md`；⚠ **`rounds/` 无独立索引**（⚠ **文件名即标识**） |
 | **经验库 · `.hob/EXPERIENCE.md` + `.hob/experience/`** | **机制细节与教训的唯一来源**（⚠ **在工作区骨架里，不在账本区**） | `.hob/experience/<编号数字>.md`（**文件名不补零**） | `.hob/EXPERIENCE.md` |
-| **`archive/<日期>-<名>/` 归档目录** | **历史与归档**：改动前整份 · 移出的历史件 · 各批交接件（⚠ 正本里**只留"现在是什么样"**）。⚠ **含 `sources/` 的必须带 `README.md` 清单件** —— 它是归档判据的**唯一比对基准**，缺即 FAIL | 该目录下 | 无（按目录名与文件头自述） |
+| **`archive/<日期>-<名>/`** | **历史与归档**：改动前整份 · 移出的历史件 · 各批交接件（⚠ 正本里**只留"现在是什么样"**）。⚠ **含 `sources/` 的必须带 `README.md` 清单件** —— 它是归档判据的**唯一比对基准**，缺即 FAIL | 该目录下 | 无（按目录名与文件头自述） |
 
 ### 0.2 预设（本插件自带一个）
 
@@ -111,8 +111,7 @@
 |---|---|---|---|
 | **`PROJECT.md`** | 账本区根 | **方案**（**唯一事实源 —— 指「方案」这一档**）（⚠ **地图**：只留**文件头 + 项目概览 + §0**）；**正文按节**：`volumes/plan/`（索引 `volumes/plan/INDEX.md`） | **只有用户能批准变更，Hob 只提议** |
 | **`CONTEXT.md`** | 账本区根 | **本文件**（⚠ **默认单档**；**撞读上限时按节移出**到 `volumes/context/`——见文件头触发点）；当前状态 + 还欠的活 + 开工检查单 | Hob |
-| **`DECISIONS.md`** | 账本区根 | 影响**方案本身**的变更（`CHG-nn`）+ **现行规约（§八 口径速查）**；⚠ **正文按卷**：`volumes/decisions/` | Hob（变更须用户批准） |
-| **`USER-DECISIONS.md`** | 账本区根 | **用户决策**（`UD-nn`，逐条附用户原话）；⚠ **正文按卷**：`volumes/user-decisions/` | Hob |
+| **`DECISIONS.md`** / **`USER-DECISIONS.md`** | 账本区根 | **变更记录 / 用户决策**（⚠ **两份各自一事一文件、正文按卷**）：`DECISIONS.md` = 影响**方案本身**的变更（`CHG-nn`）+ **现行规约（§八 口径速查）**，正文按卷 `volumes/decisions/`；`USER-DECISIONS.md` = 用户决策（`UD-nn`，逐条附用户原话），正文按卷 `volumes/user-decisions/` | Hob（变更须用户批准） |
 | **`.hob/EXPERIENCE.md`** + **`.hob/experience/`** | 工作区（骨架，进 git） | **经验库**：**索引 + 条目目录** —— **机制细节与教训的唯一来源**（**指「教训」这一档**）（⚠ **正文按卷**：`.hob/experience/<编号数字>.md`，**文件名不补零**；⚠ **条数以 `exp:next-id` 实测为准**） | Hob |
 | **`.hob/README.md`** | 工作区（骨架，进 git） | 骨架说明 · **§1.4 机检（各组守什么）** · **§5.1 纪律登记表** · §3 归档表 | Hob（骨架改动走人工 + 提交） |
 | **`.hob/templates/`** · **`roles/`** · **`drafts/`** · **`.hob/INIT.md`** | 工作区（骨架，进 git） | 空模板 · 角色方法论 · 契约人读版 · **新工作区初始化清单** | 同上 |

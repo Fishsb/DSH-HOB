@@ -166,6 +166,19 @@ export function runRepoRules({ bad, ok }) {
     //     `✗ package.json 声明的脚本不在 MUST-TRACK 里：scripts/check-build-sync.mjs`。
     //   ⚠ ⇒ 本条即那次的修正结果；⛔ **未放松任何既有断言**（`UD-130` 的边界）。
     ['scripts/check-build-sync.mjs', '入库脚本（被 package.json 的 check:build 调用 · lib/ 同步只报不拦自检）'],
+    // ⚠ 2026-10-18 补（本批 · `UD-138` ⑥「补齐对外最小面」）：**聚合判据入口**与**前置条件预检**。
+    //   ⚠ 由来：本仓此前有 12 条 `check:*`、**零聚合入口** ⇒ 对外标准「判据入口能一条命令跑」
+    //     直接不成立（外部人不知道该跑哪条、跑了一半就以为全过了）。
+    //   ⚠ ⚠ 同族的**第十次**现场抓获 —— 加完这两个 script 未登记时，本脚本的"反向自检"
+    //     （读 package.json 的 scripts 反查 MUST-TRACK）**当场 FAIL**：
+    //     `✗ package.json 声明的脚本不在 MUST-TRACK 里：scripts/check-all.mjs`（与 preflight 同批）。
+    //   ⚠ ⇒ 本条即那次的修正结果；⛔ **未放松任何既有断言**（`UD-130` 的边界）——
+    //     本条只**新增**两条登记，上面九条一字未动。
+    //   ⚠ 两者分工：`check-all` 是**调度器**（不改任何判据的字节，只逐族转调 + 汇总退出码）；
+    //     `preflight` 是**体检**（恒 exit 0，不是判据 —— 缺条件不该让外壳脚本变红，
+    //     否则"缺依赖"与"判据失败"在 CI 里就分不开了）。
+    ['scripts/check-all.mjs', '入库脚本（被 package.json 的 check / check:all 调用 · 一条命令跑完全部判据族并汇总退出码）'],
+    ['scripts/preflight.mjs', '入库脚本（被 package.json 的 check:preflight 调用 · 判据前置条件体检，恒 exit 0）'],
   ]
 
   /** 该路径是否已在 git index 里（= 已 `git add`）。 */
