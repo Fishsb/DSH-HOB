@@ -165,7 +165,7 @@ export async function readWorkspaceText(
 
   // ⚠ 类型拒绝**只在档2**（档3 = 任意文件 ⇒ 这一句对它是恒假的）。
   if (!isAllowedForLevel(abs, level)) {
-    return { ok: false, text: '拒绝：本档只允许读 .md（「项目」档）。', truncated: false, bytes: 0, reason: 'type' }
+    return { ok: false, text: '拒绝：本档只允许读 .md（「文档权限」档）。', truncated: false, bytes: 0, reason: 'type' }
   }
 
   let bytes = 0

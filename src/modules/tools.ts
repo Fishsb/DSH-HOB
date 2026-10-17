@@ -253,7 +253,7 @@ export interface HobToolsDeps {
    */
   skeletonEnabledOf?: () => boolean
   /**
-   * **现读**当前权限档位（`ledger` / `project` / `workspace`）。
+   * **现读**当前可读权限控制的档位（`ledger` / `project` / `workspace` —— 内部取值）。
    *
    * ⚠ 必须是**函数**（不是值）：档位可以**随时改**（volatile 值型配置，改完即生效），
    *   若在 `createHobTools` 时读一次存起来，就成了"装配期快照"——
@@ -342,7 +342,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
     },
   })
 
-  // ── 权限档位的**读能力**四个工具（2026-10-14 第 144 轮）─────────────────
+  // ── 可读权限控制的**读能力**四个工具（2026-10-14 第 144 轮；2026-10-17 改名）─────
   //   ⚠ **为什么这四个在这里定义、却由预设行注册**：与 `read_contracts` 同一条分层
   //     —— 工具**定义**在本模块（可被机检直接 import 真跑），**注册**在预设作用域
   //     （`src/preset/tools.ts` 的 `registerTools`），因为"哪些档看得见"是预设的权限面。
@@ -369,8 +369,9 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
     name: 'hob_read_doc',
     description:
       '只读本工作区内的文件（⛔ 不能写、不能改）。'
-      + '⚠ 可读范围**随本会话的权限档位变**：'
-      + '「项目」档**只可读 .md**；「工作区」档**工作区里的文件都可读取查看**（含代码与图片）。'
+      + '⚠ 可读范围**随本会话的可读权限控制档位变**：'
+      + '「文档权限」档**只可读 .md**；「完全权限」档**工作区里的文件都可读取查看**（含代码与图片）'
+      + '（完全权限 = 工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队）。'
       + '越出工作区、软链一律拒绝。'
       + '⚠ 三种内容分别处理：文本 ⇒ 返回正文；二进制 / 非 UTF-8 ⇒ 只给一句短提示（⛔ 不吐乱码）；'
       + '图片 ⇒ 提示改用 hob_read_image。'

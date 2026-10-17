@@ -276,14 +276,14 @@ export async function writeSpawnFields(
   }
 }
 
-/** 权限档位的三个值（与 `src/config.ts` 的 `PERMISSION_LEVELS` 同源口径）。 */
+/** 可读权限控制的三档值（与 `src/config.ts` 的 `PERMISSION_LEVELS` 同源口径；⚠ 内部取值，⛔ 不是显示名）。 */
 export type PermissionLevel = 'ledger' | 'project' | 'workspace'
 
 /** 档位的展示顺序（= 包含链从窄到宽；面板按这个顺序渲染）。 */
 export const PERMISSION_LEVEL_ORDER: readonly PermissionLevel[] = ['ledger', 'project', 'workspace']
 
 /**
- * 写**权限档位**（`permission.level`）。
+ * 写**可读权限控制**的档位（`permission.level`；⚠ 内部取值一字未变）。
  *
  * ⚠ 与 {@link writeSpawnField} 同形的三条纪律（照抄，别各写一份）：
  *   ① **必须写子字段路径** `['permission', 'level']` —— 父对象 `permission`

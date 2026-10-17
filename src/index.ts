@@ -94,7 +94,7 @@ export function apply(ctx: Context, config: ConfigShape): void {
   // 开关一次性解出普通对象：把 volatile 的 ref 形态收口在 moduleSwitches 里。
   const switches = moduleSwitches(config)
 
-  // ── 权限档位的**现读**服务（2026-10-14 第 144 轮）─────────────────────
+  // ── 可读权限控制的**现读**服务（2026-10-14 第 144 轮；2026-10-17 改名）─────────
   //   ⚠ **为什么在入口 provide 而不是在模块里**：档位要同时对**两个半边**生效 ——
   //     · 预设行（`preset/dsh-hob/preset-tools` 的装配期过滤 + 哨兵）在**预设作用域**；
   //     · 模块层（四个读工具的 `execute`）在**模块作用域**。
@@ -117,7 +117,7 @@ export function apply(ctx: Context, config: ConfigShape): void {
     if (!entry.enabled(switches)) continue
     // ⚠ M6a：第二道闸门（档位）—— ⚠ 只在**它自己**身上生效，⛔ 不影响别的模块。
     if (entry.key === 'interconnect' && !interconnectAllowed()) {
-      ctx.logger?.info?.(`[${name}] 跨实例投递**未注册**：权限档位 = 账本（⚠ 只读档不做影响外部状态的动作）。`)
+      ctx.logger?.info?.(`[${name}] 跨实例投递**未注册**：可读权限控制 = 账本权限（⚠ 只读档不做影响外部状态的动作）。`)
       continue
     }
 

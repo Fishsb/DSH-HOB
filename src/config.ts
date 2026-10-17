@@ -45,7 +45,7 @@ export interface ModulesConfig {
    * M6a 跨实例投递模块（2026-10-16 第 237 轮 · `UD-119` 裁定）。
    *
    * ⚠ ⚠ **缺省 `false`** —— ⚠ 它会在**无人看管时向另一个实例投递**（⚠ 与 `orch` 同风险档）。
-   * ⚠ ⚠ **且它另有一道并列的闸门**：⚠ **权限档位 = 账本时，即便这里是 `true` 也不注册**
+   * ⚠ ⚠ **且它另有一道并列的闸门**：⚠ **可读权限控制 = 账本权限时，即便这里是 `true` 也不注册**
    *   （⚠ 跨实例投递是"影响外部状态"的动作 ⇒ 只读档不做）。
    */
   interconnect: boolean
@@ -303,7 +303,8 @@ export const Config = z.object({
   }).default({}),
 
   /**
-   * 「权限档位」（2026-10-14 第 144 轮 · 用户裁定「档3 要真硬机制」+「档2不给，档3的都给」）。
+   * 「可读权限控制」（2026-10-14 第 144 轮 · 用户裁定「档3 要真硬机制」+「档2不给，档3的都给」；
+ *   **2026-10-17 由「权限档位」改名而来** —— ⚠ 只改名，⛔ 不扩权、⛔ 不改内部取值）。
    *
    * ── 它管什么 ────────────────────────────────────────────────────────
    *   「助手」预设这一档会话**能看到哪些工具**。三档是**包含链**：
@@ -344,7 +345,7 @@ export const Config = z.object({
       z.const('project'),
       z.const('workspace'),
     ]).default('ledger')
-      .description('「助手」会话的权限档位（三选一）：账本 = 只读自己的账本与网络；项目 = 另可读工作区的 .md 文档，不可读代码；工作区 = 另可读工作区里的任意文件（含代码与图片）、可跨文件搜索。⚠ 任何一档都不能改动（写类工具三档都不存在）。改完即生效，不必重启实例。')
+      .description('「助手」会话的可读权限控制（三选一）：账本权限 = 只读自己的账本与网络；文档权限 = 另可读工作区的 .md 文档，不可读代码；完全权限 = 另可读工作区里的任意文件（含代码与图片）、可跨文件搜索。⚠ 完全权限 = 工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队（写类与命令类工具三档都不存在）。改完即生效，不必重启实例。')
       .volatile(),
   }).default({}),
 
@@ -503,7 +504,7 @@ export function moduleSwitches(config: unknown): ModulesConfig {
 }
 
 /**
- * 权限档位的**现读**服务名（2026-10-14 第 144 轮）。
+ * 可读权限控制的**现读**服务名（2026-10-14 第 144 轮）。
  *
  * ⚠ 它是一个**函数**（返回 `'ledger' | 'project' | 'workspace'`），不是值：
  *   调用方**必须每次调**，不许存起来（见 {@link permissionLevel} 的注释）。
@@ -512,17 +513,17 @@ export function moduleSwitches(config: unknown): ModulesConfig {
  */
 export const PERMISSION_SERVICE = 'hobPermission'
 
-/** 权限档位的三个合法值（**唯一**枚举来源）。 */
+/** 可读权限控制的三档合法值（**唯一**枚举来源；⛔ 取值自 2026-10-17 改名起一字未动）。 */
 export const PERMISSION_LEVELS = ['ledger', 'project', 'workspace'] as const
 
-/** 权限档位类型。 */
+/** 可读权限控制的档位类型。 */
 export type PermissionLevel = (typeof PERMISSION_LEVELS)[number]
 
 /** 缺省档位 = `ledger`（与 schema 的 `.default('ledger')` 一致）。 */
 export const DEFAULT_PERMISSION_LEVEL: PermissionLevel = 'ledger'
 
 /**
- * 读出当前**权限档位**（`ledger` / `project` / `workspace`）。
+ * 读出当前**可读权限控制**的档位（`ledger` / `project` / `workspace` —— ⚠ 内部取值，⛔ 不是显示名）。
  *
  * ── 为什么必须是**函数**、且调用方必须**每次现读**────────────────────
  *   `permission.level` 标了 `.volatile()` ⇒ 运行时是 **ref 对象**，

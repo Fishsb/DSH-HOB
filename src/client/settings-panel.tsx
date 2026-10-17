@@ -574,7 +574,7 @@ function SpawnDefaultsCard(props: {
 
 
 /**
- * **权限档位卡片**（2026-10-14 第 144 轮新增）。
+ * **可读权限控制卡片**（2026-10-14 第 144 轮新增；2026-10-17 由「权限档位」改名）。
  *
  * ── 为什么用 `SegmentedControl`（而不是 `Menu` 或自造滑块）──────────────
  *   用户原话是"一个设置**滑块**选项分为三个权限"，而宿主原语里：
@@ -634,6 +634,20 @@ function PermissionCard(props: {
       <Row label={t('perm.meaning')}>
         <span className={S.cardNote}>{t(`perm.level.note.${current}`)}</span>
       </Row>
+      {/* ── ⚠ 「完全权限」旁的**限定句**（2026-10-17 · 三档改名批次）──────────────
+          依据 R-26：**只给名字不给边界，读者会把「读得更多」误读成「权限更大」**。
+          ⇒ 选到 `workspace`（显示名「完全权限」）时，**紧邻**必须有一句明写边界。
+          ⚠ 判据是「凡出现『完全权限』的用户可见处」都带限定 —— 故这一行与
+            `perm.level.note.workspace`（行内也带了同一句）、`note.permission.post`
+            （页脚说明也带了一句）三处**同源**，⛔ 不是三份各写各的措辞。
+          ⚠ 只在 `workspace` 档出现：其余两档没有「完全权限」这个名字，加上去就是噪音。 */}
+      {current === 'workspace'
+        ? (
+          <Row label={t('perm.limit')}>
+            <span className={S.cardNote}>{t('perm.workspaceLimit')}</span>
+          </Row>
+        )
+        : null}
       {result !== null ? (
         <Row label={t('perm.result')}>
           <span className={failed ? S.warn : S.cardNote}>{result}</span>
@@ -878,17 +892,19 @@ const PANEL_EN: Record<string, string> = {
   'write.notWritable.noWrite': 'not allow writes',
   'write.notWritable.mid': ' (host persistence mode = ',
   'write.notWritable.post': ') — on non-loopback access the host only changes settings in memory, so this panel refuses the write instead of pretending it saved.',
-  // ── 权限档位（2026-10-14 第 144 轮）──────────────────────────────────
+  // ── 可读权限控制（2026-10-14 第 144 轮；2026-10-17 改名）──────────────────
   // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
-  'perm.title': 'Permission level',
+  'perm.title': 'Readable-permission control',
   'perm.note': 'It changes which files this preset can READ. No level can change anything.',
   'perm.label': 'Level',
-  'perm.level.ledger': 'Ledger',
-  'perm.level.project': 'Project',
-  'perm.level.workspace': 'Workspace',
+  'perm.level.ledger': 'Ledger permission',
+  'perm.level.project': 'Document permission',
+  'perm.level.workspace': 'Full permission',
+  'perm.workspaceLimit': 'Full permission = every file in the workspace can be read; it still cannot write, run a command, or raise a team.',
+  'perm.limit': 'Where this level ends',
   'perm.level.note.ledger': 'Only its own ledger and the web; it cannot see the project workspace files.',
   'perm.level.note.project': 'Reads documents (.md) in the workspace; cannot read code.',
-  'perm.level.note.workspace': 'Reads and views any file in the workspace, including code and images, and can search across files; no level can change anything.',
+  'perm.level.note.workspace': 'Reads and views any file in the workspace, including code and images, and can search across files; full permission = every file in the workspace can be read, and it still cannot write, run a command, or raise a team.',
   'perm.meaning': 'What this level allows',
   'perm.result': 'Result',
   'perm.saved': 'Saved: now at the {level} level.',
@@ -909,9 +925,9 @@ const PANEL_EN: Record<string, string> = {
   'note.skeleton.pre': '· «Scaffold on first use» is a ',
   'note.skeleton.strong': 'never-overwrites',
   'note.skeleton.post': ' behaviour — it fills the skeleton only where no .hob exists yet; when one already exists it reports the skip and touches nothing. It creates no tool, and it is not a conversation-facing capability.',
-  'note.permission.pre': '· «Permission level» is a ',
+  'note.permission.pre': '· «Readable-permission control» is a ',
   'note.permission.strong': 'takes-effect-immediately',
-  'note.permission.post': ' value-type configuration — an open session follows the new level from its next step, and it is a different path from the module switches above.',
+  'note.permission.post': ' value-type configuration — an open session follows the new level from its next step, and it is a different path from the module switches above. ⚠ «Full permission» widens the READABLE range only: every file in the workspace can be read, and it still cannot write, run a command, or raise a team.',
   'note.restart.pre': '· Module switches ({tools} / {preset} / {bus} / {orch} / {settings} / {interconnect}, six in total): a change needs ',
   'note.restart.strong': 'an instance restart',
   'note.restart.post': ' to take effect — the host’s rule is that changing these values does not remount the plugin, and modules are loaded at plugin-load time.',
@@ -983,16 +999,18 @@ const PANEL_ZH: Record<string, string> = {
   'write.notWritable.noWrite': '不允许写入',
   'write.notWritable.mid': '（宿主持久化模式 = ',
   'write.notWritable.post': '）—— 非本机回环访问时宿主只在内存里改、不落盘，故这里会如实拒写而不是假装保存。',
-  // ── 权限档位（2026-10-14 第 144 轮）──────────────────────────────────
-  'perm.title': '权限档位',
+  // ── 可读权限控制（2026-10-14 第 144 轮；2026-10-17 改名）──────────────────
+  'perm.title': '可读权限控制',
   'perm.note': '它只改本预设能「读」哪些文件；任何一档都不能改动。',
   'perm.label': '档位',
-  'perm.level.ledger': '账本',
-  'perm.level.project': '项目',
-  'perm.level.workspace': '工作区',
+  'perm.level.ledger': '账本权限',
+  'perm.level.project': '文档权限',
+  'perm.level.workspace': '完全权限',
+  'perm.workspaceLimit': '完全权限 = 工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队。',
+  'perm.limit': '这一档的边界',
   'perm.level.note.ledger': '只读自己的账本与网络；看不到项目工作区的文件。',
   'perm.level.note.project': '可读工作区里的文档（.md），不可读代码。',
-  'perm.level.note.workspace': '工作区里的文件都可读取查看（含代码与图片），并能在文件里搜索；任何一档都不能改动。',
+  'perm.level.note.workspace': '工作区里的文件都可读取查看（含代码与图片），并能在文件里搜索；完全权限 = 工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队。',
   'perm.meaning': '这一档允许什么',
   'perm.result': '结果',
   'perm.saved': '已保存：现在是「{level}」档。',
@@ -1013,9 +1031,9 @@ const PANEL_ZH: Record<string, string> = {
   'note.skeleton.pre': '· 「首次使用时铺骨架」是',
   'note.skeleton.strong': '永不覆盖',
   'note.skeleton.post': '的行为 —— 只在还没有 .hob 时铺；已经有了就报一行跳过、一个字节都不动。它不建任何工具，也不是面向对话的能力。',
-  'note.permission.pre': '· 「权限档位」是',
+  'note.permission.pre': '· 「可读权限控制」是',
   'note.permission.strong': '即改即生效',
-  'note.permission.post': '的值型配置 —— 已开的会话在它的下一步就按新档位走；它和上面的模块开关是两条不同的路径。',
+  'note.permission.post': '的值型配置 —— 已开的会话在它的下一步就按新档位走；它和上面的模块开关是两条不同的路径。⚠ 「完全权限」只放宽可读范围：工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队。',
   'note.restart.pre': '· 模块开关（{tools} / {preset} / {bus} / {orch} / {settings} / {interconnect}，共六个）：改完需要',
   'note.restart.strong': '重启实例',
   'note.restart.post': '才生效 —— 宿主的规定是"改这些值不重挂插件"，而模块的装载发生在插件装载那一刻。',

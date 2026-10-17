@@ -126,7 +126,7 @@ export function apply(ctx: any, config: Config = {}): void {
     diag(m)
   }
   /**
-   * **现读**当前权限档位（每次调用现取，⛔ 不是快照）。
+   * **现读**当前可读权限控制的档位（每次调用现取，⛔ 不是快照）。
    *
    * ⚠ 走插件入口 provide 的 {@link PERMISSION_SERVICE}（闭包，每次现读 `config.permission.level`），
    *   因为 `permission.level` 是 volatile ref，**本预设作用域不该自己捅 config**。
@@ -715,7 +715,7 @@ function installPermissionGuard(ctx: any, levelOf: () => string, log: (m: string
       const level = levelOf()
       const names = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
       if (!names.includes(name)) {
-        return `"${name}" is not available at the current permission level (${level}).`
+        return `"${name}" is not available at the current readable-permission level (${level}).`
       }
 
       // ── **类型规则：只在档2**（2026-10-14 第 145 轮 · 用户裁定「档3的都加」）──
@@ -731,7 +731,7 @@ function installPermissionGuard(ctx: any, levelOf: () => string, log: (m: string
         if (typeof requested === 'string' && requested.trim() !== '') {
           const lower = requested.trim().toLowerCase()
           if (!lower.endsWith('.md')) {
-            return `"${requested}" is not available at the project level: this level reads only .md documents.`
+            return `"${requested}" is not available at the document-permission level: this level reads only .md documents.`
           }
         }
       }
