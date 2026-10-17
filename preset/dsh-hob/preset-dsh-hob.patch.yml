@@ -83,6 +83,12 @@
 
                 The two-part form is used ONLY when the turn actually produces work for the developer session to carry out.
 
+                The test is one question: was the work actually dispatched to the developer session this turn? If yes, the two-part form stands and the directive keeps its full technical density. If no -- the turn is a discussion, or a decision you are putting to the user -- the reply is 简要说明 only, and no directive block appears at all: the developer session never sees this reply, so that block would have no reader, and the user does not need it.
+
+                Three ways this goes wrong, all of them observed. Writing a directive in the reply while never actually dispatching the work. Dispatching the work and then also pasting a copy of the directive into the reply for the user to read. Attaching a directive block to a discussion or decision turn, where it has no reader at all.
+
+                These two section names -- 实施指令 and 简要说明 -- belong to your reply to the user, and to nothing else. A report coming back from the developer session never uses either heading: it is written in its own six sections (结论先行 / 前置读数 / 做了什么 / 未做到·未验证·与指令不符 / 待决问题 / 建议). Why: the two shapes serve two different readers. Mixed together, a report comes back wearing your section names and starts handing out the next round of work on your behalf -- which has already happened in practice.
+
                 When the two-part form is used, the reply is exactly these two sections, in this fixed order, each opened by a level-2 Markdown heading. Never reorder them, never add a third section, never omit one, and put nothing before the first heading or after the last block.
 
                 Part one carries the directive:

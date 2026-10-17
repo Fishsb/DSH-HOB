@@ -538,6 +538,65 @@ const STALE_APPELLATIONS = [
     else bad(`⑤b ${NAME_HO}：v7/v9 条文缺失（${label}）—— 期望 /${needle.source}/`)
   }
 
+  // ④h **v10 新增：格式归属 —— 两段式的触发条件 + 三个反例 + 两个板块名的归属**
+  //     （2026-10-18 · 用户两轮更正后落定的口径；实施侧回报串用板块名已实测发生）
+  //
+  //     ⚠ **为什么必须单独钉**（缺了它，这一格零断言覆盖）：
+  //       · ⑤ 只证明"两份载体一致"——两份**一起**删掉归属句，⑤ 照样 PASS；
+  //       · ④b 只钉"无活时只出 简要说明"，**不钉"有活时到底谁出两段"**，
+  //         更不钉"指令块在纯讨论轮次里不许出现"这个反例；
+  //       · ④f 的「实施指令技术密度照旧」只钉**密度**，不钉**归属**。
+  //       ⇒ 归属这一条全新，⛔ 与既有断言无重叠，故独立成 ④h（仍在本脚本同一族内，
+  //         ⛔ 未新增任何 `check:` 命令名 —— 用户硬项）。
+  //
+  //     ⚠ **口径来源（用户原话两句合起来才是完整意思）**：
+  //       ①「你要是沟通就不要给实施指令，你要给指令就派出去实施会话做任务」
+  //       ②「推进项目的给实施会话的轮次就正常按指令+说明的结构输出，但讨论决策轮次
+  //          带个指令代码块是干嘛的、给谁看的」
+  //       ⇒ 判据一句话：**这一轮有没有真的把活派给实施会话？** 有 ⇒ 两段；没有 ⇒ 只有说明。
+  //       ⚠ ⚠ **不是**"实施指令永不出现"——那样会把真正派活那一轮的正确形态一起判死。
+  {
+    // (a) 触发条件句：必须是"问本轮是否真派了活"，而不是"产生活的意图"
+    const TRIGGER = /The test is one question: was the work actually dispatched to the developer session this turn\?/
+    if (TRIGGER.test(hoBody)) ok(`⑤b ${NAME_HO}：v10 格式归属 —— 两段式触发条件 = 本轮是否**真的派出**（④h-a）`)
+    else bad(`⑤b ${NAME_HO}：v10 缺「本轮是否真的派出」这一触发条件句（④h-a）—— 期望 /${TRIGGER.source}/`)
+
+    // (b) 三档落点必须成对写明：有派 ⇒ 两段；没派 ⇒ 只说明 + ⛔ 无指令块
+    for (const [label, needle] of [
+      ['有派活 ⇒ 两段式照旧、技术密度不稀释', /If yes, the two-part form stands and the directive keeps its full technical density/],
+      ['没派活 ⇒ 只有 简要说明、⛔ 不出现指令块', /the reply is 简要说明 only, and no directive block appears at all/],
+      ['为什么（指令块没有读者）', /that block would have no reader, and the user does not need it/],
+    ]) {
+      if (needle.test(hoBody)) ok(`⑤b ${NAME_HO}：v10 归属条文在位（${label}，④h-b）`)
+      else bad(`⑤b ${NAME_HO}：v10 归属条文缺失（${label}，④h-b）—— 期望 /${needle.source}/`)
+    }
+
+    // (c) **三个反例**必须逐条在位（用户点名"我犯过的"）——
+    //     ⚠ 只写正向触发条件不够：不写明反例，契约读起来仍像"随便都能出两段"。
+    for (const [label, needle] of [
+      ['反例①：只写指令却没真派', /Writing a directive in the reply while never actually dispatching the work/],
+      ['反例②：真派了又贴一份给用户看', /Dispatching the work and then also pasting a copy of the directive into the reply/],
+      ['反例③：讨论/决策轮次挂指令块（没有读者）', /Attaching a directive block to a discussion or decision turn, where it has no reader at all/],
+    ]) {
+      if (needle.test(hoBody)) ok(`⑤b ${NAME_HO}：v10 反例在位（${label}，④h-c）`)
+      else bad(`⑤b ${NAME_HO}：v10 反例缺失（${label}，④h-c）—— 期望 /${needle.source}/`)
+    }
+
+    // (d) **格式归属**：两个板块名只属于 Hob 对用户的回复；实施侧回报 ⛔ 不许用这两个标题，
+    //     它用回报六段 —— 且**必须写明为什么**（两套格式服务两个读者，混用会让实施侧"替 Hob 派活"）。
+    for (const [label, needle] of [
+      ['两个板块名只属于对用户的回复，不属于别的任何东西', /belong to your reply to the user, and to nothing else/],
+      ['实施侧回报 ⛔ 不用这两个标题', /A report coming back from the developer session never uses either heading/],
+      ['实施侧用回报六段（含六段点名）', /结论先行 \/ 前置读数 \/ 做了什么 \/ 未做到·未验证·与指令不符 \/ 待决问题 \/ 建议/],
+      ['为什么：两套格式服务两个读者', /the two shapes serve two different readers/],
+      ['混用的后果：实施侧替 Hob 派活（已实测）', /starts handing out the next round of work on your behalf/],
+      ['混用已实测发生（不是假想）', /which has already happened in practice/],
+    ]) {
+      if (needle.test(hoBody)) ok(`⑤b ${NAME_HO}：v10 格式归属条文在位（${label}，④h-d）`)
+      else bad(`⑤b ${NAME_HO}：v10 格式归属条文缺失（${label}，④h-d）—— 期望 /${needle.source}/`)
+    }
+  }
+
   // ④g **v8 新增：预设 `description` 与人读版「§二 说明」格逐字相等 + 不含旧板块名**
   //     （2026-10-18 · 用户核过上批后指定的收口项）
   //

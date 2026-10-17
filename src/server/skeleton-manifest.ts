@@ -38,7 +38,7 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'drafts/discipline-details.md', sha256: '551ca449193338c0b9c541f484c1f1f605921460ab2e055dd305a0678075046c', bytes: 35992 },
   { path: 'drafts/growth-registry.md', sha256: 'b288e70eb66b341503ee289c45548e5e62534711c48a748de4c2d4f2fc4d0668', bytes: 11800 },
   { path: 'drafts/nav-intake-draft.md', sha256: 'd9d7d1a82002038fa619bff69efe18e689becabbe7bef71b23efbd06f172ff6f', bytes: 11028 },
-  { path: 'drafts/preset-contracts.md', sha256: '24c487d62e5eaee914ff7b9c5ee9f0c9f5492cbae213d46c5e43f37db7923aaa', bytes: 61223 },
+  { path: 'drafts/preset-contracts.md', sha256: 'e72a21cfb3e07425efe591e9598baa5d5e7691563247cd07e05b09127f26ef1f', bytes: 62546 },
   { path: 'drafts/restructure-plan.md', sha256: '38bfa48e573f5b527d278e6ee8b3c7c29a545d439dcd462ce9bd4289a26eb710', bytes: 18638 },
   { path: 'drafts/架构总览.html', sha256: 'df003d12d89372ab93f67360e022d041eaed53a775c74dc098e76d67dd5d5135', bytes: 9522 },
   { path: 'drafts/架构总览.png', sha256: '0430caae59894c937b6e712d099ad80491e72da9e7cbf214e5508fb3dc1b23b8', bytes: 133570 },
@@ -65,12 +65,12 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'templates/GATES.md', sha256: '82a42c346cffc0b5007be9dc72dd7dcf5c2825f11cbe800c6756a3fa259fec49', bytes: 7025 },
   { path: 'templates/REPORT.md', sha256: '0375d39ec33b0d736ce4f2227316414a55348cf5a89e441529c26a8a253faf0f', bytes: 6849 },
   { path: 'templates/ROLES.md', sha256: 'e4ac160b5e521a4396edbdb5e39663d34b1c7d1e74da96a4baec24deca6ad326', bytes: 14476 },
-  { path: 'templates/TASK.md', sha256: 'a41c09b1bd76505a732c5091264936c9ebb076a9fcfc9d78674d190900c74a86', bytes: 15302 },
+  { path: 'templates/TASK.md', sha256: '49d120d5edfab0e16fbf117a275e0475bba59851a78a70a2617e31144623393b', bytes: 15447 },
   { path: 'templates/USER-DECISIONS.md', sha256: '4714d0d400459eb6cc4fe1d79f2701e2f0cc1aa999e5c6373626d75171625931', bytes: 3887 },
 ]
 
 /** 生成时刻（⚠ 只作追溯，⛔ 不作判据 —— 判据是 sha256）。 */
-export const SKELETON_GENERATED_AT = '2026-10-17T22:06:19.853Z'
+export const SKELETON_GENERATED_AT = '2026-10-17T22:19:03.438Z'
 
 export interface SkeletonManifest {
   allowlist: readonly string[]
