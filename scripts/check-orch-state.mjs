@@ -21,11 +21,19 @@
  *      判据 = `orch-state.ts` 里存在写 `.gitignore`（内容 `*`）的路径。
  *   C. **不静默**：`hob_orch_status` 的输出里，丢失必须**新增行**报出；
  *      且**原有行一字未改、未删**（在等回传 / 已回传 / 被停闸拦下）。
- *   D. **不自动续上**：源码里**不得**把读回的丢失项 `watches.set(...)` 回去。
- *      理由写在 `orchestrator.ts` 修复段：`running → idle` 是**事件**不是可轮询状态，
- *      自动续上会留一个**永不结算**的 watch ⇒ 命中"同目标至多一条未结算"闸门
- *      ⇒ 该会话**永久不能再派**（比丢失更坏）。
- *      判据 = `markLost` 的返回值**只**流向计数/日志/通知，**不**流向 `watches`。
+ *   D. **重载后「先核再判」必须**成对**（2026-10-18 第 2 轮 · `UD-137` 裁定 3 收窄）**：
+ *      ⚠ 旧口径（改前）是一条**禁令**：接手块里**不得**出现 `watches.set(...)`，
+ *      理由 = `running → idle` 是**事件**不是可轮询状态，自动续上会留一个**永不结算**的
+ *      watch ⇒ 命中"同目标至多一条未结算"闸门 ⇒ 该会话**永久不能再派**。
+ *      ⚠ ⚠ **那条理由只描述"已经跑完"这一档**。用户 2026-10-18 裁定把它**收窄成成对三条**：
+ *        **D2-a（正向）** 目标**仍在跑** ⇒ **必须重挂**（实测：该条**不许**被判 lost）；
+ *        **D2-b（反向）** 目标**已空闲** ⇒ **必须不重挂**（实测：重挂数必须为 0）+ 判 lost **且档位可分辨**；
+ *        **D2-c（反证）** 把重挂那几行去掉 ⇒ **D2-a 必须 FAIL**（负向对拍，见回报件）。
+ *      ⚠ 判「不算放宽分辨力」的依据：旧的是**一条禁令**，新的是**两条方向相反的要求 + 一个反证**
+ *        ⇒ 覆盖面变宽。⚠ **前提**：重挂**只对仍在跑的目标**做 —— D2-b 钉的就是这个前提。
+ *   D'. **档位单一来源 + 两类不混一个计数**（同轮新增）：
+ *      档位只经 `orch-state.ts` 的 `asWatch` 进内存（⛔ 无 sidecar、⛔ 不借 `error`）；
+ *      状态行按 `lostByClass` **分开报**（⛔ 不再只报一个总数）。
  *   E. **闸门未动**：`stopped` 的两处闸门位置**语义未变**（回传前 + 派发前），
  *      `hob_dispatch` 的"同目标至多一条未结算"拒绝**仍在**。
  *   F. **待投递中间态**（2026-10-10 新增 · 用户报障修复）：写了交接文件 ⇒ 出现 `handoffs`
@@ -56,7 +64,7 @@
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
  * ⚠ 零第三方依赖（本仓纪律）：只做文本级解析，不引 YAML 库。
  */
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -217,25 +225,70 @@ const orchCode = stripComments(orchSrc)
   }
 }
 
-// ── D. 不自动续上（关键的反向保护）──────────────────────────────────────
+// ── D. 重载后「先核再判」**成对**（2026-10-18 第 2 轮 · `UD-137` 裁定 3 收窄）────
+//
+// ⚠ 旧口径（改前）是**一条禁令**：接手块里**不得**出现 `watches.set(...)`。
+//   理由 = `running → idle` 是事件，自动续上会留一个**永不结算**的 watch。
+//   ⚠ ⚠ **那条理由只描述"已经跑完"这一档** —— 用户 2026-10-18 裁定把它收窄成**成对**：
+//     D2-a 仍在跑 ⇒ **必须重挂**；D2-b 已空闲 ⇒ **必须不重挂**；D2-c 反向对拍 ⇒ 去掉重挂 ⇒ D2-a 必红。
+//   ⚠ 本组是**静态面**（只判"那几行在不在、条件对不对"）；
+//     **行为面**（真跑两条路径）在同文件 **K 组** —— 两者必须**同时**绿才算数。
 {
-  // `markLost` 的返回值只能流向计数/日志/通知，**不得**流向 watches.set
+  // `markLost` 的返回值流向：`reattach` → 重挂；`lost` → 只计数/日志/通知
   const idx = orchCode.indexOf('markLost(')
   if (idx < 0) {
     bad('D1 编排模块未调用 markLost —— 丢失判不出来')
   } else {
     // ⚠ 扫描范围 = 从 `markLost(` 到 `flushWatches` 的定义之前。
-    //   这一段覆盖**整个接手块**（判丢失 → 计数 → 通知）。
+    //   这一段覆盖**整个接手块**（判丢失 → 重挂 → 计数 → 通知）。
     //   ⚠ 为什么不切到 `const refreshLostCount`（**实测踩过**）：
     //     裸调用 `refreshLostCount()` 在**定义之后**，按"定义前"切片会把
     //     注入在调用点附近的 `watches.set` **切到范围外** ⇒ 负向对拍**假通过**。
     //     终点改用更靠后的 `const flushWatches`，注入点就落在范围内了。
     const stop = orchCode.indexOf('const flushWatches')
     const scope = stop > 0 ? orchCode.slice(idx, stop) : orchCode.slice(idx)
-    if (/watches\.set\s*\(/.test(scope)) {
-      bad('D2 接手逻辑里出现 watches.set —— 不许自动续上（会留永不结算的 watch ⇒ 该会话永久不能再派）')
+
+    // ── D2-a **重挂必须在位，且只吃 `reattach`**（⛔ 不许吃 `lost`）──────────
+    //   ⚠ 判据三件同时成立：
+    //     ① 接手块里**有** `watches.set(`（= 重挂那段真的在）；
+    //     ② 它遍历的是 `r.reattach`（= 只对"仍在跑"的那一摞重挂）；
+    //     ③ 它**不**遍历 `r.lost`（= 不把判死的那些也挂回去）。
+    //   ⚠ 为什么②③必须分开钉：只钉①的话，"把 lost 也一起重挂"照样 PASS ——
+    //     那正好是 K-b 要抓的"永不结算的 watch"。
+    const hasSet = /watches\.set\s*\(/.test(scope)
+    const iterReattach = /for\s*\(\s*const\s+\w+\s+of\s+r\.reattach\s*\)[\s\S]{0,400}?watches\.set\s*\(/.test(scope)
+    // ⚠ 判据写宽一点：`r.lost` **以任何形式**出现在重挂循环头里都算违规
+    //   （`for (const w of r.lost)` / `for (const w of [...r.reattach, ...r.lost])` 都抓）。
+    //   ⚠ 实测踩过：只钉 `for (const w of r.lost)` 时，把两摞展开成一个数组的写法**漏网**。
+    const iterLost = /for\s*\(\s*const\s+\w+\s+of\s+[^)]{0,200}?r\.lost[^)]{0,200}?\)[\s\S]{0,400}?watches\.set\s*\(/.test(scope)
+    if (!hasSet) {
+      bad('D2-a 【必须重挂】**接手块里没有 `watches.set(`** —— 仍在跑的目标会被一律判死'
+        + '（这正是 2026-10-18 要修的缺陷；⛔ 不是"更安全"，是回到了旧病）')
+    } else if (!iterReattach) {
+      bad('D2-a 重挂没接在 `r.reattach` 上 —— 必须**只**重挂"仍在跑"那一摞'
+        + '（`markLost` 的 `reattach` 是唯一判过状态的那一摞）')
+    } else if (iterLost) {
+      bad('D2-b 【必须不重挂】接手块里出现**遍历 `r.lost` 再重挂** —— 已空闲的也会被挂回去，'
+        + '那会留一个永不结算的 watch（命中同目标闸门 ⇒ 该会话永久不能再派）')
     } else {
-      ok('D2 接手逻辑不写 watches（只记账/报告/通知）')
+      ok('D2-a ✓ 【必须重挂】接手块里有重挂，且**只**遍历 `r.reattach`（仍在跑那一摞）；'
+        + '⛔ 未遍历 `r.lost`（已空闲/判不出的一律不挂）')
+    }
+
+    // ── D2-b 静态面：判丢失那一摞必须带档位（⛔ 不许合成一个计数）───────────
+    //   ⚠ "档位由 `orch-state.ts` 的 `asWatch` 单一来源"这一条在 **D3'** 里钉；
+    //     这里只钉"接手块把两摞**分开**用"。
+    if (/r\.lost/.test(scope) && /r\.reattach/.test(scope)) {
+      ok('D2-b ✓ 接手块把 `lost` / `reattach` **分成两摞**使用（⛔ 未合成一摞）')
+    } else {
+      bad('D2-b 接手块没有把 `lost` / `reattach` 分开使用 —— 两档会被混成一个结果')
+    }
+
+    // ── D2-c **状态行必须按档位分开报**（用户原话"两类不许混成一个 lost 计数"）──
+    if (/lostByClass\.idle/.test(orchCode) && /lostByClass\.unknown/.test(orchCode)) {
+      ok('D2-c ✓ 状态行按 `lostByClass` 分开报 idle / unknown 两档（各带追回提示）')
+    } else {
+      bad('D2-c 状态行仍只报一个总数 —— 用户要求"两类不许混成一个 lost 计数"')
     }
   }
 
@@ -244,6 +297,52 @@ const orchCode = stripComments(orchSrc)
     ok('D3 pending 由内存中活着的 watch 生成（不是读回文件）')
   } else {
     bad('D3 pending 不是由内存中活着的 watch 生成 —— 读回的文件不得当作"在等"')
+  }
+
+  // ── D3' **档位单一来源**（D1 裁定：⛔ 不许 sidecar、⛔ 不许借 `error`）─────────
+  //   ⚠ 判据三件：① `asWatch` 白名单里认 `lostClass`；② 它会判**集合内**（不许任意字符串）；
+  //     ③ 全仓**没有**第二个写档位的地方（`lostClass:` 的赋值点只在 orch-state.ts）。
+  if (/o\.lostClass/.test(stateCode) && /LOST_CLASSES/.test(stateCode)) {
+    ok("D3' ✓ 档位经 `orch-state.ts` 的 `asWatch` 白名单进入（单一来源，⛔ 无 sidecar）")
+  } else {
+    bad("D3' `asWatch` 未认 `lostClass` —— 档位读不回内存（会逼出 sidecar 这条歪路）")
+  }
+  {
+    // ⚠ 全仓找 `lostClass` 的**写**（`lostClass:` 后跟表达式）落在哪些文件
+    const walk = (dir) => {
+      const out = []
+      let ents = []
+      try { ents = readdirSync(dir, { withFileTypes: true }) } catch { return out }
+      for (const ent of ents) {
+        const p = join(dir, ent.name)
+        if (ent.isDirectory()) out.push(...walk(p))
+        else if (ent.name.endsWith('.ts')) out.push(p)
+      }
+      return out
+    }
+    const files = walk(join(root, 'src'))
+    const writers = []
+    for (const f of files) {
+      let src = ''
+      try { src = readFileSync(f, 'utf8') } catch { continue }
+      const code = stripCommentsKeepLines(src)
+      // 赋值/构造点：`lostClass: gone? X : Y` 或 `lostClass = ...`（⚠ 不把**类型**声明算进来）
+      if (/lostClass\s*:\s*(?!LostClass)/.test(code) || /\.lostClass\s*=/.test(code)) {
+        writers.push(f.slice(root.length + 1))
+      }
+    }
+    // 允许的落点：`orch-state.ts`（`classifyPending` 里那一处）+ `orchestrator.ts`（重挂时可透传）
+    const allowed = ['src/server/orch-state.ts']
+    const unexpected = writers.filter((f) => !allowed.includes(f))
+    if (unexpected.length > 0) {
+      bad(`D3' 档位在**意外的文件**里被写：${unexpected.join(', ')}`
+        + `（允许 = ${allowed.join(', ')}；⛔ 不许另写 sidecar、⛔ 不许借 \`error\` 字段）`)
+    } else if (!writers.includes('src/server/orch-state.ts')) {
+      bad("D3' 找不到档位的写入点 —— `classifyPending` 应当逐条写 `lostClass`")
+    } else {
+      ok(`D3' ✓ 档位写入点只有 \`src/server/orch-state.ts\``
+        + `· **核了 ${files.length} 个 .ts 文件 / ${writers.length} 个写入点**`)
+    }
   }
 
   // 累计丢失必须**保留**（否则第二次重载又变回 0）
@@ -1358,6 +1457,246 @@ const orchCode = stripComments(orchSrc)
         }
       } finally {
         try { rmSync(jRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+      }
+    }
+  }
+}
+
+// ── K. **重载后先核再判**（2026-10-18 第 2 轮 · `UD-137` 裁定 3）—— 真跑函数 ──────
+//
+// ⚠ **它守的是哪条缺陷**（`ROOT-CAUSE.md` §三；`FIX-REPORT.md` 阻断三）：
+//   改前接手块是 `markLost(file, () => false)` ⇒ 盘上任何 pending **一律判死、不重挂**
+//   ⇒ 「它做完了、回传没回来」与「它还在跑」被压成**同一个结果：都不再等**。
+//
+// ⚠ **为什么必须"真跑"**（同 F/G/H/I/J）：本组保的是**行为** ——
+//   "仍在跑的要重挂、已空闲的不许重挂"这两条是运行时才成立的性质；
+//   源码里 `reattach` / `lostClass` 字样还在、而实现被掏空，文本断言**照样 PASS**。
+//   ⇒ 这里**装真的 orchestrator 模块**，喂一份**假的运行态文件 + 假的会话状态**，读它真跑出来的结果。
+//
+// ⚠ ⚠ **成对三条**（用户裁定：⛔ 不许改回"一条禁令"）：
+//   · **K-a 正向**：目标仍在跑 ⇒ **必须重挂**（该条 **不许** 被判 lost）；
+//   · **K-b 反向**：目标已空闲 ⇒ **必须不重挂**（重挂数 = 0）+ 判 lost **且档位可分辨**；
+//   · **K-c 反证**：把重挂那几行去掉 ⇒ **K-a 必须 FAIL**（原始输出见回报件）。
+//
+// ⚠ 判「不算放宽分辨力」的依据：旧的是**一条禁令**（禁一切 `watches.set`），
+//   新的是**两条方向相反的要求 + 一个反证** ⇒ 覆盖面变宽。
+//   ⚠ **前提**：重挂**只对仍在跑的目标**做 —— K-b 钉的就是这个前提，缺它就不是收窄而是放宽。
+{
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { pathToFileURL } = await import('node:url')
+
+  let kOrchMod
+  let dBusMod
+  try {
+    kOrchMod = await import(pathToFileURL(join(root, 'src', 'modules', 'orchestrator.ts')).href)
+    dBusMod = await import(pathToFileURL(join(root, 'src', 'modules', 'bus.ts')).href)
+  } catch (e) {
+    bad(`K 无法加载 orchestrator / bus 模块（${String(e?.message ?? e)}）⇒ 行为断言失去基准（不按通过处理）`)
+  }
+
+  if (kOrchMod !== undefined && dBusMod !== undefined) {
+    let kRoot
+    try {
+      kRoot = mkdtempSync(join(tmpdir(), 'hob-kcheck-'))
+    } catch (e) {
+      bad(`K 造不出临时现场（${String(e?.message ?? e)}）⇒ 行为断言失去基准（不按通过处理）`)
+    }
+
+    if (kRoot !== undefined) {
+      try {
+        /** 起一个最小宿主并喂一份运行态文件；`statuses` = 目标 → 'running' | 'idle' | undefined。 */
+        const mountWith = async (opts) => {
+          // ⚠ **每个现场一个独立的 home**：`scanStateFiles()` 会扫 home 下**全部**子目录，
+          //   共用 home 会让上一现场的 lost 累计进这一现场（实测踩过一次：
+          //   K-b2 读到 idle:2 / unknown:2 而不是 1/1 —— 那不是缺陷，是现场没隔离）。
+          const home = mkdtempSync(join(kRoot, `${opts.wsName}-home-`))
+          const wsDir = join(home, opts.wsName)
+          const runtimeDir = join(wsDir, 'runtime')
+          mkdirSync(runtimeDir, { recursive: true })
+          writeFileSync(join(runtimeDir, 'orch-watches.json'), JSON.stringify({
+            version: 1, updatedAt: 1, handoffs: [], lost: [],
+            pending: opts.pending,
+          }, null, 2), 'utf8')
+
+          const now = { running: 1792250000000, idle: 1792250100000 }
+          const sessions = { get: () => undefined, list: () => [], flush: async () => true }
+          const agents = {
+            currentInitiator: () => undefined,
+            get: (id) => {
+              const st = opts.statuses[id]
+              return st === undefined ? undefined : { status: st }
+            },
+          }
+          const provided = {}
+          const logger = { debug() {}, warn() {}, info() {} }
+          const kCtx = {
+            sessions, agents, logger,
+            // ⚠ `loader` 只给一个形状：`declaredLedgerHome` 深搜 `entries[].options…ledgerHome`。
+            get: (k) => (k === 'sessions' ? sessions
+              : k === 'agents' ? agents
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                  : undefined),
+            provide: (k, v) => { provided[k] = v },
+            effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
+            inject: (_deps, cb) => cb(kCtx),
+            on: () => {},
+          }
+          kOrchMod.apply(kCtx)
+          const orch = provided.hobOrchestrator
+          const s = orch?.status?.({ wsRoot: wsDir })
+          // ⚠ 渲染是 **async** 的（`execute` 返回 Promise）：不 await 会拿到
+          //   `[object Promise]` ⇒ 渲染断言**恒假**（实测踩过：idle 行在位=false）。
+          const rendered = orch === undefined ? '' : String(
+            await kOrchMod.createHobOrchTools(orch).status.execute({}, {
+              agent: { session: { header: { cwd: wsDir } } },
+            }),
+          )
+          return { orch, status: s, rendered, wsDir, runtimeDir, now }
+        }
+
+        // ── K-a ⭐ **正向：仍在跑 ⇒ 必须重挂** ────────────────────────────
+        //   ⚠ 这一条是**负向对拍的靶子**：把重挂那几行去掉 ⇒ 它必须变成 FAIL。
+        {
+          const h = await mountWith({
+            home: kRoot, wsName: 'ws-a',
+            pending: [{ target: 'sess-running', watcher: 'hob', at: 1792250000000, sawRunning: true, task: 'K-a' }],
+            statuses: { 'sess-running': 'running' },
+          })
+          const ws = Array.isArray(h.status?.watches) ? h.status.watches : []
+          const hit = ws.find((w) => w.target === 'sess-running')
+          const lostIds = (Array.isArray(h.status?.lostByClass) ? h.status.lostByClass.running : 0)
+          if (hit === undefined) {
+            bad('K-a 【必须重挂】目标**仍在跑**却没有被重新挂上 —— 这一档不该判死'
+              + `（实测 watches=${JSON.stringify(ws.map((w) => w.target))}，`
+              + `lostByClass=${JSON.stringify(h.status?.lostByClass)}）`)
+          } else if (h.status?.lostPending !== 0) {
+            bad(`K-a 仍在跑的那条被**同时**记进了 lost（lostPending=${h.status?.lostPending}）`
+              + ' —— 重挂与判死⛔ 不许同时发生')
+          } else {
+            ok('K-a ✓ 正向：目标**仍在跑** ⇒ **重新挂上**（watches 含该条、且 ⛔ 未进 lost）')
+            void lostIds
+          }
+        }
+
+        // ── K-b ⭐ **反向：已空闲 ⇒ 必须不重挂** ──────────────────────────
+        //   ⚠ 这一条钉的是"重挂只对仍在跑的目标做"这个**前提** —— 缺它，K-a 就成了放宽。
+        {
+          const h = await mountWith({
+            home: kRoot, wsName: 'ws-b',
+            pending: [{ target: 'sess-idle', watcher: 'hob', at: 1792250100000, sawRunning: true, task: 'K-b' }],
+            statuses: { 'sess-idle': 'idle' },
+          })
+          const ws = Array.isArray(h.status?.watches) ? h.status.watches : []
+          const reattached = ws.some((w) => w.target === 'sess-idle')
+          const idleCount = h.status?.lostByClass?.idle
+          if (reattached) {
+            bad('K-b 【必须不重挂】目标**已空闲**却被重新挂上 —— 这会留一个永不结算的 watch'
+              + '（命中"同目标至多一条未结算"闸门 ⇒ 该会话永久不能再派）')
+          } else if (idleCount !== 1) {
+            bad(`K-b 已空闲的那条未按档位记成 lost：lostByClass.idle=${JSON.stringify(idleCount)}`
+              + `（期望 1），实测 ${JSON.stringify(h.status?.lostByClass)}`)
+          } else {
+            ok('K-b ✓ 反向：目标**已空闲** ⇒ **不重挂**（watches 为空）+ 判 lost **且档位=idle**')
+          }
+        }
+
+        // ── K-b2 **两档在状态行里必须可分辨**（用户原话：不许混成一个计数）──
+        {
+          const h = await mountWith({
+            home: kRoot, wsName: 'ws-b2',
+            pending: [
+              { target: 'sess-run-2', watcher: 'hob', at: 1792250000000, sawRunning: true },
+              { target: 'sess-idle-2', watcher: 'hob', at: 1792250100000, sawRunning: true },
+              { target: 'sess-gone-2', watcher: 'hob', at: 1792250200000, sawRunning: true },
+            ],
+            statuses: { 'sess-run-2': 'running', 'sess-idle-2': 'idle' },
+          })
+          const c = h.status?.lostByClass ?? {}
+          const okShape = c.running === 0 && c.idle === 1 && c.unknown === 1
+          // 状态行原文里必须**分开出现**两档的说明（且都不是那个总数行的复述）
+          const txt = String(h.rendered)
+          const hasIdleLine = txt.includes('已跑完、回传没回来')
+          const hasUnknownLine = txt.includes('判不出（目标状态读不到）')
+          if (!okShape) {
+            bad(`K-b2 档位计数不对：实测 ${JSON.stringify(c)}，期望 {running:0, idle:1, unknown:1}`
+              + '（仍在跑的重挂成功 ⇒ 不进 lost；已空闲 ⇒ idle；会话没了 ⇒ unknown）')
+          } else if (!hasIdleLine || !hasUnknownLine) {
+            bad('K-b2 状态行**没有分开报**两档（用户要求"两类不许混成一个计数"）'
+              + `：idle 行在位=${hasIdleLine} · unknown 行在位=${hasUnknownLine}`)
+          } else {
+            ok('K-b2 ✓ 两档在状态行里**分开可辨**（idle 与 unknown 各一行、各有追回提示；'
+              + 'running 异常档另有独立行）· 实测计数 ' + JSON.stringify(c))
+          }
+        }
+
+        // ── K-d **派发成功 ⇒ 状态行里必有该条（目标 + 登记时刻）** ─────────
+        //   ⚠ 这是「写发合一」**唯一可机检**的那半边（裁定 1 取 B）。
+        //   ⚠ 用**真 dispatch**（经 bus 的 deliver）造一条 watch，再读渲染行。
+        {
+          const dHome = mkdtempSync(join(kRoot, 'ws-d-home-'))
+          const wsDir = join(dHome, 'ws-d')
+          mkdirSync(wsDir, { recursive: true })
+          const target = 'sess-d-1'
+          const atBefore = Date.now()
+          const session = { id: target, header: { agentPreset: 'standard', cwd: wsDir }, log: [] }
+          const agent = { status: 'idle', followup: () => {}, steer: () => {}, inject: () => {}, ctx: {}, session }
+          const sessions = { get: (id) => (id === target ? session : undefined), list: () => [session], flush: async () => true }
+          const agents = { currentInitiator: () => undefined, get: (id) => (id === target ? agent : undefined) }
+          const logger = { debug() {}, warn() {}, info() {} }
+          // ⚠ `dispatch` 走的是 **`hobBus.deliver`**（不经工具层）⇒ 必须装**真的** bus 模块，
+          //   否则拿到的是 `session bus unavailable`（那不是缺陷，是现场没装总线）。
+          const dProvided = {}
+          const dBusCtx = {
+            sessions, agents, logger,
+            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+            provide: (k, v) => { dProvided[k] = v },
+            effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
+            inject: (_deps, cb) => cb(dBusCtx),
+          }
+          dBusMod.apply(dBusCtx, {
+            spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }),
+          })
+          const dBus = dProvided.hobBus
+          const provided = {}
+          const dCtx = {
+            sessions, agents, logger,
+            get: (k) => (k === 'sessions' ? sessions
+              : k === 'agents' ? agents
+                : k === 'hobBus' ? dBus
+                  : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: dHome } } }] }
+                    : undefined),
+            provide: (k, v) => { provided[k] = v },
+            effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
+            inject: (_deps, cb) => cb(dCtx),
+            on: () => {},
+          }
+          kOrchMod.apply(dCtx)
+          const orch = provided.hobOrchestrator
+          const d = await orch.dispatch(target, 'do it', { self: 'session-k-self' })
+          const tools = kOrchMod.createHobOrchTools(orch)
+          const rendered = String(await tools.status.execute({}, {
+            agent: { session: { header: { cwd: wsDir } } },
+          }))
+          const atAfter = Date.now()
+          const w = (orch.status({ wsRoot: wsDir }).watches ?? []).find((x) => x.target === target)
+          const hasTarget = rendered.includes(`target=${target}`)
+          const hasStamp = /登记=\d{4}\/\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}:\d{2}/.test(rendered)
+          const stampInWindow = w !== undefined && w.at >= atBefore && w.at <= atAfter
+          if (d?.ok !== true) {
+            bad(`K-d 真 dispatch 没成功（${JSON.stringify(d)}）⇒ 本断言失去基准（不按通过处理）`)
+          } else if (!hasTarget || !hasStamp) {
+            bad('K-d 派发成功但状态行里**没有**该条记录（目标 + 登记时刻）'
+              + `：target 行在位=${hasTarget} · 登记时刻行在位=${hasStamp}`)
+          } else if (!stampInWindow) {
+            bad('K-d 状态行里的登记时刻不在本次派发的时间窗内（判据不可指认）')
+          } else {
+            ok('K-d ✓ 派发成功 ⇒ 状态行里有该条：**目标 + 登记时刻**'
+              + `（target=${target} · 登记时刻落在 [${atBefore},${atAfter}] 内）`)
+          }
+        }
+      } finally {
+        try { rmSync(kRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
       }
     }
   }

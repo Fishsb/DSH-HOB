@@ -61,12 +61,14 @@ import {
   ORCH_STATE_FILENAME,
   ORCH_STATE_SUBDIR,
   clearHandoffs,
+  countLostByClass,
   ensureRuntimeIgnored,
   markLost,
   orchStateFileOf,
   readOrchState,
   readOrchStateDetailed,
   writePending,
+  type LostClass,
   type PersistedHandoff,
   type PersistedWatch,
   type StateReachability,
@@ -139,6 +141,22 @@ export interface OrchStatus {
    *   没有它，重载后的读数与"从来没派过"完全一样。
    */
   lostPending: number
+  /**
+   * **按档位分开的累计丢失数**（2026-10-18 第 2 轮 · `UD-137` 裁定 3 新增）。
+   *
+   * ⚠ ⚠ 用户原话：「**两类不许混成一个 lost 计数** —— 用户要能一眼看出
+   *   '这条真丢了'还是'这条其实做完了、去看看'」。
+   * ⇒ `lostPending` 仍然是**总数**（既有行一字不改，见 `check:orch` 的 C 组），
+   *   本字段是**它的拆解**，让状态行能分开报：
+   *   · `idle`    —— 重载时目标**已空闲（跑完了）** ⇒ 真丢了，但**可追回**
+   *                  （去那个会话看它最近一轮）；
+   *   · `unknown` —— **判不出**目标状态 ⇒ 既有数据都落这一档
+   *                  （⚠ 旧文件没有档位字段，⛔ 不许当成 `idle`）；也含"会话没了"的情形；
+   *   · `running` —— 重载时目标**仍在跑**却仍进了 lost ⇒ **异常路径**（重挂失败）。
+   *                  ⚠ 正常情况下它应当恒为 0（重挂成功的不会进 lost）；
+   *                  非 0 就说明"先核再判"那一步出了问题 ⇒ 它必须**单独可见**，不许并进前两档。
+   */
+  lostByClass: Record<LostClass, number>
   /**
    * **待投递**的中间态（2026-10-10 新增）—— "写了/建了，但还没投出去"。
    *
@@ -495,22 +513,70 @@ export function apply(ctx: any): void {
     let relaysBlocked = 0
 
     // ══════════════════════════════════════════════════════════════════
-    // 重载后接手：把**上一代**留下的未结算派发判为"丢失"
+    // 重载后接手：**先核再判**（2026-10-18 第 2 轮 · `UD-137` 裁定 3）
     // ══════════════════════════════════════════════════════════════════
     // ⚠ 此刻 `watches` 一定是**空的**（本回调刚建它）⇒ 落盘里任何 `pending`
     //   都是**上一代**留下的（见 `markLost` 的 `known` 判据注释）。
-    // ⚠ 这一段**不写 watches**：只记账 + 报告。理由（为什么"不自动续上"）
-    //   写在本文件顶部的修复段注释里 —— 简言之，`running → idle` 是事件，
-    //   目标若在重载前就跑完则永不再来，续上会留一个**永不结算**的 watch。
+    //
+    // ── 旧口径（改前）与它为什么被撤 ────────────────────────────────────
+    //   改前：`markLost(file, () => false)` ⇒ 盘上 pending **一律判死**、**不重挂**。
+    //   理由原文（本文件旧注释）：「`running → idle` 是事件，目标若在重载前就跑完则
+    //   永不再来，续上会留一个**永不结算**的 watch」。
+    //   ⚠ ⚠ **那条理由只描述"已经跑完"这一档** —— 它把两种情况压成了同一个结果。
+    //
+    // ── 新口径（分两档，⛔ 不许混）────────────────────────────────────────
+    //   · 目标**仍在跑** ⇒ **重新挂上**（`r.reattach` → `watches.set`），继续等它跑完；
+    //     ⚠ 安全前提：它本来就在等同一件事，重挂**不制造假 watch**，
+    //       且仍受 `dispatch` 的「同目标至多一条未结算」闸门约束。
+    //   · 目标**已空闲** ⇒ 记 lost（档位 `'idle'`）+ 状态行给追回提示；
+    //     ⚠ 机制上补不回来：那一刻的事件已经没了，只能靠人去那个会话看。
+    //   · **判不出** ⇒ 记 lost（档位 `'unknown'`），⛔ 不猜"它在跑"。
+    //
+    // ⚠ `statusOf` 的读法 = `agents.get(target)?.status`：与本文件 `dispatch` 里
+    //   读目标状态的**同一个函数**（`:742` 一带），⛔ 不另写一份。
     let lostLatch: PersistedWatch[] = []
+    /** 本次**重挂**的（供日志与状态行读数）。 */
+    let reattachedLatch: PersistedWatch[] = []
     try {
       for (const file of scanStateFiles(svcCtx)) {
-        const r = markLost(file, () => false)
+        const r = markLost(file, () => false, (target) => {
+          try {
+            const a = agents.get?.(target)
+            if (a === undefined) return undefined          // 会话没了 ⇒ 判不出
+            const st = a?.status
+            if (st === 'running') return 'running'
+            if (st === 'idle') return 'idle'
+            return undefined                                // 别的状态一律判不出
+          } catch {
+            return undefined
+          }
+        })
+        // ── ① 仍在跑 ⇒ **必须重挂**（不是"可以不挂"）─────────────────────
+        for (const w of r.reattach) {
+          watches.set(w.target, {
+            target: w.target,
+            watcher: w.watcher,
+            ...(w.round === undefined ? {} : { round: w.round }),
+            ...(w.task === undefined ? {} : { task: w.task }),
+            at: w.at,
+            sawRunning: w.sawRunning,
+            reported: false,
+            ...(w.error === undefined ? {} : { error: w.error }),
+          })
+          reattachedLatch = [...reattachedLatch, w]
+        }
         if (r.lost.length > 0) {
           lostLatch = [...lostLatch, ...r.lost]
           svcCtx.logger?.warn?.(
-            `[${name}] 重载后发现 ${r.lost.length} 条未结算派发丢失（${file}）：`
-            + r.lost.map((w) => `${w.target}${w.round === undefined ? '' : `(第${w.round}轮)`}`).join(', '),
+            `[${name}] 重载后判定 ${r.lost.length} 条未结算派发丢失（${file}）：`
+            + r.lost.map((w) => `${w.target}${w.round === undefined ? '' : `(第${w.round}轮)`}`
+              + `[${w.lostClass ?? 'unknown'}]`).join(', '),
+          )
+        }
+        if (r.reattach.length > 0) {
+          svcCtx.logger?.info?.(
+            `[${name}] 重载后**重新挂上** ${r.reattach.length} 条仍在跑的派发（${file}）：`
+            + r.reattach.map((w) => `${w.target}@${w.at}`).join(', '),
           )
         }
       }
@@ -527,15 +593,30 @@ export function apply(ctx: any): void {
      *   `hob_orch_status` 会在**第二次重载后**又变回"从来没派过"——
      *   正是本批要修的那个失败模式，只是晚了一代。
      *   ⇒ 报**盘上累计**（`lost`），它在 `writePending` 里被显式保留。
+     *
+     * ⚠ ⚠ **2026-10-18 第 2 轮**：除了总数，还要**按档位**分别统计 ——
+     *   用户原话「两类**不许混成一个 lost 计数**」⇒ 状态行要分开报。
+     *   分档实现点只有 `countLostByClass` 一处（⛔ 不在这里再写 filter）。
      */
     let lostCount = 0
+    /** 按档位分开的累计（`running` / `idle` / `unknown`）。 */
+    let lostByClass: Record<'running' | 'idle' | 'unknown', number> = { running: 0, idle: 0, unknown: 0 }
     /** 重新统计盘上累计丢失（启动时与每次落盘后各跑一次）。 */
     const refreshLostCount = (): void => {
       let total = 0
+      const acc: Record<'running' | 'idle' | 'unknown', number> = { running: 0, idle: 0, unknown: 0 }
       try {
-        for (const file of scanStateFiles(svcCtx)) total += readOrchState(file).lost.length
+        for (const file of scanStateFiles(svcCtx)) {
+          const s = readOrchState(file)
+          total += s.lost.length
+          const byClass = countLostByClass(s.lost)
+          acc.running += byClass.running
+          acc.idle += byClass.idle
+          acc.unknown += byClass.unknown
+        }
       } catch { /* 读不到就当 0；不因诊断用途让模块起不来 */ }
       lostCount = total
+      lostByClass = acc
     }
     refreshLostCount()
 
@@ -822,6 +903,7 @@ export function apply(ctx: any): void {
           relaysDone,
           relaysBlocked,
           lostPending: lostCount,
+          lostByClass: lostByClass,
           // ⚠ 现读盘（不缓存）：记账在别的模块做，缓存会滞后 —— 见 `readHandoffs` 注释。
           handoffs: readHandoffs(),
           // ⚠ ⚠ **可达性**（第 247 轮）：⚠ 它与 `handoffs` **同一次读**吗？
@@ -846,6 +928,7 @@ export function apply(ctx: any): void {
           relaysDone,
           relaysBlocked,
           lostPending: lostCount,
+          lostByClass: lostByClass,
           // ⚠ 与 `status()` 同源同值（两处返回**同一个形状**，调用方不必分情况）。
           handoffs: readHandoffs(),
           reachability: reachabilityFor(opts?.wsRoot),
@@ -1043,8 +1126,24 @@ export function createHobOrchTools(orch: HobOrchestrator): {
     },
     async execute(_args: unknown, exec: any): Promise<string> {
       const s = orch.status({ wsRoot: selfWorkspaceRootOf(exec) })
+      /**
+       * 把登记时刻渲染成**可指认**的一串（2026-10-18 第 2 轮 · 裁定 1 取 B）。
+       *
+       * ⚠ 为什么是它而不是"轮次"：裁定 1 把读数口径改成「**目标 + 登记时刻**」——
+       *   因为 `write_hob` 的 `dispatchTo` 那条路**拿不到轮次**
+       *   （`tools.ts` 的参数表里没有 `round`，`write-delivery.ts` 也不传），
+       *   原口径在那条路上**恒假**；恒假的判据会把真漏派一起埋掉。
+       * ⚠ 与 `handoffs` 那一列**同款口径**（本地时间串，人读得懂、且不依赖毫秒对齐）。
+       */
+      const stampOf = (at: number): string => new Date(at).toLocaleString('zh-CN', { hour12: false })
       const lines = s.watches.map((w) => '- ' + [
         `target=${w.target}`,
+        // ── **登记时刻**（2026-10-18 第 2 轮新增）──────────────────────────
+        //   ⚠ 这一列是「写发合一」**唯一可机检**的那半边：派发成功 ⇒ 状态行里
+        //     必须有该条记录（目标 + 登记时刻）。给不出 ⇒ 视同未派。
+        //   ⚠ 「**同轮**给出读数」那半边**不可机检**（回复不在文件系统里）——
+        //     ⛔ 不许假装它能，那半边靠契约与自查。
+        `登记=${stampOf(w.at)}`,
         `watcher=${w.watcher || '(无)'}`,
         // ── 目标预设（第 129 轮新增 · 判据 4）──────────────────────────────
         //   ⚠ 值由 `status()` **现读**填充（见 `targetPresetOf`）；这里只渲染，
@@ -1093,13 +1192,43 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         // ── ⚠ 以下是**本批新增的行**（原有行一字未改、未删）─────────────
         //   它们存在的唯一理由：宿主重载会把内存里的 watch 抹掉，
         //   没有这两行，重载后的读数与"从来没派过"**完全一样**。
+        //
+        //   ⚠ ⚠ **2026-10-18 第 2 轮（`UD-137` 裁定 3）**：用户原话
+        //     「两类**不许混成一个 lost 计数**」⇒ 下面按 `lostByClass` **分成两行**，
+        //     且各自带**它属哪一档**的说明与**怎么追回**。⛔ 不许再只报一个总数。
+        //   ⚠ 三档的来源只有 `countLostByClass` 一处（分档实现点不写第二遍）。
         ...(s.lostPending === 0
           ? []
           : [
-            `⚠ 重载丢失：${s.lostPending} 条派发因宿主重载而丢失（插件重新就绪时判出）`,
-            '  ↳ 它们**已经不在等**：`running → idle` 是事件而非可轮询状态，'
-            + '目标若在重载前就跑完，那条事件永不再来。',
-            '  ↳ 需要结果就**重新派一次**（`hob_dispatch`），或直接去那个会话问/看它的记录。',
+            `⚠ 重载丢失：${s.lostPending} 条派发不再在等（插件重新就绪时逐条核过目标状态）`,
+            // ① **已空闲（跑完了）** —— 真丢了，但可追回。
+            ...(s.lostByClass.idle === 0
+              ? []
+              : [
+                `  ↳ ① **已跑完、回传没回来：${s.lostByClass.idle} 条**`
+                  + '（重载时目标**已空闲** ⇒ 它做完了，只是那一刻的事件没了）',
+                '     ✅ **可追回**：去那个会话看它最近一轮的记录，就是它的产出；'
+                  + '要它继续就重新派一次（`hob_dispatch`）。',
+              ]),
+            // ② **判不出** —— 不是"真丢了"，也不是"做完了"。
+            ...(s.lostByClass.unknown === 0
+              ? []
+              : [
+                `  ↳ ② **判不出（目标状态读不到）：${s.lostByClass.unknown} 条**`
+                  + '（会话没了 / 状态读不到 —— ⚠ 这一档**不是结论**）',
+                '     ⚠ 不能当作"它还在跑"，也不能当作"它做完了"：'
+                  + '去那个会话看有没有产出，没有就重新派。',
+              ]),
+            // ③ **异常路径** —— 仍在跑却没重挂成功。正常情况下应为 0。
+            ...(s.lostByClass.running === 0
+              ? []
+              : [
+                `  ↳ ③ ⚠⚠ **异常：${s.lostByClass.running} 条重载时仍在跑却没重挂上**`,
+                '     ⛔ 这不是正常丢失 —— 说明"先核再判"那一步出了问题，'
+                  + '这几条的回传**不会再来**。',
+              ]),
+            '  ↳ ⚠ 机制边界：若"跑完"发生在重载**之前**，那一跳事件已经没了 ⇒ '
+              + '机制上补不回来，只能靠上面 ① 的"去会话里看"。',
           ]),
         // ── ⚠ 以下是 2026-10-10 **新增的行**（原有行一字未改、未删）──────────
         //   它们存在的唯一理由：`watches` 只在**投递成功之后**才登记 ⇒

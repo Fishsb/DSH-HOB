@@ -30,13 +30,27 @@
  *   ⚠ `runtime/` 自带 `.gitignore`（内容 `*`）⇒ 不会被账本仓跟踪 ——
  *     运行态**不进账本历史**（任务书 §2.1 第 4 条要求同批处理忽略）。
  *
- * ══ 为什么**不**做成"重载后自动续上 watch" ═════════════════════════════
- *   `agent/status` 的 `running → idle` 是**事件**、不是可轮询的状态：
- *   目标会话若在重载**之前**就已跑完，那条跳变**永远不会再来**。
- *   自动续上会留下一个**永不结算**的 watch —— 比丢掉更坏：
- *   它会命中 `dispatch` 的「同目标至多一条未结算」闸门，
- *   让该会话**永久不能再派**（另一个方向的坏掉）。
- *   ⇒ 本模块只**如实记账 + 报告 + 唤醒**，**不**替派活方决定重派。
+ * ══ 重载后怎么处置：**先核再判**（2026-10-18 第 2 轮 · `UD-137` 裁定 3）══════
+ *
+ *   ⚠ 旧口径（2026-10-09 起）是**一律判死**：盘上任何 `pending` ⇒ 当上一代残留 ⇒
+ *     记 `lost`、不重挂。§理由原文：`running → idle` 是**事件**、不是可轮询的状态，
+ *     目标若在重载**之前**就跑完，那条跳变**永远不会再来** ⇒ 重挂会留一个**永不结算**的
+ *     watch ⇒ 命中 `dispatch` 的「同目标至多一条未结算」闸门 ⇒ 该会话**永久不能再派**。
+ *
+ *   ⚠ ⚠ **那条理由只在"不区分目标状态"时才成立**：它描述的全是"已经跑完"这一档。
+ *     ⇒ 新版**按目标此刻的状态分两档**（判据由调用方给，见 `markLost` 的 `classify`）：
+ *       · **仍在跑**   ⇒ `'running'`      ⇒ **重新挂上**、继续等它跑完，回传照常送到；
+ *       · **已空闲**   ⇒ `'idle'`         ⇒ 记 `lost`，**但必须说清属于这一档** + 给追回提示；
+ *       · **判不出**   ⇒ `'unknown'`      ⇒ **按旧的保守方向处理**（记 lost、不重挂）——
+ *                        ⚠ 拿不到状态时不许猜"它在跑"，猜错就是上面那个"永久不能再派"。
+ *
+ *   ⚠ **两类⛔ 不许混成一个 `lost` 计数**（用户 2026-10-18 原话）：档位**逐条**记在
+ *     `lost[].lostClass` 上（本文件是它的**唯一存处**，⛔ 不许另写 sidecar、⛔ 不许借 `error`）。
+ *     见 {@link LostClass} / {@link LostEntry}。
+ *
+ *   ⚠ **重挂不是"续上就完事"**：重新挂上的那条必须**接着等同一件事**（`reported=false`），
+ *     且它仍受 `dispatch` 的同目标闸门约束 —— 这正是"仍在跑"这一档可以安全重挂的原因：
+ *     它不是"补一个假 watch"，而是"那条记录本来就还在等"。
  *
  * ══ 写入纪律（镜像 `server/hob-write.ts`）═════════════════════════════
  *   · **原子写**（同目录 tmp → rename），避免半截 JSON；
@@ -59,7 +73,31 @@ export const ORCH_STATE_FILENAME = 'orch-watches.json'
 /** 结构版本（将来改结构时用它判新旧，而不是猜字段）。 */
 export const ORCH_STATE_VERSION = 1
 
-/** 落盘的一条"未结算派发"（是 `Watch` 的可序列化子集 + 工作区归属）。 */
+/**
+ * **丢失档位**（2026-10-18 第 2 轮 · `UD-137` 裁定 3 新增）。
+ *
+ * ⚠ ⚠ **用户原话**：「两类**不许混成一个 lost 计数** —— 用户要能一眼看出
+ *   '这条真丢了'还是'这条其实做完了、去看看'」。
+ * ⇒ 所以在**落盘记录上逐条**带一个档位，⛔ 不是只加一个总数。
+ *
+ * 三档（第三档是**判不出**，⛔ 不许并进前两档）：
+ * · `'running'`  —— 重载时目标**仍在跑** ⇒ **必须重新挂上**（不该走到 lost 里）；
+ *                   ⚠ 它出现在 `lost` 里只说明一处**异常路径**（重挂失败），
+ *                   故它也有自己的档位，⛔ 不与 `'idle'` 合并。
+ * · `'idle'`     —— 重载时目标**已空闲（跑完了）** ⇒ 真 lost，**但可追回**
+ *                   （去那个会话看它最近一轮）。⚠ 机制补不回来：那一刻的事件已经没了。
+ * · `'unknown'`  —— **判不出**目标状态 ⇒ 按旧的保守方向处理（记 lost、不重挂）。
+ *                   ⚠ 这一档**不是**"真丢了"，也**不是**"做完了" —— 它是**看不清**，
+ *                   混进任何一档都是把不确定性说成结论。
+ */
+export type LostClass = 'running' | 'idle' | 'unknown'
+
+/**
+ * 落盘的一条"未结算派发"（是 `Watch` 的可序列化子集 + 工作区归属）。
+ *
+ * ⚠ `lostClass` 只在**进入 `lost`** 时被写（`pending` 里的记录**没有**这个字段）——
+ *   它是"**为什么被判丢失**"的档位，只有被判丢失时才存在。
+ */
 export interface PersistedWatch {
   /** 被派发的会话（执行方）。 */
   target: string
@@ -77,6 +115,15 @@ export interface PersistedWatch {
   error?: string
   /** 这条记录属于哪个**工作区根**（决定了它落在哪个账本目录下）。 */
   wsRoot?: string
+  /**
+   * **被判丢失的档位**（2026-10-18 第 2 轮 · `UD-137` 裁定 3）。
+   *
+   * ⚠ 只有**进了 `lost`** 的记录才带它；`pending` 里带它没有意义（还没判）。
+   * ⚠ 向后兼容：旧文件没有这个字段 ⇒ 读成 `'unknown'`
+   *   （⚠ 旧记录**当时确实没判过状态**，读成 `'unknown'` 是**如实**的，
+   *     ⛔ 不许读成 `'idle'` —— 那等于替旧数据编一个它没有的结论）。
+   */
+  lostClass?: LostClass
 }
 
 /**
@@ -244,8 +291,19 @@ function asWatch(v: unknown): PersistedWatch | undefined {
   if (typeof o.task === 'string') out.task = o.task
   if (typeof o.error === 'string') out.error = o.error
   if (typeof o.wsRoot === 'string' && o.wsRoot !== '') out.wsRoot = o.wsRoot
+  // ── **丢失档位**（2026-10-18 第 2 轮 · `UD-137` 裁定 3 / D1）────────────
+  //   ⚠ 这就是 D1 的"单一来源"落点：档位**只**从这里进内存，⛔ 不另写 sidecar。
+  //   ⚠ 判据必须是**集合内**（同 `asHandoff` 的 `kind` 纪律）：一个拼错的档位
+  //     （如 `'runnning'`）若放行，会漂到状态行里，表现为"说了一档、其实是脏值"。
+  //   ⚠ 不在集合内 ⇒ **不填**（= 调用方读成 `'unknown'`），⛔ 不许猜成某一档。
+  if (typeof o.lostClass === 'string' && (LOST_CLASSES as readonly string[]).includes(o.lostClass)) {
+    out.lostClass = o.lostClass as LostClass
+  }
   return out
 }
+
+/** 丢失档位的**运行时集合**（{@link LostClass} 的同源副本，供收窄时逐值判）。 */
+const LOST_CLASSES = ['running', 'idle', 'unknown'] as const
 
 /** 把数组字段读成 `PersistedWatch[]`（逐条收窄，坏的丢掉）。 */
 function asWatchList(v: unknown): PersistedWatch[] {
@@ -407,8 +465,15 @@ export function watchKey(w: Pick<PersistedWatch, 'target' | 'at'>): string {
 
 /** {@link markLost} 的结果。 */
 export interface MarkLostResult {
-  /** 本次**新发现**的丢失（上一代留下、这一代不认识的）。 */
+  /** 本次**判为丢失**的（已空闲 / 判不出 / 无 statusOf 时全部）。⚠ 逐条带 `lostClass`。 */
   lost: PersistedWatch[]
+  /**
+   * 本次**必须重新挂上**的（2026-10-18 第 2 轮新增）——
+   * 目标在重载时**仍在跑** ⇒ 它本来还在等，⛔ 不该判死。
+   * ⚠ 这些**不进 `lost`**、也**不进 `pending`**：调用方要把它们登记回内存的 watches，
+   *   再由 `writePending` 落成 `pending`（否则盘上会出现"既不在等也丢了"的悬空记录）。
+   */
+  reattach: PersistedWatch[]
   /** 落盘后的完整状态（即使没新丢失也返回，便于调用方读计数）。 */
   state: OrchStateFile
   /** 是否真的写盘了。 */
@@ -416,7 +481,46 @@ export interface MarkLostResult {
 }
 
 /**
- * 把落盘里**这一代不认识**的 `pending` 判为"丢失"，挪进 `lost` 并落盘。
+ * 目标状态的**判定入口**（由调用方给，本模块**不碰宿主**）。
+ *
+ * @returns `'running'` = 仍在跑（⇒ 重挂）· `'idle'` = 已空闲（⇒ 记 lost）
+ *   · `undefined` = **判不出**（会话没了 / 读不到状态）⇒ 记 lost 且档位 `'unknown'`。
+ *
+ * ⚠ 为什么由调用方给而不是本模块自己查：本模块**刻意不 import 任何宿主包**
+ *   （文件头纪律：只依赖 `node:fs`/`node:path`，这样机检能直接 import 它真跑）。
+ */
+export type TargetStatusOf = (target: string) => 'running' | 'idle' | undefined
+
+/**
+ * 把**这一代不认识**的 pending 分成两摞（⛔ 不许合成一摞）。
+ *
+ * 判据（用户 2026-10-18 裁定 3）：
+ * · 目标**仍在跑**   ⇒ `reattach`（**必须重挂**、继续等）；
+ * · 目标**已空闲**   ⇒ `lost` + `lostClass:'idle'`；
+ * · **判不出**       ⇒ `lost` + `lostClass:'unknown'`（⚠ 保守方向：不许猜"它在跑"）。
+ *
+ * ⚠ 这是**纯函数**（无 IO、无宿主）⇒ 机检可以拿假状态直接真跑两条路径。
+ */
+export function classifyPending(
+  pending: PersistedWatch[],
+  statusOf?: TargetStatusOf,
+): { reattach: PersistedWatch[]; lost: PersistedWatch[] } {
+  const reattach: PersistedWatch[] = []
+  const lost: PersistedWatch[] = []
+  for (const w of pending) {
+    const st = statusOf === undefined ? undefined : statusOf(w.target)
+    if (st === 'running') {
+      reattach.push(w)
+      continue
+    }
+    // ⚠ 档位逐条写在记录上 —— 这就是"两类不许混成一个计数"的**数据面**。
+    lost.push({ ...w, lostClass: st === 'idle' ? 'idle' : 'unknown' })
+  }
+  return { reattach, lost }
+}
+
+/**
+ * 把落盘里**这一代不认识**的 `pending` 处置掉：仍在跑的挑出来重挂，其余的判丢失并落盘。
  *
  * ── 判据 ──────────────────────────────────────────────────────────────
  *   `known(w)` 为真 = 这一代的编排器**正持有**这条 watch（还在等）
@@ -429,22 +533,56 @@ export interface MarkLostResult {
  *
  *   ⚠ 幂等：丢失项一旦挪进 `lost` 就不再出现在 `pending` 里 ⇒
  *     第二次调用不会重复报告、也不会重复唤醒派活方。
+ *
+ * ── ⚠ ⚠ **2026-10-18 第 2 轮改动（`UD-137` 裁定 3）：先核再判** ──────────
+ *   旧签名是 `markLost(file, known)`，调用点固定传 `() => false`
+ *   ⇒ 盘上任何 pending **一律判死**。新签名多一个**可选**的 `statusOf`：
+ *   · 给了它 ⇒ 目标**仍在跑**的记录进 `reattach`（重挂），不进 `lost`；
+ *   · 不给 ⇒ 行为与改前**逐字相同**（全判丢失、档位 `'unknown'`）
+ *     ⇒ ⚠ 既有调用点与既有断言 F/G 的老用法**不需要改**（向后兼容）。
+ *   ⚠ `unknown`（判不出）**不许**当成 `running` —— 猜错的代价是"该会话永久不能再派"。
  */
 export function markLost(
   file: string,
   known: (w: PersistedWatch) => boolean,
+  statusOf?: TargetStatusOf,
 ): MarkLostResult {
   const state = readOrchState(file)
   const unknown = state.pending.filter((w) => !known(w))
-  if (unknown.length === 0) return { lost: [], state, wrote: false }
+  if (unknown.length === 0) return { lost: [], reattach: [], state, wrote: false }
 
-  const knownSet = new Set(state.pending.filter(known).map(watchKey))
-  state.pending = state.pending.filter((w) => knownSet.has(watchKey(w)))
+  const { reattach, lost } = classifyPending(unknown, statusOf)
+
+  // ⚠ 仍留在 `pending` 的 = 这一代认识的 + **必须重挂**的（重挂的也要留在盘上：
+  //   否则重挂成功后一次落盘就会把它当"既不在等也没丢"抹掉 —— 那正是本批要治的形态）。
+  const keep = new Set([
+    ...state.pending.filter(known).map(watchKey),
+    ...reattach.map(watchKey),
+  ])
+  state.pending = state.pending.filter((w) => keep.has(watchKey(w)))
   // 新的在前；超过上限就丢掉最老的（运行态，不是审计留档）。
-  state.lost = [...unknown, ...state.lost].slice(0, MAX_LOST)
-  state.lostAt = Date.now()
+  state.lost = [...lost, ...state.lost].slice(0, MAX_LOST)
+  if (lost.length > 0) state.lostAt = Date.now()
   state.updatedAt = Date.now()
-  return { lost: unknown, state, wrote: writeOrchState(file, state) }
+  return { lost, reattach, state, wrote: writeOrchState(file, state) }
+}
+
+/**
+ * 把 `lost` 按**档位**分组计数（2026-10-18 第 2 轮新增）。
+ *
+ * ⚠ ⚠ 存在的唯一理由：用户原话「**两类不许混成一个 lost 计数**」⇒ 状态行必须能
+ *   **分开报**。⚠ 旧数据没有 `lostClass` ⇒ 归入 `'unknown'`（如实：当时没判过），
+ *   ⛔ 不许归入 `'idle'`。
+ *
+ * ⚠ 这里是**唯一**的分档实现点：⛔ 不许在渲染层再写一份 `filter`（两处各写必然漂）。
+ */
+export function countLostByClass(lost: readonly PersistedWatch[]): Record<LostClass, number> {
+  const out: Record<LostClass, number> = { running: 0, idle: 0, unknown: 0 }
+  for (const w of lost) {
+    const c: LostClass = w.lostClass === 'running' || w.lostClass === 'idle' ? w.lostClass : 'unknown'
+    out[c] += 1
+  }
+  return out
 }
 
 /**

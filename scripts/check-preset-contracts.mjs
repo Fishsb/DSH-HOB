@@ -22,14 +22,20 @@
  *   ④ 两份正文都含语言规则（跟随用户语言）
  *   ⑤ 人读版引文块与预设正文**全文**逐字一致（把 .md 里的引文块抽出来比对；
  *      ⚠ v3/UD-51 起含 A 段 —— 旧版只比 B+C 段，对 A 段是"缺席的 PASS"）
- *   ⑤b **两段式格式的语义断言**（UD-51 起步 → UD-55 定为两段式 → **v5/UD-57 改定围栏与排版**）：
- *      两个二级标题在位且有序、第一段（指令）必须被代码围栏包住
+ *   ⑤b **两段式格式的语义断言**（UD-51 → UD-55 → v5/UD-57 → **v7：2026-10-18 板块改名 + 四小块**）：
+ *      两个二级标题在位且有序（`## 实施指令` → `## 简要说明`）、第一段（指令）必须被代码围栏包住
  *      （**恰好 4 个反引号 + 语言标记 `markdown`**，固定、无条件式）、
- *      第二段（白话说明）不得被包住、五条规则条文在位，
+ *      第二段（`简要说明`）不得被包住、五条规则条文在位，
  *      且**旧分隔符一律不得残留**（负向断言 —— 只靠 ⑤ 的话，
  *      "两份一起改回旧分隔符"照样 PASS）。
  *      ⚠ v5 起**删去**「禁 emoji / 禁 ASCII 线 / 禁表格徽章」三条断言（装饰已放开）；
  *        也不再要求"无开场引言"（v5 允许第一段之前有一两句引言）。
+ *      ⚠ **v7（2026-10-18 · 用户两次指出回复格式不对）**：用户是**不懂代码的产品决策者**，
+ *        旧口径把路径/行号/退出码堆进给用户看的那一段 ⇒ 现改为
+ *          · 板块名：`## 实施指令`（给实施会话，**技术密度照旧**）/ `## 简要说明`（给用户）；
+ *          · 无活时**只出 `简要说明`**（⛔ 不硬凑空壳指令段）；
+ *          · `简要说明` **固定四小块** + **禁用物清单 10 项** + **正文 ≤ 6 句** + **三问判据**；
+ *          · **旧板块名 0 残留**（负向断言，见 ④e）—— 否则"两份一起改回旧名"照样 PASS。
  *   ⑤c **职责句短钉**（2026-10-07 批 3 职责重定义）：钉 `Hob` 的职责句若干
  *      稳定短语，缺失即 FAIL（⑤ 只能证明"两份一致"，两份一起删照样 PASS）。
  *   ⑤d **文件交接条文短钉**（2026-10-07 批 5 · UD-63 / CHG-011）：交接改为"指令与回报
@@ -229,6 +235,13 @@ function draftBlock(which) {
 }
 
 const hoSrc = readFileSync(HO, 'utf8')
+/**
+ * 人读版全文（④g 读 §二 表「说明」格用）。
+ * ⚠ 与 `draftBlock()` 分开取：那个函数每次调用都重读文件且只抽引文块，
+ *   这里要的是**表格正文**，抽不到 ⇒ 两者用途不同，不合并。
+ * ⚠ 读不到 ⇒ 让 `readFileSync` 当场抛（本脚本对"基准缺失"一律不按通过处理）。
+ */
+const draftSrc = readFileSync(DRAFT, 'utf8')
 // ⚠ v4：`workSrc` 已随预设删除（见文件头说明）。此处不再读取该文件。
 
 // ── ① 显示名 + ② id ───────────────────────────────────────────────────
@@ -349,8 +362,12 @@ const STALE_APPELLATIONS = [
   const hoBody = literalBlock(hoSrc, 'prefix') ?? ''
 
   // ① 两个二级标题在位，且**顺序**不可颠倒
-  const H1 = "## 给「实施会话」的指令"
-  const H2 = '## 白话说明'
+  // ⚠ v7（2026-10-18 · 用户两次指出回复格式不对）：板块**改名**。
+  //   旧：`## 给「实施会话」的指令` / `## 白话说明`
+  //   新：`## 实施指令`（给实施会话，技术密度照旧）/ `## 简要说明`（给不懂代码的用户，四小块）
+  //   ⚠ 判据未放宽：仍要求**两个标题在位且有序**，只是字面值随用户裁定换新。
+  const H1 = "## 实施指令"
+  const H2 = '## 简要说明'
   const i1 = hoBody.indexOf(H1)
   const i2 = hoBody.indexOf(H2)
   if (i1 < 0) bad(`⑤b ${NAME_HO}：缺第一部分的二级标题 ${JSON.stringify(H1)}`)
@@ -372,8 +389,8 @@ const STALE_APPELLATIONS = [
       bad(`⑤b ${NAME_HO}：${H1} 之后一行应为「4 个反引号 + markdown」的代码围栏，实测 ${JSON.stringify(fenceLine)}`)
     } else ok(`⑤b ${NAME_HO}：${H1} 后紧跟 4 反引号 + markdown 围栏（${JSON.stringify(fenceTrim)}），且标题在围栏**外**`)
 
-    // ③ 该围栏必须闭合，且闭合发生在「白话说明」标题**之前**
-    //    （否则等于把白话段也包进去了）
+    // ③ 该围栏必须闭合，且闭合发生在「简要说明」标题**之前**
+    //    （否则等于把用户段也包进去了）
     const openLen = FENCE.exec(fenceTrim)?.[1].length ?? 0
     const bodyLines = afterH1.split('\n')
     let closeIdx = -1
@@ -382,8 +399,8 @@ const STALE_APPELLATIONS = [
     }
     const h2Line = bodyLines.findIndex((l) => l.trim() === H2)
     if (closeIdx < 0) bad(`⑤b ${NAME_HO}：指令段的围栏未闭合（找不到同长度 ${openLen} 反引号的闭合行）`)
-    else if (h2Line >= 0 && closeIdx > h2Line) bad(`⑤b ${NAME_HO}：围栏跨过了「白话说明」标题 ⇒ 白话段被包进代码块`)
-    else ok(`⑤b ${NAME_HO}：指令段围栏成对闭合，且未跨过「白话说明」标题（白话段未被包住）`)
+    else if (h2Line >= 0 && closeIdx > h2Line) bad(`⑤b ${NAME_HO}：围栏跨过了「简要说明」标题 ⇒ 用户段被包进代码块`)
+    else ok(`⑤b ${NAME_HO}：指令段围栏成对闭合，且未跨过「简要说明」标题（用户段未被包住）`)
 
     // ③b **围栏长度固定为 4**（v5 取消了"含代码块才加长"的条件式）——
     //     旧口径会写 `{3,}`；这里是**精确 4**，写成 3 或 5 都算 FAIL。
@@ -412,10 +429,13 @@ const STALE_APPELLATIONS = [
   //      故正则改钉 `exactly four backticks` + `never contain a run of four or more backticks`。
   //    ⚠ v6 口径（UD-58）：**删去「两段强制」**（`Both parts are mandatory`）——
   //      两段式改为**按需触发**，不再每轮强制。其余条文**全部保留**（v6 未放开）。
+  //    ⚠ v7 口径（2026-10-18 · 用户两次指出格式不对）：板块改名 ⇒ 两条条文的正则
+  //      **钉的目标换了字面值**（`part two` → `简要说明`、`two headings` → `two section headings`）。
+  //      ⛔ 这不是放宽：仍然要求"该条文在位"，且另有**负向断言**钉住旧字面值不得回归（见 ④e）。
   for (const [label, needle] of [
-    ['禁止包白话段', /Never fence part two/],
+    ['禁止包用户段', /Never fence (?:part two|简要说明)/],
     ['禁止包整篇', /never wrap the whole reply in one code block/],
-    ['标题为结构、不随语种变', /The two headings are structural/],
+    ['标题为结构、不随语种变', /The two (?:headings|section headings) are structural/],
     ['固定 4 个反引号', /exactly four backticks/],
     ['指令内禁 4 个及以上反引号', /never contain a run of four or more backticks/],
   ]) {
@@ -429,10 +449,14 @@ const STALE_APPELLATIONS = [
   //    ⚠ 与 (a) 配对的是**删除**「两段强制」：若有人把强制口径改回来，
   //      (b) 的触发条件判定仍在（"produces work for <实施侧>"），故另设 (c) 负向断言
   //      「不得出现每轮强制的措辞」，见 ④c。
-  if (/ordinary Markdown by default/.test(hoBody)) ok(`⑤b ${NAME_HO}：含「默认正常 Markdown 回复」条文`)
-  else bad(`⑤b ${NAME_HO}：缺「默认正常 Markdown 回复」条文（v6 按需触发的落点）`)
+  //    ⚠ v7（2026-10-18）：原口径是"默认正常 Markdown 回话、只在有活时切两段"。
+  //      用户两次指出**回复格式本身就不对** ⇒ 用户可见的那一段**始终在**，改为
+  //      「**没有要派的活时只出 简要说明**」。本条钉这个新落点（**未放宽**：缺即 FAIL）。
+  if (/uses 简要说明 only/.test(hoBody)) ok(`⑤b ${NAME_HO}：含「无活时只出 简要说明」条文`)
+  else bad(`⑤b ${NAME_HO}：缺「无活时只出 简要说明」条文（v7 按需触发的落点）`)
 
-  if (/do not invent a task to fill the shape/.test(hoBody) && /do not emit a placeholder/.test(hoBody)) {
+  //    ⚠ 用 `i` 旗标：这两句在正文里是**句首**（`Do not invent ...`），大小写不构成语义差别。
+  if (/do not invent a task to fill the shape/i.test(hoBody) && /do not emit a placeholder/i.test(hoBody)) {
     ok(`⑤b ${NAME_HO}：含「不得编造任务 / 不得输出占位句」条文`)
   } else {
     bad(`⑤b ${NAME_HO}：缺「不得编造任务 / 不得输出占位句」条文（无活时不得写空壳）`)
@@ -455,21 +479,129 @@ const STALE_APPELLATIONS = [
     else ok(`⑤b ${NAME_HO}：已废除的强制条文「${label}」为 0 残留`)
   }
 
+  // ④e **v7 新增：旧板块名的负向断言**（2026-10-18 · 用户两次指出格式不对）
+  //     ⚠ 只靠 ⑤（两份一致）抓不到"两份一起改回旧名"；只靠 ④（条文在位）也抓不到 ——
+  //       旧名一旦回归，两个标题断言会 PASS 在新名上，而旧字面值**仍然在正文别处出现**
+  //       （例如「语言」段复述标题那一行）。⇒ 单独钉住旧字面值 **0 残留**。
+  //     ⚠ 例外：本段的**规则叙述**需要提到"这两个标题"时用的就是新名，故无白名单。
+  for (const [label, needle] of [
+    ['旧板块名「给「实施会话」的指令」', /给「实施会话」的指令/],
+    ['旧板块名「白话说明」', /白话说明/],
+  ]) {
+    if (needle.test(hoBody)) bad(`⑤b ${NAME_HO}：正文仍残留${label}（v7 已改名，⛔ 不许两份一起改回去）`)
+    else ok(`⑤b ${NAME_HO}：${label} 为 0 残留`)
+  }
+
+  // ④f **v7 新增：`简要说明` 的四小块 + 禁用物清单 + 长度/判据 必须写进契约**
+  //     ⚠ 为什么单列：这些是用户**这一轮的原话要求**，而 ④ 一族只管 ## Rules。
+  //       "四小块在不在"、"禁用物清单在不在"没有任何既有断言覆盖（两份一起删照样 PASS）。
+  for (const [label, needle] of [
+    ['四小块之一（这轮做了什么）', /\*\*这轮做了什么\*\*/],
+    ['四小块之二（现在什么状态）', /\*\*现在什么状态\*\*/],
+    ['四小块之三（要你决定的）', /\*\*要你决定的\*\*/],
+    ['四小块之四（还没验证 / 还有风险）', /\*\*还没验证 \/ 还有风险\*\*/],
+    ['无内容可省、不许留空标题', /no heading left without content/],
+    ['禁用物清单（硬约束）', /Banned from 简要说明 as a hard rule/],
+    ['禁用物：文件路径', /file paths/],
+    ['禁用物：行号', /line numbers/],
+    ['禁用物：提交号 / 哈希', /commit hashes/],
+    ['禁用物：字节数', /byte counts/],
+    ['禁用物：命令名', /command names/],
+    ['禁用物：检查名 / 断言之名', /check or assertion names/],
+    ['禁用物：退出码', /exit codes/],
+    ['禁用物：模块编号', /module numbers \(M1, C1\)/],
+    ['禁用物：英文标识符', /English identifiers/],
+    ['禁用物：代码块', /and code blocks/],
+    ['长度：正文不超过 6 句', /at most six sentences/],
+    ['唯一判据：用户读完能答三问', /after reading 简要说明 the user can answer three questions/],
+    ['三问：做了什么 / 是好是坏 / 要不要做什么', /what this round did, whether the project is now better or worse, and whether they must do anything/],
+    ['答不出 ⇒ 作废重写', /the section is void and gets rewritten/],
+    ['细节留在账本与报告件里', /Keep the readings, the numbers and the paths in the ledger and in the report files/],
+    ['未验证 / 风险 必须照实说、不许省', /never dropped because it is awkward to put simply/],
+    ['要你决定的必须留', /A decision that belongs to the user is never taken for them/],
+    ['实施指令不许碰什么必须留', /what must NOT be touched/],
+    ['实施指令技术密度照旧、不许稀释', /never thin it out to make it easier to read/],
+    ['没有要派的活时只出 简要说明（⛔ 不硬凑空壳指令段）', /do not add an empty 实施指令 shell/],
+    // ── **v9（2026-10-18 第 2 轮 · `UD-137` 裁定 1 取 B）**「写发合一」条文 ──────
+    //   ⚠ 这四条钉的是**用户本轮的原话**：写指令与发出去必须是**同一个动作**，
+    //     且每条派发**同轮**给出读数（口径 = 目标 + **登记时刻**，⛔ 不是"轮次"）。
+    //   ⚠ **为什么"登记时刻"而不是"轮次"**：`write_hob` 的 `dispatchTo` 那条路
+    //     **拿不到轮次**（工具参数面里没有 `round`）⇒ 原口径在那条路上**恒假**；
+    //     恒假的判据会把真漏派一起埋掉。改成真拿得到的量，才是钉住事实。
+    ['写指令与投递是**同一个动作**（⛔ 不许拆两步）', /Work is handed over in ONE action, never in two/],
+    ['`实施指令` 只能由那一步产生', /only as the by-product\s+of the single call that writes the directive into your ledger/],
+    ['⛔ 禁止：先写回复再投 / 落盘后不投', /Never compose the directive in the reply[\s\S]{0,220}?never write the file and stop there[\s\S]{0,80}?dispatch later/],
+    ['判据：同轮给出读数 = 目标 + 登记时刻，给不出视同未派', /the target session, and the moment its\s+delivery was registered[\s\S]{0,320}?read it as not sent/],
+    ['为什么这条挡得住（没调用 ⇒ 无内容可写）', /there is no directive to point at, and the reply is\s+简要说明 only/],
+  ]) {
+    if (needle.test(hoBody)) ok(`⑤b ${NAME_HO}：v7/v9 条文在位（${label}）`)
+    else bad(`⑤b ${NAME_HO}：v7/v9 条文缺失（${label}）—— 期望 /${needle.source}/`)
+  }
+
+  // ④g **v8 新增：预设 `description` 与人读版「§二 说明」格逐字相等 + 不含旧板块名**
+  //     （2026-10-18 · 用户核过上批后指定的收口项）
+  //
+  //     ⚠ **为什么必须单独钉**（缺了它，这一格是"零断言覆盖"的死角）：
+  //       · ⑤ 只比 `prefix` 引文块 ↔ 人读版 §1.2，**`config.description` 不在它里面**；
+  //       · ④e 只扫 `prefix` 正文，**同样扫不到 `description`**；
+  //       ⇒ 两份载体**一起**把 `description` 改回旧板块名，或**只改一边**，上批所有断言照样 PASS。
+  //         而这一格正是**用户在选择器里唯一看得见的那句话** ⇒ 它走样最不容易被发现。
+  //     ⚠ 判据两条，缺一即 FAIL：
+  //       ① **逐字相等**：patch 的 `description` == 人读版 §二 表「说明」那一格
+  //          （两侧都取**原样字面值**，不 trim 掉中间内容，只在比较前去掉表格/引号的外壳）；
+  //       ② **负向**：该句**不得含**旧板块名 `给「实施会话」的指令` / `白话说明`。
+  //     ⚠ **未放宽**：这是**新增**断言；且它钉的是"两份一致 + 不含旧名"，
+  //       比"只钉正文"多一层 —— 旧字面值出现在**任何一处**都得 FAIL。
+  {
+    const descPatch = scalar(hoSrc, 'description')
+    // 人读版 §二 表：`| **说明** | <值> |`（唯一一行；`值` 里不含未转义的 `|`）
+    const descRow = /^\|\s*\*\*说明\*\*\s*\|\s*(.+?)\s*\|\s*$/m.exec(draftSrc)
+    const descDraft = descRow === null ? undefined : descRow[1].trim()
+
+    if (descPatch === undefined) {
+      bad(`④g ${NAME_HO}：预设 patch 里读不到 \`config.description\`（8 空格缩进那个标量）`)
+    } else if (descDraft === undefined) {
+      bad(`④g ${NAME_HO}：人读版 §二 表里读不到「说明」那一格（期望 \`| **说明** | … |\`）`)
+    } else if (descPatch !== descDraft) {
+      bad(`④g ${NAME_HO}：\`description\` 与人读版「说明」格**不一致**（应逐字相同）`)
+      bad(`     预设: ${JSON.stringify(descPatch)}`)
+      bad(`     人读: ${JSON.stringify(descDraft)}`)
+    } else ok(`④g ${NAME_HO}：\`description\` == 人读版「说明」格（逐字相同）`)
+
+    // ② 负向：两句都不得含旧板块名（`description` 是**用户可见**的那一句，最不该走样）
+    for (const [label, text] of [['description', descPatch], ['人读版「说明」格', descDraft]]) {
+      if (text === undefined) continue
+      const stale = ['给「实施会话」的指令', '白话说明'].filter((n) => text.includes(n))
+      if (stale.length > 0) {
+        bad(`④g ${NAME_HO}：${label} 仍含旧板块名 ${stale.map((x) => JSON.stringify(x)).join(', ')}`
+          + '（v7 已改名 ⇒ 用户在选择器里读到的说明与正文对不上）')
+      } else ok(`④g ${NAME_HO}：${label} 不含旧板块名`)
+    }
+
+    // ③ 单行标量的**形态**断言（用户认下的 `>-` 折叠理由：中文之间会被折出空格）
+    {
+      const line = hoSrc.split('\n').find((l) => /^\s{8}description:/.test(l)) ?? ''
+      if (!/^\s{8}description:\s*"/.test(line)) {
+        bad(`④g ${NAME_HO}：\`description\` 不是双引号单行标量（⛔ 用 \`>-\` 折叠会在中文间折出空格）—— 实测 ${JSON.stringify(line.slice(0, 40))}`)
+      } else ok(`④g ${NAME_HO}：\`description\` 是双引号单行标量（⛔ 不是 \`>-\` 折叠）`)
+    }
+  }
+
   // ④d **v6 新增：「触发时结构不变」的四项仍在**（UD-58 明示：只取消强制，不改结构）
   //     四项 = ① 标题在围栏外 ② 只包第一段 ③ 固定 4 反引号 ④ 围栏不跨白话标题。
-  //     ⚠ 这四项**上文各自已有独立断言**（②③③b 与 ④ 的"禁止包白话段/禁止包整篇"）；
+  //     ⚠ 这四项**上文各自已有独立断言**（②③③b 与 ④ 的"禁止包用户段/禁止包整篇"）；
   //       这里再**聚合复述一次**，理由是 v6 改的是"是否强制"，
   //       而"结构本身"必须**在同一处可见地未被改动** —— 分散断言在对比 v5/v6 时不易核对。
   {
     const structChecks = [
       ['标题在围栏外', lastH1 >= 0 && FENCE.test((hoBody.slice(lastH1 + H1.length).split('\n').find((l) => l.trim() !== '') ?? '').trim())],
-      ['只包第一段（白话段未被包）', /Never fence part two/.test(hoBody)],
+      ['只包第一段（用户段未被包）', /Never fence (?:part two|简要说明)/.test(hoBody)],
       ['固定 4 反引号', /exactly four backticks/.test(hoBody)],
-      ['围栏不跨白话标题', /never run past the 白话说明 heading/.test(hoBody)],
+      ['围栏不跨 简要说明 标题', /never run past the 简要说明 heading/.test(hoBody)],
     ]
     const missing = structChecks.filter(([, isOk]) => !isOk).map(([n]) => n)
     if (missing.length > 0) bad(`⑤b ${NAME_HO}：触发时的结构细则缺项：${missing.join(' / ')}`)
-    else ok(`⑤b ${NAME_HO}：触发时结构四项俱全（标题在围栏外 / 只包第一段 / 固定 4 反引号 / 围栏不跨白话标题）`)
+    else ok(`⑤b ${NAME_HO}：触发时结构四项俱全（标题在围栏外 / 只包第一段 / 固定 4 反引号 / 围栏不跨 简要说明 标题）`)
   }
 
   // ⑤ 负向断言：**旧分隔符一律不得残留**（UD-55「删除全部分隔符与包装」）
