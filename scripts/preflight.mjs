@@ -22,6 +22,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { workspaceName } from './workspace-name.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
@@ -35,7 +36,9 @@ export function deriveLedgerRoot() {
     const m = /ledgerHome:\s*(\S+)/.exec(preset)
     if (m !== null && m[1] !== '') candidates.push(m[1])
   } catch { /* 预设读不到 ⇒ 走下面的派生态 */ }
-  const wsName = basename(root)
+  // ⚠ 工作区名**从配置读**（唯一来源 = `scripts/workspace-name.mjs`）；未配置 ⇒ 落回 `basename(root)`。
+  //   ⛔ 不再由本脚本自己猜目录名（隔离 worktree 里目录名 = 卡 id ⇒ 会派到不存在的账本区）。
+  const wsName = workspaceName(() => basename(root))
   for (const home of candidates) {
     const dir = join(home, wsName)
     if (existsSync(dir)) return { dir, how: 'preset' }

@@ -43,6 +43,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { workspaceName as configuredWorkspaceName } from './workspace-name.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -60,11 +61,17 @@ function ledgerHome () {
   }
 }
 
-/** 工作区名（与既有脚本同口径：`DSH_WORKSPACE` 优先，否则取工作区目录名）。 */
+/**
+ * 工作区名：⚠ **从配置读**（唯一来源 = `scripts/workspace-name.mjs`）；
+ *   未配置 ⇒ 落回**改动前那套**（`DSH_WORKSPACE` 优先，否则取工作区目录名）——
+ *   ⛔ 不是新逻辑，也不是放宽：未配置时与改前逐字一致。
+ */
 function workspaceName () {
-  const env = process.env.DSH_WORKSPACE
-  if (typeof env === 'string' && env.trim() !== '') return basename(env.trim())
-  return basename(root)
+  return configuredWorkspaceName(() => {
+    const env = process.env.DSH_WORKSPACE
+    if (typeof env === 'string' && env.trim() !== '') return basename(env.trim())
+    return basename(root)
+  })
 }
 
 /** 账本区根；⚠ `undefined` ⇒ 读不到（调用方**退 2**，⛔ 不静默）。 */

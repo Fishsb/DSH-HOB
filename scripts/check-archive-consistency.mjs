@@ -61,6 +61,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { workspaceName as configuredWorkspaceName } from './workspace-name.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -104,21 +105,25 @@ function walkFiles(dir, acc = []) {
 
 // ── 账本根派生（⛔ 不硬编码本机绝对路径：`ledgerHome` 从预设行读，见 UD-73③）──────────
 /**
- * 工作区目录名。
+ * 工作区名。
  *
- * ⚠ **为什么不直接 `basename(root)`**（既有脚本的写法）：本卡在**看板 worktree** 里作业，
+ * ⚠ **为什么不直接 `basename(root)`**（改动前的老写法）：本卡在**看板 worktree** 里作业，
  *   worktree 目录名是 `<taskId>`、不是工作区名 ⇒ `basename(root)` 会派生出
  *   `.../hob-ledgers/t-mv54am90-yqilyy`（不存在）⇒ 整条检查**静默跳过**
  *   （实测：同一 worktree 里 `check:gitignore` 的账本区断言全部打印「未执行」）。
- *   ⇒ 改用 **git-common-dir 的父目录名** = **主工作区目录名**，worktree 里也派得对
- *   （实测本卡：`/home/lk/FF/dsh-hob/.git` ⇒ `dsh-hob` ⇒ 账本区**真的查起来了**）。
+ * ⚠ **现改为从配置读**（唯一来源 = `scripts/workspace-name.mjs`）——
+ *   原先那套「git-common-dir 的父目录名」只是**本脚本自己的**补丁，其余 6 个脚本没有，
+ *   ⇒ 同一件事有两条口径。现在收成一条：**配置优先**，未配置才落回本脚本原逻辑
+ *   （= 改动前的猜法，⛔ 行为不变）。
  */
 function workspaceName() {
-  const abs = tryGit(['rev-parse', '--path-format=absolute', '--git-common-dir'], root)
-  if (abs !== null && abs.trim() !== '') return basename(dirname(abs.trim()))
-  const rel = tryGit(['rev-parse', '--git-common-dir'], root)
-  if (rel !== null && rel.trim() !== '') return basename(dirname(join(root, rel.trim())))
-  return basename(root)
+  return configuredWorkspaceName(() => {
+    const abs = tryGit(['rev-parse', '--path-format=absolute', '--git-common-dir'], root)
+    if (abs !== null && abs.trim() !== '') return basename(dirname(abs.trim()))
+    const rel = tryGit(['rev-parse', '--git-common-dir'], root)
+    if (rel !== null && rel.trim() !== '') return basename(dirname(join(root, rel.trim())))
+    return basename(root)
+  })
 }
 
 /** 从预设行读 `ledgerHome`（与既有脚本同口径）。 */
