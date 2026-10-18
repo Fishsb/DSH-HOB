@@ -58,6 +58,7 @@ import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
 import type { PresetSource } from './bus.ts'
 import { resolveLedgerRoot } from '../server/doc-read.ts'
 import { readCards, renderCardLines, type CardSnapshot, type GetTool } from '../server/board-cards.ts'
+import { CardWake, type WakeState } from '../server/card-wake.ts'
 import {
   ORCH_STATE_FILENAME,
   ORCH_STATE_SUBDIR,
@@ -233,6 +234,17 @@ export interface HobOrchestrator {
    * @param opts.selfSessionId - 调用方会话 id（用来判"本会话在哪个项目"）。
    */
   cardsOf(opts?: { selfSessionId?: string }): Promise<CardSnapshot>
+  /**
+   * 登记「这个会话在看本工作区的卡面」—— **卡跑完时叫醒谁**就靠这张表。
+   *
+   * ⚠ **为什么必须由调用方登记而不是本模块自己猜收件人**：卡跑完是**推送**，
+   *   那一刻**没有调用方**（不是谁在问）。凭空假设"收件人 = Hob"会把本模块
+   *   与某个具体预设焊死；而"谁读过卡面"是一个**可观测的事实**。
+   * ⚠ 只在**读到卡面**时登记（= 订阅语义）：`hob_orch_status` 每被调用一次就续订一次。
+   */
+  wakeSubscribe(sessionId: string | undefined): Promise<void>
+  /** 叫醒面的**运行态读数**（⛔ "没连上"不许被读成"没有卡跑完"）。 */
+  wakeState(): WakeState
   /** 停 / 恢复。 */
   control(action: 'stop' | 'resume', opts?: { wsRoot?: string }): OrchStatus
 }
@@ -514,6 +526,57 @@ export function apply(ctx: any): void {
       }
     }
 
+    /**
+     * 本会话属于哪个**工作区**（= 看板卡的 `workspaceId` 口径）。
+     *
+     * ⚠ **唯一实现，两个消费方共用**（`cardsOf` 的卡面过滤 + 卡跑完叫醒面的过滤）：
+     *   叫醒面与显示面**必须是同一个**（作业书 §一-2），否则会出现
+     *   "叫醒说有卡跑完、状态行里看不到那张卡" —— 那比不叫更坏。
+     * ⚠ 走 `hobBus.listWorkspaces(self)` 的 `self` 那一行（`bus.ts` 已是唯一实现）。
+     * ⚠ 判不出 ⇒ `undefined`（调用方各自按"不猜"处理：卡面**不过滤**、叫醒面**不叫**）。
+     */
+    const workspaceIdOfSession = async (selfSessionId: string | undefined): Promise<string | undefined> => {
+      try {
+        const bus = svcCtx.get?.('hobBus')
+        if (bus === undefined || typeof bus.listWorkspaces !== 'function') return undefined
+        const rows = await bus.listWorkspaces(selfSessionId)
+        const own = (Array.isArray(rows) ? rows : []).find((r: any) => r?.self === true)
+        if (own === undefined || typeof own.id !== 'string' || own.id === '') return undefined
+        return own.id
+      } catch {
+        return undefined
+      }
+    }
+
+    /**
+     * **卡跑完 ⇒ 叫醒**（2026-10-18 · 缺口实测：长活卡 22:59:20 收工，Hob 没被叫醒）。
+     *
+     * ⚠ 信号面 = **看板自己推的 SSE**（不是宿主事件 —— 第三方包里 `emit` 零命中）；
+     *   判据与去重全在 `server/card-wake.ts`（那里有完整出处与理由）。
+     * ⚠ **它不新增工具名**：读数挂在既有的 `hob_orch_status` 里（见渲染层）。
+     * ⚠ **它不碰 `watches`**：重挂是另一笔账（作业书 §三明令）。
+     */
+
+    /** 叫醒面现用的工作区 id（⚠ 由订阅时登记 —— `CardWake` 每次现读它）。 */
+    let wsIdForWake: string | undefined
+
+    const wake = new CardWake({
+      origin: (() => {
+        try {
+          const web = svcCtx.get?.('webServer')
+          return typeof web?.getOrigin === 'function' ? String(web.getOrigin()) : undefined
+        } catch { return undefined }
+      })(),
+      workspaceIdOf: () => wsIdForWake,
+      deliver: (sessionId: string, text: string) => {
+        const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
+        if (bus === undefined || typeof bus.deliver !== 'function') {
+          return Promise.reject(new Error('hobBus 未提供 ⇒ 投递通道不可用'))
+        }
+        return Promise.resolve(bus.deliver(sessionId, text, 'followup'))
+      },
+      log: (line: string) => svcCtx.logger?.info?.(`[${name}] ${line}`),
+    })
     /**
      * 在等的派发：按**执行方会话 id** 索引。
      *
@@ -954,16 +1017,28 @@ export function apply(ctx: any): void {
         //     （`bus.ts` 的 `listWorkspaces` 已经是"会话 → 路径 → 工作区记录"的唯一实现）。
         //   ⚠ 判不出 ⇒ `workspaceId` 保持 undefined ⇒ **不过滤**（看全部），
         //     ⛔ 绝不猜一个 id 去过滤（那会**少报**卡，正是本轮要治的失败模式）。
-        let workspaceId: string | undefined
-        try {
-          const bus = svcCtx.get?.('hobBus')
-          if (bus !== undefined && typeof bus.listWorkspaces === 'function') {
-            const rows = await bus.listWorkspaces(opts?.selfSessionId)
-            const own = (Array.isArray(rows) ? rows : []).find((r: any) => r?.self === true)
-            if (own !== undefined && typeof own.id === 'string' && own.id !== '') workspaceId = own.id
-          }
-        } catch { workspaceId = undefined }
+        const workspaceId = await workspaceIdOfSession(opts?.selfSessionId)
+        // ⚠ 读到卡面 ⇒ 顺手登记"这个会话在看本工作区的卡面"（= 订阅语义）。
+        //   卡跑完时**叫醒谁**就靠这张表 —— 见 `wakeSubscribe` 的注释。
+        if (typeof opts?.selfSessionId === 'string' && opts.selfSessionId !== '') {
+          wsIdForWake = workspaceId
+          wake.subscribe(opts.selfSessionId)
+          wake.startWakeIfNeeded()
+        }
         return await readCards({ workspaceId, getTool })
+      },
+
+      async wakeSubscribe(sessionId: string | undefined): Promise<void> {
+        // 会话 id 是**订阅身份**；工作区在这里**现读一次**并记为叫醒面的过滤条件
+        //   （⚠ 下次谁再订阅就再刷一次 ⇒ 工作区后建/搬走都能跟上）。
+        if (typeof sessionId !== 'string' || sessionId === '') return
+        wsIdForWake = await workspaceIdOfSession(sessionId)
+        wake.subscribe(sessionId)
+        wake.startWakeIfNeeded()
+      },
+
+      wakeState(): WakeState {
+        return wake.snapshot()
       },
 
       control(action, opts?: { wsRoot?: string }) {
@@ -1206,6 +1281,48 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         }
       })()
       /**
+       * ── 叫醒面读数（2026-10-18 · 卡跑完不会叫醒 Hob 那条缺口）──
+       *
+       * ⚠ **为什么要报出来**（作业书 §一-2 硬约束③：失败要可观测）：
+       *   叫醒面接不上时，**外表与"今天没有卡跑完"完全一样** —— 那正是本件要治的失败模式。
+       *   ⇒ 只要**不是** `live` 且**没有过叫醒记录**，就把那件事如实说出来。
+       * ⚠ `live` 且**已经叫过** ⇒ ⛔ 一行都不加（不在正常态刷屏）。
+       * ⚠ ⛔ 这不等于"没有卡在跑"—— 措辞里必须写清。
+       */
+      const wakeLines = ((): string[] => {
+        try {
+          const w = orch.wakeState()
+          if (w.conn === 'live' && w.wokeCount > 0) return []
+          if (w.conn === 'live' && w.wokeCount === 0 && w.noSubscriberCount === 0) {
+            // 连上了、没叫过、也没有"该叫没人"的情形 ⇒ 这是**正常态**（就是没卡跑完过）
+            return []
+          }
+          const head = w.conn === 'live'
+            ? '叫醒面：**已连上**'
+            : w.conn === 'connecting'
+              ? '叫醒面：**正在连**'
+              : w.conn === 'idle'
+                ? '叫醒面：**还没接**（没有会话读过卡面 ⇒ 不知道叫醒谁）'
+                : '叫醒面：⚠ **接不上**'
+          const lines = [`${head}${w.url === undefined ? '' : `（${w.url}）`}`]
+          if (w.note !== undefined) lines.push(`  ↳ ${w.note}`)
+          if (w.noSubscriberCount > 0) {
+            lines.push(`  ↳ ⚠ 有 **${w.noSubscriberCount} 次**卡跑完但没有人订阅 ⇒ 那几声没叫出去`)
+          }
+          if (w.wokeCount > 0) {
+            lines.push(`  ↳ 已叫醒 ${w.wokeCount} 次（最近：${w.lastWokeCard ?? '(读不到卡号)'}）`)
+          }
+          lines.push('  ↳ ⛔ **这不等于"没有卡跑完"** —— 叫醒面没接上时，外表与"今天没卡跑完"一样。')
+          return lines
+        } catch (e) {
+          return [
+            '⚠ 叫醒面：**读不到自身状态**（抛错）',
+            `  ↳ ${String((e as Error)?.message ?? e)}`,
+            '  ↳ ⛔ **这不等于"没有卡跑完"**。',
+          ]
+        }
+      })()
+      /**
        * 把登记时刻渲染成**可指认**的一串（2026-10-18 第 2 轮 · 裁定 1 取 B）。
        *
        * ⚠ 为什么是它而不是"轮次"：裁定 1 把读数口径改成「**目标 + 登记时刻**」——
@@ -1338,6 +1455,10 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         //   ⚠ ⚠ **读不到必须说出来**：`unavailable` / `unreadable` ⇒ 可读标记 + 原话
         //     （⛔ 不许静默当成"没有卡" —— 那正是本轮要修的失败模式）。
         ...cardLines,
+        // ── ⚠ 以下是**本批新增的行**（2026-10-18 · 卡跑完不会叫醒那条缺口）──
+        //   它们只在**叫醒面不正常**时出现（连不上 / 没订阅过），
+        //   ⛔ 不在正常态刷屏；措辞里必须写清"这不等于没有卡跑完"。
+        ...wakeLines,
       ].join('\n')
     },
   })

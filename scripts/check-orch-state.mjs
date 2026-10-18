@@ -2125,6 +2125,173 @@ const orchCode = stripComments(orchSrc)
       } finally {
         try { rmSync(lRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
       }
+
+      // ── N. **卡跑完 ⇒ 叫醒**（2026-10-18 · 用户报障："看板卡跑完不会叫醒 Hob"）────
+      //
+      // ⚠ **它守的是哪条缺口**（实测出处）：长活对照卡 `t-mvdxkqhz-ebn8hu` 于
+      //   2026-10-18 22:59:20 正常收工（`in_review` · 心跳 20/20），**Hob 没有被叫醒** ——
+      //   是**用户先看见**、Hob 才去读卡片的。对照：`hob_dispatch` 派的活跑完**会**回传。
+      //
+      // ⚠ **信号面**：看板自己的 SSE（`/dsh-taskboard/events`），不是宿主事件
+      //   （`dsh-taskboard` 包里 `ctx.emit`/`.emit(` **零命中** ⇒ 宿主总线上没有它）。
+      //   出处原文见 `src/server/card-wake.ts` 文件头。
+      //
+      // ⚠ ⚠ **成对五条**（缺一条都算没接上）：
+      //   · **N-a 正向**：一帧「执行落定」⇒ **叫了一次**，且叫醒话里带卡号；
+      //   · **N-b 反向（不重复）**：**同一帧重复投喂** ⇒ 第二声**不叫**（去重键 = 那次执行）；
+      //   · **N-c 反向（叫醒面=显示面）**：**别的项目**的卡跑完 ⇒ **一声都不叫**
+      //     （否则会出现"叫醒说有卡跑完、状态行里看不到它"）；
+      //   · **N-d 反向（不许假叫醒）**：`lastExecutionOutcome = 'running'` ⇒ **不叫**
+      //     （落定前也走同一个 kind，只认 kind 会在**点火**时就叫）；
+      //   · **N-e 失败可观测**：没订阅者 / 连不上 ⇒ **有可读话**，⛔ 不许静默。
+      //   · **N-f 负向对拍**：把"跑完"判据摘掉（变异 `outcome !== 'running'` 那道守卫）⇒
+      //     N-a **必须当场不成立**，且本组打**可读 FAIL** 行。
+      {
+        try {
+          const wakeMod = await import(pathToFileURL(join(root, 'src', 'server', 'card-wake.ts')).href)
+          const WS = 'ws-abc'
+          /** 造一帧「执行落定」的 SSE `change` 负载（形状按看板的 `broadcast()`）。 */
+          const frameOf = (over) => JSON.stringify({
+            revision: 1, kind: 'execution-recorded',
+            tasks: [{ id: 't-card-1', title: '演示卡', status: 'in_review', workspaceId: WS,
+              version: 2, lastExecutionOutcome: 'succeeded', ...over }],
+          })
+          /** 造一个叫醒面（假投递 —— ⛔ 不打真网络）。 */
+          const makeWake = (wsId) => {
+            const sent = []
+            const w = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0',
+              workspaceIdOf: () => wsId,
+              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+              now: () => 1792300800000,
+            })
+            return { w, sent }
+          }
+
+          // ── N-a ⭐ 正向：一帧落定 ⇒ 叫一次（且说清是哪张卡）────────────────────
+          {
+            const { w, sent } = makeWake(WS)
+            w.subscribe('session-hob')
+            const n = await w.handleFrame('change', frameOf({}))
+            const okCount = n === 1 && sent.length === 1
+            const hasCard = sent[0]?.text?.includes('t-card-1') === true
+            const hasOutcome = sent[0]?.text?.includes('succeeded') === true
+            const hasNext = sent[0]?.text?.includes('taskboard_get') === true
+            if (okCount && hasCard && hasOutcome && hasNext) {
+              ok('N-a ✓ 正向：一帧「执行落定」⇒ **叫醒一次**，话里带卡号 / 结果 / 下一步'
+                + `（sent=${sent.length}）`)
+            } else {
+              bad('N-a 【卡跑完必须叫醒】没叫或叫得不对'
+                + `：叫醒次数=${n} · sent=${sent.length} · 带卡号=${hasCard}`
+                + ` · 带结果=${hasOutcome} · 带下一步=${hasNext}`)
+            }
+          }
+
+          // ── N-b ⭐ 反向：同一帧再投一次 ⇒ **不叫第二声** ────────────────────────
+          {
+            const { w, sent } = makeWake(WS)
+            w.subscribe('session-hob')
+            await w.handleFrame('change', frameOf({}))
+            const second = await w.handleFrame('change', frameOf({}))
+            if (second === 0 && sent.length === 1) {
+              ok('N-b ✓ 反向：同一张卡的同一次落定再投一帧 ⇒ **第二声不叫**（去重键 = 那次执行）')
+            } else {
+              bad('N-b 【同一张卡不许重复叫】重复帧又叫了一次'
+                + `：第二次返回值=${second} · 累计 sent=${sent.length}（应为 1）`)
+            }
+          }
+
+          // ── N-c ⭐ 反向：**别的项目**的卡跑完 ⇒ 一声都不叫（叫醒面 = 显示面）────
+          {
+            const { w, sent } = makeWake(WS)
+            w.subscribe('session-hob')
+            const n = await w.handleFrame('change', frameOf({ workspaceId: 'ws-OTHER' }))
+            if (n === 0 && sent.length === 0) {
+              ok('N-c ✓ 反向（叫醒面=显示面）：**别的项目**的卡跑完 ⇒ 一声都不叫')
+            } else {
+              bad('N-c 【叫醒面必须与显示面同一个】别的项目的卡把本会话叫醒了'
+                + `：返回值=${n} · sent=${sent.length} ⇒ 会出现"叫醒说有卡跑完、状态行里看不到它"`)
+            }
+          }
+
+          // ── N-d ⭐ 反向：`running` 那一帧**不许**当成"跑完"（防在点火时就叫）──────
+          {
+            const { w, sent } = makeWake(WS)
+            w.subscribe('session-hob')
+            const n = await w.handleFrame('change', frameOf({ lastExecutionOutcome: 'running' }))
+            if (n === 0 && sent.length === 0) {
+              ok('N-d ✓ 反向（不许假叫醒）：`lastExecutionOutcome=running`（点火那一帧）⇒ **不叫**')
+            } else {
+              bad('N-d 【点火不许当成跑完】`running` 那一帧把会话叫醒了'
+                + `：返回值=${n} · sent=${sent.length} ⇒ 这会在**开跑**时就叫，比不叫更坏`)
+            }
+          }
+
+          // ── N-e ⭐ 失败可观测：没有订阅者 ⇒ 有可读话（⛔ 不许静默）──────────────
+          {
+            const { w } = makeWake(WS)   // ⚠ 故意不 subscribe
+            const n = await w.handleFrame('change', frameOf({}))
+            const st = w.snapshot()
+            const says = typeof st.note === 'string' && st.note.includes('没有订阅者')
+            const counted = st.noSubscriberCount === 1
+            if (n === 0 && says && counted) {
+              ok('N-e ✓ 失败可观测：没人订阅时**有一句可读话**（且单独记一档 noSubscriber）'
+                + '—— ⛔ 与"没有卡跑完"分得开')
+            } else {
+              bad('N-e 【叫不出去必须说出来】没订阅者时没有可读输出'
+                + `：返回值=${n} · 有话=${says} · noSubscriberCount=${st.noSubscriberCount}`)
+            }
+            // 连不上时也要有一句
+            const { w: w2 } = makeWake(undefined)
+            w2.subscribe('session-hob')
+            await w2.handleFrame('change', frameOf({}))
+            const st2 = w2.snapshot()
+            const saysWs = typeof st2.note === 'string' && st2.note.includes('判不出')
+            if (saysWs) {
+              ok('N-e2 ✓ 失败可观测：**判不出本工作区** ⇒ 明说"不叫"，且 ⛔ 不猜一个 id 去过滤')
+            } else {
+              bad('N-e2 【判不出工作区必须说出来】没有可读输出（note=' + JSON.stringify(st2.note) + '）')
+            }
+          }
+
+          // ── N-f ⭐ 负向对拍：把"跑完"判据摘掉 ⇒ N-a 必须当场不成立 ──────────────
+          {
+            const srcPath = join(root, 'src', 'server', 'card-wake.ts')
+            const original = readFileSync(srcPath, 'utf8')
+            const GUARD = "if (outcome === undefined || outcome === 'running') continue"
+            if (!original.includes(GUARD)) {
+              bad('N-f 【负向对拍失去靶子】在 `card-wake.ts` 里找不到"跑完"守卫原文'
+                + `（期望：${GUARD}）⇒ 本判据已对不上实现，不按通过处理`)
+            } else {
+              // ⚠ 变异副本落在**本组自己的**临时目录（`lRoot` 已被上面的 finally 删掉）
+              const wakeRoot = mkdtempSync(join(tmpdir(), 'hob-wakecheck-'))
+              const mutPath = join(wakeRoot, 'card-wake.ts')
+              writeFileSync(mutPath, original.replace(GUARD, 'if (outcome === undefined) continue'), 'utf8')
+              const mutant = await import(pathToFileURL(mutPath).href)
+              const sent = []
+              const w = new mutant.CardWake({
+                origin: 'http://127.0.0.1:0',
+                workspaceIdOf: () => WS,
+                deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+                now: () => 1792300800000,
+              })
+              w.subscribe('session-hob')
+              // 点火那一帧（running）—— 原实现**不叫**，变异体**会叫**
+              const n = await w.handleFrame('change', frameOf({ lastExecutionOutcome: 'running' }))
+              if (n !== 0 || sent.length !== 0) {
+                ok('N-f ✓ 负向对拍：把"跑完"守卫摘掉（变异成只判 outcome===undefined）⇒'
+                  + ` N-d 的判据**当场不成立**（点火帧被叫了 ${sent.length} 声）⇒ N-d 真长牙`)
+              } else {
+                bad('N-f 【负向对拍失败】摘掉"跑完"守卫后，点火帧**仍然**没被叫'
+                  + ' ⇒ N-d 测的不是"只认落定"这件事（它永远 PASS，也就没有分辨力）')
+              }
+              try { rmSync(wakeRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+            }
+          }
+        } catch (e) {
+          bad(`N 卡跑完叫醒面：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+        }
+      }
     }
   }
 }
