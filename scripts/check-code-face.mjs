@@ -868,3 +868,125 @@ export function runSkeletonSource({ bad, ok }) {
       + ' ⇒ ⚠ **仓库那份是唯一来源**，清单是它的派生物；⚠ 两侧任一漂 ⇒ 本条当场红')
   }
 }
+
+/**
+ * 断言 S：**工作区名口径只有一套**（判据侧 ↔ 运行时侧必须逐字相同）。
+ *
+ * ── 为什么需要它（本条的病灶就是"没这条机检"）────────────────────────
+ *   账本区由 `<ledgerHome>/<工作区名>/` 派生，而"工作区名"被**两棵树**各自使用：
+ *     · 判据侧 `scripts/workspace-name.mjs`（`npm run check` 的 7 个脚本都用它）
+ *     · 运行时侧 `src/server/doc-read.ts`（`resolveLedgerRoot` 是唯一解析入口）
+ *   ⚠ `src/` 与 `scripts/` **互不 import**（脚本不得成为产品依赖；且
+ *   `package.json` 的 `files` 只发 `lib` ⇒ 装上后根本没有 `scripts/`）
+ *   ⇒ 只能**照抄**。⚠ 而"照抄"这件事没有机检就等于**必然漂**（E-130 同族）。
+ *
+ * ── 为什么这条比"看着像"更要紧 ─────────────────────────────────────
+ *   实测过后果（2026-10-18 · 第四张隔离卡）：**判据侧修好了、运行时侧没修**
+ *   ⇒ 判据报 12/12 全绿，**运行时却仍把账本区认到目录名派生的位置**
+ *   （隔离 worktree 里目录名 = 卡 id ⇒ 读写到一个不该存在的账本区）。
+ *   ⇒ 两侧**各自"看起来对"**，合起来就是错的 —— 这正是本条要堵的形态。
+ *
+ * ── 判据（⚠ 只比字面量与判定分支，⛔ 不比"行为等价"）────────────────
+ *   S1 配置文件名常量：两侧必须逐字相同（`WORKSPACE_CONFIG_FILE`）。
+ *   S2 字段名常量：两侧必须逐字相同（`WORKSPACE_NAME_KEY`）。
+ *   S3 两侧都必须有"落回目录名"的那条分支（否则未配置时行为会变）。
+ *   ⚠ 提取不到 ⇒ **FAIL 并明说**（⛔ 不许静默通过：静默通过 = 本条不存在）。
+ *   ⚠ 自带样本：S1/S2 的比对逻辑喂一对"该咬"与一对"不该咬"，证它有牙。
+ */
+export function runWorkspaceNameSource({ bad, ok }) {
+  const RUNTIME_TS = join(root, 'src', 'server', 'doc-read.ts')
+  const CHECK_MJS = join(root, 'scripts', 'workspace-name.mjs')
+
+  const readOrNull = (p) => { try { return readFileSync(p, 'utf8') } catch { return null } }
+  const srcR = readOrNull(RUNTIME_TS)
+  const srcC = readOrNull(CHECK_MJS)
+  if (srcR === null || srcC === null) {
+    bad('S 工作区名口径比对【基准缺失】：读不到 '
+      + `${[RUNTIME_TS, CHECK_MJS].map((p) => relative(root, p)).join(' / ')} ⇒ 不按通过处理`)
+    return
+  }
+
+  /** 取 `[export] const NAME = '…'` 的单引号字面量；找不到 ⇒ null（⛔ 不静默）。 */
+  const grabStr = (src, name) => {
+    const m = new RegExp(`(?:^|\\s)(?:export\\s+)?const\\s+${name}\\s*=\\s*'([^']*)'`).exec(src)
+    return m === null ? null : m[1]
+  }
+
+  let sBad = 0
+  const PAIRS = [
+    ['S1 配置文件名', 'WORKSPACE_CONFIG_FILE'],
+    ['S2 配置字段名', 'WORKSPACE_NAME_KEY'],
+  ]
+  for (const [label, name] of PAIRS) {
+    const a = grabStr(srcR, name)
+    const b = grabStr(srcC, name)
+    if (a === null) {
+      sBad++
+      bad(`${label}【提取不到】：运行时侧 ${relative(root, RUNTIME_TS)} 里找不到 `
+        + `\`const ${name} = '…'\`（写法变了？）— ⛔ 不许静默通过`)
+      continue
+    }
+    if (b === null) {
+      sBad++
+      bad(`${label}【提取不到】：判据侧 ${relative(root, CHECK_MJS)} 里找不到 `
+        + `\`const ${name} = '…'\`（写法变了？）— ⛔ 不许静默通过`)
+      continue
+    }
+    if (a !== b) {
+      sBad++
+      bad(`${label}**两侧不一致**：\`${name}\` 必须逐字相同`
+        + `\n      · ${relative(root, RUNTIME_TS)}: '${a}'`
+        + `\n      · ${relative(root, CHECK_MJS)}: '${b}'`
+        + '\n      ⇒ 两侧各自"看起来对"、合起来就是错的：判据按一套名字找账本区，'
+        + '\n        运行时按另一套名字读写账本区 ⇒ **判据绿、运行时却认到别处**')
+    }
+  }
+
+  // S3：两侧都必须留着"未配置 ⇒ 落回目录名"这条分支（向后兼容不许被悄悄删掉）
+  {
+    const rHasBase = /basename\s*\(/.test(srcR)
+    const cHasBase = /basename\s*\(/.test(srcC)
+    if (!rHasBase) {
+      sBad++
+      bad('S3 运行时侧找不到 `basename(` —— "未配置时落回目录名"这条向后兼容分支没了'
+        + '\n      ⇒ ⚠ 那会让**不带配置的工作区**行为与改动前不一致（本条的判据 ③）')
+    }
+    if (!cHasBase) {
+      sBad++
+      bad('S3 判据侧找不到 `basename(` —— 同上，"不带配置时落回旧猜法"这条没了')
+    }
+  }
+
+  // ── 自带样本（E-126：成对，且不依赖源码现状）──────────────────────────
+  {
+    const sameLiteral = (a, b) => a === b
+    const SHOULD_BITE = [
+      ['dsh-hob.workspace.json', 'dsh-hob.workspace.yaml', 'S-S1 只差扩展名'],
+      ['workspaceName', 'workspace', 'S-S2 只差后缀'],
+    ]
+    const SHOULD_NOT_BITE = [
+      ['dsh-hob.workspace.json', 'dsh-hob.workspace.json', 'S-S3 完全相同的字面量'],
+      ['workspaceName', 'workspaceName', 'S-S4 完全相同的字面量'],
+    ]
+    for (const [a, b, why] of SHOULD_BITE) {
+      if (sameLiteral(a, b)) {
+        sBad++
+        bad(`S 自带样本**没被咬**：${why} —— 两个**不同**的字面量被判成相同 ⇒ 判据改哑了`)
+      }
+    }
+    for (const [a, b, why] of SHOULD_NOT_BITE) {
+      if (!sameLiteral(a, b)) {
+        sBad++
+        bad(`S 自带样本**被误咬**：${why} —— 两个**相同**的字面量被判成不同 ⇒ 判据过宽`)
+      }
+    }
+  }
+
+  if (sBad === 0) {
+    ok('S ✓ 工作区名口径**只有一套**（运行时侧 ↔ 判据侧字面量逐字相同）'
+      + `· 配置文件名 \`${grabStr(srcR, 'WORKSPACE_CONFIG_FILE')}\``
+      + `· 字段名 \`${grabStr(srcR, 'WORKSPACE_NAME_KEY')}\``
+      + '· 两侧都保留"未配置 ⇒ 落回目录名"分支'
+      + ' ⇒ ⚠ 判据说的账本区与运行时读写的账本区**同源**')
+  }
+}

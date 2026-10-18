@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs'
 import { runRepoRules } from './check-repo-rules.mjs'
 import { findDuplicateSectionHeadings, runDocShape, runResidualMarkers, runTableIntegrity } from './check-doc-shape.mjs'
-import { runDiscipline, runRender, runSameSource, runSkeletonSource, runWriteScope, runZeroWidth } from './check-code-face.mjs'
+import { runDiscipline, runRender, runSameSource, runSkeletonSource, runWorkspaceNameSource, runWriteScope, runZeroWidth } from './check-code-face.mjs'
 
 const fail = []
 const note = []
@@ -57,6 +57,12 @@ const { mustTrack, mustExclude, README, readmeSrc, PKG } = runRepoRules({ bad, o
 
 // ── ③ K：同源判据的字面量必须逐字相同 ───────────────────────────────────
 runSameSource({ bad, ok })
+
+// ── ③ S：工作区名口径只有一套（运行时侧 ↔ 判据侧逐字相同）─────────────────
+//   ⚠ 2026-10-18（第四张隔离卡收口 · UD-143 裁定二）：⚠ **判据修好、运行时没修**
+//     会让"判据报绿、运行时却把账本区认到别处"—— 两侧各自看起来都对，合起来是错的。
+//     ⇒ 把"照抄"从人守变成机检（与 K 同族：K 管归档/作业书正则，S 管工作区名）。
+runWorkspaceNameSource({ bad, ok })
 
 // ── ② 四份正本形态机检 A / B / J / C / D / D′ / E ──────────────────────
 runDocShape({ bad, ok })

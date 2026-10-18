@@ -8,6 +8,7 @@
  * 权限边界（硬约束）：
  *   只允许读工作区根目录下的 **.md**；非 .md 或越界一律拒绝。
  */
+import { readFileSync } from 'node:fs'
 import { lstat, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
@@ -49,10 +50,26 @@ export function resolveWorkspaceRoot(configuredRoot: string, sessionCwd?: string
  *
  * ── 取值口径（顺序有意义）──────────────────────────────────────────
  *   ① 显式 `ledgerRoot` —— 直接指定，最高优先级（便于特殊工作区覆盖）；
- *   ② `ledgerHome` + **工作区目录名** —— 派生（配了就用它）；
+ *   ② **工作区名**（见下「工作区名从哪来」）+ `ledgerHome` —— 派生（配了就用它）；
  *   ③ 都没配 ⇒ **工作区的兄弟目录 `<工作区父目录>/.hob-ledgers/<工作区名>/`**
  *      —— ⚠ **可移植**：不含任何本机绝对路径，换机器/换用户自动成立；
  *   ④ 连工作区都判不出 ⇒ `undefined`（fail-closed：调用方拒绝，不猜）。
+ *
+ * ── 工作区名从哪来（⚠ 2026-10-18 · 第四张隔离卡 + 本批）────────────────
+ *   ① **配置文件**（唯一来源）：`<工作区根>/dsh-hob.workspace.json` 的 `workspaceName`。
+ *      ⇒ 与**判据脚本**同一份文件、同一个字段（见 `scripts/workspace-name.mjs`）：
+ *        判据侧与运行时侧**不是两套口径** —— 这是本批要治的东西。
+ *   ② **不带配置 / 写坏**（文件不在 / 非法 JSON / 缺字段 / 不是单段目录名）⇒
+ *      落回 `basename(<工作区根>)` = **改动前的行为**（向后兼容，逐字一致）。
+ *
+ *   ⚠ **为什么运行时不能直接 import `scripts/workspace-name.mjs`**：
+ *     `src/` 与 `scripts/` 是**两棵互不依赖的树**（脚本不得成为产品依赖；
+ *     且 `package.json` 的 `files` 只发 `lib` —— 装上后根本没有 `scripts/`）。
+ *     ⇒ 只能**照抄同一套口径**，并由机检钉住（见下「同源」那一段）。
+ *
+ *   ⚠ **为什么必须修这一处**：这是 `R-24` 的另一半。判据脚本修好之后，
+ *     运行时若仍用目录名猜 ⇒ **判据报绿、运行时却把账本区认到别处**
+ *     （隔离 worktree 里目录名 = 卡 id ⇒ 读写到一个不该存在的账本区）。
  *
  * ⚠ **为什么 ③ 用"兄弟目录"而不是硬编码 `/home/lk/FF/.hob-ledgers`**：
  *   硬编码会把插件绑死在本机路径上 —— 实测（2026-10-08 重启后复核）在
@@ -77,10 +94,11 @@ export function resolveLedgerRoot(
   const explicit = ledgerRoot.trim()
   if (explicit) return resolve(explicit)
 
-  // 工作区名 = 工作区根的 basename（归一化后；根目录本身没有名字 ⇒ 判不出）
+  // 工作区名：**配置优先**，未配置/写坏 ⇒ 落回目录名（= 改动前的行为）
+  // ⚠ 根目录本身没有名字 ⇒ 判不出（fail-closed，⛔ 不猜）
   if (workspaceRoot === undefined) return undefined
   const ws = resolve(workspaceRoot)
-  const base = basename(ws)
+  const base = workspaceNameOf(ws)
   if (base === '' || base === sep) return undefined
 
   const home = ledgerHome.trim()
@@ -88,6 +106,62 @@ export function resolveLedgerRoot(
 
   // ③ 缺省：工作区的**兄弟目录**（可移植，不含本机绝对路径）
   return resolve(dirname(ws), DEFAULT_LEDGER_DIR, base)
+}
+
+/**
+ * 工作区名配置文件（**工作区根**上，被 git 跟踪 ⇒ 随分支走）。
+ *
+ * ⚠ ⚠ **必须与 `scripts/workspace-name.mjs` 的 `WORKSPACE_CONFIG_FILE` 逐字相同** ——
+ *   两侧是同一处口径的两个副本（`src/` 与 `scripts/` 互不 import，只能照抄）。
+ *   机检：`npm run check:gitignore` 的 **S 组**比对这两个字面量（见该脚本 S 组注释）。
+ */
+export const WORKSPACE_CONFIG_FILE = 'dsh-hob.workspace.json'
+
+/** 配置里承载工作区名的字段（⚠ 同上：与 `scripts/workspace-name.mjs` 的 `WORKSPACE_NAME_KEY` 逐字相同）。 */
+export const WORKSPACE_NAME_KEY = 'workspaceName'
+
+/**
+ * 工作区名：**① 配置**（唯一来源）→ **② 目录名**（未配置/写坏的向后兼容路径）。
+ *
+ * ⚠ 与 `scripts/workspace-name.mjs` 的 `workspaceName()` **同一套判定**：
+ *   配置在且合法 ⇒ 用配置；不在 / 非法 JSON / 缺字段 / 不是单段目录名 ⇒ 落回 `basename(ws)`。
+ *
+ * ⚠ 与脚本侧**唯一的有意差别**：这里**不打印**诊断。运行时装在每个会话的热路径上，
+ *   每读一次账本就打一行 stderr 会污染宿主日志；"配置写坏了"这件事由
+ *   **判据侧**（`scripts/workspace-name.mjs`，只在跑 `npm run check` 时）报出来。
+ *   ⇒ 后果要说清：**运行时静默落回旧猜法**（⛔ 不静默变绿 —— 判据会红）。
+ *
+ * 安全：只接受**单段目录名**（`/`、`\`、`.`、`..` 一律视为写坏）
+ *   ⇒ ⛔ 不许用配置把账本区派到工作区之外。
+ *
+ * @param ws - 已 `resolve` 的工作区根。
+ * @returns 工作区名；判不出时为空串（调用方 fail-closed）。
+ */
+export function workspaceNameOf(ws: string): string {
+  const fallback = basename(ws)
+
+  let raw: string
+  try {
+    raw = readFileSync(join(ws, WORKSPACE_CONFIG_FILE), 'utf8')
+  } catch {
+    return fallback   // 文件不在 ⇒ 未配置
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return fallback   // 非法 JSON ⇒ 按未配置处理
+  }
+
+  const value = parsed === null || typeof parsed !== 'object'
+    ? undefined
+    : (parsed as Record<string, unknown>)[WORKSPACE_NAME_KEY]
+  if (typeof value !== 'string' || value.trim() === '') return fallback
+
+  const name = value.trim()
+  if (name === '.' || name === '..' || /[\\/]/.test(name)) return fallback
+  return name
 }
 
 /**

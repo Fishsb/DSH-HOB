@@ -31,7 +31,7 @@ export const SKELETON_ALLOWLIST: readonly string[] = [
 
 /** ⚠ 逐件 sha256（⚠ 与仓库不一致 ⇒ 收尾断言 FAIL）。 */
 export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
-  { path: 'INIT.md', sha256: '00fdff85ece55d208cb98046ef84b36e1e536a29f77a1c806c9e45418348ac4e', bytes: 21955 },
+  { path: 'INIT.md', sha256: 'c060c56367ceeecfc395b06ebc8c933687cd71af8d944b5f6f55dcd8f7828d81', bytes: 24856 },
   { path: 'README.md', sha256: '0a287c5077a119aab2306428df769c3cfda42cea6843d1bbc539037db7c98fa7', bytes: 55750 },
   { path: 'drafts/archive-index.md', sha256: '5926b04f828bb1de6f4874133862affefabebd6e65b2b9d7e512c1914d2157d9', bytes: 7967 },
   { path: 'drafts/check-gitignore-guide.md', sha256: 'f68f45639fde88ada30635df480d1ce23f2b6c9f9ba584b383a2a0db4bbadb04', bytes: 19714 },
@@ -70,7 +70,7 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
 ]
 
 /** 生成时刻（⚠ 只作追溯，⛔ 不作判据 —— 判据是 sha256）。 */
-export const SKELETON_GENERATED_AT = '2026-10-18T00:35:12.479Z'
+export const SKELETON_GENERATED_AT = '2026-10-18T01:21:27.876Z'
 
 export interface SkeletonManifest {
   allowlist: readonly string[]
