@@ -36,6 +36,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { workspaceName as configuredWorkspaceName } from './workspace-name.mjs'
 
 const root = process.cwd()
 /** 记录件目录（账本区相对路径）。 */
@@ -62,12 +63,19 @@ function tryGitBuf(args, cwd, input) {
   }
 }
 
+/**
+ * 工作区名：⚠ **从配置读**（唯一来源 = `scripts/workspace-name.mjs`）；
+ *   未配置 ⇒ 落回**本脚本改动前那套**（git-common-dir 的父目录名 → `basename(root)`）——
+ *   ⛔ 未配置时与改前逐字一致。
+ */
 function workspaceName() {
-  const abs = tryGit(['rev-parse', '--path-format=absolute', '--git-common-dir'], root)
-  if (abs !== null && abs.trim() !== '') return basename(dirname(abs.trim()))
-  const rel = tryGit(['rev-parse', '--git-common-dir'], root)
-  if (rel !== null && rel.trim() !== '') return basename(dirname(join(root, rel.trim())))
-  return basename(root)
+  return configuredWorkspaceName(() => {
+    const abs = tryGit(['rev-parse', '--path-format=absolute', '--git-common-dir'], root)
+    if (abs !== null && abs.trim() !== '') return basename(dirname(abs.trim()))
+    const rel = tryGit(['rev-parse', '--git-common-dir'], root)
+    if (rel !== null && rel.trim() !== '') return basename(dirname(join(root, rel.trim())))
+    return basename(root)
+  })
 }
 
 function ledgerHome() {

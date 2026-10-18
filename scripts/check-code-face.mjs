@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { workspaceName } from './workspace-name.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -619,8 +620,11 @@ export async function runWriteScope({ bad, ok }) {
         const m = /ledgerHome:\s*(\S+)/.exec(preset)
         if (m !== null) candidates.push(m[1])
       } catch { /* 预设读不到 ⇒ 只走候选 */ }
+      // ⚠ 工作区名**从配置读**（唯一来源 = `scripts/workspace-name.mjs`）；
+      //   未配置 ⇒ 落回 `basename(root)`（与改动前逐字一致）—— ⛔ 本脚本不再自己猜目录名。
+      const wsName = workspaceName(() => basename(root))
       for (const home of candidates) {
-        const dir = join(home, basename(root))
+        const dir = join(home, wsName)
         if (existsSync(dir)) return dir
       }
       return undefined

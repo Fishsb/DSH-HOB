@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { workspaceName } from './workspace-name.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -179,6 +180,14 @@ export function runRepoRules({ bad, ok }) {
     //     否则"缺依赖"与"判据失败"在 CI 里就分不开了）。
     ['scripts/check-all.mjs', '入库脚本（被 package.json 的 check / check:all 调用 · 一条命令跑完全部判据族并汇总退出码）'],
     ['scripts/preflight.mjs', '入库脚本（被 package.json 的 check:preflight 调用 · 判据前置条件体检，恒 exit 0）'],
+    // ⚠ 2026-10-18 补（本卡 · 修「检查脚本靠猜目录名定位账本区」）：**工作区名配置的载体**。
+    //   ⚠ 它是 `scripts/workspace-name.mjs` 读的**唯一**配置源（工作区根、被 git 跟踪）——
+    //     随分支走 ⇒ 同一份代码放进任何目录名都派得对（隔离 worktree 目录名 = 卡 id 也不影响）。
+    //   ⚠ 为什么必须进 MUST-TRACK：⚠ 它一旦被规则静默排除（**E-70** 形态），
+    //     **clone / 新 worktree 里就没有它** ⇒ 7 个脚本退回猜目录名 ⇒ 账本面整族报
+    //     「未执行 / 失败」，⚠ **而 git 不报任何错**（正是本卡病灶的复发路径）。
+    //   ⚠ 它不是脚本、没有落点问题：本条只是"必须能被 git 跟踪"的登记。
+    ['dsh-hob.workspace.json', '配置文件（工作区名的唯一来源 · 由 scripts/workspace-name.mjs 读取 · 随分支走）'],
   ]
 
   /** 该路径是否已在 git index 里（= 已 `git add`）。 */
@@ -493,6 +502,14 @@ export function runRepoRules({ bad, ok }) {
     ['scripts/check-repo-rules.mjs', '纯库：族 ① 入库/排除/骨架覆盖/脚本落点双向自检，由入口 import 调用'],
     ['scripts/check-doc-shape.mjs', '纯库：族 ② 正本形态 A/B/J/C/D/D′/E/I + findDuplicateSectionHeadings，由入口 import 调用'],
     ['scripts/check-code-face.mjs', '纯库：族 ③ 静态面 K/F/G/H，由入口 import 调用'],
+    // ⚠ 2026-10-18（本卡 · 修「检查脚本靠猜目录名定位账本区」）：**工作区名的唯一来源**。
+    //   ⚠ 它是**纯库**：只导出 `workspaceName()` / `configuredWorkspaceName()` 与两个常量，
+    //     没有自己的进程入口、输出段与退出码 ⇒ ⛔ 不该单独进 `npm run`。
+    //   ⚠ 存在的理由：原先 7 个脚本**各写一份**猜目录名的逻辑（`basename(root)` 等），
+    //     隔离 worktree 里目录名 = 卡 id ⇒ 账本面整族报「未执行 / 失败」。
+    //     现在**只有一个来源**（配置 + 本模块），调用方一律传自己的旧猜法兜底 ⇒
+    //     未配置时与改动前逐字一致（⛔ 不是放宽，是收口）。
+    ['scripts/workspace-name.mjs', '纯库：工作区名的唯一来源（配置优先 · 未配置落回调用方旧猜法），由各判据脚本 import 调用'],
   ]
   {
     let onDisk = []
@@ -616,7 +633,9 @@ export function runRepoRules({ bad, ok }) {
           const m = /ledgerHome:\s*(\S+)/.exec(preset)
           if (m !== null) candidates.push(m[1])
         } catch { /* 预设读不到 ⇒ 下面的候选为空 ⇒ 走"未执行"分支 */ }
-        const wsName = basename(root)
+        // ⚠ 工作区名**从配置读**（唯一来源 = `scripts/workspace-name.mjs`）；
+        //   未配置 ⇒ 落回 `basename(root)`（与改动前逐字一致）—— ⛔ 本脚本不再自己猜目录名。
+        const wsName = workspaceName(() => basename(root))
         for (const home of candidates) {
           const dir = join(home, wsName)
           if (existsSync(dir)) return dir
