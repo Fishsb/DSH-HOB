@@ -71,7 +71,7 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
 ]
 
 /** 生成时刻（⚠ 只作追溯，⛔ 不作判据 —— 判据是 sha256）。 */
-export const SKELETON_GENERATED_AT = '2026-10-18T08:32:17.188Z'
+export const SKELETON_GENERATED_AT = '2026-10-18T09:13:06.865Z'
 
 export interface SkeletonManifest {
   allowlist: readonly string[]
