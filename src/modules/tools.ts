@@ -396,9 +396,9 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       + '越出工作区、软链一律拒绝。'
       + '⚠ 三种内容分别处理：文本 ⇒ 返回正文；二进制 / 非 UTF-8 ⇒ 只给一句短提示（⛔ 不吐乱码）；'
       + '图片 ⇒ 提示改用 hob_read_image。'
-      + `⚠ 大文件会被截断并在尾部标注（单文件上限 ${65536} 字节）；需要后续内容用 offset/limit 分段读。`,
+      + `⚠ 大文件会被截断并在尾部标注（上限 ${maxReadBytes} 字节）；需要后续内容用 offset/limit 分段读。`,
     parameters: {
-      path: { type: 'string', required: true, description: '工作区内的相对路径（也可给工作区内的绝对路径），如 src/config.ts、.hob/README.md' },
+      path: { type: 'string', required: true, description: '工作区内的路径（相对或绝对），如 src/config.ts' },
       offset: { type: 'integer', description: '起始行（1 基）。缺省 = 从第 1 行。' },
       limit: { type: 'integer', description: '最多返回多少行。缺省 = 不按行切（只受字节上限约束）。' },
     },
@@ -438,9 +438,10 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
   const grepWorkspaceTool = defineTool({
     name: 'hob_grep',
     description:
-      '在本工作区**全部文件**里按正则搜索，返回**命中行**（⛔ 只读、不能写）。'
-      + '⚠ 读不成文本的文件（二进制 / 非 UTF-8）**会被跳过**，并在结果里**注明跳过了几个**'
-      + '（⛔ 不会把二进制正文当命中）。'
+      '在本工作区里按正则搜索，返回**命中行**（⛔ 只读、不能写）。'
+      + '⚠ **9 类目录不搜**（.git / node_modules / .venv / venv / __pycache__ / dist / build / .next / coverage），'
+      + '且**超过 512KB 的文件跳过**；故"没命中"不等于"工作区里没有"。'
+      + '⚠ 读不成文本的文件（二进制 / 非 UTF-8）也会跳过，并在结果里注明跳过了几个。'
       + '⚠ 单文件与总量都有上限，被截断时会明说；软链不跟随。',
     parameters: {
       pattern: { type: 'string', required: true, description: '正则源（大小写敏感），如 "function\\s+\\w+"、TODO|FIXME' },
@@ -541,12 +542,12 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
     description:
       '向本工作区的账本写入内容（账本在工作区之外，按工作区名独立存放）。'
       + '可写文件：' + LEDGER_FILES.join(' / ') + '，以及 archive/<YYYY-MM-DD-slug>/*.md；'
-      + '卷：volumes/<卷>/*.md；⚠ 卷下**具名两层**子目录另有一说（见 VOLUME_SUBDIRS）—— 本句是给人读的摘要，判据以写入侧常量为准。'
+      + '卷：volumes/<卷>/*.md；另有**具名两层**子目录（当前是 volumes/<卷>/context/rounds/*.md），未登记的会被拒。'
       + '骨架（README.md / templates/）只读。'
       + '⚠ `PROJECT.md`（项目方案）与账本同级、同在此可写面内；'
       + '但**方案只有用户能批准变更、Hob 只提议**（程序纪律，不是工具闸门）。'
       + 'append=追加一条（默认，编号须与账本现有编号连续）；overwrite=整文件重写（受缩水守卫保护）。'
-      + '写入前自动备份到 .hob/backups/；相同编号+相同内容会被幂等跳过。'
+      + '写入前自动备份到账本区的 backups/；相同编号+相同内容会被幂等跳过。'
       + '建议先用 dryRun:true 预演。',
     parameters: {
       file: {
@@ -568,7 +569,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       },
       reason: {
         type: 'string',
-        description: '为什么写这一条（审计用；会随结果回显）。',
+        description: '为什么写这一条（仅供人读，工具不消费它）。',
       },
       dryRun: {
         type: 'boolean',

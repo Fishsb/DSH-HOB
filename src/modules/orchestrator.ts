@@ -1135,7 +1135,7 @@ export function createHobOrchTools(orch: HobOrchestrator): {
       message: {
         type: 'string',
         required: true,
-        description: '要派的事。落地时先读你要它读的文件再执行，勿把整篇正文塞在这里。',
+        description: '要派的事。给路径与要点，勿把整篇正文塞在这里。',
       },
       round: { type: 'number', description: '这是第几轮（你自己数，回传时会带回来便于对号）。' },
       task: { type: 'string', description: '一句话说明这一轮派的是什么（回传时会带回来）。' },
