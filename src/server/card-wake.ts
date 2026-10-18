@@ -114,6 +114,15 @@ export interface CardWakeOpts {
   now?: () => number
   /** 可读日志出口（⛔ 不许静默）。 */
   log?: (line: string) => void
+  /**
+   * **点火帧回调**（2026-10-19 · 补"不许依赖事先读卡面"那个缺口）。
+   *
+   * ⚠ 每认出一张**正在开跑的卡**就调一次（`cardFiringEventsOf`）。
+   *   M5 用它去**按卡 id 现读** `executionSessionId` 并登记 ——
+   *   ⇒ 登记发生在**开跑那一刻**，而不是"某人读过卡面之后"。
+   * ⚠ 回调是**副作用**：不 await、抛错不外溢（失败要可读，但⛔ 不许打断 SSE 循环）。
+   */
+  onFiring?: (e: CardFiringEvent) => void
 }
 
 /** 去重表的**上限**（超过就丢最旧的 —— 丢的是很久以前那次，不影响"这次"）。 */
@@ -194,6 +203,8 @@ export class CardWake {
   private state: WakeState = { conn: 'idle', wokeCount: 0, noSubscriberCount: 0, seenCount: 0 }
   private abort: AbortController | undefined
   private stopped = false
+  /** 已处理过的点火帧（按 `卡id@时刻桶` 去重 —— ⚠ 同一帧只回调一次，防登记风暴）。 */
+  private readonly firedSeen = new Set<string>()
   /** 注入的"投递"函数（真环境 = `hobBus.deliver`；机检 = 假函数）。 */
   private deliverFn: ((sessionId: string, text: string) => Promise<unknown>) | undefined
 
@@ -283,6 +294,27 @@ export class CardWake {
       this.state = { ...this.state, note: '⚠ 判不出本会话的工作区 ⇒ **不叫**（⛔ 不猜一个 id 去过滤，那会叫错面）' }
       this.say(`[card-wake] ${this.state.note}`)
       return 0
+    }
+    /**
+     * ⚠ ⚠ **先处理点火帧**（2026-10-19 · 补缺口）：
+     *   点火那一帧**也带卡 id** ⇒ 从推送里认卡、回调出去让对方**按卡现读会话 id** 并登记。
+     *   ⚠ 顺序有意义：点火帧在**落定帧之前**到达，先登记才可能在落定时叫得出来。
+     * ⚠ 同一帧去重（`firedSeen`）—— 看板重连会补发/重发，⛔ 不许因此把登记做成风暴。
+     */
+    if (typeof this.opts.onFiring === 'function') {
+      for (const e of cardFiringEventsOf(parsed, wsId)) {
+        const key = `${e.taskId}@${Math.floor(e.at / 1000)}`
+        if (this.firedSeen.has(key)) continue
+        this.firedSeen.add(key)
+        if (this.firedSeen.size > SEEN_LIMIT) {
+          const first = this.firedSeen.values().next().value
+          if (first !== undefined) this.firedSeen.delete(first)
+        }
+        try { this.opts.onFiring(e) } catch (err) {
+          this.state = { ...this.state, note: `⚠ 点火帧回调出错（${String((err as Error)?.message ?? err)}）⇒ 那张卡这次**可能没登记上**` }
+          this.say(`[card-wake] ${this.state.note}`)
+        }
+      }
     }
     const events = cardDoneEventsOf(parsed, wsId)
     let woke = 0
@@ -502,6 +534,22 @@ export interface DispatchWakeState {
   lastWokeAt?: number
   lastWokeSession?: string
   lastWokeCard?: string
+  /**
+   * **按推送现读登记**成功过几次（2026-10-19 · 补缺口那一路）。
+   *
+   * ⚠ 它回答"**叫醒面到底接上没有**"：> 0 ⇒ 点火帧能把会话登记进来
+   *   ⇒ **不依赖任何人先浏览卡面**。⛔ 与"读过卡面才登记"那一档分开计。
+   */
+  pushedRegisterOk: number
+  /**
+   * 按推送现读**登记失败**的档（`no-session` / `unreadable`）次数与最近原话。
+   *
+   * ⚠ ⛔ 这两档都**不是**"没有卡在跑"：`no-session` = 那张卡确实没会话 id；
+   *   `unreadable` = **读不到**（看板没装 / 卡没了）⇒ 必须留可读话。
+   */
+  pushRegisterIssues: number
+  /** 最近一次按推送登记失败的可读原话（⛔ 不许静默）。 */
+  pushRegisterWhy?: string
 }
 
 /**
@@ -512,7 +560,10 @@ export interface DispatchWakeState {
  */
 export class DispatchWake {
   private readonly sessions = new Map<string, DispatchedSession>()
-  private state: DispatchWakeState = { registered: 0, pending: 0, wokeCount: 0, undecidableCount: 0 }
+  private state: DispatchWakeState = {
+    registered: 0, pending: 0, wokeCount: 0, undecidableCount: 0,
+    pushedRegisterOk: 0, pushRegisterIssues: 0,
+  }
   private readonly opts: DispatchWakeOpts
 
   constructor(opts: DispatchWakeOpts) {
@@ -564,6 +615,39 @@ export class DispatchWake {
       reported: false,
       rounds: 0,
     })
+  }
+
+  /**
+   * 记一次「按推送现读会话**成功登记**」（2026-10-19 · 补缺口那一路）。
+   *
+   * ⚠ 它存在的唯一理由：让 `hob_orch_status` 能**一眼看出叫醒面接没接上**
+   *   （作业书 §三-6）。⛔ 不许把它与"被谁读过卡面才登记"混成一个数。
+   */
+  noteRegistryOk(cardId: string): void {
+    this.state = {
+      ...this.state,
+      pushedRegisterOk: this.state.pushedRegisterOk + 1,
+      note: `按推送现读登记成功（卡 ${cardId}）—— 不依赖任何人先浏览卡面`,
+    }
+    this.say(`[dispatch-wake] ${this.state.note}`)
+  }
+
+  /**
+   * 记一次「按推送现读**登记失败**」（`no-session` / `unreadable`）。
+   *
+   * ⚠ ⛔ **这两种都不是"没有卡在跑"**：
+   *   · `no-session` = 那张卡**确实**没有执行会话 id（旧卡 / 非看板起的会话）；
+   *   · `unreadable` = **读不到**（看板没装 / 卡没了 / 工具调用失败）。
+   *   ⇒ 各自留一句**可读话**，⛔ 不许静默（那正是本件要治的失败模式）。
+   */
+  noteRegistryIssue(cardId: string, kind: 'no-session' | 'unreadable', why: string): void {
+    this.state = {
+      ...this.state,
+      pushRegisterIssues: this.state.pushRegisterIssues + 1,
+      pushRegisterWhy: `卡 ${cardId} 按推送现读登记失败（${kind}）：${why}`
+        + (kind === 'unreadable' ? ' —— ⛔ 这是"读不到"，不是"没有会话"' : ' —— ⚠ 这是"确实没有会话 id"'),
+    }
+    this.say(`[dispatch-wake] ${this.state.pushRegisterWhy}`)
   }
 
   /** 摘掉一个登记（会话结束 / 不再关心）。 */
@@ -682,4 +766,119 @@ export interface DispatchWakeOpts {
   now?: () => number
   /** 可读日志出口（⛔ 不许静默）。 */
   log?: (line: string) => void
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 2026-10-19 · **补覆盖缺口**：叫醒不许依赖「Hob 事先读过卡面」
+// ══════════════════════════════════════════════════════════════════════
+//
+// ⚠ ⚠ **实测缺口**（本件的由头，不是推断）：
+//   短活卡 `t-mvdzqp1a-80odlo`：`00:24:13` 点火 → `00:24:33` 落定 → **`00:35` 之后 Hob 才第一次读卡面**。
+//   按 `523b610` 的实现，卡的执行会话**只有读卡面时才登记**
+//   ⇒ 登记发生在"已经跑完之后" ⇒ `running → idle` 那一跳**在登记之前就过去了** ⇒ **一声不叫**。
+//   ⚠ 而那恰恰是**最需要叫醒**的情形（派出去就没再回头看）。
+//
+// ⚠ **补法（⛔ 不是"定时扫看板"）**：
+//   点火那一帧（`execution-recorded` + `lastExecutionOutcome==='running'`）**本来就带着卡 id**
+//   ⇒ **从推送里认卡**，再去读**那一张卡**的完整记录拿 `executionSessionId`，然后登记。
+//   ⛔ 不扫全表（只读**被推送点到的那一张**）；⛔ 不依赖任何人先浏览过。
+//   ⚠ 读不到 `executionSessionId` ⇒ **不猜**，落 `undecidable` + 一条可读话（⛔ 不许静默）。
+
+/** 点火帧里认出来的一张「正在开跑的卡」。 */
+export interface CardFiringEvent {
+  /** 卡 id（推送帧里就有）。 */
+  taskId: string
+  /** 那次执行的结果字（点火帧必然是 `running`）。 */
+  outcome: string
+  /** 该帧被认出的时刻（毫秒）。 */
+  at: number
+}
+
+/**
+ * 从一帧 SSE `change` 里认出「**正在开跑的卡**」（= 点火帧）。
+ *
+ * ⚠ 与 {@link cardDoneEventsOf} **正好互补**：那个认"落定"，这个认"开跑"。
+ *   两个都从**同一个推送**里来 ⇒ 谁也不用先去浏览一遍卡面。
+ *
+ * @param frame - 已 `JSON.parse` 的 `data:` 负载。
+ * @param workspaceId - 本工作区 id（`undefined` ⇒ 不认）。
+ */
+export function cardFiringEventsOf(frame: unknown, workspaceId: string | undefined): CardFiringEvent[] {
+  if (workspaceId === undefined || workspaceId === '') return []
+  if (frame === null || typeof frame !== 'object') return []
+  const f = frame as { kind?: unknown; tasks?: unknown }
+  if (typeof f.kind !== 'string' || !EXECUTION_KINDS.includes(f.kind)) return []
+  if (!Array.isArray(f.tasks)) return []
+  const out: CardFiringEvent[] = []
+  for (const raw of f.tasks) {
+    if (raw === null || typeof raw !== 'object') continue
+    const t = raw as Record<string, unknown>
+    if (t.workspaceId !== workspaceId) continue
+    if (t.lastExecutionOutcome !== 'running') continue   // ⚠ 只认**点火**那一帧
+    const id = typeof t.id === 'string' && t.id !== '' ? t.id : undefined
+    if (id === undefined) continue
+    out.push({ taskId: id, outcome: 'running', at: Date.now() })
+  }
+  return out
+}
+
+/** 一次"按卡查会话"的读取结果（⚠ 三档分开：读到 / 没有 / 读不到）。 */
+export type CardSessionLookup =
+  /** 读到了这张卡，且它有执行会话 id。 */
+  | { kind: 'found'; cardId: string; sessionId: string; executionId?: string; outcome?: string; status?: string }
+  /** 读到了这张卡，但它**没有**执行会话 id（旧卡 / 非看板起的会话）。 */
+  | { kind: 'no-session'; cardId: string; why: string }
+  /** ⚠ **读不到**这张卡（看板不可用 / 该卡不在了）——⛔ 不许当成"没有这张卡"。 */
+  | { kind: 'unreadable'; cardId: string; why: string }
+
+/**
+ * **按卡 id 现读它的执行会话**（= 补缺口的核心：登记不再依赖"读过卡面"）。
+ *
+ * ⚠ 它**只读被点名的那一张卡**（`taskboard_get`），⛔ 不扫全表 ⇒ 代价 = 每次点火一次调用。
+ * ⚠ 三档必须分开：`found` / `no-session` / `unreadable` ——
+ *   ⛔ 不许把后两者合并成"没有"，那正是本件要治的失败模式。
+ *
+ * @param cardId - 被推送点到的那张卡。
+ * @param getTool - 宿主 `tools` 注册表的按名取定义（拿不到 ⇒ `unreadable`）。
+ */
+export async function lookupCardSession(
+  cardId: string,
+  getTool: ((name: string) => any) | undefined,
+): Promise<CardSessionLookup> {
+  if (getTool === undefined) {
+    return { kind: 'unreadable', cardId, why: '拿不到宿主的工具注册表 ⇒ 读不到那张卡（⛔ 不等于"它没有会话"）' }
+  }
+  let tool: any
+  try { tool = getTool('taskboard_get') } catch (e) {
+    return { kind: 'unreadable', cardId, why: `取 taskboard_get 抛错：${String((e as Error)?.message ?? e)}` }
+  }
+  if (tool === undefined || tool === null || typeof tool.execute !== 'function') {
+    return { kind: 'unreadable', cardId, why: '当前工具面里没有 `taskboard_get`（看板没装 / 被收敛掉）' }
+  }
+  let value: any
+  try { value = await tool.execute({ id: cardId }, { agent: undefined }) } catch (e) {
+    return { kind: 'unreadable', cardId, why: `taskboard_get 抛错：${String((e as Error)?.message ?? e)}` }
+  }
+  const task = value !== null && typeof value === 'object' ? value.task : undefined
+  if (task === undefined || task === null) {
+    return { kind: 'unreadable', cardId, why: '`taskboard_get` 的返回值里没有 task（该卡可能已删除）' }
+  }
+  const executions = Array.isArray(task.executions) ? task.executions : []
+  const last = executions.length > 0 ? executions[executions.length - 1] : undefined
+  const sessionId = typeof last?.sessionId === 'string' && last.sessionId !== '' ? last.sessionId : undefined
+  if (sessionId === undefined) {
+    return {
+      kind: 'no-session',
+      cardId,
+      why: '这张卡的最近一次执行**没有记录会话 id**（旧卡 / 非看板起的会话）',
+    }
+  }
+  return {
+    kind: 'found',
+    cardId,
+    sessionId,
+    ...(typeof last?.id === 'string' && last.id !== '' ? { executionId: last.id } : {}),
+    ...(typeof last?.outcome === 'string' ? { outcome: last.outcome } : {}),
+    ...(typeof task.status === 'string' ? { status: task.status } : {}),
+  }
 }

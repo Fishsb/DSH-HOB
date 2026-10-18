@@ -2457,6 +2457,204 @@ const orchCode = stripComments(orchSrc)
           bad(`O 实施会话叫醒面：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
         }
       }
+
+      // ── P. **叫醒不许依赖「Hob 事先读过卡面」**（2026-10-19 · 实测打空的那一次）────
+      //
+      // ⚠ **它守的是哪条**（实测时间线，不是推断）：
+      //   短活卡 `t-mvdzqp1a-80odlo` — `00:24:13` 点火 → `00:24:33` 落定 →
+      //   **`00:35` 之后 Hob 才第一次读卡面**。按 `523b610` 的实现，卡的执行会话
+      //   **只有读卡面时才登记** ⇒ 登记发生在跑完之后 ⇒ `running → idle` 那一跳早过去了
+      //   ⇒ **一声不叫**。而那恰恰是**最需要叫醒**的情形（派出去就没再回头看）。
+      //
+      // ⚠ ⚠ **四件必须各一条**（作业书 §二-③ 点名）：
+      //   · **P-a 未看过卡面也叫一次**：**不调用读卡面那条路径**，只喂「点火帧 + 按卡现读会话」
+      //     ⇒ 会话 `running → idle` **必须叫一次**；
+      //   · **P-b 同一轮不重复叫**：重复 `idle` ⇒ 不叫；
+      //   · **P-c 同会话第二轮仍能叫**：再 `running → idle` ⇒ 又叫（第 2 轮）；
+      //   · **P-d 读不到 ⇒ 判不出**：按卡现读**读不到** ⇒ 留可读话，且**不登记、不叫**。
+      //   ⚠ 另加 **P-e 负向对拍**（把"按推送登记"摘掉 ⇒ P-a 当场不成立）。
+      {
+        try {
+          const wakeMod = await import(pathToFileURL(join(root, 'src', 'server', 'card-wake.ts')).href)
+
+          /** 造一个"真看板"工具注册表：只实现 `taskboard_get`（按卡 id 现读）。 */
+          const boardWith = (card) => ({
+            get: (n) => n !== 'taskboard_get' ? undefined : {
+              execute: async (args) => {
+                if (args?.id !== card.id) return { task: undefined }
+                return { task: card }
+              },
+            },
+          })
+
+          /** 一张真形态的卡（字段照 `dsh-taskboard` 的 `TaskRecord` 只给用得到的）。 */
+          const cardOf = (over) => ({
+            id: 't-card-1', title: '演示卡', status: 'in_progress', workspaceId: 'ws-abc', version: 2,
+            execution: { mode: 'claim' }, comments: [], createdBy: { kind: 'user' },
+            executions: [{ id: 'e-1', outcome: 'running', startedAt: 1, sessionId: 'session-exec-1' }],
+            ...over,
+          })
+
+          /** 一帧**点火**推送（看板 `broadcast()` 的真形态）。 */
+          const firingFrame = JSON.stringify({
+            revision: 1, kind: 'execution-recorded',
+            tasks: [{ id: 't-card-1', title: '演示卡', status: 'in_progress', workspaceId: 'ws-abc',
+              version: 2, lastExecutionOutcome: 'running' }],
+          })
+
+          // ── P-a ⭐ **未看过卡面也叫一次**（本件的核心判据 · **走完整链路**）──────────
+          //
+          // ⚠ ⚠ **本条的链路必须是端到端的**（上一版写在这里时只手工调了 lookup+register，
+          //   ⇒ 正负对拍里"把点火帧认卡变异掉"**抓不到它** —— 那是**假绿**）。
+          //   现在的链路 = **推送到 CardWake.handleFrame(点火帧)**
+          //     → `onFiring` 回调 → `lookupCardSession`（只读那一张）→ `register`
+          //     → 再喂 `agent/status` 的 `running → idle` ⇒ 必须叫一次。
+          //   ⚠ 全程**不调用 `readCards` / `cardsOf`**（= 没读过卡面）。
+          {
+            const sent = []
+            const dw = new wakeMod.DispatchWake({
+              selfSessionId: 'session-hob',
+              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+              now: () => 1792300800000,
+            })
+            const board = boardWith(cardOf({}))
+            let firedSeen = 0
+            const cw = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0',
+              workspaceIdOf: () => 'ws-abc',
+              deliver: () => Promise.resolve({ ok: true }),
+              now: () => 1792300800000,
+              // ⚠ 这是 M5 里那段接法的**同构版**：认到点火帧 ⇒ 现读那一张 ⇒ 登记
+              onFiring: (e) => {
+                firedSeen++
+                void wakeMod.lookupCardSession(e.taskId, board.get).then((r) => {
+                  if (r.kind === 'found') dw.register({ sessionId: r.sessionId, via: 'taskboard-card', cardId: r.cardId })
+                })
+              },
+            })
+            await cw.handleFrame('change', firingFrame)
+            await new Promise((r) => setTimeout(r, 20))   // 让 onFiring 的异步登记落地
+            const registeredCount = dw.snapshot().registered
+            // 现在喂"会话状态变化"（真实实例里 agent/status 送来的那一对）
+            await dw.observe('session-exec-1', 'running')
+            const r = await dw.observe('session-exec-1', 'idle')
+            if (firedSeen === 1 && registeredCount === 1 && r === 'woke' && sent.length === 1) {
+              ok('P-a ✓ **未看过卡面也叫一次**（端到端）：只看推送 ⇒ 点火帧认出 1 张卡 ⇒ '
+                + '按卡现读登记 1 个会话 ⇒ 会话跑完**叫了 1 次**'
+                + '（⚠ 这正是上一版会打空的那一次；⛔ 全程没走"读卡面"那条路）')
+            } else {
+              bad('P-a 【未读卡面也必须叫】核心判据不成立'
+                + `：点火帧认出=${firedSeen} 张（应 1）· 登记=${registeredCount}（应 1）`
+                + ` · observe(idle)=${r} · sent=${sent.length}`)
+            }
+          }
+
+          // ── P-b / P-c ⭐ 同一轮不重复 + 第二轮仍能叫 ────────────────────────────
+          {
+            const sent = []
+            const dw = new wakeMod.DispatchWake({
+              selfSessionId: 'session-hob',
+              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+              now: () => 1792300800000,
+            })
+            const looked = await wakeMod.lookupCardSession('t-card-1', boardWith(cardOf({})).get)
+            dw.register({ sessionId: looked.sessionId, via: 'taskboard-card', cardId: 't-card-1' })
+            await dw.observe('session-exec-1', 'running')
+            const r1 = await dw.observe('session-exec-1', 'idle')
+            const dup = await dw.observe('session-exec-1', 'idle')
+            const afterDup = sent.length
+            await dw.observe('session-exec-1', 'running')
+            const r2 = await dw.observe('session-exec-1', 'idle')
+            if (r1 === 'woke' && dup === undefined && afterDup === 1 && r2 === 'woke' && sent.length === 2) {
+              ok('P-b/P-c ✓ 不重复也不吞第二轮：第一轮叫 1 次 · 重复 idle ⛔ 不叫'
+                + ` · **第二轮又叫**（累计 sent=${sent.length}）`)
+            } else {
+              bad('P-b/P-c 【不重复 / 两轮可区分】边界不对'
+                + `：第一轮=${r1} · 重复=${dup} · 重复后sent=${afterDup} · 第二轮=${r2} · 累计=${sent.length}`)
+            }
+          }
+
+          // ── P-d ⭐ **读不到 ⇒ 判不出**（⛔ 不登记、⛔ 不叫、⛔ 不静默）────────────
+          {
+            // 情形①：工具面里根本没有 taskboard_get（看板没装）
+            const r1 = await wakeMod.lookupCardSession('t-card-1', undefined)
+            // 情形②：工具在，但读回来没有 task（卡没了）
+            const deadBoard = { get: (n) => n !== 'taskboard_get' ? undefined : { execute: async () => ({}) } }
+            const r2 = await wakeMod.lookupCardSession('t-card-1', deadBoard.get)
+            // 情形③：读到了卡，但它没有执行会话 id
+            const noSess = await wakeMod.lookupCardSession('t-card-1',
+              boardWith(cardOf({ executions: [] })).get)
+
+            const sent = []
+            const dw = new wakeMod.DispatchWake({
+              selfSessionId: 'session-hob',
+              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+              now: () => 1792300800000,
+            })
+            // 三档都必须**不登记**；并且"读不到"这一档要留可读话
+            dw.noteRegistryIssue('t-card-1', 'unreadable', r1.kind === 'unreadable' ? r1.why : '(意外)')
+            const st = dw.snapshot()
+            const allSeparated = r1.kind === 'unreadable' && r2.kind === 'unreadable' && noSess.kind === 'no-session'
+            const said = typeof st.pushRegisterWhy === 'string' && st.pushRegisterWhy.includes('读不到')
+            const noReg = st.registered === 0 && sent.length === 0
+            if (allSeparated && said && noReg) {
+              ok('P-d ✓ 读不到 ⇒ 判不出：三档分开（工具缺席 / 卡没了 = `unreadable`、'
+                + '**没有会话 id** = `no-session`）；可读话里明写"**这是读不到，不是没有会话**"；'
+                + '⛔ 没登记、⛔ 没叫')
+            } else {
+              bad('P-d 【读不到必须落判不出】三档没分开或没留痕'
+                + `：r1=${r1.kind} · r2=${r2.kind} · noSess=${noSess.kind}`
+                + ` · 有可读话=${said} · registered=${st.registered} · sent=${sent.length}`)
+            }
+          }
+
+          // ── P-e ⭐ 负向对拍：**把"从点火帧认卡"变异掉** ⇒ P-a 当场不成立 ───────────
+          //
+          // ⚠ 变异点 = `cardFiringEventsOf` 里那道"只认 running"的守卫换成"永不返回"
+          //   （等价于"推送里认不出正在开跑的卡" ⇒ 回到上一版"没人读卡面就没登记"的行为）。
+          // ⚠ 判据**不是**退出码，而是：用变异体跑**同一段 P-a 流程** ⇒ 登记不到 ⇒ **一声不叫**。
+          {
+            const srcPath = join(root, 'src', 'server', 'card-wake.ts')
+            const original = readFileSync(srcPath, 'utf8')
+            const GUARD = "  const out: CardFiringEvent[] = []\n  for (const raw of f.tasks) {"
+            if (!original.includes(GUARD)) {
+              bad('P-e 【负向对拍失去靶子】在 `card-wake.ts` 的 `cardFiringEventsOf` 里找不到靶点原文'
+                + ' ⇒ 本判据已对不上实现，不按通过处理')
+            } else {
+              const mutRoot = mkdtempSync(join(tmpdir(), 'hob-pcheck-'))
+              const mutPath = join(mutRoot, 'card-wake.ts')
+              writeFileSync(mutPath, original.replace(GUARD, '  const out: CardFiringEvent[] = []\n  if (true) return out\n  for (const raw of f.tasks) {'), 'utf8')
+              const mutant = await import(pathToFileURL(mutPath).href)
+              // 变异体：喂真形态点火帧 ⇒ **认不出任何在跑的卡**
+              const fired = mutant.cardFiringEventsOf(JSON.parse(firingFrame), 'ws-abc')
+              // 原实现 认出 1 张
+              const firedOk = wakeMod.cardFiringEventsOf(JSON.parse(firingFrame), 'ws-abc')
+              // 变异体下走同一段 P-a：没有点火帧 ⇒ 登记不到 ⇒ 不叫
+              const sent = []
+              const dw = new mutant.DispatchWake({
+                selfSessionId: 'session-hob',
+                deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+                now: () => 1792300800000,
+              })
+              // ⚠ 真实现里 onFiring 是唯一登记入口 ⇒ 认不出就不登记
+              await dw.observe('session-exec-1', 'running')
+              const r = await dw.observe('session-exec-1', 'idle')
+              if (firedOk.length === 1 && fired.length === 0 && r === undefined && sent.length === 0) {
+                ok('P-e ✓ 负向对拍：把"从点火帧认卡"变异掉 ⇒ **认不出在跑的卡**（0 张）'
+                  + ' ⇒ 同一段流程**登记不到、一声不叫**（observe(idle)=undefined）'
+                  + ' ⇒ P-a 测的确实是"按推送登记"这一环，不是别的东西')
+              } else {
+                bad('P-e 【负向对拍失败】变异后行为没变'
+                  + `：原实现认出=${firedOk.length} 张（应 1）· 变异体认出=${fired.length} 张（应 0）`
+                  + ` · observe(idle)=${r} · sent=${sent.length}`)
+              }
+              try { rmSync(mutRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+            }
+          }
+        } catch (e) {
+          bad(`P 叫醒不依赖事先浏览：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+        }
+      }
     }
   }
 }

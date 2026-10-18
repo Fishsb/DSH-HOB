@@ -58,7 +58,10 @@ import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
 import type { PresetSource } from './bus.ts'
 import { resolveLedgerRoot } from '../server/doc-read.ts'
 import { readCards, renderCardLines, type CardSnapshot, type GetTool } from '../server/board-cards.ts'
-import { CardWake, DispatchWake, type WakeState, type DispatchWakeState } from '../server/card-wake.ts'
+import {
+  CardWake, DispatchWake, lookupCardSession,
+  type WakeState, type DispatchWakeState, type CardFiringEvent,
+} from '../server/card-wake.ts'
 import {
   ORCH_STATE_FILENAME,
   ORCH_STATE_SUBDIR,
@@ -568,6 +571,40 @@ export function apply(ctx: any): void {
     /** 叫醒面现用的工作区 id（⚠ 由订阅时登记 —— `CardWake` 每次现读它）。 */
     let wsIdForWake: string | undefined
 
+    /**
+     * **按卡 id 现读执行会话并登记**（2026-10-19 · 补"不许依赖事先读卡面"那个缺口）。
+     *
+     * ⚠ ⚠ 它解决的是**实测打空**的那一次：卡 00:24:13 点火 → 00:24:33 落定 →
+     *   Hob 00:35 才第一次读卡面 ⇒ 登记发生在跑完之后 ⇒ `running → idle` 那一跳早过去了。
+     *   现在改成：**点火帧一到就现读这一张卡**，把 `executionSessionId` 登记进叫醒面。
+     * ⚠ **只读被点名的那一张**（`taskboard_get`），⛔ 不扫全表、⛔ 不靠定时轮询。
+     * ⚠ 三档分开（`found` / `no-session` / `unreadable`），后两档**必须留可读痕**
+     *   （`registryIssue`），⛔ 不许静默当成"没有这张卡"。
+     */
+    const registerCardByPush = async (cardId: string): Promise<void> => {
+      try {
+        const registry: any = (() => { try { return svcCtx.get?.('tools') } catch { return undefined } })()
+        const getTool = registry !== undefined && registry !== null && typeof registry.get === 'function'
+          ? (n: string) => registry.get(n)
+          : undefined
+        const r = await lookupCardSession(cardId, getTool)
+        if (r.kind === 'found') {
+          dispatchWake.register({
+            sessionId: r.sessionId,
+            via: 'taskboard-card',
+            cardId: r.cardId,
+            ...(r.executionId === undefined ? {} : { executionId: r.executionId }),
+          })
+          dispatchWake.noteRegistryOk(cardId)
+          return
+        }
+        // ⚠ 后两档**都不是**"没有卡在跑" ⇒ 各自留一句可读话（⛔ 不许静默）
+        dispatchWake.noteRegistryIssue(cardId, r.kind, r.why)
+      } catch (e) {
+        dispatchWake.noteRegistryIssue(cardId, 'unreadable', `按卡现读会话时抛错：${String((e as Error)?.message ?? e)}`)
+      }
+    }
+
     const wake = new CardWake({
       origin: (() => {
         try {
@@ -576,6 +613,11 @@ export function apply(ctx: any): void {
         } catch { return undefined }
       })(),
       workspaceIdOf: () => wsIdForWake,
+      /**
+       * ⚠ **点火帧回调**（补缺口的核心）：推送里已经带卡 id ⇒ 现读那一张并登记。
+       * ⚠ **不 await**（SSE 循环不能被磁盘/工具调用拖住）；失败由 `registerCardByPush` 自己留痕。
+       */
+      onFiring: (e: CardFiringEvent) => { void registerCardByPush(e.taskId) },
       deliver: (sessionId: string, text: string) => {
         const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
         if (bus === undefined || typeof bus.deliver !== 'function') {
@@ -1369,10 +1411,24 @@ export function createHobOrchTools(orch: HobOrchestrator): {
       const dispatchWakeLines = ((): string[] => {
         try {
           const d = orch.dispatchWakeState()
-          const head = `实施会话叫醒面：登记 ${d.registered} 个 · 待跑 ${d.pending} 个`
+          /**
+           * ⚠ ⚠ **"接没接上，一眼能看出来"**（作业书 §三-6 的硬要求）：
+           *   判据 = **有没有过"按推送现读登记成功"**（`pushedRegisterOk`）——
+           *   它 > 0 即证明"**不依赖任何人先浏览卡面**"这条路真的通了；
+           *   = 0 且登记也是 0 ⇒ 明写"**还没接上**"（⛔ 不许让人以为是"没有卡在跑"）。
+           * ⚠ 与"读过卡面才登记"分开计：那一档是旧的、会打空的那条路。
+           */
+          const wired = d.pushedRegisterOk > 0
+          const head = `实施会话叫醒面：${wired ? '✅ **已接上（按推送现读）**' : '⚠ **还没接上（未收到过点火帧）**'}`
+            + ` · 登记 ${d.registered} 个 · 待跑 ${d.pending} 个`
             + ` · 已叫醒 ${d.wokeCount} 次`
+            + (d.pushedRegisterOk > 0 ? ` · 按推送现读登记成功 ${d.pushedRegisterOk} 次` : '')
             + (d.undecidableCount > 0 ? ` · ⚠ **判不出 ${d.undecidableCount} 次**` : '')
           const lines = [head]
+          if (d.pushRegisterIssues > 0 && d.pushRegisterWhy !== undefined) {
+            lines.push(`  ↳ ⚠ ${d.pushRegisterWhy}`)
+            lines.push(`  ↳ 按推送现读**登记失败 ${d.pushRegisterIssues} 次** —— ⛔ 这**不是**"没有卡在跑"。`)
+          }
           if (d.undecidableCount > 0 && d.undecidableWhy !== undefined) {
             lines.push(`  ↳ ⚠ ${d.undecidableWhy}`)
             lines.push('  ↳ ⛔ **判不出不是结论** —— 既不是"跑完了"，也不是"没跑过"。')
@@ -1384,6 +1440,8 @@ export function createHobOrchTools(orch: HobOrchestrator): {
           }
           if (d.registered === 0) {
             lines.push('  ↳ ⚠ 一个实施会话都没登记 ⇒ 卡跑完也**叫不了**（⛔ 这不等于"没有卡在跑"）')
+            lines.push('  ↳ 期望的接法是：**卡一点火，推送就带卡 id ⇒ 现读这一张卡的执行会话并登记**'
+              + '（⛔ 不需要谁先去浏览卡面）。')
           }
           return lines
         } catch (e) {
