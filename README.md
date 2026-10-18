@@ -101,6 +101,15 @@ dsh --profile <profile> --dump-config | grep dsh-hob
 | `debugLog` | `false` | 打开 ⇒ 诊断日志**落盘**（有字节上限） | 布尔。⚠ 缺省关：一个只读用途不该有写盘副作用 |
 | `debugLogPath` | 未设 | 诊断日志写到哪 | 未设 = `/tmp/dsh-hob-preset-tools.log`。⚠ 只在 `debugLog: true` 时有意义 |
 
+⚠ **`ledgerHome` 这一行的实际形态**（换机前必读）：
+本仓库随包发出的那份预设行里，`ledgerHome` **显式给了一个绝对路径** —— 那是**本实例取值**
+（即打这个包的那台机器上的位置，⛔ 本文件不列它的真路径）。**它不代表派生规则**：
+派生规则**本来就有且是对的**，就在代码里 —— 留空即走
+`<工作区父目录>/.hob-ledgers/<工作区名>/`（`src/server/doc-read.ts` 的 `DEFAULT_LEDGER_DIR = '.hob-ledgers'`，
+该档不含任何本机绝对路径）。
+⇒ **换机器 / 换用户时这个值必须改**：改成那台机器上存在的位置，或直接留空走派生。
+⚠ 不改的后果不是报错，而是**账本被写到上一台机器的路径**上（别处已实测过一次）。
+
 ⚠ ⚠ **改 B 组有一个坑**：profile 层写 `- id: preset-dsh-hob` 是**整段替换**（不合并）——
 你若只写一项，预设里另外九行工具声明会**一起消失**（助手的工具面会塌掉）。
 ⇒ 要改 B 组，**改包内的 `preset/dsh-hob/preset-dsh-hob.patch.yml`** 并重新构建，

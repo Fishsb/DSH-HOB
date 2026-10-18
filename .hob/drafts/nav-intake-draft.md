@@ -74,7 +74,7 @@ DH-P01  dsh-hob（项目）
 
 | 码 | 功能名 | userView（一句话） | 代表性文件（磁盘实存） |
 |---|---|---|---|
-| **DH-F01** | **预设装配** | 选择器里能看到并用上 `Hob` 预设（**本项目只有一个预设**） | `src/modules/preset.ts` · `preset/dsh-hob/preset-dsh-hob.patch.yml` |
+| **DH-F01** | **预设装配** | 选择器里能看到并用上 `Hob` 预设（**本项目只有一个预设**） | `src/shared/planning-preset.ts` · `preset/dsh-hob/preset-dsh-hob.patch.yml` |
 | **DH-F02** | **工具面收敛（与门）** | Hob 只拿到被允许的工具，写/命令类拿不到 | `src/preset/tools.ts` · `src/modules/tools.ts` |
 | **DH-F04** | **账本读写** | Hob 能读项目文档、写自己的账本（带越界/软链守卫） | `src/server/doc-read.ts` · `src/server/hob-write.ts` |
 | **DH-F05** | **设置面板** | 设置页能看到并改动本插件的配置项 | `src/client/index.ts`(79 行) · `src/client/settings-panel.tsx`(225 行) · `src/client/settings.ts`(99 行) · `src/modules/settings.ts`(115 行) |
