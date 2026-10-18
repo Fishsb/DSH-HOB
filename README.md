@@ -139,18 +139,28 @@ dsh --profile <profile> --dump-config | grep dsh-hob
 dsh plugin --profile <profile> remove dsh-hob
 ```
 
-⚠ **卸载命令不会清掉下面这些**。逐条点名，按需自己删：
+**残留一共 6 类**，下表逐条给「位置」与「怎么清」。⚠ 其中**只有 1 类不能删**（第 2 类，记录区），
+其余按你的需要清；清之前先确认那里面没有你要留的东西。
 
 | # | 残留 | 位置 | 怎么清 |
 |---|---|---|---|
-| 1 | **骨架**（铺进每个被协助的工作区） | `<工作区>/.hob/` | `rm -rf <工作区>/.hob/`。⚠ 会连你自己加的模板一起删，先看一眼 |
-| 2 | **记录区**（在工作区之外） | `<记录区父目录>/<工作区名>/`（父目录 = 你配的 `ledgerHome`，或派生出的兄弟目录 `.hob-ledgers/`） | ⛔ **别随手删** —— 那是你的项目资料（方案 / 决策 / 上下文 / 归档 / 改前备份）。要清就先搬走 |
-| 3 | **profile 依赖** | `<profile>/package.json` 的 `dependencies` 与 `dsh.profile.bundles` | 由上面的 `remove` 处理；若它没清干净，手工删那两处 |
-| 4 | **profile 的 id 定向覆盖条目** | `<profile>/cordis.patch.yml` 里 `- id: dsh-hob` 那一段 | **手工删**。⚠ `remove` **不清这一条**。不删的后果：每次启动 stderr 多一行 `patch: entry "dsh-hob" not found`，**不影响启动** |
-| 5 | **`node_modules` 里的符号链接**（用 `link:` 装过才会有） | `<profile>/node_modules/dsh-hob` | 随 #3 一起消失；若没有，手工删 |
-| 6 | **运行态** | `<记录区父目录>/<工作区名>/runtime/`（含一个自忽略的 `.gitignore`） | 随 #2 一起；它**不进 git**，留着也不污染 |
+| 1 | **骨架**（铺进每个被协助的工作区） | `<工作区>/.hob/` | `rm -rf <工作区>/.hob/`。⚠ 会连你自己加的模板一起删，先看一眼再删 |
+| 2 | **记录区**（在工作区之外） | `<记录区父目录>/<工作区名>/`（父目录 = 你配的 `ledgerHome`，或派生出的兄弟目录 `.hob-ledgers/`）。典型内容：项目档案 / 方案 / 决策 / 上下文 / 归档 / 改前备份 / 运行态 | ⛔ **这一条不能删** —— 那是**你的项目资料**（不是插件的缓存，删了没有第二份）。真要清就**先搬走**；卸载插件本身**不需要**动它 |
+| 3 | **profile 依赖** | `<profile>/package.json` 的 `dependencies` 与 `dsh.profile.bundles` 里的 `dsh-hob` | 由上面的 `remove` 处理（实测两处都会被清掉）。若你的环境里它没清干净，手工删那两处 |
+| 4 | **profile 的 id 定向覆盖条目** | `<profile>/cordis.patch.yml` 里 `- id: dsh-hob` 那一段 | **手工删**。⚠ `remove` **不清这一条**（实测）。不删的后果：每次启动 stderr 多一行 `patch: entry "dsh-hob" not found`，**不影响启动** |
+| 5 | **`node_modules` 里的符号链接**（用 `link:` 装过才会有） | `<profile>/node_modules/dsh-hob` | ⚠ **实测：`remove` 之后它仍然在**（不是"随 #3 一起消失"）。`rm <profile>/node_modules/dsh-hob` 手工删；再跑一次 `dsh plugin --profile <profile> install` 也不会替你清掉 |
+| 6 | **运行态** | `<记录区父目录>/<工作区名>/runtime/`（插件自己写的运行态文件，含一个自忽略的 `.gitignore`） | 随 #2 一起；它**不进 git**，留着也不污染 |
 
 ⚠ 插件**不写** `~/.dsh/**` 下除 profile 配置以外的任何东西（骨架铺装对被禁止的目录有显式拒绝）。
+
+### 5.1 升级不改你的设置
+
+把插件**换成另一个版本**（换安装路径、或装一个版本号不同的 `link:` 包）**不会动**
+`<profile>/cordis.patch.yml` —— 你在设置页里改过的值**原样保留**。
+
+⚠ 但有一条**要避开**的写法：在 profile 的 `cordis.patch.yml` 里写 `- id: dsh-hob` 并给一份 `config:`
+是**整段替换**（不合并）。**只写其中几项 ⇒ 没写的那几项被抹掉**（实测会被抹掉，不是"回落到默认"）。
+⇒ 要么在设置页里改（它会替你写全），要么在 profile 层**写全**你要的字段。
 
 ---
 
