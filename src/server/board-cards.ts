@@ -86,6 +86,26 @@ export interface CardReading {
   changedFiles?: number
   /** **可读原因**（只在该档需要时给：失败原因 / 卡住判据 / 受阻说明）。 */
   reason?: string
+  /**
+   * 这张卡**最近一次执行的会话 id**（2026-10-19 · `TASK-2` 改判信号源）。
+   *
+   * ⚠ ⚠ **它的唯一用途是"把卡的执行会话登记进编排器，好让会话状态变化叫醒 Hob"** ——
+   *   卡只是**结果落点**，⛔ 不是信号源（`TASK-2` §二-① 明令）。
+   * ⚠ 读不到（旧卡 / 非看板起的会话 / 看板没记）⇒ **不填**（调用方据此落"判不出"，
+   *   ⛔ 不许当成"没有在跑"）。
+   */
+  executionSessionId?: string
+  /** 最近一次执行的 **execution id**（去重键；同一会话连跑两轮靠它区分）。 */
+  executionId?: string
+  /** 最近一次执行的结果字（`running` / `succeeded` / `failed` / `cancelled`）。 */
+  executionOutcome?: string
+  /**
+   * **谁建的这张卡**（`createdBy.sessionId`；看板没记 ⇒ undefined）。
+   *
+   * ⚠ 判「这张卡是不是**我**派出去的」时要用它 —— 但**判据在编排器**
+   *   （本文件只如实转发读数，⛔ 不在这里下"算不算我派的"结论）。
+   */
+  createdBySessionId?: string
 }
 
 /** 卡读数面的可达性 —— ⚠ 与 `StateReachability` **同款纪律**：读不到必须说出来。 */
@@ -282,6 +302,13 @@ function toReading(task: any, now: number, stallMs: number): CardReading | undef
     ...(headCommit === undefined ? {} : { headCommit: headCommit.slice(0, 7) }),
     ...(changedFiles === undefined ? {} : { changedFiles }),
     ...(reason === undefined ? {} : { reason }),
+    // ── 2026-10-19 · `TASK-2` 改判：把「这张卡的执行会话」如实带出来 ──────────
+    //   ⚠ 只转发**看板自己记的**（`executions[].sessionId` / `.id` / `.outcome`），
+    //     ⛔ 不推断、不补默认值；读不到就不填（由调用方落"判不出"）。
+    ...(str(last?.sessionId) === undefined ? {} : { executionSessionId: str(last?.sessionId) }),
+    ...(str(last?.id) === undefined ? {} : { executionId: str(last?.id) }),
+    ...(str(last?.outcome) === undefined ? {} : { executionOutcome: str(last?.outcome) }),
+    ...(str(task?.createdBy?.sessionId) === undefined ? {} : { createdBySessionId: str(task?.createdBy?.sessionId) }),
   }
 }
 

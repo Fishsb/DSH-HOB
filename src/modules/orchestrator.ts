@@ -58,7 +58,7 @@ import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
 import type { PresetSource } from './bus.ts'
 import { resolveLedgerRoot } from '../server/doc-read.ts'
 import { readCards, renderCardLines, type CardSnapshot, type GetTool } from '../server/board-cards.ts'
-import { CardWake, type WakeState } from '../server/card-wake.ts'
+import { CardWake, DispatchWake, type WakeState, type DispatchWakeState } from '../server/card-wake.ts'
 import {
   ORCH_STATE_FILENAME,
   ORCH_STATE_SUBDIR,
@@ -245,6 +245,14 @@ export interface HobOrchestrator {
   wakeSubscribe(sessionId: string | undefined): Promise<void>
   /** 叫醒面的**运行态读数**（⛔ "没连上"不许被读成"没有卡跑完"）。 */
   wakeState(): WakeState
+  /**
+   * **实施会话叫醒面**的运行态读数（2026-10-19 · `TASK-2` 改判后的**主信号源**）。
+   *
+   * ⚠ 与 `wakeState()`（看板 SSE · **旁证通道**）**分开报** ——
+   *   用户原话定的口径是"信号源 = 实施会话状态变化"，SSE 只是旁证
+   *   ⇒ 两者混一个计数就等于把旁证升格成判据（`TASK-2` §二-① 明令不许）。
+   */
+  dispatchWakeState(): DispatchWakeState
   /** 停 / 恢复。 */
   control(action: 'stop' | 'resume', opts?: { wsRoot?: string }): OrchStatus
 }
@@ -568,6 +576,26 @@ export function apply(ctx: any): void {
         } catch { return undefined }
       })(),
       workspaceIdOf: () => wsIdForWake,
+      deliver: (sessionId: string, text: string) => {
+        const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
+        if (bus === undefined || typeof bus.deliver !== 'function') {
+          return Promise.reject(new Error('hobBus 未提供 ⇒ 投递通道不可用'))
+        }
+        return Promise.resolve(bus.deliver(sessionId, text, 'followup'))
+      },
+      log: (line: string) => svcCtx.logger?.info?.(`[${name}] ${line}`),
+    })
+
+    /**
+     * **实施会话叫醒面**（2026-10-19 · `TASK-2` 改判 · **主信号源**）。
+     *
+     * ⚠ ⚠ 用户原话：「看板执行完任务之后会移动到待验收区域，你不要让看板告诉你这是不可能的，
+     *   你需要自己对派出去的实施会话状态变化检查去检测，而且看板是其他的插件，
+     *   你需要自己直接去检测实施会话的状态变化」
+     *   ⇒ 信号源 = **实施会话的 `running → idle`**；看板卡的 `in_review` **只是旁证**。
+     * ⚠ `watches`（重挂那一套）**一行未动** —— 这是**另一张表**（`DispatchWake.sessions`）。
+     */
+    const dispatchWake = new DispatchWake({
       deliver: (sessionId: string, text: string) => {
         const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
         if (bus === undefined || typeof bus.deliver !== 'function') {
@@ -1022,10 +1050,34 @@ export function apply(ctx: any): void {
         //   卡跑完时**叫醒谁**就靠这张表 —— 见 `wakeSubscribe` 的注释。
         if (typeof opts?.selfSessionId === 'string' && opts.selfSessionId !== '') {
           wsIdForWake = workspaceId
+          // ⚠ 收件人 = **读卡面的人自己**（谁在看这个面，就叫醒谁 —— ⛔ 不凭空假设"Hob"）
+          dispatchWake.setSelfSessionId(opts.selfSessionId)
           wake.subscribe(opts.selfSessionId)
           wake.startWakeIfNeeded()
         }
-        return await readCards({ workspaceId, getTool })
+        const snap = await readCards({ workspaceId, getTool })
+        /**
+         * ⚠ ⚠ **把卡的执行会话登记进叫醒面**（2026-10-19 · `TASK-2` 的信号源落点）──
+         *   ⚠ **谁算"我派出去的"**（作业书 §二-① 第一件，判据写死在这里）：
+         *     ① 卡**在报**（`readCards` 已经按 `isReportable` 筛过）；
+         *     ② 卡**属于本工作区**（与显示面同一个，`workspaceId` 相等）；
+         *     ③ 卡有**执行会话 id**（`executionSessionId`）—— 读不到 ⇒ **不登记**
+         *        （⇒ 那张卡永远不会因为"会话状态变化"叫醒我们，这是**判不出**，
+         *          ⛔ 不是"没有卡在跑"）；
+         *   ⛔ **不登记**：别的项目的卡、没有执行会话的卡、`executionSessionId` 为空的卡。
+         *   ⚠ 登记是**幂等**的（`DispatchWake.register` 重复调用不重置 `sawRunning`/`reported`）
+         *     ⇒ 每次读卡面都会重登一遍，但**不会**把已叫过的会话弄成"没叫过"。
+         */
+        for (const c of snap.cards) {
+          if (typeof c.executionSessionId !== 'string' || c.executionSessionId === '') continue
+          dispatchWake.register({
+            sessionId: c.executionSessionId,
+            via: 'taskboard-card',
+            cardId: c.id,
+            ...(c.executionId === undefined ? {} : { executionId: c.executionId }),
+          })
+        }
+        return snap
       },
 
       async wakeSubscribe(sessionId: string | undefined): Promise<void> {
@@ -1039,6 +1091,10 @@ export function apply(ctx: any): void {
 
       wakeState(): WakeState {
         return wake.snapshot()
+      },
+
+      dispatchWakeState(): DispatchWakeState {
+        return dispatchWake.snapshot()
       },
 
       control(action, opts?: { wsRoot?: string }) {
@@ -1072,6 +1128,17 @@ export function apply(ctx: any): void {
         if (typeof id !== 'string' || typeof status !== 'string') return
         const before = lastStatus.get(id)
         lastStatus.set(id, status)
+        /**
+         * ⚠ ⚠ **实施会话叫醒面**（2026-10-19 · `TASK-2` · **主信号源**）──────────
+         *   ⚠ 它与下面的 `watches` **是两张独立的表**：
+         *     · `watches` = `hob_dispatch` 派出去的活（**含重挂恢复逻辑，一行未动**）；
+         *     · `dispatchWake` = **看板卡的执行会话**（`hob_dispatch` 那条照旧走 watches）。
+         *   ⚠ **为什么不能复用 `watches`**：`watches` 的语义是"我要等一个回传正文"，
+         *     而卡执行会话**没有回传正文**（正文落在卡片上）—— 混进去会改变
+         *     `在等回传` 的计数与重挂的行为（作业书 §三：⛔ 不碰重挂）。
+         *   ⚠ `void`：叫醒是**副作用**，不应拖慢状态事件的处理。
+         */
+        void dispatchWake.observe(id, typeof status === 'string' ? status : undefined)
         const w = watches.get(id)
         if (w === undefined || w.reported) return
         if (status === 'running') {
@@ -1289,6 +1356,45 @@ export function createHobOrchTools(orch: HobOrchestrator): {
        * ⚠ `live` 且**已经叫过** ⇒ ⛔ 一行都不加（不在正常态刷屏）。
        * ⚠ ⛔ 这不等于"没有卡在跑"—— 措辞里必须写清。
        */
+      /**
+       * ── **实施会话叫醒面**读数（2026-10-19 · `TASK-2` · **主信号源**）──────────
+       *
+       * ⚠ **为什么必须出这一行**（§二-② 硬要求）：读不到会话状态 / 判定不出时
+       *   外表与"没有会话在跑"**完全一样** —— 那正是本件要治的失败模式。
+       * ⚠ 三档**分开报**（⛔ 不许混成一个计数）：
+       *   · 叫醒过几次；· **判不出**几次（含原话）；· 登记了几个/待跑几个。
+       * ⚠ 正常态（有登记、没判不出、叫过或没待跑）也**给一行短读数** ——
+       *   与 `wakeLines`（旁证通道）不同，这条是**主判据面**，必须常态可见。
+       */
+      const dispatchWakeLines = ((): string[] => {
+        try {
+          const d = orch.dispatchWakeState()
+          const head = `实施会话叫醒面：登记 ${d.registered} 个 · 待跑 ${d.pending} 个`
+            + ` · 已叫醒 ${d.wokeCount} 次`
+            + (d.undecidableCount > 0 ? ` · ⚠ **判不出 ${d.undecidableCount} 次**` : '')
+          const lines = [head]
+          if (d.undecidableCount > 0 && d.undecidableWhy !== undefined) {
+            lines.push(`  ↳ ⚠ ${d.undecidableWhy}`)
+            lines.push('  ↳ ⛔ **判不出不是结论** —— 既不是"跑完了"，也不是"没跑过"。')
+          }
+          if (d.lastWokeAt !== undefined) {
+            lines.push(`  ↳ 最近一次叫醒：${new Date(d.lastWokeAt).toLocaleString('zh-CN', { hour12: false })}`
+              + ` · 会话=${d.lastWokeSession ?? '(读不到)'}`
+              + (d.lastWokeCard === undefined ? '' : ` · 卡=${d.lastWokeCard}`))
+          }
+          if (d.registered === 0) {
+            lines.push('  ↳ ⚠ 一个实施会话都没登记 ⇒ 卡跑完也**叫不了**（⛔ 这不等于"没有卡在跑"）')
+          }
+          return lines
+        } catch (e) {
+          return [
+            '⚠ 实施会话叫醒面：**读不到自身状态**（抛错）',
+            `  ↳ ${String((e as Error)?.message ?? e)}`,
+            '  ↳ ⛔ **这不等于"没有会话在跑"**。',
+          ]
+        }
+      })()
+
       const wakeLines = ((): string[] => {
         try {
           const w = orch.wakeState()
@@ -1455,7 +1561,11 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         //   ⚠ ⚠ **读不到必须说出来**：`unavailable` / `unreadable` ⇒ 可读标记 + 原话
         //     （⛔ 不许静默当成"没有卡" —— 那正是本轮要修的失败模式）。
         ...cardLines,
-        // ── ⚠ 以下是**本批新增的行**（2026-10-18 · 卡跑完不会叫醒那条缺口）──
+        // ── ⚠⚠ 以下是**主信号源**的读数（2026-10-19 · `TASK-2` 改判）────────────
+        //   ⚠ 它**必须常态出现**（不像下面那条旁证通道只在异常时出）——
+        //     因为"读不到会话状态"与"没有会话在跑"外表一样，只能靠这行分开。
+        ...dispatchWakeLines,
+        // ── ⚠ 以下是**旁证通道**的行（看板 SSE —— `TASK-2` 里已降为旁证）──────
         //   它们只在**叫醒面不正常**时出现（连不上 / 没订阅过），
         //   ⛔ 不在正常态刷屏；措辞里必须写清"这不等于没有卡跑完"。
         ...wakeLines,

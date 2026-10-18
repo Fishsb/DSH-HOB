@@ -2292,6 +2292,171 @@ const orchCode = stripComments(orchSrc)
           bad(`N 卡跑完叫醒面：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
         }
       }
+
+      // ── O. **实施会话状态变化 ⇒ 叫醒**（2026-10-19 · `TASK-2` 改判后的**主信号源**）──
+      //
+      // ⚠ **它守的是哪条**（用户原话逐字）：
+      //   「看板执行完任务之后会移动到待验收区域，你不要让看板告诉你这是不可能的，
+      //     你需要自己对派出去的实施会话状态变化检查去检测，而且看板是其他的插件，
+      //     你需要自己直接去检测实施会话的状态变化」
+      //   ⇒ 「看板是别人的插件 ⇒ 做不到」这条退路**已撤销**；判据面改到**会话状态变化**。
+      //
+      // ⚠ ⚠ **三件边界必须各有一条断言**（`TASK-2` §二-① 点名，⛔ 不许含糊过去）：
+      //   · **O-a 谁算"我派出去的"**：只有**登记过的**会话才可能叫（未登记的**一律不理**）；
+      //   · **O-b 一次跑完只叫一次**，且**同一会话接连两轮要能区分**（第二轮**要再叫**）；
+      //   · **O-c 读不到状态 ⇒ 落"判不出"**，⛔ 不许落"跑完"、⛔ 也不许落"没跑过"。
+      //   ⚠ 另加 **O-d 负向对拍**（摘掉叫醒 ⇒ O-a 当场不成立）与 **O-e 旁证不许顶替主判据**。
+      {
+        try {
+          const wakeMod = await import(pathToFileURL(join(root, 'src', 'server', 'card-wake.ts')).href)
+
+          /** 造一个叫醒面（假投递 —— ⛔ 不碰真会话）。 */
+          const makeDW = (selfId) => {
+            const sent = []
+            const w = new wakeMod.DispatchWake({
+              selfSessionId: selfId,
+              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+              now: () => 1792300800000,
+            })
+            return { w, sent }
+          }
+
+          // ── O-a ⭐ 边界①：**只有登记过的会话**才可能叫（未登记 ⇒ 一律不理）──────────
+          {
+            const { w, sent } = makeDW('session-hob')
+            // 先跑一轮"未登记"的完整序列 ⇒ 一声都不该叫
+            await w.observe('session-stranger', 'running')
+            const strangerIdle = await w.observe('session-stranger', 'idle')
+            const strangerSilent = sent.length === 0 && strangerIdle === undefined
+            // 再登记一个 ⇒ running→idle 必须叫
+            w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1' })
+            await w.observe('session-mine', 'running')
+            const mineIdle = await w.observe('session-mine', 'idle')
+            if (strangerSilent && mineIdle === 'woke' && sent.length === 1) {
+              ok('O-a ✓ 边界①「谁算我派出去的」：**未登记的会话跑完 ⇒ 一声都不叫**；'
+                + '登记过的（本会话派出的卡执行会话）跑完 ⇒ **叫一次**')
+            } else {
+              bad('O-a 【只认本会话登记的派发】边界不对'
+                + `：陌生会话被叫=${!strangerSilent} · 登记会话结局=${mineIdle} · sent=${sent.length}`
+                + ' ⇒ 要么叫了别人的活，要么没叫自己的活')
+            }
+          }
+
+          // ── O-b ⭐ 边界②：一次跑完只叫一次；**同一会话接连两轮要能区分** ───────────
+          {
+            const { w, sent } = makeDW('session-hob')
+            w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1' })
+            // 第一轮
+            await w.observe('session-mine', 'running')
+            const r1 = await w.observe('session-mine', 'idle')
+            // 同一个 idle 再来一次（重复投喂）⇒ ⛔ 不许叫第二声
+            const dup = await w.observe('session-mine', 'idle')
+            const afterDup = sent.length
+            // 第二轮：又 running ⇒ 又 idle
+            await w.observe('session-mine', 'running')
+            const r2 = await w.observe('session-mine', 'idle')
+            const rounds = w.entries().find((e) => e.sessionId === 'session-mine')?.rounds
+            if (r1 === 'woke' && dup === undefined && afterDup === 1 && r2 === 'woke' && sent.length === 2) {
+              ok('O-b ✓ 边界②：一轮跑完只叫一次（重复 idle ⇒ ⛔ 不叫）；'
+                + `**同一会话接连第二轮 ⇒ 又叫一次**（rounds=${rounds} · 累计 sent=${sent.length}）`
+                + '—— ⛔ 没有把第二轮当成第一轮的重复吞掉')
+            } else {
+              bad('O-b 【一次跑完只叫一次 + 两轮要能区分】边界不对'
+                + `：第一轮=${r1} · 重复idle=${dup} · 重复后sent=${afterDup}`
+                + ` · 第二轮=${r2} · 累计sent=${sent.length}（应为 2）· rounds=${rounds}`)
+            }
+          }
+
+          // ── O-c ⭐ 边界③：**读不到状态 ⇒ 判不出**（⛔ 落"跑完"、⛔ 落"没跑过"）──────
+          {
+            const { w, sent } = makeDW('session-hob')
+            w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1' })
+            await w.observe('session-mine', 'running')      // 先让它真在跑
+            const blank = await w.observe('session-mine', undefined)
+            const empty = await w.observe('session-mine', '')
+            const st = w.snapshot()
+            const isUndecidable = blank === 'undecidable' && empty === 'undecidable'
+            const saidOut = typeof st.undecidableWhy === 'string' && st.undecidableWhy.includes('读不到')
+            const notWoke = sent.length === 0
+            const counted = st.undecidableCount === 2 && st.wokeCount === 0
+            // ⚠ 还要证它**没被记成"跑过"**：之后来一个真 idle 仍要能叫（那一轮没被吞掉）
+            const later = await w.observe('session-mine', 'idle')
+            if (isUndecidable && saidOut && notWoke && counted && later === 'woke') {
+              ok('O-c ✓ 边界③：**读不到状态 ⇒ 落"判不出"**（计数与可读话都在），'
+                + '⛔ 没被记成"跑完"（一次都没叫），⛔ 也没被记成"没跑过"（随后的真 idle 仍能叫）')
+            } else {
+              bad('O-c 【读不到状态必须落判不出】边界不对'
+                + `：blank=${blank} · empty=${empty} · 有可读话=${saidOut} · 误叫=${!notWoke}`
+                + ` · 计数=${st.undecidableCount}/${st.wokeCount} · 随后的真idle=${later}`)
+            }
+          }
+
+          // ── O-d ⭐ 旁证不许顶替主判据：**看板 SSE 那条**不因"卡进 in_review"就叫 ──
+          //   ⚠ 用户口径：卡进 `in_review` **只是旁证** ⇒ 主判据必须能**独立于它**成立。
+          //   本条钉的是反方向：**只说"卡进了 in_review"但会话没登记 ⇒ 主判据一声不叫**。
+          {
+            const { w, sent } = makeDW('session-hob')
+            // 不登记任何会话，只走 SSE 旁证通道喂一帧"卡进 in_review"
+            const cw = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0',
+              workspaceIdOf: () => 'ws-abc',
+              deliver: () => Promise.resolve({ ok: true }),
+              now: () => 1792300800000,
+            })
+            cw.subscribe('session-hob')
+            const sseN = await cw.handleFrame('change', JSON.stringify({
+              revision: 1, kind: 'execution-recorded',
+              tasks: [{ id: 't-card-1', title: '演示卡', status: 'in_review', workspaceId: 'ws-abc',
+                version: 2, lastExecutionOutcome: 'succeeded' }],
+            }))
+            // 主判据面（DispatchWake）在**没有任何会话登记**时应保持零叫
+            const dwState = w.snapshot()
+            if (sseN === 1 && dwState.wokeCount === 0 && sent.length === 0) {
+              ok('O-d ✓ 旁证不许顶替主判据：看板 SSE（`in_review`）**自己会响**，'
+                + '但**主判据面（实施会话状态）在没人登记时一声不叫**'
+                + ` ⇒ 两条通道分开、互不冒充（SSE=${sseN} 声 · 主判据=${dwState.wokeCount} 声）`)
+            } else {
+              bad('O-d 【旁证不许顶替主判据】两通道串了'
+                + `：SSE 声数=${sseN} · 主判据叫醒=${dwState.wokeCount} · sent=${sent.length}`)
+            }
+          }
+
+          // ── O-e ⭐ 负向对拍：把叫醒那段摘掉（变异 `wake()` 恒返回 undefined）───────
+          {
+            const srcPath = join(root, 'src', 'server', 'card-wake.ts')
+            const original = readFileSync(srcPath, 'utf8')
+            const GUARD = "    s.reported = true\n    return await this.wake(s)"
+            if (!original.includes(GUARD)) {
+              bad('O-e 【负向对拍失去靶子】在 `card-wake.ts` 里找不到叫醒调用原文'
+                + '（期望 `s.reported = true` 后紧跟 `return await this.wake(s)`）⇒ 不按通过处理')
+            } else {
+              const wakeRoot = mkdtempSync(join(tmpdir(), 'hob-dwcheck-'))
+              const mutPath = join(wakeRoot, 'card-wake.ts')
+              writeFileSync(mutPath, original.replace(GUARD, '    s.reported = true\n    return undefined'), 'utf8')
+              const mutant = await import(pathToFileURL(mutPath).href)
+              const sent = []
+              const w = new mutant.DispatchWake({
+                selfSessionId: 'session-hob',
+                deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+                now: () => 1792300800000,
+              })
+              w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1' })
+              await w.observe('session-mine', 'running')
+              const r = await w.observe('session-mine', 'idle')
+              if (r !== 'woke' && sent.length === 0) {
+                ok('O-e ✓ 负向对拍：把叫醒调用摘掉（变异成 `return undefined`）⇒'
+                  + ` O-a/O-b 的判据**当场不成立**（结局=${r ?? '(无)'} · sent=${sent.length}）⇒ 前两条真长牙`)
+              } else {
+                bad('O-e 【负向对拍失败】摘掉叫醒之后仍然叫了'
+                  + `（结局=${r} · sent=${sent.length}）⇒ O-a/O-b 测的不是"叫醒"这件事`)
+              }
+              try { rmSync(wakeRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+            }
+          }
+        } catch (e) {
+          bad(`O 实施会话叫醒面：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+        }
+      }
     }
   }
 }

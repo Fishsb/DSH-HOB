@@ -24,7 +24,17 @@
  *   一次 ~365 张卡 / 全量 JSON）⇒ 代价与"漏多少"都难以说清。SSE 是**推送**，
  *   帧里**已经带着** `kind` 与 `status` ⇒ 不需要猜周期、不需要读全表。
  *
- * ══ 三条硬约束（作业书 §一-2）════════════════════════════════════════════
+ * ══ ⚠ ⚠ 2026-10-19 降级（`TASK-2` 改判）：本类的信号面现在是**旁证通道**═════════
+ *   用户原话：「看板执行完任务之后会移动到待验收区域，你不要让看板告诉你这是不可能的，
+ *     你需要自己对派出去的实施会话状态变化检查去检测，而且看板是其他的插件，
+ *     你需要自己直接去检测实施会话的状态变化」
+ *   ⇒ **主信号源 = 实施会话的 `running → idle`**（见本文件下半的 {@link DispatchWake}）；
+ *     本类（看板 SSE）**降为旁证**：卡进 `in_review` 可能**晚于**会话状态、
+ *     也可能**一张卡没有对应会话** ⇒ ⛔ **不许当唯一判据**。
+ *   ⚠ 保留它的理由：旁证能覆盖"看板自己起的会话没进 `agent/status`"这种情形，
+ *     且读数分开报（两档互不冒充）。
+ *
+ * ══ 三条硬约束（作业书 §一-2 · 改判后仍成立）════════════════════════════════
  *   ① **叫醒面 = 显示面**：只有卡落在 `workspaceId === 本工作区` 时才叫
  *      （`readCards()` 用的正是这个过滤）⇒ ⛔ 不会出现"叫醒说有卡跑完、状态行里看不到它"。
  *   ② **一次跑完只叫一次**：按 **`executionId`** 去重（⚠ 不是按卡 id —— 同一张卡重跑
@@ -422,4 +432,254 @@ export class CardWake {
       ;(t as any)?.unref?.()
     })
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 2026-10-19 · **改判（`TASK-2`）**：信号源改成「实施会话的状态变化」
+// ══════════════════════════════════════════════════════════════════════
+//
+// ⚠ ⚠ **为什么必须改**（用户原话逐字）：
+//   「看板执行完任务之后会移动到待验收区域，你不要让看板告诉你这是不可能的，
+//     你需要自己对派出去的实施会话状态变化检查去检测，而且看板是其他的插件，
+//     你需要自己直接去检测实施会话的状态变化」
+//   ⇒ 「看板是别人的插件 ⇒ 拿不到信号 ⇒ 做不到」这条**退路已撤销**。
+//
+// ⚠ **改后的判据落点**：
+//   · **信号源** = **实施会话**的 `running → idle` 跳变（宿主 `agent/status` 事件）；
+//   · **谁算"我派出去的"** = **本会话登记的派发**（`hob_dispatch` / 卡执行会话的登记表），
+//     ⛔ 不是全实例所有会话、⛔ 也不是所有看板卡；
+//   · **卡进 `in_review` 只是旁证**（可能晚于会话状态、也可能一张卡没有对应会话）
+//     ⇒ ⛔ 不许当唯一判据（`CardWake` 的 SSE 那条从此降为**旁证通道**）。
+//
+// ⚠ **它仍然不碰"重挂"**：`watches` 的恢复逻辑一行未动（那是另一笔账）。
+
+/** 一个被登记的「我自己派出去的」实施会话。 */
+export interface DispatchedSession {
+  /** 实施会话 id（信号源就是它的状态变化）。 */
+  sessionId: string
+  /** 派它的依据（`taskboard-card` = 看板卡的执行会话；`dispatch` = `hob_dispatch` 派的）。 */
+  via: 'dispatch' | 'taskboard-card'
+  /** 看板卡 id（`via='taskboard-card'` 时才有）。 */
+  cardId?: string
+  /** 看板那次执行的 id（去重键的一半 —— 同一会话连跑两轮靠它区分）。 */
+  executionId?: string
+  /** 登记时刻（毫秒）。 */
+  at: number
+  /** 是否已见过它进入 `running`（没见过 ⇒ idle 不算"跑完"，与既有 `watches` 同口径）。 */
+  sawRunning: boolean
+  /** 是否已经叫过（**单次性**：一次跑完只叫一次）。 */
+  reported: boolean
+  /** 叫过之后它又跑起来了 ⇒ 记"第二轮"（⚠ 不许把第二轮当成第一轮的重复吞掉）。 */
+  rounds: number
+}
+
+/** 一次叫醒的结局（供渲染层分开报，⛔ 不许把三档混成一个计数）。 */
+export type WakeOutcome =
+  /** 真叫醒了一次。 */
+  | 'woke'
+  /** 该叫但没人订阅（不知道叫谁）。 */
+  | 'no-subscriber'
+  /** 投递通道没就绪。 */
+  | 'no-channel'
+  /** ⚠ **判不出**：状态读不到 / 会话消失了 ⇒ ⛔ 既不是"跑完"也不是"没跑过"。 */
+  | 'undecidable'
+
+/** 卡执行会话叫醒面的运行态（供 `hob_orch_status` 渲染）。 */
+export interface DispatchWakeState {
+  /** 登记了多少个会话（去重后）。 */
+  registered: number
+  /** 其中正在跑的（见过 `running` 且还没叫）。 */
+  pending: number
+  /** 已叫醒次数（累计）。 */
+  wokeCount: number
+  /** ⚠ **判不出**的次数（状态读不到 / 会话消失）—— ⛔ 与"跑完"分开记。 */
+  undecidableCount: number
+  /** 最近一次的可读话。 */
+  note?: string
+  /** 最近一次判不出的原因（原话）。 */
+  undecidableWhy?: string
+  /** 最近一次叫醒的时刻与是谁。 */
+  lastWokeAt?: number
+  lastWokeSession?: string
+  lastWokeCard?: string
+}
+
+/**
+ * 「我自己派出去的实施会话」叫醒面。
+ *
+ * ⚠ **纯对象、不自己订阅事件**：`observe()` 由 M5 的 `agent/status` 监听喂进来
+ *   ⇒ 便于机检用**假状态序列**喂真逻辑（不起真会话）。
+ */
+export class DispatchWake {
+  private readonly sessions = new Map<string, DispatchedSession>()
+  private state: DispatchWakeState = { registered: 0, pending: 0, wokeCount: 0, undecidableCount: 0 }
+  private readonly opts: DispatchWakeOpts
+
+  constructor(opts: DispatchWakeOpts) {
+    this.opts = opts
+  }
+
+  private now(): number {
+    return this.opts.now?.() ?? Date.now()
+  }
+
+  private say(line: string): void {
+    this.opts.log?.(line)
+  }
+
+  setDeliver(fn: ((sessionId: string, text: string) => Promise<unknown>) | undefined): void {
+    this.opts.deliver = fn
+  }
+
+  /** 现读状态（渲染层只认这个）。 */
+  snapshot(): DispatchWakeState {
+    const pending = [...this.sessions.values()].filter((s) => s.sawRunning && !s.reported).length
+    return { ...this.state, registered: this.sessions.size, pending }
+  }
+
+  /** 登记一个"我派出去的"会话（已在表里 ⇒ 只补卡/执行信息，**不重置**状态）。 */
+  register(entry: {
+    sessionId: string
+    via: DispatchedSession['via']
+    cardId?: string
+    executionId?: string
+  }): void {
+    const id = entry.sessionId
+    if (typeof id !== 'string' || id === '') return
+    const have = this.sessions.get(id)
+    if (have !== undefined) {
+      // ⚠ **不覆盖 sawRunning / reported**：重复登记（每读一次卡面就登记一次）不许把状态清掉，
+      //   否则"读一次状态行"就能让已经叫过的会话**再叫一次**（刷屏）。
+      if (entry.cardId !== undefined) have.cardId = entry.cardId
+      if (entry.executionId !== undefined) have.executionId = entry.executionId
+      return
+    }
+    this.sessions.set(id, {
+      sessionId: id,
+      via: entry.via,
+      ...(entry.cardId === undefined ? {} : { cardId: entry.cardId }),
+      ...(entry.executionId === undefined ? {} : { executionId: entry.executionId }),
+      at: this.now(),
+      sawRunning: false,
+      reported: false,
+      rounds: 0,
+    })
+  }
+
+  /** 摘掉一个登记（会话结束 / 不再关心）。 */
+  forget(sessionId: string): void {
+    this.sessions.delete(sessionId)
+  }
+
+  /** 现看登记表（诊断/测试用）。 */
+  entries(): DispatchedSession[] {
+    return [...this.sessions.values()]
+  }
+
+  /**
+   * 喂一次**状态变化**（由 M5 的 `agent/status` 监听调用）。
+   *
+   * ⚠ 三件边界就在这里**写死**：
+   *   ① **只认登记过的会话**（`sessions` 里有才处理）⇒ 全实例别的会话一律不理；
+   *   ② **一次跑完只叫一次**（`reported` 单次性），但**它再次进入 `running` ⇒ `rounds+1`
+   *      且 `reported` 复位** ⇒ 第二轮会**再叫一次**（⛔ 不把第二轮当第一轮的重复吞掉）；
+   *   ③ `status` 读不到 / 不是字符串 ⇒ 落 **`undecidable`**（⛔ 不落"跑完"）。
+   *
+   * @param sessionId - 变化的是哪个会话。
+   * @param status - 新状态字（`running` / `idle` / 其它）；**读不到就传 undefined**。
+   * @returns 本次的结局（没有结局 = 正常演进，返回 undefined）。
+   */
+  async observe(sessionId: string, status: string | undefined): Promise<WakeOutcome | undefined> {
+    const s = this.sessions.get(sessionId)
+    // ① 不是我派出去的 ⇒ 不理（⚠ 未登记的会话**连"判不出"都不记**：
+    //    它不是本会话的责任面，记进来会把"判不出"的计数污染成"全实例都在判不出"）
+    if (s === undefined) return undefined
+    // ③ **读不到状态** ⇒ 判不出（⛔ 不许当跑完，⛔ 也不许当没跑过）
+    //   ⚠ **顺序有意义**：这一支必须在"登记检查"**之后**（别人的会话不归我判），
+    //     但在**任何状态判断之前**（读不到就先说读不到，⛔ 不许先猜它 idle）。
+    if (typeof status !== 'string' || status === '') {
+      this.state = {
+        ...this.state,
+        undecidableCount: this.state.undecidableCount + 1,
+        undecidableWhy: `会话 ${sessionId} 的状态**读不到**（事件里没有 status 字）⇒ 这一档叫**判不出**：⛔ 既不是"跑完"，也不是"没跑过"`,
+      }
+      this.say(`[dispatch-wake] ${this.state.undecidableWhy}`)
+      return 'undecidable'
+    }
+    if (status === 'running') {
+      // ② 再次进入 running ⇒ 这是**新一轮**（若上一轮已叫过，则复位）
+      if (s.reported) {
+        s.reported = false
+        s.rounds += 1
+        this.say(`[dispatch-wake] ${sessionId} 又开始跑 ⇒ 这是**第 ${s.rounds + 1} 轮**（上一轮已叫过，本轮要能再叫）`)
+      }
+      s.sawRunning = true
+      return undefined
+    }
+    if (status !== 'idle') return undefined                // 其它状态字不构成"跑完"
+    if (!s.sawRunning) return undefined                    // 从没跑过 ⇒ 不是"跑完"（既有口径）
+    if (s.reported) return undefined                       // ② 本轮已叫过
+    s.reported = true
+    return await this.wake(s)
+  }
+
+  /** 真叫（⛔ 只从这里叫；`observe` 已经保证单次性）。 */
+  private async wake(s: DispatchedSession): Promise<WakeOutcome> {
+    const what = s.cardId === undefined
+      ? `会话 ${s.sessionId} 跑完了`
+      : `会话 ${s.sessionId} 跑完了（对应看板卡 ${s.cardId}）`
+    const roundBit = s.rounds > 0 ? `（第 ${s.rounds + 1} 轮）` : ''
+    const text = `[实施会话跑完] ${what}${roundBit}。`
+      + '\n信号来自**实施会话的状态变化**（`running → idle`），不是等看板通知。'
+      + (s.cardId === undefined
+        ? '\n下一步：用 `hob_sessions` / `hob_orch_status` 看它回来干什么。'
+        : `\n下一步：用 \`taskboard_get\` 读那张卡的执行报告与评论（卡 id = ${s.cardId}）；`
+          + '⚠ 卡进 `in_review` 只是**旁证**，以会话状态为准。')
+    if (this.opts.deliver === undefined) {
+      this.state = { ...this.state, note: '⚠ 有会话跑完，但**投递通道没就绪**（hobBus 未提供）⇒ 这一声没叫出去' }
+      this.say(`[dispatch-wake] ${this.state.note}`)
+      return 'no-channel'
+    }
+    try {
+      const target = this.opts.selfSessionId
+      if (target === undefined || target === '') {
+        this.state = { ...this.state, note: '⚠ 有会话跑完，但**没有收件人**（不知道回给谁）⇒ 这一声没叫出去' }
+        this.say(`[dispatch-wake] ${this.state.note}`)
+        return 'no-subscriber'
+      }
+      const r: any = await this.opts.deliver(target, text)
+      void r
+      this.state = {
+        ...this.state,
+        wokeCount: this.state.wokeCount + 1,
+        lastWokeAt: this.now(),
+        lastWokeSession: s.sessionId,
+        ...(s.cardId === undefined ? {} : { lastWokeCard: s.cardId }),
+        note: `已叫醒：${what}${roundBit}`,
+      }
+      this.say(`[dispatch-wake] ${this.state.note}`)
+      return 'woke'
+    } catch (e) {
+      this.state = { ...this.state, note: `⚠ 叫醒失败：${String((e as Error)?.message ?? e)}` }
+      this.say(`[dispatch-wake] ${this.state.note}`)
+      return 'no-channel'
+    }
+  }
+
+  /** 显式设收件人（M5 在订阅时刷进来 —— 谁的派发就回给谁）。 */
+  setSelfSessionId(id: string | undefined): void {
+    this.opts.selfSessionId = id
+  }
+}
+
+/** {@link DispatchWake} 的构造参数。 */
+export interface DispatchWakeOpts {
+  /** 收件人（派单方自己）；⚠ 缺 ⇒ 叫不出去（落 `no-subscriber`）。 */
+  selfSessionId?: string
+  /** 投递实现（真环境 = `bus.deliver(id, text, 'followup')`）。 */
+  deliver?: (sessionId: string, text: string) => Promise<unknown>
+  /** 现取时刻（测试可固定）。 */
+  now?: () => number
+  /** 可读日志出口（⛔ 不许静默）。 */
+  log?: (line: string) => void
 }
