@@ -2161,6 +2161,65 @@ const STALE_APPELLATIONS = [
   }
 }
 
+// ── ⑤n 移交出去的核查记录必须「有人管」（2026-10-18 · UD-144 裁定三）──────
+//
+// 为什么需要（用户原话，逐字）：
+//   「移出去的文件必须**有人管** —— 搬出去的那份 `contract-verification-notes.md`
+//    从此不在机检范围内，**它漂了没人知道**。」
+//
+// ⇒ 判据两条，缺一即 FAIL（⛔ 不是"警告"，是 FAIL）：
+//   ① **契约人读版**里必须有一行指针，点名那个文件、并写明"那份不是规范"；
+//   ② **被点名的文件必须真实存在**，且**确实含有被移出的那几节**（防止"指针在、文件空了"
+//      这种最坏的形态：指针让人以为有记录，打开什么都没有）。
+//
+// ⚠ 本组是**新增断言，不是放宽** —— 它让一份原本零覆盖的文件进入机检面。
+// ⚠ 判据不钉具体行号、不钉字数（那会随搬移漂）；只钉"指针在 + 文件在 + 三节标题在"。
+{
+  const NOTES_REL = '.hob/drafts/contract-verification-notes.md'
+  const notesAbs = join(root, NOTES_REL)
+
+  // ① 指针行：人读版里必须同时出现"文件名"与"不是规范"这个断言
+  const hasPointer = draftSrc.includes('contract-verification-notes.md')
+  const saysNotSpec = /不是规范|⛔ 不要当规则|不要当规范/.test(draftSrc)
+  if (!hasPointer) {
+    bad(`⑤n ${NAME_HO}：人读版里**没有指向核查记录文件**的指针（期望提到 ${JSON.stringify(NOTES_REL)}）`
+      + '\n      ⇒ 移出去的记录从此无人指向 ⇒ 等于藏起来，没人会读到它')
+  } else if (!saysNotSpec) {
+    bad(`⑤n ${NAME_HO}：指针在位，但**没有写明"那份不是规范"**`
+      + '\n      ⇒ 缺这句，读的人会把历史读数当成现行规则')
+  } else {
+    ok(`⑤n ${NAME_HO}：人读版有指针指向核查记录，且写明"不是规范"`)
+  }
+
+  // ② 目标文件存在 + 含被移出的三节
+  if (!existsSync(notesAbs)) {
+    bad(`⑤n **被点名的核查记录文件不存在**：${NOTES_REL}`
+      + '\n      ⇒ 指针指着空处，比没有指针更糟（读者以为有记录）')
+  } else {
+    let notesSrc = ''
+    try { notesSrc = readFileSync(notesAbs, 'utf8') } catch { notesSrc = '' }
+    if (notesSrc === '') {
+      bad(`⑤n 核查记录文件读不到内容：${NOTES_REL}`)
+    } else {
+      // 三节标题必须在位（它们是"只搬不删"的可判证据）
+      const NEEDED_SECTIONS = ['## 三、一致性核对', '## 四、', '## 五、']
+      const missing = NEEDED_SECTIONS.filter((h) => !notesSrc.includes(h))
+      if (missing.length > 0) {
+        bad(`⑤n 核查记录**缺被移出的节**（${missing.length} 节）：${missing.join(' / ')}`
+          + '\n      ⇒ 裁定三要求「只搬不删」，缺节说明搬的过程中丢了内容')
+      } else {
+        ok(`⑤n 核查记录在位且三节齐备（${NOTES_REL}，${Buffer.byteLength(notesSrc, 'utf8')} 字节）`)
+      }
+      // 头部声明也必须在（这是"不是规范"的落点，⛔ 不许只有正文没有声明）
+      if (!/不是规范/.test(notesSrc)) {
+        bad('⑤n 核查记录**文件头缺"不是规范"声明** ⇒ 打开它的人会把它当规范读')
+      } else {
+        ok('⑤n 核查记录文件头有"不是规范"声明')
+      }
+    }
+  }
+}
+
 // ── ⑥ complete / 工具面声明未变 ────────────────────────────────────────
 {
   // 规划侧：complete: true + 恰好 1 行工具模块

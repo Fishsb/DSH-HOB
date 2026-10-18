@@ -31,14 +31,15 @@ export const SKELETON_ALLOWLIST: readonly string[] = [
 
 /** ⚠ 逐件 sha256（⚠ 与仓库不一致 ⇒ 收尾断言 FAIL）。 */
 export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
-  { path: 'INIT.md', sha256: 'c060c56367ceeecfc395b06ebc8c933687cd71af8d944b5f6f55dcd8f7828d81', bytes: 24856 },
+  { path: 'INIT.md', sha256: '31407dd97faed5b2dfeaa2eae771dab8ce0c2aaa9a3f22e06c67df8b36689b24', bytes: 25157 },
   { path: 'README.md', sha256: '0a287c5077a119aab2306428df769c3cfda42cea6843d1bbc539037db7c98fa7', bytes: 55750 },
   { path: 'drafts/archive-index.md', sha256: '5926b04f828bb1de6f4874133862affefabebd6e65b2b9d7e512c1914d2157d9', bytes: 7967 },
   { path: 'drafts/check-gitignore-guide.md', sha256: 'f68f45639fde88ada30635df480d1ce23f2b6c9f9ba584b383a2a0db4bbadb04', bytes: 19714 },
+  { path: 'drafts/contract-verification-notes.md', sha256: '571cc0b8be2e1688d7a7ef849783fccf65fd5c1ad8572417a1ed1edc112e2bb2', bytes: 18577 },
   { path: 'drafts/discipline-details.md', sha256: '551ca449193338c0b9c541f484c1f1f605921460ab2e055dd305a0678075046c', bytes: 35992 },
   { path: 'drafts/growth-registry.md', sha256: 'b288e70eb66b341503ee289c45548e5e62534711c48a748de4c2d4f2fc4d0668', bytes: 11800 },
   { path: 'drafts/nav-intake-draft.md', sha256: 'ea34ab8a129da640c5532b561b09df84c54c31d314d2596b8250feee7be26e06', bytes: 11036 },
-  { path: 'drafts/preset-contracts.md', sha256: 'c4f941cb20b42c0bc7f0439dfd5e5fd6897cd731a5914cc4d18fcc3dbe9c3733', bytes: 62095 },
+  { path: 'drafts/preset-contracts.md', sha256: 'ad5024eee14653442951caeefdd2c0364efd7f952764712f20abe93fc1008e88', bytes: 45192 },
   { path: 'drafts/restructure-plan.md', sha256: '38bfa48e573f5b527d278e6ee8b3c7c29a545d439dcd462ce9bd4289a26eb710', bytes: 18638 },
   { path: 'drafts/架构总览.html', sha256: 'df003d12d89372ab93f67360e022d041eaed53a775c74dc098e76d67dd5d5135', bytes: 9522 },
   { path: 'drafts/架构总览.png', sha256: '0430caae59894c937b6e712d099ad80491e72da9e7cbf214e5508fb3dc1b23b8', bytes: 133570 },
@@ -70,7 +71,7 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
 ]
 
 /** 生成时刻（⚠ 只作追溯，⛔ 不作判据 —— 判据是 sha256）。 */
-export const SKELETON_GENERATED_AT = '2026-10-18T08:21:05.322Z'
+export const SKELETON_GENERATED_AT = '2026-10-18T08:32:17.188Z'
 
 export interface SkeletonManifest {
   allowlist: readonly string[]
