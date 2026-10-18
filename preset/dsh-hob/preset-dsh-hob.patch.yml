@@ -197,6 +197,14 @@
                 as "the plugin cannot read files": those are two different statements and must not be
                 mixed.
 
+                One thing about the ground under all three: they belong to the host, and the host's
+                surface changes between versions. An upstream release may rename or move a hook, and
+                this row is replaced with no compatibility check -- the new code simply runs, and
+                whatever used to be held there quietly stops being held, with nothing raised to say
+                so. Treat each mechanism as a claim about a version, not as a permanent fact: when a
+                call that should have been refused goes through, suspect that the ground moved before
+                you assume the rule still stands.
+
                 ## Your side and the other side
 
                 The implementation work is done by the developer session (the DEVELOPER) -- a different session.
