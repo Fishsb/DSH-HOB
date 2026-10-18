@@ -36,9 +36,19 @@
  *                 ⇒ 卡 id · 尝试次数 · 点火时刻 · 已跑多久
  *   · **待验收** ：`in_review`（或 `done`）⇒ 卡 id · 完成时刻 · 分支/提交 ·
  *                 改动文件数 · **"去验收"一句**
- *   · **失败/卡住**：最后一次执行 `failed`/`cancelled`，或 `blocked`，
+ *   · **失败/卡住**：最后一次执行 `failed`/`cancelled`，或**非终态**的 `blocked`，
  *                 或在跑但**长时间无进展** ⇒ 卡 id · 时间 · **可读原因**
  *                 （⛔ 不许只给一个状态字）
+ *
+ *   ⚠ ⚠ **终态优先于受阻（2026-10-18 · 口径纠偏，实测出处见下）**：
+ *     `blocked` 是**过程标记**（"要人处理才能继续"），`done`/`canceled`/`archived`
+ *     是**结果**。两者同时存在（标记没被清掉）时，**先判受阻**会把**已经做完的卡**
+ *     报成「失败/受阻」—— 派单方于是以为活没干完，会去重派/重做。
+ *     实测：`t-mvczoqia-ntd9r3`（`status=done` v11 + `blocked=true`）在改前读数里
+ *     落 `phase=failed`，而它最后一次执行是 `succeeded`。
+ *     ⇒ 判档顺序里**终态一律不因受阻改判**（继续走 ③ 的既有口径），
+ *       但**非终态 + 受阻仍然必须落「失败/受阻」**（分辨力不许被这一改削掉）。
+ *     ⛔ 这不是"取消失败档"、⛔ 不是"过滤受阻卡"、⛔ 不是"把某张卡从结果里剔除"。
  *
  *   ⚠ ⚠ **反向（判据三）**：**没有该报的卡时⛔ 一行都不加**（不是"打印一句没有"）——
  *     `snap.cards.length === 0` ⇒ 渲染层返回**空数组**。
@@ -125,10 +135,33 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v !== '' ? v : undefined
 }
 
-/** 这条任务记录是不是"该报的卡"（`todo` / `canceled` / `archived` 不报）。 */
+/**
+ * 这个状态字是不是**终态**（结果已定，⛔ 不会再自己往前走）。
+ *
+ * ⚠ **为什么需要它**（2026-10-18 口径纠偏）：`blocked` 是**过程标记**（"要人处理才能继续"），
+ *   而终态是**结果**。二者同时出现在同一张卡上（标记没被清掉）时，判档必须**先认结果** ——
+ *   否则 `done` 卡会被报成「失败/受阻」，派单方以为活没干完（实测见文件头 §三档）。
+ * ⚠ **它是纯判定、不看执行记录**：只认 `status` 这一个字段（与 `isReportable` 同源同口径）。
+ *
+ * @param status - 看板给的原始状态字（⛔ 不在这里翻译措辞）。
+ */
+function isTerminalStatus(status: string): boolean {
+  return status === 'done' || status === 'canceled' || status === 'archived'
+}
+
+/**
+ * 这条任务记录是不是"该报的卡"（`todo` / `canceled` / `archived` 不报）。
+ *
+ * ⚠ ⚠ **`done` 必须报、且不许因为受阻被剔除**（2026-10-18 口径纠偏）：
+ *   `done + blocked` 这张卡要**继续出现在读数里**（它是"要人收活"的那一档），
+ *   只是档位由 `phaseOf` 判成「待验收」—— ⛔ 这里若把它滤掉，就是作业书点名的
+ *   「把这一张卡从结果里剔除」，那是**掩盖**不是**纠偏**。
+ *   `canceled` / `archived` 仍不报（既有口径，本批未动）。
+ */
 function isReportable(task: any): boolean {
   const status = str(task?.status) ?? ''
   if (status === 'in_progress' || status === 'in_review') return true
+  // ⚠ 终态里**只有 `done` 会因受阻被"翻出来"报**；`canceled`/`archived` 不报（既有口径）。
   if (task?.blocked === true && status !== 'canceled' && status !== 'archived') return true
   const executions = Array.isArray(task?.executions) ? task.executions : []
   const last = executions.length > 0 ? executions[executions.length - 1] : undefined
@@ -168,14 +201,27 @@ function phaseOf(task: any, now: number, stallMs: number): { phase: CardPhase; r
     }
   }
 
-  // ── ② 受阻：卡上明确的 `blocked` 标记（任何非终态都可能受阻）────────────────
-  if (task?.blocked === true) {
+  // ── ② 受阻：卡上明确的 `blocked` 标记 —— ⚠ **只对非终态生效** ───────────────
+  //   ⚠ ⚠ **为什么终态要排除**（2026-10-18 口径纠偏）：`blocked` 是**过程标记**，
+  //     `done`/`canceled`/`archived` 是**结果**；标记没被清掉是看板侧的事，
+  //     **不该把"已经做完的卡"翻译成"失败/受阻"**（实测 `t-mvczoqia-ntd9r3`：
+  //     `status=done` + `blocked=true` + 最后一次执行 `succeeded` ⇒ 改前落 failed）。
+  //   ⚠ **分辨力未削**：**非终态 + 受阻** 仍然**必须**落「失败/受阻」（见 `isTerminalStatus`
+  //     的成对判据 · `check-orch-state.mjs` L-f/L-g）。
+  if (task?.blocked === true && !isTerminalStatus(status)) {
     return { phase: 'failed', reason: '卡上标了**受阻**（blocked）—— 要人处理才能继续' }
   }
 
   // ── ③ 待验收：`in_review` / `done` ────────────────────────────────────────
+  //   ⚠ ⚠ **终态优先**：走到这里说明卡不是"最后一次执行失败/取消"，也已过了受阻那一支
+  //     （终态不进那一支）⇒ `done` 一律按**结果**报「待验收」。
+  //   ⚠ **但标记不静默抹掉**：`done` 卡上仍挂着 `blocked` 时，把这件事**如实带出来**——
+  //     档位按结果算（⛔ 不进失败档），可"看板上这张卡还标着受阻"这个事实**不许消失**，
+  //     否则等于用"改档"换来"看不见"（实测那张卡的受阻标记确实还在，见回报 §待决问题）。
   if (status === 'in_review' || status === 'done') {
-    return { phase: 'awaiting-review' }
+    return task?.blocked === true
+      ? { phase: 'awaiting-review', reason: '卡上仍挂着**受阻**（blocked）标记 —— 已按结果归入本档，标记本身**仍在看板上**（要清得去看板改它）' }
+      : { phase: 'awaiting-review' }
   }
 
   // ── ④ 在跑：`in_progress`，或有 `outcome='running'` 的执行 ────────────────
@@ -494,6 +540,8 @@ export function renderCardLines(snap: CardSnapshot, now: number = Date.now()): s
     if (c.headCommit !== undefined) head.push(`提交=${c.headCommit}`)
     if (c.changedFiles !== undefined) head.push(`改动=${c.changedFiles} 个文件`)
     lines.push(head.join(' · '))
+    // ⚠ **终态卡仍挂受阻标记**时要带出这一句（⛔ 不许因为"改了档"就把标记静默抹掉）。
+    if (c.reason !== undefined) lines.push(`  ↳ ${c.reason}`)
   }
   if (review.length > shownReview) {
     lines.push(`  ↳ 另有 ${review.length - shownReview} 张待验收未展开`

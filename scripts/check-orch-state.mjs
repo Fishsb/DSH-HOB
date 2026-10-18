@@ -1965,6 +1965,163 @@ const orchCode = stripComments(orchSrc)
               + `：档=${saysFailedTier} · 原因原文=${hasReason} · 时间=${hasWhen}`)
           }
         }
+        // ── L-f / L-g / L-h ⭐ **终态优先于受阻**（2026-10-18 口径纠偏 · 成对三条）──
+        //
+        // ⚠ **它守的是哪条缺陷**（实测出处）：卡 `t-mvczoqia-ntd9r3` 是
+        //   `status=done` v11 + `blocked=true`（标记没被看板清掉）+ 最后一次执行 `succeeded`，
+        //   改前它落 `phase=failed` ⇒ 状态行显示「⚠ **失败/受阻**」⇒ 派单方以为活没干完。
+        //   根因是 `phaseOf` 里**受阻判在终态之前**（`blocked` 是过程标记、`done` 是结果）。
+        //
+        // ⚠ ⚠ **三条缺一条都算没修**（E-112：只看退出码不够，要看可读断言行）——
+        //   · **L-f 正向**：`done + blocked` ⇒ 必须落「待验收」，**且⛔ 不出现在失败/受阻**；
+        //   · **L-g 反证**：`非终态 + blocked`（in_progress / todo）⇒ **必须仍落失败/受阻**
+        //     （证明分辨力没被这一改削掉 —— ⛔ 不许靠"过滤掉受阻卡"蒙过去）；
+        //   · **L-h 负向对拍**：把顺序改回"受阻先判"（源码就地变异一份临时副本再 import）
+        //     ⇒ **L-f 的判据必须当场不成立**，且本组打一条**可读 FAIL** 行。
+        //
+        // ⚠ **为什么 L-h 要变异源码而不是"我手工改一次给你看"**：
+        //   手工对拍的证据只活在那份回报里，**下一轮谁也复现不了**；
+        //   变异测试把它钉进判据 ⇒ 顺序被改回去时**机检自己就红**（E-27 的范式）。
+        {
+          /** 造一张卡的看板工具集（与 `mountAndRender` 里那份等价的假看板）。 */
+          const boardOf = (tasks) => {
+            const byId = new Map(tasks.map((t) => [t.id, t]))
+            const registry = new Map()
+            registry.set('taskboard_list', {
+              execute: async () => ({
+                revision: 1,
+                tasks: tasks.map((t) => ({
+                  id: t.id, title: t.title, status: t.status, version: t.version,
+                  blocked: t.blocked === true, workspaceId: t.workspaceId,
+                  lastExecutionOutcome: Array.isArray(t.executions) && t.executions.length > 0
+                    ? t.executions[t.executions.length - 1].outcome : undefined,
+                })),
+              }),
+            })
+            registry.set('taskboard_get', {
+              execute: async (args) => ({ task: byId.get(args?.id) }),
+            })
+            return (name) => registry.get(name)
+          }
+
+          // ── L-f ⭐ 正向：`done + blocked` ⇒ 待验收（⛔ 不得进失败/受阻）────────────
+          {
+            const doneBlocked = card({
+              id: 't-done-blocked', title: '已完成但标记没清的卡',
+              status: 'done', blocked: true, version: 11,
+              executions: [{
+                id: 'e-1', trigger: 'scheduled', startedAt: T0, endedAt: NOW,
+                outcome: 'succeeded', isolation: 'worktree', branch: 'task/done-blocked',
+                headCommit: '09749c5b3faf420f8204577f51d3674a00e46b8', changedFiles: 12,
+              }],
+            })
+            const snap = await lCardsMod.readCards({
+              workspaceId: undefined, getTool: boardOf([doneBlocked]), now: NOW,
+            })
+            const readPhase = snap.cards.find((c) => c.id === 't-done-blocked')?.phase
+            const { rendered } = await mountAndRender({ tasks: [doneBlocked] })
+            const saysReview = rendered.includes('**待验收**')
+            // ⚠ 判"不在失败档"看的是**档规模**与**档名列**，不是"整段里没出现过'失败'两个字"
+            //   （原因行、图例里出现"失败"是合理的，拿它当判据会误伤）。
+            const saysFailedTier = /失败\/受阻 \d/.test(rendered) || rendered.includes('⚠ **失败/受阻**')
+            // ⚠ ⚠ **标记不许被静默抹掉**（本条的**第二条**判据）：档位按结果算**不等于**把
+            //   "看板上这张卡还标着受阻"这件事藏起来 —— 那会变成"改了档、丢了信息"。
+            //   ⇒ 渲染里**必须**仍能读到"受阻"两个字（以提示句的形式挂在行下）。
+            const keepsMarker = rendered.includes('受阻')
+            if (readPhase === 'awaiting-review' && saysReview && !saysFailedTier && keepsMarker) {
+              ok('L-f ✓ 终态优先：`done + blocked`（标记没清）⇒ 落**待验收**，⛔ 不进失败/受阻；'
+                + '且受阻标记**未被静默抹掉**（行下仍带一句）'
+                + `（readCards phase=${readPhase}）`)
+            } else {
+              bad('L-f 【终态不得落进失败档】`done + blocked` 的归类不对'
+                + `：readCards phase=${readPhase ?? '(未读到该卡)'}`
+                + ` · 渲染有待验收=${saysReview} · 渲染出现失败/受阻档=${saysFailedTier}`
+                + ` · 受阻标记仍可见=${keepsMarker}`)
+            }
+          }
+
+          // ── L-g ⭐ 反证：**非终态 + 受阻** ⇒ 必须仍落失败/受阻（分辨力未削）──────
+          {
+            const cases = [
+              // ① 在跑但受阻（有执行记录）
+              card({
+                id: 't-running-blocked', title: '在跑但被标受阻的卡',
+                status: 'in_progress', blocked: true, version: 2,
+                executions: [{
+                  id: 'e-1', trigger: 'scheduled', startedAt: T0, lastActivityAt: NOW - 30 * 1000,
+                  outcome: 'running', isolation: 'worktree',
+                }],
+              }),
+              // ② 排队中受阻（没有执行记录 —— 只靠 blocked 这一支才报得出来）
+              card({
+                id: 't-todo-blocked', title: '排队中就被标受阻的卡',
+                status: 'todo', blocked: true, version: 1, executions: [],
+              }),
+            ]
+            const snap = await lCardsMod.readCards({
+              workspaceId: undefined, getTool: boardOf(cases), now: NOW,
+            })
+            const rows = cases.map((c) => {
+              const r = snap.cards.find((x) => x.id === c.id)
+              return { id: c.id, phase: r?.phase, reason: r?.reason }
+            })
+            const allFailed = rows.every((r) => r.phase === 'failed')
+            const saysBlockedReason = rows.every((r) => typeof r.reason === 'string' && r.reason.includes('受阻'))
+            const { rendered } = await mountAndRender({ tasks: cases })
+            const saysFailedTier = /失败\/受阻 \d/.test(rendered) || rendered.includes('⚠ **失败/受阻**')
+            if (allFailed && saysBlockedReason && saysFailedTier) {
+              ok('L-g ✓ 反证（分辨力未削）：**非终态 + 受阻**（in_progress / todo）⇒ 仍落**失败/受阻**'
+                + '，且给"受阻"可读原因')
+            } else {
+              bad('L-g 【受阻卡不许被放过】非终态 + 受阻 没有落进失败/受阻（或没给原因）'
+                + `：逐张 phase=${rows.map((r) => `${r.id}:${r.phase ?? '(未读到)'}`).join(' · ')}`
+                + ` · 有受阻原因=${saysBlockedReason} · 渲染出现失败/受阻档=${saysFailedTier}`)
+            }
+          }
+
+          // ── L-h ⭐ 负向对拍：顺序改回"受阻先判" ⇒ L-f 的判据必须当场不成立 ────────
+          //   ⚠ 变异**只在临时副本上做**：⛔ 不碰工作区源码一个字节（副本用完随 lRoot 删）。
+          //   ⚠ 变异点 = 那行守卫里的 `!isTerminalStatus(status)` ⇒ `true`
+          //     （= 改回"任何 blocked 都先判失败"的旧顺序）。
+          {
+            const srcPath = join(root, 'src', 'server', 'board-cards.ts')
+            const original = readFileSync(srcPath, 'utf8')
+            const GUARD = 'if (task?.blocked === true && !isTerminalStatus(status)) {'
+            // ⚠ **两档变异**（缺一档就漏掉一种改回去的写法）：
+            //   ① 把守卫的终态排除去掉（`!isTerminalStatus(status)` ⇒ `true`）；
+            //   ② 把"标记照旧带出来"那句去掉（⇒ 档位对、但标记被静默抹掉 ⇒ L-f 第二判据当场不成立）。
+            //   ⚠ ② 是**本组刻意加的**：只测①会漏掉"档改了、信息丢了"这种假修（改档换看不见）。
+            const MUTANT = 'if (task?.blocked === true && true) {'
+            const mutated = original.replace(GUARD, MUTANT)
+            if (mutated === original) {
+              // ⚠ "变异打不中"**不许当成通过**：那说明守卫被改名/改形，本判据已失去靶子。
+              bad('L-h 【负向对拍失去靶子】在 `board-cards.ts` 里找不到受阻守卫原文'
+                + `（期望：${GUARD}）⇒ 这条判据已对不上实现，不按通过处理`)
+            } else {
+              const mutDir = mkdtempSync(join(lRoot, 'mutant-'))
+              const mutPath = join(mutDir, 'board-cards.ts')
+              writeFileSync(mutPath, mutated, 'utf8')
+              const mutant = await import(pathToFileURL(mutPath).href)
+              const doneBlocked = card({
+                id: 't-done-blocked', title: '已完成但标记没清的卡',
+                status: 'done', blocked: true, version: 11, executions: [],
+              })
+              const snap = await mutant.readCards({
+                workspaceId: undefined, getTool: boardOf([doneBlocked]), now: NOW,
+              })
+              const mutantPhase = snap.cards.find((c) => c.id === 't-done-blocked')?.phase
+              // L-f 的判据一旦在本变异体上**仍然成立**，说明它测的不是"终态优先"这件事。
+              if (mutantPhase !== 'awaiting-review') {
+                ok('L-h ✓ 负向对拍：把顺序改回"受阻先判"（守卫变异成 `&& true`）⇒ '
+                  + `L-f 的判据**当场不成立**（该卡 phase=${mutantPhase ?? '(未读到)'}，不再是 awaiting-review）`
+                  + ' ⇒ L-f 真长牙')
+              } else {
+                bad('L-h 【负向对拍失败】顺序改回"受阻先判"之后，`done + blocked` **仍然**判成 awaiting-review'
+                  + ' ⇒ L-f 测的不是"终态优先于受阻"这件事（它永远 PASS，也就没有分辨力）')
+              }
+            }
+          }
+        }
       } finally {
         try { rmSync(lRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
       }
@@ -1973,6 +2130,7 @@ const orchCode = stripComments(orchSrc)
 }
 
 // ── 输出 ───────────────────────────────────────────────────────────────
+
 if (note.length > 0) console.log(note.join('\n'))
 if (fail.length > 0) {
   console.log('\n✗ 失败：')
