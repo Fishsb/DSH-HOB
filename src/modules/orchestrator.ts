@@ -57,6 +57,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
 import type { PresetSource } from './bus.ts'
 import { resolveLedgerRoot } from '../server/doc-read.ts'
+import { readCards, renderCardLines, type CardSnapshot, type GetTool } from '../server/board-cards.ts'
 import {
   ORCH_STATE_FILENAME,
   ORCH_STATE_SUBDIR,
@@ -216,6 +217,22 @@ export interface HobOrchestrator {
   }>
   /** 读状态。⚠ `opts.wsRoot` = 调用方的工作区根（用来判"本会话那份账本够不够得到"）。 */
   status(opts?: { wsRoot?: string }): OrchStatus
+  /**
+   * 读**卡进度**（隔离执行卡：在跑 / 待验收 / 失败·卡住）。
+   *
+   * ⚠ 与 `status()` 分开是**刻意的**：`status()` 是**同步**的纯内存读数
+   *   （`watches` / `relaysDone` / 落盘可达性），而卡进度要**调看板工具**
+   *   （异步、可能失败）⇒ 塞进 `status()` 会把一个纯读数变成会抛错的读数。
+   *
+   * ⚠ 读不到时**不抛错**，返回 `reachability='unavailable' | 'unreadable'` + 原话
+   *   —— 由渲染层说"读不到"（⛔ 不许静默成"没有卡"）。
+   *
+   * ⚠ **按调用方自己的会话归属工作区过滤**（卡归属的是**项目** = 工作区 id）：
+   *   归属判不出 ⇒ **不传过滤**（看全部）—— ⛔ 不许拿猜出来的 id 去过滤（那会**少报**）。
+   *
+   * @param opts.selfSessionId - 调用方会话 id（用来判"本会话在哪个项目"）。
+   */
+  cardsOf(opts?: { selfSessionId?: string }): Promise<CardSnapshot>
   /** 停 / 恢复。 */
   control(action: 'stop' | 'resume', opts?: { wsRoot?: string }): OrchStatus
 }
@@ -914,6 +931,41 @@ export function apply(ctx: any): void {
         }
       },
 
+      /**
+       * 读卡进度（2026-10-18 · 用户报障：隔离卡跑完了、派单方还在等）。
+       *
+       * ⚠ **纯委派**给 `server/board-cards.ts` —— 判档、认字段、渲染的**唯一实现点**
+       *   在那里；本处只负责把「宿主 `tools` 注册表」递进去。
+       * ⚠ 取注册表的手法与 `svcCtx.get?.('hobBus')` 同款（**免 inject 现读**）：
+       *   `tools` 是宿主平面服务，预设作用域也取得到；取不到 ⇒ 传 `undefined`
+       *   ⇒ `readCards` 返回 `unavailable`（⛔ 不会静默成"没有卡"）。
+       */
+      async cardsOf(opts?: { selfSessionId?: string }): Promise<CardSnapshot> {
+        let registry: any
+        try { registry = svcCtx.get?.('tools') } catch { registry = undefined }
+        // ⚠ `get(name, scope)` 的第二个参数是**观察作用域**；这里要给的是"宿主全局视角"
+        //   （看板工具是插件作用域注册的，与哪个会话在看无关）⇒ 不传 scope。
+        const getTool: GetTool | undefined = registry !== undefined && registry !== null
+          && typeof registry.get === 'function'
+          ? (name: string) => registry.get(name)
+          : undefined
+        // ── 本会话在哪个项目（= 卡归属的 workspaceId）──────────────────────────
+        //   ⚠ 走 `hobBus.listWorkspaces(self)` 的 `self` 那一行 —— **同一事实只有一个来源**
+        //     （`bus.ts` 的 `listWorkspaces` 已经是"会话 → 路径 → 工作区记录"的唯一实现）。
+        //   ⚠ 判不出 ⇒ `workspaceId` 保持 undefined ⇒ **不过滤**（看全部），
+        //     ⛔ 绝不猜一个 id 去过滤（那会**少报**卡，正是本轮要治的失败模式）。
+        let workspaceId: string | undefined
+        try {
+          const bus = svcCtx.get?.('hobBus')
+          if (bus !== undefined && typeof bus.listWorkspaces === 'function') {
+            const rows = await bus.listWorkspaces(opts?.selfSessionId)
+            const own = (Array.isArray(rows) ? rows : []).find((r: any) => r?.self === true)
+            if (own !== undefined && typeof own.id === 'string' && own.id !== '') workspaceId = own.id
+          }
+        } catch { workspaceId = undefined }
+        return await readCards({ workspaceId, getTool })
+      },
+
       control(action, opts?: { wsRoot?: string }) {
         if (action === 'stop') {
           stopped = true
@@ -1018,8 +1070,7 @@ export function apply(ctx: any): void {
  * ⚠ ⚠ **措辞里必须说清"这不等于 0"** —— 那正是本单要治的误解
  *   （读者看到 `在等回传：0 个` 会以为"没事"，而真相是"**看不到**"）。
  */
-function reachabilityLines(r: OrchStatus['reachability']): string[] {
-  if (r === 'ok' || r === 'no-records-yet') return []
+function reachabilityLines(r: OrchStatus['reachability']): string[] {  if (r === 'ok' || r === 'no-records-yet') return []
   const why = r === 'ledger-unreachable'
     ? '**账本目录不存在**（按工作区名解析出的那个路径上没有东西）'
     : r === 'unreadable'
@@ -1117,8 +1168,11 @@ export function createHobOrchTools(orch: HobOrchestrator): {
   const statusTool = defineTool({
     name: 'hob_orch_status',
     description:
-      '看编排状态：是否已停、正在等哪些会话回传、已经回传过几次、被停闸拦下几次。'
-      + '⚠ 这些是**你的记录**（谁派给谁），不是对方会话的进度；对方的具体进展要看它的会话。',
+      '看编排状态：是否已停、正在等哪些会话回传、已经回传过几次、被停闸拦下几次；'
+      + '**以及隔离执行卡（看板卡）的进度**：在跑 / 待验收 / 失败·卡住三档。'
+      + '⚠ 前半是**你的记录**（谁派给谁），不是对方会话的进度；对方的具体进展要看它的会话。'
+      + '⚠ 后半（卡）读的是看板本身 —— 卡片跑完**也**会在这里出现「待验收」，不必去翻看板。'
+      + '⚠ 看板读不到时会**明说读不到**（⛔ 不等于"没有卡"）。',
     parameters: {},
     output: {
       schema: { type: 'string' },
@@ -1126,6 +1180,33 @@ export function createHobOrchTools(orch: HobOrchestrator): {
     },
     async execute(_args: unknown, exec: any): Promise<string> {
       const s = orch.status({ wsRoot: selfWorkspaceRootOf(exec) })
+      /**
+       * ── 卡进度（2026-10-18 · 用户报障：隔离卡跑了 22 分钟，这边一行都看不见）──
+       *
+       * ⚠ **为什么挂在 `hob_orch_status` 里而不是新开一个工具**：作业书明令
+       *   ⛔ 不新增工具名 / ⛔ 不改工具面 —— 每多一个名字都占白名单一个位置。
+       * ⚠ **为什么读的是看板工具而不是看板账本文件**：见 `server/board-cards.ts` 的文件头
+       *   （第二数据源必然漂，`E-128` 口径）。
+       * ⚠ **读不到⛔ 不许静默成"没有卡"**：`readCards` 把三档可达性分开返回，
+       *   渲染层对 `unavailable` / `unreadable` 打可读标记（判据三后半）。
+       * ⚠ **按本会话自己的工作区过滤**：卡归属的是**项目**（= 工作区 id）；
+       *   判不出自己的工作区 ⇒ **不传过滤**（看全部），并在话里说清这一点 ——
+       *   ⛔ 不许拿一个猜出来的 workspaceId 去过滤（那会**少报**）。
+       */
+      const cardLines = await (async (): Promise<string[]> => {
+        try {
+          const snap = await orch.cardsOf({ selfSessionId: selfSessionIdOf(exec) })
+          return renderCardLines(snap)
+        } catch (e) {
+          // ⚠ 读卡**炸了也不能把状态工具打崩**（那会把"看状态"这个动作本身变成不可用）。
+          //   但⛔ 不许静默：如实报成"读不到"这一档。
+          return [
+            '⚠ 卡进度：**读不到**（读卡时抛错）',
+            `  ↳ ${String((e as Error)?.message ?? e)}`,
+            '  ↳ ⛔ **这不等于"没有卡在跑"** —— 别把这一档当作"确实没有"。',
+          ]
+        }
+      })()
       /**
        * 把登记时刻渲染成**可指认**的一串（2026-10-18 第 2 轮 · 裁定 1 取 B）。
        *
@@ -1249,6 +1330,16 @@ export function createHobOrchTools(orch: HobOrchestrator): {
               : '  ↳ **若本轮打算人工转达可忽略；否则说明漏了投递** —— '
                 + '用 `hob_dispatch` / `hob_send` 投出去，或明确告知用户需手工转达。',
           ]),
+        // ── ⚠ 以下是 2026-10-18 **新增的行**（原有行一字未改、未删）──────────
+        //   ⚠ **它们存在的唯一理由**（用户报障原话："为什么现在你发出的实施指令会话
+        //     完成之后你没有收到回传信息呢"）：隔离卡由**看板服务**起会话，
+        //     不在 `watches` 里 ⇒ 上面那些行**全绿也看不见它** ——
+        //     实测：卡跑了 22 分钟，这边只有「在等回传：1 个」。
+        //   ⚠ ⚠ **空态⛔ 一行都不加**（`no-cards` ⇒ `[]`）——
+        //     判据三：没有卡时不许凭空显示装饰性的卡状态行。
+        //   ⚠ ⚠ **读不到必须说出来**：`unavailable` / `unreadable` ⇒ 可读标记 + 原话
+        //     （⛔ 不许静默当成"没有卡" —— 那正是本轮要修的失败模式）。
+        ...cardLines,
       ].join('\n')
     },
   })

@@ -1702,6 +1702,276 @@ const orchCode = stripComments(orchSrc)
   }
 }
 
+// ── L. **卡进度必须进 hob_orch_status**（2026-10-18 · 用户报障）—— 真跑函数 ──────
+//
+// ⚠ **它守的是哪条缺陷**（用户原话："为什么现在你发出的实施指令会话完成之后你没有
+//   收到回传信息呢"）：卡 `t-mvddkn0y-msn95a` 05:20Z 点火、05:42Z 完成，**跑了 22 分钟**，
+//   同期 `hob_orch_status` 只有「在等回传：1 个」（那是**建卡会话**），
+//   **卡的任何信息都没有** ⇒ 卡早跑完了，派单方还在等。
+//
+// ⚠ **为什么必须"真跑"**：本组保的是**行为** —— "有卡时出现该行 / 终态变成待验收 /
+//   没卡时不出现 / 读不到时说读不到" 全是运行时才成立的性质；
+//   源码里 `readCards` 字样还在、而渲染被掏空，文本断言**照样 PASS**。
+//   ⇒ 这里**装真的 orchestrator 模块**，用**假看板工具**喂真 `hob_orch_status` 的输出。
+//
+// ⚠ ⚠ **成对四条**（判定缺一条都算没修）：
+//   · **L-a 正向**：一张卡在跑 ⇒ 输出里**必须**出现该卡的状态行，且字段齐
+//     （卡 id · 尝试次数 · 点火时刻 · 已跑多久）；
+//   · **L-b 正向**：卡到终态（`in_review`）⇒ 那行**必须变成待验收**，且给"去验收"一句
+//     （又：完成时刻 / 分支 / 提交 / 改动文件数）；
+//   · **L-c 反向**：**没有该报的卡**时⛔ 一行都不加；**看板读不到**时**必须**说"读不到"
+//     （⛔ 不许静默当成"没有卡"）；
+//   · **L-d 负向对拍**：把「读卡状态」那段从 orchestrator 里摘掉 ⇒ L-a/L-b **必须 FAIL**
+//     （⚠ 本条由回报件的实测对拍给出原文；脚本这里只守住"摘掉后渲染为空"这个等价判定 ——
+//      见 L-d 的实现：喂一个**空 snapshot 的等价物**（不接看板工具）时，L-a/L-b 的判据必须不成立）。
+{
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { pathToFileURL } = await import('node:url')
+
+  let lOrchMod
+  let lCardsMod
+  let lBusMod
+  try {
+    lOrchMod = await import(pathToFileURL(join(root, 'src', 'modules', 'orchestrator.ts')).href)
+    lCardsMod = await import(pathToFileURL(join(root, 'src', 'server', 'board-cards.ts')).href)
+    lBusMod = await import(pathToFileURL(join(root, 'src', 'modules', 'bus.ts')).href)
+  } catch (e) {
+    bad(`L 无法加载 orchestrator / board-cards / bus 模块（${String(e?.message ?? e)}）`
+      + ' ⇒ 卡进度那一族**失去基准**（不按通过处理）')
+  }
+
+  if (lOrchMod !== undefined && lCardsMod !== undefined && lBusMod !== undefined) {
+    let lRoot
+    try {
+      lRoot = mkdtempSync(join(tmpdir(), 'hob-lcheck-'))
+    } catch (e) {
+      bad(`L 造不出临时现场（${String(e?.message ?? e)}）⇒ 行为断言失去基准（不按通过处理）`)
+    }
+
+    if (lRoot !== undefined) {
+      try {
+        /**
+         * 起一个最小宿主 + 一份**假看板**，然后真跑 `hob_orch_status`。
+         *
+         * @param opts.tasks - 看板里的卡（`taskboard_list` 返回摘要、`taskboard_get` 返回全记录）。
+         * @param opts.noBoard - true ⇒ **不注册看板工具**（模拟"看板没装/被收敛"）。
+         * @param opts.listThrows - true ⇒ `taskboard_list` 调用抛错（模拟"看板在但读失败"）。
+         * @param opts.hideCards - true ⇒ 模拟**负向对拍**：把 `cardsOf` 摘掉（返回空 snapshot）。
+         */
+        const mountAndRender = async (opts) => {
+          const home = mkdtempSync(join(lRoot, 'home-'))
+          const wsDir = join(home, 'ws')
+          mkdirSync(join(wsDir, 'runtime'), { recursive: true })
+          writeFileSync(join(wsDir, 'runtime', 'orch-watches.json'), JSON.stringify({
+            version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [],
+          }), 'utf8')
+
+          // ── 假看板：两个工具，形状与真看板一致（`{ tasks }` / `{ task }`）─────────
+          const summaries = (opts.tasks ?? []).map((t) => ({
+            id: t.id, title: t.title, status: t.status, version: t.version,
+            blocked: t.blocked === true, workspaceId: t.workspaceId,
+            lastExecutionOutcome: Array.isArray(t.executions) && t.executions.length > 0
+              ? t.executions[t.executions.length - 1].outcome : undefined,
+          }))
+          const registry = new Map()
+          if (opts.noBoard !== true) {
+            registry.set('taskboard_list', {
+              name: 'taskboard_list',
+              async execute() {
+                if (opts.listThrows === true) throw new Error('boom: board ledger unreadable')
+                return { revision: 1, tasks: summaries }
+              },
+            })
+            registry.set('taskboard_get', {
+              name: 'taskboard_get',
+              async execute(args) {
+                const t = (opts.tasks ?? []).find((x) => x.id === args?.id)
+                return t === undefined ? {} : { task: t }
+              },
+            })
+          }
+          const toolsSvc = { get: (name) => registry.get(name) }
+
+          const sessions = { get: () => undefined, list: () => [] }
+          const agents = {}
+          const logger = { debug() {}, info() {}, warn() {} }
+          const provided = {}
+          const ctx = {
+            sessions, agents, logger,
+            get: (k) => (k === 'sessions' ? sessions
+              : k === 'agents' ? agents
+                : k === 'tools' ? toolsSvc
+                  : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                    : undefined),
+            provide: (k, v) => { provided[k] = v },
+            effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
+            inject: (_deps, cb) => cb(ctx),
+            on: () => {},
+          }
+          lOrchMod.apply(ctx)
+          const orch = provided.hobOrchestrator
+          if (orch === undefined) {
+            bad('L 挂真 apply 之后没拿到 hobOrchestrator 服务 ⇒ 本组失去基准（不按通过处理）')
+            return { rendered: '', orch: undefined }
+          }
+          // ── 负向对拍：把「读卡状态」摘掉（等价于 orchestrator 里那段不存在）────────
+          if (opts.hideCards === true) {
+            orch.cardsOf = async () => ({ cards: [], reachability: 'no-cards' })
+          }
+          const tools = lOrchMod.createHobOrchTools(orch)
+          const rendered = String(await tools.status.execute({}, {
+            agent: { session: { header: { cwd: wsDir } } },
+          }))
+          return { rendered, orch }
+        }
+
+        /** 造一张卡（形状按 `dsh-taskboard` 的 `TaskRecord`，只给本组用得到的字段）。 */
+        const card = (over) => ({
+          id: 't-card-1', title: '演示卡：在跑的那张', status: 'in_progress', version: 3,
+          blocked: false, workspaceId: undefined, executions: [],
+          ...over,
+        })
+        const T0 = 1792300800000 // 点火时刻（固定，便于断言"点火车"出现）
+        const NOW = T0 + 12 * 60 * 1000 // 12 分钟后（在跑）
+
+        // ── L-a ⭐ **正向：在跑 ⇒ 必须出现该行，且字段齐** ─────────────────────
+        //   ⚠ 这一条是**负向对拍的靶子**：把读卡那段摘掉 ⇒ 它必须 FAIL（L-d 实测）。
+        {
+          const running = card({
+            executions: [{
+              id: 'e-1', trigger: 'scheduled', startedAt: T0, lastActivityAt: NOW - 30 * 1000,
+              outcome: 'running', isolation: 'worktree', branch: 'task/demo', worktreePath: '/x/y',
+            }],
+          })
+          const { rendered } = await mountAndRender({ tasks: [running] })
+          const hasId = rendered.includes('t-card-1')
+          const hasAttempts = /尝试=\d+ 次/.test(rendered)
+          const hasStarted = /点火=\d{4}\/\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}:\d{2}/.test(rendered)
+          const hasElapsed = /已跑=\d+/.test(rendered) || /已跑=\d+ 时/.test(rendered) || /已跑=\d+ 分/.test(rendered)
+          const saysRunning = /在跑/.test(rendered)
+          if (hasId && hasAttempts && hasStarted && hasElapsed && saysRunning) {
+            ok('L-a ✓ 正向：有一张卡在跑 ⇒ 状态输出里有该卡行，字段齐'
+              + '（id · 尝试次数 · 点火时刻 · 已跑多久 · 档=在跑）')
+          } else {
+            bad('L-a 【必须有该卡行】在跑时状态输出里缺字段或整行缺失'
+              + `：id=${hasId} · 尝试=${hasAttempts} · 点火=${hasStarted} · 已跑=${hasElapsed} · 档=${saysRunning}`)
+          }
+        }
+
+        // ── L-b ⭐ **正向：到终态 ⇒ 必须变成"待验收" + "去验收"一句** ───────────
+        {
+          const done = card({
+            status: 'in_review',
+            executions: [{
+              id: 'e-1', trigger: 'scheduled', startedAt: T0, endedAt: NOW,
+              outcome: 'succeeded', isolation: 'worktree', branch: 'task/demo',
+              headCommit: '315a14e0b3faf420f8204577f51d3674a00e46b8', changedFiles: 1,
+            }],
+          })
+          const { rendered } = await mountAndRender({ tasks: [done] })
+          const saysReview = rendered.includes('待验收')
+          const saysGoVerify = rendered.includes('去验收')
+          const hasEnded = /完成=\d{4}\/\d{1,2}\/\d{1,2}/.test(rendered)
+          const hasBranch = rendered.includes('task/demo')
+          const hasCommit = rendered.includes('315a14e')
+          const hasChanged = /改动=1 个文件/.test(rendered)
+          if (saysReview && saysGoVerify && hasEnded && hasBranch && hasCommit && hasChanged) {
+            ok('L-b ✓ 正向：卡到 in_review ⇒ 该行变成**待验收**并给"去验收"一句'
+              + '（含完成时刻 / 分支 / 提交 / 改动文件数）')
+          } else {
+            bad('L-b 【必须变成待验收并给"去验收"】缺项'
+              + `：待验收=${saysReview} · 去验收=${saysGoVerify} · 完成=${hasEnded}`
+              + ` · 分支=${hasBranch} · 提交=${hasCommit} · 改动=${hasChanged}`)
+          }
+        }
+
+        // ── L-c ⭐ **反向两条**：没卡 ⇒ 一行都不加；读不到 ⇒ 必须说读不到 ─────────
+        {
+          // ① 真的没有该报的卡（只有一张 `todo` 的卡 —— 排队不算在跑）
+          const { rendered: none } = await mountAndRender({ tasks: [card({ status: 'todo', executions: [] })] })
+          const hasCardHeader = /^卡：/m.test(none)
+          if (!hasCardHeader) {
+            ok('L-c1 ✓ 反向：没有该报的卡（只有 todo）⇒ ⛔ 一行卡状态都不加（无装饰性行）')
+          } else {
+            bad('L-c1 【不许凭空显示】没有该报的卡时，状态输出里仍出现了「卡：」行')
+          }
+        }
+        {
+          // ② 看板不在（没装）⇒ 必须**明说读不到**，⛔ 不许静默成"没有卡"
+          const { rendered: gone } = await mountAndRender({ tasks: [card({})], noBoard: true })
+          const saysCannotRead = /卡进度：\*\*读不到\*\*/.test(gone) || /卡进度：\*?\*?读不到/.test(gone)
+          const saysNotEqualNone = /这不等于/.test(gone)
+          if (saysCannotRead && saysNotEqualNone) {
+            ok('L-c2 ✓ 反向：看板不可用 ⇒ **明说读不到** + ⛔「不等于没有卡」')
+          } else {
+            bad('L-c2 【读不到必须说出来】看板不可用时未给出可读标记'
+              + `：读不到=${saysCannotRead} · 不等于没有卡=${saysNotEqualNone}`)
+          }
+        }
+        {
+          // ③ 看板在、但调用失败 ⇒ `unreadable` 这一档也要说读不到
+          const { rendered: broke } = await mountAndRender({ tasks: [card({})], listThrows: true })
+          const saysFail = /卡进度：\*\*读不到\*\*/.test(broke) || /卡进度：\*?\*?读不到/.test(broke)
+          if (saysFail) {
+            ok('L-c3 ✓ 反向：`taskboard_list` 调用失败 ⇒ 同样明说读不到（⛔ 不静默成 0）')
+          } else {
+            bad('L-c3 【调用失败必须说出来】看板调用抛错时未给出「读不到」标记')
+          }
+        }
+
+        // ── L-d ⭐ **负向对拍**：把「读卡状态」摘掉 ⇒ L-a/L-b 的判据必须不成立 ─────
+        //   ⚠ 摘法 = `orch.cardsOf` 换成"永远空"（等价于 orchestrator 里那段代码不存在，
+        //     也就是**同一个靶子**：`hob_orch_status` 不再读卡）。
+        //   ⚠ 判据**不是**"退出码变了"，而是**那两条断言的内容判据不再成立**
+        //     （E-112：负向对拍要看可读的 ✗ 行，不是只看码）。
+        {
+          const running = card({
+            executions: [{
+              id: 'e-1', trigger: 'scheduled', startedAt: T0, lastActivityAt: NOW - 30 * 1000,
+              outcome: 'running', isolation: 'worktree', branch: 'task/demo',
+            }],
+          })
+          const { rendered } = await mountAndRender({ tasks: [running], hideCards: true })
+          const wouldPassLa = rendered.includes('t-card-1')
+          const wouldPassLb = rendered.includes('待验收') && rendered.includes('去验收')
+          if (!wouldPassLa && !wouldPassLb) {
+            ok('L-d ✓ 负向对拍：把「读卡状态」摘掉 ⇒ L-a/L-b 的判据**当场不成立**'
+              + '（输出里既无该卡行、也无待验收/去验收）⇒ 前两条真长牙')
+          } else {
+            bad('L-d 【负向对拍失败】摘掉读卡之后 L-a/L-b 仍然成立'
+              + `：卡行=${wouldPassLa} · 待验收+去验收=${wouldPassLb}`
+              + ' ⇒ 那两条断言测的不是"读卡"这件事')
+          }
+        }
+
+        // ── L-e ⭐ **判据三的成对阴性**：卡在 `failed` ⇒ 档位与**可读原因**都要给 ────
+        //   ⚠ 作业书："失败/卡住 ⇒ 卡 id · 时间 · **可读原因**（⛔ 不许只给状态字）"。
+        {
+          const failed = card({
+            executions: [{
+              id: 'e-1', trigger: 'scheduled', startedAt: T0, endedAt: NOW - 60000,
+              outcome: 'failed', error: 'typecheck exited with code 2', isolation: 'worktree',
+            }],
+          })
+          const { rendered } = await mountAndRender({ tasks: [failed] })
+          const saysFailedTier = rendered.includes('失败')
+          const hasReason = rendered.includes('typecheck exited with code 2')
+          const hasWhen = /@\s*\d{4}\/\d{1,2}\/\d{1,2}/.test(rendered)
+          if (saysFailedTier && hasReason && hasWhen) {
+            ok('L-e ✓ 失败档：给出卡 id + 失败时刻 + **可读原因**（⛔ 不是只给状态字）')
+          } else {
+            bad('L-e 【失败档必须给可读原因】缺项'
+              + `：档=${saysFailedTier} · 原因原文=${hasReason} · 时间=${hasWhen}`)
+          }
+        }
+      } finally {
+        try { rmSync(lRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+      }
+    }
+  }
+}
+
 // ── 输出 ───────────────────────────────────────────────────────────────
 if (note.length > 0) console.log(note.join('\n'))
 if (fail.length > 0) {
