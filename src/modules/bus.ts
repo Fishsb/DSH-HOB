@@ -1259,7 +1259,7 @@ export function createHobBusTools(
       workspace: {
         type: 'string',
         description:
-          '目标工作区：路径（如 `/home/lk/FF/dsh-hob`）或 id。'
+          '目标工作区：路径（如 `/path/to/your-workspace`）或 id。'
           + '**不填 = 本会话自己的工作区**（最常见的选择）。',
       },
       agentPreset: {
