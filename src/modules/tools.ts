@@ -318,7 +318,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
-    description: '只读本工作区账本内的 .md（项目方案 / 决策记录 / 用户决策 / 工作上下文）。',
+    description: '只读本工作区账本内的 .md（项目方案/决策记录/用户决策/工作上下文）。',
     parameters: {
       path: {
         type: 'string',
@@ -326,7 +326,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         // ⚠ 2026-10-10（UD-88 / CHG-025）：原文写「相对**工作区根目录**…如 README.md、PROJECT.md」
         //    ——**两处都不实**：解析根**一直是账本区**（v4 / D7），工作区根本读不到（D6）；
         //    而 `PROJECT.md` 也**已于本批移入账本区**。⇒ 改准：根 = 账本区，示例换成账本区里真实存在的文件。
-        description: '相对**账本区根目录**的 .md 路径，如 PROJECT.md、CONTEXT.md、DECISIONS.md、USER-DECISIONS.md',
+        description: '相对**账本区根目录**的 .md 路径，如 PROJECT.md、CONTEXT.md。',
       },
     },
     output: {
@@ -390,17 +390,15 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
     name: 'hob_read_doc',
     description:
       '只读本工作区内的文件（⛔ 不能写、不能改）。'
-      + '⚠ 可读范围**随本会话的可读权限控制档位变**：'
-      + '「文档权限」档**只可读 .md**；「完全权限」档**工作区里的文件都可读取查看**（含代码与图片）'
-      + '（完全权限 = 工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队）。'
-      + '越出工作区、软链一律拒绝。'
-      + '⚠ 三种内容分别处理：文本 ⇒ 返回正文；二进制 / 非 UTF-8 ⇒ 只给一句短提示（⛔ 不吐乱码）；'
-      + '图片 ⇒ 提示改用 hob_read_image。'
+      + '⚠ 可读范围**随可读权限档位变**：'
+      + '「文档权限」档**只可读 .md**；「完全权限」档**工作区内任意文件都可读**（含代码与图片），'
+      + '但仍不能写、不能执行命令、不能组队。越出工作区、软链一律拒绝。'
+      + '⚠ 二进制 / 非 UTF-8 ⇒ 只给一句短提示（⛔ 不吐乱码）；图片 ⇒ 改用 hob_read_image。'
       + `⚠ 大文件会被截断并在尾部标注（上限 ${maxReadBytes} 字节）；需要后续内容用 offset/limit 分段读。`,
     parameters: {
       path: { type: 'string', required: true, description: '工作区内的路径（相对或绝对），如 src/config.ts' },
-      offset: { type: 'integer', description: '起始行（1 基）。缺省 = 从第 1 行。' },
-      limit: { type: 'integer', description: '最多返回多少行。缺省 = 不按行切（只受字节上限约束）。' },
+      offset: { type: 'integer', description: '起始行（1 基，缺省 1）。' },
+      limit: { type: 'integer', description: '最多返回多少行（缺省 = 不按行切）。' },
     },
     output: {
       schema: { type: 'string' },
@@ -420,7 +418,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       '只列本工作区内的**文件路径**（⛔ 不读正文、不能写）。用于找文件 / 摸清目录结构。'
       + '⚠ 跳过 .git / node_modules / dist 等目录；软链不跟随；结果有上限。',
     parameters: {
-      pattern: { type: 'string', required: true, description: 'glob 模式（相对工作区根），如 **/*.ts、docs/*.md、src/**/*.json' },
+      pattern: { type: 'string', required: true, description: 'glob 模式（相对工作区根），如 **/*.ts、docs/*.md。' },
       limit: { type: 'integer', description: '最多返回多少条（缺省 200）。' },
     },
     output: {
@@ -444,8 +442,8 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       + '⚠ 读不成文本的文件（二进制 / 非 UTF-8）也会跳过，并在结果里注明跳过了几个。'
       + '⚠ 单文件与总量都有上限，被截断时会明说；软链不跟随。',
     parameters: {
-      pattern: { type: 'string', required: true, description: '正则源（大小写敏感），如 "function\\s+\\w+"、TODO|FIXME' },
-      path: { type: 'string', description: '限定在工作区内的某个子路径下搜（缺省 = 整个工作区）。' },
+      pattern: { type: 'string', required: true, description: '正则源（大小写敏感），如 TODO|FIXME。' },
+      path: { type: 'string', description: '限定子路径（缺省 = 整个工作区）。' },
       limit: { type: 'integer', description: '最多返回多少条命中（缺省 200）。' },
     },
     output: {
@@ -482,11 +480,10 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
   const readWorkspaceImageTool = defineTool({
     name: 'hob_read_image',
     description:
-      '读本工作区内的一张图片（PNG / JPEG / WebP / GIF）并把**图片本身**交给模型'
-      + '（⛔ 只读、不能写、不能改图）。大图由宿主的附件服务自动缩小。'
-      + '⚠ 只认工作区内的路径；不支持的类型 / 越界 / 软链 / 超上限一律拒绝。',
+      '读本工作区内的一张图片（PNG/JPEG/WebP/GIF），把**图片本身**交给模型（⛔ 只读、不能写）。'
+      + '大图由宿主附件服务自动缩小。⚠ 只认工作区内的路径；不支持的类型 / 越界 / 软链 / 超上限一律拒绝。',
     parameters: {
-      path: { type: 'string', required: true, description: '工作区内的图片路径，如 docs/shot.png、.hob/drafts/diagram.webp' },
+      path: { type: 'string', required: true, description: '工作区内的图片路径，如 docs/shot.png。' },
     },
     output: {
       // ⚠ 用 `json` 根而不是 `object`：`{path, image}` 里的 `image` 是宿主
@@ -555,17 +552,17 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         required: true,
         // ⚠ 原文写「相对 `.hob/` 的路径」——v4 起账本已外置，**没有 `.hob/` 这个前缀了**，
         //   那句话会让人以为要写 `.hob/CONTEXT.md`。改成与实现一致的措辞（根 = 账本区）。
-        description: '账本区内的相对路径，如 CONTEXT.md、USER-DECISIONS.md、PROJECT.md、archive/2026-10-03-xxx/A.md',
+        description: '账本区内的相对路径，如 CONTEXT.md、archive/2026-10-03-xxx/A.md。',
       },
       content: {
         type: 'string',
         required: true,
-        description: '要写入的 Markdown 文本。形状须符合对应账本的模板。',
+        description: '要写入的 Markdown 文本（形状见对应账本模板）。',
       },
       mode: {
         type: 'string',
         enum: ['append', 'overwrite'],
-        description: 'append=追加（默认）；overwrite=整文件重写。归档目录不允许 overwrite。',
+        description: 'append（默认）/ overwrite；归档目录不允许 overwrite。',
       },
       reason: {
         type: 'string',
@@ -573,7 +570,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       },
       dryRun: {
         type: 'boolean',
-        description: 'true=只跑全部校验、不落盘（推荐先试）。',
+        description: 'true=只跑校验、不落盘。',
       },
       // ── 改 2 · 写入即投递（2026-10-10 第 44 轮 · 结构改造②）──────────────
       //   ⚠ 两个参数**都不强制**：不给就照旧"只写不投"（并附「尚未投递」提醒）。

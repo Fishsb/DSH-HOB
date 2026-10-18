@@ -1121,11 +1121,9 @@ export function createHobOrchTools(orch: HobOrchestrator): {
   const dispatchTool = defineTool({
     name: 'hob_dispatch',
     description:
-      '**派活并登记回传**：把指令投递给指定会话，并让系统在**它这一轮跑完后自动把结果送回来给你**。'
-      + '这是闭环的入口 —— 与 `hob_send` 的区别是：`hob_send` 投完就完了（结果不会回来），'
-      + '`hob_dispatch` 会**等它跑完再叫醒你**，把「它的结论 + 它改动的文件」回传给你。'
-      + '⚠ 回传只是"对方说它做了什么"，**不是验收**；下一步续用还是新建，由你自己判断。'
-      + '⚠ 停了（hob_orch_control stop）之后本工具直接拒绝。',
+      '**派活并登记回传**：把指令投给指定会话，系统在**它这一轮跑完后自动把结果送回来**。'
+      + '与 `hob_send` 的区别：`hob_send` 投完就结束（结果不回来），`hob_dispatch` 会**等它跑完再叫醒你**。'
+      + '⚠ 回传是「对方说它做了什么」，**不是验收**。⚠ 停了（`hob_orch_control stop`）之后本工具直接拒绝。',
     parameters: {
       sessionId: {
         type: 'string',
@@ -1137,8 +1135,8 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         required: true,
         description: '要派的事。给路径与要点，勿把整篇正文塞在这里。',
       },
-      round: { type: 'number', description: '这是第几轮（你自己数，回传时会带回来便于对号）。' },
-      task: { type: 'string', description: '一句话说明这一轮派的是什么（回传时会带回来）。' },
+      round: { type: 'number', description: '第几轮（回传时原样带回，便于对号）。' },
+      task: { type: 'string', description: '一句话说明这一轮派什么（回传带回）。' },
     },
     output: {
       schema: { type: 'string' },
@@ -1168,11 +1166,11 @@ export function createHobOrchTools(orch: HobOrchestrator): {
   const statusTool = defineTool({
     name: 'hob_orch_status',
     description:
-      '看编排状态：是否已停、正在等哪些会话回传、已经回传过几次、被停闸拦下几次；'
-      + '**以及隔离执行卡（看板卡）的进度**：在跑 / 待验收 / 失败·卡住三档。'
-      + '⚠ 前半是**你的记录**（谁派给谁），不是对方会话的进度；对方的具体进展要看它的会话。'
-      + '⚠ 后半（卡）读的是看板本身 —— 卡片跑完**也**会在这里出现「待验收」，不必去翻看板。'
-      + '⚠ 看板读不到时会**明说读不到**（⛔ 不等于"没有卡"）。',
+      '看编排状态：是否已停、在等哪些会话回传、回传过几次、被停闸拦下几次；'
+      + '**以及看板卡进度**（在跑 / 待验收 / 失败·卡住）。'
+      + '⚠ 前半是**你的记录**（谁派给谁），不是对方的进度。'
+      + '⚠ 后半读的是看板本身 —— 卡片跑完也在这里出现「待验收」，不必去翻看板。'
+      + '⚠ 看板读不到时会**明说**（⛔ 不等于「没有卡」）。',
     parameters: {},
     output: {
       schema: { type: 'string' },
@@ -1347,9 +1345,8 @@ export function createHobOrchTools(orch: HobOrchestrator): {
   const controlTool = defineTool({
     name: 'hob_orch_control',
     description:
-      '停 / 恢复编排的自动回传。**这是刹车**：`stop` 之后对方跑完**不会再叫醒你**，'
-      + '且 `hob_dispatch` 会被拒绝；`resume` 重新打开。'
-      + '⚠ 用户随时可以要求你停 —— 用户的要求优先于你"还想继续推进"的判断。',
+      '停 / 恢复编排的自动回传。`stop` 之后对方跑完**不会再叫醒你**，且 `hob_dispatch` 会被拒绝；'
+      + '`resume` 重开。⚠ 用户随时可以要求你停 —— 用户的要求优先于你「还想继续推进」的判断。',
     parameters: {
       action: { type: 'string', required: true, enum: ['stop', 'resume'], description: 'stop=停；resume=恢复。' },
     },
