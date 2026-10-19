@@ -116,6 +116,18 @@ export interface PersistedWatch {
   /** 这条记录属于哪个**工作区根**（决定了它落在哪个账本目录下）。 */
   wsRoot?: string
   /**
+   * ⚠⚠ **这条派发记录自己的 owner**（= 派活方会话 id；`I-1`）。
+   *
+   * ⚠ **它就是回执的唯一收件人** —— 改前收件人只存在于一个**进程级单值**里
+   * （`DispatchWake` 的 `opts.selfSessionId`）⇒ 任何会话读一次状态就把它刷成自己
+   * ⇒ A 派出去的活的回执投给了 B 的 Hob。
+   *
+   * ⚠ **向后兼容（`I-1` 明令）**：旧文件没有这个字段 ⇒ 读成 `undefined` = **"无归属"**，
+   *   ⛔ **不许判坏**、⛔ **不许猜一个默认 owner**。无归属的记录到点后
+   *   **不投** + 落一条可读话（⛔ 不许退化成"投给最后一个摸过状态的人"）。
+   */
+  owner?: string
+  /**
    * **被判丢失的档位**（2026-10-18 第 2 轮 · `UD-137` 裁定 3）。
    *
    * ⚠ 只有**进了 `lost`** 的记录才带它；`pending` 里带它没有意义（还没判）。
@@ -150,6 +162,14 @@ export interface PersistedHandoff {
   /** 这条记录属于哪个**工作区根**（决定它落在哪个账本目录下）。 */
   wsRoot?: string
   /**
+   * ⚠⚠ **这条待投递记录属于哪个会话**（`I-6`：`hob_spawn` 建出的会话必须记下 owner）。
+   *
+   * ⚠ 它让"**建了会话却没投**"这条账能回答"**是谁欠的这一投**" —— 改前只有 `wsRoot`，
+   *   同一工作区里两个 Hob 各建一个会话时，两边的读数**无法分辨**哪条是自己的。
+   * ⚠ 向后兼容：旧文件没有 ⇒ `undefined` = 无归属（⛔ 不判坏、⛔ 不猜）。
+   */
+  owner?: string
+  /**
    * **有意人工转达**（2026-10-10 第 44 轮 · 结构改造②）—— `true` = 这是**有意**
    * 交给用户手工带过去的，**不是忘了投**。
    *
@@ -181,11 +201,42 @@ export interface OrchStateFile {
    *   理由同 `lost`：一份**诊断用途**的运行态不该因缺字段而读不进来。
    */
   handoffs: PersistedHandoff[]
+  /**
+   * ⚠⚠ **会话 → owner 的绑定表**（`I-6`：`hob_spawn` 建出的会话必须记下 owner，跨重载可见）。
+   *
+   * ── 它治的缺陷 ────────────────────────────────────────────────────
+   *   改前"这个会话是谁建的"**只活在内存里**（`watches` / `DispatchWake.sessions`），
+   *   重载后全丢 ⇒ 建出的会话变成"无归属"，回执再找不到主人。
+   *   ⚠ 而用户的要求是"**Hob 预设和它创建的会话必须绑定**"（结构性，不是少错一次）。
+   *
+   * ⚠ **向后兼容**（`I-1`）：旧文件没有这个字段 ⇒ 读成**空数组**，
+   *   ⛔ 不判坏、⛔ **不猜一个默认 owner**（空表 = 谁都还没绑定）。
+   */
+  sessions: PersistedSessionBinding[]
+}
+
+/**
+ * **一条"会话归谁"的绑定**（`I-6`）。
+ *
+ * ⚠ 一旦写下来就**不可改绑**：改绑会让已经派出去的活的回执送到别人手里
+ *   ⇒ 改绑必须**显式报错**（调用方在 `dispatch` / `hob_spawn` 那一侧拦）。
+ */
+export interface PersistedSessionBinding {
+  /** 被绑定的会话 id。 */
+  sessionId: string
+  /** 它的 owner（= 建它 / 第一次派它的那个会话）。 */
+  owner: string
+  /** owner 的工作区根（诊断与分区用；判不出 ⇒ 不填）。 */
+  ownerWsRoot?: string
+  /** 绑定时刻（毫秒）。 */
+  at: number
+  /** 怎么绑上的：`spawn` = 本 owner 建的；`dispatch` = 第一次派发时绑定（甲案）。 */
+  via: 'spawn' | 'dispatch'
 }
 
 /** 空态（文件不存在/坏了时的返回值）。 */
 export function emptyOrchState(): OrchStateFile {
-  return { version: ORCH_STATE_VERSION, updatedAt: 0, pending: [], lost: [], handoffs: [] }
+  return { version: ORCH_STATE_VERSION, updatedAt: 0, pending: [], lost: [], handoffs: [], sessions: [] }
 }
 
 /**
@@ -291,6 +342,12 @@ function asWatch(v: unknown): PersistedWatch | undefined {
   if (typeof o.task === 'string') out.task = o.task
   if (typeof o.error === 'string') out.error = o.error
   if (typeof o.wsRoot === 'string' && o.wsRoot !== '') out.wsRoot = o.wsRoot
+  /**
+   * ⚠ **owner 的宽容读法**（`I-1`）：与 `wsRoot` 同一纪律 —— 是字符串且非空才收。
+   *   ⚠ 缺字段 / 类型不对 ⇒ **不填**（= 无归属），⛔ **不判坏整条记录**。
+   *   ⛔ 绝不在这里"补一个默认 owner" —— 那会把别人的回执投给猜出来的会话。
+   */
+  if (typeof o.owner === 'string' && o.owner !== '') out.owner = o.owner
   // ── **丢失档位**（2026-10-18 第 2 轮 · `UD-137` 裁定 3 / D1）────────────
   //   ⚠ 这就是 D1 的"单一来源"落点：档位**只**从这里进内存，⛔ 不另写 sidecar。
   //   ⚠ 判据必须是**集合内**（同 `asHandoff` 的 `kind` 纪律）：一个拼错的档位
@@ -339,6 +396,8 @@ function asHandoff(v: unknown): PersistedHandoff | undefined {
   }
   if (typeof o.note === 'string' && o.note !== '') out.note = o.note
   if (typeof o.wsRoot === 'string' && o.wsRoot !== '') out.wsRoot = o.wsRoot
+  // ⚠ `owner` 的宽容读法（`I-6`）：与 `wsRoot` 同纪律，缺字段 ⇒ 无归属（⛔ 不判坏、⛔ 不猜）
+  if (typeof o.owner === 'string' && o.owner !== '') out.owner = o.owner
   // ⚠ **严格只认 `true`**（`o.manual === true`）：`"true"` / `1` 这类宽松值**不收**
   //   —— 判宽了会让"漏投"被误标成"有意转达"，那比缺字段更坏（把缺陷说成设计）。
   if (o.manual === true) out.manual = true
@@ -352,6 +411,40 @@ function asHandoffList(v: unknown): PersistedHandoff[] {
   for (const item of v) {
     const h = asHandoff(item)
     if (h !== undefined) out.push(h)
+  }
+  return out
+}
+
+/**
+ * 宽容地把一条 JSON 记录收窄成 {@link PersistedSessionBinding}（纪律同 {@link asWatch}）。
+ *
+ * ⚠ 逐字段判类型：判不出就**丢那一条**（丢一条 ≠ 让整次读取失败）。
+ * ⚠ ⛔ 绝不在这里"补一个默认 owner" —— 那会把别人的回执投给猜出来的会话。
+ */
+function asBinding(v: unknown): PersistedSessionBinding | undefined {
+  if (v === null || typeof v !== 'object') return undefined
+  const o = v as Record<string, unknown>
+  if (typeof o.sessionId !== 'string' || o.sessionId === '') return undefined
+  if (typeof o.owner !== 'string' || o.owner === '') return undefined
+  if (typeof o.at !== 'number' || !Number.isFinite(o.at)) return undefined
+  if (o.via !== 'spawn' && o.via !== 'dispatch') return undefined
+  const out: PersistedSessionBinding = {
+    sessionId: o.sessionId,
+    owner: o.owner,
+    at: o.at,
+    via: o.via,
+  }
+  if (typeof o.ownerWsRoot === 'string' && o.ownerWsRoot !== '') out.ownerWsRoot = o.ownerWsRoot
+  return out
+}
+
+/** 把数组字段读成 `PersistedSessionBinding[]`（逐条收窄，坏的丢掉）。 */
+function asBindingList(v: unknown): PersistedSessionBinding[] {
+  if (!Array.isArray(v)) return []
+  const out: PersistedSessionBinding[] = []
+  for (const item of v) {
+    const b = asBinding(item)
+    if (b !== undefined) out.push(b)
   }
   return out
 }
@@ -372,6 +465,8 @@ function narrowOrchState(o: Record<string, unknown>): OrchStateFile {
     //   `asHandoffList(undefined)` = `[]` ⇒ 读成**空数组**，**不抛、不判坏**。
     //   这正与 `lost` 同款纪律：缺字段 ≠ 文件坏了（运行态是诊断用途）。
     handoffs: asHandoffList(o.handoffs),
+    // ⚠ **向后兼容**（`I-6`）：旧文件没有 `sessions` ⇒ 空数组（⛔ 不判坏、⛔ 不猜归属）
+    sessions: asBindingList(o.sessions),
   }
   if (typeof o.lostAt === 'number' && Number.isFinite(o.lostAt)) out.lostAt = o.lostAt
   return out
@@ -609,14 +704,20 @@ export function writePending(
   pending: PersistedWatch[],
   lost: PersistedWatch[],
 ): boolean {
-  // 读回既有 handoffs（读不到 ⇒ 空数组，与 `readOrchState` 的宽容口径一致）。
-  const prevHandoffs = readOrchState(file).handoffs
+  // 读回既有 handoffs / sessions（读不到 ⇒ 空数组，与 `readOrchState` 的宽容口径一致）。
+  const prev = readOrchState(file)
   const state: OrchStateFile = {
     version: ORCH_STATE_VERSION,
     updatedAt: Date.now(),
     pending,
     lost: lost.slice(0, MAX_LOST),
-    handoffs: prevHandoffs.slice(0, MAX_HANDOFFS),
+    handoffs: prev.handoffs.slice(0, MAX_HANDOFFS),
+    /**
+     * ⚠ **同样必须保留 `sessions`（绑定表）**（`I-6`）：它是"谁建的会话"的唯一在盘记录。
+     *   覆盖掉它 ⇒ 重载后建出的会话全变成"无归属" ⇒ 回执再找不到主人
+     *   （与 `lost` / `handoffs` **同一条纪律**，不是顺手加的一行）。
+     */
+    sessions: prev.sessions.slice(0, MAX_BINDINGS),
   }
   return writeOrchState(file, state)
 }
@@ -627,6 +728,15 @@ export function writePending(
 
 /** 保留的"待投递"记录上限（同 `MAX_LOST` 的理由：运行态，不是审计日志）。 */
 export const MAX_HANDOFFS = 50
+
+/**
+ * 保留的**会话绑定**记录上限（`I-6`）。
+ *
+ * ⚠ 比 `MAX_LOST` 宽：绑定表回答"这个会话归谁"，是**长期**有效的事实
+ *   （一个 Hob 建过的会话可能活很久），丢一条就意味着那个会话重载后变成"无归属"。
+ * ⚠ 但仍然有上限：它是**运行态**（不是审计留档），且每建一个会话才涨一条。
+ */
+export const MAX_BINDINGS = 200
 
 /** {@link recordHandoff} / {@link clearHandoffs} 的结果。 */
 export interface HandoffWriteResult {
@@ -647,6 +757,7 @@ export interface HandoffWriteResult {
  * ⚠ **失败不抛**：返回 `wrote: false`，由调用方记日志（同 `writeOrchState` 纪律）。
  */
 export function recordHandoff(file: string, h: PersistedHandoff): HandoffWriteResult {
+  // ⚠ `sessions`（绑定表）由 `writeOrchState` 原样带着 —— 本函数只动 `handoffs`。
   const state = readOrchState(file)
   const rest = state.handoffs.filter((x) => !(x.kind === h.kind && x.ref === h.ref))
   // 新的在前；超过上限丢最老的（运行态，不是审计留档）。
@@ -670,10 +781,74 @@ export function clearHandoffs(
   file: string,
   match: (h: PersistedHandoff) => boolean,
 ): { cleared: PersistedHandoff[]; wrote: boolean; state: OrchStateFile } {
+  // ⚠ `sessions`（绑定表）同理原样保留 —— 清待投递⛔ 不许把归属也清掉。
   const state = readOrchState(file)
   const cleared = state.handoffs.filter(match)
   if (cleared.length === 0) return { cleared: [], wrote: false, state }
   state.handoffs = state.handoffs.filter((h) => !match(h))
   state.updatedAt = Date.now()
   return { cleared, wrote: writeOrchState(file, state), state }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 会话归属绑定（`I-6`：Hob 预设与它建的会话是**一个闭环**，必须绑定）
+// ══════════════════════════════════════════════════════════════════════
+
+/** {@link bindSession} 的结果。 */
+export interface BindSessionResult {
+  /** 写盘了没有（已经是同一 owner ⇒ `false`，那是幂等命中、不是失败）。 */
+  wrote: boolean
+  /** 绑定之后的归属（无论写没写盘，都给出**结果态**）。 */
+  binding?: PersistedSessionBinding
+  /**
+   * ⚠ **改绑被拒绝**（已有别的 owner）—— 调用方**必须**把这条报出去（⛔ 不许静默）。
+   * ⚠ `I-6`：`hob_dispatch` 的目标若**无归属** ⇒ 第一次派发即绑定，此后**不可改绑**；
+   *   改绑必须显式报错并说明理由。
+   */
+  conflict?: { existing: PersistedSessionBinding; wantedOwner: string }
+}
+
+/**
+ * **把一个会话绑给某个 owner**（`I-6` 的写入点）。
+ *
+ * ── 三条语义（缺一条都算没做）────────────────────────────────────────
+ *   ① **幂等**：已经是同一 owner ⇒ 不写盘、返回现有绑定；
+ *   ② **不改绑**：已有**别的** owner ⇒ **拒绝**并回带 `conflict`（⛔ 不许悄悄覆盖）；
+ *   ③ **落盘**：绑定是"跨重载可见"的事实（`I-6` 明写），必须进运行态文件。
+ *
+ * ⚠ **失败不抛**：`wrote=false` 由调用方决定怎么报（同 `writeOrchState` 纪律）。
+ * ⚠ ⛔ 本函数**不猜**默认 owner：`owner` 为空 ⇒ 直接返回、什么都不做。
+ */
+export function bindSession(
+  file: string,
+  b: { sessionId: string; owner: string; ownerWsRoot?: string; via: 'spawn' | 'dispatch' },
+): BindSessionResult {
+  if (typeof b.sessionId !== 'string' || b.sessionId === '') return { wrote: false }
+  if (typeof b.owner !== 'string' || b.owner === '') return { wrote: false }
+  const state = readOrchState(file)
+  const existing = state.sessions.find((x) => x.sessionId === b.sessionId)
+  if (existing !== undefined) {
+    if (existing.owner === b.owner) return { wrote: false, binding: existing }
+    return { wrote: false, binding: existing, conflict: { existing, wantedOwner: b.owner } }
+  }
+  const binding: PersistedSessionBinding = {
+    sessionId: b.sessionId,
+    owner: b.owner,
+    at: Date.now(),
+    via: b.via,
+    ...(b.ownerWsRoot === undefined || b.ownerWsRoot === '' ? {} : { ownerWsRoot: b.ownerWsRoot }),
+  }
+  state.sessions = [binding, ...state.sessions].slice(0, MAX_BINDINGS)
+  state.updatedAt = Date.now()
+  return { wrote: writeOrchState(file, state), binding }
+}
+
+/**
+ * **查一个会话归谁**（`I-6` 的读取点）。
+ *
+ * @returns 绑定（没有 ⇒ `undefined` = **无归属**，⛔ 不许猜一个默认 owner）。
+ */
+export function ownerOfSession(file: string, sessionId: string): PersistedSessionBinding | undefined {
+  if (typeof sessionId !== 'string' || sessionId === '') return undefined
+  return readOrchState(file).sessions.find((x) => x.sessionId === sessionId)
 }

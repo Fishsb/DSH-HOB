@@ -60,11 +60,12 @@ import { resolveLedgerRoot } from '../server/doc-read.ts'
 import { readCards, renderCardLines, type CardSnapshot, type GetTool } from '../server/board-cards.ts'
 import {
   CardWake, DispatchWake, lookupCardSession,
-  type WakeState, type DispatchWakeState, type CardFiringEvent,
+  type WakeState, type DispatchWakeState, type CardFiringEvent, type WakeTarget,
 } from '../server/card-wake.ts'
 import {
   ORCH_STATE_FILENAME,
   ORCH_STATE_SUBDIR,
+  bindSession,
   clearHandoffs,
   countLostByClass,
   ensureRuntimeIgnored,
@@ -112,6 +113,25 @@ export interface Watch {
    * ⚠ 读不到时**不填本字段**（调用方渲染成 `(读不到)`）—— 不编造、不猜默认值。
    */
   targetPreset?: string
+  /**
+   * ⚠⚠ **这条派发记录自己的 owner**（= `hob_dispatch` / `write_hob(dispatchTo)` 的调用方会话 id）。
+   *
+   * ── 为什么它必须逐条存在（本件的核心，`I-1` / `I-2`）──────────────────────
+   *   改前"回执该投给谁"只有一个来源：**进程级单值** `opts.selfSessionId`
+   *   ⇒ 任何会话读一次 `hob_orch_status` / 卡面就把它刷成自己
+   *   ⇒ **A 工作区派出去的活的回执会投给 B 工作区的 Hob**（用户报的那条缺陷）。
+   *   ⚠ 而 `watches` 里本来就记着 `watcher`（= 派发时那个 self），
+   *     ⇒ 归属信息一直**在**，只是读数与投递两条路都没用它。
+   *
+   * ⚠ **向后兼容**：旧运行态文件没有这个字段 ⇒ 读成 `undefined` = **"无归属"**，
+   *   ⛔ 不许判坏、⛔ 不许猜一个默认 owner（`I-1` 明令）。
+   */
+  owner?: string
+  /**
+   * 该 owner 的**工作区根**（落盘分区 + 读数过滤的判据，`I-1` / `I-5`）。
+   * ⚠ 判不出 ⇒ 不填；⛔ 不许拿**目标会话**的工作区根顶替（那是另一回事）。
+   */
+  ownerWsRoot?: string
   /**
    * {@link targetPreset} 的**取自哪里**（2026-10-17 第 2 轮新增 · `CHG-058` 收口）。
    *
@@ -195,6 +215,20 @@ export interface OrchStatus {
    * ⚠ **缺省 `'ok'`** ⇒ ⛔ 不动既有调用点的行为（向后兼容）。
    */
   reachability: StateReachability | 'unresolved'
+  /**
+   * ⚠⚠ **他人的（不可见明细）**（`I-4` 的显式例外）。
+   *
+   * 作业书允许的唯一混法：「要混必须单列『他人的（不可见明细）』并明确标注」。
+   * ⚠ 只给**条数**：⛔ 不许带 target / task / 轮次 / 卡号 —— 明细一出现，
+   *   就等于把别人的账本又摊开了一次（那正是本件要治的形态）。
+   */
+  others?: { note: string; watches: number }
+  /**
+   * ⚠ **无归属的在等回传条数**（`I-1`：判不出归属 ≠ 归我，也 ≠ 别人的）。
+   * ⚠ 它必须**单列一档**：并进"我的"会让别人以为那是自己的活；
+   *   并进"他人的"又等于说"那是有主的"（两件都不是事实）。
+   */
+  unownedWatches?: number
 }
 
 /** `hobOrchestrator` 服务的形状。 */
@@ -219,8 +253,14 @@ export interface HobOrchestrator {
      */
     presetNotice?: string
   }>
-  /** 读状态。⚠ `opts.wsRoot` = 调用方的工作区根（用来判"本会话那份账本够不够得到"）。 */
-  status(opts?: { wsRoot?: string }): OrchStatus
+  /**
+   * 读状态 —— ⚠⚠ **只含 `opts.self` 自己的记录**（`I-4`）。
+   *
+   * @param opts.wsRoot - 调用方的工作区根（用来判"本会话那份账本够不够得到"）。
+   * @param opts.self - 调用方会话 id = **owner 过滤键**。⚠ 不给 ⇒ 只能报"无归属"那一部分，
+   *   ⛔ 绝不退化成"全实例汇总"（那正是本件要治的形态：一条 Hob 看见 9 条别人的在等回传）。
+   */
+  status(opts?: { wsRoot?: string; self?: string }): OrchStatus
   /**
    * 读**卡进度**（隔离执行卡：在跑 / 待验收 / 失败·卡住）。
    *
@@ -257,7 +297,13 @@ export interface HobOrchestrator {
    */
   dispatchWakeState(): DispatchWakeState
   /** 停 / 恢复。 */
-  control(action: 'stop' | 'resume', opts?: { wsRoot?: string }): OrchStatus
+  /**
+   * 停 / 恢复**调用方自己**的闭环（`I-4` 末条）。
+   *
+   * ⚠ 改前是一个**进程级布尔** ⇒ 一个工作区 `stop` 会把所有工作区一起停。
+   * ⚠ 现在按 `opts.self`（owner）分档：只停那一侧，别人不受影响。
+   */
+  control(action: 'stop' | 'resume', opts?: { wsRoot?: string; self?: string }): OrchStatus
 }
 
 /** 从会话里取"最后一条 assistant 的文本"（跳过 reasoning / tool 块）。 */
@@ -453,8 +499,19 @@ function scanStateFiles(svcCtx: any): string[] {
   return out
 }
 
-/** 把一个内存 watch 收窄成可序列化的一条（带工作区归属）。 */
-function toPersisted(w: Watch, wsRoot: string | undefined): PersistedWatch {
+/**
+ * 把一个内存 watch 收窄成可序列化的一条（带**它自己的**工作区归属与 owner）。
+ *
+ * ⚠⚠ **`wsRoot` 只许是这一条记录自己的工作区根**（`I-5`）：
+ *   改前的调用点传的是"**本次派发的目标** cwd"，而写入时又 `[...watches.values()]`
+ *   把**整张表**写进那一个文件 ⇒ 外来记录被**盖上了本工作区的 `wsRoot`**
+ *   （跨工作区互相污染，`1.4` 那条病根）。
+ *   ⇒ 现在 `wsRoot` 来自**记录自己的 `ownerWsRoot`**，判不出就不写该字段
+ *     （⛔ 不许拿别人的 / 拿当前的顶替）。
+ *
+ * @param w - 内存里的一条 watch（**必须已经带 owner**）。
+ */
+function toPersisted(w: Watch): PersistedWatch {
   return {
     target: w.target,
     watcher: w.watcher,
@@ -463,7 +520,9 @@ function toPersisted(w: Watch, wsRoot: string | undefined): PersistedWatch {
     at: w.at,
     sawRunning: w.sawRunning,
     ...(w.error === undefined ? {} : { error: w.error }),
-    ...(wsRoot === undefined || wsRoot === '' ? {} : { wsRoot }),
+    // 🔑 归属两件：**逐条**带（⛔ 不再由调用点"统一盖一个"）
+    ...(w.owner === undefined || w.owner === '' ? {} : { owner: w.owner }),
+    ...(w.ownerWsRoot === undefined || w.ownerWsRoot === '' ? {} : { wsRoot: w.ownerWsRoot }),
   }
 }
 
@@ -581,19 +640,47 @@ export function apply(ctx: any): void {
      * ⚠ 三档分开（`found` / `no-session` / `unreadable`），后两档**必须留可读痕**
      *   （`registryIssue`），⛔ 不许静默当成"没有这张卡"。
      */
-    const registerCardByPush = async (cardId: string): Promise<void> => {
+    const registerCardByPush = async (cardId: string, subscriber: string | undefined): Promise<void> => {
       try {
+        /**
+         * ⚠⚠ **"是谁在看这个面"必须显式传进来**（`I-2`：⛔ 不许用进程级单值决定归属）。
+         *
+         * 改前本函数只收 `cardId`，"登记进谁的表"隐含地由进程级 `selfSessionId` 决定
+         * （见已删除的 `setSelfSessionId`）⇒ **后读者覆盖先读者**。
+         * ⇒ 现在由 `CardWake` 的订阅者（= 正在看卡面的那个会话）显式带进来；
+         *   判断它是不是这张卡的 owner，交给下面同一道准入门。
+         */
         const registry: any = (() => { try { return svcCtx.get?.('tools') } catch { return undefined } })()
         const getTool = registry !== undefined && registry !== null && typeof registry.get === 'function'
           ? (n: string) => registry.get(n)
           : undefined
         const r = await lookupCardSession(cardId, getTool)
         if (r.kind === 'found') {
+          /**
+           * ⚠⚠ **归属证明（`I-3`）**：这张卡得是**这个订阅者自己**建的/派的，才登记。
+           *   判据 = `lookupCardSession` 现读回来的 `createdBySessionId`（看板 `createdBy.sessionId`）。
+           *   ⛔ 判不出（读不到 / 不是它）⇒ **不登记** + 独立一档可读话，
+           *     ⛔ 不许"本工作区的卡一律算我的"（那正是同一工作区互相串收的成因）。
+           */
+          const cardOwner = r.createdBySessionId
+          if (typeof subscriber !== 'string' || subscriber === ''
+            || cardOwner === undefined || cardOwner !== subscriber) {
+            dispatchWake.noteOwnerUnknown(
+              r.cardId,
+              r.sessionId,
+              cardOwner === undefined
+                ? '按卡现读回来没有建卡会话（`createdBy.sessionId` 空）'
+                : `这张卡属于 ${cardOwner}，而当前看这个面的是 ${String(subscriber ?? '(判不出)')}`,
+            )
+            return
+          }
           dispatchWake.register({
             sessionId: r.sessionId,
             via: 'taskboard-card',
             cardId: r.cardId,
             ...(r.executionId === undefined ? {} : { executionId: r.executionId }),
+            owner: cardOwner,
+            ...(wsRootOfSession(cardOwner) === undefined ? {} : { ownerWsRoot: wsRootOfSession(cardOwner) }),
           })
           dispatchWake.noteRegistryOk(cardId)
           return
@@ -631,7 +718,14 @@ export function apply(ctx: any): void {
        * ⚠ **点火帧回调**（补缺口的核心）：推送里已经带卡 id ⇒ 现读那一张并登记。
        * ⚠ **不 await**（SSE 循环不能被磁盘/工具调用拖住）；失败由 `registerCardByPush` 自己留痕。
        */
-      onFiring: (e: CardFiringEvent) => { void registerCardByPush(e.taskId) },
+      /**
+       * ⚠⚠ **把"当前订阅者快照"显式传下去**（`I-2` / `I-3`）：
+       *   改前这个回调只带 `taskId`，登记目标隐含地来自进程级单值 ⇒ 后读者覆盖先读者。
+       *   ⇒ 现在逐个订阅者判"它是不是这张卡的 owner"（判据在 `registerCardByPush` 里）。
+       */
+      onFiring: (e: CardFiringEvent, subscribers: WakeTarget[]) => {
+        for (const sub of subscribers) void registerCardByPush(e.taskId, sub.sessionId)
+      },
       deliver: (sessionId: string, text: string) => {
         const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
         if (bus === undefined || typeof bus.deliver !== 'function') {
@@ -672,9 +766,25 @@ export function apply(ctx: any): void {
     const watches = new Map<string, Watch>()
     /** 上一次见到的状态，用来识别 `running → idle` **跳变**（而不是"看到 idle"）。 */
     const lastStatus = new Map<string, string>()
-    let stopped = false
+    /**
+     * ⚠⚠ **`stopped` 按 owner 分开**（`I-4` 末条：`stop` / `resume` 只作用于**调用方自己**）。
+     *
+     * 改前它是一个**进程级布尔** ⇒ 任何一个工作区的 Hob 一句 `stop`，
+     * **所有工作区**的闭环一起停（用户明确要求"闭环隔离"）。
+     * ⚠ 键 = owner 会话 id；无 owner 的记录**不受任何人的 stop 影响**
+     *   （它本来就不属于任何闭环）—— ⚠ 也⛔ 不许因此被"顺带停掉"。
+     */
+    const stoppedOwners = new Set<string>()
     let relaysDone = 0
     let relaysBlocked = 0
+    /**
+     * 判断某个 owner 的闭环是否被停。
+     * @param owner - 谁的闭环；`undefined` / 空 ⇒ **无归属 ⇒ 不归任何人停**（返回 false）。
+     */
+    const isStoppedFor = (owner: string | undefined): boolean => {
+      if (owner === undefined || owner === '') return false
+      return stoppedOwners.has(owner)
+    }
 
     // ══════════════════════════════════════════════════════════════════
     // 重载后接手：**先核再判**（2026-10-18 第 2 轮 · `UD-137` 裁定 3）
@@ -701,8 +811,156 @@ export function apply(ctx: any): void {
     let lostLatch: PersistedWatch[] = []
     /** 本次**重挂**的（供日志与状态行读数）。 */
     let reattachedLatch: PersistedWatch[] = []
+    /**
+     * ⚠⚠ **别人的记录不进本代接手**（`I-5` 末段，本件的一道硬判据）。
+     *
+     * ── 改前是什么 ────────────────────────────────────────────────────
+     *   `markLost(file, () => false, …)` 对**扫到的每一个文件**都跑 ⇒ 别人的 pending
+     *   被**本代**判成丢失（还发丢失通知给**别人**的 watcher）——
+     *   等于一条 Hob 去替别人回收账本，而它根本不知道那些活的归宿。
+     *
+     * ── 现在 ─────────────────────────────────────────────────────────
+     *   **只有 `owner` 落在"本代可接管的集合"里的记录**才进 `markLost`。
+     *   ⚠ 什么叫"本代可接管"：`owner` 是**本进程里真活着的会话**（`agents.get(owner)` 有实体）。
+     *     判据来源与"重挂时读目标状态"**同一个函数**（`agents.get`），⛔ 不另写一份。
+     *   ⚠ **无归属的记录**（旧文件缺 `owner`）⇒ **也算不进**：`I-1` 明令"⛔ 不许猜一个默认 owner"
+     *     ⇒ 它们既不被判死、也不被重挂（⛔ 不许替一个不知道是谁的记录做决定）。
+     *   ⚠ `markLost` 的**签名一个字未改**（`check:orch` 的 D4/F1/F3 锚在上面）——
+     *     本函数只是把 `known` 谓词换成"**这条归我管吗**"，其余完全同款。
+     */
+    /**
+     * ⚠⚠ **"这个 owner 是不是本代该管的"**（`I-5` 末段的唯一判据）。
+     *
+     * ⚠ 判据**必须落在盘上**、不能只问 `agents.get`：
+     *   重载恰恰是"上一代的会话可能还没重新起来"的时刻 —— 只看 `agents.get`
+     *   会把**本进程自己的**记录一律判成"别人的"（= 重挂与 lost 上报全瘫）。
+     * ⇒ 两条任一成立就算"本代该管"：
+     *   ① `agents.get(owner)` 有实体（它现在活着）；
+     *   ② **`hob_spawn` 留下的绑定表**里出现这个 owner（`I-6`：归属跨重载可见）。
+     * ⚠ 两条都**不含"猜"**：既不按工作区猜、也不按 watcher 猜。
+     */
+    const ownerIsLiveHere = (owner: string | undefined, file?: string): boolean => {
+      if (owner === undefined || owner === '') return false
+      try { if (agents.get?.(owner) !== undefined) return true } catch { /* 读不到就继续看盘 */ }
+      if (file === undefined) return false
+      try {
+        // ② 绑定表里出现这个 owner（`I-6`：归属跨重载可见）⇒ 它是"有主的、本进程认得的"记录
+        return readOrchState(file).sessions.some((b) => b.owner === owner)
+      } catch { return false }
+    }
+
+    /**
+     * ⚠⚠ **这条记录归不归本代管**（`I-5` 末段的判据，⚠ 三种取值都不许合并）。
+     *
+     * · **无归属**（`owner` 缺失：旧文件 / 旧帧）⇒ **仍归本代管**：
+     *   ⚠ 必须保留这条旧路径 —— 否则**升级后第一次重启**会把盘上所有旧记录
+     *     "既不重挂、也不报丢失"地静默抹掉，那正是本项目最忌讳的形态。
+     *   ⚠ 但它们的回执**不会投给任何人**（`I-2`：owner 缺失 ⇒ 不投 + 可读一档）。
+     * · **有 owner 且本进程认得它**（活着 / 有绑定）⇒ 归本代管。
+     * · **有 owner 但本进程不认得** ⇒ **不碰**（那是别人的账，由它自己那一侧回收）。
+     */
+    /**
+     * ⚠⚠ **本代"已经接管到的 owner 集合"**（`I-5` 的落盘口径给出的归属证明）。
+     *
+     * ⚠ 依据：`flushWatches` / `persistOwnerPartition` **只写属于该 `(账本, owner)` 的记录**，
+     *   账本目录按工作区派生 ⇒ **出现在本账本文件里的 owner，就是本账本的 owner**。
+     * ⚠ 这**不是**"按工作区猜归属"（`I-3` 禁止的那条）：
+     *   本判据判的是"**这条记录该由本代处置吗**"，⚠ 它**完全没有回答"回执该投给谁"** ——
+     *   投递仍只认 `w.owner`，且 owner 缺失仍然**不投**。
+     * ⚠ 没有这一条会怎样（实测）：重启后 owner 会话还没起来、绑定表也还没写
+     *   ⇒ 本代把它当"别人的记录"跳过 ⇒ **不重挂、不报丢失、不发通知**
+     *   —— 那正是"该看到的东西静默消失"，比误判更坏。
+     */
+    const ownerSeenInThisLedger = new Set<string>()
+
+    const adoptable = (w: PersistedWatch, file: string): boolean => {
+      if (w.owner === undefined || w.owner === '') return true
+      if (ownerIsLiveHere(w.owner, file)) return true
+      // ⚠ 本账本里已经出现过这个 owner ⇒ 它是本账本的记录（不是别人的）
+      if (ownerSeenInThisLedger.has(`${file}\u0000${w.owner}`)) return true
+      /**
+       * ⚠⚠ **本账本分区内的记录 ⇒ 本代该管**（`I-5` 的落盘口径自带归属证明）。
+       *
+       * ⚠ 依据：落盘**只写属于该 `(账本, owner)` 的记录**（`flushWatches` / `persistOwnerPartition`），
+       *   而账本目录按**工作区名**派生 ⇒ **一条记录的 `wsRoot` 与它所在文件的账本根一致**，
+       *   说明它就是**这本来账里的记录**。
+       * ⚠ 这**不是**"按工作区猜 owner"（`I-3` 明令禁止的那条）：本判据判的是
+       *   "**这条记录属不属于这本账**"，⚠ **完全没有回答"它归哪个会话"** ——
+       *   归谁仍只由 `w.owner` 决定，缺 owner 仍然"不投"。
+       * ⚠ 没有这一条会怎样（实测）：重启后 owner 会话**还没起来** / 绑定表还没写
+       *   ⇒ 本代把它当"别人的记录"跳过 ⇒ **不重挂、不报丢失、也不发通知** ——
+       *   那正是"该看到的东西静默消失"，比误判更坏。
+       */
+      if (w.wsRoot === undefined || w.wsRoot === '') return false
+      return w.wsRoot === dirname(dirname(file))
+    }
+
+    /**
+     * ⚠⚠ **本代接手时"哪些记录根本不归我碰"**（`I-5` 末段）——
+     *   与 `markLost` 的 `known` **不是同一个概念**，⛔ 千万别混：
+     *
+     *   · `known(w)` 的语义是"**这一代是不是已经持有它**"（`orch-state.ts` 的原注释），
+     *     接手那一刻 `watches` 必然为空 ⇒ 只能是 `() => false`（既有口径，⛔ 不许改）；
+     *   · 本函数回答的是"**这条记录该不该由本代处置**"（别人的账不碰）。
+     *
+     * ⚠ 改前的写法把这两件事合成一个谓词 ⇒ 传 `adoptable` 当 `known`
+     *   会让"无归属 / 别人的"记录被**原样留在 pending 里**，
+     *   于是**既不重挂也不判丢失** —— 那正是"该看到的东西静默消失"的形态（实测踩过）。
+     * ⇒ 现在：**先把不归我碰的记录摘出去**，剩下的照旧喂 `markLost(file, () => false, …)`。
+     */
+    const isForeign = (w: PersistedWatch, file: string): boolean => !adoptable(w, file)
+    /**
+     * ⚠⚠ **`known` 谓词的三种取值**（`I-5` 末段，⚠ 三条都不许合并）：
+     *
+     *   · `owner` **在本进程活着** ⇒ `known = false`（= "这一代要管"）
+     *     ⇒ 进 `classifyPending`：仍在跑就重挂，否则按档位判 lost。
+     *   · `owner` **有、但不活着** ⇒ `known = true`（= **不碰**）：
+     *     ⚠ 那是**别人的**记录（别人的会话 / 别人的账本）⇒ ⛔ 不进我的 reattach、
+     *       ⛔ 不进我的 lost 上报、⛔ 不发通知（它会由**它自己的**那一侧回收）。
+     *   · **无归属**（旧文件缺字段）⇒ 也 `known = true`（**不碰**）：
+     *     ⚠ `I-1` 明令"缺字段 ⇒ 读成无归属，⛔ 不许判坏、⛔ 不许猜一个默认 owner"
+     *     ⇒ 判死它（写进 lost）等于替一个**不知道是谁**的记录做决定；重挂它又会造出
+     *       一条**永远投不出去**的 watch（`I-2`：owner 缺失 ⇒ 不投）。
+     *     ⇒ 只剩一条诚实的做法：**原样留在盘上**，由读数单列"无归属"那一档给人看。
+     */
+    /**
+     * ⚠ **本代"我认得的" owner 集合**（`I-5`）：
+     *   ① 落盘绑定表里出现过的 owner；
+     *   ② 本进程里**真活着**的会话 id。
+     * ⚠ 它**不含**"按工作区猜"那一档 —— 那正是越界成因。
+     * ⚠ 无归属（`owner === undefined`）**永远不在这里** ⇒ 它的记录不判死、也不重挂。
+     */
+    const knownPredicate = (w: PersistedWatch, file: string): boolean => !adoptable(w, file)
     try {
       for (const file of scanStateFiles(svcCtx)) {
+        /**
+         * ⚠ **先把这个文件里出现过的 owner 记进"本账本认得"的集合**：
+         *   判据 = **它就是住在这本账里的**（分区写法的直接推论），
+         *   ⛔ 不是"按工作区猜 owner"（回执收件人始终只由 `w.owner` 决定）。
+         */
+        try {
+          for (const b of readOrchState(file).sessions) {
+            ownerSeenInThisLedger.add(`${file}\u0000${b.owner}`)
+          }
+          const st0 = readOrchState(file)
+          for (const w of [...st0.pending, ...st0.lost]) {
+            if (w.owner !== undefined && w.owner !== '') {
+              ownerSeenInThisLedger.add(`${file}\u0000${w.owner}`)
+            }
+          }
+        } catch { /* 读不到 ⇒ 只按活会话判（fail-closed） */ }
+        /**
+         * ⚠⚠ **`markLost` 之后只采用"归本代管"的那一部分**（`I-5` 末段）。
+         *
+         * ⚠ 为什么不在喂进 `markLost` 之前过滤：它只吃文件、没有"跳过某些记录"的参数，
+         *   而它的**签名不许动**（`check:orch` 的 D4/F1/F3 锚在上面）。
+         * ⚠ 而"先把别人的摘出去、再并回来"这种写法**实测踩过坑**：并回那一步会用旧快照
+         *   盖掉 `markLost` 刚写好的 `pending`（**重挂记录被抹掉**，K-a 当场红）。
+         * ⇒ 改成：**判据只作用在"我怎么采用它的结果"上** ——
+         *   · 别人的记录（`isForeign`）⛔ 不进我的 `watches`（不重挂）、
+         *     ⛔ 不进我的 lost 上报、⛔ 不发通知；
+         *   · ⚠ 盘上它仍在 `pending`/`lost` —— 由**它自己那一侧**去回收。
+         */
         const r = markLost(file, () => false, (target) => {
           try {
             const a = agents.get?.(target)
@@ -715,8 +973,31 @@ export function apply(ctx: any): void {
             return undefined
           }
         })
+        /**
+         * ⚠⚠ **只在"怎么采用结果"上过滤**（`I-5` 末段）：
+         *   `myReattach` / `myLost` 才是本代的；别人的记录⛔ 不进 `watches`、
+         *   ⛔ 不进 lost 上报、⛔ 不发通知（它们在盘上原样留着，由它自己那一侧回收）。
+         */
+        const myReattach = r.reattach.filter((w) => !isForeign(w, file))
+        const myLost = r.lost.filter((w) => !isForeign(w, file))
+        const foreignCaught = (r.reattach.length - myReattach.length) + (r.lost.length - myLost.length)
+        if (foreignCaught > 0) {
+          /**
+           * ⚠ **别人的记录也不许静默**（本项目"不静默"纪律）：留一行 info 说明
+           *   "扫到了多少条、它们不归我"，便于人确认"不是丢了，是别人的"。
+           */
+          svcCtx.logger?.info?.(
+            `[${name}] 扫到 ${foreignCaught} 条**属于别的 owner** 的派发记录（${file}）⇒`
+            + ' **不重挂、不判丢失、不发通知**（由它自己那一侧回收）',
+          )
+        }
         // ── ① 仍在跑 ⇒ **必须重挂**（不是"可以不挂"）─────────────────────
-        for (const w of r.reattach) {
+        for (const w of myReattach) {
+          /**
+           * ⚠ 无归属的记录**照旧重挂**（保持升级后第一次重启的旧行为：仍在跑就继续等）：
+           *   它的 owner 为空 ⇒ 到点时投不出去，会落"无归属 ⇒ 不投 + 可读一档"
+           *   —— ⚠ 那比"静默不再等"诚实（`I-10`：漏投必须可见）。
+           */
           watches.set(w.target, {
             target: w.target,
             watcher: w.watcher,
@@ -726,21 +1007,28 @@ export function apply(ctx: any): void {
             sawRunning: w.sawRunning,
             reported: false,
             ...(w.error === undefined ? {} : { error: w.error }),
+            /**
+             * ⚠⚠ **重挂必须把 owner 带回来**（`I-1`）：丢了它，这一条在重载后就变成
+             * "无归属" ⇒ 回执**投不出去**（`I-2`：owner 缺失 ⇒ 不投）。
+             * ⚠ 若盘上那条本来就没有 owner ⇒ **保持无归属**（⛔ 不许猜一个补上）。
+             */
+            ...(w.owner === undefined ? {} : { owner: w.owner }),
+            ...(w.wsRoot === undefined ? {} : { ownerWsRoot: w.wsRoot }),
           })
           reattachedLatch = [...reattachedLatch, w]
         }
-        if (r.lost.length > 0) {
-          lostLatch = [...lostLatch, ...r.lost]
+        if (myLost.length > 0) {
+          lostLatch = [...lostLatch, ...myLost]
           svcCtx.logger?.warn?.(
-            `[${name}] 重载后判定 ${r.lost.length} 条未结算派发丢失（${file}）：`
-            + r.lost.map((w) => `${w.target}${w.round === undefined ? '' : `(第${w.round}轮)`}`
+            `[${name}] 重载后判定 ${myLost.length} 条未结算派发丢失（${file}）：`
+            + myLost.map((w) => `${w.target}${w.round === undefined ? '' : `(第${w.round}轮)`}`
               + `[${w.lostClass ?? 'unknown'}]`).join(', '),
           )
         }
-        if (r.reattach.length > 0) {
+        if (myReattach.length > 0) {
           svcCtx.logger?.info?.(
-            `[${name}] 重载后**重新挂上** ${r.reattach.length} 条仍在跑的派发（${file}）：`
-            + r.reattach.map((w) => `${w.target}@${w.at}`).join(', '),
+            `[${name}] 重载后**重新挂上** ${myReattach.length} 条仍在跑的派发（${file}）：`
+            + myReattach.map((w) => `${w.target}@${w.at}`).join(', '),
           )
         }
       }
@@ -836,13 +1124,28 @@ export function apply(ctx: any): void {
     //   ⚠ 唤醒失败只记 debug：这不是主流程，别让它把模块启动搞挂。
     try {
       const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
+      /**
+       * ⚠⚠ **丢失通知只发给"那条记录自己的 owner"**（`I-2` / `I-5` 末段）：
+       *   · `owner` 缺失 ⇒ **不发**（⛔ 不许退化成"发给 watcher / 最后摸过状态的人"）；
+       *   · `owner` 不是本进程里活着的会话 ⇒ 不发（那不是本代能唤醒的对象）。
+       * ⚠ 改前这里按 `w.watcher` 分组 —— 而 `watcher` 与 owner 在旧数据里可能不一致，
+       *   且别人的记录也会进来（见上面 `ownerIsLiveHere` 那一段）。
+       */
       if (lostLatch.length > 0 && bus !== undefined && typeof bus.deliver === 'function') {
         const byWatcher = new Map<string, PersistedWatch[]>()
         for (const w of lostLatch) {
-          if (w.watcher === '') continue
-          const arr = byWatcher.get(w.watcher) ?? []
+          const to = w.owner
+          if (to === undefined || to === '') {
+            svcCtx.logger?.warn?.(
+              `[${name}] 丢失记录 ${w.target} **没有 owner** ⇒ 不发丢失通知`
+              + '（I-2：⛔ 不许退化成"发给最后一个摸过状态的人"）',
+            )
+            continue
+          }
+          if (!ownerIsLiveHere(to)) continue
+          const arr = byWatcher.get(to) ?? []
           arr.push(w)
-          byWatcher.set(w.watcher, arr)
+          byWatcher.set(to, arr)
         }
         for (const [watcher, items] of byWatcher) {
           const body = [
@@ -900,37 +1203,222 @@ export function apply(ctx: any): void {
     /**
      * 把当前活着的 watch 落盘（结算/清理后调用）。
      *
-     * ⚠ 只对**已经登记过落点**的 target 写（`stateFileFor`）——
-     *   否则会拿着"判不出的空路径"去写，或在错误的工作区目录里建文件。
+     * ⚠⚠ **只写属于该 `(账本, owner)` 的记录**（`I-5` 的核心判据）：
+     *   ① **分区键** = `stateFileFor.get(target)`（该记录自己的落点）
+     *      **+ `w.owner`**（该记录自己的归属）；
+     *   ② ⛔ 不许把 `watches` 整个 Map 写进某一个文件（改前 `dispatch()` 里正是那么写的）；
+     *   ③ ⛔ 不许给外来记录盖本工作区的 `wsRoot`（`wsRoot` 现在逐条来自 `ownerWsRoot`）。
+     * ⚠ 同一文件下可能有**多个 owner** 的记录（同工作区里两个 Hob）——
+     *   它们共享同一个账本文件是**既成事实**（账本按工作区名派生），
+     *   但每条记录**自己带 owner**，读侧按 owner 过滤 ⇒ 读的人只看得到自己的。
      */
     const flushWatches = (): void => {
-      const files = new Set<string>()
-      for (const v of stateFileFor.values()) if (v !== '') files.add(v)
-      for (const file of files) {
-        const ws = (() => {
-          try {
-            // 用该文件对应的任一会话反推工作区根（同一工作区的账本是同一个）。
-            for (const [t, f] of stateFileFor) if (f === file) { const r = wsRootOfSession(t); if (r !== undefined) return r }
-            return undefined
-          } catch { return undefined }
-        })()
-        const alive = [...watches.values()].filter((x) => stateFileFor.get(x.target) === file)
-        if (!persistWatches(file, alive.map((x) => toPersisted(x, ws)))) {
-          svcCtx.logger?.warn?.(`[${name}] 运行态落盘失败（${file}）。`)
+      /**
+       * 按 `(文件, owner)` 分区：⚠ 键里**必须**含 owner —— 只按文件分会让同一工作区里
+       * 两个 Hob 的记录互相覆盖（后写的那个把先写的抹掉）。
+       */
+      const groups = new Map<string, { file: string; owner: string; rows: PersistedWatch[] }>()
+      for (const w of watches.values()) {
+        const file = stateFileFor.get(w.target)
+        if (file === undefined || file === '') continue
+        const owner = w.owner ?? ''
+        const key = `${file}\u0000${owner}`
+        const g = groups.get(key) ?? { file, owner, rows: [] }
+        g.rows.push(toPersisted(w))
+        groups.set(key, g)
+      }
+      /**
+       * ⚠ 还要处理"这个文件里已经没有我的记录了"的情形（全部结算完）——
+       *   否则盘上会留着上一代的 pending，下次重载又被判成 lost（**虚报丢失**）。
+       * ⇒ 对每个**曾经登记过落点**的文件，把所有它名下出现过的 owner 都覆盖一遍。
+       */
+      const ownersByFile = new Map<string, Set<string>>()
+      for (const w of watches.values()) {
+        const file = stateFileFor.get(w.target)
+        if (file === undefined || file === '') continue
+        if (w.owner === undefined || w.owner === '') continue
+        const set = ownersByFile.get(file) ?? new Set<string>()
+        set.add(w.owner)
+        ownersByFile.set(file, set)
+      }
+      for (const [file, owners] of ownersByFile) {
+        for (const owner of owners) {
+          const key = `${file}\u0000${owner}`
+          if (!groups.has(key)) groups.set(key, { file, owner, rows: [] })
+        }
+      }
+      if (groups.size === 0) {
+        // 一条带落点的记录都没有 ⇒ 仍要走一遍"清空自己名下"的老路径（保持既有行为）
+        const files = new Set<string>()
+        for (const v of stateFileFor.values()) if (v !== '') files.add(v)
+        for (const file of files) {
+          if (!persistWatches(file, [])) {
+            svcCtx.logger?.warn?.(`[${name}] 运行态落盘失败（${file}）。`)
+          }
+        }
+        refreshLostCount()
+        return
+      }
+      for (const g of groups.values()) {
+        /**
+         * ⚠⚠ **合并而不是覆盖**：同一个文件里可能还有**别的 owner** 的 pending
+         *   （同一工作区两个 Hob）—— ⛔ 不许把他们的记录写没了。
+         *   判据：读回盘上现有的 pending，**只替换 owner 等于本条的那些**。
+         */
+        if (!persistOwnerPartition(g.file, g.owner, g.rows)) {
+          svcCtx.logger?.warn?.(`[${name}] 运行态落盘失败（${g.file} · owner=${g.owner || '(无)'}）。`)
         }
       }
       refreshLostCount()
+    }
+
+    /**
+     * 把**某一个 owner 名下的** pending 写回它自己的那一份（`I-5`）。
+     *
+     * ⚠ 与 `persistWatches` 的分工：
+     *   · `persistWatches(file, pending)` —— **整文件覆盖**（既有行为，`check:orch` 的 D4 锚在上面，
+     *     ⛔ 不动它的签名与它的调用点语义）；
+     *   · 本函数 —— 只动"**owner 匹配的那些**"这一片，其余原样保留。
+     * ⚠ 实现上**读回 → 只替换自己的 → 写回**，所以它必须自己调 `readOrchState` + `writePending`
+     *   （⚠ 判据 D4 要的是"落盘前读回、且把 `prev.lost` 传下去"，本函数同款照做）。
+     */
+    const persistOwnerPartition = (
+      file: string,
+      owner: string,
+      mine: PersistedWatch[],
+    ): boolean => {
+      try {
+        const prev = readOrchState(file)
+        /**
+         * ⚠ **保留别人的**：`owner` 不匹配的那些**原样留着**。
+         *   无归属（`owner === undefined`）的记录算**别人**的 —— ⛔ 不许被我覆盖掉：
+         *   判不出归属 ≠ 归我（`I-1`：⛔ 不许猜一个默认 owner）。
+         */
+        const others = prev.pending.filter((w) => (w.owner ?? '') !== owner)
+        const next = [...mine, ...others]
+        return writePending(file, next, prev.lost)
+      } catch {
+        return false
+      }
+    }
+
+    /**
+     * ⚠⚠ **"我的"这一份读数**（`I-4` 的唯一实现点）。
+     *
+     * ── 它治的缺陷（用户实测）────────────────────────────────────────────
+     *   改前 `status()` 把**全实例汇总**原样返回：`watches` 是内存里全部的派发，
+     *   `lostByClass` / `handoffs` 来自 `scanStateFiles()` 扫的**所有**工作区。
+     *   实测：一条 Hob 会话看到 **9 条"在等回传"、watcher 分散在 6 个不同会话**
+     *   （shoucang / prompt-enhancer-release / dsh-hob / customer-service-agent /
+     *    project-nav / dsh-plugin-roundtable）—— 那是**别人的整本账**。
+     *
+     * ── 判据（⚠ 四条都按 owner 过滤，⛔ 一条都不许漏）──────────────────────
+     *   ① `watches`（在等回传）；② `handoffs`（待投递）；③ `lost`（重载丢失，含按档拆开的三项）；
+     *   ④ `relaysDone` / `relaysBlocked`（已回传 / 被拦下）。
+     * ⚠ **行名与档位分法一个字不变**，只是**分母变成"我的"**（作业书 §2 `I-4` 末段）。
+     *
+     * ⚠ **无归属的记录（`owner === undefined`）不算给任何人**（`I-1`：⛔ 不许猜一个默认 owner）
+     *   ⇒ 它们既不进"我的"，也不会被算成"别人的"（`othersOf` 同样排除），
+     *     而是由渲染层**单列一档**"无归属"（判不出 ≠ 归我，也 ≠ 别人的）。
+     */
+    const mineOnly = (self: string | undefined): {
+      watches: Watch[]
+      handoffs: PersistedHandoff[]
+      lostPending: number
+      lostByClass: Record<LostClass, number>
+      relaysDone: number
+      relaysBlocked: number
+      unownedWatches: number
+    } => {
+      const all = [...watches.values()]
+      if (self === undefined) {
+        // ⚠ 判不出"我"是谁 ⇒ **只报无归属的那一部分**（⛔ 不许把全实例汇总当我的）
+        return {
+          watches: [],
+          handoffs: [],
+          lostPending: 0,
+          lostByClass: { running: 0, idle: 0, unknown: 0 },
+          relaysDone: 0,
+          relaysBlocked: 0,
+          unownedWatches: all.filter((w) => w.owner === undefined || w.owner === '').length,
+        }
+      }
+      const mineW = all.filter((w) => w.owner === self)
+      /**
+       * 盘上的两摞（handoffs / lost）**也按 owner 过滤**（`I-5` 的读侧）。
+       * ⚠ 扫的还是那些文件（`scanStateFiles` 不动），但**只取属于我的记录**——
+       *   别人的记录⛔ 不进我的读数（`I-4`）。
+       */
+      const handoffs: PersistedHandoff[] = []
+      let lostTotal = 0
+      const lostAcc: Record<LostClass, number> = { running: 0, idle: 0, unknown: 0 }
+      try {
+        for (const file of scanStateFiles(svcCtx)) {
+          const st = readOrchState(file)
+          for (const h of st.handoffs) if (h.owner === self) handoffs.push(h)
+          const mineLost = st.lost.filter((w) => w.owner === self)
+          lostTotal += mineLost.length
+          const byClass = countLostByClass(mineLost)
+          lostAcc.running += byClass.running
+          lostAcc.idle += byClass.idle
+          lostAcc.unknown += byClass.unknown
+        }
+      } catch { /* 读不到就当 0；不因诊断用途让读数崩掉 */ }
+      return {
+        watches: mineW,
+        handoffs: handoffs.sort((a, b) => b.at - a.at),
+        lostPending: lostTotal,
+        lostByClass: lostAcc,
+        /**
+         * ⚠ `relaysDone` / `relaysBlocked` 是**累计计数器**（进程内），
+         *   改前只有一个数 ⇒ 读的人以为"我回传了 N 次"。⇒ 现在按 owner 分档累计。
+         */
+        relaysDone: relaysByOwner.done.get(self) ?? 0,
+        relaysBlocked: relaysByOwner.blocked.get(self) ?? 0,
+        unownedWatches: all.filter((w) => w.owner === undefined || w.owner === '').length,
+      }
+    }
+
+    /**
+     * ⚠⚠ **别人的（只给条数、不给明细）**（`I-4` 的显式例外，作业书允许的唯一混法）。
+     * ⚠ 无归属的记录**两边都不算**（既不是我的、也不是"别人的"）。
+     */
+    const othersOf = (self: string | undefined): { watches: Watch[] } => {
+      const all = [...watches.values()]
+      if (self === undefined) return { watches: [] }
+      return { watches: all.filter((w) => w.owner !== undefined && w.owner !== '' && w.owner !== self) }
+    }
+
+    /**
+     * **按 owner 分档的累计回传计数**（`I-4`：读数分母变成"我的"）。
+     * ⚠ 与既有 `relaysDone` / `relaysBlocked` 两个数字**同源同义**，只是拆到各 owner 名下。
+     */
+    const relaysByOwner = {
+      done: new Map<string, number>(),
+      blocked: new Map<string, number>(),
+    }
+    const bumpRelay = (m: Map<string, number>, owner: string | undefined): void => {
+      if (owner === undefined || owner === '') return
+      m.set(owner, (m.get(owner) ?? 0) + 1)
     }
 
     const orch: HobOrchestrator = {
       version: 1,
 
       async dispatch(target, message, opts) {
-        if (stopped) {
-          return { ok: false, reason: 'orchestration is stopped; resume it first (hob_orch_control resume).' }
+        const self = opts?.self
+        /**
+         * ⚠ **闸门按调用方自己的 owner 判**（`I-4`）：
+         *   改前是进程级 `stopped` ⇒ 别人一停我也停（跨工作区互相影响）。
+         */
+        if (isStoppedFor(typeof self === 'string' ? self : undefined)) {
+          return {
+            ok: false,
+            reason: 'orchestration is stopped for this session; resume it first (hob_orch_control resume).'
+              + ' ⚠ 只有**你自己**这一侧的闭环被停（别人的不受影响）。',
+          }
         }
         if (typeof target !== 'string' || target === '') return { ok: false, reason: 'no-session-id' }
-        const self = opts?.self
         // ⚠ 不接受"派给自己"：那既不构成闭环，也会把派活方自己刷起来。
         if (typeof self === 'string' && target === self) {
           return { ok: false, reason: 'refusing to dispatch to this session itself' }
@@ -979,6 +1467,52 @@ export function apply(ctx: any): void {
         if (bus === undefined || typeof bus.deliver !== 'function') {
           return { ok: false, reason: 'session bus unavailable: cannot deliver the dispatch.' }
         }
+        /**
+         * ⚠⚠ **首派即绑定（甲案）**（`I-6` / 作业书 Q1）：
+         *   目标是**无归属**的会话 ⇒ 这一派就把它绑给 `self`，此后**不再改绑**。
+         *   已经是**别的** owner 的 ⇒ **拒绝派发**并点名占用者（`I-9`：⛔ 不许扇出、
+         *   ⛔ 不许"多路都试一遍"）。
+         *
+         * ⚠ **判据顺序有意如此**：绑定判定**在投递之前** ——
+         *   投出去却绑不上，就会出现"活派了、回执没有主人"（`I-10` 的漏投）。
+         * ⚠ 无归属且**判不出 self** ⇒ 不绑（⛔ 不许猜一个 owner），但**不拦派发**
+         *   （那是既有能力；只是这条活的回执将来会落"无归属 ⇒ 不投"那一档，如实可读）。
+         */
+        const selfId = typeof self === 'string' && self !== '' ? self : undefined
+        if (selfId !== undefined) {
+          const bindFile = runtimeFileOf(svcCtx, wsRootOfSession(selfId))
+          if (bindFile !== undefined) {
+            try {
+              const b = bindSession(bindFile, {
+                sessionId: target,
+                owner: selfId,
+                via: 'dispatch',
+                ...(wsRootOfSession(selfId) === undefined ? {} : { ownerWsRoot: wsRootOfSession(selfId) as string }),
+              })
+              if (b.conflict !== undefined) {
+                /**
+                 * ⚠ **已经归别人 ⇒ 拒绝派发**（⛔ 不许改绑、⛔ 不许两边都投）。
+                 * ⚠ 话术给到"会话 id + 被另一方占着"（Q2 的必须项）；
+                 *   ⛔ **不给**对方派了什么 / 轮次 / task（那是别人的账）。
+                 */
+                return {
+                  ok: false,
+                  sessionId: target,
+                  reason: `session "${target}" is already bound to another session (owner ${b.conflict.existing.owner}, `
+                    + `bound via ${b.conflict.existing.via}) — it is occupied by another side. `
+                    + 'A session belongs to exactly one dispatcher: dispatching here would send its receipts '
+                    + 'to that other session, so this dispatch was NOT delivered. '
+                    + 'Bind it back explicitly (it cannot be re-bound implicitly), or dispatch to a different session.',
+                }
+              }
+            } catch (e) {
+              svcCtx.logger?.warn?.(
+                `[${name}] 首次派发绑定时出错：${String((e as Error)?.message ?? e)} ⇒ 本次派发照常，`
+                + '但这条活的归属可能没记上（重载后会落"无归属"那一档）。',
+              )
+            }
+          }
+        }
         const r = await bus.deliver(target, message, opts?.mode === 'steer' ? 'steer' : 'followup')
         if (!r?.ok) return { ok: false, reason: r?.reason ?? 'delivery failed' }
 
@@ -986,6 +1520,16 @@ export function apply(ctx: any): void {
         const cur = (() => {
           try { const a = agents.get?.(target); return a?.status } catch { return undefined }
         })()
+        /**
+         * ⚠⚠ **owner = 派这一单的那个会话**（`I-1`）。它同时是一等公民：
+         *   · 回执收件人（`watcher` 与它同源，但 `owner` 是**归属**、`watcher` 是**收件人**）；
+         *   · 读数过滤的判据（`status()` / `control()` 只报 owner === 调用方的记录）；
+         *   · 落盘分区的判据（`flushWatches` 按 `(文件, owner)` 分区）。
+         * ⚠ `ownerWsRoot` = **owner 自己的工作区根**（⛔ 不是目标会话的）：
+         *   它是"这条记录该落在哪本账"的依据，改前错用了**目标**的 cwd（`1.4` 病根）。
+         */
+        const owner = typeof self === 'string' && self !== '' ? self : undefined
+        const ownerWsRoot = owner === undefined ? undefined : wsRootOfSession(owner)
         const w: Watch = {
           target,
           watcher: typeof self === 'string' ? self : '',
@@ -995,6 +1539,8 @@ export function apply(ctx: any): void {
           // 投递时它若已在跑，直接算"见过 running"，否则等状态事件点亮。
           sawRunning: cur === 'running',
           reported: false,
+          ...(owner === undefined ? {} : { owner }),
+          ...(ownerWsRoot === undefined ? {} : { ownerWsRoot }),
         }
         watches.set(target, w)
         lastStatus.set(target, cur ?? 'unknown')
@@ -1002,12 +1548,25 @@ export function apply(ctx: any): void {
         // ── 落盘（**本批新增**）：让"有未结算派发"这件事活过下一次重载 ──
         //   ⚠ 写失败必须留 warn：静默的"记不上账"正是本批要修的失败模式。
         try {
-          const ws = wsRootOfSession(target)
+          /**
+           * ⚠⚠ **落点按 owner 自己的工作区根算**（`I-5`）——
+           *   改前用的是**目标**的 cwd，于是"我派的活"被记进了**对方**的账本目录。
+           * ⚠ owner 判不出（没给 `self`）⇒ 退回目标的 cwd（**只为让这次派发可观测**，
+           *   并照实记 warn）—— ⚠ 但那条记录的 `owner` 仍是空 ⇒ 读数侧**不会**把它算给任何人。
+           */
+          const ws = ownerWsRoot ?? wsRootOfSession(target)
           const file = runtimeFileOf(svcCtx, ws)
           stateFileFor.set(target, file ?? '')
           if (file !== undefined) {
             ensureRuntimeIgnored(dirname(file))
-            if (!persistWatches(file, [...watches.values()].map((x) => toPersisted(x, ws)))) {
+            /**
+             * ⚠⚠ **只写属于 `(本文件, 本 owner)` 的那一片**（`I-5` 的核心）：
+             *   改前是 `persistWatches(file, [...watches.values()].map(...))`
+             *   —— **整张表**写进一个文件、还给每条盖上本次的 `wsRoot`
+             *   ⇒ 跨工作区互相污染（`1.4` 病根）。
+             *   ⇒ 现在走 `persistOwnerPartition`：只替换 owner 等于本条的记录，别人的原样留着。
+             */
+            if (!persistOwnerPartition(file, owner ?? '', [toPersisted(w)])) {
               svcCtx.logger?.warn?.(`[${name}] 运行态落盘失败（${file}）—— 重载后这次派发将不可观测。`)
             }
             // ── 清"待投递"（2026-10-10 新增）：这次投递成功 ⇒ 之前的欠账已还 ──
@@ -1046,15 +1605,20 @@ export function apply(ctx: any): void {
         }
       },
 
-      status(opts?: { wsRoot?: string }) {
+      status(opts?: { wsRoot?: string; self?: string }) {
+        const self = typeof opts?.self === 'string' && opts.self !== '' ? opts.self : undefined
+        const mine = mineOnly(self)
         return {
-          stopped,
+          /**
+           * ⚠ 停/未停**也是自己的那一份**（`I-4` 末条）：别人停了不该让我的读数显示"已停"。
+           */
+          stopped: isStoppedFor(self),
           // ⚠ **现读**每个在等目标的预设（不缓存、不回落到 `w` 上存一份）——
           //   见 `targetPresetOf` 的注释：这条读数的价值全在"此刻准不准"。
           // ⚠ ⚠ 2026-10-17 第 2 轮：读数改由 `hobBus.presetOf()` **单点**给出，
           //   且**来源标记一起透传**（`targetPresetSource`）—— 渲染层据此标「降级」。
           //   ⛔ 这里**不再**调 `sessions.get(...).header`：那正是本单要治的第二来源。
-          watches: [...watches.values()]
+          watches: mine.watches
             .sort((a, b) => a.at - b.at)
             .map((w) => {
               const [preset, source] = targetPresetOf(w.target)
@@ -1064,17 +1628,31 @@ export function apply(ctx: any): void {
                 ...(preset === undefined || source === undefined ? {} : { targetPresetSource: source }),
               }
             }),
-          relaysDone,
-          relaysBlocked,
-          lostPending: lostCount,
-          lostByClass: lostByClass,
+          relaysDone: mine.relaysDone,
+          relaysBlocked: mine.relaysBlocked,
+          lostPending: mine.lostPending,
+          lostByClass: mine.lostByClass,
           // ⚠ 现读盘（不缓存）：记账在别的模块做，缓存会滞后 —— 见 `readHandoffs` 注释。
-          handoffs: readHandoffs(),
+          handoffs: mine.handoffs,
           // ⚠ ⚠ **可达性**（第 247 轮）：⚠ 它与 `handoffs` **同一次读**吗？
-          //   ⛔ 不是 —— `readHandoffs()` 扫**所有**工作区（跨工作区汇总），
+          //   ⛔ 不是 —— `handoffs` 现在按 owner 过滤（`I-4`），
           //   而可达性问的是"**本会话这一份**账本够不够得到"（那才是"够不到"的形态）。
-          //   ⇒ 故它按**调用方给的工作区根**现算（⛔ 不从 `readHandoffs` 反推）。
+          //   ⇒ 故它按**调用方给的工作区根**现算（⛔ 不从 `handoffs` 反推）。
           reachability: reachabilityFor(opts?.wsRoot),
+          /**
+           * ⚠⚠ **别人的条数（不可见明细）**（`I-4` 的显式例外）。
+           *
+           * 作业书允许"要混必须**单列**『他人的（不可见明细）』并明确标注"。
+           * ⚠ 它**只给条数、不给任何明细**（不给 target / task / 轮次）——
+           *   明细一旦出现，就等于把别人的账本又摊开了一次。
+           * ⚠ 不给 `self` ⇒ 这个数**恒为 0**（判不出"我"是谁 ⇒ ⛔ 不许猜一个分母）。
+           */
+          others: {
+            note: '他人的（不可见明细）—— 只给条数，不给 target / task / 轮次',
+            watches: othersOf(self).watches.length,
+          },
+          // ⚠ 无归属**单列一档**（判不出 ≠ 归我，也 ≠ 别人的）
+          unownedWatches: mine.unownedWatches,
         }
       },
 
@@ -1106,15 +1684,18 @@ export function apply(ctx: any): void {
         //   卡跑完时**叫醒谁**就靠这张表 —— 见 `wakeSubscribe` 的注释。
         if (typeof opts?.selfSessionId === 'string' && opts.selfSessionId !== '') {
           wsIdForWake = workspaceId
-          // ⚠ 收件人 = **读卡面的人自己**（谁在看这个面，就叫醒谁 —— ⛔ 不凭空假设"Hob"）
-          dispatchWake.setSelfSessionId(opts.selfSessionId)
-          // ⚠⚠ **订阅时要带上"这个会话自己的项目"**（`TASK-B6` S3-4）：
-          //   `CardWake` 是**进程级单实例、被所有会话共用**，订阅表 `targets` 里装的是
-          //   所有会话的登记 ⇒ 投递侧必须能**逐个订阅者**核对归属
-          //   （`card-wake.ts` 的 `eligible` 过滤）。⚠ 用上面**这次现读**的 `workspaceId`，
-          //   ⛔ 不另造进程级变量（`wsIdForWake` 是旧的进程级单值，正是越界成因）。
-          //   ⚠ 判不出（`undefined`）⇒ **照原样传 undefined** ⇒ 投递侧落"不投"，
-          //     而不是退化成"全投"。
+          /**
+           * ⛔ **不再 `dispatchWake.setSelfSessionId(...)`**（2026-10-19 收单第一轮 · `I-2`）。
+           *
+           * 改前这一行把"回执该投给谁"写进一个**进程级单值**——而 `DispatchWake` 全进程共用
+           * ⇒ **谁读一次状态/卡面，收件人就被刷成谁** ⇒ A 的派发回执投给 B 的 Hob
+           * （本件病根 1.1，也是用户报的"回执跑到别的 Hob 预设"最直接的一条路）。
+           * ⇒ 收件人现在是**每条登记记录自己的 `owner`**（见 `DispatchWake.register`）。
+           */
+          // ⚠⚠ **订阅表只用于诊断**（"还有没有人订阅" / "owner 在不在看这个面"）——
+          //   它⛔ 不再是投递名单（`CardWake` 与 `DispatchWake` 两侧都已改判，见 `I-9`）。
+          //   ⚠ 仍然要带上"这个会话自己的项目"：判不出就照原样传 undefined，
+          //     ⛔ 不许拿进程级单值顶替（`wsIdForWake` 正是那个越界成因）。
           wake.subscribe(opts.selfSessionId, workspaceId)
           wake.startWakeIfNeeded()
         }
@@ -1131,13 +1712,52 @@ export function apply(ctx: any): void {
          *   ⚠ 登记是**幂等**的（`DispatchWake.register` 重复调用不重置 `sawRunning`/`reported`）
          *     ⇒ 每次读卡面都会重登一遍，但**不会**把已叫过的会话弄成"没叫过"。
          */
+        /**
+         * ⚠⚠ **准入只有三种来源（`I-3` 改判）** —— 旧判据(②)「卡属于本工作区」**已作废**：
+         *
+         *   改前：`卡属于本工作区 ⇒ 登记`。⚠ 那就是"**本工作区的卡一律算我的**"
+         *   ⇒ 同一工作区里两个 Hob **互相串收**（用户点名的"包括同一个工作区"那一半），
+         *   而且一条卡跑完会落到**好几个**会话手里（`I-9` 明令⛔ 禁止扇出）。
+         *
+         *   现在：只有下面**三种**能登记（缺一即不登记）：
+         *     ① `c.createdBySessionId === self` —— 这张卡**是本调用方建的/派的**（最权威）；
+         *     ② （`hob_spawn` 建的会话由 `via='dispatch'` 那条路登记，见 `dispatch()`）；
+         *     ③ 本次会话**就是该卡执行会话的派发方**（`watches` 里那条 `watcher === self`）。
+         *   ⛔ 判不出归属 ⇒ **不登记**，落「判不出归属」独立一档（`register()` 里那一段）。
+         *   ⚠ 别的 owner 的卡⛔ 不进我的叫醒面 —— 它该由**它自己的**会话去登记。
+         */
         for (const c of snap.cards) {
           if (typeof c.executionSessionId !== 'string' || c.executionSessionId === '') continue
+          const self = opts?.selfSessionId
+          const cardOwner = typeof c.createdBySessionId === 'string' && c.createdBySessionId !== ''
+            ? c.createdBySessionId
+            : undefined
+          const owner = cardOwner ?? (() => {
+            // 兜底②：本会话**派过**这个执行会话（watches 里 watcher === self）⇒ 归属仍是本会话
+            const w = watches.get(c.executionSessionId as string)
+            return w !== undefined && typeof self === 'string' && w.watcher === self ? self : undefined
+          })()
+          /**
+           * ⚠ **准入门**：`owner` 必须存在，且**必须是本调用方** ——
+           *   别人的卡⛔ 不登记（⛔ 不许"本工作区的卡一律算我的"）。
+           */
+          if (owner === undefined || typeof self !== 'string' || owner !== self) {
+            dispatchWake.noteOwnerUnknown(
+              c.id,
+              c.executionSessionId,
+              owner === undefined
+                ? '这张卡没有记录建卡会话（`createdBy.sessionId` 读不到），本会话也没派过它的执行会话'
+                : `这张卡的归属是 ${owner}（不是本会话）`,
+            )
+            continue
+          }
           dispatchWake.register({
             sessionId: c.executionSessionId,
             via: 'taskboard-card',
             cardId: c.id,
             ...(c.executionId === undefined ? {} : { executionId: c.executionId }),
+            owner,
+            ...(wsRootOfSession(owner) === undefined ? {} : { ownerWsRoot: wsRootOfSession(owner) }),
           })
         }
         return snap
@@ -1165,24 +1785,36 @@ export function apply(ctx: any): void {
         return dispatchWake.snapshot()
       },
 
-      control(action, opts?: { wsRoot?: string }) {
-        if (action === 'stop') {
-          stopped = true
-          svcCtx.logger?.info?.(`[${name}] 已停：不再回传、不再接收新派发`)
+      control(action, opts?: { wsRoot?: string; self?: string }) {
+        const self = typeof opts?.self === 'string' && opts.self !== '' ? opts.self : undefined
+        if (self === undefined) {
+          /**
+           * ⚠ **判不出"我"是谁 ⇒ 拒绝执行 stop/resume**（`I-4`）。
+           *   ⛔ 不许把它落成"停所有人" —— 那正是本件要治的形态（一个工作区 stop 停掉全部）。
+           */
+          svcCtx.logger?.warn?.(`[${name}] control(${action}) 的调用方身份判不出 ⇒ **未执行**（⛔ 不会停掉所有人）`)
+        } else if (action === 'stop') {
+          stoppedOwners.add(self)
+          svcCtx.logger?.info?.(`[${name}] 已停（owner=${self}）：**只停这一侧**的回传与新派发`)
         } else if (action === 'resume') {
-          stopped = false
-          svcCtx.logger?.info?.(`[${name}] 已恢复`)
+          stoppedOwners.delete(self)
+          svcCtx.logger?.info?.(`[${name}] 已恢复（owner=${self}）：只恢复这一侧`)
         }
+        const mine = mineOnly(self)
         return {
-          stopped,
-          watches: [...watches.values()].sort((a, b) => a.at - b.at),
-          relaysDone,
-          relaysBlocked,
-          lostPending: lostCount,
-          lostByClass: lostByClass,
+          stopped: isStoppedFor(self),
+          watches: mine.watches.sort((a, b) => a.at - b.at),
+          relaysDone: mine.relaysDone,
+          relaysBlocked: mine.relaysBlocked,
+          lostPending: mine.lostPending,
+          lostByClass: mine.lostByClass,
           // ⚠ 与 `status()` 同源同值（两处返回**同一个形状**，调用方不必分情况）。
-          handoffs: readHandoffs(),
+          handoffs: mine.handoffs,
           reachability: reachabilityFor(opts?.wsRoot),
+          others: {
+            note: '他人的（不可见明细）—— 只给条数，不给 target / task / 轮次',
+            watches: othersOf(self).watches.length,
+          },
         }
       },
     }
@@ -1222,8 +1854,10 @@ export function apply(ctx: any): void {
         // ── ⚠⚠ 闸门在【回传之前】 ──
         //   用户选择了"不设上限、只能手动停" ⇒ 这里就是那个刹车的作用点。
         //   停了 ⇒ **不唤醒派活方**（循环当场断在这一环）。
-        if (stopped) {
+        //   ⚠ **按该条记录自己的 owner 判**（`I-4`）：别人停了⛔ 不许拦下我的回传。
+        if (isStoppedFor(w.owner ?? (w.watcher === '' ? undefined : w.watcher))) {
           relaysBlocked++
+          bumpRelay(relaysByOwner.blocked, w.owner ?? (w.watcher === '' ? undefined : w.watcher))
           return
         }
 
@@ -1240,8 +1874,12 @@ export function apply(ctx: any): void {
         }
         Promise.resolve(bus.deliver(w.watcher, receipt, 'followup'))
           .then((res: any) => {
-            if (res?.ok) { relaysDone++; watches.delete(id) }
-            else { w.error = res?.reason ?? 'relay delivery failed' }
+            if (res?.ok) {
+              relaysDone++
+              // ⚠ 分档累计（`I-4`：读数分母 = 我的）—— 与上面的总数同源同义，只拆到各 owner 名下
+              bumpRelay(relaysByOwner.done, w.owner ?? (w.watcher === '' ? undefined : w.watcher))
+              watches.delete(id)
+            } else { w.error = res?.reason ?? 'relay delivery failed' }
           })
           .catch((e: any) => { w.error = String(e?.message ?? e) })
           // ⚠ 无论成败都要同步落盘（本批新增）：成功 ⇒ 该条从 pending 消失
@@ -1387,7 +2025,13 @@ export function createHobOrchTools(orch: HobOrchestrator): {
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
     async execute(_args: unknown, exec: any): Promise<string> {
-      const s = orch.status({ wsRoot: selfWorkspaceRootOf(exec) })
+      /**
+       * ⚠⚠ **必须把调用方身份传下去**（`I-4`）：不传 ⇒ 读数**只含无归属那一部分**
+       *   （⛔ 绝不会退化成"全实例汇总"）。这是"一条 Hob 看见 9 条别人的在等回传"
+       *   那条缺陷的**修法落点**。
+       */
+      const selfId = selfSessionIdOf(exec)
+      const s = orch.status({ wsRoot: selfWorkspaceRootOf(exec), ...(selfId === undefined ? {} : { self: selfId }) })
       /**
        * ── 卡进度（2026-10-18 · 用户报障：隔离卡跑了 22 分钟，这边一行都看不见）──
        *
@@ -1459,6 +2103,26 @@ export function createHobOrchTools(orch: HobOrchestrator): {
             lines.push(`  ↳ ⚠ ${d.undecidableWhy}`)
             lines.push('  ↳ ⛔ **判不出不是结论** —— 既不是"跑完了"，也不是"没跑过"。')
           }
+          /**
+           * ⚠⚠ **「判不出归属 ⇒ 没登记」与「跑完了却没送到」两档必须分开可见**（`I-3` 末段 / `I-10`）。
+           *
+           * ⚠ 它们都**不是**"没有会话在跑"：
+           *   · 前者 = 那条记录不知道归谁 ⇒ 我**没**把它算进我的叫醒面；
+           *   · 后者 = 它确实跑完了，但**回执没送到**（漏投）—— 这一档就是用户说的
+           *     "正确的 hob 预设肯定就收不到指令了"里的那个"收不到"。
+           * ⚠ ⛔ 两档**不许合并**成一个计数（本项目既有纪律）。
+           */
+          if (d.ownerUnknownCount > 0) {
+            lines.push(`  ↳ ⚠ **判不出归属 ⇒ 未登记 ${d.ownerUnknownCount} 次**`
+              + (d.ownerUnknownWhy === undefined ? '' : `（${d.ownerUnknownWhy}）`))
+            lines.push('  ↳ ⛔ 这**不是**"没有卡在跑"：卡在跑，只是**判不出它归谁** ⇒ 它的回执不该给我。')
+          }
+          if (d.undeliverableCount > 0) {
+            lines.push(`  ↳ ⚠⚠ **跑完了却没送到（漏投）${d.undeliverableCount} 次**`
+              + (d.undeliverableWhy === undefined ? '' : `（${d.undeliverableWhy}）`))
+            lines.push('  ↳ ⛔ **错投 ≡ 漏投**：这一档说明**有回执没到**（不是"没有回执"）。'
+              + '⛔ 它不会自动重投、⛔ 也不会改投别人 —— 需要重新派一次。')
+          }
           if (d.lastWokeAt !== undefined) {
             lines.push(`  ↳ 最近一次叫醒：${new Date(d.lastWokeAt).toLocaleString('zh-CN', { hour12: false })}`
               + ` · 会话=${d.lastWokeSession ?? '(读不到)'}`
@@ -1498,6 +2162,24 @@ export function createHobOrchTools(orch: HobOrchestrator): {
           if (w.note !== undefined) lines.push(`  ↳ ${w.note}`)
           if (w.noSubscriberCount > 0) {
             lines.push(`  ↳ ⚠ 有 **${w.noSubscriberCount} 次**卡跑完但没有人订阅 ⇒ 那几声没叫出去`)
+          }
+          /**
+           * ⚠⚠ **"判不出 owner ⇒ 不投"这一档**（`I-7` 改判后 `legacyTargetCount` 的新语义）。
+           *
+           * ⚠ 改前这个数是"按旧语义**投**出去的次数"（那条退回路径**已知会越界**）；
+           *   现在退回路径**已删除** ⇒ 同一个键名改为记"**判不出 owner 所以没投**"。
+           * ⚠ 措辞必须把三件事说清：① 有卡跑完；② **没有退回到按工作区广播**；
+           *   ③ 这一档**不是**"没有卡跑完"。
+           */
+          if (w.legacyTargetCount > 0) {
+            lines.push(`  ↳ ⚠ 有 **${w.legacyTargetCount} 次**卡跑完但**判不出它的 owner** ⇒ 那几声**没投**`
+              + '（⛔ **没有**退回"按工作区广播 / 投给最后一个读过状态的人"这条旧路）')
+            lines.push('  ↳ ⛔ 这不等于"没有卡跑完"：卡确实跑完了，只是**判不出该回给谁**。')
+          }
+          if (w.undeliveredCount > 0) {
+            lines.push(`  ↳ ⚠⚠ **卡跑完却没送到（漏投）${w.undeliveredCount} 次**`
+              + (w.lastUndeliveredTo === undefined ? '' : `（最后一次本该给 ${w.lastUndeliveredTo}）`))
+            lines.push('  ↳ ⛔ 这是"**有回执没到**"，不是"没有回执"；不会自动重投、也不会改投别人。')
           }
           if (w.wokeCount > 0) {
             lines.push(`  ↳ 已叫醒 ${w.wokeCount} 次（最近：${w.lastWokeCard ?? '(读不到卡号)'}）`)
@@ -1653,6 +2335,22 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         //   它们只在**叫醒面不正常**时出现（连不上 / 没订阅过），
         //   ⛔ 不在正常态刷屏；措辞里必须写清"这不等于没有卡跑完"。
         ...wakeLines,
+        /**
+         * ⚠⚠ **归属三档必须在读数里分开可见**（`I-4` 末段 / `I-10`）。
+         *
+         * ⚠ 为什么必须出这几行：`在等回传：N 个` 现在**只算我自己的**——
+         *   于是"别的 owner 有几条在等"与"那几条根本没归属"这两件事**都会变得不可见**。
+         *   而不可见正是本件要治的形态（"以为没有，其实是不归我 / 不知道归谁"）。
+         * ⚠ ⛔ 只在**非零**时出（正常态不刷屏）；⛔ **不给任何明细**（别人派了什么不关我事）。
+         */
+        ...(s.others === undefined || s.others.watches === 0
+          ? []
+          : [`  ↳ ${s.others.note}：${s.others.watches} 条`]),
+        ...(s.unownedWatches === undefined || s.unownedWatches === 0
+          ? []
+          : [`  ↳ ⚠ **无归属的在等回传：${s.unownedWatches} 条** —— 那些记录没有 owner`
+            + '（旧文件缺字段 / 派发时判不出调用方）⇒ 它们的回执**不会**投给任何人；'
+            + '⛔ 这不是"没有在等"，也⛔ 不是"归我"']),
       ].join('\n')
     },
   })
@@ -1673,7 +2371,15 @@ export function createHobOrchTools(orch: HobOrchestrator): {
       if (args?.action !== 'stop' && args?.action !== 'resume') {
         return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume'" })
       }
-      const s = orch.control(args.action, { wsRoot: selfWorkspaceRootOf(exec) })
+      const selfId = selfSessionIdOf(exec)
+      /**
+       * ⚠ `control` 也带身份：`stop` / `resume` **只作用于自己那一侧**（`I-4` 末条）。
+       *   ⚠ 判不出身份 ⇒ `control()` 内部**拒绝执行**（⛔ 不许落成"停掉所有人"）。
+       */
+      const s = orch.control(args.action, {
+        wsRoot: selfWorkspaceRootOf(exec),
+        ...(selfId === undefined ? {} : { self: selfId }),
+      })
       return JSON.stringify({
         ok: true,
         stopped: s.stopped,

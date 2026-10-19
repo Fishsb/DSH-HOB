@@ -42,7 +42,10 @@ import { appendSessionModelSelection, installSessionModelSelection } from '../mo
 //     与 `modules/tools.ts` 的 write_hob 记账同款分工：**能力层不记账，工具层记账**。
 //   ⚠ 账本根**不由本模块解析**（否则就是第二个路径解析实现点）：由挂载方
 //     （`preset/tools.ts`）把 `ledgerRootOf` 闭包传进来 —— 那里已有 config 与 ctx。
-import { clearHandoffs, ensureRuntimeIgnored, orchStateFileOf, recordHandoff } from '../server/orch-state.ts'
+import {
+  bindSession, clearHandoffs, ensureRuntimeIgnored, orchStateFileOf, readOrchState, recordHandoff,
+} from '../server/orch-state.ts'
+import type { PersistedSessionBinding } from '../server/orch-state.ts'
 import { dirname } from 'node:path'
 
 /** 模块名。 */
@@ -154,6 +157,14 @@ export interface SpawnResult {
    */
   presetNote?: string
   reason?: string
+  /**
+   * ⚠⚠ **建这个会话的调用方会话 id**（`I-6`：建会话即绑定）。
+   *
+   * ⚠ 服务层只**如实回带身份**，绑定由**工具层**写（那里才有账本根闭包）。
+   * ⚠ 拿不到调用方身份 ⇒ **不填**（⛔ 不猜）⇒ 那条会话就是"无归属"，
+   *   工具层会**如实报**"绑定没记上"（⛔ 不静默）。
+   */
+  owner?: string
   /** 可选：给错 `workspace` 时回带的可选清单，便于改对而不是乱猜。 */
   available?: string[]
 }
@@ -970,6 +981,29 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
             }
           }
 
+          /**
+           * ⚠⚠ **建会话即绑定**（`I-6`）：把"这个会话归 `selfSessionId`"写进运行态
+           *   ⇒ **跨重载可见**（改前它只活在内存里，重载后全丢 ⇒ 回执找不到主人）。
+           * ⚠ 写的是**本工作区**那份运行态（`stateFileOf` 按调用方 cwd 派生）。
+           * ⚠ `bindSession` 失败 / 判不出 self ⇒ **不改 spawn 的成功语义**
+           *   （只是那条会话变成"无归属"，且下面 `bindNote` 会**如实带回去**，⛔ 不静默）。
+           */
+          const bindNote = ((): string | undefined => {
+            if (typeof sessionId !== 'string' || sessionId === '') {
+              return 'session created but its id was not returned; the owner binding was NOT recorded'
+            }
+            if (typeof selfSessionId !== 'string' || selfSessionId === '') {
+              return 'session created but the caller identity was unavailable; the owner binding was NOT '
+                + 'recorded, so this session is "unowned" (its receipts will not come back to anyone).'
+            }
+            /**
+           * ⚠ 绑定**不在服务层写**：`I-6` 要求落进**调用方那一本运行态**，
+           *   而账本根解析闭包（`ledgerRootOf`）只由预设层传给**工具层**。
+           *   ⇒ 服务层只把 **owner 是谁**如实回带，由 `hob_spawn` 工具写绑定
+           *     （见 `spawnTool` 里 `bindSession` 那一段）。
+           */
+          return undefined
+          })()
           return {
             ok: true,
             sessionId,
@@ -978,6 +1012,9 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
             ...(created?.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }),
             ...(presetNote === undefined ? {} : { presetNote }),
             ...(modelNote === undefined ? {} : { modelNote }),
+            ...(bindNote === undefined ? {} : { bindNote }),
+            // ⚠ 把调用方身份如实回带（工具层据此写绑定；⛔ 服务层不猜）
+            ...(typeof selfSessionId === 'string' && selfSessionId !== '' ? { owner: selfSessionId } : {}),
           }
         } catch (e) {
           // ⚠ 宿主对**不存在的 workspaceId 会直接抛**（实测："workspace \"…\" not found"）
@@ -1065,7 +1102,30 @@ export function createHobBusTools(
     if (file === undefined) return
     try {
       ensureRuntimeIgnored(dirname(file))
-      recordHandoff(file, { kind, ref, at: Date.now() })
+      /**
+       * ⚠⚠ **记录必须带 owner**（`I-1` / `I-6`）：改前只记 `kind`/`ref`/`at`，
+       * 于是同一工作区里两个 Hob 各建一个会话时，两边的"待投递"读数**无法分辨哪条是自己的**
+       * （`status()` 现在按 owner 过滤，没有 owner 的记录谁都看不到 —— 那条账就悬空了）。
+       * ⚠ 判不出 owner（`exec` 里拿不到 self）⇒ **不填**（⛔ 不猜、⛔ 不拿工作区顶替）。
+       */
+      const self = selfSessionIdOf(exec)
+      /**
+       * ⚠ owner 的**工作区根** = 调用方自己的 cwd（与 `tools.ts` 的 `rootOf` 同源读法）。
+       *   ⛔ 不拿账本目录顶替（那是派生值，不是工作区根）。
+       */
+      const ownerWsRoot = ((): string | undefined => {
+        try {
+          const cwd = exec?.agent?.session?.header?.cwd
+          return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
+        } catch { return undefined }
+      })()
+      recordHandoff(file, {
+        kind,
+        ref,
+        at: Date.now(),
+        ...(self === undefined ? {} : { owner: self }),
+        ...(ownerWsRoot === undefined ? {} : { wsRoot: ownerWsRoot }),
+      })
     } catch { /* 记账失败不掩盖主结果 */ }
   }
 
@@ -1106,6 +1166,19 @@ export function createHobBusTools(
       // ⚠ ⚠ **投影缺位时置顶声明**（⚠ 否则读的人会把降级值当权威值用 —— 那正是本单要修的形态）。
       //   判据：`bus.list()` 的行是不是**全都**来自保留头（⚠ 有一条来自投影就不算降级）。
       const degraded = rows.length > 0 && rows.every((r) => r.presetSource === 'header')
+      /**
+       * ⚠⚠ **归属列**（`I-6`：`hob_sessions` 每行必须能看出归属 —— 哪个会话的 / 未绑定）。
+       *
+       * ⚠ 读法 = 运行态文件里的**绑定表**（`bindSession` 写的那些），
+       *   ⛔ 不猜、⛔ 不从 cwd 反推（同一工作区里多个 owner 恰恰要靠这一列分辨）。
+       * ⚠ 绑定表读不到 ⇒ 该列显示"（归属表读不到）"—— ⛔ 不许静默成"未绑定"
+       *   （那是把"读不到"说成"确实没有"，本项目最忌讳的形态）。
+       */
+      const bindFile = stateFileOf(exec)
+      let bindings: PersistedSessionBinding[] | undefined
+      if (bindFile !== undefined) {
+        try { bindings = readOrchState(bindFile).sessions } catch { bindings = undefined }
+      }
       const lines = rows.map((r) => {
         // ⚠ ⚠ 第 292 轮：**侧** 与 **预设** 都要能分辨（依据 CHG-058）——
         //   ⚠ 侧由 `agentPreset` 派生（同一口径 PLANNING_PRESET_ID），⛔ 不另立判据；
@@ -1124,6 +1197,14 @@ export function createHobBusTools(
             ? '预设=（读不到：投影与建档头都为空）'
             : `预设=${r.agentPreset}${r.presetSource === 'header' ? '（降级：取自建档头，可能非当前值）' : ''}`,
           r.cwd === undefined ? '' : `cwd=${r.cwd}`,
+          // ⚠ 归属：`归属=<owner>` / `归属=（未绑定）` / `归属=（表读不到）`
+          (() => {
+            if (bindFile === undefined) return '归属=（本会话账本根判不出·读不到归属表）'
+            if (bindings === undefined) return '归属=（归属表读不到）'
+            const hit = bindings.find((b) => b.sessionId === r.id)
+            if (hit === undefined) return '归属=（未绑定）'
+            return `归属=${hit.owner}`
+          })(),
         ].filter((x) => x !== '')
         return '- ' + bits.join(' · ')
       })
@@ -1271,6 +1352,41 @@ export function createHobBusTools(
           ...(r.available === undefined ? {} : { availableWorkspaces: r.available }),
         })
       }
+      /**
+       * ⚠⚠ **建会话即绑定**（`I-6` 的写入点，落在这里的理由见服务层那段注释：
+       *   账本根闭包 `ledgerRootOf` 只在工具层）。
+       *
+       * ⚠ 绑定失败 / 判不出 ⇒ **不改"建会话成功"这个事实**，但必须**如实回带**
+       *   （`bindNote`）—— ⛔ 不许静默，否则那条会话重载后变"无归属"、回执无处可去。
+       * ⚠ 已有别的 owner ⇒ `bindSession` 返回 `conflict` ⇒ **拒绝改绑并报出来**。
+       */
+      const bindNote = ((): string | undefined => {
+        const file = stateFileOf(exec)
+        if (file === undefined) {
+          return 'session created but the ledger root of this call is unresolvable; the owner binding '
+            + 'was NOT recorded (this session is unowned).'
+        }
+        if (typeof r.owner !== 'string' || r.owner === '') {
+          return 'session created but the caller identity was unavailable; the owner binding was NOT '
+            + 'recorded (this session is unowned).'
+        }
+        const cwd = exec?.agent?.session?.header?.cwd
+        const b = bindSession(file, {
+          sessionId: r.sessionId ?? '',
+          owner: r.owner,
+          via: 'spawn',
+          ...(typeof cwd === 'string' && cwd !== '' ? { ownerWsRoot: cwd } : {}),
+        })
+        if (b.conflict !== undefined) {
+          return `session created but it is ALREADY bound to ${b.conflict.existing.owner} `
+            + `(via ${b.conflict.existing.via}); it was NOT rebound to ${b.conflict.wantedOwner}.`
+        }
+        if (!b.wrote) {
+          return 'session created but the owner binding could not be persisted; after a restart this '
+            + 'session may look unowned.'
+        }
+        return undefined
+      })()
       // ── 建会话成功 ⇒ 记一条"待投递"（2026-10-10 新增）────────────────────
       //   ⚠ 为什么必须记：**建完不投递，用户看不见它**（空白会话被宿主有意过滤，
       //     见下面的 `visibilityNote`）。若派活方只建不投，那就既看不见、也收不到，
@@ -1292,6 +1408,9 @@ export function createHobBusTools(
         // ⚠ 模型默认值装不上时**如实回带**（不静默）：会话已建成，
         //   只是那一步增强失败了，调用方与用户都该看得见。
         ...(r.modelNote === undefined ? {} : { modelNote: r.modelNote }),
+        // ⚠ 归属绑定：成功时不加噪音，失败/冲突时**必须**带回去（⛔ 不静默）
+        ...(bindNote === undefined ? {} : { bindNote }),
+        ...(r.owner === undefined ? {} : { owner: r.owner }),
         note2: 'Created only: the session exists but has not started yet. A directive delivered with '
           + 'hob_send or hob_dispatch wakes it — no user action is needed. Only if no directive is '
           + 'delivered does the user need to open it and send one line.',
