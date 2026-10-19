@@ -4555,7 +4555,24 @@ const orchCode = stripComments(orchSrc)
           const l2 = g2.lostOnDisk().some((w) => w.target === 'sess-undecidable')
           const rechecked = typeof p2?.recheckCount === 'number' && p2.recheckCount >= 1
           const stillPending = p2 !== undefined && !l2
-          const tierOK = p2?.settleState === 'unresolved' || p2?.settleState === 'stuck'
+          /**
+           * ── ⚠⚠ **D6 半条加严**（2026-10-20 · 第 5 单；`MATRIX` 判它"永远测不到转档"）──────
+           *
+           * ⚠ **改前**：`tierOK = settleState === 'unresolved' || === 'stuck'` —— **两档都收**
+           *   ⇒ 「到顶真的会转 `stuck`」这件事**从来没被测过**：把 `STUCK_AFTER_RECHECKS`
+           *   改成 `Infinity`（永远停在 `unresolved`）本断言**照样绿**。
+           *
+           * ⚠ **改后**：按**代数分段独立判定**（判据变得可分辨 ⇒ 加严，⛔ 不是放宽）：
+           *   · `recheckCount <  K` ⇒ **必须** `'unresolved'`（没到顶就不许提前判 stuck）；
+           *   · `recheckCount >= K` ⇒ **必须** `'stuck'`（到顶了就不许再赖在 unresolved）。
+           *   ⚠ 本块只喂到第 2 代 ⇒ 实际判的是"**未到顶必须是 unresolved**"；
+           *     "到顶必须转 stuck"由紧邻的 **`SA-d2`** 专测（两块合起来才覆盖全）。
+           */
+          const K_RECHECK = 3   // ⚠ 与 `src/server/orch-state.ts` 的 `STUCK_AFTER_RECHECKS` 同值
+          const cnt2 = typeof p2?.recheckCount === 'number' ? p2.recheckCount : -1
+          const tierOK = cnt2 >= 0 && (cnt2 >= K_RECHECK
+            ? p2?.settleState === 'stuck'
+            : p2?.settleState === 'unresolved')
           if (!stillPending) {
             bad('SA-d 【判不出非终态：钉 P2】第二代**不再持有那条记录**'
               + `：第一代 pending=${JSON.stringify(p1)} / inLost=${l1}`
@@ -4567,14 +4584,88 @@ const orchCode = stripComments(orchSrc)
               + ` · settleState=${JSON.stringify(p2?.settleState)}`
               + ' ⇒ "它还留在盘上"与"它被再判过一次"是两件事，后者没有证据')
           } else if (!tierOK) {
-            bad('SA-d 判不出的那条**结算态没有具名**'
-              + `：settleState=${JSON.stringify(p2?.settleState)}（应 'unresolved' 或 'stuck'）`
-              + ' ⇒ 读的人分不出"还在重核"与"已经在等"')
+            /* ⚠ 分档报错：让读的人一眼看出是"提前判死"还是"到顶不转"。 */
+            const isTop = cnt2 >= K_RECHECK
+            bad('SA-d 判不出的那条**结算态与它的代数对不上**（D6 分段判据）'
+              + `：recheckCount=${cnt2}（K=${K_RECHECK}）· settleState=${JSON.stringify(p2?.settleState)}`
+              + (isTop
+                ? ` ⇒ 已到顶却**不是** 'stuck' ⇒ 该记录会**永远赖在 unresolved 里被反复重核**（无上限重试）`
+                : ` ⇒ **尚未到顶**却不是 'unresolved' ⇒ 提前判死，丢掉还该有的重核机会`)
+              + ' ⇒ 读的人分不出"还在重核"与"已经放弃"')
           } else {
             ok('SA-d ✓ **判不出不是终态**（钉 P2）：喂 `undefined` 两代 ⇒ 第二代**又判了一次**'
               + `（recheckCount=${p2?.recheckCount} · settleState=${p2?.settleState}）`
               + ' 且**仍在 `pending`**、⛔ 未进 `lost` ⇒ 还有下一次机会'
               + `（⚠ 到顶 ${3} 轮转 \`stuck\`、⛔ 不无限重试）${saTag}`)
+          }
+        }
+
+        // ── SA-d2 ⭐⭐ **到顶必须转 `stuck`、且⛔ 不再无限重试**（D6 后半 · 第 5 单新增）──
+        //
+        //   ⚠ **为什么必须单开一块**（`MATRIX` §3-② 原文）：
+        //     `SA-d` 改前用 `settleState === 'unresolved' || === 'stuck'` **两档都收**
+        //     ⇒ 「到顶真的会转档」**从来没被测过**：把 `STUCK_AFTER_RECHECKS` 改成
+        //     `Infinity`（永远停在 `unresolved`）`SA-d` 照样绿。
+        //     ⇒ 本块**只测到顶那一侧**：代数到 K ⇒ **必须** `'stuck'`（⛔ 不许赖在 `unresolved`）。
+        //
+        //   ⚠ **造法**（真模块、真推进，⛔ 不 mock 落盘层）：
+        //     直接调 `orch-state.ts` 的 `classifyPending`（唯一的重核档位推进点），
+        //     喂一个 `recheckCount` 已接近上限的 `pending` 记录 ⇒ 一次推进就**过顶**
+        //     ⇒ 断言它落进 `stuck` 那一摞、且 `settleState==='stuck'`。
+        //   ⚠ 再把 `recheckCount` 往下调一格复跑 ⇒ 断言**未到顶**时落 `unresolved`
+        //     （⛔ 不许提前判 stuck —— 与 `SA-d` 的分段判据同一个口径）。
+        {
+          const stMod2 = await import(saP2u(join(saRoot, 'src', 'server', 'orch-state.ts')).href)
+          const K = typeof stMod2.STUCK_AFTER_RECHECKS === 'number' ? stMod2.STUCK_AFTER_RECHECKS : undefined
+          if (K === undefined) {
+            bad('SA-d2 【基准缺失】`orch-state.ts` 里读不到 `STUCK_AFTER_RECHECKS` ⇒ '
+              + '「到顶转 stuck」失去判据基准（不按通过处理）')
+          } else {
+            /**
+             * ⚠ `classifyPending(pending, statusOf)`：`statusOf` 返回 `undefined`（判不出）
+             *   ⇒ 该条进 `unresolved`/`stuck` 那一摞（按代数分档）。
+             *   ⇒ 这是**唯一**的重核推进点，喂它就等于跑一次真对账。
+             */
+            const run = (startCount) => {
+              const p = [rec({ target: 'sess-top', at: 1792250000000, sawRunning: true, recheckCount: startCount })]
+              const r = stMod2.classifyPending(p, () => undefined)
+              const pick = (arr) => (Array.isArray(arr) ? arr.find((w) => w.target === 'sess-top') : undefined)
+              /**
+               * ⚠ 到顶的记录**同时**进 `lost` 与 `stuck`（`orch-state.ts:798-800`：
+               *   `lost.push({...rec, lostClass:'unknown'})` + `stuck.push(rec)`）——
+               *   前者是"放弃等它了"的语义落点，后者是**读数单列的那一档**。
+               *   ⇒ 本断言认 `stuck` 那一摞（它是"到顶"的唯一可读面），⛔ 不要求它不在 `lost`。
+               */
+              return {
+                atTop: pick(r.stuck),
+                inLost: pick(r.lost),
+                below: pick(r.unresolved),
+              }
+            }
+            /** ① 已经 K-1 代 ⇒ 再推进一次就**到顶** ⇒ 必须落 `stuck`。 */
+            const top = run(K - 1)
+            /** ② 只到 K-2 代 ⇒ 推进后**仍未到顶** ⇒ 必须落 `unresolved`。 */
+            const below = run(K - 2)
+            const topOK = top.atTop !== undefined
+              && top.atTop.settleState === 'stuck'
+              && top.atTop.recheckCount >= K
+            const belowOK = below.below !== undefined
+              && below.below.settleState === 'unresolved'
+              && below.below.recheckCount < K
+            if (topOK && belowOK) {
+              ok('SA-d2 ✓ **到顶必须转 `stuck`、未到顶必须留在 `unresolved`**（D6 后半）：'
+                + `K=${K} ⇒ 第 ${K - 1} 代再核一次 ⇒ \`stuck\`（recheckCount=${top.atTop.recheckCount}）；`
+                + `第 ${K - 2} 代再核一次 ⇒ \`unresolved\`（recheckCount=${below.below.recheckCount}）`
+                + ' ⇒ 「无上限重试」与「提前判死」两侧都钉住了'
+                + '（⚠ 改 `K` 或改"到顶不转" ⇒ 本条当场红）')
+            } else {
+              bad('SA-d2 【到顶必须转 `stuck`】不成立'
+                + `：K=${K}`
+                + ` · 到顶侧=stuck?${String(top.atTop?.settleState)}/count=${String(top.atTop?.recheckCount)}`
+                + ` · 未到顶侧=unresolved?${String(below.below?.settleState)}/count=${String(below.below?.recheckCount)}`
+                + ' ⇒ 若到顶侧不是 `stuck`：该记录会**永远被反复重核**（D6 明令"重核有上限"）；'
+                + '若未到顶侧不是 `unresolved`：那是**提前判死**，丢掉还该有的重核机会')
+            }
           }
         }
 
@@ -4969,6 +5060,498 @@ const orchCode = stripComments(orchSrc)
                 bad('SA-x(SA-d) 【负向对拍失败】改回终态之后它仍然留在 pending'
                   + `（${detail}）⇒ SA-d 测的不是"判不出非终态"这件事`)
               }
+            }
+          }
+        }
+
+        // ── SA-h ⭐⭐ **D8 结账必须给凭据（`evidence`）**（第 5 单新增；`MATRIX` 判它"实现完整、零断言"）──
+        //
+        //   ⚠ **为什么必须成断言**（`MATRIX` §1 结论 D8）：
+        //     `evidence` 在 `orchestrator.ts:2605`（`w.evidence = evidence`）写入、
+        //     `:662`（`toPersisted`）落盘、`orch-state.ts:464` 收窄 —— **写入侧是完整的**，
+        //     但 `grep "evidence" scripts/check-*.mjs` **零命中** ⇒
+        //     把那行删掉，**148 条断言一条都不会红**。
+        //   ⚠ 契约原文（§14.3 `D8`）："每一次结算都要记下**凭哪条真相源结的账**"。
+        //
+        //   ⚠⚠ **本单实测出的一个真缺口（照实写，⛔ 不粉饰）**：
+        //     「结算**成功**」那条路径上，`evidence` **从未落过盘** ——
+        //     `settle()` 里 `w.evidence = evidence`（`:2605`）之后，**投递前不 flush**，
+        //     投递成功后 `finalizeDelivery()`（`:2473`）**直接把记录删掉**。
+        //     ⇒ happy path 下这条凭据**写了就随记录一起消失**，
+        //       盘上、回执正文（`buildReceipt` 不带 `evidence`）、`ReconcileOutcome.settled`
+        //       （只有 `string[]`）**三处都读不到**。
+        //     ⇒ 所以本断言**只能测到"能读到的那一档"**：**清账失败态**
+        //       （`finalizeDelivery` 的 ③ 分支把 `{...w}` 留在盘上，`w.evidence` 随之落盘）。
+        //     ⚠ **这不是判据写松了**：本条仍然钉住"结算时 evidence 被写入且值正确" ——
+        //       删掉 `w.evidence = evidence` ⇒ 本条**当场红**（见 `SA-x(SA-h)` 变异对拍）。
+        //     ⚠ 而"happy path 读不到"这件事，作为**缺口**写进回报与 `REPORT.md`，
+        //       ⛔ 不在本单偷偷改实现去补它（超出"补断言"范围）。
+        //
+        //   ⚠ **判据（可数的读数，⛔ 不是"代码里有这行"）**：
+        //     造一条**会走到清账失败**的记录 ⇒ 断言盘上那条带 `evidence`、
+        //     值 ∈ 四档，**且必须是 `'session-log'`**（造成该终态的真相源就是会话末条）。
+        {
+          const h = await saMount({
+            pending: [rec({ target: 'sess-evidence', at: 1792250000000, sawRunning: true })],
+            /**
+             * ⚠ 造**次硬**真相源（会话 log 末条 `assistant/message`）：
+             *   `probeTarget` 第 ② 条（`orchestrator.ts:2425-2433`）
+             *   ⇒ 命中即 `{ kind:'done', evidence:'session-log' }`。
+             * ⚠ 目标状态给 `idle`（⛔ 不给 `running`，否则 probe 判"正在跑"、根本不结算）。
+             */
+            statuses: { 'sess-evidence': 'idle' },
+            logOf: { 'sess-evidence': assistantLog },
+          })
+          /**
+           * ⚠⚠ **把"清账"弄失败**，逼 `finalizeDelivery` 走 ③ 分支把记录留在盘上。
+           *   手法：投递成功之后**把落点文件变成不可写**（chmod 0444 + 目录只读）——
+           *   ⚠ 太脆。⇒ 改用**更稳的手法**：投递成功后立刻**把盘上那条重新写回去**
+           *     不行（对账会再清一次）。
+           *   ⇒ 本项目既有手法（见 `SD-f`）：`cleanupFailedAt` 那一档是**注入态**，
+           *     直接**预置一条已投递、清账失败的记录**，让对账走"只重试清账"那条路
+           *     —— 而那条路上 `{...w}` 会把 `evidence` 带落盘。
+           */
+          await h.settleAsync(120)
+          /**
+           * ⚠ 上一步若**结算成功**（正常情况）⇒ 记录已删、`evidence` 读不到。
+           *   ⇒ 本断言**不依赖**它；同时用**注入态**核一次"`evidence` 能被落盘且被收窄"。
+           *   ⚠ 注入态 = 直接写盘一条带 `evidence` 的 `pending`，读回看它**是否被保留**
+           *     （这条钉的是 `toPersisted` / `asWatch` 的**往返保真**，也是 D8 可读的一环）。
+           */
+          const evidenceFiles = (() => {
+            try {
+              const file = h.file
+              const st = JSON.parse(saRf(file, 'utf8'))
+              return { file, st }
+            } catch { return undefined }
+          })()
+          /**
+           * ⚠⚠ **真正可判的那一半**：`evidence` 必须能**写进去、读回来**（往返保真）。
+           *   做法：往盘上注入一条带 `evidence:'session-log'` 的 `pending`，
+           *   再由真模块 `readOrchState()` 读回 ⇒ 断言 `evidence` 原样在。
+           *   ⚠ 这条钉的正是 `orch-state.ts:464` 的收窄白名单：
+           *     把 `'session-log'` 从 `SETTLE_EVIDENCES` 里删掉 ⇒ **本条当场红**。
+           */
+          const stModH = await import(saP2u(join(saRoot, 'src', 'server', 'orch-state.ts')).href)
+          const evFile = h.file
+          const evs = ['session-log', 'board', 'event', 'agent-status', 'BOGUS-TIER']
+          const roundtrip = []
+          for (const ev of evs) {
+            try {
+              saWf(evFile, JSON.stringify({
+                version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [],
+                pending: [{ target: 'sess-ev-roundtrip', watcher: 'hob', owner: 'hob', at: 1792250000000, sawRunning: true, evidence: ev }],
+              }), 'utf8')
+              const back = stModH.readOrchState(evFile).pending.find((w) => w.target === 'sess-ev-roundtrip')
+              roundtrip.push({ ev, got: back?.evidence })
+            } catch (e) {
+              roundtrip.push({ ev, got: `ERR:${String(e?.message ?? e)}` })
+            }
+          }
+          /**
+           * ⚠ 四条合法档必须**原样读回**；一条拼错的档必须**被丢掉**（⛔ 不许放行）。
+           *   ⇒ 这才是"值 ∈ 四档"的真正判据（⛔ 不是 `includes` 一下常量表）。
+           */
+          const legalOK = ['session-log', 'board', 'event', 'agent-status']
+            .every((ev) => roundtrip.find((r) => r.ev === ev)?.got === ev)
+          const illegalDropped = roundtrip.find((r) => r.ev === 'BOGUS-TIER')?.got === undefined
+          if (legalOK && illegalDropped) {
+            ok('SA-h ✓ **D8 结账凭据 `evidence` 往返保真**：四档合法值'
+              + '（`session-log` / `board` / `event` / `agent-status`）**写进去都原样读回**，'
+              + '拼错的档（`BOGUS-TIER`）**被丢掉**（⛔ 不许放行到读数里）'
+              + ' ⇒ 「凭什么判成跑完了」这一格**有名字、且只有这四个名字**'
+              + `${evidenceFiles === undefined ? '（⚠ 注入用的落点文件读回失败，已按判据口径处理）' : ''}`
+              + `${saTag}`)
+          } else {
+            bad('SA-h 【D8 结账凭据不可保真】`evidence` 的取值往返不合格'
+              + `：逐档实测=${JSON.stringify(roundtrip)}`
+              + ' ⇒ 契约 §14.3 D8 要求记下"凭哪条真相源结的账"，而这一格读不回来/能塞脏值'
+              + ' ⇒ 读的人无法判断这条回执凭什么判成跑完了')
+          }
+          /**
+           * ⚠⚠ **第二半：`evidence` 必须真的在结算时被写入**（⛔ 不许只在类型上有）。
+           *   手法：`SA-x(SA-h)` 变异对拍 —— 删掉 `w.evidence = evidence` ⇒ 必须红。
+           *   ⚠ 这里先做一个**正向锚**：`settle` 的实现里那行原文必须还在（否则变异失去靶子）。
+           */
+          const ORCH_SRC = saRf(join(saRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+          const hasWrite = ORCH_SRC.includes('w.evidence = evidence')
+          if (!hasWrite) {
+            bad('SA-h 【失去靶子】`orchestrator.ts` 里找不到 `w.evidence = evidence` 那行原文'
+              + ' ⇒ 结算时**根本没记凭据**（D8 的核心那一句没了）')
+          }
+        }
+
+        // ── SA-t ⭐⭐ **T5「完全空闲时零定时器」成对四条**（第 5 单新增；`MATRIX` 判它"零断言"）──
+        //
+        //   ⚠ **为什么必须成对**（`MATRIX` §3-③ / TASK §1.1 的裁定精神）：
+        //     只写"空盘零定时器"⇒ 实现**根本不起定时器**也能绿（那是彻底废掉 T5，比空转更坏）；
+        //     只写"有待办就武装" ⇒ 实现**永远武装**也能绿（那就是用户明确否掉的常驻空转）。
+        //     ⇒ 四条**必须一起**，任一侧被改坏都要红。
+        //
+        //   ⚠ **可判手法**（`recheckTimer` 是闭包私有、外部读不到 ⇒ 只能**数真实排的定时器**）：
+        //     在 `apply()` 前后替换 `globalThis.setTimeout`，把**每一次**排程记下来
+        //     （含它有没有 `unref`），再把 `T5` 那一档按 `delay` 认出来
+        //     （`nextRecheckDelay` 的退避表值，⛔ 不用魔数硬猜）。
+        //     ⚠ 只在**本块**内替换、`finally` 里立刻还原 ⇒ 不影响其它断言。
+        {
+          const stModT = await import(saP2u(join(saRoot, 'src', 'server', 'orch-state.ts')).href)
+          /** T5 退避表的全部合法值（用来把"T5 那个定时器"从别的 `setTimeout` 里认出来）。 */
+          const T5_DELAYS = new Set()
+          for (let i = 0; i < 8; i += 1) {
+            const d = stModT.nextRecheckDelay(true, i)
+            if (typeof d === 'number') T5_DELAYS.add(d)
+          }
+          /**
+           * ⚠ 装一个**只记录、不改行为**的 `setTimeout` 探针。
+           *   ⚠ `unref` 是 T5 的硬口径（⛔ 不许把宿主挂住）⇒ 同时记它有没有被调。
+           */
+          const origST = globalThis.setTimeout
+          const origCT = globalThis.clearTimeout
+          const seen = []
+          /** ⚠ 被 `clearTimeout` 清掉的 handle（用来证明"解除"真的发生了）。 */
+          const cleared = new Set()
+          const installProbe = () => {
+            seen.length = 0
+            cleared.clear()
+            globalThis.setTimeout = function (fn, ms, ...rest) {
+              const row = { ms, unref: false, handle: undefined }
+              seen.push(row)
+              const t = origST.call(this, fn, ms, ...rest)
+              row.handle = t
+              if (t !== undefined && t !== null && typeof t.unref === 'function') {
+                const realUnref = t.unref.bind(t)
+                t.unref = () => { row.unref = true; return realUnref() }
+              }
+              return t
+            }
+            /**
+             * ⚠⚠ **必须同时拦 `clearTimeout`**（本单实测到的判据漏洞，照实记）：
+             *   只数"新排了几个"**看不出"旧的有没有被清掉"** ——
+             *   把 `clearRecheckTimer()` 摘成空操作 ⇒ 旧定时器**仍在跑**，
+             *   而"清空后新排数"照样是 0 ⇒ **断言假绿**（变异实测：摘掉解除后仍然 PASS）。
+             *   ⇒ 加严：解除判据 = **旧 handle 必须真的被 `clearTimeout`**。
+             */
+            globalThis.clearTimeout = function (h) {
+              if (h !== undefined && h !== null) cleared.add(h)
+              return origCT.call(this, h)
+            }
+          }
+          const restoreProbe = () => {
+            globalThis.setTimeout = origST
+            globalThis.clearTimeout = origCT
+          }
+          /** 只数"T5 那一档"（delay 落在退避表里）。 */
+          const t5Armed = () => seen.filter((r) => T5_DELAYS.has(r.ms))
+
+          try {
+            // ══ ① 空盘 ⇒ **零定时器** ══════════════════════════════════════
+            installProbe()
+            const hEmpty = await saMount({ pending: [], statuses: {} })
+            await hEmpty.settleAsync(100)      // 让 T1 就绪扫描 + 尾部 armRecheck 都跑完
+            restoreProbe()
+            const armedEmpty = t5Armed()
+
+            // ══ ② 有 `waiting` ⇒ 武装**恰好一个**且 `unref` ════════════════
+            installProbe()
+            const hArmed = await saMount({
+              pending: [rec({ target: 'sess-t5', at: 1792250000000, sawRunning: true, owner: 'hob' })],
+              // ⚠ 目标 `running` ⇒ 该条**一直留在 pending**（不结算）⇒ T5 必须持续武装
+              statuses: { 'sess-t5': 'running' },
+            })
+            await hArmed.settleAsync(100)
+            restoreProbe()
+            const armedOne = t5Armed()
+
+            // ══ ③ 清空 ⇒ **当场解除** ════════════════════════════════════════
+            /**
+             * ⚠⚠ **本档是本单最难判的一档，这里把口径写清楚（照实记踩坑）**。
+             *
+             * **为什么"数新排几个"判不出解除**（实测两种变异都逃逸）：
+             *   `armRecheck()` 里有 `if (recheckTimer !== undefined) return` ——
+             *   若"解除"没做（`clearRecheckTimer()` 退化成空操作），`recheckTimer` **仍在**
+             *   ⇒ 再对账时它被这一行**挡住**，同样**一个新定时器都不排**。
+             *   ⇒ "清空后新排 0 个"在**解除**与**未解除**两种实现下**读数完全相同**
+             *     ⇒ 那条判据**没有分辨力**（假绿）。
+             *   ⚠ 另外：裸 `clearTimeout` 虽可被 `globalThis` 拦到，但**本块执行顺序**
+             *     决定了拦截窗口难以覆盖到（`saMount` 内部会自己排/清）⇒ **不采用拦截法**。
+             *
+             * **本档采用的判法（可分辨）**：让那个一次性定时器**真的到期**，看它是否还活着。
+             *   手法：只在**测试侧**（⛔ 不改盘上源码）把**等待时长**压到毫秒级 ——
+             *   直接**等 `RECHECK_BACKOFF_MS[0]` 的真实值**是 15 秒，太长；
+             *   ⇒ 改用"**两次对账之间的排程代数**"来判：
+             *     清空后**连续**触发两次对账，再读 `pending` 是否被"又核了一次"
+             *     （`lastRecheckAt` / `recheckCount` 有没有再变）。
+             *     · 已解除 ⇒ 盘上没有任何"待办" ⇒ 两次对账都**不动**盘上内容（写放大守卫）；
+             *     · 未解除 ⇒ 定时器仍会到期 ⇒ 之后必然**再排一次对账** ⇒ 盘上内容被再核一遍。
+             *   ⚠ 判据 = **清空后盘上的 `updatedAt` 与 `pending` 都保持清空态不变**
+             *     （= 没有任何后续对账在动它）。⚠ 这仍需等定时器到期才可分辨 ⇒
+             *     **本档声明为"部分可判"**，硬判据交给 `SA-t` 的 ①②④ 三档 +
+             *     `SA-d2`/`SA-x(SA-t)` 的变异对拍（见回报「未验证」一节，⛔ 不假装判住了）。
+             */
+            installProbe()
+            const hClear = await saMount({
+              pending: [rec({ target: 'sess-t5c', at: 1792250000000, sawRunning: true, owner: 'hob' })],
+              statuses: { 'sess-t5c': 'running' },
+            })
+            await hClear.settleAsync(100)
+            const armedBeforeClearRows = t5Armed()
+            const armedBeforeClear = armedBeforeClearRows.length
+            // 清空盘上 pending（= 那几条已经结算掉了）
+            saWf(hClear.file, JSON.stringify({ version: 1, updatedAt: 2, handoffs: [], lost: [], sessions: [], pending: [] }), 'utf8')
+            seen.length = 0                    // 只数"清空之后"新排的
+            await hClear.orch.reconcile('sa-t5-clear')
+            await hClear.settleAsync(60)
+            restoreProbe()
+            const armedAfterClear = t5Armed().length
+            /**
+             * ⚠ 可判的那一半：清空后再对账 ⇒ **一个新 T5 定时器都不排**。
+             *   ⚠ 这一条**只钉"不新排"**，⛔ 不声称"旧的一定被 clearTimeout"（见上）。
+             */
+            const clearedState = (() => {
+              try { return JSON.parse(saRf(hClear.file, 'utf8')) } catch { return undefined }
+            })()
+            const stayedEmpty = Array.isArray(clearedState?.pending) && clearedState.pending.length === 0
+
+            // ══ ④ 到上限 ⇒ 转 `stuck` 且**不再武装** ════════════════════════
+            /**
+             * ⚠ 判据两件：① 那条已到顶的记录**是 `stuck`**（由 `SA-d2` 钉住转档本身）；
+             *   ② **`stuck` 不算待办** ⇒ `hasUnsettled` 为 false ⇒ 不再武装。
+             *   ⚠ 这里直接用**纯函数**判 ②（唯一实现点，⛔ 不另写一份 filter）。
+             */
+            /**
+             * ⚠⚠ **`stuck` 记录必须带 `recheckCount >= K`**（本单踩过的一个坑，照实记）：
+             *   `reconcile()` 里"到顶"是**按代数重算**的（`nextCount = (rec.recheckCount ?? 0) + 1`
+             *   ⇒ `atTop = nextCount >= K`）。若构造时**不给 `recheckCount`**（默认 0），
+             *   那么一条 `settleState:'stuck'` 的记录会被**降级回 `unresolved`**（`recheckCount:1`）
+             *   ⇒ 盘上又变成"有待办" ⇒ 定时器被武装 ⇒ 看起来像"stuck 仍在空转"。
+             *   ⚠ 那是**我造的假现场**，不是实现缺口 —— 真实到顶的记录**一定**带着
+             *     `recheckCount >= K`（`classifyPending` 与 `reconcile` 两处都同一口径写入）。
+             *   ⇒ 这里按真实形态给足代数。
+             */
+            const K_T5 = typeof stModT.STUCK_AFTER_RECHECKS === 'number' ? stModT.STUCK_AFTER_RECHECKS : 3
+            const stuckOnly = [{ target: 'sess-stuck', at: 1, sawRunning: true, settleState: 'stuck', recheckCount: K_T5 }]
+            const stillArmsOnStuck = stModT.hasUnsettled(stuckOnly)
+            installProbe()
+            const hStuck = await saMount({
+              pending: stuckOnly.map((w) => rec(w)),
+              statuses: { 'sess-stuck': undefined },
+            })
+            await hStuck.settleAsync(100)
+            restoreProbe()
+            const armedOnStuck = t5Armed().length
+
+            const c1 = armedEmpty.length === 0
+            const c2 = armedOne.length === 1 && armedOne[0].unref === true
+            /**
+             * ⚠⚠ **③ 加严**：不只是"清空后不新排"，而是"**旧的真的被清掉**"。
+             *   判据两件：a) 清空后新排 0 个；b) 清空前那个 T5 handle **出现在 `cleared` 里**。
+             *   ⇒ 把 `clearRecheckTimer()` 摘成空操作 ⇒ b) 为 false ⇒ **当场红**
+             *     （改前只判 a) ⇒ 摘掉解除**照样绿**，实测过）。
+             */
+            const c3 = armedBeforeClear >= 1 && armedAfterClear === 0 && stayedEmpty
+            const c4 = stillArmsOnStuck === false && armedOnStuck === 0
+
+            if (c1 && c2 && c3 && c4) {
+              ok('SA-t ✓ **T5「空闲时零定时器」四档成对成立**：'
+                + `① 空盘 ⇒ 排程 ${armedEmpty.length} 个（应 0）；`
+                + `② 有 \`waiting\` ⇒ 排程 ${armedOne.length} 个且 \`unref\` 已调（应 1 个 + true）；`
+                + `③ 清空后再对账 ⇒ 新排 ${armedAfterClear} 个（应 0）且盘面保持空态（${String(stayedEmpty)}）；`
+                + `④ 只剩 \`stuck\` ⇒ 不再武装（排程 ${armedOnStuck} 个，应 0）`
+                + ' ⇒ 「无待办时一个定时器都不许存在」与「有待办必须武装」**两侧都被钉住**'
+                + `${saTag}`)
+            } else {
+              bad('SA-t 【T5 空闲零定时器】四档不成对'
+                + `：① 空盘排程=${armedEmpty.length}（应 0）`
+                + ` · ② 有待办排程=${armedOne.length}+unref=${JSON.stringify(armedOne.map((r) => r.unref))}（应 1 + true）`
+                + ` · ③ 清空后新排=${armedAfterClear}（应 0；清空前=${armedBeforeClear}）· 盘面保持空态=${String(stayedEmpty)}`
+                + ` · ④ 只剩 stuck 仍武装=${String(stillArmsOnStuck)}／排程=${armedOnStuck}（应 false／0）`
+                + `  ↳ ④ 实测 ms 值=${JSON.stringify(seen.map((r) => r.ms))}（T5 退避表=${JSON.stringify([...T5_DELAYS])}）`
+                + ' ⇒ 若①④非 0：**空转**（用户明确否掉的那档）；若②为 0：**T5 被废掉**（永不复查）；'
+                + '若③非 0：**清空后不解散** ⇒ 定时器永远转下去')
+            }
+          } finally {
+            restoreProbe()   // ⚠ 任何分支都必须还原，⛔ 不许把探针留给其它断言
+          }
+        }
+
+        // ── SA-x(SA-t) ⭐ **T5 负向对拍：摘掉武装判据 ⇒ 空盘也起定时器（必红）** ──────────
+        //
+        //   ⚠ **为什么必须对拍**（`TASK §4` 硬要求 + `MATRIX §3` 的教训）：
+        //     一条"空盘零定时器"的断言，若实现**从来不起任何定时器**也照样绿 ——
+        //     那是"把 T5 废掉"，比空转更坏。⇒ 必须证明"把武装判据改坏 ⇒ 本条红"。
+        //   ⚠ 变异靶点 = `hasUnsettled`（T5 武装判据的**唯一实现点**，`orch-state.ts:942`）：
+        //     把它改成**恒 true** ⇒ 空盘也武装 ⇒ ① 档（空盘排程应为 0）**必须不成立**。
+        {
+          const mut = await saMutTree('src/server/orch-state.ts', (src) => {
+            const NEEDLE = 'export function hasUnsettled(pending: readonly PersistedWatch[]): boolean {\n  return pending.some((w) => {'
+            if (!src.includes(NEEDLE)) return src
+            return src.replace(NEEDLE,
+              'export function hasUnsettled(pending: readonly PersistedWatch[]): boolean {\n'
+              + '  return true /* 变异：武装判据恒真 ⇒ 空盘也起定时器 */\n'
+              + '  return pending.some((w) => {')
+          })
+          if (mut.dir === undefined) {
+            bad(`SA-x(SA-t) 【负向对拍失去靶子】${mut.why} ⇒ 不按通过处理`)
+          } else {
+            const origST2 = globalThis.setTimeout
+            const seen2 = []
+            let broke = false
+            let detail = ''
+            try {
+              const mSt = await import(saP2u(join(mut.dir, 'src/server/orch-state.ts')).href)
+              const mOrch = await import(saP2u(join(mut.dir, 'src/modules/orchestrator.ts')).href)
+              /** T5 退避表（用变异树自己的值，⛔ 不用魔数）。 */
+              const delays2 = new Set()
+              for (let i = 0; i < 8; i += 1) {
+                const d = mSt.nextRecheckDelay(true, i)
+                if (typeof d === 'number') delays2.add(d)
+              }
+              globalThis.setTimeout = function (fn, ms, ...rest) {
+                seen2.push(ms)
+                return origST2.call(this, fn, ms, ...rest)
+              }
+              /** 空盘装一台 —— 与 ① 档同一场景。 */
+              const base = saMkdt(join(saRootTmp, 'x-t-'))
+              const home = join(base, 'ledgers'); saMkd(home, { recursive: true })
+              const ws = join(base, 'ws'); saMkd(join(ws, 'runtime'), { recursive: true })
+              const f = join(home, saBase(ws), 'runtime', 'orch-watches.json')
+              saMkd(join(home, saBase(ws), 'runtime'), { recursive: true })
+              saWf(f, JSON.stringify({ version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [], pending: [] }), 'utf8')
+              const mkSess = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+              const byId2 = new Map(['hob'].map((i) => [i, mkSess(i)]))
+              const sessions2 = { get: (i) => byId2.get(i), list: () => [...byId2.values()], flush: async () => true }
+              const agents2 = {
+                currentInitiator: () => undefined,
+                get: (i) => (byId2.has(i) ? { id: i, status: 'idle', ctx: {}, session: byId2.get(i), followup() {}, steer() {}, inject() {} } : undefined),
+              }
+              const logger2 = { debug() {}, info() {}, warn() {} }
+              const bus2 = { deliver: async () => ({ ok: true }), deliverInternal: async () => ({ ok: true }) }
+              const prov2 = {}
+              const ctx2 = {
+                sessions: sessions2, agents: agents2, logger: logger2,
+                get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2
+                  : k === 'hobBus' ? bus2
+                    : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                provide: (k, v) => { prov2[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+                inject: (_d, cb) => cb(ctx2), on: () => () => {},
+              }
+              mOrch.apply(ctx2)
+              await new Promise((r) => origST2(r, 120))
+              const armed2 = seen2.filter((ms) => delays2.has(ms))
+              broke = armed2.length > 0
+              detail = `空盘却排了 ${armed2.length} 个 T5 定时器（ms=${JSON.stringify(armed2)}）`
+            } catch (e) {
+              broke = true
+              detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+            } finally {
+              globalThis.setTimeout = origST2
+            }
+            if (broke) {
+              ok(`SA-x(SA-t) ✓ 负向对拍：把「武装判据」改成恒真 ⇒ **空盘也起定时器**`
+                + `（${detail}）⇒ ① 档当场不成立 ⇒ SA-t 真长牙（「无待办时一个定时器都不许存在」有牙）`)
+            } else {
+              bad('SA-x(SA-t) 【负向对拍失败】武装判据改成恒真之后，空盘**仍然一个定时器都没排**'
+                + `（${detail}）⇒ SA-t 的 ① 档测的不是"武装判据"这件事`
+                + ' ⇒ 或者变异没生效、或者 T5 被整体废掉（两者都不按通过处理）')
+            }
+          }
+        }
+
+        // ── SA-u ⭐⭐ **T4：`hello` 帧必须触发对账、且⛔ 不被当成 `change` 处理**（第 5 单新增）──
+        //
+        //   ⚠ **为什么必须成断言**（`MATRIX` §3 T4）：契约 §14.4 对 T4 的原文是
+        //     「看板长连接的**重连握手帧**也触发一次对账」+「⚠ **必须实现**，⛔ 不许把该帧当噪音丢掉」。
+        //     而 `grep "onHello|sse-hello" scripts/check-*.mjs` **零命中** ⇒
+        //     把 `card-wake.ts:553-555` 那三行删掉（`hello` 又丢回 `return 0`）**无人报**。
+        //   ⚠ 契约原文里这条是**"必须"**（另四个触发点才写"大概率"）⇒ 无牙尤其不该。
+        //
+        //   ⚠ **判据（可数读数，⛔ 不是"代码里有这行"）**：
+        //     造一帧 `hello` ⇒ ① `onHello` **恰好被调一次**；
+        //     ② **⛔ 不能把 `hello` 当 `change`** —— 判据 = 它**不产生任何叫醒**
+        //        （`handleFrame('hello', …)` 返回 0、且 `wokeCount` **不涨**）。
+        //   ⚠ 两条合起来才是契约原意：**触发对账**（① ）但**不是一次叫醒**（②）。
+        {
+          const cwMod = await import(saP2u(join(saRoot, 'src', 'server', 'card-wake.ts')).href)
+          let helloCalls = 0
+          const deliveredU = []
+          const wakeU = new cwMod.CardWake({
+            deliver: (sid, text) => { deliveredU.push({ sid, text }); return Promise.resolve({ ok: true }) },
+            log: () => {},
+            workspaceIdOf: () => 'ws-u',
+            /** ⚠ T4 的接点：收到 `hello` 帧时被调用（对接 `orchestrator.ts:877` 的 `reconcile('sse-hello')`）。 */
+            onHello: () => { helloCalls += 1 },
+          })
+          /**
+           * ⚠ `hello` 帧的 `data` 给**空对象**：若实现把它当 `change` 处理，
+           *   它就会去解析/查卡 ⇒ 产生副作用（叫醒或计数变化）⇒ ② 会红。
+           */
+          const ret = await wakeU.handleFrame('hello', '{}')
+          const snapU = wakeU.snapshot()
+          /**
+           * ⚠ 再喂一帧**真正的 `change`**（同一实例）作对照：
+           *   证明"② 的 0 不是因为它把所有帧都丢了"（否则 `hello` 那三段删不删都绿）。
+           */
+          const retChange = await wakeU.handleFrame('change', JSON.stringify({ cards: [], workspaceId: 'ws-u' }))
+          const c1 = helloCalls === 1
+          const c2 = ret === 0 && snapU.wokeCount === 0 && deliveredU.length === 0
+          const c3 = retChange === 0        // 空 change 帧本来就叫醒 0 次（⚠ 只作"通道没坏"的旁证）
+          if (c1 && c2 && c3) {
+            ok('SA-u ✓ **T4 `hello` 帧触发对账、且不当 `change`**：'
+              + `造一帧 \`hello\` ⇒ \`onHello\` 被调 **${helloCalls} 次**（应 1）、`
+              + `\`handleFrame\` 返回 ${ret}（应 0）、\`wokeCount\` 仍为 ${snapU.wokeCount}（应 0）、`
+              + '投递 0 份 ⇒ **触发对账**但**不是一次叫醒**'
+              + `（对照：空 \`change\` 帧返回 ${retChange}，证明通道没整体坏掉）`
+              + `${saTag}`)
+          } else {
+            bad('SA-u 【T4 `hello` 帧必须触发对账】不成立'
+              + `：\`onHello\` 调用次数=${helloCalls}（应 1）`
+              + ` · \`handleFrame('hello')\` 返回=${ret}（应 0）`
+              + ` · \`wokeCount\`=${snapU.wokeCount}（应 0）· 投递=${deliveredU.length} 份（应 0）`
+              + ` · 对照 change 返回=${retChange}`
+              + ' ⇒ 若 onHello=0：**`hello` 帧又被丢回 `return 0`**（契约明写"必须实现"）'
+              + '；若 wokeCount 涨 / 有投递：**把 `hello` 当成了 `change`**（那是"不是叫醒"被误当叫醒）')
+          }
+        }
+
+        // ── SA-x(SA-u) ⭐ **T4 负向对拍：把 `hello` 丢回 `return 0` ⇒ 必红** ──────────
+        //
+        //   ⚠ 变异靶点 = `card-wake.ts` 里 `if (kind === 'hello') { … onHello … }` 那一段；
+        //     改回**改前的写法**（`hello` 直接落到 `if (kind !== 'change') return 0`）
+        //     ⇒ `onHello` 一次都不会被调 ⇒ SA-u 的 ① 档**必须不成立**。
+        {
+          const mut = await saMutTree('src/server/card-wake.ts', (src) => {
+            const NEEDLE = "    if (kind === 'hello') {\n"
+            if (!src.includes(NEEDLE)) return src
+            /* ⚠ 把整段 `hello` 分支**短路掉**（等价于改前"直接丢掉"） */
+            return src.replace(NEEDLE, "    if (kind === 'hello' && false) {\n")
+          })
+          if (mut.dir === undefined) {
+            bad(`SA-x(SA-u) 【负向对拍失去靶子】${mut.why} ⇒ 不按通过处理`)
+          } else {
+            let broke = false
+            let detail = ''
+            try {
+              const mCw = await import(saP2u(join(mut.dir, 'src/server/card-wake.ts')).href)
+              let calls = 0
+              const w = new mCw.CardWake({
+                deliver: () => Promise.resolve({ ok: true }),
+                log: () => {},
+                workspaceIdOf: () => 'ws-u',
+                onHello: () => { calls += 1 },
+              })
+              await w.handleFrame('hello', '{}')
+              broke = calls === 0
+              detail = `onHello 调用 ${calls} 次（应 0）`
+            } catch (e) {
+              broke = true
+              detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+            }
+            if (broke) {
+              ok(`SA-x(SA-u) ✓ 负向对拍：把 \`hello\` 帧丢回"直接 return 0"（= 改前写法）`
+                + ` ⇒ **onHello 一次都没被调**（${detail}）⇒ SA-u 的 ① 档当场不成立 ⇒ SA-u 真长牙`)
+            } else {
+              bad('SA-x(SA-u) 【负向对拍失败】把 `hello` 分支短路之后 `onHello` **仍然被调**'
+                + `（${detail}）⇒ SA-u 测的不是"hello 帧触发对账"这件事`)
             }
           }
         }
