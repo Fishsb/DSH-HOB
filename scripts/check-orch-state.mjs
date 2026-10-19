@@ -5379,6 +5379,203 @@ const orchCode = stripComments(orchSrc)
   }
 }
 
+// ── SC. **量纲不混装 + 累计去重**（2026-10-20 第 3 单）────────────────
+//
+// ⚠ **本组守的是哪两条**（TASK §2 / §3）：
+//   · **SC-a 同屏不混量纲**：分区三档那一行**只放"此刻"的三个数**；
+//     累计值必须与它**分行**，且措辞里明写"累计"；
+//   · **SC-b 累计按 (卡, 执行) 去重**：同一张卡的同一次执行**只计一次**
+//     （改前是"卡数 × 读卡次数"，现场 `22 → 46 → 162 → 192 → 222 → 960` 就是它）。
+//
+// ⚠ ⚠ **为什么必须成断言**：这两个缺陷都是"读数看起来正常、其实在骗人"的类型 ——
+//   `归属判不出 960 个` 会让读的人以为"有 960 张别人的卡在跑"。
+//   ⇒ 光改代码不算修，得有一条**能失败**的判据钉住。
+{
+  const { pathToFileURL: scP2u } = await import('node:url')
+  const { join: scJoin } = await import('node:path')
+  const { mkdtempSync: scMkdt, readFileSync: scRf, writeFileSync: scWf,
+    cpSync: scCpSync, symlinkSync: scLink, rmSync: scRm } = await import('node:fs')
+  const { tmpdir: scTmp } = await import('node:os')
+  /** ⚠ 与 SA/SB 同款：`HOB_SA_ROOT` 可指向另一棵源码树（用来跑"改前必红"）。 */
+  const scRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT
+    : root
+  const scTag = scRoot === root ? '' : `（源码树=${scRoot}）`
+  let scRootTmp
+  try { scRootTmp = scMkdt(scJoin(scTmp(), 'hob-sccheck-')) } catch { scRootTmp = scTmp() }
+  let scWakeMod
+  try {
+    scWakeMod = await import(scP2u(scJoin(scRoot, 'src', 'server', 'card-wake.ts')).href)
+  } catch (e) {
+    bad(`SC 无法加载 card-wake（${String(e?.message ?? e)}）⇒ 量纲判据失去基准（不按通过处理）`)
+  }
+
+  if (scWakeMod !== undefined) {
+    // ══════════════════════════════════════════════════════════════
+    // SC-a · **同屏不混量纲**：分区三档全是"此刻"，累计必须分行且明写"累计"
+    // ══════════════════════════════════════════════════════════════
+    //
+    //   ⚠ 造法：**故意制造量纲差** —— 让"累计"远大于"此刻"（反复 noteOwnerUnknown
+    //     多次同一张卡 ⇒ 去重后累计只 +1；再用**另一张卡**多刷几次让累计长大）。
+    //     ⚠ 更直接：用 `register()` 造 1 条"判不出"（当前=1），
+    //       再用 **N 张不同卡**刷累计（累计=N）⇒ 若分区字段拿了累计值，两者相等；拿了当前值，当前=1。
+    {
+      const dw = new scWakeMod.DispatchWake({
+        deliver: () => Promise.resolve({ ok: true }),
+        now: () => 1792300800000,
+      })
+      /**
+       * ⚠ **造出量纲差**（这是本判据的关键，⛔ 不能只造同值）：
+       *   · **此刻**（`ownerUnknownLive`）：1 条 —— 只让 1 个键处于"判不出"；
+       *   · **累计**（`ownerUnknownCount`）：靠**同一个键反复出现、但每次 executionId 不同**
+       *     把它刷大（那确实是 N 次不同的"判不出"事件），
+       *     而"此刻"仍然只有 **1 条**（同一个卡在等归属）。
+       *   ⚠ 改前的实现会把累计值塞进分区字段 ⇒ 分区读数 = 累计 ⇒ 两者相等 ⇒ 判据红。
+       */
+      dw.register({ sessionId: 'nobody-1', via: 'taskboard-card', cardId: 't-n1' })
+      // 同一张卡、同一次执行刷 10 遍 ⇒ 去重后累计**只 +1**（这也是 SC-b 的口径）
+      for (let i = 0; i < 10; i++) dw.noteOwnerUnknown('t-same', 'sess-same', 'x', 'exec-same')
+      // 同一张卡**重新点火** 5 次 ⇒ 累计 +5（每次都是新的执行）
+      for (let i = 1; i <= 5; i++) dw.noteOwnerUnknown('t-same', 'sess-same', 'x', `exec-re${i}`)
+      const snap = dw.snapshot('ownerA')
+      const cumulative = snap.ownerUnknownCount
+      const current = snap.ownerUnknownRegistered
+      /**
+       * ⚠ 判据（两条都要满足）：
+       *   ① 分区字段 `ownerUnknownRegistered` **必须小于**累计（否则说明它就是累计值）；
+       *   ② 它必须等于"此刻仍在等归属"的条数（= 1）。
+       */
+      const notCumulative = current !== cumulative
+      /** 此刻 = `nobody-1` 那一条 + `t-same` 这一个键（同键多代只算 1 条在等）= 2。 */
+      const currentIsRight = current === 2
+      /** 累计 = 1（register）+ 1（t-same 首次）+ 5（重新点火 5 次）= 7。 */
+      const cumulativeGrew = cumulative === 7
+      if (notCumulative && currentIsRight && cumulativeGrew) {
+        ok('SC-a ✓ **同屏不混量纲**：分区字段 `ownerUnknownRegistered` 是**此刻**（'
+          + `（${current} 个），累计那一档是 ${cumulative} 次`
+          + ' ⇒ 两者**不相等** ⇒ 分区那一行⛔ 没有拿累计值充数'
+          + '（改前两者是同一个值，现场长成 `归属判不出 960 个`）' + scTag)
+      } else {
+        bad('SC-a 【分区三档不许混量纲】不成立'
+          + `：此刻=${current}（应 2）· 累计=${cumulative}（应 7）`
+          + ` · 两者相等=${!notCumulative}`
+          + ' ⇒ 分区那一行把"累计"当成了"此刻"，两种量纲相加（本项目明令禁止）')
+      }
+      // ⚠ 负向对拍：把分区字段改回累计值 ⇒ 本判据必红
+      {
+        const scCp = scCpSync
+        const dir = scMkdt(join(scRootTmp, 'mut-sc-a-'))
+        scCp(scJoin(scRoot, 'src'), scJoin(dir, 'src'), { recursive: true })
+        const mf = scJoin(dir, 'src/server/card-wake.ts')
+        const src = scRf(mf, 'utf8')
+        const GUARD = '    const ownerUnknownRegistered = this.ownerUnknownLive.size'
+        if (!src.includes(GUARD)) {
+          bad('SC-a(反证) 【失去靶子】找不到分区字段那行原文 ⇒ 不按通过处理')
+        } else {
+          scWf(mf, src.replace(GUARD,
+            '    const ownerUnknownRegistered = this.state.ownerUnknownCount /* 变异：拿累计充此刻 */'), 'utf8')
+          try {
+            
+            scLink(scJoin(scRoot, 'node_modules'), scJoin(dir, 'node_modules'), 'dir')
+          } catch { /* 已有 */ }
+          try {
+            const mW = await import(scP2u(scJoin(dir, 'src/server/card-wake.ts')).href)
+            const dwM = new mW.DispatchWake({ deliver: () => Promise.resolve({ ok: true }),
+              now: () => 1792300800000 })
+            dwM.register({ sessionId: 'nobody-1', via: 'taskboard-card', cardId: 't-n1' })
+            for (let i = 0; i < 10; i++) dwM.noteOwnerUnknown('t-same', 'sess-same', 'x', 'exec-same')
+            for (let i = 1; i <= 5; i++) dwM.noteOwnerUnknown('t-same', 'sess-same', 'x', `exec-re${i}`)
+            const sM = dwM.snapshot('ownerA')
+            if (sM.ownerUnknownRegistered === sM.ownerUnknownCount) {
+              ok(`SC-a(反证) ✓ 负向对拍：把分区字段改回累计值 ⇒ **两者相等**`
+                + `（${sM.ownerUnknownRegistered}）⇒ SC-a 真长牙`)
+            } else {
+              bad('SC-a(反证) 【负向对拍失败】改回累计后两者仍不相等'
+                + `（此刻=${sM.ownerUnknownRegistered} 累计=${sM.ownerUnknownCount}）`
+                + ' ⇒ SC-a 测的不是"量纲分离"')
+            }
+          } catch (e) {
+            bad(`SC-a(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+          }
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // SC-b · **累计按 (卡, 执行) 去重**（钉 **960**）
+    // ══════════════════════════════════════════════════════════════
+    //
+    //   ⚠ 病灶（实证）：`cardsOf()` **每读一次卡面**，就对**每一张别人的卡** +
+    //     ⇒ 累计 = 卡数 × 读卡次数。现场 40 分钟 `22 → 46 → 162 → 192 → 222 → 960`。
+    //   ⚠ 判据：同一 `(cardId, executionId)` 刷 N 次 ⇒ 累计**只 +1**；
+    //     `executionId` 变了（重新点火）⇒ **再 +1**（那确实是一次新的判不出）。
+    {
+      const dw = new scWakeMod.DispatchWake({
+        deliver: () => Promise.resolve({ ok: true }),
+        now: () => 1792300800000,
+      })
+      // 同一张卡、同一次执行 ⇒ 刷 10 次
+      for (let i = 0; i < 10; i++) dw.noteOwnerUnknown('t-same', 'sess-1', '重复刷', 'exec-A')
+      const afterRepeat = dw.snapshot('ownerA').ownerUnknownCount
+      // 同一次执行但**另一张卡** ⇒ 应当 +1（不同组合）
+      dw.noteOwnerUnknown('t-other', 'sess-2', '另一张卡', 'exec-B')
+      const afterOther = dw.snapshot('ownerA').ownerUnknownCount
+      // 同一张卡但**重新点火**（executionId 变了）⇒ 应当 +1
+      dw.noteOwnerUnknown('t-same', 'sess-1', '重新点火', 'exec-A2')
+      const afterRefire = dw.snapshot('ownerA').ownerUnknownCount
+      const deduped = afterRepeat === 1
+      const distinctCounts = afterOther === 2
+      const refireCounts = afterRefire === 3
+      if (deduped && distinctCounts && refireCounts) {
+        ok('SC-b ✓ **累计按 (卡, 执行) 去重**（钉 960）：同一 `(卡, 执行)` 刷 **10 次** ⇒ 累计 **只 +1**'
+          + `（${afterRepeat}）；另一张卡 ⇒ +1（${afterOther}）；`
+          + `同一张卡**重新点火**（executionId 变了）⇒ 再 +1（${afterRefire}）`
+          + ' ⇒ 语义是"**真正判不出归属的(卡,执行)组合数**"，⛔ 不是"读卡次数 × 卡数"' + scTag)
+      } else {
+        bad('SC-b 【累计必须按 (卡,执行) 去重】不成立'
+          + `：刷 10 次后=${afterRepeat}（应 1）· 另一张卡后=${afterOther}（应 2）`
+          + ` · 重新点火后=${afterRefire}（应 3）`
+          + ' ⇒ 那是**重复计数**（读 N 次 = N × 卡数），现场会涨到 960 这种数')
+      }
+      // ⚠ 负向对拍：把去重摘掉 ⇒ 刷 10 次应当涨到 10
+      {
+        const scCp = scCpSync
+        const dir = scMkdt(join(scRootTmp, 'mut-sc-b-'))
+        scCp(scJoin(scRoot, 'src'), scJoin(dir, 'src'), { recursive: true })
+        const mf = scJoin(dir, 'src/server/card-wake.ts')
+        const src = scRf(mf, 'utf8')
+        const GUARD = '    if (this.ownerUnknownSeen.has(key)) {'
+        if (!src.includes(GUARD)) {
+          bad('SC-b(反证) 【失去靶子】找不到去重那行原文 ⇒ 不按通过处理')
+        } else {
+          scWf(mf, src.replace(GUARD, '    if (false) { /* 变异：摘掉去重 */'), 'utf8')
+          try {
+            
+            scLink(scJoin(scRoot, 'node_modules'), scJoin(dir, 'node_modules'), 'dir')
+          } catch { /* 已有 */ }
+          try {
+            const mW = await import(scP2u(scJoin(dir, 'src/server/card-wake.ts')).href)
+            const dwM = new mW.DispatchWake({ deliver: () => Promise.resolve({ ok: true }),
+              now: () => 1792300800000 })
+            for (let i = 0; i < 10; i++) dwM.noteOwnerUnknown('t-same', 'sess-1', 'x', 'exec-A')
+            const n = dwM.snapshot('ownerA').ownerUnknownCount
+            if (n === 10) {
+              ok(`SC-b(反证) ✓ 负向对拍：摘掉去重 ⇒ 刷 10 次**涨到 ${n}**（改前的重复计数形态）`
+                + ' ⇒ SC-b 真长牙')
+            } else {
+              bad(`SC-b(反证) 【负向对拍失败】摘掉去重后刷 10 次得 ${n}（应 10）`
+                + ' ⇒ SC-b 测的不是去重')
+            }
+          } catch (e) {
+            bad(`SC-b(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+          }
+        }
+      }
+    }
+  }
+  try { scRm(scRootTmp, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+}
+
 // ── 输出 ───────────────────────────────────────────────────────────────
 
 if (note.length > 0) console.log(note.join('\n'))

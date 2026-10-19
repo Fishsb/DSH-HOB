@@ -1112,15 +1112,41 @@ export interface DispatchWakeState {
   /** 最近一次按推送登记失败的可读原话（⛔ 不许静默）。 */
   pushRegisterWhy?: string
   /**
-   * ⚠⚠ **「判不出归属 ⇒ 没登记」的独立一档**（`I-3` 末段）。
+   * ⚠⚠ **「判不出归属 ⇒ 没登记」的独立一档**（`I-3` 末段）—— **累计事件计数**。
    *
    * ⚠ 判据：`register()` 收到的记录**没有 owner** ⇒ 不登记，记本档 + 可读话。
    * ⚠ ⛔ **不许与"没有卡在跑 / 没有会话在跑"混成一个计数**（本项目既有纪律）：
    *   那一个数说的是"确实没人在跑"，本档说的是"有人在跑，但我不知道它归谁"。
+   *
+   * ── ⚠⚠ **量纲：这是"累计到今天"，⛔ 不是"此刻有几条"**（2026-10-20 第 3 单修正）──
+   *   ⚠ 它曾经被当成"归属判不出的**登记数**"塞进分区三档那一行（`我的 / 判不出 / 他人`），
+   *     **而它其实是累计** ⇒ 那一行混装了两种量纲（现场读到 `归属判不出 960 个`）。
+   *   ⇒ 现在**分区那一路只认 `ownerUnknownRegistered`（当前登记数）**；
+   *     本字段只出现在"累计"那一行，并**在字段名与措辞上双双标"累计"**。
+   *   ⚠ ⛔ 谁再把本字段塞进"覆盖全部登记"的判据，`SB-4` 会当场红。
    */
   ownerUnknownCount: number
   /** 最近一次"判不出归属"的可读原话（⛔ 不许静默）。 */
   ownerUnknownWhy?: string
+  /**
+   * ── ⚠⚠ **上面那个累计值的"去重键集"**（2026-10-20 第 3 单 · 修 960 重复计数）──
+   *
+   * ⚠ **960 是怎么来的**（实证见报告 §3）：
+   *   `cardsOf()` 每被调用**一次**，就会对看板上**每一张"不是我建的"卡**各调一次
+   *   `noteOwnerUnknown` ⇒ 累计数 = **卡数 × 读卡次数**。
+   *   实测：12 张卡读 4 次 ⇒ `48`（12/24/36/48 每轮 +12）。
+   *   ⇒ 那不是"有 960 张判不出归属的卡"，而是**同一批卡被反复计数 80 遍**。
+   *
+   * ⚠ 但**不能简单去掉**：它回答的是"I-3 这条准入门拦下过多少次"（有诊断价值）。
+   *   ⇒ 现在改成**按 (cardId, executionId) 去重**累计：同一张卡的**同一次执行**
+   *     只计一次；重新点火（`executionId` 变了）才再计一次。
+   *   ⇒ 语义从"读卡次数 × 卡数"变成"**真正被判不出归属的(卡,执行)组合数**"。
+   */
+  /**
+   * ⚠ **`ownerUnknownCount` 的口径说明**（随读数一起渲染，⛔ 不许只写在注释里）：
+   * 它是"累计，按 (卡, 执行) 去重"—— 读的人必须能当场知道这件事。
+   */
+  ownerUnknownBasis?: string
   /**
    * ⚠⚠ **「有会话跑完、但判不出该回给谁 / 没送到」的独立一档**（`I-10`：错投 ≡ 漏投）。
    *
@@ -1194,6 +1220,29 @@ export class DispatchWake {
   private readonly ownedPushedOk = new Map<string, number>()
   private readonly ownedPushIssues = new Map<string, number>()
   private readonly ownedUndeliverable = new Map<string, number>()
+  /**
+   * ⚠⚠ **判不出归属的累计去重键集**（2026-10-20 第 3 单 · 修 **960**）。
+   *
+   * 键 = `` `${cardId}\u0000${executionId ?? '(无执行id)'}` ``。
+   * ⚠ 与 `wake.delivered` 的 `executionId` 去重**同族纪律**：同一张卡的同一次执行只计一次；
+   *   重新点火（`executionId` 变了）⇒ 应当再计一次（那确实是一次新的"判不出"）。
+   * ⚠ 上限与 `SEEN_LIMIT` 同款（丢最旧），⛔ 不让它无限涨。
+   */
+  private readonly ownerUnknownSeen = new Set<string>()
+  /**
+   * ── ⚠⚠ **"判不出归属"的*当前*集合**（2026-10-20 第 3 单 · 修量纲混装）──────────
+   *
+   * ⚠ **为什么需要它**：分区三档承诺"互斥且覆盖全部登记"，而这一档的另外两个
+   *   （`mine.registered` / `othersOnly`）都是**当前条数**。
+   *   改前这一档直接拿 `ownerUnknownCount`（**累计**）来填 ⇒ 量纲混装
+   *   （现场：`归属判不出 960 个`，而我的登记只有 1 个）。
+   *
+   * ⚠ 语义：**此刻仍处于"判不出归属"的 (卡, 执行) 组合**。
+   *   · 加：`noteOwnerUnknown` 首次见到某个键；
+   *   · 减：`register()` 成功登记了同一个 `sessionId`（说明归属后来判出来了）。
+   * ⚠ ⛔ 不许把它当成"累计"用（累计是 `ownerUnknownCount` / `ownerUnknownSeen`）。
+   */
+  private readonly ownerUnknownLive = new Map<string, string>()
   /** 逐 owner 的"最近一次可读原话"（⛔ 不许把别人的原话串给读的人）。 */
   private readonly whyByOwner = new Map<string, { undecidable?: string; push?: string; undeliverable?: string }>()
   private readonly opts: DispatchWakeOpts
@@ -1257,8 +1306,25 @@ export class DispatchWake {
     const owned = self === undefined ? [] : all.filter((s) => s.owner === self)
     const pendingOf = (rows: DispatchedSession[]): number =>
       rows.filter((s) => s.sawRunning && !s.reported).length
-    /** 判不出归属的（`owner` 缺失 —— 这类记录**根本不会进 sessions**，见 `register`）。 */
-    const ownerUnknownRegistered = this.state.ownerUnknownCount
+    /**
+     * ── ⚠⚠ **分区三档里的"判不出"= 当前登记数**（2026-10-20 第 3 单 · 修量纲混装）──────
+     *
+     * ⚠ 改前这一行是 `const ownerUnknownRegistered = this.state.ownerUnknownCount`
+     *   —— 把**累计事件计数**塞进了**分区字段**。而 `SA-g` 的"覆盖全部登记"判据
+     *   把三档相加当作"全部登记数" ⇒ **两种量纲相加**。
+     *   现场读数因此长成 `我的登记 1 个 · 我的在跑 0 个 · 归属判不出 960 个 · 他人的 1 个`
+     *   —— 前两个与最后一个是"此刻有几条"，960 是"累计发生过多少次"，
+     *   **并排还宣称是分区**（本项目明令禁止的"两种原因说成同一句话"）。
+     *
+     * ⚠ 现在：
+     *   · **本字段（`ownerUnknownRegistered`）= 当前**"判不出归属"的登记数；
+     *   · 累计值仍在 `ownerUnknownCount`，**只出现在"累计"那一行**，并带 `ownerUnknownBasis`。
+     *
+     * ⚠ "判不出归属"当前有几条怎么算？这类记录**根本不会进 `sessions`**（`register` 直接拒），
+     *   所以它没有"当前条数"的自然载体。⇒ 现在**显式维护一个集合**
+     *   （`ownerUnknownLive`：键 = (卡, 执行)），**只在"已知它不再跑"时移出**。
+     */
+    const ownerUnknownRegistered = this.ownerUnknownLive.size
     /** 他人的：有 owner、但不是我的 ⇒ **只给条数**。 */
     const othersOnly = self === undefined
       ? all.filter((s) => typeof s.owner === 'string' && s.owner !== '').length
@@ -1278,7 +1344,20 @@ export class DispatchWake {
       undecidableCount: this.ownedUndecidable.get(self ?? '') ?? 0,
       pushedRegisterOk: countOf(this.ownedPushedOk),
       pushRegisterIssues: this.ownedPushIssues.get(self ?? '') ?? 0,
-      ownerUnknownCount: ownerUnknownRegistered,
+      /**
+       * ── ⚠⚠ **这里必须给"累计"，⛔ 不许给"此刻"**（2026-10-20 第 3 单 · 量纲分离）──
+       *
+       * ⚠ 改前这一行是 `ownerUnknownCount: ownerUnknownRegistered` ——
+       *   把**分区字段（此刻）**的值喂给了**累计字段** ⇒ 两个字段恒等
+       *   ⇒ 渲染层无论怎么改，读到的"累计"都只是"此刻"，
+       *   而"此刻"早些时候又被喂成了累计 ⇒ **两者永远相等，量纲彻底糊在一起**。
+       *   ⚠ 这也是我这次先改渲染、再改字段时 **SC-a 一直红**的直接原因
+       *     （实证：`此刻=7 · 累计=7 · 两者相等=true`）。
+       *
+       * ⚠ 现在：累计 = `this.state.ownerUnknownCount`（**只增不减**的事件计数，
+       *   按 `(卡, 执行)` 去重）；此刻 = `ownerUnknownRegistered`（分区字段）。
+       */
+      ownerUnknownCount: this.state.ownerUnknownCount,
       undeliverableCount: countOf(this.ownedUndeliverable),
       mine: self === undefined
         ? undefined
@@ -1319,14 +1398,30 @@ export class DispatchWake {
        *   （`ownerUnknownCount` 是**跨 owner 的**"判不出归属"总数 —— 它不是"某个人的数"，
        *    因为这条记录**根本不属于任何人**；读数侧据它报"归属判不出"那一档）。
        */
+      /**
+       * ⚠ 与 `noteOwnerUnknown` 同一口径（第 3 单）：**累计按 (会话, ·) 去重**、
+       *   **当前集合 `ownerUnknownLive` 单独维护**（分区那一档要用此刻的条数）。
+       */
+      const rkey = `${'\u0000register\u0000'}${id}`
+      const firstTime = !this.ownerUnknownSeen.has(rkey)
+      if (firstTime) this.ownerUnknownSeen.add(rkey)
+      this.ownerUnknownLive.set(rkey, id)
       this.state = {
         ...this.state,
-        ownerUnknownCount: this.state.ownerUnknownCount + 1,
+        ...(firstTime ? { ownerUnknownCount: this.state.ownerUnknownCount + 1 } : {}),
+        ownerUnknownBasis: '累计，按 (卡 id, 执行 id) 去重 —— ⛔ 不是"此刻有几张判不出归属的卡"',
         ownerUnknownWhy: `会话 ${id} 的归属**判不出**（没有 owner）⇒ **不登记**：`
           + '它跑完也不会叫醒任何人（⛔ 这不等于"没有会话在跑"，也⛔ 不是"它没跑完"）',
       }
       this.say(`[dispatch-wake] ${this.state.ownerUnknownWhy}`)
       return
+    }
+    /**
+     * ⚠ **归属后来判出来了 ⇒ 从"当前判不出"集合里移出**（分区那一档必须跟着降）。
+     *   ⚠ 按 `sessionId` 扫它（键是 (卡, 执行)，与 id 不同构，⛔ 不许硬套键）。
+     */
+    for (const [k, sid] of this.ownerUnknownLive) {
+      if (sid === id) this.ownerUnknownLive.delete(k)
     }
     const have = this.sessions.get(id)
     if (have !== undefined) {
@@ -1372,10 +1467,56 @@ export class DispatchWake {
    *     ⇒ 这不是失败、也不是"没有卡在跑"，而是"**这张卡的回执不该给我**"。
    * ⚠ ⛔ 不许与"没有卡在跑 / 没有会话在跑"合并计数（本项目既有纪律）。
    */
-  noteOwnerUnknown(cardId: string, sessionId: string, why: string): void {
+  noteOwnerUnknown(cardId: string, sessionId: string, why: string, executionId?: string): void {
+    /**
+     * ── ⚠⚠ **按 `(cardId, executionId)` 去重**（2026-10-20 第 3 单 · 修 **960**）──────
+     *
+     * ⚠ 改前：每调一次就 `ownerUnknownCount + 1`，而 `cardsOf()` **每读一次卡面**
+     *   就对**每一张别人的卡**调一次 ⇒ 累计 = **卡数 × 读卡次数**。
+     *   现场实证（`tmp/probe-960.mjs`，12 张卡）：
+     *     `第2次→12 · 第3次→24 · 第4次→36 · 第5次→48`  ← 每读一次 +12，纯重复计数。
+     *   ⇒ 读数 `归属判不出 960 个` 让人以为"有 960 张别人的卡在跑"，**那是误导读数**。
+     *
+     * ⚠ 现在：同一张卡的**同一次执行**只计一次；`executionId` 变了（重新点火）再计。
+     *   ⇒ 语义 = "**真正被判不出归属的 (卡, 执行) 组合数**"（累计），⛔ 不是"读卡次数"。
+     * ⚠ 去重**只影响计数**，不影响可读话（`ownerUnknownWhy` 每次仍然更新 —— 那句是诊断）。
+     */
+    const key = `${cardId}\u0000${executionId ?? '(无执行id)'}`
+    if (this.ownerUnknownSeen.has(key)) {
+      /** ⚠ 重复计数 ⇒ 只刷新可读话，⛔ 不加数（这就是"同一次点火只计一次"）。 */
+      this.state = {
+        ...this.state,
+        ownerUnknownWhy: `卡 ${cardId}（执行会话 ${sessionId}）**归属判不出** ⇒ **不登记**：${why}`
+          + ' —— ⛔ 这不等于"没有卡在跑"，也⛔ 不是"它没跑完"；'
+          + '该卡的回执只该回到它自己的 owner',
+      }
+      return
+    }
+    this.ownerUnknownSeen.add(key)
+    /**
+     * ⚠⚠ **"此刻"按卡去重，⛔ 不按 (卡, 执行)** —— 这是"当前"与"累计"的**关键区别**：
+     *   · **累计**（`ownerUnknownCount`）按 `(卡, 执行)` 去重：重新点火是一次**新的**判不出事件；
+     *   · **当前**（`ownerUnknownLive`）按**卡**去重：同一张卡哪怕点过 5 次火，
+     *     **此刻**它在等归属这件事仍然只是 **1 条**。
+     *   ⚠ 若这里也按 `(卡,执行)` 记，重新点火就把"此刻"越刷越大 ——
+     *     那等于把累计值换个名字塞回分区字段（正是本单要修的量纲混装）。
+     */
+    for (const [k, sid] of this.ownerUnknownLive) {
+      if (sid === sessionId) this.ownerUnknownLive.delete(k)
+    }
+    this.ownerUnknownLive.set(`card\u0000${cardId}`, sessionId)
+    if (this.ownerUnknownSeen.size > SEEN_LIMIT) {
+      const drop = this.ownerUnknownSeen.size - SEEN_LIMIT
+      let i = 0
+      for (const k of this.ownerUnknownSeen) {
+        if (i++ >= drop) break
+        this.ownerUnknownSeen.delete(k)
+      }
+    }
     this.state = {
       ...this.state,
       ownerUnknownCount: this.state.ownerUnknownCount + 1,
+      ownerUnknownBasis: '累计，按 (卡 id, 执行 id) 去重 —— ⛔ 不是"此刻有几张判不出归属的卡"',
       ownerUnknownWhy: `卡 ${cardId}（执行会话 ${sessionId}）**归属判不出** ⇒ **不登记**：${why}`
         + ' —— ⛔ 这不等于"没有卡在跑"，也⛔ 不是"它没跑完"；'
         + '该卡的回执只该回到它自己的 owner',

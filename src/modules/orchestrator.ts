@@ -773,6 +773,8 @@ export function apply(ctx: any): void {
               cardOwner === undefined
                 ? '按卡现读回来没有建卡会话（`createdBy.sessionId` 空）'
                 : `这张卡属于 ${cardOwner}，而当前看这个面的是 ${String(subscriber ?? '(判不出)')}`,
+              // ⚠ 传执行 id ⇒ `noteOwnerUnknown` 才能按 (卡, 执行) 去重（修 960 的一半）
+              r.executionId,
             )
             return
           }
@@ -2006,6 +2008,7 @@ export function apply(ctx: any): void {
               owner === undefined
                 ? '这张卡没有记录建卡会话（`createdBy.sessionId` 读不到），本会话也没派过它的执行会话'
                 : `这张卡的归属是 ${owner}（不是本会话）`,
+              c.executionId,
             )
             continue
           }
@@ -2955,6 +2958,21 @@ export function createHobOrchTools(orch: HobOrchestrator): {
            * ⚠ `selfUndecidable`（判不出"我"是谁）⇒ **只报后两档**，
            *   ⛔ **不许说"0 个"** —— 那是把"不知道我是谁"说成"我没有登记"。
            */
+          /**
+           * ── ⚠⚠ **这一行只放"此刻"三个数**（2026-10-20 第 3 单 · 修量纲混装）────────
+           *
+           * ⚠ 改前这一行是：
+           *   `我的登记 1 个 · 我的在跑 0 个 · **归属判不出 960 个** · **他人的 1 个**`
+           *   —— 前两个与最后一个是**当前登记数**，`960` 是**累计事件计数**
+           *   （`cardsOf()` 每读一次卡面就给每张"不是我的"卡 +1）。
+           *   **两种量纲并排，还宣称是分区** ⇒ 本项目明令禁止的"两种原因说成同一句话"。
+           *   而且它读起来像"有 960 张别人的卡在跑"——**误导读数**（`R26` 名不副实同族）。
+           *
+           * ⚠ 现在：
+           *   · **本行 = 分区三档（全部是"此刻"）**：我的登记 / 我的在跑 / 归属判不出 / 他人的；
+           *   · **累计值单独一行**，且**明写"累计"** + 口径（`ownerUnknownBasis`）。
+           * ⚠ 分区三档仍承诺"互斥且覆盖全部登记"（`SA-g` 钉的），⛔ 没有放宽。
+           */
           const selfPart = d.selfUndecidable === true
             ? ' · ⚠ **我的登记：判不出（本次调用没带会话身份）**'
             : ` · 我的登记 ${d.mine?.registered ?? 0} 个 · 我的在跑 ${d.mine?.pending ?? 0} 个`
@@ -2984,9 +3002,16 @@ export function createHobOrchTools(orch: HobOrchestrator): {
            * ⚠ ⛔ 两档**不许合并**成一个计数（本项目既有纪律）。
            */
           if (d.ownerUnknownCount > 0) {
-            lines.push(`  ↳ ⚠ **判不出归属 ⇒ 未登记 ${d.ownerUnknownCount} 次**`
-              + (d.ownerUnknownWhy === undefined ? '' : `（${d.ownerUnknownWhy}）`))
+            /**
+             * ── ⚠⚠ **累计单独一行，且必须与上面那行"此刻"分开**（第 3 单 · 修量纲混装）──
+             *   ⚠ 措辞里**必须出现"累计"二字** —— 渲染面每一行都要能回答
+             *     "这个数是**此刻**的还是**累计到今天**的"。
+             */
+            lines.push(`  ↳ ⚠ **累计**：判不出归属 ⇒ 未登记 **${d.ownerUnknownCount} 次**`
+              + `（${d.ownerUnknownBasis ?? '累计事件计数，⛔ 不是此刻的条数'}）`)
+            if (d.ownerUnknownWhy !== undefined) lines.push(`  ↳ ${d.ownerUnknownWhy}`)
             lines.push('  ↳ ⛔ 这**不是**"没有卡在跑"：卡在跑，只是**判不出它归谁** ⇒ 它的回执不该给我。')
+            lines.push('  ↳ ⚠ 上面那行"归属判不出 N 个"是**此刻**；本行是**累计**。两者量纲不同，⛔ 不可相加。')
           }
           if (d.undeliverableCount > 0) {
             lines.push(`  ↳ ⚠⚠ **跑完了却没送到（漏投）${d.undeliverableCount} 次**`
