@@ -2655,6 +2655,194 @@ const orchCode = stripComments(orchSrc)
           bad(`P 叫醒不依赖事先浏览：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
         }
       }
+
+      // ── Q. **看板地址必须现取**（2026-10-19 重启实测：「接不上」不会自愈）────────────
+      //
+      // ⚠ **它守的是哪条缺陷**（重启后三次读数的实测，不是推断）：
+      //   宿主 `12:23:38` 重启；`12:36:27` / `12:37:17` / `12:45:57` 三次 `hob_orch_status`
+      //   都报同一句「拿不到看板地址（webServer 不可用）⇒ 叫醒面没接上」。
+      //   ⇒ 那不是"取得太早"，是**只取了一次**：`CardWake` 的 `origin` 由 orchestrator 在
+      //     `apply()` 那一刻**立即求值**（IIFE）⇒ 那一刻 `webServer` 还没 bind ⇒ `undefined`
+      //     **永久**；此后 `startWakeIfNeeded` 又因为 `conn === 'broken'` 不再重来
+      //     ⇒ **结构上不可能自愈**（`E-01` 的同族：另一个模块里同一个坑）。
+      //
+      // ⚠ ⚠ **判定四件，缺一条都算没修**（E-112：只看退出码不够，要看可读断言）：
+      //   · **Q-a 正向 · 现取**：`origin` 给**函数**（先返回 undefined，模拟"还没就绪"）
+      //     ⇒ 先报可读的"拿不到地址"；然后让函数**开始返回地址** ⇒ **再订阅一次就接上**；
+      //   · **Q-b 反向 · 不自欺**：一直取不到 ⇒ **每次都给可读话**，且写清"能否自愈 / 什么才叫真出问题"；
+      //   · **Q-c 接线（对 orchestrator）**：传进去的 `origin` **必须是函数**且含 `getOrigin()`；
+      //   · **Q-d 负向对拍（变异）**：把 `start()` 里"现取"改回"只认字符串" ⇒ **Q-a 当场不成立**。
+      {
+        try {
+          const wakeMod = await import(pathToFileURL(join(root, 'src', 'server', 'card-wake.ts')).href)
+
+          /** 一个**必定拒连**的假 fetch（不挂网络、立刻失败，且失败原因可与"取不到地址"分辨）。 */
+          const refusedFetch = async () => { throw new Error('probe: connection refused') }
+          /** 等条件成立（轮询 ≤ 800ms）；返回是否成立。 */
+          const until = async (fn, ms = 800) => {
+            const t0 = Date.now()
+            while (Date.now() - t0 < ms) {
+              if (fn()) return true
+              await new Promise((r) => setTimeout(r, 10))
+            }
+            return fn()
+          }
+
+          // ── Q-a ⭐ 正向：**地址后到 ⇒ 下一次订阅就接上**（本件的核心判据）────────
+          {
+            let originNow
+            const cw = new wakeMod.CardWake({
+              origin: () => originNow,                      // ⚠ 函数 = 现取（被测形态）
+              workspaceIdOf: () => 'ws-abc',
+              deliver: () => Promise.resolve({ ok: true }),
+              now: () => 1792300800000,
+            })
+            cw.subscribe('session-hob')
+            cw.startWakeIfNeeded(refusedFetch)
+            const s1 = cw.snapshot()
+            const saidUnavailable = typeof s1.note === 'string' && s1.note.includes('拿不到看板地址')
+            const noUrl1 = s1.url === undefined
+
+            originNow = 'http://127.0.0.1:1'                 // 宿主 web 服务就绪了
+            cw.startWakeIfNeeded(refusedFetch)               // ⚠ 再订阅一次（= 再读一次状态）
+            const gotUrl = await until(() => cw.snapshot().url !== undefined)
+            const s2 = cw.snapshot()
+            /**
+             * ⚠ 接上的判据 = **url 出现了**（= 真的用上了后到的地址）。
+             *   ⛔ 不能拿 `conn === 'live'` 当判据：本组用拒连的假 fetch ⇒ 必然 `broken`，
+             *     但那个 `broken` 的**原因**已经换成"连接失败"（不是"取不到地址"）——
+             *     两者可分辨，正是本件要求的可读判据。
+             */
+            const recovered = gotUrl && typeof s2.url === 'string' && s2.url.includes('127.0.0.1:1')
+            const noteIsNotUnavailable = typeof s2.note !== 'string' || !s2.note.includes('拿不到看板地址')
+            cw.stop()
+            if (saidUnavailable && noUrl1 && recovered && noteIsNotUnavailable) {
+              ok('Q-a ✓ 正向：看板地址**后到** ⇒ 再订阅一次就**接上**'
+                + `（起初报"拿不到看板地址" ⇒ 地址就绪后 url=${s2.url}）`
+                + ' ⇒ 重启后**能自愈**，⛔ 不是永久接不上')
+            } else {
+              bad('Q-a 【地址后到必须能接上】不成立'
+                + `：先报"拿不到地址"=${saidUnavailable} · 初次无 url=${noUrl1}`
+                + ` · 地址就绪后再订阅 有 url=${recovered} · 仍报拿不到=${!noteIsNotUnavailable}`)
+            }
+          }
+
+          // ── Q-b ⭐ 反向：**一直取不到 ⇒ 每次都说清楚**（⛔ 不许静默 / ⛔ 不许当空）──
+          {
+            const cw = new wakeMod.CardWake({
+              origin: () => undefined,                      // 永远取不到
+              workspaceIdOf: () => 'ws-abc',
+              deliver: () => Promise.resolve({ ok: true }),
+              now: () => 1792300800000,
+            })
+            cw.subscribe('session-hob')
+            cw.startWakeIfNeeded(refusedFetch)
+            const n1 = cw.snapshot().note
+            cw.startWakeIfNeeded(refusedFetch)              // 再试一次
+            const n2 = cw.snapshot().note
+            cw.stop()
+            const said = (n) => typeof n === 'string' && n.includes('拿不到看板地址')
+            /**
+             * ⚠ 判据三件：
+             *   ① 每次都有一句可读话（⛔ 不静默）；
+             *   ② 话里写清**这不等于"没有卡跑完"**（`423b536` 立的可读行不许退化）；
+             *   ③ 话里写清**能不能自愈** ⇒ 读者才分得出"等一下"与"宿主没起 web 服务"。
+             */
+            const text2 = typeof n2 === 'string' ? n2 : (typeof n1 === 'string' ? n1 : '')
+            const saysNotNoCard = text2.includes('不代表') || text2.includes('不等于')
+            const saysSelfHeal = text2.includes('自愈')
+            if (said(n1) && said(n2) && saysNotNoCard && saysSelfHeal) {
+              ok('Q-b ✓ 反向：一直取不到地址 ⇒ **每次都给可读话**，'
+                + '且明写"⛔ 不等于没有卡跑完"与"**会自愈·何为真出问题**"'
+                + '（⛔ 没有静默，⛔ 也没有伪装成"没有卡在跑"）')
+            } else {
+              bad('Q-b 【取不到地址必须可读且说清能否自愈】缺项'
+                + `：首次有可读话=${said(n1)} · 再次有=${said(n2)}`
+                + ` · 写了不等于没有卡=${saysNotNoCard} · 写了会自愈=${saysSelfHeal}`)
+            }
+          }
+
+          // ── Q-c ⭐ **接线必须走现取**（orchestrator 侧，⛔ 不许退回快照）─────────
+          {
+            const orchSrc = readFileSync(join(root, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+            const callSite = orchSrc.indexOf('new CardWake({')
+            if (callSite < 0) {
+              bad('Q-c 【失去靶子】`orchestrator.ts` 里找不到 `new CardWake({` ⇒ 本组不按通过处理')
+            } else {
+              const seg = orchSrc.slice(callSite, callSite + 2400)
+              const m = seg.match(/origin:\s*([\s\S]{0,700}?),\s*\n\s*workspaceIdOf:/)
+              const expr = m === undefined ? '' : m[1].trim()
+              const flat = expr.replace(/\s+/g, ' ')
+              /** ⚠ 必须是函数形态（`() => …` / `function`），⛔ 不许是立即求值的 IIFE。 */
+              const isFunction = /^(\(\)\s*=>|function\b|async\s*\(\)\s*=>)/.test(flat)
+              const isIIFE = /^\(\s*\(\)\s*=>[\s\S]*\)\s*\(\s*\)$/.test(flat)
+              const callsGetOrigin = expr.includes('getOrigin()')
+              if (isFunction && callsGetOrigin && !isIIFE) {
+                ok('Q-c ✓ 接线：`orchestrator.ts` 传给 `CardWake` 的 `origin` 是**现取函数**'
+                  + '（内含 `getOrigin()`）⇒ 地址不会被 `apply()` 那一刻定死')
+              } else {
+                bad('Q-c 【origin 必须是现取函数】接线退回了快照'
+                  + `：是函数=${isFunction} · 立即求值(IIFE)=${isIIFE}`
+                  + ` · 含 getOrigin=${callsGetOrigin} · 实际=${flat.slice(0, 140)}`)
+              }
+            }
+          }
+
+          // ── Q-d ⭐ 负向对拍：**把 origin 变异回"求值一次"** ⇒ Q-a 当场不成立 ────────
+          {
+            const srcPath = join(root, 'src', 'server', 'card-wake.ts')
+            const original = readFileSync(srcPath, 'utf8')
+            const GUARD = "    const origin = typeof this.opts.origin === 'function' ? this.opts.origin() : this.opts.origin"
+            if (!original.includes(GUARD)) {
+              bad('Q-d 【负向对拍失去靶子】在 `card-wake.ts` 的 `start()` 里找不到"现取地址"那一行原文'
+                + ' ⇒ 本判据已对不上实现，不按通过处理')
+            } else {
+              const mutRoot = mkdtempSync(join(tmpdir(), 'hob-qcheck-'))
+              const mutPath = join(mutRoot, 'card-wake.ts')
+              // 变异成"只认字符串（= 快照语义）"：函数一律当 undefined
+              writeFileSync(mutPath, original.replace(GUARD,
+                "    const origin = typeof this.opts.origin === 'string' ? this.opts.origin : undefined"), 'utf8')
+              const mutant = await import(pathToFileURL(mutPath).href)
+              const cwMut = new mutant.CardWake({
+                origin: () => 'http://127.0.0.1:1',         // ⚠ 即便地址一开始就在
+                workspaceIdOf: () => 'ws-abc',
+                deliver: () => Promise.resolve({ ok: true }),
+                now: () => 1792300800000,
+              })
+              cwMut.subscribe('session-hob')
+              cwMut.startWakeIfNeeded(refusedFetch)
+              cwMut.startWakeIfNeeded(refusedFetch)
+              const sMut = cwMut.snapshot()
+              cwMut.stop()
+              const mutantStillUnavailable = typeof sMut.note === 'string' && sMut.note.includes('拿不到看板地址')
+              const mutantNoUrl = sMut.url === undefined
+              // 原实现同一场景 ⇒ 一定有 url（这就是 Q-a 的判据）
+              const cwOk = new wakeMod.CardWake({
+                origin: () => 'http://127.0.0.1:1',
+                workspaceIdOf: () => 'ws-abc',
+                deliver: () => Promise.resolve({ ok: true }),
+                now: () => 1792300800000,
+              })
+              cwOk.subscribe('session-hob')
+              cwOk.startWakeIfNeeded(refusedFetch)
+              const realHasUrl = typeof cwOk.snapshot().url === 'string'
+              cwOk.stop()
+              if (mutantStillUnavailable && mutantNoUrl && realHasUrl) {
+                ok('Q-d ✓ 负向对拍：把 `origin` 变异回**快照语义**（函数一律当 undefined）'
+                  + ' ⇒ 即便地址一开始就在，也叫不出去（仍报"拿不到看板地址"· url=无）'
+                  + ' ⇒ Q-a 测的确实是"现取"这一环，不是别的东西')
+              } else {
+                bad('Q-d 【负向对拍失败】变异后行为没变'
+                  + `：变异体仍报拿不到地址=${mutantStillUnavailable} · 变异体无 url=${mutantNoUrl}`
+                  + ` · 原实现有 url=${realHasUrl}`)
+              }
+              try { rmSync(mutRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+            }
+          }
+        } catch (e) {
+          bad(`Q 看板地址现取：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+        }
+      }
     }
   }
 }

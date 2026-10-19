@@ -606,12 +606,26 @@ export function apply(ctx: any): void {
     }
 
     const wake = new CardWake({
-      origin: (() => {
+      /**
+       * ⚠ ⚠ **现取**（函数），⛔ **不是 apply 那一刻的快照**（2026-10-19 重启实测的缺陷）。
+       *
+       * 改前：这里是一个**立即求值的 IIFE** ⇒ 地址在 `apply()` 那一刻被定死。
+       *   而 `webServer` 与本模块**没有激活顺序保证**（`.hob/experience/1.md` 的 **E-01**：
+       *   同一坑在路由注册上已经踩过一次）⇒ 那一刻取不到（或 `getOrigin()` 抛
+       *   "origin read before the listener bound a port"）⇒ `origin = undefined` **永久**。
+       *   ⚠ 实测后果（重启后）：`12:36:27` / `12:37:17` / `12:45:57` **三次读数都是**
+       *   「拿不到看板地址（webServer 不可用）」——**不会自愈**，因为再也没人去取第二次。
+       * ⇒ 改成一个**每次调用都现读**的函数：`CardWake.start()` 每次都调它
+       *   ⇒ 宿主 web 服务一 bind，下一次读状态就接上。
+       * ⚠ `try/catch` 保留：取不到就返回 `undefined`（由 `CardWake` 报可读话），
+       *   ⛔ 不许让"取地址失败"把整个模块带崩。
+       */
+      origin: () => {
         try {
           const web = svcCtx.get?.('webServer')
           return typeof web?.getOrigin === 'function' ? String(web.getOrigin()) : undefined
         } catch { return undefined }
-      })(),
+      },
       workspaceIdOf: () => wsIdForWake,
       /**
        * ⚠ **点火帧回调**（补缺口的核心）：推送里已经带卡 id ⇒ 现读那一张并登记。

@@ -104,8 +104,18 @@ export interface WakeTarget {
 
 /** {@link CardWake} 的构造参数（⚠ 显式类型：别用构造参数属性，见该类注释）。 */
 export interface CardWakeOpts {
-  /** 看板 origin（如 `http://127.0.0.1:3080`）；判不出 ⇒ `start()` 报不可读。 */
-  origin: string | undefined
+  /**
+   * 看板 origin（如 `http://127.0.0.1:3080`）；判不出 ⇒ `start()` 报不可读。
+   *
+   * ⚠ ⚠ **可以是函数，且真环境必须给函数**（2026-10-19 重启实测）：
+   *   `webServer` 可能在**本模块激活之后**才 bind（`getOrigin()` 早读会抛；
+   *   宿主起 web 服务与插件激活之间没有顺序保证 —— `.hob/experience/1.md` 的 **E-01**）。
+   *   ⇒ 若在这里**只给一个字符串**，那它在 `apply()` 那一刻就被**快照**了：
+   *     那一刻取不到 ⇒ **永远是 undefined** ⇒ 叫醒面**永久**「接不上」，且**不会自愈**
+   *     （实测：重启后 12:36 / 12:37 / 12:45 三次读数都是同一句「拿不到看板地址」）。
+   *   ⇒ 给函数 ⇒ 每次 `start()` **现取**：宿主一就绪，下一次读状态就能接上。
+   */
+  origin: string | undefined | (() => string | undefined)
   /** 现读本工作区 id（⚠ 每次现读：工作区可能后建）。 */
   workspaceIdOf: () => string | undefined
   /** 投递实现（真环境 = `bus.deliver(id, text, 'followup')`）。 */
@@ -203,6 +213,17 @@ export class CardWake {
   private state: WakeState = { conn: 'idle', wokeCount: 0, noSubscriberCount: 0, seenCount: 0 }
   private abort: AbortController | undefined
   private stopped = false
+  /**
+   * 重连主循环**还在不在跑**（⚠ 与 `conn` 不是一回事）。
+   *
+   * ⚠ 为什么必须单独记：`conn` 在**两次重试之间**就是 `'broken'`，而那时
+   *   `loop()` **并没有退出**。若只看 `conn` 决定"要不要再起一条"，
+   *   `hob_orch_status` 每读一次就会**再开一条 SSE 长连接**
+   *   ⇒ 看板那边看到 N 条订阅、本进程这边 N 个重连循环。
+   *   ⚠ 这个错在修复「地址现取」之后**更容易被踩到**（地址一就绪就会被反复 start），
+   *     故一并把它关掉：**已经在循环里 ⇒ 一律不起第二条**。
+   */
+  private looping = false
   /** 已处理过的点火帧（按 `卡id@时刻桶` 去重 —— ⚠ 同一帧只回调一次，防登记风暴）。 */
   private readonly firedSeen = new Set<string>()
   /** 注入的"投递"函数（真环境 = `hobBus.deliver`；机检 = 假函数）。 */
@@ -235,15 +256,22 @@ export class CardWake {
   }
 
   /**
-   * 按需拉起 SSE（⚠ 幂等：已在连/已连上都**不会**起第二条）。
+   * 按需拉起 SSE（⚠ 幂等：已在连/已连上/已在重试 ⇒ 都**不会**起第二条）。
    *
    * ⚠ **为什么"订阅时才连"而不是模块加载就 connect**：没有订阅者时连上也叫不动
    *   （见 `handleFrame` 的 `noSubscriberCount` 一档），白占一条长连接；
    *   而且本仓的 `webServer` 可能在模块激活之后才 bind（`getOrigin()` 早读会抛）。
+   *
+   * ⚠ ⚠ **"判不出地址"这一档必须能重试**（2026-10-19 重启实测的缺陷）：
+   *   改前只看 `conn === live / connecting` 就 return ⇒ 地址取不到那一刻落 `broken`
+   *   ⇒ 之后**每次都 early-return** ⇒ **永久接不上**（实测三次读数都一样）。
+   *   ⇒ 现在用 `looping` 判"真的还有循环在跑吗"：没有 ⇒ 重新 `start()`
+   *     （`start()` 会**现取**地址 —— 这就是重启后自愈的那一步）。
    */
   startWakeIfNeeded(fetcher: typeof fetch = fetch): void {
     if (this.stopped) return
-    if (this.state.conn === 'live' || this.state.conn === 'connecting') return
+    if (this.looping) return                              // 已经有循环在跑（连接中/重试中都算）
+    if (this.state.conn === 'live') return                // 已连上（`looping` 之外的双保险）
     this.start(fetcher)
   }
 
@@ -370,18 +398,39 @@ export class CardWake {
   /**
    * 连上 SSE 并持续读（⚠ 失败要可观测 + 自动重连，⛔ 不许静默退出）。
    *
+   * ⚠ ⚠ **地址在这里现取**（`origin` 可为函数）：`webServer` 可能在模块激活后才 bind。
+   *   `start()` 本身会被 `startWakeIfNeeded` **反复调用**（每次读状态一行就调一次）
+   *   ⇒ 宿主一就绪，下一次就接上 —— 这是"重启后能自愈"的唯一机制，⛔ 别把它改成快照。
+   *
    * @param fetcher - 注入的 `fetch`（机检可换成假的；默认真 `fetch`）。
    */
   start(fetcher: typeof fetch = fetch): void {
     if (this.stopped) return
-    const origin = this.opts.origin
+    if (this.looping) return                              // ⚠ 只允许一条循环（见 `loop()` 的 finally）
+    const origin = typeof this.opts.origin === 'function' ? this.opts.origin() : this.opts.origin
     if (origin === undefined || origin === '') {
-      this.state = { ...this.state, conn: 'broken', note: '⚠ 拿不到看板地址（webServer 不可用）⇒ **叫醒面没接上**（⛔ 不等于"没有卡跑完"）' }
+      /**
+       * ⚠ **这一句必须如实说清"为什么"与"能不能自愈"**（§二-② 的可读判据）。
+       *   改前只写「webServer 不可用」⇒ 读者分不出：
+       *     · 宿主**还没起来**（等一下就好）· 还是**永远拿不到**（要人修）；
+       *     · 也分不出「取不到地址」与「地址有但连不上」（后者在 `loop()` 的 catch 里）。
+       *   ⚠ ⛔ 不许把这一档降级成静默（那正是 `423b536` 刚立起来的可读行）。
+       */
+      this.state = {
+        ...this.state,
+        conn: 'broken',
+        url: undefined,
+        note: '⚠ 拿不到看板地址（webServer 未就绪 / 未 bind）⇒ **叫醒面没接上**'
+          + '（⛔ 不等于"没有卡跑完"）。'
+          + ' ↳ **会自愈**：每次读状态都会**现取一次**地址 ⇒ 宿主 web 服务一 bind 就接上；'
+          + ' ⚠ 若一直是这一句 ⇒ 宿主这轮**根本没起 web 服务**（那是宿主侧的事，不是本插件的重试没做）',
+      }
       this.say(`[card-wake] ${this.state.note}`)
       return
     }
     const url = `${origin.replace(/\/+$/, '')}${BOARD_SSE_PATH}`
     this.state = { conn: 'connecting', url, wokeCount: this.state.wokeCount, noSubscriberCount: this.state.noSubscriberCount, seenCount: 0 }
+    this.looping = true
     this.say(`[card-wake] 正在接 ${url}`)
     void this.loop(url, fetcher)
   }
@@ -389,6 +438,7 @@ export class CardWake {
   /** 断开（模块卸载 / 测试收尾）。 */
   stop(): void {
     this.stopped = true
+    this.looping = false
     try { this.abort?.abort() } catch { /* 已经断了 */ }
     this.abort = undefined
   }
@@ -396,37 +446,48 @@ export class CardWake {
   /** 重连主循环（指数退避，⚠ 每次失败都有一句可读话）。 */
   private async loop(url: string, fetcher: typeof fetch): Promise<void> {
     let backoff = RECONNECT_MIN_MS
-    while (!this.stopped) {
-      const ctl = new AbortController()
-      this.abort = ctl
-      try {
-        const res = await fetcher(url, {
-          signal: ctl.signal,
-          headers: { accept: 'text/event-stream' },
-        } as any)
-        if (!res.ok || res.body === null) {
-          throw new Error(`HTTP ${res.status}${res.body === null ? ' / 无响应体' : ''}`)
-        }
-        this.state = { ...this.state, conn: 'live', note: undefined }
-        this.say('[card-wake] 已连上')
-        backoff = RECONNECT_MIN_MS
-        await this.readStream(res.body)
-        // 流自然结束 ⇒ 也是"断了"，要重连
-        if (!this.stopped) {
-          this.state = { ...this.state, conn: 'broken', note: '⚠ SSE 流被对面关掉了（看板重载？）⇒ 正在重连' }
+    /**
+     * ⚠ ⚠ **`looping` 必须在这一个 `try/finally` 里收掉**：循环退出（`stopped` / 抛错）
+     *   之后若还留着 `true`，`startWakeIfNeeded` 就会永远 early-return ⇒ **再也起不来**
+     *   （那正是本件要治的"接不上且不自愈"，只是换了个位置）。
+     *   ⚠ 放在最外层 finally ⇒ 无论从哪个分支退出都清掉。
+     */
+    try {
+      while (!this.stopped) {
+        const ctl = new AbortController()
+        this.abort = ctl
+        try {
+          const res = await fetcher(url, {
+            signal: ctl.signal,
+            headers: { accept: 'text/event-stream' },
+          } as any)
+          if (!res.ok || res.body === null) {
+            throw new Error(`HTTP ${res.status}${res.body === null ? ' / 无响应体' : ''}`)
+          }
+          this.state = { ...this.state, conn: 'live', note: undefined }
+          this.say('[card-wake] 已连上')
+          backoff = RECONNECT_MIN_MS
+          await this.readStream(res.body)
+          // 流自然结束 ⇒ 也是"断了"，要重连
+          if (!this.stopped) {
+            this.state = { ...this.state, conn: 'broken', note: '⚠ SSE 流被对面关掉了（看板重载？）⇒ 正在重连' }
+            this.say(`[card-wake] ${this.state.note}`)
+          }
+        } catch (e) {
+          if (this.stopped) return
+          const msg = String((e as Error)?.message ?? e)
+          this.state = { ...this.state, conn: 'broken', note: `⚠ 接不上看板 SSE（${msg}）⇒ 正在重试（${backoff}ms 后）—— ⛔ 这不等于"没有卡跑完"` }
           this.say(`[card-wake] ${this.state.note}`)
+        } finally {
+          this.abort = undefined
         }
-      } catch (e) {
         if (this.stopped) return
-        const msg = String((e as Error)?.message ?? e)
-        this.state = { ...this.state, conn: 'broken', note: `⚠ 接不上看板 SSE（${msg}）⇒ 正在重试（${backoff}ms 后）—— ⛔ 这不等于"没有卡跑完"` }
-        this.say(`[card-wake] ${this.state.note}`)
-      } finally {
-        this.abort = undefined
+        await this.sleep(backoff)
+        backoff = Math.min(backoff * 2, RECONNECT_MAX_MS)
       }
-      if (this.stopped) return
-      await this.sleep(backoff)
-      backoff = Math.min(backoff * 2, RECONNECT_MAX_MS)
+    } finally {
+      // ⚠ 循环真的退出（不是"两次重试之间"）⇒ 放开闸门，允许下一次 start 重来
+      this.looping = false
     }
   }
 
