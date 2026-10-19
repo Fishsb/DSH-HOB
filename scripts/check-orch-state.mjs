@@ -7287,6 +7287,146 @@ const orchCode = stripComments(orchSrc)
       }
     }
 
+    // ══════════════════════════════════════════════════════════════
+    // SE-d · **执行方就是 owner 本人 ⇒ 卡跑完不叫醒**（2026-10-20 · 第 7 单）
+    // ══════════════════════════════════════════════════════════════
+    //
+    //   ⚠ 守的是哪条病（现场实测，`session-77d33ea8` 会话档案）：
+    //     卡 t-mvfertx2-zrnyvc 的 20 条执行 sessionId 全部 = 建卡会话自己
+    //     ⇒ 每一轮结束都"卡跑完"一次、再通知回它自己 ⇒ 05:54:23–06:06:29
+    //     收到 25 条 `[实施会话跑完]`，最密一段间隔 0.1–0.3 秒。
+    //
+    //   ⚠ 为什么 SE-c / SE-c2 挡不住这一条：那两档守的是 **DispatchWake**
+    //     （`running → idle` 那条主信号源）。本档守的是 **CardWake**
+    //     （看板 SSE 那条旁证通道）—— 两条通道各有一份"该不该通知"的判据，
+    //     只修一条，另一条照样自己叫醒自己。
+    //
+    //   ⚠ 判据四条（缺一条都算没做）：
+    //     ① **执行方 = owner ⇒ 一声不投**（`deliver` 一次都不许被调）；
+    //     ② **执行方 ≠ owner ⇒ 照常投**（⛔ 不许一刀切把真回执也拦掉）；
+    //     ③ **读不到执行方 ⇒ 照常投**（本闸只拦"能证明是我自己"，⛔ 不是"判不出就拦"）；
+    //     ④ 被拦下的那一声落**独立一档**（`selfExecutedCount`），⛔ 不并进任何既有计数。
+    {
+      if (seWakeMod === undefined) {
+        bad('SE-d 无法加载 card-wake ⇒ 本判据失去基准（不按通过处理）')
+      } else {
+        const WS = 'ws-se-d'
+        /**
+         * ⚠ **真帧形状**：看板 `summarize()` 投影 —— **既无 `createdBy`、也无 `executions`**
+         *   ⇒ 执行方只能**按卡现读**（本档正是要钉住"现读那一路"）。
+         */
+        const frame = JSON.stringify({
+          revision: 9, kind: 'execution-recorded',
+          tasks: [{ id: 't-self-run', title: '自产自收的卡', workspaceId: WS,
+            status: 'in_review', version: 4, lastExecutionOutcome: 'succeeded' }],
+        })
+        const OWNER = 'session-hob'
+        const OTHER = 'session-worker'
+        /** 造一面叫醒面：`ownerOf` / `execSessionOf` 由调用方注入（三个用例分别不同）。 */
+        const mk = (ownerVal, execVal) => {
+          const sent = []
+          const w = new seWakeMod.CardWake({
+            origin: 'http://127.0.0.1:0', workspaceIdOf: () => WS,
+            deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+            ownerOf: async () => ownerVal,
+            execSessionOf: async () => execVal,
+            now: () => 1792300800000,
+          })
+          w.subscribe(OWNER, WS)
+          return { w, sent }
+        }
+        // ① 执行方 = owner ⇒ 一声不投，且落独立一档
+        const self = mk(OWNER, OWNER)
+        const n1 = await self.w.handleFrame('change', frame)
+        const st1 = self.w.snapshot()
+        // ② 执行方 ≠ owner ⇒ **照常投**（负向对照：这道闸只挡"自己"），收件人仍是 owner
+        const otherFrame = JSON.stringify({
+          revision: 10, kind: 'execution-recorded',
+          tasks: [{ id: 't-other-run', title: '别人跑的卡', workspaceId: WS,
+            status: 'in_review', version: 1, lastExecutionOutcome: 'succeeded' }],
+        })
+        const other = mk(OWNER, OTHER)
+        const n2 = await other.w.handleFrame('change', otherFrame)
+        // ③ 读不到执行方 ⇒ **照常投**（⛔ 不许做成"判不出就拦"）
+        const unknown = mk(OWNER, undefined)
+        const n3 = await unknown.w.handleFrame('change', otherFrame)
+        // ④ 既有各档**一个都没被污染**（⛔ 不许并进 legacyTargetCount / undeliveredCount 等）
+        const noPollute = st1.legacyTargetCount === 0 && st1.undeliveredCount === 0
+          && st1.noSubscriberCount === 0 && st1.wokeCount === 0
+        const okAll = n1 === 0 && self.sent.length === 0
+          && st1.selfExecutedCount === 1
+          && n2 === 1 && other.sent.length === 1 && other.sent[0].sid === OWNER
+          && n3 === 1 && unknown.sent.length === 1
+          && noPollute
+        if (okAll) {
+          ok('SE-d ✓ **执行方就是 owner ⇒ 卡跑完不叫醒**（钉第 7 单）：'
+            + '`execSessionOf === owner` ⇒ **投递 0 次**且落独立一档 `selfExecutedCount=1`；'
+            + '⚠ 负向对照两条都过：**执行方是别人** ⇒ 照常投 1 次（收件人仍是 owner）、'
+            + '**读不到执行方** ⇒ 照常投 1 次（⛔ 没做成"判不出就拦"）；'
+            + `⚠ 既有各档零污染（legacy/undelivered/noSubscriber/woke 全 0）${seTag}`)
+        } else {
+          bad('SE-d 【执行方=owner 时仍在叫醒自己】或【误伤了真回执】'
+            + `：自执行叫醒=${n1}（应 0）· 投递=${self.sent.length}（应 0）· selfExecutedCount=${st1.selfExecutedCount}（应 1）`
+            + ` · 别人跑的=${n2}（应 1）· 投递=${other.sent.length}（应 1，收件人应 ${OWNER}）`
+            + ` · 读不到执行方=${n3}（应 1）· 投递=${unknown.sent.length}（应 1）`
+            + ` · 既有各档零污染=${noPollute}`
+            + ' ⇒ 这一档非零就说明"卡绑在一个自己每轮都会跑完一次的会话上"还在自唤醒')
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // SE-d(反证) · 把"执行方 = owner ⇒ 不投"那一段摘成恒假 ⇒ SE-d 必须当场不成立
+    // ══════════════════════════════════════════════════════════════
+    {
+      /**
+       * ⚠ 靶点 = `if (execSid !== undefined && execSid === ownerResolved) {` 那一行。
+       *   变异成 `if (false) {` ⇒ 花括号配对不变，那一段整段不执行。
+       */
+      const GUARD_D = 'if (execSid !== undefined && execSid === ownerResolved) {'
+      const MUT_D = 'if (false) { /* 变异：摘掉"执行方=owner 不投" */'
+      let srcD = ''
+      try { srcD = seRf(seJ(seRoot, 'src', 'server', 'card-wake.ts'), 'utf8') } catch { srcD = '' }
+      if (!srcD.includes(GUARD_D)) {
+        bad('SE-d(反证) 【失去靶子】在 `card-wake.ts` 里找不到"执行方=owner ⇒ 不投"那一行原文'
+          + `（期望：${GUARD_D}）⇒ 对不上实现，不按通过处理`)
+      } else {
+        const dir = seMkdt(seJ(seTmpRoot, 'mut-d-'))
+        try {
+          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true })
+          const f = seJ(dir, 'src', 'server', 'card-wake.ts')
+          seWf(f, seRf(f, 'utf8').replace(GUARD_D, MUT_D), 'utf8')
+          try { seLink(seJ(seRoot, 'node_modules'), seJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+          const mut = await import(seP2u(seJ(dir, 'src', 'server', 'card-wake.ts')).href)
+          const WS = 'ws-se-d-x'
+          const frame = JSON.stringify({
+            revision: 9, kind: 'execution-recorded',
+            tasks: [{ id: 't-self-run', title: '自产自收的卡', workspaceId: WS,
+              status: 'in_review', version: 4, lastExecutionOutcome: 'succeeded' }],
+          })
+          const sent = []
+          const w = new mut.CardWake({
+            origin: 'http://127.0.0.1:0', workspaceIdOf: () => WS,
+            deliver: (sid) => { sent.push({ sid }); return Promise.resolve({ ok: true }) },
+            ownerOf: async () => 'session-hob',
+            execSessionOf: async () => 'session-hob',
+            now: () => 1792300800000,
+          })
+          w.subscribe('session-hob', WS)
+          const n = await w.handleFrame('change', frame)
+          if (n === 1 && sent.length === 1) {
+            ok('SE-d(反证) ✓ 负向对拍：摘掉"执行方=owner ⇒ 不投"那一段 ⇒ '
+              + '**自己把自己叫醒 1 次** ⇒ SE-d 真长牙（它钉的正是这一条）')
+          } else {
+            bad(`SE-d(反证) 【负向对拍失败】变异体仍然一声不投（叫醒=${n} · 投递=${sent.length}）`
+              + ' ⇒ SE-d 测的不是那一段（本判据恒真，比没有更危险）')
+          }
+        } catch (e) {
+          bad(`SE-d(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        }
+      }
+    }
+
     /**
      * ── SE-b(负向对拍)：⚠ **本档不做行为变异**（实测证明它做不到，照实写）──────────
      *

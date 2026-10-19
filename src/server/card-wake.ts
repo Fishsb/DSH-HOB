@@ -191,6 +191,38 @@ export interface WakeState {
   redeliveredCount: number
   /** 最近一次补投的收件人（诊断：点名"补给了谁"）。 */
   lastRedeliveredTo?: string
+  /**
+   * ⚠⚠ **「执行方就是 owner 本人 ⇒ 不叫醒」的独立一档**（2026-10-20 · 第 7 单）。
+   *
+   * ── 现场（`session-77d33ea8` 会话档案，已实测）──────────────────────────
+   *   05:54:23 → 06:06:29 之间，Hob 收到 **25 条** `[实施会话跑完]`
+   *   （另在 spliced 通道共 76 条记录），内容全部是「会话 `session-77d33ea8` 跑完了」
+   *   —— **报的就是它自己**；06:01:39–06:01:52 一段间隔 **0.1–0.3 秒**，轮次号涨到 `第 42 轮`。
+   *
+   * ── 机理（⚠ 两段叠成的正反馈，⛔ 不是"某处重发"）────────────────────
+   *   ① 第三方看板（`syncExternalSessions: true`）找任务的谓词是
+   *      `claimedBy === sessionId || executions.some(e => e.sessionId === sessionId)`
+   *      （`dsh-taskboard/lib/host/session-sync.js:269 / 321 / 412`）——
+   *      **只要这张卡曾经由该会话执行过**，之后该会话**每一轮 `turn/start`**
+   *      都会给那张卡**追加一条新 execution**（`:326` / `:352`），`turn/end` 再结算成 `succeeded`；
+   *   ② 本模块把"卡跑完"的通知**回给该卡的 owner**（= 建卡会话 = 同一个会话）
+   *      ⇒ 它自己**每一轮结束都被叫醒一次** ⇒ 又开新的一轮 ⇒ 回到 ①。
+   *
+   * ── 判据（⚠ 一句话）──────────────────────────────────────────────────
+   *   **"通知 owner"这件事的前提是 owner 不知道**。若那张卡的**执行方就是 owner 本人**，
+   *   它当然知道自己这一轮跑完了 ⇒ 这一声**不投**（⛔ 不是漏投，⛔ 不是判不出）。
+   *
+   * ⚠ ⛔ **不许并进任何既有计数**（本项目明令：两种原因不许说成同一句话）：
+   *   · 并进 `legacyTargetCount` ⇒ 那是"**判不出 owner**"，而这里 owner **判得明明白白**；
+   *   · 并进 `undeliveredCount` ⇒ 那是"**知道给谁但没送到**"，而这里是"**有意不送**"；
+   *   · 并进 `noSubscriberCount` ⇒ 那是"没人订阅"，与"执行方是谁"无关；
+   *   · 并进 `wokeCount` ⇒ 把"没叫"说成"叫了"。
+   */
+  selfExecutedCount: number
+  /** 最近一次"执行方就是 owner 本人 ⇒ 不叫醒"的可读原话（⛔ 不许静默）。 */
+  selfExecutedWhy?: string
+  /** 最近一次被这一档拦下的卡（诊断：点名是哪张卡在自产自收）。 */
+  lastSelfExecutedCard?: string
   /** 去重表里记了多少条（诊断用，防"表悄悄涨"）。 */
   seenCount: number
 }
@@ -298,6 +330,26 @@ export interface CardWakeOpts {
    * ⚠ 缺省不传 ⇒ 行为与改前**逐字相同**（机检与旧调用形状照旧）。
    */
   ownerOf?: (taskId: string) => Promise<string | undefined>
+  /**
+   * ⚠⚠ **按卡现读"这张卡最近一次执行是谁在跑"**（2026-10-20 · 第 7 单；治「自己叫醒自己」）。
+   *
+   * ── 它补的是哪一格（⚠ 与 `ownerOf` 成对，⛔ 不可互相替代）──────────────
+   *   `ownerOf` 回答"**该叫谁**"；本函数回答"**这次是谁跑的**"。
+   *   两者**相等** ⇒ 那张卡的执行方就是收件人本人 ⇒ 它当然知道自己跑完了
+   *   ⇒ **这一声不投**（见 {@link WakeState.selfExecutedCount} 的现场与机理）。
+   *
+   * ── 为什么必须**现读**，⛔ 不能从帧里拿 ────────────────────────────────
+   *   帧是看板 `summarize()` 投影（`dsh-taskboard/lib/shared/protocol.js:965-987`）：
+   *   里面**既没有 `createdBy`，也没有 `executions[].sessionId`**
+   *   ⇒ 真帧上**永远**判不出执行方 ⇒ 只能按卡 id 现读（`taskboard_get` 的
+   *   `executions[last].sessionId`，那正是 `lookupCardSession` 已经在读的字段）。
+   *
+   * ⚠ 返回 `Promise<string|undefined>`：读不到 ⇒ `undefined` ⇒ **这一道闸不生效**
+   *   （退回既有行为：照常按 `owner` 投）—— ⚠ 这是**有意**的：
+   *   本闸判的是"**能证明是我自己**"，⛔ 不是"判不出就拦"（那会把真正的回执也拦掉）。
+   * ⚠ 缺省不传 ⇒ 行为与改前**逐字相同**（机检与旧调用形状照旧）。
+   */
+  execSessionOf?: (taskId: string) => Promise<string | undefined>
 }
 
 /** 去重表的**上限**（超过就丢最旧的 —— 丢的是很久以前那次，不影响"这次"）。 */
@@ -423,7 +475,7 @@ export class CardWake {
   private readonly redelivered = new Map<string, true>()
   private state: WakeState = {
     conn: 'idle', wokeCount: 0, noSubscriberCount: 0, legacyTargetCount: 0, redeliverOwnerUnknownCount: 0,
-    undeliveredCount: 0, redeliveredCount: 0, seenCount: 0,
+    undeliveredCount: 0, redeliveredCount: 0, selfExecutedCount: 0, seenCount: 0,
   }
   private abort: AbortController | undefined
   private stopped = false
@@ -687,6 +739,56 @@ export class CardWake {
         }
         this.say(`[card-wake] ${this.state.note}`)
         continue
+      }
+      /**
+       * ── ①b ⚠⚠ **执行方就是 owner 本人 ⇒ 这一声不投**（2026-10-20 · 第 7 单）──────────
+       *
+       * ⚠⚠ **位置必须在"定出 owner"之后、"订阅前提 / markDelivered / 投递"之前**：
+       *   · 在"定出 owner"之前 ⇒ 判不了"是不是同一个人"；
+       *   · 在 `markDelivered` 之后 ⇒ 这一声会被记成"已投"，往后真该投的那次反而被去重掉。
+       *
+       * ⚠ **为什么这是"自己叫醒自己"的正解，而不是再加一层去重**：
+       *   这种"卡跑完"的**信号是真的**（看板确实给那张卡追加并结算了一次执行），
+       *   错的只是**要不要通知**。⇒ 判据放在"通知"这一步，⛔ 不去改看板（第三方，`UD-82`），
+       *   ⛔ 也不去改 `seenIds`（那会把真信号当成重复吞掉，下一张卡的同类问题就查不出来）。
+       *
+       * ⚠ **判据的两条边界（⛔ 都不许放宽）**：
+       *   · `execSessionOf` **没给** 或 **读不到** ⇒ 本闸**不生效**，退回既有行为
+       *     （退回"按 owner 投"）—— 本闸只拦"**能证明是我自己**"，
+       *     ⛔ 不许做成"判不出就拦"（那会把真正的回执也一起拦掉）；
+       *   · 判"是不是同一个人"用**严格相等**（会话 id 是宿主发的稳定字面量，
+       *     ⛔ 不做前缀 / 模糊匹配 —— 那会把 `session-abc` 与 `session-abc-2` 判成同一个）。
+       *
+       * ⚠ **读数落独立一档**（{@link WakeState.selfExecutedCount}）：
+       *   ⛔ 不并进 `legacyTargetCount`（判不出 owner）、⛔ 不并进 `undeliveredCount`（知道给谁但没送到）、
+       *   ⛔ 不并进 `noSubscriberCount`、⛔ 更不许并进 `wokeCount`。
+       */
+      if (typeof this.opts.execSessionOf === 'function') {
+        let execSid: string | undefined
+        try {
+          const read = await this.opts.execSessionOf(e.taskId)
+          if (typeof read === 'string' && read !== '') execSid = read
+        } catch (err) {
+          /**
+           * ⚠ 读执行方**抛错** ⇒ 本闸**不生效**（退回既有行为）+ 一句可读话。
+           *   ⛔ 不许因为"读不到"就把这一声丢掉 —— 那是漏投，比自唤醒更坏。
+           */
+          this.say(`[card-wake] 按卡现读执行方出错（${e.taskId}）：${String((err as Error)?.message ?? err)}`
+            + ' ⇒ 这一声按既有口径照常投（本闸只拦"能证明是我自己"的情形）')
+        }
+        if (execSid !== undefined && execSid === ownerResolved) {
+          this.state = {
+            ...this.state,
+            selfExecutedCount: this.state.selfExecutedCount + 1,
+            lastSelfExecutedCard: e.taskId,
+            selfExecutedWhy: `⚠ 卡 ${e.taskId} 跑完了，但**执行方就是它的 owner 本人**`
+              + `（${execSid}）⇒ 这一声**不投**`,
+            note: `⚠ 卡 ${e.taskId}：执行方 = owner（${execSid}）⇒ **不叫醒**`
+              + '（它自己跑完的，通知它没有信息量；⛔ 这不是漏投，也⛔ 不是判不出 owner）',
+          }
+          this.say(`[card-wake] ${this.state.note}`)
+          continue
+        }
       }
       /**
        * ── ② 订阅前提（诊断用；⛔ 不再是"该不该投"的判据）──────────────────
@@ -957,6 +1059,14 @@ export class CardWake {
       // ⚠ 补投那一档同样跨重连保留：它是"我补过几份"的唯一读数
       redeliveredCount: this.state.redeliveredCount,
       ...(this.state.lastRedeliveredTo === undefined ? {} : { lastRedeliveredTo: this.state.lastRedeliveredTo }),
+      /**
+       * ⚠⚠ **"执行方 = owner ⇒ 不叫醒"这一档也必须跨重连保留**（2026-10-20 · 第 7 单）。
+       *   否则**一次重连就把这一档读成 0** —— 那正是本项目最忌讳的
+       *   "没去读"伪装成"确实是空的"（同款纪律见上面那两档）。
+       */
+      selfExecutedCount: this.state.selfExecutedCount,
+      ...(this.state.selfExecutedWhy === undefined ? {} : { selfExecutedWhy: this.state.selfExecutedWhy }),
+      ...(this.state.lastSelfExecutedCard === undefined ? {} : { lastSelfExecutedCard: this.state.lastSelfExecutedCard }),
       seenCount: 0,
     }
     this.looping = true

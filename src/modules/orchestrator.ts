@@ -919,6 +919,30 @@ export function apply(ctx: any): void {
         }
       },
       /**
+       * ⚠⚠ **按卡现读"这次是谁在跑"**（2026-10-20 · 第 7 单）—— 治「自己叫醒自己」。
+       *
+       * ⚠ 为什么必须有它：看板 SSE 帧是 `summarize()` 投影，**既无 `createdBy`、
+       *   也无 `executions[].sessionId`**（第三方包 `lib/shared/protocol.js:965-987` 原文）
+       *   ⇒ "执行方是不是 owner 本人"在帧上**永远判不出** ⇒ 只能按卡 id 现读。
+       * ⚠ 现场：卡 `t-mvfertx2-zrnyvc` 的 **20 条执行**，`sessionId` 全部 = 建卡会话自己
+       *   ⇒ 每一轮结束都"卡跑完"一次、再通知回它自己 ⇒ 05:54:23–06:06:29 收到 25 条
+       *   `[实施会话跑完]`，最密一段间隔 0.1–0.3 秒（会话档案实测）。
+       * ⚠ 读不到（没卡 / 卡已删 / 最近一次执行没记会话 id）⇒ `undefined`
+       *   ⇒ 上层落"这一档不生效"（照常按 owner 投，⛔ 不做成"判不出就拦"）。
+       */
+      execSessionOf: async (taskId: string): Promise<string | undefined> => {
+        try {
+          const registry: any = (() => { try { return svcCtx.get?.('tools') } catch { return undefined } })()
+          const getTool = registry !== undefined && registry !== null && typeof registry.get === 'function'
+            ? (n: string) => registry.get(n)
+            : undefined
+          const r = await lookupCardSession(taskId, getTool)
+          return r.kind === 'found' ? r.sessionId : undefined
+        } catch {
+          return undefined
+        }
+      },
+      /**
        * ⚠⚠ **看板卡回执走内部入口**（2026-10-20 · 第 4 单）：收件人 `= 该卡的 createdBy.sessionId`
        *   **就是派活方自己** ⇒ 走 `deliver()` 会被"拒投给自己"那一道打回（T2 作用域下恒失败）。
        *   `deliverInternal` 与它**同一份实现**，只跳过那一道；归档/活会话/预设预警全都照旧。
@@ -3476,8 +3500,15 @@ export function createHobOrchTools(orch: HobOrchestrator): {
            */
           const anyMissed = w.noSubscriberCount > 0 || w.legacyTargetCount > 0
             || w.redeliverOwnerUnknownCount > 0 || w.undeliveredCount > 0
+            /**
+             * ⚠⚠ **`selfExecutedCount` 必须算进这一行**（2026-10-20 · 第 7 单）：
+             *   它不是"没办成"，但它是**差一点又要开一圈**的那一档 ——
+             *   若不算进来，正常态下会被 early-return **整块吞掉**
+             *   ⇒ 用户只能从"又被叫醒了一次"里发现它（那正是本单的现场）。
+             */
+            || w.selfExecutedCount > 0
           if (w.conn === 'live' && w.wokeCount === 0 && !anyMissed) {
-            // 连上了、没叫过、也没有"该叫没人 / 判不出归属 / 漏投"的情形 ⇒ **正常态**（就是没卡跑完过）
+            // 连上了、没叫过、也没有"该叫没人 / 判不出归属 / 漏投 / 执行方=owner"的情形 ⇒ **正常态**
             return []
           }
           const head = w.conn === 'live'
@@ -3526,6 +3557,24 @@ export function createHobOrchTools(orch: HobOrchestrator): {
             lines.push(`  ↳ ⚠⚠ **卡跑完却没送到（漏投）${w.undeliveredCount} 次**`
               + (w.lastUndeliveredTo === undefined ? '' : `（最后一次本该给 ${w.lastUndeliveredTo}）`))
             lines.push('  ↳ ⛔ 这是"**有回执没到**"，不是"没有回执"；不会自动重投、也不会改投别人。')
+          }
+          /**
+           * ⚠⚠ **「执行方就是 owner 本人 ⇒ 不叫醒」独立一档**（2026-10-20 · 第 7 单）。
+           *
+           * ⚠ 措辞必须把三件事说清（⛔ 不许让它读成"漏投"或"判不出"）：
+           *   ① 那张卡**确实**跑完了一次（信号是真的）；
+           *   ② 执行方**就是**收件人本人 ⇒ 通知它没有信息量；
+           *   ③ 这一档非零 ⇒ 说明**卡被绑在一个自己会反复跑完的会话上**，
+           *      那一侧的源头（第三方看板的执行史绑定）**不会自己消失**。
+           */
+          if (w.selfExecutedCount > 0) {
+            lines.push(`  ↳ ⚠ **执行方就是 owner 本人、因此没叫醒 ${w.selfExecutedCount} 次**`
+              + (w.lastSelfExecutedCard === undefined ? '' : `（最近：卡 ${w.lastSelfExecutedCard}）`))
+            if (w.selfExecutedWhy !== undefined) lines.push(`  ↳ ${w.selfExecutedWhy}`)
+            lines.push('  ↳ ⛔ 这**不是漏投**、也**不是判不出 owner**：收件人判得明明白白，'
+              + '只是它自己跑完的 ⇒ 通知它没有信息量。')
+            lines.push('  ↳ ⚠ 这一档 > 0 ⇒ 那张卡**绑在一个"自己每轮都会跑完一次"的会话上**'
+              + '（第三方看板按执行史绑定）⇒ 源头不除，还会持续产生这种"假跑完"。')
           }
           if (w.wokeCount > 0) {
             lines.push(`  ↳ 已叫醒 ${w.wokeCount} 次（最近：${w.lastWokeCard ?? '(读不到卡号)'}）`)
