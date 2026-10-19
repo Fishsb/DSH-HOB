@@ -26,13 +26,17 @@
  *   必须**真的改变行为**。本项的行为改变 = **注入给 Hob 的那段拆分口径变了**，
  *   且那段话**逐档不同、且可机检**（见 {@link workModeInstruction}）。
  *
- * ── ⚠ §二-③ 的产品口径：本单按「(甲) 只自动选路」实现 ─────────────────
- *   「自动」档有多自动，两种读法都成立：(甲) 只自动选路（**动手前仍先跟用户报一句**
- *   要拆成几份 / 哪几份）；(乙) 选路 + 派活都自动（判完直接派出去）。
- *   ⇒ ⚠ **本单按 (甲) 实现**（不扩大"不问就动手"的面）；⚠ (乙) 属**产品取向**，
- *     ⛔ **留待用户裁定**（见回报「待决问题」），⛔ 不许自行升格。
- *   ⚠ 落到代码上就是：{@link WORK_MODE_ORDER} 三档的**措辞都不含"直接派出去"**，
- *   且 `auto` 档**显式要求先报一句**（{@link workModeInstruction} 的 `auto` 分支）。
+ * ── ⚠ 产品口径：用户已裁定「全自动」= (乙)（`UD-149`）────────────────────
+ *   「自动」档有多自动，曾有两种读法：(甲) 只自动选路（**动手前仍先跟用户报一句**）；
+ *   (乙) 选路 + 派活都自动（判完**直接派出去**，用户在收到结果时看见）。
+ *   ⇒ ⚠ **用户裁定为 (乙)「全自动」**（原话只有三个字：「全自动」）。
+ *   ⇒ 落到代码上：`auto` 档**不再要求"动手前先报"**，而是**判完即派**，
+ *     且**派完之后**必须在给用户的回复里说清三件（见 {@link workModeInstruction} 的 `auto` 分支）：
+ *     **拆成了几路 · 每路给了谁 · 哪一路先回来才能定下一步**。
+ *   ⚠ **"不再先报"≠"不报"**：只是把"说清路数"这件事从**派之前**挪到**派之后**
+ *     （`UD-149` §二）；⛔ 不许把它读成"闷头派、用户看不见"。
+ *   ⚠ **另两档（单会话 / 多会话）的口径 ⛔ 不动** —— 用户只裁了「自动」档。
+ *   ⚠ **档名不改**：仍是 自动 / 单会话 / 多会话（`UD-149` §三：档名属用户已裁的命名）。
  *
  * ── 为什么单独一个文件（而不是写在 `config.ts` 里）──────────────────────
  *   与 `planning-preset.ts` 同一条理由：**两个编译单元**都要它 ——
@@ -93,10 +97,22 @@ export const WORK_MODE_LABEL_EN: Readonly<Record<WorkMode, string>> = {
  * 用途：**注入给 Hob 的那段口径里必须有它**，且设置面板上**紧邻**控件也要有它
  * （用户看不到就等于没有 —— `PROJECT.md` §5.3）。
  * ⚠ 位置选择与理由见 {@link WORK_MODE_SECTIONS} 上方注释。
+ *
+ * ── ⚠ 2026-10-19 第 3 轮（`UD-149`）扩写：**两段边界并列** ────────────────
+ *   ① 「多会话」的"无限制"只到"费用与时间不设上限"；
+ *   ② **「自动」档的「全自动」只到"不再先问用户就派出去"** —— 它⛔ **不解除任何红线**、
+ *      ⛔ **不越过权限档位**、⛔ 不许读成"每个会话能干任意事"。
+ *   ⚠ **为什么并列而不各写一份**：两条的**适用面都是三档共同的**
+ *     （单会话档照样不许碰别人的卡；多会话档也不因为不自动就放宽判据）——
+ *     各写一份必然漂移（本项目已多次踩「一处口径抄三份」）。
+ *   ⚠ 名字里带「全」的那一档**最容易**被读成"权限更大"（与「完全权限」同族，`R-26`），
+ *     所以界面上**紧邻控件**就有它，⛔ 不能只写在给模型的口径里。
  */
 export const WORK_MODE_RED_LINE = '「多会话」的"无限制"只到"费用与时间不设上限"这一层，'
   + '不解除任何既有红线 —— 不许改看板、不许碰别人项目的卡、不许放宽任何判据、'
   + '不许把"多"理解成"每个会话都能干任意事"。'
+  + '「自动」档的「全自动」同样只到"不再先问用户就派出去"这一层：'
+  + '它不解除任何既有红线、不越过权限档位，也不等于"每个会话能干任意事"。'
 
 /**
  * 三档各自**注入给模型**的口径正文（⚠ **本项的唯一真实消费者**）。
@@ -123,6 +139,16 @@ export const WORK_MODE_RED_LINE = '「多会话」的"无限制"只到"费用与
 export function workModeInstruction(mode: WorkMode): string {
   const head = [
     '## How work is split',
+    '',
+    // ⚠⚠ **显式作废声明**（2026-10-19 第 3 轮 · `UD-149` 裁定 ②）。
+    //   为什么必须有：本通路是**快照替换语义**，但宿主是"新快照顶旧"而**不是编辑历史**
+    //   ⇒ 用户改过档位后，会话史里**旧的同名段落仍然在**（只是被后来的快照压住）。
+    //   模型读到的是一串消息，旧段落照样在它的视野里 —— 两段并同时，它可能照旧那段走。
+    //   ⇒ 在**正文里**写明"以本段为准、忽略此前任何同名段落"，⛔ 纯文本、⛔ 不加机制。
+    '**This section supersedes any earlier snapshot of the same section.** If a previous message',
+    'in this conversation also carries a "How work is split" section, ignore it entirely: only the',
+    'one you are reading now applies. The same holds for any earlier wording of what this setting',
+    'does or does not relax.',
     '',
     `The user has set how this project\'s work should be split into sessions. The current setting is`,
     `**${WORK_MODE_LABEL_EN[mode]}**. Apply it every time you turn a need into tasks.`,
@@ -159,7 +185,7 @@ export function workModeInstruction(mode: WorkMode): string {
     ].join('\n')
   }
 
-  // auto（缺省）
+  // auto（缺省）—— ⚠ 用户裁定「全自动」= (乙)：判完**直接派**，派完**必须报**（`UD-149`）
   return [
     ...head,
     '**Decide for yourself how many tracks this task needs** — one when the work is one thread,',
@@ -167,9 +193,14 @@ export function workModeInstruction(mode: WorkMode): string {
     'target. Settle first what the pieces are and in what order they depend on each other, then',
     'choose the split that lets each piece be judged on its own.',
     '',
-    'Before you hand any of it over, say in one line how many tracks you are splitting it into',
-    'and which pieces they are, so the user can see the shape before the work starts. Deciding',
-    'the split is yours; carrying it out is not automatic.',
+    '**Then hand it over yourself, without asking first.** Under this setting the split and the',
+    'hand-over are one motion: once the pieces are settled, give each piece its own directive and',
+    'start it. The user sees the shape together with the result, not as a question ahead of it.',
+    '',
+    '**But the report after dispatching is not optional.** Say three things in your reply to the',
+    'user: how many tracks you split the work into, who each track was given to, and which one',
+    'has to come back before the next step can be decided. "No longer asks first" is not "does',
+    'not say": a hand-over the user cannot see is one they cannot steer.',
     '',
   ].join('\n')
 }
@@ -197,6 +228,12 @@ export function workModeRedLine(): string {
     'project\'s cards, no acceptance criterion is relaxed, and "more" never means "each session may',
     'do whatever it likes". A session created for a track has exactly the reach its own preset and',
     'permission level give it — creating more of them is not a way around either.',
+    '',
+    '**Fully automatic never means fully authorised.** Handing over without asking first lifts',
+    'exactly one thing: the question ahead of the hand-over. It is not permission, and it is not',
+    'a wider reach for anyone. No rule above is relaxed by it, and the permission level of this',
+    'session still bounds what this session may ever do — a split into more tracks is never a way',
+    'around either of them.',
     '',
   ].join('\n')
 }

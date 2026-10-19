@@ -580,6 +580,31 @@ function schemaTopGroups(src) {
           bad(`G-4 两条通路没有**共用**同一个现拼函数（section=${sectionRef} · context=${contextRef}）`
             + '\n      ⇒ 各拼一份的话，改一处必然漏一处（"+1 处口径"的分裂）')
         } else ok('G-4 正文由 `textNow()` 函数现拼，且 section / context 两条通路共用（⛔ 非常量）')
+
+        //   ⚠⚠ 2026-10-19 第 3 轮（`UD-149` 裁定 ③）：`section()` 那条**今天无效**，
+        //     保留但注释必须写明"今天无效、为什么无效"（否则下一个人把它当生效通路读）。
+        //     判据 = 在 `section()` 注册**前后 4000 字符**里必须同时出现"无效"的解释与原因锚。
+        const secAt = fnBody.indexOf('spCtx.systemPrompt.section({')
+        const secZone = secAt < 0 ? '' : fnBody.slice(Math.max(0, secAt - 4000), secAt + 600)
+        const declaresDead = secZone.includes('本条今天不进模型上下文') || secZone.includes('今天这条是无效的')
+        const givesReason = secZone.includes('completeSection') || secZone.includes('complete: true')
+        //   ⚠ 判据 = **正面声称**"两条都生效"才 FAIL；写成否定句（"它**不是**两条都生效"）是**允许且鼓励**的
+        //     —— 这一条本身就是在防那个误读，禁掉否定说法等于逼人删掉最有用的那句。⇒ 逐行判：
+        //     含该短语的行必须**同一行**带否定标记（不是 / 别 / ⛔ / 不），否则才算正面声称。
+        const NEGATION = /不是|别|⛔|不两条|并不/
+        const bothClaimLines = secZone.split('\n')
+          .filter((line) => /两条通路都生效|两条都生效/.test(line) && !NEGATION.test(line))
+        if (!declaresDead) {
+          bad('G-4 `section()` 通路没有**明写"今天无效"**'
+            + '\n      ⇒ `UD-149` 裁定 ③：这条保留（零成本），但注释必须写明今天无效、为什么无效，'
+            + '\n        ⛔ 不许让人读成"两条都生效"（那会让下一个人守着一条不生效的通路）')
+        } else if (!givesReason) {
+          bad('G-4 `section()` 的"今天无效"没给出**原因锚**（缺 `completeSection` / `complete: true`）'
+            + '\n      ⇒ 只说"无效"不说"为什么"，等于把结论留成口口相传')
+        } else if (bothClaimLines.length > 0) {
+          bad('G-4 `section()` 附近出现**"两条都生效"式正面声称** —— 与实测相反（实测 section 被 complete 吞）'
+            + '\n      ⇒ ' + JSON.stringify(bothClaimLines[0].trim().slice(0, 80)))
+        } else ok('G-4 `section()` 保留且**明写今天无效 + 原因**（⛔ 未声称两条都生效）')
       }
 
       if (sharedSrc !== undefined) {
@@ -652,13 +677,47 @@ function schemaTopGroups(src) {
                 + ' —— 红线的适用面是三档共同的，⛔ 不是"只有多会话才要守"')
             } else ok('G-4 红线三档共同在场（不是只在多会话档）')
 
-            //   ⚠ 缺省档**必须**含"动手前先报一句"（任务书 §二-③ 的 (甲) 口径）。
-            //     ⛔ (乙) 是产品取向、留待用户裁定 —— 这条判据把 (甲) 钉住，⛔ 不许被悄悄改成 (乙)。
-            if (!texts[defaultMode].includes('say in one line how many tracks')) {
-              bad(`G-4 缺省档（${defaultMode}）缺「先报一句要拆成几份」`
-                + '\n      ⇒ 本单按 §二-③ 的 (甲) 实现（只自动选路，动手前仍先报一句）；'
-                + '\n        ⛔ (乙)「选路 + 派活都自动」属产品取向、留待用户裁定，⛔ 不许自行升格')
-            } else ok(`G-4 缺省档明写"动手前先报一句"（§二-③ 的 (甲) 口径被钉住）`)
+            //   ⚠ 缺省档 = 「自动」档 ⇒ **用户已裁定 (乙)「全自动」**（`UD-149`，2026-10-19 第 3 轮）：
+            //     判完**直接派**，不再要求"动手前先报一句"（那是作废的 (甲)）。
+            //     ⚠ 但仍**必须**在派完之后说清三件（路数 / 去向 / 哪一路先回来）——
+            //     "不再先报"≠"不报"（`UD-149` §二）。⇒ 本组把这两侧**成对钉住**：
+            //       ① 旧的 (甲) 措辞**必须消失**（否则模型会同时读到"先问"和"直接派"两条相反指令）；
+            //       ② "派完说清路数与去向"那一句**必须在**（否则就是"闷头派、用户看不见"）。
+            const OLD_REPORT_FIRST = 'say in one line how many tracks'
+            const NEW_DISPATCH = 'without asking first'
+            const NEW_REPORT = 'report after dispatching is not optional'
+            if (texts[defaultMode].includes(OLD_REPORT_FIRST)) {
+              bad(`G-4 缺省档（${defaultMode}）**仍含已作废的 (甲) 措辞**「${OLD_REPORT_FIRST}」`
+                + '\n      ⇒ 用户已裁定「全自动」= (乙)（`UD-149`）：判完直接派、不再先问。'
+                + '\n        旧措辞留着会让模型收到两条相反指令（"先问"×"直接派"）—— 档位等于没设')
+            } else if (!texts[defaultMode].includes(NEW_DISPATCH)) {
+              bad(`G-4 缺省档（${defaultMode}）缺「直接派出去、不再先问」（判据词「${NEW_DISPATCH}」）`
+                + '\n      ⇒ 这是 `UD-149` 的 (乙) 口径；缺了就是"面板说全自动、背后仍先问"')
+            } else if (!texts[defaultMode].includes(NEW_REPORT)) {
+              bad(`G-4 缺省档（${defaultMode}）缺「派完必须说清路数与去向」（判据词「${NEW_REPORT}」）`
+                + '\n      ⇒ "不再先报"⛔ **不等于**"不报"（`UD-149` §二）：'
+                + '\n        派完必须在回复里说清 拆成几路 / 每路给了谁 / 哪一路先回来才能定下一步')
+            } else {
+              ok(`G-4 缺省档（${defaultMode}）= 「全自动」口径：旧 (甲) 措辞已清除 · `
+                + '「判完直接派」在场 · 「派完说清路数与去向」在场（三件成对）')
+            }
+
+            //   ⚠ **另两档不许被动**（用户只裁了「自动」档）：单会话 / 多会话的**档位正文**里
+            //     ⛔ 不许出现"直接派 / 不再先问"这类只属于「自动」档的措辞 ——
+            //     否则就是"改一档、顺手改了另两档"（本项目的口径分裂族）。
+            //     ⚠⚠ 判据必须只看**档位正文**（`workModeInstruction(m)`），⛔ 不能看
+            //     `texts[m]`：那里拼进了**三档共用的红线**（`workModeRedLine()`），
+            //     而红线里的「全自动」边界是**故意三档都在**的 —— 拿 texts 判会假失败。
+            const ONLY_INSTR = {}
+            for (const m of values) ONLY_INSTR[m] = wm.workModeInstruction(m)
+            const AUTO_ONLY = ['without asking first', 'report after dispatching']
+            const contaminated = values.filter((m) => m !== defaultMode
+              && AUTO_ONLY.some((needle) => ONLY_INSTR[m].includes(needle)))
+            if (contaminated.length > 0) {
+              bad(`G-4 「全自动」措辞漏进了非缺省档的**档位正文**：${contaminated.join(', ')}`
+                + '\n      ⇒ 用户只裁了「自动」档（`UD-149` §三）；另两档的口径 ⛔ 一个字都不许动')
+            } else ok('G-4 「全自动」措辞只在缺省档的档位正文里（单会话 / 多会话未被改动；'
+              + '红线那段三档共用，不算污染）')
           }
         }
       }
@@ -691,23 +750,56 @@ function schemaTopGroups(src) {
     {
       //   ⚠ 锚点逐个落在**同一行**内（口径正文是数组 join 出来的，跨行的短语会假失败）。
       const RED_ANCHORS = ['never means more power', 'lifts nothing else', 'the board', 'criterion is relaxed']
+      //   ⚠ 2026-10-19 第 3 轮（`UD-149`）：红线段**扩写了两段边界**，
+      //     第二段是「全自动」的边界（⚠ 名字带「全」的那一档最容易读成"权限更大"，`R-26` 同族）。
+      //     它的关键限定单独列锚点 —— ⛔ 不许被裁掉成"只是一句好听的话"。
+      const AUTOMATIC_ANCHORS = ['fully authorised', 'lifts', 'permission level']
       const redStart = (sharedSrc ?? '').indexOf('export function workModeRedLine(')
       const redBody = redStart < 0 ? '' : (sharedSrc ?? '').slice(redStart)
       const missModel = RED_ANCHORS.filter((a) => !redBody.includes(a))
-      if (missModel.length > 0) {
+      const missAuto = AUTOMATIC_ANCHORS.filter((a) => !redBody.includes(a))
+      //   ⚠⚠ 2026-10-19 第 3 轮**补**（负向对拍暴露的真缺口）：
+      //     上面只判了**英文**函数 `workModeRedLine()`，而**中文原文常量**
+      //     `WORK_MODE_RED_LINE` 是「全自动」边界在三处的**唯一落点**（`UD-149` §一）。
+      //     实测：把「自动」那半句从常量里删掉 ⇒ 上面两条判据**仍然全绿**（判据失去分辨力）。
+      //     ⇒ 必须**单独**把中文源常量也钉住（否则面板与 schema 里的那句会悄悄停在旧版）。
+      const zhRedStart = (sharedSrc ?? '').indexOf('export const WORK_MODE_RED_LINE')
+      const zhRedBody = zhRedStart < 0
+        ? ''
+        : (sharedSrc ?? '').slice(zhRedStart, (sharedSrc ?? '').indexOf('\n\n', zhRedStart) + 2)
+      const ZH_RED_AUTO = ['自动', '全自动', '不越过权限档位', '不再先问用户就派出去']
+      const missZhRed = ZH_RED_AUTO.filter((a) => !zhRedBody.includes(a))
+      if (zhRedStart < 0) {
+        bad('G-6 抽不到 `WORK_MODE_RED_LINE`（中文红线原文常量）⇒ 三处的中文源无从核对（不按通过处理）')
+      } else if (missZhRed.length > 0) {
+        bad(`G-6 中文红线原文缺「全自动」那条边界：${missZhRed.join(', ')}`
+          + '\n      ⇒ 它是面板与 schema 那句限定的**中文源**（`UD-149` §一：凡出现「全自动」这个名，'
+          + '\n        紧邻必须有那句限定）。源常量缺了，下游两处即使"看起来有"也是各写各的')
+      } else if (missModel.length > 0) {
         bad(`G-6 给模型看的口径里缺红线关键限定：${missModel.join(', ')}`
           + ' —— 红线是任务书 §二-② 写死的一条，⛔ 不许被裁掉或改写成更弱的说法')
-      } else ok('G-6 给模型看的口径含红线全部关键限定（不解除 / 看板 / 别人的卡 / 判据）')
+      } else if (missAuto.length > 0) {
+        bad(`G-6 给模型看的口径里缺「全自动」那条边界的关键限定：${missAuto.join(', ')}`
+          + '\n      ⇒ `UD-149` §一：「全自动」只到"不再先问就派出去"这一层，'
+          + '\n        不解除任何红线、不越过权限档位（名字带「全」⇒ 必须挡住"权限更大"那个误读）')
+      } else ok('G-6 给模型看的口径含两条边界全部关键限定（多会话 / 全自动）')
 
       const zhBlock = dictBlock('PANEL_ZH')
       if (zhBlock === null) {
         bad('G-6 抽不出 `PANEL_ZH` ⇒ 界面上的红线条无从核对（不按通过处理）')
       } else {
+        //   ⚠ 界面侧同样**两段都要在**：多会话四限定 + 全自动那条边界
+        //     （⚠ 判据词取面板上真出现的措辞，⛔ 不按源码注释里的说法判）。
         const missPanel = ['看板', '别人项目的卡', '判据', '权限'].filter((a) => !zhBlock.includes(a))
+        const missPanelAuto = ['全自动', '不越过权限档位'].filter((a) => !zhBlock.includes(a))
         if (missPanel.length > 0) {
           bad(`G-6 界面上的红线条缺关键限定：${missPanel.join(', ')}`
             + ' —— 用户看不到就等于没有（本项名字自带"更多更强"的暗示，界面必须挡住那个误读）')
-        } else ok('G-6 界面上有红线条（看板 / 别人项目的卡 / 判据 / 权限 四个限定都在）')
+        } else if (missPanelAuto.length > 0) {
+          bad(`G-6 界面上的红线条缺「全自动」边界：${missPanelAuto.join(', ')}`
+            + '\n      ⇒ 「自动」档显示名下一句都没有它，用户只会看到"全自动"三个字'
+            + '\n        （`UD-149` §一：凡出现这个名，紧邻必须有那句限定）')
+        } else ok('G-6 界面上有两条边界（多会话四限定 + 全自动那条）')
       }
 
       const descBlock = (() => {
@@ -717,11 +809,16 @@ function schemaTopGroups(src) {
         return at < 0 ? '' : cfgSrc.slice(start, at)
       })()
       const SCHEMA_ANCHORS = ['不解除任何既有红线', '不改看板', '不碰别人项目的卡', '不放宽任何判据']
+      const SCHEMA_AUTO = ['全自动', '不越过权限档位']
       const missSchema = SCHEMA_ANCHORS.filter((a) => !descBlock.includes(a))
+      const missSchemaAuto = SCHEMA_AUTO.filter((a) => !descBlock.includes(a))
       if (missSchema.length > 0) {
         bad(`G-6 schema 的 \`.description()\` 缺红线关键限定：${missSchema.join(', ')}`
           + '\n      ⇒ 插件管理页的自动表单只读这份 description；它缺了，红线在自动表单里就不存在')
-      } else ok('G-6 schema 的 `.description()` 含红线原文（自动表单里也在场）')
+      } else if (missSchemaAuto.length > 0) {
+        bad(`G-6 schema 的 \`.description()\` 缺「全自动」边界：${missSchemaAuto.join(', ')}`
+          + '\n      ⇒ 三处落点必须同形（给模型的正文 / 面板紧邻控件 / 这份 description），少一处就是缺口')
+      } else ok('G-6 schema 的 `.description()` 含两条边界（自动表单里也在场）')
     }
 
     // ── G-7 兜底同值 ─────────────────────────────────────────────────────

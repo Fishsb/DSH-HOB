@@ -613,16 +613,30 @@ function injectWorkMode(ctx: any, modeOf: () => WorkMode, log: (m: string) => vo
       }
     }
 
-    // ── ① 段通路（`section()`）────────────────────────────────────────────
-    //   ⚠ **今天被 persona 的 `complete: true` 吞掉**（装配层实测：三档最终正文逐字相同）。
-    //     仍保留：它零成本，且"将来 persona 不再 complete"时它就是唯一通路
-    //     —— 删掉会让那种组合下**静默失效**（本项目最忌讳的形态）。
+    // ── ① 段通路（`section()`）—— ⚠⚠ **今天这条是无效的，读代码的人别误读** ──────
+    //
+    //   ⚠⚠ **结论：本条今天不进模型上下文。** 原因（实测，不是推断）：
+    //     本预设的 persona 行配了 `complete: true`（`preset-dsh-hob.patch.yml`），
+    //     而宿主 `SystemPrompt.assemble()` 在末尾做
+    //       `sections: completeSection === void 0 ? transformed.sections : [completeSection]`
+    //     ⇒ **任何 section 注册都被整段替换掉**。
+    //     实测读数：三档 `renderPrompt(assembly)`（= 最终系统提示词正文）**逐字相同**，
+    //     档位口径**一个字都没进去**（读数见 `archive/2026-10-19-work-mode-effective/`）。
+    //   ⚠ **所以它不是"两条通路都生效"**：真正生效的是下面的 ② `context()`，
+    //     `check:config` 的 **G-10** 只对 ② 取装配层读数；G-4 只判"这条注册在位"。
+    //     ⛔ 别把这两条读成互为备份、更别在任何报告里写"两条都生效"。
+    //
+    //   ⚠ **为什么仍然保留（2026-10-19 第 3 轮 · `UD-149` 裁定 ③：保留）**：
+    //     零成本，且"将来 persona 不再 `complete`"（或本行换掉）时，
+    //     它就是这条口径的**唯一通路** —— 删掉会让那种组合下**静默失效**
+    //     （本项目最忌讳的形态：没有注入、也没有任何报错）。
+    //     ⚠ 保留的前提是**注释如实写明今天无效**，否则下一个人会把它当生效通路。
     spCtx.effect(() => spCtx.systemPrompt.section({
       name: SECTION_NAME,
       order: ORDER,
-      // ⚠ **函数**（不是字符串）：每次装配现读档位 ⇒ "改完即生效"的落点之一。
+      // ⚠ **函数**（不是字符串）：每次装配现读档位 ⇒ 这一天生效时它也是"改完即生效"的落点。
       text: textNow,
-    }), 'dsh-hob preset: work-mode instruction section')
+    }), 'dsh-hob preset: work-mode instruction section (⚠ 今天被 persona complete 吞掉，见上方注释)')
 
     // ── ② 上下文通路（`context()`）—— ⚠ **真正生效的那条** ─────────────────
     //   ⚠ 为什么它是有效的：`complete` 只重写 `sections`，`contexts` 是另一条通路；

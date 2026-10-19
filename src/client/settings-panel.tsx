@@ -680,6 +680,13 @@ function PermissionCard(props: {
  *   （插件管理页自动表单会显示）。⚠ 三者都由同一句中文派生，机检 `check:config` 的
  *   G 组核"用户在面板上能看到它与那句红线同源"。
  *
+ * ── ⚠ 「全自动」（2026-10-19 第 3 轮 · `UD-149`）**同一条处理** ─────────────
+ *   名字里带「全」的那一档与「完全权限」同族（`R-26`）：读者会把"更自主"读成"权限更大"。
+ *   ⇒ ⚠ **`wm.redline` 那一句里必须同时含两条边界**（多会话 / 全自动），
+ *     且它**常驻**（与档位无关）—— ⛔ 不许只在 `auto` 档出现、也⛔ 不许只在 `multi` 档出现。
+ *   ⚠ 「自动」档的**语义说明**（`wm.mode.note.auto`）同批改成"判完直接派、派完说清路数与去向"
+ *     （用户裁定的 (乙) 口径）—— ⛔ 别让它继续写"动手之前先说清"（那是 (甲)，已作废）。
+ *
  * ── 生效方式（⚠ 必须如实写，⛔ 不许写做不到的）──────────────────────────
  *   本档位带 `.volatile()` ⇒ 宿主写入**不重挂载**，而消费者
  *   （`src/preset/tools.ts` 注入的那段口径）**每次装配现读** ⇒ **改完即生效**，
@@ -1017,12 +1024,12 @@ const PANEL_EN: Record<string, string> = {
   'wm.mode.auto': 'Automatic',
   'wm.mode.single': 'One session',
   'wm.mode.multi': 'Many sessions',
-  'wm.mode.note.auto': 'Hob works out itself how many tracks the task needs, so the count follows the task. Before it hands the work over it says, in one line, how many tracks it is splitting into and which pieces they are.',
+  'wm.mode.note.auto': 'Hob works out itself how many tracks the task needs, so the count follows the task. Under this setting it hands the work over as soon as the split is settled, without asking first — and then says in its reply how many tracks it split into, who each track went to, and which one has to come back before the next step.',
   'wm.mode.note.single': 'Always one track, carried by one session one stage at a time — even when the task could clearly be split, that possibility is what this setting overrides. Large work is sequenced inside that one thread.',
   'wm.mode.note.multi': 'Split as finely as the work honestly allows and run as many tracks as that gives; cost and time are not a limit. Pieces that depend on each other still stay together, because splitting them only makes rework.',
   'wm.meaning': 'What this mode does',
   'wm.limit': 'What no mode relaxes',
-  'wm.redline': 'Many sessions means no more power and relaxes no rule: the board is still off-limits, another project\'s cards are still off-limits, no acceptance criterion is loosened, and more sessions never means each one may do whatever it likes.',
+  'wm.redline': 'Many sessions means no more power and relaxes no rule: the board is still off-limits, another project\'s cards are still off-limits, no acceptance criterion is loosened, and more sessions never means each one may do whatever it likes. Automatic works the same way: handing over without asking first is not permission — it relaxes no rule, crosses no permission level, and never means each session may do whatever it likes.',
   'wm.multiLimitLabel': 'Where many sessions stops',
   'wm.multiLimit': '"Cost and time are not a limit" is all it lifts. It is not permission: every session it starts has exactly the reach its own preset and permission level give it.',
   'wm.result': 'Result',
@@ -1144,12 +1151,12 @@ const PANEL_ZH: Record<string, string> = {
   'wm.mode.auto': '自动',
   'wm.mode.single': '单会话',
   'wm.mode.multi': '多会话',
-  'wm.mode.note.auto': '由 Hob 按任务与方案自己判该拆成几路，所以路数随任务而变。动手之前它会先用一句话说清要拆成几份、哪几份。',
+  'wm.mode.note.auto': '由 Hob 按任务与方案自己判该拆成几路，所以路数随任务而变。这一档下它拆完就直接派出去、不再先问，然后在回复里说清拆成了几路、每路给了谁、哪一路先回来才能定下一步。',
   'wm.mode.note.single': '恒定一路推进，一次一个阶段 —— 即使任务本可拆开也只走一路，那正是这一档要盖住的可能。活多就在这一条线上排先后。',
   'wm.mode.note.multi': '拆到活本身允许的最细，能并出几路就跑几路；费用与时间都不设上限。互相依赖的部分仍放在一起 —— 硬拆开只会返工，那不是更细，是更多。',
   'wm.meaning': '这一档怎么拆活',
   'wm.limit': '哪一档都不放宽的',
-  'wm.redline': '多会话不等于权限更大、也不解除任何既有规则：看板照样不许改、别人项目的卡照样不许碰、判据一条都不放宽、「多」也从不等于「每个会话都能干任意事」。',
+  'wm.redline': '多会话不等于权限更大、也不解除任何既有规则：看板照样不许改、别人项目的卡照样不许碰、判据一条都不放宽、「多」也从不等于「每个会话都能干任意事」。自动档同理：「全自动」只是不再先问就派出去，它不是权限 —— 不解除任何规则、不越过权限档位，也不等于每个会话能干任意事。',
   'wm.multiLimitLabel': '多会话的边界',
   'wm.multiLimit': '「费用与时间不设上限」就是它全部放宽的东西，它不是权限：它开的每个会话，能力仍只由那个会话自己的预设与权限档决定。',
   'wm.result': '结果',
