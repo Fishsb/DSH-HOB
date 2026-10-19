@@ -478,22 +478,25 @@ export class CardWake {
        *   实测 `cf72d8b^` 在旧式订阅下 `woke=1 sent=1`、`cf72d8b` 变成 `0/0`
        *   ⇒ 静默丢掉了本应到达的叫醒，连带 N-a/N-b/N-f/O-d 四条机检失真。
        */
+      /** ⚠ "没报项目"那一档的警告正文（见下方 `legacyWarnedNote` 的注释）；无 legacy 订阅者时为 `undefined`。 */
+      let legacyWarnedNote: string | undefined
       const globalWs = this.opts.workspaceIdOf()
-      const legacy = rows.filter((t) => t.workspaceId === undefined && globalWs !== undefined && globalWs === e.workspaceId)
+      /**
+       * **"没报项目"的订阅者**（旧式 `subscribe(sid)` / 判不出）。
+       *
+       * ⚠ ⚠ **为什么定义里不带 `globalWs === e.workspaceId`**（第一版写错过，实测）：
+       *   那个条件是"**按全局单值判之后**的结果"，不是"谁算 legacy 订阅者"的判据。
+       *   把它写进定义 ⇒ 全局 ws 指向别的项目时 `legacy` 直接为空 ⇒
+       *   R-a 说的"别的项目不许叫"会**假通过**（其实是压根没进循环），
+       *   而 R-c 会变成"投 0"（静默丢）—— 两条判据同时失真。
+       * ⇒ 正确定义：**没报项目就是 legacy**；该不该投由 `globalWs` 另判（见下）。
+       */
+      const legacy = rows.filter((t) => t.workspaceId === undefined)
       const eligible = rows.filter((t) => t.workspaceId !== undefined && t.workspaceId === e.workspaceId)
       if (eligible.length === 0 && legacy.length === 0) {
         // ③ 一个能投的都没有 ⇒ 按原因分两档（⛔ 不许把两种原因说成同一句话）
-        if (rows.length === 0) {
-          // ③-a 一个订阅者都没有（既有档，⛔ 未与其它档合并）
-          this.state = {
-            ...this.state,
-            noSubscriberCount: this.state.noSubscriberCount + 1,
-            note: `⚠ 有卡跑完（${e.taskId}）但**没有订阅者** ⇒ 这一声没叫出去`
-              + '（没人读过本工作区的卡面 ⇒ 不知道叫谁；⛔ 这不等于"没有卡跑完"）',
-          }
-          this.say(`[card-wake] ${this.state.note}`)
-          continue
-        }
+        // ⚠ 走到这里 `rows.length > 0` 必然成立（空表已被上面 `this.targets.size === 0`
+        //   那一档 `continue` 掉）⇒ 本节只判"有没有人属于这个项目"。
         // ③-b 有人订阅，但没有一个**属于这个项目**（且"没报项目"的也没退回成）
         this.state = {
           ...this.state,
@@ -521,6 +524,21 @@ export class CardWake {
             + '⛔ 这不是"没有卡跑完"，⛔ 也不是"已确认投给了本项目的人"',
         }
         this.say(`[card-wake] ${this.state.note}`)
+        /**
+         * ⚠ ⚠ **这一档的可读话必须"挺过投递"**（2026-10-19 · `TASK-B8` 收口 · 实测逼出来的）：
+         *
+         * 病灶（实测）：上面那句 note 设好之后，紧接着的投递成功分支会把它**整条覆盖**
+         * 成 `已叫醒 <sid>（<卡> 跑完 · <outcome>）` ⇒
+         *   · `R-c` 判"点名卡与项目 / 写可能越界 / 写不是没卡跑完 / 写不是已确认投给本项目"
+         *     四条件**全部 false** ⇒ 判据红；
+         *   · 更要紧的是**语义**：投递一成功，"可能越界"这句警告就**消失了** ——
+         *     而那正是这一档存在的唯一理由（甲路的已知代价）。⇒ 这就是"投了、却没人报"。
+         *
+         * ⇒ 修法：把这一档的警告**暂存**下来，在投递循环结束后**重新落回** `note`
+         *   （⛔ 不是改投递成功那句的措辞 —— 那句只描述"叫醒了谁"，不该承载归属警告）。
+         *   ⚠ 只在"本帧确有 legacy 订阅者"时暂存 ⇒ 不影响其它路径的 note 语义。
+         */
+        legacyWarnedNote = this.state.note
       }
       /**
        * ⚠ **两类都投**：`eligible`（确认本项目）+ `legacy`（旧的、可能越界但要可观测）。
@@ -547,6 +565,17 @@ export class CardWake {
           this.state = { ...this.state, note: `⚠ 叫醒 ${t.sessionId} 失败：${String((err as Error)?.message ?? err)}` }
           this.say(`[card-wake] ${this.state.note}`)
         }
+      }
+      /**
+       * ⚠ **把"没报项目"那档的警告落回去**（⛔ 不许让它被投递成功的 note 覆盖掉）。
+       *
+       * ⚠ 为什么放在循环**之后**：投递那句 `已叫醒 …` 是**逐收件人**的流水，
+       *   而"这一声可能越界"是**整帧**的归属事实 ⇒ 后者必须压在上面、且不能被覆盖。
+       * ⚠ 只本帧有 legacy 订阅者时才落 ⇒ 其余路径的 note 语义一个字不动。
+       */
+      if (legacyWarnedNote !== undefined) {
+        this.state = { ...this.state, note: legacyWarnedNote }
+        this.say(`[card-wake] ${this.state.note}`)
       }
     }
     return woke

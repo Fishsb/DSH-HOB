@@ -3154,11 +3154,19 @@ const orchCode = stripComments(orchSrc)
       //   行为对照读数：`cf72d8b^` ⇒ `woke=1 sent=1`；`cf72d8b` ⇒ `woke=0 sent=0`
       //   （`tmp/probe-before-after.mjs`）。⇒ 连带 N-a / N-b / N-f / O-d 四条红。
       //
-      // ⚠ ⚠ **本组钉两件事**（缺一不算）：
-      //   · **R-g1 不越界**：没报项目 ⇒ **仍然不投**（⛔ 不许退回全量广播）；
-      //   · **R-g2 不静默**：必须落一条**独立**可读话（`noProjectCount + 1`），
+      // ⚠ ⚠ **本组钉两件事**（缺一不算）—— ⚠ **2026-10-19 收口：口径已随代码改判为「甲路」**：
+      //   · **R-g1 可观测地投**（⚠ 原口径是"不投"，甲路下改判）：
+      //     没报项目 ⇒ **按旧语义投**（`sent.length === 1`），
+      //     ⚠ **但必须留下独立一档 + 可读话** —— 因为甲路的已知代价就是"**可能越界**"，
+      //     这个缺陷要一直看得见 ⇒ ⛔ 不许"投了却没人报"；
+      //   · **R-g2 不静默**：那条话必须是**独立档**（`legacyTargetCount + 1`，
+      //     ⚠ 键名随实现改了，语义仍是"没报项目"这一档 ⛔ 别并进 `noSubscriberCount`），
       //     且 ⛔ 不许与"没有订阅者" / "筛空" / "投递失败" 三句混同；
-      //     话里必须写清它**既不是**"没有卡跑完"、**也不是**"已投递"。
+      //     话里必须写清它**既不是**"没有卡跑完"、**也不是**"已确认投给本项目的人"。
+      //
+      //   ⚠ ⚠ **这不是放宽**（改判 ≠ 放宽）：原"不投"那条已被甲路否掉，
+      //     但本组**换成了一条更硬的靶子** —— 它同时要求"投到了"**与**"这笔投递可数、可读、且自报风险"。
+      //     删掉任何一条断言都会让 R-g 失去分辨力（负向对拍见 `REPORT.md` §五-3 的四次）。
       {
         try {
           const wakeMod = await import(pathToFileURL(join(root, 'src', 'server', 'card-wake.ts')).href)
@@ -3169,37 +3177,53 @@ const orchCode = stripComments(orchSrc)
               version: 2, lastExecutionOutcome: 'succeeded' }],
           })
 
-          // ── R-g1 / R-g2 ⭐ 没报项目 ⇒ 不投 **且** 独立可读一档 ──────────────
+          // ── R-g1 / R-g2 ⭐ 没报项目 ⇒ **投，且必须可观测**（甲路）──────────────
+          //
+          //   ⚠ 三条**同时**断言（缺一即红）：
+          //     ① **投到了**（`sent.length === 1`）—— 甲路下"不投"就是回到 `cf72d8b` 的静默回归；
+          //     ② **单独计数**（`legacyTargetCount === 1` 且 `noSubscriberCount === 0`）——
+          //        ⛔ 不许把"没报项目"并进"筛空"（两档原因不同，合并就没法区分了）；
+          //     ③ **可读话写全四层**：点名"没报自己属于哪个项目" / 自报"可能越界" /
+          //        明写不是"没有卡跑完" / 明写不是"已确认投给本项目的人"。
           {
             const sent = []
             const cw = new wakeMod.CardWake({
               origin: 'http://127.0.0.1:0',
-              workspaceIdOf: () => WSX,          // ⚠ 全局单值"恰好对得上" —— 也不能因此放行
+              workspaceIdOf: () => WSX,          // ⚠ 全局单值"恰好对得上" —— 也不能因此静默放行
               deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
               now: () => 1792300800000,
             })
-            cw.subscribe('session-no-project')   // ⚠ 故意不传项目（旧式调用）
+            cw.subscribe('session-no-project')   // ⚠ 旧式调用：故意不传项目
             const n = await cw.handleFrame('change', frameG)
             const st = cw.snapshot()
             const note = String(st.note ?? '')
-            const saysNoProject = note.includes('没有报告自己属于哪个项目')
-            const saysNotDelivered = note.includes('不是"已投递"')
+            const delivered = sent.length === 1 && n === 1
+            const saysNoProject = note.includes('没有报自己属于哪个项目')
+            const saysRisk = note.includes('可能越界')
             const saysNotNoCard = note.includes('不是"没有卡跑完"')
+            const saysNotConfirmed = note.includes('已确认投给了本项目的人')
             const notMixedWithNoSub = !note.includes('没有订阅者属于这个项目')
-            const counted = st.noProjectCount === 1
+            const counted = st.legacyTargetCount === 1
             const zeroSubUntouched = st.noSubscriberCount === 0
-            if (n === 0 && sent.length === 0 && saysNoProject && saysNotDelivered
-                && saysNotNoCard && notMixedWithNoSub && counted && zeroSubUntouched) {
-              ok('R-g1/R-g2 ✓ "没报项目"既不越界也不静默：'
-                + `投递=${sent.length}（应 0）· 独立档 noProjectCount=${st.noProjectCount}（应 1）`
-                + ` · 没并进"筛空"=${notMixedWithNoSub} · 明写"不是已投递 / 不是没有卡跑完"=${saysNotDelivered && saysNotNoCard}`)
+            if (delivered && saysNoProject && saysRisk && saysNotNoCard && saysNotConfirmed
+                && notMixedWithNoSub && counted && zeroSubUntouched) {
+              ok('R-g1/R-g2 ✓ "没报项目"**投了、且每一笔都可观测**（甲路）：'
+                + `投递=${sent.length}（应 1）· 独立档 legacyTargetCount=${st.legacyTargetCount}（应 1）`
+                + ` · 没并进"筛空"=${notMixedWithNoSub}`
+                + ` · 可读话四层齐（没报项目 / 可能越界 / 不是没卡跑完 / 不是已确认投给本项目）`)
+            } else if (!delivered) {
+              bad('R-g1 【甲路必须投】"没报项目"这一档被静默丢弃了'
+                + `：投递=${sent.length}（应为 1）· handleFrame 返回=${n}`
+                + '\n      ⇒ ⚠ 这就是 `cf72d8b` 的原缺陷（该收到的没收到、而且没人报）'
+                + '\n      ⇒ 甲路要的是"**可能越界但必须可观测**"，⛔ 不是"干脆不投"')
             } else {
-              bad('R-g 【没报项目必须"不越界 + 不静默"】缺项'
-                + `：投递=${sent.length}（应 0）· 有"没报项目"那句=${saysNoProject}`
-                + ` · 明写不是已投递=${saysNotDelivered} · 明写不是没卡跑完=${saysNotNoCard}`
-                + ` · 未混进筛空=${notMixedWithNoSub} · noProjectCount=${st.noProjectCount}`
-                + ` · noSubscriberCount=${st.noSubscriberCount}（应 0）`
-                + ` · note=${JSON.stringify(note.slice(0, 160))}`)
+              bad('R-g 【没报项目必须"可观测"】投是投了，但这一档**没留下能分辨的话/计数**'
+                + `：legacyTargetCount=${st.legacyTargetCount}（应 1）`
+                + ` · 与"筛空"分开=${zeroSubUntouched}（noSubscriberCount 应 0，实测 ${st.noSubscriberCount}）`
+                + ` · 未混进筛空句=${notMixedWithNoSub}`
+                + ` · 有"没报项目"那句=${saysNoProject} · 自报"可能越界"=${saysRisk}`
+                + ` · 明写不是没卡跑完=${saysNotNoCard} · 明写不是"已确认投给本项目"=${saysNotConfirmed}`
+                + ` · note=${JSON.stringify(note.slice(0, 200))}`)
             }
           }
 
@@ -3224,16 +3248,18 @@ const orchCode = stripComments(orchSrc)
             await b.handleFrame('change', frameG)
             const sb = b.snapshot()
 
-            if (sa.noProjectCount === 1 && sa.noSubscriberCount === 0
-                && sb.noProjectCount === 0 && sb.noSubscriberCount === 1) {
+            //   ⚠ 键名随甲路改为 `legacyTargetCount`（原 `noProjectCount` 已不存在），
+            //     ⚠ **语义未变**：两种原因各自独立计数，⛔ 不许合并成一档。
+            if (sa.legacyTargetCount === 1 && sa.noSubscriberCount === 0
+                && sb.legacyTargetCount === 0 && sb.noSubscriberCount === 1) {
               ok('R-g3 ✓ 两档**互斥**且各自计数正确：'
-                + `"没报项目" ⇒ noProject=${sa.noProjectCount}/筛空=${sa.noSubscriberCount} · `
-                + `"别的项目" ⇒ noProject=${sb.noProjectCount}/筛空=${sb.noSubscriberCount}`
+                + `"没报项目" ⇒ legacy=${sa.legacyTargetCount}/筛空=${sa.noSubscriberCount} · `
+                + `"别的项目" ⇒ legacy=${sb.legacyTargetCount}/筛空=${sb.noSubscriberCount}`
                 + ' ⇒ 两种原因**没有**被记成同一档')
             } else {
               bad('R-g3 【两档必须互斥】计数串了'
-                + `：没报项目 ⇒ noProject=${sa.noProjectCount}（应 1）/ 筛空=${sa.noSubscriberCount}（应 0）`
-                + ` · 别的项目 ⇒ noProject=${sb.noProjectCount}（应 0）/ 筛空=${sb.noSubscriberCount}（应 1）`)
+                + `：没报项目 ⇒ legacy=${sa.legacyTargetCount}（应 1）/ 筛空=${sa.noSubscriberCount}（应 0）`
+                + ` · 别的项目 ⇒ legacy=${sb.legacyTargetCount}（应 0）/ 筛空=${sb.noSubscriberCount}（应 1）`)
             }
           }
         } catch (e) {
