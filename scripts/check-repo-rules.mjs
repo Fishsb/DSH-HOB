@@ -167,6 +167,13 @@ export function runRepoRules({ bad, ok }) {
     //     `✗ package.json 声明的脚本不在 MUST-TRACK 里：scripts/check-build-sync.mjs`。
     //   ⚠ ⇒ 本条即那次的修正结果；⛔ **未放松任何既有断言**（`UD-130` 的边界）。
     ['scripts/check-build-sync.mjs', '入库脚本（被 package.json 的 check:build 调用 · lib/ 同步只报不拦自检）'],
+    // ⚠ 2026-10-19 补（本单 · `TASK` 补投判据接线）：**补投判据**（错投回执按 owner 补送）。
+    //   ⚠ 由来（实测）：该脚本上一轮作为**独立入口**落下（`node scripts/check-redeliver.mjs`），
+    //     ⚠ ⚠ 但**总门不会跑它** ⇒ 正是本仓最忌讳的形态「**判据在、但不会响**」。
+    //   ⚠ 本行**同时**被 `check-repo-rules` 的"脚本落点"双向自检要求：该脚本已进
+    //     `package.json` 的 `check:redeliver`（= 它因此被 `check-all` 的派生族表自动收录）。
+    //   ⚠ ⛔ 本条只**新增一条登记**，上面既有条目一字未动（`UD-130` 的边界）。
+    ['scripts/check-redeliver.mjs', '入库脚本（被 package.json 的 check:redeliver 调用 · 补投判据：错投回执按 owner 补送）'],
     // ⚠ 2026-10-18 补（本批 · `UD-138` ⑥「补齐对外最小面」）：**聚合判据入口**与**前置条件预检**。
     //   ⚠ 由来：本仓此前有 12 条 `check:*`、**零聚合入口** ⇒ 对外标准「判据入口能一条命令跑」
     //     直接不成立（外部人不知道该跑哪条、跑了一半就以为全过了）。
