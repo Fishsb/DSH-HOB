@@ -41,7 +41,29 @@ import {
   ledgerRootOf,
   type HobToolsConfig,
 } from '../modules/tools.ts'
-import { PERMISSION_SERVICE, WORK_MODE_SERVICE, skeletonEnabled } from '../config.ts'
+/**
+ * ⚠⚠ **必须用「命名空间导入」，⛔ 不许写具名导入**（2026-10-19 · `TASK-D2`）。
+ *
+ * ── 改前的失败链（实测定性，不是猜测）──────────────────────────────────
+ *   旧写法是 `import { PERMISSION_SERVICE, WORK_MODE_SERVICE, skeletonEnabled } from '../config.ts'`。
+ *   ESM 的**具名导入在链接期（link time）**就要求目标模块**确实有那个名字**：
+ *   只要有一个名字对不上，`import` 就抛
+ *   `SyntaxError: The requested module '../config.ts' does not provide an export named 'WORK_MODE_SERVICE'`
+ *   ⇒ **整个本模块求值失败** ⇒ `apply` 从未被调用 ⇒ `tools` 一行都没注册。
+ *
+ *   真实现场：宿主进程跑的是**启动时那份 `dsh-hob` 模块缓存**，而磁盘产物已被重新 build、
+ *   新增了 `WORK_MODE_SERVICE` 这个导出 ⇒ 新预设文件在那个旧进程里**链接失败** ⇒
+ *   该会话工具面 **25 → 12**、`hob_*` 全部消失、插件条目 `enabled=true` 但 `fiberPhase=null`，
+ *   ⚠ **而且不报错**（求值失败被宿主当成"这个 preset 就这德行"）。
+ *
+ * ── 为什么命名空间导入能治它 ──────────────────────────────────────────
+ *   `import * as configFace from '../config.ts'` **不检查名字是否存在**：
+ *   缺的那个名字在运行时只是 `undefined`（属性缺席），**模块照样求值成功**。
+ *   ⇒ 于是"少一个可选服务"的代价可以缩到**只少那一条能力**，而不是整块工具面。
+ *   ⚠ 取值时机必须是**运行时**（`apply` 里 / 每次调用时光读），⛔ 不许在模块顶层快照
+ *     （那会把"这一份缓存有没有那个导出"凝固成常量，正是本条要避免的形态）。
+ */
+import * as configFace from '../config.ts'
 import {
   DEFAULT_WORK_MODE,
   WORK_MODE_VALUES,
@@ -133,16 +155,77 @@ export function apply(ctx: any, config: Config = {}): void {
     diag(m)
   }
   /**
+   * 从 `config.ts` 的面里**运行时**取一个具名服务的服务名（⛔ 不是模块顶层快照）。
+   *
+   * ⚠ 为什么要有这一层：`../config.ts` 现在是**命名空间导入**（见文件头那段注释），
+   *   所以"这一份缓存到底有没有这个导出"只能在**运行时**回答。
+   * ⚠ 返回 `undefined` 的语义 = **这个具名导出在你手上这份 `config.ts` 里根本不存在**
+   *   （旧缓存 / 版本错配）—— 这与"导出在、但服务没被 provide"（模块关掉）是**两件事**，
+   *   下面按各自的口径分开处理，⛔ 不许混成一句。
+   *
+   * @param key - `config.ts` 里的导出名。
+   * @returns 服务名字符串；该导出缺席 ⇒ `undefined`。
+   */
+  const serviceNameOf = (key: 'PERMISSION_SERVICE' | 'WORK_MODE_SERVICE'): string | undefined => {
+    const value = (configFace as unknown as Record<string, unknown>)[key]
+    return typeof value === 'string' && value !== '' ? value : undefined
+  }
+
+  /**
+   * ⚠⚠ **关键依赖缺席 ⇒ 照旧失败，但必须给出能读懂的原因**（`TASK-D2` §三-③）。
+   *
+   * ── 为什么 `PERMISSION_SERVICE` 是**关键**依赖、不许降级 ─────────────────
+   *   它决定三件事，而这三件**都是安全面**：模型面工具白名单（{@link filterModelToolList}）、
+   *   装配期允许清单（{@link enforceToolAllowlist}）、执行前拦截哨兵（{@link installPermissionGuard}）。
+   *   ⇒ 它缺席时，**其余能力不能"安全工作"**：我们会**不知道用户选的是哪一档**，
+   *     只能编一个档位往下传（旧行为是静默编 `ledger`）—— 那会让
+   *     ① 工作区档的用户**静默少掉**一堆本该看得见的读工具；或
+   *     ② 反过来把本该收窄的档位当成更宽的档。
+   *     两种都是**用户看不出没生效**的失败，正是本项目明令要避免的形态。
+   *   ⇒ 判据（`TASK-D2` §三）：**关键依赖缺席就该照旧失败** —— 这里落 `throw`，
+   *     ⛔ 不落"静默退回某个档"。
+   *
+   * ⚠ 与 `WORK_MODE_SERVICE` 的区别（同一次判断的两侧，⛔ 别读反）：
+   *   那个只决定**一段给模型看的规划口径**；它缺席时其余能力**照常安全工作**（工具面不变、
+   *   权限面不变）⇒ 它属于**可降级**的那一侧（见 `apply` 尾部）。
+   */
+  const permissionServiceName = serviceNameOf('PERMISSION_SERVICE')
+  if (permissionServiceName === undefined) {
+    const why = '⚠ 本预设想通过具名服务 "PERMISSION_SERVICE" 取"可读权限档位"，'
+      + '但当前这份 `config.ts`（很可能是宿主进程里的**旧模块缓存**）**没有这个导出**。'
+      + ' ⚠ 它决定模型面白名单 / 装配期允许清单 / 执行前拦截哨兵三处，'
+      + '⛔ 少了它**无法安全降级**（会变成"按一个编出来的档位放行或收窄"，且用户看不出）。'
+      + ' ⇒ 按"关键依赖缺席照旧失败"处理：本预设工具面不注册。'
+      + ' ↳ 修法：重启宿主，让它加载与盘上产物同版本的 `dsh-hob`。'
+    try { ctx.logger?.warn?.(`[dsh-hob preset] ${why}`) } catch { /* 日志失败不影响判定 */ }
+    diag(`[dsh-hob preset] 关键依赖缺席：${why}`)
+    throw new Error(`dsh-hob preset: 关键依赖 "PERMISSION_SERVICE" 取不到（旧版 config.ts 缓存？）`
+      + ' ⇒ 拒绝以降级方式运行（理由见日志 warn / 见 src/preset/tools.ts 的 TASK-D2 注释）')
+  }
+  /**
    * **现读**当前可读权限控制的档位（每次调用现取，⛔ 不是快照）。
    *
-   * ⚠ 走插件入口 provide 的 {@link PERMISSION_SERVICE}（闭包，每次现读 `config.permission.level`），
+   * ⚠ 走插件入口 provide 的 `PERMISSION_SERVICE`（闭包，每次现读 `config.permission.level`），
    *   因为 `permission.level` 是 volatile ref，**本预设作用域不该自己捅 config**。
-   * ⚠ 服务不在（模块关掉 / 旧版本组合）⇒ 退到 `ledger`（**最保守**档，fail-closed）。
+   * ⚠ 服务名在（见上面的关键依赖检查）但**服务不在**（模块关掉 / 没 provide）⇒
+   *   退到 `ledger`（**最保守**档，fail-closed）。⚠ 这是"模块关掉"这一档的既有语义，
+   *   ⛔ 与"导出缺席"那种关键失败**不是同一件事**（后者上面已经 throw 了）。
+   * ⚠ 这条退路**也要可读**：第一次走到它时打一句 warn（⛔ 不许静默收窄）。
    */
+  let warnedNoPermissionService = false
   const levelOf = (): string => {
     try {
-      const svc = ctx.get?.(PERMISSION_SERVICE) ?? ctx[PERMISSION_SERVICE]
-      return typeof svc === 'function' ? String(svc()) : 'ledger'
+      const svc = ctx.get?.(permissionServiceName) ?? ctx[permissionServiceName]
+      if (typeof svc === 'function') return String(svc())
+      if (!warnedNoPermissionService) {
+        warnedNoPermissionService = true
+        const why = `⚠ 权限服务 "${permissionServiceName}" 当前**没有被 provide**（多半是 modules.tools 关着 / 还没就绪）'
+          + ' ⇒ 本预设按"最保守档 ledger"工作（fail-closed）：读文档 / 读工作区文件那几项会**看不见**。'
+          + ' ⛔ 这不是"权限没配"，是"这一轮取不到"。`
+        try { ctx.logger?.warn?.(`[dsh-hob preset] ${why}`) } catch { /* 忽略 */ }
+        diag(`[dsh-hob preset] ${why}`)
+      }
+      return 'ledger'
     } catch {
       return 'ledger'
     }
@@ -151,7 +234,7 @@ export function apply(ctx: any, config: Config = {}): void {
    * **现读**当前「工作方式」档位（每次调用现取，⛔ 不是快照 —— 2026-10-19 · `UD-97`）。
    *
    * ⚠ 与 {@link levelOf} **同一条纪律、同一条取法**（照抄，别各写一份）：
-   *   走插件入口 provide 的 {@link WORK_MODE_SERVICE}（闭包，每次现读 `workMode.mode`），
+   *   走插件入口 provide 的 `WORK_MODE_SERVICE`（闭包，每次现读 `workMode.mode`），
    *   因为 `workMode.mode` 是 volatile ref，**本预设作用域不该自己捅 config**。
    * ⚠ 服务不在（模块关掉 / 旧版本组合 / 裸跑）⇒ 退到 `DEFAULT_WORK_MODE`（`auto`）。
    *   ⚠ 兜底方向的理由见 `config.ts` 的 `workMode()`：取**后果更轻**的那一边，
@@ -161,7 +244,9 @@ export function apply(ctx: any, config: Config = {}): void {
    */
   const modeOf = (): WorkMode => {
     try {
-      const svc = ctx.get?.(WORK_MODE_SERVICE) ?? ctx[WORK_MODE_SERVICE]
+      const name = serviceNameOf('WORK_MODE_SERVICE')
+      if (name === undefined) return DEFAULT_WORK_MODE
+      const svc = ctx.get?.(name) ?? ctx[name]
       const raw = typeof svc === 'function' ? String(svc()) : ''
       return (WORK_MODE_VALUES as readonly string[]).includes(raw) ? (raw as WorkMode) : DEFAULT_WORK_MODE
     } catch {
@@ -181,7 +266,24 @@ export function apply(ctx: any, config: Config = {}): void {
   // ⚠ 「工作方式」口径的挂载点**同上**：外层 ctx（本预设作用域）、不随门禁消失。
   //   理由与收敛机制同一条：关掉 `modules.tools` 不该让"拆几路"的口径**消失**
   //   （那不是工具能力，是规划口径 —— 与本插件工具面无关）。
-  injectWorkMode(ctx, modeOf, log)
+  //
+  // ⚠⚠ **这一条是「可降级」的那一侧**（`TASK-D2` §三-①）：`WORK_MODE_SERVICE` 只决定
+  //   **一段给模型看的规划口径**；它缺席时工具面、权限面、收敛机制**全都照常安全工作**。
+  //   ⇒ 缺席（导出根本没有 / 服务没 provide）⇒ **只跳过这一段**，⛔ 不许影响其余注册。
+  //   ⚠ 但降级**必须可读**（§三-②）：少了什么、为什么少、影响是什么，一次 warn 说清。
+  const workModeServiceName = serviceNameOf('WORK_MODE_SERVICE')
+  if (workModeServiceName === undefined) {
+    const why = '⚠ 「工作方式」档位口径**没有注入**：当前这份 `config.ts`（很可能是宿主进程里的'
+      + '**旧模块缓存**）没有具名导出 "WORK_MODE_SERVICE"。'
+      + ' ⇒ 影响面**只有这一条**：Hob 会按缺省档的拆分口径做事（`auto`），'
+      + '「单会话 / 多会话」两档的设置**这一轮读不到**；'
+      + ' ⚠ 工具面 / 权限档位 / 收敛机制**不受影响，已照常注册**。'
+      + ' ↳ 修法：重启宿主，让它加载与盘上产物同版本的 `dsh-hob`。'
+    try { ctx.logger?.warn?.(`[dsh-hob preset] ${why}`) } catch { /* 忽略 */ }
+    diag(`[dsh-hob preset] ${why}`)
+  } else {
+    injectWorkMode(ctx, modeOf, log)
+  }
 
   log('apply 完成权限边界与收敛；等待门禁 ' + GATE_SERVICE)
 
@@ -954,7 +1056,16 @@ function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m:
     // ⚠ **现读开关**（⛔ 不是快照）：`skeleton.enabled` 是 volatile（ref 对象）
     //   ⇒ 在 `createHobTools` 时读一次会让"改开关即生效"失效（与上面档位同一条教训）。
     // ⚠ 收口点 = `config.ts` 的 `skeletonEnabled()`（本作用域⛔ 不直接读 `config.skeleton.enabled`）。
-    skeletonEnabledOf: () => skeletonEnabled(config),
+    // ⚠ **命名空间取用**（`TASK-D2`）：这个具名导出同样可能在旧缓存里缺席 ⇒ 用可选 call，
+    //   缺席时退回 schema 的缺省值（`true`，与 `skeletonEnabled()` 自己的兜底**同值**），
+    //   并且**说一句**（⛔ 不许静默少一块 —— 见 §三-②）。
+    skeletonEnabledOf: () => {
+      const fn = (configFace as unknown as Record<string, unknown>).skeletonEnabled
+      if (typeof fn === 'function') return Boolean((fn as (c: unknown) => unknown)(config))
+      // ⚠ 本函数作用域只有 `log`（没有 `diag`）；用 `log` 说这一句 —— 可读优先于通道区别。
+      log('⚠ `config.ts` 没有 `skeletonEnabled()` 导出（旧缓存？）⇒ 「首次铺骨架」按缺省值 true 处理')
+      return true
+    },
     // ⚠ 图片的存储走宿主 `attachments` 服务（实测：宿主平面 provide，
     //   **预设作用域取得到**）。⚠ 惰性取值 + 取不到时返回 undefined
     //   （工具会如实回"没有附件服务"，而不是假装图片已交给模型）。
