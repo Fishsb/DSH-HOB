@@ -99,6 +99,16 @@ export interface WakeState {
   lastWokeCard?: string
   /** 连着但**没有订阅者**时也会叫不出去 ⇒ 单独记一档。 */
   noSubscriberCount: number
+  /**
+   * ⚠ **按旧语义投出去的次数**：订阅者没报项目（`WakeTarget.workspaceId === undefined`）时，
+   * 退回 `opts.workspaceIdOf()`（**进程级单值**）判它该不该收。
+   *
+   * ⚠ ⚠ **这一档的存在理由 = 让"可能越界"可观测**（2026-10-19 · `TASK-B8` 甲路）：
+   *   退回旧语义是**恢复了一个已知缺陷**（全局单值可能把别人的卡投给我），
+   *   ⛔ 但它**不许再是静默的** —— 今天已经栽过一次"该收到的没收到、而且没人报"。
+   * ⚠ ⛔ 不许并进 `noSubscriberCount`（那是"一个订阅者都没有"或"都不是这个项目"）。
+   */
+  legacyTargetCount: number
   /** 去重表里记了多少条（诊断用，防"表悄悄涨"）。 */
   seenCount: number
 }
@@ -234,7 +244,7 @@ export class CardWake {
   private wsId: string | undefined
   private readonly targets = new Map<string, WakeTarget>()
   private readonly seenIds = new Map<string, number>()
-  private state: WakeState = { conn: 'idle', wokeCount: 0, noSubscriberCount: 0, seenCount: 0 }
+  private state: WakeState = { conn: 'idle', wokeCount: 0, noSubscriberCount: 0, legacyTargetCount: 0, seenCount: 0 }
   private abort: AbortController | undefined
   private stopped = false
   /**
@@ -427,23 +437,86 @@ export class CardWake {
        *   `catch` 分支**原样保留**；"按归属筛不出人"是**第四个**独立形态，
        *   单独计数（`noSubscriberCount`）并单独说一句可读话。
        */
-      const eligible = [...this.targets.values()].filter((t) => {
-        // ② 该订阅者没报项目（旧调用 / 判不出）⇒ **不投**（⛔ 不退化成全投）
-        return t.workspaceId !== undefined && t.workspaceId === e.workspaceId
-      })
-      if (eligible.length === 0) {
-        // ③ 有人订阅，但没有一个是**这个项目**的 ⇒ 独立一档：可数、可读
+      /**
+       * 把订阅者**分两类**算（2026-10-19 · `TASK-B8` 修正的落点）。
+       *
+       * ⚠ ⚠ **为什么必须分两类而不是一个 filter**（上一版 `cf72d8b` 的缺陷，实测）：
+       *   旧版只有一个谓词 `t.workspaceId !== undefined && t.workspaceId === e.workspaceId`，
+       *   于是"**没报项目**"（旧式 `subscribe(sid)` / 判不出）被算进"不属于本项目"⇒ 筛空 ⇒
+       *   **不投**。而它**一声可读话都没有**（筛空那句话说的是"没有订阅者属于这个项目"，
+       *   读起来像"确实没人在看这个项目"，**掩盖了**"有人在看、但没说自己是哪个项目"）。
+       *   ⇒ 实测行为对照：`cf72d8b^` 投 1 声 · `cf72d8b` 投 0 声（`tmp/probe-before-after.mjs`）。
+       *   ⚠ **"不投"与"静默不投"是两件事**：后者正是本项目最忌讳的形态。
+       *
+       * ⚠ **两类仍然都不投**（⛔ 不是把 `undefined` 放行 —— 那等于退回全量广播、恢复越界）：
+       *   · `noProject`：没报项目 ⇒ 不知道它属不属于这张卡 ⇒ **宁可不说**（不越界），
+       *     但**必须落一条独立可读话**，写明它既不是"没有卡跑完"也不是"已投递"；
+       *   · `eligible`：项目相等 ⇒ 投。
+       */
+      const rows = [...this.targets.values()]
+      /**
+       * **两类订阅者分开判**（2026-10-19 · `TASK-B8` 甲路 · 三条同时成立的要求）：
+       *
+       * · **报了项目的**（`t.workspaceId !== undefined`）⇒ **只投项目相等的那几个**
+       *   ⇒ 别的项目的卡**不进我这儿**（`R-a` / `R-b2` 钉的就是这条）；
+       * · **没报项目的**（旧式 `subscribe(sid)` / 判不出）⇒ **退回旧语义**
+       *   （= `cf72d8b^` 的行为：用 `opts.workspaceIdOf()` 现读的全局 wsId 判它该不该收），
+       *   ⚠ **同时记一档 `legacyTargetCount` + 一句可读话** —— 因为这条退回路径
+       *   **恢复了"可能越界"这个已知缺陷**，⛔ 不许静默（今天的教训就在这）。
+       *
+       * ⚠ ⚠ **为什么不能把 `undefined` 一律当"不投"**（那是乙路，本单已放弃）：
+       *   实测 `cf72d8b^` 在旧式订阅下 `woke=1 sent=1`、`cf72d8b` 变成 `0/0`
+       *   ⇒ 静默丢掉了本应到达的叫醒，连带 N-a/N-b/N-f/O-d 四条机检失真。
+       */
+      const globalWs = this.opts.workspaceIdOf()
+      const legacy = rows.filter((t) => t.workspaceId === undefined && globalWs !== undefined && globalWs === e.workspaceId)
+      const eligible = rows.filter((t) => t.workspaceId !== undefined && t.workspaceId === e.workspaceId)
+      if (eligible.length === 0 && legacy.length === 0) {
+        // ③ 一个能投的都没有 ⇒ 按原因分两档（⛔ 不许把两种原因说成同一句话）
+        if (rows.length === 0) {
+          // ③-a 一个订阅者都没有（既有档，⛔ 未与其它档合并）
+          this.state = {
+            ...this.state,
+            noSubscriberCount: this.state.noSubscriberCount + 1,
+            note: `⚠ 有卡跑完（${e.taskId}）但**没有订阅者** ⇒ 这一声没叫出去`
+              + '（没人读过本工作区的卡面 ⇒ 不知道叫谁；⛔ 这不等于"没有卡跑完"）',
+          }
+          this.say(`[card-wake] ${this.state.note}`)
+          continue
+        }
+        // ③-b 有人订阅，但没有一个**属于这个项目**（且"没报项目"的也没退回成）
         this.state = {
           ...this.state,
           noSubscriberCount: this.state.noSubscriberCount + 1,
           note: `⚠ 有卡跑完（${e.taskId} · 项目 ${e.workspaceId}）但**没有订阅者属于这个项目** ⇒ 这一声没叫出去`
-            + `（当前 ${this.targets.size} 个订阅者里没有一个是该项目的；`
+            + `（当前 ${rows.length} 个订阅者里没有一个是该项目的；`
             + '⛔ 这不等于"没有卡跑完"，也不等于"谁都该收到"）',
         }
         this.say(`[card-wake] ${this.state.note}`)
         continue
       }
-      for (const t of eligible) {
+      /**
+       * ⚠ **退回旧语义的可观测档**（`legacyTargetCount`）。
+       *
+       * ⚠ 它**不是**失败计数、也**不是**"没叫出去"—— 这一档**投了**，只是**可能越界**。
+       * ⇒ 措辞必须把这三件事说清：① 有订阅者没报项目；② 已按全局工作区判；③ 结果是"可能越界"。
+       */
+      if (legacy.length > 0) {
+        this.state = {
+          ...this.state,
+          legacyTargetCount: this.state.legacyTargetCount + 1,
+          note: `⚠ ${legacy.length} 个订阅者**没有报自己属于哪个项目** ⇒ 已退回旧语义`
+            + `（按全局工作区 ${String(globalWs)} 现读判断）⇒ **这一声可能越界**`
+            + `（卡 ${e.taskId} · 项目 ${e.workspaceId}）；`
+            + '⛔ 这不是"没有卡跑完"，⛔ 也不是"已确认投给了本项目的人"',
+        }
+        this.say(`[card-wake] ${this.state.note}`)
+      }
+      /**
+       * ⚠ **两类都投**：`eligible`（确认本项目）+ `legacy`（旧的、可能越界但要可观测）。
+       *   ⚠ 顺序：先投确认过的，再投退回旧语义的 —— 让 `lastWokeCard` 语义稳定。
+       */
+      for (const t of [...eligible, ...legacy]) {
         if (this.deliverFn === undefined) {
           this.state = { ...this.state, note: '⚠ 有卡跑完，但**投递通道没就绪**（hobBus 未提供）⇒ 这一声没叫出去' }
           this.say(`[card-wake] ${this.state.note}`)
@@ -510,7 +583,14 @@ export class CardWake {
       return
     }
     const url = `${origin.replace(/\/+$/, '')}${BOARD_SSE_PATH}`
-    this.state = { conn: 'connecting', url, wokeCount: this.state.wokeCount, noSubscriberCount: this.state.noSubscriberCount, seenCount: 0 }
+    this.state = {
+      conn: 'connecting',
+      url,
+      wokeCount: this.state.wokeCount,
+      noSubscriberCount: this.state.noSubscriberCount,
+      legacyTargetCount: this.state.legacyTargetCount,
+      seenCount: 0,
+    }
     this.looping = true
     this.say(`[card-wake] 正在接 ${url}`)
     void this.loop(url, fetcher)

@@ -2171,7 +2171,7 @@ const orchCode = stripComments(orchSrc)
           // ── N-a ⭐ 正向：一帧落定 ⇒ 叫一次（且说清是哪张卡）────────────────────
           {
             const { w, sent } = makeWake(WS)
-            w.subscribe('session-hob')
+            w.subscribe('session-hob', WS)
             const n = await w.handleFrame('change', frameOf({}))
             const okCount = n === 1 && sent.length === 1
             const hasCard = sent[0]?.text?.includes('t-card-1') === true
@@ -2190,7 +2190,7 @@ const orchCode = stripComments(orchSrc)
           // ── N-b ⭐ 反向：同一帧再投一次 ⇒ **不叫第二声** ────────────────────────
           {
             const { w, sent } = makeWake(WS)
-            w.subscribe('session-hob')
+            w.subscribe('session-hob', WS)
             await w.handleFrame('change', frameOf({}))
             const second = await w.handleFrame('change', frameOf({}))
             if (second === 0 && sent.length === 1) {
@@ -2204,7 +2204,7 @@ const orchCode = stripComments(orchSrc)
           // ── N-c ⭐ 反向：**别的项目**的卡跑完 ⇒ 一声都不叫（叫醒面 = 显示面）────
           {
             const { w, sent } = makeWake(WS)
-            w.subscribe('session-hob')
+            w.subscribe('session-hob', WS)
             const n = await w.handleFrame('change', frameOf({ workspaceId: 'ws-OTHER' }))
             if (n === 0 && sent.length === 0) {
               ok('N-c ✓ 反向（叫醒面=显示面）：**别的项目**的卡跑完 ⇒ 一声都不叫')
@@ -2217,7 +2217,7 @@ const orchCode = stripComments(orchSrc)
           // ── N-d ⭐ 反向：`running` 那一帧**不许**当成"跑完"（防在点火时就叫）──────
           {
             const { w, sent } = makeWake(WS)
-            w.subscribe('session-hob')
+            w.subscribe('session-hob', WS)
             const n = await w.handleFrame('change', frameOf({ lastExecutionOutcome: 'running' }))
             if (n === 0 && sent.length === 0) {
               ok('N-d ✓ 反向（不许假叫醒）：`lastExecutionOutcome=running`（点火那一帧）⇒ **不叫**')
@@ -2275,7 +2275,7 @@ const orchCode = stripComments(orchSrc)
                 deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
                 now: () => 1792300800000,
               })
-              w.subscribe('session-hob')
+              w.subscribe('session-hob', WS)
               // 点火那一帧（running）—— 原实现**不叫**，变异体**会叫**
               const n = await w.handleFrame('change', frameOf({ lastExecutionOutcome: 'running' }))
               if (n !== 0 || sent.length !== 0) {
@@ -2403,7 +2403,7 @@ const orchCode = stripComments(orchSrc)
               deliver: () => Promise.resolve({ ok: true }),
               now: () => 1792300800000,
             })
-            cw.subscribe('session-hob')
+            cw.subscribe('session-hob', 'ws-abc')
             const sseN = await cw.handleFrame('change', JSON.stringify({
               revision: 1, kind: 'execution-recorded',
               tasks: [{ id: 't-card-1', title: '演示卡', status: 'in_review', workspaceId: 'ws-abc',
@@ -2841,6 +2841,403 @@ const orchCode = stripComments(orchSrc)
           }
         } catch (e) {
           bad(`Q 看板地址现取：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+        }
+      }
+
+      // ── R. **叫醒面 = 显示面**：旁证通道（`CardWake`）**按项目**投递（2026-10-19）────
+      //
+      // ⚠ **它守的是哪条缺陷**（用户实测两次，不是推断）：
+      //   本会话被**别的项目**的卡跑完叫醒过 —— 通知原文形态
+      //   `[看板卡跑完] t-mvdy37bb-paev0o「…」…`（卡属 `e9742e44…` video-transcribe）、
+      //   `t-mvers6x3-nkonel`（`c4bb5014…`）、`t-mveu5dzx-3zx7t2`（`cca0a688…` Mana）。
+      //   根因：`CardWake` 在进程里**被所有会话共用**，而"本工作区"原先只存在于
+      //   `opts.workspaceIdOf()`（**进程级单值**）⇒ 后订阅者覆盖 ⇒ 先前那个会话收到别人的卡。
+      //   ⇒ 修法：归**跟着每个订阅者走**（`WakeTarget.workspaceId`），投递前按归属筛。
+      //
+      // ⚠ ⚠ **判定要成对**（E-112：只测一边等于没测）：
+      //   · **R-a 不匹配** ⇒ 投 0（别的项目的卡 **一声都不叫**）；
+      //   · **R-b 匹配**   ⇒ 投 1（自己项目的卡 **仍然叫一次**，⛔ 不许把通路关掉）；
+      //   · **R-c 未报项目** ⇒ 投 0（⛔ 不许退化成"全投"）；
+      //   · **R-d 筛空** ⇒ `noSubscriberCount + 1` **且**有可读话（⛔ 不许静默）。
+      //   · **R-e 三档不合并**：`deliverFn` 缺 / 投递抛错 / 一个订阅者都没有 —— 三句可读话各自还在。
+      //   · **R-f 负向对拍**：把 `filter` 那步摘掉（改回全量遍历）⇒ **R-a 当场 FAIL 且有可读断言行**；
+      //     还原 ⇒ PASS。
+      //
+      // ⚠ 造样本**全部在内存里**（直接把 target 塞进 `targets`、直接喂 `CardDoneEvent`）：
+      //   ⛔ 不碰真看板、⛔ 不动别人项目的卡、⛔ 不起第二个宿主。
+      {
+        try {
+          const wakeMod = await import(pathToFileURL(join(root, 'src', 'server', 'card-wake.ts')).href)
+          const WS_MINE = 'ws-mine-0001'
+          const WS_OTHER = 'ws-other-0002'
+
+          /**
+           * 造一个只用**内存**的叫醒面。
+           *
+           * @param opts.subs - `[sessionId, workspaceId?]` 列表（⚠ workspaceId 缺省 = "没报项目"）。
+           */
+          const makeCW = (subs, over = {}) => {
+            const sent = []
+            const cw = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0',
+              workspaceIdOf: () => over.globalWs,          // ⚠ 进程级单值（R-c 要证明它不再决定投给谁）
+              deliver: over.deliver ?? ((sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) }),
+              now: () => 1792300800000,
+            })
+            for (const [sid, ws] of subs) cw.subscribe(sid, ws)
+            return { cw, sent }
+          }
+
+          /** 造一帧「执行落定」的 SSE 负载；`ws` = 这张卡属于哪个项目。 */
+          const frameOn = (ws, over = {}) => JSON.stringify({
+            revision: 1, kind: 'execution-recorded',
+            tasks: [{ id: 't-card-x', title: '演示卡', status: 'in_review', workspaceId: ws,
+              version: 2, lastExecutionOutcome: 'succeeded', ...over }],
+          })
+
+          // ── R-a ⭐ **(a) 第一条腿：别的项目的卡跑完 ⇒ 一声都不叫** ─────────────
+          //   ⚠ 订阅者报的是**自己的**项目（WS_MINE），帧里的卡属于**别人的**项目（WS_OTHER）。
+          //   ⚠ 同时把 `workspaceIdOf()` 设成 WS_OTHER（= 全局单值正好"对得上这张卡"）——
+          //     这一手是用来证明**投给谁不再由全局单值决定**（改前正是它导致越界）。
+          {
+            const { cw, sent } = makeCW([['session-hob', WS_MINE]], { globalWs: WS_OTHER })
+            // ⚠ 认卡阶段仍受 `workspaceIdOf()` 约束（B7 §一 只收了投递侧）⇒ 为让事件真的被认出来，
+            //   本条的全局 ws 设成**帧的项目**；"该不该投给这个订阅者"由 R-a 自己判。
+            const n = await cw.handleFrame('change', frameOn(WS_OTHER))
+            const st = cw.snapshot()
+            if (sent.length === 0) {
+              ok('R-a ✓ (a) 旁证通道：**别的项目**的卡跑完 ⇒ **一声都不叫**'
+                + `（订阅者属 ${WS_MINE} · 卡属 ${WS_OTHER} · 投递=${sent.length} · 返回值=${n}`
+                + ` · 落"没有订阅者属于这个项目"=${st.noSubscriberCount}）`)
+            } else {
+              bad('R-a 【叫醒面必须与显示面同一个】旁证通道把**别的项目**的卡叫给了本会话'
+                + `：投递=${sent.length}（应为 0）· 收到的会话=${sent.map((x) => x.sid).join(',')}`
+                + ' ⇒ 这正是「叫醒说有卡跑完、状态行里看不到它」的越界')
+            }
+          }
+
+          // ── R-b ⭐ **(b) 第二条腿：本工作区的卡跑完 ⇒ 仍然叫一次** ─────────────
+          //   ⚠ 与 R-a 成对：只做 (a) 的最省事做法是"把整条通路关掉"—— 这条防的就是那个。
+          {
+            const { cw, sent } = makeCW([['session-hob', WS_MINE]], { globalWs: WS_MINE })
+            const n = await cw.handleFrame('change', frameOn(WS_MINE))
+            const hit = sent.length === 1 && sent[0].sid === 'session-hob'
+            if (n === 1 && hit && sent[0].text.includes('t-card-x')) {
+              ok('R-b ✓ (b) 旁证通道：**本项目的卡**跑完 ⇒ **仍然叫一次**'
+                + `（投递=${sent.length} · 收件=${sent[0].sid} · 话里带卡号=是）`)
+            } else {
+              bad('R-b 【本工作区的卡必须仍然叫】判据 (b) 不成立'
+                + `：返回值=${n}（应 1）· 投递=${sent.length}（应 1）· 收件=${sent.map((x) => x.sid).join(',') || '(无)'}`
+                + ' ⇒ 为了做到 (a) 把通路关掉了')
+            }
+          }
+
+          // ── R-b2 ⭐ **多订阅者同桌：各收各的**（越界的真实现场就是"不止一个订阅者"）──
+          //   ⚠ 这一条是本组最有分辨力的一条：改前两个订阅者会**都**收到同一张卡。
+          {
+            const { cw, sent } = makeCW([
+              ['session-hob', WS_MINE],
+              ['session-other-hob', WS_OTHER],
+            ], { globalWs: WS_MINE })
+            // 先推本项目的一张卡（全局 ws 与帧一致 ⇒ 认得出）
+            await cw.handleFrame('change', frameOn(WS_MINE))
+            const mineGot = sent.filter((x) => x.sid === 'session-hob').length
+            const otherGot = sent.filter((x) => x.sid === 'session-other-hob').length
+            sent.length = 0
+            // 再把全局 ws 换成"别人的项目"，推别人的卡
+            //   ⚠ 认卡用的是现读的 `workspaceIdOf()` ⇒ 这里要让它现读成 WS_OTHER
+            const cw2 = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0',
+              workspaceIdOf: () => WS_OTHER,
+              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+              now: () => 1792300800000,
+            })
+            cw2.subscribe('session-hob', WS_MINE)
+            cw2.subscribe('session-other-hob', WS_OTHER)
+            await cw2.handleFrame('change', frameOn(WS_OTHER))
+            const mineGot2 = sent.filter((x) => x.sid === 'session-hob').length
+            const otherGot2 = sent.filter((x) => x.sid === 'session-other-hob').length
+            if (mineGot === 1 && otherGot === 0 && mineGot2 === 0 && otherGot2 === 1) {
+              ok('R-b2 ✓ 两个会话同桌：**各收各的项目的卡**'
+                + `（本项目卡 ⇒ 我 ${mineGot} / 他 ${otherGot}；他的项目卡 ⇒ 我 ${mineGot2} / 他 ${otherGot2}）`
+                + ' ⇒ 改前这两个数会是 1/1 与 1/1（全量广播）')
+            } else {
+              bad('R-b2 【多订阅者必须各收各的】出现串台'
+                + `：本项目卡 ⇒ 我 ${mineGot}（应 1）/ 他 ${otherGot}（应 0）`
+                + ` · 他的项目卡 ⇒ 我 ${mineGot2}（应 0）/ 他 ${otherGot2}（应 1）`)
+            }
+          }
+
+          // ── R-c ⭐ 订阅者**没报项目** ⇒ **按旧语义投**，但必须留下独立可读话 ──────────
+          //
+          //   ⚠ 2026-10-19 · `TASK-B8` **甲路改判**（⚠ 这是"改判"，不是"放宽"）：
+          //     原判据钉的是"没报项目 ⇒ **投 0**"（= 乙路）。派单方复核了 `cf72d8b^` 的实际行为
+          //     （`git show cf72d8b^:src/server/card-wake.ts` 的 `:365`
+          //      `for (const t of this.targets.values())` = **全量广播**，项目过滤只在 `:347`
+          //      `cardDoneEventsOf(parsed, wsId)` 的**认卡**阶段用全局 `wsId`）⇒ 旧语义**是投的**。
+          //     ⚠ 走甲路后"投 0"在语义上不成立 ⇒ 判据随之改判。
+          //   ⚠ ⚠ **分辨力没有削，反而换了个更硬的靶子**：
+          //     新的那条钉的是「**不许静默**」——"投了"必须可数（`legacyTargetCount`）且可读，
+          //     并且话里必须写清它**不是**"没有卡跑完"、**不是**"已确认投给本项目的人"
+          //     （因为退回全局单值 = **可能越界**，这个缺陷要一直看得见）。
+          //   ⇒ 成对判四件（缺一即红）：
+          //     ① 投了（`sent.length === 1`；⛔ 不是 0 —— 0 就等于退回乙路静默丢）；
+          //     ② 单独计数（`legacyTargetCount === 1`，⛔ 不许并进 `noSubscriberCount`）；
+          //     ③ 有话，且点名卡 id 与该帧的项目 id；
+          //     ④ 话里明确写"可能越界"+"既不是没有卡跑完/也不是已确认投给本项目的人"。
+          {
+            const { cw, sent } = makeCW([['session-legacy']], { globalWs: WS_MINE })
+            await cw.handleFrame('change', frameOn(WS_MINE))
+            const st = cw.snapshot()
+            const delivered = sent.length === 1
+            const counted = st.legacyTargetCount === 1
+            const notMerged = st.noSubscriberCount === 0
+            const note = typeof st.note === 'string' ? st.note : ''
+            const namesIt = note.includes('t-card-x') && note.includes(WS_MINE)
+            const saysRisk = note.includes('可能越界')
+            const saysNotNoCard = note.includes('不是"没有卡跑完"')
+            const saysNotConfirmed = note.includes('已确认投给了本项目')
+            if (delivered && counted && notMerged && namesIt && saysRisk && saysNotNoCard && saysNotConfirmed) {
+              ok('R-c ✓ 订阅者**没有报项目** ⇒ **按旧语义投**（`legacyTargetCount + 1`），'
+                + '**且留下独立可读话**：点名卡与项目、明写"可能越界"、'
+                + '并说清它不是"没有卡跑完"也不是"已确认投给本项目的人"'
+                + ' —— ⚠ 退回旧语义 = 恢复"可能越界"，但 ⛔ 不是静默')
+            } else if (!delivered) {
+              bad('R-c 【没报项目必须按旧语义投】这一档被静默丢弃了（投 0）'
+                + `：投递=${sent.length}（应为 1）· note=${JSON.stringify(note.slice(0, 120))}`
+                + '\n      ⇒ ⚠ 静默丢 = 今天的原缺陷；要"不投"就必须先改派单口径')
+            } else {
+              bad('R-c 【没报项目必须留下独立可读话】投是投了，但这一档**不可观测**'
+                + `：legacyTargetCount=${st.legacyTargetCount}（应 1）`
+                + ` · 与"没有订阅者"分开=${notMerged}（noSubscriberCount 应 0，实测 ${st.noSubscriberCount}）`
+                + ` · 点名卡与项目=${namesIt} · 写了"可能越界"=${saysRisk}`
+                + ` · 写了不是没卡跑完=${saysNotNoCard} · 写了不是"已确认投给本项目"=${saysNotConfirmed}`
+                + ` · note=${JSON.stringify(note.slice(0, 160))}`
+                + '\n      ⇒ ⚠ 这正是本项目最忌讳的形态："可能越界、而且没人报"')
+            }
+          }
+
+          // ── R-d ⭐ **筛空** ⇒ `noSubscriberCount + 1` + 可读话（⛔ 不许静默）──────
+          {
+            const { cw } = makeCW([['session-hob', WS_MINE]], { globalWs: WS_OTHER })
+            await cw.handleFrame('change', frameOn(WS_OTHER))
+            const st = cw.snapshot()
+            const says = typeof st.note === 'string'
+              && st.note.includes('没有订阅者属于这个项目')
+              && st.note.includes('t-card-x')
+            if (st.noSubscriberCount === 1 && says) {
+              ok('R-d ✓ "筛空"是**独立一档**：`noSubscriberCount + 1` **且**有可读话'
+                + '（点名卡 id 与项目 id；⛔ 不静默丢弃）')
+            } else {
+              bad('R-d 【筛空必须可数可读】没有一档独立读数'
+                + `：noSubscriberCount=${st.noSubscriberCount}（应 1）· 有话=${says}`
+                + ` · note=${JSON.stringify(st.note)}`)
+            }
+          }
+
+          // ── R-e ⭐ **既有三档一条都不许被合并 / 降级** ─────────────────────────
+          {
+            // ① 一个订阅者都没有（`targets.size === 0`）—— 与"筛空"是**两句不同**的话
+            const noOne = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0',
+              workspaceIdOf: () => WS_MINE,
+              deliver: () => Promise.resolve({ ok: true }),
+              now: () => 1792300800000,
+            })
+            await noOne.handleFrame('change', frameOn(WS_MINE))
+            const stNoOne = noOne.snapshot()
+            const saysNoOne = typeof stNoOne.note === 'string' && stNoOne.note.includes('没有订阅者')
+
+            // ② 投递通道没就绪（`deliverFn === undefined`）
+            const noChannel = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0',
+              workspaceIdOf: () => WS_MINE,
+              now: () => 1792300800000,
+            })
+            noChannel.subscribe('session-hob', WS_MINE)
+            await noChannel.handleFrame('change', frameOn(WS_MINE))
+            const stNoChannel = noChannel.snapshot()
+            const saysNoChannel = typeof stNoChannel.note === 'string' && stNoChannel.note.includes('投递通道没就绪')
+
+            // ③ 投递抛错（`catch` 那一档）
+            const boom = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0',
+              workspaceIdOf: () => WS_MINE,
+              deliver: () => Promise.reject(new Error('probe: deliver exploded')),
+              now: () => 1792300800000,
+            })
+            boom.subscribe('session-hob', WS_MINE)
+            await boom.handleFrame('change', frameOn(WS_MINE))
+            const stBoom = boom.snapshot()
+            const saysBoom = typeof stBoom.note === 'string' && stBoom.note.includes('失败')
+
+            // ④ 三句必须是**三种不同**的话（⛔ 不许合并成一句）
+            const notes = [stNoOne.note, stNoChannel.note, stBoom.note].map((x) => String(x ?? ''))
+            const distinct = new Set(notes).size === 3
+            if (saysNoOne && saysNoChannel && saysBoom && distinct) {
+              ok('R-e ✓ 既有三档**一条都没被合并**：'
+                + '"没有订阅者" / "投递通道没就绪" / "投递失败" 三句各自还在且互不相同'
+                + '（⚠ 与 R-d 的"筛空"是**第四句**，不共用措辞）')
+            } else {
+              bad('R-e 【三档被合并或丢了】'
+                + `：没有订阅者=${saysNoOne} · 通道没就绪=${saysNoChannel} · 投递失败=${saysBoom}`
+                + ` · 三句互不相同=${distinct}`)
+            }
+          }
+
+          // ── R-f ⭐ **负向对拍**：把 `filter` 那一步摘掉 ⇒ R-a 必须当场 FAIL ──────
+          //   ⚠ 判据**不是**退出码，而是：变异体跑**同一段 R-a/R-b** ⇒ 出现串台，
+          //     且本组打出**可读断言行**（这正是 R-a/R-b/R-b2 存在的意义）。
+          {
+            const srcPath = join(root, 'src', 'server', 'card-wake.ts')
+            const original = readFileSync(srcPath, 'utf8')
+            /**
+             * 靶点 = **按归属筛的谓词本身**。
+             *
+             * ⚠ ⚠ 为什么不能拿 `for (const t of eligible)` 当靶子（第一版写错过，实测教训）：
+             *   把它换回全量遍历后，`eligible.length === 0` 那道 `continue` **仍然先拦住**了
+             *   "筛空"的情形 ⇒ 变异体在单订阅者的 R-a 场景里**行为照旧**（投 0），
+             *   只有多订阅者的 R-b2 才露馅 ⇒ 对拍的靶子**偏了**。
+             *   ⇒ 正确的靶子是把谓词改成**恒真**（= 谁都不排除 = 改前的全量广播）。
+             */
+            const GUARD = 'const eligible = rows.filter((t) => t.workspaceId !== undefined && t.workspaceId === e.workspaceId)'
+            if (!original.includes(GUARD)) {
+              bad('R-f 【负向对拍失去靶子】在 `card-wake.ts` 里找不到"按归属筛"的谓词原文'
+                + `（期望：${GUARD}）⇒ 本判据已对不上实现，不按通过处理`)
+            } else {
+              // ⚠ 变异 = 谓词改成恒真（= 谁都收 = 改前的全量广播）
+              const mutDir = mkdtempSync(join(tmpdir(), 'hob-scopecheck-'))
+              const mutPath = join(mutDir, 'card-wake.ts')
+              writeFileSync(mutPath, original.replace(GUARD, 'const eligible = rows.filter((t) => true || t.workspaceId === e.workspaceId)'), 'utf8')
+              let mutant
+              try {
+                mutant = await import(pathToFileURL(mutPath).href)
+              } catch (e) {
+                bad(`R-f 【负向对拍跑不起来】变异体 import 失败：${String(e?.message ?? e)}`)
+              }
+              if (mutant !== undefined) {
+                const sent = []
+                const mw = new mutant.CardWake({
+                  origin: 'http://127.0.0.1:0',
+                  workspaceIdOf: () => WS_OTHER,
+                  deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+                  now: () => 1792300800000,
+                })
+                mw.subscribe('session-hob', WS_MINE)          // 我：本项目
+                mw.subscribe('session-other-hob', WS_OTHER)   // 他：别的项目
+                await mw.handleFrame('change', frameOn(WS_OTHER))
+                const leaked = sent.filter((x) => x.sid === 'session-hob').length
+                if (leaked > 0) {
+                  ok('R-f ✓ 负向对拍：把"按归属筛"的谓词摘掉（改成恒真 = 全量广播）⇒'
+                    + ` **R-a/R-b2 当场不成立**（别的项目的卡投给了我 ${leaked} 声 · 共 ${sent.length} 声）`
+                    + ' ⇒ R-a/R-b/R-b2 真长牙（⚠ 这条 PASS 说明变异体确实被抓到了）')
+                } else {
+                  bad('R-f 【负向对拍失败】谓词恒真之后**仍然**没投给别的项目的订阅者'
+                    + `（投递=${sent.length}）⇒ R-a/R-b2 测的不是"按项目过滤"这件事（永远 PASS = 没有分辨力）`)
+                }
+              }
+              try { rmSync(mutDir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+            }
+          }
+        } catch (e) {
+          bad(`R 叫醒面按项目投递：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+        }
+      }
+
+      // ── R-g. **"没报项目"必须独立成档**（2026-10-19 · `TASK-B8` · 回归的收口)──────
+      //
+      // ⚠ **它守的是哪条回归**（我自己在 S4 报上来的那条，实测）：
+      //   `cf72d8b` 把订阅谓词写成 `t.workspaceId !== undefined && t.workspaceId === e.workspaceId`
+      //   ⇒ **没报项目**的旧式订阅（`subscribe(sid)`）被判成"不属于本项目" ⇒ 筛空 ⇒ **不投**，
+      //   而且**一声可读话都没有**（那句"没有订阅者属于这个项目"读起来像"确实没人在看"，
+      //   把"有人在看、但没说自己是哪个项目"**掩盖**了）。
+      //   行为对照读数：`cf72d8b^` ⇒ `woke=1 sent=1`；`cf72d8b` ⇒ `woke=0 sent=0`
+      //   （`tmp/probe-before-after.mjs`）。⇒ 连带 N-a / N-b / N-f / O-d 四条红。
+      //
+      // ⚠ ⚠ **本组钉两件事**（缺一不算）：
+      //   · **R-g1 不越界**：没报项目 ⇒ **仍然不投**（⛔ 不许退回全量广播）；
+      //   · **R-g2 不静默**：必须落一条**独立**可读话（`noProjectCount + 1`），
+      //     且 ⛔ 不许与"没有订阅者" / "筛空" / "投递失败" 三句混同；
+      //     话里必须写清它**既不是**"没有卡跑完"、**也不是**"已投递"。
+      {
+        try {
+          const wakeMod = await import(pathToFileURL(join(root, 'src', 'server', 'card-wake.ts')).href)
+          const WSX = 'ws-g-0001'
+          const frameG = JSON.stringify({
+            revision: 1, kind: 'execution-recorded',
+            tasks: [{ id: 't-card-g', title: '演示卡', status: 'in_review', workspaceId: WSX,
+              version: 2, lastExecutionOutcome: 'succeeded' }],
+          })
+
+          // ── R-g1 / R-g2 ⭐ 没报项目 ⇒ 不投 **且** 独立可读一档 ──────────────
+          {
+            const sent = []
+            const cw = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0',
+              workspaceIdOf: () => WSX,          // ⚠ 全局单值"恰好对得上" —— 也不能因此放行
+              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+              now: () => 1792300800000,
+            })
+            cw.subscribe('session-no-project')   // ⚠ 故意不传项目（旧式调用）
+            const n = await cw.handleFrame('change', frameG)
+            const st = cw.snapshot()
+            const note = String(st.note ?? '')
+            const saysNoProject = note.includes('没有报告自己属于哪个项目')
+            const saysNotDelivered = note.includes('不是"已投递"')
+            const saysNotNoCard = note.includes('不是"没有卡跑完"')
+            const notMixedWithNoSub = !note.includes('没有订阅者属于这个项目')
+            const counted = st.noProjectCount === 1
+            const zeroSubUntouched = st.noSubscriberCount === 0
+            if (n === 0 && sent.length === 0 && saysNoProject && saysNotDelivered
+                && saysNotNoCard && notMixedWithNoSub && counted && zeroSubUntouched) {
+              ok('R-g1/R-g2 ✓ "没报项目"既不越界也不静默：'
+                + `投递=${sent.length}（应 0）· 独立档 noProjectCount=${st.noProjectCount}（应 1）`
+                + ` · 没并进"筛空"=${notMixedWithNoSub} · 明写"不是已投递 / 不是没有卡跑完"=${saysNotDelivered && saysNotNoCard}`)
+            } else {
+              bad('R-g 【没报项目必须"不越界 + 不静默"】缺项'
+                + `：投递=${sent.length}（应 0）· 有"没报项目"那句=${saysNoProject}`
+                + ` · 明写不是已投递=${saysNotDelivered} · 明写不是没卡跑完=${saysNotNoCard}`
+                + ` · 未混进筛空=${notMixedWithNoSub} · noProjectCount=${st.noProjectCount}`
+                + ` · noSubscriberCount=${st.noSubscriberCount}（应 0）`
+                + ` · note=${JSON.stringify(note.slice(0, 160))}`)
+            }
+          }
+
+          // ── R-g3 ⭐ 三档**互斥**：同一个订阅面上，"没报项目"与"筛空"不会同时成立 ──
+          //   ⚠ 这条防的是"两档合并成一档"那种省事写法（合并之后计数就没法区分原因了）。
+          {
+            // ① 只有"没报项目"的订阅者
+            const a = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0', workspaceIdOf: () => WSX,
+              deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000,
+            })
+            a.subscribe('session-no-project')
+            await a.handleFrame('change', frameG)
+            const sa = a.snapshot()
+
+            // ② 有一个订阅者、但它属于**别的项目**（= 真"筛空"）
+            const b = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0', workspaceIdOf: () => WSX,
+              deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000,
+            })
+            b.subscribe('session-other-project', 'ws-elsewhere')
+            await b.handleFrame('change', frameG)
+            const sb = b.snapshot()
+
+            if (sa.noProjectCount === 1 && sa.noSubscriberCount === 0
+                && sb.noProjectCount === 0 && sb.noSubscriberCount === 1) {
+              ok('R-g3 ✓ 两档**互斥**且各自计数正确：'
+                + `"没报项目" ⇒ noProject=${sa.noProjectCount}/筛空=${sa.noSubscriberCount} · `
+                + `"别的项目" ⇒ noProject=${sb.noProjectCount}/筛空=${sb.noSubscriberCount}`
+                + ' ⇒ 两种原因**没有**被记成同一档')
+            } else {
+              bad('R-g3 【两档必须互斥】计数串了'
+                + `：没报项目 ⇒ noProject=${sa.noProjectCount}（应 1）/ 筛空=${sa.noSubscriberCount}（应 0）`
+                + ` · 别的项目 ⇒ noProject=${sb.noProjectCount}（应 0）/ 筛空=${sb.noSubscriberCount}（应 1）`)
+            }
+          }
+        } catch (e) {
+          bad(`R-g "没报项目"独立成档：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
         }
       }
     }
