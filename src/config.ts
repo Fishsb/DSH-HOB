@@ -13,6 +13,12 @@
  *    或在 profile 层**写全**字段。
  */
 import z from '@deepseek-ai/schemastery'
+import {
+  DEFAULT_WORK_MODE,
+  WORK_MODE_DISPLAY,
+  WORK_MODE_VALUES,
+  type WorkMode,
+} from './shared/work-mode.ts'
 
 /**
  * 模块开关：每个宿主半边模块（`src/modules/*`）可**独立启停**。
@@ -109,6 +115,18 @@ export interface Config {
      */
     bus: import('@deepseek-ai/cordis').Volatile<boolean>
     settings: import('@deepseek-ai/cordis').Volatile<boolean>
+  }
+  /**
+   * 「Hob 推进项目的工作方式」（2026-10-19 · `UD-97`）。
+   *
+   * ⚠ **形状与 `spawn` 同款**：父对象 `workMode` **不**标 volatile、子字段 `mode` **标**
+   *   （父子同标会抛 `ValidationError`；非 volatile 路径会被宿主写入通道拒
+   *   ⇒ 设置面必须写 `['workMode','mode']`）。
+   * ⚠ **绝不要直接读 `config.workMode.mode`**：运行时它是 ref 对象（恒 truthy、且不报错）。
+   *   一律经 {@link workMode} 取普通值。
+   */
+  workMode: {
+    mode: import('@deepseek-ai/cordis').Volatile<WorkMode>
   }
 }
 
@@ -395,6 +413,59 @@ export const Config = z.object({
       .description('跨实例投递的对端白名单：每行一个，格式 `名字` 或 `名字=<launcher 路径>`。⚠ 空 = 谁都不许投（拒绝时会点名）。')
       .volatile(),
   }).default({}),
+
+  /**
+   * ── 「Hob 推进项目的工作方式」（2026-10-19 · `UD-97` 推进优先）───────────────
+   *
+   * ⚠ ⚠ **它管什么、⛔ 不管什么**（这是本段最容易被误读的地方）：
+   *   ✅ 管：**Hob 怎么拆活、拆成几路**（三档：自动 / 单会话 / 多会话）；
+   *   ⛔ 不管：权限档位（那是上面 `permission`）、谁能写什么、验收口径。
+   *   ⇒ 它与 `permission` 是**两个正交的旋钮**：一个管"看得见什么"，一个管"拆几路"。
+   *
+   * ── 三档（⚠ 取值与顺序的唯一来源是 `src/shared/work-mode.ts`）──────────────
+   *   `auto`（缺省）= 按任务与方案自己判该拆成几路；`single` = **恒定一路**；
+   *   `multi` = 拆到**最细**、**尽可能多路**（⚠ 费用与时间不设上限）。
+   *   ⚠ 顺序照 `WORK_MODE_VALUES`（面板渲染顺序同此）。
+   *
+   * ── 形状（⚠ 与 `spawn` / `permission` / `skeleton` / `interconnectTargets` 同形）──
+   *   · 父对象 `workMode` **不标** `.volatile()`；
+   *   · 子字段 `mode` **标** `.volatile()`。
+   *   理由与那四段完全同源：父子同标会抛 `ValidationError`；
+   *   写入路径必须逐级 volatile ⇒ 设置面**必须写** `['workMode','mode']`。
+   *
+   * ── 为什么是 `.volatile()`（而不只是普通配置）────────────────────────────
+   *   ⚠ 三档要**改完即生效、不必重启**：`.volatile()` 让宿主写入走 volatile-only 通道
+   *   （`equalExceptVolatile` 判定为真 ⇒ 只换 `fiber._config`、**不重挂载**）。
+   *   而消费方（`src/preset/tools.ts` 注入的那段口径）**每次装配现读**档位
+   *   ⇒ 已开的 Hob 会话**下一次模型 step** 就按新档走（与 `permission.level` 同一条落法）。
+   *   ⚠ 若改成普通（非 volatile）字段 ⇒ 宿主走重挂载通道 ⇒ **必须重载/重启**
+   *   （而重启只有用户能做）—— 那就与界面写的那句"改完即生效"不符，
+   *   属于本任务书明令禁止的"写了却做不到"。
+   *
+   * ── 为什么是 `z.union([z.const(…), …])` 而不是 `z.string()` ────────────
+   *   `z.string()` 在设置面会退化成**自由文本输入**（用户能填出三档之外的值，
+   *   而非法值在消费方只能静默归到缺省档 = 一个用户看不出没生效的失败）；
+   *   `z.union` 的 const 列表在宿主 form 里是**选项**形态（`volatileForm` 保留
+   *   `{type:'union', list:[{type:'const',value}…]}`）⇒ 用户只能三选一。
+   *
+   * ── ⛔ 不许改成顶层标量 ──────────────────────────────────────────────
+   *   顶层标量（`workMode: z.string()`）会让 `volatileForm` 返回 `undefined`
+   *   ⇒ **整个本插件分区在设置页静默消失**（宿主不报错）。`check:config` 的 B 组钉着。
+   */
+  workMode: z.object({
+    mode: z.union(WORK_MODE_VALUES.map((v) => z.const(v))).default(DEFAULT_WORK_MODE)
+      .description(
+        'Hob 推进项目的工作方式（三选一）：'
+        + `${WORK_MODE_DISPLAY.auto} = Hob 按任务与方案自己判该拆成几路（结果随任务而变）；`
+        + `${WORK_MODE_DISPLAY.single} = 恒定一路推进；`
+        + `${WORK_MODE_DISPLAY.multi} = 拆到最细、尽可能多路（费用与时间不设上限）。`
+        + '⚠ 它只改「怎么拆活、拆成几路」，不改权限档位、不改谁能写什么、不改验收口径。'
+        + '⚠ 「多会话」的无限制只到"费用与时间不设上限"这一层，不解除任何既有红线：'
+        + '不改看板、不碰别人项目的卡、不放宽任何判据、不把"多"理解成"每个会话都能干任意事"。'
+        + '改完即生效，不必重启实例（已开的会话从下一步起按新档走）。',
+      )
+      .volatile(),
+  }).default({}),
 })
 
 /**
@@ -542,6 +613,52 @@ export function permissionLevel(config: unknown): PermissionLevel {
       : DEFAULT_PERMISSION_LEVEL
   } catch {
     return DEFAULT_PERMISSION_LEVEL
+  }
+}
+
+/**
+ * 「Hob 推进项目的工作方式」的**现读**服务名（2026-10-19 · `UD-97`）。
+ *
+ * ⚠ 与 {@link PERMISSION_SERVICE} 同形：它是一个**函数**（返回 `'auto' | 'single' | 'multi'`），
+ *   不是值 —— 调用方**必须每次调**，不许存起来（理由见 {@link workMode} 的注释）。
+ * ⚠ 定义在 `config.ts`（而不是 `index.ts`）：**两侧都要用它** ——
+ *   插件入口（provide 方）与预设作用域（消费方），放这里不会造成循环 import。
+ */
+export const WORK_MODE_SERVICE = 'hobWorkMode'
+
+/**
+ * 读出「Hob 推进项目的工作方式」的档位（`auto` / `single` / `multi` —— ⚠ 内部取值，⛔ 不是显示名）。
+ *
+ * ── 为什么必须是**函数**、且调用方必须**每次现读**────────────────────
+ *   与 {@link permissionLevel} 同一条纪律：`workMode.mode` 标了 `.volatile()`
+ *   ⇒ 运行时是 **ref 对象**，宿主写入走 volatile-only 通道**原地更新**（不重挂载）。
+ *   ⇒ 若在挂载时读一次存起来，用户改完档位后**已开的会话仍按旧档**走到重挂载为止 ——
+ *     正是"设置页改了但行为没变"那个静默失败。
+ *   ⚠ 本项的**唯一消费者**是 `src/preset/tools.ts` 注册的那段 scoped prompt section，
+ *     它的 `text` 是函数、**每次装配现调** ⇒ "改完即生效"在这里成立。
+ *
+ * ── 兜底口径 ─────────────────────────────────────────────────────────
+ *   读不出来 / 不是三档之一 / 抛异常 ⇒ 一律归到 {@link DEFAULT_WORK_MODE}（`auto`）。
+ *   ⚠ **为什么兜底是 `auto` 而不是 `single`**：两条判据 ——
+ *     ① `auto` 是**缺省档**（与 schema 的 `.default('auto')` 一致；不一致会让
+ *        "读不到配置"与"用户没设过"表现为**两种不同行为**，那就是漂）；
+ *     ② 兜底方向取**后果更轻**的那一边：`auto` = "按任务自己判"；`single` 则会把一个
+ *        **本可并行**的任务强行压成一路 ⇒ 那是**替用户做了一个他没做过的选择**。
+ *     ⚠ 这与 `permissionLevel` 的 fail-closed **不矛盾**：那一档的误判方向是
+ *     **放大权限**（必须收紧），而本项**不涉及任何权限面**（见 `shared/work-mode.ts` 的注释）。
+ *
+ * @param config - 插件配置（或任何带 `workMode.mode` 的对象）。
+ */
+export function workMode(config: unknown): WorkMode {
+  try {
+    const raw = deref((config as { workMode?: unknown } | undefined)?.workMode)
+    if (raw === null || typeof raw !== 'object') return DEFAULT_WORK_MODE
+    const v = deref((raw as Record<string, unknown>).mode)
+    return typeof v === 'string' && (WORK_MODE_VALUES as readonly string[]).includes(v)
+      ? (v as WorkMode)
+      : DEFAULT_WORK_MODE
+  } catch {
+    return DEFAULT_WORK_MODE
   }
 }
 

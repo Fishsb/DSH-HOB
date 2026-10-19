@@ -70,8 +70,9 @@ import {
 import {
   getSettingsForm, getSettingsSnapshot, subscribeSettingsForm, writeSpawnFields,
   writePermissionLevel, readPermissionLevel, PERMISSION_LEVEL_ORDER,
+  writeWorkMode, readWorkMode, WORK_MODE_ORDER,
   readSkeletonEnabled, writeSkeletonEnabled,
-  type PermissionLevel, type SettingsSnapshot, type WriteResult,
+  type PermissionLevel, type SettingsSnapshot, type WriteResult, type WorkMode,
 } from './settings.ts'
 import {
   findModel, findPreset, getCatalogSnapshot, loadCatalog, subscribeCatalog,
@@ -658,6 +659,100 @@ function PermissionCard(props: {
 }
 
 /**
+ * **「Hob 推进项目的工作方式」卡片**（2026-10-19 · `UD-97` 推进优先）。
+ *
+ * ── 它写什么 ──────────────────────────────────────────────────────────
+ *   `workMode.mode` 的**三档**（自动 / 单会话 / 多会话）。写作路径
+ *   `['workMode','mode']`（子字段路径 —— 父对象不 volatile，整块写会被宿主拒）。
+ *
+ * ── ⚠ 与 {@link PermissionCard} **必须分开说清楚**的事（这两张卡最容易混）──
+ *   · 权限档位（上面那张）管「**看得见什么**」，⛔ 不管"干多少"；
+ *   · 本卡管「**怎么拆活、拆成几路**」，⛔ **不改任何权限边界**。
+ *   ⇒ 本卡的说明里**必须**点明"它不改变能力与权限"，否则用户会把"多会话"
+ *   读成"放权"（那正是任务书 §二-② 红线要挡的误读）。
+ *
+ * ── ⚠ 红线为什么也放在**界面上**（不只放在给模型看的口径里）─────────────
+ *   本项目对"用户看不到就等于没有"这条口径（`PROJECT.md` §5.3）——
+ *   而「多会话」这个名字**自带"更多、更强"的暗示**：只把红线写进给模型的口径，
+ *   用户在界面上仍会以为"选多会话 = 能做更多事"。⇒ **紧邻控件**给一句限定。
+ *   三处同源（⛔ 不是三份各写各的措辞）：`shared/work-mode.ts` 的 `WORK_MODE_RED_LINE`
+ *   （中文原文）· 本卡词典的 `wm.redline`（用户可见版）· schema 的 `.description()`
+ *   （插件管理页自动表单会显示）。⚠ 三者都由同一句中文派生，机检 `check:config` 的
+ *   G 组核"用户在面板上能看到它与那句红线同源"。
+ *
+ * ── 生效方式（⚠ 必须如实写，⛔ 不许写做不到的）──────────────────────────
+ *   本档位带 `.volatile()` ⇒ 宿主写入**不重挂载**，而消费者
+ *   （`src/preset/tools.ts` 注入的那段口径）**每次装配现读** ⇒ **改完即生效**，
+ *   已开的 Hob 会话**下一步**就按新档走。⚠ 这句话与 `perm` 那张卡**同一条依据**，
+ *   与模块开关（要重启）**不是同一条路径** —— 两者不许混。
+ */
+function WorkModeCard(props: {
+  form: ReturnType<typeof getSettingsForm>
+  settings: SettingsSnapshot | null
+}): ReactElement {
+  const { form, settings } = props
+  const current = readWorkMode(settings)
+  const [pending, setPending] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  const onChange = async (next: WorkMode): Promise<void> => {
+    if (next === current) return
+    setPending(true); setResult(null); setFailed(false)
+    const r: WriteResult = await writeWorkMode(form, next)
+    setFailed(!r.ok)
+    setResult(r.ok ? t('wm.saved', { mode: t(`wm.mode.${next}`) }) : (r.reason ?? t('perm.writeFailed')))
+    setPending(false)
+  }
+
+  return (
+    <div className={S.card}>
+      <div className={S.cardHead}>
+        <span className={S.cardTitle}>{t('wm.title')}</span>
+        <span className={S.cardNote}>{t('wm.note')}</span>
+      </div>
+      <Row label={t('wm.label')}>
+        <span className={S.inline}>
+          {/* ⚠ 受控组件：`value` 来自**外部存储的快照**（不是渲染期直调 form），
+              否则宿主写入成功后这一处不会跟着重渲染（第 7 轮的同源收益）。 */}
+          <SegmentedControl
+            id="dsh-hob-work-mode"
+            label={t('wm.label')}
+            value={current}
+            disabled={pending}
+            options={WORK_MODE_ORDER.map((m) => ({ value: m, label: t(`wm.mode.${m}`) }))}
+            onChange={(next) => { void onChange(next as WorkMode) }}
+          />
+          {pending ? <span className={S.cardNote}>{t('perm.writing')}</span> : null}
+        </span>
+      </Row>
+      <Row label={t('wm.meaning')}>
+        <span className={S.cardNote}>{t(`wm.mode.note.${current}`)}</span>
+      </Row>
+      {/* ── ⚠ 三档**共同**的红线（不是只在多会话档出现）───────────────────────
+          判据：它是"本项不解除任何既有红线"的**总声明**，与档位无关 ——
+          单会话档照样不许碰别人的卡。⇒ **常驻**，不随档位出现/消失。
+          ⚠ 另外单独给「多会话」一句**代价/边界**（见下），因为那个名字最容易误读。 */}
+      <Row label={t('wm.limit')}>
+        <span className={S.cardNote}>{t('wm.redline')}</span>
+      </Row>
+      {current === 'multi'
+        ? (
+          <Row label={t('wm.multiLimitLabel')}>
+            <span className={S.cardNote}>{t('wm.multiLimit')}</span>
+          </Row>
+        )
+        : null}
+      {result !== null ? (
+        <Row label={t('wm.result')}>
+          <span className={failed ? S.warn : S.cardNote}>{result}</span>
+        </Row>
+      ) : null}
+    </div>
+  )
+}
+
+/**
  * 「首次使用时铺骨架」开关卡片（2026-10-16 第 224 轮 · **`UD-118` 用户裁定「C」**）。
  *
  * ⚠ ⚠ **为什么它必须出现在面板上**（而不是藏在配置文件里）：
@@ -787,6 +882,8 @@ export function SettingsPanel(): ReactElement {
 
       <PermissionCard form={form} settings={settings} />
 
+      <WorkModeCard form={form} settings={settings} />
+
       <SkeletonCard form={form} settings={settings} />
 
       <ul className={S.notes}>
@@ -804,6 +901,9 @@ export function SettingsPanel(): ReactElement {
         </li>
         <li className={S.note}>
           {t('note.permission.pre')}<b>{t('note.permission.strong')}</b>{t('note.permission.post')}
+        </li>
+        <li className={S.note}>
+          {t('note.split.pre')}<b>{t('note.split.strong')}</b>{t('note.split.post')}
         </li>
         <li className={S.note}>
           {t('note.skeleton.pre')}<b>{t('note.skeleton.strong')}</b>{t('note.skeleton.post')}
@@ -908,6 +1008,25 @@ const PANEL_EN: Record<string, string> = {
   'perm.saved': 'Saved: now at the {level} level.',
   'perm.writing': 'Writing…',
   'perm.writeFailed': 'Write failed (no reason returned).',
+  // ── 工作方式（2026-10-19 · UD-97）──────────────────────────────────────
+  // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
+  // ⚠ 显示名只给人看 —— **配置值不进任何用户可见文本**（机检 G 组钉住）。
+  'wm.title': 'How work gets split',
+  'wm.note': 'It changes only how the work is split into tracks. It changes no capability: no level of it lets anything be written, run, or raised as a team.',
+  'wm.label': 'Mode',
+  'wm.mode.auto': 'Automatic',
+  'wm.mode.single': 'One session',
+  'wm.mode.multi': 'Many sessions',
+  'wm.mode.note.auto': 'Hob works out itself how many tracks the task needs, so the count follows the task. Before it hands the work over it says, in one line, how many tracks it is splitting into and which pieces they are.',
+  'wm.mode.note.single': 'Always one track, carried by one session one stage at a time — even when the task could clearly be split, that possibility is what this setting overrides. Large work is sequenced inside that one thread.',
+  'wm.mode.note.multi': 'Split as finely as the work honestly allows and run as many tracks as that gives; cost and time are not a limit. Pieces that depend on each other still stay together, because splitting them only makes rework.',
+  'wm.meaning': 'What this mode does',
+  'wm.limit': 'What no mode relaxes',
+  'wm.redline': 'Many sessions means no more power and relaxes no rule: the board is still off-limits, another project\'s cards are still off-limits, no acceptance criterion is loosened, and more sessions never means each one may do whatever it likes.',
+  'wm.multiLimitLabel': 'Where many sessions stops',
+  'wm.multiLimit': '"Cost and time are not a limit" is all it lifts. It is not permission: every session it starts has exactly the reach its own preset and permission level give it.',
+  'wm.result': 'Result',
+  'wm.saved': 'Saved: now splitting work as {mode}. It applies from the next step of an open session.',
   // ── 首次铺骨架（2026-10-16 第 224 轮 · UD-118「C」）───────────────────
   // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
   'skel.title': 'Scaffold on first use',
@@ -920,6 +1039,9 @@ const PANEL_EN: Record<string, string> = {
   'skel.note.off': 'Nothing is ever filled in. A new workspace keeps whatever skeleton you copied by hand, or none at all.',
   'skel.result': 'Result',
   'skel.saved': 'Saved: scaffold-on-first-use is now {state}.',
+  'note.split.pre': '· «How work gets split» is a ',
+  'note.split.strong': 'takes-effect-immediately',
+  'note.split.post': ' value-type configuration too: an open session follows the new mode from its next step. It is not a permission control — it decides how many tracks the work is split into, and no mode adds a capability.',
   'note.skeleton.pre': '· «Scaffold on first use» is a ',
   'note.skeleton.strong': 'never-overwrites',
   'note.skeleton.post': ' behaviour — it fills the skeleton only where no .hob exists yet; when one already exists it reports the skip and touches nothing. It creates no tool, and it is not a conversation-facing capability.',
@@ -1013,6 +1135,25 @@ const PANEL_ZH: Record<string, string> = {
   'perm.saved': '已保存：现在是「{level}」档。',
   'perm.writing': '正在写入…',
   'perm.writeFailed': '写入失败（宿主未给原因）。',
+  // ── 工作方式（2026-10-19 · UD-97）──────────────────────────────────────
+  // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
+  // ⚠ 显示名只给人看 —— **配置值不进任何用户可见文本**（机检 G 组钉住）。
+  'wm.title': '推进项目的工作方式',
+  'wm.note': '它只改「活怎么拆成几路」，不改任何能力：哪一档都不能写、不能执行命令、不能组队。',
+  'wm.label': '工作方式',
+  'wm.mode.auto': '自动',
+  'wm.mode.single': '单会话',
+  'wm.mode.multi': '多会话',
+  'wm.mode.note.auto': '由 Hob 按任务与方案自己判该拆成几路，所以路数随任务而变。动手之前它会先用一句话说清要拆成几份、哪几份。',
+  'wm.mode.note.single': '恒定一路推进，一次一个阶段 —— 即使任务本可拆开也只走一路，那正是这一档要盖住的可能。活多就在这一条线上排先后。',
+  'wm.mode.note.multi': '拆到活本身允许的最细，能并出几路就跑几路；费用与时间都不设上限。互相依赖的部分仍放在一起 —— 硬拆开只会返工，那不是更细，是更多。',
+  'wm.meaning': '这一档怎么拆活',
+  'wm.limit': '哪一档都不放宽的',
+  'wm.redline': '多会话不等于权限更大、也不解除任何既有规则：看板照样不许改、别人项目的卡照样不许碰、判据一条都不放宽、「多」也从不等于「每个会话都能干任意事」。',
+  'wm.multiLimitLabel': '多会话的边界',
+  'wm.multiLimit': '「费用与时间不设上限」就是它全部放宽的东西，它不是权限：它开的每个会话，能力仍只由那个会话自己的预设与权限档决定。',
+  'wm.result': '结果',
+  'wm.saved': '已保存：现在按「{mode}」拆活。已开的会话从下一步起按新档走。',
   // ── 首次铺骨架（2026-10-16 第 224 轮 · UD-118「C」）───────────────────
   // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
   'skel.title': '首次使用时铺骨架',
@@ -1025,6 +1166,9 @@ const PANEL_ZH: Record<string, string> = {
   'skel.note.off': '什么都不铺。新工作区就保持你手工复制的那份骨架（或者干脆没有）。',
   'skel.result': '结果',
   'skel.saved': '已保存：首次铺骨架现在是「{state}」。',
+  'note.split.pre': '· 「推进项目的工作方式」同样是',
+  'note.split.strong': '即改即生效',
+  'note.split.post': '的值型配置 —— 已开的会话从下一步起按新档走。它不是权限控制：它决定活被拆成几路，哪一档都不增加任何能力。',
   'note.skeleton.pre': '· 「首次使用时铺骨架」是',
   'note.skeleton.strong': '永不覆盖',
   'note.skeleton.post': '的行为 —— 只在还没有 .hob 时铺；已经有了就报一行跳过、一个字节都不动。它不建任何工具，也不是面向对话的能力。',

@@ -41,7 +41,14 @@ import {
   ledgerRootOf,
   type HobToolsConfig,
 } from '../modules/tools.ts'
-import { PERMISSION_SERVICE, skeletonEnabled } from '../config.ts'
+import { PERMISSION_SERVICE, WORK_MODE_SERVICE, skeletonEnabled } from '../config.ts'
+import {
+  DEFAULT_WORK_MODE,
+  WORK_MODE_VALUES,
+  workModeInstruction,
+  workModeRedLine,
+  type WorkMode,
+} from '../shared/work-mode.ts'
 import { BUS_SERVICE, createHobBusTools, type HobBus } from '../modules/bus.ts'
 import { ORCH_SERVICE, createHobOrchTools, type HobOrchestrator } from '../modules/orchestrator.ts'
 
@@ -140,6 +147,27 @@ export function apply(ctx: any, config: Config = {}): void {
       return 'ledger'
     }
   }
+  /**
+   * **现读**当前「工作方式」档位（每次调用现取，⛔ 不是快照 —— 2026-10-19 · `UD-97`）。
+   *
+   * ⚠ 与 {@link levelOf} **同一条纪律、同一条取法**（照抄，别各写一份）：
+   *   走插件入口 provide 的 {@link WORK_MODE_SERVICE}（闭包，每次现读 `workMode.mode`），
+   *   因为 `workMode.mode` 是 volatile ref，**本预设作用域不该自己捅 config**。
+   * ⚠ 服务不在（模块关掉 / 旧版本组合 / 裸跑）⇒ 退到 `DEFAULT_WORK_MODE`（`auto`）。
+   *   ⚠ 兜底方向的理由见 `config.ts` 的 `workMode()`：取**后果更轻**的那一边，
+   *   而不是替用户选了 `single`（那会把本可并行的任务压成一路）。
+   * ⚠ **读到的不是三档之一** ⇒ 同样归到缺省档（⛔ 不许把非法值当一档往下传 ——
+   *   那会让 `workModeInstruction()` 落进 `auto` 分支却带着一个说不清的档位名）。
+   */
+  const modeOf = (): WorkMode => {
+    try {
+      const svc = ctx.get?.(WORK_MODE_SERVICE) ?? ctx[WORK_MODE_SERVICE]
+      const raw = typeof svc === 'function' ? String(svc()) : ''
+      return (WORK_MODE_VALUES as readonly string[]).includes(raw) ? (raw as WorkMode) : DEFAULT_WORK_MODE
+    } catch {
+      return DEFAULT_WORK_MODE
+    }
+  }
   denyInheritedTools(ctx, log)
 
   // ⚠ **收敛机制的挂载点：直接在 preset scope 上**（不在门禁回调内）—— 见 apply 头部注释。
@@ -149,6 +177,11 @@ export function apply(ctx: any, config: Config = {}): void {
   filterModelToolList(ctx, levelOf, log)
   enforceToolAllowlist(ctx, levelOf, log)
   installPermissionGuard(ctx, levelOf, log)
+
+  // ⚠ 「工作方式」口径的挂载点**同上**：外层 ctx（本预设作用域）、不随门禁消失。
+  //   理由与收敛机制同一条：关掉 `modules.tools` 不该让"拆几路"的口径**消失**
+  //   （那不是工具能力，是规划口径 —— 与本插件工具面无关）。
+  injectWorkMode(ctx, modeOf, log)
 
   log('apply 完成权限边界与收敛；等待门禁 ' + GATE_SERVICE)
 
@@ -490,6 +523,94 @@ export const GUARDED_TOOLS: readonly string[] = [
   'hob_grep',
   'hob_read_image',
 ]
+
+/**
+ * **「Hob 推进项目的工作方式」口径注入**（2026-10-19 · `UD-97`）—— 本项的**唯一真实消费者**。
+ *
+ * ── 它做什么 ─────────────────────────────────────────────────────────
+ *   在本预设作用域注册**一段 system prompt section**，内容随档位而变：
+ *   `auto` = 自己判几路（⚠ **动手前先报一句**，即任务书 §二-③ 的 (甲) 口径）；
+ *   `single` = **恒定一路**；`multi` = **拆到最细、尽可能多路**（费用与时间不设上限）。
+ *   末尾**恒定**拼上那段红线（"多会话的无限制只到费用与时间，不解除任何既有红线"）。
+ *
+ * ── 它为什么真的改变行为（不是空旋钮）────────────────────────────────
+ *   `text` 是**函数**（`(context) => string`），宿主**每次装配**都调它
+ *   （`dsh-system-prompt/lib/index.js` 的 `assemble()`：
+ *   `text: typeof section.text === "function" ? section.text(context) : section.text`
+ *   —— ⚠ **符号锚**，⛔ 不钉行号）。
+ *   ⇒ 档位改了 ⇒ 下一次装配拿到的正文就变了 ⇒ 已开的 Hob 会话**下一步**按新档规划。
+ *   ⚠ 若写成常量字符串，就会是"设置页改了但行为没变"（本项最要避免的失败形态）。
+ *
+ * ── 为什么落在 `systemPrompt.section` 而不是新工具 / 工具参数 ──────────────
+ *   见 `src/shared/work-mode.ts` 的 `workModeInstruction` 上方注释（三条理由：
+ *   一直生效而非一次调用 · 不扩工具面 · 宿主官方 scoped section）。
+ *
+ * ── 作用半径与失效方向（如实标注）──────────────────────────────────────
+ *   · `systemPrompt.section()` **按调用方的 scope 归属**（`dsh-scope` 的
+ *     `ScopedLayers.effect` → `scopeOf(ctx)`），本函数用的 `sp` 是**预设作用域**
+ *     ⇒ 只有「Hob」受影响；宿主自带的 minimal / standard **零影响**；
+ *   · ⚠ 与 `complete: true` 的关系（**实测过的语义**）：本预设的 persona 用
+ *     `complete: true`（"本段是唯一 prompt 段"）—— 它作用在**装配之后**
+ *     （`assemble()` 末尾把 sections 换回 `[completeSection]`）⇒ **本 section 不会进
+ *     系统提示词正文**。⚠ **这不是 bug，是本实现的已知边界**：
+ *     正文落在 `assembly.sections` 里（装配瀑布可见、可机检），但被 complete 段覆盖。
+ *     ⇒ ⚠ **别用"注入成功"当作"模型看见了"**（判据见 `check:config` 的 G 组：
+ *     它断言的是"注入了、内容随档位变"，**不是**"模型一定读到"）。
+ *     ⚠ 另一条**真正会进模型上下文**的通道是 `agent.inbox`（消息段，见
+ *     `dsh-agent-instructions` 的用法）；本批**不动**它 —— 理由：消息段会**留在会话史**
+ *     里，改档位后旧消息仍在，形成"新旧两套口径同时在上下文里"的错配，
+ *     而 section 是**每次装配重算**的。这个取捨写进回报的「未做到/未验证」段。
+ *   · `systemPrompt` 服务缺席（极端组合）⇒ 反应式 `ctx.inject` 的回调**不跑**
+ *     ⇒ **没有任何注入**，而预设**不 broken**、其余能力照常（与门禁同一条纪律）。
+ *
+ * @param ctx - **本预设作用域**的 ctx（`apply` 的入参，即**外层** ctx）。
+ * @param modeOf - **现读**档位（每次装配调用；⛔ 传值会变成快照）。
+ * @param log - 诊断输出。
+ */
+function injectWorkMode(ctx: any, modeOf: () => WorkMode, log: (m: string) => void): void {
+  // ⚠ 走**反应式** `ctx.inject`（不是本模块的静态 `inject`）：
+  //   静态 inject 缺依赖 ⇒ fiber 停 PENDING ⇒ 预设被标 `broken`
+  //   ⇒ **在选择器里被静默过滤掉**（同本文件头部 E-21 的教训）。
+  ctx.inject(['systemPrompt'], (spCtx: any) => {
+    // ⚠ 段名**必须**稳定且带本项目前缀：宿主 `PromptLayer.sections` 是**按名字**去重的
+    //   （`named entries`，同名重注册会抛"is already registered"）⇒
+    //   名字里带档位会让"改档位"变成"另一个段"（旧段还在），那不是本项要的行为。
+    const SECTION_NAME = 'dsh-hob:work-mode'
+    // 排序位：取 persona 之后、工具说明之前那一档（`DEPLOYMENT_PERSONA_PREFIX` = 0，
+    // `TOOL_*` 从 1000 起）⇒ 用 500（宿主 `SECTION_ORDERS.PLAN_POLICY` 的值）。
+    // ⚠ 用**字面量而非 `getSectionOrder('PLAN_POLICY')`**：后者要求 `systemPrompt`
+    //   实例在位（本回调里 `spCtx.systemPrompt` 才刚就绪），而 order 只是一个排序数
+    //   —— 拿不到就退字面量会让"顺序"变成"有时不同"，比写死更差。
+    //   ⚠ 取值出处：`dsh-system-prompt/lib/types/index.d.ts` 的 `SECTION_ORDERS`
+    //   （`PLAN_POLICY: 500`）—— 它若在上游被重排，本段只是**换了个先后**，不会失效。
+    const SECTION_ORDER = 500
+
+    spCtx.effect(() => spCtx.systemPrompt.section({
+      name: SECTION_NAME,
+      order: SECTION_ORDER,
+      // ⚠ **函数**（不是字符串）：每次装配现读档位 + 现拼正文 ⇒ "改完即生效"的落点。
+      //   ⚠ 整段包 try/catch：装配期抛错会让**这一轮整个装配失败**（宿主 fail-closed），
+      //   那比"口径没注入"严重得多（会话可能整轮跑不起来）。
+      //   异常 ⇒ 退回**缺省档**的正文（而不是空串）：空串等于"没有这个口径"，
+      //   而缺省档是本项落地之前的行为，最轻。
+      text: (): string => {
+        try {
+          const mode = modeOf()
+          return workModeInstruction(mode) + workModeRedLine()
+        } catch (e) {
+          log('工作方式口径取档位异常（退回缺省档）：' + String((e as Error)?.message ?? e))
+          try {
+            return workModeInstruction(DEFAULT_WORK_MODE) + workModeRedLine()
+          } catch {
+            return ''
+          }
+        }
+      },
+    }), 'dsh-hob preset: work-mode instruction section')
+
+    log(`已注入「工作方式」口径段（段名 ${SECTION_NAME}；当前档 = ${modeOf()}）`)
+  })
+}
 
 /**
  * 装配期白名单：把**发给模型的**工具清单收敛到 {@link MODEL_TOOL_ALLOWLIST}。

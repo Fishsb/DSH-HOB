@@ -46,7 +46,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -350,6 +350,392 @@ function schemaTopGroups(src) {
   if (!panelSrc.includes('不影响') || !panelSrc.includes('手工新建')) {
     bad('D 面板缺"只影响本插件建出的会话、不影响手工新建的会话"这条边界说明')
   } else ok('D 面板写明了边界：只影响本插件建出的会话，不影响手工新建的会话')
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// G 组 · 「Hob 推进项目的工作方式」（2026-10-19 · `UD-97`）
+//
+// 判什么（⚠ 每一条都能失败，见回报里的负向对拍）：
+//   G-0 基准（三档取值 / 缺省档）—— **抽不出即 FAIL**（⛔ 基准缺失不按通过处理）；
+//   G-1 第 1 处 · schema（union **派生自**唯一来源 + 形状父不标子各标）；
+//   G-2 第 2 处 · 配置段（声明值合法 + **等于缺省档**）；
+//   G-3 第 3 处 · 面板控件（顺序派生 + 两份词典齐备 + 中文显示名与来源逐字同源）；
+//   G-4 **真实消费者**（收口 → 服务 → 注入 → 每次装配现读；且三档分支真的不同）；
+//   G-5 **显示名 / 配置值分层**（配置值零出现在可见文本里）；
+//   G-6 **红线条在位**（三处：给模型的口径 / 界面 / schema description）；
+//   G-7 兜底同值（面板与收口函数用同一个 `DEFAULT_WORK_MODE`）；
+//   G-8 写入走子字段路径（⛔ 无整块写）；
+//   G-9 ⛔ 无 `*.workMode.*` 直读（volatile ref 直读静默）。
+//
+// ⚠ 为什么单开一组而不并进 B/E：B 只管"键/子键集合对"（结构对而语义空正是本项目
+//   定义的失败形态）；E 只管 spawn 那一项的写入路径。**"三处齐备但没人读"**这个
+//   组合形态，只有本组能咬住 —— 它是本项最可能的失败方式（空旋钮）。
+// ══════════════════════════════════════════════════════════════════════════
+{
+  const SHARED = join(root, 'src', 'shared', 'work-mode.ts')
+  const HOST_ENTRY = join(root, 'src', 'index.ts')
+  const PRESET_TOOLS = join(root, 'src', 'preset', 'tools.ts')
+  const CLIENT_SETTINGS = join(root, 'src', 'client', 'settings.ts')
+  const readG = (p) => { try { return readFileSync(p, 'utf8') } catch { return undefined } }
+  const sharedSrc = readG(SHARED)
+  const hostEntrySrc = readG(HOST_ENTRY)
+  const presetToolsSrc = readG(PRESET_TOOLS)
+  const clientSettingsSrc = readG(CLIENT_SETTINGS)
+
+  /** 从面板源码里抽一份词典块（`const PANEL_XX: Record<string,string> = {…}`）。 */
+  const dictBlock = (name) => {
+    const m = new RegExp(`const\\s+${name}\\s*:\\s*Record<string,\\s*string>\\s*=\\s*\\{([\\s\\S]*?)\\n\\}`).exec(panelSrc)
+    return m === null ? null : m[1]
+  }
+
+  // ── G-0 基准 ──────────────────────────────────────────────────────────
+  const mValues = sharedSrc === undefined ? null : /export\s+const\s+WORK_MODE_VALUES\s*=\s*\[([^\]]*)\]/.exec(sharedSrc)
+  const values = mValues === null ? [] : [...mValues[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+  const mDefault = sharedSrc === undefined
+    ? null
+    : /export\s+const\s+DEFAULT_WORK_MODE\s*:\s*WorkMode\s*=\s*'([^']+)'/.exec(sharedSrc)
+  const defaultMode = mDefault === null ? undefined : mDefault[1]
+
+  if (sharedSrc === undefined) {
+    bad('G-0 读不到 `src/shared/work-mode.ts` —— 三档的唯一来源不在，G 组失去基准（**不按通过处理**）')
+  } else if (values.length !== 3) {
+    bad(`G-0 \`WORK_MODE_VALUES\` 抽到 ${values.length} 个值（应恰好 3 个）`
+      + ' —— 要么档位被改少了（需求是三档），要么抽取口径已漂（⇒ 不按通过处理）')
+  } else if (defaultMode === undefined || !values.includes(defaultMode)) {
+    bad(`G-0 \`DEFAULT_WORK_MODE\` 缺失或不在三档里（抽到 ${JSON.stringify(defaultMode)}）`
+      + ' —— 兜底档必须真实存在且是合法值')
+  } else {
+    ok(`G-0 三档唯一来源在位（${values.join(' / ')}；缺省 = ${defaultMode}）`)
+  }
+
+  if (values.length === 3 && defaultMode !== undefined) {
+    // ── G-1 第 1 处 · schema ─────────────────────────────────────────────
+    const hasUnion = /mode:\s*z\.union\(WORK_MODE_VALUES\.map\(\(v\)\s*=>\s*z\.const\(v\)\)\)/.test(cfgSrc)
+    if (!hasUnion) {
+      bad('G-1 schema 的 `workMode.mode` 不再从 `WORK_MODE_VALUES` 派生'
+        + '（找不到 `z.union(WORK_MODE_VALUES.map((v) => z.const(v)))`）'
+        + '\n      ⇒ 要么档位退化成自由文本（用户能填出三档之外的值），'
+        + '\n        要么 schema 与唯一来源之间出现第二份清单（必然漂）')
+    } else ok('G-1 schema 的 union 列表**派生自** `WORK_MODE_VALUES`（⛔ 无第二份清单）')
+
+    const wmBlock = (() => {
+      const start = cfgSrc.indexOf('workMode: z.object({')
+      if (start < 0) return null
+      const marker = '}).default({})'
+      const at = cfgSrc.indexOf(marker, start)
+      return at < 0 ? null : cfgSrc.slice(start, at + marker.length)
+    })()
+    if (wmBlock === null) {
+      bad('G-1 schema 里找不到 `workMode: z.object({ … }).default({})` 段（配置面无「工作方式」）')
+    } else {
+      const volatileCount = [...wmBlock.matchAll(/\.volatile\(\)/g)].length
+      if (volatileCount !== 1) {
+        bad(`G-1 workMode 段的 .volatile() 应为 1 次（子字段 mode 一次），实测 ${volatileCount}`
+          + ' —— 漏标会让该字段从设置面静默消失；多标/父子同标会抛 ValidationError')
+      } else if (/}\)\.default\(\{\}\)\s*\.volatile\(\)/.test(wmBlock)) {
+        bad('G-1 `workMode` 父对象被标了 .volatile() —— 父子同标会抛 ValidationError')
+      } else {
+        ok('G-1 workMode 形状 = 父不标 volatile + 子字段各标（与 spawn / permission 同形）')
+      }
+    }
+
+    // ── G-2 第 2 处 · 配置段 ─────────────────────────────────────────────
+    {
+      const parsed = patchConfigGroups(patchSrc)
+      const subs = parsed?.groups?.workMode ?? []
+      if (!subs.includes('mode')) {
+        bad('G-2 `cordis.patch.yml` 的 `workMode` 段缺 `mode` 子键'
+          + ' —— 随包分发的默认配置里没有这一项，用户层拿不到基准值')
+      } else {
+        const at = patchSrc.indexOf('workMode:')
+        const block = at < 0 ? '' : patchSrc.slice(at).split('\n').slice(0, 4).join('\n')
+        const mLine = /^\s*mode:\s*(\S+)\s*$/m.exec(block)
+        const declared = mLine === null ? undefined : mLine[1].replace(/^["']|["']$/g, '')
+        if (declared === undefined || !values.includes(declared)) {
+          bad(`G-2 patch 里 \`workMode.mode\` 的声明值非法（抽到 ${JSON.stringify(declared)}）—— 必须是三档之一`)
+        } else if (declared !== defaultMode) {
+          bad(`G-2 patch 的声明值 ${JSON.stringify(declared)} 与缺省档 ${JSON.stringify(defaultMode)} 不一致`
+            + ' —— 同一个"没设过"的状态会出现两种行为（面板显示一个、跑起来另一个）')
+        } else {
+          ok(`G-2 patch 声明 \`workMode.mode: ${declared}\`（= 缺省档，与来源一致）`)
+        }
+      }
+    }
+
+    // ── G-3 第 3 处 · 面板控件 ───────────────────────────────────────────
+    {
+      if (!/WORK_MODE_ORDER\.map\(/.test(panelSrc)) {
+        bad('G-3 面板里找不到 `WORK_MODE_ORDER.map(…)` —— 「工作方式」没有控件（三处只剩两处 ⇒ 有键无功能）')
+      } else ok('G-3 面板控件经 `WORK_MODE_ORDER.map(…)` 渲染（顺序派生，⛔ 无手写清单）')
+
+      const mDisplay = /export\s+const\s+WORK_MODE_DISPLAY[^=]*=\s*\{([\s\S]*?)\n\}/.exec(sharedSrc)
+      const displayPairs = mDisplay === null
+        ? []
+        : [...mDisplay[1].matchAll(/(\w+)\s*:\s*'([^']*)'/g)].map((x) => ({ key: x[1], label: x[2] }))
+      if (displayPairs.length !== 3) {
+        bad(`G-3 从 \`WORK_MODE_DISPLAY\` 抽到 ${displayPairs.length} 个显示名（应 3 个）⇒ 本组失去基准（不按通过处理）`)
+      }
+      for (const dict of ['PANEL_ZH', 'PANEL_EN']) {
+        const block = dictBlock(dict)
+        if (block === null) { bad(`G-3 抽不出面板词典 ${dict} ⇒ 显示名无从核对（不按通过处理）`); continue }
+        const missing = values.filter((v) => !new RegExp(`'wm\\.mode\\.${v}'\\s*:`).test(block))
+        if (missing.length > 0) {
+          bad(`G-3 ${dict} 缺这些档位的显示名：${missing.map((v) => `wm.mode.${v}`).join(', ')}`
+            + ' —— 缺一个就会在界面上**显示键名**（等于把这个档藏起来）')
+        }
+      }
+      const zhBlock = dictBlock('PANEL_ZH')
+      if (zhBlock === null) {
+        bad('G-3 抽不出 `PANEL_ZH` ⇒ 显示名同源无从核对（不按通过处理）')
+      } else {
+        const mismatched = []
+        for (const { key, label } of displayPairs) {
+          const hit = new RegExp(`'wm\\.mode\\.${key}'\\s*:\\s*'([^']*)'`).exec(zhBlock)
+          if (hit !== null && hit[1] !== label) mismatched.push(`${key}：来源「${label}」/ 面板「${hit[1]}」`)
+        }
+        if (mismatched.length > 0) {
+          bad(`G-3 面板中文显示名与 \`WORK_MODE_DISPLAY\` **不是同一套说法**：${mismatched.join('；')}`
+            + ' —— 显示名只有一个来源，两处各写一份必然漂')
+        } else ok(`G-3 三档显示名与来源逐字同源（${displayPairs.map((p) => p.label).join(' / ')}）`)
+      }
+      //   ⚠ 对称的一半：**英文**词典必须与 `WORK_MODE_LABEL_EN` 逐字相等（⛔ 两套英文）。
+      //     判据同源理由与中文那条一样；缺了它，模型面的英文名与面板英文名可以各说一套。
+      {
+        const enBlock = dictBlock('PANEL_EN')
+        const mLabel = /export\s+const\s+WORK_MODE_LABEL_EN[^=]*=\s*\{([\s\S]*?)\n\}/.exec(sharedSrc)
+        const enPairs = mLabel === null
+          ? []
+          : [...mLabel[1].matchAll(/(\w+)\s*:\s*'([^']*)'/g)].map((x) => ({ key: x[1], label: x[2] }))
+        if (enBlock === null) {
+          bad('G-3 抽不出 `PANEL_EN` ⇒ 英文显示名同源无从核对（不按通过处理）')
+        } else if (enPairs.length !== 3) {
+          bad(`G-3 从 \`WORK_MODE_LABEL_EN\` 抽到 ${enPairs.length} 个英文名（应 3 个）⇒ 基准缺失（不按通过处理）`)
+        } else {
+          const missEn = []
+          for (const { key, label } of enPairs) {
+            const hit = new RegExp(`'wm\\.mode\\.${key}'\\s*:\\s*'([^']*)'`).exec(enBlock)
+            if (hit === null || hit[1] !== label) missEn.push(`${key}（来源「${label}」/ 面板「${hit?.[1] ?? '缺'}」）`)
+          }
+          if (missEn.length > 0) {
+            bad(`G-3 面板英文显示名与 \`WORK_MODE_LABEL_EN\` 不一致：${missEn.join('；')}`
+              + ' —— 模型面的英文名与面板英文名必须同一套')
+          } else ok(`G-3 面板英文显示名与来源逐字同源（${enPairs.map((p) => p.label).join(' / ')}）`)
+        }
+      }
+    }
+
+    // ── G-4 真实消费者（本组最重要的一条）──────────────────────────────
+    {
+      const consumers = [
+        { label: 'host 收口函数 `workMode()`', src: cfgSrc, needle: 'export function workMode(' },
+        { label: '入口 provide 现读服务', src: hostEntrySrc, needle: 'ctx.provide(WORK_MODE_SERVICE, () => workMode(config))' },
+        { label: '预设作用域挂载注入', src: presetToolsSrc, needle: 'injectWorkMode(ctx, modeOf, log)' },
+        { label: '注入正文随档位而变', src: presetToolsSrc, needle: 'workModeInstruction(mode) + workModeRedLine()' },
+      ]
+      const missing = consumers.filter((c) => c.src === undefined || !c.src.includes(c.needle))
+      if (missing.length > 0) {
+        bad(`G-4 「工作方式」缺真实消费者：${missing.map((c) => c.label).join(' / ')}`
+          + '\n      ⇒ ⚠ 这正是本项目明确要避免的**空旋钮**：界面有开关、背后没人读')
+      } else ok('G-4 消费者链在位：收口 → 入口现读服务 → 预设注入 → 正文随档位变（4/4）')
+
+      if (presetToolsSrc !== undefined) {
+        const fnStart = presetToolsSrc.indexOf('function injectWorkMode(')
+        const fnBody = fnStart < 0 ? '' : presetToolsSrc.slice(fnStart, fnStart + 8000)
+        if (!/text:\s*\(\s*\)\s*:\s*string\s*=>/.test(fnBody)) {
+          bad('G-4 注入段的 `text` 不是**函数**（找不到 `text: (): string =>`）'
+            + '\n      ⇒ 若是常量字符串，档位改了**已开会话仍按旧档**走到重挂载为止 ——'
+            + '\n        那正是"设置页改了但行为没变"的静默失败')
+        } else ok('G-4 注入段的 `text` 是函数（每次装配现读档位 ⇒ 改完即生效的落点）')
+      }
+
+      if (sharedSrc !== undefined) {
+        const fnStart = sharedSrc.indexOf('export function workModeInstruction(')
+        const fnEnd = sharedSrc.indexOf('export function workModeRedLine(')
+        const fnBody = fnStart < 0 || fnEnd < 0 ? '' : sharedSrc.slice(fnStart, fnEnd)
+        const branches = ["mode === 'single'", "mode === 'multi'"].filter((b) => fnBody.includes(b))
+        if (branches.length !== 2) {
+          bad('G-4 `workModeInstruction()` 缺分档分支（应能见到 single / multi 两个分支）'
+            + ` —— 实测只见 ${branches.length} 个 ⇒ 三档可能返回同一段（假消费）`)
+        } else {
+          ok('G-4 `workModeInstruction()` 分档分支齐备（single / multi 各一支，其余落缺省档）')
+        }
+      }
+
+      //   ⚠⚠ **真不同**：三档正文必须**逐档互不相同**，且各自带着"那一档才有的"
+      //   语义标记。⚠ 光有分支不算数 —— "分支在、正文一样"照样是假消费（负向对拍实证）。
+      //   ⚠ 这里**实跑真模块**（⛔ 不靠文本推断）：Node ≥22 可直载 TS。
+      {
+        let wm = null
+        try {
+          wm = await import(pathToFileURL(join(root, 'src', 'shared', 'work-mode.ts')).href)
+        } catch (e) {
+          bad(`G-4 无法加载 \`src/shared/work-mode.ts\`（${String(e?.message ?? e)}）`
+            + ' ⇒ "三档真的不同"这一条失去基准（**不按通过处理**）')
+        }
+        if (wm !== null) {
+          if (typeof wm.workModeInstruction !== 'function' || typeof wm.workModeRedLine !== 'function') {
+            bad('G-4 `work-mode.ts` 没导出 `workModeInstruction()` / `workModeRedLine()` 函数'
+              + ' ⇒ 三档正文无从实跑（**不按通过处理**）')
+          } else {
+            const texts = {}
+            for (const m of values) texts[m] = wm.workModeInstruction(m) + wm.workModeRedLine()
+            const distinct = new Set(Object.values(texts))
+            if (distinct.size !== 3) {
+              bad(`G-4 三档注入正文**不是互不相同**（实测只有 ${distinct.size} 种不同正文 / 共 3 档）`
+                + '\n      ⇒ 档位改了而注入内容没变 = **假消费**（比没有这个旋钮更坏：界面看起来在动）')
+            } else ok('G-4 三档注入正文实跑互不相同（3 档 → 3 种不同正文）')
+
+            //   ⚠ 单会话档**必须明写"恒定一路"**；多会话档**必须明写"拆更细/更多路"**。
+            //     这两条是任务书 §二-② 直接点名的判据（不只是"不同"，还要"朝那个方向不同"）。
+            const SINGLE_MARK = 'One track, always.'
+            const MULTI_MARK = 'Split as finely'
+            if (!texts.single.includes(SINGLE_MARK)) {
+              bad(`G-4 单会话档正文缺「${SINGLE_MARK}」—— 判据要能证明`
+                + '"即使任务本可拆多路，也只走一路"，而这句正是那个证明的落点')
+            } else ok(`G-4 单会话档明写「${SINGLE_MARK}」（覆盖"本可拆多路"）`)
+            if (!texts.multi.includes(MULTI_MARK)) {
+              bad(`G-4 多会话档正文缺「${MULTI_MARK}」—— 判据要能证明`
+                + '"同一个任务在多会话档下拆出的路数 > 单会话档"')
+            } else ok(`G-4 多会话档明写「${MULTI_MARK}」（朝"更细/更多路"）`)
+
+            //   ⚠ **交叉污染**：单会话档不得含多会话的措辞，反之亦然
+            //     （防"两档拼在一起"这种看起来更周全、实际让模型收到矛盾指令的形态）。
+            if (texts.single.includes(MULTI_MARK) || texts.multi.includes(SINGLE_MARK)) {
+              bad('G-4 两档措施**互相污染**（单会话档里出现多会话措辞，或反之）'
+                + ' —— 模型会同时收到两条相反指令，档位等于没设')
+            } else ok('G-4 两档措辞互不污染（各档只收到自己那条）')
+
+            //   ⚠ 红线**三档共同**：不是"只在多会话档出现"。
+            //     理由：单会话档照样不许碰别人的卡、不许放宽判据（任务书 §二-② 的"恒定"那半）。
+            const RED_MARK = 'never means more power'
+            const missRed = values.filter((m) => !texts[m].includes(RED_MARK))
+            if (missRed.length > 0) {
+              bad(`G-4 红线**没有三档共同在场**：${missRed.join(', ')} 档缺它`
+                + ' —— 红线的适用面是三档共同的，⛔ 不是"只有多会话才要守"')
+            } else ok('G-4 红线三档共同在场（不是只在多会话档）')
+
+            //   ⚠ 缺省档**必须**含"动手前先报一句"（任务书 §二-③ 的 (甲) 口径）。
+            //     ⛔ (乙) 是产品取向、留待用户裁定 —— 这条判据把 (甲) 钉住，⛔ 不许被悄悄改成 (乙)。
+            if (!texts[defaultMode].includes('say in one line how many tracks')) {
+              bad(`G-4 缺省档（${defaultMode}）缺「先报一句要拆成几份」`
+                + '\n      ⇒ 本单按 §二-③ 的 (甲) 实现（只自动选路，动手前仍先报一句）；'
+                + '\n        ⛔ (乙)「选路 + 派活都自动」属产品取向、留待用户裁定，⛔ 不许自行升格')
+            } else ok(`G-4 缺省档明写"动手前先报一句"（§二-③ 的 (甲) 口径被钉住）`)
+          }
+        }
+      }
+    }
+
+    // ── G-5 显示名 / 配置值分层 ──────────────────────────────────────────
+    {
+      const offenders = []
+      for (const dict of ['PANEL_ZH', 'PANEL_EN']) {
+        const block = dictBlock(dict)
+        if (block === null) continue
+        for (const lit of block.matchAll(/'((?:[^'\\]|\\.)*)'/g)) {
+          const v = lit[1]
+          if (/^[A-Za-z][\w.]*$/.test(v)) continue // 键形态（`wm.mode.auto` 是键，不是可见文本）
+          for (const val of values) {
+            // 独立词匹配：`automatically` / `multi-session` 这类不算
+            if (new RegExp(`(^|[^A-Za-z0-9_-])${val}([^A-Za-z0-9_-]|$)`).test(v)) {
+              offenders.push(`${dict}: 出现配置值「${val}」→ ${JSON.stringify(v.slice(0, 60))}`)
+            }
+          }
+        }
+      }
+      if (offenders.length > 0) {
+        bad(`G-5 配置值出现在**用户可见文本**里：\n     ${offenders.join('\n     ')}`
+          + '\n      ⇒ 配置值是内部标识（⛔ 不进对话文本）；界面该显示的是「自动 / 单会话 / 多会话」')
+      } else ok('G-5 三档配置值零出现在面板可见文本里（分层成立）')
+    }
+
+    // ── G-6 红线条在位（三处）────────────────────────────────────────────
+    {
+      //   ⚠ 锚点逐个落在**同一行**内（口径正文是数组 join 出来的，跨行的短语会假失败）。
+      const RED_ANCHORS = ['never means more power', 'lifts nothing else', 'the board', 'criterion is relaxed']
+      const redStart = (sharedSrc ?? '').indexOf('export function workModeRedLine(')
+      const redBody = redStart < 0 ? '' : (sharedSrc ?? '').slice(redStart)
+      const missModel = RED_ANCHORS.filter((a) => !redBody.includes(a))
+      if (missModel.length > 0) {
+        bad(`G-6 给模型看的口径里缺红线关键限定：${missModel.join(', ')}`
+          + ' —— 红线是任务书 §二-② 写死的一条，⛔ 不许被裁掉或改写成更弱的说法')
+      } else ok('G-6 给模型看的口径含红线全部关键限定（不解除 / 看板 / 别人的卡 / 判据）')
+
+      const zhBlock = dictBlock('PANEL_ZH')
+      if (zhBlock === null) {
+        bad('G-6 抽不出 `PANEL_ZH` ⇒ 界面上的红线条无从核对（不按通过处理）')
+      } else {
+        const missPanel = ['看板', '别人项目的卡', '判据', '权限'].filter((a) => !zhBlock.includes(a))
+        if (missPanel.length > 0) {
+          bad(`G-6 界面上的红线条缺关键限定：${missPanel.join(', ')}`
+            + ' —— 用户看不到就等于没有（本项名字自带"更多更强"的暗示，界面必须挡住那个误读）')
+        } else ok('G-6 界面上有红线条（看板 / 别人项目的卡 / 判据 / 权限 四个限定都在）')
+      }
+
+      const descBlock = (() => {
+        const start = cfgSrc.indexOf('workMode: z.object({')
+        if (start < 0) return ''
+        const at = cfgSrc.indexOf('}).default({})', start)
+        return at < 0 ? '' : cfgSrc.slice(start, at)
+      })()
+      const SCHEMA_ANCHORS = ['不解除任何既有红线', '不改看板', '不碰别人项目的卡', '不放宽任何判据']
+      const missSchema = SCHEMA_ANCHORS.filter((a) => !descBlock.includes(a))
+      if (missSchema.length > 0) {
+        bad(`G-6 schema 的 \`.description()\` 缺红线关键限定：${missSchema.join(', ')}`
+          + '\n      ⇒ 插件管理页的自动表单只读这份 description；它缺了，红线在自动表单里就不存在')
+      } else ok('G-6 schema 的 `.description()` 含红线原文（自动表单里也在场）')
+    }
+
+    // ── G-7 兜底同值 ─────────────────────────────────────────────────────
+    {
+      const mHostFallback = /export function workMode\([\s\S]*?return DEFAULT_WORK_MODE/.test(cfgSrc)
+      const mClientFallback = clientSettingsSrc === undefined
+        ? false
+        : /export function readWorkMode\([\s\S]*?DEFAULT_WORK_MODE/.test(clientSettingsSrc)
+      const mClientImports = clientSettingsSrc === undefined
+        ? false
+        : /from\s*'\.\.\/shared\/work-mode\.ts'/.test(clientSettingsSrc)
+      if (!mHostFallback) {
+        bad('G-7 host 收口函数 `workMode()` 的兜底不是 `DEFAULT_WORK_MODE`'
+          + ' —— 兜底值必须在唯一来源里，⛔ 不许在函数体里另写一个字面量')
+      } else if (!mClientFallback || !mClientImports) {
+        bad('G-7 面板的 `readWorkMode()` 没有从 `shared/work-mode.ts` 取兜底'
+          + '（缺 `DEFAULT_WORK_MODE` 或没 import 该文件）'
+          + '\n      ⇒ 配置读不到时面板显示与实际生效各说一套，且都不报错')
+      } else {
+        ok(`G-7 兜底同源（两处都用 shared 的 \`DEFAULT_WORK_MODE\` = ${defaultMode}）`)
+      }
+    }
+
+    // ── G-8 写入路径 ─────────────────────────────────────────────────────
+    if (clientSettingsSrc === undefined) {
+      bad('G-8 读不到 `src/client/settings.ts` ⇒ 写入路径无从核对（不按通过处理）')
+    } else {
+      const hasWhole = /path:\s*\[\s*['"]workMode['"]\s*\]/.test(clientSettingsSrc)
+      const hasSub = /path:\s*\[\s*['"]workMode['"]\s*,\s*['"]mode['"]\s*\]/.test(clientSettingsSrc)
+      if (hasWhole) {
+        bad("G-8 设置绑定里出现整块写 `['workMode']` —— 父对象不 volatile ⇒ 宿主 isVolatilePath 会拒")
+      } else if (!hasSub) {
+        bad("G-8 找不到子字段写入路径 `['workMode','mode']` —— 面板的写入路径可能已被改坏")
+      } else ok("G-8 写入走子字段路径 `['workMode','mode']`（⛔ 无整块写）")
+    }
+
+    // ── G-9 ⛔ 无直读 ────────────────────────────────────────────────────
+    {
+      const files = [PRESET_TOOLS, PANEL]
+      const hits = []
+      for (const f of files) {
+        const s = readG(f)
+        if (s === undefined) continue
+        const code = stripComments(s)
+        for (const m of code.matchAll(/\.workMode\.\w+/g)) hits.push(`${f.slice(root.length + 1)}: ${m[0]}`)
+      }
+      if (hits.length > 0) {
+        bad(`G-9 模块侧/面板出现对 \`workMode\` 子字段的**直读**（${hits.length} 处）`
+          + ' —— volatile ref 直读恒为对象且不报错：\n     ' + hits.join('\n     '))
+      } else ok('G-9 模块侧与面板无 `*.workMode.*` 直读（解 ref 收口在 config.ts 的 workMode()）')
+    }
+  }
 }
 
 // ── 输出 ────────────────────────────────────────────────────────────────

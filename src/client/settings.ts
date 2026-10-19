@@ -26,6 +26,15 @@
  */
 export const SETTINGS_NS = 'dsh-hob'
 
+// ⚠ 「工作方式」三档的取值与兜底**不在这里重抄**（⛔ 重抄 = 与 host 半边各有一份 ⇒ 必然漂）：
+//   一律从 `src/shared/work-mode.ts` 引用 —— 它与 `planning-preset.ts` 同一条先例
+//   （client 半边由 tsdown 打包、host 半边由 tsc 编译，两边都能 import 该文件，实测皆过）。
+import {
+  DEFAULT_WORK_MODE,
+  WORK_MODE_VALUES,
+  type WorkMode,
+} from '../shared/work-mode.ts'
+
 /** `configForms.get()` 返回的快照（只取我们用到的字段）。 */
 export interface SettingsSnapshot {
   /** `loading` 直到首个被接受的 section；`unavailable` = 命名空间不可见。 */
@@ -342,6 +351,82 @@ export function readPermissionLevel(snapshot: SettingsSnapshot | null): Permissi
   return typeof lvl === 'string' && (PERMISSION_LEVEL_ORDER as readonly string[]).includes(lvl)
     ? (lvl as PermissionLevel)
     : 'ledger'
+}
+
+/**
+ * 「Hob 推进项目的工作方式」三档（与 `src/shared/work-mode.ts` 的 `WORK_MODE_VALUES` 同源口径；
+ * ⚠ 内部取值，⛔ 不是显示名 —— 2026-10-19 · `UD-97`）。
+ *
+ * ⚠ 为什么在这里**再导出一次**而不是让面板直接 import `../shared/work-mode.ts`：
+ *   面板（`tsx`，经 tsdown 打包）与 host 半边共用同一份 shared 文件**是可以的**
+ *   （`planning-preset.ts` 就是这么用的）；这里再导一次只是为了让
+ *   **本文件成为"面板侧所有写入/读取口径"的唯一入口**（与 `writeXxx` / `readXxx` 同处），
+ *   ⛔ 三档取值仍只有 `shared/work-mode.ts` 一处定义（本文件**引用**，不重抄）。
+ */
+export const WORK_MODE_ORDER: readonly WorkMode[] = WORK_MODE_VALUES
+
+/** 「工作方式」档位类型（转发 `shared/work-mode.ts`，面板只从这里取）。 */
+export type { WorkMode }
+
+/**
+ * 写**「工作方式」档位**（`workMode.mode` —— 2026-10-19 · `UD-97`）。
+ *
+ * ⚠ 与 {@link writePermissionLevel} 同形的三条纪律（照抄，别各写一份）：
+ *   ① **必须写子字段路径** `['workMode', 'mode']` —— 父对象 `workMode`
+ *      自己不 volatile，宿主 `isVolatilePath` 会拒整块写；
+ *   ② `snapshot.writable !== true` ⇒ **拒写并说清为什么**（非本机回环访问时，
+ *      宿主只在内存里改、不落盘）—— 静默"看起来改了"是这里最坏的失败形态；
+ *   ③ 走宿主 `form.mutate`（Remote RPC），**不自己实现写入**（E-10）。
+ *
+ * ⚠ 为什么档位**没有** `unset` 分支（与 spawn 四个字段不同）：
+ *   档位有 `.default('auto')`，而"缺省"本身就是 `auto` 这一档
+ *   ⇒ 清空没有独立语义，一律写成显式三值之一。
+ *
+ * @param form - 当前 settings form（`null` = 还没就绪）。
+ * @param mode - 要写入的档位（⚠ 内部取值）。
+ * @returns 写入结果（含失败原因；前置检查不过就**一个字也不写**）。
+ */
+export async function writeWorkMode(form: ConfigForm | null, mode: WorkMode): Promise<WriteResult> {
+  if (form === null) return { ok: false, reason: '配置面尚未就绪（读不到本插件的 form），未写入。' }
+  if (!WORK_MODE_ORDER.includes(mode)) {
+    return { ok: false, reason: `档位 ${String(mode)} 不是三档之一，未写入。` }
+  }
+  const snapshot = form.getSnapshot()
+  if (snapshot.writable !== true) {
+    return {
+      ok: false,
+      reason: `当前页面不允许写入（持久化模式 = ${snapshot.mode}；非本机回环访问时宿主只在内存里改，不落盘）⇒ 已拒写，未做任何修改。`,
+    }
+  }
+  if (typeof form.mutate !== 'function') {
+    return { ok: false, reason: '该配置面不支持写入（宿主 form 未提供 mutate）。' }
+  }
+  try {
+    const ops: ConfigMutationOp[] = [{ op: 'set', path: ['workMode', 'mode'], value: mode }]
+    const accepted = await form.mutate(ops)
+    return accepted === true ? { ok: true } : { ok: false, reason: '宿主拒绝了这次写入（版本冲突或该字段不可写）。' }
+  } catch (e) {
+    return { ok: false, reason: `写入失败：${String((e as Error)?.message ?? e)}` }
+  }
+}
+
+/**
+ * 从 settings snapshot 里读出**当前「工作方式」档位**（面板用来显示选中态）。
+ *
+ * ⚠ 兜底 = `DEFAULT_WORK_MODE`（`auto`）—— 与 `config.ts` 的 `workMode()` **同一个值**。
+ *   ⚠ 若两处兜底不一致，"面板显示"与"实际生效"就会在配置读不到时**各说一套**
+ *   （用户看到的是 `auto`、跑起来是 `single`，且没有任何一处报错）。
+ *   机检 `check:config` 的 G 组钉住这一条（两处兜底必须同值）。
+ *
+ * @param snapshot - 宿主 form 的快照（`null` = 未就绪）。
+ */
+export function readWorkMode(snapshot: SettingsSnapshot | null): WorkMode {
+  const raw = (snapshot as { value?: unknown } | null)?.value
+  const wm = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>).workMode : undefined
+  const mode = wm !== null && typeof wm === 'object' ? (wm as Record<string, unknown>).mode : undefined
+  return typeof mode === 'string' && (WORK_MODE_VALUES as readonly string[]).includes(mode)
+    ? (mode as WorkMode)
+    : DEFAULT_WORK_MODE
 }
 
 /**

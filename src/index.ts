@@ -10,7 +10,7 @@
  * ⚠ 本轮是**骨架**：只把上面这条形状立起来，**不注册任何业务能力**。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { Config, moduleSwitches, spawnDefaults, permissionLevel, PERMISSION_SERVICE, interconnectEnabled, interconnectTargets } from './config.ts'
+import { Config, moduleSwitches, spawnDefaults, permissionLevel, PERMISSION_SERVICE, interconnectEnabled, interconnectTargets, workMode, WORK_MODE_SERVICE } from './config.ts'
 export { PERMISSION_SERVICE }
 import type { Config as ConfigShape, ModulesConfig } from './config.ts'
 
@@ -102,6 +102,16 @@ export function apply(ctx: Context, config: ConfigShape): void {
   //   ⚠ **必须是闭包不是快照**：档位改完要"即改即生效"（volatile 原地更新，
   //     宿主不重挂载）⇒ 快照会让改完的档位对已开会话不可见。
   ctx.provide(PERMISSION_SERVICE, () => permissionLevel(config))
+
+  // ── 「工作方式」档位的**现读**服务（2026-10-19 · `UD-97`）─────────────────────
+  //   ⚠ 与上面 `PERMISSION_SERVICE` 完全同一条落法与纪律（照抄，别各写一份）：
+  //     · **为什么在入口 provide**：唯一消费方在**预设作用域**（`src/preset/tools.ts`
+  //       注册的那段 scoped prompt section），而 `workMode.mode` 是 volatile ref；
+  //       预设作用域**不该自己捅 config**（直读会静默拿到 ref 对象）。
+  //     · **必须是闭包不是快照**：档位改完要"即改即生效"（volatile 原地更新、
+  //       宿主不重挂载）⇒ 快照会让改完的档位对已开会话不可见。
+  //   ⚠ ⛔ 本服务**不授予任何能力**：它只回一个档位字符串（决定"拆几路"的口径文本）。
+  ctx.provide(WORK_MODE_SERVICE, () => workMode(config))
 
   // ⚠ M6a 的**档位闸门**（2026-10-16 第 237 轮 · `UD-119` 裁定）：
   //   ⚠ ⚠ 它**在开关之外**再加一道：⚠ **档位 = 账本 ⇒ 不注册**（⚠ 跨实例投递是"影响外部状态"的动作）。

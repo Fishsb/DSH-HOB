@@ -94,6 +94,21 @@
         # ⚠ 唯一允许解 ref 的地方是 `src/config.ts` 的 `interconnectTargets()`。
         interconnectTargets:
           list: []
+        # ── 「Hob 推进项目的工作方式」（2026-10-19 · `UD-97` 推进优先）────────────
+        # ⚠ **它管什么**：**Hob 怎么拆活、拆成几路** —— 三档：自动 / 单会话 / 多会话。
+        #   ⛔ **不管**：权限档位（那是上面的 `permission`）、谁能写什么、验收口径。
+        #   ⇒ 与 `permission` 是**两个正交的旋钮**：一个管"看得见什么"，一个管"拆几路"。
+        # ⚠ `auto`（缺省）/ `single` / `multi` —— 取值与顺序的**唯一来源**是
+        #   `src/shared/work-mode.ts` 的 `WORK_MODE_VALUES`（⚠ 本文件只写声明值，
+        #   ⛔ 不许在这里另立一套顺序；`check:config` 的 G 组双向比对）。
+        # ⚠ 形状与 `spawn` / `permission` / `skeleton` / `interconnectTargets` 同形：
+        #   父对象 `workMode` 不标 volatile、子字段 `mode` 标
+        #   ⇒ ⚠ 设置面写入必须走**子字段路径** `['workMode','mode']`；
+        #   ⚠ 父子同标会抛 `ValidationError`；非 volatile 路径会被宿主写入通道拒。
+        # ⚠ **改完即生效、⛔ 不必重启**（volatile 原地更新；消费方每次装配现读档位）。
+        # ⚠ 唯一允许解 ref 的地方是 `src/config.ts` 的 `workMode()`。
+        workMode:
+          mode: auto
 # ⚠ 上面四个值只是**声明默认值**，别在代码里直接读 `config.modules.x`：
 #   四个字段**都带 .volatile()** ⇒ 运行时都是 **ref 对象**（恒 truthy）。
 #   唯一允许解 ref 的地方是 `src/config.ts` 的 `moduleSwitches()`。
