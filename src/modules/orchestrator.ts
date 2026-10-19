@@ -1779,7 +1779,26 @@ export function apply(ctx: any): void {
           const ws = ownerWsRoot ?? wsRootOfSession(target)
           const file = runtimeFileOf(svcCtx, ws)
           stateFileFor.set(target, file ?? '')
-          if (file !== undefined) {
+          /**
+           * ── ⚠⚠ **落点登记缺失 ⇒ 可读失败，⛔ 不许猜一个文件**（2026-10-20 第 2 单 · 收口①）──
+           *
+           * ⚠ 这是 `R1` §五-2 那条"`stateFile` 不落盘"的**行为面收口**：
+           *   落点**只能**由 `stateFileFor` 现算；`stateFileFor` 里没有这一条时，
+           *   `mineHere` 会算出**空**，于是 `persistOwnerPartition` 什么也不写
+           *   ⇒ **这次派发静默地没有落盘**（而那正是本项目最忌的失败形态：
+           *     "记不上账"与"没有账"长得一样）。
+           * ⇒ 现在**先核对落点确实登记上了**，没有就**留一条 warn**（`落点登记缺失`），
+           *   ⛔ 不去 `w.stateFile` 里取、⛔ 不去猜一个相邻文件。
+           *   ⚠ 判据见 `check:orch` 的 **SB-1b**（摘掉落点登记 ⇒ 盘上不许出现该记录 + 必须有可读 warn）。
+           */
+          const located = stateFileFor.get(target)
+          if (located !== file) {
+            svcCtx.logger?.warn?.(
+              `[${name}] 落点登记缺失（target=${target} · 算出的 file=${String(file)}`
+              + ` · stateFileFor=${String(located)}）⇒ **本次派发不落盘**`
+              + '（⛔ 不猜一个文件：重载后这次派发将不可观测）。',
+            )
+          } else if (file !== undefined) {
             ensureRuntimeIgnored(dirname(file))
             /**
              * ⚠⚠ **只写属于 `(本文件, 本 owner)` 的那一片**（`I-5` 的核心）：
@@ -2279,9 +2298,40 @@ export function apply(ctx: any): void {
           if (card !== undefined) {
             const ended = card.phase === 'awaiting-review'
               || card.status === 'in_review' || card.status === 'done' || card.status === 'canceled'
-            // ⚠ 只认"**这次派发之后**结束的"：卡可能早就在终态了（那是上一轮的事）。
-            const endedAfter = card.endedAt === undefined ? true : card.endedAt >= at
-            if (ended && endedAfter) return { kind: 'done', evidence: 'board' }
+            /**
+             * ── ⚠⚠ **`endedAt` 缺失 ⇒ 判不出，⛔ 不当成已结算**（2026-10-20 第 2 单 · 收口③）──
+             *
+             * ── 改前是什么（`R1` §4 未验证 4 自己标出来的退化）──────────────────
+             *   `const endedAfter = card.endedAt === undefined ? true : card.endedAt >= at`
+             *   —— 卡没给 `endedAt` 时**默认"就是这次结束的"** ⇒ 会把**上一轮**的结果
+             *   当成本轮结果结算掉 ⇒ **把别人的产出当这次的产出回传**（错配，比丢更坏）。
+             *
+             * ── 现在 ─────────────────────────────────────────────────────────
+             *   ① 有 `endedAt` ⇒ 仍按"**这次派发之后**结束的"判（`>= at`），判据不变；
+             *   ② **没有 `endedAt`** ⇒ 这一档**判不出**：
+             *      ⛔ 不返回 `done`（那是把不确定性说成结论）；
+             *      ⛔ 也不返回 `running`（那会把它永远挂在"在跑"里）；
+             *      ⇒ **返回 `undefined`** = 判不出 ⇒ 记录按 `unresolved` 留到下一轮再核
+             *        （到顶转 `stuck`，由读数说"需人工裁"）。
+             *   ⚠ 这是**保守口径**：宁可"再核一次 / 交人看"，也不"猜一个然后发错回执"。
+             *     与 `classifyPending` 对 `undefined` 的处理**同一条纪律**（`I-1` 不猜）。
+             */
+            if (ended) {
+              if (card.endedAt === undefined) {
+                /**
+                 * ⚠ 卡的**终态**已成立、但**结束时刻读不到** ⇒ 判不出"这是不是这一轮"。
+                 *   ⇒ 落到最外层 `return undefined`（判不出），⛔ 不在这里返回 done/running。
+                 *   ⚠ 但若它此刻**确实在跑**（`phase==='running'`），那仍然优先（见下）。
+                 */
+                if (card.phase === 'running') return { kind: 'running' }
+                return undefined
+              }
+              if (card.endedAt >= at) return { kind: 'done', evidence: 'board' }
+              /**
+               * ⚠ `endedAt < at` ⇒ 这张卡是**派发之前**就结束的（上一轮的事）⇒
+               *   不能当成本轮结果；但也不必判"判不出"——它此刻是否在跑由下一条判据看。
+               */
+            }
             if (card.phase === 'running') return { kind: 'running' }
           }
         }

@@ -4966,6 +4966,419 @@ const orchCode = stripComments(orchSrc)
   }
 }
 
+// ── SB. **三处收口**（2026-10-20 第 2 单 · 把"我判定不需要"变成机器判据）──
+//
+// ⚠ **本组守的是哪三条**（来源 = `R1` §五-2 / §五-3 / §五-5，方向已被用户接受）：
+//   · **SB-1 `stateFile` 不落盘**：任何写 `pending` 的路径，**落点只能由 `stateFileFor` 现算**；
+//     ⛔ 记录里不得有 `stateFile` 字段被**读来做写盘判据**；
+//   · **SB-2 `CardWake` 不分区**：① `WakeState` 的计数**不进入** owner 分区路径；
+//     ② **投递收件人恒等于 `e.owner`**，⛔ 不许"按订阅者扇出"；
+//   · **SB-3 `probeTarget` 的 `endedAt` 缺失 ⇒ 判不出**（⛔ 不当成已结算）。
+//
+// ⚠ ⚠ **为什么这三条要成"机器判据"而不是"一句话结论"**（用户原话）：
+//   「判断不能老死在一句话里，必须留一条断言」—— 一句话的结论**下一轮没人会重新检验**，
+//   而断言会。⚠ 每条都配**负向对拍**（改坏 ⇒ 必红），⛔ 不许恒真。
+{
+  const { mkdtempSync: sbMkdt, mkdirSync: sbMkd, writeFileSync: sbWf,
+    readFileSync: sbRf, rmSync: sbRm } = await import('node:fs')
+  const { tmpdir: sbTmp } = await import('node:os')
+  const { basename: sbBase } = await import('node:path')
+  const { pathToFileURL: sbP2u } = await import('node:url')
+
+  const sbRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT
+    : root
+  const sbTag = sbRoot === root ? '' : `（源码树=${sbRoot}）`
+
+  let sbOrch
+  let sbBus
+  let sbWakeMod
+  try {
+    sbOrch = await import(sbP2u(join(sbRoot, 'src', 'modules', 'orchestrator.ts')).href)
+    sbBus = await import(sbP2u(join(sbRoot, 'src', 'modules', 'bus.ts')).href)
+    sbWakeMod = await import(sbP2u(join(sbRoot, 'src', 'server', 'card-wake.ts')).href)
+  } catch (e) {
+    bad(`SB 无法加载 orchestrator / bus / card-wake${sbTag}（${String(e?.message ?? e)}）`
+      + ' ⇒ 三处收口失去基准（不按通过处理）')
+  }
+
+  if (sbOrch !== undefined && sbBus !== undefined && sbWakeMod !== undefined) {
+    let sbRootTmp
+    try { sbRootTmp = sbMkdt(join(sbTmp(), 'hob-sbcheck-')) } catch (e) {
+      bad(`SB 造不出临时现场（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+    }
+
+    if (sbRootTmp !== undefined) {
+      const sbSrc = sbRf(join(sbRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+      const sbStateSrc = sbRf(join(sbRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
+      const sbWakeSrc = sbRf(join(sbRoot, 'src', 'server', 'card-wake.ts'), 'utf8')
+
+      try {
+        // ══════════════════════════════════════════════════════════════
+        // SB-1 · `stateFile` 不落盘（落点只能由 `stateFileFor` 现算）
+        // ══════════════════════════════════════════════════════════════
+        //
+        //   ⚠ 判据三件：
+        //     ① **源码级**：`PersistedWatch` 的 `stateFile` 字段**没有任何读点**参与"写哪个文件"；
+        //     ② 全部写 `pending` 的调用点里，`file` 都来自 `stateFileFor` / `runtimeFileOf`
+        //        （⛔ 不许从记录字段里反取）；
+        //     ③ **行为级**：**删掉 `stateFileFor` 的登记之后**，写盘必须走"可读失败"
+        //        （= 这条记录被跳过 + 有 warn），⛔ 不许"猜一个文件"把它写进去。
+        {
+          // ── ① 静态：`stateFile` 这个词在写盘判据里不许出现 ──────────────
+          //
+          //   ⚠ 精确判据：`stateFileFor` **可以**出现（它就是唯一权威）；
+          //     ⚠ 而不带 `For` 的**记录字段** `w.stateFile` / `rec.stateFile` / `.stateFile` 读法
+          //     **不许**出现在"取落点"的位置。⇒ 用"取落点的三条既有写法"作反面：
+          //     它们必须**全部**来自 `stateFileFor`。
+          const locatorForms = [
+            /const file = stateFileFor\.get\(w\.target\)/,
+            /const file = runtimeFileOf\(svcCtx, ws\)/,
+          ]
+          const usesStateFileFor = locatorForms.every((re) => re.test(sbSrc))
+          /**
+           * ⛔ 记录字段被读来做写盘判据 ⇒ 违规。判据写成"点号取 stateFile 但**不是** stateFileFor"，
+           *   且后面**没有**紧跟 `set(`（赋值进 Map 是允许的：那是内存镜像，不是读判据）。
+           */
+          /**
+           * ⚠ **必须先把注释剥掉再判**（实测踩过：我自己的解释性注释 `⛔ 不去 \`w.stateFile\` 里取`
+           *   被当成了"读了记录字段" ⇒ 假红）。本文件既有 `stripComments()` 就是干这件事的，
+           *   ⚠ 用同一份（⛔ 不另写一个剥离器）。
+           */
+          const sbSrcCode = stripComments(sbSrc)
+          const badRead = /\.stateFile(?!For)\b(?!\s*=\s*)/.test(
+            sbSrcCode.replace(/stateFileFor/g, 'stateFileFor_PLACEHOLDER'),
+          )
+          if (usesStateFileFor && !badRead) {
+            ok('SB-1a ✓ `stateFile` 不落盘（静态）：取落点只有 `stateFileFor.get(...)` / '
+              + '`runtimeFileOf(...)` 两种写法，⛔ 没有从记录字段 `.stateFile` 反取（`R1` §五-2 的收口）')
+          } else {
+            bad('SB-1a 【`stateFile` 不许参与写盘判据】不成立'
+              + `：落点两种写法都在位=${usesStateFileFor} · 记录字段被读=${badRead}`
+              + ' ⇒ "凭什么写这个文件"出现了第二个来源（正是本病的头号成因）')
+          }
+
+          // ── ② 行为：把 `stateFileFor` 的登记摘掉 ⇒ 写盘必须可读失败，⛔ 不许猜 ──
+          //
+          //   ⚠ 造法：变异 `dispatch()` 里那行 `stateFileFor.set(target, file ?? '')`
+          //     ⇒ 落点 Map 里没有该 target ⇒ `flushWatches`/`persistOwnerPartition` 都跳过它。
+          //   ⚠ 判据：**盘上不能出现该 target**（⛔ 猜一个文件写进去），且**必须有 warn**。
+          {
+            const { cpSync } = await import('node:fs')
+            const dir = sbMkdt(join(sbRootTmp, 'mut-sb1-'))
+            cpSync(join(sbRoot, 'src'), join(dir, 'src'), { recursive: true })
+            const mutFile = join(dir, 'src/modules/orchestrator.ts')
+            const src = sbRf(mutFile, 'utf8')
+            const GUARD = "          stateFileFor.set(target, file ?? '')"
+            if (!src.includes(GUARD)) {
+              bad('SB-1b 【失去靶子】在 `dispatch()` 里找不到落点登记那行原文'
+                + `（期望：${JSON.stringify(GUARD)}）⇒ 行为断言对不上实现，不按通过处理`)
+            } else {
+              sbWf(mutFile, src.replace(GUARD, '          /* 变异：摘掉落点登记（stateFileFor 不写） */'), 'utf8')
+              try {
+                const { symlinkSync } = await import('node:fs')
+                symlinkSync(join(sbRoot, 'node_modules'), join(dir, 'node_modules'), 'dir')
+              } catch { /* 已有 */ }
+              try {
+                const mOrch = await import(sbP2u(join(dir, 'src/modules/orchestrator.ts')).href)
+                const mBus = await import(sbP2u(join(dir, 'src/modules/bus.ts')).href)
+                const base = sbMkdt(join(sbRootTmp, 'sb1-beh-'))
+                const home = join(base, 'ledgers'); sbMkd(home, { recursive: true })
+                const ws = join(base, 'ws'); sbMkd(join(ws, 'runtime'), { recursive: true })
+                const sess = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+                const byId = new Map(['hob', 'target-x'].map((i) => [i, sess(i)]))
+                const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+                const agents = { currentInitiator: () => undefined,
+                  get: (i) => (byId.has(i) ? { id: i, status: 'running', ctx: {}, session: byId.get(i),
+                    followup() {}, steer() {}, inject() {} } : undefined) }
+                const warns = []
+                const logger = { debug() {}, info() {}, warn: (m) => warns.push(String(m)) }
+                const bp = {}
+                const bc = { sessions, agents, logger,
+                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+                  provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                  inject: (_d, cb) => cb(bc), on: () => {} }
+                mBus.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+                const prov = {}
+                const c = { sessions, agents, logger,
+                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+                    : k === 'hobBus' ? bp.hobBus
+                      : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                  provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                  inject: (_d, cb) => cb(c), on: () => {} }
+                mOrch.apply(c)
+                const mo = prov.hobOrchestrator
+                if (mo === undefined) {
+                  bad('SB-1b 变异体没提供 hobOrchestrator ⇒ 行为断言失去基准')
+                } else {
+                  await mo.dispatch('target-x', 'do x', { self: 'hob' })
+                  await new Promise((r) => setTimeout(r, 40))
+                  let pend = []
+                  try {
+                    pend = JSON.parse(sbRf(join(home, sbBase(ws), 'runtime', 'orch-watches.json'), 'utf8')).pending ?? []
+                  } catch { pend = [] }
+                  const guessed = pend.some((w) => w.target === 'target-x')
+                  const saidSomething = warns.some((m) => /落点登记缺失/.test(m))
+                  if (!guessed && saidSomething) {
+                    ok('SB-1b ✓ `stateFile` 不落盘（行为）：把 `stateFileFor` 的登记摘掉后'
+                      + ` ⇒ **盘上没有该 target**（⛔ 没有"猜一个文件"写进去）且**有可读 warn**`
+                      + `（${warns.filter((m) => /落点登记缺失/.test(m)).length} 条）`)
+                  } else {
+                    bad('SB-1b 【摘掉落点后不许猜文件】不成立'
+                      + `：盘上出现了该 target=${guessed} · 有可读 warn=${saidSomething}`
+                      + ` · warns=${JSON.stringify(warns.slice(0, 3))}`)
+                  }
+                }
+              } catch (e) {
+                bad(`SB-1b 变异体跑不起来（${String(e?.message ?? e)}）⇒ 行为断言失去基准`)
+              }
+            }
+          }
+        }
+
+        // ══════════════════════════════════════════════════════════════
+        // SB-2 · `CardWake` 不分区（两点，缺一即没守住）
+        // ══════════════════════════════════════════════════════════════
+        //
+        //   ⚠ 上游结论（`R1` §五-3）：`CardWake` 的**投递面已按 owner**（`card-wake.ts:615`
+        //     `const to = e.owner`），**累计计数不分**也算合理。⇒ 收口成两条断言，⛔ 不许两套并存。
+        {
+          // ── ① `WakeState` 的计数不进入 owner 分区路径 ──────────────────
+          //
+          //   ⚠ 判据：`WakeState`（`CardWake.snapshot()`）**仍然无参**，且它的字段里
+          //     **没有** `mine` / `othersOnly` / `ownerUnknownRegistered` / `selfUndecidable`
+          //     这类分区字段 —— 分区那一套**只属于** `DispatchWakeState`。
+          const wakeStateDecl = sbWakeSrc.match(/export interface WakeState \{[\s\S]*?\n\}/)
+          const dispatchStateDecl = sbWakeSrc.match(/export interface DispatchWakeState \{[\s\S]*?\n\}/)
+          const partitionFields = ['mine', 'othersOnly', 'ownerUnknownRegistered', 'selfUndecidable']
+          const wakeHasPartition = wakeStateDecl === null
+            ? undefined
+            : partitionFields.filter((f) => new RegExp(`\\b${f}\\b`).test(wakeStateDecl[0]))
+          const dispatchHasPartition = dispatchStateDecl === null
+            ? []
+            : partitionFields.filter((f) => new RegExp(`\\b${f}\\b`).test(dispatchStateDecl[0]))
+          // `CardWake.snapshot()` 必须**仍是无参**（分区是有意的例外，不是漏做）
+          const cardWakeSnapshotNoArg = /snapshot\(\): WakeState \{\n    return \{ \.\.\.this\.state, seenCount: this\.seenIds\.size \}/.test(sbWakeSrc)
+          const dispatchSnapshotHasArg = /snapshot\(owner\?: string\): DispatchWakeState \{/.test(sbWakeSrc)
+          if (wakeStateDecl !== null && wakeHasPartition !== undefined && wakeHasPartition.length === 0
+            && dispatchHasPartition.length > 0 && cardWakeSnapshotNoArg && dispatchSnapshotHasArg) {
+            ok('SB-2a ✓ `WakeState` 的计数**不进入** owner 分区路径：`CardWake.snapshot()` 仍无参，'
+              + `且 \`WakeState\` 里**没有** ${partitionFields.join(" / ")} 任一字段`
+              + `（分区那一套只在 \`DispatchWakeState\`：${dispatchHasPartition.join(" / ")}）`
+              + ' ⇒ ⛔ 没有"两套并存"')
+          } else {
+            bad('SB-2a 【分区只属于 DispatchWake】不成立'
+              + `：WakeState 里的分区字段=${JSON.stringify(wakeHasPartition)}（应 []）`
+              + ` · DispatchWakeState 里的=${JSON.stringify(dispatchHasPartition)}（应非空）`
+              + ` · CardWake.snapshot() 无参=${cardWakeSnapshotNoArg}`
+              + ` · DispatchWake.snapshot(owner?) 有参=${dispatchSnapshotHasArg}`)
+          }
+
+          // ── ② 投递收件人恒等于 `e.owner`（⛔ 不许按订阅者扇出）──────────
+          //
+          //   ⚠ 判据（行为）：一条卡跑完的帧，**无论有几个订阅者**，
+          //     **只投一次**、且收件人 === 帧里的 `createdBy.sessionId`。
+          {
+            const WS2 = 'ws-sb2-0001'
+            const frame = JSON.stringify({
+              revision: 1, kind: 'execution-recorded',
+              tasks: [{
+                id: 't-sb2', title: 'SB-2 用卡', status: 'in_review', workspaceId: WS2, version: 2,
+                lastExecutionOutcome: 'succeeded', createdBy: { sessionId: 'owner-real' },
+              }],
+            })
+            const sent = []
+            const cw = new sbWakeMod.CardWake({
+              origin: 'http://127.0.0.1:0',
+              workspaceIdOf: () => WS2,
+              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+              now: () => 1792300800000,
+            })
+            // ⚠ **故意挂 3 个订阅者**（其中两个是本工作区的"旁观者"）——
+            //   若发生"按订阅者扇出"，它们就会各收到一份。
+            cw.subscribe('owner-real', WS2)
+            cw.subscribe('bystander-1', WS2)
+            cw.subscribe('bystander-2', WS2)
+            const n = await cw.handleFrame('change', frame)
+            const onlyOwner = sent.length === 1 && sent[0].sid === 'owner-real'
+            const noFanout = !sent.some((x) => x.sid !== 'owner-real')
+            if (n === 1 && onlyOwner && noFanout) {
+              ok('SB-2b ✓ **投递收件人恒等于 `e.owner`**：一帧"卡跑完"、**3 个订阅者**在位 ⇒ '
+                + `**只投 1 份且收件人 = ${sent[0].sid}**（⛔ 没有按订阅者扇出到 bystander-1/2）`)
+            } else {
+              bad('SB-2b 【收件人必须恒等于 e.owner】不成立'
+                + `：投递=${JSON.stringify(sent.map((x) => x.sid))}（应只有 owner-real 一份）`
+                + ` · 返回值=${n}`)
+            }
+            // ⚠ 负向对拍：把收件人改成"取第一个订阅者" ⇒ 本判据必须当场不成立
+            {
+              const { cpSync } = await import('node:fs')
+              const dir = sbMkdt(join(sbRootTmp, 'mut-sb2-'))
+              cpSync(join(sbRoot, 'src'), join(dir, 'src'), { recursive: true })
+              const mf = join(dir, 'src/server/card-wake.ts')
+              const src = sbRf(mf, 'utf8')
+              const GUARD = '      const to = e.owner'
+              if (!src.includes(GUARD)) {
+                bad('SB-2b(反证) 【失去靶子】找不到"收件人 = e.owner"那一行原文 ⇒ 不按通过处理')
+              } else {
+                sbWf(mf, src.replace(GUARD, "      const to = [...this.targets.keys()][0] /* 变异：取第一个订阅者（扇出形态） */"), 'utf8')
+                try {
+                  const { symlinkSync } = await import('node:fs')
+                  symlinkSync(join(sbRoot, 'node_modules'), join(dir, 'node_modules'), 'dir')
+                } catch { /* 已有 */ }
+                try {
+                  const mW = await import(sbP2u(join(dir, 'src/server/card-wake.ts')).href)
+                  const sentM = []
+                  const cwM = new mW.CardWake({
+                    origin: 'http://127.0.0.1:0',
+                    workspaceIdOf: () => WS2,
+                    deliver: (sid, text) => { sentM.push({ sid, text }); return Promise.resolve({ ok: true }) },
+                    now: () => 1792300800000,
+                  })
+                  cwM.subscribe('bystander-1', WS2)   // ⚠ 第一个订阅者**不是** owner
+                  cwM.subscribe('owner-real', WS2)
+                  await cwM.handleFrame('change', frame)
+                  const wrong = sentM.length > 0 && sentM.every((x) => x.sid !== 'owner-real')
+                  if (wrong) {
+                    ok(`SB-2b(反证) ✓ 负向对拍：把收件人改成"取第一个订阅者"`
+                      + ` ⇒ **投给了错的会话**（${JSON.stringify(sentM.map((x) => x.sid))}）⇒ SB-2b 真长牙`)
+                  } else {
+                    bad('SB-2b(反证) 【负向对拍失败】改成"取第一个订阅者"后收件人仍然正确'
+                      + `（${JSON.stringify(sentM.map((x) => x.sid))}）⇒ SB-2b 测的不是"收件人恒等于 owner"`)
+                  }
+                } catch (e) {
+                  bad(`SB-2b(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+                }
+              }
+            }
+          }
+        }
+
+        // ══════════════════════════════════════════════════════════════
+        // SB-3 · `probeTarget`：`endedAt` 缺失 ⇒ **判不出**（⛔ 不当成已结算）
+        // ══════════════════════════════════════════════════════════════
+        //
+        //   ⚠ 上游结论（`R1` §五-5）：改前 `card.endedAt === undefined` 直接**默认"是这次结束的"**
+        //     ⇒ 会把**上一轮**的结果当本轮结果结算（错配，比丢更坏）。
+        //   ⚠ 判据：造一条"卡在终态、但**没有** `endedAt`"的现场 ⇒
+        //     该条**必须**落 `unresolved`，⛔ **不许**被结算（不许投回执、不许离开 pending）。
+        {
+          // ⚠ 先确认类型里**有** `endedAt`（TASK：若没有就先补齐再断言）
+          const hasField = /endedAt\?: number/.test(
+            sbRf(join(sbRoot, 'src', 'server', 'board-cards.ts'), 'utf8'),
+          )
+          if (!hasField) {
+            bad('SB-3 【类型缺 `endedAt`】`CardReading` 里没有 `endedAt?: number` ⇒ '
+              + '本断言失去基准（TASK §2.3：应先把类型补齐）')
+          } else {
+            const base = sbMkdt(join(sbRootTmp, 'sb3-'))
+            const home = join(base, 'ledgers'); sbMkd(home, { recursive: true })
+            const ws = join(base, 'ws'); sbMkd(join(ws, 'runtime'), { recursive: true })
+            const file = join(home, sbBase(ws), 'runtime', 'orch-watches.json')
+            sbMkd(join(home, sbBase(ws), 'runtime'), { recursive: true })
+            // 盘上一条 pending，目标 sess-card-nodate
+            sbWf(file, JSON.stringify({
+              version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [],
+              pending: [{ target: 'sess-card-nodate', watcher: 'hob', owner: 'hob',
+                at: 1792250000000, sawRunning: true }],
+            }, null, 2), 'utf8')
+
+            const sess = (id) => ({
+              id, header: { agentPreset: 'standard', cwd: ws },
+              // ⚠ 会话 log **没有**助手产出 ⇒ 第 ② 条真相源不成立，只剩看板那一条
+              log: [],
+            })
+            const byId = new Map(['hob', 'sess-card-nodate'].map((i) => [i, sess(i)]))
+            const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+            const agents = { currentInitiator: () => undefined,
+              get: (i) => (byId.has(i) ? { id: i, status: 'idle', ctx: {}, session: byId.get(i),
+                followup() {}, steer() {}, inject() {} } : undefined) }
+            /** ⚠ 假看板：这张卡**在终态**（`in_review`）但**没有 `endedAt`**。 */
+            const cardNoEnd = {
+              id: 't-nodate', title: 'SB-3 无 endedAt 的卡', status: 'in_review', version: 2,
+              workspaceId: ws, executions: [{
+                id: 'e-nodate', trigger: 'scheduled', startedAt: 1792240000000,
+                outcome: 'succeeded', isolation: 'worktree', branch: 'task/x',
+                // ⚠ **故意不给 endedAt**
+                sessionId: 'sess-card-nodate',
+              }],
+              createdBy: { sessionId: 'hob' },
+            }
+            const registry = new Map()
+            registry.set('taskboard_list', {
+              name: 'taskboard_list',
+              async execute() {
+                return { revision: 1, tasks: [{
+                  id: cardNoEnd.id, title: cardNoEnd.title, status: cardNoEnd.status,
+                  version: 2, blocked: false, workspaceId: ws, lastExecutionOutcome: 'succeeded',
+                }] }
+              },
+            })
+            registry.set('taskboard_get', {
+              name: 'taskboard_get',
+              async execute(args) { return args?.id === cardNoEnd.id ? { task: cardNoEnd } : {} },
+            })
+            const toolsSvc = { get: (n) => registry.get(n) }
+            const delivered = []
+            const logger = { debug() {}, info() {}, warn() {} }
+            const bp = {}
+            const bc = { sessions, agents, logger,
+              get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+              provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
+              inject: (_d, cb) => cb(bc), on: () => {} }
+            sbBus.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+            const realDeliver = bp.hobBus?.deliver?.bind(bp.hobBus)
+            if (bp.hobBus !== undefined) {
+              bp.hobBus.deliver = async (sid, text, mode) => {
+                delivered.push({ to: sid, text })
+                return await realDeliver(sid, text, mode)
+              }
+            }
+            const prov = {}
+            const handlers = {}
+            const c = { sessions, agents, logger,
+              get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+                : k === 'hobBus' ? bp.hobBus
+                  : k === 'tools' ? toolsSvc
+                    : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+              provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
+              inject: (_d, cb) => cb(c), on: (ev, fn) => { handlers[ev] = fn; return () => {} } }
+            sbOrch.apply(c)
+            const orch = prov.hobOrchestrator
+            if (orch === undefined) {
+              bad('SB-3 挂真 apply 之后没拿到 hobOrchestrator ⇒ 本断言失去基准')
+            } else {
+              // ⚠ 显式跑一次对账（T1 就绪扫描之外再来一次，确保这条被核到）
+              if (typeof orch.reconcile === 'function') await orch.reconcile('sb3-probe')
+              await new Promise((r) => setTimeout(r, 80))
+              const after = JSON.parse(sbRf(file, 'utf8'))
+              const still = (after.pending ?? []).find((w) => w.target === 'sess-card-nodate')
+              const inLost = (after.lost ?? []).some((w) => w.target === 'sess-card-nodate')
+              const receipts = delivered.filter((d) => String(d.text).includes('【自动回传】'))
+              const notSettled = receipts.length === 0
+              const keptUnresolved = still !== undefined && still.settleState !== undefined
+                && still.settleState !== 'waiting'
+              if (notSettled && keptUnresolved && !inLost) {
+                ok('SB-3 ✓ `endedAt` 缺失 ⇒ **判不出**（⛔ 不当成已结算）：卡在终态但无结束时刻 ⇒ '
+                  + `**没有投任何回执**（${receipts.length} 份）、该条**留在 pending**`
+                  + ` 且 settleState=${still?.settleState}（recheckCount=${still?.recheckCount}）、⛔ 未进 lost`
+                  + ` ⇒ 不会把上一轮的结果当本轮结果回传${sbTag}`)
+              } else {
+                bad('SB-3 【`endedAt` 缺失必须判不出】不成立'
+                  + `：投了回执=${!notSettled}（应 false）· 盘上那条=${JSON.stringify(still)}`
+                  + ` · 进 lost=${inLost} · 收据=${JSON.stringify(receipts.map((r) => r.to))}`
+                  + ' ⇒ 这会把上一轮的结果当本轮结算（错配比丢更坏）')
+              }
+            }
+          }
+        }
+      } finally {
+        try { sbRm(sbRootTmp, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+      }
+    }
+  }
+}
+
 // ── 输出 ───────────────────────────────────────────────────────────────
 
 if (note.length > 0) console.log(note.join('\n'))
