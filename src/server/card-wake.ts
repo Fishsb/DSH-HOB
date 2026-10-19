@@ -132,8 +132,37 @@ export interface WakeState {
    *   改为断言『没有退回路径』"）：数值 > 0 ⇒ **有过"判不出 owner 所以没投"的卡跑完**，
    *   ⛔ **不再意味着"按全局单值投出去了一声"**。
    * ⚠ ⛔ 不许并进 `noSubscriberCount`（那是"一个订阅者都没有"或"都不是 owner 的面"）。
+   *
+   * ⚠⚠ **2026-10-19 · 拆"一档两义"（`306-C83` §四）**：本档**只留投递那一半**
+   *   （{@link CardWake.handleFrame}：一条卡跑完、**判不出它的 owner** ⇒ 这一声不投）。
+   *   另一半（{@link CardWake.redeliver}：有人补一条错投回执、**判不出该补给谁**
+   *   ⇒ 这一份不补）**已挪到** {@link WakeState.redeliverOwnerUnknownCount}。
+   *   ⇒ 读本数的人**不会再**把"投递时判不出归属"与"补投时判不出归属"看成同一件事
+   *   （本项目明令：⛔ 不许把两种原因说成同一句话）。
    */
   legacyTargetCount: number
+  /**
+   * ⚠⚠ **「补投时判不出该补给谁 ⇒ 这一份不补」的独立一档**（2026-10-19 拆档 · `306-C83` §四）。
+   *
+   * ── 拆掉的是哪一半（⚠ 必须写清，否则下一个人又会合并回去）────────────────
+   *   改前 `legacyTargetCount` 一个数被**两条路径**共用：
+   *     ① **投递**（{@link CardWake.handleFrame}）：一条卡跑完、**判不出它的 owner**
+   *        ⇒ 这一声不投；
+   *     ② **补投**（{@link CardWake.redeliver}）：有人补一条错投回执、**判不出该补给谁**
+   *        ⇒ 这一份不补。
+   *   ⇒ 读那个数的人**分不出是哪一件**：前者是"这声回执我压根不知道该给谁"，
+   *     后者是"**有人按了补投**、但补不了"—— 后果完全不同
+   *     （后者会让人以为"错投那条已经补过了"）。
+   *   ⇒ 挪走的是 **②**；`legacyTargetCount` 里**留着的仍是 ①**（语义一个字没改）。
+   *
+   * ⚠ ⛔ **不许并进任何既有计数**：
+   *   · 并进 `wokeCount` ⇒ 把"没补成"说成"叫醒了"；
+   *   · 并进 `undeliveredCount` ⇒ 那一档是"**知道给谁但没送到**"，本档是"**不知道该给谁**"；
+   *   · 并进 `legacyTargetCount` ⇒ 就是本档要拆掉的"一档两义"本身。
+   */
+  redeliverOwnerUnknownCount: number
+  /** 最近一次"补投时判不出该补给谁"的可读原话（⛔ 不许静默）。 */
+  redeliverOwnerUnknownWhy?: string
   /**
    * ⚠⚠ **漏投的次数**（`I-10`：错投 ≡ 漏投，必须同档可观测）。
    *
@@ -353,7 +382,8 @@ export class CardWake {
    */
   private readonly redelivered = new Map<string, true>()
   private state: WakeState = {
-    conn: 'idle', wokeCount: 0, noSubscriberCount: 0, legacyTargetCount: 0, undeliveredCount: 0, redeliveredCount: 0, seenCount: 0,
+    conn: 'idle', wokeCount: 0, noSubscriberCount: 0, legacyTargetCount: 0, redeliverOwnerUnknownCount: 0,
+    undeliveredCount: 0, redeliveredCount: 0, seenCount: 0,
   }
   private abort: AbortController | undefined
   private stopped = false
@@ -667,8 +697,10 @@ export class CardWake {
    *   （后者是"正常投递已发过"的台账，混用会让正常路径误判"已投过"而漏投）。
    *
    * ── 判不出 `owner` ⇒ **不补投** + 独立可读话 ────────────────────────────
-   *   ⛔ 不许猜、⛔ 不许改投别人。这一档记进 `legacyTargetCount`
-   *   （既有语义 = "判不出 owner ⇒ 不投"），措辞点明这是**补投**语境。
+   *   ⛔ 不许猜、⛔ 不许改投别人。这一档记进**本支专有的**
+   *   {@link WakeState.redeliverOwnerUnknownCount}（2026-10-19 拆档，`306-C83` §四）：
+   *   ⚠ 它⛔ **不再**记进 `legacyTargetCount` —— 那个数只留"投递时判不出 owner"那一半，
+   *     把"**有人按了补投**但补不了"混进去，就是本项目明令禁止的"两种原因说成同一句话"。
    *
    * @param executionId - 那次执行的 id（与 {@link deliveredLedger} `/` 台账同键）。
    * @param owner - **该条记录自己的** `createdBy.sessionId`（⚠ 调用方现读后传入）。
@@ -685,14 +717,22 @@ export class CardWake {
     const card = taskId === undefined ? '' : `（卡 ${taskId}）`
 
     // ── ① 判不出 owner ⇒ 不补投 + 独立可读话（⛔ 不许猜、⛔ 不许改投别人）──────
+    //
+    //   ⚠⚠ **2026-10-19 拆档（`306-C83` §四）**：这一支原来记的是
+    //     `legacyTargetCount`（= 投递那一半的档）⇒ 一个数被两条路径共用，
+    //     读的人分不出"投递时判不出归属"与"**有人按了补投**、但判不出归属"。
+    //   ⇒ 现在挪进**本支专有**的 `redeliverOwnerUnknownCount`；
+    //     `legacyTargetCount` 只留 `handleFrame` 里那一半（语义一字未改）。
     if (typeof owner !== 'string' || owner === '') {
+      const why = `⚠ 有一条错投回执**补投不了**${card}：**判不出它该给谁**`
+        + '（该卡没有 `createdBy.sessionId`：人工建的卡 / 卡片已被清掉）⇒ **这一份不补**；'
+        + '⛔ 这不是"没有卡跑完"，⛔ 也不是"已经补过了"，'
+        + '⛔ 更**没有**退回"按工作区广播 / 投给最后一个读过状态的人"'
       this.state = {
         ...this.state,
-        legacyTargetCount: this.state.legacyTargetCount + 1,
-        note: `⚠ 有一条错投回执**补投不了**${card}：**判不出它该给谁**`
-          + '（该卡没有 `createdBy.sessionId`：人工建的卡 / 卡片已被清掉）⇒ **这一份不补**；'
-          + '⛔ 这不是"没有卡跑完"，⛔ 也不是"已经补过了"，'
-          + '⛔ 更**没有**退回"按工作区广播 / 投给最后一个读过状态的人"',
+        redeliverOwnerUnknownCount: this.state.redeliverOwnerUnknownCount + 1,
+        redeliverOwnerUnknownWhy: why,
+        note: why,
       }
       this.say(`[card-wake] ${this.state.note}`)
       return { kind: 'refused', reason: String(this.state.note ?? '') }
@@ -814,6 +854,11 @@ export class CardWake {
       wokeCount: this.state.wokeCount,
       noSubscriberCount: this.state.noSubscriberCount,
       legacyTargetCount: this.state.legacyTargetCount,
+      // ⚠ 拆档后的两档（2026-10-19 · `306-C83` §四）同样**跨重连保留** ——
+      //   否则"重连一次就把'补投补不了'读成 0"，那正是本项目最忌讳的"没去读"伪装成"确实是空的"。
+      redeliverOwnerUnknownCount: this.state.redeliverOwnerUnknownCount,
+      ...(this.state.redeliverOwnerUnknownWhy === undefined
+        ? {} : { redeliverOwnerUnknownWhy: this.state.redeliverOwnerUnknownWhy }),
       // ⚠ `I-10` 那一档也要跨重连保留（它是"我有一条回执没到"的唯一在内存读数）
       undeliveredCount: this.state.undeliveredCount,
       ...(this.state.lastUndeliveredTo === undefined ? {} : { lastUndeliveredTo: this.state.lastUndeliveredTo }),

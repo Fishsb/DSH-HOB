@@ -148,18 +148,31 @@ if (cwMod !== undefined) {
       const saysNotDelivered = note2.includes('不补') || note2.includes('不补投')
       const noBroadcast = !note2.includes('广播给') && !note2.includes('投给所有')
       const notInRedelivered = st.redeliveredCount === 0
-      const countedAsLegacy = st.legacyTargetCount === 1
+      /**
+       * ⚠⚠ **2026-10-19 拆档（`306-C83` §四）后这一档换了落点，且判据同时变严**：
+       *   改前 `legacyTargetCount` 一位被"**投递**时判不出 owner"与"**补投**时判不出 owner"
+       *   两件事共用 ⇒ 读的人分不出是哪一件。现在补投这一半单开
+       *   `redeliverOwnerUnknownCount`，`legacyTargetCount` 只留投递那一半。
+       *   ⇒ 本条相应改成：**本档 +1、且 `legacyTargetCount` 必须仍为 0**。
+       *   ⚠ 这不是放宽（`UD-130`）：断言条数没减、门槛没降，还**多钉了一条**
+       *     ——"两条路径不许落回同一个计数"（那正是拆档要保的性质）。
+       */
+      const countedAsRedeliverOwnerUnknown = st.redeliverOwnerUnknownCount === 1
+      const notCountedAsLegacy = st.legacyTargetCount === 0
       if (r.kind === 'refused' && sent.length === 0 && saysUndecidable && saysNotDelivered
-          && noBroadcast && notInRedelivered && countedAsLegacy) {
+          && noBroadcast && notInRedelivered && countedAsRedeliverOwnerUnknown && notCountedAsLegacy) {
         ok('(b) ✓ **owner 判不出 ⇒ 不补投 + 独立可读话**：'
-          + `kind=refused · 实发=0 · legacyTargetCount=${st.legacyTargetCount}（应 1，独立一档）· `
+          + `kind=refused · 实发=0 · redeliverOwnerUnknownCount=${st.redeliverOwnerUnknownCount}（应 1，独立一档）· `
+          + `legacyTargetCount=${st.legacyTargetCount}（应 0：投递那一半才用它）· `
           + 'redeliveredCount=0（⛔ 没并进去）· 话里点名"判不出 / 不补"')
       } else {
         bad('(b) 【owner 判不出 ⇒ 不补投】不成立'
           + `：kind=${r.kind}（应 refused）· 实发=${sent.length}（应 0）· `
           + `点名判不出=${saysUndecidable} · 说不补=${saysNotDelivered} · `
           + `没提广播=${noBroadcast} · redeliveredCount=${st.redeliveredCount}（应 0）· `
-          + `legacyTargetCount=${st.legacyTargetCount}（应 1）· note=${JSON.stringify(note2.slice(0, 160))}`)
+          + `redeliverOwnerUnknownCount=${st.redeliverOwnerUnknownCount}（应 1）· `
+          + `legacyTargetCount=${st.legacyTargetCount}（应 0，⛔ 不许与补投共用）`
+          + ` · note=${JSON.stringify(note2.slice(0, 160))}`)
       }
     }
 

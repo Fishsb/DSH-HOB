@@ -2371,8 +2371,21 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         try {
           const w = orch.wakeState()
           if (w.conn === 'live' && w.wokeCount > 0) return []
-          if (w.conn === 'live' && w.wokeCount === 0 && w.noSubscriberCount === 0) {
-            // 连上了、没叫过、也没有"该叫没人"的情形 ⇒ 这是**正常态**（就是没卡跑完过）
+          /**
+           * ⚠⚠ **"正常态才收起"的判据必须把每一个非零档都算进去**（2026-10-19 · 拆档同步）。
+           *
+           * ⚠ 改前这里只判 `wokeCount` 与 `noSubscriberCount` 两个数 ⇒
+           *   "**判不出 owner ⇒ 没投**"（`legacyTargetCount`）与"**补投时判不出归属**"
+           *   （`redeliverOwnerUnknownCount`）即便 **> 0**，也会因为这一行 early-return
+           *   而被**整块吞掉** —— 那是本项目最忌讳的形态：**有读数，却读出来是空的**。
+           * ⇒ 现在：只要**任何一个**"没办成"的档非零，就照实把那一档念出来。
+           * ⚠ 这是**加严**（更多情形会被念出来），⛔ 不是放宽：两档都为 0 时仍然收起，
+           *   且**不会**因此出现"没有卡跑完"那种错觉式说法（收起的语义就是"没发生"）。
+           */
+          const anyMissed = w.noSubscriberCount > 0 || w.legacyTargetCount > 0
+            || w.redeliverOwnerUnknownCount > 0 || w.undeliveredCount > 0
+          if (w.conn === 'live' && w.wokeCount === 0 && !anyMissed) {
+            // 连上了、没叫过、也没有"该叫没人 / 判不出归属 / 漏投"的情形 ⇒ **正常态**（就是没卡跑完过）
             return []
           }
           const head = w.conn === 'live'
@@ -2399,6 +2412,23 @@ export function createHobOrchTools(orch: HobOrchestrator): {
             lines.push(`  ↳ ⚠ 有 **${w.legacyTargetCount} 次**卡跑完但**判不出它的 owner** ⇒ 那几声**没投**`
               + '（⛔ **没有**退回"按工作区广播 / 投给最后一个读过状态的人"这条旧路）')
             lines.push('  ↳ ⛔ 这不等于"没有卡跑完"：卡确实跑完了，只是**判不出该回给谁**。')
+          }
+          /**
+           * ⚠⚠ **「补投时判不出归属 ⇒ 这一份不补」是独立一档**（2026-10-19 拆档 · `306-C83` §四）。
+           *
+           * ⚠ 改前它与上面那一档**共用 `legacyTargetCount`** ⇒ 一个数两件事，读者分不出：
+           *   · 上面那一档 = **投递**时判不出该给谁（卡跑完、回执没发）；
+           *   · 本档 = **有人按了补投**、但判不出该补给谁（操作者会以为"那条错投已经补过了"）。
+           * ⇒ 现在各自具名、各自一句可读话，⛔ 不合并计数（本项目明令：两种原因不许说成同一句话）。
+           */
+          if (w.redeliverOwnerUnknownCount > 0) {
+            lines.push(`  ↳ ⚠ 有 **${w.redeliverOwnerUnknownCount} 条**错投回执**补投不了**（判不出该补给谁）`
+              + ' ⇒ 那几份**没有补发**')
+            if (w.redeliverOwnerUnknownWhy !== undefined) {
+              lines.push(`  ↳ ${w.redeliverOwnerUnknownWhy}`)
+            }
+            lines.push('  ↳ ⛔ 这**不是**"没有错投"、也⛔ **不是**"已经补过了"：'
+              + '它是"**有意补投、但判不出收件人**" ⇒ 请先补上该卡的 `createdBy.sessionId` 再补投。')
           }
           if (w.undeliveredCount > 0) {
             lines.push(`  ↳ ⚠⚠ **卡跑完却没送到（漏投）${w.undeliveredCount} 次**`

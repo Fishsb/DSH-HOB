@@ -2094,6 +2094,75 @@ const orchCode = stripComments(orchSrc)
               + `：档=${saysFailedTier} · 原因原文=${hasReason} · 时间=${hasWhen}`)
           }
         }
+        // ── L-w ⭐ **拆档后的渲染面成对**（2026-10-19 · `TASK` §3 的渲染面要求）──────
+        //
+        // ⚠ **它守的是哪条**：拆 `legacyTargetCount` 时新增了 `redeliverOwnerUnknownCount`
+        //   （= "补投时判不出该补给谁"那一半）。渲染块原先的"正常态收起"只判
+        //   `wokeCount` / `noSubscriberCount` ⇒ **新档非零也会被整块吞掉**
+        //   （有读数，却读出来是空的 —— 本项目最忌讳的形态）。成对两面：
+        //   · **L-w1 空态**：两档都为 0 且没叫过 ⇒ ⛔ 不得出现该档的行，
+        //     也⛔ 不得出现"没有卡跑完"那种错觉式说法（既有口径）；
+        //   · **L-w2 非空态**：只把 `redeliverOwnerUnknownCount` 置 2（其余全 0）⇒
+        //     这一档**必须**被念出来（含计数），且⛔ 不得说成"没有卡跑完"或"没有错投"。
+        //   ⚠ 这是**加严**（多钉一条之前没人守的路径），⛔ 不是放宽（`UD-130`）。
+        {
+          const still = card({ status: 'in_review', executions: [{
+            id: 'e-1', trigger: 'scheduled', startedAt: T0, endedAt: NOW,
+            outcome: 'succeeded', isolation: 'worktree', branch: 'task/demo',
+          }] })
+          /**
+           * ⚠ ⚠ **"错觉式说法"的判据必须排除否定式免责句**：
+           *   本项目既有口径是"⛔ 不许出现『没有卡跑完』那种**肯定式**结论"，
+           *   而**紧跟着**的免责句「这不等于"没有卡跑完"」是**要求**的（它正是防错觉的那一句）。
+           *   ⇒ 判据 = 每一处出现都必须在**否定词之后**（不等于 / 不是 / ≠）；
+           *     出现一处**肯定式**（前面没有否定词）⇒ 那就是错觉说法，判红。
+           */
+          const positiveOnly = (text) => {
+            const re = /没有卡跑完/g
+            let m
+            while ((m = re.exec(text)) !== null) {
+              const head = text.slice(Math.max(0, m.index - 8), m.index)
+              if (!/不等于|不是|≠/.test(head)) return false
+            }
+            return true
+          }
+          // ① 空态（真实现：conn='idle'、所有叫醒档为 0）
+          const empty = await mountAndRender({ tasks: [still] })
+          const emptyText = String(empty.rendered)
+          const noIllusion = positiveOnly(emptyText)
+          const noRedeliverLine = !/补投不了/.test(emptyText)
+          // ② 非空态：只让新档非零（在真渲染链路上就地改 `wakeState` 的返回值）
+          const hit = await mountAndRender({ tasks: [still] })
+          const realWake = hit.orch.wakeState.bind(hit.orch)
+          hit.orch.wakeState = () => ({
+            ...realWake(),
+            conn: 'live',
+            wokeCount: 0,
+            noSubscriberCount: 0,
+            legacyTargetCount: 0,
+            undeliveredCount: 0,
+            redeliverOwnerUnknownCount: 2,
+            redeliverOwnerUnknownWhy: '演示：有一条错投回执补投不了',
+          })
+          const hitText = String(await lOrchMod.createHobOrchTools(hit.orch).status.execute({}, {
+            agent: { session: { header: { cwd: hit.cwd } } },
+          }).catch(() => ''))
+          const named = /补投不了/.test(hitText)
+          const saysCount = hitText.includes('2')
+          const stillNoIllusion = positiveOnly(hitText)
+          if (noIllusion && noRedeliverLine && named && saysCount && stillNoIllusion) {
+            ok('L-w ✓ 拆档后渲染面成对：**两档都为 0** ⇒ 不出现"补投不了"行、也⛔ 不含'
+              + '"没有卡跑完"那种错觉式说法；**新档非零** ⇒ 必须被念出来（含计数与"补投不了"）'
+              + ' ⇒ 新增那一档不会因"正常态收起"被整块吞掉')
+          } else {
+            bad('L-w 【拆档后渲染面必须成对】缺项'
+              + `：空态无错觉说法=${noIllusion} · 空态无补投行=${noRedeliverLine}`
+              + ` · 非空态念出该档=${named} · 带计数=${saysCount} · 非空态无错觉说法=${stillNoIllusion}`
+              + ` · 非空态输出=${JSON.stringify(hitText.slice(0, 240))}`
+              + ` · 空态输出=${JSON.stringify(emptyText.slice(0, 120))}`)
+          }
+        }
+
         // ── L-f / L-g / L-h ⭐ **终态优先于受阻**（2026-10-18 口径纠偏 · 成对三条）──
         //
         // ⚠ **它守的是哪条缺陷**（实测出处）：卡 `t-mvczoqia-ntd9r3` 是
@@ -3225,6 +3294,139 @@ const orchCode = stripComments(orchSrc)
             } else {
               bad('R-e 【具名反例必须只到 owner】出现错投或漏投'
                 + `：${results.map((r) => `${r.card} ⇒ 合计 ${r.total}（应 1）/ owner ${r.toOwner}（应 1）/ 受害者 ${r.toVictim}（应 0）`).join(' · ')}`)
+            }
+          }
+
+          // ── R-h ⭐⭐ **旧 `R-g1/g2/g3` 的等价覆盖**（2026-10-19 · `306-C83` §三 · `TASK` §2）──
+          //
+          // ⚠ ⚠ **为什么要补这一组**（这不是新需求，是补一处**已确认的判据面缺口**）：
+          //   `a8e2c7a`（R 组按"一条信号只投一次"改判）把旧 `R-g1/g2/g3` 删掉了。
+          //   逐条对照后：`R-b2` **有**等价替代（`R-a2`），而那三条**没有** ——
+          //   它们原本守三件事：① 不越界（✅ 现由 `R-a`/`R-a2` 覆盖）
+          //   ② **不静默**（⚠ 删后无机检）③ **两档互斥**（⚠ 删后无机检）。
+          //   ⇒ 本组补的是 ②③ 的**行为等价覆盖**，⛔ 不是把那三条 id 恢复
+          //     （它们断言的对象 —— "订阅者没报项目 ⇒ 按全局 ws 兜底投" —— 已被 `I-7`/`I-9` 判死，
+          //      恢复＝对不存在的对象空转）。
+          //   ⚠ **旧 id 原文已无处可对照**：`git show HEAD:scripts/check-orch-state.mjs | grep -n "R-g"`
+          //     在 HEAD 里**零命中**（本单开工时实测）⇒ 只能以 `3852e58` 那一版为历史依据，
+          //     对照结论写进回报件，⛔ 不假装 HEAD 里有原文。
+          //   ⚠ 两条新断言都**只许新增/加严**（`UD-130`）：下面每一条都比旧的那条**多钉一条**性质。
+          //
+          //   · **R-h1（不静默 · 两种原因不许说成同一句话）**：喂一条"**卡跑完但判不出 owner**"
+          //     的事件 ⇒ 它必须落到**具名的一档**（`legacyTargetCount`）且 +1，
+          //     ⛔ 不许并进"没有订阅者 / 已叫醒 0 次"那一族；
+          //     ⚠ 且它的**可读话**必须与"确实没人在跑"那句**逐字不同**（同句＝两种原因被压成一句）。
+          //   · **R-h2（两档互斥）**：同一事件⛔ 不得同时计入
+          //     "**判不出 owner ⇒ 不投**"（A = `legacyTargetCount`）与"**知道给谁但没送到**"
+          //     （B = `undeliveredCount`）：无 owner ⇒ A+1/B+0；有 owner 但投递抛错 ⇒ B+1/A+0。
+          //   · **R-h3（拆档后两半仍互斥）**：`306-C83` §四 把 `legacyTargetCount` 里
+          //     "补投时判不出该补给谁"那一半拆成 `redeliverOwnerUnknownCount`
+          //     ⇒ 行为上钉住：**投递**判不出只涨前者、**补投**判不出只涨后者，⛔ 谁都不许落回彼此。
+          {
+            // ── R-h1 ⭐ **不静默**：判不出归属必须具名成档，且话不与"没人订阅"同句 ──
+            {
+              // ① 有订阅者（所以"没人订阅"这一档**本来就不该**成立），但这条记录**没有 owner**
+              const mine = makeCW([['session-hob', WS_MINE]], { globalWs: WS_MINE })
+              await mine.cw.handleFrame('change', frameOn(WS_MINE, undefined))
+              const stA = mine.cw.snapshot()
+              const noteA = typeof stA.note === 'string' ? stA.note : ''
+              // ② 对照面：一个订阅者都没有 + owner 是有的 ⇒ 落"没有订阅者"那一档
+              const none = makeCW([], { globalWs: WS_MINE })
+              await none.cw.handleFrame('change', frameOn(WS_MINE, 'session-hob'))
+              const stB = none.cw.snapshot()
+              const noteB = typeof stB.note === 'string' ? stB.note : ''
+              // ③ 判据
+              const named = stA.legacyTargetCount === 1          // 具名档 +1
+              const notMergedIntoNoRunner = stA.noSubscriberCount === 0 && stA.wokeCount === 0
+              const bothSilent = mine.sent.length === 0 && none.sent.length === 0
+              const differsFromNoBody = noteA !== '' && noteB !== '' && noteA !== noteB
+              const aSaysUndecidableOwner = noteA.includes('判不出') && noteA.includes('owner')
+              const bSaysNoSubscriber = noteB.includes('没有订阅者')
+              if (named && notMergedIntoNoRunner && bothSilent && differsFromNoBody
+                  && aSaysUndecidableOwner && bSaysNoSubscriber) {
+                ok('R-h1 ✓ **不静默**：卡跑完但**判不出 owner** ⇒ 落**具名档** `legacyTargetCount=1`'
+                  + `（⛔ 未并进"没人订阅/已叫醒"那一族：noSubscriber=${stA.noSubscriberCount} · woke=${stA.wokeCount}）`
+                  + '；**且两种原因的可读话逐字不同**'
+                  + `（判不出 owner="${noteA.slice(0, 24)}…" ≠ 没人订阅="${noteB.slice(0, 24)}…"）`
+                  + ' ⇒ 旧 `R-g1/g2/g3` 的"不静默"这一半**已被等价覆盖**')
+              } else {
+                bad('R-h1 【判不出归属必须具名成档、且不许与"没人订阅"同句】缺项'
+                  + `：legacyTargetCount=${stA.legacyTargetCount}（应 1）· noSubscriber=${stA.noSubscriberCount}（应 0）`
+                  + ` · 已叫醒=${stA.wokeCount}（应 0）· 两侧都没投=${bothSilent}`
+                  + ` · 两句话不同=${differsFromNoBody}（⚠ 同句＝两种原因被压成一句）`
+                  + ` · A 说"判不出 owner"=${aSaysUndecidableOwner} · B 说"没有订阅者"=${bSaysNoSubscriber}`
+                  + ` · noteA=${JSON.stringify(noteA.slice(0, 160))} · noteB=${JSON.stringify(noteB.slice(0, 160))}`)
+              }
+            }
+
+            // ── R-h2 ⭐ **两档互斥**："判不出 owner ⇒ 不投" vs "知道给谁但没送到" ──
+            {
+              // ① 没有 owner ⇒ A+1、B+0
+              const noOwner = makeCW([['session-hob', WS_MINE]], { globalWs: WS_MINE })
+              await noOwner.cw.handleFrame('change', frameOn(WS_MINE, undefined))
+              const s1 = noOwner.cw.snapshot()
+              // ② 有 owner，但投递**抛错** ⇒ B+1、A+0
+              const boom = makeCW([['session-hob', WS_MINE]], {
+                globalWs: WS_MINE,
+                deliver: () => Promise.reject(new Error('boom: deliver failed')),
+              })
+              await boom.cw.handleFrame('change', frameOn(WS_MINE, 'session-hob'))
+              const s2 = boom.cw.snapshot()
+              const caseA = s1.legacyTargetCount === 1 && s1.undeliveredCount === 0
+                && noOwner.sent.length === 0
+              const caseB = s2.undeliveredCount === 1 && s2.legacyTargetCount === 0
+                && boom.sent.length === 0 && s2.wokeCount === 0
+              const notBothAtOnce = !(s1.legacyTargetCount > 0 && s1.undeliveredCount > 0)
+                && !(s2.legacyTargetCount > 0 && s2.undeliveredCount > 0)
+              if (caseA && caseB && notBothAtOnce) {
+                ok('R-h2 ✓ **两档互斥**：**没有 owner** ⇒ 判不出那档 +1（`legacyTargetCount=1`）'
+                  + '、漏投那档 **+0**（`undeliveredCount=0`）；'
+                  + '**有 owner 但投递抛错** ⇒ 漏投那档 +1（`undeliveredCount=1`）、'
+                  + '判不出那档 **+0**（`legacyTargetCount=0`）'
+                  + ' ⇒ 同一事件⛔ 不会同时计入两档（旧 `R-g3` 的"两档互斥"已被等价覆盖）')
+              } else {
+                bad('R-h2 【"判不出 owner"与"知道给谁但没送到"必须互斥】计数串了'
+                  + `：无 owner ⇒ legacy=${s1.legacyTargetCount}（应 1）/ undelivered=${s1.undeliveredCount}（应 0）`
+                  + ` · 投递抛错 ⇒ legacy=${s2.legacyTargetCount}（应 0）/ undelivered=${s2.undeliveredCount}（应 1）`
+                  + ` · 有 owner 时的已叫醒=${s2.wokeCount}（应 0）· 实发=${boom.sent.length}（应 0）`)
+              }
+            }
+
+            // ── R-h3 ⭐ **拆档后两半仍互斥**（`306-C83` §四 的机检钉子）──────────────
+            //
+            //   ⚠ 本单把 `legacyTargetCount` 里"**补投**时判不出该补给谁"那一半
+            //     拆成 `redeliverOwnerUnknownCount`。⚠ 拆完必须**行为上**证明两边没落回去：
+            //     · 投递路径判不出 ⇒ **只**涨 `legacyTargetCount`；
+            //     · 补投路径判不出 ⇒ **只**涨 `redeliverOwnerUnknownCount`。
+            //   ⚠ 这条是为拆档新加的（拆档本身属于"新增判据"，⛔ 没有放宽任何旧断言）。
+            {
+              const cw1 = makeCW([['session-hob', WS_MINE]], { globalWs: WS_MINE })
+              await cw1.cw.handleFrame('change', frameOn(WS_MINE, undefined))
+              const st1 = cw1.cw.snapshot()
+              const cw2 = makeCW([['session-hob', WS_MINE]], { globalWs: WS_MINE })
+              const refused = await cw2.cw.redeliver('t-card-x@succeeded@v2', undefined, 't-card-x')
+              const st2 = cw2.cw.snapshot()
+              const deliveryHalf = st1.legacyTargetCount === 1
+                && st1.redeliverOwnerUnknownCount === 0
+              const redeliverHalf = st2.redeliverOwnerUnknownCount === 1
+                && st2.legacyTargetCount === 0
+                && refused.kind === 'refused'
+                && cw2.sent.length === 0
+              if (deliveryHalf && redeliverHalf) {
+                ok('R-h3 ✓ **拆档两半互斥**（`306-C83` §四）：**投递**判不出 owner ⇒'
+                  + ` \`legacyTargetCount=1\`、\`redeliverOwnerUnknownCount=${st1.redeliverOwnerUnknownCount}\`（应 0）；`
+                  + ' **补投**判不出该补给谁 ⇒'
+                  + ` \`redeliverOwnerUnknownCount=${st2.redeliverOwnerUnknownCount}\`（应 1）、`
+                  + `\`legacyTargetCount=${st2.legacyTargetCount}\`（应 0）`
+                  + ' ⇒ 一档两义已被拆开，⛔ 两半没有落回同一个计数')
+              } else {
+                bad('R-h3 【补投/投递两半必须各记各的档】计数串了'
+                  + `：投递判不出 ⇒ legacy=${st1.legacyTargetCount}（应 1）/`
+                  + ` redeliverOwnerUnknown=${st1.redeliverOwnerUnknownCount}（应 0）`
+                  + ` · 补投判不出 ⇒ redeliverOwnerUnknown=${st2.redeliverOwnerUnknownCount}（应 1）/`
+                  + ` legacy=${st2.legacyTargetCount}（应 0）· 补投实发=${cw2.sent.length}（应 0）`
+                  + ` · kind=${refused.kind}（应 refused）`)
+              }
             }
           }
 
