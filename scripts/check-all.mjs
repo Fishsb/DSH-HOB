@@ -26,10 +26,32 @@
  *   ⛔ **不预设某族该是什么结果** —— 每族的期望值仍由那族自己决定。
  *   ⛔ 不写任何文件（各族的临时件仍由各族自己管，且都在系统临时目录里）。
  *
+ * ── 判据模的传参（2026-10-19 新增 · `TASK-C`）────────────────────────────
+ *   ⚠ `check:build` 的**面 ③**（运行实例 vs 产物）有**两档跑法**：
+ *     · 单独跑 `npm run check:build` ⇒ **报警模**（落后只打印，⛔ 不 FAIL）；
+ *     · 由**本聚合入口**跑 ⇒ **判据模**（`--strict-instance` ⇒ 落后 exit 1 · 判不出 exit 2）。
+ *   ⚠ ⚠ **为什么在这里传、而不让那一族自己决定**：报警与"跑判据"是两个面。
+ *     ⚠ 本入口存在的理由就是"**一条命令跑完**、且**有失败就红**"；而实测现场就是落后态
+ *     ⇒ 若那一族在任何时候都只报不拦，则"实例跑的是旧代码"这件事**永远不会让任何东西变红**
+ *     —— 那正是本件要治的静默。
+ *   ⚠ ⛔ 本入口**不改**那族判据的任何一个字节：它只多传一个开关（`STRICT_FAMILIES`）。
+ *     ⚠ 同理**不改** `verdict()` —— 那三档口径（1 失败 / 2 未执行）本来就够了。
+ *
  * ── 用法 ───────────────────────────────────────────────────────────────
  *   `npm run check`（= `npm run check:all`）· 或 `node scripts/check-all.mjs`
  *   想看"哪几族现在跑不了、怎么补" ⇒ `npm run check:preflight`（⚠ 那一条只体检，不跑判据）。
  */
+
+/**
+ * **判据模**才传的族 → 额外参数。
+ *
+ * ⚠ 只有 `check:build`：它的面 ③ 需要「运行实例」这个**外部**读数，而在日常开发中间态
+ *   落后是**必然**的（刚 build 完还没重启）⇒ 缺省只报警，⛔ 不能让它把 `npm run check` 搞成恒红。
+ * ⚠ 加族时**必须**同时想清"它恒不恒红"—— ⛔ 别把新的恒红引入本入口。
+ */
+const STRICT_FAMILIES = new Map([
+  ['check:build', ['--strict-instance']],
+])
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -68,7 +90,9 @@ export function runFamilies(names) {
     console.log('═'.repeat(72))
     console.log(`▶ ${name}`)
     console.log('═'.repeat(72))
-    const r = spawnSync('npm', ['run', '--silent', name], {
+    const extra = STRICT_FAMILIES.get(name) ?? []
+    // ⚠ 传法 = `npm run <族> -- <参数>`（⚠ 走 `npm` 而不是直接 node：各族自己的入口仍以 package.json 为准）
+    const r = spawnSync('npm', ['run', '--silent', name, ...(extra.length > 0 ? ['--', ...extra] : [])], {
       cwd: root,
       stdio: 'inherit',
       // ⚠ 不设 timeout：有一族要跑 60+ 秒（真跑组）；超时会把它误报成失败。

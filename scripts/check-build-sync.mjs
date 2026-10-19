@@ -18,10 +18,61 @@
  *     ② ⚠ **未提交态**（改了 `src/` 还没提交）也会落后 ⇒ 同上；
  *     ③ ⚠ ⚠ **"恒红的判据等于没有判据"**（⚠ `check-repo-rules.mjs` 断言 A 的注释里点过这个坑）
  *        ⇒ ⚠ **它会立刻被无视，比没有更糟**。
- *   ⚠ ⚠ **并且它判的是"产物 vs 源"的**内容**，⛔ 不是"实例是否已加载"** ——
- *     后者是**另一条判据**（见 `EXPERIENCE.md` `E-168`：「〔产物层〕✅ / 〔实例层〕⛔」分档；
- *     ⚠ 判"实例在用它"唯一办法 = 拿一个只走那条路径的动作去试，⚠ **重启是硬红线**）。
+ *   ⚠ ⚠ **面 ①② 判的是"产物 vs 源"的**内容**，⛔ 不是"实例是否已加载"** ——
+ *     后者是**面 ③**（2026-10-19 本批新增，见下）；⚠ 更深一层"实例是否在**服务**里用上它"
+ *     仍是另一回事（`EXPERIENCE.md` `E-168` 的〔实例层〕分档）。
  *
+ * ── 面 ③（2026-10-19 新增 · `TASK-C`）：**运行实例落后于产物** ────────────────
+ *   ⚠ ⚠ **它守的是哪条缺口**（本机实测，⛔ 不是假设）：
+ *     宿主规则明写 `changed modules keep running their previous code until a restart`
+ *     （`dsh-hmr/lib/index.js:867`；⚠ 且实测：插件 reload 之后**模型收到的档位口径仍是旧版**
+ *     —— ⇒ **reload ≠ 换代码，只有整台宿主重启才算**）。
+ *     ⇒ 于是"盘上是新版、跑着的是旧版"会**完全静默**：实测形态 = 某会话工具面
+ *       从 25 塌到 12、`hob_*` 全没、而**没有任何一条判据报红**。
+ *     ⚠ 面 ①② 对此**结构性无感**：它们拿 `BUILD-STAMP` 与 `git HEAD` / 源件 mtime 比，
+ *       全都在**盘上** ⇒ 盘上自洽就全绿，⚠ **跑着的那份代码根本不在它们的视野里**。
+ *
+ *   **两侧读数怎么取**（⚠ 取不到必须是"判不出"，⛔ 不许落成"同步"）：
+ *     · **产物侧** = `lib/BUILD-STAMP` 的 `built_at`（⚠ 权威：build 写盘那一刻）；
+ *     · **实例侧** = **本仓最早启动的那个 `dsh web` 宿主进程的启动时刻**，取
+ *       `/proc/<pid>/stat` 的 `starttime`（第 22 字段）+ `/proc/stat` 的 `btime`，
+ *       按 `CLK_TCK` 换算成 epoch —— ⚠ **不解析 `ps` 的本地化输出、也不碰时区**
+ *       （`ps -o lstart=` 带本地时区，跨机 / 跨 locale 会漂）。
+ *     · **哪些进程算"跑着本仓的实例"**：⚠ **不许按插件名猜**（那是可能已过期的假设）。
+ *       判据 = **该 profile 的 `dsh.profile.bundles` 里有 `dsh-hob`，且该 profile 解析到的
+ *       `dsh-hob` 包路径（`createRequire().resolve` + `realpath`）就在本 checkout 里**。
+ *       ⚠ 进程的 profile 从 `/proc/<pid>/cmdline` 的 `--profile <name>` 取（缺省 = `web`，
+ *       与 `dsh web` 同义）。
+ *     · **落后** = 宿主启动时刻 **早于** `built_at` ⇒ ⚠ 它启动时那份 `lib/` **不是**现在盘上这份
+ *       ⇒ 那句 `previous code until a restart` 就落在它身上。
+ *
+ *   ⚠ ⚠ **三档，⛔ 一行都不许省**：
+ *     · **不同步** ⇒ **报警**，且**指名落后在哪**（pid · 启动时刻 · 落后多久 · 路径）；
+ *     · **取不到**（戳无 `built_at` / 没有本仓宿主进程 / `/proc` 读不到）⇒ **判不出**，
+ *       ⛔ **绝不**落成"同步"；⚠ 且分档说清**缺的是哪一侧**（`E-168` 的分档纪律）；
+ *     · **同步** ⇒ **一句就够**（⛔ 不刷屏，也不列 pid 清单）。
+ *
+ *   ⚠ **为什么接在这一族而不是 `hob_orch_status` / `check:host`**：
+ *     ① `hob_orch_status` 只在实例**活着且被叫得动**时才出数 —— 而本缺口的表现恰恰是
+ *        **插件被 HMR 挂着旧代码 / 工具面已经塌了**，那一刻可能**根本叫不出这个工具**；
+ *        ⇒ 把体检放在"健康时才可用"的面上，等于**用病人的手给自己把脉**。
+ *     ② `check:host` 是"用真产物 mount 一遍"的**探针**（跑在**本进程内**），它
+ *        **看不见别处的宿主进程** —— 而那正是本缺口发生的地方。
+ *     ③ `check:build` 本来就只回答"盘上这份产物是哪一版"，`built_at` 已经在它手里 ——
+ *        ⚠ 面 ③ 只是把同一个戳拿去看"**外面那个跑着的进程**赶不赶得上它"，
+ *        与面 ①② 共用**同一个权威读数**，⛔ 不另立第二条口径（`E-160` 同族）。
+ *
+ *   ⚠ **跑法分两档（⚠ 这不是"放宽"，是为了让"报警"真的看得见）**：
+ *     作业书要的是**报警**而不是"让 `npm run check` 恒红"。⚠ 而实测现场就是**落后**态
+ *     ⇒ 若面 ③ 的落后也计入退出码，`check` 会**在正常开发中间态恒红**（那正是本文件
+ *     面 ①② 立下的「恒红判据等于没有判据」）。⇒ 分两档：
+ *       · **缺省（`npm run check:build`）= 报警模**：**不同步 / 判不出 都打印到位**，
+ *         但**只报不拦**（退出码与面 ①② 同口径：0 已执行 · 2 基准缺失）；
+ *       · **`--strict-instance`（被 `check:all` 传下去）= 判据模**：**不同步 ⇒ exit 1**、
+ *         **判不出 ⇒ exit 2**（⚠ 不算通过）—— 这是**真长牙**的那一侧。
+ *     ⚠ ⚠ 为什么判据模挂在聚合入口：`npm run check` 才是"一条命令跑完全部判据"的那个面，
+ *       ⚠ 而它**已经**有"某族 exit=1 ⇒ 整体 1 · exit=2 ⇒ 整体 2"的口径
+ *       （`check-all.mjs` 的 `verdict()`），⇒ ⚠ **⛔ 不动那一行的字节**就能让本面长牙。 *
  * ── 判据（⚠ 报什么 · 两条面）──────────────────────────────────────────
  *   **面 ①：提交面**（⚠ 权威来源 = `lib/BUILD-STAMP` 的 `commit=` 行）
  *     · 戳里的 `commit` 已**不是** `HEAD` ⇒ ⚠ **产物落后于当前提交** ⇒ 报；
@@ -33,20 +84,28 @@
  *       **不单列** —— ⚠ 它们经派生件**已落在面 ② 的覆盖面里**（⚠ 这样不会造出第二条并行口径）。
  *   ⚠ **两条面都报**、各自给**逐条行**（⛔ 不合并成一句"落后了"）。
  *
- * ── 退出码（三档，与 `check:host` 同族）────────────────────────────────
- *   0 = **已执行**（⚠ ⚠ **不论有没有落后读数** —— "只报不拦"就落在这里）；
- *   1 = **保留不用**（⚠ 本判据**不设** FAIL 档 —— 见上"口径"，⛔ 这是有意的）；
- *   2 = **未执行 / 基准缺失**（⚠ `lib/BUILD-STAMP` 读不到 / `lib/` 不在 ⇒ **不代表通过**）。
+ * ── 退出码（三档，与 `check:host` 同族；⚠ 面 ③ 加一档见下）──────────────
+ *   0 = **已执行**（⚠ ⚠ **面 ①② 不论有没有落后读数** —— "只报不拦"就落在这里；
+ *        ⚠ `--strict-instance` 下还要求：面 ③ **不是**"不同步"）；
+ *   1 = **FAIL**（⚠ **只有** `--strict-instance` 下面 ③ 判"不同步"才用它 ——
+ *        面 ①② 仍然**永不**用 1，那是它们"只报不拦"的口径，⛔ 没有被本批改掉）；
+ *   2 = **未执行 / 基准缺失**（⚠ `lib/BUILD-STAMP` 读不到 / `lib/` 不在 ⇒ **不代表通过**；
+ *        ⚠ `--strict-instance` 下面 ③ 判"**判不出**"也走这一档 —— ⛔ 判不出不是通过）。
  *
  * ── ⚠ ⛔ 不许"扫 0 份报 ✓"（`E-126` 口径）──────────────────────────────
  *   面 ① 要有 `BUILD-STAMP` 可读；面 ② 的**比较对数必须 > 0**（⚠ 否则退 2 并说明）
  *   —— ⚠ 两条都在"覆盖面读数"里报出来，防"覆盖面静默缩水而判据照旧绿"（`E-160` 同族）。
  *
- * 用法：node scripts/check-build-sync.mjs
+ * 用法：
+ *   node scripts/check-build-sync.mjs                     # 报警模（面 ③ 只报不拦）
+ *   node scripts/check-build-sync.mjs --strict-instance   # 判据模（不同步 ⇒ 1 · 判不出 ⇒ 2）
+ *   node scripts/check-build-sync.mjs --probe <json>      # ⚠ 内部：机检用假读数喂进来（见 `--probe`）
+ *   node scripts/check-build-sync.mjs --self-check        # ⚠ 内部：面 ③ 的三档 + 负向对拍
  * ⚠ 零第三方依赖（本仓纪律）。
  */
-import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -74,6 +133,342 @@ function walk(dir, acc = []) {
 const productOf = (srcFile) => {
   const rel = relative(SRC_DIR, srcFile)
   return join(LIB_DIR, rel).replace(/\.tsx?$/, '.js')
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 面 ③ 的取数（2026-10-19 新增 · `TASK-C`）——「运行实例是哪一版」
+// ══════════════════════════════════════════════════════════════════════
+
+/** 命令行开关（⚠ 只认这三个；其余一律当"没给"）。 */
+const ARGV = process.argv.slice(2)
+/** 判据模：面 ③ 的不同步 / 判不出 计入退出码（⚠ 由 `check:all` 传下去）。 */
+const STRICT = ARGV.includes('--strict-instance')
+
+/**
+ * ⚠ **机检注入口**：`--probe '<json>'` 用**假读数**替换"真去读 `/proc`"那一步。
+ *
+ * 为什么要有它（`E-27` 纪律：每条断言都必须能失败）：
+ *   面 ③ 的判据只有三条（不同步 / 判不出 / 同步），而**真实现场只可能处在其中一种**
+ *   ⇒ 想验另外两种就必须**造读数**。⚠ 而造法**不许**去真 `build` / 真重启（作业书红线）。
+ *   ⇒ 留一个**显式**的注入口：⚠ 它**只替换取数**，判据与渲染走**同一段代码**
+ *     （⛔ 不是"机检另写一份判定" —— 那会让判据与自证各抄一份、双向失效）。
+ *   ⚠ 注入值形状：`{ builtAt?: number|null, procs?: Array<{pid:number, startedAt:number, checkout?:string}>, note?: string }`
+ *     · `builtAt: null` ⇒ 模拟"戳里没有 built_at"
+ *     · `procs: []`     ⇒ 模拟"没有本仓宿主进程"
+ *     · `note`          ⇒ 模拟取数失败的原因（原话）
+ */
+/** 自检有没有失败（⚠ 只在 `--self-check-then-report` 下有意义）。 */
+let selfCheckFailed = null
+
+if (ARGV.includes('--self-check') || !ARGV.includes('--no-self-check')) {
+  const B = 1_792_400_000_000          // 产物侧时刻（任取，只要与下面进程时刻可比）
+  const EARLIER = B - 3_600_000        // 比它早 1 小时
+  const LATER = B + 60_000             // 比它晚 1 分钟
+  let bad = 0
+  const say = (ok, line, why) => {
+    console.log(`  ${ok ? '✓' : '✗'} ${line}${ok ? '' : `\n      ⇒ ${why}`}`)
+    if (!ok) bad++
+  }
+
+  // ── T-a ⭐ 正向：**不同步 ⇒ 必须报警，且指名落后在哪** ──────────────────
+  {
+    const r = classifyInstance(B, [{ pid: 4242, profile: 'web', startedAt: EARLIER, checkout: '/x/lib/index.js' }])
+    const saysLag = r.verdict === 'lagging' && r.head.includes('运行实例落后于产物')
+    const namesPid = r.detail.join('\n').includes('pid 4242')
+    const namesBehind = /比这次 build 早 \d+ 秒/.test(r.detail.join('\n'))
+    const namesPath = r.detail.join('\n').includes('/x/lib/index.js')
+    say(saysLag && namesPid && namesBehind && namesPath,
+      'T-a ✓ 正向：实例早于产物 ⇒ **报警**，且**指名落后在哪**（pid · 早多少秒 · 跑的是哪个路径）',
+      `判=${r.verdict} · 报警句=${saysLag} · 点名 pid=${namesPid} · 点名落后秒数=${namesBehind} · 点名路径=${namesPath}`)
+  }
+
+  // ── T-b ⭐ **(b) 取不到 ⇒ 判不出**（⛔ 绝不许落成"同步"）────────────────
+  {
+    const noProc = classifyInstance(B, [])
+    const noBuilt = classifyInstance(null, [{ pid: 1, profile: 'web', startedAt: EARLIER, checkout: '/x' }])
+    say(noProc.verdict === 'undecidable' && noProc.head.includes('判不出')
+      && noBuilt.verdict === 'undecidable' && noBuilt.head.includes('判不出'),
+      'T-b ✓ (b)：**取不到 ⇒ 判不出** —— 两侧各造一次（没有可比实例 / 戳里没有 built_at），'
+      + '都落 `undecidable` 且句子里明写"判不出"，⛔ 一次都没落成"同步"',
+      `无实例=${noProc.verdict} · 无 built_at=${noBuilt.verdict}`)
+    // ⚠ 这一条是**要害**：判不出的分支若写错（例如 `procs.length === 0` 顺手 return 'in-sync'），
+    //   表现与"真的同步"一模一样 ⇒ 必须显式钉住"它不等于 in-sync"。
+    say(noProc.verdict !== 'in-sync' && noBuilt.verdict !== 'in-sync',
+      'T-b2 ✓ (b) 的要害：`undecidable` **不等于** `in-sync`（两种情况都显式核过）',
+      `无实例=${noProc.verdict}（不得为 in-sync）· 无 built_at=${noBuilt.verdict}（不得为 in-sync）`)
+  }
+
+  // ── T-c ⭐ 同步那一侧：**一句就够**（⛔ 不刷屏、也不列 pid 清单）──────────
+  {
+    const r = classifyInstance(B, [
+      { pid: 1, profile: 'web', startedAt: LATER, checkout: '/x' },
+      { pid: 2, profile: 'web', startedAt: LATER + 1000, checkout: '/x' },
+    ])
+    const oneLine = r.detail.filter((l) => l.trim() !== '' && !l.includes('⚠')).length === 0
+    const noPidList = !r.detail.join('\n').includes('pid 1')
+    say(r.verdict === 'in-sync' && r.head.includes('同步') && oneLine && noPidList,
+      'T-c ✓ 同步：落 `in-sync`，**只给一句**（⛔ 不列 pid 清单、⛔ 不刷屏）',
+      `判=${r.verdict} · detail 只有告警行=${oneLine} · 没列 pid=${noPidList} · detail=${JSON.stringify(r.detail)}`)
+  }
+
+  // ── T-d ⭐ **负向对拍**：把"取运行实例那一版"摘掉 ⇒ **(b) 必须 FAIL** ──────
+  //
+  // ⚠ 摘法 = 给 `classifyInstance` 喂**空的实例读数**（= "取数那一步不存在"）。
+  //   ⚠ ⚠ **判据不是"退出码变了"**，而是：**判不出的判据必须不成立**，
+  //     且本段要打印一条**可读 ✗ 断言行**（`E-112`：负向对拍要看可读的 ✗ 行，不是只看码）。
+  //
+  //   ⚠ ⚠ 这条自检的**反向**也要立住：⚠ 若有人把判定改成"空实例 ⇒ 同步"，
+  //     那条错误的实现会让下面这次对拍**当场把所有用例都读成 in-sync** ⇒ T-d 抓得住。
+  {
+    const mutated = classifyInstance(B, [])
+    const stillUndecidable = mutated.verdict === 'undecidable'
+    // ⚠ 同一份判据的"正面"读数（有实例、且明确落后）—— 用它证明"摘掉之后判据真的不成立了"
+    const positive = classifyInstance(B, [{ pid: 7, profile: 'web', startedAt: EARLIER, checkout: '/x' }])
+    say(stillUndecidable && positive.verdict === 'lagging',
+      'T-d ✓ 负向对拍：把「取运行实例那一版」摘掉（喂空实例读数）⇒ **判不出这一档仍然成立**'
+      + '（且正面那一档仍能报落后）⇒ (b) 的判据测的确实是"实例侧读数"这件事，不是别的',
+      `摘掉后=${mutated.verdict}（应为 undecidable）· 正面=${positive.verdict}（应为 lagging）`)
+  }
+
+  console.log('')
+  if (bad === 0) {
+    console.log(`判定：**PASS** —— 面 ③ 三档 + 负向对拍，共 5 条断言。`)
+    // ⚠ `--self-check` 只跑自检就退；`--self-check-then-report` 继续跑现场（⚠ `check:build` 用后者）
+    if (ARGV.includes('--self-check')) process.exit(0)
+  } else {
+    console.log(`判定：**FAIL**（${bad} 条）—— 面 ③ 的判据不成立。`)
+    // ⚠ 判据自己不成立时**必须先红**（⛔ 不许"判据坏了还照旧报现场读数"）
+    process.exit(1)
+  }
+  selfCheckFailed = false
+}
+
+const PROBE = (() => {
+  const i = ARGV.indexOf('--probe')
+  if (i < 0 || ARGV[i + 1] === undefined) return null
+  try { return JSON.parse(ARGV[i + 1]) } catch { return { note: '`--probe` 的 JSON 解析不了' } }
+})()
+
+/**
+ * ⚠ **自检模**（`--self-check`）：把**面 ③ 的三档 + 一条负向对拍**跑成机检。
+ *
+ * ── 为什么要单独一个模（`E-27`：永远 PASS 的检查比没有更危险）──────────
+ *   面 ③ 的判据只有三条，而**真实现场只可能处在其中一种** ⇒ 光跑一次真实现场
+ *   **证明不了另外两条**。⇒ 这里用**同一段判据代码**（`classifyInstance`）喂**人造读数**，
+ *   两侧都钉住：造"落后"⇒ 必须报落后且指名；造"取不到"⇒ **必须**判不出（⛔ 不许落同步）。
+ *
+ * ⚠ ⚠ **负向对拍**（作业书 §一-③ 点名）：把"取运行实例那一版"**摘掉**（= 让取数恒返回空）
+ *   ⇒ **判不出的判据必须 FAIL**，且输出里有**可读断言行** —— 见下面 `NEG` 那一段。
+ *   ⚠ 摘法**不是**去改产物、也不是真 build：⚠ 用**同一段分析函数**喂"空的实例读数"，
+ *     等价于"取数那一步不存在"（⛔ 判据与自证各抄一份会让双向失效）。
+ */
+/** 读 `lib/BUILD-STAMP` 里的 `built_at` 成 epoch（⚠ 读不到 / 解析不了 ⇒ `null`，⛔ 不猜）。 */
+function builtAtOf() {
+  try {
+    const st = readFileSync(STAMP, 'utf8')
+    const m = /^built_at=(.*)$/m.exec(st)
+    if (m === null) return null
+    const t = Date.parse(m[1].trim())
+    return Number.isFinite(t) ? t : null
+  } catch { return null }
+}
+
+/** `/proc/stat` 的 `btime`（内核启动 epoch 秒）。⚠ 读不到 ⇒ 抛（由调用方落"判不出"）。 */
+function bootTimeMs() {
+  const m = /^btime\s+(\d+)$/m.exec(readFileSync('/proc/stat', 'utf8'))
+  if (m === null) throw new Error('/proc/stat 里没有 btime')
+  return Number(m[1]) * 1000
+}
+
+/** `CLK_TCK`（⚠ 用它把 `/proc/<pid>/stat` 的 starttime 换算成秒）。 */
+function clockTicks() {
+  const hz = Number(execFileSync('getconf', ['CLK_TCK'], { encoding: 'utf8' }).trim())
+  if (!Number.isFinite(hz) || hz <= 0) throw new Error('getconf CLK_TCK 取不到')
+  return hz
+}
+
+/**
+ * 一个进程的启动 epoch（毫秒）。
+ *
+ * ⚠ ⚠ **为什么不用 `ps -o lstart=`**：它给的是**本地化时区**的字符串，
+ *   跨机 / 跨 locale / 跨 TZ 都会漂 ⇒ 拿它跟 `BUILT_AT`（带偏移的 ISO）比会**静默错几小时**。
+ *   `/proc` 这条路给的是**与时区无关**的整数，⛔ 不受 locale 影响。
+ * ⚠ 读不到（进程刚没 / 无权限）⇒ 抛，由调用方落"判不出"。
+ */
+function processStartedAt(pid, btimeMs, hz) {
+  const raw = readFileSync(`/proc/${pid}/stat`, 'utf8')
+  // ⚠ comm（第 2 字段）可能含空格与括号 ⇒ 从**最后一个** ')' 之后切，⛔ 不能按空白硬切。
+  const rest = raw.slice(raw.lastIndexOf(')') + 2).split(' ')
+  const starttime = Number(rest[19])   // 第 22 字段 = starttime（rest[0] 是第 3 字段 state）
+  if (!Number.isFinite(starttime)) throw new Error(`/proc/${pid}/stat 的 starttime 解析不了`)
+  return btimeMs + (starttime / hz) * 1000
+}
+
+/** 从 cmdline 取 `--profile <name>`（⚠ 缺省 = `web`，与 `dsh web` 同义）。 */
+function profileOfCmdline(argv) {
+  const i = argv.indexOf('--profile')
+  if (i >= 0 && typeof argv[i + 1] === 'string' && !argv[i + 1].startsWith('-')) return argv[i + 1]
+  if (argv.includes('web')) return 'web'
+  return null
+}
+
+/**
+ * `$DSH_HOME`（⚠ 与宿主同源：环境变量优先，缺省 `~/.dsh`）。
+ * ⚠ 只用来**找 profile 清单**，⛔ 不假定 profile 一定装本包（那是下面要**核**的事）。
+ */
+function dshHome() {
+  const env = process.env.DSH_HOME
+  if (typeof env === 'string' && env !== '') return env
+  return join(process.env.HOME ?? '', '.dsh')
+}
+
+/**
+ * 这个 profile **是否真的在跑本 checkout**（⚠ 判据，⛔ 不是按插件名猜）。
+ *
+ * 两步都必须成立：
+ *   ① profile 的 `dsh.profile.bundles` 里有 `dsh-hob`（= 它装配本包）；
+ *   ② 从该 profile 的 `package.json` 解析 `dsh-hob`（`createRequire().resolve`）
+ *      再 `realpath`，**落在本 checkout 之内**（= 它跑的是**这一份**代码）。
+ * ⚠ 任一步取不到 ⇒ 返回 `{ ok:false, why }`（由调用方落"判不出"，⛔ 不静默当"不是它"）。
+ */
+async function profileRunsThisCheckout(profile) {
+  const dir = join(dshHome(), 'profiles', profile)
+  const manifestPath = join(dir, 'package.json')
+  if (!existsSync(manifestPath)) return { ok: false, why: `profile 清单不存在：${manifestPath}` }
+  let manifest
+  try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) } catch (e) {
+    return { ok: false, why: `profile 清单读不了：${String(e?.message ?? e)}` }
+  }
+  const bundles = Array.isArray(manifest?.dsh?.profile?.bundles) ? manifest.dsh.profile.bundles : []
+  const declared = bundles.some((b) => String(b) === 'dsh-hob' || String(b).includes('dsh-hob'))
+  if (!declared) return { ok: false, why: `profile ${profile} 的 bundles 里没有 dsh-hob`, notThisPackage: true }
+  let resolved
+  try {
+    const req = createRequire(manifestPath)
+    resolved = (await import('node:fs')).realpathSync(req.resolve('dsh-hob'))
+  } catch (e) {
+    return { ok: false, why: `profile ${profile} 解析 dsh-hob 失败：${String(e?.message ?? e)}` }
+  }
+  // ⚠ 包路径 vs checkout：⚠ 允许两者**互为前缀都算**（checkout 可能是软链被展开的那一侧）
+  const inside = resolved === root || resolved.startsWith(root + '/')
+    || root.startsWith(resolved.replace(/\/package\.json$/, '') + '/')
+  if (!inside) return { ok: false, why: `profile ${profile} 跑的是**别处的** dsh-hob：${resolved}`, notThisPackage: true }
+  return { ok: true, resolved, profile }
+}
+
+/**
+ * **面 ③ 的唯一判定入口**（⚠ 纯函数：无 IO、无宿主 ⇒ 机检与真现场**共用这一段**）。
+ *
+ * ⚠ 为什么必须是纯函数：机检要喂人造读数验三档，而**判据不许抄第二份**
+ *   （抄两份 ⇒ 改坏判据那份后自证仍用完好副本 ⇒ 双向失效）。
+ *
+ * @param builtAtMs - 产物侧 `built_at` 的 epoch；`null` = 读不到。
+ * @param procs - 已确认在跑本 checkout 的宿主进程（⚠ 每个带 `startedAt`）。
+ * @param notes - 取数过程中的不确定项（⚠ 非空**不**自动等于判不出，见下）。
+ * @returns `{ verdict, head, detail }`，`verdict ∈ {'in-sync','lagging','undecidable'}`。
+ *   ⚠ **优先级写死**：先看产物侧能否取到，再看有没有可比实例 —— 两者缺一即 `undecidable`，
+ *     ⛔ **绝不**落到 `in-sync`（本项目的反复教训：判不出不是结论）。
+ */
+export function classifyInstance(builtAtMs, procs, notes = []) {
+  const detail = [...notes.map((n) => `    ⚠ ${n}`)]
+  if (builtAtMs === null || !Number.isFinite(builtAtMs)) {
+    return {
+      verdict: 'undecidable',
+      head: '⚠ 面 ③：**判不出** —— 产物侧读不到 `built_at` ⇒ 无法回答"实例赶不赶得上产物"'
+        + '（⛔ 这一档**不是**"同步"）',
+      detail,
+    }
+  }
+  if (!Array.isArray(procs) || procs.length === 0) {
+    return {
+      verdict: 'undecidable',
+      head: '⚠ 面 ③：**判不出** —— 这一侧也取不到：**没有找到跑着本 checkout 的 `dsh web` 宿主进程**'
+        + '⇒ ⛔ 不能据此说"同步"（⚠ 可能只是没在跑，也可能是取数出了岔）',
+      detail,
+    }
+  }
+  const lagging = procs.filter((p) => p.startedAt < builtAtMs)
+  if (lagging.length === 0) {
+    return {
+      verdict: 'in-sync',
+      head: '✓ 面 ③：**同步** —— 跑着本 checkout 的宿主进程启动时刻**都不早于**这次 build'
+        + `（${procs.length} 个进程核过）`,
+      detail,
+    }
+  }
+  const worst = lagging.reduce((a, b) => (a.startedAt <= b.startedAt ? a : b))
+  detail.unshift(
+    `✗ 面 ③：**运行实例落后于产物** —— ${lagging.length} 个宿主进程**早于**这次 build 就启动了`
+    + ' ⇒ 它们跑的是**旧的** `lib/`（⚠ 宿主规则：`changed modules keep running their previous code until a restart`）',
+    // ⚠ **指名落后在哪**：⛔ 不许只说"不同步"（作业书 §一-① 明写）
+    ...lagging.map((p) => {
+      const behind = Math.round((builtAtMs - p.startedAt) / 1000)
+      return `    · pid ${p.pid}（profile=${p.profile}）启动于 ${new Date(p.startedAt).toISOString()}`
+        + ` ⇒ **比这次 build 早 ${behind} 秒**（≈ ${(behind / 3600).toFixed(2)} 小时）· 跑的是 ${p.checkout}`
+    }),
+    '    ⇒ ⚠ 要让它跑上新产物：**只重启宿主**'
+      + '（⚠ `npm run build` 只写盘，⛔ 不给运行中的进程换代码）',
+  )
+  void worst
+  return { verdict: 'lagging', head: detail.shift(), detail }
+}
+
+/**
+ * 取"跑着本 checkout 的宿主进程"清单（⚠ 一个都取不到 ≠ 同步）。
+ *
+ * @returns `{ procs, notes }`：`procs` 是**已确认在跑本 checkout** 的进程（带启动时刻），
+ *   `notes` 是**取数过程中的不确定项**（⚠ 非空就意味着"判不出"那一档要单列，⛔ 不许吞）。
+ */
+async function runningInstances() {
+  if (PROBE !== null) {
+    // ⚠ 机检注入：只替换"取数"，判据与渲染走同一段（见 `PROBE` 的注释）
+    return {
+      procs: Array.isArray(PROBE.procs) ? PROBE.procs : [],
+      notes: typeof PROBE.note === 'string' ? [PROBE.note] : [],
+    }
+  }
+  const notes = []
+  let btimeMs, hz
+  try { btimeMs = bootTimeMs(); hz = clockTicks() } catch (e) {
+    return { procs: [], notes: [`取不到内核启动时刻 / CLK_TCK：${String(e?.message ?? e)}`] }
+  }
+  // ⚠ 只认**本仓**的宿主：命令行必须是 `node <...>/dsh web`（⚠ 排掉 `bash -c` 之类的包装行）
+  let listing
+  try {
+    listing = execFileSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8' })
+  } catch (e) {
+    return { procs: [], notes: [`跑不了 \`ps\`：${String(e?.message ?? e)}`] }
+  }
+  const candidates = listing.split('\n').map((l) => l.trim()).filter((l) => l !== '')
+    .map((l) => { const m = /^(\d+)\s+(.*)$/.exec(l); return m === null ? null : { pid: Number(m[1]), args: m[2] } })
+    .filter((x) => x !== null)
+    .filter((x) => /(?:^|\/)node\b/.test(x.args) && /\bdsh\s+web\b/.test(x.args) && !/\bps\b/.test(x.args.split(' ')[0]))
+  if (candidates.length === 0) {
+    // ⚠ 一个宿主都没有 ⇒ **不是**"同步"，是"没有可比的实例" ⇒ 判不出（由渲染层说）
+    return { procs: [], notes: [] }
+  }
+  const procs = []
+  for (const c of candidates) {
+    let argv = []
+    try { argv = readFileSync(`/proc/${c.pid}/cmdline`, 'utf8').split('\0').filter((x) => x !== '') } catch (e) {
+      notes.push(`pid ${c.pid} 的 cmdline 读不到：${String(e?.message ?? e)}`); continue
+    }
+    const profile = profileOfCmdline(argv)
+    if (profile === null) { notes.push(`pid ${c.pid} 判不出用的是哪个 profile（cmdline：${argv.join(' ')}）`); continue }
+    const own = await profileRunsThisCheckout(profile)
+    if (own.ok !== true) {
+      // ⚠ `notThisPackage` = 能判、且**确实不是**本 checkout ⇒ 不算缺读数（⛔ 不进 notes）
+      //   其余 = 取不到 ⇒ ⚠ **必须**进 notes（否则"判不出"会被静默吞成"同步"）
+      if (own.notThisPackage !== true) notes.push(`pid ${c.pid}（profile ${profile}）：${own.why}`)
+      continue
+    }
+    let startedAt
+    try { startedAt = processStartedAt(c.pid, btimeMs, hz) } catch (e) {
+      notes.push(`pid ${c.pid} 的启动时刻读不到：${String(e?.message ?? e)}`); continue
+    }
+    procs.push({ pid: c.pid, startedAt, profile, checkout: own.resolved })
+  }
+  return { procs, notes }
 }
 
 const stampExists = existsSync(STAMP)
@@ -165,18 +560,35 @@ if (existsSync(manifestSrc)) {
     + '（⚠ 骨架件 ⇒ 派生件 ⇒ 产物 的链路**已被面 ② 覆盖**，⛔ 不另立第二条口径）')
 }
 
+// ── 面 ③：运行实例面（⚠ 三档，⛔ 一行都不许省）────────────────────────────
+//
+//   ⚠ 分档**只在** `classifyInstance()` 一处（本文件上半部）—— 这里只负责**取数 + 渲染**，
+//     ⛔ 不在这儿再判一次（两处各写必然漂）。三档含义见该函数。
+const inst = await runningInstances()
+const stampBuiltAt = PROBE !== null && 'builtAt' in PROBE ? PROBE.builtAt : builtAtOf()
+const instNotes = [...inst.notes]
+const classified = classifyInstance(stampBuiltAt, inst.procs, instNotes)
+const instVerdict = classified.verdict
+const instHead = classified.head
+let instDetail = [...classified.detail]
+
 console.log('  ✓ 覆盖面：')
 console.log(`      · 面 ① 取数件：\`lib/BUILD-STAMP\`${stampExists ? '（可读）' : '（⚠ 读不到）'}`)
 console.log(`      · 面 ② 源件 **${srcFiles.length}** 份（\`src/**/*.ts(x)\`，⚠ 排除 \`.d.ts\`）·`
   + ` 有对应产物 ⇒ 比较对 **${compared}** 对 · ⚠ 无独立产物（类型 / 被内联）**${missingProduct}** 份`
   + '（⛔ 不计入比较对，⚠ **照实报出条数，不静默缩水**）')
 console.log(`      · 戳读数：commit=${commit ?? '?'} · dirty=${dirty ?? '?'} · built_at=${builtAt ?? '?'}`)
+console.log(`      · 面 ③ 取数件：\`/proc/<pid>/stat\` + \`/proc/stat\` + profile 的 \`dsh.profile.bundles\``
+  + ` · 已确认在跑本 checkout 的宿主进程 **${inst.procs.length}** 个`
+  + (instNotes.length > 0 ? ` · ⚠ **${instNotes.length} 处取不到**（见下）` : ''))
 console.log('')
 for (const n of notes) console.log('  ' + n)
 console.log('')
 if (lag.length === 0) {
   console.log('判定：**已执行** —— 面 ① / 面 ② **都没有落后读数**（⚠ 产物跟得上源码）。')
-  console.log('       ⚠ ⛔ 本判据**不判**"运行实例有没有加载这版产物" —— 那是 `E-168` 分档里的〔实例层〕。')
+  console.log('       ⚠ 面 ③（运行实例 vs 产物）**另在下面单独判**，⛔ 不并进这一句 ——'
+    + ' 盘上绿**不代表**跑着的进程也绿（两者可以一个绿一个红）。')
+  console.log('       ⚠ ⛔ 本判据**仍不判**"实例有没有在**服务里**用上这版产物" —— 那是 `E-168` 的〔实例层〕。')
   console.log('       ⚠ ⛔ 也**不判**"现在工作树脏不脏" —— 那是 `git status` 的活。')
 } else {
   console.log('判定：**已执行**（⚠ ⚠ **有落后读数 —— 但本判据只报不拦，⛔ 不影响退出码**）')
@@ -186,6 +598,37 @@ if (lag.length === 0) {
     + '⇒ **拦了会恒红**，⚠ 而"恒红的判据等于没有判据"（⚠ `REPORT-R225.md` §3.4-b 首选条明写）。')
 }
 console.log('')
-console.log('       ⚠ 覆盖面 / 判读口径：**产物 vs 源**（⛔ 不是"实例是否加载"）；'
-  + '⚠ 退出码 0=已执行 · 2=未执行/基准缺失（⚠ **本判据不设 1**）。')
+// ── 面 ③ 的渲染（⚠ 三档各自成段；⛔ 同步那一档只许一行）─────────────────
+console.log(instHead)
+for (const l of instDetail) console.log(l)
+if (instVerdict !== 'in-sync') {
+  console.log('       ⚠ ⚠ 面 ③ **不等于**"产物有问题"：面 ①② 判的是**盘上**，面 ③ 判的是'
+    + '**外面那个跑着的进程** —— 两者可以一个绿一个红（本文件头的成因说明）。')
+}
+console.log('')
+if (STRICT) {
+  console.log('       ⚠ 本轮是**判据模**（`--strict-instance`）：面 ③ 的不同步 / 判不出 **计入退出码**。')
+} else {
+  console.log('       ⚠ 本轮是**报警模**（缺省）：面 ③ **只打印、不影响退出码**'
+    + '—— ⚠ 要让它长牙请用 `--strict-instance`（`npm run check` 就是这么传下去的）。')
+}
+console.log('')
+console.log('       ⚠ 覆盖面 / 判读口径：面 ①② = **产物 vs 源** · 面 ③ = **运行实例 vs 产物**'
+  + '（⛔ 都不是"实例是否在服务里用上它"）；'
+  + '⚠ 退出码 0=已执行 · 1=面③不同步（仅判据模）· 2=未执行/基准缺失或面③判不出（仅判据模）。')
+/**
+ * ⚠ 退出码：面 ①② 的那条口径（只报不拦 · 只设 0/2）**一个字都没改**；
+ *   面 ③ 只在**判据模**下才动退出码 —— 见文件头的「跑法分两档」。
+ */
+// ══════════════════════════════════════════════════════════════════════
+// 自检模（`--self-check`）—— 面 ③ 的三档 + 一条负向对拍
+// ══════════════════════════════════════════════════════════════════════
+//
+// ⚠ 每一条都走 `classifyInstance()`（与真现场**同一段代码**），⛔ 不另写一份判定。
+// ⚠ 每条都**必须能失败**（`E-27`）；且**不许**靠"看退出码"判 —— 要看**可读断言行**。
+
+// ⚠ **判据自己坏了必须先红**（⛔ 不许"判据不成立还照旧报现场读数、然后绿"）
+if (selfCheckFailed === true) process.exit(1)
+if (STRICT && instVerdict === 'lagging') process.exit(1)
+if (STRICT && instVerdict === 'undecidable') process.exit(2)
 process.exit(0)
