@@ -1108,7 +1108,14 @@ export function apply(ctx: any): void {
           wsIdForWake = workspaceId
           // ⚠ 收件人 = **读卡面的人自己**（谁在看这个面，就叫醒谁 —— ⛔ 不凭空假设"Hob"）
           dispatchWake.setSelfSessionId(opts.selfSessionId)
-          wake.subscribe(opts.selfSessionId)
+          // ⚠⚠ **订阅时要带上"这个会话自己的项目"**（`TASK-B6` S3-4）：
+          //   `CardWake` 是**进程级单实例、被所有会话共用**，订阅表 `targets` 里装的是
+          //   所有会话的登记 ⇒ 投递侧必须能**逐个订阅者**核对归属
+          //   （`card-wake.ts` 的 `eligible` 过滤）。⚠ 用上面**这次现读**的 `workspaceId`，
+          //   ⛔ 不另造进程级变量（`wsIdForWake` 是旧的进程级单值，正是越界成因）。
+          //   ⚠ 判不出（`undefined`）⇒ **照原样传 undefined** ⇒ 投递侧落"不投"，
+          //     而不是退化成"全投"。
+          wake.subscribe(opts.selfSessionId, workspaceId)
           wake.startWakeIfNeeded()
         }
         const snap = await readCards({ workspaceId, getTool })
@@ -1140,8 +1147,13 @@ export function apply(ctx: any): void {
         // 会话 id 是**订阅身份**；工作区在这里**现读一次**并记为叫醒面的过滤条件
         //   （⚠ 下次谁再订阅就再刷一次 ⇒ 工作区后建/搬走都能跟上）。
         if (typeof sessionId !== 'string' || sessionId === '') return
-        wsIdForWake = await workspaceIdOfSession(sessionId)
-        wake.subscribe(sessionId)
+        const workspaceId = await workspaceIdOfSession(sessionId)
+        wsIdForWake = workspaceId
+        // ⚠⚠ **订阅时带上这个会话自己的项目**（`TASK-B6` S3-4）：
+        //   投递侧按 `t.workspaceId === e.workspaceId` 逐个订阅者过滤 ⇒
+        //   ⛔ 不传就等于"这个订阅者不属于任何项目" ⇒ 它一张卡都收不到（那是**静默失效**）。
+        //   ⚠ 用**这次现读**的结果，⛔ 不另造进程级变量；判不出就传 `undefined`（投递侧落"不投"）。
+        wake.subscribe(sessionId, workspaceId)
         wake.startWakeIfNeeded()
       },
 

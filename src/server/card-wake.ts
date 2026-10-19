@@ -70,6 +70,15 @@ export interface CardDoneEvent {
   outcome: string
   /** 卡当前状态字（原样转发）。 */
   status: string
+  /**
+   * 这张卡**属于哪个看板项目**（= 帧里的 `workspaceId`，认卡那一刻已经校验过）。
+   *
+   * ⚠ **它存在只有一个理由**：投递时**逐个订阅者**核对项目归属
+   *   （`subscribe(sessionId, workspaceId)` 记的那一栏）—— 见 {@link CardWake.handleFrame}。
+   *   ⛔ 不复用 `opts.workspaceIdOf()`：那是**进程级单值**，多会话共用一个
+   *   `CardWake` 时会被后订阅者覆盖，正是 2026-10-19 越界的成因。
+   */
+  workspaceId: string
   /** 这个信号被认出的时刻（毫秒）。 */
   at: number
 }
@@ -98,6 +107,19 @@ export interface WakeState {
 export interface WakeTarget {
   /** 收件会话 id。 */
   sessionId: string
+  /**
+   * **这个订阅者自己所属的看板项目**（= 它 `hob_orch_status` 读卡面时那个 `workspaceId`）。
+   *
+   * ⚠ ⚠ **必须是"每个订阅者各一份"**（2026-10-19 越界根因）：
+   *   改前该值只存在于 `CardWakeOpts.workspaceIdOf()`（**进程级单值**），
+   *   而 `CardWake` 在进程里**被所有会话共用** ⇒ 后订阅者一覆盖，
+   *   先前那个会话就会收到**别的项目**的卡跑完通知
+   *   （实测：`t-mvdy37bb-paev0o`/e9742e44、`t-mvers6x3-nkonel`/c4bb5014、
+   *    `t-mveu5dzx-3zx7t2`/cca0a688 三张别人的卡被报给了本会话）。
+   * ⚠ `undefined` = 该订阅**没报项目**（旧调用 / 判不出）⇒ 投递时退回
+   *   `opts.workspaceIdOf()`（保持既有 N 组机检与"判不出就不叫"的语义）。
+   */
+  workspaceId?: string
   /** 它从什么时候开始"在看这个面"（毫秒）—— 用于诊断 `noSubscriber`。 */
   since: number
 }
@@ -186,6 +208,8 @@ export function cardDoneEventsOf(frame: unknown, workspaceId: string | undefined
       executionId,
       outcome,
       status,
+      // ⚠ 结论里**必须带回**归属：投递时按**每个订阅者**的项目核对（不是全局单值）。
+      workspaceId,
       at: Date.now(),
     })
   }
@@ -249,10 +273,28 @@ export class CardWake {
     return { ...this.state, seenCount: this.seenIds.size }
   }
 
-  /** 登记"这个会话在看本工作区的卡面"（由 `hob_orch_status` 每次调用时登记）。 */
-  subscribe(sessionId: string): void {
+  /**
+   * 登记"这个会话在看**它自己那个项目**的卡面"（由 `hob_orch_status` 每次调用时登记）。
+   *
+   * @param sessionId - 收件会话。
+   * @param workspaceId - **该会话自己**的看板项目 id（⚠ 每次订阅现传，⛔ 不许用进程级单值）。
+   *   传 `undefined` ⇒ 退回 `opts.workspaceIdOf()`（旧语义；判不出 ⇒ 不叫）。
+   * ⚠ 已订阅过 ⇒ **刷新**它的 `workspaceId`（会话换项目 / 工作区后建都要跟上），
+   *   但**不重置**叫醒计数之外的任何状态 —— 这里本来也不存状态。
+   */
+  subscribe(sessionId: string, workspaceId?: string): void {
     if (typeof sessionId !== 'string' || sessionId === '') return
-    if (!this.targets.has(sessionId)) this.targets.set(sessionId, { sessionId, since: this.now() })
+    const have = this.targets.get(sessionId)
+    const next = typeof workspaceId === 'string' && workspaceId !== '' ? workspaceId : undefined
+    if (have === undefined) {
+      this.targets.set(sessionId, {
+        sessionId,
+        ...(next === undefined ? {} : { workspaceId: next }),
+        since: this.now(),
+      })
+      return
+    }
+    if (next !== undefined) have.workspaceId = next
   }
 
   /**
@@ -362,7 +404,46 @@ export class CardWake {
         continue
       }
       const text = wakeMessageOf(e)
-      for (const t of this.targets.values()) {
+      /**
+       * ⚠⚠ **按归属逐个订阅者过滤**（2026-10-19 · `TASK-B6` S3-3）。
+       *
+       * ── 为什么要这一层 ────────────────────────────────────────────────
+       *   `CardWake` 在进程里是**单实例、被所有会话共用**，而 `targets` 里装的是
+       *   **所有订阅过卡面的会话**（跨项目）。改前这个循环是"对每个订阅者都投"⇒
+       *   A 会话订阅过后，B 项目的卡跑完也会叫醒 A（实测三例：
+       *   `t-mvdy37bb-paev0o`/e9742e44 · `t-mvers6x3-nkonel`/c4bb5014 ·
+       *   `t-mveu5dzx-3zx7t2`/cca0a688）。
+       *
+       * ── 判据（⚠ 三条都是"必须"）─────────────────────────────────────
+       *   ① 只投给 `t.workspaceId === e.workspaceId` 的订阅者；
+       *   ② `t.workspaceId` **为空 ⇒ 不投** —— ⛔ 不许退化成"全投"
+       *      （那等于没修；也⛔ 别退回 `opts.workspaceIdOf()`：那是**进程级单值**，
+       *        正是越界的成因本身）；
+       *   ③ **一个都不匹配 ⇒ 记 `noSubscriberCount` 那一档并给可读话** ——
+       *      ⛔ 不许静默丢弃（本项目「叫不出去必须可观测」的既有纪律）。
+       *
+       * ⚠ 既有三档（`deliverFn === undefined` / 投递抛错 / 连订阅者都没有）
+       *   **一条都不合并、不降级**：下面逐订阅者的 `deliverFn === undefined` 分支与
+       *   `catch` 分支**原样保留**；"按归属筛不出人"是**第四个**独立形态，
+       *   单独计数（`noSubscriberCount`）并单独说一句可读话。
+       */
+      const eligible = [...this.targets.values()].filter((t) => {
+        // ② 该订阅者没报项目（旧调用 / 判不出）⇒ **不投**（⛔ 不退化成全投）
+        return t.workspaceId !== undefined && t.workspaceId === e.workspaceId
+      })
+      if (eligible.length === 0) {
+        // ③ 有人订阅，但没有一个是**这个项目**的 ⇒ 独立一档：可数、可读
+        this.state = {
+          ...this.state,
+          noSubscriberCount: this.state.noSubscriberCount + 1,
+          note: `⚠ 有卡跑完（${e.taskId} · 项目 ${e.workspaceId}）但**没有订阅者属于这个项目** ⇒ 这一声没叫出去`
+            + `（当前 ${this.targets.size} 个订阅者里没有一个是该项目的；`
+            + '⛔ 这不等于"没有卡跑完"，也不等于"谁都该收到"）',
+        }
+        this.say(`[card-wake] ${this.state.note}`)
+        continue
+      }
+      for (const t of eligible) {
         if (this.deliverFn === undefined) {
           this.state = { ...this.state, note: '⚠ 有卡跑完，但**投递通道没就绪**（hobBus 未提供）⇒ 这一声没叫出去' }
           this.say(`[card-wake] ${this.state.note}`)
