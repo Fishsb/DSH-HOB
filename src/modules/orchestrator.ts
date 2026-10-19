@@ -110,6 +110,30 @@ export interface Watch {
   sawRunning: boolean
   /** 是否已经回传过（**单次性**：防止同一个 idle 事件重复唤醒派活方）。 */
   reported: boolean
+  /**
+   * ⚠⚠ **"先写后发"的投递尝试标记**（2026-10-20 · 第 4 单；跨进程幂等层）。
+   *
+   * ⚠ 存在的唯一理由：`reported` 只在**内存**里 ⇒ 进程一重载就归零
+   *   ⇒ 一条"已经发出去过"的记录会在下一代替**再发一份**。
+   *   而"投递成功 ⇒ 该条离开 pending"这两步之间有一个**窗口**
+   *   （消息已进 inbox，盘上还没删）—— 在那个窗口里崩溃/被杀，就会重复送达。
+   *   ⇒ 这个标记在**调用 `deliver` 之前**就落盘（同 `CardWake.markDelivered` 的同一条纪律）。
+   */
+  deliveryAttemptAt?: number
+  /**
+   * 回执**已经投递成功**的时刻（成功 ⇒ 该条应离开 `pending`；只剩"清账"这一步）。
+   * ⚠ 与 {@link deliveryAttemptAt} 成对：有 attempt 没 delivered =
+   *   **投递结果未知**（进程在投递中途退出）⇒ **不再自动重投**，等人工裁。
+   */
+  deliveredAt?: number
+  /**
+   * ⚠⚠ **成功投递但清账（写盘）失败**的标志（2026-10-20 · 第 4 单）。
+   *
+   * ⚠ 任务书要求："投递成功但写盘失败 ⇒ **必须可读地报出来**，⛔ 不许静默让下一轮重发"。
+   *   ⇒ 失败时把这条**留在盘上并带上本字段**：下一轮对账**只重试清账**（⛔ 不重投），
+   *     读数里单列一档。有它 = "回执已送到，账没清掉"。
+   */
+  cleanupFailedAt?: number
   /** 回传失败时的原因（有值 = 试过但没送回去）。 */
   error?: string
   /**
@@ -621,6 +645,17 @@ function toPersisted(w: Watch): PersistedWatch {
     ...(w.ownerWsRoot === undefined || w.ownerWsRoot === '' ? {} : { wsRoot: w.ownerWsRoot }),
     // ── 耐久化五件（2026-10-20 · B2）：⛔ 缺一就修不掉 W3 / W4 / P2 ──────────
     ...(w.lastStatus === undefined ? {} : { lastStatus: w.lastStatus }),
+    /**
+     * ⚠⚠ **投递三件必须落盘**（2026-10-20 · 第 4 单）：它们是**跨进程幂等**的唯一依据
+     *   （`reported` 只在内存里，一重载就归零 ⇒ 同一份回执会再发一份）。
+     *   ⚠ 三件语义各不相同，⛔ 不许合并成一个字段：
+     *     · `deliveryAttemptAt` —— 投之前落的"试过了"；
+     *     · `deliveredAt` —— 投**成功**（⇒ 只差清账，⛔ 绝不重发）；
+     *     · `cleanupFailedAt` —— 送到了但**清账失败**（下一轮只重试清账）。
+     */
+    ...(w.deliveryAttemptAt === undefined ? {} : { deliveryAttemptAt: w.deliveryAttemptAt }),
+    ...(w.deliveredAt === undefined ? {} : { deliveredAt: w.deliveredAt }),
+    ...(w.cleanupFailedAt === undefined ? {} : { cleanupFailedAt: w.cleanupFailedAt }),
     ...(w.settleState === undefined ? {} : { settleState: w.settleState }),
     ...(w.recheckCount === undefined ? {} : { recheckCount: w.recheckCount }),
     ...(w.lastRecheckAt === undefined ? {} : { lastRecheckAt: w.lastRecheckAt }),
@@ -841,12 +876,40 @@ export function apply(ctx: any): void {
       onHello: () => {
         void reconcile('sse-hello').catch(() => { /* reconcile 自己已接住 */ })
       },
+      /**
+       * ⚠⚠ **按卡现读 owner**（2026-10-20 · 第 4 单）—— 治「自家卡叫不醒」。
+       *
+       * ⚠ 为什么必须有它：看板 SSE 的 `broadcast()` 推的是 `summarize()` 投影，
+       *   **投影里没有 `createdBy`** ⇒ 真帧上 owner 永远读不到 ⇒ 卡跑完一声不投
+       *   （现场原文 `⚠ 有卡跑完（t-mvfertx2-zrnyvc …）但**判不出它的 owner**`）。
+       * ⚠ 归属证明的口径**一个字不改**（`I-3` 第 ③ 条）：读的是**这张卡自己的**
+       *   `createdBy.sessionId`，⛔ 不是"本工作区的卡一律算我的"、⛔ 不是按工作区广播。
+       * ⚠ 读不到（没卡 / 卡已删 / 没记字段）⇒ 返回 `undefined` ⇒ 上层仍按"判不出 ⇒ 不投"。
+       */
+      ownerOf: async (taskId: string): Promise<string | undefined> => {
+        try {
+          const registry: any = (() => { try { return svcCtx.get?.('tools') } catch { return undefined } })()
+          const getTool = registry !== undefined && registry !== null && typeof registry.get === 'function'
+            ? (n: string) => registry.get(n)
+            : undefined
+          const r = await lookupCardSession(taskId, getTool)
+          return r.kind === 'found' ? r.createdBySessionId : undefined
+        } catch {
+          return undefined
+        }
+      },
+      /**
+       * ⚠⚠ **看板卡回执走内部入口**（2026-10-20 · 第 4 单）：收件人 `= 该卡的 createdBy.sessionId`
+       *   **就是派活方自己** ⇒ 走 `deliver()` 会被"拒投给自己"那一道打回（T2 作用域下恒失败）。
+       *   `deliverInternal` 与它**同一份实现**，只跳过那一道；归档/活会话/预设预警全都照旧。
+       */
       deliver: (sessionId: string, text: string) => {
         const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
         if (bus === undefined || typeof bus.deliver !== 'function') {
           return Promise.reject(new Error('hobBus 未提供 ⇒ 投递通道不可用'))
         }
-        return Promise.resolve(bus.deliver(sessionId, text, 'followup'))
+        const send = typeof bus.deliverInternal === 'function' ? bus.deliverInternal.bind(bus) : bus.deliver.bind(bus)
+        return Promise.resolve(send(sessionId, text, 'followup'))
       },
       log: (line: string) => svcCtx.logger?.info?.(`[${name}] ${line}`),
     })
@@ -861,12 +924,14 @@ export function apply(ctx: any): void {
      * ⚠ `watches`（重挂那一套）**一行未动** —— 这是**另一张表**（`DispatchWake.sessions`）。
      */
     const dispatchWake = new DispatchWake({
+      /** ⚠ 同上：叫醒的收件人是 `owner` = 派活方自己 ⇒ 走内部入口（只跳过"拒投给自己"那一道）。 */
       deliver: (sessionId: string, text: string) => {
         const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
         if (bus === undefined || typeof bus.deliver !== 'function') {
           return Promise.reject(new Error('hobBus 未提供 ⇒ 投递通道不可用'))
         }
-        return Promise.resolve(bus.deliver(sessionId, text, 'followup'))
+        const send = typeof bus.deliverInternal === 'function' ? bus.deliverInternal.bind(bus) : bus.deliver.bind(bus)
+        return Promise.resolve(send(sessionId, text, 'followup'))
       },
       log: (line: string) => svcCtx.logger?.info?.(`[${name}] ${line}`),
     })
@@ -1139,6 +1204,13 @@ export function apply(ctx: any): void {
              */
             ...(w.owner === undefined ? {} : { owner: w.owner }),
             ...(w.wsRoot === undefined ? {} : { ownerWsRoot: w.wsRoot }),
+            /**
+             * ⚠⚠ **投递三件同款带回内存**（2026-10-20 · 第 4 单）：重挂的那条若上一代
+             *   **已经送过回执**（`deliveredAt` 在盘上），这一代只该清账、⛔ 不该再发一份。
+             */
+            ...(w.deliveryAttemptAt === undefined ? {} : { deliveryAttemptAt: w.deliveryAttemptAt }),
+            ...(w.deliveredAt === undefined ? {} : { deliveredAt: w.deliveredAt }),
+            ...(w.cleanupFailedAt === undefined ? {} : { cleanupFailedAt: w.cleanupFailedAt }),
             /**
              * ── ⚠⚠ **修 W3**（2026-10-20 · `FINDINGS` P5 / `DESIGN` §4.2）──────────
              * 重挂时**必须**同时把"上一跳状态"记成 `running`。
@@ -2254,6 +2326,15 @@ export function apply(ctx: any): void {
     let recheckTimer: ReturnType<typeof setTimeout> | undefined
     /** 对账是否正在跑（防重入：结算里会落盘，落盘又会触发读状态）。 */
     let reconciling = false
+    /**
+     * ⚠⚠ **正在投递的那些 target**（2026-10-20 · 第 4 单）。
+     *
+     * ⚠ 存在的唯一理由：`settle()` 会先落 `deliveryAttemptAt`（先写后发），而
+     *   "结果未知"这一档的判据是"有 attempt、没 delivered"。**本代正在投递中**的那一条
+     *   也符合那个形状 ⇒ 若不加这一层，它会被自己的"结果未知"挡住（实测：回执 0 次）。
+     * ⇒ 只有**不在投递中**（= attempt 是上一代留下的）才算结果未知。
+     */
+    const delivering = new Set<string>()
 
     /**
      * 取**目标此刻的状态**（⚠ 这是"判得出/判不出"的唯一判据来源，⛔ 不猜）。
@@ -2367,6 +2448,71 @@ export function apply(ctx: any): void {
     }
 
     /**
+     * ⚠⚠ **清账（不是投递）的唯一落点**（2026-10-20 · 第 4 单）。
+     *
+     * ── 为什么必须与"投递"分开成两步 ─────────────────────────────────────
+     *   改前"投递成功"与"该条离开 `pending`"挤在同一个 `try` 里，且**谁也没看写盘结果**：
+     *   `watches.delete(id); flushWatches()` —— `flushWatches()` 的返回值是 `void`，
+     *   而 `persistOwnerPartition` 写失败只落一条 warn。
+     *   ⇒ 只要那一次写盘没成（ENOSPC / 被杀 / 权限），**盘上那条还在** ⇒
+     *     下一轮对账再结算一次 ⇒ **同一份回执被再送一遍**（现场 4 次就是这么来的）。
+     *   任务书的要求逐字是：「成功即 `reported` + 清盘上 `pending`；失败必须**当场可读**，
+     *   ⛔ 不许留到下一轮重试 N 次」。⇒ 这一条就是那个"当场可读"。
+     *
+     * ── 三条语义（⚠ 一条都不许混）──────────────────────────────────────
+     *   ① **成功 ⇒ 该条离开 `pending`（内存 + 盘上两处都查）** —— 返回 `true`；
+     *   ② **写盘失败 ⇒ 留在盘上并带 `cleanupFailedAt`**，且**当场留一条 warn** ——
+     *      下一轮对账看到 `deliveredAt` **只重试清账、⛔ 不重投**（见 `settle` 顶部）；
+     *   ③ ⛔ 不在这里投递、⛔ 不改 `reported`（那是 `settle` 的活）。
+     *
+     * @param w - 已投递成功的那条（`deliveredAt` 必须已置）。
+     * @param id - 目标会话 id（= `watches` 的键）。
+     * @param why - 谁触发的清账（⚠ 只进日志，⛔ 不影响判据）。
+     */
+    const finalizeDelivery = (w: Watch, id: string, why: string): boolean => {
+      /** ① 先清内存 —— 这一步不会失败，也要先做（否则同一次事件会再走一遍 `settle`）。 */
+      watches.delete(id)
+      /**
+       * ② 再清盘，并**核对它真的没了**。
+       *   ⚠ 判据是**盘上那条记录本身**（`watchKey` = `target@at`），
+       *     ⛔ 不是"写函数返回 true"就算数 —— 写成功但写的是别的内容同样等于没清。
+       *   ⚠ 读不回来 ⇒ **判不出**（`unknown`），⛔ 不许当成"清掉了"。
+       */
+      flushWatches()
+      const absent = ((): 'absent' | 'present' | 'unknown' => {
+        try {
+          const file = stateFileFor.get(id)
+          if (file === undefined || file === '') return 'unknown'
+          const rows = readOrchState(file).pending
+          return rows.some((r) => watchKey(r) === watchKey(toPersisted(w))) ? 'present' : 'absent'
+        } catch {
+          return 'unknown'
+        }
+      })()
+      if (absent === 'absent') {
+        /** 盘上确实没有这一条 ⇒ 账清了（这是"成功"的唯一判据）。 */
+        return true
+      }
+      /**
+       * ③ **写盘失败 / 清账未确认** ⇒ 当场可读 + 留在盘上（带 `cleanupFailedAt`）。
+       *   ⚠ 这条**必须**留下：下一轮对账靠它认出"已经送到过、只差清账"⇒ ⛔ 不重投。
+       *   ⚠ 而"留在盘上"这一动作本身也走 `flushWatches` —— 它再失败也无所谓：
+       *     盘上那条本来就在（这正是我们没清掉的那个状态）。
+       */
+      const stamp = Date.now()
+      const retry: Watch = { ...w, target: id, reported: true, cleanupFailedAt: stamp }
+      watches.set(id, retry)
+      flushWatches()
+      svcCtx.logger?.warn?.(
+        `[${name}] **回执已投递成功，但账没清掉**（target=${id} · 触发=${why} · 盘上=${absent}）⇒`
+        + ' 该条仍留在 pending（带 `cleanupFailedAt`）。'
+        + ' ⚠ 下一轮对账**只重试清账、⛔ 不会重发回执**（所以不会重复送达）。'
+        + ' ⛔ 这不是"没送到"：送到是真的，清账失败才是真的。',
+      )
+      return false
+    }
+
+    /**
      * ⚠⚠ **唯一的结算点**（B1）。事件路径 / 对账路径 / 重挂路径 / 补投路径**都只调它**。
      *
      * ── 为什么必须只有一个 ────────────────────────────────────────────────
@@ -2388,6 +2534,56 @@ export function apply(ctx: any): void {
       if (record.reported) return false
       const w = watches.get(id) ?? record
       /**
+       * ⚠⚠ **单次性的判据必须读"内存里那一条"**（2026-10-20 · 第 4 单）。
+       *
+       * ⚠ 现场机理（本单复现过）：**同一次 `running → idle`** 会先后叫到 `settle()` 两遍 ——
+       *   ① 事件路径（`agent/status` 监听器，传的是内存里那个 `w`）；
+       *   ② T3 对账（`reconcile()`，传的是**按盘上记录重建**的 `revived`，那是**另一个对象**）。
+       *   改前只判 `record.reported` ⇒ 第 ② 条看的是 `revived.reported`（恒 `false`）
+       *   ��� 绕过单次性 ⇒ **同一份回执投两次**。
+       * ⚠ `w.reported` 在**任何 `await` 之前**就置上了（见下面 ② 那一步），
+       *   所以这一条足以挡住"同一 tick 内的并发结算"，⛔ 不必引入锁。
+       */
+      if (w.reported) return false
+      /**
+       * ⚠⚠ **跨进程幂等：盘上已经"投过"的，⛔ 不再发第二份**（2026-10-20 · 第 4 单）。
+       *
+       * ⚠ 这一层为什么必须有：`reported` **只在内存**（`watches`）里 ⇒ 一重载就归零，
+       *   而"投递成功"与"盘上 pending 清掉"之间有**窗口**（消息已进 inbox、盘还没写）
+       *   ⇒ 在那个窗口里被杀/重载，下一代就会把**同一份回执再发一遍**。
+       * ⇒ 盘上的 `deliveryAttemptAt`（投之前落）与 `deliveredAt`（投成功落）就是那一层：
+       *   · 有 `deliveredAt` ⇒ **已经送到了**，只差清账 ⇒ 交给 `finalizeDelivery()` 清，
+       *     ⛔ **绝不重发**；
+       *   · 只有 `deliveryAttemptAt`（没 `deliveredAt`）⇒ **投递结果未知**（进程死在投递中途）
+       *     ⇒ 同样⛔ **不自动重投**（那是"另一种空转"），落一条**可读**的档等人裁。
+       */
+      /**
+       * ⚠ 判据读的是**内存里那一条**（`w`）而不是传进来的 `record`：
+       *   `settle()` 会被同一份 `agent/status` 的**两个触发点**（事件 + T3 对账）
+       *   在同一次状态变化里先后叫到；第一次已经把 `deliveredAt` 写在 `w` 上了，
+       *   第二次如果只看 `record`（旧对象）就会**再投一份**（实测就是这么复现的）。
+       */
+      if (w.deliveredAt !== undefined) {
+        w.reported = true
+        return finalizeDelivery(w, id, 'already-delivered')
+      }
+      if (w.deliveryAttemptAt !== undefined) {
+        /**
+         * ⚠⚠ **只有盘上那一代留下的 attempt 才算"结果未知"**（2026-10-20 · 第 4 单）。
+         *   本代自己刚落的 attempt 一定发生在 `await bus.deliver(...)` 的**前一刻**，
+         *   若把它也当"结果未知"，同一次结算里紧接着的那一步就会被自己挡住
+         *   （实测：`投递次数 = 0`，回执**永远发不出去** —— 比重复严重得多）。
+         *   判据 = **本代是否正在投递**（`delivering.has(target)`）。
+         */
+        if (!delivering.has(id)) {
+          w.reported = true
+          w.error = 'delivery outcome unknown (attempt recorded before the process stopped): '
+            + '**NOT re-sent automatically** — check that session, then re-dispatch if needed.'
+          flushWatches()
+          return false
+        }
+      }
+      /**
        * ── ① 闸门在【回传之前】 ──
        *   用户选择了"不设上限、只能手动停" ⇒ 这里就是那个刹车的作用点。
        *   停了 ⇒ **不唤醒派活方**（循环当场断在这一环）。
@@ -2407,6 +2603,14 @@ export function apply(ctx: any): void {
       // ── ② 先标记再发（同一个 idle 只唤醒一次）──
       w.reported = true
       w.evidence = evidence
+      /**
+       * ⚠⚠ **"先写后发"的尝试标记必须落盘**（2026-10-20 · 第 4 单）：
+       *   与 `CardWake.markDelivered` 同一条纪律 —— 标记**先落**、消息**后发**。
+       *   ⇒ 进程死在这两步之间时，下一代替看到"有 attempt、无 delivered"
+       *     ⇒ **认成"结果未知"**（⛔ 不重投），而不是当成"没投过"再发一份。
+       */
+      w.deliveryAttemptAt = Date.now()
+      flushWatches()
       const session = (() => { try { return sessions.get?.(id) } catch { return undefined } })()
       const receipt = buildReceipt(w, session)
       const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
@@ -2416,19 +2620,45 @@ export function apply(ctx: any): void {
         return false
       }
       // ── ③ 投递（唯一一次，⛔ 没有循环扇出、⛔ 没有兜底改投）──
+      /**
+       * ⚠⚠ **回执必须走内部入口**（2026-10-20 · 第 4 单）：`deliverInternal` 与
+       *   `deliver` **同一份实现**，只跳过"拒投给自己"那一道 —— 而回执的收件人
+       *   `w.watcher` **本来就是派活方自己**。走 `deliver` 的后果是**T2 路径恒失败**
+       *   （`callerId` 在派活方自己的作用域里恒等于 `w.watcher`）：
+       *   `pending` 永远清不掉 ⇒ 同一份回执被一遍遍重发（现场 4 次）。
+       *   ⚠ 模型面 `hob_send` 仍走 `deliver`（那道守卫对它照旧生效）。
+       */
+      const relayDeliver = typeof bus.deliverInternal === 'function'
+        ? bus.deliverInternal.bind(bus)
+        : bus.deliver.bind(bus)
+      delivering.add(id)
       try {
-        const res: any = await bus.deliver(w.watcher, receipt, 'followup')
+        const res: any = await relayDeliver(w.watcher, receipt, 'followup')
         if (res?.ok) {
           relaysDone++
           bumpRelay(relaysByOwner.done, w.owner ?? (w.watcher === '' ? undefined : w.watcher))
           // ── ④ 成功 ⇒ 该条离开 `pending`（⛔ 不许只删内存不落盘 —— 那就是 W4）──
-          watches.delete(id)
+          /**
+           * ⚠⚠ **先落 `deliveredAt` 再清账**（2026-10-20 · 第 4 单）。
+           *   顺序有意义：若"清账"那一步失败（写盘错/被杀），盘上那条**带 `deliveredAt`**
+           *   ⇒ 下一代对账认出"回执**已经送到过**"⇒ **只重试清账、⛔ 不重发**。
+           *   反过来（先删再记）就会丢掉这个证据 ⇒ 回到"投了又投"。
+           */
+          w.deliveredAt = Date.now()
           flushWatches()
-          return true
+          if (finalizeDelivery(w, id, 'delivered')) return true
+          /**
+           * ⚠ 清账失败 ⇒ **当场可读**（`finalizeDelivery` 里已留 warn + `cleanupFailedAt`）。
+           *   返回值仍是 `false`：**"账没清掉"就是没结算完**，⛔ 不许报成功。
+           */
+          return false
         }
         w.error = res?.reason ?? 'relay delivery failed'
       } catch (e: any) {
         w.error = String(e?.message ?? e)
+      } finally {
+        /** ⚠ 投递已结束（成功/失败都算）⇒ 之后那一格才叫"结果未知"。 */
+        delivering.delete(id)
       }
       // ⚠ 失败 ⇒ 留 `error` 残骸，同样**如实落盘**（⛔ 不许静默丢掉）。
       flushWatches()
@@ -2471,6 +2701,66 @@ export function apply(ctx: any): void {
              */
             if (rec.settleState === 'stuck') continue
             /**
+             * ⚠⚠ **投递三件取"内存优先、盘上兜底"**（2026-10-20 · 第 4 单）——
+             *   下面三条判据（已送到 / 结果未知 / 重建 watch）**全都用它**，⛔ 不许各读一份。
+             *   ⚠ 为什么内存优先：**盘写失败正是"送到了但账没清"的那个现场** ——
+             *     那一刻盘上没有 `deliveredAt`，只有内存里有 ⇒ 只看盘就会把
+             *     "已经送过"读回成"没送过"⇒**再送一份**（实测：投递次数 1 → 2 → 3）。
+             *   ⚠ 也不能只看内存：跨代之后内存是空的 ⇒ 盘上那份才是唯一证据。
+             *   ⚠ 合并方向恒取"更保守的那一侧"：任一来源说"投过"，就按"投过"处理。
+             */
+            const memRec = watches.get(rec.target)
+            const effAttemptAt = memRec?.deliveryAttemptAt ?? rec.deliveryAttemptAt
+            const effDeliveredAt = memRec?.deliveredAt ?? rec.deliveredAt
+            const effCleanupAt = memRec?.cleanupFailedAt ?? rec.cleanupFailedAt
+            /**
+             * ── ⚠⚠ **已经送到过 ⇒ 只清账，⛔ 绝不重发**（2026-10-20 · 第 4 单）──────
+             *   判据 = 盘上的 `deliveredAt`（`settle()` 在**投递成功之后、清账之前**落的那个）。
+             *   ⚠ 这一档为什么必须**排在"判目标状态"之前**：它跟目标此刻在不在跑**无关** ——
+             *     回执**已经送出去了**，剩下的事只有"把盘上那条删掉"。
+             *     排在后面就会因为目标仍 `running`（`probe.kind === 'running' ⇒ continue`）
+             *     而永远清不掉 ⇒ 那就是"送到了、账没清"的另一种形态。
+             *   ⚠ ⛔ 这里**不投递**（一条消息都不发）⇒ 同一条记录无论被触发多少次，
+             *     投递次数**恒为 1**（那正是任务书要求的那条断言）。
+             */
+            if (typeof effDeliveredAt === 'number') {
+              const pendingLive = watches.get(rec.target)
+              const revivedDone: Watch = {
+                ...(pendingLive ?? {
+                  target: rec.target,
+                  watcher: rec.watcher,
+                  at: rec.at,
+                  sawRunning: true,
+                  reported: true,
+                }),
+                deliveredAt: effDeliveredAt,
+                reported: true,
+              }
+              watches.set(rec.target, revivedDone)
+              stateFileFor.set(rec.target, file)
+              if (finalizeDelivery(revivedDone, rec.target, `cleanup-retry(${trigger})`)) {
+                out.settled.push(rec.target)
+              }
+              out.changed = true
+              continue
+            }
+            /**
+             * ── ⚠⚠ **只有"试过、但不知道成没成" ⇒ 不自动重投，落一条可读档**（第 4 单）──
+             *   `deliveryAttemptAt` 有、`deliveredAt` 没有 = 进程死在投递中途。
+             *   ⛔ 不重投（那是另一种空转），但也⛔ 不许静默：落 `error` 让人一眼看见。
+             */
+            if (typeof effAttemptAt === 'number') {
+              const liveTry = watches.get(rec.target)
+              if (liveTry !== undefined) liveTry.reported = true
+              const why = 'delivery outcome unknown (attempt recorded, no confirmation): '
+                + '**NOT re-sent automatically** — check that session, then re-dispatch if needed.'
+              if (rec.error !== why) {
+                persistRecheck(file, { ...rec, error: why })
+                out.changed = true
+              }
+              continue
+            }
+            /**
              * ⚠ 内存里还活着的 watch ⇒ 走事件路径结算（⛔ 不在这里抢着投，
              *   否则同一个 `idle` 会被投两次）。
              */
@@ -2497,6 +2787,19 @@ export function apply(ctx: any): void {
                *     （`pending` 是唯一权威），所以它该结算。
                *   ⚠ 收件人**只来自** `rec.watcher` / `rec.owner` —— ⛔ 不猜、⛔ 不改投。
                */
+              /**
+               * ⚠⚠ **投递三件要取"内存优先、盘上兜底"**（2026-10-20 · 第 4 单）。
+               *
+               * ⚠ 为什么不能只读盘：`cleanupFailedAt` 那一条的**事实**（"回执已经送到了"）
+               *   存在于**内存**里，而盘上写失败正是它留在盘上的原因
+               *   ⇒ 只看盘就会把"已经送过"读回成"没送过" ⇒ **再送一份**
+               *   （实测：写盘失败的那一格，投递次数从 1 变 2、再变 3）。
+               * ⚠ 也不能只读内存：跨代之后内存是空的 ⇒ 盘上那份才是唯一证据。
+               * ⇒ 两边取**先到的那个标记**（同一件事，取最保守的那个方向：认"已经投过"）。
+               */
+              const attemptAt = effAttemptAt
+              const deliveredAt = effDeliveredAt
+              const cleanupAt = effCleanupAt
               const revived: Watch = {
                 target: rec.target,
                 watcher: rec.watcher,
@@ -2508,6 +2811,9 @@ export function apply(ctx: any): void {
                 ...(rec.error === undefined ? {} : { error: rec.error }),
                 ...(rec.owner === undefined ? {} : { owner: rec.owner }),
                 ...(rec.wsRoot === undefined ? {} : { ownerWsRoot: rec.wsRoot }),
+                ...(attemptAt === undefined ? {} : { deliveryAttemptAt: attemptAt }),
+                ...(deliveredAt === undefined ? {} : { deliveredAt }),
+                ...(cleanupAt === undefined ? {} : { cleanupFailedAt: cleanupAt }),
                 lastStatus: 'running',
                 settleState: 'waiting',
               }
@@ -3156,6 +3462,17 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         ...(w.task === undefined ? [] : [`任务=${w.task}`]),
         w.sawRunning ? '已开跑' : '尚未开跑',
         ...(w.error === undefined ? [] : [`⚠ 回传失败：${w.error}`]),
+        /**
+         * ⚠⚠ **"送到了但账没清掉"必须单列一档**（2026-10-20 · 第 4 单）。
+         *
+         * ⚠ 不许并进上面的"回传失败"：那一档的意思是**没送到**，而这一档是
+         *   **已经送到了**（对方 inbox 里有），只是盘上那条没删掉。
+         *   两件事混成一句话，读的人就会去重发 ⇒ 那正是"同一份报告反复送达"的下游。
+         * ⚠ 措辞里明写**不要重派**（这一档不需要任何人的动作，下一轮自己会清）。
+         */
+        ...(w.cleanupFailedAt === undefined
+          ? []
+          : ['⚠⚠ 回执**已送到**、但账没清掉（`cleanupFailedAt`）⇒ ⛔ 不用重派、也不会重发；下一轮自动重试清账']),
       ].join(' · '))
       const hh = s.handoffs.map((h) => {
         const when = new Date(h.at).toLocaleString('zh-CN', { hour12: false })

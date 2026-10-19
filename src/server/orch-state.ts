@@ -209,6 +209,25 @@ export interface PersistedWatch {
   lastRecheckAt?: number
   /** **凭哪条真相源结的账**（{@link SettleEvidence}）—— 结算时写，⛔ 只在真结算时写。 */
   evidence?: SettleEvidence
+  /**
+   * ── ⚠⚠ **投递三件**（2026-10-20 · 第 4 单；`Watch` 同名同义）──────────────────
+   *
+   * ⚠ 它们存在的唯一理由：**`reported` 只在内存里**。进程一重载，内存那张表清零 ⇒
+   *   一条"已经发出去过"的记录会被下一代**当成没发过，再发一份**
+   *   （现场：同一份第 3 轮报告送到派活方眼前 4 次）。
+   *   任务书明写"幂等必须是**双层的**：进程内（`reported`）**和**跨进程/跨代（盘上状态）"，
+   *   这三个字段就是**跨代那一层**。
+   *
+   * ⚠ 三者语义**各不相同**，⛔ 不许合并成一个"已投"布尔：
+   *   · `deliveryAttemptAt` —— **投之前**落的"试过了"（先写后发，同 `CardWake.markDelivered`）；
+   *   · `deliveredAt`      —— 投**成功**的时刻 ⇒ 该条只差清账，**⛔ 绝不再发**；
+   *   · `cleanupFailedAt`  —— 送到了、但**清账（写盘）失败** ⇒ 下一轮**只重试清账**。
+   * ⚠ 全部向后兼容：旧文件没有 ⇒ 读成 `undefined`，⛔ 不判坏、⛔ 不猜默认值
+   *   （"没记过"就是"不知道投过没有"，按老口径重试 —— 但那一条已经是既成事实）。
+   */
+  deliveryAttemptAt?: number
+  deliveredAt?: number
+  cleanupFailedAt?: number
 }
 
 /**
@@ -444,6 +463,15 @@ function asWatch(v: unknown): PersistedWatch | undefined {
   if (typeof o.lastRecheckAt === 'number' && Number.isFinite(o.lastRecheckAt)) out.lastRecheckAt = o.lastRecheckAt
   if (typeof o.evidence === 'string' && (SETTLE_EVIDENCES as readonly string[]).includes(o.evidence)) {
     out.evidence = o.evidence as SettleEvidence
+  }
+  /**
+   * ── **投递三件**（2026-10-20 · 第 4 单）：与上面同一条宽容纪律 ──────────────
+   *   ⚠ 判据是"有限数字"；类型不对 ⇒ **不填**（⛔ 不许读成 0 —— 0 是一个合法的"很旧的时刻"，
+   *     而这里"没记过"与"记了个坏值"是两件事，都只能落成"不知道"）。
+   */
+  for (const k of ['deliveryAttemptAt', 'deliveredAt', 'cleanupFailedAt'] as const) {
+    const v = (o as Record<string, unknown>)[k]
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) out[k] = v
   }
   return out
 }

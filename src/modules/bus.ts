@@ -438,6 +438,28 @@ export interface HobBus {
   /** 向指定会话投递一条 user 消息。 */
   deliver(sessionId: string, text: string, mode: DeliveryMode): Promise<DeliveryResult>
   /**
+   * ⚠⚠ **插件内部的投递入口**（2026-10-20 · 第 4 单）—— 与 {@link deliver} **同一份实现**，
+   * 只**跳过"拒投给自己"那一道**。
+   *
+   * ── 为什么必须分开（现场读数定性，不是偏好）─────────────────────────────
+   *   `deliver()` 那道 `callerId === sessionId ⇒ 拒绝` 的自检，本意是
+   *   **"agent 不许给自己发消息"**（防自唤醒死循环）。
+   *   而**回执是插件内部投递**、收件人 `w.watcher` **就是派活方自己** —— 两件事撞在一起：
+   *   `reconcile()` 的 **T2**（每次 `hob_*` 调用）是在**派活方自己的执行作用域**里跑的
+   *   ⇒ 那一刻 `currentInitiator()` 恒等于 `w.watcher` ⇒ **回执被自家守卫拒掉**
+   *   （现场原文：`⚠ 回传失败：refusing to deliver to this session itself`，
+   *    而 `已回传` 计数照涨 —— 另一类触发 T3/T5 的 `callerId` 是 `undefined`，投成功了）。
+   *   ⇒ 「同一份回执一半尝试被打回、一半成功」，`pending` 里那条永远清不掉 ⇒ **反复重发**。
+   *
+   * ── 口径（⚠ 两条都不许破）──────────────────────────────────────────────
+   *   · 本入口**只跳过那一道自检**；归档拒绝 / 活会话校验 / 预设预警 / 落库确认**全部照旧**
+   *     （同一份实现，⛔ 不复制投递逻辑）；
+   *   · **模型面 `hob_send` 仍走 `deliver()`**（那道守卫对它照旧生效，⛔ 不许放宽）。
+   *   ⚠ 所以这不是"把守卫拆掉"，而是**把它限定回本来的作用面**：
+   *     「模型发起的投递」而不是「插件内部回执的投递」。
+   */
+  deliverInternal(sessionId: string, text: string, mode: DeliveryMode): Promise<DeliveryResult>
+  /**
    * 列可选的工作区（批 16）。给 `spawn` 挑目标用。
    *
    * @param selfSessionId - 调用方自己的会话 id；用来标出"本会话所在工作区"
@@ -550,78 +572,22 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
       return [undefined, undefined]
     }
 
-    const bus: HobBus = {
-      version: 1,
-      /**
-       * ⚠ **全仓唯一**的"按会话 id 现读预设"入口（本方法体本身也只有这一份实现）。
-       *
-       * 读法与 {@link SessionInfo.agentPreset} **完全同源**（都走 `currentPresetOf`）：
-       *   ⛔ 这里如果再写一遍 `stateOf(...)` / `header?.agentPreset`，就是第二份归约
-       *   ⇒ 必然漂（本方法的由来正是"两处读法已经漂了一次"）。
-       */
-      presetOf(sessionId: string): PresetReading {
-        if (typeof sessionId !== 'string' || sessionId === '') return {}
-        try {
-          const session = typeof sessions.get === 'function' ? sessions.get(sessionId) : undefined
-          if (session === undefined || session === null) return {}
-          const [preset, source] = currentPresetOf(session)
-          return {
-            ...(preset === undefined ? {} : { preset }),
-            ...(source === undefined ? {} : { source }),
-          }
-        } catch {
-          // 单个会话读不出来 ⇒ 空读数（调用方渲染成 `(读不到)`，⛔ 不编造、不猜默认值）。
-          return {}
-        }
-      },
-      list(selfSessionId: string | undefined): SessionInfo[] {
-        const rows: SessionInfo[] = []
-        // `list()` 返回的是**活会话**（创建顺序）；失败一律当作"列不出来"，
-        // 由调用方看到空列表 —— 不编造、不抛给模型。
-        let live: any[] = []
-        try {
-          const all = typeof sessions.list === 'function' ? sessions.list() : []
-          live = Array.isArray(all) ? all : []
-        } catch {
-          return []
-        }
-        for (const s of live) {
-          try {
-            const id = String(s?.id ?? s?.header?.id ?? '')
-            if (id === '') continue
-            // ⚠ 归档会话**不列**：归档只写归档集、不 dispose agent，所以它们此刻
-            //   仍会出现在 `sessions.list()` 里。列出去 = 让 Hob 挑一个投了也没人
-            //   执行的靶（`agent/pre-step` 门禁会挡下）。判据见 `makeArchivedLookup`。
-            if (isArchived(id)) continue
-            const header = s?.header ?? {}
-            const agent = typeof agents.get === 'function' ? agents.get(id) : undefined
-            // ⚠ ⚠ 预设取**当前运行值**（宿主投影），⛔ 不是建档头 —— 见 `currentPresetOf`。
-            const [preset, presetSource] = currentPresetOf(s)
-            rows.push({
-              id,
-              ...(typeof header.cwd === 'string' ? { cwd: header.cwd } : {}),
-              ...(preset === undefined ? {} : { agentPreset: preset, presetSource }),
-              // ⚠ 「在哪一侧」由**同一个值**派生（口径同源 PLANNING_PRESET_ID，⛔ 不另写字面量）。
-              ...(preset === undefined
-                ? {}
-                : { side: preset === PLANNING_PRESET_ID ? 'planning' as const : 'implementation' as const }),
-              ...(agent?.status === undefined ? {} : { status: String(agent.status) }),
-              live: agent !== undefined,
-              self: selfSessionId !== undefined && id === selfSessionId,
-            })
-          } catch {
-            // 单个会话读不出来不该让整张表失败。
-          }
-        }
-        // 活的和 running 的排前面，便于调用方挑target。
-        return rows.sort((a, b) => {
-          if (a.live !== b.live) return a.live ? -1 : 1
-          if ((a.status === 'running') !== (b.status === 'running')) return a.status === 'running' ? -1 : 1
-          return a.id.localeCompare(b.id)
-        })
-      },
-
-      async deliver(sessionId: string, text: string, mode: DeliveryMode): Promise<DeliveryResult> {
+    /**
+     * ⚠⚠ **投递的唯一实现**（2026-10-20 · 第 4 单；`deliver` 与 `deliverInternal` 共用）──
+     *
+     * ⚠ 放在 `bus` 字面量**之前**，是为了让两个入口**共用同一份实现**：
+     *   复制一份投递逻辑出去，它迟早与主路径漂（"两处各写一份"正是本项目反复踩过的成因）。
+     * @param skipSelfGuard - **只有 `deliverInternal` 传 `true`**：跳过"拒投给自己"那一道。
+     *   那道自检本意是"agent 不许给自己发消息"（防自唤醒死循环），而**插件内部回执**的
+     *   收件人 `w.watcher` 本来**就是派活方自己** ⇒ 两件事不该共用一道守卫。
+     *   详见 {@link HobBus.deliverInternal} 的注释（现场原文 + 三条触发路径）。
+     */
+    const deliverImpl = async (
+      sessionId: string,
+      text: string,
+      mode: DeliveryMode,
+      skipSelfGuard: boolean,
+    ): Promise<DeliveryResult> => {
         if (typeof sessionId !== 'string' || sessionId === '') {
           return { ok: false, reason: 'no-session-id' }
         }
@@ -644,7 +610,23 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
             return undefined
           }
         })()
-        if (typeof callerId === 'string' && sessionId === callerId) {
+        /**
+         * ⚠⚠ **这道守卫只该管"模型发起的投递"**（2026-10-20 · 第 4 单）。
+         *
+         * 现场原文（`hob_orch_status` 的等待记录）：
+         *   `⚠ 回传失败：refusing to deliver to this session itself`
+         * 而 `已回传` 计数照涨 —— 因为**触发点不同**：
+         *   · **T2**（每次 `hob_*` 调用）在**派活方自己的执行作用域**里跑 ⇒ `callerId` 恒等于
+         *     `w.watcher` ⇒ **这一路永远投不出去**；
+         *   · **T3/T5**（`agent/status` / 一次性复查）不在那个作用域里 ⇒ `callerId === undefined`
+         *     ⇒ 投得出去。
+         * ⇒ 「一半打回、一半成功」= 同一份回执反复送达的**直接机理**。
+         * ⚠ 而**回执的收件人本来就是派活方自己**（`w.watcher`），那是**插件内部投递**，
+         *   不是"agent 给自己发消息"（后者才是这道守卫要防的自唤醒死循环）。
+         * ⇒ 内部入口（{@link HobBus.deliverInternal}）传 `skipSelfGuard=true` 跳过它；
+         *   **模型面 `hob_send` 走 `deliver()`，这道守卫照旧生效**（⛔ 不许放宽）。
+         */
+        if (skipSelfGuard !== true && typeof callerId === 'string' && sessionId === callerId) {
           return { ok: false, reason: 'refusing to deliver to this session itself' }
         }
         // ⓪ 归档会话**明确拒绝**（不能只是"列表里不显示"）。
@@ -754,6 +736,101 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
           mode,
           ...(presetNotice === undefined ? {} : { presetNotice }),
         }
+    }
+
+    const bus: HobBus = {
+      version: 1,
+      /**
+       * ⚠ **全仓唯一**的"按会话 id 现读预设"入口（本方法体本身也只有这一份实现）。
+       *
+       * 读法与 {@link SessionInfo.agentPreset} **完全同源**（都走 `currentPresetOf`）：
+       *   ⛔ 这里如果再写一遍 `stateOf(...)` / `header?.agentPreset`，就是第二份归约
+       *   ⇒ 必然漂（本方法的由来正是"两处读法已经漂了一次"）。
+       */
+      presetOf(sessionId: string): PresetReading {
+        if (typeof sessionId !== 'string' || sessionId === '') return {}
+        try {
+          const session = typeof sessions.get === 'function' ? sessions.get(sessionId) : undefined
+          if (session === undefined || session === null) return {}
+          const [preset, source] = currentPresetOf(session)
+          return {
+            ...(preset === undefined ? {} : { preset }),
+            ...(source === undefined ? {} : { source }),
+          }
+        } catch {
+          // 单个会话读不出来 ⇒ 空读数（调用方渲染成 `(读不到)`，⛔ 不编造、不猜默认值）。
+          return {}
+        }
+      },
+      list(selfSessionId: string | undefined): SessionInfo[] {
+        const rows: SessionInfo[] = []
+        // `list()` 返回的是**活会话**（创建顺序）；失败一律当作"列不出来"，
+        // 由调用方看到空列表 —— 不编造、不抛给模型。
+        let live: any[] = []
+        try {
+          const all = typeof sessions.list === 'function' ? sessions.list() : []
+          live = Array.isArray(all) ? all : []
+        } catch {
+          return []
+        }
+        for (const s of live) {
+          try {
+            const id = String(s?.id ?? s?.header?.id ?? '')
+            if (id === '') continue
+            // ⚠ 归档会话**不列**：归档只写归档集、不 dispose agent，所以它们此刻
+            //   仍会出现在 `sessions.list()` 里。列出去 = 让 Hob 挑一个投了也没人
+            //   执行的靶（`agent/pre-step` 门禁会挡下）。判据见 `makeArchivedLookup`。
+            if (isArchived(id)) continue
+            const header = s?.header ?? {}
+            const agent = typeof agents.get === 'function' ? agents.get(id) : undefined
+            // ⚠ ⚠ 预设取**当前运行值**（宿主投影），⛔ 不是建档头 —— 见 `currentPresetOf`。
+            const [preset, presetSource] = currentPresetOf(s)
+            rows.push({
+              id,
+              ...(typeof header.cwd === 'string' ? { cwd: header.cwd } : {}),
+              ...(preset === undefined ? {} : { agentPreset: preset, presetSource }),
+              // ⚠ 「在哪一侧」由**同一个值**派生（口径同源 PLANNING_PRESET_ID，⛔ 不另写字面量）。
+              ...(preset === undefined
+                ? {}
+                : { side: preset === PLANNING_PRESET_ID ? 'planning' as const : 'implementation' as const }),
+              ...(agent?.status === undefined ? {} : { status: String(agent.status) }),
+              live: agent !== undefined,
+              self: selfSessionId !== undefined && id === selfSessionId,
+            })
+          } catch {
+            // 单个会话读不出来不该让整张表失败。
+          }
+        }
+        // 活的和 running 的排前面，便于调用方挑target。
+        return rows.sort((a, b) => {
+          if (a.live !== b.live) return a.live ? -1 : 1
+          if ((a.status === 'running') !== (b.status === 'running')) return a.status === 'running' ? -1 : 1
+          return a.id.localeCompare(b.id)
+        })
+      },
+
+      /** 投递（**模型面入口**：那道"拒投给自己"的守卫照旧生效）。 */
+      deliver(sessionId: string, text: string, mode: DeliveryMode): Promise<DeliveryResult> {
+        return deliverImpl(sessionId, text, mode, false)
+      },
+
+      /**
+       * ⚠⚠ **插件内部回执的投递入口**（2026-10-20 · 第 4 单）。
+       *
+       * ⚠ 与 `deliver()` **共用同一份实现**，唯一差别是跳过"拒投给自己"那一道 ——
+       *   理由见 {@link HobBus.deliverInternal}（现场原文 + 三条触发路径）。
+       * ⚠ **⛔ 不许把 `hob_send` 改到这条路上**：模型给自己发消息仍然必须被拒。
+       */
+      async deliverInternal(
+        sessionId: string,
+        text: string,
+        mode: DeliveryMode,
+      ): Promise<DeliveryResult> {
+        /**
+         * ⚠ 走的就是 `deliverImpl`（**同一个函数对象**，`skipSelfGuard = true`）：
+         *   ⛔ 不复制一份投递逻辑 —— 复制出来的那份迟早与主路径漂。
+         */
+        return deliverImpl(sessionId, text, mode, true)
       },
 
       // ── 批 16：建会话（强制归属工作区）────────────────────────────────

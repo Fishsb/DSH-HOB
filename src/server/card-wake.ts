@@ -273,6 +273,31 @@ export interface CardWakeOpts {
    *   ⚠ 它仍然**只是"大概率"**（只在重连时来），⛔ 不许当成保证（见 B5 的交底表）。
    */
   onHello?: () => void
+  /**
+   * ⚠⚠ **按卡现读 owner**（2026-10-20 · 第 4 单；治「自家卡叫不醒」）──────────────
+   *
+   * ── 现场（Hob 原文，已 4 次）──────────────────────────────────────────
+   *   `⚠ 有卡跑完（t-mvfertx2-zrnyvc · 项目 …）但**判不出它的 owner**`
+   *   `（这条记录没有 owner：旧帧 / 看板没记 createdBy.sessionId）⇒ **这一声不投**`
+   *
+   * ── 机理（**已核实，不是猜**）────────────────────────────────────────
+   *   **不是**"看板不给这个字段" —— 卡面上它**有值**（实测读数为
+   *   `createdBy: {kind:'agent', sessionId:'session-77d33ea8-…'}`）。
+   *   是 **SSE 帧里没有**：看板 `broadcast()` 用 `summarize()` 投影每张卡
+   *   （第三方包 `lib/shared/protocol.js:966-986` 原文），那个投影**只有**
+   *   `id/title/workspaceId/urgency/status/blocked/version/lastExecutionOutcome/…`
+   *   —— **没有 `createdBy`**。而本模块的 owner 只从**帧**里读
+   *   ⇒ 真帧上**永远**判不出 ⇒ 落 `legacyTargetCount` 那一档、一声不投。
+   *
+   * ── 修法（⚠ 口径不变：⛔ 不猜、⛔ 不按工作区广播）──────────────────────
+   *   帧里读不到 owner ⇒ 让上层**按卡 id 现读**（`taskboard_get` 的
+   *   `createdBy.sessionId`，那正是 `I-3` 的第 ③ 条准入来源）。
+   *   现读**读不到** ⇒ 仍然"判不出 ⇒ 不投"（⛔ 不许退化成广播）。
+   * ⚠ 返回 `Promise<string|undefined>`：判不出/读不到都返回 `undefined`
+   *   （调用方按"判不出"处理，⛔ 不许据此编一个收件人）。
+   * ⚠ 缺省不传 ⇒ 行为与改前**逐字相同**（机检与旧调用形状照旧）。
+   */
+  ownerOf?: (taskId: string) => Promise<string | undefined>
 }
 
 /** 去重表的**上限**（超过就丢最旧的 —— 丢的是很久以前那次，不影响"这次"）。 */
@@ -612,8 +637,41 @@ export class CardWake {
        */
       const rows = [...this.targets.values()]
       // ── ① 收件人**先定**（⛔ 定不出就到此为止，不进投递分支）─────────────────
+      /**
+       * ⚠⚠ **帧里没有 owner ⇒ 按卡 id 现读一次**（2026-10-20 · 第 4 单）。
+       *
+       * ⚠ 为什么必须有这一步：看板 `broadcast()` 推的是 `summarize()` 投影，
+       *   **投影里没有 `createdBy`**（第三方包原文，见 `CardWakeOpts.ownerOf` 的注释）
+       *   ⇒ 真帧上 `e.owner` **永远**是 `undefined` ⇒ 卡跑完**一声都叫不出去**
+       *   （现场原文：`⚠ 有卡跑完（t-mvfertx2-zrnyvc …）但**判不出它的 owner**`）。
+       * ⚠ 口径不变：现读**读不到** ⇒ 仍然"判不出 ⇒ 不投"（⛔ 不许改投、⛔ 不许广播）；
+       *   读到了 ⇒ 它就是**该卡自己的** owner（`I-3` 第 ③ 条准入来源），⛔ 不是猜的。
+       */
+      /**
+       * ⚠⚠ **收件人只来自这条记录自己的 owner**（`I-9` 的铁律，⛔ 一个字不改）：
+       *   这一行是三条负向对拍的靶点（`R-f` / `S-D` / `SB-2b`）——
+       *   ⛔ 不许改名、⛔ 不许改成 `let`（改了就等于让"按订阅表扇出"的变异体失去靶子）。
+       *   ⚠ 帧里没有 owner 时的**按卡现读**另写一个变量（`ownerResolved`），
+       *     由它决定"最终收件人"，但**起始值仍然只有 `e.owner` 这一个来源**。
+       */
       const to = e.owner
-      if (to === undefined || to === '') {
+      let ownerResolved = to
+      if ((to === undefined || to === '') && typeof this.opts.ownerOf === 'function') {
+        try {
+          const read = await this.opts.ownerOf(e.taskId)
+          if (typeof read === 'string' && read !== '') {
+            ownerResolved = read
+            /**
+             * ⚠ 把现读到的 owner **回填到事件上**：同一帧里若还有别的卡，
+             *   各自现读各自的；而"这条记录的 owner"在下面 `markDelivered` 之前必须已经定了。
+             */
+            e.owner = read
+          }
+        } catch (err) {
+          this.say(`[card-wake] 按卡现读 owner 出错（${e.taskId}）：${String((err as Error)?.message ?? err)}`)
+        }
+      }
+      if (ownerResolved === undefined || ownerResolved === '') {
         /**
          * ⚠ **判不出 owner ⇒ 不投，且必须落独立一档 + 可读话**（`I-2` / `I-7` / `I-9` 三处同款要求）。
          * ⚠ 这一档**不是**"没有卡跑完"、**也不是**"没有订阅者"：
@@ -648,7 +706,7 @@ export class CardWake {
       }
       const text = wakeMessageOf(e)
       // ── ③ **先写后发**：把"已投"标记先落下来（同一 execution 永不再发第二份）────
-      this.markDelivered(e.executionId, to)
+      this.markDelivered(e.executionId, ownerResolved)
       // ── ④ 投递：**唯一一次**，⛔ 没有循环、⛔ 没有兜底 ─────────────────────────
       if (this.deliverFn === undefined) {
         this.state = { ...this.state, note: '⚠ 有卡跑完，但**投递通道没就绪**（hobBus 未提供）⇒ 这一声没叫出去' }
@@ -656,14 +714,14 @@ export class CardWake {
         continue
       }
       try {
-        await this.deliverFn(to, text)
+        await this.deliverFn(ownerResolved, text)
         woke++
         this.state = {
           ...this.state,
           wokeCount: this.state.wokeCount + 1,
           lastWokeAt: this.now(),
           lastWokeCard: e.taskId,
-          note: `已叫醒 ${to}（${e.taskId} 跑完 · ${e.outcome}）`
+          note: `已叫醒 ${ownerResolved}（${e.taskId} 跑完 · ${e.outcome}）`
             + '—— 收件人 = 该卡的 owner，**只投一次**',
         }
         this.say(`[card-wake] ${this.state.note}`)
@@ -675,8 +733,8 @@ export class CardWake {
         this.state = {
           ...this.state,
           undeliveredCount: this.state.undeliveredCount + 1,
-          lastUndeliveredTo: to,
-          note: `⚠ 叫醒 ${to} 失败：${String((err as Error)?.message ?? err)}`
+          lastUndeliveredTo: ownerResolved,
+          note: `⚠ 叫醒 ${ownerResolved} 失败：${String((err as Error)?.message ?? err)}`
             + `（卡 ${e.taskId}）⇒ 这是一条**漏投**：⛔ 不会改投别人，⛔ 也不会自动重投；`
             + '该 owner 读状态时会看到这一档',
         }

@@ -4279,14 +4279,28 @@ const orchCode = stripComments(orchSrc)
           spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }),
         })
         const bus = busProvided.hobBus
-        // ⚠ 记录每一次真投递（判"回执真的回去了"要用）
-        const realDeliver = bus?.deliver?.bind(bus)
-        if (bus !== undefined && typeof realDeliver === 'function') {
-          bus.deliver = async (sid, text, mode) => {
-            delivered.push({ to: sid, text })
-            return await realDeliver(sid, text, mode)
+        /**
+         * ⚠ 记录每一次真投递（判"回执真的回去了"要用）。
+         *
+         * ⚠⚠ **两个入口都要包**（2026-10-20 第 4 单）：回执改走 `deliverInternal`
+         *   （它跳过"拒投给自己"那一道，因为收件人就是派活方自己），而**模型面**
+         *   `hob_send` 仍走 `deliver`。只包 `deliver` 会让本组的"回执真的回去了"
+         *   判据**读成 0 份** —— 那不是放宽，而是**测错了面**：
+         *   被放弃的正是"回执只走 deliver"这个错误假设。
+         *   ⚠ 一次调用只记一条（两个包装各自 `push` 一次，⛔ 不重复计数）。
+         */
+        const wrapDeliveries = (b) => {
+          if (b === undefined) return
+          for (const key of ['deliver', 'deliverInternal']) {
+            const real = typeof b[key] === 'function' ? b[key].bind(b) : undefined
+            if (real === undefined) continue
+            b[key] = async (sid, text, mode) => {
+              delivered.push({ to: sid, text })
+              return await real(sid, text, mode)
+            }
           }
         }
+        wrapDeliveries(bus)
 
         // 再装真 orchestrator
         const provided = {}
@@ -5327,11 +5341,15 @@ const orchCode = stripComments(orchSrc)
               provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
               inject: (_d, cb) => cb(bc), on: () => {} }
             sbBus.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
-            const realDeliver = bp.hobBus?.deliver?.bind(bp.hobBus)
+            /** ⚠ **两个入口都包**（同 SA 组的理由：回执走 `deliverInternal`，模型面走 `deliver`）。 */
             if (bp.hobBus !== undefined) {
-              bp.hobBus.deliver = async (sid, text, mode) => {
-                delivered.push({ to: sid, text })
-                return await realDeliver(sid, text, mode)
+              for (const key of ['deliver', 'deliverInternal']) {
+                const real = typeof bp.hobBus[key] === 'function' ? bp.hobBus[key].bind(bp.hobBus) : undefined
+                if (real === undefined) continue
+                bp.hobBus[key] = async (sid, text, mode) => {
+                  delivered.push({ to: sid, text })
+                  return await real(sid, text, mode)
+                }
               }
             }
             const prov = {}
@@ -5574,6 +5592,521 @@ const orchCode = stripComments(orchSrc)
     }
   }
   try { scRm(scRootTmp, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+}
+
+// ── SD. **回执投递：单次性 + 不被"不许给自己发消息"拦下 + 模型面守卫不放宽**（2026-10-20 第 4 单）──
+//
+// ⚠ **本组守的是哪四条**（TASK §1.2-4 与 ADDENDUM §三-4）：
+//   · **SD-a 单次性**：同一条回执、T2/T3/T5 三类触发共 N 次 ⇒ **成功投递恒为 1**
+//     （负向对拍：摘掉幂等标记 ⇒ 必红）；
+//   · **SD-b 回执不得被"不许给自己发消息"拦下**：构造 `watcher === 本会话` ⇒ **必须投得出去**
+//     （现场原文 `refusing to deliver to this session itself` 就是这条被拦下）；
+//   · **SD-c 模型面 `hob_send` 给自己仍然被拒**（既有行为 ⛔ 不许放宽，须有断言守住）；
+//   · **SD-d 三条触发路径行为一致**：T2（在派活方自己的作用域里）/ T3·T5（不在）**都要投得出去**。
+//
+// ⚠⚠ **为什么这四条必须成断言**：改前的现场是"计数涨了、等待没清、同一份报告送了 4 次"，
+//   而**任何一条读数都看起来正常**（`已回传` 在涨）。⇒ 光改代码不算修。
+{
+  const { pathToFileURL: sdB } = await import('node:url')
+  const { join: sdJ } = await import('node:path')
+  const { mkdtempSync: sdMkdt, mkdirSync: sdMkd, writeFileSync: sdWf,
+    readFileSync: sdRf, rmSync: sdRm, cpSync: sdCp, symlinkSync: sdLink } = await import('node:fs')
+  const { tmpdir: sdTmp } = await import('node:os')
+  const { basename: sdBase } = await import('node:path')
+
+  /** ⚠ 与 SA/SB/SC 同款：`HOB_SA_ROOT` 可指向另一棵树（用来跑"改前必红"）。 */
+  const sdRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT
+    : root
+  const sdTag = sdRoot === root ? '' : `（源码树=${sdRoot}）`
+  let sdTmpRoot
+  try { sdTmpRoot = sdMkdt(sdJ(sdTmp(), 'hob-sdcheck-')) } catch { sdTmpRoot = sdTmp() }
+
+  let sdOrch, sdBusMod
+  try {
+    sdOrch = await import(sdB(sdJ(sdRoot, 'src', 'modules', 'orchestrator.ts')).href)
+    sdBusMod = await import(sdB(sdJ(sdRoot, 'src', 'modules', 'bus.ts')).href)
+  } catch (e) {
+    bad(`SD 无法加载 orchestrator / bus（${String(e?.message ?? e)}）⇒ 回执单次性失去基准（不按通过处理）`)
+  }
+
+  /**
+   * 造一个最小宿主（真 apply + 假会话/假投递）。
+   * @param opts.initiator - `currentInitiator()` 的返回值（模拟 T2 / T3 的作用域差别）。
+   * @param opts.pending - 预置到盘上的 `pending`。
+   * @param opts.statuses - 目标 → 状态。
+   */
+  const sdMount = async (opts = {}) => {
+    const base = sdMkdt(sdJ(sdTmpRoot, 'case-'))
+    const home = sdJ(base, 'ledgers')
+    const ws = sdJ(base, 'ws')
+    sdMkd(sdJ(ws, 'runtime'), { recursive: true })
+    const file = sdJ(home, sdBase(ws), 'runtime', 'orch-watches.json')
+    sdMkd(sdJ(home, sdBase(ws), 'runtime'), { recursive: true })
+    if (opts.pending !== undefined) {
+      sdWf(file, JSON.stringify({
+        version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [], pending: opts.pending,
+      }, null, 2), 'utf8')
+    }
+    /**
+     * ⚠⚠ **锁住落盘目录**（2026-10-20 · 第 4 单 · SD-f 专用）：
+     *   在 `apply()` **之前**把 `runtime/` 设成只读 ⇒ 之后的任何一次 `flushWatches`
+     *   都写不进去 ⇒ "送到了但账没清掉"这一格才**留得住**（否则 T1 一挂载就清掉了，
+     *   那是设计，不是缺陷 —— 但本判据要看的就是那一格）。
+     */
+    if (opts.lockRuntime === true) {
+      const { chmodSync: sdChmod } = await import('node:fs')
+      sdChmod(sdJ(home, sdBase(ws), 'runtime'), 0o555)
+    }
+    const owner = opts.owner ?? 'session-hob'
+    const target = opts.target ?? 'session-worker'
+    const ids = new Set([owner, target])
+    const mkSession = (id) => ({
+      id,
+      header: { agentPreset: 'standard', cwd: ws },
+      log: id === target && opts.logDone === true
+        ? [{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'done' }] } } }]
+        : [],
+    })
+    const byId = new Map([...ids].map((id) => [id, mkSession(id)]))
+    const sessions = { get: (id) => byId.get(id), list: () => [...byId.values()], flush: async () => true }
+    const statuses = opts.statuses ?? { [target]: 'idle' }
+    /** ⚠ 作用域开关：T2 = 在**派活方自己**的执行作用域里跑 ⇒ initiator 就是 owner。 */
+    const scope = { initiator: opts.initiator }
+    const agents = {
+      currentInitiator: () => scope.initiator,
+      get: (id) => (byId.has(id) ? {
+        id, status: statuses[id], ctx: {}, session: byId.get(id),
+        followup() {}, steer() {}, inject() {},
+      } : undefined),
+    }
+    const delivered = []
+    const logger = { debug() {}, info() {}, warn() {} }
+
+    const busProvided = {}
+    const busCtx = {
+      sessions, agents, logger,
+      get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+      provide: (k, v) => { busProvided[k] = v },
+      effect: (fn) => { try { fn() } catch {} },
+      inject: (_d, cb) => cb(busCtx), on: () => {},
+    }
+    sdBusMod.apply(busCtx, {
+      spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }),
+    })
+    const bus = busProvided.hobBus
+    /** ⚠ 两个入口都包：回执走 `deliverInternal`，模型面走 `deliver`。 */
+    for (const key of ['deliver', 'deliverInternal']) {
+      const real = typeof bus[key] === 'function' ? bus[key].bind(bus) : undefined
+      if (real === undefined) continue
+      bus[key] = async (sid, text, mode) => {
+        const r = await real(sid, text, mode)
+        delivered.push({ to: sid, ok: r.ok, reason: r.reason, via: key, text })
+        return r
+      }
+    }
+
+    const provided = {}
+    const handlers = {}
+    const ctx = {
+      sessions, agents, logger,
+      get: (k) => (k === 'sessions' ? sessions
+        : k === 'agents' ? agents
+          : k === 'hobBus' ? bus
+            : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+              : undefined),
+      provide: (k, v) => { provided[k] = v },
+      effect: (fn) => { try { fn() } catch {} },
+      inject: (_d, cb) => cb(ctx),
+      on: (ev, fn) => { handlers[ev] = fn; return () => { delete handlers[ev] } },
+    }
+    sdOrch.apply(ctx)
+    const orch = provided.hobOrchestrator
+    const wait = (ms = 60) => new Promise((r) => setTimeout(r, ms))
+    const disk = () => { try { return JSON.parse(sdRf(file, 'utf8')) } catch { return undefined } }
+    const pend = () => (disk()?.pending ?? [])
+    const receipts = () => delivered.filter((d) => String(d.text).includes('【自动回传】'))
+    return {
+      orch, bus, file, owner, target, delivered, receipts, scope, wait, disk, pend, ws,
+      emitStatus: (id, status) => {
+        const fn = handlers['agent/status']
+        if (typeof fn === 'function') fn({ agent: { id }, status })
+      },
+    }
+  }
+
+  const sdRec = (over = {}) => ({
+    target: 'session-worker', watcher: 'session-hob', owner: 'session-hob',
+    at: 1792250000000, sawRunning: true, lastStatus: 'running', settleState: 'waiting', ...over,
+  })
+
+  if (sdOrch !== undefined && sdBusMod !== undefined) {
+    // ══════════════════════════════════════════════════════════════
+    // SD-a · **同一条回执，三类触发共 N 次 ⇒ 成功投递恒为 1**
+    // ══════════════════════════════════════════════════════════════
+    {
+      const h = await sdMount({
+        pending: [sdRec()],
+        statuses: { 'session-worker': 'idle' },
+        logDone: true,
+        /** ⚠ T1 就在**派活方自己的作用域**里跑 —— 这正是现场那条 `refusing…` 的复现条件。 */
+        initiator: { id: 'session-hob' },
+      })
+      await h.wait(150)
+      const afterT1 = h.receipts().length
+      /** T2 / T3 / T5 各来几次（T2 在自己作用域里，T3/T5 不在）。 */
+      for (let i = 0; i < 3; i++) {
+        h.scope.initiator = { id: 'session-hob' }        // T2
+        await h.orch.reconcile('T2'); await h.wait(40)
+        h.scope.initiator = undefined                    // T3
+        await h.orch.reconcile('T3'); await h.wait(40)
+        h.scope.initiator = undefined                    // T5
+        await h.orch.reconcile('T5'); await h.wait(40)
+      }
+      const total = h.receipts().length
+      const okCount = h.receipts().filter((d) => d.ok === true).length
+      const cleaned = h.pend().length === 0
+      if (okCount === 1 && total === 1 && cleaned) {
+        ok(`SD-a ✓ **单次性**：同一条回执经 T1+T2×3+T3×3+T5×3 共 10 次触发 ⇒ `
+          + `**成功投递恒为 1**（尝试 ${total} 次 · 成功 ${okCount} 次），且该条已离开 \`pending\``
+          + `${sdTag}`)
+      } else if (afterT1 === 0) {
+        bad(`SD-a 【回执投不出去】连第一次都没投出去（尝试=${total}）⇒ 正是"账永远清不掉"的形态`
+          + `（note 可能是 refusing to deliver / bus 未就绪）${sdTag}`)
+      } else {
+        bad(`SD-a 【单次性】同一条回执被**投了不止一次**（尝试 ${total} 次 · 成功 ${okCount} 次 · `
+          + `盘上 pending=${JSON.stringify(h.pend().map((w) => w.target))}）`
+          + ' ⇒ 这就是"同一份报告反复送到眼前"的形态')
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // SD-b · **回执不得被"不许给自己发消息"拦下**（watcher === 本会话 ⇒ 必须投得出去）
+    // ══════════════════════════════════════════════════════════════
+    {
+      const h = await sdMount({
+        pending: [sdRec()],
+        statuses: { 'session-worker': 'idle' },
+        logDone: true,
+        initiator: { id: 'session-hob' },      // ⚠ 恒在"派活方自己"的作用域里
+      })
+      await h.wait(150)
+      const r = h.receipts()
+      const refused = r.some((d) => String(d.reason ?? '').includes('refusing to deliver to this session itself'))
+      /**
+       * ⚠ 判据两条：
+       *   ① 回执**投出去了**（`to === owner`，`ok === true`）；
+       *   ② ⛔ **不许**出现 `refusing to deliver to this session itself`。
+       */
+      if (r.length >= 1 && r.every((d) => d.ok === true) && r[0].to === h.owner && !refused) {
+        ok('SD-b ✓ **回执投递不被"不许给自己发消息"拦下**：构造 `watcher === 本会话`'
+          + '（T2 作用域，`currentInitiator()` 恒等于收件人）⇒ **照常投得出去**'
+          + `${sdTag}`)
+      } else {
+        bad('SD-b 【回执被自家守卫拦下】watcher === 本会话时投不出去'
+          + `：投递=${JSON.stringify(r.map((d) => ({ to: d.to, ok: d.ok, reason: d.reason })))}`
+          + ` · 出现 refusing=${refused}`
+          + ' ⇒ 这正是现场 `⚠ 回传失败：refusing to deliver to this session itself` 的形态')
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // SD-c · **模型面 `hob_send` 给自己仍然被拒**（既有行为 ⛔ 不许放宽）
+    // ══════════════════════════════════════════════════════════════
+    {
+      const h = await sdMount({ pending: [], statuses: {} })
+      /** ⚠ 服务层：`deliver`（模型面入口）必须仍然拒；`deliverInternal` 才放行。 */
+      h.scope.initiator = { id: 'session-hob' }
+      const viaTool = await h.bus.deliver('session-hob', 'hello self', 'followup')
+      /**
+       * ⚠ **防御式取值**（`E-112` 家族）：改前那一版**没有** `deliverInternal` 这个方法，
+       *   直接调用会抛 `TypeError` 把整个脚本打成堆栈（= 看不出违反了哪条断言）。
+       *   ⇒ 缺失时按"判据不成立"处理，⛔ 不许让它崩掉整轮自检。
+       */
+      const viaInternal = typeof h.bus.deliverInternal === 'function'
+        ? await h.bus.deliverInternal('session-hob', 'internal receipt', 'followup')
+        : { ok: false, reason: 'deliverInternal 不存在（改前那一版）' }
+      /**
+       * ⚠ 再走**真工具**面确认一次（`hob_send` 自己那道 `selfSessionIdOf(exec)` 判据也要在）。
+       *   ⚠ 工具定义需要 `ledgerRootOf`，这里给一个常量解析器（只为跑通，不落盘）。
+       */
+      let toolRejected = undefined
+      try {
+        const tools = sdBusMod.createHobBusTools(h.bus, () => undefined)
+        const out = String(await tools.send.execute(
+          { sessionId: 'session-hob', message: 'hi' },
+          { agent: { id: 'session-hob', session: { header: { cwd: sdTmpRoot } } } },
+        ))
+        toolRejected = out.includes('refusing to deliver to this session itself')
+      } catch (e) {
+        bad(`SD-c 工具面执行失败（${String(e?.message ?? e)}）—— 本判据失去基准`)
+      }
+      if (viaTool.ok === false && viaInternal.ok === true && toolRejected === true) {
+        ok('SD-c ✓ **模型面 `hob_send` 给自己仍然被拒**（⛔ 未放宽）：`deliver()` 拒 · '
+          + '`hob_send` 工具拒 · 只有插件内部的 `deliverInternal()` 放行'
+          + `${sdTag}`)
+      } else {
+        bad('SD-c 【模型面守卫被放宽了】`hob_send` 给自己必须仍然被拒'
+          + `：deliver().ok=${viaTool.ok}（应 false）· deliverInternal().ok=${viaInternal.ok}（应 true）`
+          + ` · 工具面拒绝=${toolRejected}（应 true）`
+          + ' ⇒ 一刀切拆守卫会重开"agent 自唤醒死循环"那个洞（ADDENDUM §三-3 明令禁止）')
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // SD-d · **盘上已 deliveredAt ⇒ 只清账、⛔ 不再投**（跨代幂等那一层）
+    // ══════════════════════════════════════════════════════════════
+    {
+      /**
+       * ⚠ 造"送到了但没清掉"的现场：盘上有 `deliveredAt`，而**目标仍在跑**
+       *   （改前那种"先判目标状态、running ⇒ continue"的写法在这一格**永远清不掉**）。
+       */
+      const h = await sdMount({
+        pending: [sdRec({ deliveredAt: 1792250000100, deliveryAttemptAt: 1792250000050 })],
+        statuses: { 'session-worker': 'running' },
+        initiator: undefined,
+      })
+      await h.wait(150)
+      for (const trig of ['T2', 'T3', 'T5']) {
+        await h.orch.reconcile(trig); await h.wait(40)
+      }
+      const sent = h.delivered.length
+      const left = h.pend().length
+      if (sent === 0 && left === 0) {
+        ok('SD-d ✓ **跨代幂等**：盘上已有 `deliveredAt`（上一代送到过）⇒ 之后任何触发'
+          + '**只清账、一份都不再发**，且该条已离开 `pending`'
+          + `${sdTag}`)
+      } else {
+        bad('SD-d 【跨代幂等】盘上已 `deliveredAt` 仍被重发、或没清掉'
+          + `：重发 ${sent} 份（应 0）· 盘上 pending=${JSON.stringify(h.pend().map((w) => w.target))}`
+          + ' ⇒ 重载/换代之后同一份回执会再发一份')
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // SD-f · **"送到了但账没清掉"必须在状态行里单列一档**（⛔ 不许并进"回传失败"）
+    // ══════════════════════════════════════════════════════════════
+    //
+    //   ⚠ 为什么必须钉：这两件事的**动作方向相反** ——
+    //     · `回传失败` = **没送到** ⇒ 读的人该去重派；
+    //     · `cleanupFailedAt` = **已经送到了**，只是盘上那条没删 ⇒ **⛔ 千万不要重派**
+    //       （重派会让对方再做一遍），下一轮自己会清。
+    //     合成一句话，下游就会去重发 ⇒ 那正是"同一份报告反复送达"的放大器。
+    {
+      const h = await sdMount({
+        pending: [sdRec({
+          deliveryAttemptAt: 1792250000050,
+          deliveredAt: 1792250000100,
+          cleanupFailedAt: 1792250000200,
+        })],
+        statuses: { 'session-worker': 'running' },
+        initiator: undefined,
+        /** ⚠ 挂载前就锁住 ⇒ T1 也清不掉 ⇒ 这一格留在盘上（本判据要看的就是它）。 */
+        lockRuntime: true,
+      })
+      /**
+       * ⚠ 让清账**失败**（runtime 目录只读）⇒ 那条留在盘上并带 `cleanupFailedAt`。
+       *   否则 T1 一挂载就把它清掉了 —— 那是设计，不是缺陷。
+       */
+      const { dirname } = await import('node:path')
+      const { chmodSync } = await import('node:fs')
+      /**
+       * ⚠ 造这一刻的现场：让它**此刻**带 `cleanupFailedAt` 留在盘上。
+       *   直接把目录设只读 ⇒ `flushWatches` 写不进去 ⇒ 那条**仍在盘上**（带 deliveredAt）
+       *   ⇒ 对账只重试清账、⛔ 不重投 ⇒ `finalizeDelivery` 失败 ⇒ 内存那条带上 `cleanupFailedAt`
+       *   ⇒ 状态行才渲染得出这一档。
+       */
+      chmodSync(dirname(h.file), 0o555)
+      try {
+        await h.orch.reconcile('T2')
+        await h.wait(120)
+        let rendered = ''
+        try {
+          rendered = String(await sdOrch.createHobOrchTools(h.orch).status.execute({}, {
+            /** ⚠ cwd 必须是**本用例自己的工作区**（账本按工作区名派生）。 */
+            agent: { id: h.owner, session: { header: { cwd: h.ws } } },
+          }))
+        } catch (e) {
+          bad(`SD-f 状态工具执行失败（${String(e?.message ?? e)}）—— 渲染面失去基准`)
+        }
+        if (rendered === '') bad('SD-f 状态渲染为空 —— 本判据失去基准')
+        const line = rendered.split('\n').find((l) => l.includes('session-worker')) ?? ''
+        if (line === '') {
+          bad('SD-f 状态行里**没有该条**（判不出它为什么不在）'
+            + `：盘上 pending=${JSON.stringify(h.pend().map((w) => ({ t: w.target, c: w.cleanupFailedAt })))}`
+            + ` · 内存 watches=${JSON.stringify((h.orch.status({ self: h.owner })?.watches ?? []).map((w) => ({ t: w.target, c: w.cleanupFailedAt })))}`
+            + ` · 渲染前 300 字=${JSON.stringify(rendered.slice(0, 300))}`)
+        }
+        const saysCleanup = line.includes('账没清掉')
+        const notBlamedOnRelay = !line.includes('⚠ 回传失败')
+        if (saysCleanup && notBlamedOnRelay) {
+          ok('SD-f ✓ **"送到了但账没清掉"单列一档**、且⛔ 没被并进"回传失败"'
+            + '（前者要人气"不要重派"，后者要人去重派 —— 两句话方向相反）'
+            + `${sdTag}`)
+        } else {
+          bad('SD-f 【两种原因被说成一句话】状态行里读不出"送到了但账没清掉"'
+            + `：有该档=${saysCleanup} · 没混成"回传失败"=${notBlamedOnRelay}`
+            + ` · 该行=${JSON.stringify(line.slice(0, 200))}`)
+        }
+      } finally {
+        try { chmodSync(dirname(h.file), 0o755) } catch { /* 恢复可写，别让后续用例受影响 */ }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // SD-e · **§2 自家卡叫不醒**：真帧没有 `createdBy` ⇒ 按卡现读补上；读不到 ⇒ 仍然不投
+    // ══════════════════════════════════════════════════════════════
+    {
+      let sdWake
+      try { sdWake = await import(sdB(sdJ(sdRoot, 'src', 'server', 'card-wake.ts')).href) } catch (e) {
+        bad(`SD-e 无法加载 card-wake（${String(e?.message ?? e)}）⇒ 本判据失去基准`)
+      }
+      if (sdWake !== undefined) {
+        const WS = 'ws-sd-e'
+        /**
+         * ⚠ **真帧形状**：看板 `broadcast()` 推的是 `summarize()` 投影
+         *   （第三方包 `lib/shared/protocol.js` 原文），**其中没有 `createdBy`** ——
+         *   这就是"自家卡叫不醒"的根因（卡面上有值，帧里没有）。
+         */
+        const realFrame = JSON.stringify({
+          revision: 7, kind: 'execution-recorded',
+          tasks: [{ id: 't-own-card', title: '自家卡', workspaceId: WS,
+            status: 'in_review', version: 1, lastExecutionOutcome: 'succeeded' }],
+        })
+        const OWNER = 'session-hob'
+        // ① 有 `ownerOf`（按卡现读）⇒ 必须叫醒，收件人 = 卡自己的 createdBy.sessionId
+        const sent = []
+        const w1 = new sdWake.CardWake({
+          origin: 'http://127.0.0.1:0', workspaceIdOf: () => WS,
+          deliver: (sid) => { sent.push(sid); return Promise.resolve({ ok: true }) },
+          ownerOf: async () => OWNER,
+          now: () => 1792300800000,
+        })
+        w1.subscribe(OWNER, WS)
+        const n1 = await w1.handleFrame('change', realFrame)
+        // ② 读不到 owner ⇒ 仍然一声不投（⛔ 不许退化成"本工作区的卡一律算我的"）
+        const sent2 = []
+        const w2 = new sdWake.CardWake({
+          origin: 'http://127.0.0.1:0', workspaceIdOf: () => WS,
+          deliver: (sid) => { sent2.push(sid); return Promise.resolve({ ok: true }) },
+          ownerOf: async () => undefined,
+          now: () => 1792300800000,
+        })
+        w2.subscribe(OWNER, WS)
+        const n2 = await w2.handleFrame('change', realFrame)
+        const st2 = w2.snapshot()
+        if (n1 === 1 && sent.length === 1 && sent[0] === OWNER && n2 === 0 && sent2.length === 0
+          && st2.legacyTargetCount === 1) {
+          ok('SD-e ✓ **自家卡叫得醒**（钉 §2）：真帧里**没有 `createdBy`**（看板 `summarize()` 投影'
+            + '原文如此）⇒ 按卡现读补上 owner ⇒ **照常叫醒**；⚠ 现读**也读不到** ⇒ '
+            + '仍然"判不出 ⇒ 不投"（⛔ 未退化成按工作区广播）'
+            + `${sdTag}`)
+        } else {
+          bad('SD-e 【自家卡叫不醒 / 或退化成广播】不成立'
+            + `：有 ownerOf 时叫醒=${n1}（应 1）· 收件人=${JSON.stringify(sent)}（应 ["${OWNER}"]）`
+            + ` · 读不到 owner 时叫醒=${n2}（应 0）· 投递=${sent2.length}（应 0）`
+            + ` · legacyTargetCount=${st2.legacyTargetCount}（应 1）`)
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // **SD-x 负向对拍**：把幂等标记摘掉 ⇒ SD-a / SD-d 必须当场不成立
+    // ══════════════════════════════════════════════════════════════
+    {
+      /**
+       * 变异的靶点 = `settle()` 顶部那两条跨代幂等判据（`deliveredAt` / `deliveryAttemptAt`）。
+       * ⚠ 摘掉它们之后，同一份"盘上已 deliveredAt"的记录会被**重新投一遍** ⇒ SD-d 的
+       *   "重发 0 份"必须当场**不成立**。
+       * ⚠ 变异体只活在临时目录（⛔ 不碰盘上源文件）。
+       */
+      const GUARD = "if (typeof effDeliveredAt === 'number') {"
+      let sdSrc = ''
+      try { sdSrc = sdRf(sdJ(sdRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { sdSrc = '' }
+      if (!sdSrc.includes(GUARD)) {
+        bad('SD-x 【负向对拍失去靶子】在 `orchestrator.ts` 里找不到跨代幂等判据原文'
+          + `（期望：${GUARD}）⇒ 本判据已对不上实现，不按通过处理`)
+      } else {
+        const dir = sdMkdt(sdJ(sdTmpRoot, 'mut-'))
+        try {
+          sdCp(sdJ(sdRoot, 'src'), sdJ(dir, 'src'), { recursive: true })
+          const f = sdJ(dir, 'src', 'modules', 'orchestrator.ts')
+          sdWf(f, sdRf(f, 'utf8').replace(GUARD, 'if (false) { /* 变异：摘掉跨代幂等 */'), 'utf8')
+        } catch (e) {
+          bad(`SD-x 造不出变异树（${String(e?.message ?? e)}）`)
+        }
+        try { sdLink(sdJ(sdRoot, 'node_modules'), sdJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try {
+          const mut = await import(sdB(sdJ(dir, 'src', 'modules', 'orchestrator.ts')).href)
+          const base = sdMkdt(sdJ(sdTmpRoot, 'mutcase-'))
+          const home = sdJ(base, 'ledgers'); const ws = sdJ(base, 'ws')
+          sdMkd(sdJ(ws, 'runtime'), { recursive: true })
+          const file = sdJ(home, sdBase(ws), 'runtime', 'orch-watches.json')
+          sdMkd(sdJ(home, sdBase(ws), 'runtime'), { recursive: true })
+          sdWf(file, JSON.stringify({
+            version: 1, updatedAt: 1, lost: [], handoffs: [], sessions: [],
+            pending: [sdRec({ deliveredAt: 1792250000100, deliveryAttemptAt: 1792250000050 })],
+          }), 'utf8')
+          const ids = ['session-hob', 'session-worker']
+          const byId = new Map(ids.map((id) => [id, { id, header: { agentPreset: 'standard', cwd: ws }, log: [] }]))
+          const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+          const agents = { currentInitiator: () => undefined,
+            get: (i) => (byId.has(i) ? { id: i, status: 'running', ctx: {}, session: byId.get(i),
+              followup() {}, steer() {}, inject() {} } : undefined) }
+          const delivered = []
+          const logger = { debug() {}, info() {}, warn() {} }
+          const bp = {}
+          const bc = { sessions, agents, logger,
+            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+            provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
+            inject: (_d, cb) => cb(bc), on: () => {} }
+          sdBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+          for (const key of ['deliver', 'deliverInternal']) {
+            const real = bp.hobBus[key].bind(bp.hobBus)
+            bp.hobBus[key] = async (sid, text, mode) => {
+              const r = await real(sid, text, mode)
+              delivered.push({ sid, text })
+              return r
+            }
+          }
+          const prov = {}
+          const c = { sessions, agents, logger,
+            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+              : k === 'hobBus' ? bp.hobBus
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+            provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
+            inject: (_d, cb) => cb(c), on: () => {} }
+          mut.apply(c)
+          const orchM = prov.hobOrchestrator
+          await new Promise((r) => setTimeout(r, 150))
+          for (const trig of ['T2', 'T3', 'T5']) {
+            await orchM.reconcile(trig)
+            await new Promise((r) => setTimeout(r, 40))
+          }
+          const n = delivered.length
+          /**
+           * ⚠ 变异之后 SD-d 的判据**必须不成立** —— 具体坏在哪一格有两种可能：
+           *   · 那一条被**重发**（`n >= 1`）；
+           *   · 或者它**没被清掉**（盘上 `pending` 还留着，因为目标此刻 `running`、走不到"done"）。
+           * 两种都算 SD-d 红了；⛔ 不许只认其中一种（否则变异体换个坏法就漏掉）。
+           */
+          let leftM = -1
+          try { leftM = (JSON.parse(sdRf(file, 'utf8'))?.pending ?? []).length } catch { leftM = -1 }
+          const sdDFails = n >= 1 || leftM !== 0
+          if (sdDFails) {
+            ok('SD-x ✓ 负向对拍：把跨代幂等判据摘掉 ⇒ **SD-d 当场不成立**'
+              + `（重发 ${n} 份 · 盘上 pending=${leftM}）⇒ SD-d 真长牙（钉的是"跨代幂等"，不是别的）`)
+          } else {
+            bad('SD-x 【负向对拍失败】摘掉跨代幂等判据后 SD-d 仍然成立'
+              + '（没重发、也清干净了）⇒ SD-d 测的不是那道判据（本判据恒真，比没有更危险）')
+          }
+        } catch (e) {
+          bad(`SD-x 变异体跑不起来（${String(e?.message ?? e)}）`)
+        }
+      }
+    }
+  }
+  try { sdRm(sdTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
 }
 
 // ── 输出 ───────────────────────────────────────────────────────────────
