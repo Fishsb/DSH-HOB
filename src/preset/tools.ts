@@ -527,44 +527,50 @@ export const GUARDED_TOOLS: readonly string[] = [
 /**
  * **「Hob 推进项目的工作方式」口径注入**（2026-10-19 · `UD-97`）—— 本项的**唯一真实消费者**。
  *
- * ── 它做什么 ─────────────────────────────────────────────────────────
- *   在本预设作用域注册**一段 system prompt section**，内容随档位而变：
- *   `auto` = 自己判几路（⚠ **动手前先报一句**，即任务书 §二-③ 的 (甲) 口径）；
- *   `single` = **恒定一路**；`multi` = **拆到最细、尽可能多路**（费用与时间不设上限）。
- *   末尾**恒定**拼上那段红线（"多会话的无限制只到费用与时间，不解除任何既有红线"）。
+ * ── ⚠⚠ 两条通路都要注册（2026-10-19 第 2 轮 · 装配层实测逼出来的）──────────
+ *   本预设的 persona 用 **`complete: true`**（"本段成为唯一 prompt 段"）。
+ *   宿主 `SystemPrompt.assemble()` 在**装配瀑布跑完之后**做这一步：
+ *     `sections: completeSection === void 0 ? transformed.sections : [completeSection]`
+ *   ⇒ **任何 `section()` 注册都会被它整段覆盖** —— 这是我在装配层实测出来的，不是推断：
+ *     用宿主真 `SystemPrompt` + 真 `createScope`（本预设同构）跑三档，
+ *     `renderPrompt(assembly)` 三档**长度完全相同、且逐字等于 persona 正文**。
+ *     （读数：`archive/2026-10-19-work-mode-effective/tmp/route-costs.mjs` 的 (C) 段。）
  *
- * ── 它为什么真的改变行为（不是空旋钮）────────────────────────────────
- *   `text` 是**函数**（`(context) => string`），宿主**每次装配**都调它
- *   （`dsh-system-prompt/lib/index.js` 的 `assemble()`：
- *   `text: typeof section.text === "function" ? section.text(context) : section.text`
- *   —— ⚠ **符号锚**，⛔ 不钉行号）。
- *   ⇒ 档位改了 ⇒ 下一次装配拿到的正文就变了 ⇒ 已开的 Hob 会话**下一步**按新档规划。
- *   ⚠ 若写成常量字符串，就会是"设置页改了但行为没变"（本项最要避免的失败形态）。
+ *   ⇒ 所以本函数注册**两处**：
+ *     · **`section()`** —— 仅在"将来 persona 不再 complete"时有用（今天被吞，⛔ 但**留着**：
+ *       删了它会让本项在那种组合下**静默失效**，而留着是零成本的）；
+ *     · **`context()`** —— ⚠ **真正生效的那一条**：动态上下文**不受 complete 段影响**
+ *       （宿主 `assemble()` 里 `contexts` 与 `completeSection` 是两条独立通路，
+ *       `complete` 只重写 `sections`）。而 `agent-loop` 每步会把它投成**一条 user 消息**
+ *       （`dsh-agent-loop/lib/index.js` 的 `preStep` → `renderContextSections` +
+ *       `runtimeContext.project` ⇒ `messages: [...claimed, context]`）。
  *
- * ── 为什么落在 `systemPrompt.section` 而不是新工具 / 工具参数 ──────────────
- *   见 `src/shared/work-mode.ts` 的 `workModeInstruction` 上方注释（三条理由：
- *   一直生效而非一次调用 · 不扩工具面 · 宿主官方 scoped section）。
+ * ── ⚠ 为什么 `contexts` 通路仍满足"**改完即生效**"（关键，别读成"要重载"）────
+ *   `agent-loop` 每步都 `refreshContext(assembly, …)`（`dsh-system-prompt` 的该方法原文：
+ *   *"@returns the accepted assembly with current runtime-context provider text"*），
+ *   它对每个 context 调 `resolveContext(provider, context)` ⇒ **provider 函数每步重跑**
+ *   ⇒ 本函数的 `text: () => …` **每步现读档位** ⇒ 改完下一步即生效。
  *
- * ── 作用半径与失效方向（如实标注）──────────────────────────────────────
- *   · `systemPrompt.section()` **按调用方的 scope 归属**（`dsh-scope` 的
- *     `ScopedLayers.effect` → `scopeOf(ctx)`），本函数用的 `sp` 是**预设作用域**
- *     ⇒ 只有「Hob」受影响；宿主自带的 minimal / standard **零影响**；
- *   · ⚠ 与 `complete: true` 的关系（**实测过的语义**）：本预设的 persona 用
- *     `complete: true`（"本段是唯一 prompt 段"）—— 它作用在**装配之后**
- *     （`assemble()` 末尾把 sections 换回 `[completeSection]`）⇒ **本 section 不会进
- *     系统提示词正文**。⚠ **这不是 bug，是本实现的已知边界**：
- *     正文落在 `assembly.sections` 里（装配瀑布可见、可机检），但被 complete 段覆盖。
- *     ⇒ ⚠ **别用"注入成功"当作"模型看见了"**（判据见 `check:config` 的 G 组：
- *     它断言的是"注入了、内容随档位变"，**不是**"模型一定读到"）。
- *     ⚠ 另一条**真正会进模型上下文**的通道是 `agent.inbox`（消息段，见
- *     `dsh-agent-instructions` 的用法）；本批**不动**它 —— 理由：消息段会**留在会话史**
- *     里，改档位后旧消息仍在，形成"新旧两套口径同时在上下文里"的错配，
- *     而 section 是**每次装配重算**的。这个取捨写进回报的「未做到/未验证」段。
- *   · `systemPrompt` 服务缺席（极端组合）⇒ 反应式 `ctx.inject` 的回调**不跑**
- *     ⇒ **没有任何注入**，而预设**不 broken**、其余能力照常（与门禁同一条纪律）。
+ * ── ⚠ 为什么 `contexts` 通路**不会新旧口径并存**（这条与 `agent.inbox` 的本质区别）──
+ *   宿主 `RuntimeContextProjection.project(current, sections)` 的语义是
+ *   *"只在保留值不同时创建一份未提交快照"*：
+ *     `if (this.retained?.text === snapshot) return;`
+ *   且新快照正文首句写明 *"This snapshot supersedes earlier runtime-context snapshots."*
+ *   ⇒ 改档位后是**新快照顶掉旧快照**（同一条被替换），⛔ 不是并列两条。
+ *   ⚠ 这正是它比 `agent.inbox`**更适合本项**的理由（inbox 每次投一条、**留在会话史**，
+ *     改档后旧口径仍在，除非自建作废机制 —— 代价读数见同一份报告）。
+ *
+ * ── 它的有效性判据（⛔ 不是"注入了"）──────────────────────────────────
+ *   `scripts/check-config-face.mjs` 的 G-10 组：**跑宿主真装配**、取**最终正文**、
+ *   要求三档最终正文互不相同且都含档位口径；并做**负向对拍**（摘掉注册 ⇒ 必须 FAIL）。
+ *   ⚠ 本项在 `assembly.sections` 里"看得见"**不再算通过**（那正是上一单被打回的原因）。
+ *
+ * ── ⚠ 与 `complete: true` 的关系（如实标注）───────────────────────────
+ *   `section()` 那一条**今天确实进不了最终正文** —— 这不是 bug，是本预设的既定形态；
+ *   真正生效的是 `context()` 那一条。⛔ 报告里不许把两者混着说"都生效"。
  *
  * @param ctx - **本预设作用域**的 ctx（`apply` 的入参，即**外层** ctx）。
- * @param modeOf - **现读**档位（每次装配调用；⛔ 传值会变成快照）。
+ * @param modeOf - **现读**档位（每次装配/每步重新调；⛔ 传值会变成快照）。
  * @param log - 诊断输出。
  */
 function injectWorkMode(ctx: any, modeOf: () => WorkMode, log: (m: string) => void): void {
@@ -572,43 +578,77 @@ function injectWorkMode(ctx: any, modeOf: () => WorkMode, log: (m: string) => vo
   //   静态 inject 缺依赖 ⇒ fiber 停 PENDING ⇒ 预设被标 `broken`
   //   ⇒ **在选择器里被静默过滤掉**（同本文件头部 E-21 的教训）。
   ctx.inject(['systemPrompt'], (spCtx: any) => {
-    // ⚠ 段名**必须**稳定且带本项目前缀：宿主 `PromptLayer.sections` 是**按名字**去重的
-    //   （`named entries`，同名重注册会抛"is already registered"）⇒
-    //   名字里带档位会让"改档位"变成"另一个段"（旧段还在），那不是本项要的行为。
+    // ⚠ 名字**必须**稳定且带本项目前缀：宿主这两张表都是**按名字**去重的
+    //   （`NamedEntries.insert` 重名即抛）⇒ 名字里带档位会让"改档位"变成**多出**一个条目
+    //   （旧条目还在、新档又加一条），那不是本项要的行为。
+    //   ⚠ 段名与上下文名**分开**（两张表各自唯一），但都带 `dsh-hob:` 前缀便于识别。
     const SECTION_NAME = 'dsh-hob:work-mode'
+    const CONTEXT_NAME = 'dsh-hob:work-mode-context'
     // 排序位：取 persona 之后、工具说明之前那一档（`DEPLOYMENT_PERSONA_PREFIX` = 0，
     // `TOOL_*` 从 1000 起）⇒ 用 500（宿主 `SECTION_ORDERS.PLAN_POLICY` 的值）。
     // ⚠ 用**字面量而非 `getSectionOrder('PLAN_POLICY')`**：后者要求 `systemPrompt`
-    //   实例在位（本回调里 `spCtx.systemPrompt` 才刚就绪），而 order 只是一个排序数
-    //   —— 拿不到就退字面量会让"顺序"变成"有时不同"，比写死更差。
+    //   实例在位，而 order 只是一个排序数 —— 拿不到就退字面量会让"顺序"变成"有时不同"。
     //   ⚠ 取值出处：`dsh-system-prompt/lib/types/index.d.ts` 的 `SECTION_ORDERS`
-    //   （`PLAN_POLICY: 500`）—— 它若在上游被重排，本段只是**换了个先后**，不会失效。
-    const SECTION_ORDER = 500
+    //   （`PLAN_POLICY: 500`）—— 它若在上游被重排，本条目只是**换了个先后**，不会失效。
+    const ORDER = 500
 
+    /**
+     * 现拼口径正文 —— 两条通路**共用这一个函数**（⛔ 不许各写一份）。
+     *
+     * ⚠ 整段包 try/catch：装配/刷新期抛错会让**这一轮整个装配或这一步失败**
+     *   （宿主 fail-closed），那比"口径没注入"严重得多（会话可能整轮跑不起来）。
+     *   异常 ⇒ 退回**缺省档**的正文（而不是空串）：空串等于"没有这个口径"，
+     *   而缺省档是本项落地之前的行为，最轻。
+     */
+    const textNow = (): string => {
+      try {
+        return workModeInstruction(modeOf()) + workModeRedLine()
+      } catch (e) {
+        log('工作方式口径取档位异常（退回缺省档）：' + String((e as Error)?.message ?? e))
+        try {
+          return workModeInstruction(DEFAULT_WORK_MODE) + workModeRedLine()
+        } catch {
+          return ''
+        }
+      }
+    }
+
+    // ── ① 段通路（`section()`）────────────────────────────────────────────
+    //   ⚠ **今天被 persona 的 `complete: true` 吞掉**（装配层实测：三档最终正文逐字相同）。
+    //     仍保留：它零成本，且"将来 persona 不再 complete"时它就是唯一通路
+    //     —— 删掉会让那种组合下**静默失效**（本项目最忌讳的形态）。
     spCtx.effect(() => spCtx.systemPrompt.section({
       name: SECTION_NAME,
-      order: SECTION_ORDER,
-      // ⚠ **函数**（不是字符串）：每次装配现读档位 + 现拼正文 ⇒ "改完即生效"的落点。
-      //   ⚠ 整段包 try/catch：装配期抛错会让**这一轮整个装配失败**（宿主 fail-closed），
-      //   那比"口径没注入"严重得多（会话可能整轮跑不起来）。
-      //   异常 ⇒ 退回**缺省档**的正文（而不是空串）：空串等于"没有这个口径"，
-      //   而缺省档是本项落地之前的行为，最轻。
-      text: (): string => {
-        try {
-          const mode = modeOf()
-          return workModeInstruction(mode) + workModeRedLine()
-        } catch (e) {
-          log('工作方式口径取档位异常（退回缺省档）：' + String((e as Error)?.message ?? e))
-          try {
-            return workModeInstruction(DEFAULT_WORK_MODE) + workModeRedLine()
-          } catch {
-            return ''
-          }
-        }
-      },
+      order: ORDER,
+      // ⚠ **函数**（不是字符串）：每次装配现读档位 ⇒ "改完即生效"的落点之一。
+      text: textNow,
     }), 'dsh-hob preset: work-mode instruction section')
 
-    log(`已注入「工作方式」口径段（段名 ${SECTION_NAME}；当前档 = ${modeOf()}）`)
+    // ── ② 上下文通路（`context()`）—— ⚠ **真正生效的那条** ─────────────────
+    //   ⚠ 为什么它是有效的：`complete` 只重写 `sections`，`contexts` 是另一条通路；
+    //     而 `agent-loop` 每步 `refreshContext()` 会**重跑 provider**（本处 = textNow）
+    //     并把结果作为一条 user 消息投进去（`preStep` 的 `runtimeContext.project`）。
+    //   ⚠ `required: false`（不写 = 缺省 false）：它应当**可被 runtime-context 抑制**
+    //     —— 本预设 persona 配了 `includeRuntimeContext: false`（`suppressRuntimeContext()`），
+    //     ⚠ **这会让本通路的正文不进上下文**！⇒ 见下 §③ 的处理。
+    spCtx.effect(() => spCtx.systemPrompt.context({
+      name: CONTEXT_NAME,
+      order: ORDER,
+      text: textNow,
+      // ⚠⚠ **必须 `required: true`**（这是本轮第二个实测发现，不是可选口味）：
+      //   本预设的 persona 配了 `includeRuntimeContext: false`
+      //   ⇒ `dsh-persona` 会调 `systemPrompt.suppressRuntimeContext()`
+      //   ⇒ 宿主 `assemble()`/`refreshContext()` 里
+      //      `if (suppressed && provider?.required !== true) continue;`
+      //   ⇒ **非 required 的 context 会被整条丢掉**。
+      //   ⚠ 设 `required: true` 的语义（宿主原文）：*"Keep this operational context when
+      //     optional runtime context is disabled."* —— 正是本项需要的：它是**运行口径**，
+      //     不是可选的运行环境快照（工作目录那类）。
+      required: true,
+    }), 'dsh-hob preset: work-mode instruction context')
+
+    log(`已注入「工作方式」口径（段 ${SECTION_NAME} 被 complete 段覆盖；`
+      + `上下文 ${CONTEXT_NAME} 为**生效通路**；当前档 = ${modeOf()}）`)
   })
 }
 

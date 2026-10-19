@@ -47,6 +47,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { existsSync } from 'node:fs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -54,6 +55,26 @@ const CONFIG_TS = join(root, 'src', 'config.ts')
 const PATCH = join(root, 'cordis.patch.yml')
 const PANEL = join(root, 'src', 'client', 'settings-panel.tsx')
 const SETTINGS_CLIENT = join(root, 'src', 'client', 'settings.ts')
+
+/**
+ * 宿主包的 `@deepseek-ai` 根（G-10 装配层判据要 import 宿主真包）。
+ *
+ * ⚠ 兜底顺序与 `check-preset-contracts.mjs` 的 `HOST_NODE_MODULES_CANDIDATES` **同款**
+ *   （先本仓 `node_modules`，再宿主全局 checkout）—— ⛔ 不另立一套解析口径。
+ * ⚠ 取第一个真有 `dsh-system-prompt` 的候选；都探不到 ⇒ 返回首个，
+ *   由 G-10 报 **FAIL（基准缺失不按通过处理）**，⛔ 不静默跳过。
+ */
+const HOST_NODE_MODULES = (() => {
+  const candidates = [
+    join(root, 'node_modules', '@deepseek-ai'),
+    '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai',
+    '/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai',
+  ]
+  for (const c of candidates) {
+    try { if (existsSync(join(c, 'dsh-system-prompt', 'lib', 'index.js'))) return c } catch { /* 继续 */ }
+  }
+  return candidates[1]
+})()
 
 const fail = []
 const note = []
@@ -530,22 +551,35 @@ function schemaTopGroups(src) {
         { label: 'host 收口函数 `workMode()`', src: cfgSrc, needle: 'export function workMode(' },
         { label: '入口 provide 现读服务', src: hostEntrySrc, needle: 'ctx.provide(WORK_MODE_SERVICE, () => workMode(config))' },
         { label: '预设作用域挂载注入', src: presetToolsSrc, needle: 'injectWorkMode(ctx, modeOf, log)' },
-        { label: '注入正文随档位而变', src: presetToolsSrc, needle: 'workModeInstruction(mode) + workModeRedLine()' },
+        { label: '两条通路共用的现拼正文 `textNow()`', src: presetToolsSrc, needle: 'workModeInstruction(modeOf()) + workModeRedLine()' },
+        { label: '段通路 `section()` 注册', src: presetToolsSrc, needle: 'spCtx.systemPrompt.section({' },
+        { label: '上下文通路 `context()` 注册（G-10 证明它是生效那条）', src: presetToolsSrc, needle: 'spCtx.systemPrompt.context({' },
+        { label: '上下文必须 `required: true`（否则被 suppress 丢）', src: presetToolsSrc, needle: 'required: true,' },
       ]
       const missing = consumers.filter((c) => c.src === undefined || !c.src.includes(c.needle))
       if (missing.length > 0) {
         bad(`G-4 「工作方式」缺真实消费者：${missing.map((c) => c.label).join(' / ')}`
           + '\n      ⇒ ⚠ 这正是本项目明确要避免的**空旋钮**：界面有开关、背后没人读')
-      } else ok('G-4 消费者链在位：收口 → 入口现读服务 → 预设注入 → 正文随档位变（4/4）')
+      } else ok('G-4 消费者链在位：收口 → 入口现读服务 → 预设注入 → textNow 现拼 → 两条通路注册 → required（7/7）')
 
       if (presetToolsSrc !== undefined) {
         const fnStart = presetToolsSrc.indexOf('function injectWorkMode(')
         const fnBody = fnStart < 0 ? '' : presetToolsSrc.slice(fnStart, fnStart + 8000)
-        if (!/text:\s*\(\s*\)\s*:\s*string\s*=>/.test(fnBody)) {
-          bad('G-4 注入段的 `text` 不是**函数**（找不到 `text: (): string =>`）'
+        //   ⚠ 判据：`textNow` 必须是**函数**（`const textNow = (): string => …`），
+        //     且两条通路的 `text:` 都**引用它**（`text: textNow,`）—— ⛔ 不许写常量字符串。
+        //     ⚠ 2026-10-19 第 2 轮起正文由 `textNow()` 统一现拼（两条通路共用一份，
+        //     防"section 与 context 各拼一份、改一处漏一处"）。
+        const isFn = /const\s+textNow\s*=\s*\(\s*\)\s*:\s*string\s*=>/.test(fnBody)
+        const sectionRef = /section\(\{[\s\S]{0,600}?text:\s*textNow,/.test(fnBody)
+        const contextRef = /context\(\{[\s\S]{0,600}?text:\s*textNow,/.test(fnBody)
+        if (!isFn) {
+          bad('G-4 注入正文不是**函数**（找不到 `const textNow = (): string =>`）'
             + '\n      ⇒ 若是常量字符串，档位改了**已开会话仍按旧档**走到重挂载为止 ——'
             + '\n        那正是"设置页改了但行为没变"的静默失败')
-        } else ok('G-4 注入段的 `text` 是函数（每次装配现读档位 ⇒ 改完即生效的落点）')
+        } else if (!sectionRef || !contextRef) {
+          bad(`G-4 两条通路没有**共用**同一个现拼函数（section=${sectionRef} · context=${contextRef}）`
+            + '\n      ⇒ 各拼一份的话，改一处必然漏一处（"+1 处口径"的分裂）')
+        } else ok('G-4 正文由 `textNow()` 函数现拼，且 section / context 两条通路共用（⛔ 非常量）')
       }
 
       if (sharedSrc !== undefined) {
@@ -564,6 +598,10 @@ function schemaTopGroups(src) {
       //   ⚠⚠ **真不同**：三档正文必须**逐档互不相同**，且各自带着"那一档才有的"
       //   语义标记。⚠ 光有分支不算数 —— "分支在、正文一样"照样是假消费（负向对拍实证）。
       //   ⚠ 这里**实跑真模块**（⛔ 不靠文本推断）：Node ≥22 可直载 TS。
+      //
+      //   ⚠⚠ **本组只判"口径文本本身对不对"** —— ⛔ 它**不**证明"模型读到了"。
+      //     "真进上下文"由 **G-10 组**（跑宿主真装配）判；上一单正是把 G-4 当成了通过证据
+      //     才被打回（`assembly.sections` 里有它 ≠ 进最终上下文）。两组分工不许混。
       {
         let wm = null
         try {
@@ -581,9 +619,9 @@ function schemaTopGroups(src) {
             for (const m of values) texts[m] = wm.workModeInstruction(m) + wm.workModeRedLine()
             const distinct = new Set(Object.values(texts))
             if (distinct.size !== 3) {
-              bad(`G-4 三档注入正文**不是互不相同**（实测只有 ${distinct.size} 种不同正文 / 共 3 档）`
+              bad(`G-4 三档口径正文**不是互不相同**（实测只有 ${distinct.size} 种不同正文 / 共 3 档）`
                 + '\n      ⇒ 档位改了而注入内容没变 = **假消费**（比没有这个旋钮更坏：界面看起来在动）')
-            } else ok('G-4 三档注入正文实跑互不相同（3 档 → 3 种不同正文）')
+            } else ok('G-4 三档口径正文实跑互不相同（3 档 → 3 种不同正文；⚠ 是否真进上下文由 G-10 判）')
 
             //   ⚠ 单会话档**必须明写"恒定一路"**；多会话档**必须明写"拆更细/更多路"**。
             //     这两条是任务书 §二-② 直接点名的判据（不只是"不同"，还要"朝那个方向不同"）。
@@ -734,6 +772,187 @@ function schemaTopGroups(src) {
         bad(`G-9 模块侧/面板出现对 \`workMode\` 子字段的**直读**（${hits.length} 处）`
           + ' —— volatile ref 直读恒为对象且不报错：\n     ' + hits.join('\n     '))
       } else ok('G-9 模块侧与面板无 `*.workMode.*` 直读（解 ref 收口在 config.ts 的 workMode()）')
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ── G-10 **装配层**：档位口径**真进上下文**且三档互不相同 ──────────────
+    //
+    // ⚠⚠ 本组的由来（2026-10-19 第 2 轮 · 上一单被打回的原因）：
+    //   上一单的 G-4 只证明"注入了、正文随档位变"，就写在 `assembly.sections` 里；
+    //   而本预设 persona 配 `complete: true` ⇒ 宿主 `assemble()` 末尾
+    //   `sections: completeSection === void 0 ? transformed.sections : [completeSection]`
+    //   ⇒ **任何 section 注册都被整段覆盖**。实测：三档 `renderPrompt(assembly)` 长度相同。
+    //   ⇒ 所以必须**跑宿主真装配**、取**真正进模型上下文的那一份**，⛔ 不许停在 sections。
+    //
+    // ⚠ 本组**挂真模块**（`src/preset/tools.ts` 的 `apply`）+ **宿主真包**
+    //   （`dsh-system-prompt` 的 `SystemPrompt`/`renderPrompt`/`renderContextSections`、
+    //    `dsh-scope` 的 `createScope`、宿主自己的 `cordis` 的 `Context`）——
+    //   ⛔ 不自己复刻装配语义（复刻的就不是判据了）。
+    //
+    // ⚠ 判据（三条，⛔ 缺一条就不算"真进上下文"）：
+    //   ① `refreshContext()` 后 `contexts` 非空 ⇒ 那条上下文**会被 `agent-loop` 投成 user 消息**；
+    //   ② 该上下文快照**含档位口径标记**（`How work is split`）与**红线标记**；
+    //   ③ **三档快照互不相同**（⚠ 不是"注入内容不同"，是**最终进上下文的那段**不同）。
+    // ⚠ 且必须**能失败**：内置负向对拍 —— 摘掉 context 注册 ⇒ ①②③ 必须全不成立。
+    {
+      let spMod, scopeMod, cordisMod, wmMod, presetMod
+      let loadErr
+      try {
+        spMod = await import(pathToFileURL(join(HOST_NODE_MODULES, 'dsh-system-prompt', 'lib', 'index.js')).href)
+        scopeMod = await import(pathToFileURL(join(HOST_NODE_MODULES, 'dsh-scope', 'lib', 'index.js')).href)
+        cordisMod = await import(pathToFileURL(join(HOST_NODE_MODULES, 'cordis', 'lib', 'index.js')).href)
+        wmMod = await import(pathToFileURL(join(root, 'src', 'shared', 'work-mode.ts')).href)
+        presetMod = await import(pathToFileURL(PRESET_TOOLS).href)
+      } catch (e) {
+        loadErr = e
+      }
+      if (loadErr !== undefined) {
+        // ⚠ 宿主包读不到 / TS 直载失败 ⇒ **FAIL，⛔ 不许静默跳过**（基准缺失不按通过处理）
+        bad(`G-10 装配层判据**跑不起来**（${String(loadErr?.message ?? loadErr)}）`
+          + '\n      ⇒ ⛔ 基准缺失不按通过处理：这一条正是上一单唯一缺的判据，'
+          + '\n        跳过它等于回到"`assembly.sections` 里有它就算过"那个被打回的状态')
+      } else if (typeof presetMod.apply !== 'function') {
+        bad('G-10 `src/preset/tools.ts` 没有导出 `apply` ⇒ 装配层判据失去被测物（不按通过处理）')
+      } else {
+        const { SystemPrompt, renderPrompt, renderContextSections, joinContextSections } = spMod
+        const { createScope, scopeOf } = scopeMod
+        const { Context } = cordisMod
+        const PERSONA_TEXT = 'You are the translation layer between the user and the developer session.\n'
+        const WANT = {
+          mark: 'How work is split',
+          red: 'never means more power',
+          track: {
+            auto: 'Decide for yourself how many tracks',
+            single: 'One track, always.',
+            multi: 'Split as finely',
+          },
+        }
+
+        /**
+         * 挂**真** `apply`，只让它跑到 `injectWorkMode`；其余挂载在假宿主下无害跳过。
+         *
+         * ⚠ 结构照**本预设真实配置**：
+         *   · persona 段 `complete: true`（`preset-dsh-hob.patch.yml` 的 `complete: true`）；
+         *   · `suppressRuntimeContext()`（同文件的 `includeRuntimeContext: false`）——
+         *     ⚠ **这一条是本组的第二个靶子**：它会把非 `required` 的 context 整条丢掉，
+         *     所以 `injectWorkMode` 必须写 `required: true`（摘掉它 ⇒ 本组当场 FAIL，见下）。
+         *
+         * @param mode 档位（模拟宿主 volatile 现读）
+         * @param opts.skipContext 负向对拍：把 context 注册摘掉
+         */
+        const mountAndAssemble = async (mode, opts = {}) => {
+          const rootCtx = new Context()
+          new SystemPrompt(rootCtx, 'systemPrompt')
+          const { ctx: presetCtx } = createScope(rootCtx, { preset: 'Hob' })
+          const personaSp = presetCtx.systemPrompt
+          personaSp.section({
+            name: spMod.PERSONA_PREFIX_SECTION,
+            order: personaSp.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
+            text: PERSONA_TEXT,
+            complete: true,
+          })
+          personaSp.suppressRuntimeContext()
+
+          const shellProto = {
+            logger: { debug() {}, info() {}, warn() {} },
+            get: (k) => {
+              if (k === 'hobPermission') return () => 'ledger'
+              if (k === 'hobWorkMode') return () => mode
+              return undefined
+            },
+            inject: (deps, cb) => {
+              if (!Array.isArray(deps) || !deps.includes('systemPrompt')) return { dispose: () => {} }
+              const shell = Object.create(shellProto)
+              const realSp = presetCtx.systemPrompt
+              shell.systemPrompt = opts.skipContext === true
+                ? new Proxy(realSp, { get: (t, p, r) => (p === 'context' ? () => () => {} : Reflect.get(t, p, r)) })
+                : realSp
+              cb(shell)
+              return { dispose: () => {} }
+            },
+            effect: (fn, label) => presetCtx.effect(fn, label),
+            on: (...a) => presetCtx.on(...a),
+            provide: () => {},
+            tools: { guard: () => () => {}, restrict: () => {} },
+          }
+          presetMod.apply(shellProto, {})
+
+          const assembly = await presetCtx.systemPrompt.assemble({ scope: scopeOf(presetCtx) })
+          // ⚠ 每步宿主都会 `refreshContext()`（`agent-loop` 的 `step`）⇒ 这里也跑一遍，
+          //   才是"真正会投进上下文的那一份"。
+          const refreshed = presetCtx.systemPrompt.refreshContext(assembly, { scope: scopeOf(presetCtx) })
+          const ctxSections = renderContextSections(refreshed)
+          return {
+            rendered: renderPrompt(assembly),
+            snapshot: joinContextSections(ctxSections),
+            contextCount: refreshed.contexts.length,
+          }
+        }
+
+        try {
+          const pos = {}
+          for (const m of values) pos[m] = await mountAndAssemble(m)
+
+          // ① contexts 非空（否则它根本不会被投进上下文）
+          const emptyCtx = values.filter((m) => pos[m].contextCount === 0)
+          if (emptyCtx.length > 0) {
+            bad(`G-10 「工作方式」的 context **在三档里都被丢掉了**（${emptyCtx.join(', ')} 档 contexts=0）`
+              + '\n      ⇒ ⚠ 本预设 persona 配了 `includeRuntimeContext: false` ⇒ `suppressRuntimeContext()`；'
+              + '\n        宿主 `assemble()`/`refreshContext()` 里 `if (suppressed && provider?.required !== true) continue;`'
+              + '\n      ⇒ 注册 context 时必须 `required: true`，否则整条被静默丢弃（外观与"从没注册"一样）')
+          } else {
+            ok(`G-10 三档 context 都在（contexts=${values.map((m) => pos[m].contextCount).join('/')}，`
+              + '⚠ 非 required 会被 suppressRuntimeContext 丢掉，故必须 required:true）')
+          }
+
+          // ② 快照含档位口径 + 红线
+          const missMark = values.filter((m) => !pos[m].snapshot.includes(WANT.mark))
+          const missRed = values.filter((m) => !pos[m].snapshot.includes(WANT.red))
+          if (missMark.length > 0) {
+            bad(`G-10 进上下文的快照**不含档位口径**：${missMark.join(', ')} 档缺「${WANT.mark}」`
+              + '\n      ⇒ ⛔ 这就是「空旋钮」：面板上有档位、背后没有任何东西进模型上下文')
+          } else if (missRed.length > 0) {
+            bad(`G-10 进上下文的快照**不含红线**：${missRed.join(', ')} 档缺「${WANT.red}」`
+              + ' —— 红线必须三档共同在场，⛔ 不许只在多会话档')
+          } else {
+            ok('G-10 三档进上下文的快照都含档位口径与红线')
+          }
+
+          // ③ 三档快照互不相同
+          const snaps = values.map((m) => pos[m].snapshot)
+          if (new Set(snaps).size !== values.length) {
+            bad(`G-10 三档**进上下文的快照不是互不相同**（实测 ${new Set(snaps).size} 种 / 共 ${values.length} 档）`
+              + '\n      ⇒ 档位改了而模型看到的口径没变 = 假消费')
+          } else {
+            ok(`G-10 三档进上下文的快照互不相同（${values.map((m) => `${m}=${pos[m].snapshot.length}字符`).join(' · ')}）`)
+          }
+
+          // ④ 每一档的"那一档特有语义"确实在它自己的快照里（朝对的方向不同）
+          const trackMiss = values.filter((m) => !pos[m].snapshot.includes(WANT.track[m]))
+          if (trackMiss.length > 0) {
+            bad(`G-10 这些档的上下文里缺它**自己那条**语义标记：${trackMiss.join(', ')}`
+              + ' —— "不同"还不够，必须朝"本档应有的方向"不同')
+          } else ok('G-10 三档上下文各含自己的语义标记（auto 自判 / single 恒定一路 / multi 拆更细）')
+
+          // ⑤ **内置负向对拍**：摘掉 context 注册 ⇒ ②③ 必须**都不成立**
+          const neg = {}
+          for (const m of values) neg[m] = await mountAndAssemble(m, { skipContext: true })
+          const negSnaps = values.map((m) => neg[m].snapshot)
+          const negHasMark = negSnaps.some((s) => s.includes(WANT.mark))
+          const negUniq = new Set(negSnaps).size
+          if (negHasMark || negUniq === values.length) {
+            bad(`G-10 【负向对拍失败】摘掉 context 注册后判据**仍然成立**`
+              + `（含口径=${negHasMark} · 不同快照数=${negUniq}）`
+              + '\n      ⇒ 说明本组测的不是"进上下文"这一环 ⇒ 判据失去分辨力')
+          } else {
+            ok('G-10 ✓ 负向对拍：摘掉 context 注册 ⇒ 上下文里没有档位口径、三档不再有区别'
+              + '（⇒ 本组测的确实是"进上下文"那一环）')
+          }
+        } catch (e) {
+          bad(`G-10 装配层判据抛错（${String(e?.message ?? e)}）⇒ 不按通过处理`
+            + '\n      ⇒ ⛔ 跑不起来 ≠ 通过（`E-130/E-131` 同族）')
+        }
+      }
     }
   }
 }
