@@ -289,6 +289,27 @@ export interface HobOrchestrator {
   /** 叫醒面的**运行态读数**（⛔ "没连上"不许被读成"没有卡跑完"）。 */
   wakeState(): WakeState
   /**
+   * ⚠⚠ **显式补投一条"投错人"的回执**（2026-10-19 · 用户原话「送错的看能不能重新派送到
+   * 对应正确的 hob 预设」）。
+   *
+   * ── 为什么要有这一层（⛔ 不是重复 `CardWake.redeliver`）───────────────
+   *   `CardWake.redeliver(executionId, owner, taskId?)` 要调用方**现读** `owner`
+   *   （= 该卡的 `createdBy.sessionId`）。⛔ 只有 `CardWake` 自己读不到它
+   *   —— 它只看帧与订阅者，不看卡面。⇒ `owner` 的现读必须在**能读卡面**的这一侧做，
+   *   而读卡面（`cardsOf`）归编排器。⇒ 本方法是"**读 owner + 转交**"的唯一落点。
+   *
+   * ⚠ **人按才动**：⛔ 不被任何失败分支调用、⛔ 不重试；只由 `hob_orch_control` 显式触发。
+   * ⚠ **判不出 owner ⇒ 不补投**（`CardWake` 侧落 `refused` + 独立可读话，⛔ 不猜、⛔ 不改投别人）。
+   *
+   * @param executionId - 那次执行的 id（与 `deliveredLedger()` 同键）。
+   * @param taskId - 卡 id（⚠ 用来现读 `createdBy.sessionId`，也用于可读话点名）。
+   */
+  redeliver(executionId: string, taskId: string | undefined): Promise<{
+    kind: 'redelivered' | 'noop' | 'refused'
+    reason: string
+    owner?: string
+  }>
+  /**
    * **实施会话叫醒面**的运行态读数（2026-10-19 · `TASK-2` 改判后的**主信号源**）。
    *
    * ⚠ 与 `wakeState()`（看板 SSE · **旁证通道**）**分开报** ——
@@ -1781,6 +1802,74 @@ export function apply(ctx: any): void {
         return wake.snapshot()
       },
 
+      /**
+       * ⚠⚠ **显式补投**（`TASK-R2` 裁定 ③：挂 `hob_orch_control`，⛔ 不新增工具名）。
+       *
+       * ── 这一层只做两件事：**现读 owner** → **转交 `wake.redeliver`** ─────────
+       *   `CardWake` 看的是"帧 + 订阅者"，它**读不到卡面** ⇒ 它无法自己知道
+       *   "这条回执本该给谁"。`owner` = 该卡的 `createdBy.sessionId`，
+       *   只能从**卡面**现读，而读卡面（`cardsOf`）归本模块。
+       *
+       * ⚠ ⚠ **三条语义一个字不动**（`TASK-R2` §二）：
+       *   ① 收件人只由该记录自己的 `owner` 决定 ⇒ 判不出就**不投**（`refused`），
+       *      ⛔ 不猜、⛔ 不改投"最后一个读过状态的人"、⛔ 不按工作区广播；
+       *   ② ⛔ **不自动重投**、⛔ 不在失败路径加重试 —— 只有人能按到这里；
+       *   ③ **幂等** `(executionId, to)` 与计数全在 `CardWake` 侧（本层不另记账）。
+       *
+       * ⚠ **判不出 owner 的两种情形必须分开说**（否则又是"两种原因一句话"）：
+       *   · 读不到卡面（`unavailable` / `unreadable` / 卡没找到）⇒ **本层**给可读话并返回 `refused`；
+       *   · 卡在、但没记 `createdBy.sessionId` ⇒ **转交下去**由 `CardWake` 落
+       *     `legacyTargetCount` + 那句"判不出它该给谁"（那一档的语义正是"判不出 owner"）。
+       */
+      async redeliver(executionId: string, taskId: string | undefined) {
+        const shown = taskId === undefined ? `执行 ${executionId}` : `卡 ${taskId}（执行 ${executionId}）`
+        // ── ① 有 taskId 才能读卡面；没有 ⇒ 判不出 owner（⛔ 不猜）────────────────
+        if (taskId === undefined || taskId === '') {
+          return {
+            kind: 'refused' as const,
+            reason: `⚠ **补投不了**（${shown}）：**没有给卡 id** ⇒ 读不到这张卡的 \`createdBy.sessionId\` `
+              + '⇒ 判不出该补给谁 ⇒ **这一份不补**（⛔ 不猜、⛔ 不改投别人）',
+          }
+        }
+        // ── ② 现读卡面拿 owner（⚠ 读不到是"读不到"，⛔ 不是"没有 owner"）────────
+        let owner: string | undefined
+        try {
+          const snap = await this.cardsOf({ selfSessionId: undefined })
+          // ⚠ 可达性四档（`board-cards.ts:112-120`）：`ok` 有卡 / `no-cards` 读到了但确实没有卡
+          //   ⇒ 只有这两档算"读到了"；`unavailable`（看板不在这里）/ `unreadable`（读了但失败）
+          //   都是**读不到**，⛔ 不许当成"没有 owner"（那是两种不同的原因）。
+          if (snap.reachability !== 'ok' && snap.reachability !== 'no-cards') {
+            return {
+              kind: 'refused' as const,
+              reason: `⚠ **补投不了**（${shown}）：**读不到看板卡面**（${snap.reachability}`
+                + `${typeof snap.detail === 'string' && snap.detail !== '' ? '：' + snap.detail : ''}）`
+                + ' ⇒ 判不出这张卡该补给谁 ⇒ **这一份不补**；'
+                + '⛔ 这是"读不到"，⛔ **不是**"这张卡没有 owner"，也⛔ 不是"已经补过了"',
+            }
+          }
+          const row = snap.cards.find((c) => c.id === taskId)
+          if (row === undefined) {
+            return {
+              kind: 'refused' as const,
+              reason: `⚠ **补投不了**（${shown}）：看板里**找不到这张卡**`
+                + '（已被清理 / 不在本工作区？）⇒ 判不出它该补给谁 ⇒ **这一份不补**；'
+                + '⛔ 这是"卡没了"，⛔ **不是**"没有错投"',
+            }
+          }
+          owner = row.createdBySessionId
+        } catch (e) {
+          return {
+            kind: 'refused' as const,
+            reason: `⚠ **补投不了**（${shown}）：现读卡面抛错 ⇒ 判不出该补给谁 ⇒ **这一份不补**；`
+              + `⛔ 不是"已经补过了"（${String((e as Error)?.message ?? e)}）`,
+          }
+        }
+        // ── ③ 转交 `CardWake`：owner 的判定、幂等、计数、可读话全在它那一侧 ──────
+        //   ⚠ 传 `undefined` 它才会走"判不出 owner"那一支（⛔ 别在这里替它兜成空串逻辑）
+        const r = await wake.redeliver(executionId, owner, taskId)
+        return { ...r, ...(owner === undefined ? {} : { owner }) }
+      },
+
       dispatchWakeState(): DispatchWakeState {
         return dispatchWake.snapshot()
       },
@@ -2359,17 +2448,58 @@ export function createHobOrchTools(orch: HobOrchestrator): {
     name: 'hob_orch_control',
     description:
       '停 / 恢复编排的自动回传。`stop` 之后对方跑完**不会再叫醒你**，且 `hob_dispatch` 会被拒绝；'
-      + '`resume` 重开。⚠ 用户随时可以要求你停 —— 用户的要求优先于你「还想继续推进」的判断。',
+      + '`resume` 重开。⚠ 用户随时可以要求你停 —— 用户的要求优先于你「还想继续推进」的判断。'
+      + ' `redeliver` = **显式**补投一条"投错人"的回执：收件人只由该卡自己的 `createdBy.sessionId` 决定，'
+      + '判不出就不补；同一条同一个人只补一份；⛔ 这不是自动重试。',
     parameters: {
-      action: { type: 'string', required: true, enum: ['stop', 'resume'], description: 'stop=停；resume=恢复。' },
+      action: {
+        type: 'string',
+        required: true,
+        enum: ['stop', 'resume', 'redeliver'],
+        description: 'stop=停；resume=恢复；redeliver=**显式补投**一条投错人的回执（需 executionId + taskId）。',
+      },
+      executionId: {
+        type: 'string',
+        description: 'redeliver 专用：那次执行的 id（错投的那条回执）。',
+      },
+      taskId: {
+        type: 'string',
+        description: 'redeliver 专用：卡 id（用来现读这张卡的 `createdBy.sessionId` 作为收件人）。',
+      },
     },
     output: {
       schema: { type: 'string' },
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
-    async execute(args: { action: 'stop' | 'resume' }, exec: any): Promise<string> {
-      if (args?.action !== 'stop' && args?.action !== 'resume') {
-        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume'" })
+    async execute(args: { action: 'stop' | 'resume' | 'redeliver'; executionId?: string; taskId?: string }, exec: any): Promise<string> {
+      /**
+       * ⚠ ⚠ **这一支原样保留、一个字没改**（`TASK-R2` §一-③ 明令）：
+       *   它是"`action` 取值不合法"的既有报错分支，`TASK-R2` 只许**在它后面加一支**。
+       *   ⚠ 只在文案里把新增的 `redeliver` 也列进去（否则报错话会把合法值说漏一个）。
+       */
+      if (args?.action !== 'stop' && args?.action !== 'resume' && args?.action !== 'redeliver') {
+        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume' or 'redeliver'" })
+      }
+      // ── 新增一支：显式补投（⛔ 不新增工具名，挂在本写工具上）──────────────────
+      //   ⚠ 本支**不碰** `stopped`：补投是一次"人按的补发"，与"停不停自动回传"无关
+      //     ⇒ ⛔ 不要因为 stop 了就不许补投（那是两件事）。
+      if (args.action === 'redeliver') {
+        if (typeof args.executionId !== 'string' || args.executionId === '') {
+          return JSON.stringify({
+            ok: false,
+            reason: 'redeliver 需要 `executionId`（那次执行的 id）—— ⛔ 不许猜一条来补',
+          })
+        }
+        const r = await orch.redeliver(args.executionId, args.taskId)
+        return JSON.stringify({
+          ok: r.kind === 'redelivered',
+          kind: r.kind,
+          executionId: args.executionId,
+          ...(args.taskId === undefined ? {} : { taskId: args.taskId }),
+          ...(r.owner === undefined ? {} : { owner: r.owner }),
+          reason: r.reason,
+          redeliveredCount: orch.wakeState().redeliveredCount,
+        })
       }
       const selfId = selfSessionIdOf(exec)
       /**
