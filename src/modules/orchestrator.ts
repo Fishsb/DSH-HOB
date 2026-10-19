@@ -1566,6 +1566,37 @@ export function apply(ctx: any): void {
         const keepPrev = prev.pending.filter((w) => !mineKeys.has(watchKey(w))
           && ((w.owner ?? '') !== owner || w.settleState === 'unresolved' || w.settleState === 'stuck'))
         /**
+         * ⚠⚠ **本代已经结算掉的键 ⇒ ⛔ 不许被 `keepPrev` 保留**（2026-10-20 · 第 6 单 · §1.2）──
+         *
+         * ── 这一刀治的到底是哪一格（⚠ 我第一版写错过，照实记下）────────────────
+         *   第一版写的是"保留时**补上** `deliveredAt`"。⚠ **那是死代码**：
+         *   `keepPrev` 上面那条 filter 已经排除了 `mineKeys`（= 本代 `mine` 里的键），
+         *   而"补标记"要读的恰恰是 `mine` 里同键的那条 ⇒ **两条集合不相交**
+         *   ⇒ 那个分支**一次都不可能命中**（实测：编造场景跑，改了等于没改）。
+         *
+         * ── 真正的缝 ──────────────────────────────────────────────────────────
+         *   `finalizeDelivery()` **先把那条从 `watches` 删掉**，再落盘清账。
+         *   ⇒ 等到这次 `flushWatches` 跑起来时，`mine` 里**已经没有它**了（`mineKeys` 也不含它），
+         *     而盘上那条（若 `settleState` 是 `unresolved` / `stuck`）会被下面那条 filter **保留**
+         *   ⇒ **结算成功了、盘上却还留着一条"从没送过"的记录** ⇒ 下一代复活 ⇒ **再发一份**。
+         *
+         * ── 判据（两句话）────────────────────────────────────────────────────
+         *   · **本代已经投递成功过**（`deliveredAt` 有值）的那些键 ⇒ 盘上那条**必须丢掉**
+         *     （它不是"判不出"，它是"已经办完了"）；
+         *   · **从没结算过**的 `unresolved` / `stuck` ⇒ 照旧保留（B3 的可重入态，⛔ 不许删）。
+         *   ⇒ 用一个**本代记账**的集合表达这件事：`finalizeDelivery` 成功/失败时都登记它，
+         *     由 `flushWatches` 在合并前把盘上同键那条剔掉。
+         *   ⚠ 为什么不用"给保留项补 `deliveredAt`"：那等于往盘上写一条**本代没投过**的记录，
+         *     万一 `deliveredAt` 对不上同一次投递，就成了伪造证据。
+         */
+        const settledKeep = new Set<string>()
+        for (const [k, v] of settledKeys) settledKeep.add(k)
+        if (settledKeep.size > 0) {
+          for (let i = keepPrev.length - 1; i >= 0; i--) {
+            if (settledKeep.has(watchKey(keepPrev[i]))) keepPrev.splice(i, 1)
+          }
+        }
+        /**
          * ⚠ 合并**必须**走 `mergePendingByIdentity`（`orch-state.ts` 的唯一实现点）：
          *   它与 `flushWatches` 那一侧用的是**同一个**判据（`target@at`），
          *   ⛔ 不许在这里再写一遍去重 —— 两处各写一份正是 P1 的成因。
@@ -2335,6 +2366,19 @@ export function apply(ctx: any): void {
      * ⇒ 只有**不在投递中**（= attempt 是上一代留下的）才算结果未知。
      */
     const delivering = new Set<string>()
+    /**
+     * ⚠⚠ **本代已经结算过的键**（`watchKey` = `target@at`）—— 2026-10-20 · 第 6 单 · §1.2。
+     *
+     * ⚠ 存在的唯一理由：`finalizeDelivery()` **先把记录从 `watches` 删掉、再落盘清账**
+     *   ⇒ 等 `flushWatches` 真正跑起来时，`mine` 里**已经没有它**了
+     *   ⇒ 盘上那条若 `settleState` 是 `unresolved` / `stuck`（B3 的可重入态），
+     *     会被 `keepPrev` **保留**下来 ⇒ **结算成功了、盘上却还留着一条"没送过"的记录**
+     *   ⇒ 下一代复活成全新派发 ⇒ **再发一份**（`FINDINGS` §三·问 4 那条缝）。
+     * ⇒ 这个集合就是那句"它办完了"的凭据：`flushWatches` 合并前把盘上同键那条剔掉。
+     * ⚠ 只记**本代真的投递成功过**的那些；⛔ 从没结算过的 `unresolved` 照旧保留。
+     * ⚠ 上限：它只活在这一代（进程内），⛔ 不落盘 —— 落盘的那份证据是 `deliveredAt` 本身。
+     */
+    const settledKeys = new Map<string, number>()
 
     /**
      * 取**目标此刻的状态**（⚠ 这是"判得出/判不出"的唯一判据来源，⛔ 不猜）。
@@ -2470,6 +2514,12 @@ export function apply(ctx: any): void {
      * @param why - 谁触发的清账（⚠ 只进日志，⛔ 不影响判据）。
      */
     const finalizeDelivery = (w: Watch, id: string, why: string): boolean => {
+      /**
+       * ⓪ **先记账**：这一条在本代**已经投递成功**（调用它的前提就是 `deliveredAt` 已置）
+       *   ⇒ 盘上那条同键记录**不该再被"保留"**（它不是"判不出"，是"已经办完了"）。
+       *   ⚠ 顺序必须在 `watches.delete` **之前**（之后就拿不到 `w.at` 了）。
+       */
+      settledKeys.set(watchKey(w), typeof w.deliveredAt === 'number' ? w.deliveredAt : Date.now())
       /** ① 先清内存 —— 这一步不会失败，也要先做（否则同一次事件会再走一遍 `settle`）。 */
       watches.delete(id)
       /**
@@ -2653,8 +2703,38 @@ export function apply(ctx: any): void {
            */
           return false
         }
-        w.error = res?.reason ?? 'relay delivery failed'
+        /**
+         * ⚠⚠⚠ **`ok:false` 是"确定失败"，⛔ 不是"结果未知"**（2026-10-20 · 第 6 单 · Hob 裁定 **(A)**）──
+         *
+         * ── 现场（第 5 单取证，`FINDINGS` §一.3）──────────────────────────────
+         *   宿主 05:35:00 启动 ⇒ **05:35:10** T1 就绪扫描先跑，那一刻 owner（Hob）的 agent
+         *   **还没建** ⇒ `bus.deliver` 明确返回 `{ok:false, reason:'not a live session'}`
+         *   ⇒ 但 `deliveryAttemptAt` **已经落盘**（先写后发，`:2614`）
+         *   ⇒ 之后每一次对账都命中"有 attempt、无 delivered ⇒ 结果未知 ⇒ ⛔ 不重投"
+         *   ⇒ **`已回传：0 次`**，而 `在等回传` 挂着那条**永不结算**。
+         *   实测（`tmp/probe-poison.mjs`）：owner 变活后再触发 4 次 ⇒ **成功 0 次**。
+         *
+         * ── 判据（⚠ 四种状态，⛔ 不许合成一个字段）──────────────────────────────
+         *   · 没试过（无 attempt）                        ⇒ 正常投
+         *   · **试过、失败了（bus 明确 `ok:false`）⇒ 删掉 attempt + 留 `error`** ⇒ **允许重投**
+         *   · 试过、不知道成没成（进程死在投递中途）        ⇒ 有 attempt 无 delivered ⇒ 不自动重投
+         *   · 成功了（有 deliveredAt）                    ⇒ ⛔ 绝不再发，只补清账
+         * ⇒ **这一支必须把 attempt 撤掉**：它撤销的是"我试过了但不知道结果"这个**错误陈述**，
+         *   而 `error` 留着 —— 失败原因本身是可读事实，⛔ 不许一起删掉。
+         *
+         * ⚠ **同一个失败原因不重复覆盖**（2026-10-20 · 第 6 单 · Hob 裁定）：
+         *   若上一轮已经因**同一原因**失败，`error` 内容不变 ⇒ 盘上那条**不该每轮都变**
+         *   （变了就等于"账变了"，读的人分不清"它一直在失败"还是"它刚刚又失败了一次"）。
+         *   ⇒ 只在**原因真的变了**时才改写。
+         */
+        delete w.deliveryAttemptAt
+        const why = res?.reason ?? 'relay delivery failed'
+        if (w.error !== why) w.error = why
       } catch (e: any) {
+        /**
+         * ⚠ **抛异常 = 结果未知**（不是"确定失败"）：投递库可能已经把消息送出去了才抛
+         *   ⇒ ⛔ **不许在这里删 attempt**（删了就可能在下一轮重发一份）⇒ 保持现状、留可读 error。
+         */
         w.error = String(e?.message ?? e)
       } finally {
         /** ⚠ 投递已结束（成功/失败都算）⇒ 之后那一格才叫"结果未知"。 */

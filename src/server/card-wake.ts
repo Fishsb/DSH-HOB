@@ -1449,6 +1449,34 @@ export class DispatchWake {
   }): void {
     const id = entry.sessionId
     if (typeof id !== 'string' || id === '') return
+    /**
+     * ── ⚠⚠ **执行方 ≠ owner**（2026-10-20 · 第 6 单 · Hob 裁定 §1.3）──────────────
+     *
+     * ── 现场（第 5 单取证，`FINDINGS` §一.2 / §六）──────────────────────────────
+     *   卡 `t-mvfertx2-zrnyvc` 被反复点火 **20 次**，而这 20 次执行的 `sessionId`
+     *   **全部 = `session-77d33ea8`（Hob 自己）**，卡的 `createdBy.sessionId` **也是**它。
+     *   ⇒ 两处 `register()` 的准入（`createdBySessionId === subscriber` / `owner === self`）
+     *     **都判"是我的卡"就登记**，而**没有一句查"执行方是不是就是我自己"**
+     *   ⇒ 登记成"实施会话 = Hob" ⇒ `observe(Hob, idle)` ⇒ **Hob 自己 turn 结束就把它自己叫醒一次**
+     *   ⇒ 用户连续收到 `[实施会话跑完] 会话 session-77d33ea8-… （第 1/2/3 轮）`。
+     *
+     * ── 判据（⚠ 一句话）──────────────────────────────────────────────────────
+     *   **派活方（owner）不是它自己派出去的"实施会话"** —— owner 的 `running→idle`
+     *   是**它自己在干活**，⛔ 不是"某个被派出去的活跑完了"。
+     *   ⇒ `sessionId === owner` ⇒ **拒绝登记**，落一条可读话（⛔ 不许静默丢）。
+     * ⚠ 这一道闸**只挡"自己登记自己"**，⛔ 不影响任何"别人派给我 / 我派给别人"的合法登记。
+     */
+    if (typeof entry.owner === 'string' && entry.owner !== '' && entry.owner === id) {
+      this.state = {
+        ...this.state,
+        note: `⚠ **拒绝把 "${id}" 登记成"实施会话"**：它就是派活方自己（owner === sessionId）。`
+          + '派活方的 `running → idle` 是**它自己在干活**，⛔ 不是"某个被派出去的活跑完了"；'
+          + '登记它 ⇒ 每次它自己一轮跑完就把它自己叫醒一次（实测：连续 3 条「实施会话跑完」'
+          + '报的都是派活方自己）。⇒ 这一声**不登记**（⛔ 这不是"没有会话在跑"）',
+      }
+      this.say(`[dispatch-wake] ${this.state.note}`)
+      return
+    }
     // ── 准入：**判不出归属 ⇒ 不登记**，落独立一档可读话（⛔ 不许猜、⛔ 不许按工作区兜）
     if (typeof entry.owner !== 'string' || entry.owner === '') {
       /**

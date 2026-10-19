@@ -5288,6 +5288,18 @@ const orchCode = stripComments(orchSrc)
              *     **本档声明为"部分可判"**，硬判据交给 `SA-t` 的 ①②④ 三档 +
              *     `SA-d2`/`SA-x(SA-t)` 的变异对拍（见回报「未验证」一节，⛔ 不假装判住了）。
              */
+            /**
+             * ── ⚠⚠ **已知空洞登记（第 6 单 §3 · 可 grep 的显式标记）** ──────────────────
+             *   `[KNOWN-GAP:T5-解除]` **本档分辨力不足** ——
+             *   摘掉 `clearRecheckTimer()`（= 让"解除"失效）⇒ **`check:orch` 仍然 PASS**。
+             *   为什么：`armRecheck()` 的 `if (recheckTimer !== undefined) return` 让
+             *   "已解除"与"未解除"产生**同一个读数**（两种情况都"不再新排定时器"）。
+             *   ⇒ 这一格**当前判不住**，⛔ 不许把它当成"已验证"。
+             *   ⇒ 补齐它要改**测试注入**（把定时器等待压到毫秒级或注入假时钟），代价大，
+             *     ⚠ 本单按 Hob 的裁定**不硬补**，只在此登记。
+             *   ⚠ 真正的硬判据在 `SA-t` 的 ①②④ 三档 + `SA-d2` / `SA-x(SA-t)` 的变异对拍；
+             *     **本档的绿不代表"解除"这件事被验证过**。
+             */
             installProbe()
             const hClear = await saMount({
               pending: [rec({ target: 'sess-t5c', at: 1792250000000, sawRunning: true, owner: 'hob' })],
@@ -6690,6 +6702,518 @@ const orchCode = stripComments(orchSrc)
     }
   }
   try { sdRm(sdTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+}
+
+// ── SE. **失败可重试 + 清账后不复活 + 不登记 owner 自己**（2026-10-20 第 6 单）──
+//
+// ⚠ **本组守的是哪三条**（TASK §2）：
+//   · **SE-a 失败可重试**：`bus.deliver` 明确返回 `ok:false` ⇒ **撤掉 attempt** ⇒ 之后必须能投成。
+//     （现场：宿主启动 10 秒时 owner 未 live ⇒ 一次失败被记成永久"结果未知" ⇒ `已回传：0 次`）
+//   · **SE-b 清账后不复活**：盘上那条带 `deliveredAt` 却被保留（模拟清账失败）⇒ 对账**0 投递**、只重试清账。
+//   · **SE-c 不登记 owner 自己**：`register({sessionId: owner, owner})` ⇒ **必须被拒** + 有可读话。
+//
+// ⚠⚠ **SE-a 与 SD-a 是成对的相反行为**（TASK §2 末条）：
+//   `SD-a` = "成功之后恒为 1"、`SE-a` = "失败之后还能重试"。
+//   ⛔ 不许为了 SE-a 把 SD-a 改松，也不许为了 SD-a 让 SE-a 变成"永不重投"。
+{
+  const { pathToFileURL: seP2u } = await import('node:url')
+  const { join: seJ } = await import('node:path')
+  const { mkdtempSync: seMkdt, mkdirSync: seMkd, writeFileSync: seWf,
+    readFileSync: seRf, rmSync: seRm, cpSync: seCp, symlinkSync: seLink, chmodSync: seChmod } = await import('node:fs')
+  const { tmpdir: seTmp } = await import('node:os')
+  const { basename: seBase } = await import('node:path')
+
+  /** ⚠ 与 SA/SB/SC/SD 同款：`HOB_SA_ROOT` 可指向另一棵树（用来跑"改前必红"）。 */
+  const seRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT
+    : root
+  const seTag = seRoot === root ? '' : `（源码树=${seRoot}）`
+  let seTmpRoot
+  try { seTmpRoot = seMkdt(seJ(seTmp(), 'hob-secheck-')) } catch { seTmpRoot = seTmp() }
+
+  let seOrch, seBusMod, seWakeMod
+  try {
+    seOrch = await import(seP2u(seJ(seRoot, 'src', 'modules', 'orchestrator.ts')).href)
+    seBusMod = await import(seP2u(seJ(seRoot, 'src', 'modules', 'bus.ts')).href)
+  } catch (e) {
+    bad(`SE 无法加载 orchestrator / bus（${String(e?.message ?? e)}）⇒ 本组失去基准（不按通过处理）`)
+  }
+  try {
+    seWakeMod = await import(seP2u(seJ(seRoot, 'src', 'server', 'card-wake.ts')).href)
+  } catch { seWakeMod = undefined }
+
+  /**
+   * 最小宿主。⚠ 与 SD 组同款，但多一个 `live` 开关 —— **SE-a 要靠它造"那一刻 owner 还没起来"**。
+   */
+  const seMount = async (opts = {}) => {
+    const base = seMkdt(seJ(seTmpRoot, 'case-'))
+    const home = seJ(base, 'ledgers'); const ws = seJ(base, 'ws')
+    seMkd(seJ(ws, 'runtime'), { recursive: true })
+    const file = seJ(home, seBase(ws), 'runtime', 'orch-watches.json')
+    seMkd(seJ(home, seBase(ws), 'runtime'), { recursive: true })
+    if (opts.pending !== undefined) {
+      seWf(file, JSON.stringify({
+        version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [], pending: opts.pending,
+      }, null, 2), 'utf8')
+    }
+    /** ⚠ 挂载前锁盘 = 模拟"清账写不进去"（SE-b 要用）。 */
+    if (opts.lockRuntime === true) seChmod(seJ(home, seBase(ws), 'runtime'), 0o555)
+    const owner = opts.owner ?? 'session-hob'
+    const target = opts.target ?? 'session-worker'
+    const mkS = (id) => ({
+      id, header: { agentPreset: 'standard', cwd: ws },
+      log: id === target && opts.logDone === true
+        ? [{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'done' }] } } }]
+        : [],
+    })
+    const byId = new Map([owner, target].map((i) => [i, mkS(i)]))
+    const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+    const statuses = opts.statuses ?? { [target]: 'idle' }
+    /** ⚠ `live` = 宿主里那个会话的 agent 建没建 —— SE-a 的核心开关。 */
+    const live = { [owner]: opts.ownerLive !== false, [target]: true }
+    const scope = { initiator: opts.initiator }
+    const agents = {
+      currentInitiator: () => scope.initiator,
+      get: (i) => {
+        if (live[i] === false) return undefined
+        return byId.has(i) ? {
+          id: i, status: statuses[i], ctx: {}, session: byId.get(i),
+          followup() {}, steer() {}, inject() {},
+        } : undefined
+      },
+    }
+    const delivered = []
+    const warns = []
+    const logger = { debug() {}, info() {}, warn: (m) => warns.push(String(m)) }
+    const bp = {}
+    const bc = {
+      sessions, agents, logger,
+      get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+      provide: (k, v) => { bp[k] = v },
+      effect: (fn) => { try { fn() } catch {} },
+      inject: (_d, cb) => cb(bc), on: () => {},
+    }
+    seBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+    const bus = bp.hobBus
+    for (const key of ['deliver', 'deliverInternal']) {
+      if (typeof bus[key] !== 'function') continue
+      const real = bus[key].bind(bus)
+      bus[key] = async (sid, text, mode) => {
+        const r = await real(sid, text, mode)
+        delivered.push({ to: sid, ok: r.ok, reason: r.reason, via: key, text })
+        return r
+      }
+    }
+    const prov = {}
+    const ctx = {
+      sessions, agents, logger,
+      get: (k) => (k === 'sessions' ? sessions
+        : k === 'agents' ? agents
+          : k === 'hobBus' ? bus
+            : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+              : undefined),
+      provide: (k, v) => { prov[k] = v },
+      effect: (fn) => { try { fn() } catch {} },
+      inject: (_d, cb) => cb(ctx),
+      on: () => {},
+    }
+    seOrch.apply(ctx)
+    const wait = (ms = 80) => new Promise((r) => setTimeout(r, ms))
+    const disk = () => { try { return JSON.parse(seRf(file, 'utf8')).pending } catch { return [] } }
+    return {
+      orch: prov.hobOrchestrator, bus, file, owner, target, ws, delivered, warns,
+      live, scope, wait, disk, receipts: () => delivered.filter((d) => String(d.text).includes('【自动回传】')),
+    }
+  }
+
+  const seRec = (over = {}) => ({
+    target: 'session-worker', watcher: 'session-hob', owner: 'session-hob', round: 1,
+    at: 1792250000000, sawRunning: true, lastStatus: 'running', settleState: 'waiting', ...over,
+  })
+
+  if (seOrch !== undefined && seBusMod !== undefined) {
+    // ══════════════════════════════════════════════════════════════
+    // SE-a · **失败可重试**（⛔ attempt 不许把"确定失败"锁成"结果未知"）
+    // ══════════════════════════════════════════════════════════════
+    {
+      const h = await seMount({
+        pending: [seRec()],
+        statuses: { 'session-worker': 'idle' },
+        logDone: true,
+        /** ⚠ 现场：宿主刚启动，owner 的 agent **还没建** ⇒ `bus.deliver` 明确返回 ok:false。 */
+        ownerLive: false,
+      })
+      await h.wait(150)
+      const firstTry = h.receipts()
+      const failedClearly = firstTry.length >= 1 && firstTry.every((d) => d.ok === false)
+      /** ⚠ 现在 owner 起来了（= 现场几秒后 `hob_sessions` 把它列为 running 的活会话）。 */
+      h.live[h.owner] = true
+      for (const trig of ['T2', 'T3', 'T5']) { await h.orch.reconcile(trig); await h.wait(60) }
+      const okNow = h.receipts().filter((d) => d.ok === true)
+      const stillPending = h.disk().some((w) => w.target === h.target)
+      if (failedClearly && okNow.length === 1 && !stillPending) {
+        ok('SE-a ✓ **失败可重试**：owner 未 live 时投一次**明确失败**（`ok:false`）⇒ owner 变活后再触发'
+          + ` ⇒ **投成了 1 次**、该条已离开 \`pending\``
+          + '（⛔ 不是"一次失败永久不投"——那正是现场 `已回传：0 次` 的成因）'
+          + `${seTag}`)
+      } else if (!failedClearly) {
+        bad('SE-a 【前置不成立】第一次投递**没有**产生"明确失败"的读数'
+          + `（回执=${JSON.stringify(firstTry.map((d) => ({ ok: d.ok, why: String(d.reason ?? '').slice(0, 40) })))}）`
+          + ' ⇒ 本判据测不到"失败"这一支')
+      } else {
+        bad('SE-a 【失败被锁死】owner 变活之后仍然投不出去'
+          + `：成功 ${okNow.length} 次（应 1）· 回执 ${JSON.stringify(firstTry.map((d) => ({ ok: d.ok })))}`
+          + ` · 盘上仍 pending=${JSON.stringify(h.disk().map((w) => w.target))}`
+          + ' ⇒ 这就是"一次失败被记成永久未知"的形态（现场 `已回传：0 次`）')
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // SE-b · **清账后不复活**（钉 §1.2：本代已结算的键 ⛔ 不许被 `keepPrev` 保留）
+    // ══════════════════════════════════════════════════════════════
+    //
+    //   ⚠⚠ **这一档的构造是本单踩了两次才对的，理由写在这里（照实）**：
+    //     第一版造"只有一条 watch"⇒ `groups` 为空 ⇒ 走 `persistWatches(file, [])`
+    //     **整文件覆盖** ⇒ 那条被清掉、`keepPrev` **根本没机会执行**
+    //     ⇒ 摘掉补丁它照样绿（实测：本体与反证都绿）⇒ **没有分辨力**。
+    //   ⇒ 必须造出 `persistOwnerPartition`（`groups` 非空）那一支：
+    //     **同一账本文件里另有一条本代活着的 watch**（B），A 才有机会被 `keepPrev` 保留。
+    //
+    //   ⚠⚠ **第二版也错过（一并记下）**：先写的是"保留时给那条**补** `deliveredAt`" ——
+    //     **死代码**：`keepPrev` 上面那条 filter 已排除 `mineKeys`，而补标记要读的正是
+    //     `mine` 里同键那条 ⇒ **两集合不相交** ⇒ 那个分支一次都不可能命中
+    //     （实测：摘掉它 SE-b 照样绿）。
+    //   ⇒ 现在这一版补丁 = **本代已结算的键一律剔掉**（`settledKeys`）：
+    //     它**不伪造标记**，只表达"它办完了、⛔ 不是判不出"。
+    //
+    //   判据（Hob 定死 + 本单 §1.2 的落点）：
+    //     ① A 结算成功后**不再发第二份**（总投递恒为 1）；
+    //     ② **A 不许留在盘上** —— 它已经办完了，不是"判不出"；
+    //     ③ B（真正在跑的那条）**照旧留在盘上**（⛔ 补刀不许误伤）。
+    {
+      const base = seMkdt(seJ(seTmpRoot, 'seb-'))
+      const home = seJ(base, 'ledgers'); const ws = seJ(base, 'ws')
+      const RT = seJ(home, seBase(ws), 'runtime')
+      const file = seJ(RT, 'orch-watches.json')
+      seMkd(RT, { recursive: true })
+      const OWNER = 'session-hob'; const A = 'session-worker'; const B = 'session-other'
+      const AT = 1792250000000
+      /** ⚠ A = 已被判过"判不出"（`unresolved`，**没有** deliveredAt）；B = 本代还在跑。 */
+      seWf(file, JSON.stringify({ version: 1, updatedAt: 1, lost: [], handoffs: [], sessions: [], pending: [
+        { target: A, watcher: OWNER, owner: OWNER, round: 1, at: AT,
+          sawRunning: true, lastStatus: 'running', settleState: 'unresolved' },
+        { target: B, watcher: OWNER, owner: OWNER, at: AT + 1,
+          sawRunning: true, lastStatus: 'running', settleState: 'waiting' },
+      ] }), 'utf8')
+      const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws },
+        log: id === A ? [{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'done' }] } } }] : [] })
+      const byId = new Map([OWNER, A, B].map((i) => [i, mkS(i)]))
+      const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+      const statuses = { [A]: 'idle', [B]: 'running' }
+      const agents = { currentInitiator: () => undefined,
+        get: (i) => (byId.has(i) ? { id: i, status: statuses[i], ctx: {}, session: byId.get(i),
+          followup() {}, steer() {}, inject() {} } : undefined) }
+      const delivered = []; const warns = []
+      const logger = { debug() {}, info() {}, warn: (m) => warns.push(String(m)) }
+      const bp = {}
+      const bc = { sessions, agents, logger,
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+        provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
+        inject: (_d, cb) => cb(bc), on: () => {} }
+      seBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+      for (const key of ['deliver', 'deliverInternal']) {
+        if (typeof bp.hobBus[key] !== 'function') continue
+        const real = bp.hobBus[key].bind(bp.hobBus)
+        bp.hobBus[key] = async (sid, text, mode) => {
+          const r = await real(sid, text, mode)
+          delivered.push({ to: sid, ok: r.ok, text })
+          return r
+        }
+      }
+      /** ⚠ 挂载前锁盘 ⇒ 清账写不进去 ⇒ A 留在盘上（正是要被 `keepPrev` 处理的那一格）。 */
+      seChmod(RT, 0o555)
+      const prov = {}
+      const ctx = { sessions, agents, logger,
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+          : k === 'hobBus' ? bp.hobBus
+            : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+        provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
+        inject: (_d, cb) => cb(ctx), on: () => {} }
+      try {
+        seOrch.apply(ctx)
+        const orch = prov.hobOrchestrator
+        const wait = (ms = 90) => new Promise((r) => setTimeout(r, ms))
+        await wait(200)
+        /** ② 解锁 ⇒ 下一趟落盘走 `persistOwnerPartition`（`groups` 非空因为有 B）⇒ `keepPrev` 生效。 */
+        seChmod(RT, 0o755)
+        await orch.reconcile('T3'); await wait(90)
+        await orch.reconcile('T5'); await wait(90)
+        const rows = (() => { try { return JSON.parse(seRf(file, 'utf8')).pending } catch { return [] } })()
+        const sent = delivered.filter((d) => String(d.text).includes('【自动回传】')).length
+        const hasA = rows.some((w) => w.target === A)
+        const hasB = rows.some((w) => w.target === B)
+        /**
+         * ⚠ 判据三条：
+         *   ① 全程只送出 1 份（**没有再发第二份**）；
+         *   ② **A 不许留在盘上**（它已办完，不是"判不出"）；
+         *   ③ **B 照旧留在盘上**（⛔ 补刀不许误伤真正在跑的那条）。
+         */
+        if (sent === 1 && !hasA && hasB) {
+          ok('SE-b ✓ **清账后不复活**（钉 §1.2）：A 已结算但清账失败 ⇒ 解锁再落盘时'
+            + '**A 不被保留**（它办完了、⛔ 不是"判不出"）、**B 照旧在盘**、**全程只送出 1 份**'
+            + `${seTag}`)
+        } else if (sent > 1) {
+          bad('SE-b 【清账后复活并被重发】那条被保留了却**又发了一份**'
+            + `：总投递 ${sent} 次（应 1）· 盘上=${JSON.stringify(rows.map((w) => ({ t: w.target, dl: w.deliveredAt })))}`
+            + ' ⇒ 这就是"同一份回执反复送达"的成因')
+        } else if (hasA) {
+          bad('SE-b 【已结算的那条被 `keepPrev` 留了下来】**A 还在盘上**'
+            + `：盘上=${JSON.stringify(rows.map((w) => ({ t: w.target, st: w.settleState, dl: w.deliveredAt })))}`
+            + ' ⇒ 下一代看到一个"没带 deliveredAt 的 unresolved" ⇒ 复活成全新派发 ⇒ 再发一份')
+        } else {
+          bad('SE-b 【误伤了真正在跑的那条】B 被剔掉了'
+            + `：盘上=${JSON.stringify(rows.map((w) => ({ t: w.target, st: w.settleState })))}`
+            + ' ⇒ 补刀只许剔"本代已结算的键"，⛔ 不许碰还在跑的那些')
+        }
+      } catch (e) {
+        bad(`SE-b 跑不起来（${String(e?.message ?? e)}）`)
+        try { seChmod(RT, 0o755) } catch { /* 恢复 */ }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // SE-c · **不登记 owner 自己**（叫醒面不许把派活方当"实施会话"）
+    // ══════════════════════════════════════════════════════════════
+    {
+      if (seWakeMod === undefined) {
+        bad('SE-c 无法加载 card-wake ⇒ 本判据失去基准（不按通过处理）')
+      } else {
+        const dw = new seWakeMod.DispatchWake({ deliver: () => Promise.resolve({ ok: true }),
+          now: () => 1792300800000 })
+        /** ⚠ 现场形态：卡 `t-mvfertx2-zrnyvc` 的 20 次执行 `sessionId` 全 = 建卡人自己。 */
+        const SELF = 'session-77d33ea8'
+        dw.register({ sessionId: SELF, via: 'taskboard-card', cardId: 't-card-self', owner: SELF })
+        const snapSelf = dw.snapshot(SELF)
+        /** ⚠ 负向对照：**别人**派给我的会话**必须照旧登记**（这道闸只挡"自己登记自己"）。 */
+        dw.register({ sessionId: 'session-real-worker', via: 'taskboard-card', cardId: 't-card-ok', owner: SELF })
+        const snapOk = dw.snapshot(SELF)
+        /** ⚠ `mine` 是 `{registered, pending}`（不是数字）—— 数的是"登记了几个"。 */
+        const selfN = snapSelf.mine?.registered
+        const okN = snapOk.mine?.registered
+        const rejected = selfN === 0
+        const readable = String(snapSelf.note ?? '').includes('派活方自己')
+        const stillWorks = okN === 1
+        if (rejected && readable && stillWorks) {
+          ok('SE-c ✓ **不登记 owner 自己**：`register({sessionId: owner, owner})` ⇒ **被拒**且留可读话；'
+            + '⚠ 负向对照：**别人派给我**的会话**照旧登记成功**（这道闸只挡"自己登记自己"，⛔ 没误伤合法登记）'
+            + `${seTag}`)
+        } else {
+          bad('SE-c 【把派活方登记成实施会话】或【误伤了合法登记】'
+            + `：自己那条 mine.registered=${selfN}（应 0）· 可读话=${readable}（应 true）`
+            + ` · 合法登记 mine.registered=${okN}（应 1）`
+            + ` · note=${JSON.stringify(String(snapSelf.note ?? '').slice(0, 120))}`
+            + ' ⇒ 登记自己 ⇒ 它自己每跑完一轮就把自己叫醒一次（现场连收 3 条「实施会话跑完」）')
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // **负向对拍**：三处各摘一处 ⇒ 对应那条必须当场不成立
+    // ══════════════════════════════════════════════════════════════
+    {
+      /** ── SE-a(反证)：把"失败清 attempt"那两行摘成空操作 ───────────────── */
+      const GUARD_A = '        delete w.deliveryAttemptAt'
+      let src = ''
+      try { src = seRf(seJ(seRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { src = '' }
+      if (!src.includes(GUARD_A)) {
+        bad('SE-a(反证) 【失去靶子】找不到"失败时删 attempt"那一行原文'
+          + `（期望：${JSON.stringify(GUARD_A.trim())}）⇒ 不按通过处理`)
+      } else {
+        const dir = seMkdt(seJ(seTmpRoot, 'mut-a-'))
+        try {
+          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true })
+          const f = seJ(dir, 'src', 'modules', 'orchestrator.ts')
+          seWf(f, seRf(f, 'utf8').replace(GUARD_A, '        void 0 /* 变异：不删 attempt */'), 'utf8')
+          try { seLink(seJ(seRoot, 'node_modules'), seJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+          const mut = await import(seP2u(seJ(dir, 'src', 'modules', 'orchestrator.ts')).href)
+          const base = seMkdt(seJ(seTmpRoot, 'mutcase-a-'))
+          const home = seJ(base, 'ledgers'); const ws = seJ(base, 'ws')
+          seMkd(seJ(ws, 'runtime'), { recursive: true })
+          const file = seJ(home, seBase(ws), 'runtime', 'orch-watches.json')
+          seMkd(seJ(home, seBase(ws), 'runtime'), { recursive: true })
+          seWf(file, JSON.stringify({ version: 1, updatedAt: 1, lost: [], handoffs: [], sessions: [],
+            pending: [seRec()] }), 'utf8')
+          const OWNER = 'session-hob'; const TGT = 'session-worker'
+          const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws },
+            log: id === TGT ? [{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'done' }] } } }] : [] })
+          const byId = new Map([OWNER, TGT].map((i) => [i, mkS(i)]))
+          const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+          const live = { [OWNER]: false, [TGT]: true }
+          const agents = { currentInitiator: () => undefined,
+            get: (i) => (live[i] === false ? undefined : (byId.has(i) ? { id: i, status: 'idle', ctx: {},
+              session: byId.get(i), followup() {}, steer() {}, inject() {} } : undefined)) }
+          const delivered = []
+          const logger = { debug() {}, info() {}, warn() {} }
+          const bp = {}
+          const bc = { sessions, agents, logger,
+            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+            provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
+            inject: (_d, cb) => cb(bc), on: () => {} }
+          seBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+          for (const key of ['deliver', 'deliverInternal']) {
+            if (typeof bp.hobBus[key] !== 'function') continue
+            const real = bp.hobBus[key].bind(bp.hobBus)
+            bp.hobBus[key] = async (sid, text, mode) => {
+              const r = await real(sid, text, mode); delivered.push({ ok: r.ok }); return r
+            }
+          }
+          const prov = {}
+          const c = { sessions, agents, logger,
+            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+              : k === 'hobBus' ? bp.hobBus
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+            provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
+            inject: (_d, cb) => cb(c), on: () => {} }
+          mut.apply(c)
+          const orchM = prov.hobOrchestrator
+          await new Promise((r) => setTimeout(r, 160))
+          live[OWNER] = true
+          for (const trig of ['T2', 'T3', 'T5']) {
+            await orchM.reconcile(trig); await new Promise((r) => setTimeout(r, 50))
+          }
+          const okCount = delivered.filter((d) => d.ok).length
+          if (okCount === 0) {
+            ok('SE-a(反证) ✓ 负向对拍：**不删 attempt** ⇒ owner 变活后仍**一次都投不出去**（0 次）'
+              + ' ⇒ SE-a 真长牙（它钉的正是"失败不许锁死成结果未知"）')
+          } else {
+            bad(`SE-a(反证) 【负向对拍失败】不删 attempt 也投成了 ${okCount} 次`
+              + ' ⇒ SE-a 测的不是"删 attempt"那一行（本判据恒真，比没有更危险）')
+          }
+        } catch (e) {
+          bad(`SE-a(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        }
+      }
+      /** ── SE-b(反证)：摘掉"保留时补上 deliveredAt"那一刀 ───────────────── */
+      const GUARD_B = '        if (settledKeep.size > 0) {'
+      /**
+       * ⚠ 变异体：把**整个 `if (settledKeep.size > 0) {` 的条件改成恒假**
+       *   ⇒ 剔除那一段**整段不执行**，而花括号配对不变（⛔ 不会留下悬空 `}`）。
+       */
+      const MUT_B = '        if (false) { /* 变异：结算掉的那条照旧被保留 */'
+      let srcB = ''
+      try { srcB = seRf(seJ(seRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { srcB = '' }
+      if (!srcB.includes(GUARD_B)) {
+        bad('SE-b(反证) 【失去靶子】找不到"本代已结算的键不许被保留"那一行原文 ⇒ 不按通过处理')
+      } else {
+        const dir = seMkdt(seJ(seTmpRoot, 'mut-b-'))
+        try {
+          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true })
+          const f = seJ(dir, 'src', 'modules', 'orchestrator.ts')
+          seWf(f, seRf(f, 'utf8').replace(GUARD_B, MUT_B), 'utf8')
+          try { seLink(seJ(seRoot, 'node_modules'), seJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+          const mut = await import(seP2u(seJ(dir, 'src', 'modules', 'orchestrator.ts')).href)
+          const base = seMkdt(seJ(seTmpRoot, 'mutcase-b-'))
+          const home = seJ(base, 'ledgers'); const ws = seJ(base, 'ws')
+          seMkd(seJ(ws, 'runtime'), { recursive: true })
+          const file = seJ(home, seBase(ws), 'runtime', 'orch-watches.json')
+          seMkd(seJ(home, seBase(ws), 'runtime'), { recursive: true })
+          /**
+           * ⚠ 造法：**内存里有一条已 deliveredAt 的 watch**，而盘上同名那条是 `unresolved`。
+           *   走一次 `flushWatches`（= 任何一次落盘）⇒ 变异体会把它留下但**不带 deliveredAt**
+           *   ⇒ 下一代读到的就是"没送过"。
+           *   判据 = **盘上那条有没有 deliveredAt**。
+           */
+          const OWNER = 'session-hob'; const TGT = 'session-worker'; const AT = 1792250000000
+          seWf(file, JSON.stringify({ version: 1, updatedAt: 1, lost: [], handoffs: [], sessions: [],
+            pending: [
+              { target: TGT, watcher: OWNER, owner: OWNER, at: AT, sawRunning: true,
+                lastStatus: 'running', settleState: 'unresolved' },
+              { target: 'session-other', watcher: OWNER, owner: OWNER, at: AT + 1, sawRunning: true,
+                lastStatus: 'running', settleState: 'waiting' },
+            ] }), 'utf8')
+          const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+          const byId = new Map([OWNER, TGT, 'session-other'].map((i) => [i, mkS(i)]))
+          const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+          const agents = { currentInitiator: () => undefined,
+            get: (i) => (byId.has(i) ? { id: i, status: 'running', ctx: {}, session: byId.get(i),
+              followup() {}, steer() {}, inject() {} } : undefined) }
+          const logger = { debug() {}, info() {}, warn() {} }
+          const bp = {}
+          const bc = { sessions, agents, logger,
+            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+            provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
+            inject: (_d, cb) => cb(bc), on: () => {} }
+          seBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+          const prov = {}
+          const c = { sessions, agents, logger,
+            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+              : k === 'hobBus' ? bp.hobBus
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+            provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
+            inject: (_d, cb) => cb(c), on: () => {} }
+          mut.apply(c)
+          const orchM = prov.hobOrchestrator
+          await new Promise((r) => setTimeout(r, 160))
+          /**
+           * ⚠ 判据取**盘上那条**：变异体若真的没补，`session-worker` 那条就**不带 deliveredAt**。
+           *   （本用例内存里那条是"别人替我写进来的已结算证据"——
+           *     用 `settle` 走一遍最真实，但这里只需要"保留时的补刀"，所以直接看保留结果。）
+           */
+          const rows = (() => { try { return JSON.parse(seRf(file, 'utf8')).pending } catch { return [] } })()
+          const worker = rows.find((w) => w.target === TGT)
+          const hasDl = worker !== undefined && typeof worker.deliveredAt === 'number'
+          /**
+           * ⚠ 变异体的期望：**没补** ⇒ `deliveredAt` 缺失 ⇒ 本判据红。
+           *   ⚠ 而若这一格里盘上那条本来就被"结算掉"了（不是保留格）⇒ 本用例不成立，
+           *     按"前置不成立"报，⛔ 不假装它长牙。
+           */
+          if (worker === undefined) {
+            note.push('SE-b(反证) ⚠ 前置不成立：变异体那一格里 `session-worker` 没被保留'
+              + '（被结算掉了）⇒ 本对拍测不到"保留时补刀"那一行')
+          } else if (!hasDl) {
+            ok('SE-b(反证) ✓ 负向对拍：**摘掉"本代已结算的键不许被保留"那一段** ⇒ '
+              + '盘上被保留的那条**不带 `deliveredAt`** ⇒ 下一代只能读成"没送过"'
+              + ' ⇒ SE-b 真长牙（⚠ 与本体用的是同一个构造：同账本里另有一条活着的 watch）')
+          } else {
+            bad('SE-b(反证) 【负向对拍失败】摘掉那一刀后盘上仍然带着 `deliveredAt`'
+              + `（worker=${JSON.stringify(worker)}）⇒ SE-b 测的不是那一行`)
+          }
+        } catch (e) {
+          bad(`SE-b(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        }
+      }
+      /** ── SE-c(反证)：放开"拒绝登记 owner 自己"那道闸 ───────────────── */
+      const GUARD_C = '    if (typeof entry.owner === \'string\' && entry.owner !== \'\' && entry.owner === id) {'
+      let srcW = ''
+      try { srcW = seRf(seJ(seRoot, 'src', 'server', 'card-wake.ts'), 'utf8') } catch { srcW = '' }
+      if (!srcW.includes(GUARD_C)) {
+        bad('SE-c(反证) 【失去靶子】找不到"拒绝登记 owner 自己"那道闸原文 ⇒ 不按通过处理')
+      } else {
+        const dir = seMkdt(seJ(seTmpRoot, 'mut-c-'))
+        try {
+          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true })
+          const f = seJ(dir, 'src', 'server', 'card-wake.ts')
+          seWf(f, seRf(f, 'utf8').replace(GUARD_C, '    if (false) { /* 变异：放开那道闸 */'), 'utf8')
+          try { seLink(seJ(seRoot, 'node_modules'), seJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+          const mW = await import(seP2u(seJ(dir, 'src', 'server', 'card-wake.ts')).href)
+          const dwM = new mW.DispatchWake({ deliver: () => Promise.resolve({ ok: true }),
+            now: () => 1792300800000 })
+          const SELF = 'session-77d33ea8'
+          dwM.register({ sessionId: SELF, via: 'taskboard-card', cardId: 't-self', owner: SELF })
+          const n = dwM.snapshot(SELF).mine?.registered
+          if (n === 1) {
+            ok('SE-c(反证) ✓ 负向对拍：**放开那道闸** ⇒ 派活方自己被登记成实施会话（mine=1）'
+              + ' ⇒ SE-c 真长牙（它钉的正是"不许把 owner 当实施方"）')
+          } else {
+            bad(`SE-c(反证) 【负向对拍失败】放开闸后仍然 mine=${n}（应 1）⇒ SE-c 测的不是那道闸`)
+          }
+        } catch (e) {
+          bad(`SE-c(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        }
+      }
+    }
+  }
+  try { seRm(seTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
 }
 
 // ── 输出 ───────────────────────────────────────────────────────────────
