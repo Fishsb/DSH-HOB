@@ -93,6 +93,56 @@ export const ORCH_STATE_VERSION = 1
 export type LostClass = 'running' | 'idle' | 'unknown'
 
 /**
+ * **一条未结算派发的结算态**（2026-10-20 · 本单 B2/B3 新增）。
+ *
+ * ⚠ ⚠ 存在的唯一理由：**「判不出」过去是终态**（判不出 ⇒ 挪进 `lost` ⇒ 再也没人看它，
+ *   见 `markLost` 的旧注释与 `FINDINGS` 的 P2）。用户要的是"回执得回来"，
+ *   而终态等于"这条永远不会有回执了"。
+ *
+ * 三档语义（⛔ 不许合并成一档、⛔ 不许把 `unresolved` 当结论）：
+ * · `waiting`     —— 还在等目标跑完（正常态；重挂成功的那条也是它）；
+ * · `unresolved`  —— **判不出**（目标状态读不到 / 会话没了）⇒ **留在 `pending` 里，
+ *                    每一轮任意触发都会再核一次**（可重入态，⛔ 不是终态）；
+ * · `stuck`       —— 重核了 K 轮（{@link STUCK_AFTER_RECHECKS}）**仍然判不出**
+ *                    ⇒ **停止自动重试**，读数里单列一档并明说"需人工裁"。
+ *
+ * ⚠ ⚠ **`unresolved` 不是"猜 owner"**（`I-1` / `I-3` 不破）：重判读的是**目标此刻的状态**
+ *   （`agents.get(target)?.status` / 看板卡终态 / 会话 log 末条），
+ *   **收件人仍然只由 `w.owner` 决定**；`owner` 缺失 ⇒ **照旧不投**，只落"无归属"那一档。
+ *   ⚠ 目标状态与 owner 是**两个不同字段** —— `I-1`/`I-3` 禁的是**猜 owner**，
+ *   ⛔ 不是"读目标状态"。⇒ 这一段必须留在代码里，否则下一个人会以为"重判 = 猜"。
+ */
+export type SettleState = 'waiting' | 'unresolved' | 'stuck'
+
+/**
+ * **凭哪条真相源结的账**（2026-10-20 · 本单 B2 新增）。
+ *
+ * ⚠ 它的唯一用途是**读数可解释**：结算发生时，读的人必须能说出
+ * "这条是**凭着什么**判成跑完的"，⛔ 不是又一个内部计数器。
+ * ⚠ 四档与三真相源 + 事件路径一一对应（⛔ 不许再添第五个含义）：
+ * · `'event'`        —— 宿主 `agent/status` 的 `running → idle` 那一跳（快路径）；
+ * · `'board'`        —— **看板卡终态**（`in_review` / `done` / `canceled`）；
+ * · `'session-log'`  —— **会话 log 最后一条 `assistant/message`**；
+ * · `'agent-status'` —— `agents.get(id).status`（⚠ **最弱**：重载后不可信 ⇒ 只作旁证）。
+ */
+export type SettleEvidence = 'event' | 'board' | 'session-log' | 'agent-status'
+
+/** 结算态的**运行时集合**（{@link SettleState} 的同源副本，供收窄时逐值判）。 */
+const SETTLE_STATES = ['waiting', 'unresolved', 'stuck'] as const
+
+/** 结算证据的**运行时集合**（{@link SettleEvidence} 的同源副本）。 */
+const SETTLE_EVIDENCES = ['event', 'board', 'session-log', 'agent-status'] as const
+
+/**
+ * **重核多少轮仍判不出 ⇒ 升 `stuck`**（`K = 3`，本单 B3）。
+ *
+ * ⚠ ⚠ 为什么必须有它：`unresolved` 是**可重入态**，若没有上限，一个永远读不到的目标
+ *   会让对账**每轮都白撞一次**（那是"无限重试"，⛔ 与本单要治的"永久丢"正好是两个极端）。
+ * ⚠ 到顶后的行为：**停止自动重试** + 读数里单列 `stuck` 一档 + **明说"需人工裁"**。
+ */
+export const STUCK_AFTER_RECHECKS = 3
+
+/**
  * 落盘的一条"未结算派发"（是 `Watch` 的可序列化子集 + 工作区归属）。
  *
  * ⚠ `lostClass` 只在**进入 `lost`** 时被写（`pending` 里的记录**没有**这个字段）——
@@ -136,6 +186,29 @@ export interface PersistedWatch {
    *     ⛔ 不许读成 `'idle'` —— 那等于替旧数据编一个它没有的结论）。
    */
   lostClass?: LostClass
+  /**
+   * ── ⚠⚠ **耐久化四件**（2026-10-20 · 本单 B2；诊断出处见 `FINDINGS` P2/W3/W4 与 `DESIGN` §4.3）──
+   *
+   * ⚠ ⚠ 为什么要落盘这四件：`pending` 现在是**唯一权威**，而重载后要接着办三件事 ——
+   *   ① 判"从 running 掉下来了吗"（`lastStatus`）· ② 结算完知道该写回哪个文件（`stateFile`）
+   *   · ③ 判不出时能证明"**真的又核过**"而不是干等着（`recheckCount` / `lastRecheckAt`）。
+   *   改前这四件只有 `lastStatus` 在内存里（{@link PersistedWatch} 无此字段），
+   *   `stateFileFor` 是内存 `Map` 且**重挂路径从不写它** ⇒ 重挂等于白挂（W3/W4）。
+   *
+   * ⚠ **全部向后兼容**：旧文件没有这些字段 ⇒ 读成 `undefined`，⛔ 不判坏、⛔ 不猜默认值。
+   *   （`settleState` 缺字段 ⇒ 调用方按 `'waiting'` 读：旧记录本来就在等，这是如实，不是猜。）
+   */
+  lastStatus?: string
+  /** 这条记录**该写回哪个运行态文件**（修 W4：重挂时也写，否则结算后盘上残留）。 */
+  stateFile?: string
+  /** 结算态三档（{@link SettleState}）；缺字段 ⇒ 调用方读成 `'waiting'`。 */
+  settleState?: SettleState
+  /** **又核了几轮**（`unresolved` 每被判一次 +1；到 {@link STUCK_AFTER_RECHECKS} ⇒ `stuck`）。 */
+  recheckCount?: number
+  /** 最近一次重核的时刻（毫秒）。 */
+  lastRecheckAt?: number
+  /** **凭哪条真相源结的账**（{@link SettleEvidence}）—— 结算时写，⛔ 只在真结算时写。 */
+  evidence?: SettleEvidence
 }
 
 /**
@@ -356,6 +429,22 @@ function asWatch(v: unknown): PersistedWatch | undefined {
   if (typeof o.lostClass === 'string' && (LOST_CLASSES as readonly string[]).includes(o.lostClass)) {
     out.lostClass = o.lostClass as LostClass
   }
+  // ── **耐久化四件**（2026-10-20 · B2）：与 `lostClass` 同一条宽容纪律 ──────────
+  //   ⚠ 逐字段判类型/判集合，判不出 ⇒ **不填**（⛔ 不许猜一个默认值）：
+  //     一个拼错的 `settleState`（如 `'unresovled'`）若放行，会漂到读数里，
+  //     表现为"说它还在重核、其实是个脏值" —— 那是把不确定性说成结论。
+  if (typeof o.lastStatus === 'string' && o.lastStatus !== '') out.lastStatus = o.lastStatus
+  if (typeof o.stateFile === 'string' && o.stateFile !== '') out.stateFile = o.stateFile
+  if (typeof o.settleState === 'string' && (SETTLE_STATES as readonly string[]).includes(o.settleState)) {
+    out.settleState = o.settleState as SettleState
+  }
+  if (typeof o.recheckCount === 'number' && Number.isFinite(o.recheckCount) && o.recheckCount >= 0) {
+    out.recheckCount = o.recheckCount
+  }
+  if (typeof o.lastRecheckAt === 'number' && Number.isFinite(o.lastRecheckAt)) out.lastRecheckAt = o.lastRecheckAt
+  if (typeof o.evidence === 'string' && (SETTLE_EVIDENCES as readonly string[]).includes(o.evidence)) {
+    out.evidence = o.evidence as SettleEvidence
+  }
   return out
 }
 
@@ -569,6 +658,16 @@ export interface MarkLostResult {
    *   再由 `writePending` 落成 `pending`（否则盘上会出现"既不在等也丢了"的悬空记录）。
    */
   reattach: PersistedWatch[]
+  /**
+   * ⚠⚠ **本次判不出、必须留在 `pending` 里再核的**（2026-10-20 · B3 新增）。
+   *
+   * ⚠ 它们是**可重入态**（`settleState: 'unresolved'`），⛔ **不是终态**：
+   *   每一轮任意触发都会再判一次，直到判出（⇒ 结算）或到顶（⇒ `stuck`）。
+   * ⚠ 改前这一档直接挪进 `lost` 就再也没有第二次机会（`FINDINGS` 的 P2）。
+   */
+  unresolved: PersistedWatch[]
+  /** 重核到顶（`recheckCount >= STUCK_AFTER_RECHECKS`）⇒ **不再自动重试**的那一档。 */
+  stuck: PersistedWatch[]
   /** 落盘后的完整状态（即使没新丢失也返回，便于调用方读计数）。 */
   state: OrchStateFile
   /** 是否真的写盘了。 */
@@ -595,23 +694,83 @@ export type TargetStatusOf = (target: string) => 'running' | 'idle' | undefined
  * · **判不出**       ⇒ `lost` + `lostClass:'unknown'`（⚠ 保守方向：不许猜"它在跑"）。
  *
  * ⚠ 这是**纯函数**（无 IO、无宿主）⇒ 机检可以拿假状态直接真跑两条路径。
+ *
+ * ── ⚠⚠ **2026-10-20 改动（本单 B3）：判不出不再判死** ────────────────────
+ *   改前三档是 `running ⇒ reattach` / `idle ⇒ lost(idle)` / **判不出 ⇒ lost(unknown)**，
+ *   而 `lost` 是**终态**（挪进去就再没人看它）⇒ 「判不出」= **这条永远不会有回执了**
+ *   （`FINDINGS` P2 / `DESIGN` §3.3 逐条证明"没有第二次机会"）。
+ *   ⇒ 现在第三档改判成 {@link classifyOutcome} 里的 `unresolved`：**留在 `pending` 里，
+ *     下一轮再核**；⛔ 不是终态、⛔ 不无限重试（到 {@link STUCK_AFTER_RECHECKS} 轮 ⇒ `stuck`）。
+ *   ⚠ ⛔ **这一改不允许"猜 owner"**：重判读的是**目标此刻的状态**，
+ *     收件人仍然只由 `w.owner` 决定（`I-1` / `I-3` 不破；详见 `SettleState` 的注释）。
  */
 export function classifyPending(
   pending: PersistedWatch[],
   statusOf?: TargetStatusOf,
-): { reattach: PersistedWatch[]; lost: PersistedWatch[] } {
+): { reattach: PersistedWatch[]; lost: PersistedWatch[]; unresolved: PersistedWatch[]; stuck: PersistedWatch[] } {
   const reattach: PersistedWatch[] = []
   const lost: PersistedWatch[] = []
+  const unresolved: PersistedWatch[] = []
+  const stuck: PersistedWatch[] = []
   for (const w of pending) {
     const st = statusOf === undefined ? undefined : statusOf(w.target)
     if (st === 'running') {
       reattach.push(w)
       continue
     }
-    // ⚠ 档位逐条写在记录上 —— 这就是"两类不许混成一个计数"的**数据面**。
-    lost.push({ ...w, lostClass: st === 'idle' ? 'idle' : 'unknown' })
+    if (st === 'idle') {
+      /**
+       * ⚠ ⚠ **"已空闲"不再当场判死 —— 先给一次结算机会**（2026-10-20 · 修 SA-a 暴露的缺口）。
+       *
+       * ── 为什么 ──────────────────────────────────────────────────────
+       *   目标 `idle` 的语义是"**它跑完了**"（`running → idle` 那一跳的终点）。
+       *   改前这里直接 `lost`（= 终态）+ 通知"结果不会再回来了" —— 而它**其实有结果**，
+       *   只是那一跳事件发生在重载之前。⇒ 用户看到的是"回执从来没回来"，
+       *   而**真相源上明明写着"跑完了"**（`FINDINGS` §3.3 列出 `idle` 那一档"永久"）。
+       *   ⇒ 现在把它**留在 `pending`** 并标 `settleState: 'unresolved'`：
+       *     对账（T1..T5）会拿**三条真相源**再核一次，**能结就结**（真投递回执）；
+       *     核不出证据才继续留到下一轮 ⇒ 到顶转 `stuck`。
+       *
+       * ⚠ ⛔ **这不是猜**：判据是**目标此刻的状态**（`idle` = 跑完了），
+       *   **收件人仍然只由 `w.owner` 决定**（`I-1`）；`owner` 缺失 ⇒ 照旧不投。
+       * ⚠ 保留 `lostClass: 'idle'` 的**语义**：真正被结算失败而落在 `lost` 的那条
+       *   仍然带这一档（`lost` 的写入路径一个字没动）。
+       */
+      unresolved.push({ ...w, lostClass: 'idle', settleState: 'unresolved', recheckCount: (w.recheckCount ?? 0) + 1, lastRecheckAt: Date.now() })
+      continue
+    }
+    /**
+     * ── **判不出** ⇒ 可重入态（B3），⛔ 不是终态 ────────────────────────
+     *   ⚠ 代数（`recheckCount`）是**这里**加的：每被判一次 +1。
+     *   ⚠ 到顶 ⇒ `stuck`（**停止自动重试**），读数里单列一档并明说"需人工裁"。
+     *   ⚠ `settleState` 只在这两条分支里写，⛔ 结算成功那条路径不写（它离开 `pending` 了）。
+     */
+    const nextCount = (w.recheckCount ?? 0) + 1
+    const atTop = nextCount >= STUCK_AFTER_RECHECKS
+    const rec: PersistedWatch = {
+      ...w,
+      settleState: atTop ? 'stuck' : 'unresolved',
+      recheckCount: nextCount,
+      lastRecheckAt: Date.now(),
+    }
+    if (atTop) {
+      /**
+       * ⚠ ⚠ **到顶 ⇒ 转 `stuck` 并进 `lost`**（2026-10-20 · B3 的上限落点）。
+       *
+       * 为什么是"进 `lost`"而不是"永远留在 `pending` 里标 stuck"：
+       *   · 用户口径：到顶后 **⛔ 不再自动重试**、读数里**明说"需人工裁"**；
+       *     留在 `pending` 里就得每轮再判"它是不是该跳过" —— 那是**另一种空转**。
+       *   · 而 `lost` 的语义正好是"**放弃等它了**"⇒ 语义对得上，
+       *     且它仍然是**可读的一档**（读数按 `settleState==='stuck'` 单列）。
+       * ⚠ ⛔ 这不是回到 P2 的死胡同：进 `lost` 的**前提是已经真核过 K 轮**
+       *   （`recheckCount` 逐轮留在记录上，⛔ 不是第一次就判死）。
+       * ⚠ `lostClass` 仍写 `'unknown'`（如实：它是"判不出"到顶的产物，⛔ 不许冒充 `idle`）。
+       */
+      lost.push({ ...rec, lostClass: 'unknown' })
+      stuck.push(rec)
+    } else unresolved.push(rec)
   }
-  return { reattach, lost }
+  return { reattach, lost, unresolved, stuck }
 }
 
 /**
@@ -644,22 +803,58 @@ export function markLost(
 ): MarkLostResult {
   const state = readOrchState(file)
   const unknown = state.pending.filter((w) => !known(w))
-  if (unknown.length === 0) return { lost: [], reattach: [], state, wrote: false }
+  if (unknown.length === 0) return { lost: [], reattach: [], unresolved: [], stuck: [], state, wrote: false }
 
-  const { reattach, lost } = classifyPending(unknown, statusOf)
+  const { reattach, lost, unresolved, stuck } = classifyPending(unknown, statusOf)
 
-  // ⚠ 仍留在 `pending` 的 = 这一代认识的 + **必须重挂**的（重挂的也要留在盘上：
-  //   否则重挂成功后一次落盘就会把它当"既不在等也没丢"抹掉 —— 那正是本批要治的形态）。
+  /**
+   * ⚠ 仍留在 `pending` 的 = 这一代认识的 + **必须重挂**的 + **判不出待重核的**（B3）。
+   *   ⚠ 最后那一摞是关键：改前它进 `lost`（终态）就再也没有第二次机会；
+   *     现在它**留在盘上**，下一轮任意触发都会再核一次（`unresolved` / `stuck` 逐条带代数）。
+   *   ⚠ 重挂的也要留在盘上：否则重挂成功后一次落盘就会把它当"既不在等也没丢"抹掉。
+   */
   const keep = new Set([
     ...state.pending.filter(known).map(watchKey),
     ...reattach.map(watchKey),
+    ...unresolved.map(watchKey),
+    /**
+     * ⚠ **到顶的那几摞不留在 `pending`**（它们已经进了 `lost` —— 见 `classifyPending`）。
+     *   ⚠ 留着会让它既在 `pending` 又在 `lost`（同一件事两个来源，读数两面都报一次）。
+     */
   ])
-  state.pending = state.pending.filter((w) => keep.has(watchKey(w)))
-  // 新的在前；超过上限就丢掉最老的（运行态，不是审计留档）。
-  state.lost = [...lost, ...state.lost].slice(0, MAX_LOST)
+  /**
+   * ⚠⚠ **保留的那几摞必须带上**新代数/结算态（B3）—— 否则 `recheckCount` 每次重核
+   *   都被旧记录盖回 0 ⇒ 永远到不了顶（= 无限重试），而 `settleState` 也永远念不出来。
+   *   ⇒ 用"有更新版本就用更新版本"合并，⛔ 不是简单 `filter`（那会把刚写的代数丢掉）。
+   */
+  const refreshed = new Map<string, PersistedWatch>()
+  for (const w of [...reattach, ...unresolved]) refreshed.set(watchKey(w), w)
+  state.pending = state.pending
+    .filter((w) => keep.has(watchKey(w)))
+    .map((w) => refreshed.get(watchKey(w)) ?? w)
+  /**
+   * ⚠⚠ **`lost` 写入按键去重**（2026-10-20 · 修 **W9**）。
+   *
+   * 改前是 `[...lost, ...state.lost]`，**没有去重** ⇒ 同一条记录被判丢两次时
+   * 盘上出现**逐字段完全相同**的两条（现场实证：`lost=26` 里有 2 条是同一条，
+   * 见 `FINDINGS` §2.1 / `DESIGN` §3.5）⇒ 读数虚高 + `MAX_LOST` 提前截断**真**记录。
+   *
+   * ⚠ 去重键 = {@link watchKey}（`target@at`）—— 与 `pending` 那一侧**同一个键**，
+   *   ⛔ 不另立"保留策略"（两处键不一致正是本病的成因）。
+   * ⚠ 新的在前；超过上限就丢掉最老的（运行态，不是审计留档）。
+   */
+  const seenLost = new Set<string>()
+  const mergedLost: PersistedWatch[] = []
+  for (const w of [...lost, ...state.lost]) {
+    const k = watchKey(w)
+    if (seenLost.has(k)) continue
+    seenLost.add(k)
+    mergedLost.push(w)
+  }
+  state.lost = mergedLost.slice(0, MAX_LOST)
   if (lost.length > 0) state.lostAt = Date.now()
   state.updatedAt = Date.now()
-  return { lost, reattach, state, wrote: writeOrchState(file, state) }
+  return { lost, reattach, unresolved, stuck, state, wrote: writeOrchState(file, state) }
 }
 
 /**
@@ -676,6 +871,101 @@ export function countLostByClass(lost: readonly PersistedWatch[]): Record<LostCl
   for (const w of lost) {
     const c: LostClass = w.lostClass === 'running' || w.lostClass === 'idle' ? w.lostClass : 'unknown'
     out[c] += 1
+  }
+  return out
+}
+
+/**
+ * **T5 · 有条件的一次性复查的退避梯度**（2026-10-20 · 本单 B5 新增）。
+ *
+ * ⚠ ⚠ **口径必须说清，因为用户明确否掉了"常驻定时器空转"**：
+ *   · 它**不是周期轮询** —— **没有待办时不存在任何定时器**（武装条件 = 盘上还有
+ *     `waiting` / `unresolved` 记录；解除条件 = **pending 清空当场解除**）；
+ *   · 它**不是无条件常转** —— 每一轮只排**一个**一次性 `setTimeout`（`unref`），
+ *     跑完看账，账还没平才排下一次；
+ *   · 它**必须有上限** —— 到 {@link STUCK_AFTER_RECHECKS} 后记录升 `stuck`，
+ *     读数里**明说"不再自动重试，需人工裁"**。
+ * ⇒ 完全空闲时（没有在等回传的派发）本模块**一个定时器都不存在**。
+ */
+export const RECHECK_BACKOFF_MS = [15_000, 60_000, 300_000] as const
+
+/**
+ * 选**这一次**一次性复查该等多久（纯函数，⛔ 无 IO、⛔ 无定时器 —— 便于机检真跑）。
+ *
+ * @param armed - 这次要不要武装（= 盘上还有 `waiting` / `unresolved`）。
+ * @param round - 已经排过第几次（0 起）。超出梯度长度 ⇒ 用最后一档（**封顶**，⛔ 不无限拉长）。
+ * @returns 毫秒；`undefined` = **不武装**（本次一个定时器都不排）。
+ *   ⚠ `armed === false` ⇒ 必须返回 `undefined`：**"没有待办 ⇒ 没有定时器"** 这一条
+ *     是用户口径的硬要求，⛔ 不许退化成"定个很长的周期"。
+ */
+export function nextRecheckDelay(armed: boolean, round: number): number | undefined {
+  if (!armed) return undefined
+  const i = Number.isFinite(round) && round > 0 ? Math.floor(round) : 0
+  return RECHECK_BACKOFF_MS[Math.min(i, RECHECK_BACKOFF_MS.length - 1)]
+}
+
+/**
+ * 判断"**盘上还有没有未结算的**"（T5 的武装判据，纯函数）。
+ *
+ * ⚠ ⚠ 为什么`stuck` **不算**待办：`stuck` 的语义就是"不再自动重试，等人工裁"
+ *   ⇒ 若把它算成待办，定时器就会**为一个已经放弃的记录永远转下去**（= 空转，用户否掉的那档）。
+ * ⇒ 只认 `waiting`（含缺字段的旧记录：它本来就在等）与 `unresolved`（可重入态）。
+ */
+export function hasUnsettled(pending: readonly PersistedWatch[]): boolean {
+  return pending.some((w) => {
+    const st = w.settleState ?? 'waiting'
+    return st === 'waiting' || st === 'unresolved'
+  })
+}
+
+/**
+ * 把 `pending` 按**结算态**分档计数（B3 / B4 的读数面，纯函数）。
+ *
+ * ⚠ ⚠ 它是**唯一**的分档实现点：⛔ 不许在渲染层再写一份 `filter`（两处各写必然漂）。
+ */
+export function countBySettleState(
+  pending: readonly PersistedWatch[],
+): Record<SettleState, number> {
+  const out: Record<SettleState, number> = { waiting: 0, unresolved: 0, stuck: 0 }
+  for (const w of pending) {
+    const st: SettleState = w.settleState === 'unresolved' || w.settleState === 'stuck'
+      ? w.settleState
+      : 'waiting'
+    out[st] += 1
+  }
+  return out
+}
+
+/**
+ * 把**同一个账本文件里的** `pending` 与"我这一片"合并（2026-10-20 · 修 **P1**）。
+ *
+ * ── 它治的缺陷（`FINDINGS` 的 P1，本单最贵的一条）──────────────────────────
+ *   改前 `persistOwnerPartition` 的 `others` 过滤条件是
+ *   `prev.pending.filter(w => (w.owner ?? '') !== owner)` —— 它保留的是"**别人的**"，
+ *   而 **同一个 owner 名下先前那条 pending 被排除在外** ⇒
+ *   **每派一条活，就把同 owner 先前那条从盘上静默删掉**（连 `lost` 都不进）。
+ *   现场实证：`57893e5d` 派完下一条之后从 `pending` 消失，且从未出现在 `lost` 里。
+ *
+ * ── 判据（⚠ 一处实现，两个写入路径共用 —— ⛔ 不许各写一份）──────────────
+ *   **按记录身份**（{@link watchKey} = `target@at`）去重，⛔ **不按 owner 一刀切**：
+ *   · `mine` 里出现的键 ⇒ 用 `mine` 的那一条（它是最新的写法）；
+ *   · 其余（`prev` 里有、`mine` 里没有）⇒ **原样保留**（不管它属于谁）。
+ *   ⇒ 语义与 `flushWatches` 的"全量写"**同构**：两边都只是"把我知道的那些放上去"，
+ *     差别只在"我知道哪些"，⛔ 不在"要不要保留同一个人的其它记录"。
+ *   ⚠ ⛔ 不引入"保留策略"这类需要长期维护的额外规则 —— 两处写法不一致正是本病的成因。
+ *
+ * @param prev - 盘上现有的 `pending`（**写之前读回**的那一份）。
+ * @param mine - 本次要写上去的那一片（按 `watchKey` 去重）。
+ */
+export function mergePendingByIdentity(
+  prev: readonly PersistedWatch[],
+  mine: readonly PersistedWatch[],
+): PersistedWatch[] {
+  const mineKeys = new Set(mine.map(watchKey))
+  const out: PersistedWatch[] = [...mine]
+  for (const w of prev) {
+    if (mineKeys.has(watchKey(w))) continue
+    out.push(w)
   }
   return out
 }

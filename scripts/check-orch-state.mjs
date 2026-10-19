@@ -1637,7 +1637,19 @@ const orchCode = stripComments(orchSrc)
               return Array.isArray(o?.lost) ? o.lost : []
             } catch { return [] }
           }
-          return { orch, status: s, rendered, wsDir, runtimeDir, now, readLostFromDisk }
+          /**
+           * ⚠ **盘上 `pending`**（2026-10-20 · B3 新增）：`unresolved` / `stuck` 这两档
+           *   **只活在盘上**（内存里没有对应 watch）⇒ 判"判不出是不是非终态"必须直接读盘。
+           *   ⚠ 与 `readLostFromDisk` 同一个读法、⛔ 不另写一份解析。
+           */
+          const readPendingFromDisk = () => {
+            try {
+              const raw = readFileSync(join(runtimeDir, 'orch-watches.json'), 'utf8')
+              const o = JSON.parse(raw)
+              return Array.isArray(o?.pending) ? o.pending : []
+            } catch { return [] }
+          }
+          return { orch, status: s, rendered, wsDir, runtimeDir, now, readLostFromDisk, readPendingFromDisk }
         }
 
         /**
@@ -1703,15 +1715,37 @@ const orchCode = stripComments(orchSrc)
            */
           const diskLost = h.readLostFromDisk()
           const idleCount = countIdle(diskLost)
+          const diskPending = h.readPendingFromDisk().filter((w) => w.target === 'sess-idle')
+          /**
+           * ⚠⚠ **K-b 改判**（2026-10-20 · 本单 B3）。
+           *
+           * 改前：目标"已空闲"⇒ **当场判死**（挪进 `lost`，`lostClass:'idle'`）⇒ 断言 `idleCount === 1`。
+           * 现在：目标"已空闲"的语义是"**它跑完了**"⇒ 先给**一次结算机会**
+           *   （留在 `pending`、`settleState:'unresolved'`，由真相源再核一次）。
+           *   ⚠ **这不是放宽**，是加严：本条现在除了"⛔ 不重挂"，
+           *     还额外要求"**它没有被静默判死**" —— 要么结算掉（离开 pending），
+           *     要么留下**可重核**的具名档（`settleState==='unresolved'` 且 `recheckCount>=1`）。
+           *   ⚠ 改前那一版落在 `lost` 里是**终态**：`FINDINGS` §3.3 已证它"永远不会被再核"。
+           */
+          const settledAway = diskPending.length === 0 && !diskLost.some((w) => w.target === 'sess-idle')
+          const keptRecheckable = diskPending.length === 1
+            && diskPending[0].settleState === 'unresolved'
+            && typeof diskPending[0].recheckCount === 'number' && diskPending[0].recheckCount >= 1
           if (reattached) {
             bad('K-b 【必须不重挂】目标**已空闲**却被重新挂上 —— 这会留一个永不结算的 watch'
               + '（命中"同目标至多一条未结算"闸门 ⇒ 该会话永久不能再派）')
-          } else if (idleCount !== 1) {
-            bad(`K-b 已空闲的那条未按档位记成 lost：盘上 lostClass=idle 的条数=${JSON.stringify(idleCount)}`
-              + `（期望 1），盘上 lost=${JSON.stringify(h.readLostFromDisk())}`)
+          } else if (!settledAway && !keptRecheckable) {
+            bad('K-b 已空闲的那条**既没结算、也没留下可重核的具名档**'
+              + `：盘上 lostClass=idle 的条数=${JSON.stringify(idleCount)} · 盘上 lost=${JSON.stringify(diskLost)}`
+              + ` · 盘上 pending 里那条=${JSON.stringify(diskPending)}`
+              + '（期望：要么已结算离开 pending，要么仍在 pending 且 settleState=unresolved、recheckCount>=1）')
           } else {
-            ok('K-b ✓ 反向：目标**已空闲** ⇒ **不重挂**（watches 为空）+ 判 lost **且档位=idle**'
-              + '（档位从盘上 `lost[].lostClass` 读回验证）')
+            ok('K-b ✓ 反向：目标**已空闲** ⇒ **不重挂**（watches 为空），'
+              + (settledAway
+                ? '且该条**已结算离开 pending**（真投递过回执）'
+                : `且该条**留在 pending 可重核**（settleState=${diskPending[0].settleState}`
+                  + ` · recheckCount=${diskPending[0].recheckCount}）⇒ ⛔ 没有被静默判死`)
+              + ' —— 改前它落在 `lost` 里是**终态**（永远不会被再核）')
           }
         }
 
@@ -1737,17 +1771,54 @@ const orchCode = stripComments(orchSrc)
             idle: countIdle(diskLost),
             unknown: diskLost.filter((w) => w?.lostClass !== 'running' && w?.lostClass !== 'idle').length,
           }
-          const okShape = c.running === 0 && c.idle === 1 && c.unknown === 1
+          /**
+           * ⚠⚠ **K-b2 改判**（2026-10-20 · 本单 B3：**「判不出」不再是终态**）。
+           *
+           * 改前：三档 = `reattach` / `lost(idle)` / `lost(unknown)` ⇒ 断言 `unknown === 1`。
+           * 现在：**判不出 ⇒ `unresolved`（留在 `pending` 里再核）**，⛔ 不进 `lost`
+           *   —— 这正是本单要修的那条死胡同（`FINDINGS` P2：判不出就再也没有第二次机会）。
+           * ⚠ 所以本条**不是放宽**，是**加严**：除了"已空闲那档仍落 `idle`"，
+           *   还额外要求"判不出那档**必须留在盘上可重核**（`settleState==='unresolved'`
+           *   且 `recheckCount>=1`）" —— 这条在改前**根本不存在**（旧实现直接把它扔进 lost）。
+           */
+          const diskPending = h.readPendingFromDisk()
+          const gone = diskPending.find((w) => w.target === 'sess-gone-2')
+          const goneIsRecheckable = gone !== undefined
+            && gone.settleState === 'unresolved'
+            && typeof gone.recheckCount === 'number' && gone.recheckCount >= 1
+          const goneNotInLost = !diskLost.some((w) => w.target === 'sess-gone-2')
+          /**
+           * ⚠ **"已空闲"那条的档位期望改了**（B3 同款）：它现在要么已结算离开、
+           *   要么留在 `pending` 里可重核 ⇒ `lost` 里**不该再有它**（⛔ 不再判死）。
+           *   ⚠ 判据仍钉住"**两档不许混成一个计数**"这件事：见下面状态行那两条。
+           */
+          const idleGone = !diskLost.some((w) => w.target === 'sess-idle-2')
+          const okShape = c.running === 0 && c.unknown === 0 && idleGone
+            && goneIsRecheckable && goneNotInLost
           // 状态行原文里必须**分开出现**两档的说明（且都不是那个总数行的复述）
           const txt = String(h.rendered)
+          /**
+           * ⚠ **状态行那两档的判据同步改了**（B3）：
+           *   · "已跑完、回传没回来"那一行只在 **`lost` 里真有 idle 档**时出现；
+           *     现在 idle 那条不再进 `lost` ⇒ 该行**不该出现**，而
+           *   · **"判不出（目标状态读不到）"必须出现**（`unresolved` 单列一档，且明写"仍在自动重核"）。
+           * ⚠ 这是**加严**：判据从"两行都在"变成"该在的那行在、不该在的那行不在"
+           *   （多了"⛔ 不许虚报已判死"这一半）。
+           */
           const hasIdleLine = txt.includes('已跑完、回传没回来')
           const hasUnknownLine = txt.includes('判不出（目标状态读不到）')
+          const saysRechecking = txt.includes('仍在自动重核')
           if (!okShape) {
-            bad(`K-b2 档位计数不对：实测 ${JSON.stringify(c)}，期望 {running:0, idle:1, unknown:1}`
-              + '（仍在跑的重挂成功 ⇒ 不进 lost；已空闲 ⇒ idle；会话没了 ⇒ unknown）')
-          } else if (!hasIdleLine || !hasUnknownLine) {
+            bad(`K-b2 档位计数不对：实测 lost=${JSON.stringify(c)}`
+              + ` · 判不出那条在盘上可重核=${goneIsRecheckable}（settleState=${gone?.settleState}`
+              + ` recheckCount=${gone?.recheckCount}）· ⛔ 不在 lost=${goneNotInLost}`
+              + '（期望 {running:0, idle:1, unknown:0} + 判不出那条留 pending 且 settleState=unresolved）'
+              + '（仍在跑的重挂成功 ⇒ 不进 lost；已空闲 ⇒ idle；**判不出 ⇒ unresolved 留着再核，⛔ 不是终态**）')
+          } else if (hasIdleLine || !hasUnknownLine || !saysRechecking) {
             bad('K-b2 状态行**没有分开报**两档（用户要求"两类不许混成一个计数"）'
-              + `：idle 行在位=${hasIdleLine} · unknown 行在位=${hasUnknownLine}`)
+              + `：idle 行在位=${hasIdleLine}（应 false —— 这条现在不是终态，⛔ 不许虚报已判死）`
+              + ` · 判不出的行在位=${hasUnknownLine}（应 true）`
+              + ` · 明写"仍在自动重核"=${saysRechecking}（应 true）`)
           } else {
             ok('K-b2 ✓ 两档在状态行里**分开可辨**（idle 与 unknown 各一行、各有追回提示；'
               + 'running 异常档另有独立行）· 实测计数 ' + JSON.stringify(c))
@@ -2590,7 +2661,13 @@ const orchCode = stripComments(orchSrc)
             await w.observe('session-mine', 'running')      // 先让它真在跑
             const blank = await w.observe('session-mine', undefined)
             const empty = await w.observe('session-mine', '')
-            const st = w.snapshot()
+            /**
+             * ⚠⚠ **`snapshot()` 现在必须带 owner**（2026-10-20 · 本单 B4 的破坏性改签名）。
+             *   改前它无参、报进程级合计 ⇒ 同一工作区两个 Hob 读到对方的计数（**W6**）。
+             *   ⇒ 本夹具的记录 owner 是 `session-hob`，所以这里传它；
+             *     ⚠ 传别的/不传都会被**正确地**读成"我的 = 0"（那正是隔离生效，不是缺陷）。
+             */
+            const st = w.snapshot('session-hob')
             const isUndecidable = blank === 'undecidable' && empty === 'undecidable'
             const saidOut = typeof st.undecidableWhy === 'string' && st.undecidableWhy.includes('读不到')
             const notWoke = sent.length === 0
@@ -2754,7 +2831,8 @@ const orchCode = stripComments(orchSrc)
             })
             await cw.handleFrame('change', firingFrame)
             await new Promise((r) => setTimeout(r, 20))   // 让 onFiring 的异步登记落地
-            const registeredCount = dw.snapshot().registered
+            /** ⚠ `snapshot()` 必须带 owner（B4）：本夹具登记时给的 owner 是 `session-hob`。 */
+            const registeredCount = dw.snapshot('session-hob').registered
             // 现在喂"会话状态变化"（真实实例里 agent/status 送来的那一对）
             await dw.observe('session-exec-1', 'running')
             const r = await dw.observe('session-exec-1', 'idle')
@@ -3873,12 +3951,22 @@ const orchCode = stripComments(orchSrc)
                 const mutPathC = join(root, 'src', 'modules', `orchestrator.mutc-${process.pid}-${Date.now()}.ts`)
                 try {
                   const srcC = rf(join(root, 'src', 'modules', 'orchestrator.ts'), 'utf8')
-                  const GUARDC = "const others = prev.pending.filter((w) => (w.owner ?? '') !== owner)"
+                  /**
+                   * ⚠ **靶点已随 P1 的修法换了**（2026-10-20 · 本单 B1）。
+                   *   改前锚的是 `const others = prev.pending.filter((w) => (w.owner ?? '') !== owner)`
+                   *   —— 那一行**本身就是 P1 的病灶**（它把同 owner 的其它记录一起排除）。
+                   *   ⇒ 现在锚"保留别人那一片"的那条判据（`keepPrev`），把它变异成**空**，
+                   *     语义上仍等于"整张表覆盖 / 只留我这一条"（旧的写全部形态）。
+                   *   ⚠ 判据**方向不变**：变异之后 S-C 必须当场坏掉。
+                   */
+                  const GUARDC = "const keepPrev = prev.pending.filter((w) => !mineKeys.has(watchKey(w))"
                   if (!srcC.includes(GUARDC)) {
-                    bad('S-C(反证) 【失去靶子】找不到"保留别人的"那一行原文'
-                      + `（期望：${JSON.stringify(GUARDC)}）⇒ 判据已对不上实现，不按通过处理`)
+                    bad('S-C(反证) 【失去靶子】找不到"保留别人那一片"的那段原文'
+                      + `（期望含：${JSON.stringify(GUARDC)}）⇒ 判据已对不上实现，不按通过处理`)
                   } else {
-                    wf(mutPathC, srcC.replace(GUARDC, 'const others = [] /* 变异：整张表覆盖 = 旧的写全部 */'), 'utf8')
+                    // ⚠ 变异 = 把 keepPrev 的过滤结果整个置空（= 整张表覆盖，旧的写全部形态）
+                    wf(mutPathC, srcC.replace(GUARDC,
+                      'const keepPrev = [] || prev.pending.filter((w) => !mineKeys.has(watchKey(w))'), 'utf8')
                     const mutC = await import(p2u(mutPathC).href)
                     // 同一招：造现场 → 两个 owner 各派一个 → 读**同一本账**
                     const baseC = mkdt(join(sRoot, 'case-mutc-'))
@@ -4049,6 +4137,830 @@ const orchCode = stripComments(orchSrc)
         }
       } finally {
         try { rm(sRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+      }
+    }
+  }
+}
+
+// ── SA. **回执链路的结算收口 / 耐久化 / 非终态 / 分区读数**（2026-10-20 · 本单 B1–B5）──
+//
+// ⚠ ⚠ **本组的编号说明**：任务书写"建议 S 组"，但本文件**已有一个 S 组**
+//   （归属绑定与跨工作区隔离，2026-10-19）⇒ 本组改号 **SA**，⛔ 不覆盖既有 S 组。
+//
+// ⚠ **本组守的是哪条缺陷**（用户两次点名的那件事）：Hob 派活 ⇒ 对方跑完、交了报告、
+//   提交了代码，而**回执从来没回到 Hob 手里**（`已回传：0 次` 连续多次）。
+//   `FINDINGS` 已用代码 + 盘上读数双证五条病灶：**P1**（同 owner 连续派发互相覆盖）、
+//   **P2**（判不出 = 终态，再无第二次机会）、**W3**（重挂不写 `lastStatus` ⇒ 白挂）、
+//   **W4**（重挂不写落点 ⇒ 结算后盘上残留）、**W9**（`lost` 无去重）。
+//
+// ⚠ ⚠ **七条缺一条都算没修**（任务书 §3；每条都配**负向对拍**，⛔ 不许改成恒真跳过检查）：
+//   · **SA-a 不静默**：目标已 idle 且 `sawRunning` ⇒ **必有一次结算尝试被记录**
+//     （成功 ⇒ 离开 `pending`；失败 ⇒ 留 `error` / 具名档）；
+//   · **SA-b 重挂可结算**：`reattach` 条 + 一次 `idle`（`before==='running'`）
+//     ⇒ **必须**离开 `pending`（**钉 W3**：改前重挂白挂）；
+//   · **SA-c 重挂可落盘**：同上，查**文件** ⇒ 该 target 不在 `pending`（**钉 W4**）；
+//   · **SA-d 判不出非终态**：喂 `undefined` 两代 ⇒ 第二代**必须再判一次**
+//     （`recheckCount ≥ 1`，且它**仍在 `pending`**，⛔ 不在 `lost`）（**钉 P2**）；
+//   · **SA-e `lost` 无重复**：同键判丢两次 ⇒ `lost` 只有一条（**钉 W9**）；
+//   · **SA-f 同 owner 连续派发不互相覆盖**：两次 `dispatch`（同 owner、不同 target）
+//     ⇒ 盘上 `pending` = **2 条**（**钉 P1**，本单最便宜的验收点）；
+//   · **SA-g 读数三档互斥**：`我的` + `判不出` + `他人` **覆盖**全部登记，⛔ 三档有交集（**钉 W6**）。
+//
+// ⚠ ⚠ **"先写红、再改实现、再看变绿"的证据怎么落到盘上**：
+//   本组接受 `HOB_SA_ROOT`（环境变量）指到**另一份源码树** ⇒ 用它把**改前那一版**
+//   （`git show HEAD:…` 重建出来的树，落在账本区 `tmp/` 下）跑同一组断言，
+//   就能**当场复现"改前必红"**（读数见 REPORT）。
+//   ⚠ 默认根 = 本仓库（= 改后那一版，必须**全绿**）。
+{
+  const { mkdtempSync: saMkdt, mkdirSync: saMkd, writeFileSync: saWf,
+    readFileSync: saRf, rmSync: saRm, readdirSync: saRd } = await import('node:fs')
+  const { tmpdir: saTmp } = await import('node:os')
+  const { basename: saBase } = await import('node:path')
+  const { pathToFileURL: saP2u } = await import('node:url')
+
+  /**
+   * ⚠ **被测源码树的根**：
+   *   · 缺省 = 本仓库（改后那一版 ⇒ 必须全绿）；
+   *   · `HOB_SA_ROOT=<另一棵树>` ⇒ 拿**改前那一版**跑同一组断言（⇒ 必须见红，作为"先写红"的证据）。
+   */
+  const saRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT
+    : root
+  const saTag = saRoot === root ? '' : `（源码树=${saRoot}）`
+
+  let saOrch
+  let saBus
+  try {
+    saOrch = await import(saP2u(join(saRoot, 'src', 'modules', 'orchestrator.ts')).href)
+    saBus = await import(saP2u(join(saRoot, 'src', 'modules', 'bus.ts')).href)
+  } catch (e) {
+    bad(`SA 无法加载 orchestrator / bus${saTag}（${String(e?.message ?? e)}）`
+      + ' ⇒ 回执链路那一族失去基准（不按通过处理）')
+  }
+
+  if (saOrch !== undefined && saBus !== undefined) {
+    let saRootTmp
+    try { saRootTmp = saMkdt(join(saTmp(), 'hob-sacheck-')) } catch (e) {
+      bad(`SA 造不出临时现场（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+    }
+
+    if (saRootTmp !== undefined) {
+      /**
+       * 造一个最小宿主（**真 apply + 假会话/假投递**）。
+       *
+       * ⚠ 与 S 组同款：⛔ 不碰真会话、⛔ 不碰真账本；临时根建在系统临时目录、**跑完即删**
+       *   （沿用本文件既有 `tmpdir()` 口径，与该族其它组一致）。
+       *
+       * @param opts.pending - 预置到运行态文件里的 `pending`（= "上一代留下的"）。
+       * @param opts.statuses - 目标 → `'running' | 'idle' | undefined`（`undefined` = 判不出）。
+       * @param opts.logOf - 会话 id → 会话的 `log`（用来造"跑完了"的次硬证据）。
+       * @param opts.owner - 派活方（默认 `hob`）。
+       */
+      const saMount = async (opts = {}) => {
+        const base = saMkdt(join(saRootTmp, 'case-'))
+        const home = join(base, 'ledgers')
+        saMkd(home, { recursive: true })
+        const ws = join(base, 'ws')
+        saMkd(join(ws, 'runtime'), { recursive: true })
+        const file = join(home, saBase(ws), 'runtime', 'orch-watches.json')
+        saMkd(join(home, saBase(ws), 'runtime'), { recursive: true })
+        if (opts.pending !== undefined) {
+          saWf(file, JSON.stringify({
+            version: 1, updatedAt: 1, handoffs: [], lost: opts.lost ?? [],
+            sessions: opts.sessions ?? [],
+            pending: opts.pending,
+          }, null, 2), 'utf8')
+        }
+
+        const owner = opts.owner ?? 'hob'
+        /** 会话表：派活方 + 各个目标（**都活着**，否则 `deliver` 会拒投）。 */
+        const ids = new Set([owner, ...Object.keys(opts.statuses ?? {})])
+        const mkSession = (id) => ({
+          id,
+          header: { agentPreset: 'standard', cwd: ws },
+          log: Array.isArray(opts.logOf?.[id]) ? opts.logOf[id] : [],
+        })
+        const byId = new Map([...ids].map((id) => [id, mkSession(id)]))
+        const sessions = {
+          get: (id) => byId.get(id),
+          list: () => [...byId.values()],
+          flush: async () => true,
+        }
+        const agents = {
+          currentInitiator: () => undefined,
+          get: (id) => {
+            if (!byId.has(id)) return undefined
+            /**
+             * ⚠ `status === undefined` ⇒ 返回 `{ status: undefined }`（= **判不出那一档**：
+             *   会话在、状态读不到）。⚠ 与"会话没了"（返回 `undefined`）**分开造**，
+             *   因为它们是两种不同的判不出（任务书 §2.3 的三条真相源）。
+             */
+            const st = opts.statuses?.[id]
+            return {
+              id, status: st, ctx: {}, session: byId.get(id),
+              followup: () => {}, steer: () => {}, inject: () => {},
+            }
+          },
+        }
+        const delivered = []
+        const logger = { debug() {}, info() {}, warn() {}, error() {} }
+
+        // 首先装真 bus（`dispatch` / `settle` 都走 `bus.deliver`）
+        const busProvided = {}
+        const busCtx = {
+          sessions, agents, logger,
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+          provide: (k, v) => { busProvided[k] = v },
+          effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
+          inject: (_d, cb) => cb(busCtx),
+          on: () => {},
+        }
+        saBus.apply(busCtx, {
+          spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }),
+        })
+        const bus = busProvided.hobBus
+        // ⚠ 记录每一次真投递（判"回执真的回去了"要用）
+        const realDeliver = bus?.deliver?.bind(bus)
+        if (bus !== undefined && typeof realDeliver === 'function') {
+          bus.deliver = async (sid, text, mode) => {
+            delivered.push({ to: sid, text })
+            return await realDeliver(sid, text, mode)
+          }
+        }
+
+        // 再装真 orchestrator
+        const provided = {}
+        /** ⚠ 收下 `agent/status` 的处理器 —— **本组的核心手段**（喂事件用的就是它）。 */
+        const handlers = {}
+        const ctx = {
+          sessions, agents, logger,
+          get: (k) => (k === 'sessions' ? sessions
+            : k === 'agents' ? agents
+              : k === 'hobBus' ? bus
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                  : undefined),
+          provide: (k, v) => { provided[k] = v },
+          effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
+          inject: (_d, cb) => cb(ctx),
+          on: (ev, fn) => { handlers[ev] = fn; return () => { delete handlers[ev] } },
+        }
+        saOrch.apply(ctx)
+        const orch = provided.hobOrchestrator
+        /** 喂一次 `agent/status`（真实现的事件入口）。 */
+        const emitStatus = (id, status) => {
+          const fn = handlers['agent/status']
+          if (typeof fn !== 'function') return
+          fn({ agent: { id }, status })
+        }
+        /** 等微任务/异步落盘跑完（`settle` 是 async 的）。 */
+        const settleAsync = async (ms = 30) => { await new Promise((r) => setTimeout(r, ms)) }
+        const readState = () => {
+          try { return JSON.parse(saRf(file, 'utf8')) } catch { return undefined }
+        }
+        const pendingOnDisk = () => {
+          const st = readState()
+          return Array.isArray(st?.pending) ? st.pending : []
+        }
+        const lostOnDisk = () => {
+          const st = readState()
+          return Array.isArray(st?.lost) ? st.lost : []
+        }
+        /**
+         * ⚠ `dispatch` 只在**自派**时才拒绝：目标必须 ≠ 派活方。
+         *   本夹具里"派活方"就是 `owner`，目标是别的 id ⇒ 合法。
+         */
+        return {
+          orch, bus, ws, file, owner, byId, delivered, handlers,
+          emitStatus, settleAsync, readState, pendingOnDisk, lostOnDisk,
+          sendAs: (execId) => ({ agent: { id: execId, session: { header: { cwd: ws } } } }),
+        }
+      }
+
+      /** 一条合成 pending 记录（形状按 `PersistedWatch`）。 */
+      const rec = (over) => ({
+        target: 'sess-target', watcher: 'hob', owner: 'hob', at: 1792250000000,
+        sawRunning: true, ...over,
+      })
+      /** 一条"助手说完了"的 log 条目（次硬真相源：`session-log`）。 */
+      const assistantLog = [{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'done' }] } } }]
+
+      /**
+       * ── ⚠⚠ **负向对拍（SA-x）**：逐条证明"把实现改坏 ⇒ 对应断言当场变红" ──────────
+       *
+       * ⚠ 判据（任务书 §3 原文）：**每条都要做负向对拍**（变异必须走到判红那一支，
+       *   ⛔ 不许改成恒真让它跳过检查）。
+       *
+       * ⚠ 造法：把**改后那一版**源码里的靶点文本替换成"坏实现"，落到本组临时目录里
+       *   import 成变异体，再喂**同一段**场景 ⇒ 断言必须**不成立**。
+       *   ⚠ ⛔ 不修改盘上任何源文件（变异体只在 `mkdtemp` 里活，跑完即删）。
+       */
+      /**
+       * 造一个**变异体源码树**（整棵 `src` 复制到临时目录，只替换靶点文件里的一处文本）。
+       *
+       * ⚠ 为什么复制整棵树而不是软链：变异后的文件必须与**兄弟模块**在同一棵树里
+       *   （相对 import 才解析得对），而软链会让"覆盖那一个文件"写回原树（⛔ 绝不能碰盘上源文件）。
+       */
+      const saMutTree = async (relPath, mutate) => {
+        const { cpSync } = await import('node:fs')
+        const dir = saMkdt(join(saRootTmp, 'mut-'))
+        cpSync(join(saRoot, 'src'), join(dir, 'src'), { recursive: true })
+        const f = join(dir, relPath)
+        const src = saRf(f, 'utf8')
+        const next = mutate(src)
+        if (next === src) return { dir: undefined, why: '变异没有生效（靶点文本未匹配）' }
+        saWf(f, next, 'utf8')
+        try {
+          const { symlinkSync } = await import('node:fs')
+          symlinkSync(join(saRoot, 'node_modules'), join(dir, 'node_modules'), 'dir')
+        } catch { /* 已有/不可建 ⇒ 后面 import 会当场报错并被判红 */ }
+        return { dir, why: '' }
+      }
+
+      try {
+        // ── SA-f ⭐⭐ **同 owner 连续派发不互相覆盖**（钉 **P1**；本单最便宜的验收点）──
+        //
+        //   ⚠ 病灶原文（`FINDINGS` P1）：`persistOwnerPartition` 的 `others` 过滤把
+        //     **同一 owner 的其它记录**也排除了 ⇒ 每派一条活就把上一条从盘上静默删掉。
+        //   ⚠ 判据（任务书原文）：连续两次 `dispatch`（同 owner、**不同 target**）
+        //     ⇒ 盘上 `pending` 必须是 **2 条**，⛔ 不是 1 条。
+        {
+          const h = await saMount({
+            statuses: { 'target-one': 'running', 'target-two': 'running' },
+          })
+          const r1 = await h.orch.dispatch('target-one', 'do one', { self: 'hob' })
+          await h.settleAsync(5)
+          const after1 = h.pendingOnDisk().map((w) => w.target)
+          const r2 = await h.orch.dispatch('target-two', 'do two', { self: 'hob' })
+          await h.settleAsync(5)
+          const after2 = h.pendingOnDisk().map((w) => w.target).sort()
+          const bothOK = r1?.ok === true && r2?.ok === true
+          if (!bothOK) {
+            bad(`SA-f 两次 dispatch 没都成功（${JSON.stringify({ r1, r2 })}）⇒ 本断言失去基准`)
+          } else if (after2.length !== 2) {
+            bad('SA-f 【同 owner 连续派发不许互相覆盖】**先前那条从盘上消失了**（= P1 复现）'
+              + `：第一条后 pending=${JSON.stringify(after1)}`
+              + ` · 第二条后 pending=${JSON.stringify(after2)}（应为 2 条：["target-one","target-two"]）`
+              + ' ⇒ 那个 target 既不在 `pending`、也不在 `lost` ⇒ **在任何读数里都彻底消失**')
+          } else {
+            ok('SA-f ✓ 同 owner 连续两次派发（不同 target）⇒ 盘上 `pending` = **2 条**'
+              + `（${JSON.stringify(after2)}）⇒ ⛔ 没有"每派一条活就丢上一条"（钉 P1）${saTag}`)
+          }
+        }
+
+        // ── SA-a ⭐ **不静默**：目标已 idle 且 `sawRunning` ⇒ 必有一次结算尝试被记录 ──
+        //
+        //   ⚠ 判据（任务书原文）：成功 ⇒ 离开 `pending`；失败 ⇒ 留 `error` 或具名档。
+        //   ⚠ 这里走**完整链路**：真 `apply` + 真 `reconcile`（T1 就绪扫描那条）+ 真 `bus.deliver`
+        //     ⇒ 对方"跑完了"这件事必须变成**一次真投递**或**一条可读的失败记录**，
+        //     ⛔ 不许"什么都没发生"（那正是"回执从来没回来"的形态）。
+        {
+          const h = await saMount({
+            pending: [rec({ target: 'sess-done', at: 1792250000000, sawRunning: true })],
+            statuses: { 'sess-done': 'idle' },
+            logOf: { 'sess-done': assistantLog },
+          })
+          // apply() 里的 T1 就绪扫描是**异步**的 ⇒ 等它跑完
+          await h.settleAsync(80)
+          const pend = h.pendingOnDisk().map((w) => w.target)
+          /**
+           * ⚠⚠ **只数"真回执"**（`【自动回传】`），⛔ 不数"丢失通知"（`【编排通知】`）。
+           *   改前把两者混着数会让本判据**假通过**（实测踩过：改前那版投出的
+           *   `【编排通知】…已经不在等` 被当成了"回执回来了"）——
+           *   那正是本单要治的形态：**回执没回来，但读数里看起来像回来了**。
+           */
+          const gotReceipt = h.delivered.filter((d) => d.to === 'hob' && String(d.text).includes('【自动回传】'))
+          const residual = h.pendingOnDisk().find((w) => w.target === 'sess-done')
+          const settled = !pend.includes('sess-done') && gotReceipt.length >= 1
+          const namedFailure = residual !== undefined
+            && (typeof residual.error === 'string' || residual.settleState === 'stuck')
+          if (settled) {
+            ok('SA-a ✓ 不静默：`pending` 里目标已 idle 且 `sawRunning` ⇒ **真的结算并投递**'
+              + `（回执 ${gotReceipt.length} 份 → ${gotReceipt[0]?.to}），该条已离开 \`pending\``
+              + `（盘上 pending=${JSON.stringify(pend)}）${saTag}`)
+          } else if (namedFailure) {
+            ok('SA-a ✓ 不静默：结算**尝试过**且留下了具名档'
+              + `（error=${JSON.stringify(residual?.error)} / settleState=${residual?.settleState}）`
+              + '⇒ ⛔ 不是"什么都没发生"')
+          } else {
+            bad('SA-a 【不静默】目标已 idle 且 `sawRunning`，但**既没结算、也没留下任何具名失败档**'
+              + `：盘上 pending=${JSON.stringify(pend)} · 回执=${gotReceipt.length} 份`
+              + ` · 残留记录=${JSON.stringify(residual)}`
+              + ' ⇒ 这正是"回执从来没回来"的形态：有记录，但没有任何一次结算尝试被记录')
+          }
+        }
+
+        // ── SA-b / SA-c ⭐⭐ **重挂可结算 + 可落盘**（钉 **W3** / **W4**）──────────
+        //
+        //   ⚠ 病灶原文：重挂条目不写 `lastStatus`（⇒ 之后的 `idle` 被
+        //     `if (before !== 'running') return` 丢掉 ⇒ **重挂白挂**）·
+        //     不写 `stateFileFor`（⇒ 结算成功后 `flushWatches` 直接 `continue`
+        //     ⇒ **盘上 pending 残留** ⇒ 下次重载再判 lost，永久循环累积）。
+        //   ⚠ 造法（**两代**）：
+        //     第一代：盘上一条 `pending`，目标 `running` ⇒ 真 `apply()` ⇒ **重挂**发生；
+        //     第二代：**喂一次 `idle`**（`before === 'running'` 由重挂写入的 `lastStatus` 保证）
+        //     ⇒ 必须结算 ⇒ **内存与盘上都离开 `pending`**。
+        {
+          const h = await saMount({
+            pending: [rec({ target: 'sess-reattach', at: 1792250000000, sawRunning: true })],
+            statuses: { 'sess-reattach': 'running' },
+            logOf: { 'sess-reattach': assistantLog },
+          })
+          await h.settleAsync(40)
+          // ① 重挂确实发生了（否则后面的断言没有靶子）
+          const reattached = (h.orch.status({ wsRoot: h.ws, self: 'hob' }).watches ?? [])
+            .some((w) => w.target === 'sess-reattach')
+          /**
+           * ── ⚠⚠ **这里刻意只喂一次 `idle`**（不先喂 `running`）──────────────────
+           *   病灶 W3 的原文是：「重挂条目不写 `lastStatus` ⇒ `before === undefined`
+           *   ⇒ `:2015` 的 `if (before !== 'running') return` 把 `idle` **丢掉**」。
+           *   ⚠ 若这里先喂一次 `running`，`lastStatus` 就被**本夹具自己**填上了，
+           *     于是**改前的实现也会通过** —— 那是把判据测成了"夹具能修 bug"（假绿）。
+           *   ⇒ 只喂 `running → idle` 里的**后半跳**：`lastStatus` 必须由**重挂那一步**填
+           *     （`classifyPending` 只在 `statusOf === 'running'` 时才重挂 ⇒ 那是直接结论，不是猜）。
+           */
+          h.emitStatus('sess-reattach', 'idle')
+          await h.settleAsync(80)
+          // ③ 内存：该条必须离开 `watches`
+          const stillWatching = (h.orch.status({ wsRoot: h.ws, self: 'hob' }).watches ?? [])
+            .some((w) => w.target === 'sess-reattach')
+          // ④ 盘：该条必须离开 `pending`
+          const diskPending = h.pendingOnDisk().map((w) => w.target)
+          /** ⚠ 同 SA-a：只数**真回执**（`【自动回传】`），⛔ 不数丢失通知。 */
+          const receipt = h.delivered.filter((d) => d.to === 'hob' && String(d.text).includes('【自动回传】'))
+          if (!reattached) {
+            bad('SA-b 【失去靶子】重载接手没有把"仍在跑"的那条重新挂上 ⇒ '
+              + 'SA-b/SA-c 测不到"重挂之后还能不能结算"（不按通过处理）')
+          } else if (stillWatching) {
+            bad('SA-b 【重挂可结算：钉 W3】**重挂的那条收到 `running → idle` 后仍留在 \`在等回传\`**'
+              + `：watches 仍含 sess-reattach · 回执=${receipt.length} 份`
+              + ' ⇒ 重挂条目没有 `lastStatus`（或在内存里没重建）⇒ 那一跳 `idle` 被 `before !== \'running\'` 丢掉'
+              + ' ⇒ **重挂白挂**（回执永远不回来）')
+          } else if (receipt.length === 0) {
+            bad('SA-b 【重挂可结算】该条离开了内存，但**并没有真的投递回执**'
+              + `（回执=0 份）⇒ 那不是"结算"，是"静默删掉"`)
+          } else {
+            ok('SA-b ✓ **重挂可结算**（钉 W3）：重挂的那条收到 `running → idle` ⇒ '
+              + '**离开「在等回传」** 且**真投递了回执**'
+              + `（${receipt.length} 份 → ${receipt[0]?.to}）${saTag}`)
+          }
+          // ── SA-c：查**文件**（W4）
+          if (diskPending.includes('sess-reattach')) {
+            bad('SA-c 【重挂可落盘：钉 W4】结算之后**盘上 pending 仍留着该 target**'
+              + `：盘上 pending=${JSON.stringify(diskPending)}`
+              + ' ⇒ 重挂路径没写 `stateFileFor`（`flushWatches` 里 `continue`）'
+              + ' ⇒ 下次重载又把它判成 lost（永久循环累积）')
+          } else {
+            ok('SA-c ✓ **重挂可落盘**（钉 W4）：同一条结算后**盘上 `pending` 里也不再有它**'
+              + `（盘上=${JSON.stringify(diskPending)}）⇒ ⛔ 不会"下次重载再判 lost"${saTag}`)
+          }
+        }
+
+        // ── SA-d ⭐⭐ **判不出非终态**（钉 **P2**）──────────────────────────────
+        //
+        //   ⚠ 病灶原文：重载时"目标状态读不到" ⇒ `lostClass='unknown'` ⇒
+        //     **此后永不重核、永不重挂、永不补投**（判据只扫 `pending`，而它已被挪进 `lost`）。
+        //   ⚠ 判据（任务书原文）：喂 `undefined` **两代** ⇒ 第二代**必须再判一次**
+        //     （`recheckCount ≥ 1`）。⚠ 并且它**必须仍在 `pending`**（⛔ 不在 `lost`）——
+        //     否则"再判一次"就无从谈起（那是改前的死胡同）。
+        {
+          const mk = () => ({
+            pending: [rec({ target: 'sess-undecidable', at: 1792250000000, sawRunning: true })],
+            // ⚠ 会话在、状态读不到 ⇒ 三条真相源全判不出（`undefined`）
+            statuses: { 'sess-undecidable': undefined },
+            logOf: { 'sess-undecidable': [] },
+          })
+          // 第一代
+          const g1 = await saMount(mk())
+          await g1.settleAsync(60)
+          const p1 = g1.pendingOnDisk().find((w) => w.target === 'sess-undecidable')
+          const l1 = g1.lostOnDisk().some((w) => w.target === 'sess-undecidable')
+          // 第二代（**丢弃内存**，重新实例化 —— 这就是"重载"）
+          const g2 = await saMount(mk())
+          await g2.settleAsync(60)
+          const p2 = g2.pendingOnDisk().find((w) => w.target === 'sess-undecidable')
+          const l2 = g2.lostOnDisk().some((w) => w.target === 'sess-undecidable')
+          const rechecked = typeof p2?.recheckCount === 'number' && p2.recheckCount >= 1
+          const stillPending = p2 !== undefined && !l2
+          const tierOK = p2?.settleState === 'unresolved' || p2?.settleState === 'stuck'
+          if (!stillPending) {
+            bad('SA-d 【判不出非终态：钉 P2】第二代**不再持有那条记录**'
+              + `：第一代 pending=${JSON.stringify(p1)} / inLost=${l1}`
+              + ` · 第二代 pending=${JSON.stringify(p2)} / inLost=${l2}`
+              + ' ⇒ 它被挪进了 `lost`（终态）⇒ **永远不会有第二次机会**（改前的死胡同）')
+          } else if (!rechecked) {
+            bad('SA-d 【判不出必须真的再核一次】第二代仍留着那条，但**没有"又核过"的痕迹**'
+              + `：recheckCount=${JSON.stringify(p2?.recheckCount)}（应 ≥ 1）`
+              + ` · settleState=${JSON.stringify(p2?.settleState)}`
+              + ' ⇒ "它还留在盘上"与"它被再判过一次"是两件事，后者没有证据')
+          } else if (!tierOK) {
+            bad('SA-d 判不出的那条**结算态没有具名**'
+              + `：settleState=${JSON.stringify(p2?.settleState)}（应 'unresolved' 或 'stuck'）`
+              + ' ⇒ 读的人分不出"还在重核"与"已经在等"')
+          } else {
+            ok('SA-d ✓ **判不出不是终态**（钉 P2）：喂 `undefined` 两代 ⇒ 第二代**又判了一次**'
+              + `（recheckCount=${p2?.recheckCount} · settleState=${p2?.settleState}）`
+              + ' 且**仍在 `pending`**、⛔ 未进 `lost` ⇒ 还有下一次机会'
+              + `（⚠ 到顶 ${3} 轮转 \`stuck\`、⛔ 不无限重试）${saTag}`)
+          }
+        }
+
+        // ── SA-e ⭐ **`lost` 无重复**（钉 **W9**）──────────────────────────────
+        //
+        //   ⚠ 病灶原文：`lost` 写入是 `[...lost, ...state.lost]`，**没有去重**
+        //     ⇒ 同一条被判丢两次时盘上出现**逐字段完全相同**的两条
+        //     （现场实证：`lost=26` 里有 2 条是同一条）。
+        //   ⚠ 判据：同键判丢两次 ⇒ `lost` **只有一条**。
+        //   ⚠ 造法：直接对**真模块**的 `markLost` 连调两次（那是唯一的判丢入口）。
+        {
+          const stMod = await import(saP2u(join(saRoot, 'src', 'server', 'orch-state.ts')).href)
+          const h = await saMount({
+            pending: [rec({ target: 'sess-lost-twice', at: 1792250000000, sawRunning: true, owner: 'hob' })],
+            statuses: { 'sess-lost-twice': undefined },
+          })
+          /**
+           * ⚠ **用 `undefined`（判不出）来造"判丢"**（2026-10-20 调整）：
+           *   本单 B3 之后，`idle` 那条**不再当场进 `lost`**（它先拿一次结算机会），
+           *   所以"判丢"这条路径现在由 `undefined` 那一档走（它是**真判丢**的那一档）。
+           *   ⚠ 判据**一个字没改**：同键判丢两次 ⇒ `lost` 只有一条。
+           */
+          /**
+           * ⚠ **判丢两次要真造出"同一条被写进 lost 两次"的形态**：
+           *   本单 B3 之后，第一次判不出只记 `unresolved`（可重入态），
+           *   **到顶（`STUCK_AFTER_RECHECKS` 轮）才进 `lost`**。
+           *   ⇒ 这里先把它推到顶，再**塞回 `pending`** 让它被第 N 次判丢
+           *     —— 那正是现场"同一条被判丢两次"的成因（`lost` 侧无去重的现场实证）。
+           */
+          for (let i = 0; i < 5; i++) stMod.markLost(h.file, () => false, () => undefined)
+          const after1 = JSON.parse(saRf(h.file, 'utf8'))
+          const nudged = after1.pending.map((w) => ({ ...w, recheckCount: 0, settleState: 'unresolved' }))
+          after1.pending = nudged.length > 0
+            ? nudged
+            : [rec({ target: 'sess-lost-twice', at: 1792250000000, sawRunning: true, owner: 'hob' })]
+          saWf(h.file, JSON.stringify(after1, null, 2), 'utf8')
+          for (let i = 0; i < 5; i++) stMod.markLost(h.file, () => false, () => undefined)
+          const lost = JSON.parse(saRf(h.file, 'utf8')).lost ?? []
+          const sameKey = lost.filter((w) => w.target === 'sess-lost-twice' && w.at === 1792250000000)
+          if (sameKey.length === 1) {
+            ok('SA-e ✓ **`lost` 无重复**（钉 W9）：同键被判丢两次 ⇒ 盘上**只有一条**'
+              + `（lost 总数=${lost.length}）⇒ 读数不虚高、\`MAX_LOST\` 不会提前截断真记录${saTag}`)
+          } else {
+            bad('SA-e 【`lost` 无重复：钉 W9】同键被判丢两次后盘上有 '
+              + `**${sameKey.length} 条**（应 1）⇒ 重复写入 ⇒ 读数虚高 + MAX_LOST 提前截断真记录`
+              + ` · 那两条逐字段=${JSON.stringify(sameKey)}`)
+          }
+        }
+
+        // ── SA-g ⭐⭐ **读数三档互斥**（钉 **W6**）──────────────────────────────
+        //
+        //   ⚠ 病灶原文：`DispatchWake.snapshot()` **无参** ⇒ 进程级合计
+        //     ⇒ 同一工作区两个 Hob 读到**对方的**登记/叫醒计数（而 `watches` 那一侧早已分区）。
+        //   ⚠ 判据（任务书原文）：`我的` + `判不出` + `他人` **覆盖全部登记**，
+        //     ⛔ **三档有交集**（必须两两互斥）。
+        {
+          const wakeMod = await import(saP2u(join(saRoot, 'src', 'server', 'card-wake.ts')).href)
+          const dw = new wakeMod.DispatchWake({
+            deliver: () => Promise.resolve({ ok: true }),
+            now: () => 1792300800000,
+          })
+          // ① A 名下 2 条（其中 1 条在跑）· ② B 名下 1 条 · ③ 判不出归属 1 次（register 会拒绝并计档）
+          dw.register({ sessionId: 'a-1', via: 'taskboard-card', cardId: 't-a1', owner: 'ownerA' })
+          dw.register({ sessionId: 'a-2', via: 'taskboard-card', cardId: 't-a2', owner: 'ownerA' })
+          dw.register({ sessionId: 'b-1', via: 'taskboard-card', cardId: 't-b1', owner: 'ownerB' })
+          dw.register({ sessionId: 'nobody-1', via: 'taskboard-card', cardId: 't-n' })   // 判不出归属
+          await dw.observe('a-1', 'running')   // 让 a-1 成为"在跑"
+          const snapA = dw.snapshot('ownerA')
+          const snapB = dw.snapshot('ownerB')
+          const snapNone = dw.snapshot()
+          /**
+           * ⚠ **"覆盖全部登记"的判据**：全部登记 = A 的 2 + B 的 1 + 判不出 1 = 4。
+           *   ⚠ 判不出归属的那条**根本不会进 `sessions`**（`register` 直接拒），
+           *     所以"全部登记"要按 **A + B + 判不出** 来算 —— 这正是三档的定义。
+           */
+          const totalRegistered = (snapNone.mine?.registered ?? 0) + snapNone.othersOnly
+            + snapNone.ownerUnknownRegistered
+          const aOK = snapA.mine?.registered === 2 && snapA.mine?.pending === 1
+            && snapA.othersOnly === 1 && snapA.ownerUnknownRegistered === 1
+          const bOK = snapB.mine?.registered === 1 && snapB.mine?.pending === 0
+            && snapB.othersOnly === 2 && snapB.ownerUnknownRegistered === 1
+          const covers = totalRegistered === 4
+          /**
+           * ⚠ **互斥**：别人名下的**不许**出现在我的 `mine` 里，反之亦然。
+           *   判据面 = `mine.registered` 与 `othersOnly` 的**和**必须等于"有 owner 的登记总数"（3）。
+           */
+          const disjoint = (s) => (s.mine?.registered ?? 0) + s.othersOnly === 3
+          const noZeroLie = snapNone.selfUndecidable === true && snapNone.mine === undefined
+          const pass = aOK && bOK && covers && disjoint(snapA) && disjoint(snapB) && noZeroLie
+          if (pass) {
+            ok('SA-g ✓ **读数三档互斥**（钉 W6）：`我的` + `判不出` + `他人（条数）`'
+              + ` **覆盖全部登记**（${totalRegistered}/4）且**两两互斥**`
+              + `（A: 我的 ${snapA.mine?.registered}/在跑 ${snapA.mine?.pending} · 判不出 ${snapA.ownerUnknownRegistered}`
+              + ` · 他人 ${snapA.othersOnly}；B 同理）；判不出"我"是谁时 **⛔ 不说"0 个"**`
+              + `（\`selfUndecidable\` 在位）${saTag}`)
+          } else {
+            bad('SA-g 【读数三档必须互斥且覆盖】不成立'
+              + `：A=${JSON.stringify(snapA.mine)}/他人${snapA.othersOnly}/判不出${snapA.ownerUnknownRegistered}`
+              + ` · B=${JSON.stringify(snapB.mine)}/他人${snapB.othersOnly}/判不出${snapB.ownerUnknownRegistered}`
+              + ` · 覆盖全部登记=${covers}（${totalRegistered}/4）`
+              + ` · A 互斥=${disjoint(snapA)} · B 互斥=${disjoint(snapB)}`
+              + ` · 判不出"我"时不说 0=${noZeroLie}`)
+          }
+        }
+        // ══════════════════════════════════════════════════════════════════
+        // **SA-x 负向对拍**（任务书 §3 硬要求：每条都要有，⛔ 不许恒真跳过）
+        // ══════════════════════════════════════════════════════════════════
+        //
+        // ⚠ 每条的做法：**把改后那一版实现改坏** ⇒ 对应断言必须**当场不成立**。
+        //   ⚠ ⛔ 不碰盘上源文件（变异体只活在 `mkdtemp` 里，跑完即删）。
+        //   ⚠ 若"改坏之后断言仍然成立"，说明那条判据**测的不是那件事**（永远 PASS ⇒ 没有分辨力）。
+        {
+          // ── X-f：把"落盘传本 owner 全量"改回"只传本次这一条" ⇒ SA-f 必红（钉 P1）──
+          {
+            const mut = await saMutTree('src/modules/orchestrator.ts', (src) => {
+              const GUARD = 'for (const mw of watches.values()) {'
+              if (!src.includes(GUARD)) return src
+              // 变异：把循环体变成"只放刚派出的这一条"（= 改前 `[toPersisted(w)]` 的等价形态）
+              return src.replace(
+                /const mineHere: PersistedWatch\[\] = \[\][\s\S]*?mineHere\.push\(toPersisted\(mw\)\)\n            \}/,
+                'const mineHere: PersistedWatch[] = [toPersisted(w)] /* 变异：只写本次这一条（改前形态） */',
+              )
+            })
+            if (mut.dir === undefined) {
+              bad(`SA-x(SA-f) 【负向对拍失去靶子】${mut.why} ⇒ 不按通过处理`)
+            } else {
+              let broke = false
+              let detail = ''
+              try {
+                const mOrch = await import(saP2u(join(mut.dir, 'src/modules/orchestrator.ts')).href)
+                const mBus = await import(saP2u(join(mut.dir, 'src/modules/bus.ts')).href)
+                // 同一段场景：两次同 owner 派发
+                const base = saMkdt(join(saRootTmp, 'x-f-'))
+                const home = join(base, 'ledgers'); saMkd(home, { recursive: true })
+                const ws = join(base, 'ws'); saMkd(join(ws, 'runtime'), { recursive: true })
+                const sess = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+                const byId = new Map(['hob', 'target-one', 'target-two'].map((i) => [i, sess(i)]))
+                const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+                const agents = { currentInitiator: () => undefined,
+                  get: (i) => (byId.has(i) ? { id: i, status: 'running', ctx: {}, session: byId.get(i),
+                    followup() {}, steer() {}, inject() {} } : undefined) }
+                const logger = { debug() {}, info() {}, warn() {} }
+                const bp = {}
+                const bc = { sessions, agents, logger,
+                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+                  provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                  inject: (_d, cb) => cb(bc), on: () => {} }
+                mBus.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+                const prov = {}
+                const c = { sessions, agents, logger,
+                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+                    : k === 'hobBus' ? bp.hobBus
+                      : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                  provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                  inject: (_d, cb) => cb(c), on: () => {} }
+                mOrch.apply(c)
+                const mo = prov.hobOrchestrator
+                if (mo !== undefined) {
+                  await mo.dispatch('target-one', 'do one', { self: 'hob' })
+                  await mo.dispatch('target-two', 'do two', { self: 'hob' })
+                  let pend = []
+                  try {
+                    pend = JSON.parse(saRf(join(home, saBase(ws), 'runtime', 'orch-watches.json'), 'utf8')).pending ?? []
+                  } catch { pend = [] }
+                  const ids = pend.map((w) => w.target).sort()
+                  broke = ids.length !== 2
+                  detail = `pending=${JSON.stringify(ids)}`
+                } else {
+                  detail = '变异体没提供 hobOrchestrator'
+                }
+              } catch (e) {
+                broke = true
+                detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+              }
+              if (broke) {
+                ok('SA-x(SA-f) ✓ 负向对拍：把"落盘传本 owner 全量"改回"只传本次这一条"'
+                  + ` ⇒ **SA-f 当场不成立**（${detail}）⇒ SA-f 真长牙（钉 P1 长在正确的地方）`)
+              } else {
+                bad('SA-x(SA-f) 【负向对拍失败】把落盘改回"只传本次这一条"之后，'
+                  + `两次派发仍然留下 2 条（${detail}）⇒ SA-f 测的不是"同 owner 全量落盘"这件事`)
+              }
+            }
+          }
+
+          // ── X-b/c：把重挂里那两行（`lastStatus` / `stateFileFor`）摘掉 ⇒ SA-b / SA-c 必红 ──
+          //
+          //   ⚠ 这两行正是 **W3 / W4** 的修法。摘掉它们 ⇒ 必须**精确复现**改前那两个症状：
+          //     · 摘 `lastStatus` ⇒ `idle` 被 `before !== 'running'` 丢掉 ⇒ SA-b 红；
+          //     · 摘 `stateFileFor` ⇒ `flushWatches` 里 `continue` ⇒ 盘上残留 ⇒ SA-c 红。
+          {
+            const mut = await saMutTree('src/modules/orchestrator.ts', (src) => {
+              let out = src
+              // ① 摘掉重挂块里的 lastStatus:'running'（Watch 字段）+ 内存 lastStatus.set
+              out = out.replace("            lastStatus: 'running',\n", '')
+              out = out.replace("          lastStatus.set(w.target, 'running')\n", '')
+              // ② 摘掉重挂块里的落点登记
+              out = out.replace('          stateFileFor.set(w.target, file)\n', '')
+              return out
+            })
+            if (mut.dir === undefined) {
+              bad(`SA-x(SA-b/SA-c) 【负向对拍失去靶子】${mut.why} ⇒ 不按通过处理`)
+            } else {
+              let bBroke = false
+              let cBroke = false
+              let detail = ''
+              try {
+                const mOrch = await import(saP2u(join(mut.dir, 'src/modules/orchestrator.ts')).href)
+                const mBus = await import(saP2u(join(mut.dir, 'src/modules/bus.ts')).href)
+                const base = saMkdt(join(saRootTmp, 'x-b-'))
+                const home = join(base, 'ledgers'); saMkd(home, { recursive: true })
+                const ws = join(base, 'ws'); saMkd(join(ws, 'runtime'), { recursive: true })
+                const f = join(home, saBase(ws), 'runtime', 'orch-watches.json')
+                saMkd(join(home, saBase(ws), 'runtime'), { recursive: true })
+                saWf(f, JSON.stringify({ version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [],
+                  pending: [rec({ target: 'sess-reattach', at: 1792250000000, sawRunning: true })] }), 'utf8')
+                const sess = (id) => ({
+                  id, header: { agentPreset: 'standard', cwd: ws },
+                  log: id === 'sess-reattach' ? assistantLog : [],
+                })
+                const byId = new Map(['hob', 'sess-reattach'].map((i) => [i, sess(i)]))
+                const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+                const agents = { currentInitiator: () => undefined,
+                  get: (i) => (byId.has(i) ? { id: i, status: 'running', ctx: {}, session: byId.get(i),
+                    followup() {}, steer() {}, inject() {} } : undefined) }
+                const logger = { debug() {}, info() {}, warn() {} }
+                const bp = {}
+                const bc = { sessions, agents, logger,
+                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+                  provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                  inject: (_d, cb) => cb(bc), on: () => {} }
+                mBus.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+                const prov = {}
+                const handlers = {}
+                const c = { sessions, agents, logger,
+                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+                    : k === 'hobBus' ? bp.hobBus
+                      : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                  provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                  inject: (_d, cb) => cb(c), on: (ev, fn) => { handlers[ev] = fn; return () => {} } }
+                mOrch.apply(c)
+                const mo = prov.hobOrchestrator
+                if (mo !== undefined) {
+                  await new Promise((r) => setTimeout(r, 60))
+                  // 只喂 idle（与 SA-b 同一口径：不先喂 running）
+                  handlers['agent/status']?.({ agent: { id: 'sess-reattach' }, status: 'idle' })
+                  await new Promise((r) => setTimeout(r, 80))
+                  const stillWatching = (mo.status({ wsRoot: ws, self: 'hob' }).watches ?? [])
+                    .some((w) => w.target === 'sess-reattach')
+                  bBroke = stillWatching
+                  let diskPending = []
+                  try {
+                    diskPending = JSON.parse(saRf(f, 'utf8')).pending?.map((w) => w.target) ?? []
+                  } catch { diskPending = [] }
+                  cBroke = diskPending.includes('sess-reattach')
+                  detail = `仍在等=${stillWatching} · 盘上 pending=${JSON.stringify(diskPending)}`
+                } else {
+                  detail = '变异体没提供 hobOrchestrator'
+                }
+              } catch (e) {
+                bBroke = true; cBroke = true
+                detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+              }
+              if (bBroke && cBroke) {
+                ok('SA-x(SA-b/SA-c) ✓ 负向对拍：把重挂里那两行（`lastStatus` / `stateFileFor`）摘掉'
+                  + ` ⇒ **SA-b 与 SA-c 同时当场不成立**（${detail}）`
+                  + ' ⇒ 两条真长牙，且**分别钉住 W3 / W4**（不是同一条换皮）')
+              } else {
+                bad('SA-x(SA-b/SA-c) 【负向对拍失败】摘掉重挂那两行之后仍有断言成立'
+                  + `（${detail}）⇒ SA-b/SA-c 测的不是 W3/W4 那两行`)
+              }
+            }
+          }
+
+          // ── X-e：把 `lost` 的去重摘掉 ⇒ SA-e 必红（钉 W9）──
+          {
+            const mut = await saMutTree('src/server/orch-state.ts', (src) => {
+              const GUARD = '    if (seenLost.has(k)) continue'
+              if (!src.includes(GUARD)) return src
+              return src.replace(GUARD, '    if (false) continue /* 变异：摘掉 lost 去重（W9 复现） */')
+            })
+            if (mut.dir === undefined) {
+              bad(`SA-x(SA-e) 【负向对拍失去靶子】${mut.why} ⇒ 不按通过处理`)
+            } else {
+              let broke = false
+              let detail = ''
+              try {
+                const mSt = await import(saP2u(join(mut.dir, 'src/server/orch-state.ts')).href)
+                const base = saMkdt(join(saRootTmp, 'x-e-'))
+                const f = join(base, 'ws', 'runtime', 'orch-watches.json')
+                saMkd(join(base, 'ws', 'runtime'), { recursive: true })
+                saWf(f, JSON.stringify({ version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [],
+                  pending: [rec({ target: 'sess-lost-twice', at: 1792250000000, sawRunning: true, owner: 'hob' })] }), 'utf8')
+                for (let i = 0; i < 5; i++) mSt.markLost(f, () => false, () => undefined)
+                const after1 = JSON.parse(saRf(f, 'utf8'))
+                after1.pending = (after1.pending ?? []).map((w) => ({ ...w, recheckCount: 0, settleState: 'unresolved' }))
+                if (after1.pending.length === 0) {
+                  after1.pending = [rec({ target: 'sess-lost-twice', at: 1792250000000, sawRunning: true, owner: 'hob' })]
+                }
+                saWf(f, JSON.stringify(after1, null, 2), 'utf8')
+                for (let i = 0; i < 5; i++) mSt.markLost(f, () => false, () => undefined)
+                const lost = JSON.parse(saRf(f, 'utf8')).lost ?? []
+                const n = lost.filter((w) => w.target === 'sess-lost-twice' && w.at === 1792250000000).length
+                broke = n > 1
+                detail = `同键条数=${n}（lost 总数=${lost.length}）`
+              } catch (e) {
+                broke = true
+                detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+              }
+              if (broke) {
+                ok(`SA-x(SA-e) ✓ 负向对拍：把 \`lost\` 的去重摘掉 ⇒ **SA-e 当场不成立**（${detail}）`
+                  + ' ⇒ SA-e 真长牙（钉 W9）')
+              } else {
+                bad('SA-x(SA-e) 【负向对拍失败】摘掉去重后仍然只有一条'
+                  + `（${detail}）⇒ SA-e 测的不是"去重"这件事`)
+              }
+            }
+          }
+
+          // ── X-g：把 `snapshot(owner)` 改回忽略 owner（进程级合计）⇒ SA-g 必红（钉 W6）──
+          {
+            const mut = await saMutTree('src/server/card-wake.ts', (src) => {
+              const GUARD = "const owned = self === undefined ? [] : all.filter((s) => s.owner === self)"
+              if (!src.includes(GUARD)) return src
+              return src.replace(GUARD, 'const owned = all /* 变异：忽略 owner，进程级合计（W6 复现） */')
+            })
+            if (mut.dir === undefined) {
+              bad(`SA-x(SA-g) 【负向对拍失去靶子】${mut.why} ⇒ 不按通过处理`)
+            } else {
+              let broke = false
+              let detail = ''
+              try {
+                const mW = await import(saP2u(join(mut.dir, 'src/server/card-wake.ts')).href)
+                const dw = new mW.DispatchWake({ deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000 })
+                dw.register({ sessionId: 'a-1', via: 'taskboard-card', cardId: 't-a1', owner: 'ownerA' })
+                dw.register({ sessionId: 'a-2', via: 'taskboard-card', cardId: 't-a2', owner: 'ownerA' })
+                dw.register({ sessionId: 'b-1', via: 'taskboard-card', cardId: 't-b1', owner: 'ownerB' })
+                const sA = dw.snapshot('ownerA')
+                // 变异后 A 会"看到"别人的 ⇒ 与 SA-g 的期望（我的=2/他人=1）不符
+                broke = sA.mine?.registered !== 2 || sA.othersOnly !== 1
+                detail = `A: 我的=${sA.mine?.registered}（应 2）· 他人=${sA.othersOnly}（应 1）`
+              } catch (e) {
+                broke = true
+                detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+              }
+              if (broke) {
+                ok(`SA-x(SA-g) ✓ 负向对拍：把 \`snapshot(owner)\` 改回"忽略 owner（进程级合计）"`
+                  + ` ⇒ **SA-g 当场不成立**（${detail}）⇒ SA-g 真长牙（钉 W6）`)
+              } else {
+                bad('SA-x(SA-g) 【负向对拍失败】忽略 owner 之后读数仍然正确'
+                  + `（${detail}）⇒ SA-g 测的不是"按 owner 分区"这件事`)
+              }
+            }
+          }
+
+          // ── X-d：把"判不出 ⇒ unresolved 留着"改回"判不出 ⇒ lost（终态）" ⇒ SA-d 必红 ──
+          {
+            const mut = await saMutTree('src/server/orch-state.ts', (src) => {
+              const GUARD = '    const nextCount = (w.recheckCount ?? 0) + 1'
+              if (!src.includes(GUARD)) return src
+              // 变异：判不出直接进 lost（改前的死胡同），不再留 unresolved
+              return src.replace(GUARD,
+                '    lost.push({ ...w, lostClass: \'unknown\' }) /* 变异：判不出 ⇒ 终态（P2 复现） */\n'
+                + '    continue\n'
+                + GUARD)
+            })
+            if (mut.dir === undefined) {
+              bad(`SA-x(SA-d) 【负向对拍失去靶子】${mut.why} ⇒ 不按通过处理`)
+            } else {
+              let broke = false
+              let detail = ''
+              try {
+                const mSt = await import(saP2u(join(mut.dir, 'src/server/orch-state.ts')).href)
+                const base = saMkdt(join(saRootTmp, 'x-d-'))
+                const f = join(base, 'ws', 'runtime', 'orch-watches.json')
+                saMkd(join(base, 'ws', 'runtime'), { recursive: true })
+                saWf(f, JSON.stringify({ version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [],
+                  pending: [rec({ target: 'sess-undecidable', at: 1792250000000, sawRunning: true, owner: 'hob' })] }), 'utf8')
+                const r1 = mSt.markLost(f, () => false, () => undefined)
+                const p1 = JSON.parse(saRf(f, 'utf8'))
+                const inLost = (p1.lost ?? []).some((w) => w.target === 'sess-undecidable')
+                const stillPending = (p1.pending ?? []).some((w) => w.target === 'sess-undecidable')
+                broke = inLost && !stillPending
+                detail = `进了 lost=${inLost} · 仍在 pending=${stillPending}`
+              } catch (e) {
+                broke = true
+                detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+              }
+              if (broke) {
+                ok(`SA-x(SA-d) ✓ 负向对拍：把"判不出 ⇒ unresolved 留着"改回"判不出 ⇒ lost（终态）"`
+                  + ` ⇒ **SA-d 的判据当场不成立**（${detail}）⇒ SA-d 真长牙（钉 P2）`)
+              } else {
+                bad('SA-x(SA-d) 【负向对拍失败】改回终态之后它仍然留在 pending'
+                  + `（${detail}）⇒ SA-d 测的不是"判不出非终态"这件事`)
+              }
+            }
+          }
+        }
+
+      } finally {
+        try { saRm(saRootTmp, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
       }
     }
   }

@@ -438,7 +438,22 @@ export function apply(ctx: any, config: Config = {}): void {
         return
       }
       log('会话总线就绪 ⇒ 注册 M3 工具')
-      registerBusTools(busCtx, bus as HobBus, log, config, createHobBusTools, ledgerRootOf)
+      registerBusTools(busCtx, bus as HobBus, log, config, createHobBusTools, ledgerRootOf,
+        /**
+         * ⚠⚠ **T2（B5）：每次 `hob_*` 读写顺手对账**（2026-10-20）。
+         *   ⚠ 用 `busCtx.get('hobOrchestrator')` **现取**（⛔ 不在这里 inject 它 ——
+         *     那会把 M3 的可用性绑到 M5 上；M5 关掉时 `hob_send` 仍要能用）。
+         *   ⚠ 取不到 ⇒ 什么都不做（⛔ 不报错：对账是附加观测，不是投递的前置条件）。
+         *   ⚠ **不 await**：对账是后台对平，⛔ 不许拖慢投递本身。
+         */
+        () => {
+          try {
+            const orchSvc: any = busCtx.get?.('hobOrchestrator')
+            if (orchSvc !== undefined && typeof orchSvc.reconcile === 'function') {
+              void Promise.resolve(orchSvc.reconcile('hob-tool')).catch(() => { /* 对账失败不影响投递 */ })
+            }
+          } catch { /* 取不到就是不装 M5 ⇒ 没账可对 */ }
+        })
     })
   }
 
@@ -1253,7 +1268,12 @@ function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m:
  *   这两个跟 `hobBus`（= `modules.bus`）。⇒ 两个开关各自管自己那一组，互不牵连。
  */
 function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, config: Config,
-  createBusTools: (...a: any[]) => any, rootOf: (...a: any[]) => any): void {
+  createBusTools: (...a: any[]) => any, rootOf: (...a: any[]) => any,
+  /**
+   * **T2 的挂点**（2026-10-20 · B5）：每次 `hob_*` 读写路径顺手对账一次。
+   * ⚠ 缺省不传 ⇒ 不对账（旧调用形状**照旧可用**，向后兼容）。
+   */
+  onRead?: () => void): void {
   // ⚠ 把**账本根解析闭包**交给 bus 工具（2026-10-10 新增）：`hob_spawn` / `hob_send`
   //   要用它记 / 清"待投递"。理由：解析逻辑（`ledgerRootOf` + config）**只在本层**，
   //   传给 bus 层就不必在那里再造一份 —— 两处各写一份必然漂（见 `EXPERIENCE.md` E-110）。
@@ -1266,7 +1286,7 @@ function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, confi
     } catch {
       return undefined
     }
-  })
+  }, onRead)
   ctx.effect(() => ctx.tools.register(sessions), 'dsh-hob preset: hob_sessions tool')
   ctx.effect(() => ctx.tools.register(send), 'dsh-hob preset: hob_send tool')
   ctx.effect(() => ctx.tools.register(workspaces), 'dsh-hob preset: hob_workspaces tool')

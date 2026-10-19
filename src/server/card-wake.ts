@@ -258,6 +258,21 @@ export interface CardWakeOpts {
    *   ⛔ 不许把"谁最后订阅过"当成归属。
    */
   onFiring?: (e: CardFiringEvent, subscribers: WakeTarget[]) => void
+  /**
+   * ⚠⚠ **`hello` 帧回调**（2026-10-20 · 本单 B5 的 **T4**）。
+   *
+   * ── 改前它被直接丢掉（`FINDINGS`/`DESIGN` §4.4 T4/T5 的原话）──────────────
+   *   `handleFrame` 的第一行是 `if (kind !== 'change') return 0` ⇒ **`hello` 帧不处理**
+   *   ⇒ 重连之后**不补帧**，而 `seenIds` / `firedSeen` 又都是**内存去重表**（重载即清零）
+   *   ⇒ 「重载 + 看板无新提交」这一格里，SSE 这条通道**永不触发**。
+   *
+   * ── 现在它算什么 ────────────────────────────────────────────────────
+   *   **只当一次"对账的触发点"**（⛔ 不当信号源、⛔ 不投递任何回执）：
+   *   重连成功 ⇒ 让上层**顺手把盘上的账对平一次**。
+   *   ⚠ 零额外连接、零周期 —— 复用的就是**本来就有的**那条长连接。
+   *   ⚠ 它仍然**只是"大概率"**（只在重连时来），⛔ 不许当成保证（见 B5 的交底表）。
+   */
+  onHello?: () => void
 }
 
 /** 去重表的**上限**（超过就丢最旧的 —— 丢的是很久以前那次，不影响"这次"）。 */
@@ -498,6 +513,25 @@ export class CardWake {
    * @returns 本次真的叫醒了几次（0 = 没有该叫的）。
    */
   async handleFrame(kind: string, data: string): Promise<number> {
+    /**
+     * ── ⚠⚠ **`hello` 帧：只触发一次对账，⛔ 不当信号源**（2026-10-20 · B5 的 T4）──
+     *
+     * 改前这里是 `if (kind !== 'change') return 0` ⇒ 把 `hello` **直接丢掉**。
+     * 后果：重连不补帧，而 `seenIds` / `firedSeen` 是内存去重表（重载即清零）
+     * ⇒ 「重载 + 看板无新提交」= 这条通道**永不触发**（`DESIGN` §4.4 的 T4/T5 原文）。
+     *
+     * ⚠ 现在它**只做一件事**：把"该对账了"这件事告诉上层（`onHello`）。
+     *   ⛔ **不投递任何回执**（回执的唯一发出点是结算函数，见 `settle()`）；
+     *   ⛔ **不改变 `conn` / 计数**（它只是一次触发，不是一次"叫醒"）；
+     *   ⚠ 返回值仍是 `0` —— 语义是"**这次没有叫醒任何人**"，⛔ 不许改成"叫了一次"。
+     */
+    if (kind === 'hello') {
+      try { this.opts.onHello?.() } catch (e) {
+        this.state = { ...this.state, note: `⚠ 收到 hello 帧但触发对账时出错（${String((e as Error)?.message ?? e)}）` }
+        this.say(`[card-wake] ${this.state.note}`)
+      }
+      return 0
+    }
     if (kind !== 'change') return 0
     let parsed: unknown
     try {
@@ -1026,11 +1060,28 @@ export type WakeOutcome =
   /** ⚠ **判不出**：状态读不到 / 会话消失了 ⇒ ⛔ 既不是"跑完"也不是"没跑过"。 */
   | 'undecidable'
 
-/** 卡执行会话叫醒面的运行态（供 `hob_orch_status` 渲染）。 */
+/**
+ * 卡执行会话叫醒面的运行态（供 `hob_orch_status` 渲染）。
+ *
+ * ⚠ ⚠ **2026-10-20 · 本单 B4：这个读数面按 owner 分区了**（修 **W6**）。
+ *   改前 `snapshot()` **无参**、所有计数都是**进程级合计** ⇒
+ *   同一工作区里两个 Hob 会读到对方的登记 / 叫醒 / 判不出原话
+ *   （`watches` 那一侧早已按 owner 分区，两处口径不一致正是 W6）。
+ *   ⇒ 现在 {@link DispatchWake.snapshot} **必须带 owner**（**破坏性改签名**，
+ *     DESIGN §七-5 采纳 A；⛔ 不做"无参版 + snapshotOf"两套并存 —— 两套必然漂，`E-128`）。
+ *
+ * ⚠ **三档必须成对报**（缺一即假话；DESIGN §4.6）：
+ *   · 我的（`mine`）—— 本次调用方 owner 名下的登记 / 在跑；
+ *   · **归属判不出**（`ownerUnknown`）—— 那些记录**没有 owner**，
+ *     ⇒ 既不归我、也不归别人（⛔ 不许并进任何一边）；
+ *   · **他人的（`othersOnly`）—— 只给条数**（⛔ 不许带卡号 / 会话 id / 明细）。
+ *   ⚠ `owner === undefined` ⇒ **只报后两档**，⛔ **不许说"0 个"**（判不出"我"是谁时，
+ *     "0" 是一句假话：它把"不知道"说成了"没有"）。
+ */
 export interface DispatchWakeState {
-  /** 登记了多少个会话（去重后）。 */
+  /** 登记了多少个会话（去重后）。⚠ 带 owner 调 ⇒ **只算该 owner 的**。 */
   registered: number
-  /** 其中正在跑的（见过 `running` 且还没叫）。 */
+  /** 其中正在跑的（见过 `running` 且还没叫）。⚠ 同上，只算该 owner 的。 */
   pending: number
   /** 已叫醒次数（累计）。 */
   wokeCount: number
@@ -1081,6 +1132,34 @@ export interface DispatchWakeState {
   undeliverableCount: number
   /** 最近一次"跑完却送不出去"的可读原话（⛔ 不许静默）。 */
   undeliverableWhy?: string
+  /**
+   * ── ⚠⚠ **分区三档**（2026-10-20 · B4；修 **W6**）─────────────────────────
+   *
+   * ⚠ 三档**必须互斥且覆盖全部登记**（`check:orch` 的 `S-g` 钉的就是这一条）：
+   *   `mine.registered + ownerUnknownCount + othersOnly === 全部登记数`，
+   *   且**两两无交集**。缺一条就不是"分区"，而是"换个地方混着报"。
+   */
+  mine?: {
+    /** 本次调用方 owner 自己名下的登记数。 */
+    registered: number
+    /** 其中在跑的（见过 `running` 且还没叫）。 */
+    pending: number
+  }
+  /**
+   * **归属判不出的登记数**（记录没有 `owner`）——
+   * ⚠ 它**既不归我、也不归别人**（`I-1`：判不出 ≠ 归我），所以必须**单列一档**。
+   */
+  ownerUnknownRegistered: number
+  /**
+   * **他人的登记数（⚠ 只给条数）**—— ⛔ 不带卡号 / 会话 id / 执行 id。
+   * ⚠ 明细一出现就等于把别人的账本又摊开了一次（`I-4` 的显式例外只允许条数）。
+   */
+  othersOnly: number
+  /**
+   * ⚠ **"我"判不出**（调用方没给 owner）⇒ 本读数**只报后两档**，
+   * ⛔ **不许报"我的 = 0"** —— 那是把"不知道我是谁"说成"我没有登记"。
+   */
+  selfUndecidable?: true
 }
 
 /**
@@ -1091,11 +1170,32 @@ export interface DispatchWakeState {
  */
 export class DispatchWake {
   private readonly sessions = new Map<string, DispatchedSession>()
+  /**
+   * ⚠ 进程级那一份（**跨 owner 的合计**）—— 它**仍然是给日志/自检用的原始计数**，
+   *   而 `snapshot(owner)` 端出去的是**分区之后**的那一份（B4）。
+   *   ⚠ 两者都留着是**有意**的：合计不能让读的人看见（那正是 W6），
+   *     但"这个进程一共叫醒过几次"对排错有用 ⇒ 它只出现在日志里。
+   */
   private state: DispatchWakeState = {
     registered: 0, pending: 0, wokeCount: 0, undecidableCount: 0,
     pushedRegisterOk: 0, pushRegisterIssues: 0,
     ownerUnknownCount: 0, undeliverableCount: 0,
+    ownerUnknownRegistered: 0, othersOnly: 0,
   }
+  /**
+   * ── ⚠⚠ **按 owner 分档的累计计数**（2026-10-20 · B4；修 **W6**）──────────────
+   *   ⚠ 形态与既有 `relaysByOwner`（orchestrator 侧）**同款**（`Map<owner, number>`）——
+   *     ⛔ 不另造一种写法（同一事实两个来源必然漂，`E-128`）。
+   *   ⚠ 这些是**累计**（跨轮）：`snapshot(owner)` 只把该 owner 那一份端出来，
+   *     ⛔ 不把它压回一个进程级合计（那正是 W6 的成因）。
+   */
+  private readonly ownedWoke = new Map<string, number>()
+  private readonly ownedUndecidable = new Map<string, number>()
+  private readonly ownedPushedOk = new Map<string, number>()
+  private readonly ownedPushIssues = new Map<string, number>()
+  private readonly ownedUndeliverable = new Map<string, number>()
+  /** 逐 owner 的"最近一次可读原话"（⛔ 不许把别人的原话串给读的人）。 */
+  private readonly whyByOwner = new Map<string, { undecidable?: string; push?: string; undeliverable?: string }>()
   private readonly opts: DispatchWakeOpts
 
   constructor(opts: DispatchWakeOpts) {
@@ -1110,14 +1210,83 @@ export class DispatchWake {
     this.opts.log?.(line)
   }
 
+  /** 记一次"某 owner 名下的某档 +1"（⛔ 无 owner ⇒ 不记给任何人，见各调用点的判据）。 */
+  private bump(m: Map<string, number>, owner: string | undefined): void {
+    if (typeof owner !== 'string' || owner === '') return
+    m.set(owner, (m.get(owner) ?? 0) + 1)
+  }
+
+  /** 记一句"某 owner 名下的可读原话"（按字段分档，⛔ 不许互相顶替）。 */
+  private sayFor(
+    owner: string | undefined,
+    field: 'undecidable' | 'push' | 'undeliverable',
+    why: string,
+  ): void {
+    if (typeof owner !== 'string' || owner === '') return
+    const cur = this.whyByOwner.get(owner) ?? {}
+    cur[field] = why
+    this.whyByOwner.set(owner, cur)
+  }
+
   setDeliver(fn: ((sessionId: string, text: string) => Promise<unknown>) | undefined): void {
     this.opts.deliver = fn
   }
 
-  /** 现读状态（渲染层只认这个）。 */
-  snapshot(): DispatchWakeState {
-    const pending = [...this.sessions.values()].filter((s) => s.sawRunning && !s.reported).length
-    return { ...this.state, registered: this.sessions.size, pending }
+  /**
+   * 现读状态（渲染层只认这个）—— ⚠⚠ **必须带 owner**（2026-10-20 · B4，修 **W6**）。
+   *
+   * ── 改前（本缺陷的证据，`FINDINGS` W6 / `DESIGN` §4.6）──────────────
+   *   `snapshot()` **无参**，`registered` / `pending` 与全部累计计数都是**进程级合计**
+   *   ⇒ 同一工作区里两个 Hob 读到**对方的**登记数、叫醒数与"判不出"原话；
+   *   而 `watches` 那一侧（`mineOnly`）**早就按 owner 分区** ⇒ 两处口径不一致。
+   *
+   * ── 现在 ──────────────────────────────────────────────────────────
+   *   · `registered` / `pending` ⇒ **只算 `owner` 名下的**；
+   *   · 其余累计计数（`wokeCount` / `undecidableCount` / …）⇒ 取**该 owner 名下**那一份
+   *     （`Map<owner, number>`，与既有 `relaysByOwner` 同款形态）；
+   *   · **三档成对报**：`mine` · `ownerUnknownRegistered`（判不出归属）· `othersOnly`（他人只给条数）；
+   *   · `owner === undefined` ⇒ **只报后两档** + `selfUndecidable: true`，
+   *     ⛔ **不许报"我的 = 0"**（那会把"不知道我是谁"说成"我没有登记"）。
+   *
+   * ⚠ ⚠ **这是破坏性改签名**（DESIGN §七-5 采纳 A）：⛔ 不许再加一个无参版并存
+   *   —— 两套口径必然漂（`E-128`），而那正是 W6 的成因。
+   */
+  snapshot(owner?: string): DispatchWakeState {
+    const all = [...this.sessions.values()]
+    const self = typeof owner === 'string' && owner !== '' ? owner : undefined
+    const owned = self === undefined ? [] : all.filter((s) => s.owner === self)
+    const pendingOf = (rows: DispatchedSession[]): number =>
+      rows.filter((s) => s.sawRunning && !s.reported).length
+    /** 判不出归属的（`owner` 缺失 —— 这类记录**根本不会进 sessions**，见 `register`）。 */
+    const ownerUnknownRegistered = this.state.ownerUnknownCount
+    /** 他人的：有 owner、但不是我的 ⇒ **只给条数**。 */
+    const othersOnly = self === undefined
+      ? all.filter((s) => typeof s.owner === 'string' && s.owner !== '').length
+      : all.filter((s) => s.owner !== self && typeof s.owner === 'string' && s.owner !== '').length
+    /**
+     * ⚠ 累计计数按 owner 取：**没有该 owner 的条目 ⇒ 0，但只有 `self` 存在时才谈得上"0"**。
+     *   ⚠ `self === undefined` 时这些计数**一律给 0 且带 `selfUndecidable`** ——
+     *     渲染层据 `selfUndecidable` 报"判不出我是谁"，⛔ 不报"0 次"。
+     */
+    const countOf = (m: Map<string, number>): number => (self === undefined ? 0 : m.get(self) ?? 0)
+    return {
+      ...this.state,
+      registered: owned.length,
+      pending: pendingOf(owned),
+      // ⚠ 累计计数**逐档按 owner 取**（改前是 `this.state` 里的进程级合计）
+      wokeCount: this.ownedWoke.get(self ?? '') ?? 0,
+      undecidableCount: this.ownedUndecidable.get(self ?? '') ?? 0,
+      pushedRegisterOk: countOf(this.ownedPushedOk),
+      pushRegisterIssues: this.ownedPushIssues.get(self ?? '') ?? 0,
+      ownerUnknownCount: ownerUnknownRegistered,
+      undeliverableCount: countOf(this.ownedUndeliverable),
+      mine: self === undefined
+        ? undefined
+        : { registered: owned.length, pending: pendingOf(owned) },
+      ownerUnknownRegistered,
+      othersOnly,
+      ...(self === undefined ? { selfUndecidable: true as const } : {}),
+    }
   }
 
   /**
@@ -1145,6 +1314,11 @@ export class DispatchWake {
     if (typeof id !== 'string' || id === '') return
     // ── 准入：**判不出归属 ⇒ 不登记**，落独立一档可读话（⛔ 不许猜、⛔ 不许按工作区兜）
     if (typeof entry.owner !== 'string' || entry.owner === '') {
+      /**
+       * ⚠ 判不出归属 ⇒ **不归任何人**（`I-1`）⇒ 只记进**进程级**那一档
+       *   （`ownerUnknownCount` 是**跨 owner 的**"判不出归属"总数 —— 它不是"某个人的数"，
+       *    因为这条记录**根本不属于任何人**；读数侧据它报"归属判不出"那一档）。
+       */
       this.state = {
         ...this.state,
         ownerUnknownCount: this.state.ownerUnknownCount + 1,
@@ -1215,7 +1389,12 @@ export class DispatchWake {
    * ⚠ 它存在的唯一理由：让 `hob_orch_status` 能**一眼看出叫醒面接没接上**
    *   （作业书 §三-6）。⛔ 不许把它与"被谁读过卡面才登记"混成一个数。
    */
-  noteRegistryOk(cardId: string): void {
+  noteRegistryOk(cardId: string, owner?: string): void {
+    /**
+     * ⚠ **按 owner 记**（B4）：这条计数的语义是"**我的**某个登记是靠推送现读成功的"
+     *   ⇒ 它必须落到那个 owner 名下，否则同一工作区两个 Hob 会读到对方的数（W6）。
+     */
+    this.bump(this.ownedPushedOk, owner)
     this.state = {
       ...this.state,
       pushedRegisterOk: this.state.pushedRegisterOk + 1,
@@ -1232,7 +1411,13 @@ export class DispatchWake {
    *   · `unreadable` = **读不到**（看板没装 / 卡没了 / 工具调用失败）。
    *   ⇒ 各自留一句**可读话**，⛔ 不许静默（那正是本件要治的失败模式）。
    */
-  noteRegistryIssue(cardId: string, kind: 'no-session' | 'unreadable', why: string): void {
+  noteRegistryIssue(cardId: string, kind: 'no-session' | 'unreadable', why: string, owner?: string): void {
+    /**
+     * ⚠ 单条"读不到"必须能分别归属（B4）：`registry` 是**谁在看卡面**触发的动作，
+     *   其原话只该出现在**那个人**的读数里（⛔ 不许串台）。
+     */
+    this.bump(this.ownedPushIssues, owner)
+    this.sayFor(owner, 'push', `${cardId} 按推送现读登记失败（${kind}）：${why}`)
     this.state = {
       ...this.state,
       pushRegisterIssues: this.state.pushRegisterIssues + 1,
@@ -1274,6 +1459,8 @@ export class DispatchWake {
     //   ⚠ **顺序有意义**：这一支必须在"登记检查"**之后**（别人的会话不归我判），
     //     但在**任何状态判断之前**（读不到就先说读不到，⛔ 不许先猜它 idle）。
     if (typeof status !== 'string' || status === '') {
+      this.bump(this.ownedUndecidable, s.owner)
+      this.sayFor(s.owner, 'undecidable', `会话 ${sessionId} 的状态**读不到**（事件里没有 status 字）`)
       this.state = {
         ...this.state,
         undecidableCount: this.state.undecidableCount + 1,
@@ -1312,6 +1499,8 @@ export class DispatchWake {
         : `\n下一步：用 \`taskboard_get\` 读那张卡的执行报告与评论（卡 id = ${s.cardId}）；`
           + '⚠ 卡进 `in_review` 只是**旁证**，以会话状态为准。')
     if (this.opts.deliver === undefined) {
+      this.bump(this.ownedUndeliverable, s.owner)
+      this.sayFor(s.owner, 'undeliverable', `投递通道没就绪（hobBus 未提供）⇒ 会话 ${s.sessionId} 那一轮没叫出去`)
       this.state = { ...this.state, note: '⚠ 有会话跑完，但**投递通道没就绪**（hobBus 未提供）⇒ 这一声没叫出去' }
       this.say(`[dispatch-wake] ${this.state.note}`)
       return 'no-channel'
@@ -1326,6 +1515,10 @@ export class DispatchWake {
      */
     const target = s.owner
     if (target === undefined || target === '') {
+      /**
+       * ⚠ **这里没有 owner 可记**（它正是"判不出该回给谁"那一档）⇒
+       *   只进进程级那一档，⛔ 不**猜**一个 owner 去记（那正是 `I-1` 禁的）。
+       */
       this.state = {
         ...this.state,
         undeliverableCount: this.state.undeliverableCount + 1,
@@ -1344,6 +1537,7 @@ export class DispatchWake {
     try {
       const r: any = await this.opts.deliver(target, text)
       void r
+      this.bump(this.ownedWoke, target)
       this.state = {
         ...this.state,
         wokeCount: this.state.wokeCount + 1,
@@ -1359,6 +1553,8 @@ export class DispatchWake {
        * ⚠ **投递抛错 ⇒ 记"漏投"那一档**（`I-10`），⛔ **不重投、⛔ 不改投别人**。
        * ⚠ 必须能被 **owner 自己的读数**看见（"我有一条回执没到"）。
        */
+      this.bump(this.ownedUndeliverable, target)
+      this.sayFor(target, 'undeliverable', `回执**没送到**：${String((e as Error)?.message ?? e)}`)
       this.state = {
         ...this.state,
         undeliverableCount: this.state.undeliverableCount + 1,

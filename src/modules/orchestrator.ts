@@ -65,18 +65,26 @@ import {
 import {
   ORCH_STATE_FILENAME,
   ORCH_STATE_SUBDIR,
+  STUCK_AFTER_RECHECKS,
   bindSession,
   clearHandoffs,
   countLostByClass,
   ensureRuntimeIgnored,
+  countBySettleState,
+  hasUnsettled,
   markLost,
+  mergePendingByIdentity,
+  nextRecheckDelay,
   orchStateFileOf,
   readOrchState,
   readOrchStateDetailed,
+  watchKey,
   writePending,
   type LostClass,
   type PersistedHandoff,
   type PersistedWatch,
+  type SettleEvidence,
+  type SettleState,
   type StateReachability,
 } from '../server/orch-state.ts'
 
@@ -132,6 +140,18 @@ export interface Watch {
    * ⚠ 判不出 ⇒ 不填；⛔ 不许拿**目标会话**的工作区根顶替（那是另一回事）。
    */
   ownerWsRoot?: string
+  /**
+   * ── ⚠⚠ **耐久化五件**（2026-10-20 · 本单 B1/B2；诊断出处 `FINDINGS` P2/W3/W4）──
+   *
+   * ⚠ 这五个字段**必须同时活在内存与盘上**（`PersistedWatch` 同名同义），否则
+   *   重载后要么"判不出从 running 掉下来"(W3)、要么"结算完盘上还留着"(W4)、
+   *   要么"判不出就再也醒不过来"(P2)。
+   */
+  lastStatus?: string
+  settleState?: SettleState
+  recheckCount?: number
+  lastRecheckAt?: number
+  evidence?: SettleEvidence
   /**
    * {@link targetPreset} 的**取自哪里**（2026-10-17 第 2 轮新增 · `CHG-058` 收口）。
    *
@@ -229,6 +249,20 @@ export interface OrchStatus {
    *   并进"他人的"又等于说"那是有主的"（两件都不是事实）。
    */
   unownedWatches?: number
+  /**
+   * ── ⚠⚠ **结算态三档**（2026-10-20 · 本单 B3 / B4 新增）──────────────────
+   *
+   * ⚠ 存在的唯一理由：`unresolved`（判不出、**下一次还会再核**）与
+   *   `stuck`（重核到顶、**不再自动重试**）是两个**必须分开报**的档 ——
+   *   混在"在等回传"里，读的人会以为"这些都在正常等"（`S-d` 钉的就是这条）。
+   * ⚠ 三档**互斥且覆盖全部登记**（`countBySettleState` 是唯一实现点）。
+   */
+  settleByState?: Record<SettleState, number>
+  /**
+   * **不再自动重试的条数**（`stuck`）—— 读数里必须**明说"需人工裁"**，
+   * ⛔ 不许让它看起来像"还在等"。
+   */
+  stuckCount?: number
 }
 
 /** `hobOrchestrator` 服务的形状。 */
@@ -335,7 +369,29 @@ export interface HobOrchestrator {
    *   用户原话定的口径是"信号源 = 实施会话状态变化"，SSE 只是旁证
    *   ⇒ 两者混一个计数就等于把旁证升格成判据（`TASK-2` §二-① 明令不许）。
    */
-  dispatchWakeState(): DispatchWakeState
+  /**
+   * @param self - **调用方会话 id**（owner 过滤键）。⚠ 不给 ⇒ 读数**只报"归属判不出"与
+   *   "他人的（条数）"两档**，⛔ **不许报"我的 = 0"**（那是把"不知道我是谁"说成"我没有登记"）。
+   *   ⚠⚠ 本参数是 **B4 的破坏性改签名**（`DESIGN` §七-5 采纳 A）：改前它无参、
+   *   于是同一工作区两个 Hob 读到对方的登记与叫醒计数（**W6**）。
+   */
+  dispatchWakeState(self?: string): DispatchWakeState
+  /**
+   * ⚠⚠ **把盘上的账对平一次**（2026-10-20 · 本单 B5 的**唯一触发入口**）。
+   *
+   * ⚠ 它是**惰性对账**：不跑就没有任何后台活动；跑一次就"能判的结掉、判不出的留待下次"。
+   * ⚠ **所有触发点都只调它**（T1 就绪扫描 / T2 `hob_*` / T3 `agent/status` /
+   *   T4 SSE `hello` / T5 有条件复查）—— ⛔ 不许各写一份。
+   * ⚠ `trigger` 只为日志可读（⛔ 不影响判据）。
+   * ⚠ **不收 `self`**：对账读的是**盘上全部记录**，而"该由谁处置"由既有的 `adoptable`
+   *   判据决定（`I-5`）；"回执投给谁"仍然只由每条记录自己的 `owner` / `watcher` 决定（`I-1`）。
+   */
+  reconcile(trigger: string): Promise<{
+    settled: string[]
+    unresolved: string[]
+    stuck: string[]
+    changed: boolean
+  }>
   /** 停 / 恢复。 */
   /**
    * 停 / 恢复**调用方自己**的闭环（`I-4` 末条）。
@@ -563,6 +619,12 @@ function toPersisted(w: Watch): PersistedWatch {
     // 🔑 归属两件：**逐条**带（⛔ 不再由调用点"统一盖一个"）
     ...(w.owner === undefined || w.owner === '' ? {} : { owner: w.owner }),
     ...(w.ownerWsRoot === undefined || w.ownerWsRoot === '' ? {} : { wsRoot: w.ownerWsRoot }),
+    // ── 耐久化五件（2026-10-20 · B2）：⛔ 缺一就修不掉 W3 / W4 / P2 ──────────
+    ...(w.lastStatus === undefined ? {} : { lastStatus: w.lastStatus }),
+    ...(w.settleState === undefined ? {} : { settleState: w.settleState }),
+    ...(w.recheckCount === undefined ? {} : { recheckCount: w.recheckCount }),
+    ...(w.lastRecheckAt === undefined ? {} : { lastRecheckAt: w.lastRecheckAt }),
+    ...(w.evidence === undefined ? {} : { evidence: w.evidence }),
   }
 }
 
@@ -766,6 +828,17 @@ export function apply(ctx: any): void {
       onFiring: (e: CardFiringEvent, subscribers: WakeTarget[]) => {
         for (const sub of subscribers) void registerCardByPush(e.taskId, sub.sessionId)
       },
+      /**
+       * ── **T4：看板 SSE 的 `hello` 帧也触发一次对账**（B5；`card-wake.ts` 侧已实现）──
+       *
+       * ⚠ 改前 `handleFrame` 第一行就是 `if (kind !== 'change') return 0` ⇒ `hello` 被**直接丢掉**
+       *   ⇒ 重连不补帧（`FINDINGS`/`DESIGN` §4.4 的 T4/T5 原文）。
+       * ⚠ 现在重连那一下顺手把账对平 —— **零额外连接、零周期**，复用的就是本来就有的长连接。
+       * ⚠ 它仍然**只是大概率**（只在重连时来），⛔ 不许当成保证。
+       */
+      onHello: () => {
+        void reconcile('sse-hello').catch(() => { /* reconcile 自己已接住 */ })
+      },
       deliver: (sessionId: string, text: string) => {
         const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
         if (bus === undefined || typeof bus.deliver !== 'function') {
@@ -825,6 +898,16 @@ export function apply(ctx: any): void {
       if (owner === undefined || owner === '') return false
       return stoppedOwners.has(owner)
     }
+
+    /**
+     * 目标会话 → 运行态文件（登记时定下来；结算时按同一个文件改）。
+     *
+     * ⚠⚠ **声明位置必须在"重载后接手"那一段之前**（2026-10-20 · 修 **W4**）：
+     *   重挂路径也要往这里写（`stateFileFor.set(target, file)`），
+     *   否则 `flushWatches` 里 `stateFileFor.get()` 为 `undefined` ⇒ `continue`
+     *   ⇒ **回传成功了盘上仍留着 pending** ⇒ 下次重载再判 lost（永久循环累积）。
+     */
+    const stateFileFor = new Map<string, string>()
 
     // ══════════════════════════════════════════════════════════════════
     // 重载后接手：**先核再判**（2026-10-18 第 2 轮 · `UD-137` 裁定 3）
@@ -1054,7 +1137,36 @@ export function apply(ctx: any): void {
              */
             ...(w.owner === undefined ? {} : { owner: w.owner }),
             ...(w.wsRoot === undefined ? {} : { ownerWsRoot: w.wsRoot }),
+            /**
+             * ── ⚠⚠ **修 W3**（2026-10-20 · `FINDINGS` P5 / `DESIGN` §4.2）──────────
+             * 重挂时**必须**同时把"上一跳状态"记成 `running`。
+             *
+             * ⚠ **这不是猜**：`classifyPending` 只在 `statusOf === 'running'` 时才进
+             *   `reattach`（`orch-state.ts`）—— "它**此刻**在跑"是**重挂判据的直接结论**。
+             * ⚠ 不写会怎样（改前的形态）：重挂条目的 `lastStatus` 是 `undefined`
+             *   ⇒ 它跑完那一次 `idle` 被 `if (before !== 'running') return` 丢掉
+             *   ⇒ **重挂白挂**（回执永远不回来，`在等回传` 里永远挂着一条）。
+             */
+            lastStatus: 'running',
+            /** 重挂的那条仍然是"在等"（⛔ 不是 `unresolved`：它此刻确实在跑）。 */
+            settleState: 'waiting',
+            ...(w.recheckCount === undefined ? {} : { recheckCount: w.recheckCount }),
+            ...(w.lastRecheckAt === undefined ? {} : { lastRecheckAt: w.lastRecheckAt }),
           })
+          /**
+           * ── ⚠⚠ **修 W4**（同上）──────────────────────────────────────────────
+           * 重挂时**必须**把这个条目的落点文件记下来。
+           * ⚠ 不写会怎样（改前的形态）：结算成功后 `flushWatches` 因为
+           *   `stateFileFor.get(target) === undefined` 而 `continue`
+           *   ⇒ **盘上 pending 残留** ⇒ 下次重载又被判 lost（永久循环累积）。
+           */
+          stateFileFor.set(w.target, file)
+          /**
+           * ⚠ 重挂的那条**同时要留在内存的 lastStatus 里**（跨的是"这一代的事件"，
+           *   而 `lastStatus` 是内存 Map）—— 上面写进 `Watch` 的是**落盘**那一份，
+           *   两者必须一致，否则重挂之后第一跳 `idle` 仍然会被丢掉。
+           */
+          lastStatus.set(w.target, 'running')
           reattachedLatch = [...reattachedLatch, w]
         }
         if (myLost.length > 0) {
@@ -1063,6 +1175,29 @@ export function apply(ctx: any): void {
             `[${name}] 重载后判定 ${myLost.length} 条未结算派发丢失（${file}）：`
             + myLost.map((w) => `${w.target}${w.round === undefined ? '' : `(第${w.round}轮)`}`
               + `[${w.lostClass ?? 'unknown'}]`).join(', '),
+          )
+        }
+        /**
+         * ── ⚠⚠ **"判不出"不再是终态**（2026-10-20 · B3；修 `FINDINGS` P2）────────
+         *   `markLost` 现在把"判不出"的那一摞留在 `pending` 里（`settleState: 'unresolved'`），
+         *   并回带 `unresolved` / `stuck` 两摞。
+         *   ⚠ 这里**只上报、⛔ 不判死**：它们会由**任意一次后续触发**（T1..T5）再核一次。
+         *   ⚠ ⛔ 不许在这里把它们挪进 `lost`（那正是改前的死胡同）；
+         *   ⚠ ⛔ 也不许在这里"猜一个 owner"—— 重判读的是**目标状态**，不是收件人（`I-1`）。
+         */
+        const myUnresolved = r.unresolved.filter((w) => !isForeign(w, file))
+        const myStuck = r.stuck.filter((w) => !isForeign(w, file))
+        if (myUnresolved.length > 0) {
+          svcCtx.logger?.info?.(
+            `[${name}] 重载后 ${myUnresolved.length} 条**判不出目标状态** ⇒ 留在待办里再核（${file}）：`
+            + myUnresolved.map((w) => `${w.target}@${w.at}(第${w.recheckCount ?? 1}次)`).join(', '),
+          )
+        }
+        if (myStuck.length > 0) {
+          svcCtx.logger?.warn?.(
+            `[${name}] ${myStuck.length} 条重核 ${STUCK_AFTER_RECHECKS} 轮仍**判不出** ⇒ 转 stuck、`
+            + `**不再自动重试**（${file}）：`
+            + myStuck.map((w) => `${w.target}@${w.at}`).join(', '),
           )
         }
         if (myReattach.length > 0) {
@@ -1218,9 +1353,6 @@ export function apply(ctx: any): void {
       svcCtx.logger?.warn?.(`[${name}] 丢失通知发送失败：${String((e as Error)?.message ?? e)}`)
     }
 
-    /** 目标会话 → 运行态文件（登记时定下来；结算时按同一个文件改）。 */
-    const stateFileFor = new Map<string, string>()
-
     /**
      * 取某会话的**工作区根**（= 它的 `header.cwd`）。
      *
@@ -1330,12 +1462,41 @@ export function apply(ctx: any): void {
       try {
         const prev = readOrchState(file)
         /**
-         * ⚠ **保留别人的**：`owner` 不匹配的那些**原样留着**。
-         *   无归属（`owner === undefined`）的记录算**别人**的 —— ⛔ 不许被我覆盖掉：
-         *   判不出归属 ≠ 归我（`I-1`：⛔ 不许猜一个默认 owner）。
+         * ⚠⚠ **按记录身份去重，⛔ 不按 owner 一刀切**（2026-10-20 · 修 **P1**）。
+         *
+         * ── 改前（本缺陷的现场成因，`FINDINGS` P1）──────────────────────────
+         *   `const others = prev.pending.filter((w) => (w.owner ?? '') !== owner)`
+         *   —— 它保留的是"**别人的**"，于是**同一个 owner 名下先前那条 pending
+         *   不在 `next` 里** ⇒ **每派一条活就把上一条从盘上静默删掉**（连 `lost` 都不进）。
+         *   现场：`57893e5d` 派完 `dd4c18eb` 之后从 `pending` 消失，且从未进 `lost`。
+         *
+         * ── 现在 ───────────────────────────────────────────────────────
+         *   合并交给 `orch-state.ts` 的 `mergePendingByIdentity`（**唯一实现点**）：
+         *   键 = `target@at`（与 `flushWatches` 那一侧同一个键），
+         *   `mine` 里有的用 `mine`、其余的**原样留着**（不管属于谁、也不管有没有 owner）。
+         *   ⚠ 无归属（`owner === undefined`）的记录当然也留着 —— 判不出归属 ≠ 归我。
+         *   ⚠ **不引入"保留策略"**：两处写法不一致正是本病的成因，现在两边同构。
          */
-        const others = prev.pending.filter((w) => (w.owner ?? '') !== owner)
-        const next = [...mine, ...others]
+        /** 我这一次真正"知道"的那些键（⛔ 不按 owner 一刀切，见上）。 */
+        const mineKeys = new Set(mine.map((w) => watchKey(w)))
+        /**
+         * ⚠ **保留的两种**：
+         *   ① **别人的**（`owner` 不匹配）—— 与改前同一条纪律（`I-5`：只写自己那一片）；
+         *   ② **我自己名下但盘上才是权威的**（`unresolved` / `stuck`）——
+         *      ⚠ 这两档是 `B3` 的**可重入态**：它们**只活在盘上**（内存里没有对应 watch），
+         *      若按"我的那一片整体替换"处理，**下一次任何一次落盘都会把它们抹掉**
+         *      ⇒ 「判不出」又变回终态，只是换了个位置。
+         * ⚠ 而我名下那些**已经结算掉的** `waiting` 记录**必须被丢掉** ——
+         *   那正是 `W4`（回传成功了盘上还留着 pending ⇒ 下次重载再判 lost）的修法。
+         */
+        const keepPrev = prev.pending.filter((w) => !mineKeys.has(watchKey(w))
+          && ((w.owner ?? '') !== owner || w.settleState === 'unresolved' || w.settleState === 'stuck'))
+        /**
+         * ⚠ 合并**必须**走 `mergePendingByIdentity`（`orch-state.ts` 的唯一实现点）：
+         *   它与 `flushWatches` 那一侧用的是**同一个**判据（`target@at`），
+         *   ⛔ 不许在这里再写一遍去重 —— 两处各写一份正是 P1 的成因。
+         */
+        const next = mergePendingByIdentity(keepPrev, mine)
         return writePending(file, next, prev.lost)
       } catch {
         return false
@@ -1369,6 +1530,7 @@ export function apply(ctx: any): void {
       relaysDone: number
       relaysBlocked: number
       unownedWatches: number
+      settleByState: Record<SettleState, number>
     } => {
       const all = [...watches.values()]
       if (self === undefined) {
@@ -1381,6 +1543,8 @@ export function apply(ctx: any): void {
           relaysDone: 0,
           relaysBlocked: 0,
           unownedWatches: all.filter((w) => w.owner === undefined || w.owner === '').length,
+          /** ⚠ 判不出"我"是谁 ⇒ 三档一律 0，且渲染层**不许**把它们说成"没有"（B4 同款口径）。 */
+          settleByState: { waiting: 0, unresolved: 0, stuck: 0 },
         }
       }
       const mineW = all.filter((w) => w.owner === self)
@@ -1404,11 +1568,29 @@ export function apply(ctx: any): void {
           lostAcc.unknown += byClass.unknown
         }
       } catch { /* 读不到就当 0；不因诊断用途让读数崩掉 */ }
+      /**
+       * ── ⚠⚠ **结算态三档（按 owner 过滤）**（B3）────────────────────────────
+       *   ⚠ 它们**只活在盘上**（`unresolved` / `stuck` 在内存里没有对应 watch）
+       *     ⇒ 必须从**盘**读，⛔ 不许从 `watches` 推。
+       *   ⚠ `waiting` 那一档**只数盘上的**（内存里活着的那些另外有 `watches` 计数）——
+       *     两处叠起来会让"在等回传"变成两个数，⛔ 不许。
+       */
+      let settleAcc: Record<SettleState, number> = { waiting: 0, unresolved: 0, stuck: 0 }
+      try {
+        for (const file of scanStateFiles(svcCtx)) {
+          const owned = readOrchState(file).pending.filter((w) => w.owner === self)
+          const byState = countBySettleState(owned)
+          settleAcc.waiting += byState.waiting
+          settleAcc.unresolved += byState.unresolved
+          settleAcc.stuck += byState.stuck
+        }
+      } catch { /* 读不到就当 0；不因诊断用途让读数崩掉 */ }
       return {
         watches: mineW,
         handoffs: handoffs.sort((a, b) => b.at - a.at),
         lostPending: lostTotal,
         lostByClass: lostAcc,
+        settleByState: settleAcc,
         /**
          * ⚠ `relaysDone` / `relaysBlocked` 是**累计计数器**（进程内），
          *   改前只有一个数 ⇒ 读的人以为"我回传了 N 次"。⇒ 现在按 owner 分档累计。
@@ -1604,9 +1786,23 @@ export function apply(ctx: any): void {
              *   改前是 `persistWatches(file, [...watches.values()].map(...))`
              *   —— **整张表**写进一个文件、还给每条盖上本次的 `wsRoot`
              *   ⇒ 跨工作区互相污染（`1.4` 病根）。
-             *   ⇒ 现在走 `persistOwnerPartition`：只替换 owner 等于本条的记录，别人的原样留着。
+             *
+             * ⚠⚠⚠ **这里传的不是"本次这一条"，而是"本 owner 在本文件里还活着的全部"**
+             *   （2026-10-20 · 修 **P1** 的最后一处）。改前传的是 `[toPersisted(w)]`
+             *   （**只含刚派出的这一条**）⇒ `persistOwnerPartition` 里"我的那一片"就只有它
+             *   ⇒ **同一个 owner 先前那条被替换掉** ⇒ "每派一条活就丢上一条"。
+             *   ⚠ 语义现在与 `flushWatches` **完全同构**（那一边本来就是"本 owner 全量"）——
+             *     两处写法不一致正是本病的成因（`FINDINGS` P1 的原话）。
+             *   ⚠ 圈定"属于本文件"用的仍是**逐条的 `stateFileFor`**（⛔ 不拿当前 ws 一刀切，
+             *     否则跨工作区的记录会被错写进这一本账）。
              */
-            if (!persistOwnerPartition(file, owner ?? '', [toPersisted(w)])) {
+            const mineHere: PersistedWatch[] = []
+            for (const mw of watches.values()) {
+              if (stateFileFor.get(mw.target) !== file) continue
+              if ((mw.owner ?? '') !== (owner ?? '')) continue
+              mineHere.push(toPersisted(mw))
+            }
+            if (!persistOwnerPartition(file, owner ?? '', mineHere)) {
               svcCtx.logger?.warn?.(`[${name}] 运行态落盘失败（${file}）—— 重载后这次派发将不可观测。`)
             }
             // ── 清"待投递"（2026-10-10 新增）：这次投递成功 ⇒ 之前的欠账已还 ──
@@ -1672,6 +1868,9 @@ export function apply(ctx: any): void {
           relaysBlocked: mine.relaysBlocked,
           lostPending: mine.lostPending,
           lostByClass: mine.lostByClass,
+          // ── 结算态三档（B3）：`unresolved` 与 `stuck` **必须分开报**（⛔ 不许并进"在等"）──
+          settleByState: mine.settleByState,
+          stuckCount: mine.settleByState.stuck,
           // ⚠ 现读盘（不缓存）：记账在别的模块做，缓存会滞后 —— 见 `readHandoffs` 注释。
           handoffs: mine.handoffs,
           // ⚠ ⚠ **可达性**（第 247 轮）：⚠ 它与 `handoffs` **同一次读**吗？
@@ -1945,8 +2144,21 @@ export function apply(ctx: any): void {
         }
       },
 
-      dispatchWakeState(): DispatchWakeState {
-        return dispatchWake.snapshot()
+      dispatchWakeState(self?: string): DispatchWakeState {
+        /**
+         * ⚠⚠ **必须把调用方身份传下去**（B4 / W6）：改前是 `dispatchWake.snapshot()`
+         *   —— 无参 ⇒ 进程级合计 ⇒ 读的人看到的是**别人的**登记数与叫醒数。
+         */
+        const me = typeof self === 'string' && self !== '' ? self : undefined
+        return dispatchWake.snapshot(me)
+      },
+
+      /**
+       * ⚠⚠ **对外暴露的唯一对账入口**（B5）—— 实现就是上面那个 `reconcile()`，
+       *   ⛔ 不另写一份（两处各写必然漂）。
+       */
+      async reconcile(trigger: string) {
+        return reconcile(trigger)
       },
 
       control(action, opts?: { wsRoot?: string; self?: string }) {
@@ -1972,6 +2184,9 @@ export function apply(ctx: any): void {
           relaysBlocked: mine.relaysBlocked,
           lostPending: mine.lostPending,
           lostByClass: mine.lostByClass,
+          // ── 结算态三档（B3）：与 `status()` 同源同值 ──
+          settleByState: mine.settleByState,
+          stuckCount: mine.settleByState.stuck,
           // ⚠ 与 `status()` 同源同值（两处返回**同一个形状**，调用方不必分情况）。
           handoffs: mine.handoffs,
           reachability: reachabilityFor(opts?.wsRoot),
@@ -1982,6 +2197,392 @@ export function apply(ctx: any): void {
         }
       },
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // **唯一结算点** `settle()` + 惰性对账 `reconcile()`（2026-10-20 · 本单 B1/B3/B5）
+    // ══════════════════════════════════════════════════════════════════
+    //
+    // ⚠ ⚠ **本段是整个改造的地基**，改前有两处各写一份的结算逻辑
+    //   （事件路径 `:2006-2051`、重挂路径 `:1035-1059`）⇒ 两处必然漂。
+    //   现在：**事件路径 / 对账路径 / 重挂路径 / 补投路径都只调 `settle()`**。
+    //
+    // ⚠ ⚠ **`I-1` / `I-3` 不破（这一段必须留在代码里）**：
+    //   `settle()` 与 `reconcile()` 读的是**目标此刻的状态**（`agents.get(target)?.status`
+    //   / 看板卡终态 / 会话 log 末条），**⛔ 完全不是在回答"回执该投给谁"**。
+    //   收件人**永远只由 `w.owner` 决定**；`owner` 缺失 ⇒ **照旧不投**，只落"无归属"那一档。
+    //   ⇒ 下一个人若以为"重判 = 猜 owner"，请先读到这里：**目标状态与 owner 是两个不同字段**。
+
+    /**
+     * 一次对账的结果（⛔ 不给外部用，只供日志与自检读）。
+     */
+    interface ReconcileOutcome {
+      /** 真的结算掉的（成功投递并落盘）。 */
+      settled: string[]
+      /** 判不出、留在 `pending` 里等下一轮的那一摞。 */
+      unresolved: string[]
+      /** 重核到顶（`stuck`）的那一摞。 */
+      stuck: string[]
+      /** 本次有没有真的改过账（= 有没有触发落盘）。⚠ 写放大守卫的判据。 */
+      changed: boolean
+    }
+
+    /** 对账的代次（T5 的退避用它；⚠ 只增不清 —— 它是"这次武装排到第几档"）。 */
+    let recheckRound = 0
+    /** T5 已排的那个一次性定时器（⚠ 同一时刻**至多一个**；没有待办时这里恒为 undefined）。 */
+    let recheckTimer: ReturnType<typeof setTimeout> | undefined
+    /** 对账是否正在跑（防重入：结算里会落盘，落盘又会触发读状态）。 */
+    let reconciling = false
+
+    /**
+     * 取**目标此刻的状态**（⚠ 这是"判得出/判不出"的唯一判据来源，⛔ 不猜）。
+     *
+     * ⚠ 三档与 `TargetStatusOf` 同义：`'running'` / `'idle'` / `undefined`（判不出）。
+     * ⚠ `agents.get` 在**重载后不可信**（新代可能还没装载那个会话）⇒ 它只是**旁证**；
+     *   真正的判据优先级见 {@link probeTarget}。
+     */
+    const statusOfTarget = (target: string): 'running' | 'idle' | undefined => {
+      try {
+        const a = agents.get?.(target)
+        if (a === undefined) return undefined
+        const st = (a as any)?.status
+        if (st === 'running') return 'running'
+        if (st === 'idle') return 'idle'
+        return undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    /**
+     * 用**三条真相源**判"这个目标这一轮到底跑完了没有"（B3）。
+     *
+     * ⚠ ⚠ **判据顺序是有意义的**（`DESIGN` §4.1 的慢路径）：
+     *   ① **看板卡终态**（最硬：跨进程、跨重载都还在）——
+     *      卡进 `in_review` / `done` / `canceled` ⇒ 这一轮**确实结束了**；
+     *   ② **会话 log 末条 `assistant/message`**（次硬）——
+     *      有助手产出 ⇒ 它至少跑完过一轮（⚠ 与"它现在在不在跑"分开看）；
+     *   ③ `agents.get(id).status`（**最弱**：重载后不可信）⇒ 只作旁证。
+     *
+     * @returns `'done'` = 有硬证据说明跑完了（带 `evidence`）；
+     *   `'running'` = 还在跑；`undefined` = **判不出**（⛔ 不许当成"做完了"）。
+     */
+    const probeTarget = async (
+      target: string,
+      at: number,
+    ): Promise<{ kind: 'done'; evidence: SettleEvidence } | { kind: 'running' } | undefined> => {
+      const st = statusOfTarget(target)
+      // ① 看板卡终态（**唯一一条跨重载仍然可靠的真相源**）
+      try {
+        const snap = await orch.cardsOf({ selfSessionId: undefined })
+        if (snap.reachability === 'ok' || snap.reachability === 'no-cards') {
+          const card = snap.cards.find((c) => c.executionSessionId === target)
+          if (card !== undefined) {
+            const ended = card.phase === 'awaiting-review'
+              || card.status === 'in_review' || card.status === 'done' || card.status === 'canceled'
+            // ⚠ 只认"**这次派发之后**结束的"：卡可能早就在终态了（那是上一轮的事）。
+            const endedAfter = card.endedAt === undefined ? true : card.endedAt >= at
+            if (ended && endedAfter) return { kind: 'done', evidence: 'board' }
+            if (card.phase === 'running') return { kind: 'running' }
+          }
+        }
+      } catch { /* 读不到卡面 ⇒ 继续看下一条真相源（⛔ 不许当成"没跑完"） */ }
+      // ② 会话 log 末条 `assistant/message`
+      try {
+        const session = sessions.get?.(target)
+        if (session !== undefined && lastAssistantText(session) !== undefined) {
+          /**
+           * ⚠ log 有助手产出只说明"它跑完过一轮"，**不说明这一轮**就是刚派的那一轮。
+           *   ⇒ 只把它当"跑完了"的**次硬**证据；⚠ 而 `status==='running'` 仍然优先
+           *     （它此刻还在跑 ⇒ 这一轮没结束）。
+           */
+          if (st !== 'running') return { kind: 'done', evidence: 'session-log' }
+        }
+      } catch { /* 读不到会话 ⇒ 继续 */ }
+      // ③ 最弱的一条：`agents.get(id).status`
+      if (st === 'running') return { kind: 'running' }
+      if (st === 'idle') {
+        /**
+         * ⚠ `idle` **只在"本代亲眼见过它 running"时才算数**（既有口径，⛔ 不放宽）：
+         *   否则"目标一直是 idle"会被读成"它刚跑完"（那是改前的假叫醒形态）。
+         *   而重挂条目**已经由重挂判据确证过"它当时在跑"**（`lastStatus: 'running'`）⇒ 算数。
+         */
+        const sawRun = watches.get(target)?.sawRunning === true
+          || watches.get(target)?.lastStatus === 'running'
+        if (sawRun) return { kind: 'done', evidence: 'agent-status' }
+      }
+      return undefined
+    }
+
+    /**
+     * ⚠⚠ **唯一的结算点**（B1）。事件路径 / 对账路径 / 重挂路径 / 补投路径**都只调它**。
+     *
+     * ── 为什么必须只有一个 ────────────────────────────────────────────────
+     *   改前散在两处（事件 `:2006-2051`、重挂 `:1035-1059`）⇒ 一处改了另一处没改
+     *   就是"两条路给出两个结果"，而本病的现场正是"重挂那条白挂"（W3/W4）。
+     *
+     * ── 四件事，缺一条就不算结算 ─────────────────────────────────────────
+     *   ① **闸门在投递之前**（`stop` ⇒ `relaysBlocked++`、不投、⛔ 不删 watch）；
+     *   ② **单次性**：`w.reported = true` 先写后发（同一个 `idle` 只唤醒一次）；
+     *   ③ **投递**（`bus.deliver(w.watcher, receipt)`）—— 收件人**只来自 `w.watcher` / `w.owner`**；
+     *   ④ **账变了才落盘**（⛔ 读了就写）—— 成功 ⇒ 该条离开 `pending`；失败 ⇒ 留 `error` 残骸。
+     *
+     * @param record - 要结算的那条（内存里的 watch）。
+     * @param evidence - **凭哪条真相源结的账**（写进落盘记录，读数可解释）。
+     * @returns `true` = 投递成功且该条已离开 `pending`。
+     */
+    const settle = async (record: Watch, evidence: SettleEvidence): Promise<boolean> => {
+      const id = record.target
+      if (record.reported) return false
+      const w = watches.get(id) ?? record
+      /**
+       * ── ① 闸门在【回传之前】 ──
+       *   用户选择了"不设上限、只能手动停" ⇒ 这里就是那个刹车的作用点。
+       *   停了 ⇒ **不唤醒派活方**（循环当场断在这一环）。
+       *   ⚠ **按该条记录自己的 owner 判**（`I-4`）：别人停了⛔ 不许拦下我的回传。
+       */
+      if (isStoppedFor(w.owner ?? (w.watcher === '' ? undefined : w.watcher))) {
+        relaysBlocked++
+        bumpRelay(relaysByOwner.blocked, w.owner ?? (w.watcher === '' ? undefined : w.watcher))
+        return false
+      }
+      /** ⚠ 无收件人 ⇒ 不投（`I-2` 同款：缺 owner/watcher 时⛔ 不许猜一个）。 */
+      if (w.watcher === '') {
+        w.error = 'no recipient (watcher empty): receipt NOT delivered'
+        flushWatches()
+        return false
+      }
+      // ── ② 先标记再发（同一个 idle 只唤醒一次）──
+      w.reported = true
+      w.evidence = evidence
+      const session = (() => { try { return sessions.get?.(id) } catch { return undefined } })()
+      const receipt = buildReceipt(w, session)
+      const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
+      if (bus === undefined || typeof bus.deliver !== 'function') {
+        w.error = 'session bus unavailable at relay time'
+        flushWatches()
+        return false
+      }
+      // ── ③ 投递（唯一一次，⛔ 没有循环扇出、⛔ 没有兜底改投）──
+      try {
+        const res: any = await bus.deliver(w.watcher, receipt, 'followup')
+        if (res?.ok) {
+          relaysDone++
+          bumpRelay(relaysByOwner.done, w.owner ?? (w.watcher === '' ? undefined : w.watcher))
+          // ── ④ 成功 ⇒ 该条离开 `pending`（⛔ 不许只删内存不落盘 —— 那就是 W4）──
+          watches.delete(id)
+          flushWatches()
+          return true
+        }
+        w.error = res?.reason ?? 'relay delivery failed'
+      } catch (e: any) {
+        w.error = String(e?.message ?? e)
+      }
+      // ⚠ 失败 ⇒ 留 `error` 残骸，同样**如实落盘**（⛔ 不许静默丢掉）。
+      flushWatches()
+      return false
+    }
+
+    /**
+     * ⚠⚠ **惰性对账**（B5 的唯一实现点）：把盘上 `pending` 的账对平一次。
+     *
+     * ── 触发点（每一处都只调本函数，⛔ 不各写一份）──────────────────────
+     *   **T1** 插件就绪扫描（`apply()` 里那一次，保证型）
+     *   **T2** 每次 `hob_*` 工具调用（`bus.ts` 的 `pokeReconcile`）
+     *   **T3** 任意 `agent/status`（下面那个监听器）
+     *   **T4** 看板 SSE 的 `hello` 帧（`CardWake` 的 `onHello`）
+     *   **T5** 有条件的一次性复查（本函数末尾的 `armRecheck`）
+     *
+     * ── 写放大守卫 ────────────────────────────────────────────────────
+     *   ⚠ **只在"账真的变了"时落盘**：结算成功 / 判不出升级 / 重核代数变化才算变。
+     *   ⛔ 读了就写 —— 高频读路径（`hob_*`）会把它变成写风暴。
+     *
+     * @param trigger - 哪个触发点来的（⚠ 只为日志可读，⛔ 不影响判据）。
+     */
+    const reconcile = async (trigger: string): Promise<ReconcileOutcome> => {
+      const out: ReconcileOutcome = { settled: [], unresolved: [], stuck: [], changed: false }
+      if (reconciling) return out
+      reconciling = true
+      try {
+        for (const file of scanStateFiles(svcCtx)) {
+          const state = readOrchState(file)
+          for (const rec of state.pending) {
+            /**
+             * ⚠ 只处理**本代该管**的（`I-5`：别人的账不碰）——
+             *   判据复用既有 `adoptable`，⛔ 不另写一份。
+             */
+            if (isForeign(rec, file)) continue
+            /**
+             * ⚠⚠ **`stuck` 不参与自动重试**（B3 的上限）：
+             *   它的语义就是"不再自动重试，需人工裁" ⇒ 对账**跳过**它
+             *   （⛔ 不许"再看一眼"——那就等于无限重试，用户明确否掉的那档）。
+             */
+            if (rec.settleState === 'stuck') continue
+            /**
+             * ⚠ 内存里还活着的 watch ⇒ 走事件路径结算（⛔ 不在这里抢着投，
+             *   否则同一个 `idle` 会被投两次）。
+             */
+            const live = watches.get(rec.target)
+            if (live !== undefined && !live.reported) {
+              const p0 = await probeTarget(rec.target, rec.at)
+              if (p0?.kind === 'done') {
+                // ⚠ 落点文件必须记下来（修 W4）：重挂/对账两条路都要能结算得掉盘上那条。
+                stateFileFor.set(rec.target, file)
+                lastStatus.set(rec.target, 'running')
+                live.sawRunning = true
+                live.lastStatus = 'running'
+                if (await settle(live, p0.evidence)) out.settled.push(rec.target)
+                out.changed = true
+              }
+              continue
+            }
+            const probe = await probeTarget(rec.target, rec.at)
+            if (probe?.kind === 'running') continue
+            if (probe?.kind === 'done') {
+              /**
+               * ── 盘上有、内存没有 ⇒ **重建一条 watch 再走 settle()**（B1 的"唯一结算点"）──
+               *   ⚠ ⛔ 这不是"造一个假 watch"：目标**确实跑完了**，而这条记录本来就还在等
+               *     （`pending` 是唯一权威），所以它该结算。
+               *   ⚠ 收件人**只来自** `rec.watcher` / `rec.owner` —— ⛔ 不猜、⛔ 不改投。
+               */
+              const revived: Watch = {
+                target: rec.target,
+                watcher: rec.watcher,
+                ...(rec.round === undefined ? {} : { round: rec.round }),
+                ...(rec.task === undefined ? {} : { task: rec.task }),
+                at: rec.at,
+                sawRunning: true,
+                reported: false,
+                ...(rec.error === undefined ? {} : { error: rec.error }),
+                ...(rec.owner === undefined ? {} : { owner: rec.owner }),
+                ...(rec.wsRoot === undefined ? {} : { ownerWsRoot: rec.wsRoot }),
+                lastStatus: 'running',
+                settleState: 'waiting',
+              }
+              watches.set(rec.target, revived)
+              stateFileFor.set(rec.target, file)
+              lastStatus.set(rec.target, 'running')
+              if (await settle(revived, probe.evidence)) out.settled.push(rec.target)
+              out.changed = true
+              continue
+            }
+            /**
+             * ── **判不出** ⇒ 记代数 + 落回盘上（可重入态，⛔ 不是终态）──────────
+             *   ⚠ 代数已经由 `classifyPending`/`markLost` 那一侧维护；这里负责
+             *     "**又核过一次**"这句话是真的（`lastRecheckAt` 每次更新）。
+             */
+            const nextCount = (rec.recheckCount ?? 0) + 1
+            const atTop = nextCount >= STUCK_AFTER_RECHECKS
+            const nextRec: PersistedWatch = {
+              ...rec,
+              settleState: atTop ? 'stuck' : 'unresolved',
+              recheckCount: nextCount,
+              lastRecheckAt: Date.now(),
+            }
+            if (atTop) out.stuck.push(rec.target)
+            else out.unresolved.push(rec.target)
+            // 只有**代数变化**才算"账变了"（⛔ 读了就写）
+            persistRecheck(file, nextRec)
+            out.changed = true
+          }
+        }
+        if (out.changed) refreshLostCount()
+        return out
+      } catch (e) {
+        svcCtx.logger?.warn?.(`[${name}] 对账出错（${trigger}）：${String((e as Error)?.message ?? e)}`)
+        return out
+      } finally {
+        reconciling = false
+        // ⚠ 每轮对账之后**重新评估要不要武装 T5**（清空 ⇒ 当场解除）。
+        armRecheck()
+      }
+    }
+
+    /**
+     * 把"判不出"那一条的**代数**落回盘上（⚠ 只改这一条，⛔ 不重写整张表）。
+     *
+     * ⚠ 为什么要单独一个函数：`flushWatches` 写的是**内存里活着的** watch，
+     *   而 `unresolved` 那几条**只在盘上** ⇒ 走不到那条路。
+     * ⚠ 写失败必须留 warn（⛔ 不许静默：那会让"又核过"这句话变成假话）。
+     */
+    const persistRecheck = (file: string, rec: PersistedWatch): void => {
+      try {
+        const prev = readOrchState(file)
+        const rows = prev.pending.map((w) => (watchKey(w) === watchKey(rec) ? rec : w))
+        if (!writePending(file, rows, prev.lost)) {
+          svcCtx.logger?.warn?.(`[${name}] 对账结果落盘失败（${file}）：${rec.target}`)
+        }
+      } catch (e) {
+        svcCtx.logger?.warn?.(`[${name}] 对账结果落盘出错：${String((e as Error)?.message ?? e)}`)
+      }
+    }
+
+    /**
+     * ── ⚠⚠ **T5：有条件的一次性复查**（B5，⚠ 口径按用户裁定，逐条见下）──────
+     *
+     * ⚠ ⚠ **它到底是什么 / 不是什么**（用户明确否掉了"常驻定时器空转"）：
+     *   · **不是周期轮询** —— **没有待办时不存在任何定时器**（武装条件见下）；
+     *   · **不是无条件常转** —— 每一轮只排**一个**一次性 `setTimeout`（`unref`），跑完看账，
+     *     账还没平才排下一次；
+     *   · **必须有上限** —— 到 {@link STUCK_AFTER_RECHECKS} 轮记录升 `stuck`，
+     *     读数里**明说"不再自动重试，需人工裁"**。
+     * ⇒ **完全空闲时（没有在等回传的派发）本模块一个定时器都不存在。**
+     *
+     * ⚠ 解除条件 = **pending 清空 ⇒ 当场解除**（`clearRecheckTimer()`）。
+     */
+    const clearRecheckTimer = (): void => {
+      if (recheckTimer === undefined) return
+      try { clearTimeout(recheckTimer) } catch { /* 已触发/已清 */ }
+      recheckTimer = undefined
+      recheckRound = 0
+    }
+
+    const armRecheck = (): void => {
+      /**
+       * ⚠⚠ **武装判据**：只认"**盘上还有** `waiting` / `unresolved`"。
+       *   ⚠ `stuck` **不算**（它已经放弃自动重试）⇒ 否则就是"为一个放弃了的记录永远转下去"。
+       *   ⚠ 一个都没有 ⇒ **当场解除**（`recheckTimer` 归 undefined，`recheckRound` 归 0）。
+       */
+      const armed = (() => {
+        try {
+          for (const file of scanStateFiles(svcCtx)) {
+            if (hasUnsettled(readOrchState(file).pending)) return true
+          }
+        } catch { /* 读不到 ⇒ 不武装（fail-closed：没有证据就不起定时器） */ }
+        return false
+      })()
+      const delay = nextRecheckDelay(armed, recheckRound)
+      if (delay === undefined) { clearRecheckTimer(); return }
+      if (recheckTimer !== undefined) return          // ⚠ 同一时刻至多一个
+      recheckRound += 1
+      const t = setTimeout(() => {
+        recheckTimer = undefined
+        void reconcile('t5-timer').catch(() => { /* reconcile 自己已接住 */ })
+      }, delay)
+      /**
+       * ⚠ **`unref` 必须有**：宿主要能正常退出，⛔ 不许被本模块的复查定时器挂住。
+       *   （与 `card-wake.ts` 的 `sleep` 同一条纪律。）
+       */
+      ;(t as any)?.unref?.()
+      recheckTimer = t
+    }
+
+    void settle
+    void armRecheck
+
+    /**
+     * ── ⚠⚠ **T1：插件就绪扫描（保证型）**（B5）──────────────────────────────
+     *
+     * ⚠ ⚠ **这是唯一"保证"型的触发点**：进程一起来就**必跑一次**（`apply()` 的 inject 回调里）。
+     *   其余四个（T2 `hob_*` / T3 `agent/status` / T4 SSE `hello` / T5 复查）
+     *   **都只是"大概率"** —— 用户口径与 `DESIGN` §4.4 明令：⛔ 不许把它们写成保证。
+     *
+     * ⚠ **不 await**：`apply()` 是同步装配路径，⛔ 不许被读盘/投递拖住。
+     * ⚠ 它跑的正是**唯一**那个 `reconcile()`（⛔ 不另写一份就绪逻辑）。
+     * ⚠ 就绪那一刻盘上的三种记录各有归宿（上面接手块已经处置了 `reattach` / `lost`）：
+     *   · 仍在跑 ⇒ 已重挂，这里的对账会确认它还在跑（⛔ 不误结）；
+     *   · 已空闲 / 判不出 ⇒ 由对账**再核一次**（判不出 ⇒ `unresolved`，不是终态）。
+     */
+    void reconcile('ready-scan').catch(() => { /* reconcile 自己已接住 */ })
 
     // ── 状态监听：识别 `running → idle` 跳变 ─────────────────────────────
     // ⚠ 用 `ctx.on` 挂在**本模块自己的 fiber** 上 ⇒ 模块卸载时监听自动拆除。
@@ -2004,51 +2605,32 @@ export function apply(ctx: any): void {
          */
         void dispatchWake.observe(id, typeof status === 'string' ? status : undefined)
         const w = watches.get(id)
-        if (w === undefined || w.reported) return
-        if (status === 'running') {
-          // 见过 running 才算"它真的开始跑了" —— 光看到 idle 不能当"跑完"。
-          w.sawRunning = true
-          return
+        if (w !== undefined && !w.reported) {
+          if (status === 'running') {
+            // 见过 running 才算"它真的开始跑了" —— 光看到 idle 不能当"跑完"。
+            w.sawRunning = true
+            w.lastStatus = 'running'
+            return
+          }
+          if (status === 'idle' && w.sawRunning && before === 'running') {
+            /**
+             * ── ⚠⚠ **事件路径也走 `settle()`**（B1：唯一结算点）──────────────
+             *   改前这里有一份**独立实现**（闸门 / reported / buildReceipt / deliver
+             *   / flushWatches 各写一遍），与重挂路径那份必然漂 —— 而"重挂那条白挂"
+             *   （W3）正是两处不一致的直接后果。
+             *   ⇒ 现在只剩一处：`settle(w, 'event')`。
+             */
+            void settle(w, 'event')
+          }
         }
-        if (status !== 'idle') return
-        if (!w.sawRunning) return      // 从没跑过 ⇒ 不是"跑完"
-        if (before !== 'running') return // 不是从 running 掉下来的 ⇒ 不是这一次的结束
-        if (w.watcher === '') return
-
-        // ── ⚠⚠ 闸门在【回传之前】 ──
-        //   用户选择了"不设上限、只能手动停" ⇒ 这里就是那个刹车的作用点。
-        //   停了 ⇒ **不唤醒派活方**（循环当场断在这一环）。
-        //   ⚠ **按该条记录自己的 owner 判**（`I-4`）：别人停了⛔ 不许拦下我的回传。
-        if (isStoppedFor(w.owner ?? (w.watcher === '' ? undefined : w.watcher))) {
-          relaysBlocked++
-          bumpRelay(relaysByOwner.blocked, w.owner ?? (w.watcher === '' ? undefined : w.watcher))
-          return
-        }
-
-        // **先标记再发**：同一个 idle 事件只该唤醒一次（防"刷爆派活方"）。
-        w.reported = true
-
-        const session = (() => { try { return sessions.get?.(id) } catch { return undefined } })()
-        const receipt = buildReceipt(w, session)
-        const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
-        if (bus === undefined || typeof bus.deliver !== 'function') {
-          w.error = 'session bus unavailable at relay time'
-          flushWatches()
-          return
-        }
-        Promise.resolve(bus.deliver(w.watcher, receipt, 'followup'))
-          .then((res: any) => {
-            if (res?.ok) {
-              relaysDone++
-              // ⚠ 分档累计（`I-4`：读数分母 = 我的）—— 与上面的总数同源同义，只拆到各 owner 名下
-              bumpRelay(relaysByOwner.done, w.owner ?? (w.watcher === '' ? undefined : w.watcher))
-              watches.delete(id)
-            } else { w.error = res?.reason ?? 'relay delivery failed' }
-          })
-          .catch((e: any) => { w.error = String(e?.message ?? e) })
-          // ⚠ 无论成败都要同步落盘（本批新增）：成功 ⇒ 该条从 pending 消失
-          //   （下次重载不该再报它"丢失"）；失败 ⇒ 留 error 残骸，同样如实落盘。
-          .finally(() => { flushWatches() })
+        /**
+         * ── **T3：任意 `agent/status` 顺手对账一次**（B5）──────────────
+         *   ⚠ **不限目标**（用户口径逐字："任意 `agent/status`（不限目标）"）：
+         *     整机任何会话的状态变化都说明"时间在走"，此时把盘上的账对平一次最便宜。
+         *   ⚠ **不 await**：状态事件是热路径，⛔ 不许被读盘/投递拖住。
+         *   ⚠ 它**只对账、不投递**（投递仍然只由 `settle()` 做，且只认 `w.owner/watcher`）。
+         */
+        void reconcile('agent-status').catch(() => { /* reconcile 自己已接住 */ })
       } catch (e) {
         svcCtx.logger?.warn?.(`[${name}] 状态监听出错：${String((e as Error)?.message ?? e)}`)
       }
@@ -2304,7 +2886,11 @@ export function createHobOrchTools(orch: HobOrchestrator): {
       })()
       const dispatchWakeLines = ((): string[] => {
         try {
-          const d = orch.dispatchWakeState()
+          /**
+           * ⚠⚠ **必须把调用方身份传下去**（B4 / 修 **W6**）：改前 `dispatchWake.snapshot()`
+           *   无参 ⇒ 进程级合计 ⇒ 同一工作区两个 Hob 读到**对方的**登记数与叫醒数。
+           */
+          const d = orch.dispatchWakeState(selfId)
           /**
            * ⚠ ⚠ **"接没接上，一眼能看出来"**（作业书 §三-6 的硬要求）：
            *   判据 = **有没有过"按推送现读登记成功"**（`pushedRegisterOk`）——
@@ -2313,8 +2899,19 @@ export function createHobOrchTools(orch: HobOrchestrator): {
            * ⚠ 与"读过卡面才登记"分开计：那一档是旧的、会打空的那条路。
            */
           const wired = d.pushedRegisterOk > 0
+          /**
+           * ⚠⚠ **三档必须成对报**（B4 / `DESIGN` §4.6；缺一即假话）：
+           *   `我的登记/在跑` · **`归属判不出`** · **`他人的（只给条数）`**。
+           * ⚠ `selfUndecidable`（判不出"我"是谁）⇒ **只报后两档**，
+           *   ⛔ **不许说"0 个"** —— 那是把"不知道我是谁"说成"我没有登记"。
+           */
+          const selfPart = d.selfUndecidable === true
+            ? ' · ⚠ **我的登记：判不出（本次调用没带会话身份）**'
+            : ` · 我的登记 ${d.mine?.registered ?? 0} 个 · 我的在跑 ${d.mine?.pending ?? 0} 个`
+          const othersPart = ` · **归属判不出 ${d.ownerUnknownRegistered} 个**`
+            + ` · **他人的 ${d.othersOnly} 个（只给条数）**`
           const head = `实施会话叫醒面：${wired ? '✅ **已接上（按推送现读）**' : '⚠ **还没接上（未收到过点火帧）**'}`
-            + ` · 登记 ${d.registered} 个 · 待跑 ${d.pending} 个`
+            + selfPart + othersPart
             + ` · 已叫醒 ${d.wokeCount} 次`
             + (d.pushedRegisterOk > 0 ? ` · 按推送现读登记成功 ${d.pushedRegisterOk} 次` : '')
             + (d.undecidableCount > 0 ? ` · ⚠ **判不出 ${d.undecidableCount} 次**` : '')
@@ -2551,6 +3148,37 @@ export function createHobOrchTools(orch: HobOrchestrator): {
               ]),
             '  ↳ ⚠ 机制边界：若"跑完"发生在重载**之前**，那一跳事件已经没了 ⇒ '
               + '机制上补不回来，只能靠上面 ① 的"去会话里看"。',
+          ]),
+        /**
+         * ⚠⚠ **「判不出」与「重核到顶」必须单列**（2026-10-20 · B3）。
+         *
+         * ⚠ 改前它们叫 `lostClass:'unknown'` 并**永远不会再被看一次**（终态）；
+         *   现在 `unresolved` 是**可重入态**：每一轮触发都会再核，直到判出或到顶。
+         * ⚠ 两档**分开报**（⛔ 不许并进"在等回传"）：
+         *   · `unresolved` = **还在自动重试**（说清"第几次"）；
+         *   · `stuck`      = **已经放弃自动重试** ⇒ 必须明说"需人工裁"
+         *     （⛔ 不许让它看起来像"还在等"）。
+         */
+        ...(s.settleByState === undefined || (s.settleByState.unresolved === 0 && s.settleByState.stuck === 0)
+          ? []
+          : [
+            ...(s.settleByState.unresolved === 0
+              ? []
+              : [
+                `⚠ 判不出（目标状态读不到）：${s.settleByState.unresolved} 条 —— **仍在自动重核**`,
+                '  ↳ ⚠ 这一档**不是结论**：既不是"它还在跑"，也不是"它做完了"；'
+                  + `下次任何一次读写（含插件就绪）都会再核一次，最多 ${STUCK_AFTER_RECHECKS} 轮。`,
+                '  ↳ ⛔ 它**不会**猜 owner：收件人始终只由该记录自己的 owner 决定（缺 owner ⇒ 不投）。',
+              ]),
+            ...(s.settleByState.stuck === 0
+              ? []
+              : [
+                `⚠⚠ 重核到顶仍判不出（**stuck**）：${s.settleByState.stuck} 条 —— **不再自动重试，需人工裁**`,
+                '  ↳ 去向：去那个会话 / 那张卡看有没有产出；有 ⇒ 该条应被结算（若仍挂着说明真相源读不到），'
+                  + '没有 ⇒ 重新派一次（`hob_dispatch`）。',
+                '  ↳ ⛔ 别再等它自己回来：**这一档没有自动重试了**（上限 = '
+                  + `${STUCK_AFTER_RECHECKS} 轮，防无限重试）。`,
+              ]),
           ]),
         // ── ⚠ 以下是 2026-10-10 **新增的行**（原有行一字未改、未删）──────────
         //   它们存在的唯一理由：`watches` 只在**投递成功之后**才登记 ⇒

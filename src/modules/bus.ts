@@ -1072,6 +1072,16 @@ function selfSessionIdOf(exec: any): string | undefined {
 export function createHobBusTools(
   bus: HobBus,
   ledgerRootOf?: (exec: any) => string | undefined,
+  /**
+   * ⚠⚠ **T2 的唯一挂点**（2026-10-20 · B5）：**每次 `hob_*` 工具被调用时顺手对账一次**。
+   *
+   * ⚠ 为什么挂在这里而不是各工具的 `execute` 里各写一行：本函数是那四个工具的
+   *   **唯一造点** ⇒ 一处挂上，四个工具（`hob_sessions` / `hob_send` /
+   *   `hob_workspaces` / `hob_spawn`）全部覆盖，⛔ 不会漏一个、⛔ 不会写四遍。
+   * ⚠ ⛔ 不许 await（对账是背景对平，投递语义不变）；⛔ 不许让它抛（对账坏了不能把投递带崩）。
+   * ⚠ 缺省不传 ⇒ 不对账（机检与旧调用形状照旧）。
+   */
+  onRead?: () => void,
 ): {
   sessions: ReturnType<typeof defineTool>
   send: ReturnType<typeof defineTool>
@@ -1090,6 +1100,17 @@ export function createHobBusTools(
     } catch {
       return undefined
     }
+  }
+
+  /**
+   * **T2：本次工具调用顺手对一次账**（⛔ 不 await、⛔ 不抛、⛔ 不改任何工具结果）。
+   *
+   * ⚠ 它工作的前提是调用方能从 `exec` 判出"我是谁"（= owner）：
+   *   **判不出 ⇒ 照样触发**（对账读的是盘，不依赖"我是谁"），
+   *   而**投递与读数**仍然只认逐条的 `owner`（`I-1` / `I-2`）—— 两件事分开。
+   */
+  const pokeReconcile = (): void => {
+    try { onRead?.() } catch { /* 对账是附加观测，失败不影响工具本体 */ }
   }
 
   /**
@@ -1161,6 +1182,8 @@ export function createHobBusTools(
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
     async execute(_args: unknown, exec: any): Promise<string> {
+      /** ⚠ T2（B5）：每次 `hob_*` 读写顺手对账一次（⛔ 不 await、⛔ 不改本工具结果）。 */
+      pokeReconcile()
       const rows = bus.list(selfSessionIdOf(exec))
       // 把自己标出来：投给自己是无效动作。
       // ⚠ ⚠ **投影缺位时置顶声明**（⚠ 否则读的人会把降级值当权威值用 —— 那正是本单要修的形态）。
@@ -1255,6 +1278,8 @@ export function createHobBusTools(
       args: { sessionId: string; message: string; mode?: 'followup' | 'steer' },
       exec: any,
     ): Promise<string> {
+      /** ⚠ T2（B5）：同上 —— 投递路径也顺手对账（对账读盘，⛔ 不改投递语义）。 */
+      pokeReconcile()
       const self = selfSessionIdOf(exec)
       if (self !== undefined && args.sessionId === self) {
         return JSON.stringify({ ok: false, reason: 'refusing to deliver to this session itself' })
@@ -1297,6 +1322,8 @@ export function createHobBusTools(
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
     async execute(_args: unknown, exec: any): Promise<string> {
+      /** ⚠ T2（B5）。 */
+      pokeReconcile()
       const rows = await bus.listWorkspaces(selfSessionIdOf(exec))
       if (rows.length === 0) return '没有可用的工作区（或工作区服务不可用）。'
       const lines = rows.map((w) => '- ' + [
@@ -1344,6 +1371,8 @@ export function createHobBusTools(
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
     async execute(args: { workspace?: string; agentPreset?: string }, exec: any): Promise<string> {
+      /** ⚠ T2（B5）。⚠ 建会话也顺手对账：那是"我可能正在等回传"的又一条高频路径。 */
+      pokeReconcile()
       const r = await bus.spawn(args?.workspace, args?.agentPreset, selfSessionIdOf(exec))
       if (!r.ok) {
         return JSON.stringify({
