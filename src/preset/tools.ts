@@ -33,14 +33,7 @@
  * ⚠ 本模块**不注册** DSH 原生 read/bash/write —— 与 `PROJECT.md` §5.2 同款纪律。
  */
 import { appendFileSync, statSync } from 'node:fs'
-import {
-  GATE_SERVICE,
-  DEFAULT_DENY,
-  DEFAULTS,
-  createHobTools,
-  ledgerRootOf,
-  type HobToolsConfig,
-} from '../modules/tools.ts'
+import type { HobToolsConfig } from '../modules/tools.ts'
 /**
  * ⚠⚠ **必须用「命名空间导入」，⛔ 不许写具名导入**（2026-10-19 · `TASK-D2`）。
  *
@@ -64,15 +57,37 @@ import {
  *     （那会把"这一份缓存有没有那个导出"凝固成常量，正是本条要避免的形态）。
  */
 import * as configFace from '../config.ts'
-import {
-  DEFAULT_WORK_MODE,
-  WORK_MODE_VALUES,
-  workModeInstruction,
-  workModeRedLine,
-  type WorkMode,
-} from '../shared/work-mode.ts'
-import { BUS_SERVICE, createHobBusTools, type HobBus } from '../modules/bus.ts'
-import { ORCH_SERVICE, createHobOrchTools, type HobOrchestrator } from '../modules/orchestrator.ts'
+/**
+ * ⚠⚠ **同一纪律扩到「一个名字就能拖垮整块」的全部具名导入**（2026-10-19 · `TASK-D`①）。
+ *
+ * `TASK-D2` 只治了 `../config.ts` 那一处，但**失败链是 ESM 的共性、不是那个文件的个性**：
+ * 本模块原来还有四组**具名导入**（`modules/tools.ts` 的五个名字 · `shared/work-mode.ts` 的
+ * 四个名字 · `modules/bus.ts` 的 `BUS_SERVICE` · `modules/orchestrator.ts` 的 `ORCH_SERVICE`），
+ * 任何一组里少一个名字 ⇒ **同一个症状**：整块求值失败 ⇒ `apply` 不被调用 ⇒ `hob_*` 全没，且不报错。
+ *
+ * ⇒ 现在**全部改为命名空间导入**，取值时机一律**运行时**（`apply` 里 / 订阅回调里 / 每次现读）。
+ *   缺席时的处置按「它缺席时其余能力还能不能安全工作」分两档（本单 §三-③ 的判据）：
+ *
+ *   | 面 | 缺席时 | 为什么 |
+ *   |---|---|---|
+ *   | 工具定义 / 门禁名 / 默认值（`modules/tools.ts`） | ⛔ **关键：起手 throw** | 没有它本预设一行工具都注册不出来；"少一半工具却看着正常"正是要避免的形态 |
+ *   | `PERMISSION_SERVICE`（`config.ts`） | ⛔ **关键：throw** | 安全面三处（白名单 / 允许清单 / 执行前拦截），详见 `apply` 里那段注释 |
+ *   | `BUS_SERVICE` / `ORCH_SERVICE` | 可降级 | 只在**用它的那次订阅**里取；缺席 = 少 M3 / M5 那组工具，其余照常 |
+ *   | `WORK_MODE_SERVICE` | 可降级 | 只决定一段给模型看的规划口径 |
+ *   | `skeletonEnabled()` / 共享口径函数 | 可降级 | 缺了退回**同一份** schema 缺省值 |
+ *
+ * ⚠ 降级**必须可读**：每条降级都 `warn` + `diag` 说清「少了什么 / 为什么少 / 影响什么 / 怎么修」，
+ *   并记进 {@link DEGRADED_CAPABILITIES} 供诊断读取（⛔ 不许静默少一块）。
+ */
+import * as toolsFace from '../modules/tools.ts'
+import * as workModeFace from '../shared/work-mode.ts'
+import * as busFace from '../modules/bus.ts'
+import * as orchFace from '../modules/orchestrator.ts'
+// ⚠ ⚠ **只导类型**（`import type`）—— 类型在编译期擦除，**不产生运行时绑定** ⇒
+//   它们缺席不会造成 ESM 链接失败。这正是"值的面可降级、类型的面仍精确"的分界线。
+import type { HobBus } from '../modules/bus.ts'
+import type { HobOrchestrator } from '../modules/orchestrator.ts'
+import type { WorkMode } from '../shared/work-mode.ts'
 
 /** 模块名（preset 行的 `name` 指向本模块）。 */
 export const name = 'dsh-hob-tools'
@@ -87,6 +102,19 @@ export const inject = ['tools']
 
 /** preset 行传入的配置。 */
 export type Config = HobToolsConfig
+
+/**
+ * **本模块当前降级了哪些能力**（`TASK-D`①-②："降级必须可读"的**可读落点**）。
+ *
+ * ⚠ 为什么要有这个导出，而不是只打一行 `warn`：
+ *   日志是**易失**的（用户默认关着 `debugLog`、`ctx.logger.warn` 只在宿主控制台），
+ *   而"少了什么"这件事必须在**事后**也能读出来（诊断脚本 / 将来的面板）。
+ *   ⇒ 每次 `apply` **重写**这份清单（它描述的是"这一次挂载的实况"，不是历史累积）。
+ *
+ * ⚠ 键 = `config.ts` / 依赖模块里的**具名导出名**（与告警文本一一对应，便于对照源码）。
+ * ⚠ ⛔ **关键依赖不写进这里** —— 那条路径是 `throw`，不是降级（本单 §三-③）。
+ */
+export const DEGRADED_CAPABILITIES: { key: string; why: string }[] = []
 
 /**
  * 诊断输出 —— **默认关闭**，由配置开关 `debugLog` 显式打开。
@@ -105,7 +133,12 @@ function makeDiag(config: Config): (msg: string) => void {
   if (config.debugLog !== true) return (): void => { /* 开关关闭：不做任何 IO */ }
 
   const path = config.debugLogPath ?? '/tmp/dsh-hob-preset-tools.log'
-  const maxBytes = config.debugLogMaxBytes ?? DEFAULTS.debugLogMaxBytes
+  // ⚠ `DEFAULTS` 也是"可能在旧缓存里缺席"的具名导出（`TASK-D`①）⇒ **运行时**取，
+  //   且缺席时退到**同一个数**（`modules/tools.ts` 的 `debugLogMaxBytes` 缺省值）。
+  //   ⚠ 诊断器本身**不是能力**（默认关着），它缺席不该让任何东西失败。
+  const defaults = (toolsFace as unknown as Record<string, unknown>).DEFAULTS as
+    { debugLogMaxBytes?: number } | undefined
+  const maxBytes = config.debugLogMaxBytes ?? defaults?.debugLogMaxBytes ?? 262144
 
   return (msg: string): void => {
     try {
@@ -154,6 +187,58 @@ export function apply(ctx: any, config: Config = {}): void {
     try { ctx.logger?.debug?.(m) } catch { /* 无 logger 时忽略 */ }
     diag(m)
   }
+
+  /** 记一条**降级**（可读 + 可查）。⚠ 每条只记一次，`apply` 重入时重置清单。 */
+  DEGRADED_CAPABILITIES.length = 0
+  const degrade = (key: string, why: string): void => {
+    DEGRADED_CAPABILITIES.push({ key, why })
+    try { ctx.logger?.warn?.(`[dsh-hob preset] ${why}`) } catch { /* 日志失败不影响判定 */ }
+    diag(`[dsh-hob preset] 降级 ${key}：${why}`)
+  }
+
+  /**
+   * **运行时**取本模块依赖的具名导出（⛔ 不是模块顶层快照）。
+   *
+   * ⚠ 为什么要有这一层：见文件头那段注释 —— 四个依赖模块现在都是**命名空间导入**，
+   *   "这一份缓存到底有没有这个导出"只能在运行时回答。
+   * ⚠ 返回 `undefined` 的语义 = **这个具名导出在你手上这份模块里根本不存在**
+   *   （旧缓存 / 版本错配）—— 这与"导出在、但服务没被 provide"（模块关掉）是**两件事**，
+   *   下面按各自的口径分开处理，⛔ 不许混成一句。
+   */
+  const faceOf = (key: string): unknown => (toolsFace as unknown as Record<string, unknown>)[key]
+
+  /**
+   * ⚠⚠ **关键依赖①：`modules/tools.ts` 的五个名字**（`TASK-D`① 新增的这条判据）。
+   *
+   * 判据（本单 §三-③）：**它缺席时，其余能力还能不能安全工作** —— 答案是不能：
+   *   这五个名字里有**工具定义本身**（`createHobTools`）、**门禁服务名**（`GATE_SERVICE`）、
+   *   **账本根解析**（`ledgerRootOf`）、**默认值**（`DEFAULTS`）与**屏蔽名单**（`DEFAULT_DENY`）。
+   *   ⇒ 少了它们，`apply` 要么立刻抛 `TypeError`（更糟：抛在订阅回调里，变成半挂载），
+   *     要么**静默少掉一整组工具/整条屏蔽**——后者正是"装错了却看起来正常"。
+   *   ⇒ 起手就 `throw`，并且**把缺了哪几个名字逐条说出来**（⛔ 不许只说"依赖缺失"）。
+   */
+  const TOOLS_FACE_NAMES = ['GATE_SERVICE', 'DEFAULT_DENY', 'DEFAULTS', 'createHobTools', 'ledgerRootOf'] as const
+  const missingToolsFace = TOOLS_FACE_NAMES.filter((k) => faceOf(k) === undefined)
+  if (missingToolsFace.length > 0) {
+    const why = '⚠ 本预设依赖的工具模块面**取不到这些具名导出**：'
+      + missingToolsFace.map((k) => `"${k}"`).join(' / ')
+      + '。当前这份 `modules/tools.ts`（很可能是宿主进程里的**旧模块缓存**）没有它们。'
+      + ' ⚠ 它决定工具定义 / 门禁服务名 / 账本根解析 / 默认值 / 屏蔽名单五处，'
+      + '⛔ 少了它**无法安全降级**（会变成"只有半套工具、或屏蔽名单凭空消失"，用户看不出）。'
+      + ' ⇒ 按"关键依赖缺席照旧失败"处理：本预设工具面不注册。'
+      + ' ↳ 修法：重启宿主，让它加载与盘上产物同版本的 `dsh-hob`。'
+    try { ctx.logger?.warn?.(`[dsh-hob preset] ${why}`) } catch { /* 日志失败不影响判定 */ }
+    diag(`[dsh-hob preset] 关键依赖缺席：${why}`)
+    throw new Error(`dsh-hob preset: 关键依赖（modules/tools.ts 的 ${missingToolsFace.join(' / ')}）取不到`
+      + ' ⇒ 拒绝以降级方式运行（理由见日志 warn / 见 src/preset/tools.ts 的 TASK-D 注释）')
+  }
+  /** 已过关键依赖检查 ⇒ 这些名字此后按非空使用（`typeof` 收窄只在本地有效，故显式取一次）。 */
+  const GATE_SERVICE = faceOf('GATE_SERVICE') as string
+  const DEFAULT_DENY = faceOf('DEFAULT_DENY') as readonly string[]
+  const DEFAULTS = faceOf('DEFAULTS') as { debugLogMaxBytes: number }
+  const createHobTools = faceOf('createHobTools') as (...a: any[]) => any
+  const ledgerRootOf = faceOf('ledgerRootOf') as (...a: any[]) => any
+
   /**
    * 从 `config.ts` 的面里**运行时**取一个具名服务的服务名（⛔ 不是模块顶层快照）。
    *
@@ -245,15 +330,29 @@ export function apply(ctx: any, config: Config = {}): void {
   const modeOf = (): WorkMode => {
     try {
       const name = serviceNameOf('WORK_MODE_SERVICE')
-      if (name === undefined) return DEFAULT_WORK_MODE
+      if (name === undefined) return workModeFace.DEFAULT_WORK_MODE
       const svc = ctx.get?.(name) ?? ctx[name]
       const raw = typeof svc === 'function' ? String(svc()) : ''
-      return (WORK_MODE_VALUES as readonly string[]).includes(raw) ? (raw as WorkMode) : DEFAULT_WORK_MODE
+      return (workModeFace.WORK_MODE_VALUES as readonly string[]).includes(raw)
+        ? (raw as WorkMode) : workModeFace.DEFAULT_WORK_MODE
     } catch {
-      return DEFAULT_WORK_MODE
+      return workModeFace.DEFAULT_WORK_MODE
     }
   }
-  denyInheritedTools(ctx, log)
+
+  /**
+   * ⚠ `shared/work-mode.ts` 里那四个**口径函数/常量**同样是"缺一个就整块求值失败"的具名导出。
+   *
+   * 判据：**它们缺席时其余能力还能不能安全工作** ⇒ 能 —— 工具面、权限面、收敛机制都不读它们，
+   *   只有「工作方式」这一段口径与两个降级兜底用到。⇒ **可降级**，但必须可读。
+   * ⚠ 因此把它们收成一个 `wm` 句柄：缺席的字段是 `undefined`，下面的口径注入**整体跳过**，
+   *   而不是让 `apply` 在 `workModeInstruction is not a function` 上炸掉。
+   */
+  const wmOk = typeof workModeFace.workModeInstruction === 'function'
+    && typeof workModeFace.workModeRedLine === 'function'
+    && typeof workModeFace.DEFAULT_WORK_MODE === 'string'
+    && Array.isArray(workModeFace.WORK_MODE_VALUES)
+  denyInheritedTools(ctx, log, DEFAULT_DENY)
 
   // ⚠ **收敛机制的挂载点：直接在 preset scope 上**（不在门禁回调内）—— 见 apply 头部注释。
   //   两处都只认**本 scope**（ctx 即 preset 作用域），因此不影响其它预设；
@@ -272,15 +371,23 @@ export function apply(ctx: any, config: Config = {}): void {
   //   ⇒ 缺席（导出根本没有 / 服务没 provide）⇒ **只跳过这一段**，⛔ 不许影响其余注册。
   //   ⚠ 但降级**必须可读**（§三-②）：少了什么、为什么少、影响是什么，一次 warn 说清。
   const workModeServiceName = serviceNameOf('WORK_MODE_SERVICE')
-  if (workModeServiceName === undefined) {
-    const why = '⚠ 「工作方式」档位口径**没有注入**：当前这份 `config.ts`（很可能是宿主进程里的'
+  if (!wmOk) {
+    // ⚠ 依赖模块整块缺席（旧缓存里没有 `shared/work-mode.ts` 这四个名字）⇒ 口径**无从拼起**。
+    degrade('WORK_MODE_SERVICE',
+      '⚠ 「工作方式」档位口径**没有注入**：`shared/work-mode.ts` 里'
+      + ' `workModeInstruction` / `workModeRedLine` / `DEFAULT_WORK_MODE` / `WORK_MODE_VALUES`'
+      + ' **至少有一个取不到**（当前这份 `dsh-hob` 很可能是宿主进程里的**旧模块缓存**）。'
+      + ' ⇒ 影响面**只有这一条**：Hob 收不到"拆几路"的规划口径（按本项落地之前的行为走）；'
+      + ' ⚠ 工具面 / 权限档位 / 收敛机制**不受影响，已照常注册**。'
+      + ' ↳ 修法：重启宿主，让它加载与盘上产物同版本的 `dsh-hob`。')
+  } else if (workModeServiceName === undefined) {
+    degrade('WORK_MODE_SERVICE',
+      '⚠ 「工作方式」档位口径**没有注入**：当前这份 `config.ts`（很可能是宿主进程里的'
       + '**旧模块缓存**）没有具名导出 "WORK_MODE_SERVICE"。'
-      + ' ⇒ 影响面**只有这一条**：Hob 会按缺省档的拆分口径做事（`auto`），'
+      + ' ⇒ 影响面**只有这一条**：Hob 会按缺省档的拆分口径做事（`' + workModeFace.DEFAULT_WORK_MODE + '`），'
       + '「单会话 / 多会话」两档的设置**这一轮读不到**；'
       + ' ⚠ 工具面 / 权限档位 / 收敛机制**不受影响，已照常注册**。'
-      + ' ↳ 修法：重启宿主，让它加载与盘上产物同版本的 `dsh-hob`。'
-    try { ctx.logger?.warn?.(`[dsh-hob preset] ${why}`) } catch { /* 忽略 */ }
-    diag(`[dsh-hob preset] ${why}`)
+      + ' ↳ 修法：重启宿主，让它加载与盘上产物同版本的 `dsh-hob`。')
   } else {
     injectWorkMode(ctx, modeOf, log)
   }
@@ -301,7 +408,7 @@ export function apply(ctx: any, config: Config = {}): void {
     //   `ctx.inject(["settings"], (child) => {` 那一段 —— ⚠ 按**符号锚**定位，⛔ 别按行号）。
     //   子 ctx 继承依赖 API 且**拥有它自己创建的注册** ⇒ 门禁消失时这些注册随之拆除，
     //   不用手写卸载逻辑（§3.3 第 3 条：资源靠 ctx.effect 挂，卸载自动清理）。
-    registerTools(gatedCtx, config, levelOf, log)
+    registerTools(gatedCtx, config, levelOf, log, ORCH_SERVICE, createHobTools)
   })
 
   // ── M3 · 会话总线工具（UD-77）────────────────────────────────────────
@@ -309,30 +416,58 @@ export function apply(ctx: any, config: Config = {}): void {
   //   `sessions`/`agents` 就绪后 provide。服务不在（模块关掉 / 服务未就绪）⇒
   //   回调不跑 ⇒ **这两个工具根本不出现**（而不是出现后报错）。
   //   ⇒ 关掉 `modules.bus` 只影响 M3 自己，与「模块可独立启停」一致（§3.3）。
-  ctx.inject([BUS_SERVICE], (busCtx: any) => {
-    const bus = busCtx[BUS_SERVICE] ?? busCtx.get?.(BUS_SERVICE)
-    if (bus === undefined) {
-      log('hobBus 已就绪但不可用（跳过 M3 工具注册）')
-      return
-    }
-    log('会话总线就绪 ⇒ 注册 M3 工具')
-    registerBusTools(busCtx, bus as HobBus, log, config)
-  })
+  //
+  // ⚠⚠ **`BUS_SERVICE` 与 `createHobBusTools` 也是"缺一个就拖垮整块"的具名导出**
+  //   （`TASK-D`①）⇒ 改成**运行时**取。取不到的处置：**可降级**（少 M3 这 4 个工具，
+  //   工具面其余部分 / 权限面 / 收敛机制 / M5 全部照常）—— 判据仍是本单 §三-③
+  //   "它缺席时其余能力还能不能安全工作"。⚠ 但⛔ 不许静默：`degrade` 会说清少了哪 4 个。
+  const BUS_SERVICE = busFace.BUS_SERVICE
+  const createHobBusTools = busFace.createHobBusTools
+  if (typeof BUS_SERVICE !== 'string' || typeof createHobBusTools !== 'function') {
+    degrade('BUS_SERVICE',
+      '⚠ 会话总线（M3）四个工具**没有注册**：`modules/bus.ts` 的'
+      + ' `BUS_SERVICE` / `createHobBusTools` 至少有一个取不到（旧模块缓存？）。'
+      + ' ⇒ 少了 `hob_sessions` / `hob_send` / `hob_workspaces` / `hob_spawn` 这 4 个；'
+      + ' ⚠ 工具面其余部分 / 权限档位 / 收敛机制 / 编排工具（M5）**不受影响**。'
+      + ' ↳ 修法：重启宿主，让它加载与盘上产物同版本的 `dsh-hob`。')
+  } else {
+    ctx.inject([BUS_SERVICE], (busCtx: any) => {
+      const bus = busCtx[BUS_SERVICE] ?? busCtx.get?.(BUS_SERVICE)
+      if (bus === undefined) {
+        log('hobBus 已就绪但不可用（跳过 M3 工具注册）')
+        return
+      }
+      log('会话总线就绪 ⇒ 注册 M3 工具')
+      registerBusTools(busCtx, bus as HobBus, log, config, createHobBusTools, ledgerRootOf)
+    })
+  }
 
   // ── M5 · 闭环编排工具（UD-80 · 批 17）────────────────────────────────
   // ⚠ 同 M3 的反应式订阅纪律：`hobOrchestrator` 由 `modules/orchestrator.ts` 在
   //   `sessions`/`agents` 就绪后 provide。服务不在（`modules.orch` 关掉 / 未就绪）
   //   ⇒ 回调不跑 ⇒ **三个编排工具根本不出现**。
   //   ⇒ 关掉 `modules.orch` 只影响 M5 自己：**会话总线仍在**（手工投递路不受影响）。
-  ctx.inject([ORCH_SERVICE], (orchCtx: any) => {
-    const orch = orchCtx[ORCH_SERVICE] ?? orchCtx.get?.(ORCH_SERVICE)
-    if (orch === undefined) {
-      log('hobOrchestrator 已就绪但不可用（跳过 M5 工具注册）')
-      return
-    }
-    log('闭环编排就绪 ⇒ 注册 M5 工具')
-    registerOrchTools(orchCtx, orch as HobOrchestrator, log)
-  })
+  // ⚠⚠ 与 M3 同款：`ORCH_SERVICE` / `createHobOrchTools` 改为**运行时**取，取不到即降级。
+  const ORCH_SERVICE = orchFace.ORCH_SERVICE
+  const createHobOrchTools = orchFace.createHobOrchTools
+  if (typeof ORCH_SERVICE !== 'string' || typeof createHobOrchTools !== 'function') {
+    degrade('ORCH_SERVICE',
+      '⚠ 闭环编排（M5）三个工具**没有注册**：`modules/orchestrator.ts` 的'
+      + ' `ORCH_SERVICE` / `createHobOrchTools` 至少有一个取不到（旧模块缓存？）。'
+      + ' ⇒ 少了 `hob_dispatch` / `hob_orch_status` / `hob_orch_control` 这 3 个；'
+      + ' ⚠ 工具面其余部分 / 权限档位 / 收敛机制 / 会话总线（M3）**不受影响**。'
+      + ' ↳ 修法：重启宿主，让它加载与盘上产物同版本的 `dsh-hob`。')
+  } else {
+    ctx.inject([ORCH_SERVICE], (orchCtx: any) => {
+      const orch = orchCtx[ORCH_SERVICE] ?? orchCtx.get?.(ORCH_SERVICE)
+      if (orch === undefined) {
+        log('hobOrchestrator 已就绪但不可用（跳过 M5 工具注册）')
+        return
+      }
+      log('闭环编排就绪 ⇒ 注册 M5 工具')
+      registerOrchTools(orchCtx, orch as HobOrchestrator, log, createHobOrchTools)
+    })
+  }
 }
 
 /**
@@ -342,10 +477,10 @@ export function apply(ctx: any, config: Config = {}): void {
  *   **宿主平面行**声明的，会被**每个 agent 继承** —— 只靠"预设不挂它"**摘不掉**
  *   （实测：不摘时助手会多出 4 个）。收敛要靠**允许清单**思维（§6.3）。
  */
-function denyInheritedTools(ctx: any, log: (m: string) => void): void {
+function denyInheritedTools(ctx: any, log: (m: string) => void, defaultDeny: readonly string[]): void {
   // ⚠ 原先此处还拼接 `config.denyTools ?? []`；该配置键已在阶段 E2 **删除**（无 patch 声明 ⇒ 恒空）。
   //   deny 名单现在**就是** `DEFAULT_DENY`（行为与删键前完全一致：删前它恒为 `[]`）。
-  const deny = [...DEFAULT_DENY]
+  const deny = [...defaultDeny]
   log('deny=' + JSON.stringify(deny))
 
   /** 已摘掉的名字（含"这套部署里没有"的 —— 不重复试，避免每次都抛一遍）。 */
@@ -703,12 +838,15 @@ function injectWorkMode(ctx: any, modeOf: () => WorkMode, log: (m: string) => vo
      *   而缺省档是本项落地之前的行为，最轻。
      */
     const textNow = (): string => {
+      // ⚠ 运行时读（⛔ 不是模块顶层快照 `workModeInstruction`）—— 见文件头那段注释：
+      //   这四个名字也可能在旧缓存里缺席。`apply` 已在挂载前用 `wmOk` 判过一轮，
+      //   这里再取一次是因为**装配发生在很久以后**（`apply` 与装配之间可能隔着重载）。
       try {
-        return workModeInstruction(modeOf()) + workModeRedLine()
+        return workModeFace.workModeInstruction(modeOf()) + workModeFace.workModeRedLine()
       } catch (e) {
         log('工作方式口径取档位异常（退回缺省档）：' + String((e as Error)?.message ?? e))
         try {
-          return workModeInstruction(DEFAULT_WORK_MODE) + workModeRedLine()
+          return workModeFace.workModeInstruction(workModeFace.DEFAULT_WORK_MODE) + workModeFace.workModeRedLine()
         } catch {
           return ''
         }
@@ -1033,7 +1171,8 @@ function installPermissionGuard(ctx: any, levelOf: () => string, log: (m: string
 }
 
 /** 注册两个工具（工具**定义**来自 `modules/tools.ts`，此处不重写实现）。 */
-function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m: string) => void): void {
+function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m: string) => void,
+  orchServiceName: string, createTools: (...a: any[]) => any): void {
   // ── 改 2 · 写入即投递（2026-10-10 第 44 轮 · 结构改造②）────────────────
   //   ⚠ 把**编排服务**注入工具定义，让 `write_hob(dispatchTo=…)` 能走
   //     `hob_dispatch` 的同一条路径（登记回传 + 清"待投递"）。
@@ -1045,10 +1184,10 @@ function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m:
   const {
     readContracts, writeHob,
     readWorkspaceDoc, globWorkspace: globTool, grepWorkspaceTool, readWorkspaceImage,
-  } = createHobTools(config, {
+  } = createTools(config, {
     // ⚠ **惰性取值**（每次执行时才 `ctx.get`），见上面那段注释的同一个理由。
     orchOf: () => {
-      try { return ctx.get?.(ORCH_SERVICE) as HobOrchestrator | undefined } catch { return undefined }
+      try { return ctx.get?.(orchServiceName) as HobOrchestrator | undefined } catch { return undefined }
     },
     // ⚠ **现读档位**（不是快照）：档位是 volatile 值型配置，宿主原地更新、不重挂载
     //   ⇒ 在 `createHobTools` 时读一次会让"改档位即生效"失效。
@@ -1069,7 +1208,7 @@ function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m:
     // ⚠ 图片的存储走宿主 `attachments` 服务（实测：宿主平面 provide，
     //   **预设作用域取得到**）。⚠ 惰性取值 + 取不到时返回 undefined
     //   （工具会如实回"没有附件服务"，而不是假装图片已交给模型）。
-    saveImage: async (input) => {
+    saveImage: async (input: unknown) => {
       try {
         const att = ctx.get?.('attachments')
         if (att === undefined || typeof att.saveImage !== 'function') return undefined
@@ -1113,16 +1252,17 @@ function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m:
  * ⚠ 与 `read_contracts`/`write_hob` 的**门禁不同源**：那两个跟 `hobTools`（= `modules.tools`），
  *   这两个跟 `hobBus`（= `modules.bus`）。⇒ 两个开关各自管自己那一组，互不牵连。
  */
-function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, config: Config): void {
+function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, config: Config,
+  createBusTools: (...a: any[]) => any, rootOf: (...a: any[]) => any): void {
   // ⚠ 把**账本根解析闭包**交给 bus 工具（2026-10-10 新增）：`hob_spawn` / `hob_send`
   //   要用它记 / 清"待投递"。理由：解析逻辑（`ledgerRootOf` + config）**只在本层**，
   //   传给 bus 层就不必在那里再造一份 —— 两处各写一份必然漂（见 `EXPERIENCE.md` E-110）。
   //   ⚠ 传**函数**而不是值：账本落点按 exec 的 cwd 派生，快照会拿错工作区。
   //   ⚠ 闭包内 fail-closed（`ledgerRootOf` 判不出 ⇒ `undefined`）⇒ 记账被跳过，
   //     但工具的**功能照常**（记账是附加可观测，不是前置条件）。
-  const { sessions, send, workspaces, spawn } = createHobBusTools(bus, (exec: any) => {
+  const { sessions, send, workspaces, spawn } = createBusTools(bus, (exec: any) => {
     try {
-      return ledgerRootOf(config, exec)
+      return rootOf(config, exec)
     } catch {
       return undefined
     }
@@ -1141,8 +1281,9 @@ function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, confi
  *   stop 与 resume 合成一个带 `action` 枚举的工具 —— **每个工具名都占白名单的一个位置**，
  *   两个反义动作不值得占两个名字。
  */
-function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => void): void {
-  const { dispatch, status, control } = createHobOrchTools(orch)
+function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => void,
+  createOrchTools: (...a: any[]) => any): void {
+  const { dispatch, status, control } = createOrchTools(orch)
   ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')
   ctx.effect(() => ctx.tools.register(status), 'dsh-hob preset: hob_orch_status tool')
   ctx.effect(() => ctx.tools.register(control), 'dsh-hob preset: hob_orch_control tool')

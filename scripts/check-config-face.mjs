@@ -551,7 +551,12 @@ function schemaTopGroups(src) {
         { label: 'host 收口函数 `workMode()`', src: cfgSrc, needle: 'export function workMode(' },
         { label: '入口 provide 现读服务', src: hostEntrySrc, needle: 'ctx.provide(WORK_MODE_SERVICE, () => workMode(config))' },
         { label: '预设作用域挂载注入', src: presetToolsSrc, needle: 'injectWorkMode(ctx, modeOf, log)' },
-        { label: '两条通路共用的现拼正文 `textNow()`', src: presetToolsSrc, needle: 'workModeInstruction(modeOf()) + workModeRedLine()' },
+        //   ⚠ 2026-10-19（`TASK-D`①）改**判据词**、⛔ 不是放宽：改前这里钉的是**具名导入**的
+        //     调用形态（`workModeInstruction(modeOf()) + workModeRedLine()`），而那个形态正是
+        //     "一个名字不到就整块求值失败"的来源。现在钉的是**运行时命名空间取值**的同一处调用
+        //     —— 语义（两条通路共用同一个现拼函数、且它确实拼出"档位口径 + 红线"）一字未变，
+        //     只是把"从哪个面取"钉到了新形态上。
+        { label: '两条通路共用的现拼正文 `textNow()`', src: presetToolsSrc, needle: 'workModeFace.workModeInstruction(modeOf()) + workModeFace.workModeRedLine()' },
         { label: '段通路 `section()` 注册', src: presetToolsSrc, needle: 'spCtx.systemPrompt.section({' },
         { label: '上下文通路 `context()` 注册（G-10 证明它是生效那条）', src: presetToolsSrc, needle: 'spCtx.systemPrompt.context({' },
         { label: '上下文必须 `required: true`（否则被 suppress 丢）', src: presetToolsSrc, needle: 'required: true,' },
@@ -869,6 +874,254 @@ function schemaTopGroups(src) {
         bad(`G-9 模块侧/面板出现对 \`workMode\` 子字段的**直读**（${hits.length} 处）`
           + ' —— volatile ref 直读恒为对象且不报错：\n     ' + hits.join('\n     '))
       } else ok('G-9 模块侧与面板无 `*.workMode.*` 直读（解 ref 收口在 config.ts 的 workMode()）')
+    }
+
+    // ── G-11 预设模块的**具名导出不拖垮整块**（2026-10-19 · `TASK-D`①）──────
+    //
+    // ⚠⚠ 本组要咬死的形态（已实测的真事故，见 `TASK-D`）：ESM 的**具名导入在链接期**
+    //   就要求目标模块有那个名字 ⇒ 少一个可选服务 ⇒ **整个 preset 模块求值失败**
+    //   ⇒ `apply` 从不被调用 ⇒ 工具面 25→12、`hob_*` 全没、`fiberPhase=null`，**而且不报错**。
+    //   `TASK-D2` 只治了 `../config.ts` 一处；本组把这条纪律**扩到全部依赖模块**并**机检钉住**。
+    //
+    // 判据（四条，每条都能失败）：
+    //   ① `src/preset/tools.ts` 里**零具名值导入**（只允许 `import type`）—— 否则下次再加一个名字
+    //      就又是同一个形态；
+    //   ② **可读**：降级必须既有 `warn` 又有**可查的落点**（`DEGRADED_CAPABILITIES`）；
+    //   ③ **关键依赖不许一起降级**：`modules/tools.ts` 那五个名字 + `PERMISSION_SERVICE`
+    //      必须是 `throw` 路径（`degrade(` 不许出现在它们的分支里）；
+    //   ④ **真跑**（Node ≥22 直载 TS）：沙盒里删掉一个可选导出 ⇒ 模块**仍然求值成功**、
+    //      `apply` 跑完、降级清单里有它；再删掉一个**关键**导出 ⇒ **必须抛**。
+    {
+      const presetSrc = presetToolsSrc
+      if (presetSrc === undefined) {
+        bad('G-11 读不到 `src/preset/tools.ts` ⇒ 降级面无从核对（不按通过处理）')
+      } else {
+        const code = stripComments(presetSrc)
+        // ① 零具名值导入（`import { a, b } from '...'`）；`import type { T }` 与命名空间导入不算
+        const namedValueImports = []
+        for (const m of code.matchAll(/^\s*import\s+(?!type\b)([^;]*?)\s+from\s+'([^']+)'/gm)) {
+          const clause = m[1]
+          if (/^\s*\*\s+as\s+/.test(clause)) continue          // `import * as ns` —— 允许
+          // ⚠ 本组只盯**依赖模块**（相对路径）：`node:` 内建是宿主提供的固定面，
+          //   不存在"旧缓存里没这个名字"那种形态（它不是本插件自己的产物）。
+          if (!m[2].startsWith('.')) continue
+          if (/^\s*\{/.test(clause) && /\btype\b/.test(clause)) continue // 混合型，保守放行
+          if (/^\s*\{/.test(clause)) namedValueImports.push(`${m[2]} → ${clause.trim()}`)
+          else namedValueImports.push(`${m[2]} → ${clause.trim()}`) // 默认导入同形风险
+        }
+        if (namedValueImports.length > 0) {
+          bad(`G-11 \`src/preset/tools.ts\` 里仍有**具名值导入**（${namedValueImports.length} 处）：`
+            + `\n     ${namedValueImports.join('\n     ')}`
+            + '\n      ⇒ ESM 具名导入在**链接期**校验名字：任何一个对不上 ⇒ **整块模块求值失败** ⇒'
+            + '\n        `apply` 从不被调用 ⇒ `hob_*` 全消失、工具面塌一半，**且不报错**（`TASK-D` 的实测链）'
+            + '\n      ⇒ 一律改 `import * as ns from \'…\'` + 运行时取值（只导类型可用 `import type`）')
+        } else {
+          ok('G-11 预设模块零具名值导入（依赖面全部命名空间导入；类型面用 `import type`）')
+        }
+
+        // ② 降级可读：`degrade(` 必须同时有 warn 与可查落点
+        if (!/export const DEGRADED_CAPABILITIES/.test(code)) {
+          bad('G-11 降级没有**可查的落点**（找不到 `export const DEGRADED_CAPABILITIES`）'
+            + '\n      ⇒ 只有日志时"少了什么"事后查不到（用户默认关着 debugLog）')
+        } else if (!/logger\?\.warn\?\./.test(code)) {
+          bad('G-11 降级没有 warn 通道（找不到 `logger?.warn?.(`）⇒ 少了一块却没人说')
+        } else if (!/const\s+degrade\s*=/.test(code)) {
+          bad('G-11 找不到统一的 `degrade()` 落点 ⇒ 各分支各写一份告警，必然漂（E-110 同族）')
+        } else {
+          ok('G-11 降级**可读**：`degrade()` 统一落点 = warn + `DEGRADED_CAPABILITIES`（事后可查）')
+        }
+
+        // ③ 关键依赖不许降级：`modules/tools.ts` 那五个名字 + `PERMISSION_SERVICE` 走 throw
+        const CRITICAL_FACE = ['GATE_SERVICE', 'DEFAULT_DENY', 'DEFAULTS', 'createHobTools', 'ledgerRootOf']
+        const faceBlock = /const TOOLS_FACE_NAMES = \[([\s\S]*?)\] as const/.exec(code)
+        const declared = faceBlock === null
+          ? []
+          : [...faceBlock[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+        const missDecl = CRITICAL_FACE.filter((n) => !declared.includes(n))
+        if (missDecl.length > 0) {
+          bad(`G-11 关键依赖清单不全：${missDecl.join(', ')} 不在 \`TOOLS_FACE_NAMES\` 里`
+            + '\n      ⇒ 判据：**它缺席时其余能力还能不能安全工作** —— 这五个名字里有工具定义本身、'
+            + '\n        门禁名、账本根解析、默认值、屏蔽名单，任何一个缺席都无法安全降级')
+        } else if (!/throw new Error\(`dsh-hob preset: 关键依赖（modules\/tools\.ts 的/.test(code)) {
+          bad('G-11 关键依赖缺席的路径**不是 throw** ⇒ 会静默半挂载（把"装错了"变成"看起来正常"）')
+        } else if (!/throw new Error\(`dsh-hob preset: 关键依赖 "PERMISSION_SERVICE" 取不到/.test(code)) {
+          bad('G-11 `PERMISSION_SERVICE` 缺席的路径**不是 throw** ⇒ 安全面三处会按一个编出来的档位放行/收窄')
+        } else {
+          ok('G-11 关键依赖**不降级**：`modules/tools.ts` 五名 + `PERMISSION_SERVICE` 缺席一律 `throw`')
+        }
+
+        // ④ **真跑**：沙盒删导出 ⇒ 可选降级 / 关键抛错
+        //
+        // ⚠⚠ **每个场景必须用独立子进程**（2026-10-19 实测踩到）：
+        //   同进程里跑两次时，第二次 `import` 的 `modules/tools.ts` 命中了**第一次的 ESM 缓存**
+        //   ⇒ 盘上删了导出也没用 ⇒ "关键依赖缺失"那条**假 PASS**（`E-131` 同族：
+        //   判据自身失效却报绿）。子进程隔离后每个场景都是**全新的模块图**。
+        {
+          const { spawnSync } = await import('node:child_process')
+          const { mkdtempSync, cpSync, rmSync, writeFileSync } = await import('node:fs')
+          const { tmpdir } = await import('node:os')
+          let sandbox = null
+          try {
+            sandbox = mkdtempSync(join(tmpdir(), 'hob-g11-'))
+            cpSync(join(root, 'src'), join(sandbox, 'src'), { recursive: true })
+            writeFileSync(join(sandbox, 'package.json'), JSON.stringify({ type: 'module', name: 'g11' }))
+
+            /** 场景脚本：在**本进程**里改名导出 → import 真模块 → 调 apply → 打印一行 JSON。 */
+            const runnerSrc = `
+import { readFileSync, writeFileSync, symlinkSync, existsSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
+import { join, resolve } from 'node:path'
+const SB = process.cwd()
+const REPO = process.argv[2]
+const [file, exportName] = process.argv[3].split('::')
+// ⚠ node_modules 用**绝对路径**软链（相对路径在临时目录里解析不到 ⇒ 被测模块 import 宿主包失败）
+const nm = resolve(REPO, 'node_modules')
+// ⚠ 第二个场景时软链已存在（同一个沙盒跑两次）⇒ 先判再建，⛔ 别让 EEXIST 把判据搞成"跑不起来"
+if (existsSync(nm) && !existsSync(join(SB, 'node_modules'))) symlinkSync(nm, join(SB, 'node_modules'), 'dir')
+if (file !== '-') {
+  const p = join(SB, 'src', file)
+  const t = readFileSync(p, 'utf8')
+  const re = new RegExp('export\\\\s+(const|function|async function)\\\\s+' + exportName + '\\\\b')
+  if (!re.test(t)) { console.log(JSON.stringify({ setupError: 'export not found: ' + exportName })); process.exit(0) }
+  writeFileSync(p, t.replace(re, '$1 ' + exportName + '___absent'))
+}
+const warns = []
+const shell = {
+  logger: { debug() {}, info() {}, warn: (m) => warns.push(String(m)) },
+  get: (k) => (k === 'hobPermission' ? () => 'ledger' : k === 'hobWorkMode' ? () => 'auto' : undefined),
+  inject: () => ({ dispose: () => {} }),
+  effect: (fn) => { try { fn() } catch {} },
+  on: () => ({ dispose: () => {} }),
+  provide: () => {},
+  tools: { guard: () => () => {}, restrict: () => {}, register: () => () => {} },
+}
+let threw = null, degraded = [], evaluated = false
+try {
+  const mod = await import(pathToFileURL(join(SB, 'src', 'preset', 'tools.ts')).href)
+  evaluated = true
+  try { mod.apply(shell, {}) } catch (e) { threw = String(e?.message ?? e) }
+  degraded = (mod.DEGRADED_CAPABILITIES ?? []).map((d) => d.key)
+} catch (e) { threw = String(e?.message ?? e) }
+console.log(JSON.stringify({ evaluated, threw, degraded, warns }))
+`
+            writeFileSync(join(sandbox, 'runner.mjs'), runnerSrc)
+
+            /** 跑一个场景（**独立子进程**），返回它打印的 JSON。 */
+            const runScenario = (spec) => {
+              const r = spawnSync(process.execPath, [join(sandbox, 'runner.mjs'), root, spec], {
+                cwd: sandbox, encoding: 'utf8', timeout: 120000,
+              })
+              const line = String(r.stdout ?? '').trim().split('\n').filter((l) => l.startsWith('{')).pop()
+              if (line === undefined) {
+                throw new Error(`场景 ${spec} 没有输出可读结果（stderr: ${String(r.stderr ?? '').slice(0, 300)}）`)
+              }
+              return JSON.parse(line)
+            }
+
+            // (a) 可选：删 `WORK_MODE_SERVICE`（今晚真事故的形态）⇒ 降级、不抛
+            const opt = runScenario('config.ts::WORK_MODE_SERVICE')
+            if (opt.setupError !== undefined) {
+              bad(`G-11 场景搭不起来：${opt.setupError} ⇒ 不按通过处理`)
+            } else if (opt.threw !== null) {
+              bad(`G-11 【可选项缺失】**照旧整块失败**了：${opt.threw}`
+                + '\n      ⇒ 这正是本件要治的形态：少一个可选服务不该拖垮整个模块')
+            } else if (!opt.degraded.includes('WORK_MODE_SERVICE')) {
+              bad('G-11 【可选项缺失】降级清单里没有 `WORK_MODE_SERVICE`'
+                + '\n      ⇒ "少了什么"不可读（清单为空 = 事后查不到）')
+            } else if (opt.warns.length === 0) {
+              bad('G-11 【可选项缺失】没有任何可读 warn')
+            } else {
+              ok(`G-11 ✓ 可选导出缺失 ⇒ **模块仍求值成功**、apply 跑完、降级可读（`
+                + `清单=${opt.degraded.join('/')}；warn=${opt.warns.length} 条）`)
+            }
+
+            // (b) 关键：删 `createHobTools` ⇒ **必须抛**，且抛错点明缺哪个名字
+            const crit = runScenario('modules/tools.ts::createHobTools')
+            if (crit.setupError !== undefined) {
+              bad(`G-11 场景搭不起来：${crit.setupError} ⇒ 不按通过处理`)
+            } else if (crit.threw === null) {
+              bad('G-11 【关键依赖缺失】**没有失败** ⇒ 关键依赖被一起降级了'
+                + '\n      ⇒ 那会把"装错了"变成"看起来正常"：半套工具 / 屏蔽名单凭空消失，用户看不出')
+            } else if (!/关键依赖/.test(crit.threw) || !/createHobTools/.test(crit.threw)) {
+              bad(`G-11 【关键依赖缺失】抛错文本不可读（未点名缺哪个名字）：${crit.threw}`)
+            } else if (crit.degraded.length !== 0) {
+              bad(`G-11 【关键依赖缺失】关键依赖被写进了降级清单（${crit.degraded.join(',')}）`
+                + ' —— 关键依赖是 throw 路径，⛔ 不是降级路径')
+            } else {
+              ok(`G-11 ✓ 关键依赖缺失 ⇒ **照旧失败**且原因可读（「${crit.threw.slice(0, 42)}…」）`)
+            }
+          } catch (e) {
+            // ⚠ 跑不起来就是"什么都没测到" ⇒ FAIL（⛔ 不许静默跳过，`E-130/E-131` 同族）
+            bad(`G-11 真跑那一条**跑不起来**（${String(e?.message ?? e)}）⇒ 不按通过处理`
+              + '\n      ⇒ ⛔ 跑不起来 ≠ 通过')
+          } finally {
+            if (sandbox !== null) { try { rmSync(sandbox, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+          }
+        }
+      }
+    }
+
+    // ── G-12 面板明写「改代码 / 重 build 之后要重启实例」（2026-10-19 · `TASK-D`②）──
+    //
+    // ⚠ 为什么这条必须机检：`build` **只是写盘**，运行中的实例用的是**启动那一刻**加载的代码。
+    //   实测吃亏过：以为改了就是生效了。⇒ 界面上必须有一句，且措辞要准：
+    //     · 必须说清"两步不是一步"（build ≠ 生效）；
+    //     · ⛔ 不许写成"重启一下就好" —— 重启会冲掉在跑的派发（本项目已实测多次）。
+    //
+    // 判据（三条）：
+    //   ① 两份词典**都有**这三个键（缺一个 ⇒ 该语言下**静默显示键名**）；
+    //   ② 中文那句**同时**含"build 只写盘 / 要重启 / 会冲掉在等回传的派发"三件事（缺一即 FAIL）；
+    //   ③ 面板**真的渲染了**它（词典里写了却不挂在 JSX 上 = 用户看不见，等于没写）。
+    {
+      const zhBlock = dictBlock('PANEL_ZH')
+      const enBlock = dictBlock('PANEL_EN')
+      const KEYS = ['note.buildrestart.pre', 'note.buildrestart.strong', 'note.buildrestart.post']
+      if (zhBlock === null || enBlock === null) {
+        bad('G-12 抽不出两份面板词典 ⇒ 重启提示无从核对（不按通过处理）')
+      } else {
+        const missZh = KEYS.filter((k) => !zhBlock.includes(`'${k}'`))
+        const missEn = KEYS.filter((k) => !enBlock.includes(`'${k}'`))
+        if (missZh.length > 0 || missEn.length > 0) {
+          bad(`G-12 重启提示的键不全（zh 缺：${missZh.join(', ') || '无'}；en 缺：${missEn.join(', ') || '无'}）`
+            + '\n      ⇒ 缺一个就会在那种语言下**显示键名**（宿主 translate 取不到时返回键本身）')
+        } else {
+          ok('G-12 重启提示三个键在中英两词典都齐（`note.buildrestart.pre/strong/post`）')
+        }
+
+        // ② 中文那句的三件事必须都在
+        //   ⚠ 取法：三行**各取一次**再拼 —— ⛔ 不许用"直到下一个 note. 为止"的切片
+        //     （pre 行自己就紧跟 strong 行，切片会把后两行切掉 ⇒ 判据假 FAIL）。
+        const lineOf = (blk, key) => {
+          const at = blk.indexOf(`'${key}'`)
+          if (at < 0) return ''
+          const end = blk.indexOf('\n', at)
+          return blk.slice(at, end < 0 ? blk.length : end)
+        }
+        const zhNote = zhBlock === null
+          ? ''
+          : KEYS.map((k) => lineOf(zhBlock, k)).join(' ')
+        const WANT_ZH = [
+          ['build 只写盘', /build\s*只是把文件写到盘上/],
+          ['不重启等于没改', /不重启，等于没改|等于没改/],
+          ['重启会冲掉在等回传的派发', /冲掉|等在等回传|等回传的派发/],
+        ]
+        const missWords = WANT_ZH.filter(([, re]) => !re.test(zhNote)).map(([label]) => label)
+        if (missWords.length > 0) {
+          bad(`G-12 面板那句**没把该说的说全**：缺 ${missWords.join(' / ')}`
+            + '\n      ⇒ 措辞必须同时讲清：build 只写盘（≠生效）· 换代码要重启 · 重启会冲掉在跑的派发。'
+            + '\n        ⛔ 少了最后一条就变成"重启一下就好"，而本项目已实测多次重启会冲掉在等回传的派发')
+        } else {
+          ok('G-12 面板那句三件事都在（build 只写盘 / 要重启 / 会冲掉派发）')
+        }
+
+        // ③ 真的渲染了（词典写了不挂 JSX = 用户看不见）
+        if (!/t\('note\.buildrestart\.pre'\)/.test(panelSrc) || !/t\('note\.buildrestart\.strong'\)/.test(panelSrc)) {
+          bad("G-12 词典里有重启提示，但面板**没有渲染它**（找不到 `t('note.buildrestart.pre')` / `.strong`）"
+            + '\n      ⇒ 写了不挂 = 用户看不见 = 这条提示不存在')
+        } else {
+          ok('G-12 重启提示**真的渲染在面板上**（`t(\'note.buildrestart.pre/strong/post\')` 三处都在）')
+        }
+      }
     }
 
     // ═══════════════════════════════════════════════════════════════════

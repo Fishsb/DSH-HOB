@@ -904,6 +904,9 @@ export function SettingsPanel(): ReactElement {
           })}<b>{t('note.restart.strong')}</b>{t('note.restart.post')}
         </li>
         <li className={S.note}>
+          {t('note.buildrestart.pre')}<b>{t('note.buildrestart.strong')}</b>{t('note.buildrestart.post')}
+        </li>
+        <li className={S.note}>
           {t('note.effective.pre', { card: t('cardTitle') })}<b>{t('note.effective.strong')}</b>{t('note.effective.post')}
         </li>
         <li className={S.note}>
@@ -1061,6 +1064,9 @@ const PANEL_EN: Record<string, string> = {
   'note.effective.pre': '· «{card}» is a ',
   'note.effective.strong': 'takes-effect-immediately',
   'note.effective.post': ' value-type configuration (no restart after a host write) — it is a different path from the module switches above; do not mix up their conditions.',
+  'note.buildrestart.pre': '· Changing this plugin’s own code is not one step but two, and they are different steps: ',
+  'note.buildrestart.strong': 'a build only writes files to disk',
+  'note.buildrestart.post': ' — the running instance keeps the code it loaded at startup, so after a rebuild nothing has changed until the instance is restarted. A restart is not a casual action either: it drops every dispatch that is still waiting to come back, so wait until the work in flight has landed before restarting.',
   'note.entry': '· Where to change things: this section edits «{card}» directly; the remaining fields can still be changed in the plugin-management page’s host-generated configuration form.',
 }
 
@@ -1188,6 +1194,9 @@ const PANEL_ZH: Record<string, string> = {
   'note.effective.pre': '· 「{card}」是',
   'note.effective.strong': '即改即生效',
   'note.effective.post': '的值型配置（宿主写入后不必重启）—— 它和上面的模块开关是两条不同的路径，别把两者的生效条件混起来。',
+  'note.buildrestart.pre': '· 改本插件自己的代码不是一步、是两步，而且两步不一样：',
+  'note.buildrestart.strong': 'build 只是把文件写到盘上',
+  'note.buildrestart.post': ' —— 运行中的实例用的还是它启动那一刻加载的那份代码，所以重 build 之后不重启，等于没改。⚠ 重启也不是随手就点：它会把还在等回传的派发一起冲掉，要等手上的活落地了再重启。',
   'note.entry': '· 修改入口：本分区直接可改「{card}」；其余字段仍可在插件管理页里由宿主自动生成的配置表单中改。',
 }
 
