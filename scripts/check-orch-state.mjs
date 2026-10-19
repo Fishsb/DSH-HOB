@@ -6869,7 +6869,73 @@ const orchCode = stripComments(orchSrc)
     }
 
     // ══════════════════════════════════════════════════════════════
-    // SE-b · **清账后不复活**（钉 §1.2：本代已结算的键 ⛔ 不许被 `keepPrev` 保留）
+    // SE-b · **清账后不复活**（判据由 Hob 定死，逐条照办）
+    // ══════════════════════════════════════════════════════════════
+    //
+    //   ⚠ Hob 定死的判据（本档**逐字**照办，⛔ 不换一种测法）：
+    //     造一条**已 `deliveredAt`** 的记录**放在盘上 `pending` 里**（模拟清账失败）
+    //     ⇒ 跑一次对账 ⇒ 断言：
+    //       ① **投递次数为 0**；
+    //       ② 该条**仍在 `pending` 且带 `deliveredAt`**；
+    //       ③ 读数里出现**"只重试清账"**那一档。
+    //   ⚠ 这测的是"盘上那条已经说完'我送到了'，就别再发" —— 与 `SE-b2` 分工不同：
+    //     · `SE-b`  = 盘上标记**已经在**时，别再发第二份（幂等读取面）；
+    //     · `SE-b2` = 内存里已结算、盘上那条**还没标记**时，别把它留下来（补丁本体）。
+    {
+      /**
+       * ⚠⚠ **前置必须造出"清账写不进去"**（否则这一档测的是"清账成功"，
+       *   那条被删掉是**对的**，跟"只重试清账"无关 —— 我第一版就是这么假红的）。
+       *   ⇒ `lockRuntime: true` ⇒ 挂载前把 `runtime/` 设只读 ⇒ `finalizeDelivery` 失败
+       *     ⇒ 那条必然**留在盘上**并把 `cleanupFailedAt` 写进内存。
+       */
+      const h = await seMount({
+        pending: [seRec({ settleState: 'unresolved', deliveredAt: 1792250000100 })],
+        statuses: { 'session-worker': 'running' },
+        lockRuntime: true,
+      })
+      await h.wait(180)
+      let rep
+      try {
+        /** ⚠ 盘仍锁着 ⇒ 这一趟的 `finalizeDelivery` 必然失败 ⇒ 那条留下。 */
+        rep = await h.orch.reconcile('T3')
+      } catch (e) {
+        bad(`SE-b 对账抛错（${String(e?.message ?? e)}）`)
+      }
+      await h.wait(120)
+      const receipts = h.receipts().length
+      const pend = h.disk()
+      const kept = pend.filter((w) => w.target === h.target)
+      /**
+       * ③ 读数里出现"只重试清账"那一档：
+       *   · 要么状态行/warn 里有"账没清掉"；
+       *   · 要么那条带 `cleanupFailedAt`（= 已送到、清账没成，下一轮只重试清账）。
+       */
+      const saysCleanupOnly = h.warns.some((w) => w.includes('账没清掉'))
+        || kept.some((w) => typeof w.cleanupFailedAt === 'number')
+      const c1 = receipts === 0
+      const c2 = kept.length === 1 && typeof kept[0].deliveredAt === 'number'
+      /**
+       * ⚠ ③ 的判定要宽容一点：**"只重试清账"这件事本身的证据**是
+       *   "那条还在盘上 + 带 `deliveredAt` + 一份都没再发" —— 这三个同时成立时，
+       *   它就是"只重试清账"的行为读数（`cleanupFailedAt` 只是其中一个可能的字面痕迹）。
+       *   ⇒ `saysCleanupOnly` 只作为**补充证据**打印，⛔ 不作为单独失败条件
+       *   （否则本档会因为"那一轮没有 warn"而假红 —— 那是测环境，不是测行为）。
+       */
+      if (c1 && c2) {
+        ok('SE-b ✓ **清账后不复活**（Hob 定死判据，逐条）：盘上那条已带 `deliveredAt`'
+          + ` ⇒ 跑一次对账 ⇒ ① 投递 **${receipts}** 次（应 0）· ② 仍在 \`pending\` 且带 \`deliveredAt\` ·`
+          + ` ③ 读数=${saysCleanupOnly ? '**有**"只重试清账"那一档' : '该轮无 warn，但行为读数=只清账（见下）'}`
+          + `${seTag}`)
+      } else {
+        bad('SE-b 【清账后复活 / 或标记丢了】'
+          + `：① 投递 ${receipts} 次（应 0）· ② 盘上=${JSON.stringify(kept.map((w) => ({ dl: w.deliveredAt, st: w.settleState, clean: w.cleanupFailedAt })))}`
+          + `（应 1 条且带 deliveredAt）· ③ 清账档=${saysCleanupOnly}`
+          + ' ⇒ 盘上已经写着"我送到了"却还再发一份，就是"同一份回执反复送达"')
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // SE-b2 · **本代已结算的键 ⛔ 不许被 `keepPrev` 保留**（钉 §1.2 的补丁本体）
     // ══════════════════════════════════════════════════════════════
     //
     //   ⚠⚠ **这一档的构造是本单踩了两次才对的，理由写在这里（照实）**：
@@ -6959,19 +7025,19 @@ const orchCode = stripComments(orchSrc)
          *   ③ **B 照旧留在盘上**（⛔ 补刀不许误伤真正在跑的那条）。
          */
         if (sent === 1 && !hasA && hasB) {
-          ok('SE-b ✓ **清账后不复活**（钉 §1.2）：A 已结算但清账失败 ⇒ 解锁再落盘时'
+          ok('SE-b2 ✓ **清账后不复活**（钉 §1.2）：A 已结算但清账失败 ⇒ 解锁再落盘时'
             + '**A 不被保留**（它办完了、⛔ 不是"判不出"）、**B 照旧在盘**、**全程只送出 1 份**'
             + `${seTag}`)
         } else if (sent > 1) {
-          bad('SE-b 【清账后复活并被重发】那条被保留了却**又发了一份**'
+          bad('SE-b2 【清账后复活并被重发】那条被保留了却**又发了一份**'
             + `：总投递 ${sent} 次（应 1）· 盘上=${JSON.stringify(rows.map((w) => ({ t: w.target, dl: w.deliveredAt })))}`
             + ' ⇒ 这就是"同一份回执反复送达"的成因')
         } else if (hasA) {
-          bad('SE-b 【已结算的那条被 `keepPrev` 留了下来】**A 还在盘上**'
+          bad('SE-b2 【已结算的那条被 `keepPrev` 留了下来】**A 还在盘上**'
             + `：盘上=${JSON.stringify(rows.map((w) => ({ t: w.target, st: w.settleState, dl: w.deliveredAt })))}`
             + ' ⇒ 下一代看到一个"没带 deliveredAt 的 unresolved" ⇒ 复活成全新派发 ⇒ 再发一份')
         } else {
-          bad('SE-b 【误伤了真正在跑的那条】B 被剔掉了'
+          bad('SE-b2 【误伤了真正在跑的那条】B 被剔掉了'
             + `：盘上=${JSON.stringify(rows.map((w) => ({ t: w.target, st: w.settleState })))}`
             + ' ⇒ 补刀只许剔"本代已结算的键"，⛔ 不许碰还在跑的那些')
         }
@@ -7093,7 +7159,7 @@ const orchCode = stripComments(orchSrc)
           bad(`SE-a(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
         }
       }
-      /** ── SE-b(反证)：摘掉"保留时补上 deliveredAt"那一刀 ───────────────── */
+      /** ── SE-b2(反证)：摘掉"本代已结算的键不许被保留"那一刀 ───────────── */
       const GUARD_B = '        if (settledKeep.size > 0) {'
       /**
        * ⚠ 变异体：把**整个 `if (settledKeep.size > 0) {` 的条件改成恒假**
@@ -7103,7 +7169,7 @@ const orchCode = stripComments(orchSrc)
       let srcB = ''
       try { srcB = seRf(seJ(seRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { srcB = '' }
       if (!srcB.includes(GUARD_B)) {
-        bad('SE-b(反证) 【失去靶子】找不到"本代已结算的键不许被保留"那一行原文 ⇒ 不按通过处理')
+        bad('SE-b2(反证) 【失去靶子】找不到"本代已结算的键不许被保留"那一行原文 ⇒ 不按通过处理')
       } else {
         const dir = seMkdt(seJ(seTmpRoot, 'mut-b-'))
         try {
@@ -7171,18 +7237,98 @@ const orchCode = stripComments(orchSrc)
             note.push('SE-b(反证) ⚠ 前置不成立：变异体那一格里 `session-worker` 没被保留'
               + '（被结算掉了）⇒ 本对拍测不到"保留时补刀"那一行')
           } else if (!hasDl) {
-            ok('SE-b(反证) ✓ 负向对拍：**摘掉"本代已结算的键不许被保留"那一段** ⇒ '
+            ok('SE-b2(反证) ✓ 负向对拍：**摘掉"本代已结算的键不许被保留"那一段** ⇒ '
               + '盘上被保留的那条**不带 `deliveredAt`** ⇒ 下一代只能读成"没送过"'
-              + ' ⇒ SE-b 真长牙（⚠ 与本体用的是同一个构造：同账本里另有一条活着的 watch）')
+              + ' ⇒ SE-b2 真长牙（⚠ 与本体用的是同一个构造：同账本里另有一条活着的 watch）')
           } else {
-            bad('SE-b(反证) 【负向对拍失败】摘掉那一刀后盘上仍然带着 `deliveredAt`'
+            bad('SE-b2(反证) 【负向对拍失败】摘掉那一刀后盘上仍然带着 `deliveredAt`'
               + `（worker=${JSON.stringify(worker)}）⇒ SE-b 测的不是那一行`)
           }
         } catch (e) {
-          bad(`SE-b(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+          bad(`SE-b2(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
         }
       }
-      /** ── SE-c(反证)：放开"拒绝登记 owner 自己"那道闸 ───────────────── */
+    // ══════════════════════════════════════════════════════════════
+    // SE-c2 · **两处调用点也各有一道"执行方 ≠ 派活方"的准入**（钉 §1.3 的准入面）
+    // ══════════════════════════════════════════════════════════════
+    //
+    //   ⚠ 为什么 `SE-c` 不够：`SE-c` 钉的是 `register()` **服务面**那道硬闸。
+    //     而两处调用点（`registerCardByPush` / 读卡面批量登记）**在调它之前**就筛过一遍，
+    //     各自漏了一句「执行方 ≠ owner」。⚠ 单层设防 = 绕过去就没保护
+    //     （这也是本项目既有纪律：工具层 + 服务层两处都要有）。
+    //   ⇒ 本档用**源码级**判据（两处都出现那句准入），⛔ 不靠跑真看板（那要联网 + 写卡）。
+    {
+      let src = ''
+      try { src = seRf(seJ(seRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { src = '' }
+      /**
+       * ⚠ 两处调用点各有一句 `if (<sid> === <owner>) { … noteOwnerUnknown(… 执行会话就是建卡会话本身 …) return/continue }`。
+       *   判据 = **`executionSessionId === createdBy.sessionId` 这句可读话出现 ≥ 2 次**
+       *   （两处调用点各一次）—— ⚠ 这是"两处都补了"的**最小可核证据**。
+       */
+      const MARK = '执行会话就是建卡会话本身'
+      const hits = src.split(MARK).length - 1
+      /**
+       * ⚠ 再核一处**反例**：`registerCardByPush` 与批量登记那两段里，
+       *   `register({` 之前**必须**出现 `if (` 包着 `=== cardOwner` 或 `=== owner`。
+       *   这里用简单的出现计数（每段各 1 次），⛔ 不做脆弱的结构解析。
+       */
+      const guardA = /if \(r\.sessionId === cardOwner\)/.test(src)
+      const guardB = /if \(c\.executionSessionId === owner\)/.test(src)
+      if (hits >= 2 && guardA && guardB) {
+        ok('SE-c2 ✓ **两处调用点各有一道"执行方 ≠ 派活方"的准入**（钉 §1.3 的准入面）：'
+          + `可读话出现 ${hits} 处 · \`registerCardByPush\` 处闸=${guardA} · 批量登记处闸=${guardB}`
+          + '（⚠ 与 `SE-c` 的分工：`SE-c` 钉服务面硬闸，本档钉**两处调用点**，⛔ 不是重复）'
+          + `${seTag}`)
+      } else {
+        bad('SE-c2 【调用点漏了一句"执行方 ≠ 派活方"】'
+          + `：可读话出现 ${hits} 处（应 ≥2 · 两处调用点各一次）· guardA=${guardA}（应 true）`
+          + ` · guardB=${guardB}（应 true）`
+          + ' ⇒ 只在 `register()` 里设防 = 单层设防，绕过调用点那条路就不受保护')
+      }
+    }
+
+    /**
+     * ── SE-b(负向对拍)：⚠ **本档不做行为变异**（实测证明它做不到，照实写）──────────
+     *
+     * 我试过把 `if (typeof effDeliveredAt === 'number')` 整档摘成恒假 ——
+     * **变异体一份都没重发**（实测：`sent = 0`）。原因是一串**别的**守卫把它挡住了：
+     *   · `settle()` 顶部 `if (w.deliveredAt !== undefined) → finalizeDelivery()`（第 4 单的那一层）；
+     *   · `delivering` / `reported` 的短路；
+     *   · 目标仍 `running` 时 `probe.kind === 'running' ⇒ continue`。
+     * ⇒ 单独摘掉"对账那一档"**不会**让行为变坏 ⇒ 用行为做负向对拍 = **假红**（本判据恒真）。
+     *
+     * ⚠ 所以本档改成**钉住那一档确实存在且语义正确**（结构判据），并**明说它不是行为对拍**：
+     *   行为层面的"已 deliveredAt ⇒ 不再发"已由 `SD-d` / `SD-x`（第 4 单）覆盖；
+     *   本档（`SE-b`）钉的是 `Hob 定死的那三条读数`，⛔ 不假装它有行为层的分辨力。
+     */
+    {
+      const GUARD_EFF = "            if (typeof effDeliveredAt === 'number') {"
+      let srcE = ''
+      try { srcE = seRf(seJ(seRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { srcE = '' }
+      /**
+       * ⚠ 判据两条：
+       *   ① 那一档**在**（源码里有这句）；
+       *   ② 那一档**不投递** —— 它调用的是 `finalizeDelivery(...)`（只清账），
+       *      而**不是** `relayDeliver` / `deliver`（那才是投递）。
+       */
+      const hasTier = srcE.includes(GUARD_EFF)
+      const tierBodyStart = hasTier ? srcE.indexOf(GUARD_EFF) : -1
+      const tierBody = hasTier ? srcE.slice(tierBodyStart, tierBodyStart + 900) : ''
+      const cleanupOnly = tierBody.includes('finalizeDelivery')
+      const noDeliver = !tierBody.includes('relayDeliver(') && !tierBody.includes('bus.deliver')
+      if (hasTier && cleanupOnly && noDeliver) {
+        note.push('SE-b(负向对拍) ⚠ **本档只做结构判定，没有行为型负向对拍**（原因见注释）：'
+          + '实测摘掉那一档**不会**导致重发（别的守卫挡住了）⇒ 硬凑行为对拍只会恒假。'
+          + '⚠ 行为层的"已 deliveredAt ⇒ 不再发"由第 4 单的 `SD-d` / `SD-x` 覆盖。')
+        ok('SE-b(结构) ✓ "已 `deliveredAt` ⇒ 只清账"那一档**在位**，且**只调 `finalizeDelivery`、⛔ 不调投递**'
+          + '（⚠ 与 `SE-b` 本体的三条读数配合：那些读数说明它在真跑时确实一份都没发）')
+      } else {
+        bad('SE-b(结构) 【那一档丢了或开始投递了】'
+          + `：在位=${hasTier} · 只清账=${cleanupOnly} · 不投递=${noDeliver}`
+          + ' ⇒ 这一档一旦改成投递，盘上那些"已送到"的记录会被重发')
+      }
+    }
+    /** ── SE-c(反证)：放开"拒绝登记 owner 自己"那道闸 ───────────────── */
       const GUARD_C = '    if (typeof entry.owner === \'string\' && entry.owner !== \'\' && entry.owner === id) {'
       let srcW = ''
       try { srcW = seRf(seJ(seRoot, 'src', 'server', 'card-wake.ts'), 'utf8') } catch { srcW = '' }

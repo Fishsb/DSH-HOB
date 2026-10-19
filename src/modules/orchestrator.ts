@@ -813,6 +813,26 @@ export function apply(ctx: any): void {
             )
             return
           }
+          /**
+           * ── ⚠⚠ **执行方 ≠ 派活方**（2026-10-20 · 第 6 单 §1.3 · Hob 追加要求）──────────
+           *
+           * 上面那道准入只判"这张卡**是我的**"（`createdBy === subscriber`），
+           * ⛔ **没判"执行方是不是就是我自己"**。
+           * 现场：卡 `t-mvfertx2-zrnyvc` 被点火 20 次，`executionSessionId` **全部 = 建卡人自己**
+           * ⇒ 我既是派活方又是执行方 ⇒ 登记成"实施会话 = 我" ⇒ 我自己 turn 结束就把我自己叫醒。
+           * ⇒ 在这里**明说这一句**（`register()` 里另有一道同款硬闸兜底，⛔ 两处不是重复：
+           *   这里是**准入面**，那里是**服务面**；单层设防等于绕过去就没保护）。
+           */
+          if (r.sessionId === cardOwner) {
+            dispatchWake.noteOwnerUnknown(
+              r.cardId,
+              r.sessionId,
+              '这张卡的**执行会话就是建卡会话本身**（`executionSessionId === createdBy.sessionId`）'
+                + '⇒ 它自己跑完不是"某个被派出去的活跑完了"⇒ **不登记**（⛔ 不是"没有会话在跑"）',
+              r.executionId,
+            )
+            return
+          }
           dispatchWake.register({
             sessionId: r.sessionId,
             via: 'taskboard-card',
@@ -2111,6 +2131,20 @@ export function apply(ctx: any): void {
               owner === undefined
                 ? '这张卡没有记录建卡会话（`createdBy.sessionId` 读不到），本会话也没派过它的执行会话'
                 : `这张卡的归属是 ${owner}（不是本会话）`,
+              c.executionId,
+            )
+            continue
+          }
+          /**
+           * ⚠⚠ **同款准入**（第 6 单 §1.3）：执行方就是派活方自己 ⇒ 不登记。
+           *   理由与 `registerCardByPush` 那一处**逐字相同**（同一个缺陷的两条入口）。
+           */
+          if (c.executionSessionId === owner) {
+            dispatchWake.noteOwnerUnknown(
+              c.id,
+              c.executionSessionId,
+              '这张卡的**执行会话就是建卡会话本身**（`executionSessionId === createdBy.sessionId`）'
+                + '⇒ 它自己跑完不是"某个被派出去的活跑完了"⇒ **不登记**（⛔ 不是"没有会话在跑"）',
               c.executionId,
             )
             continue
