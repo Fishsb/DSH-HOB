@@ -271,6 +271,255 @@ if (cwMod !== undefined) {
         }
       }
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // (d) **渲染面**：`hob_orch_status` 里那块"回执投递台账"（`TASK-R3`）
+    //
+    // ⚠ 它守的是上一轮留的那句话：「入口通了，但**用户拿不到 `executionId`** ⇒ 按不到」。
+    //   ⇒ 本组钉三件事（`TASK-R3` §二-3，缺一即红）：
+    //     ① 有台账 ⇒ 按形状列出来，且 `executionId` **完整不截断**；
+    //     ② 台账为空 ⇒ **明说"没有"**（⛔ 不是不显示 —— "没有"与"没显示"必须可区分）；
+    //     ③ 收件人 ≠ owner ⇒ **能被认出来**；⚠ **判不出 owner ⇒ 单独一档**
+    //        （⛔ 不许并进"没有错投"）。
+    //
+    // ⚠ 变异靶子：把"错投判定"改成恒假（`mismatch === true` → `false`）⇒ ③ 必须红。
+    //   ⚠ ⛔ 不是改成恒真让检查"跳过"—— 那会让断言在变异体上照样过（上一单的教训）。
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      // ⚠ 这里**从 src 里抽真实渲染源码**来跑，⛔ 不是在本脚本里重写一份
+      //   —— 否则"判据测的是判据自己的副本"，与实现脱钩（`E-128` 同族）。
+      const orch = join(root, 'src', 'modules', 'orchestrator.ts')
+      let src = ''
+      try {
+        src = readFileSync(orch, 'utf8')
+      } catch (e) {
+        bad(`(d) 读不到 \`src/modules/orchestrator.ts\`（${String(e?.message ?? e)}）⇒ 渲染面判据无从落地`)
+      }
+      if (src !== '') {
+        /**
+         * ⚠ 靶点 = 那三态写法本身（`mismatch === true` / `=== false` / 其余 = 判不出）。
+         *   ⚠ 它必须**在盘上**且**唯一**，否则判据会静默对不上实现。
+         */
+        const GUARD = "const verdict = e.mismatch === true"
+        if (!src.includes(GUARD)) {
+          bad('(d) 【失去靶子】在 `orchestrator.ts` 里找不到错投三态判定的原文'
+            + `（期望含：${GUARD}）⇒ 渲染面判据已对不上实现，不按通过处理`)
+        } else {
+          // ── 抽渲染块：从 `const DELIVERY_LIST_MAX = 8` 到 `deliveryLines` 的 IIFE 结束 ──
+          const startMark = 'const DELIVERY_LIST_MAX = 8'
+          const endMark = 'const dispatchWakeLines = '
+          const i0 = src.indexOf(startMark)
+          const i1 = src.indexOf(endMark)
+          if (i0 < 0 || i1 < 0 || i1 <= i0) {
+            bad('(d) 【抽不出渲染块】`DELIVERY_LIST_MAX` 与 `dispatchWakeLines` 两处标记之间取不到源码'
+              + ' ⇒ 渲染面判据无从落地（⛔ 不按通过处理）')
+          } else {
+            const blockSrc = src.slice(i0, i1)
+            /**
+             * ⚠ 把渲染块抽成**纯函数**（⛔ 不改盘上源码，只在 `mkdtemp` 里造副本）：
+             *   块的样子是
+             *     `const DELIVERY_LIST_MAX = 8`
+             *     `const deliveryLines = await (async (): Promise<string[]> => { … })()`
+             *   ⇒ 取 `DELIVERY_LIST_MAX` 那一行 + IIFE 的**函数体**（`{` 与最后的 `})()` 之间），
+             *   包成 `export const renderDeliveryLines = (led) => { <体> }`。
+             *   ⚠ 函数体里唯一的自由变量就是 `led`（它来自外层 `await orch.deliveryLedger()`）
+             *     ⇒ 把它作为参数注入，其余（`DELIVERY_LIST_MAX`）用同一行常量。
+             *   ⚠ 若将来块里用了别的外层变量，下面的 import 会**当场失败**并判红
+             *     —— 那是"判据与实现脱钩"的正确信号，⛔ 不许悄悄跳过。
+             */
+            const MAX_LINE = 'const DELIVERY_LIST_MAX = 8'
+            const OPEN = 'const deliveryLines = await (async (): Promise<string[]> => {'
+            const oi = blockSrc.indexOf(OPEN)
+            if (oi < 0) {
+              bad('(d) 【抽不出渲染块】找不到 IIFE 开头'
+                + `（期望含：${OPEN}）⇒ 判据对不上实现，⛔ 不按通过处理`)
+            } else {
+              let body = blockSrc.slice(oi + OPEN.length)
+              // 去掉收尾的 `})()` 以及后面的空白
+              const ci = body.lastIndexOf('})()')
+              if (ci < 0) {
+                bad('(d) 【抽不出渲染块】找不到 IIFE 收尾 `})()` ⇒ 判据对不上实现')
+              } else {
+                body = body.slice(0, ci)
+              }
+              /**
+               * ⚠ **把 `const led = await orch.deliveryLedger()` 那一行去掉**：
+               *   纯渲染函数里的 `led` 由参数注入（`await` 在非 async 函数里是保留字 ⇒ 求值失败）。
+               *   ⚠ 只删这一行；其余（含 `try/catch` 与全部措辞）**原样保留**
+               *     ⇒ 判据测的仍是**盘上那段真源码**，⛔ 不是本脚本重写的副本。
+               */
+              const bodyPure = body
+                .replace(/^\s*const led = await orch\.deliveryLedger\(\).*$/m, '')
+                /**
+                 * ⚠ 还要去掉 **TS 类型断言**（`(e as Error)`）—— 那是 TS 语法，纯 `.mjs` 里求值会
+                 * 报 `Unexpected identifier 'as'`。⚠ 只做**语法降级**（`as Error` → 空），
+                 * ⛔ 不改任何措辞、⛔ 不改任何判断。
+                 */
+                .replace(/\bas (?:Error|unknown)\b/g, '')
+              if (bodyPure === body) {
+                bad('(d) 【抽不出渲染块】块里找不到 `const led = await orch.deliveryLedger()` 那一行'
+                  + ' ⇒ 判据对不上实现（⚠ 若实现改成别的取数写法，这里要同步）')
+              }
+              const wrapped = `export const renderDeliveryLines = (led) => {\n`
+                + `  ${MAX_LINE}\n`
+                + bodyPure
+                + '\n}\n'
+              const dir = mkdtempSync(join(tmpdir(), 'hob-redeliver-render-'))
+              const modPath = join(dir, 'render.mjs')
+              writeFileSync(modPath, wrapped, 'utf8')
+              {
+                let rmod
+                try {
+                  rmod = await import(pathToFileURL(modPath).href)
+                } catch (e) {
+                  bad(`(d) 【渲染块插不进去】抽出来的源码不能独立求值：${String(e?.message ?? e)}\n`
+                    + '      ⇒ 多半是渲染块里用了外层变量；⚠ 这是判据与实现脱钩的信号，⛔ 不按通过处理')
+                }
+              if (rmod !== undefined && typeof rmod.renderDeliveryLines === 'function') {
+                const render = rmod.renderDeliveryLines
+
+                // ── ① 有台账 ⇒ 列出来，且 executionId **完整不截断** ─────────────
+                const LONG_ID = 'e-0123456789abcdef-full-id-must-survive'
+                const l1 = render({
+                  total: 2, reachability: 'ok',
+                  entries: [
+                    { executionId: LONG_ID, to: 'session-wrong', taskId: 't-1', owner: 'session-right', mismatch: true },
+                    { executionId: 'e-undecidable', to: 'session-x', taskId: 't-2', mismatch: undefined },
+                  ],
+                }).join('\n')
+                const hasFullId = l1.includes(LONG_ID)
+                const saysMismatch = l1.includes('可能投错')
+                const saysUndecidable = l1.includes('判不出')
+                /**
+                 * ⚠ ⚠ **"有没有建议用户去补投 / 有没有谎称已修复"不能只测子串**（实测踩到）：
+                 *   实现里那句是「⛔ 也没有"已修复"这回事」—— 它是**否定式说明**，
+                 *   子串里有"已修复"却正是我们要的。⇒ 判据改为：
+                 *   · 不许出现**建议式**措辞（"建议你补投" / "请补投" / "请你补"）；
+                 *   · 不许出现**肯定式**的"已修复"（即"已修复"前面**不是**否定词）。
+                 */
+                const adviceWords = ['建议你补投', '建议补投', '请补投', '请你补']
+                const hasAdvice = adviceWords.some((w) => l1.includes(w))
+                // ⚠ 肯定式"已修复"：前面 8 个字符内**没有**否定词（不 / 没 / 无 / 未 / ⛔）
+                const affirmFixed = (() => {
+                  const key = '已修复'
+                  let i = l1.indexOf(key)
+                  while (i >= 0) {
+                    const before = l1.slice(Math.max(0, i - 8), i)
+                    if (!/[不没无未⛔]/.test(before)) return true
+                    i = l1.indexOf(key, i + 1)
+                  }
+                  return false
+                })()
+                const notAdvice = !hasAdvice && !affirmFixed
+                if (hasFullId && saysMismatch && saysUndecidable && notAdvice) {
+                  ok('(d)① ✓ 有台账 ⇒ 列出来：**`executionId` 完整不截断**'
+                    + '（长 id 原样保留）· 错投的标"可能投错"· 判不出的**单独**标"判不出"'
+                    + '· ⛔ 没有"建议你补投"这类建议措辞、⛔ 也没有肯定式的"已修复"')
+                } else {
+                  bad('(d)【有台账必须可复制可辨认】不成立'
+                    + `：executionId 完整=${hasFullId} · 标了可能投错=${saysMismatch}`
+                    + ` · 标了判不出=${saysUndecidable} · 无建议措辞=${notAdvice}`
+                    + `\n      ⇒ 渲染原文：${JSON.stringify(l1.slice(0, 300))}`)
+                }
+
+                // ── ② 台账为空 ⇒ **明说"没有"**（⛔ 不是不显示）──────────────────
+                const emptyLines = render({ total: 0, reachability: 'no-cards', entries: [] })
+                const saysEmpty = emptyLines.length > 0
+                  && emptyLines.join('\n').includes('没有')
+                  && emptyLines.join('\n').includes('投递记录')
+                if (saysEmpty) {
+                  ok('(d)② ✓ 台账为空 ⇒ **明说"没有投递记录"**'
+                    + `（${emptyLines.length} 行，⛔ 不是"一行都不显示"）`
+                    + ' ⇒ "没有"与"没去读"可区分')
+                } else {
+                  bad('(d)【空台账必须明说】不成立：空态**没有**可读的"没有"一说'
+                    + `（${emptyLines.length} 行）⇒ 用户会把「没显示」读成「没有」`)
+                }
+
+                // ── ③ 判不出 owner ⇒ **单独一档**，⛔ 不许并进"没有错投" ───────────
+                const l3 = render({
+                  total: 1, reachability: 'ok',
+                  entries: [{ executionId: 'e-nobody', to: 'session-x', taskId: 't-3', mismatch: undefined }],
+                }).join('\n')
+                const onlyUndecidable = l3.includes('判不出') && !l3.includes('一致')
+                if (onlyUndecidable) {
+                  ok('(d)③ ✓ **判不出 owner ⇒ 单独一档**：`mismatch === undefined` 写成"判不出"，'
+                    + '⛔ 没有被写成"一致"（那会把"判不出"读成"没投错"）')
+                } else {
+                  bad('(d)【判不出必须单独一档】不成立'
+                    + `：含"判不出"=${l3.includes('判不出')} · 误写成"一致"=${l3.includes('一致')}`
+                    + `\n      ⇒ 渲染原文：${JSON.stringify(l3.slice(0, 240))}`)
+                }
+
+                // ── ④ 超上限 ⇒ **明说还有 N 条**（⛔ 不许静默截断）────────────────
+                const many = Array.from({ length: 11 }, (_, i) => ({
+                  executionId: `e-${i}`, to: 's', taskId: `t-${i}`, owner: 's', mismatch: false,
+                }))
+                const l4 = render({ total: 11, reachability: 'ok', entries: many }).join('\n')
+                const saysRest = l4.includes('还有 3 条未列出')
+                if (saysRest) {
+                  ok('(d)④ ✓ 超出上限**明说"还有 3 条未列出"**（11 条只列 8 条）'
+                    + ' ⇒ ⛔ 没有静默截断')
+                } else {
+                  bad('(d)【超出上限不许静默截断】不成立：11 条台账里没找到"还有 3 条未列出"'
+                    + `\n      ⇒ 渲染原文尾部：${JSON.stringify(l4.slice(-200))}`)
+                }
+
+                // ── 变异：把错投判定改成**恒假** ⇒ ③ 那档必须红 ─────────────────
+                //   ⚠ ⚠ 靶子 = `e.mismatch === true` → `false`
+                //     ⇒ 错投那条会被当成"一致"，"可能投错"消失 ⇒ (d)① 当场红。
+                const mutSrc = src.replace(
+                  'const verdict = e.mismatch === true',
+                  'const verdict = false && e.mismatch === true',
+                )
+                if (mutSrc === src) {
+                  bad('变异(d) 【失去靶子】替换 `mismatch === true` 未生效 ⇒ 判据对不上实现')
+                } else {
+                  const mutBlock = mutSrc.slice(mutSrc.indexOf(startMark), mutSrc.indexOf(endMark))
+                  // ⚠ 与正向侧**同一套语法降级**（去 `await` 行 + 去 TS 断言），
+                  //   否则变异体根本跑不起来 ⇒ "负向对拍失败"会被误读成"判据没牙"。
+                  const mutBlockOpen = 'const deliveryLines = await (async (): Promise<string[]> => {'
+                  const mutOi = mutBlock.indexOf(mutBlockOpen)
+                  let mutBody = mutOi < 0 ? mutBlock : mutBlock.slice(mutOi + mutBlockOpen.length)
+                  const mutCi = mutBody.lastIndexOf('})()')
+                  if (mutCi >= 0) mutBody = mutBody.slice(0, mutCi)
+                  const mutWrap = 'export const renderDeliveryLines = (led) => {\n'
+                    + '  const DELIVERY_LIST_MAX = 8\n'
+                    + mutBody
+                      .replace(/^\s*const led = await orch\.deliveryLedger\(\).*$/m, '')
+                      .replace(/\bas (?:Error|unknown)\b/g, '')
+                    + '\n}\n'
+                  const mutPath = join(dir, 'render-mut.mjs')
+                  writeFileSync(mutPath, mutWrap, 'utf8')
+                  let mm
+                  try {
+                    mm = await import(pathToFileURL(mutPath).href)
+                  } catch (e) {
+                    bad(`变异(d) 【变异体跑不起来】${String(e?.message ?? e)}`)
+                  }
+                  if (mm !== undefined && typeof mm.renderDeliveryLines === 'function') {
+                    const ml = mm.renderDeliveryLines({
+                      total: 1, reachability: 'ok',
+                      entries: [{ executionId: 'e-mut', to: 'session-wrong', taskId: 't-m', owner: 'session-right', mismatch: true }],
+                    }).join('\n')
+                    const lost = !ml.includes('可能投错')
+                    if (lost) {
+                      ok('变异(d) ✓ 把错投判定改成**恒假** ⇒ "可能投错"**当场消失**'
+                        + '（错投的那条被写成"一致"）⇒ (d)①③ 的靶子是真的')
+                    } else {
+                      bad('变异(d) 【负向对拍失败】把 `mismatch === true` 改成恒假后，'
+                        + '渲染里**仍然**说"可能投错" ⇒ (d) 测的不是这件事（它永远 PASS，没有分辨力）')
+                    }
+                  }
+                }
+              }
+            }
+            try { rmSync(dir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+          }
+        }
+      }
+    }
+  }
   }
 }
 

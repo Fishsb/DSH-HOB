@@ -310,6 +310,25 @@ export interface HobOrchestrator {
     owner?: string
   }>
   /**
+   * ⚠⚠ **"哪些回执投给了谁"的只读面**（2026-10-19 · `TASK-R3`）。
+   *
+   * ── 为什么非要有它（上一轮留的那句话就是理由）──────────────────────────
+   *   `redeliver` 的入口已经通了，但用户**拿不到 `executionId`** ——
+   *   台账只活在 `CardWake` 的私有 `Map` 里、`deliveredLedger()` 只有内部视角
+   *   ⇒ 入口通了却按不到，等于没通。本方法把它**如实**端出来。
+   *
+   * ⚠ **只读、只报**：⛔ 不自动补投、⛔ 不写"建议你去补投"、⛔ 不提示"已修复"。
+   * ⚠ **`owner` 要现读卡面**（`createdBy.sessionId`）—— 台账本身⛔ 不记"本该给谁"。
+   *   判不出 ⇒ 那一档必须**单独**报出（⛔ 不许混进"没有错投"）。
+   */
+  deliveryLedger(): Promise<{
+    entries: Array<{ executionId: string; to: string; taskId?: string; owner?: string; mismatch: boolean | undefined }>
+    total: number
+    reachability: 'ok' | 'no-cards' | 'unavailable' | 'unreadable'
+    /** 现读不到卡面时的原话（⛔ 不许编造；读到了就是 undefined）。 */
+    detail?: string
+  }>
+  /**
    * **实施会话叫醒面**的运行态读数（2026-10-19 · `TASK-2` 改判后的**主信号源**）。
    *
    * ⚠ 与 `wakeState()`（看板 SSE · **旁证通道**）**分开报** ——
@@ -1870,6 +1889,62 @@ export function apply(ctx: any): void {
         return { ...r, ...(owner === undefined ? {} : { owner }) }
       },
 
+      /**
+       * ⚠⚠ **投递台账的只读面**（`TASK-R3`）：把"回执投给了谁 / 哪条可能投错"端出来。
+       *
+       * ⚠ **为什么要现读卡面**：`deliveredLedger()` 只记"给了谁"（`executionId → to`），
+       *   ⛔ **不记"本该给谁"** ⇒ 光看它判不出哪条是错投的。
+       *   "本该给谁"= 该卡的 `createdBy.sessionId`，只能从卡面现读。
+       *
+       * ⚠ ⚠ **三种"判不出"必须分开，⛔ 不许并进"没有错投"**：
+       *   · 读不到卡面（`unavailable` / `unreadable`）⇒ 整块报"读不到"，`mismatch` 全 `undefined`；
+       *   · 卡找不到 / 卡没记 `createdBy.sessionId` ⇒ 该条 `owner === undefined` ⇒ `mismatch` = `undefined`；
+       *   · 读到了且 owner 有值 ⇒ 才能判 `mismatch: to !== owner`。
+       *   ⇒ `mismatch === undefined` 的语义是**"判不出"**，⛔ 不是"没投错"。
+       *
+       * ⚠ **不泄露别人**：`wake` 是进程级单例，台账里可能有别的工作区的执行。
+       *   ⇒ 只保留"能在**本工作区卡面**里找到那张卡"的条目
+       *   （找不到卡 = 判不出归属 = 不属于本工作区，⛔ 不许显示）。
+       */
+      async deliveryLedger() {
+        const ledger = wake.deliveredLedger()
+        const snap = await this.cardsOf({ selfSessionId: undefined })
+        /** 卡面读数 OK 才谈得上"判 mismatch"；否则整块只能是"判不出"。 */
+        const readable = snap.reachability === 'ok' || snap.reachability === 'no-cards'
+        const byId = new Map(snap.cards.map((c) => [c.id, c]))
+        const entries: Array<{
+          executionId: string
+          to: string
+          taskId?: string
+          owner?: string
+          mismatch: boolean | undefined
+        }> = []
+        for (const row of ledger) {
+          /**
+           * ⚠ 台账键是 `executionId`，⛔ 不含卡 id ⇒ 只能靠卡面的 `executionId` 反查。
+           *   找不到 ⇒ 这条**不属于本工作区**（或卡已被清理）⇒ **不显示**
+           *   （⛔ 不许把别人的执行显示出来；⛔ 也不许猜一张卡给它）。
+           */
+          const card = snap.cards.find((c) => c.executionId === row.executionId)
+          if (card === undefined) continue
+          const owner = card.createdBySessionId
+          entries.push({
+            executionId: row.executionId,
+            to: row.to,
+            taskId: card.id,
+            ...(owner === undefined ? {} : { owner }),
+            // ⚠ `undefined` = **判不出**（卡面读不到 / 卡没记 createdBy）—— ⛔ 不是"没投错"
+            mismatch: readable && owner !== undefined ? row.to !== owner : undefined,
+          })
+        }
+        return {
+          entries,
+          total: entries.length,
+          reachability: snap.reachability,
+          ...(snap.detail === undefined ? {} : { detail: snap.detail }),
+        }
+      },
+
       dispatchWakeState(): DispatchWakeState {
         return dispatchWake.snapshot()
       },
@@ -2167,6 +2242,66 @@ export function createHobOrchTools(orch: HobOrchestrator): {
        * ⚠ 正常态（有登记、没判不出、叫过或没待跑）也**给一行短读数** ——
        *   与 `wakeLines`（旁证通道）不同，这条是**主判据面**，必须常态可见。
        */
+      /**
+       * ⚠⚠ **"哪些回执投给了谁"**（`TASK-R3`）—— 只读读数，⛔ 不动任何东西。
+       *
+       * ⚠ **上限**：一次最多列 `DELIVERY_LIST_MAX` 条；超出**明说还有 N 条未列出**
+       *   （⛔ 不许静默截断 —— 本项目既有病根之一）。
+       * ⚠ **空态也出一行**（"没有"≠"没显示"）：台账为空 ⇒ 明说"目前没有投递记录"。
+       */
+      const DELIVERY_LIST_MAX = 8
+      const deliveryLines = await (async (): Promise<string[]> => {
+        try {
+          const led = await orch.deliveryLedger()
+          const head = `回执投递台账：${led.total} 条`
+            + (led.entries.filter((e) => e.mismatch === true).length > 0
+              ? ` · ⚠ **其中 ${led.entries.filter((e) => e.mismatch === true).length} 条收件人 ≠ 该卡自己的 owner**`
+              : '')
+            + ` · 这里只显示**本工作区**那些能在卡面上对上号的`
+          const lines = [head]
+          if (led.reachability !== 'ok' && led.reachability !== 'no-cards') {
+            // ⚠ 读不到卡面 ⇒ **判不出**哪条错投（⛔ 不是"没有错投"）
+            lines.push(`  ↳ ⚠ **读不到卡面**（${led.reachability}`
+              + `${led.detail === undefined ? '' : '：' + led.detail}）`
+              + ' ⇒ **判不出哪一条投错了**')
+            lines.push('  ↳ ⛔ 这不等于"没有错投"，也⛔ 不等于"没有回执"')
+            return lines
+          }
+          if (led.total === 0) {
+            lines.push('  ↳ 目前**没有**投递记录（这一档是"确实是空的"，⛔ 不是"没去读"）')
+            return lines
+          }
+          const shown = led.entries.slice(0, DELIVERY_LIST_MAX)
+          for (const e of shown) {
+            /**
+             * ⚠ 三态分开写（缺一就会把"判不出"读成"没投错"）：
+             *   · `true`  ⇒ 明确标"可能投错"；· `false` ⇒ 标"一致"；
+             *   · `undefined` ⇒ 明写"判不出"（卡没记 createdBy / 该条读不到 owner）。
+             */
+            const verdict = e.mismatch === true
+              ? '⚠ 收件人 ≠ owner ⇒ **可能投错**'
+              : e.mismatch === false
+                ? '一致'
+                : '**判不出**（该卡没记 `createdBy.sessionId`）'
+            lines.push(`  · \`${e.executionId}\` → ${e.to}`
+              + (e.taskId === undefined ? '' : `（卡 ${e.taskId}）`)
+              + (e.owner === undefined ? '' : ` · owner=${e.owner}`)
+              + ` · ${verdict}`)
+          }
+          if (led.total > shown.length) {
+            lines.push(`  ↳ ⚠ **还有 ${led.total - shown.length} 条未列出**（本行有上限 ${DELIVERY_LIST_MAX} 条，`
+              + '⛔ 不是只剩这么多）')
+          }
+          lines.push('  ↳ 这一块**只是读数**：⛔ 不会自动补投，⛔ 也没有"已修复"这回事')
+          return lines
+        } catch (e) {
+          return [
+            '回执投递台账：⚠ **读不到**（取台账时抛错）',
+            `  ↳ ${String((e as Error)?.message ?? e)}`,
+            '  ↳ ⛔ **这不等于"没有回执"** —— 别把这一档当作"确实是空的"。',
+          ]
+        }
+      })()
       const dispatchWakeLines = ((): string[] => {
         try {
           const d = orch.dispatchWakeState()
@@ -2420,6 +2555,21 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         //   ⚠ 它**必须常态出现**（不像下面那条旁证通道只在异常时出）——
         //     因为"读不到会话状态"与"没有会话在跑"外表一样，只能靠这行分开。
         ...dispatchWakeLines,
+        /**
+         * ── ⚠⚠ **"哪些回执投给了谁"**（2026-10-19 · `TASK-R3`）──────────────────────
+         *
+         * 为什么必须出这几行：`redeliver` 的入口在上一轮已经通了，但**用户拿不到
+         * `executionId`** ⇒ 入口通了却按不到。这一块就是"把它变成看得见的"。
+         *
+         * ⚠ **只读、只报**（`TASK-R3` §一 三条边界）：
+         *   · ⛔ 不自动补投、⛔ 不写"建议你去补投"、⛔ 不提示"已修复"；
+         *   · ⛔ 只显示**本工作区**的（反查不到卡的条目直接不显示 —— 那是别人的）；
+         *   · ⚠ **有上限**，超出**明说还有多少条未列出**（⛔ 不许静默截断）。
+         * ⚠ **`executionId` 必须完整、不截断** —— 否则复制不走，这个读数就没用。
+         * ⚠ ⚠ **"判不出"与"没投错"是两件事**：`mismatch === undefined` ⇒ 明写"判不出"，
+         *   ⛔ 不许让人读成"都投对了"。
+         */
+        ...deliveryLines,
         // ── ⚠ 以下是**旁证通道**的行（看板 SSE —— `TASK-2` 里已降为旁证）──────
         //   它们只在**叫醒面不正常**时出现（连不上 / 没订阅过），
         //   ⛔ 不在正常态刷屏；措辞里必须写清"这不等于没有卡跑完"。
