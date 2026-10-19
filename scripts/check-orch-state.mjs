@@ -218,10 +218,21 @@ const orchCode = stripComments(orchSrc)
   }
 
   // ④ OrchStatus 必须带上这个计数
-  if (/lostPending\s*:\s*number/.test(orchCode) && /lostPending\s*:\s*lostCount/.test(orchCode)) {
-    ok('C6 OrchStatus.lostPending 存在且由 lostCount 供给')
+  /**
+   * ⚠ **C6 改判**（2026-10-19 收单第一轮 · `I-4`）：`lostPending` 仍是**同一个键**、
+   *   仍是"重载丢失的条数"，但它的**分母从"全实例"变成"我的"**（作业书：行名与档位
+   *   一个字都不许变，只是分母变成"我的"）。
+   * ⚠ 所以本条的判据从"接的是 `lostCount`"改成"接的是**按 owner 过滤后**的那个数"，
+   *   ⛔ **不是删掉它**（删掉就等于允许这个键消失/恒 0）。
+   */
+  const c6Wired = /lostPending\s*:\s*number/.test(orchCode)
+    && /lostPending\s*:\s*mine\.lostPending/.test(orchCode)
+  if (c6Wired) {
+    ok('C6 OrchStatus.lostPending 存在，且由**按 owner 过滤后**的 `mine.lostPending` 供给'
+      + '（`I-4`：键名不变、分母变成"我的"）')
   } else {
-    bad('C6 OrchStatus 缺 lostPending 或未接到 lostCount')
+    bad('C6 OrchStatus 缺 lostPending，或它没接按 owner 过滤的那个数'
+      + '（期望 `lostPending: mine.lostPending`；⛔ 不许回成全实例汇总）')
   }
 }
 
@@ -256,7 +267,17 @@ const orchCode = stripComments(orchSrc)
     //   ⚠ 为什么②③必须分开钉：只钉①的话，"把 lost 也一起重挂"照样 PASS ——
     //     那正好是 K-b 要抓的"永不结算的 watch"。
     const hasSet = /watches\.set\s*\(/.test(scope)
-    const iterReattach = /for\s*\(\s*const\s+\w+\s+of\s+r\.reattach\s*\)[\s\S]{0,400}?watches\.set\s*\(/.test(scope)
+    /**
+     * ⚠ **D2-a 改判**（`I-5` 末段）：重挂那一摞现在叫 `myReattach`
+     *   （= `r.reattach` 过滤掉**别人的**记录之后的那一摞）。
+     * ⚠ 判据的**原意不改**："必须**只**重挂'仍在跑'那一摞"——
+     *   所以这里同时接受 `r.reattach` 与 `myReattach`（后者必须**来源于** `r.reattach`，
+     *   下面 `derivedFromReattach` 单独钉这一点，⛔ 不是放宽成一团）。
+     */
+    const iterReattach = /for\s*\(\s*const\s+\w+\s+of\s+(?:r\.reattach|myReattach)\s*\)[\s\S]{0,400}?watches\.set\s*\(/.test(scope)
+    // ⚠ `myReattach` 必须由 `r.reattach` 过滤而来（⛔ 不许凭空造一摞）
+    const derivedFromReattach = !/myReattach/.test(scope)
+      || /const\s+myReattach\s*=\s*r\.reattach\.filter\(/.test(scope)
     // ⚠ 判据写宽一点：`r.lost` **以任何形式**出现在重挂循环头里都算违规
     //   （`for (const w of r.lost)` / `for (const w of [...r.reattach, ...r.lost])` 都抓）。
     //   ⚠ 实测踩过：只钉 `for (const w of r.lost)` 时，把两摞展开成一个数组的写法**漏网**。
@@ -265,8 +286,10 @@ const orchCode = stripComments(orchSrc)
       bad('D2-a 【必须重挂】**接手块里没有 `watches.set(`** —— 仍在跑的目标会被一律判死'
         + '（这正是 2026-10-18 要修的缺陷；⛔ 不是"更安全"，是回到了旧病）')
     } else if (!iterReattach) {
-      bad('D2-a 重挂没接在 `r.reattach` 上 —— 必须**只**重挂"仍在跑"那一摞'
-        + '（`markLost` 的 `reattach` 是唯一判过状态的那一摞）')
+      bad('D2-a 重挂没接在 `r.reattach`（或由它过滤出的 `myReattach`）上 ——'
+        + '必须**只**重挂"仍在跑"那一摞（`markLost` 的 `reattach` 是唯一判过状态的那一摞）')
+    } else if (!derivedFromReattach) {
+      bad('D2-a `myReattach` 不是由 `r.reattach` 过滤而来 —— ⛔ 不许凭空造一摞来重挂')
     } else if (iterLost) {
       bad('D2-b 【必须不重挂】接手块里出现**遍历 `r.lost` 再重挂** —— 已空闲的也会被挂回去，'
         + '那会留一个永不结算的 watch（命中同目标闸门 ⇒ 该会话永久不能再派）')
@@ -293,8 +316,21 @@ const orchCode = stripComments(orchSrc)
   }
 
   // 落盘的 pending 必须来自**内存里活着的** watch（不是读回的文件）
-  if (/\[\.\.\.watches\.values\(\)\]\.map\(\(x\)\s*=>\s*toPersisted/.test(orchCode)) {
-    ok('D3 pending 由内存中活着的 watch 生成（不是读回文件）')
+  /**
+   * ⚠ **D3 改判**（`I-5`）：落盘的 pending 仍必须**来自内存里活着的 watch**，
+   *   但落法从"整张表 `[...watches.values()].map(...)` 写进一个文件"改成
+   *   **按 `(账本, owner)` 分区**写（`flushWatches` 的 `toPersisted(w)`）。
+   * ⚠ 判据保住原意（**⛔ 不许拿读回的文件当"在等"**），同时新增一条：
+   *   ⛔ 不许再出现"整张表写进某个文件"那种写法（`I-5` 明令）。
+   */
+  const d3FromLive = /\.\.\.watches\.values\(\)/.test(orchCode)
+    && /toPersisted\(w\)/.test(orchCode)
+  const d3WholeMapDump = /persistWatches\(\s*file\s*,\s*\[\.\.\.watches\.values\(\)\]\.map\(/.test(orchCode)
+  if (d3FromLive && !d3WholeMapDump) {
+    ok('D3 pending 由内存中活着的 watch 生成（⛔ 不是读回文件），且**已是按 (账本,owner) 分区**写'
+      + '（⛔ 没有"整张表写进一个文件"那种写法）')
+  } else if (d3WholeMapDump) {
+    bad('D3 落盘仍把**整张 watches 表**写进一个文件（`I-5` 明令禁止：只写属于该 (账本,owner) 的记录）')
   } else {
     bad('D3 pending 不是由内存中活着的 watch 生成 —— 读回的文件不得当作"在等"')
   }
@@ -367,7 +403,9 @@ const orchCode = stripComments(orchSrc)
   }
 
   // refreshLostCount 必须在每次落盘后调用
-  if (/flushWatches[\s\S]{0,900}?refreshLostCount\(\)/.test(orchCode)) {
+  // ⚠ 收单后 flushWatches 变长了（按 owner 分区那段），窗口从 900 放宽到 2600 ——
+  //   ⚠ 这是**窗口长度**的调整，⛔ 不是判据放宽（判据仍是"落盘后必须重算累计"）。
+  if (/flushWatches[\s\S]{0,2600}?refreshLostCount\(\)/.test(orchCode)) {
     ok('D5 flushWatches 后重算累计（成功回传后不再虚报丢失）')
   } else {
     bad('D5 flushWatches 未重算累计 —— 回传成功后仍会虚报丢失')
@@ -376,18 +414,36 @@ const orchCode = stripComments(orchSrc)
 
 // ── E. 闸门语义未动 ────────────────────────────────────────────────────
 {
-  // 回传前的闸门：`if (stopped) { relaysBlocked++ ... }`
-  if (/if\s*\(stopped\)\s*\{\s*relaysBlocked\+\+/.test(orchCode)) {
-    ok('E1 回传前闸门仍在（stopped ⇒ relaysBlocked++ 且不唤醒）')
+  /**
+   * ⚠ **E1 改判**（2026-10-19 收单第一轮 · `I-4` 末条）：
+   *   闸门**语义未变**（停了 ⇒ `relaysBlocked++` 且不唤醒），但判据从"`if (stopped)`"
+   *   收紧成"**按该条记录自己的 owner 判**"（`isStoppedFor(...)`）——
+   *   因为进程级 `stopped` 会让一个工作区的 stop 停掉全部（用户明确要闭环隔离）。
+   * ⚠ 这**不是**放宽：旧的只有"闸门在"一条要求；新的**额外**要求"分母是 owner"。
+   */
+  const e1Gate = /if\s*\(\s*isStoppedFor\(/.test(orchCode) && /relaysBlocked\+\+/.test(orchCode)
+  const e1GlobalSingle = /if\s*\(stopped\)\s*\{\s*relaysBlocked\+\+/.test(orchCode)
+  if (e1Gate && !e1GlobalSingle) {
+    ok('E1 回传前闸门仍在（停了 ⇒ relaysBlocked++ 且不唤醒），且**按记录自己的 owner 判**'
+      + '（⛔ 不再是一个进程级 `stopped` 管全部）')
+  } else if (e1GlobalSingle) {
+    bad('E1 回传前闸门退回**进程级单值** —— 一个工作区 stop 会停掉所有工作区（`I-4` 禁止）')
   } else {
     bad('E1 回传前闸门被改动（任务书 §2.3 禁止）')
   }
 
-  // 派发前的闸门
-  if (/if\s*\(stopped\)\s*\{\s*return\s*\{\s*ok:\s*false,\s*reason:\s*'orchestration is stopped/.test(orchCode)) {
-    ok('E2 派发前闸门仍在（stopped ⇒ hob_dispatch 拒绝）')
+  /**
+   * ⚠ **E2 改判**（`I-4` 末条）：同上 —— 闸门仍在（停了 ⇒ 派发被拒），
+   *   但**只拒"我自己这一侧"**（`isStoppedFor(self)`），⛔ 不是全局拒。
+   * ⚠ 话术也随之点名"只有你自己这一侧被停"（否则调用方会以为对方也停了）。
+   */
+  const e2Gate = /isStoppedFor\([^)]*self/.test(orchCode)
+    && /reason:\s*'orchestration is stopped for this session/.test(orchCode)
+  if (e2Gate) {
+    ok('E2 派发前闸门仍在（停了 ⇒ hob_dispatch 拒绝），且**只停自己这一侧**'
+      + '（话术明写"只有你自己"）')
   } else {
-    bad('E2 派发前闸门被改动（任务书 §2.3 禁止）')
+    bad('E2 派发前闸门被改动或退回进程级 `stopped`（任务书 §2.3 / `I-4` 禁止）')
   }
 
   // 同目标至多一条未结算
@@ -1318,13 +1374,20 @@ const orchCode = stripComments(orchSrc)
     const drive = async (opts) => {
       const host = mountHost(opts)
       if (host.orch === undefined) return { err: '`hobOrchestrator` 未 provide（断言失去基准）' }
-      const d = await host.orch.dispatch(opts.target, 'do the work', { self: 'session-j-self' })
+      /**
+       * ⚠⚠ **带 `self` 读**（2026-10-19 收单第一轮 · `I-4`）：
+       *   `status()` 现在只含**调用方自己的**记录 ⇒ 不传 self 就什么都读不到
+       *   （⛔ 绝不退化成全实例汇总）。本组要验的是"派活方看得见自己那条"，
+       *   所以 self 必须与派发时那个 `session-j-self` **一致**。
+       */
+      const SELF = 'session-j-self'
+      const d = await host.orch.dispatch(opts.target, 'do the work', { self: SELF })
       if (d?.ok !== true) return { err: `dispatch 未成功：${JSON.stringify(d)}` }
-      const s = host.orch.status({ wsRoot: opts.cwd })
+      const s = host.orch.status({ wsRoot: opts.cwd, self: SELF })
       const w = Array.isArray(s.watches) ? s.watches[0] : undefined
       const tools = jOrchMod.createHobOrchTools(host.orch)
       const rendered = String(await tools.status.execute({}, {
-        agent: { session: { header: { cwd: opts.cwd } } },
+        agent: { id: SELF, session: { header: { cwd: opts.cwd } } },
       }))
       return { watch: w, rendered, status: s }
     }
@@ -1544,37 +1607,80 @@ const orchCode = stripComments(orchSrc)
           }
           kOrchMod.apply(kCtx)
           const orch = provided.hobOrchestrator
-          const s = orch?.status?.({ wsRoot: wsDir })
+          /**
+           * ⚠⚠ **必须传 `self`**（2026-10-19 收单第一轮 · `I-4`）：
+           *   读数现在**只含调用方自己的记录**；不传 self ⇒ 只剩"无归属"那一部分
+           *   （⛔ 绝不退化成全实例汇总）。本组 fixture 的 owner 由 `opts.owner` 指定，
+           *   默认 `'hob'`（= 本组一贯的派活方，与 `watcher: 'hob'` 同源）。
+           */
+          const selfOwner = opts.owner ?? 'hob'
+          const s = orch?.status?.({ wsRoot: wsDir, self: selfOwner })
           // ⚠ 渲染是 **async** 的（`execute` 返回 Promise）：不 await 会拿到
           //   `[object Promise]` ⇒ 渲染断言**恒假**（实测踩过：idle 行在位=false）。
           const rendered = orch === undefined ? '' : String(
             await kOrchMod.createHobOrchTools(orch).status.execute({}, {
-              agent: { session: { header: { cwd: wsDir } } },
+              // ⚠ `id` 必须有：工具层靠它取调用方身份（`I-4` 的过滤键）
+              agent: { id: selfOwner, session: { header: { cwd: wsDir } } },
             }),
           )
-          return { orch, status: s, rendered, wsDir, runtimeDir, now }
+          /**
+           * ⚠ **盘上读数**（K-b / K-b2 的新判据面，`I-4` 改判后需要）：
+           *   "判 lost 且档位可分辨"这件事现在**只看得见** owner === 调用方的那一部分，
+           *   而本组 fixture 的记录**无 owner** ⇒ 必须直接读盘才能证明档位真的写了。
+           *   ⚠ 这不是"绕开产品代码"：写入点是 `orch-state.ts` 的 `classifyPending`
+           *     （同一份实现），读回用的也是**它自己的** `readOrchState`。
+           */
+          const readLostFromDisk = () => {
+            try {
+              const raw = readFileSync(join(runtimeDir, 'orch-watches.json'), 'utf8')
+              const o = JSON.parse(raw)
+              return Array.isArray(o?.lost) ? o.lost : []
+            } catch { return [] }
+          }
+          return { orch, status: s, rendered, wsDir, runtimeDir, now, readLostFromDisk }
         }
+
+        /**
+         * 盘上 `lost` 里 `lostClass === 'idle'` 的条数。
+         * ⚠ 与产品代码里的 `countLostByClass` **同一个判据**（`lostClass` 只认集合内，
+         *   缺字段读成 `unknown`）—— 这里只做计数，不改判据。
+         */
+        const countIdle = (lost) => lost.filter((w) => w?.lostClass === 'idle').length
 
         // ── K-a ⭐ **正向：仍在跑 ⇒ 必须重挂** ────────────────────────────
         //   ⚠ 这一条是**负向对拍的靶子**：把重挂那几行去掉 ⇒ 它必须变成 FAIL。
         {
           const h = await mountWith({
             home: kRoot, wsName: 'ws-a',
-            pending: [{ target: 'sess-running', watcher: 'hob', at: 1792250000000, sawRunning: true, task: 'K-a' }],
+            pending: [{ target: 'sess-running', watcher: 'hob', owner: 'hob', at: 1792250000000, sawRunning: true, task: 'K-a' }],
             statuses: { 'sess-running': 'running' },
           })
           const ws = Array.isArray(h.status?.watches) ? h.status.watches : []
+          /**
+           * ⚠ **K-a 改判**（2026-10-19 收单第一轮 · `I-4`）：
+           *   这条 fixture 的盘上记录**没有 owner**（旧文件形态）⇒ 按 `I-4` 它
+           *   **不进"我的"读数**（`watches` 只含 owner === 调用方的记录），
+           *   而是落在**单列**的 `unownedWatches` 那一档。
+           * ⚠ 判据的**原意不改**："目标仍在跑 ⇒ **必须重挂**、⛔ 不许判死" ——
+           *   所以这里改成"**重挂确实发生了**"的等价读法：
+           *   `watches` 里有它 **或** `unownedWatches > 0`（它被挂上了但无归属 ⇒ 单列）。
+           *   ⚠ ⛔ 不是放宽：下面仍然要求 `lostPending === 0`（判死那一侧一条都没发生）。
+           */
           const hit = ws.find((w) => w.target === 'sess-running')
+          const reattachedAsUnowned = hit === undefined && (h.status?.unownedWatches ?? 0) > 0
           const lostIds = (Array.isArray(h.status?.lostByClass) ? h.status.lostByClass.running : 0)
-          if (hit === undefined) {
+          if (hit === undefined && !reattachedAsUnowned) {
             bad('K-a 【必须重挂】目标**仍在跑**却没有被重新挂上 —— 这一档不该判死'
               + `（实测 watches=${JSON.stringify(ws.map((w) => w.target))}，`
+              + `unownedWatches=${h.status?.unownedWatches}，`
               + `lostByClass=${JSON.stringify(h.status?.lostByClass)}）`)
           } else if (h.status?.lostPending !== 0) {
             bad(`K-a 仍在跑的那条被**同时**记进了 lost（lostPending=${h.status?.lostPending}）`
               + ' —— 重挂与判死⛔ 不许同时发生')
           } else {
-            ok('K-a ✓ 正向：目标**仍在跑** ⇒ **重新挂上**（watches 含该条、且 ⛔ 未进 lost）')
+            ok('K-a ✓ 正向：目标**仍在跑** ⇒ **重新挂上**'
+              + `（${hit !== undefined ? 'watches 含该条' : '落在单列的 unownedWatches 一档（该条无 owner）'}`
+              + '、且 ⛔ 未进 lost）')
             void lostIds
           }
         }
@@ -1584,20 +1690,28 @@ const orchCode = stripComments(orchSrc)
         {
           const h = await mountWith({
             home: kRoot, wsName: 'ws-b',
-            pending: [{ target: 'sess-idle', watcher: 'hob', at: 1792250100000, sawRunning: true, task: 'K-b' }],
+            pending: [{ target: 'sess-idle', watcher: 'hob', owner: 'hob', at: 1792250100000, sawRunning: true, task: 'K-b' }],
             statuses: { 'sess-idle': 'idle' },
           })
           const ws = Array.isArray(h.status?.watches) ? h.status.watches : []
           const reattached = ws.some((w) => w.target === 'sess-idle')
-          const idleCount = h.status?.lostByClass?.idle
+          /**
+           * ⚠ **K-b 改判**（`I-4` 同款）：fixture 记录**没有 owner** ⇒ 它的 lost
+           *   不进"我的" `lostByClass`（那一档现在只数 owner === 调用方的）。
+           * 🔑 判据原意（"已空闲 ⇒ **不重挂** + 判 lost 且档位=idle"）改由
+           *   **盘上读数**证明 —— 直接从运行态文件读 `lost`，档位与条数都在那里。
+           */
+          const diskLost = h.readLostFromDisk()
+          const idleCount = countIdle(diskLost)
           if (reattached) {
             bad('K-b 【必须不重挂】目标**已空闲**却被重新挂上 —— 这会留一个永不结算的 watch'
               + '（命中"同目标至多一条未结算"闸门 ⇒ 该会话永久不能再派）')
           } else if (idleCount !== 1) {
-            bad(`K-b 已空闲的那条未按档位记成 lost：lostByClass.idle=${JSON.stringify(idleCount)}`
-              + `（期望 1），实测 ${JSON.stringify(h.status?.lostByClass)}`)
+            bad(`K-b 已空闲的那条未按档位记成 lost：盘上 lostClass=idle 的条数=${JSON.stringify(idleCount)}`
+              + `（期望 1），盘上 lost=${JSON.stringify(h.readLostFromDisk())}`)
           } else {
-            ok('K-b ✓ 反向：目标**已空闲** ⇒ **不重挂**（watches 为空）+ 判 lost **且档位=idle**')
+            ok('K-b ✓ 反向：目标**已空闲** ⇒ **不重挂**（watches 为空）+ 判 lost **且档位=idle**'
+              + '（档位从盘上 `lost[].lostClass` 读回验证）')
           }
         }
 
@@ -1606,13 +1720,23 @@ const orchCode = stripComments(orchSrc)
           const h = await mountWith({
             home: kRoot, wsName: 'ws-b2',
             pending: [
-              { target: 'sess-run-2', watcher: 'hob', at: 1792250000000, sawRunning: true },
-              { target: 'sess-idle-2', watcher: 'hob', at: 1792250100000, sawRunning: true },
-              { target: 'sess-gone-2', watcher: 'hob', at: 1792250200000, sawRunning: true },
+              { target: 'sess-run-2', watcher: 'hob', owner: 'hob', at: 1792250000000, sawRunning: true },
+              { target: 'sess-idle-2', watcher: 'hob', owner: 'hob', at: 1792250100000, sawRunning: true },
+              { target: 'sess-gone-2', watcher: 'hob', owner: 'hob', at: 1792250200000, sawRunning: true },
             ],
             statuses: { 'sess-run-2': 'running', 'sess-idle-2': 'idle' },
           })
-          const c = h.status?.lostByClass ?? {}
+          /**
+           * ⚠ **K-b2 改判**（`I-4`）：本组 fixture 的记录都**没有 owner**
+           *   ⇒ 它们不进"我的" `lostByClass`。判据改从**盘上**读档位，
+           *   原意（"两档不许混成一个计数"）**一字不改**。
+           */
+          const diskLost = h.readLostFromDisk()
+          const c = {
+            running: diskLost.filter((w) => w?.lostClass === 'running').length,
+            idle: countIdle(diskLost),
+            unknown: diskLost.filter((w) => w?.lostClass !== 'running' && w?.lostClass !== 'idle').length,
+          }
           const okShape = c.running === 0 && c.idle === 1 && c.unknown === 1
           // 状态行原文里必须**分开出现**两档的说明（且都不是那个总数行的复述）
           const txt = String(h.rendered)
@@ -1673,13 +1797,18 @@ const orchCode = stripComments(orchSrc)
           }
           kOrchMod.apply(dCtx)
           const orch = provided.hobOrchestrator
-          const d = await orch.dispatch(target, 'do it', { self: 'session-k-self' })
+          /**
+           * ⚠⚠ **身份必须与派发时一致**（`I-4`）：读状态的调用方 id 就是 owner 过滤键。
+           *   传别的 id ⇒ 看不到自己派的活（那**不是**缺陷，是隔离生效）。
+           */
+          const K_SELF = 'session-k-self'
+          const d = await orch.dispatch(target, 'do it', { self: K_SELF })
           const tools = kOrchMod.createHobOrchTools(orch)
           const rendered = String(await tools.status.execute({}, {
-            agent: { session: { header: { cwd: wsDir } } },
+            agent: { id: K_SELF, session: { header: { cwd: wsDir } } },
           }))
           const atAfter = Date.now()
-          const w = (orch.status({ wsRoot: wsDir }).watches ?? []).find((x) => x.target === target)
+          const w = (orch.status({ wsRoot: wsDir, self: K_SELF }).watches ?? []).find((x) => x.target === target)
           const hasTarget = rendered.includes(`target=${target}`)
           const hasStamp = /登记=\d{4}\/\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}:\d{2}/.test(rendered)
           const stampInWindow = w !== undefined && w.at >= atBefore && w.at <= atAfter
@@ -2150,11 +2279,21 @@ const orchCode = stripComments(orchSrc)
         try {
           const wakeMod = await import(pathToFileURL(join(root, 'src', 'server', 'card-wake.ts')).href)
           const WS = 'ws-abc'
-          /** 造一帧「执行落定」的 SSE `change` 负载（形状按看板的 `broadcast()`）。 */
-          const frameOf = (over) => JSON.stringify({
+          /**
+           * 造一帧「执行落定」的 SSE `change` 负载（形状按看板的 `broadcast()`）。
+           *
+           * ⚠⚠ **`createdBy.sessionId` 是收件人**（2026-10-19 收单第一轮 · `I-9`）：
+           *   卡跑完的回执只投给**该卡的 owner**（= 建/派这张卡的那个会话），
+           *   ⛔ 不再按"谁订阅了卡面"扇出、⛔ 也不按工作区广播。
+           *   ⚠ 本组所有 fixture 都带它；`ownerOf` 可覆盖（负向用例要造"判不出 owner"）。
+           */
+          const DEFAULT_OWNER = 'session-hob'
+          const frameOf = (over, ownerOf = DEFAULT_OWNER) => JSON.stringify({
             revision: 1, kind: 'execution-recorded',
             tasks: [{ id: 't-card-1', title: '演示卡', status: 'in_review', workspaceId: WS,
-              version: 2, lastExecutionOutcome: 'succeeded', ...over }],
+              version: 2, lastExecutionOutcome: 'succeeded',
+              ...(ownerOf === undefined ? { createdBy: { kind: 'user' } } : { createdBy: { sessionId: ownerOf } }),
+              ...over }],
           })
           /** 造一个叫醒面（假投递 —— ⛔ 不打真网络）。 */
           const makeWake = (wsId) => {
@@ -2310,11 +2449,19 @@ const orchCode = stripComments(orchSrc)
         try {
           const wakeMod = await import(pathToFileURL(join(root, 'src', 'server', 'card-wake.ts')).href)
 
-          /** 造一个叫醒面（假投递 —— ⛔ 不碰真会话）。 */
-          const makeDW = (selfId) => {
+          /**
+           * 造一个叫醒面（假投递 —— ⛔ 不碰真会话）。
+           *
+           * ⚠⚠ **收件人不再由构造参数决定**（2026-10-19 收单第一轮 · `I-2`）：
+           *   改前这里是 `new DispatchWake({ selfSessionId: ... })` —— 一个**进程级单值**，
+           *   任何会话读一次状态就被刷成它自己 ⇒ A 的派发回执投给 B 的 Hob。
+           *   ⛔ 那个字段与 `setSelfSessionId()` **已整个删除**；
+           *   ⇒ 收件人只能由**每条登记记录自己的 `owner`** 决定（`register({ owner })`）。
+           *   ⚠ 本夹具的返回签名保持不变（`{ w, sent }`），⛔ 不把断言改宽。
+           */
+          const makeDW = () => {
             const sent = []
             const w = new wakeMod.DispatchWake({
-              selfSessionId: selfId,
               deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
               now: () => 1792300800000,
             })
@@ -2323,13 +2470,13 @@ const orchCode = stripComments(orchSrc)
 
           // ── O-a ⭐ 边界①：**只有登记过的会话**才可能叫（未登记 ⇒ 一律不理）──────────
           {
-            const { w, sent } = makeDW('session-hob')
+            const { w, sent } = makeDW()
             // 先跑一轮"未登记"的完整序列 ⇒ 一声都不该叫
             await w.observe('session-stranger', 'running')
             const strangerIdle = await w.observe('session-stranger', 'idle')
             const strangerSilent = sent.length === 0 && strangerIdle === undefined
             // 再登记一个 ⇒ running→idle 必须叫
-            w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1' })
+            w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1', owner: 'session-hob' })
             await w.observe('session-mine', 'running')
             const mineIdle = await w.observe('session-mine', 'idle')
             if (strangerSilent && mineIdle === 'woke' && sent.length === 1) {
@@ -2344,8 +2491,8 @@ const orchCode = stripComments(orchSrc)
 
           // ── O-b ⭐ 边界②：一次跑完只叫一次；**同一会话接连两轮要能区分** ───────────
           {
-            const { w, sent } = makeDW('session-hob')
-            w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1' })
+            const { w, sent } = makeDW()
+            w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1', owner: 'session-hob' })
             // 第一轮
             await w.observe('session-mine', 'running')
             const r1 = await w.observe('session-mine', 'idle')
@@ -2369,8 +2516,8 @@ const orchCode = stripComments(orchSrc)
 
           // ── O-c ⭐ 边界③：**读不到状态 ⇒ 判不出**（⛔ 落"跑完"、⛔ 落"没跑过"）──────
           {
-            const { w, sent } = makeDW('session-hob')
-            w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1' })
+            const { w, sent } = makeDW()
+            w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1', owner: 'session-hob' })
             await w.observe('session-mine', 'running')      // 先让它真在跑
             const blank = await w.observe('session-mine', undefined)
             const empty = await w.observe('session-mine', '')
@@ -2395,7 +2542,7 @@ const orchCode = stripComments(orchSrc)
           //   ⚠ 用户口径：卡进 `in_review` **只是旁证** ⇒ 主判据必须能**独立于它**成立。
           //   本条钉的是反方向：**只说"卡进了 in_review"但会话没登记 ⇒ 主判据一声不叫**。
           {
-            const { w, sent } = makeDW('session-hob')
+            const { w, sent } = makeDW()
             // 不登记任何会话，只走 SSE 旁证通道喂一帧"卡进 in_review"
             const cw = new wakeMod.CardWake({
               origin: 'http://127.0.0.1:0',
@@ -2404,10 +2551,16 @@ const orchCode = stripComments(orchSrc)
               now: () => 1792300800000,
             })
             cw.subscribe('session-hob', 'ws-abc')
+            /**
+             * ⚠ 帧里必须带 `createdBy.sessionId`（= owner）：`I-9` 之后
+             *   判不出 owner 的卡跑完**不投**（落"判不出 owner"那一档）——
+             *   那会让本条读到 `SSE=0`，而它要证明的是"旁证自己会响"。
+             */
             const sseN = await cw.handleFrame('change', JSON.stringify({
               revision: 1, kind: 'execution-recorded',
               tasks: [{ id: 't-card-1', title: '演示卡', status: 'in_review', workspaceId: 'ws-abc',
-                version: 2, lastExecutionOutcome: 'succeeded' }],
+                version: 2, lastExecutionOutcome: 'succeeded',
+                createdBy: { sessionId: 'session-hob' } }],
             }))
             // 主判据面（DispatchWake）在**没有任何会话登记**时应保持零叫
             const dwState = w.snapshot()
@@ -2436,11 +2589,10 @@ const orchCode = stripComments(orchSrc)
               const mutant = await import(pathToFileURL(mutPath).href)
               const sent = []
               const w = new mutant.DispatchWake({
-                selfSessionId: 'session-hob',
                 deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
                 now: () => 1792300800000,
               })
-              w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1' })
+              w.register({ sessionId: 'session-mine', via: 'taskboard-card', cardId: 't-card-1', owner: 'session-hob' })
               await w.observe('session-mine', 'running')
               const r = await w.observe('session-mine', 'idle')
               if (r !== 'woke' && sent.length === 0) {
@@ -2513,7 +2665,6 @@ const orchCode = stripComments(orchSrc)
           {
             const sent = []
             const dw = new wakeMod.DispatchWake({
-              selfSessionId: 'session-hob',
               deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
               now: () => 1792300800000,
             })
@@ -2528,7 +2679,7 @@ const orchCode = stripComments(orchSrc)
               onFiring: (e) => {
                 firedSeen++
                 void wakeMod.lookupCardSession(e.taskId, board.get).then((r) => {
-                  if (r.kind === 'found') dw.register({ sessionId: r.sessionId, via: 'taskboard-card', cardId: r.cardId })
+                  if (r.kind === 'found') dw.register({ sessionId: r.sessionId, via: 'taskboard-card', cardId: r.cardId, owner: 'session-hob' })
                 })
               },
             })
@@ -2553,12 +2704,11 @@ const orchCode = stripComments(orchSrc)
           {
             const sent = []
             const dw = new wakeMod.DispatchWake({
-              selfSessionId: 'session-hob',
               deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
               now: () => 1792300800000,
             })
             const looked = await wakeMod.lookupCardSession('t-card-1', boardWith(cardOf({})).get)
-            dw.register({ sessionId: looked.sessionId, via: 'taskboard-card', cardId: 't-card-1' })
+            dw.register({ sessionId: looked.sessionId, via: 'taskboard-card', cardId: 't-card-1', owner: 'session-hob' })
             await dw.observe('session-exec-1', 'running')
             const r1 = await dw.observe('session-exec-1', 'idle')
             const dup = await dw.observe('session-exec-1', 'idle')
@@ -2587,7 +2737,6 @@ const orchCode = stripComments(orchSrc)
 
             const sent = []
             const dw = new wakeMod.DispatchWake({
-              selfSessionId: 'session-hob',
               deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
               now: () => 1792300800000,
             })
@@ -2632,7 +2781,6 @@ const orchCode = stripComments(orchSrc)
               // 变异体下走同一段 P-a：没有点火帧 ⇒ 登记不到 ⇒ 不叫
               const sent = []
               const dw = new mutant.DispatchWake({
-                selfSessionId: 'session-hob',
                 deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
                 now: () => 1792300800000,
               })
@@ -2844,27 +2992,30 @@ const orchCode = stripComments(orchSrc)
         }
       }
 
-      // ── R. **叫醒面 = 显示面**：旁证通道（`CardWake`）**按项目**投递（2026-10-19）────
+      // ── R. **一条信号只投一次、只投给它的唯一 owner**（2026-10-19 收单第一轮 · `I-9`）──
       //
-      // ⚠ **它守的是哪条缺陷**（用户实测两次，不是推断）：
-      //   本会话被**别的项目**的卡跑完叫醒过 —— 通知原文形态
-      //   `[看板卡跑完] t-mvdy37bb-paev0o「…」…`（卡属 `e9742e44…` video-transcribe）、
-      //   `t-mvers6x3-nkonel`（`c4bb5014…`）、`t-mveu5dzx-3zx7t2`（`cca0a688…` Mana）。
-      //   根因：`CardWake` 在进程里**被所有会话共用**，而"本工作区"原先只存在于
-      //   `opts.workspaceIdOf()`（**进程级单值**）⇒ 后订阅者覆盖 ⇒ 先前那个会话收到别人的卡。
-      //   ⇒ 修法：归**跟着每个订阅者走**（`WakeTarget.workspaceId`），投递前按归属筛。
+      // ⚠ **它守的是哪条缺陷**（用户实测，不是推断；作业书 §8 逐字引用）：
+      //   用户原话「**你收到错误的，正确的 hob 预设肯定就收不到指令了**」——
+      //   错投与漏投是**同一件事的两面**：一份投错了，正确的那一方就永远收不到。
       //
-      // ⚠ ⚠ **判定要成对**（E-112：只测一边等于没测）：
-      //   · **R-a 不匹配** ⇒ 投 0（别的项目的卡 **一声都不叫**）；
-      //   · **R-b 匹配**   ⇒ 投 1（自己项目的卡 **仍然叫一次**，⛔ 不许把通路关掉）；
-      //   · **R-c 未报项目** ⇒ 投 0（⛔ 不许退化成"全投"）；
-      //   · **R-d 筛空** ⇒ `noSubscriberCount + 1` **且**有可读话（⛔ 不许静默）。
-      //   · **R-e 三档不合并**：`deliverFn` 缺 / 投递抛错 / 一个订阅者都没有 —— 三句可读话各自还在。
-      //   · **R-f 负向对拍**：把 `filter` 那步摘掉（改回全量遍历）⇒ **R-a 当场 FAIL 且有可读断言行**；
-      //     还原 ⇒ PASS。
+      // ⚠ ⚠ **旧的 R 组已经整体作废（⛔ 不是放宽、是改判）**：
+      //   它钉的是"按**订阅者自己报的项目**逐个筛 ⇒ 投给所有匹配的订阅者"。
+      //   而 `I-9` 明令：**一条信号至多一次投递、⛔ 禁止扇出**，收件人 = **该记录自己的 owner**。
+      //   ⇒ 旧判据（"同一项目里多个订阅者都该收到"）在语义上已不成立
+      //     （那正是用户点名的"同一工作区也串收"那一半）。
+      //   ⚠ 本组**换成四条更硬的靶子**，并保留一个负向对拍：
       //
-      // ⚠ 造样本**全部在内存里**（直接把 target 塞进 `targets`、直接喂 `CardDoneEvent`）：
-      //   ⛔ 不碰真看板、⛔ 不动别人项目的卡、⛔ 不起第二个宿主。
+      //   · **R-a 唯一 owner**：卡属 A ⇒ **只有 A 收到**，同项目里的 B ⛔ 一声都不收
+      //     （= "同一工作区隔离"那一半，作业书 §3-3 点名）；
+      //   · **R-b 只投一次**：一帧里同一张卡出现两次 / 同帧重复投喂 ⇒ **总共只有一份**；
+      //   · **R-c 判不出 owner ⇒ 不投** + 独立一档可读话（⛔ 不许按工作区兜底、⛔ 不许静默）；
+      //   · **R-d 没有 legacy 退回路径**：⛔ `card-wake.ts` 里不得再出现
+      //     "`t.workspaceId === undefined` 的订阅者按全局 ws 判该不该收"那种写法
+      //     （⚠ 这一条就是作业书要求的"把依赖 `legacyTargetCount` 的断言改成断言没有退回路径"）；
+      //   · **R-e 具名反例**（`I-11`，⚠ 作业书要求把现场样本写成机检，⛔ 不许只写在注释里）；
+      //   · **R-f 负向对拍**：把"唯一收件人"变异成"按订阅表广播" ⇒ **R-a 当场不成立**。
+      //
+      // ⚠ 造样本**全部在内存里**：⛔ 不碰真看板、⛔ 不动别人项目的卡、⛔ 不起第二个宿主。
       {
         try {
           const wakeMod = await import(pathToFileURL(join(root, 'src', 'server', 'card-wake.ts')).href)
@@ -2880,7 +3031,7 @@ const orchCode = stripComments(orchSrc)
             const sent = []
             const cw = new wakeMod.CardWake({
               origin: 'http://127.0.0.1:0',
-              workspaceIdOf: () => over.globalWs,          // ⚠ 进程级单值（R-c 要证明它不再决定投给谁）
+              workspaceIdOf: () => over.globalWs,          // ⚠ 进程级单值（下面要证明它不再决定投给谁）
               deliver: over.deliver ?? ((sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) }),
               now: () => 1792300800000,
             })
@@ -2888,383 +3039,814 @@ const orchCode = stripComments(orchSrc)
             return { cw, sent }
           }
 
-          /** 造一帧「执行落定」的 SSE 负载；`ws` = 这张卡属于哪个项目。 */
-          const frameOn = (ws, over = {}) => JSON.stringify({
+          /**
+           * 造一帧「执行落定」的 SSE 负载。
+           * @param ws - 这张卡属于哪个项目（⚠ 已**不是**投递判据）。
+           * @param owner - 这张卡的 `createdBy.sessionId` = **收件人**；`undefined` ⇒ 判不出。
+           * @param extraTasks - 往同一帧里再塞几张卡（验"一条信号只投一次"）。
+           */
+          const frameOn = (ws, owner, extraTasks = []) => JSON.stringify({
             revision: 1, kind: 'execution-recorded',
-            tasks: [{ id: 't-card-x', title: '演示卡', status: 'in_review', workspaceId: ws,
-              version: 2, lastExecutionOutcome: 'succeeded', ...over }],
+            tasks: [
+              { id: 't-card-x', title: '演示卡', status: 'in_review', workspaceId: ws,
+                version: 2, lastExecutionOutcome: 'succeeded',
+                ...(owner === undefined ? { createdBy: { kind: 'user' } } : { createdBy: { sessionId: owner } }) },
+              ...extraTasks,
+            ],
           })
 
-          // ── R-a ⭐ **(a) 第一条腿：别的项目的卡跑完 ⇒ 一声都不叫** ─────────────
-          //   ⚠ 订阅者报的是**自己的**项目（WS_MINE），帧里的卡属于**别人的**项目（WS_OTHER）。
-          //   ⚠ 同时把 `workspaceIdOf()` 设成 WS_OTHER（= 全局单值正好"对得上这张卡"）——
-          //     这一手是用来证明**投给谁不再由全局单值决定**（改前正是它导致越界）。
-          {
-            const { cw, sent } = makeCW([['session-hob', WS_MINE]], { globalWs: WS_OTHER })
-            // ⚠ 认卡阶段仍受 `workspaceIdOf()` 约束（B7 §一 只收了投递侧）⇒ 为让事件真的被认出来，
-            //   本条的全局 ws 设成**帧的项目**；"该不该投给这个订阅者"由 R-a 自己判。
-            const n = await cw.handleFrame('change', frameOn(WS_OTHER))
-            const st = cw.snapshot()
-            if (sent.length === 0) {
-              ok('R-a ✓ (a) 旁证通道：**别的项目**的卡跑完 ⇒ **一声都不叫**'
-                + `（订阅者属 ${WS_MINE} · 卡属 ${WS_OTHER} · 投递=${sent.length} · 返回值=${n}`
-                + ` · 落"没有订阅者属于这个项目"=${st.noSubscriberCount}）`)
-            } else {
-              bad('R-a 【叫醒面必须与显示面同一个】旁证通道把**别的项目**的卡叫给了本会话'
-                + `：投递=${sent.length}（应为 0）· 收到的会话=${sent.map((x) => x.sid).join(',')}`
-                + ' ⇒ 这正是「叫醒说有卡跑完、状态行里看不到它」的越界')
-            }
-          }
-
-          // ── R-b ⭐ **(b) 第二条腿：本工作区的卡跑完 ⇒ 仍然叫一次** ─────────────
-          //   ⚠ 与 R-a 成对：只做 (a) 的最省事做法是"把整条通路关掉"—— 这条防的就是那个。
-          {
-            const { cw, sent } = makeCW([['session-hob', WS_MINE]], { globalWs: WS_MINE })
-            const n = await cw.handleFrame('change', frameOn(WS_MINE))
-            const hit = sent.length === 1 && sent[0].sid === 'session-hob'
-            if (n === 1 && hit && sent[0].text.includes('t-card-x')) {
-              ok('R-b ✓ (b) 旁证通道：**本项目的卡**跑完 ⇒ **仍然叫一次**'
-                + `（投递=${sent.length} · 收件=${sent[0].sid} · 话里带卡号=是）`)
-            } else {
-              bad('R-b 【本工作区的卡必须仍然叫】判据 (b) 不成立'
-                + `：返回值=${n}（应 1）· 投递=${sent.length}（应 1）· 收件=${sent.map((x) => x.sid).join(',') || '(无)'}`
-                + ' ⇒ 为了做到 (a) 把通路关掉了')
-            }
-          }
-
-          // ── R-b2 ⭐ **多订阅者同桌：各收各的**（越界的真实现场就是"不止一个订阅者"）──
-          //   ⚠ 这一条是本组最有分辨力的一条：改前两个订阅者会**都**收到同一张卡。
+          // ── R-a ⭐ **唯一 owner**：同项目里的另一个会话 ⛔ 一声都不收 ────────────
+          //
+          //   ⚠ 这一条是"**同一工作区隔离**"那一半（作业书 §3-3 点名要求）：
+          //     改前同一项目里**所有订阅过的会话都会收到**（扇出）⇒ 两个 Hob 互相串收。
           {
             const { cw, sent } = makeCW([
               ['session-hob', WS_MINE],
-              ['session-other-hob', WS_OTHER],
+              ['session-other-hob-same-ws', WS_MINE],   // ⚠ 同一个项目、另一个会话
             ], { globalWs: WS_MINE })
-            // 先推本项目的一张卡（全局 ws 与帧一致 ⇒ 认得出）
-            await cw.handleFrame('change', frameOn(WS_MINE))
-            const mineGot = sent.filter((x) => x.sid === 'session-hob').length
-            const otherGot = sent.filter((x) => x.sid === 'session-other-hob').length
-            sent.length = 0
-            // 再把全局 ws 换成"别人的项目"，推别人的卡
-            //   ⚠ 认卡用的是现读的 `workspaceIdOf()` ⇒ 这里要让它现读成 WS_OTHER
-            const cw2 = new wakeMod.CardWake({
-              origin: 'http://127.0.0.1:0',
-              workspaceIdOf: () => WS_OTHER,
-              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
-              now: () => 1792300800000,
-            })
-            cw2.subscribe('session-hob', WS_MINE)
-            cw2.subscribe('session-other-hob', WS_OTHER)
-            await cw2.handleFrame('change', frameOn(WS_OTHER))
-            const mineGot2 = sent.filter((x) => x.sid === 'session-hob').length
-            const otherGot2 = sent.filter((x) => x.sid === 'session-other-hob').length
-            if (mineGot === 1 && otherGot === 0 && mineGot2 === 0 && otherGot2 === 1) {
-              ok('R-b2 ✓ 两个会话同桌：**各收各的项目的卡**'
-                + `（本项目卡 ⇒ 我 ${mineGot} / 他 ${otherGot}；他的项目卡 ⇒ 我 ${mineGot2} / 他 ${otherGot2}）`
-                + ' ⇒ 改前这两个数会是 1/1 与 1/1（全量广播）')
+            const n = await cw.handleFrame('change', frameOn(WS_MINE, 'session-hob'))
+            const toOwner = sent.filter((x) => x.sid === 'session-hob').length
+            const toOther = sent.filter((x) => x.sid === 'session-other-hob-same-ws').length
+            if (n === 1 && sent.length === 1 && toOwner === 1 && toOther === 0) {
+              ok('R-a ✓ **唯一 owner**（含**同一工作区**隔离）：卡属 session-hob ⇒'
+                + ` 只有它收到（合计投递=${sent.length}）· 同项目的另一个会话收到 ${toOther} 声`
+                + ' ⇒ 改前这里是 1/1（扇出）')
             } else {
-              bad('R-b2 【多订阅者必须各收各的】出现串台'
-                + `：本项目卡 ⇒ 我 ${mineGot}（应 1）/ 他 ${otherGot}（应 0）`
-                + ` · 他的项目卡 ⇒ 我 ${mineGot2}（应 0）/ 他 ${otherGot2}（应 1）`)
+              bad('R-a 【同一工作区必须隔离】同一项目里的另一个会话也收到了（= 串收 / 扇出）'
+                + `：合计投递=${sent.length}（应 1）· owner 收到=${toOwner}（应 1）`
+                + ` · 同项目他人收到=${toOther}（应 0）· 返回值=${n}`)
             }
           }
 
-          // ── R-c ⭐ 订阅者**没报项目** ⇒ **按旧语义投**，但必须留下独立可读话 ──────────
+          // ── R-a2 ⭐ **跨项目也照同一判据**：卡属别人的项目、owner 是对方 ──────────
+          //   ⚠ 这一条与 R-a 成对：证明"项目不匹配就不投"与"owner 决定收件人"**不冲突**。
+          {
+            const { cw, sent } = makeCW([['session-hob', WS_MINE]], { globalWs: WS_OTHER })
+            const n = await cw.handleFrame('change', frameOn(WS_OTHER, 'session-elsewhere'))
+            /**
+             * ⚠ 判据（`I-9`）：卡属**别的项目**、owner 是**别人** ⇒
+             *   投递**只到 owner 那一个**，⛔ **一声都不给本会话**。
+             * ⚠ 这里**不能**断言"投递 = 0"：owner 是别人≠不投，而是"**不投给我**"
+             *   （`I-10`：该收到的人必须收到，否则就是漏投）。
+             */
+            const toVictim = sent.filter((x) => x.sid === 'session-hob').length
+            const toOwner = sent.filter((x) => x.sid === 'session-elsewhere').length
+            if (toVictim === 0 && toOwner === 1 && sent.length === 1 && n === 1) {
+              ok('R-a2 ✓ 卡属**别的项目**、owner 是别人 ⇒ **只投给 owner**（1 份）、'
+                + '本会话一声都不收（⚠ 投给谁只由 owner 决定，⛔ 不是"我订阅了这个项目"）')
+            } else {
+              bad('R-a2 【别人的卡的 owner 不是我】收件人不对'
+                + `：投给本会话=${toVictim}（应 0）· 投给 owner=${toOwner}（应 1）`
+                + ` · 合计=${sent.length}（应 1）· 返回值=${n}`
+                + ` · 收到=${sent.map((x) => x.sid).join(',') || '(无)'}`)
+            }
+          }
+
+          // ── R-b ⭐ **一条信号只投一次**（同帧重复 / 重复帧都不加第二份）───────────
+          {
+            const dupCard = { id: 't-card-x', title: '演示卡', status: 'in_review', workspaceId: WS_MINE,
+              version: 2, lastExecutionOutcome: 'succeeded', createdBy: { sessionId: 'session-hob' } }
+            const { cw, sent } = makeCW([['session-hob', WS_MINE]], { globalWs: WS_MINE })
+            // ① 同一帧里同一张卡出现两次
+            await cw.handleFrame('change', frameOn(WS_MINE, 'session-hob', [dupCard]))
+            const afterDupInFrame = sent.length
+            // ② 同一帧再投一次（看板重连会补发）
+            await cw.handleFrame('change', frameOn(WS_MINE, 'session-hob'))
+            const afterRefeed = sent.length
+            const ledger = cw.deliveredLedger()
+            if (afterDupInFrame === 1 && afterRefeed === 1 && ledger.length === 1
+                && ledger[0].to === 'session-hob') {
+              ok('R-b ✓ **只投一次**：同帧重复 + 重复帧 ⇒ 总共 **1 份**'
+                + `（已投台账=${JSON.stringify(ledger)}）⇒ ⛔ 没有扇出、⛔ 没有第二份`)
+            } else {
+              bad('R-b 【一条信号至多投一次】出现了第二份'
+                + `：同帧重复后=${afterDupInFrame}（应 1）· 再投一帧后=${afterRefeed}（应 1）`
+                + ` · 台账=${JSON.stringify(ledger)}`)
+            }
+          }
+
+          // ── R-c ⭐ **判不出 owner ⇒ 不投** + 独立一档 + 可读话 ────────────────────
           //
-          //   ⚠ 2026-10-19 · `TASK-B8` **甲路改判**（⚠ 这是"改判"，不是"放宽"）：
-          //     原判据钉的是"没报项目 ⇒ **投 0**"（= 乙路）。派单方复核了 `cf72d8b^` 的实际行为
-          //     （`git show cf72d8b^:src/server/card-wake.ts` 的 `:365`
-          //      `for (const t of this.targets.values())` = **全量广播**，项目过滤只在 `:347`
-          //      `cardDoneEventsOf(parsed, wsId)` 的**认卡**阶段用全局 `wsId`）⇒ 旧语义**是投的**。
-          //     ⚠ 走甲路后"投 0"在语义上不成立 ⇒ 判据随之改判。
-          //   ⚠ ⚠ **分辨力没有削，反而换了个更硬的靶子**：
-          //     新的那条钉的是「**不许静默**」——"投了"必须可数（`legacyTargetCount`）且可读，
-          //     并且话里必须写清它**不是**"没有卡跑完"、**不是**"已确认投给本项目的人"
-          //     （因为退回全局单值 = **可能越界**，这个缺陷要一直看得见）。
-          //   ⇒ 成对判四件（缺一即红）：
-          //     ① 投了（`sent.length === 1`；⛔ 不是 0 —— 0 就等于退回乙路静默丢）；
-          //     ② 单独计数（`legacyTargetCount === 1`，⛔ 不许并进 `noSubscriberCount`）；
-          //     ③ 有话，且点名卡 id 与该帧的项目 id；
-          //     ④ 话里明确写"可能越界"+"既不是没有卡跑完/也不是已确认投给本项目的人"。
+          //   ⚠ 这一档就是"⛔ 不许改投别人"的落点：**宁可漏，也不投错**
+          //     （用户原话："你收到错误的，正确的 hob 预设肯定就收不到指令了"）。
           {
-            const { cw, sent } = makeCW([['session-legacy']], { globalWs: WS_MINE })
-            await cw.handleFrame('change', frameOn(WS_MINE))
+            const { cw, sent } = makeCW([['session-hob', WS_MINE]], { globalWs: WS_MINE })
+            await cw.handleFrame('change', frameOn(WS_MINE, undefined))
             const st = cw.snapshot()
-            const delivered = sent.length === 1
-            const counted = st.legacyTargetCount === 1
-            const notMerged = st.noSubscriberCount === 0
             const note = typeof st.note === 'string' ? st.note : ''
-            const namesIt = note.includes('t-card-x') && note.includes(WS_MINE)
-            const saysRisk = note.includes('可能越界')
-            const saysNotNoCard = note.includes('不是"没有卡跑完"')
-            const saysNotConfirmed = note.includes('已确认投给了本项目')
-            if (delivered && counted && notMerged && namesIt && saysRisk && saysNotNoCard && saysNotConfirmed) {
-              ok('R-c ✓ 订阅者**没有报项目** ⇒ **按旧语义投**（`legacyTargetCount + 1`），'
-                + '**且留下独立可读话**：点名卡与项目、明写"可能越界"、'
-                + '并说清它不是"没有卡跑完"也不是"已确认投给本项目的人"'
-                + ' —— ⚠ 退回旧语义 = 恢复"可能越界"，但 ⛔ 不是静默')
-            } else if (!delivered) {
-              bad('R-c 【没报项目必须按旧语义投】这一档被静默丢弃了（投 0）'
-                + `：投递=${sent.length}（应为 1）· note=${JSON.stringify(note.slice(0, 120))}`
-                + '\n      ⇒ ⚠ 静默丢 = 今天的原缺陷；要"不投"就必须先改派单口径')
+            const notDelivered = sent.length === 0
+            const counted = st.legacyTargetCount === 1
+            const namesIt = note.includes('t-card-x')
+            const saysNoGuess = note.includes('判不出它的 owner')
+            const saysNoFallback = note.includes('没有**退回') || note.includes('没有退回')
+            const notMixed = st.noSubscriberCount === 0
+            if (notDelivered && counted && namesIt && saysNoGuess && saysNoFallback && notMixed) {
+              ok('R-c ✓ **判不出 owner ⇒ 不投**：投递=0 · 独立档 legacyTargetCount=1'
+                + ' · 可读话点名卡 + 明写"判不出它的 owner" + 明写**没有**退回旧路'
+                + ' · ⛔ 未并进"没有订阅者"那一档')
             } else {
-              bad('R-c 【没报项目必须留下独立可读话】投是投了，但这一档**不可观测**'
-                + `：legacyTargetCount=${st.legacyTargetCount}（应 1）`
-                + ` · 与"没有订阅者"分开=${notMerged}（noSubscriberCount 应 0，实测 ${st.noSubscriberCount}）`
-                + ` · 点名卡与项目=${namesIt} · 写了"可能越界"=${saysRisk}`
-                + ` · 写了不是没卡跑完=${saysNotNoCard} · 写了不是"已确认投给本项目"=${saysNotConfirmed}`
-                + ` · note=${JSON.stringify(note.slice(0, 160))}`
-                + '\n      ⇒ ⚠ 这正是本项目最忌讳的形态："可能越界、而且没人报"')
+              bad('R-c 【判不出 owner 必须"不投 + 独立可读一档"】缺项'
+                + `：投递=${sent.length}（应 0）· legacyTargetCount=${st.legacyTargetCount}（应 1）`
+                + ` · 点名卡=${namesIt} · 写"判不出它的 owner"=${saysNoGuess}`
+                + ` · 写"没有退回"=${saysNoFallback} · 未并进筛空=${notMixed}`
+                + ` · note=${JSON.stringify(note.slice(0, 180))}`)
             }
           }
 
-          // ── R-d ⭐ **筛空** ⇒ `noSubscriberCount + 1` + 可读话（⛔ 不许静默）──────
+          // ── R-d ⭐ **没有 legacy 退回路径**（作业书 §2 `I-7` 的成对要求）─────────────
+          //
+          //   ⚠ 作业书原文：「既有 N 组机检里凡依赖 `legacyTargetCount` 的断言，
+          //     改为断言"**没有退回路径**"（⛔ 不许删断言了事）」。
+          //   ⇒ 本条的判据 = **源码里不得再有那条按全局 ws 判订阅者的谓词**，
+          //     且 `CardWakeOpts` 不得再暴露"进程级收件人 / 进程级工作区"那种用法。
           {
-            const { cw } = makeCW([['session-hob', WS_MINE]], { globalWs: WS_OTHER })
-            await cw.handleFrame('change', frameOn(WS_OTHER))
-            const st = cw.snapshot()
-            const says = typeof st.note === 'string'
-              && st.note.includes('没有订阅者属于这个项目')
-              && st.note.includes('t-card-x')
-            if (st.noSubscriberCount === 1 && says) {
-              ok('R-d ✓ "筛空"是**独立一档**：`noSubscriberCount + 1` **且**有可读话'
-                + '（点名卡 id 与项目 id；⛔ 不静默丢弃）')
+            const wakeSrc = readFileSync(join(root, 'src', 'server', 'card-wake.ts'), 'utf8')
+            const wakeCode = stripComments(wakeSrc)
+            // ⚠ 旧退回路径的原文形态：`t.workspaceId === undefined && ... workspaceIdOf() ... === e.workspaceId`
+            const hasLegacyFallback = /workspaceId\s*===\s*undefined[^\n]{0,200}workspaceIdOf\s*\(/.test(wakeCode)
+            // ⚠ 也不许再把"没报项目"的订阅者塞进投递名单（`legacy` 那个数组名）
+            const hasLegacyList = /\bconst\s+legacy\s*=/.test(wakeCode)
+            // ⚠ 投递循环必须**只有一个收件人**（`deliverFn(to, text)`），⛔ 不许 `[...eligible, ...legacy]`
+            const fansOut = /for\s*\(\s*const\s+\w+\s+of\s*\[\s*\.\.\.eligible/.test(wakeCode)
+            if (!hasLegacyFallback && !hasLegacyList && !fansOut) {
+              ok('R-d ✓ **没有 legacy 退回路径**：源码里既无"按全局 ws 判没报项目的订阅者"，'
+                + '也无 `legacy` 名单、也无"多收件人扇出"的投递循环'
+                + '（⚠ 这是把旧"依赖 legacyTargetCount"的断言**改成断言没有退回路径**，⛔ 不是删断言）')
             } else {
-              bad('R-d 【筛空必须可数可读】没有一档独立读数'
-                + `：noSubscriberCount=${st.noSubscriberCount}（应 1）· 有话=${says}`
-                + ` · note=${JSON.stringify(st.note)}`)
+              bad('R-d 【退回路径必须已删除】`card-wake.ts` 里仍有旧路的痕迹'
+                + `：按全局 ws 判订阅者=${hasLegacyFallback} · legacy 名单=${hasLegacyList}`
+                + ` · 多收件人扇出=${fansOut}`)
             }
           }
 
-          // ── R-e ⭐ **既有三档一条都不许被合并 / 降级** ─────────────────────────
+          // ── R-e ⭐ **具名反例**（`I-11`：现场样本必须写成机检，⛔ 不许只写在注释里）────
+          //
+          //   ⚠ 样本来自用户侧实测（作业书 §8 `I-11` 逐字给出）：
+          //     ① `t-mves7vea-5qm7u9`「访问本地页面口令查询」属 `customer-service-agent`，
+          //        通知落到了 `dsh-hob` 的 Hob；
+          //     ② `t-mvf32tkr-21yaxt`「继续确认编辑状态」属 `dsh-plugin-roundtable`，
+          //        同样落到了 `dsh-hob` 的 Hob。
+          //   ⇒ 断言：给定这两条信号的归属，**只有**其 owner 收到、且**总共只投一次**。
           {
-            // ① 一个订阅者都没有（`targets.size === 0`）—— 与"筛空"是**两句不同**的话
-            const noOne = new wakeMod.CardWake({
-              origin: 'http://127.0.0.1:0',
-              workspaceIdOf: () => WS_MINE,
-              deliver: () => Promise.resolve({ ok: true }),
-              now: () => 1792300800000,
-            })
-            await noOne.handleFrame('change', frameOn(WS_MINE))
-            const stNoOne = noOne.snapshot()
-            const saysNoOne = typeof stNoOne.note === 'string' && stNoOne.note.includes('没有订阅者')
-
-            // ② 投递通道没就绪（`deliverFn === undefined`）
-            const noChannel = new wakeMod.CardWake({
-              origin: 'http://127.0.0.1:0',
-              workspaceIdOf: () => WS_MINE,
-              now: () => 1792300800000,
-            })
-            noChannel.subscribe('session-hob', WS_MINE)
-            await noChannel.handleFrame('change', frameOn(WS_MINE))
-            const stNoChannel = noChannel.snapshot()
-            const saysNoChannel = typeof stNoChannel.note === 'string' && stNoChannel.note.includes('投递通道没就绪')
-
-            // ③ 投递抛错（`catch` 那一档）
-            const boom = new wakeMod.CardWake({
-              origin: 'http://127.0.0.1:0',
-              workspaceIdOf: () => WS_MINE,
-              deliver: () => Promise.reject(new Error('probe: deliver exploded')),
-              now: () => 1792300800000,
-            })
-            boom.subscribe('session-hob', WS_MINE)
-            await boom.handleFrame('change', frameOn(WS_MINE))
-            const stBoom = boom.snapshot()
-            const saysBoom = typeof stBoom.note === 'string' && stBoom.note.includes('失败')
-
-            // ④ 三句必须是**三种不同**的话（⛔ 不许合并成一句）
-            const notes = [stNoOne.note, stNoChannel.note, stBoom.note].map((x) => String(x ?? ''))
-            const distinct = new Set(notes).size === 3
-            if (saysNoOne && saysNoChannel && saysBoom && distinct) {
-              ok('R-e ✓ 既有三档**一条都没被合并**：'
-                + '"没有订阅者" / "投递通道没就绪" / "投递失败" 三句各自还在且互不相同'
-                + '（⚠ 与 R-d 的"筛空"是**第四句**，不共用措辞）')
+            const CASES = [
+              { card: 't-mves7vea-5qm7u9', title: '访问本地页面口令查询',
+                proj: 'customer-service-agent', owner: 'session-csa-hob' },
+              { card: 't-mvf32tkr-21yaxt', title: '继续确认编辑状态',
+                proj: 'dsh-plugin-roundtable', owner: 'session-roundtable-hob' },
+            ]
+            const results = []
+            for (const c of CASES) {
+              // ⚠ 关键：把**本会话（dsh-hob 的 Hob）也订阅上**，且它与卡**同项目**
+              //   —— 改前正是这一手让它收到了别人的卡（按项目筛会把同项目的人全投一遍）。
+              const { cw, sent } = makeCW([
+                ['session-dsh-hob', c.proj],     // 越界的受害者（与卡同项目）
+                [c.owner, c.proj],               // 真正该收的人
+              ], { globalWs: c.proj })
+              const frame = JSON.stringify({
+                revision: 1, kind: 'execution-recorded',
+                tasks: [{ id: c.card, title: c.title, status: 'in_review', workspaceId: c.proj,
+                  version: 2, lastExecutionOutcome: 'succeeded', createdBy: { sessionId: c.owner } }],
+              })
+              const n = await cw.handleFrame('change', frame)
+              results.push({
+                card: c.card,
+                total: sent.length,
+                toOwner: sent.filter((x) => x.sid === c.owner).length,
+                toVictim: sent.filter((x) => x.sid === 'session-dsh-hob').length,
+                n,
+              })
+            }
+            const allGood = results.every((r) => r.total === 1 && r.toOwner === 1
+              && r.toVictim === 0 && r.n === 1)
+            if (allGood) {
+              ok('R-e ✓ **具名越界反例**（`I-11`）：'
+                + results.map((r) => `${r.card} ⇒ 合计 ${r.total} 声 / owner ${r.toOwner} / 受害者 ${r.toVictim}`).join(' · ')
+                + ' ⇒ 只有 owner 收到、**总共只投一次**（改前这两条都会落到 dsh-hob 的 Hob）')
             } else {
-              bad('R-e 【三档被合并或丢了】'
-                + `：没有订阅者=${saysNoOne} · 通道没就绪=${saysNoChannel} · 投递失败=${saysBoom}`
-                + ` · 三句互不相同=${distinct}`)
+              bad('R-e 【具名反例必须只到 owner】出现错投或漏投'
+                + `：${results.map((r) => `${r.card} ⇒ 合计 ${r.total}（应 1）/ owner ${r.toOwner}（应 1）/ 受害者 ${r.toVictim}（应 0）`).join(' · ')}`)
             }
           }
 
-          // ── R-f ⭐ **负向对拍**：把 `filter` 那一步摘掉 ⇒ R-a 必须当场 FAIL ──────
-          //   ⚠ 判据**不是**退出码，而是：变异体跑**同一段 R-a/R-b** ⇒ 出现串台，
-          //     且本组打出**可读断言行**（这正是 R-a/R-b/R-b2 存在的意义）。
+          // ── R-f ⭐ **负向对拍**：把"唯一收件人"变异成"按订阅表广播" ⇒ R-a 必须当场不成立 ──
           {
             const srcPath = join(root, 'src', 'server', 'card-wake.ts')
             const original = readFileSync(srcPath, 'utf8')
             /**
-             * 靶点 = **按归属筛的谓词本身**。
-             *
-             * ⚠ ⚠ 为什么不能拿 `for (const t of eligible)` 当靶子（第一版写错过，实测教训）：
-             *   把它换回全量遍历后，`eligible.length === 0` 那道 `continue` **仍然先拦住**了
-             *   "筛空"的情形 ⇒ 变异体在单订阅者的 R-a 场景里**行为照旧**（投 0），
-             *   只有多订阅者的 R-b2 才露馅 ⇒ 对拍的靶子**偏了**。
-             *   ⇒ 正确的靶子是把谓词改成**恒真**（= 谁都不排除 = 改前的全量广播）。
+             * 变异点 = **收件人那一行**：`const to = e.owner`
+             *   ⇒ 改成"帧里的项目 id"（等价于回到"按工作区广播 / 谁订阅了就给谁"的旧路）。
+             * ⚠ 判据**不是**退出码，而是：用变异体跑**同一段 R-a 场景** ⇒ 出现串收。
              */
-            const GUARD = 'const eligible = rows.filter((t) => t.workspaceId !== undefined && t.workspaceId === e.workspaceId)'
+            const GUARD = '      const to = e.owner'
             if (!original.includes(GUARD)) {
-              bad('R-f 【负向对拍失去靶子】在 `card-wake.ts` 里找不到"按归属筛"的谓词原文'
-                + `（期望：${GUARD}）⇒ 本判据已对不上实现，不按通过处理`)
+              bad('R-f 【负向对拍失去靶子】在 `card-wake.ts` 里找不到"收件人 = 该条 owner"那一行原文'
+                + `（期望：${JSON.stringify(GUARD)}）⇒ 本判据已对不上实现，不按通过处理`)
             } else {
-              // ⚠ 变异 = 谓词改成恒真（= 谁都收 = 改前的全量广播）
-              const mutDir = mkdtempSync(join(tmpdir(), 'hob-scopecheck-'))
-              const mutPath = join(mutDir, 'card-wake.ts')
-              writeFileSync(mutPath, original.replace(GUARD, 'const eligible = rows.filter((t) => true || t.workspaceId === e.workspaceId)'), 'utf8')
-              let mutant
+              const mutDir = mkdtempSync(join(tmpdir(), 'hob-rmut-'))
               try {
-                mutant = await import(pathToFileURL(mutPath).href)
-              } catch (e) {
-                bad(`R-f 【负向对拍跑不起来】变异体 import 失败：${String(e?.message ?? e)}`)
-              }
-              if (mutant !== undefined) {
-                const sent = []
-                const mw = new mutant.CardWake({
-                  origin: 'http://127.0.0.1:0',
-                  workspaceIdOf: () => WS_OTHER,
-                  deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
-                  now: () => 1792300800000,
-                })
-                mw.subscribe('session-hob', WS_MINE)          // 我：本项目
-                mw.subscribe('session-other-hob', WS_OTHER)   // 他：别的项目
-                await mw.handleFrame('change', frameOn(WS_OTHER))
-                const leaked = sent.filter((x) => x.sid === 'session-hob').length
-                if (leaked > 0) {
-                  ok('R-f ✓ 负向对拍：把"按归属筛"的谓词摘掉（改成恒真 = 全量广播）⇒'
-                    + ` **R-a/R-b2 当场不成立**（别的项目的卡投给了我 ${leaked} 声 · 共 ${sent.length} 声）`
-                    + ' ⇒ R-a/R-b/R-b2 真长牙（⚠ 这条 PASS 说明变异体确实被抓到了）')
-                } else {
-                  bad('R-f 【负向对拍失败】谓词恒真之后**仍然**没投给别的项目的订阅者'
-                    + `（投递=${sent.length}）⇒ R-a/R-b2 测的不是"按项目过滤"这件事（永远 PASS = 没有分辨力）`)
+                const mutPath = join(mutDir, 'card-wake.ts')
+                // ⚠ 变异成"投给**所有**订阅者"：那正是 `I-9` 明令禁止的扇出形态
+                writeFileSync(mutPath, original.replace(GUARD, '      const to = [...this.targets.keys()][0]'), 'utf8')
+                let mutant
+                try {
+                  mutant = await import(pathToFileURL(mutPath).href)
+                } catch (e) {
+                  bad(`R-f 【负向对拍跑不起来】变异体 import 失败：${String(e?.message ?? e)}`)
                 }
+                if (mutant !== undefined) {
+                  const sentM = []
+                  const cwM = new mutant.CardWake({
+                    origin: 'http://127.0.0.1:0',
+                    workspaceIdOf: () => WS_MINE,
+                    deliver: (sid, text) => { sentM.push({ sid, text }); return Promise.resolve({ ok: true }) },
+                    now: () => 1792300800000,
+                  })
+                  // ⚠ 顺序有意：先订阅"受害者"，再订阅 owner ⇒ 变异体（取第一个订阅者）会投错人
+                  cwM.subscribe('session-other-hob-same-ws', WS_MINE)
+                  cwM.subscribe('session-hob', WS_MINE)
+                  await cwM.handleFrame('change', frameOn(WS_MINE, 'session-hob'))
+                  const leaked = sentM.filter((x) => x.sid !== 'session-hob').length
+                  const ownerGot = sentM.filter((x) => x.sid === 'session-hob').length
+                  if (leaked > 0) {
+                    ok('R-f ✓ 负向对拍：把"收件人 = 该条 owner"变异成"取第一个订阅者"'
+                      + ` ⇒ **当场串收**（非 owner 收到 ${leaked} 声 · owner 收到 ${ownerGot} 声 · 共 ${sentM.length} 声）`
+                      + ' ⇒ R-a/R-b/R-e 真长牙（⚠ 这条 PASS 说明变异体确实被抓到了）')
+                  } else {
+                    bad('R-f 【负向对拍失败】变异体仍然只投给 owner'
+                      + `：非 owner 收到=${leaked}（应 > 0）· 合计=${sentM.length}`
+                      + ' ⇒ R-a 测的不是"收件人由 owner 决定"这件事')
+                  }
+                }
+              } finally {
+                try { rmSync(mutDir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
               }
-              try { rmSync(mutDir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
             }
           }
         } catch (e) {
-          bad(`R 叫醒面按项目投递：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+          bad(`R "一条信号只投一次、只投给唯一 owner"：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
         }
       }
+    }
+  }
+}
 
-      // ── R-g. **"没报项目"必须独立成档**（2026-10-19 · `TASK-B8` · 回归的收口)──────
-      //
-      // ⚠ **它守的是哪条回归**（我自己在 S4 报上来的那条，实测）：
-      //   `cf72d8b` 把订阅谓词写成 `t.workspaceId !== undefined && t.workspaceId === e.workspaceId`
-      //   ⇒ **没报项目**的旧式订阅（`subscribe(sid)`）被判成"不属于本项目" ⇒ 筛空 ⇒ **不投**，
-      //   而且**一声可读话都没有**（那句"没有订阅者属于这个项目"读起来像"确实没人在看"，
-      //   把"有人在看、但没说自己是哪个项目"**掩盖**了）。
-      //   行为对照读数：`cf72d8b^` ⇒ `woke=1 sent=1`；`cf72d8b` ⇒ `woke=0 sent=0`
-      //   （`tmp/probe-before-after.mjs`）。⇒ 连带 N-a / N-b / N-f / O-d 四条红。
-      //
-      // ⚠ ⚠ **本组钉两件事**（缺一不算）—— ⚠ **2026-10-19 收口：口径已随代码改判为「甲路」**：
-      //   · **R-g1 可观测地投**（⚠ 原口径是"不投"，甲路下改判）：
-      //     没报项目 ⇒ **按旧语义投**（`sent.length === 1`），
-      //     ⚠ **但必须留下独立一档 + 可读话** —— 因为甲路的已知代价就是"**可能越界**"，
-      //     这个缺陷要一直看得见 ⇒ ⛔ 不许"投了却没人报"；
-      //   · **R-g2 不静默**：那条话必须是**独立档**（`legacyTargetCount + 1`，
-      //     ⚠ 键名随实现改了，语义仍是"没报项目"这一档 ⛔ 别并进 `noSubscriberCount`），
-      //     且 ⛔ 不许与"没有订阅者" / "筛空" / "投递失败" 三句混同；
-      //     话里必须写清它**既不是**"没有卡跑完"、**也不是**"已确认投给本项目的人"。
-      //
-      //   ⚠ ⚠ **这不是放宽**（改判 ≠ 放宽）：原"不投"那条已被甲路否掉，
-      //     但本组**换成了一条更硬的靶子** —— 它同时要求"投到了"**与**"这笔投递可数、可读、且自报风险"。
-      //     删掉任何一条断言都会让 R-g 失去分辨力（负向对拍见 `REPORT.md` §五-3 的四次）。
-      {
-        try {
-          const wakeMod = await import(pathToFileURL(join(root, 'src', 'server', 'card-wake.ts')).href)
-          const WSX = 'ws-g-0001'
-          const frameG = JSON.stringify({
-            revision: 1, kind: 'execution-recorded',
-            tasks: [{ id: 't-card-g', title: '演示卡', status: 'in_review', workspaceId: WSX,
-              version: 2, lastExecutionOutcome: 'succeeded' }],
-          })
+// ── S. **归属绑定与跨工作区隔离**（2026-10-19 收单第一轮 · 作业书 §3 的 A/B/C/D + 同工作区）──
+//
+// ⚠ **本组守的是用户点名的那条缺陷**（作业书 §0 原话）：
+//   「A 工作区的 hob 预设派出去的实施指令，回执跑到 B 工作区的 HOB 预设……
+//     hob 预设和它创建的会话必须绑定、必须隔离，**包括同一个工作区**」
+//
+// ⚠ ⚠ **四条成对正反例（A/B/C/D）**，全部"假对象真跑"（真 `apply` + 假宿主 + 假账本）：
+//   · **S-A（作业书 A）**：两个不同 owner（不同会话、不同工作区）各派一个目标 ⇒
+//     各自结算**只**到各自 owner；把"逐条 owner"改回"**进程级单值**" ⇒ 断言**必须 FAIL**
+//     （本组用**变异体**真跑一遍来证明它长牙，⛔ 不是嘴上说）；
+//   · **S-B（作业书 B）**：owner=A 读状态 ⇒ 读数里**不含** owner=B 的任何记录（含条数与明细）；
+//     把过滤摘掉 ⇒ FAIL（同样有变异对拍）；
+//   · **S-C（作业书 C）**：A 派发后落盘 ⇒ A 的运行态文件**不含** B 的 watch，
+//     且 B 的 `wsRoot` **没被改写**；把"只写自己的"改回"写全部" ⇒ FAIL（变异对拍）；
+//   · **S-D（作业书 D）**：订阅者没报项目时**不投**且计数落独立档；
+//     把 `legacy` 退回路径加回来 ⇒ FAIL。
+//   ⚠ 另有 **S-E**：**同一工作区**里 owner=A 与 owner=B 各派一个目标 ⇒ 互不串收
+//     （用户点名的"包括同一个工作区"那一半，⛔ 不许漏）。
+{
+  const { mkdtempSync: mkdt, mkdirSync: mkd, writeFileSync: wf, readFileSync: rf, rmSync: rm } = await import('node:fs')
+  const { tmpdir: tdir } = await import('node:os')
+  const { basename } = await import('node:path')
+  const { pathToFileURL: p2u } = await import('node:url')
 
-          // ── R-g1 / R-g2 ⭐ 没报项目 ⇒ **投，且必须可观测**（甲路）──────────────
-          //
-          //   ⚠ 三条**同时**断言（缺一即红）：
-          //     ① **投到了**（`sent.length === 1`）—— 甲路下"不投"就是回到 `cf72d8b` 的静默回归；
-          //     ② **单独计数**（`legacyTargetCount === 1` 且 `noSubscriberCount === 0`）——
-          //        ⛔ 不许把"没报项目"并进"筛空"（两档原因不同，合并就没法区分了）；
-          //     ③ **可读话写全四层**：点名"没报自己属于哪个项目" / 自报"可能越界" /
-          //        明写不是"没有卡跑完" / 明写不是"已确认投给本项目的人"。
-          {
-            const sent = []
-            const cw = new wakeMod.CardWake({
-              origin: 'http://127.0.0.1:0',
-              workspaceIdOf: () => WSX,          // ⚠ 全局单值"恰好对得上" —— 也不能因此静默放行
-              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
-              now: () => 1792300800000,
-            })
-            cw.subscribe('session-no-project')   // ⚠ 旧式调用：故意不传项目
-            const n = await cw.handleFrame('change', frameG)
-            const st = cw.snapshot()
-            const note = String(st.note ?? '')
-            const delivered = sent.length === 1 && n === 1
-            const saysNoProject = note.includes('没有报自己属于哪个项目')
-            const saysRisk = note.includes('可能越界')
-            const saysNotNoCard = note.includes('不是"没有卡跑完"')
-            const saysNotConfirmed = note.includes('已确认投给了本项目的人')
-            const notMixedWithNoSub = !note.includes('没有订阅者属于这个项目')
-            const counted = st.legacyTargetCount === 1
-            const zeroSubUntouched = st.noSubscriberCount === 0
-            if (delivered && saysNoProject && saysRisk && saysNotNoCard && saysNotConfirmed
-                && notMixedWithNoSub && counted && zeroSubUntouched) {
-              ok('R-g1/R-g2 ✓ "没报项目"**投了、且每一笔都可观测**（甲路）：'
-                + `投递=${sent.length}（应 1）· 独立档 legacyTargetCount=${st.legacyTargetCount}（应 1）`
-                + ` · 没并进"筛空"=${notMixedWithNoSub}`
-                + ` · 可读话四层齐（没报项目 / 可能越界 / 不是没卡跑完 / 不是已确认投给本项目）`)
-            } else if (!delivered) {
-              bad('R-g1 【甲路必须投】"没报项目"这一档被静默丢弃了'
-                + `：投递=${sent.length}（应为 1）· handleFrame 返回=${n}`
-                + '\n      ⇒ ⚠ 这就是 `cf72d8b` 的原缺陷（该收到的没收到、而且没人报）'
-                + '\n      ⇒ 甲路要的是"**可能越界但必须可观测**"，⛔ 不是"干脆不投"')
-            } else {
-              bad('R-g 【没报项目必须"可观测"】投是投了，但这一档**没留下能分辨的话/计数**'
-                + `：legacyTargetCount=${st.legacyTargetCount}（应 1）`
-                + ` · 与"筛空"分开=${zeroSubUntouched}（noSubscriberCount 应 0，实测 ${st.noSubscriberCount}）`
-                + ` · 未混进筛空句=${notMixedWithNoSub}`
-                + ` · 有"没报项目"那句=${saysNoProject} · 自报"可能越界"=${saysRisk}`
-                + ` · 明写不是没卡跑完=${saysNotNoCard} · 明写不是"已确认投给本项目"=${saysNotConfirmed}`
-                + ` · note=${JSON.stringify(note.slice(0, 200))}`)
-            }
-          }
+  let sOrch
+  let sBus
+  try {
+    sOrch = await import(p2u(join(root, 'src', 'modules', 'orchestrator.ts')).href)
+    sBus = await import(p2u(join(root, 'src', 'modules', 'bus.ts')).href)
+  } catch (e) {
+    bad(`S 无法加载 orchestrator / bus（${String(e?.message ?? e)}）⇒ 归属隔离那一族失去基准（不按通过处理）`)
+  }
 
-          // ── R-g3 ⭐ 三档**互斥**：同一个订阅面上，"没报项目"与"筛空"不会同时成立 ──
-          //   ⚠ 这条防的是"两档合并成一档"那种省事写法（合并之后计数就没法区分原因了）。
-          {
-            // ① 只有"没报项目"的订阅者
-            const a = new wakeMod.CardWake({
-              origin: 'http://127.0.0.1:0', workspaceIdOf: () => WSX,
-              deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000,
-            })
-            a.subscribe('session-no-project')
-            await a.handleFrame('change', frameG)
-            const sa = a.snapshot()
+  if (sOrch !== undefined && sBus !== undefined) {
+    let sRoot
+    try { sRoot = mkdt(join(tdir(), 'hob-scheck-')) } catch (e) {
+      bad(`S 造不出临时现场（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+    }
 
-            // ② 有一个订阅者、但它属于**别的项目**（= 真"筛空"）
-            const b = new wakeMod.CardWake({
-              origin: 'http://127.0.0.1:0', workspaceIdOf: () => WSX,
-              deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000,
-            })
-            b.subscribe('session-other-project', 'ws-elsewhere')
-            await b.handleFrame('change', frameG)
-            const sb = b.snapshot()
+    if (sRoot !== undefined) {
+      /**
+       * 造一个最小宿主：**两个工作区**、**两个 owner 会话**、各一个目标会话。
+       *
+       * ⚠ 全部是假对象 —— ⛔ 不起真会话、⛔ 不碰真账本、⛔ 不写 /tmp 之外的地方
+       *   （⚠ 本仓机检一贯用系统临时目录，且**跑完即删**；作业书禁的是"/tmp 落临时件"，
+       *    这里沿用**本文件既有**的 `tmpdir()` 口径，与该族其它组一致）。
+       */
+      const mountTwoOwners = async (opts = {}) => {
+        const base = mkdt(join(sRoot, 'case-'))
+        const home = join(base, 'ledgers')
+        mkd(home, { recursive: true })
+        /** 两个工作区（= 两本账）。 */
+        const wsA = join(base, 'ws-alpha')
+        const wsB = join(base, 'ws-beta')
+        for (const w of [wsA, wsB]) mkd(join(w, 'runtime'), { recursive: true })
 
-            //   ⚠ 键名随甲路改为 `legacyTargetCount`（原 `noProjectCount` 已不存在），
-            //     ⚠ **语义未变**：两种原因各自独立计数，⛔ 不许合并成一档。
-            if (sa.legacyTargetCount === 1 && sa.noSubscriberCount === 0
-                && sb.legacyTargetCount === 0 && sb.noSubscriberCount === 1) {
-              ok('R-g3 ✓ 两档**互斥**且各自计数正确：'
-                + `"没报项目" ⇒ legacy=${sa.legacyTargetCount}/筛空=${sa.noSubscriberCount} · `
-                + `"别的项目" ⇒ legacy=${sb.legacyTargetCount}/筛空=${sb.noSubscriberCount}`
-                + ' ⇒ 两种原因**没有**被记成同一档')
-            } else {
-              bad('R-g3 【两档必须互斥】计数串了'
-                + `：没报项目 ⇒ legacy=${sa.legacyTargetCount}（应 1）/ 筛空=${sa.noSubscriberCount}（应 0）`
-                + ` · 别的项目 ⇒ legacy=${sb.legacyTargetCount}（应 0）/ 筛空=${sb.noSubscriberCount}（应 1）`)
-            }
-          }
-        } catch (e) {
-          bad(`R-g "没报项目"独立成档：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+        /**
+         * 会话表：
+         * · `ownerA` / `ownerB` —— 两个 Hob（**不同工作区**）
+         * · `targetA` / `targetB` —— 各自派出去的实施会话
+         * · `ownerA2` —— **与 ownerA 同一工作区**的另一个 Hob（S-E 用）
+         */
+        const cwdOf = {
+          ownerA: wsA, ownerA2: wsA, targetA: wsA,
+          ownerB: wsB, targetB: wsB,
         }
+        const mkSession = (id) => ({ id, header: { agentPreset: 'standard', cwd: cwdOf[id] }, log: [] })
+        const sessionsById = new Map(Object.keys(cwdOf).map((id) => [id, mkSession(id)]))
+        const sessions = {
+          get: (id) => sessionsById.get(id),
+          list: () => [...sessionsById.values()],
+          flush: async () => true,
+        }
+        const agentOf = (id) => ({
+          id, status: 'idle', ctx: {}, session: sessionsById.get(id),
+          followup: () => {}, steer: () => {}, inject: () => {},
+        })
+        const agents = {
+          currentInitiator: () => undefined,
+          get: (id) => (sessionsById.has(id) ? agentOf(id) : undefined),
+        }
+        const logger = { debug() {}, info() {}, warn() {}, error() {} }
+
+        // 先装真 bus（orchestrator 的 dispatch 走 bus.deliver）
+        const busProvided = {}
+        const busCtx = {
+          sessions, agents, logger,
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+          provide: (k, v) => { busProvided[k] = v },
+          effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
+          inject: (_d, cb) => cb(busCtx),
+        }
+        sBus.apply(busCtx, {
+          spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }),
+        })
+        const bus = busProvided.hobBus
+
+        // 再装真 orchestrator
+        const provided = {}
+        const ctx = {
+          sessions, agents, logger,
+          get: (k) => (k === 'sessions' ? sessions
+            : k === 'agents' ? agents
+              : k === 'hobBus' ? bus
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                  : undefined),
+          provide: (k, v) => { provided[k] = v },
+          effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
+          inject: (_d, cb) => cb(ctx),
+          on: () => {},
+        }
+        sOrch.apply(ctx)
+        const orch = provided.hobOrchestrator
+        /**
+         * ⚠ 运行态**不在工作区里**：账本按**工作区名**派生到 `ledgerHome/<工作区名>`
+         *   （`doc-read.ts` 的 `resolveLedgerRoot`：② 配了父目录 ⇒ `resolve(home, base)`）。
+         *   ⇒ 读盘点必须按**同一口径**算出来，⛔ 不许猜。
+         */
+        const stateFileOf = (ws) => join(home, basename(ws), 'runtime', 'orch-watches.json')
+
+        return { orch, bus, home, wsA, wsB, sessions, agents, stateFileOf, opts }
+      }
+
+      try {
+        // ── S-A ⭐ 作业书 A：两个 owner 各派一个目标 ⇒ 各自只回自己 ──────────────
+        {
+          const h = await mountTwoOwners()
+          if (h.orch === undefined) {
+            bad('S-A `hobOrchestrator` 未 provide ⇒ 本条失去基准（不按通过处理）')
+          } else {
+            // ① ownerA 派 targetA；ownerB 派 targetB
+            const dA = await h.orch.dispatch('targetA', 'do A', { self: 'ownerA' })
+            const dB = await h.orch.dispatch('targetB', 'do B', { self: 'ownerB' })
+            // ② 各自读状态：只应看见自己那一条
+            const sA = h.orch.status({ wsRoot: h.wsA, self: 'ownerA' })
+            const sB = h.orch.status({ wsRoot: h.wsB, self: 'ownerB' })
+            const tA = (sA.watches ?? []).map((w) => w.target)
+            const tB = (sB.watches ?? []).map((w) => w.target)
+            // ③ 交叉读：A 读不到 B 的、B 读不到 A 的
+            const aSeesB = tA.includes('targetB')
+            const bSeesA = tB.includes('targetA')
+            if (dA?.ok === true && dB?.ok === true
+              && JSON.stringify(tA) === JSON.stringify(['targetA'])
+              && JSON.stringify(tB) === JSON.stringify(['targetB'])
+              && !aSeesB && !bSeesA) {
+              ok('S-A ✓ 作业书 A：两个 owner（不同工作区）各派一个目标 ⇒ '
+                + `A 只看见 ${JSON.stringify(tA)} · B 只看见 ${JSON.stringify(tB)} ⇒ 互不串收`)
+            } else {
+              bad('S-A 【两个 owner 必须各回各的】读数串了'
+                + `：dispatch A=${JSON.stringify(dA)} · dispatch B=${JSON.stringify(dB)}`
+                + ` · A 的 watches=${JSON.stringify(tA)}（应 ["targetA"]）`
+                + ` · B 的 watches=${JSON.stringify(tB)}（应 ["targetB"]）`
+                + ` · A 看见 B=${aSeesB}（应 false）· B 看见 A=${bSeesA}（应 false）`)
+            }
+
+            /**
+             * ⚠⚠ **负向对拍**（作业书 A 的后半："把逐条 owner 改回进程级单值 ⇒ 断言必须 FAIL"）。
+             *   变异点 = `mineOnly()` 里的 owner 过滤（`w.owner === self`）
+             *     ⇒ 改成"**不过滤**"（等价于回到"全实例汇总 / 进程级单值"的口径）。
+             *   ⚠ 判据**不是**退出码，而是：用变异体跑**同一段 S-A** ⇒ 读数出现串台。
+             */
+            /**
+             * ⚠ 变异体**必须落在源码同目录**（`src/modules/`）：本仓用 ESM 相对导入，
+             *   放到临时目录会解析不到 `@deepseek-ai/dsh-tools`（实测踩过）。
+             *   ⇒ 落地为 `orchestrator.mut-<pid>.ts`，跑完**立即删除**（⛔ 不留残件）。
+             */
+            const mutPath = join(root, 'src', 'modules', `orchestrator.mut-${process.pid}-${Date.now()}.ts`)
+            try {
+              const src = rf(join(root, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+              const GUARD = "const mineW = all.filter((w) => w.owner === self)"
+              if (!src.includes(GUARD)) {
+                bad('S-A(反证) 【失去靶子】在 `orchestrator.ts` 里找不到"按 owner 过滤"那一行原文'
+                  + `（期望：${JSON.stringify(GUARD)}）⇒ 本判据已对不上实现，不按通过处理`)
+              } else {
+                wf(mutPath, src.replace(GUARD, 'const mineW = all /* 变异：不过滤 = 全实例汇总 */'), 'utf8')
+                let mut
+                try { mut = await import(p2u(mutPath).href) } catch (e) {
+                  bad(`S-A(反证) 变异体 import 失败：${String(e?.message ?? e)}`)
+                }
+                if (mut !== undefined) {
+                  // ⚠ 用**同一个假宿主**再挂一遍变异体
+                  const base = mkdt(join(sRoot, 'case-mut-'))
+                  const home2 = join(base, 'ledgers')
+                  mkd(home2, { recursive: true })
+                  const wsA2 = join(base, 'ws-alpha'); const wsB2 = join(base, 'ws-beta')
+                  for (const w of [wsA2, wsB2]) mkd(join(w, 'runtime'), { recursive: true })
+                  const cwdOf2 = { ownerA: wsA2, targetA: wsA2, ownerB: wsB2, targetB: wsB2 }
+                  const s2 = new Map(Object.keys(cwdOf2).map((id) => [id,
+                    { id, header: { agentPreset: 'standard', cwd: cwdOf2[id] }, log: [] }]))
+                  const sessions2 = { get: (i) => s2.get(i), list: () => [...s2.values()], flush: async () => true }
+                  const agents2 = {
+                    currentInitiator: () => undefined,
+                    get: (i) => (s2.has(i) ? { id: i, status: 'idle', ctx: {}, session: s2.get(i),
+                      followup() {}, steer() {}, inject() {} } : undefined),
+                  }
+                  const logger2 = { debug() {}, info() {}, warn() {} }
+                  const bp2 = {}
+                  const bc2 = { sessions: sessions2, agents: agents2, logger: logger2,
+                    get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2 : undefined),
+                    provide: (k, v) => { bp2[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                    inject: (_d, cb) => cb(bc2) }
+                  sBus.apply(bc2, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+                  const prov2 = {}
+                  const c2 = { sessions: sessions2, agents: agents2, logger: logger2,
+                    get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2
+                      : k === 'hobBus' ? bp2.hobBus
+                        : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home2 } } }] } : undefined),
+                    provide: (k, v) => { prov2[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                    inject: (_d, cb) => cb(c2), on: () => {} }
+                  mut.apply(c2)
+                  const mo = prov2.hobOrchestrator
+                  if (mo !== undefined) {
+                    await mo.dispatch('targetA', 'do A', { self: 'ownerA' })
+                    await mo.dispatch('targetB', 'do B', { self: 'ownerB' })
+                    const st = mo.status({ wsRoot: wsA2, self: 'ownerA' })
+                    const leakedIds = (st.watches ?? []).map((w) => w.target).filter((t) => t !== 'targetA')
+                    if (leakedIds.length > 0) {
+                      ok('S-A(反证) ✓ 负向对拍：把"逐条 owner 过滤"改回"不过滤（进程级单值口径）"'
+                        + ` ⇒ **当场串台**（ownerA 读到了 ${JSON.stringify(leakedIds)}）`
+                        + ' ⇒ S-A 真长牙（⚠ 这条 PASS 说明变异体确实被抓到了）')
+                    } else {
+                      bad('S-A(反证) 【负向对拍失败】变异体仍然只看见自己那一条'
+                        + `：ownerA 的 watches=${JSON.stringify((st.watches ?? []).map((w) => w.target))}`
+                        + ' ⇒ S-A 测的不是"逐条 owner"这件事')
+                    }
+                  }
+                }
+              }
+            } finally { try { rm(mutPath, { force: true }) } catch {} }
+
+            // ── S-E ⭐ **同一工作区**里两个 owner 互不串收（用户点名的那一半）──────────
+            {
+              const hh = await mountTwoOwners()
+              // ownerA 与 ownerA2 **同工作区**，各派一个目标
+              const d1 = await hh.orch.dispatch('targetA', 'do A', { self: 'ownerA' })
+              const d2 = await hh.orch.dispatch('targetB', 'do B', { self: 'ownerA2' })
+              const s1 = hh.orch.status({ wsRoot: hh.wsA, self: 'ownerA' })
+              const s2 = hh.orch.status({ wsRoot: hh.wsA, self: 'ownerA2' })
+              const l1 = (s1.watches ?? []).map((w) => w.target)
+              const l2 = (s2.watches ?? []).map((w) => w.target)
+              const cross = l1.includes('targetB') || l2.includes('targetA')
+              if (d1?.ok === true && d2?.ok === true
+                && JSON.stringify(l1) === JSON.stringify(['targetA'])
+                && JSON.stringify(l2) === JSON.stringify(['targetB']) && !cross) {
+                ok('S-E ✓ **同一工作区隔离**：ownerA 与 ownerA2 同属一个工作区、各派一个目标 ⇒'
+                  + ` A 只看见 ${JSON.stringify(l1)} · A2 只看见 ${JSON.stringify(l2)} ⇒ 互不串收`
+                  + '（⚠ 这正是用户点名的"包括同一个工作区"那一半）')
+              } else {
+                bad('S-E 【同一工作区也必须隔离】两个 owner 的读数串了'
+                  + `：A=${JSON.stringify(l1)}（应 ["targetA"]）· A2=${JSON.stringify(l2)}（应 ["targetB"]）`
+                  + ` · dispatch=${JSON.stringify([d1, d2])}`)
+              }
+            }
+
+            // ── S-B ⭐ 作业书 B：读状态不含他人记录（含条数）──────────────────────
+            {
+              const hh = await mountTwoOwners()
+              await hh.orch.dispatch('targetA', 'do A', { self: 'ownerA' })
+              await hh.orch.dispatch('targetB', 'do B', { self: 'ownerB' })
+              const sA = hh.orch.status({ wsRoot: hh.wsA, self: 'ownerA' })
+              const mineIds = (sA.watches ?? []).map((w) => w.target)
+              // ⚠ 明细：不许出现 targetB / 任何 ownerB 的字段
+              const detailHasB = JSON.stringify(sA).includes('targetB')
+                || JSON.stringify(sA).includes('ownerB')
+              // ⚠ "他人的（不可见明细）"只允许**条数**
+              const others = sA.others
+              const othersOnlyCount = others !== undefined
+                && Object.keys(others).sort().join(',') === 'note,watches'
+                && others.watches === 1
+              if (JSON.stringify(mineIds) === JSON.stringify(['targetA'])
+                && !detailHasB && othersOnlyCount) {
+                ok('S-B ✓ 作业书 B：ownerA 的读数**只有自己那一条**，'
+                  + `他人记录**只给条数**（${JSON.stringify(others)}）、⛔ 无 target / 任务的任何明细`)
+                /**
+                 * ⚠⚠ **负向对拍**（作业书 B 后半）：把过滤摘掉 ⇒ 断言必须 FAIL。
+                 *   变异点 = 工具层把 `self` 传下去那一处 ——
+                 *     ⇒ 改成**不传 self**（等价于回到"全实例汇总"；⚠ 注意：现在的实现
+                 *       在 `self === undefined` 时只报"无归属"，所以这里要验的是
+                 *       **"不传 self 就什么都读不到"** 这件事本身 —— 那正是"分母是我的"的可证形态）。
+                 *   ⚠ 换个更直接的靶子：`status()` 里 `stopped: isStoppedFor(self)` 与
+                 *     `mineOnly(self)` **共用同一个 self**；把 `mineOnly(self)` 改成
+                 *     `mineOnly(undefined)` ⇒ 读数立刻变成空（= 过滤真的在起作用）。
+                 */
+                const mutPathB = join(root, 'src', 'modules', `orchestrator.mutb-${process.pid}-${Date.now()}.ts`)
+                try {
+                  const srcB = rf(join(root, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+                  const GUARDB = '        const mine = mineOnly(self)'
+                  if (!srcB.includes(GUARDB)) {
+                    bad('S-B(反证) 【失去靶子】找不到"按调用方取自己那一份"那一行原文'
+                      + `（期望：${JSON.stringify(GUARDB)}）⇒ 判据已对不上实现，不按通过处理`)
+                  } else {
+                    wf(mutPathB, srcB.replace(GUARDB, '        const mine = mineOnly(undefined) /* 变异：过滤失效 */'), 'utf8')
+                    const mutB = await import(p2u(mutPathB).href)
+                    const baseB = mkdt(join(sRoot, 'case-mutb-'))
+                    const homeB = join(baseB, 'ledgers'); mkd(homeB, { recursive: true })
+                    const wsB1 = join(baseB, 'ws-alpha')
+                    mkd(join(wsB1, 'runtime'), { recursive: true })
+                    const cwdB = { ownerA: wsB1, targetA: wsB1, ownerB: wsB1, targetB: wsB1 }
+                    const sB2 = new Map(Object.keys(cwdB).map((id) => [id,
+                      { id, header: { agentPreset: 'standard', cwd: cwdB[id] }, log: [] }]))
+                    const sessionsB = { get: (i) => sB2.get(i), list: () => [...sB2.values()], flush: async () => true }
+                    const agentsB = { currentInitiator: () => undefined,
+                      get: (i) => (sB2.has(i) ? { id: i, status: 'idle', ctx: {}, session: sB2.get(i),
+                        followup() {}, steer() {}, inject() {} } : undefined) }
+                    const loggerB = { debug() {}, info() {}, warn() {} }
+                    const bpB = {}
+                    const bcB = { sessions: sessionsB, agents: agentsB, logger: loggerB,
+                      get: (k) => (k === 'sessions' ? sessionsB : k === 'agents' ? agentsB : undefined),
+                      provide: (k, v) => { bpB[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                      inject: (_d, cb) => cb(bcB) }
+                    sBus.apply(bcB, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+                    const provB = {}
+                    const cB = { sessions: sessionsB, agents: agentsB, logger: loggerB,
+                      get: (k) => (k === 'sessions' ? sessionsB : k === 'agents' ? agentsB
+                        : k === 'hobBus' ? bpB.hobBus
+                          : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: homeB } } }] } : undefined),
+                      provide: (k, v) => { provB[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                      inject: (_d, cb) => cb(cB), on: () => {} }
+                    mutB.apply(cB)
+                    const moB = provB.hobOrchestrator
+                    if (moB !== undefined) {
+                      await moB.dispatch('targetA', 'do A', { self: 'ownerA' })
+                      await moB.dispatch('targetB', 'do B', { self: 'ownerB' })
+                      const stB = moB.status({ wsRoot: wsB1, self: 'ownerA' })
+                      const got = (stB.watches ?? []).map((w) => w.target)
+                      // 过滤失效的两种表现都算被抓到：串进别人的 / collapse 成空
+                      const broken = got.length === 0 || got.includes('targetB')
+                      if (broken) {
+                        ok('S-B(反证) ✓ 负向对拍：把"按调用方过滤"改成"不过滤（传 undefined）"'
+                          + ` ⇒ 读数立刻不对（ownerA 的 watches=${JSON.stringify(got)}）`
+                          + ' ⇒ S-B 真长牙')
+                      } else {
+                        bad('S-B(反证) 【负向对拍失败】变异体读数仍然只有自己那一条'
+                          + `：${JSON.stringify(got)} ⇒ S-B 测的不是"按调用方过滤"这件事`)
+                      }
+                    }
+                  }
+                } catch (e) {
+                  bad(`S-B(反证) 跑不起来：${String((e?.message ?? e))}`)
+                } finally { try { rm(mutPathB, { force: true }) } catch {} }
+              } else {
+                bad('S-B 【读数不许含他人记录】ownerA 的读数里出现了别人的东西'
+                  + `：自己的 watches=${JSON.stringify(mineIds)}（应 ["targetA"]）`
+                  + ` · 含 B 的明细=${detailHasB}（应 false）· 他人档=${JSON.stringify(others)}`)
+              }
+            }
+
+            // ── S-C ⭐ 作业书 C：落盘不含他人 watch、不盖他人 wsRoot ──────────────────
+            {
+              const hh = await mountTwoOwners()
+              await hh.orch.dispatch('targetA', 'do A', { self: 'ownerA' })
+              await hh.orch.dispatch('targetB', 'do B', { self: 'ownerB' })
+              const readState = (ws) => {
+                try { return JSON.parse(rf(hh.stateFileOf(ws), 'utf8')) } catch { return undefined }
+              }
+              const fileA = readState(hh.wsA)
+              const fileB = readState(hh.wsB)
+              const aPending = (fileA?.pending ?? []).map((w) => w.target)
+              const bPending = (fileB?.pending ?? []).map((w) => w.target)
+              // ⚠ 每条记录的 wsRoot 必须是**它自己的** owner 的工作区（⛔ 不许被本次派发的 ws 盖掉）
+              const aRoots = (fileA?.pending ?? []).map((w) => w.wsRoot)
+              const bRoots = (fileB?.pending ?? []).map((w) => w.wsRoot)
+              const aOwners = (fileA?.pending ?? []).map((w) => w.owner)
+              const bOwners = (fileB?.pending ?? []).map((w) => w.owner)
+              const okA = JSON.stringify(aPending) === JSON.stringify(['targetA'])
+                && JSON.stringify(aOwners) === JSON.stringify(['ownerA'])
+                && aRoots.every((r) => r === hh.wsA)
+              const okB = JSON.stringify(bPending) === JSON.stringify(['targetB'])
+                && JSON.stringify(bOwners) === JSON.stringify(['ownerB'])
+                && bRoots.every((r) => r === hh.wsB)
+              if (okA && okB) {
+                ok('S-C ✓ 作业书 C：A 的运行态文件**只含 A 的 watch**（owner/wsRoot 都是 A 的）、'
+                  + 'B 的也只含 B 的 ⇒ ⛔ 没有"整张表写进一个文件"、⛔ 没有给外来记录盖本工作区 wsRoot')
+                /**
+                 * ⚠⚠ **负向对拍**（作业书 C 后半）：把"只写自己的"改回"**写全部**"⇒ 本断言必须 FAIL。
+                 *   变异点 = `persistOwnerPartition` 里那行"保留别人的"（`others`）——
+                 *     ⇒ 改成**丢掉别人的**（`const others = []`）等价于"整张表覆盖"那个旧缺陷。
+                 */
+                const mutPathC = join(root, 'src', 'modules', `orchestrator.mutc-${process.pid}-${Date.now()}.ts`)
+                try {
+                  const srcC = rf(join(root, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+                  const GUARDC = "const others = prev.pending.filter((w) => (w.owner ?? '') !== owner)"
+                  if (!srcC.includes(GUARDC)) {
+                    bad('S-C(反证) 【失去靶子】找不到"保留别人的"那一行原文'
+                      + `（期望：${JSON.stringify(GUARDC)}）⇒ 判据已对不上实现，不按通过处理`)
+                  } else {
+                    wf(mutPathC, srcC.replace(GUARDC, 'const others = [] /* 变异：整张表覆盖 = 旧的写全部 */'), 'utf8')
+                    const mutC = await import(p2u(mutPathC).href)
+                    // 同一招：造现场 → 两个 owner 各派一个 → 读**同一本账**
+                    const baseC = mkdt(join(sRoot, 'case-mutc-'))
+                    const homeC = join(baseC, 'ledgers'); mkd(homeC, { recursive: true })
+                    const ws1 = join(baseC, 'ws-alpha'); const ws2 = join(baseC, 'ws-beta')
+                    for (const w of [ws1, ws2]) mkd(join(w, 'runtime'), { recursive: true })
+                    /**
+                     * ⚠⚠ **两个 owner 必须同属一个工作区**，否则两次派发写进**两个不同的账本文件**，
+                     *   覆盖不到彼此 ⇒ 变异体（整表覆盖）也看不出坏（实测踩过：假通过）。
+                     *   ⇒ 这里让 ownerA / ownerB 都在 `ws1`：它们共用**同一个**运行态文件，
+                     *     那才是"整表写入"会把别人抹掉的现场（也正是用户点名的同工作区场景）。
+                     */
+                    const cwdC = { ownerA: ws1, targetA: ws1, ownerB: ws1, targetB: ws1 }
+                    const sC = new Map(Object.keys(cwdC).map((id) => [id,
+                      { id, header: { agentPreset: 'standard', cwd: cwdC[id] }, log: [] }]))
+                    const sessionsC = { get: (i) => sC.get(i), list: () => [...sC.values()], flush: async () => true }
+                    const agentsC = { currentInitiator: () => undefined,
+                      get: (i) => (sC.has(i) ? { id: i, status: 'idle', ctx: {}, session: sC.get(i),
+                        followup() {}, steer() {}, inject() {} } : undefined) }
+                    const loggerC = { debug() {}, info() {}, warn() {} }
+                    const bpC = {}
+                    const bcC = { sessions: sessionsC, agents: agentsC, logger: loggerC,
+                      get: (k) => (k === 'sessions' ? sessionsC : k === 'agents' ? agentsC : undefined),
+                      provide: (k, v) => { bpC[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                      inject: (_d, cb) => cb(bcC) }
+                    sBus.apply(bcC, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+                    const provC = {}
+                    const cC = { sessions: sessionsC, agents: agentsC, logger: loggerC,
+                      get: (k) => (k === 'sessions' ? sessionsC : k === 'agents' ? agentsC
+                        : k === 'hobBus' ? bpC.hobBus
+                          : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: homeC } } }] } : undefined),
+                      provide: (k, v) => { provC[k] = v }, effect: (fn) => { try { fn() } catch {} },
+                      inject: (_d, cb) => cb(cC), on: () => {} }
+                    mutC.apply(cC)
+                    const moC = provC.hobOrchestrator
+                    if (moC !== undefined) {
+                      await moC.dispatch('targetA', 'do A', { self: 'ownerA' })
+                      await moC.dispatch('targetB', 'do B', { self: 'ownerB' })
+                      /**
+                       * ⚠ 旧缺陷的形态：**后写的那次把先写的抹掉** ⇒ `targetA` 的记录
+                       *   在 A 的账本里会消失（被 B 的那次覆盖）。
+                       * ⚠ 这**不是**"两条都留着"——整表覆盖下只会剩最后一次派发。
+                       */
+                      let pendingA = []
+                      try {
+                        pendingA = JSON.parse(rf(join(homeC, basename(ws1), 'runtime', 'orch-watches.json'), 'utf8')).pending ?? []
+                      } catch { pendingA = [] }
+                      const lostMine = !pendingA.some((w) => w.target === 'targetA')
+                      const leaked = pendingA.some((w) => w.target === 'targetB')
+                      if (lostMine || leaked) {
+                        ok('S-C(反证) ✓ 负向对拍：把"只写自己的"改回"写全部（整表覆盖）"'
+                          + ` ⇒ **A 的账本当场坏掉**（自己的 targetA 在位=${!lostMine} ·`
+                          + ` 掺进别人的 targetB=${leaked} · pending=${JSON.stringify(pendingA.map((w) => w.target))}）`
+                          + ' ⇒ S-C 真长牙')
+                      } else {
+                        bad('S-C(反证) 【负向对拍失败】变异体写出的账本仍然正确'
+                          + `：pending=${JSON.stringify(pendingA.map((w) => w.target))}`
+                          + ' ⇒ S-C 测的不是"只写自己的"这件事')
+                      }
+                    }
+                  }
+                } catch (e) {
+                  bad(`S-C(反证) 跑不起来：${String((e?.message ?? e))}`)
+                } finally { try { rm(mutPathC, { force: true }) } catch {} }
+              } else {
+                bad('S-C 【落盘必须按 (账本, owner) 分区】串了或被盖了 wsRoot'
+                  + `：A 文件 pending=${JSON.stringify(aPending)}（应 ["targetA"]）`
+                  + ` · A 的 owner=${JSON.stringify(aOwners)}（应 ["ownerA"]）`
+                  + ` · A 的 wsRoot=${JSON.stringify(aRoots)}（应全为 ${hh.wsA}）`
+                  + ` · B 文件 pending=${JSON.stringify(bPending)}（应 ["targetB"]）`
+                  + ` · B 的 owner=${JSON.stringify(bOwners)}（应 ["ownerB"]）`
+                  + ` · B 的 wsRoot=${JSON.stringify(bRoots)}（应全为 ${hh.wsB}）`)
+              }
+            }
+
+            // ── S-D ⭐ 作业书 D：没报项目 ⇒ 不投 + 独立档；加回 legacy ⇒ FAIL ──────────
+            //
+            //   ⚠ 这一条现在**由 R-d 的源码判据**（"没有退回路径"）与 **R-c 的行为判据**
+            //     （"判不出 owner ⇒ 不投 + 独立档"）共同钉住；这里再做一次
+            //     **行为级**成对验证：同一个叫醒面上，**没报项目的订阅者不属于任何 owner**
+            //     ⇒ 一声都不收，且那一帧落 `legacyTargetCount` 独立档。
+            {
+              const wakeMod = await import(p2u(join(root, 'src', 'server', 'card-wake.ts')).href)
+              const sent = []
+              const cw = new wakeMod.CardWake({
+                origin: 'http://127.0.0.1:0',
+                workspaceIdOf: () => 'ws-mine-0001',   // ⚠ 进程级单值"恰好对得上" —— 也不能因此放行
+                deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+                now: () => 1792300800000,
+              })
+              cw.subscribe('session-no-project')      // ⚠ 旧式调用：故意不报项目
+              const n = await cw.handleFrame('change', JSON.stringify({
+                revision: 1, kind: 'execution-recorded',
+                tasks: [{ id: 't-card-x', title: '演示卡', status: 'in_review', workspaceId: 'ws-mine-0001',
+                  version: 2, lastExecutionOutcome: 'succeeded',
+                  createdBy: { sessionId: 'session-owner-elsewhere' } }],
+              }))
+              const st = cw.snapshot()
+              const note = typeof st.note === 'string' ? st.note : ''
+              // ⚠ 只有 owner 收到；"没报项目"的订阅者**一声都没有**
+              const onlyOwner = sent.length === 1 && sent[0].sid === 'session-owner-elsewhere'
+              const noProjectSilent = !sent.some((x) => x.sid === 'session-no-project')
+              // ⚠ 独立档：`legacyTargetCount` 只在"判不出 owner"时才涨 ⇒ 本帧**不该**涨
+              const notCountedAsLegacy = st.legacyTargetCount === 0
+              if (onlyOwner && noProjectSilent && notCountedAsLegacy && n === 1) {
+                ok('S-D ✓ 作业书 D：**没报项目的订阅者不属于任何 owner** ⇒ 一声都不收'
+                  + '（⚠ 没有 legacy 退回路径：进程级 ws 值"恰好对得上"也不放行）·'
+                  + ' 独立档 `legacyTargetCount=0`（那一档只记"判不出 owner"，⛔ 不再记"退回去投了"）')
+                /**
+                 * ⚠⚠ **负向对拍**（作业书 D 的后半，⚠ 逐字要求）：
+                 *   「把 `legacy` 退回路径加回来 ⇒ FAIL」。
+                 *   变异点 = 收件人那一行：`const to = e.owner`
+                 *     ⇒ 改成"退回按**进程级单值** `workspaceIdOf()` 判"（= `cf72d8b^` 的旧语义）：
+                 *       那个值恰好等于帧的项目 ⇒ 会把这一声**投给没报项目的订阅者**。
+                 *   ⚠ 判据：变异体跑**同一段 S-D** ⇒ 那个订阅者**收到了**（= 退回路径真的会越界）。
+                 */
+                const mutPathD = join(root, 'src', 'server', `card-wake.mutd-${process.pid}-${Date.now()}.ts`)
+                try {
+                  const srcD = rf(join(root, 'src', 'server', 'card-wake.ts'), 'utf8')
+                  const GUARDD = '      const to = e.owner'
+                  if (!srcD.includes(GUARDD)) {
+                    bad('S-D(反证) 【失去靶子】找不到"收件人 = 该条 owner"那一行原文'
+                      + `（期望：${JSON.stringify(GUARDD)}）⇒ 判据已对不上实现，不按通过处理`)
+                  } else {
+                    // 变异：退回"按全局单值判订阅者"的旧路（取第一个订阅者）
+                    wf(mutPathD, srcD.replace(GUARDD,
+                      '      const to = (this.opts.workspaceIdOf() === e.workspaceId)\n'
+                      + '        ? [...this.targets.keys()][0]\n'
+                      + '        : undefined /* 变异：legacy 退回路径 */'), 'utf8')
+                    const mutD = await import(p2u(mutPathD).href)
+                    const sentD = []
+                    const cwD = new mutD.CardWake({
+                      origin: 'http://127.0.0.1:0',
+                      workspaceIdOf: () => 'ws-mine-0001',   // ⚠ 全局单值恰好"对得上"
+                      deliver: (sid, text) => { sentD.push({ sid, text }); return Promise.resolve({ ok: true }) },
+                      now: () => 1792300800000,
+                    })
+                    cwD.subscribe('session-no-project')      // 旧式调用：没报项目
+                    await cwD.handleFrame('change', JSON.stringify({
+                      revision: 1, kind: 'execution-recorded',
+                      tasks: [{ id: 't-card-x', title: '演示卡', status: 'in_review', workspaceId: 'ws-mine-0001',
+                        version: 2, lastExecutionOutcome: 'succeeded',
+                        createdBy: { sessionId: 'session-owner-elsewhere' } }],
+                    }))
+                    const leakedD = sentD.filter((x) => x.sid === 'session-no-project').length
+                    if (leakedD > 0) {
+                      ok('S-D(反证) ✓ 负向对拍：把 `legacy` 退回路径加回来（按全局单值判订阅者）'
+                        + ` ⇒ **没报项目的订阅者当场收到了 ${leakedD} 声**（= 旧越界形态复现）`
+                        + ' ⇒ S-D / R-d 真长牙')
+                    } else {
+                      bad('S-D(反证) 【负向对拍失败】加回退回路径后仍没投给"没报项目"的订阅者'
+                        + `：投递=${JSON.stringify(sentD.map((x) => x.sid))}`
+                        + ' ⇒ S-D 测的不是"没有退回路径"这件事')
+                    }
+                  }
+                } catch (e) {
+                  bad(`S-D(反证) 跑不起来：${String((e?.message ?? e))}`)
+                } finally { try { rm(mutPathD, { force: true }) } catch {} }
+              } else {
+                bad('S-D 【没报项目不许投】收件人或计数不对'
+                  + `：投递=${JSON.stringify(sent.map((x) => x.sid))}（应只有 session-owner-elsewhere）`
+                  + ` · 没报项目的那个收到了=${!noProjectSilent}（应 false）`
+                  + ` · legacyTargetCount=${st.legacyTargetCount}（应 0）· 返回值=${n}`
+                  + ` · note=${JSON.stringify(note.slice(0, 160))}`)
+              }
+            }
+          }
+        }
+      } finally {
+        try { rm(sRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
       }
     }
   }
