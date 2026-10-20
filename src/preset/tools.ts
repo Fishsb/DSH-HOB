@@ -540,7 +540,7 @@ function denyInheritedTools(ctx: any, log: (m: string) => void, defaultDeny: rea
 }
 
 /**
- * 「助手」**发给模型的**工具清单 —— **装配期白名单**（**档1 的 26 个显式名字**；
+ * 「助手」**发给模型的**工具清单 —— **装配期白名单**（**档1 的显式名字表**（⚠ 名数以 `check:presets` 的判定为准）；
  *   三档的名字集见 {@link PERMISSION_TIERS}，**逐档名数以 `check:presets` 的判定为准**）。
  *
  * ── 为什么是这些 ────────────────────────────────────────────────────

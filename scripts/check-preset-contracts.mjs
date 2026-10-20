@@ -2202,8 +2202,20 @@ const STALE_APPELLATIONS = [
    *     模板的用途正是"给新工作区当骨架"，它**必须是占位形状**，
    *     与"面向用户的政策读数"不是一回事。
    */
+  /**
+   * ⚠⚠ **修饰语窄扩**（2026-10-21 · 第 341 轮 · 丙-7 的欠账）：
+   *   ⚠ 改前的形状是「数字 + `个?` + 名词」，中间**不许夹任何词** ⇒
+   *     像 `26 个显式名字` 这种**数字后带修饰语**的写法**漏检**。
+   *   ⇒ 现在在 `个?` 与名词之间允许**一个**来自**封闭白名单**的修饰语。
+   *
+   *   ⚠⛔ **必须是封闭白名单**，不许放开成任意词 —— 那会让它变成噪音然后被关掉：
+   *     `显式` / `独立` / `具体` / `明文`（中文）· `explicit` / `distinct`（英文）。
+   *   ⚠ 只允许**一个**修饰语（`{0,1}`，⛔ 不是 `*`）：允许多个就等于放开成"任意词串"。
+   */
+  const P1_ZH_MODS = '显式|独立|具体|明文'
+  const P1_EN_MODS = 'explicit|distinct'
   const NUM_ZH = new RegExp(
-    `(?<![A-Za-z0-9])(?:恰好\\s*)?\\*{0,2}([1-9]\\d{0,2})\\s*个?\\s*(?:${P1_ZH_NOUNS})`,
+    `(?<![A-Za-z0-9])(?:恰好\\s*)?\\*{0,2}([1-9]\\d{0,2})\\s*个?\\s*(?:${P1_ZH_MODS})?\\s*(?:${P1_ZH_NOUNS})`,
     'g',
   )
   /**
@@ -2215,7 +2227,7 @@ const STALE_APPELLATIONS = [
     + 'thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty'
   const P1_EN_NOUNS = 'modules?|switches|switch|tools?|names?|entries|items?'
   const NUM_EN = new RegExp(
-    `\\b(${EN_WORDS})(?:\\s+(?:in\\s+total\\b|${P1_EN_NOUNS}\\b))`,
+    `\\b(${EN_WORDS})(?:\\s+(?:${P1_EN_MODS}\\s+)?(?:in\\s+total\\b|${P1_EN_NOUNS}\\b))`,
     'gi',
   )
   /** ⚠ 旧名保留（下方代码引用它），值改为"两条正则里任一条命中即算"。 */
