@@ -58,6 +58,15 @@
  *     （"0" 与 "没记录" 必须能分开，见 `check-orch-state.mjs` 的 C 组口径）。
  */
 
+/**
+ * ⚠⚠ **合成执行键的唯一来源**（2026-10-20 · 第 321 轮 · `TASK-G` ③）：
+ *   与叫醒面**同一个函数**（`card-wake.ts` 导出它、这里 import 它）。
+ *   本文件**自己不再拼一遍** —— 两处各拼一份就是"同一事实两个来源必然漂"（`E-128`）。
+ *
+ * ⚠ 依赖方向是 `board-cards → card-wake`（单向，无环）：叫醒面不 import 本文件。
+ */
+import { synthesizedExecutionKey } from './card-wake.ts'
+
 /** 卡读数面的相位（**四档**，逐档独立，⛔ 不许合成一个"进行中"）。 */
 export type CardPhase = 'running' | 'awaiting-review' | 'failed' | 'stalled'
 
@@ -97,6 +106,26 @@ export interface CardReading {
   executionSessionId?: string
   /** 最近一次执行的 **execution id**（去重键；同一会话连跑两轮靠它区分）。 */
   executionId?: string
+  /**
+   * ⚠⚠ **"合成执行键"**（2026-10-20 · 第 321 轮 · `TASK-G` ③）—— **与叫醒面同源**。
+   *
+   * ── 为什么卡面上还要有它（本件要治的那条缺陷）─────────────────────────
+   *   叫醒面（`card-wake.ts`）的投递台账键**不是**看板真 id：看板 SSE 推的是
+   *   `summarize()` 投影，**投影里没有 `executions`** ⇒ 帧上拿不到 `execution.id`
+   *   ⇒ 只能拼一个合成键 `<卡 id>@<outcome>@v<version>` 当去重键。
+   *   而 `orchestrator.deliveryLedger()` 拿台账键（合成键）去比
+   *   {@link CardReading.executionId}（看板**真 id**）⇒ **永远不相等**
+   *   ⇒ 台账恒空、渲染成「确实是空的」⇒ 补投（`redeliver`）拿不到可用执行 id，入口按不到。
+   *   ⚠ 那不是"没有错投"，是"**没去比**"伪装成"比过且为空"。
+   *
+   * ── 怎么来的 ───────────────────────────────────────────────────────
+   *   由 `card-wake.ts` 导出的 {@link synthesizedExecutionKey} **同一份实现**生成
+   *   （⛔ 不在这里另拼一份 —— 两处各拼必然漂，`E-128` 口径）。
+   *   ⛔ **不许用"前缀匹配"**替代它（`t-a` 是 `t-ab` 的前缀 ⇒ 会误配）。
+   *
+   * ⚠ 读不到必要字段（没有最近一次执行结果字）⇒ **不填**（判不出就是判不出）。
+   */
+  synthesizedExecutionId?: string
   /** 最近一次执行的结果字（`running` / `succeeded` / `failed` / `cancelled`）。 */
   executionOutcome?: string
   /**
@@ -308,6 +337,14 @@ function toReading(task: any, now: number, stallMs: number): CardReading | undef
     ...(str(last?.sessionId) === undefined ? {} : { executionSessionId: str(last?.sessionId) }),
     ...(str(last?.id) === undefined ? {} : { executionId: str(last?.id) }),
     ...(str(last?.outcome) === undefined ? {} : { executionOutcome: str(last?.outcome) }),
+    // ── ⚠⚠ 2026-10-20 · 第 321 轮 · `TASK-G` ③：合成键（与叫醒面**同源**）────────
+    //   ⚠ 必须用**与 `cardDoneEventsOf` 同一个函数**生成 —— 台账键就是它
+    //     （帧上没有 `executions` ⇒ 叫醒面只能拼一个合成键）⇒ 这边拼法一漂，
+    //     `deliveryLedger()` 就又比不上了（改前正是"永远不相等 ⇒ 台账恒空"）。
+    //   ⚠ 最近一次执行有**结果字**才谈得上"落定"；读不到 ⇒ 不填（判不出就判不出）。
+    ...(str(last?.outcome) === undefined
+      ? {}
+      : { synthesizedExecutionId: synthesizedExecutionKey(id, str(last?.outcome) as string, task?.version) }),
     ...(str(task?.createdBy?.sessionId) === undefined ? {} : { createdBySessionId: str(task?.createdBy?.sessionId) }),
   }
 }
