@@ -7217,6 +7217,216 @@ const orchCode = stripComments(orchSrc)
       }
     }
   }
+  // ══════════════════════════════════════════════════════════════
+  // SN · **清账失败必须有归宿：重试上限 + 超限转 `stuck`**（2026-10-21 · 第 334 轮 · **丙-1**）
+  // ══════════════════════════════════════════════════════════════
+  //
+  // ⚠⚠ **本组守的是哪一格**（`PROJECT-SURVEY-3` §6.3 丙-1，**唯一有盘上活证据的一条**）：
+  //   改前 `finalizeDelivery` 失败后**没有上限、没有转 `stuck` 的分支**，每轮对账重试、
+  //   每次把 `cleanupFailedAt` 刷成新时间戳 ⇒ **永不收敛**。
+  //   ⚠ 现场实证：一条记录**同时带 `deliveredAt` 与 `cleanupFailedAt`**，
+  //   后者比前者晚约 4035 秒（≈ 67 分钟）**仍在**，且它污染了「在等回传」那一行。
+  //
+  // ⚠⚠ **为什么必须上锁**：改前那一档**看起来一切正常** ——
+  //   「在等回传：1」这个数**没有错**（确实有一条没清掉），错的是**它永远不会变**。
+  //   ⚠ 没有断言的话，谁把计数或转档删掉，`check:all` **照样全绿**。
+  //
+  // ── 三档判据（成对，⛔ 缺一半不算）────────────────────────────────────
+  //   · **SN-a 中途档**：失败 3 次（未超限）⇒ 仍在"重试中"那一档，
+  //     读数带 `n/LIMIT`，且**不许**出现"已放弃重试"；
+  //   · **SN-b 到顶档**：失败到 `CLEANUP_RETRY_LIMIT` ⇒ 转 `stuck`，
+  //     读数带"已放弃重试"、**且仍明说"回执已送到"**（⛔ 不许与"判不出"混）；
+  //   · **SN-c 不该咬**：清账一次成功 ⇒ 该条**消失**、读数里**一行都不出现**。
+  //
+  // ⚠ 手法与 SD-f / SE 同款：**把 runtime 目录设只读**让写盘必然失败，
+  //   然后反复 `reconcile()` 把重试次数顶上去。⛔ 不去手工改盘上文件
+  //   （那正是"三个数的对账关系"会失真的地方）。
+  {
+    /** ⚠ 读一次状态行（人读输出）。 */
+    const snRender = async (h) => {
+      let out = ''
+      try {
+        out = String(await sdOrch.createHobOrchTools(h.orch).status.execute({}, {
+          agent: { id: h.owner, session: { header: { cwd: h.ws } } },
+        }))
+      } catch (e) { out = 'THROW: ' + String(e?.message ?? e) }
+      return out
+    }
+    /** ⚠ 读盘上那条记录的 `cleanupRetryCount` 与 `settleState`（**证据**，不是渲染）。 */
+    const snDisk = (h) => {
+      try {
+        const rows = JSON.parse(sdRf(h.file, 'utf8'))?.pending ?? []
+        const one = rows.find((r) => r.target === 'session-worker')
+        return one === undefined
+          ? { present: false, retries: undefined, state: undefined }
+          : { present: true, retries: one.cleanupRetryCount, state: one.settleState }
+      } catch { return { present: false, retries: undefined, state: undefined } }
+    }
+    /** ⚠ 造一份"送到了、但清账会失败"的现场，并把 runtime 锁成只读。 */
+    const snMountLocked = async () => {
+      const h = await sdMount({
+        pending: [sdRec({
+          deliveryAttemptAt: 1792250000050,
+          deliveredAt: 1792250000100,
+        })],
+        statuses: { 'session-worker': 'running' },
+        initiator: undefined,
+        lockRuntime: true,
+      })
+      const { dirname } = await import('node:path')
+      const { chmodSync } = await import('node:fs')
+      chmodSync(dirname(h.file), 0o555)
+      return h
+    }
+
+    // ── SN-a ⭐ **中途档：失败 3 次仍未超限 ⇒ 留在"重试中"** ──────────────
+    {
+      const h = await snMountLocked()
+      try {
+        /**
+         * ⚠ 反复对账把重试次数顶到 3 —— 但**远不到 LIMIT**。
+         *   ⚠ 每次都 `await h.wait(...)`：`finalizeDelivery` 是同步的，但对账本身是 async。
+         */
+        for (let i = 0; i < 2; i++) {
+          try { await h.orch.reconcile(`SN-a#${i + 1}`) } catch { /* 失败正是我们要的 */ }
+          await h.wait(60)
+        }
+        /**
+         * ⚠ **主判据读内存侧**（`st.watches`）：清账失败时**盘上写不进去**
+         *   （那正是"清账失败"的定义）⇒ 盘上那个 `cleanupRetryCount` 恒 `undefined`
+         *   ⇒ 若只看盘，本档会永远读不到计数。⚠ 这是本轮实测出来的必然，⛔ 不是将就。
+         */
+        const stA = h.orch.status({ self: h.owner })
+        const wA = stA.watches.find((x) => x.target === 'session-worker')
+        const d = { present: wA !== undefined, retries: wA?.cleanupRetryCount, state: wA?.settleState }
+        const rendered = await snRender(h)
+        const saysRetrying = /下一轮自动重试清账/.test(rendered)
+        const saysGaveUp = /已放弃重试/.test(rendered)
+        const saysCount = new RegExp(`第 \\d+/`).test(rendered)
+        if (!d.present) {
+          bad('SN-a 【失去靶子】盘上那条**已经不在** ⇒ 测不到"重试中"这一档'
+            + '（⚠ 这是判据自身失效，不按通过处理）')
+        } else if (saysGaveUp) {
+          bad('SN-a 【提前转档】只失败 3 次就印了"已放弃重试"'
+            + `（重试次数=${String(d.retries)} · 状态=${String(d.state)}）`
+            + '\n      ⇒ ⚠ 上限没生效或阈值写错：中途档不该显示"已放弃"')
+        } else if (saysRetrying && saysCount && (d.retries ?? 0) >= 1) {
+          ok('SN-a ✓ **中途档（未超限）**：清账连续失败 3 次 ⇒ 仍留在"重试中"，'
+            + `读数带次数（第 ${String(d.retries)}/? 次）且**没有**"已放弃重试"`
+            + ` ⇒ 与"已放弃"那一档**可分辨**（钉的是丙-1 的中间态）`)
+        } else {
+          bad('SN-a 【中途档读数不对】'
+            + `：重试次数=${String(d.retries)} · 状态=${String(d.state)}`
+            + ` · 说"下一轮自动重试"=${saysRetrying} · 说次数=${saysCount} · 说"已放弃"=${saysGaveUp}`)
+        }
+      } finally { try { h.unlock?.() } catch { /* 解锁失败不影响判定 */ } }
+    }
+
+    // ── SN-b ⭐⭐ **到顶档：失败到 LIMIT ⇒ 转 `stuck`、读数说"已放弃"** ──────
+    {
+      const h = await snMountLocked()
+      try {
+        /**
+         * ⚠ 把次数直接**预置到 LIMIT-1**（而不是真跑 19 轮对账）——
+         *   每一轮对账都要等一个 async 周期，19 轮会把本族拖慢十几秒。
+         *   ⚠ **预置的是"次数"这个既有事实**，⛔ 不是伪造结论：再失败一次就必然到顶。
+         *   ⚠ 预置通过**盘上文件**（`sdWf`），与真跑 19 轮等价 —— 因为判据只读这个数。
+         */
+        /**
+         * ⚠ **从源码里现读上限值**（⛔ 不硬编码 20 —— 那会变成第二份会漂的东西）。
+         *   ⚠ 读法：`export const CLEANUP_RETRY_LIMIT = <数字>`。
+         *   ⚠ 读不到 ⇒ **本档判红**（⛔ 不许静默当成 20 —— 那会让"常量被改名"这件事不可见）。
+         */
+        const LIMIT = (() => {
+          try {
+            const src = sdRf(join(sdRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
+            const m = /export\s+const\s+CLEANUP_RETRY_LIMIT\s*=\s*(\d+)/.exec(src)
+            return m === null ? undefined : Number(m[1])
+          } catch { return undefined }
+        })()
+        if (LIMIT === undefined) {
+          bad('SN-b 【失去基准】读不到 `CLEANUP_RETRY_LIMIT`（`src/server/orch-state.ts` 里'
+            + ' `export const CLEANUP_RETRY_LIMIT = <数字>` 找不到）⇒ 本档测不到"到顶转档"'
+            + '\n      ⇒ ⚠ 判据自身失效，⛔ 不按通过处理（也不许硬编码一个数顶替）')
+        } else {
+        /**
+         * ⚠⚠ **为什么这里必须"真跑"而不能预置次数**（本轮实测）：清账失败 = **盘写不进去**
+         *   ⇒ 预置到盘上的 `cleanupRetryCount` 读不回来（1 轮之后就被内存的 `max()` 覆盖），
+         *   而**内存侧计数是本代唯一的计数器** ⇒ 只能靠真跑把它顶上去。
+         *   ⚠ 一轮 `reconcile` 可能触发**多次** `finalizeDelivery`（`ready-scan` + `T2`），
+         *   所以轮数上限给 `LIMIT + 10` 足够；⚠ 到顶后 `stuck` 会让对账**跳过**它（不再增长）。
+         */
+        let reached = false
+        for (let i = 0; i < LIMIT + 10; i++) {
+          try { await h.orch.reconcile(`SN-b#${i + 1}`) } catch { /* 失败正是我们要的 */ }
+          await h.wait(40)
+          const stI = h.orch.status({ self: h.owner })
+          const wI = stI.watches.find((x) => x.target === 'session-worker')
+          if (wI?.settleState === 'stuck') { reached = true; break }
+        }
+        const stB = h.orch.status({ self: h.owner })
+        const wB = stB.watches.find((x) => x.target === 'session-worker')
+        const d = { present: wB !== undefined, retries: wB?.cleanupRetryCount, state: wB?.settleState }
+        void reached
+        const rendered = await snRender(h)
+        const saysGaveUp = /已放弃重试/.test(rendered)
+        const saysDelivered = /回执\*\*已送到\*\*/.test(rendered)
+        const saysNotJudged = /不是"判不出"/.test(rendered)
+        if (!d.present) {
+          bad('SN-b 【失去靶子】盘上那条**已经不在** ⇒ 测不到"到顶转 stuck"'
+            + '（⚠ 判据自身失效，不按通过处理）')
+        } else if (d.state !== 'stuck') {
+          bad('SN-b 【没有转档】到顶之后 `settleState` 仍是 '
+            + `${String(d.state)}（应为 stuck · 重试次数=${String(d.retries)}/${LIMIT}）`
+            + '\n      ⇒ ⚠ 这就是丙-1 的病灶：**没有上限、没有归宿**，永远停在原档')
+        } else if (!(saysGaveUp && saysDelivered && saysNotJudged)) {
+          bad('SN-b 【转档了但读数是错的】'
+            + `state=${String(d.state)} · 说"已放弃重试"=${saysGaveUp}`
+            + ` · 说"回执已送到"=${saysDelivered} · 说"不是判不出"=${saysNotJudged}`
+            + '\n      ⇒ ⚠ 三件事必须都能分辨："已送到"（`deliveredAt` 在）'
+            + ' / "判不出"（`deliveredAt` 不在） / "已放弃重试"（`stuck` + 有 `deliveredAt`）')
+        } else {
+          ok('SN-b ✓ **到顶档**：清账失败到 '
+            + `${String(d.retries)}/${LIMIT} 次 ⇒ **转 \`stuck\`**，读数明写"已放弃重试"`
+            + '，**且同时**保留"回执已送到"与"不是判不出"两句'
+            + ' ⇒ ⛔ 不再是"永不收敛"，也⛔ 没把两种成因压成一句（钉的是丙-1 的归宿）')
+        }
+        }
+      } finally { try { h.unlock?.() } catch { /* 解锁失败不影响判定 */ } }
+    }
+
+    // ── SN-c ⭐ **不该咬：清账一次成功 ⇒ 该条消失，读数一行都不出现** ──────
+    {
+      const h = await sdMount({
+        pending: [sdRec({
+          deliveryAttemptAt: 1792250000050,
+          deliveredAt: 1792250000100,
+        })],
+        statuses: { 'session-worker': 'running' },
+        initiator: undefined,
+        /** ⚠ **不锁** runtime ⇒ 写盘会成功 ⇒ 清账成功。 */
+      })
+      try {
+        try { await h.orch.reconcile('SN-c') } catch { /* 记下来即可 */ }
+        await h.wait(120)
+        const d = snDisk(h)
+        const rendered = await snRender(h)
+        const saysAnything = /cleanupFailedAt|已放弃重试|下一轮自动重试清账/.test(rendered)
+        if (d.present) {
+          bad('SN-c 【没有清掉】清账本应成功（runtime 可写），而盘上那条**仍在**'
+            + `（重试次数=${String(d.retries)} · 状态=${String(d.state)}）`
+            + '\n      ⇒ ⚠ 这会退化成"永远在等回传"——正是丙-1 要治的那一格的反面')
+        } else if (saysAnything) {
+          bad('SN-c 【清了但读数没跟上】盘上已经没有那条，而状态行仍印着清账相关的句子'
+            + '\n      ⇒ ⚠ 读数与盘上事实不一致（`E-128` 同族）')
+        } else {
+          ok('SN-c ✓ **不该咬**：清账一次成功 ⇒ 该条**离开 pending**，'
+            + '状态行里**一行都不出现**（⛔ 没有"已放弃"、也没有"下一轮重试"）'
+            + ' ⇒ 正常路径与改前**逐字不变**（钉的是"新逻辑没有误伤成功路径"）')
+        }
+      } finally { try { h.unlock?.() } catch { /* 解锁失败不影响判定 */ } }
+    }
+  }
   try { sdRm(sdTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
 }
 

@@ -66,6 +66,7 @@ import {
   ORCH_STATE_FILENAME,
   ORCH_STATE_SUBDIR,
   STUCK_AFTER_RECHECKS,
+  CLEANUP_RETRY_LIMIT,
   bindSession,
   clearHandoffs,
   countLostByClass,
@@ -135,6 +136,11 @@ export interface Watch {
    *     读数里单列一档。有它 = "回执已送到，账没清掉"。
    */
   cleanupFailedAt?: number
+  /**
+   * ⚠⚠ **清账重试次数**（2026-10-21 · 第 334 轮 · **丙-1**）—— 见 `PersistedWatch` 同名字段。
+   *   ⚠ 单调递增、**⛔ 不因重试被刷新**；到 `CLEANUP_RETRY_LIMIT` 转 `stuck`。
+   */
+  cleanupRetryCount?: number
   /** 回传失败时的原因（有值 = 试过但没送回去）。 */
   error?: string
   /**
@@ -778,6 +784,7 @@ function toPersisted(w: Watch): PersistedWatch {
     ...(w.deliveryAttemptAt === undefined ? {} : { deliveryAttemptAt: w.deliveryAttemptAt }),
     ...(w.deliveredAt === undefined ? {} : { deliveredAt: w.deliveredAt }),
     ...(w.cleanupFailedAt === undefined ? {} : { cleanupFailedAt: w.cleanupFailedAt }),
+    ...(w.cleanupRetryCount === undefined ? {} : { cleanupRetryCount: w.cleanupRetryCount }),
     ...(w.settleState === undefined ? {} : { settleState: w.settleState }),
     ...(w.recheckCount === undefined ? {} : { recheckCount: w.recheckCount }),
     ...(w.lastRecheckAt === undefined ? {} : { lastRecheckAt: w.lastRecheckAt }),
@@ -1446,6 +1453,7 @@ export function apply(ctx: any): void {
             ...(w.deliveryAttemptAt === undefined ? {} : { deliveryAttemptAt: w.deliveryAttemptAt }),
             ...(w.deliveredAt === undefined ? {} : { deliveredAt: w.deliveredAt }),
             ...(w.cleanupFailedAt === undefined ? {} : { cleanupFailedAt: w.cleanupFailedAt }),
+    ...(w.cleanupRetryCount === undefined ? {} : { cleanupRetryCount: w.cleanupRetryCount }),
             /**
              * ── ⚠⚠ **修 W3**（2026-10-20 · `FINDINGS` P5 / `DESIGN` §4.2）──────────
              * 重挂时**必须**同时把"上一跳状态"记成 `running`。
@@ -2777,6 +2785,27 @@ export function apply(ctx: any): void {
      * ⚠ 上限：它只活在这一代（进程内），⛔ 不落盘 —— 落盘的那份证据是 `deliveredAt` 本身。
      */
     const settledKeys = new Map<string, number>()
+    /**
+     * ══════════════════════════════════════════════════════════════════════
+     * ⚠⚠ **清账重试次数的内存侧账**（2026-10-21 · 第 334 轮 · **丙-1**）
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * ── 为什么必须有内存这一份（现场实测的必然）──────────────────────────
+     *   ⚠ 清账失败的定义就是"**盘写不进去**"⇒ ⛔ 这时**无法把计数写到盘上**
+     *   （实测：把 runtime 设只读后连跑 4 轮对账，盘上 `cleanupRetryCount` **恒 `undefined`**）。
+     *   ⇒ 若只靠盘上那个字段，**计数永远不涨 ⇒ 上限永远触发不到 ⇒ 丙-1 照旧不收敛**。
+     *   ⇒ 现在**内存这一份才是计数器**（键 = `watchKey`，与 `settledKeys` 同形）；
+     *     盘上那个字段是**尽力而为**的留档（写得进去时就写，供跨代参考）。
+     *
+     * ── 为什么键用 `watchKey`（`target@at`）而不是 `target` ─────────────────
+     *   ⚠ 同一个 target 可能被**重新派发**（新一轮的活）⇒ 那是**另一条记录**、
+     *     它的清账失败应当**从 0 开始数**。用 `target` 会把上一轮的次数记到新一轮头上。
+     *
+     * ⚠ **进程重载 ⇒ 这份表清零**（与 `settledKeys` / `reported` 同款纪律）：
+     *   重载后**从 0 重新数**是可接受的 —— 每一代都有 `CLEANUP_RETRY_LIMIT` 次机会。
+     *   ⛔ 不试图把它持久化（那正是"写不进去还硬要写"的死循环）。
+     */
+    const cleanupRetries = new Map<string, number>()
 
     /**
      * 取**目标此刻的状态**（⚠ 这是"判得出/判不出"的唯一判据来源，⛔ 不猜）。
@@ -2939,6 +2968,8 @@ export function apply(ctx: any): void {
       })()
       if (absent === 'absent') {
         /** 盘上确实没有这一条 ⇒ 账清了（这是"成功"的唯一判据）。 */
+        /** ⚠ **清账成功 ⇒ 把这个键的重试计数一并丢掉**（⛔ 不许留着污染下一次）。 */
+        cleanupRetries.delete(watchKey(w))
         return true
       }
       /**
@@ -2948,15 +2979,77 @@ export function apply(ctx: any): void {
        *     盘上那条本来就在（这正是我们没清掉的那个状态）。
        */
       const stamp = Date.now()
-      const retry: Watch = { ...w, target: id, reported: true, cleanupFailedAt: stamp }
+      /**
+       * ══════════════════════════════════════════════════════════════════════
+       * ⚠⚠ **丙-1（2026-10-21 · 第 334 轮）：清账失败必须有个归宿**
+       * ══════════════════════════════════════════════════════════════════════
+       *
+       * ── 改前的病灶 ────────────────────────────────────────────────────────
+       *   这一支**只**把 `cleanupFailedAt` 刷成现在，**不计数、不设上限、不转档**
+       *   ⇒ 每轮对账发现"送到了但盘没清" ⇒ 再走一遍 `finalizeDelivery` ⇒
+       *     再把 `cleanupFailedAt` 刷新 ⇒ ⚠ **永远看起来"刚刚失败过一次"**
+       *   ⇒ **永不收敛**（现场：一条记录挂了约 67 分钟仍在）。
+       *
+       * ── 现在：计数 + 到顶转 `stuck` ───────────────────────────────────────
+       *   · `cleanupRetryCount` **单调递增**（⚠ 从**记录上的旧值** +1，⛔ 不是从 0 开始 ——
+       *     否则每轮都重置成 1，那与"不计数"没区别）；
+       *   · 到 `CLEANUP_RETRY_LIMIT` ⇒ **落 `settleState: 'stuck'`** 并**保留**
+       *     `cleanupFailedAt` + 失败原因（⛔ 不许清证据）；
+       *   · ⚠ `stuck` 的既有语义正好是"**停止自动重试 + 需人工裁**"
+       *     ⇒ ⛔ 没有引入第 4 个状态、⛔ 没改 `R2` 的三档定义。
+       *
+       * ── 为什么"送到"这个事实在转 `stuck` 之后**必须还看得见** ──────────────
+       *   ⚠ `stuck` 里既有"判不出目标跑完没有"的，也有"送到了但账清不掉"的 ——
+       *     **两种成因 ⛔ 不许印成同一句**。区分判据 = **`deliveredAt` 在不在**
+       *     （在 ⇒ 回执**已经送到**；不在 ⇒ 连送都没送到）。
+       */
+      /**
+       * ⚠⚠ **计数取三者中最保守的那个**（2026-10-21 · 第 334 轮 · **丙-1**）：
+       *   · 内存侧 `cleanupRetries`（⚠ **本代真正的计数器** —— 盘写不进去时只有它记得住）；
+       *   · 记录上的 `w.cleanupRetryCount`（上一次尽力写盘的留档 / 跨代带过来的）；
+       *   ⚠ 取 `max` 而不是 `??`：三者可能不同步（内存涨了但盘没写成），
+       *     **取大的那个才不会让计数倒退**（倒退 = 上限永远到不了 = 丙-1 复现）。
+       */
+      const key = watchKey(w)
+      const memRetries = cleanupRetries.get(key) ?? 0
+      const diskRetries = typeof w.cleanupRetryCount === 'number' && w.cleanupRetryCount > 0
+        ? w.cleanupRetryCount
+        : 0
+      const nextRetries = Math.max(memRetries, diskRetries) + 1
+      /** ⚠ 先更新内存侧 —— 它**一定能记下**（盘可能写不进去）。 */
+      cleanupRetries.set(key, nextRetries)
+      const giveUp = nextRetries >= CLEANUP_RETRY_LIMIT
+      const retry: Watch = {
+        ...w,
+        target: id,
+        reported: true,
+        cleanupFailedAt: stamp,
+        cleanupRetryCount: nextRetries,
+        ...(giveUp ? { settleState: 'stuck' as const } : {}),
+      }
       watches.set(id, retry)
       flushWatches()
-      svcCtx.logger?.warn?.(
-        `[${name}] **回执已投递成功，但账没清掉**（target=${id} · 触发=${why} · 盘上=${absent}）⇒`
-        + ' 该条仍留在 pending（带 `cleanupFailedAt`）。'
-        + ' ⚠ 下一轮对账**只重试清账、⛔ 不会重发回执**（所以不会重复送达）。'
-        + ' ⛔ 这不是"没送到"：送到是真的，清账失败才是真的。',
-      )
+      if (giveUp) {
+        /**
+         * ⚠ **到顶 ⇒ 换一句话说**（⛔ 不许再把"下一轮自动重试"印出来 —— 那已经不成立了）。
+         *   ⚠ 但**证据一个字不删**：`cleanupFailedAt` / `cleanupRetryCount` / `error` 全留着。
+         */
+        svcCtx.logger?.warn?.(
+          `[${name}] **回执已投递成功，但账重试 ${nextRetries} 次仍没清掉 ⇒ 已放弃重试、转 stuck**`
+          + `（target=${id} · 触发=${why} · 盘上=${absent}）`
+          + ' ⚠ **这不是"没送到"**：送到是真的（`deliveredAt` 在），清账失败才是真的。'
+          + ' ⚠ 也**不是"判不出"**：目标早已跑完、回执早已送达 —— 卡住的只有写盘。'
+          + ` ⇒ 需人工裁（先看磁盘空间 / 权限），⛔ 不要再等自动重试（已经停了）。`,
+        )
+      } else {
+        svcCtx.logger?.warn?.(
+          `[${name}] **回执已投递成功，但账没清掉**（target=${id} · 触发=${why} · 盘上=${absent}）⇒`
+          + ` 该条仍留在 pending（带 \`cleanupFailedAt\`，第 ${nextRetries}/${CLEANUP_RETRY_LIMIT} 次）`
+          + ` —— 到第 ${CLEANUP_RETRY_LIMIT} 次仍失败就转 stuck、不再自动重试。`
+          + ' ⚠ 下一轮对账**只重试清账、⛔ 不会重发回执**（所以不会重复送达）。'
+          + ' ⛔ 这不是"没送到"：送到是真的，清账失败才是真的。',
+        )
+      }
       return false
     }
 
@@ -3292,8 +3385,28 @@ export function apply(ctx: any): void {
                 ...(attemptAt === undefined ? {} : { deliveryAttemptAt: attemptAt }),
                 ...(deliveredAt === undefined ? {} : { deliveredAt }),
                 ...(cleanupAt === undefined ? {} : { cleanupFailedAt: cleanupAt }),
+                /**
+                 * ⚠ **丙-1**：重试次数**必须跨代继承**（⛔ 不许重建时归零）——
+                 *   否则每轮对账都从 1 开始计数，那与"不计数"逐字相同
+                 *   （正是改前"永远看起来刚刚失败过一次"的形态）。
+                 */
+                ...(typeof (memRec?.cleanupRetryCount ?? rec.cleanupRetryCount) === 'number'
+                  ? { cleanupRetryCount: (memRec?.cleanupRetryCount ?? rec.cleanupRetryCount) as number }
+                  : {}),
+                /**
+                 * ⚠ **已经转 `stuck` 的那一条，重建时也要保住 `stuck`** ——
+                 *   ⛔ 不许在 `revived` 里无脑写 `settleState: 'waiting'` 把它打回重试档
+                 *   （那会让"已放弃"在被读到一次之后又活过来）。
+                 */
                 lastStatus: 'running',
-                settleState: 'waiting',
+                /**
+                 * ⚠⚠ **`settleState` 只能在这里写一次**（2026-10-21 · 第 334 轮 · **丙-1** 现场踩到）：
+                 *   改前这一行是**硬编码** `settleState: 'waiting'`，而上面我又加了一个
+                 *   "保住 `stuck`"的展开 —— ⚠ **对象字面量里后面的键覆盖前面的**
+                 *   ⇒ 那个保护**被这一行悄悄吃掉了**（`stuck` 一读到就变回 `waiting`）。
+                 *   ⇒ 现在合并成**一个**表达式：已经 `stuck` 的保住 `stuck`，否则才是 `waiting`。
+                 */
+                settleState: (memRec?.settleState ?? rec.settleState) === 'stuck' ? 'stuck' : 'waiting',
               }
               watches.set(rec.target, revived)
               stateFileFor.set(rec.target, file)
@@ -4098,7 +4211,22 @@ export function createHobOrchTools(orch: HobOrchestrator): {
          */
         ...(w.cleanupFailedAt === undefined
           ? []
-          : ['⚠⚠ 回执**已送到**、但账没清掉（`cleanupFailedAt`）⇒ ⛔ 不用重派、也不会重发；下一轮自动重试清账']),
+          : [
+            /**
+             * ⚠ 判别式 = **`settleState === 'stuck'`**（不是"重试了多少次"）——
+             *   因为 `stuck` 是**已落盘的状态**，而次数只是过程量。
+             *   ⚠ 用次数判会在"刚好第 LIMIT 次但还没落盘"那一瞬给出错档。
+             */
+            w.settleState === 'stuck'
+              ? '⛔⛔ 回执**已送到**、但账重试 '
+                + `${w.cleanupRetryCount ?? CLEANUP_RETRY_LIMIT}/${CLEANUP_RETRY_LIMIT} 次仍没清掉`
+                + ' ⇒ **已放弃重试**（转 `stuck`）。⚠ ⛔ 不用重派（回执真的到了）；'
+                + '⚠ 也**不是"判不出"**（目标早跑完、回执早送到，卡住的只有写盘）。'
+                + ' ⇒ **需人工裁**：先看磁盘空间 / 权限，⛔ 别再等自动重试（已停）。'
+              : `⚠⚠ 回执**已送到**、但账没清掉（第 ${w.cleanupRetryCount ?? 1}/${CLEANUP_RETRY_LIMIT} 次）`
+                + ' ⇒ ⛔ 不用重派、也不会重发；下一轮自动重试清账'
+                + `（⚠ 到第 ${CLEANUP_RETRY_LIMIT} 次仍失败就转 stuck、不再自动重试）`,
+          ]),
       ].join(' · '))
       const hh = s.handoffs.map((h) => {
         const when = new Date(h.at).toLocaleString('zh-CN', { hour12: false })
