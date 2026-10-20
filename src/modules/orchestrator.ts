@@ -287,6 +287,29 @@ export interface OrchStatus {
    */
   unownedWatches?: number
   /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **乙-10（2026-10-21 · 第 332 轮）：`unownedWatches` 只数内存**
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 改前的病灶（`PROJECT-SURVEY-3` §6.2 乙-10）────────────────────────
+   *   `unownedWatches` 的取数面是 **`[...watches.values()]`（内存）**。
+   *   ⚠ 而盘上的 `unresolved` / `stuck` 记录里，**内存里没有对应 `watch`** 的那一部分
+   *   （重载后还没被认领 / 上一代留下的）**根本不在这摞里** ⇒ 那一档**会漏**。
+   *   ⇒ 更要命的是：**"这一档真的是 0" 与 "这一档我只看了内存"印成同一句** ——
+   *     读数看起来完整（`R2`「三档互斥且覆盖」在这一格不成立）。
+   *
+   * ── 现在：把"只看了内存"这件事**显式标出来** ──────────────────────────
+   *   本字段 = **盘上存在、而本进程内存里没有对应 watch 的未结算记录条数**。
+   *   ⚠ 它与 `unownedWatches` **不是同一个数、也不相加**（量纲不同）：
+   *     · `unownedWatches`：**内存里**那些 `owner` 缺失的 ⇒ 已知条数；
+   *     · 本字段：**内存里压根没有**的那些 ⇒ `unownedWatches` **看不见它们**。
+   *   ⇒ ⚠ 只有当本字段 **> 0** 时，"无归属"那一档才是**不完整**的
+   *     ⇒ 渲染层必须补一句"上面那个数**只覆盖内存**"。
+   *   ⚠ 正常档（内存与盘一致）⇒ 本字段为 `0` ⇒ **一个字都不多**
+   *     （与改前**逐字相同**，`TASK` 要求 3）。
+   */
+  unownedWatchesMemoryOnlyGap?: number
+  /**
    * ── ⚠⚠ **结算态三档**（2026-10-20 · 本单 B3 / B4 新增）──────────────────
    *
    * ⚠ 存在的唯一理由：`unresolved`（判不出、**下一次还会再核**）与
@@ -1853,9 +1876,34 @@ export function apply(ctx: any): void {
       relaysDone: number
       relaysBlocked: number
       unownedWatches: number
+      /** ⚠ **乙-10**：盘上有、内存里没有对应 watch 的未结算条数（正常档不出现）。 */
+      unownedWatchesMemoryOnlyGap?: number
       settleByState: Record<SettleState, number>
     } => {
       const all = [...watches.values()]
+      /**
+       * ⚠⚠ **乙-10 的核心读数：盘上有、内存里没有对应 watch 的未结算记录数**。
+       *   ⚠ **声明必须在 `self === undefined` 那条 return 之前** ——
+       *     那一条也要带这个数（它描述"内存看不全"，与"我是谁"无关）。
+       *   ⚠ **只读**：只 `readOrchState`，⛔ 不写盘；⛔ 不引入任何定时器
+       *     （就在既有 `status()` 的取数里顺手算）。
+       */
+      let memoryOnlyGap = 0
+      try {
+        /** ⚠ 内存里已知的 target 集（= `watches` 的键；`D4` 保证同一 target 至多一条）。 */
+        const memTargets = new Set<string>()
+        for (const w of all) memTargets.add(w.target)
+        for (const file of scanStateFiles(svcCtx)) {
+          const st = readOrchState(file)
+          /**
+           * ⚠ 只看**未结算**那摞（`pending`）—— `lost` 是"已判丢失"的留档，
+           *   不计入"在等回传"。
+           */
+          for (const pw of st.pending) {
+            if (!memTargets.has(pw.target)) memoryOnlyGap++
+          }
+        }
+      } catch { /* 盘读不到 ⇒ 缺口判不出 ⇒ 保持 0；⚠ 不许因此让 status() 抛 */ }
       if (self === undefined) {
         // ⚠ 判不出"我"是谁 ⇒ **只报无归属的那一部分**（⛔ 不许把全实例汇总当我的）
         return {
@@ -1866,6 +1914,8 @@ export function apply(ctx: any): void {
           relaysDone: 0,
           relaysBlocked: 0,
           unownedWatches: all.filter((w) => w.owner === undefined || w.owner === '').length,
+          /** ⚠ 即使判不出"我"是谁，这条缺口读数**照样给**（它描述的是"内存看不全"，与我无关）。 */
+          ...(memoryOnlyGap === 0 ? {} : { unownedWatchesMemoryOnlyGap: memoryOnlyGap }),
           /** ⚠ 判不出"我"是谁 ⇒ 三档一律 0，且渲染层**不许**把它们说成"没有"（B4 同款口径）。 */
           settleByState: { waiting: 0, unresolved: 0, stuck: 0 },
         }
@@ -1879,9 +1929,34 @@ export function apply(ctx: any): void {
       const handoffs: PersistedHandoff[] = []
       let lostTotal = 0
       const lostAcc: Record<LostClass, number> = { running: 0, idle: 0, unknown: 0 }
+      /**
+       * ⚠⚠ **乙-10（2026-10-21 · 第 332 轮）**：盘上有、而**内存里没有对应 watch** 的未结算记录。
+       *
+       * ── 为什么要数它 ──────────────────────────────────────────────────────
+       *   `unownedWatches` 的取数面是 `[...watches.values()]`（**内存**）。
+       *   ⇒ ⚠ 盘上那些 `unresolved` / `stuck` 的记录里，**内存里没有对应 `watch`** 的那一部分
+       *     （重载后还没被认领 / 上一代留下的）**根本不在这摞里** ⇒ "无归属"那一档**会漏**。
+       *   ⇒ 而读的人**看不出漏了**：`无归属：0 条` 与"我只看了内存、其实盘上还有"印成同一句。
+       *
+       * ── 判据：**怎么算"内存里没有对应 watch"** ────────────────────────────
+       *   ⚠ 按 **`target`（目标会话 id）** 对：内存里存着 `watches`（以 target 为键）。
+       *     盘上一条 pending 的 `target` **不在**那个键集里 ⇒ 它**没有**内存对应物。
+       *   ⚠ 为什么不用 `(target, cardId)` 之类的更细的键：内存的 `watches` **就是按 target 建的**
+       *     （`Map<string, Watch>`，`D4`「同一 target 至多一条未结算」是它的不变量）
+       *     ⇒ 用 target 对**正好与那条不变量同源**，⛔ 不另立一套更细的键。
+       *
+       * ⚠ **只读**：这里只 `readOrchState`，⛔ 不写盘（`TASK` 要求 2：`status()` 不许改成写盘）。
+       * ⚠ **不引入新定时器**：它就在既有的 `status()` 取数里算，零额外调度。
+       */
       try {
         for (const file of scanStateFiles(svcCtx)) {
           const st = readOrchState(file)
+          /**
+           * ⚠⚠ **缺口数已经在上面算过一遍了**（`memoryOnlyGap`，在 `self === undefined`
+           *   那条 return **之前**）—— ⛔ 这里**不许再数一次**，否则同一个文件被数两遍
+           *   （实测：一条 pending 会印成 `2`）。
+           *   ⚠ 两处必须共用**同一个** `memoryOnlyGap`（一次算、两处用，`E-160` 同族纪律）。
+           */
           for (const h of st.handoffs) if (h.owner === self) handoffs.push(h)
           const mineLost = st.lost.filter((w) => w.owner === self)
           lostTotal += mineLost.length
@@ -1921,6 +1996,11 @@ export function apply(ctx: any): void {
         relaysDone: relaysByOwner.done.get(self) ?? 0,
         relaysBlocked: relaysByOwner.blocked.get(self) ?? 0,
         unownedWatches: all.filter((w) => w.owner === undefined || w.owner === '').length,
+        /**
+         * ⚠ **正常档不带这个字段**（`0` ⇒ 不出现）⇒ 渲染层一个字都不多，
+         *   与改前**逐字相同**（`TASK` 要求 3）。
+         */
+        ...(memoryOnlyGap === 0 ? {} : { unownedWatchesMemoryOnlyGap: memoryOnlyGap }),
       }
     }
 
@@ -2255,6 +2335,13 @@ export function apply(ctx: any): void {
           },
           // ⚠ 无归属**单列一档**（判不出 ≠ 归我，也 ≠ 别人的）
           unownedWatches: mine.unownedWatches,
+          /**
+           * ⚠ **乙-10**：正常档 `memoryOnlyGap === 0` ⇒ 字段不出现 ⇒ 渲染层**一个字都不多**
+           *   （与改前逐字相同）。
+           */
+          ...(mine.unownedWatchesMemoryOnlyGap === undefined
+            ? {}
+            : { unownedWatchesMemoryOnlyGap: mine.unownedWatchesMemoryOnlyGap }),
         }
       },
 
@@ -4152,11 +4239,46 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         ...(s.others === undefined || s.others.watches === 0
           ? []
           : [`  ↳ ${s.others.note}：${s.others.watches} 条`]),
+        /**
+         * ══════════════════════════════════════════════════════════════════
+         * ⚠⚠ **乙-10（2026-10-21 · 第 332 轮）：「无归属」这一档必须能分辨「真 0」与「只看了内存」**
+         * ══════════════════════════════════════════════════════════════════
+         *
+         * ── 改前的病灶 ────────────────────────────────────────────────────
+         *   `unownedWatches` 只数**内存**（`[...watches.values()]`）。而盘上
+         *   **内存里没有对应 watch** 的未结算记录**不进这一摞** ⇒ 那一档会漏，
+         *   ⚠ 而 `无归属：0 条`（真 0）与"我只看了内存、其实盘上还有"**印成同一句**。
+         *
+         * ── 现在：**两行，且只在异常档** ──────────────────────────────────
+         *   · 第一行（既有行，一个字未改）：内存里那些 owner 缺失的条数；
+         *   · 第二行（**新增**，只在 `unownedWatchesMemoryOnlyGap > 0` 时）：盘上还有 N 条
+         *     内存里**没有对应 watch** ⇒ ⚠ 上数**只覆盖内存**。
+         *   ⚠ **`TASK` 限"最多两行新增"** —— 本批**只加了一行**。
+         *   ⚠ **正常档一个字都不多**：缺口为 0 ⇒ 第二行展开成 0 行 ⇒
+         *     输出与改前**逐字相同**。
+         *
+         * ── 覆盖性：新增那一档与既有三档**互斥**（判据见下）──────────────────
+         *   既有三档（`settleByState`）按**结算状态**分：`waiting` / `unresolved` / `stuck`。
+         *   本条按**取数面的完备性**分：`内存看得全` / `内存看不全`。
+         *   ⚠ 两者**维度不同** ⇒ 不是"新增第四档"，而是给既有读数**标注覆盖面**。
+         *   互斥判据：**同一条记录要么在内存里（计入既有三档）、要么不在（计入缺口）**
+         *     —— 对 `pending` 按 `target ∈ 内存键集` 二分，⛔ 不重叠、⛔ 不漏。
+         */
         ...(s.unownedWatches === undefined || s.unownedWatches === 0
           ? []
           : [`  ↳ ⚠ **无归属的在等回传：${s.unownedWatches} 条** —— 那些记录没有 owner`
             + '（旧文件缺字段 / 派发时判不出调用方）⇒ 它们的回执**不会**投给任何人；'
             + '⛔ 这不是"没有在等"，也⛔ 不是"归我"']),
+        /**
+         * ⚠ **只有缺口 > 0 时才出**（正常档 ⇒ 0 行，与改前逐字相同）。
+         *   ⚠ 它**不进 `unownedWatches` 的计数**（量纲不同、⛔ 不可相加）——
+         *     只声明"上数只覆盖内存"。
+         */
+        ...(s.unownedWatchesMemoryOnlyGap === undefined || s.unownedWatchesMemoryOnlyGap === 0
+          ? []
+          : [`  ↳ ⚠⚠ **盘上另有 ${s.unownedWatchesMemoryOnlyGap} 条未结算记录，本进程内存里没有对应 watch**`
+            + ' ⇒ 上面"无归属"那个数**只覆盖内存**（⛔ 别把它读成"盘上也干净"）；'
+            + '⚠ 成因：重载后还没被认领 / 上一代留下的（本进程只看得见自己的 `watches`）']),
       ].join('\n')
     },
   })

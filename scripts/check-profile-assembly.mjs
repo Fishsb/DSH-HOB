@@ -39,7 +39,7 @@
  *   `npm run check:profile -- --fix`     判 + **自动补回**丢失的 bundles 行（⚠ 会写盘，先备份）
  *   `npm run check:profile -- --all`     检查 `$DSH_HOME/profiles/*` 下**所有** profile
  */
-import { copyFileSync, existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -195,6 +195,31 @@ function notJudged(line, why, cause = 'no-dep') {
  * 记一条**不成立、且计入判定**（= 真红）。
  * ⚠ 调用者**必须**已确认它该装；否则走 `notJudged()`（本函数自带防线，见下）。
  */
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * ⚠⚠ **`badDanglingDep()`：绕过资格门的红**（2026-10-21 · 第 332 轮 · **乙-8**）
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * ── 为什么需要一条**独立通道** ─────────────────────────────────────────
+ *   `bad()` 自带一道防线（上面那段）：`CURRENT_QUALIFIES === false` ⇒ **降级成 `·`**。
+ *   而乙-8 要治的**恰恰是**"资格判据为假"的那一格：
+ *     ⚠ **`node_modules/<本包>` 在**（它被装过）+ **`dependencies` 里没有它**
+ *     ⇒ 资格判据说"不参与判定" ⇒ 走 `bad()` 会被降级 ⇒ **红不起来**（这正是"恒不红"的根）。
+ *
+ *   ⇒ 这一档的**判定依据不是 `dependencies`**，而是**盘上的装配痕迹**
+ *     （见 `hasAssemblyTrace`：那是 `dsh plugin add` / `pnpm install` 留下的物理结果，
+ *      与 `package.json` 里那行声明**互相独立**）。
+ *   ⇒ 它**确实是被判定者**（有对象、有判据、且判据不成立）⇒ 必须绕过那道门、真的计数。
+ *
+ * ⚠ ⛔ **只给这一种情形用**：本函数是**窄口**，⛔ 不许拿它去印别的红
+ *   （否则就等于把 `bad()` 那道防线整个拆了）。
+ */
+function badDanglingDep(line, why) {
+  badCount++
+  console.log(`  ✗ ${line}`)
+  if (why !== undefined) console.log(`      ⇒ ${why}`)
+}
+
 function bad(line, why) {
   if (!CURRENT_QUALIFIES) {
     /**
@@ -224,6 +249,52 @@ function ok(line) {
 }
 
 /** 解析出本包的真身（⚠ 抛错由调用方落判不出）。 */
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * ⚠⚠ **"该装"的客观依据：盘上的装配痕迹**（2026-10-21 · 第 332 轮 · **乙-8**）
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * ── 为什么需要它 ──────────────────────────────────────────────────────
+ *   资格判据（`CURRENT_QUALIFIES`）是 **`dependencies` 里有没有本包**。
+ *   ⚠ 一个**装过、却把 `dependencies` 那行丢了**的 profile，会**恰好**满足
+ *   "不参与判定" ⇒ 整格掉出判据面、`exit 0` ⇒ **它掉行时没有任何东西会响**。
+ *
+ * ── 为什么用 `node_modules/<本包>` 而不是一份期望清单 ────────────────────
+ *   本文件 `:1152` 已明令「⛔ 不另立一份**会漂**的期望清单来补」。而
+ *   `node_modules/dsh-hob` 是**装过的物理结果**：由 `dsh plugin add` / `pnpm install`
+ *   写下，**与 `package.json` 里那行声明互相独立** —— 那行正是可能被误删的东西。
+ *   ⇒ 痕迹**在** = 它被装过；`dependencies` **不在** = 它不再声明 ⇒ **两者矛盾 = 真缺陷**。
+ *   ⇒ 痕迹**也不在** = 它确实从没装过 ⇒ 维持原样（`·` + 不参与判定）。
+ *
+ * ⚠ **只读**（`existsSync` / `lstatSync`），⛔ 不装包、⛔ 不跑 `pnpm`、⛔ 不动 `node_modules`
+ *   —— 与文件头第 30 行那条纪律一致。
+ *
+ * @param profileDir - `<DSH_HOME>/profiles/<name>`（⚠ 由调用方给，⛔ 不在这里重算）。
+ * @returns `{ present, how, where }` —— `how` 说清是软链还是实体目录，`where` 是绝对路径。
+ */
+function hasAssemblyTrace(profileDir) {
+  const where = join(profileDir, 'node_modules', SELF_NAME)
+  if (typeof profileDir !== 'string' || profileDir === '') {
+    return { present: false, how: '目录判不出', where: '(空)' }
+  }
+  try {
+    if (!existsSync(where)) return { present: false, how: '不存在', where }
+    /** ⚠ 软链与实体目录**都算痕迹**（`link:` 依赖装出来就是软链）。 */
+    const st = lstatSync(where)
+    const how = st.isSymbolicLink()
+      ? `软链 → ${(() => { try { return realpathSync(where) } catch { return '(读不到目标)' } })()}`
+      : (st.isDirectory() ? '实体目录' : '存在但既非目录也非软链')
+    return { present: true, how, where }
+  } catch (e) {
+    /**
+     * ⚠ **读不出来 ⇒ 不当作"没有痕迹"**：那会把"判不出"静默算成"没装过"，
+     *   正好把这个新判据变成又一个"恒不红"。⇒ 记成 `present:false` 但 `how` 明说读不到
+     *   —— 调用方那一支会印出成因（⛔ 不静默）。
+     */
+    return { present: false, how: `读不到（${String(e?.message ?? e)}）`, where }
+  }
+}
+
 function resolveSelf(manifestPath) {
   const req = createRequire(manifestPath)
   return realpathSync(req.resolve(SELF_NAME))
@@ -701,10 +772,62 @@ for (const profile of names) {
      *   ⇒ 现在"修不了"这件事**在只判的那一遍就说出来**。
      * ⚠ 本单 A 改判之后：这种情况**不参与判定**（没依赖 = 不该装），但**仍然把话说出来**
      *   —— 万一是"该装却连依赖都没了"，这句话是唯一线索（⛔ 不许静默）。
+     *
+     * ══════════════════════════════════════════════════════════════════════
+     * ⚠⚠ **乙-8（2026-10-21 · 第 332 轮）：这一档原来"恒不红"**
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * ── 改前的病灶（`PROJECT-SURVEY-3` §6.2 乙-8）────────────────────────
+     *   资格判据是 **`dependencies` 里有没有本包**。⇒ 一个**本该装、却连
+     *   `dependencies` 整段都没了**的 profile，**恰好**同时满足"不参与判定"
+     *   ⇒ ⚠ 它掉出判据面，`exit 0`，上面那句 `·` 只是**印刷品**。
+     *   ⚠ 而文件本来自陈过这一点（`:1152`「代价是"本该装却连依赖都没加"**不会红**」）
+     *     —— 那是**诚实的设计取舍**，⛔ 不是隐瞒。本批要做的是**把它变成可见**。
+     *
+     * ── "该装"的客观依据：**盘上的装配痕迹**，⛔ 不是一份期望清单 ──────────
+     *   ⚠ 文件 `:1152` 明令「⛔ 不另立一份**会漂**的期望清单来补」。所以这里**不改**那条裁定，
+     *     而是去找一个**已经存在、且不依赖 `dependencies`** 的事实：
+     *       **`<profile>/node_modules/dsh-hob` 在不在**（软链 / 目录都算）。
+     *   ⚠ 为什么这个事实成立："包**已经被装进这个 profile**"是**装过**的物理结果 ——
+     *     它由 `dsh plugin add` / `pnpm install` 写下，**与 `package.json` 里那行声明无关**
+     *     （那行正是可能被误删的东西）。
+     *   ⇒ **痕迹在、而 `dependencies` 没了** = "它被装过、却不再声明" ⇒ **这是真缺陷** ⇒ `bad`（`exit 1`）。
+     *   ⇒ **痕迹也不在** = 它确实从没装过 ⇒ 维持原样（`·` + 不参与判定，⛔ 一个字不改）。
+     *
+     * ── 为什么是 `bad`（`1`）而不是 `2` ────────────────────────────────────
+     *   `2` 的语义是"**没有对象**"。而这里**有对象**：那个 profile 上确实装着本包
+     *   （`node_modules/dsh-hob` 就在那儿）、盘上也确实有一份清单
+     *   ⇒ 有对象、有判据、且**判据不成立**（装过的包不该没有依赖声明）
+     *   ⇒ `1`（查了、不过）。⚠ 用 `2` 会把"该修"说成"没东西可查"，让人不去修。
+     *
+     * ── ⛔ 不动既有语义（要求 2）─────────────────────────────────────────
+     *   `idle` / `emptydir` 那几档的 `·` + 原因说明**一个字未改**；
+     *   只有"**痕迹在、依赖不在**"这一种新情形才走 `bad`。
      */
-    console.log(`  · D · profile "${profile}"：**没法自动修** —— \`dependencies\` 里也没有 ${SELF_NAME}`
-      + '（⚠ 补进 bundles 也解析不了）；⚠ 没声明依赖 ⇒ **不参与判定**，'
-      + `但若它本该装，先 \`dsh plugin --profile ${profile} add ${root}\``)
+    const assemblyTrace = hasAssemblyTrace(dir)
+    if (assemblyTrace.present) {
+      /**
+       * ⚠ **同时把它记进"被判定者"**：否则汇总句「**N 个被判定 profile**」里没有它，
+       *   而它明明被判红了 ⇒ **主部与数字对不上**（`TASK-2` §1-A-2 治过同一形态）。
+       *   ⚠ 判据是"**盘上有装配痕迹**"（⛔ 不是 `dependencies`）。
+       */
+      if (!QUALIFIED.includes(profile)) QUALIFIED.push(profile)
+      badDanglingDep(`D · profile "${profile}"：**该装却没声明依赖** —— `
+        + `\`node_modules/${SELF_NAME}\` **在**（${assemblyTrace.how}），而 \`dependencies\` 里没有它`
+        + `\n      ⇒ 盘上证据：${assemblyTrace.where}`
+        + '\n      ⇒ ⚠ 这不是"本来就不该装"：包**已经被装进这个 profile**，'
+        + '而 `package.json` 的 `dependencies` 里已经没有那行'
+        + '\n      ⇒ 后果：`bundles` 掉行时**没有任何判据会看见**（资格判据正是那行依赖）'
+        + `\n      ⇒ 修法：\`dsh plugin --profile ${profile} add ${root}\`（把依赖声明补回来）`,
+        '⚠ 改前这一档**恒不红**：它同时满足"没声明依赖 ⇒ 不参与判定"，于是整格掉出判据面。'
+        + ' ⚠ 现在用**盘上的装配痕迹**（`node_modules/dsh-hob`）当"该装"的客观依据 ——'
+        + ' 那条痕迹与 `package.json` 里那行声明**互相独立**，所以不会被同一处误删带走。')
+    } else {
+      console.log(`  · D · profile "${profile}"：**没法自动修** —— \`dependencies\` 里也没有 ${SELF_NAME}`
+        + '（⚠ 补进 bundles 也解析不了）；⚠ 没声明依赖 ⇒ **不参与判定**，'
+        + `但若它本该装，先 \`dsh plugin --profile ${profile} add ${root}\``
+        + `（⚠ 已核：\`node_modules/${SELF_NAME}\` **也不在** ⇒ 它确实没装过，不是"该装却掉线"）`)
+    }
   } else if (!declared) {
     console.log(`  ⚠ D · profile "${profile}"：可以自动修 —— 跑 \`npm run check:profile -- --fix`
       + `${NAMED === null ? '' : ` --profile ${profile}`}\`（⚠ 会写盘，先备份；⚠ 之后**必须重启宿主**）`)
@@ -755,7 +878,20 @@ if (ARGV.includes('--self-check')) {
     if (!pass) scBad++
   }
   /** 造一个假 profile 目录（⚠ 全部落在系统临时区，⛔ 不碰真 profile）。 */
-  const mkProfile = (bundlesHasSelf, depsHasSelf) => {
+  /**
+   * 造一个假 profile 目录。
+   *
+   * @param bundlesHasSelf - `bundles` 里有没有本包。
+   * @param depsHasSelf    - `dependencies` 里有没有本包。
+   * @param trace          - ⚠⚠ **乙-8（第 332 轮）新增**：要不要造**装配痕迹**
+   *   （`node_modules/<本包>` 软链）。
+   *   ⚠ **为什么必须可关**：第 332 轮把"**痕迹在、依赖不在**"判成 `bad`（那正是乙-8 要治的格）。
+   *     而下面 P-3 测的是"**从没装过**"那一格 —— 若夹具无条件造痕迹，
+   *     P-3 的场景就**不再是"从没装过"**了（它会被新判据判红）。
+   *     ⇒ ⚠ 两个场景在**同一个 `(false,false)` 入参**下无法区分，必须靠这个开关分开。
+   *   ⚠ 缺省 `true`（照旧造）⇒ **既有 8 条断言的夹具行为一个字未变**。
+   */
+  const mkProfile = (bundlesHasSelf, depsHasSelf, trace = true) => {
     const base = mkdtempSync(join(tmpdir(), 'hob-prof-'))
     MADE.push(base)
     const dir = join(base, 'profiles', 'web')
@@ -769,11 +905,13 @@ if (ARGV.includes('--self-check')) {
      *   ⚠⚠ **父目录必须先建**（2026-10-20 自检 P-1/P-4 抓到：`symlinkSync` 不会替你建中间目录，
      *   于是软链**静默失败**、解析面一律红 —— 那会让自检"看起来在测，其实测的是环境缺件")。
      */
-    try {
-      mkdirSync(join(dir, 'node_modules'), { recursive: true })
-      symlinkSync(root, join(dir, 'node_modules', SELF_NAME), 'dir')
-    } catch (e) {
-      throw new Error(`自检夹具造不出 node_modules：${String(e?.message ?? e)}`)
+    if (trace) {
+      try {
+        mkdirSync(join(dir, 'node_modules'), { recursive: true })
+        symlinkSync(root, join(dir, 'node_modules', SELF_NAME), 'dir')
+      } catch (e) {
+        throw new Error(`自检夹具造不出 node_modules：${String(e?.message ?? e)}`)
+      }
     }
     return base
   }
@@ -804,7 +942,7 @@ if (ARGV.includes('--self-check')) {
   //     ⇒ 它**不参与判定**，而"一个被判定者都没有"必须是 **未执行**（⛔ 不许算通过）。
   //   ⚠ 仍然要**照实把话说出来**（"没法自动修"那句必须在），⛔ 不许静默。
   {
-    const h = mkProfile(false, false)
+    const h = mkProfile(false, false, false)
     const r = run(h, [])
     const saysNoAutoFix = r.stdout.includes('没法自动修')
     const saysNotJudged = r.stdout.includes('不参与判定')
@@ -862,12 +1000,21 @@ if (ARGV.includes('--self-check')) {
         dsh: { profile: { bundles: bundlesHasSelf ? [SELF_NAME] : ['base'] } },
       }, null, 2) + '\n', 'utf8')
       /**
-       * ⚠⚠ **两个 profile 都要能解析**（2026-10-20 自检 P-5 抓到）：
-       *   只给 `web` 造 `node_modules` ⇒ `headless` 会因为**解析面**红而红
-       *   ⇒ 测到的就不是"非目标掉行不拉红"这一条（那是**假靶子**）。
+       * ⚠⚠ **只给"有依赖"的那个造 `node_modules`**（2026-10-21 · 第 332 轮乙-8 订正）：
+       *
+       *   改前这里**两个 profile 都造**，理由是"只给 web 造 ⇒ headless 会因为解析面红而红"。
+       *   ⚠ 那条理由在当时成立（解析面 C 只在 `declared && hasDep` 时才判，headless 不进 C），
+       *     但**第 332 轮加了乙-8 之后它就不成立了**：
+       *     ⚠ `headless` 既没依赖、又**有装配痕迹** ⇒ 那恰好命中"**该装却没声明依赖**" ⇒ 红。
+       *     ⚠ 而 P-5 要测的是"**没声明依赖 = 本来就不该装**"那一格 ——
+       *       给它造痕迹等于把它**改造成了另一个场景**（假靶子）。
+       *   ⇒ 现在：**有依赖的才造痕迹**（`web`）。`headless` 没有痕迹 ⇒ 它确实"从没装过"
+       *     ⇒ 走 `·` + 不参与判定，与 P-5 的意图一致。
        */
-      mkdirSync(join(dir, 'node_modules'), { recursive: true })
-      symlinkSync(root, join(dir, 'node_modules', SELF_NAME), 'dir')
+      if (depsHasSelf) {
+        mkdirSync(join(dir, 'node_modules'), { recursive: true })
+        symlinkSync(root, join(dir, 'node_modules', SELF_NAME), 'dir')
+      }
     }
     const r = run(base, ['--all'])
     /**
@@ -1058,6 +1205,42 @@ if (ARGV.includes('--self-check')) {
       + ` · broken 有 ✗=${brokenCross}（应 true）· 加 broken 后 exit=${r2.status}（应 1）`
       + ` · broken 在时 emptydir 仍可见=${stillVisible}`)
   }
+  // ⑩ ⭐⭐ **乙-8：`node_modules` 痕迹在、`dependencies` 没了 ⇒ 必须红**（第 332 轮）
+  //
+  //   ⚠ 守的是那一格：**"本该装却连 dependencies 都没了"从判据面上消失**。
+  //     改前资格判据就是 `dependencies` ⇒ 那行一删，这个 profile **恰好**变成"不参与判定"
+  //     ⇒ exit 0，而它掉行时没有任何东西会看见。
+  //   ⚠ 判据两条**成对**（⛔ 只测一条会退化成"永远红"或"永远绿"）：
+  //     ① **痕迹在 + 依赖不在** ⇒ 必须 `✗` 且 `exit 1`（点名"该装却没声明依赖"）；
+  //     ② **痕迹也不在 + 依赖不在** ⇒ 必须仍是 `·` / `exit 2`（⛔ 不许误伤"本来就不该装"）。
+  //     ⚠ 两者用**同一个 `mkProfile(false,false)` 入参**，唯一差别就是第三参数 `trace` ——
+  //       这正是"痕迹"这个客观依据在起作用的证明。
+  {
+    /** ① 痕迹在、依赖不在 ⇒ 必须红（点名 + exit 1） */
+    const h1 = mkProfile(false, false, true)
+    const r1 = run(h1, [])
+    const namesDangling = /该装却没声明依赖/.test(r1.stdout)
+    const namesTrace = new RegExp(`node_modules/${SELF_NAME}`).test(r1.stdout)
+    const hasCross = r1.stdout.split('\n').some((l) => l.trim().startsWith('✗'))
+    /**
+     * ② 痕迹也不在 ⇒ 必须维持原样（`·` + "不参与判定" + exit 2，⛔ 不许误伤）。
+     *   ⚠ 这一条与上面 P-3 用的是**同一形态**，但这里**显式并列** ——
+     *     它是"新判据不过咬"的反证，⛔ 不能只靠 P-3 间接担保。
+     */
+    const h2 = mkProfile(false, false, false)
+    const r2 = run(h2, [])
+    const stillNotJudged = r2.stdout.includes('不参与判定') && r2.status === 2
+    const noFalseCross = !r2.stdout.split('\n').some((l) => l.trim().startsWith('✗'))
+
+    say(r1.status === 1 && namesDangling && namesTrace && hasCross && stillNotJudged && noFalseCross,
+      'P-10 ✓ **乙-8**：`node_modules` 痕迹**在**、`dependencies` 没了 ⇒ **必须红（exit 1）**并点名；'
+      + '⚠ 反证：痕迹**也不在** ⇒ 仍是 `·` / `exit 2`（⛔ 没误伤"本来就不该装"的那一档）；'
+      + '⚠ 两者入参相同，唯一差别就是"有没有装配痕迹" ⇒ 证明这条新判据真的接在痕迹上',
+      `① 痕迹在: exit=${r1.status}（应 1）· 点名"该装却没声明依赖"=${namesDangling}`
+      + ` · 点名 node_modules=${namesTrace} · 有 ✗=${hasCross}`
+      + ` ‖ ② 痕迹不在: exit=${r2.status}（应 2）· 说"不参与判定"=${stillNotJudged}`
+      + ` · 无 ✗=${noFalseCross}`)
+  }
   console.log('')
   /** ⚠ **无论如何都清**（失败路径也清 —— `TASK` §1-C 的硬要求）。 */
   cleanupAll()
@@ -1065,7 +1248,7 @@ if (ARGV.includes('--self-check')) {
     + `${cleaned.fail > 0 ? `、**⚠ ${cleaned.fail} 个没清掉**` : '（全部清净）'}`)
   console.log('')
   if (scBad === 0) {
-    console.log('判定：**PASS** —— 装配面判据自检 9 条全过。')
+    console.log('判定：**PASS** —— 装配面判据自检 10 条全过。')
     process.exit(0)
   }
   console.log(`判定：**FAIL**（${scBad} 条）—— 装配面判据自身不成立。`)
