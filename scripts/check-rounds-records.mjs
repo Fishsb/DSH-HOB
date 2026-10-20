@@ -369,6 +369,44 @@ export function surfaceGuard(ev, everSize) {
   const blobs = Number(ev?.blobs ?? 0)
   const parsed = Number(ev?.parsedBlobs ?? 0)
   const revs = Number(ev?.revs ?? 0)
+  /**
+   * ⚠⚠ **命中 0 个 blob ⇒ 取数面整个塌了，⛔ 不许当"历史干净"**（2026-10-21 · 第 322 轮 · 甲-4）——
+   *
+   * ── 改前是什么（本项目头号禁忌：**让失败不可观测**）────────────────────
+   *   下面两条守卫**都**以 `blobs > 0` 为前提（`:blobs > 0 && parsed === 0` ·
+   *   `blobs > 0 && everSize === 0`）⇒ ⚠ `blobs === 0` 时**两条都不成立**
+   *   ⇒ `surfaceGuard` 返回 `null` ⇒ 差集**恒空**（历史集是空集）
+   *   ⇒ 判定行照打 **PASS**。⚠ 而实测形态就是：`git rev-list` 失败（`tryGit` 返回 `null`）
+   *   ⇒ `everSeen()` 早退 `{blobs:0}` ⇒ **整族纪律可以静默失效而不响一声**。
+   *
+   * ── 为什么落 `bad`（FAIL）而**不是** `exit 2`（本批二选一的裁决）──────────
+   *   ⚠ TASK 给了两条路（`bad` / `exit 2`），**必须选一条并说理由**。选 `bad`：
+   *   ① **"账本仓可以不是 git 仓"这个前提在本项目不成立** —— 实测账本区
+   *      `/home/lk/.dsh/hob-ledgers/dsh-hob` 是 git 仓（`rev-parse --is-inside-work-tree` = `true`、
+   *      `rev-list --all --count` = **446**）。本脚本的**全部**取数面（`everSeen` / `atNow` /
+   *      `countCommits` / `shaExists`）都走 git；若不是 git 仓，本检查**一条判据都执行不了**，
+   *      那属于"基准缺失"。
+   *   ② **"基准缺失"在入口已经单独分档**：`main` 里 `ledgerRoot === undefined` ⇒ `exit 2`
+   *      （见文件尾 `判定：**未执行**`）。⚠ 能走到 `runCheck` 说明**账本区存在**，
+   *      那么这里发生的就是"账本在、但取数面塌了" —— 那是**判据失效**，⛔ 不是"没执行"。
+   *      两种故障分在两个地方判，比混成同一个退出码更有分辨力。
+   *   ③ **与同函数既有两条同族**：它俩都返回可读 bad 文案 ⇒ 由 `runCheck` 汇进 `bad[]` ⇒ FAIL。
+   *      把同一个函数的三条判据拆成两种退出语义，读的人要同时记两套，容易漏。
+   *   ④ **`bad` 在聚合入口里更刺眼**：`check-all.mjs` 把 `exit 1` 归 `failed`（红），
+   *      把 `exit≠0/1` 归 `notRun`（"没替你检查任何东西"的提示）。本批主题是
+   *      "让失败不可观测"⇒ 宁可红得难看，不要"未执行"被当成"跳过了也无所谓"。
+   *   ⚠ ⛔ **不许"既不红也不退 2"**（TASK 明令）：本行之后没有任何 `blobs === 0` 的静默放行口。
+   */
+  if (blobs === 0) {
+    return '✗ **历史取数面整个塌了**（⛔ "命中 0 个 blob"不许当"历史干净"）：'
+      + `\n      ⇒ 扫描提交 ${revs} 个 · **命中载体 blob 0 个** · 真解析出 ${parsed} 个 · 标识并集 ${everSize} 个`
+      + '\n      ⇒ ⚠ 成因通常是 `git rev-list --all --objects` **失败**（`tryGit` 返回 `null`）'
+      + ' —— 账本区不是 git 仓、或 git 不可用、或 HEAD 还没有任何载体提交'
+      + '\n      ⇒ ⚠ 此时"历史集"是**空集** ⇒ 差集**必然**为空 ⇒ 下面那条 PASS **一个字都不算数**'
+      + '\n      ⇒ ⛔ 这正是本批要治的形态（E-126 假绿）：判据绿着，而它**一行都没在跑**'
+      + '\n      ⇒ 修法：确认账本区是 git 仓且 `git rev-list --all` 能列出提交；'
+      + '若确属"还没有历史"的新仓 ⇒ 本条按"尚未建立基准"待人工确认，⛔ 不许改成静默通过'
+  }
   if (blobs > 0 && parsed === 0) {
     return '✗ **历史取数面没有真的在跑**（⚠ 差集即便是空的也不代表通过）：'
       + `\n      ⇒ 扫描提交 ${revs} 个 · 历史 blob 命中 **${blobs} 个** · **真解析出 ${parsed} 个** · 标识并集 ${everSize} 个`
@@ -624,6 +662,32 @@ function selfTest() {
     readings.push({ label: '⑤ 对照：取数面健康（命中 231 · 解析 231 · 并集 243）', expect: '不咬（null）',
       got: ok5 ? '未咬（正确）' : '误咬（判据过咬）', pass: ok5 })
     if (!ok5) failed++
+
+    /**
+     * ⚠ ⚠ **④-b 取数面整个塌了（命中 0 个 blob）⇒ 必须红**（2026-10-21 · 第 322 轮 · **甲-4**）
+     *
+     * ⚠ 本档在对拍的是**改动前那个假绿**：`blobs === 0` 时下面两条守卫（都要求 `blobs > 0`）
+     *   一条都不成立 ⇒ `surfaceGuard` 返回 `null` ⇒ 差集恒空 ⇒ **PASS**。
+     *   ⚠ 判据**不是**退出码（自带对拍不落盘），而是：`surfaceGuard` **必须给出可读文案**。
+     * ⚠ 成对那一半在 ⑤（健康面不许咬）与 ④（`blobs>0 而 parsed=0` 要咬）——三档互不重叠。
+     */
+    {
+      const collapsed = surfaceGuard({ blobs: 0, parsedBlobs: 0, revs: 0 }, 0)
+      const ok6a = typeof collapsed === 'string' && collapsed.includes('整个塌了')
+      readings.push({ label: '④-b 取数面塌了（命中 0 个 blob · 历史集空集）', expect: 'FAIL · 点名取数面整个塌了',
+        got: ok6a ? 'FAIL · 咬住（空差集不再算通过）' : '未咬（假绿 —— 这正是甲-4 的形态）', pass: ok6a })
+      if (!ok6a) failed++
+      /**
+       * ⚠ 成对：⚠ **`blobs > 0` 且一切健康 ⇒ 不许因为新增这一条而误咬**。
+       *   与 ⑤ 不同的地方：⑤ 是"两个数都满"，本档是"命中 1 个、解析 1 个、并集 1 个"——
+       *   贴着新判据的**边界下方一格**，证明它不是"`blobs` 小于某个阈值就红"。
+       */
+      const tiny = surfaceGuard({ blobs: 1, parsedBlobs: 1, revs: 1 }, 1)
+      const ok6b = tiny === null
+      readings.push({ label: '⑤-b 对照：取数面最小但健康（命中 1 · 解析 1 · 并集 1）', expect: '不咬（null）',
+        got: ok6b ? '未咬（正确）' : '误咬（新判据写成了阈值判据）', pass: ok6b })
+      if (!ok6b) failed++
+    }
   }
 
   // ⚠ ⚠ ⑥ 第 233 轮新增（`UD-119` 要求 ②/④）：**野文件 ⇒ 必须 FAIL 并点名**

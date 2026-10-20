@@ -150,7 +150,36 @@ export function auditReadings (src) {
 export function collectReports (ledgerRoot) {
   const out = []
   const arcRoot = join(ledgerRoot, 'archive')
-  for (const d of readdirSync(arcRoot)) {
+  /**
+   * ⚠⚠ **`archive/` 读不到 ⇒ 必须变成可读失败，⛔ 不许让进程崩**（2026-10-21 · 第 322 轮 · **甲-5** ①）——
+   *
+   * ── 改前是什么──────────────────────────────────────────────────
+   *   `readdirSync(arcRoot)` **没有 try/catch** ⇒ 目录不存在时抛 `ENOENT`
+   *   （实测原文：`ENOENT: no such file or directory, scandir '…/archive'`）
+   *   ⇒ ⚠ 整个脚本带堆栈退出（`exit 1`，但**是 node 的未捕获异常**，不是本脚本的 FAIL 判定）。
+   *   ⚠ 为什么这比"红"更糟：本项目对 FAIL 的约定是**逐条可读的 ✗ 行 + 点名对象**
+   *     （`E-112`：负向对拍**不只看退出码**，还要有可读的 ✗ 行）。
+   *     堆栈里既没有断言名、也没有"覆盖面 = 0 份"这句话 ⇒ 读的人分不清
+   *     "**目录没了**"与"**脚本自己坏了**"（后者会让人去查脚本，而 faults 在账本区）。
+   *   ⚠ 而 `resolveLedgerRoot()` 只在 **CLI 档**用 `existsSync(join(cliLedger, 'archive'))` 兜了一次；
+   *     它**认定"账本根存在"就等于"archive 存在"**（非 CLI 档连这个检查都没有，只 `existsSync(cand)`）。
+   *     ⇒ 目录在、`archive/` 不在（或权限不足、或中途被删）就是**裸 ENOENT**。
+   *   ⇒ 现在：把"读不到"落成**返回值里的可读失败**（`unreadable`），由调用方判 `exit 2`。
+   *   ⚠ 语义为什么是 `exit 2`（"基准缺失"）而**不是** `exit 1`（"查了不过"）：
+   *     这里**一份报告都没读到** ⇒ ⛔ "查了不过"无从谈起（一条判据都没跑）——
+   *     与本文件既有的"账本区读不到 ⇒ `exit 2`"**同一档**（见下面 main 的分支）。
+   *     ⚠ 全族一致：`exit 2` = **没有对象 / 没执行**，`exit 1` = **查了且不过**。
+   *   ⚠ ⛔ **不许改成"读不到就返回空数组"** —— 那会与"archive 存在但里面一份报告也没有"
+   *     **长得一模一样**，而这两件事的性质完全不同（一个是基准缺失、一个是真的 0 份）。
+   *     实测踩过的正是这种"两种原因说成同一句话"（本项目头号禁忌）。
+   */
+  let ent
+  try {
+    ent = readdirSync(arcRoot)
+  } catch (e) {
+    return { reports: out, unreadable: String(e?.message ?? e), arcRoot }
+  }
+  for (const d of ent) {
     const p = join(arcRoot, d)
     let st
     try { st = statSync(p) } catch { continue }
@@ -161,7 +190,109 @@ export function collectReports (ledgerRoot) {
       out.push({ no: Number(m[1]), path: join(p, f), rel: `archive/${d}/${f}` })
     }
   }
-  return out.sort((a, b) => a.no - b.no)
+  return { reports: out.sort((a, b) => a.no - b.no), unreadable: undefined, arcRoot }
+}
+
+/**
+ * ── **自带负向对拍**（2026-10-21 · 第 322 轮 · **甲-5** 的"补负向对拍"那一半）──────
+ *
+ * ⚠ **为什么本族必须有它**（TASK 原话）：本族**目前没有任何负向对拍** ——
+ *   一条判据若只验"正常路径绿"，它把"0 份 ⇒ 退 2"写成什么都不会被发现。
+ *   ⚠ 实测过的形态（本批改前）：空归档 ⇒ 判定 `PASS` + 退出码 **0**，
+ *   而**没有任何读数能证明这件事被改过** —— 因为旧版根本没有对这一档的断言。
+ *
+ * ⚠ **做法：真起子进程跑真 CLI**（⛔ 不 mock、⛔ 不内联复制判据）——
+ *   本档要证的正是"**进程退出码**"，那是 `process.exit()` 的行为，
+ *   ⛔ 函数级断言证明不了它（改了分支却忘了 `exit` 照样"函数返回值对"）。
+ * ⚠ 夹具全部落**工作区内**的临时目录（⛔ 不写 `/tmp`），跑完即删（⛔ 不留残件）。
+ * ⚠ 两档**成对**（`E-126`）：
+ *   · ① 空归档 ⇒ **必须 2**（该咬的）；
+ *   · ② 归档里有一份**干净**报告 ⇒ **必须 0**（不该咬的 —— 证明 ① 不是"一律退 2"）。
+ */
+async function selfTest () {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { execFileSync } = await import('node:child_process')
+  const selfPath = fileURLToPath(import.meta.url)
+  /** ⚠ 夹具根落**工作区内**（⛔ 不写 `/tmp`）—— 收工能核 0 残留。 */
+  const fxRoot = mkdtempSync(join(root, '.tmp-readings-selftest-'))
+  const readings = []
+  let failed = 0
+
+  /** 跑一次**真 CLI**，把退出码与 stdout 一起拿回来（⛔ 异常不吞：非预期退出码要能读出来）。 */
+  const runOn = (ledger) => {
+    try {
+      const out = execFileSync(process.execPath, [selfPath, '--ledger', ledger],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      return { code: 0, out }
+    } catch (e) {
+      return { code: typeof e?.status === 'number' ? e.status : -1, out: String(e?.stdout ?? '') }
+    }
+  }
+
+  try {
+    // ── ① 空归档目录 ⇒ **必须退 2**（甲-5 的正面：改前这里是 PASS + 退出码 0）──
+    const empty = join(fxRoot, 'empty')
+    mkdirSync(join(empty, 'archive'), { recursive: true })
+    const r1 = runOn(empty)
+    const ok1 = r1.code === 2
+    readings.push({
+      label: '① 空归档目录（0 份报告）',
+      expect: '退出码 2（"没有对象"，⛔ 不是 0 / 不是 1）',
+      got: `退出码 ${r1.code}${ok1 ? '' : ` · 原文「${r1.out.split('\n').filter((l) => l.includes('判定')).join(' ')}」`}`,
+      pass: ok1,
+    })
+    if (!ok1) failed++
+
+    // ── ② 成对：归档里有一份**干净**报告 ⇒ **必须退 0**（证明 ① 不是"一律退 2"）──
+    const good = join(fxRoot, 'good')
+    mkdirSync(join(good, 'archive', '9999-x'), { recursive: true })
+    writeFileSync(join(good, 'archive', '9999-x', 'REPORT-R999.md'),
+      '# 轮次报告 999\n\n```\n$ ls\nsrc\n```\n\n结论：贴了输出 ⇒ 可指认。\n', 'utf8')
+    const r2 = runOn(good)
+    const ok2 = r2.code === 0
+    readings.push({
+      label: '② 对照：归档里有 1 份干净报告',
+      expect: '退出码 0（不该咬的⛔ 不许咬）',
+      got: `退出码 ${r2.code}${ok2 ? '' : ` · 原文「${r2.out.split('\n').filter((l) => l.includes('判定')).join(' ')}」`}`,
+      pass: ok2,
+    })
+    if (!ok2) failed++
+
+    // ── ③ 成对：归档目录**不存在** ⇒ 也必须退 2，且**不许是堆栈**（甲-5 ①）──
+    const gone = join(fxRoot, 'gone')
+    mkdirSync(gone, { recursive: true })
+    const r3 = runOn(gone)
+    /** ⚠ 判两件事：退出码 2 **且** 输出里有可读的 ✗ 行（⛔ 不是 `ENOENT` 裸堆栈）。 */
+    const readable = r3.out.includes('未执行') && r3.out.includes('读不到')
+    const noStack = !/^\s+at\s/m.test(r3.out)
+    const ok3 = r3.code === 2 && readable && noStack
+    readings.push({
+      label: '③ `archive/` 不存在（改前是裸 ENOENT 堆栈）',
+      expect: '退出码 2 · 有可读"未执行/读不到"行 · 无堆栈',
+      got: `退出码 ${r3.code} · 可读行=${readable} · 无堆栈=${noStack}`,
+      pass: ok3,
+    })
+    if (!ok3) failed++
+  } finally {
+    try { rmSync(fxRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+  }
+
+  console.log('读数可指认自检 · 自带负向对拍')
+  for (const x of readings) console.log(`  ${x.pass ? '✓' : '✗'} ${x.label} —— 期望 ${x.expect} · 实测 ${x.got}`)
+  const okAll = failed === 0
+  console.log('')
+  console.log(okAll
+    ? `判定：PASS —— ${readings.length} 档**全部符合预期**（⚠ 档数从实测数出来：`
+      + `${readings.filter((x) => x.expect.includes('退出码 0')).length} 档"不该咬"未被咬 · `
+      + `${readings.filter((x) => x.expect.includes('退出码 2')).length} 档"该咬"真被咬且**退出码对**）`
+    : `判定：FAIL —— ${failed}/${readings.length} 档不符（⚠ 判据改哑了）`)
+  return okAll ? 0 : 1
+}
+
+if (process.argv[1] !== undefined && process.argv[1].endsWith('check-readings-citable.mjs')
+  && process.argv.includes('--self-test')) {
+  process.exit(await selfTest())
 }
 
 if (process.argv[1] !== undefined && process.argv[1].endsWith('check-readings-citable.mjs')) {
@@ -174,7 +305,26 @@ if (process.argv[1] !== undefined && process.argv[1].endsWith('check-readings-ci
       + '或用 `--ledger <路径>` 显式给。')
     process.exit(2)
   }
-  const reports = collectReports(ledgerRoot)
+  const collected = collectReports(ledgerRoot)
+  /**
+   * ⚠⚠ **`archive/` 读不到 ⇒ `exit 2`（基准缺失），⛔ 不是崩、也不是 FAIL**（甲-5 ①）——
+   *   与上面"账本区读不到 ⇒ `exit 2`"**同一档**，理由见 {@link collectReports} 的注释。
+   *   ⚠ 必须在 `reports.length === 0` 那一步**之前**判：两者都"读到 0 份"，
+   *     但前者是**没有取数面**、后者是**取数面在而内容空**。⛔ 合并即"两种原因说成一句话"。
+   */
+  if (collected.unreadable !== undefined) {
+    console.log('读数可指认自检 · archive/**/REPORT-R*.md')
+    console.log(`账本区：${ledgerRoot}`)
+    console.log('')
+    console.log('判定：**未执行** —— 归档目录读不到 ⇒ 本检查**不代表通过**（退出码 2 与 FAIL(1) 有意区分）。')
+    console.log(`  ✗ 读不到 \`${collected.arcRoot}\` ⇒ ⛔ 不静默跳过、也不让进程崩：`)
+    console.log(`      ${collected.unreadable}`)
+    console.log('      ⇒ ⚠ 成因：`archive/` 不存在 · 无读权限 · 或账本区路径拼错。')
+    console.log('      ⇒ ⚠ 改前这一支是**裸 ENOENT 堆栈**（既没有断言名、也没有覆盖面读数）；'
+      + '现在落成可读失败并明确分档。')
+    process.exit(2)
+  }
+  const reports = collected.reports
   const fail = []
   const note = []
   let forced = 0
@@ -221,6 +371,33 @@ if (process.argv[1] !== undefined && process.argv[1].endsWith('check-readings-ci
   }
   for (const n of note) console.log('  ✓', n)
   console.log('')
+  /**
+   * ⚠⚠ **0 份报告 ⇒ `exit 2`，⛔ 不是 `exit 0`、也⛔ 不是 `exit 1`**（2026-10-21 · 第 322 轮 · **甲-5** ②）——
+   *
+   * ── 改前是什么（甲-5 的正面）──────────────────────────────────────
+   *   `fail.length === 0` ⇒ `PASS` + `exit 0`。而 `fail` 只由**逐份报告**的扫描填充
+   *   ⇒ ⚠ **一份报告都没有 ⇒ 循环一次都不跑 ⇒ `fail` 恒空 ⇒ PASS**。
+   *   实测读数（空归档夹具）：`报告 0 份 · 判定：PASS`、退出码 **0**。
+   *   ⚠ 这正是本批的主题：**"没有对象"与"查过且全绿"被判成同一件事**。
+   *   ⇒ 本族的强制面（`STRICT_FROM` 起）可以**整族消失而不响一声** —— 只要 archive 是空的。
+   *
+   * ── 为什么是 `exit 2` 而不是 `exit 1` ─────────────────────────────
+   *   `exit 1` 的语义在本脚本里是"**查了，且查到违规**"（每条 `fail` 都是点名某处）。
+   *   0 份报告时**一条判据都没跑** ⇒ ⛔ 说"查了不过"是**谎报**，说"全绿"更是。
+   *   它属于**"没有对象 ⇒ 本检查未执行"**那一档 —— 与本文件既有的
+   *   "账本区读不到 ⇒ `exit 2`"（`未执行` / `不代表通过`）**同一档**（TASK 明写：⛔ 不是 1）。
+   *   ⚠ 两个 `exit 2` 的**成因分开报**（一个说"归档目录读不到"、一个说"0 份报告"），
+   *     ⛔ 不合并成一句 —— 读的人据此知道去修什么。
+   */
+  if (reports.length === 0) {
+    console.log(`判定：**未执行** —— 归档目录里**一份报告都没有**（\`${join(ledgerRoot, 'archive')}\`）`
+      + ' ⇒ 本检查**一条判据都没跑**，⛔ 不代表通过。')
+    console.log(`       ⚠ 退出码 **2**（不是 1）：0 份是"**没有对象**"，不是"**查了不过**"。`)
+    console.log('       ⚠ 改前这一支打 `PASS` + `exit 0` —— 于是 R208 起这整族可以**静默消失**。')
+    console.log(`       ⇒ 修法：确认 \`archive/**/REPORT-R<n>.md\` 确实存在；`
+      + '若账本区刚重建、报告还没迁过来，那是**基准缺失**，先补齐再判。')
+    process.exit(2)
+  }
   if (fail.length === 0) {
     console.log(`判定：PASS —— R${STRICT_FROM} 起的报告里，含读数命令的代码块**全部可指认**`
       + '（贴了输出 / 内联给了结果 / 或显式声明了为什么没有）。')
