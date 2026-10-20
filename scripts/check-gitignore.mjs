@@ -13,7 +13,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { runRepoRules } from './check-repo-rules.mjs'
-import { findDuplicateSectionHeadings, runDocShape, runResidualMarkers, runTableIntegrity } from './check-doc-shape.mjs'
+import { findDuplicateSectionHeadings, ledgerRootDiag, runDocShape, runResidualMarkers, runTableIntegrity } from './check-doc-shape.mjs'
 import { runDiscipline, runRender, runSameSource, runSkeletonSource, runWorkspaceNameSource, runWriteScope, runZeroWidth } from './check-code-face.mjs'
 
 const fail = []
@@ -50,6 +50,60 @@ if (process.argv[1] !== undefined && process.argv[1].endsWith('check-gitignore.m
     console.log(`  ✗ 「${d.title}」出现在第 ${d.lines.join(' 与第 ')} 行（共 ${d.lines.length} 次）`)
   }
   process.exit(1)
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * ⚠⚠ **前置闸门：账本根读不到 ⇒ `exit 2`**（2026-10-21 · 第 324 轮 · **甲-1 试点**）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 它堵的是哪一档（`PROJECT-SURVEY-3` §6.1 甲-1，本项目**最广**的一处假绿）──────
+ *   本族 32 组里所有"跳过 / 未执行 / 未取"分支都走 `ok()`，而 `ok()` **无条件打 `✓`
+ *   且不进 `fail` 计数** ⇒ 账本区读不到时，`check:all` 把那几组记成 **`✓ 通过`**。
+ *   ⚠ **实测原文（第 324 轮 · 改前，把工作区名指向不存在的目录）**：
+ *     `✓ 文档形态机检【跳过】—— 账本区读不到…不代表通过`
+ *     `✓ I 正本无残留标记【跳过】—— 账本区读不到…**不代表通过**`
+ *   ⇒ ⚠ **嘴上说"不代表通过"，机器读数却是 ✓** —— 读数与判据互相打架，而**机器只信 ✓**。
+ *
+ * ── 为什么落 `exit 2` 而⛔ 不是 `exit 1`、也⛔ 不是一条 `bad()` ────────────
+ *   ① **不是 1**：`exit 1` 的语义在本族是"**查了，且查到违规**"。账本根读不到时，
+ *      A / B / C / I / Q / P 那几组**一条判据都没跑** ⇒ 说"查了不过"是谎报
+ *      （同 `check:readings` / `check:rounds` 既有的"未执行 ⇒ 2"那一档）。
+ *   ② **不是 `bad()`**：`bad()` 会让**其余 31 组**继续跑完再报 FAIL，而它们的基准
+ *      （正本清单、表块、写侧白名单）全都派生自账本根 ⇒ 那 31 组会**各自再报一次
+ *      "失去基准"**，把一句真话淹没在几十行噪声里。前置闸门的价值就在于**只报一句**。
+ *   ③ **不是"读不到就跳过"**（旧路径）：那正是本批要治的形态，⛔ 不许留。
+ *
+ * ── 为什么闸门放在**入口**而不在 `check-doc-shape.mjs` 里 `process.exit` ────────
+ *   `check-doc-shape.mjs` 被 import 做断言（`--dup-headings` 与单测）⇒ 那里 `exit`
+ *   会把"只想验一个函数"的调用方一起打死。⇒ 闸门**只设一处**：本入口。
+ *
+ * ── ⚠ 本批的**边界**（TASK ① 明令）────────────────────────────────
+ *   **只堵这一档**。其余 31 组"跳过也打 ✓"的分支走向**一字未动**
+ *   （那是 Q1 选项 ①，改动面大、另开轮）—— 清单见本批 REPORT ②。
+ */
+if (ledgerRootDiag.kind !== 'ok') {
+  const KIND_TEXT = {
+    'preset-unreadable': '**预设行读不到**（连候选路径都没有）',
+    'no-ledger-home': '**预设里没有 `ledgerHome:` 声明**',
+    absent: '**账本根目录读不到**',
+  }
+  console.log('`.gitignore` 一致性核对 · dsh-hob')
+  console.log('')
+  console.log(`判定：**未执行** —— ${KIND_TEXT[ledgerRootDiag.kind] ?? '账本根解析失败'}`
+    + ' ⇒ 本族**一条判据都没跑**（退出码 2 与 FAIL(1) 有意区分）。')
+  console.log(`  ✗ 读不到的路径：\`${String(ledgerRootDiag.path ?? '(算不出来)')}\``)
+  console.log(`  ✗ 原因：${ledgerRootDiag.reason}`)
+  if (ledgerRootDiag.wsName !== undefined) {
+    console.log(`      ⇒ 工作区名 = \`${ledgerRootDiag.wsName}\`（来源：`
+      + '`dsh-hob.workspace.json` 的 `workspaceName`；未配置则落回目录名）')
+  }
+  console.log('      ⇒ ⚠ 改前这一档**不会**退出 2：全族继续跑，其中若干组各打一条'
+    + '`ok(\'…【跳过】…不代表通过\')` —— ⚠ **带 ✓、不进 `fail`** ⇒ `check:all` 记成「✓ 通过」。')
+  console.log('      ⇒ 修法：确认预设行的 `ledgerHome` 可读、且'
+    + ' `‹ledgerHome›/‹工作区名›` 存在；或先用 `node scripts/check-gitignore.mjs --dup-headings <file>`'
+    + ' 走单测口径（那条不吃账本根）。')
+  process.exit(2)
 }
 
 // ── ① 入库与仓规（带回 README / PKG 两处共享读数）───────────────────────

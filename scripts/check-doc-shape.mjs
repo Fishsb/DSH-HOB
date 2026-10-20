@@ -123,24 +123,73 @@ function fencedMaskBelow(lines) {
  *   ⇒ 排除的**理由已消失**：`B_FILES`（第 71 轮起派生自账本根）**必然含 `PROJECT.md`**，
  *     账本根的正本**全部纳入**形态机检，本文件里**不再有任何"待纳入"的例外**。
  */
-const LEDGER_ROOT = (() => {
+/**
+ * ── 账本根的解析（⚠ 2026-10-21 · 第 324 轮 · **甲-1 试点**：把"读不到"变成可判的失败）────
+ *
+ * **改前是什么**（本项目最广的一处"没查 = 查过且过"，`PROJECT-SURVEY-3` §6.1 甲-1）：
+ *   这里**只返回 `undefined`**，而 `undefined` 之后全族走 `ok('【跳过】…')`
+ *   ⇒ ⚠ `ok()` **无条件打 ✓ 且不进 `fail` 计数** ⇒ 账本区读不到时 `check:all` 记成 **`✓ 通过`**。
+ *   ⚠ 实测（第 324 轮，改前）：把工作区名指向不存在的目录 ⇒ `check:gitignore` 打出
+ *     `✓ 文档形态机检【跳过】…不代表通过` 与 `✓ I 正本无残留标记【跳过】…不代表通过`
+ *     两条**带 ✓ 的"没查"**（原文见 REPORT）。
+ *
+ * **现在**：解析结果多带一个 **`diag`** —— ⚠ 它回答"为什么读不到"（三档分开，⛔ 不合并成一句）：
+ *   · `preset-unreadable` ⇒ 预设行都读不到（连候选都没有）；
+ *   · `no-ledger-home`   ⇒ 预设读到了，但里面没有 `ledgerHome:` 声明；
+ *   · `absent`           ⇒ 候选算出来了，但**那个目录不存在 / 不是目录 / 无权限**（`reason` 带 errno）。
+ *   ⚠ 调用方（入口 `check-gitignore.mjs`）据此**在跑任何断言之前 `exit 2`**（甲-1 试点那一档），
+ *   ⛔ **不再**让全族带着 `ok()` 的 ✓ 走完。
+ *
+ * ⚠ **本文件不自己 `exit`**（`docs-shape` 也被 import 做断言）—— 闸门只有入口一处。
+ */
+const ledgerDiag = (() => {
   // ⚠ 与其它脚本同口径：账本父目录**不硬编码本机绝对路径**（UD-73③），
   //   从 profile 的预设行声明 `ledgerHome` 读出；读不到再退回缺省候选。
   const candidates = []
+  let presetErr
   try {
     const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
     const m = /ledgerHome:\s*(\S+)/.exec(preset)
     if (m !== null) candidates.push(m[1])
-  } catch { /* 预设读不到 ⇒ 只走下面的候选 */ }
+    else return { kind: 'no-ledger-home', path: undefined, wsName: undefined,
+      reason: '预设里没有 `ledgerHome:` 声明' }
+  } catch (e) {
+    presetErr = String(e?.message ?? e)
+    return { kind: 'preset-unreadable', path: undefined, wsName: undefined,
+      reason: `读不到预设 ${join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')}（${presetErr}）` }
+  }
   // 候选：<ledgerHome>/<工作区名>（⚠ 工作区名**从配置读**，唯一来源 = `scripts/workspace-name.mjs`；
   //   未配置 ⇒ 落回 `basename(root)`，与改动前逐字一致 —— ⛔ 本脚本不再自己猜目录名）
   const wsName = workspaceName(() => basename(root))
+  const tried = []
   for (const home of candidates) {
     const dir = join(home, wsName)
-    if (existsSync(dir)) return dir
+    tried.push(dir)
+    if (existsSync(dir)) return { kind: 'ok', path: dir, wsName, reason: '' }
   }
-  return undefined
+  /**
+   * ⚠ **"不存在"与"存在但读不了"要分开报**（本项目头号禁忌：两种原因说成同一句话）：
+   *   后者（无权限 / 不是目录）是**环境坏了**，前者是**没建账本** —— 修法完全不同。
+   */
+  const target = tried[0]
+  let why = '不存在'
+  try {
+    const st = statSync(target)
+    why = st.isDirectory() ? '存在且是目录，但 `existsSync` 却为假（异常）' : '存在但**不是目录**'
+  } catch (e) {
+    why = `不存在或读不到（${String(e?.code ?? '')} ${String(e?.message ?? e)}）`
+  }
+  return { kind: 'absent', path: target, wsName, reason: why, tried }
 })()
+
+/** 账本根（⚠ `undefined` = 读不到；**为什么**读不到见 {@link ledgerDiag}）。 */
+const LEDGER_ROOT = ledgerDiag.kind === 'ok' ? ledgerDiag.path : undefined
+
+/**
+ * 导出给入口做**前置闸门**（甲-1 试点）：`{ kind, path, wsName, reason }`。
+ * ⚠ `kind !== 'ok'` ⇒ 入口 `exit 2`，⛔ 不许降级成一条 `ok()` 的"跳过"。
+ */
+export const ledgerRootDiag = ledgerDiag
 
 /**
  * A 用的：正本文件名（**有配套空模板**的那三本 —— 断言 A 比的是「正本节名 ↔ 模板节名」）。
@@ -682,6 +731,177 @@ export function runDocShape({ bad, ok }) {
         + '**不在辖** = 首格**含散文**的表（如关键约束速查表）与**读数行**'
         + '（它们是模板**有意不搬**的"项目现状 / 项目史"）—— 即本组绿的是"结构行"，'
         + '**不**代表"模板与正本逐字一致"（名单不写死：口径如上，以实测输出的表数为准）')
+    }
+
+    // ── 断言 V：`package.json` 的每一个 `check:*` 族都必须在正本 §4.1 收尾表里 ──
+    //
+    // ⚠ **为什么加这一组**（2026-10-20 第 320 轮 · TASK-D4）：
+    //   断言 N 管的是「**正本 → 模板**」（模板必须镜像正本的行）。它有一个**结构性盲区**：
+    //   ⚠ ⚠ **正本自己漏了一族时，N 组看不见** —— 它只要求"正本里有的，模板也得有"，
+    //   从不要求"`package.json` 里有的，正本也得有"。
+    //   实测出处：`check:redeliver` 于 `76e1bc3` 接进 `npm run check`（只改了 `package.json` +
+    //   `check-repo-rules.mjs` 的落点登记），**两份 `CONTEXT.md` 都没跟上** ⇒ 两侧各 14 族、
+    //   `package.json` 15 族，而**当时没有任何判据会红**。
+    //   ⇒ 后果与 E-122 同族：**族在、判据在、但照着 §4.1 手工跑收尾的人永远跳过它**。
+    //
+    // ⚠ **方向与 N 组相反、两条都要**（⛔ 不许拿本条替换 N 组）：
+    //   · N：正本 ⊆ 模板（模板别落后）
+    //   · V：`package.json` 的族 ⊆ 正本（**正本别落后**）
+    //   ⇒ 两条合起来才闭合"三处同批"：`package.json` · 正本 §4.1 · 模板 §4.1。
+    //
+    // ⚠ **扫描面派生、⛔ 不手抄族名**（E-133 同族；手抄一张会漂的期望表正是本条要治的病）：
+    //   族名一律从 `package.json` 的 `scripts` 键现读，只保留 `check:` 前缀。
+    //   ⚠ **排除 `check:all` 与 `check:preflight`** —— 它们自己就是聚合入口与体检
+    //   （与 `scripts/check-all.mjs` 的 `SELF` 同口径），⛔ 不是判据族。
+    //
+    // ⚠ **正本读不到 / 解析不到时**：⛔ **不许静默通过**（照 N 组同款口径 —— 它用 `bad(...)`
+    //   而不是 `ok(...)`：参见上面 `N 真断言的参照面**读不到**` 那一条）。
+    //   同理 `package.json` 读不到也 `bad`（基准缺失 ⇒ 不按通过处理）。
+    {
+      /** 从一份 Markdown 的「`### 4.1` 起、下一个 `## ` 止」这段里抽出 `check:*` 族名。 */
+      const vFamiliesInSection = (src) => {
+        const lines = src.split('\n')
+        let inSec = false
+        const found = new Set()
+        for (const l of lines) {
+          if (/^###\s+4\.1(\s|$)/.test(l)) { inSec = true; continue }
+          if (inSec && /^##\s+\S/.test(l)) break
+          if (!inSec) continue
+          if (!l.trim().startsWith('|')) continue
+          // ⚠ 只认**首格里的反引号 token**（与 N 组的收录口径同族：只看首格，不看说明列）
+          const first = (l.trim().replace(/^\|/, '').split('|')[0] || '')
+          for (const m of first.matchAll(/`npm run (check:[A-Za-z0-9:_-]+)`/g)) found.add(m[1])
+        }
+        return found
+      }
+      /** 从 `package.json` 的 `scripts` 派生判据族（⚠ 派生，⛔ 不手抄）。 */
+      const vFamiliesFromPkg = (raw) => {
+        const scripts = JSON.parse(raw)?.scripts ?? {}
+        const SELF_V = new Set(['check:all', 'check:preflight'])
+        return new Set(Object.keys(scripts).filter((k) => k.startsWith('check:') && !SELF_V.has(k)))
+      }
+      let vPkgRaw = ''
+      try {
+        vPkgRaw = readFileSync(join(root, 'package.json'), 'utf8')
+      } catch { vPkgRaw = '' }
+      let vLedgerSrc = ''
+      try {
+        vLedgerSrc = readFileSync(join(LEDGER_ROOT, 'CONTEXT.md'), 'utf8')
+      } catch { vLedgerSrc = '' }
+
+      if (vPkgRaw === '') {
+        bad('V 读不到 `package.json` ⇒ 「`check:*` 族必须进正本 §4.1」这一条**失去基准**（不按通过处理）')
+      } else if (vLedgerSrc === '') {
+        bad('V 读不到正本 `CONTEXT.md` ⇒ 「`check:*` 族必须进正本 §4.1」这一条**失去基准**（不按通过处理）'
+          + `\n      ⇒ 期望路径：${join(LEDGER_ROOT, 'CONTEXT.md')}`)
+      } else {
+        let vPkgFams
+        let vLedgerFams
+        try {
+          vPkgFams = vFamiliesFromPkg(vPkgRaw)
+        } catch (e) {
+          vPkgFams = undefined
+          bad(`V \`package.json\` 不是合法 JSON ⇒ 本条失去基准（不按通过处理）：${String(e?.message ?? e)}`)
+        }
+        vLedgerFams = vFamiliesInSection(vLedgerSrc)
+        // ⚠ 正本这一段**一条都抽不到**也是一个错（可能是 §4.1 被搬走 / 标题被改），⛔ 不许当"全过"
+        if (vPkgFams !== undefined && vLedgerFams.size === 0) {
+          bad('V 正本 `CONTEXT.md` 的 `### 4.1` 段里**一条 `npm run check:*` 都没抽到**'
+            + ' ⇒ 扫描面为 0，本条**不是在通过**（⛔ 扫 0 份报 ✓ 是 E-126 假绿）'
+            + '\n      ⇒ 可能原因：§4.1 整节被搬走 / 标题被改成非 `### 4.1` / 表格结构变了'
+            + '\n      ⇒ 期望：`### 4.1 收尾必跑` 之后、下一个 `## ` 之前，有 `| \`npm run check:<名>\` | … |` 形态的行')
+        } else if (vPkgFams !== undefined) {
+          const vMissing = [...vPkgFams].filter((f) => !vLedgerFams.has(f)).sort()
+          if (vMissing.length > 0) {
+            bad(`V **收尾表漏族**：\`package.json\` 里有、而正本 \`CONTEXT.md\` §4.1 里**没有**的判据族：`
+              + ` ${vMissing.map((m) => '`' + m + '`').join(' · ')}`
+              + `\n      ⇒ 实测：\`package.json\` 的 \`check:*\` 族 **${vPkgFams.size}** 个 ·`
+              + ` 正本 §4.1 抽到 **${vLedgerFams.size}** 个 · **缺 ${vMissing.length} 个**`
+              + '\n      ⇒ ⚠ 这正是"族在、判据在、但**照着 §4.1 手工跑收尾的人永远跳过它**"那一形态'
+              + '（`E-122` 同族：机制没有喂养端）'
+              + '\n      ⇒ 处置：把缺的那几族**逐条补进正本 §4.1**（照该表既有行文：`| \\`npm run <族>\\` | <守什么> |`）'
+              + '\n      ⇒ ⚠ **同批还要改两处**，否则会当场再红：模板 §4.1（断言 N 管）+ 本表的登记面'
+              + '\n      ⇒ 加新 `check:` 族时必须同批改三处：`package.json` · 账本正本 `§4.1` · 模板 `§4.1`。')
+          } else {
+            ok(`V ✓ 收尾表**不漏族**：\`package.json\` 的 \`check:*\` 族 **${vPkgFams.size}** 个，`
+              + `正本 \`CONTEXT.md\` §4.1 里**全部在列**（⚠ 派生自 \`package.json\`，⛔ 不手抄族名）`
+              + ' ⇒ 与断言 N（正本 ⊆ 模板）方向相反、两条合起来才闭合"三处同批"：'
+              + '`package.json` · 账本正本 §4.1 · 模板 §4.1')
+          }
+        }
+      }
+
+      // ── 断言 V 的自带样本（⚠ **在内存里造**，⛔ 不改任何真文件）──────────────
+      //   ⚠ 与 N 组同法：样本**由机检自造**，⛔ 不拿真正本当基准
+      //     （否则"正本那条靶行被搬走"会误报成"判据改哑了"，第 179 轮的坑）。
+      //   ⚠ 成对纪律（E-126）：**该咬的真被咬** + **不该咬的真没被咬**，两条都要过。
+      {
+        const V_SAMPLE_M = [
+          '### 4.1 收尾必跑（全部 exit 0）',
+          '',
+          '| 命令 | 守什么 |',
+          '|---|---|',
+          '| `npm run build` | 构建 |',
+          '| `npm run check:orch` | 运行态 |',
+          '| `npm run check:redeliver` | 补投 |',
+          '',
+          '## 5. 本批登记',
+          '',
+          '| 项 | 读 |',
+          '|---|---|',
+          '| `npm run check:zzz-not-in-41` | ⚠ 这一行在 §4.1 **之外**，⛔ 不许被算进收尾表 |',
+          '',
+        ].join('\n')
+        const V_PKG = JSON.stringify({
+          scripts: {
+            'check:orch': 'node a.mjs',
+            'check:redeliver': 'node b.mjs',
+            'check:all': 'node c.mjs',
+            'check:preflight': 'node d.mjs',
+            build: 'tsc',
+          },
+        })
+        const vSafe = vFamiliesInSection(V_SAMPLE_M)
+        const vPkgSafe = vFamiliesFromPkg(V_PKG)
+        const vProbes = [
+          // ① **不该咬**：样本里 §4.1 的族齐全 ⇒ package.json 的族必须全部命中
+          ['样本 §4.1 齐全 ⇒ 不许报缺族',
+            () => {
+              const miss = [...vPkgSafe].filter((f) => !vSafe.has(f))
+              // check:all / check:preflight 必须被排除 ⇒ 否则本条会误报
+              return miss.length === 0 && !vPkgSafe.has('check:all') && !vPkgSafe.has('check:preflight')
+            }],
+          // ② **该咬**：把 check:redeliver 从样本 §4.1 里删掉 ⇒ 必须报缺它
+          ['样本 §4.1 删掉 `check:redeliver` ⇒ 必须报缺这一族',
+            () => {
+              const cut = V_SAMPLE_M.replace(/^\| `npm run check:redeliver` \|.*$/m, '')
+              const got = vFamiliesInSection(cut)
+              return [...vPkgSafe].filter((f) => !got.has(f)).includes('check:redeliver')
+            }],
+          // ③ **该排除**：写在 §4.1 **之外**的表行 ⛔ 不许被算进收尾表（否则"别处的表"能顶替收尾表）
+          ['§4.1 之外的表行 ⛔ 不算收尾表（`check:zzz-not-in-41` 不许被收进）',
+            () => !vSafe.has('check:zzz-not-in-41')],
+          // ④ `check:all` / `check:preflight` 必须被排除（它们是调度器与体检，不是判据族）
+          ['`check:all` / `check:preflight` 必须被排除（与 `check-all.mjs` 的 SELF 同口径）',
+            () => !vPkgSafe.has('check:all') && !vPkgSafe.has('check:preflight')],
+        ]
+        let vSampleBad = 0
+        for (const [why, fn] of vProbes) {
+          let bit = false
+          try { bit = fn() === true } catch { bit = false }
+          if (!bit) {
+            vSampleBad++
+            bad(`V 自带样本**不符合预期**：${why}`
+              + '\n      ⇒ 该组判据**改哑了**（或过咬）⇒ 真缺陷更会溜'
+              + '\n      ⇒ 与 N / I 组同法：**判据改哑与判据改对必须输出不同**（E-126）')
+          }
+        }
+        if (vSampleBad === 0) {
+          ok('V ✓ 自带样本：2 组"该咬/不该咬"成对（§4.1 齐全 ⇒ 不报缺；删 `check:redeliver` ⇒ 真报缺）'
+            + ' + 2 组排除面（§4.1 之外的表行不算 · `check:all`/`check:preflight` 不算）**全部符合预期**'
+            + ' ⇒ 本组还长着牙、且不过咬（⚠ 样本由机检自造，⛔ 不依赖真正本原文）')
+        }
+      }
     }
 
     // ── 断言 O：地图 ↔ 卷 两向完整 + 说明列非空（第 99 轮 · UD-98 / CHG-038）──
@@ -1766,6 +1986,28 @@ export async function runResidualMarkers({ bad, ok }) {  // ── 断言 I · �
     } catch (e) {
       bad(`I 无法加载渲染模块（${String(e?.message ?? e)}）⇒ 残留标记扫描失去基准（不按通过处理）`)
     }
+    /**
+     * ⚠⚠ **`else` 分支是本批补的（2026-10-21 · 第 327 轮 · **乙-4**）** ────────────────
+     *
+     * ── 改前的病灶（`PROJECT-SURVEY-3` §6.1 乙-4，梳理报告原话判它是
+     *    「**本路找到的最干净的假绿洞**」）──────────────────────────────────────
+     *   这里只有 `if (typeof scan === 'function') { … }`，**没有 `else`**。
+     *   ⚠ 上一支（`catch`）确实会 `bad('I 无法加载渲染模块…')`，而它**只接住 `import` 抛错**；
+     *     `scan` 拿到一个**非函数**（导出被改名 / 改成常量 / 被 tree-shake 掉）时，
+     *     `catch` **不触发**、`if` 也不进 ⇒ ⚠ **I 组整组静默消失**：
+     *     既无 `bad`、也无 `ok`，**一行输出都没有**，退出码照旧 0。
+     *
+     * ── 为什么这比"报 ✓"更难发现 ──────────────────────────────────────────
+     *   "报 ✓"至少**有那一行**，读的人还能看见"I 组跑了、说没问题"；
+     *   而整组消失时，**输出里连 I 组的存在痕迹都没有** —— ⚠ 没人会去数"本该有几组"。
+     *   这是 `E-126`（判据改哑 vs 判据改对必须输出不同）的**最纯形态**：
+     *     改哑之后，两者的输出**完全相同**（都没有那一行）。
+     *
+     * ── 现在 ──────────────────────────────────────────────────────────────
+     *   `scan` 不是函数 ⇒ **必须落 `bad`**（点名"I 组判据函数缺失 ⇒ 本组一条都没跑"）。
+     *   ⛔ 不许落 `ok`、⛔ 不许沉默跳过（TASK 明令）。
+     *   ⚠ 判据**不只是退出码**：必须打印**可读断言行**（`E-112`）。
+     */
     if (typeof scan === 'function') {
       const hits = []
       for (const f of SCAN_FILES) {
@@ -1843,6 +2085,23 @@ export async function runResidualMarkers({ bad, ok }) {  // ── 断言 I · �
           + `${I_BITE_SAMPLES.length} 个"该咬"的对照样本**全部照旧被咬**`
           + ' ⇒ 豁免在起作用、且没有把裸写也放过（自带样本，不依赖正本内容）')
       }
+    } else {
+      /**
+       * ⚠⚠ **乙-4 的修法本体**（2026-10-21 · 第 327 轮）：`scan` 不是函数 ⇒ **必须红**。
+       *
+       * ⚠ **为什么⛔ 不许落 `ok('I 【跳过】…')`**：那正是本项目反复踩的那一格 ——
+       *   "跳过也打 ✓" ⇒ 机器读数把"没查"记成"查过且过"。
+       * ⚠ **为什么⛔ 不许沉默**：改前连 `ok` 都没有 ⇒ 输出里**连 I 组的存在痕迹都没有**，
+       *   没人会去数"本该有几组"（见上面那段长注）。
+       * ⚠ 判据**必须可读**（`E-112`）：点名"判据函数缺失" + "本组一条都没跑" + 修法。
+       */
+      bad('I 【判据函数缺失】`hob-render.ts` 的 `scanMarkers` 不是函数'
+        + `（实测 typeof = ${typeof scan}）⇒ **I 组一条都没跑**（⚠ 不是"没有残留标记"）`
+        + `\n      ⇒ 位置：scripts/check-doc-shape.mjs 的断言 I（${join(root, 'src', 'server', 'hob-render.ts')}）`
+        + '\n      ⇒ ⚠ 这正是乙-4 那个洞：`import` 成功但导出不是函数时，'
+        + '旧代码既不进 `if`、也不进 `catch` ⇒ **整组静默消失**（连一行输出都没有）'
+        + '\n      ⇒ 修法：确认 `hob-render.ts` 仍导出 `scanMarkers` 函数；'
+        + '⛔ 不许把本组改成"跳过也打 ✓"')
     }
   }
 }
