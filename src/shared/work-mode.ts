@@ -134,7 +134,14 @@ export const WORK_MODE_RED_LINE = '「多会话」的"无限制"只到"费用与
  *   的 `allowFor()` 同一条纪律：⛔ 不许在装配外做快照）。
  *
  * @param mode - 当前档位（调用方须**现读**，见 `src/config.ts` 的 `workMode()`）。
- * @returns 该档的口径正文（Markdown 段落；⛔ 保证长度为 0 的唯一情形是非法档位）。
+ * @returns 该档的口径正文（Markdown 段落）。
+ *
+ * ⚠ **订正说明**（2026-10-21 第 333 轮 · **丁-8**）：原句写「⛔ 保证长度为 0 的唯一情形是
+ *   非法档位」—— ⚠ **那个情形不存在**：本函数三个出口（`single` / `multi` / 兜底 `auto`）
+ *   全部返回非空正文，而 `WorkMode` 是**闭合联合类型** ⇒ 编译期就不存在"非法档位"这种入参。
+ *   ⚠ 更关键的是：那个兜底分支**不是"报错出口"**，而是「`auto` = 缺省档」这一条**正常路径**
+ *   （见下面 `// auto（缺省）` 那段）⇒ 把它说成"非法档位"会把**默认行为**读成**异常**。
+ *   ⇒ 现在只陈述事实：**本函数不返回空串**（实测三个分支的 `.join('\n')` 都非空）。
  */
 export function workModeInstruction(mode: WorkMode): string {
   const head = [

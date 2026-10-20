@@ -1,9 +1,13 @@
 /**
  * 文档读取的守卫与上限：**唯一**的路径校验与截断实现点。
  *
- * 被两处共用，避免守卫逻辑写两遍而漂移：
- *   · `tools/read-contracts.ts` —— 暴露给模型的 read_contracts 工具
- *   · `server/llm-bridge.ts`   —— 服务端代执行工具调用时
+ * 被多处共用，避免守卫逻辑写两遍而漂移（⚠ 2026-10-21 第 333 轮 · **丁-8** 订正）：
+ *   · `server/workspace-read.ts` —— 读**工作区**内的文件（它的包含性 / 软链守卫从这里来）
+ *   · `server/hob-write.ts`      —— 写账本时的越界与软链守卫
+ *   · `modules/orchestrator.ts`  —— `resolveLedgerRoot` 的账本根解析
+ *   ⚠ **订正说明**：本条原写作「`tools/read-contracts.ts`」与「`server/llm-bridge.ts`」，
+ *     而**这两个路径都不存在**（实测 `src/tools/` 整个目录没有、`server/llm-bridge.ts` 也没有）
+ *     ⇒ 读注释的人会去找两个找不到的文件。现在按**实际 import 本模块的地方**重写。
  *
  * 权限边界（硬约束）：
  *   只允许读工作区根目录下的 **.md**；非 .md 或越界一律拒绝。

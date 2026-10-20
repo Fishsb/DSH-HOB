@@ -115,6 +115,28 @@ export interface Config {
      */
     bus: import('@deepseek-ai/cordis').Volatile<boolean>
     settings: import('@deepseek-ai/cordis').Volatile<boolean>
+    /**
+     * ⚠⚠ **乙-9（2026-10-21 · 第 333 轮）：这两个键原先在这里是缺的** ────────────
+     *
+     * ── 改前的病灶（`PROJECT-SURVEY-3` §6.2 乙-9，乙类最后一条）─────────────
+     *   本接口的 `modules` **只声明了 3 个键**（`tools` / `bus` / `settings`），
+     *   而 {@link ModulesConfig} 与 schema（见 `:213` 起）都是 **5 个**。
+     *   ⇒ ⚠ 缺的正是 **`orch`** 与 **`interconnect`** —— 恰是那两个"高风险、默认关"的。
+     *   ⚠ **运行期一律走 `moduleSwitches`** ⇒ 读的是运行时对象、不是本类型
+     *     ⇒ **一件事都不响**：编译能过、`check:all` 全绿、设置页也照常显示这两项。
+     *   ⇒ 这是**唯一一处"代码与注释都没发现"的缺陷落点**（乙类里其余都有读数）。
+     *
+     * ── 补齐口径（⚠ 纯类型面，⛔ 不动运行期）──────────────────────────────
+     *   值与 {@link ModulesConfig} **同形**：`Volatile<boolean>`。
+     *   ⚠ **为什么是 `Volatile` 而不是普通 `boolean`**：schema 里这两个都标了
+     *     `.volatile()`（会在设置页出现、可热改），与 `tools` / `bus` / `settings` 同档。
+     *     ⛔ 写成普通 `boolean` 会让类型面再次与实际可配置面**分叉**（只是换个方向分叉）。
+     *   ⚠ **⛔ 不改 `moduleSwitches` 的逻辑、⛔ 不改 schema** —— 本改动**零运行时效果**，
+     *     只让类型面赶上既有事实。
+     *   ⚠ 让这一格**以后不会再漂**：机检见 `check:config` 的 `T` 组（三向键集对账）。
+     */
+    orch: import('@deepseek-ai/cordis').Volatile<boolean>
+    interconnect: import('@deepseek-ai/cordis').Volatile<boolean>
   }
   /**
    * 「Hob 推进项目的工作方式」（2026-10-19 · `UD-97`）。

@@ -1307,6 +1307,203 @@ console.log(JSON.stringify({ evaluated, threw, degraded, warns }))
   }
 }
 
+// ── T. **三向键集对账：schema ⊇ ModulesConfig ⊇ Config.modules**（2026-10-21 · 第 333 轮 · **乙-9**）──
+//
+// ⚠⚠ 本组守的是哪一格（PROJECT-SURVEY-3 §6.2 乙-9，乙类最后一条）：
+//   Config.modules 只声明了 **3** 个键（tools / bus / settings），
+//   而 ModulesConfig 与 schema 都是 **5 个** ⇒ 缺的正是 **orch** 与 **interconnect**。
+//   ⚠ 运行期一律走 moduleSwitches（读运行时对象、不读这个类型）
+//     ⇒ **一件事都不响**：编译能过、check:all 全绿、设置页照常显示这两项。
+//   ⇒ ⚠ 所以**光补齐接口不够** —— 不钉住的话，下次加一个模块键照样会漂，
+//     而且是**同一个静默形态**（无人发现）。
+//
+// ── 判据：三向包含，且**双向**（不是单向子集检查）──────────────────
+//   记三个键集（⚠ 全部从源码实测解析，⛔ 不硬编码键名 —— 硬编码就是第二份会漂的东西）：
+//     · K_schema —— src/config.ts 里 modules: z.object({ … }) 的直接子键；
+//     · K_iface  —— interface ModulesConfig { … } 的顶层键；
+//     · K_cfg    —— Config 里 modules: { … } 那个**内联**对象类型的键。
+//   ⚠ 要求三条，缺一不可：
+//     ① K_schema ⊇ K_iface（schema 必须能配置接口声明的每一个开关）
+//     ② K_iface ⊇ K_cfg（Config.modules 必须声明接口的每一个键 —— **乙-9 就是这里破的**）
+//     ③ 三者不漂移：K_schema === K_iface === K_cfg（⚠ 这条比 ①② 更强，
+//        专治"两个都少同一个键"那种情况 —— 那时 ①② 都成立却仍是漂的）
+//
+// ⚠ 为什么用源码文本解析而不是 import 运行时对象：Config 是**纯类型接口**，
+//   运行期**不存在**（tsc 编译后擦除）⇒ 只能读源码。⚠ 这也是本缺陷当初看不见的原因之一。
+// ⚠ ⛔ 不硬编码键名清单：orch / interconnect 这些名字**一个都不写进判据**
+//   —— 全部从上面三处源码里抽出来比对。⇒ 加模块/删模块时本组自动跟上。
+{
+  /** ⚠ 便于跑"改前 / 改后 / 反向"三档：允许外部塞一份源码进来（默认读真仓）。 */
+  const T_SRC = process.env.HOB_T_SRC !== undefined && process.env.HOB_T_SRC !== ''
+    ? process.env.HOB_T_SRC
+    : null
+
+  /**
+   * 从一个 { … } 块里抽出**顶层的**「标识符:」形式的键（⚠ 只取深度 1）。
+   * ⚠ 用**括号计数**而不是正则一把梭：这三处的值里都含对象字面量
+   *   （如 import(...).Volatile<boolean> 与 z.boolean().default(true)），
+   *   正则会在嵌套里误抓。
+   */
+  const topKeysOf = (blockBody) => {
+    const keys = []
+    let depth = 0
+    let segStart = 0
+    const segs = []
+    /**
+     * ⚠⚠ **按顶层行切段**（不是按 `;`）：TS interface 成员**不写分号**
+     *   ⇒ 按 `;` 切会把整个块体当一段。⚠ 这里改成"在 depth === 0 处遇到换行就切"。
+     */
+    for (let i = 0; i < blockBody.length; i++) {
+      const ch = blockBody[i]
+      if (ch === '(' || ch === '{' || ch === '[') depth++
+      else if (ch === ')' || ch === '}' || ch === ']') depth--
+      else if (ch === '\n' && depth === 0) {
+        segs.push(blockBody.slice(segStart, i))
+        segStart = i + 1
+      }
+    }
+    segs.push(blockBody.slice(segStart))
+    for (const seg of segs) {
+      /**
+       * ⚠ 只认「行首 标识符:」。⚠ 段内可能夹注释，先剥掉再判 ——
+       *   否则注释里的 "xxx:" 会被当成键。
+       */
+      const stripped = seg
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n')
+        .map((l) => l.replace(/\/\/.*$/, ''))
+        .join('\n')
+      /**
+       * ⚠⚠ **按行判，而不是按分号分段**（2026-10-21 · 第 333 轮现场实测的坑）：
+       *   TS 的 interface 成员**不写分号**（`tools: boolean` 后面直接换行）⇒
+       *   用 `;` 分段会把**整个块体当成一段**、只认出第一个键
+       *   ⇒ ⚠ 本组会"看起来绿、其实只比了 1 个键"（比恒绿更坏：它有输出、像在干活）。
+       *   ⇒ 现在逐行扫：**行首的 `标识符:`** 就是成员声明（⚠ 对象字面量的值也长这样，
+       *     但那些行**不以行首标识符开头**——它们在 `{}` 内部、缩进更深，
+       *     而我们已经用 `depth === 0` 只在顶层扫）。
+       */
+      const m = /^\s*([A-Za-z_$][\w$]*)\s*:/.exec(stripped)
+      if (m !== null) keys.push(m[1])
+    }
+    return keys
+  }
+
+  /** 取 src 里 startIdx 之后第一个 { 的**配对块体**（{} 之内）。 */
+  const blockAfter = (src, startIdx) => {
+    const open = src.indexOf('{', startIdx)
+    if (open < 0) return null
+    let depth = 0
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === '{') depth++
+      else if (src[i] === '}') {
+        depth--
+        if (depth === 0) return src.slice(open + 1, i)
+      }
+    }
+    return null
+  }
+
+  /** 取一个 interface 的块体。 */
+  const ifaceBody = (src, nameRe) => {
+    const m = nameRe.exec(src)
+    if (m === null) return null
+    return blockAfter(src, m.index)
+  }
+
+  let tSrc = null
+  try {
+    tSrc = T_SRC !== null ? readFileSync(T_SRC, 'utf8') : readFileSync(CONFIG_TS, 'utf8')
+  } catch (e) {
+    bad('T 【失去基准】读不到 config 源码（' + String(e?.message ?? e) + '）⇒ 三向键集对账无法进行（不按通过处理）')
+  }
+
+  if (tSrc !== null) {
+    /** ① schema */
+    const Ks = (() => {
+      const m = /modules\s*:\s*z\s*\.\s*object\s*\(/.exec(tSrc)
+      if (m === null) return { label: 'schema', keys: null, why: '找不到 modules: z.object(' }
+      const body = blockAfter(tSrc, m.index)
+      if (body === null) return { label: 'schema', keys: null, why: '找不到配对的 {} 块' }
+      const keys = topKeysOf(body)
+      return { label: 'schema', keys, why: keys.length === 0 ? '解析出 0 个键' : '' }
+    })()
+    /** ② ModulesConfig */
+    const Ki = (() => {
+      const body = ifaceBody(tSrc, /export\s+interface\s+ModulesConfig\b/)
+      if (body === null) return { label: 'ModulesConfig', keys: null, why: '找不到 interface ModulesConfig' }
+      const keys = topKeysOf(body)
+      return { label: 'ModulesConfig', keys, why: keys.length === 0 ? '解析出 0 个键' : '' }
+    })()
+    /** ③ Config.modules */
+    const Kc = (() => {
+      const body = ifaceBody(tSrc, /export\s+interface\s+Config\b/)
+      if (body === null) return { label: 'Config.modules', keys: null, why: '找不到 interface Config' }
+      const mm = /(^|\n)\s*modules\s*:\s*/.exec(body)
+      if (mm === null) return { label: 'Config.modules', keys: null, why: 'interface Config 里没有 modules: 段' }
+      const blk = blockAfter(body, mm.index)
+      if (blk === null) return { label: 'Config.modules', keys: null, why: 'modules: 后面没有配对的 {} 块' }
+      const keys = topKeysOf(blk)
+      return { label: 'Config.modules', keys, why: keys.length === 0 ? '解析出 0 个键' : '' }
+    })()
+
+    const unreadable = [Ks, Ki, Kc].filter((x) => x.keys === null)
+    if (unreadable.length > 0) {
+      bad('T 【失去基准】三处键集有解析不到的 ⇒ 本组一条都没比：'
+        + '\n      ' + unreadable.map((x) => x.label + '：' + x.why).join('\n      ')
+        + '\n      ⇒ ⚠ 解析失败**⛔ 不许当成"没问题"**（那会让本组变成恒绿）'
+        + '\n      ⇒ 修法：核对 src/config.ts 里这三处的写法是否变了形状（正则要跟着改）')
+    } else {
+      const fmt = (a) => '{' + a.join(', ') + '}'
+      const setOf = (a) => new Set(a)
+      const diff = (a, b) => [...setOf(a)].filter((x) => !setOf(b).has(x))
+      const ifaceNotCfg = diff(Ki.keys, Kc.keys)
+      const cfgNotIface = diff(Kc.keys, Ki.keys)
+      const ifaceNotSchema = diff(Ki.keys, Ks.keys)
+      const schemaNotCfg = diff(Ks.keys, Kc.keys)
+
+      const problems = []
+      if (ifaceNotCfg.length > 0) {
+        problems.push('② Config.modules **缺** ' + ifaceNotCfg.length + ' 个键：' + ifaceNotCfg.join(' / ')
+          + '\n         ⇒ 接口之间不一致：ModulesConfig 有、而 Config.modules 没有'
+          + '\n         ⇒ ⚠ 这正是乙-9 的原病（orch / interconnect 曾长期缺席）'
+          + '\n         ⇒ 修法：在 interface Config 的 modules: 里补上这些键（与 ModulesConfig 同形）')
+      }
+      if (cfgNotIface.length > 0) {
+        problems.push('③ Config.modules **多** ' + cfgNotIface.length + ' 个键：' + cfgNotIface.join(' / ')
+          + '\n         ⇒ ModulesConfig 里没有这些 ⇒ 接口之间不一致'
+          + '\n         ⇒ 修法：要么补进 ModulesConfig，要么从 Config.modules 删掉')
+      }
+      if (ifaceNotSchema.length > 0) {
+        problems.push('① schema **缺** ' + ifaceNotSchema.length + ' 个键：' + ifaceNotSchema.join(' / ')
+          + '\n         ⇒ ModulesConfig 声明了、而 modules: z.object({…}) 里没有'
+          + '\n         ⇒ ⚠ 后果：**这个开关在设置页里根本不存在**（配了也不认）'
+          + '\n         ⇒ 修法：在 schema 里补 z.boolean().default(…) + .volatile()')
+      }
+      if (schemaNotCfg.length > 0) {
+        problems.push('④ schema **有而 Config.modules 没有** ' + schemaNotCfg.length + ' 个键：' + schemaNotCfg.join(' / ')
+          + '\n         ⇒ ⚠ 这就是"两个都少同一个键"那一格：① 与 ② 都成立（因为都少），'
+          + '\n           而 **schema 是唯一能配的面** ⇒ 少它意味着"用户配得到、而类型面不承认"'
+          + '\n         ⇒ 修法：Config.modules 必须与 schema 对齐')
+      }
+
+      if (problems.length === 0) {
+        ok('T ✓ **三向键集对账**：schema ' + fmt(Ks.keys) + ' ⊇ ModulesConfig ' + fmt(Ki.keys)
+          + ' ⊇ Config.modules ' + fmt(Kc.keys) + '，且**三者完全相同**（' + Ks.keys.length + ' 个键）'
+          + ' ⇒ ⛔ 不再是"Config.modules 少两段而运行期一件事都不响"'
+          + '（⚠ 键名**不硬编码**：三处全部从源码实测解析，加/删模块时本组自动跟上）')
+      } else {
+        bad('T **三向键集漂移**（schema ' + Ks.keys.length + ' 个 / ModulesConfig ' + Ki.keys.length + ' 个'
+          + ' / Config.modules ' + Kc.keys.length + ' 个）：\n      ' + problems.join('\n      ')
+          + '\n      ⇒ 三处实测键集：\n         schema           = ' + fmt(Ks.keys)
+          + '\n         ModulesConfig    = ' + fmt(Ki.keys)
+          + '\n         Config.modules   = ' + fmt(Kc.keys)
+          + '\n      ⇒ ⚠ 这是**双向**判据：少了红、多了也红、两处同少同一个键**同样红**'
+          + '\n        （⛔ 不是单向子集检查 —— 那种检查放过"两个都少"这一格）')
+      }
+    }
+  }
+}
+
 // ── 输出 ────────────────────────────────────────────────────────────────
 console.log('配置面一致性核对 · dsh-hob（schema ↔ cordis.patch.yml ↔ 设置面板）')
 console.log('schema :', CONFIG_TS)

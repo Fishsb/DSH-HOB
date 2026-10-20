@@ -310,6 +310,13 @@ export interface OrchStatus {
    */
   unownedWatchesMemoryOnlyGap?: number
   /**
+   * ⚠ **乙-10 补充（第 333 轮）**：同一个缺口的**盘上原始记录条数**（去重前）。
+   *   ⚠ 上一条是**按 `target` 去重后**的个数；本条是**去重前**的条数。
+   *   ⛔ 两者**不可相加、不可互换**（一个数"几个会话"、一个数"几条记录"）
+   *     —— 只留一个就是"两种成因说成同一句话"。
+   */
+  unownedWatchesMemoryOnlyGapRaw?: number
+  /**
    * ── ⚠⚠ **结算态三档**（2026-10-20 · 本单 B3 / B4 新增）──────────────────
    *
    * ⚠ 存在的唯一理由：`unresolved`（判不出、**下一次还会再核**）与
@@ -1876,8 +1883,10 @@ export function apply(ctx: any): void {
       relaysDone: number
       relaysBlocked: number
       unownedWatches: number
-      /** ⚠ **乙-10**：盘上有、内存里没有对应 watch 的未结算条数（正常档不出现）。 */
+      /** ⚠ **乙-10**：盘上有、内存里没有对应 target 的未结算记录 —— **按 target 去重后**的个数。 */
       unownedWatchesMemoryOnlyGap?: number
+      /** ⚠ **乙-10**：同一个缺口的**盘上原始记录条数**（⛔ 不与上面那个相加 —— 量纲不同）。 */
+      unownedWatchesMemoryOnlyGapRaw?: number
       settleByState: Record<SettleState, number>
     } => {
       const all = [...watches.values()]
@@ -1888,11 +1897,27 @@ export function apply(ctx: any): void {
        *   ⚠ **只读**：只 `readOrchState`，⛔ 不写盘；⛔ 不引入任何定时器
        *     （就在既有 `status()` 的取数里顺手算）。
        */
+      /**
+       * ⚠⚠ **两个数都要**（2026-10-21 · 第 333 轮 · **乙-10 补充**）——
+       *   ⛔ 不许只留一个：那是"两种成因说成同一句话"（本项目反复栽的那一格）。
+       *   · `memoryOnlyGapRaw`   —— 盘上**原始记录条数**（内存里没有对应 target 的那些）；
+       *   · `memoryOnlyGap`      —— **按 `target` 去重后**的条数。
+       *
+       * ── 为什么要去重 ──────────────────────────────────────────────────────
+       *   `D4` 的不变量是「**同一 `target` 至多一条未结算**」。⚠ 而盘上**可能被别的代
+       *   留下多条同 target 记录**（上一代崩在写盘中途 / 手工改过文件 / 两次派发撞在一起）
+       *   ⇒ ⚠ 按条数算会**偏大**：同一个在等回传的会话被数成 2 条、3 条。
+       *   ⇒ 去重后才是"**有多少个在等回传**"；原始条数则说明"**盘上有多少条记录**"。
+       *   ⚠ 两个数**量纲不同**（个 vs 条）⇒ 都印出来，⛔ 不合并、⛔ 不加总。
+       */
       let memoryOnlyGap = 0
+      let memoryOnlyGapRaw = 0
       try {
         /** ⚠ 内存里已知的 target 集（= `watches` 的键；`D4` 保证同一 target 至多一条）。 */
         const memTargets = new Set<string>()
         for (const w of all) memTargets.add(w.target)
+        /** ⚠ 盘上"内存里没有"的 target 集（去重用）。 */
+        const gapTargets = new Set<string>()
         for (const file of scanStateFiles(svcCtx)) {
           const st = readOrchState(file)
           /**
@@ -1900,9 +1925,12 @@ export function apply(ctx: any): void {
            *   不计入"在等回传"。
            */
           for (const pw of st.pending) {
-            if (!memTargets.has(pw.target)) memoryOnlyGap++
+            if (memTargets.has(pw.target)) continue
+            memoryOnlyGapRaw++
+            gapTargets.add(pw.target)
           }
         }
+        memoryOnlyGap = gapTargets.size
       } catch { /* 盘读不到 ⇒ 缺口判不出 ⇒ 保持 0；⚠ 不许因此让 status() 抛 */ }
       if (self === undefined) {
         // ⚠ 判不出"我"是谁 ⇒ **只报无归属的那一部分**（⛔ 不许把全实例汇总当我的）
@@ -1915,7 +1943,9 @@ export function apply(ctx: any): void {
           relaysBlocked: 0,
           unownedWatches: all.filter((w) => w.owner === undefined || w.owner === '').length,
           /** ⚠ 即使判不出"我"是谁，这条缺口读数**照样给**（它描述的是"内存看不全"，与我无关）。 */
-          ...(memoryOnlyGap === 0 ? {} : { unownedWatchesMemoryOnlyGap: memoryOnlyGap }),
+          ...(memoryOnlyGap === 0 && memoryOnlyGapRaw === 0
+            ? {}
+            : { unownedWatchesMemoryOnlyGap: memoryOnlyGap, unownedWatchesMemoryOnlyGapRaw: memoryOnlyGapRaw }),
           /** ⚠ 判不出"我"是谁 ⇒ 三档一律 0，且渲染层**不许**把它们说成"没有"（B4 同款口径）。 */
           settleByState: { waiting: 0, unresolved: 0, stuck: 0 },
         }
@@ -2000,7 +2030,9 @@ export function apply(ctx: any): void {
          * ⚠ **正常档不带这个字段**（`0` ⇒ 不出现）⇒ 渲染层一个字都不多，
          *   与改前**逐字相同**（`TASK` 要求 3）。
          */
-        ...(memoryOnlyGap === 0 ? {} : { unownedWatchesMemoryOnlyGap: memoryOnlyGap }),
+        ...(memoryOnlyGap === 0 && memoryOnlyGapRaw === 0
+          ? {}
+          : { unownedWatchesMemoryOnlyGap: memoryOnlyGap, unownedWatchesMemoryOnlyGapRaw: memoryOnlyGapRaw }),
       }
     }
 
@@ -2341,7 +2373,12 @@ export function apply(ctx: any): void {
            */
           ...(mine.unownedWatchesMemoryOnlyGap === undefined
             ? {}
-            : { unownedWatchesMemoryOnlyGap: mine.unownedWatchesMemoryOnlyGap }),
+            : {
+              unownedWatchesMemoryOnlyGap: mine.unownedWatchesMemoryOnlyGap,
+              ...(mine.unownedWatchesMemoryOnlyGapRaw === undefined
+                ? {}
+                : { unownedWatchesMemoryOnlyGapRaw: mine.unownedWatchesMemoryOnlyGapRaw }),
+            }),
         }
       },
 
@@ -4276,7 +4313,10 @@ export function createHobOrchTools(orch: HobOrchestrator): {
          */
         ...(s.unownedWatchesMemoryOnlyGap === undefined || s.unownedWatchesMemoryOnlyGap === 0
           ? []
-          : [`  ↳ ⚠⚠ **盘上另有 ${s.unownedWatchesMemoryOnlyGap} 条未结算记录，本进程内存里没有对应 watch**`
+          : [`  ↳ ⚠⚠ **盘上另有 ${s.unownedWatchesMemoryOnlyGap} 个会话在等回传**`
+            + `（涉及 **${s.unownedWatchesMemoryOnlyGapRaw ?? s.unownedWatchesMemoryOnlyGap}** 条记录`
+            + `—— 同一会话被留下的记录多于一条时会不等，⚠ 两个数**量纲不同、⛔ 不可相加**）`
+            + '，本进程内存里没有对应 `watch`'
             + ' ⇒ 上面"无归属"那个数**只覆盖内存**（⛔ 别把它读成"盘上也干净"）；'
             + '⚠ 成因：重载后还没被认领 / 上一代留下的（本进程只看得见自己的 `watches`）']),
       ].join('\n')
