@@ -69,6 +69,7 @@ import {
   CLEANUP_RETRY_LIMIT,
   RELAY_BUS_MISS_LIMIT,
   orchWriteQueueStats,
+  STATUS_LIST_MAX,
   bindSession,
   clearHandoffs,
   countLostByClass,
@@ -4368,7 +4369,16 @@ export function createHobOrchTools(orch: HobOrchestrator): {
        * ⚠ 与 `handoffs` 那一列**同款口径**（本地时间串，人读得懂、且不依赖毫秒对齐）。
        */
       const stampOf = (at: number): string => new Date(at).toLocaleString('zh-CN', { hour12: false })
-      const lines = s.watches.map((w) => '- ' + [
+      /**
+       * ⚠⚠ **丙-13（2026-10-21 · 第 339 轮）：`watches` 逐条展开原先没有上限**。
+       *   ⇒ 现在只展开前 `STATUS_LIST_MAX` 条；**超出**时**另起一行**说清还有多少条未展开
+       *     （⛔ 不许静默截断 —— 那会把"账本很长"说成"只有这么多"）。
+       *   ⚠ 已展开行的内容**一个字未改**（`map` 的元组逐项不变）。
+       *   ⚠ **"未展开"的数 ⛔ 不与"在等回传"那个数相加**（量纲不同：一个是总数、一个是差额）。
+       */
+      const watchShown = s.watches.slice(0, STATUS_LIST_MAX)
+      const watchHidden = Math.max(0, s.watches.length - watchShown.length)
+      const lines = watchShown.map((w) => '- ' + [
         `target=${w.target}`,
         // ── **登记时刻**（2026-10-18 第 2 轮新增）──────────────────────────
         //   ⚠ 这一列是「写发合一」**唯一可机检**的那半边：派发成功 ⇒ 状态行里
@@ -4434,10 +4444,20 @@ export function createHobOrchTools(orch: HobOrchestrator): {
       //   ⚠ **空态照旧**（`待投递：0 份`）：判据是"空态也给读数"，**不许**改成
       //     `length === 0 ? []` 那种"空就不打印"（那正是本缺陷的病根）。
       const manualCount = s.handoffs.filter((h) => h.manual === true).length
+      /**
+       * ⚠ **`handoffs` 同样加上限**（丙-13 的第二处）。
+       *   ⚠ `hh` 是逐条展开那摞；⚠ 未展开数**单列**，⛔ 不并进 `待投递：N 份` 那个数。
+       */
+      const handoffShown = hh.slice(0, STATUS_LIST_MAX)
+      const handoffHidden = Math.max(0, hh.length - handoffShown.length)
       return [
         s.stopped ? '⏸ 已停（不回传、不接受新派发）' : '▶ 在跑',
         `在等回传：${s.watches.length} 个`,
         ...lines,
+        ...(watchHidden === 0
+          ? []
+          : [`  ↳ ⚠ **另有 ${watchHidden} 条未展开**（本次只展开前 ${STATUS_LIST_MAX} 条`
+            + ` —— ⛔ 这不是"只有 ${s.watches.length} 条"的相反面，上面那个总数 ${s.watches.length} 是真的）`]),
         `已回传：${s.relaysDone} 次 · 被停闸拦下：${s.relaysBlocked} 次`,
         // ── ⚠ ⚠ 以下是 2026-10-16 第 247 轮（`TASK-R207`）**新增的行** ─────────
         //   ⚠ **只在"够不到"时才出现**（`'no-records-yet'` / `'ok'` ⇒ 一行都不加）。
@@ -4546,7 +4566,15 @@ export function createHobOrchTools(orch: HobOrchestrator): {
             manualCount > 0
               ? `⚠ 待投递：${s.handoffs.length} 份（其中 ${manualCount} 份已标注为人工转达） ——`
               : `⚠ 待投递：${s.handoffs.length} 份 ——`,
-            ...hh,
+            ...handoffShown,
+            /**
+             * ⚠ **丙-13**：`handoffs` 的未展开数**单列一行**（⛔ 不与 `待投递：N 份` 相加）。
+             *   ⚠ 正常档（未超限）⇒ `handoffHidden === 0` ⇒ **一行都不加** ⇒ 输出逐字不变。
+             */
+            ...(handoffHidden === 0
+              ? []
+              : [`  ↳ ⚠ **另有 ${handoffHidden} 条未展开**（本次只展开前 ${STATUS_LIST_MAX} 条`
+                + ` —— 上面"待投递：${s.handoffs.length} 份"那个总数是真的）`]),
             '  ↳ 这些是**已写出、但还没投出去**的（写了交接文件 / 建了会话）。',
             manualCount > 0
               ? '  ↳ 标注为**人工转达**的那些是**有意的**（不是漏投）；**其余**若本轮没打算人工带过去 ⇒ 说明漏了投递。'

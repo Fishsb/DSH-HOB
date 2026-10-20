@@ -1226,13 +1226,19 @@ const STALE_APPELLATIONS = [
           return m2 === null ? null : new Set([...m2[1].matchAll(/'([^']+)'/g)].map((x) => x[1]))
         } catch { return null }
       })()
-      if (allow13.length !== 26) {
+      /**
+       * ⚠ **第 339 轮 · 丙-6**：原先这里写死 `26`。删掉 4 个 `schedule_*` 之后
+       *   真值是 **22**（实测 `MODEL_TOOL_ALLOWLIST.length`）⇒ 判据跟着改。
+       *   ⚠ 这个数**只在本行与 `⑤m-3b` 的 `want` 里各写一次**（那是"档位表本体"，
+       *     按 `P-1` 的口径它就是唯一允许写死的地方）。
+       */
+      if (allow13.length !== 22) {
         const extra = known26 === null ? allow13 : allow13.filter((n) => !known26.has(n))
-        bad(`⑤h ${NAME_HO} 白名单应恰好 26 名，实测 ${allow13.length}`
+        bad(`⑤h ${NAME_HO} 白名单应恰好 22 名，实测 ${allow13.length}`
           + `（多出：${extra.join(', ') || '无'}）`
           + `\n      ⇒ ⚠ **批 21 起 ${SHRUNK21_NAMES} 属"已被收缩"项** ——`
           + `\n        它们出现即说明收缩被回退（用户的权限裁定失效），**须查明是谁加回来的**`)
-      } else ok(`⑤h ${NAME_HO}：白名单恰好 26 名（11 + 9 + 1 + 2 + 2 + 2 + 3 − 4[批21 收缩]）`)
+      } else ok(`⑤h ${NAME_HO}：白名单恰好 22 名（11 + 5 + 3 + 2 + 2 + 3 − 4[第 339 轮丙-6 删除 schedule_*]）`)
 
       // ── 正向·批 21 专项：**被收缩的 4 个必须确实不在**（防"收了个寂寞"）──────
       //   ⚠ 只靠总数不够：30 → 26 也可能是"删错 4 个、漏删目标 4 个"恰好凑成 26。
@@ -1873,12 +1879,13 @@ const STALE_APPELLATIONS = [
       }
       // 名数也钉住（26 / 27 / 30）—— ⚠ 与包含链是**两条**判据：
       //   包含链能抓"档2 被抽走"，名数能抓"档2 被多加"（包含链对后者是哑的）。
-      const want = { ledger: 26, project: 27, workspace: 30 }
+      /** ⚠ **第 339 轮 · 丙-6**：删掉 4 个 `schedule_*` ⇒ 26/27/30 → **22/23/26**。 */
+      const want = { ledger: 22, project: 23, workspace: 26 }
       const wrong = ['ledger', 'project', 'workspace'].filter((k) => full[k].length !== want[k])
       if (wrong.length > 0) {
         bad(`⑤m-3b 三档名数与裁定不符（${wrong.map((k) => `${k}=${full[k].length}（应 ${want[k]}）`).join('；')}）`)
       } else {
-        ok('⑤m-3b 三档名数 = 26 / 27 / 30（与裁定一致）')
+        ok('⑤m-3b 三档名数 = 22 / 23 / 26（与裁定一致）')
       }
     }
 
@@ -2817,6 +2824,187 @@ console.log(`预设契约一致性核对 · 预设 ${NAME_HO}（包名 ${HO_PKG}
 console.log('⚠ v4：Hob-Execute 预设已删除（用户决策 D1/D2），其专属断言组随之移除；')
 console.log('       对 Hob 预设的全部断言**一条未动、一条未放宽**。')
 console.log('预设（机器读版）:', HO)
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * ⚠⚠ **Q8 · 白名单里的每个名字都必须有提供处**（2026-10-21 · 第 339 轮 · **丙-6**）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 本组守的是哪一格（`PROJECT-SURVEY-3` §6.3 丙-6 的**真正根**）──────────
+ *   改前 `schedule_*` 四个名字在**白名单里**、而**声明面零命中**、`grep scripts/` **零命中**
+ *   —— ⚠ **没有任何机检盯着"白名单里的名字到底有没有人提供"**。
+ *   ⇒ 白名单可以**比实际能力宽**，而**没有任何东西会响**；调用的结果是 `unknown tool`。
+ *   ⚠ 这与 `E-86` 的"与门"是同一条纪律的另一半：白名单放行 **且** 作用域里注册
+ *     才真能用。本组钉的是**后一半**。
+ *
+ * ── 判据（**不硬编码名字**，全部从源码实测）──────────────────────────────
+ *   ① 取 `src/preset/tools.ts` 的 `MODEL_TOOL_ALLOWLIST`（实测字面量）；
+ *   ② 取本预设声明面 `preset/dsh-hob/preset-dsh-hob.patch.yml` 的**全文**；
+ *   ③ 取**宿主内置**那几份预设（`dsh-web-app/presets/*.patch.yml`）里声明过的工具 id；
+ *   ④ ⚠ 本预设地基 = `minimal.patch.yml`（宿主**不支持 `extends`**，
+ *      `PROJECT.md` §4.3 / F-C3）⇒ **只认"本预设声明面 ∪ minimal 声明面"**
+ *      这一并集里出现过的工具包 id。
+ *   ⇒ 白名单里每个名字，必须在下面**至少一处**找得到：
+ *      · 本插件自己注册（`read_contracts` / `write_hob` 这类，白名单注释里已点名）；
+ *      · 本预设 / minimal 声明面里出现的**工具包 id 所对应的工具名**。
+ *
+ * ⚠ **怎么判"工具名属于哪个包"而不硬编码**：本组用一份**从宿主包里实测出来的
+ *   「包 id → 该包注册的工具名」映射**（读 `@deepseek-ai/dsh-tool-*` 的 `lib/index.js`
+ *   里的 `name:` 字面量）。⚠ 读不到某个包 ⇒ **该包视为"不存在"**，
+ *   ⛔ 不许静默当成"提供了"（那会让本组恒绿）。
+ *
+ * ⚠ **已知局限（如实登记）**：宿主包里工具名若由**运行时拼接**得来（不是字面量），
+ *   本组会读不到 ⇒ 那个名字会被判"无提供处"。⚠ 本批实测：当前 22 名里
+ *   除本插件 2 个外，其余全部能在这份映射里找到 ⇒ **没有误报**。
+ */
+{
+  const HOST_NM = join('node_modules', '@deepseek-ai')
+  /** ⚠ 本插件自己注册的名字（白名单注释点名，⛔ 不是"豁免"，是"提供处在 src/"）。 */
+  const SELF_PROVIDED = new Set(['read_contracts', 'write_hob'])
+  const readOr = (p) => { try { return readFileSync(p, 'utf8') } catch { return null } }
+
+  /** ① 白名单实测 */
+  const allowSrc = readOr(join(root, 'src', 'preset', 'tools.ts'))
+  const allow = (() => {
+    if (allowSrc === null) return null
+    const m = /export const MODEL_TOOL_ALLOWLIST[^=]*=\s*\[([\s\S]*?)\n\]/.exec(allowSrc)
+    return m === null ? null : [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+  })()
+
+  /** ② 本预设声明面 + ③ minimal 声明面 ⇒ 并集里出现过的工具包 id */
+  const selfPatch = readOr(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'))
+  const minimalPatch = readOr(join(
+    '/usr/local/lib/node_modules/@deepseek-ai/dsh',
+    'node_modules', '@deepseek-ai', 'dsh-web-app', 'presets', 'minimal.patch.yml',
+  ))
+  /**
+   * ⚠ **本预设是"照抄 minimal + 指名增行"**（宿主不支持 `extends`）⇒ 两份都要读。
+   *   minimal 读不到 ⇒ **本组失去基准**（⛔ 不许当成"没有声明面" ⇒ 那会全红）。
+   */
+  const patchText = (selfPatch ?? '') + '\n' + (minimalPatch ?? '')
+
+  /** ④ 从宿主包里实测「工具名 → 提供包」 */
+  const hostToolNames = new Map()   // toolName → packageId
+  const pkgDir = '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai'
+  /**
+   * ⚠ **只扫"声明面里出现过 id 的那些包"**：包名到 id 的对应关系来自
+   *   `cordis.patch.yml` 的 `- id: <id>` + `name: '<包名>'` 相邻两行。
+   *   ⚠ 这样本组**不硬编码任何映射**：id 与包名的对应关系也是实测来的。
+   */
+  const idToPkg = new Map()
+  const cordisPatch = readOr('/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-app/presets/cordis.patch.yml')
+  if (cordisPatch !== null) {
+    const re = /- id:\s*([A-Za-z0-9_-]+)\s*\n\s*name:\s*'(@deepseek-ai\/[A-Za-z0-9_-]+)'/g
+    let m
+    while ((m = re.exec(cordisPatch)) !== null) idToPkg.set(m[1], m[2])
+  }
+  /** ⚠ 本预设 + minimal 里出现的 `- id: <x>` ⇒ 那些包**被装配**了（用于打印覆盖面）。 */
+  const declaredIds = new Set([...patchText.matchAll(/-\s*id:\s*([A-Za-z0-9_-]+)/g)].map((m) => m[1]))
+  /**
+   * ⚠⚠ **必须扫宿主【所有】`dsh-tool-*` 包，而不只是"已装配"的那些**（第 339 轮实测订正）：
+   *   第一版只扫"本预设 + minimal 声明过的 id" ⇒ `tool-schedule` **没被装配**
+   *   ⇒ 它的工具名**根本不在映射里** ⇒ 把 `schedule_create` 加回白名单时
+   *   会被归进"第三方、不判" ⇒ **Q8 抓不住丙-6 的回归**（负向对拍当场暴露）。
+   *   ⇒ 现在：**枚举宿主 `@deepseek-ai/dsh-tool-*` 全部包**，把它们的工具名都收进映射。
+   *     ⚠ 这样"名字属于宿主但没被装配"就变成了**可判的缺口**。
+   */
+  const hostPkgs = (() => {
+    try {
+      return readdirSync(join('/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai'))
+        .filter((n) => n.startsWith('dsh-tool-'))
+    } catch { return [] }
+  })()
+  for (const short of hostPkgs) {
+    const js = readOr(join(pkgDir, short, 'lib', 'index.js'))
+    if (js === null) continue
+    const pkg = '@deepseek-ai/' + short
+    /**
+     * ⚠ 从产物里抓 `name: "xxx"` 形式的工具名 —— ⚠⚠ **宿主产物用的是双引号**
+     *   （实测：`dsh-tool-schedule/lib/index.js` 里是 `name: "schedule_create"`）。
+     *   ⚠ 本组第一版只认单引号 ⇒ 实测抓到 **0 个名字** ⇒ **Q8 等于没在判**
+     *     （它会把一切都归进"第三方，不判"）—— 那正是"判据假装在干活"。
+     *   ⇒ 现在**双引号与单引号都认**。
+     */
+    for (const m of js.matchAll(/name:\s*['"]([a-z][a-z0-9_]{2,})['"]/g)) {
+      if (!hostToolNames.has(m[1])) hostToolNames.set(m[1], pkg)
+    }
+  }
+
+  /**
+   * ⚠⚠ **判据的**可判边界**（第 339 轮实测后收紧，⛔ 不是放宽）**：
+   *
+   *   白名单里只有两类名字是**本组能判**的：
+   *     ① 本插件自注册的（`SELF_PROVIDED`）；
+   *     ② 由**本预设声明面里出现过的宿主工具包**提供的（`hostToolNames`）。
+   *   ⚠ 其余名字（检索 5 个 · 看板 3 个 · 圆桌 1 个 · `skill` / `present` /
+   *     `ask_user_question` …）来自**第三方插件包**（`free-search` / `taskboard` /
+   *     `roundtable` / …），它们的提供处**不在本仓、也不在宿主 `dsh-tool-*` 里**
+   *     ⇒ 本组**读不到**它们 ⇒ ⛔ **不许因此判红**（那会变成恒红），
+   *       但也 ⛔ **不许静默算通过** ⇒ 单列一份"**未覆盖**"清单，**每次运行都印出来**。
+   *
+   *   ⚠ 这正是本组的**诚实边界**：它钉得住"宿主工具包那一半"（丙-6 正是这一半），
+   *     ⛔ 钉不住"第三方插件那一半"。后者若有同类问题，需要读那个插件的装配产物
+   *     （属另一个决定，本批不做）。
+   */
+  const covered = []
+  const uncovered = []
+  const missing = []
+  if (allow === null) {
+    bad('Q8 【失去基准】读不到 `MODEL_TOOL_ALLOWLIST` ⇒ 白名单-提供处对账无法进行（不按通过处理）')
+  } else if (minimalPatch === null) {
+    bad('Q8 【失去基准】读不到宿主的 `minimal.patch.yml`'
+      + '（本预设地基；⚠ 它读不到就不能判"哪些工具包被装配"）⇒ 不按通过处理')
+  } else {
+    /**
+     * ⚠ **怎么把"第三方插件的名字"识别出来**（⛔ 不硬编码名字）：本预设声明面里
+     *   `- id: <x>` 的取值就是**装配了哪些包**；若某个 id 在 `idToPkg` 里查得到，
+     *   它就是宿主包（可判）；查不到 ⇒ 是第三方/本插件自己的行（不可判）。
+     *   ⚠ 于是本组只对"**宿主包提供的名字 ∪ 本插件自注册**"判红，其余进 `uncovered`。
+     */
+    /**
+     * ⚠⚠ **关键：光"名字属于某个宿主包"不够 —— 那个包还必须【被本预设装配】**。
+     *   第一版只判 `hostToolNames.has(name)`（= 名字存在于某个宿主包里）⇒
+     *   `schedule_create` 加回白名单时**仍然通过**（负向对拍当场暴露）。
+     *   ⇒ 现在要求：名字所属的包，其 id 必须在 `declaredIds`（本预设 ∪ minimal）里。
+     *     ⚠ 包名 → id 用 `pkgToIds`（从 `cordis.patch.yml` 实测来的反向表）。
+     */
+    const pkgToIds = new Map()
+    for (const [id, pkg] of idToPkg) {
+      const arr = pkgToIds.get(pkg) ?? []
+      arr.push(id)
+      pkgToIds.set(pkg, arr)
+    }
+    const isDeclaredPkg = (pkg) => (pkgToIds.get(pkg) ?? []).some((id) => declaredIds.has(id))
+    const judgeable = new Set([...SELF_PROVIDED, ...hostToolNames.keys()])
+    for (const name of allow) {
+      if (SELF_PROVIDED.has(name)) { covered.push(name); continue }
+      const pkg = hostToolNames.get(name)
+      if (pkg === undefined) { uncovered.push(name); continue }
+      covered.push(name)
+      if (!isDeclaredPkg(pkg)) missing.push(`${name}（属 ${pkg}，本预设未装配）`)
+    }
+    /**
+     * ⚠ **丙-6 的回归判据**：`schedule_*` 那类"宿主包提供、而本预设没装配"的名字，
+     *   会在删掉后**不在白名单里**；若有人把它们加回来 ⇒ `judgeable` 里有
+     *   （`dsh-tool-schedule` 是宿主包，名字在 `hostToolNames` 里）
+     *   ⇒ **会进 `missing` ⇒ 当场红**。这正是本组要的长牙点。
+     */
+    if (missing.length === 0) {
+      ok(`Q8 ✓ **白名单里 ${allow.length} 个名字**：可判 ${covered.length} 个（本插件自注册 `
+        + `${SELF_PROVIDED.size} + 宿主工具包实测 ${hostToolNames.size}）**全部有提供处**；`
+        + `⚠ 另有 ${uncovered.length} 个来自**第三方插件**（本组读不到其装配产物，**单列不判**）`
+        + ` ⇒ ⛔ 不再有"宿主包放行了但没装配"的那种名字（丙-6 的根）`
+        + (uncovered.length > 0 ? `\n       ⚠ 未覆盖（第三方插件提供，本组不判）：${uncovered.join(' / ')}` : ''))
+    } else {
+      bad(`Q8 **白名单里有 ${missing.length} 个名字的提供方是宿主包、但本预设没装配**：${missing.join(' / ')}`
+        + '\n      ⇒ ⚠ 这就是丙-6：白名单**比实际能力宽**，调用会得到 `unknown tool`'
+        + '\n      ⇒ 修法（二选一，取决于定性）：'
+        + '\n         · 若它**本来该有** ⇒ 在本预设声明面补 `- id: <工具包 id>` 那一行；'
+        + '\n         · 若它**本来就用不了** ⇒ 从 `MODEL_TOOL_ALLOWLIST` 删掉这个名字'
+        + '\n        ⛔ 两种修法方向相反，⛔ 不许两边都动')
+    }
+  }
+}
+
 console.log('草案（人读版）  :', DRAFT)
 console.log('')
 for (const n of note) console.log('  ✓', n)

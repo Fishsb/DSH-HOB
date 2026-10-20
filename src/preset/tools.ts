@@ -622,11 +622,33 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
   'platform_search',
   'video_search',
   'free_search_test',
-  // ── 定时提醒 4 个（既有）──────────────────────────────────────────
-  'schedule_create',
-  'schedule_list',
-  'schedule_update',
-  'schedule_delete',
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **丙-6（2026-10-21 · 第 339 轮）：这 4 个定时工具**已从白名单删除**
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 定性（**实测**，不是推断）──────────────────────────────────────────
+   *   ① 白名单曾列 `schedule_create` / `schedule_list` / `schedule_update` / `schedule_delete` 这四个；
+   *   ② **本预设的声明面零命中** —— `preset/dsh-hob/preset-dsh-hob.patch.yml` 里
+   *      `grep schedule` = **0**；
+   *   ③ 本预设地基 = `dsh-web-app/presets/minimal.patch.yml`，而那份里
+   *      只有 `tool-fs` **一行**工具面，**没有 `tool-schedule`**（`grep` = 0）；
+   *   ④ 宿主 preset **不支持 `extends`**（`PROJECT.md` §4.3 / F-C3）⇒ 本预设
+   *      **不会**从 standard / full 那类预设里继承到 `tool-schedule`；
+   *   ⑤ 提供方是 `@deepseek-ai/dsh-tool-schedule`（dsh 主包直接依赖，
+   *      `package.json:80`；装配 id = `tool-schedule`，见
+   *      `dsh-web-app/presets/cordis.patch.yml:38-39`）—— **它不在本预设的装配面上**。
+   *
+   *   ⇒ **定性 = 模型面多余**：这几个名字被放行，但作用域里**根本没有注册**，
+   *     调用只会得到 `unknown tool`（`E-86` 的"与门"缺一半）。
+   *     ⚠ 这是白名单**比实际能力宽**，与"声明面漏行"方向相反 ——
+   *     两种定性修法相反，本批按实测的那一种做：**删名字**。
+   *
+   * ── 代价（如实）─────────────────────────────────────────────────────
+   *   ⚠ 名数按实测：`ledger` 22 · `project` 23 · `workspace` 26（**以 `check:presets` 的判定为准**）。
+   *   ⚠ 受影响的断言（本批已全部跑过）：`P-1`（名数口径）、`⑤h`、`⑤m-3b`、`⑦`、`⑧`。
+   *   ⚠ **能力面没有缩水** —— 那几个工具**本来就用不了**；删掉的只是"看起来能用"的假象。
+   */
   // ── 批 9 / S1：编排**只读查询** 4 个（声明面零增量，已在继承面）─────
   'taskboard_list',
   'taskboard_get',
