@@ -85,44 +85,126 @@ async function boot(configInput) {
   return { root, fiber }
 }
 
-/** 取根 registry 上**已登记**的模块名（`apply` 走 `ctx.plugin` ⇒ 登记名进 registry）。 */
+/**
+ * 取根 registry 上**已登记**的模块名（`apply` 走 `ctx.plugin` ⇒ 登记名进 registry）。
+ *
+ * ⚠⚠ **2026-10-21 · 第 330 轮 · 乙-1**：本函数现在**同时**回带"取数面在不在"。
+ *
+ * ── 改前的病灶（`PROJECT-SURVEY-3` §6.2 乙-1）────────────────────────
+ *   它返回 `[]` 时，下面两条**否定式**断言（`!names.includes('dsh-hob-tools')` 等）
+ *   **恒真** ⇒ ⚠「**取数面塌了**」与「**取数面正常、且确实没有那个模块**」
+ *   印出**逐字相同**的 `PASS`。这正是本项目最忌的"两种原因说成同一句话"。
+ *   ⚠ `[]` 的成因**不止一种**：`root.registry` 缺席 / `values()` 不是函数 /
+ *     `values()` 抛错 / 真的一个都没登记 —— ⛔ 它们必须与"正常且为空"分开。
+ *
+ * ⇒ 返回值改成 `{ names, ok, why }`：
+ *   · `ok === true`  ⇒ 取数面**真的读到了**（`values()` 正常返回，可能是空数组）；
+ *   · `ok === false` ⇒ **取数面塌了**（`why` 给成因）⇒ 调用方必须落失败。
+ */
 function registryNames(root) {
   const names = []
-  for (const rt of (root.registry?.values?.() ?? [])) names.push(rt.name)
-  return names
+  const reg = root?.registry
+  if (reg === undefined || reg === null) {
+    return { names, ok: false, why: '`root.registry` 缺席（拿不到登记表）' }
+  }
+  if (typeof reg.values !== 'function') {
+    return { names, ok: false, why: '`root.registry.values` 不是函数（登记表形状变了）' }
+  }
+  try {
+    for (const rt of reg.values()) names.push(rt.name)
+  } catch (e) {
+    return { names, ok: false, why: `\`registry.values()\` 抛错（${String(e?.message ?? e)}）` }
+  }
+  /**
+   * ⚠ **读完却是空 ⇒ 也判"取数面塌了"**：本探针**必然**会登记至少一个模块
+   *   （路径 A 就断言了 tools/bus/settings 被装载）⇒ 空表只可能是"没读到"，
+   *   ⛔ 不是"确实什么都没有"。
+   *   ⚠ 这一条是**关键**：不加它，`names` 为空时下面两条否定式仍然恒真。
+   */
+  if (names.length === 0) {
+    return { names, ok: false, why: '`registry.values()` 读完**一条登记都没有**（本探针至少该有 3 条）' }
+  }
+  return { names, ok: true, why: '' }
 }
 
 console.log('=== 路径 A：配置开关（默认 modules.bus=true，自 M3 / UD-77 起）===')
 {
   const { root } = await boot({})
-  const names = registryNames(root)
-  check(
-    '默认配置下，tools / bus / settings 三个模块被装载（orch 默认关）',
-    names.includes('dsh-hob-tools') && names.includes('dsh-hob-bus') && names.includes('dsh-hob-settings'),
-    JSON.stringify(names),
-  )
-  check(
-    '默认配置下，orch 模块**未**被装载（默认 modules.orch=false）',
-    !names.includes('dsh-hob-orchestrator'),
-    JSON.stringify(names),
-  )
+  const r = registryNames(root)
+  /**
+   * ⚠⚠ **取数面塌了 ⇒ 两条否定式断言一律不许再判**（乙-1 要求 2）——
+   *   改前它们只看 `!names.includes(...)`，`names === []` 时**恒真** ⇒ 假绿。
+   *   ⚠ 现在**先判取数面**：不是"跳过"，是**落 FAIL**（`exit 1`）；
+   *     ⛔ 不许落 `ok`、⛔ 不许让"塌了"与"确实没有"印成同一句。
+   */
+  if (!r.ok) {
+    check(`默认配置：**取数面塌了** ⇒ 下面两条否定式断言一条都没跑（${r.why}）`, false)
+  } else {
+    const names = r.names
+    check(
+      '默认配置下，tools / bus / settings 三个模块被装载（orch 默认关）',
+      names.includes('dsh-hob-tools') && names.includes('dsh-hob-bus') && names.includes('dsh-hob-settings'),
+      JSON.stringify(names),
+    )
+    check(
+      '默认配置下，orch 模块**未**被装载（默认 modules.orch=false）',
+      !names.includes('dsh-hob-orchestrator'),
+      JSON.stringify(names),
+    )
+  }
 }
 
 console.log('\n=== 路径 A2：开 bus 但关 tools（验证彼此独立）===')
 {
   const { root } = await boot({ modules: { tools: false, bus: true, settings: true } })
-  const names = registryNames(root)
-  check('tools=false ⇒ tools 未被装载', !names.includes('dsh-hob-tools'), JSON.stringify(names))
-  check('同一配置下 settings 仍被装载（互不影响）', names.includes('dsh-hob-settings'), JSON.stringify(names))
-  check('同一配置下 bus 被装载', names.includes('dsh-hob-bus'), JSON.stringify(names))
+  const r = registryNames(root)
+  /** ⚠ 同路径 A：取数面塌了 ⇒ 这一组三条（含两条否定式）一条都不许判成通过。 */
+  if (!r.ok) {
+    check(`路径 A2：**取数面塌了** ⇒ 本组三条断言一条都没跑（${r.why}）`, false)
+  } else {
+    const names = r.names
+    check('tools=false ⇒ tools 未被装载', !names.includes('dsh-hob-tools'), JSON.stringify(names))
+    check('同一配置下 settings 仍被装载（互不影响）', names.includes('dsh-hob-settings'), JSON.stringify(names))
+    check('同一配置下 bus 被装载', names.includes('dsh-hob-bus'), JSON.stringify(names))
+  }
 }
 
 console.log('\n=== 路径 B：依赖门禁（缺服务 ⇒ 该模块 PENDING，整体照常）===')
 {
   // 该根 context 没有任何宿主服务 ⇒ 有模块级 inject 的模块都该 PENDING，
   // 且**插件整体不报错**（boot() 没抛错就已经证明了后者）。
-  const { root } = await boot({ modules: { tools: true, settings: true, bus: false } })
-  check('缺依赖时插件整体加载完成（未抛错）', true)
+  /**
+   * ⚠⚠ **这条原先恒真**（乙-1 要求 1）——原文是 `check('缺依赖时插件整体加载完成（未抛错）', true)`
+   *   字面量 `true`。⚠ 它的本意是"boot() 没抛错"，而 `boot()` 若抛错，**上面那行 `await`
+   *   就会把整个脚本打成堆栈** ⇒ 走到这里时"没抛错"**必然为真** ⇒ 判据**恒真、零分辨力**。
+   *
+   * ── 现在读什么（⛔ 不是"只打印"）──────────────────────────────────────
+   *   它读 **`boot()` 之后这个根 context 的真实状态**：`boot()` 现在把 fiber 一起返回，
+   *   而"整体加载完成"的可判形态 = **根 fiber 没有停在 PENDING/FAILED**（`state` 不是 0/3）**且**
+   *   登记表**读得到**（`registryNames().ok`）。⚠ 这两条任一条不成立 ⇒ 插件整体没起来。
+   *   ⚠ 失败时印什么：`root.state` / `registryNames` 的成因 —— 读的人据此知道是"没起来"
+   *     还是"起来了但登记表读不到"（⛔ 两种原因不合并）。
+   */
+  const { root, fiber } = await boot({ modules: { tools: true, settings: true, bus: false } })
+  const rB = registryNames(root)
+  const rootState = (() => {
+    const st = (fiber?.fibers ?? []).find((f) => f !== undefined && typeof f.state === 'number')
+    return typeof fiber?.state === 'number' ? fiber.state : (typeof st?.state === 'number' ? st.state : undefined)
+  })()
+  /**
+   * ⚠ `state` 语义（cordis）：`0 = PENDING` · `1 = LOADING` · `2 = ACTIVE` · `3 = FAILED`。
+   *   ⚠ 判据 = **不是 0（仍在等依赖）也不是 3（加载失败）** ——
+   *     注意这里**不能要求 `=== 2`**：插件的根 fiber 允许停在"已装好、有子模块在等"的状态，
+   *     而本探针要证的是"**插件整体没有因为缺依赖而失败**"。
+   * ⚠ `rootState === undefined` ⇒ **判不出** ⇒ 落失败（⛔ 不按通过处理 —— `E-112` 同族）。
+   */
+  const overallLoaded = rB.ok && rootState !== undefined && rootState !== 0 && rootState !== 3
+  check(
+    '缺依赖时插件整体加载完成（根 fiber 既没停在 PENDING、也没 FAILED，且登记表读得到）',
+    overallLoaded,
+    `root.state=${String(rootState)}（0=PENDING · 3=FAILED 均判失败）`
+    + ` · registry=${rB.ok ? `读到 ${rB.names.length} 条` : `塌了（${rB.why}）`}`,
+  )
   let pending = 0
   for (const rt of (root.registry?.values?.() ?? [])) {
     for (const f of (rt.fibers ?? [])) if (f.state === 0) pending++ // PENDING = 0
