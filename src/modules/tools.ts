@@ -632,18 +632,41 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       //     ⛔ 不靠这里记"铺过了"）。
       //   ⚠ ⚠ **⛔ 它不是一个工具**（**约束 ⑥**）：⚠ 本工具的参数表**一个字段都没加**，
       //     Hob 的工具面**不扩** —— ⚠ 这是**插件的初始化行为**，与"注册模块"同一档。
-      //   ⚠ **只在真写时触发**（`dryRun` 除外）：⚠ dryRun 的语义是"只看会发生什么、⛔ 不落盘"
-      //     ⇒ ⚠ 在 dryRun 上真去建目录会**违背它自己的承诺**。
+      //   ⚠⚠ **只在「真写**且**写成功」时触发**（2026-10-21 · 第 329 轮 · **甲-10** 要求 1）——
+      //     条件 = `args.dryRun !== true` **且** `r.ok`。
+      //     ⚠ **改前只判了 `dryRun`，`r.ok` 一个字没判** —— 于是**写被拒时照样把骨架铺下去**：
+      //       用户想写的文件没写成，`.hob/` 却被建了出来（一次被拒的写入留下了它不该留的东西）。
+      //       ⚠ 而 `:637` 原注释还写着"只在真写时触发" ⇒ **注释与代码方向相反**（TASK 明令要改）。
+      //     ⚠ dryRun 那一半的理由不变：它的语义是"只看会发生什么、⛔ 不落盘"
+      //       ⇒ 在 dryRun 上真去建目录会**违背它自己的承诺**。
       //   ⚠ ⚠ **不改写写入语义**：⚠ 骨架铺没铺、铺成没铺成，⛔ **都不影响**写入的结果字段 ——
       //     只在返回值里**新增**一个 `skeletonScaffold` 字段如实回带（⛔ 不掩盖、⛔ 不冒充成功）。
-      let skeletonNote: { ok: boolean; wrote: boolean; written: readonly string[]; notes: readonly { kind: string; message: string }[] } | undefined
-      if (args.dryRun !== true) {
+      /**
+       * ⚠ 类型带上 **`completeness`**（甲-10 要求 2）：`已铺 N / 共 M` 必须**能在
+       *   `write_hob` 的返回里看见**。⚠ 改前这个字段根本不存在 ⇒ 读者只看到
+       *   `written: [a,b,c,d]` 这个**没有分母**的分子，看不出是不是"半套"。
+       */
+      let skeletonNote: {
+        ok: boolean
+        wrote: boolean
+        written: readonly string[]
+        notes: readonly { kind: string; message: string }[]
+        completeness: { total: number; scaffolded: number; skippedExists: number; failed: number }
+      } | undefined
+      /**
+       * ⚠⚠ **触发条件 = 真写 且 写成功**（甲-10）。⛔ 不许只判 `dryRun`。
+       *   ⚠ 为什么不判 `r.ok` 会更糟：`r.ok === false` 的写入（越权 / 白名单外 / 目标不存在）
+       *     **一个字节都没落盘**，而这里却会建 `.hob/` 目录树 ⇒ 用户看到"被拒了但多了个目录"。
+       *   ⚠ `dryRun` 时 `r.ok` 是 `true`（预览成功）⇒ 两个条件都必须有，⛔ 不能只用 `r.ok`。
+       */
+      if (args.dryRun !== true && r.ok === true) {
         const wsRoot = rootOf(cfg, exec)
         if (wsRoot === undefined) {
           // ⚠ 判不出工作区根 ⇒ **如实说**，⛔ 不猜、⛔ 不拿账本区顶上（fail-closed）。
           skeletonNote = {
             ok: false, wrote: false, written: [],
             notes: [{ kind: 'source-missing', message: '首次铺骨架：判不出工作区根 ⇒ ⛔ 未铺任何文件（fail-closed，不猜）。' }],
+            completeness: { total: 0, scaffolded: 0, skippedExists: 0, failed: 0 },
           }
         } else {
           skeletonNote = scaffoldSkeletonForWorkspace(wsRoot, deps.skeletonEnabledOf?.() ?? true)

@@ -62,6 +62,36 @@ export interface ScaffoldResult {
   written: readonly string[]
   /** ⚠ **每一类结果都有可读输出**（约束 ④ · ⛔ 不许静默）。 */
   notes: readonly ScaffoldNote[]
+  /**
+   * ── ⚠⚠ **完整性读数**（2026-10-21 · 第 329 轮 · **甲-10** 要求 2）─────────────
+   *
+   * ⚠ **它治的是什么**（`PROJECT-SURVEY-3` §6.1 甲-10）：改前只有 `written.length` 一个数，
+   *   而它**只是一个孤零零的分子** —— 没有分母，读的人无法回答
+   *   「**该铺 7 件，实际铺了几件**？」更看不出"半套"（铺了 4 件、3 件失败）。
+   *   现场形态：手上有 `written: ['a','b','c','d']`，而那到底是"全部"还是"一半"，
+   *   ⚠ **盘上没有任何读数能回答**（`notes` 里虽有 failed 条目，但要人去数）。
+   *
+   * ⇒ 现在**显式给三个数**，让"半套"一眼可读：
+   *   · `total`    —— 本次**应有**的件数（= 骨架源按清单列出的件数）；
+   *   · `scaffolded` —— **真的写成**的件数（= `written.length`，⛔ 不另算一遍）；
+   *   · `skippedExists` —— **因为已存在而整目录跳过**（那是幂等命中，⛔ 不是缺件）；
+   *   · `failed`   —— **逐件失败**的件数（⚠ `total - scaffolded` 里除跳过以外的差额）。
+   *
+   * ⚠ ⛔ **它不是判据、只是一条读数**：本字段**不参与任何 ok/fail 判定**
+   *   （那仍由既有的 `ok` / `notes` 决定），加它⛔ 不改任何既有语义。
+   * ⚠ 三种出口（拒绝 / 跳过已存在 / 源缺失）**都要给这组数**，
+   *   否则读者又回到"有的分支有读数、有的没有"那种状态。
+   */
+  completeness: {
+    /** 应有件数（源按清单列出的件数；源读不到 ⇒ 0）。 */
+    total: number
+    /** 真写成的件数。 */
+    scaffolded: number
+    /** 因目标已存在而整目录跳过（⚠ 幂等命中，⛔ 不是缺件）。 */
+    skippedExists: number
+    /** 逐件失败数（含读源失败与写失败）。 */
+    failed: number
+  }
 }
 
 /**
@@ -235,29 +265,39 @@ export function scaffoldSkeletonOnce(workspaceRoot: string, opts: { sourceDir?: 
   // ── 开关（约束 ③）──────────────────────────────────────────────────────
   if (opts.enabled !== true) {
     notes.push({ kind: 'skipped-switch-off', message: '首次铺骨架：**开关关闭** ⇒ ⛔ 未铺任何文件（按配置跳过）。' })
-    return { ok: true, wrote: false, written: [], notes }
+    return { ok: true, wrote: false, written: [], notes,
+      completeness: { total: 0, scaffolded: 0, skippedExists: 0, failed: 0 } }
   }
   // ── 目标（约束 ①）──────────────────────────────────────────────────────
   const guard = assertInsideWorkspace(workspaceRoot)
   if (guard.ok === false) {
     notes.push({ kind: 'refused-outside', message: guard.message })
-    return { ok: false, wrote: false, written: [], notes }
+    return { ok: false, wrote: false, written: [], notes,
+      completeness: { total: 0, scaffolded: 0, skippedExists: 0, failed: 0 } }
   }
   const target = guard.abs
   // ── 闸门（约束 ②）：存在 ⇒ 整体跳过 ─────────────────────────────────────
   if (existsSync(target)) {
     notes.push({ kind: 'skipped-exists', message: `首次铺骨架：\`${target}\` **已存在** ⇒ ⛔ 一个字节都不动（只补缺、永不覆盖）。`, path: SKELETON_DIR })
-    return { ok: true, wrote: false, written: [], notes }
+    /**
+     * ⚠ 跳过**不是缺件**（甲-10 要求 2）：这里把 `skippedExists` 记成 **1 次整目录跳过**，
+     *   ⚠ 而"该铺几件"此刻**判不出**（源还没列）⇒ `total: 0` 是**如实**的"未计算"，
+     *   ⛔ 不许拿它冒充"应该铺 0 件"。
+     */
+    return { ok: true, wrote: false, written: [], notes,
+      completeness: { total: 0, scaffolded: 0, skippedExists: 1, failed: 0 } }
   }
   // ── 源（约束 ④：读不到 ⇒ 可观测，⛔ 不静默）──────────────────────────────
   if (opts.sourceDir === undefined || !existsSync(opts.sourceDir)) {
     notes.push({ kind: 'source-missing', message: `首次铺骨架：**骨架源读不到** ⇒ ⛔ 未铺任何文件（目标=\`${target}\`）。`, path: SKELETON_DIR })
-    return { ok: false, wrote: false, written: [], notes }
+    return { ok: false, wrote: false, written: [], notes,
+      completeness: { total: 0, scaffolded: 0, skippedExists: 0, failed: 0 } }
   }
   const files = listSkeletonFiles(opts.sourceDir)
   if (files.length === 0) {
     notes.push({ kind: 'source-missing', message: `首次铺骨架：骨架源 \`${opts.sourceDir}\` 里**按清单一件也没列到** ⇒ ⛔ 未铺（⛔ 不把"0 件"当成功）。`, path: SKELETON_DIR })
-    return { ok: false, wrote: false, written: [], notes }
+    return { ok: false, wrote: false, written: [], notes,
+      completeness: { total: 0, scaffolded: 0, skippedExists: 0, failed: 0 } }
   }
   // ── 铺（逐件原子写；⚠ 失败逐件可观测，⛔ 不吞）──────────────────────────
   const written: string[] = []
@@ -279,8 +319,17 @@ export function scaffoldSkeletonOnce(workspaceRoot: string, opts: { sourceDir?: 
   if (written.length > 0) {
     notes.push({ kind: 'scaffolded', message: `首次铺骨架：\`${target}\` **原先不存在** ⇒ 铺了 ${written.length} 件（源=\`${opts.sourceDir}\`）。`, path: SKELETON_DIR })
   }
-  const failed = notes.some((n) => n.kind === 'failed')
-  return { ok: !failed, wrote: written.length > 0, written, notes }
+  const failedCount = notes.filter((n) => n.kind === 'failed').length
+  const failed = failedCount > 0
+  /**
+   * ⚠⚠ **半套场景的读数**（甲-10 要求 2）：
+   *   `total` = **源按清单列出的件数**（`files.length`），`scaffolded` = 真写成的，
+   *   `failed` = 逐件失败数。⇒ ⚠ `total !== scaffolded + failed` 时，**差额就是"半套"**：
+   *     例：`total 7 · scaffolded 4 · failed 3` ⇒ 一眼看出缺 3 件。
+   *   ⚠ 改前只能看到 `written: [a,b,c,d]` —— **没有分母**，看不出它是不是全部。
+   */
+  return { ok: !failed, wrote: written.length > 0, written, notes,
+    completeness: { total: files.length, scaffolded: written.length, skippedExists: 0, failed: failedCount } }
 }
 
 /** sha256（⚠ 同源判据用；`check-code-face.mjs` 用**同一函数**重算，⛔ 不另写一份）。 */
@@ -344,6 +393,7 @@ export function scaffoldSkeletonForWorkspace(workspaceRoot: string, enabled: boo
       wrote: false,
       written: [],
       notes: [{ kind: 'source-missing', message: '首次铺骨架：解析不到本模块所在目录（`import.meta.url` 不可用）⇒ ⛔ 未铺任何文件。' }],
+      completeness: { total: 0, scaffolded: 0, skippedExists: 0, failed: 0 },
     }
   }
   const src = resolveSkeletonSource(md)

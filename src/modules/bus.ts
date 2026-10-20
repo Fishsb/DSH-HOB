@@ -43,7 +43,8 @@ import { appendSessionModelSelection, installSessionModelSelection } from '../mo
 //   ⚠ 账本根**不由本模块解析**（否则就是第二个路径解析实现点）：由挂载方
 //     （`preset/tools.ts`）把 `ledgerRootOf` 闭包传进来 —— 那里已有 config 与 ctx。
 import {
-  bindSession, clearHandoffs, ensureRuntimeIgnored, orchStateFileOf, readOrchState, recordHandoff,
+  bindSession, clearHandoffs, ensureRuntimeIgnored, ORCH_STATE_IGNORE, orchStateFileOf, readOrchState,
+  recordHandoff,
 } from '../server/orch-state.ts'
 import type { PersistedSessionBinding } from '../server/orch-state.ts'
 import { dirname } from 'node:path'
@@ -573,6 +574,30 @@ export interface HobBusConfig {
 /** 就绪时挂上的实现（`apply` 里构造，服务缺席时不会存在）。 */
 export function apply(ctx: any, config: HobBusConfig = {}): void {
   ctx.logger?.debug?.(`[${name}] 已激活，等待 sessions/agents`)
+
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **两处「丢弃返回值 ⇒ 失败不可见」的读数出口**（2026-10-21 · 第 329 轮）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * 这两个变量**必须声明在 `bus` 字面量之前**（`bus.handoffWriteIssues()` 要读它们），
+   *   而写入点（`noteHandoff` / `clearAfterDelivery`）在文件后段 —— 同一函数作用域，能共享。
+   *
+   * ── **甲-8**：`recordHandoff` / `clearHandoffs` 的返回值被丢 ⇒ 记账失败无痕 ────────
+   *   · `handoffWriteNote` ⇒ **这条账没记上 / 没清掉**。后果：重载后这次派发在读数里
+   *     **与"从来没派过"逐字相同**（本项目最忌的"两种原因说成同一句话"）。
+   *   · ⚠ 判"清账失败"时**⛔ 不许一律看 `wrote === false`**：`clearHandoffs` 在
+   *     "没有匹配项"时**本来就不写盘**（那是正常路径）⇒ 判据是
+   *     **`cleared.length > 0 && wrote !== true`**。
+   *
+   * ── **甲-9**：`ensureRuntimeIgnored` 的返回值被丢 ⇒ `runtime/` 可能进 git 历史 ──────
+   *   · `handoffIgnoreNote` ⇒ **`runtime/.gitignore` 没写成**。后果不是"少一个文件"，
+   *     而是 `orch-watches.json` 里的**会话 id 被提交进账本仓库**。
+   *
+   * ⚠ **两个字段分开、⛔ 不合并**：成因不同、修法不同（一个去查盘能不能写、
+   *   一个去查 `runtime/.gitignore`）。⚠ 两者**可以同时成立**。
+   * ⚠ **正常档一律 `undefined`** ⇒ `handoffWriteIssues()` 回空对象 ⇒ 状态行**一个字都不多**。
+   */
 
   // ⚠ 配置**每次现读**（不是装载时快照）：设置页写入不会重启插件，
   //   而 `spawn` 的四个子字段是**原地更新**的 volatile ref（实测 fiber uid 未变）。
@@ -1422,6 +1447,32 @@ export function createHobBusTools(
   }
 
   /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **甲-8 / 甲-9 的读数出口**（2026-10-21 · 第 329 轮）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ⚠ **为什么声明在这里而不是 `apply()`**：写入点（`noteHandoff` /
+   *   `clearAfterDelivery`）在**本函数**里，而 `apply()` 早已结束（`:1401`）
+   *   —— 声明在外层作用域会把"谁写谁读"拆散，且 `apply()` 里根本没有写入点。
+   *
+   * ── **甲-8**：`recordHandoff` / `clearHandoffs` 的返回值被丢 ⇒ 记账失败无痕 ─────
+   *   · `write` ⇒ **这条账没记上 / 没清掉** ⇒ 重载后这次派发在读数里
+   *     **与"从来没派过"逐字相同**（本项目最忌的"两种原因说成同一句话"）。
+   *   · ⚠ 判"清账失败"⛔ 不许一律看 `wrote === false`：`clearHandoffs` 在
+   *     "没有匹配项"时**本来就不写盘**（正常路径）⇒ 判据是
+   *     **`cleared.length > 0 && wrote !== true`**。
+   *
+   * ── **甲-9**：`ensureRuntimeIgnored` 的返回值被丢 ⇒ `runtime/` 可能进 git 历史 ──
+   *   · `ignore` ⇒ **`runtime/.gitignore` 没写成** ⇒ `orch-watches.json` 里的
+   *     **会话 id 会被提交进账本仓库**。
+   *
+   * ⚠ **两个字段分开、⛔ 不合并**（成因与修法都不同，且可同时成立）。
+   * ⚠ **正常档一律 `undefined`** ⇒ 调用方什么都不多印。
+   */
+  let handoffWriteNote: string | undefined
+  let handoffIgnoreNote: string | undefined
+
+  /**
    * 记一条"待投递"（**只记，不报错**）。
    * ⚠ 记账失败**不改工具结果**：调用方拿到的是"建会话/投递成功"这个事实，
    *   记账是附加可观测（同 `tools.ts` 的 write_hob 记账纪律）。
@@ -1430,7 +1481,19 @@ export function createHobBusTools(
     const file = stateFileOf(exec)
     if (file === undefined) return
     try {
-      ensureRuntimeIgnored(dirname(file))
+      /**
+       * ⚠⚠ **读 `ensureRuntimeIgnored` 的返回值**（2026-10-21 · 第 329 轮 · **甲-9** 要求 1）——
+       *   改前**丢了返回值**：它失败 = `runtime/.gitignore` 没写成
+       *   ⇒ ⚠ `runtime/` 会进账本 git 历史，而那里的 `orch-watches.json` **含会话 id**
+       *   （`sessionId` / `owner` / `target`）。⛔ 这不止是"少一个文件"，是**标识被提交进仓库**。
+       *
+       * ⚠ ⛔ **不升级成拒绝记账**（TASK 要求 3）：忽略失败只影响"会不会被 git 收进去"，
+       *   不影响这次记账本身 ⇒ 记账照常，只把失败**记进 `handoffIgnoreNote` 让状态行能看见**。
+       */
+      if (!ensureRuntimeIgnored(dirname(file))) {
+        handoffIgnoreNote = `\`${ORCH_STATE_IGNORE}\` 没写成（${dirname(file)}）`
+          + ' ⇒ runtime/ 可能被账本 git 收进历史（该文件含会话 id）'
+      }
       /**
        * ⚠⚠ **记录必须带 owner**（`I-1` / `I-6`）：改前只记 `kind`/`ref`/`at`，
        * 于是同一工作区里两个 Hob 各建一个会话时，两边的"待投递"读数**无法分辨哪条是自己的**
@@ -1448,14 +1511,33 @@ export function createHobBusTools(
           return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
         } catch { return undefined }
       })()
-      recordHandoff(file, {
+      /**
+       * ⚠⚠ **读 `recordHandoff` 的返回值**（2026-10-21 · 第 329 轮 · **甲-8** 要求 1）——
+       *
+       * ── 改前是什么（`PROJECT-SURVEY-3` §6.1 甲-8）────────────────────────
+       *   这一行**整条丢了返回值**，而 `recordHandoff` **专门**返回 `{ wrote, state }`。
+       *   ⇒ `wrote === false`（写盘失败）时**没有任何痕迹**：
+       *     `hob_dispatch` 报"派活成功"，而盘上**那条待投递根本不存在** ⇒
+       *     重载后这条派发在读数里**与"从来没派过"逐字相同**。
+       *
+       * ⚠ **判据公式（⛔ 不许把两种成因压成一句话）**：
+       *   · `wrote === false` ⇒ **写盘失败**（盘上没这条）⇒ 重载后不可见；
+       *   · 正常（`wrote === true`）⇒ 无需记账；
+       *   ⚠ `recordHandoff` **没有** `conflict` 字段（那是 `bindSession` 的）——
+       *     本文件的正确参照写法见 `bindSession` 那一处，但**字段集不同**，⛔ 不许照抄字段名。
+       */
+      const rec = recordHandoff(file, {
         kind,
         ref,
         at: Date.now(),
         ...(self === undefined ? {} : { owner: self }),
         ...(ownerWsRoot === undefined ? {} : { wsRoot: ownerWsRoot }),
       })
-    } catch { /* 记账失败不掩盖主结果 */ }
+      if (rec.wrote !== true) {
+        handoffWriteNote = `待投递**没记上**（\`${kind}\` ref=${ref}）：写盘失败 ⇒ `
+          + '重载后这次派发在状态里**与"从来没派过"逐字相同**（⛔ 不是"没有待投递"）'
+      }
+    } catch (e) { handoffWriteNote = `待投递**没记上**（\`${kind}\` ref=${ref}）：${String((e as Error)?.message ?? e)}` }
   }
 
   /**
@@ -1470,10 +1552,27 @@ export function createHobBusTools(
     if (file === undefined) return
     try {
       const now = Date.now()
-      clearHandoffs(file, (h) => (h.kind === 'spawned-session'
+      /**
+       * ⚠⚠ **读 `clearHandoffs` 的返回值**（甲-8 要求 1）——
+       *
+       * ── 改前丢了返回值 ⇒ 两种完全不同的情形**在读数里长得一样** ────────────
+       *   · `cleared.length === 0` ⇒ **没有可清的**（正常：这条派发本来就没记过待投递）；
+       *   · `wrote === false` **且** `cleared.length > 0` ⇒ **该清却没落盘**（异常）：
+       *     账清了但盘上还留着 ⇒ 读数显示"还有待投递"，而它其实已经投过了
+       *     ⇒ 下一个人会去**重投**（那正是"同一份报告反复送达"的成因之一）。
+       *
+       * ⚠ **⛔ 不许把 `wrote === false` 一律当失败**：`clearHandoffs` 在"没有匹配项"时
+       *   **本来就不写盘**（`wrote: false`）—— 那是**正常路径**，不是缺陷。
+       *   ⇒ 判据 = **`cleared.length > 0 && wrote === false`** 才算异常。
+       */
+      const cleared = clearHandoffs(file, (h) => (h.kind === 'spawned-session'
         ? h.ref === targetSessionId
         : h.at <= now))
-    } catch { /* 清理失败不掩盖主结果 */ }
+      if (cleared.cleared.length > 0 && cleared.wrote !== true) {
+        handoffWriteNote = `待投递**没清掉**（${cleared.cleared.length} 条匹配但写盘失败）⇒ `
+          + '盘上还留着"已经投过"的记录 ⇒ ⛔ 别据此重投（它会自己再清一次，但读数此刻是假的）'
+      }
+    } catch (e) { handoffWriteNote = `待投递**没清掉**：${String((e as Error)?.message ?? e)}` }
   }
 
   const sessionsTool = defineTool({
@@ -1614,6 +1713,13 @@ export function createHobBusTools(
         //   ⚠ 字段名与服务层一致（`presetNotice`），⛔ 不在这里重写措辞 ——
         //     措辞是**服务层单点**（含后果与下一步），改一处即可两工具同步。
         ...(r.presetNotice === undefined ? {} : { presetNotice: r.presetNotice }),
+        /**
+         * ⚠⚠ **甲-8 的「清账失败」读数**（2026-10-21 · 第 329 轮）——
+         *   ⚠ 投递本身已成功（`ok: true` 不改），但**盘上那条"待投递"没清掉**：
+         *     读数会显示"还有待投递"，而它其实已经投过了 ⇒ 下一个人会去**重投**。
+         *   ⚠ 正常档（没有匹配项 / 清成功）这里是 `undefined` ⇒ 返回体**一个字都不多**。
+         */
+        ...(handoffWriteNote === undefined ? {} : { handoffWriteNote }),
         note2: 'Delivered only: the reply lands in that session, not here. Do not claim the work itself was done.',
       })
     },
@@ -1747,6 +1853,15 @@ export function createHobBusTools(
         ...(r.modelNote === undefined ? {} : { modelNote: r.modelNote }),
         // ⚠ 归属绑定：成功时不加噪音，失败/冲突时**必须**带回去（⛔ 不静默）
         ...(bindNote === undefined ? {} : { bindNote }),
+        /**
+         * ⚠⚠ **甲-8 / 甲-9 的失败读数**（2026-10-21 · 第 329 轮）——
+         *   ⚠ 与 `bindNote` **同款纪律**：成功时不加噪音、⛔ 一字不多；
+         *     失败时必须**带回去**，且**两条成因分开**（⛔ 不许压成一句）。
+         *   · `handoffWriteNote` ⇒ 待投递账没记上 ⇒ 重载后与"从来没派过"逐字相同；
+         *   · `handoffIgnoreNote` ⇒ `runtime/.gitignore` 没写成 ⇒ 会话 id 可能进 git。
+         */
+        ...(handoffWriteNote === undefined ? {} : { handoffWriteNote }),
+        ...(handoffIgnoreNote === undefined ? {} : { handoffIgnoreNote }),
         ...(r.owner === undefined ? {} : { owner: r.owner }),
         note2: 'Created only: the session exists but has not started yet. A directive delivered with '
           + 'hob_send or hob_dispatch wakes it — no user action is needed. Only if no directive is '

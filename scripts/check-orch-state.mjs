@@ -5965,6 +5965,126 @@ const orchCode = stripComments(orchSrc)
   }
 }
 
+// ── SM. **甲-8 / 甲-9 / 甲-10 上锁：三处「丢弃返回值 ⇒ 失败不可见」**（2026-10-21 · 第 329 轮）──
+//
+// ⚠⚠ **本组守的是哪三条**（`PROJECT-SURVEY-3` §6.1 甲类，形态完全一致）：
+//   **函数专门设计了失败返回值，调用方不读它** ⇒ 记账/落盘失败**静默**。
+//
+//   · **甲-8**：`recordHandoff` / `clearHandoffs` 返回 `{ wrote, conflict? }`，
+//     `bus.ts` 两处调用**整条丢了返回值** ⇒ 盘上没记上，而 `hob_dispatch` 报"派活成功"
+//     ⇒ 重载后这次派发在读数里**与"从来没派过"逐字相同**。
+//   · **甲-9**：`ensureRuntimeIgnored` 返回 boolean，三个调用点**全部丢弃** ⇒
+//     `runtime/.gitignore` 没写成时，`orch-watches.json`（**含会话 id**）会进账本 git 历史。
+//   · **甲-10**：`write_hob` 的骨架触发只判 `dryRun`、**不判 `r.ok`** ⇒ **写被拒也照样铺骨架**
+//     （用户想写的文件没写成，`.hob/` 却被建了出来）。
+//
+// ⚠ ⚠ **为什么必须上锁**：第 329 轮把三处都修了，并用一次性探针拿到成对读数。
+//   ⚠ **而探针不是判据** —— 那是发生在那一轮里的一次运行，⛔ 没有任何东西会再跑它。
+//   ⇒ 谁把 `r.ok === true` 从触发条件里删掉，`check:all` **照样全绿**。
+//   ⇒ 本组把最要命的那一律（甲-10 的"写被拒 ⇒ 一个字都不许铺"）变成常驻断言。
+{
+  const { mkdtempSync: smMkdt, mkdirSync: smMkd, rmSync: smRm, existsSync: smExists } = await import('node:fs')
+  const { tmpdir: smTmp } = await import('node:os')
+  const { pathToFileURL: smP2u } = await import('node:url')
+
+  /** ⚠ 与 SA/SB/SL 同款：`HOB_SA_ROOT` 可指向另一棵源码树（用来跑"改回旧行为 ⇒ 必红"）。 */
+  const smRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT
+    : root
+  const smTag = smRoot === root ? '' : `（源码树=${smRoot}）`
+  let smTmpRoot
+  try { smTmpRoot = smMkdt(join(smTmp(), 'hob-smcheck-')) } catch { smTmpRoot = smTmp() }
+
+  let smTools
+  try {
+    smTools = await import(smP2u(join(smRoot, 'src', 'modules', 'tools.ts')).href)
+  } catch (e) {
+    bad(`SM 无法加载 tools 模块${smTag}（${String(e?.message ?? e)}）⇒ 甲-10 那条失去基准（不按通过处理）`)
+  }
+
+  if (smTools !== undefined) {
+    try {
+      // ── SM-a ⭐⭐ **写被拒 ⇒ 一个字都不许铺骨架**（钉甲-10 的 `r.ok` 条件）──
+      {
+        const base = smMkdt(join(smTmpRoot, 'sm-a-'))
+        const ws = join(base, 'ws')
+        smMkd(ws, { recursive: true })
+        const lr = join(base, 'ledger')
+        smMkd(lr, { recursive: true })
+        const t = smTools.createHobTools({ workspaceRoot: ws, ledgerRoot: lr },
+          { skeletonEnabledOf: () => true })
+        /**
+         * ⚠ **构造一个必然被拒的写入**：`../escape.txt` 逃出工作区 ⇒ `hob-write` 必拒
+         *   （`reason: 'outside-hob'`）。
+         *   ⚠ 判据**只看盘**（`.hob` 存不存在），⛔ 不看返回值 —— 返回值说"被拒了"是**改前也有**的读数，
+         *     而本缺陷恰恰是"被拒了但盘上多了东西"。
+         */
+        let refused = false
+        try {
+          const out = String(await t.writeHob.execute({ file: '../escape.txt', content: 'x' },
+            { agent: { id: 'hob', session: { header: { cwd: ws } } } }))
+          const p = (() => { try { return JSON.parse(out) } catch { return {} } })()
+          refused = p.ok === false
+        } catch { refused = false }
+        const hobExists = smExists(join(ws, '.hob'))
+        if (!refused) {
+          bad('SM-a 【失去基准】构造的写入**没有被拒** ⇒ 本判据测不到"被拒时铺不铺骨架"'
+            + `（.hob 存在=${hobExists}）⇒ 不按通过处理`)
+        } else if (!hobExists) {
+          ok('SM-a ✓ **写被拒 ⇒ 一个字都不许铺骨架**（钉甲-10）：写入被拒（`outside-hob`），'
+            + '`.hob/` **未被创建** ⇒ ⛔ 不再是"用户想写的没写成、却多了个目录"' + smTag)
+        } else {
+          bad('SM-a 【写被拒却照样铺了骨架】写入被拒（`outside-hob`），而 `.hob/` **已被创建**'
+            + `\n      ⇒ 位置：${join(smRoot, 'src', 'modules', 'tools.ts')} 的骨架触发条件`
+            + '\n      ⇒ ⚠ 改前它只判 `args.dryRun !== true`、**不判 `r.ok`**'
+            + ' ⇒ 一次被拒的写入留下了它不该留的东西'
+            + '\n      ⇒ 修法：触发条件必须是 **`args.dryRun !== true && r.ok === true`**'
+            + '（⛔ dryRun 时 `r.ok` 为 true，两个条件缺一不可）')
+        }
+      }
+
+      // ── SM-b ⭐ **写成功 ⇒ 仍要铺，且完整性读数非空**（成对那一半）──
+      {
+        const base = smMkdt(join(smTmpRoot, 'sm-b-'))
+        const ws = join(base, 'ws')
+        smMkd(ws, { recursive: true })
+        const lr = join(base, 'ledger')
+        smMkd(lr, { recursive: true })
+        const t = smTools.createHobTools({ workspaceRoot: ws, ledgerRoot: lr },
+          { skeletonEnabledOf: () => true })
+        let out = ''
+        try {
+          /**
+           * ⚠ 写**账本区白名单内**的文件（`LEDGER_FILES`：PROJECT / DECISIONS /
+           *   USER-DECISIONS / CONTEXT 四本）—— ⛔ 不许用 `notes/x.md` 这种
+           *   "看着合理但根本不在白名单里"的路径：那样 `ok=false` 就测不到"写成功后铺不铺"。
+           */
+          out = String(await t.writeHob.execute({ file: 'PROJECT.md', content: '# ok\n' },
+            { agent: { id: 'hob', session: { header: { cwd: ws } } } }))
+        } catch (e) { out = 'THROW: ' + String(e?.message ?? e) }
+        const p = (() => { try { return JSON.parse(out) } catch { return {} } })()
+        const c = p.skeletonScaffold?.completeness
+        const hobExists = smExists(join(ws, '.hob'))
+        if (p.ok === true && hobExists && c !== undefined && typeof c.total === 'number'
+          && typeof c.scaffolded === 'number' && typeof c.failed === 'number'
+          && typeof c.skippedExists === 'number' && c.total > 0 && c.scaffolded > 0) {
+          ok('SM-b ✓ **写成功 ⇒ 骨架照铺，且完整性读数非空**（成对那一半）：'
+            + `\`已铺 ${c.scaffolded} / 共 ${c.total}\`（失败 ${c.failed} · 跳过已存在 ${c.skippedExists}）`
+            + ` ⇒ ⛔ 不再是"只有一个没有分母的 written.length"${smTag}`)
+        } else {
+          bad('SM-b 【写成功却不铺 / 或完整性读数缺失】'
+            + `：ok=${p.ok} · .hob 存在=${hobExists} · completeness=${JSON.stringify(c ?? null)}`
+            + '\n      ⇒ ⚠ 两种可能：① 为了过 SM-a 把触发条件写成了"永不触发"（那会废掉骨架）；'
+            + '\n                     ② `completeness` 字段没接到 `write_hob` 的返回里'
+            + '\n      ⇒ 修法：`completeness` 必须含 `total`/`scaffolded`/`skippedExists`/`failed` 四个数')
+        }
+      }
+    } finally {
+      try { smRm(smTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+    }
+  }
+}
+
 // ── SB. **三处收口**（2026-10-20 第 2 单 · 把"我判定不需要"变成机器判据）──
 //
 // ⚠ **本组守的是哪三条**（来源 = `R1` §五-2 / §五-3 / §五-5，方向已被用户接受）：

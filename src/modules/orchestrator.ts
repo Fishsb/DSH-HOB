@@ -70,6 +70,7 @@ import {
   clearHandoffs,
   countLostByClass,
   ensureRuntimeIgnored,
+  ORCH_STATE_IGNORE,
   countBySettleState,
   hasUnsettled,
   markLost,
@@ -240,6 +241,12 @@ export interface OrchStatus {
    *   而且这也让它**跨重载可见**（与 `lost` 同理）。
    */
   handoffs: PersistedHandoff[]
+  /**
+   * ⚠⚠ **`runtime/.gitignore` 没写成**（2026-10-21 · 第 329 轮 · **甲-9**）——
+   *   只在异常档有值；**正常档 `undefined`** ⇒ 渲染层一个字都不多。
+   *   ⚠ 它回答的是"**会话 id 会不会被账本 git 收进历史**"，⛔ 不是"盘能不能写"。
+   */
+  runtimeIgnoreNote?: string
   /**
    * ── ⚠ ⚠ **账本可达性**（2026-10-16 · 第 247 轮 · `TASK-R207` 新增）────────────
    *
@@ -1131,6 +1138,16 @@ export function apply(ctx: any): void {
      *   这条不变量是"回传不丢也不错配"的前提：`agent/status` 事件**不带轮次**，
      *   两轮同时挂着时无法判断这次 `running → idle` 属于谁。
      */
+    /**
+     * ⚠⚠ **最近一次「`runtime/.gitignore` 没写成」**（2026-10-21 · 第 329 轮 · **甲-9**）。
+     *
+     * ⚠ **为什么必须是模块级**：写入发生在 `dispatch` 的局部作用域里，而读数
+     *   （`hob_orch_status`）在完全另一个函数里 —— 局部变量传不过去。
+     * ⚠ **只保留最近一次**（⛔ 不累积成数组）：本字段的用途是"**此刻**这件事发生过没有"，
+     *   而 `runtime/.gitignore` 一旦写成就永久存在 ⇒ 累积计数没有信息量，只会让读数越跑越长。
+     * ⚠ **正常档是 `undefined`** ⇒ 状态行**一个字都不多**（TASK 要求：只在异常档出现）。
+     */
+    let runtimeIgnoreNote: string | undefined
     const watches = new Map<string, Watch>()
     /** 上一次见到的状态，用来识别 `running → idle` **跳变**（而不是"看到 idle"）。 */
     const lastStatus = new Map<string, string>()
@@ -2105,7 +2122,19 @@ export function apply(ctx: any): void {
               + '（⛔ 不猜一个文件：重载后这次派发将不可观测）。',
             )
           } else if (file !== undefined) {
-            ensureRuntimeIgnored(dirname(file))
+            /**
+             * ⚠⚠ **读 `ensureRuntimeIgnored` 的返回值**（2026-10-21 · 第 329 轮 · **甲-9** 要求 1）——
+             *   改前**丢了返回值**。它 `false` = `runtime/.gitignore` 没写成
+             *   ⇒ ⚠ `runtime/` 会进账本 git 历史，而 `orch-watches.json` **含会话 id**。
+             *   ⚠ 落点在这个分支里，是因为**只有真要写运行态时才需要忽略它**。
+             * ⚠ ⛔ **不升级成拒绝落盘**（TASK 要求 3）：忽略失败不改变"这次派发能不能被观测"，
+             *   只改变"它会不会被 git 收进历史" ⇒ 写照常，失败**点名**进日志与状态读数。
+             */
+            if (!ensureRuntimeIgnored(dirname(file))) {
+              runtimeIgnoreNote = `\`${ORCH_STATE_IGNORE}\` 没写成（${dirname(file)}）`
+                + ' ⇒ runtime/ 可能被账本 git 收进历史（该文件含会话 id）'
+              svcCtx.logger?.warn?.(`[${name}] ${runtimeIgnoreNote}`)
+            }
             /**
              * ⚠⚠ **只写属于 `(本文件, 本 owner)` 的那一片**（`I-5` 的核心）：
              *   改前是 `persistWatches(file, [...watches.values()].map(...))`
@@ -2205,6 +2234,7 @@ export function apply(ctx: any): void {
           stuckCount: mine.settleByState.stuck,
           // ⚠ 现读盘（不缓存）：记账在别的模块做，缓存会滞后 —— 见 `readHandoffs` 注释。
           handoffs: mine.handoffs,
+          ...(runtimeIgnoreNote === undefined ? {} : { runtimeIgnoreNote }),
           // ⚠ ⚠ **可达性**（第 247 轮）：⚠ 它与 `handoffs` **同一次读**吗？
           //   ⛔ 不是 —— `handoffs` 现在按 owner 过滤（`I-4`），
           //   而可达性问的是"**本会话这一份**账本够不够得到"（那才是"够不到"的形态）。
@@ -2556,6 +2586,7 @@ export function apply(ctx: any): void {
           stuckCount: mine.settleByState.stuck,
           // ⚠ 与 `status()` 同源同值（两处返回**同一个形状**，调用方不必分情况）。
           handoffs: mine.handoffs,
+          ...(runtimeIgnoreNote === undefined ? {} : { runtimeIgnoreNote }),
           reachability: reach,
           ...(reach === 'ledger-home-unresolved' ? { ledgerHomeWhy: ledgerHomeDiag(svcCtx) } : {}),
           others: {
@@ -4049,6 +4080,21 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         //   ⚠ **空态也要给读数**（`待投递：0 份`）—— 让"没有漏"**也是可读的**；
         //     这正是本缺陷的病根（"0"与"没记录"必须能分开）。故**不**用
         //     `s.handoffs.length === 0 ? [] : […]` 那种"空就不打印"的写法。
+        /**
+         * ══════════════════════════════════════════════════════════════════
+         * ⚠⚠ **甲-9 的读数行**（2026-10-21 · 第 329 轮）
+         * ══════════════════════════════════════════════════════════════════
+         *
+         * ⚠ **只在异常档出现**：`runtimeIgnoreNote === undefined`（正常）⇒ 展开成 0 行
+         *   ⇒ 正常档的状态输出**与改前逐字相同**（TASK 要求 2 的"正常档一个字都不许多"）。
+         * ⚠ **恰好一行**（TASK 限"最多两行"，本字段只占一行）——
+         *   状态行是逐轮要读的，多一行就挤压上下文。
+         * ⚠ ⚠ **为什么必须印在这里**：改前这件事**完全不可见**（返回值被丢在
+         *   `ensureRuntimeIgnored(dirname(file))` 那一行）⇒ 用户看得到"派发成功"，
+         *   却不知道 `runtime/.gitignore` 缺了、`orch-watches.json`（**含会话 id**）
+         *   会被账本 git 收进历史。
+         */
+        ...(s.runtimeIgnoreNote === undefined ? [] : [`⚠⚠ ${s.runtimeIgnoreNote}`]),
         ...(s.handoffs.length === 0
           ? ['待投递：0 份']
           : [

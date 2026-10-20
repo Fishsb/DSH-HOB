@@ -26,6 +26,7 @@ import { dirname } from 'node:path'
 import {
   clearHandoffs,
   ensureRuntimeIgnored,
+  ORCH_STATE_IGNORE,
   orchStateFileOf,
   readOrchState,
   readOrchStateDetailed,
@@ -119,7 +120,25 @@ export async function deliverHandoff(
 
   // ── 1：记账（写一份"待投递"）────────────────────────────────────────────
   try {
-    ensureRuntimeIgnored(dirname(stateFile))
+    /**
+     * ⚠⚠ **读 `ensureRuntimeIgnored` 的返回值**（2026-10-21 · 第 329 轮 · **甲-9** 要求 1）——
+     *
+     * ── 改前是什么（`PROJECT-SURVEY-3` §6.1 甲-9）────────────────────────
+     *   这一行**丢了返回值**。而它失败意味着 `runtime/.gitignore` **没写成**
+     *   ⇒ ⚠ **`runtime/` 会进账本 git 历史**，而那里的 `orch-watches.json`
+     *     **含会话 id**（`sessionId` / `owner` / `target` 全是会话标识）。
+     *   ⇒ 后果不是"少了一个文件"，是**会话标识被提交进仓库**。
+     *
+     * ── 现在 ──────────────────────────────────────────────────────────────
+     *   读到 `false` ⇒ 落一条**点名**记录（⛔ 不是笼统的"忽略失败"）。
+     *   ⚠ ⛔ **不升级成拒绝写入**（TASK 要求 3）：忽略失败只影响"会不会被 git 收进去"，
+     *     不影响这次交接文件本身的可用性 ⇒ 让写入照常，只把失败**变可观测**。
+     */
+    const ignored = ensureRuntimeIgnored(dirname(stateFile))
+    if (!ignored) {
+      note = `\`${ORCH_STATE_IGNORE}\` 没写成（${dirname(stateFile)}）⇒ runtime/ 可能被账本 git 收进历史`
+        + '（该文件含会话 id）—— 写入本身已成功，⛔ 不影响这次交接文件的可用性'
+    }
     const rec = recordHandoff(stateFile, {
       kind: 'task-file',
       ref: input.ref,
@@ -129,7 +148,16 @@ export async function deliverHandoff(
       ...(manual ? { manual: true as const, note: '人工转达（有意，非漏投）' } : {}),
     })
     recorded = rec.wrote
-    if (!rec.wrote) note = '待投递记录未能落盘（写入本身已成功）⇒ 这次交接文件在状态输出里可能不可见。'
+    /**
+     * ⚠ **两条成因不许互相覆盖**（本项目明令：两种原因说成一句话是本件要治的形态）：
+     *   · 忽略没写成 ⇒ `runtime/.gitignore` 缺 ⇒ 会话 id 可能进 git；
+     *   · 记账没落盘 ⇒ 这次交接文件在状态输出里不可见。
+     *   ⚠ 两者可以**同时成立** ⇒ 用数组累积、⛔ 不用后写覆盖前写。
+     */
+    if (!rec.wrote) {
+      note = (note === undefined ? '' : note + '；')
+        + '待投递记录未能落盘（写入本身已成功）⇒ 这次交接文件在状态输出里可能不可见。'
+    }
   } catch (e) {
     note = `待投递记录出错：${String((e as Error)?.message ?? e)}（写入本身已成功）`
   }
