@@ -99,23 +99,76 @@ let okCount = 0
 let badCount = 0
 /** 被判定者（= `dependencies` 里声明了本包的 profile）。⚠ 退出码由它们全体决定。 */
 const QUALIFIED = []
+/**
+ * ══ ⚠⚠ **读数归属：记号必须与"算不算"一致**（2026-10-20 本单 A · `TASK-2` §1-A）═════════
+ *
+ * ── 改前是什么（⚠ 一行红 ✗ 配一个绿灯退出码）────────────────────────────
+ *   `bad()` 无条件印 `✗`，只在 `CURRENT_QUALIFIES` 为真时才 `badCount++`。
+ *   ⇒ `--all --fix` 扫到"没声明依赖"的 profile 时，屏幕上出现
+ *     `✗ D · profile "headless"：没法自动修…`，而**退出码是 0**。
+ *   ⚠ 这正是本项目明令禁止的形态：**把两种事实说成同一句话**
+ *     （"它坏了" 与 "它不归我判" 外表完全一样）。
+ *
+ * ── 改后：**三个记号，各自绑定一个含义**（⛔ 不许互相借用）───────────────
+ *   · `✓` = 成立 **且** 计入判定（`okCount++`）；
+ *   · `✗` = **不成立且计入判定**（`badCount++`）—— ⛔ 只留给真正算红的；
+ *   · `·` = **不参与判定**（成立与否都走这个；⛔ 不动任何计数，行上必须带"不参与判定"）。
+ * ⚠ 一个 profile 的"算不算"由 `dependencies` 决定（`CURRENT_QUALIFIES`），
+ *   与"这一条是正还是负"无关 ⇒ `notJudged()` 与 `bad()`/`ok()` **分开**。
+ */
+let notJudgedCount = 0
+/**
+ * **判不出**的 profile 条数（清单不存在[点名]、读不了、不是合法 JSON）。
+ * ⚠ 它们**必须计入退出码**（判不出不是结论），但与 `badCount`（"该装却坏了"）
+ *   **分开记** —— 两种原因，⛔ 不许说成同一句话。
+ */
+let UNREADABLE = 0
 /** 本 profile **有没有资格计入判定**（= `dependencies` 里声明了本包）。⚠ 由主循环每轮设置。 */
 let CURRENT_QUALIFIES = false
 /**
- * 记一条不成立。
- * ⚠ **只有"该装却坏了"才算红**（`CURRENT_QUALIFIES`）；没声明依赖的 profile
- *   不参与判定，但也**照实打印**（⛔ 不许静默跳过 —— 那是"没读到"伪装成"没问题"）。
+ * 记一条**不参与判定**的读数（成立与否都走这里）。
+ *
+ * ⚠ 记号固定 **`·`**（⛔ 不用 `✗`/`✓`）：
+ *   · 用 `✓` ⇒ 会被读成"这个 profile 通过了"（而它压根没被判定），
+ *     并且会把汇总条数带歪（`TASK-2` §1-A-2 说的就是这一半）；
+ *   · 用 `✗` ⇒ 就是本单要治的那个"红 ✗ 配绿灯退出码"。
+ * ⚠ 行尾**必须**带"不参与判定"那句（⛔ 不许只换个记号、把原因留在别处）。
  */
-const bad = (line, why) => {
-  if (CURRENT_QUALIFIES) badCount++
+function notJudged(line, why) {
+  notJudgedCount++
+  console.log(`  · ${line}`)
+  if (why !== undefined) console.log(`      ⇒ ${why}`)
+  console.log('      ⚠ 该 profile 的 `dependencies` 里没有本包 ⇒ **不参与判定**'
+    + '（⛔ 不计入退出码；⚠ 也不代表"它装对了"或"它坏了"，只代表**本来就不该由它装**）')
+}
+/**
+ * 记一条**不成立、且计入判定**（= 真红）。
+ * ⚠ 调用者**必须**已确认它该装；否则走 `notJudged()`（本函数自带防线，见下）。
+ */
+function bad(line, why) {
+  if (!CURRENT_QUALIFIES) {
+    /**
+     * ⚠ 这是**防线**，不是正常路径：真走到这里说明有人把"不该判的"当红记了。
+     *   ⇒ 当场**降级成 `·`** 并**大声说出来**（⛔ 不许悄悄印 ✗ 又不动计数）。
+     */
+    console.log('  ⚠ [读数为误用] 这一条本该走 notJudged()（不计入判定）—— 已按不参与处理：')
+    notJudged(line, why)
+    return
+  }
+  badCount++
   console.log(`  ✗ ${line}`)
   if (why !== undefined) console.log(`      ⇒ ${why}`)
-  if (!CURRENT_QUALIFIES) {
-    console.log('      ⚠ 这个 profile 的 `dependencies` 里**没有**本包 ⇒ **不参与判定**'
-      + '（⛔ 不计入退出码；⚠ 也不代表"它装对了"，只代表**本来就不该由它装**）')
-  }
 }
-const ok = (line) => {
+/**
+ * 记一条**成立、且计入判定**。
+ * ⚠ 非被判定者走 `notJudged()` —— 否则汇总里那句「**N 个被判定 profile** …（**X 条**）」
+ *   的**主部与数字对不上**（`TASK-2` §1-A-2）。
+ */
+function ok(line) {
+  if (!CURRENT_QUALIFIES) {
+    notJudged(line)
+    return
+  }
   okCount++
   console.log(`  ✓ ${line}`)
 }
@@ -255,7 +308,7 @@ function planBundleLineInsertion(raw, name, afterName) {
         if (nlIdx < 0) return { ok: false, why: `锚点 \`${afterName}\` 所在行找不到换行` }
         insertAt = nlIdx + 1
         insertText = indentOfLine(anchorAbs) + '"' + name + '",\n'
-        how = `紧跟在 \`${afterName}\` 之后（整行插入，沿用原文缩进）`
+        how = `**原位**：紧跟在 \`${afterName}\` 之后（整行插入，沿用原文缩进）`
       } else {
         /**
          * 末项：在**锚点行末的换行符之前**插入 `,` + 换行 + 新行。
@@ -266,7 +319,7 @@ function planBundleLineInsertion(raw, name, afterName) {
         if (nlIdx < 0) return { ok: false, why: `锚点 \`${afterName}\` 是末项，但它所在行找不到换行` }
         insertAt = nlIdx
         insertText = ',\n' + indentOfLine(anchorAbs) + '"' + name + '"'
-        how = `紧跟在 \`${afterName}\` 之后（它是末项 ⇒ 一并补上分隔逗号）`
+        how = `**原位**：紧跟在 \`${afterName}\` 之后（它是末项 ⇒ 一并补上分隔逗号）`
       }
     } else {
       /**
@@ -277,7 +330,7 @@ function planBundleLineInsertion(raw, name, afterName) {
       const endQuoteAbs = anchorAbs + afterName.length + 1
       insertAt = endQuoteAbs + 1
       insertText = hasNext ? ' "' + name + '",' : ', "' + name + '"'
-      how = `紧跟在 \`${afterName}\` 之后（单行数组 · 内联插入）`
+      how = `**原位**：紧跟在 \`${afterName}\` 之后（单行数组 · 内联插入）`
     }
   } else {
     /**
@@ -351,19 +404,24 @@ function planBundleLineInsertion(raw, name, afterName) {
         const itemIndent0 = indentOfLine(lastNonWs)
         insertAt = nlBeforeClose
         insertText = ',\n' + itemIndent0 + '"' + name + '"'
-        how = '**追加到数组末尾**（没找到原位邻接项；一并补上末项的分隔逗号）'
+        how = '**降级：位置是猜的** —— 没找到 `dsh-taskboard` 锚点 ⇒ 追加到数组末尾'
+          + '（⚠ 装配语义不受位置影响，但**这正是猜的那个位置**）；一并补上末项的分隔逗号'
         const text0b = raw.slice(0, insertAt) + insertText + raw.slice(insertAt)
         return { ok: true, text: text0b, insertAt, insertText, how }
       }
       insertText = itemIndent + '"' + name + '"\n'
-      how = '**追加到数组末尾**（没找到原位邻接项）'
+      how = '**降级：位置是猜的** —— 没找到 `dsh-taskboard` 锚点 ⇒ 追加到数组末尾'
+        + '（⚠ 装配语义不受位置影响，但**这正是猜的那个位置**）'
       const text3 = raw.slice(0, closeLineStart) + insertText + raw.slice(closeLineStart)
       return { ok: true, text: text3, insertAt: closeLineStart, insertText, how }
     } else {
       insertAt = closeIdx
       insertText = '"' + name + '"'
       const emptyArray = raw.slice(openIdx + 1, closeIdx).trim() === ''
-      how = emptyArray ? '**数组原本是空的** ⇒ 直接放入' : '**追加到数组末尾**（没找到原位邻接项）'
+      how = emptyArray
+        ? '**数组原本是空的** ⇒ 直接放入（⚠ 无位置可谈）'
+        : '**降级：位置是猜的** —— 没找到 `dsh-taskboard` 锚点 ⇒ 追加到数组末尾'
+          + '（⚠ 装配语义不受位置影响，但**这正是猜的那个位置**）'
       if (!emptyArray) insertText = ', ' + insertText
     }
   }
@@ -412,19 +470,39 @@ for (const profile of names) {
   CURRENT_QUALIFIES = false
   const dir = join(dshHome(), 'profiles', profile)
   const manifestPath = join(dir, 'package.json')
+  /**
+   * ⚠⚠ **`--all` 下"没有清单"是正常态**（空目录 / 非 profile 目录）—— ⛔ 不算红；
+   *   而**点名**时它必须红（查的对象不存在 = 用户在找一个不存在的 profile）。
+   *   改前这里无条件 `bad()`：`--all` 扫到空目录也会印 `✗`（同族误报，本单一并收）。
+   */
   if (!existsSync(manifestPath)) {
-    bad(`profile "${profile}"：清单不存在（${manifestPath}）`,
-      '这不是"没装"—— 是**查的对象不存在**；`--all` 时属于正常（空目录），点名时请确认 profile 名')
+    if (ALL) {
+      notJudged(`profile "${profile}"：没有 \`package.json\``,
+        '`--all` 扫到的目录里没有清单 ⇒ 它不是可装配的 profile（⚠ 这与"没装"不是一回事）')
+    } else {
+      UNREADABLE++
+      console.log(`  ✗ profile "${profile}"：清单不存在（${manifestPath}）`)
+      console.log('      ⇒ 点名要查的 profile **不存在** ⇒ 判不出（⛔ 不当作通过）')
+    }
     continue
   }
+  /**
+   * ⚠ **"读不了 / 解析不了"一律算红**（⛔ 不按依赖面豁免）：
+   *   这两种情况**判不出"该不该装"**，所以资格也定不了 ⇒ 归"判不出"，必须计入退出码。
+   *   ⚠ 这正是本项目口径：**判不出不是结论**，⛔ 也不许静默。
+   */
   let raw
   try { raw = readFileSync(manifestPath, 'utf8') } catch (e) {
-    bad(`profile "${profile}"：清单读不了（${String(e?.message ?? e)}）`, '读不到 ⇒ 判不出，⛔ 不当作通过')
+    UNREADABLE++
+    console.log(`  ✗ profile "${profile}"：清单读不了（${String(e?.message ?? e)}）`)
+    console.log('      ⇒ 读不到 ⇒ 判不出"该不该装" ⇒ **计入退出码**（⛔ 不当作通过）')
     continue
   }
   let manifest
   try { manifest = JSON.parse(raw) } catch (e) {
-    bad(`profile "${profile}"：清单不是合法 JSON（${String(e?.message ?? e)}）`, '解析不了 ⇒ 判不出')
+    UNREADABLE++
+    console.log(`  ✗ profile "${profile}"：清单不是合法 JSON（${String(e?.message ?? e)}）`)
+    console.log('      ⇒ 解析不了 ⇒ 判不出"该不该装" ⇒ **计入退出码**（⛔ 不当作通过）')
     continue
   }
   const bundles = Array.isArray(manifest?.dsh?.profile?.bundles) ? manifest.dsh.profile.bundles : null
@@ -554,8 +632,15 @@ for (const profile of names) {
     }
 
   } else if (!declared && FIX && !hasDep) {
-    bad(`D · profile "${profile}"：**没法自动修** —— \`dependencies\` 里也没有 ${SELF_NAME}`,
-      '先把它加成依赖（`dsh plugin --profile ' + profile + ' add ' + root + '`），再来补 bundles')
+    /**
+     * ⚠⚠ **本单 A-1 的落点：这里⛔ 不许再印 `✗`**（`TASK-2` §1-A-1）。
+     *   这一条的前提是"没声明依赖" ⇒ 该 profile **不参与判定** ⇒ 它的读数
+     *   **不许**长得像失败（改前正是 `✗` 配 exit 0）。
+     *   ⇒ 改走 `notJudged()`：记号 `·` + 行尾那句"不参与判定"。
+     */
+    notJudged(`D · profile "${profile}"：**没法自动修** —— \`dependencies\` 里也没有 ${SELF_NAME}`,
+      '⚠ 这不是"修失败"：它**本来就不该装**本插件 ⇒ 无"修"可言；'
+      + `若它确实该装，先 \`dsh plugin --profile ${profile} add ${root}\`（那属于另一件事）`)
   } else if (!declared && !hasDep) {
     /**
      * ⚠⚠ **这条必须与"有没有加 `--fix`"无关**（2026-10-20 自检 P-3 抓到）：
@@ -778,6 +863,87 @@ if (ARGV.includes('--self-check')) {
       + ` · 输出=${String(r.stdout).slice(-320)}`)
   }
 
+  // ⑦ ⭐⭐ **记号必须与"算不算"一致**（2026-10-20 本单 A-1 · `TASK-2` §1-A-1）
+  //
+  //   ⚠ 守的是那一格：**一行红 ✗ 配一个绿灯退出码**。
+  //     改前 `--all --fix` 扫到"没声明依赖"的 profile ⇒ 印 `✗ D · …没法自动修`，而 exit 0。
+  //   ⚠ 判据两条**成对**：
+  //     ① 不参与判定的那条**不许**有 `✗`、**必须**有 `·` 且带"不参与判定"；
+  //     ② **真失败**（有依赖、掉 bundles）**必须**有 `✗`（⛔ 不许一刀切把 ✗ 也去掉）。
+  //     ⚠ 只有①会退化成"永远绿"，只有②会退化成"永远红" ⇒ 两条一起才有分辨力。
+  {
+    const base = mkdtempSync(join(tmpdir(), 'hob-prof-sign-'))
+    MADE.push(base)
+    for (const [n, depsHasSelf, bundlesHasSelf] of [
+      ['web', true, true],       // 被判定者 · 装好了
+      ['idle', false, false],    // ⚠ 没依赖 ⇒ 不参与 ⇒ **不许印 ✗**
+      ['broken', true, false],   // ⚠ 该装却掉行 ⇒ **必须印 ✗**
+    ]) {
+      const dir = join(base, 'profiles', n)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({
+        name: 'x', dependencies: depsHasSelf ? { [SELF_NAME]: 'link:' + root } : {},
+        dsh: { profile: { bundles: bundlesHasSelf ? [SELF_NAME] : ['base'] } },
+      }, null, 2) + '\n', 'utf8')
+      mkdirSync(join(dir, 'node_modules'), { recursive: true })
+      symlinkSync(root, join(dir, 'node_modules', SELF_NAME), 'dir')
+    }
+    /** ⚠ `--fix` 才走得到那条 `!declared && FIX && !hasDep`（本单 A-1 的原现场）。 */
+    const r = run(base, ['--all', '--fix'])
+    const out = String(r.stdout)
+    const idleLines = out.split('\n').filter((l) => l.includes('profile "idle"'))
+    const idleHasCross = idleLines.some((l) => l.trim().startsWith('✗'))
+    const idleHasDot = idleLines.some((l) => l.trim().startsWith('·'))
+    const idleSaysNotJudged = idleLines.some((l) => l.includes('不参与判定'))
+    const brokenHasCross = out.split('\n').some((l) => l.trim().startsWith('✗') && l.includes('profile "broken"'))
+    say(!idleHasCross && idleHasDot && idleSaysNotJudged && brokenHasCross && r.status === 1,
+      'P-7 ✓ **记号与归属一致**（钉"红 ✗ 配绿灯"）：不参与判定的那段**没有 `✗`**、'
+      + '用 `·` 且带"不参与判定"；⚠ 反证：**真失败**（有依赖、掉行）**仍有 `✗`** 且 exit=1',
+      `idle 有 ✗=${idleHasCross}（应 false）· idle 有 ·=${idleHasDot}（应 true）`
+      + ` · idle 说"不参与判定"=${idleSaysNotJudged}（应 true）`
+      + ` · broken 有 ✗=${brokenHasCross}（应 true）· exit=${r.status}（应 1）`
+      + ` · idle 行=${JSON.stringify(idleLines.slice(0, 3))}`)
+  }
+  // ⑧ ⭐⭐ **汇总条数只许数被判定者**（2026-10-20 本单 A-2 · `TASK-2` §1-A-2）
+  //
+  //   ⚠ 守的是那一格：一个**没声明依赖**却把本包写进 `bundles` 的 profile，
+  //     它的 A 段原本会打 `✓` 并被计进「**N 个被判定 profile** …（**X 条**）」
+  //     ⇒ **主部与数字对不上**。
+  //   ⚠ 判据：汇总句里「被判定 profile」的**个数**必须等于**真正有依赖**的那个数
+  //     （本夹具里只有 `web` 与 `broken` 两条有依赖）。⚠ 再核:那句话里的条数必须是 `web` 那几条。
+  {
+    const base = mkdtempSync(join(tmpdir(), 'hob-prof-count-'))
+    MADE.push(base)
+    for (const [n, depsHasSelf, bundlesHasSelf] of [
+      ['web', true, true],        // 被判定者
+      ['ghost', false, true],     // ⚠ **没依赖却写了 bundles** ⇒ 原本会给一个 ✓
+    ]) {
+      const dir = join(base, 'profiles', n)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({
+        name: 'x', dependencies: depsHasSelf ? { [SELF_NAME]: 'link:' + root } : {},
+        dsh: { profile: { bundles: bundlesHasSelf ? [SELF_NAME] : ['base'] } },
+      }, null, 2) + '\n', 'utf8')
+      mkdirSync(join(dir, 'node_modules'), { recursive: true })
+      symlinkSync(root, join(dir, 'node_modules', SELF_NAME), 'dir')
+    }
+    const r = run(base, ['--all'])
+    const out = String(r.stdout)
+    /** 汇总句：`判定：**PASS** —— **1 个被判定 profile**（web）…（3 条）` */
+    const m = /\*\*(\d+) 个被判定 profile\*\*（([^）]*)）[^（]*（(\d+) 条）/.exec(out)
+    const judgeCount = m === null ? -1 : Number(m[1])
+    const judgeNames = m === null ? '' : m[2]
+    const stated = m === null ? -1 : Number(m[3])
+    /** ghost 的 A 段必须**不是** ✓（它是 `·`）。 */
+    const ghostLines = out.split('\n').filter((l) => l.includes('profile "ghost"'))
+    const ghostHasCheck = ghostLines.some((l) => l.trim().startsWith('✓'))
+    say(judgeCount === 1 && judgeNames.includes('web') && !judgeNames.includes('ghost')
+      && stated === 3 && !ghostHasCheck && r.status === 0,
+      'P-8 ✓ **汇总条数只数被判定者**（钉 A-2）：`ghost`（没依赖却写了 bundles）**不算** ✓、'
+      + '不计进汇总；「被判定 profile」的个数与名字**只含 web**，条数 = web 那 3 条',
+      `汇总解析=${JSON.stringify(m === null ? null : m.slice(1))}（应 1 个 / 含 web / 3 条）`
+      + ` · ghost 有 ✓=${ghostHasCheck}（应 false）· exit=${r.status}（应 0）`)
+  }
   console.log('')
   /** ⚠ **无论如何都清**（失败路径也清 —— `TASK` §1-C 的硬要求）。 */
   cleanupAll()
@@ -785,7 +951,7 @@ if (ARGV.includes('--self-check')) {
     + `${cleaned.fail > 0 ? `、**⚠ ${cleaned.fail} 个没清掉**` : '（全部清净）'}`)
   console.log('')
   if (scBad === 0) {
-    console.log('判定：**PASS** —— 装配面判据自检 6 条全过。')
+    console.log('判定：**PASS** —— 装配面判据自检 8 条全过。')
     process.exit(0)
   }
   console.log(`判定：**FAIL**（${scBad} 条）—— 装配面判据自身不成立。`)
@@ -802,24 +968,58 @@ if (ARGV.includes('--self-check')) {
  *   而那正是 2026-10-20 事故的形态。
  */
 const judged = QUALIFIED
-const notJudged = names.filter((n) => !QUALIFIED.includes(n))
+/** ⚠ 变量名别与记号函数 `notJudged()` 撞 —— 那是同一文件里的两个东西（本单踩过）。 */
+const NOT_JUDGED_NAMES = names.filter((n) => !QUALIFIED.includes(n))
+/**
+ * ══ 汇总（`TASK-2` §1-A-2：**条数只许数被判定者**）══════════════════════════
+ *
+ * ⚠ 改前 `ok()` 无条件 `okCount++` ⇒ 一个"没声明依赖却把本包写进 `bundles`"的 profile
+ *   会打 `✓` 并被计进「**N 个被判定 profile** …（**X 条**）」⇒ **主部与数字对不上**。
+ *   ⇒ 现在 `ok()` 只给被判定者计数，非被判定者一律 `notJudged()`（`·` 记号，不进任何计数）。
+ *
+ * ⚠ 退出码（三档，⛔ 不许再把"判不出"塞进 PASS）：
+ *   · `badCount > 0` ⇒ **FAIL（1）** —— 该装却坏了；
+ *   · `UNREADABLE > 0` ⇒ **判不出（2）** —— 清单读不了 / 不是 JSON / 点名的 profile 不存在
+ *     （⚠ 判不出不是结论，⛔ 不许当通过）；
+ *   · 两者皆 0 且 `judged.length > 0` ⇒ **PASS（0）**；
+ *   · `judged.length === 0` ⇒ **未执行（2）** —— 没有任何 profile 声称要装它。
+ * ⚠ 优先级：`badCount`（真红）高于 `UNREADABLE`（判不出）—— 真红更需要先看。
+ */
+if (badCount > 0) {
+  console.log(`判定：**FAIL** —— **被判定的 ${judged.length} 个 profile**（${judged.join(' / ') || '(无)'}）`
+    + `里有 ${badCount} 条不成立（${okCount} 条成立）。`
+    + ' ⚠ 装配面出问题**不会**让 `check:build` 红（它判的是盘上产物），'
+    + '⛔ 所以这条判据不能省。')
+  if (UNREADABLE > 0) {
+    console.log(`       ⚠ 另有 **${UNREADABLE} 个** profile **判不出**（清单读不了 / 不是 JSON / 点名的不存在）`
+      + ' —— 两件事分开说：上面是真坏，这里是**判不出**。')
+  }
+  if (notJudgedCount > 0) {
+    console.log(`       ⚠ 还有 **${notJudgedCount} 条**读数**不参与判定**（记号为 \`·\`，⛔ 不计入退出码）。`)
+  }
+  process.exit(1)
+}
+if (UNREADABLE > 0) {
+  console.log(`判定：**判不出** —— **${UNREADABLE} 个** profile 的清单读不了 / 不是合法 JSON`
+    + '（或点名的 profile 不存在）⇒ ⚠ **既不是通过、也不是坏**。')
+  console.log('       ⚠ 本仓口径：**判不出不是结论** ⇒ ⛔ 不许当通过（退出码 2）。')
+  process.exit(2)
+}
 if (judged.length === 0) {
   console.log('判定：**未执行** —— 没有一个 profile 的 `dependencies` 里声明了 ' + SELF_NAME
     + ' ⇒ **没有可判定的对象**（⚠ 这不代表装对了；也不代表没装 —— 只是"没有任何 profile 声称要装它"）。')
   console.log(`       ⚠ 扫过的 profile：${names.join(' / ') || '(无)'}`)
+  console.log('       ⚠ 这是**有意取舍**（`TASK-2` §1-B 裁定②）：本判据拿 `dependencies` 当'
+    + '"哪些 profile 该装"的唯一依据，⛔ 不另立一份会漂的期望清单。')
   process.exit(2)
 }
-if (badCount === 0) {
-  console.log(`判定：**PASS** —— **${judged.length} 个被判定 profile**（${judged.join(' / ')}）`
-    + `的装配面四条全部成立（${okCount} 条）。`)
-  if (notJudged.length > 0) {
-    console.log(`       ⚠ 另扫了 ${notJudged.length} 个**没声明依赖**的 profile（${notJudged.join(' / ')}）：`
-      + '它们**不参与判定**（⚠ 不是"通过了"，是"本来就不该由它们装"）。')
-  }
-  process.exit(0)
+console.log(`判定：**PASS** —— **${judged.length} 个被判定 profile**（${judged.join(' / ')}）`
+  + `的装配面四条全部成立（${okCount} 条）。`)
+if (NOT_JUDGED_NAMES.length > 0) {
+  console.log(`       ⚠ 另扫了 ${NOT_JUDGED_NAMES.length} 个**没声明依赖**的 profile（${NOT_JUDGED_NAMES.join(' / ')}）：`
+    + `它们**不参与判定**（记号为 \`·\`，⛔ 不计入退出码；⚠ 不是"通过了"，是"本来就不该由它们装"）。`)
+  console.log('       ⚠ 这是一条**有意取舍**（`TASK-2` §1-B 裁定②）：本判据拿 `dependencies` 当'
+    + '"哪些 profile 该装"的唯一依据 —— ⚠ 代价是"本该装却连依赖都没加"**不会红**'
+    + '（只会在 D 段说一句），⛔ 不另立一份会漂的期望清单来补。')
 }
-console.log(`判定：**FAIL** —— **被判定的 ${judged.length} 个 profile**（${judged.join(' / ')}）`
-  + `里有 ${badCount} 条不成立（${okCount} 条成立）。`
-  + ' ⚠ 装配面出问题**不会**让 `check:build` 红（它判的是盘上产物），'
-  + '⛔ 所以这条判据不能省。')
-process.exit(1)
+process.exit(0)

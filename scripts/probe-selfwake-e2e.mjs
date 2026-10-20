@@ -30,15 +30,38 @@ const WAKE = process.env.HOB_WAKE_ARTIFACT !== undefined && process.env.HOB_WAKE
   ? process.env.HOB_WAKE_ARTIFACT
   : join(ROOT, 'lib', 'server', 'card-wake.js')
 
-/** 退出码 2 的统一下场（⚠ "未执行"⛔ 不等于"通过"）。 */
+/**
+ * 退出码 2 的统一下场（⚠ "未执行"⛔ 不等于"通过"）。
+ *
+ * ⚠⚠ **本族在"没有看板卡库"的机器上 exit 2 是预期行为**（`TASK-2` §1-B 裁定①：**保持**）：
+ *   这一族验的是"**真卡数据形状**"，没有真卡库就没有可验的对象
+ *   ⇒ ⛔ **不造 fixture 兜底**（那会把这一族存在的理由打折）。
+ *   ⇒ 这句话必须**直接读到**，⛔ 不许只写在注释里（所以放进了函数体，会被打印）。
+ * ⚠ 连带后果（⚠ 读 `check:all` 的人要知道）：这种机器上 `check:all` 会因本族
+ *   记"未执行"而**整体 exit 2**（⛔ 不是 0）—— 那是诚实的"没验过"，⛔ 不是"有问题"。
+ */
 const notRun = (why) => {
   console.log('判定：**未执行** —— ' + why)
   console.log('       ⚠ 这不代表"没出问题"，只代表**没东西可验**。')
+  console.log('       ⚠ ⚠ **本族缺看板卡库 ⇒ 未执行是预期行为**（`TASK-2` §1-B 裁定①：保持 exit 2，⛔ 不改 0）；'
+    + '⛔ 本族**不造 fixture 兜底** —— 那会把"真卡数据形状"这个存在理由打折。')
+  console.log('       ⚠ 连带：这种机器上 `npm run check:all` 会因此**整体 exit 2**（⚠ 是"没验过"，⛔ 不是"坏了"）。')
   process.exit(2)
 }
 
 if (!existsSync(WAKE)) notRun(`找不到产物 \`${WAKE}\`（先 \`npm run build\`）`)
-if (!existsSync(BOARD)) notRun(`读不到看板卡库 \`${BOARD}\``)
+if (!existsSync(BOARD)) {
+  /**
+   * ══ ⚠⚠ **"缺看板卡库 ⇒ 未执行（预期）"必须能直接读到**（`TASK-2` §1-B 裁定①）═══
+   *
+   * 判据（裁定原文）：**保持 exit 2**（⛔ 不改 0 —— 那是放宽），
+   *   并且把这句话写成**输出里的一行**（⛔ 不许只躺在代码注释里）。
+   * ⚠ 另一条同款裁定：⛔ **不许造 fixture 兜底** —— 那会把这一族存在的理由
+   *   （"拿**真**卡数据 + 已出货产物"）打折，等于把判据换成一段自说自话。
+   * ⇒ 所以这里**只加一句可读话**，行为一个字没改（仍然 exit 2）。
+   */
+  notRun(`读不到看板卡库 \`${BOARD}\``)
+}
 
 let board
 try { board = JSON.parse(readFileSync(BOARD, 'utf8')) } catch (e) {
