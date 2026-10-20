@@ -230,9 +230,35 @@ if (ARGV.includes('--self-check') || !ARGV.includes('--no-self-check')) {
       `摘掉后=${mutated.verdict}（应为 undecidable）· 正面=${positive.verdict}（应为 lagging）`)
   }
 
+  // ── T-e ⭐⭐ **"宿主在跑、但没装配本插件"必须自成一档**（2026-10-20 修误报）──
+  //
+  //   ⚠ 病灶（实测）：`procs` 为空、而**确实有 `dsh web` 在跑**（pid 26110 / 30214）
+  //     时，改前一律印「**没有找到**跑着本 checkout 的宿主进程」——
+  //     ⚠ 那句话**是假话**，而且把修法指错方向（去查进程，而真相是 bundles 里缺 `dsh-hob`）。
+  //   ⚠ 判据三条：
+  //     ① 有"别人的宿主"证据 ⇒ 落 `not-assembled`，⛔ 不是 `undecidable`、⛔ 更不是 `in-sync`；
+  //     ② 那句话里**必须**出现"在跑"，且**不许**出现"没有找到"；
+  //     ③ `others` 为空时**仍**落 `undecidable`（⛔ 不许把这一档做成通配）。
+  {
+    const others = [{ pid: 26110, profile: 'web', why: 'profile web 的 bundles 里没有 dsh-hob' }]
+    const r = classifyInstance(B, [], [], others)
+    const noProcNoOther = classifyInstance(B, [], [], [])
+    const line = r.head + '\n' + r.detail.join('\n')
+    const saysRunning = line.includes('在跑')
+    const notSaysMissing = !line.includes('没有找到')
+    const rightVerdict = r.verdict === 'not-assembled'
+    const stillUndecidable = noProcNoOther.verdict === 'undecidable'
+    say(rightVerdict && saysRunning && notSaysMissing && stillUndecidable,
+      'T-e ✓ **"宿主在跑但没装配本插件"自成一档**（钉 2026-10-20 的误报）：'
+      + '`others` 非空 ⇒ 落 `not-assembled` 且话说"**在跑**"、`⛔` 不说"没有找到"；'
+      + '⚠ 负向对照：`others` 为空 ⇒ **仍**落 `undecidable`（⛔ 没做成通配）',
+      `判=${r.verdict}（应 not-assembled）· 说"在跑"=${saysRunning} · 没说"没有找到"=${notSaysMissing}`
+      + ` · 空 others 仍判不出=${stillUndecidable}`)
+  }
+
   console.log('')
   if (bad === 0) {
-    console.log(`判定：**PASS** —— 面 ③ 三档 + 负向对拍，共 5 条断言。`)
+    console.log(`判定：**PASS** —— 面 ③ 三档 + 负向对拍，共 6 条断言。`)
     // ⚠ `--self-check` 只跑自检就退；`--self-check-then-report` 继续跑现场（⚠ `check:build` 用后者）
     if (ARGV.includes('--self-check')) process.exit(0)
   } else {
@@ -365,12 +391,44 @@ async function profileRunsThisCheckout(profile) {
  * @param builtAtMs - 产物侧 `built_at` 的 epoch；`null` = 读不到。
  * @param procs - 已确认在跑本 checkout 的宿主进程（⚠ 每个带 `startedAt`）。
  * @param notes - 取数过程中的不确定项（⚠ 非空**不**自动等于判不出，见下）。
- * @returns `{ verdict, head, detail }`，`verdict ∈ {'in-sync','lagging','undecidable'}`。
+ * @param others - **在跑、但确认不是本 checkout 的 `dsh web` 宿主**（⚠ 每项 `{pid, profile, why}`）。
+ *   ⚠⚠ **这一档是 2026-10-20 补的**：改前 `procs.length === 0` 一律说
+ *     「**没有找到跑着本 checkout 的 `dsh web` 宿主进程**」——
+ *     ⚠ 而实测有一种情形**逐字**落在这句话上、却完全不是那个意思：
+ *     **宿主确实在跑（pid 26110 / 30214），只是那个 profile 的 `dsh.profile.bundles`
+ *     里没有 `dsh-hob`** ⇒ 插件**压根没被装配**。
+ *     ⇒ 那句话会把人引向"没在跑 / 取数出岔"，而真相是"**跑着，但没装**"，
+ *       修法完全不同（前者去查进程，后者去查 bundles）。⚠ 这正是本项目明令的
+ *       "**两种原因不许说成同一句话**"。
+ * @returns `{ verdict, head, detail }`，`verdict ∈ {'in-sync','lagging','undecidable','not-assembled'}`。
  *   ⚠ **优先级写死**：先看产物侧能否取到，再看有没有可比实例 —— 两者缺一即 `undecidable`，
  *     ⛔ **绝不**落到 `in-sync`（本项目的反复教训：判不出不是结论）。
+ *   ⚠ `not-assembled` **仍是判不出那一族**（⛔ 不是"同步"、⛔ 也不是"落后"）：
+ *     它只多说一句"**宿主在跑但没装配本插件**"，⛔ 不加任何"大概是……"的推测。
  */
-export function classifyInstance(builtAtMs, procs, notes = []) {
+export function classifyInstance(builtAtMs, procs, notes = [], others = []) {
   const detail = [...notes.map((n) => `    ⚠ ${n}`)]
+  /**
+   * ⚠⚠ **"宿主在跑、但没装配本插件"单独一档**（优先于"没找到宿主"那句）。
+   *   ⚠ 只认**明确**证据（`others` 里带 `why`），⛔ 不靠"ps 里像"去猜。
+   *   ⚠ 判据：`others` 非空 ⇒ 至少一个 `dsh web` 在跑，且它解析出来的不是本 checkout。
+   *     ⇒ 此时说"没有找到宿主进程"是**假话**。
+   */
+  if ((!Array.isArray(procs) || procs.length === 0) && Array.isArray(others) && others.length > 0) {
+    const who = others.map((o) => `pid ${o.pid}（profile=${o.profile}）：${o.why}`)
+    return {
+      verdict: 'not-assembled',
+      head: `⚠ 面 ③：**判不出** —— **有 ${others.length} 个 \`dsh web\` 宿主在跑，但它们都没有装配本插件**`
+        + '（⇒ 这一版产物**根本不在那些进程里**，⛔ 不是"没在跑"，也⛔ 不是"同步"）',
+      detail: [
+        ...who.map((w) => `    · ${w}`),
+        '    ⇒ ⚠ 修法**不是**重启：先看那个 profile 的 `package.json` 的 `dsh.profile.bundles`'
+          + ' 里有没有 `dsh-hob`（⚠ `cordis.patch.yml` 里那条 `- id: dsh-hob` 只是**覆盖 config**，'
+          + '⛔ 不负责装配 —— 实测它会报 `patch: entry "dsh-hob" not found`）',
+        ...detail,
+      ],
+    }
+  }
   if (builtAtMs === null || !Number.isFinite(builtAtMs)) {
     return {
       verdict: 'undecidable',
@@ -416,8 +474,12 @@ export function classifyInstance(builtAtMs, procs, notes = []) {
 /**
  * 取"跑着本 checkout 的宿主进程"清单（⚠ 一个都取不到 ≠ 同步）。
  *
- * @returns `{ procs, notes }`：`procs` 是**已确认在跑本 checkout** 的进程（带启动时刻），
- *   `notes` 是**取数过程中的不确定项**（⚠ 非空就意味着"判不出"那一档要单列，⛔ 不许吞）。
+ * @returns `{ procs, notes, others }`：`procs` 是**已确认在跑本 checkout** 的进程（带启动时刻），
+ *   `notes` 是**取数过程中的不确定项**（⚠ 非空就意味着"判不出"那一档要单列，⛔ 不许吞），
+ *   `others` 是**在跑、但明确不是本 checkout 的宿主**（⚠ `{pid, profile, why}`）——
+ *   ⚠⚠ **它必须单独带出来**：否则"宿主在跑但没装配本插件"会被渲染成
+ *     「**没有找到**跑着本 checkout 的宿主进程」（实测 2026-10-20 就是这么误报的，
+ *     两句话的修法完全不同：一个查进程、一个查 `dsh.profile.bundles`）。
  */
 async function runningInstances() {
   if (PROBE !== null) {
@@ -425,6 +487,7 @@ async function runningInstances() {
     return {
       procs: Array.isArray(PROBE.procs) ? PROBE.procs : [],
       notes: typeof PROBE.note === 'string' ? [PROBE.note] : [],
+      others: Array.isArray(PROBE.others) ? PROBE.others : [],
     }
   }
   const notes = []
@@ -448,6 +511,7 @@ async function runningInstances() {
     return { procs: [], notes: [] }
   }
   const procs = []
+  const others = []
   for (const c of candidates) {
     let argv = []
     try { argv = readFileSync(`/proc/${c.pid}/cmdline`, 'utf8').split('\0').filter((x) => x !== '') } catch (e) {
@@ -457,9 +521,13 @@ async function runningInstances() {
     if (profile === null) { notes.push(`pid ${c.pid} 判不出用的是哪个 profile（cmdline：${argv.join(' ')}）`); continue }
     const own = await profileRunsThisCheckout(profile)
     if (own.ok !== true) {
-      // ⚠ `notThisPackage` = 能判、且**确实不是**本 checkout ⇒ 不算缺读数（⛔ 不进 notes）
+      // ⚠ `notThisPackage` = 能判、且**确实不是**本 checkout
+      //   ⇒ ⚠⚠ **不进 notes，但必须进 `others`**（2026-10-20 修误报）：
+      //     它是"宿主在跑、但没装配本插件"的**唯一**证据 ——
+      //     丢掉它，渲染层就只能说"没有找到宿主进程"（⚠ 那句话**是假话**）。
       //   其余 = 取不到 ⇒ ⚠ **必须**进 notes（否则"判不出"会被静默吞成"同步"）
       if (own.notThisPackage !== true) notes.push(`pid ${c.pid}（profile ${profile}）：${own.why}`)
+      else others.push({ pid: c.pid, profile, why: own.why })
       continue
     }
     let startedAt
@@ -468,7 +536,7 @@ async function runningInstances() {
     }
     procs.push({ pid: c.pid, startedAt, profile, checkout: own.resolved })
   }
-  return { procs, notes }
+  return { procs, notes, others }
 }
 
 const stampExists = existsSync(STAMP)
@@ -567,7 +635,13 @@ if (existsSync(manifestSrc)) {
 const inst = await runningInstances()
 const stampBuiltAt = PROBE !== null && 'builtAt' in PROBE ? PROBE.builtAt : builtAtOf()
 const instNotes = [...inst.notes]
-const classified = classifyInstance(stampBuiltAt, inst.procs, instNotes)
+/**
+ * ⚠⚠ **把"在跑但没装配本插件"那一档一并喂进去**（2026-10-20 · 修误报）：
+ *   少了它，`procs` 为空就会印出「**没有找到**跑着本 checkout 的宿主进程」——
+ *   ⚠ 而宿主可能**明明在跑**（实测 pid 26110 / 30214，只是那个 profile 的
+ *   `dsh.profile.bundles` 里没有 `dsh-hob`）⇒ 那句话把人引向错的修法。
+ */
+const classified = classifyInstance(stampBuiltAt, inst.procs, instNotes, inst.others)
 const instVerdict = classified.verdict
 const instHead = classified.head
 let instDetail = [...classified.detail]
@@ -615,7 +689,8 @@ if (STRICT) {
 console.log('')
 console.log('       ⚠ 覆盖面 / 判读口径：面 ①② = **产物 vs 源** · 面 ③ = **运行实例 vs 产物**'
   + '（⛔ 都不是"实例是否在服务里用上它"）；'
-  + '⚠ 退出码 0=已执行 · 1=面③不同步（仅判据模）· 2=未执行/基准缺失或面③判不出（仅判据模）。')
+  + '⚠ 退出码 0=已执行 · 1=面③不同步（仅判据模）· 2=未执行/基准缺失或面③判不出'
+  + '（含"宿主在跑但没装配本插件"那一档 · 仅判据模）。')
 /**
  * ⚠ 退出码：面 ①② 的那条口径（只报不拦 · 只设 0/2）**一个字都没改**；
  *   面 ③ 只在**判据模**下才动退出码 —— 见文件头的「跑法分两档」。
@@ -630,5 +705,10 @@ console.log('       ⚠ 覆盖面 / 判读口径：面 ①② = **产物 vs 源*
 // ⚠ **判据自己坏了必须先红**（⛔ 不许"判据不成立还照旧报现场读数、然后绿"）
 if (selfCheckFailed === true) process.exit(1)
 if (STRICT && instVerdict === 'lagging') process.exit(1)
-if (STRICT && instVerdict === 'undecidable') process.exit(2)
+/**
+ * ⚠⚠ **`not-assembled` 属于"判不出"那一族**（2026-10-20）：宿主在跑、但没装本插件
+ *   ⇒ 这一版产物**不在任何进程里** ⇒ ⛔ 既不是"同步"也不是"落后" ⇒ 判据模下与
+ *   `undecidable` **同档**（退出码 2）。⚠ ⛔ 不许让它悄悄落 0（那正是误报的另一种形态）。
+ */
+if (STRICT && (instVerdict === 'undecidable' || instVerdict === 'not-assembled')) process.exit(2)
 process.exit(0)
