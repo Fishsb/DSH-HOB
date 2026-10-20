@@ -50,7 +50,23 @@
  * ⚠ 加族时**必须**同时想清"它恒不恒红"—— ⛔ 别把新的恒红引入本入口。
  */
 const STRICT_FAMILIES = new Map([
-  ['check:build', ['--strict-instance']],
+  /**
+   * ⚠⚠ **第 325 轮 · 甲-6**：本族现在收**两个**开关，各管一面、⛔ 不合并 ——
+   *
+   *   · `--strict-instance` 管**面 ③**（运行实例 vs 产物）：⚠ **不加**。它恒红的风险
+   *     来自"刚 build 完还没重启"，而本入口是在**用户没重启**的情况下跑的 ⇒ 加了会把
+   *     `npm run check` 搞成**恒红**（正是本文件上面那段注释警告的那件事，红线第 5 条也禁）。
+   *   · `--strict-source` 管**面 ①②**（产物 vs 源）：⚠ **加**。它恒红的风险来自
+   *     "刚改完源码还没 build" —— 那是**可以立刻消掉的中间态**（跑一次 `npm run build`），
+   *     而它漏过去的代价正是本项目最痛的那类故障：**「改了 `src` 却不生效」**
+   *     （第 321 轮活例：三处修复改完、`BUILD-STAMP` 已更新，实例仍跑旧逻辑，
+   *      而 `check:all` 当时**并不因这件事变红**）。
+   *
+   * ⚠ **判据**：面 ①② 落后 ⇒ `exit 1`（"查了、且有问题"）；面 ①② **基准缺失**
+   *   （戳读不到 / 无 `lib/`）仍走 `exit 2`（"没有基准可判"）—— 两者 ⛔ 不压成同一个码。
+   * ⚠ 面 ③ 的语义**一个字未动**（红线第 4 条）：它仍由 `--strict-instance` 单独控制。
+   */
+  ['check:build', ['--strict-source']],
 ])
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
