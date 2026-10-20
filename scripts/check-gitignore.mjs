@@ -18,6 +18,14 @@ import { runDiscipline, runRender, runSameSource, runSkeletonSource, runWorkspac
 
 const fail = []
 const note = []
+/**
+ * ⚠⚠ **第三档：没有对象**（2026-10-21 · 第 331 轮 · **乙-5**）——
+ *   ⚠ 本族三档：`fail` ⇒ `exit 1` · `noObject` ⇒ `exit 2` · 两者皆空 ⇒ `exit 0`。
+ *   ⚠ **⛔ 不许把 `noObject` 塞进 `fail`**：那会把"没有对象"洗成"查了不过"（红线 2 的反向）。
+ *   ⚠ **⛔ 也不许塞进 `note`**：`note` 就是 `ok()`，塞进去等于把"没查"记成"查过且过"。
+ */
+const noObject = []
+const noteNoObject = (m) => noObject.push(m)
 const bad = (m) => fail.push(m)
 const ok = (m) => note.push(m)
 
@@ -119,7 +127,7 @@ runSameSource({ bad, ok })
 runWorkspaceNameSource({ bad, ok })
 
 // ── ② 四份正本形态机检 A / B / J / C / D / D′ / E ──────────────────────
-runDocShape({ bad, ok })
+runDocShape({ bad, ok, noObject: noteNoObject })
 
 // ── ③ F / G / H ────────────────────────────────────────────────────────
 runDiscipline({ bad, ok, readmeSrc, PKG })
@@ -147,6 +155,17 @@ console.log('约定归属地:', README)
 console.log('')
 for (const n of note) console.log('  ✓', n)
 console.log('')
+if (fail.length === 0 && noObject.length > 0) {
+  /**
+   * ⚠⚠ **乙-5 的出口**：某组"没有对象可查" ⇒ `exit 2`（⚠ 不是 0、也不是 1）。
+   *   ⚠ 位置在 `fail` 判之后：**真查到违规**（`1`）优先于"某组没对象"（`2`）——
+   *     与 `check-all.mjs` 的"失败优先于未执行"**同一口径**。
+   */
+  console.log('判定：**未执行** —— 有组**没有对象可查**（⚠ 这不代表通过，也不代表有违规）。')
+  for (const m of noObject) console.log('  ·', m)
+  console.log('       ⚠ 退出码 **2**（没有对象 / 没执行）：0 = 查过且过 · 1 = 查了不过。')
+  process.exit(2)
+}
 if (fail.length === 0) {
   console.log(`判定：PASS —— ${mustTrack.length} 项必须入库、${mustExclude.length} 项必须排除，全部符合 README §1。`)
   process.exit(0)

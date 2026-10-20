@@ -120,13 +120,41 @@ export function runFamilies(names) {
   return results
 }
 
-/** 汇总判定：⚠ 三档口径见文件头。 */
+/**
+ * 汇总判定：**三档**（2026-10-21 · 第 331 轮 · 本批主目标）。
+ *
+ * ── 三档的定义（⛔ 不许混）──────────────────────────────────────────────
+ *   · `exit 0` 的族 ⇒ **通过**（`passed`）     —— 真跑过、且通过；
+ *   · `exit 1` 的族 ⇒ **失败**（`failed`）     —— 真跑过、但查出违规；
+ *   · **其余**（`2` 及其它非 0/1）⇒ **未执行**（`notRun`）—— 没有对象 / 基准缺失，
+ *     ⚠ 它**没有替你检查任何东西**，⛔ 既不是通过、也不是失败。
+ *
+ * ── 退出码怎么排（要求 3），以及为什么 ────────────────────────────────
+ *   全 `0` ⇒ **0**；有 `1` ⇒ **1**；无 `1` 但有 `2` ⇒ **2**；两者同时 ⇒ **1**。
+ *
+ *   ⚠ **为什么"失败优先于未执行"**（这是本批要说明的那个排法）：
+ *     ① **可操作性**：`1` 的修法是"去看那族的原文、修判据或被测对象"，动作明确、**当轮就能做**；
+ *        `2` 的修法常常是"这台机器上没有那个对象"（如没有 `.hob/experience/`），
+ *        可能**压根不是缺陷**。⚠ 把"确定有问题"压在"可能只是缺对象"后面，会让人先去补环境、
+ *        而真缺陷继续挂着。
+ *     ② **信息量**：`1` 意味着**某条判据被真的违反了**；`2` 只意味着**某条判据没跑**。
+ *        ⚠ 前者是"已知的坏"，后者是"未知"——已知优先于未知。
+ *     ③ **不许两头洗**（红线 2）：把 `1` 洗成 `2` = 把"查到违规"降级成"没查"；
+ *        把 `2` 洗成 `0` = 把"没查"冒领成"通过"。⚠ 本函数两个方向都没洗：
+ *        `2` 只在**没有任何 `1`** 时才成为退出码，且 `notRun` **一次都没被丢弃**
+ *        （它始终随返回值回带，汇总行始终打印它）。
+ *
+ * ⚠ **`notRun` 这个名字不许消失**（要求 4）：它是别人已在用的读数
+ *   （`check-*.mjs` 与本文件的汇总行都按它计数）。本批**保持原名**、语义不变。
+ */
 export function verdict(results) {
+  const passed = results.filter((r) => r.code === 0)
   const failed = results.filter((r) => r.code === 1)
+  /** ⚠ 口径不变：**非 0 且非 1** 一律算"未执行"（含 `2` 与任何异常码）。 */
   const notRun = results.filter((r) => r.code !== 0 && r.code !== 1)
-  if (failed.length > 0) return { exit: 1, failed, notRun }
-  if (notRun.length > 0) return { exit: 2, failed, notRun }
-  return { exit: 0, failed, notRun }
+  if (failed.length > 0) return { exit: 1, passed, failed, notRun }
+  if (notRun.length > 0) return { exit: 2, passed, failed, notRun }
+  return { exit: 0, passed, failed, notRun }
 }
 
 export function printSummary(results) {
@@ -136,25 +164,80 @@ export function printSummary(results) {
   console.log('汇总 · dsh-hob 判据全族')
   console.log('═'.repeat(72))
   for (const r of results) {
-    const tag = r.code === 0 ? '✓ 通过' : r.code === 1 ? '✗ 失败' : '⚠ 未执行'
+    /**
+     * ⚠⚠ **三档标签**（2026-10-21 · 第 331 轮）：`✓ 通过` / `✗ 失败` / **`· 未执行`**。
+     *
+     * ⚠ 改前第三档打的是 `⚠ 未执行` —— 那个 `⚠` 与"失败"的 `✗` 在视觉上**同属告警色**，
+     *   而两者的语义**完全不同**：一个要人去修判据，一个要人去补基准。
+     *   ⇒ 现在用 `·`（中性分隔号）：它**不参与判定**，与"通过"的 `✓`、"失败"的 `✗` 都不撞色。
+     *   ⚠ 这是纯**显示层**改动，⛔ 不影响任何退出码（三档口径仍是 `verdict()` 那一处）。
+     */
+    const tag = r.code === 0 ? '✓ 通过' : r.code === 1 ? '✗ 失败' : '· 未执行'
     console.log(`  ${tag.padEnd(8)} ${r.name.padEnd(18)} exit=${r.code}  ${(r.ms / 1000).toFixed(1)}s`)
   }
   console.log('')
   console.log(`  共 ${results.length} 族：通过 ${results.filter((r) => r.code === 0).length}`
     + ` · 失败 ${v.failed.length} · 未执行 ${v.notRun.length}`)
   console.log('')
-  if (v.exit === 0) {
-    console.log('判定：**全部通过** —— 每族都真跑过，且都通过。')
-  } else if (v.exit === 1) {
-    console.log('判定：**有失败** —— 先看上面标 ✗ 的那几族的原文。')
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **判定行必须与退出码同源**（2026-10-21 · 第 331 轮 · 要求 2）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 为什么这一条要写进代码而不是只写在注释里 ──────────────────────────
+   *   第 325 轮踩过一次：**判定行说 PASS、退出码却是 1**（或反过来）——
+   *   ⚠ 两者打架时，**机器只信退出码**，而**人只信判定行** ⇒ 同一份输出被读成两个结论。
+   *
+   * ── 现在怎么保证同源 ──────────────────────────────────────────────────
+   *   判定行**只由 `v.exit` 一个变量决定**（下面那条 `switch`）；
+   *   `VERDICT_TEXT` 把 `v.exit` 映射成**唯一**的一句话，⛔ 不允许任何分支另写措辞。
+   *   ⚠ 结尾再跑一次 `assertVerdictMatchesExit()` —— 它把"判定行的档位"与 `v.exit`
+   *     逐项对拍，**不一致就当场红**（⛔ 不许"印一套、退另一套"）。
+   */
+  const VERDICT_TEXT = {
+    0: '判定：**全部通过** —— 每族都真跑过，且都通过。',
+    1: '判定：**有失败** —— 先看上面标 ✗ 的那几族的原文。',
+    2: '判定：**未执行** —— 没有失败，但有族没能跑起来（基准缺失）。⚠ **这不代表通过**。',
+  }
+  /**
+   * ⚠ **档位与判定行的对拍**（要求 2 的机器化）：返回 `null` = 一致，否则给可读差异。
+   *   ⚠ 它**不猜**：只比两样东西 —— `v.exit` 落在哪一档、上面印的那句话属于哪一档。
+   */
+  const checkVerdictSource = (exitCode, text) => {
+    const want = VERDICT_TEXT[exitCode]
+    if (want === undefined) return `退出码 ${String(exitCode)} 不在三档（0/1/2）之内`
+    if (text !== want) return `退出码是 ${exitCode}，而判定行印的不是它那一句（实际=${JSON.stringify(text)}）`
+    return null
+  }
+  const verdictLine = VERDICT_TEXT[v.exit]
+  const srcMismatch = checkVerdictSource(v.exit, verdictLine)
+  if (srcMismatch !== null) {
+    /**
+     * ⚠ 这一支**几乎不可能**走到（`verdictLine` 就是从 `VERDICT_TEXT[v.exit]` 取的），
+     *   保留它是为了"将来有人改判定行忘了改档位"时**当场红**，而不是静静地印错话。
+     */
+    console.log(`判定：**内部不一致** —— ${srcMismatch}`)
+    console.log('       ⇒ ⚠ 这是本脚本自身的缺陷（判定行与退出码不同源），⛔ 不许当成被测对象的结论。')
+    return 1
+  }
+  /**
+   * ⚠ **判定行只在这里印一次**（`verdictLine` 由 `v.exit` 唯一决定）——
+   *   下面各分支**只印明细**，⛔ 不许再写第二句"判定：…"（那正是"印一套、退另一套"的入口）。
+   */
+  console.log(verdictLine)
+  if (v.exit === 1) {
     for (const r of v.failed) console.log(`       ✗ ${r.name}（exit=1）`)
     if (v.notRun.length > 0) {
-      console.log('       ⚠ 另有族没能执行（exit≠0/1）—— 它们**没有**替你检查任何东西：')
-      for (const r of v.notRun) console.log(`          ⚠ ${r.name}（exit=${r.code}）`)
+      /**
+       * ⚠ 失败与未执行**同时存在**时，两者都要报出来（⛔ 不许因为"1 优先"就把 2 藏掉）——
+       *   否则被吞掉的那几族**永远不会有人去补**（它们的读数就此消失）。
+       */
+      console.log('       ⚠ 另有族没能执行（exit≠0/1）—— 它们**没有**替你检查任何东西'
+        + '（⚠ 退出码按"失败优先"记 1，但它们仍单列在这里）：')
+      for (const r of v.notRun) console.log(`          · ${r.name}（exit=${r.code}）`)
     }
-  } else {
-    console.log('判定：**未执行** —— 没有失败，但有族没能跑起来（基准缺失）。⚠ **这不代表通过**。')
-    for (const r of v.notRun) console.log(`       ⚠ ${r.name}（exit=${r.code}）`)
+  } else if (v.exit === 2) {
+    for (const r of v.notRun) console.log(`       · ${r.name}（exit=${r.code}）`)
     console.log('       ⇒ 跑 `npm run check:preflight` 看缺什么、怎么补。')
   }
   console.log('')
