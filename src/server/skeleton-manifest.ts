@@ -61,7 +61,7 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
   { path: 'roles/methods/security.md', sha256: 'c12f6947057de131b009ca4ac6de61c639dd140807c4d5b7f1b983c764156396', bytes: 591 },
   { path: 'roles/methods/social-media.md', sha256: '472f25ccd78fee649b96c1c51f2f56ef7417134bb23fe86f0f33fe7a65c51a0b', bytes: 1930 },
   { path: 'roles/methods/uiux-design.md', sha256: 'aa48f1a5f166b001e5f9d4352d03d44f2f82a8081c1dfd6fe6e126917a4b95c5', bytes: 2127 },
-  { path: 'templates/CONTEXT.md', sha256: 'fa60ea4bc81af5d47ac845cd2fea79c79828f3555f6aef7677e797d7951e3b68', bytes: 14158 },
+  { path: 'templates/CONTEXT.md', sha256: '5da6aaee1090c479a8cdad74d4a70c08a3653bca4107889a2d7889c53110039e', bytes: 14263 },
   { path: 'templates/DECISIONS.md', sha256: '35cbf204ad4131e0222f2fd4e711391ceff843d09f155da8af1f772b7d418c33', bytes: 3558 },
   { path: 'templates/GATES.md', sha256: '82a42c346cffc0b5007be9dc72dd7dcf5c2825f11cbe800c6756a3fa259fec49', bytes: 7025 },
   { path: 'templates/REPORT.md', sha256: '0375d39ec33b0d736ce4f2227316414a55348cf5a89e441529c26a8a253faf0f', bytes: 6849 },
@@ -71,7 +71,7 @@ export const SKELETON_ENTRIES: readonly SkeletonEntry[] = [
 ]
 
 /** 生成时刻（⚠ 只作追溯，⛔ 不作判据 —— 判据是 sha256）。 */
-export const SKELETON_GENERATED_AT = '2026-10-19T21:46:44.002Z'
+export const SKELETON_GENERATED_AT = '2026-10-20T10:29:46.000Z'
 
 export interface SkeletonManifest {
   allowlist: readonly string[]

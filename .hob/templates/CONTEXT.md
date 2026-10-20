@@ -190,12 +190,15 @@
 | `npm run check:presets` | ... |
 | `npm run check:config` | ... |
 | `npm run check:orch` | ... |
+| `npm run check:redeliver` | ... |
 | `npm run check:client` | ... |
 | `npm run check:gitignore` | ... |
 | `npm run check:archive` | ... |
 | `npm run check:experience` | ... |
 | `npm run check:host` | ... |
 | `npm run check:modules` | ... |
+| `npm run check:profile` | ... |
+| `npm run check:selfwake` | ... |
 | `npm run check:rounds` | ... |
 | `npm run check:readings` | ... |
 | `npm run check:build` | ... |
