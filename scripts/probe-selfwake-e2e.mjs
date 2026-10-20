@@ -1,0 +1,210 @@
+#!/usr/bin/env node
+/**
+ * `probe-selfwake-e2e` —— **端到端行为探针**：拿**真看板卡的真记录**，喂**已出货产物**，
+ * 验证「执行方 = owner ⇒ 不叫醒」在真数据形状上也成立。
+ *
+ * ── 它补的是哪一格（⚠ 与 `check:orch` 的 `SE-d` 不重复）────────────────────
+ *   `SE-d` 用的是 **手写 fixture**（字段是我们自己挑的）⇒ 它证明"判据逻辑对"，
+ *   ⛔ 不证明"**看板真推过来的那种形状**也判得对"。
+ *   ⚠ 2026-10-20 那场事故里，正是"真帧里没有 `createdBy`、也没有 `executions`"
+ *   这一点把上一版判据打空的 —— 手写 fixture 当时**看不出来**。
+ *   ⇒ 本探针读**盘上真卡**（`~/.dsh/dsh-taskboard.json`），按看板 `broadcast()` 的真实投影
+ *     （`summarize()`：**只有** id/title/workspaceId/status/version/lastExecutionOutcome…）
+ *     造帧，再把 `ownerOf` / `execSessionOf` 接到**真卡的那两个字段**上。
+ *
+ * ── ⚠ 它**不**做的事（⛔ 不许把它的绿当成"端到端验收"）──────────────────
+ *   ⛔ 不连真看板、⛔ 不写卡、⛔ 不动宿主；⚠ 它证明的是"**产物 + 真数据形状**"，
+ *      ⛔ 不证明"宿主里那个实例在你这条真事件上没叫醒你"（那要等一次真的 `turn/end`）。
+ *   ⚠ 输出必须把这条边界**写在读数旁边**（⛔ 不许让人读成"已端到端验收"）。
+ *
+ * ── 退出码 ─────────────────────────────────────────────────────────────
+ *   `0` = 三档都按预期 · `1` = 现场与预期不符 · `2` = **未执行**（读不到卡库 / 产物加载不了）
+ */
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+const HOME = process.env.DSH_HOME ?? join(process.env.HOME ?? '', '.dsh')
+const BOARD = process.env.HOB_BOARD_FILE ?? join(HOME, 'dsh-taskboard.json')
+const ROOT = new URL('..', import.meta.url).pathname
+const WAKE = process.env.HOB_WAKE_ARTIFACT !== undefined && process.env.HOB_WAKE_ARTIFACT !== ''
+  ? process.env.HOB_WAKE_ARTIFACT
+  : join(ROOT, 'lib', 'server', 'card-wake.js')
+
+/** 退出码 2 的统一下场（⚠ "未执行"⛔ 不等于"通过"）。 */
+const notRun = (why) => {
+  console.log('判定：**未执行** —— ' + why)
+  console.log('       ⚠ 这不代表"没出问题"，只代表**没东西可验**。')
+  process.exit(2)
+}
+
+if (!existsSync(WAKE)) notRun(`找不到产物 \`${WAKE}\`（先 \`npm run build\`）`)
+if (!existsSync(BOARD)) notRun(`读不到看板卡库 \`${BOARD}\``)
+
+let board
+try { board = JSON.parse(readFileSync(BOARD, 'utf8')) } catch (e) {
+  notRun(`卡库解析不了（${String(e?.message ?? e)}）`)
+}
+const tasks = Array.isArray(board?.tasks) ? board.tasks : []
+
+/**
+ * 挑一张**真·自产自收**的卡：它最近一次执行的 `sessionId` 与它自己的 `createdBy.sessionId` 相同。
+ * ⚠ 这正是那场事故的形态（卡被绑在"自己每轮都会跑完一次"的会话上）。
+ */
+const selfBound = tasks.find((t) => {
+  const ex = Array.isArray(t?.executions) ? t.executions : []
+  const last = ex[ex.length - 1]
+  const owner = t?.createdBy?.sessionId
+  return typeof last?.sessionId === 'string' && last.sessionId !== '' && last.sessionId === owner
+})
+if (selfBound === undefined) notRun('卡库里没有"执行方 == 建卡会话"的真卡 ⇒ 本探针无对象可验')
+
+const OWNER = selfBound.createdBy.sessionId
+const otherTask = tasks.find((t) => {
+  const ex = Array.isArray(t?.executions) ? t.executions : []
+  const last = ex[ex.length - 1]
+  return typeof last?.sessionId === 'string' && last.sessionId !== '' && last.sessionId !== t?.createdBy?.sessionId
+})
+
+/** 按看板 `broadcast()` 的真实投影造帧（⚠ 与真帧同形：**没有** createdBy / executions）。 */
+const frameOf = (t) => JSON.stringify({
+  revision: 1, kind: 'execution-recorded',
+  tasks: [{
+    id: t.id, title: t.title, workspaceId: t.workspaceId, urgency: t.urgency,
+    status: t.status, blocked: t.blocked === true, version: t.version,
+    commentCount: Array.isArray(t.comments) ? t.comments.length : 0,
+    lastExecutionOutcome: (t.executions.at(-1) ?? {}).outcome,
+    trashed: false,
+  }],
+})
+
+/**
+ * ⚠⚠ **`--selftest`：证明本探针真的会红**（`E-27`：永远绿的自检比没有更危险）。
+ *
+ * 做法（⛔ 全程只碰临时区，不碰真卡库 / 真产物）：
+ *   ① 造一份**最小真形**卡库（一张自产自收、一张别人跑的）；
+ *   ② 用**当前产物**跑 ⇒ 必须 **PASS**；
+ *   ③ 把产物复制到临时区、**摘掉那道闸**再跑 ⇒ 必须 **FAIL**（否则说明本探针测的不是那道闸）。
+ * ⚠ 退出码：0 = 两种情况都对；1 = 本探针失去分辨力。
+ */
+if (process.argv.includes('--selftest')) {
+  const { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, symlinkSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { spawnSync } = await import('node:child_process')
+  const base = mkdtempSync(join(tmpdir(), 'hob-e2e-'))
+  const board = join(base, 'board.json')
+  const OWNER = 'session-owner-1'
+  writeFileSync(board, JSON.stringify({ tasks: [
+    { id: 't-self', title: '自产自收', workspaceId: 'ws-x', status: 'in_review', version: 2,
+      createdBy: { kind: 'agent', sessionId: OWNER },
+      executions: [{ id: 'e1', sessionId: OWNER, outcome: 'succeeded' }] },
+    { id: 't-other', title: '别人跑的', workspaceId: 'ws-x', status: 'in_review', version: 3,
+      createdBy: { kind: 'agent', sessionId: OWNER },
+      executions: [{ id: 'e2', sessionId: 'session-worker', outcome: 'succeeded' }] },
+  ] }), 'utf8')
+  /** ② 真产物 ⇒ 应 PASS */
+  const r1 = spawnSync('node', [process.argv[1]], { env: { ...process.env, HOB_BOARD_FILE: board }, encoding: 'utf8' })
+  /** ③ 摘闸产物 ⇒ 应 FAIL */
+  const mutDir = join(base, 'lib', 'server')
+  mkdirSync(mutDir, { recursive: true })
+  const raw = readFileSync(WAKE, 'utf8')
+  const GUARD = 'if (execSid !== undefined && execSid === ownerResolved) {'
+  const hasGuard = raw.includes(GUARD)
+  let r2 = { status: -1, stdout: '' }
+  if (hasGuard) {
+    const mut = join(mutDir, 'card-wake.js')
+    writeFileSync(mut, raw.replace(GUARD, 'if (false) {'), 'utf8')
+    /** ⚠ 用环境变量把探针指向变异产物（⛔ 不去覆盖真产物） */
+    r2 = spawnSync('node', [process.argv[1]], {
+      env: { ...process.env, HOB_BOARD_FILE: board, HOB_WAKE_ARTIFACT: mut }, encoding: 'utf8',
+    })
+  }
+  let bad = 0
+  const say = (pass, line, why) => {
+    console.log(`  ${pass ? '✓' : '✗'} ${line}${pass ? '' : `\n      ⇒ ${why}`}`)
+    if (!pass) bad++
+  }
+  say(r1.status === 0, 'S-1 ✓ 真产物 + 最小真形卡库 ⇒ **PASS**', `exit=${r1.status}（应 0）`)
+  say(hasGuard, 'S-2 ✓ 产物里找得到那道闸（⛔ 找不到就没法做反证）', '在产物里找不到该行原文')
+  say(r2.status === 1, 'S-3 ✓ **摘掉那道闸 ⇒ 探针当场 FAIL**（⇒ 它测的确实是那道闸）',
+    `exit=${r2.status}（应 1）· 输出=${String(r2.stdout).slice(0, 200)}`)
+  console.log('')
+  if (bad === 0) { console.log('判定：**PASS** —— 端到端探针自检 3 条全过（含"摘闸必红"）。'); process.exit(0) }
+  console.log(`判定：**FAIL**（${bad} 条）—— 本探针失去分辨力。`); process.exit(1)
+}
+
+const { CardWake } = await import('file://' + WAKE)
+
+let bad = 0
+const say = (pass, line, why) => {
+  console.log(`  ${pass ? '✓' : '✗'} ${line}${pass ? '' : `\n      ⇒ ${why}`}`)
+  if (!pass) bad++
+}
+
+/**
+ * 造一面叫醒面：`ownerOf` / `execSessionOf` 直接读**真卡的那两个字段**
+ * （= 真环境里 `orchestrator` 接的正是 `lookupCardSession` 的这两个值）。
+ */
+const mk = (task, execOverride) => {
+  const sent = []
+  const w = new CardWake({
+    origin: 'http://127.0.0.1:0',
+    workspaceIdOf: () => task.workspaceId,
+    deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+    ownerOf: async () => task.createdBy?.sessionId,
+    execSessionOf: async () => (execOverride === undefined ? task.executions.at(-1)?.sessionId : execOverride),
+  })
+  w.subscribe(task.createdBy?.sessionId ?? 'x', task.workspaceId)
+  return { w, sent }
+}
+
+console.log('端到端行为探针 · 真卡数据 + 已出货产物')
+console.log('')
+console.log(`  卡库：\`${BOARD}\`（${tasks.length} 张卡）`)
+console.log(`  自产自收的真卡：\`${selfBound.id}\`「${String(selfBound.title).slice(0, 28)}」`
+  + ` · 执行 ${selfBound.executions.length} 条 · owner 与执行方都是 \`${OWNER}\``)
+console.log('')
+
+// ① 真·自产自收 ⇒ 必须不叫醒
+{
+  const { w, sent } = mk(selfBound)
+  const n = await w.handleFrame('change', frameOf(selfBound))
+  const st = w.snapshot()
+  say(n === 0 && sent.length === 0 && st.selfExecutedCount === 1,
+    'E2E-1 ✓ **真卡（执行方 = owner）⇒ 一声不叫**：真帧形状（无 createdBy / 无 executions）下，'
+    + '按卡现读补上执行方 ⇒ 投递 0 次、落 `selfExecutedCount=1`',
+    `叫醒=${n}（应 0）· 投递=${sent.length}（应 0）· selfExecutedCount=${st.selfExecutedCount}（应 1）`
+    + ` · 既有各档=${JSON.stringify({ legacy: st.legacyTargetCount, undelivered: st.undeliveredCount })}`)
+}
+
+// ② 同一张卡、把执行方改成别人 ⇒ **必须照常叫醒**（⛔ 不许把闸做成"这张卡永远不叫"）
+{
+  const { w, sent } = mk(selfBound, 'session-someone-else')
+  const n = await w.handleFrame('change', frameOf(selfBound))
+  say(n === 1 && sent.length === 1 && sent[0].sid === OWNER,
+    'E2E-2 ✓ 同一张卡、执行方换成别人 ⇒ **照常叫醒一次**（收件人仍是真 owner）'
+    + ' ⇒ 这道闸只挡"自己跑完的"，⛔ 没把整张卡静音',
+    `叫醒=${n}（应 1）· 投递=${JSON.stringify(sent.map((s) => s.sid))}（应 ["${OWNER}"]）`)
+}
+
+// ③ 真卡库里的"别人跑的"卡（如果有）⇒ 也必须照常叫醒
+if (otherTask !== undefined) {
+  const { w, sent } = mk(otherTask)
+  const n = await w.handleFrame('change', frameOf(otherTask))
+  say(n === 1 && sent.length === 1,
+    `E2E-3 ✓ 真卡库里另一张**别人跑的**卡（\`${otherTask.id}\`）⇒ 照常叫醒一次`,
+    `叫醒=${n}（应 1）· 投递=${sent.length}（应 1）`)
+} else {
+  console.log('  ⚠ E2E-3 跳过：卡库里没有"执行方 ≠ 建卡会话"的卡 ⇒ 这一档无对象（⛔ 不按通过计）')
+}
+
+console.log('')
+console.log('       ⚠ ⚠ **这不是端到端验收**：它证明"**产物 + 真数据形状**"这一层，'
+  + '⛔ 不证明"宿主里那个实例在你这条真事件上没叫醒你"。')
+console.log('        后者要等**一次真的 `turn/end`**（⚠ 本档不主动制造看板事件）。')
+
+if (bad === 0) {
+  console.log('判定：**PASS** —— 三档全部按预期（真数据形状）。')
+  process.exit(0)
+}
+console.log(`判定：**FAIL**（${bad} 条）—— 真数据形状下与预期不符。`)
+process.exit(1)

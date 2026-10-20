@@ -56,6 +56,8 @@
     "check:rounds": "node scripts/check-rounds-records.mjs",
     "check:readings": "node scripts/check-readings-citable.mjs",
     "check:build": "node scripts/check-build-sync.mjs",
+    "check:profile": "node scripts/check-profile-assembly.mjs --self-check && node scripts/check-profile-assembly.mjs",
+    "check:selfwake": "node scripts/probe-selfwake-e2e.mjs --selftest && node scripts/probe-selfwake-e2e.mjs",
     "check:redeliver": "node scripts/check-redeliver.mjs",
     "check:experience": "node scripts/check-experience.mjs",
     "check:host": "node scripts/host-probe.mjs",

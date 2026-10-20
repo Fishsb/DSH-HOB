@@ -167,6 +167,19 @@ export function runRepoRules({ bad, ok }) {
     //     `✗ package.json 声明的脚本不在 MUST-TRACK 里：scripts/check-build-sync.mjs`。
     //   ⚠ ⇒ 本条即那次的修正结果；⛔ **未放松任何既有断言**（`UD-130` 的边界）。
     ['scripts/check-build-sync.mjs', '入库脚本（被 package.json 的 check:build 调用 · lib/ 同步只报不拦自检）'],
+    // ⚠ 2026-10-20 补（本批 · 装配面判据）：**profile 到底装没装本插件**。
+    //   ⚠ 由来（实测事故）：`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`
+    //     在 06:24:24 那次写盘里丢了 `dsh-hob`（`dependencies` 仍在）⇒ 宿主起来了、网页也开着，
+    //     ⚠ ⚠ **而插件压根没装配**（`hob_*` 全是 `unknown tool`）。
+    //   ⚠ ⚠ 关键：**当时没有任何判据会因此变红** —— `check:build` 面①②判盘上产物（全绿）、
+    //     面③判"跑着本 checkout 的进程"（没装配的进程不在候选里 ⇒ 落"判不出"）。
+    //   ⚠ ⛔ 本条只**新增一条登记**，上面既有条目一字未动（`UD-130` 的边界）。
+    ['scripts/check-profile-assembly.mjs', '入库脚本（被 package.json 的 check:profile 调用 · 装配面：profile 的 bundles/dependencies/解析 + --fix 自动补行）'],
+    // ⚠ 2026-10-20 补（本批 · 端到端行为探针）：拿**真看板卡**喂**已出货产物**，验"执行方=owner⇒不叫醒"。
+    //   ⚠ 由来：`check:orch` 的 `SE-d` 用**手写 fixture**（字段自己挑）⇒ 证不了"看板真推来的形状"也判得对；
+    //     ⚠ 而 2026-10-20 那场事故恰恰是"真帧里没有 createdBy / 没有 executions"把上一版判据打空的。
+    //   ⚠ 它自带 `--selftest`（摘闸必红）⇒ ⛔ 不会沦为"永远绿的自检"。
+    ['scripts/probe-selfwake-e2e.mjs', '入库脚本（被 package.json 的 check:selfwake 调用 · 端到端行为探针：真卡数据 + 已出货产物）'],
     // ⚠ 2026-10-19 补（本单 · `TASK` 补投判据接线）：**补投判据**（错投回执按 owner 补送）。
     //   ⚠ 由来（实测）：该脚本上一轮作为**独立入口**落下（`node scripts/check-redeliver.mjs`），
     //     ⚠ ⚠ 但**总门不会跑它** ⇒ 正是本仓最忌讳的形态「**判据在、但不会响**」。
