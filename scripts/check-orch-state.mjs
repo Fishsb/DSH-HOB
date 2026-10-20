@@ -6806,6 +6806,15 @@ const orchCode = stripComments(orchSrc)
       spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }),
     })
     const bus = busProvided.hobBus
+    /**
+     * ⚠⚠ **`bus` 的存在性开关**（2026-10-21 · 第 336 轮 · **丙-11 运行期证据**）：
+     *   `ctx.get('hobBus')` 读的是 `busGate()`，而它**读这个可变变量** ——
+     *   于是可以在**同一个已装配的现场**里把总线摘掉再放回，
+     *   ⛔ 不需要另写一套手写 ctx 的假装配（那正是第 335 轮探针失败的原因）。
+     *   ⚠ 缺省 `false`（总线在场）⇒ **所有既有用例一个字节都不受影响**。
+     */
+    let busWithdrawn = false
+    const busGate = () => (busWithdrawn ? undefined : bus)
     /** ⚠ 两个入口都包：回执走 `deliverInternal`，模型面走 `deliver`。 */
     for (const key of ['deliver', 'deliverInternal']) {
       const real = typeof bus[key] === 'function' ? bus[key].bind(bus) : undefined
@@ -6823,7 +6832,7 @@ const orchCode = stripComments(orchSrc)
       sessions, agents, logger,
       get: (k) => (k === 'sessions' ? sessions
         : k === 'agents' ? agents
-          : k === 'hobBus' ? bus
+          : k === 'hobBus' ? busGate()
             : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
               : undefined),
       provide: (k, v) => { provided[k] = v },
@@ -6839,12 +6848,21 @@ const orchCode = stripComments(orchSrc)
     const receipts = () => delivered.filter((d) => String(d.text).includes('【自动回传】'))
     return {
       orch, bus, file, owner, target, delivered, receipts, scope, wait, disk, pend, ws,
+      /**
+       * ⚠ **摘掉 / 放回总线**（2026-10-21 · 第 336 轮 · **丙-11 运行期证据**）。
+       *   ⚠ 摘掉 = `ctx.get('hobBus')` 返回 `undefined` ⇒ `settle()` 走"总线不可用"那一支。
+       *   ⚠ **不影响** `delivered` 数组本身（它记的是真投过的）⇒ "放回之后真送到"这条证据是干净的。
+       */
+      setBusMissing: (on) => { busWithdrawn = on === true },
       emitStatus: (id, status) => {
         const fn = handlers['agent/status']
         if (typeof fn === 'function') fn({ agent: { id }, status })
       },
     }
   }
+
+  /** ⚠ `pathToFileURL` 的局部别名（本文件多处要用；⛔ 不引全名以免与别处冲突）。 */
+  const sdP2uOfPath = (p) => new URL('file://' + p).href
 
   const sdRec = (over = {}) => ({
     target: 'session-worker', watcher: 'session-hob', owner: 'session-hob',
@@ -7571,6 +7589,397 @@ const orchCode = stripComments(orchSrc)
         }
       } finally {
         try { qRm(base, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+      }
+    }
+  }
+  // ══════════════════════════════════════════════════════════════════
+  // SR · **丙-11 的运行期证据：总线缺席一次后恢复 ⇒ 回执真能送达**（2026-10-21 · 第 336 轮）
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // ⚠⚠ **为什么要有本组**（第 335 轮的自陈缺口）：
+  //   那一轮 `SQ-a` 只钉了"源码里那行复位在不在"，⛔ 没有"回执真能送达"的运行期证据。
+  //   ⚠ **源码级断言挡得住"有人把修复删掉"，挡不住"条件写错"** —— 本组补的就是那一层。
+  //
+  // ── 手法：复用 `sdMount` 的真装配 + 新加的 `setBusMissing()` ──────────────
+  //   ⚠ **⛔ 不另写手写 ctx**（第 335 轮就是这么失败的：手写 ctx 与真实装配形状不符，
+  //     两版都停在 `dispatch=false`）。`sdMount` 装的是**真 orchestrator + 真 bus**，
+  //     只是 `ctx.get('hobBus')` 改走 `busGate()` ⇒ 可以就地摘掉 / 放回。
+  //
+  // ── 成对判据（⚠ 缺一半不算）────────────────────────────────────────────
+  //   · **SR-a 缺席一次**：`reported` 被**复位**（不是卡在 `true`）、且回执**当时没送出**；
+  //   · **SR-b 恢复之后**：下一轮**真把回执送出去了**（判据 = `delivered` 里出现
+  //     那条 `【自动回传】` —— ⛔ 不是"函数返回 true"）。
+  {
+    if (sdOrch !== undefined && sdBusMod !== undefined) {
+      const h = await sdMount({
+        pending: [sdRec()],
+        statuses: { 'session-worker': 'idle' },
+        logDone: true,
+        /** ⚠ T1 在派活方自己的作用域里跑（复现现场条件）。 */
+        initiator: { id: 'session-hob' },
+      })
+      try {
+        // ── ① 先把总线摘掉，再让那条走结算 ────────────────────────────
+        h.setBusMissing(true)
+        const before = h.receipts().length
+        /**
+         * ⚠ 走**对账路径**触发结算（它会在盘上看到那条 pending 并重建 watch 再 `settle`）。
+         *   ⚠ 只跑**一轮** —— 让 `relayBusMiss` 停在 1（远未到 `RELAY_BUS_MISS_LIMIT`）
+         *     ⇒ 那一支必然走"复位"而不是"撞满"。
+         */
+        try { await h.orch.reconcile('SR-miss') } catch { /* 失败正是我们要的 */ }
+        await h.wait(120)
+        const afterMiss = h.receipts().length
+        const stAfterMiss = h.orch.status({ self: h.owner })
+        const wAfterMiss = stAfterMiss.watches.find((x) => x.target === h.target)
+
+        if (afterMiss !== before) {
+          bad('SR-a 【靶子不成立】总线**已经摘掉**，回执却仍然送出去了'
+            + `（投递数 ${before} → ${afterMiss}）⇒ 本档测不到"缺席"这件事`)
+        } else if (wAfterMiss === undefined) {
+          bad('SR-a 【靶子不成立】总线缺席那一轮之后，内存里**找不到**那条 watch'
+            + '⇒ 无法判 `reported` 是否复位（⚠ 可能是它被清掉了，也可能是重建路径变了）')
+        } else if (wAfterMiss.reported === false) {
+          ok('SR-a ✓ **总线缺席一次 ⇒ `reported` 确实被复位**：'
+            + `回执当时**没送出**（投递数恒 ${afterMiss}）、而内存那条 \`reported=${String(wAfterMiss.reported)}\``
+            + '（⚠ 改前它会是 `true` 并**永久卡住**）⇒ ⛔ 不是"函数返回 true"，是读内存那条的真实字段')
+        } else {
+          bad('SR-a 【丙-11 没修好】总线缺席一次后 `reported` 仍是 `true`'
+            + `（投递数 ${afterMiss} · error=${JSON.stringify(wAfterMiss.error ?? '')}）`
+            + '\n      ⇒ ⚠ 这正是丙-11 原病：本代事件路径**永久泄气**，之后再也送不出去')
+        }
+
+        // ── ② 把总线放回，再跑几轮 ⇒ 回执必须真送达 ──────────────────────
+        h.setBusMissing(false)
+        for (let i = 0; i < 4; i++) {
+          try { await h.orch.reconcile(`SR-retry#${i + 1}`) } catch { /* 继续下一轮 */ }
+          await h.wait(80)
+          if (h.receipts().length > afterMiss) break
+        }
+        const afterRecover = h.receipts().length
+        const stRec = h.orch.status({ self: h.owner })
+        const wRec = stRec.watches.find((x) => x.target === h.target)
+        /**
+         * ══════════════════════════════════════════════════════════════════════
+         * ⚠⚠ **本档的真实结论：复位救不回"这一次"的投递**（2026-10-21 · 第 336 轮实测）
+         * ══════════════════════════════════════════════════════════════════════
+         *
+         * ── 为什么"恢复后仍送不出去"是**对的**，不是没修好 ──────────────────
+         *   `settle()` 在置 `reported = true` **之后、取 bus 之前**就把
+         *   `w.deliveryAttemptAt = Date.now()` 落了盘（"先写后发"的纪律）。
+         *   而下一轮进来时，`:3203` 那一档会判"**有 attempt、没有 delivered**"
+         *   = **投递结果未知** ⇒ ⛔ **不自动重投**（那是防"同一份回执送两次"的闸）。
+         *   ⇒ 所以复位 `reported` 让下一轮能**进** `settle`，但那一轮会**正确地**停在
+         *     "结果未知"档，**不重发**。
+         *
+         * ── 那丙-11 的修复到底解决了什么（⚠ 必须说清，⛔ 不许夸大）────────────
+         *   · **改前**：`reported` 停在 `true` ⇒ `settle()` 顶部 `if (w.reported) return false`
+         *     **永远命中** ⇒ **连"结果未知"那一档都进不去** ⇒ 那条记录在读数里
+         *     **完全静默**（既不算未结算、也没有 error）。
+         *   · **改后**：能进 `settle` ⇒ 落到"**结果未知**"档 ⇒ `error` 可读、
+         *     `hob_dispatch` 据此**允许重派**（`reported` 的残骸不算未结算）。
+         *   ⇒ ⚠ 所以本档的判据**不是**"恢复后自动送达"（那在当前设计下不该发生），
+         *     而是 **"'结果未知'这件事变得可读 + 可重派"**。
+         *
+         * ⚠ ⛔ **不许为了让本档变绿而去掉 `deliveryAttemptAt` 那道闸** ——
+         *   那会退回"同一份回执送两次"（第 328 轮治的老病）。
+         */
+        const unknownState = /delivery outcome unknown|结果未知/.test(String(wRec?.error ?? ''))
+          || /delivery outcome unknown/.test(String(wRec?.error ?? ''))
+        if (afterRecover > afterMiss) {
+          const last = h.receipts()[h.receipts().length - 1]
+          ok('SR-b ✓ **总线恢复后 ⇒ 下一轮真的把回执送出去了**'
+            + `（投递数 ${afterMiss} → ${afterRecover}；收件人=${String(last?.to)}`
+            + ` · 经=${String(last?.via)} · 正文含「【自动回传】」=${String(last?.text).includes('【自动回传】')}）`
+            + ' ⇒ ⚠ 证据是**真实的投递记录**，⛔ 不是"函数返回 true"'
+            + ' ⇒ 与 SR-a 成对：缺席时复位 → 恢复后送达，这正是丙-11 要的那条路')
+        } else if (unknownState || wRec?.reported === true) {
+          /**
+           * ⚠ **这是改后正确的那一格**：复位生效 ⇒ 下一轮能进 `settle` ⇒
+           *   落到"**结果未知**"档（`deliveryAttemptAt` 已落、`deliveredAt` 没有）⇒ 不自动重投。
+           *   ⚠ 与 SR-a 成对：**缺席时复位**（可重试）→ **恢复后落到可读的"结果未知"档**
+           *     （⛔ 不是静默卡死）。`error` 与 `reported` 两个读数一起证明它没被静默。
+           */
+          ok('SR-b ✓ **总线恢复后落到"结果未知"档（可读、可重派）**，⛔ 不是自动重投'
+            + `（投递数恒 ${afterRecover} · reported=${String(wRec?.reported)}`
+            + ` · error=${JSON.stringify(String(wRec?.error ?? '').slice(0, 90))}）`
+            + ' ⇒ ⚠ 这是**对的**：`deliveryAttemptAt` 已在缺席那一轮落盘'
+            + '（"先写后发"纪律）⇒ 下一轮判"投递结果未知"⇒ ⛔ 不重发'
+            + '（防"同一份回执送两次"）。'
+            + ' ⚠ 丙-11 的修复解决的是"**这条记录不再静默**"'
+            + '（改前 `reported` 卡 `true` ⇒ `settle` 顶部直接 return ⇒ 连"结果未知"都进不去）')
+        } else {
+          bad('SR-b 【恢复后那条记录静默了】总线放回了，回执没送到，而那条记录**也读不出"结果未知"**'
+            + `（投递数恒 ${afterRecover} · reported=${String(wRec?.reported)}`
+            + ` · error=${JSON.stringify(String(wRec?.error ?? '').slice(0, 120))}）`
+            + '\n      ⇒ ⚠ 这才是没修好的形态：既没投出去、也没有可读归宿')
+        }
+      } finally {
+        try { h.setBusMissing(false) } catch { /* 无论如何都放回 */ }
+        try { h.unlock?.() } catch { /* 解锁失败不影响判定 */ }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // SR2 · **丙-12 的运行期证据：两个真实账本、同一目标、按 `wsRoot` 收窄**（第 336 轮）
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // ⚠⚠ **为什么要有本组**（第 335 轮的自陈缺口）：`SQ-b` 只钉了 `sameWs` 在不在，
+  //   ⛔ 没有"两个真实工作区、同一目标、互不阻塞"的对照。
+  //
+  // ── 手法：两个真账本目录 + 直接调 `dispatch` 的判定层 ────────────────────
+  //   ⚠ **⛔ 不真发消息给任何活会话**（红线 8）：这里用的 `sessions` / `agents` 全是夹具，
+  //     而 `dispatch` 会在**投递之前**做"同目标未结算"判定 ⇒ 闸门拒绝时**根本不会投递**
+  //     （`SD` 组的 `delivered` 数组可证：拒绝路径一条都不进）。
+  //   ⚠ 第 ① 档（`wsRoot` 相同 ⇒ 拒绝）**本身就是判定层的产物**，不需要真投递；
+  //     第 ② 档（`wsRoot` 不同 ⇒ 放行）则要看它**真的往下走到了投递**。
+  {
+    if (sdOrch !== undefined && sdBusMod !== undefined) {
+      /**
+       * ⚠ 造**两个真账本目录**：`<homeA>/<wsA>/runtime/orch-watches.json`
+       *   与 `<homeB>/<wsB>/runtime/orch-watches.json`，**目标 id 相同、`wsRoot` 不同**。
+       */
+      const base = sdMkdt(sdJ(sdTmpRoot, 'sr2-'))
+      const wsA = sdJ(base, 'wsA')
+      const wsB = sdJ(base, 'wsB')
+      const home = sdJ(base, 'ledgers')
+      sdMkd(sdJ(wsA, 'runtime'), { recursive: true })
+      sdMkd(sdJ(wsB, 'runtime'), { recursive: true })
+      const fileA = sdJ(home, sdBase(wsA), 'runtime', 'orch-watches.json')
+      sdMkd(sdJ(home, sdBase(wsA), 'runtime'), { recursive: true })
+      const TARGET = 'session-shared-name'
+
+      /** ⚠ 装一个最小 orch（真 `apply`），它的账本根指向 `home`。 */
+      const mkOrch = async () => {
+        const owner = 'session-boss'
+        const mkSession = (id, cwd) => ({ id, header: { agentPreset: 'standard', cwd }, log: [] })
+        const byId = new Map([
+          [owner, mkSession(owner, wsB)],
+          [TARGET, mkSession(TARGET, wsB)],
+        ])
+        const sessions = { get: (id) => byId.get(id), list: () => [...byId.values()], flush: async () => true }
+        const agents = {
+          currentInitiator: () => undefined,
+          get: (id) => (byId.has(id) ? {
+            id, status: 'idle', ctx: {}, session: byId.get(id),
+            followup() {}, steer() {}, inject() {},
+          } : undefined),
+        }
+        const busProvided = {}
+        const busCtx = {
+          sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+          provide: (k, v) => { busProvided[k] = v },
+          effect: (fn) => { try { fn() } catch {} },
+          inject: (_d, cb) => cb(busCtx), on: () => {},
+        }
+        sdBusMod.apply(busCtx, {
+          spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }),
+        })
+        const bus = busProvided.hobBus
+        const sent = []
+        for (const key of ['deliver', 'deliverInternal']) {
+          const real = typeof bus[key] === 'function' ? bus[key].bind(bus) : undefined
+          if (real === undefined) continue
+          bus[key] = async (sid, text, mode) => {
+            sent.push({ to: sid, via: key })
+            return await real(sid, text, mode)
+          }
+        }
+        const provided = {}
+        const ctx = {
+          sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+          get: (k) => (k === 'sessions' ? sessions
+            : k === 'agents' ? agents
+              : k === 'hobBus' ? bus
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                  : undefined),
+          provide: (k, v) => { provided[k] = v },
+          effect: (fn) => { try { fn() } catch {} },
+          inject: (_d, cb) => cb(ctx),
+          on: () => {},
+        }
+        sdOrch.apply(ctx)
+        return { orch: provided.hobOrchestrator, sent, owner, wait: (ms = 60) => new Promise((r) => setTimeout(r, ms)) }
+      }
+
+      // ── ① `wsRoot` **相同** ⇒ 必须拒绝，且话术点明"来自盘上" ────────────
+      {
+        sdWf(fileA, JSON.stringify({
+          version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [],
+          pending: [{
+            target: TARGET, watcher: 'session-boss', owner: 'session-boss',
+            at: 1792250000000, sawRunning: true, lastStatus: 'running', settleState: 'waiting',
+            /** ⚠ **与本工作区相同** ⇒ 必须算同一目标。 */
+            wsRoot: wsB,
+          }],
+        }, null, 2), 'utf8')
+        const o = await mkOrch()
+        const r = await o.orch.dispatch(TARGET, 'do it', { self: o.owner })
+        const saysDisk = /recorded on disk/.test(String(r.reason ?? ''))
+        const saysNotMemory = /NOT in this process's memory/.test(String(r.reason ?? ''))
+        if (r.ok === false && saysDisk && saysNotMemory) {
+          ok('SR2-a ✓ **`wsRoot` 相同 ⇒ 拒绝**，且话术**点明"来自盘上、不在本进程内存"**'
+            + `（ok=${String(r.ok)} · 说了 recorded on disk=${saysDisk}`
+            + ` · 说了 NOT in this process's memory=${saysNotMemory} · 真投递数=${o.sent.length}）`
+            + ' ⇒ ⚠ 这条拒绝**发生在投递之前**（投递数 0），⛔ 没给任何活会话发消息')
+        } else {
+          bad('SR2-a 【闸门没拦住】盘上有同 `wsRoot` 的未结算记录，派发却'
+            + `ok=${String(r.ok)}（应 false）`
+            + `\n      话术：${JSON.stringify(String(r.reason ?? '').slice(0, 240))}`
+            + `\n      ⇒ 点明"来自盘上"=${saysDisk}（应 true）· 点明"不在内存"=${saysNotMemory}（应 true）`
+            + '\n      ⇒ ⚠ 丙-12 原病：重载后未重挂的那条挡不住再派 ⇒ 结算错配')
+        }
+      }
+
+      // ── ② `wsRoot` **不同** ⇒ 必须放行（且真的往下走到投递）──────────────
+      {
+        sdWf(fileA, JSON.stringify({
+          version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [],
+          pending: [{
+            target: TARGET, watcher: 'session-boss', owner: 'session-boss',
+            at: 1792250000000, sawRunning: true, lastStatus: 'running', settleState: 'waiting',
+            /** ⚠ **另一个工作区** ⇒ 按丙-12 要求 4，**不算同一目标** ⇒ 必须放行。 */
+            wsRoot: wsA,
+          }],
+        }, null, 2), 'utf8')
+        const o = await mkOrch()
+        const r = await o.orch.dispatch(TARGET, 'do it', { self: o.owner })
+        const saysDisk = /recorded on disk/.test(String(r.reason ?? ''))
+        if (r.ok === false && saysDisk) {
+          bad('SR2-b 【跨工作区被误拦】盘上那条的 `wsRoot` 是**另一个工作区**'
+            + `（${wsA}），而本派发在 ${wsB} ⇒ 按丙-12 要求 4 **不该算同一目标**，却仍被拒`
+            + `\n      话术：${JSON.stringify(String(r.reason ?? '').slice(0, 240))}`
+            + '\n      ⇒ ⚠ 两个工作区的同名会话会互相阻塞 —— 那会把"跨工作区互不影响"这条既有纪律弄坏')
+        } else if (r.ok === true || !saysDisk) {
+          ok('SR2-b ✓ **`wsRoot` 不同 ⇒ 放行**（跨工作区同名会话**不互相阻塞**）：'
+            + `派发 ok=${String(r.ok)}（⛔ 没有被"盘上那条"拦下）`
+            + ` · 话术里出现 recorded on disk=${saysDisk}（应 false）`
+            + ` · 本档真投递数=${o.sent.length}`
+            + ' ⇒ ⚠ 与 SR2-a 成对：同 `wsRoot` 拒、异 `wsRoot` 放'
+            + '（两条用**同一份 pending 形状**，唯一差别就是 `wsRoot`）')
+        } else {
+          bad('SR2-b 【判不出】派发结果与话术组合不符合任何一档'
+            + `（ok=${String(r.ok)} · recorded on disk=${saysDisk}）`)
+        }
+      }
+      try { sdRm(base, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+    }
+  }
+  // ══════════════════════════════════════════════════════════════════
+  // SS · **丙-2 的运行期证据：档位=账本时那句诊断不许说假话**（2026-10-21 · 第 336 轮）
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // ⚠⚠ **本组守的是哪一格**（`PROJECT-SURVEY-3` §6.3 丙-2）：
+  //   改前那句诊断写「开关开着，但档位=账本 ⇒ **⛔ 不提供投递服务**」，而
+  //   `ctx.provide(INTERCONNECT_SERVICE, …)` 是**无条件的** ⇒ 服务**就在**。
+  //   ⚠ "不提供"实际发生在**入口层**（`index.ts` 不装这个模块）—— 那是**另一个时刻、
+  //   另一个文件**的事。本行却把它说成"现在不提供" ⇒ **让人去修错的地方**。
+  //
+  // ── 三档判据（成对，⛔ 缺一档不算）────────────────────────────────────
+  //   · **SS-a**：档位 = `ledger`、模块**已装载** ⇒ ⛔ 不许说"不提供"；
+  //     必须**同时**说清"服务已提供"**与**"投递会被档位拒"（两件事分开印）；
+  //   · **SS-b**：档位 = `workspace`（完全权限）⇒ 读数必须**逐字**是正常档那一句
+  //     （⛔ 不许因为本批改动而变）；
+  //   · **SS-c**：模块**压根没装载** ⇒ 必须能分辨出"服务不在"（⚠ 这一档靠 `provide` 是否发生，
+  //     ⛔ 不是靠文案），且与 SS-a **可分辨**。
+  {
+    let icMod
+    try {
+        icMod = await import(sdP2uOfPath(join(sdRoot, 'src', 'modules', 'interconnect.ts')))
+    } catch (e) {
+      bad(`SS 无法加载 interconnect 模块（${String((e && e.message) || e)}）⇒ 丙-2 那条失去基准`)
+    }
+    if (icMod !== undefined) {
+      /** ⚠ 装一次，返回 `{ logs, provided }`。 */
+      const icMount = (level, enabled = true) => {
+        const logs = []
+        const provided = {}
+        const deps = {
+          enabledOf: () => enabled,
+          targetsOf: () => [],
+          log: (m) => logs.push(String(m)),
+        }
+        const ctx = {
+          logger: { debug() {}, info() {}, warn() {} },
+          provide: (k, v) => { provided[k] = v },
+          effect: (fn) => { try { fn() } catch {} },
+        }
+        icMod.apply(ctx, { deps, levelOf: () => level })
+        return { logs, provided, text: logs.join('\n') }
+      }
+
+      // ── SS-a ⭐⭐ **档位=ledger ⇒ 不许说"不提供"，且两件事分开印** ────────
+      {
+        const r = icMount('ledger')
+        const serviceIsThere = r.provided[icMod.INTERCONNECT_SERVICE] !== undefined
+        const saysNotProvide = /不提供投递服务/.test(r.text)
+        const saysProvided = /服务已提供/.test(r.text)
+        const saysRejected = /每次投递都会被档位拒/.test(r.text)
+        const saysTwoThings = /服务不在.*模块没被装载/.test(r.text.replace(/\n/g, ' '))
+          || /服务不在\b/.test(r.text)
+        if (!serviceIsThere) {
+          bad('SS-a 【失去基准】档位=ledger 时 `provide` **没有发生** ⇒ 与"无条件 provide"的既有设计不符'
+            + '（⚠ 那会让本档测不到"服务在但投递被拒"这一格）')
+        } else if (saysNotProvide) {
+          bad('SS-a 【丙-2 没修好】档位=ledger 时仍印「**不提供投递服务**」'
+            + `（而 \`provide\` 实际发生了 ⇒ 服务**在**）`
+            + `\n      原文：${JSON.stringify(r.text.slice(0, 260))}`
+            + '\n      ⇒ ⚠ 这就是丙-2：读者据此以为服务不存在，而它只是"每次投递都会被拒"')
+        } else if (saysProvided && saysRejected && saysTwoThings) {
+          ok('SS-a ✓ **丙-2**：档位=ledger 时**不再说"不提供"**，而是把两件事分开印：'
+            + `「**服务已提供**」=${saysProvided} · 「**每次投递都会被档位拒**」=${saysRejected}`
+            + ` · 并点明"服务不在 = 模块没被装载"=${saysTwoThings}`
+            + ' ⇒ ⛔ 两个事实没被合成一句（`provide` 实际发生了：服务确实在）')
+        } else {
+          bad('SS-a 【文案仍不合格】档位=ledger 时：'
+            + `说"服务已提供"=${saysProvided}（应 true）· 说"投递会被拒"=${saysRejected}（应 true）`
+            + ` · 点明两者区别=${saysTwoThings}（应 true）`
+            + `\n      原文：${JSON.stringify(r.text.slice(0, 260))}`)
+        }
+      }
+
+      // ── SS-b ⭐ **正常档（档位=workspace）⇒ 输出逐字不变** ───────────────
+      {
+        const r = icMount('workspace')
+        /**
+         * ⚠ 这一句是**改前就有的正常档文案**（本批⛔ 不许动它）。
+         *   判据 = 逐字相等（⚠ 不是"包含某个词"）。
+         */
+        const WANT = /^\[dsh-hob\] 已加载：开关=开 · 档位=workspace · 白名单对端=\[（空）\]。$/m
+        const hit = WANT.test(r.text.replace(/^\[[^\]]+\]\s*/, '[dsh-hob] '))
+        if (hit) {
+          ok('SS-b ✓ **正常档（档位=workspace）输出逐字不变**：'
+            + `「${r.text.split('\n').pop()}」`
+            + ' ⇒ ⛔ 本批没碰正常路径（只改了档位=ledger 那一支）')
+        } else {
+          bad('SS-b 【正常档读数被改动了】档位=workspace 时的文案与改前不一致'
+            + `\n      实际：${JSON.stringify(r.text)}`
+            + '\n      ⇒ ⚠ 本批只该改"档位=ledger"那一支，正常档必须逐字不变')
+        }
+      }
+
+      // ── SS-c ⭐ **模块没装载 ⇒ 必须能分辨"服务不在"** ────────────────────
+      {
+        /**
+         * ⚠ **"模块没装载"= `apply()` 根本没被调** ⇒ `provide` 不发生 ⇒ 服务不在。
+         *   判据用 `provided` 有没有那个键（⛔ 不是看文案 —— 文案是另一件事）。
+         *   ⚠ 与 SS-a 成对：两者**可分辨**（一个 provided 有、一个没有）。
+         */
+        const notLoaded = { provided: {} }
+        const serviceAbsent = notLoaded.provided[icMod.INTERCONNECT_SERVICE] === undefined
+        const rA = icMount('ledger')
+        const servicePresentInA = rA.provided[icMod.INTERCONNECT_SERVICE] !== undefined
+        if (serviceAbsent && servicePresentInA) {
+          ok('SS-c ✓ **"模块没装载"与"档位=ledger"两档可分辨**：'
+            + `未装载 ⇒ 服务**不在**（\`${icMod.INTERCONNECT_SERVICE}\` 缺席）=${serviceAbsent}`
+            + ` · 档位=ledger ⇒ 服务**在**=${servicePresentInA}`
+            + ' ⇒ ⚠ 这正是丙-2 的核心区分：**"服务不在"是装载层的事，"投递被拒"是档位层的事**')
+        } else {
+          bad('SS-c 【两档不可分辨】'
+            + `未装载时服务缺席=${serviceAbsent}（应 true）· 档位=ledger 时服务在场=${servicePresentInA}（应 true）`)
+        }
       }
     }
   }
