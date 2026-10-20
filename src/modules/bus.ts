@@ -128,6 +128,39 @@ export interface DeliveryResult {
    * ⚠ **口径同源**：判定用 {@link PLANNING_PRESET_ID}，⛔ **不另写字面量**。
    */
   presetNotice?: string
+  /**
+   * 本次投递**为把冷目标叫活而做过的尝试**（2026-10-21 · 第 330 轮新增）。
+   *
+   * ⚠ **只在真的尝试过唤醒时**才出现 —— 目标本来就是活的（常见路径）⇒ ⛔ 不出现，
+   *   免得给每一次正常投递都背一条噪音字段（判据 #4：活的靶不许因此多走一步）。
+   * ⚠ 唤醒**成功**时也带着它：调用方据此知道"这条投递顺手把目标叫起来了"
+   *   （那是有代价的动作，⛔ 不该静默）。
+   */
+  wake?: WakeOutcome
+  /**
+   * 唤醒**失败**的档位（见 {@link WakeFailureKind}）。
+   *
+   * ⚠ 与 `reason` 分开：`reason` 是**投递**的结论，`wakeFailure` 是**唤醒**的档位。
+   *   两者同非空 = "投递失败，原因是唤醒失败"；⛔ 不许把两者合成一个字符串
+   *   （那样调用方没法判别"是靶不存在还是叫不醒"）。
+   */
+  wakeFailure?: WakeFailureKind
+}
+
+/**
+ * 一次「叫活尝试」的如实读数（{@link DeliveryResult.wake}）。
+ *
+ * ⚠ 只记**这次投递真的做了什么**，不记"打算做什么"。⛔ 不许用它描述没发生的事。
+ */
+export interface WakeOutcome {
+  /** 尝试的结果。`ok=true` ⇒ 目标在此之后确实在 `agents` 表里。 */
+  ok: boolean
+  /** 失败的档位（`ok=true` 时无）。 */
+  failure?: WakeFailureKind
+  /** 从发起唤醒到得出结论的耗时（毫秒）—— 用于判断"是不是慢到该看日志了"。 */
+  elapsedMs?: number
+  /** 失败时的可读原因（宿主原话 / 超时说明）—— ⛔ 不加工、不吞。 */
+  detail?: string
 }
 
 /** 建会话结果（批 16）。`ok=false` 时 `reason` 给出可读原因。 */
@@ -182,6 +215,39 @@ export interface WorkspaceInfo {
 
 /** 会话忙闲：投递给 `running` 的会话会排到它下一轮/下一 step。 */
 const BUSY = 'running'
+
+/**
+ * 「投递前把冷目标叫活」的超时上限（毫秒 · 2026-10-21 · 第 330 轮）。
+ *
+ * ⚠ **为什么必须有上限**：`sessionController.resolveAgent` 内部要**读盘**（打开
+ *   会话持久化文件）、**装配 agent**（挂预设、装工具、解析默认模型）⇒ 它可能是
+ *   几百毫秒，也可能在某些部署下**根本回不来**（后端卡住 / 写锁被人握着）。
+ *   而投递是**同步链路上的一步**：调用方（`hob_send` / 回执对账）在等这个返回值。
+ *   ⇒ 没有上限就等于"投递可能无限等"，那是比"投递被拒"更糟的形态（无读数、
+ *     无话术、调用方挂死）。
+ *   ⇒ 到点**如实报失败**（message 里写 `timed out`），⛔ 不许把等待静默变成挂死。
+ *
+ * ⚠ 取值口径：8 秒 = 冷会话读盘 + 装配的常见量级再留余量。它**不是**性能指标，
+ *   只是"不许无限等"这道闸的门槛值 —— ⛔ 不许据此做任何性能断言。
+ */
+const WAKE_TIMEOUT_MS = 8000
+
+/**
+ * 把目标会话「叫活」的失败原因分类（⚠ 与「目标不存在」**分开**报，⛔ 不许混成一句）。
+ *
+ * ⚠ 为什么要分档：调用方（Hob / 回执对账）要能分辨"这个靶本来就投不进去"和
+ *   "我试过叫它起来、但没起来"。两者的**下一步动作完全不同**：
+ *   前者只能换靶 / 让用户打开；后者说明**能力或后端**出了问题，值得看日志。
+ */
+export type WakeFailureKind =
+  /** 唤醒能力缺席（宿主没提供 `sessionController`）⇒ 退化成"直接拒"。 */
+  | 'unavailable'
+  /** 调用了唤醒，但它**抛错**了（后端异常 / 装配失败）。 */
+  | 'threw'
+  /** 调用了唤醒，但它**超时**了（`WAKE_TIMEOUT_MS` 内没回来）。 */
+  | 'timeout'
+  /** 唤醒返回了，但**`agents.get` 仍然空**（resume 没产出活 agent）。 */
+  | 'still-not-live'
 
 /**
  * 取"已归档会话"集合（只读）。
@@ -573,6 +639,132 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
     }
 
     /**
+     * 把**一个**冷目标会话叫活（{@link deliverImpl} 的 ① 分支唯一调用点）。
+     *
+     * ── 为什么单独成函数（⛔ 不内联进 deliverImpl）──────────────────────────
+     *   唤醒是**有代价、可能慢、可能失败**的一步，而投递本身是另一件事。
+     *   把"叫人起来"与"投一条消息"分开写，才能各自被单测/判据钉住
+     *   （本轮六条判据里有三条只针对唤醒，两条只针对唤醒失败话术）。
+     *
+     * ── 叫醒用什么（⚠ 只许用宿主原生入口）────────────────────────────────
+     *   `sessionController.resolveAgent(sessionId)` —— 宿主自己的
+     *   「Resolve or resume one ordinary Session」入口
+     *   （`dsh-api-session-controller/lib/index.js:3037`，其实现 `:221` 的 `resolve()`：
+     *   **先查 live、再 resume**，并对并发 resume 去重 ⇒ **天然幂等**）。
+     *   ⛔ **不自己拼 resume**：那会绕过归档门禁、默认模型解析、预设挂载等一串宿主不变量
+     *   （与 `spawn` 用 `controller.create` 而不是自己建会话是**同一条纪律**）。
+     *
+     * ── 三条硬边界（作业书 §二 明列）──────────────────────────────────────
+     *   1. **只叫这一次**：⛔ 不重试、⛔ 不轮询、⛔ 不广播；
+     *   2. **只叫这一个 id**：⛔ 不遍历、⛔ 不顺手把同工作区的也拉起来；
+     *   3. **有上限**：{@link WAKE_TIMEOUT_MS} 到点报 `timeout`，⛔ 不许无限等。
+     *
+     * @param sessionId - 本次**真要投递**的那个目标（⛔ 不接收 id 列表）。
+     * @returns 如实读数；**不抛错**（失败一律变成 `{ok:false, failure, detail}`）。
+     */
+    const wakeTarget = async (sessionId: string): Promise<WakeOutcome> => {
+      const startedAt = Date.now()
+      const elapsed = () => Date.now() - startedAt
+      const controller = controllerOf()
+      /**
+       * ③ 唤醒能力缺席 ⇒ **退化成"直接拒"**（话术点明能力不可用），⛔ 不假装成功。
+       *    ⚠ 为什么按"缺失"处理而不是"就当目标真不存在"：两者对调用方的含义不同 ——
+       *      "这个部署没有唤醒能力"是**环境事实**，值得报出来；
+       *      而"这个 id 从没存在过"是**调用方的输入错误**。⛔ 混成一句会让后者被掩盖。
+       */
+      if (controller === undefined || typeof controller.resolveAgent !== 'function') {
+        return {
+          ok: false,
+          failure: 'unavailable',
+          elapsedMs: elapsed(),
+          detail: 'sessionController.resolveAgent is not available in this host composition',
+        }
+      }
+      // ⚠ 超时与"宿主自己拒绝"要能区分 ⇒ 用一个可辨识的哨兵，⛔ 不靠 message 文本匹配。
+      const TIMEOUT = Symbol('wake-timeout')
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const resolved = await Promise.race([
+          // ⚠ 用 `Promise.resolve().then(...)` 包一层：`resolveAgent` 在参数校验阶段
+          //   可能**同步抛**，那样 `Promise.race` 接不住（会直接冲出 try 之外，
+          //   与"超时"混在一个 catch 里就分不清是哪种失败）。
+          Promise.resolve().then(() => controller.resolveAgent(sessionId)),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(TIMEOUT), WAKE_TIMEOUT_MS)
+            // ⚠ `unref`：定时器不许把宿主进程吊住（投递失败不该影响进程退出）。
+            ;(timer as any)?.unref?.()
+          }),
+        ]) as any
+        /**
+         * ⚠ 宿主的返回形状**不是**"agent 或 throw"，而是 `{agent}` / `{error}` 判别式
+         *   （`ApiSessionAgentResult`）。⚠ **两种都要认**：
+         *   · `{error}` ⇒ 唤醒**明确失败**（如 `session/not-found`、后端坏）；
+         *   · 直接给了一个对象、没有 `error` 字段 ⇒ 当作成功（宽松但如实：
+         *     真正的判据是下面"再查一次 `agents.get`"，那个骗不了人）。
+         */
+        if (resolved !== undefined && resolved !== null && typeof resolved === 'object' && 'error' in resolved) {
+          const err: any = (resolved as any).error
+          return {
+            ok: false,
+            failure: 'threw',
+            elapsedMs: elapsed(),
+            detail: String(err?.message ?? err ?? 'resolveAgent reported an error'),
+          }
+        }
+        return { ok: true, elapsedMs: elapsed() }
+      } catch (e: any) {
+        if (e === TIMEOUT) {
+          return {
+            ok: false,
+            failure: 'timeout',
+            elapsedMs: elapsed(),
+            detail: `wake did not finish within ${WAKE_TIMEOUT_MS}ms`,
+          }
+        }
+        return {
+          ok: false,
+          failure: 'threw',
+          elapsedMs: elapsed(),
+          detail: String(e?.message ?? e),
+        }
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+      }
+    }
+
+    /**
+     * 唤醒失败时的**可读话术**（⚠ 与"目标不存在"分成两句，⛔ 不混）。
+     *
+     * ⚠ 三档各说各的（作业书 §§二-3 / 三-2 / 三-3）：
+     *   · `unavailable` ⇒ 点明"唤醒能力不可用，所以没法叫它起来"；
+     *   · `timeout`     ⇒ 点明"叫了但超时"（并给出毫秒数）；
+     *   · `threw`       ⇒ 带上宿主原话（⛔ 不加工、不吞）；
+     *   · `still-not-live` ⇒ 点明"叫了、调用回来了，但它仍然不在活会话表里"。
+     * 四者**都**保留原 `is not a live session` 前缀 —— 那是既有调用方（对账/工具面）
+     * 已经在读的字样，⛔ 不许因为改话术把既有读数打断。
+     */
+    const wakeReasonOf = (sessionId: string, wake: WakeOutcome): string => {
+      const base = `session "${sessionId}" is not a live session; only live sessions can receive; `
+      const tail = 'do not wake archived history — pick another target or let the user open that session first.'
+      switch (wake.failure) {
+        case 'unavailable':
+          return base + 'the wake capability is unavailable in this host composition '
+            + '(no sessionController.resolveAgent), so the target could not be brought up. '
+            + 'Pick another target, or let the user open that session first.'
+        case 'timeout':
+          return base + `wake was attempted but timed out after ${WAKE_TIMEOUT_MS}ms `
+            + `(elapsed ${String(wake.elapsedMs ?? WAKE_TIMEOUT_MS)}ms); retry later or let the user open `
+            + 'that session first.'
+        case 'threw':
+          return base + 'wake was attempted but the host refused it: '
+            + `${String(wake.detail ?? '(no detail)')}`
+        default:
+          return base + 'wake was attempted and returned, but the target is STILL not a live agent; '
+            + tail
+      }
+    }
+
+    /**
      * ⚠⚠ **投递的唯一实现**（2026-10-20 · 第 4 单；`deliver` 与 `deliverInternal` 共用）──
      *
      * ⚠ 放在 `bus` 字面量**之前**，是为了让两个入口**共用同一份实现**：
@@ -643,12 +835,49 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
           }
         }
         // ① 目标必须在**活**会话里 —— `agents.get` 的语义就是"活 agent"。
-        const agent = typeof agents.get === 'function' ? agents.get(sessionId) : undefined
+        let agent = typeof agents.get === 'function' ? agents.get(sessionId) : undefined
+        let wake: WakeOutcome | undefined
         if (agent === undefined) {
-          return {
-            ok: false,
-            reason: `session "${sessionId}" is not a live session; only live sessions can receive; `
-              + 'do not wake archived history — pick another target or let the user open that session first.',
+          /**
+           * ⚠⚠ **冷目标：投之前先叫一次活**（2026-10-21 · 第 330 轮 · 根因修复）。
+           *
+           * ── 为什么必须在这里叫（不是"建议用户去点开"）──────────────────────
+           *   根因已在 `ANSWER.md` 定死：`agents.get` 只是查**进程内内存 Map**
+           *   （`dsh-agent/lib/index.js:596`），而这张表**只有 `agents.enter` 一个插入口**
+           *   （同文件 `:512`），其唯一调用者是 agent loop 的发布路径
+           *   （`dsh-agent-loop/lib/index.js:1791`）。冷会话（只在磁盘上、没被任何入口
+           *   resolve 过）**不在表里** ⇒ 返回 `undefined` ⇒ 本函数原先**直接拒绝**。
+           *   后果：**执行会话跑完时，派活方（Hob）通常没被打开** ⇒ 回执投不进去
+           *   ⇒ 整个闭环派活的核心承诺在最常见的情形下断掉（用户实测：
+           *   「回执只有点了 Hob 会话，随后 Hob 才会收到」）。
+           *
+           * ── 改法只做三件事（⛔ 不扩）──────────────────────────────────
+           *   ① 经宿主 `sessionController.resolveAgent(id)` 叫**这一个**目标起来
+           *      （它内部先查 live、再 resume ⇒ 天然幂等）；
+           *   ② 叫完**再查一次** `agents.get`：查到 ⇒ 继续走**原有投递路径，一个字不改**；
+           *      还空 ⇒ 仍然拒绝，但话术**明说"已尝试唤醒但没起来"**（与"不存在"分开）；
+           *   ③ 唤醒能力缺席（宿主没给 `sessionController`）⇒ **退化成原来的直接拒**，
+           *      话术点明"唤醒能力不可用"，⛔ 不许假装成功。
+           *
+           * ── 四条不改的边界（越一条即错）──────────────────────────────
+           *   · **只对本次真要投递的那一个目标**做**一次** resolve ⇒ ⛔ 不广播、⛔ 不遍历、
+           *     ⛔ 不重试到死（失败**一次就报**）。
+           *   · 唤醒**有代价**（装配 agent、可能烧 token）⇒ 只在"确实要投"时做。
+           *     ⛔ **不许**在 `list()` / 状态查询 / 对账扫描里顺手 resolve（那会把
+           *     "看一眼"变成"叫一片起来"）。
+           *   · 唤醒**可能慢** ⇒ {@link WAKE_TIMEOUT_MS} 到点**如实报超时**，
+           *     ⛔ 不许让调用方无限等。
+           *   · 归档会话在上一步（⓪）已**明确拒绝**，走不到这里 ⇒ 唤醒**永远无法绕过归档门禁**。
+           */
+          wake = await wakeTarget(sessionId)
+          agent = typeof agents.get === 'function' ? agents.get(sessionId) : undefined
+          if (agent === undefined) {
+            return {
+              ok: false,
+              reason: wakeReasonOf(sessionId, wake),
+              wake,
+              wakeFailure: wake.failure ?? 'still-not-live',
+            }
           }
         }
         // ② **目标预设预警**（第 129 轮新增）—— 只提示、不拦、不改投递成败。
@@ -724,6 +953,7 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
                 mode,
                 reason: 'delivered but persistence did not acknowledge',
                 ...(presetNotice === undefined ? {} : { presetNotice }),
+                ...(wake === undefined ? {} : { wake }),
               }
             }
           }
@@ -735,6 +965,7 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
           messageId: message?.id,
           mode,
           ...(presetNotice === undefined ? {} : { presetNotice }),
+          ...(wake === undefined ? {} : { wake }),
         }
     }
 
