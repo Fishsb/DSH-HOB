@@ -67,6 +67,7 @@ import {
   ORCH_STATE_SUBDIR,
   STUCK_AFTER_RECHECKS,
   CLEANUP_RETRY_LIMIT,
+  RELAY_BUS_MISS_LIMIT,
   bindSession,
   clearHandoffs,
   countLostByClass,
@@ -2120,6 +2121,92 @@ export function apply(ctx: any): void {
               + 'Wait for that relay (hob_orch_status shows it), or dispatch to a different live session.',
           }
         }
+        /**
+         * ══════════════════════════════════════════════════════════════════════
+         * ⚠⚠ **丙-12（2026-10-21 · 第 335 轮）：闸门必须同时看盘**
+         * ══════════════════════════════════════════════════════════════════════
+         *
+         * ── 改前的病灶（`PROJECT-SURVEY-3` §6.3 丙-12）───────────────────────
+         *   上面那条只读 **内存 Map**（`watches.get(target)`）。⚠ 而重载后若那条记录
+         *   **没有成功重挂**（例如被判成 `isForeign`，或目标当时不在跑）⇒ 内存里没有它
+         *   ⇒ **闸门放行** ⇒ 可以对**同一目标**再派一份
+         *   ⇒ 那个目标跑完时，同一个 `running → idle` **可能结算错配**（两份都以为自己在等）。
+         *
+         * ── 现在：内存没有 ⇒ **再查盘** ────────────────────────────────────
+         *   ⚠ 但**只影响派发闸门**（红线 3）：⛔ 不动 `D4`「至多投一次」、⛔ 不动 `R2` 三档。
+         *   ⚠ **不引入新扫描**：`scanStateFiles` 与 `readOrchState` 都是既有函数，
+         *     这里就是顺手读一次（次数 = 一次派发一次，⛔ 不是定时器）。
+         *   ⚠ **⛔ 不改"写盘才判"**：本闸门仍然在**投递之前**判，只是判据多了一个来源。
+         *
+         * ── 判据三条（⚠ 三条都不许合并成一句）──────────────────────────────
+         *   ① 盘上**有**、且 `wsRoot` **与本工作区相同**、且 `!reported` ⇒ **拒绝**，
+         *      话术**点明"这条来自盘上、不是本进程内存"**（⛔ 不许与"内存里已有一条"同句）；
+         *   ② 盘上有，但 **`wsRoot` 与本工作区不同** ⇒ **不算同一目标** ⇒ **放行**
+         *      （⚠ 跨工作区的同名会话 id **不许互相阻塞** —— 那是另一本账里的事）；
+         *   ③ 盘上**已 `reported`**（`deliveredAt` 在 / 是残骸）⇒ 按既有语义**放行**
+         *      （同上：`reported` 的不算"未结算"）。
+         *
+         * ── ⚠ 为什么要按 `wsRoot` 收窄（丙-12 要求 4）──────────────────────
+         *   `scanStateFiles()` 扫的是**整本账本区**（`<ledgerHome>/<各工作区>/runtime/…`），
+         *   而会话 id 在**不同工作区之间可以重复**（那是各自的会话）。
+         *   ⇒ 若不带 `wsRoot` 判，A 工作区的一条待回传会**把 B 工作区的同名会话卡住**
+         *     —— 那是把"跨工作区不互相阻塞"这条既有纪律弄坏。
+         *   ⚠ 本工作区的判定口径与 `isForeign` 同源：比 `wsRoot` 归一化后的绝对路径。
+         */
+        const { existsSync: dExists, readdirSync: dReaddir } = await import('node:fs')
+        const { join: dJoin } = await import('node:path')
+        const sameWs = (a: string | undefined, b: string | undefined): boolean => {
+          if (typeof a !== 'string' || a === '' || typeof b !== 'string' || b === '') return false
+          /** ⚠ 归一到绝对路径再比（两侧都可能带/不带尾斜杠）。 */
+          const norm = (p: string): string => p.replace(/[\/]+$/, '')
+          return norm(a) === norm(b)
+        }
+        /** ⚠ 本派发所属的工作区根（与 `runtimeFileOf` 同一口径，见上面那段注释）。 */
+        /**
+         * ⚠ 本派发所属的工作区根：先看**派活方自己**的（那是记录 `wsRoot` 的来源，
+         *   见 `toPersisted` 里 `ownerWsRoot → wsRoot` 那条），判不出才退回目标的。
+         *   ⚠ 与上面 `const ws = ...` 同一口径（那段注释解释了为什么 owner 优先）。
+         */
+        const myWsRoot = (typeof self === 'string' ? wsRootOfSession(self) : undefined)
+          ?? wsRootOfSession(target)
+        let diskPending: PersistedWatch | undefined
+        let diskFile: string | undefined
+        try {
+          const home = declaredLedgerHome(svcCtx)
+          if (home !== '') {
+            for (const name of dReaddir(home)) {
+              const f = dJoin(home, name, ORCH_STATE_SUBDIR, ORCH_STATE_FILENAME)
+              if (!dExists(f)) continue
+              const rows = readOrchState(f).pending
+              for (const r of rows) {
+                if (r.target !== target) continue
+                /** ⚠ 已 `reported` 的不算未结算（与内存那条同口径）。 */
+                if (r.deliveredAt !== undefined) continue
+                /** ⚠ 跨工作区不算同一目标（丙-12 要求 4）。 */
+                if (!sameWs(r.wsRoot, myWsRoot)) continue
+                diskPending = r
+                diskFile = f
+                break
+              }
+              if (diskPending !== undefined) break
+            }
+          }
+        } catch { /* 盘读不到 ⇒ 判不出 ⇒ ⛔ 不因此拒绝（fail-open，与既有闸门同款） */ }
+        if (diskPending !== undefined) {
+          return {
+            ok: false,
+            sessionId: target,
+            reason: `session "${target}" already has an unsettled round **recorded on disk**`
+              + ` (round ${diskPending.round ?? '?'}`
+              + `${diskPending.task === undefined ? '' : `: ${diskPending.task}`}`
+              + ` · at=${new Date(diskPending.at).toISOString()}`
+              + ` · file=${diskFile ?? '?'}) — this record is **NOT in this process's memory**`
+              + ' (it survived a reload and has not been re-attached here). '
+              + 'Its result has not come back yet; dispatching again would let one completion'
+              + ' settle the wrong round. Wait for that relay (hob_orch_status shows it),'
+              + ' or dispatch to a different live session.',
+          }
+        }
         if (pending !== undefined) {
           svcCtx.logger?.warn?.(
             `[${name}] 覆盖一条回传失败的残骸：${target}（${pending.error ?? 'unknown error'}）`,
@@ -2806,6 +2893,15 @@ export function apply(ctx: any): void {
      *   ⛔ 不试图把它持久化（那正是"写不进去还硬要写"的死循环）。
      */
     const cleanupRetries = new Map<string, number>()
+    /**
+     * ⚠⚠ **回执送不出去时"总线缺席"撞了几次**（2026-10-21 · 第 335 轮 · **丙-11**）。
+     *   ⚠ **与本文件的 `cleanupRetries` 是两套数**（⛔ 不许合并）：
+     *     · `cleanupRetries` —— 已经送到、**清账写盘**失败；
+     *     · 本表           —— **一次都没送出去**（总线不在）。
+     *   ⚠ 只在内存、键 = `watchKey`（同 `settledKeys`）—— 进程重载清零是**对的**，
+     *     因为 `reported` 本身也只活在内存里。
+     */
+    const relayBusMiss = new Map<string, number>()
 
     /**
      * 取**目标此刻的状态**（⚠ 这是"判得出/判不出"的唯一判据来源，⛔ 不猜）。
@@ -3156,7 +3252,57 @@ export function apply(ctx: any): void {
       const receipt = buildReceipt(w, session)
       const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
       if (bus === undefined || typeof bus.deliver !== 'function') {
+        /**
+         * ══════════════════════════════════════════════════════════════════════
+         * ⚠⚠ **丙-11（2026-10-21 · 第 335 轮）：总线缺失 ⇒ 必须复位 `reported`**
+         * ══════════════════════════════════════════════════════════════════════
+         *
+         * ── 改前的病灶（`PROJECT-SURVEY-3` §6.3 丙-11）───────────────────────
+         *   上面 ② 那一步已经把 `w.reported = true` 置了（"先写后发"的纪律），
+         *   而这一档**只落 `error` + `flushWatches()` + `return false`** ——
+         *   ⛔ **没有把 `reported` 复位** ⇒ 之后 `settle()` 顶部那句
+         *   `if (w.reported) return false` **永远命中** ⇒ **本代的事件路径永久泄气**
+         *   （这个目标的回执再也不会经事件路径送出）。
+         *   ⚠ 对账路径能救它（`:2948` 附近重建 `revived` 时硬写 `reported: false`），
+         *     **事件路径救不了** —— 而事件路径恰恰是最快的那一条。
+         *
+         * ── 现在：复位 + 计数（⛔ 两件事都要）──────────────────────────────
+         *   · `w.reported = false` ⇒ 下一轮能重试；
+         *   · `w.error` **保留**（⛔ 不许为了复位把证据抹掉）；
+         *   · `relayBusMissCount` **单独计数**（⚠ 与丙-1 的 `cleanupRetries` **不是一套**：
+         *     那个数"清账写盘失败了几次"、这个数"总线缺席撞了几次" —— 成因与修法都不同）；
+         *   · 到 `RELAY_BUS_MISS_LIMIT` ⇒ **停止再复位**（让 `reported` 停在 `true`）
+         *     ⇒ 该条变回"已尝试过、不会再回来"的**残骸**，`dispatch` 的闸门据此放行重派
+         *     （这正是既有语义：`reported` 的残骸不算"未结算"）。
+         *
+         * ── 为什么选"次数上限"而不是"有上限的退避"────────────────────────
+         *   ⚠ 退避要**引一个定时器**（或记一个"下次允许时刻"），而本项目有一条硬纪律
+         *     **「空闲零定时器」**（`T5`）⇒ 引定时器是往反方向走。
+         *   ⚠ 而"次数上限"只是**一个数**，不需要任何调度：每一轮对账/事件**顺手**加一，
+         *     撞满就停手。⇒ 零新增定时器、零新增扫描。
+         */
         w.error = 'session bus unavailable at relay time'
+        const missed = (relayBusMiss.get(watchKey(w)) ?? 0) + 1
+        relayBusMiss.set(watchKey(w), missed)
+        if (missed < RELAY_BUS_MISS_LIMIT) {
+          /** ⚠ 还没撞满 ⇒ 复位，让下一轮能重试（这是丙-11 的核心修复）。 */
+          w.reported = false
+          w.error += `（第 ${missed}/${RELAY_BUS_MISS_LIMIT} 次；已复位 \`reported\` 供下一轮重试）`
+        } else {
+          /**
+           * ⚠ **撞满 ⇒ 停在 `reported: true`**（⛔ 不再复位）。
+           *   语义：这条已经"试够了"⇒ 变成**残骸** ⇒ `dispatch` 闸门会放行重派
+           *   （`!reported` 才算未结算）。⛔ 不许在这里无限复位 —— 那会让总线长期缺席时
+           *   每轮都空转一次（本档要治的是"泄气"，不是"换个方式空转"）。
+           */
+          w.error += `（第 ${missed}/${RELAY_BUS_MISS_LIMIT} 次 ⇒ **已达上限，停止重试**；`
+            + '该条留作残骸，可 `hob_dispatch` 重派）'
+          svcCtx.logger?.warn?.(
+            `[${name}] **回执送不出去：会话总线连续 ${missed} 次缺席**（target=${w.target}）⇒`
+            + ' 已停止自动重试（⚠ 不是"已经送到"：一次都没送出去）。'
+            + ' ⚠ 该条仍留在盘上（带 `error`），`hob_dispatch` 仍可重派。',
+          )
+        }
         flushWatches()
         return false
       }

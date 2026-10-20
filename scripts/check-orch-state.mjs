@@ -7427,6 +7427,153 @@ const orchCode = stripComments(orchSrc)
       } finally { try { h.unlock?.() } catch { /* 解锁失败不影响判定 */ } }
     }
   }
+  // ══════════════════════════════════════════════════════════════════
+  // SQ · **三条「失败之后没有回去的路」**（2026-10-21 · 第 335 轮 · **丙-11 / 丙-12 / 丙-4**）
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // ⚠⚠ **本组守的是哪三条**（`PROJECT-SURVEY-3` §6.3）：
+  //   · **丙-11**：`settle()` 在 `bus` 缺席时只落 `error`、**不复位 `reported`**
+  //     ⇒ 本代事件路径**永久泄气**（回执再也不会经事件路径送出）。
+  //   · **丙-12**：同目标闸门**只读内存**（`watches.get(target)`）⇒ 重载后那条没成功重挂时
+  //     **可以对同一目标再派一份** ⇒ 同一个 `running → idle` 结算错配。
+  //   · **丙-4**：备份名 `basename + 秒级时间戳` + `writeFile` 默认覆盖
+  //     ⇒ **同一秒两次 overwrite 只留后一份** ⇒ 撞 `R-17`「副本必须先于重写」。
+  //
+  // ⚠ ⛔ **三条都不许只用"代码看着对"结案** —— 没有断言的话，谁把复位 / 查盘 / `wx` 删掉，
+  //   `check:all` 照样全绿。本组就是那三道锁。
+  {
+    // ── SQ-a ⭐ **丙-11：`bus` 缺席后必须复位 `reported` 且计数有上限** ──────
+    {
+      /**
+       * ⚠ 判据分两半（成对）：
+       *   ① **源码级**：`bus` 缺席那一支**必须**含 `w.reported = false`（复位）
+       *      —— ⚠ 这是"能重试"的唯一实现方式，⛔ 不是靠 `error` 字段暗示；
+       *   ② **上限级**：必须同时引 `RELAY_BUS_MISS_LIMIT`（⛔ 不许复位到无限），
+       *      且该常量与 `CLEANUP_RETRY_LIMIT` 是**两个不同的数**（⛔ 不许混成一个计数器）。
+       * ⚠ 为什么用源码级：这一支要在**总线缺席**时才走到，而构造它需要把 `hobBus`
+       *   服务从 ctx 里拿掉再放回 —— 那会污染本组其它用例的 ctx 形状。
+       *   ⚠ 源码级判据**不是弱判据**：它钉的正是"那行复位到底在不在"，
+       *   而 `E-126` 的教训是"改哑了仍全绿"—— 这里删掉那行就会当场红。
+       */
+      try {
+        const src = sdRf(join(sdRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+        /** ⚠ 精确锚在"总线缺席"那一支上（用它的 error 文案定位，⛔ 不全局搜）。 */
+        const at = src.indexOf("w.error = 'session bus unavailable at relay time'")
+        if (at < 0) {
+          bad('SQ-a 【失去靶子】找不到「会话总线在投递时刻不可用」那一支'
+            + '（`w.error = \'session bus unavailable at relay time\'`）⇒ 测不到丙-11')
+        } else {
+          /** ⚠ 取那一支往后 3000 字符（足够覆盖整个分支体的改动）。 */
+          const seg = src.slice(at, at + 3000)
+          const resets = /w\.reported\s*=\s*false/.test(seg)
+          const usesLimit = /RELAY_BUS_MISS_LIMIT/.test(seg)
+          const keepsError = /w\.error/.test(seg)
+          const constSrc = sdRf(join(sdRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
+          const busLimit = /export\s+const\s+RELAY_BUS_MISS_LIMIT\s*=\s*(\d+)/.exec(constSrc)
+          const cleanupLimit = /export\s+const\s+CLEANUP_RETRY_LIMIT\s*=\s*(\d+)/.exec(constSrc)
+          const distinct = busLimit !== null && cleanupLimit !== null
+            && busLimit[1] !== cleanupLimit[1]
+          if (resets && usesLimit && keepsError) {
+            ok('SQ-a ✓ **丙-11**：`bus` 缺席那一支**复位了 `reported`**（`w.reported = false`）'
+              + '、**保留 `error`**（⛔ 没抹证据）、且受 `RELAY_BUS_MISS_LIMIT='
+              + (busLimit === null ? '?' : busLimit[1]) + ' 次上限约束（⛔ 不是无限复位）'
+              + ` ⇒ 事件路径不再永久泄气；⚠ 与丙-1 的 \`CLEANUP_RETRY_LIMIT=${
+                cleanupLimit === null ? '?' : cleanupLimit[1]}\` **是两个数**（${distinct ? '不同 ✓' : '⚠ 相同' }）`)
+          } else {
+            bad('SQ-a 【丙-11 没修好】`bus` 缺席那一支的实测：'
+              + `复位 \`reported\`=${resets}（应 true）· 引 \`RELAY_BUS_MISS_LIMIT\`=${usesLimit}（应 true）`
+              + ` · 保留 \`error\`=${keepsError}（应 true）`
+              + '\n      ⇒ ⚠ 缺"复位" ⇒ 本代事件路径**永久泄气**（这就是丙-11 原病）'
+              + '\n      ⇒ ⚠ 缺"上限" ⇒ 总线长期缺席时会**每轮空转**（换了一种坏法）')
+          }
+        }
+      } catch (e) {
+        bad(`SQ-a 读源码失败（${String((e && e.message) || e)}）⇒ 丙-11 那条失去基准`)
+      }
+    }
+
+    // ── SQ-b ⭐⭐ **丙-12：闸门必须同时看盘，且按 `wsRoot` 收窄** ──────────
+    {
+      try {
+        const src = sdRf(join(sdRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+        const at = src.indexOf('watchKey')
+        /** ⚠ 锚在闸门本身：找"already has an unsettled round **recorded on disk**"那句。 */
+        const diskMsg = src.indexOf('recorded on disk')
+        if (diskMsg < 0) {
+          bad('SQ-b 【失去靶子】找不到「盘上已有一条未结算」那条拒绝话术'
+            + '（`recorded on disk`）⇒ 测不到丙-12 的查盘闸门')
+        } else {
+          /** ⚠ 取话术前后 4000 字符（覆盖整个查盘块）。 */
+          const seg = src.slice(Math.max(0, diskMsg - 4000), diskMsg + 500)
+          const readsDisk = /readOrchState\s*\(/.test(seg)
+          const scansFiles = /scanStateFiles\s*\(/.test(seg) || /dReaddir|readdirSync/.test(seg)
+          const narrowsWs = /sameWs\s*\(/.test(seg)
+          const saysNotMemory = /NOT in this process's memory/.test(seg)
+          const distinctFromMemMsg = saysNotMemory
+          if (readsDisk && scansFiles && narrowsWs && distinctFromMemMsg) {
+            ok('SQ-b ✓ **丙-12**：同目标闸门**同时看盘**（`readOrchState` + 扫账本区）'
+              + '、**按 `wsRoot` 收窄**（`sameWs`）⇒ 跨工作区同名会话不互相阻塞'
+              + '，且话术**点明"这条来自盘上、不在本进程内存"**'
+              + '（`NOT in this process\'s memory`）⇒ ⛔ 没与"内存里已有一条"印成同一句')
+          } else {
+            bad('SQ-b 【丙-12 没修好】查盘块的实测：'
+              + `读盘=${readsDisk}（应 true）· 扫账本区=${scansFiles}（应 true）`
+              + ` · 按 wsRoot 收窄=${narrowsWs}（应 true）· 点名"不在内存"=${distinctFromMemMsg}（应 true）`
+              + '\n      ⇒ ⚠ 少任何一条：重载后没重挂的那条**挡不住**再派 ⇒ 结算错配（丙-12 原病）')
+          }
+        }
+        void at
+      } catch (e) {
+        bad(`SQ-b 读源码失败（${String((e && e.message) || e)}）⇒ 丙-12 那条失去基准`)
+      }
+    }
+
+    // ── SQ-c ⭐ **丙-4：备份必须 `wx` 不覆盖 + 递增后缀** ─────────────────
+    {
+      const { mkdtempSync: qMkdt, mkdirSync: qMkd, readdirSync: qReaddir, rmSync: qRm } =
+        await import('node:fs')
+      const base = qMkdt(join(sdTmpRoot, 'sq-c-'))
+      try {
+        const lr = join(base, 'ledger')
+        qMkd(lr, { recursive: true })
+        const { pathToFileURL: qP2u } = await import('node:url')
+        const hw = await import(qP2u(join(sdRoot, 'src', 'server', 'hob-write.ts')).href)
+        const opts = { hobDir: '.hob', keepBackups: 50, shrinkGuard: 0.2, maxFileBytes: 1 << 20 }
+        const w = (content) => hw.writeHobFile(lr, { file: 'PROJECT.md', content, mode: 'overwrite' }, opts)
+        await w('A\n')
+        await w('B\n')
+        await w('C\n')
+        /**
+         * ⚠ 判据 = **备份份数**（⛔ 不看返回值）：同一秒两次 overwrite 必须留 **2** 份。
+         *   ⚠ 内容也要对：两份分别是**两次改前**的状态（`A` 与 `B`），⛔ 不许只数个数。
+         */
+        let files = []
+        try {
+          files = qReaddir(join(lr, '.hob', 'backups'))
+            .filter((n) => n.startsWith('PROJECT.md.') && n.endsWith('.bak'))
+            .sort()
+        } catch { files = [] }
+        const contents = files.map((n) => {
+          try { return sdRf(join(lr, '.hob', 'backups', n), 'utf8') } catch { return '?' }
+        })
+        const hasA = contents.includes('A\n')
+        const hasB = contents.includes('B\n')
+        if (files.length >= 2 && hasA && hasB) {
+          ok(`SQ-c ✓ **丙-4**：同一秒对同一路径连 overwrite 两次 ⇒ 备份 **${files.length} 份**`
+            + `（${files.join(' · ')}），内容分别是两次改前状态（含 \`A\`=${hasA} · \`B\`=${hasB}）`
+            + ' ⇒ ⛔ 不再是"只留后一份、第一次的原状没有副本"（守住 R-17「副本必须先于重写」）')
+        } else {
+          bad('SQ-c 【丙-4 没修好】同一秒两次 overwrite 的备份实测：'
+            + `份数=${files.length}（应 ≥2）· 含 \`A\`=${hasA} · 含 \`B\`=${hasB}`
+            + `\n      文件=${JSON.stringify(files)}`
+            + '\n      ⇒ ⚠ 1 份 ⇒ 第二份把第一份**覆盖**了（`writeFile` 默认行为）'
+            + '\n      ⇒ 修法：`writeFile(..., { flag: \'wx\' })` + 递增后缀（缺一不可）')
+        }
+      } finally {
+        try { qRm(base, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+      }
+    }
+  }
   try { sdRm(sdTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
 }
 
