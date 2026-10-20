@@ -87,10 +87,26 @@ const frameOf = (t) => JSON.stringify({
  * ⚠ 退出码：0 = 两种情况都对；1 = 本探针失去分辨力。
  */
 if (process.argv.includes('--selftest')) {
-  const { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, symlinkSync } = await import('node:fs')
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { spawnSync } = await import('node:child_process')
+  /**
+   * ══ ⚠⚠ **临时件卫生**（2026-10-20 本单 C · `TASK` §0.3）═══════════════════════
+   *
+   * 改前：本段每次跑造 **1 个 `hob-e2e-*`** 目录（里面有一份 `card-wake.js` 拷贝），
+   *   ⚠ **跑完一个字节都不删**（本文件里 `rmSync` **零命中**）。
+   *   本机 `/tmp` 是 5.9 G tmpfs 且**被占满过**（`CONTEXT.md` §2.4 第 15 项）。
+   *   ⚠ 实测基线（改前）：`ls -d /tmp/hob-e2e-* | wc -l` = **4**。
+   *
+   * ⇒ 现在：整段包进 `try/finally`（**失败路径也清**），清理失败**当场说**（⛔ 不许静默）。
+   *   ⚠ 清理写在 `finally` 里，`process.exit()` 之前 —— ⚠ 不行：`process.exit` 在 `finally` 之后
+   *     仍会跳过？⇒ **不会**：`finally` 在 `exit` 调用之前就已执行完（本段的 `exit` 在末尾）。
+   *     为稳妥，退出码统一在 `finally` **之后**用变量决定（见末尾）。
+   */
   const base = mkdtempSync(join(tmpdir(), 'hob-e2e-'))
+  let cleanupNote = '未清理'
+  let bad = 0
+  try {
   const board = join(base, 'board.json')
   const OWNER = 'session-owner-1'
   writeFileSync(board, JSON.stringify({ tasks: [
@@ -118,7 +134,6 @@ if (process.argv.includes('--selftest')) {
       env: { ...process.env, HOB_BOARD_FILE: board, HOB_WAKE_ARTIFACT: mut }, encoding: 'utf8',
     })
   }
-  let bad = 0
   const say = (pass, line, why) => {
     console.log(`  ${pass ? '✓' : '✗'} ${line}${pass ? '' : `\n      ⇒ ${why}`}`)
     if (!pass) bad++
@@ -128,8 +143,26 @@ if (process.argv.includes('--selftest')) {
   say(r2.status === 1, 'S-3 ✓ **摘掉那道闸 ⇒ 探针当场 FAIL**（⇒ 它测的确实是那道闸）',
     `exit=${r2.status}（应 1）· 输出=${String(r2.stdout).slice(0, 200)}`)
   console.log('')
-  if (bad === 0) { console.log('判定：**PASS** —— 端到端探针自检 3 条全过（含"摘闸必红"）。'); process.exit(0) }
-  console.log(`判定：**FAIL**（${bad} 条）—— 本探针失去分辨力。`); process.exit(1)
+  if (bad === 0) {
+    console.log('判定：**PASS** —— 端到端探针自检 3 条全过（含"摘闸必红"）。')
+  } else {
+    console.log(`判定：**FAIL**（${bad} 条）—— 本探针失去分辨力。`)
+  }
+  } finally {
+    /**
+     * ⚠⚠ **无论如何都清**（`TASK` §1-C：失败路径也要清）。
+     *   ⚠ 清不掉**当场说**：⛔ 不许"跑完了但脏东西留着、还报全绿"。
+     */
+    try {
+      rmSync(base, { recursive: true, force: true })
+      cleanupNote = '已清净'
+    } catch (e) {
+      cleanupNote = `**没清掉**（${String(e?.message ?? e)}）`
+    }
+    console.log(`  ⚠ 临时件：\`${base}\` ⇒ ${cleanupNote}`)
+  }
+  /** ⚠ 退出码在清理**之后**才定 —— 保证 `finally` 一定跑到。 */
+  process.exit(bad === 0 ? 0 : 1)
 }
 
 const { CardWake } = await import('file://' + WAKE)
