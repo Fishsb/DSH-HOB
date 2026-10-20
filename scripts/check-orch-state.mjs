@@ -1925,7 +1925,8 @@ const orchCode = stripComments(orchSrc)
 //     （⚠ 本条由回报件的实测对拍给出原文；脚本这里只守住"摘掉后渲染为空"这个等价判定 ——
 //      见 L-d 的实现：喂一个**空 snapshot 的等价物**（不接看板工具）时，L-a/L-b 的判据必须不成立）。
 {
-  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import('node:fs')
+  // ⚠ `copyFileSync` 自第 321 轮起需要（`L-h` 的变异副本要带上 `./card-wake.ts` 的同目录依赖）。
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync, copyFileSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { pathToFileURL } = await import('node:url')
 
@@ -2370,6 +2371,18 @@ const orchCode = stripComments(orchSrc)
               const mutDir = mkdtempSync(join(lRoot, 'mutant-'))
               const mutPath = join(mutDir, 'board-cards.ts')
               writeFileSync(mutPath, mutated, 'utf8')
+              /**
+               * ⚠⚠ **2026-10-20 · 第 321 轮 · `TASK-G` ③ 的连带修改**（不是放宽判据）：
+               *   `board-cards.ts` 现在**真的 import 了一个同目录模块**
+               *   （`./card-wake.ts` 的 `synthesizedExecutionKey` —— 台账合成键的唯一生成点）。
+               *   而本变异体是**单文件副本** ⇒ 解析 `./card-wake.ts` 时 ENOENT ⇒
+               *   `import()` 抛错把整个脚本打成堆栈（= 看不出违反了哪条断言，`E-112` 家族）。
+               *   ⇒ 把**原目录那份 `card-wake.ts`** 拷进变异目录（**未变异**，本档不测它）；
+               *     判据本身**一个字没改**。
+               */
+              try {
+                copyFileSync(join(root, 'src', 'server', 'card-wake.ts'), join(mutDir, 'card-wake.ts'))
+              } catch { /* 拷不到就照旧（L-h 会以可读 FAIL 报出来） */ }
               const mutant = await import(pathToFileURL(mutPath).href)
               const doneBlocked = card({
                 id: 't-done-blocked', title: '已完成但标记没清的卡',
@@ -3589,7 +3602,8 @@ const orchCode = stripComments(orchSrc)
 //   ⚠ 另有 **S-E**：**同一工作区**里 owner=A 与 owner=B 各派一个目标 ⇒ 互不串收
 //     （用户点名的"包括同一个工作区"那一半，⛔ 不许漏）。
 {
-  const { mkdtempSync: mkdt, mkdirSync: mkd, writeFileSync: wf, readFileSync: rf, rmSync: rm } = await import('node:fs')
+  const { mkdtempSync: mkdt, mkdirSync: mkd, writeFileSync: wf, readFileSync: rf, rmSync: rm,
+    cpSync: cpSyncS, symlinkSync: symlinkS, lstatSync: lstatS } = await import('node:fs')
   const { tmpdir: tdir } = await import('node:os')
   const { basename } = await import('node:path')
   const { pathToFileURL: p2u } = await import('node:url')
@@ -3610,6 +3624,80 @@ const orchCode = stripComments(orchSrc)
     }
 
     if (sRoot !== undefined) {
+      /**
+       * ══════════════════════════════════════════════════════════════════════
+       * ⚠⚠ **变异体沙箱**（2026-10-21 · 第 323 轮 · `TASK` ① 丁-7 根因修复）
+       * ══════════════════════════════════════════════════════════════════════
+       *
+       * ── 改前是什么（⚠ 本项目头号禁忌：**让失败不可观测**；这里是它的近亲：**动作越界**）────
+       *   S-A / S-B / S-C / S-D 四处的变异体**直接落在真源码树里**：
+       *     `join(root, 'src', 'modules', 'orchestrator.mut-<pid>-<ts>.ts')`（S-D 在 `src/server/`）。
+       *   ⚠ 作者当时的理由是真的（写在原注释里）：本仓用 **ESM 相对导入**，变异体
+       *     要能解析到**同目录的兄弟模块**与**上层的 `node_modules`**，放到 `tmpdir()` 里就解析不到
+       *     `@deepseek-ai/dsh-tools`（实测踩过）。
+       *   ⚠ ⚠ **而这条理由本身没错、后果却是坏的**：默认运行每跑一次就往**仓库 `src/`**
+       *     写 4 个 `.ts`（再删）。⚠ 一旦 `src` **不是真目录**（软链 / 挂载点 / `cpSync` 边界），
+       *     写回就**穿到软链的另一头**——第 322 轮实测：五个文件 20 处被写入
+       *     `/* 变异：… *\/`、`if (false)`、`mutated:`，`check:orch` 一度 FAIL 13 条。
+       *   ⚠ **本批实测的机理**（第 323 轮，⛔ 不是照抄上一轮结论）：`fs.cpSync` **默认不解引用**
+       *     （`dereference:false`）⇒ 若 `src` 是软链，复制出来的 `dir/src` **还是那条软链**
+       *     ⇒ 下面所有 `writeFileSync(join(dir,'src',…))` 都写回**源树**。
+       *     实测读数：受控靶仓里 `git status --porcelain src/` 跑前 0 行、跑后 **4 行 M**。
+       *
+       * ── 现在怎么做（TASK 的**方案甲**：真实副本，⛔ 不是"拒绝运行"的乙）───────────
+       *   **一次**造一棵**真副本**，落 `sRoot`（= 本组自己的临时现场，跑完随 `sRoot` 一起删）：
+       *     · 用 `cpSync(..., { dereference: true })` —— ⚠ **这个参数就是本修复的要害**：
+       *       它把软链的**内容**复制成**真文件/真目录** ⇒ 副本里不可能再有指向源树的软链；
+       *     · `node_modules` **软链过来**（⛔ 不复制：那是一棵几十万文件的树，复制既慢又没必要；
+       *       ⚠ 且它是**只读依赖**，变异体只 import 不写它）；
+       *     · 副本**内部**再按原相对路径放变异体 ⇒ 兄弟模块按相对路径解析、`node_modules`
+       *       沿父目录向上找到 `sSandbox/node_modules` ⇒ **两条解析需求都满足**，而
+       *       写盘面完全在 `sRoot` 内。
+       *
+       * ── ⛔ 三条不许（越一条即错）──────────────────────────────────────
+       *   ① ⛔ 不许把变异组关掉 / 改 SKIP（那是把判据弄哑，比写穿更糟 —— TASK 红线原话）；
+       *   ② ⛔ 不许改判据的**靶点文本**与**期望方向**（本修复只换"文件落在哪"，⛔ 不换"测什么"）；
+       *   ③ ⛔ 不许改 `src/**`（红线；本修复一个字都没碰它）。
+       *
+       * ── 为什么**不复用** `saMutTree`（SA 组已有一份同类实现）──────────────
+       *   ⚠ 它**也有同一个病**：`cpSync(join(saRoot,'src'), ..., { recursive: true, dereference: true })` **没给
+       *     `dereference`** ⇒ 软链照样被复制成软链。本批**同时**给它补上该参数（见 SA 组注释），
+       *   ⛔ 但**不**把两处合并 —— S 组要的是"一棵可复用的树 + 在其内按需放多个变异体"，
+       *   SA 组要的是"每个变异体一棵一次性树"，合并会让两边的失败面互相牵连。
+       *
+       * @returns {{ root: string|undefined, why: string }}
+       *   `root` = 沙箱树根（其下 `src/` 是真目录）；造不出来时 `why` 给可读原因（⛔ 不静默）。
+       */
+      const makeMutationSandbox = () => {
+        let dir
+        try { dir = mkdt(join(sRoot, 'mutree-')) } catch (e) {
+          return { root: undefined, why: `造不出沙箱目录（${String(e?.message ?? e)}）` }
+        }
+        try {
+          /**
+           * ⚠ `dereference: true` = **本修复的要害**：把软链的内容复制成真文件/真目录。
+           *   ⛔ 去掉它 ⇒ 回到"复制出一条新软链 ⇒ 写回穿到源树"的旧病。
+           */
+          cpSyncS(join(root, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
+        } catch (e) {
+          return { root: undefined, why: `复制源码树失败（${String(e?.message ?? e)}）` }
+        }
+        /**
+         * ⚠ **复制完必须自证"不是软链"**（⛔ 不靠"我给了 dereference 所以一定对"）——
+         *   实测过的教训（第 322 轮）：`cpSync` 的软链行为**默认与直觉相反**，
+         *   ⛔ 不能再假设一次。这里落一条**硬检查**：仍然软链 ⇒ 整组判 `bad`（⛔ 不继续跑）。
+         */
+        try {
+          if (lstatS(join(dir, 'src')).isSymbolicLink()) {
+            return { root: undefined, why: '副本里的 `src` 仍然是软链（dereference 未生效）' }
+          }
+        } catch (e) {
+          return { root: undefined, why: `自证副本形态时出错（${String(e?.message ?? e)}）` }
+        }
+        /** ⚠ `node_modules` 用**软链**（只读依赖，⛔ 不复制几十万文件）；判据不需要它可写。 */
+        try { symlinkS(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有/不可建 ⇒ import 会当场报错并被判红 */ }
+        return { root: dir, why: '' }
+      }
       /**
        * 造一个最小宿主：**两个工作区**、**两个 owner 会话**、各一个目标会话。
        *
@@ -3736,8 +3824,19 @@ const orchCode = stripComments(orchSrc)
              *   放到临时目录会解析不到 `@deepseek-ai/dsh-tools`（实测踩过）。
              *   ⇒ 落地为 `orchestrator.mut-<pid>.ts`，跑完**立即删除**（⛔ 不留残件）。
              */
-            const mutPath = join(root, 'src', 'modules', `orchestrator.mut-${process.pid}-${Date.now()}.ts`)
-            try {
+            /**
+             * ⚠⚠ **变异体落沙箱**（第 323 轮 · 丁-7）：⛔ 不再往 `root/src` 写一个字节。
+             *   沙箱路径**保持原相对结构**（`<sandbox>/src/modules/…`）⇒ ESM 相对导入与
+             *   向上找 `node_modules` 两条解析需求都照旧满足（见 `makeMutationSandbox` 的长注）。
+             */
+            const box = makeMutationSandbox()
+            const mutPath = box.root === undefined
+              ? undefined
+              : join(box.root, 'src', 'modules', `orchestrator.mut-${process.pid}-${Date.now()}.ts`)
+            if (mutPath === undefined) {
+              bad(`S-A(反证) 【沙箱造不出来】${box.why} ⇒ 本负向对拍**无法在不碰源码树的前提下运行**，`
+                + '不按通过处理（⛔ 不许退回"直接往 `src/` 写"的老路）')
+            } else try {
               const src = rf(join(root, 'src', 'modules', 'orchestrator.ts'), 'utf8')
               const GUARD = "const mineW = all.filter((w) => w.owner === self)"
               if (!src.includes(GUARD)) {
@@ -3798,7 +3897,15 @@ const orchCode = stripComments(orchSrc)
                   }
                 }
               }
-            } finally { try { rm(mutPath, { force: true }) } catch {} }
+            } finally {
+              /**
+               * ⚠ 沙箱**整棵删**（不只是那一个 `.ts`）：本组一棵树里可能放多个变异体，
+               *   而树根就在 `sRoot` 内 ⇒ 随 `sRoot` 一起清也算干净，这里再删一次是为了
+               *   ⛔ 不让"树里还留着变异源码"活到 `sRoot` 清理那一刻（万一清理失败）。
+               * ⚠ `box.root === undefined` ⇒ 没造出来，⛔ 没有可删的东西（⛔ 不许当成失败）。
+               */
+              try { if (box.root !== undefined) rm(box.root, { recursive: true, force: true }) } catch {}
+            }
 
             // ── S-E ⭐ **同一工作区**里两个 owner 互不串收（用户点名的那一半）──────────
             {
@@ -3853,8 +3960,14 @@ const orchCode = stripComments(orchSrc)
                  *     `mineOnly(self)` **共用同一个 self**；把 `mineOnly(self)` 改成
                  *     `mineOnly(undefined)` ⇒ 读数立刻变成空（= 过滤真的在起作用）。
                  */
-                const mutPathB = join(root, 'src', 'modules', `orchestrator.mutb-${process.pid}-${Date.now()}.ts`)
-                try {
+                /** ⚠ 沙箱（第 323 轮 · 丁-7）：写入面只在 `boxB.root` 内。 */
+                const boxB = makeMutationSandbox()
+                const mutPathB = boxB.root === undefined
+                  ? undefined
+                  : join(boxB.root, 'src', 'modules', `orchestrator.mutB-${process.pid}-${Date.now()}.ts`)
+                if (mutPathB === undefined) {
+                  bad(`S-B(反证) 【沙箱造不出来】${boxB.why} ⇒ 本负向对拍无法在源码树之外运行，不按通过处理`)
+                } else try {
                   const srcB = rf(join(root, 'src', 'modules', 'orchestrator.ts'), 'utf8')
                   const GUARDB = '        const mine = mineOnly(self)'
                   if (!srcB.includes(GUARDB)) {
@@ -3909,7 +4022,9 @@ const orchCode = stripComments(orchSrc)
                   }
                 } catch (e) {
                   bad(`S-B(反证) 跑不起来：${String((e?.message ?? e))}`)
-                } finally { try { rm(mutPathB, { force: true }) } catch {} }
+                } finally {
+                  try { if (boxB.root !== undefined) rm(boxB.root, { recursive: true, force: true }) } catch {}
+                }
               } else {
                 bad('S-B 【读数不许含他人记录】ownerA 的读数里出现了别人的东西'
                   + `：自己的 watches=${JSON.stringify(mineIds)}（应 ["targetA"]）`
@@ -3948,8 +4063,14 @@ const orchCode = stripComments(orchSrc)
                  *   变异点 = `persistOwnerPartition` 里那行"保留别人的"（`others`）——
                  *     ⇒ 改成**丢掉别人的**（`const others = []`）等价于"整张表覆盖"那个旧缺陷。
                  */
-                const mutPathC = join(root, 'src', 'modules', `orchestrator.mutc-${process.pid}-${Date.now()}.ts`)
-                try {
+                /** ⚠ 沙箱（第 323 轮 · 丁-7）：写入面只在 `boxC.root` 内。 */
+                const boxC = makeMutationSandbox()
+                const mutPathC = boxC.root === undefined
+                  ? undefined
+                  : join(boxC.root, 'src', 'modules', `orchestrator.mutC-${process.pid}-${Date.now()}.ts`)
+                if (mutPathC === undefined) {
+                  bad(`S-C(反证) 【沙箱造不出来】${boxC.why} ⇒ 本负向对拍无法在源码树之外运行，不按通过处理`)
+                } else try {
                   const srcC = rf(join(root, 'src', 'modules', 'orchestrator.ts'), 'utf8')
                   /**
                    * ⚠ **靶点已随 P1 的修法换了**（2026-10-20 · 本单 B1）。
@@ -4030,7 +4151,9 @@ const orchCode = stripComments(orchSrc)
                   }
                 } catch (e) {
                   bad(`S-C(反证) 跑不起来：${String((e?.message ?? e))}`)
-                } finally { try { rm(mutPathC, { force: true }) } catch {} }
+                } finally {
+                  try { if (boxC.root !== undefined) rm(boxC.root, { recursive: true, force: true }) } catch {}
+                }
               } else {
                 bad('S-C 【落盘必须按 (账本, owner) 分区】串了或被盖了 wsRoot'
                   + `：A 文件 pending=${JSON.stringify(aPending)}（应 ["targetA"]）`
@@ -4083,8 +4206,14 @@ const orchCode = stripComments(orchSrc)
                  *       那个值恰好等于帧的项目 ⇒ 会把这一声**投给没报项目的订阅者**。
                  *   ⚠ 判据：变异体跑**同一段 S-D** ⇒ 那个订阅者**收到了**（= 退回路径真的会越界）。
                  */
-                const mutPathD = join(root, 'src', 'server', `card-wake.mutd-${process.pid}-${Date.now()}.ts`)
-                try {
+                /** ⚠ 沙箱（第 323 轮 · 丁-7）：写入面只在 `boxD.root` 内。 */
+                const boxD = makeMutationSandbox()
+                const mutPathD = boxD.root === undefined
+                  ? undefined
+                  : join(boxD.root, 'src', 'server', `card-wake.mutD-${process.pid}-${Date.now()}.ts`)
+                if (mutPathD === undefined) {
+                  bad(`S-D(反证) 【沙箱造不出来】${boxD.why} ⇒ 本负向对拍无法在源码树之外运行，不按通过处理`)
+                } else try {
                   const srcD = rf(join(root, 'src', 'server', 'card-wake.ts'), 'utf8')
                   const GUARDD = '      const to = e.owner'
                   if (!srcD.includes(GUARDD)) {
@@ -4124,7 +4253,9 @@ const orchCode = stripComments(orchSrc)
                   }
                 } catch (e) {
                   bad(`S-D(反证) 跑不起来：${String((e?.message ?? e))}`)
-                } finally { try { rm(mutPathD, { force: true }) } catch {} }
+                } finally {
+                  try { if (boxD.root !== undefined) rm(boxD.root, { recursive: true, force: true }) } catch {}
+                }
               } else {
                 bad('S-D 【没报项目不许投】收件人或计数不对'
                   + `：投递=${JSON.stringify(sent.map((x) => x.sid))}（应只有 session-owner-elsewhere）`
@@ -4377,7 +4508,27 @@ const orchCode = stripComments(orchSrc)
       const saMutTree = async (relPath, mutate) => {
         const { cpSync } = await import('node:fs')
         const dir = saMkdt(join(saRootTmp, 'mut-'))
-        cpSync(join(saRoot, 'src'), join(dir, 'src'), { recursive: true })
+      /**
+       * ⚠⚠ **`dereference: true` 是本修复的要害，⛔ 不许去掉**（2026-10-21 · 第 323 轮 · 丁-7）：
+       *   `fs.cpSync` **默认不解引用**（`dereference:false`）⇒ 源树里若 `src` 是软链，
+       *   复制出来的 `dir/src` **还是那条软链** ⇒ 下面 `writeFileSync(dir/src/…)`
+       *   **写回源树**。⚠ 第 323 轮实测：受控靶仓 `git status --porcelain src/`
+       *   跑前 0 行、跑后 **4 行 M**（`bus.ts` / `orchestrator.ts` / `card-wake.ts` / `orch-state.ts`）。
+       *   ⚠ 下面紧跟的 `lstatSync(...).isSymbolicLink()` 是**自证**：⛔ 不靠"我给了参数所以一定对"。
+       */
+        cpSync(join(saRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
+        /**
+         * ⚠ **自证"副本不是软链"**：仍然是软链 ⇒ 本组整族判 `bad`（⛔ 不许带着写穿风险继续跑）。
+         *   返回 `why` 让调用方落可读失败（与该函数既有的"变异没生效"同一档：⛔ 不按通过处理）。
+         */
+        try {
+          const { lstatSync: saLstat } = await import('node:fs')
+          if (saLstat(join(dir, 'src')).isSymbolicLink()) {
+            return { dir: undefined, why: '副本里的 `src` 仍是软链（dereference 未生效）⇒ ⛔ 会写穿到源树' }
+          }
+        } catch (e) {
+          return { dir: undefined, why: `自证副本形态时出错（${String(e?.message ?? e)}）` }
+        }
         const f = join(dir, relPath)
         const src = saRf(f, 'utf8')
         const next = mutate(src)
@@ -4794,6 +4945,7 @@ const orchCode = stripComments(orchSrc)
             } else {
               let broke = false
               let detail = ''
+              let mutErr = ''
               try {
                 const mOrch = await import(saP2u(join(mut.dir, 'src/modules/orchestrator.ts')).href)
                 const mBus = await import(saP2u(join(mut.dir, 'src/modules/bus.ts')).href)
@@ -4837,10 +4989,13 @@ const orchCode = stripComments(orchSrc)
                   detail = '变异体没提供 hobOrchestrator'
                 }
               } catch (e) {
-                broke = true
-                detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+                mutErr = String(e?.message ?? e)
+                detail = `变异体跑不起来（${mutErr}）`
               }
-              if (broke) {
+              if (mutErr !== '') {
+                bad(`SA-x(SA-f) 【变异体 import 失败】变异体跑不起来 ⇒ **负向对拍一次都没测**`
+                  + `（${mutErr}）⇒ 不按通过处理（⛔ 不许把它当成"判据有牙"）`)
+              } else if (broke) {
                 ok('SA-x(SA-f) ✓ 负向对拍：把"落盘传本 owner 全量"改回"只传本次这一条"'
                   + ` ⇒ **SA-f 当场不成立**（${detail}）⇒ SA-f 真长牙（钉 P1 长在正确的地方）`)
               } else {
@@ -4951,6 +5106,7 @@ const orchCode = stripComments(orchSrc)
             } else {
               let broke = false
               let detail = ''
+              let mutErr = ''
               try {
                 const mSt = await import(saP2u(join(mut.dir, 'src/server/orch-state.ts')).href)
                 const base = saMkdt(join(saRootTmp, 'x-e-'))
@@ -4971,10 +5127,13 @@ const orchCode = stripComments(orchSrc)
                 broke = n > 1
                 detail = `同键条数=${n}（lost 总数=${lost.length}）`
               } catch (e) {
-                broke = true
-                detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+                mutErr = String(e?.message ?? e)
+                detail = `变异体跑不起来（${mutErr}）`
               }
-              if (broke) {
+              if (mutErr !== '') {
+                bad(`SA-x(SA-e) 【变异体 import 失败】变异体跑不起来 ⇒ **负向对拍一次都没测**`
+                  + `（${mutErr}）⇒ 不按通过处理（⛔ 不许把它当成"判据有牙"）`)
+              } else if (broke) {
                 ok(`SA-x(SA-e) ✓ 负向对拍：把 \`lost\` 的去重摘掉 ⇒ **SA-e 当场不成立**（${detail}）`
                   + ' ⇒ SA-e 真长牙（钉 W9）')
               } else {
@@ -4996,6 +5155,7 @@ const orchCode = stripComments(orchSrc)
             } else {
               let broke = false
               let detail = ''
+              let mutErr = ''
               try {
                 const mW = await import(saP2u(join(mut.dir, 'src/server/card-wake.ts')).href)
                 const dw = new mW.DispatchWake({ deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000 })
@@ -5007,10 +5167,13 @@ const orchCode = stripComments(orchSrc)
                 broke = sA.mine?.registered !== 2 || sA.othersOnly !== 1
                 detail = `A: 我的=${sA.mine?.registered}（应 2）· 他人=${sA.othersOnly}（应 1）`
               } catch (e) {
-                broke = true
-                detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+                mutErr = String(e?.message ?? e)
+                detail = `变异体跑不起来（${mutErr}）`
               }
-              if (broke) {
+              if (mutErr !== '') {
+                bad(`SA-x(SA-g) 【变异体 import 失败】变异体跑不起来 ⇒ **负向对拍一次都没测**`
+                  + `（${mutErr}）⇒ 不按通过处理（⛔ 不许把它当成"判据有牙"）`)
+              } else if (broke) {
                 ok(`SA-x(SA-g) ✓ 负向对拍：把 \`snapshot(owner)\` 改回"忽略 owner（进程级合计）"`
                   + ` ⇒ **SA-g 当场不成立**（${detail}）⇒ SA-g 真长牙（钉 W6）`)
               } else {
@@ -5036,6 +5199,7 @@ const orchCode = stripComments(orchSrc)
             } else {
               let broke = false
               let detail = ''
+              let mutErr = ''
               try {
                 const mSt = await import(saP2u(join(mut.dir, 'src/server/orch-state.ts')).href)
                 const base = saMkdt(join(saRootTmp, 'x-d-'))
@@ -5050,10 +5214,13 @@ const orchCode = stripComments(orchSrc)
                 broke = inLost && !stillPending
                 detail = `进了 lost=${inLost} · 仍在 pending=${stillPending}`
               } catch (e) {
-                broke = true
-                detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+                mutErr = String(e?.message ?? e)
+                detail = `变异体跑不起来（${mutErr}）`
               }
-              if (broke) {
+              if (mutErr !== '') {
+                bad(`SA-x(SA-d) 【变异体 import 失败】变异体跑不起来 ⇒ **负向对拍一次都没测**`
+                  + `（${mutErr}）⇒ 不按通过处理（⛔ 不许把它当成"判据有牙"）`)
+              } else if (broke) {
                 ok(`SA-x(SA-d) ✓ 负向对拍：把"判不出 ⇒ unresolved 留着"改回"判不出 ⇒ lost（终态）"`
                   + ` ⇒ **SA-d 的判据当场不成立**（${detail}）⇒ SA-d 真长牙（钉 P2）`)
               } else {
@@ -5409,6 +5576,7 @@ const orchCode = stripComments(orchSrc)
             const seen2 = []
             let broke = false
             let detail = ''
+            let mutErr = ''
             try {
               const mSt = await import(saP2u(join(mut.dir, 'src/server/orch-state.ts')).href)
               const mOrch = await import(saP2u(join(mut.dir, 'src/modules/orchestrator.ts')).href)
@@ -5453,12 +5621,15 @@ const orchCode = stripComments(orchSrc)
               broke = armed2.length > 0
               detail = `空盘却排了 ${armed2.length} 个 T5 定时器（ms=${JSON.stringify(armed2)}）`
             } catch (e) {
-              broke = true
-              detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+              mutErr = String(e?.message ?? e)
+              detail = `变异体跑不起来（${mutErr}）`
             } finally {
               globalThis.setTimeout = origST2
             }
-            if (broke) {
+            if (mutErr !== '') {
+              bad(`SA-x(SA-t) 【变异体 import 失败】变异体跑不起来 ⇒ **负向对拍一次都没测**`
+                + `（${mutErr}）⇒ 不按通过处理（⛔ 不许把它当成"判据有牙"）`)
+            } else if (broke) {
               ok(`SA-x(SA-t) ✓ 负向对拍：把「武装判据」改成恒真 ⇒ **空盘也起定时器**`
                 + `（${detail}）⇒ ① 档当场不成立 ⇒ SA-t 真长牙（「无待办时一个定时器都不许存在」有牙）`)
             } else {
@@ -5542,6 +5713,7 @@ const orchCode = stripComments(orchSrc)
           } else {
             let broke = false
             let detail = ''
+            let mutErr = ''
             try {
               const mCw = await import(saP2u(join(mut.dir, 'src/server/card-wake.ts')).href)
               let calls = 0
@@ -5555,10 +5727,13 @@ const orchCode = stripComments(orchSrc)
               broke = calls === 0
               detail = `onHello 调用 ${calls} 次（应 0）`
             } catch (e) {
-              broke = true
-              detail = `变异体跑不起来（${String(e?.message ?? e)}）`
+              mutErr = String(e?.message ?? e)
+              detail = `变异体跑不起来（${mutErr}）`
             }
-            if (broke) {
+            if (mutErr !== '') {
+              bad(`SA-x(SA-u) 【变异体 import 失败】变异体跑不起来 ⇒ **负向对拍一次都没测**`
+                + `（${mutErr}）⇒ 不按通过处理（⛔ 不许把它当成"判据有牙"）`)
+            } else if (broke) {
               ok(`SA-x(SA-u) ✓ 负向对拍：把 \`hello\` 帧丢回"直接 return 0"（= 改前写法）`
                 + ` ⇒ **onHello 一次都没被调**（${detail}）⇒ SA-u 的 ① 档当场不成立 ⇒ SA-u 真长牙`)
             } else {
@@ -5571,6 +5746,221 @@ const orchCode = stripComments(orchSrc)
       } finally {
         try { saRm(saRootTmp, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
       }
+    }
+  }
+}
+
+// ── SL. **甲-7 上锁：账本根解析不到 ⇒ T5 复查必须被武装**（2026-10-21 · 第 327 轮）──
+//
+// ⚠⚠ **本组守的是哪条缺陷**（`PROJECT-SURVEY-3` §6.1 **甲-7**，被标为"本文件最重的静默面"）：
+//   `declaredLedgerHome()` 失败一律返回 `''` ⇒ `scanStateFiles()` 直接返回空数组
+//   ⇒ `armRecheck()` 的 `hasUnsettled` 恒假 ⇒ `clearRecheckTimer()` **当场执行**
+//   ⇒ **T5 定时复查被静默关闭** ⇒ 派发的回执**永不结算，且没有任何周期性补偿**。
+//   运行期**一声不响**（装配期那条是 `logger.warn`，且只说一次）。
+//
+// ⚠ ⚠ **为什么本组必须存在（第 326 轮修完、但没有任何机检钉住它）**──────────────
+//   第 326 轮把实现改成了 **fail-open**（解析不到 ⇒ 当作"还有待办"⇒ 武装），
+//   并用一次性探针实测到"改前 0 个定时器 → 改后 1 个"。
+//   ⚠ ⚠ **而探针不是判据**：它是发生在那一轮里的一次运行，⛔ 没有任何东西会再跑它。
+//   ⇒ 日后谁把 fail-open 改回 fail-closed（或把 `armedByDiag` 删掉、写成 `armed = armedByDisk`），
+//     `check:all` **照样全绿** —— 这正是本项目最忌的形态："改坏了没人发现"。
+//   ⇒ 本组把那一刻**变成常驻断言**。
+//
+// ⚠ **观测法沿用第 326 轮**（⛔ 不另发明一套）：
+//   劫持 `globalThis.setTimeout` 记录所有 ms，与**源码里的** `RECHECK_BACKOFF_MS` 求交
+//   （⚠ 用 `RECHECK_BACKOFF_MS` 而不是写死 `[15000,30000,60000]`：⛔ 两处各写一份必然漂）。
+{
+  const { mkdtempSync: slMkdt, mkdirSync: slMkd, writeFileSync: slWf,
+    rmSync: slRm } = await import('node:fs')
+  const { tmpdir: slTmp } = await import('node:os')
+  const { pathToFileURL: slP2u } = await import('node:url')
+
+  /** ⚠ 与 SA/SB 同款：`HOB_SA_ROOT` 可指向另一棵源码树（用来跑"改回 fail-closed ⇒ 必红"）。 */
+  const slRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT
+    : root
+  const slTag = slRoot === root ? '' : `（源码树=${slRoot}）`
+  let slTmpRoot
+  try { slTmpRoot = slMkdt(join(slTmp(), 'hob-slcheck-')) } catch { slTmpRoot = slTmp() }
+
+  let slOrch, slBus, slState
+  try {
+    slOrch = await import(slP2u(join(slRoot, 'src', 'modules', 'orchestrator.ts')).href)
+    slBus = await import(slP2u(join(slRoot, 'src', 'modules', 'bus.ts')).href)
+    slState = await import(slP2u(join(slRoot, 'src', 'server', 'orch-state.ts')).href)
+  } catch (e) {
+    bad(`SL 无法加载 orchestrator / bus / orch-state${slTag}（${String(e?.message ?? e)}）`
+      + ' ⇒ 甲-7 那三件事失去基准（不按通过处理）')
+  }
+
+  if (slOrch !== undefined && slBus !== undefined && slState !== undefined) {
+    /**
+     * ⚠ **退避表取自源码**（⛔ 不写死）：判定用的"T5 定时器"= 落在 `RECHECK_BACKOFF_MS` 里的 ms。
+     *   ⚠ 同时兜住"表里含 30_000 而实际没排"这种伪命中 —— 我们数的是**真的排出来的那些**。
+     */
+    const T5_DELAYS = new Set([...slState.RECHECK_BACKOFF_MS].map((n) => Number(n)))
+    if (T5_DELAYS.size === 0) {
+      bad('SL 【失去基准】`RECHECK_BACKOFF_MS` 为空 ⇒ "T5 排了几个定时器"这条判据无从核验（不按通过处理）')
+    }
+
+    /**
+     * 挂一台最小宿主，并**统计它排出的 T5 定时器**。
+     *
+     * @param opts.loaderOpts - 传给 `loader.entries()` 的**条目 options**：
+     *   `undefined` ⇒ ⚠ **甲-7 那一档**（条目里没有 `ledgerHome` ⇒ 解析不到）；
+     *   给了目录 ⇒ 正常档。
+     *
+     * ⚠ **劫持窗口 = 整个挂载 + 一段等待**：`armRecheck` 由 T1 就绪扫描触发，
+     *   而那是**异步**的（`await settleAsync`）⇒ 只劫持 `apply()` 那一刻会**漏掉**它。
+     * ⚠ `finally` 里**必须**还原 `globalThis.setTimeout`（⛔ 不许把劫持漏给后面的组）。
+     */
+    const slMount = async (opts = {}) => {
+      const base = slMkdt(join(slTmpRoot, 'sl-case-'))
+      const ws = join(base, 'ws')
+      slMkd(join(ws, 'runtime'), { recursive: true })
+      const mkSess = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+      const byId = new Map([['hob', mkSess('hob')]])
+      const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+      const agents = {
+        currentInitiator: () => undefined,
+        get: (i) => (byId.has(i) ? { id: i, status: 'idle', ctx: {}, session: byId.get(i),
+          followup() {}, steer() {}, inject() {} } : undefined),
+      }
+      const logger = { debug() {}, info() {}, warn() {}, error() {} }
+      const bp = {}
+      const busCtx = { sessions, agents, logger,
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+        provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
+        inject: (_d, cb) => cb(busCtx), on: () => {} }
+      slBus.apply(busCtx, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+      const prov = {}
+      const ctx = { sessions, agents, logger,
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+          : k === 'hobBus' ? bp.hobBus
+            : k === 'loader'
+              ? { entries: () => [{ options: opts.loaderOpts ?? {} }] }
+              : undefined),
+        provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
+        inject: (_d, cb) => cb(ctx), on: () => {} }
+      /** ⚠ 劫持窗口从这里开始（`apply()` 之前）。 */
+      const origST = globalThis.setTimeout
+      const seen = []
+      globalThis.setTimeout = function (fn, ms, ...rest) {
+        seen.push(Number(ms))
+        return origST.call(this, fn, ms, ...rest)
+      }
+      try {
+        slOrch.apply(ctx)
+        await new Promise((r) => origST(r, 220))
+      } finally {
+        globalThis.setTimeout = origST
+      }
+      const t5 = seen.filter((ms) => T5_DELAYS.has(ms))
+      return { orch: prov.hobOrchestrator, ws, ctx, t5, allSeen: seen }
+    }
+
+    try {
+      // ── SL-a ⭐⭐ **解析不到账本根 ⇒ T5 **必须**被武装**（钉甲-7 的 fail-open）──
+      {
+        const h = await slMount({ loaderOpts: undefined })
+        if (h.orch === undefined) {
+          bad('SL-a 服务未 provide `hobOrchestrator` ⇒ 断言失去基准（不按通过处理）')
+        } else {
+          /**
+           * ⚠⚠ **判据 = `t5.length >= 1`**（⛔ 不是"不崩"、⛔ 不是"没抛错"）：
+           *   这一档要的正是"**排出了至少一个 T5 复查**"。
+           *   ⚠ 改前（fail-closed）这里恒为 **0** —— 因为 `scanStateFiles()` 返空数组
+           *     ⇒ `hasUnsettled` 恒假 ⇒ `nextRecheckDelay(false, …)` = `undefined`
+           *     ⇒ `clearRecheckTimer()` 当场执行。
+           */
+          if (h.t5.length >= 1) {
+            ok(`SL-a ✓ **账本根解析不到 ⇒ T5 复查被武装**（钉甲-7 的 fail-open）：`
+              + `该档排出 T5 定时器 **${h.t5.length}** 个（期望 ≥1 · ms=${JSON.stringify(h.t5)}）`
+              + ` ⇒ ⛔ 不再是"扫不到文件就当场清掉定时器"${slTag}`)
+          } else {
+            bad('SL-a 【甲-7 回退成 fail-closed】**账本根解析不到时一个 T5 复查都没排**'
+              + `（排出 ${h.t5.length} 个 · 全部 setTimeout ms=${JSON.stringify(h.allSeen)}）`
+              + '\n      ⇒ ⚠ 这正是甲-7 的原始缺陷：`scanStateFiles()` 返空 ⇒ 武装判据恒假'
+              + ' ⇒ `clearRecheckTimer()` 当场执行 ⇒ **回执永不结算、且再无周期性补偿**'
+              + '\n      ⇒ 修法：`armRecheck()` 里"账本根解析不到"必须单独成档并**强制武装**'
+              + '（见 `ledgerHomeDiag` 与 `armedByDiag`），⛔ 不许退化成"扫不到就关掉"')
+          }
+        }
+      }
+
+      // ── SL-b ⭐ **空盘档仍排 0 个**（「空闲零定时器」纪律不许被 SL-a 破坏）──
+      {
+        const emptyHome = slMkdt(join(slTmpRoot, 'sl-home-'))
+        const h = await slMount({ loaderOpts: { ledgerHome: emptyHome } })
+        if (h.orch === undefined) {
+          bad('SL-b 服务未 provide `hobOrchestrator` ⇒ 断言失去基准（不按通过处理）')
+        } else {
+          /**
+           * ⚠⚠ **这一条与 SL-a 是一对**：SL-a 要求"解析不到 ⇒ 武装"，
+           *   若有人为了让它绿而把武装判据改成**恒真**，本档会立刻红 ——
+           *   而"空闲时一个定时器都不许存在"是用户明确要求的纪律
+           *   （`SA-t` 的 ① 档也钉着它，两处**不是重复**：SA-t 钉的是"武装判据本身有没有牙"，
+           *    本档钉的是"甲-7 的 fail-open **不许外溢**到正常档"）。
+           */
+          if (h.t5.length === 0) {
+            ok('SL-b ✓ **账本根可读但空盘 ⇒ 仍然 0 个 T5 定时器**'
+              + '（「空闲零定时器」纪律未被甲-7 的 fail-open 外溢破坏）'
+              + `${slTag}`)
+          } else {
+            bad('SL-b 【空闲零定时器纪律被破坏】账本根可读、盘上无待办，却排出了 T5 复查'
+              + `：${h.t5.length} 个（ms=${JSON.stringify(h.t5)}）`
+              + '\n      ⇒ ⚠ 这说明"武装"退化成了**恒真**（⚠ 最可能的成因：为了过 SL-a 而把判断写成永远 true）'
+              + '\n      ⇒ 修法：武装只许在 **①盘上真有待办** 或 **②账本根解析不到** 两种情形下成立')
+          }
+        }
+      }
+
+      // ── SL-c ⭐ **正常档读数逐字不变**（新档只在异常档出现）──
+      {
+        const home = slMkdt(join(slTmpRoot, 'sl-home2-'))
+        const wsName = 'ws'
+        slMkd(join(home, wsName, 'runtime'), { recursive: true })
+        slWf(join(home, wsName, 'runtime', 'orch-watches.json'), JSON.stringify({
+          version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [], pending: [],
+        }), 'utf8')
+        const h = await slMount({ loaderOpts: { ledgerHome: home } })
+        if (h.orch === undefined) {
+          bad('SL-c 服务未 provide `hobOrchestrator` ⇒ 断言失去基准（不按通过处理）')
+        } else {
+          /**
+           * ⚠ 正常档的判据走**渲染面**（`hob_orch_status` 的真实输出），⛔ 不看内部变量：
+           *   要钉的是"**用户看到的那几行**在正常档一个字都没变"。
+           *   ⚠ 值 = `ledger-home-unresolved` 这个词**不得出现**（它是异常档的标记）。
+           */
+          let rendered = ''
+          try {
+            const tools = slOrch.createHobOrchTools(h.orch)
+            rendered = String(await tools.status.execute({}, {
+              agent: { id: 'hob', session: { header: { cwd: h.ws } } },
+            }))
+          } catch (e) {
+            bad(`SL-c 状态工具执行失败（${String(e?.message ?? e)}）—— 渲染面失去基准`)
+          }
+          if (rendered === '') {
+            bad('SL-c 状态渲染为空 —— 本判据失去基准')
+          } else {
+            const leaked = rendered.includes('ledger-home-unresolved')
+              || rendered.includes('账本根解析不到')
+            if (!leaked) {
+              ok('SL-c ✓ **正常档读数不含异常档标记**（"新档只在异常档出现"）：'
+                + '渲染里既无 `ledger-home-unresolved`、也无「账本根解析不到」'
+                + ` ⇒ 正常档与改前逐字相同${slTag}`)
+            } else {
+              bad('SL-c 【异常档标记漏进正常档】账本根可读、有 state 文件，渲染里却出现'
+                + ' `ledger-home-unresolved` 或「账本根解析不到」'
+                + `\n      ⇒ 渲染前 400 字=${JSON.stringify(rendered.slice(0, 400))}`
+                + '\n      ⇒ ⚠ 甲-7 的读数**只许在异常档出现**（TASK 要求 3：正常档一个字都不许多）')
+            }
+          }
+        }
+      }
+    } finally {
+      try { slRm(slTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
     }
   }
 }
@@ -5675,7 +6065,13 @@ const orchCode = stripComments(orchSrc)
           {
             const { cpSync } = await import('node:fs')
             const dir = sbMkdt(join(sbRootTmp, 'mut-sb1-'))
-            cpSync(join(sbRoot, 'src'), join(dir, 'src'), { recursive: true })
+            /**
+             * ⚠⚠ **`dereference: true` 是本修复的要害，⛔ 不许去掉**（2026-10-21 · 第 323 轮 · 丁-7）：
+             *   `fs.cpSync` **默认不解引用**⇒ 源树里 `src` 若是软链，复制出来的 `dir/src`
+             *   **还是那条软链** ⇒ 随后 `writeFileSync(dir/src/…)` **写回源树**。
+             *   ⚠ 第 323 轮实测：受控靶仓 `git status --porcelain src/` 跑前 0 行、跑后 **4 行 M**。
+             */
+            cpSync(join(sbRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
             const mutFile = join(dir, 'src/modules/orchestrator.ts')
             const src = sbRf(mutFile, 'utf8')
             const GUARD = "          stateFileFor.set(target, file ?? '')"
@@ -5823,7 +6219,7 @@ const orchCode = stripComments(orchSrc)
             {
               const { cpSync } = await import('node:fs')
               const dir = sbMkdt(join(sbRootTmp, 'mut-sb2-'))
-              cpSync(join(sbRoot, 'src'), join(dir, 'src'), { recursive: true })
+              cpSync(join(sbRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
               const mf = join(dir, 'src/server/card-wake.ts')
               const src = sbRf(mf, 'utf8')
               const GUARD = '      const to = e.owner'
@@ -6078,7 +6474,7 @@ const orchCode = stripComments(orchSrc)
       {
         const scCp = scCpSync
         const dir = scMkdt(join(scRootTmp, 'mut-sc-a-'))
-        scCp(scJoin(scRoot, 'src'), scJoin(dir, 'src'), { recursive: true })
+        scCp(scJoin(scRoot, 'src'), scJoin(dir, 'src'), { recursive: true, dereference: true })
         const mf = scJoin(dir, 'src/server/card-wake.ts')
         const src = scRf(mf, 'utf8')
         const GUARD = '    const ownerUnknownRegistered = this.ownerUnknownLive.size'
@@ -6154,7 +6550,7 @@ const orchCode = stripComments(orchSrc)
       {
         const scCp = scCpSync
         const dir = scMkdt(join(scRootTmp, 'mut-sc-b-'))
-        scCp(scJoin(scRoot, 'src'), scJoin(dir, 'src'), { recursive: true })
+        scCp(scJoin(scRoot, 'src'), scJoin(dir, 'src'), { recursive: true, dereference: true })
         const mf = scJoin(dir, 'src/server/card-wake.ts')
         const src = scRf(mf, 'utf8')
         const GUARD = '    if (this.ownerUnknownSeen.has(key)) {'
@@ -6624,7 +7020,7 @@ const orchCode = stripComments(orchSrc)
       } else {
         const dir = sdMkdt(sdJ(sdTmpRoot, 'mut-'))
         try {
-          sdCp(sdJ(sdRoot, 'src'), sdJ(dir, 'src'), { recursive: true })
+          sdCp(sdJ(sdRoot, 'src'), sdJ(dir, 'src'), { recursive: true, dereference: true })
           const f = sdJ(dir, 'src', 'modules', 'orchestrator.ts')
           sdWf(f, sdRf(f, 'utf8').replace(GUARD, 'if (false) { /* 变异：摘掉跨代幂等 */'), 'utf8')
         } catch (e) {
@@ -6757,7 +7153,21 @@ const orchCode = stripComments(orchSrc)
       }, null, 2), 'utf8')
     }
     /** ⚠ 挂载前锁盘 = 模拟"清账写不进去"（SE-b 要用）。 */
-    if (opts.lockRuntime === true) seChmod(seJ(home, seBase(ws), 'runtime'), 0o555)
+    /**
+     * ⚠⚠ **`lockRuntime` 锁盘后必须有一次配对的还原**（2026-10-21 · 第 323 轮 · **丁-6** 主因）——
+     *   改前这里**只锁不解**：`runtime/` 带上 `0o555` 一路留到 `sRoot` 清理那一刻 ⇒
+     *   `rmSync(sRoot, { recursive: true })` 遇 EACCES ⇒ 被外层 `catch {}` 吞掉
+     *   ⇒ **每跑一次 `check:orch` 就漏一个 `/tmp/hob-secheck-*`**（本机已积 98 个 / 397 MB）。
+     *   ⚠ 修法：把"被锁的目录"记下来、并在返回句柄上暴露 `unlock()`，
+     *     由**用它的那个用例**在 `finally` 里调用（⛔ 不是把 `lockRuntime` 去掉 ——
+     *     那会让 SE-b 的判据失效，TASK 红线明令禁止）。
+     */
+    const lockedDirs = []
+    if (opts.lockRuntime === true) {
+      const RT0 = seJ(home, seBase(ws), 'runtime')
+      seChmod(RT0, 0o555)
+      lockedDirs.push(RT0)
+    }
     const owner = opts.owner ?? 'session-hob'
     const target = opts.target ?? 'session-worker'
     const mkS = (id) => ({
@@ -6823,6 +7233,20 @@ const orchCode = stripComments(orchSrc)
     return {
       orch: prov.hobOrchestrator, bus, file, owner, target, ws, delivered, warns,
       live, scope, wait, disk, receipts: () => delivered.filter((d) => String(d.text).includes('【自动回传】')),
+      /**
+       * ⚠⚠ **解锁**（2026-10-21 · 第 323 轮 · **丁-6**）：把 {@link lockedDirs} 里的目录
+       *   还原成 `0o755`。⚠ **用 `lockRuntime` 的用例必须在 `finally` 里调用它** ——
+       *   否则目录带着 `0o555` 活到 `sRoot` 清理那一刻 ⇒ `rmSync` EACCES ⇒ `/tmp` 残留。
+       *   ⚠ 幂等：没锁过 ⇒ 空数组 ⇒ 什么都不做（⛔ 不报错）。
+       *   ⚠ 失败**不抛**（清理不该把判据带崩），但**记一条可读 warn**（⛔ 不静默）。
+       */
+      unlock: () => {
+        for (const d of lockedDirs) {
+          try { seChmod(d, 0o755) } catch (e) {
+            warns.push(`[seMount] 解锁 ${d} 失败（${String(e?.message ?? e)}）⇒ 该目录可能留下只读残件`)
+          }
+        }
+      },
     }
   }
 
@@ -6932,6 +7356,15 @@ const orchCode = stripComments(orchSrc)
           + `（应 1 条且带 deliveredAt）· ③ 清账档=${saysCleanupOnly}`
           + ' ⇒ 盘上已经写着"我送到了"却还再发一份，就是"同一份回执反复送达"')
       }
+      /**
+       * ⚠⚠ **解锁**（2026-10-21 · 第 323 轮 · **丁-6**）：本用例用了 `lockRuntime: true`，
+       *   而它**在 `apply()` 之前**就把 `runtime/` 设成了 `0o555`。改前这里**从不解锁**
+       *   ⇒ 目录带着只读活到 `rmSync(sRoot)` ⇒ EACCES 被吞 ⇒ `/tmp/hob-secheck-*` 越积越多。
+       *   ⚠ 放在判定之后、用例末尾：判据本身一个字没改（⛔ 不是"为了让清理过而放宽判据"）。
+       *   ⚠ 更稳的写法是 `try/finally` 包住整个用例体 —— 但那样要重排 60 行缩进，
+       *     本批 ⛔ 不做大范围重排（改动面越小越好核对）。
+       */
+      try { h.unlock?.() } catch { /* 解锁失败不影响判据 */ }
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -7043,7 +7476,15 @@ const orchCode = stripComments(orchSrc)
         }
       } catch (e) {
         bad(`SE-b 跑不起来（${String(e?.message ?? e)}）`)
-        try { seChmod(RT, 0o755) } catch { /* 恢复 */ }
+      } finally {
+        /**
+         * ⚠⚠ **必须还原权限**（2026-10-21 · 第 323 轮 · **丁-6** 根因之一）——
+         *   改前这里只在 `catch` 里复原 ⇒ **成功路径（最常见的那条）不复原** ⇒
+         *   `RT` 一直是 `0o555` ⇒ 下面 `rmSync(sRoot)` 遇 EACCES ⇒ 被 `catch {}` 吞掉
+         *   ⇒ **每跑一次漏一个 `/tmp/hob-secheck-*`**。
+         *   ⚠ 写法照同文件 `SD-f` 的既有正确形态（`:6730` 的 `finally`），⛔ 不是新发明。
+         */
+        try { seChmod(RT, 0o755) } catch { /* 恢复可写：失败也不许把整组带崩 */ }
       }
     }
 
@@ -7097,7 +7538,7 @@ const orchCode = stripComments(orchSrc)
       } else {
         const dir = seMkdt(seJ(seTmpRoot, 'mut-a-'))
         try {
-          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true })
+          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true, dereference: true })
           const f = seJ(dir, 'src', 'modules', 'orchestrator.ts')
           seWf(f, seRf(f, 'utf8').replace(GUARD_A, '        void 0 /* 变异：不删 attempt */'), 'utf8')
           try { seLink(seJ(seRoot, 'node_modules'), seJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
@@ -7173,7 +7614,7 @@ const orchCode = stripComments(orchSrc)
       } else {
         const dir = seMkdt(seJ(seTmpRoot, 'mut-b-'))
         try {
-          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true })
+          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true, dereference: true })
           const f = seJ(dir, 'src', 'modules', 'orchestrator.ts')
           seWf(f, seRf(f, 'utf8').replace(GUARD_B, MUT_B), 'utf8')
           try { seLink(seJ(seRoot, 'node_modules'), seJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
@@ -7393,7 +7834,7 @@ const orchCode = stripComments(orchSrc)
       } else {
         const dir = seMkdt(seJ(seTmpRoot, 'mut-d-'))
         try {
-          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true })
+          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true, dereference: true })
           const f = seJ(dir, 'src', 'server', 'card-wake.ts')
           seWf(f, seRf(f, 'utf8').replace(GUARD_D, MUT_D), 'utf8')
           try { seLink(seJ(seRoot, 'node_modules'), seJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
@@ -7477,7 +7918,7 @@ const orchCode = stripComments(orchSrc)
       } else {
         const dir = seMkdt(seJ(seTmpRoot, 'mut-c-'))
         try {
-          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true })
+          seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true, dereference: true })
           const f = seJ(dir, 'src', 'server', 'card-wake.ts')
           seWf(f, seRf(f, 'utf8').replace(GUARD_C, '    if (false) { /* 变异：放开那道闸 */'), 'utf8')
           try { seLink(seJ(seRoot, 'node_modules'), seJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
@@ -7500,6 +7941,1368 @@ const orchCode = stripComments(orchSrc)
     }
   }
   try { seRm(seTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+}
+
+// ── SG. **三处"读数不老实"**（2026-10-20 · 第 321 轮 · `TASK-G`）───────────────
+//
+// ⚠ **本组守的是哪三条**（三处**都是同一个病**：**让失败不可观测**）：
+//   · **SG-a 叫醒面接住投递返回值**：投递 resolve `{ok:false, reason}` ⇒
+//     ⛔ 不涨 `wokeCount`、⛔ 不写"已叫醒"、⛔ 不覆盖"最近一次叫醒"；
+//     ✅ 涨"没送到"那档（`undeliveredCount` / `undeliverableCount`）且**原话含 `reason`**。
+//     ⚠ 改前两处都**丢掉返回值**（`handleFrame` 不接、`wake` 里 `void r`）⇒
+//       `{ok:false}` 被当成成功，读数说"成了"、实际没成。
+//   · **SG-b 登记回调必须带 owner**：按推送现读登记成功 ⇒ 按人读的 `pushedRegisterOk > 0`、
+//     `wired` 真、头行**不再打「还没接上」**。⚠ 改前三处调用都不传 owner ⇒
+//     `bump()` 遇空 return ⇒ 按人读恒 0 ⇒ 头行永远说没接上，**而它其实接上了**。
+//   · **SG-c 台账键空间同源**：卡跑完 + 投递成功 ⇒ `deliveryLedger` **不是 0 条**，
+//     且条目的 `executionId` 就是**可用**的那个键。⚠ 改前拿合成键比看板真 id ⇒
+//     永远不相等 ⇒ 台账恒空、渲染成"确实是空的"、补投入口按不到。
+//
+// ⚠⚠ **每条都配一个负向对拍**（改前必红）：把修复回退到变异体上跑 ⇒ 本档**必须不成立**。
+//   ⚠ 变异只落在**临时副本**（⛔ 不碰工作区源码一个字节），同 `SC` / `SD` / `SE` 的纪律。
+{
+  const { pathToFileURL: sgP2u } = await import('node:url')
+  const { join: sgJ, basename: sgBase } = await import('node:path')
+  const { mkdtempSync: sgMkdt, mkdirSync: sgMkd, writeFileSync: sgWf, readFileSync: sgRf,
+    rmSync: sgRm, cpSync: sgCp, symlinkSync: sgLink } = await import('node:fs')
+  const { tmpdir: sgTmp } = await import('node:os')
+  const { createServer: sgServer } = await import('node:http')
+
+  /** ⚠ 与 SA/SB/SC/SD/SE 同款：`HOB_SA_ROOT` 可指向另一棵树（用来跑"改前必红"）。 */
+  const sgRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT
+    : root
+  const sgTag = sgRoot === root ? '' : `（源码树=${sgRoot}）`
+  let sgTmpRoot
+  try { sgTmpRoot = sgMkdt(sgJ(sgTmp(), 'hob-sgcheck-')) } catch { sgTmpRoot = sgTmp() }
+
+  let sgWake, sgOrchMod, sgBusMod
+  try {
+    sgWake = await import(sgP2u(sgJ(sgRoot, 'src', 'server', 'card-wake.ts')).href)
+  } catch (e) {
+    bad(`SG 无法加载 card-wake（${String(e?.message ?? e)}）⇒ 三处读数失去基准（不按通过处理）`)
+  }
+  try {
+    sgOrchMod = await import(sgP2u(sgJ(sgRoot, 'src', 'modules', 'orchestrator.ts')).href)
+    sgBusMod = await import(sgP2u(sgJ(sgRoot, 'src', 'modules', 'bus.ts')).href)
+  } catch { sgOrchMod = undefined; sgBusMod = undefined }
+
+  const sgWS = 'ws-sg'
+
+  /** 造一帧「执行落定」（形状按看板 `broadcast()` 的 `summarize()` 投影）。 */
+  const sgFrameOf = (over = {}) => JSON.stringify({
+    revision: 1, kind: 'execution-recorded',
+    tasks: [{ id: 't-sg-1', title: 'SG 用卡', status: 'in_review', workspaceId: sgWS,
+      version: 5, lastExecutionOutcome: 'succeeded',
+      createdBy: { sessionId: 'session-sg-hob' }, ...over }],
+  })
+
+  // ══════════════════════════════════════════════════════════════
+  // SG-a · **叫醒面必须接住投递返回值**（两处：CardWake + DispatchWake）
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 现场形态：`hobBus.deliver` 对"归档会话 / 非活会话 / 建消息失败"返回
+  //     `{ok:false, reason}`（**不抛错**）⇒ 改前两处都当成功。
+  //   ⚠ 判据（两条通道各一条，且**改法要一致**）：
+  //     ① `{ok:false}` ⇒ `wokeCount`/`wokeCount` **不涨**、`undeliveredCount` **+1**、
+  //        那句可读话里**含 `reason` 原文**、"最近一次叫醒"**没被覆盖**；
+  //     ② 同一面上再喂一次**成功**投递 ⇒ 照常涨（⛔ 不是把这一档做成"永远不叫"）。
+  if (sgWake !== undefined) {
+    {
+      const REASON = 'session "session-sg-hob" is not a live session; only live sessions can receive'
+      const sent = []
+      const cw = new sgWake.CardWake({
+        origin: 'http://127.0.0.1:0',
+        workspaceIdOf: () => sgWS,
+        deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: false, reason: REASON }) },
+        now: () => 1792300800000,
+      })
+      cw.subscribe('session-sg-hob', sgWS)
+      const n = await cw.handleFrame('change', sgFrameOf())
+      const st = cw.snapshot()
+      const noFakeWake = st.wokeCount === 0 && n === 0
+      const countedUndelivered = st.undeliveredCount === 1
+      const noteHasReason = typeof st.note === 'string' && st.note.includes(REASON)
+      const noLastWoke = st.lastWokeCard === undefined
+      const saysNotWoke = typeof st.note === 'string' && !st.note.includes('已叫醒')
+      if (noFakeWake && countedUndelivered && noteHasReason && noLastWoke && saysNotWoke) {
+        ok('SG-a1 ✓ **卡唤醒面接住投递返回值**：投递返回 `{ok:false, reason}` ⇒ '
+          + '`wokeCount` **不涨**（仍 0）· `undeliveredCount` **+1** · '
+          + '可读话里**含失败原话**（`' + REASON.slice(0, 34) + '…`）· "最近一次叫醒"**未被覆盖**'
+          + sgTag)
+      } else {
+        bad('SG-a1 【{ok:false} 被当成了成功】卡唤醒面仍在报"已叫醒"'
+          + `：返回值=${n}（应 0）· wokeCount=${st.wokeCount}（应 0）· undeliveredCount=${st.undeliveredCount}（应 1）`
+          + ` · 话里含失败原话=${noteHasReason} · 没覆盖"最近一次叫醒"=${noLastWoke}`
+          + ` · 话里没写"已叫醒"=${saysNotWoke} · note=${JSON.stringify(String(st.note ?? '').slice(0, 120))}`
+          + ' ⇒ 这正是"读数说成了、实际没成"那条形态')
+      }
+      // ⚠ 反向对照：同一面、**成功**投递照样涨（⛔ 不是把这一档做成永不叫）
+      const okSent = []
+      const cwOk = new sgWake.CardWake({
+        origin: 'http://127.0.0.1:0',
+        workspaceIdOf: () => sgWS,
+        deliver: (sid, text) => { okSent.push(sid); return Promise.resolve({ ok: true }) },
+        now: () => 1792300800000,
+      })
+      cwOk.subscribe('session-sg-hob', sgWS)
+      const nOk = await cwOk.handleFrame('change', sgFrameOf())
+      const stOk = cwOk.snapshot()
+      if (nOk === 1 && stOk.wokeCount === 1 && stOk.undeliveredCount === 0) {
+        ok('SG-a2 ✓ 反向对照：**投递成功**时照常涨 `wokeCount=1`、`undeliveredCount=0`'
+          + ' ⇒ SG-a1 钉的是"失败要如实记"，⛔ 没有把叫醒弄成永不生效')
+      } else {
+        bad('SG-a2 【成功路径被误伤】投递成功时叫醒没长起来'
+          + `：返回值=${nOk}（应 1）· wokeCount=${stOk.wokeCount}（应 1）· undeliveredCount=${stOk.undeliveredCount}（应 0）`)
+      }
+    }
+    {
+      // ── 第二处：`DispatchWake.wake`（实施会话叫醒面）—— **改法必须与上一处一致** ──
+      const REASON2 = 'session "session-sg-exec" is archived; an archived session is woken by a delivery but its execution is gated off'
+      const sent2 = []
+      const dw = new sgWake.DispatchWake({
+        deliver: (sid, text) => { sent2.push({ sid, text }); return Promise.resolve({ ok: false, reason: REASON2 }) },
+        now: () => 1792300800000,
+      })
+      dw.register({ sessionId: 'session-sg-exec', via: 'taskboard-card', cardId: 't-sg-2', owner: 'session-sg-hob' })
+      await dw.observe('session-sg-exec', 'running')
+      const outcome = await dw.observe('session-sg-exec', 'idle')
+      const ds = dw.snapshot('session-sg-hob')
+      const noFakeWoke = ds.wokeCount === 0 && outcome !== 'woke'
+      const counted = ds.undeliverableCount === 1
+      const whyHasReason = typeof ds.undeliverableWhy === 'string' && ds.undeliverableWhy.includes(REASON2)
+      const noteHasReason2 = typeof ds.note === 'string' && ds.note.includes(REASON2)
+      if (noFakeWoke && counted && whyHasReason && noteHasReason2) {
+        ok('SG-a3 ✓ **会话唤醒面接住投递返回值**（与上面**同一套判据**）：`{ok:false}` ⇒ '
+          + `结局=${String(outcome)}（⛔ 不是 'woke'）· wokeCount 仍 0 · undeliverableCount **+1** · `
+          + '原话里**逐字**带着失败原因' + sgTag)
+      } else {
+        bad('SG-a3 【{ok:false} 被当成了成功】会话唤醒面仍在报"已叫醒"'
+          + `：结局=${String(outcome)}（应非 'woke'）· wokeCount=${ds.wokeCount}（应 0）`
+          + ` · undeliverableCount=${ds.undeliverableCount}（应 1）· why 含原话=${whyHasReason}`
+          + ` · note 含原话=${noteHasReason2}`
+          + ' ⇒ 两处改法不一致（`D4`「至多投一次」不受影响，但"记没记成"必须一致）')
+      }
+      // ⚠ `D4` 不许被这一改破：`{ok:false}` **仍然不重投**（`reported` 照旧只在投之前落）
+      await dw.observe('session-sg-exec', 'idle')
+      const again = await dw.observe('session-sg-exec', 'idle')
+      if (sent2.length === 1 && again === undefined) {
+        ok('SG-a4 ✓ **`D4`「至多投一次」未被这一改破**：`{ok:false}` 之后同一轮再喂 `idle` ⇒ '
+          + `**不再投第二次**（累计投递 ${sent2.length} 次、结局=${String(again)}）`
+          + ' —— 本件只改"记账"，⛔ 没有让失败变成可重投')
+      } else {
+        bad('SG-a4 【重投语义被改动】`{ok:false}` 之后又投了一次'
+          + `：累计投递=${sent2.length}（应 1）· 第二次结局=${String(again)}`
+          + ' ⇒ 那是用户要裁的事，⛔ 本件不许动')
+      }
+    }
+    // ── SG-a(反证)：把两处的"接住返回值"回退成改前的样子 ⇒ SG-a1 / SG-a3 必须不成立 ──
+    {
+      const CW = sgJ(sgRoot, 'src', 'server', 'card-wake.ts')
+      const original = sgRf(CW, 'utf8')
+      /**
+       * ⚠ 变异点要**同时打中两处**，否则只能证明一处有牙：
+       *   ① `CardWake`：把 `deliveryFailureOf(r)` 那次判定改成恒 `undefined`（= 改前"不看返回值"）；
+       *   ② `DispatchWake`：同一函数是共用的 ⇒ 一处变异两处一起回退（这正是"改法一致"的副作用）。
+       */
+      const GUARD = '  const o = r as { ok?: unknown; reason?: unknown }'
+      if (original.includes(GUARD) === false) {
+        bad('SG-a(反证) 【失去靶子】在 `card-wake.ts` 里找不到"读返回值"那行'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const dir = sgMkdt(sgJ(sgTmpRoot, 'mut-sga-'))
+        sgCp(sgJ(sgRoot, 'src'), sgJ(dir, 'src'), { recursive: true, dereference: true })
+        const mf = sgJ(dir, 'src', 'server', 'card-wake.ts')
+        sgWf(mf, original.replace(GUARD,
+          '  const o = r as { ok?: unknown; reason?: unknown }\n  return undefined /* 变异：改回"丢掉返回值" */'), 'utf8')
+        try { sgLink(sgJ(sgRoot, 'node_modules'), sgJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try {
+          const mW = await import(sgP2u(sgJ(dir, 'src', 'server', 'card-wake.ts')).href)
+          const mSent = []
+          const mcw = new mW.CardWake({ origin: 'http://127.0.0.1:0', workspaceIdOf: () => sgWS,
+            deliver: (sid, text) => { mSent.push(sid); return Promise.resolve({ ok: false, reason: 'x' }) },
+            now: () => 1792300800000 })
+          mcw.subscribe('session-sg-hob', sgWS)
+          const mN = await mcw.handleFrame('change', sgFrameOf())
+          const mSt = mcw.snapshot()
+          const mdw = new mW.DispatchWake({
+            deliver: () => Promise.resolve({ ok: false, reason: 'x' }), now: () => 1792300800000 })
+          mdw.register({ sessionId: 'session-sg-exec', via: 'taskboard-card', cardId: 't-sg-2', owner: 'session-sg-hob' })
+          await mdw.observe('session-sg-exec', 'running')
+          const mOutcome = await mdw.observe('session-sg-exec', 'idle')
+          const mDs = mdw.snapshot('session-sg-hob')
+          const bothFake = mSt.wokeCount === 1 && mN === 1
+            && mDs.wokeCount === 1 && mOutcome === 'woke'
+          if (bothFake) {
+            ok('SG-a(反证) ✓ 负向对拍：把"读返回值"回退成改前（`void r` / 不接返回值）⇒ '
+              + `**两处同时**把 \`{ok:false}\` 当成成功（卡面 wokeCount=${mSt.wokeCount} · `
+              + `会话面 wokeCount=${mDs.wokeCount}·结局=${String(mOutcome)}）`
+              + ' ⇒ SG-a1 / SG-a3 真长牙（它们钉的正是这一条）')
+          } else {
+            bad('SG-a(反证) 【负向对拍失败】回退"接返回值"之后仍然没把它当成功'
+              + `（卡面 wokeCount=${mSt.wokeCount} · 会话面 wokeCount=${mDs.wokeCount}·结局=${String(mOutcome)}）`
+              + ' ⇒ SG-a 测的不是"接住返回值"这件事')
+          }
+        } catch (e) {
+          bad(`SG-a(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SG-b · **登记回调必须带 `owner`**（按人读的读数才是真的）
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 现场形态：点火帧把会话登记进来了（`registered=1`、真叫醒过），
+  //     而 `hob_orch_status` 的头行却说 `⚠ 还没接上（未收到过点火帧）` —— 两个读数打架。
+  //   ⚠ 机理：三处 `noteRegistryOk` / `noteRegistryIssue` 调用**都不传 owner**
+  //     ⇒ `bump()` 遇空直接 return ⇒ 按人读的 `pushedRegisterOk` 恒 0。
+  //   ⚠ 判据：**走真链路**（假看板 SSE → 点火帧 → `onFiring` → `registerCardByPush`）⇒
+  //     ① 按人读 `pushedRegisterOk > 0`；② 头行写"已接上"、**不再**写"还没接上"；
+  //     ③ 同一份读数**按 owner 分区**（别人的 owner 读到 0 —— ⛔ 不回退进程级合计）。
+  if (sgOrchMod !== undefined && sgBusMod !== undefined) {
+    const sgMount = async (opts = {}) => {
+      const base = sgMkdt(sgJ(sgTmpRoot, 'case-b-'))
+      const home = sgJ(base, 'ledgers'); const ws = sgJ(base, 'ws')
+      sgMkd(sgJ(ws, 'runtime'), { recursive: true })
+      sgMkd(sgJ(home, sgBase(ws), 'runtime'), { recursive: true })
+      sgWf(sgJ(home, sgBase(ws), 'runtime', 'orch-watches.json'),
+        JSON.stringify({ version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [] }), 'utf8')
+      const card = opts.card
+      const registry = new Map([
+        ['taskboard_get', { name: 'taskboard_get', execute: async (a) => (a?.id === card.id ? { task: card } : {}) }],
+        ['taskboard_list', { name: 'taskboard_list', execute: async () => ({ revision: 1, tasks: [card] }) }],
+      ])
+      const toolsSvc = { get: (n) => registry.get(n) }
+      const mkSession = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+      const byId = new Map([[opts.owner ?? 'session-sg-hob', mkSession(opts.owner ?? 'session-sg-hob')],
+        ['session-sg-exec', mkSession('session-sg-exec')]])
+      const sessions = { get: (id) => byId.get(id), list: () => [...byId.values()], flush: async () => true }
+      const agents = { currentInitiator: () => undefined,
+        get: (id) => (byId.has(id) ? { id, status: 'idle', ctx: {}, session: byId.get(id),
+          followup() {}, steer() {}, inject() {} } : undefined) }
+      const logger = { debug() {}, info() {}, warn() {} }
+      /** ⚠ 假 `workspaceRegistry`：`bus.listWorkspaces` 靠它判"本会话在哪个项目"。 */
+      const workspaceRegistry = {
+        list: () => [{ id: sgWS, path: ws, title: 'sg', record: { sessionIds: [...byId.keys()] } }],
+        sessionPaths: new Map([...byId.keys()].map((id) => [id, ws])),
+      }
+      const busProvided = {}
+      // ⚠ 变异体可以传**它自己的** bus 模块（否则 SG-b(反证) 只换了 orchestrator，
+      //   实测证明那一档会**照样绿** —— 见下面反证块的注释：必须两边一起回退）。
+      const busMod = opts.busMod ?? sgBusMod
+      const busCtx = { sessions, agents, logger,
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+          : k === 'workspaceRegistry' ? workspaceRegistry : undefined),
+        provide: (k, v) => { busProvided[k] = v }, effect: (f) => { try { f() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(busCtx), on: () => {} }
+      busMod.apply(busCtx, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+      const bus = busProvided.hobBus
+      const provided = {}
+      const ctx = { sessions, agents, logger,
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : k === 'hobBus' ? bus
+          : k === 'tools' ? toolsSvc
+            : k === 'workspaceRegistry' ? workspaceRegistry
+              : k === 'webServer' ? { getOrigin: () => opts.origin }
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+        provide: (k, v) => { provided[k] = v }, effect: (f) => { try { f() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(ctx), on: () => {} }
+      // ⚠ 同上：变异体可以传**它自己的** orchestrator 模块。
+      const orchMod = opts.orchMod ?? sgOrchMod
+      orchMod.apply(ctx)
+      return { orch: provided.hobOrchestrator, ws, home }
+    }
+
+    {
+      /** 假看板 SSE：连上来就推一帧**点火**（= `pre-step` 那一刻看板真推的那一帧）。 */
+      const card = { id: 't-sg-push', title: 'SG 推送用卡', status: 'in_progress', workspaceId: sgWS,
+        version: 6, createdBy: { kind: 'user', sessionId: 'session-sg-hob' }, comments: [],
+        executions: [{ id: 'e-sg-1', outcome: 'running', startedAt: 1, sessionId: 'session-sg-exec' }] }
+      const firing = JSON.stringify({ revision: 1, kind: 'execution-recorded',
+        tasks: [{ id: card.id, title: card.title, status: 'in_progress', workspaceId: sgWS,
+          version: 6, lastExecutionOutcome: 'running' }] })
+      const srv = sgServer((req, res) => {
+        if (String(req.url ?? '').includes('/dsh-taskboard/events') === false) { res.writeHead(404).end(); return }
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+        res.write(`event: change\ndata: ${firing}\n\n`)
+      })
+      await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+      const origin = `http://127.0.0.1:${srv.address().port}`
+      try {
+        const h = await sgMount({ card, origin })
+        await h.orch.wakeSubscribe('session-sg-hob')
+        /** ⚠ 等到"按推送现读登记成功"真的发生（最多 800ms）。 */
+        const until = async (fn, ms = 800) => {
+          const t0 = Date.now()
+          while (Date.now() - t0 < ms) { if (fn()) return true; await new Promise((r) => setTimeout(r, 10)) }
+          return fn()
+        }
+        await until(() => h.orch.dispatchWakeState('session-sg-hob').pushedRegisterOk > 0)
+        const d = h.orch.dispatchWakeState('session-sg-hob')
+        const tools = sgOrchMod.createHobOrchTools(h.orch)
+        const rendered = String(await tools.status.execute({}, {
+          agent: { id: 'session-sg-hob', session: { header: { cwd: h.ws } } },
+        }))
+        const head = rendered.split('\n').find((l) => l.includes('实施会话叫醒面')) ?? ''
+        const wired = head.includes('已接上')
+        const notWired = head.includes('还没接上')
+        /**
+         * ⚠ **按 owner 分区**（B4 / W6）：同一个进程级对象，另一个 owner 读到的是**它的** 0，
+         *   ⛔ 不许是"进程级合计"（那正是 W6 那条"两个 Hob 互相看见"）。
+         */
+        const other = h.orch.dispatchWakeState('session-someone-else')
+        const partitioned = d.pushedRegisterOk >= 1 && other.pushedRegisterOk === 0
+        if (d.pushedRegisterOk > 0 && wired && !notWired && partitioned) {
+          ok('SG-b ✓ **登记回调带 owner**：按推送现读登记成功 ⇒ **按人读**的 `pushedRegisterOk=' 
+            + String(d.pushedRegisterOk) + '`（改前恒 0）· 头行写 **"已接上"**、⛔ 不再写"还没接上"'
+            + `（原行：${head.slice(0, 68)}…）· 且**按 owner 分区**（别人的 owner 读到 ${other.pushedRegisterOk}）`
+            + sgTag)
+        } else {
+          bad('SG-b 【按人读的"接没接上"仍然是假 0】三处登记回调没把 owner 传下去'
+            + `：我的 pushedRegisterOk=${d.pushedRegisterOk}（应 ≥1）· 头行说"已接上"=${wired}`
+            + ` · 头行仍说"还没接上"=${notWired} · 按 owner 分区=${partitioned}`
+            + `（别人读到的=${other.pushedRegisterOk}，应 0）`
+            + ` · 头行=${JSON.stringify(head.slice(0, 120))}`
+            + ' ⇒ 头行永远打"还没接上"，而它其实接上了 —— 本项目头号禁忌')
+        }
+        // ── SG-b(反证)：把三处 `noteRegistryOk/Issue` 的 owner 去掉 ⇒ SG-b 必须不成立 ──
+        {
+          const OJ = sgJ(sgRoot, 'src', 'modules', 'orchestrator.ts')
+          const osrc = sgRf(OJ, 'utf8')
+          const G1 = 'dispatchWake.noteRegistryOk(cardId, subscriber)'
+          const G2 = 'dispatchWake.noteRegistryIssue(cardId, r.kind, r.why, subscriber)'
+          const G3 = "dispatchWake.noteRegistryIssue(cardId, 'unreadable', `按卡现读会话时抛错：${String((e as Error)?.message ?? e)}`, subscriber)"
+          if (!osrc.includes(G1) || !osrc.includes(G2) || !osrc.includes(G3)) {
+            bad('SG-b(反证) 【失去靶子】`orchestrator.ts` 里三处登记回调不是"带 owner"的形态'
+              + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+          } else {
+            const dir = sgMkdt(sgJ(sgTmpRoot, 'mut-sgb-'))
+            sgCp(sgJ(sgRoot, 'src'), sgJ(dir, 'src'), { recursive: true, dereference: true })
+            const mf = sgJ(dir, 'src', 'modules', 'orchestrator.ts')
+            sgWf(mf, osrc
+              .replace(G1, 'dispatchWake.noteRegistryOk(cardId)')
+              .replace(G2, 'dispatchWake.noteRegistryIssue(cardId, r.kind, r.why)')
+              .replace(G3, "dispatchWake.noteRegistryIssue(cardId, 'unreadable', `按卡现读会话时抛错：${String((e as Error)?.message ?? e)}`)"),
+            'utf8')
+            try { sgLink(sgJ(sgRoot, 'node_modules'), sgJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+            const srv2 = sgServer((req, res) => {
+              if (String(req.url ?? '').includes('/dsh-taskboard/events') === false) { res.writeHead(404).end(); return }
+              res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+              res.write(`event: change\ndata: ${firing}\n\n`)
+            })
+            await new Promise((r) => srv2.listen(0, '127.0.0.1', r))
+            try {
+              const mOrchMod = await import(sgP2u(sgJ(dir, 'src', 'modules', 'orchestrator.ts')).href)
+              const mBusMod = await import(sgP2u(sgJ(dir, 'src', 'modules', 'bus.ts')).href)
+              const h2 = await sgMount({ card, origin: `http://127.0.0.1:${srv2.address().port}`,
+                orchMod: mOrchMod, busMod: mBusMod })
+              await h2.orch.wakeSubscribe('session-sg-hob')
+              await until(() => h2.orch.dispatchWakeState('session-sg-hob').registered > 0 || Date.now() % 1 === 9)
+              await new Promise((r) => setTimeout(r, 350))
+              const md = h2.orch.dispatchWakeState('session-sg-hob')
+              const mtools = mOrchMod.createHobOrchTools(h2.orch)
+              const mRendered = String(await mtools.status.execute({}, {
+                agent: { id: 'session-sg-hob', session: { header: { cwd: h2.ws } } },
+              }))
+              const mHead = mRendered.split('\n').find((l) => l.includes('实施会话叫醒面')) ?? ''
+              /**
+               * ── ⚠⚠ **判据已随头行拆档更新**（第 323 轮 · `TASK-I`）──────────────────
+               *
+               * ⚠ 改前这里钉的是 `mHead.includes('还没接上')` —— 那时头行只有"已接上 / 还没接上"两档。
+               *   拆档后，`pushedRegisterOk=0` 且**帧到过**时头行打的是
+               *   `⚠ 收到过点火帧 N 次、但一次都没走到"登记成功"`（**不含**"还没接上"字样）
+               *   ⇒ 旧判据会把**正确的新行为**判成"反证失败"（实测首跑正是这样红的）。
+               *
+               * ⚠ 本反证**要钉的那件事一个字没变**：`owner` 不传 ⇒ 按人读的 `pushedRegisterOk`
+               *   **回落到 0** ⇒ 头行**不许**说"已接上"（那才是 OG 要治的假话）。
+               *   ⇒ 判据改成"**回落到 0 且不说已接上**"，⛔ 不依赖具体档位措辞
+               *     （⛔ 不许把它绑死在某一句文案上，否则下次改措辞又假红）。
+               */
+              const mNotWired = mHead.includes('已接上') === false
+              if (md.pushedRegisterOk === 0 && mNotWired) {
+                ok('SG-b(反证) ✓ 负向对拍：把三处登记回调的 `owner` 去掉 ⇒ '
+                  + `按人读的 \`pushedRegisterOk\` **回落到 0**、头行**不再说"已接上"**（登记本身还在：`
+                  + `registered=${md.mine?.registered ?? 0}）`
+                  + ' ⇒ SG-b 真长牙（它钉的正是"不传 owner ⇒ 读数永远说没接上"）')
+              } else {
+                bad('SG-b(反证) 【负向对拍失败】去掉 owner 之后按人读仍然 > 0 或头行仍然说已接上'
+                  + `（pushedRegisterOk=${md.pushedRegisterOk} · 头行=${JSON.stringify(mHead.slice(0, 100))}）`
+                  + ' ⇒ SG-b 测的不是"owner 有没有传下去"')
+              }
+            } finally { srv2.close() }
+          }
+        }
+      } finally { srv.close() }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SG-c · **`deliveryLedger` 的键空间必须同源**
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 现场形态：卡跑完 ⇒ 叫醒面按**合成键**（`<卡>@<outcome>@v<version>`）记账；
+  //     而 `deliveryLedger()` 拿这个键去比卡面的**看板真 id** ⇒ **永远不相等**
+  //     ⇒ 台账恒空、渲染成「目前**没有**投递记录（这一档是"确实是空的"）」
+  //     ⇒ 补投入口拿不到可用 `executionId`，**按不到**。
+  //   ⚠ 判据：喂一条"卡跑完 + 投递成功"的**真实形状**数据 ⇒ `deliveryLedger` **不是 0 条**，
+  //     且条目的 `executionId` 与台账键**逐字相同**（= 补投入口拿到的就是那个可用的 id）。
+  //   ⛔ 判据里**不许用前缀匹配**（`t-a` 是 `t-ab` 的前缀 ⇒ 会误配）—— 本档另外钉住这一点。
+  if (sgOrchMod !== undefined && sgBusMod !== undefined) {
+    {
+      const card = { id: 't-sg-ledger', title: 'SG 台账用卡', status: 'in_review', workspaceId: sgWS,
+        version: 7, createdBy: { kind: 'user', sessionId: 'session-sg-hob' }, comments: [],
+        // ⚠ 真形状：最近一次执行**已落定**，且带看板自己的真 id
+        executions: [{ id: 'e-real-abcdef', outcome: 'succeeded', startedAt: 1, endedAt: 2, sessionId: 'session-sg-exec' }] }
+      const done = JSON.stringify({ revision: 1, kind: 'execution-recorded',
+        tasks: [{ id: card.id, title: card.title, status: 'in_review', workspaceId: sgWS,
+          version: 7, lastExecutionOutcome: 'succeeded' }] })
+      const srv = sgServer((req, res) => {
+        if (String(req.url ?? '').includes('/dsh-taskboard/events') === false) { res.writeHead(404).end(); return }
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+        res.write(`event: change\ndata: ${done}\n\n`)
+      })
+      await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+      try {
+        const base = sgMkdt(sgJ(sgTmpRoot, 'case-c-'))
+        const home = sgJ(base, 'ledgers'); const ws = sgJ(base, 'ws')
+        sgMkd(sgJ(ws, 'runtime'), { recursive: true })
+        sgMkd(sgJ(home, sgBase(ws), 'runtime'), { recursive: true })
+        sgWf(sgJ(home, sgBase(ws), 'runtime', 'orch-watches.json'),
+          JSON.stringify({ version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [] }), 'utf8')
+        const registry = new Map([
+          ['taskboard_get', { name: 'taskboard_get', execute: async (a) => (a?.id === card.id ? { task: card } : {}) }],
+          ['taskboard_list', { name: 'taskboard_list', execute: async () => ({ revision: 1, tasks: [card] }) }],
+        ])
+        const toolsSvc = { get: (n) => registry.get(n) }
+        const mkSession = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+        const byId = new Map([['session-sg-hob', mkSession('session-sg-hob')],
+          ['session-sg-exec', mkSession('session-sg-exec')]])
+        const sessions = { get: (id) => byId.get(id), list: () => [...byId.values()], flush: async () => true }
+        const agents = { currentInitiator: () => undefined,
+          get: (id) => (byId.has(id) ? { id, status: 'idle', ctx: {}, session: byId.get(id),
+            followup() {}, steer() {}, inject() {} } : undefined) }
+        const logger = { debug() {}, info() {}, warn() {} }
+        const workspaceRegistry = {
+          list: () => [{ id: sgWS, path: ws, title: 'sg', record: { sessionIds: [...byId.keys()] } }],
+          sessionPaths: new Map([...byId.keys()].map((id) => [id, ws])),
+        }
+        const busProvided = {}
+        const busCtx = { sessions, agents, logger,
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+            : k === 'workspaceRegistry' ? workspaceRegistry : undefined),
+          provide: (k, v) => { busProvided[k] = v }, effect: (f) => { try { f() } catch { /* 无落点 */ } },
+          inject: (_d, cb) => cb(busCtx), on: () => {} }
+        sgBusMod.apply(busCtx, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+        const bus = busProvided.hobBus
+        const provided = {}
+        const ctx = { sessions, agents, logger,
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : k === 'hobBus' ? bus
+            : k === 'tools' ? toolsSvc
+              : k === 'workspaceRegistry' ? workspaceRegistry
+                : k === 'webServer' ? { getOrigin: () => `http://127.0.0.1:${srv.address().port}` }
+                  : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+          provide: (k, v) => { provided[k] = v }, effect: (f) => { try { f() } catch { /* 无落点 */ } },
+          inject: (_d, cb) => cb(ctx), on: () => {} }
+        sgOrchMod.apply(ctx)
+        const orch = provided.hobOrchestrator
+        await orch.wakeSubscribe('session-sg-hob')
+        await new Promise((r) => setTimeout(r, 400))
+        const led = await orch.deliveryLedger()
+        const snap = await orch.cardsOf({ selfSessionId: 'session-sg-hob' })
+        const synthetic = snap.cards.find((c) => c.id === card.id)?.synthesizedExecutionId
+        const entry = led.entries[0]
+        const notEmpty = led.total > 0 && entry !== undefined
+        /**
+         * ⚠ 判据三件（缺一即红）：
+         *   ① 台账**不是 0 条**；② 条目 `taskId` 能对上那张卡；
+         *   ③ 条目的 `executionId` = 卡面上的**合成键**（= 补投入口真正可用的那个 id）。
+         *   ⚠ ③ **不许**退化成"前缀相等"（那就又会把 `t-a` 匹配到 `t-ab`）。
+         */
+        const rightCard = entry !== undefined && entry.taskId === card.id
+        const idUsable = entry !== undefined && synthetic !== undefined && entry.executionId === synthetic
+        const strictNotPrefix = entry !== undefined
+          && entry.executionId !== undefined
+          && entry.executionId.split('@')[0] === card.id
+        if (notEmpty && rightCard && idUsable && strictNotPrefix) {
+          ok('SG-c ✓ **台账键空间同源**：卡跑完 + 投递成功 ⇒ `deliveryLedger` **不再是 0 条**'
+            + `（${led.total} 条）· 条目 \`executionId=${String(entry.executionId)}\` **与卡面合成键逐字相同**`
+            + '（= 补投入口拿到的就是可用的那个 id）· 卡 id 严格相等（⛔ 不是前缀匹配）' + sgTag)
+        } else {
+          bad('SG-c 【台账恒空 / 拿不到可用执行 id】键空间不同源'
+            + `：台账条数=${led.total}（应 > 0）· 条目卡 id 对得上=${rightCard}`
+            + ` · 条目 id 与卡面合成键相同=${idUsable}`
+            + `（条目=${JSON.stringify(entry ?? null)} · 卡面合成键=${JSON.stringify(synthetic ?? null)}）`
+            + ` · 卡 id 严格相等=${strictNotPrefix}`
+            + ' ⇒ 恒空会被渲染成"确实是空的"，补投入口永远按不到')
+        }
+        // ── SG-c(反证)：把比对改回"只比看板真 id"（= 改前那一行）⇒ SG-c 必须不成立 ──
+        {
+          const OJ = sgJ(sgRoot, 'src', 'modules', 'orchestrator.ts')
+          const osrc = sgRf(OJ, 'utf8')
+          const GUARD = 'const card = snap.cards.find((c) => c.synthesizedExecutionId === row.executionId'
+          if (!osrc.includes(GUARD)) {
+            bad('SG-c(反证) 【失去靶子】`deliveryLedger()` 里找不到"比合成键"那一行'
+              + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+          } else {
+            const dir = sgMkdt(sgJ(sgTmpRoot, 'mut-sgc-'))
+            sgCp(sgJ(sgRoot, 'src'), sgJ(dir, 'src'), { recursive: true, dereference: true })
+            const mf = sgJ(dir, 'src', 'modules', 'orchestrator.ts')
+            sgWf(mf, osrc.replace(GUARD,
+              'const card = snap.cards.find((c) => false && c.synthesizedExecutionId === row.executionId'), 'utf8')
+            try { sgLink(sgJ(sgRoot, 'node_modules'), sgJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+            try {
+              const mOrchMod = await import(sgP2u(sgJ(dir, 'src', 'modules', 'orchestrator.ts')).href)
+              const mBusMod = await import(sgP2u(sgJ(dir, 'src', 'modules', 'bus.ts')).href)
+              const b2 = sgMkdt(sgJ(sgTmpRoot, 'case-c2-'))
+              const home2 = sgJ(b2, 'ledgers'); const ws2 = sgJ(b2, 'ws')
+              sgMkd(sgJ(ws2, 'runtime'), { recursive: true })
+              sgMkd(sgJ(home2, sgBase(ws2), 'runtime'), { recursive: true })
+              sgWf(sgJ(home2, sgBase(ws2), 'runtime', 'orch-watches.json'),
+                JSON.stringify({ version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [] }), 'utf8')
+              const provided2 = {}
+              const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws2 }, log: [] })
+              const byId2 = new Map([['session-sg-hob', mkS('session-sg-hob')], ['session-sg-exec', mkS('session-sg-exec')]])
+              const sessions2 = { get: (id) => byId2.get(id), list: () => [...byId2.values()], flush: async () => true }
+              const agents2 = { currentInitiator: () => undefined,
+                get: (id) => (byId2.has(id) ? { id, status: 'idle', ctx: {}, session: byId2.get(id),
+                  followup() {}, steer() {}, inject() {} } : undefined) }
+              const wr2 = { list: () => [{ id: sgWS, path: ws2, title: 'sg', record: { sessionIds: [...byId2.keys()] } }],
+                sessionPaths: new Map([...byId2.keys()].map((id) => [id, ws2])) }
+              const bp2 = {}
+              const bc2 = { sessions: sessions2, agents: agents2, logger,
+                get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2
+                  : k === 'workspaceRegistry' ? wr2 : undefined),
+                provide: (k, v) => { bp2[k] = v }, effect: (f) => { try { f() } catch { /* 无落点 */ } },
+                inject: (_d, cb) => cb(bc2), on: () => {} }
+              mBusMod.apply(bc2, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+              const srv2 = sgServer((req, res) => {
+                if (String(req.url ?? '').includes('/dsh-taskboard/events') === false) { res.writeHead(404).end(); return }
+                res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+                res.write(`event: change\ndata: ${done}\n\n`)
+              })
+              await new Promise((r) => srv2.listen(0, '127.0.0.1', r))
+              try {
+                const ctx2 = { sessions: sessions2, agents: agents2, logger,
+                  get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2 : k === 'hobBus' ? bp2.hobBus
+                    : k === 'tools' ? toolsSvc
+                      : k === 'workspaceRegistry' ? wr2
+                        : k === 'webServer' ? { getOrigin: () => `http://127.0.0.1:${srv2.address().port}` }
+                          : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home2 } } }] } : undefined),
+                  provide: (k, v) => { provided2[k] = v }, effect: (f) => { try { f() } catch { /* 无落点 */ } },
+                  inject: (_d, cb) => cb(ctx2), on: () => {} }
+                mOrchMod.apply(ctx2)
+                const orch2 = provided2.hobOrchestrator
+                await orch2.wakeSubscribe('session-sg-hob')
+                await new Promise((r) => setTimeout(r, 400))
+                const led2 = await orch2.deliveryLedger()
+                if (led2.total === 0) {
+                  ok('SG-c(反证) ✓ 负向对拍：把比对改回"只比看板真 id"（= 改前那一行）⇒ '
+                    + '台账**回落到 0 条** ⇒ 渲染出来就是"确实是空的"、补投入口拿不到 id'
+                    + ' ⇒ SG-c 真长牙（它钉的正是"合成键 vs 真 id"这条键空间不同源）')
+                } else {
+                  bad('SG-c(反证) 【负向对拍失败】改回"只比真 id"之后台账**仍有 '
+                    + `${led2.total} 条** ⇒ SG-c 测的不是键空间同源`)
+                }
+              } finally { srv2.close() }
+            } catch (e) {
+              bad(`SG-c(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+            }
+          }
+        }
+      } finally { srv.close() }
+    }
+  } else {
+    bad('SG-c/c 跑不起来：orchestrator/bus 模块没加载上（不按通过处理）')
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SI · **投递前把冷目标叫活**（第 330 轮 · `TASK-M`）
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 现场形态（用户原话）：「**回执只有点了 Hob 会话，随后 Hob 才会收到**」。
+  //   ⚠ 根因（`ANSWER.md` 判定 A 已定）：`agents.get` 只是查**进程内内存 Map**
+  //     （`dsh-agent/lib/index.js:596`），冷会话不进表 ⇒ `bus.deliver` 原先**直接拒**
+  //     ⇒ 执行会话跑完时派活方通常没被打开 ⇒ 回执根本投不进去。
+  //   ⚠ 改法：`deliverImpl` 的 ① 分支不再直接拒，先经宿主
+  //     `sessionController.resolveAgent(id)` 把**这一个**目标叫起来，再查一次。
+  //   ⚠ 判据（六条，⛔ 缺一条都不算；每条配负向对拍见 SI-x）：
+  //     1 冷目标可 resume ⇒ **投递成功**（改前：`is not a live session` 拒绝）；
+  //     2 冷目标 resume 失败 ⇒ 仍拒，但话术**明说"已尝试唤醒"**（与"不存在"分开）；
+  //     3 `sessionController` 缺席 ⇒ 仍拒，话术**点明唤醒能力不可用**（⛔ 不假装成功）；
+  //     4 目标本来活着 ⇒ **仍直接投成功**，且**一次唤醒都不许做**（⛔ 不许变慢/多走一步）；
+  //     5 归档会话 ⇒ **仍拒绝**，且**唤醒一次都不许发生**（⛔ 不许被唤醒绕过）；
+  //     6 拒投给自己（模型面）⇒ **仍拒绝**，且唤醒一次都不许发生。
+  if (sgBusMod !== undefined) {
+    /**
+     * 起一个只够跑 `deliver()` 的 mock 宿主。
+     * ⚠ `sessionController` 按 `opts.controller` 现造：`undefined` = 该能力缺席。
+     * ⚠ 一切现读（`agents.get`），与 `bus.ts` 的读法一致。
+     */
+    const siMount = async (opts = {}) => {
+      const target = opts.target ?? 'session-si-cold'
+      const session = { id: target, header: { agentPreset: 'standard' }, log: [] }
+      const makeAgent = () => ({ status: 'idle', followup() {}, steer() {}, inject() {}, ctx: {}, session })
+      let live = opts.live === true ? makeAgent() : undefined
+      const sessions = {
+        get: (id) => (id === target ? session : undefined),
+        list: () => [session],
+        flush: async () => true,
+      }
+      const agents = {
+        currentInitiator: () => (opts.callerId === undefined
+          ? undefined
+          : { id: opts.callerId, session: { id: opts.callerId } }),
+        get: (id) => (id === target ? live : undefined),
+      }
+      const stats = { resolveCalls: 0, resolveIds: [] }
+      const controller = opts.controller === undefined ? undefined : {
+        resolveAgent: async (id) => {
+          stats.resolveCalls++
+          stats.resolveIds.push(id)
+          return opts.controller(id, () => { live = makeAgent() })
+        },
+      }
+      /** ⚠ 归档集：`archivedSessionIds` 是**活数据**（宿主原地改同一个数组）。 */
+      const workspaceRegistry = { archivedSessionIds: opts.archived === true ? [target] : [] }
+      const provided = {}
+      const svcCtx = {
+        sessions, agents,
+        logger: { debug() {}, warn() {}, info() {}, error() {} },
+        get: (k) => (k === 'sessions' ? sessions
+          : k === 'agents' ? agents
+            : k === 'sessionController' ? controller
+              : k === 'workspaceRegistry' ? workspaceRegistry : undefined),
+        provide: (k, v) => { provided[k] = v },
+        effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(svcCtx),
+        on: () => {},
+      }
+      const busMod = opts.busMod ?? sgBusMod
+      busMod.apply(svcCtx, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+      const bus = provided.hobBus
+      if (bus === undefined) return undefined
+      return {
+        target,
+        stats,
+        deliver: (text = 'do the work') => bus.deliver(target, text, 'followup'),
+      }
+    }
+
+    // ── SI-1 **判据 #1**：冷目标（不在表里）但**可以 resume** ⇒ 投递成功 ──
+    {
+      const h = await siMount({ controller: async (_id, setLive) => { setLive(); return { agent: {} } } })
+      if (h === undefined) {
+        bad('SI-1 服务未 provide（`hobBus` 拿不到）⇒ 断言失去基准')
+      } else {
+        const r = await h.deliver()
+        const okNow = r.ok === true
+        const woke = r.wake !== undefined && r.wake.ok === true
+        const once = h.stats.resolveCalls === 1 && h.stats.resolveIds[0] === h.target
+        if (okNow && woke && once) {
+          ok('SI-1 ✓ **判据 #1 冷目标可唤醒 ⇒ 投递成功**（改前 ⇒ `is not a live session` 拒绝）：'
+            + `ok=${r.ok} · mode=${String(r.mode)} · wake.ok=${String(r.wake?.ok)} · `
+            + `唤醒次数=${h.stats.resolveCalls}（⛔ 只叫一次、只叫这一个 id）`)
+        } else {
+          bad('SI-1 【冷目标仍然投不进去】投递没被叫活这一步救回来'
+            + `：ok=${r.ok}（应 true）· reason=${JSON.stringify(String(r.reason ?? '').slice(0, 90))}`
+            + ` · wake.ok=${String(r.wake?.ok)} · 唤醒次数=${h.stats.resolveCalls}（应 1）`
+            + ' ⇒ "回执只有点了 Hob 才会收到"这条现场症状没有被修')
+        }
+      }
+    }
+
+    // ── SI-2 **判据 #2**：resume **失败** ⇒ 仍拒，但话术**明说"已尝试唤醒"** ──
+    {
+      const cases = [
+        { tag: '(a 宿主明确报错)', controller: async () => ({ error: { message: 'session backend is closed' } }),
+          expect: 'wake was attempted but the host refused it', expectDetail: 'session backend is closed' },
+        { tag: '(b 唤醒抛错)', controller: async () => { throw new Error('resume blew up') },
+          expect: 'wake was attempted but the host refused it', expectDetail: 'resume blew up' },
+        { tag: '(c 叫完仍不是活会话)', controller: async () => ({ agent: {} }),
+          expect: 'STILL not a live agent', expectDetail: undefined },
+      ]
+      for (const c of cases) {
+        const h = await siMount({ controller: c.controller })
+        if (h === undefined) { bad(`SI-2${c.tag} 服务未 provide ⇒ 断言失去基准`); continue }
+        const r = await h.deliver()
+        const reason = String(r.reason ?? '')
+        const refused = r.ok === false
+        const namesWake = reason.includes(c.expect)
+        const keepsPrefix = reason.includes('is not a live session')
+        const detailOk = c.expectDetail === undefined ? true : reason.includes(c.expectDetail)
+        if (refused && namesWake && keepsPrefix && detailOk) {
+          ok(`SI-2${c.tag} ✓ **判据 #2 唤醒失败 ⇒ 仍拒、且话术写明"已尝试唤醒"**（与"目标不存在"分开）：`
+            + `ok=false · 档位=${String(r.wakeFailure)} · 含"${c.expect.slice(0, 30)}…" · 保留既有前缀 · `
+            + `宿主原话${c.expectDetail === undefined ? '（本例无）' : '逐字带上'}`)
+        } else {
+          bad(`SI-2${c.tag} 【唤醒失败被说成了"目标不存在"】`
+            + `：ok=${r.ok}（应 false）· 写"已尝试唤醒"=${namesWake} · 保留既有前缀=${keepsPrefix}`
+            + ` · 原话带上=${detailOk} · 档位=${String(r.wakeFailure)} · reason=${JSON.stringify(reason.slice(0, 110))}`
+            + ' ⇒ 两种原因说成同一句话，读的人会把"叫不醒"当"没这个靶"去查')
+        }
+      }
+    }
+
+    // ── SI-3 **判据 #3**：`sessionController` **缺席** ⇒ 仍拒 + 点明能力不可用 ──
+    {
+      const h = await siMount({ controller: undefined })
+      if (h === undefined) {
+        bad('SI-3 服务未 provide ⇒ 断言失去基准')
+      } else {
+        const r = await h.deliver()
+        const reason = String(r.reason ?? '')
+        const unavailable = reason.includes('wake capability is unavailable')
+        const refused = r.ok === false
+        const noFake = !/delivered/i.test(reason)
+        if (refused && unavailable && noFake && r.wakeFailure === 'unavailable') {
+          ok('SI-3 ✓ **判据 #3 唤醒能力缺席 ⇒ 明确拒 + 点明"唤醒能力不可用"**'
+            + '（⛔ 不假装成功、⛔ 不退化成"目标不存在"）：'
+            + `ok=false · 档位=${String(r.wakeFailure)} · 话里有"wake capability is unavailable"`)
+        } else {
+          bad('SI-3 【能力缺席时话术不对】'
+            + `：ok=${r.ok}（应 false）· 点明不可用=${unavailable} · 没有假成功字样=${noFake}`
+            + ` · 档位=${String(r.wakeFailure)} · reason=${JSON.stringify(reason.slice(0, 110))}`)
+        }
+      }
+    }
+
+    // ── SI-4 **判据 #4 反向对照**：目标本来活着 ⇒ 直接投成功，**一次唤醒都不做** ──
+    //   ⚠ 这一条是"没把常见路径弄慢"的唯一证据：少了它，把唤醒写成无条件调用也能过 SI-1。
+    {
+      const h = await siMount({ live: true, controller: async (_id, setLive) => { setLive(); return { agent: {} } } })
+      if (h === undefined) {
+        bad('SI-4 服务未 provide ⇒ 断言失去基准')
+      } else {
+        const r = await h.deliver()
+        const okNow = r.ok === true
+        const noWake = r.wake === undefined && r.wakeFailure === undefined
+        const noCall = h.stats.resolveCalls === 0
+        if (okNow && noWake && noCall) {
+          ok('SI-4 ✓ **判据 #4 反向对照：目标本来活着 ⇒ 仍直接投成功，且唤醒一次都没做**'
+            + `：ok=true · 返回值无 wake 字段=${noWake} · 唤醒次数=${h.stats.resolveCalls}（应 0）`
+            + ' ⇒ 常见路径没有被这一改多走一步、⛔ 没有变慢')
+        } else {
+          bad('SI-4 【常见路径被误伤】目标本来就是活的时候还去叫了一次 / 返回值被塞了唤醒字段'
+            + `：ok=${r.ok} · 无 wake 字段=${noWake} · 唤醒次数=${h.stats.resolveCalls}（应 0）`)
+        }
+      }
+    }
+
+    // ── SI-5 **判据 #5**：归档会话 ⇒ 仍拒绝，且**唤醒一次都不许发生** ──
+    {
+      const h = await siMount({ archived: true, controller: async (_id, setLive) => { setLive(); return { agent: {} } } })
+      if (h === undefined) {
+        bad('SI-5 服务未 provide ⇒ 断言失去基准')
+      } else {
+        const r = await h.deliver()
+        const reason = String(r.reason ?? '')
+        const refused = r.ok === false
+        const saysArchived = reason.includes('is archived')
+        const noWake = h.stats.resolveCalls === 0
+        if (refused && saysArchived && noWake) {
+          ok('SI-5 ✓ **判据 #5 归档会话仍拒绝，且唤醒一次都没发生**：'
+            + `ok=false · 话里点名归档=${saysArchived} · 唤醒次数=${h.stats.resolveCalls}（应 0）`
+            + ' ⇒ 唤醒**无法绕过**归档门禁（放了它也只是白烧 token、活永远不发生）')
+        } else {
+          bad('SI-5 【唤醒把归档门禁绕过去了】'
+            + `：ok=${r.ok}（应 false）· 点名归档=${saysArchived} · 唤醒次数=${h.stats.resolveCalls}（应 0）`)
+        }
+      }
+    }
+
+    // ── SI-6 **判据 #6**：拒投给自己（模型面）⇒ 仍拒绝，且唤醒不发生 ──
+    {
+      const h = await siMount({ callerId: 'session-si-cold', controller: async (_id, setLive) => { setLive(); return { agent: {} } } })
+      if (h === undefined) {
+        bad('SI-6 服务未 provide ⇒ 断言失去基准')
+      } else {
+        const r = await h.deliver()
+        const reason = String(r.reason ?? '')
+        const refused = r.ok === false
+        const saysSelf = reason.includes('refusing to deliver to this session itself')
+        const noWake = h.stats.resolveCalls === 0
+        if (refused && saysSelf && noWake) {
+          ok('SI-6 ✓ **判据 #6 模型面"拒投给自己"照旧生效，且唤醒一次都没发生**：'
+            + `ok=false · 话里点名自投=${saysSelf} · 唤醒次数=${h.stats.resolveCalls}（应 0）`
+            + ' ⇒ 那道守卫的语义**一个字未改**（⛔ 也没被唤醒这一步绕开）')
+        } else {
+          bad('SI-6 【自投守卫被削弱】'
+            + `：ok=${r.ok}（应 false）· 点名自投=${saysSelf} · 唤醒次数=${h.stats.resolveCalls}（应 0）`)
+        }
+      }
+    }
+
+    // ── SI-x **负向对拍**：把"叫活"那一步摘掉 ⇒ SI-1 必须**不成立** ──
+    //   ⚠ 变异只落在**临时副本**（⛔ 不碰工作区源码一个字节），同 SC/SD/SE/SG 的纪律。
+    {
+      const BUS = sgJ(sgRoot, 'src', 'modules', 'bus.ts')
+      const original = sgRf(BUS, 'utf8')
+      const GUARD = '          wake = await wakeTarget(sessionId)'
+      if (original.includes(GUARD) === false) {
+        bad('SI-x(反证) 【失去靶子】在 `bus.ts` 里找不到"调用唤醒"那一行'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const dir = sgMkdt(sgJ(sgTmpRoot, 'mut-si-'))
+        sgCp(sgJ(sgRoot, 'src'), sgJ(dir, 'src'), { recursive: true, dereference: true })
+        const mf = sgJ(dir, 'src', 'modules', 'bus.ts')
+        /**
+         * ⚠ 变异形态：把"真的去叫"换成"记成能力不可用" ⇒ 等价于**改前**那条路
+         *   （`agents.get` 空 ⇒ 直接拒，从不调用任何唤醒）。
+         *   ⚠ 为什么不能只删那一行：后面 `wake.failure` 会读到 `undefined` 而崩
+         *     （首跑实测踩到：变异体跑不起来 ⇒ 对拍无读数）。变异必须**可跑**才算对拍。
+         */
+        sgWf(mf, original.replace(GUARD,
+          "          wake = { ok: false, failure: 'unavailable', detail: 'mutated: no wake' } /* 变异：改回直接拒 */"), 'utf8')
+        try { sgLink(sgJ(sgRoot, 'node_modules'), sgJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try {
+          const mBus = await import(sgP2u(sgJ(dir, 'src', 'modules', 'bus.ts')).href)
+          const h = await siMount({ controller: async (_id, setLive) => { setLive(); return { agent: {} } }, busMod: mBus })
+          if (h === undefined) {
+            bad('SI-x(反证) 变异体没 provide `hobBus` ⇒ 对拍失去基准')
+          } else {
+            const r = await h.deliver()
+            const stillRefused = r.ok === false && String(r.reason ?? '').includes('is not a live session')
+            const neverWoke = h.stats.resolveCalls === 0
+            if (stillRefused && neverWoke) {
+              ok('SI-x(反证) ✓ 负向对拍：把"叫活"那一步摘掉 ⇒ **冷目标又回到直接拒**'
+                + `（ok=${r.ok} · 唤醒次数=${h.stats.resolveCalls}）`
+                + ' ⇒ SI-1 钉的确实是"投之前先叫人起来"这件事，不是别的东西')
+            } else {
+              bad('SI-x(反证) 【负向对拍失败】摘掉唤醒之后冷目标**仍然投成功**'
+                + `：ok=${r.ok} · 唤醒次数=${h.stats.resolveCalls}`
+                + ' ⇒ SI-1 测的不是唤醒这一步')
+            }
+          }
+        } catch (e) {
+          bad(`SI-x(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        }
+      }
+    }
+
+    // ── SI-y **负向对拍 · 话术分档**：把 wakeReasonOf 退回改前那一句 ⇒ SI-2 / SI-3 必须红 ──
+    //   ⚠ 少了这一块，"把三档话术都写成同一句旧话"也能过 SI-x（那条只测"有没有去叫"）。
+    {
+      const BUS = sgJ(sgRoot, 'src', 'modules', 'bus.ts')
+      const original = sgRf(BUS, 'utf8')
+      const GUARD = "      switch (wake.failure) {"
+      if (original.includes(GUARD) === false) {
+        bad('SI-y(反证) 【失去靶子】在 `bus.ts` 里找不到 `wakeReasonOf` 的分档 switch'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const dir = sgMkdt(sgJ(sgTmpRoot, 'mut-siy-'))
+        sgCp(sgJ(sgRoot, 'src'), sgJ(dir, 'src'), { recursive: true, dereference: true })
+        const mf = sgJ(dir, 'src', 'modules', 'bus.ts')
+        // ⚠ 变异形态：**保留**唤醒调用，只把分档话术退回"目标不存在"那一句（= 改前唯一的说法）。
+        sgWf(mf, original.replace(GUARD,
+          "      if (wake.failure !== undefined) return base + tail\n      switch (wake.failure) {"), 'utf8')
+        try { sgLink(sgJ(sgRoot, 'node_modules'), sgJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try {
+          const mBus = await import(sgP2u(sgJ(dir, 'src', 'modules', 'bus.ts')).href)
+          const m1 = await siMount({ busMod: mBus, controller: async () => ({ error: { message: 'backend closed' } }) })
+          const m2 = await siMount({ busMod: mBus, controller: undefined })
+          if (m1 === undefined || m2 === undefined) {
+            bad('SI-y(反证) 变异体没 provide `hobBus` ⇒ 对拍失去基准')
+          } else {
+            const r1 = await m1.deliver()
+            const r2 = await m2.deliver()
+            const s1 = String(r1.reason ?? '')
+            const s2 = String(r2.reason ?? '')
+            const bothOld = s1.includes('wake was attempted') === false
+              && s2.includes('wake capability is unavailable') === false
+              && s1.includes('is not a live session') && s2.includes('is not a live session')
+            if (bothOld) {
+              ok('SI-y(反证) ✓ 负向对拍：把 `wakeReasonOf` 的分档退回改前那一句 ⇒ '
+                + '**SI-2 / SI-3 同时不成立**（两档又合成"目标不存在"一句话，宿主原话与'
+                + '"能力不可用"全被吞掉）⇒ 那两条判据钉的确实是"两种原因要分开说"')
+            } else {
+              bad('SI-y(反证) 【负向对拍失败】退回单一话术之后仍然分得清档位'
+                + `：唤醒失败话=${JSON.stringify(s1.slice(0, 80))} · 能力缺席话=${JSON.stringify(s2.slice(0, 80))}`)
+            }
+          }
+        } catch (e) {
+          bad(`SI-y(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        }
+      }
+    }
+
+    // ── SI-z **负向对拍 · 归档门禁**：把归档那道检查摘掉 ⇒ SI-5 必须红（且唤醒真的发生）──
+    //   ⚠ 这一条防的是"改造时把 ⓪ 归档检查挪到唤醒之后"——那样归档会话会被叫起来，
+    //     白烧一次装配与 token，而执行仍被 `agent/pre-step` 挡下（= 用户最恨的静默失败）。
+    {
+      const BUS = sgJ(sgRoot, 'src', 'modules', 'bus.ts')
+      const original = sgRf(BUS, 'utf8')
+      const GUARD = "        if (isArchived(sessionId)) {"
+      if (original.includes(GUARD) === false) {
+        bad('SI-z(反证) 【失去靶子】在 `bus.ts` 里找不到归档检查那一行'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const dir = sgMkdt(sgJ(sgTmpRoot, 'mut-siz-'))
+        sgCp(sgJ(sgRoot, 'src'), sgJ(dir, 'src'), { recursive: true, dereference: true })
+        const mf = sgJ(dir, 'src', 'modules', 'bus.ts')
+        sgWf(mf, original.replace(GUARD, "        if (false && isArchived(sessionId)) {"), 'utf8')
+        try { sgLink(sgJ(sgRoot, 'node_modules'), sgJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try {
+          const mBus = await import(sgP2u(sgJ(dir, 'src', 'modules', 'bus.ts')).href)
+          const h = await siMount({ busMod: mBus, archived: true,
+            controller: async (_id, setLive) => { setLive(); return { agent: {} } } })
+          if (h === undefined) {
+            bad('SI-z(反证) 变异体没 provide `hobBus` ⇒ 对拍失去基准')
+          } else {
+            const r = await h.deliver()
+            const becameLive = r.ok === true
+            const woke = h.stats.resolveCalls > 0
+            if (becameLive && woke) {
+              ok('SI-z(反证) ✓ 负向对拍：摘掉归档那道检查 ⇒ **归档会话被唤醒并投成功**'
+                + `（ok=${r.ok} · 唤醒次数=${h.stats.resolveCalls}）`
+                + ' ⇒ SI-5 钉的确实是"唤醒不许绕过归档门禁"')
+            } else {
+              bad('SI-z(反证) 【负向对拍失败】摘掉归档检查之后归档会话仍然投不进去'
+                + `：ok=${r.ok} · 唤醒次数=${h.stats.resolveCalls}`
+                + ' ⇒ SI-5 测的不是归档门禁本身')
+            }
+          }
+        } catch (e) {
+          bad(`SI-z(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        }
+      }
+    }
+    // ── SI-w **负向对拍 · 常见路径**：把唤醒改成**无条件**调用 ⇒ SI-4 必须红 ──
+    //   ⚠ 少了这一块，"每次投递都顺手叫一次活"也能过 SI-1（那条只测冷目标能投进去）。
+    //    而那样的后果正是作业书 §二-2 点名要防的：把**有代价的动作**加到最热的路径上。
+    {
+      const BUS = sgJ(sgRoot, 'src', 'modules', 'bus.ts')
+      const original = sgRf(BUS, 'utf8')
+      const GUARD = '        if (agent === undefined) {'
+      if (original.includes(GUARD) === false) {
+        bad('SI-w(反证) 【失去靶子】在 `bus.ts` 里找不到 `if (agent === undefined) {` 那一行'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const dir = sgMkdt(sgJ(sgTmpRoot, 'mut-siw-'))
+        sgCp(sgJ(sgRoot, 'src'), sgJ(dir, 'src'), { recursive: true, dereference: true })
+        const mf = sgJ(dir, 'src', 'modules', 'bus.ts')
+        // ⚠ 变异形态：**无条件**进唤醒分支（活目标也去叫一次）⇒ 常见路径多走一步 + 返回值被塞 wake。
+        sgWf(mf, original.replace(GUARD, '        if (agent === undefined || true) {'), 'utf8')
+        try { sgLink(sgJ(sgRoot, 'node_modules'), sgJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try {
+          const mBus = await import(sgP2u(sgJ(dir, 'src', 'modules', 'bus.ts')).href)
+          const h = await siMount({ busMod: mBus, live: true,
+            controller: async (_id, setLive) => { setLive(); return { agent: {} } } })
+          if (h === undefined) {
+            bad('SI-w(反证) 变异体没 provide `hobBus` ⇒ 对拍失去基准')
+          } else {
+            const r = await h.deliver()
+            const stillOk = r.ok === true
+            const wokeAnyway = h.stats.resolveCalls > 0 || r.wake !== undefined
+            if (stillOk && wokeAnyway) {
+              ok('SI-w(反证) ✓ 负向对拍：把唤醒改成**无条件** ⇒ 活目标也被叫了一次'
+                + `（唤醒次数=${h.stats.resolveCalls} · 返回值带 wake=${r.wake !== undefined}）`
+                + ' ⇒ SI-4 钉的确实是"常见路径不许多走一步"')
+            } else {
+              bad('SI-w(反证) 【负向对拍失败】无条件唤醒之后活目标那条路**没有**被多叫一次'
+                + `（ok=${r.ok} · 唤醒次数=${h.stats.resolveCalls} · 带 wake=${r.wake !== undefined}）`
+                + ' ⇒ SI-4 测的不是"常见路径有没有多走一步"')
+            }
+          }
+        } catch (e) {
+          bad(`SI-w(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        }
+      }
+    }
+
+    // ── SI-v **负向对拍 · 自投守卫**：把"拒投给自己"摘掉 ⇒ SI-6 必须红 ──
+    //   ⚠ 防的是"改造时把守卫挪到唤醒之后"——那样模型面自投会先被叫活再投进去，
+    //     即用户最担心的自唤醒死循环（守卫的语义是**一个字不改**）。
+    {
+      const BUS = sgJ(sgRoot, 'src', 'modules', 'bus.ts')
+      const original = sgRf(BUS, 'utf8')
+      const GUARD = "        if (skipSelfGuard !== true && typeof callerId === 'string' && sessionId === callerId) {"
+      if (original.includes(GUARD) === false) {
+        bad('SI-v(反证) 【失去靶子】在 `bus.ts` 里找不到"拒投给自己"那一行'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const dir = sgMkdt(sgJ(sgTmpRoot, 'mut-siv-'))
+        sgCp(sgJ(sgRoot, 'src'), sgJ(dir, 'src'), { recursive: true, dereference: true })
+        const mf = sgJ(dir, 'src', 'modules', 'bus.ts')
+        sgWf(mf, original.replace(GUARD,
+          "        if (false && skipSelfGuard !== true && typeof callerId === 'string' && sessionId === callerId) {"),
+        'utf8')
+        try { sgLink(sgJ(sgRoot, 'node_modules'), sgJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try {
+          const mBus = await import(sgP2u(sgJ(dir, 'src', 'modules', 'bus.ts')).href)
+          const h = await siMount({ busMod: mBus, callerId: 'session-si-cold',
+            controller: async (_id, setLive) => { setLive(); return { agent: {} } } })
+          if (h === undefined) {
+            bad('SI-v(反证) 变异体没 provide `hobBus` ⇒ 对拍失去基准')
+          } else {
+            const r = await h.deliver()
+            const deliveredToSelf = r.ok === true
+            const wokeId = h.stats.resolveIds[0] === h.target
+            if (deliveredToSelf && wokeId) {
+              ok('SI-v(反证) ✓ 负向对拍：摘掉"拒投给自己" ⇒ **模型面自投被唤醒并投进了自己**'
+                + `（ok=${r.ok} · 唤醒的就是 ${String(h.stats.resolveIds[0])}）`
+                + ' ⇒ SI-6 钉的确实是那道守卫没被唤醒这一步绕开')
+            } else {
+              bad('SI-v(反证) 【负向对拍失败】摘掉自投守卫之后仍然没投给自己'
+                + `（ok=${r.ok} · 唤醒 id=${String(h.stats.resolveIds[0])}）`
+                + ' ⇒ SI-6 测的不是自投守卫本身')
+            }
+          }
+        } catch (e) {
+          bad(`SI-v(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        }
+      }
+    }
+  } else {
+    bad('SI 组跑不起来：bus 模块没加载上（不按通过处理）')
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SH · **头行三档：三种原因各有各的话**（第 323 轮 · `TASK-I`）
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 现场形态（第 322 轮 `AFTER-RESTART.md` §5.A 实证）：
+  //     卡 `t-mvgb2v48-j6tx4o` 22:36:15 **真点过火**、`归属判不出` 11→12，
+  //     而头行**照样**打 `⚠ 还没接上（未收到过点火帧）` —— **那半句是假的**。
+  //   ⚠ 机理：头行改前只有 `pushedRegisterOk > 0 ? 已接上 : 还没接上（未收到过点火帧）`。
+  //     而"还没接上"至少三条成因，**其中两条根本没有帧**。把 ② 说成 ①
+  //     ⇒ 读的人会去查"为什么没有帧"，而真正该查的是**准入那两道**
+  //     ⇒ 本项目头号禁忌：**两种原因说成同一句话**。
+  //   ⚠ 判据（⚠ 三种情形**各一条**，⛔ 只钉"不再说假话"不算完成 —— 要钉"说对了是哪一种"）：
+  //     ① 一帧都没收到过 ⇒ 头行**必须**说"一帧都没收到过"；
+  //     ② 收到帧 + 被准入拦下 + 一次没成功 ⇒ 头行**必须**说"收到过"且**点名被哪道准入拦下**，
+  //        且**不许**出现"未收到过点火帧"/"一帧都没收到过"；
+  //     ③ 已接上 ⇒ 头行照旧"已接上"。
+  //   ⚠ 三条 `(反证)`：把对应实现摘掉 ⇒ 各自必须**不成立**（否则断言没有牙）。
+  if (sgOrchMod !== undefined && sgBusMod !== undefined) {
+    /**
+     * ⚠ 三个情形共用一个挂载器：差别只在**看板推哪一帧**与**卡的归属形状**。
+     *   ⚠ 与 `SG-b` 的 `sgMount` **不共用**（那一份写死了"帧就是点火帧"，
+     *     而本组第 ① 种要的恰恰是"**一帧都不推**"）。
+     */
+    const shMount = async (opts = {}) => {
+      const base = sgMkdt(sgJ(sgTmpRoot, 'case-h-'))
+      const home = sgJ(base, 'ledgers'); const ws = sgJ(base, 'ws')
+      sgMkd(sgJ(ws, 'runtime'), { recursive: true })
+      sgMkd(sgJ(home, sgBase(ws), 'runtime'), { recursive: true })
+      sgWf(sgJ(home, sgBase(ws), 'runtime', 'orch-watches.json'),
+        JSON.stringify({ version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [] }), 'utf8')
+      const card = opts.card
+      const registry = new Map([
+        ['taskboard_get', { name: 'taskboard_get', execute: async (a) => (a?.id === card.id ? { task: card } : {}) }],
+        ['taskboard_list', { name: 'taskboard_list', execute: async () => ({ revision: 1, tasks: [card] }) }],
+      ])
+      const toolsSvc = { get: (n) => registry.get(n) }
+      const mkSession = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+      const byId = new Map([['session-sh-hob', mkSession('session-sh-hob')],
+        [opts.execId ?? 'session-sh-exec', mkSession(opts.execId ?? 'session-sh-exec')]])
+      const sessions = { get: (id) => byId.get(id), list: () => [...byId.values()], flush: async () => true }
+      const agents = { currentInitiator: () => undefined,
+        get: (id) => (byId.has(id) ? { id, status: 'idle', ctx: {}, session: byId.get(id),
+          followup() {}, steer() {}, inject() {} } : undefined) }
+      /** ⚠ 本组的假 logger（`sgMount` 那份在它自己的作用域里，⛔ 不能跨函数借用）。 */
+      const logger = { debug() {}, info() {}, warn() {} }
+      const workspaceRegistry = {
+        list: () => [{ id: sgWS, path: ws, title: 'sh', record: { sessionIds: [...byId.keys()] } }],
+        sessionPaths: new Map([...byId.keys()].map((id) => [id, ws])),
+      }
+      const busProvided = {}
+      const busCtx = { sessions, agents, logger,
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+          : k === 'workspaceRegistry' ? workspaceRegistry : undefined),
+        provide: (k, v) => { busProvided[k] = v }, effect: (f) => { try { f() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(busCtx), on: () => {} }
+      sgBusMod.apply(busCtx, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+      const bus = busProvided.hobBus
+      const provided = {}
+      const ctx = { sessions, agents, logger,
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : k === 'hobBus' ? bus
+          : k === 'tools' ? toolsSvc
+            : k === 'workspaceRegistry' ? workspaceRegistry
+              : k === 'webServer' ? { getOrigin: () => opts.origin }
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+        provide: (k, v) => { provided[k] = v }, effect: (f) => { try { f() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(ctx), on: () => {} }
+      const orchMod = opts.orchMod ?? sgOrchMod
+      orchMod.apply(ctx)
+      const orch = provided.hobOrchestrator
+      const tools = (opts.orchMod ?? sgOrchMod).createHobOrchTools(orch)
+      const render = async () => String(await tools.status.execute({}, {
+        agent: { id: 'session-sh-hob', session: { header: { cwd: ws } } },
+      }))
+      return { orch, ws, home, render }
+    }
+    /** 造一个假看板 SSE：连上就把 `frames` 逐条推出去（`[]` ⇒ 只开连接、**不推任何帧**）。 */
+    const shServe = async (frames) => {
+      const srv = sgServer((req, res) => {
+        if (String(req.url ?? '').includes('/dsh-taskboard/events') === false) { res.writeHead(404).end(); return }
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+        for (const f of frames) res.write(`event: change\ndata: ${f}\n\n`)
+      })
+      await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+      return { srv, origin: `http://127.0.0.1:${srv.address().port}` }
+    }
+    const shFiring = (card) => JSON.stringify({ revision: 1, kind: 'execution-recorded',
+      tasks: [{ id: card.id, title: card.title, status: 'in_progress', workspaceId: sgWS,
+        version: 6, lastExecutionOutcome: 'running' }] })
+    const shUntil = async (fn, ms = 900) => {
+      const t0 = Date.now()
+      while (Date.now() - t0 < ms) { if (fn()) return true; await new Promise((r) => setTimeout(r, 10)) }
+      return fn()
+    }
+    const shHead = (rendered) => rendered.split('\n').find((l) => l.includes('实施会话叫醒面')) ?? ''
+    /** ⚠ 改前那句假话的两种写法（两种都算"说了没帧"）。 */
+    const shSaysNoFrame = (head) => head.includes('未收到过点火帧') || head.includes('一帧都没收到过')
+
+    // ── 情形 ①：**一帧都没收到过** ⇒ 头行必须说"一帧都没收到过" ──────────────
+    {
+      const card = { id: 't-sh-none', title: 'SH 无帧卡', status: 'in_progress', workspaceId: sgWS,
+        version: 1, createdBy: { kind: 'user', sessionId: 'session-sh-hob' }, comments: [],
+        executions: [{ id: 'e-sh-none', outcome: 'running', startedAt: 1, sessionId: 'session-sh-exec' }] }
+      const { srv, origin } = await shServe([])   // ⚠ **一帧都不推**
+      try {
+        const h = await shMount({ card, origin })
+        await h.orch.wakeSubscribe('session-sh-hob')
+        await new Promise((r) => setTimeout(r, 300))
+        const d = h.orch.dispatchWakeState('session-sh-hob')
+        const head = shHead(await h.render())
+        /**
+         * ⚠ 判据三件：① `firingSeen === 0`（确实没帧）；② 头行**说"一帧都没收到过"**；
+         *   ③ 头行**不**说"已接上"（那会是另一种假话）。
+         */
+        const noFrameSaid = head.includes('一帧都没收到过')
+        const notWired = head.includes('已接上') === false
+        if (d.firingSeen === 0 && noFrameSaid && notWired) {
+          ok('SH-a ✓ **第 ① 档（一帧都没收到过）说对了**：'
+            + `\`firingSeen=0\` ⇒ 头行 = ${JSON.stringify(head.slice(0, 76))}`
+            + ' —— 说"一帧都没收到过"、且⛔ 不谎报"已接上"' + sgTag)
+        } else {
+          bad('SH-a 【第 ① 档没说对】一帧都没收到时，头行没有如实地说是"没收到过帧"'
+            + `：firingSeen=${d.firingSeen}（应 0）· 说了"一帧都没收到过"=${noFrameSaid}`
+            + ` · 没说"已接上"=${notWired} · 头行=${JSON.stringify(head.slice(0, 130))}`)
+        }
+      } finally { srv.close() }
+    }
+
+    // ── 情形 ②：**收到帧 + 被准入拦下 + 一次没成功** ⇒ 必须说"收到了但没登记成功" ──
+    //   ⚠ 用 `selfExecuted` 那道准入来构造（执行会话 = 建卡人自己 = 本机常态）。
+    {
+      const card = { id: 't-sh-blocked', title: 'SH 被拦卡', status: 'in_progress', workspaceId: sgWS,
+        version: 1, createdBy: { kind: 'user', sessionId: 'session-sh-hob' }, comments: [],
+        // ⚠ 执行会话 = 建卡会话本身 ⇒ 必被 `selfExecuted` 拦下
+        executions: [{ id: 'e-sh-blocked', outcome: 'running', startedAt: 1, sessionId: 'session-sh-hob' }] }
+      const { srv, origin } = await shServe([shFiring(card)])
+      try {
+        const h = await shMount({ card, origin, execId: 'session-sh-hob' })
+        await h.orch.wakeSubscribe('session-sh-hob')
+        await shUntil(() => h.orch.dispatchWakeState('session-sh-hob').firingSeen > 0)
+        await new Promise((r) => setTimeout(r, 250))
+        const d = h.orch.dispatchWakeState('session-sh-hob')
+        const rendered = await h.render()
+        const head = shHead(rendered)
+        /**
+         * ⚠ 判据（这是本件的核心格，缺一条都不算完成）：
+         *   ① 帧**确实到过**（`firingSeen > 0`）；
+         *   ② 登记**确实没成功**（`pushedRegisterOk === 0`）；
+         *   ③ 头行**不说那半句假话**（"未收到过点火帧"/"一帧都没收到过"）；
+         *   ④ 头行**说清了**"收到过帧、但一次都没登记成功"；
+         *   ⑤ **点名了被哪道准入拦下**（`selfExecuted`）；
+         *   ⑥ 且**没有放宽准入**：登记数仍为 0（`registered === 0`）。
+         */
+        const frameSeen = d.firingSeen > 0
+        const notRegistered = d.pushedRegisterOk === 0
+        const noLying = shSaysNoFrame(head) === false
+        const saysReceived = head.includes('收到过点火帧') && head.includes('登记成功')
+        const namesGate = rendered.includes('selfExecuted') || rendered.includes('执行会话就是建卡会话本身')
+        const gateStillOn = d.registered === 0
+        if (frameSeen && notRegistered && noLying && saysReceived && namesGate && gateStillOn) {
+          ok('SH-b ✓ **第 ② 档（收到帧但没登记成功）说对了、且不再说假话**：'
+            + `\`firingSeen=${d.firingSeen}\` · \`pushedRegisterOk=0\` ⇒ 头行 = ${JSON.stringify(head.slice(0, 76))}`
+            + ' —— ⛔ 不再出现"未收到过点火帧"（改前那一句），'
+            + '且**点名了被哪道准入拦下**（`selfExecuted`）· 准入未被放宽（`registered=0`）' + sgTag)
+        } else {
+          bad('SH-b 【第 ② 档没说对 / 仍在说假话】收到帧但被准入拦下时，头行没有说清"收到了但没登记成功"'
+            + `：firingSeen=${d.firingSeen}（应 > 0）· pushedRegisterOk=${d.pushedRegisterOk}（应 0）`
+            + ` · 没说假话=${noLying} · 说清了"收到过但没登记成功"=${saysReceived}`
+            + ` · 点名了准入=${namesGate} · 准入仍生效=${gateStillOn}（registered=${d.registered}）`
+            + ` · 头行=${JSON.stringify(head.slice(0, 150))}`)
+        }
+      } finally { srv.close() }
+    }
+
+    // ── 情形 ③：**已接上** ⇒ 头行照旧"已接上" ────────────────────────────────
+    {
+      const card = { id: 't-sh-wired', title: 'SH 接上卡', status: 'in_progress', workspaceId: sgWS,
+        version: 1, createdBy: { kind: 'user', sessionId: 'session-sh-hob' }, comments: [],
+        // ⚠ 执行会话 ≠ 建卡人 ⇒ 过得了两道准入 ⇒ 真登记成功
+        executions: [{ id: 'e-sh-wired', outcome: 'running', startedAt: 1, sessionId: 'session-sh-exec' }] }
+      const { srv, origin } = await shServe([shFiring(card)])
+      try {
+        const h = await shMount({ card, origin })
+        await h.orch.wakeSubscribe('session-sh-hob')
+        await shUntil(() => h.orch.dispatchWakeState('session-sh-hob').pushedRegisterOk > 0)
+        const d = h.orch.dispatchWakeState('session-sh-hob')
+        const head = shHead(await h.render())
+        /**
+         * ⚠ 判据：① 登记成功 > 0；② 头行说"已接上"；
+         *   ③ **不许**同时说"收到过…但一次都没登记成功"或"未收到过点火帧"（两句话打架）。
+         */
+        const wired = head.includes('已接上')
+        const noContradiction = !head.includes('一次都没走到')
+        if (d.pushedRegisterOk > 0 && wired && noContradiction) {
+          ok('SH-c ✓ **第 ③ 档（已接上）说对了**：'
+            + `\`pushedRegisterOk=${d.pushedRegisterOk}\` ⇒ 头行 = ${JSON.stringify(head.slice(0, 76))}`
+            + ' —— 说"已接上"、且⛔ 没有同时说"一次都没登记成功"' + sgTag)
+        } else {
+          bad('SH-c 【第 ③ 档没说对】登记成功之后头行没有如实说"已接上"'
+            + `：pushedRegisterOk=${d.pushedRegisterOk}（应 > 0）· 说"已接上"=${wired}`
+            + ` · 无自相矛盾=${noContradiction} · 头行=${JSON.stringify(head.slice(0, 130))}`)
+        }
+      } finally { srv.close() }
+    }
+
+    /**
+     * ── 三条负向对拍（⚠ 每条都要**真的把对应实现摘掉**，⛔ 不许只做文本替换而不挂载）──
+     *   ⚠ 三条共用一份**变异源码树**，但各自摘掉不同的一段：
+     *     · `(反证)-a`：把"三档"改回**改前那一句二值** ⇒ SH-b 必须不成立（又说假话）；
+     *     · `(反证)-b`：摘掉 `noteFiringSeen` 的调用 ⇒ SH-b 的"收到过帧"前提消失（落回第 ① 档）⇒ 必须不成立；
+     *     · `(反证)-c`：摘掉 `noteFiredBlocked` 的调用 ⇒ 头行**说不出被哪道准入拦下** ⇒ SH-b 必须不成立。
+     *   ⚠ 为什么 -a 与 -b/-c 都要：-a 钉的是"**拆档这件事本身**"，
+     *     -b/-c 钉的是"**两档数据来源真的接上了**" —— 少了 -b/-c，
+     *     把 `noteFiringSeen` 删掉也照样能绿（那就是没有牙的绿）。
+     */
+    {
+      const OJ = sgJ(sgRoot, 'src', 'modules', 'orchestrator.ts')
+      const osrc = sgRf(OJ, 'utf8')
+      const HEAD_THREE = "const headState = wired"
+      const FIRE_CALL = 'dispatchWake.noteFiringSeen(cardId, subscriber)'
+      const BLOCK_CALL = 'dispatchWake.noteFiredBlocked('
+      // 卡 A：会被准入拦下（selfExecuted）；卡 B：能真登记成功
+      const cardBlocked = { id: 't-sh-m-blocked', title: 'SH 变异被拦卡', status: 'in_progress', workspaceId: sgWS,
+        version: 1, createdBy: { kind: 'user', sessionId: 'session-sh-hob' }, comments: [],
+        executions: [{ id: 'e-sh-m-blocked', outcome: 'running', startedAt: 1, sessionId: 'session-sh-hob' }] }
+      const runMutant = async (label, mutate, card, execId) => {
+        const dir = sgMkdt(sgJ(sgTmpRoot, 'mut-sh-'))
+        sgCp(sgJ(sgRoot, 'src'), sgJ(dir, 'src'), { recursive: true, dereference: true })
+        const mf = sgJ(dir, 'src', 'modules', 'orchestrator.ts')
+        const mutated = mutate(osrc)
+        if (mutated === osrc) {
+          bad(`SH-(${label}) 【失去靶子】变异没改到任何字节 ⇒ 本负向对拍已对不上实现，不按通过处理`)
+          return null
+        }
+        sgWf(mf, mutated, 'utf8')
+        try { sgLink(sgJ(sgRoot, 'node_modules'), sgJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try {
+          const mOrchMod = await import(sgP2u(mf).href)
+          const mBusMod = await import(sgP2u(sgJ(dir, 'src', 'modules', 'bus.ts')).href)
+          const { srv, origin } = await shServe([shFiring(card)])
+          try {
+            const h = await shMount({ card, origin, execId, orchMod: mOrchMod })
+            await h.orch.wakeSubscribe('session-sh-hob')
+            await shUntil(() => h.orch.dispatchWakeState('session-sh-hob').firingSeen > 0
+              || h.orch.dispatchWakeState('session-sh-hob').pushedRegisterOk > 0)
+            await new Promise((r) => setTimeout(r, 300))
+            const d = h.orch.dispatchWakeState('session-sh-hob')
+            return { d, rendered: await h.render() }
+          } finally { srv.close() }
+        } catch (e) {
+          bad(`SH-(${label}) 变异体跑不起来（${String(e?.message ?? e)}）`)
+          return null
+        }
+      }
+      // ── (反证)-a：把三档改回改前那一句二值 ──────────────────────────────
+      if (!osrc.includes(HEAD_THREE)) {
+        bad('SH-(反证a) 【失去靶子】`orchestrator.ts` 里找不到 `const headState = wired`'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const r = await runMutant('反证a', (src) => src.replace(
+          /const headState = wired\s*\n[\s\S]*?: '⚠ \*\*还没接上（一帧都没收到过）\*\*'/,
+          "const headState = wired ? '✅ **已接上（按推送现读）**' : '⚠ **还没接上（未收到过点火帧）**'",
+        ), cardBlocked, 'session-sh-hob')
+        if (r !== null) {
+          const head = shHead(r.rendered)
+          const lyingAgain = shSaysNoFrame(head)
+          if (lyingAgain) {
+            ok('SH-(反证a) ✓ 负向对拍：把三档**改回改前那一句二值** ⇒ '
+              + `头行**又说回假话**（${JSON.stringify(head.slice(0, 70))}），`
+              + '而帧确实到过（`firingSeen=' + String(r.d.firingSeen) + '`）'
+              + ' ⇒ SH-b 真长牙（它钉的正是"不许把两种原因说成同一句话"）')
+          } else {
+            bad('SH-(反证a) 【负向对拍失败】改回二值之后头行仍然没说假话'
+              + `（头行=${JSON.stringify(head.slice(0, 110))}）⇒ SH-b 测的不是"拆档"这件事`)
+          }
+        }
+      }
+      // ── (反证)-b：摘掉 `noteFiringSeen` 的调用 ⇒ "收到过帧"这条前提消失 ──
+      if (!osrc.includes(FIRE_CALL)) {
+        bad('SH-(反证b) 【失去靶子】`orchestrator.ts` 里找不到 `noteFiringSeen(cardId, subscriber)`'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const r = await runMutant('反证b', (src) => src.replace(FIRE_CALL, 'void cardId'),
+          cardBlocked, 'session-sh-hob')
+        if (r !== null) {
+          const head = shHead(r.rendered)
+          /**
+           * ⚠ 摘掉"记帧"之后：`firingSeen` 恒 0 ⇒ 头行会落回**第 ① 档**
+           *   ⇒ 它**又说成"一帧都没收到过"**，而帧其实到过。
+           *   ⚠ 这正是本件要治的那个形态，必须能被这条反证重现出来。
+           */
+          if (r.d.firingSeen === 0 && shSaysNoFrame(head)) {
+            ok('SH-(反证b) ✓ 负向对拍：摘掉 `noteFiringSeen` ⇒ '
+              + `\`firingSeen=0\`、头行落回 ${JSON.stringify(head.slice(0, 60))}`
+              + '（⚠ 帧其实到过）⇒ SH-b 的"收到过帧"这条前提**真的接在实现上**，不是摆设')
+          } else {
+            bad('SH-(反证b) 【负向对拍失败】摘掉 `noteFiringSeen` 之后'
+              + `firingSeen=${r.d.firingSeen}（应 0）· 头行=${JSON.stringify(head.slice(0, 110))}`
+              + ' ⇒ SH-b 测的不是"帧计数有没有接上"')
+          }
+        }
+      }
+      // ── (反证)-c：摘掉 `noteFiredBlocked` 的调用 ⇒ 说不出被哪道准入拦下 ──
+      if (!osrc.includes(BLOCK_CALL)) {
+        bad('SH-(反证c) 【失去靶子】`orchestrator.ts` 里找不到 `noteFiredBlocked(`'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const r = await runMutant('反证c', (src) => src.replace(
+          /dispatchWake\.noteFiredBlocked\([\s\S]*?\n(\s*)\)\n/g,
+          (_m) => '/* 变异：摘掉 noteFiredBlocked */\n',
+        ), cardBlocked, 'session-sh-hob')
+        if (r !== null) {
+          const rendered = r.rendered
+          const head = shHead(rendered)
+          const namesGate = rendered.includes('selfExecuted') || rendered.includes('执行会话就是建卡会话本身')
+          /**
+           * ⚠⚠ **这里必须用一个"只在该变异下才出现"的判据**（首跑实测踩到的坑）：
+           *   原先用 `rendered.includes('被准入拦下')` —— ⛔ **那是假阳性**：
+           *   摘掉之后走的是 else 分支，而那一段的原文是
+           *   "帧到过，但**没有一条被准入拦下的记录** ⇒ …（⛔ 与"被准入拦下"不是同一档）"
+           *   ⇒ **也含"被准入拦下"四个字** ⇒ 判据永远为真 ⇒ 反证"失败"其实是**判据自己写错了**。
+           *   ⇒ 现在钉的是那个 else 分支**独有的那句**。
+           */
+          const saysNoBlockedRecord = rendered.includes('没有一条被准入拦下')
+          /**
+           * ⚠ 摘掉之后：`firingSeen` 仍 > 0（帧还是记了），但**说不出被哪道准入拦下**
+           *   ⇒ 头行会落到"没有一条被准入拦下的记录"那一支。
+           *   ⚠ 这一条钉的是"**点名准入**这件事真的有数据来源"。
+           */
+          if (r.d.firingSeen > 0 && namesGate === false && saysNoBlockedRecord) {
+            ok('SH-(反证c) ✓ 负向对拍：摘掉 `noteFiredBlocked` ⇒ '
+              + `帧仍然记到（\`firingSeen=${r.d.firingSeen}\`），但头行**说不出被哪道准入拦下**、`
+              + `落到了"没有一条被准入拦下的记录"那一支（${JSON.stringify(head.slice(0, 60))}）`
+              + ' ⇒ SH-b 的"必须点名准入"真的接在实现上，不是摆设')
+          } else {
+            bad('SH-(反证c) 【负向对拍失败】摘掉 `noteFiredBlocked` 之后仍然说得清被哪道准入拦下'
+              + `（firingSeen=${r.d.firingSeen} · 点名准入=${namesGate} · 落到"没有一条记录"那一支=${saysNoBlockedRecord}）`
+              + ' ⇒ SH-b 测的不是"点名准入有没有数据来源"')
+          }
+        }
+      }
+    }
+  } else {
+    bad('SH 组跑不起来：orchestrator/bus 模块没加载上（不按通过处理）')
+  }
+
+  try { sgRm(sgTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
 }
 
 // ── 输出 ───────────────────────────────────────────────────────────────

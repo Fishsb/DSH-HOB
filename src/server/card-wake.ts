@@ -360,6 +360,37 @@ const RECONNECT_MIN_MS = 1000
 const RECONNECT_MAX_MS = 30000
 
 /**
+ * ⚠⚠ **"合成执行键"的唯一生成点**（2026-10-20 · 第 321 轮 · `TASK-G` ③）。
+ *
+ * ── 它为什么必须导出（本件要治的那条缺陷）─────────────────────────────
+ *   看板 SSE 推的是 `summarize()` 投影，**投影里没有 `executions`** ⇒ 帧上拿不到
+ *   真正的 `execution.id` ⇒ 本模块**只能拼一个合成键**当去重键
+ *   （`<卡 id>@<outcome>@v<version>`）。
+ *   而 `CardReading`（`board-cards.ts` 的卡面读数）那边给的是**看板真 id**
+ *   （`executions[].id`）。两处**各自生成、语义不同** ⇒
+ *   `orchestrator.deliveryLedger()` 拿台账键（合成键）去 `snap.cards.find(c => c.executionId === row.executionId)`
+ *   **永远不相等** ⇒ 台账**恒空**，并且渲染成「目前**没有**投递记录（这一档是"确实是空的"）」
+ *   ⇒ 补投（`redeliver`）**永远拿不到可用的执行 id**，入口按不到。
+ *   ⚠ 那不是"没有错投"，是"**没去比**"伪装成"比过且为空"—— 本项目头号禁忌。
+ *
+ * ── 修法（候选**甲**：一处生成、两处共用）──────────────────────────────
+ *   `CardReading` 侧**补一个"合成键"字段**（`synthesizedExecutionId`），
+ *   与本函数**用同一个实现**生成 ⇒ 比对时键空间**同源**。
+ *   ⛔ 候选乙（`delivered` 台账改存真 id）被否：帧的 `summarize()` 没有 `executions`，
+ *     拿真 id 只能"每次落定多读一次卡面" ⇒ 多一条读路径、成本高，且与本模块"不看卡面"的
+ *     分工冲突。⛔ 也不许用"前缀匹配"（`t-a` 是 `t-ab` 的前缀 ⇒ 会误配）。
+ *
+ * @param cardId - 卡 id（帧里 `tasks[].id`）。
+ * @param outcome - 执行结果字（`succeeded` / `failed` / `cancelled`）。
+ * @param version - 卡的版本号（读到非有限数 ⇒ 当没有）。
+ * @returns 稳定的合成键（同一张卡的同一次落定恒等；重跑 bump version ⇒ 键变）。
+ */
+export function synthesizedExecutionKey(cardId: string, outcome: string, version: unknown): string {
+  const v = typeof version === 'number' && Number.isFinite(version) ? version : undefined
+  return v === undefined ? `${cardId}@${outcome}` : `${cardId}@${outcome}@v${v}`
+}
+
+/**
  * 把一条 SSE `change` 帧认成「卡跑完」事件。
  *
  * ⚠ **判据（刻意写死、可被机检钉住）**：
@@ -393,8 +424,9 @@ export function cardDoneEventsOf(frame: unknown, workspaceId: string | undefined
     // 🔑 去重键 = 那次执行的 id。⚠ 摘要里没有 `executions` ⇒ 用 `(卡 id, outcome, version)`
     //    拼一个稳定键：同一张卡的**同一次**落定只会产生一帧相同的 (outcome, version)；
     //    重跑会 bump version ⇒ 键变了 ⇒ **会再叫一次**（那正是我们要的）。
-    const version = typeof t.version === 'number' && Number.isFinite(t.version) ? t.version : undefined
-    const executionId = version === undefined ? `${id}@${outcome}` : `${id}@${outcome}@v${version}`
+    //    ⚠⚠ 生成**只在这里**（{@link synthesizedExecutionKey}），⛔ 不许在别处再拼一遍
+    //    —— `deliveryLedger()` 要拿它去卡面上比对，两处各拼一份必然漂。
+    const executionId = synthesizedExecutionKey(id, outcome, t.version)
     const title = typeof t.title === 'string' && t.title !== '' ? t.title : '(无标题)'
     const status = typeof t.status === 'string' && t.status !== '' ? t.status : '(读不到)'
     /**
@@ -440,6 +472,44 @@ export function wakeMessageOf(e: CardDoneEvent): string {
     + '\n这是**看板卡**，不是 `hob_dispatch` 派的活 ⇒ 它没有回传正文。'
     + `\n下一步：用 \`taskboard_get\` 读这张卡的执行报告与评论（卡 id = ${e.taskId}），`
     + '确认后由用户决定是否置 done。'
+}
+
+/**
+ * ⚠⚠ **从投递实现的返回值里读出"到底成没成"**（2026-10-20 · 第 321 轮 · `TASK-G` ①）。
+ *
+ * ── 改前是什么（本项目头号禁忌的形态：**让失败不可观测**）───────────────
+ *   两处投递点**都丢掉了返回值**：
+ *     · `CardWake.handleFrame` —— `await this.deliverFn(ownerResolved, text)`（不接）；
+ *     · `DispatchWake.wake`   —— `const r: any = await this.opts.deliver(...)` 之后 `void r`。
+ *   而 `hobBus.deliver` / `deliverInternal` 的契约是：**明确失败走 `{ok:false, reason}`**
+ *   （`modules/bus.ts` 的 `DeliveryResult`：归档会话 / 非活会话 / 建消息失败 / 投递抛错
+ *   全是 `ok:false`；**只有真异常才 reject**）。
+ *   ⇒ 改前那些"明确失败"被当成成功：`wokeCount+1`、写"已叫醒"那句、
+ *     覆盖"最近一次叫醒"字段，而 `reason` **连日志都没有**。
+ *   ⚠ 同一份 bus 返回值，回传那条路径是**看 `ok`** 的（`orchestrator.ts` 的 `dispatch`）
+ *     —— 一处看、一处不看，读出来就是"成了"，实际没成。
+ *
+ * ── 现在 ─────────────────────────────────────────────────────────────
+ *   返回 `{ok:false}` ⇒ 交回**失败原话**；调用方据此落"没送到"那一档
+ *   （`undeliveredCount`）并把原话**逐字**写进那句可读话（⛔ 不许只写"失败"两个字）。
+ *
+ * ⚠ 判据**刻意收窄**：只有 `ok === false` 才算失败。
+ *   ⛔ **不**把"没有 `ok` 字段 / 不是对象"当失败 —— 老测试桩与第三方实现可能只 `resolve()`，
+ *   把它们全打成失败就是拿"未知"冒充"失败"（本项目另一条禁忌）。
+ *
+ * ⚠ ⛔ **它只影响"记账"，⛔ 不影响"能不能重投"**（`D4`「至多投一次」**一个字不改**）：
+ *   `markDelivered` / `s.reported` 仍然在投递**之前**落，失败**仍然不重投**。
+ *
+ * @param r - 投递实现的返回值（`DeliveryResult` 形状）。
+ * @returns 失败原话；成功 / 判不出 ⇒ `undefined`。
+ */
+export function deliveryFailureOf(r: unknown): string | undefined {
+  if (r === null || typeof r !== 'object') return undefined
+  const o = r as { ok?: unknown; reason?: unknown }
+  if (o.ok !== false) return undefined
+  return typeof o.reason === 'string' && o.reason !== ''
+    ? o.reason
+    : '（投递实现返回 `ok:false`，但没有给 `reason`）'
 }
 
 /**
@@ -816,7 +886,32 @@ export class CardWake {
         continue
       }
       try {
-        await this.deliverFn(ownerResolved, text)
+        /**
+         * ⚠⚠ **接住返回值**（2026-10-20 · 第 321 轮 · `TASK-G` ①）：改前这一行是
+         *   `await this.deliverFn(ownerResolved, text)` —— 返回值**直接丢掉**，
+         *   于是 `hobBus` 返回 `{ok:false, reason}`（归档会话 / 非活会话 / 建消息失败）
+         *   时照旧 `wokeCount+1`、照旧写"已叫醒"、照旧覆盖"最近一次叫醒"，
+         *   而 `reason` **连日志都没有** ⇒ **"已叫醒"是假的**。
+         */
+        const r = await this.deliverFn(ownerResolved, text)
+        const failure = deliveryFailureOf(r)
+        if (failure !== undefined) {
+          /**
+           * ⚠ **`{ok:false}` 与"抛错"落同一档**（"知道给谁但没送到"）：对读的人来说
+           *   这是同一件事；⛔ 但**不改重投语义**（`markDelivered` 已在上面落过，
+           *   这一条**不会被再投一次** —— `D4` 一个字不改）。
+           */
+          this.state = {
+            ...this.state,
+            undeliveredCount: this.state.undeliveredCount + 1,
+            lastUndeliveredTo: ownerResolved,
+            note: `⚠ 叫醒 ${ownerResolved} 失败：${failure}`
+              + `（卡 ${e.taskId}）⇒ 这是一条**漏投**：⛔ 不会改投别人，⛔ 也不会自动重投；`
+              + '该 owner 读状态时会看到这一档',
+          }
+          this.say(`[card-wake] ${this.state.note}`)
+          continue
+        }
         woke++
         this.state = {
           ...this.state,
@@ -1225,6 +1320,17 @@ export type WakeOutcome =
   | 'no-subscriber'
   /** 投递通道没就绪。 */
   | 'no-channel'
+  /**
+   * ⚠⚠ **投了，但投递实现明确回报"没送到"**（2026-10-20 · 第 321 轮 · `TASK-G` ①）。
+   *
+   * ⚠ 为什么必须与 `no-channel` 分开（本项目纪律：⛔ 两种原因不许说成同一句话）：
+   *   · `no-channel` = **通道没就绪**（`hobBus` 未提供）⇒ 根本**没试着投**；
+   *   · `undelivered` = **真投了**，对方的投递实现回 `{ok:false, reason}`
+   *     ⇒ 知道给谁、也发了，但**没送到**。
+   * ⚠ 改前这一档**不存在**：`{ok:false}` 被当成成功，返回 `'woke'` ⇒ 读数说"成了"。
+   * ⛔ 它**不改变重投语义**（`D4`）：`s.reported` 早已置 true，这一轮**不会重投**。
+   */
+  | 'undelivered'
   /** ⚠ **判不出**：状态读不到 / 会话消失了 ⇒ ⛔ 既不是"跑完"也不是"没跑过"。 */
   | 'undecidable'
 
@@ -1279,6 +1385,42 @@ export interface DispatchWakeState {
   pushRegisterIssues: number
   /** 最近一次按推送登记失败的可读原话（⛔ 不许静默）。 */
   pushRegisterWhy?: string
+  /**
+   * ── ⚠⚠ **「点火帧到过几次」**（2026-10-20 · 第 323 轮 · `TASK-I`）──────────────
+   *
+   * ⚠ **为什么必须单独一个数**（本项目头号禁忌：两种原因说成同一句话）：
+   *   头行改前只有 `pushedRegisterOk > 0 ? 已接上 : 还没接上（未收到过点火帧）`。
+   *   而"还没接上"至少有三条成因，其中**两条根本没有帧**：
+   *     · 真的一帧都没收到过；
+   *     · **收到过帧，但从没走到"登记成功"**（被 `selfExecuted` / `owner ≠ subscriber`
+   *       那两道准入拦下 —— 这是本机常态）；
+   *     · 登记成功过，但按人读的那一档取不到。
+   *   ⇒ 改前把第 2 种说成第 1 种，读的人会去查"为什么没有帧"，而该查的是准入那两道。
+   *   现场实证（第 322 轮 `AFTER-RESTART.md`）：卡 `t-mvgb2v48-j6tx4o` 22:36:15 真点过火、
+   *   `归属判不出` 11→12，而头行照样打"未收到过点火帧" ⇒ **那半句是假的**。
+   *
+   * ⚠ 语义：**收到过几帧点火**（按 owner 分区累计）。⛔ 它**不是**"登记成功数"
+   *   （那是 `pushedRegisterOk`），也⛔ 不是"投递成功数"。
+   */
+  firingSeen: number
+  /**
+   * ── ⚠⚠ **「收到过点火帧、但一次都没走到登记成功」的次数 + 被哪道准入拦下的点名** ──
+   *
+   * ⚠ 这是上面 `firingSeen > 0 而 pushedRegisterOk === 0` 那个格子的**具体成因**：
+   *   帧到了，但卡在中途被准入挡回。⛔ 两道准入是**设计**（`selfExecuted` / `owner ≠ subscriber`），
+   *   ⛔ 不许为了让档位好看而放宽它们 —— 本档只是**把话说清**，不是放宽。
+   *
+   * ⚠ 语义：**累计**"帧到了但没登记成功"的条数（按 owner 分区）。
+   * ⚠ 与 `pushRegisterIssues` **不是一档**（⛔ 不许合并）：
+   *   · `pushRegisterIssues` = **读不到那张卡**（看板没装 / 卡没了 / `no-session`）；
+   *   · 本档 = **卡读到了**，是**准入**把它挡回的（归属证明没通过）。
+   */
+  firedBlockedCount: number
+  /**
+   * 最近一次「帧到了但被准入拦下」的可读原话（⛔ 不许静默）：
+   * 必须点名**是哪一道准入**（`selfExecuted` / `owner≠subscriber` / `owner 判不出`）。
+   */
+  firedBlockedWhy?: string
   /**
    * ⚠⚠ **「判不出归属 ⇒ 没登记」的独立一档**（`I-3` 末段）—— **累计事件计数**。
    *
@@ -1373,6 +1515,7 @@ export class DispatchWake {
   private state: DispatchWakeState = {
     registered: 0, pending: 0, wokeCount: 0, undecidableCount: 0,
     pushedRegisterOk: 0, pushRegisterIssues: 0,
+    firingSeen: 0, firedBlockedCount: 0,
     ownerUnknownCount: 0, undeliverableCount: 0,
     ownerUnknownRegistered: 0, othersOnly: 0,
   }
@@ -1388,6 +1531,16 @@ export class DispatchWake {
   private readonly ownedPushedOk = new Map<string, number>()
   private readonly ownedPushIssues = new Map<string, number>()
   private readonly ownedUndeliverable = new Map<string, number>()
+  /**
+   * ── ⚠⚠ **点火帧的两档，同样按 owner 分区**（2026-10-20 · 第 323 轮 · `TASK-I`）──
+   *
+   * ⚠ 形态与上面几条**逐字同款**（`bump()` + `Map<owner, number>`）——
+   *   ⛔ 不另造一种写法（同一事实两个来源必然漂，`E-128`）。
+   * ⚠ 为什么必须分区：头行是**按人读**的（`dispatchWakeState(selfId)`），
+   *   若这两档取进程级合计，同一工作区两个 Hob 会读到对方的帧数（= W6 同族）。
+   */
+  private readonly ownedFiringSeen = new Map<string, number>()
+  private readonly ownedFiredBlocked = new Map<string, number>()
   /**
    * ⚠⚠ **判不出归属的累计去重键集**（2026-10-20 第 3 单 · 修 **960**）。
    *
@@ -1412,7 +1565,14 @@ export class DispatchWake {
    */
   private readonly ownerUnknownLive = new Map<string, string>()
   /** 逐 owner 的"最近一次可读原话"（⛔ 不许把别人的原话串给读的人）。 */
-  private readonly whyByOwner = new Map<string, { undecidable?: string; push?: string; undeliverable?: string }>()
+  /**
+   * ⚠ 逐 owner 的"最近一次可读原话"。
+   *   ⚠ `firedBlocked` 是第 323 轮（`TASK-I`）新增的一档：**帧到了但被准入拦下**。
+   *     ⛔ 不许并进 `push`（那是"读不到卡"），也不许并进 `undecidable`（那是"读不到会话状态"）。
+   */
+  private readonly whyByOwner = new Map<string, {
+    undecidable?: string; push?: string; undeliverable?: string; firedBlocked?: string
+  }>()
   private readonly opts: DispatchWakeOpts
 
   constructor(opts: DispatchWakeOpts) {
@@ -1436,7 +1596,7 @@ export class DispatchWake {
   /** 记一句"某 owner 名下的可读原话"（按字段分档，⛔ 不许互相顶替）。 */
   private sayFor(
     owner: string | undefined,
-    field: 'undecidable' | 'push' | 'undeliverable',
+    field: 'undecidable' | 'push' | 'undeliverable' | 'firedBlocked',
     why: string,
   ): void {
     if (typeof owner !== 'string' || owner === '') return
@@ -1512,6 +1672,13 @@ export class DispatchWake {
       undecidableCount: this.ownedUndecidable.get(self ?? '') ?? 0,
       pushedRegisterOk: countOf(this.ownedPushedOk),
       pushRegisterIssues: this.ownedPushIssues.get(self ?? '') ?? 0,
+      /**
+       * ⚠⚠ **点火帧两档，按 owner 取**（`TASK-I`）：⛔ 不许落回进程级合计（= W6）。
+       *   ⚠ `self === undefined` ⇒ 一律 0 + `selfUndecidable`，渲染层据此报"判不出我是谁"。
+       */
+      firingSeen: countOf(this.ownedFiringSeen),
+      firedBlockedCount: countOf(this.ownedFiredBlocked),
+      firedBlockedWhy: this.whyByOwner.get(self ?? '')?.firedBlocked,
       /**
        * ── ⚠⚠ **这里必须给"累计"，⛔ 不许给"此刻"**（2026-10-20 第 3 单 · 量纲分离）──
        *
@@ -1721,6 +1888,57 @@ export class DispatchWake {
   }
 
   /**
+   * 记一次「**点火帧到了**」（2026-10-20 · 第 323 轮 · `TASK-I`）。
+   *
+   * ⚠ **为什么单独记"帧到了"**：改前头行只有"已接上 / 还没接上（未收到过点火帧）"两档，
+   *   而"还没接上"至少三条成因，其中两条**根本没帧**。把"收到过帧但没登记成功"
+   *   说成"未收到过点火帧"就是**两种原因说成同一句话**（本项目头号禁忌）。
+   *   ⇒ 本方法是那一档的**唯一前提**：`firingSeen > 0 && pushedRegisterOk === 0`
+   *     才谈得上"收到了但没成功"。
+   *
+   * ⚠ 它**不**代表登记成功（那是 {@link noteRegistryOk}），
+   *   也**不**代表投递（那是 `delivered` 台账）。
+   * ⚠ 每次**帧**记一次（不是每张卡、不是每次重连）：去重由调用方按 `firedSeen` 做。
+   */
+  noteFiringSeen(cardId: string, owner?: string): void {
+    this.bump(this.ownedFiringSeen, owner)
+    this.state = { ...this.state, firingSeen: this.state.firingSeen + 1 }
+    this.say(`[dispatch-wake] 收到点火帧（卡 ${cardId}）⇒ 接下来按卡现读会话并登记`)
+  }
+
+  /**
+   * 记一次「**收到过点火帧，但被准入拦下、没登记成功**」（`TASK-I` 的核心）。
+   *
+   * ⚠ **与 `noteRegistryIssue` 不是一档**（⛔ 不许合并）：
+   *   · `noteRegistryIssue` = **读不到那张卡**（看板没装 / 卡没了 / `no-session`）；
+   *   · 本方法 = **卡读到了**，是**归属准入**把它挡回的
+   *     ⇒ 那不是失败，也不是"没有卡在跑"，而是"**这张卡的回执不该给我**"。
+   * ⚠ ⛔ **不许因为本档存在就去放宽那两道准入** —— 准入是**设计**（`I-3`），
+   *   本档只负责**把"被哪一道挡的"说出来**，⛔ 不是放宽的理由。
+   *
+   * @param gate - **哪一道准入**拦下的（渲染层要逐字点名，⛔ 不许笼统写"没登记成功"）：
+   *   `self-executed`（执行方 = 建卡人自己）· `not-my-card`（`owner ≠ subscriber`）·
+   *   `owner-unknown`（判不出归属）。
+   */
+  noteFiredBlocked(cardId: string, gate: 'self-executed' | 'not-my-card' | 'owner-unknown',
+    why: string, owner?: string): void {
+    this.bump(this.ownedFiredBlocked, owner)
+    const gateText = gate === 'self-executed'
+      ? '执行会话就是建卡会话本身（`selfExecuted`）'
+      : gate === 'not-my-card'
+        ? '这张卡不是本会话建的（`owner ≠ subscriber`）'
+        : '判不出这张卡归谁（`owner` 读不到）'
+    this.sayFor(owner, 'firedBlocked', `卡 ${cardId} 收到过点火帧，但被准入拦下（${gateText}）：${why}`)
+    this.state = {
+      ...this.state,
+      firedBlockedCount: this.state.firedBlockedCount + 1,
+      firedBlockedWhy: `卡 ${cardId} 收到过点火帧，但被准入拦下（${gateText}）：${why}`
+        + ' —— ⛔ 这不等于"没收到过帧"，也⛔ 不是"没有卡在跑"',
+    }
+    this.say(`[dispatch-wake] ${this.state.firedBlockedWhy}`)
+  }
+
+  /**
    * 记一次「按推送现读会话**成功登记**」（2026-10-19 · 补缺口那一路）。
    *
    * ⚠ 它存在的唯一理由：让 `hob_orch_status` 能**一眼看出叫醒面接没接上**
@@ -1872,8 +2090,35 @@ export class DispatchWake {
      *   这里再显式留一行注释，避免以后有人把它挪到投递之后（那会让失败的一轮**再叫一次**）。
      */
     try {
-      const r: any = await this.opts.deliver(target, text)
-      void r
+      /**
+       * ⚠⚠ **接住返回值**（2026-10-20 · 第 321 轮 · `TASK-G` ①）：
+       *   改前这里是 `const r: any = await this.opts.deliver(target, text)` + `void r`
+       *   —— 返回值被**显式丢掉**。而 `hobBus.deliver` 的契约是**失败走 `{ok:false, reason}`**
+       *   ⇒ `{ok:false}` 时照旧 `bump(ownedWoke)` + `wokeCount+1` + 写"已叫醒"，
+       *   而"没送到"的那个 `reason` **一个字都没留下** ⇒ 读数说"成了"、实际没成。
+       *
+       * ⚠ 两处改法**必须一致**（`CardWake.handleFrame` 用的是同一个
+       *   {@link deliveryFailureOf}），⛔ 不许两处各写一份判据（两份必然漂）。
+       * ⚠ **`{ok:false}` 与"抛错"落同一档**（"知道给谁但没送到"，`undeliverableCount`）；
+       *   ⛔ **不改重投语义**：`observe()` 已先把 `s.reported` 置 true ⇒ 这一轮**不会重投**
+       *   （`D4`「至多投一次」一个字不改）。
+       */
+      const r: unknown = await this.opts.deliver(target, text)
+      const failure = deliveryFailureOf(r)
+      if (failure !== undefined) {
+        this.bump(this.ownedUndeliverable, target)
+        this.sayFor(target, 'undeliverable', `回执**没送到**：${failure}`)
+        this.state = {
+          ...this.state,
+          undeliverableCount: this.state.undeliverableCount + 1,
+          undeliverableWhy: `回执**没送到** ${target}：${failure}`
+            + `（会话 ${s.sessionId} 那一轮）⇒ 这是一条**漏投**：⛔ 不会改投别人，⛔ 不会自动重投`,
+          note: `⚠ 叫醒 ${target} 失败：${failure}（会话 ${s.sessionId}）`
+            + '⇒ 这是一条**漏投**：⛔ 不会改投别人，⛔ 也不会自动重投；该 owner 读状态时会看到这一档',
+        }
+        this.say(`[dispatch-wake] ${this.state.undeliverableWhy}`)
+        return 'undelivered'
+      }
       this.bump(this.ownedWoke, target)
       this.state = {
         ...this.state,

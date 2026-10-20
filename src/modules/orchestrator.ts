@@ -258,7 +258,13 @@ export interface OrchStatus {
    *
    * ⚠ **缺省 `'ok'`** ⇒ ⛔ 不动既有调用点的行为（向后兼容）。
    */
-  reachability: StateReachability | 'unresolved'
+  reachability: StateReachability | 'unresolved' | 'ledger-home-unresolved'
+  /**
+   * ⚠⚠ **账本根为什么解析不到**（2026-10-21 · 第 326 轮 · **甲-7**）——
+   *   只在 `reachability === 'ledger-home-unresolved'` 时**有值**，⛔ 正常档一个字都不多。
+   *   ⚠ 它回答的是"**成因**"，`reachability` 回答的是"**够不够得到**" —— 两者互补，⛔ 不重复。
+   */
+  ledgerHomeWhy?: LedgerHomeDiag
   /**
    * ⚠⚠ **他人的（不可见明细）**（`I-4` 的显式例外）。
    *
@@ -581,6 +587,85 @@ export function declaredLedgerHome(svcCtx: any): string {
 }
 
 /**
+ * ⚠⚠ **账本根解析的**诊断面**（2026-10-21 · 第 326 轮 · **甲-7**）─────────────────
+ *
+ * ── 改前的病灶（`PROJECT-SURVEY-3` §6.1 甲-7，被标为"本文件最重的静默面"）──────
+ *   `declaredLedgerHome()` **失败一律返回 `''`**（`catch { return '' }` + 两处 `return ''`），
+ *   而**下游没有一处问过"这是空账本，还是根本没解析出来"**：
+ *     · `scanStateFiles()`：`home === ''` ⇒ **直接 `return out`（空数组）**；
+ *     · `armRecheck()`：扫到 0 个文件 ⇒ `hasUnsettled` 恒假 ⇒ `nextRecheckDelay(false, …)`
+ *       = `undefined` ⇒ **`clearRecheckTimer()` 当场执行** ⇒ **T5 定时复查被静默关闭**；
+ *     · `reachabilityFor()`：`resolveLedgerRoot('', '', wsRoot)` 在 `home===''` 时
+ *       **退回缺省兄弟目录**（`doc-read.ts:108`）⇒ 读的是**另一个位置**
+ *       ⇒ 读数落成 `'ledger-unreachable'`，与"账本真的不存在"**逐字相同**。
+ *   ⇒ ⚠ 后果（多账本 / 深搜歧义布局）：**派发的回执永不结算，且没有任何周期性补偿**，
+ *     而运行期**只有装配期一条 warn**（`logger.debug`，默认看不见）。
+ *
+ * ── 现在：把"解析不到"变成**可分辨的四档**（⛔ 不是三种，见下）──────────────
+ *   ⚠ **为什么不复用 `declaredLedgerHome() === ''` 这一个布尔**：
+ *     它们**成因不同、修法不同**，压成一个布尔就又是"两种原因说成同一句话"：
+ *       · `no-loader`    ⇒ 宿主没给 `loader`（装配面问题，⛔ 改账本没用）；
+ *       · `unreadable`   ⇒ `loader.entries()` **抛了**（配置面坏了 —— ⚠ 与"没配"不是一回事）；
+ *       · `absent`       ⇒ 条目里**没有非空 `ledgerHome`**（配置没写 / 写空）；
+ *       · `ok`           ⇒ 解析到了（`home` 非空）。
+ *   ⚠ `declaredLedgerHome()` 的**签名与返回值一个字未改**（`bus.ts` 还在用它，⛔ 不破坏调用方）；
+ *     本函数是**新增的第二个入口**，只在"要读数"的地方用。
+ *
+ * ── ⚠ ⛔ 本函数**不做任何 IO**：只读 `loader` 的内存投影 ⇒ 读状态时调它没有代价。
+ */
+export type LedgerHomeDiag =
+  | { kind: 'ok'; home: string; reason?: undefined }
+  | { kind: 'no-loader'; home: ''; reason: string }
+  | { kind: 'unreadable'; home: ''; reason: string }
+  | { kind: 'absent'; home: ''; reason: string }
+
+/** 见 {@link LedgerHomeDiag}。⚠ 与 `declaredLedgerHome()` **同一段深搜口径**（⛔ 不另写一份）。 */
+export function ledgerHomeDiag(svcCtx: any): LedgerHomeDiag {
+  let entries: unknown
+  try {
+    const loader = typeof svcCtx?.get === 'function' ? svcCtx.get('loader') : undefined
+    if (loader === undefined) {
+      return { kind: 'no-loader', home: '',
+        reason: '宿主没提供 `loader` 服务 ⇒ 读不到任何条目配置' }
+    }
+    entries = loader?.entries?.()
+    if (entries === undefined) {
+      return { kind: 'no-loader', home: '',
+        reason: '`loader.entries()` 不可用 ⇒ 读不到任何条目配置' }
+    }
+  } catch (e) {
+    /**
+     * ⚠ **`entries()` 抛错 ≠ 没配置**：前者是**装配面坏了**，后者是**配置没写**。
+     *   改前两者都被 `catch { return '' }` 吞成同一个空串 ⇒ ⛔ 正是本件要治的形态。
+     */
+    return { kind: 'unreadable', home: '',
+      reason: `\`loader.entries()\` 抛错 ⇒ 配置面读不了（${String((e as Error)?.message ?? e)}）` }
+  }
+  // ⚠ 深搜口径与 `declaredLedgerHome()` **逐字相同**（深度 8、取第一个非空、trim）。
+  const walk = (node: unknown, depth: number): string => {
+    if (depth > 8 || node === null || typeof node !== 'object') return ''
+    if (Array.isArray(node)) {
+      for (const v of node) { const hit = walk(v, depth + 1); if (hit !== '') return hit }
+      return ''
+    }
+    const o = node as Record<string, unknown>
+    const direct = o.ledgerHome
+    if (typeof direct === 'string' && direct.trim() !== '') return direct.trim()
+    for (const v of Object.values(o)) {
+      const hit = walk(v, depth + 1)
+      if (hit !== '') return hit
+    }
+    return ''
+  }
+  for (const e of entries as any[]) {
+    const hit = walk(e?.options, 0)
+    if (hit !== '') return { kind: 'ok', home: hit }
+  }
+  return { kind: 'absent', home: '',
+    reason: '条目配置里**没有非空 `ledgerHome`** ⇒ 落回缺省的兄弟目录（⛔ 那不是"账本是空的"）' }
+}
+
+/**
  * 解析**运行态文件**的路径（`<账本目录>/runtime/orch-watches.json`）。
  *
  * @param svcCtx - 本模块作用域（用来读 loader 与 sessions）。
@@ -778,6 +863,18 @@ export function apply(ctx: any): void {
      *   （`registryIssue`），⛔ 不许静默当成"没有这张卡"。
      */
     const registerCardByPush = async (cardId: string, subscriber: string | undefined): Promise<void> => {
+      /**
+       * ── ⚠⚠ **"收到过帧"必须单独留痕**（2026-10-20 · 第 323 轮 · `TASK-I`）──────────
+       *
+       * ⚠ 这一行在本函数**最开头**、且**在准入门之前** —— 顺序是本件的全部要害：
+       *   头行要说清"是被准入拦下的"，就必须**先证明帧真的到过**，
+       *   再做归属判断。若记在准入之后，被拦下的那些帧就**永远**记不到
+       *   ⇒ 又回到"两种原因说成同一句话"。
+       * ⚠ 按 `subscriber` 落账（不是进程级合计）：头行是**按人读**的（W6 同族）。
+       */
+      if (typeof subscriber === 'string' && subscriber !== '') {
+        dispatchWake.noteFiringSeen(cardId, subscriber)
+      }
       try {
         /**
          * ⚠⚠ **"是谁在看这个面"必须显式传进来**（`I-2`：⛔ 不许用进程级单值决定归属）。
@@ -811,6 +908,22 @@ export function apply(ctx: any): void {
               // ⚠ 传执行 id ⇒ `noteOwnerUnknown` 才能按 (卡, 执行) 去重（修 960 的一半）
               r.executionId,
             )
+            /**
+             * ⚠⚠ **同时记"帧到了但被这道准入拦下"**（第 323 轮 · `TASK-I`）——————
+             *   ⛔ 这两条不是重复计数（两道不同的档，各自回答不同的问题）：
+             *     · `noteOwnerUnknown` 回答"**归属判不出 ⇒ 这张卡的回执不该给我**"（服务面口径）；
+             *     · 本行回答"**帧到过、是被这道准入挡住的**"（头行拆档口径）。
+             *   ⚠ 少了本行，头行就只能说"没登记成功"，⛔ 说不出"被哪一道拦的" ——
+             *     而那句话正是本件要治的（读的人该去查准入，不是去查"为什么没帧"）。
+             */
+            dispatchWake.noteFiredBlocked(
+              r.cardId,
+              cardOwner === undefined ? 'owner-unknown' : 'not-my-card',
+              cardOwner === undefined
+                ? '按卡现读回来没有建卡会话（`createdBy.sessionId` 空）'
+                : `这张卡属于 ${cardOwner}，而当前看这个面的是 ${String(subscriber ?? '(判不出)')}`,
+              subscriber,
+            )
             return
           }
           /**
@@ -831,6 +944,13 @@ export function apply(ctx: any): void {
                 + '⇒ 它自己跑完不是"某个被派出去的活跑完了"⇒ **不登记**（⛔ 不是"没有会话在跑"）',
               r.executionId,
             )
+            /** ⚠ 同上：**帧到了，被 `selfExecuted` 这道准入拦下**（第 323 轮 · `TASK-I`）。 */
+            dispatchWake.noteFiredBlocked(
+              r.cardId,
+              'self-executed',
+              '这张卡的**执行会话就是建卡会话本身**（`executionSessionId === createdBy.sessionId`）',
+              subscriber,
+            )
             return
           }
           dispatchWake.register({
@@ -841,13 +961,37 @@ export function apply(ctx: any): void {
             owner: cardOwner,
             ...(wsRootOfSession(cardOwner) === undefined ? {} : { ownerWsRoot: wsRootOfSession(cardOwner) }),
           })
-          dispatchWake.noteRegistryOk(cardId)
+          /**
+           * ⚠⚠ **必须把订阅者（= 这个 owner）传下去**（2026-10-20 · 第 321 轮 · `TASK-G` ②）。
+           *
+           * ── 改前是什么（本项目头号禁忌：**让失败不可观测**）─────────────────
+           *   这一处（以及下面两处）**都没传 `owner`** ⇒ `DispatchWake.bump()` 遇空
+           *   **直接 return**（见 `card-wake.ts` 的 `bump`：`if (typeof owner !== 'string' || owner === '') return`）
+           *   ⇒ `ownedPushedOk` 里一条都不记 ⇒ **按人读的 `pushedRegisterOk` 恒 0**
+           *   ⇒ `hob_orch_status` 的头行**永远打「还没接上」**，**而它其实接上了**。
+           *   ⚠ 现场读数正是这一句：点火帧已经把会话登记进来了（`registered=1`、真叫醒过），
+           *     头行却写 `⚠ 还没接上（未收到过点火帧）` —— 两个读数互相打架，
+           *     而读的人只能信头行。
+           *
+           * ── 现在 ────────────────────────────────────────────────────────
+           *   传**这次登记用的那个订阅者**（`registerCardByPush(cardId, subscriber)` 的入参，
+           *   就是"谁在看这个面"= 这张卡的 owner，上面那道准入已经保证它 === `cardOwner`）。
+           *   ⛔ **不许改成"改读进程级的那个数"** —— 那等于退回"两个 Hob 互相看见"
+           *     （另一个已登记的毛病，`I-2` / 波次 W6），本件不动它。
+           */
+          dispatchWake.noteRegistryOk(cardId, subscriber)
           return
         }
+        /**
+         * ⚠ **这两档同样要传 `owner`**（同 `noteRegistryOk` 的理由）：
+         *   ⛔ 不传 ⇒ `bump` / `sayFor` 遇空直接 return ⇒ 按人读的
+         *   `pushRegisterIssues` 恒 0、`pushRegisterWhy` 恒空 ⇒ **"读不到"这件事
+         *   在读数里彻底消失**（本项目头号禁忌）。失败比成功更需要归属。
+         */
         // ⚠ 后两档**都不是**"没有卡在跑" ⇒ 各自留一句可读话（⛔ 不许静默）
-        dispatchWake.noteRegistryIssue(cardId, r.kind, r.why)
+        dispatchWake.noteRegistryIssue(cardId, r.kind, r.why, subscriber)
       } catch (e) {
-        dispatchWake.noteRegistryIssue(cardId, 'unreadable', `按卡现读会话时抛错：${String((e as Error)?.message ?? e)}`)
+        dispatchWake.noteRegistryIssue(cardId, 'unreadable', `按卡现读会话时抛错：${String((e as Error)?.message ?? e)}`, subscriber)
       }
     }
 
@@ -1396,10 +1540,23 @@ export function apply(ctx: any): void {
      * ⚠ 判不出工作区根 / 账本解析为 `undefined` ⇒ `'unresolved'`
      *   （⚠ **这本身也是一种"够不到"** ⇒ 调用方**必须**把它当标记报出来，⛔ 不许静默当 `'ok'`）。
      */
-    const reachabilityFor = (wsRoot: string | undefined): StateReachability | 'unresolved' => {
+    const reachabilityFor = (wsRoot: string | undefined): StateReachability | 'unresolved' | 'ledger-home-unresolved' => {
       try {
         if (typeof wsRoot !== 'string' || wsRoot === '') return 'unresolved'
-        const ledgerRoot = resolveLedgerRoot('', declaredLedgerHome(svcCtx), wsRoot)
+        /**
+         * ⚠⚠ **解析不到 `ledgerHome` 必须单独成档**（2026-10-21 · 第 326 轮 · **甲-7** 要求 1）——
+         *
+         * 改前这里直接把 `declaredLedgerHome()` 的空串喂给 `resolveLedgerRoot('', '', wsRoot)`
+         * ⇒ 它在 `home === ''` 时**退回缺省的兄弟目录**（`doc-read.ts:108`，
+         *   `resolve(dirname(ws), DEFAULT_LEDGER_DIR, base)`）⇒ 读的是**另一个位置**
+         * ⇒ 落成 `'ledger-unreachable'`，与"这个工作区真的没有账本"**逐字相同**。
+         * ⚠ 这正是甲-7 要求 1 点名的"三件事说成同一句"。
+         * ⇒ 现在**先问诊断**：`kind !== 'ok'` ⇒ 直接落 `'ledger-home-unresolved'`
+         *   （⚠ 它被渲染成**另一句话**，见 `reachabilityLines`）。
+         */
+        const diag = ledgerHomeDiag(svcCtx)
+        if (diag.kind !== 'ok') return 'ledger-home-unresolved'
+        const ledgerRoot = resolveLedgerRoot('', diag.home, wsRoot)
         if (ledgerRoot === undefined) return 'unresolved'
         return readOrchStateDetailed(orchStateFileOf(ledgerRoot)).reachability
       } catch {
@@ -2012,6 +2169,13 @@ export function apply(ctx: any): void {
       status(opts?: { wsRoot?: string; self?: string }) {
         const self = typeof opts?.self === 'string' && opts.self !== '' ? opts.self : undefined
         const mine = mineOnly(self)
+        /**
+         * ⚠ **一次算、两处用**（2026-10-21 · 第 326 轮 · **甲-7**）：
+         *   `reachability` 的值与"要不要带成因"必须来自**同一个结果** ——
+         *   ⛔ 不许在展开式里再调一次 `reachabilityFor`（两次各算会漂，
+         *   而漂的正是"读数说的"与"读数凭的"这件事，`E-160` 同族）。
+         */
+        const reach = reachabilityFor(opts?.wsRoot)
         return {
           /**
            * ⚠ 停/未停**也是自己的那一份**（`I-4` 末条）：别人停了不该让我的读数显示"已停"。
@@ -2045,7 +2209,8 @@ export function apply(ctx: any): void {
           //   ⛔ 不是 —— `handoffs` 现在按 owner 过滤（`I-4`），
           //   而可达性问的是"**本会话这一份**账本够不够得到"（那才是"够不到"的形态）。
           //   ⇒ 故它按**调用方给的工作区根**现算（⛔ 不从 `handoffs` 反推）。
-          reachability: reachabilityFor(opts?.wsRoot),
+          reachability: reach,
+          ...(reach === 'ledger-home-unresolved' ? { ledgerHomeWhy: ledgerHomeDiag(svcCtx) } : {}),
           /**
            * ⚠⚠ **别人的条数（不可见明细）**（`I-4` 的显式例外）。
            *
@@ -2303,11 +2468,28 @@ export function apply(ctx: any): void {
         }> = []
         for (const row of ledger) {
           /**
-           * ⚠ 台账键是 `executionId`，⛔ 不含卡 id ⇒ 只能靠卡面的 `executionId` 反查。
-           *   找不到 ⇒ 这条**不属于本工作区**（或卡已被清理）⇒ **不显示**
-           *   （⛔ 不许把别人的执行显示出来；⛔ 也不许猜一张卡给它）。
+           * ⚠⚠ **键空间必须同源**（2026-10-20 · 第 321 轮 · `TASK-G` ③）。
+           *
+           * ── 改前是什么（本项目头号禁忌：**让失败不可观测**）─────────────────
+           *   这里只比 `c.executionId === row.executionId`：
+           *   · 台账键 = 叫醒面的**合成键**（帧上没有 `executions` ⇒
+           *     `cardDoneEventsOf` 拼的 `<卡 id>@<outcome>@v<version>`）；
+           *   · 卡面的 `executionId` = 看板**真 id**（`executions[].id`）；
+           *   ⇒ **永远不相等** ⇒ `entries` 恒空 ⇒ 渲染成
+           *     「目前**没有**投递记录（这一档是"确实是空的"）」
+           *   ⇒ 补投（`redeliver`）**永远拿不到可用的执行 id**，入口按不到。
+           *   ⚠ 那不是"没有错投"，是"**没去比**"装成"比过且为空"。
+           *
+           * ── 现在 ────────────────────────────────────────────────────────
+           *   比 **`synthesizedExecutionId`**（卡面侧由 `card-wake.ts` 的**同一个**
+           *   `synthesizedExecutionKey` 生成 ⇒ 键空间同源），并**保留**真 id 的比对作为
+           *   第二条通路（历史台账里若曾按真 id 记过，仍然认得出来）。
+           *   ⛔ **不许用"前缀匹配"**（`t-a` 是 `t-ab` 的前缀 ⇒ 会误配）。
+           *   ⛔ 找不到就**不显示**（同改前）：那表示"不属于本工作区 / 卡已被清理"，
+           *     ⛔ 不许把别人的执行显示出来，⛔ 也不许猜一张卡给它。
            */
-          const card = snap.cards.find((c) => c.executionId === row.executionId)
+          const card = snap.cards.find((c) => c.synthesizedExecutionId === row.executionId
+            || c.executionId === row.executionId)
           if (card === undefined) continue
           const owner = card.createdBySessionId
           entries.push({
@@ -2360,6 +2542,8 @@ export function apply(ctx: any): void {
           svcCtx.logger?.info?.(`[${name}] 已恢复（owner=${self}）：只恢复这一侧`)
         }
         const mine = mineOnly(self)
+        /** ⚠ 同 `status()` 那条：一次算、两处用（甲-7）。 */
+        const reach = reachabilityFor(opts?.wsRoot)
         return {
           stopped: isStoppedFor(self),
           watches: mine.watches.sort((a, b) => a.at - b.at),
@@ -2372,7 +2556,8 @@ export function apply(ctx: any): void {
           stuckCount: mine.settleByState.stuck,
           // ⚠ 与 `status()` 同源同值（两处返回**同一个形状**，调用方不必分情况）。
           handoffs: mine.handoffs,
-          reachability: reachabilityFor(opts?.wsRoot),
+          reachability: reach,
+          ...(reach === 'ledger-home-unresolved' ? { ledgerHomeWhy: ledgerHomeDiag(svcCtx) } : {}),
           others: {
             note: '他人的（不可见明细）—— 只给条数，不给 target / task / 轮次',
             watches: othersOf(self).watches.length,
@@ -3038,15 +3223,61 @@ export function apply(ctx: any): void {
        * ⚠⚠ **武装判据**：只认"**盘上还有** `waiting` / `unresolved`"。
        *   ⚠ `stuck` **不算**（它已经放弃自动重试）⇒ 否则就是"为一个放弃了的记录永远转下去"。
        *   ⚠ 一个都没有 ⇒ **当场解除**（`recheckTimer` 归 undefined，`recheckRound` 归 0）。
+       *
+       * ══════════════════════════════════════════════════════════════════════
+       * ⚠⚠⚠ **甲-7（2026-10-21 · 第 326 轮）："扫不到文件"这一个布尔里混着两件事**
+       * ══════════════════════════════════════════════════════════════════════
+       *
+       * ── 改前的病灶（本文件最重的静默面，`PROJECT-SURVEY-3` §6.1 甲-7 原话）──────
+       *   下面那个 IIFE 只看"**有没有扫到带待办的 state 文件**"。而 `scanStateFiles()`
+       *   在 `declaredLedgerHome()` 返回 `''` 时**直接返回空数组** ——
+       *   ⇒ 账本根**解析不到** 与 账本根**真的没有待办** 产出**同一个 `false`**
+       *   ⇒ `nextRecheckDelay(false, …)` = `undefined` ⇒ `clearRecheckTimer()` **当场执行**
+       *   ⇒ ⚠ **T5 定时复查被静默关闭**：派发的回执永不结算，**且没有任何周期性补偿**，
+       *     运行期**一声不响**（装配期那条是 `logger.warn`，且只说一次）。
+       *   ⚠ 最坏形态（多账本 / 深搜歧义布局）：`ledgerHome` 有多处、深搜取到**别的工作区**那份
+       *     ⇒ 我的待办在**另一棵树**里 ⇒ 扫不到 ⇒ 定时器关掉 ⇒ 死等。
+       *
+       * ── 现在（TASK 要求 2：**二选一**，选「不静默关掉」，理由在下面）────────────
+       *   **先诊断账本根**，再决定武装判据：
+       *     · `diag.kind === 'ok'` ⇒ 照旧按"盘上还有没有待办"武装（⛔ 行为一字未改）；
+       *     · `diag.kind !== 'ok'` ⇒ **强制武装**（`armed = true`）——
+       *       ⚠ 语义是"**判不出该查哪里 ⇒ 按'还有待办'处理**"，即 **fail-open**。
+       *
+       * ── ⚠ 为什么选 fail-open（不静默关掉），而⛔ 不选"照旧关掉 + 加一行读数"────────
+       *   ① **这一档的代价不对称**：关掉 ⇒ 回执**永久不结算**（用户看不到任何东西，
+       *      且**没有任何机制会再来一次**）；开着 ⇒ 每轮只是**重试一次扫描**，
+       *      而 `nextRecheckDelay` 是**有上限的退避表**（`RECHECK_BACKOFF_MS`，末项封顶）
+       *      ⇒ **不会无界空转**，且 `unref` 保证不吊住宿主退出。
+       *   ② **"加一行读数"救不了这一档**：读数是**人主动看**才生效的，
+       *      而本缺陷的形态恰恰是"**没人知道要去看**" —— 用户看到的是"在等回传：0 个"，
+       *      他**没有理由**去点开状态再读一行成因。⇒ 读数必须**配合**行为修正，⛔ 不能替代它。
+       *   ③ ⚠ ⛔ **"空闲零定时器"纪律没有被破坏**：那条纪律的语义是
+       *      「**确认没有待办时**，一个定时器都不许存在」（`check:orch` 的 SA-t 钉着它）。
+       *      本档是"**判不出**有没有待办" —— ⛔ 它从来不是"确认没有"。
+       *      ⚠ 判据侧已核：SA-t 的四档里，"空盘"那一档走的是 `diag.kind === 'ok'`（账本可读、
+       *      pending 为空）⇒ **仍排 0 个定时器**，本条不碰它。
+       *   ④ ⚠ **读数面同时补齐**（要求 1 / 3）：`hob_orch_status` 现在会印
+       *      「**账本根解析不到**」+ 成因（恰好两行，见 `reachabilityLines`）——
+       *      行为与读数**两侧都动**，⛔ 不是只改一边。
        */
-      const armed = (() => {
+      const homeDiag = ledgerHomeDiag(svcCtx)
+      /**
+       * ⚠ `armed` 的两个来源**必须各自可读**（⛔ 不许压成一个布尔后就说不出为什么）：
+       *   · `armedByDisk` = 盘上真有待办（改前的唯一依据）；
+       *   · `armedByDiag` = 账本根解析不到 ⇒ 判不出 ⇒ fail-open（本批新增）。
+       *   ⚠ 只在**诊断异常**时才多读盘一次；正常档**多一次 `readdir` 都不做**。
+       */
+      let armedByDisk = false
+      if (homeDiag.kind === 'ok') {
         try {
           for (const file of scanStateFiles(svcCtx)) {
-            if (hasUnsettled(readOrchState(file).pending)) return true
+            if (hasUnsettled(readOrchState(file).pending)) { armedByDisk = true; break }
           }
         } catch { /* 读不到 ⇒ 不武装（fail-closed：没有证据就不起定时器） */ }
-        return false
-      })()
+      }
+      const armedByDiag = homeDiag.kind !== 'ok'
+      const armed = armedByDisk || armedByDiag
       const delay = nextRecheckDelay(armed, recheckRound)
       if (delay === undefined) { clearRecheckTimer(); return }
       if (recheckTimer !== undefined) return          // ⚠ 同一时刻至多一个
@@ -3161,7 +3392,31 @@ export function apply(ctx: any): void {
  * ⚠ ⚠ **措辞里必须说清"这不等于 0"** —— 那正是本单要治的误解
  *   （读者看到 `在等回传：0 个` 会以为"没事"，而真相是"**看不到**"）。
  */
-function reachabilityLines(r: OrchStatus['reachability']): string[] {  if (r === 'ok' || r === 'no-records-yet') return []
+function reachabilityLines(r: OrchStatus['reachability'], homeWhy?: LedgerHomeDiag): string[] {
+  if (r === 'ok' || r === 'no-records-yet') return []
+  /**
+   * ⚠⚠ **第 ④ 档：账本根压根没解析出来**（2026-10-21 · 第 326 轮 · **甲-7** 要求 1 / 3）——
+   *
+   * ⚠ **为什么必须与 `ledger-unreachable` 分开印**：改前两者印的是**同一句**
+   *   （"**账本目录不存在** —— 按工作区名解析出的那个路径上没有东西"），
+   *   而它们的**修法完全不同**：
+   *     · `ledger-unreachable` ⇒ 这个工作区**真的没有**账本（还没派过 / 换机器了）；
+   *     · `ledger-home-unresolved` ⇒ **配置面**没给出 `ledgerHome`（或 loader 读不了）
+   *       ⇒ ⚠ 去查预设行 / loader，⛔ 不是去建账本目录 —— 建了也用不上。
+   *   ⚠ 这两件事说成一句话，正是甲-7 点名的"三件事说成同一句"。
+   *
+   * ── 要求 3：**最多两行，且只在异常档出现**（正常档一个字都不多加）───────────
+   *   本档固定**恰好两行**（标题行 + 成因行）。⚠ ⛔ 不许再加第三行 ——
+   *   状态行是逐轮要读的，多一行就挤压上下文（TASK 明令）。
+   */
+  if (r === 'ledger-home-unresolved') {
+    const reason = homeWhy?.reason ?? '（诊断不可用）'
+    return [
+      '⚠⚠ 账本可达性：**账本根解析不到** —— 连"该查哪个账本"都不知道 ⇒ ⚠ **上面那些 0 是"看不到"，不是"没有"**',
+      `  ↳ 成因（${homeWhy?.kind ?? 'unknown'}）：${reason}`
+      + ' ⇒ ⚠ 去查**预设行的 `ledgerHome`** / loader 装配，⛔ 不是去建账本目录（建了也用不上）',
+    ]
+  }
   const why = r === 'ledger-unreachable'
     ? '**账本目录不存在**（按工作区名解析出的那个路径上没有东西）'
     : r === 'unreadable'
@@ -3391,11 +3646,12 @@ export function createHobOrchTools(orch: HobOrchestrator): {
           /**
            * ⚠ ⚠ **"接没接上，一眼能看出来"**（作业书 §三-6 的硬要求）：
            *   判据 = **有没有过"按推送现读登记成功"**（`pushedRegisterOk`）——
-           *   它 > 0 即证明"**不依赖任何人先浏览卡面**"这条路真的通了；
-           *   = 0 且登记也是 0 ⇒ 明写"**还没接上**"（⛔ 不许让人以为是"没有卡在跑"）。
+           *   它 > 0 即证明"**不依赖任何人先浏览卡面**"这条路真的通了。
            * ⚠ 与"读过卡面才登记"分开计：那一档是旧的、会打空的那条路。
+           * ⚠⚠ **本行已拆成三档**（第 323 轮 · `TASK-I`）：`wired` 只是**第 ③ 档**的条件，
+           *   ⛔ 不是"没 wired 就等于没收到过帧" —— 那个等式正是本件要修掉的假话，
+           *   完整判据见下面 `headState` 那一段。
            */
-          const wired = d.pushedRegisterOk > 0
           /**
            * ⚠⚠ **三档必须成对报**（B4 / `DESIGN` §4.6；缺一即假话）：
            *   `我的登记/在跑` · **`归属判不出`** · **`他人的（只给条数）`**。
@@ -3422,12 +3678,64 @@ export function createHobOrchTools(orch: HobOrchestrator): {
             : ` · 我的登记 ${d.mine?.registered ?? 0} 个 · 我的在跑 ${d.mine?.pending ?? 0} 个`
           const othersPart = ` · **归属判不出 ${d.ownerUnknownRegistered} 个**`
             + ` · **他人的 ${d.othersOnly} 个（只给条数）**`
-          const head = `实施会话叫醒面：${wired ? '✅ **已接上（按推送现读）**' : '⚠ **还没接上（未收到过点火帧）**'}`
+          /**
+           * ── ⚠⚠ **头行拆三档**（2026-10-20 · 第 323 轮 · `TASK-I`）────────────────────
+           *
+           * ⚠ ⚠ **改前是一句假话**（现场实证：第 322 轮 `AFTER-RESTART.md` §5.A）：
+           *   那时只有 `pushedRegisterOk > 0 ? 已接上 : ⚠ 还没接上（未收到过点火帧）`。
+           *   而"还没接上"至少三条成因，**其中两条根本没有帧**：
+           *     ① 真的一帧都没收到过；
+           *     ② **收到过帧，但从没走到"登记成功"**（被 `selfExecuted` / `owner ≠ subscriber`
+           *        那两道准入拦下 —— 这是本机常态）；
+           *     ③ 登记成功过，但按人读的那一档取不到。
+           *   ⇒ 改前把 ② 说成 ①，读的人会去查"为什么没有帧"，
+           *     而真正该查的是**准入那两道**。这正是本项目**头号禁忌**：
+           *     **两种原因说成同一句话**。
+           *
+           * ⚠ 现在（判据见 `check:orch` 的 `SH` 组，三种情形各一条 + 三条反证）：
+           *   · `wired`       ⇒ ③ `✅ 已接上（按推送现读）`
+           *   · `firingSeen>0` ⇒ ② `⚠ 收到过点火帧、但一次都没登记成功` + **点名被哪道准入拦下**
+           *   · 否则           ⇒ ① `⚠ 还没接上（一帧都没收到过）`
+           * ⚠ ⛔ **不许为了档位好看去放宽那两道准入** —— 准入是**设计**（`I-3`），
+           *   本件只负责**把话说清**。⛔ 也不许改 `pushedRegisterOk` 的语义。
+           */
+          const wired = d.pushedRegisterOk > 0
+          /**
+           * ⚠ `firingSeen` 缺失（旧快照 / 老调用形状）⇒ 落 `undefined`，**⛔ 不许当成 0**
+           *   —— 那会把"判不出有没有帧"说成"一帧都没有"（同族的另一种假话）。
+           */
+          const firingSeen = typeof d.firingSeen === 'number' ? d.firingSeen : undefined
+          const headState = wired
+            ? '✅ **已接上（按推送现读）**'
+            : firingSeen === undefined
+              ? '⚠ **判不出接没接上**（这一版读数取不到"收到过几帧点火"）'
+              : firingSeen > 0
+                ? `⚠ **收到过点火帧 ${firingSeen} 次、但一次都没走到"登记成功"**`
+                : '⚠ **还没接上（一帧都没收到过）**'
+          const head = `实施会话叫醒面：${headState}`
             + selfPart + othersPart
             + ` · 已叫醒 ${d.wokeCount} 次`
             + (d.pushedRegisterOk > 0 ? ` · 按推送现读登记成功 ${d.pushedRegisterOk} 次` : '')
             + (d.undecidableCount > 0 ? ` · ⚠ **判不出 ${d.undecidableCount} 次**` : '')
           const lines = [head]
+          /**
+           * ── ⚠⚠ **第 ② 档必须点名"被哪一道准入拦下"**（`TASK-I` 判据的落点）──────
+           *   ⚠ 只说"收到了但没登记成功"**不够**：读的人仍然不知道该去查什么。
+           *   本档要回答的正是"**该查准入，不是查帧**"。
+           * ⚠ `firedBlockedWhy` 缺 ⇒ 明写"没取到原话"（⛔ 不许静默当成没有这件事）。
+           */
+          if (!wired && firingSeen !== undefined && firingSeen > 0) {
+            if (d.firedBlockedCount > 0) {
+              lines.push(`  ↳ ⚠ 收到过点火帧，但**被准入拦下 ${d.firedBlockedCount} 次**`
+                + ' ⇒ 这不是"没有帧"，是"**帧到了、归属证明没通过**"')
+              if (d.firedBlockedWhy !== undefined) lines.push(`  ↳ ${d.firedBlockedWhy}`)
+              lines.push('  ↳ ⛔ 两道准入是**设计**（`selfExecuted` / `owner ≠ subscriber`），'
+                + '⛔ 不是缺陷；该查的是"这张卡该归谁"，⛔ 不是"为什么没有帧"。')
+            } else {
+              lines.push('  ↳ ⚠ 帧到过，但**没有一条被准入拦下的记录** ⇒ '
+                + '说明它们**根本没被识别成点火帧**（⛔ 与"被准入拦下"不是同一档）')
+            }
+          }
           if (d.pushRegisterIssues > 0 && d.pushRegisterWhy !== undefined) {
             lines.push(`  ↳ ⚠ ${d.pushRegisterWhy}`)
             lines.push(`  ↳ 按推送现读**登记失败 ${d.pushRegisterIssues} 次** —— ⛔ 这**不是**"没有卡在跑"。`)
@@ -3662,7 +3970,7 @@ export function createHobOrchTools(orch: HobOrchestrator): {
         //     （在等回传 0 · 已回传 0 · 待投递 0）⇒ ⚠ **读者以为"就是 0"**。
         //   ⚠ ⚠ **为什么⛔ 不能改"真的没有记录"那一侧**（作业书 §3(a)）：
         //     那是**真实状态**；给它加标记＝把一类假信号换成另一类。
-        ...reachabilityLines(s.reachability),
+        ...reachabilityLines(s.reachability, s.ledgerHomeWhy),
         // ── ⚠ 以下是**本批新增的行**（原有行一字未改、未删）─────────────
         //   它们存在的唯一理由：宿主重载会把内存里的 watch 抹掉，
         //   没有这两行，重载后的读数与"从来没派过"**完全一样**。
