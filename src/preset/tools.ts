@@ -169,7 +169,7 @@ function makeDiag(config: Config): (msg: string) => void {
  *
  * ⚠ **F1 修正的行为倒挂**（阶段 E3 实测暴露）：这两处原先挂在 `ctx.inject([GATE_SERVICE])`
  *   回调内 ⇒ `modules.tools:false` 时**整段不执行** ⇒ 关掉门禁反而让助手
- *   从当时白名单的 11 个工具**涨到 51 个**（含能派活、能改工作状态的工具）——
+ *   从当时那个白名单**涨到**含能派活、能改工作状态的一大批（**具体名数以 `check:presets` 的判定为准**）——
  *   用户"减少能力"的意图被执行成了"放大权限"。与方案 §3.3「关掉只影响该模块自己」不符。
  *   ⇒ 现在门禁**只继续管"工具注册"这一件事**。
  *   ⚠ 上面「11 → 51」是**阶段 E3 那次实测的历史读数**（当时的白名单是 11 项）；
@@ -418,7 +418,7 @@ export function apply(ctx: any, config: Config = {}): void {
   //   ⇒ 关掉 `modules.bus` 只影响 M3 自己，与「模块可独立启停」一致（§3.3）。
   //
   // ⚠⚠ **`BUS_SERVICE` 与 `createHobBusTools` 也是"缺一个就拖垮整块"的具名导出**
-  //   （`TASK-D`①）⇒ 改成**运行时**取。取不到的处置：**可降级**（少 M3 这 4 个工具，
+  //   （`TASK-D`①）⇒ 改成**运行时**取。取不到的处置：**可降级**（少掉 M3 的那几个工具，
   //   工具面其余部分 / 权限面 / 收敛机制 / M5 全部照常）—— 判据仍是本单 §三-③
   //   "它缺席时其余能力还能不能安全工作"。⚠ 但⛔ 不许静默：`degrade` 会说清少了哪 4 个。
   const BUS_SERVICE = busFace.BUS_SERVICE
@@ -547,13 +547,26 @@ function denyInheritedTools(ctx: any, log: (m: string) => void, defaultDeny: rea
  * 「助手」只干这几件事：**读项目文档 / 读工作区文件 / 写自己的账本**、
  * **查资料**、**打开网页取正文**、**只读查询看板与圆桌**、**安排自己的定时提醒**、
  * **在只有用户能定时向用户提问**、**按需加载技能指引**、**把产出挂成交付卡**。
- * 于是清单 = 本插件的 2 个 + 检索 5 个 + 定时 4 个（既有 11）
- *           + 编排只读查询 4 个 + 网页正文 1 个 + 文件只读 4 个（批 9 新增 9 = 20）
- *           + 向用户提问 1 个（**批 11 / D2 新增 1 = 21**）
- *           + 技能加载 1 个 + 产出挂卡 1 个（**批 13 新增 2 = 23**）。
- *           + **会话总线投递 2 个**（`hob_sessions` / `hob_send`，**批 14 / M3 新增 2 = 25**）。
- *           + **建会话 2 个**（`hob_workspaces` / `hob_spawn`，**批 16 新增 2 = 27**）。
- *           + **闭环编排 3 个**（`hob_dispatch` / `hob_orch_status` / `hob_orch_control`，**批 17 新增 3 = 30**）。
+ * 于是清单（**以下全部为实测**：逐项 `grep` + `MODEL_TOOL_ALLOWLIST.length`）：
+ *   · **既有 11 个** = 本插件 2（`read_contracts` / `write_hob`）
+ *                    + 检索 5 + 定时 4（`schedule_*`）                          = 11
+ *   · **批 9 新增 5 个** = `taskboard_list` / `taskboard_get` / `taskboard_comments`
+ *                        + `roundtable_status` + `web_fetch`                    = 16
+ *   · **批 11 / 13 新增 3 个** = `ask_user_question` + `skill` + `present`     = 19
+ *   · **批 14 新增 2 个** = `hob_sessions` / `hob_send`                         = 21
+ *   · **批 16 新增 2 个** = `hob_workspaces` / `hob_spawn`                      = 23
+ *   · **批 17 新增 3 个** = `hob_dispatch` / `hob_orch_status` / `hob_orch_control` = **26**。
+ *
+ * ⚠⚠ **订正说明（2026-10-21 · 第 337 轮 · 丙-7）**：本条原写作一串从 11 加到 **30** 的加法链，
+ *   并声称「批 9 新增 **9** = 20 … 批 16 新增 **2 = 27** … 批 17 新增 **3 = 30**」。
+ *   ⚠ **实测真值是 26**（`MODEL_TOOL_ALLOWLIST.length === 26`）。原链有两处错：
+ *     ① **批 9 实际新增 5 个**（不是 9）—— 而且 `hob_read_doc` / `hob_glob` / `hob_grep` /
+ *        `hob_read_image` **本就不在档1**（它们是档2/档3 的增量）⇒ 原链把"档位增量"
+ *        算进了"本清单"；
+ *     ② 累加到 **30** 之后**没有纠正** —— 而 **30 恰好是 `workspace` 档的数**
+ *        （`PERMISSION_TIERS.workspace.length`），**不是本清单（= `ledger` 档）的数**。
+ *   ⚠ 现在的口径（全实测）：本清单 **26** · `project` **27** · `workspace` **30**。
+ *     ⚠ **逐档名数一律以 `check:presets` 的判定为准**（那是唯一的实测来源）。
  *
  * ── ⚠ 能力落点 = **声明面 与 白名单 的「与门」**（批 8 审查实测，见 E-86）────
  * 白名单**只**决定"这一项发不发给模型"；工具**还必须在该预设作用域里被注册**——

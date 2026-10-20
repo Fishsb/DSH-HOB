@@ -928,20 +928,72 @@ export async function writeHobFile(
   }
 
   // ── 14：回读校验；不一致则从备份回滚 ────────────────────────────────────
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **丙-3（2026-10-21 · 第 337 轮）：回读校验太弱 + 回滚非原子**
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 改前的两条病（`PROJECT-SURVEY-3` §6.3 丙-3）────────────────────────
+   *   ① **判据太弱**：只判"落盘内容**包含**正文第一行非空行"。
+   *      ⚠ 首行往往很短（`# 工作上下文` / `# 决策记录`）⇒ **任何仍含该行的旧内容都能通过**
+   *      ⇒ 真的写坏了（后半截被截断 / 被别的进程覆盖）**照样报 ok**。
+   *   ② **回滚非原子**：`writeFile(absTarget, 备份内容)` **直接覆盖目标**。
+   *      ⚠ 回滚恰恰发生在"**已经出过一次错**"的时刻 —— 此时再崩一次就留**半截文件**。
+   *
+   * ── 现在的判据：与 **`next` 逐字节比**（⚠ 不是与 `body` 比）────────────────
+   *   ⚠ **为什么比 `next` 而不是比 `body`**：真正落盘的是 `next`（见上面
+   *     `writeFile(tmp, next, 'utf8')` ⇒ `rename`）。而 `body` 与它之间**确实有差异**：
+   *       · `overwrite` 时 `next` 可能补过尾部换行；
+   *       · `append` 时 `next` 是"原内容 + 分隔 + 正文"。
+   *     ⚠ 拿 `body` 直接比 ⇒ **正常写入必然误报**（那会让每次写都回滚）。
+   *   ⚠ **EOL 对齐**：两侧都是 `readFile(..., 'utf8')` / 写进去的同一个 JS 字符串，
+   *     **没有做任何 EOL 归一** ⇒ 逐字节比**成立**（实测：正常 append / overwrite 均通过）。
+   *   ⚠ 为稳妥仍保留一条"**长度先比**"的短路：长度不等就**不必**逐字节比，
+   *     这样坏样本能给出更可读的差异（`实际 N 字节 / 期望 M 字节`）。
+   */
   try {
     const back = await readFile(absTarget, 'utf8')
-    if (!back.includes(body.replace(/\s+$/, '').split('\n')[0]!)) {
-      throw new Error('回读内容与预期不符')
+    if (back !== next) {
+      /**
+       * ⚠ 差异描述里**分别报长度与首个不一字节的位置** —— ⛔ 只说"不符"等于没说。
+       *   ⚠ 位置只在长度相等时才有意义（长度不等时"第几个字节不同"是误导）。
+       */
+      const detail = back.length !== next.length
+        ? `长度不符：落盘 ${Buffer.byteLength(back, 'utf8')} 字节 / 期望 ${Buffer.byteLength(next, 'utf8')} 字节`
+        : (() => {
+          let i = 0
+          while (i < back.length && i < next.length && back[i] === next[i]) i++
+          return `等长但内容不同（首处差异在第 ${i + 1} 个字符）`
+        })()
+      throw new Error(`回读内容与预期不符 —— ${detail}`)
     }
   } catch (e) {
     let rolled = false
+    let how = ''
     if (backupName !== undefined) {
       try {
-        await writeFile(absTarget, await readFile(join(backupDir, backupName)))
-        rolled = true
+        /**
+         * ⚠⚠ **回滚也走 `tmp → rename`**（丙-3 要求 1）：
+         *   同目录内建临时件 ⇒ 写备份内容 ⇒ `rename` 到目标。
+         *   ⚠ `rename` 在同一文件系统内是**原子**的 ⇒ 目标要么是**旧的整体**、
+         *     要么是**新的整体**，⛔ 绝不会是"半截回滚内容"。
+         *   ⚠ 临时件名带 `pid` + 时间戳 ⇒ 多次回滚不会互撞（同丙-4 那条纪律）。
+         */
+        const backBytes = await readFile(join(backupDir, backupName))
+        const rbTmp = `${absTarget}.rollback-${process.pid}-${Date.now()}`
+        try {
+          await writeFile(rbTmp, backBytes)
+          await rename(rbTmp, absTarget)
+          rolled = true
+          how = '（原子回滚：tmp → rename）'
+        } catch (e2) {
+          /** ⚠ 临时件清掉再抛 —— ⛔ 不许留垃圾。 */
+          try { await rm(rbTmp, { force: true }) } catch { /* 清不掉不影响判定 */ }
+          throw e2
+        }
       } catch { /* 回滚失败要在消息里说清 */ }
     }
-    return refuse(file, 'readback-mismatch', `写入后回读校验失败（${e instanceof Error ? e.message : String(e)}）；${rolled ? '已从备份回滚' : '回滚未成功，请人工检查'}。`)
+    return refuse(file, 'readback-mismatch', `写入后回读校验失败（${e instanceof Error ? e.message : String(e)}）；${rolled ? `已从备份回滚${how}` : '回滚未成功，请人工检查'}。`)
   }
 
   // ── 14.5：**改 1 · 写入边界校验**（2026-10-10 第 44 轮 · 结构改造①）────────

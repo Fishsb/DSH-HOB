@@ -1058,7 +1058,14 @@ const PANEL_EN: Record<string, string> = {
   'note.permission.pre': '· «Readable-permission control» is a ',
   'note.permission.strong': 'takes-effect-immediately',
   'note.permission.post': ' value-type configuration — an open session follows the new level from its next step, and it is a different path from the module switches above. ⚠ «Full permission» widens the READABLE range only: every file in the workspace can be read, and it still cannot write, run a command, or raise a team.',
-  'note.restart.pre': '· Module switches ({tools} / {bus} / {orch} / {settings} / {interconnect}, five in total): a change needs ',
+  /**
+   * ⚠⚠ **数量词改成口径式**（2026-10-21 · 第 337 轮 · 丙-8）：
+   *   原文在括号里写死了一个英文数量词（「多少个，合计」那半句）—— ⚠ 那是**政策读数**，
+   *   以后再加一个开关时它会**静默变旧**，而 `P-1`（扩面后）会咬它。
+   *   ⇒ 改成「列出的每一个」：**不写死数**，以花括号里实际列出的那串为准。
+   *   ⚠ 中文那一侧同步改（见 `:1191` 附近），⛔ 不许一边改一边不改。
+   */
+  'note.restart.pre': '· Module switches ({tools} / {bus} / {orch} / {settings} / {interconnect}; every one listed here): a change needs ',
   'note.restart.strong': 'an instance restart',
   'note.restart.post': ' to take effect — the host’s rule is that changing these values does not remount the plugin, and modules are loaded at plugin-load time.',
   'note.effective.pre': '· «{card}» is a ',
@@ -1188,7 +1195,8 @@ const PANEL_ZH: Record<string, string> = {
   'note.permission.pre': '· 「可读权限控制」是',
   'note.permission.strong': '即改即生效',
   'note.permission.post': '的值型配置 —— 已开的会话在它的下一步就按新档位走；它和上面的模块开关是两条不同的路径。⚠ 「完全权限」只放宽可读范围：工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队。',
-  'note.restart.pre': '· 模块开关（{tools} / {bus} / {orch} / {settings} / {interconnect}，共五个）：改完需要',
+  /** ⚠ 与上面英文侧同步：⛔ 不写死数量，改成"上面列出的每一个"。 */
+  'note.restart.pre': '· 模块开关（{tools} / {bus} / {orch} / {settings} / {interconnect}，上面列出的每一个）：改完需要',
   'note.restart.strong': '重启实例',
   'note.restart.post': '才生效 —— 宿主的规定是"改这些值不重挂插件"，而模块的装载发生在插件装载那一刻。',
   'note.effective.pre': '· 「{card}」是',
