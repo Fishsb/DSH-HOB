@@ -634,22 +634,103 @@ export async function runWriteScope({ bad, ok }) {
     } else {
       const found = []
       const volsDir = join(LEDGER, 'volumes')
+      /**
+       * ══════════════════════════════════════════════════════════════════════
+       * ⚠⚠ **乙-6（2026-10-21 · 第 327 轮）：这一段的两个读数都不老实**
+       * ══════════════════════════════════════════════════════════════════════
+       *
+       * ── 病灶 ①（改前）：`catch { vols = [] }` 把"读不到"吞成"没有" ────────────
+       *   卷目录**不存在 / 无权限 / 不是目录** ⇒ `vols = []` ⇒ 下面 `found.length === 0`
+       *   ⇒ ⚠ **打 ✓**：「实际存在的卷下两层目录**都已在** `VOLUME_SUBDIRS` 里」——
+       *   而真相是**一个都没扫到**。「没有对象」与「扫过且都对」被印成同一句话。
+       *
+       * ── 病灶 ②（改前）：读数用**常量长度**冒充"实测扫到 N 项" ──────────────────
+       *   `实测扫到 ${VOLUME_SUBDIRS.length} 项` —— 那个值是**登记表的长度**，
+       *   ⚠ **它跟这次到底扫到几条毫无关系**。⇒ 读数看起来是实测值，其实是常量
+       *   （本项目最忌的形态：**读数不老实**，比"没有读数"更坏 —— 它让人以为核过了）。
+       *
+       * ── 现在 ──────────────────────────────────────────────────────────────
+       *   ① 读不到 ⇒ **`bad`**（点名路径 + 成因），⛔ 不再落 `ok`；
+       *   ② "实测扫到 N 项"改用**真的扫出来的** `scanned`；
+       *   ③ ⚠ **`scanned !== VOLUME_SUBDIRS.length` 也必须是一条 `bad`** ——
+       *      那正是"配置声明的白名单与实际落盘不一致"（TASK 明令要求这一条）。
+       *
+       * ── 为什么选 `bad` 而⛔ 不选 `exit 2` ──────────────────────────────────
+       *   `exit 2` 的语义在本族是"**没有对象**"（基准缺失）。而这里的情形**一半是**：
+       *   卷目录真的不存在时确实是"没有对象"；**但另一半不是** ——
+       *   目录在、权限不足 / 读到一半抛错，那是"**查了但查不成**"。
+       *   ⚠ 两者成因不同、修法不同（一个是"去建目录"，一个是"去查权限"），
+       *   ⛔ 压成同一个退出码就又是"两种原因说成同一句话"。
+       *   ⇒ 统一落 `bad`（退出码 1），并在**文案里点名成因**把两档分开：
+       *     `ENOENT`（不存在）与其它 errno（无权限 / 不是目录）**分别措辞**。
+       *   ⚠ 另有一条硬理由：`exit 2` 会让**整族**（Q1/Q2/Q4 等）一条都不跑，
+       *     而那些判据与账本卷目录**无关** ⇒ 那是"为修一格而废掉全族"。
+       */
       let vols = []
-      try { vols = readdirSync(volsDir, { withFileTypes: true }) } catch { vols = [] }
+      let volsWhy = ''
+      try {
+        vols = readdirSync(volsDir, { withFileTypes: true })
+      } catch (e) {
+        const code = String(e?.code ?? '')
+        volsWhy = code === 'ENOENT'
+          ? `目录**不存在**（ENOENT）`
+          : `**读不到**（${code || 'unknown'} ${String(e?.message ?? e)}）`
+      }
+      if (volsWhy !== '') {
+        bad(`Q3 **卷目录读不到** ⇒ 「新两层目录必须登记」这一条**一条都没跑**`
+          + `\n      ⇒ 路径：\`${volsDir}\``
+          + `\n      ⇒ 成因：${volsWhy}`
+          + '\n      ⇒ ⚠ 改前这一档会 `vols = []` ⇒ 下面打 ✓「实际存在的都已登记」'
+          + ' —— ⚠ 那是把「**一个都没扫到**」印成「**扫过且都对**」'
+          + '\n      ⇒ 修法：确认账本区 `volumes/` 存在且可读；'
+          + '若本机尚未建立账本卷目录，那是**基准缺失**，⛔ 不代表通过')
+      }
+      /** ⚠ **真的扫出来的**两层目录数（⛔ 不是 `VOLUME_SUBDIRS.length`）。 */
+      let scanned = 0
+      let subWhy = ''
       for (const v of vols) {
         if (!v.isDirectory()) continue
         let subs = []
-        try { subs = readdirSync(join(volsDir, v.name), { withFileTypes: true }) } catch { subs = [] }
+        try {
+          subs = readdirSync(join(volsDir, v.name), { withFileTypes: true })
+        } catch (e) {
+          /** ⚠ 卷子目录读不到 ⇒ 也**不许**吞成"没有"（否则覆盖面无声明地缩水）。 */
+          subWhy += `\n      ⇒ 卷 \`${v.name}\` 读不到（${String(e?.code ?? '')}）⇒ 该卷两层目录**未计入实测数**`
+          continue
+        }
         for (const sd of subs) {
           if (!sd.isDirectory()) continue
+          scanned += 1
           const rel = `${v.name}/${sd.name}`
           if (!VOLUME_SUBDIRS.includes(rel)) found.push(rel)
         }
       }
-      if (found.length === 0) {
+      if (subWhy !== '') {
+        bad(`Q3 **卷子目录读不到** ⇒ 实测覆盖率不完整（⛔ 不按通过处理）${subWhy}`)
+      }
+      /**
+       * ⚠⚠ **病灶 ② 的修法 + TASK 要求的第三条**：
+       *   `scanned`（实测）与 `VOLUME_SUBDIRS.length`（登记表）**必须相等** ——
+       *   不等就是"配置声明的白名单与实际落盘不一致"。
+       *   ⚠ 注意方向：`scanned > 登记数` ⇒ 有**未登记**的（`found` 会抓到）；
+       *     `scanned < 登记数` ⇒ 登记表里有**落盘上不存在的**条目（`found` 抓不到，
+       *     因为 `found` 只按"扫到的"枚举）⇒ 这一侧改前**完全没有判据**。
+       */
+      if (volsWhy === '' && found.length === 0 && scanned !== VOLUME_SUBDIRS.length) {
+        bad(`Q3 **登记表与实测对不上**：\`VOLUME_SUBDIRS\` 登记 **${VOLUME_SUBDIRS.length}** 项，`
+          + `而本次实测扫到 **${scanned}** 项`
+          + `\n      ⇒ 路径：\`${volsDir}\``
+          + '\n      ⇒ ⚠ 改前这一行印的是 `实测扫到 ${VOLUME_SUBDIRS.length} 项` —— '
+          + '**那个值是登记表的长度，跟扫到几条毫无关系**'
+          + '\n      ⇒ ⚠ 两种成因、两种修法（⛔ 不许压成一句）：'
+          + '\n         ① `scanned > 登记数` ⇒ 有落盘存在但**未登记**的两层目录 ⇒ 加进 `VOLUME_SUBDIRS`；'
+          + '\n         ② `scanned < 登记数` ⇒ 登记表里有**落盘上已不存在**的条目 ⇒ 删掉那一行（或把目录建回来）')
+      }
+      if (volsWhy === '' && found.length === 0 && scanned === VOLUME_SUBDIRS.length) {
         ok(`Q3 ✓ **强制登记**：账本区实际存在的卷下两层目录**都已在 \`VOLUME_SUBDIRS\` 里**`
-          + `（登记 ${VOLUME_SUBDIRS.length} 项 · 实测扫到 ${VOLUME_SUBDIRS.length} 项）`)
-      } else {
+          + `（登记 ${VOLUME_SUBDIRS.length} 项 · **实测扫到 ${scanned} 项** —— `
+          + '⚠ 这个数来自本次真的 `readdirSync`，⛔ 不是登记表的长度）')
+      } else if (volsWhy === '' && found.length > 0) {
         bad(`Q3 **有未登记的两层目录**：${found.map((f) => `\`volumes/${f}/\``).join(' · ')}`
           + `\n      ⇒ ⚠ 这正是"下次再出现一个新两层目录"的那条缝 ⇒`
           + `\n      **动作**：把它的相对路径（如 \`${found[0]}\`）加进 \`src/server/hob-write.ts\` 的 \`VOLUME_SUBDIRS\`（一行）。`)
