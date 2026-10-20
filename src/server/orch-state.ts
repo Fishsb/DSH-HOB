@@ -697,6 +697,63 @@ export function readOrchState(file: string): OrchStateFile {
  * @returns 是否写成功。**失败不抛** —— 由调用方记日志（一个记不上账的
  *   诊断不该让编排的主流程崩掉；但也绝不静默：返回值必须被消费）。
  */
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * ⚠⚠ **进程内单写者队列**（2026-10-21 · 第 338 轮 · **丙-5**）
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * ── 为什么需要它（`PROJECT-SURVEY-3` §6.3 丙-5）────────────────────────
+ *   全仓 `grep -rnE "O_EXCL|flock|lockfile|withLock|mutex|\.lock'"` 在 `src/` + `scripts/`
+ *   = **0 命中** ⇒ 五个写函数全是**无锁的「读 → 改 → 写」**。
+ *   ⚠ `writeOrchState` 的 `tmp → rename` 只防**半截文件**，⛔ **不防丢更新**：
+ *     A 读到旧盘 → B 读旧盘 → B 写 → A 写 ⇒ **B 的改动被 A 的旧快照覆盖掉**。
+ *   ⚠ 而 `orchestrator.persistOwnerPartition` 与 `bus.noteHandoff` 写**同一个文件**、
+ *     两个模块各自持有一份快照 ⇒ 这正是"必然丢更新"的形态。
+ *
+ * ── 做法：Q8 选项 ① · 进程内单写者队列 ────────────────────────────────
+ *   ⚠ 为什么不用锁文件：那会引入**新的失败面**（死锁 / 残留锁 / 崩溃后无人清理），
+ *     而本进程内的写者本来就都在同一个 Node 进程里。
+ *   ⛔ 不引入定时器（`T5`「空闲零定时器」）；⛔ 不改任何调用方的返回值语义与异步性 ——
+ *     五个写函数仍**同步返回**，队列在**当前调用栈内**跑完。
+ */
+export interface OrchWriteQueueStats {
+  /** 当前**正在跑**的写事务数（0 = 空闲；>1 = 发生过重入）。 */
+  depth: number
+  /** 自进程启动以来**累计**入队过多少次。 */
+  total: number
+  /** 是否**曾经发生过重入**（= 有写事务在自己的读改写中间又调了写函数）。 */
+  waited: boolean
+}
+
+const queueStats: OrchWriteQueueStats = { depth: 0, total: 0, waited: false }
+let inWrite = false
+
+/** 读队列读数（**只读快照**）。⚠ 正常档（`waited === false`）调用方**不许印任何行**。 */
+export function orchWriteQueueStats(): OrchWriteQueueStats {
+  return { depth: queueStats.depth, total: queueStats.total, waited: queueStats.waited }
+}
+
+/**
+ * 在**单写者**保护下跑一段写事务（同步）。
+ *
+ * ⚠ **同步执行**：回调在当前调用栈内跑完，返回值原样返回（⛔ 不排队、不延后）。
+ * ⚠ **重入如实记账**：进入时若已在写 ⇒ `waited = true`（这说明调用链里有写事务嵌套，
+ *   也就是丢更新的形成机制）。⛔ 不在这里抛 —— 那会把记账缺陷变成主流程崩溃。
+ */
+export function runSerialized<T>(fn: () => T): T {
+  queueStats.total++
+  if (inWrite) queueStats.waited = true
+  queueStats.depth++
+  const prev = inWrite
+  inWrite = true
+  try {
+    return fn()
+  } finally {
+    queueStats.depth--
+    inWrite = prev
+  }
+}
+
 export function writeOrchState(file: string, state: OrchStateFile): boolean {
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
   try {
@@ -903,7 +960,22 @@ export function classifyPending(
  *     ⇒ ⚠ 既有调用点与既有断言 F/G 的老用法**不需要改**（向后兼容）。
  *   ⚠ `unknown`（判不出）**不许**当成 `running` —— 猜错的代价是"该会话永久不能再派"。
  */
+/**
+ * ⚠⚠ **丙-5（2026-10-21 · 第 338 轮）**：`markLost` 的「读 → 改 → 写」必须**单写者**执行。
+ *   ⚠ 实现方式：原函数体**一字未改**地搬进 `markLostInner`，外面套一层 `runSerialized`。
+ *   ⚠ 为什么不直接把整段包进箭头函数：原体里有 `return` 早退（`unknown.length === 0` 那条）
+ *     与 `for` 循环里的 `continue` ⇒ 直接包会撞"跳转跨函数边界"（本批实测踩到）。
+ *   ⚠ 套一层之后：**返回值、早退时机、异步性全部不变**（仍然同步返回 `MarkLostResult`）。
+ */
 export function markLost(
+  file: string,
+  known: (w: PersistedWatch) => boolean,
+  statusOf?: TargetStatusOf,
+): MarkLostResult {
+  return runSerialized(() => markLostInner(file, known, statusOf))
+}
+
+function markLostInner(
   file: string,
   known: (w: PersistedWatch) => boolean,
   statusOf?: TargetStatusOf,
@@ -1101,6 +1173,8 @@ export function writePending(
   pending: PersistedWatch[],
   lost: PersistedWatch[],
 ): boolean {
+  /** ⚠ **丙-5**：整段「读回既有 → 组装 → 写」进单写者队列。 */
+  return runSerialized(() => {
   // 读回既有 handoffs / sessions（读不到 ⇒ 空数组，与 `readOrchState` 的宽容口径一致）。
   const prev = readOrchState(file)
   const state: OrchStateFile = {
@@ -1117,6 +1191,7 @@ export function writePending(
     sessions: prev.sessions.slice(0, MAX_BINDINGS),
   }
   return writeOrchState(file, state)
+  })
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1154,13 +1229,16 @@ export interface HandoffWriteResult {
  * ⚠ **失败不抛**：返回 `wrote: false`，由调用方记日志（同 `writeOrchState` 纪律）。
  */
 export function recordHandoff(file: string, h: PersistedHandoff): HandoffWriteResult {
-  // ⚠ `sessions`（绑定表）由 `writeOrchState` 原样带着 —— 本函数只动 `handoffs`。
-  const state = readOrchState(file)
-  const rest = state.handoffs.filter((x) => !(x.kind === h.kind && x.ref === h.ref))
-  // 新的在前；超过上限丢最老的（运行态，不是审计留档）。
-  state.handoffs = [h, ...rest].slice(0, MAX_HANDOFFS)
-  state.updatedAt = Date.now()
-  return { wrote: writeOrchState(file, state), state }
+  /** ⚠ **丙-5**：整段「读 → 改 → 写」进单写者队列（队列内**重新读盘** ⇒ 不用过期快照写）。 */
+  return runSerialized(() => {
+    // ⚠ `sessions`（绑定表）由 `writeOrchState` 原样带着 —— 本函数只动 `handoffs`。
+    const state = readOrchState(file)
+    const rest = state.handoffs.filter((x) => !(x.kind === h.kind && x.ref === h.ref))
+    // 新的在前；超过上限丢最老的（运行态，不是审计留档）。
+    state.handoffs = [h, ...rest].slice(0, MAX_HANDOFFS)
+    state.updatedAt = Date.now()
+    return { wrote: writeOrchState(file, state), state }
+  })
 }
 
 /**
@@ -1178,13 +1256,16 @@ export function clearHandoffs(
   file: string,
   match: (h: PersistedHandoff) => boolean,
 ): { cleared: PersistedHandoff[]; wrote: boolean; state: OrchStateFile } {
-  // ⚠ `sessions`（绑定表）同理原样保留 —— 清待投递⛔ 不许把归属也清掉。
-  const state = readOrchState(file)
-  const cleared = state.handoffs.filter(match)
-  if (cleared.length === 0) return { cleared: [], wrote: false, state }
-  state.handoffs = state.handoffs.filter((h) => !match(h))
-  state.updatedAt = Date.now()
-  return { cleared, wrote: writeOrchState(file, state), state }
+  /** ⚠ **丙-5**：整段「读 → 改 → 写」进单写者队列（同 `recordHandoff` 的理由）。 */
+  return runSerialized(() => {
+    // ⚠ `sessions`（绑定表）同理原样保留 —— 清待投递⛔ 不许把归属也清掉。
+    const state = readOrchState(file)
+    const cleared = state.handoffs.filter(match)
+    if (cleared.length === 0) return { cleared: [], wrote: false, state }
+    state.handoffs = state.handoffs.filter((h) => !match(h))
+    state.updatedAt = Date.now()
+    return { cleared, wrote: writeOrchState(file, state), state }
+  })
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1222,22 +1303,25 @@ export function bindSession(
 ): BindSessionResult {
   if (typeof b.sessionId !== 'string' || b.sessionId === '') return { wrote: false }
   if (typeof b.owner !== 'string' || b.owner === '') return { wrote: false }
-  const state = readOrchState(file)
-  const existing = state.sessions.find((x) => x.sessionId === b.sessionId)
-  if (existing !== undefined) {
-    if (existing.owner === b.owner) return { wrote: false, binding: existing }
-    return { wrote: false, binding: existing, conflict: { existing, wantedOwner: b.owner } }
-  }
-  const binding: PersistedSessionBinding = {
-    sessionId: b.sessionId,
-    owner: b.owner,
-    at: Date.now(),
-    via: b.via,
-    ...(b.ownerWsRoot === undefined || b.ownerWsRoot === '' ? {} : { ownerWsRoot: b.ownerWsRoot }),
-  }
-  state.sessions = [binding, ...state.sessions].slice(0, MAX_BINDINGS)
-  state.updatedAt = Date.now()
-  return { wrote: writeOrchState(file, state), binding }
+  /** ⚠ **丙-5**：入参校验在队列之外（不碰盘），「读 → 改 → 写」在队列之内。 */
+  return runSerialized(() => {
+    const state = readOrchState(file)
+    const existing = state.sessions.find((x) => x.sessionId === b.sessionId)
+    if (existing !== undefined) {
+      if (existing.owner === b.owner) return { wrote: false, binding: existing }
+      return { wrote: false, binding: existing, conflict: { existing, wantedOwner: b.owner } }
+    }
+    const binding: PersistedSessionBinding = {
+      sessionId: b.sessionId,
+      owner: b.owner,
+      at: Date.now(),
+      via: b.via,
+      ...(b.ownerWsRoot === undefined || b.ownerWsRoot === '' ? {} : { ownerWsRoot: b.ownerWsRoot }),
+    }
+    state.sessions = [binding, ...state.sessions].slice(0, MAX_BINDINGS)
+    state.updatedAt = Date.now()
+    return { wrote: writeOrchState(file, state), binding }
+  })
 }
 
 /**

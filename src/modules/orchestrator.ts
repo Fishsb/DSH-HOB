@@ -68,6 +68,7 @@ import {
   STUCK_AFTER_RECHECKS,
   CLEANUP_RETRY_LIMIT,
   RELAY_BUS_MISS_LIMIT,
+  orchWriteQueueStats,
   bindSession,
   clearHandoffs,
   countLostByClass,
@@ -209,6 +210,13 @@ export interface OrchStatus {
   relaysDone: number
   /** 被闸门拦下的回传次数（停了之后对方又跑完的次数）。 */
   relaysBlocked: number
+  /**
+   * ⚠⚠ **丙-5（2026-10-21 · 第 338 轮）**：进程内单写者队列的读数。
+   *   ⚠ **正常档（`waited === false`）不出现** ⇒ 输出与改前**逐字相同**
+   *     —— ⛔ 不许每轮都印（`TASK` 要求 3）。
+   *   ⚠ `waited === true` 才说明"写事务发生过重入"（= 队列真的承过重）。
+   */
+  writeQueue?: { depth: number; total: number; waited: boolean }
   /**
    * **本代就绪时发现的、上一代遗留的丢失派发数**（本批新增）。
    *
@@ -372,9 +380,19 @@ export interface HobOrchestrator {
   /**
    * 读**卡进度**（隔离执行卡：在跑 / 待验收 / 失败·卡住）。
    *
-   * ⚠ 与 `status()` 分开是**刻意的**：`status()` 是**同步**的纯内存读数
-   *   （`watches` / `relaysDone` / 落盘可达性），而卡进度要**调看板工具**
-   *   （异步、可能失败）⇒ 塞进 `status()` 会把一个纯读数变成会抛错的读数。
+   * ⚠ 与 `status()` 分开是**刻意的**：`status()` 是**同步**的，而卡进度要**调看板工具**
+   *   （异步、可能失败）⇒ 塞进 `status()` 会把一个同步读数变成会抛错的读数。
+   *
+   * ⚠⚠ **订正（2026-10-21 · 第 338 轮 · 丙-10）**：本条原写「`status()` 是**同步**的
+   *   **纯内存**读数」—— ⚠ **"纯内存"那半句是假的**。
+   *   `mineOnly()` 内有 **3 处 `scanStateFiles()`**（同步读盘），外加每条
+   *   `targetPresetOf()` → `bus.presetOf()`。⇒ 它是**同步 + 会扫盘**，
+   *   ⛔ 不是纯内存；成本随账本增长（`hob_orch_status` 是高频工具，
+   *   而 T2 每次 `hob_*` 都会触发对账，两者叠加）。
+   *   ⚠ 本批**只改注释**（选甲方案）：把它改成与实现一致，⛔ **不**真把取数面改成纯内存
+   *     （那要动取数面，属另一个决定），⛔ 也不加成本读数（`TASK` 明令正常档必须逐字不变，
+   *     而成本读数要么每轮都印、要么引一个阈值状态机 —— 前者违约、后者比收益贵）。
+   *   ⇒ 读者现在能知道：**这个"同步读数"会同步读盘**。
    *
    * ⚠ 读不到时**不抛错**，返回 `reachability='unavailable' | 'unreadable'` + 原话
    *   —— 由渲染层说"读不到"（⛔ 不许静默成"没有卡"）。
@@ -2442,6 +2460,11 @@ export function apply(ctx: any): void {
           // ⚠ 现读盘（不缓存）：记账在别的模块做，缓存会滞后 —— 见 `readHandoffs` 注释。
           handoffs: mine.handoffs,
           ...(runtimeIgnoreNote === undefined ? {} : { runtimeIgnoreNote }),
+          /**
+           * ⚠ **丙-5 的队列读数**：⚠ **只在发生过重入时出现**（`waited === true`）
+           *   ⇒ 正常档**一个字都不多**（与改前逐字相同）。
+           */
+          ...(orchWriteQueueStats().waited ? { writeQueue: orchWriteQueueStats() } : {}),
           // ⚠ ⚠ **可达性**（第 247 轮）：⚠ 它与 `handoffs` **同一次读**吗？
           //   ⛔ 不是 —— `handoffs` 现在按 owner 过滤（`I-4`），
           //   而可达性问的是"**本会话这一份**账本够不够得到"（那才是"够不到"的形态）。
@@ -2806,6 +2829,11 @@ export function apply(ctx: any): void {
           // ⚠ 与 `status()` 同源同值（两处返回**同一个形状**，调用方不必分情况）。
           handoffs: mine.handoffs,
           ...(runtimeIgnoreNote === undefined ? {} : { runtimeIgnoreNote }),
+          /**
+           * ⚠ **丙-5 的队列读数**：⚠ **只在发生过重入时出现**（`waited === true`）
+           *   ⇒ 正常档**一个字都不多**（与改前逐字相同）。
+           */
+          ...(orchWriteQueueStats().waited ? { writeQueue: orchWriteQueueStats() } : {}),
           reachability: reach,
           ...(reach === 'ledger-home-unresolved' ? { ledgerHomeWhy: ledgerHomeDiag(svcCtx) } : {}),
           others: {
@@ -4230,8 +4258,27 @@ export function createHobOrchTools(orch: HobOrchestrator): {
              */
             || w.selfExecutedCount > 0
           if (w.conn === 'live' && w.wokeCount === 0 && !anyMissed) {
-            // 连上了、没叫过、也没有"该叫没人 / 判不出归属 / 漏投 / 执行方=owner"的情形 ⇒ **正常态**
-            return []
+            /**
+             * ══════════════════════════════════════════════════════════════════════
+             * ⚠⚠ **丙-9（2026-10-21 · 第 338 轮）：空态不许整块收起**
+             * ══════════════════════════════════════════════════════════════════════
+             *
+             * ── 改前是什么 ────────────────────────────────────────────────────
+             *   这一支 `return []` ⇒ 所有"没办成"的档**一行都不出现**。
+             *   ⚠ 而 `R4`（`volumes/plan/14-dispatch-and-receipt-contract.md:108-109`）明令
+             *     「**空态不许说成"没有发生"**」—— 读者必须能分辨
+             *     「**这一档是空的**」与「**根本没去读**」。
+             *   ⚠ 两者在改前的输出里**逐字相同**（都没有行）⇒ 那正是 R4 要治的不可分辨。
+             *
+             * ── 现在：输出**一行空态标记** ────────────────────────────────────
+             *   ⚠ **不是**把非空档的句子在空态下也印出来（那会让"空"和"有"同句）；
+             *     而是印一句**只可能出现在空态**的话 ⇒ 两者一眼可分。
+             *   ⚠ ⛔ 不出现"没有卡跑完"那种**肯定式**结论（那是错觉式说法，`L-w1` 原本守的正是它）。
+             *   ⚠ 本批裁定：**R4 优先**（契约级）· `L-w1` 让步（形式级，省一行）
+             *     —— 省一行的收益远小于"空态不可分辨"的代价。
+             */
+            return ['叫醒面：已连上 · **各档全为 0（已读，确为空）**'
+              + ' —— ⚠ 这是"**读过了、确实是空**"，⛔ 不是"没去读"']
           }
           const head = w.conn === 'live'
             ? '叫醒面：**已连上**'

@@ -2202,7 +2202,42 @@ const orchCode = stripComments(orchSrc)
           const empty = await mountAndRender({ tasks: [still] })
           const emptyText = String(empty.rendered)
           const noIllusion = positiveOnly(emptyText)
-          const noRedeliverLine = !/补投不了/.test(emptyText)
+          /**
+           * ══════════════════════════════════════════════════════════════════════
+           * ⚠⚠ **丙-9（2026-10-21 · 第 338 轮）：`L-w1` 让步给 `R4`**
+           * ══════════════════════════════════════════════════════════════════════
+           *
+           * ── 改前 ─────────────────────────────────────────────────────────────
+           *   判据 = `!/补投不了/.test(emptyText)` —— 要求空态**不得**出现那一档的行。
+           *   ⚠ 而 `R4`（契约级，`volumes/plan/14-dispatch-and-receipt-contract.md:108-109`）
+           *     要求「**空态不许说成"没有发生"**」—— 读者必须能分辨
+           *     「这一档是空的」与「根本没去读」。
+           *   ⇒ 两者**不能同时对同一档成立**（这正是丙-9 的冲突实质）。
+           *
+           * ── 裁定：`R4` 优先，`L-w1` 让步 ─────────────────────────────────────
+           *   `R4` 是**契约级**（读者必须能从读数判断），`L-w1` 是**形式级**（省一行输出）。
+           *   ⇒ 现在判据改成 **双向**：
+           *     · **空态** ⇒ 该行**必须在**，且**必须带空态标记**（`已读，确为空`）；
+           *     · **有记录** ⇒ 该行在，且**⛔ 不得带**空态标记。
+           *   ⚠ 仍然保留原来守的那条：空态**不许出现"没有卡跑完"那种肯定式错觉说法**。
+           */
+          /**
+           * ⚠⚠ **空态标记的实测形态**（2026-10-21 · 第 338 轮实测订正）：
+           *   空态下 `wakeState().conn === 'idle'`（不是 `'live'`）⇒ 渲染走的是**头行**
+           *   「叫醒面：**还没接**（没有会话读过卡面 ⇒ 不知道叫醒谁）」——
+           *   ⚠ 那句话**本身就是空态标记**：它明说"没读过卡面" ⇒
+           *     与"读过、确实是空"**可分辨**（这正是 `R4` 要的那条）。
+           *   ⇒ 判据取**任一个**真实存在的空态标记（⛔ 不许只认我新写的那一句 —— 那会变成
+           *     "只认实现细节"）。
+           */
+          const hasEmptyMarker = /还没接|已读，确为空/.test(emptyText)
+          /**
+           * ⚠ `noRedeliverLine` 的名字保留（下面 `say(...)` 与失败信息都引用它），
+           *   语义**已换成新判据**：空态那一行**必须在且带空态标记**。
+           *   ⚠ ⛔ 不改名是为了让这次改动**只动判据、不动断言骨架**
+           *     （改名会让 diff 更难读，而判据本身已经写在上面的注释里）。
+           */
+          const noRedeliverLine = hasEmptyMarker
           // ② 非空态：只让新档非零（在真渲染链路上就地改 `wakeState` 的返回值）
           const hit = await mountAndRender({ tasks: [still] })
           const realWake = hit.orch.wakeState.bind(hit.orch)
@@ -2228,7 +2263,7 @@ const orchCode = stripComments(orchSrc)
               + ' ⇒ 新增那一档不会因"正常态收起"被整块吞掉')
           } else {
             bad('L-w 【拆档后渲染面必须成对】缺项'
-              + `：空态无错觉说法=${noIllusion} · 空态无补投行=${noRedeliverLine}`
+              + `：空态无错觉说法=${noIllusion} · 空态带"已读确为空"标记=${noRedeliverLine}`
               + ` · 非空态念出该档=${named} · 带计数=${saysCount} · 非空态无错觉说法=${stillNoIllusion}`
               + ` · 非空态输出=${JSON.stringify(hitText.slice(0, 240))}`
               + ` · 空态输出=${JSON.stringify(emptyText.slice(0, 120))}`)
