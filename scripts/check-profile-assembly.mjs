@@ -84,13 +84,39 @@ function dshHome() {
  * profile 清单（⚠ `--all` 时读目录；否则只取被点名的那一个）。
  * ⚠ 判"缺省 profile"用 `web`（与 `dsh web` 同义，见 `check-build-sync.mjs` 的 `profileOfCmdline`）。
  */
+/**
+ * ══ ⚠⚠ **`--all` 的名单 = 每一个子目录，⛔ 不预先剔掉"没有清单"的**（2026-10-20 `TASK-3` §1-A）══
+ *
+ * ── 改前是什么（⚠ 一个**静默消失**的格子）─────────────────────────────────
+ *   ```
+ *   readdirSync(profiles) → filter(isDirectory) → filter(existsSync(<dir>/package.json)) → sort
+ *   ```
+ *   ⚠ **第二个 filter 把"目录在、清单不在"的目录整个剔掉了** ⇒ 它**连名字都不出现**，
+ *   主循环里那段 `if (!existsSync(manifestPath)) { if (ALL) notJudged(...) }`
+ *   在 `--all` 下成了**死代码**（永远走不到）。
+ *   ⇒ 真实后果：`profiles/` 下任何一个目录的 `package.json` 被删了 / 从没写出来，
+ *     `check:profile --all` **既不说红、也不说 `·`、连名字都不出现** —— 而整体仍 **PASS**。
+ *   ⚠ 这正是本仓最忌讳的形态：**"没读到"伪装成"没问题"**（同族 `E-172`）。
+ *
+ * ── 现在 ────────────────────────────────────────────────────────────────
+ *   **只按"是不是子目录"筛**（那才是"profiles 下有什么"这个事实本身）⇒
+ *   没有清单的目录**进主循环**、走 `notJudged()`（`·` + 一句"为什么"）。
+ *   ⚠ **⛔ 不许把它改成红**：空目录 / 残留目录在 `--all` 里**是常态**
+ *     ⇒ 改成红就是造一条**恒红判据**（"恒红的判据等于没有判据"）。
+ *     本单要的是**看得见**，⛔ 不是"变红"。
+ *   ⚠ **点名**（`--profile xxx`）时仍按**判不出**处理（exit 2）—— 与改前一致：
+ *     那是用户在找一个不存在的 profile，必须红着脸说"没有"，⛔ 不能当"没事"。
+ */
 function profilesToCheck() {
   if (!ALL) return [NAMED ?? 'web']
   const dir = join(dshHome(), 'profiles')
   try {
     return readdirSync(dir)
+      /**
+       * ⚠ **只筛"是子目录"这一条事实**（⛔ 不再 `filter(existsSync(package.json))`）。
+       *   筛目录本身也可能抛（权限 / 竞态）⇒ catch 掉并**不静默**：交给调用方按"取不到"处理。
+       */
       .filter((n) => { try { return statSync(join(dir, n)).isDirectory() } catch { return false } })
-      .filter((n) => existsSync(join(dir, n, 'package.json')))
       .sort()
   } catch { return [] }
 }
@@ -118,6 +144,13 @@ const QUALIFIED = []
  */
 let notJudgedCount = 0
 /**
+ * 不参与判定的 profile **按成因分开记**（⚠ 汇总句必须分开说，⛔ 不许混成一句）。
+ * · `noDep`：有清单，但没声明本包依赖；
+ * · `noManifest`：**目录里根本没有 `package.json`**（`TASK-3` §1-A 新露出一格）。
+ * ⚠ 两种成因的"为什么不参与"完全不同 ⇒ 汇总里⛔ 不许都叫"没声明依赖的 profile"。
+ */
+const NOT_JUDGED_BY = { noDep: [], noManifest: [] }
+/**
  * **判不出**的 profile 条数（清单不存在[点名]、读不了、不是合法 JSON）。
  * ⚠ 它们**必须计入退出码**（判不出不是结论），但与 `badCount`（"该装却坏了"）
  *   **分开记** —— 两种原因，⛔ 不许说成同一句话。
@@ -125,19 +158,36 @@ let notJudgedCount = 0
 let UNREADABLE = 0
 /** 本 profile **有没有资格计入判定**（= `dependencies` 里声明了本包）。⚠ 由主循环每轮设置。 */
 let CURRENT_QUALIFIES = false
+/** 本 profile 的名字（⚠ 汇总按成因分类时要用；由主循环每轮设置）。 */
+let CURRENT_NAME = ''
 /**
  * 记一条**不参与判定**的读数（成立与否都走这里）。
  *
  * ⚠ 记号固定 **`·`**（⛔ 不用 `✗`/`✓`）：
  *   · 用 `✓` ⇒ 会被读成"这个 profile 通过了"（而它压根没被判定），
  *     并且会把汇总条数带歪（`TASK-2` §1-A-2 说的就是这一半）；
- *   · 用 `✗` ⇒ 就是本单要治的那个"红 ✗ 配绿灯退出码"。
+ *   · 用 `✗` ⇒ 就是 `TASK-2` 要治的那个"红 ✗ 配绿灯退出码"。
  * ⚠ 行尾**必须**带"不参与判定"那句（⛔ 不许只换个记号、把原因留在别处）。
+ *
+ * @param cause - **不参与的成因**（⚠ 必须传对，⛔ 不许一律说成"没声明依赖"）：
+ *   · `'no-dep'`   = 有清单，但 `dependencies` 里没有本包；
+ *   · `'no-manifest'` = **目录里根本没有 `package.json`**（`TASK-3` §1-A 新露出的一格）。
+ *   ⚠ 2026-10-20 我第一版把它写死成 `'no-dep'` 那句 ⇒ 对一个**没有清单**的目录打出
+ *     "该 profile 的 `dependencies` 里没有本包" —— 那是**假话**（它连清单都没有）。
+ *     ⇒ 加这个参数就是为了让"为什么"与实际成因**逐字对得上**。
  */
-function notJudged(line, why) {
+function notJudged(line, why, cause = 'no-dep') {
   notJudgedCount++
+  if (cause === 'no-manifest') {
+    if (!NOT_JUDGED_BY.noManifest.includes(CURRENT_NAME)) NOT_JUDGED_BY.noManifest.push(CURRENT_NAME)
+  } else if (!NOT_JUDGED_BY.noDep.includes(CURRENT_NAME)) NOT_JUDGED_BY.noDep.push(CURRENT_NAME)
   console.log(`  · ${line}`)
   if (why !== undefined) console.log(`      ⇒ ${why}`)
+  if (cause === 'no-manifest') {
+    console.log('      ⚠ 该目录里**没有 `package.json`** ⇒ 它不是可装配的 profile ⇒ **不参与判定**'
+      + '（⛔ 不计入退出码；⚠ 也不代表"它没装" —— 只是**没有清单可判**）')
+    return
+  }
   console.log('      ⚠ 该 profile 的 `dependencies` 里没有本包 ⇒ **不参与判定**'
     + '（⛔ 不计入退出码；⚠ 也不代表"它装对了"或"它坏了"，只代表**本来就不该由它装**）')
 }
@@ -468,6 +518,7 @@ if (names.length === 0) {
 
 for (const profile of names) {
   CURRENT_QUALIFIES = false
+  CURRENT_NAME = profile
   const dir = join(dshHome(), 'profiles', profile)
   const manifestPath = join(dir, 'package.json')
   /**
@@ -478,7 +529,8 @@ for (const profile of names) {
   if (!existsSync(manifestPath)) {
     if (ALL) {
       notJudged(`profile "${profile}"：没有 \`package.json\``,
-        '`--all` 扫到的目录里没有清单 ⇒ 它不是可装配的 profile（⚠ 这与"没装"不是一回事）')
+        '`--all` 扫到的目录里没有清单 ⇒ 它不是可装配的 profile（⚠ 这与"没装"不是一回事）',
+        'no-manifest')
     } else {
       UNREADABLE++
       console.log(`  ✗ profile "${profile}"：清单不存在（${manifestPath}）`)
@@ -944,6 +996,68 @@ if (ARGV.includes('--self-check')) {
       `汇总解析=${JSON.stringify(m === null ? null : m.slice(1))}（应 1 个 / 含 web / 3 条）`
       + ` · ghost 有 ✓=${ghostHasCheck}（应 false）· exit=${r.status}（应 0）`)
   }
+  // ⑨ ⭐⭐ **`--all` 下"有目录、没清单"必须看得见**（2026-10-20 本单 A · `TASK-3` §1-A）
+  //
+  //   ⚠ 守的就是 §0 那条**静默消失**：改前 `profilesToCheck()` 有一个
+  //     `filter(existsSync(<dir>/package.json))` ⇒ 没有清单的目录**连名字都不出现**，
+  //     而整体仍 PASS（"没读到"伪装成"没问题"）。
+  //   ⚠ 判据三条**成对**（只有前两条会退化成"永远多打一行"）：
+  //     ① `--all` 下那个目录的**名字出现在输出里**；
+  //     ② 它的记号是 `·`、带"为什么"那句、**不进退出码**（exit 仍 0）；
+  //     ③ **反证**：同一夹具里再放一个**有依赖、掉 bundles** 的 ⇒ **必须 `✗` 且 exit 1**。
+  {
+    const base = mkdtempSync(join(tmpdir(), 'hob-prof-nomanifest-'))
+    MADE.push(base)
+    /** ① web：正常装好（让夹具里有一个被判定者，避免落到"未执行"） */
+    {
+      const dir = join(base, 'profiles', 'web')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({
+        name: 'x', dependencies: { [SELF_NAME]: 'link:' + root },
+        dsh: { profile: { bundles: [SELF_NAME] } },
+      }, null, 2) + '\n', 'utf8')
+      mkdirSync(join(dir, 'node_modules'), { recursive: true })
+      symlinkSync(root, join(dir, 'node_modules', SELF_NAME), 'dir')
+    }
+    /** ② **emptydir：目录在、没有 package.json**（= 改前会静默消失的那一格） */
+    mkdirSync(join(base, 'profiles', 'emptydir'), { recursive: true })
+
+    const r1 = run(base, ['--all'])
+    const out1 = String(r1.stdout)
+    const named = out1.includes('emptydir')
+    const dotLine = out1.split('\n').some((l) => l.trim().startsWith('·') && l.includes('emptydir'))
+    const saysWhy = out1.includes('没有 `package.json`') || out1.includes('连 `package.json` 都没有')
+    /** ⚠ 再核：不参与**不许**被算进退出码（应当仍 PASS；若它把 exit 拖红了，这条也是错的）。 */
+    const stillPass = r1.status === 0
+
+    /** ③ 反证：加一个"有依赖、掉 bundles"的 ⇒ 必须红（⛔ 不许整族退化成"多打一行"） */
+    {
+      const dir = join(base, 'profiles', 'broken')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({
+        name: 'b', dependencies: { [SELF_NAME]: 'link:' + root },
+        dsh: { profile: { bundles: ['base'] } },
+      }, null, 2) + '\n', 'utf8')
+      mkdirSync(join(dir, 'node_modules'), { recursive: true })
+      symlinkSync(root, join(dir, 'node_modules', SELF_NAME), 'dir')
+    }
+    const r2 = run(base, ['--all'])
+    const out2 = String(r2.stdout)
+    const brokenCross = out2.split('\n').some((l) => l.trim().startsWith('✗') && l.includes('profile "broken"'))
+    /** ⚠ 加了 broken 之后，emptydir **仍然**要看得见、仍然是 `·`。 */
+    const stillVisible = out2.includes('emptydir')
+      && out2.split('\n').some((l) => l.trim().startsWith('·') && l.includes('emptydir'))
+
+    say(named && dotLine && saysWhy && stillPass && brokenCross && r2.status === 1 && stillVisible,
+      'P-9 ✓ **`--all` 下"有目录、没清单"看得见但不红**（钉 `TASK-3` §0 的静默消失）：'
+      + '名字出现、记号为 `·`、带"为什么"、**不进退出码**；'
+      + '⚠ 反证：**有依赖却掉 bundles** 的那个**仍有 `✗` 且 exit=1**（⛔ 没退化成"多打一行"），'
+      + '且加了它之后 emptydir **仍然看得见**',
+      `名字出现=${named}（应 true）· 有 ·行=${dotLine}（应 true）· 有"为什么"=${saysWhy}（应 true）`
+      + ` · 不拖红(exit=${r1.status}，应 0)=${stillPass}`
+      + ` · broken 有 ✗=${brokenCross}（应 true）· 加 broken 后 exit=${r2.status}（应 1）`
+      + ` · broken 在时 emptydir 仍可见=${stillVisible}`)
+  }
   console.log('')
   /** ⚠ **无论如何都清**（失败路径也清 —— `TASK` §1-C 的硬要求）。 */
   cleanupAll()
@@ -951,7 +1065,7 @@ if (ARGV.includes('--self-check')) {
     + `${cleaned.fail > 0 ? `、**⚠ ${cleaned.fail} 个没清掉**` : '（全部清净）'}`)
   console.log('')
   if (scBad === 0) {
-    console.log('判定：**PASS** —— 装配面判据自检 8 条全过。')
+    console.log('判定：**PASS** —— 装配面判据自检 9 条全过。')
     process.exit(0)
   }
   console.log(`判定：**FAIL**（${scBad} 条）—— 装配面判据自身不成立。`)
@@ -1015,11 +1129,28 @@ if (judged.length === 0) {
 }
 console.log(`判定：**PASS** —— **${judged.length} 个被判定 profile**（${judged.join(' / ')}）`
   + `的装配面四条全部成立（${okCount} 条）。`)
+/**
+ * ⚠⚠ **汇总里"不参与"必须按成因分开说**（`TASK-3` §1-A 暴露的一格）：
+ *   改前这里一律写「**没声明依赖**的 profile（…）」⇒ 对一个**没有清单**的目录，
+ *   那句话是**假话**（它连 `package.json` 都没有，谈不上"没声明依赖"）。
+ *   ⇒ 现在拆两句：`noDep`（有清单没依赖）/ `noManifest`（根本没清单）。
+ */
 if (NOT_JUDGED_NAMES.length > 0) {
-  console.log(`       ⚠ 另扫了 ${NOT_JUDGED_NAMES.length} 个**没声明依赖**的 profile（${NOT_JUDGED_NAMES.join(' / ')}）：`
-    + `它们**不参与判定**（记号为 \`·\`，⛔ 不计入退出码；⚠ 不是"通过了"，是"本来就不该由它们装"）。`)
-  console.log('       ⚠ 这是一条**有意取舍**（`TASK-2` §1-B 裁定②）：本判据拿 `dependencies` 当'
-    + '"哪些 profile 该装"的唯一依据 —— ⚠ 代价是"本该装却连依赖都没加"**不会红**'
-    + '（只会在 D 段说一句），⛔ 不另立一份会漂的期望清单来补。')
+  const { noDep, noManifest } = NOT_JUDGED_BY
+  if (noDep.length > 0) {
+    console.log(`       ⚠ 另扫了 ${noDep.length} 个**没声明依赖**的 profile（${noDep.join(' / ')}）：`
+      + '它们**不参与判定**（记号为 `·`，⛔ 不计入退出码；⚠ 不是"通过了"，是"本来就不该由它们装"）。')
+  }
+  if (noManifest.length > 0) {
+    console.log(`       ⚠ 另扫了 ${noManifest.length} 个**没有清单**的目录（${noManifest.join(' / ')}）：`
+      + '**它们连 `package.json` 都没有** ⇒ **不参与判定**'
+      + '（⚠ 这**不等于**"它没装"、也不等于"它坏了" —— 只是**没有清单可判**；⛔ 不计入退出码）。'
+      + ' ⚠ ⚠ 这条**必须看得见**：改前这整类从名单里被剔掉、连名字都不出现（见 `TASK-3` §0）。')
+  }
+  if (noDep.length > 0) {
+    console.log('       ⚠ 上面"没声明依赖"那一条是**有意取舍**（`TASK-2` §1-B 裁定②）：本判据拿 `dependencies` 当'
+      + '"哪些 profile 该装"的唯一依据 —— ⚠ 代价是"本该装却连依赖都没加"**不会红**'
+      + '（只会在 D 段说一句），⛔ 不另立一份会漂的期望清单来补。')
+  }
 }
 process.exit(0)
