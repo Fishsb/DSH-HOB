@@ -256,9 +256,35 @@ if (ARGV.includes('--self-check') || !ARGV.includes('--no-self-check')) {
       + ` · 空 others 仍判不出=${stillUndecidable}`)
   }
 
+  // ── T-f ⭐⭐ **"重编但源码没改"不许报落后**（2026-10-20 修假红）──────
+  //
+  //   ⚠ 病灶（实测）：13:33 启动的宿主 + 13:50 的 `build`（`git diff e333f7c HEAD -- src/` **0 行**）
+  //     ⇒ 改前只比产物 mtime 与启动时刻 ⇒ 报「**运行实例落后于产物**」
+  //     ⇒ `check:all` 从全绿变 **1 族失败**，而**源码一个字都没改**。
+  //   ⚠ 判据三条：
+  //     ① 源码未变（`srcNewest ≤ startedAt`）⇒ 落 `rebuilt-only`，⛔ 不是 `lagging`；
+  //     ② 源码变了（`srcNewest > startedAt`）⇒ **仍**落 `lagging`（⛔ 不许把这条做成"永不报落后"）；
+  //     ③ `srcNewest === null`（取不到）⇒ **仍**落 `lagging`（⛔ 判不出不许当同步）。
+  {
+    const proc = { pid: 30214, profile: 'web', startedAt: EARLIER, checkout: '/x/lib/index.js' }
+    const rNoSrcChange = classifyInstance(B, [proc], [], [], EARLIER - 60_000)
+    const rSrcChanged = classifyInstance(B, [proc], [], [], EARLIER + 60_000)
+    const rUnknownSrc = classifyInstance(B, [proc], [], [], null)
+    const saysRecompute = rNoSrcChange.verdict === 'rebuilt-only' && rNoSrcChange.head.includes('源码')
+    const stillLagging = rSrcChanged.verdict === 'lagging'
+    const unknownLagging = rUnknownSrc.verdict === 'lagging'
+    say(saysRecompute && stillLagging && unknownLagging,
+      'T-f ✓ **"重编但源码没改"不报落后**（钉 2026-10-20 的假红）：'
+      + '`srcNewest` 早于启动 ⇒ 落 `rebuilt-only`（算同步）；'
+      + '⚠ 负向对照两条：**源码真改过 ⇒ 仍报落后**、**源码 mtime 取不到 ⇒ 仍报落后**'
+      + '（⛔ 没做成"永不报落后"）',
+      `源码未改=${rNoSrcChange.verdict}（应 rebuilt-only）· 说清"源码"=${saysRecompute}`
+      + ` · 源码改过=${rSrcChanged.verdict}（应 lagging）· 取不到=${rUnknownSrc.verdict}（应 lagging）`)
+  }
+
   console.log('')
   if (bad === 0) {
-    console.log(`判定：**PASS** —— 面 ③ 三档 + 负向对拍，共 6 条断言。`)
+    console.log(`判定：**PASS** —— 面 ③ 三档 + 负向对拍，共 7 条断言。`)
     // ⚠ `--self-check` 只跑自检就退；`--self-check-then-report` 继续跑现场（⚠ `check:build` 用后者）
     if (ARGV.includes('--self-check')) process.exit(0)
   } else {
@@ -400,13 +426,23 @@ async function profileRunsThisCheckout(profile) {
  *     ⇒ 那句话会把人引向"没在跑 / 取数出岔"，而真相是"**跑着，但没装**"，
  *       修法完全不同（前者去查进程，后者去查 bundles）。⚠ 这正是本项目明令的
  *       "**两种原因不许说成同一句话**"。
- * @returns `{ verdict, head, detail }`，`verdict ∈ {'in-sync','lagging','undecidable','not-assembled'}`。
+ * @param srcNewestMtime - **本 checkout 里 `src/**` 的最新 mtime**（毫秒）；`null` = 取不到。
+ *   ⚠⚠ **这一档是 2026-10-20 补的**（修"重编 = 落后"的假红）：改前只比
+ *     `builtAt` 与进程 `startedAt` ⇒ **源码一个字没改、只重跑一次 `build`**，
+ *     产物 mtime 就整体推后 ⇒ 一律报"**运行实例落后于产物**"。
+ *     实测：13:33 启动的宿主 + 13:50 的 `build`（`git diff` 的 `src/` 为 **0 行**）⇒ 假红，
+ *     而 `check:all` 因此从"全绿"变"1 族失败"。⚠ 判据报假红会逼人**去重启一个不需要重启的宿主**
+ *     （或者逼人**不敢 build**）—— 两者都比"漏报"更贵。
+ *   ⇒ 现在多问一句：**进程启动之后，源码变过没有？**
+ *     · 变过（`srcNewestMtime > startedAt`）⇒ 真的落后（跑的是旧逻辑）；
+ *     · 没变（`srcNewestMtime ≤ startedAt`）⇒ 只是**重编**，进程里那份与盘上同源 ⇒ ⛔ 不算落后。
+ * @returns `{ verdict, head, detail }`，`verdict ∈ {'in-sync','rebuilt-only','lagging','undecidable','not-assembled'}`。
  *   ⚠ **优先级写死**：先看产物侧能否取到，再看有没有可比实例 —— 两者缺一即 `undecidable`，
  *     ⛔ **绝不**落到 `in-sync`（本项目的反复教训：判不出不是结论）。
  *   ⚠ `not-assembled` **仍是判不出那一族**（⛔ 不是"同步"、⛔ 也不是"落后"）：
  *     它只多说一句"**宿主在跑但没装配本插件**"，⛔ 不加任何"大概是……"的推测。
  */
-export function classifyInstance(builtAtMs, procs, notes = [], others = []) {
+export function classifyInstance(builtAtMs, procs, notes = [], others = [], srcNewestMtime = null) {
   const detail = [...notes.map((n) => `    ⚠ ${n}`)]
   /**
    * ⚠⚠ **"宿主在跑、但没装配本插件"单独一档**（优先于"没找到宿主"那句）。
@@ -445,8 +481,8 @@ export function classifyInstance(builtAtMs, procs, notes = [], others = []) {
       detail,
     }
   }
-  const lagging = procs.filter((p) => p.startedAt < builtAtMs)
-  if (lagging.length === 0) {
+  const olderThanBuild = procs.filter((p) => p.startedAt < builtAtMs)
+  if (olderThanBuild.length === 0) {
     return {
       verdict: 'in-sync',
       head: '✓ 面 ③：**同步** —— 跑着本 checkout 的宿主进程启动时刻**都不早于**这次 build'
@@ -454,15 +490,43 @@ export function classifyInstance(builtAtMs, procs, notes = [], others = []) {
       detail,
     }
   }
+  /**
+   * ── ⚠⚠ **再分一刀：进程启动之后，源码到底变没变**（2026-10-20 修假红）──────────
+   *
+   * ⚠ 判据：`srcNewestMtime ≤ p.startedAt` ⇒ 那个进程启动时源码就是现在这份
+   *   ⇒ 之后无论重编多少次，它**跑的都是同一份逻辑** ⇒ ⛔ 不该报"落后"。
+   * ⚠ `srcNewestMtime === null`（取不到）⇒ ⛔ **不猜**，仍按"落后"报（⚠ 判不出不许当同步）。
+   */
+  const reallyLagging = olderThanBuild.filter((p) => srcNewestMtime === null || srcNewestMtime > p.startedAt)
+  const rebuiltOnly = olderThanBuild.filter((p) => srcNewestMtime !== null && srcNewestMtime <= p.startedAt)
+  if (reallyLagging.length === 0) {
+    return {
+      verdict: 'rebuilt-only',
+      head: `✓ 面 ③：**同步（源码层面）** —— ${rebuiltOnly.length} 个宿主进程早于这次 build 启动，`
+        + '但**源码在它们启动之后一个字都没改** ⇒ 它们跑的就是盘上这份逻辑'
+        + '（⚠ 这叫"重编"，⛔ 不叫"落后"；⛔ 也⛔ 不必为它重启）',
+      detail: [
+        ...detail,
+        ...rebuiltOnly.map((p) => `    · pid ${p.pid}（profile=${p.profile}）启动于 ${new Date(p.startedAt).toISOString()}`
+          + ` · 源码最新改动 ${new Date(srcNewestMtime).toISOString()} ⇒ **早于启动**`),
+        '    ⚠ 判据边界：本条只说"**源码没变**"。⚠ ⛔ 它**不**证明"实例在服务里用上了这版产物"'
+          + '（那是 `E-168` 的〔实例层〕，需要"只走新路径"的真动作）。',
+      ],
+    }
+  }
+  const lagging = reallyLagging
   const worst = lagging.reduce((a, b) => (a.startedAt <= b.startedAt ? a : b))
   detail.unshift(
     `✗ 面 ③：**运行实例落后于产物** —— ${lagging.length} 个宿主进程**早于**这次 build 就启动了`
-    + ' ⇒ 它们跑的是**旧的** `lib/`（⚠ 宿主规则：`changed modules keep running their previous code until a restart`）',
+    + '，且**源码在它们启动之后改过**'
+    + ' ⇒ 它们跑的是**旧的**逻辑（⚠ 宿主规则：`changed modules keep running their previous code until a restart`）',
     // ⚠ **指名落后在哪**：⛔ 不许只说"不同步"（作业书 §一-① 明写）
     ...lagging.map((p) => {
       const behind = Math.round((builtAtMs - p.startedAt) / 1000)
       return `    · pid ${p.pid}（profile=${p.profile}）启动于 ${new Date(p.startedAt).toISOString()}`
         + ` ⇒ **比这次 build 早 ${behind} 秒**（≈ ${(behind / 3600).toFixed(2)} 小时）· 跑的是 ${p.checkout}`
+        + (srcNewestMtime === null ? ' · ⚠ 源码 mtime 取不到（按落后报）'
+          : ` · 源码最新改动 ${new Date(srcNewestMtime).toISOString()}（**晚于启动**）`)
     }),
     '    ⇒ ⚠ 要让它跑上新产物：**只重启宿主**'
       + '（⚠ `npm run build` 只写盘，⛔ 不给运行中的进程换代码）',
@@ -590,6 +654,20 @@ if (dirty === 'true') {
 
 // ── 面 ②：内容面（⚠ 面 ① 说"同步"时也不能省）─────────────────────────────
 const srcFiles = walk(SRC_DIR)
+/**
+ * ⚠⚠ **源码最新 mtime**（面 ③ 用来分辨"重编"与"真的改了源码"）——
+ *   `null` = 一份源件都取不到（⚠ 此时面 ② 也会报"比较对 0"，⛔ 不静默）。
+ */
+const srcNewestMtime = (() => {
+  let newest = null
+  for (const f of srcFiles) {
+    try {
+      const t = statSync(f).mtimeMs
+      if (newest === null || t > newest) newest = t
+    } catch { /* 单件读不到 ⇒ 跳过（不影响"取到的那部分"） */ }
+  }
+  return newest
+})()
 let compared = 0
 let missingProduct = 0
 let staleProduct = 0
@@ -641,7 +719,7 @@ const instNotes = [...inst.notes]
  *   ⚠ 而宿主可能**明明在跑**（实测 pid 26110 / 30214，只是那个 profile 的
  *   `dsh.profile.bundles` 里没有 `dsh-hob`）⇒ 那句话把人引向错的修法。
  */
-const classified = classifyInstance(stampBuiltAt, inst.procs, instNotes, inst.others)
+const classified = classifyInstance(stampBuiltAt, inst.procs, instNotes, inst.others, srcNewestMtime)
 const instVerdict = classified.verdict
 const instHead = classified.head
 let instDetail = [...classified.detail]
@@ -654,6 +732,7 @@ console.log(`      · 面 ② 源件 **${srcFiles.length}** 份（\`src/**/*.ts(
 console.log(`      · 戳读数：commit=${commit ?? '?'} · dirty=${dirty ?? '?'} · built_at=${builtAt ?? '?'}`)
 console.log(`      · 面 ③ 取数件：\`/proc/<pid>/stat\` + \`/proc/stat\` + profile 的 \`dsh.profile.bundles\``
   + ` · 已确认在跑本 checkout 的宿主进程 **${inst.procs.length}** 个`
+  + (srcNewestMtime === null ? ' · ⚠ 源码 mtime 取不到' : ` · 源码最新改动 ${new Date(srcNewestMtime).toISOString()}`)
   + (instNotes.length > 0 ? ` · ⚠ **${instNotes.length} 处取不到**（见下）` : ''))
 console.log('')
 for (const n of notes) console.log('  ' + n)
@@ -675,7 +754,7 @@ console.log('')
 // ── 面 ③ 的渲染（⚠ 三档各自成段；⛔ 同步那一档只许一行）─────────────────
 console.log(instHead)
 for (const l of instDetail) console.log(l)
-if (instVerdict !== 'in-sync') {
+if (instVerdict !== 'in-sync' && instVerdict !== 'rebuilt-only') {
   console.log('       ⚠ ⚠ 面 ③ **不等于**"产物有问题"：面 ①② 判的是**盘上**，面 ③ 判的是'
     + '**外面那个跑着的进程** —— 两者可以一个绿一个红（本文件头的成因说明）。')
 }
@@ -690,7 +769,8 @@ console.log('')
 console.log('       ⚠ 覆盖面 / 判读口径：面 ①② = **产物 vs 源** · 面 ③ = **运行实例 vs 产物**'
   + '（⛔ 都不是"实例是否在服务里用上它"）；'
   + '⚠ 退出码 0=已执行 · 1=面③不同步（仅判据模）· 2=未执行/基准缺失或面③判不出'
-  + '（含"宿主在跑但没装配本插件"那一档 · 仅判据模）。')
+  + '（含"宿主在跑但没装配本插件"那一档 · 仅判据模）；'
+  + '⚠ 另有 **`rebuilt-only`（重编但源码未变）** 一档 —— 它**算同步**，⛔ 不计入退出码。')
 /**
  * ⚠ 退出码：面 ①② 的那条口径（只报不拦 · 只设 0/2）**一个字都没改**；
  *   面 ③ 只在**判据模**下才动退出码 —— 见文件头的「跑法分两档」。
