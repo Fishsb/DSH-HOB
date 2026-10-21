@@ -971,6 +971,9 @@ export function apply(ctx: any): void {
                 : `这张卡属于 ${cardOwner}，而当前看这个面的是 ${String(subscriber ?? '(判不出)')}`,
               // ⚠ 传执行 id ⇒ `noteOwnerUnknown` 才能按 (卡, 执行) 去重（修 960 的一半）
               r.executionId,
+              // ⚠ 逐 owner 归账（第 345 轮）：订阅者不一定存在（帧推来但没人订阅）
+              subscriber,
+              cardOwner === undefined ? 'unknown' : 'other',
             )
             /**
              * ⚠⚠ **同时记"帧到了但被这道准入拦下"**（第 323 轮 · `TASK-I`）——————
@@ -1007,6 +1010,8 @@ export function apply(ctx: any): void {
               '这张卡的**执行会话就是建卡会话本身**（`executionSessionId === createdBy.sessionId`）'
                 + '⇒ 它自己跑完不是"某个被派出去的活跑完了"⇒ **不登记**（⛔ 不是"没有会话在跑"）',
               r.executionId,
+              subscriber,
+              'selfExec',
             )
             /** ⚠ 同上：**帧到了，被 `selfExecuted` 这道准入拦下**（第 323 轮 · `TASK-I`）。 */
             dispatchWake.noteFiredBlocked(
@@ -2571,7 +2576,36 @@ export function apply(ctx: any): void {
          *   ⛔ 判不出归属 ⇒ **不登记**，落「判不出归属」独立一档（`register()` 里那一段）。
          *   ⚠ 别的 owner 的卡⛔ 不进我的叫醒面 —— 它该由**它自己的**会话去登记。
          */
-        for (const c of snap.cards) {
+        /**
+         * ── ⚠⚠ **没有"我"的调用方，不下归属判词**（2026-10-21 · 第 345 轮）────────────
+         *
+         * ── 改前是什么（本项目头号禁忌：**两种原因说成同一句话**）────────────────
+         *   `self === undefined`（无身份的读卡面，本文件 `:2676` / `:2731` / `:2975` 三处）
+         *   时，本循环**照样逐卡走一遍准入门**，而 `:2595` 那句 else 支**没有
+         *   `self === undefined` 这一支** ⇒ 对一个"根本没有'本会话'这回事"的调用，
+         *   印出「这张卡的归属是 <createdBy>（**不是本会话**）」——
+         *   而 `<createdBy>` 往往**逐字就是**调用这条链路的那个会话自己（真机实证见 REPORT §一）。
+         *
+         * ── 现场（第 344 轮真机读数 + 夹具）──────────────────────────────────
+         *   卡 `t-mvgzazjk-ic7ren`：`createdBy.sessionId` 与读数者**逐字相同**
+         *   （`session-a74b7f22-…`，44 字符全等），读数却写"不是本会话"。
+         *   更糟的是**它盖掉了正确的理由**：同一次渲染里先由 `:4014` 的**有身份**读
+         *   正确写下 `selfExecuted`，随后 `:2731`（`deliveryLedger` 内部）那次
+         *   **无身份**读调本函数 ⇒ `ownerUnknownWhy` 被覆写成"不是本会话"
+         *   （`noteOwnerUnknown` 的去重只挡计数、**不挡可读话**）。
+         *
+         * ── 现在 ────────────────────────────────────────────────────────
+         *   `self` 判不出（`undefined` / 空串）⇒ **整段归属循环跳过**。
+         *   ⚠ **登记行为一个字未变**：登记本来就只在 `owner === self` 时发生，
+         *     没有 `self` 时**一条都登记不了** ⇒ 跳过循环 = 同一结果。
+         *   ⚠ **两道准入的比对一个字未改**（`:2589` 的 `owner !== self`、
+         *     `:2604` 的 `executionSessionId === owner`）—— 改的只是"谁有权触发判词"。
+         *   ⛔ **不许**改回"无身份也给个默认 self"（那等于把"不知道我是谁"
+         *     说成"我就是某个人"，`I-1` 明令⛔ 猜 owner）。
+         */
+        const selfId = opts?.selfSessionId
+        const selfKnown = typeof selfId === 'string' && selfId !== ''
+        if (selfKnown) for (const c of snap.cards) {
           if (typeof c.executionSessionId !== 'string' || c.executionSessionId === '') continue
           const self = opts?.selfSessionId
           const cardOwner = typeof c.createdBySessionId === 'string' && c.createdBySessionId !== ''
@@ -2594,6 +2628,10 @@ export function apply(ctx: any): void {
                 ? '这张卡没有记录建卡会话（`createdBy.sessionId` 读不到），本会话也没派过它的执行会话'
                 : `这张卡的归属是 ${owner}（不是本会话）`,
               c.executionId,
+              // ⚠ 逐 owner 归账（第 345 轮）：这句只能出现在**看这个面的人**的读数里
+              self,
+              // ⚠ 三种成因分开记：归属判出来了但不是我 ⇒ 'other'（⛔ 不是"判不出"）
+              owner === undefined ? 'unknown' : 'other',
             )
             continue
           }
@@ -2608,6 +2646,8 @@ export function apply(ctx: any): void {
               '这张卡的**执行会话就是建卡会话本身**（`executionSessionId === createdBy.sessionId`）'
                 + '⇒ 它自己跑完不是"某个被派出去的活跑完了"⇒ **不登记**（⛔ 不是"没有会话在跑"）',
               c.executionId,
+              self,
+              'selfExec',
             )
             continue
           }

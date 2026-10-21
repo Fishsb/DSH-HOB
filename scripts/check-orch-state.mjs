@@ -6651,12 +6651,28 @@ const orchCode = stripComments(orchSrc)
         scCp(scJoin(scRoot, 'src'), scJoin(dir, 'src'), { recursive: true, dereference: true })
         const mf = scJoin(dir, 'src/server/card-wake.ts')
         const src = scRf(mf, 'utf8')
-        const GUARD = '    const ownerUnknownRegistered = this.ownerUnknownLive.size'
-        if (!src.includes(GUARD)) {
-          bad('SC-a(反证) 【失去靶子】找不到分区字段那行原文 ⇒ 不按通过处理')
+        /**
+         * ⚠⚠ **第 345 轮：锚点跟着实现一起搬**（⛔ 不许把断言删掉了事）。
+         *   改前那行是单行 `const ownerUnknownRegistered = this.ownerUnknownLive.size`；
+         *   改后它变成"逐条过滤"的多行形态（同一档要扣掉"后来判出来了的"）。
+         *   ⇒ 用**正则**钉住那条语句的**语义**（`ownerUnknownLive` → `ownerUnknownRegistered`），
+         *     ⛔ 不钉某一种排版 —— 否则实现一换行，这条反证就"失去靶子"、
+         *     而失去靶子的反证**恒真**（本项目明令：永远 PASS 的检查比没有更危险）。
+         */
+        /**
+         * ⚠⚠ **必须吃到整条语句的结尾**（`;`）：改后它是
+         *   `const ownerUnknownRegistered = [...this.ownerUnknownLive.values()]`
+         *   + 换行 + `.filter(...).length`。若只匹配到第一个换行，替换后会留下
+         *   悬空的 `.filter(...)` ⇒ 变异体**语法错误跑不起来**（实测踩到：
+         *   `SC-a(反证) 变异体跑不起来（Expression expected）`）。
+         *   ⚠ 这正是"反证失败其实是判据/锚点自己写错了"的又一例，⛔ 不许靠放宽判据绕过。
+         */
+        const GUARD_RE = /^    const ownerUnknownRegistered = [\s\S]*?\.length$/m.exec(src)
+        if (GUARD_RE === null || !GUARD_RE[0].includes('ownerUnknownLive')) {
+          bad('SC-a(反证) 【失去靶子】找不到分区字段那条语句（应含 `ownerUnknownLive`、以 `.length` 收尾）⇒ 不按通过处理')
         } else {
-          scWf(mf, src.replace(GUARD,
-            '    const ownerUnknownRegistered = this.state.ownerUnknownCount /* 变异：拿累计充此刻 */'), 'utf8')
+          scWf(mf, src.replace(GUARD_RE[0],
+            'const ownerUnknownRegistered = this.state.ownerUnknownCount /* 变异：拿累计充此刻 */\n'), 'utf8')
           try {
             
             scLink(scJoin(scRoot, 'node_modules'), scJoin(dir, 'node_modules'), 'dir')
@@ -10210,7 +10226,26 @@ const orchCode = stripComments(orchSrc)
         if (r !== null) {
           const rendered = r.rendered
           const head = shHead(rendered)
-          const namesGate = rendered.includes('selfExecuted') || rendered.includes('执行会话就是建卡会话本身')
+          /**
+           * ⚠⚠ **第 345 轮：判据窗口必须收窄到"头行那一段"**（⛔ 不许改回全文匹配）————──
+           *   改前这里用**全文** `rendered.includes('selfExecuted' | '执行会话就是建卡会话本身')`。
+           *   第 345 轮起，"归属判不出"的判词也**按成因分开写**，其中 `selfExec` 档天然含
+           *   「**执行会话就是建卡会话本身**」这几个字（那是它该说的话）。
+           *   ⇒ 全文匹配在变异体上**依然为真** ⇒ 这条反证"失去靶子"变成恒真
+           *     （实测：`点名准入=true` 而 `noteFiredBlocked` 已被摘掉）。
+           *   ⚠ 真正该问的是"**头行那几行里有没有点名哪道准入**"（那才是 SH-b 的判据面），
+           *     ⛔ 不是"整份输出里出现过这几个字"。
+           */
+          const headBlock = rendered.split('回执投递台账')[0]
+          /**
+           * ⚠⚠ **钉"被准入拦下"这条专属行，⛔ 不钉那几个字的任意出现**（第 345 轮）——
+           *   第 345 轮起，"归属判不出"的判词按成因分开写，其中 `selfExec` 档天然含
+           *   「执行会话就是建卡会话本身」；那一句**不是** `noteFiredBlocked` 写的，
+           *   所以拿它当判据 ⇒ 变异体上依然为真 ⇒ 反证恒真（实测 `点名准入=true`）。
+           *   ⇒ 改钉 `noteFiredBlocked` **唯一**产出的那一行
+           *     （`orchestrator.ts` 渲染层：`收到过点火帧，但**被准入拦下 N 次**`）。
+           */
+          const namesGate = headBlock.includes('被准入拦下 ') && !headBlock.includes('没有一条被准入拦下的记录')
           /**
            * ⚠⚠ **这里必须用一个"只在该变异下才出现"的判据**（首跑实测踩到的坑）：
            *   原先用 `rendered.includes('被准入拦下')` —— ⛔ **那是假阳性**：
@@ -10243,6 +10278,328 @@ const orchCode = stripComments(orchSrc)
   }
 
   try { sgRm(sgTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+}
+
+// ══════════════════════════════════════════════════════════════
+// SJ · **丙-13 的 10 / 5 真的被钉住了**（2026-10-21 · 第 345 轮）
+// ══════════════════════════════════════════════════════════════
+//
+//   ── 改前是什么（"常量没人钉"）──────────────────────────────────────────
+//     `grep -rn "STATUS_LIST_MAX\|未展开" scripts/` ⇒ **0 命中**。
+//     ⇒ `STATUS_LIST_MAX = 10` 与卡行的 `MAX_RUNNING/MAX_REVIEW = 5`
+//       这两组数**改大改小都不会红** —— 超限时会不会**静默截断**（把"账本很长"
+//       说成"只有这么多"）这件事，没有任何机检在看着。
+//
+//   ── 本组钉什么（三处 × 三档，缺一不算）────────────────────────────
+//     ① **超限** ⇒ 必须出现"未展开"那一行，且**数目对得上**（不是随便一句）；
+//     ② **未超限** ⇒ **一行都不许多**（⛔ 不许常态刷屏）；
+//     ③ **恰好等于上限**（边界）⇒ **不印"未展开"**（`>` 不是 `>=`）。
+//     ⚠ 三处**各自按自己的实际值**钉：`watches` / `handoffs` 是 `STATUS_LIST_MAX`（10），
+//       卡行是 `MAX_RUNNING` / `MAX_REVIEW`（各 5）—— 本批**不统一**它们
+//       （统一是另一件事，红线上写着不许顺手改），断言名里写清是哪一个。
+//
+//   ⚠⚠ **必须经真渲染路径**（`tools.status.execute({})`）：
+//     `SA-g` 的教训就是"直接喂 `register()` 测 `DispatchWake`、绕过了 `cardsOf`"
+//     ⇒ 断言绿而现实红。本组一律走 `status.execute`，⛔ 不直接调内部函数。
+//   ⚠ 三档都**不靠真看板**：卡面用假注册表喂（同 SH/SG 的手法），零联网。
+{
+  const { join: sjJ, basename: sjBase2 } = await import('node:path')
+  const { mkdtempSync: sjMkdt, mkdirSync: sjMkd, writeFileSync: sjWf, rmSync: sjRm } = await import('node:fs')
+  const { tmpdir: sjTmp } = await import('node:os')
+  const { pathToFileURL: sjP2u } = await import('node:url')
+
+  const sjRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT : root
+  const sjTag = sjRoot === root ? '' : `（源码树=${sjRoot}）`
+  let sjOrchMod; let sjBusMod; let sjBoardMod
+  try {
+    sjOrchMod = await import(sjP2u(sjJ(sjRoot, 'src', 'modules', 'orchestrator.ts')).href)
+    sjBusMod = await import(sjP2u(sjJ(sjRoot, 'src', 'modules', 'bus.ts')).href)
+    sjBoardMod = await import(sjP2u(sjJ(sjRoot, 'src', 'server', 'board-cards.ts')).href)
+  } catch (e) {
+    bad(`SJ 无法加载 orchestrator/bus/board-cards（${String(e?.message ?? e)}）⇒ 丙-13 判据失去基准（不按通过处理）`)
+  }
+  /**
+   * ⚠ 两个上限**只从实现里读一次**（⛔ 不在断言里写死数字）：
+   *   判据要与实现同源，否则"改常量 ⇒ 判据跟着漂"这件事根本测不出来。
+   *   `STATUS_LIST_MAX` 是导出的；卡行那两个是模块内常量 ⇒ 用**行为**测，
+   *   ⛔ 不去解析源码文本（那是 check-code-face 的活，不是这里的）。
+   */
+  const SJ_MAX = sjBoardMod === undefined ? undefined : undefined
+
+  if (sjOrchMod !== undefined && sjBusMod !== undefined && sjBoardMod !== undefined) {
+    void SJ_MAX
+    const sjWS = 'ws-sj'
+    /** 挂一个真 `status.execute`：卡面由 `cards` 决定，watch/handoff 由 ledger 状态决定。 */
+    const sjMount = async (cards, opts = {}) => {
+      const base = sjMkdt(sjJ(sjTmp(), 'hob-sjcheck-'))
+      const home = sjJ(base, 'ledgers'); const ws = sjJ(base, 'ws')
+      /** ⚠ 账本目录按**工作区基名**派生（与产品代码 `resolveLedgerRoot` 同源）——
+       *   ⛔ 不许写死一个 `x`（实测踩到：写死 ⇒ 读成"账本够不到"，watches 恒 0）。
+       */
+      const ledgerName = sjBase2(ws)
+      sjMkd(sjJ(ws, 'runtime'), { recursive: true })
+      sjMkd(sjJ(home, ledgerName, 'runtime'), { recursive: true })
+      /**
+       * ⚠ `watches` / `handoffs` 用**盘上 pending**喂（`classifyPending` 会把它们读进来）。
+       *   `pending` 每条要 `target` / `watcher` / `at` / `wsRoot` / `owner` ——
+       *   与 `toPersisted` 同形（⛔ 不另造字段）。
+       */
+      /**
+       * ⚠⚠ **`watches` 必须经 `dispatch()` 真造**（⛔ 不许手搓盘上 `pending`）──────────
+       *   实测踩到的坑：手搓 `pending` 的 `target` 在 `sessions`/`agents` 里查不到
+       *   ⇒ `classifyPending` 把它们判成「判不出（目标状态读不到）」⇒ **根本不进
+       *   `watches`** ⇒ `在等回传：0 个`、`未展开` 一行都不印 ⇒ 断言假红。
+       *   ⇒ 走产品代码自己的入口（`dispatch` 会同时建 watch + 落盘 + 记 `stateFileFor`），
+       *     那才是"真渲染路径"该有的样子。
+       */
+      /**
+       * ⚠⚠ 记录形状**必须与 `asHandoff` 的判据一致**：它要的是 `kind` + **`ref`** + `at`
+       *   （实测踩到：手搓成 `file:` ⇒ 逐条被丢弃 ⇒ `待投递：0 份`、断言假红）。
+       *   ⚠ 这是"夹具形状不对"而不是"产品缺陷"，⛔ 不许因此放宽判据。
+       */
+      const handoffs = []
+      for (let i = 0; i < (opts.handoffCount ?? 0); i++) {
+        handoffs.push({ kind: 'task-file', ref: `archive/x/f${i}.md`, at: 2, wsRoot: ws, owner: 'session-sj-hob' })
+      }
+      sjWf(sjJ(home, ledgerName, 'runtime', 'orch-watches.json'),
+        JSON.stringify({ version: 1, updatedAt: 1, pending: [], handoffs, lost: [] }), 'utf8')
+      const m = new Map(cards.map((c) => [c.id, c]))
+      const registry = new Map([
+        ['taskboard_get', { name: 'taskboard_get', execute: async (a) => (a?.id && m.has(a.id) ? { task: m.get(a.id) } : {}) }],
+        ['taskboard_list', { name: 'taskboard_list', execute: async () => ({ revision: 1, tasks: [...m.values()] }) }],
+      ])
+      const toolsSvc = { get: (n) => registry.get(n) }
+      const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+      const self = 'session-sj-hob'
+      const byId = new Map([[self, mkS(self)]])
+      /**
+       * ⚠⚠ **目标必须是活会话**，否则 `dispatch()` 直接拒投（实测：`ok:false`
+       *   "is not a live session"）⇒ watch 根本建不起来 ⇒ `在等回传` 恒 0。
+       *   ⇒ 预先把要派的目标都注册进 `sessions`/`agents`（`status:'running'`，
+       *     那是"正在跑"的真形态，也免得被 `classifyPending` 判成别的档）。
+       */
+      const ensureTargets = (n) => {
+        for (let i = 0; i < n; i++) {
+          const id = `s-w${i}`
+          if (!byId.has(id)) byId.set(id, mkS(id))
+        }
+      }
+      const sessions = { get: (id) => byId.get(id), list: () => [...byId.values()], flush: async () => true }
+      const agents = { currentInitiator: () => undefined,
+        get: (id) => (byId.has(id) ? { id, status: id === self ? 'idle' : 'running', ctx: {},
+          session: byId.get(id), followup() {}, steer() {}, inject() {} } : undefined) }
+      const logger = { debug() {}, info() {}, warn() {} }
+      const wr = { list: () => [{ id: sjWS, path: ws, title: 'w', record: { sessionIds: [...byId.keys()] } }],
+        sessionPaths: new Map([...byId.keys()].map((id) => [id, ws])) }
+      const bp = {}
+      const bc = { sessions, agents, logger,
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : k === 'workspaceRegistry' ? wr : undefined),
+        provide: (k, v) => { bp[k] = v }, effect: (f) => { try { f() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(bc), on: () => {} }
+      sjBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+      const prov = {}
+      const ctx = { sessions, agents, logger,
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : k === 'hobBus' ? bp.hobBus
+          : k === 'tools' ? toolsSvc : k === 'workspaceRegistry' ? wr
+            : k === 'webServer' ? { getOrigin: () => undefined }
+              : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+        provide: (k, v) => { prov[k] = v }, effect: (f) => { try { f() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(ctx), on: () => {} }
+      sjOrchMod.apply(ctx)
+      const orch = prov.hobOrchestrator
+      const tools = sjOrchMod.createHobOrchTools(orch)
+      /** ⚠ **真渲染路径**：⛔ 不直接调 `renderCardLines` / 内部函数。 */
+      const render = async () => String(await tools.status.execute({}, {
+        agent: { id: self, session: { header: { cwd: ws } } } }))
+      /**
+       * ⚠ 用 `dispatch()` 真造 N 条 watch（⚠ 目标**不必是活会话**：`dispatch` 对
+       *   冷目标会走"叫活"那条路并**照样登记**，那正是它在真机上的形态）。
+       *   ⚠ 失败不抛 —— 由调用方的断言去判"条数对不对"，⛔ 不在这里吞掉。
+       */
+      const seedWatches = async (n) => {
+        ensureTargets(n)
+        for (let i = 0; i < n; i++) {
+          try { await orch.dispatch(`s-w${i}`, 'do work', { self }) } catch { /* 断言侧看条数 */ }
+        }
+      }
+      return { render, ws, base, seedWatches,
+        cleanup: () => { try { sjRm(base, { recursive: true, force: true }) } catch { /* 忽略 */ } } }
+    }
+    const sjCard = (id) => ({ id, title: id, status: 'in_progress', workspaceId: sjWS, version: 2,
+      blocked: false, comments: [],
+      executions: [{ id: 'e-' + id, outcome: 'running', startedAt: Date.now(), sessionId: 'session-sj-w' }],
+      createdBy: { kind: 'agent', sessionId: 'session-other-sj' } })
+
+    /**
+     * ── 三处 × 三档 ─────────────────────────────────────────────────
+     * ⚠ 判据一律**数"未展开"那一行里的数目**，⛔ 不看"有没有出现这四个字"
+     *   （那会在"另一处超限"时假阳性 —— 三处在同一份输出里，很容易串）。
+     */
+    const SJ_LIMIT = 10                       // = `STATUS_LIST_MAX`（丙-13 的 10）
+    const SJ_CARD_LIMIT = 5                   // = `MAX_RUNNING` / `MAX_REVIEW`（丙-13 的卡行 5）
+
+    /** 从渲染结果里取某一处"未展开"那一行的条数（取不到 ⇒ -1）。 */
+    const sjHiddenOf = (rendered, kind) => {
+      /**
+       * ⚠⚠ 实际渲染文本带 **markdown 粗体标记**：`**另有 3 条未展开**（…`
+       *   ⇒ 正则必须容忍 `**`（实测踩到：钉死无星号的写法 ⇒ 恒不匹配 ⇒ 断言假红）。
+       */
+      const re = kind === 'watch'
+        ? /\*\*另有 (\d+) 条未展开\*\*/
+        : kind === 'handoff'
+          ? /\*\*另有 (\d+) 条未展开\*\*/
+          : kind === 'cardRunning'
+            ? /另有 (\d+) 张在跑\/失败\/卡住的卡未展开/
+            : /另有 (\d+) 张待验收未展开/
+      const m = re.exec(rendered)
+      return m === null ? -1 : Number(m[1])
+    }
+    /** ⚠ 三处"未展开"的行**不能互相冒充** —— 用各自独有的量词/句式分开数。 */
+    const sjCountLines = (rendered, kind) => {
+      if (kind === 'cardRunning') return (rendered.match(/张在跑\/失败\/卡住的卡未展开/g) ?? []).length
+      if (kind === 'cardReview') return (rendered.match(/张待验收未展开/g) ?? []).length
+      // watch / handoff 两句文本同形 ⇒ 按**出现次序**分：watch 那段在 handoffs 段之前
+      const all = rendered.match(/\*\*另有 \d+ 条未展开\*\*/g) ?? []
+      if (kind === 'watch') return all.length >= 1 ? 1 : 0
+      return all.length >= 2 ? 1 : 0
+    }
+
+    // ── ① watches：超限 / 未超限 / 边界 ─────────────────────────────────
+    {
+      const cases = [
+        { n: SJ_LIMIT + 3, want: 3, tag: '超限' },
+        { n: SJ_LIMIT - 2, want: -1, tag: '未超限' },
+        { n: SJ_LIMIT, want: -1, tag: '恰好等于上限' },
+      ]
+      for (const cs of cases) {
+        const h = await sjMount([], {})
+        try {
+          await h.seedWatches(cs.n)
+          const out = await h.render()
+          const got = sjHiddenOf(out, 'watch')
+          const wantShown = cs.want === -1 ? cs.n : SJ_LIMIT
+          const totalLine = `在等回传：${cs.n} 个`
+          const okTotal = out.includes(totalLine)
+          if (got === cs.want && okTotal) {
+            ok(`SJ-a(${cs.tag}) ✓ **watches 未展开行按 \`STATUS_LIST_MAX\`=${SJ_LIMIT} 生效**：`
+              + `${cs.n} 条 ⇒ ${cs.want === -1 ? '**不印**"未展开"' : `印 **另有 ${got} 条未展开**`}`
+              + `（展开 ${wantShown} 条 · 总数行 \`${totalLine}\` 在位）${sjTag}`)
+          } else {
+            bad(`SJ-a(${cs.tag}) 【watches 上限没被钉住】`
+              + `${cs.n} 条 ⇒ 未展开=${got}（应 ${cs.want === -1 ? '不印（-1）' : cs.want}）`
+              + ` · 总数行在位=${okTotal}`
+              + ' ⇒ `STATUS_LIST_MAX` 改大改小都不会红，正是丙-13 的缺口')
+          }
+        } finally { h.cleanup() }
+      }
+    }
+
+    // ── ② handoffs：超限 / 未超限 / 边界 ────────────────────────────────
+    {
+      const cases = [
+        { n: SJ_LIMIT + 4, want: 4, tag: '超限' },
+        { n: SJ_LIMIT - 3, want: -1, tag: '未超限' },
+        { n: SJ_LIMIT, want: -1, tag: '恰好等于上限' },
+      ]
+      for (const cs of cases) {
+        const h = await sjMount([], { handoffCount: cs.n })
+        try {
+          const out = await h.render()
+          // ⚠ handoffs 那一句要取**第二处**（watch 在前）；watch 未超限时它是唯一一处
+          const all = [...out.matchAll(/\*\*另有 (\d+) 条未展开\*\*/g)].map((m) => Number(m[1]))
+          const got = all.length === 0 ? -1 : all[all.length - 1]
+          const okTotal = out.includes(`待投递：${cs.n} 份`)
+          if (got === cs.want && okTotal) {
+            ok(`SJ-b(${cs.tag}) ✓ **handoffs 未展开行按 \`STATUS_LIST_MAX\`=${SJ_LIMIT} 生效**：`
+              + `${cs.n} 份 ⇒ ${cs.want === -1 ? '**不印**"未展开"' : `印 **另有 ${got} 条未展开**`}`
+              + `（总数行 \`待投递：${cs.n} 份\` 在位）${sjTag}`)
+          } else {
+            bad(`SJ-b(${cs.tag}) 【handoffs 上限没被钉住】`
+              + `${cs.n} 份 ⇒ 未展开=${got}（应 ${cs.want === -1 ? '不印（-1）' : cs.want}）`
+              + ` · 总数行在位=${okTotal}`)
+          }
+        } finally { h.cleanup() }
+      }
+    }
+
+    // ── ③ 卡行：在跑档 MAX_RUNNING=5 / 待验收档 MAX_REVIEW=5 ────────────
+    {
+      const cases = [
+        { n: SJ_CARD_LIMIT + 2, want: 2, tag: '超限' },
+        { n: SJ_CARD_LIMIT - 1, want: -1, tag: '未超限' },
+        { n: SJ_CARD_LIMIT, want: -1, tag: '恰好等于上限' },
+      ]
+      for (const cs of cases) {
+        // ⚠ 全部造成"在跑"档（`in_progress` + outcome=running）
+        const cards = []
+        for (let i = 0; i < cs.n; i++) cards.push(sjCard(`t-sj-run-${i}`))
+        const h = await sjMount(cards)
+        try {
+          const out = await h.render()
+          const got = sjHiddenOf(out, 'cardRunning')
+          const okHead = out.includes(`卡：${cs.n} 张`)
+          if (got === cs.want && okHead) {
+            ok(`SJ-c(${cs.tag}) ✓ **卡行"在跑"档按 \`MAX_RUNNING\`=${SJ_CARD_LIMIT} 生效**`
+              + `（⚠ 与 \`STATUS_LIST_MAX\`=${SJ_LIMIT} **两个数并存**，本批不统一）：`
+              + `${cs.n} 张 ⇒ ${cs.want === -1 ? '**不印**"未展开"' : `印 **另有 ${got} 张未展开**`}`
+              + `（总行 \`卡：${cs.n} 张\` 在位）${sjTag}`)
+          } else {
+            bad(`SJ-c(${cs.tag}) 【卡行 MAX_RUNNING 没被钉住】`
+              + `${cs.n} 张 ⇒ 未展开=${got}（应 ${cs.want === -1 ? '不印（-1）' : cs.want}）`
+              + ` · 卡总行在位=${okHead}`)
+          }
+        } finally { h.cleanup() }
+      }
+    }
+
+    // ── ④ 负向对拍：把 `STATUS_LIST_MAX` 改小 ⇒ SJ-a/b 必须当场不成立 ──
+    {
+      const mut = sjMkdt(sjJ(sjTmp(), 'hob-sj-mut-'))
+      try {
+        const { cpSync } = await import('node:fs')
+        cpSync(sjJ(sjRoot, 'src'), sjJ(mut, 'src'), { recursive: true, dereference: true })
+        try { (await import('node:fs')).symlinkSync(sjJ(sjRoot, 'node_modules'), sjJ(mut, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mf = sjJ(mut, 'src', 'server', 'orch-state.ts')
+        const { readFileSync: sjRf2, writeFileSync: sjWf2 } = await import('node:fs')
+        const src = sjRf2(mf, 'utf8')
+        const GUARD = 'export const STATUS_LIST_MAX = 10'
+        if (!src.includes(GUARD)) {
+          bad('SJ-(反证a) 【失去靶子】`orch-state.ts` 里找不到 `STATUS_LIST_MAX = 10` ⇒ 不按通过处理')
+        } else {
+          sjWf2(mf, src.replace(GUARD, 'export const STATUS_LIST_MAX = 7'), 'utf8')
+          const mOrch = await import(sjP2u(sjJ(mut, 'src', 'modules', 'orchestrator.ts')).href)
+          const mBus = await import(sjP2u(sjJ(mut, 'src', 'modules', 'bus.ts')).href)
+          const savedOrch = sjOrchMod; const savedBus = sjBusMod
+          sjOrchMod = mOrch; sjBusMod = mBus
+          /**
+           * ⚠ 上限改成 7 之后：给 10 条 ⇒ 未展开应是 **3**（改后实现算的是 7 展开 + 3 未展开）；
+           *   若判据写死了 10，这里仍会得 0/不印 ⇒ 说明判据没跟实现走。
+           *   ⚠ 本档要证明的是"**判据真的读实现**"，⛔ 不是"7 比 10 好"。
+           */
+          const h = await sjMount([], {})
+          try {
+            await h.seedWatches(SJ_LIMIT)
+            const out = await h.render()
+            const got = sjHiddenOf(out, 'watch')
+            if (got === 3) {
+              ok('SJ-(反证a) ✓ 负向对拍：把 `STATUS_LIST_MAX` 改成 **7** ⇒ '
+                + `10 条时未展开变成 **3**（got=${got}）⇒ SJ-a/b 钉的确实是`
+                + '**实现里的那个常量**，⛔ 不是断言里写死的 10')
+            } else {
+              bad('SJ-(反证a) 【负向对拍失败】把 `STATUS_LIST_MAX` 改成 7 之后'
+                + `10 条时未展开=${got}（应 3）⇒ SJ-a/b 没跟实现走（判据写死了数字）`)
+            }
+          } finally { h.cleanup() }
+          sjOrchMod = savedOrch; sjBusMod = savedBus
+        }
+      } catch (e) {
+        bad(`SJ-(反证a) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally {
+        try { sjRm(mut, { recursive: true, force: true }) } catch { /* 忽略 */ }
+      }
+    }
+  }
 }
 
 // ── 输出 ───────────────────────────────────────────────────────────────

@@ -1610,9 +1610,16 @@ export class DispatchWake {
    * ⚠ 逐 owner 的"最近一次可读原话"。
    *   ⚠ `firedBlocked` 是第 323 轮（`TASK-I`）新增的一档：**帧到了但被准入拦下**。
    *     ⛔ 不许并进 `push`（那是"读不到卡"），也不许并进 `undecidable`（那是"读不到会话状态"）。
+   *   ⚠⚠ `ownerUnknown` 是第 345 轮新增的一档：**「归属判不出」那句原话也要按 owner 取**。
+   *     ── 改前（=`this.state.ownerUnknownWhy`，进程级单值）的病 ────────────────
+   *     A 读一次卡面，A 的读数里就会出现**B 的卡**（实证：`A.ownerUnknownWhy` 含 `t-b`，
+   *     而 `t-b` 归 B）—— 与 `W6` 同族的"把别人的原话串给读的人"。
+   *     ⚠ `sayFor` 本来就有这道防线（`whyByOwner` 的第一个用途就是它），
+   *     只是 `ownerUnknown` 这一档当初**没走它**。
    */
   private readonly whyByOwner = new Map<string, {
     undecidable?: string; push?: string; undeliverable?: string; firedBlocked?: string
+    ownerUnknown?: string
   }>()
   private readonly opts: DispatchWakeOpts
 
@@ -1637,7 +1644,7 @@ export class DispatchWake {
   /** 记一句"某 owner 名下的可读原话"（按字段分档，⛔ 不许互相顶替）。 */
   private sayFor(
     owner: string | undefined,
-    field: 'undecidable' | 'push' | 'undeliverable' | 'firedBlocked',
+    field: 'undecidable' | 'push' | 'undeliverable' | 'firedBlocked' | 'ownerUnknown',
     why: string,
   ): void {
     if (typeof owner !== 'string' || owner === '') return
@@ -1676,24 +1683,33 @@ export class DispatchWake {
     const pendingOf = (rows: DispatchedSession[]): number =>
       rows.filter((s) => s.sawRunning && !s.reported).length
     /**
-     * ── ⚠⚠ **分区三档里的"判不出"= 当前登记数**（2026-10-20 第 3 单 · 修量纲混装）──────
+     * ── ⚠⚠ **"判不出归属"这一档要扣掉"后来判出来了的"**（2026-10-21 · 第 345 轮）──
      *
-     * ⚠ 改前这一行是 `const ownerUnknownRegistered = this.state.ownerUnknownCount`
-     *   —— 把**累计事件计数**塞进了**分区字段**。而 `SA-g` 的"覆盖全部登记"判据
-     *   把三档相加当作"全部登记数" ⇒ **两种量纲相加**。
-     *   现场读数因此长成 `我的登记 1 个 · 我的在跑 0 个 · 归属判不出 960 个 · 他人的 1 个`
-     *   —— 前两个与最后一个是"此刻有几条"，960 是"累计发生过多少次"，
-     *   **并排还宣称是分区**（本项目明令禁止的"两种原因说成同一句话"）。
+     * ── 改前是什么（分区三档的"互斥"当场被破）────────────────────────────
+     *   `const ownerUnknownRegistered = this.ownerUnknownLive.size` —— **整个集合**的大小，
+     *   ⛔ 不扣任何东西。而这个集合是**全进程共用**的：
+     *   A 读一次卡面，凡"A 判不出归属"的卡都会进集合 —— 其中包含
+     *   **已经明确归属给别人的**（A 视角"不是我的"，但 B 视角"就是我的"），
+     *   以及**已经被 B 登记成功的**。
+     *   ⇒ B 读数里同一张卡**同时出现**在 `我的登记` 与 `归属判不出` 里，
+     *     三档**不再互斥**（`SA-g` 钉的正是"互斥"，但它直接喂 `register()`、
+     *     ⛔ 绕过了 `cardsOf` 这个真实入口，所以它一直绿 —— 这正是本批要补的缺口）。
+     *   ⚠ 第 344 轮现场形态：`我的登记 1 个 · 归属判不出 3 个`，而其中一条
+     *     就是**已登记成功的那张自家卡**（被一次无身份读顺手记进了这一档）。
      *
-     * ⚠ 现在：
-     *   · **本字段（`ownerUnknownRegistered`）= 当前**"判不出归属"的登记数；
-     *   · 累计值仍在 `ownerUnknownCount`，**只出现在"累计"那一行**，并带 `ownerUnknownBasis`。
-     *
-     * ⚠ "判不出归属"当前有几条怎么算？这类记录**根本不会进 `sessions`**（`register` 直接拒），
-     *   所以它没有"当前条数"的自然载体。⇒ 现在**显式维护一个集合**
-     *   （`ownerUnknownLive`：键 = (卡, 执行)），**只在"已知它不再跑"时移出**。
+     * ── 现在 ────────────────────────────────────────────────────────
+     *   逐条判：**这个执行会话的归属，后来是不是已经判出来了**（在 `sessions` 里就是）。
+     *   · 已判出 ⇒ **不算"判不出归属"**，从这一档扣掉（它已在 `mine` 或 `othersOnly` 里被数过）；
+     *   · 仍判不出 ⇒ 留着。
+     *   ⚠ 于是三档**真正互斥**：`sessions` 里的按 owner 分成 `mine` / `othersOnly`，
+     *     `unknownLive` 里剩下的才是"谁都不算"的那一档。
+     *   ⚠ 这一档**只给条数**（与 `othersOnly` 同款口径），⛔ 不许改成逐条展开。
+     *   ⚠ `self === undefined` ⇒ 仍然照报这一档（它是"没有主人的记录数"，
+     *     与"我是谁"无关）——⛔ 不许压成 0（那会把"有一堆判不出归属的记录"
+     *     说成"一条都没有"，同族的假话）。
      */
-    const ownerUnknownRegistered = this.ownerUnknownLive.size
+    const ownerUnknownRegistered = [...this.ownerUnknownLive.values()]
+      .filter((sid) => this.sessions.get(sid) === undefined).length
     /** 他人的：有 owner、但不是我的 ⇒ **只给条数**。 */
     const othersOnly = self === undefined
       ? all.filter((s) => typeof s.owner === 'string' && s.owner !== '').length
@@ -1734,6 +1750,17 @@ export class DispatchWake {
        *   按 `(卡, 执行)` 去重）；此刻 = `ownerUnknownRegistered`（分区字段）。
        */
       ownerUnknownCount: this.state.ownerUnknownCount,
+      /**
+       * ── ⚠⚠ **这句原话必须按 owner 取**（2026-10-21 · 第 345 轮）────────────────
+       *
+       * ⚠ 改前它来自上面那个 `...this.state` 展开 —— 即**进程级单值**，
+       *   谁最后写就归谁读。实证：A 读一次卡面，**A 的读数里出现 B 的卡 `t-b`**
+       *   （`t-b` 的 `createdBy` 是 B）；B 再读一次，A 也看见 B 那句。
+       *   ⇒ 与 `W6` 完全同族：「把别人的原话串给读的人」。
+       * ⚠ 现在照 `firedBlockedWhy`（紧邻上面那一行）的既有写法按 owner 取。
+       * ⚠ `self === undefined` ⇒ `undefined`（⛔ 不许落回进程级单值 —— 那正是改前的形态）。
+       **/
+      ownerUnknownWhy: this.whyByOwner.get(self ?? '')?.ownerUnknown,
       undeliverableCount: countOf(this.ownedUndeliverable),
       mine: self === undefined
         ? undefined
@@ -1810,6 +1837,16 @@ export class DispatchWake {
       const firstTime = !this.ownerUnknownSeen.has(rkey)
       if (firstTime) this.ownerUnknownSeen.add(rkey)
       this.ownerUnknownLive.set(rkey, id)
+      /**
+       * ⚠ **这句同样要逐 owner 存**（第 345 轮）：`register()` 是**服务面**那道同款准入，
+       *   它的可读话与 `noteOwnerUnknown`（准入面）走同一档 `ownerUnknown`。
+       *   ⚠ 本档**本来就是"判不出归属"**，所以 owner 参数通常为空 ⇒ `sayFor` 不记给任何人
+       *   （⛔ 不许落回进程级）。真出现 `entry.owner` 缺失但有调用方时，调用方无从得知，
+       *   故这一档只保证"⛔ 不串给别人"，不保证"一定有人能看到"——
+       *   那正是 `ownerUnknownCount`（进程级累计）留在那里的理由。
+       */
+      this.sayFor(entry.owner, 'ownerUnknown', `会话 ${id} 的归属**判不出**（没有 owner）⇒ **不登记**：`
+        + '它跑完也不会叫醒任何人（⛔ 这不等于"没有会话在跑"，也⛔ 不是"它没跑完"）')
       this.state = {
         ...this.state,
         ...(firstTime ? { ownerUnknownCount: this.state.ownerUnknownCount + 1 } : {}),
@@ -1871,7 +1908,69 @@ export class DispatchWake {
    *     ⇒ 这不是失败、也不是"没有卡在跑"，而是"**这张卡的回执不该给我**"。
    * ⚠ ⛔ 不许与"没有卡在跑 / 没有会话在跑"合并计数（本项目既有纪律）。
    */
-  noteOwnerUnknown(cardId: string, sessionId: string, why: string, executionId?: string): void {
+  noteOwnerUnknown(cardId: string, sessionId: string, why: string, executionId?: string,
+    owner?: string,
+    /**
+     * ── ⚠⚠ **三种成因必须分开记**（2026-10-21 · 第 345 轮）────────────────────────
+     *
+     * ⚠ 改前它们**全挤进同一个 `ownerUnknownLive`** ⇒ 那个集合的大小既不是
+     *   "判不出归属的条数"，也不是"我该管的条数"，而是**三种东西的和**：
+     *     · `unknown`   = 真的判不出（`createdBy` 空）        ⇒ 谁的都不是
+     *     · `other`     = 归属判出来了、是**别人**的          ⇒ 是**他人**那一档，⛔ 不是"判不出"
+     *     · `selfExec`  = 归属判出来了、是**我**的，但执行方就是我 ⇒ 我**拒绝**登记，⛔ 也不是"判不出"
+     *   ⇒ 读数里因此长成 `我的登记 1 个 · 归属判不出 3 个 · 他人的 0 个`，
+     *     三档之和与"全部登记"对不上 —— 分区三档"互斥且覆盖全部登记"当场被破。
+     *   ⚠ 更荒诞的是 `selfExec` 那一档：那张卡**明明是我的**（`createdBy === self`），
+     *     却被印成"判不出归属"。
+     * ⚠ 缺省 `'unknown'` ⇒ 旧调用形状**行为逐字相同**（机检里的既有调用不用改）。
+     */
+    reason: 'unknown' | 'other' | 'selfExec' = 'unknown'): void {
+    /**
+     * ── ⚠⚠ **这句原话要归到"读这个面的人"名下**（2026-10-21 · 第 345 轮）──────────
+     *
+     * ⚠ 改前它只写进 `this.state.ownerUnknownWhy`（**进程级单值**）⇒ **谁最后写谁读**：
+     *   A 读一次卡面，A 的读数里就出现 **B 的卡**那句（实证见 `REPORT` §二-1）。
+     * ⚠ 现在照同族既有写法走 `sayFor(owner, 'ownerUnknown', …)`（逐 owner 存）。
+     *   ⚠ 与 `firedBlocked` **分开两个字段**（⛔ 不许互相顶替）：一个回答"回执不该给我"，
+     *     另一个回答"帧到过、被准入挡了"，是两道不同的档。
+     *   ⚠ `owner` 判不出（调用方没给）⇒ `sayFor` 自己会**不记给任何人**
+     *     （⛔ 不许落回进程级 —— 那正是改前的形态）。
+     * ⚠ 累计 `ownerUnknownCount` / `ownerUnknownBasis` **仍然进程级**（那是"跨 owner 的
+     *   判不出归属总数"，本来就不属于任何人；口径一个字未改）。
+     */
+    /**
+     * ⚠⚠ **措辞按成因分开**（第 345 轮）：改前三种成因**共用一句"归属判不出"**
+     *   ⇒ `selfExec` 那张"明明是我的卡"被印成"判不出归属"（本项目头号禁忌的又一变种）。
+     *   ⚠ 现在 `other` / `selfExec` 两档**不再自称"判不出"** ——
+     *     它们的归属**判得明明白白**，只是"回执不该给我"。
+     */
+    const line = reason === 'selfExec'
+      ? `卡 ${cardId}（执行会话 ${sessionId}）**归属是你自己的**，但**执行方就是你自己**`
+        + ` ⇒ **不登记**：${why}`
+        + ' —— ⛔ 这不等于"没有卡在跑"，也⛔ 不是"判不出它归谁"；'
+        + '它自己跑完不是"某个被派出去的活跑完了"'
+      : reason === 'other'
+        ? `卡 ${cardId}（执行会话 ${sessionId}）**归属判出来了、是别人的** ⇒ **不登记**：${why}`
+          + ' —— ⛔ 这不是"判不出归属"，是"**这张卡不该算给我**"；'
+          + '该卡的回执只该回到它自己的 owner'
+        : `卡 ${cardId}（执行会话 ${sessionId}）**归属判不出** ⇒ **不登记**：${why}`
+          + ' —— ⛔ 这不等于"没有卡在跑"，也⛔ 不是"它没跑完"；'
+          + '该卡的回执只该回到它自己的 owner'
+    /**
+     * ⚠⚠ **只有 `other` 那一档不许进"我这句原话"**（第 345 轮）——————
+     *
+     * ⚠ 判据是"**这句话是不是读者自己的事**"，不是"它严不严重"：
+     *   · `unknown`（谁都判不出归谁）⇒ **是**读者的事：他该知道"有卡在跑但不该给我"；
+     *   · `selfExec`（归属是**我自己**、只是执行方也是我）⇒ **是**读者的事：
+     *     这正是"我拒绝登记我自己那张卡"的解释，§一 的反向对照要求它**话术必须点名**；
+     *   · `other`（归属判出来了、**是别人**）⇒ **不是**读者的事 ——
+     *     它已经在 `othersOnly` 里按"只给条数"的既有口径报过（⛔ 不许逐条展开别人的卡）。
+     *
+     * ⚠ 改前这一档**三种全收** ⇒ A 读一次卡面，A 的读数里就出现 **B 的卡**
+     *   （实证：`A.ownerUnknownWhy` 含 `t-b`，而 `t-b` 归 B；B 根本没读过也照样拿到）。
+     *   ⛔ 现在 `other` 一律不进 —— 这就是"⛔ 不许把别人的原话串给读的人"（`W6` 同族）。
+     */
+    if (reason !== 'other') this.sayFor(owner, 'ownerUnknown', line)
     /**
      * ── ⚠⚠ **按 `(cardId, executionId)` 去重**（2026-10-20 第 3 单 · 修 **960**）──────
      *
@@ -1883,17 +1982,15 @@ export class DispatchWake {
      *
      * ⚠ 现在：同一张卡的**同一次执行**只计一次；`executionId` 变了（重新点火）再计。
      *   ⇒ 语义 = "**真正被判不出归属的 (卡, 执行) 组合数**"（累计），⛔ 不是"读卡次数"。
-     * ⚠ 去重**只影响计数**，不影响可读话（`ownerUnknownWhy` 每次仍然更新 —— 那句是诊断）。
+     * ⚠ 去重**只影响计数**，不影响可读话（逐 owner 那句每次仍然更新 —— 那句是诊断）。
      */
     const key = `${cardId}\u0000${executionId ?? '(无执行id)'}`
     if (this.ownerUnknownSeen.has(key)) {
-      /** ⚠ 重复计数 ⇒ 只刷新可读话，⛔ 不加数（这就是"同一次点火只计一次"）。 */
-      this.state = {
-        ...this.state,
-        ownerUnknownWhy: `卡 ${cardId}（执行会话 ${sessionId}）**归属判不出** ⇒ **不登记**：${why}`
-          + ' —— ⛔ 这不等于"没有卡在跑"，也⛔ 不是"它没跑完"；'
-          + '该卡的回执只该回到它自己的 owner',
-      }
+      /**
+       * ⚠ 重复计数 ⇒ 只刷新可读话，⛔ 不加数（这就是"同一次点火只计一次"）。
+       *   ⚠ 刷新的是**逐 owner** 那一份（见上面 `sayFor`），⛔ 不再碰 `this.state` 那句。
+       */
+      this.say(`[dispatch-wake] ${line}`)
       return
     }
     this.ownerUnknownSeen.add(key)
@@ -1905,10 +2002,19 @@ export class DispatchWake {
      *   ⚠ 若这里也按 `(卡,执行)` 记，重新点火就把"此刻"越刷越大 ——
      *     那等于把累计值换个名字塞回分区字段（正是本单要修的量纲混装）。
      */
+    /**
+     * ⚠⚠ **只有"真判不出"才进这个集合**（第 345 轮）：
+     *   `other` / `selfExec` 两档的归属**已经判出来了**（分别是别人 / 我自己），
+     *   它们⛔ 不是"判不出归属"⇒ 不许占这一档的名额。
+     *   ⚠ 改前它们**三条都往这里塞** ⇒ 集合大小 = 三种成因之和
+     *     ⇒ 分区三档之和与"全部登记"对不上（现场 `1+3+0=4 ≠ 1`）。
+     *   ⚠ 顺手把这条会话先移出（改前就在做）：它若早先是"真判不出"、
+     *     后来判出来了，这一档必须跟着降。
+     */
     for (const [k, sid] of this.ownerUnknownLive) {
       if (sid === sessionId) this.ownerUnknownLive.delete(k)
     }
-    this.ownerUnknownLive.set(`card\u0000${cardId}`, sessionId)
+    if (reason === 'unknown') this.ownerUnknownLive.set(`card\u0000${cardId}`, sessionId)
     if (this.ownerUnknownSeen.size > SEEN_LIMIT) {
       const drop = this.ownerUnknownSeen.size - SEEN_LIMIT
       let i = 0
@@ -1921,9 +2027,13 @@ export class DispatchWake {
       ...this.state,
       ownerUnknownCount: this.state.ownerUnknownCount + 1,
       ownerUnknownBasis: '累计，按 (卡 id, 执行 id) 去重 —— ⛔ 不是"此刻有几张判不出归属的卡"',
-      ownerUnknownWhy: `卡 ${cardId}（执行会话 ${sessionId}）**归属判不出** ⇒ **不登记**：${why}`
-        + ' —— ⛔ 这不等于"没有卡在跑"，也⛔ 不是"它没跑完"；'
-        + '该卡的回执只该回到它自己的 owner',
+      /**
+       * ⚠ **这个字段保留原义**：它现在是**进程级的"最近一次"**，只在日志/自检里用；
+       *   ⛔ **渲染层不再读它**（`snapshot(owner)` 改读 `whyByOwner[...].ownerUnknown`，
+       *   见 {@link snapshot}）—— 留着它是为了 `say()` 那条日志与原口径逐字相同，
+       *   ⛔ 不是为了再当读数出口（那正是本批要修的"把别人的原话串给读的人"）。
+       */
+      ownerUnknownWhy: line,
     }
     this.say(`[dispatch-wake] ${this.state.ownerUnknownWhy}`)
   }
