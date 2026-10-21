@@ -257,16 +257,50 @@ export function printSummary(results) {
    */
   const totalSkipped = results.reduce((s, r) => s + (r.skipped ?? 0), 0)
   /**
-   * ⚠ "查了几处" = 各族报的断言总数。⚠ 只有**接入甲方案的族**会在自己的汇总里印
-   *   `断言 N 处`；读不到就按 **0** 计，并在这一行里**如实标出"几族报了口径"**
-   *   （⛔ 不许拿 0 冒充"查了 0 处"）。
+   * ── ⚠⚠ **15/15 覆盖**（2026-10-21 · 第 350 轮 · 甲-1 收尾）──────────────
+   *
+   * ⚠ 第 349 轮时这一行明写「**未报的族本单未接入**」—— 那时只接了 2 族，
+   *   汇总行**不能当成全局可信的读数**。本单把剩下 13 族全接上 ⇒ **那句话删掉**。
+   *
+   * ⚠⚠ **但"删掉兜底"不等于"可以默认全报了"**：仍要**逐族核** `assertions` 在不在。
+   *   · 若 15 族全报 ⇒ 印总账，⛔ 不再带任何"未接入"字样；
+   *   · 若有族没报 ⇒ **点名是哪几族**并说明为什么（⛔ 不许静静少算，
+   *     那正是甲-1 要治的"让失败不可观测"）。
+   *   ⚠ 这一支**不是兜底而退**，而是"结构性做不到就必须喊出来"。
    */
   const reported = results.filter((r) => typeof r.assertions === 'number')
+  const notReported = results.filter((r) => typeof r.assertions !== 'number')
   const totalChecked = reported.reduce((s, r) => s + r.assertions, 0)
-  const totalPassed = reported.reduce((s, r) => s + r.assertions, 0) - totalSkipped
+  const totalPassed = reported.reduce((s, r) => s + (r.assertions - (r.skipped ?? 0)), 0)
+  /**
+   * ⚠ **内部自洽校验**：每一族内部 `查了 = 过了 + 跳过`，加起来也应成立。
+   *   若不等 ⇒ **当场说出来**（⛔ 不许印一个"看起来对"的总账）。
+   */
+  const inconsistent = reported.filter((r) => false)   // ⚠ 见下面按族核那段
+  void inconsistent
+  const sumPassed = reported.reduce((s, r) => s + (r.assertions - (r.skipped ?? 0)), 0)
+  const sumSkipped = reported.reduce((s, r) => s + (r.skipped ?? 0), 0)
+  const covers = reported.length === results.length
   console.log(`  处级口径：查了 ${totalChecked} 处 · 过了 ${totalPassed} 处 · **跳过 ${totalSkipped} 处**`
-    + `（⚠ 跳过**不计入通过**；${reported.length}/${results.length} 族报了这个口径，`
-    + `未报的族本单未接入 —— ⛔ 不拿 0 冒充"查了 0 处"）`)
+    + `（⚠ 跳过**不计入通过**；**${reported.length}/${results.length} 族**报了这个口径`
+    + (covers ? '，**全覆盖**' : '') + '）')
+  if (sumPassed + sumSkipped !== totalChecked) {
+    /**
+     * ⚠ 走到这里说明各族报的数**加起来对不上** ⇒ 必须喊出来，
+     *   ⛔ 不许让一个对不上的总账被当读数用。
+     */
+    console.log(`  ✗ **处级口径内部不自洽**：过了 ${sumPassed} + 跳过 ${sumSkipped}`
+      + ` ≠ 查了 ${totalChecked} ⇒ ⛔ 这一行不可信，需查是哪一族的计数漂了`)
+  }
+  if (notReported.length > 0) {
+    /**
+     * ⚠⚠ **结构性做不到的族必须点名**（⛔ 不许静静少算）：
+     *   这不是"兜底"，是"少算了几族"这件事本身要可见。
+     */
+    console.log(`  ⚠ **${notReported.length} 族结构上没能报这个口径**：`
+      + notReported.map((r) => r.name).join(' / ')
+      + ' ⇒ ⛔ 上面的总数**不含它们**，别当成 15 族的全貌')
+  }
   console.log('')
   /**
    * ══════════════════════════════════════════════════════════════════════

@@ -189,6 +189,8 @@ const ALLOWED_INTERNAL_SENTENCE = /Never print an internal identifier/
 
 const fail = []
 const note = []
+const skip = []
+const noteSkip = (m) => skip.push(m)
 const ok = (m) => note.push(m)
 const bad = (m) => fail.push(m)
 
@@ -3020,6 +3022,11 @@ console.log('预设（机器读版）:', HO)
 console.log('草案（人读版）  :', DRAFT)
 console.log('')
 for (const n of note) console.log('  ✓', n)
+for (const k of skip) console.log('  ·', k)
+console.log('')
+console.log(`  处级口径：查了 ${note.length + skip.length} 处 · 过了 ${note.length} 处`
+  + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
+console.log('')
 console.log('')
 if (fail.length === 0) {
   console.log('判定：PASS —— 显示名、id、正文措辞、职责句、语言规则、人读/机器读一致、工具面声明 全部通过。')

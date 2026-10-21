@@ -78,6 +78,14 @@ const DELIVERY_TS = join(root, 'src', 'server', 'write-delivery.ts')
 
 const fail = []
 const note = []
+/**
+ * ── ⚠⚠ **第三态 `skip`**（2026-10-21 · 第 350 轮）──────────────────────────
+ *   跳过类**不进 `note`（通过）、不进 `fail`（失败）**，单独成档。
+ *   ⚠ 本族**目前没有**跳过类调用点（实测 0 处）—— 这个收集器恒空，
+ *     但它让本族也能印同一口径的一行（`check:all` 要 15/15 覆盖）。
+ */
+const skip = []
+const noteSkip = (m) => skip.push(m)
 const bad = (m) => fail.push(m)
 const ok = (m) => note.push('  ✓ ' + m)
 
@@ -10670,6 +10678,14 @@ const orchCode = stripComments(orchSrc)
 // ── 输出 ───────────────────────────────────────────────────────────────
 
 if (note.length > 0) console.log(note.join('\n'))
+/**
+ * ⚠ **处级口径**（第 350 轮）：`查了 = 过了 + 跳过`。
+ *   ⚠ 本族 `note` 每条就是一个断言（`ok()` 逐条 push）⇒ `note.length` 就是"过了几处"。
+ *   ⚠ 放在 `fail` 判定**之前**印：失败时也应当能看到"查了多少、过了多少、跳了多少"
+ *     （⛔ 不许只在 PASS 时才印 —— 那会让失败态缺少维度）。
+ */
+console.log(`  处级口径：查了 ${note.length + skip.length} 处 · 过了 ${note.length} 处`
+  + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
 if (fail.length > 0) {
   console.log('\n✗ 失败：')
   for (const m of fail) console.log('  ' + m)

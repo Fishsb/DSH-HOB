@@ -1302,6 +1302,17 @@ if (UNREADABLE > 0) {
   console.log('       ⚠ 本仓口径：**判不出不是结论** ⇒ ⛔ 不许当通过（退出码 2）。')
   process.exit(2)
 }
+/**
+ * ── ⚠⚠ **处级口径**（2026-10-21 · 第 350 轮 · 甲-1 收尾）────────────────────
+ *   ⚠ 本族**本来就有**第三档：`notJudged()`（记 `·`、不计入判定、⛔ 不进退出码）——
+ *     它与第 349 轮引入的 `skip` **语义完全相同**，只是名字不同。
+ *     ⇒ 这里把它按同一格式报出来，⛔ 不另造一套计数（那会让两处口径漂）。
+ *   `查了 = 过了 + 跳过`：过了 = `okCount`，跳过 = `notJudgedCount`。
+ *   ⚠ 本族 `judged.length === 0` 那档（整族没对象）**走 `exit 2`**，与 skip 不是一档，
+ *     ⛔ 所以那支不进这个等式（它与第 349 轮 `noObject` 同口径）。
+ */
+console.log(`  处级口径：查了 ${okCount + notJudgedCount} 处 · 过了 ${okCount} 处`
+  + ` · **跳过 ${notJudgedCount} 处**（⚠ 跳过**不计入通过**）`)
 if (judged.length === 0) {
   console.log('判定：**未执行** —— 没有一个 profile 的 `dependencies` 里声明了 ' + SELF_NAME
     + ' ⇒ **没有可判定的对象**（⚠ 这不代表装对了；也不代表没装 —— 只是"没有任何 profile 声称要装它"）。')

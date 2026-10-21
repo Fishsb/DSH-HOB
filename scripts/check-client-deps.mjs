@@ -140,6 +140,15 @@ const PANEL_STYLES_TS = join(CLIENT_DIR, 'panel-styles.ts')
 
 const fail = []
 const note = []
+/**
+ * ── ⚠⚠ **第三态 `skip`**（2026-10-21 · 第 350 轮 · 甲-1 收尾）─────────────────
+ *   跳过类**不进 `note`（= 通过）、不进 `fail`（= 失败）**，单独成档。
+ *   ⚠ 本族目前**没有**跳过类调用点（实测 grep 0 处）⇒ 这个收集器恒空；
+ *     留着它是为了**口径统一**：`check:all` 要能从**每一族**读到同形的一行，
+ *     ⛔ 不许"因为本族没有跳过就不印那行"（"没有跳过"本身是读数）。
+ */
+const skip = []
+const noteSkip = (m) => skip.push(m)
 const bad = (m) => fail.push(m)
 const ok = (m) => note.push(m)
 
@@ -1150,7 +1159,16 @@ console.log('      I 渲染值来自外部存储且该存储订阅了 form 自�
 console.log('      J 零原生 select + 预设名本地化（键名有兜底）+ locale 零裸访问/不进 inject + 中英键集一致')
 console.log('')
 for (const n of note) console.log('  ✓', n)
+for (const k of skip) console.log('  ·', k)
 console.log('')
+/**
+ * ⚠ **处级口径**（第 350 轮）：`查了 = 过了 + 跳过`。
+ *   ⚠ 「查了」= **本族真的看过的处数**（`note` 的通过数 + `skip` 的跳过数）；
+ *     `fail` 那几条**不计入**它 —— 它们不是"查过且过"，也**不是"没查"**，
+ *     它们单独就是"查了且不过"，在判定行里。
+ */
+console.log(`  处级口径：查了 ${note.length + skip.length} 处 · 过了 ${note.length} 处`
+  + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
 if (fail.length === 0) {
   console.log('判定：PASS —— 两个 Remote 命名空间只经免 inject 读法取用，且失败仍如实显示、可重试。')
   process.exit(0)

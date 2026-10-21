@@ -760,7 +760,17 @@ console.log('  ✓', note)
 console.log('  ✓', surface)
 console.log('  ✓', landingLine)
 console.log('  ✓', corrLine)
+/**
+ * ⚠ **处级口径**（2026-10-21 · 第 350 轮 · 甲-1 收尾）：`查了 = 过了 + 跳过`。
+ *   ⚠ 本族**固定 4 组**（`note` / `surface` / `landingLine` / `corrLine`，各一行 ✓）
+ *     ⇒ 过了 = 4。⚠ 这 4 个是**恒在**的（不因数据空而不印）⇒ 口径稳定。
+ *   ⚠ 本族**没有**跳过分支（每条都有对象/或直接 FAIL）⇒ `skip` 恒 0，口径行照样要印。
+ *   ⚠ `bad` 那几条**不进等式**（"查了且不过"，由判定行负责）。
+ */
+const SKIP_ROUNDS = []
 console.log('')
+console.log(`  处级口径：查了 ${4 + SKIP_ROUNDS.length} 处 · 过了 4 处`
+  + ` · **跳过 ${SKIP_ROUNDS.length} 处**（⚠ 跳过**不计入通过**）`)
 console.log('⚠ 覆盖面（归纳，⛔ 非穷举）：只管**轮次标识**这一类 · 取数面限于轮次登记的载体 '
   + '（`CONTEXT*.md` 整份 + `08-round-table.md`）· ⛔ 不管"号还在但内容被换掉" · ⛔ 不管"记录件起好了而指针没点到它"。')
 console.log('')

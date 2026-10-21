@@ -66,7 +66,17 @@ try {
 const { Context } = cordis
 
 let fail = 0
+/**
+ * ── ⚠⚠ **处级计数**（2026-10-21 · 第 350 轮 · 甲-1 收尾）──────────────────
+ *   `checked` = 真跑过的处数（每条 `check()` 一次）；`fail` = 其中不符的。
+ *   ⚠ 本族**没有**"跳过"分支（每条 check 都有对象）⇒ `skip` 恒 0，
+ *     但口径行必须印（"没有跳过"是读数，⛔ 不许因为 0 就不印）。
+ *   ⚠ `查了 = 过了 + 跳过`：过了 = `checked - fail`。⛔ 不许把 `fail` 塞进"过了"。
+ */
+let checked = 0
+const skip = []
 const check = (name, ok, extra = '') => {
+  checked++
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  ' + extra : ''}`)
   if (!ok) fail++
 }
@@ -251,5 +261,7 @@ console.log('\n=== 路径 B2：两种 inject 的**不同后果**（E-02 的实�
   )
 }
 
+console.log(`\n  处级口径：查了 ${checked} 处 · 过了 ${checked - fail} 处`
+  + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
 console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILED`)
 process.exit(fail === 0 ? 0 : 1)

@@ -78,6 +78,8 @@ const HOST_NODE_MODULES = (() => {
 
 const fail = []
 const note = []
+const skip = []
+const noteSkip = (m) => skip.push(m)
 const bad = (m) => fail.push(m)
 const ok = (m) => note.push(m)
 
@@ -1511,6 +1513,11 @@ console.log('patch  :', PATCH)
 console.log('panel  :', PANEL)
 console.log('')
 for (const n of note) console.log('  ✓', n)
+for (const k of skip) console.log('  ·', k)
+console.log('')
+console.log(`  处级口径：查了 ${note.length + skip.length} 处 · 过了 ${note.length} 处`
+  + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
+console.log('')
 console.log('')
 if (fail.length === 0) {
   console.log('判定：PASS —— 形状、一一对应、解 ref 收口、面板文案、写入路径 全部通过。')

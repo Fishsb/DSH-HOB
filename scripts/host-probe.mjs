@@ -311,5 +311,14 @@ check('name 常量 = dsh-hob（entry id / 路由前缀 / settings ns 三契约�
 })
 
 const TOTAL = 9
+/**
+ * ⚠ **处级口径**（2026-10-21 · 第 350 轮 · 甲-1 收尾）：`查了 = 过了 + 跳过`。
+ *   ⚠ `TOTAL` 是本族**固定的断言条数**（9 条，每条必跑）；`fail` 是不符的条数。
+ *     过了 = `TOTAL - fail`。本族**没有**跳过分支 ⇒ `skip` 恒 0（口径行照样要印）。
+ *   ⚠ ⛔ 不许把 `fail` 塞进"过了"或"跳过"任一边来凑等式。
+ */
+const SKIP = []
+console.log(`  处级口径：查了 ${TOTAL} 处 · 过了 ${TOTAL - fail} 处`
+  + ` · **跳过 ${SKIP.length} 处**（⚠ 跳过**不计入通过**）`)
 console.log(fail === 0 ? `\nALL PASS（${TOTAL} 条）` : `\n${fail} FAILED（共 ${TOTAL} 条）`)
 process.exit(fail === 0 ? 0 : 1)

@@ -398,6 +398,14 @@ if (process.argv[1] !== undefined && process.argv[1].endsWith('check-readings-ci
       + '若账本区刚重建、报告还没迁过来，那是**基准缺失**，先补齐再判。')
     process.exit(2)
   }
+  /**
+   * ⚠ **处级口径**（2026-10-21 · 第 350 轮 · 甲-1 收尾）：`查了 = 过了 + 跳过`。
+   *   ⚠ 本族**没有**"跳过"分支（实测 0 处）⇒ `skip` 恒 0，口径行照样要印。
+   *   ⚠ `note` 是查过且过；`fail` **不进等式**（它是"查了且不过"，由判定行负责）。
+   */
+  const skip = []
+  console.log(`  处级口径：查了 ${note.length + skip.length} 处 · 过了 ${note.length} 处`
+    + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
   if (fail.length === 0) {
     console.log(`判定：PASS —— R${STRICT_FROM} 起的报告里，含读数命令的代码块**全部可指认**`
       + '（贴了输出 / 内联给了结果 / 或显式声明了为什么没有）。')

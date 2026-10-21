@@ -35,6 +35,8 @@ const CW = join(root, 'src', 'server', 'card-wake.ts')
 
 const fail = []
 const note = []
+const skip = []
+const noteSkip = (m) => skip.push(m)
 const bad = (m) => fail.push(m)
 const ok = (m) => note.push(m)
 
@@ -541,6 +543,11 @@ console.log('补投判据 · dsh-hob（错投回执按 owner 补送）')
 console.log('被测：', CW)
 console.log('')
 for (const n of note) console.log('  ✓', n)
+for (const k of skip) console.log('  ·', k)
+console.log('')
+console.log(`  处级口径：查了 ${note.length + skip.length} 处 · 过了 ${note.length} 处`
+  + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
+console.log('')
 console.log('')
 if (fail.length === 0) {
   console.log('判定：PASS —— (a) 补投到 owner ·(b) 判不出不补且可读 ·(c) 幂等只补一份 全成立；'
