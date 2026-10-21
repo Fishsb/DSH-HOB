@@ -1605,6 +1605,38 @@ export class DispatchWake {
    * ⚠ ⛔ 不许把它当成"累计"用（累计是 `ownerUnknownCount` / `ownerUnknownSeen`）。
    */
   private readonly ownerUnknownLive = new Map<string, string>()
+  /**
+   * ── ⚠⚠ **`ownerUnknownLive` 的键只允许一种形态**（2026-10-21 · 第 348 轮）──────
+   *
+   * ── 改前是什么（两种键混在同一个 Map 里）────────────────────────────────
+   *   · `register()` 的准入门用 `` `${'\u0000register\u0000'}${id}` ``（会话 id 嵌在键里）
+   *   · `noteOwnerUnknown()` 用 `` `card\u0000${cardId}` ``（卡 id 嵌在键里）
+   *   ⇒ 同一个 Map 里并存**两种拼法**，而"值"倒是一致的（都是执行会话 id）。
+   *   ⚠ 后果不在今天爆，而在**下一次改这个 Map 的人**身上：
+   *     他只要按其中一种拼法去 `delete`/`get`，另一种就**静默漏掉**
+   *     （删不掉 ⇒ "此刻"这一档只涨不降；查不到 ⇒ 移不出去）。
+   *     这正是本项目反复吃亏的形态：**同一事实两种表示**（`E-128` 同族）。
+   *
+   * ── 为什么选"卡 id"这一种（而不是"会话 id"那一种）────────────────────
+   *   ① **语义**：这一档的语义是"**这张卡**现在判不出归谁"——
+   *      计数的去重口径也是 `(卡, 执行)`（见 `ownerUnknownSeen`）；
+   *      用卡 id 当键，与那个口径**同构**。
+   *   ② **覆盖**：`register()` 那一处进来时**未必有卡 id**（它只保证有 `sessionId`），
+   *      所以它必须能接受"没有卡 id"的情形 ⇒ 键退化成 `card\u0000?<会话id>`
+   *      **仍然是一种拼法**（前缀固定、只是槽位内容不同），⛔ 不是第二种形态。
+   *   ③ **可删**：`register()` 成功时要按 `sessionId` 移出本集合（`:1864`），
+   *      它扫的是**值**、不是键 ⇒ 与键形态无关，选哪种都不影响那条清理。
+   *
+   * ⚠ 于是键的**唯一形态** = `` `card\u0000${cardId ?? '?' + sessionId}` ``：
+   *   前缀恒为 `card\u0000`，槽位是"卡 id，判不出卡 id 时退化成 `?<会话id>`"。
+   * ⚠ ⛔ 不许再出现第二种前缀（旧的 `\u0000register\u0000` 已删）。
+   */
+  private static readonly UNKNOWN_LIVE_PREFIX = 'card\u0000'
+  /** 造这一档的唯一键（⛔ 任何调用点都不许自己拼字符串）。 */
+  private unknownLiveKey(cardId: string | undefined, sessionId: string): string {
+    const slot = typeof cardId === 'string' && cardId !== '' ? cardId : `?${sessionId}`
+    return DispatchWake.UNKNOWN_LIVE_PREFIX + slot
+  }
   /** 逐 owner 的"最近一次可读原话"（⛔ 不许把别人的原话串给读的人）。 */
   /**
    * ⚠ 逐 owner 的"最近一次可读原话"。
@@ -1833,9 +1865,19 @@ export class DispatchWake {
        * ⚠ 与 `noteOwnerUnknown` 同一口径（第 3 单）：**累计按 (会话, ·) 去重**、
        *   **当前集合 `ownerUnknownLive` 单独维护**（分区那一档要用此刻的条数）。
        */
-      const rkey = `${'\u0000register\u0000'}${id}`
-      const firstTime = !this.ownerUnknownSeen.has(rkey)
-      if (firstTime) this.ownerUnknownSeen.add(rkey)
+      /**
+       * ⚠⚠ **键走唯一构造器**（第 348 轮统一）：改前这里自己拼
+       *   `` `${'\u0000register\u0000'}${id}` ``，与 `noteOwnerUnknown` 的
+       *   `` `card\u0000${cardId}` `` 是**两种形态**。
+       *   ⚠ `register()` 这一处**可能没有卡 id**（它只保证有 `sessionId`）⇒
+       *     键槽位退化成 `?<会话id>`，**前缀仍然只有一个**（⛔ 不是第二种形态）。
+       *   ⚠ **累计**那本账（`ownerUnknownSeen`）仍用原来的去重键：它按 `(会话)` 去重、
+       *     与 `(卡, 执行)` 不同构，⛔ 不许硬套 —— 两者**故意不同**（见各自注释）。
+       */
+      const rkey = this.unknownLiveKey(entry.cardId, id)
+      const seenKey = `${'\u0000register\u0000'}${id}`
+      const firstTime = !this.ownerUnknownSeen.has(seenKey)
+      if (firstTime) this.ownerUnknownSeen.add(seenKey)
       this.ownerUnknownLive.set(rkey, id)
       /**
        * ⚠ **这句同样要逐 owner 存**（第 345 轮）：`register()` 是**服务面**那道同款准入，
@@ -2014,7 +2056,7 @@ export class DispatchWake {
     for (const [k, sid] of this.ownerUnknownLive) {
       if (sid === sessionId) this.ownerUnknownLive.delete(k)
     }
-    if (reason === 'unknown') this.ownerUnknownLive.set(`card\u0000${cardId}`, sessionId)
+    if (reason === 'unknown') this.ownerUnknownLive.set(this.unknownLiveKey(cardId, sessionId), sessionId)
     if (this.ownerUnknownSeen.size > SEEN_LIMIT) {
       const drop = this.ownerUnknownSeen.size - SEEN_LIMIT
       let i = 0

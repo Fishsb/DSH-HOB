@@ -8053,7 +8053,59 @@ const orchCode = stripComments(orchSrc)
       }
     }
   }
-  try { sdRm(sdTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+  /**
+   * ── ⚠⚠ **SD 组的收工清理：删前先恢复权限**（2026-10-21 · 第 348 轮 · 修 `/tmp` 泄漏）──
+   *
+   * ── 改前是什么（实测：每跑一次 `check:orch` 就在 `/tmp` 留一个空壳）────────
+   *   这里本来就有一句 `sdRm(sdTmpRoot, {recursive:true, force:true})`，
+   *   但它**每次都失败、而且失败了没人知道**（`try/catch` 一包，注释写"不影响判定"）。
+   *   实测：`/tmp/hob-sdcheck-*` 37 → 38 → 39（**每跑一次 +1**），
+   *   也就是这句"清理"**从来没清成功过一次**。
+   *
+   * ── 为什么删不掉（不是"忘了删"，是**权限**）──────────────────────────
+   *   `SD-f` 的判据要 `lockRuntime: true` —— 它把
+   *   `ledgers/<ws>/runtime/` 设成 **`0o555`**（只读）来构造"送到了但账没清掉"那一格。
+   *   收工 `rmSync` 走到那个只读目录下就 `Permission denied`
+   *   （实测原文：`rm: cannot remove '…/runtime/orch-watches.json': Permission denied`）。
+   *   ⚠ 所以修法是"**删前把只读目录恢复可写**"，⛔ 不是"把 `lockRuntime` 去掉"
+   *     —— 去掉它 = 把 `SD-f` 的判据拆了（红线 2 明令不许）。
+   *
+   * ── 现在 ────────────────────────────────────────────────────────
+   *   ① 自底向上扫一遍整根，把**不可写**的目录（`0o555`）恢复成 `0o755`；
+   *   ② 再 `rmSync` 整根；
+   *   ③ 删完**复核**：还在就 `bad(...)` 明着红（⛔ 不许像改前那样静默留根）。
+   * ⚠ `SD` 组既有的判据（含 `lockRuntime` 那一档）**一个字未改**。
+   * ⚠ 本根被 `SN` / `SQ` / `SR2` 组共用 ⇒ 必须放在**它们全部跑完之后**（就是这里）。
+   * ⚠ ⛔ 只清本组这一次建的根；`/tmp` 里历史残留**一动不动**（授权面外）。
+   */
+  try {
+    const { readdirSync: sdRd, chmodSync: sdChmod2, statSync: sdStat } = await import('node:fs')
+    const sdUnlock = (dir) => {
+      let kids = []
+      try { kids = sdRd(dir) } catch { return }
+      for (const k of kids) {
+        const p2 = sdJ(dir, k)
+        let st
+        try { st = sdStat(p2) } catch { continue }
+        if (!st.isDirectory()) continue
+        sdUnlock(p2)
+      }
+      try {
+        /** ⚠ 只认"属主不可写"这一位 —— 本组锁的是 `0o555`，恢复成 `0o755`。 */
+        const mode = sdStat(dir).mode & 0o777
+        if ((mode & 0o200) === 0) sdChmod2(dir, 0o755)
+      } catch { /* 个别目录恢复不了就交给下面的 rm 去报 */ }
+    }
+    sdUnlock(sdTmpRoot)
+    sdRm(sdTmpRoot, { recursive: true, force: true })
+    let stillThere = false
+    try { sdStat(sdTmpRoot); stillThere = true } catch { /* 没了=对的 */ }
+    if (stillThere) {
+      bad(`SD 组临时根清不掉：\`${sdTmpRoot}\` 仍在盘上 ⇒ 会继续每跑一次泄漏一个 /tmp/hob-sdcheck-*`)
+    }
+  } catch (e) {
+    bad(`SD 组临时根清理抛错（${String(e?.message ?? e)}）⇒ 会继续泄漏 /tmp/hob-sdcheck-*`)
+  }
 }
 
 // ── SE. **失败可重试 + 清账后不复活 + 不登记 owner 自己**（2026-10-20 第 6 单）──
