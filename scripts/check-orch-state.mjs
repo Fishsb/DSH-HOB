@@ -10311,6 +10311,17 @@ const orchCode = stripComments(orchSrc)
   const sjRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
     ? process.env.HOB_SA_ROOT : root
   const sjTag = sjRoot === root ? '' : `（源码树=${sjRoot}）`
+  /**
+   * ── ⚠⚠ **组级临时根 + 收工必删**（第 345 轮 · 自查发现）──────────────────────
+   *   第一版每个 case 自己 `sjMkdt(sjTmp(), 'hob-sjcheck-')` 并只删 `base`，
+   *   但**组级根没删** ⇒ 每跑一次 `check:orch` 就在 `/tmp` 留 6 个空壳
+   *   （实测：跑了几次之后 `/tmp/hob-sjcheck-*` 攒到 6 个）。
+   *   ⇒ 现在照 `SG` 的 `sgTmpRoot` 同构：**一个根**，收工 `rm -rf` 整根。
+   *   ⚠ 建在 `/tmp` 是**既有 14 个组的一致做法**（本批沿用同构，⛔ 未擅自改全局口径，
+   *     该口径要不要统一另见 REPORT「待决问题」）。
+   */
+  let sjTmpRoot
+  try { sjTmpRoot = sjMkdt(sjJ(sjTmp(), 'hob-sjcheck-')) } catch { sjTmpRoot = sjTmp() }
   let sjOrchMod; let sjBusMod; let sjBoardMod
   try {
     sjOrchMod = await import(sjP2u(sjJ(sjRoot, 'src', 'modules', 'orchestrator.ts')).href)
@@ -10332,7 +10343,7 @@ const orchCode = stripComments(orchSrc)
     const sjWS = 'ws-sj'
     /** 挂一个真 `status.execute`：卡面由 `cards` 决定，watch/handoff 由 ledger 状态决定。 */
     const sjMount = async (cards, opts = {}) => {
-      const base = sjMkdt(sjJ(sjTmp(), 'hob-sjcheck-'))
+      const base = sjMkdt(sjJ(sjTmpRoot, 'case-'))
       const home = sjJ(base, 'ledgers'); const ws = sjJ(base, 'ws')
       /** ⚠ 账本目录按**工作区基名**派生（与产品代码 `resolveLedgerRoot` 同源）——
        *   ⛔ 不许写死一个 `x`（实测踩到：写死 ⇒ 读成"账本够不到"，watches 恒 0）。
@@ -10555,7 +10566,7 @@ const orchCode = stripComments(orchSrc)
 
     // ── ④ 负向对拍：把 `STATUS_LIST_MAX` 改小 ⇒ SJ-a/b 必须当场不成立 ──
     {
-      const mut = sjMkdt(sjJ(sjTmp(), 'hob-sj-mut-'))
+      const mut = sjMkdt(sjJ(sjTmpRoot, 'mut-'))
       try {
         const { cpSync } = await import('node:fs')
         cpSync(sjJ(sjRoot, 'src'), sjJ(mut, 'src'), { recursive: true, dereference: true })
@@ -10600,6 +10611,8 @@ const orchCode = stripComments(orchSrc)
       }
     }
   }
+  /** ⚠ **收工删整根**（⛔ 不许只删各 case 的 base —— 那样根会留空壳）。 */
+  try { sjRm(sjTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
 }
 
 // ── 输出 ───────────────────────────────────────────────────────────────
