@@ -26,6 +26,24 @@ const note = []
  */
 const noObject = []
 const noteNoObject = (m) => noObject.push(m)
+/**
+ * ── ⚠⚠ **第三态 `skip`：跳过 ≠ 通过**（2026-10-21 · 第 349 轮 · 甲-1 甲方案）──────
+ *
+ * ⚠ 它与上面两档的关系（⛔ 不许含糊）：
+ *   · `fail`     ⇒ 查了、且查到违规              ⇒ `exit 1`
+ *   · `noObject` ⇒ **整族**没有对象、一条判据都没跑 ⇒ `exit 2`
+ *   · **`skip`** ⇒ **本族查了**，但**其中几处没对象** ⇒ **不退 2**，只单列 + 计数
+ *
+ * ⚠ **为什么 `skip` 不是 `noObject`**（这正是甲方案的理由）：
+ *   把"某处跳过"升成 `exit 2` ⇒ 任何一台缺对象的机器上**整族退 2**，
+ *   于是"查了 200 处只跳 3 处"与"一条都没跑"变成**同一个退出码** ⇒
+ *   和"这一族真的查了"混为一谈，正是本项目最忌的"两种原因说成同一句话"。
+ *   ⇒ 甲方案让跳过**有自己的计数**，`exit` 仍由 `fail`/`noObject` 决定。
+ *
+ * ⚠ **⛔ 不许把 skip 塞进 `note`**（那就是改前的老毛病：跳过也打 ✓、还进了"通过"的数）。
+ */
+const skip = []
+const noteSkip = (m) => skip.push(m)
 const bad = (m) => fail.push(m)
 const ok = (m) => note.push(m)
 
@@ -115,7 +133,7 @@ if (ledgerRootDiag.kind !== 'ok') {
 }
 
 // ── ① 入库与仓规（带回 README / PKG 两处共享读数）───────────────────────
-const { mustTrack, mustExclude, README, readmeSrc, PKG } = runRepoRules({ bad, ok })
+const { mustTrack, mustExclude, README, readmeSrc, PKG } = runRepoRules({ bad, ok, skip: noteSkip })
 
 // ── ③ K：同源判据的字面量必须逐字相同 ───────────────────────────────────
 runSameSource({ bad, ok })
@@ -127,7 +145,7 @@ runSameSource({ bad, ok })
 runWorkspaceNameSource({ bad, ok })
 
 // ── ② 四份正本形态机检 A / B / J / C / D / D′ / E ──────────────────────
-runDocShape({ bad, ok, noObject: noteNoObject })
+runDocShape({ bad, ok, noObject: noteNoObject, skip: noteSkip })
 
 // ── ③ F / G / H ────────────────────────────────────────────────────────
 runDiscipline({ bad, ok, readmeSrc, PKG })
@@ -154,6 +172,21 @@ console.log('`.gitignore` 一致性核对 · dsh-hob')
 console.log('约定归属地:', README)
 console.log('')
 for (const n of note) console.log('  ✓', n)
+/**
+ * ⚠⚠ **跳过类单列**（第 349 轮 · 甲方案）：⛔ 不进上面那堆 `✓`、⛔ 不计入"通过"的数。
+ *   前缀 `·`（中性符号，与"未执行"同族），与 `✓ 通过` / `✗ 失败` 都不撞色。
+ */
+for (const k of skip) console.log('  ·', k)
+console.log('')
+/**
+ * ── ⚠⚠ **处级口径（机器可读）**（第 349 轮 · TASK §二 硬要求 3）────────────────
+ *   `查了 N 处 · 过了 M 处 · 跳过 K 处` —— `check:all` 按这两个正则读它。
+ *   ⚠ **无论 `skip` 是否为 0 都印**：`跳过 0 处` 本身就是"没有跳过"的读数，
+ *     ⛔ 不许因为它是 0 就不印（那会让"没查"与"没跳过"重新糊在一起）。
+ */
+const checkedTotal = note.length + skip.length
+console.log(`  处级口径：查了 ${checkedTotal} 处 · 过了 ${note.length} 处 · **跳过 ${skip.length} 处**`
+  + `（⚠ 跳过**不计入通过**）`)
 console.log('')
 if (fail.length === 0 && noObject.length > 0) {
   /**

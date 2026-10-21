@@ -43,7 +43,14 @@ function ignoreExitCode(target) {
 }
 
 /** 由入口调用；返回入口打印判定行所需的两个清单与几处共享读数。 */
-export function runRepoRules({ bad, ok }) {
+export function runRepoRules({ bad, ok, skip }) {
+  /**
+   * ⚠⚠ **第三态 `skip`**（2026-10-21 · 第 349 轮 · 甲-1 甲方案）：
+   *   本文件里有 2 处"账本根 / 运行时目录解析不到 ⇒ 未执行、不代表通过"，
+   *   改前走 `ok()` ⇒ **嘴上说未执行、机器记成 ✓**。
+   *   ⚠ 缺省不传 ⇒ 收集到本地（⛔ 不退化成 `ok()`，那正是要治的病）。
+   */
+  const skipSink = typeof skip === 'function' ? skip : () => {}
   // ── 前置：必须是 git 仓库（否则 check-ignore 无意义）──────────────────
   try {
     const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: root, encoding: 'utf8' }).trim()
@@ -736,7 +743,7 @@ export function runRepoRules({ bad, ok }) {
       }
       if (!ledgerExists) {
         // ⚠ 与 check-doc-shape 同款口径：账本区不在本机 ⇒ **打印"未执行"，⛔ 不报 ✓**
-        ok(`断言 A · 账本区引用：**未执行、不代表通过**（账本根解析不到 —— 预设行的 \`ledgerHome\` 读不到 / 目录不在本机）`
+        skipSink(`断言 A · 账本区引用：**未执行、不代表通过**（账本根解析不到 —— 预设行的 \`ledgerHome\` 读不到 / 目录不在本机）`
           + ` —— 已收 ${ledgerHits.length} 处留待届时核`)
       } else {
         const ledgerBad = ledgerHits.filter((x) => x.ok === false)
@@ -1082,7 +1089,7 @@ export function runRepoRules({ bad, ok }) {
       bad('断言 C · 工作区 `node_modules/@deepseek-ai` 读不到任何包（基准缺失 ⇒ 不按通过处理）')
     } else if (rtTable === undefined || Object.keys(rtTable).length === 0) {
       // ⚠ "没测到"≠"测到了且不对"：如实报未执行，⛔ 不混进 PASS 也不假装 FAIL
-      ok(`断言 C · **未执行、不代表通过**（宿主运行时目录解析不到：\`${RT_SCOPE}\`；`
+      skipSink(`断言 C · **未执行、不代表通过**（宿主运行时目录解析不到：\`${RT_SCOPE}\`；`
         + '⚠ 换台机器/换 profile 时可能如此 —— 这条要的是"至少一边基准缺失就说清"，⛔ 不是绿灯）')
     } else {
       const compared = Object.keys(wsTable).filter((n) => n in rtTable)

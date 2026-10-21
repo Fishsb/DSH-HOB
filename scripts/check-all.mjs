@@ -97,7 +97,50 @@ export function listFamilies() {
     .sort()
 }
 
-/** 逐族真跑，收集 {name, code, ms}。 */
+/**
+ * 从一族自己的输出里读它报的**跳过数**（第 349 轮 · 甲-1 甲方案）。
+ *
+ * ── 为什么要读输出 ────────────────────────────────────────────────────
+ *   各族把"跳过 / 未执行"的明细打在自己的正文里，**退出码表达不了"这一族查了、
+ *   但有几处没查"**（退出码只有 0/1/2 三档，且 `2` 已被"整族没对象"占用）。
+ *   ⇒ 甲方案让各族在自己的汇总里印一行**机器可读的口径**：
+ *     `` `跳过 N 处（⛔ 不计入通过）` ``
+ *   本函数只认这一个形状，⛔ 不猜、⛔ 不拿"未执行"三个字去模糊匹配。
+ *
+ * ⚠ **读不到 ⇒ 0**（不是错）：没印这一行 = 这一族没有跳过，或还没接入甲方案。
+ *   ⚠ 这**不会**把"跳过"洗成"没跳过" —— 因为接入了甲方案的族**必然**印那行
+ *   （由 `skip()` 负责，见各族实现）；没接入的族本来就在旧口径上，本单不假装它们已接入。
+ *
+ * @param out - 该族 stdout（已解码）。
+ * @returns 跳过处数（读不到 ⇒ 0）。
+ */
+export function parseSkipCount(out) {
+  if (typeof out !== 'string' || out === '') return 0
+  /** ⚠ 只认 `跳过 N 处` 这一种形状（取**最后一条**：一族若印了多次，以最后一次汇总为准）。 */
+  const all = [...out.matchAll(/跳过\s*(\d+)\s*处/g)]
+  if (all.length === 0) return 0
+  const n = Number(all[all.length - 1][1])
+  return Number.isFinite(n) && n >= 0 ? n : 0
+}
+
+/**
+ * 从一族输出里读**它报的断言总数**（"查了几处"）。
+ *
+ * ⚠ 与 `parseSkipCount` **必须同源同形**：两者都来自那一行
+ *   ``处级口径：查了 N 处 · 过了 M 处 · 跳过 K 处``
+ *   ⇒ 读不到整行就两个都不认（`undefined`），⛔ 不许一个认、一个猜。
+ *
+ * @returns 断言总数；读不到 ⇒ `undefined`（**不是 0** —— 0 会冒充"查了 0 处"）。
+ */
+export function parseAssertionCount(out) {
+  if (typeof out !== 'string' || out === '') return undefined
+  const all = [...out.matchAll(/查了\s*(\d+)\s*处/g)]
+  if (all.length === 0) return undefined
+  const n = Number(all[all.length - 1][1])
+  return Number.isFinite(n) && n >= 0 ? n : undefined
+}
+
+/** 逐族真跑，收集 `{name, code, ms, skipped}`。 */
 export function runFamilies(names) {
   const results = []
   for (const name of names) {
@@ -107,15 +150,34 @@ export function runFamilies(names) {
     console.log(`▶ ${name}`)
     console.log('═'.repeat(72))
     const extra = STRICT_FAMILIES.get(name) ?? []
-    // ⚠ 传法 = `npm run <族> -- <参数>`（⚠ 走 `npm` 而不是直接 node：各族自己的入口仍以 package.json 为准）
+    /**
+     * ⚠⚠ **`stdio` 从 `inherit` 改成 `pipe`**（2026-10-21 · 第 349 轮 · 甲方案）：
+     *   要读各族自己报的"跳过 N 处"就必须**拿到它的 stdout**；`inherit` 直接透传到
+     *   终端、父进程读不到。
+     * ⚠ **但输出一个字都不能少**：拿到之后**原样转发**到 `process.stdout/stderr`
+     *   （见下），所以人看到的仍是逐族全量输出 —— ⛔ 不许因为要解析就把日志吞掉。
+     * ⚠ 两族之间本来就是**串行**（`for` 循环 + `spawnSync`）⇒ 转发**不会乱序**。
+     */
     const r = spawnSync('npm', ['run', '--silent', name, ...(extra.length > 0 ? ['--', ...extra] : [])], {
       cwd: root,
-      stdio: 'inherit',
+      stdio: ['inherit', 'pipe', 'pipe'],
+      encoding: 'utf8',
       // ⚠ 不设 timeout：有一族要跑 60+ 秒（真跑组）；超时会把它误报成失败。
       shell: process.platform === 'win32',
+      // ⚠ 输出可能较大（`check:orch` 单族几百行）⇒ 给足缓冲，⛔ 不让它被截断成"读不到"。
+      maxBuffer: 64 * 1024 * 1024,
     })
+    const stdout = typeof r.stdout === 'string' ? r.stdout : ''
+    const stderr = typeof r.stderr === 'string' ? r.stderr : ''
+    /** ⚠ **原样转发**（人看到的与 `inherit` 时一致）。 */
+    if (stdout !== '') process.stdout.write(stdout)
+    if (stderr !== '') process.stderr.write(stderr)
     const code = typeof r.status === 'number' ? r.status : 1
-    results.push({ name, code, ms: Date.now() - started })
+    results.push({
+      name, code, ms: Date.now() - started,
+      skipped: parseSkipCount(stdout),
+      ...(parseAssertionCount(stdout) === undefined ? {} : { assertions: parseAssertionCount(stdout) }),
+    })
   }
   return results
 }
@@ -173,11 +235,38 @@ export function printSummary(results) {
      *   ⚠ 这是纯**显示层**改动，⛔ 不影响任何退出码（三档口径仍是 `verdict()` 那一处）。
      */
     const tag = r.code === 0 ? '✓ 通过' : r.code === 1 ? '✗ 失败' : '· 未执行'
-    console.log(`  ${tag.padEnd(8)} ${r.name.padEnd(18)} exit=${r.code}  ${(r.ms / 1000).toFixed(1)}s`)
+    /**
+     * ⚠ **第四列只在该族真有跳过时才出现**（第 349 轮 · 甲方案）：
+     *   正常路径（跳过 0 处）⇒ **这一列一个字都不多** ⇒ 既有输出逐字不变
+     *   （TASK §三"不该咬：正常路径输出逐字不变"的落点就在这一行）。
+     */
+    const skipCol = (r.skipped ?? 0) > 0 ? `  跳过 ${r.skipped} 处` : ''
+    console.log(`  ${tag.padEnd(8)} ${r.name.padEnd(18)} exit=${r.code}  ${(r.ms / 1000).toFixed(1)}s${skipCol}`)
   }
   console.log('')
   console.log(`  共 ${results.length} 族：通过 ${results.filter((r) => r.code === 0).length}`
     + ` · 失败 ${v.failed.length} · 未执行 ${v.notRun.length}`)
+  /**
+   * ── ⚠⚠ **汇总行必须回答三件事**（第 349 轮 · TASK §二 硬要求 3）──────────────
+   *   **查了几处 · 过了几处 · 跳了几处**。
+   *   ⚠ 这一行的语义与上面那行（族级三档）**不是同一层**，⛔ 不许混：
+   *     · 上面那行 = **族**（15 族里几族通过/失败/未执行）；
+   *     · 这一行 = **处**（各族自己报的断言数里，过了几处、跳了几处）。
+   *   ⚠ `跳过 0 处` 时**仍然印这一行**（"没有跳过"是个有价值的读数，
+   *     ⛔ 不许因为"是 0"就不印 —— 那会把"没查"与"没跳过"重新糊起来）。
+   */
+  const totalSkipped = results.reduce((s, r) => s + (r.skipped ?? 0), 0)
+  /**
+   * ⚠ "查了几处" = 各族报的断言总数。⚠ 只有**接入甲方案的族**会在自己的汇总里印
+   *   `断言 N 处`；读不到就按 **0** 计，并在这一行里**如实标出"几族报了口径"**
+   *   （⛔ 不许拿 0 冒充"查了 0 处"）。
+   */
+  const reported = results.filter((r) => typeof r.assertions === 'number')
+  const totalChecked = reported.reduce((s, r) => s + r.assertions, 0)
+  const totalPassed = reported.reduce((s, r) => s + r.assertions, 0) - totalSkipped
+  console.log(`  处级口径：查了 ${totalChecked} 处 · 过了 ${totalPassed} 处 · **跳过 ${totalSkipped} 处**`
+    + `（⚠ 跳过**不计入通过**；${reported.length}/${results.length} 族报了这个口径，`
+    + `未报的族本单未接入 —— ⛔ 不拿 0 冒充"查了 0 处"）`)
   console.log('')
   /**
    * ══════════════════════════════════════════════════════════════════════

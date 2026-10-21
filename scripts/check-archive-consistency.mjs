@@ -226,7 +226,9 @@ function globCount(arcAbs, token) {
 }
 
 // ── 半 ①：归档件字节 == 源修订字节 ────────────────────────────────────────────
-function checkArchiveBytes({ ledgerRoot, bad, ok }) {
+function checkArchiveBytes({ ledgerRoot, bad, ok, skip }) {
+  /** ⚠ 缺省收集器（旧调用方不传 `skip` 时用）：⛔ 不许退化成 `ok()`。 */
+  const skipSink = typeof skip === 'function' ? skip : () => {}
   const stat = { sourceDirs: 0, pairs: 0, formS: 0, formM: 0, mismatched: 0, globGroups: 0 }
   const arcRoot = join(ledgerRoot, 'archive')
   const dirs = []
@@ -241,7 +243,7 @@ function checkArchiveBytes({ ledgerRoot, bad, ok }) {
   stat.sourceDirs = dirs.length
 
   if (dirs.length === 0) {
-    ok('① 归档件字节比对【未执行】—— 账本区**没有含 `sources/` 的归档目录** ⇒ 无对象可查，'
+    skipSink('① 归档件字节比对【未执行】—— 账本区**没有含 `sources/` 的归档目录** ⇒ 无对象可查，'
       + '「不代表通过」（⛔ 不报 ✓）')
     return { executed: false, ...stat }
   }
@@ -343,7 +345,8 @@ function checkArchiveBytes({ ledgerRoot, bad, ok }) {
  *   ⇒ 对上 = 该归档件**确曾是**那份源文件（独立证据）；对不上**不判 FAIL**
  *     （合法情形：归档时那份源从未提交 / 该路径不在本仓）。
  */
-function crossCheckAgainstWorkspaceHistory({ ledgerRoot, bad: _bad, ok }) {
+function crossCheckAgainstWorkspaceHistory({ ledgerRoot, bad: _bad, ok, skip }) {
+  const skipSink = typeof skip === 'function' ? skip : () => {}
   const arcRoot = join(ledgerRoot, 'archive')
   let matched = 0
   let checked = 0
@@ -390,7 +393,7 @@ function crossCheckAgainstWorkspaceHistory({ ledgerRoot, bad: _bad, ok }) {
     }
   } catch { /* 下面按"未取"处理 */ }
   if (checked === 0) {
-    ok('①c 历史交叉核对【未执行】—— 形态 M 清单为空 / 读不到 ⇒ 无对象可查（⛔ 不报 ✓）')
+    skipSink('①c 历史交叉核对【未执行】—— 形态 M 清单为空 / 读不到 ⇒ 无对象可查（⛔ 不报 ✓）')
     return { checked, matched, notFound }
   }
   ok(`①c 历史交叉核对（**辅助读数，⛔ 不参与判定**）—— ${checked} 份里 ${matched} 份能在`
@@ -479,7 +482,8 @@ function deriveArchiveDirs(ledgerRoot) {
   return out.sort()
 }
 
-function checkDirRefs({ ledgerRoot, bad, ok }) {
+function checkDirRefs({ ledgerRoot, bad, ok, skip }) {
+  const skipSink = typeof skip === 'function' ? skip : () => {}
   const stat = {
     scanFiles: 0, refs: 0, dirRefs: 0, dirRefsNamed: 0, dirRefsDerived: 0,
     memberPairs: 0, missing: 0, dirsWithoutMembers: 0, overlapSkipped: 0,
@@ -488,7 +492,7 @@ function checkDirRefs({ ledgerRoot, bad, ok }) {
   const files = deriveScanFiles(ledgerRoot)
   stat.scanFiles = files.length
   if (files.length === 0) {
-    ok('② 目录成员核【未执行】—— 账本区读不到任何正本 / 卷 `.md` ⇒ 无对象可查，「不代表通过」')
+    skipSink('② 目录成员核【未执行】—— 账本区读不到任何正本 / 卷 `.md` ⇒ 无对象可查，「不代表通过」')
     return { executed: false, ...stat }
   }
 
@@ -526,7 +530,7 @@ function checkDirRefs({ ledgerRoot, bad, ok }) {
             continue
           }
           stat.dirsWithoutMembers += 1
-          ok(`② ${f}:${i + 1} 引用的目录 \`${ref}\` **无清单、index 里也无成员、盘上也没有文件** ⇒ 无成员可核（⛔ 不报 ✓）`)
+          skipSink(`② ${f}:${i + 1} 引用的目录 \`${ref}\` **无清单、index 里也无成员、盘上也没有文件** ⇒ 无成员可核（⛔ 不报 ✓）`)
           continue
         }
         for (const memRel of [...members].sort()) {
@@ -577,7 +581,7 @@ function checkDirRefs({ ledgerRoot, bad, ok }) {
         continue
       }
       stat.dirsWithoutMembers += 1
-      ok(`② 盘上派生目录 \`${rel}/\` **无清单、index 里也无成员、盘上也没有文件** ⇒ 无成员可核（⛔ 不报 ✓）`)
+      skipSink(`② 盘上派生目录 \`${rel}/\` **无清单、index 里也无成员、盘上也没有文件** ⇒ 无成员可核（⛔ 不报 ✓）`)
       continue
     }
     const fresh = [...members].filter((m) => !namedCovered.has(m))
@@ -617,12 +621,23 @@ function checkDirRefs({ ledgerRoot, bad, ok }) {
 function runChecks(ledgerRoot) {
   const bad = []
   const notes = []
+  /**
+   * ── ⚠⚠ **第三态 `skip`**（2026-10-21 · 第 349 轮 · 甲-1 甲方案）──────────────
+   *   改前本族有 5 处 `ok('…【未执行】/ 无成员可核…')`：
+   *   它们**嘴上说"不代表通过"，机器却记成 `✓ 通过`**（`ok()` 无条件打 ✓、不进 `bad`）。
+   *   ⇒ 现在分流：这几处走 `skip`，**不进 `notes`（= 通过）、不进 `bad`（= 失败）**，
+   *     单独成档，由主入口印 `跳过 N 处`（`check:all` 读这个数）。
+   *   ⚠ 与 `noObject`（`exit 2`）**不是同一档**：那档是"整族一条都没跑"（账本根读不到），
+   *     本档是"**账本根读到了、族跑了，但其中几处没对象**" ⇒ 不许退 2（见 check-all 的口径）。
+   */
+  const skips = []
   const b = (m) => bad.push(m)
   const o = (m) => notes.push(m)
-  const a = checkArchiveBytes({ ledgerRoot, bad: b, ok: o })
-  const c = crossCheckAgainstWorkspaceHistory({ ledgerRoot, bad: b, ok: o })
-  const d = checkDirRefs({ ledgerRoot, bad: b, ok: o })
-  return { bad, notes, a, c, d }
+  const k = (m) => skips.push(m)
+  const a = checkArchiveBytes({ ledgerRoot, bad: b, ok: o, skip: k })
+  const c = crossCheckAgainstWorkspaceHistory({ ledgerRoot, bad: b, ok: o, skip: k })
+  const d = checkDirRefs({ ledgerRoot, bad: b, ok: o, skip: k })
+  return { bad, notes, skips, a, c, d }
 }
 
 // ── 自带负向对拍夹具（⛔ 不依赖账本区内容、⛔ 不触碰账本区）────────────────────
@@ -826,9 +841,24 @@ if (ledgerRoot === undefined) {
 console.log(`账本区：${ledgerRoot}`)
 console.log('')
 
-const { bad, notes, a, c, d } = runChecks(ledgerRoot)
+const { bad, notes, skips, a, c, d } = runChecks(ledgerRoot)
 for (const n of notes) console.log('  ✓', n)
+/**
+ * ⚠⚠ **跳过类单列**（第 349 轮 · 甲方案）：它们**不再出现在上面那堆 `✓` 里**。
+ *   ⚠ 前缀用 `·`（与 `check:all` 的"未执行"同一套中性符号），⛔ 不用 `✓`。
+ */
+for (const k of skips) console.log('  ·', k)
 console.log('')
+/**
+ * ── ⚠⚠ **处级口径（机器可读）**（第 349 轮 · TASK §二 硬要求 3）────────────
+ *   `查了 N 处 · 过了 M 处 · 跳过 K 处`
+ *   ⚠ `check:all` 按 `查了 N 处` / `跳过 K 处` 两个正则读它（见该文件 `parseSkipCount`）。
+ *   ⚠ "查了几处" = 通过数 + 跳过数（**跳过不算过**，但它**是"查过"的一部分**——
+ *     它回答的是"这一处我看了、只是没有可查的对象"，与"我没看"不同）。
+ */
+const checkedTotal = notes.length + skips.length
+console.log(`  处级口径：查了 ${checkedTotal} 处 · 过了 ${notes.length} 处 · **跳过 ${skips.length} 处**`
+  + `（⚠ 跳过**不计入通过**）`)
 if (bad.length === 0) {
   console.log(`判定：PASS —— ① 比较对数 ${a.pairs}（形态 S ${a.formS} · 形态 M ${a.formM}`
     + `${a.globGroups > 0 ? ` · 通配组 ${a.globGroups}` : ''}），①c 历史对上 ${c.matched}/${c.checked}；`

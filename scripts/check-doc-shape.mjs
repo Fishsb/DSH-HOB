@@ -393,7 +393,7 @@ function collectSkeletonMdFiles() {
 }
 
 /** 形态机检主体：A / B / J / C / D / D′ / E（累计顺序与拆前一致）。 */
-export function runDocShape({ bad, ok, noObject }) {
+export function runDocShape({ bad, ok, noObject, skip }) {
   /**
    * ⚠⚠ **`noObject`（2026-10-21 · 第 331 轮 · 乙-5）**：本组"**没有对象可查**"的出口。
    *   ⚠ 它与 `bad`（`exit 1`）、`ok`（`exit 0`）是**第三档**（`exit 2`）：
@@ -401,9 +401,19 @@ export function runDocShape({ bad, ok, noObject }) {
    *   ⚠ 缺省不传 ⇒ 退化成"只打印不判定"（⚠ 仅向后兼容旧调用方，⛔ 入口必须传）。
    */
   const noObjectSink = typeof noObject === 'function' ? noObject : (m) => ok(`⚠ ${m}（⚠ 调用方未提供 noObject ⇒ 本档不参与退出码）`)
+  /**
+   * ── ⚠⚠ **`skip` 出口**（2026-10-21 · 第 349 轮 · 甲-1 甲方案）──────────────
+   *   与 `noObject` 的区别见 `check-gitignore.mjs` 的 `noteSkip` 注释：
+   *   `noObject` = **整族**没对象（退 2）；`skip` = **本组某一处**没对象（只计数，不退码）。
+   *   ⚠ 缺省不传 ⇒ 退化成只打印（与 `noObjectSink` 同款的向后兼容），
+   *     ⛔ 但**绝不**退化成 `ok()` —— 那会把"没查"重新记成"查过且过"。
+   */
+  /** ⚠ 缺省收集器（调用方没给 `skip` 时用）；声明**必须在** `skipSink` 之前（否则 TDZ 抛错）。 */
+  const skipTrail = []
+  const skipSink = typeof skip === 'function' ? skip : (m) => skipTrail.push(m)
   if (LEDGER_ROOT === undefined) {
     // ⚠ **明确跳过并说明**（不静默 PASS）：这一支不计入 fail，但**打印为什么跳过**。
-    ok(`文档形态机检【跳过】—— 账本区读不到（工作区之外，本机可能未建立）`
+    skipSink(`文档形态机检【跳过】—— 账本区读不到（工作区之外，本机可能未建立）`
       + `⇒ 断言 A（模板↔正本节名）、断言 B（正本无补丁式说明）、`
       + `断言 C（账本仓忽略规则不许写宽）**三条均未执行**，`
       + `不代表通过。跳过位置：scripts/check-gitignore.mjs 的 LEDGER_ROOT 解析。`)
@@ -974,7 +984,7 @@ export function runDocShape({ bad, ok, noObject }) {
     const oVolDir = join(LEDGER_ROOT, 'volumes', 'plan')
     if (!existsSync(oVolDir)) {
       // ⚠ 打印「未执行」—— **不报通过**（本仓口径：『没有』与『没查』必须可区分）
-      ok('O 【未执行、不代表通过】`volumes/plan/` 卷根不存在 ⇒ '
+      skipSink('O 【未执行、不代表通过】`volumes/plan/` 卷根不存在 ⇒ '
         + '「地图 ↔ 卷 两向完整 + 说明列非空」这一组**没有查**，不是通过'
         + `\n      （卷根：${oVolDir}）`)
     } else {
@@ -1148,7 +1158,7 @@ export function runDocShape({ bad, ok, noObject }) {
         snapSrc = readFileSync(BAD_SNAPSHOT, 'utf8')
       } catch { snapSrc = '' }
       if (snapSrc === '') {
-        ok(`J ⏳ 活体实证【未取】—— 读不到历史坏快照 ${BAD_SNAPSHOT}`
+        skipSink(`J ⏳ 活体实证【未取】—— 读不到历史坏快照 ${BAD_SNAPSHOT}`
           + '（账本区 backups/ 可能不在本机）⛔ **这不代表通过**')
       } else {
         const dup = findDuplicateSectionHeadings(snapSrc)
@@ -1578,7 +1588,7 @@ export function runDocShape({ bad, ok, noObject }) {
     //   卷根不存在 ⇒ 保持为空（M 仍会查根上那几份，M 没有"跳过"档）。
     const indexNamesForM = []
     if (!VOLUME_FILES_RESULT.exists) {
-      ok('L 【未执行】—— 卷根尚未建立，**不代表通过**'
+      skipSink('L 【未执行】—— 卷根尚未建立，**不代表通过**'
         + `\n      ⇒ 口径：<账本根>/volumes/ 不存在时本断言跳过（迁移期正常态）`
         + `\n      ⇒ 原因：${VOLUME_FILES_RESULT.reason}`)
     } else {
@@ -2036,7 +2046,7 @@ export async function runResidualMarkers({ bad, ok }) {  // ── 断言 I · �
    * ⚠ **空态给读数**（正本里没有标记是**正常状态**，不是"没查"）。
    */
   if (LEDGER_ROOT === undefined) {
-    ok('I ✓ 正本无残留标记【跳过】—— 账本区读不到（工作区之外），**不代表通过**'
+    skipSink('I ✓ 正本无残留标记【跳过】—— 账本区读不到（工作区之外），**不代表通过**'
       + '（跳过位置：scripts/check-gitignore.mjs 的 LEDGER_ROOT 解析）')
   } else {
     const RENDER_TS_I = join(root, 'src', 'server', 'hob-render.ts')
