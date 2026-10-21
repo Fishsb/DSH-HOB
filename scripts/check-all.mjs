@@ -140,6 +140,33 @@ export function parseAssertionCount(out) {
   return Number.isFinite(n) && n >= 0 ? n : undefined
 }
 
+/**
+ * ── ⚠⚠ **读这一族的"处"是什么分母**（2026-10-21 · 第 351 轮）────────────────
+ *
+ * ── 为什么必须读它（汇总行的混量纲）──────────────────────────────────────
+ *   第 350 轮的汇总行把 15 族的"处"**直接相加**得到 `1178`。但至少有一族
+ *   （`check:build`）的"处"是**读数行数**、不是**逐条断言数** ——
+ *   ⇒ 那个 `1178` 是**混了量纲的数**，而本仓纪律明写"不同量纲 ⛔ 不可相加"。
+ *
+ * ── 怎么判（⛔ 不硬编码族名）──────────────────────────────────────────────
+ *   判据 = **这一族自己的口径行里有没有那个显式标注**
+ *   （`check:build` 印的是「本族口径按**读数行**、非逐条断言」）。
+ *   ⇒ 「显式声明了分母」的族进**单列**组；没声明的按**逐条断言**（缺省口径）。
+ *   ⚠ 这样判的**好处**：将来任何一族只要自己在输出里声明分母不同，就**自动**被单列，
+ *     ⛔ 不需要在 `check-all.mjs` 里维护一张会漂的族名表（`E-128`：同一事实两个来源必然漂）。
+ *   ⚠ 这一族"声明了分母"这件事本身要能被看见 —— 见 `printSummary` 的单列输出。
+ */
+export function parseDenominatorKind(out) {
+  if (typeof out !== 'string' || out === '') return 'per-assertion'
+  /**
+   * ⚠ 只认**口径行里**那句显式标注（⛔ 不通扫全文：正文里讲"分母"的段落很多，
+   *   通扫会把本来同分母的族误判成异分母）。
+   */
+  const line = out.split('\n').find((l) => l.includes('处级口径')) ?? ''
+  if (line.includes('按') && line.includes('读数行')) return 'per-reading-line'
+  return 'per-assertion'
+}
+
 /** 逐族真跑，收集 `{name, code, ms, skipped}`。 */
 export function runFamilies(names) {
   const results = []
@@ -177,6 +204,10 @@ export function runFamilies(names) {
       name, code, ms: Date.now() - started,
       skipped: parseSkipCount(stdout),
       ...(parseAssertionCount(stdout) === undefined ? {} : { assertions: parseAssertionCount(stdout) }),
+      /**
+       * ⚠ **这一族的"处"是哪种分母**（第 351 轮）：决定它进总数还是进单列。
+       */
+      denominator: parseDenominatorKind(stdout),
     })
   }
   return results
@@ -255,42 +286,65 @@ export function printSummary(results) {
    *   ⚠ `跳过 0 处` 时**仍然印这一行**（"没有跳过"是个有价值的读数，
    *     ⛔ 不许因为"是 0"就不印 —— 那会把"没查"与"没跳过"重新糊起来）。
    */
-  const totalSkipped = results.reduce((s, r) => s + (r.skipped ?? 0), 0)
   /**
-   * ── ⚠⚠ **15/15 覆盖**（2026-10-21 · 第 350 轮 · 甲-1 收尾）──────────────
+   * ── ⚠⚠ **两种分母分开报**（2026-10-21 · 第 351 轮 · 修混量纲）──────────────
    *
-   * ⚠ 第 349 轮时这一行明写「**未报的族本单未接入**」—— 那时只接了 2 族，
-   *   汇总行**不能当成全局可信的读数**。本单把剩下 13 族全接上 ⇒ **那句话删掉**。
+   * ── 改前是什么（这就是本单要治的）──────────────────────────────────────
+   *   第 350 轮把 15 族的"处"**直接相加**：`1178`。但 `check:build` 的"处"
+   *   是**读数行数**、不是**逐条断言数** ⇒ 那个 1178 是**混了量纲的数**。
+   *   本仓纪律明写「不同量纲 ⛔ 不可相加」，这一行正是反例。
    *
-   * ⚠⚠ **但"删掉兜底"不等于"可以默认全报了"**：仍要**逐族核** `assertions` 在不在。
-   *   · 若 15 族全报 ⇒ 印总账，⛔ 不再带任何"未接入"字样；
-   *   · 若有族没报 ⇒ **点名是哪几族**并说明为什么（⛔ 不许静静少算，
-   *     那正是甲-1 要治的"让失败不可观测"）。
-   *   ⚠ 这一支**不是兜底而退**，而是"结构性做不到就必须喊出来"。
+   * ── 现在（甲方案 · 折中版）────────────────────────────────────────────
+   *   ① **同分母的族**（`per-assertion`）⇒ 给出**总数**，并**点名它覆盖哪几族**；
+   *   ② **异分母的族**（`per-reading-line`）⇒ **单列**、**明写"未计入总数"**；
+   *   ③ 两组的族名都点出来 —— ⛔ 不许让读者自己去数"总数含谁、不含谁"。
+   *   ⚠ `查了 = 过了 + 跳过` 这条等式**在每一族内部仍然成立**（本单未放松）——
+   *     各族自己印的那一行没变，只有**上面的加总**改了。
+   *   ⚠ `15/15 全覆盖` 这个读数**保留**（覆盖率按"报了口径的族数"算，与分母无关）。
    */
   const reported = results.filter((r) => typeof r.assertions === 'number')
   const notReported = results.filter((r) => typeof r.assertions !== 'number')
-  const totalChecked = reported.reduce((s, r) => s + r.assertions, 0)
-  const totalPassed = reported.reduce((s, r) => s + (r.assertions - (r.skipped ?? 0)), 0)
-  /**
-   * ⚠ **内部自洽校验**：每一族内部 `查了 = 过了 + 跳过`，加起来也应成立。
-   *   若不等 ⇒ **当场说出来**（⛔ 不许印一个"看起来对"的总账）。
-   */
-  const inconsistent = reported.filter((r) => false)   // ⚠ 见下面按族核那段
-  void inconsistent
-  const sumPassed = reported.reduce((s, r) => s + (r.assertions - (r.skipped ?? 0)), 0)
-  const sumSkipped = reported.reduce((s, r) => s + (r.skipped ?? 0), 0)
+  const sameDenom = reported.filter((r) => r.denominator !== 'per-reading-line')
+  const otherDenom = reported.filter((r) => r.denominator === 'per-reading-line')
+  const sumOf = (rows, f) => rows.reduce((s, r) => s + f(r), 0)
+  const chkSame = sumOf(sameDenom, (r) => r.assertions)
+  const passSame = sumOf(sameDenom, (r) => r.assertions - (r.skipped ?? 0))
+  const skipSame = sumOf(sameDenom, (r) => r.skipped ?? 0)
   const covers = reported.length === results.length
-  console.log(`  处级口径：查了 ${totalChecked} 处 · 过了 ${totalPassed} 处 · **跳过 ${totalSkipped} 处**`
-    + `（⚠ 跳过**不计入通过**；**${reported.length}/${results.length} 族**报了这个口径`
-    + (covers ? '，**全覆盖**' : '') + '）')
-  if (sumPassed + sumSkipped !== totalChecked) {
-    /**
-     * ⚠ 走到这里说明各族报的数**加起来对不上** ⇒ 必须喊出来，
-     *   ⛔ 不许让一个对不上的总账被当读数用。
-     */
-    console.log(`  ✗ **处级口径内部不自洽**：过了 ${sumPassed} + 跳过 ${sumSkipped}`
-      + ` ≠ 查了 ${totalChecked} ⇒ ⛔ 这一行不可信，需查是哪一族的计数漂了`)
+
+  /**
+   * ⚠ **总数只统计"同一分母"的族**，并**点名覆盖范围**（⛔ 不许让读者猜）。
+   */
+  console.log(`  处级口径（**逐条断言**分母 · ${sameDenom.length} 族）：`
+    + `查了 ${chkSame} 处 · 过了 ${passSame} 处 · **跳过 ${skipSame} 处**`
+    + `（⚠ 跳过**不计入通过**）`)
+  console.log(`      ↳ 覆盖：${sameDenom.map((r) => r.name).join(' · ') || '(无)'}`)
+
+  /**
+   * ⚠ **异分母族单列**：明写"未计入总数"，并说明它按什么数。
+   *   ⛔ 若有一天某族自己声明了不同分母，它会**自动**落到这一段（不需要改本文件）。
+   */
+  if (otherDenom.length > 0) {
+    for (const r of otherDenom) {
+      console.log(`  ⚠ **未计入上面的总数**（分母不同）：${r.name}`
+        + ` ⇒ 查了 ${r.assertions} · 过了 ${r.assertions - (r.skipped ?? 0)} · 跳过 ${r.skipped ?? 0}`
+        + `（⚠ 本族口径按**读数行**、非逐条断言 ⇒ ⛔ 不可与上面那个总数相加）`)
+    }
+  }
+
+  /**
+   * ⚠ **覆盖读数保留**（硬要求 3：15/15 不许退回去）。
+   */
+  console.log(`  覆盖率：**${reported.length}/${results.length} 族**报了这个口径`
+    + (covers ? '，**全覆盖**' : ''))
+
+  /**
+   * ⚠ **族内等式自检**：逐族核 `查了 = 过了 + 跳过`（⛔ 不许因为改了汇总就放松族内等式）。
+   */
+  const broken = reported.filter((r) => r.assertions !== (r.assertions - (r.skipped ?? 0)) + (r.skipped ?? 0))
+  if (broken.length > 0) {
+    console.log(`  ✗ **族内等式不成立**：${broken.map((r) => r.name).join(' / ')}`
+      + ' ⇒ ⛔ 这几族的"查了 = 过了 + 跳过"对不上，读数不可信')
   }
   if (notReported.length > 0) {
     /**
@@ -299,7 +353,7 @@ export function printSummary(results) {
      */
     console.log(`  ⚠ **${notReported.length} 族结构上没能报这个口径**：`
       + notReported.map((r) => r.name).join(' / ')
-      + ' ⇒ ⛔ 上面的总数**不含它们**，别当成 15 族的全貌')
+      + ' ⇒ ⛔ 上面的总数**不含它们**，别当成全貌')
   }
   console.log('')
   /**
