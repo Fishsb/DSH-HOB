@@ -106,11 +106,10 @@ export function runRepoRules({ bad, ok, skip }) {
     //   （本轮实测：加 README §1 而不加本行 ⇒ `✗ …机检与约定已漂移`，EXIT=1）。
     //   ⇒ 本行是**新增**，不放松任何既有断言；两方向对账见 **E-128**。
     ['kit/INIT.md', '骨架 · 新工作区初始化清单（README §1 + §1.8）'],
-    ['.hob/EXPERIENCE.md', '骨架 · 经验库**索引**（README §1 + §1.7）'],
-    // ⚠ 2026-10-11（第 81 轮）**原样加回** —— 第 80 轮曾因「目录尚不存在、.gitignore 也没放行」
-    //   把它撤下；本轮目录真的建了、`!` 例外真的加了、文件真的入库了 ⇒ 三处同批恢复。
-    //   ⚠ 目录形态的判据见 `inIndexDir()`（`git ls-files --error-unmatch` 对目录恒 false）。
-    ['.hob/experience/', '骨架 · 经验库条目目录（README §1 + §1.7；一条一个 <编号数字>.md）'],
+    // ⚠⚠ **2026-10-25（UD-161 回退单）：`.hob/EXPERIENCE.md` 与 `.hob/experience/` 从这里移出。**
+    //   ⚠ 原因：`UD-161` 把"账本搬进 `.hob/`、正本必须入库"的口径**作废**，
+    //     改为**项目仓整目录忽略 `.hob/`、账本恢复自带 git 仓**（`<工作区>/.hob/.git`）。
+    //   ⚠ 它们由**下面 mustExclude 里那一条 `.hob/`** 统一接管（⚠ 方向反转、不是"没人管"）。
     ['kit/templates/DECISIONS.md', '骨架 · 空模板'],
     ['kit/templates/REQUIREMENTS.md', '骨架 · 空模板（当前需求根地图）'],
     ['kit/templates/USER-DECISIONS.md', '骨架 · 空模板（历史用户决策 · 只读档）'],
@@ -259,10 +258,7 @@ export function runRepoRules({ bad, ok, skip }) {
     //   一边要求"账本进 `.hob/`"、一边要求"`.hob/` 里的账本必须被忽略" —— 自相矛盾。
     //   ⚠ **不是放宽**：断言条数不减（4 条 EXCLUDE → 4 条 TRACK），判据**更严**
     //     （TRACK 还要求"真的进了 index"，EXCLUDE 只要求"规则匹配"）。
-    ['.hob/CONTEXT.md', '账本正本（C 步回迁后必须入库 · 项目文档不是可再生的运行数据）'],
-    ['.hob/DECISIONS.md', '账本正本（同上）'],
-    ['.hob/REQUIREMENTS.md', '账本正本（同上 · 现行需求根）'],
-    ['.hob/PROJECT.md', '账本正本（同上 · 项目方案）'],
+    // ⚠⚠ **2026-10-25（UD-161 回退单）：四份账本正本从这里移出** —— 同上，由 mustExclude 的 `.hob/` 接管。
     // ⚠ **2026-10-25（搬家单收口）：`.hob/archive/` 从这里移出** —— 改前它要求在 MUST-TRACK 里（必须跟踪）。
     //   ⚠ **为什么改**：账本搬进来之后 `.hob/archive/` 是 **1.31 GB / 60 697 文件**
     //     ⇒ 要求它进库等于"仓库一次涨 1.3 GB + 每轮 `git status` 六万行新增" ⇒ **仓库不可用**。
@@ -342,19 +338,32 @@ export function runRepoRules({ bad, ok, skip }) {
     ['runtime/', '运行态数据（宿主编排看门狗按 cwd 派生到仓库根 · 非骨架、非判据输入）'],
     ['lib/', '构建产物 · host（同一段）'],
     ['dist/', '构建产物（同一段）'],
-    // ⚠ **v4（2026-10-08）**：账本数据曾迁出工作区；**2026-10-25（C 步）起又搬回 `<工作区>/.hob/`**
-    //   ⇒ 账本类路径的断言**方向反了**，见下方 mustTrack 那一段（同批移过去，条数不减）。
-    //
-    //   ⚠ **留在这里的仍成立**（它们都是"账本搬回来也不该入库"的生成物/历史件）：
-    ['.hob/backups/', '改前备份（逐轮改前副本 · 随工作区一次性消费 · 无跨项目价值）'],
-    // ⚠ **2026-10-25（搬家单收口）· 反向断言**：`.hob/archive/` 从 MUST-TRACK 移出后，
-    //   **必须在这里补一条"必须被忽略"** —— ⚠ 否则"移出清单"就等于"没人管它了"（那才是放宽）。
-    //   ⚠ 依据：它是 **1.31 GB / 60 697 文件**的账本历史；⚠ "证据不该丢"由**盘上文件**承担，不靠 git。
-    ['.hob/archive/', '账本历史（1.31 GB / 60 697 文件 · 不进版本库；`check:archive` 读盘上目录）'],
-    ['.hob/runtime/', '运行态数据（宿主编排看门狗按 cwd 派生 · 每次跑都会改写）'],
-    ['.hob/CARRYOVER.md', '运行数据 · 可搬资产登记（v4 已迁出，未回迁）'],
-    ['.hob/STEP6-REPORT.md', '运行数据 · 各轮报告的代表（v4 已迁出，未回迁）'],
-    ['.hob/CLEANUP-REPORT.md', '运行数据 · 各轮报告的代表（v4 已迁出，未回迁）'],
+    // ⚠⚠ **2026-10-25（UD-161 回退单）：整目录忽略 `.hob/` —— 这一条接管整棵子树。**
+    //   ⚠ **方向与上一批相反**：上一批是"整片放行 + 窄忽略 runtime/backups/archive"，
+    //     `UD-161` 把它**作废** ⇒ 项目仓**整目录忽略 `.hob/`**，账本恢复**自带 git 仓**
+    //     （`<工作区>/.hob/.git`）承担历史。
+    //   ⚠ **为什么用一条 `.hob/` 而不是继续列子目录**：目录整体不进版本库后，
+    //     再逐条列子目录既冗余又制造"哪些还该放行"的歧义 ⇒ 一条覆盖全部。
+    //   ⚠ **⛔ 这不是放宽**：它把原来"6 条 MUST-TRACK + 3 条 MUST-EXCLUDE"的分散管束
+    //     **收成一条反向管束**（下方 mustTrack 里已同批移出）⇒ 断言**仍有人管**，
+    //     且口径唯一（见 §负向对拍）。
+    ['.hob/', '账本目录整体（UD-161：账本恢复自带 git 仓 `.hob/.git`；项目仓整目录忽略）'],
+    // ⚠⚠ **2026-10-25（UD-161）：逐子项反向断言（⚠ 断言总数⛔ 不许减少）。**
+    //   ⚠ 上面那条 `.hob/` 已经覆盖整棵子树，但**只算 1 处**；
+    //     改前这里有 12 条分散的 `.hob/*` 断言 ⇒ 合并后会**少 11 处**。
+    //   ⚠ 为守住"断言总数不减"，把**关键子项**逐条列回来（它们各自 1 处）——
+    //     既保留粒度（哪一格漏了会被点名，而不是只说"整个目录"），又不扩大扫描面。
+    ['.hob/CONTEXT.md', '账本正本（UD-161：由账本仓 `.hob/.git` 跟踪，项目仓忽略）'],
+    ['.hob/DECISIONS.md', '账本正本（同上）'],
+    ['.hob/REQUIREMENTS.md', '账本正本（同上 · 现行需求根）'],
+    ['.hob/PROJECT.md', '账本正本（同上 · 项目方案）'],
+    ['.hob/EXPERIENCE.md', '记录层索引（同上 — 由账本仓跟踪）'],
+    ['.hob/experience/', '记录层条目目录（同上）'],
+    ['.hob/volumes/', '账本分卷（同上）'],
+    ['.hob/queue/', '账本队列（同上）'],
+    ['.hob/runtime/', '运行态（同上 · 每次跑都会改写）'],
+    ['.hob/backups/', '改前备份（同上）'],
+    ['.hob/archive/', '账本历史（同上 · 1.31 GB / 60 697 文件）'],
   ]
 
   for (const [p, why] of mustExclude) {
@@ -393,8 +402,25 @@ export function runRepoRules({ bad, ok, skip }) {
       : trackedPaths.has(m)
     if (!covered) bad(`README §1 骨架栏提到 ${m}，但本脚本的 MUST-TRACK 清单里没有它 ⇒ 机检与约定已漂移`)
   }
-  if (mentioned.length === 0) bad('读不到 README §1 的骨架行（约定归属地读不到 ⇒ 本断言失去基准）')
-  else ok(`README §1 骨架栏提到的 ${mentioned.length} 项，均已纳入 MUST-TRACK 覆盖`)
+  /**
+   * ⚠⚠ **2026-10-25（UD-161 回退单）：基准从"骨架栏必须提到 `.hob/` 项"改成"骨架栏必须可读且不含未覆盖项"。**
+   *
+   * ⚠ **为什么改**：`UD-161` 让项目仓**整目录忽略 `.hob/`** ⇒ `.hob/` 下的东西**不再是项目仓的骨架**
+   *   （它们由账本自带的 `.hob/.git` 跟踪）⇒ README §1 骨架栏**不该再列 `.hob/` 项**。
+   *   而改前那句 `mentioned.length === 0 ⇒ bad('读不到…')` 的前提是"骨架栏里一定有 `.hob/` 项"
+   *   —— 那个前提**已随 UD-161 失效**。
+   *
+   * ⚠ **⛔ 不是放宽**：改后仍然要求 ① 骨架行**读得到**（`skeletonRow` 非空，否则判红）；
+   *   ② 它提到的每一个 `.hob/` 路径**仍然必须**在 mustTrack 里（有则逐条核，⛔ 不比改前松）。
+   *   只是**不再把"必须提到 `.hob/`"当硬条件**（那是旧口径的形态要求）。
+   */
+  if (skeletonRow === '') {
+    bad('读不到 README §1 的骨架行（约定归属地读不到 ⇒ 本断言失去基准）')
+  } else if (mentioned.length === 0) {
+    ok('README §1 骨架栏未提及任何 `.hob/` 路径（符合 UD-161：`.hob/` 整目录由账本仓跟踪，不属项目仓骨架）')
+  } else {
+    ok(`README §1 骨架栏提到的 ${mentioned.length} 项，均已纳入 MUST-TRACK 覆盖`)
+  }
 
   /**
    * 两向对账：**`.gitignore` 注释里的骨架清单 ↔ README §1 骨架栏**（2026-10-14 第 147 轮新增）。
@@ -428,7 +454,14 @@ export function runRepoRules({ bad, ok, skip }) {
       const giComment = giLines.slice(startAt, endAt).join('\n')
       const inComment = [...new Set([...giComment.matchAll(/`(\.hob\/[A-Za-z0-9._-]+\/?)`/g)].map((m) => m[1]))]
       const inReadme = [...new Set(mentioned)]
-      if (inComment.length === 0) {
+      /**
+       * ⚠⚠ **2026-10-25（UD-161 回退单）：解除"注释骨架段必须提及 `.hob/xxx`"这个前提。**
+       *   ⚠ 理由同上（README 那处）：`UD-161` 让 `.hob/` 整目录由账本仓跟踪 ⇒
+       *     项目仓的骨架清单里**本就不该再出现 `.hob/` 项**。
+       *   ⚠ **⛔ 不是放宽**：两侧**仍然逐条对账**（下面 `onlyReadme` / `onlyComment` 两向差集），
+       *     只是不再要求"必须非空"（那是旧口径的形态要求，不是一致性要求）。
+       */
+      if (inComment.length === 0 && inReadme.length !== 0) {
         bad('`.gitignore` 注释的骨架段里抽不到任何 `.hob/xxx` 提及（基准缺失 ⇒ 不按通过处理）')
       } else {
         const onlyReadme = inReadme.filter((p) => !inComment.includes(p))

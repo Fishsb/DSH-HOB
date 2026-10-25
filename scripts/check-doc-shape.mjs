@@ -1814,11 +1814,19 @@ export function runDocShape({ bad, ok, noObject, skip }) {
       ...SCAN_FILES.map((f) => [f, '正本（派生自 derivePrimaryFiles() / deriveVolumeFiles()）']),
       ['volumes/', '账本分卷根（UD-95 / CHG-032：卷与地图同权，都不许被忽略）'],
     ]
-    /** ⚠ 2026-10-25 新增：**必须被忽略**的目录（与上面那条相反方向，⛔ 不减项）。 */
-    const C_MUST_IGNORE = [
-      ['archive/', '账本历史（1.31 GB / 60 697 文件 · 不进版本库；`check:archive` 读盘上目录）'],
-      ['backups/', '逐轮改前副本（随工作区一次性消费 · 无跨项目价值）'],
-    ]
+    /**
+     * **必须被忽略**的目录（与上面那条相反方向）。
+     *
+     * ⚠⚠ **2026-10-25（UD-161 回退单）：本清单清空。**
+     *   ⚠ 上一批它是 `['archive/', 'backups/']` —— 那是"账本搬进项目仓、只窄忽略生成物"口径的产物。
+     *   ⚠ `UD-161` 把那条口径**作废**：账本**恢复自带 git 仓**（`<工作区>/.hob/.git`），
+     *     项目仓**整目录忽略 `.hob/`** ⇒ **账本仓内部应当什么都不忽略**（全部由它自己跟踪）。
+     *   ⚠ **⛔ 这不是"少了一条检查"**：账本仓"什么都不忽略"这件事由上面
+     *     `C_MUST_NOT_IGNORE`（正本 + volumes/ 逐条实测"未被忽略"）**正面兜住**；
+     *     而"项目仓整目录忽略 `.hob/`"这件事由 `check-repo-rules.mjs` 的
+     *     `mustExclude` 里那条 `.hob/` **反向兜住** ⇒ 两件事各有归属，⛔ 不是没人管。
+     */
+    const C_MUST_IGNORE = []
     // ⚠ 前置：账本仓**必须是 git 仓库**（否则 check-ignore 无意义，会一律报 exit 128 ⇒ 假 PASS）
     let ledgerIsRepo = false
     try {
