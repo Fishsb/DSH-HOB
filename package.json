@@ -36,11 +36,12 @@
     "lib",
     "cordis.patch.yml",
     "preset",
-    ".hob/README.md",
-    ".hob/INIT.md",
-    ".hob/templates",
-    ".hob/drafts",
-    ".hob/roles"
+    "kit/README.md",
+    "kit/INIT.md",
+    "kit/templates",
+    "kit/drafts",
+    "kit/roles",
+    "kit/parts"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run build:client && node scripts/write-build-stamp.mjs",
@@ -49,7 +50,6 @@
     "check:presets": "node scripts/check-preset-contracts.mjs",
     "check:config": "node scripts/check-config-face.mjs",
     "check:policy": "node scripts/check-session-policy.mjs",
-    "check:policy-cross": "node scripts/check-policy-cross-instance.mjs",
     "check:hob-create": "node scripts/check-hob-create-ui.mjs",
     "check:hob-create-dom": "node scripts/check-hob-create-dom.mjs",
     "check:hob-gate": "node scripts/check-hob-unselected-gate.mjs",
@@ -67,7 +67,6 @@
     "check:host": "node scripts/host-probe.mjs",
     "check:modules": "node scripts/module-independence-probe.mjs",
     "exp:next-id": "node scripts/next-experience-id.mjs",
-    "gen:skeleton": "node scripts/gen-skeleton-manifest.mjs",
     "check:all": "node scripts/check-all.mjs",
     "check:preflight": "node scripts/preflight.mjs",
     "check": "npm run check:all"
