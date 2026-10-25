@@ -37,7 +37,16 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /** 脚本所在目录 = `<root>/scripts` ⇒ 上跳一级即仓库根。 */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const ENTRY = resolve(ROOT, 'lib', 'index.js')
+/**
+ * ⚠ **产物根可被 `HOB_PROBE_LIB` 指向一份临时副本**（负向对拍用：把 settings 模块的
+ *   探测日志改哑，确认第 ⑤ 条**会红**而不是恒绿）。
+ * ⚠ 与 `check:orch` 的 `HOB_SA_ROOT` / `check:policy` 的 `HOB_SP_ROOT` / `HOB_DOM_ROOT` /
+ *   `HOB_GATE_ROOT` / `HOB_CF_ROOT` **同一约定**（⛔ 不另造开关名）。
+ */
+const LIB_ROOT = process.env.HOB_PROBE_LIB !== undefined && process.env.HOB_PROBE_LIB !== ''
+  ? process.env.HOB_PROBE_LIB
+  : resolve(ROOT, 'lib')
+const ENTRY = resolve(LIB_ROOT, 'index.js')
 const CORDIS = resolve(ROOT, 'node_modules', '@deepseek-ai', 'cordis', 'lib', 'index.js')
 
 // ── 退出码 2：探针本身跑不起来（**不是**断言失败）────────────────────────────
@@ -254,10 +263,48 @@ console.log('\n=== 路径 B2：两种 inject 的**不同后果**（E-02 的实�
   // ④ 关键结论：同一插件内「一个模块被门禁挡住、另一个照常激活」——互不阻塞。
   check('同插件共存：tools ACTIVE 与 settings ACTIVE 各自独立', tools?.state === 2 && settings?.state === 2)
 
-  // ⑤ 更强的证据：缺依赖的 settings 模块**确实没有执行它的探测回调**。
+  /**
+   * ── ⑤ ⚠⚠ **恒绿判据订正**（2026-10-24 · t10 · B 席）══════════════════════════
+   *
+   * ── 改前是什么（审查席实测：**恒真**）──────────────────────────────────
+   *   改前判据词是 `'settings 服务可用'`，而在 `src/` 与 `lib/` 里 `grep -rn` **零命中**
+   *   —— 这个模块**从来不会**打这句话 ⇒ `!logs.some(...)` **恒为 true** ⇒ 本条**恒绿**。
+   *   它守的命题（"缺依赖的 settings 模块确实没跑探测回调"）于是**完全没有被判**。
+   *
+   * ── 现在（⚠ 判据词换成模块**真的会打**的字符串）──────────────────────────
+   *   `src/modules/settings.ts` 的 `runProbe()` 在四态里各打一句话，其中
+   *   **可见**那一支打的是 `设置页可见：namespace=…`（实测输出见下"正控"）。
+   *   ⇒ 判据 = 缺依赖时**没有**这一句（= 回调确实没跑）。
+   *   ⚠ **必须有正控**：另起一个**给了 settings 服务**的同构场景，断言那**真的会出现**
+   *     —— 否则"这句从不存在"和"回调没跑"两种情况读起来一样（又回到恒绿）。
+   */
+  const PROBE_MARK = '设置页可见：namespace='
+  const noProbeRan = !logs.some((l) => String(l).includes(PROBE_MARK))
+  /**
+   * ⚠ **正控**：同一插件、同样配置，只把 settings 服务**提供出来** ⇒ 那一句必须出现。
+   *   ⚠ 这同时证明 `settings` 模块的 `ctx.inject` 回调**确实会跑**（不是"它从不跑"）。
+   */
+  const posRoot = new Context()
+  posRoot.provide?.('tools', {})
+  posRoot.provide?.('settings', {
+    describe: () => [{
+      ns: 'dsh-hob', autoGenerate: true, revision: 3, schema: { dict: { probeField: {} } },
+    }],
+  })
+  const posLogs = []
+  posRoot.logger = {
+    ...posRoot.logger,
+    info: (...a) => posLogs.push(a.join(' ')), warn: (...a) => posLogs.push(a.join(' ')),
+    error: () => {}, debug: () => {},
+  }
+  const posF = posRoot.plugin(mod, { modules: { tools: true, settings: true, bus: false } })
+  await posF
+  await sleep(80)
+  const probeRan = posLogs.some((l) => String(l).includes(PROBE_MARK))
   check(
-    'settings 服务缺席 ⇒ 其探测回调未执行（无对应日志）',
-    !logs.some((l) => String(l).includes('settings 服务可用')),
+    `settings 服务缺席 ⇒ 其探测回调未执行（正控：有服务时**确实**打了「${PROBE_MARK}…」）`,
+    noProbeRan && probeRan,
+    `缺依赖时无该句=${noProbeRan} · 有依赖时该句${probeRan ? '出现' : '**未出现**（判据词或回调对不上）'}`,
   )
 }
 

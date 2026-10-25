@@ -106,15 +106,71 @@ interface Dictionary {
   en: Record<string, string>
 }
 
+/**
+ * **词典层**（2026-10-24 · client 侧修复单 · 第 6 条）。
+ *
+ * ── 为什么要分层（而⛔ 不是各文件自己查表）──────────────────────────────
+ *   弹窗（`create-hob-dialog.tsx`）与未选横幅（`hob-unselected-gate.tsx`）此前
+ *   **全硬编码中文**、不 import 本模块 ⇒ 切英文后那两屏仍是中文（语言跟随有洞）。
+ *   修法有两条路，本单选后者：
+ *     ① 每个文件自己写一份 `t()` 查表 —— ⛔ **不许**：那会让"取词入口"变成
+ *        两个语义源，下次切语言两边行为可能不同（审计点名的反模式）；
+ *     ② 各文件把自己的中英词条**灌进本模块**（同一条 `t()` 管线）+ 用 `t()` 取词
+ *        —— ✅ 本单采用。灌进来的只是**词条数据**（入参），解析入口始终只有
+ *        {@link t} 一个。
+ *   ⇒ 一个层 = 一份 `{name, zh, en}`；{@link t} 按**注册顺序**逐层合并（后注册的覆盖
+ *     先注册的同名键），每层的键集一致性由该文件自己的机检钉住。
+ */
+interface DictionaryLayer extends Dictionary {
+  /** 层名（⚠ 只用于排错与"谁覆盖了谁"，⛔ 不进用户可见文本）。 */
+  name: string
+}
+
+const dictionaryLayers: DictionaryLayer[] = []
+
+/** 合并后的词典（= 所有层按注册顺序叠加；`null` = 一层都没注册）。 */
 let panelDict: Dictionary | null = null
 
+/** 重新合并所有层（后注册的层覆盖先注册的同名键）。 */
+function rebuildDictionary(): void {
+  if (dictionaryLayers.length === 0) { panelDict = null; return }
+  const zh: Record<string, string> = {}
+  const en: Record<string, string> = {}
+  for (const layer of dictionaryLayers) {
+    Object.assign(zh, layer.zh)
+    Object.assign(en, layer.en)
+  }
+  panelDict = { zh, en }
+}
+
 /**
- * 灌入本插件的词典（**在 `settings-panel.tsx` 模块顶层调用一次**）。
+ * 登记一层词典并把它**同步给语言服务**（若服务已就绪）。
+ *
+ * ⚠ 同名层重复登记 = **替换**（不叠加）：热重载时同一个文件会再登记一次，
+ *   叠加会让键数无限增长且同名键的覆盖关系变得不可预测。
+ *
+ * @param name - 层名（如 `panel` / `hob-dialog` / `hob-gate`）。
+ * @param dict - `{ zh, en }` 两份**键集相同**的字面量。
+ */
+export function addDictionaryLayer(name: string, dict: Dictionary): void {
+  const at = dictionaryLayers.findIndex((l) => l.name === name)
+  if (at >= 0) dictionaryLayers[at] = { name, zh: dict.zh, en: dict.en }
+  else dictionaryLayers.push({ name, zh: dict.zh, en: dict.en })
+  rebuildDictionary()
+  // ⚠ 语言服务可能**已经**就绪（弹窗/横幅的词条是后登记的）⇒ 必须重新注册，
+  //   否则宿主那条取词路径（{@link translateVia}）永远看不到新层的词条
+  //   （症状：面板能切语言、弹窗永远中文）。
+  registerDictWithLocale()
+  emit()
+}
+
+/**
+ * 灌入面板词典（`settings-panel.tsx` 模块顶层调用；`panel` 层的等价旧入口）。
  *
  * @param dict - `{ zh, en }` 两份键集相同的字面量。
  */
 export function configureDictionary(dict: Dictionary): void {
-  panelDict = dict
+  addDictionaryLayer('panel', dict)
 }
 
 /** `{name}` 占位符替换（与宿主 `translate()` 的 `:1426-1427` 同一手法）。 */
@@ -343,6 +399,31 @@ export function presetDisplayName(row: { id: string; name?: string }): string {
  * @param ctx - client 半的 cordis context。
  * @returns 解除绑定的函数（挂 `ctx.effect` 用；`ctx.inject` 返回 **Fiber**，用 `.dispose()`）。
  */
+/**
+ * 把**当前合并后的词典**注册给语言服务（幂等；服务未就绪时什么都不做）。
+ *
+ * ⚠ 为什么单独抽成函数（2026-10-24 · 第 6 条）：词典是**分层增量**登记的
+ *   （面板层最先，弹窗/横幅层在各自模块加载时补上），而语言服务的就绪时刻与
+ *   这两件事没有先后保证 —— 三种交错都会发生：
+ *     ① 服务先就绪、层后到  ⇒ {@link addDictionaryLayer} 里要重新注册；
+ *     ② 层先到、服务后就绪  ⇒ `bindLocale` 的 inject 回调里要注册；
+ *     ③ 服务换了（热重载）  ⇒ 同上。
+ *   三处共用这一个函数，⛔ 不各写一份注册逻辑（否则漏掉哪一处就表现为
+ *   "某一屏永远不跟随语言"）。
+ */
+function registerDictWithLocale(localeOverride?: any): void {
+  const locale = localeOverride ?? currentLocale
+  if (locale === null || locale === undefined || typeof locale.register !== 'function') return
+  if (panelDict === null) return
+  // 重复注册会抛（宿主 `register` 的 "namespace already has locale"）⇒ 先释放上一笔。
+  releaseDict()
+  try {
+    dictDispose = locale.register(LOCALE_NS, { zh: panelDict.zh, en: panelDict.en })
+  } catch {
+    // 注册失败（例如命名空间已被别人占）时本地词典仍可用 ⇒ 不致命。
+  }
+}
+
 export function bindLocale(ctx: any): () => void {
   if (typeof ctx?.inject !== 'function') return () => {}
 
@@ -350,16 +431,10 @@ export function bindLocale(ctx: any): () => void {
     // 免 inject 现读（`ctx.get` 不要求先声明，也不做属性访问 —— E-100）。
     const locale = typeof localeCtx?.get === 'function' ? localeCtx.get('locale') : undefined
     if (locale === undefined || locale === null) return
-    if (typeof locale.register === 'function' && panelDict !== null) {
-      // 重复注册会抛（宿主 `register` 的 "namespace already has locale"）⇒ 先释放上一笔。
-      releaseDict()
-      try {
-        dictDispose = locale.register(LOCALE_NS, { zh: panelDict.zh, en: panelDict.en })
-      } catch {
-        // 注册失败（例如命名空间已被别人占）时本地词典仍可用 ⇒ 不致命。
-      }
-    }
     if (typeof locale.bind === 'function') adoptLocale(locale)
+    // ⚠ 显式把 locale 传进去：不依赖 adoptLocale 是否接上（`bind` 缺席时它不设
+    //   `currentLocale`，但它仍可能支持 `register` —— 那条路径也要注册词条）。
+    registerDictWithLocale(locale)
   })
 
   return () => {

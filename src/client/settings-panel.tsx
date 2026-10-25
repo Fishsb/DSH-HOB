@@ -65,14 +65,18 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import {
   IconChevronDownOutlineRegular, IconCheckOutlineRegular, IconDataOutlineRegular,
+  // ⚠ `SegmentedControl` **仍在用**（骨架开关那张卡）—— 别跟着两张死卡一起删。
   Menu, MenuGroup, MenuItemButton, SegmentedControl, StateDot, Tag,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+// ⚠ 2026-10-24（修复单第 8 条）：删掉两张死卡后，只服务它们的六个 import
+//   （`writePermissionLevel` / `readPermissionLevel` / `PERMISSION_LEVEL_ORDER` /
+//    `writeWorkMode` / `readWorkMode` / `WORK_MODE_ORDER` 与两个类型）也跟着删 ——
+//   留着的后果是"看起来面板还在用权限/工作方式"，而实际没有任何渲染点用它们。
+//   ⚠ `settings.ts` 里那些函数**仍然保留**（迁移/兼容路径的写入口，见上面的替身注释）。
 import {
   getSettingsForm, getSettingsSnapshot, subscribeSettingsForm, writeSpawnFields,
-  writePermissionLevel, readPermissionLevel, PERMISSION_LEVEL_ORDER,
-  writeWorkMode, readWorkMode, WORK_MODE_ORDER,
   readSkeletonEnabled, writeSkeletonEnabled,
-  type PermissionLevel, type SettingsSnapshot, type WriteResult, type WorkMode,
+  type SettingsSnapshot, type WriteResult,
 } from './settings.ts'
 import {
   findModel, findPreset, getCatalogSnapshot, loadCatalog, subscribeCatalog,
@@ -324,6 +328,21 @@ function SpawnDefaultsCard(props: {
   const [busy, setBusy] = useState(false)
   const formRef = useRef(form)
   formRef.current = form
+  /**
+   * ⚠⚠ **卸载守卫**（2026-10-24 · 修复单第 10 条）。
+   *
+   * ── 修的是什么 ────────────────────────────────────────────────────────
+   *   `writeMany` 在 `await writeSpawnFields(…)` 之后**直接** `setNotice` / `setBusy`。
+   *   而这次写入是宿主 RPC（可慢）；用户完全可能在它回来之前**切走设置页**
+   *   ⇒ 组件已卸载，`setState` 落到已卸载组件上：React 18 不再报 warning，
+   *   但那个 `finally` 里的 `setBusy(false)` 会**永久留在内存里**（无意义的闭包持有），
+   *   且若宿主把它重新挂载成"另一个实例"，旧回包会把**新实例**的界面刷成旧结果
+   *   （现象：切回来看到上一次的"已写入"，而这次什么都没发生）。
+   *   ⇒ 用 mounted 标记：卸载后**一个 state 都不写**。
+   *   ⚠ 与弹窗的 `abandonedRef` / 门卫的令牌**同形**（团队统一写法）。
+   */
+  const mountedRef = useRef(true)
+  useEffect(() => () => { mountedRef.current = false }, [])
 
   // ⚠ 只在面板**第一次**渲染时读一次候选（不是每次渲染，也不是内联 promise ——
   //   内联会被依赖捕获成自持循环，见文件头）。失败时用户可点「重试」。
@@ -333,18 +352,24 @@ function SpawnDefaultsCard(props: {
   const writeMany = async (
     writes: ReadonlyArray<{ field: 'agentPreset' | 'provider' | 'model' | 'reasoningEffort'; value: string }>,
   ): Promise<void> => {
+    if (!mountedRef.current) return
     setBusy(true)
     try {
       const r: WriteResult = await writeSpawnFields(formRef.current, writes)
+      // ⚠ 每一步 await 之后都要核（卸载可能发生在任何一个 await 点上）
+      if (!mountedRef.current) return
       if (r.ok) setNotice({ tone: 'ok', text: t('write.ok') })
       else setNotice({ tone: 'bad', text: r.reason ?? t('write.rejected') })
     } finally {
-      setBusy(false)
+      if (mountedRef.current) setBusy(false)
     }
   }
   /** 单字段写入（选中预设 / 单独改档位时用）。 */
   const write = (field: 'agentPreset' | 'provider' | 'model' | 'reasoningEffort', next: string): Promise<void> =>
     writeMany([{ field, value: next }])
+
+  /** 加载失败的 provider 分组（⚠ 必须呈现，见下面那一行；空数组 = 全成功）。 */
+  const failures = catalog?.failures ?? []
 
   const catalogStatusText =
     snapshot.status === 'loading' ? t('catalog.status.loading')
@@ -359,6 +384,11 @@ function SpawnDefaultsCard(props: {
               excluded: snapshot.excludedPresets.length === 0
                 ? ''
                 : t('catalog.status.excluded', { count: snapshot.excludedPresets.length }),
+              // ⚠⚠ 第 1 条：有分组加载失败时**必须**在这句里说出来 ——
+              //   否则"模型数"会比用户能在下拉里看到的少，而界面声称"已就绪"。
+              failed: failures.length === 0
+                ? ''
+                : t('catalog.status.failedGroups', { count: failures.length }),
             })
 
   // ── 第 11 轮：**整块撤销**上一轮的"解析宿主有效默认 + 警告"（用户裁定）───────────
@@ -550,6 +580,48 @@ function SpawnDefaultsCard(props: {
         </span>
       </Row>
 
+      {/**
+        * ── ⚠⚠ **provider 分组加载失败必须逐条呈现**（2026-10-24 · 修复单第 1 条）──
+        *
+        * ── 修的是什么（这是本单最"静默"的一条）────────────────────────────
+        *   `catalog.ts:408-414` **保留了**宿主返回的 `failures`（每个失败分组有
+        *   `{id, name, message}`），但本面板**全文零读取**它（`grep failures` = 0）。
+        *   后果：某个 provider 组加载失败时，该组下的模型**从下拉里静默消失**，
+        *   而上面那行状态还写着「候选已就绪（预设 N 个 / 模型 M 个）」——
+        *   用户看到的是"我的模型不见了"，界面上**没有任何一处**说明原因，
+        *   也没有任何地方能重试那个组。这正是本项目反复禁止的**静默过滤**
+        *   （与 E-46 的"宿主静默过滤预设"同族，只不过这次过滤发生在我们自己手里）。
+        *   ⇒ 现在：`failures` 非空 ⇒ 每一组**单独一行**（分组名 + 可读原因）+
+        *     一行「重新读取」按钮；且 `catalog.status.ready` 那句里追加
+        *     「另有 K 个分组加载失败」—— 让数字与事实对得上，⛔ 不假装全都就绪。
+        *
+        * ⚠ 为什么不做"只重试失败的那个组"：宿主的模型目录是**一次整体 RPC**
+        *   （`remote.session.modelCatalog()`），没有按 provider 重取的接口
+        *   ⇒ 按组重试只能是假按钮。这里的重试 = 重新读一次整个目录（如实说明）。
+        */}
+      {failures.length > 0 ? (
+        <Row label={t('label.catalogFailures')}>
+          <span className={S.warn}>
+            {failures.map((f) => (
+              <span key={f.id} className={S.subNote} data-hob-catalog-failure={f.id}>
+                {t('catalog.failure.row', {
+                  name: f.name === '' ? f.id : `${f.name}（${f.id}）`,
+                  message: f.message === '' ? t('catalog.failure.noMessage') : f.message,
+                })}
+              </span>
+            ))}
+            <button
+              type="button"
+              className={S.linkBtn}
+              disabled={snapshot.status === 'loading'}
+              onClick={() => { void loadCatalog() }}
+            >
+              {t('catalog.failure.retry')}
+            </button>
+          </span>
+        </Row>
+      ) : null}
+
       {/* ── 写入反馈（成功与失败都显示；失败必有原因）─────────────── */}
       {notice === null ? null : (
         <Row label={t('label.writeResult')}>
@@ -564,7 +636,6 @@ function SpawnDefaultsCard(props: {
         <Row label={t('label.write')}>
           <span className={S.warn}>
             {t('write.notWritable.pre')}<b>{t('write.notWritable.noWrite')}</b>
-            {t('write.notWritable.mid')}<code>{settings?.mode ?? '?'}</code>
             {t('write.notWritable.post')}
           </span>
         </Row>
@@ -575,189 +646,30 @@ function SpawnDefaultsCard(props: {
 
 
 /**
- * **可读权限控制卡片**（2026-10-14 第 144 轮新增；2026-10-17 由「权限档位」改名）。
+ * ⚠⚠ **两张"全局联动"卡片已删除**（2026-10-24 · 修复单第 8 条）。
  *
- * ── 为什么用 `SegmentedControl`（而不是 `Menu` 或自造滑块）──────────────
- *   用户原话是"一个设置**滑块**选项分为三个权限"，而宿主原语里：
- *   · `Switch` 是**二态** —— 三档要两个开关，语义不贴；
- *   · `Menu` + `MenuItemButton` 是**下拉**，面板里已有先例（模型选择），
- *     但"滑块"的观感差得最远；
- *   · **`SegmentedControl`**（宿主已导出，`SegmentedControl.d.ts` 要求 ≥2 段）
- *     是三段并排、一次点选、键盘走位由宿主负责 —— 语义最贴，且**不引入原生 `<select>`**
- *     （机检 J-1 盯这个）。
+ * ── 删的是什么 ─────────────────────────────────────────────────────
+ *   `PermissionCard`（可读权限控制三档）与 `WorkModeCard`（推进方式三档）——
+ *   共 177 行**只定义、从未渲染**的组件（下面注册处只剩一句"已下线"的注释）。
+ *   死代码的代价不是"多几行"：它让读者以为这两项还能在设置页里改，
+ *   而实际改它们的地方是**新建会话弹窗**（`create-hob-dialog.tsx`，用户做选择的那一屏）。
  *
- * ── ⚠ 档位是**值型**配置，但**三档的生效方式与模块开关不同** ──────────────
- *   模块开关是**拓扑型**（改完要重启实例）；档位带 `.volatile()`，
- *   宿主走 volatile-only 通道、**不重挂载**，且装配期过滤是**逐 step 现算**的
- *   ⇒ **改完即生效**。这两句必须分开说（见下方两条 note），
- *   ⛔ 不许把两者的生效条件混起来（R-26 同款纪律）。
+ * ── 它们的功能去哪了（⛔ 不是被删掉）────────────────────────────────
+ *   · 两个值（可读档 / 推进方式）现在**逐会话**在弹窗里选；
+ *   · 配置字段 `permission.level` / `workMode.mode` **仍然保留**（旧会话一次性迁移的
+ *     取值来源，以及 `resolveSessionPolicy` 的兼容面）—— ⛔ 删代码不等于删配置；
+ *   · 写入函数 `writePermissionLevel` / `writeWorkMode` **仍在 `settings.ts`**
+ *     （那条迁移/兼容路径的写入口；`check:config` 的 G-7/G-8 钉着它们）；
+ *   · 用户在面板上看到的是下面那张「这两项设到哪儿去了」的只读提示卡。
+ *
+ * ⚠ 判据侧影响（**已报集成席，⛔ 本单不自己改判据**）：
+ *   `scripts/check-config-face.mjs` 的 G-3（面板里要有按档位顺序渲染的控件）与
+ *   G-6 的**面板那一半**（`PANEL_ZH` 里含「看板 / 别人项目的卡 / 判据 / 全自动 /
+ *   「不越过权限档位」）此前**唯一的承载者就是 `WorkModeCard` 与它那批 `wm.*` 词条**
+ *   ⇒ 删掉后这两条会红。它们该改到新落点（弹窗词典的 `redline.workMode` /
+ *   `mode.label.*`），那是判据席的活。
  */
-function PermissionCard(props: {
-  form: ReturnType<typeof getSettingsForm>
-  settings: SettingsSnapshot | null
-}): ReactElement {
-  const { form, settings } = props
-  const current = readPermissionLevel(settings)
-  const [pending, setPending] = useState(false)
-  const [result, setResult] = useState<string | null>(null)
-  const [failed, setFailed] = useState(false)
 
-  const onChange = async (next: PermissionLevel): Promise<void> => {
-    if (next === current) return
-    setPending(true); setResult(null); setFailed(false)
-    const r: WriteResult = await writePermissionLevel(form, next)
-    setFailed(!r.ok)
-    setResult(r.ok ? t('perm.saved', { level: t(`perm.level.${next}`) }) : (r.reason ?? t('perm.writeFailed')))
-    setPending(false)
-  }
-
-  return (
-    <div className={S.card}>
-      <div className={S.cardHead}>
-        <span className={S.cardTitle}>{t('perm.title')}</span>
-        <span className={S.cardNote}>{t('perm.note')}</span>
-      </div>
-      <Row label={t('perm.label')}>
-        <span className={S.inline}>
-          {/* ⚠ 受控组件：`value` 来自**外部存储的快照**（不是渲染期直调 form），
-              否则宿主写入成功后这一处不会跟着重渲染（第 7 轮的同源收益）。 */}
-          <SegmentedControl
-            id="dsh-hob-permission-level"
-            label={t('perm.label')}
-            value={current}
-            disabled={pending}
-            options={PERMISSION_LEVEL_ORDER.map((lv) => ({ value: lv, label: t(`perm.level.${lv}`) }))}
-            onChange={(next) => { void onChange(next as PermissionLevel) }}
-          />
-          {pending ? <span className={S.cardNote}>{t('perm.writing')}</span> : null}
-        </span>
-      </Row>
-      <Row label={t('perm.meaning')}>
-        <span className={S.cardNote}>{t(`perm.level.note.${current}`)}</span>
-      </Row>
-      {/* ── ⚠ 「完全权限」旁的**限定句**（2026-10-17 · 三档改名批次）──────────────
-          依据 R-26：**只给名字不给边界，读者会把「读得更多」误读成「权限更大」**。
-          ⇒ 选到 `workspace`（显示名「完全权限」）时，**紧邻**必须有一句明写边界。
-          ⚠ 判据是「凡出现『完全权限』的用户可见处」都带限定 —— 故这一行与
-            `perm.level.note.workspace`（行内也带了同一句）、`note.permission.post`
-            （页脚说明也带了一句）三处**同源**，⛔ 不是三份各写各的措辞。
-          ⚠ 只在 `workspace` 档出现：其余两档没有「完全权限」这个名字，加上去就是噪音。 */}
-      {current === 'workspace'
-        ? (
-          <Row label={t('perm.limit')}>
-            <span className={S.cardNote}>{t('perm.workspaceLimit')}</span>
-          </Row>
-        )
-        : null}
-      {result !== null ? (
-        <Row label={t('perm.result')}>
-          <span className={failed ? S.warn : S.cardNote}>{result}</span>
-        </Row>
-      ) : null}
-    </div>
-  )
-}
-
-/**
- * **「Hob 推进项目的工作方式」卡片**（2026-10-19 · `UD-97` 推进优先）。
- *
- * ── 它写什么 ──────────────────────────────────────────────────────────
- *   `workMode.mode` 的**三档**（自动 / 单会话 / 多会话）。写作路径
- *   `['workMode','mode']`（子字段路径 —— 父对象不 volatile，整块写会被宿主拒）。
- *
- * ── ⚠ 与 {@link PermissionCard} **必须分开说清楚**的事（这两张卡最容易混）──
- *   · 权限档位（上面那张）管「**看得见什么**」，⛔ 不管"干多少"；
- *   · 本卡管「**怎么拆活、拆成几路**」，⛔ **不改任何权限边界**。
- *   ⇒ 本卡的说明里**必须**点明"它不改变能力与权限"，否则用户会把"多会话"
- *   读成"放权"（那正是任务书 §二-② 红线要挡的误读）。
- *
- * ── ⚠ 红线为什么也放在**界面上**（不只放在给模型看的口径里）─────────────
- *   本项目对"用户看不到就等于没有"这条口径（`PROJECT.md` §5.3）——
- *   而「多会话」这个名字**自带"更多、更强"的暗示**：只把红线写进给模型的口径，
- *   用户在界面上仍会以为"选多会话 = 能做更多事"。⇒ **紧邻控件**给一句限定。
- *   三处同源（⛔ 不是三份各写各的措辞）：`shared/work-mode.ts` 的 `WORK_MODE_RED_LINE`
- *   （中文原文）· 本卡词典的 `wm.redline`（用户可见版）· schema 的 `.description()`
- *   （插件管理页自动表单会显示）。⚠ 三者都由同一句中文派生，机检 `check:config` 的
- *   G 组核"用户在面板上能看到它与那句红线同源"。
- *
- * ── ⚠ 「全自动」（2026-10-19 第 3 轮 · `UD-149`）**同一条处理** ─────────────
- *   名字里带「全」的那一档与「完全权限」同族（`R-26`）：读者会把"更自主"读成"权限更大"。
- *   ⇒ ⚠ **`wm.redline` 那一句里必须同时含两条边界**（多会话 / 全自动），
- *     且它**常驻**（与档位无关）—— ⛔ 不许只在 `auto` 档出现、也⛔ 不许只在 `multi` 档出现。
- *   ⚠ 「自动」档的**语义说明**（`wm.mode.note.auto`）同批改成"判完直接派、派完说清路数与去向"
- *     （用户裁定的 (乙) 口径）—— ⛔ 别让它继续写"动手之前先说清"（那是 (甲)，已作废）。
- *
- * ── 生效方式（⚠ 必须如实写，⛔ 不许写做不到的）──────────────────────────
- *   本档位带 `.volatile()` ⇒ 宿主写入**不重挂载**，而消费者
- *   （`src/preset/tools.ts` 注入的那段口径）**每次装配现读** ⇒ **改完即生效**，
- *   已开的 Hob 会话**下一步**就按新档走。⚠ 这句话与 `perm` 那张卡**同一条依据**，
- *   与模块开关（要重启）**不是同一条路径** —— 两者不许混。
- */
-function WorkModeCard(props: {
-  form: ReturnType<typeof getSettingsForm>
-  settings: SettingsSnapshot | null
-}): ReactElement {
-  const { form, settings } = props
-  const current = readWorkMode(settings)
-  const [pending, setPending] = useState(false)
-  const [result, setResult] = useState<string | null>(null)
-  const [failed, setFailed] = useState(false)
-
-  const onChange = async (next: WorkMode): Promise<void> => {
-    if (next === current) return
-    setPending(true); setResult(null); setFailed(false)
-    const r: WriteResult = await writeWorkMode(form, next)
-    setFailed(!r.ok)
-    setResult(r.ok ? t('wm.saved', { mode: t(`wm.mode.${next}`) }) : (r.reason ?? t('perm.writeFailed')))
-    setPending(false)
-  }
-
-  return (
-    <div className={S.card}>
-      <div className={S.cardHead}>
-        <span className={S.cardTitle}>{t('wm.title')}</span>
-        <span className={S.cardNote}>{t('wm.note')}</span>
-      </div>
-      <Row label={t('wm.label')}>
-        <span className={S.inline}>
-          {/* ⚠ 受控组件：`value` 来自**外部存储的快照**（不是渲染期直调 form），
-              否则宿主写入成功后这一处不会跟着重渲染（第 7 轮的同源收益）。 */}
-          <SegmentedControl
-            id="dsh-hob-work-mode"
-            label={t('wm.label')}
-            value={current}
-            disabled={pending}
-            options={WORK_MODE_ORDER.map((m) => ({ value: m, label: t(`wm.mode.${m}`) }))}
-            onChange={(next) => { void onChange(next as WorkMode) }}
-          />
-          {pending ? <span className={S.cardNote}>{t('perm.writing')}</span> : null}
-        </span>
-      </Row>
-      <Row label={t('wm.meaning')}>
-        <span className={S.cardNote}>{t(`wm.mode.note.${current}`)}</span>
-      </Row>
-      {/* ── ⚠ 三档**共同**的红线（不是只在多会话档出现）───────────────────────
-          判据：它是"本项不解除任何既有红线"的**总声明**，与档位无关 ——
-          单会话档照样不许碰别人的卡。⇒ **常驻**，不随档位出现/消失。
-          ⚠ 另外单独给「多会话」一句**代价/边界**（见下），因为那个名字最容易误读。 */}
-      <Row label={t('wm.limit')}>
-        <span className={S.cardNote}>{t('wm.redline')}</span>
-      </Row>
-      {current === 'multi'
-        ? (
-          <Row label={t('wm.multiLimitLabel')}>
-            <span className={S.cardNote}>{t('wm.multiLimit')}</span>
-          </Row>
-        )
-        : null}
-      {result !== null ? (
-        <Row label={t('wm.result')}>
-          <span className={failed ? S.warn : S.cardNote}>{result}</span>
-        </Row>
-      ) : null}
-    </div>
-  )
-}
 
 /**
  * 「首次使用时铺骨架」开关卡片（2026-10-16 第 224 轮 · **`UD-118` 用户裁定「C」**）。
@@ -887,9 +799,41 @@ export function SettingsPanel(): ReactElement {
 
       <SpawnDefaultsCard form={form} settings={settings} value={value} snapshot={catalog} />
 
-      <PermissionCard form={form} settings={settings} />
-
-      <WorkModeCard form={form} settings={settings} />
+      {/**
+        * ⚠⚠ **2026-10-22 第 6 轮（`REQ-04` UI 源码阶段）：两张"全局联动"卡片已下线。**
+        *
+        * ── 为什么必须下线（任务书第 4 条原文）────────────────────────────
+        *   这两张卡改的是**实例级全局值**（`permission.level` / `workMode.mode`）
+        *   ⇒ 一次影响**所有已开的 Hob 会话**。而 `REQ-04` 的整个目标就是
+        *   "每个新建 Hob 会话各自选、旧全局值不得一次影响所有"。
+        *   ⇒ 只要这两张卡还在，用户就会继续用它改全局、然后**期待所有会话变** ——
+        *     那与新的逐会话语义直接冲突（两种互斥的行为同时暴露给用户）。
+        *
+        * ── 下线的**范围**（⚠ 精确，⛔ 不是把整页拆了）────────────────────
+        *   · 只去掉这两张**控制卡**（`PermissionCard` / `WorkModeCard`）；
+        *   · **其余卡片照旧**：模块开关、{@link SpawnDefaultsCard}、{@link SkeletonCard}、页脚说明；
+        *   · ⚠ **2026-10-24 订正（修复单第 8 条）**：这两个组件的**代码已删除**
+        *     （此前那句"代码保留、将来可复用"是死代码的借口 —— 177 行零渲染点）。
+        *     功能没丢：两个值现在在**新建会话弹窗**里按会话选（见
+        *     `create-hob-dialog.tsx`），而配置字段与写入函数照旧保留（迁移用）。
+        *
+        * ── ⚠ 旧配置仍是**受控迁移来源**（⛔ 不许顺手删配置）──────────────
+        *   `config.permission.level` / `config.workMode.mode` 这两个字段**必须保留**：
+        *   · 旧会话一次性迁移要用它们作**切换时刻快照**（`legacyModeSnapshot`）；
+        *   · 迁移完成前，`resolveSessionPolicy` 的兼容面还读得到它们。
+        *   ⇒ **只下线 UI 控件，⛔ 不删 schema 字段**。这两件事必须分开做，
+        *     否则"控件没了"会被误读成"配置也没了"，而后者会破坏迁移。
+        */}
+      {/**
+        * ⚠ 这里保留一个**只读提示**：告诉用户"这两项设到哪儿去了"。
+        *    ⛔ 不是控件、不可点、不写任何值 —— 只是别让老用户找不到入口又不明原因。
+        */}
+      <div className={S.card}>
+        <div className={S.cardHead}>
+          <span className={S.cardTitle}>{t('moved.title')}</span>
+        </div>
+        <span className={S.cardNote}>{t('moved.body')}</span>
+      </div>
 
       <SkeletonCard form={form} settings={settings} />
 
@@ -909,12 +853,10 @@ export function SettingsPanel(): ReactElement {
         <li className={S.note}>
           {t('note.effective.pre', { card: t('cardTitle') })}<b>{t('note.effective.strong')}</b>{t('note.effective.post')}
         </li>
-        <li className={S.note}>
-          {t('note.permission.pre')}<b>{t('note.permission.strong')}</b>{t('note.permission.post')}
-        </li>
-        <li className={S.note}>
-          {t('note.split.pre')}<b>{t('note.split.strong')}</b>{t('note.split.post')}
-        </li>
+        {/* ⚠ 原先这里还有两条：分别介绍「可读权限控制」与「推进项目的工作方式」是
+            "即改即生效"的值型配置。它们描述的两张卡已删（见上面那条注释），
+            而这两项现在在**新建会话弹窗**里按会话选 ⇒ 那两条说明的落点已不存在，
+            留着只会让人以为设置页里还能改它们。 */}
         <li className={S.note}>
           {t('note.skeleton.pre')}<b>{t('note.skeleton.strong')}</b>{t('note.skeleton.post')}
         </li>
@@ -984,8 +926,13 @@ const PANEL_EN: Record<string, string> = {
   'warn.modelMissing': 'The stored model “{provider} / {model}” is not in the current catalog (it may be retired) — the value is kept so you can change it here.',
   'catalog.status.loading': 'Reading candidates…',
   'catalog.status.idle': 'Candidates not loaded',
-  'catalog.status.ready': 'Candidates ready ({presets} presets / {models} models)',
+  'catalog.status.ready': 'Candidates ready ({presets} presets / {models} models){excluded}{failed}',
   'catalog.status.excluded': ' ({count} planning-side preset(s) not offered here)',
+  'catalog.status.failedGroups': ' — {count} provider group(s) failed to load (see below)',
+  'label.catalogFailures': 'Failed to load',
+  'catalog.failure.row': '{name}: {message}',
+  'catalog.failure.noMessage': 'the host gave no reason',
+  'catalog.failure.retry': 'Reload the whole catalog',
   'catalog.fail': 'Reading candidates failed — {message}',
   'catalog.fail.host': '{code}: {message}',
   'catalog.fail.noResult': 'The host returned no result (its namespace may not be mounted yet)',
@@ -998,47 +945,16 @@ const PANEL_EN: Record<string, string> = {
   'write.rejected': 'The host rejected this write (no reason given).',
   'write.notWritable.pre': 'This page does ',
   'write.notWritable.noWrite': 'not allow writes',
-  'write.notWritable.mid': ' (host persistence mode = ',
   'write.notWritable.post': ') — on non-loopback access the host only changes settings in memory, so this panel refuses the write instead of pretending it saved.',
   // ── 可读权限控制（2026-10-14 第 144 轮；2026-10-17 改名）──────────────────
   // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
-  'perm.title': 'Readable-permission control',
-  'perm.note': 'It changes which files this preset can READ. No level can change anything.',
-  'perm.label': 'Level',
-  'perm.level.ledger': 'Ledger permission',
-  'perm.level.project': 'Document permission',
-  'perm.level.workspace': 'Full permission',
-  'perm.workspaceLimit': 'Full permission = every file in the workspace can be read; it still cannot write, run a command, or raise a team.',
-  'perm.limit': 'Where this level ends',
-  'perm.level.note.ledger': 'Only its own ledger and the web; it cannot see the project workspace files.',
-  'perm.level.note.project': 'Reads documents (.md) in the workspace; cannot read code.',
-  'perm.level.note.workspace': 'Reads and views any file in the workspace, including code and images, and can search across files; full permission = every file in the workspace can be read, and it still cannot write, run a command, or raise a team.',
-  'perm.meaning': 'What this level allows',
-  'perm.result': 'Result',
-  'perm.saved': 'Saved: now at the {level} level.',
+  'moved.title': 'Readable range and work mode',
+  'moved.body': 'These two are now chosen per new Hob session (in the new-session dialog), not globally. Existing Hob sessions are migrated once: readable range goes to the lowest tier, and each keeps the work mode it had. The old global settings are kept only as the source of that one-time migration and no longer drive any session. Where each of the two now lives: readable range and how work gets split are the two controls in the new-session dialog, and the dialog states the capability red line right next to them.',
   'perm.writing': 'Writing…',
   'perm.writeFailed': 'Write failed (no reason returned).',
   // ── 工作方式（2026-10-19 · UD-97）──────────────────────────────────────
   // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
   // ⚠ 显示名只给人看 —— **配置值不进任何用户可见文本**（机检 G 组钉住）。
-  'wm.title': 'How work gets split',
-  'wm.note': 'It changes only how the work is split into tracks. It changes no capability: no level of it lets anything be written, run, or raised as a team.',
-  'wm.label': 'Mode',
-  'wm.mode.auto': 'Automatic',
-  'wm.mode.single': 'One session',
-  'wm.mode.multi': 'Many sessions',
-  'wm.mode.note.auto': 'Hob works out itself how many tracks the task needs, so the count follows the task. Under this setting it hands the work over as soon as the split is settled, without asking first — and then says in its reply how many tracks it split into, who each track went to, and which one has to come back before the next step.',
-  'wm.mode.note.single': 'Always one track, carried by one session one stage at a time — even when the task could clearly be split, that possibility is what this setting overrides. Large work is sequenced inside that one thread.',
-  'wm.mode.note.multi': 'Split as finely as the work honestly allows and run as many tracks as that gives; cost and time are not a limit. Pieces that depend on each other still stay together, because splitting them only makes rework.',
-  'wm.meaning': 'What this mode does',
-  'wm.limit': 'What no mode relaxes',
-  'wm.redline': 'Many sessions means no more power and relaxes no rule: the board is still off-limits, another project\'s cards are still off-limits, no acceptance criterion is loosened, and more sessions never means each one may do whatever it likes. Automatic works the same way: handing over without asking first is not permission — it relaxes no rule, crosses no permission level, and never means each session may do whatever it likes.',
-  'wm.multiLimitLabel': 'Where many sessions stops',
-  'wm.multiLimit': '"Cost and time are not a limit" is all it lifts. It is not permission: every session it starts has exactly the reach its own preset and permission level give it.',
-  'wm.result': 'Result',
-  'wm.saved': 'Saved: now splitting work as {mode}. It applies from the next step of an open session.',
-  // ── 首次铺骨架（2026-10-16 第 224 轮 · UD-118「C」）───────────────────
-  // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
   'skel.title': 'Scaffold on first use',
   'skel.note': 'Fills the skeleton into a workspace the first time the plugin works there.',
   'skel.label': 'Enabled',
@@ -1049,15 +965,9 @@ const PANEL_EN: Record<string, string> = {
   'skel.note.off': 'Nothing is ever filled in. A new workspace keeps whatever skeleton you copied by hand, or none at all.',
   'skel.result': 'Result',
   'skel.saved': 'Saved: scaffold-on-first-use is now {state}.',
-  'note.split.pre': '· «How work gets split» is a ',
-  'note.split.strong': 'takes-effect-immediately',
-  'note.split.post': ' value-type configuration too: an open session follows the new mode from its next step. It is not a permission control — it decides how many tracks the work is split into, and no mode adds a capability.',
   'note.skeleton.pre': '· «Scaffold on first use» is a ',
   'note.skeleton.strong': 'never-overwrites',
   'note.skeleton.post': ' behaviour — it fills the skeleton only where no .hob exists yet; when one already exists it reports the skip and touches nothing. It creates no tool, and it is not a conversation-facing capability.',
-  'note.permission.pre': '· «Readable-permission control» is a ',
-  'note.permission.strong': 'takes-effect-immediately',
-  'note.permission.post': ' value-type configuration — an open session follows the new level from its next step, and it is a different path from the module switches above. ⚠ «Full permission» widens the READABLE range only: every file in the workspace can be read, and it still cannot write, run a command, or raise a team.',
   /**
    * ⚠⚠ **数量词改成口径式**（2026-10-21 · 第 337 轮 · 丙-8）：
    *   原文在括号里写死了一个英文数量词（「多少个，合计」那半句）—— ⚠ 那是**政策读数**，
@@ -1122,8 +1032,13 @@ const PANEL_ZH: Record<string, string> = {
   'warn.modelMissing': '已存模型「{provider} / {model}」不在当前目录里（可能已下线）—— 仍保留原值，可在此改掉。',
   'catalog.status.loading': '候选读取中…',
   'catalog.status.idle': '候选未加载',
-  'catalog.status.ready': '候选已就绪（预设 {presets} 个 / 模型 {models} 个）',
+  'catalog.status.ready': '候选已就绪（预设 {presets} 个 / 模型 {models} 个）{excluded}{failed}',
   'catalog.status.excluded': '（另有 {count} 个规划侧预设不作候选）',
+  'catalog.status.failedGroups': '—— 另有 {count} 个 provider 分组加载失败（见下）',
+  'label.catalogFailures': '加载失败',
+  'catalog.failure.row': '{name}：{message}',
+  'catalog.failure.noMessage': '宿主未给原因',
+  'catalog.failure.retry': '重新读取整个目录',
   'catalog.fail': '候选读取失败 —— {message}',
   'catalog.fail.host': '{code}: {message}',
   'catalog.fail.noResult': '宿主未返回结果（命名空间可能尚未挂载）',
@@ -1136,46 +1051,15 @@ const PANEL_ZH: Record<string, string> = {
   'write.rejected': '写入被拒（未说明原因）。',
   'write.notWritable.pre': '当前页面',
   'write.notWritable.noWrite': '不允许写入',
-  'write.notWritable.mid': '（宿主持久化模式 = ',
   'write.notWritable.post': '）—— 非本机回环访问时宿主只在内存里改、不落盘，故这里会如实拒写而不是假装保存。',
   // ── 可读权限控制（2026-10-14 第 144 轮；2026-10-17 改名）──────────────────
-  'perm.title': '可读权限控制',
-  'perm.note': '它只改本预设能「读」哪些文件；任何一档都不能改动。',
-  'perm.label': '档位',
-  'perm.level.ledger': '账本权限',
-  'perm.level.project': '文档权限',
-  'perm.level.workspace': '完全权限',
-  'perm.workspaceLimit': '完全权限 = 工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队。',
-  'perm.limit': '这一档的边界',
-  'perm.level.note.ledger': '只读自己的账本与网络；看不到项目工作区的文件。',
-  'perm.level.note.project': '可读工作区里的文档（.md），不可读代码。',
-  'perm.level.note.workspace': '工作区里的文件都可读取查看（含代码与图片），并能在文件里搜索；完全权限 = 工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队。',
-  'perm.meaning': '这一档允许什么',
-  'perm.result': '结果',
-  'perm.saved': '已保存：现在是「{level}」档。',
+  'moved.title': '可读范围与推进方式',
+  'moved.body': '这两项现在改为「每个新建 Hob 会话自己选」（在新建弹窗里），不再是全局开关。已开的旧 Hob 会话会做一次性迁移：读档统一收到最低档，工作方式保持它原来的值。旧的全局设置只作为那次迁移的取值来源保留，不再驱动任何会话。这两项现在的落点：可读范围与推进方式就是新建弹窗里的那两个控件，能力红线也写在它们旁边。',
   'perm.writing': '正在写入…',
   'perm.writeFailed': '写入失败（宿主未给原因）。',
   // ── 工作方式（2026-10-19 · UD-97）──────────────────────────────────────
   // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
   // ⚠ 显示名只给人看 —— **配置值不进任何用户可见文本**（机检 G 组钉住）。
-  'wm.title': '推进项目的工作方式',
-  'wm.note': '它只改「活怎么拆成几路」，不改任何能力：哪一档都不能写、不能执行命令、不能组队。',
-  'wm.label': '工作方式',
-  'wm.mode.auto': '自动',
-  'wm.mode.single': '单会话',
-  'wm.mode.multi': '多会话',
-  'wm.mode.note.auto': '由 Hob 按任务与方案自己判该拆成几路，所以路数随任务而变。这一档下它拆完就直接派出去、不再先问，然后在回复里说清拆成了几路、每路给了谁、哪一路先回来才能定下一步。',
-  'wm.mode.note.single': '恒定一路推进，一次一个阶段 —— 即使任务本可拆开也只走一路，那正是这一档要盖住的可能。活多就在这一条线上排先后。',
-  'wm.mode.note.multi': '拆到活本身允许的最细，能并出几路就跑几路；费用与时间都不设上限。互相依赖的部分仍放在一起 —— 硬拆开只会返工，那不是更细，是更多。',
-  'wm.meaning': '这一档怎么拆活',
-  'wm.limit': '哪一档都不放宽的',
-  'wm.redline': '多会话不等于权限更大、也不解除任何既有规则：看板照样不许改、别人项目的卡照样不许碰、判据一条都不放宽、「多」也从不等于「每个会话都能干任意事」。自动档同理：「全自动」只是不再先问就派出去，它不是权限 —— 不解除任何规则、不越过权限档位，也不等于每个会话能干任意事。',
-  'wm.multiLimitLabel': '多会话的边界',
-  'wm.multiLimit': '「费用与时间不设上限」就是它全部放宽的东西，它不是权限：它开的每个会话，能力仍只由那个会话自己的预设与权限档决定。',
-  'wm.result': '结果',
-  'wm.saved': '已保存：现在按「{mode}」拆活。已开的会话从下一步起按新档走。',
-  // ── 首次铺骨架（2026-10-16 第 224 轮 · UD-118「C」）───────────────────
-  // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
   'skel.title': '首次使用时铺骨架',
   'skel.note': '首次在某工作区干活时，把骨架铺进那个工作区。',
   'skel.label': '开关',
@@ -1186,15 +1070,9 @@ const PANEL_ZH: Record<string, string> = {
   'skel.note.off': '什么都不铺。新工作区就保持你手工复制的那份骨架（或者干脆没有）。',
   'skel.result': '结果',
   'skel.saved': '已保存：首次铺骨架现在是「{state}」。',
-  'note.split.pre': '· 「推进项目的工作方式」同样是',
-  'note.split.strong': '即改即生效',
-  'note.split.post': '的值型配置 —— 已开的会话从下一步起按新档走。它不是权限控制：它决定活被拆成几路，哪一档都不增加任何能力。',
   'note.skeleton.pre': '· 「首次使用时铺骨架」是',
   'note.skeleton.strong': '永不覆盖',
   'note.skeleton.post': '的行为 —— 只在还没有 .hob 时铺；已经有了就报一行跳过、一个字节都不动。它不建任何工具，也不是面向对话的能力。',
-  'note.permission.pre': '· 「可读权限控制」是',
-  'note.permission.strong': '即改即生效',
-  'note.permission.post': '的值型配置 —— 已开的会话在它的下一步就按新档位走；它和上面的模块开关是两条不同的路径。⚠ 「完全权限」只放宽可读范围：工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队。',
   /** ⚠ 与上面英文侧同步：⛔ 不写死数量，改成"上面列出的每一个"。 */
   'note.restart.pre': '· 模块开关（{tools} / {bus} / {orch} / {settings} / {interconnect}，上面列出的每一个）：改完需要',
   'note.restart.strong': '重启实例',

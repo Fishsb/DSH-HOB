@@ -35,6 +35,8 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { type SpawnDefaults } from '../config.ts'
 import { FACTORY_DEFAULT_PRESET_ID, PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
+// ⚠ 新建 Hob 会话的**可读档开放面**（唯一声明点；本模块只消费，⛔ 不另抄白名单）
+import { isOpenReadLevel, readLevelNotOpenReason } from '../shared/read-level-policy.ts'
 import { appendSessionModelSelection, installSessionModelSelection } from '../model-selection.ts'
 // ── 待投递中间态记账（2026-10-10 · 用户报障修复）──────────────────────────
 //   ⚠ 为什么在**工具层**（而不是服务实现 `spawn()` 里）：服务被别的路径调用时
@@ -1415,6 +1417,25 @@ export function createHobBusTools(
    * ⚠ 缺省不传 ⇒ 不对账（机检与旧调用形状照旧）。
    */
   onRead?: () => void,
+  /**
+   * ⚠⚠ **执行层"能不能推进"闸门**（2026-10-22 第 5 轮 · 任务书第 12 条）。
+   *
+   * 只作用在**会改变项目 / 建新会话**的两个动作：`hob_spawn`（建会话）与
+   * `hob_send`（投递 = 让对方真开跑）。
+   * ⚠ **`hob_sessions` / `hob_workspaces` 是只读诊断，必须放行**（任务书原文
+   *   "允许只读诊断"）—— 否则用户连"我有哪些会话"都查不到，只会更糟。
+   * ⚠ 返回字符串 ⇒ 拒绝理由；`undefined` ⇒ 放行。⛔ 非 Hob 由注入方放行。
+   */
+  proceedGateOf?: (exec: any) => string | undefined,
+  /**
+   * ⚠⚠ **写入两轴策略**（2026-10-22 第 5 轮 · 任务书第 4 条无界面路径）。
+   *
+   * `hob_spawn` 显式给了两值 ⇒ **必须真的写进去**，否则"要求了却没落地"=
+   * 用户以为按选择建了、实际按最低档跑（比不要求更糟：它假装成功了）。
+   * ⚠ 返回 `{ok, reason}`；失败 ⇒ spawn 的返回值里**如实回带**（⛔ 不静默）。
+   * ⚠ 缺席（老组合）⇒ 不写，但返回值里说明"两轴未落地"。
+   */
+  setPolicyOf?: (sessionId: string, level: string, workMode: string) => { ok: boolean; reason: string }
 ): {
   sessions: ReturnType<typeof defineTool>
   send: ReturnType<typeof defineTool>
@@ -1685,6 +1706,21 @@ export function createHobBusTools(
       args: { sessionId: string; message: string; mode?: 'followup' | 'steer' },
       exec: any,
     ): Promise<string> {
+      /**
+       * ⚠⚠ **投递 = 让对方真开跑** ⇒ 也属于"推进项目"的动作，必须过闸门
+       * （2026-10-22 第 5 轮 · 任务书第 12 条点名"真实派活"）。
+       *   ⚠ 拒绝返回**结构化 JSON**（与 `hob_dispatch` 的既有写回形一致），
+       *     ⛔ 不抛异常（抛出去会变成 tool error，模型读不到可读理由）。
+       */
+      try {
+        const blocked = proceedGateOf?.(exec)
+        if (blocked !== undefined) return JSON.stringify({ ok: false, reason: 'proceed-not-confirmed', message: blocked })
+      } catch (e) {
+        return JSON.stringify({
+          ok: false, reason: 'proceed-gate-error',
+          message: `拒绝：无法确认本会话的原「推进工作方式」（闸门抛错：${String((e as Error)?.message ?? e)}）`,
+        })
+      }
       /** ⚠ T2（B5）：同上 —— 投递路径也顺手对账（对账读盘，⛔ 不改投递语义）。 */
       pokeReconcile()
       const self = selfSessionIdOf(exec)
@@ -1769,6 +1805,29 @@ export function createHobBusTools(
         description:
           '目标工作区：路径或 id。**不填 = 本会话自己的工作区**。',
       },
+      /**
+       * ⚠⚠ **两轴显式值**（2026-10-22 第 5 轮 · 任务书第 4 条）。
+       *
+       * ── 为什么无界面路径也必须给这两项 ────────────────────────────────────
+       *   弹窗那条路给了用户选择；但 `hob_spawn` 是**无界面**建 Hob 会话的路径。
+       *   ⚠ 若它不要求两值，就等于"绕过弹窗悄悄建一个用缺省方式的 Hob 会话"
+       *     —— 那正是 `REQ-04` 要消灭的"一次影响所有 / 不知不觉用了缺省"。
+       *   ⇒ 只要本次建的是 **Hob** 预设，`level` 与 `workMode` **必须同时给**，
+       *     缺任一 ⇒ **拒并说明**；⛔ 不用缺省顶替（顶替会静默决定用户没选的东西）。
+       *   ⚠ **非 Hob 预设不受此限**：标准会话不看这两个字段（它们只对 Hob 有意义）。
+       */
+      level: {
+        type: 'string',
+        enum: ['ledger', 'project', 'workspace'],
+        description: '（**新建 Hob 会话时必填**）可读档：ledger / project / workspace。非 Hob 预判可省略。'
+          + '⚠ **当前只有 ledger 开放**：其余两档会被服务端拒签/拒建并给可读原因'
+          + '（待宿主具备可靠的持久清理能力后开放）。',
+      },
+      workMode: {
+        type: 'string',
+        enum: ['auto', 'single', 'multi'],
+        description: '（**新建 Hob 会话时必填**）推进工作方式：auto / single / multi。非 Hob 预判可省略。',
+      },
       agentPreset: {
         type: 'string',
         description:
@@ -1784,10 +1843,108 @@ export function createHobBusTools(
       schema: { type: 'string' },
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
-    async execute(args: { workspace?: string; agentPreset?: string }, exec: any): Promise<string> {
+    async execute(
+      args: { workspace?: string; agentPreset?: string; level?: string; workMode?: string },
+      exec: any,
+    ): Promise<string> {
+      /**
+       * ⚠⚠ **建会话之前先过"能不能推进"闸门**（2026-10-22 第 5 轮）。
+       *   ⚠ 这条在 `pokeReconcile()` **之前**：被拒的调用不该产生任何副作用
+       *     （连"顺手对账"这种附加观测也不做 —— 让拒绝是**纯粹**的）。
+       */
+      try {
+        const blocked = proceedGateOf?.(exec)
+        if (blocked !== undefined) return JSON.stringify({ ok: false, reason: 'proceed-not-confirmed', message: blocked })
+      } catch (e) {
+        return JSON.stringify({
+          ok: false, reason: 'proceed-gate-error',
+          message: `拒绝：无法确认本会话的原「推进工作方式」（闸门抛错：${String((e as Error)?.message ?? e)}）`,
+        })
+      }
+      /**
+       * ⚠⚠ **Hob 预设必须显式给两轴**（2026-10-22 第 5 轮 · 任务书第 4 条）。
+       *
+       * ── 判据 ────────────────────────────────────────────────────────────
+       *   "本次建的是不是 Hob" —— 由**请求的预设**决定（`args.agentPreset`）：
+       *   · 明确给了 `Hob` ⇒ 两轴必须齐（缺任一 ⇒ 拒，⛔ 不用缺省顶替）；
+       *   · 明确给了别的预设 ⇒ 不看两轴（标准会话与它们无关）；
+       *   · **没给预设** ⇒ ⚠ **不知道会落到哪个预设**（宿主会解析"有效默认"，
+       *     本机实测默认可能是 `Hob`）⇒ 这时候**若给了任一轴**就按"想建 Hob"处理并要求补齐；
+       *     若**两轴都没给**，不拦（那是"用宿主默认建普通会话"的老路径，
+       *     ⛔ 拦它会把标准用法打死）。
+       *   ⚠ 第三档是**有意的取舍**：我拦不了"宿主默认恰好是 Hob"这一种，
+       *     但会**如实报边界**（见返回值与 CONTEXT），⛔ 不说"所有路径都有弹窗"。
+       */
+      {
+        const wantsHob = args?.agentPreset === PLANNING_PRESET_ID
+          || (args?.agentPreset === undefined || args?.agentPreset === '')
+            && (args?.level !== undefined || args?.workMode !== undefined)
+        if (wantsHob) {
+          const missing: string[] = []
+          if (args?.level === undefined) missing.push('level（可读档）')
+          if (args?.workMode === undefined) missing.push('workMode（推进工作方式）')
+          if (missing.length > 0) {
+            return JSON.stringify({
+              ok: false,
+              reason: 'hob-needs-explicit-policy',
+              message: `新建 **Hob** 会话必须**同时**给出两项选择，缺：${missing.join(' / ')}。`
+                + '\n  ⚠ 这是有意的：不给就不建 —— ⛔ 不用缺省值替用户决定'
+                + '（那正是"不知不觉用了缺省方式"的来源）。'
+                + '\n  ⚠ 可读档：ledger（只看账本）/ project（另可读 .md）/ workspace（另可读任意文件，仍不能写/执行命令/组队）。',
+            })
+          }
+          const badLevel = !['ledger', 'project', 'workspace'].includes(String(args.level))
+          const badMode = !['auto', 'single', 'multi'].includes(String(args.workMode))
+          if (badLevel || badMode) {
+            return JSON.stringify({
+              ok: false,
+              reason: 'hob-policy-invalid',
+              message: `两轴取值不在合法枚举里（level=${JSON.stringify(args.level)} · workMode=${JSON.stringify(args.workMode)}）⇒ 拒绝建会话`,
+            })
+          }
+          /**
+           * ⚠⚠ **当前开放面硬限制**（2026-10-22 · 用户裁定「安全优先」）。
+           *
+           * ── 为什么无界面路径也必须由**服务端动作**拒，而不是只靠枚举 ────────────
+           *   `project` / `workspace` 仍在**合法枚举**里（已建会话要用它们解析），
+           *   ⇒ 枚举校验**不会**拦住 `hob_spawn(level:'workspace')`。
+           *   而这条路**绕过弹窗** ⇒ 若这里不拒，用户"界面上看不见宽档"就只是假象。
+           *
+           * ── 位置 ──────────────────────────────────────────────────────────────
+           *   在 `spawn()` **之前**（此时零副作用：没建会话、没写绑定、没记待投递）。
+           *   ⚠ 判据与票据链**同一个常量**（`shared/read-level-policy.ts`），⛔ 不另抄白名单。
+           *   ⚠ **只作用于 Hob**（`wantsHob` 分支内）⇒ 非 Hob 建会话一行代码都没变。
+           */
+          if (!isOpenReadLevel(args.level)) {
+            return JSON.stringify({
+              ok: false,
+              reason: 'hob-read-level-not-open',
+              message: readLevelNotOpenReason('建会话') + '\n  ⚠ 非 Hob 会话不受此限（本限制只针对新建 Hob 会话的可读范围）。',
+            })
+          }
+        }
+      }
       /** ⚠ T2（B5）。⚠ 建会话也顺手对账：那是"我可能正在等回传"的又一条高频路径。 */
       pokeReconcile()
       const r = await bus.spawn(args?.workspace, args?.agentPreset, selfSessionIdOf(exec))
+      /**
+       * ⚠ **spawn 成功后立刻写两轴**（只有在调用方显式给了两值时）。
+       *   ⚠ 顺序：先建会话（拿到 sessionId）→ 再写（`set` 要求会话已存在）。
+       *   ⚠ 写失败**不改"建会话成功"这个事实**，但必须回带 `policyNote`，且
+       *     该会话**没有策略记录** ⇒ 恒最低档（⛔ 不会是宽档）。
+       */
+      let policyNote: string | undefined
+      if (r.ok && args?.level !== undefined && args?.workMode !== undefined) {
+        if (typeof setPolicyOf !== 'function') {
+          policyNote = '两轴**未落地**：本组合没有提供策略写入接口 ⇒ 该会话按最低档读'
+        } else {
+          const w = setPolicyOf(String(r.sessionId ?? ''), String(args.level), String(args.workMode))
+          if (!w.ok) {
+            policyNote = `两轴**写入失败**（${w.reason}）⇒ 该会话没有策略记录，按最低档读；`
+              + `⚠ 用户选择的 ${args.level}/${args.workMode} **未生效**`
+          }
+        }
+      }
       if (!r.ok) {
         return JSON.stringify({
           ok: false,
@@ -1853,6 +2010,8 @@ export function createHobBusTools(
         ...(r.modelNote === undefined ? {} : { modelNote: r.modelNote }),
         // ⚠ 归属绑定：成功时不加噪音，失败/冲突时**必须**带回去（⛔ 不静默）
         ...(bindNote === undefined ? {} : { bindNote }),
+        // ⚠ 2026-10-22 第 5 轮：两轴是否真的落地（无界面路径要求显式给值 ⇒ 必须回报落地结果）
+        ...(policyNote === undefined ? {} : { policyNote }),
         /**
          * ⚠⚠ **甲-8 / 甲-9 的失败读数**（2026-10-21 · 第 329 轮）——
          *   ⚠ 与 `bindNote` **同款纪律**：成功时不加噪音、⛔ 一字不多；

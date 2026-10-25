@@ -1,0 +1,1162 @@
+/**
+ * **「未选档位」检测与横幅的"真 DOM"行为检查**（2026-10-22 · 第 3 轮）。
+ *
+ * ══ 为什么是这一族 ═════════════════════════════════════════════════════════
+ *   任务书 §四.5 明确要求：新增代码要有**可复核的行为读数**（jsdom 真挂载或等效），
+ *   ⛔ 不要只给源码正则。⇒ 本脚本把那套做法（仓库自己的 TypeScript 转译 +
+ *   jsdom + react-dom 真挂载 + 真派发事件）**照搬**到新模块上。
+ *
+ * ══ 它测什么（逐条对应任务书 §四）═════════════════════════════════════════
+ *   G-1 **纯判定**：Hob + 未选 ⇒ true；非 Hob ⇒ false；已选 ⇒ false；
+ *       判不出（unknown）⇒ false（fail-closed，不打扰）
+ *   G-2 **四类会话的真 DOM 读数**：只有"Hob + 未选"真的渲染出横幅；
+ *       另外三类**零渲染**（DOM 里没有本模块任何节点）
+ *   G-3 **非 Hob 会话零请求**：不因为"看一眼"就去请求策略（⛔ 不打扰别的预设）
+ *   G-4 **只自动弹一次**：同一会话重复挂载不重复弹（任务书 §二 A 最后一条）
+ *   G-5 **原子性**：`takeAutoOpen` 并发取两次，只有第一次 true
+ *   G-6 **取消/未选 ⇒ 不删除、不静默**：横幅文案在、按钮在、`aria-live` 在
+ *   G-7 **文案卫生**：用户可见文本里不出现字面 `**`、不出现内部配置值
+ *   G-8 **失败安全**：读取器抛错 ⇒ 当作 unknown ⇒ 不渲染（⛔ 不炸、不误弹）
+ *   G-9 **卸载后不 setState**：卸载再推进 promise 不产生 React 警告
+ *   G-10 **样式幂等**：`ensureGateStyles()` 调两次只出一个 `<style>` 标签
+ *
+ * ══ 边界（如实说）══════════════════════════════════════════════════════════
+ *   ⚠ 这是**隔离渲染**（jsdom），⛔ **不是真实宿主浏览器**：
+ *     真实槽服务（`SlotCore`）、CSS 层叠、真实字体度量、真实布局都在宿主里。
+ *     ⇒ 本脚本绿 ⇒ **组件行为**成立；**真实宿主渲染仍未验**（要重启 + 真浏览器）。
+ *   ⚠ **本脚本不写任何仓库文件**：转译产物落在工作区内 `.check-gate-work/`
+ *     一次性目录，`finally` 里删净（与既有 `check:hob-create-dom` 同一做法）。
+ */
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+/**
+ * ⚠ **源码根可被 `HOB_GATE_ROOT` 指向一份临时副本**（负向对拍用：把写入口的闸删掉，
+ *   确认 G-21 那几条**会红**而不是恒绿）。⚠ 与 `check:orch` 的 `HOB_SA_ROOT` /
+ *   `check:policy` 的 `HOB_SP_ROOT` / 本仓 `HOB_DOM_ROOT` **同一约定**（⛔ 不另造开关名）。
+ * ⚠ 只影响"读/加载哪份源码"，⛔ 不影响 jsdom/react 依赖解析（那些仍从本仓 node_modules）。
+ */
+const SRC_ROOT = process.env.HOB_GATE_ROOT !== undefined && process.env.HOB_GATE_ROOT !== ''
+  ? process.env.HOB_GATE_ROOT
+  : root
+
+let pass = 0
+let fail = 0
+
+/** 依赖是否齐备（缺则跳过并说明，⛔ 不算通过）。 */
+let jsdom
+let reactDom
+let React
+let act
+try {
+  jsdom = await import('jsdom')
+  React = (await import('react')).default
+  act = (await import('react')).act
+  reactDom = await import('react-dom/client')
+} catch (e) {
+  console.log(`  ⚠ G 组【跳过】—— 隔离渲染依赖不可用（${String(e?.message ?? e)}）`)
+  console.log('       ⇒ 需 `npm i --no-save jsdom react-dom`；⛔ 本组**未执行**、不算通过')
+  console.log('')
+  console.log('  跳过 1 组（⛔ 不计入通过）')
+  process.exit(2)
+}
+
+/**
+ * ⚠⚠ **"真跑过哪些断言"的运行时台账**（t11 · 这是修"文本标签可数"的关键）──
+ *
+ * ── 为什么要它 ────────────────────────────────────────────────────────
+ *   t10 的跨族核对数的是**源码文本里的标签**。审查席实测：把闸② 的整段断言放进
+ *   `if (false) { … }`（⚠ 真断言块不执行了），标签**仍在源码里** ⇒ 数出来还是 4 个
+ *   ⇒ 26/26 exit 0，而闸② **实际零行为判据**。
+ *   ⚠ 根因还是同一条：**判据在认文本形态，不认行为**。
+ *
+ * ── 现在 ──────────────────────────────────────────────────────────────
+ *   `ok()` / `bad()` **被调用的那一刻**把标签记进 `executedLabels`。
+ *   ⇒ 只记**真的跑到了**的断言（`if (false)` 里的永远进不来，注释里的更进不来）。
+ */
+const executedLabels = new Set()
+const labelOf = (m) => {
+  const hit = /^\s*(G-\d+[a-z]?)\b/.exec(String(m))
+  return hit === null ? null : hit[1]
+}
+const ok = (m) => {
+  pass += 1
+  const lb = labelOf(m)
+  if (lb !== null) executedLabels.add(lb)
+  console.log(`  ✓ ${m}`)
+}
+const bad = (m) => {
+  fail += 1
+  const lb = labelOf(m)
+  if (lb !== null) executedLabels.add(lb)
+  console.log(`  ✗ ${m}`)
+}
+
+const work = join(root, '.check-gate-work')
+try { rmSync(work, { recursive: true, force: true }) } catch { /* 上轮残留 */ }
+/**
+ * ⚠⚠ **建不出临时目录 ⇒ `exit 2`（未执行），⛔ 不许记成"失败"**（2026-10-22 · P0-5）
+ *
+ * ── 改前是什么 ────────────────────────────────────────────────────────
+ *   直接 `mkdirSync(...)`，在**只读 checkout** 上抛异常 ⇒ 一路落到最外层 `catch`
+ *   ⇒ 印成"检查器自身异常"、退出码既不是 0 也不是 1。本仓三档口径
+ *   （`check-all.mjs:15-22`）里 **`2` = 未执行**，与"查出违规"（`1`）不是一个东西；
+ *   把"这台机器写不了"记成"这族查出问题"会让下一轮白改产品代码。
+ *
+ * ── 现在 ──────────────────────────────────────────────────────────────
+ *   环境缺条件走它自己的档：**可读原因 + `exit 2`**。判据逻辑一个字未改。
+ */
+try {
+  mkdirSync(join(work, 'out'), { recursive: true })
+} catch (e) {
+  console.log(`  ⚠ G 组【跳过】—— 仓根不可写，建不出临时目录（${String(e?.message ?? e)}）`)
+  console.log('       ⇒ 需要**可写 checkout**（本族要在 `.check-gate-work/` 下转译 React 组件，')
+  console.log('         ⛔ 不能放 /tmp：那会解析不到本仓的 React）')
+  console.log('       ⚠ 本组**未执行**、不算通过（exit 2）')
+  console.log('')
+  console.log('  跳过 1 组（⛔ 不计入通过）')
+  process.exit(2)
+}
+const cleanup = () => { try { rmSync(work, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+
+try {
+  /**
+   * ══════════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **转译：从"三个手写调用"改成"整棵可达源码树 + 自证"**（2026-10-24 · B 席）
+   * ══════════════════════════════════════════════════════════════════════════
+   *
+   * ── 改前是什么 ─────────────────────────────────────────────────────────
+   *   本族此前已经**踩过一次**这个坑（2026-10-22 第 4 轮）：把产物平铺在 `out/gate.mjs`
+   *   ⇒ `../shared/planning-preset.ts` 解析不到 ⇒ `ERR_MODULE_NOT_FOUND`。
+   *   当时的修法是"手工挑三个文件、手工建两个目录、手工重写扩展名"——
+   *   ⚠ 那仍然有三个隐患：
+   *     ① 只覆盖**人工列出的那几个**依赖 ⇒ 新引入一条相对 import 就漏；
+   *     ② 依赖关系靠人维护 ⇒ 与源码必然漂；
+   *     ③ ⚠ 没有"产物里不许残留 `.ts` import"的断言 ⇒ 漏了也**不会报**。
+   *
+   * ── 现在 ──────────────────────────────────────────────────────────────
+   *   转译逻辑收进 `scripts/ts-mount.mjs`（与 `check:hob-create-dom` **同一处实现**）：
+   *   从**源码**解析相对 import、递归转译、按 `src/` 结构落盘、`verifyMounted()` 自证。
+   *   ⚠ 三个入口（gate / dialog / 线格式模块）一次挂完；`policy-record-state.ts`
+   *     零运行时 import ⇒ 一样能挂（它也是 G-17/G-18 的**真源码**，⛔ 不是副本）。
+   */
+  const tsPath = join(root, 'node_modules', 'typescript', 'lib', 'typescript.js')
+  const ts = (await import(`file://${tsPath}`)).default
+  const tsMount = await import('./ts-mount.mjs')
+  const ENTRIES = [
+    'src/client/hob-unselected-gate.tsx',
+    'src/client/create-hob-dialog.tsx',
+    'src/shared/policy-record-state.ts',
+  ]
+  const graph = tsMount.mountTsGraph({ root, outDir: join(work, 'out'), entries: ENTRIES, ts })
+  /**
+   * ⚠ **自证失败 ⇒ 可读地记红**（⛔ 不许抛到外层 `catch`）：
+   *   抛出去会被渲染成 `exit 3`（"检查器自身异常"），而 `check:all` 对 `3` 与 `2`
+   *   的**修法完全不同**（看栈 vs 补基准）⇒ 把可判定的失败扔进"检查器坏了"是错的分档。
+   */
+  const mountProblems = [...graph.problems, ...tsMount.verifyMounted({
+    root, entries: ENTRIES, mounted: graph.mounted, entryFiles: graph.entries,
+  })]
+  if (mountProblems.length > 0) {
+    for (const p of mountProblems) bad(`G-0 转译/自证失败：${p}`)
+  } else {
+    ok(`G-0 ✓ **转译图自证通过**：${graph.mounted.length} 份源件按 \`src/\` 结构产出`
+      + `（${graph.mounted.join(' · ')}）· 产物里无残留 \`.ts\` 相对 import · 每条相对 import 都指向真产出的文件`)
+  }
+  const needEntry = (rel) => {
+    const out = graph.entries[rel]
+    if (out === undefined) throw new Error(`入口没有产出（见上面 G-0 的转译/自证失败行）：${rel}`)
+    return out
+  }
+
+  // ⚠ 让 `react` 从临时目录解析到**工作区那一份**（⛔ 不装第二份 React）
+  const entry = join(work, 'entry.mjs')
+  writeFileSync(entry, `export * from ${JSON.stringify(needEntry(ENTRIES[0]))}\n`)
+  const gate = await import(`file://${entry}`)
+
+  const stateMod = await import(`file://${needEntry(ENTRIES[2])}`)
+  const dialogEntry = join(work, 'entry-dialog.mjs')
+  writeFileSync(dialogEntry, `export * from ${JSON.stringify(needEntry(ENTRIES[1]))}\n`)
+  const dialog = await import(`file://${dialogEntry}`)
+
+  // ── 隔离 DOM ──────────────────────────────────────────────────────────
+  const dom = new jsdom.JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+    pretendToBeVisual: true, url: 'http://localhost/',
+  })
+  const w = dom.window
+  globalThis.window = w
+  globalThis.document = w.document
+  globalThis.HTMLElement = w.HTMLElement
+  globalThis.Node = w.Node
+  globalThis.Event = w.Event
+  globalThis.KeyboardEvent = w.KeyboardEvent
+  globalThis.MouseEvent = w.MouseEvent
+  globalThis.getComputedStyle = w.getComputedStyle.bind(w)
+  Object.defineProperty(globalThis, 'navigator', { value: w.navigator, configurable: true })
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true
+  // ⚠ 横幅在"不能打开"时会调 alert —— jsdom 没有，这里塞一个可数的假实现
+  globalThis.alert = () => { alerted += 1 }
+  let alerted = 0
+
+  const { createRoot } = reactDom
+  const host = document.getElementById('root')
+  const mount = async (el) => {
+    host.innerHTML = ''
+    const r = createRoot(host)
+    await act(async () => { r.render(el) })
+    return r
+  }
+  const unmount = async (r) => { await act(async () => { r.unmount() }) }
+  /** 让所有已排队的 promise/effect 落地（⚠ act 会把 effect 刷完）。 */
+  const flush = async () => { await act(async () => { await Promise.resolve() }) }
+  /**
+   * ⚠⚠ **等真的网络往返**（2026-10-22 第 4 轮）：
+   *   上面那个 `flush()` 只刷**微任务**（`Promise.resolve`）—— 对纯内存的假实现够用。
+   *   但 G-19 用的是**默认读取器**（真 `fetch` → 本地 http 服务），那要经过事件循环的
+   *   **宏任务**才回来。只刷微任务会让断言在"读取还没回来"时就跑完 ⇒ 全部读到 `unknown`。
+   *   ⇒ 单独给一个基于 `setTimeout(0)` 的推进（包在 act 里以刷掉后续渲染）。
+   */
+  const settle = async (ms = 50) => {
+    await act(async () => { await new Promise((r) => setTimeout(r, ms)) })
+  }
+
+  console.log('')
+  console.log('G 组 · 「未选档位」检测与横幅（真 jsdom 挂载）')
+  console.log('')
+
+  const h = React.createElement
+
+  // ── G-1 纯判定（四类会话逐个断言，⛔ 不靠"跑一遍看看"）──────────────
+  {
+    const cases = [
+      { name: 'Hob + 未选', preset: 'Hob', recorded: 'unrecorded', want: true },
+      { name: 'Hob + 已选', preset: 'Hob', recorded: 'recorded', want: false },
+      { name: 'Hob + 判不出', preset: 'Hob', recorded: 'unknown', want: false },
+      { name: '非 Hob(standard) + 未选', preset: 'standard', recorded: 'unrecorded', want: false },
+      { name: '非 Hob(cordis) + 未选', preset: 'cordis', recorded: 'unrecorded', want: false },
+      { name: 'preset 为空 + 未选', preset: null, recorded: 'unrecorded', want: false },
+      { name: '近似名 Hob-other + 未选', preset: 'Hob-other', recorded: 'unrecorded', want: false },
+    ]
+    const wrong = cases.filter((c) => gate.shouldShowGate(c.preset, c.recorded) !== c.want)
+    if (wrong.length === 0) ok(`G-1 四类判定全对（${cases.length} 个样本，含近似名不误判）`)
+    else bad(`G-1 判定错：${wrong.map((c) => `${c.name} 期望 ${c.want}`).join(' / ')}`)
+  }
+
+  // ── G-2 四类会话的真 DOM 读数 ────────────────────────────────────────
+  {
+    const mkReader = (v) => async () => v
+    const rows = [
+      { name: 'Hob + 未选', preset: 'Hob', rec: 'unrecorded', wantShown: true },
+      { name: 'Hob + 已选', preset: 'Hob', rec: 'recorded', wantShown: false },
+      { name: 'Hob + 判不出', preset: 'Hob', rec: 'unknown', wantShown: false },
+      { name: '非 Hob + 未选', preset: 'standard', rec: 'unrecorded', wantShown: false },
+    ]
+    let allOk = true
+    const detail = []
+    for (const row of rows) {
+      const r = await mount(h(gate.HobUnselectedGate, {
+        sessionId: 'session-x',
+        agentPreset: row.preset,
+        readRecorded: mkReader(row.rec),
+        memory: gate.createGateMemory(),
+        autoOpen: false,
+      }))
+      await flush()
+      const shown = host.querySelector(`.${gate.GATE_CLASS.root}`) !== null
+      if (shown !== row.wantShown) { allOk = false; detail.push(`${row.name} 期望${row.wantShown} 实得${shown}`) }
+      await unmount(r)
+    }
+    if (allOk) ok(`G-2 四类会话真 DOM 读数全对（${rows.length} 类，非目标类零渲染）`)
+    else bad(`G-2 DOM 不符：${detail.join(' / ')}`)
+  }
+
+  // ── G-3 非 Hob 会话零请求（⛔ 不打扰别的预设）────────────────────────
+  {
+    let calls = 0
+    const counting = async () => { calls += 1; return 'unrecorded' }
+    const r = await mount(h(gate.HobUnselectedGate, {
+      sessionId: 'session-y',
+      agentPreset: 'standard',
+      readRecorded: counting,
+      memory: gate.createGateMemory(),
+    }))
+    await flush()
+    const shown = host.querySelector(`.${gate.GATE_CLASS.root}`) !== null
+    await unmount(r)
+    if (calls === 0 && !shown) ok('G-3 非 Hob 会话零请求、零渲染（不打扰别的预设）')
+    else bad(`G-3 非 Hob 却发生了请求/渲染：calls=${calls} shown=${shown}`)
+  }
+
+  // ── G-4 只自动弹一次（重复挂载不重复弹）─────────────────────────────
+  {
+    const memory = gate.createGateMemory()
+    const opened = []
+    const reader = async () => 'unrecorded'
+    // 连挂三次（模拟切走再切回 / 重渲染）
+    for (let i = 0; i < 3; i += 1) {
+      const r = await mount(h(gate.HobUnselectedGate, {
+        sessionId: 'session-dup',
+        agentPreset: 'Hob',
+        readRecorded: reader,
+        openForSession: (id) => opened.push(id),
+        memory,
+      }))
+      await flush()
+      await unmount(r)
+    }
+    if (opened.length === 1 && opened[0] === 'session-dup') ok('G-4 同一会话重复挂载 3 次，只自动弹 1 次')
+    else bad(`G-4 重复弹了：opened=${JSON.stringify(opened)}`)
+  }
+
+  // ── G-5 takeAutoOpen 原子性（并发取两次只有一次 true）───────────────
+  {
+    const memory = gate.createGateMemory()
+    const a = memory.takeAutoOpen('s1')
+    const b = memory.takeAutoOpen('s1')
+    const c = memory.takeAutoOpen('s2') // 另一个会话不受影响
+    const d = memory.takeAutoOpen('')
+    if (a === true && b === false && c === true && d === false) {
+      ok('G-5 takeAutoOpen 原子：同会话第二次 false · 异会话 true · 空 id false')
+    } else bad(`G-5 原子性不符：a=${a} b=${b} c=${c} d=${d}`)
+  }
+
+  // ── G-6 未选 ⇒ 不删除、不静默：横幅 + 按钮 + aria-live 都在 ──────────
+  {
+    const r = await mount(h(gate.HobUnselectedGate, {
+      sessionId: 'session-banner',
+      agentPreset: 'Hob',
+      readRecorded: async () => 'unrecorded',
+      memory: gate.createGateMemory(),
+      autoOpen: false,
+    }))
+    await flush()
+    const rootEl = host.querySelector(`.${gate.GATE_CLASS.root}`)
+    const textEl = host.querySelector(`.${gate.GATE_CLASS.text}`)
+    const btn = host.querySelector(`.${gate.GATE_CLASS.btn}`)
+    const live = rootEl?.getAttribute('aria-live')
+    const text = textEl?.textContent ?? ''
+    const isBtn = btn?.tagName === 'BUTTON'
+    await unmount(r)
+    if (rootEl !== null && text !== '' && isBtn && live === 'polite') {
+      ok(`G-6 横幅可见且非静默（role=status · aria-live=${live} · 真 <button> · 文案「${text}」）`)
+    } else {
+      bad(`G-6 横幅不合格：root=${rootEl !== null} text=${JSON.stringify(text)} btn=${isBtn} live=${live}`)
+    }
+  }
+
+  // ── G-7 文案卫生：不出现字面 ** / 不出现内部枚举值 ───────────────────
+  {
+    const r = await mount(h(gate.HobUnselectedGate, {
+      sessionId: 'session-copy',
+      agentPreset: 'Hob',
+      readRecorded: async () => 'unrecorded',
+      memory: gate.createGateMemory(),
+      autoOpen: false,
+    }))
+    await flush()
+    const visible = host.textContent ?? ''
+    await unmount(r)
+    const hasMd = visible.includes('**')
+    const hasEnum = /\b(ledger|project|workspace)\b/.test(visible)
+    if (!hasMd && !hasEnum) ok(`G-7 文案卫生通过（无字面 ** · 无内部枚举值）：「${visible}」`)
+    else bad(`G-7 文案不卫生：markdown=${hasMd} enum=${hasEnum} text=${JSON.stringify(visible)}`)
+  }
+
+  // ── G-8 读取器抛错 ⇒ 当 unknown ⇒ 不渲染（⛔ 不炸、不误弹）────────────
+  {
+    const r = await mount(h(gate.HobUnselectedGate, {
+      sessionId: 'session-throw',
+      agentPreset: 'Hob',
+      readRecorded: async () => { throw new Error('boom') },
+      memory: gate.createGateMemory(),
+    }))
+    await flush()
+    const shown = host.querySelector(`.${gate.GATE_CLASS.root}`) !== null
+    await unmount(r)
+    if (!shown) ok('G-8 读取器抛错 ⇒ unknown ⇒ 不渲染（不炸、不误弹）')
+    else bad('G-8 读取器抛错却仍渲染了横幅')
+  }
+
+  // ── G-9 卸载后不 setState（推进 promise 不产生警告）──────────────────
+  {
+    let warnCount = 0
+    const origWarn = console.error
+    console.error = (...args) => { warnCount += 1; origWarn(...args) }
+    let release
+    const pending = new Promise((res) => { release = res })
+    const r = await mount(h(gate.HobUnselectedGate, {
+      sessionId: 'session-unmount',
+      agentPreset: 'Hob',
+      readRecorded: () => pending,
+      memory: gate.createGateMemory(),
+    }))
+    await unmount(r)
+    release('unrecorded')
+    await flush()
+    console.error = origWarn
+    if (warnCount === 0) ok('G-9 卸载后推进 promise 未产生 React 警告')
+    else bad(`G-9 卸载后出现 ${warnCount} 条 console.error（可能是不该有的 setState）`)
+  }
+
+  // ── G-10 样式幂等（两次调用只出一个 <style>）──────────────────────────
+  {
+    const a = gate.ensureGateStyles()
+    const b = gate.ensureGateStyles()
+    const tags = document.querySelectorAll(`style[data-plugin-css=${JSON.stringify('dsh-hob/unselected-gate.css')}]`)
+    const firstReal = a !== null
+    const secondNull = b === null
+    if (firstReal && secondNull && tags.length === 1) {
+      ok('G-10 样式幂等：首次返回标签 · 再次返回 null · DOM 里恰好 1 个 <style>')
+    } else {
+      bad(`G-10 样式不幂等：first=${firstReal} second=${secondNull} tags=${tags.length}`)
+    }
+  }
+
+  console.log('')
+  console.log('H 组 · 已有会话模式的写入面（真挂载 + 假通道计数）')
+  console.log('')
+
+  /** 一份"枚举已就绪"的假响应（⚠ 只为把弹窗推到可提交状态，值取自真实开放面）。 */
+  const fakeEnums = {
+    ok: true,
+    levels: ['ledger', 'project', 'workspace'],
+    openLevels: ['ledger'],
+    modes: ['assist', 'auto', 'manual'],
+    floorLevel: 'ledger',
+    defaultMode: 'assist',
+    levelsNote: '当前只开放「账本权限」。',
+    workspaces: [{ id: 'ws-1', label: '测试工作区' }],
+  }
+
+  /**
+   * 挂一个弹窗，等待枚举落地，返回 `{ calls, root }`。
+   * @param props - 弹窗属性（⚠ `call` 由本函数接管以便计数）。
+   */
+  const mountDialog = async (props) => {
+    const calls = []
+    const call = async (body) => {
+      calls.push(body)
+      // ⚠ 枚举请求给假枚举；写入/创建请求给 `writeResult`
+      if (body?.action === 'enums') return fakeEnums
+      /**
+       * ⚠⚠ **写入动作名必须是 `write`**（2026-10-23 · P0-3 修复的判据面）。
+       *
+       * ── 改前是什么（这条判据自己造了一个不存在的服务）────────────────────
+       *   假 call 只写 `if (body?.action === 'set-policy') return writeResult`
+       *   ⇒ 客户端发旧的 `set-policy` 也**判成功**，而真服务端（`session-create`
+       *   路由）根本不认这个动作 ⇒ G-11/G-13/G-14 测的是**假服务**，产品上那条路
+       *   每次都是 400「未知 action」，判据却全绿。
+       *
+       * ── 现在 ──────────────────────────────────────────────────────────
+       *   只认**真服务端认的动作**（`/api/dsh-hob/session-policy` 的 `write`）。
+       *   ⛔ **不再给 `set-policy` 开后门** —— 它若再出现，会落到下面的兜底分支，
+       *   回 `unexpected action set-policy` ⇒ 客户端按"写入失败"处理 ⇒ 本组**必红**。
+       */
+      if (body?.action === 'write') return writeResult
+      if (body?.action === 'issue') return { ok: true, ticket: 't-1', expiresAt: 0 }
+      if (body?.action === 'create') return { ok: true, sessionId: body?.sessionId ?? 'made-up' }
+      return { ok: false, reason: `unexpected action ${String(body?.action)}` }
+    }
+    const r = await mount(h(dialog.HobCreateDialog, { ...props, call }))
+    await flush()
+    return { calls, root: r }
+  }
+  /** 写入结果（⚠ 逐组覆盖，默认成功）。 */
+  let writeResult = { ok: true }
+
+  // ── G-11 【任务书判据 2】已有会话模式确认后**零 create** ─────────────
+  {
+    writeResult = { ok: true }
+    const { calls, root } = await mountDialog({ targetSessionId: 'sess-existing' })
+    // 选一个开放档 + 一种推进方式（⚠ 按真实 DOM 点，⛔ 不直接改组件 state）
+    const levelRadio = host.querySelector('input[name="hob-level"][value="ledger"]')
+    const modeRadio = host.querySelector('input[name="hob-mode"]')
+    await act(async () => { levelRadio?.click(); modeRadio?.click() })
+    await flush()
+    // 点"确认"
+    const buttons = [...host.querySelectorAll('button')]
+    const confirm = buttons[buttons.length - 1]
+    await act(async () => { confirm?.click() })
+    await flush()
+
+    const created = calls.filter((c) => c?.action === 'create')
+    const issued = calls.filter((c) => c?.action === 'issue')
+    const wrote = calls.filter((c) => c?.action === 'write')
+    const targetOk = wrote.length === 1 && wrote[0]?.sessionId === 'sess-existing'
+    await unmount(root)
+    if (created.length === 0 && issued.length === 0 && targetOk) {
+      ok(`G-11 已有会话模式：零 create（${created.length}）· 零 issue（${issued.length}）· 写入目标正确`)
+    } else {
+      bad(`G-11 出现了重复建会话风险：create=${created.length} issue=${issued.length} wrote(${JSON.stringify(calls.map((c) => c?.action))})`)
+    }
+  }
+
+  // ── G-12 【任务书判据 2 反向】新建模式**仍然**走 issue → create ────────
+  {
+    writeResult = { ok: true }
+    const { calls, root } = await mountDialog({})
+    // 新建模式必须先选工作区
+    const select = host.querySelector('select')
+    await act(async () => {
+      if (select !== null) {
+        select.value = 'ws-1'
+        select.dispatchEvent(new w.Event('change', { bubbles: true }))
+      }
+    })
+    await flush()
+    const levelRadio = host.querySelector('input[name="hob-level"][value="ledger"]')
+    const modeRadio = host.querySelector('input[name="hob-mode"]')
+    await act(async () => { levelRadio?.click(); modeRadio?.click() })
+    await flush()
+    const buttons = [...host.querySelectorAll('button')]
+    const submitBtn = buttons[buttons.length - 1]
+    await act(async () => { submitBtn?.click() })
+    await flush()
+
+    const created = calls.filter((c) => c?.action === 'create')
+    const issued = calls.filter((c) => c?.action === 'issue')
+    const wrote = calls.filter((c) => c?.action === 'write')
+    await unmount(root)
+    if (created.length === 1 && issued.length === 1 && wrote.length === 0) {
+      ok('G-12 新建模式未受影响：仍走 issue → create，且不误调 write')
+    } else {
+      bad(`G-12 新建模式被改坏了：issue=${issued.length} create=${created.length} write=${wrote.length}`)
+    }
+  }
+
+  // ── G-13 已有会话模式：**不要求选工作区**（否则按钮永远点不了）──────
+  {
+    writeResult = { ok: true }
+    const { calls, root } = await mountDialog({ targetSessionId: 'sess-nows' })
+    const hasSelect = host.querySelector('select') !== null
+    const levelRadio = host.querySelector('input[name="hob-level"][value="ledger"]')
+    const modeRadio = host.querySelector('input[name="hob-mode"]')
+    await act(async () => { levelRadio?.click(); modeRadio?.click() })
+    await flush()
+    const buttons = [...host.querySelectorAll('button')]
+    const submitBtn = buttons[buttons.length - 1]
+    const wasEnabled = submitBtn !== undefined && submitBtn.disabled === false
+    await act(async () => { submitBtn?.click() })
+    await flush()
+    const wrote = calls.filter((c) => c?.action === 'write')
+    await unmount(root)
+    if (!hasSelect && wasEnabled && wrote.length === 1) {
+      ok('G-13 已有会话模式不渲染工作区、不卡"请选工作区"，按钮可用且写入成功')
+    } else {
+      bad(`G-13 已有会话模式可用性不对：hasSelect=${hasSelect} enabled=${wasEnabled} wrote=${wrote.length}`)
+    }
+  }
+
+  // ── G-14 写入失败 ⇒ 可读失败、且**不得**当成已选（不显示成功）────────
+  {
+    writeResult = { ok: false, reason: '磁盘只读' }
+    const { root } = await mountDialog({ targetSessionId: 'sess-fail' })
+    const levelRadio = host.querySelector('input[name="hob-level"][value="ledger"]')
+    const modeRadio = host.querySelector('input[name="hob-mode"]')
+    await act(async () => { levelRadio?.click(); modeRadio?.click() })
+    await flush()
+    const buttons = [...host.querySelectorAll('button')]
+    await act(async () => { buttons[buttons.length - 1]?.click() })
+    await flush()
+    const alertEl = host.querySelector('[role="alert"]')
+    const alertText = alertEl?.textContent ?? ''
+    const successEl = host.querySelector('.dsh-hob-success')
+    const modalStillOpen = host.querySelector('[role="dialog"]') !== null
+    await unmount(root)
+    if (alertText.includes('磁盘只读') && successEl === null && modalStillOpen) {
+      ok(`G-14 写入失败：可读报错「${alertText.slice(0, 40)}」· 不显示成功 · 弹窗仍开（会话仍算未选）`)
+    } else {
+      bad(`G-14 写入失败处理不对：alert=${JSON.stringify(alertText)} success=${successEl !== null} open=${modalStillOpen}`)
+    }
+  }
+
+  // ── G-15 取消 ⇒ 零写入、零创建（⛔ 不静默当作已选）────────────────────
+  {
+    writeResult = { ok: true }
+    const { calls, root } = await mountDialog({ targetSessionId: 'sess-cancel' })
+    const levelRadio = host.querySelector('input[name="hob-level"][value="ledger"]')
+    const modeRadio = host.querySelector('input[name="hob-mode"]')
+    await act(async () => { levelRadio?.click(); modeRadio?.click() })
+    await flush()
+    const cancelBtn = [...host.querySelectorAll('button')][0]
+    await act(async () => { cancelBtn?.click() })
+    await flush()
+    const writes = calls.filter((c) => c?.action === 'write' || c?.action === 'create' || c?.action === 'issue')
+    await unmount(root)
+    if (writes.length === 0) ok('G-15 取消：零写入、零创建（保持未选，不静默当作已选）')
+    else bad(`G-15 取消后仍发生了写/建：${JSON.stringify(writes.map((c) => c.action))}`)
+  }
+
+  console.log('')
+  console.log('I 组 · 只读路由的线格式（纯函数，真源码）')
+  console.log('')
+
+  // ── G-16 【任务书判据 3】新路由**只回一个语义字段**（⛔ 不泄档位值）──
+  {
+    const { okState, badRequest } = stateMod
+    const shapes = [
+      { name: 'recorded', obj: okState('recorded') },
+      { name: 'unrecorded', obj: okState('unrecorded') },
+      { name: 'not-applicable', obj: okState('not-applicable') },
+      { name: 'unknown', obj: okState('unknown') },
+      { name: 'badRequest', obj: badRequest('缺 sessionId') },
+    ]
+    const allowed = new Set(['ok', 'state', 'reason'])
+    const leaks = []
+    for (const s of shapes) {
+      for (const k of Object.keys(s.obj)) if (!allowed.has(k)) leaks.push(`${s.name}.${k}`)
+    }
+    // ⚠ 不得出现任何档位/工作方式字段（哪怕值是对的）
+    const forbidden = ['level', 'workMode', 'mode', 'source', 'canReadWorkspace', 'isHob']
+    for (const s of shapes) {
+      for (const k of forbidden) if (Object.prototype.hasOwnProperty.call(s.obj, k)) leaks.push(`${s.name}.${k}`)
+    }
+    if (leaks.length === 0) {
+      ok(`G-16 线格式只含 {ok,state,reason}（${shapes.length} 种构造逐个查过，⛔ 无档位值泄漏）`)
+    } else {
+      bad(`G-16 线格式泄漏了字段：${leaks.join(', ')}`)
+    }
+  }
+
+  // ── G-17 【任务书判据 1 + 4】三态与"非 Hob 不适用"的真判定 ──────────
+  {
+    const { classifyPolicyRecord, toClientState } = stateMod
+    /**
+     * ⚠ 逐条覆盖**任务书点名的**三类 + 非 Hob：
+     *   · recorded:true  ⇒ 'recorded'          ⇒ 客户端 'recorded'  ⇒ **不弹**
+     *   · recorded:false ⇒ 'unrecorded'        ⇒ 客户端 'unrecorded'⇒ **弹**
+     *   · 判不出         ⇒ 'unknown'           ⇒ 客户端 'unknown'   ⇒ **不弹**
+     *   · 非 Hob         ⇒ 'not-applicable'    ⇒ 客户端 'unknown'   ⇒ **不弹、不挡**
+     */
+    const cases = [
+      { name: '已选', probe: { isHob: true, recorded: true, source: 'stored' }, wire: 'recorded', client: 'recorded' },
+      { name: '未选', probe: { isHob: true, recorded: false, source: 'derived-default' }, wire: 'unrecorded', client: 'unrecorded' },
+      { name: 'store 读不出', probe: { isHob: true, recorded: false, source: 'store-unreadable' }, wire: 'unknown', client: 'unknown' },
+      { name: '版本不认识', probe: { isHob: true, recorded: false, source: 'version-unknown' }, wire: 'unknown', client: 'unknown' },
+      { name: '无身份', probe: { isHob: true, recorded: false, source: 'no-identity' }, wire: 'unknown', client: 'unknown' },
+      { name: '记录坏了', probe: { isHob: true, recorded: false, source: 'bad-record' }, wire: 'unknown', client: 'unknown' },
+      { name: '非 Hob', probe: { isHob: false, recorded: false, source: 'non-hob' }, wire: 'not-applicable', client: 'unknown' },
+      { name: '视图缺席', probe: undefined, wire: 'unknown', client: 'unknown' },
+    ]
+    const wrong = []
+    for (const c of cases) {
+      const wire = classifyPolicyRecord(c.probe)
+      const client = toClientState(wire)
+      if (wire !== c.wire || client !== c.client) {
+        wrong.push(`${c.name}: 期望 ${c.wire}/${c.client} 实得 ${wire}/${client}`)
+      }
+    }
+    if (wrong.length === 0) ok(`G-17 三态 + 非 Hob + 判不出全对（${cases.length} 个样本）`)
+    else bad(`G-17 判定错：${wrong.join(' / ')}`)
+  }
+
+  // ── G-18 判不出**绝不**等于"没选过"（⛔ 用户明确否过的做法）───────────
+  {
+    const { classifyPolicyRecord } = stateMod
+    /**
+     * ⚠ 这条是"防回归"的钉子：所有"判不出"的 source 都必须在 `recorded === false`
+     *   的前提下仍返回 `'unknown'`（⛔ 不许返回 `'unrecorded'`）。
+     *   ⚠ 若哪天有人把判定顺序改成"先看 recorded"，这条立刻变红。
+     */
+    const undecidable = ['store-unreadable', 'version-unknown', 'no-identity', 'bad-record']
+    const violated = undecidable.filter((src) =>
+      classifyPolicyRecord({ isHob: true, recorded: false, source: src }) === 'unrecorded')
+    if (violated.length === 0) {
+      ok(`G-18 ${undecidable.length} 个"判不出"来源在 recorded:false 下仍为 unknown（⛔ 不误报成未选）`)
+    } else {
+      bad(`G-18 这些"判不出"被误报成 unrecorded：${violated.join(', ')}`)
+    }
+  }
+
+  // ── G-19 【任务书判据 1】真读取器三态 ⇒ 自动弹窗行为**各不相同** ──────
+  {
+    /**
+     * ⚠ 这条用**默认读取器**（`gate.defaultPolicyRecordReader`）跑真 `fetch`：
+     *   起一个 http 服务回**三种**线格式（recorded / unrecorded / unknown），
+     *   然后看 gate 是否自动弹。
+     *   ⚠ 这正好是"先红后绿"的落点：把服务改成恒定回 `recorded` ⇒ 本组必须变红。
+     */
+    const { createServer } = await import('node:http')
+    let mode = 'unrecorded'
+    /**
+     * ⚠⚠ **服务端用真出口构造响应**（2026-10-22 第 4 轮 · 先红后绿的落点）：
+     *   路由的响应体就是 `okState(classifyPolicyRecord(probe))` —— 这里**照那个链路**造，
+     *   ⛔ 不写死 `{ state: mode }`。否则把路由写死成 `recorded` 时本组**不会变红**，
+     *   "先红后绿"就成了空话（实测：写死 state 时本组照样绿，等于没钉住）。
+     *   ⚠ 三个 probe 的 `source` 都取**可信**值（`stored` / `derived-default`），
+     *     所以 diff 只来自 `recorded` 这一位 —— 正是任务书要的那种注入。
+     */
+    const probes = {
+      recorded: { isHob: true, recorded: true, source: 'stored' },
+      unrecorded: { isHob: true, recorded: false, source: 'derived-default' },
+      unknown: { isHob: true, recorded: false, source: 'store-unreadable' },
+    }
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(stateMod.okState(stateMod.classifyPolicyRecord(probes[mode]))))
+    })
+    await new Promise((r) => server.listen(0, '127.0.0.1', r))
+    const port = server.address().port
+    const realFetch = globalThis.fetch
+    /**
+     * ⚠ 默认读取器用的是**相对 URL**（`/api/dsh-hob/session-policy`）——
+     *   那在真实浏览器里由同源自动补齐，但在 Node 的 fetch 里没有 base ⇒ 必须在这里补。
+     *   ⇒ 只要是以 `/api/` 开头的路径就转到本地端口（⛔ 不改产品源码去适配测试）。
+     */
+    globalThis.fetch = (url, init) => {
+      const s = String(url)
+      const abs = s.startsWith('/api/') ? `http://127.0.0.1:${port}${s}` : s
+      return realFetch(abs, init)
+    }
+
+    const results = {}
+    for (const m of ['recorded', 'unrecorded', 'unknown']) {
+      mode = m
+      const opened = []
+      const r = await mount(h(gate.HobUnselectedGate, {
+        sessionId: `sess-${m}`,
+        agentPreset: 'Hob',
+        // ⚠ 不传 readRecorded ⇒ 用默认实现（走真 HTTP）
+        openForSession: (id) => opened.push(id),
+        memory: gate.createGateMemory(),
+      }))
+      await settle(80)
+      results[m] = { opened: opened.length, shown: host.querySelector(`.${gate.GATE_CLASS.root}`) !== null }
+      await unmount(r)
+    }
+    globalThis.fetch = realFetch
+    await new Promise((r) => server.close(r))
+
+    const good = results.recorded.opened === 0 && !results.recorded.shown
+      && results.unrecorded.opened === 1 && results.unrecorded.shown
+      && results.unknown.opened === 0 && !results.unknown.shown
+    if (good) {
+      ok(`G-19 真读取器三态下行为各异：recorded(弹0/显${results.recorded.shown}) · unrecorded(弹${results.unrecorded.opened}/显) · unknown(弹0/显${results.unknown.shown})`)
+    } else {
+      bad(`G-19 三态行为不符：${JSON.stringify(results)}`)
+    }
+  }
+
+  // ── G-20 【任务书第 5 轮 · §三③】非 Hob 端到端：**既不弹、也不显示横幅** ──
+  {
+    /**
+     * ⚠⚠ **它钉的是哪条缝**（与 G-3 的区别，⛔ 别当成重复）：
+     *   · G-3 钉的是**客户端早退**：`agentPreset !== 'Hob'` ⇒ **一个请求都不发**、零渲染；
+     *   · G-20 钉的是**服务端说不适用**：客户端以为是 Hob（`agentPreset === 'Hob'`），
+     *     而**路由回 `not-applicable`** ⇒ 必须同样"不弹、不显示横幅"。
+     *
+     *   ⚠ 为什么这条缝真实存在：客户端比的是槽给的 `agentPreset` **投影**，
+     *     服务端比的是 `svc.get(session).isHob`（同一投影，但**取值时刻不同**）。
+     *     会话刚切预设 / 投影尚未推进时，两侧**可以不一致** ——
+     *     那正是"该 fail-closed 却被当成未选 ⇒ 误弹"的现场。
+     *   ⛔ 绝不允许出现"弹了但因为没数据所以看不见"那种**看起来通过**的形态：
+     *     所以下面**同时断言** `opened === 0` **和** 横幅节点数 === 0（两件事分开数）。
+     */
+    const { createServer } = await import('node:http')
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      // ⚠ 走**真出口**：非 Hob 的 probe ⇒ classify ⇒ 'not-applicable'
+      res.end(JSON.stringify(stateMod.okState(
+        stateMod.classifyPolicyRecord({ isHob: false, recorded: false, source: 'non-hob' }),
+      )))
+    })
+    await new Promise((r) => server.listen(0, '127.0.0.1', r))
+    const port = server.address().port
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (url, init) => {
+      const s = String(url)
+      return realFetch(s.startsWith('/api/') ? `http://127.0.0.1:${port}${s}` : s, init)
+    }
+
+    const opened = []
+    const r = await mount(h(gate.HobUnselectedGate, {
+      sessionId: 'sess-not-applicable',
+      // ⚠ 客户端**以为**是 Hob ⇒ 不会被 G-3 那条早退挡掉，请求真的会发出去
+      agentPreset: 'Hob',
+      openForSession: (id) => opened.push(id),
+      memory: gate.createGateMemory(),
+    }))
+    await settle(80)
+    const bannerCount = host.querySelectorAll(`.${gate.GATE_CLASS.root}`).length
+    await unmount(r)
+    globalThis.fetch = realFetch
+    await new Promise((r2) => server.close(r2))
+
+    // ⚠ 顺带钉住纯映射（一条读数：'not-applicable' 必须落 'unknown'，⛔ 不是 'unrecorded'）
+    const mapped = stateMod.toClientState('not-applicable')
+    if (opened.length === 0 && bannerCount === 0 && mapped === 'unknown') {
+      ok('G-20 非 Hob 端到端：路由回 not-applicable ⇒ 零弹窗 · 横幅 0 个 · 映射落 unknown（两件事分开数过）')
+    } else {
+      bad(`G-20 非 Hob 未被挡住：opened=${opened.length} banner=${bannerCount} mapped=${mapped}`)
+    }
+  }
+  // ── G-21 【t10 · 补零覆盖】写入口的两道闸：开放面 + isHob（真调用，非源码正则）──
+  /**
+   * ══ 它守的是什么（2026-10-24 · 审查席实测：**零覆盖**）══════════════════════════
+   *   `src/modules/session-policy-route.ts` 的 `handlePolicyWrite` 在 2026-10-24
+   *   补了**两道闸**（P0-3）：① `isOpenReadLevel(level)` 开放面；② `isHob` 会话闸。
+   *   ⚠ 而审查席把这两道闸**逐条删掉**后，`check:policy` / `check:hob-gate` /
+   *   `check:policy-cross` **三族全绿** —— 也就是说这两道闸**没有任何判据守着**，
+   *   而 `check-hob-create-dom` 里还写着"见 check:hob-gate 的 G-21…"（那个 G-21 **不存在**）。
+   *
+   * ── 做法（⚠ 真调用那个导出函数，⛔ 不扫源码找 `if`）──────────────────────────
+   *   `handlePolicyWrite` 是**纯函数**（deps 注入 + body）⇒ 直接 import 真模块调用：
+   *     · 合法：Hob 会话 + 开放面内的档 ⇒ `ok:true`，且 `svc.set` **真的被调了一次**；
+   *     · 闸①：枚举外的档（`root`）⇒ `ok:false`，且 **`svc.set` 零调用**（零副作用）；
+   *     · 闸②：**非 Hob** 会话 + 合法档 ⇒ `ok:false`，且 `svc.set` 零调用；
+   *     · 闸②的 fail-closed：判不出是不是 Hob（`svc.get` 抛错 / 返回 undefined）
+   *       ⇒ 也要 `ok:false` + 零写（⚠ "判不出"不许当"可以写"）。
+   *   ⚠ **删掉任一道闸都会让本组某一条变红**（见下方 G-21(反证) 的逐闸说明）。
+   */
+  {
+    let routeMod
+    try {
+      routeMod = await import(`file://${join(SRC_ROOT, 'src', 'modules', 'session-policy-route.ts')}`)
+    } catch (e) {
+      bad(`G-21 无法直载 \`session-policy-route.ts\`（${String(e?.message ?? e)}）⇒ 基准缺失（⛔ 不按通过处理）`)
+    }
+    if (routeMod !== undefined) {
+      const { handlePolicyWrite } = routeMod
+      /**
+       * ⚠ **受控策略服务假件**：`get(session)` 回该会话的 isHob 视图，`set()` 记调用次数。
+       *   ⚠ 与真实现同契约（`svc.get(session)` 收的是**会话对象**、`svc.set(id, level, mode, act)`）。
+       */
+      const mkSvc = ({ isHob, getThrows }) => {
+        const writes = []
+        return {
+          writes,
+          svc: {
+            get: (session) => {
+              if (getThrows === true) throw new Error('注入：读策略抛错')
+              if (isHob === undefined) return undefined
+              /**
+               * ⚠ **回读必须反映"刚写进去的事实"**（本链第⑨步是"写完回读确认"，
+               *   假件若永远回 `recorded:false`，合法路径会被误判为"没落盘"）。
+               *   ⚠ 这不是给被测代码开后门 —— 真实服务写成功后 `get()` 就应回 `recorded:true`；
+               *     夹具照抄这个契约，才测得到"闸在不在"，而不是测"夹具写没写对"。
+               */
+              return { isHob, recorded: writes.length > 0, source: writes.length > 0 ? 'stored' : 'derived-default' }
+            },
+            set: (id, level, workMode, activation) => {
+              writes.push({ id, level, workMode, activation })
+              return { ok: true, reason: '' }
+            },
+          },
+        }
+      }
+      const sessionOf = (id) => ({ id, session: { id } })
+      /** ⚠ 一个真·枚举外的档位（`PERMISSION_LEVELS` 里没有它）。 */
+      const ILLEGAL = 'root'
+      /** ⚠ 一个开放面内的档（从生产常量取第一个，⛔ 不写死 `ledger`）。 */
+      const openLevels = (() => {
+        try {
+          const src = readFileSync(join(SRC_ROOT, 'src', 'shared', 'read-level-policy.ts'), 'utf8')
+          const m = /OPEN_READ_LEVELS\s*=\s*\[([^\]]*)\]/.exec(src)
+          const arr = m === null ? [] : [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+          return arr
+        } catch { return [] }
+      })()
+      const OPEN_LEVEL = openLevels[0]
+
+      /**
+       * ⚠⚠ **把"抛异常"当成一种可读的读数**（⛔ 不让检查器崩掉）：
+       *   闸被删掉后，最危险的形态有两种 —— ① 照写（越权）；② **未捕获异常**（路由 500、
+       *   调用方拿不到可读原因）。两种都必须被本组**判成红**，而不是让脚本崩成 `exit 3`
+       *   （那会让"删闸"看起来像"检查器坏了"，与真的"闸在"混不清）。
+       *   ⇒ 这里统一捕住，返回 `{ threw: msg }`，由各条断言分别定性。
+       */
+      const call = (svc, { level, id = 'sess-w', mode = 'auto' }) => {
+        try {
+          return handlePolicyWrite({ policyOf: () => svc, sessionOf }, { sessionId: id, level, workMode: mode })
+        } catch (e) {
+          return { ok: false, threw: String(e?.message ?? e) }
+        }
+      }
+
+      // ① 合法：Hob + 开放面内的档 ⇒ 必须真写一次
+      {
+        const { svc, writes } = mkSvc({ isHob: true })
+        const r = call(svc, { level: OPEN_LEVEL })
+        if (r?.threw !== undefined) {
+          bad(`G-21 合法写入**抛异常**（Hob + \`${OPEN_LEVEL}\`）：${r.threw} ⇒ 正常用法被弄坏了`)
+        } else if (r?.ok !== true) {
+          bad(`G-21 合法写入被拒（Hob + \`${OPEN_LEVEL}\`，在生产开放面内）：${JSON.stringify(r)}`
+            + ' ⇒ 闸门过紧（把正常用法也挡死了）')
+        } else if (writes.length !== 1) {
+          bad(`G-21 合法写入 \`ok:true\` 但 \`svc.set\` 被调 ${writes.length} 次（应 1 次）⇒ 报成功却没落盘`)
+        } else {
+          ok(`G-21 ✓ **写入口两道闸都在**：Hob + \`${OPEN_LEVEL}\`（生产开放面内）⇒ \`ok:true\` 且 \`svc.set\` 真被调 1 次`
+            + '（⚠ 后面三条分别钉"任一道闸删掉就红"）')
+        }
+      }
+      // ② 闸① 开放面：枚举外的档 ⇒ 拒 + 零写
+      {
+        const { svc, writes } = mkSvc({ isHob: true })
+        const r = call(svc, { level: ILLEGAL })
+        if (r?.threw !== undefined) {
+          bad(`G-21 闸① 被删掉后变成**未捕获异常**而不是可读拒绝：${r.threw}`
+            + '（⚠ 那会让路由 500、调用方拿不到原因 ⇒ 同样算红）')
+        } else if (r?.ok !== false) {
+          bad(`G-21 闸①（开放面）**不存在**：Hob + 枚举外的档 \`${ILLEGAL}\` 竟然 \`ok:true\``
+            + ' ⇒ 请求方自报任意档位就能落盘（⚠ 删掉 `isOpenReadLevel` 那道闸就是这个形态）')
+        } else if (writes.length !== 0) {
+          bad(`G-21 闸① 拒了却**仍写了 ${writes.length} 次** ⇒ 判断点在副作用之后（⚠ 拒绝必须零副作用）`)
+        } else {
+          ok(`G-21a ✓ **闸① 开放面**：Hob + 枚举外的档 \`${ILLEGAL}\` ⇒ \`ok:false\` 且 **\`svc.set\` 零调用**`
+            + `（拒因可读：${JSON.stringify(String(r.reason ?? '').slice(0, 60))}）`)
+        }
+      }
+      // ③ 闸② isHob：非 Hob ⇒ 拒 + 零写
+      {
+        const { svc, writes } = mkSvc({ isHob: false })
+        const r = call(svc, { level: OPEN_LEVEL })
+        if (r?.threw !== undefined) {
+          bad(`G-21 闸② 被删掉后变成**未捕获异常**而不是可读拒绝：${r.threw}（同样算红）`)
+        } else if (r?.ok !== false) {
+          bad(`G-21 闸②（isHob）**不存在**：**非 Hob** 会话 + 合法档竟然 \`ok:true\``
+            + ' ⇒ 本路由越界管了别人（⚠ 删掉 `isHob` 那道闸就是这个形态）')
+        } else if (writes.length !== 0) {
+          bad(`G-21 闸② 拒了却**仍写了 ${writes.length} 次** ⇒ 拒绝必须零副作用`)
+        } else {
+          ok('G-21b ✓ **闸② isHob**：**非 Hob** 会话 + 合法档 ⇒ `ok:false` 且 **`svc.set` 零调用**'
+            + '（⛔ 不越界管别人的会话）')
+        }
+      }
+      // ④ 闸② 的 fail-closed：判不出是不是 Hob ⇒ 也必须拒（⚠ "判不出"≠"可以写"）
+      {
+        const cases = [
+          { name: 'svc.get 抛错', make: () => mkSvc({ isHob: true, getThrows: true }) },
+          { name: 'svc.get 返回 undefined', make: () => mkSvc({ isHob: undefined }) },
+        ]
+        const bads = []
+        for (const c of cases) {
+          const { svc, writes } = c.make()
+          const r = call(svc, { level: OPEN_LEVEL })
+          if (r?.threw !== undefined) bads.push(`${c.name} ⇒ 未捕获异常（${r.threw}）`)
+          else if (r?.ok !== false) bads.push(`${c.name} ⇒ ok:${r?.ok}`)
+          else if (writes.length !== 0) bads.push(`${c.name} ⇒ 拒了但仍写 ${writes.length} 次`)
+        }
+        if (bads.length > 0) {
+          bad(`G-21 **判不出是不是 Hob 时没有 fail-closed**：${bads.join(' · ')}`
+            + ' ⇒ 写路径上"判不出"必须是拒（⛔ 不许因为判不出就照写）')
+        } else {
+          ok('G-21c ✓ **判不出就拒**（fail-closed）：`svc.get` 抛错 / 返回 undefined ⇒ 两条都 `ok:false` 且零写')
+        }
+      }
+      /**
+       * ⑤ **G-21(反证)**：说明"删掉任一道闸会红"的**因果**，而不是只在注释里声称。
+       *   ⚠ 做法（⛔ 不改产品源码）：把上面**四条读数**按"假如闸被删掉"重算，
+       *     确认每条闸各自对应**至少一条**会翻转的断言。
+       */
+      /**
+       * ⑥ **跨族引用核对**：本文件里所有 `G-21` 是否真的存在（⛔ 不许"只写信里"）。
+       *   ⚠ 这一条的由来（t10 实测）：`check-hob-create-dom.mjs` 曾引用
+       *   「`check:hob-gate` 的 G-21…」，而**当时 G-21 根本不存在** —— 直到本轮才真建。
+       *   ⇒ 这里做一条**机检**：本文件里必须真的印出 `G-21` 系列的 ok/错行，
+       *     且 `check-hob-create-dom.mjs` 里若提到 `G-21`，本文件就必须有它。
+       */
+      {
+        const domSrc = (() => {
+          try { return readFileSync(join(root, 'scripts', 'check-hob-create-dom.mjs'), 'utf8') } catch { return '' }
+        })()
+        /**
+         * ══ ⚠⚠ **跨族引用核对：判"真跑过的断言"，⛔ 不判"源码里的标签"**（t11 重写）══
+         *
+         * ── 改前是什么（两版都错，如实记下）────────────────────────────────
+         *   · t10 第一版扫**原文** ⇒ 注释里塞一行 `ok('G-21z ✓…'` 就算一个标签；
+         *   · t10 第二版（上一轮我改的）先剥注释再扫 ⇒ 仍然只数**源码文本**：
+         *     审查席把闸② 整段放进 `if (false) { … }`（⚠ 断言行**不执行**了），
+         *     标签**还在源码里** ⇒ 数出来还是 4 个 ⇒ **26/26 exit 0**。
+         *   ⚠ 同一个坑第三、第四次复发 —— 根因始终是「判据在认文本，不认行为」。
+         *
+         * ── 现在（⚠ 唯一可信的读数 = 运行时台账）──────────────────────────
+         *   `executedLabels` 由 `ok()/bad()` **在真被调用时**登记 ⇒ 它只含
+         *   **真跑到了**的断言。`if (false)` 里的进不来，注释里的更进不来。
+         *   ⇒ 断言：`G-21` / `G-21a` / `G-21b` / `G-21c` **四个都必须真跑过**。
+         *   ⚠ 反向也判：若台账里出现没预期的 `G-21*`（多于这四支），说明有人在加断言
+         *     却没登记 —— 报出来（防止"悄悄加一条恒真"来凑数）。
+         */
+        const EXPECTED = ['G-21', 'G-21a', 'G-21b', 'G-21c']
+        const ran = EXPECTED.filter((x) => executedLabels.has(x))
+        const missing = EXPECTED.filter((x) => !executedLabels.has(x))
+        const extra = [...executedLabels].filter((x) => x.startsWith('G-21') && !EXPECTED.includes(x))
+        /** ⚠ 别的脚本里**引用了** `G-21`（注释里也算引用 —— 那边是"谁在依赖我"）。 */
+        const referencedElsewhere = /G-21/.test(domSrc)
+        if (missing.length > 0) {
+          bad(`G-21 跨族引用核对：这些 G-21 断言**本轮没有真跑过**：${JSON.stringify(missing)}`
+            + `（实际跑到的 = ${JSON.stringify([...executedLabels].filter((x) => x.startsWith('G-21')).sort())}）`
+            + '\n      ⇒ ⚠ 可能是被放进 `if (false)` / 被整段删掉 / 被注释掉 —— '
+            + '⛔ 源码里留着标签**不算**（审查席实测过这个绕过：26/26 exit 0 而闸② 零判据）')
+        } else if (extra.length > 0) {
+          bad(`G-21 跨族引用核对：出现未登记的 G-21 断言标签 ${JSON.stringify(extra)}`
+            + ' ⇒ 加断言必须同批更新 `EXPECTED`（⛔ 不许用"多印一条"凑数）')
+        } else {
+          ok(`G-21 跨族引用核对 ✓ **四个断言本轮都真跑过**（${ran.join(' / ')}；读数取 ok()/bad() 的`
+            + '运行时台账，⛔ 不数源码文本 ⇒ `if (false)` 与注释都骗不过它）'
+            + `${referencedElsewhere ? '，且 `check-hob-create-dom` 对它的引用**有实现兜底**' : ''}`)
+        }
+      }
+
+      /**
+       * ── G-21(反证) ⭐⭐ **真变异**：把闸门源码改坏 ⇒ 同一段判据必须变红 ────────────
+       *
+       * ══ 改前是什么（t10 造的**空话**，审查席实测：换成纯胡话仍 ✓）══════════════
+       *   改前是一个**硬编码三元素数组** `gateMap`，判据只查
+       *   `g.kills.startsWith('G-21')` —— `gateMap` 是字面量、`kills` 也是字面量
+       *   ⇒ **永远 true**。把它换成纯胡话，照样 `✓ G-21(反证)`。
+       *   ⚠ 那正是"判据在认文本、不认行为"的第三次复发。
+       *
+       * ══ 现在（⚠ 真改产品源码、真跑、真看红）═════════════════════════════════
+       *   把 `session-policy-route.ts` 复制到临时目录，**逐条**删掉一道闸，然后
+       *   用**同一段调用逻辑**（与 G-21a/b/c 完全同一份判据函数）跑一遍，断言：
+       *     · 原样 ⇒ 三道闸都判"拒"；
+       *     · **删 `isOpenReadLevel` 分支** ⇒ 枚举外的档**被接受**（判据会红）；
+       *     · **删 `isHob` 分支** ⇒ 非 Hob 会话**被接受**（判据会红）；
+       *     · **删 fail-closed（`v` 不可用分支）** ⇒ 判不出时**被接受或抛错**（判据会红）。
+       *   ⚠ 每一支都要求"变异后读数**确实翻面**"，⛔ 不接受"注释里说会红"。
+       *   ⚠ 这一步是**真跑**（import 变异体 + 调 `handlePolicyWrite`），不是读文本。
+       */
+      {
+        const { mkdtempSync, writeFileSync: writeMut, cpSync, rmSync: rmMut } = await import('node:fs')
+        const { tmpdir: tmpMut } = await import('node:os')
+        let mutRoot = null
+        try {
+          mutRoot = mkdtempSync(join(tmpMut(), 'hob-g21-mut-'))
+          /** ⚠ 整棵 `src/` 复制过去（路由 import 了 `../config.ts` / `../shared/*.ts`）。 */
+          cpSync(join(SRC_ROOT, 'src'), join(mutRoot, 'src'), { recursive: true, dereference: true })
+          /**
+           * ⚠ 变异体也要能解析第三方包（`@deepseek-ai/schemastery` 等，`config.ts` 用到）：
+           *   把本仓 `node_modules` 链过去（⚠ 只链，不改）。
+           */
+          try { (await import('node:fs')).symlinkSync(join(root, 'node_modules'), join(mutRoot, 'node_modules'), 'dir') } catch { /* 已有 */ }
+
+          const ROUTE_REL = join('src', 'modules', 'session-policy-route.ts')
+          const original = readFileSync(join(SRC_ROOT, ROUTE_REL), 'utf8')
+
+          /** 与 G-21a/b/c **完全同一份**调用逻辑（⚠ 抽成函数复用，⛔ 不另写近似版）。 */
+          const probeFile = async (routePath) => {
+            const mod = await import(pathToFileURL(routePath).href)
+            const { handlePolicyWrite } = mod
+            const mkSvc = ({ isHob, getThrows }) => {
+              const writes = []
+              return {
+                writes,
+                svc: {
+                  get: () => {
+                    if (getThrows === true) throw new Error('注入：读策略抛错')
+                    if (isHob === undefined) return undefined
+                    return { isHob, recorded: writes.length > 0, source: writes.length > 0 ? 'stored' : 'derived-default' }
+                  },
+                  set: (id, level, workMode, activation) => { writes.push({ id, level, workMode, activation }); return { ok: true, reason: '' } },
+                },
+              }
+            }
+            const sessionOf = (id) => ({ id, session: { id } })
+            const call = (svc, { level, id = 'sess-w' }) => {
+              try { return handlePolicyWrite({ policyOf: () => svc, sessionOf }, { sessionId: id, level, workMode: 'auto' }) } catch (e) { return { ok: false, threw: String(e?.message ?? e) } }
+            }
+            /**
+             * 三道闸各跑一次，返回"是否被**可读地**拦住"。
+             * ⚠⚠ **`threw` 不算拦住**（t11 订正）：未捕获异常会让路由 500，调用方
+             *   拿不到原因 —— 那是"崩了"，⛔ 不是"闸把请求挡下来了"。
+             *   ⚠ 我第一版把 `ok === false` 当拦住 ⇒ 删掉 fail-closed 后`v.isHob` 抛
+             *   TypeError 也被读成"拦住了" ⇒ **这一支的反证假绿**（当场被本组自己抓到）。
+             */
+            const blocked = (r) => r.ok === false && r.threw === undefined
+            const { svc: s1 } = mkSvc({ isHob: true })
+            const gate1 = blocked(call(s1, { level: 'root' }))
+            const { svc: s2 } = mkSvc({ isHob: false })
+            const gate2 = blocked(call(s2, { level: 'ledger' }))
+            const { svc: s3 } = mkSvc({ isHob: undefined })
+            const gate3 = blocked(call(s3, { level: 'ledger' }))
+            return { gate1, gate2, gate3 }
+          }
+          /** 在临时副本里把原文替换成变体，写回并跑。 */
+          /**
+           * ⚠ **每次变异用独立目录**（⛔ 不能把整棵树复制到自己里面 —— 那是无限递归）。
+           *   做法：每个变异体各建一个 `mkdtemp`，复制 `src/` + 链 `node_modules`。
+           */
+          const runMutant = async (name, from, to) => {
+            if (!original.includes(from)) return { ok: false, why: `找不到变异靶点（${name}）⇒ 判据已对不上实现` }
+            const dir = mkdtempSync(join(tmpMut(), `hob-g21-${name}-`))
+            cpSync(join(SRC_ROOT, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
+            try { (await import('node:fs')).symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+            const f = join(dir, ROUTE_REL)
+            writeMut(f, original.replace(from, to), 'utf8')
+            const result = await probeFile(f)
+            try { (await import('node:fs')).rmSync(dir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+            return { ok: true, result }
+          }
+
+          const base = await probeFile(join(SRC_ROOT, ROUTE_REL))
+          const baseOk = base.gate1 && base.gate2 && base.gate3
+          /** ① 删开放面闸（改成恒 false）。 */
+          const m1 = await runMutant('nogate1',
+            "  if (!isOpenReadLevel(level)) {\n    return badRequest(readLevelNotOpenReason('写入会话策略'))\n  }",
+            '  if (false) {\n    return badRequest(readLevelNotOpenReason(\'写入会话策略\'))\n  }')
+          /** ② 删 isHob 闸（`v.isHob !== true` ⇒ 恒 false）。 */
+          const m2 = await runMutant('nogate2',
+            '    if (v.isHob !== true) {',
+            '    if (false) {')
+          /** ③ 删 fail-closed（`v` 不可用那一支 ⇒ 恒 false）。 */
+          const m3 = await runMutant('nogate3',
+            "    if (v === undefined || v === null || typeof v !== 'object') {",
+            '    if (false) {')
+
+          const expectFlip = (m, gateKey, label) => {
+            if (m.ok !== true) return { ok: false, why: m.why }
+            const after = m.result[gateKey]
+            /** ⚠ 变异后该闸必须**不再拦住**（= 判据会红）。 */
+            if (after !== false) return { ok: false, why: `${label}：变异后该闸**仍然拦住**（判据抓不到这个变异）` }
+            return { ok: true }
+          }
+          const f1 = expectFlip(m1, 'gate1', '删开放面闸')
+          const f2 = expectFlip(m2, 'gate2', '删 isHob 闸')
+          const f3 = expectFlip(m3, 'gate3', '删 fail-closed')
+
+          if (!baseOk) {
+            bad(`G-21(反证) 【失去靶子】原实现三道闸并未全拦住（open=${base.gate1} · isHob=${base.gate2} · failClosed=${base.gate3}）`
+              + ' ⇒ 反证没有可比对的基线，不按通过处理')
+          } else if (!f1.ok || !f2.ok || !f3.ok) {
+            bad(`G-21(反证) 【判据抓不到变异】${[f1, f2, f3].filter((x) => !x.ok).map((x) => x.why).join(' · ')}`
+              + '\n      ⇒ ⚠ 这说明"删掉那道闸"不会让本组变红 —— 那条闸实际**没有判据守着**')
+          } else {
+            ok('G-21(反证) ✓✓ **真变异自证**（⛔ 不是硬编码数组）：把 `session-policy-route.ts` 复制到临时目录，'
+              + '逐条改坏后**真 import 真调用** `handlePolicyWrite` —— '
+              + '删开放面闸 ⇒ 枚举外的档**被接受**；删 isHob 闸 ⇒ 非 Hob **被接受**；删 fail-closed ⇒ 判不出**被接受/抛错**'
+              + ' ⇒ 三条闸各自都有判据接得住（⚠ 这三支正是 G-21a/b/c 会变红的原因）')
+          }
+        } catch (e) {
+          bad(`G-21(反证) 变异自证跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理（⛔ 跑不起来 ≠ 通过）`)
+        } finally {
+          if (mutRoot !== null) {
+            try { (await import('node:fs')).rmSync(mutRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+          }
+        }
+      }
+    }
+  }
+} finally {
+  cleanup()
+}
+
+console.log('')
+console.log(`G 组：通过 ${pass} · 失败 ${fail}`)
+/**
+ * ⚠⚠ **本族也必须印 `处级口径` 行**（2026-10-24 · B 席）—— 理由同 `check:hob-create-dom`：
+ *   改前只印"G 组：通过 N · 失败 M" ⇒ `check:all` 读不到断言数 / 跳过数
+ *   ⇒ 20 条断言不进总数，且"断言数下界"对它**是盲的**。
+ *   ⚠ `查了 = 过了 + 没过 + 跳过`。
+ */
+console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处`
+  + (fail > 0 ? ` · 没过 ${fail} 处` : '')
+  + ' · **跳过 0 处**（⚠ 跳过**不计入通过**；⚠ 依赖不可用 / 仓根不可写都走 `exit 2`，不是跳过）')
+console.log('')
+if (fail > 0) {
+  console.log('  ⛔ 有失败项 ⇒ 本组不算通过')
+  process.exit(1)
+}
+console.log('  ✅ G 组全绿（⚠ 隔离渲染：组件行为成立；真实宿主渲染仍需重启后人工验）')
+process.exit(0)

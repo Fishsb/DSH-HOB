@@ -87,6 +87,45 @@ function tryGitBuf(args, cwd) {
   }
 }
 
+/**
+ * **修订仓**（形态 S 的取数根）—— 2026-10-25 搬家单之后新增。
+ *
+ * ⚠ **为什么需要它**：形态 S 要用 `git show <rev>:<path>` 取"声明源修订"的字节，
+ *   而**账本根已不再是独立 git 仓**（2026-10-25 搬家单把内层 `.git` 移进了归档）。
+ *   ⇒ 若仍以 `ledgerRoot` 为 `cwd`，`git show` **一律取不到**（改前实测：41 处形态 S 全红）。
+ *
+ * ⚠ **取数顺序（覆盖面 ⛔ 不许缩小）**：
+ *   ① **工作区仓**（`root`，账本现在就它里面）—— 首选，用的是"搬家后"的仓；
+ *   ② **归档里的内层 `.git`**（⚠ **只读** 当 `--git-dir` 用，⛔ 不写、⛔ 不删、⛔ 不提交）。
+ *      ⚠ 为什么必须留这一档：实测归档仓 **446 个提交**、工作区仓 **280 个**，
+ *      而形态 S 声明的修订（`d391602` 等）**只在归档仓里**（工作区仓 `cat-file -e` 全 missing）。
+ *      ⇒ 只留 ① 会让形态 S **整体失效**（41 处全红或全 skip）⇒ 那是"缩小覆盖面"，⛔ 本单禁止。
+ *
+ * ⚠ 返回 `null` ⇒ 两处都取不到（调用方照旧报红，⛔ 不当通过）。
+ */
+function resolveRevRepos(ledgerRoot) {
+  const out = []
+  // ① 工作区仓：`root` 就是本脚本所在工作区根
+  out.push({ cwd: root, gitDir: null, label: '工作区仓' })
+  // ② 归档里的内层 .git —— 只读
+  const archived = join(ledgerRoot, 'archive', '2026-10-25-project-migrate', 'inner-git', '.git')
+  try {
+    if (statSync(archived).isDirectory()) out.push({ cwd: ledgerRoot, gitDir: archived, label: '归档内层仓(只读)' })
+  } catch { /* 归档不在 ⇒ 只有 ① */ }
+  return out
+}
+
+/** 在若干"修订仓"里依次试 `git show`；命中即返回字节，全不命中返回 null。 */
+function tryGitBufInRepos(args, repos) {
+  for (const r of repos) {
+    const full = r.gitDir === null ? args : ['--git-dir', r.gitDir, ...args]
+    const cwd = r.gitDir === null ? r.cwd : r.cwd
+    const got = tryGitBuf(full, cwd)
+    if (got !== null) return got
+  }
+  return null
+}
+
 /** 递归列出目录下的**普通文件**（账本区是数据目录，规模可控）。 */
 function walkFiles(dir, acc = []) {
   let entries = []
@@ -137,9 +176,37 @@ function ledgerHome() {
   }
 }
 
-/** 账本区 = `<ledgerHome>/<工作区名>/`；读不到 / 不存在 ⇒ undefined（⇒ 退 2 档，⛔ 不静默通过）。 */
+/**
+ * 账本区解析（⚠ 与产品代码 `src/server/doc-read.ts` 的 `resolveLedgerRoot` **同一套口径**）。
+ *
+ * 顺序（2026-10-25 · C 步改）：
+ *   ① CLI 显式给 ⇒ 用它；
+ *   ② **本工作区自己的 `<工作区>/.hob/`**（若它看起来像账本）—— 新正典；
+ *   ③ 过渡桥：预设行的 `ledgerHome` + 工作区名（⚠ 仍按名字拼 ⇒ 分期迁移期间用）；
+ *   ④ 都没有 ⇒ undefined（⇒ 退 2 档，⛔ 不静默通过）。
+ *
+ * ⚠ "看起来像账本"的判据与产品侧 `looksLikeLedger` 逐条相同（⛔ 两侧不许各写一套）：
+ *   有正本文件之一，或有**非空的** `volumes/` / `archive/` / `runtime/`。
+ */
+const CANON_FILES = ['REQUIREMENTS.md', 'PROJECT.md', 'DECISIONS.md', 'CONTEXT.md']
+const SIDE_DIRS = ['volumes', 'archive', 'runtime']
+function looksLikeLedger(dir) {
+  try { if (!statSync(dir).isDirectory()) return false } catch { return false }
+  for (const f of CANON_FILES) {
+    try { if (statSync(join(dir, f)).isFile()) return true } catch { /* 继续 */ }
+  }
+  for (const d of SIDE_DIRS) {
+    try {
+      const q = join(dir, d)
+      if (statSync(q).isDirectory() && readdirSync(q).length > 0) return true
+    } catch { /* 继续 */ }
+  }
+  return false
+}
 function resolveLedgerRoot(cliLedger) {
   if (typeof cliLedger === 'string' && cliLedger !== '') return cliLedger
+  const inWs = join(root, '.hob')
+  if (looksLikeLedger(inWs)) return inWs
   const home = ledgerHome()
   if (home === null) return undefined
   const cand = join(home, workspaceName())
@@ -229,6 +296,8 @@ function globCount(arcAbs, token) {
 function checkArchiveBytes({ ledgerRoot, bad, ok, skip }) {
   /** ⚠ 缺省收集器（旧调用方不传 `skip` 时用）：⛔ 不许退化成 `ok()`。 */
   const skipSink = typeof skip === 'function' ? skip : () => {}
+  /** ⚠ 形态 S 的**取数根**（2026-10-25 搬家后：账本根不再是 git 仓 ⇒ 见 {@link resolveRevRepos}）。 */
+  const revRepos = resolveRevRepos(ledgerRoot)
   const stat = { sourceDirs: 0, pairs: 0, formS: 0, formM: 0, mismatched: 0, globGroups: 0 }
   const arcRoot = join(ledgerRoot, 'archive')
   const dirs = []
@@ -272,12 +341,12 @@ function checkArchiveBytes({ ledgerRoot, bad, ok, skip }) {
       if (rev !== null) {
         stat.pairs += 1
         stat.formS += 1
-        const srcBuf = tryGitBuf(['show', `${rev}:${relInSources}`], ledgerRoot)
+        const srcBuf = tryGitBufInRepos(['show', `${rev}:${relInSources}`], revRepos)
         if (srcBuf === null) {
           stat.mismatched += 1
           bad(`①[形态 S] 归档件在**声明的源修订里不存在**：\`${relLedger}\``
             + `\n      ⇒ 声明来源：修订 \`${rev}\`（清单：${relDir}/README.md）`
-            + `\n      ⇒ 核实方式：在 ${ledgerRoot} 跑 \`git show ${rev}:${relInSources}\``)
+            + `\n      ⇒ 核实方式：在 ${revRepos.map((r) => r.label).join(' / ')} 试 \`git show ${rev}:${relInSources}\``)
         } else if (!buf.equals(srcBuf)) {
           stat.mismatched += 1
           bad(`①[形态 S] 归档件与**声明的源修订**逐字节不一致：\`${relLedger}\``

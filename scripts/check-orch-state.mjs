@@ -70,6 +70,21 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
+/**
+ * ⚠ **源码树根**（2026-10-22 第 3 轮提升为模块级）。
+ *
+ * ── 为什么提上来 ──────────────────────────────────────────────────────
+ *   原先只有 SD 组内部有 `sdRoot`（可被 `HOB_SA_ROOT` 指向临时副本）。
+ *   而 **J4 的静态扫描**当时写死了 `root` ⇒ 负向对拍注入到副本里的缺陷它**看不到**，
+ *   于是那条"通过"是假绿（实测：注入一处 `header.agentPreset` 读取，J4 仍报通过）。
+ *   ⇒ 现在**模块级**只有一个"要扫的源码树"，SD 组与 J 组共用它，
+ *     两边**不可能**再各看一棵树。
+ */
+const sourceTreeRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+  ? process.env.HOB_SA_ROOT
+  : root
+/** ⚠ 与 `sourceTreeRoot` 成对：判定行里标明"这次扫的是哪棵树"（⚠ 非本仓时必须可见）。 */
+const sourceTreeTag = sourceTreeRoot === root ? '' : `（源码树=${sourceTreeRoot}）`
 
 const STATE_TS = join(root, 'src', 'server', 'orch-state.ts')
 const ORCH_TS = join(root, 'src', 'modules', 'orchestrator.ts')
@@ -1492,8 +1507,21 @@ const orchCode = stripComments(orchSrc)
             }
             return out
           }
-          const files = walk(join(root, 'src'))
+          /**
+           * ⚠⚠ **必须跟随 `sdRoot`，⛔ 不能写死 `root`**（2026-10-22 第 3 轮修）。
+           *
+           * ── 为什么这是真缺口（实测抓到）────────────────────────────────────
+           *   本组原先写的是 `walk(join(root, 'src'))` —— 而 `root` 是**本仓源码树**。
+           *   其他组用 `sdRoot`（可用 `HOB_SA_ROOT` 指向一份临时副本）。
+           *   ⇒ 结果：负向对拍把"故意加一处 header 读取"注入到副本里，J4 **仍然只扫本仓**
+           *     ⇒ 它报的是"本仓那 1 处，通过"，**根本没看**被注目的那份。
+           *   ⇒ 那条"通过"是**假绿**：判据对注入的缺陷无感。
+           *   ⚠ 修法不是把断言写松，是**让它看对地方**。
+           */
+          const files = walk(join(sourceTreeRoot, 'src'))
           const hits = []
+          /** 被扫过的字符串计数（⚠ 判定行要报出来 —— 免得更严的剥法静默"少查了"）。 */
+          let strsMasked = 0
           for (const f of files) {
             let src = ''
             try { src = readFileSync(f, 'utf8') } catch { continue }
@@ -1503,10 +1531,77 @@ const orchCode = stripComments(orchSrc)
             //     行号与原文**逐行对齐**（判定行里的 `文件:行号` 才能被人直接跳过去看）。
             //   ⚠ 两种剥离器**在语义上等价**（都不让注释里的名字冒充代码），
             //     差别只在"行号是否可指认" ⇒ 静态面扫描一律用这一个。
-            const lines = stripCommentsKeepLines(src).split('\n')
+            /**
+             * ⚠⚠ **注释之外，字符串也要剥**（2026-10-22 第 3 轮 · 本判据的假阳性缺口）。
+             *
+             * ── 实测怎么撞上的 ─────────────────────────────────────────────────
+             *   `session-policy-service.ts` 里有一句**给用户看的拒绝文案**：
+             *     「…只凭 \`header.agentPreset\` 猜是明令禁止的…」
+             *   ⇒ 它出现在**字符串字面量**里，是**说明**，不是"读这个字段"。
+             *   而 J4 原先只剥注释 ⇒ 把这句字符串当成**第二处真实读取**，报红。
+             *
+             * ── 为什么这是判据的缺陷、不是我该去改文案 ─────────────────────────
+             *   ① 那句文案是在**警告读者不要**读 header —— 为了过检查而删掉它，
+             *      等于**删掉知识来迁就检查器**（方向反了）；
+             *   ② J4 要守的是"有没有第二个**读法**"；字符串里的字段名不构成读法；
+             *   ③ 同一个坑本轮已经在 `check:policy-cross` 的 CX-12 上踩过一次
+             *      ⇒ 一律：**先剥干净再判**。
+             * ⚠ 仍然**保行数**（把字符串内容替换成等量空格），行号可指认。
+             * ⚠ 只剥**单/双/反引号**三种常规字面量；模板串里的 `${...}` **不剥**
+             *   （那里面可能是真代码 ⇒ 宁可多查，⛔ 不可漏读）。
+             */
+            const maskStrings = (text) => {
+              let out = ''
+              let i = 0
+              let n = 0
+              while (i < text.length) {
+                const ch = text[i]
+                if (ch !== "'" && ch !== '"' && ch !== '`') { out += ch; i += 1; continue }
+                const quote = ch
+                n += 1
+                out += ' '
+                i += 1
+                while (i < text.length) {
+                  const c2 = text[i]
+                  if (c2 === '\\') { out += '  '; i += 2; continue }
+                  if (c2 === '\n') { out += '\n'; i += 1; continue }
+                  // 模板串的 `${...}`：原样保留（可能是真代码，⛔ 不剥）
+                  if (quote === '`' && c2 === '$' && text[i + 1] === '{') {
+                    let depth = 1
+                    out += '${'
+                    i += 2
+                    while (i < text.length && depth > 0) {
+                      if (text[i] === '{') depth += 1
+                      else if (text[i] === '}') depth -= 1
+                      out += text[i]
+                      i += 1
+                    }
+                    continue
+                  }
+                  if (c2 === quote) { out += ' '; i += 1; break }
+                  out += c2 === '\n' ? '\n' : ' '
+                  i += 1
+                }
+              }
+              strsMasked = n
+              return out
+            }
+            const lines = maskStrings(stripCommentsKeepLines(src)).split('\n')
             for (let i = 0; i < lines.length; i++) {
               if (/header\s*\??\.\s*agentPreset/.test(lines[i])) {
-                hits.push({ file: f.slice(root.length + 1), line: i + 1, text: lines[i].replace(/\s+/g, ' ').trim() })
+                /**
+                 * ⚠ 相对路径必须按**实际扫描的那棵树**切（2026-10-22 修）。
+                 *   原先写 `f.slice(root.length + 1)` —— 一旦扫的是 `sourceTreeRoot`
+                 *   （负向对拍的临时副本），切位就错：`/tmp/hob-j4-xxx/src/modules/bus.ts`
+                 *   会被切成 `rc/modules/bus.ts`（把 `src/` 也切掉了）。
+                 *   ⚠ 后果不是"报错"，是**判定行里的 `文件:行号` 指错地方** ——
+                 *     而本组的既有纪律正是"行号必须可指认"。⇒ 按扫描根切。
+                 */
+                hits.push({
+                  file: f.slice(sourceTreeRoot.length + 1),
+                  line: i + 1,
+                  text: lines[i].replace(/\s+/g, ' ').trim(),
+                })
               }
             }
           }
@@ -1518,12 +1613,15 @@ const orchCode = stripComments(orchSrc)
           const exactlyOne = hits.length === 1
           if (onlyBus && exactlyOne) {
             ok(`J4 \`header.agentPreset\` 全仓只剩 ${hits.length} 处`
-              + `（${hits[0].file}:${hits[0].line} = 降级分支）· **核了 ${files.length} 个 .ts 文件 / ${hits.length} 处命中**`)
+              + `（${hits[0].file}:${hits[0].line} = 降级分支）· **核了 ${files.length} 个 .ts 文件 / ${hits.length} 处命中**`
+              + `${sourceTreeTag} · 已剥注释与字符串（${strsMasked} 处字符串不参与判定）`)
           } else {
             bad(`J4 \`header.agentPreset\` 的剩余命中不合格：**核了 ${files.length} 个 .ts 文件**，`
               + `命中 ${hits.length} 处、分布在 ${filesWithHits.length} 个文件`
               + '（允许 = 仅 src/modules/bus.ts 降级分支 1 处）：'
-              + hits.map((h) => `${h.file}:${h.line} → ${h.text}`).join(' | '))
+              + hits.map((h) => `${h.file}:${h.line} → ${h.text}`).join(' | ')
+              + `${sourceTreeTag}`
+              + '\n      ⚠ 判据已剥注释与字符串（⚠ 字符串里的字段名不算一处"读取"）')
           }
         }
       } finally {
@@ -3023,6 +3121,250 @@ const orchCode = stripComments(orchSrc)
           }
         } catch (e) {
           bad(`P 叫醒不依赖事先浏览：本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+        }
+      }
+
+      // ── O-f0 ⭐⭐ **生产接线**：`orchestrator.ts` 构造两个 Wake 时**真的传了 `stoppedOf`** ──
+      /**
+       * ══ 它守的是什么（t11 · 最高优先）═════════════════════════════════════════════
+       *   t10 的 O-f 是 `new CardWake({ stoppedOf: 假件 })` —— **自己注入**，
+       *   所以它只证明"给了就会用"，**完全没有测生产到底给没给**。
+       *   ⚠ 审查席把 `orchestrator.ts` 的两处 `stoppedOf: (o, w) => isStoppedFor(o, w)`
+       *     **单删一处 / 双删两处**，`check:orch` 三次都 **224/224 exit 0** ——
+       *     因为 O-f 里那个假件永远在。
+       *
+       * ── 现在（⚠ 读**生产源码的构造参数**，⛔ 不读注释、⛔ 不靠假件）────────────
+       *   剥掉注释后，对 `new CardWake({…})` 与 `new DispatchWake({…})` 各做三件事：
+       *     ① 找到那个**平衡的对象字面量**（按括号配对切，⛔ 不按行/正则截断）；
+       *     ② 断言里面有 `stoppedOf` 这个**键**（⛔ 不是注释里提到）；
+       *     ③ 断言它的值是 `isStoppedFor(...)` —— ⚠ 否则传个 `() => false` 也算"传了"，
+       *        那等于刹车永远不踩（**比不传更坏**：看起来接了线）。
+       *   ⚠ **两处必须各自成立**：删 `:1246` 或 `:1275` 任一处 ⇒ 对应那条红
+       *     （两个是不同叫醒面，断一处就少一个刹车）。
+       *
+       * ── 为什么这条不会被"注释里写一句"绕过 ───────────────────────────────
+       *   ① 先 `maskComments`（同长度掩码，偏移不变）再切片 ⇒ 注释里的 `stoppedOf`
+       *      在掩码后是空格，**找不到**；
+       *   ② 判的是"这个键在**对象字面量内部**且值含 `isStoppedFor(`" ⇒
+       *      光在文件里写一句 `stoppedOf` 文本（不在构造参数里）不算。
+       */
+      {
+        /** ⚠ 同长度注释掩码（本脚本 SE-a 用的同一套实现，⛔ 不另写一份近似逻辑）。 */
+        const maskCommentsForCtor = (t) => {
+          const out = t.split('')
+          for (const m of t.matchAll(/\/\*[\s\S]*?\*\//g)) {
+            for (let k = m.index; k < m.index + m[0].length; k += 1) if (out[k] !== '\n') out[k] = ' '
+          }
+          for (const m of t.matchAll(/(^|[^:'"`\\])(\/\/[^\n]*)/g)) {
+            const st = m.index + m[1].length
+            for (let k = st; k < st + m[2].length; k += 1) out[k] = ' '
+          }
+          return out.join('')
+        }
+        /** 从 `{` 开始按括号配对切出整个对象字面量（⚠ 只数花括号，跳过字符串）。 */
+        const objectLiteralAt = (code, openIdx) => {
+          let depth = 0
+          let inStr = null
+          for (let k = openIdx; k < code.length; k += 1) {
+            const c = code[k]
+            if (inStr !== null) {
+              if (c === '\\') { k += 1; continue }
+              if (c === inStr) inStr = null
+              continue
+            }
+            if (c === "'" || c === '"' || c === '`') { inStr = c; continue }
+            if (c === '{') depth += 1
+            else if (c === '}') {
+              depth -= 1
+              if (depth === 0) return code.slice(openIdx, k + 1)
+            }
+          }
+          return null
+        }
+        /**
+         * ⚠ **逐个构造点**核：`new <Cls>({ … })`。
+         *   ⚠ 用 `masked`（注释已掩）⇒ 注释里写多少遍都不算。
+         */
+        const ctorCheck = (masked, cls) => {
+          const sites = [...masked.matchAll(new RegExp(`new\\s+${cls}\\s*\\(\\s*\\{`, 'g'))]
+          if (sites.length === 0) return { ok: false, why: `生产源码里找不到 \`new ${cls}({\` 构造点` }
+          const details = []
+          for (const m of sites) {
+            const openIdx = m.index + m[0].length - 1
+            const lit = objectLiteralAt(masked, openIdx)
+            if (lit === null) { details.push({ ok: false, why: '对象字面量括号不配对' }); continue }
+            /** ② 有没有 `stoppedOf` 这个**键**（⚠ 键后面必须跟 `:`，防 `stoppedOffset` 之类误命中）。 */
+            const hasKey = /(^|[\s,{])stoppedOf\s*:/.test(lit)
+            /** ③ 值里必须真的调 `isStoppedFor(`。 */
+            const valueM = /(^|[\s,{])stoppedOf\s*:\s*([\s\S]*?)(?=,\s*\n|\n\s*\})/.exec(lit)
+            const valueOk = valueM !== null && /isStoppedFor\s*\(/.test(valueM[2])
+            details.push({ ok: hasKey && valueOk, hasKey, valueOk, lit: lit.slice(0, 120) })
+          }
+          return { ok: details.every((d) => d.ok === true), details }
+        }
+        let orchSrc = ''
+        try { orchSrc = readFileSync(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { orchSrc = '' }
+        if (orchSrc === '') {
+          bad('O-f0 读不到 `orchestrator.ts` ⇒ 生产接线无从核对（⛔ 不按通过处理）')
+        } else {
+          const masked = maskCommentsForCtor(orchSrc)
+          const card = ctorCheck(masked, 'CardWake')
+          const disp = ctorCheck(masked, 'DispatchWake')
+          if (!card.ok) {
+            const d = card.details?.[0] ?? {}
+            bad('O-f0 ⚠ 面① **`new CardWake({…})` 没有传 `stoppedOf`（或传的不是 `isStoppedFor`）**'
+              + `（构造点数=${card.details?.length ?? 0} · 有键=${JSON.stringify(d.hasKey)} · 值调 isStoppedFor=${JSON.stringify(d.valueOk)}）`
+              + '\n      ⇒ 用户按了 `stop`，看板卡跑完照样把他叫醒（刹车在这一面根本没接上）')
+          } else if (!disp.ok) {
+            const d = disp.details?.[0] ?? {}
+            bad('O-f0 ⚠ 面② **`new DispatchWake({…})` 没有传 `stoppedOf`（或传的不是 `isStoppedFor`）**'
+              + `（构造点数=${disp.details?.length ?? 0} · 有键=${JSON.stringify(d.hasKey)} · 值调 isStoppedFor=${JSON.stringify(d.valueOk)}）`
+              + '\n      ⇒ 主信号源（实施会话跑完）那条路上刹车没接上')
+          } else {
+            ok(`O-f0 ✓✓ **生产接线在位**：\`orchestrator.ts\` 的 \`new CardWake({…})\`（${card.details.length} 处）与 `
+              + `\`new DispatchWake({…})\`（${disp.details.length} 处）各都传了 `
+              + '`stoppedOf: (owner, wsRoot) => isStoppedFor(owner, wsRoot)`（⚠ 剥注释后读构造参数；'
+              + '两处是两个不同叫醒面，⚠ 删任一处本条即红）')
+          }
+        }
+      }
+
+      // ── O-f ⭐ **`stop` 必须覆盖两条叫醒面**（2026-10-24 · t10 补零覆盖）──────
+      /**
+       * ══ 它守的是什么（审查席实测：**零判据覆盖**）════════════════════════════════
+       *   D 席 2026-10-24 把 `stoppedOf` 接进了**两处叫醒面**：
+       *     ① `CardWake.handleFrame` —— 看板 SSE 推送那条（卡进 `in_review` / 跑完）；
+       *     ② `DispatchWake` 的派发回执那条（本会话派出的会话跑完）。
+       *   改前 `stoppedOwners` 在这两条路上**零引用** ⇒ 用户按了 `stop`，
+       *   卡跑完 / 派出去的实施会话跑完，**照样把他叫醒**（刹车失灵）。
+       *   ⚠ 审查席把 `stoppedOf` 接线**整根断开**后，`check:orch` **仍然绿** ——
+       *     也就是说这条修复**没有任何判据守着**。
+       *
+       * ── 判据（四条，两条面 × 有/无 stop）──────────────────────────────────
+       *   · **面①（CardWake）**：`stoppedOf` 说"停了" ⇒ 那一帧**一声不叫** 且
+       *     `stoppedCount` +1、`note` 明写"有意不投"；`stoppedOf` 说"没停" ⇒ 照叫。
+       *   · **面②（DispatchWake）**：同上，且 `stoppedCount` **独立一档**
+       *     （⛔ 不许并进 `undecidableCount` / `wokeCount` —— 那会把"有意不送"混成"判不出"）。
+       *   ⚠ 两面**都必须**用**真类**（`CardWake` / `DispatchWake`）+ 注入的 `stoppedOf` 假件，
+       *     ⛔ 不扫源码正则（"写了 if"证明不了线接通了）。
+       *
+       * ── 负向对拍（O-f 的反证）──────────────────────────────────────────────
+       *   把 `stoppedOf` 传成 `undefined`（= 接线断开，正是改前的形态）⇒
+       *   同一段流程**会照叫** ⇒ 下面的"停住"断言**当场不成立**。
+       *   ⚠ 这条对拍**在同一次运行里真做**（不是注释里声称）。
+       */
+      {
+        try {
+          /**
+           * ⚠ 用 `sourceTreeRoot`（**不是** `root`）：`HOB_SA_ROOT` 指向一份临时副本时，
+           *   O-f 必须加载**那份**的 `card-wake.ts` —— 否则"把 `stoppedOf` 接线摘掉"的负向对拍
+           *   会加载回本仓（未变异）的那份 ⇒ 对拍**假绿**。
+           *   ⚠ 与本仓其它"源码树可指向副本"的组同一约定。
+           */
+          const wakeMod = await import(pathToFileURL(join(sourceTreeRoot, 'src', 'server', 'card-wake.ts')).href)
+          /** 造一帧"卡进 in_review（有执行会话）"的真形态帧。 */
+          const frame = JSON.stringify({
+            revision: 1,
+            kind: 'execution-recorded',
+            tasks: [{
+              id: 't-stop-1', title: '演示卡', status: 'in_review', workspaceId: 'ws-stop',
+              version: 2, lastExecutionOutcome: 'succeeded',
+              createdBy: { sessionId: 'session-hob' },
+            }],
+          })
+          /**
+           * 一次"面①"流程：`stoppedOf` **接线** vs **断开**，看各叫几声。
+           * ⚠ `stopped` 这个布尔就是注入的判据读数（真实实现 = `isStoppedFor`）。
+           */
+          const sseRun = async (stoppedOf) => {
+            const sent = []
+            const cw = new wakeMod.CardWake({
+              origin: 'http://127.0.0.1:0',
+              workspaceIdOf: () => 'ws-stop',
+              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+              now: () => 1792400000000,
+              ...(stoppedOf === undefined ? {} : { stoppedOf }),
+            })
+            cw.subscribe('session-hob', 'ws-stop')
+            const n = await cw.handleFrame('change', frame)
+            return { n, sent, st: cw.snapshot() }
+          }
+          const sseStopped = await sseRun(() => true)
+          const sseFree = await sseRun(() => false)
+          const sseDisconnected = await sseRun(undefined)
+
+          /**
+           * 一次"面②"流程：登记一个派发会话 → running → idle。
+           * ⚠ 与 O-a 同一套夹具形状（`register({ owner })` + `observe`）。
+           */
+          const dwRun = async (stoppedOf) => {
+            const sent = []
+            const dw = new wakeMod.DispatchWake({
+              deliver: (sid, text) => { sent.push({ sid, text }); return Promise.resolve({ ok: true }) },
+              now: () => 1792400000000,
+              ...(stoppedOf === undefined ? {} : { stoppedOf }),
+            })
+            dw.register({ sessionId: 'session-exec-stop', via: 'taskboard-card', cardId: 't-stop-1', owner: 'session-hob' })
+            await dw.observe('session-exec-stop', 'running')
+            const r = await dw.observe('session-exec-stop', 'idle')
+            /**
+             * ⚠ **`snapshot(owner)` 是"分区之后"的那一份**（`DispatchWake` 的计数全按 owner 分）——
+             *   不传 owner 拿到的是**进程级**合计，"我的闭环停了没叫醒我"这一档在它那里读不到。
+             *   ⇒ 必须传 `'session-hob'`（= 本组那个 owner）才读得到 `stoppedCount`。
+             *   ⚠ 这不是给判据开后门：真实渲染层也是**按当前会话**读 `snapshot(owner)`。
+             */
+            return { r, sent, st: dw.snapshot('session-hob') }
+          }
+          const dwStopped = await dwRun(() => true)
+          const dwFree = await dwRun(() => false)
+          const dwDisconnected = await dwRun(undefined)
+
+          /**
+           * ⚠ 断言（⚠ 每条都**两向**：停了不叫 + 没停照叫 —— 只判一边会漏掉"恒不叫"那种坏）。
+           */
+          const sseOk = sseStopped.n === 0 && sseStopped.sent.length === 0
+            && sseFree.n === 1 && sseFree.sent.length === 1
+            && (sseStopped.st.stoppedCount ?? 0) === 1
+            && typeof sseStopped.st.note === 'string' && /有意不投/.test(sseStopped.st.note)
+          /**
+           * ⚠ `DispatchWake` 在停住时**返回 `'stopped'`**（一个独立结局，见 `card-wake.ts` 的
+           *   `return 'stopped'`）—— ⛔ 不是 `undefined`（那是"没跑完 / 无动作"）。
+           *   ⚠ 我第一版写 `r === undefined` ⇒ **假红**（实现是对的，判据把两种结局读成一种）。
+           *   ⇒ 判据要求"是一个**能读出来的、与 `woke` 不同**的结局"，并点名 `'stopped'`。
+           */
+          const dwOk = dwStopped.r === 'stopped' && dwStopped.sent.length === 0
+            && dwFree.r === 'woke' && dwFree.sent.length === 1
+            && (dwStopped.st.stoppedCount ?? 0) === 1
+            /** ⚠ **独立一档**：停住这件事不许并进"判不出"或"叫醒"。 */
+            && (dwStopped.st.undecidableCount ?? 0) === 0 && (dwStopped.st.wokeCount ?? 0) === 0
+          /** ⚠ **反证**：接线断开（改前形态）⇒ **会照叫** ⇒ 上面两条都会翻。 */
+          const disconnectShowsBlind = sseDisconnected.n === 1 && dwDisconnected.r === 'woke'
+
+          if (!sseOk) {
+            bad('O-f 面①（看板 SSE）**没被 `stop` 刹住**：'
+              + `stopped(声=${sseStopped.n}·sent=${sseStopped.sent.length}·stoppedCount=${sseStopped.st.stoppedCount}) · `
+              + `free(声=${sseFree.n}·sent=${sseFree.sent.length})`
+              + '\n      ⇒ 用户按了 `stop`，卡跑完照样把他叫醒（D 席修的那条刹车没落地或只落了一半）')
+          } else if (!dwOk) {
+            bad('O-f 面②（派发回执）**没被 `stop` 刹住**：'
+              + `stopped(结局=${JSON.stringify(dwStopped.r)}·sent=${dwStopped.sent.length}·stoppedCount=${dwStopped.st.stoppedCount}`
+              + `·undecidable=${dwStopped.st.undecidableCount}·woke=${dwStopped.st.wokeCount}) · `
+              + `free(结局=${dwFree.r}·sent=${dwFree.sent.length})`
+              + '\n      ⇒ 要么刹车没接上，要么"有意不送"被并进了别的计数（那会让用户读不出区别）')
+          } else if (!disconnectShowsBlind) {
+            bad('O-f(反证) 【失去靶子】把 `stoppedOf` **整根断开**（= 改前形态）后，两条面**竟然还是不叫**'
+              + `（SSE 声=${sseDisconnected.n} · 派发结局=${dwDisconnected.r}）`
+              + '\n      ⇒ 说明"不叫"另有来源（别的守卫挡着），O-f 测到的**不是 `stop` 接线**'
+              + ' ⇒ ⛔ 不按通过处理（那会让这条判据恒绿）')
+          } else {
+            ok('O-f ✓ **`stop` 覆盖两条叫醒面**：面①（看板 SSE）停住时**一声不叫**（`stoppedCount`=1 · '
+              + 'note 明写"有意不投"）、没停时**照叫 1 声**；面②（派发回执）停住时**零投递**、'
+              + '没停时**照叫 1 声**，且停住返回**独立结局**（不是"什么都没发生"，也⛔ 不是 `woke`），'
+              + '"停住"**独立计数**（⛔ 不与判不出/叫醒混）'
+              + ' · ⚠ 反证：把 `stoppedOf` 整根断开 ⇒ **两条面都照叫**（正是改前的失灵形态）')
+          }
+        } catch (e) {
+          bad(`O-f 本组跑不起来（${String(e?.message ?? e)}）⇒ 不按通过处理（⛔ 跑不起来 ≠ 通过）`)
         }
       }
 
@@ -6045,7 +6387,7 @@ const orchCode = stripComments(orchSrc)
 //   ⇒ 谁把 `r.ok === true` 从触发条件里删掉，`check:all` **照样全绿**。
 //   ⇒ 本组把最要命的那一律（甲-10 的"写被拒 ⇒ 一个字都不许铺"）变成常驻断言。
 {
-  const { mkdtempSync: smMkdt, mkdirSync: smMkd, rmSync: smRm, existsSync: smExists } = await import('node:fs')
+  const { mkdtempSync: smMkdt, mkdirSync: smMkd, rmSync: smRm, existsSync: smExists, writeFileSync: smWf } = await import('node:fs')
   const { tmpdir: smTmp } = await import('node:os')
   const { pathToFileURL: smP2u } = await import('node:url')
 
@@ -6141,8 +6483,160 @@ const orchCode = stripComments(orchSrc)
             + '\n      ⇒ 修法：`completeness` 必须含 `total`/`scaffolded`/`skippedExists`/`failed` 四个数')
         }
       }
+      // ── SM-c ⭐ **skeleton 两态各判一次**（t11 补：目录级闸门回退 / 忽略开关）────
+      /**
+       * ══ 它守的是什么（审查席实测：**两条都绿**）══════════════════════════════════
+       *   `scaffoldSkeletonOnce` 里有两处**独立判断**，改前各被回退过：
+       *     ① `if (opts.enabled !== true) return … skipped-switch-off` —— **忽略开关**
+       *        （不管配置怎样都铺）；
+       *     ② **逐件判存在**（`if (existsSync(dest)) skip`）—— 回退成"目录级闸门"
+       *        （`if (dirExistedBefore) 整目录跳过`）⇒ 半套骨架**永久缺**，补不齐。
+       *
+       * ── 判据（⚠ 两态各一条，都能单独红）────────────────────────────────
+       *   · **SM-c1 开关关 ⇒ 一件都不许铺**：`enabled:false` 时 `.hob/` 不存在、
+       *     `written.length===0`、且有 `skipped-switch-off` 说明。
+       *   · **SM-c2 半套 ⇒ 逐件补齐（⛔ 不是整目录跳过）**：先只放**一件**骨架文件，
+       *     再铺一次 ⇒ 其余件必须被补上（证明判据是"那一件在不在"，⛔ 不是"目录在不在"）。
+       *   ⚠ C2 是**关键**：目录级闸门回退在 C1 下完全看不出来（C1 不碰已存在的目录）。
+       */
+      {
+        /** ⚠ 直接调 `scaffoldSkeletonOnce`（纯函数、可注入 sourceDir）⇒ 不依赖模块定位。 */
+        const skelMod = await (async () => {
+          try { return await import(smP2u(join(smRoot, 'src', 'server', 'skeleton.ts')).href) } catch { return undefined }
+        })()
+        if (skelMod === undefined || typeof skelMod.scaffoldSkeletonOnce !== 'function') {
+          bad('SM-c 无法直载 `skeleton.ts` 的 `scaffoldSkeletonOnce` ⇒ 基准缺失（⛔ 不按通过处理）')
+        } else {
+          /** 造一份最小骨架源（⛔ 不读真 `.hob/`：那会让判据随仓库内容漂）。 */
+          const mkSrc = (d) => {
+            smMkd(join(d, 'templates'), { recursive: true })
+            smWf(join(d, 'README.md'), '# 骨架说明\n', 'utf8')
+            smWf(join(d, 'templates', 'CONTEXT.md'), '# 上下文\n', 'utf8')
+            smWf(join(d, 'templates', 'TASK.md'), '# 任务\n', 'utf8')
+          }
+          // ── C1 开关关 ⇒ 一件都不铺 ────────────────────────────────────
+          {
+            const base = smMkdt(join(smTmpRoot, 'sm-c1-'))
+            const src = join(base, 'skel-src'); mkSrc(src)
+            const ws = join(base, 'ws'); smMkd(ws, { recursive: true })
+            const r = skelMod.scaffoldSkeletonOnce(ws, { sourceDir: src, enabled: false })
+            const hobExists = smExists(join(ws, '.hob'))
+            const said = (r.notes ?? []).some((n) => n.kind === 'skipped-switch-off')
+            if (hobExists || (r.written ?? []).length > 0) {
+              bad(`SM-c1 ⚠ **开关关着却照样铺了骨架**（.hob 存在=${hobExists} · 铺了 ${(r.written ?? []).length} 件）`
+                + ' ⇒ 配置开关被忽略（用户明确关掉的功能照旧生效）')
+            } else if (!said) {
+              bad('SM-c1 开关关着没铺，但**没有可读说明**（缺 `skipped-switch-off`）⇒ 用户不知道为什么没铺')
+            } else {
+              ok('SM-c1 ✓ **开关关 ⇒ 一件都不铺**（`.hob/` 不存在 · `written=0` · 有 `skipped-switch-off` 说明）'
+                + '（⚠ 把 `enabled !== true` 那支删掉时，本条会红）')
+            }
+          }
+          // ── C2 半套 ⇒ 逐件补齐（⛔ 不是整目录跳过）─────────────────────
+          {
+            const base = smMkdt(join(smTmpRoot, 'sm-c2-'))
+            const src = join(base, 'skel-src'); mkSrc(src)
+            const ws = join(base, 'ws'); smMkd(ws, { recursive: true })
+            /** ⚠ 先铺出**半套**：只放 README.md（目录存在、但 templates 三件缺）。 */
+            smMkd(join(ws, '.hob'), { recursive: true })
+            smWf(join(ws, '.hob', 'README.md'), '# 半套\n', 'utf8')
+            const r = skelMod.scaffoldSkeletonOnce(ws, { sourceDir: src, enabled: true })
+            /** ⚠ 判据：缺的那几件**被补齐**了（⛔ 不是"目录在就整目录跳过"）。 */
+            const fixed = ['templates/CONTEXT.md', 'templates/TASK.md']
+              .filter((rel) => smExists(join(ws, '.hob', rel)))
+            const c = r.completeness ?? {}
+            if (fixed.length !== 2) {
+              bad(`SM-c2 ⚠⚠ **半套骨架没被补齐**（缺的件仍在：${JSON.stringify(fixed)} 应在但只有 ${fixed.length}/2）`
+                + ` · completeness=${JSON.stringify(c)}`
+                + '\n      ⇒ 这正是**目录级闸门**的形态：`if (目录在) 整目录跳过` ⇒ 半套**永久缺**'
+                + '\n      ⇒ 判据必须是"**这一件**在不在"（⛔ 不是"目录在不在"）')
+            } else if (!(c.skippedExists >= 1 && c.scaffolded >= 2)) {
+              bad(`SM-c2 补齐了，但**完整性读数不对**：completeness=${JSON.stringify(c)}`
+                + '（期望 skippedExists≥1（README 那件跳过）且 scaffolded≥2（补了两件））')
+            } else {
+              ok('SM-c2 ✓ **半套 ⇒ 逐件补齐**（⛔ 不是整目录跳过）：目录已存在、只放了 README 一件 ⇒ '
+                + `其余 ${c.scaffolded} 件被补上、${c.skippedExists} 件已存在跳过 ⇒ 判据是"那一件在不在"`
+                + '（⚠ 回退成目录级闸门时，本条会红）')
+            }
+          }
+        }
+      }
     } finally {
       try { smRm(smTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+    }
+  }
+}
+
+// ── WW. **写守卫两态**（t11 补：把任一支改成 `if(false)` 必须变红）──────────────
+/**
+ * ══ 它守的是什么（审查席实测：**`if(false)` 也全绿**）════════════════════════════
+ *   `readOrchStateForWrite()` 有两个拒写分支（`store-unreadable` / `version-unknown`）。
+ *   把任一分支改成 `if (false)` ⇒ 该形态**照写**、把盘上原有数据清空，
+ *   而**当时没有任何判据会因此变红**。
+ *
+ * ── 判据（⚠ 真跑那个守卫，⛔ 不扫源码找 `if`）──────────────────────────
+ *   · 坏 JSON ⇒ `{ok:false, reason:'store-unreadable'}` + **留证副本**存在 + 原文件**字节未变**；
+ *   · 版本不认识（`version: 999`）⇒ `{ok:false, reason:'version-unknown'}` + 留证 + 原文件未变；
+ *   · 正常 JSON ⇒ `{ok:true}`（对照：⛔ 别把守卫做成"谁都不让写"）。
+ *   ⚠ 三态**分开报**（本仓纪律：两种成因不许合成一句话）。
+ */
+{
+  const { mkdtempSync: wMkdt, writeFileSync: wWf, readFileSync: wRf, readdirSync: wRd, rmSync: wRm } =
+    await import('node:fs')
+  const { tmpdir: wTmp } = await import('node:os')
+  let orchStateMod
+  /**
+   * ⚠ 用 `sourceTreeRoot`（**不是** SM 组作用域里的 `smRoot`）——
+   *   本块是**顶层**（SM 组的花括号已闭合）⇒ `smRoot` 不在作用域里。
+   *   ⚠ `sourceTreeRoot` 同样受 `HOB_SA_ROOT` 控制（本文件顶部定义）⇒ 负向对拍行为一致。
+   */
+  const { pathToFileURL: wP2u } = await import('node:url')
+  try {
+    orchStateMod = await import(wP2u(join(sourceTreeRoot, 'src', 'server', 'orch-state.ts')).href)
+  } catch { orchStateMod = undefined }
+  if (orchStateMod === undefined || typeof orchStateMod.readOrchStateForWrite !== 'function') {
+    bad('WW 无法直载 `orch-state.ts` 的 `readOrchStateForWrite` ⇒ 基准缺失（⛔ 不按通过处理）')
+  } else {
+    const base = wMkdt(join(wTmp(), 'hob-ww-'))
+    try {
+      const mk = (name, text) => { const f = join(base, name); wWf(f, text, 'utf8'); return f }
+      const corruptF = mk('bad.json', '{ this is not json')
+      const verF = mk('ver.json', JSON.stringify({ version: 999, updatedAt: 1, lost: [], handoffs: [], sessions: [], pending: [] }))
+      const goodF = mk('good.json', JSON.stringify({ version: 1, updatedAt: 1, lost: [], handoffs: [], sessions: [], pending: [] }))
+      const beforeCorrupt = wRf(corruptF, 'utf8')
+      const beforeVer = wRf(verF, 'utf8')
+      const g1 = orchStateMod.readOrchStateForWrite(corruptF)
+      const g2 = orchStateMod.readOrchStateForWrite(verF)
+      const g3 = orchStateMod.readOrchStateForWrite(goodF)
+      const afterCorrupt = wRf(corruptF, 'utf8')
+      const afterVer = wRf(verF, 'utf8')
+      /** ⚠ 留证副本必须真的生成了（`<file>.corrupt-*`）。 */
+      const evid = (f) => {
+        try { return wRd(base).some((n) => n.startsWith(f.slice(base.length + 1) + '.corrupt-')) } catch { return false }
+      }
+      const ok1 = g1?.ok === false && g1?.reason === 'store-unreadable'
+        && beforeCorrupt === afterCorrupt && evid(corruptF)
+      const ok2 = g2?.ok === false && g2?.reason === 'version-unknown'
+        && beforeVer === afterVer && evid(verF)
+      const ok3 = g3?.ok === true
+      if (!ok1) {
+        bad(`WW ⚠ **坏 JSON 的写守卫不在**（\`if(false)\` 形态）：ok=${g1?.ok} reason=${JSON.stringify(g1?.reason)}`
+          + ` · 原文件未变=${beforeCorrupt === afterCorrupt} · 有留证=${evid(corruptF)}`
+          + '\n      ⇒ 按空态重写会把盘上原有 pending/lost/handoffs/sessions **全部清空**，而调用方只会看到"写成功"')
+      } else if (!ok3) {
+        bad(`WW 对照失败：**正常 JSON 也被拒写**（ok=${g3?.ok} reason=${JSON.stringify(g3?.reason)}）`
+          + ' ⇒ 守卫被做成了"谁都不让写"（那会让运行态永远落不了盘）')
+      } else if (!ok2) {
+        bad(`WW ⚠ **版本不认识的写守卫不在**（\`if(false)\` 形态）：ok=${g2?.ok} reason=${JSON.stringify(g2?.reason)}`
+          + ` · 原文件未变=${beforeVer === afterVer} · 有留证=${evid(verF)}`
+          + '\n      ⇒ "不认识就当我这一代"重写 = **静默降级**（本代不认识的字段被丢掉，且回不来）')
+      } else {
+        ok('WW ✓ **写守卫两态各自独立在位**：坏 JSON ⇒ `store-unreadable` · 版本不认识 ⇒ `version-unknown`，'
+          + '两态都**原文件零字节改动 + 生成 `.corrupt-*` 留证**；对照：正常 JSON ⇒ `ok:true`'
+          + '（⚠ 把任一支改成 `if(false)` 时，本条会红）')
+      }
+    } finally {
+      try { wRm(base, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
     }
   }
 }
@@ -6563,6 +7057,110 @@ const orchCode = stripComments(orchSrc)
             }
           }
         }
+        // ══════════════════════════════════════════════════════════════
+        // SB-4 · **本轮窗口**：上一轮的产出 ⛔ 不许结这一轮的账（t11 补）
+        // ══════════════════════════════════════════════════════════════
+        //
+        //   ⚠⚠ 它守的是哪一格（审查席实测：**:3632 那条回退后全绿**）：
+        //     `probeTarget` 第 ② 条（会话 log 末条 `assistant/message`）改前**只判**
+        //     "有助手产出 + 此刻不在跑" ⇒ 重载后一条 `unresolved`（`at` = 派发时刻）
+        //     会被**上一轮的产出**结账：目标早就跑完，log 末条是**派发之前**那个活儿的结果
+        //     ⇒ 把**别人的产出当这一轮的回执**回传（错配，比丢更坏）。
+        //     修法：加一条 `entry.at >= at`。
+        //
+        //   ⚠ 判据（⚠ 造出"log 末条早于派发时刻"的现场）：
+        //     盘上一条 pending（`at` = **晚于** log 末条的时刻），会话 log 里有一条
+        //     `assistant/message` 带 `time`（**早于** `at`）⇒ 该条**必须不结算**
+        //     （零回执、仍留 pending）；再用"log 末条晚于 `at`"的对照证明它**不是恒不结算**。
+        //     ⚠ 两向都要：只判"不结算"会让"永远不结算"也过。
+        {
+          const base = sbMkdt(join(sbRootTmp, 'sb4-'))
+          const home = join(base, 'ledgers'); sbMkd(home, { recursive: true })
+          const ws = join(base, 'ws'); sbMkd(join(ws, 'runtime'), { recursive: true })
+          const file = join(home, sbBase(ws), 'runtime', 'orch-watches.json')
+          sbMkd(join(home, sbBase(ws), 'runtime'), { recursive: true })
+          const AT = 1792250000000
+          /** 造一份场景：`logTime` 决定 log 末条的时刻（早于 / 晚于 `AT`）。 */
+          const run = async (logTime, tagName) => {
+            sbWf(file, JSON.stringify({
+              version: 1, updatedAt: 1, handoffs: [], lost: [], sessions: [],
+              pending: [{ target: 'sess-win', watcher: 'hob', owner: 'hob',
+                at: AT, sawRunning: true, lastStatus: 'running' }],
+            }, null, 2), 'utf8')
+            const sess = (id) => ({
+              id, header: { agentPreset: 'standard', cwd: ws },
+              log: id === 'sess-win'
+                ? [{ type: 'assistant/message', time: logTime,
+                  data: { message: { content: [{ type: 'text', text: '上一轮的产出' }] } } }]
+                : [],
+            })
+            const byId = new Map(['hob', 'sess-win'].map((i) => [i, sess(i)]))
+            const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+            const agents = { currentInitiator: () => undefined,
+              get: (i) => (byId.has(i) ? { id: i, status: 'idle', ctx: {}, session: byId.get(i),
+                followup() {}, steer() {}, inject() {} } : undefined) }
+            const delivered = []
+            const logger = { debug() {}, info() {}, warn() {} }
+            const bp = {}
+            const bc = { sessions, agents, logger,
+              get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+              provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
+              inject: (_d, cb) => cb(bc), on: () => {} }
+            sbBus.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+            if (bp.hobBus !== undefined) {
+              for (const key of ['deliver', 'deliverInternal']) {
+                const real = typeof bp.hobBus[key] === 'function' ? bp.hobBus[key].bind(bp.hobBus) : undefined
+                if (real === undefined) continue
+                bp.hobBus[key] = async (sid, text, mode) => {
+                  delivered.push({ to: sid, text })
+                  return await real(sid, text, mode)
+                }
+              }
+            }
+            const prov = {}
+            const c = { sessions, agents, logger,
+              get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+                : k === 'hobBus' ? bp.hobBus
+                  : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+              provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
+              inject: (_d, cb) => cb(c), on: () => {} }
+            sbOrch.apply(c)
+            const orch = prov.hobOrchestrator
+            if (orch === undefined) return { noOrch: true }
+            if (typeof orch.reconcile === 'function') await orch.reconcile(`sb4-${tagName}`)
+            await new Promise((r) => setTimeout(r, 100))
+            const after = (() => { try { return JSON.parse(sbRf(file, 'utf8')) } catch { return {} } })()
+            return {
+              receipts: delivered.filter((d) => String(d.text).includes('【自动回传】')).length,
+              still: (after.pending ?? []).find((w) => w.target === 'sess-win'),
+            }
+          }
+          try {
+            /** ① **回归形态**：log 末条**早于**派发时刻 ⇒ ⛔ 不许结算。 */
+            const old = await run(AT - 60000, 'old')
+            /** ② **对照**：log 末条**晚于**派发时刻 ⇒ 应当结算（证明判据不是"恒不结算"）。 */
+            const fresh = await run(AT + 60000, 'fresh')
+            if (old.noOrch === true || fresh.noOrch === true) {
+              bad('SB-4 挂真 apply 之后没拿到 hobOrchestrator ⇒ 本断言失去基准')
+            } else if (old.receipts !== 0 || old.still === undefined) {
+              bad(`SB-4 ⚠⚠ **上一轮的产出被当成本轮回执**：log 末条（${AT - 60000}）**早于**派发时刻（${AT}），`
+                + `却投了 ${old.receipts} 份回执、盘上那条=${JSON.stringify(old.still)}`
+                + '\n      ⇒ 这正是 `entry.at >= at` 那条窗口判据被回退的形态：'
+                + '**把别人的产出当这一轮的结果回传**（错配比丢更坏）')
+            } else if (fresh.receipts === 0 && fresh.still !== undefined) {
+              bad('SB-4 对照失败：log 末条**晚于**派发时刻也**不结算**（零回执、仍留 pending）'
+                + `（盘上=${JSON.stringify(fresh.still)}）`
+                + '\n      ⇒ 判据被做成了"恒不结算"—— 那会让所有正常回传永久丢失')
+            } else {
+              ok('SB-4 ✓ **本轮窗口判据在位（两向）**：log 末条**早于**派发时刻 ⇒ '
+                + `**零回执** 且该条**留在 pending**（不拿上一轮的产出结这一轮的账）；`
+                + `对照：末条**晚于**派发时刻 ⇒ **正常结算**（${fresh.receipts} 份回执）`
+                + '（⚠ 回退成"只判有产出+不在跑"时，第一条会红；做成"恒不结算"时第二条会红）')
+            }
+          } finally {
+            try { sbRm(base, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+          }
+        }
       } finally {
         try { sbRm(sbRootTmp, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
       }
@@ -6804,9 +7402,7 @@ const orchCode = stripComments(orchSrc)
   const { basename: sdBase } = await import('node:path')
 
   /** ⚠ 与 SA/SB/SC 同款：`HOB_SA_ROOT` 可指向另一棵树（用来跑"改前必红"）。 */
-  const sdRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
-    ? process.env.HOB_SA_ROOT
-    : root
+  const sdRoot = sourceTreeRoot
   const sdTag = sdRoot === root ? '' : `（源码树=${sdRoot}）`
   let sdTmpRoot
   try { sdTmpRoot = sdMkdt(sdJ(sdTmp(), 'hob-sdcheck-')) } catch { sdTmpRoot = sdTmp() }
@@ -7560,17 +8156,36 @@ const orchCode = stripComments(orchSrc)
             + '（`w.error = \'session bus unavailable at relay time\'`）⇒ 测不到丙-11')
         } else {
           /** ⚠ 取那一支往后 3000 字符（足够覆盖整个分支体的改动）。 */
-          const seg = src.slice(at, at + 3000)
+          /**
+           * ══ ⚠⚠ **往回多切一段**（t11 补：`clearDeliveryAttempt(w)` 必须被核到）══════
+           *   改前只从 `w.error = …` 那行**往后**切 3000 字符 —— 而
+           *   `clearDeliveryAttempt(w)` 在它**前一行**（见 `orchestrator.ts` 的顺序：
+           *   `clearDeliveryAttempt(w)` → `w.error = …`）⇒ **完全在切片之外** ⇒
+           *   把那行删掉本组**照样绿**（审查席实测："总线缺席不撤 attempt"回退后全绿）。
+           *   ⇒ 现在从**锚点前 400 字符**切起（覆盖到前一行），并新增一条判据：
+           *     **必须调用 `clearDeliveryAttempt(w)`** —— 那是"总线不在 = 消息没进投递实现
+           *     ⇒ 与 `ok:false` 同档 ⇒ 撤掉 attempt（撤销那个错误陈述）"的落点。
+           *   ⚠ 同时**保留**原来的三条（复位 / 上限 / 不抹 error）：它们各管一件事。
+           */
+          const seg = src.slice(Math.max(0, at - 400), at + 3000)
           const resets = /w\.reported\s*=\s*false/.test(seg)
           const usesLimit = /RELAY_BUS_MISS_LIMIT/.test(seg)
           const keepsError = /w\.error/.test(seg)
+          /** ⚠ **总线缺席必须撤 attempt**（`delete …deliveryAttemptAt` 经这个 helper）。 */
+          const clearsAttempt = /clearDeliveryAttempt\s*\(\s*w\s*\)/.test(seg)
           const constSrc = sdRf(join(sdRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
           const busLimit = /export\s+const\s+RELAY_BUS_MISS_LIMIT\s*=\s*(\d+)/.exec(constSrc)
           const cleanupLimit = /export\s+const\s+CLEANUP_RETRY_LIMIT\s*=\s*(\d+)/.exec(constSrc)
           const distinct = busLimit !== null && cleanupLimit !== null
             && busLimit[1] !== cleanupLimit[1]
-          if (resets && usesLimit && keepsError) {
-            ok('SQ-a ✓ **丙-11**：`bus` 缺席那一支**复位了 `reported`**（`w.reported = false`）'
+          if (!clearsAttempt) {
+            bad('SQ-a ⚠ **总线缺席时没有撤 `attempt`**（缺 `clearDeliveryAttempt(w)`）'
+              + '\n      ⇒ 总线不在 = 消息**根本没进入投递实现** ⇒ 与 `ok:false` 同档：'
+              + '必须撤掉"我试过了但不知道结果"这个**错误陈述**（`deliveryAttemptAt`）'
+              + '\n      ⇒ 不撤的后果：该 target 被那条假 attempt 判成"结果未知"⇒ 既收不到回执、也不能被重派')
+          } else if (resets && usesLimit && keepsError) {
+            ok('SQ-a ✓ **丙-11**：`bus` 缺席那一支**撤了 `attempt`**（`clearDeliveryAttempt(w)`）· '
+              + '**复位了 `reported`**（`w.reported = false`）'
               + '、**保留 `error`**（⛔ 没抹证据）、且受 `RELAY_BUS_MISS_LIMIT='
               + (busLimit === null ? '?' : busLimit[1]) + ' 次上限约束（⛔ 不是无限复位）'
               + ` ⇒ 事件路径不再永久泄气；⚠ 与丙-1 的 \`CLEANUP_RETRY_LIMIT=${
@@ -7988,53 +8603,103 @@ const orchCode = stripComments(orchSrc)
         return { logs, provided, text: logs.join('\n') }
       }
 
-      // ── SS-a ⭐⭐ **档位=ledger ⇒ 不许说"不提供"，且两件事分开印** ────────
+      // ── SS-a ⭐⭐ **丙-2 的原意 + 2026-10-22 第 2 轮的新契约** ──────────────
+      /**
+       * ⚠ 本条**换过一次判据**（第 2 轮 · `REQ-04`/`REQ-05`），⛔ 不是放宽：
+       *
+       * ── 改前（第 336 轮钉的）────────────────────────────────────────────
+       *   「档位=ledger ⇒ 说"**服务已提供**" + "**每次投递都会被档位拒**" + 点明"服务不在=没装载"」
+       *   ⚠ 那时装载层**按全局档**丢模块 ⇒ 读者最怕的是"以为服务不在（其实在但会被拒）"。
+       *
+       * ── 为什么它必须改（旧句现在**本身不成立**）────────────────────────
+       *   本轮删掉了装载期的全局档闸门 ⇒ 「每次投递都会被**（全局）档位**拒」**已经是假话**：
+       *   投递时判的是**发起会话自己的**策略，⛔ 不是这个全局读数。
+       *   ⚠ 若继续钉旧句，等于要求代码**保留一句假话**来让检查器变绿 —— 方向反了。
+       *
+       * ── 现在钉什么（**三条都在，且都是本轮真正要传达的**）──────────────
+       *   ① `provide` 必须发生（⚠ 与档位无关 —— 这正是本轮改动）；
+       *   ② 必须明写"**装载条件只有开关**"（⛔ 别让人以为档位还能挡装载）；
+       *   ③ 必须明写"全局档读数**仅供参考、不参与准入**"（⛔ 别让人把它接回判据）；
+       *   ④ 仍须**点名**"无执行归属 / 会话已销毁 / 策略取不到 ⇒ 一律拒"。
+       *   ⚠ 这四条合起来**比原来更强**：原来只要求"说清服务在不在"，
+       *     现在还要求"说清准入改到哪儿去了"。
+       */
       {
         const r = icMount('ledger')
         const serviceIsThere = r.provided[icMod.INTERCONNECT_SERVICE] !== undefined
         const saysNotProvide = /不提供投递服务/.test(r.text)
-        const saysProvided = /服务已提供/.test(r.text)
-        const saysRejected = /每次投递都会被档位拒/.test(r.text)
-        const saysTwoThings = /服务不在.*模块没被装载/.test(r.text.replace(/\n/g, ' '))
-          || /服务不在\b/.test(r.text)
+        const saysOnlySwitch = /装载条件\*\*只有开关\*\*/.test(r.text)
+        const saysGlobalNotUsed = /仅供参考、⛔ 不参与准入/.test(r.text)
+        const saysRejectCases = /无执行归属/.test(r.text) && /策略取不到/.test(r.text) && /一律拒/.test(r.text)
+        const claimsGlobalLevelRejects = /每次投递都会被档位拒/.test(r.text)
         if (!serviceIsThere) {
-          bad('SS-a 【失去基准】档位=ledger 时 `provide` **没有发生** ⇒ 与"无条件 provide"的既有设计不符'
-            + '（⚠ 那会让本档测不到"服务在但投递被拒"这一格）')
+          bad('SS-a 【失去基准】档位=ledger 时 `provide` **没有发生** ⇒ 与"装载与档位无关"的本轮设计不符')
         } else if (saysNotProvide) {
-          bad('SS-a 【丙-2 没修好】档位=ledger 时仍印「**不提供投递服务**」'
+          bad('SS-a 【丙-2 复发】档位=ledger 时又印「**不提供投递服务**」'
             + `（而 \`provide\` 实际发生了 ⇒ 服务**在**）`
-            + `\n      原文：${JSON.stringify(r.text.slice(0, 260))}`
-            + '\n      ⇒ ⚠ 这就是丙-2：读者据此以为服务不存在，而它只是"每次投递都会被拒"')
-        } else if (saysProvided && saysRejected && saysTwoThings) {
-          ok('SS-a ✓ **丙-2**：档位=ledger 时**不再说"不提供"**，而是把两件事分开印：'
-            + `「**服务已提供**」=${saysProvided} · 「**每次投递都会被档位拒**」=${saysRejected}`
-            + ` · 并点明"服务不在 = 模块没被装载"=${saysTwoThings}`
-            + ' ⇒ ⛔ 两个事实没被合成一句（`provide` 实际发生了：服务确实在）')
+            + `\n      原文：${JSON.stringify(r.text.slice(0, 260))}`)
+        } else if (claimsGlobalLevelRejects) {
+          bad('SS-a 【仍在说假话】文案里还写着「每次投递都会被档位拒」'
+            + '\n      ⇒ ⚠ 本轮准入已改成**按发起会话**判，全局档不再决定投递；这句会把人指去"升全局档"，是错的方向')
+        } else if (saysOnlySwitch && saysGlobalNotUsed && saysRejectCases) {
+          ok('SS-a ✓ 装载与档位**解耦**已如实印出：'
+            + `「装载条件只有开关」=${saysOnlySwitch} · 「全局档仅供参考、不参与准入」=${saysGlobalNotUsed}`
+            + ` · 点名三种拒因（无归属/已销毁/无策略）=${saysRejectCases}`
+            + ' ⇒ ⛔ 没有把"服务在不在"与"能不能投"合成一句')
         } else {
           bad('SS-a 【文案仍不合格】档位=ledger 时：'
-            + `说"服务已提供"=${saysProvided}（应 true）· 说"投递会被拒"=${saysRejected}（应 true）`
-            + ` · 点明两者区别=${saysTwoThings}（应 true）`
-            + `\n      原文：${JSON.stringify(r.text.slice(0, 260))}`)
+            + `说"装载只看开关"=${saysOnlySwitch}（应 true）· 说"全局档不参与准入"=${saysGlobalNotUsed}（应 true）`
+            + ` · 点名拒因=${saysRejectCases}（应 true）`
+            + `\n      原文：${JSON.stringify(r.text.slice(0, 300))}`)
         }
       }
 
-      // ── SS-b ⭐ **正常档（档位=workspace）⇒ 输出逐字不变** ───────────────
+      // ── SS-b ⭐ **档位不再是"分支条件"：三档读数必须一致**（第 2 轮换判据）──────
+      /**
+       * ⚠ 本条也**换过一次判据**，⛔ 不是放宽 —— 换的理由与 SS-a 同一个：
+       *   改前钉的是「档位=workspace 时文案逐字 = 旧那一句（含 `档位=workspace`）」。
+       *   而那整句的**存在前提**是"装载与档位有关"。本轮解耦之后：
+       *     · 旧句里的 `档位=workspace` 会被误读成"装载看档位"；
+       *     · 更关键的是——**三档之间的输出不该再有结构差异**，
+       *       否则说明档位又变成了某个分支条件。
+       *   ⇒ 新判据（更强）：**ledger / project / workspace 三档的日志必须逐字相同**。
+       *     ⚠ 只要有人把档位塞回任何分支，（含仅用于文案）这条就红。
+       *   ⚠ 并且「装载条件只有开关」与「不参与准入」两句**每一档都要在**。
+       */
       {
-        const r = icMount('workspace')
+        const LEVELS = ['ledger', 'project', 'workspace']
+        const texts = LEVELS.map((lv) => icMount(lv).text)
         /**
-         * ⚠ 这一句是**改前就有的正常档文案**（本批⛔ 不许动它）。
-         *   判据 = 逐字相等（⚠ 不是"包含某个词"）。
+         * ⚠ 归一：把**诊断读数里那个档位名**替换成占位符 —— 它是"被观测的值"，
+         *   自然会随档位变；⚠ 但**它出现在文中的位置与句式必须一模一样**，
+         *   否则就说明档位参与了**分支**（而不是被打印）。
+         *   ⚠ 这是本判据的关键：**"带着不同的值"与"走不同的分支"必须分清**。
          */
-        const WANT = /^\[dsh-hob\] 已加载：开关=开 · 档位=workspace · 白名单对端=\[（空）\]。$/m
-        const hit = WANT.test(r.text.replace(/^\[[^\]]+\]\s*/, '[dsh-hob] '))
-        if (hit) {
-          ok('SS-b ✓ **正常档（档位=workspace）输出逐字不变**：'
-            + `「${r.text.split('\n').pop()}」`
-            + ' ⇒ ⛔ 本批没碰正常路径（只改了档位=ledger 那一支）')
+        const NORMS = texts.map((t, i) => t.split(`读数=\`${LEVELS[i]}\``).join('读数=<LEVEL>'))
+        const allSameShape = NORMS.every((t) => t === NORMS[0])
+        const allSayOnlySwitch = texts.every((t) => /装载条件\*\*只有开关\*\*/.test(t))
+        const allSayNotUsed = texts.every((t) => /仅供参考、⛔ 不参与准入/.test(t))
+        /**
+         * ⚠ 额外的**行为面**证据：三档装出来的**服务体**必须一样能用（⛔ 不是"看档位给不给"）。
+         *   判据 = 三档下 `provide` 都发生、且 `deliver` 都是函数。
+         */
+        const services = LEVELS.map((lv) => icMount(lv).provided[icMod.INTERCONNECT_SERVICE])
+        const allHaveDeliver = services.every((sv) => sv !== undefined && typeof sv.deliver === 'function')
+        if (!allSameShape) {
+          const diff = NORMS.map((t, i) => `[${LEVELS[i]}] ${JSON.stringify(t.slice(0, 240))}`)
+          bad('SS-b 【档位又变成了分支条件】三档日志**句式不同**（把读数归一后仍不相等）'
+            + `\n      逐档：\n      ${diff.join('\n      ')}`
+            + '\n      ⇒ ⚠ 装载已与档位解耦 ⇒ 三档**必须走同一个分支**（档位只可作为读数出现）')
+        } else if (!allHaveDeliver) {
+          bad(`SS-b 【服务体随档位变化】三档都 provide 且都有 deliver 函数 = ${allHaveDeliver}（应 true）`)
+        } else if (!allSayOnlySwitch || !allSayNotUsed) {
+          bad('SS-b 【三档一致但内容不合格】**三档**都必须同时说清'
+            + `「装载条件只有开关」=${allSayOnlySwitch} · 「全局档不参与准入」=${allSayNotUsed}（都应 true）`)
         } else {
-          bad('SS-b 【正常档读数被改动了】档位=workspace 时的文案与改前不一致'
-            + `\n      实际：${JSON.stringify(r.text)}`
-            + '\n      ⇒ ⚠ 本批只该改"档位=ledger"那一支，正常档必须逐字不变')
+          ok('SS-b ✓ **三档（ledger/project/workspace）走的是同一个分支**：'
+            + `日志句式归一后逐字相同（各 ${texts[0].length} 字符，唯一差异是"被打印的读数"）；`
+            + `三档都 provide 且 \`deliver\` 都是函数=${allHaveDeliver}`
+            + ' ⇒ 档位已**不再是**任何分支条件（⚠ 比改前更强：改前只核 workspace 一档）')
         }
       }
 
@@ -8263,6 +8928,129 @@ const orchCode = stripComments(orchSrc)
           }
         }
       },
+    }
+  }
+
+  /**
+   * ══ ⚠⚠ **Z0 · 零组不许整文件覆盖**（t11 补：`orchestrator.ts` 零组分支回退必须红）═════
+   *
+   * ── 它守的是什么（审查席实测：全绿）────────────────────────────────────────
+   *   `flushWatches` 的**零组分支**（本代一条活着的记录都没有了）改前走
+   *   `persistWatches(file, [])` —— **整个文件被覆盖成空**。
+   *   而同一个文件里可能还有**别的 owner** 的 pending（同一工作区两个 Hob，`I-5`），
+   *   以及**只活在盘上的** `unresolved` / `stuck` ⇒ 一起被抹掉、**不进 `lost`** ⇒ 静默消失。
+   *   修法：零组时仍**逐个 `(文件, owner)` 走 `persistOwnerPartition(file, owner, [])`**。
+   *
+   * ── 判据（走真 `apply` + 真账本文件；⚠ **先证分支真跑了**）──────────────
+   *   ① **造出"本代登记过落点、但已无活着的 watch"**的状态：先 `dispatch` 一条
+   *      （`noteLanding` 记下 `(file, ME)`），再让它**结算掉**
+   *      （把 agent 推到 idle ⇒ 事件/对账把它 `watches.delete` ⇒ `groups.size===0`）。
+   *   ② 盘上那份文件里同时有**别人的**一条记录。
+   *   ③ 触发一次落盘 ⇒ 断言 **我这一片被清掉**（`mine.length === 0`，证明零组分支真的跑了）
+   *      **且别人的那条还在**（`others.length === 1`）。
+   *   ⚠ 前置不可省：只判"别人的还在"时，**分支没跑 ⇒ 文件没被碰 ⇒ 别人的当然还在**
+   *     ⇒ 恒绿（我前两版正是这样，变异体照样绿 —— 两次都当场抓到）。
+   */
+  {
+    if (seOrch !== undefined && seBusMod !== undefined) {
+      const base = seMkdt(seJ(seTmpRoot, 'z0-'))
+      const home = seJ(base, 'ledgers'); const ws = seJ(base, 'ws')
+      const RT = seJ(home, seBase(ws), 'runtime')
+      const file = seJ(RT, 'orch-watches.json')
+      seMkd(RT, { recursive: true })
+      const ME = 'session-z0-me'; const OTHER = 'session-z0-other'
+      const MINE_T = 'sess-z0-mine'
+      seWf(file, JSON.stringify({
+        version: 1, updatedAt: 1, lost: [], handoffs: [], sessions: [], pending: [
+          { target: 'sess-z0-other', watcher: OTHER, owner: OTHER, round: 1, at: 1792250000000, sawRunning: true, lastStatus: 'running' },
+        ],
+      }), 'utf8')
+      const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+      const byId = new Map([[ME, mkS(ME)], [MINE_T, mkS(MINE_T)]])
+      const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+      /**
+       * ⚠ 可改的 agent 状态（把派出去那条推到 idle ⇒ 结算 ⇒ watches 空 ⇒ 零组分支）。
+       * ⚠ `ME` **也必须在 `stMap` 里**（= 活会话）：投递目标是 `MINE_T` 的回执送不出去时
+       *   记录会**留在 walks 里重试**（`reported:true` 但未 `delete`）⇒ 到不了零组。
+       */
+      const stMap = new Map([[ME, 'idle'], [MINE_T, 'running']])
+      const agents = {
+        currentInitiator: () => undefined,
+        get: (i) => (stMap.has(i) ? {
+          id: i, status: stMap.get(i), ctx: {}, session: byId.get(i) ?? mkS(i),
+          followup() {}, steer() {}, inject() {},
+        } : undefined),
+      }
+      const bp = {}
+      const bc = {
+        sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+        provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(bc), on: () => {},
+      }
+      seBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+      const bus = bp.hobBus
+      const prov = {}
+      /**
+       * ⚠⚠ **必须真的把 `agent/status` 事件收集起来并手动派发**（t11 第三版）：
+       *   `reconcile` **只处理盘上已有的记录** —— 它**不会**把"内存里那条已跑完的 watch"
+       *   结算掉。而零组分支要的是"本代**一条活着的 watch 都没有**"。
+       *   ⇒ 只有走**事件路径**（`agent/status` → `settle` → `watches.delete`）才能达到那个状态。
+       *   ⚠ 前两版用 `reconcile` 硬凑 ⇒ 分支根本没跑（自证当场报"失去靶子"，两次都抓到）。
+       */
+      const evHandlers = []
+      const ctx = {
+        sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : k === 'hobBus' ? bus
+          : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+        provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(ctx),
+        on: (ev, h) => { if (ev === 'agent/status') evHandlers.push(h); return () => {} },
+      }
+      seOrch.apply(ctx)
+      const orch = prov.hobOrchestrator
+      if (orch === undefined) {
+        bad('Z0 装不出 `hobOrchestrator` ⇒ 基准缺失（⛔ 不按通过处理）')
+      } else {
+        try {
+          /** ① 派一条 ⇒ `noteLanding(file, ME)` 记下"本代用过这个文件"。 */
+          const d = await orch.dispatch(MINE_T, 'z0：只为让本代登记一次落点', { self: ME })
+          await new Promise((r) => setTimeout(r, 80))
+          /** ② 先喂一帧 running（`sawRunning` 要真见过 running 才算"跑完"）。 */
+          stMap.set(MINE_T, 'running')
+          for (const h of evHandlers) await h({ agent: { id: MINE_T }, status: 'running' })
+          await new Promise((r) => setTimeout(r, 60))
+          /** ③ 推到 idle ⇒ 事件路径 `settle` ⇒ 投递成功 ⇒ `watches.delete` ⇒ 本代无活着的 watch。 */
+          stMap.set(MINE_T, 'idle')
+          for (const h of evHandlers) await h({ agent: { id: MINE_T }, status: 'idle' })
+          await new Promise((r) => setTimeout(r, 200))
+
+          /** ③ 再触发一次落盘 ⇒ 若本代已无活着的 watch，就走**零组分支**。 */
+          await orch.reconcile('z0-zero-group')
+          await new Promise((r) => setTimeout(r, 150))
+          const after = (() => { try { return JSON.parse(seRf(file, 'utf8')).pending ?? [] } catch { return null } })()
+          const mine = (after ?? []).filter((w) => w.owner === ME)
+          const others = (after ?? []).filter((w) => w.owner === OTHER)
+          if (after === null) {
+            bad('Z0 落盘后读不回账本文件 ⇒ 本组失去读数（⛔ 不按通过处理）')
+          } else if (mine.length !== 0) {
+            bad(`Z0 【失去靶子】零组分支**没有被执行**：我这一片仍有 ${mine.length} 条`
+              + `（pending=${JSON.stringify((after ?? []).map((w) => ({ t: w.target, o: w.owner })))}`
+              + ` · dispatch 结果=${JSON.stringify(d)?.slice(0, 80)}）`
+              + '\n      ⇒ 本组测不到"零组时怎么清"，⛔ 不按通过处理（⚠ 只判"别人的还在"不算通过）')
+          } else if (others.length === 0) {
+            bad('Z0 ⚠⚠ **零组分支把别的 owner 的记录也抹掉了**（`persistWatches(file, [])` 的整文件覆盖形态）'
+              + `\n      ⇒ 落盘后 pending=${JSON.stringify((after ?? []).map((w) => ({ t: w.target, o: w.owner })))}`
+              + '\n      ⇒ 同一账本文件里别的 Hob 的记录 / 只活在盘上的 unresolved 会被**静默清掉**（不进 `lost`）')
+          } else {
+            ok('Z0 ✓ **零组分支只清"我这一片"，⛔ 不整文件覆盖**：`dispatch` 后结算 ⇒ 本代无活着的 watch'
+              + `（零组分支**确实执行**：我这一片已清空）· **另一个 owner（${OTHER}）的那条仍在盘上**`
+              + '（⚠ 回退成 `persistWatches(file, [])` 时，本条会红：整本被覆盖成空）')
+          }
+        } catch (e) {
+          bad(`Z0 用例抛错（${String(e?.message ?? e)}）⇒ 不按通过处理（⛔ 跑不起来 ≠ 通过）`)
+        }
+      }
     }
   }
 
@@ -8544,19 +9332,148 @@ const orchCode = stripComments(orchSrc)
     // **负向对拍**：三处各摘一处 ⇒ 对应那条必须当场不成立
     // ══════════════════════════════════════════════════════════════
     {
-      /** ── SE-a(反证)：把"失败清 attempt"那两行摘成空操作 ───────────────── */
-      const GUARD_A = '        delete w.deliveryAttemptAt'
+      /**
+       * ── SE-a(反证)：把**所有**"删 attempt"的落点摘成空操作 ───────────────────
+       *
+       * ── ⚠⚠ 改前是什么（**判据形态脆性**，不是产品缺陷 · 2026-10-24 · B 席）────
+       *   靶子是**语法形态**（先是一个字面量行 + `String.replace`，后来是
+       *   `const x = (…) : void => { delete … }` 的 helper 专门形态），于是：
+       *     · `replace` 只换第一处 ⇒ 两处删除点时变异只改一半 ⇒ **反证假失败**；
+       *     · 认 `const … => { … }` 这一种写法 ⇒ 换成**语义完全等价**的
+       *       `function x(...): void { delete … }` 声明式 ⇒ 那条 pattern 命中 0
+       *       ⇒ **又只覆盖一半** ⇒ `check:orch` 回落 221/222 exit 1。
+       *   ⚠ 根因是**判据在认语法形态**：`const` 箭头 / `function` 声明 / 类方法 /
+       *     内联 / helper 封装 —— 这些形状**无穷**，认形状必然漏。
+       *
+       * ── 现在的修法（按**语义**认，⛔ 不特判任何 helper 形状）────────────────
+       *   ① **一条正向语义正则**：`delete\s+<expr>.deliveryAttemptAt`（任意缩进、
+       *      任意对象表达式），**全量**替换成空操作。它**自动覆盖**上面所有形状
+       *      （helper 的函数体里那句 `delete` 本身就是被替换的对象）⇒
+       *      ⛔ 不需要也不允许再写"helper 特判"那种会随形状失效的东西。
+       *   ② `g` 全局（⛔ 单点 `replace`）。
+       *   ③ ⚠⚠ **自证：注释外真实命中数 before=N（>0）/ after=0** —— 这条不能丢，
+       *      否则退回"改了一半还报绿"。
+       *      ⚠ 计数**必须先剥注释**：本仓注释里大量引用这句代码（讲"改前是什么"），
+       *        直接数会把注释里的命中算进来 ⇒ 永远 after≠0（假红）。
+       *   ⚠ 反证本身**一个字没放宽**：仍然是"不删 attempt ⇒ 一次都投不出去"。
+       */
+      /**
+       * ⚠⚠ **注释掩码：把注释字符替换成空格，但保持长度与索引不变**（2026-10-24 · B 席）──
+       *
+       * ── 为什么必须是"同长度掩码"而不是"剥掉注释"────────────────────────
+       *   改前这里用 `stripCommentsForCount()`（**删掉**注释）来**计数**，却拿**原文**去
+       *   `replace()` ⇒ **两套文本、两套命中数**：
+       *     · 计数（剥注释后）= **2** 处（真实代码）；
+       *     · 替换（原文）  = **3** 处（多命中一处**写在块注释里的** `delete w.deliveryAttemptAt`）。
+       *   ⇒ 后果两层：
+       *     ① 替换串里带着**块注释的结束记号**（星号 + 斜杠）⇒ 它被塞进块注释内部后
+       *        **注释提前闭合** ⇒ 后半段变成裸代码
+       *        ⇒ 语法错 ⇒ 变异体 import 失败 ⇒ 报「变异体跑不起来」（实测 `check:orch` 221/222）；
+       *     ② 即使替换串不带块注释结束记号，注释内容也被**悄悄改坏** ⇒ 而"剥注释计数"看不出差别
+       *        ⇒ 自证 after=0 **假通过**。
+       *   ⚠ 根因就是**计数与替换用了两套口径** —— 这正是本仓反复讲的那类缺陷。
+       *
+       * ── 现在 ──────────────────────────────────────────────────────────
+       *   `maskComments()` 把注释区间**逐字符换成空格**（长度、行号、每个字符的偏移全不变）
+       *   ⇒ 「在掩码上找命中」得到的**偏移可直接用在原文上** ⇒ **同一套口径**。
+       */
+      const maskComments = (t) => {
+        const out = t.split('')
+        /** ① 块注释：`/* … *\/`（含多行）。 */
+        for (const m of t.matchAll(/\/\*[\s\S]*?\*\//g)) {
+          for (let i = m.index; i < m.index + m[0].length; i += 1) if (out[i] !== '\n') out[i] = ' '
+        }
+        /** ② 行注释：⚠ 同一行里若该 `//` 落在已成空格的块注释区间内，则已被上一步吃掉。 */
+        for (const m of t.matchAll(/(^|[^:'"`\\])(\/\/[^\n]*)/g)) {
+          const start = m.index + m[1].length
+          for (let i = start; i < start + m[2].length; i += 1) out[i] = ' '
+        }
+        return out.join('')
+      }
+      /**
+       * ⚠ **靶点的唯一权威形式 = 语义正则**（⛔ 不写死对象名、⛔ 不特判 helper 形状）。
+       *   `\bdelete\s+[^\n;{}]*?\.deliveryAttemptAt\b` ——
+       *   覆盖 `delete w.deliveryAttemptAt` / `delete x.y.deliveryAttemptAt` /
+       *   以及任何 helper 函数体里的那一句（因为它就是一句 `delete …`）。
+       */
+      const GUARD_A_RE = /\bdelete\s+[^\n;{}]*?\.deliveryAttemptAt\b/g
+      /**
+       * ⚠ **取数点只有一个**：`guardHits(text)` 返回 `{ count, spans }`，`spans` 是**原文偏移**。
+       *   ⛔ 不许再出现"计数一套、替换一套"的第二个口径。
+       */
+      const guardHits = (text) => {
+        const masked = maskComments(text)
+        const spans = [...masked.matchAll(GUARD_A_RE)].map((m) => ({ start: m.index, end: m.index + m[0].length }))
+        return { count: spans.length, spans }
+      }
       let src = ''
       try { src = seRf(seJ(seRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { src = '' }
-      if (!src.includes(GUARD_A)) {
-        bad('SE-a(反证) 【失去靶子】找不到"失败时删 attempt"那一行原文'
-          + `（期望：${JSON.stringify(GUARD_A.trim())}）⇒ 不按通过处理`)
+      const before = guardHits(src)
+      const hitsBefore = before.count
+      if (hitsBefore === 0) {
+        bad('SE-a(反证) 【失去靶子】注释外找不到任何 `delete …deliveryAttemptAt` 落点'
+          + ' ⇒ 不按通过处理（⚠ 若实现换成了别的表达，请把本判据的**语义**更新到新表达，'
+          + '⛔ 不许因此把反证删掉）')
       } else {
         const dir = seMkdt(seJ(seTmpRoot, 'mut-a-'))
         try {
           seCp(seJ(seRoot, 'src'), seJ(dir, 'src'), { recursive: true, dereference: true })
           const f = seJ(dir, 'src', 'modules', 'orchestrator.ts')
-          seWf(f, seRf(f, 'utf8').replace(GUARD_A, '        void 0 /* 变异：不删 attempt */'), 'utf8')
+          /**
+           * ⚠ **变异**：**按偏移、只改代码区**（⛔ 不碰注释、⛔ 不动行数与缩进）。
+           *
+           * ── 为什么必须"按位置"而不是 `src.replace(RE, …)` ──────────────────
+           *   `replace` 作用在**原文**上 ⇒ 它**连注释里的那句一起改**（实测多命中 1 处），
+           *   而替换串一旦落进块注释内部就会把注释**提前闭合** ⇒ 语法错
+           *   ⇒ 「变异体跑不起来」（那会被误读成"反证成立"，其实什么都没验到）。
+           *   ⇒ 用 `guardHits(src).spans`（**已在注释掩码上算好、偏移可直接用于原文**）
+           *     逐段拼接：命中段 ⇒ `void 0`，其余原样。
+           *   ⚠ 替换串**不带任何注释记号**（纯 `void 0`）⇒ 即便将来掩码有偏差，
+           *     也不会再制造"注释提前闭合"这种**结构性**破坏。
+           */
+          const PLACEHOLDER = 'void 0'
+          const spans = before.spans
+          const MUT = 'void 0 /* mutated: drop attempt-clearing */'
+          const chunks = []
+          let cursor = 0
+          for (const sp of spans) {
+            chunks.push(src.slice(cursor, sp.start), PLACEHOLDER)
+            cursor = sp.end
+          }
+          chunks.push(src.slice(cursor))
+          const mutated = chunks.join('')
+          /**
+           * ⚠⚠ **口径一致性自证（这条是本轮修的真缺口）**：
+           *   替换的命中数**必须等于**掩码上的命中数，⛔ 不许"两套文本两套数"。
+           *   ⚠ 再加一条：**替换后原文里"代码区的命中"必须归零**（`after=0`），
+           *     且**注释字数不许变**（= 我们没改坏注释）。
+           */
+          const after = guardHits(mutated)
+          if (after.count !== 0) {
+            bad('SE-a(反证) 【变异不完整】改完仍有 `delete …deliveryAttemptAt` 残留'
+              + `：before=${hitsBefore} 处 / after=${after.count} 处`
+              + ' ⇒ ⚠ 只改了一半的变异体**不能**用来做负向对拍')
+            throw new Error('变异不完整（见上面那条 ✗）')
+          }
+          if (spans.length !== hitsBefore) {
+            bad('SE-a(反证) 【口径不一致】替换用的命中数 ≠ 计数用的命中数'
+              + `：spans=${spans.length} / before=${hitsBefore}`
+              + ' ⇒ ⚠ 这就是"两套文本两套数"的缺陷形态，⛔ 不许继续跑')
+            throw new Error('计数口径不一致（见上面那条 ✗）')
+          }
+          if (maskComments(mutated) !== maskComments(src).replace(GUARD_A_RE, PLACEHOLDER)) {
+            /**
+             * ⚠ 更强的一条：**把两边都掩码后再比**，唯一的差别必须只是那几处命中。
+             *   它同时证明"注释一个字没动"（注释全被掩成空格，两边必须逐字相同）。
+             */
+            bad('SE-a(反证) 【变异越界】改完的掩码文本与"只在命中处替换"的期望不一致'
+              + ' ⇒ 变异动到了命中段之外（注释 / 缩进 / 其它代码）')
+            throw new Error('变异越界（见上面那条 ✗）')
+          }
+          ok(`SE-a(反证) 自证 ✓ **变异按语义全量生效**：注释外 \`delete …deliveryAttemptAt\` `
+            + `before=${hitsBefore} 处 ⇒ after=0 处（⚠ 覆盖 const 箭头 / function 声明 / 类方法 / 内联 / helper 函数体 —— `
+            + '因为这条判据**只认那句删除本身**，⛔ 不认任何外层形状）')
+          seWf(f, mutated, 'utf8')
           try { seLink(seJ(seRoot, 'node_modules'), seJ(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
           const mut = await import(seP2u(seJ(dir, 'src', 'modules', 'orchestrator.ts')).href)
           const base = seMkdt(seJ(seTmpRoot, 'mutcase-a-'))
@@ -10684,7 +11601,8 @@ if (note.length > 0) console.log(note.join('\n'))
  *   ⚠ 放在 `fail` 判定**之前**印：失败时也应当能看到"查了多少、过了多少、跳了多少"
  *     （⛔ 不许只在 PASS 时才印 —— 那会让失败态缺少维度）。
  */
-console.log(`  处级口径：查了 ${note.length + skip.length} 处 · 过了 ${note.length} 处`
+console.log(`  处级口径：查了 ${note.length + fail.length + skip.length} 处 · 过了 ${note.length} 处`
+    + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
   + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
 if (fail.length > 0) {
   console.log('\n✗ 失败：')

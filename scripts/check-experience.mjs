@@ -506,7 +506,8 @@ if (fail.length === 0 && ENTRIES_DIR_MISSING) {
  *     `fail` **不进等式**（它是"查了且不过"，由判定行负责）——
  *     ⛔ 不许把它塞进"过了"或"跳过"任一边来凑等式（那正是甲-1 的病）。
  */
-console.log(`  处级口径：查了 ${note.length + skip.length} 处 · 过了 ${note.length} 处`
+console.log(`  处级口径：查了 ${note.length + fail.length + skip.length} 处 · 过了 ${note.length} 处`
+    + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
   + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
 if (fail.length === 0) {
   console.log('判定：PASS —— 编号唯一且连续，E-' + STRICT_FROM + ' 起的四要素与根因句齐备。')

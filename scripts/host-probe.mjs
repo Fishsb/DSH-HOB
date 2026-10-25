@@ -119,6 +119,22 @@ function fakeCtx() {
     //   `ctx.provide is not a function` —— 那是**夹具缺能力**，不是实现错。
     provide: (name, value) => { provided.set(name, value); return { dispose: () => provided.delete(name) } },
     get: (name) => provided.get(name),
+    /**
+     * ⚠⚠ **2026-10-22 第 6 轮：假 ctx 必须长 `inject`**（与上面 `provide` 同一条教训）。
+     *
+     * ── 谁要它 ────────────────────────────────────────────────────────
+     *   `installCreateChannel(ctx)` 用 `ctx.inject(['connection','sessions'], cb)` ——
+     *   那是**反应式**依赖（宿主先有这两个服务才登记路由）。
+     *   ⚠ 假 ctx 没有 `inject` ⇒ apply 直接抛 `ctx.inject is not a function`
+     *     ⇒ 本族 4 条判据全变成"抛异常"，看起来像实现坏了。
+     *   ⚠ 那是**夹具缺能力**，⛔ 不是实现错。
+     *
+     * ── 语义：**不回调**（本族的假 ctx 里没有 `connection` 服务）
+     *   宿主原文里 `ctx.inject` 的语义就是"依赖到齐才跑回调"⇒ 依赖不在 ⇒ 不跑。
+     *   ⇒ 这里返回一个可 dispose 的空句柄，**不调用 cb** —— 与真实行为一致
+     *     （本族测的是"模块登记清单"，不是建会话通道本身）。
+     */
+    inject: () => ({ dispose: () => {} }),
   }
   return { ctx, plugins, logs, provided }
 }
@@ -287,19 +303,41 @@ check(`apply：${SWITCH_KEYS.length} 个开关全关 ⇒ 不登记任何子模�
   return true
 })
 
-// ── 8b) ⚠ ⚠ **档位闸门（M6a 的第二道）成对对拍的实测**（2026-10-16 第 237 轮）──────
-//   ⚠ **它守什么**：⚠ `interconnect` 除了"开关"还有一道**并列**的闸门 ——
-//     ⚠ **权限档位 = 账本 ⇒ 不登记**（⚠ 跨实例投递是"影响外部状态"的动作，只读档不做）。
-//   ⚠ ⚠ **成对**：⚠ 账本档 ⇒ **不**登记；⚠ 项目档 ⇒ **要**登记（⚠ 两边都测，⛔ 只测一边证明不了闸门）。
-//   ⚠ 条件：⚠ 开关**开着** —— ⚠ 否则测的是开关闸门，⛔ 不是档位闸门。
-check('apply：⚠ 档位闸门成对 —— 开关开着时，档位=账本 ⇒ 不登记 interconnect；档位=项目 ⇒ 登记', () => {
+// ── 8b) ⚠ ⚠ **装载条件 = 只有开关**（2026-10-22 第 2 轮**改判据**，⚠ 不是放宽）──────
+//   ⚠ **它守什么（现在的口径）**：`interconnect` 的**装载**只看显式开关，
+//     ⚠ **与任何档位无关** —— 因为准入已经搬到"投递时按发起会话判"（`deliverRemote` ③）。
+//
+//   ── 为什么这条判据换了（原判据当场变红，必须处理，⛔ 不许删了了事）──────────
+//     原判据：`档位=账本 ⇒ 不登记 · 档位=项目 ⇒ 登记`（2026-10-16 第 237 轮）。
+//     ⚠ 它钉的是**装载期的全局档闸门**；本轮按 `REQ-04`/`REQ-05` 把那道门**删掉**了
+//       （理由见 `src/index.ts` 装载循环上方那段注释）。
+//     ⇒ 若原样保留，它会**恒红**；若直接删掉，就没人守"装载条件到底是什么"了。
+//     ⇒ 正确处理：**换成钉新契约，并且方向反过来仍成对**：
+//        · `档位=账本` 且开关开 ⇒ **必须登记**（这正是"不再被全局档一票否决"）；
+//        · 开关关 ⇒ **必须不登记**（显式开关仍是唯一装载条件）。
+//     ⚠ 这两条合起来**比原来更强**：原来只证明"档位能挡装载"，现在还证明
+//       "档位**不能**挡装载" + "开关仍然能挡装载"。⛔ 不是把断言写松。
+//   ⚠ 投递层的准入（谁能投）**不在这里测** —— 那是 `scripts/check-policy-cross-instance.mjs`
+//     的活（它跑真 `deliverRemote`，带假启动器）。别让一条判据同时测两件事。
+check('apply：⚠ 装载条件**只有开关** —— 开关开 + 档位=账本 ⇒ 仍登记；开关关 ⇒ 不登记', () => {
   const problems = []
-  for (const [level, shouldRegister] of [['ledger', false], ['project', true]]) {
+  // ① 开关开 + 档位=账本 ⇒ **要**登记（旧口径是"不登记"；本轮该方向反转）
+  for (const level of ['ledger', 'project', 'workspace']) {
     const { ctx, plugins } = fakeCtx()
     mod.apply(ctx, mod.Config({ modules: { interconnect: true }, permission: { level } }))
     const got = plugins.includes('dsh-hob-interconnect')
-    if (got !== shouldRegister) {
-      problems.push(`档位=${level} ⇒ ${got ? '登记了' : '未登记'}（期望 ${shouldRegister ? '登记' : '未登记'}）plugins=${JSON.stringify([...plugins])}`)
+    if (got !== true) {
+      problems.push(`开关开 + 档位=${level} ⇒ ${got ? '登记了' : '**未登记**'}（期望登记：装载⛔ 不看档位）`
+        + ` plugins=${JSON.stringify([...plugins])}`)
+    }
+  }
+  // ② 开关关 ⇒ **不**登记（显式开关仍是唯一装载条件，⚠ 别把这道也一起删了）
+  {
+    const { ctx, plugins } = fakeCtx()
+    mod.apply(ctx, mod.Config({ modules: { interconnect: false }, permission: { level: 'workspace' } }))
+    if (plugins.includes('dsh-hob-interconnect')) {
+      problems.push(`开关关 + 档位=workspace ⇒ **仍登记了**（期望不登记：开关是唯一装载条件）`
+        + ` plugins=${JSON.stringify([...plugins])}`)
     }
   }
   return problems.length === 0 ? true : problems.join('；')

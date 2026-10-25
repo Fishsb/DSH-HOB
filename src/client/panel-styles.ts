@@ -174,6 +174,83 @@ const CSS = [
   // ⚠ 链接色令牌名是 `--dsw-alias-link`（不是 `label-link`，实测）。
   `.dsh-hob-link-btn{padding:0;font:inherit;color:var(--dsw-alias-link);background:none;border:0;cursor:pointer;text-decoration:underline}`,
   `.dsh-hob-link-btn:disabled{color:var(--dsw-alias-label-tertiary);cursor:default;text-decoration:none}`,
+
+  // ══════════════════════════════════════════════════════════════════════
+  // 新建 Hob 会话：命令入口 + 双轴弹窗（2026-10-22）
+  // ══════════════════════════════════════════════════════════════════════
+  //
+  // ⚠ 入口**不遮挡**：dock 固定右下角、`pointer-events:none`（容器不接事件 ⇒
+  //   点空白处会**穿透**到下面界面）；只有按钮自己 `pointer-events:auto`。
+  //   ⚠ 不占满屏、不盖导航 —— 这是任务书"不得遮挡现有导航"的落点。
+  `.dsh-hob-entryDock{position:fixed;right:16px;bottom:16px;z-index:40;display:flex;gap:8px;align-items:center}`,
+  `.dsh-hob-entryBtn{pointer-events:auto;padding:6px 12px;font:inherit;font-size:12px;line-height:1.6;`
+    + `color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover);`
+    + `border:0.5px solid var(--dsw-alias-interactive-bg-hover);border-radius:999px;cursor:pointer;`
+    + `box-shadow:0 2px 8px rgba(0,0,0,0.16)}`,
+  `.dsh-hob-entryBtn:hover{background:var(--dsw-alias-interactive-bg-active)}`,
+  `.dsh-hob-entryBtn:focus-visible{outline:2px solid var(--dsw-alias-link);outline-offset:2px}`,
+
+  // 弹窗：遮罩 + 卡片。⚠ **不写死宽度**（窄屏会溢出的根源）⇒ 用 `min()` + 百分比。
+  `.dsh-hob-dialogBackdrop{position:fixed;inset:0;z-index:50;display:flex;align-items:center;`
+    + `justify-content:center;padding:16px;background:rgba(0,0,0,0.32)}`,
+  `.dsh-hob-dialog{width:min(560px, 100%);max-width:100%;max-height:calc(100vh - 32px);overflow:auto;`
+    + `box-sizing:border-box;padding:16px;display:flex;flex-direction:column;gap:12px;`
+    + `background:var(--dsw-alias-bg-elevated, var(--dsw-alias-interactive-bg-hover));`
+    + `color:var(--dsw-alias-label-primary);border-radius:12px;`
+    + `box-shadow:0 8px 32px rgba(0,0,0,0.24)}`,
+  `.dsh-hob-dialog:focus{outline:none}`,
+  `.dsh-hob-dialogTitle{margin:0;font-size:16px;font-weight:600;line-height:1.5}`,
+  `.dsh-hob-dialogLead{margin:0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary)}`,
+  `.dsh-hob-fieldset{margin:0;padding:8px;display:flex;flex-direction:column;gap:6px;`
+    + `border:0.5px solid var(--dsw-alias-interactive-bg-hover);border-radius:8px}`,
+  `.dsh-hob-legend{padding:0 4px;font-size:12px;font-weight:600}`,
+  `.dsh-hob-select{width:100%;box-sizing:border-box;padding:6px 8px;font:inherit;font-size:12px;`
+    + `color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover);`
+    + `border:0.5px solid var(--dsw-alias-interactive-bg-hover);border-radius:6px}`,
+  `.dsh-hob-select:focus-visible{outline:2px solid var(--dsw-alias-link);outline-offset:1px}`,
+  `.dsh-hob-option{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;font-size:12px;line-height:1.6;cursor:pointer}`,
+  `.dsh-hob-optionLabel{font-weight:600}`,
+  `.dsh-hob-optionHint{color:var(--dsw-alias-label-secondary)}`,
+  `.dsh-hob-option[data-emphasis="strict"] .dsh-hob-optionHint{color:var(--dsw-alias-label-primary)}`,
+  /**
+   * ⚠ 「暂未开放」那两档的**视觉置灰**（2026-10-22 · 用户就地纠正后）：
+   *   ⚠ 语义**不靠颜色**表达 —— 真禁用在 `input.disabled`、文字标在 `optionBadge`；
+   *     这里只是让"点不了"**看起来**也像点不了（避免用户反复点）。
+   */
+  `.dsh-hob-option[data-unavailable="true"]{cursor:not-allowed;opacity:.55}`,
+  `.dsh-hob-optionBadge{font-size:11px;padding:0 6px;border-radius:8px;border:1px solid currentColor;color:var(--dsw-alias-label-secondary)}`,
+  `.dsh-hob-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}`,
+  `.dsh-hob-btn{padding:6px 12px;font:inherit;font-size:12px;border-radius:6px;cursor:pointer;`
+    + `color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover);`
+    + `border:0.5px solid var(--dsw-alias-interactive-bg-hover)}`,
+  `.dsh-hob-btn:disabled{cursor:default;opacity:0.55}`,
+  `.dsh-hob-btnPrimary{color:var(--dsw-alias-label-on-brand, #fff);background:var(--dsw-alias-brand-primary, #4d6bfe);`
+    + `border-color:transparent}`,
+  `.dsh-hob-btn:focus-visible{outline:2px solid var(--dsw-alias-link);outline-offset:2px}`,
+  `.dsh-hob-error{margin:0;font-size:12px;line-height:1.6;color:var(--dsw-alias-state-error-primary)}`,
+  // ⚠ 失败时必须同时给出**重试按钮**（2026-10-24 · 修复单第 7 条）⇒ 错误行与按钮排一行，
+  //   窄屏会换行（flex-wrap）而不是把按钮挤出可视区。
+  `.dsh-hob-errorBox{display:flex;flex-wrap:wrap;align-items:center;gap:8px}`,
+  `.dsh-hob-success{margin:0;font-size:12px;line-height:1.6;color:var(--dsw-alias-state-success-primary)}`,
+  `.dsh-hob-created{padding:6px 8px;display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12px;`
+    + `border:0.5px solid var(--dsw-alias-interactive-bg-hover);border-radius:6px}`,
+  `.dsh-hob-createdId{font-family:var(--ds-font-family-code, monospace);font-size:12px}`,
+  `.dsh-hob-createdHint{color:var(--dsw-alias-label-secondary)}`,
+
+  // ⚠ **窄屏适配**（任务书要求"移动窄视口无遮挡/不重叠"）：
+  //   ① ≤480px：入口贴底边、按钮左右留白收紧；弹窗内边距与字号收紧；
+  //   ② 极窄（≤360px）：动作按钮**整行铺满**，⛔ 不并排挤成一行。
+  `@media (max-width: 480px){`
+    + `.dsh-hob-entryDock{right:8px;bottom:8px}`
+    + `.dsh-hob-dialog{padding:12px;gap:8px;border-radius:10px}`
+    + `.dsh-hob-fieldset{padding:6px}`
+    + `.dsh-hob-actions{justify-content:stretch}`
+    + `.dsh-hob-btn{flex:1 1 auto;min-width:44px;min-height:44px}`
+    + `}`,
+  `@media (max-width: 360px){`
+    + `.dsh-hob-actions{flex-direction:column;align-items:stretch}`
+    + `.dsh-hob-dialogLead,.dsh-hob-option{font-size:11px}`
+    + `}`,
 ].join('')
 
 /**

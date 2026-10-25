@@ -223,6 +223,16 @@ export interface WakeState {
   selfExecutedWhy?: string
   /** 最近一次被这一档拦下的卡（诊断：点名是哪张卡在自产自收）。 */
   lastSelfExecutedCard?: string
+  /**
+   * ⚠⚠ **「该 owner 的闭环已停 ⇒ 这一声不投」的独立一档**（2026-10-24 · 本单 §10）。
+   *
+   * ⚠ 判据 = `opts.stoppedOf(该卡的 owner)`（编排层的 `isStoppedFor`）。
+   * ⚠ **语义**：这是**有意不送**（用户按了 stop），⛔ 不是漏投、⛔ 不是判不出 owner。
+   * ⚠ ⛔ 不许并进 `undeliveredCount`（"知道给谁但没送到"）、⛔ 不许并进 `wokeCount`（把没叫说成叫了）。
+   */
+  stoppedCount: number
+  /** 最近一次因 `stop` 没投的收件人（诊断：点名"停的是谁"）。 */
+  lastStoppedTo?: string
   /** 去重表里记了多少条（诊断用，防"表悄悄涨"）。 */
   seenCount: number
 }
@@ -350,6 +360,28 @@ export interface CardWakeOpts {
    * ⚠ 缺省不传 ⇒ 行为与改前**逐字相同**（机检与旧调用形状照旧）。
    */
   execSessionOf?: (taskId: string) => Promise<string | undefined>
+  /**
+   * ⚠⚠ **"这个 owner 的闭环被停了吗"**（2026-10-24 · 本单 §10）——
+   *   由编排层把 `isStoppedFor` 传进来（⛔ 本类不自己读任何 stop 状态）。
+   *
+   * ── 它治的是哪条 ────────────────────────────────────────────────────
+   *   改前 `stop` 只在编排层的**派发**与**回传**两处生效，而**本类（看板卡 SSE 叫醒）
+   *   全文零引用** ⇒ 用户按了 `stop` 之后，卡跑完**照样把他叫醒** ——
+   *   刹车在最热的一条路上失灵。
+   *
+   * ⚠ 判据用 `e.owner`（= 该卡自己的 owner，也就是**本来要叫醒的那个人**），
+   *   ⛔ 不用 `opts.workspaceIdOf()` 那个进程级单值（那正是越界成因）。
+   * ⚠ 缺省不传 ⇒ 行为与改前**逐字相同**（机检与旧调用形状照旧）。
+   * ⚠ 命中 ⇒ **不投** + **独立一档**（`stoppedCount`）+ 可读话；
+   *   ⛔ 不许并进 `undeliveredCount`（那是"知道给谁但没送到"，这里是"**有意不送**"）。
+   *
+   * ⚠⚠ **第二个参数是"这个 owner 自己的工作区根"**（t9 新增）：
+   *   会话 id **在不同工作区之间可以重复** ⇒ 只按 owner 判会把 A 工作区的 stop
+   *   算到 B 工作区同 id 的头上（卡叫醒面会**静默不投**）。
+   *   ⚠ 取 `e.ownerWsRoot`（看板 `createdBy.workspaceRoot`，判不出 ⇒ `undefined`）；
+   *     判不出时**由编排层的 `isStoppedFor` 回落 owner-only 并 warn** —— ⛔ 本类不自己兜底判。
+   */
+  stoppedOf?: (owner: string, wsRoot?: string) => boolean
 }
 
 /** 去重表的**上限**（超过就丢最旧的 —— 丢的是很久以前那次，不影响"这次"）。 */
@@ -557,6 +589,17 @@ export class CardWake {
    */
   private readonly delivered = new Map<string, string>()
   /**
+   * ⚠⚠ **"记过、但确定没发出去 / 不知道发没发出去"的台账**（2026-10-24 · 本单 §5）。
+   *
+   * 键 = `executionId`，值 = 原因原话。⚠ 它存在的唯一理由：让 `redeliver()` 不再
+   * 把"台账里有它"当成"**它本来就在那个人手里**"——
+   *   · `{ok:false}`（投递实现明确回报失败）⇒ 条目从 `delivered` **撤销**、落这里；
+   *   · 投递**抛错**（结果未知）⇒ 条目**留在** `delivered`（防重复送达）、同时落这里；
+   * 两档的共同语义 = "**这一条没有确认送到**" ⇒ 补投（人显式叫的）**可以**发。
+   * ⚠ 上限与 `delivered` 同款（丢最旧），⛔ 不无限涨。
+   */
+  private readonly unsent = new Map<string, string>()
+  /**
    * ⚠⚠ **补投台账**：键 = `` `${executionId}\u0000${to}` ``。
    *
    * ⚠ 为什么**独立一张表**、⛔ 不复用 {@link delivered}：
@@ -568,7 +611,7 @@ export class CardWake {
   private readonly redelivered = new Map<string, true>()
   private state: WakeState = {
     conn: 'idle', wokeCount: 0, noSubscriberCount: 0, legacyTargetCount: 0, redeliverOwnerUnknownCount: 0,
-    undeliveredCount: 0, redeliveredCount: 0, selfExecutedCount: 0, seenCount: 0,
+    undeliveredCount: 0, redeliveredCount: 0, selfExecutedCount: 0, stoppedCount: 0, seenCount: 0,
   }
   private abort: AbortController | undefined
   private stopped = false
@@ -888,6 +931,41 @@ export class CardWake {
         }
       }
       /**
+       * ── ①c ⚠⚠ **`stop` 闸门：该 owner 的闭环已停 ⇒ 这一声不投**（2026-10-24 · 本单 §10）──
+       *
+       * ⚠⚠ **位置必须在"定出 owner"之后、"订阅前提 / 记账 / 投递"之前**：
+       *   · 在定 owner 之前 ⇒ 判不了"停的是谁"；
+       *   · 在 `markDelivered` 之后 ⇒ 这一声会被记成"已投给他"（而它**有意没发**）。
+       *
+       * ⚠ **语义（⛔ 不许与任何既有档合并）**：
+       *   · 这是**有意不送**（用户按了 `stop`），⛔ 不是漏投（`undeliveredCount`）、
+       *     ⛔ 不是判不出 owner（`legacyTargetCount`）、⛔ 不是执行方=owner（`selfExecutedCount`）；
+       *   · **独立一档** `stoppedCount` + 可读话（⛔ 不许静默 —— 用户要靠它确认"刹车真的落在这条路上"）。
+       * ⚠ **⛔ 不重投、⛔ 不改投别人**：口径与既有投递失败同款（`I-9` 末条）。
+       *   `resume` 之后看板再推同一帧 ⇒ `seenIds` 已记过 ⇒ 这一声**不会自动补**
+       *   （要补得靠人显式 `redeliver`）。⚠ 这是**已知取舍**：`stop` 期间故意不发。
+       */
+      if (typeof this.opts.stoppedOf === 'function') {
+        let stopped = false
+        /**
+         * ⚠ **带 `e.ownerWsRoot`**（t9）：这条记录自己的 owner 的工作区根。
+         *   判不出 ⇒ `undefined` ⇒ 编排层回落 owner-only + warn（⛔ 不在这里猜）。
+         */
+        try { stopped = this.opts.stoppedOf(ownerResolved, e.ownerWsRoot) === true } catch { stopped = false }
+        if (stopped) {
+          this.state = {
+            ...this.state,
+            stoppedCount: this.state.stoppedCount + 1,
+            lastStoppedTo: ownerResolved,
+            note: `⚠ 卡 ${e.taskId} 跑完了，但 **${ownerResolved} 的闭环已停**（\`hob_orch_control stop\`）`
+              + '⇒ 这一声**有意不投**（⛔ 不是漏投、⛔ 不是判不出 owner；'
+              + '恢复用 `hob_orch_control resume`）',
+          }
+          this.say(`[card-wake] ${this.state.note}`)
+          continue
+        }
+      }
+      /**
        * ── ② 订阅前提（诊断用；⛔ 不再是"该不该投"的判据）──────────────────
        * 一个订阅者都没有 ⇒ 走既有 `noSubscriberCount` 那一档（**这条既有档一字不动**）：
        * ⚠ 有人订阅但**owner 本人不在**（例如 owner 还没读过卡面）时**仍然要投** ——
@@ -904,14 +982,30 @@ export class CardWake {
         continue
       }
       const text = wakeMessageOf(e)
-      // ── ③ **先写后发**：把"已投"标记先落下来（同一 execution 永不再发第二份）────
-      this.markDelivered(e.executionId, ownerResolved)
-      // ── ④ 投递：**唯一一次**，⛔ 没有循环、⛔ 没有兜底 ─────────────────────────
+      /**
+       * ── ③ **通道就绪检查必须在记账之前**（2026-10-24 · 本单 §5）──────────────
+       *
+       * ── 改前是什么（把"没发出去"记成"已投给 owner"）────────────────────────
+       *   `markDelivered(...)` 在**这一行之前**，而通道没就绪的分支只 `continue`。
+       *   ⇒ 一次 `hobBus` 未就绪就把那条 execution **永久写成"已投给 owner"**：
+       *     此后同一帧再来（重连补发 / 看板重推）会被 `seenIds` / 台账双重去重；
+       *     而 `redeliver()` 的 ② 一看 `actualTo === owner` 就判 `noop`
+       *     —— 理由是「**它本来就在他手里**」，而它**从来没发出去过**。
+       *   ⚠ 这正是本项目头号禁忌的又一变种：**没发**被记成**发了**。
+       *
+       * ── 现在：先判通道，**再**记账 ─────────────────────────────────────────
+       *   通道不在 ⇒ 一声不投、**一个字节都不记账**（这一条仍然可以被下一次重放救回来）。
+       *   ⚠ 与"先写后发"那条纪律**不冲突**：那条要保证的是"**同一条信号至多投一次**"，
+       *     而通道缺席时**根本没有那次投递**（`deliverFn === undefined` 是**确定性**事实，
+       *     不是"投了但结果未知"）。
+       */
       if (this.deliverFn === undefined) {
         this.state = { ...this.state, note: '⚠ 有卡跑完，但**投递通道没就绪**（hobBus 未提供）⇒ 这一声没叫出去' }
         this.say(`[card-wake] ${this.state.note}`)
         continue
       }
+      // ── ④ **先写后发**：把"已投"标记先落下来（同一 execution 永不再发第二份）────
+      this.markDelivered(e.executionId, ownerResolved)
       try {
         /**
          * ⚠⚠ **接住返回值**（2026-10-20 · 第 321 轮 · `TASK-G` ①）：改前这一行是
@@ -928,6 +1022,16 @@ export class CardWake {
            *   这是同一件事；⛔ 但**不改重投语义**（`markDelivered` 已在上面落过，
            *   这一条**不会被再投一次** —— `D4` 一个字不改）。
            */
+          /**
+           * ⚠⚠ **`{ok:false}` = 确定没送出去 ⇒ 必须把台账回滚**（2026-10-24 · 本单 §5）。
+           *   ⚠ 改前它**不回滚** ⇒ 那一条被永久记成"已投给 owner"（见上面 ③ 的注释）：
+           *     看板重推会被去重吞掉、`redeliver` 也会判 `noop`（"本来就在他手里"）。
+           *   ⇒ 现在：从 `delivered` 撤销，并**登记到 `unsent` 台账**（"记过但确定没发"）——
+           *     `redeliver()` 据此能认出这一档，⛔ 不再说"本来就在他手里"。
+           *   ⚠ **投递语义一个字未改**：这一条**不会自动重投**（`D4`），
+           *     只是"下一次真能重放 / 人能补投"。⛔ 不改"⛔ 不扇出、⛔ 不改投别人"。
+           */
+          this.rollbackDelivered(e.executionId, ownerResolved, `投递实现明确回报失败：${failure}`)
           this.state = {
             ...this.state,
             undeliveredCount: this.state.undeliveredCount + 1,
@@ -954,6 +1058,15 @@ export class CardWake {
          * ⚠ **投失败 ⇒ 记一档"漏投"，⛔ 不重投、⛔ 不改投别人**（`I-9` 末条 / `I-10`）。
          * ⚠ 这一档必须能被 **owner 自己的读数**看见："我有一条回执没到"。
          */
+        /**
+         * ⚠⚠ **抛错 = 结果未知 ⇒ 台账不回滚，但必须标成"记了、没确认送到"**
+         *   （2026-10-24 · 本单 §5）。
+         *   ⚠ 与 `{ok:false}` 那一档**故意不同**：投递库可能已经把消息送出去了才抛
+         *     ⇒ 撤销台账会让重放**再发一份**（宁可"记着但标不确定"，也不重复送达）。
+         *   ⚠ 但**必须能被 `redeliver()` 认出来**：否则它会把这条当成"已投对"而 `noop`
+         *     —— 一句"本来就在他手里"就把人工补投的路堵死了。
+         */
+        this.noteUnsent(e.executionId, ownerResolved, `投递抛错、结果未知：${String((err as Error)?.message ?? err)}`)
         this.state = {
           ...this.state,
           undeliveredCount: this.state.undeliveredCount + 1,
@@ -974,13 +1087,46 @@ export class CardWake {
    * ⚠ 必须在 `deliverFn` **之前**调用 —— 这是"一条信号至多投一次"的**唯一保证点**：
    *   若放在投递成功之后，一次抛错就会让下一帧（或下一次重连补发）**再投一遍**，
    *   而那份重复正是用户说的"两份，错的那份占住了"。
+   * ⚠ **调用点在通道就绪检查之后**（2026-10-24 · 本单 §5）：通道没就绪时
+   *   **根本不记账**（那一档是"确定没发出去"，不是"试过了"）。
    * ⚠ 台账上限与 `seenIds` 同款（丢最旧），⛔ 不让它无限涨。
    */
   private markDelivered(executionId: string, to: string): void {
     this.delivered.set(executionId, to)
+    /** ⚠ 这一次是**真的去投**了 ⇒ 把"没发出去"的旧标记撤掉（同一 execution 重放时）。 */
+    this.unsent.delete(executionId)
     if (this.delivered.size <= SEEN_LIMIT) return
     const sorted = [...this.delivered.entries()]
     for (const [k] of sorted.slice(0, this.delivered.size - SEEN_LIMIT)) this.delivered.delete(k)
+  }
+
+  /**
+   * ⚠⚠ **`{ok:false}` ⇒ 撤销"已投"并记成"确定没发"**（2026-10-24 · 本单 §5）。
+   *
+   * ⚠ 为什么撤销是**安全**的：`{ok:false}` 是投递实现**明确回报"没送出去"**
+   *   （归档会话 / 非活会话 / 建消息失败）—— 与"抛错、可能已经发出去"**不是同一档**。
+   *   撤销之后，看板重推 / 下一次重放**能再试一次**（那正是我们要的：
+   *   "确定没发"不该被永久记成"发了"）。
+   * ⚠ **⛔ 不是"自动重投"**：本函数不触发任何投递，只改台账；
+   *   自动重投的口径一个字未改（`D4`：一条信号至多投一次）。
+   */
+  private rollbackDelivered(executionId: string, to: string, why: string): void {
+    if (this.delivered.get(executionId) === to) this.delivered.delete(executionId)
+    this.noteUnsent(executionId, to, why)
+  }
+
+  /** 记一条"没有确认送到"（见 {@link unsent}；上限与 `delivered` 同款）。 */
+  private noteUnsent(executionId: string, to: string, why: string): void {
+    this.unsent.set(executionId, `${why}（收件人 ${to}）`)
+    if (this.unsent.size <= SEEN_LIMIT) return
+    for (const k of [...this.unsent.keys()].slice(0, this.unsent.size - SEEN_LIMIT)) {
+      this.unsent.delete(k)
+    }
+  }
+
+  /** 现看"记了但没确认送到"的那一档（诊断/机检用：证明"没发"没被记成"发了"）。 */
+  unsentLedger(): Array<{ executionId: string; why: string }> {
+    return [...this.unsent.entries()].map(([executionId, why]) => ({ executionId, why }))
   }
 
   /** 现看"已投台账"（诊断/机检用：证明**同一信号只投一次**）。 */
@@ -1055,8 +1201,23 @@ export class CardWake {
     }
 
     // ── ② 与"实际投给了谁"对照：一致 ⇒ 没投错，不发 ─────────────────────────
+    /**
+     * ⚠⚠ **"台账里有它"不再等于"它已经在他手里"**（2026-10-24 · 本单 §5）。
+     *
+     * ── 改前是什么（补投恒 noop 的那条缝）──────────────────────────────────
+     *   `handleFrame` 先 `markDelivered` 再判通道 / 投递，失败也不回滚
+     *   ⇒ 一条**从未发出去**的回执在台账里长得跟"投成功"一模一样
+     *   ⇒ 本函数一看 `actualTo === owner` 就 `noop`，理由是「**本来就在他手里**」
+     *     —— 那句话是**假的**，而人会据此认为"不用补了"。
+     *
+     * ── 现在：先查 {@link unsent}（"记了但没确认送到"）─────────────────────
+     *   命中 ⇒ **不 noop**，往下走真补（这是人**显式**叫的补投，不是自动重试）。
+     *   ⚠ 幂等（③）与去重表（`redelivered`）**一个字未改** ⇒ 同一条同一个人仍只补一份。
+     *   ⚠ `unsent` 没命中 ⇒ 沿用既有判据（真投过 ⇒ `noop`）。
+     */
     const actualTo = this.delivered.get(executionId)
-    if (actualTo === owner) {
+    const unsentWhy = this.unsent.get(executionId)
+    if (actualTo === owner && unsentWhy === undefined) {
       return {
         kind: 'noop',
         reason: `这条回执本来就在 ${owner} 手里${card} ⇒ 不是错投，无需补投（未发出任何东西）`,
@@ -1110,9 +1271,19 @@ export class CardWake {
         ...this.state,
         redeliveredCount: this.state.redeliveredCount + 1,
         lastRedeliveredTo: owner,
-        note: `已**补投** ${owner}${card}（此前错投给 ${actualTo ?? '（判不出/未投）'}）`
+        /**
+         * ⚠ **"此前错投给 X"与"此前根本没发出去"必须分开说**（2026-10-24 · 本单 §5）——
+         *   改前统一写"错投给 X"，于是"通道没就绪那一档"被印成"投错了人"
+         *   （两种原因说成同一句话，本项目明令禁止）。
+         */
+        note: `已**补投** ${owner}${card}（${
+          unsentWhy !== undefined
+            ? `此前**没有确认送到**：${unsentWhy}`
+            : `此前错投给 ${actualTo ?? '（判不出/未投）'}`}）`
           + '—— 这一档与"正常叫醒"分开计数',
       }
+      /** ⚠ 补投成功 ⇒ 那条"没确认送到"的标记可以撤了（它已经被补上了）。 */
+      this.unsent.delete(executionId)
       this.say(`[card-wake] ${this.state.note}`)
       return { kind: 'redelivered', reason: String(this.state.note ?? '') }
     } catch (err) {
@@ -1203,6 +1374,13 @@ export class CardWake {
       selfExecutedCount: this.state.selfExecutedCount,
       ...(this.state.selfExecutedWhy === undefined ? {} : { selfExecutedWhy: this.state.selfExecutedWhy }),
       ...(this.state.lastSelfExecutedCard === undefined ? {} : { lastSelfExecutedCard: this.state.lastSelfExecutedCard }),
+      /**
+       * ⚠⚠ **「闭环已停 ⇒ 这一声没投」这一档同样跨重连保留**（2026-10-24 · 本单 §10）。
+       *   否则一次重连就把它读成 0 ⇒ "刹车拦下过几声"这件事**凭空消失**
+       *   （同款纪律：这正是本项目最忌讳的"没去读"伪装成"确实是空的"）。
+       */
+      stoppedCount: this.state.stoppedCount,
+      ...(this.state.lastStoppedTo === undefined ? {} : { lastStoppedTo: this.state.lastStoppedTo }),
       seenCount: 0,
     }
     this.looping = true
@@ -1372,6 +1550,12 @@ export type WakeOutcome =
    * ⛔ 它**不改变重投语义**（`D4`）：`s.reported` 早已置 true，这一轮**不会重投**。
    */
   | 'undelivered'
+  /**
+   * ⚠⚠ **该 owner 的闭环已停 ⇒ 这一声有意不投**（2026-10-24 · 本单 §10）。
+   *   ⛔ 不是漏投（`undelivered`）、⛔ 不是判不出（`undecidable`）、⛔ 不是没通道（`no-channel`）：
+   *   这是**用户按了 `stop`** 的确定结果 ⇒ 必须单独一档（两种原因不许说成同一句话）。
+   */
+  | 'stopped'
   /** ⚠ **判不出**：状态读不到 / 会话消失了 ⇒ ⛔ 既不是"跑完"也不是"没跑过"。 */
   | 'undecidable'
 
@@ -1510,6 +1694,17 @@ export interface DispatchWakeState {
   /** 最近一次"跑完却送不出去"的可读原话（⛔ 不许静默）。 */
   undeliverableWhy?: string
   /**
+   * ⚠⚠ **「该 owner 的闭环已停 ⇒ 这一声不投」的独立一档**（2026-10-24 · 本单 §10）。
+   *
+   * ⚠ 语义：**有意不送**（用户按了 `hob_orch_control stop`）——
+   *   ⛔ 不是漏投（`undeliverableCount`）、⛔ 不是判不出（`undecidableCount`）。
+   * ⚠ 它存在就是为了让"刹车真的覆盖到叫醒面"这件事**可读**；
+   *   ⛔ 不许并进任何既有档（两种原因说成同一句话是本项目明令禁止的形态）。
+   */
+  stoppedCount: number
+  /** 最近一次因 `stop` 没投的收件人（诊断：点名"停的是谁"）。 */
+  lastStoppedTo?: string
+  /**
    * ── ⚠⚠ **分区三档**（2026-10-20 · B4；修 **W6**）─────────────────────────
    *
    * ⚠ 三档**必须互斥且覆盖全部登记**（`check:orch` 的 `S-g` 钉的就是这一条）：
@@ -1557,7 +1752,7 @@ export class DispatchWake {
     registered: 0, pending: 0, wokeCount: 0, undecidableCount: 0,
     pushedRegisterOk: 0, pushRegisterIssues: 0,
     firingSeen: 0, firedBlockedCount: 0,
-    ownerUnknownCount: 0, undeliverableCount: 0,
+    ownerUnknownCount: 0, undeliverableCount: 0, stoppedCount: 0,
     ownerUnknownRegistered: 0, othersOnly: 0,
   }
   /**
@@ -1572,6 +1767,12 @@ export class DispatchWake {
   private readonly ownedPushedOk = new Map<string, number>()
   private readonly ownedPushIssues = new Map<string, number>()
   private readonly ownedUndeliverable = new Map<string, number>()
+  /**
+   * ⚠⚠ **`stop` 闸门拦下的次数，按 owner 分区**（2026-10-24 · 本单 §10）。
+   *   ⚠ 形态与上面几条**逐字同款**（`bump()` + `Map<owner, number>`）——
+   *     ⛔ 不另造一种写法（同一事实两个来源必然漂，`E-128`）。
+   */
+  private readonly ownedStopped = new Map<string, number>()
   /**
    * ── ⚠⚠ **点火帧的两档，同样按 owner 分区**（2026-10-20 · 第 323 轮 · `TASK-I`）──
    *
@@ -1794,6 +1995,11 @@ export class DispatchWake {
        **/
       ownerUnknownWhy: this.whyByOwner.get(self ?? '')?.ownerUnknown,
       undeliverableCount: countOf(this.ownedUndeliverable),
+      /**
+       * ⚠ **按 owner 取**（同上面几条）：这一档是"**你的**闭环停了、因此没叫醒**你**"
+       *   ⇒ 读的人只能是那个 owner（⛔ 落回进程级合计 = W6 同族）。
+       */
+      stoppedCount: this.ownedStopped.get(self ?? '') ?? 0,
       mine: self === undefined
         ? undefined
         : { registered: owned.length, pending: pendingOf(owned) },
@@ -2278,6 +2484,34 @@ export class DispatchWake {
       return 'no-subscriber'
     }
     /**
+     * ⚠⚠ **`stop` 闸门：该 owner 的闭环已停 ⇒ 这一声不投**（2026-10-24 · 本单 §10）。
+     *   ⚠ 位置在**定出 `target`（= 这条记录自己的 owner）之后、投递之前** ——
+     *     这就是"刹车覆盖叫醒面"的落点。⛔ 不改 `s.reported` 的语义：
+     *     `observe()` 已置 true ⇒ 这一轮**不会重投**（`D4` 一个字不改）；
+     *     恢复之后要看结果，靠人显式 `hob_orch_status` / 下一次状态变化。
+     *   ⚠ **独立一档**（`stoppedCount`）+ 可读话 —— ⛔ 不许并进 `undeliverableCount`
+     *     （那是"知道给谁但没送到"，这里是"**有意不送**"）。
+     */
+    if (typeof this.opts.stoppedOf === 'function') {
+      let stopped = false
+      /** ⚠ **带 `s.ownerWsRoot`**（t9）：这条登记自己的 owner 工作区根。 */
+      try { stopped = this.opts.stoppedOf(target, s.ownerWsRoot) === true } catch { stopped = false }
+      if (stopped) {
+        this.bump(this.ownedStopped, target)
+        this.sayFor(target, 'undeliverable', `会话 ${s.sessionId} 跑完了，但**你的闭环已停** ⇒ 这一声没有叫`)
+        this.state = {
+          ...this.state,
+          stoppedCount: this.state.stoppedCount + 1,
+          lastStoppedTo: target,
+          note: `⚠ 会话 ${s.sessionId} 跑完了，但 **${target} 的闭环已停**`
+            + '（`hob_orch_control stop`）⇒ 这一声**有意不投**'
+            + '（⛔ 不是漏投、⛔ 不是判不出；恢复用 `hob_orch_control resume`）',
+        }
+        this.say(`[dispatch-wake] ${this.state.note}`)
+        return 'stopped'
+      }
+    }
+    /**
      * ⚠⚠ **先写后发**（`I-9` 第三条）：把"这一轮已叫过"先落下来再投。
      *   `observe()` 已经先把 `s.reported` 置 true 才调本函数 —— 那一处就是同一道保证；
      *   这里再显式留一行注释，避免以后有人把它挪到投递之后（那会让失败的一轮**再叫一次**）。
@@ -2371,6 +2605,21 @@ export interface DispatchWakeOpts {
   now?: () => number
   /** 可读日志出口（⛔ 不许静默）。 */
   log?: (line: string) => void
+  /**
+   * ⚠⚠ **"这个 owner 的闭环被停了吗"**（2026-10-24 · 本单 §10）——
+   *   与 {@link CardWakeOpts.stoppedOf} **同一口径**（同一个 `isStoppedFor` 传进来）。
+   *
+   * ⚠ 改前本类的 `observe()` → `wake()` **全文不认 stop** ⇒ 用户按了 `stop` 之后，
+   *   **实施会话跑完照样把他叫醒**（刹车在最热的那条路上失灵）。
+   * ⚠ 命中 ⇒ 不投 + 独立一档（{@link DispatchWakeState.stoppedCount}）+ 可读话；
+   *   ⛔ 不许并进 `undeliveredCount`（"知道给谁但没送到"）：这里是**有意不送**。
+   * ⚠ 缺省不传 ⇒ 行为与改前**逐字相同**。
+   *
+   * ⚠⚠ **第二个参数 = 该 owner 自己的工作区根**（t9，理由同
+   *   {@link CardWakeOpts.stoppedOf}：会话 id 跨工作区可重复）。
+   *   ⚠ 取 `s.ownerWsRoot`（登记时记下的那个）；判不出 ⇒ `undefined` ⇒ 编排层回落并 warn。
+   */
+  stoppedOf?: (owner: string, wsRoot?: string) => boolean
 }
 
 // ══════════════════════════════════════════════════════════════════════

@@ -1,0 +1,591 @@
+/**
+ * **宿主原生新建的 Hob 会话 → 自动拉起选档弹窗 + 未选可见横幅**（2026-10-22 · 第 3 轮）。
+ *
+ * ══ 它解决的是哪条边界 ═════════════════════════════════════════════════════
+ *   前两轮的结论是：选档弹窗**只在用户点本插件入口时**才弹（`HOB_CREATE_ENTRY_ID`）。
+ *   而**宿主原生新建**（Web UI 新建按钮 / `Ctrl+N` / 看板建卡 / CLI）建出来的 Hob 会话
+ *   **不经过本插件的创建链** ⇒ 用户永远看不到那个弹窗，会话静默落在「未选」状态。
+ *
+ *   ⇒ 本模块补的就是这一段：**在宿主原生新建的 Hob 会话上，把"你还没选"这件事
+ *     变成看得见、点得开的界面**。
+ *
+ * ══ 挂在哪、为什么 ════════════════════════════════════════════════════════
+ *   `conversation.hero.options`（`kind:"list"` / `scope:"session"`）。
+ *   证据（宿主 0.2.1-rc.2，`dsh-client-ui-conversation/lib/client.js`）：
+ *     · 槽声明 `:19766-19769` —— `{ kind: "list", scope: "session" }`
+ *     · 渲染点 `:17812-17815` ——
+ *       `sessionId === void 0 ? null : <div class=heroOptions>{renderSlot("conversation.hero.options", {})}</div>`
+ *     · 何时进入该分支 `:17545` ——
+ *       `hero = sessionId === void 0 || shellPhase === "blank" && (openState === "open" || summaryBlank === true)`
+ *     · 空白会话会被打开 `dsh-client-ui-workspace/lib/client.js:1489`
+ *       `this.replaceMain(sessionId, navigation, "reveal", beforeOpen)`
+ *   ⇒ **新建出来的空白会话正好落在这个槽里**，这就是"自动检测"的落点。
+ *
+ *   ⚠ 槽本身只承载**触发器 + 横幅**，⛔ 不承载弹窗本体（弹窗仍渲染在
+ *     `shell.overlay` 那一层）。所以"这个槽很窄、放不下弹窗"不构成障碍 ——
+ *     我们只往里面放一行提示 + 一个按钮。
+ *   ⚠ 该槽 official doc 原文：*"Compact options right-aligned in the New Session row
+ *     after the workspace and preset controls; rendered only with a Session."*
+ *     （`dsh-cordis-client-runner/lib/client.js:3146`）⇒ 它确实是一条**行内**位置。
+ *
+ * ══ 判定条件（⚠ 三态，不是布尔）════════════════════════════════════════════
+ *   要「自动弹/显示横幅」，必须同时满足：
+ *     ① 该会话的 `agentPreset` 投影 === `'Hob'`（宿主的 `agentPreset` 投影，
+ *        定义见 `dsh-agent-preset-registry/lib/types/session.js:20-27`：
+ *        `init: header.agentPreset ?? null`，之后被 `agent-preset/selected` 推进）；
+ *     ② 该会话的策略记录 `recorded === false`（`src/session-policy-service.ts:70`
+ *        有这个字段，`:835` 是它的赋值点 `reading?.file.sessions[sid] !== undefined`）。
+ *
+ *   ⚠⚠ **② 走的是本插件自己的只读路由**（2026-10-24 据实订正 —— 上一版这段注释
+ *      写的是「通道只有 issue/create/enums、今天不会自动弹」，**已与事实不符**）：
+ *     · 插件的策略服务只是 `ctx.provide(SESSION_POLICY_SERVICE, …)`
+ *       （`src/session-policy-service.ts:977`）⇒ **宿主内部服务，客户端调不到**；
+ *     · 本插件**没有**注册任何 `sessionProjections.register(...)`（全仓 0 命中）
+ *       ⇒ `recorded` 不在任何客户端可读投影里；
+ *     · **但是**本插件登记了一条独立路由 `POST /api/dsh-hob/session-policy`
+ *       （`src/modules/session-policy-route.ts`），它按 `action` 分发**两个**动作
+ *       （`session-policy-route.ts:256-258`）：
+ *         · `read`（缺省） ⇒ 只回答"这个会话选过没有"（线格式 `{ok,state,reason}`）；
+ *         · `write`       ⇒ 给**已存在的会话**写两项选择（弹窗的已有会话模式用）。
+ *       注意：**它不是** `session-create` 那条路由 —— 那条仍只认
+ *       `issue` / `create` / `enums`，两条路由各管各的动作。
+ *     · 宿主 `remote.session` 命名空间仍只暴露 `create` / `selectModel` / `rename` 等
+ *       （`dsh-api-session-controller/lib/index.js:755/793/827`），**没有策略读**
+ *       ⇒ 这条路只能走本插件自己的路由。
+ *   ⇒ 本模块把 ② 做成**注入的读取器 + 三态**：
+ *       `'recorded'` ⇒ 不渲染任何东西（已选过）；
+ *       `'unrecorded'` ⇒ 显示横幅（+ 允许自动弹）；
+ *       `'unknown'` ⇒ **不渲染、不弹**（fail-closed：判不出就不打扰用户）。
+ *     ⚠ 默认读取器真的会读（见 {@link defaultPolicyRecordReader}）⇒ **自动弹是通的**：
+ *       路由回 `unrecorded` 就弹一次；`unknown`（服务缺席 / 判不出）则不弹。
+ *       ⛔ 仍然**不伪造**一个假的 'unrecorded' 来"让功能看起来完成了"。
+ *
+ * ══ 为什么不直接调 `state.open()` ══════════════════════════════════════════
+ *   现有 `DialogState.open()` 打开的是**"新建会话"**模式
+ *   （`src/client/create-hob-dialog.tsx:600-620` 的 `createDialogState()`，只有
+ *    `isOpen/open/close/created/markCreated/clearCreated/subscribe` 七个成员，
+ *   **没有"为某个已有会话选档位"的入口**）。
+ *   ⇒ 在宿主原生会话上直接 `open()` 会让用户看到"新建 Hob 会话"弹窗，
+ *     点确认会**再建一个会话** —— 那不是"给这个会话选档位"，是**建重复会话**。
+ *   ⛔ 因此本模块**只**通过注入的 `openForSession` 打开；该能力缺席时
+ *     **只显示横幅**（横幅上的按钮此时给出可读说明，⛔ 不假装能开）。
+ *
+ * ══ 边界（如实说）════════════════════════════════════════════════════════
+ *   · 只覆盖**有界面**的路径。CLI / headless / 跨实例**没有槽可渲染** ⇒ 本模块
+ *     对它们**完全无效**（那条口径是"未显式给两项 ⇒ 可读拒绝"，落在创建侧，不是这里）。
+ *   · 宿主直建但**不是 Hob** 的会话：`agentPreset !== 'Hob'` ⇒ 一行都不渲染。
+ *   · 旧会话已迁移（`legacy-migrated`）：其 `recorded` 为 `true` ⇒ 不渲染。
+ *     ⚠ 但若读取器给 `'unknown'`（默认情形），也**不渲染** —— 同样不打扰。
+ *   · 本模块**不创建、不删除、不修改**任何会话；它只显示与转交点击。
+ */
+
+import * as React from 'react'
+
+/** list 槽里的条目 id（⚠ 自有 id，⛔ 不复用宿主或他插件的 id）。 */
+export const HOB_GATE_SLOT_ID = 'dsh-hob.unselected-gate'
+
+/** 排序：排在宿主自己的 hero 选项**之后**（不抢先，⛔ 不遮挡）。 */
+export const HOB_GATE_ORDER = 900
+
+/** 本模块的样式标签 id（幂等注入，卸载时摘掉）。 */
+const STYLE_TAG_ID = 'dsh-hob/unselected-gate.css'
+
+/**
+ * Hob 预设的 id —— ⚠ **必须**取自唯一来源 `src/shared/planning-preset.ts`。
+ *
+ * ── 2026-10-22 第 4 轮订正（`check:presets` ⑦ 组当场抓获）──────────────
+ *   上一轮这里写的是**字面值** `'Hob'`，理由是"client 半边不该 import 可能会拖
+ *   host 依赖的模块"。⚠ 那个理由是**错的**：
+ *     · `src/shared/planning-preset.ts` 是**纯常量文件**（零 import）⇒ 对 client 安全；
+ *     · 而且 `src/client/create-hob-dialog.tsx:38` **早就**在 client 半边 import 它了
+ *       ⇒ "client 不能 import"这个前提与事实不符；
+ *     · 真正的代价是：两处字面值 ⇒ **改名时必漏一处**，而漏掉的那处**不会报错**，
+ *       只会静默地把 Hob 会话认成"非 Hob"⇒ 永不弹窗（最难查的那种失败）。
+ *   ⇒ 改为 import；`HOB_PRESET_ID_FOR_MATCH` 保留为**别名导出**（兼容既有引用，
+ *     同时把"这是同一个值的引用"这件事写在类型系统里）。
+ */
+import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
+// ⚠ 取词**只有一个入口**（`t()`）—— 本文件只把自己这屏的中英词条当**入参**灌进去，
+//   ⛔ 不自建第二套查表（2026-10-24 · 修复单第 6 条：此前这里全是中文字面量）。
+import { addDictionaryLayer, getLocaleSnapshot, subscribeLocale, t } from './i18n.ts'
+
+/** ⚠ 别名（= `PLANNING_PRESET_ID`，⛔ 不是第二处字面值）。 */
+export const HOB_PRESET_ID_FOR_MATCH = PLANNING_PRESET_ID
+
+/**
+ * 策略记录的**三态**（⚠ 不是布尔）。
+ *
+ * `'unknown'` 是**默认且安全**的一档：判不出 ⇒ 不渲染、不弹、不打扰。
+ * ⚠ 为什么不允许"判不出就当成未选"：那会在**已选过**的会话上每次开都弹一次，
+ *   属于本仓反复禁止的"把判不出当结论"。
+ */
+export type PolicyRecordState = 'recorded' | 'unrecorded' | 'unknown'
+
+/** 读一个会话的策略记录状态（⚠ 注入，便于机检用假实现跑真逻辑）。 */
+export type PolicyRecordReader = (sessionId: string) => Promise<PolicyRecordState>
+
+/**
+ * **默认读取器**：走本插件自己的通道。
+ *
+ * ⚠ 现状（2026-10-24 据实订正）：本插件**已有**读动作 ——
+ *   `POST /api/dsh-hob/session-policy` 的 `action: 'read'`（缺省动作，
+ *   见 `src/modules/session-policy-route.ts:256-258` 的分发），线格式 `{ok,state,reason}`。
+ *   ⚠ 注意别把它与 `POST /api/dsh-hob/session-create` 混起来：那条只认
+ *     `issue` / `create` / `enums`（没有读）。上一版这里写"通道没有读动作"是把
+ *     两条路由记混了 —— 照那段注释，会让人以为自动弹是死的（实际是通的）。
+ *   ⇒ 服务缺席 / 回 `unknown` / 网络失败 ⇒ `'unknown'` ⇒ 不打扰（fail-closed）。
+ *   ⛔ 不许在这里"猜"一个答案（例如按 agentPreset 就当成 unrecorded）——
+ *     那正好把"已选过"的会话也弹一遍。
+ */
+export const defaultPolicyRecordReader: PolicyRecordReader = async (sessionId) => {
+  try {
+    const res = await fetch('/api/dsh-hob/session-policy', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'read', sessionId }),
+    })
+    const parsed: any = await res.json().catch(() => undefined)
+    if (parsed?.ok !== true) return 'unknown'
+    // ⚠ 线格式四态 ⇒ 客户端三态（⚠ 唯一映射点，与 host 侧共用 `toClientState` 的语义）
+    const state = String(parsed.state ?? '')
+    if (state === 'recorded') return 'recorded'
+    if (state === 'unrecorded') return 'unrecorded'
+    // 'not-applicable' | 'unknown' | 任何意外的值 ⇒ 不打扰
+    return 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+/**
+ * **"同一会话只自动弹一次"的记忆**（⚠ 模块级，跨挂载存活）。
+ *
+ * 为什么要模块级而不是组件内 ref：
+ *   `conversation.hero.options` 的条目会随会话切换/重渲染**反复挂载**；
+ *   用组件内 ref 的话"切走再切回"会再弹一次 —— 那正是任务书点名不许的。
+ * ⚠ 键 = `sessionId`；⚠ 不按 `agentPreset` 分键（同一会话的预设可能变，但那不该让它再弹）。
+ * ⚠ 这是**进程内内存**，⛔ 不落盘（刷新页面后会重来一次 —— 如实记在回报里）。
+ */
+export interface GateMemory {
+  /** 该会话是否**已经**自动弹过（只读）。 */
+  hasAutoOpened(sessionId: string): boolean
+  /**
+   * 取一次"是否该自动弹"，**并在返回 true 时立刻记下**（原子，避免重复挂载竞态）。
+   * @returns 首次 ⇒ true；之后一律 false。
+   */
+  takeAutoOpen(sessionId: string): boolean
+  /**
+   * 忘记一个会话的"已自动弹过"记录。
+   *
+   * ⚠ **生产调用点**（2026-10-24 · 修复单第 11 条）：弹窗写成功 ⇒
+   *   `index.ts` 的 `onCreated` ⇒ {@link notifySessionSelected} ⇒ 横幅订阅回调里调它，
+   *   同时重读三态（横幅当场消失）。改前它**零生产调用** ⇒ 记录留到刷新页面。
+   * ⚠ 测试也用它造"没弹过"的初态。
+   */
+  forget(sessionId: string): void
+  /** 当前记了多少个会话（⚠ 只给机检断言"没有无限增长"）。 */
+  size(): number
+}
+
+/** 造一份记忆（⚠ 每次 `apply` 一份，⛔ 全局单例 —— 热重载时跟着本 fiber 走）。 */
+export function createGateMemory(): GateMemory {
+  const opened = new Set<string>()
+  return {
+    hasAutoOpened: (sessionId) => opened.has(sessionId),
+    takeAutoOpen: (sessionId) => {
+      if (sessionId === '' || opened.has(sessionId)) return false
+      opened.add(sessionId)
+      return true
+    },
+    forget: (sessionId) => { opened.delete(sessionId) },
+    size: () => opened.size,
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 本屏的**词条数据**（中 / 英，键集必须完全一致）
+// ══════════════════════════════════════════════════════════════════════════
+/**
+ * ⚠ 只是灌进 `i18n.ts` 的**入参**（`addDictionaryLayer('hob-gate', …)`），
+ *   ⛔ 不是第二套查表实现 —— 取词入口始终只有 `t()` 一个。
+ *
+ * ⛔ 三条硬约束（任务书 §二 B）：
+ *   ① 不出现内部配置值（不写 `ledger` / `workspace` 这类枚举字面值）；
+ *   ② 不用字面 markdown 标记（不出现 `**`、`##` 之类）；
+ *   ③ 若出现「完全权限」字样，紧邻必须带完整边界句 —— 本文案**整体不提那三个字**。
+ */
+const HOB_GATE_ZH: Record<string, string> = {
+  'gate.banner': '本会话尚未选择可读范围，暂不推进。',
+  'gate.btn': '选择可读范围',
+  'gate.btn.unavailable': '选择入口暂不可用',
+  'gate.alert.unavailable': '本版尚未接上为此会话选档位的入口。',
+}
+
+const HOB_GATE_EN: Record<string, string> = {
+  'gate.banner': 'This session has not chosen a readable range yet, so it does not advance.',
+  'gate.btn': 'Choose the readable range',
+  'gate.btn.unavailable': 'The chooser is not available',
+  'gate.alert.unavailable': 'This version has no entry point yet for choosing this session’s levels.',
+}
+
+// ⚠ 模块加载时就灌进去（⛔ 不放在 apply 里：语言服务的 inject 回调可能更早就触发，
+//   晚登记会让宿主那条取词路径看不到本屏词条 ⇒ 横幅永远中文）。
+addDictionaryLayer('hob-gate', { zh: HOB_GATE_ZH, en: HOB_GATE_EN })
+
+/**
+ * **"这个会话已经选完了"的进程内广播**（2026-10-24 · 修复单第 11 条）。
+ *
+ * ── 修的是什么 ────────────────────────────────────────────────────────
+ *   `GateMemory.forget()` 在此之前**生产零调用**（只有测试与注释提到它）⇒
+ *   用户在弹窗里选完之后，`takeAutoOpen` 记下的那条"已自动弹过"会**留到刷新页面**。
+ *   后果不是"多弹一次"这么轻：选完之后如果因为任何原因重新挂载（切会话再切回 /
+ *   宿主重渲染），`recorded` 仍读到旧值（或读到 `unrecorded`）⇒ 横幅还在 /
+ *   会再弹一次，而用户明明已经选过了。
+ *   ⇒ 写入成功时由 {@link notifySessionSelected} 广播一次，挂着的横幅据此：
+ *     ① `memory.forget(id)`（清掉"弹过"的记录）；② 重新读一次三态（横幅随即消失）。
+ *
+ * ⚠ 为什么用模块级广播而不是把回调层层传下去：`DialogState`（弹窗）与
+ *   `HobUnselectedGate`（横幅）挂在**两个不同的槽**上，没有共同的 React 父组件
+ *   —— 与 `createDialogState()` 用模块内订阅的理由同源。
+ * ⚠ 只在**真正写成功**时广播（`onCreated`），⛔ 取消/失败一律不广播：
+ *   失败后横幅必须留着（那正是"还没选"的事实）。
+ */
+const selectedListeners = new Set<(sessionId: string) => void>()
+
+/**
+ * 广播"某会话已选完"（⚠ 由 `index.ts` 接在弹窗的 `onCreated` 上）。
+ *
+ * @param sessionId - 刚写完两项选择的会话 id。
+ */
+export function notifySessionSelected(sessionId: string): void {
+  if (typeof sessionId !== 'string' || sessionId === '') return
+  for (const fn of [...selectedListeners]) {
+    try { fn(sessionId) } catch { /* 一个订阅者出错不影响其他人 */ }
+  }
+}
+
+/** 横幅上用的类名（⚠ 集中一处，拼错会静默无样式）。 */
+export const GATE_CLASS = {
+  root: 'dsh-hob-gate',
+  text: 'dsh-hob-gateText',
+  btn: 'dsh-hob-gateBtn',
+} as const
+
+const GATE_CSS = [
+  // ⚠ 只占**行内**一格：不设 position:fixed、不吃全屏、不遮挡导航。
+  //   父容器是宿主的 `.heroOptions`（`display:flex; align-items:center; margin-left:auto`）。
+  `.${GATE_CLASS.root}{display:flex;align-items:center;gap:8px;min-width:0;`
+    + `font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary,inherit)}`,
+  `.${GATE_CLASS.text}{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`,
+  `.${GATE_CLASS.btn}{flex:none;padding:4px 10px;font:inherit;font-size:12px;line-height:1.6;`
+    + `color:var(--dsw-alias-label-primary,inherit);`
+    + `background:var(--dsw-alias-interactive-bg-hover,transparent);`
+    + `border:0.5px solid var(--dsw-alias-state-warn-secondary,currentColor);border-radius:999px;cursor:pointer}`,
+  `.${GATE_CLASS.btn}:focus-visible{outline:2px solid var(--dsw-alias-link,currentColor);outline-offset:2px}`,
+].join('')
+
+/**
+ * 幂等注入本模块的样式（⚠ 与 `panel-styles.ts` 同一套做法，但**独立成一份**）。
+ *
+ * ⚠ 为什么不并进 `panel-styles.ts`：那个文件正被**另一实施会话**改
+ *   （第 3 轮开工时 `git diff --stat` 显示 +74 行）。本模块自带样式 ⇒
+ *   **零冲突**，卸载时也只摘自己这一个 `<style>`。
+ */
+export function ensureGateStyles(): HTMLStyleElement | null {
+  if (typeof document === 'undefined') return null
+  if (document.querySelector(`style[data-plugin-css=${JSON.stringify(STYLE_TAG_ID)}]`) !== null) return null
+  const tag = document.createElement('style')
+  tag.dataset.plugin = 'dsh-hob'
+  tag.dataset.pluginCss = STYLE_TAG_ID
+  tag.textContent = GATE_CSS
+  document.head.appendChild(tag)
+  return tag
+}
+
+/**
+ * 横幅文案。
+ *
+ * ⛔ 三条硬约束（任务书 §二 B）：
+ *   ① 不出现内部配置值（不写 `ledger` / `workspace` 这类枚举字面值）；
+ *   ② 不用字面 markdown 标记（不出现 `**`、`##` 之类）；
+ *   ③ 若出现「完全权限」字样，紧邻必须带完整边界句 —— 本文案**整体不提那三个字**，
+ *      所以不触发该约束（更省事也更不容易说错）。
+ */
+/**
+ * ⚠ 2026-10-24（修复单第 6 条）：这三句原先是**硬编码中文 export 常量**，
+ *   本文件不 import 语言服务 ⇒ 切英文后横幅仍是中文。
+ *   现在它们是**键**（`GATE_TEXT_KEY` 等），渲染期经 `t()` 现读 —— 切语言当场变。
+ *   ⚠ 旧名（`GATE_TEXT` 等）**保留为 getter 函数**（`gateText()`），不是字面量：
+ *     机检与别的调用点若还按"值是字符串"读，会读到**当前语言**的文案（比字面量更准）。
+ */
+const GATE_TEXT_KEY = 'gate.banner'
+const GATE_BTN_KEY = 'gate.btn'
+const GATE_BTN_UNAVAILABLE_KEY = 'gate.btn.unavailable'
+
+/** 横幅主文案（⭐ 每次调用现读语言）。 */
+export function gateText(): string { return t(GATE_TEXT_KEY) }
+/** 按钮文案（可开时）。 */
+export function gateButtonText(): string { return t(GATE_BTN_KEY) }
+/** 读取器缺席/判不出时的按钮说明（诚实话术，⛔ 不假装能开）。 */
+export function gateButtonUnavailableText(): string { return t(GATE_BTN_UNAVAILABLE_KEY) }
+
+/** 组件属性（⚠ 全部注入，便于机检用假实现跑真逻辑）。 */
+export interface HobUnselectedGateProps {
+  /** 槽给的本会话 id（`scope:'session'` ⇒ 一定有；缺席 ⇒ 不渲染）。 */
+  sessionId?: string
+  /**
+   * 本会话的 `agentPreset` 投影值。
+   * ⚠ 由 live 包装器用 `useProjection('agentPreset')` 取；机检直接传。
+   */
+  agentPreset?: string | null
+  /** 策略记录读取器（默认走本插件通道；缺席 ⇒ 'unknown' ⇒ 不渲染）。 */
+  readRecorded?: PolicyRecordReader | null
+  /**
+   * **为某个已有会话**打开选档弹窗。
+   * ⚠ 现状缺席 —— 现有 `DialogState` 没有这个入口（详见文件头"为什么不直接调 state.open()"）。
+   *   缺席 ⇒ 只显示横幅，按钮给"暂不可用"的说明。
+   */
+  openForSession?: (sessionId: string) => void
+  /** 只自动弹一次的共享记忆（⚠ 必须由调用方注入同一份，跨挂载才有效）。 */
+  memory?: GateMemory
+  /** 是否允许自动打开（默认 true；机检可关掉以单独测横幅）。 */
+  autoOpen?: boolean
+}
+
+/**
+ * 判据①：该会话是不是 Hob。
+ *
+ * ⚠ 用**严格相等**比较具体预设 id，⛔ 不用大小写不敏感/前缀匹配 ——
+ *   那会把 `Hob-other` 之类的自建预设也算进来（误弹）。
+ */
+export function isHobPreset(agentPreset: string | null | undefined): boolean {
+  return agentPreset === HOB_PRESET_ID_FOR_MATCH
+}
+
+/**
+ * 纯判定：给定三态，是否应该**显示横幅**。
+ *
+ * ⚠ 只有 `'unrecorded'` 才显示；`'recorded'`（已选）与 `'unknown'`（判不出）
+ *   都**不显示** —— 后者是 fail-closed 的落点（判不出就不打扰）。
+ * ⚠ 抽成纯函数是为了让机检能直接对四类会话逐条断言，而不必造 DOM。
+ */
+export function shouldShowGate(
+  agentPreset: string | null | undefined,
+  recorded: PolicyRecordState,
+): boolean {
+  return isHobPreset(agentPreset) && recorded === 'unrecorded'
+}
+
+/**
+ * **横幅 + 自动拉起**（组件本体）。
+ *
+ * 时序（⚠ 每一步都影响判据，别改顺序）：
+ *   ① 没有 `sessionId` ⇒ 立刻 `null`（槽是 `scope:'session'`，正常一定有）；
+ *   ② 不是 Hob ⇒ 立刻 `null`，**不发起任何请求**（⛔ 非 Hob 会话零打扰）；
+ *   ③ 读三态（异步）⇒ `'recorded'`/`'unknown'` ⇒ `null`；
+ *   ④ `'unrecorded'` ⇒ 显示横幅；若允许自动弹且本会话没弹过 ⇒ 打开一次。
+ */
+export function HobUnselectedGate(props: HobUnselectedGateProps): any {
+  // ⚠ 订阅语言变化只为触发重渲染（用的是 i18n 已有的 subscribeLocale，
+  //   ⛔ 不是第二套订阅）；横幅挂在 `conversation.hero.options`，不在设置面板的子树里
+  //   ⇒ 不自己订阅的话，切语言后横幅仍是旧语言（第 6 条）。
+  React.useSyncExternalStore(subscribeLocale, getLocaleSnapshot, getLocaleSnapshot)
+  const h = React.createElement
+  const sessionId = props.sessionId
+  const memory = props.memory
+  const [recorded, setRecorded] = React.useState<PolicyRecordState>('unknown')
+  /**
+   * ⚠⚠ **每轮 effect 自增的令牌**（2026-10-24 · 修复单第 3 条）。
+   *
+   * ── 修的是什么（实测两方向都坏）──────────────────────────────────────
+   *   上一版用 `const alive = useRef(true)` + 每个 effect 首行 `alive.current = true`：
+   *   **新 effect 会先把闸重新打开**，于是**上一个会话**那次仍在飞的读取，回包时
+   *   `alive.current` 读到的已经是新 effect 置的 `true` ⇒ 它照旧 `setRecorded(…)`：
+   *     · 旧会话回 `'unrecorded'`、当前会话其实已选 ⇒ **误弹一次**；
+   *     · 旧会话回 `'recorded'`、当前会话其实未选 ⇒ **横幅被抹掉**（该提示的不提示）。
+   *   ⇒ 改为**令牌**：每次 effect 开头 `token.current += 1` 并记下 `myToken`，
+   *     回包时只有 `token.current === myToken` 才写 state。切换会话/卸载都会让
+   *     旧令牌**永久失效**（不存在"重新打开闸"的路径）。
+   *   ⚠ 与弹窗的 `abandonedRef` **同形**（同一个团队定的写法，⛔ 不要各写一套）。
+   */
+  const token = React.useRef(0)
+  /** 选完之后的**重读计数**（自增 ⇒ 下面的读取 effect 重跑；见 `notifySessionSelected`）。 */
+  const [reload, setReload] = React.useState(0)
+
+  /**
+   * 订阅"本会话已选完"（第 11 条）：命中 ⇒ ① 清掉"弹过"的记录；② 重读三态。
+   * ⚠ 只在自己这个 `sessionId` 上生效 —— 别人的会话选完不该动我的横幅。
+   */
+  React.useEffect(() => {
+    if (sessionId === undefined || sessionId === '') return undefined
+    const onSelected = (id: string) => {
+      if (id !== sessionId) return
+      memory?.forget(sessionId)
+      setReload((n) => n + 1)
+    }
+    selectedListeners.add(onSelected)
+    return () => { selectedListeners.delete(onSelected) }
+  }, [sessionId, memory])
+
+  React.useEffect(() => {
+    token.current += 1
+    const myToken = token.current
+    /**
+     * ⚠ **非 Hob 直接早退**：这是"非 Hob ⇒ 不渲染、不请求"的落点。
+     *   放在 effect 里而不是渲染期，是为了让请求数可数（机检断言"零请求"）。
+     */
+    if (sessionId === undefined || sessionId === '' || !isHobPreset(props.agentPreset)) {
+      setRecorded('unknown')
+      // ⚠ 早退分支也要**作废**本轮令牌（否则它不会被任何回包用到，但语义要一致）
+      return () => { token.current += 1 }
+    }
+    /**
+     * ⚠⚠ **读取器的选取**（2026-10-22 第 4 轮修正 · 真缺陷）：
+     *   上一版写的是「没传 `readRecorded` ⇒ 直接 `'unknown'`」—— 那是**错的**：
+     *   生产注册处（`src/client/index.ts`）**不需要**显式传它，默认就应该走本插件的
+     *   只读路由。照上一版，`install…({openForSession})` 装出来的 gate **永远不会读**，
+     *   于是"自动弹"永远不生效 —— 功能看着接上了、其实是死的。
+     *   ⇒ 现在：未传 ⇒ 用 {@link defaultPolicyRecordReader}（同源 POST 到本插件路由）。
+     *   ⚠ 只有**显式传了 `null`** 才表示"我就是不想读"（机检用它测"零请求"分支）。
+     */
+    const reader = props.readRecorded === null
+      ? undefined
+      : (props.readRecorded ?? defaultPolicyRecordReader)
+    if (typeof reader !== 'function') {
+      // ⚠ 显式 null ⇒ 判不出 ⇒ 'unknown'（⛔ 不猜成 unrecorded）
+      setRecorded('unknown')
+      return () => { token.current += 1 }
+    }
+    void (async () => {
+      let next: PolicyRecordState = 'unknown'
+      try {
+        next = await reader(sessionId)
+      } catch {
+        next = 'unknown'
+      }
+      /**
+       * ⚠ **令牌核对**（第 3 条）：只有"这一次 effect 发的请求"才允许写 state。
+       *   切换会话 / 卸载之后 `token.current` 已经变了 ⇒ 这次回包**一个 state 都不写**
+       *   （⛔ 不许用上一会话的判定覆盖当前会话的判定）。
+       */
+      if (token.current !== myToken) return
+      setRecorded(next)
+    })()
+    return () => { token.current += 1 }
+  }, [sessionId, props.agentPreset, props.readRecorded, reload])
+
+  /**
+   * 自动打开（⚠ 必须在 `recorded === 'unrecorded'` 且未弹过时才发生）。
+   *
+   * ⚠ "只弹一次"用 `memory.takeAutoOpen()` —— 它是**原子**的（取与记号同一行），
+   *   所以即使本组件被并发挂载两次，也只有一次返回 true。
+   */
+  const mountedAutoOpen = props.autoOpen !== false
+  React.useEffect(() => {
+    if (sessionId === undefined || sessionId === '') return
+    if (recorded !== 'unrecorded') return
+    if (!mountedAutoOpen) return
+    if (typeof props.openForSession !== 'function') return
+    if (memory === undefined) return
+    if (!memory.takeAutoOpen(sessionId)) return
+    try { props.openForSession(sessionId) } catch { /* 打不开不影响横幅显示 */ }
+  }, [sessionId, recorded, mountedAutoOpen, props.openForSession, memory])
+
+  if (!shouldShowGate(props.agentPreset, recorded)) return null
+
+  const canOpen = typeof props.openForSession === 'function'
+  return h('div', { className: GATE_CLASS.root, role: 'status', 'aria-live': 'polite' },
+    // ⚠ 文案经 `t()` **现读**（切语言 ⇒ 订阅触发重渲染 ⇒ 这里拿到新语言的句子）
+    h('span', { className: GATE_CLASS.text }, gateText()),
+    h('button', {
+      type: 'button',
+      className: GATE_CLASS.btn,
+      // ⚠ 不能开时**不用 disabled**：disabled 的按钮在部分宿主主题下读不出来，
+      //   且用户不知道"为什么点不动"。改成可点 + 可读说明（见 onClick）。
+      'aria-disabled': canOpen ? undefined : 'true',
+      'data-gate-action': canOpen ? 'open' : 'unavailable',
+      onClick: () => {
+        if (!canOpen || sessionId === undefined) {
+          try {
+            // ⚠ 如实说明，⛔ 不假装已经打开
+            globalThis.alert?.(`${gateText()}\n${gateButtonUnavailableText()}：${t('gate.alert.unavailable')}`)
+          } catch { /* 无 alert 环境 ⇒ 静默（横幅文案已可见） */ }
+          return
+        }
+        props.openForSession?.(sessionId)
+      },
+    }, canOpen ? gateButtonText() : gateButtonUnavailableText()),
+  )
+}
+
+/**
+ * **槽用的活组件**：把宿主给的标准 props 映射成本组件的 props。
+ *
+ * ⚠ 为什么单独一层：槽注入的是 `sessionId` 与 `useProjection` 这类**hook 面**，
+ *   而组件本体要的是**普通值** —— 分开才能让机检直接挂组件本体（不依赖槽）。
+ * ⚠ `useProjection('agentPreset')` 是宿主第五个框架 hook（签名见
+ *   `dsh-api-session-controller/lib/types/client/sessions/projection-store.d.ts:28-30`），
+ *   与 `dsh-client-ui-agent-preset/lib/client.js:2095` 的用法同源。
+ */
+export function HobUnselectedGateLive(props: {
+  sessionId?: string
+  useProjection?: (key: string) => unknown
+  readRecorded?: PolicyRecordReader | null
+  openForSession?: (sessionId: string) => void
+  memory: GateMemory
+  autoOpen?: boolean
+}): any {
+  const useProjection = props.useProjection
+  const preset = typeof useProjection === 'function'
+    ? (useProjection('agentPreset') as string | null | undefined)
+    : undefined
+  return React.createElement(HobUnselectedGate, {
+    sessionId: props.sessionId,
+    agentPreset: preset,
+    ...(props.readRecorded === undefined ? {} : { readRecorded: props.readRecorded }),
+    ...(props.openForSession === undefined ? {} : { openForSession: props.openForSession }),
+    memory: props.memory,
+    ...(props.autoOpen === undefined ? {} : { autoOpen: props.autoOpen }),
+  })
+}
+
+/**
+ * 把本模块注册进 `conversation.hero.options`。
+ *
+ * ⚠ 用 `ctx.slots.inject`（反应式）而**不是**模块级 `inject`：
+ *   槽缺席时**不注册、不报错**（宿主其它界面插件未装载时也不该炸）——
+ *   与 `src/client/index.ts` 里三条 `shell.overlay` 注册同一套纪律。
+ * ⚠ 样式挂 `ctx.effect`，热重载/卸载时自动摘掉（⛔ 不留孤儿 `<style>`）。
+ *
+ * @param ctx - client 半边上下文。
+ * @param deps - 外部能力：是否允许自动弹、为已有会话开弹窗（⚠ 现状缺席）。
+ */
+export function installHobUnselectedGate(ctx: any, deps: {
+  readRecorded?: PolicyRecordReader | null
+  openForSession?: (sessionId: string) => void
+  autoOpen?: boolean
+} = {}): GateMemory {
+  const memory = createGateMemory()
+
+  ctx.effect(() => {
+    const tag = ensureGateStyles()
+    return () => { tag?.remove() }
+  }, 'dsh-hob: unselected gate styles')
+
+  ctx.slots.inject('conversation.hero.options', () => ctx.slots.register({
+    name: 'conversation.hero.options',
+    id: HOB_GATE_SLOT_ID,
+    // ⚠ 排在宿主自己的 hero 选项之后（不抢先）
+    order: HOB_GATE_ORDER,
+  }, (slotProps: any) => React.createElement(HobUnselectedGateLive, {
+    sessionId: typeof slotProps?.sessionId === 'string' ? slotProps.sessionId : undefined,
+    ...(typeof slotProps?.useProjection === 'function' ? { useProjection: slotProps.useProjection } : {}),
+    ...(deps.readRecorded === undefined ? {} : { readRecorded: deps.readRecorded }),
+    ...(deps.openForSession === undefined ? {} : { openForSession: deps.openForSession }),
+    memory,
+    ...(deps.autoOpen === undefined ? {} : { autoOpen: deps.autoOpen }),
+  })))
+
+  return memory
+}

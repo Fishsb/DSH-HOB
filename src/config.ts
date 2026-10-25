@@ -19,6 +19,11 @@ import {
   WORK_MODE_VALUES,
   type WorkMode,
 } from './shared/work-mode.ts'
+// ── 能力红线的**单一来源**（2026-10-24 · 跨席收口）─────────────────────────
+//   ⚠ 这句话在用户可见处出现过多次，原先在本文件里是**逐字副本**。
+//     副本的失败形态是**静默漂移**（改一处漏一处 ⇒ 某一处仍在承诺"不能写"）。
+//   ⚠ `capability-red-line.ts` **零 import** ⇒ 这里直接引安全，不会有循环依赖。
+import { CAPABILITY_RED_LINE_ZH } from './shared/capability-red-line.ts'
 
 /**
  * 模块开关：每个宿主半边模块（`src/modules/*`）可**独立启停**。
@@ -43,7 +48,16 @@ export interface ModulesConfig {
   bus: boolean
   /** M5 编排模块（闭环派活：投递 → 等对方跑完 → 回传结果 → 唤醒派活方）。 */
   orch: boolean
-  /** M4 配置 schema 模块。 */
+  /**
+   * M4 配置面**自检**模块（⚠ 2026-10-24 订正：它**不是**"设置页分区开关"）。
+   *
+   * ⚠ **关掉它会发生什么（实测口径，⛔ 别再按旧说法写"配置面消失"）**：
+   *   设置页里本插件的分区**照样在** —— 那一格由 **client 半边**
+   *   （`src/client/index.ts` 的 `ctx.slots.inject('settings.section', …)`）**无条件**注册，
+   *   而它是否被宿主渲染出表单由 `describe()` 决定（条件 = entry 的 fiber ACTIVE 且
+   *   schema 里至少有一个 `.volatile()` 字段），两者都与本开关无关。
+   *   ⇒ 关掉它**唯一**的后果：少掉 `modules/settings.ts` 里那条 `describe()` 可见性自检日志。
+   */
   settings: boolean
   /**
    * M6a 跨实例投递模块（2026-10-16 第 237 轮 · `UD-119` 裁定）。
@@ -268,7 +282,11 @@ export const Config = z.object({
       .description('闭环编排（M5）：对方跑完自动回传并唤醒派活方（hob_dispatch / hob_orch_status / hob_orch_control）。⚠ 它会在无人看管时继续推进 —— 默认关闭，要用请显式打开。')
       .volatile(),
     settings: z.boolean().default(true)
-      .description('设置模块：登记本插件的配置面，使其出现在这个设置页里。')
+      // ⚠⚠ 2026-10-24 订正：旧描述「登记本插件的配置面，使其出现在这个设置页里」**不成立**
+      //   —— 设置页那一格由 client 半边无条件注册、表单由宿主 describe() 按 volatile 生成，
+      //   两者都与本开关无关（实测见 `src/modules/settings.ts` 文件头的「本模块不控制…」一节）。
+      //   ⇒ 现在如实写成「配置面自检」：关掉它只是少掉那条 describe() 可见性探测日志。
+      .description('配置面自检（⚠ 不是"设置页分区开关"）：打开时向宿主 describe() 问一次"本插件在设置面上可见吗"，并把结果（可见/不可见+原因）打进日志。⚠ 关掉它：设置页分区**照样在**，只是少掉这条自检。⚠ 改它要重启实例才生效（模块装载发生在插件装载那一刻）。')
       .volatile(),
     /**
      * ── 跨实例投递开关（M6a · 2026-10-16 第 237 轮 · `UD-119` 裁定）─────────────
@@ -341,15 +359,37 @@ export const Config = z.object({
    * 「可读权限控制」（2026-10-14 第 144 轮 · 用户裁定「档3 要真硬机制」+「档2不给，档3的都给」；
  *   **2026-10-17 由「权限档位」改名而来** —— ⚠ 只改名，⛔ 不扩权、⛔ 不改内部取值）。
    *
-   * ── 它管什么 ────────────────────────────────────────────────────────
-   *   「助手」预设这一档会话**能看到哪些工具**。三档是**包含链**：
+   * ── ⚠⚠ **2026-10-24 订正：本节描述的是"历史存档"，不是"当前生效的档位"** ──────
+   *   改前的说法（**已作废**）：「档位要求改完即生效、不必重启」「已开的会话在下一次
+   *   模型 step 就按新档位走」。⚠ 那句在 `REQ-04`（2026-10-22）之后**不成立**：
+   *   运行期档位已改为**按会话**读 `hobSessionPolicy`
+   *   （`src/modules/session-policy-service.ts` / `src/server/session-policy.ts`），
+   *   而本字段的**消费方为 0**：唯一取它的是入口 provide 的 `PERMISSION_SERVICE`，
+   *   那个服务的消费者只剩 `src/preset/tools.ts:277` 的**存在性检查**（取名字、判在不在），
+   *   **取到的值从不参与任何判定**。
+   *   ⇒ 改这一档**对任何会话都没有行为影响**（⛔ 不是"改完即生效"，也⛔ 不是
+   *   "重启后生效" —— 是**没人读**）。
+   *
+   * ── ⚠⚠ **它到底还是不是"迁移取值来源"（2026-10-24 二次订正：不是）** ─────────
+   *   上面那段初稿曾写"保留只为旧会话迁移时读当年取值"。**逐行核实后：今天不成立** ——
+   *   `src/session-policy-service.ts` 的迁移只抓**工作方式**
+   *   （`legacyModeSnapshot` ← `hobWorkMode`），而迁移记录的 **档位** 直接取
+   *   `opts.floorLevel` = `DEFAULT_PERMISSION_LEVEL`（`'ledger'`，见
+   *   `src/server/session-policy.ts:1020` / `:1081`）—— **一次都没读 `permission.level`**。
+   *   ⇒ 诚实的表述是：**它今天没有任何消费方，也不是迁移来源**；
+   *     留它是因为 ①面板写入路径与 `check:config` 的 B/G 组钉着这个键、
+   *     ②摘掉会让 `permission` 组整组从表单里消失（见下"为什么仍保留 `.volatile()`"）。
+   *   ⚠ 若将来要把"旧全局档"真正迁进来，那才是它变成"取值来源"的时刻 ——
+   *     **到那时再改这段说明，⛔ 不许提前写成已经做了**（本单的错误就是这种提前声称）。
+   *
+   * ── 三档的含义（⚠ 现在只是**词义说明**，用于读旧记录 / 旧日志）──────────────
    *   · `ledger`（账本，默认）= **只读自己的账本 + 网络**，看不到项目工作区的文件；
    *   · `project`（项目）= 上面那些 **+** 读工作区里的**文档（`.md`）**，不可读代码；
    *   · `workspace`（工作区）= 上面那些 **+** 工作区里的**任意文件**（含代码与图片）、
    *     跨文件搜索。
    *   ⚠ **任何一档都不能改动**：写类 / 命令类工具在三档里**都不存在**
    *     （不声明 + 不注册 —— 见 `src/preset/tools.ts` 的三档表与哨兵）。
-   *   ⚠ **档位只改「读」的范围**，不改「写」的边界。
+   *   ⚠ 真正生效的档位由**每个会话自己的策略记录**决定（同上两个文件）。
    *
    * ── 形状（与 `spawn` 同形，**不是**随手选的）──────────────────────
    *   · 父对象 `permission` **不标** `.volatile()`；
@@ -357,12 +397,11 @@ export const Config = z.object({
    *   理由与 `spawn` 那段完全同源（父子同标会抛 `ValidationError`；
    *   写入路径必须逐级 volatile，故设置面**必须写 `['permission','level']`**）。
    *
-   * ── 为什么是 `.volatile()`（而不只是普通配置）──────────────────────
-   *   档位要求「**改完即生效、不必重启**」。`.volatile()` 让宿主写入走
-   *   **volatile-only 通道**（`cordis-plugin-loader` 的 `equalExceptVolatile` 判定为真
-   *   ⇒ 只换 `fiber._config`、**不重挂载**）⇒ 已开的会话在**下一次模型 step**
-   *   就按新档位走（装配期过滤是**逐 step 现算**的，见 `src/preset/tools.ts`）。
-   *   ⚠ 若档位改成普通（非 volatile）字段 ⇒ 宿主走重挂载通道 ⇒ **必须重载/重启**。
+   * ── 为什么仍保留 `.volatile()`（⚠ 与"它还生效"无关）──────────────────
+   *   ① 面板写入路径（`['permission','level']`）与 `check:config` 的 B/G 组钉着这个键；
+   *   ② 摘掉会让 `volatileForm()` 少一个字段 ⇒ `permission` 组整组从表单里消失。
+   *   ⚠ **不是**"为了迁移取值"（见上方二次订正：今天没有迁移在读它）。
+   *   ⇒ 保留字段 + **把描述改准**，⛔ 不是"留着让人以为能改"。
    *
    * ── 为什么是 `z.union([z.const(…), …])` 而不是 `z.string()` ─────────
    *   `z.string()` 在设置面会退化成**自由文本输入**（用户能填出三档之外的值）；
@@ -380,7 +419,33 @@ export const Config = z.object({
       z.const('project'),
       z.const('workspace'),
     ]).default('ledger')
-      .description('「助手」会话的可读权限控制（三选一）：账本权限 = 只读自己的账本与网络；文档权限 = 另可读工作区的 .md 文档，不可读代码；完全权限 = 另可读工作区里的任意文件（含代码与图片）、可跨文件搜索。⚠ 完全权限 = 工作区里任何文件都可读，仍然不能写、不能执行命令、不能组队（写类与命令类工具三档都不存在）。改完即生效，不必重启实例。')
+      /**
+       * ⚠⚠ **2026-10-24 订正：这不是"活配置"**（原描述宣称"改完即生效"，实测不成立）。
+       *
+       * ── 现状（逐条可核）─────────────────────────────────────────────────
+       *   · `permissionLevel(config)` 的**唯一消费方**是入口
+       *     `src/index.ts:117` 的 `ctx.provide(PERMISSION_SERVICE, () => permissionLevel(config))`；
+       *   · 而 `PERMISSION_SERVICE` 的消费方**只剩一处"存在性检查"**：
+       *     `src/preset/tools.ts:277` 的 `serviceNameOf('PERMISSION_SERVICE')`（取名字、判在不在），
+       *     **取到的档位值从不参与任何判定** —— 真正的按会话档位来自
+       *     `hobSessionPolicy`（`src/modules/session-policy-service.ts`）。
+       *   · ⇒ 在设置面改这一档，**对任何已开会话、任何新建会话都没有行为影响**
+       *     （⛔ 不是"改完即生效"，也⛔ 不是"重启后生效"——是**没人读**）。
+       *
+       * ── 那为什么保留这个字段（⛔ 不删）──────────────────────────────────
+       *   ⚠ **不是因为"迁移要用"** —— 核实过：迁移只搬「推进方式」，
+       *     档位按 `floorLevel`（最低档）落库（`src/server/session-policy.ts:1020` / `:1081`），
+       *     **一次都没读这里**。保留它的真实理由只有两条：
+       *     ① 面板写入路径（`['permission','level']`）与 `check:config` 的 B/G 组钉着这个键；
+       *     ② 摘掉会让 `permission` 组整组从表单里消失（`volatileForm()` 少字段）。
+       *   ⇒ 保留字段、**把描述改准**：它是"旧全局档的历史存档"，⛔ 既不是当前生效档位、
+       *     也不是迁移来源。⚠ 将来真要做"旧全局档迁移"时，**那时**再把它接成取值来源
+       *     并同步改这一段 —— ⛔ 不许提前声称（本单要治的就是这种"描述比实现多走一步"）。
+       *
+       * 形状（父不标 + 子标 volatile）**一个字不许动**：删/改形状会让
+       * `volatileForm()` 少一个字段，甚至让整个分区从设置面消失（见本段上方注释）。
+       */
+      .description('⚠ 历史存档值（**不是**当前生效档，也**不是**迁移来源）：本插件自 REQ-04 起按**会话**读档（hobSessionPolicy），而迁移只搬「推进方式」、档位按最低档落库 —— 所以这个字段**今天没有任何消费方**，改它不会影响任何会话。三档含义仅作历史说明：账本 = 只读自己的账本与网络；文档 = 另可读工作区的 .md；完全 = 另可读工作区任意文件（含代码与图片）、可跨文件搜索。⚠ 任何一档都' + CAPABILITY_RED_LINE_ZH + '。保留它只为「面板写入路径 + 设置面分组可见性」两件既有契约。')
       .volatile(),
   }).default({}),
 
@@ -405,10 +470,29 @@ export const Config = z.object({
    *   ⇒ ⚠ 对**已经有骨架**的工作区，它是**空操作**（只打一行"已存在 ⇒ 跳过"）。
    *   ⚠ 与 `orch` 的"缺省 false"不矛盾：⚠ 那个的失效方向是**在无人看管时继续烧 token**，
    *     方向不同 ⇒ 兜底取值不同（同一条"取后果更轻的那一边"纪律）。
+   *
+   * ── ⚠⚠ **2026-10-24 订正：这个开关此前是【空旋钮】，现已真的接上** ──────────
+   *   **改前的病灶**（本单必修 3，实测确认）：唯一的消费点
+   *   （`src/modules/tools.ts` 的 `scaffoldSkeletonForWorkspace(wsRoot, …)`）拿的是
+   *   **预设行**转手注入的 `skeletonEnabledOf`，而预设行读的是**它自己的配置**
+   *   （`HobToolsConfig`：workspaceRoot / ledgerHome / maxFileBytes…）——
+   *   **那份配置里根本没有 `skeleton` 段** ⇒ 读不到 ⇒ 落兜底 `true`。
+   *   ⇒ 用户在这里关掉（写进了**插件配置**），**没有任何人读** ⇒ 照样铺骨架。
+   *
+   *   **现在**（接法在 `src/modules/tools.ts`，本文件只负责被读）：
+   *   · `src/modules/tools.ts` 的 `apply` 从**入口 fiber 的已解配置**装一个现读器
+   *     （`pluginEntryConfigOf` → `parent.fiber.config` → 本文件的 `skeletonEnabled()`）；
+   *   · 消费点优先用它（权威），注入值降为**兜底**（只为不跑 `apply` 的机检路径）；
+   *   · 双向读数实测：`false` ⇒ `skipped-switch-off` 且**一个字节都没铺**；
+   *     `true` ⇒ `scaffolded`。
+   *   ⇒ ⚠ 这个旋钮**两个方向都真的管用**；⛔ 别再把它写成"配置项"而不说它接到了哪里。
+   *
+   *   ⚠ **生效时机**：`.volatile()` ⇒ 改完**不必重启**，下一次 `write_hob` 真写成功时按新值走
+   *     （读取器每次现解 ref，不是装配期快照）。
    */
   skeleton: z.object({
     enabled: z.boolean().default(true)
-      .description('首次在某工作区干活时，把骨架（`.hob/**` 结构层）铺进那个工作区。⚠ 只补缺：目标已存在 ⇒ 一个字节都不动。⚠ 这不是工具，是插件的初始化行为。')
+      .description('首次在某工作区干活时，把骨架（`.hob/**` 结构层）铺进那个工作区。⚠ 只补缺：目标已存在 ⇒ 一个字节都不动。⚠ 这不是工具，是插件的初始化行为。⚠ 这个开关**双向真的生效**（关 ⇒ 一个字节都不铺，并在写结果里如实回 `skipped-switch-off`；开 ⇒ 只补缺地铺）；改完不必重启，下一次真写生效。')
       .volatile(),
   }).default({}),
 
@@ -597,12 +681,25 @@ export function moduleSwitches(config: unknown): ModulesConfig {
 }
 
 /**
- * 可读权限控制的**现读**服务名（2026-10-14 第 144 轮）。
+ * 可读权限控制的**现读**服务名（2026-10-14 第 144 轮；**2026-10-24 订正消费面**）。
+ *
+ * ⚠⚠ **这个服务的消费方现在只剩"存在性检查"** —— 它**不再是档位来源**：
+ *   `REQ-04`（2026-10-22）起，运行期档位按**会话**读 `hobSessionPolicy`
+ *   （`src/modules/session-policy-service.ts`）。
+ *   实测 `grep -rn PERMISSION_SERVICE src/`：唯一消费者是
+ *   `src/preset/tools.ts:277` 的 `serviceNameOf('PERMISSION_SERVICE')` ——
+ *   它只判**这个名字在不在**（导出在不在），**取到的档位值从不参与判定**。
+ *   ⚠ 于是 `permission.level` 是一个**死配置**（改它没有任何行为影响）。
+ *
+ * ── 那为什么还留着这个服务名/导出（⛔ 不删）────────────────────────────
+ *   · 机检 G-11 钉着「`PERMISSION_SERVICE` 缺席 ⇒ 预设 `throw`」这条既有契约；
+ *   · 老实例/老组合的既有行为不该在本轮被悄悄改变。
+ *   ⇒ 保留；⚠ 但**不许**再把它写成"档位生效链路"的一环（这是本轮改准的那句）。
  *
  * ⚠ 它是一个**函数**（返回 `'ledger' | 'project' | 'workspace'`），不是值：
- *   调用方**必须每次调**，不许存起来（见 {@link permissionLevel} 的注释）。
- * ⚠ 定义在 `config.ts`（而不是 `index.ts`）：**两侧都要用它** ——
- *   插件入口（provide 方）与预设作用域（消费方），放这里不会造成循环 import。
+ *   调用方**必须每次调**，不许存起来。
+ * ⚠ 定义在 `config.ts`（而不是 `index.ts`）：两侧都要用它（provide 方与检查方），
+ *   放这里不会造成循环 import。
  */
 export const PERMISSION_SERVICE = 'hobPermission'
 
@@ -616,17 +713,27 @@ export type PermissionLevel = (typeof PERMISSION_LEVELS)[number]
 export const DEFAULT_PERMISSION_LEVEL: PermissionLevel = 'ledger'
 
 /**
- * 读出当前**可读权限控制**的档位（`ledger` / `project` / `workspace` —— ⚠ 内部取值，⛔ 不是显示名）。
+ * 读出 `permission.level` 的档位（`ledger` / `project` / `workspace` —— ⚠ 内部取值，⛔ 不是显示名）。
  *
- * ── 为什么必须是**函数**、且调用方必须**每次现读**────────────────────
- *   `permission.level` 标了 `.volatile()` ⇒ 运行时是 **ref 对象**，
- *   宿主写入走 volatile-only 通道**原地更新**（不重挂载）。
- *   ⇒ 若在挂载时读一次存起来，用户改完档位后**已开的会话仍按旧档**走到重挂载为止 ——
- *     正是"设置页改了但行为没变"那个静默失败（与 `spawnDefaults` 的注释同一条教训）。
+ * ⚠⚠ **2026-10-24 订正：这个值当前【没有消费方】** ──────────────────────────
+ *   · 唯一调用点是入口 `src/index.ts:117`
+ *     （`ctx.provide(PERMISSION_SERVICE, () => permissionLevel(config))`）；
+ *   · 而 `PERMISSION_SERVICE` 的消费者只剩 `src/preset/tools.ts:277` 的**存在性检查**
+ *     ⇒ **返回的档位值从不参与任何判定**（真正生效的档位走 `hobSessionPolicy`）。
+ *   ⇒ 所以本函数**不是**"档位生效链路"的一环，它只是**旧全局值的读取口**
+ *     （⚠ 今天**连迁移都不读它** —— 迁移只搬「推进方式」，档位按 `floorLevel` 落库）。
+ *     ⛔ 别再按"改完即生效"或"迁移要用"来描述它。
+ *
+ * ── 为什么仍必须是**函数**、且调用方**每次现读** ─────────────────────────
+ *   `permission.level` 标了 `.volatile()` ⇒ 运行时是 **ref 对象**
+ *   ⇒ 若在挂载时读一次存起来，连"取到 ref 还是取到值"都会错（直读 `config.permission.level`
+ *     会拿到 ref 对象，**恒 truthy 且不报错**）。
+ *   ⚠ 这条纪律与"值有没有人消费"无关：**解 ref 的正确性**仍然必须靠现读。
  *
  * ── 兜底口径（fail-closed）────────────────────────────────────────────
  *   读不出来 / 不是三档之一 / 抛异常 ⇒ 一律归到**最保守**的 {@link DEFAULT_PERMISSION_LEVEL}
- *   （档1 账本）。理由：档位的失效方向应当是**收窄**而不是放大权限。
+ *   （档1 账本）。理由：即便目前无人消费，取值方向也应当时**收窄**而不是放大权限
+ *   （将来若重新接线，兜底方向已经是对的）。
  *
  * @param config - 插件配置（或任何带 `permission.level` 的对象）。
  */
@@ -652,6 +759,27 @@ export function permissionLevel(config: unknown): PermissionLevel {
  *   插件入口（provide 方）与预设作用域（消费方），放这里不会造成循环 import。
  */
 export const WORK_MODE_SERVICE = 'hobWorkMode'
+
+/**
+ * ⭐ **逐会话策略**服务名（2026-10-22 · `REQ-04`）。
+ *
+ * ⚠ 与 {@link PERMISSION_SERVICE} / {@link WORK_MODE_SERVICE} **不是同一个服务**，语义也不同：
+ *   那两个返回**实例级全局值**（改一次影响所有已开会话 —— 正是本需求要取消的串线）；
+ *   本服务返回**按会话**解析的结果（`of(session) → { level, workMode, ... }`）。
+ *
+ * ⚠ **它才是运行权威**：读档 / 工作方式判定一律走它，⛔ 不许再读上面那两个。
+ *   上面两个只保留两类用途：① 既有调用方与机检的兼容面；
+ *   ② ⚠ **只有 `WORK_MODE_SERVICE` 还多一条真实用途** —— 迁移旧会话时固化
+ *   "当时的生效工作方式"（`legacyModeSnapshot`）。
+ *   ⛔ `PERMISSION_SERVICE` **没有**这第二条：迁移的档位取 `floorLevel`（最低档），
+ *   一次都没读 `permission.level`（见 `permissionLevel()` 的注释）。
+ *
+ * ⚠ 定义在 `config.ts`（而不是 `index.ts`）：**两侧都要用它** ——
+ *   插件入口（provide 方）与预设作用域 / 模块作用域（消费方），放这里不会造成循环 import。
+ * ⚠ 服务**体**在 `src/session-policy-service.ts`（那里才是实现；本文件只放名字，
+ *   以免 `index.ts ↔ 服务实现` 之间为了一个字符串常量形成循环 import）。
+ */
+export const SESSION_POLICY_SERVICE = 'hobSessionPolicy'
 
 /**
  * 读出「Hob 推进项目的工作方式」的档位（`auto` / `single` / `multi` —— ⚠ 内部取值，⛔ 不是显示名）。
@@ -702,6 +830,17 @@ export function workMode(config: unknown): WorkMode {
  *   而 ⛔ **永不覆盖已存在的 `.hob/`**（只补缺）⇒ ⚠ **多铺的后果是空操作**；
  *   反过来（读不出来就关掉）会让"装到别的实例"**重新依赖人记得复制** ——
  *   那正是 `UD-118` 要治的形态。
+ *
+ * ── ⚠⚠ **谁该调它、谁不该（2026-10-24 订正 · 本单必修 3）** ────────────────
+ *   ✅ **唯一正确的取法**：`src/modules/tools.ts` 的 `apply` 把它绑在**插件入口配置**上
+ *      （`pluginEntryConfigOf(ctx)` → `parent.fiber.config`），装成模块级的现读器
+ *      （`setEntrySkeletonSwitch`），再由 `write_hob` 的铺骨架那一步消费。
+ *   ⛔ **别再传预设行的 `config` 进来**：那份配置是 `HobToolsConfig`
+ *      （workspaceRoot / ledgerHome / …），**没有 `skeleton` 段** ⇒ 本函数按兜底返回
+ *      `true` ⇒ 用户关掉开关**不生效**（这就是"空旋钮"的成因）。
+ *      `src/preset/tools.ts` 现在仍那样传，**它的值已降为兜底**（见该文件 §需转派）。
+ *   ⚠ 兜底恒 `true` 还有一个后果必须记住：**"读不到"与"开着"在本函数里同形**。
+ *     所以判据不能靠它区分（要看调用方是否真的拿到了入口配置）。
  *
  * @param config - 插件配置（来自 Loader 时是 ref 形态；测试里的裸对象是普通形态）。
  */

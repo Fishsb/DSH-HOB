@@ -33,10 +33,33 @@
  *   node scripts/check-rounds-records.mjs --self-test   # 自带负向对拍（⛔ 不碰真账本）
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { workspaceName as configuredWorkspaceName } from './workspace-name.mjs'
+
+/**
+ * 「这个目录看起来像不像一份账本」（⚠ 与产品代码 `src/server/doc-read.ts` 的 `looksLikeLedger`
+ * **逐条相同** —— 两侧各写一套就是新的漂移点）。
+ *
+ * 判据：目录在，且**至少有一件**账本特征 —— 正本之一，或**非空的** `volumes/` / `archive/` / `runtime/`。
+ * ⚠ **空目录不算**：本项目 `.hob/archive/` 是空的记录层历史位，算进去会把"未迁移"误判成"已迁移"。
+ */
+const CANON_FILES = ['REQUIREMENTS.md', 'PROJECT.md', 'DECISIONS.md', 'CONTEXT.md']
+const SIDE_DIRS = ['volumes', 'archive', 'runtime']
+function looksLikeLedger(dir) {
+  try { if (!statSync(dir).isDirectory()) return false } catch { return false }
+  for (const f of CANON_FILES) {
+    try { if (statSync(join(dir, f)).isFile()) return true } catch { /* 继续 */ }
+  }
+  for (const d of SIDE_DIRS) {
+    try {
+      const q = join(dir, d)
+      if (statSync(q).isDirectory() && readdirSync(q).length > 0) return true
+    } catch { /* 继续 */ }
+  }
+  return false
+}
 
 const root = process.cwd()
 /** 记录件目录（账本区相对路径）。 */
@@ -90,6 +113,9 @@ function ledgerHome() {
 
 function resolveLedgerRoot(cliLedger) {
   if (typeof cliLedger === 'string' && cliLedger !== '') return cliLedger
+  // ② 新正典：本工作区自己的 `<工作区>/.hob/`（若它看起来像账本）
+  const inWs = join(root, '.hob')
+  if (looksLikeLedger(inWs)) return inWs
   const home = ledgerHome()
   if (home === null) return undefined
   const cand = join(home, workspaceName())
@@ -140,6 +166,23 @@ function shaExists(repoRoot, sha) {
   return r === null ? 'missing' : 'ok'
 }
 
+/**
+ * 账本侧的 `shaExists` —— ⚠ 2026-10-25 搬家后**账本根不再是 git 仓**，
+ *   所以"这个 sha 在不在账本仓里"要**依次问几个仓**（见 {@link ledgerRevRepos}）：
+ *   ① 归档内层仓（只读）② 工作区仓（`.hob/` 前缀）。
+ * ⚠ 任一命中即 `ok`（⛔ 不是"第一个仓没有就判 missing" —— 那会把搬过来的历史全判没）。
+ */
+function shaExistsInLedgerRepos(ledgerRoot, sha) {
+  if (ledgerRoot === undefined) return 'unresolved'
+  for (const r of ledgerRevRepos(ledgerRoot)) {
+    const args = r.gitDir === null
+      ? ['cat-file', '-e', `${sha}^{commit}`]
+      : ['--git-dir', r.gitDir, 'cat-file', '-e', `${sha}^{commit}`]
+    if (tryGit(args, r.cwd) !== null) return 'ok'
+  }
+  return 'missing'
+}
+
 // ── 取数 ──────────────────────────────────────────────────────────────────
 const DEL_ROW = /^-\|\s*(\d{1,4})\s*(?:[–-]\s*(\d{1,4}))?\s*\|/
 const ROW = /^\|\s*(\d{1,4})\s*(?:[–-]\s*(\d{1,4}))?\s*\|/
@@ -173,11 +216,57 @@ function expand(a, b) {
  *    逐个取它 `### 5.1` 段里的标识并集 —— ⚠ **节上下文由正文本身保证**，⛔ 不靠流式跟踪。
  *    ⚠ 成本实测 ~0.5s（231 个 blob · 一次 `cat-file --batch`）。
  */
+/**
+ * **账本历史的取数仓**（2026-10-25 搬家单之后新增）。
+ *
+ * ⚠ **为什么需要它**：`everSeen` / `atNow` 都用 `git` 读账本的**提交历史**
+ *   （`rev-list --all --objects` / `ls-tree HEAD`），而 **`cwd = 账本根**。
+ *   ⚠ 2026-10-25 搬家单把账本并进工作区仓、内层 `.git` 移进归档
+ *   ⇒ `cwd = 账本根` 已**不是 git 仓** ⇒ 改前实测：`everSeen` 返回 `{blobs:0}`、
+ *     `atNow` 返回空集 ⇒ 判据打「历史取数面整个塌了」。
+ *
+ * ⚠ **取数顺序（覆盖面 ⛔ 不许缩小）**：
+ *   ① **归档里的内层 `.git`**（⚠ **只读**当 `--git-dir`，⛔ 不写不删不提交）——
+ *      ⚠ 它才是"账本自己的仓"：实测 **446 提交 / 4580 对象 / HEAD 1711 篇**，
+ *      而工作区仓只有 280 提交，且它的 HEAD 里 `.hob/` 是**骨架**（`.hob/README.md` 等），
+ *      ⛔ 不是账本正本 ⇒ **`atNow` 用它才查得到账本当前状态**。
+ *   ② **工作区仓**（`root`）—— 账本搬进来后它也在里面；作为兜底，
+ *      ⚠ 且 `ls-tree HEAD` 只取 `.hob/` 前缀（账本在工作区仓里的相对位置）。
+ *
+ * ⚠ 返回 `null` ⇒ 两处都取不到（调用方照旧报「塌了」，⛔ 不当通过）。
+ */
+function ledgerRevRepos(ledgerRoot) {
+  const out = []
+  const archived = join(ledgerRoot, 'archive', '2026-10-25-project-migrate', 'inner-git', '.git')
+  try {
+    if (statSync(archived).isDirectory()) {
+      out.push({ cwd: ledgerRoot, gitDir: archived, prefix: '', label: '归档内层仓(只读)' })
+    }
+  } catch { /* 归档不在 ⇒ 只有 ② */ }
+  // ② 工作区仓：账本在它里面的相对前缀是 `.hob/`
+  out.push({ cwd: ledgerRoot, gitDir: null, prefix: '.hob/', label: '工作区仓(.hob/)' })
+  return out
+}
+
+/** 在若干"账本仓"里试 `rev-list --all --objects`；命中即返回（⛔ 不合并两个仓的结果）。 */
+function everSeenIn(repos) {
+  for (const r of repos) {
+    const args = r.gitDir === null ? ['rev-list', '--all', '--objects'] : ['--git-dir', r.gitDir, 'rev-list', '--all', '--objects']
+    const got = tryGit(args, r.cwd)
+    if (got !== null) return { out: got, repo: r }
+  }
+  return null
+}
+
 function everSeen(ledgerRoot) {
   const s = new Set()
-  const objs = tryGit(['rev-list', '--all', '--objects'], ledgerRoot)
-  if (objs === null) return { set: s, blobs: 0, parsedBlobs: 0, revs: 0, ids: 0 }
-  const revs = (tryGit(['rev-list', '--all'], ledgerRoot) ?? '').split('\n').filter(Boolean).length
+  const repos = ledgerRevRepos(ledgerRoot)
+  const hitObjs = everSeenIn(repos)
+  if (hitObjs === null) return { set: s, blobs: 0, parsedBlobs: 0, revs: 0, ids: 0 }
+  const repo = hitObjs.repo
+  const objs = hitObjs.out
+  const revsArgs = repo.gitDir === null ? ['rev-list', '--all'] : ['--git-dir', repo.gitDir, 'rev-list', '--all']
+  const revs = (tryGit(revsArgs, repo.cwd) ?? '').split('\n').filter(Boolean).length
   const blobs = new Set()
   for (const line of objs.split('\n')) {
     if (line === '' || !line.includes(' ')) continue
@@ -193,7 +282,10 @@ function everSeen(ledgerRoot) {
   const list = [...blobs]
   for (let i = 0; i < list.length; i += 200) {
     const chunk = list.slice(i, i + 200)
-    const out = tryGitBuf(['cat-file', '--batch'], ledgerRoot, chunk.join('\n') + '\n')
+    const catArgs = repo.gitDir === null
+      ? ['cat-file', '--batch']
+      : ['--git-dir', repo.gitDir, 'cat-file', '--batch']
+    const out = tryGitBuf(catArgs, repo.cwd, chunk.join('\n') + '\n')
     if (out === null) continue
     // ⚠ ⚠ **必须按字节切**（`cat-file --batch` 报的 size 是**字节数**）：
     //   ⚠ 若先把整块转成 JS 字符串再按 size 切，⚠ **多字节字符会让偏移越切越歪** ——
@@ -234,13 +326,30 @@ function idsInSection(text) {
 /** ② 现在能查到的标识（⚠ **轮次登记的两种载体**：§5.1 段 · 记录件目录的文件名/首行标识）。 */
 function atNow(ledgerRoot) {
   const s = new Set()
-  const rels = tryGit(['ls-tree', '-r', '--name-only', 'HEAD'], ledgerRoot)
+  const repos = ledgerRevRepos(ledgerRoot)
+  /** 挑出**第一个能列出账本 HEAD**的仓（⚠ 归档仓的 HEAD 根上就是账本正本，所以优先）。 */
+  let repo = null
+  let rels = null
+  for (const r of repos) {
+    const args = r.gitDir === null ? ['ls-tree', '-r', '--name-only', 'HEAD'] : ['--git-dir', r.gitDir, 'ls-tree', '-r', '--name-only', 'HEAD']
+    const got = tryGit(args, r.cwd)
+    if (got === null) continue
+    // ⚠ 工作区仓的 HEAD 里账本在 `.hob/` 前缀下 ⇒ 必须剥前缀后再按账本相对路径判
+    const lines = got.split('\n').filter((x) => x !== '')
+    const usable = r.prefix === '' ? lines : lines.filter((x) => x.startsWith(r.prefix)).map((x) => x.slice(r.prefix.length))
+    if (usable.length === 0) continue
+    repo = r; rels = usable.join('\n')
+    break
+  }
   if (rels === null) return s
   for (const p of rels.split('\n')) {
     if (!p.endsWith('.md')) continue
     // (a) 旧载体：CONTEXT*.md / 08-round-table.md 的 §5.1 段
     if (isCarrier(p) && (!p.includes('/') || p.startsWith('volumes/') || p.startsWith('archive/'))) {
-      const txt = tryGit(['show', `HEAD:${p}`], ledgerRoot)
+      const showArgs = repo.gitDir === null
+        ? ['show', `HEAD:${repo.prefix}${p}`]
+        : ['--git-dir', repo.gitDir, 'show', `HEAD:${p}`]
+      const txt = tryGit(showArgs, repo.cwd)
       if (txt !== null) for (const id of idsInSection(txt)) s.add(id)
       continue
     }
@@ -338,9 +447,19 @@ function coverageFromFiles(ledgerRoot) {
   return { set, files, missingDir: false, ...classifyRecordNames(files.map((f) => f.replace(/\.md$/, ''))) }
 }
 
+/**
+ * 账本 HEAD 的提交数 —— ⚠ 2026-10-25 搬家后要**依次问几个账本仓**（见 {@link ledgerRevRepos}）。
+ * ⚠ 取**第一个能答的仓**（⛔ 不把几个仓的数字相加 —— 那会造出一个不存在的"总数"）。
+ */
 function countCommits(ledgerRoot) {
-  const t = tryGit(['rev-list', '--count', 'HEAD'], ledgerRoot)
-  return t === null ? 0 : Number(t.trim())
+  for (const r of ledgerRevRepos(ledgerRoot)) {
+    const args = r.gitDir === null
+      ? ['rev-list', '--count', 'HEAD']
+      : ['--git-dir', r.gitDir, 'rev-list', '--count', 'HEAD']
+    const t = tryGit(args, r.cwd)
+    if (t !== null) return Number(t.trim())
+  }
+  return 0
 }
 
 function expandAll(ids) {
@@ -497,8 +616,9 @@ function runCheck(ledgerRoot) {
     for (const p of pairs) {
       landing.checked++
       landing.byRepo[p.repo]++
-      const repoRoot = p.repo === 'workspace' ? root : ledgerRoot
-      const st = shaExists(repoRoot, p.sha)
+      const st = p.repo === 'workspace'
+        ? shaExists(root, p.sha)
+        : shaExistsInLedgerRepos(ledgerRoot, p.sha)
       if (st === 'missing') landing.missing.push({ file: f, ...p })
     }
   }

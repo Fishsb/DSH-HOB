@@ -78,6 +78,20 @@ import { scaffoldSkeletonForWorkspace } from '../server/skeleton.ts'
 //     故 `ensureRuntimeIgnored` / `orchStateFileOf` / `recordHandoff` / `dirname`
 //     在本模块**已不再直接使用**（由该模块统一持有）。
 import { deliverHandoff, renderHandoffReading, type DispatchLike } from '../server/write-delivery.ts'
+// ── 「首次铺骨架」开关的**唯一解 ref 点**（2026-10-24 · 本单必修 3）───────────
+//   ⚠ `skeleton.enabled` 标了 `.volatile()` ⇒ 运行时是 **ref 对象**，直读拿到的是 ref
+//     （恒 truthy、且不报错）。⇒ 一律经 `config.ts` 的 `skeletonEnabled()` 解。
+//   ⚠ 用**命名空间导入**（与 `preset/tools.ts` 的 `TASK-D` 纪律同一条）：
+//     具名导入在 ESM **链接期**就要求目标模块有那个名字 —— 少一个名字会让**整个模块**
+//     求值失败（症状：工具面整体消失且不报错）。命名空间导入把代价缩到"这一条降级"。
+import * as configFace from '../config.ts'
+// ── 能力红线的**单一来源**（2026-10-24 · 跨席收口）─────────────────────────
+//   ⚠ 这句话原先在本文件里是**逐字副本**（「不能写、不能执行命令、不能组队」）。
+//     多份副本的失败形态是**静默漂移**：某天真的开了写能力，只改一处 ⇒ 另一处
+//     仍在向用户/模型承诺"不能写" —— 那是**谎报**，比没有这句更坏。
+//   ⚠ `src/shared/capability-red-line.ts` **零 import**（纯常量模块）⇒ host 侧
+//     直接 import 安全（不需要 ctx、不会有循环依赖）。
+import { CAPABILITY_RED_LINE_ZH } from '../shared/capability-red-line.ts'
 
 /** 模块名（同时是 fiber 显示名）。 */
 export const name = 'dsh-hob-tools'
@@ -89,8 +103,90 @@ export const name = 'dsh-hob-tools'
  * 环境缺依赖 ⇒ 模块自动不加载，**宿主不报错、插件整体照常**。
  * 语义依据（cordis）：`FiberState.PENDING = 0` — "waiting for required services"
  * （`@deepseek-ai/cordis/lib/types/fiber.d.ts:60-68`）。
+ *
+ * ── ⚠⚠ **这条依赖是"真的被用上"的，不是一个挂在门口没人读的声明**（2026-10-24）──
+ *   **改前**：`inject = ['tools']` 声明了，而 `apply` 里**一次都没读 `ctx.tools`**
+ *   ⇒ 它只起"加载门禁"作用，看上去像空声明。
+ *
+ *   **现在**：`apply` **真的读它一次**，并据此决定要不要提供门禁服务
+ *   （见 {@link apply} 里的 `registerOk`）：门禁 `hobTools` 的语义是
+ *   「工具面此刻**可以**注册」，而这句话只有在宿主 `tools` 服务**真的有 `register`**
+ *   时才成立。宿主把 `tools` 换成一个没有 `register` 的形状（版本错配 / 夹具）
+ *   时，若照旧提供门禁 ⇒ 预设行会**先注册再炸**；现在 ⇒ **不提供门禁 + 一行 warn**
+ *   （预设行只是不注册工具，不 broken、不刷错误栈）。
+ *   ⚠ 真实宿主（`@deepseek-ai/dsh-tools` 的 `ToolsService`）**一直有 `register`**
+ *     ⇒ 正常路径的行为**一个字都没变**（判据见 `scripts/module-independence-probe.mjs`
+ *     路径 A/B：默认配置下 tools 模块仍被登记，缺服务时仍 PENDING）。
+ *   ⚠ `inject` 本身**保留**：它仍是"环境依赖决定的启停"这条架构性质的载体
+ *     （`check:modules` 的路径 B 用它证明"缺依赖 ⇒ PENDING 且整体照常"）。
  */
 export const inject = ['tools']
+
+/**
+ * 由**门禁**负责注册的模型面工具名（⚠ 单一来源，⛔ 别处不许再抄一份）。
+ *
+ * ── 为什么这个清单必须在这里、而不是在预设的档位表里 ─────────────────────
+ *   `src/preset/tools.ts` 的 `PERMISSION_TIERS` 是三档**模型面**名字集，而上面这些名字的
+ *   **注册面**在本模块的门禁后面（`modules.tools` 关掉 ⇒ 门禁不在 ⇒ 这些名称**不存在**）。
+ *   ⇒ 两个面**必须能对账**，否则就是"模型看得见、一调就 `unknown tool`"：
+ *     2026-10-24 排查确认的形态 —— `modules.tools=false` 时模型仍看见 4 个只读名
+ *     （`hob_read_doc` / `hob_glob` / `hob_grep` / `hob_read_image`）。
+ *   ⚠ 本常量就是那份**对账依据**：消费方（`preset/tools.ts` 的装配期过滤 / 执行前拦截）
+ *     应当在**门禁缺席**时把这份集合从"允许名"里减掉 —— 具体接线在 C 席文件里，
+ *     本单只提供单一来源（见交付报告里的转派项）。
+ *   ⚠ 名字的**增删只在这里改**：加一个"由门禁注册"的工具时，本数组 + 预设的档位表
+ *     必须同批更新；漏一边就会被上述对账判据抓到。
+ */
+export const GATE_OWNED_TOOL_NAMES: readonly string[] = [
+  // 账本两件（`modules.tools` 关 ⇒ 这两个也不存在）
+  'read_contracts',
+  'write_hob',
+  // 四个自注册只读工具（`modules.tools` 关 ⇒ 同样不存在；它们正是"看得见却调不到"的那四个）
+  'hob_read_doc',
+  'hob_glob',
+  'hob_grep',
+  'hob_read_image',
+]
+
+/**
+ * **白名单 ↔ 注册面对账**：把"门禁不在时**必然** `unknown tool`"的名字从允许集里减掉。
+ *
+ * ── 它治的确切形态（2026-10-24 排查确认，实测复现见交付报告）────────────────
+ *   `modules.tools = false` ⇒ 本模块**根本不加载** ⇒ 门禁 `hobTools` 不存在 ⇒
+ *   `src/preset/tools.ts` 的 `ctx.inject([GATE_SERVICE])` 回调**不跑** ⇒
+ *   **`read_contracts` / `write_hob` / `hob_read_doc` / `hob_glob` / `hob_grep` /
+ *   `hob_read_image` 一个都没注册**。
+ *   ⚠ 而同一文件里的**装配期白名单**（`filterModelToolList`）与**执行前拦截**
+ *   （`enforceToolAllowlist`）挂在门禁**外面**（那是刻意的：关掉门禁不许放权），
+ *   它们的名字集来自 `PERMISSION_TIERS` —— 那个表**只描述"这一档该有哪些名字"**，
+ *   **不知道注册面在不在**。
+ *   ⇒ 模型面于是出现"看得见、点一下就 `unknown tool`"的四个只读名（这是**模型面比注册面宽**
+ *     的失败，与"声明面漏行"方向相反，修法也相反）。
+ *
+ * ── 用法（**消费方只有一处**：`src/preset/tools.ts` 的那两个名字集构造点）────
+ *   ```ts
+ *   // 原来： const allow = new Set(PERMISSION_TIERS[level])
+ *   // 现在： const allow = visibleToolsFor(PERMISSION_TIERS[level], gateReady)
+ *   ```
+ *   其中 `gateReady` = 门禁回调**跑过了**（`let gateReady = false; ctx.inject([GATE_SERVICE], () => { gateReady = true; … })`
+ *   —— ⚠ 必须在**同一作用域**里维护，⛔ 不要用 `ctx.get(GATE_SERVICE) !== undefined`：
+ *   后者在**门禁服务存在但工具注册尚未完成**的那一瞬也可能是 `true`，两种状态会混）。
+ *
+ * ── ⚠ 语义三条（⛔ 缺一条就变成"另一种静默"）─────────────────────────────
+ *   ① `gatePresent === true` ⇒ **原样返回**（一个名字都不动 ⇒ 正常路径零行为变化）；
+ *   ② `gatePresent === false` ⇒ 只减掉 {@link GATE_OWNED_TOOL_NAMES}，**其余名字一个不动**
+ *      （⚠ 白名单里还有编排 / 台账 / 检索那批名字，它们的注册面**不归门禁管**，
+ *       一并减掉会造成"关掉 tools 顺手关掉别的能力"——那正是本轮要防的拆东墙）；
+ *   ③ 入参是任意可迭代名字集，返回**新数组**（⛔ 不改入参、⛔ 不缓存快照）。
+ *
+ * @param names - 该档的名字集（通常 `PERMISSION_TIERS[level]`）。
+ * @param gatePresent - 门禁**当前是否就绪**（= 门禁回调跑过 ⇒ 工具确实注册了）。
+ */
+export function visibleToolsFor(names: readonly string[], gatePresent: boolean): readonly string[] {
+  if (gatePresent) return names
+  const hidden = new Set<string>(GATE_OWNED_TOOL_NAMES)
+  return names.filter((n) => !hidden.has(n))
+}
 
 /**
  * 门禁服务名 —— 预设行据此判断「工具模块是否就绪」。
@@ -249,7 +345,21 @@ export interface HobToolsDeps {
    *   `skeleton.enabled` 标了 `.volatile()`（运行时是 ref 对象），
    *   ⚠ 在 `createHobTools` 时读一次就是**装配期快照** ⇒ 用户改完开关后
    *   **已开的会话仍按旧值**走到重挂载为止（正是 `spawnDefaults` 那条教训）。
-   * ⚠ 缺席 ⇒ 按 schema 的 `.default(true)` 处理（理由见 `skeleton.ts` 的兜底注释）。
+   *
+   * ── ⚠⚠ **2026-10-24 订正：它是【兜底】，不是权威** ─────────────────────
+   *   权威是 {@link setEntrySkeletonSwitch}（由 `apply` 从**插件入口配置**装上）。
+   *   **优先级：入口配置 > 本字段 > 兜底 `true`**（见 `writeHob` 里那段取值注释）。
+   *
+   *   ⚠ 为什么本字段**注定读不到用户那个开关**：真机唯一注入它的是
+   *   `src/preset/tools.ts`，传的是 `configFace.skeletonEnabled(config)` —— 那个
+   *   `config` 是**预设行的配置**（`HobToolsConfig`：workspaceRoot / ledgerHome / …），
+   *   **没有 `skeleton` 段** ⇒ `skeletonEnabled()` 按兜底返回 `true`。
+   *   ⇒ 只靠本字段 = **空旋钮**（用户在设置页关掉，照样铺骨架）。这正是本单必修 3。
+   *
+   *   ⚠ 那为什么**不删掉它**：不跑 `apply` 的调用方（`check:orch` 的 SM-a/SM-b
+   *   直接 `createHobTools(cfg, { skeletonEnabledOf: () => true })`）靠它指定行为；
+   *   删了会打断既有机检路径。⇒ 保留为**降级路径**，但**不再是权威**。
+   *   ⚠ 缺席 ⇒ 按 schema 的 `.default(true)` 处理（理由见 `skeleton.ts` 的兜底注释）。
    */
   skeletonEnabledOf?: () => boolean
   /**
@@ -263,7 +373,38 @@ export interface HobToolsDeps {
    *
    * 缺席 / 抛异常 / 返回值不是三档之一 ⇒ 按**最保守**的 `ledger` 处理（fail-closed）。
    */
-  levelOf?: () => string
+  levelOf?: (exec?: ToolRunContext) => string
+  /**
+   * ⚠ **该档允许的工具名集合**（2026-10-22 · `REQ-04`）。
+   *
+   * ── 为什么必须注入而不是本模块自己判 ─────────────────────────────────
+   *   本模块是**工具定义层**，⛔ 不知道"哪一档有哪些名字" —— 那是**预设的权限面**
+   *   （`src/preset/tools.ts` 的 `PERMISSION_TIERS`）。在这里再抄一份必然漂。
+   *   ⇒ 由挂载方（`registerTools`）把**唯一来源**的那个查表函数传进来。
+   *
+   * ⚠ 缺席 / 抛异常 ⇒ 空数组 ⇒ **什么都不许读**（fail-closed）。
+   * ⚠ 这是 G-5 的落点：即使宿主的 scope guard 被跳过（无 agent），
+   *   本层也按名字集把"这一档本来就没有的刀"挡住。
+   */
+  tierNamesOf?: (level: string) => readonly string[]
+  /**
+   * ⚠⚠ **"这次能不能推进"的执行层闸门**（2026-10-22 第 5 轮 · 任务书第 12 条）。
+   *
+   * ── 为什么必须在这里、而不只是提示词 ──────────────────────────────────
+   *   上一轮 `mayProceed=false` 只体现在**注入的那段文字**里（告诉模型别推进）。
+   *   ⚠ 但提示词**不是边界**：模型仍可强行点名 `write_hob` / `hob_dispatch` /
+   *     `hob_spawn`；而 `policyOf` 当时对"缺服务/缺字段"还默认 `true`。
+   *   ⇒ 任务书要求：**在真实派活 / 会话创建 / 账本写这三处执行层作硬拒**，
+   *     且"强制点名调用也不能绕"（那就是本闸门 —— 它在 `execute` 里，晚于一切参数校验）。
+   *
+   * ── 语义（⚠ 与 `mayProceed` 同一份事实，⛔ 不另判一份）──────────────────
+   *   返回 `undefined` ⇒ 放行；返回**字符串** ⇒ 拒绝理由（直接回给模型）。
+   *   ⚠ **非 Hob 会话必须放行**（本机制不参与别人）：判据在注入方，
+   *     这里只看它给不给理由。
+   *   ⚠ 只读工具（`hob_read_doc`/`hob_glob`/`hob_grep`/`hob_read_image`/
+   *     `hob_orch_status` 等）**不走这道门** —— 允许只读诊断（任务书原文）。
+   */
+  proceedGateOf?: (exec: ToolRunContext) => string | undefined
   /**
    * 把图片字节**存成附件**并取回引用（`hob_read_image` 用）。
    *
@@ -296,6 +437,63 @@ export interface HobToolsDeps {
 function sessionIdOf(exec: any): string | undefined {
   const id = exec?.agent?.id ?? exec?.agent?.session?.id
   return typeof id === 'string' && id !== '' ? id : undefined
+}
+
+/**
+ * ⚠⚠ **「首次铺骨架」开关的权威读取器**（2026-10-24 · 本单必修 3）。
+ *
+ * ── 为什么它必须是**模块级**的一个槽，而不是 `apply` 里的一个局部闭包 ─────────
+ *   消费点在 {@link createHobTools}（**纯函数工厂**，模块作用域），它拿不到 `apply`
+ *   的 ctx；而 `apply` 是唯一能看到**插件入口配置**的地方（见 `pluginEntryConfigOf`）。
+ *   ⇒ 用一个模块级可写槽把"权威读取器"传下去。
+ *
+ * ── ⚠ 模块级可变状态的边界（⛔ 不许扩大）───────────────────────────────
+ *   · 存的**不是值**，是一个**函数**（每次调用现解 ref）⇒ 设置页改完即生效；
+ *   · 只由 {@link apply} 写一次；`createHobTools` 只在**调用时**读它；
+ *   · 卸载时**不清空**：清了反而会让"卸载后残留的旧工具定义"回退到"永远 true"，
+ *     而那种残留本就不该被执行（工具注册随 fiber 一起拆）。⚠ 这是**有意**的取舍，
+ *     写在这里免得后人以为是漏了清理。
+ */
+let entrySkeletonSwitch: (() => boolean) | undefined
+
+/** 写入权威读取器（只由 `apply` 调用）。 */
+export function setEntrySkeletonSwitch(fn: (() => boolean) | undefined): void {
+  entrySkeletonSwitch = fn
+}
+
+/** 读当前权威值（⚠ 没装 `apply` 时返回 `undefined`，调用方据此退回注入值 / 兜底）。 */
+export function currentEntrySkeletonSwitch(): boolean | undefined {
+  try {
+    return typeof entrySkeletonSwitch === 'function' ? entrySkeletonSwitch() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 取**插件入口条目**（`id: dsh-hob`）的已解配置对象。
+ *
+ * ⚠ 怎么取（实测过的链，不是猜的）：
+ *   `apply` 的 ctx 是**本模块 fiber 的 ctx**；cordis 把 `fiber` mixin 到每个 ctx 上
+ *   （`@deepseek-ai/cordis/lib/index.js` 的 `this.mixin("fiber", ["runtime", "effect"])`），
+ *   而 `fiber.parent` 是**父 ctx**、`fiber.parent.fiber` 是**父 fiber** —— 在本插件里
+ *   父 fiber 就是入口条目那个 fiber，它的 `config` 正是带 `skeleton.enabled` 的插件配置。
+ *   实测（`scripts/` 外的探针，真 `Context`）：本模块 fiber 的
+ *   `parent.fiber.config.skeleton.enabled` 在 `skeleton.enabled=false` 时解出 `false`、
+ *   在 `true` 时解出 `true`（双向读数在交付报告里）。
+ *
+ * ⚠ **取不到就返回 `undefined`**（⛔ 不猜、⛔ 不编一个 `{}`）：
+ *   机检/夹具直接 `createHobTools(...)` 时不跑 `apply` ⇒ 这条链根本不存在 ⇒
+ *   退回 `deps.skeletonEnabledOf`（既有行为）。判据是"取不到 ≠ 关掉"。
+ */
+export function pluginEntryConfigOf(ctx: any): unknown {
+  try {
+    const parentFiber = ctx?.fiber?.parent?.fiber
+    const cfg = parentFiber?.config
+    return cfg !== undefined && cfg !== null && typeof cfg === 'object' ? cfg : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -374,15 +572,99 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
   //
   //   ⚠ **写类工具不在这里**：本模块只定义**只读**工具；写类 / 命令类的名字
   //     在三档里都不存在（不声明 + 不注册），见 `src/preset/tools.ts` 的三档表与哨兵。
-  const levelNow = (): string => {
+  const levelNow = (exec?: ToolRunContext): string => {
     try {
-      const v = deps.levelOf?.()
+      const v = deps.levelOf?.(exec)
       return typeof v === 'string' && v !== '' ? v : 'ledger'
     } catch {
       // ⚠ 判不出档位 ⇒ 按**最保守**的档处理（与 `doc-read.ts` 的 fail-closed 同口径）。
       return 'ledger'
     }
   }
+
+  /**
+   * ⚠⚠ **本层读档门**（2026-10-22 · `REQ-04` 的 G-5 落点）。
+   *
+   * ── 为什么每把刀都要自己再核一次（⛔ 不是重复劳动）─────────────────────
+   *   改前三个工具（`hob_glob` / `hob_grep` / `hob_read_image`）**只在武器架与哨兵上被挡**：
+   *   · 模型面过滤 —— 只管"看不见"；
+   *   · `tools/pre-execute` —— 挂在**预设作用域**上，`scopeTarget(this, exec.agent)` 对
+   *     **没有 agent 的执行**把事件送不到（`dsh-scope/lib/index.js:327-337`）；
+   *   · `ctx.tools.guard` —— 宿主在 `exec.agent === undefined` 时**直接 `return undefined`**
+   *     （`dsh-tools/lib/index.js:3027`）⇒ **整条 scope 链的哨兵一条都不跑**。
+   *   ⇒ 三条路都有"没身份就静默放行"的形态 ⇒ **必须在工具自己的 `execute` 里兜住**：
+   *     没有可信身份 / 档位读不到 ⇒ **拒读工作区**（⛔ 不回退到任何全局宽档）。
+   *
+   * ── 返回什么 ────────────────────────────────────────────────────────
+   *   允许 ⇒ `undefined`；拒绝 ⇒ **一句可读的拒绝文本**（调用方直接回给模型）。
+   *
+   * @param exec - 本次执行的宿主上下文（⚠ 身份只在 `exec.agent` 里）。
+   * @param toolName - 工具名（用于拒绝文案，⚠ 不参与判定）。
+   */
+  const workspaceGate = (exec: ToolRunContext, toolName: string): string | undefined => {
+    /**
+     * ⚠⚠ **身份门在最前**（`REQ-04` 的硬要求，⛔ 不能只靠 `levelNow` 的返回值）。
+     *
+     * ── 为什么必须先判身份 ─────────────────────────────────────────────
+     *   `levelNow(exec)` 走 `deps.levelOf(exec)` ⇒ 策略服务 ⇒ 无身份时它**恰好**回
+     *   `ledger`（fail-closed）。但那只是"当前实现恰好保守"：
+     *   ① 将来任何一次 `levelOf` 注入写错 / 被替换成旧全局闭包 ⇒ 返回 `workspace`；
+     *   ② 宿主在 `exec.agent === undefined` 时**压根不跑 scope guard**
+     *      （`dsh-tools/lib/index.js:3027`），预执行监听器也送不到（无 scope key）。
+     *   ⇒ 那时"没有身份"就变成"按宽档读工作区"——正是任务书点名要堵的那条路。
+     *   ⇒ 本门**自己**判身份：没有可信 agent / session.id ⇒ **一律拒**，与档位无关。
+     *
+     * ⚠ "可信" = `exec.agent.session.id` 是非空字符串（宿主保证 `agent.id === session.id`，
+     *   见 `dsh-agent/lib/index.js:514`）。⛔ 不接受"只有 agent 对象、没有 id"的形态。
+     */
+    const sid = (() => {
+      try {
+        const v = exec?.agent?.session?.id ?? exec?.agent?.id
+        return typeof v === 'string' && v !== '' ? v : undefined
+      } catch { return undefined }
+    })()
+    if (sid === undefined) {
+      return `拒绝：本次调用**没有可信会话身份** ⇒ ${toolName} 不读工作区`
+        + '（⚠ 无身份的调用不受会话策略约束，按最保守处理：拒绝而不是照旧读）。'
+    }
+    const level = levelNow(exec)
+    /**
+     * ⚠⚠ **判据 = 该工具名是否在**这个档的名字集**里**（⛔ 不是"档不低就放行"）。
+     *
+     * 改前（本函数第一版）只挡 `ledger` ⇒ `project` 档下 `hob_glob` 仍能列代码目录
+     * —— **`hob_glob` 本来就不在 `project` 档的名字集里**（只有 `hob_read_doc` 在）。
+     * 那次是负向样本（SP-6d）咬出来的，不是想当然。
+     * ⇒ 现在与 `src/preset/tools.ts` 的 `PERMISSION_TIERS` **同一份事实**：
+     *   名字集没有它 ⇒ 这一档**不该**读工作区。⚠ 单一来源，⛔ 不在这里再抄一份清单。
+     */
+    const names = deps.tierNamesOf?.(level) ?? []
+    if (!names.includes(toolName)) {
+      const label = level === 'ledger' ? '「账本权限」' : level === 'project' ? '「文档权限」' : '「完全权限」'
+      return `拒绝：本会话的可读范围是${label} ⇒ ${toolName} 不在这一档的工具面里`
+        + '（⚠ 这是**本会话自己的**档位，不随全局设置变；要读请在创建/该会话策略里选更宽的档）。'
+    }
+    return undefined
+  }
+
+  /**
+   * ⚠⚠ **执行层"能不能推进"闸门**（2026-10-22 第 5 轮 · 任务书第 12 条）。
+   *
+   * 在**改变项目的动作**（本模块里 = `write_hob` 的**真写**）之前调一次。
+   * ⚠ 判据来自注入方（它读逐会话策略的唯一权威），本模块⛔ 不自己判。
+   * ⚠ 出错方向：**闸门自己抛错 ⇒ 拒绝**（这是边界，不是收敛措施 ——
+   *   与 `enforceToolAllowlist` 的 fail-open 取向相反，理由同 `installPermissionGuard`）。
+   * ⚠ `dryRun` **不受**本闸门限制（只读预演，不改变任何东西）——
+   *   否则用户连"看看会写成什么样"都做不到。
+   */
+  const proceedGate = (exec: ToolRunContext): string | undefined => {
+    try {
+      return deps.proceedGateOf?.(exec)
+    } catch (e) {
+      return `拒绝：无法确认本会话的原「推进工作方式」（闸门抛错：${String((e as Error)?.message ?? e)}）`
+        + ' ⇒ 本动作不执行（⛔ 不拿不可信的方式去改项目）'
+    }
+  }
+
   const workspaceRootOf = (exec: ToolRunContext): string | undefined => rootOf(cfg, exec)
   const maxReadBytes = cfg.maxFileBytes ?? DEFAULTS.maxFileBytes
 
@@ -392,7 +674,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       '只读本工作区内的文件（⛔ 不能写、不能改）。'
       + '⚠ 可读范围**随可读权限档位变**：'
       + '「文档权限」档**只可读 .md**；「完全权限」档**工作区内任意文件都可读**（含代码与图片），'
-      + '但仍不能写、不能执行命令、不能组队。越出工作区、软链一律拒绝。'
+      + '但仍' + CAPABILITY_RED_LINE_ZH + '。越出工作区、软链一律拒绝。'
       + '⚠ 二进制 / 非 UTF-8 ⇒ 只给一句短提示（⛔ 不吐乱码）；图片 ⇒ 改用 hob_read_image。'
       + `⚠ 大文件会被截断并在尾部标注（上限 ${maxReadBytes} 字节）；需要后续内容用 offset/limit 分段读。`,
     parameters: {
@@ -405,9 +687,12 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
     async execute(args: { path: string; offset?: number; limit?: number }, exec: ToolRunContext): Promise<string> {
+      // ⚠ 本层读档门（G-5）：`ledger` 档 / 无身份 ⇒ 不读工作区（⛔ 不看全局值）。
+      const gate = workspaceGate(exec, 'hob_read_doc')
+      if (gate !== undefined) return gate
       const root = workspaceRootOf(exec)
       if (root === undefined) return '拒绝：无法确定工作区目录。'
-      const r = await readWorkspaceText(root, args.path, maxReadBytes, levelNow(), args.offset ?? 1, args.limit ?? 0)
+      const r = await readWorkspaceText(root, args.path, maxReadBytes, levelNow(exec), args.offset ?? 1, args.limit ?? 0)
       return r.text
     },
   })
@@ -426,6 +711,10 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
     async execute(args: { pattern: string; limit?: number }, exec: ToolRunContext): Promise<string> {
+      // ⚠⚠ 本层读档门（G-5 的**核心**）：改前这把刀**完全没有**档位判断，
+      //   直接 execute 在 `ledger` 档照样列出工作区路径（前轮实测已证）。
+      const gate = workspaceGate(exec, 'hob_glob')
+      if (gate !== undefined) return gate
       const root = workspaceRootOf(exec)
       if (root === undefined) return '拒绝：无法确定工作区目录。'
       const r = await globWorkspacePaths(root, args.pattern, args.limit ?? 200)
@@ -451,6 +740,10 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
     async execute(args: { pattern: string; path?: string; limit?: number }, exec: ToolRunContext): Promise<string> {
+      // ⚠⚠ 本层读档门（G-5）：改前这把刀也**没有**档位判断，直接 execute 在
+      //   `ledger` 档能搜出工作区正文（前轮实测已证）。
+      const gate = workspaceGate(exec, 'hob_grep')
+      if (gate !== undefined) return gate
       const root = workspaceRootOf(exec)
       if (root === undefined) return '拒绝：无法确定工作区目录。'
       const r = await grepWorkspaceText(root, args.pattern, args.path ?? '', args.limit ?? 200)
@@ -498,6 +791,10 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       },
     },
     async execute(args: { path: string }, exec: ToolRunContext): Promise<JsonValue> {
+      // ⚠⚠ 本层读档门（G-5）：改前这把刀也**没有**档位判断 —— 只要宿主挂了
+      //   `attachments`，`ledger` 档直接 execute 就能把 PNG 字节读出来交给模型。
+      const gate = workspaceGate(exec, 'hob_read_image')
+      if (gate !== undefined) return { path: String(args.path), envelope: gate }
       const root = workspaceRootOf(exec)
       if (root === undefined) return { path: String(args.path), envelope: '拒绝：无法确定工作区目录。' }
       const r = await readWorkspaceImageBytes(root, args.path, DEFAULTS.maxImageBytes)
@@ -603,6 +900,20 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       },
       exec: ToolRunContext,
     ): Promise<string> {
+      /**
+       * ⚠⚠ **真写之前先过"能不能推进"闸门**（2026-10-22 第 5 轮）。
+       *   `dryRun` 是只读预演 ⇒ 放行（见 `proceedGate` 的注释）。
+       *   ⚠ 这条**在 `ledgerRootOf` 之前**：连"判账本落点"都不必做，省得
+       *     顺带触发任何初始化动作。
+       */
+      if (args.dryRun !== true) {
+        const blocked = proceedGate(exec)
+        if (blocked !== undefined) {
+          return JSON.stringify({
+            ok: false, reason: 'proceed-not-confirmed', message: blocked,
+          })
+        }
+      }
       // v4：账本目录按工作区派生（在工作区之外）⇒ 边界仍是「账本目录」，只是位置变了。
       const root = ledgerRootOf(cfg, exec)
       if (root === undefined) {
@@ -669,7 +980,25 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
             completeness: { total: 0, scaffolded: 0, skippedExists: 0, failed: 0 },
           }
         } else {
-          skeletonNote = scaffoldSkeletonForWorkspace(wsRoot, deps.skeletonEnabledOf?.() ?? true)
+          /**
+           * ⚠⚠ **开关值的取法（2026-10-24 修正 · 治"空旋钮"）** ────────────────
+           *   **优先级：入口配置（权威） > 注入的 `deps.skeletonEnabledOf` > 兜底 `true`**。
+           *
+           *   ① `currentEntrySkeletonSwitch()` —— 由 {@link apply} 从**插件入口配置**装上的
+           *      现读器（`configFace.skeletonEnabled(入口 config)`）。**这才是用户那个开关**。
+           *   ② 注入的那个 —— ⚠ 真机它读的是**预设行配置**（`HobToolsConfig`，没有 `skeleton`
+           *      段）⇒ 恒落到兜底 `true`（**这就是空旋钮的成因**）。保留它只为
+           *      **不跑 `apply` 的调用方**（机检 SM-a/SM-b 直接传 `() => true`；语义不变）。
+           *   ③ 两者都没有 ⇒ `true`（与 schema 的 `.default(true)` 一致，理由见 `skeleton.ts`）。
+           *
+           *   ⚠ 为什么这一层不能"只用注入的"：那样关掉开关**永远不生效**（本单必修 3 的病灶）；
+           *   ⚠ 也不能"只读入口配置、丢掉注入"：那会打断机检直接调 `createHobTools` 的既有路径
+           *     （它们没有 ctx，拿不到入口配置）。
+           */
+          const authoritative = currentEntrySkeletonSwitch()
+          const injected = deps.skeletonEnabledOf?.()
+          const enabled = authoritative ?? injected ?? true
+          skeletonNote = scaffoldSkeletonForWorkspace(wsRoot, enabled)
         }
       }
       // ── 记账 + 投递：交给了交接文件（2026-10-10 新增；第 44 轮扩展为"写入即投递"）──
@@ -736,7 +1065,85 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
 }
 
 export function apply(ctx: any): void {
-  ctx.provide(GATE_SERVICE, { version: 1, module: name })
+  /**
+   * ⚠⚠ **「首次铺骨架」开关的权威读取器**（2026-10-24 · 本单必修 3 —— 治"空旋钮"）────
+   *
+   * ── 改前是什么（实测出来的空旋钮）───────────────────────────────────────
+   *   消费点（本文件 `createHobTools` 里那次 `scaffoldSkeletonForWorkspace(wsRoot, …)`）
+   *   拿的是**注入进来的** `deps.skeletonEnabledOf`。而真机唯一注入它的是
+   *   `src/preset/tools.ts`，那里传的是
+   *   `configFace.skeletonEnabled(config)` —— ⚠ 那个 `config` 是**预设行的配置**
+   *   （`HobToolsConfig`：workspaceRoot / ledgerHome / maxFileBytes…），**根本没有
+   *   `skeleton` 段** ⇒ `skeletonEnabled()` 读不到 ⇒ 按它自己的兜底返回 **`true`**。
+   *   ⇒ 用户在设置页把「首次铺骨架」关掉，**写进了插件配置、却没有人读**
+   *     （消费点读的是另一份配置里不存在的键）⇒ 关掉照样铺骨架 = **空旋钮**。
+   *
+   * ── 现在：从**插件入口配置**读（唯一权威），不再依赖预设行转手 ────────────
+   *   `apply` 的 ctx 是**模块 fiber 的 ctx**，它的 `parent.fiber` 就是**插件入口条目**
+   *   （`id: dsh-hob`）的 fiber，`config` 正是那份带 `skeleton.enabled` 的插件配置。
+   *   ⇒ 这里取一次**配置对象本身**（⚠ 不是取一次**值**），读取器每次调用时现解 ref
+   *     （`configFace.skeletonEnabled()` 内部 `deref()`）⇒ 设置页改完**下一次写入即生效**
+   *     （volatile ref 原地更新，宿主不重挂载）。
+   *
+   * ── ⚠ 为什么"取对象"而不是"取值"─────────────────────────────────────
+   *   取一次值 = 装配期快照 ⇒ 用户改完开关后已开实例仍按旧值走到重挂载为止
+   *   （与 `spawnDefaults` / `levelOf` 同一条教训）。
+   *
+   * ── ⚠ 与注入进来的 `deps.skeletonEnabledOf` 的关系（向后兼容）──────────
+   *   · **有权威读取器时以权威为准**（它就是用户的开关）；
+   *   · **没有时退回注入的那个**（机检/夹具直接 `createHobTools(...)` 不跑 `apply`，
+   *     它们传的 `skeletonEnabledOf: () => true` 照旧生效 ⇒ `check:orch` 的 SM-a/SM-b 不变）。
+   *   ⚠ 预设行那份传参因此**不再影响行为**（它读的是预设行配置，天生读不到本开关）；
+   *     C 席应把它删掉或改成从门禁读（见交付报告「需转派」清单）。
+   */
+  const entryConfig = pluginEntryConfigOf(ctx)
+  if (entryConfig !== undefined) {
+    setEntrySkeletonSwitch(() => configFace.skeletonEnabled(entryConfig))
+  }
+
+  /**
+   * ── ⚠ `inject = ['tools']` 的**真实使用点**（2026-10-24 · 本单必修 6）────────
+   *   改前这条声明只当"加载门禁"用，`apply` 里**一次都没读 `ctx.tools`**。
+   *   现在读它一次并据此决定**要不要提供门禁服务**：
+   *     宿主 `tools` 服务存在但**没有 `register`**（版本错配 / 精简夹具）⇒
+   *     门禁服务**不提供** + 一行 warn ⇒ 预设行**不注册**工具（它只等门禁），
+   *     而不是"注册到一半炸在 `ctx.tools.register is not a function`"。
+   *   ⚠ 真实宿主（`ToolsService`）一直有 `register` ⇒ 正常路径行为**未变**。
+   *   ⚠ 用一个 `let` 承接（而不是提前 return）：卸载 effect 与调试日志仍要挂上，
+   *     否则"模块装上了但什么都没说"又是一种静默。
+   */
+  const toolsSvc = (() => {
+    try { return ctx.get?.('tools') ?? ctx.tools } catch { return undefined }
+  })()
+  const registerOk = typeof toolsSvc?.register === 'function'
+
+  if (registerOk) {
+    ctx.provide(GATE_SERVICE, {
+      version: 1,
+      module: name,
+      /**
+       * ⚠ **本门禁负责注册的工具名**（= {@link GATE_OWNED_TOOL_NAMES} 的运行时投影）。
+       *
+       * 为什么让门禁把它带出去：预设行那两处名字集（装配期过滤 / 执行前拦截）需要知道
+       * "哪些名字的注册面在门禁后面"。让它们**从门禁读**，就不必另抄一份常量、
+       * 也不会出现"门禁改了、预设的清单没跟上"（本轮第 4 条的成因就是这个方向）。
+       * ⚠ 只在门禁**在场**时有意义；门禁不在 ⇒ 预设读不到 ⇒ 回落它自己的名字集
+       *   （那正是 {@link visibleToolsFor} 要处理的那一侧）。
+       */
+      toolNames: GATE_OWNED_TOOL_NAMES,
+      /**
+       * ⚠ 门禁**顺带**回带"铺骨架开关此刻的值"（只读、现解 ref）。
+       *   消费方（将来的预设行 / 诊断）可以从门禁拿到**同一份权威**，
+       *   ⛔ 不必再去读预设行配置里那个不存在的键（那正是空旋钮的成因）。
+       */
+      skeletonEnabledOf: () => currentEntrySkeletonSwitch(),
+    })
+  } else {
+    ctx.logger?.warn?.(
+      `[${name}] 宿主 \`tools\` 服务**没有 register()**（版本错配？）⇒ **不提供门禁 ${GATE_SERVICE}**：`
+      + '预设行因此不会注册任何工具（⛔ 不假装就绪，也⛔ 不在注册到一半时炸）。',
+    )
+  }
 
   // 资源示范 + 卸载纪律：卸载时打印一行，便于诊断"模块真的被拆干净了"。
   ctx.effect(() => {

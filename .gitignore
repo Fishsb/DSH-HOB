@@ -78,5 +78,28 @@ dist/
 !.hob/roles/
 !.hob/roles/**
 
+# ── 仓库根 `runtime/`（运行态数据，2026-10-24 补）──────────────────────────
+# ⚠ 由来（实测）：宿主的编排看门狗会把「本工作区」的运行态落在**仓库根**的
+#   `runtime/orch-watches.json` ⇒ 它出现在 `git status` 里成为未跟踪文件，
+#   并让 `lib/BUILD-STAMP` 的 `dirty` **恒为 true**（= 面 ① 那条读数永远报警，
+#   于是那条报警器被人习惯性无视 —— 而这正是"恒红判据等于没有判据"的同族）。
+#   证据：本单复核时 `git status --porcelain` 的未跟踪项里就有它。
+# ⚠ 它**不是**骨架、也**不是**判据的输入：判据里的运行态一律落在**账本区**
+#   `<ledgerHome>/<工作区名>/runtime/`（见 `README.md` §1 两栏清单），
+#   仓库根这一份纯属宿主按 cwd 派生出来的旁支 ⇒ ⛔ 不该入库。
+# ⚠ 注意与 `.hob/` 段的关系：本条只排除**仓库根**的 `runtime/`（末尾斜杠 + 无前导路径
+#   在 git 里就是"任意层的 runtime 目录"）—— 判据读的账本区那份在**仓库之外**，
+#   所以本条**不会**把判据的输入排掉。⚠ `check:gitignore` 的 MUST-EXCLUDE 会盯它。
+runtime/
+
 # 历史备份与日志
 *.log
+
+# ⚠ 两族判据在**仓根**建的一次性转译目录（`check-hob-create-dom.mjs` /
+#   `check-hob-unselected-gate.mjs`）。它们自己写了"⛔ 不许留在仓库里"，但
+#   `.gitignore` 此前**没有任何条款**兜底 ⇒ 被 SIGKILL / 断电打断就留成未跟踪残留，
+#   并让 `lib/BUILD-STAMP` 的 `dirty` 多一处噪声来源（工作区本来就不该有它）。
+#   ⇒ 显式忽略：正常路径照旧自己删；异常退出也不污染 `git status`。
+.check-dom-work/
+.check-gate-work/
+.check-*-work/

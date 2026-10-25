@@ -13,8 +13,8 @@
  */
 import { readFileSync } from 'node:fs'
 import { runRepoRules } from './check-repo-rules.mjs'
-import { findDuplicateSectionHeadings, ledgerRootDiag, runDocShape, runResidualMarkers, runTableIntegrity } from './check-doc-shape.mjs'
-import { runDiscipline, runRender, runSameSource, runSkeletonSource, runWorkspaceNameSource, runWriteScope, runZeroWidth } from './check-code-face.mjs'
+import { findDuplicateSectionHeadings, ledgerRootDiag, runDocShape, runRequirementPurity, runResidualMarkers, runTableIntegrity } from './check-doc-shape.mjs'
+import { runDiscipline, runPlanModuleParity, runRender, runRequirementsRoot, runSameSource, runSkeletonSource, runWorkspaceNameSource, runWriteScope, runZeroWidth } from './check-code-face.mjs'
 
 const fail = []
 const note = []
@@ -158,6 +158,15 @@ await runResidualMarkers({ bad, ok })
 // ── ③ Q：卷下两层子目录的写侧白名单（成对 + 强制登记）──────────────
 await runWriteScope({ bad, ok })
 
+// ── ③ T：现行需求根的迁移面（新根可写 / 旧根拒写且理由分得开 / 旧根仍可读）──
+await runRequirementsRoot({ bad, ok })
+
+// ── ③ W：方案 §3 的模块清单 ↔ `src/modules/` 实际文件（虚列即红）──
+runPlanModuleParity({ bad, ok })
+
+// ── ② U：需求面只记「用户要什么」（日期 / 工具名 / reason / 变更号 / 过程词一律不许进）──
+runRequirementPurity({ bad, ok, skip: noteSkip })
+
 // ── ② P：表结构完整性（表内重复行 / 分隔行在位）────────────────────────
 runTableIntegrity({ bad, ok })
 
@@ -184,8 +193,10 @@ console.log('')
  *   ⚠ **无论 `skip` 是否为 0 都印**：`跳过 0 处` 本身就是"没有跳过"的读数，
  *     ⛔ 不许因为它是 0 就不印（那会让"没查"与"没跳过"重新糊在一起）。
  */
-const checkedTotal = note.length + skip.length
-console.log(`  处级口径：查了 ${checkedTotal} 处 · 过了 ${note.length} 处 · **跳过 ${skip.length} 处**`
+const checkedTotal = note.length + fail.length + skip.length
+console.log(`  处级口径：查了 ${checkedTotal} 处 · 过了 ${note.length} 处`
+  + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
+  + ` · **跳过 ${skip.length} 处**`
   + `（⚠ 跳过**不计入通过**）`)
 console.log('')
 if (fail.length === 0 && noObject.length > 0) {

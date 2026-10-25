@@ -176,6 +176,14 @@ npm run check          # 一条命令跑完全部判据，汇总退出码
 逐族单跑也可以（每族都是 `npm run check:<名字>`）。⚠ 若某一族打的是"未执行"，
 它**没有**替你检查任何东西 —— 别把它的输出当成绿灯。
 
+⚠ **`check:build` 有三个面，只有两个面在这个入口里是判据**（`scripts/check-all.mjs` 的
+`STRICT_FAMILIES`，`:52` / `:69`）：
+- 面 ①②（产物 vs 源码）：聚合入口传 `--strict-source` ⇒ 落后 `exit 1`、基准缺失 `exit 2`。
+- 面 ③（运行实例 vs 产物）：聚合入口**不传** `--strict-instance`（`:56` 明文「⚠ 不加」），
+  因为"刚 build 完还没重启"会让它恒红。⇒ **单独跑 `npm run check:build` 时面 ③ 只报警、不 FAIL**，
+  想让它成为判据必须显式加 `--strict-instance`。
+- ⇒ 「`npm run check` 全绿」**不等于**「装配链已验」：面 ③ 这条最贵的墙不在其中。
+
 想先知道**哪几族现在跑不了**，跑 `npm run check:preflight`：它只报告缺什么、怎么补，**不跑判据**。
 
 ---
@@ -190,6 +198,8 @@ src/
   preset/           预设作用域那一半（工具在这里注册，权限面也在这里）
   server/           落地实现：读写、路径守卫、渲染
   client/           设置面板那半边（浏览器侧）
+  shared/           两侧共用（值域 / 词典 / 纯函数）：work-mode · read-level-policy ·
+                    policy-record-state · planning-preset（改这里会同时影响 host 与 client）
 preset/             预设声明（patch）
 scripts/            判据脚本
 ```

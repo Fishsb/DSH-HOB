@@ -41,10 +41,24 @@ export interface SettingsSnapshot {
   status: 'loading' | 'ready' | 'unavailable'
   /** 当前生效的配置段（已按 schema 解析）。 */
   value: Record<string, unknown> | undefined
-  /** 宿主是否接受写入（`memory` 模式下恒 false）。 */
+  /**
+   * 宿主是否接受写入。
+   *
+   * ⚠⚠ **没有 `mode` 字段**（2026-10-24 · 修复单第 2 条）。
+   *
+   * ── 删掉的是什么 ──────────────────────────────────────────────────────
+   *   上一版这里声明了 `mode: 'host' | 'memory'`，并被四处拒写文案拼进句子
+   *   （"持久化模式 = ${snapshot.mode}"）。⚠ 但宿主 `ConfigFormSnapshot`
+   *   （`dsh-client-ui-settings/lib/types/client/config-form-types.d.ts`）**没有这个字段**
+   *   —— 它的字段只有 `status` / `value` / `base` / `user` / `revision` / `writable`。
+   *   ⇒ `snapshot.mode` 恒为 `undefined`，用户会读到"持久化模式 = **undefined**"
+   *     （一句既不可读、也不成立的话）。
+   *   ⚠ 而且那个概念本身是**自造**的：宿主只在文档里说"非回环访问时写入只在内存里"，
+   *     从不把它暴露成一个可读的模式值 ⇒ 我们**无法**如实报出它。
+   *   ⇒ 现在：拒写只报**能如实知道**的事实（`writable === false`），
+   *     并说明宿主的行为（非回环 ⇒ 内存里改、不落盘），⛔ 不编造一个模式名。
+   */
   writable: boolean
-  /** `host` 会落盘；`memory` 是远端浏览器的进程内模式。 */
-  mode: 'host' | 'memory'
 }
 
 /** 对 configForms form 的最小接口（避免依赖宿主类型的运行时形态）。 */
@@ -266,7 +280,8 @@ export async function writeSpawnFields(
   if (snapshot.writable !== true) {
     return {
       ok: false,
-      reason: `当前页面不允许写入（持久化模式 = ${snapshot.mode}；非本机回环访问时宿主只在内存里改，不落盘）⇒ 已拒写，未做任何修改。`,
+      reason: '当前页面不允许写入（宿主报告该配置面不可写 —— 常见原因是用非本机回环地址打开页面：'
+        + '此时宿主只在内存里改、不落盘）⇒ 已拒写，未做任何修改。',
     }
   }
   if (typeof form.mutate !== 'function') {
@@ -321,7 +336,8 @@ export async function writePermissionLevel(
   if (snapshot.writable !== true) {
     return {
       ok: false,
-      reason: `当前页面不允许写入（持久化模式 = ${snapshot.mode}；非本机回环访问时宿主只在内存里改，不落盘）⇒ 已拒写，未做任何修改。`,
+      reason: '当前页面不允许写入（宿主报告该配置面不可写 —— 常见原因是用非本机回环地址打开页面：'
+        + '此时宿主只在内存里改、不落盘）⇒ 已拒写，未做任何修改。',
     }
   }
   if (typeof form.mutate !== 'function') {
@@ -395,7 +411,8 @@ export async function writeWorkMode(form: ConfigForm | null, mode: WorkMode): Pr
   if (snapshot.writable !== true) {
     return {
       ok: false,
-      reason: `当前页面不允许写入（持久化模式 = ${snapshot.mode}；非本机回环访问时宿主只在内存里改，不落盘）⇒ 已拒写，未做任何修改。`,
+      reason: '当前页面不允许写入（宿主报告该配置面不可写 —— 常见原因是用非本机回环地址打开页面：'
+        + '此时宿主只在内存里改、不落盘）⇒ 已拒写，未做任何修改。',
     }
   }
   if (typeof form.mutate !== 'function') {
@@ -463,7 +480,8 @@ export async function writeSkeletonEnabled(form: ConfigForm | null, enabled: boo
   if (snapshot.writable !== true) {
     return {
       ok: false,
-      reason: `当前页面不允许写入（持久化模式 = ${snapshot.mode}；非本机回环访问时宿主只在内存里改），未写入。`,
+      reason: '当前页面不允许写入（宿主报告该配置面不可写 —— 常见原因是用非本机回环地址打开页面：'
+        + '此时宿主只在内存里改），未写入。',
     }
   }
   if (typeof form.mutate !== 'function') {

@@ -251,7 +251,7 @@ export function apply(ctx: any, config: Config = {}): void {
    * @param key - `config.ts` 里的导出名。
    * @returns 服务名字符串；该导出缺席 ⇒ `undefined`。
    */
-  const serviceNameOf = (key: 'PERMISSION_SERVICE' | 'WORK_MODE_SERVICE'): string | undefined => {
+  const serviceNameOf = (key: 'PERMISSION_SERVICE' | 'WORK_MODE_SERVICE' | 'SESSION_POLICY_SERVICE'): string | undefined => {
     const value = (configFace as unknown as Record<string, unknown>)[key]
     return typeof value === 'string' && value !== '' ? value : undefined
   }
@@ -298,22 +298,109 @@ export function apply(ctx: any, config: Config = {}): void {
    * ⚠ 这条退路**也要可读**：第一次走到它时打一句 warn（⛔ 不许静默收窄）。
    */
   let warnedNoPermissionService = false
-  const levelOf = (): string => {
+  /**
+   * ⚠⚠ **2026-10-22 · `REQ-04`：档位不再是"实例级全局值"，而是"这个会话的策略"。**
+   *
+   * ── 改前 / 改后 ────────────────────────────────────────────────────
+   *   · 改前：`levelOf()` 读入口 provide 的 `hobPermission`（= 全局 `config.permission.level`）
+   *     ⇒ 一个全局值给**所有**会话用 ⇒ 改一次，所有已开会话在下一次 step 就跟着变（串线）。
+   *   · 改后：`levelOf(session)` 读 `hobSessionPolicy` 服务（**按会话 id** 解析）。
+   *     ⛔ 拿不到会话 / 拿不到服务 / 解析抛错 ⇒ **一律 `ledger`**（最低档，fail-closed）。
+   *
+   * ── ⚠ 为什么参数是 `session` 而不是"什么都不传" ───────────────────────
+   *   四个闸门（装配过滤 / 预执行 / 哨兵 / execute）拿到的东西不一样：
+   *   前三个有 `agent`（或装配 `context.agent`），第四个有 `exec.agent.session`。
+   *   ⇒ 统一成"传 `session`（可为 `undefined`）"，由本函数做**唯一**解析。
+   *   ⛔ 不许任何调用方"没 session 就退回全局值" —— 那正是要取消的串线路径。
+   *
+   * ── ⚠ 为什么保留 `permissionServiceName` 的强依赖检查（上面那段 throw）──────
+   *   它现在**不再是档位来源**，但仍是两条既有契约的一部分：
+   *   ① 机检 G-11 钉着"`PERMISSION_SERVICE` 缺席 ⇒ throw"（⛔ 本轮不改判据）；
+   *   ② 老实例/老组合的具体行为不该在本轮被悄悄改变。
+   *   ⇒ 保留该检查；它**不参与**档位判定。真正的判定看下面的 `policyOf()`。
+   */
+  const sessionPolicyName = serviceNameOf('SESSION_POLICY_SERVICE')
+
+  /** 取会话策略服务（⛔ 不缓存实例；服务可能随重挂载换掉）。 */
+  const policyService = (): any => {
+    if (sessionPolicyName === undefined) return undefined
     try {
-      const svc = ctx.get?.(permissionServiceName) ?? ctx[permissionServiceName]
-      if (typeof svc === 'function') return String(svc())
-      if (!warnedNoPermissionService) {
-        warnedNoPermissionService = true
-        const why = `⚠ 权限服务 "${permissionServiceName}" 当前**没有被 provide**（多半是 modules.tools 关着 / 还没就绪）'
-          + ' ⇒ 本预设按"最保守档 ledger"工作（fail-closed）：读文档 / 读工作区文件那几项会**看不见**。'
-          + ' ⛔ 这不是"权限没配"，是"这一轮取不到"。`
-        try { ctx.logger?.warn?.(`[dsh-hob preset] ${why}`) } catch { /* 忽略 */ }
-        diag(`[dsh-hob preset] ${why}`)
-      }
-      return 'ledger'
+      return (ctx.get?.(sessionPolicyName) ?? ctx[sessionPolicyName]) as any
     } catch {
-      return 'ledger'
+      return undefined
     }
+  }
+
+  /** 会话 → 策略解析（**唯一**入口；异常/缺服务 ⇒ 最低档）。 */
+  const policyOf = (sessionOrAgent: any): { level: string; workMode: string; source: string; mayProceed: boolean } => {
+    const floor = {
+      level: 'ledger', workMode: workModeFace.DEFAULT_WORK_MODE, source: 'no-policy-service',
+      // ⚠ 服务缺席时不拦（保持既有行为：老组合照样能用，只是按最低档）
+      mayProceed: true,
+    }
+    /**
+     * ⚠ 入参**可以是 Agent 也可以是 Session**（四个闸门拿到的东西不同）：
+     *   `exec.agent` / `context.agent` 是 **Agent**，`exec.agent.session` 是 **Session**。
+     *   ⇒ 这里统一归一成 Session（有 `.session` 就往下取一层），
+     *     ⛔ 不让每个调用点各写一遍"我该传哪个"（那必然漂）。
+     */
+    const session = (() => {
+      try {
+        if (sessionOrAgent === null || sessionOrAgent === undefined) return undefined
+        return sessionOrAgent.session ?? sessionOrAgent
+      } catch { return undefined }
+    })()
+    try {
+      const svc = policyService()
+      if (typeof svc?.of !== 'function') return floor
+      const r = svc.of(session)
+      const lv = typeof r?.level === 'string' && (configFace.PERMISSION_LEVELS as readonly string[]).includes(r.level)
+        ? r.level : 'ledger'
+      const wm = typeof r?.workMode === 'string' && (workModeFace.WORK_MODE_VALUES as readonly string[]).includes(r.workMode)
+        ? r.workMode : workModeFace.DEFAULT_WORK_MODE
+      /**
+       * ⚠⚠ **`mayProceed` 的方向改了**（2026-10-22 第 5 轮 · 任务书第 12 条点名）。
+       *
+       * ── 改前（第 4 轮）写的是什么、为什么是错的 ────────────────────────
+       *   `typeof r?.mayProceed === 'boolean' ? r.mayProceed : true`
+       *   ——"字段缺失就默认可推进"。
+       *   ⚠ 后果：**服务在、但那份读数没有这个字段**（版本错配 / 实现被替换 / 半升级）
+       *     时，旧会话会被当成"可以推进"，而它的原工作方式**根本没被确认**。
+       *     那正是本批要消灭的形态：**拿不可信的值去派活**。
+       *   ⚠ 我当时给的理由是"反过来会让每次版本不匹配都停摆" —— 但那是**拿事故换事故**：
+       *     停摆是可读的、可恢复的；静默改写旧会话的工作方式是不可逆的。
+       *
+       * ── 现在：**只有明确说"可以"才放行**（fail-closed）──────────────────
+       *   · `mayProceed === true` ⇒ 放行；
+       *   · `false` / 缺席 / 非布尔 ⇒ **一律视为不可推进**（`mayProceed=false`）。
+       *   ⚠ 例外只有一处：**服务整个缺席**（`floor`）——那是老组合的兼容面，
+       *     此时走的是 `floor` 分支（下面 catch / 无服务），仍按既有行为
+       *     （最低档 + 不拦）。⚠ 区别要看清：**"没有这个服务"** 与
+       *     **"有服务但读数不可信"** 是两件事，处理方向相反。
+       */
+      const mayProceed = r?.mayProceed === true
+      return { level: lv, workMode: wm, source: String(r?.source ?? 'unknown'), mayProceed }
+    } catch {
+      return floor
+    }
+  }
+
+  /**
+   * **现读**某个会话的可读档（⚠ 每次调用现取，⛔ 不是快照）。
+   *
+   * @param session - 该会话；`undefined` ⇒ 最低档（⛔ 不看全局值）。
+   */
+  const levelOf = (session: any): string => {
+    const r = policyOf(session)
+    if (r.level === 'ledger' && warnedNoPermissionService === false && r.source === 'no-policy-service') {
+      warnedNoPermissionService = true
+      const why = `⚠ 逐会话策略服务 "${sessionPolicyName ?? '(未导出)'}" 当前**没有被 provide**`
+        + ' ⇒ 本预设按"最保守档 ledger"工作（fail-closed）：读文档 / 读工作区文件那几项会**看不见**。'
+        + ' ⛔ 这不是"权限没配"，是"这一轮取不到策略权威"。'
+      try { ctx.logger?.warn?.(`[dsh-hob preset] ${why}`) } catch { /* 忽略 */ }
+      diag(`[dsh-hob preset] ${why}`)
+    }
+    return r.level
   }
   /**
    * **现读**当前「工作方式」档位（每次调用现取，⛔ 不是快照 —— 2026-10-19 · `UD-97`）。
@@ -327,17 +414,89 @@ export function apply(ctx: any, config: Config = {}): void {
    * ⚠ **读到的不是三档之一** ⇒ 同样归到缺省档（⛔ 不许把非法值当一档往下传 ——
    *   那会让 `workModeInstruction()` 落进 `auto` 分支却带着一个说不清的档位名）。
    */
-  const modeOf = (): WorkMode => {
+  const modeOf = (session: any = undefined): WorkMode => {
     try {
-      const name = serviceNameOf('WORK_MODE_SERVICE')
-      if (name === undefined) return workModeFace.DEFAULT_WORK_MODE
-      const svc = ctx.get?.(name) ?? ctx[name]
-      const raw = typeof svc === 'function' ? String(svc()) : ''
-      return (workModeFace.WORK_MODE_VALUES as readonly string[]).includes(raw)
-        ? (raw as WorkMode) : workModeFace.DEFAULT_WORK_MODE
+      return policyOf(session).workMode as WorkMode
     } catch {
       return workModeFace.DEFAULT_WORK_MODE
     }
+  }
+
+  /**
+   * ⭐ **执行层"能不能推进"闸门**（2026-10-22 第 5 轮 · 任务书第 12 条）。
+   *
+   * ── 为什么需要它（Hob 源读数点出的两条）────────────────────────────────
+   *   ① `mayProceed=false` 上一轮**只注入提示词**：模型照样可以强行点名
+   *      `write_hob` / `hob_spawn` / `hob_send` ⇒ 提示词不是边界；
+   *   ② `policyOf` 对"缺服务 / 缺字段"**默认 true** ⇒ 不可信的读数被当成"可推进"。
+   *   ⇒ 现在两者都收口到**这一个函数**：动作为"改变项目"类工具在 `execute` 里调它。
+   *
+   * ── 判决（⚠ 按"能不能证明可以"排，⛔ 不按"默认放行"排）──────────────
+   *   · 非 Hob（含认不出预设）⇒ **放行**：本机制不参与别人（保留既有行为）。
+   *     ⚠ 这里**故意**放行：如果我连"Hob 与否"都判不出就拦，
+   *       那会把**普通标准会话**一起打死 —— 那是比不拦更严重的回归。
+   *   · Hob + `mayProceed === true` ⇒ 放行。
+   *   · Hob + 其余 ⇒ **拒**，并在理由里点明是哪一档（`unknown-legacy` / 失败 / 服务缺席）。
+   *
+   * ⚠⚠ **2026-10-24 · 判据口径变了，但闸门保留**（用户裁定 1(a)）：
+   *   改前 `derived-default`（新建 Hob、还没选可读档/工作方式）回 `mayProceed=false`
+   *   ⇒ 本函数把 `hob_spawn` / `hob_send` / 建 standard 实施会话**全拒** ⇒ **死锁**
+   *     （用户想干活，但没有任何工具能先把它"选起来"）。
+   *   ⇒ 裁决：**这类新会话允许推进**（`session-policy.ts` 的 `derived-default` 支改 `mayProceed=true`）
+   *     —— ⚠ 但它的**读档仍然是最低档 `ledger`**，所以这里**不需要也不允许**再按档位放行：
+   *     本函数只看 `mayProceed`，⛔ 不再加"档位够宽才放行"这类判据（那会把"没选档"变成"必须选宽档"）。
+   *   ⚠ **闸门本身不能删**：它仍然是"判不出 / 旧会话迁移未完成 / 归档 / 隔离 / pending"
+   *     这些情形的执行层边界 —— 那些支的 `mayProceed` 仍然是 `false`（一个字没动）。
+   *
+   * @returns `undefined` = 放行；字符串 = 拒绝理由。
+   */
+  const proceedGateFor = (session: any): string | undefined => {
+    const subject = (() => {
+      try { return session?.session ?? session } catch { return undefined }
+    })()
+    let verdict: ReturnType<typeof policyOf>
+    try {
+      verdict = policyOf(subject)
+    } catch (e) {
+      // ⚠ 判不出 ⇒ 若这本来就是非 Hob 语境就没关系；但**判不出就是判不出**，
+      //   不能假装"是普通会话"。⇒ 拒绝并说清（这是边界，fail-closed）。
+      return `拒绝：无法判定本会话的策略（${String((e as Error)?.message ?? e)}）`
+        + ' ⇒ 本次**不执行**（⛔ 不拿不可信的方式去改项目）'
+    }
+    // ⚠ 非 Hob：本机制不参与 ⇒ 放行（保留既有行为）
+    if (verdict.source === 'non-hob') return undefined
+    // ⚠ 服务整体缺席（floor）：老组合兼容面 ⇒ 放行（⚠ 与"有服务但读数不可信"方向相反）
+    if (verdict.source === 'no-policy-service') return undefined
+    if (verdict.mayProceed === true) return undefined
+    /**
+     * ⚠ **拒绝文案要覆盖所有 `mayProceed=false` 的来源**（2026-10-24 订正）：
+     *   改前只写"旧 Hob 会话，迁移未完成或快照取不到" —— 但 `derived-default`
+     *   （新会话未选档）已经改为放行，剩下的 `false` 来源其实是：
+     *   `unknown-legacy`（旧会话无快照 / 创建时刻判不出）、`store-unreadable` /
+     *   `version-unknown`、`quarantined`、`pending-activation`、`archived` /
+     *   `archive-unknown`、`no-identity`。
+     *   ⇒ 文案改成"按读数来源分述"，⛔ 不再把所有情形都说成"旧会话"（那会误导用户）。
+     *   ⚠ 判决逻辑一个字没改（仍然只看 `mayProceed`）。
+     */
+    const why = ((): string => {
+      switch (verdict.source) {
+        case 'unknown-legacy': return '旧 Hob 会话的工作方式**无法确定**（迁移未完成 / 取不到切换快照 / 判不出创建时刻）'
+        case 'store-unreadable':
+        case 'version-unknown': return '策略文件**读不出来或结构版本不认识**，无法确定本会话的工作方式'
+        case 'quarantined': return '本会话的策略记录**已被隔离作废**（创建失败兜底留下的残留）'
+        case 'pending-activation': return '本会话的策略**尚未确认生效**（写在盘上了但没走完确认）'
+        case 'archived': return '本会话**已被宿主持久归档**'
+        case 'archive-unknown': return '**读不到宿主的归档状态**，无法证明本会话没被归档'
+        case 'no-identity': return '**取不到可信的会话身份**，无法确定本会话的工作方式'
+        case 'bad-record': return '本会话的策略记录**字段非法**（按不存在处理）'
+        default: return `本会话的策略读数不可信（source=\`${verdict.source}\`）`
+      }
+    })()
+    return `拒绝：${why}`
+      + ' ⇒ 本次**不执行**任何改变项目的动作。'
+      + '\n  ⚠ 可以做的：**只读**诊断（`hob_sessions` / `hob_workspaces` / `hob_read_doc` / `hob_glob` / `hob_grep` / `hob_read_image` / `hob_orch_status`）。'
+      + '\n  ⚠ 为什么：给一个"没确认的方式"去派活，等于静默改写原工作方式（⛔ 不接受"日志里写了未保全"）。'
+      + '\n  ⚠ 注：新建会话在**还没选**可读档 / 工作方式时**不在**本拒绝之列（那类会话可以派活，读档按最低档）。'
   }
 
   /**
@@ -354,13 +513,114 @@ export function apply(ctx: any, config: Config = {}): void {
     && Array.isArray(workModeFace.WORK_MODE_VALUES)
   denyInheritedTools(ctx, log, DEFAULT_DENY)
 
+  /**
+   * ⭐ **门禁状态：三态，⛔ 不是布尔**（2026-10-24 · 治「白名单与注册面脱钩」的消费侧）。
+   *
+   * ── 它治的确切形态（真功能缺口，不是风格）───────────────────────────
+   *   `modules.tools = false` ⇒ 本模块**不加载** ⇒ 门禁 `hobTools` 不存在 ⇒
+   *   下面的 `ctx.inject([GATE_SERVICE], …)` 回调**不跑** ⇒
+   *   `read_contracts` / `write_hob` / `hob_read_doc` / `hob_glob` / `hob_grep` /
+   *   `hob_read_image` **一个都没注册**。
+   *   ⚠ 但收敛机制（装配期白名单 + 执行前拦截 + 哨兵）**挂在门禁外面**（刻意的：
+   *     关掉门禁不许放权），它们只读 `PERMISSION_TIERS` —— 那张表**不知道注册面在不在**
+   *   ⇒ 模型面出现"看得见、点一下 `unknown tool`"的那几个名字。
+   *
+   * ── ⚠⚠ 为什么必须是**三态**（2026-10-24 订正；一版曾用布尔，被 SP-10 咬出来）──────
+   *   一版把"回调跑过"这一个布尔当成门禁状态，初值 `false`。而**测试/夹具的假壳**
+   *   （`check:session-policy` 的 SP-10、`check:config-face`、`host-probe`）只 mock 了
+   *   自己关心的那几条 `inject`，**不会** mock 一个 `hobTools` 服务 ⇒ 那个布尔恒 `false`
+   *   ⇒ 把**正常工作宿主**的工具面误减了几个名字 ⇒ SP-10 当场红。
+   *   ⇒ 根因是"**判不出**"与"**确定没装**"被混成了一个值。三种状态必须分开：
+   *
+   *   | 判据 | 状态 | 处置 |
+   *   |---|---|---|
+   *   | 下面 `ctx.inject([GATE_SERVICE], …)` 回调**跑过** | `'ready'` | 原样返回（正常路径零变化） |
+   *   | 从**插件入口配置**读到 `modules.tools === false` | `'absent'` | 减掉门禁拥有的那批名字（**这才是本单要修的形态**） |
+   *   | 两者都判不出（假壳 / 旧缓存 / 无 fiber 链） | `'unknown'` | **原样返回** + 一条 warn（fail-open 于"能力面"） |
+   *
+   * ── 为什么"判不出"要 fail-open（⚠ 这里的方向与安全面相反，理由是判据不同）──────
+   *   减名字是**收紧**动作：判不出就收紧会**误伤正常会话**（SP-10 就是活证据：
+   *   一个正常宿主被削掉了它本来就该有的 `hob_glob` / `hob_read_doc`）。
+   *   而真实的"门禁没装"由 `modules.tools=false` 这个**显式开关**决定 ⇒ 那是**可判的**，
+   *   不需要靠"判不出"去兜。⇒ 判不出时**不收紧**，但**说出来**（warn，⛔ 不静默）。
+   *   ⚠ 这**不是**「把 fail-open 做成恒 true」：明确关掉 `modules.tools` 时**仍然会减**
+   *     （负向对拍见交付读数：把状态强制成 `'absent'` ⇒ 那批名字确实被减掉）。
+   *
+   * ── 为什么不用 `ctx.get(GATE_SERVICE) !== undefined` 判 "ready" ────────────
+   *   ⚠ 它在「服务已 provide、但工具注册还没完成」那一瞬也是 `true` ⇒ 两种状态混起来。
+   *   ⇒ `'ready'` **只认**"门禁回调真的跑过了"这一件事（下面 inject 里置位）。
+   */
+  type GateState = 'ready' | 'absent' | 'unknown'
+  /**
+   * `inject` 回调跑过 ⇒ `'ready'`（单调：一旦跑过就不再回退 —— 卸载会同时拆掉
+   * 工具注册，此刻再收紧只会让**正在卸载的中间态**突然改模型面）。
+   */
+  let gateInjected = false
+  /** 从入口配置读到的显式开关（`undefined` = 判不出）。 */
+  const entryToolsSwitch = ((): boolean | undefined => {
+    const readEntry = (toolsFace as unknown as Record<string, unknown>).pluginEntryConfigOf
+    const readSwitches = (configFace as unknown as Record<string, unknown>).moduleSwitches
+    if (typeof readEntry !== 'function' || typeof readSwitches !== 'function') return undefined
+    try {
+      const cfg = (readEntry as (c: any) => unknown)(ctx)
+      if (cfg === undefined || cfg === null) return undefined
+      const sw = (readSwitches as (c: unknown) => { tools?: unknown })(cfg)
+      return typeof sw?.tools === 'boolean' ? sw.tools : undefined
+    } catch { return undefined }
+  })()
+  /** 判据顺序：运行期事实 → 装配期显式开关 → 判不出。 */
+  const gateState = (): GateState => (gateInjected ? 'ready' : (entryToolsSwitch === false ? 'absent' : 'unknown'))
+
+  /**
+   * **该档对模型可见的工具名**（⚠ 唯一的口径收口点，所有消费处都过这里）。
+   *
+   * 语义（由 `modules/tools.ts` 的 `visibleToolsFor` 定义，⛔ 不在这里重写一份）：
+   *   · `'ready'` / `'unknown'` ⇒ **原样返回**（前者正常路径；后者判不出不收紧，见上）；
+   *   · `'absent'` ⇒ 只减掉**门禁自己拥有的那批名字**
+   *     （名数以 `GATE_OWNED_TOOL_NAMES` 为准，⛔ 不在此写死数量），
+   *     其余（编排/台账/检索）**一个不动**。
+   * ⚠ 命名空间取用 + 运行时取值（`G-11` 钉着：本文件禁具名值导入）。
+   * ⚠ `visibleToolsFor` 在旧缓存里缺席 ⇒ **原样返回**（= 既有行为），并降级说一句。
+   */
+  let warnedGateUnknown = false
+  const visibleNamesFor = (names: readonly string[]): readonly string[] => {
+    const fn = (toolsFace as unknown as Record<string, unknown>).visibleToolsFor
+    if (typeof fn !== 'function') {
+      degrade('visibleToolsFor', '`modules/tools.ts` 没有 `visibleToolsFor()` 导出（旧缓存？）'
+        + ' ⇒ 工具名**按原样**下发（⚠ 关掉 `modules.tools` 时模型仍可能看见调不到的名字）')
+      return names
+    }
+    const st = gateState()
+    if (st === 'unknown' && !warnedGateUnknown) {
+      warnedGateUnknown = true
+      /**
+       * ⚠ 这条 warn **是判据的一部分**（任务书要求"判不出 ⇒ 原样返回 + 一条 warn"）：
+       *   它让"我们没判出门禁状态"这件事**可见**，而不是让工具面悄悄宽一点。
+       */
+      degrade('gate-state-unknown',
+        '判不出工具门禁状态（既没跑过 `hobTools` 注入回调，也从插件入口配置读不到 `modules.tools`）'
+        + ' ⇒ 工具名**按原样**下发（⚠ 若 `modules.tools` 实际关着，模型可能看见调不到的名字）')
+    }
+    /**
+     * ⚠⚠ **传的是"门禁是否在场"，⛔ 不是"是否 ready"**：
+     *   `visibleToolsFor(names, gatePresent)` 的第二参语义是「**门禁在 ⇒ 原样返回**」。
+     *   ⇒ `'absent'`（明确关掉）才是唯一该减的状态；`'ready'` 与 `'unknown'` 都必须视为"在场"
+     *     （后者是"判不出不收紧"，见上）。
+     *   ⚠ 我第一版这里写成 `st === 'ready'` —— 于是 `'unknown'` 被当成"不在场"而**照减**，
+     *     与上面那条 warn 的承诺（"按原样下发"）**自相矛盾**，被 SP-10 当场咬出来。
+     *     ⇒ 判据只有一处：`st !== 'absent'`。
+     */
+    return (fn as (n: readonly string[], g: boolean) => readonly string[])(names, st !== 'absent')
+  }
+
   // ⚠ **收敛机制的挂载点：直接在 preset scope 上**（不在门禁回调内）—— 见 apply 头部注释。
   //   两处都只认**本 scope**（ctx 即 preset 作用域），因此不影响其它预设；
   //   资源仍走 `ctx.effect`（卸载自动清理，§3.3 第 3 条）。
   //   ⚠ 用**外层 ctx**（不是门禁子 ctx）：门禁消失时收敛**必须留下**，否则就是本批要修的倒挂。
-  filterModelToolList(ctx, levelOf, log)
-  enforceToolAllowlist(ctx, levelOf, log)
-  installPermissionGuard(ctx, levelOf, log)
+  //   ⚠ 2026-10-24：三处都多收一个 `visibleNamesFor`（= 名字集口径的唯一收口点）。
+  filterModelToolList(ctx, levelOf, log, visibleNamesFor)
+  enforceToolAllowlist(ctx, levelOf, log, visibleNamesFor)
+  installPermissionGuard(ctx, levelOf, log, visibleNamesFor)
 
   // ⚠ 「工作方式」口径的挂载点**同上**：外层 ctx（本预设作用域）、不随门禁消失。
   //   理由与收敛机制同一条：关掉 `modules.tools` 不该让"拆几路"的口径**消失**
@@ -389,7 +649,7 @@ export function apply(ctx: any, config: Config = {}): void {
       + ' ⚠ 工具面 / 权限档位 / 收敛机制**不受影响，已照常注册**。'
       + ' ↳ 修法：重启宿主，让它加载与盘上产物同版本的 `dsh-hob`。')
   } else {
-    injectWorkMode(ctx, modeOf, log)
+    injectWorkMode(ctx, modeOf, policyOf, log)
   }
 
   log('apply 完成权限边界与收敛；等待门禁 ' + GATE_SERVICE)
@@ -401,14 +661,40 @@ export function apply(ctx: any, config: Config = {}): void {
    * ⚠ 门禁现在**只管工具注册**：收敛（模型面白名单 + 执行前拦截）已在上面挂好，
    *   不随门禁的在场与否改变。
    */
+  /**
+   * ⚠⚠ **`ORCH_SERVICE` / `createHobOrchTools` 声明必须早于门禁回调**（2026-10-24）。
+   *
+   * ── 为什么前移（这是"靠宿主偶然时序成立"的那个脆点）────────────────────
+   *   门禁回调里 `registerTools(..., ORCH_SERVICE, ...)` 要用这两个名字，而它们原先
+   *   声明在**门禁 inject 之后**。当前 cordis 的 `inject()` 一定是**异步**开始 apply 的
+   *   （`Fiber._reload()` 首句就是 `await Promise.resolve()`，见
+   *   `@deepseek-ai/cordis/lib/index.js:1349-1357`）⇒ 今天不会撞 TDZ。
+   *   ⚠ 但那是**宿主的实现细节**，⛔ 不该成为我们正确性的前提：换个宿主版本/别的
+   *     调度器若变成同步执行 apply，这里就会 `ReferenceError: Cannot access
+   *     'ORCH_SERVICE' before initialization` —— 而且会炸在**订阅回调里**（半挂载）。
+   *   ⇒ 纯**声明前移**（语义零变化：两者都只在 `apply` 里被读），把这个前提去掉。
+   *   ⚠ 对应的 `degrade` 判定**留在原处**（它是"取不到就降级"的处置，与声明位置无关）。
+   */
+  const ORCH_SERVICE = orchFace.ORCH_SERVICE
+  const createHobOrchTools = orchFace.createHobOrchTools
+
   ctx.inject([GATE_SERVICE], (gatedCtx: any) => {
+    /**
+     * ⚠⚠ **置位"门禁真的就绪"**（2026-10-24）—— 唯一可信的来源。
+     *   ⚠ 只在这里置：本回调跑起来 ⇒ 服务已 provide **且** 我们要立刻注册工具。
+     *   ⛔ 不用 `ctx.get(GATE_SERVICE) !== undefined` 判：那在"服务在、注册未完成"
+     *     那一瞬也是真，两种状态会混（见 `apply` 里 `gateReady` 的注释）。
+     *   ⚠ 置位**在注册之前**：`registerTools` 里 `tierNamesOf`/`proceedGateOf` 等
+     *     会现读本值，置位后再注册才能保证"这一轮看到的名单 = 确实注册了的名单"。
+     */
+    gateInjected = true
     log('门禁就绪 ⇒ 注册工具')
     // ⚠ 用**回调给的子 ctx**注册（不是外层 ctx）：这是宿主的既有用法
     //   （`dsh-agent-preset-registry/lib/index.js` 里
     //   `ctx.inject(["settings"], (child) => {` 那一段 —— ⚠ 按**符号锚**定位，⛔ 别按行号）。
     //   子 ctx 继承依赖 API 且**拥有它自己创建的注册** ⇒ 门禁消失时这些注册随之拆除，
     //   不用手写卸载逻辑（§3.3 第 3 条：资源靠 ctx.effect 挂，卸载自动清理）。
-    registerTools(gatedCtx, config, levelOf, log, ORCH_SERVICE, createHobTools)
+    registerTools(gatedCtx, config, levelOf, proceedGateFor, log, ORCH_SERVICE, createHobTools, visibleNamesFor)
   })
 
   // ── M3 · 会话总线工具（UD-77）────────────────────────────────────────
@@ -438,7 +724,7 @@ export function apply(ctx: any, config: Config = {}): void {
         return
       }
       log('会话总线就绪 ⇒ 注册 M3 工具')
-      registerBusTools(busCtx, bus as HobBus, log, config, createHobBusTools, ledgerRootOf,
+      registerBusTools(busCtx, bus as HobBus, log, config, createHobBusTools, ledgerRootOf, proceedGateFor,
         /**
          * ⚠⚠ **T2（B5）：每次 `hob_*` 读写顺手对账**（2026-10-20）。
          *   ⚠ 用 `busCtx.get('hobOrchestrator')` **现取**（⛔ 不在这里 inject 它 ——
@@ -463,8 +749,6 @@ export function apply(ctx: any, config: Config = {}): void {
   //   ⇒ 回调不跑 ⇒ **三个编排工具根本不出现**。
   //   ⇒ 关掉 `modules.orch` 只影响 M5 自己：**会话总线仍在**（手工投递路不受影响）。
   // ⚠⚠ 与 M3 同款：`ORCH_SERVICE` / `createHobOrchTools` 改为**运行时**取，取不到即降级。
-  const ORCH_SERVICE = orchFace.ORCH_SERVICE
-  const createHobOrchTools = orchFace.createHobOrchTools
   if (typeof ORCH_SERVICE !== 'string' || typeof createHobOrchTools !== 'function') {
     degrade('ORCH_SERVICE',
       '⚠ 闭环编排（M5）三个工具**没有注册**：`modules/orchestrator.ts` 的'
@@ -480,7 +764,7 @@ export function apply(ctx: any, config: Config = {}): void {
         return
       }
       log('闭环编排就绪 ⇒ 注册 M5 工具')
-      registerOrchTools(orchCtx, orch as HobOrchestrator, log, createHobOrchTools)
+      registerOrchTools(orchCtx, orch as HobOrchestrator, log, createHobOrchTools, proceedGateFor)
     })
   }
 }
@@ -860,7 +1144,19 @@ export const GUARDED_TOOLS: readonly string[] = [
  * @param modeOf - **现读**档位（每次装配/每步重新调；⛔ 传值会变成快照）。
  * @param log - 诊断输出。
  */
-function injectWorkMode(ctx: any, modeOf: () => WorkMode, log: (m: string) => void): void {
+/**
+ * 注入「推进工作方式」的口径。
+ *
+ * ⚠ 2026-10-22 第 4 轮：多收一个 `policyOf` —— 因为**只有它能回答 `mayProceed`**。
+ *   ⚠ `modeOf()` 只回档位字符串，不知道"能不能推进"；用它来判会漏掉**暂停**那一档。
+ *   ⛔ 不要把它并进 `modeOf` 的返回值（那会改一个被多处按字符串使用的契约）。
+ */
+function injectWorkMode(
+  ctx: any,
+  modeOf: (sessionOrAgent?: any) => WorkMode,
+  policyOf: (sessionOrAgent?: any) => { level: string; workMode: string; source: string; mayProceed?: boolean },
+  log: (m: string) => void,
+): void {
   // ⚠ 走**反应式** `ctx.inject`（不是本模块的静态 `inject`）：
   //   静态 inject 缺依赖 ⇒ fiber 停 PENDING ⇒ 预设被标 `broken`
   //   ⇒ **在选择器里被静默过滤掉**（同本文件头部 E-21 的教训）。
@@ -887,12 +1183,42 @@ function injectWorkMode(ctx: any, modeOf: () => WorkMode, log: (m: string) => vo
      *   异常 ⇒ 退回**缺省档**的正文（而不是空串）：空串等于"没有这个口径"，
      *   而缺省档是本项落地之前的行为，最轻。
      */
-    const textNow = (): string => {
+    const textNow = (context?: any): string => {
       // ⚠ 运行时读（⛔ 不是模块顶层快照 `workModeInstruction`）—— 见文件头那段注释：
       //   这四个名字也可能在旧缓存里缺席。`apply` 已在挂载前用 `wmOk` 判过一轮，
       //   这里再取一次是因为**装配发生在很久以后**（`apply` 与装配之间可能隔着重载）。
+      //
+      // ⚠⚠ **2026-10-22 · `REQ-04`：这里开始按会话取工作方式。**
+      //   宿主的 `resolveContext()` 会把**装配 context**（含 `agent`）作为参数传进来
+      //   （`dsh-system-prompt/lib/index.js:184-190` 的 `entry.text(context)`），
+      //   `refreshContext(assembly, context)` 同理（`:324-341`）⇒ 身份就在入参里。
+      //   ⚠ 拿不到 context ⇒ `modeOf(undefined)` ⇒ 策略服务的保守值（⛔ 不是旧全局值）。
       try {
-        return workModeFace.workModeInstruction(modeOf()) + workModeFace.workModeRedLine()
+        const subject = context?.agent ?? context?.scope
+        /**
+         * ⚠⚠ **`mayProceed=false` ⇒ 必须先停下，⛔ 不许给出"按某种方式推进"的口径**
+         * （2026-10-22 第 4 轮 · 任务书原文："要么暂停本次推进，要么用固定的原值快照"）。
+         *
+         * ── 为什么这条必须在这里、而不只是"读数里带个字段"──────────────
+         *   读到 `mayProceed=false` 却仍然注入"请按 auto 自行判断怎么推进"这段话，
+         *   等于**照样让模型去推进**，只是我们在日志里写了句"未保全"——
+         *   那正是任务书点名**不接受**的形态。
+         *   ⇒ 这里直接换成**暂停说明**：告诉模型不要推进、并说清原因。
+         *   ⚠ 这段文字**不是**"工作方式口径"，所以⛔ 不拼 `workModeRedLine()` 之外的东西
+         *     （避免模型把它当成又一个 mode）。
+         */
+        const verdict = policyOf(subject)
+        if (verdict.mayProceed === false) {
+          return '## 本轮**暂停推进**（本会话的工作方式/策略读数不可信）\n\n'
+            + '⚠ 本会话此时**不能确定**该按哪种工作方式推进（旧会话迁移未完成 / 策略文件读不出 /'
+            + ' 已被隔离或归档 / 策略尚未确认生效 —— 具体原因见工具返回值）。\n'
+            + '⚠ 为避免把原来的 `multi`/`single` 静默改成 `auto`，**本轮不要推进项目**：\n'
+            + '- 不要拆解任务、不要派活、不要按任何"工作方式"去规划；\n'
+            + '- 可以先做**只读**的信息收集，或向用户说明情况并请其稍后重试。\n\n'
+            + '（这条与"权限档"无关：读档仍按最低档执行。）\n'
+            + '（⚠ 新建会话在**还没选**可读档 / 工作方式时**不会**走这一段 —— 那类会话可以推进，读档按最低档。）'
+        }
+        return workModeFace.workModeInstruction(verdict.workMode as WorkMode) + workModeFace.workModeRedLine()
       } catch (e) {
         log('工作方式口径取档位异常（退回缺省档）：' + String((e as Error)?.message ?? e))
         try {
@@ -994,15 +1320,30 @@ function injectWorkMode(ctx: any, modeOf: () => WorkMode, log: (m: string) => vo
  *   「F1 修正的行为倒挂」一节：收敛机制**必须留下**，否则关掉门禁反而放权。
  * @param log - 诊断输出。
  */
-function filterModelToolList(ctx: any, levelOf: () => string, log: (m: string) => void): void {
+function filterModelToolList(
+  ctx: any,
+  levelOf: (sessionOrAgent?: any) => string,
+  log: (m: string) => void,
+  /**
+   * ⚠ 2026-10-24：名字集的**唯一收口点**（见 `apply` 里的 `visibleNamesFor`）。
+   *   缺省 = 原样返回，只为兼容直接调用本函数的旧测试/旧路径（⛔ 产品路径一定传它）。
+   */
+  visibleNamesFor: (names: readonly string[]) => readonly string[] = (n) => n,
+): void {
   // ⚠ **⛔ 不许在这里建 Set 快照**（2026-10-14 第 144 轮修的点）：
   //   旧版写 `const allow = new Set(MODEL_TOOL_ALLOWLIST)` —— 那是**装配期快照**，
   //   用户改完档位后**已开的会话仍按旧档**走到重挂载为止。
-  //   档位是 volatile 值型配置（宿主原地更新、不重挂载）⇒ **必须每次装配现读**。
-  const allowFor = (): Set<string> => {
-    const level = levelOf()
+  //   ⚠ 2026-10-22 起档位**按会话**（`REQ-04`）⇒ 快照的危害升级成"跨会话串线"，更要现读。
+  const allowFor = (subject: any): Set<string> => {
+    const level = levelOf(subject)
     const names = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
-    return new Set<string>(names)
+    /**
+     * ⚠⚠ **2026-10-24：必须过 `visibleNamesFor`**（否则 `modules.tools` 关掉时
+     *   模型面白名单里仍有那 6 个**没注册**的名字 ⇒ 看得见、点一下 `unknown tool`）。
+     *   ⚠ 语义仍由 `modules/tools.ts` 的 `visibleToolsFor` 定义：
+     *     门禁在 ⇒ **原样返回**（本行对正常路径零影响）；门禁不在 ⇒ 只减门禁拥有的 6 个。
+     */
+    return new Set<string>(visibleNamesFor(names))
   }
 
   // ⚠ 走**反应式** `ctx.inject`（不是本模块的静态 `inject`）：
@@ -1010,14 +1351,22 @@ function filterModelToolList(ctx: any, levelOf: () => string, log: (m: string) =
   //   ⇒ **在选择器里被静默过滤掉**（同本文件头部 E-21 的教训）。
   //   反应式注入在依赖缺席时只是**不跑回调** ⇒ 预设照常可用、宿主零告警。
   ctx.inject(['systemPrompt'], (spCtx: any) => {
-    const handler = async (assembly: any, _context: any, next: any): Promise<any> => {
+    /**
+     * ⚠⚠ **2026-10-22 · `REQ-04`：第二个形参从 `_context` 改名为 `context` 并真正使用。**
+     *   宿主每步调 `assembleContextFor(agent, signal)` = `{ agent, scope: agent, signal }`
+     *   （`dsh-agent/lib/index.js:291-297`）⇒ **身份就在这个形参里**，改前一直没接。
+     *   ⚠ 拿不到 `context`（例如老宿主不传 / 别处直接调 `assemble()`）
+     *     ⇒ 传 `undefined` ⇒ `levelOf(undefined)` ⇒ **最低档**（fail-closed，⛔ 不看全局值）。
+     */
+    const handler = async (assembly: any, context: any, next: any): Promise<any> => {
       // ⚠ 必须**先 `await next()`** 再过滤：后面的监听器可能还会往清单里加东西。
       const assembled = await next()
       const all: any[] = Array.isArray(assembled?.tools) ? assembled.tools : []
       // ⚠ 现读档位发生在**这一步**（每次装配）—— 这是"改档位不必重启"的落点。
-      const allow = allowFor()
+      const subject = context?.agent ?? context?.scope
+      const allow = allowFor(subject)
       const kept = all.filter((t) => allow.has(t?.name) || t?.name === RESERVED_TRANSPORT_TOOL)
-      if (kept.length !== all.length) log(`装配期白名单（档=${levelOf()}）：模型面工具 ${all.length} ⇒ ${kept.length}`)
+      if (kept.length !== all.length) log(`装配期白名单（档=${levelOf(subject)}）：模型面工具 ${all.length} ⇒ ${kept.length}`)
       return { ...assembled, tools: kept }
     }
     // ⚠ 监听器必须挂在 **ctx** 上，不能挂在服务实例上：`SystemPrompt` 是 cordis `Service`
@@ -1063,13 +1412,28 @@ function filterModelToolList(ctx: any, levelOf: () => string, log: (m: string) =
  *   「F1 修正的行为倒挂」一节：关掉门禁时本拦截器**照常执行**（这正是那处修正的目的）。
  * @param log - 诊断输出（走 {@link makeDiag}：默认关、有磁盘上限，不新开日志）。
  */
-function enforceToolAllowlist(ctx: any, levelOf: () => string, log: (m: string) => void): void {
+function enforceToolAllowlist(
+  ctx: any,
+  levelOf: (sessionOrAgent?: any) => string,
+  log: (m: string) => void,
+  /** ⚠ 2026-10-24：同 `filterModelToolList` 的 `visibleNamesFor`（唯一收口点）。 */
+  visibleNamesFor: (names: readonly string[]) => readonly string[] = (n) => n,
+): void {
   // ⚠ 同上：**⛔ 不许快照**。执行期也要按**当次**档位判 ——
   //   否则"档2 会话调用档3 才有的名字"会被旧快照放行（或反向误拒）。
-  const allowFor = (): Set<string> => {
-    const level = levelOf()
+  //   ⚠ 2026-10-22 起档位**按会话**（`REQ-04`）：主体 = `exec.agent`。
+  const allowFor = (subject: any): Set<string> => {
+    const level = levelOf(subject)
     const names = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
-    return new Set<string>(names)
+    /**
+     * ⚠⚠ **2026-10-24：执行前拦截也过同一层。**
+     *   理由不是"让调用失败得更早"，而是**两个口径必须一致**：
+     *   模型面已经看不见门禁拥有的那批名字了，若这里仍按全量白名单放行，
+     *   一旦有人在别处（subagent / 直调）拿到那些名字，本层就会**放行一个门禁不在时的
+     *   `unknown tool`** —— 那不是安全边界，是**不一致**。
+     *   ⚠ 门禁在的正常路径：`visibleToolsFor` 原样返回 ⇒ 本层行为**一个字节都没变**。
+     */
+    return new Set<string>(visibleNamesFor(names))
   }
 
   ctx.effect(() => ctx.on('tools/pre-execute', async (exec: any, next: any) => {
@@ -1079,7 +1443,10 @@ function enforceToolAllowlist(ctx: any, levelOf: () => string, log: (m: string) 
       const name = exec?.name
       // ① 认识的、且在**当前档位**的名单里 ⇒ 放行（门槛 4：不阻断白名单内的名字）。
       if (typeof name !== 'string') return await next()
-      if (allowFor().has(name)) return await next()
+      // ⚠ 2026-10-22：判定主体 = `exec.agent`（宿主每条工具调用都带，见
+      //   `dsh-agent-loop/lib/index.js:509-518`）。⚠ **没有 agent ⇒ 最低档**（fail-closed）。
+      const subject = exec?.agent
+      if (allowFor(subject).has(name)) return await next()
       // ② 保留传输名（ptc 的 `run_code`）⇒ 放行：滤掉它会让助手彻底失去能力。
       if (name === RESERVED_TRANSPORT_TOOL) return await next()
       // ③ 嵌套子派发（`exec.parent` 存在）⇒ 放行：那是 `run_code` 内部调用，
@@ -1160,7 +1527,13 @@ function readPathArg(exec: any): string | undefined {
   }
 }
 
-function installPermissionGuard(ctx: any, levelOf: () => string, log: (m: string) => void): void {
+function installPermissionGuard(
+  ctx: any,
+  levelOf: (sessionOrAgent?: any) => string,
+  log: (m: string) => void,
+  /** ⚠ 2026-10-24：同 `filterModelToolList` 的 `visibleNamesFor`（唯一收口点）。 */
+  visibleNamesFor: (names: readonly string[]) => readonly string[] = (n) => n,
+): void {
   const guarded = new Set<string>(GUARDED_TOOLS)
   const forbidden = new Set<string>(SHARED_FORBIDDEN_TOOLS)
 
@@ -1185,8 +1558,21 @@ function installPermissionGuard(ctx: any, levelOf: () => string, log: (m: string
       //   本哨兵在这里**只确认"这个档位看得见它"** —— 因为 guard 是按**调用名**
       //   生效的，而档位可能在会话中途**变窄**（workspace ⇒ ledger）：
       //   变窄后**已发出的调用**不该还能落地。
-      const level = levelOf()
-      const names = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
+      //
+      // ⚠⚠ **2026-10-22 · `REQ-04`：主体改为 `exec.agent`（按会话判）。**
+      //   ⚠ 没有 agent ⇒ `levelOf(undefined)` ⇒ **最低档**（fail-closed）。
+      //   ⚠ 但**这一层不是唯一防线**：宿主在 `exec.agent === undefined` 时**根本不遍历
+      //     scope 链**（`dsh-tools/lib/index.js:3024-3032`，`:3027` 是那句提前返回）
+      //     ⇒ 那种调用路径下本哨兵**压根不会被调**。⇒ 四个读工具的 `execute`
+      //     自己必须再核一次档位（见 `src/modules/tools.ts`；这是本轮 G-5 的落点）。
+      const level = levelOf(exec?.agent)
+      const tier = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
+      /**
+       * ⚠⚠ **2026-10-24：哨兵也过 `visibleNamesFor`**（三处口径必须同一份）。
+       *   ⚠ 门禁在 ⇒ 原样返回 ⇒ 哨兵行为零变化；门禁不在 ⇒ 门禁拥有的那批名字由门禁负责的
+       *     注册面本来就不存在，哨兵不该把它们算作"这一档可读"。
+       */
+      const names = visibleNamesFor(tier)
       if (!names.includes(name)) {
         return `"${name}" is not available at the current readable-permission level (${level}).`
       }
@@ -1221,8 +1607,16 @@ function installPermissionGuard(ctx: any, levelOf: () => string, log: (m: string
 }
 
 /** 注册两个工具（工具**定义**来自 `modules/tools.ts`，此处不重写实现）。 */
-function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m: string) => void,
-  orchServiceName: string, createTools: (...a: any[]) => any): void {
+function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any) => string,
+  proceedGateFor: (sessionOrAgent?: any) => string | undefined, log: (m: string) => void,
+  orchServiceName: string, createTools: (...a: any[]) => any,
+  /**
+   * ⚠ 2026-10-24：名字集收口点（`apply` 的 `visibleNamesFor`）。
+   *   `tierNamesOf` 要用它 —— 否则 `write_hob` 的 tier 名核对会把门禁不在时
+   *   **没注册**的那批名字报成"这一档可读"（名数以 `GATE_OWNED_TOOL_NAMES` 为准）。
+   *   缺省 = 原样返回（兼容直接调用）。
+   */
+  visibleNamesFor: (names: readonly string[]) => readonly string[] = (n) => n): void {
   // ── 改 2 · 写入即投递（2026-10-10 第 44 轮 · 结构改造②）────────────────
   //   ⚠ 把**编排服务**注入工具定义，让 `write_hob(dispatchTo=…)` 能走
   //     `hob_dispatch` 的同一条路径（登记回传 + 清"待投递"）。
@@ -1239,16 +1633,76 @@ function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m:
     orchOf: () => {
       try { return ctx.get?.(orchServiceName) as HobOrchestrator | undefined } catch { return undefined }
     },
-    // ⚠ **现读档位**（不是快照）：档位是 volatile 值型配置，宿主原地更新、不重挂载
-    //   ⇒ 在 `createHobTools` 时读一次会让"改档位即生效"失效。
-    levelOf: () => levelOf(),
-    // ⚠ **现读开关**（⛔ 不是快照）：`skeleton.enabled` 是 volatile（ref 对象）
-    //   ⇒ 在 `createHobTools` 时读一次会让"改开关即生效"失效（与上面档位同一条教训）。
-    // ⚠ 收口点 = `config.ts` 的 `skeletonEnabled()`（本作用域⛔ 不直接读 `config.skeleton.enabled`）。
-    // ⚠ **命名空间取用**（`TASK-D2`）：这个具名导出同样可能在旧缓存里缺席 ⇒ 用可选 call，
-    //   缺席时退回 schema 的缺省值（`true`，与 `skeletonEnabled()` 自己的兜底**同值**），
-    //   并且**说一句**（⛔ 不许静默少一块 —— 见 §三-②）。
+    // ⚠ **现读档位**（不是快照）：⛔ 在 `createHobTools` 时读一次会让"改档位即生效"失效。
+    //   ⚠⚠ **2026-10-22 · `REQ-04`：入参换成 `exec`** —— 档位现在**按会话**解析，
+    //     而会话身份只存在于 `exec.agent` 里。`levelOf(exec?.agent)` 走**同一个**
+    //     解析源（⛔ 不在这里另写一份判定）。拿不到 `exec` / `agent` ⇒ 最低档。
+    levelOf: (exec?: any) => levelOf(exec?.agent ?? exec),
+    /**
+     * ⚠⚠ **执行层"能不能推进"闸门**（2026-10-22 第 5 轮 · 任务书第 12 条）。
+     *   判据来自同一个 `policyOf`（唯一权威），⛔ 不另判一份：
+     *   · 非 Hob ⇒ 放行（本机制不管别人）；
+     *   · `mayProceed === true` ⇒ 放行；
+     *   · 其余（false / 读数缺席 / 服务异常） ⇒ **拒绝并给可读理由**。
+     *   ⚠ 这条**不依赖提示词**：模型强行点名 `write_hob` / `hob_spawn` / `hob_send`
+     *     一样会被挡在这里（`execute` 内，晚于一切参数校验）。
+     */
+    proceedGateOf: (exec?: any) => proceedGateFor(exec?.agent ?? exec),
+    // ⚠⚠ **该档的名字集**（2026-10-22 · `REQ-04`）：四个读工具的 `execute` 要用它做
+    //   **本层读档门**（G-5）。⚠ 传**查表函数**而不是数组快照 —— 名字集是编译期常量、
+    //   但传函数能保证"来源只有一处"（`PERMISSION_TIERS`，⛔ 不在模块层再抄一份）。
+    //   ⚠ 非法档 / 查不到 ⇒ 空数组 ⇒ 什么都读不到（fail-closed）。
+    tierNamesOf: (level: string) => {
+      const t = (PERMISSION_TIERS as Record<string, readonly string[] | undefined>)[level]
+      /**
+       * ⚠⚠ **2026-10-24：也过 `visibleNamesFor`**（否则 `write_hob` 的 tier 名核对会把
+       *   "门禁不在时根本没注册的那批名字"报成"这一档可读"⇒ 与模型面/拦截面不一致）。
+       *   ⚠ 本函数由 `apply` 传入（`registerTools` 的 `deps`），见下面调用点的注释。
+       */
+      return Array.isArray(t) ? visibleNamesFor(t) : []
+    },
+    // ⚠⚠ **「首次铺骨架」开关：这里**只作纯兜底**（2026-10-24 订正）**。
+    //
+    // ── 为什么降级（改前的病灶）──────────────────────────────────────────
+    //   改前它读的是**预设行的 `config`**（`HobToolsConfig`：workspaceRoot / ledgerHome / …），
+    //   那份配置里**根本没有 `skeleton` 段** ⇒ `skeletonEnabled()` 走自己的兜底 ⇒
+    //   **恒 `true`** ⇒ ⚠ 用户关掉「首次铺骨架」**不生效**，而代码看起来"读了开关"。
+    //   行为上无害（每轮都会铺一次，但 `skeleton.ts` 只补缺、⛔ 永不覆盖），
+    //   但**它是空旋钮**：读的位置不对，值永远等于缺省。
+    //
+    // ── 权威在哪（⛔ 别在这里再实现一遍）────────────────────────────────
+    //   `src/modules/tools.ts` 的 `apply` 用 `pluginEntryConfigOf(ctx)` 取**插件入口配置**
+    //   （那才是带 `skeleton.enabled` 的那份），装成 `setEntrySkeletonSwitch(...)`，
+    //   由 `currentEntrySkeletonSwitch()` / 门禁的 `skeletonEnabledOf` 现读提供。
+    //   ⇒ 本回调**只在该权威不可用时兜底**（`createHobTools` 直接调用、未跑 `apply` 的测试路径）。
+    //
+    // ⚠ 顺序：① 门禁的权威读法（`ctx.get(GATE_SERVICE)?.skeletonEnabledOf`，现读）
+    //        ② 模块级权威槽 `currentEntrySkeletonSwitch()`（命名空间取用 + 运行时取值）
+    //        ③ 都取不到 ⇒ `config.ts` 的 `skeletonEnabled()`（按旧行为，但**它读的是预设行配置**）
+    //        ④ 连导出都没有 ⇒ `true`（schema 缺省，后果最轻）并**说一句**（⛔ 不静默）。
     skeletonEnabledOf: () => {
+      /**
+       * ⚠ 本函数在 `registerTools`（模块作用域）里 —— **拿不到 `apply` 里的 `GATE_SERVICE` 局部量**
+       *   ⇒ 从命名空间现取同名导出（`G-11` 允许的取法，⛔ 不是新抄一个字面值）。
+       */
+      const gateServiceName = (() => {
+        const v = (toolsFace as unknown as Record<string, unknown>).GATE_SERVICE
+        return typeof v === 'string' && v !== '' ? v : undefined
+      })()
+      const gate = (() => {
+        if (gateServiceName === undefined) return undefined
+        try { return ctx.get?.(gateServiceName) as { skeletonEnabledOf?: () => boolean } | undefined } catch { return undefined }
+      })()
+      if (typeof gate?.skeletonEnabledOf === 'function') {
+        try { const v = gate.skeletonEnabledOf(); if (typeof v === 'boolean') return v } catch { /* 落到下一层 */ }
+      }
+      const readEntry = (toolsFace as unknown as Record<string, unknown>).currentEntrySkeletonSwitch
+      if (typeof readEntry === 'function') {
+        try {
+          const v = (readEntry as () => boolean | undefined)()
+          if (typeof v === 'boolean') return v
+        } catch { /* 落到下一层 */ }
+      }
       const fn = (configFace as unknown as Record<string, unknown>).skeletonEnabled
       if (typeof fn === 'function') return Boolean((fn as (c: unknown) => unknown)(config))
       // ⚠ 本函数作用域只有 `log`（没有 `diag`）；用 `log` 说这一句 —— 可读优先于通道区别。
@@ -1304,6 +1758,8 @@ function registerTools(ctx: any, config: Config, levelOf: () => string, log: (m:
  */
 function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, config: Config,
   createBusTools: (...a: any[]) => any, rootOf: (...a: any[]) => any,
+  /** ⚠ 2026-10-22 第 5 轮：`hob_spawn` / `hob_send` 的执行层闸门（§任务书第 12 条）。 */
+  proceedGateFor: (sessionOrAgent?: any) => string | undefined,
   /**
    * **T2 的挂点**（2026-10-20 · B5）：每次 `hob_*` 读写路径顺手对账一次。
    * ⚠ 缺省不传 ⇒ 不对账（旧调用形状**照旧可用**，向后兼容）。
@@ -1321,7 +1777,26 @@ function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, confi
     } catch {
       return undefined
     }
-  }, onRead)
+  }, onRead, (exec: any) => proceedGateFor(exec?.agent ?? exec),
+  /**
+   * ⚠ 2026-10-22 第 5 轮：`hob_spawn` 显式给了两值 ⇒ **必须真写进去**。
+   *   这里把策略服务的 `set` 透下去（⛔ 不让 bus 层自己去摸服务 —— 它拿不到同一份权威）。
+   */
+  (sessionId: string, level: string, workMode: string) => {
+    try {
+      // ⚠ 本函数在模块级（拿不到 `apply` 里的闭包）⇒ 按同文件既有纪律**每次现读**服务
+      //   （⛔ 不缓存实例：服务可能随重挂载换掉）。
+      //   ⚠ 服务名从 `config.ts` 的具名导出取（⛔ 不在这里写死字符串）。
+      const name = (configFace as unknown as Record<string, unknown>).SESSION_POLICY_SERVICE
+      const svc = typeof name === 'string' && name !== ''
+        ? (ctx.get?.(name) ?? (ctx as any)[name])
+        : undefined
+      if (typeof svc?.set !== 'function') return { ok: false, reason: '逐会话策略服务缺席 ⇒ 两轴未落地' }
+      return svc.set(sessionId, level, workMode)
+    } catch (e) {
+      return { ok: false, reason: `策略写入抛错：${String((e as Error)?.message ?? e)}` }
+    }
+  })
   ctx.effect(() => ctx.tools.register(sessions), 'dsh-hob preset: hob_sessions tool')
   ctx.effect(() => ctx.tools.register(send), 'dsh-hob preset: hob_send tool')
   ctx.effect(() => ctx.tools.register(workspaces), 'dsh-hob preset: hob_workspaces tool')
@@ -1337,8 +1812,10 @@ function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, confi
  *   两个反义动作不值得占两个名字。
  */
 function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => void,
-  createOrchTools: (...a: any[]) => any): void {
-  const { dispatch, status, control } = createOrchTools(orch)
+  createOrchTools: (...a: any[]) => any,
+  /** ⚠ 2026-10-22 第 5 轮：`hob_dispatch` 的执行层闸门（§任务书第 12 条）。 */
+  proceedGateFor: (sessionOrAgent?: any) => string | undefined): void {
+  const { dispatch, status, control } = createOrchTools(orch, (exec: any) => proceedGateFor(exec?.agent ?? exec))
   ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')
   ctx.effect(() => ctx.tools.register(status), 'dsh-hob preset: hob_orch_status tool')
   ctx.effect(() => ctx.tools.register(control), 'dsh-hob preset: hob_orch_control tool')

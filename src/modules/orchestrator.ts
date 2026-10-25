@@ -51,12 +51,12 @@
  *   `sessions` / `agents` 是**必需**（写进 `inject`）；其余一律 `ctx.get` 可选读。
  *   缺席 ⇒ 相关能力**明确拒绝**，绝不静默降级成"看起来在工作"的状态。
  */
-import { existsSync, readdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, sep } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
 import type { PresetSource } from './bus.ts'
-import { resolveLedgerRoot } from '../server/doc-read.ts'
+import { resolveLedgerRoot, workspaceNameOf } from '../server/doc-read.ts'
 import { readCards, renderCardLines, type CardSnapshot, type GetTool } from '../server/board-cards.ts'
 import {
   CardWake, DispatchWake, lookupCardSession,
@@ -65,6 +65,7 @@ import {
 import {
   ORCH_STATE_FILENAME,
   ORCH_STATE_SUBDIR,
+  ORCH_STATE_VERSION,
   STUCK_AFTER_RECHECKS,
   CLEANUP_RETRY_LIMIT,
   RELAY_BUS_MISS_LIMIT,
@@ -497,6 +498,26 @@ export interface HobOrchestrator {
 
 /** 从会话里取"最后一条 assistant 的文本"（跳过 reasoning / tool 块）。 */
 function lastAssistantText(session: any): string | undefined {
+  return lastAssistantEntry(session)?.text
+}
+
+/**
+ * 从会话里取**最后一条 assistant 的文本 + 它的时刻**（`time` 可能读不到）。
+ *
+ * ⚠⚠ **为什么要额外把 `time` 带出来**（2026-10-24 · 本单 §9）：
+ *   `probeTarget` 的第 ② 条真相源（会话 log 末条 `assistant/message`）改前**只判**
+ *   「有助手产出、且目标此刻不在 `running`」—— **完全不认"这一轮"的窗口**。
+ *   ⇒ 重载之后，一条 `unresolved` 记录（`at` = 派发时刻）会被**上一轮的产出**结账：
+ *     目标早就跑完、log 末条是**派发之前**那个活儿的结果 ⇒ **把它当成这一轮的回执
+ *     回传回去**（错配 —— 比丢掉更坏，用户会把上一轮的结论当成这一轮的）。
+ *   ⇒ 与卡面分支同形：`time >= at` 才算"这一轮结束的"（见 `probeTarget` 的 ①）。
+ *
+ * ⚠ **读不到 `time` 时**（`undefined`）：真实会话日志的每条事件都带 `time`
+ *   （`dsh-session` 的 `SessionEvent.time` 是必填字段），读不到只可能是**测试替身 / 旧形状**。
+ *   这一档**不改既有结论**（仍当"次硬证据"），但把 `at` 也带出去，让调用方
+ *   **能分辨"有时刻可判窗口"与"没有时刻只能沿用旧口径"** —— ⛔ 不假装判过窗口。
+ */
+function lastAssistantEntry(session: any): { text: string; at?: number } | undefined {
   try {
     const log = session?.log
     if (!Array.isArray(log)) return undefined
@@ -510,7 +531,10 @@ function lastAssistantText(session: any): string | undefined {
         .map((c: any) => c.text)
         .join('\n')
         .trim()
-      if (text !== '') return text
+      if (text !== '') {
+        const at = typeof e?.time === 'number' && Number.isFinite(e.time) ? e.time : undefined
+        return at === undefined ? { text } : { text, at }
+      }
     }
     return undefined
   } catch {
@@ -813,13 +837,56 @@ function toPersisted(w: Watch): PersistedWatch {
 }
 
 /**
+ * 读运行态文件里**声明的版本号**（判不出 ⇒ `undefined`）。
+ *
+ * ⚠ 为什么读的是 `readOrchState().version` 而不是另写一个 JSON 解析：
+ *   那条路径是**唯一**的收窄实现（`orch-state.ts` 的 `narrowOrchState`），
+ *   它把 `version` **原样**读出来（缺字段才回落到当前版本）⇒ 高版本号在这里可见。
+ *   ⛔ 不另写第二份解析 —— 两份必然漂（`E-128`）。
+ */
+function stateFileVersionOf(file: string): number | undefined {
+  try {
+    if (!existsSync(file)) return undefined
+    const v = readOrchState(file).version
+    return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * ⚠⚠ **高版本文件不许被本代码降级重写**（2026-10-24 · 本单 §11）。
+ *
+ * ── 它治的是哪一格 ────────────────────────────────────────────────────
+ *   `writePending` **恒写** `version: ORCH_STATE_VERSION`（当前 = 1），而
+ *   `narrowOrchState` 读 `version` **只存不用**（没有比较、没有拒绝分支）。
+ *   ⇒ 一份**更新版插件**写下的运行态文件（`version > 1`、字段更多）被旧代码读到后，
+ *     任何一次 `flushWatches` / `reconcile` 落盘都会把它**降级重写**：
+ *     版本号打回 1、**新版本才有的字段全丢** —— 而且**没有任何提示**。
+ *
+ * ── 判据（⚠ 一句话）──────────────────────────────────────────────────
+ *   `version > ORCH_STATE_VERSION` ⇒ **拒绝写**（留可读 warn），
+ *   内存里的读数照旧（读侧宽容口径不变：⛔ 不改任何读函数）。
+ *
+ * ⚠ ⛔ **不在这里改 `orch-state.ts`**（那是 C 席的文件面）：本函数只是
+ *   `orchestrator.ts` 这一侧的**调用侧拦截**；写函数的签名与语义一个字未动。
+ */
+function refusesDowngrade(file: string): boolean {
+  const v = stateFileVersionOf(file)
+  return v !== undefined && v > ORCH_STATE_VERSION
+}
+
+/**
  * 落盘"这一代还活着的 watch"（保留既有 `lost`）。
  *
  * ⚠ 写失败**必须留痕**（返回 false ⇒ 调用方记 warn）——
  *   一个"记不上账"的诊断若静默，就又回到本批要修的失败模式。
+ * ⚠ **高版本文件 ⇒ 直接拒绝**（见 {@link refusesDowngrade}）：宁可这次不落盘，
+ *   ⛔ 也不把新版数据降级抹掉。
  */
 function persistWatches(file: string | undefined, pending: PersistedWatch[]): boolean {
   if (file === undefined) return false
+  if (refusesDowngrade(file)) return false
   try {
     const prev = readOrchState(file)
     return writePending(file, pending, prev.lost)
@@ -1168,6 +1235,15 @@ export function apply(ctx: any): void {
         const send = typeof bus.deliverInternal === 'function' ? bus.deliverInternal.bind(bus) : bus.deliver.bind(bus)
         return Promise.resolve(send(sessionId, text, 'followup'))
       },
+      /**
+       * ⚠⚠ **`stop` 必须覆盖到看板卡叫醒面**（2026-10-24 · 本单 §10）。
+       *   ⚠ 改前 `stoppedOwners` **全文在这条路上零引用** ⇒ 用户按了 `stop`，
+       *     卡跑完照样把他叫醒（刹车失灵）。
+       *   ⚠ 判据转交给 `isStoppedFor`（**唯一实现点**），⛔ 不在这里再写一份比较。
+       *   ⚠ 闭包引用：`isStoppedFor` 声明在下面（`const`），但**只在投递时调用**
+       *     ⇒ 构造期不触发 TDZ；且它与 `stoppedOwners` 同属本 `inject` 回调作用域。
+       */
+      stoppedOf: (owner: string, wsRoot?: string) => isStoppedFor(owner, wsRoot),
       log: (line: string) => svcCtx.logger?.info?.(`[${name}] ${line}`),
     })
 
@@ -1190,6 +1266,13 @@ export function apply(ctx: any): void {
         const send = typeof bus.deliverInternal === 'function' ? bus.deliverInternal.bind(bus) : bus.deliver.bind(bus)
         return Promise.resolve(send(sessionId, text, 'followup'))
       },
+      /**
+       * ⚠⚠ **`stop` 必须覆盖到「实施会话跑完」这条叫醒面**（2026-10-24 · 本单 §10）。
+       *   ⚠ 这条是**主信号源**（`TASK-2` 改判后），而改前它**全文不认 stop**
+       *     ⇒ 按了 `stop` 之后照样被叫醒 —— 最热的一条路上刹车失灵。
+       *   ⚠ 判据转交 `isStoppedFor`（唯一实现点）。
+       */
+      stoppedOf: (owner: string, wsRoot?: string) => isStoppedFor(owner, wsRoot),
       log: (line: string) => svcCtx.logger?.info?.(`[${name}] ${line}`),
     })
     /**
@@ -1214,23 +1297,321 @@ export function apply(ctx: any): void {
     /** 上一次见到的状态，用来识别 `running → idle` **跳变**（而不是"看到 idle"）。 */
     const lastStatus = new Map<string, string>()
     /**
-     * ⚠⚠ **`stopped` 按 owner 分开**（`I-4` 末条：`stop` / `resume` 只作用于**调用方自己**）。
+     * ⚠⚠ **`stopped` 按 `(工作区, owner)` 分开**（`I-4` 末条 + 本单 t9 的收窄）。
      *
-     * 改前它是一个**进程级布尔** ⇒ 任何一个工作区的 Hob 一句 `stop`，
-     * **所有工作区**的闭环一起停（用户明确要求"闭环隔离"）。
-     * ⚠ 键 = owner 会话 id；无 owner 的记录**不受任何人的 stop 影响**
-     *   （它本来就不属于任何闭环）—— ⚠ 也⛔ 不许因此被"顺带停掉"。
+     * ── 为什么键里必须有工作区（t9 的由头）────────────────────────────────
+     *   改前这一个集合是 `Set<owner>` —— 只按会话 id 当键。**那个键法不是本单引入的**
+     *   （`git show HEAD` 的 `isStoppedFor` 逐字相同），但本单把它从"进程内瞬时、
+     *   只影响 2 处"变成"**跨重载耐久、覆盖 4 处**"（dispatch / settle / 卡叫醒 /
+     *   实施会话叫醒）⇒ **同一个洞的后果被放大**，所以必须收窄。
+     *
+     *   ⚠ 为什么它是洞：**会话 id 在不同工作区之间可以重复**
+     *     （本文件 §丙-12 那一段的原话，`sameWs` 收窄就是为同一族理由加的），
+     *     而 `scanStateFiles()` / 本文件的读回循环**都扫整本账本区（跨工作区）**
+     *     ⇒ 一个只在 A 工作区按过 stop 的 owner，会在 B 工作区里被**误判"已停"**
+     *     ⇒ 卡叫醒/会话叫醒对他的 B 侧**静默不投**（而他从没按过 stop ——
+     *     这是最坏的一种静默）。
+     *
+     * ── 现在的键 ────────────────────────────────────────────────────────
+     *   `${workspaceNameOf(wsRoot)}\u0000${owner}`（`workspaceNameOf` 是唯一实现点，
+     *   与 `resolveLedgerRoot` **同源** —— ⛔ 不在这里另拼一份账本目录名）。
+     *   ⚠ 键里有 `\u0000`：工作区名**不可能**含 NUL（`workspaceNameOf` 还挡了 `/\\`、`.`、`..`）
+     *     ⇒ 拼接无歧义（与 `watchKey` / `flushWatches` 的分区键同一个做法）。
+     *
+     * ⚠ **回落面**：`isStoppedFor(owner)` 不传 `wsRoot`（或判不出）⇒ 按 owner-only 判，
+     *   **并留一条可读 warn**（见该函数）。⛔ 不许把"判不出"变成"拒绝/不停"：
+     *   那会让"只 stop 没派过活"的账本在重载后**复活**（等于把 t4 §10 的 P7 打回去）。
+     * ⚠ 无 owner 的记录**不受任何人的 stop 影响**（它本来就不属于任何闭环）。
      */
     const stoppedOwners = new Set<string>()
+    /** 判"这个 owner 属于哪个工作区"（= 账本目录名）；判不出 ⇒ `undefined`）。 */
+    const workspaceNameOfRoot = (wsRoot: string | undefined): string | undefined => {
+      if (typeof wsRoot !== 'string' || wsRoot === '') return undefined
+      try {
+        const name = workspaceNameOf(wsRoot)
+        return name === '' || name === sep ? undefined : name
+      } catch {
+        return undefined
+      }
+    }
+    /** 组装 `stop` 键（⚠ 唯一实现点：⛔ 任何调用点都不许自己拼）。 */
+    const stoppedKeyOf = (owner: string, wsName: string): string => `${wsName}\u0000${owner}`
     let relaysDone = 0
     let relaysBlocked = 0
     /**
      * 判断某个 owner 的闭环是否被停。
+     *
      * @param owner - 谁的闭环；`undefined` / 空 ⇒ **无归属 ⇒ 不归任何人停**（返回 false）。
+     * @param wsRoot - **这个 owner 自己的工作区根**（t9 新增，可选）。
+     *   · 给了且判得出工作区名 ⇒ 只比 `(工作区, owner)` —— **不串档**；
+     *   · 判不出（没传 / 空 / `workspaceNameOf` 判不出）⇒ **回落 owner-only + warn**。
+     *     ⚠ 回落是**兼容面**，不是"更严格"：不回落会让"只 stop、没派过活"的账本
+     *       在重载后复活（t4 §10 的 P7 会当场红）。
      */
-    const isStoppedFor = (owner: string | undefined): boolean => {
+    const isStoppedFor = (owner: string | undefined, wsRoot?: string): boolean => {
       if (owner === undefined || owner === '') return false
-      return stoppedOwners.has(owner)
+      const wsName = workspaceNameOfRoot(wsRoot)
+      if (wsName === undefined) {
+        /**
+         * ⚠⚠ **回落必须可读**（否则下次又变成"静默按宽口径判"——正是 t9 要治的形态）。
+         *   ⚠ 只在**确实存在 stop 记录**时才 warn（`stoppedAnywhere`）：
+         *     否则每次正常调用都刷一行，等于把 warn 变成噪音（假告警训练人忽略真告警）。
+         */
+        const any = [...stoppedOwners].some((k) => k === owner || k.endsWith(`\u0000${owner}`))
+        if (any) {
+          svcCtx.logger?.warn?.(
+            `[${name}] 判"${owner}"是否已停时**判不出它属于哪个工作区**（wsRoot=${String(wsRoot)}）`
+            + ' ⇒ 回落**按 owner 单键**判（⚠ 这可能把别的工作区里同名 owner 的 stop 算到它头上；'
+            + '⛔ 不拒绝、⛔ 不当作"没停"—— 那会让 stop 在重载后复活）',
+          )
+        }
+        return any
+      }
+      return stoppedOwners.has(stoppedKeyOf(owner, wsName))
+    }
+
+    /**
+     * ══════════════════════════════════════════════════════════════════════
+     * ⚠⚠ **`stop` 的覆盖范围 + 跨重载持久化**（2026-10-24 · 本单 §10）
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * ── 改前是什么（两道口子）─────────────────────────────────────────────
+     *   ① **覆盖不全**：`stoppedOwners` 只在 `dispatch`（`isStoppedFor(self)`）与
+     *      `settle`（`isStoppedFor(w.owner ?? w.watcher)`）两处生效，而
+     *      `CardWake`（看板卡 SSE 叫醒）与 `DispatchWake`（实施会话 `running→idle` 叫醒）
+     *      **全文零引用** ⇒ 用户按了 `stop` 之后，**卡跑完 / 实施会话跑完照样把他叫醒**
+     *      —— 刹车在最热的那条路上是**失灵**的。
+     *   ② **只活在内存**：重载即归零 ⇒ `stop` 之后一次插件重载就**自动复活**，
+     *      而用户以为自己已经停住了（这正是"静默失效"的形态）。
+     *
+     * ── 现在（两件都做，且互相独立）──────────────────────────────────────
+     *   · **覆盖**：把 `isStoppedFor` 作为一道闸门传给两个叫醒面（`CardWake` /
+     *     `DispatchWake`），命中 ⇒ **不投** + 各自的**独立一档**计数 + 可读话
+     *     （⛔ 不并进 `undelivered`：那是"知道给谁但没送到"，这里是"**有意不送**"）。
+     *   · **持久化**：停在 `<该账本的 runtime>/orch-stopped.json`（与 `orch-watches.json`
+     *     同目录的**旁挂**文件；⛔ 不往 `OrchStateFile` 里加字段 —— 那是 C 席的文件面，
+     *     且给运行态文件加字段会让"旧版本读到新字段"变成又一处版本面）。
+     *     `stop`/`resume` 写一次，`apply()` 接手时按 `scanStateFiles()` 逐个账本读回。
+     *   ⚠ **写入失败不掩盖 `stop` 本身**：内存里的 `stop` 立刻生效（那是主语义），
+     *     持久化失败只留一条 warn 说明"重载后会复活"（⛔ 不许静默）。
+     */
+    /** 每个账本目录旁的 `stop` 状态文件（与运行态文件**同目录**，便于随账本一起清）。 */
+    const stoppedFileOf = (stateFile: string): string => join(dirname(stateFile), 'orch-stopped.json')
+    /**
+     * 读回某一份 `stop` 状态（⚠ 宽容：读不到 / 坏了 / 形状不对 ⇒ 空集合，绝不抛）。
+     * ⚠ 形状 = `{ version: 1, owners: string[] }`；**只认字符串**（⛔ 不把别的东西当 owner）。
+     */
+    const readStoppedFile = (file: string): string[] => {
+      try {
+        if (!existsSync(file)) return []
+        const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+        if (parsed === null || typeof parsed !== 'object') return []
+        const owners = (parsed as { owners?: unknown }).owners
+        if (!Array.isArray(owners)) return []
+        return owners.filter((x): x is string => typeof x === 'string' && x !== '')
+      } catch {
+        return []
+      }
+    }
+    /**
+     * 从 `stop` 状态文件里读出**结构化条目**（⚠ 两种格式都认，见 {@link persistStoppedFor}）。
+     *
+     * · **v2**（本单 t9 起）：`{ version: 2, entries: [{ ws, owner }] }` —— 工作区**显式**写在里面；
+     * · **v1**（t4 那版）：`{ version: 1, owners: string[] }` —— 没有工作区字段
+     *   ⇒ 由调用方按**该文件自己的账本目录名**补上（那正是它当初被写进去的地方）。
+     * ⚠ 向后兼容不是可选项：v1 文件可能就在盘上（t4 跑过）⇒ 读不进来等于**stop 静默复活**。
+     */
+    const readStoppedEntries = (file: string): Array<{ ws?: string; owner: string }> => {
+      try {
+        if (!existsSync(file)) return []
+        const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+        if (parsed === null || typeof parsed !== 'object') return []
+        const o = parsed as { entries?: unknown; owners?: unknown }
+        const out: Array<{ ws?: string; owner: string }> = []
+        if (Array.isArray(o.entries)) {
+          for (const e of o.entries) {
+            if (e === null || typeof e !== 'object') continue
+            const ws = (e as { ws?: unknown }).ws
+            const owner = (e as { owner?: unknown }).owner
+            if (typeof owner !== 'string' || owner === '') continue
+            out.push(typeof ws === 'string' && ws !== '' ? { ws, owner } : { owner })
+          }
+          return out
+        }
+        if (Array.isArray(o.owners)) {
+          for (const x of o.owners) if (typeof x === 'string' && x !== '') out.push({ owner: x })
+        }
+        return out
+      } catch {
+        return []
+      }
+    }
+    /**
+     * 把"这个账本里该停的 owner"写回去（⚠ 只写该账本那一份，⛔ 不跨账本广播）。
+     *
+     * ⚠⚠ **写的是 `(ws, owner)` 对，⛔ 不是裸 owner**（t9）：
+     *   裸 owner 的语义是"**任意工作区**里这个会话都停"，而那正是本次要治的串档。
+     *   ⚠ **为什么仍保留 v1 兼容读**：见 {@link readStoppedEntries}。
+     */
+    const persistStoppedFor = (stateFile: string, wsName: string, owners: Iterable<string>): void => {
+      const file = stoppedFileOf(stateFile)
+      try {
+        mkdirSync(dirname(file), { recursive: true })
+        /**
+         * ⚠ **`runtime/.gitignore` 必须一并保证**（同 `dispatch` 那条纪律）：
+         *   ⛔ 否则"从没派过活、只按过 stop"的账本会留下一个**未被忽略**的
+         *   `orch-stopped.json`，里面是**会话 id** ⇒ 会被账本 git 收进历史。
+         *   ⚠ 失败**不升级成拒绝写**（同 `dispatch` 的口径）：只影响"会不会被 git 收进去"。
+         */
+        if (!ensureRuntimeIgnored(dirname(file))) {
+          svcCtx.logger?.warn?.(
+            `[${name}] \`${ORCH_STATE_IGNORE}\` 没写成（${dirname(file)}）⇒ `
+            + 'runtime/ 可能被账本 git 收进历史（`orch-stopped.json` 含会话 id）',
+          )
+        }
+        /**
+         * ⚠ 判"该不该留"用**复合键**（`ws\0owner`），⛔ 不按裸 owner 一刀切 ——
+         *   否则"同 id 两个工作区"里写 A 会顺手把 B 那条剔掉（又是一种串档）。
+         * ⚠ v1 条目没有 `ws` ⇒ 按**它所在文件的工作区**补（那是它当初落盘的地方）。
+         */
+        const prev = readStoppedEntries(file)
+        const merged: Array<{ ws: string; owner: string }> = []
+        const seen = new Set<string>()
+        const push = (ws: string, owner: string): void => {
+          const k = `${ws}\u0000${owner}`
+          if (seen.has(k)) return
+          seen.add(k)
+          merged.push({ ws, owner })
+        }
+        for (const e of prev) {
+          /**
+           * ⚠ **只丢"同一工作区 + 同一 owner"**（本条要重写的那些）；
+           *   别的条目**原样保留**（⛔ 不许因为一次 stop 就把别人的停状态清掉）。
+           * ⚠ v1 条目（`ws` 缺）落到**本文件自己的工作区**名下（那是它当初写进去的地方）。
+           */
+          const ws = e.ws ?? wsName
+          if (ws === wsName && [...owners].includes(e.owner)) continue
+          push(ws, e.owner)
+        }
+        for (const owner of owners) push(wsName, owner)
+        merged.sort((a, b) => (a.ws === b.ws ? a.owner.localeCompare(b.owner) : a.ws.localeCompare(b.ws)))
+        writeFileSync(file, JSON.stringify({ version: 2, entries: merged }, null, 2), 'utf8')
+      } catch (e) {
+        svcCtx.logger?.warn?.(
+          `[${name}] \`stop\` 状态**没写成**（${file}）：${String((e as Error)?.message ?? e)}`
+          + ' ⇒ ⚠ 这一停只在本代内存里有效，**插件重载后会复活**（请重载后再按一次 stop）。',
+        )
+      }
+    }
+    /**
+     * 从某一份 `stop` 状态文件里**移除**某个 owner（`resume`）。
+     *
+     * ⚠ **只移除 `(本文件的工作区, owner)` 那一条**（t9）：同 id 在**别的工作区**的
+     *   stop 条目**不许**被这次 resume 顺手清掉（那也是一种串档，只是方向相反）。
+     * ⚠ v1 条目（无 `ws`）按本文件的工作区认（同 {@link persistStoppedFor}）。
+     */
+    const clearStoppedFor = (stateFile: string, wsName: string, owner: string): void => {
+      const file = stoppedFileOf(stateFile)
+      try {
+        if (!existsSync(file)) return
+        /**
+         * ⚠⚠ **`resume` 也要保证 `runtime/.gitignore`**（t9 收口项）。
+         *   ⚠ 理由：`stop` 时写过，但**用户可能手工删过** `.gitignore`；而 resume 会
+         *     重写这个文件 —— 此时若不补，`orch-stopped.json`（**含会话 id**）就会
+         *     暴露给账本 git ⇒ **不可逆的隐私面后果**（进了历史就删不掉）。
+         *   ⚠ 一行成本的既有函数（{@link ensureRuntimeIgnored}），⛔ 不值得赌概率。
+         *   ⚠ 失败**不升级成拒绝写**（同 dispatch / stop 的口径）：只影响"会不会被 git 收进去"。
+         */
+        if (!ensureRuntimeIgnored(dirname(file))) {
+          svcCtx.logger?.warn?.(
+            `[${name}] \`${ORCH_STATE_IGNORE}\` 没写成（${dirname(file)}）⇒ `
+            + 'runtime/ 可能被账本 git 收进历史（`orch-stopped.json` 含会话 id）',
+          )
+        }
+        const prev = readStoppedEntries(file)
+        const entries = prev
+          .filter((e) => !((e.ws ?? wsName) === wsName && e.owner === owner))
+          .map((e) => ({ ws: e.ws ?? wsName, owner: e.owner }))
+        writeFileSync(file, JSON.stringify({ version: 2, entries }, null, 2), 'utf8')
+      } catch (e) {
+        svcCtx.logger?.warn?.(
+          `[${name}] \`resume\` 状态**没写成**（${file}）：${String((e as Error)?.message ?? e)}`
+          + ' ⇒ ⚠ 重载后这一侧可能仍被算作已停。',
+        )
+      }
+    }
+    /**
+     * ⚠ 接手时**读回所有账本的 stop 状态**（这就是"跨重载持久化"的落点）。
+     * ⚠ 只在本次 `apply()` 里跑一次（⛔ 不引入定时器、⛔ 不每轮扫）。
+     */
+    try {
+      /**
+       * ⚠ **不能只顺着 `scanStateFiles()` 找**：那个函数只返回**已存在的
+       *   `orch-watches.json`** ⇒ 一个"从没派过活、但按过 stop"的账本会被漏掉
+       *   （那种账本里恰恰只有 `orch-stopped.json`）⇒ 重载后 stop **照样复活**。
+       *   ⇒ 同一层目录扫描，但按**停止文件名**找（与 `scanStateFiles` 同款纪律：
+       *     一层、确定、只在 `apply()` 跑一次，⛔ 不是全盘搜索）。
+       */
+      const stoppedFiles = new Set<string>()
+      for (const file of scanStateFiles(svcCtx)) stoppedFiles.add(stoppedFileOf(file))
+      try {
+        const home = declaredLedgerHome(svcCtx)
+        if (home !== '') {
+          for (const name of readdirSync(home)) {
+            const f = join(home, name, ORCH_STATE_SUBDIR, 'orch-stopped.json')
+            if (existsSync(f)) stoppedFiles.add(f)
+          }
+        }
+      } catch { /* 父目录不在 / 不可读 ⇒ 没有可扫的（不是错误） */ }
+      for (const f of stoppedFiles) {
+        /**
+         * ⚠⚠ **每条都要带工作区**（t9）：v2 直接用条目里的 `ws`；
+         *   v1（t4 写的旧文件）没有 `ws` ⇒ 取**该文件自己的账本目录名**
+         *   （`<ledgerHome>/<工作区名>/runtime/orch-stopped.json` 的倒数第二级）——
+         *   那正是它当初被写进去的地方，⛔ 不是猜。
+         */
+        const wsFromPath = basename(dirname(dirname(f)))
+        for (const e of readStoppedEntries(f)) {
+          const ws = e.ws ?? wsFromPath
+          if (ws === '' || ws === '.') continue
+          stoppedOwners.add(stoppedKeyOf(e.owner, ws))
+        }
+      }
+    } catch { /* 读不到 ⇒ 当作没停（fail-closed 的方向在这里是"不误停"），下一次 stop 会重写 */ }
+    /** 某个 owner 用哪一份运行态文件（`stop`/`resume` 落盘时用；判不出 ⇒ 不落盘）。 */
+    const stateFileForOwner = (owner: string): string | undefined => {
+      try {
+        return runtimeFileOf(svcCtx, wsRootOfSession(owner))
+      } catch {
+        return undefined
+      }
+    }
+
+    /**
+     * ⚠⚠ **本代登记过的 `(账本文件, owner)` 组合**（2026-10-24 · 本单 §1 的必需件）。
+     *
+     * ── 为什么必须单独记一份（而不是每次现从 `watches` 推）──────────────
+     *   `flushWatches` 的"零组"分支（= 本代一条活着的记录都没有了）原先**没有任何
+     *   owner 可推**：它退化成 `persistWatches(file, [])` —— **整文件覆盖成空**。
+     *   ⇒ 同一个文件里**别的 owner** 的 pending、以及**只活在盘上的** `unresolved` /
+     *     `stuck`（内存里没有对应 watch）会被**一起抹掉**，而且**不进 `lost`**
+     *     （= 静默消失，本项目最忌的形态）。更荒谬的是，这与同函数下面
+     *     `.persistOwnerPartition` 那条分支的注释「⛔ 不许把他们的记录写没了」**自相矛盾**。
+     *   ⇒ 记下"本代曾经用过哪些 `(文件, owner)`"，零组时仍**逐个 owner 分区合并**
+     *     （`mine = []`），语义与另一条分支**完全同构**：只清"我这一片"。
+     * ⚠ 只在内存（进程内）：重载后那本账由接手块重新登记（重挂/派发都会记）。
+     */
+    const fileOwnersSeen = new Map<string, Set<string>>()
+    /**
+     * 记一次"这个 owner 的落点是这个文件"（⚠ 逐条来自记录自己的 `stateFileFor`）。
+     * ⚠ **`owner === undefined` 也记**（键记成 `''`，与 `flushWatches` 的分区键同款）：
+     *   无归属的记录同样"只该清自己那一片"，⛔ 不该靠"整文件清空"来处理。
+     */
+    const noteLanding = (file: string | undefined, owner: string | undefined): void => {
+      if (file === undefined || file === '') return
+      const set = fileOwnersSeen.get(file) ?? new Set<string>()
+      set.add(owner ?? '')
+      fileOwnersSeen.set(file, set)
     }
 
     /**
@@ -1504,6 +1885,12 @@ export function apply(ctx: any): void {
            */
           stateFileFor.set(w.target, file)
           /**
+           * ⚠⚠ **同时登记"这个 owner 用过这个落点"**（2026-10-24 · 本单 §1）——
+           *   否则等到本代一条活着的记录都没有时（零组分支），`flushWatches` 就**推不出**
+           *   该对哪些 `(文件, owner)` 做分区合并 ⇒ 又会退回"整文件覆盖"。
+           */
+          noteLanding(file, w.owner)
+          /**
            * ⚠ 重挂的那条**同时要留在内存的 lastStatus 里**（跨的是"这一代的事件"，
            *   而 `lastStatus` 是内存 Map）—— 上面写进 `Watch` 的是**落盘**那一份，
            *   两者必须一致，否则重挂之后第一跳 `idle` 仍然会被丢掉。
@@ -1775,10 +2162,60 @@ export function apply(ctx: any): void {
         }
       }
       if (groups.size === 0) {
-        // 一条带落点的记录都没有 ⇒ 仍要走一遍"清空自己名下"的老路径（保持既有行为）
-        const files = new Set<string>()
-        for (const v of stateFileFor.values()) if (v !== '') files.add(v)
-        for (const file of files) {
+        /**
+         * ══════════════════════════════════════════════════════════════════════
+         * ⚠⚠ **零组分支：按 owner 分区合并，⛔ 不再整文件覆盖**（2026-10-24 · 本单 §1）
+         * ══════════════════════════════════════════════════════════════════════
+         *
+         * ── 改前是什么（本缺陷的现场）────────────────────────────────────────
+         *   `persistWatches(file, [])` —— **整个文件**被覆盖成空。
+         *   ⚠ 而一个文件里可能同时有：
+         *     · **别的 owner** 的 pending（同一工作区两个 Hob，`I-5` 明写"共享同一个账本文件"）；
+         *     · **只活在盘上的** `unresolved` / `stuck`（B3 的可重入态，内存里没有对应 watch）。
+         *   ⇒ 两者都会被**一起抹掉**，且**不进 `lost`** ⇒ **静默消失**。
+         *   ⚠ 这还与同函数下面那条分支的注释**自相矛盾**（「⛔ 不许把他们的记录写没了」）——
+         *     两条分支本该同构，改前它们不同构。
+         *
+         * ── 现在 ───────────────────────────────────────────────────────────
+         *   **逐个 `(文件, owner)` 走 `persistOwnerPartition(file, owner, [])`** ——
+         *   与另一条分支**同一个函数、同一套合并判据**：
+         *   `mine = []` ⇒ 盘上"我这一片"该被清（`keepPrev` 会把属于我的 `waiting` 丢掉），
+         *   而**别人的** / **我名下仍是 `unresolved`·`stuck`** 的照旧保留。
+         *   ⚠ 判定"哪些 owner 曾经用过这个文件"= `fileOwnersSeen`（本代登记过的组合）
+         *     **并上** `stateFileFor` 的现值（双保险：任何一处登记过都不会漏）。
+         */
+        const ownersByLanding = new Map<string, Set<string>>()
+        for (const [file, owners] of fileOwnersSeen) {
+          const set = ownersByLanding.get(file) ?? new Set<string>()
+          for (const o of owners) set.add(o)
+          ownersByLanding.set(file, set)
+        }
+        for (const w of watches.values()) {
+          const file = stateFileFor.get(w.target)
+          if (file === undefined || file === '') continue
+          const set = ownersByLanding.get(file) ?? new Set<string>()
+          set.add(w.owner ?? '')
+          ownersByLanding.set(file, set)
+        }
+        /**
+         * ⚠ **只有"连一个 owner 都判不出"的文件**才走老的 `persistWatches(file, [])`：
+         *   那种文件里本代**没有任何归属依据**，此时"清空"是唯一诚实的动作
+         *   （⚠ 且它只在升级后第一代、`fileOwnersSeen` 还空着时才可能发生）。
+         */
+        const unknownLanding = new Set<string>()
+        for (const v of stateFileFor.values()) {
+          if (v !== '' && !ownersByLanding.has(v)) unknownLanding.add(v)
+        }
+        for (const [file, owners] of ownersByLanding) {
+          for (const owner of owners) {
+            if (!persistOwnerPartition(file, owner, [])) {
+              svcCtx.logger?.warn?.(
+                `[${name}] 运行态落盘失败（${file} · owner=${owner || '(无)'}）。`,
+              )
+            }
+          }
+        }
+        for (const file of unknownLanding) {
           if (!persistWatches(file, [])) {
             svcCtx.logger?.warn?.(`[${name}] 运行态落盘失败（${file}）。`)
           }
@@ -1814,6 +2251,20 @@ export function apply(ctx: any): void {
       owner: string,
       mine: PersistedWatch[],
     ): boolean => {
+      /**
+       * ⚠⚠ **高版本文件 ⇒ 拒绝写**（2026-10-24 · 本单 §11，判据见 {@link refusesDowngrade}）。
+       *   ⚠ 放在 `try` **之前**：这不是"写失败"，而是"**不该写**"—— 调用方拿到 `false`
+       *     只会记一条 warn，而本函数自己再说明一句（⛔ 不许静默）。
+       *   ⛔ 不动 `writePending` / `writeOrchState`（那是 `orch-state.ts` 的面）。
+       */
+      if (refusesDowngrade(file)) {
+        svcCtx.logger?.warn?.(
+          `[${name}] 拒绝写运行态（${file} · owner=${owner || '(无)'}）：`
+          + `该文件版本 **高于** 本代码的 ${ORCH_STATE_VERSION} ⇒ 写下去会把它降级并丢掉新字段`
+          + '（⛔ 不覆盖、⛔ 不猜；请用匹配版本的插件读它）',
+        )
+        return false
+      }
       try {
         const prev = readOrchState(file)
         /**
@@ -2101,11 +2552,19 @@ export function apply(ctx: any): void {
          * ⚠ **闸门按调用方自己的 owner 判**（`I-4`）：
          *   改前是进程级 `stopped` ⇒ 别人一停我也停（跨工作区互相影响）。
          */
-        if (isStoppedFor(typeof self === 'string' ? self : undefined)) {
+        /**
+         * ⚠⚠ **闸门带工作区**（t9）：`(工作区, owner)` ⇒ 同 id 在别的工作区**不受影响**。
+         *   ⚠ `wsRoot` 取**调用方自己的**（`wsRootOfSession(self)`，与落盘分区同一个来源）；
+         *     判不出 ⇒ `isStoppedFor` 内部回落 owner-only **并 warn**（不静默按宽口径判）。
+         */
+        if (isStoppedFor(
+          typeof self === 'string' ? self : undefined,
+          typeof self === 'string' && self !== '' ? wsRootOfSession(self) : undefined,
+        )) {
           return {
             ok: false,
             reason: 'orchestration is stopped for this session; resume it first (hob_orch_control resume).'
-              + ' ⚠ 只有**你自己**这一侧的闭环被停（别人的不受影响）。',
+              + ' ⚠ 只有**你自己**这一侧、这一本账的闭环被停（别人的不受影响）。',
           }
         }
         if (typeof target !== 'string' || target === '') return { ok: false, reason: 'no-session-id' }
@@ -2334,6 +2793,12 @@ export function apply(ctx: any): void {
           const file = runtimeFileOf(svcCtx, ws)
           stateFileFor.set(target, file ?? '')
           /**
+           * ⚠⚠ **登记"这个 owner 用过这个落点"**（2026-10-24 · 本单 §1）——
+           *   零组分支（本代已无活着的记录）靠它决定该对哪些 `(文件, owner)` 做分区合并，
+           *   ⛔ 不再靠"把整个文件覆盖成空"。
+           */
+          noteLanding(file, owner)
+          /**
            * ── ⚠⚠ **落点登记缺失 ⇒ 可读失败，⛔ 不许猜一个文件**（2026-10-20 第 2 单 · 收口①）──
            *
            * ⚠ 这是 `R1` §五-2 那条"`stateFile` 不落盘"的**行为面收口**：
@@ -2365,6 +2830,24 @@ export function apply(ctx: any): void {
               runtimeIgnoreNote = `\`${ORCH_STATE_IGNORE}\` 没写成（${dirname(file)}）`
                 + ' ⇒ runtime/ 可能被账本 git 收进历史（该文件含会话 id）'
               svcCtx.logger?.warn?.(`[${name}] ${runtimeIgnoreNote}`)
+            } else if (runtimeIgnoreNote !== undefined) {
+              /**
+               * ⚠⚠ **这一次写成了 ⇒ 必须把旧告警复位**（2026-10-24 · 本单 §8）。
+               *
+               * ── 改前是什么（一次失败、永远背告警）────────────────────────────
+               *   `runtimeIgnoreNote` **只在失败时赋值、永不清空**（`bus.ts` 的
+               *   `handoffWriteNote` / `handoffIgnoreNote` 也是同一形态）。
+               *   ⇒ 用户修好权限之后，**每一份 `hob_orch_status` 都继续印那句
+               *     「`runtime/.gitignore` 没写成」** —— 一句**已经不成立**的告警。
+               *   ⚠ 这不是"多一行噪音"：假告警会训练人忽略真告警（`G5` 那条的原话），
+               *     而真出事时他正好不看那一行。
+               *
+               * ── 判据 ───────────────────────────────────────────────────────
+               *   **写入成功 ⇒ 清掉旧告警**（`undefined`）。
+               *   ⚠ 只清"我这一条"（本函数只写这一个字段）—— ⛔ 不去猜别的档位是否也该清。
+               *   ⚠ **正常档一个字不多**（`undefined` ⇒ 渲染层展开成 0 行，与改前一致）。
+               */
+              runtimeIgnoreNote = undefined
             }
             /**
              * ⚠⚠ **只写属于 `(本文件, 本 owner)` 的那一片**（`I-5` 的核心）：
@@ -2440,7 +2923,7 @@ export function apply(ctx: any): void {
           /**
            * ⚠ 停/未停**也是自己的那一份**（`I-4` 末条）：别人停了不该让我的读数显示"已停"。
            */
-          stopped: isStoppedFor(self),
+          stopped: isStoppedFor(self, opts?.wsRoot),
           // ⚠ **现读**每个在等目标的预设（不缓存、不回落到 `w` 上存一份）——
           //   见 `targetPresetOf` 的注释：这条读数的价值全在"此刻准不准"。
           // ⚠ ⚠ 2026-10-17 第 2 轮：读数改由 `hobBus.presetOf()` **单点**给出，
@@ -2848,17 +3331,73 @@ export function apply(ctx: any): void {
            */
           svcCtx.logger?.warn?.(`[${name}] control(${action}) 的调用方身份判不出 ⇒ **未执行**（⛔ 不会停掉所有人）`)
         } else if (action === 'stop') {
-          stoppedOwners.add(self)
-          svcCtx.logger?.info?.(`[${name}] 已停（owner=${self}）：**只停这一侧**的回传与新派发`)
+          /**
+           * ⚠⚠ **键带工作区**（t9）：`(工作区, owner)` ⇒ 同 id 在别的工作区**不受影响**。
+           *   ⚠ `wsRoot` 取**调用方自己**的（`opts.wsRoot` 优先，缺省现读 `wsRootOfSession`）——
+           *     ⛔ 不拿"当前进程碰到的那个工作区"顶替（那正是串档的成因）。
+           */
+          const selfWs = (typeof opts?.wsRoot === 'string' && opts.wsRoot !== '' ? opts.wsRoot : wsRootOfSession(self))
+          const wsName = workspaceNameOfRoot(selfWs)
+          if (wsName === undefined) {
+            /**
+             * ⚠ **判不出工作区 ⇒ 记 owner-only 键 + warn**（回落面，同 `isStoppedFor`）：
+             *   ⛔ 不拒绝执行 —— 拒绝等于"按了 stop 却没停"，比"可能过宽"更坏。
+             */
+            stoppedOwners.add(self)
+            svcCtx.logger?.warn?.(
+              `[${name}] 已停（owner=${self}）—— ⚠ **判不出它属于哪个工作区** ⇒ 记成 owner 单键`
+              + '（可能波及别的工作区里同 id 的会话；补上 `wsRoot` 可收窄）。',
+            )
+          } else {
+            stoppedOwners.add(stoppedKeyOf(self, wsName))
+          }
+          /**
+           * ⚠⚠ **落盘**（2026-10-24 · 本单 §10）：⛔ 不许只留在内存 ——
+           *   改前重载即归零 ⇒ `stop` 之后一次插件重载就**自动复活**，
+           *   而用户以为自己已经停住了（静默失效）。
+           *   ⚠ 判不出该写哪本账 ⇒ **不写**，并把这句话说清（⛔ 不猜一个账本）。
+           */
+          const f = stateFileForOwner(self)
+          if (f === undefined || wsName === undefined) {
+            svcCtx.logger?.warn?.(
+              `[${name}] 已停（owner=${self}）—— ⚠ 但**判不出该写哪本账 / 属于哪个工作区** ⇒ `
+              + '这一停只在**本次进程**有效，**插件重载后会复活**。',
+            )
+          } else {
+            persistStoppedFor(f, wsName, [self])
+          }
+          svcCtx.logger?.info?.(
+            `[${name}] 已停（owner=${self} · 工作区=${wsName ?? '(判不出)'}）：`
+            + '**只停这一侧、这一本账**的回传、新派发与叫醒面',
+          )
         } else if (action === 'resume') {
-          stoppedOwners.delete(self)
-          svcCtx.logger?.info?.(`[${name}] 已恢复（owner=${self}）：只恢复这一侧`)
+          const selfWs = (typeof opts?.wsRoot === 'string' && opts.wsRoot !== '' ? opts.wsRoot : wsRootOfSession(self))
+          const wsName = workspaceNameOfRoot(selfWs)
+          if (wsName === undefined) {
+            /**
+             * ⚠ 回落面：**owner 单键 + 复合键都删**（两个都可能是它自己，⛔ 别留残骸
+             *   让 resume 之后仍被判"已停"）。
+             */
+            stoppedOwners.delete(self)
+            for (const k of [...stoppedOwners]) if (k.endsWith(`\u0000${self}`)) stoppedOwners.delete(k)
+          } else {
+            stoppedOwners.delete(stoppedKeyOf(self, wsName))
+            /** ⚠ 兼容：早期落在 owner-only 键上的那条也要清（升级后第一次 resume）。 */
+            stoppedOwners.delete(self)
+          }
+          const f = stateFileForOwner(self)
+          if (f !== undefined && wsName !== undefined) clearStoppedFor(f, wsName, self)
+          else if (f !== undefined) {
+            /** ⚠ 判不出工作区 ⇒ 按本文件的工作区名清（那是它当初落盘的地方）。 */
+            clearStoppedFor(f, basename(dirname(dirname(f))), self)
+          }
+          svcCtx.logger?.info?.(`[${name}] 已恢复（owner=${self} · 工作区=${wsName ?? '(判不出)'}）：只恢复这一侧`)
         }
         const mine = mineOnly(self)
         /** ⚠ 同 `status()` 那条：一次算、两处用（甲-7）。 */
         const reach = reachabilityFor(opts?.wsRoot)
         return {
-          stopped: isStoppedFor(self),
+          stopped: isStoppedFor(self, opts?.wsRoot),
           watches: mine.watches.sort((a, b) => a.at - b.at),
           relaysDone: mine.relaysDone,
           relaysBlocked: mine.relaysBlocked,
@@ -3059,13 +3598,43 @@ export function apply(ctx: any): void {
       // ② 会话 log 末条 `assistant/message`
       try {
         const session = sessions.get?.(target)
-        if (session !== undefined && lastAssistantText(session) !== undefined) {
+        const entry = session === undefined ? undefined : lastAssistantEntry(session)
+        if (entry !== undefined) {
           /**
            * ⚠ log 有助手产出只说明"它跑完过一轮"，**不说明这一轮**就是刚派的那一轮。
            *   ⇒ 只把它当"跑完了"的**次硬**证据；⚠ 而 `status==='running'` 仍然优先
            *     （它此刻还在跑 ⇒ 这一轮没结束）。
+           *
+           * ⚠⚠ **必须加"本轮窗口"判据**（2026-10-24 · 本单 §9；与 ① 的
+           *   `card.endedAt >= at` **同形**）：
+           *   改前这里**只判**"有助手产出 + 此刻不在跑" ⇒ 重载后一条 `unresolved`
+           *   （`at` = 派发时刻）会被**上一轮的产出**结账 —— 目标早就跑完，log 末条是
+           *   **派发之前**那个活儿的结果 ⇒ 把**别人的产出当这一轮的回执**回传（错配，
+           *   比丢更坏）。现场形态：重载 → `unresolved` → 一读会话 log 就"结算成功"。
+           *   ⇒ 判据加一条：**`entry.at >= at`** 才算"这一轮结束的"。
+           *   ⚠ **读不到 `entry.at`** ⇒ 这一档**判不出窗口**：⛔ 不当成 `done`
+           *     （那是把不确定性说成结论），也⛔ 不当成 `running`（那会永远挂着）⇒
+           *     落到最外层 `return undefined` = 判不出 ⇒ 记录按 `unresolved` 留到下一轮。
+           *     ⚠ 与 ① 对 `card.endedAt === undefined` 的处理**同一条纪律**（保守口径）。
            */
-          if (st !== 'running') return { kind: 'done', evidence: 'session-log' }
+          if (st !== 'running') {
+            /**
+             * ⚠ **读不到 `time` ⇒ 不假装判过窗口**：真实会话日志的每条事件都带
+             *   `time`（`dsh-session` 的 `SessionEvent.time` 是**必填**字段），
+             *   读不到只可能是旧形状 / 测试替身 ⇒ 沿用**既有口径**（当次硬证据）。
+             *   ⚠ 这是**兼容档**，不是"判过窗口"：真环境下这条分支不会走到
+             *     （所以本单要治的"上一轮产出结账"在真机上是关掉的）。
+             *   ⚠ ⛔ 不许把这一档写成 `return undefined` —— 那会让**所有没有 `time`
+             *     的历史替身数据**一律判"判不出"，把既有闭环路径整条掐断
+             *     （实测：`check:orch` 的 SA-a / SA-b / SE-b2 三组固定样本都无 `time`）。
+             */
+            if (entry.at === undefined) return { kind: 'done', evidence: 'session-log' }
+            if (entry.at >= at) return { kind: 'done', evidence: 'session-log' }
+            /**
+             * ⚠ `entry.at < at` ⇒ 它是**派发之前**的产出（上一轮的事）⇒ 不能当本轮结果；
+             *   是否仍在跑由下面第 ③ 条看（与 ① 的 `endedAt < at` 同款）。
+             */
+          }
         }
       } catch { /* 读不到会话 ⇒ 继续 */ }
       // ③ 最弱的一条：`agents.get(id).status`
@@ -3219,6 +3788,17 @@ export function apply(ctx: any): void {
     }
 
     /**
+     * 撤掉"投递尝试"标记（= 撤销"我试过了但不知道结果"这个陈述）。
+     *
+     * ⚠ 两处调用点语义相同、成因不同（⚠ 都**不许**改成"什么都不做"）：
+     *   · **总线缺席**（{@link settle} 的 bus-missing 支）—— 消息**确定没进入**投递实现；
+     *   · **`ok:false`**（同函数末尾）—— 投递实现**明确回报失败**。
+     * ⚠ 抽成函数只是为了让"哪一种成因在删"在调用点**自解释**；
+     *   ⛔ 不是为了让两处合并成一处判据（两处仍各有一行调用、各自留注释）。
+     */
+    const clearDeliveryAttempt = (x: Watch): void => { delete x.deliveryAttemptAt }
+
+    /**
      * ⚠⚠ **唯一的结算点**（B1）。事件路径 / 对账路径 / 重挂路径 / 补投路径**都只调它**。
      *
      * ── 为什么必须只有一个 ────────────────────────────────────────────────
@@ -3295,7 +3875,15 @@ export function apply(ctx: any): void {
        *   停了 ⇒ **不唤醒派活方**（循环当场断在这一环）。
        *   ⚠ **按该条记录自己的 owner 判**（`I-4`）：别人停了⛔ 不许拦下我的回传。
        */
-      if (isStoppedFor(w.owner ?? (w.watcher === '' ? undefined : w.watcher))) {
+      /**
+       * ⚠⚠ **带工作区**（t9）：`w.ownerWsRoot` 是**这条记录自己的** owner 工作区根
+       *   （`toPersisted` 里 `ownerWsRoot → wsRoot` 那条），⚠ ⛔ 不拿"当前处理者的工作区"顶替。
+       *   ⚠ 判不出（旧记录没有 `ownerWsRoot`）⇒ 回落 owner-only + warn，⛔ 不会误放行。
+       */
+      if (isStoppedFor(
+        w.owner ?? (w.watcher === '' ? undefined : w.watcher),
+        w.ownerWsRoot,
+      )) {
         relaysBlocked++
         bumpRelay(relaysByOwner.blocked, w.owner ?? (w.watcher === '' ? undefined : w.watcher))
         return false
@@ -3350,6 +3938,27 @@ export function apply(ctx: any): void {
          *   ⚠ 而"次数上限"只是**一个数**，不需要任何调度：每一轮对账/事件**顺手**加一，
          *     撞满就停手。⇒ 零新增定时器、零新增扫描。
          */
+        /**
+         * ⚠⚠ **总线缺席 = 确定没送出去 ⇒ 必须撤掉 attempt**（2026-10-24 · 本单 §2）。
+         *
+         * ── 改前的病灶（死锁）──────────────────────────────────────────────
+         *   上面 ② 刚把 `deliveryAttemptAt` 落盘（"先写后发"），而本档**只复位
+         *   `reported`、不删 `deliveryAttemptAt`** —— 与 `ok:false` 那一档
+         *   （`delete w.deliveryAttemptAt`）**不同档**。
+         *   ⇒ 下一轮进 `settle()` 时命中"有 attempt、没 delivered ⇒ **投递结果未知
+         *   ⇒ ⛔ 不自动重投**"并 `return false`。
+         *   ⇒ `RELAY_BUS_MISS_LIMIT = 3` 这个阈值**永远到不了**（每轮都停在上面那条
+         *   `return false`，`relayBusMiss` 再也不会 +1）⇒ 该 target **既收不到回执、
+         *   也不能被重派**（`reported` 被复位了，但每次都被"结果未知"挡回）。
+         *
+         * ── 判据（⚠ 一句话）────────────────────────────────────────────────
+         *   **总线不在 = 消息根本没进入投递实现** ⇒ 与 `ok:false` **同档**：
+         *   撤掉 attempt（撤销"我试过了但不知道结果"这个**错误陈述**），
+         *   `error` 留着（失败原因本身是可读事实，⛔ 不许一起删）。
+         *   ⚠ 真正的"结果未知"（进程死在 `await deliver` 中途）**不带总线缺席这一档**，
+         *     那条路径的 attempt 仍然会留着 —— 本改动**没有**放宽那个闸。
+         */
+        clearDeliveryAttempt(w)
         w.error = 'session bus unavailable at relay time'
         const missed = (relayBusMiss.get(watchKey(w)) ?? 0) + 1
         relayBusMiss.set(watchKey(w), missed)
@@ -3670,6 +4279,18 @@ export function apply(ctx: any): void {
      * ⚠ 写失败必须留 warn（⛔ 不许静默：那会让"又核过"这句话变成假话）。
      */
     const persistRecheck = (file: string, rec: PersistedWatch): void => {
+      /**
+       * ⚠⚠ **高版本文件 ⇒ 拒绝写**（2026-10-24 · 本单 §11）：同 `persistWatches` /
+       *   `persistOwnerPartition` 那条纪律 —— 本代码只会写 `version = 当前版本`，
+       *   对着更高版本的文件写下去就是**降级并丢字段**。
+       */
+      if (refusesDowngrade(file)) {
+        svcCtx.logger?.warn?.(
+          `[${name}] 拒绝写对账结果（${file} · target=${rec.target}）：`
+          + `该文件版本高于本代码的 ${ORCH_STATE_VERSION} ⇒ 写下去会降级并丢掉新字段（⛔ 不覆盖）`,
+        )
+        return
+      }
       try {
         const prev = readOrchState(file)
         const rows = prev.pending.map((w) => (watchKey(w) === watchKey(rec) ? rec : w))
@@ -3873,6 +4494,25 @@ export function apply(ctx: any): void {
       return () => {
         /** ⚠ 清理失败不许把卸载带崩（`stop()` 本身已幂等且内部全 try）。 */
         try { wake.stop() } catch { /* 已经停了 */ }
+        /**
+         * ══════════════════════════════════════════════════════════════════════
+         * ⚠⚠ **卸载时必须把 T5 复查定时器一并清掉**（2026-10-24 · 本单 §7）
+         * ══════════════════════════════════════════════════════════════════════
+         *
+         * ── 改前是什么（静默的越界调用）──────────────────────────────────────
+         *   `recheckTimer` 只在**账清平**时由 `armRecheck()` → `clearRecheckTimer()` 清；
+         *   **卸载路径一次都没清过**。而它 `unref()` 过 ⇒ 宿主能退出，但**模块被卸载后**
+         *   那个回调仍会到点触发 `reconcile('t5-timer')` —— 于是它对着一个**已销毁的
+         *   作用域**取服务（`svcCtx.get('hobBus')` / `sessions` / `agents`）：
+         *   要么取到 `undefined`（回执静默失败），要么把**新一代替换上的服务**当成自己的
+         *   （跨代互相干扰）。两种都不是"没有代价"。
+         *
+         * ── 判据 ───────────────────────────────────────────────────────────
+         *   清理回调里**先** `clearRecheckTimer()`（它是纯内存操作、幂等：没有定时器时
+         *   第一行就 return）⇒ 卸载之后**不再有任何属于本代的回调**。
+         *   ⚠ 「空闲零定时器」纪律不受影响：正常卸载时它本来就该是 `undefined`。
+         */
+        try { clearRecheckTimer() } catch { /* 没有定时器 / 已触发 ⇒ 无所谓 */ }
       }
     }, `${name}: provide ${ORCH_SERVICE}`)
     svcCtx.logger?.debug?.(`[${name}] 已提供 ${ORCH_SERVICE}`)
@@ -3965,7 +4605,17 @@ function selfWorkspaceRootOf(exec: any): string | undefined {
  *   —— 每多一个工具名都在稀释模型的注意力，且都进白名单；两个反义动作合成一个枚举参数
  *   已经足够清楚。
  */
-export function createHobOrchTools(orch: HobOrchestrator): {
+/**
+ * @param orch - 编排服务。
+ * @param proceedGateOf - ⚠ 2026-10-22 第 5 轮：**派活前的执行层闸门**（任务书第 12 条）。
+ *   只作用于 `hob_dispatch`（真让别人开跑）；`hob_orch_status` / `hob_orch_control`
+ *   **不拦** —— 状态是只读诊断，控制是对"已在跑的派单"收闸（收闸永远该允许，
+ *   ⛔ 否则连止损都做不了）。
+ */
+export function createHobOrchTools(
+  orch: HobOrchestrator,
+  proceedGateOf?: (exec: any) => string | undefined,
+): {
   dispatch: ReturnType<typeof defineTool>
   status: ReturnType<typeof defineTool>
   control: ReturnType<typeof defineTool>
@@ -3995,6 +4645,20 @@ export function createHobOrchTools(orch: HobOrchestrator): {
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
     async execute(args: { sessionId: string; message: string; round?: number; task?: string }, exec: any): Promise<string> {
+      /**
+       * ⚠⚠ **派活前先过执行层闸门**（2026-10-22 第 5 轮 · 任务书第 12 条）。
+       *   ⚠ `hob_dispatch` 是"真实派活"的主路径 ⇒ 必须在这里挡，
+       *     ⛔ 不能只靠 `hob_send` 那道（两条路都能让别人开跑）。
+       */
+      try {
+        const blocked = proceedGateOf?.(exec)
+        if (blocked !== undefined) return JSON.stringify({ ok: false, reason: 'proceed-not-confirmed', message: blocked })
+      } catch (e) {
+        return JSON.stringify({
+          ok: false, reason: 'proceed-gate-error',
+          message: `拒绝：无法确认本会话的原「推进工作方式」（闸门抛错：${String((e as Error)?.message ?? e)}）`,
+        })
+      }
       const r = await orch.dispatch(args.sessionId, args.message, {
         self: selfSessionIdOf(exec),
         ...(args.round === undefined ? {} : { round: args.round }),
@@ -4277,6 +4941,20 @@ export function createHobOrchTools(orch: HobOrchestrator): {
             lines.push('  ↳ ⛔ **错投 ≡ 漏投**：这一档说明**有回执没到**（不是"没有回执"）。'
               + '⛔ 它不会自动重投、⛔ 也不会改投别人 —— 需要重新派一次。')
           }
+          /**
+           * ⚠⚠ **「闭环已停 ⇒ 这一声有意不投」独立一档**（2026-10-24 · 本单 §10）。
+           *   ⚠ 措辞必须把三件事说清（⛔ 不许让它读成漏投或判不出）：
+           *     ① 那张卡/那个会话**确实**跑完了；② 是**你自己**按的 stop；
+           *     ③ 恢复要用 `resume`（而且**不会自动补**）。
+           */
+          if (typeof d.stoppedCount === 'number' && d.stoppedCount > 0) {
+            lines.push(`  ↳ ⏸ **闭环已停 ⇒ 这一声有意没投 ${d.stoppedCount} 次**`
+              + (d.lastStoppedTo === undefined ? '' : `（最近：${d.lastStoppedTo}）`))
+            lines.push('  ↳ ⛔ 这**不是漏投**、也**不是判不出**：是你按了 `stop`，'
+              + '所以叫醒面**主动不发**（刹车覆盖到了这条路上）。')
+            lines.push('  ↳ ⚠ 恢复用 `hob_orch_control resume`；'
+              + '⚠ 停止期间的这一声**不会自动补发**（要补得靠显式 `redeliver`）。')
+          }
           if (d.lastWokeAt !== undefined) {
             lines.push(`  ↳ 最近一次叫醒：${new Date(d.lastWokeAt).toLocaleString('zh-CN', { hour12: false })}`
               + ` · 会话=${d.lastWokeSession ?? '(读不到)'}`
@@ -4314,6 +4992,12 @@ export function createHobOrchTools(orch: HobOrchestrator): {
            */
           const anyMissed = w.noSubscriberCount > 0 || w.legacyTargetCount > 0
             || w.redeliverOwnerUnknownCount > 0 || w.undeliveredCount > 0
+            /**
+             * ⚠⚠ **`stoppedCount` 必须算进这一行**（2026-10-24 · 本单 §10）：
+             *   `stop` 期间的"有意不投"若因为"已连上且 wokeCount>0"被 early-return 吞掉，
+             *   读的人就看不到刹车真的落在叫醒面上（本项目最忌："有读数，却读出来是空的"）。
+             */
+            || (typeof w.stoppedCount === 'number' && w.stoppedCount > 0)
             /**
              * ⚠⚠ **`selfExecutedCount` 必须算进这一行**（2026-10-20 · 第 7 单）：
              *   它不是"没办成"，但它是**差一点又要开一圈**的那一档 ——
@@ -4400,6 +5084,16 @@ export function createHobOrchTools(orch: HobOrchestrator): {
            *   ③ 这一档非零 ⇒ 说明**卡被绑在一个自己会反复跑完的会话上**，
            *      那一侧的源头（第三方看板的执行史绑定）**不会自己消失**。
            */
+          /**
+           * ⚠⚠ **「闭环已停 ⇒ 这一声有意不投」独立一档**（2026-10-24 · 本单 §10；同 `dispatchWakeLines`）。
+           *   ⚠ **必须算进 `anyMissed`**（下面那行），否则正常态会被 early-return 整块吞掉
+           *     ⇒ "刹车真的拦下过几声"读不到（"有读数却读出来是空的"）。
+           */
+          if (typeof w.stoppedCount === 'number' && w.stoppedCount > 0) {
+            lines.push(`  ↳ ⏸ **闭环已停 ⇒ 这一声有意没叫 ${w.stoppedCount} 次**`
+              + (w.lastStoppedTo === undefined ? '' : `（最近：${w.lastStoppedTo}）`))
+            lines.push('  ↳ ⛔ 这**不是漏投**、也**不是判不出**：是你按了 `stop`，叫醒面**主动不发**。')
+          }
           if (w.selfExecutedCount > 0) {
             lines.push(`  ↳ ⚠ **执行方就是 owner 本人、因此没叫醒 ${w.selfExecutedCount} 次**`
               + (w.lastSelfExecutedCard === undefined ? '' : `（最近：卡 ${w.lastSelfExecutedCard}）`))
@@ -4514,7 +5208,24 @@ export function createHobOrchTools(orch: HobOrchestrator): {
       const handoffShown = hh.slice(0, STATUS_LIST_MAX)
       const handoffHidden = Math.max(0, hh.length - handoffShown.length)
       return [
+        /**
+         * ⚠⚠ **这一行的字面量不许改**（t9）：`check:orch` 的 **C1** 锚的就是
+         *   `s.stopped ? '⏸ 已停（不回传、不接受新派发）' : '▶ 在跑'` 这一段原文，
+         *   它守的是"既有行不许被删改"（任务书 §2.3）。⛔ 不许为了让措辞更准去动它。
+         *   ⇒ **作用域说明另起一行**（下面 `stopScopeLine`）——
+         *     那正是本仓对"补信息"的一贯做法：**加行，不改既有行**。
+         */
         s.stopped ? '⏸ 已停（不回传、不接受新派发）' : '▶ 在跑',
+        /**
+         * ⚠⚠ **`stop` 的作用域必须单独说清**（t9 · 队长要求 ②）：
+         *   键是 `(工作区, owner)` ⇒ 同 id 在**别的工作区**的那个闭环**没被停**。
+         *   上面那行字面量受 C1 保护不能改 ⇒ 说明**另起一行、只在停着的时候出现**
+         *   （正常档 `▶ 在跑` 一个字都不多 —— 与改前逐字相同）。
+         */
+        ...(s.stopped
+          ? ['  ↳ ⚠ **只停这一侧、这一本账**（`(工作区, 会话)` 键）：'
+            + '别的会话、以及**别的工作区里同名会话**的闭环都不受影响。']
+          : []),
         `在等回传：${s.watches.length} 个`,
         ...lines,
         ...(watchHidden === 0

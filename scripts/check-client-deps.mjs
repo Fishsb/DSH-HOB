@@ -1167,7 +1167,8 @@ console.log('')
  *     `fail` 那几条**不计入**它 —— 它们不是"查过且过"，也**不是"没查"**，
  *     它们单独就是"查了且不过"，在判定行里。
  */
-console.log(`  处级口径：查了 ${note.length + skip.length} 处 · 过了 ${note.length} 处`
+console.log(`  处级口径：查了 ${note.length + fail.length + skip.length} 处 · 过了 ${note.length} 处`
+    + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
   + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
 if (fail.length === 0) {
   console.log('判定：PASS —— 两个 Remote 命名空间只经免 inject 读法取用，且失败仍如实显示、可重试。')

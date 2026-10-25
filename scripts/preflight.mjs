@@ -3,7 +3,9 @@
  * `check:preflight` —— **判据的前置条件预检**（⚠ 只报告，不跑任何判据）。
  *
  * ── 它解决什么 ────────────────────────────────────────────────────────
- *   本仓有 12 族判据，其中**有若干族在"缺基准"时打 `未执行 / 不代表通过`（退出码 2）**。
+ *   本仓有多族判据（⚠ **条数以 `package.json` 的 `check:*` 实测为准**，⛔ 不在此写死 ——
+ *   这行原先写着"12 族"，实况早已不是 12），其中**有若干族在"缺基准"时打
+ *   `未执行 / 不代表通过`（退出码 2）**。
  *   ⚠ 那个约定本身是对的（"没查"与"查过且过"必须可区分），但它有一个代价：
  *   **外部人看不懂该先补什么** —— 他看到一堆"未执行"，不知道是要装依赖、要构建、
  *   还是要先把记录区建出来。
@@ -57,6 +59,50 @@ export function deriveLedgerRoot() {
  */
 export function preflight() {
   const items = []
+
+  // ── ⓪ Node 运行时（2026-10-24 · B 席 · 补"声明面 vs 现实"的体检）──────────
+  /**
+   * ── 为什么需要它（缺口有实测出处）──────────────────────────────────────
+   *   本仓的判据脚本大量**直接 `import('./src/xxx.ts')`**（`check:policy` /
+   *   `check:policy-cross` / `check:hob-gate` / `check:hob-create-dom` / …），
+   *   靠的是 **Node 的 type-stripping**。⚠ 而 `package.json` 的 `engines` 此前只写
+   *   `node: ">=20"` —— Node 20 上那条 import **必然**抛
+   *   `ERR_UNKNOWN_FILE_EXTENSION: Unknown file extension ".ts"`（实测：
+   *   `node --no-experimental-strip-types -e "import('./src/shared/work-mode.ts')"`）。
+   *   ⇒ 声明与实现对不上：按 `engines` 装 Node 20 的人，跑 `npm run check` 会看到
+   *     **一串看不懂的崩溃**，而没有任何东西告诉他"是 Node 版本不够"。
+   *
+   * ⚠ 本条**只体检、不拦**（本文件恒 exit 0）；真正的牙口有两条：
+   *   ① `check-repo-rules.mjs` 断言 `engines.node` 的下界 **≥ 22.18**
+   *      （type-stripping 从 22.18 起**默认开启**；再低就要带 flag）；
+   *   ② 本项在"运行时实际不支持"时**明确说出来**，让那一串崩溃有归因。
+   */
+  {
+    const ver = process.versions.node
+    const parts = ver.split('.').map((x) => Number(x))
+    const atLeast = (a, b, c) => parts[0] > a || (parts[0] === a && (parts[1] > b || (parts[1] === b && parts[2] >= c)))
+    /** ⚠ Node 的权威读数：`process.features.typescript`（`false` / `'strip'` / `'transform'`）。 */
+    const strip = process.features.typescript
+    const okVer = atLeast(22, 18, 0)
+    const present = okVer && strip !== false && strip !== undefined
+    let line
+    if (present) {
+      line = `Node 运行时 \`v${ver}\` 支持 **type-stripping**（\`process.features.typescript=${JSON.stringify(strip)}\`）`
+        + ' ⇒ 判据里那些 `import(\'./src/x.ts\')` 能跑'
+    } else {
+      line = `Node 运行时 \`v${ver}\` **不支持 type-stripping**`
+        + `（\`process.features.typescript=${JSON.stringify(strip)}\` · 需要 **≥ 22.18**）`
+        + ' ⇒ ⚠ 凡**直接 `import(\'.ts\')`** 的判据都会抛 `ERR_UNKNOWN_FILE_EXTENSION`，'
+        + '那时的红**不是被测对象的问题**，是这台机器的 Node 太旧（先升级 Node）'
+    }
+    items.push({
+      key: 'node',
+      present,
+      line,
+      affects: present ? [] : ['check:policy', 'check:policy-cross', 'check:hob-gate', 'check:hob-create-dom',
+        'check:hob-create', 'check:presets', 'check:config', 'check:readings'],
+    })
+  }
 
   // ── ① node_modules ────────────────────────────────────────────────────
   {

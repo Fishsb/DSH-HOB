@@ -22,7 +22,7 @@
  * ⚠ 本模块**刻意不 import `config.ts`** —— 配置由调用方以 options 传入。
  *   这样它可以被独立测试，也避免 core/server 反向依赖配置类型。
  */
-import { lstat, readFile, writeFile, rename, readdir, unlink, mkdir, rm } from 'node:fs/promises'
+import { lstat, readFile, writeFile, rename, readdir, unlink, mkdir, rm, open, chmod, stat } from 'node:fs/promises'
 import { existsSync, readdirSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { resolveInside } from './doc-read.ts'
@@ -31,20 +31,38 @@ import { renderReadings, renderReadingsNote, type RenderResult } from './hob-ren
 // ── 白名单：骨架只读，运行数据/方案可写（与 UD-05 的切分同一条线）─────────────
 
 /**
- * 可写的账本文件（**运行数据 + 项目方案**）。
+ * 可写的账本文件（**运行数据 + 项目方案 + 当前需求**）。
  *
  * 沿革：
  *   · 原含 `FACTS.md`，2026-10-09 按 **UD-84** 退场（四本 → 三本）；
  *   · **2026-10-10 按 UD-88 / CHG-025 加入 `PROJECT.md`** —— 用户裁定
  *     「这些都是 hob 的账本，不要放工作区，**包括项目方案**」
  *     ⇒ 方案随账本一起住在账本区（工作区里**不再有任何项目文档**）。
+ *   · **2026-10-22（用户批准方案重构后）**：现行需求根从 `USER-DECISIONS.md`
+ *     迁到 **`REQUIREMENTS.md`**，旧根转为**只读历史**（见 {@link RETIRED_LEDGER_FILES}）。
+ *     ⚠ 迁移的落点是 **"只有一个现行需求写面"** —— 两本都能写就是两套真相并存，
+ *     那正是本次重构要治的病（用户原话：「旧账本的现行职责改为只记录当前想实现的功能需求」）。
  *
  * ⚠ **纪律（不加技术闸门）**：方案**只有用户能批准变更、Hob 只提议**。
  *   这条是**程序纪律**，写在方案自身与 `.hob/README.md` 里 ——
  *   **不**在这里写"禁止写方案"的代码：那会把该由人守的规矩变成静默的拒绝，
  *   而 `write_hob` 的语义是"按你给的路径与内容如实写"。
  */
-export const LEDGER_FILES = ['PROJECT.md', 'DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md'] as const
+export const LEDGER_FILES = ['PROJECT.md', 'REQUIREMENTS.md', 'DECISIONS.md', 'CONTEXT.md'] as const
+
+/**
+ * 已退役的根正本（**只读历史，拒写**）。
+ *
+ * ⚠ **它们仍在账本区根上、仍必须逐字节可读** —— 本清单只改**写入面**，
+ *   ⛔ 不动读面、⛔ 不动盘上任何一个字节、⛔ 不删不移。
+ *
+ * ⚠⚠ **为什么必须单列一个 reason、而不是"从白名单里拿掉就算了"**：
+ *   拿掉之后它会落进 `not-whitelisted` 那句笼统话术 —— 读者读不出
+ *   「它还在，只是退役了，现行需求在别处」，容易误判成"工具坏了"或"文件没了"，
+ *   于是有人会去 hand-edit 旧根绕开工具 ⇒ 又被写回第二个现行需求面。
+ *   ⇒ 专门一个 `retired-historical`，把**去向**直接写进拒绝话术。
+ */
+export const RETIRED_LEDGER_FILES = ['USER-DECISIONS.md'] as const
 
 /** 骨架文件（**拒写**）：格式契约，进 git，变更须人工 + commit。 */
 export const SKELETON_FILES = ['README.md'] as const
@@ -188,7 +206,16 @@ export function isPrimaryRootDoc(file: string): boolean {
  *   ⚠ **同源的另一面**：两侧**逐字同源**既是纪律（E-110），也意味着**一个缺陷会同时在两侧静默**
  *     —— **"两边一致"不等于"两边都对"**（本轮两边一致地错）。见 **E-130**。
  */
-const REF_PATH_RE = /archive\/\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+\/[A-Za-z0-9._/-]*/g
+// ⚠ **2026-10-25（搬家单收口）改了尾段字符类** —— 与 `scripts/check-doc-shape.mjs` 的
+//   `D_REF_RE` **必须逐字相同**（机检 K 组盯这一对）。
+//   ⚠ 原 `[A-Za-z0-9._/-]*` **不含 CJK** ⇒ `…/evidence/03-条件项查重证据.txt` 会被**截断**成
+//   `…/evidence/03-` ⇒ 写入侧认错路径、判据侧假报"不存在"。
+//   ⚠ 改成"到空白 / 反引号 / 右括号 / 右方括号为止"⇒ 中文文件名完整保留。
+//   ⚠ **不是放宽**：`<` `>` 占位与 `{}` 枚举仍不在具名引用里（判据侧另有跳过）。
+// ⚠ **2026-10-25（final-green）：与 `scripts/check-doc-shape.mjs` 的 `D_REF_RE` 逐字相同**
+//   （机检 K 组盯这一对，⛔ 只改一侧）。改法 = 原字符类**逐字保留** + **追加 CJK 基本区**。
+//   ⚠ 由"到分隔符为止"收回白名单写法：效果等，但不给自己留放宽的口子。
+const REF_PATH_RE = /archive\/\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+\/[A-Za-z0-9._/\u4e00-\u9fa5-]*/g
 
 /**
  * 作业书文件名（与 `scripts/check-doc-shape.mjs` 的**断言 D′** 同源）。
@@ -293,6 +320,15 @@ export type RefuseReason =
   | 'symlink'
   | 'skeleton'
   | 'not-whitelisted'
+  /**
+   * **退役的历史正本**（2026-10-22 · 现行需求根迁到 `REQUIREMENTS.md`）。
+   * ⚠ 与 `not-whitelisted` **必须分成两个值** —— 两者的修法完全不同：
+   *   · `not-whitelisted`：你写错地方了，换一个允许的路径；
+   *   · `retired-historical`：这份文件**确实存在且可读**，但它**不再是写面**，
+   *     现行需求在 `REQUIREMENTS.md`。
+   *   ⚠ 并成一个值 = 把"退役"说成"不存在"，正是本项目反复记的那类"两种原因一句话"。
+   */
+  | 'retired-historical'
   | 'not-markdown'
   | 'too-large'
   | 'bad-format'
@@ -300,6 +336,16 @@ export type RefuseReason =
   | 'id-conflict'
   | 'shrinking'
   | 'archive-overwrite-denied'
+  /**
+   * **读不出来 ≠ 不存在**（2026-10-24 · 本单必修 1/2/3）。
+   *
+   * ⚠ 与 `write-failed` 必须**分成两个值**：两者的修法完全不同 ——
+   *   · `read-failed`：目标**可能就在那儿**，只是读不出来（EACCES / EIO / EISDIR…）
+   *     ⇒ 停手，去查权限 / 磁盘 / 路径上挡了什么；
+   *   · `write-failed`：读没问题，是**写**没落下去。
+   * ⚠ 并把两者都并进 `write-failed` 的话，`bytesBefore:0` 那种假读数会重新变得"看起来正常"。
+   */
+  | 'read-failed'
   | 'write-failed'
   | 'readback-mismatch'
 
@@ -435,6 +481,213 @@ function refuse(file: string, reason: RefuseReason, message: string): WriteHobRe
   return { ok: false, action: 'refused', file, message, reason }
 }
 
+// ── 读盘：**"不存在"与"读不出来"必须分开** ────────────────────────────────────
+
+/**
+ * 一次目标读盘的结果（⚠ 三态，⛔ 不许合并成"内容 + 布尔"）。
+ *
+ * ── 它治的缺陷（2026-10-24 · 本单必修 1/2/3）──────────────────────────────
+ *   改前的写法是：
+ *   ```ts
+ *   let existing = ''
+ *   let exists = true
+ *   try { existing = await readFile(absTarget, 'utf8') } catch { exists = false }
+ *   ```
+ *   ⚠ `catch` **吞掉了错误码** ⇒ `EACCES` / `EIO` / `EISDIR` 全被当成
+ *   "文件不存在（首次创建）" ⇒ 两个真后果：
+ *   · **`append` 用空 `existing` 拼内容** ⇒ **整本账本被覆盖成这一条**，
+ *     而返回值仍是 `ok: true` / `bytesBefore: 0`（实测 200KB 账本被顶掉）；
+ *   · **`backup()` 不备份**（它把"读不出来"读成"首次创建"）⇒ 覆盖前没有副本，
+ *     正好破掉 R-17「副本必须先于重写」。
+ *
+ *   ⇒ 现在把三态**显式**带出来，由调用方逐档处理：
+ *   · `missing` —— `ENOENT`（**唯一**可以当"首次创建"的错误码）；
+ *   · `ok`      —— 读到内容；
+ *   · `error`   —— 其它一切（含 `EACCES` / `EIO` / `EISDIR` / 软链环 …）⇒ **拒写**。
+ *
+ * ⚠ **为什么⛔ 不把 `ENOTDIR` 也当 missing**：`a/b.md` 里 `a` 是个普通文件时，
+ *   `readFile` 报 `ENOTDIR` —— 那不是"还没有这个文件"，是**路径本身坏了**；
+ *   写下去只会再失败一次，或者（更糟）在别处建出目录树。⇒ 归到 `error` 一侧，拒写并说明。
+ */
+type TargetRead =
+  | { kind: 'ok'; bytes: Buffer }
+  | { kind: 'missing' }
+  | { kind: 'error'; code: string; message: string }
+
+/**
+ * 读一个已存在的目标文件；**只把 `ENOENT` 当"不存在"**（判据见 {@link TargetRead}）。
+ *
+ * ⚠ 读成 **Buffer** 而不是字符串：备份必须**逐字节**保真
+ *   （{@link backup} 的副本是回滚源）。若先按 `utf8` 解码再编码回去，
+ *   非法 UTF-8 字节会被替换成 `U+FFFD` ⇒ 备份**不再等于原文**，
+ *   而回滚会把替换字符写进账本 —— 一个"有备份"掩盖着的静默损坏。
+ */
+async function readTargetBytes(absTarget: string): Promise<TargetRead> {
+  try {
+    return { kind: 'ok', bytes: await readFile(absTarget) }
+  } catch (e) {
+    const err = e as { code?: string; message?: string } | null
+    const code = typeof err?.code === 'string' && err.code !== '' ? err.code : 'unknown'
+    if (code === 'ENOENT') return { kind: 'missing' }
+    return { kind: 'error', code, message: typeof err?.message === 'string' ? err.message : String(e) }
+  }
+}
+
+/** {@link readTargetBytes} 的**文本**版（调用方要的就是内容本身，如幂等比对 / 拼接）。 */
+async function readTarget(absTarget: string): Promise<{ kind: 'ok'; content: string } | { kind: 'missing' } | { kind: 'error'; code: string; message: string }> {
+  const r = await readTargetBytes(absTarget)
+  if (r.kind !== 'ok') return r
+  return { kind: 'ok', content: r.bytes.toString('utf8') }
+}
+
+/** 把一次 {@link TargetRead} 的 `error` 档渲染成**可读的拒写原因**（⛔ 不说"不存在"）。 */
+function describeReadFailure(file: string, r: { code: string; message: string }): string {
+  return `拒绝：\`${file}\` **读不出来**（${r.code}）—— ${r.message}`
+    + '\n      ⚠ 这**不是**"文件还不存在"：目标可能就在那儿，只是这次读不到'
+    + '（权限 / 磁盘 / 路径上挡了东西 / 它是目录 …）。'
+    + '\n      ⇒ 停手去查那一个原因；⛔ 不按"首次创建"处理 —— 那会把整本文件覆盖成这一次的内容，且返回看起来是成功的。'
+}
+
+/**
+ * **写前备份读源失败**（`backup()` 抛它 ⇒ {@link writeHobFile} 落 `read-failed`）。
+ *
+ * ⚠ 单独一个错误类型而不是 `Error` 带一句字符串：调用方要能**机器可判**地认出
+ *   "这是读不出来、不是写不进去"（`write-failed` 与 `read-failed` 的修法完全不同）。
+ */
+export class BackupReadError extends Error {
+  /** 读盘失败的错误码（`EACCES` / `EIO` / `EISDIR`…；拿不到时是 `'unknown'`）。 */
+  readonly code: string
+  /**
+   * ⚠ 这是**新增导出**（既有的导出一个未动）：它只承载错误码，⛔ 不改变任何既有语义。
+   *   ⚠ code 取**原始错误码**，⛔ 不在这里判"该不该拒" —— 那是 {@link writeHobFile} 的事。
+   */
+  constructor(code: string, message: string) {
+    super(`写前备份时读不出原文（${code}）：${message}`)
+    this.name = 'BackupReadError'
+    this.code = code
+  }
+}
+
+/**
+ * **原子落盘**（同目录 tmp → 写入 → fsync → chmod → rename → fsync 目录）。
+ *
+ * ⚠ 这是本文件**唯一**的原子写实现点：主写入路径（§13）与**回滚**路径
+ *   （§14 的 `rollback`）都走它 —— 两处各写一份必然漂（本仓分层纪律）。
+ * ⚠ **rename 之前**把原文件（若存在）的 mode chmod 到临时件上 ⇒ 覆盖后权限不变
+ *   （实测改前 `600 → 644`）。原文件不存在 ⇒ 沿用系统默认（= 改前行为）。
+ * ⚠ `Buffer` 与字符串都收：回滚要**逐字节**写回备份（⛔ 不经过字符串往返）。
+ *
+ * @param absTarget - 目标绝对路径。
+ * @param data - 要写的内容。
+ * @param modeOverride - 指定 mode（回滚时用备份那份的原 mode）；缺省 = 取现目标的 mode。
+ */
+async function atomicWriteWithMode(
+  absTarget: string,
+  data: string | Buffer,
+  modeOverride?: number,
+): Promise<void> {
+  const tmp = `${absTarget}.tmp-${process.pid}-${Date.now()}`
+  let originalMode = modeOverride
+  if (originalMode === undefined) {
+    try {
+      originalMode = (await stat(absTarget)).mode & 0o777
+    } catch {
+      /** ⚠ 文件不存在 / 读不到权限 ⇒ 不 chmod（沿用系统默认，与改前一致）。 */
+      originalMode = undefined
+    }
+  }
+  try {
+    const fh = await open(tmp, 'w')
+    try {
+      await fh.writeFile(data)
+      /** ⚠ 数据先落地，再 rename（顺序不可换：先改名再 fsync 等于没防住断电）。 */
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
+    if (originalMode !== undefined) {
+      /** ⚠ chmod **在 rename 之前**：改名之后那个 inode 就是目标文件了。 */
+      await chmod(tmp, originalMode)
+    }
+    await rename(tmp, absTarget)
+    /** ⚠ 目录 fsync：让"改名"这件事也落到盘上（该平台不支持时尽力而为）。 */
+    await fsyncDirBestEffort(dirname(absTarget))
+  } catch (e) {
+    try { await rm(tmp, { force: true }) } catch { /* 清理失败不掩盖主错误 */ }
+    throw e
+  }
+}
+
+/**
+ * 尽力 fsync 一个目录（让"条目改名 / 新建"这件事本身落盘）。
+ *
+ * ⚠ **为什么"尽力而为"而⛔ 不当写失败**：`fsync` 目录句柄在部分平台 / 文件系统上
+ *   根本不支持（Windows 上 `fsync` 目录会 `EPERM` / `EISDIR`；某些网络文件系统也是）。
+ *   把它升级成失败会把**本来成功的写入**判成失败（= 换了一个更坏的缺陷）。
+ * ⚠ 但**数据文件本身的 fsync 是硬的**（失败 ⇒ 拒绝写入，见 `writeHobFileInner` §13）：
+ *   那一处丢了就是真的可能半截文件。
+ */
+async function fsyncDirBestEffort(dir: string): Promise<void> {
+  let fh
+  try {
+    fh = await open(dir, 'r')
+    await fh.sync()
+  } catch {
+    /* 该平台/文件系统不支持目录 fsync ⇒ 数据文件的 fsync 已经做过，不在此处升级为失败 */
+  } finally {
+    if (fh !== undefined) {
+      try { await fh.close() } catch { /* 关不掉不影响结果 */ }
+    }
+  }
+}
+
+// ── 进程内串行队列（按文件路径 keyed）─────────────────────────────────────────
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * ⚠⚠ **同进程内的写串行化**（2026-10-24 · 本单必修 4）
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * ── 治的缺陷（实测）────────────────────────────────────────────────────
+ *   两个并发的 `append` 各自先读盘、再拼内容、再写回：
+ *     A 读到旧内容 → B 读到同一份旧内容 → B 写 → A 写（A 的快照里没有 B 的改动）
+ *   ⇒ **B 的那一段凭空消失**，而**两次调用都返回 `ok: true`**（实测丢过 200KB）。
+ *   ⚠ 本函数整个"读 → 判 → 拼 → 写 → 回读"都在队列里 ⇒ 同进程内不存在"用过期快照写"。
+ *
+ * ── ⚠ ⚠ **诚实说明本队列管不到的地方（⛔ 不许含糊）**──────────────────────
+ *   · **跨进程仍然不防**：另一个 Node 进程（另一个 DSH 实例 / 手工脚本 / `git checkout`）
+ *     与本进程**同时**写同一个文件，**照样会互相覆盖**。本队列是**进程内**的
+ *     `Promise` 链，没有任何文件锁 —— 故意如此：加锁文件会引入死锁 / 残留锁 / 崩溃后无人清理
+ *     这些**新的失败面**，而本仓的账本写入是"单写者"设计（`doc-read.ts` 的 *Single Writer
+ *     Principle*）。⇒ 跨进程互斥**不在本批范围**，也**不要**把本队列当成它。
+ *   · **跨机器更不防**（同上，且账本目录若在 NFS 上连 rename 语义都要另说）。
+ *   ⚠ 上面两句必须留在代码里：否则下一个人会以为"已经防并发了"，把真并发问题当成已修。
+ *
+ * ── 实现 ───────────────────────────────────────────────────────────────
+ *   每个**规范化后的目标绝对路径**一条 `Promise` 链：后到的排在前一个（成功或失败）之后。
+ *   ⚠ 用 `then(ok, ok)` 续链：**前一个失败不打断队列**（否则一次失败会把后续写入永久卡死）。
+ *   ⚠ 链尾用完即删（`finally` 里比对同一个 promise 才删）⇒ 不随写入次数增长（无内存泄漏）。
+ */
+const writeQueues = new Map<string, Promise<unknown>>()
+
+async function withFileQueue<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = writeQueues.get(key) ?? Promise.resolve()
+  /** ⚠ 两条回调都要把链续下去：前一个 reject 不该让后一个跟着 reject。 */
+  const run = prev.then(() => fn(), () => fn())
+  /**
+   * ⚠ 链尾登记的是"这次跑完（无论成败）"的 promise，且**吞掉**它的 rejection ——
+   *   真正的错误由 `run` 自己抛给本次调用方，队列只需要知道"轮到我了没有"。
+   */
+  const tail = run.then(() => undefined, () => undefined)
+  writeQueues.set(key, tail)
+  try {
+    return await run
+  } finally {
+    /** ⚠ 只有**自己还是链尾**时才删（否则会把后来者登记的链尾一起删掉 ⇒ 又并发）。 */
+    if (writeQueues.get(key) === tail) writeQueues.delete(key)
+  }
+}
+
 // ── 路径守卫 ────────────────────────────────────────────────────────────────
 
 /**
@@ -460,8 +713,21 @@ function checkWhitelist(file: string): WriteHobResult | null {
   if (file === BACKUP_DIR || file.startsWith(BACKUP_DIR + '/')) {
     return refuse(file, 'not-whitelisted', `拒绝：${BACKUP_DIR}/ 由 write_hob 自管，不接受写入。`)
   }
-  // 账本 + 项目方案（PROJECT.md 自 2026-10-10 / UD-88 起与账本同级）
+  // 账本 + 项目方案 + 当前需求（PROJECT.md 自 2026-10-10 / UD-88 起与账本同级；
+  // REQUIREMENTS.md 自 2026-10-22 起是**唯一现行需求根**）
   if ((LEDGER_FILES as readonly string[]).includes(file)) return null
+  // ⚠ **退役的历史正本**：仍在盘上、仍可读，但**不再是写面**（2026-10-22）
+  if ((RETIRED_LEDGER_FILES as readonly string[]).includes(file)) {
+    return refuse(
+      file,
+      'retired-historical',
+      `拒绝：\`${file}\` 是**退役的历史正本**（仍在账本区根上、逐字节保留、随时可读），`
+        + `\n      ⛔ 但它**不再是现行需求写面** —— 现行需求只有 \`REQUIREMENTS.md\` 一个根。`
+        + `\n      ⇒ 要改当前功能需求 ⇒ 写 \`REQUIREMENTS.md\`（根地图）+ \`volumes/requirements/REQ-<编号>.md\`（条目正文）；`
+        + `\n      ⇒ 要查历史用户决策 ⇒ **读**它（读面不受影响），⛔ 不要往它里面追加。`
+        + `\n      ⚠ 两个现行需求根并存 = 两套真相，那正是本次重构要治的病。`,
+    )
+  }
   // 归档：只允许 archive/<日期目录>/<名>.md，且只一层
   const m = ARCHIVE_PATH_RE.exec(file)
   if (m !== null) {
@@ -515,9 +781,16 @@ interface IdSpec {
   label: string
 }
 
-/** 带编号的两个文件各自的编号规则（`CONTEXT.md` 无编号，不入此表）。 */
+/**
+ * 带编号的两个文件各自的编号规则（`CONTEXT.md` / `REQUIREMENTS.md` 无编号，不入此表）。
+ *
+ * ⚠ **2026-10-22 起 `USER-DECISIONS.md` 已从本表移除**：它在 {@link checkWhitelist}
+ *   就被 `retired-historical` 拒掉，**根本走不到编号逻辑** ⇒ 留着它是**永远跑不到的死规则**，
+ *   而"写着一段永不执行的校验"会让人误以为它还是活的写面（false comfort）。
+ *   ⚠ 这**不是删断言**：它守的那件事（追加时编号必须连续）已由 `REQUIREMENTS.md` 的
+ *   独立编号体系承担（`volumes/requirements/REQ-nn` 由卷索引与机检 L 组盯）。
+ */
 const ID_SPECS: Record<string, IdSpec> = {
-  'USER-DECISIONS.md': { full: /\bUD-(\d+)\b/, family: /UD-(\d+)/g, label: 'UD' },
   'DECISIONS.md': { full: /\bCHG-(\d+)\b/, family: /CHG-(\d+)/g, label: 'CHG' },
 }
 
@@ -565,13 +838,6 @@ function findEntryById(text: string, id: string): string | null {
 
 // ── 格式校验（只校验，不构造）───────────────────────────────────────────────
 
-/** 表格行的列数（按 `|` 切，去掉首尾空段）。 */
-function tableCols(line: string): number {
-  const t = line.trim()
-  if (!t.startsWith('|') || !t.endsWith('|')) return -1
-  return t.slice(1, -1).split('|').length
-}
-
 /**
  * 各账本的**条目格式**校验：与 `.hob/templates/` 的列契约一致。
  *
@@ -581,13 +847,36 @@ function checkFormat(file: string, content: string): WriteHobResult | null {
   const body = normalize(content)
   if (body === '') return refuse(file, 'bad-format', '拒绝：content 为空。')
 
-  if (file === 'USER-DECISIONS.md') {
-    const isBlock = /^#{1,6}\s+UD-\d+/.test(body)
-    if (!isBlock) {
-      const offending = body.split('\n').find((l) => l.trim() !== '' && tableCols(l) !== 6)
-      if (offending !== undefined) {
-        return refuse(file, 'bad-format', `拒绝：USER-DECISIONS.md 条目须为 6 列表格行或 \`### UD-NNN · …\` 块。问题行：${offending.slice(0, 80)}`)
-      }
+  /**
+   * ── `REQUIREMENTS.md`：**根地图**，不是条目正文 ────────────────────────────
+   *
+   * ⚠ 这一条替换的是原先那条 `USER-DECISIONS.md` 的「6 列表格 / `### UD-` 块」校验 ——
+   *   那条在 2026-10-22 之后**已是死规则**（旧根在 {@link checkWhitelist} 就被拒掉，
+   *   根本走不到这里）。留着它 = 一段永不执行、还会误导人以为旧根仍可写的校验。
+   *
+   * ⚠ **本组守的那件事**（与旧那条**不同**，故意不沿用旧形状）：
+   *   需求条目的**正文住在卷里**（`volumes/requirements/REQ-<编号>.md`），根上只放地图。
+   *   ⇒ 判据 = 根文件里**必须至少有一行表格指向卷内条目**（即"它是地图，不是正文"）。
+   *   否则有人会直接把需求正文写进根，回到"根文件无限增长"的老形态。
+   *
+   * ⚠ **为什么不做"每条都必须被点到"的正向核**：那件事已由 `check:gitignore` 的
+   *   **断言 L（索引两向完整）**在卷索引面盯着 —— 这里再写一遍就是**同一条判据两份实现**
+   *   （本项目明令要防的形态）。本处只判**形状**，与既有分工一致。
+   */
+  if (file === 'REQUIREMENTS.md') {
+    const mapRows = body
+      .split('\n')
+      .filter((l) => l.trim().startsWith('|'))
+      .filter((l) => /`volumes\/requirements\/[A-Za-z0-9._-]+\.md`/.test(l))
+    if (mapRows.length === 0) {
+      return refuse(
+        file,
+        'bad-format',
+        `拒绝：\`REQUIREMENTS.md\` 是**现行需求根地图**，里面必须至少有一行表格指向卷内条目`
+          + `（形如 \`volumes/requirements/REQ-01.md\`）。`
+          + `\n      ⇒ 条目正文请写进 \`volumes/requirements/REQ-<编号>.md\`（一事一文件），根上只留地图；`
+          + `\n      ⛔ 不要把需求正文直接写进根 —— 那会退回"根文件只进不出、无限增长"的老形态。`,
+      )
     }
   }
   if (file === 'DECISIONS.md') {
@@ -605,16 +894,88 @@ async function ensureDir(p: string): Promise<void> {
   await mkdir(p, { recursive: true })
 }
 
-/** 列出一个文件的历史备份（按名升序 = 时间升序）。 */
-async function listBackups(backupDir: string, base: string): Promise<string[]> {
+/**
+ * 一条备份的**排序键**（2026-10-24 · 本单必修 6）。
+ *
+ * ── 它治的缺陷 ────────────────────────────────────────────────────────
+ *   备份名形如 `PROJECT.md.<YYYYMMDD-HHMMSS>.bak`，同秒冲突时还会长出
+ *   `….<stamp>.1.bak` / `.2.bak`（见 {@link backup} 的 `wx` + 递增后缀）。
+ *   ⚠ 改前 `listBackups` 直接 `names.sort()` —— **字典序**：
+ *     `'…-040000.1.bak'` 与 `'…-040000.bak'` 比到后缀时 `'1' < 'b'`
+ *     ⇒ **递增后缀排到无后缀那份前面**，于是"保留 N 份、删最旧"删掉的
+ *     **恰恰是最新那一份**；更糟的是它可能删掉**本次刚生成、已经返回给调用方**
+ *     的那个 `backupName` ⇒ 返回值里点名的备份**根本不在盘上**（回滚路径断掉）。
+ *
+ * ── 判据 ──────────────────────────────────────────────────────────────
+ *   ① **先按 mtime**（文件的真实写入时刻，跨"同秒但不同批次"也分得开）；
+ *   ② mtime 相同时按 **stamp 字符串**（同一秒名族）；
+ *   ③ 再按**递增后缀序号**（`.1` 一定晚于无后缀那份 —— 它是"撞名后换的下一个名字"）。
+ *   ⚠ 三条都升序 = 时间升序 ⇒ 删最旧就是删数组**头部**。
+ */
+interface BackupEntry {
+  name: string
+  /** 文件真实修改时刻（毫秒）；取不到时退化为 0（排序时按名继续区分）。 */
+  mtimeMs: number
+  /** 名字里的 stamp（`YYYYMMDD-HHMMSS`）；不符合命名形态 ⇒ 空串。 */
+  stamp: string
+  /** 递增后缀序号（无后缀 = 0）。 */
+  seq: number
+}
+
+/** 解析一个备份名（相对 `base` 前缀）：返回 stamp 与递增序号；形态不符 ⇒ undefined。 */
+function parseBackupName(name: string, base: string): { stamp: string; seq: number } | undefined {
+  if (!name.startsWith(base + '.') || !name.endsWith('.bak')) return undefined
+  const mid = name.slice(base.length + 1, name.length - '.bak'.length)
+  const m = /^(\d{8}-\d{6})(?:\.(\d+))?$/.exec(mid)
+  if (m === null) return undefined
+  const seq = m[2] === undefined ? 0 : Number(m[2])
+  return { stamp: m[1]!, seq: Number.isFinite(seq) ? seq : 0 }
+}
+
+/**
+ * 列出一个文件的历史备份，**按真实时间升序**（判据见 {@link BackupEntry}）。
+ *
+ * ⚠ 这是**唯一**的备份排序实现点：`backup()` 的去重（"最近一份"）与保留策略
+ *   （"删最旧"）都从它取顺序 —— 两处各排一遍必然漂（本仓分层纪律）。
+ */
+async function listBackupEntries(backupDir: string, base: string): Promise<BackupEntry[]> {
+  let names: string[]
   try {
-    const names = await readdir(backupDir)
-    return names.filter((n) => n.startsWith(base + '.') && n.endsWith('.bak')).sort()
+    names = await readdir(backupDir)
   } catch {
     return []
   }
+  const out: BackupEntry[] = []
+  for (const name of names) {
+    const parsed = parseBackupName(name, base)
+    if (parsed === undefined) continue
+    let mtimeMs = 0
+    try {
+      mtimeMs = (await stat(join(backupDir, name))).mtimeMs
+    } catch {
+      /**
+       * ⚠ 取不到 mtime（刚被别的进程删掉 / 权限）⇒ **不丢这一条**：
+       *   `mtimeMs: 0` 会让它排到最前（= 视为最旧），而它本来就可能已经不在了；
+       *   保留在清单里能让去重那一步照旧按内容判，⛔ 不会把"读不到"说成"没有备份"。
+       */
+      mtimeMs = 0
+    }
+    out.push({ name, mtimeMs, stamp: parsed.stamp, seq: parsed.seq })
+  }
+  return out.sort((a, b) => {
+    if (a.mtimeMs !== b.mtimeMs) return a.mtimeMs - b.mtimeMs
+    if (a.stamp !== b.stamp) return a.stamp < b.stamp ? -1 : 1
+    return a.seq - b.seq
+  })
 }
 
+/**
+ * ⚠ **本文件不再有"只回名字"的 `listBackups`**：本单之后所有调用点都要排序键
+ *   （mtime + stamp + 递增序号）—— 只回名字的版本会诱使下一个人回到 `names.sort()`
+ *   （= 必修 6 的病根）。⇒ 唯一入口是 {@link listBackupEntries}。
+ *   ⚠ 行为差异：这是一处**删除**（函数未导出、`src/` 内无外部调用者）；
+ *     既有备份**命名规则一个字未改** ⇒ 盘上那 217 份历史备份照旧按族识别得出。
+ */
 /**
  * 写前备份：全量复制 + 与最近一份**去重** + 保留 `keepBackups` 份。
  *
@@ -628,23 +989,36 @@ async function backup(
   backupDir: string,
   keepBackups: number,
 ): Promise<string | undefined> {
-  let original: Buffer
-  try {
-    original = await readFile(absTarget)
-  } catch {
-    return undefined // 文件尚不存在（首次创建）⇒ 无需备份
+  /**
+   * ⚠⚠ **"读不出来"⛔ 不许当成"首次创建"**（2026-10-24 · 本单必修 2）。
+   *
+   * 改前这里是 `try { readFile } catch { return undefined }` —— 一个 `catch` 把
+   *   `ENOENT`（真的还没有这个文件）与 `EACCES` / `EIO`（**读不出来**）说成同一句话。
+   * ⇒ 后者的后果：**不备份**，然后覆盖写 ⇒ **改前那份原状没有任何副本**
+   *   （R-17「副本必须先于重写」当场被破），而调用方看不出发生了什么。
+   * ⇒ 现在只有 `ENOENT` 走"首次创建、无需备份"；其余**抛出去**，由
+   *   {@link writeHobFile} 落成 `read-failed` 并说明。
+   */
+  const read = await readTargetBytes(absTarget)
+  if (read.kind === 'error') {
+    throw new BackupReadError(read.code, read.message)
   }
+  if (read.kind === 'missing') return undefined // 真的还没有这个文件 ⇒ 无需备份
+  /** ⚠ 逐字节保真（见 {@link readTargetBytes}）——⛔ 不经过字符串往返。 */
+  const original = read.bytes
 
   await ensureDir(backupDir)
   const base = absTarget.split(sep).pop()!
-  const existing = await listBackups(backupDir, base)
+  const existing = await listBackupEntries(backupDir, base)
 
-  // 去重：与最近一份内容相同则不再新增（防"反复写同内容"刷屏）
+  // 去重：与**最近一份**（按 mtime + 序号，见 `BackupEntry`）内容相同则不再新增
+  //   （防"反复写同内容"刷屏）。⚠ 改前这里取的是 `sort()` 的最后一项 = 字典序最大，
+  //   而同秒多份时它**不是**最新那份（`…040000.bak` vs `…040000.1.bak`）⇒ 去重会判错。
   if (existing.length > 0) {
-    const latestPath = join(backupDir, existing[existing.length - 1]!)
+    const latest = existing[existing.length - 1]!
     try {
-      const latest = await readFile(latestPath)
-      if (latest.equals(original)) return existing[existing.length - 1]!
+      const latestBytes = await readFile(join(backupDir, latest.name))
+      if (latestBytes.equals(original)) return latest.name
     } catch { /* 读不到就当没备份过 */ }
   }
 
@@ -667,12 +1041,12 @@ async function backup(
    *   ⚠ 两者缺一不可：只有 `wx` ⇒ 同秒第二次直接失败；只有后缀 ⇒ 存在性检查有窗口。
    *
    * ── ⚠ 为什么**不改族键**（`basename` → 账本区相对路径）─────────────────
-   *   那是迁移工程（涉及 217 份历史备份的命名与 `listBackups` 的族判定），
+   *   那是迁移工程（涉及 217 份历史备份的命名与族判定 `parseBackupName`），
    *   TASK 明令**另开轮**。⇒ 本批**只**保证"同秒不覆盖"。
    *   ⚠ ⚠ 因此**遗留一格已知缺陷**：**同一秒、两个不同路径、`basename` 相同**时，
    *     第二份仍会把第一份顶掉（`wx` 会撞、递增后缀会让它变成 `.1` ——
-   *     ⚠ 但 `listBackups` 的族判定按 `basename` 前缀，`.1` 仍算同一族 ⇒ **不再丢**）。
-   *     见下面 `listBackups` 那段注释与报告里的"已知未修"。
+   *     ⚠ 但族判定（`parseBackupName`）按 `basename` 前缀，`.1` 仍算同一族 ⇒ **不再丢**）。
+   *     见 {@link listBackupEntries} 的注释与报告里的"已知未修"。
    */
   const stampStr = stamp()
   let name = `${base}.${stampStr}.bak`
@@ -706,11 +1080,34 @@ async function backup(
     throw new Error(`备份名冲突：同一秒内 \`${base}\` 已有 100 份同名备份（${stampStr}）⇒ 拒绝覆盖`)
   }
 
-  // 保留 N 份：超出则删最旧
-  const after = await listBackups(backupDir, base)
-  const excess = after.length - Math.max(1, keepBackups)
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **保留 N 份：按真实时间删最旧的，且⛔ 永不删本次刚生成的那份**
+   * （2026-10-24 · 本单必修 6）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 改前的两条病灶 ───────────────────────────────────────────────────
+   *   ① `const after = await listBackups(...)` 拿的是**字典序**；同秒多份时
+   *      `…040000.bak` 排在 `…040000.1.bak` **之后**（`'b' > '1'`）⇒ "删最旧"删掉的
+   *      恰恰是**最新那份**（刚生成的那份）。历史因此被削成"只剩最老的几份"。
+   *   ② **没有排除本次的 `name`** ⇒ 上限很小时（`keepBackups = 1` 是最坏的一档）
+   *      本次备份**自己**会被删掉，而 `name` **已经作为 `backupName` 返回给调用方** ——
+   *      返回值指向一个**不在盘上**的备份 ⇒ 回滚路径（`readFile(join(backupDir, backupName))`）
+   *      当场失效。
+   *
+   * ── 现在的判据（三句话）──────────────────────────────────────────────
+   *   · 顺序来自 {@link listBackupEntries}（mtime → stamp → 递增序号，**时间升序**）；
+   *   · **本次的 `name` 从候选里剔除**（它永远保留）—— 这是"返回值必须能在盘上被读到"的保证；
+   *   · 剩下的按**从旧到新**删，删到总数 `<= max(1, keepBackups)`。
+   *   ⚠ 删不掉不阻塞写入（既有语义不变）。
+   */
+  const after = await listBackupEntries(backupDir, base)
+  const keep = Math.max(1, keepBackups)
+  const prunable = after.filter((e) => e.name !== name)
+  /** ⚠ 本次那份**也算**一份 ⇒ 它还占一个名额（否则总份数会达到 `keep + 1`）。 */
+  const excess = prunable.length - Math.max(0, keep - 1)
   for (let i = 0; i < excess; i++) {
-    try { await unlink(join(backupDir, after[i]!)) } catch { /* 删不掉不阻塞写入 */ }
+    try { await unlink(join(backupDir, prunable[i]!.name)) } catch { /* 删不掉不阻塞写入 */ }
   }
   return name
 }
@@ -730,10 +1127,40 @@ export async function writeHobFile(
   opts: WriteHobOptions,
 ): Promise<WriteHobResult> {
   const file = normalizeRelPath(input.file)
-  const mode = input.mode ?? 'append'
   if (root === undefined || root.trim() === '') {
     return refuse(file, 'no-workspace-root', '拒绝：无法确定工作区根目录。')
   }
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **同进程内按路径串行**（2026-10-24 · 本单必修 4）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * 队列 **必须**在"读存量之前"就开始 ⇒ 整个「读 → 判 → 拼 → 备份 → 写 → 回读」
+   * 都在同一个临界区里。改前两次并发 `append` 各自读同一份旧内容、后写的把先写的
+   * 顶掉，而**两次都回 `ok: true`**（实测丢过 200KB）。
+   *
+   * ⚠ **key 用规范化后的目标绝对路径**（不是入参原文）：`./CONTEXT.md` / `CONTEXT.md` /
+   *   `a/../CONTEXT.md` 是**同一个文件**，必须排同一条队（用原文当 key 会让它们并行）。
+   * ⚠ **判据在 {@link withFileQueue} 的注释里** —— ⛔ 这里不重写一份，只说"为什么在这里"。
+   * ⚠ ⚠ **跨进程仍不防**（见那个注释）：本队列只是同进程内的一条 `Promise` 链。
+   */
+  const queueKey = resolveInside(resolveInside(root, opts.hobDir).abs, file).abs
+  return withFileQueue(queueKey, () => writeHobFileInner(root, input, opts))
+}
+
+/**
+ * {@link writeHobFile} 的实现体（**唯一**的落盘路径）。
+ *
+ * ⚠ 拆出来**只为**套那一层进程内队列（见上）；函数体本身的行为**一处未改**，
+ *   除了本单点名的那几条（读失败判据 / 原子写 fsync / mode 保留）。
+ */
+async function writeHobFileInner(
+  root: string,
+  input: WriteHobInput,
+  opts: WriteHobOptions,
+): Promise<WriteHobResult> {
+  const file = normalizeRelPath(input.file)
+  const mode = input.mode ?? 'append'
   /**
    * ⚠ ⚠ **写之前**账本根在不在（2026-10-16 第 247 轮 · `TASK-R207`）。
    *
@@ -792,27 +1219,57 @@ export async function writeHobFile(
   const rendered = renderReadings(hobRoot, file, input.content)
   const content = rendered.content
 
+  /**
+   * ── 6.6：`REQUIREMENTS.md` 的**形状**必须两种模式都判 ─────────────────────
+   *
+   * ⚠ 为什么不能只放在 append 分支：**根地图是整份重写的**（`overwrite` 才是它的常态），
+   *   而 `checkFormat` 原先只被 `append` 分支调用 ⇒ 把唯一的形状判据挂在**最少用的那条路**上，
+   *   等于"日常写法不受检"（本仓反复记过的形态：判据落在无人走的路径上）。
+   *   ⇒ 这里对**新根**单独补一次，`append` / `overwrite` 都走到。
+   * ⚠ 其余文件保持原样（`DECISIONS.md` 的编号形状仍只在 append 判）—— 本批不扩判定面。
+   */
+  if (file === 'REQUIREMENTS.md') {
+    const rootFmt = checkFormat(file, content)
+    if (rootFmt !== null) return rootFmt
+  }
+
   const contentBytes = Buffer.byteLength(content, 'utf8')
   if (contentBytes > opts.maxFileBytes) {
     return refuse(file, 'too-large', `拒绝：content ${contentBytes} 字节，超过上限 ${opts.maxFileBytes}。`)
   }
 
-  // ── 7：读存量（append 需要它做编号/幂等；overwrite 需要它做缩水守卫）────
-  let existing = ''
-  let exists = true
-  try {
-    existing = await readFile(absTarget, 'utf8')
-  } catch {
-    exists = false
+  /**
+   * ── 7：读存量（append 需要它做编号/幂等；overwrite 需要它做缩水守卫）────
+   *
+   * ⚠⚠ **本单必修 1/3：读不出来必须拒写**（2026-10-24）。
+   *
+   * 改前：`try { existing = await readFile(...) } catch { exists = false }` ——
+   *   `catch` 把**一切**错误都读成"文件不存在"。
+   *   · `append` 于是用**空 `existing`** 拼内容 ⇒ **整本账本被覆盖成这一条**，
+   *     而返回值仍是 `ok: true` / `bytesBefore: 0`（实测 200KB 账本被顶掉）；
+   *   · `overwrite` 于是跳过缩水守卫与幂等比对（它们都以 `exists` 为前提）；
+   *   · `backup()` 同理不备份（见 {@link backup}）。
+   *
+   * ⇒ 现在三态分开（{@link TargetRead}）：只有 `missing` 才当"首次创建"；
+   *   `error` **当场拒写**并给可读原因（`read-failed`），
+   *   ⛔ 绝不带着一个空的 `existing` 往下走 —— 那正是"账本被覆盖还报成功"的来源。
+   */
+  const read = await readTarget(absTarget)
+  if (read.kind === 'error') {
+    return refuse(file, 'read-failed', describeReadFailure(file, read))
   }
-
-  if (!exists && mode === 'overwrite') {
-    // overwrite 一个不存在的文件 = 创建；允许，但缩水守卫无从比较
-  }
+  const exists = read.kind === 'ok'
+  const existing = read.kind === 'ok' ? read.content : ''
 
   // ── 8：编号校验 + 幂等（append 才需要）────────────────────────────────
   let id: string | undefined
   if (mode === 'append') {
+    /**
+     * ⚠ **这里再判一次"读不出来"是多余的**（上面已经拒掉了）—— 本段**刻意不写**
+     *   `exists ? … : …` 之外的兜底：`exists === false` 此刻**只有一个含义**
+     *   （文件真的不存在，ENOENT），不再兼指"读失败"。⛔ 不许在这里补一个
+     *   "读不到就按空文件算"的分支 —— 那会把必修 1 修好的东西原路放回去。
+     */
     const fmt = checkFormat(file, content)
     if (fmt !== null) return fmt
 
@@ -873,6 +1330,18 @@ export async function writeHobFile(
     : undefined
 
   // ── 11：组装最终内容 ────────────────────────────────────────────────────
+  /**
+   * ⚠ **本单必修 3 的复查点**（2026-10-24）：下面 `append` 那一支仍然用
+   *   `exists ? trimmed + … : body + …`。
+   *   ⚠ 改前它的隐患是 `exists === false` **同时**意味着"文件不存在"与"读不出来"
+   *     ⇒ 读到 `EACCES` 时会用**空 `existing`** 拼出"只有这一条"的内容并覆盖整本账本。
+   *   ⇒ 必修 1 之后（见 §7 的 {@link readTarget} 三态）：走到这里时
+   *     `exists === false` **只剩一个含义** —— `ENOENT`，即"这个文件真的还不存在"。
+   *     `EACCES` / `EIO` / `EISDIR` 等已在 §7 **当场拒写**（`read-failed`），根本到不了这里。
+   *   ⚠ 所以本段**不需要改写法**（改成 `existing` 非空判也会得到同一结果）——需要的是
+   *     **判据被收紧**，而那是 §7 做的。⛔ 这里⛔ 不加"再做一次兜底"的分支：
+   *     那会让两个判据并存，日后必然漂。
+   */
   const eol = exists ? dominantEol(existing) : '\n'
   const body = eol === '\r\n' ? content.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n') : content.replace(/\r\n/g, '\n')
   let next: string
@@ -913,17 +1382,51 @@ export async function writeHobFile(
   try {
     backupName = await backup(absTarget, backupDir, opts.keepBackups)
   } catch (e) {
+    /**
+     * ⚠⚠ **两种成因⛔ 不许说成一句话**（2026-10-24 · 本单必修 2 的出口）：
+     *   · `BackupReadError` —— **读不出原文** ⇒ `read-failed`（去查权限 / 磁盘 / 路径）；
+     *   · 其它（`ENOSPC` / `EACCES` 写备份 / 100 个后缀撞满）—— **备份写不成**
+     *     ⇒ `write-failed`（去查备份目录）。
+     *   ⚠ 两者的处置完全不同（"不备份就不写"这条语义**没变**，变的是**说得清是哪一种**）。
+     */
+    if (e instanceof BackupReadError) {
+      return refuse(file, 'read-failed', describeReadFailure(file, e))
+    }
     return refuse(file, 'write-failed', `拒绝：写前备份失败（${e instanceof Error ? e.message : String(e)}）—— 不备份就不写。`)
   }
 
-  // ── 13：原子写（同目录 tmp → rename）────────────────────────────────────
+  // ── 13：原子写（同目录 tmp → rename，**补齐 fsync 链**）───────────────────
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **原子写不只是 tmp → rename**（2026-10-24 · 本单必修 5）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 改前缺的两件（都很实际）───────────────────────────────────────────
+   *   ① **没有 fsync**：`writeFile(tmp)` 只把数据交给内核页缓存，`rename` 只改目录项。
+   *      ⚠ 断电 / 崩溃时可能出现"目录项已经指向新名字、而数据还在页缓存里没落盘"
+   *      ⇒ 重开得到一个**长度对、内容空白 / 半截**的文件 —— 原子写本该防的正是这个。
+   *      ⇒ 现在：**先 fsync 临时文件**（数据先落地），**rename 之后再 fsync 目录**
+   *        （让"改名"这件事本身也落地）。
+   *   ② **rename 换掉了原文件的 mode**：`writeFile(tmp)` 用的是 `0o666 & ~umask`（通常 644），
+   *      rename 之后**目标文件的权限跟着新 inode 走** ⇒ 实测 `600 → 644`
+   *      （账本从"只有我能读"变成"同机所有人都能读"）。
+   *      ⇒ 现在：**rename 之前**把原文件的 mode **chmod 到临时件上**（原文件不存在则沿用默认）。
+   *
+   * ── 既有行为哪一条仍然成立（凭什么确认）──────────────────────────────────
+   *   · **同目录 tmp → rename 的原子性**：一条都没改（还是同一个 `rename`，同目录）；
+   *   · **临时件命名**：`${absTarget}.tmp-${process.pid}-${Date.now()}` **一字未动**
+   *     ⇒ 既有的"残留临时件可被识别 / 不会与目标同名"的前提不变；
+   *   · **失败清理**：`rm(tmp, { force: true })` 仍在 `catch` 里，且失败不掩盖主错误；
+   *   · **返回的 reason 仍集中在 `write-failed`**（除上面新分出的 `read-failed`）。
+   *
+   * ⚠ **fsync 失败怎么办**：与"写失败"同档 —— 拒绝、清理临时件、回 `write-failed`。
+   *   ⛔ 不许"fsync 没成功就当没事"（那等于把持久化保证悄悄降级）。
+   */
   await ensureDir(dirname(absTarget))
-  const tmp = `${absTarget}.tmp-${process.pid}-${Date.now()}`
   try {
-    await writeFile(tmp, next, 'utf8')
-    await rename(tmp, absTarget)
+    /** ⚠ 具体判据（fsync 链 / mode 保留 / 为什么用 Buffer）见 {@link atomicWriteWithMode}。 */
+    await atomicWriteWithMode(absTarget, next)
   } catch (e) {
-    try { await rm(tmp, { force: true }) } catch { /* 清理失败不掩盖主错误 */ }
     return refuse(file, 'write-failed', `写入失败：${e instanceof Error ? e.message : String(e)}`)
   }
 
@@ -973,24 +1476,17 @@ export async function writeHobFile(
     if (backupName !== undefined) {
       try {
         /**
-         * ⚠⚠ **回滚也走 `tmp → rename`**（丙-3 要求 1）：
-         *   同目录内建临时件 ⇒ 写备份内容 ⇒ `rename` 到目标。
+         * ⚠⚠ **回滚也走 `tmp → rename`**（丙-3 要求 1），且**与主写入同一个实现**
+         *   （{@link atomicWriteWithMode}）：同目录临时件 ⇒ 写备份字节 ⇒ fsync ⇒
+         *   chmod（沿用目标当前 mode）⇒ `rename` ⇒ fsync 目录。
          *   ⚠ `rename` 在同一文件系统内是**原子**的 ⇒ 目标要么是**旧的整体**、
          *     要么是**新的整体**，⛔ 绝不会是"半截回滚内容"。
-         *   ⚠ 临时件名带 `pid` + 时间戳 ⇒ 多次回滚不会互撞（同丙-4 那条纪律）。
+         *   ⚠ 写入的是**备份的原始字节**（⛔ 不经过字符串往返）⇒ 回滚结果与备份逐字节相同。
          */
         const backBytes = await readFile(join(backupDir, backupName))
-        const rbTmp = `${absTarget}.rollback-${process.pid}-${Date.now()}`
-        try {
-          await writeFile(rbTmp, backBytes)
-          await rename(rbTmp, absTarget)
-          rolled = true
-          how = '（原子回滚：tmp → rename）'
-        } catch (e2) {
-          /** ⚠ 临时件清掉再抛 —— ⛔ 不许留垃圾。 */
-          try { await rm(rbTmp, { force: true }) } catch { /* 清不掉不影响判定 */ }
-          throw e2
-        }
+        await atomicWriteWithMode(absTarget, backBytes)
+        rolled = true
+        how = '（原子回滚：tmp → rename + fsync）'
       } catch { /* 回滚失败要在消息里说清 */ }
     }
     return refuse(file, 'readback-mismatch', `写入后回读校验失败（${e instanceof Error ? e.message : String(e)}）；${rolled ? `已从备份回滚${how}` : '回滚未成功，请人工检查'}。`)

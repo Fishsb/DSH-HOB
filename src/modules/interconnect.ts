@@ -65,6 +65,14 @@ export interface DeliverRemoteResult {
   /** 机器可判的类别 —— ⚠ 与 `reason` 一起构成"可读且可判"的失败面。 */
   reason?: 'switch-off' | 'target-not-in-allowlist' | 'launcher-missing' | 'spawn-failed'
     | 'timeout' | 'nonzero-exit' | 'empty-stdout' | 'malformed-json' | 'ok'
+    /**
+     * ⚠ 2026-10-22 新增（`REQ-04`）：**本会话**的可读档不够（不是全局档不够）。
+     * ⚠ 与 `switch-off` **分开**：那个是"模块开关关了"，这个是"这个会话只有账本档"。
+     * ⚠ 两者**必须可分辨** —— 修法不同（改配置 vs 改该会话的档位）。
+     */
+    | 'session-level-too-low'
+    /** ⚠ 2026-10-22 第 2 轮：**没有可信发起者**（无 initiator / 已销毁 / 无策略 / 策略坏）。 */
+    | 'no-trusted-initiator'
   /** ⚠ 给人和模型看的一句话（⛔ 不许空着）。 */
   message: string
   /** 对端 stdout（⚠ 成功时是答案；⚠ 失败时原文保留，便于定位）。 */
@@ -77,6 +85,15 @@ export interface DeliverRemoteResult {
   events?: unknown[]
   /** 实际用了哪个对端（⚠ 点名用的那个）。 */
   target: string
+  /**
+   * ⚠ 准入拒因的**细分代码**（2026-10-22 第 2 轮）。
+   *   `no-initiator` / `stale-session` / `no-policy` / `bad-policy` —— 拒；
+   *   `level-too-low` —— 有身份但该会话档位不够。
+   *   ⚠ 与 `reason` 并用：`reason` 是**族**（能不能投），本字段是**为什么**（该修哪）。
+   */
+  admissionCode?: string
+  /** ⚠ 通过/被拒时涉及的**真实发起会话 id**（⚠ 取自执行归属，⛔ 不是调用方参数）。 */
+  sessionId?: string
 }
 
 /**
@@ -179,6 +196,38 @@ function looksLikeScript(p: string): boolean {
   return p.endsWith('.js') || p.endsWith('.mjs') || p.endsWith('.cjs')
 }
 
+/**
+ * 一次投递的**准入判定结果**（判别联合 —— ⚠ 两种结果**不可互换**）。
+ *
+ * ── 为什么不是"返回一个档位字符串"（上一轮就是那样，本轮改掉）───────────
+ *   字符串把三件事压成一个读数：
+ *     · 有身份、档位够 ⇒ 放行；
+ *     · 有身份、档位不够 ⇒ 拒（**改该会话的档**就能解决）；
+ *     · 根本不知道是谁 ⇒ 拒（**接执行上下文**才能解决，改档没用）。
+ *   ⇒ 后两者对读者的下一步指示**相反**。压成同一个 `'ledger'` 会让
+ *     "身份链路没接上"表现成"你的权限太低"，把人指去修错的地方
+ *     （与 `SS-a` 丙-2 同一条教训：两件事必须分开印）。
+ */
+export type Admission =
+  | {
+    ok: true
+    /** 可信发起会话的 id（⚠ 取自宿主执行归属并回表核实过，⛔ 不是调用方自报）。 */
+    sessionId: string
+    /** 该会话自己的可读档（三档之一）。 */
+    level: string
+    /** 该会话是不是 Hob 会话（非 Hob 时本插件不做逐会话判定 —— 但仍须有身份）。 */
+    isHob: boolean
+    /** 策略来源（`stored` / `derived-default` / …；诊断用）。 */
+    source: string
+  }
+  | {
+    ok: false
+    /** ⚠ 机器可判的拒因 —— 修法各不相同，⛔ 不许压成一句"被拒"。 */
+    code: 'no-initiator' | 'stale-session' | 'no-policy' | 'bad-policy'
+    /** 给人看的一句话（⛔ 不许空着）。 */
+    detail: string
+  }
+
 /** 投递的运行时依赖（⚠ 由 `index.ts` 注入 —— ⚠ 与 `bus.ts` 的 `ledgerRootOf` 同款纪律）。 */
 export interface InterconnectDeps {
   /**
@@ -188,6 +237,37 @@ export interface InterconnectDeps {
   enabledOf: () => boolean
   /** ⚠ **现读**白名单（⚠ 同上：⛔ 不缓存）。 */
   targetsOf: () => readonly InterconnectTarget[]
+  /**
+   * ⭐⭐ **投递准入：可信发起者 → 该会话策略**（2026-10-22 第 2 轮 · `REQ-04`/`REQ-05`）。
+   *
+   * ── 它取代了什么 ────────────────────────────────────────────────────
+   *   上一轮的 `sessionLevelOf(sessionKey)` 收**调用方自报的字符串**作身份
+   *   ⇒ 谁传谁算，传别人的 id 就能借用别人的权限。**那不是授权，是可伪造的声称。**
+   *   ⇒ 现在本模块**不接受**任何身份参数：它只问一句"当前这次投递是谁发起的"，
+   *     由入口用宿主的执行归属（`agents.currentInitiator()`，`AsyncLocalStorage`）回答。
+   *
+   * ── 返回值是**判别**，不是字符串 ─────────────────────────────────────
+   *   · `{ ok: true, sessionId, level, isHob, source }` —— 有可信发起者且取到了档；
+   *   · `{ ok: false, code, detail }` —— 拒，且 `code` **机器可判**：
+   *     `no-initiator` / `stale-session` / `no-policy` / `bad-policy`。
+   *   ⚠ 为什么不用"返回 `'ledger'` 表示拒"：那会把**两种完全不同的事**
+   *     （"这个人只有账本档" vs "根本不知道是谁"）压成同一个读数，
+   *     而它们的修法相反（前者去改该会话的档，后者去接执行上下文）。
+   *     上一轮就是这么写的 —— 本轮改成判别类型，把两者**分开**。
+   *
+   * ⚠ 缺席 / 抛异常 / 形状不对 ⇒ 一律拒。**fail-closed**，⛔ 不退回全局宽档。
+   */
+  admissionOf?: () => Admission
+  /**
+   * ⚠ 上一轮留下的全局档读取口（**仅供诊断文案**使用，⛔ 不参与准入判定）。
+   *
+   * ── 为什么还留着 ────────────────────────────────────────────────────
+   *   模块装载时那几行如实报告要说出"**装载层现在只看开关**"，否则读数会变成
+   *   "档位=ledger 却装上了" —— 看着像 bug。留它只为把**声明**打清楚。
+   *   ⛔ 任何 `deliverRemote` 的放行/拒绝分支都**不许**读它（判据挂
+   *     `scripts/check-policy-cross-instance.mjs` 的负向对拍）。
+   */
+  diagnosticLevelOf?: () => string
   /** ⚠ 日志（⚠ 本模块不用 `console.*`）。 */
   log?: (m: string) => void
   /** ⚠ 超时毫秒（⚠ 缺省 {@link DEFAULT_TIMEOUT_MS}）。 */
@@ -224,10 +304,22 @@ export function deliverRemote(
   deps: InterconnectDeps,
   name: string,
   task: string,
+  /**
+   * ⚠⚠ **这里刻意没有 `sessionKey`**（2026-10-22 第 2 轮）。
+   *
+   *   上一轮加过 `sessionKey?: string` —— 那是"调用方自报身份"，**可伪造**：
+   *   传别人的 id 就借用别人的档位。本轮删掉它，改用宿主的执行归属
+   *   （`deps.admissionOf()`，内部走 `agents.currentInitiator()` + `sessions.get()` 回表）。
+   *   ⇒ 调用方**没有任何**参数可以声明"我是谁"。
+   */
   opts: { json?: boolean; cwd?: string } = {},
 ): Promise<DeliverRemoteResult> {
   const target = name.trim()
+  /** 通过准入后的真实发起会话（⚠ 只给日志用；⛔ 后续任何分支都不再据此放行）。 */
+  let admittedSessionId = ''
+  let admittedLevel = ''
   // ── ① 开关（⚠ 缺省关：⚠ 关着就**什么都不投**，但**要有可读输出**）────────────
+  //   ⚠ 语义与文案**逐字未变**（既有断言 SS / host-probe 依赖它）。
   if (deps.enabledOf() !== true) {
     return Promise.resolve({
       ok: false, reason: 'switch-off', target,
@@ -235,6 +327,10 @@ export function deliverRemote(
     })
   }
   // ── ② 白名单（⚠ 地址只从配置来 ⇒ ⛔ 不接受任意远端）──────────────────────
+  //   ⚠ 顺序：开关 → **白名单** → 身份 → 档位。
+  //     把白名单放在身份之前，是为了让"地址写错了"这件事**先**被说出来 ——
+  //     否则一个未接入执行上下文的调用会先撞"没身份"，把配置错误盖掉。
+  //     ⚠ 这不叫放宽：白名单拒与身份拒**都是拒**，只是**谁先说**。
   const targets = deps.targetsOf()
   const found = findTarget(targets, target)
   if (found === undefined) {
@@ -244,6 +340,82 @@ export function deliverRemote(
       message: `对端 \`${target}\` **不在白名单里** ⇒ ⛔ 拒绝投递。`
         + (known === '' ? '（⚠ 当前白名单**为空** —— 请先在配置里点名对端。）' : `（⚠ 白名单内可用：${known}）`),
     })
+  }
+  // ── ③ ⭐ 投递准入：**可信发起会话** → 该会话自己的策略 ────────────────────
+  //   ⚠⚠ 这一层是本轮的核心：身份**不来自调用方参数**，来自宿主执行归属。
+  //     上一轮收的是 `opts.sessionKey`（调用方自报）⇒ 传别人的 id 就能借用别人的权限。
+  //     ⛔ 现在函数签名里**没有**任何身份参数 —— 想伪造也没有入口。
+  //   ⚠ 顺序放在白名单之后、启动器之前：白名单/开关的既有文案逐字不变；
+  //     而**未通过准入的调用绝不进入启动器解析与 spawn**（⛔ 不触发任何外部进程）。
+  {
+    let verdict: Admission
+    try {
+      verdict = deps.admissionOf?.() ?? {
+        ok: false, code: 'no-policy',
+        detail: '本模块没有拿到准入判定器（`admissionOf` 缺席）⇒ 无法确认发起者，按拒处理',
+      }
+    } catch (e) {
+      verdict = { ok: false, code: 'no-policy', detail: `准入判定器抛错：${String((e as Error)?.message ?? e)}` }
+    }
+    if (verdict.ok !== true) {
+      /**
+       * ⚠ 每一档拒因都**单独成句**（⛔ 不许合并成"被拒"）——
+       *   因为它们指向的修法不同：
+       *     `no-initiator` ⇒ 这条调用路径压根没有 agent（定时器/外部脚本）：
+       *                      要么改成从 agent 内发起，要么明确"这条路径不支持跨实例投递"；
+       *     `stale-session`⇒ 发起者已销毁/派生残留：不该再用它的身份；
+       *     `no-policy`    ⇒ 逐会话策略服务没就绪/没装：**先修链路**，不是调权限；
+       *     `bad-policy`   ⇒ 策略形状坏了：查策略文件。
+       *   ⚠ 四种都**不投递、不 spawn**。
+       */
+      const headline = verdict.code === 'no-initiator'
+        ? '当前调用**没有可信发起会话**（无执行归属）'
+        : verdict.code === 'stale-session'
+          ? '发起会话**已不在活表里**（无法核实身份）'
+          : verdict.code === 'no-policy'
+            ? '**取不到**发起会话的逐会话策略'
+            : '发起会话的策略**形状不对**'
+      return Promise.resolve({
+        ok: false, reason: 'no-trusted-initiator', target,
+        message: `${headline} ⇒ ⛔ 未投递任何东西（⚠ 未启动任何对端进程）。`
+          + `\n  拒因代码：\`${verdict.code}\``
+          + `\n  详情：${verdict.detail}`
+          + '\n  ⚠ 跨实例投递是"影响外部状态"的动作 ⇒ 判据是**发起者是谁**，'
+          + '⛔ 不接受调用方自报身份，也⛔ 不退回全局宽档。',
+        admissionCode: verdict.code,
+      })
+    }
+    // 档位不够 ⇒ 拒。⚠ 与"没身份"**分开报**（修法不同：改这个会话的档 vs 接执行上下文）。
+    if (verdict.level === 'ledger') {
+      return Promise.resolve({
+        ok: false, reason: 'session-level-too-low', target,
+        /**
+         * ⚠⚠ **可见文字必须用显示名，⛔ 不许出现内部配置值**（2026-10-22 第 3 轮纠错）。
+         *
+         * ── 改前这句错在哪 ─────────────────────────────────────────────────
+         *   原文写「要放行请把该会话的读档提到**「项目」**或以上」——
+         *   「项目」是 `config` 里的**内部档位值**（`project`），
+         *   而设置页给用户看的名字是 **「文档权限」**（见 `config.ts:383` 的 description
+         *   与 `modules/tools.ts:457` 的既有映射）。⇒ 用户照着这句话去设置页**找不到「项目」**。
+         *
+         * ⚠ 更糟的是它还**说反了方向**：`ledger` 之上最近的一档是 `project`
+         *   （显示名「文档权限」），不是"项目"；而且"项目"在别处指的是**工作区/项目**，
+         *   与可读档完全无关 —— 两个不相干的词撞在一起，读者只会更糊涂。
+         *
+         * ⇒ 现在按**既有显示名映射**写（与 `modules/tools.ts:457` 同口径），
+         *   并且**两个能放的档都点名**，让用户知道"文档权限只到 .md"这层区别。
+         */
+        message: `发起会话 \`${verdict.sessionId}\` 的可读档是**「账本权限」** ⇒ ⛔ 未投递（⚠ 未启动任何对端进程）。`
+          + '\n  ⚠ 这是**这个会话自己的**档位（不随全局设置变）；'
+          + '要放行请把**该会话**的读档提到**「文档权限」**或**「完全权限」**。'
+          + '\n  ⚠ 两档的区别：**「文档权限」只可读工作区的 .md**；**「完全权限」可读任意文件**。',
+        admissionCode: 'level-too-low',
+        sessionId: verdict.sessionId,
+      })
+    }
+    // ⚠ 通过准入：把**实际的发起会话 id** 交给后续（⚠ 用于日志，⛔ 不参与再判定）
+    admittedSessionId = verdict.sessionId
+    admittedLevel = verdict.level
   }
   // ── ③ 启动器（⚠ 找不到 ⇒ 可读，⛔ 不静默；⛔ 不猜别的路径）──────────────
   //   ⚠ 缺省值**运行时解析**（⛔ 不写死安装路径，见 {@link resolveDefaultLauncher}）。
@@ -282,7 +454,10 @@ export function deliverRemote(
     : [...topLevel, sub, ...afterSub]
   const bin = looksLikeScript(launcher) ? process.execPath : launcher
 
-  deps.log?.(`[${name}] 投递到对端 \`${target}\`（profile=${profile} cwd=${cwd} json=${wantJson}）`)
+  deps.log?.(
+    `[${name}] 投递到对端 \`${target}\`（profile=${profile} cwd=${cwd} json=${wantJson}`
+    + ` · 发起会话=${admittedSessionId || '(未知)'} · 该会话档位=${admittedLevel || '(未知)'}）`,
+  )
 
   return new Promise<DeliverRemoteResult>((done) => {
     execFile(bin, args, {
@@ -362,14 +537,22 @@ export function deliverRemote(
  *   ⚠ ⚠ **这是"能力"而不是"工具"** —— ⚠ `M6a` 的裁定是**尽量⛔ 不加面向模型的新工具**
  *     ⇒ ⚠ 投递能力**只经服务暴露**（⛔ 不进 `MODEL_TOOL_ALLOWLIST`、⛔ 不动三档白名单）。
  *
- * ── ⚠ 可读权限控制（⚠ 边界 ③）────────────────────────────────────────────────
- *   ⚠ **档位低（`ledger`）时⛔ 不提供本服务** —— ⚠ 判据照 §1.3："判据是**有没有改动能力**"；
- *   ⚠ 跨实例投递**向对端派活**，⚠ 那是一种**影响外部状态**的动作 ⇒ ⚠ 与"只读档"不相容。
- *   ⚠ `levelOf` 是**现读**函数（⛔ 不是快照 —— 档位可随时改，⚠ 见 `config.ts` 的 `permissionLevel`）。
+ * ── ⚠ 权限控制（⚠ 边界 ③）—— 2026-10-22 第 2 轮**改了判据的位置** ──────────
+ *   ⚠ 判据本身没变：跨实例投递"向对端派活"= **影响外部状态** ⇒ 低档会话不该做。
+ *   ⚠ 变的是**在哪判**：
+ *     · 改前 —— **装载期**按**实例级全局**档，档位=账本 ⇒ **整个模块不装载**；
+ *     · 现在 —— 装载**只看显式开关**；**每次投递**按**发起会话自己的**策略判
+ *       （`deps.admissionOf()`，内部走宿主执行归属 + 活表核实 + 策略服务）。
+ *   ⚠ 为什么这个改动**不是放宽**：全局档是一个值，而"谁能发起"是逐会话的事实。
+ *     用全局值在装载期一票否决，会同时造成两种错：全局窄 ⇒ **合法会话也被拒**（能力凭空消失）；
+ *     全局宽 ⇒ 每个会话都得自己再够宽（否则等于"全局值决定逐会话边界"，仍是串线）。
+ *   ⇒ 删除的是**串线**那一半，⛔ 不是准入。
  *
  * ── ⚠ 诊断（⚠ 本仓纪律：能观测的都要说出来）──────────────────────────────────
- *   ⚠ 激活时把"开关状态 / 白名单内有几个对端 / 当前档位"如实打出来
- *     （⚠ 关着也要说 —— ⛔ 别让它"静默地什么都不做"）。
+ *   ⚠ 激活时把"开关状态 / 白名单内有几个对端"如实打出来，并**明写**：
+ *     · 装载条件只有开关；
+ *     · 投递准入在投递时按发起会话判；
+ *     · 全局档读数**仅供参考、不参与准入**（⚠ 否则下一个人会把它接回判据）。
  */
 export const INTERCONNECT_SERVICE = 'hobInterconnect'
 
@@ -381,7 +564,12 @@ export function apply(ctx: any, config: unknown): void {
   //   ⚠ `index.ts` 的 `configFor` 把 `deps`（现读开关/白名单）与 `levelOf`（现读档位）打成一个普通对象。
   const cfg = (config ?? {}) as { deps?: InterconnectDeps; levelOf?: () => string }
   const deps = cfg.deps ?? { enabledOf: () => false, targetsOf: () => [] }
-  const levelOf = cfg.levelOf ?? (() => 'ledger')
+  /**
+   * ⚠ 兼容面：老配置里可能还传 `levelOf`。⚠ **它只用于诊断文案**，
+   *   ⛔ 不参与准入（准入一律走 `deps.admissionOf()`）。
+   *   把这条写出来，是为了让下一个人别再把 `levelOf` 当判据接回去。
+   */
+  const levelOf = cfg.levelOf ?? deps.diagnosticLevelOf ?? (() => 'ledger')
   const log = (m: string): void => { deps.log?.(m) }
   ctx.effect(() => {
     return () => {
@@ -391,53 +579,50 @@ export function apply(ctx: any, config: unknown): void {
 
   ctx.provide(INTERCONNECT_SERVICE, {
     version: 1,
-    /** ⚠ 投递入口（⚠ 每次现读开关与白名单 —— ⛔ 不缓存）。 */
+    /**
+     * ⚠ 投递入口（⚠ 每次现读开关与白名单 —— ⛔ 不缓存）。
+     *
+     * ⚠⚠ **签名里没有身份参数**（2026-10-22 第 2 轮）：发起者由 `deps.admissionOf()`
+     *   从宿主执行归属里取，⛔ 调用方无法声明"我是谁"。
+     */
     deliver: (target: string, task: string, opts?: { json?: boolean; cwd?: string }) =>
       deliverRemote(deps, target, task, opts ?? {}),
     /** ⚠ 白名单只读快照（⚠ 供诊断/面板显示 —— ⚠ 每次现读）。 */
     targets: () => deps.targetsOf().map((t) => t.name),
   })
 
-  // ⚠ 如实报告（⚠ 关着 / 白名单空 / 档位不足 —— 三种都要说出来，⛔ 不静默）
+  // ⚠ 如实报告（⚠ 关着 / 白名单空 —— 两种都要说出来，⛔ 不静默）
   const on = deps.enabledOf() === true
   const targets = deps.targetsOf()
   const level = (() => { try { return levelOf() } catch { return 'ledger' } })()
   if (!on) {
     log(`[${name}] 已加载，但**开关关闭**（缺省）⇒ ⛔ 不会向任何对端投递`
       + `（⚠ 白名单里有 ${targets.length} 个对端，⚠ 但开关关着就用不上）。`)
-  } else if (level === 'ledger') {
-    /**
-     * ══════════════════════════════════════════════════════════════════════
-     * ⚠⚠ **丙-2（2026-10-21 · 第 336 轮）：这句话原先在说假话**
-     * ══════════════════════════════════════════════════════════════════════
-     *
-     * ── 改前（本条原文）──────────────────────────────────────────────────
-     *   「开关**开着**，但**当前可读权限控制 = 账本权限** ⇒ ⛔ **不提供投递服务**」
-     *
-     * ── 为什么那是假话（`PROJECT-SURVEY-3` §6.3 丙-2）──────────────────────
-     *   ⚠ **上面 `:390` 的 `ctx.provide(INTERCONNECT_SERVICE, …)` 是無条件的**
-     *     —— 只要本模块被装载，服务**就在**，与档位无关。
-     *   ⚠ "不提供"实际发生在**入口层**（`src/index.ts` 不装这个模块）——
-     *     那是**另一个时刻**（装载时）、由**另一个文件**决定的。
-     *   ⇒ ⚠ 而在"档位刚改到 `ledger`、模块**尚未重挂载**"的那个窗口里，
-     *     本行会打印一个**不成立的事实**：读者据此判断"服务不存在"，
-     *     而它**在**（只是每次投递都会被档位拒）。
-     *   ⚠ 后果不是"少了一句提示"，是**让人去修错的地方**（去找装载配置，
-     *     而真该看的是档位）。
-     *
-     * ── 现在：**两件事分开印**（⛔ 不许合成一句）───────────────────────────
-     *   ① **服务在不在** —— 本行说清"**已提供**"（事实：上面 `provide` 已执行）；
-     *   ② **投递会不会被拒** —— 本行说清"**每次都会被档位拒**"（事实：`deliverRemote`
-     *     内部现读档位）。
-     *   ⚠ ⛔ 不改 `provide` 的无条件性（那是既有设计）、⛔ 不改 `index.ts` 的装载闸门。
-     *   ⚠ 仍是**一行**（⚠ `TASK` 限"最多两行"）—— 正常档输出**逐字不变**（见下面 `else`）。
-     */
-    log(`[${name}] 开关**开着**，但**当前可读权限控制 = 账本权限**：`
-      + `⚠ **服务已提供**（\`${INTERCONNECT_SERVICE}\` 在 —— 只要本模块被装载，它就在，与档位无关）`
-      + `，但**每次投递都会被档位拒**（⚠ 跨实例投递是"影响外部状态"的动作；⚠ 升到"项目"档才放行）。`
-      + ' ⚠ 两件事别混：**服务不在** = 模块没被装载（看 `index.ts` 的装载闸门）；'
-      + '**服务在但投递被拒** = 就是现在这一档（看档位）。')
   } else {
-    log(`[${name}] 已加载：开关=开 · 档位=${level} · 白名单对端=[${targets.map((t) => t.name).join(', ') || '（空）'}]。`)
+    /**
+     * ══════════════════════════════════════════════════════════════════════════
+     * ⚠⚠ **2026-10-22（第 2 轮）：装载层不再看档位，所以这里不许再报"档位不足"**
+     * ══════════════════════════════════════════════════════════════════════════
+     *
+     * ── 改前这里是什么 ──────────────────────────────────────────────────
+     *   三分支：关着 / **档位=账本** / 正常档。中间那一支印的是
+     *   「服务已提供，但每次投递都会被档位拒（升到"项目"档才放行）」。
+     *   ⚠ 那句话在**装载层按全局档**的旧设计下是对的；但本轮把装载闸门删掉之后，
+     *     它变成**又一句假话**：现在"档位=账本"**不影响装载**，
+     *     而且投递时判的是**发起会话自己**的档，⛔ 不是这个全局值。
+     *   ⇒ 若继续印，读者会以为"把全局档升上去就能投"—— 那是**错的方向**。
+     *
+     * ── 现在印什么（三个**各自独立**的事实）──────────────────────────────
+     *   ① 装载条件 = **只有开关**（⛔ 与任何档位无关）—— 这是本行要传达的第一件事；
+     *   ② 投递准入 = **发起会话 + 它的策略**（现场判，⛔ 不是装载时判）；
+     *   ③ 白名单里有几个对端（配置事实）。
+     *   ⚠ 全局档只作为**诊断读数**附带印出，并**明写"不参与准入"** ——
+     *     否则下一个人又会把它接回判据里。
+     */
+    log(`[${name}] 已加载：开关=开 · 白名单对端=[${targets.map((t) => t.name).join(', ') || '（空）'}]`
+      + ` · ⚠ 装载条件**只有开关**（⛔ 与任何档位无关）`)
+    log(`[${name}] 投递准入在**投递时**按**发起会话自己的**策略判`
+      + `（全局档读数=\`${level}\`，⚠ **仅供参考、⛔ 不参与准入**）。`
+      + `无执行归属 / 发起会话已销毁 / 策略取不到 ⇒ 一律拒（⛔ 不退回任何宽档）。`)
   }
 }

@@ -142,6 +142,29 @@ function fencedMaskBelow(lines) {
  *
  * ⚠ **本文件不自己 `exit`**（`docs-shape` 也被 import 做断言）—— 闸门只有入口一处。
  */
+/**
+ * 「这个目录看起来像不像一份账本」（⚠ 与产品代码 `src/server/doc-read.ts` 的 `looksLikeLedger`
+ * **逐条相同** —— 两侧不许各写一套，否则"判据说在、产品说不在"就是新的漂移点）。
+ *
+ * 判据：目录在，且**至少有一件**账本特征 —— 正本之一，或**非空的** `volumes/` / `archive/` / `runtime/`。
+ * ⚠ **空目录不算**：本项目 `.hob/archive/` 是空的记录层历史位，算进去会把"未迁移"误判成"已迁移"。
+ */
+const CANON_FILES = ['REQUIREMENTS.md', 'PROJECT.md', 'DECISIONS.md', 'CONTEXT.md']
+const SIDE_DIRS = ['volumes', 'archive', 'runtime']
+function looksLikeLedger(dir) {
+  try { if (!statSync(dir).isDirectory()) return false } catch { return false }
+  for (const f of CANON_FILES) {
+    try { if (statSync(join(dir, f)).isFile()) return true } catch { /* 继续 */ }
+  }
+  for (const d of SIDE_DIRS) {
+    try {
+      const q = join(dir, d)
+      if (statSync(q).isDirectory() && readdirSync(q).length > 0) return true
+    } catch { /* 继续 */ }
+  }
+  return false
+}
+
 const ledgerDiag = (() => {
   // ⚠ 与其它脚本同口径：账本父目录**不硬编码本机绝对路径**（UD-73③），
   //   从 profile 的预设行声明 `ledgerHome` 读出；读不到再退回缺省候选。
@@ -158,9 +181,12 @@ const ledgerDiag = (() => {
     return { kind: 'preset-unreadable', path: undefined, wsName: undefined,
       reason: `读不到预设 ${join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')}（${presetErr}）` }
   }
-  // 候选：<ledgerHome>/<工作区名>（⚠ 工作区名**从配置读**，唯一来源 = `scripts/workspace-name.mjs`；
-  //   未配置 ⇒ 落回 `basename(root)`，与改动前逐字一致 —— ⛔ 本脚本不再自己猜目录名）
+  // 候选（2026-10-25 · C 步改了顺序，⚠ 与产品代码 `resolveLedgerRoot` 同一套口径）：
+  //   ② **本工作区自己的 `<工作区>/.hob/`**（若它看起来像账本）—— 新正典；
+  //   ③ 过渡桥：<ledgerHome>/<工作区名>（⚠ 仍按名字拼 ⇒ 分期迁移期间用）。
   const wsName = workspaceName(() => basename(root))
+  const inWs = join(root, '.hob')
+  if (looksLikeLedger(inWs)) return { kind: 'ok', path: inWs, wsName, reason: '' }
   const tried = []
   for (const home of candidates) {
     const dir = join(home, wsName)
@@ -195,7 +221,7 @@ export const ledgerRootDiag = ledgerDiag
  * A 用的：正本文件名（**有配套空模板**的那三本 —— 断言 A 比的是「正本节名 ↔ 模板节名」）。
  *
  * ── 为什么 `PROJECT.md` **不在 A 里**（2026-10-10 第 21 轮 · Hob 裁定，**非疏漏**）──
- *   **方案的模板不存在** —— `.hob/templates/` 里没有 `PROJECT.md`
+ *   **方案的模板不存在** —— `kit/templates/` 里没有 `PROJECT.md`
  *   （该目录 7 份：`DECISIONS` / `USER-DECISIONS` / `CONTEXT` / `ROLES` / `GATES` / `TASK` / `REPORT`）。
  *   原因不是"还没建"：**方案是项目专有文档，不是可复用的骨架格式** ——
  *   三本账本是「同构空模板 + 每项目填条目」，方案是**逐项目唯一**的整篇文档，
@@ -203,7 +229,7 @@ export const ledgerRootDiag = ledgerDiag
  *   （⚠ 因此**不要**在这里写"待补模板"之类的话：把它登记成待办，等于把
  *    一个正当的分类结果误报成缺口。）
  *   ⚠ 反证：若把 `PROJECT.md` 塞进 A 的循环，A 会立刻报
- *   「A 模板读不到：…/.hob/templates/PROJECT.md —— 节名比对失去基准」⇒ **FAIL、exit 1**
+ *   「A 模板读不到：…/kit/templates/PROJECT.md —— 节名比对失去基准」⇒ **FAIL、exit 1**
  *   （第 20 轮实测）。而"不许为了让检查通过而放宽断言"是本项目红线
  *   ⇒ 正确做法是 **A 只覆盖有模板的三本**（判定逻辑一字未改），**B 覆盖全部正本**（第 71 轮起为派生值）。
  *
@@ -215,7 +241,53 @@ export const ledgerRootDiag = ledgerDiag
  *   给 B 加 `PROJECT.md`，A 当场被带挂，而改动方在运行前看不到（`B_FILES` 有第二个消费者）。
  *   ⇒ 见 `.hob/EXPERIENCE.md` **E-110**（同一教训已登记为经验条目）。
  */
-const A_FILES = ['DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md']
+/**
+ * ⚠⚠ **2026-10-25（`archive/2026-10-25-oldroot-retire/`）：本常量被拆成两件。**
+ *
+ * ── 为什么拆（旧根物理退场：`USER-DECISIONS.md` 已不在账本区根上）──────────
+ *   原先是**一张手抄的 4 项清单**，其中 `USER-DECISIONS.md` 已整份移进
+ *   `archive/2026-10-25-oldroot-retire/USER-DECISIONS.md` ⇒ 它**不在根上**
+ *   ⇒ 断言 A 会对它报「A 正本读不到 ⇒ 节名比对失去基准」（本单实测：`check:gitignore` `EXIT=1`）。
+ *
+ * ── ⛔ 这不是"把那一项删掉"（那是本单明令禁止的"删判据"）────────────────────
+ *   两者差别是**可判的**：
+ *   · **删掉一项** ⇒ 该份**彻底无人管**：模板还在 `kit/templates/USER-DECISIONS.md`，
+ *     正本却没了，**没有任何一条判据会说一句话**（静默缩水，正是 `ASSERTION_FLOORS` 那一段反对的形态）；
+ *   · **本改法** ⇒ `A_TEMPLATE_FILES` **仍是 4 项（模板面一项不少）**，退场件只是从"要跟模板比节名"
+ *     挪到 {@link RETIRED_ROOT_FILES} 登记，并由**同批新增的断言 A′** 逐条核
+ *     「它**必须不在根上** + **归档件必须在且非空**」。
+ *   ⇒ **覆盖没缩：一处从"比节名"换成"核退场"，另一处（A′）是原来完全没有的新牙。**
+ *
+ * ⚠ **代价（照实说）**：退场之后，A / N 两组**不再**对 `USER-DECISIONS.md` 比节名 / 比表行
+ *   —— 因为根上没有那份文件，**没有可比对象**。这个缺口由 A′ 的"归档件必须在"部分补位
+ *   （它证明那份东西**还在**，但不证明它的**节名与模板一致**）。
+ *   ⚠ 要恢复那半条，得让 A / N 支持"对归档件比节名"—— 那是**另一件**（本单边界外）。
+ */
+const A_TEMPLATE_FILES = ['REQUIREMENTS.md', 'DECISIONS.md', 'USER-DECISIONS.md', 'CONTEXT.md']
+
+/**
+ * ── 已**物理退场**的正本（⛔ 不是"曾经的正本"：登记在这里 ⇒ 它必须**不在**账本区根上）──
+ *
+ * ⚠ **入册条件（三条，缺一不许进）**：
+ *   ① 它**确实**已从账本区根移走（不是"打算移"）；
+ *   ② `movedTo` 指的那份**在盘上、非空**；
+ *   ③ 有一条**可核的副本与清单件**（R-17）。
+ *
+ * ⚠ **`movedTo` 的路径口径**：相对**账本区根**（与 `volumes/**` 同一套基准）。
+ * ⚠ ⛔ **不许**把它当成"豁免名单"用（往里塞一份还在根上的文件 ⇒ 断言 A′ 会报
+ *   「登记为已退场，但它**仍在**账本区根上」）。
+ */
+const RETIRED_ROOT_FILES = [
+  {
+    file: 'USER-DECISIONS.md',
+    movedTo: 'archive/2026-10-25-oldroot-retire/USER-DECISIONS.md',
+    why: '现行需求根已迁到 `REQUIREMENTS.md`（2026-10-22）；该份自那之后只作历史出处、'
+      + '写入工具回 `retired-historical` 拒写。本单把它整份移进归档（副本 + 清单件同批落）。',
+  },
+]
+
+/** A 组实际要跟模板比节名的那几份 = 模板全集 **减去**已退场登记的（⚠ 派生，⛔ 不另手抄一份）。 */
+const A_FILES = A_TEMPLATE_FILES.filter((f) => !RETIRED_ROOT_FILES.some((r) => r.file === f))
 
 /**
  * ── 正本清单的**派生点**（第 71 轮 · 结构改造 ④「值派生而非手抄」）──────────────
@@ -257,6 +329,177 @@ function derivePrimaryFiles() {
 }
 
 const PRIMARY_FILES = derivePrimaryFiles()
+
+/**
+ * ── 断言 U · **需求根只记"用户要什么"**（2026-10-22 · 用户批准的真相源收口）─────────────
+ *
+ * **它防的是什么**：`REQUIREMENTS.md` 是**当前功能需求根**。它一旦混进**过程与实现痕迹**，
+ *   就会退化成第二本 `CONTEXT.md` / `DECISIONS.md` —— 读它的人分不出"用户要什么"和
+ *   "上次迁移是怎么做的"。⚠ 实测就发生过：根里写了迁移日期、旧写口 reason、
+ *   旧历史怎么退场 —— 用户读到的第一条是**过程**，不是需求。
+ *
+ * **判据（只咬需求面，⛔ 不咬方案面）**：
+ *   · 扫 `REQUIREMENTS.md` + `volumes/requirements/REQ-*.md`；
+ *   · **禁止出现**：具体日期字面（`YYYY-MM-DD`）· 写入/读取工具名（`write_hob` / `read_contracts`）·
+ *     拒绝 reason 值（`retired-historical` / `not-whitelisted`）· 变更/决策编号（`CHG-nn` / `UD-nn`）·
+ *     机检脚本名（`check:*`）· 过程词（`本轮` / `上轮` / `本批` / `上一批`）。
+ *   · ⚠ **例外（合法，不咬）**：反引号包住的 `archive/...` **来源指针** —— 它是"这条需求出自哪句用户原话"
+ *     的凭据，属需求的一部分；⚠ 只对**路径**放过，路径外的过程词照样咬。
+ *
+ * ⚠ **为什么不是"删字"而是"分家"**：这些事实**本身没错**，只是**不属于需求面** ——
+ *   日期与迁移动作进 `CONTEXT.md` / `archive/`，拒绝 reason 进代码与 `CONTEXT.md` §2.1c，
+ *   变更编号进 `DECISIONS.md`。⚠ ⛔ 不许为了让本断言变绿而删掉**别处**该记的事实。
+ * ⚠ **取不到账本根 ⇒ 跳过并说明**（与其它组同口径，⛔ 不静默 PASS）。
+ */
+export function runRequirementPurity({ bad, ok, skip }) {
+  const skipSink = typeof skip === 'function' ? skip : () => {}
+  if (LEDGER_ROOT === undefined) {
+    skipSink('U 需求根纯度【未执行】—— 账本根解析不到 ⇒ 无对象可查（⛔ 不代表通过）')
+    return
+  }
+  const rootPath = join(LEDGER_ROOT, 'REQUIREMENTS.md')
+  if (!existsSync(rootPath)) {
+    skipSink('U 需求根纯度【未执行】—— `REQUIREMENTS.md` 不存在（⛔ 不代表通过）')
+    return
+  }
+  /** 纯函数：吃文本吐命中清单 —— 自带样本可在内存里造，⛔ 不必真改仓库文件。 */
+  const scan = (src) => {
+    const hits = []
+    // 先把反引号里含 archive/ 的**路径**抹成空白：来源指针合法，⛔ 不算过程痕迹
+    const masked = src.replace(/`[^`\n]*`/g, (m) => (m.includes('archive/') ? '\u0000'.repeat(m.length) : m))
+    const rules = [
+      [/\b\d{4}-\d{2}-\d{2}\b/g, '具体日期字面（属状态，进 CONTEXT）'],
+      [/\bwrite_hob\b/g, '写入工具名（属实现，进 CONTEXT/代码）'],
+      [/\bread_contracts\b/g, '读取工具名（属实现，进 CONTEXT/代码）'],
+      [/\bretired-historical\b/g, '拒绝 reason 值（属实现状态，进 CONTEXT §2.1c）'],
+      [/\bnot-whitelisted\b/g, '拒绝 reason 值（属实现状态，进 CONTEXT §2.1c）'],
+      [/\bCHG-\d+\b/g, '变更编号（属技术史，进 DECISIONS）'],
+      [/\bUD-\d+\b/g, '旧用户决策编号（属历史，进 USER-DECISIONS）'],
+      [/\bcheck:[a-z][a-z0-9-]*/g, '机检脚本名（属质量面，进 README/.hob）'],
+      [/本轮/g, '过程词（属状态）'],
+      [/上轮/g, '过程词（属状态）'],
+      [/本批/g, '过程词（属状态）'],
+      [/上一批/g, '过程词（属状态）'],
+    ]
+    for (const [re, why] of rules) {
+      let m
+      while ((m = re.exec(masked)) !== null) {
+        const ln = masked.slice(0, m.index).split('\n').length
+        hits.push({ ln, token: m[0], why })
+      }
+    }
+
+    /**
+     * ── 结构性：**独立的技术维护附录**（2026-10-22 新增）─────────────────────────
+     *
+     * ⚠ 它防的是一次**实测漏检**：根尾有一段「## 附：卷文件怎么写」——
+     *   讲文件名怎么起、编号列写什么、索引怎么加一行、哪条机检盯着。
+     *   ⚠ 那段里**没有**日期 / 工具名 / reason / 变更号 / 过程词 ⇒ 上面那组词形规则**全放过它**，
+     *   ⚠ 于是 U 组打绿，而读者读到的第一条仍是**操作步骤**，不是功能目标。
+     *
+     * ⚠ **只咬"结构"，不做语义判别**（本轮明确不冒充语义理解）：
+     *   ① **技术性附录标题**：`^#{2,6}\s*附` 且标题含 怎么写 / 如何写 / 维护 / 操作 / 步骤 / 机检 / 编号规则；
+     *   ② **操作指令句**：正文里出现「写进…」「加一行」「两处同批」「必须同时改」这类**祈使式维护动作**。
+     *   ⚠ 两条都只在**需求面**扫（根 + REQ 卷），⛔ 不扫骨架与方案。
+     */
+    const STRUCT_HEADING = /^#{2,6}\s*(?:附|附录)[^\n]*(?:怎么写|如何写|维护|操作|步骤|机检|编号规则)/
+    const STRUCT_ORDER = /写进|加一行|两处同批|必须同时改|不要写本文件|不写本文件|逐行核/g
+
+    let off = 0
+    for (const line of src.split('\n')) {
+      const ln = masked.slice(0, off).split('\n').length
+      if (STRUCT_HEADING.test(line)) {
+        hits.push({ ln, token: line.trim().slice(0, 40), why: '独立的**技术维护附录**（"怎么写/维护/机检"类标题）—— 属骨架使用说明，不进需求面' })
+      }
+      off += line.length + 1
+    }
+    {
+      let m
+      while ((m = STRUCT_ORDER.exec(masked)) !== null) {
+        const ln = masked.slice(0, m.index).split('\n').length
+        hits.push({ ln, token: m[0], why: '**操作指令**（写进/加一行/两处同批/逐行核）—— 属维护方法，不进需求面' })
+      }
+    }
+
+    return hits
+  }
+
+  // ── U0 **自带样本必须被咬与不被咬**（成对；⛔ 缺一侧即"判据没牙"）────────
+  const MUST_BITE = [
+    ['迁移日期', '# x\n\n2026-10-22 用户批准。\n'],
+    ['旧写口 reason', '# x\n\n旧根会回 `retired-historical`。\n'],
+    ['工具名', '# x\n\n用 write_hob 写。\n'],
+    ['变更编号', '# x\n\n见 CHG-057。\n'],
+    ['过程词', '# x\n\n本轮只改措辞。\n'],
+    /**
+     * ⚠ **真实同形回归**（2026-10-22 实测从根尾移走的那一段）：技术维护附录里
+     *   **没有任何**上面那几类词形 ⇒ 老判据**全放过**。下面是它的**逐字压缩版**，
+     *   必须被结构性规则咬住，否则本条等于没加。
+     */
+    ['技术附录标题（真实同形）', '# x\n\n---\n\n## 附：卷文件怎么写（`volumes/requirements/REQ-<编号>.md`）\n\n> ⚠ 一条需求 = 一个文件。\n'],
+    ['技术附录标题（维护/机检变体）', '# x\n\n## 附录 · 索引维护与机检口径\n\n内容。\n'],
+    ['操作指令句（写进/加一行）', '# x\n\n⚠ 写进 `volumes/requirements/REQ-01.md`；同时在索引表加一行。\n'],
+    ['操作指令句（两处同批/逐行核）', '# x\n\n编号列写文件名主干 —— 机检按编号列逐行核；两处同批。\n'],
+  ]
+  const MUST_NOT_BITE = [
+    ['来源指针（archive 路径）', '# x\n\n**来源**：见 `archive/2026-10-22-requirements-first/USER-WORDS.md`。\n'],
+    ['纯功能文字', '# x\n\n用户希望新建会话时选择读档。\n'],
+    /**
+     * ⚠ **正向：纯功能地图不该被咬**。这几条覆盖"看起来像技术词、其实是功能描述"的形态 ——
+     *   若结构性规则过宽（比如一见"编号"就咬），这里会红。
+     */
+    ['功能描述里提到编号（不该咬）', '# x\n\n| 编号 | 当前功能目标 | 条目 |\n|---|---|---|\n| REQ-01 | 用户可逐会话选择读档 | `volumes/requirements/REQ-01.md` |\n'],
+    ['功能描述里提到索引（不该咬）', '# x\n\n**分卷**\n\n| 卷 | 内容 | 索引 |\n|---|---|---|\n| `volumes/requirements/` | 需求全文 | `volumes/requirements/INDEX.md` |\n'],
+    ['纯功能地图（无附录）', '# x\n\n## 一、当前功能需求\n\n用户希望 Hob 作为总工程师完成规划与验收。\n'],
+  ]
+  let uBad = 0
+  for (const [label, sample] of MUST_BITE) {
+    if (scan(sample).length === 0) { uBad++; bad(`U 自带样本**没被咬**：${label} ⇒ 判据改哑了`) }
+  }
+  for (const [label, sample] of MUST_NOT_BITE) {
+    const h = scan(sample)
+    if (h.length !== 0) { uBad++; bad(`U 自带样本**被误咬**：${label} ⇒ ${h.map((x) => x.token).join(' / ')}（判据过宽）`) }
+  }
+  if (uBad === 0) {
+    ok(`U0 ✓ 判据成对可验：${MUST_BITE.length} 组该咬**全咬住** · ${MUST_NOT_BITE.length} 组不该咬**全放过**`
+      + '（⚠ 样本由机检自造·内存里跑，⛔ 不真改仓库文件）')
+  }
+
+  // ── U1 真文件扫描 ────────────────────────────────────────────────────
+  /**
+   * ⚠ **模板也在扫描面内**（2026-10-22 补）：本轮要求"根与模板同时改" ——
+   *   ⚠ 若只扫账本区根，模板里**留一份技术附录**就完全抓不到（根干净、模板脏），
+   *   而新工作区开箱拿到的正是模板 ⇒ 病会**延续到下一个项目**。
+   *   ⚠ 模板是**工作区里的骨架件**（`kit/templates/REQUIREMENTS.md`），⛔ 不在账本区。
+   */
+  const targets = [{ p: rootPath, rel: 'REQUIREMENTS.md' }]
+  const tplPath = join(root, 'kit', 'templates', 'REQUIREMENTS.md')
+  if (existsSync(tplPath)) targets.push({ p: tplPath, rel: 'kit/templates/REQUIREMENTS.md（骨架模板）' })
+  const reqDir = join(LEDGER_ROOT, 'volumes', 'requirements')
+  if (existsSync(reqDir)) {
+    for (const name of readdirSync(reqDir).sort()) {
+      if (!/^REQ-.+\.md$/.test(name)) continue
+      targets.push({ p: join(reqDir, name), rel: `volumes/requirements/${name}` })
+    }
+  }
+  let total = 0
+  for (const t of targets) {
+    let src = ''
+    try { src = readFileSync(t.p, 'utf8') } catch { continue }
+    const hits = scan(src)
+    total += hits.length
+    for (const h of hits) {
+      bad(`U 需求面混进**过程/实现痕迹**：\`${t.rel}\` 第 ${h.ln} 行 \`${h.token}\`（${h.why}）`
+        + '\n      ⇒ 需求面只记"用户要什么"；这些事实该在 CONTEXT（状态）或 DECISIONS（技术史）')
+    }
+  }
+  if (total === 0) {
+    ok(`U ✓ 需求面**只记当前功能**：\`REQUIREMENTS.md\`（1 份根）+ 其**骨架模板**（1 份）+ ${targets.length - 2} 份需求卷`
+      + '里**无**具体日期 / 工具名 / 拒绝 reason / 变更编号 / 机检名 / 过程词，'
+      + '**也无独立的技术维护附录 / 操作指令句**'
+      + '（⚠ 反引号里的 `archive/...` 来源指针属合法例外，未被误咬）')
+  }
+}
 
 /**
  * ── 卷文件清单的**派生点**（2026-10-11 第 78 轮 · UD-95 / CHG-032）─────────────
@@ -348,7 +591,7 @@ const SCAN_FILES = [...B_FILES, ...VOLUME_FILES_RESULT.files]
  * **为什么需要（第 217 轮读实现实测的洞）**：读上限断言 **M** 的 `mTargets`
  *   原先只取 `B_FILES`（账本根）+ 卷内 + 卷索引 ⇒ ⚠ ⚠ **`.hob/**` 完全不在扫描面内** ⇒
  *   ⚠ **骨架侧的文件撞上同一个 `maxFileBytes` 时不会有任何红**。
- *   ⚠ 第 217 轮**实测**：`.hob/README.md` 余量只剩 2762 字节，⚠ **没有任何机检盯它**，
+ *   ⚠ 第 217 轮**实测**：`kit/README.md` 余量只剩 2762 字节，⚠ **没有任何机检盯它**，
  *   是执行方**人工算**才发现的 ⇒ 该轮立了"到顶动作在设计期就写"的口径（`UD-115`）。
  *
  * ── 口径（⛔ 不许手抄数组：**派生**，与账本侧同一条理由）────────────────────────
@@ -365,7 +608,7 @@ const SCAN_FILES = [...B_FILES, ...VOLUME_FILES_RESULT.files]
  *   ⇒ ⚠ **结构上不可能进这张清单**（它们本来也不走读取路径）。
  */
 function collectSkeletonMdFiles() {
-  const hobRoot = join(root, '.hob')
+  const hobRoot = join(root, 'kit')
   if (!existsSync(hobRoot)) {
     return { files: [], reason: `骨架目录不存在（${hobRoot}）` }
   }
@@ -450,7 +693,7 @@ export function runDocShape({ bad, ok, noObject, skip }) {
 
     for (const f of A_FILES) {
       const mp = join(LEDGER_ROOT, f)
-      const tp = join(root, '.hob', 'templates', f)
+      const tp = join(root, 'kit', 'templates', f)
       let msrc = ''
       let tsrc = ''
       try { msrc = readFileSync(mp, 'utf8') } catch { msrc = '' }
@@ -471,10 +714,59 @@ export function runDocShape({ bad, ok, noObject, skip }) {
       }
       const missing = mKeys.filter((k) => !tSet.has(k))
       if (missing.length > 0) {
-        bad(`A 模板缺节：模板 .hob/templates/${f} 里找不到正本 ${f} 的节 —— ${missing.map((k) => `「${k}」`).join(' / ')}`
+        bad(`A 模板缺节：模板 kit/templates/${f} 里找不到正本 ${f} 的节 —— ${missing.map((k) => `「${k}」`).join(' / ')}`
           + '（正本改了形态而模板没跟 ⇒ 新工作区起手就会写成旧形态）')
       } else {
         ok(`A ✓ ${f}：模板与正本节名一致（${mKeys.length} 节全对上）`)
+      }
+    }
+
+    // ── 断言 A′：**已退场登记的旧根必须真的退场**（2026-10-25 · 本单新增）──────────
+    //
+    // ── 它补的是哪一格（为什么"不删判据"必须配这一条）──────────────────────
+    //   旧根退场时，`A_TEMPLATE_FILES` 里的那一项**不能再跟模板比节名**（根上没有那份文件）。
+    //   ⚠ 若只在 `A_FILES` 里把它**删掉**，结果是：`kit/templates/USER-DECISIONS.md` 还在，
+    //     正本却没了 ⇒ **没有任何判据会说一句话** —— 那是"静默缩水"。
+    //   ⇒ 本条把"退场"这件事**变成可判的**，两个方向都验：
+    //     **负向**：登记为已退场的，⛔ **不许仍在账本区根上**（有人搬回去 ⇒ 红）；
+    //     **正向**：它的 `movedTo` **必须在盘上、非空**（有人顺手删了归档件 ⇒ 红）。
+    //   ⚠⚠ **为什么这比"删掉那一项"强**：删项只让断言变少；本条让它**换了个判的对象**
+    //     （从"节名一致"换成"确实退场 + 归档件确实在"），且**两个失败方向都点名**。
+    //   ⚠ **它守不到什么（照实说）**：它证不到"归档件与退场前那份逐字节相同"（那是 R-17 的
+    //     副本 + `cmp` 的活，见 `archive/2026-10-25-oldroot-retire/README.md`），
+    //     也证不到"归档件的节名与模板一致"（那需要 A / N 支持对归档件比对，属另一件）。
+    {
+      for (const r of RETIRED_ROOT_FILES) {
+        const atRoot = join(LEDGER_ROOT, r.file)
+        const arch = join(LEDGER_ROOT, r.movedTo)
+        let rootStill = false
+        try {
+          rootStill = statSync(atRoot).isFile()
+        } catch { rootStill = false }
+        let archBytes = -1
+        try {
+          const st = statSync(arch)
+          archBytes = st.isFile() ? st.size : -1
+        } catch { archBytes = -1 }
+
+        if (rootStill) {
+          bad(`A′ 已登记为**已退场**的正本，但它**仍在账本区根上**：${r.file}`
+            + `\n      ⇒ 登记：scripts/check-doc-shape.mjs 的 RETIRED_ROOT_FILES（movedTo = \`${r.movedTo}\`）`
+            + '\n      ⇒ 两种成因、修法不同（⛔ 不许合并成一句）：'
+            + '\n        ① 它被搬回来了 ⇒ 删掉根上那份（该份的去处在 `movedTo`）；'
+            + '\n        ② 它本来就没退场 ⇒ 把 RETIRED_ROOT_FILES 这条登记**撤掉**，让它回到 A / N 的比对面。'
+            + '\n      ⚠ 只要"登记说退了、盘上还在"，两套真相就并存 —— 这正是本条要拦的。')
+        } else if (archBytes < 0) {
+          bad(`A′ 已退场的正本的**归档件读不到**：${r.movedTo}`
+            + `\n      ⇒ 登记来源：scripts/check-doc-shape.mjs 的 RETIRED_ROOT_FILES（file = \`${r.file}\`）`
+            + '\n      ⇒ ⚠ 这与"它还在根上"是两件事：这里说的是**归档件丢了/路径写错了**，'
+            + '\n         → 修法 = 把那份归档件放回来（副本见 `archive/2026-10-25-oldroot-retire/sources/`），⛔ 不是改本条')
+        } else if (archBytes === 0) {
+          bad(`A′ 已退场的正本的归档件是**空文件**：${r.movedTo}（0 字节）`
+            + '\n      ⇒ "占位空文件"不等于"退场成功"：那会把 8161 字节的历史决策换成 0 字节')
+        } else {
+          ok(`A′ ✓ ${r.file}：**已退场**（不在账本区根上）且归档件在位（\`${r.movedTo}\` · ${archBytes} 字节）`)
+        }
       }
     }
 
@@ -571,14 +863,14 @@ export function runDocShape({ bad, ok, noObject, skip }) {
       let msrc = ''
       let tsrc = ''
       try { msrc = readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { msrc = '' }
-      try { tsrc = readFileSync(join(root, '.hob', 'templates', f), 'utf8') } catch { tsrc = '' }
+      try { tsrc = readFileSync(join(root, 'kit', 'templates', f), 'utf8') } catch { tsrc = '' }
       // ⚠ 「有配套模板的正本才比」：任一侧读不到 ⇒ 本组退出（节名已由 A 报"失去基准"）
       if (msrc === '' || tsrc === '') continue
       const { missing, comparedTables } = nCompare(msrc, tsrc)
       nTables += comparedTables
       if (missing.length > 0) {
         nBad++
-        bad(`N 模板缺表行：模板 .hob/templates/${f} 里缺 ${missing.length} 行「正本有、模板没有」的结构行`
+        bad(`N 模板缺表行：模板 kit/templates/${f} 里缺 ${missing.length} 行「正本有、模板没有」的结构行`
           + missing.slice(0, 8).map(([k, r]) => `\n        §「${k}」缺行：${r}`).join('')
           + (missing.length > 8 ? `\n        …另有 ${missing.length - 8} 行` : '')
           + '\n      ⇒ 模板只镜像了"节名"（断言 A 已管）而**没镜像表行集**'
@@ -594,7 +886,7 @@ export function runDocShape({ bad, ok, noObject, skip }) {
           .filter((k) => !mKeys.has(k) && !k.startsWith('附：'))
         if (extras.length > 0) {
           nBad++
-          bad(`N 模板多出节：模板 .hob/templates/${f} 里有正本没有、且非「附：」的节`
+          bad(`N 模板多出节：模板 kit/templates/${f} 里有正本没有、且非「附：」的节`
             + extras.map((k) => `\n        「${k}」`).join('')
             + '\n      ⇒ 断言 A 只核「正本 ⊆ 模板」，管不到模板凭空多一节'
             + '\n      ⇒ 新工作区会把这一节照抄成**不存在的规矩**'
@@ -606,7 +898,7 @@ export function runDocShape({ bad, ok, noObject, skip }) {
         for (const [re, why] of N_HARD) {
           if (!re.test(l)) continue
           nBad++
-          bad(`N 模板写了硬阈值（${why}）：.hob/templates/${f}:${i + 1}`
+          bad(`N 模板写了硬阈值（${why}）：kit/templates/${f}:${i + 1}`
             + `\n        ${l.trim().slice(0, 120)}`
             + '\n      ⇒ 模板是**可分发**的：写死的阈值会**随新工作区一起复制**，'
             + '\n        而该阈值在别的项目里几乎必然不成立（本仓已因一个百分数阈值错过一次 = CHG-034）'
@@ -629,7 +921,7 @@ export function runDocShape({ bad, ok, noObject, skip }) {
     //   ⚠ 于是：**正本怎么搬，这里的牙口都不受影响**。
     //   ⚠ ⛔ 并且**不许**因此放宽上面那条真断言（它照旧逐行比对正本 ↔ 模板）。
     {
-      const tRef = ['.hob/templates/CONTEXT.md', '.hob/templates/DECISIONS.md', '.hob/templates/USER-DECISIONS.md']
+      const tRef = ['kit/templates/CONTEXT.md', 'kit/templates/DECISIONS.md', 'kit/templates/USER-DECISIONS.md']
         .map((rp) => { try { return readFileSync(join(root, rp), 'utf8') } catch { return '' } }).join('\n')
       const mRef = A_FILES.map((f) => { try { return readFileSync(join(LEDGER_ROOT, f), 'utf8') } catch { return '' } }).join('\n')
       // ⚠ ⚠ **机检自造的样本对**（⛔ 与真正本内容无关）：一份"正本样本" + 它的"模板样本"。
@@ -765,7 +1057,7 @@ export function runDocShape({ bad, ok, noObject, skip }) {
      */
     const nReadAny = A_FILES.some((f) => {
       let tsrc = ''
-      try { tsrc = readFileSync(join(root, '.hob', 'templates', f), 'utf8') } catch { tsrc = '' }
+      try { tsrc = readFileSync(join(root, 'kit', 'templates', f), 'utf8') } catch { tsrc = '' }
       return tsrc !== ''
     })
     if (nBad === 0 && nTables === 0) {
@@ -776,7 +1068,7 @@ export function runDocShape({ bad, ok, noObject, skip }) {
          *   后者是"这份正本本来就没有结构行表"（可能完全正常）。
          */
         bad('N 【基准缺失】模板镜像：**一份模板都读不到** ⇒ 本组一张表都没比（⛔ 不按通过处理）'
-          + `\n      ⇒ 期望路径：${join(root, '.hob', 'templates')}/<正本名>`
+          + `\n      ⇒ 期望路径：${join(root, 'kit', 'templates')}/<正本名>`
           + '\n      ⇒ ⚠ 这与"模板在、但没有可比的表"是两件事：前者要**修路径/补模板**，'
           + '后者可能完全正常（⛔ 不许合并成一句）')
       } else {
@@ -973,7 +1265,289 @@ export function runDocShape({ bad, ok, noObject, skip }) {
             + ' ⇒ 本组还长着牙、且不过咬（⚠ 样本由机检自造，⛔ 不依赖真正本原文）')
         }
       }
+      /**
+       * ── 断言 V2：**反向闭合**「正本 / 模板 §4.1 多出来的族」（2026-10-25 · TASK-5）──────
+       *
+       * ── 它补的是什么空洞（有实测出处，不是假想）──────────────────────────────
+       *   · `V` 的方向是「`package.json` 的族 **⊆** 正本 §4.1」——**只管正本别落后**，
+       *     **不管正本多出来的行**；
+       *   · `N` 的方向是「正本 §4.1 **⊆** 模板 §4.1」——**只管模板别落后**，
+       *     **不管模板多出来的行**；
+       *   · `F` 只扫**工作区骨架说明**里那张纪律登记表，⛔ 不扫正本、也不扫模板。
+       *   ⇒ 三条合起来**仍有一个洞**：删掉一个判据族之后，**正本或模板里留一行指向已删族的死行，
+       *     没有任何断言会红**（本轮实测：删 `check:policy-cross` 后，正本 `CONTEXT.md:463`
+       *     与模板 `templates/CONTEXT.md:211` 各留一行，**只有 `F` 因别的原因红**，
+       *     而 `F` 根本不扫正本/模板）。
+       *
+       * ── 判定（⚠ 与 `V` / `N` **并存**，⛔ 不改它们的方向、⛔ 不放宽）─────────────
+       *   ① **正本** §4.1 的族集 **⊆** `package.json` 的族集；
+       *   ② **模板** §4.1 的族集 **⊆** `package.json` 的族集。
+       *   ⇒ 两边各有"多出来 ⇒ 报"的能力，「三处同批」才算闭上。
+       *   ⚠ **只在 §4.1 段内抽**（复用 `vFamiliesInSection`，与 `V` 同源口径）⇒
+       *     ⛔ 不把正文别处提到的族名算进来（那会误报）。
+       *   ⚠ **读不到基准** ⇒ `bad`（不按通过处理）：与 `V` / `N` 同款纪律。
+       */
+      {
+        const v2PkgRaw = (() => {
+          try { return readFileSync(join(root, 'package.json'), 'utf8') } catch { return '' }
+        })()
+        const v2TemplatePath = join(root, 'kit', 'templates', 'CONTEXT.md')
+        const v2TemplateSrc = (() => {
+          try { return readFileSync(v2TemplatePath, 'utf8') } catch { return '' }
+        })()
+        let v2PkgFams
+        try { v2PkgFams = vFamiliesFromPkg(v2PkgRaw) } catch { v2PkgFams = undefined }
+
+        if (v2PkgFams === undefined) {
+          bad('V2 读不到 `package.json` 的 `scripts` ⇒ 「§4.1 里不许有多出来的族」失去基准（不按通过处理）')
+        } else {
+          /**
+           * 一侧的核对（⚠ 两侧同一段逻辑，⛔ 不各写一份）。
+           * @param label - 人读名（'正本' / '模板'）
+           * @param src - 该侧 §4.1 所在文件的全文
+           * @param path - 文件路径（用于点名）
+           */
+          const v2CheckSide = (label, src, path) => {
+            if (src === '') {
+              bad(`V2 读不到${label} \`${path}\` ⇒ 「§4.1 里不许有多出来的族」失去基准（不按通过处理）`)
+              return
+            }
+            const fams = vFamiliesInSection(src)
+            if (fams.size === 0) {
+              /**
+               * ⚠ **一条都抽不到**也是一个错（§4.1 被搬走 / 标题改了）。
+               *   但这一档 `V`（正本侧）已经报过；此处**只为模板侧**报，
+               *   ⛔ 不与 `V` 重复刷同一条（正本侧交给 `V` 的"扫 0 份"那一档）。
+               */
+              if (label === '模板') {
+                bad(`V2 ${label} \`${path}\` 的 §4.1 里**一条 \`npm run check:*\` 都没抽到**`
+                  + ' ⇒ 扫描面为 0，本条**不是在通过**（⛔ 扫 0 份报 ✓ 是 E-126 假绿）')
+              }
+              return
+            }
+            const extra = [...fams].filter((f) => !v2PkgFams.has(f)).sort()
+            if (extra.length > 0) {
+              bad(`V2 **${label} §4.1 有「多出来的族」**：\`package.json\` 里**已经没有**、而`
+                + ` ${label} 收尾表里仍在列的判据族：`
+                + ` ${extra.map((m) => '`' + m + '`').join(' · ')}`
+                + `\n      ⇒ 实测：\`package.json\` 的 \`check:*\` 族 **${v2PkgFams.size}** 个 ·`
+                + ` ${label} §4.1 抽到 **${fams.size}** 个 · **多 ${extra.length} 个**`
+                + `\n      ⇒ 位置：\`${path}\` 的 §4.1 段`
+                + '\n      ⇒ 这正是**删了判据族、却留下死行**的形态：照着这张表跑收尾的人会去跑一个'
+                + '**已经不存在**的命令（⛔ 不是"多一条无害说明"，是**照着做会失败**）'
+                + '\n      ⇒ 处置：把这几行从该侧 §4.1 删掉（⚠ 三处同批：`package.json` · 正本 · 模板）')
+            } else {
+              ok(`V2 ✓ ${label} §4.1 **没有多出来的族**：抽到 ${fams.size} 个，全部都在`
+                + ` \`package.json\` 的 ${v2PkgFams.size} 个里（⚠ 方向与 \`V\` 相反、两条合起来才闭死"死行"）`)
+            }
+          }
+          v2CheckSide('正本', vLedgerSrc, join(LEDGER_ROOT, 'CONTEXT.md'))
+          v2CheckSide('模板', v2TemplateSrc, v2TemplatePath)
+        }
+      }
+
+      /**
+       * ── 断言 V3：**§4.1 的非 `check:*` 必跑命令必须在场**（2026-10-25 · 本单 §一-1(b)）──
+       *
+       * ── 它补的是什么空洞（⚠ 有实测，不是假想）──────────────────────────────
+       *   `V` / `N` / `V2` 三条**扫描面全部是 `check:*` 前缀**：
+       *     · `V`  / `V2` 的族集来自 `package.json` 的 `check:*` 脚本键；
+       *     · `N`   比的是 `vFamiliesInSection` 抽出来的 `check:*` 族。
+       *   ⇒ ⚠ **`build` 与 `typecheck` 根本不在那三条的扫描面里**。
+       *   ⚠ 实测（本单 REPORT §2）：把这两行从**正本与模板同时**删掉之后，
+       *      `V` / `N` / `V2` **三条全部仍然 PASS** —— 因为它们的集合关系在"两边都没有"时照样成立。
+       *   ⇒ 后果与 `E-122` 同族：**收尾表上少了 `build`，照表跑的人永远不会 build**，
+       *     而 `check:host` / `check:build` 都是"必须在 build 之后跑"的 ⇒ **整条收尾链失效**，
+       *     且**没有任何一条判据会红**。
+       *
+       * ── 与既有三条的分工（⚠ 四条并存，⛔ 不许拿任何一条替另一条）──────────
+       *   · `V`  ：`package.json` 的 `check:*` ⊆ 正本（正本别漏族）
+       *   · `N`  ：正本 §4.1 的结构行 ⊆ 模板（模板别落后）
+       *   · `V2` ：正本/模板的 `check:*` ⊆ `package.json`（别留死行）
+       *   · **`V3`：非 `check:*` 的必跑命令必须在场**（`build` / `typecheck` 这一类
+       *     **不会出现在 `package.json` 的 `check:*` 里**，所以上面三条**结构上看不到它们**）
+       *
+       * ── 判据口径（⚠ 存在性，⛔ 不是"两边一致"）──────────────────────────────
+       *   一组**必须出现在 §4.1 里**的命令名（下面 `V3_REQUIRED`）。
+       *   ⚠ 为什么**写死**这张小表而不是派生：这三条**没有权威派生根** ——
+       *     `package.json` 的 `scripts` 里有一堆不相干项（`exp:next-id` / `gen:skeleton` …），
+       *     "哪些是收尾必跑"这个判断**只存在于正本**，派生不出来。
+       *   ⚠ 所以本表是**人维护的期望**，且**加新非 check 命令时必须同批加到这里** ——
+       *     这个代价写在明处，⛔ 不藏（与 `ASSERTION_FLOORS` 同类）。
+       *
+       *   ⚠⚠ **两侧都查**（正本 + 模板）：本单的漏洞正是"两侧同时删"，
+       *     只查一侧的话，另一侧被删仍然会让照模板起手的人漏跑。
+       *     ⇒ 两侧各判一次，**缺哪侧点哪侧**。
+       */
+      {
+        /**
+         * ⚠ 必须在场、且**不会**出现在 `package.json` 的 `check:*` 里的收尾命令。
+         *   `build`：`check:host` / `check:build` 的前提（它们 import/比对的是产物）。
+         *   `typecheck`：两个 tsconfig 的类型面，`build` 的 `tsc` 只覆盖 host 半边。
+         */
+        const V3_REQUIRED = [
+          ['build', '`npm run build` 缺 ⇒ 收尾链从第一步就断：`check:host` / `check:build` 都在拿**产物**做判据，不 build 就等于拿旧产物判'],
+          ['typecheck', '`npm run typecheck` 缺 ⇒ client 半边的类型面没人查（`build` 里的 `tsc` 只覆盖 host tsconfig）'],
+        ]
+        /** 从一段 §4.1 里抽**全部** `npm run <name>`（不限 `check:` 前缀）。 */
+        const v3AllCommands = (src) => {
+          const found = new Set()
+          for (const l of src.split('\n')) {
+            if (!l.trim().startsWith('|')) continue
+            const first = (l.trim().replace(/^\|/, '').split('|')[0] || '')
+            for (const m of first.matchAll(/`npm run ([A-Za-z0-9:_-]+)`/g)) found.add(m[1])
+          }
+          return found
+        }
+        /**
+         * 从一份 Markdown 里切出「`### 4.1` 起、下一个 `## ` 止」那一段。
+         * ⚠ **复用 `vFamiliesInSection` 的段口径**（同一个正则、同一个终止条件）——
+         *   否则"V 认为在 §4.1 里、V3 认为不在"这种**两套口径**会让两条断言互相打架。
+         */
+        const v3SectionOf = (src) => {
+          const lines = src.split('\n')
+          const out = []
+          let inSec = false
+          for (const l of lines) {
+            if (/^###\s+4\.1(\s|$)/.test(l)) { inSec = true; continue }
+            if (inSec && /^##\s+\S/.test(l)) break
+            if (inSec) out.push(l)
+          }
+          return out.join('\n')
+        }
+        const v3Sides = [
+          ['正本', vLedgerSrc, join(LEDGER_ROOT, 'CONTEXT.md')],
+          ['模板', (() => { try { return readFileSync(join(root, 'kit', 'templates', 'CONTEXT.md'), 'utf8') } catch { return '' } })(),
+            join(root, 'kit', 'templates', 'CONTEXT.md')],
+        ]
+        for (const [sideLabel, sideSrc, sidePath] of v3Sides) {
+          if (sideSrc === '') {
+            // ⚠ 读不到 ⇒ 不按通过处理（与 V / V2 同款纪律；正本侧 V 也会报，但那是"族"，这里是"非 check 命令"，⛔ 不合并）
+            bad(`V3 读不到${sideLabel} \`${sidePath}\` ⇒ 「§4.1 的非 check 必跑命令必须在场」失去基准（不按通过处理）`)
+            continue
+          }
+          const cmds = v3AllCommands(v3SectionOf(sideSrc))
+          const miss = V3_REQUIRED.filter(([name]) => !cmds.has(name))
+          if (miss.length > 0) {
+            bad(`V3 **${sideLabel} §4.1 缺必跑命令 ${miss.length}/${V3_REQUIRED.length} 条**`
+              + `（⚠ 这三条**不会**出现在 \`package.json\` 的 \`check:*\` 里 ⇒`
+              + ' `V` / `N` / `V2` 的扫描面**结构上覆盖不到**它们；'
+              + '两侧同时删掉时那三条仍全绿 —— 本单实测）'
+              + '\n      ⇒ 缺的是：'
+              + miss.map(([n, why]) => `\n        · \`npm run ${n}\`\n          ⚠ ${why}`).join('')
+              + `\n      ⇒ 位置：\`${sidePath}\` 的 §4.1 段`
+              + '\n      ⇒ 修法：把这几行补回该侧 §4.1（照既有行文 `| \\`npm run <名>\\` | <守什么> |`），'
+              + '⚠ 两侧同批改（另一侧由本断言的另一半管）')
+          } else {
+            ok(`V3 ✓ ${sideLabel} §4.1 **非 check 的必跑命令全在**（${V3_REQUIRED.map(([n]) => '`' + n + '`').join(' · ')}）`
+              + ' ⇒ 补 `V`/`N`/`V2` 的结构性盲区（那三条只看 `check:*`，'
+              + '两侧同时删掉 `build`/`typecheck` 时它们仍全绿 —— 本单实测）')
+          }
+        }
+      }
+
+      /**
+       * ── 断言 W：**同一事项不许既"待用户拍板"又"用户已认领"**（2026-10-25 · `UD-152` §④）──
+       *
+       * ── 它守的是哪条真人缺陷（`UD-152` 的根因，⛔ 不是假想）────────────────────
+       *   用户的当轮表态若没落进账本，下一轮就"按账本里没有"重新推 ⇒ **把他已经做过的事端回去问**。
+       *   `UD-152` 的修法 ① 是"当轮落账"、② 是"待决项写清是谁的"；**本条是 ③ 的机检一半**：
+       *   ⚠ **账本自己前后矛盾时**（一处说"待用户拍板"、另一处说"用户已认领"）必须红 ——
+       *   否则两种写法并存，读的人（和下一轮的我）**挑一个顺眼的信**。
+       *
+       * ── 判据必须能判出"同一事项"（⚠ 作业书 §一-2 的硬要求）─────────────────
+       *   ⛔ **不许退化成"文件里出现了一个词就红"**（那会把"确实还在等用户的那一项"也判死）。
+       *   ⇒ 口径 = **按事项编号对齐**：
+       *     ① 在四份根正本里找**表格行**（`| … |`）；
+       *     ② 每行抽**事项编号**：首格是 `**<数字>**` 形态（本仓正本的表就是这么写的，
+       *        如 `| **53** | … |`）；抽不到编号的行**不参与**（⛔ 不拿散文行瞎对齐）；
+       *     ③ 每行判它的**状态词**：`待用户裁 / 待用户拍板 / 待用户定 / 待用户决定 / 待拍板`
+       *        ⇒ PENDING；`已认领` ⇒ CLAIMED；
+       *     ④ **同一个编号**（同文件内）既出现 PENDING 又出现 CLAIMED ⇒ **红**，并点名编号 + 两处原文。
+       *
+       * ── 为什么限定"同文件内"（⚠ 这是有意收窄，不是漏）────────────────────────
+       *   跨文件的编号空间**不同源**：`CONTEXT.md` §2.4 的编号是"事项序号"，
+       *   `USER-DECISIONS/` 的 `UD-xxx` 是另一套编号，`CHG-xxx` 又一套。
+       *   ⇒ 跨文件按裸数字对齐会**把不同事项撞成同一个**（假红）。⚠ 本仓明令"两种原因不许说成一句话"，
+       *     同一个道理：**两个编号空间不许混比**。
+       *   ⚠ 代价如实登记：**跨文件真矛盾今天就抓不到**（见 REPORT §4 的"不守什么"）。
+       *
+       * ── 读不到基准 ⇒ `bad`（⛔ 不静默通过）─────────────────────────────────
+       *   ⚠ 一条`PENDING`/`CLAIMED` 都抽不到时**也报**：那多半是表格形态变了/正本被搬走，
+       *     而不是"世界上没有待决项"（`E-126`：扫 0 份报 ✓ 是最坏的那类假绿）。
+       */
+      {
+        /** 状态词的两种落点（⚠ 宽窄有讲究：只收**明确**的表态词，⛔ 不收"待办""待确认"那种中性词）。 */
+        const W_PENDING = /(待用户拍板|待用户裁|待用户定|待用户决定|待你决定|待用户放行|待拍板)/
+        const W_CLAIMED = /(已认领|用户已认领)/
+        /** 表行首格的事项编号：`**53**` / `** 53 **` 这类（⚠ 只认带粗体的纯数字格）。 */
+        const wItemId = (line) => {
+          if (!line.trim().startsWith('|')) return undefined
+          const first = (line.trim().replace(/^\|/, '').split('|')[0] || '').trim()
+          const m = /^\*\*\s*(\d+)\s*\*\*$/.exec(first)
+          return m === null ? undefined : m[1]
+        }
+        /** 参与核对的四份根正本（⚠ 与 `SCAN_FILES` 同源，⛔ 不另抄一份清单 —— `E-130` 同病）。 */
+        const wFiles = SCAN_FILES.filter((f) => !f.endsWith('/'))
+        let wPendingSeen = 0
+        let wClaimedSeen = 0
+        let wConflicts = 0
+        const wUnreadable = []
+        for (const rel of wFiles) {
+          const abs = join(LEDGER_ROOT, rel)
+          let src = ''
+          try { src = readFileSync(abs, 'utf8') } catch { wUnreadable.push(rel); continue }
+          /** 编号 → { pending: [行原文], claimed: [行原文] }（⚠ 只在本文件内聚合）。 */
+          const byId = new Map()
+          for (const line of src.split('\n')) {
+            const id = wItemId(line)
+            if (id === undefined) continue
+            const isP = W_PENDING.test(line)
+            const isC = W_CLAIMED.test(line)
+            if (!isP && !isC) continue
+            if (!byId.has(id)) byId.set(id, { pending: [], claimed: [] })
+            const slot = byId.get(id)
+            if (isP) { slot.pending.push(line.trim()); wPendingSeen++ }
+            if (isC) { slot.claimed.push(line.trim()); wClaimedSeen++ }
+          }
+          for (const [id, slot] of byId) {
+            if (slot.pending.length === 0 || slot.claimed.length === 0) continue
+            wConflicts++
+            bad(`W **\`${rel}\` 第 ${id} 项两种状态并存**：`
+              + '同一条事项既写着"待用户拍板"、又写着"用户已认领"'
+              + '（⚠ 这正是 `UD-152` 的病：**读的人会挑一个顺眼的信**，'
+              + '而下一轮很可能挑错那个 ⇒ 用户已经做过的事被端回去问）'
+              + `\n      ⇒ 待拍板那处：${slot.pending[0].slice(0, 200)}`
+              + `\n      ⇒ 已认领那处：${slot.claimed[0].slice(0, 200)}`
+              + `\n      ⇒ 位置：\`${abs}\``
+              + '\n      ⇒ 处置：**同一事项只留一个状态** —— 用户已认领的写成「已认领」并'
+              + '⛔ 从"待用户拍板"里删掉（`UD-152` 修法 ②）；⚠ 若其实是**另一件事**，'
+              + '那就给它**单独的编号**（⛔ 不许两个事项共用一个号）')
+          }
+        }
+        if (wUnreadable.length > 0) {
+          bad(`W 读不到 ${wUnreadable.length} 份正本（${wUnreadable.join(' · ')}）⇒ `
+            + '「同一事项不许两种状态并存」在这一侧**没有查**（⛔ 不按通过处理）')
+        }
+        if (wConflicts === 0 && wUnreadable.length === 0) {
+          // ⚠ 一条状态词都没抽到 ⇒ 多半是表格形态变了，⛔ 不许当"没有矛盾"（E-126）
+          if (wPendingSeen === 0 && wClaimedSeen === 0) {
+            bad('W **一条状态词都没抽到**（`待用户拍板` / `已认领` 各 0 处）⇒ 扫描面为 0，'
+              + '本条**不是在通过**（⛔ 扫 0 份报 ✓ 是 `E-126` 假绿）'
+              + `\n      ⇒ 扫的是：${wFiles.join(' · ')}`
+              + '\n      ⇒ 可能原因：正本表格形态变了（编号格不再是 `**<数字>**`）/ 正本被搬走')
+          } else {
+            ok(`W ✓ **同一事项无「待拍板 + 已认领」并存**：`
+              + `${wFiles.length} 份正本里按**事项编号**对齐核过（`
+              + `待拍板 ${wPendingSeen} 处 · 已认领 ${wClaimedSeen} 处 · 冲突 0）`
+              + ' ⚠ **口径**：按表行首格的事项编号对齐，⛔ 不是"出现一个词就红"；'
+              + '⚠ **只在同文件内对齐**（跨文件编号空间不同源，见 REPORT 的"不守什么"）')
+          }
+        }
+      }
+
     }
+
 
     // ── 断言 O：地图 ↔ 卷 两向完整 + 说明列非空（第 99 轮 · UD-98 / CHG-038）──
     // ⚠ **只为"地图漏了某个板块"这一件事**加判据（⛔ 不扩到别的对象）。
@@ -1231,10 +1805,19 @@ export function runDocShape({ bad, ok, noObject, skip }) {
     //   同一个事实写两处 = **E-130 同病**（一处改了另一处没改，两面一起瞎）。
     //   ⇒ 现在 `SCAN_FILES` 是**唯一**的正本清单来源，本组只补上它的"目录"那一项。
     //   ⚠ 第 78 轮（UD-95 / CHG-032）：`SCAN_FILES` = 根上 + 卷里 ⇒ 卷根也纳入**同一条**口径。
+    // ⚠ **2026-10-25（搬家单收口）：`archive/` 从"不许被忽略"里移出，改到反向清单**。
+    //   ⚠ **为什么**：账本搬进 `<工作区>/.hob/` 之后 `archive/` 是 **1.31 GB / 60 697 文件**，
+    //     要求它能被跟踪 = 要求仓库一次涨 1.3 GB ⇒ 不可用。
+    //   ⚠ **⚠ 这不是放宽**：它被移到下面的 `C_MUST_IGNORE`（必须被忽略）⇒ **仍然有人管**，
+    //     检查项总数**不减**（`C_MUST_NOT_IGNORE` −1、`C_MUST_IGNORE` +1）。
     const C_MUST_NOT_IGNORE = [
       ...SCAN_FILES.map((f) => [f, '正本（派生自 derivePrimaryFiles() / deriveVolumeFiles()）']),
-      ['archive/', '各批归档（§3 指针表说它由账本仓 git 记录保证）'],
       ['volumes/', '账本分卷根（UD-95 / CHG-032：卷与地图同权，都不许被忽略）'],
+    ]
+    /** ⚠ 2026-10-25 新增：**必须被忽略**的目录（与上面那条相反方向，⛔ 不减项）。 */
+    const C_MUST_IGNORE = [
+      ['archive/', '账本历史（1.31 GB / 60 697 文件 · 不进版本库；`check:archive` 读盘上目录）'],
+      ['backups/', '逐轮改前副本（随工作区一次性消费 · 无跨项目价值）'],
     ]
     // ⚠ 前置：账本仓**必须是 git 仓库**（否则 check-ignore 无意义，会一律报 exit 128 ⇒ 假 PASS）
     let ledgerIsRepo = false
@@ -1252,14 +1835,18 @@ export function runDocShape({ bad, ok, noObject, skip }) {
           + '\n      ⇒ 它们会被**静默排除**（git 不报错）；规则应**只忽略 `backups/`**。'
           + `\n      判据：在 ${LEDGER_ROOT} 跑 \`git check-ignore --no-index <路径>\` 应为 1（未被排除）`)
       } else {
-        ok(`C ✓ 账本仓：${SCAN_FILES.length} 份正本（派生）与 archive/ / volumes/ **均未被忽略**（${C_MUST_NOT_IGNORE.length} 项逐条实测）`)
+        ok(`C ✓ 账本仓：${SCAN_FILES.length} 份正本（派生）与 volumes/ **均未被忽略**（${C_MUST_NOT_IGNORE.length} 项逐条实测）`)
       }
-      // 反向：backups/ 必须被忽略
-      if (ignoreIn(LEDGER_ROOT, 'backups/') !== 0) {
-        bad('C 账本仓的 `backups/` **没有被忽略** —— "整目录不进库"（README §1 口径）未生效，'
-          + '下一轮起 `git status` 会重新冒出"N 删 + M 增"的噪音')
+      // 反向：C_MUST_IGNORE 里每一项都**必须**被忽略（⚠ 2026-10-25：`archive/` 与 `backups/` 都在这里）
+      const wronglyTracked = C_MUST_IGNORE.filter(([p]) => ignoreIn(LEDGER_ROOT, p) !== 0)
+      if (wronglyTracked.length > 0) {
+        bad('C 账本仓的**必须被忽略**清单里有项没被排除 —— "整目录不进库"未生效：'
+          + wronglyTracked.map(([p, why]) => `\n        ${p}（${why}）`).join('')
+          + '\n      ⇒ 下一轮起 `git status` 会重新冒出"N 删 + M 增"的噪音，'
+          + '\n        且 `.hob/archive/`（1.31 GB）一旦入库仓库就不可用'
+          + `\n      判据：在 ${LEDGER_ROOT} 跑 \`git check-ignore --no-index <路径>\` 应为 0（确被排除）`)
       } else {
-        ok('C ✓ 账本仓：`backups/` 确被忽略（反向判据，规则真的生效）')
+        ok(`C ✓ 账本仓：${C_MUST_IGNORE.length} 项**均被忽略**（${C_MUST_IGNORE.map(([p]) => p).join(' / ')} —— 反向判据，规则真的生效）`)
       }
     }
 
@@ -1315,7 +1902,20 @@ export function runDocShape({ bad, ok, noObject, skip }) {
     //     既有断言未被削弱，只是**多认出一种坏写法**（合法性仍归 `ARCHIVE_DIR_RE`）。
     //   ⚠ **同源的另一面**：与写侧 `REF_PATH_RE` **逐字同源**既是纪律（E-110），
     //     也意味着**一个缺陷会同时在两侧静默** —— "两边一致"不等于"两边都对"（**E-130**）。
-    const D_REF_RE = /archive\/\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+\/[A-Za-z0-9._/-]*/g
+    // ⚠ **2026-10-25（搬家单收口）改了尾段字符类** —— 原 `[A-Za-z0-9._/-]*` **不含 CJK**，
+    //   ⇒ 像 `…/evidence/03-条件项查重证据.txt` 这样的**真实文件**会被**截断**成 `…/evidence/03-`
+    //   ⇒ 拿截断路径去 `existsSync` ⇒ **假报"引用不存在"**（实测：本条的出处正是这种）。
+    //   ⚠ 改成"**到空白 / 反引号 / 右括号为止**"⇒ 中文文件名完整保留；
+    //   ⚠ **仍然拒绝占位**：`<` `>` 与花括号枚举不在路径里（且下方按 `*` / `{}` 跳过）。
+    //   ⚠ **不是放宽**：对自带 8 个样本逐个实测，**该咬的 4 个仍咬、不该咬的 4 个仍未咬**（N4 通配除外）。
+    // ⚠ **2026-10-25（final-green）：改成"显式把 CJK 区间加进原字符类"的保守写法**。
+    //   ⚠ 上一版把尾段改成 `[^ 分隔符]*`（"到分隔符为止"）—— 效果等但**写法上是放宽**
+    //     （任何未列举的字符都会被吃进来）。本版回到**白名单字符类**：
+    //     原 `[A-Za-z0-9._/-]` **逐字保留**，只**追加** CJK 基本区 `\u4e00-\u9fa5`。
+    //   ⚠ **为什么必须加**：`…/evidence/03-条件项查重证据.txt` 这种**真实存在**的文件，
+    //     原字符类会在中文处**截断**成 `…/evidence/03-` ⇒ 拿截断路径 `existsSync` ⇒ 假报"不存在"。
+    //   ⚠ **不是放宽**：8 个自带样本逐个复验 —— 该咬的 4 个仍咬、不该咬的 3 个仍未咬（N4 通配为例外）。
+    const D_REF_RE = /archive\/\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+\/[A-Za-z0-9._/\u4e00-\u9fa5-]*/g
     let dTotal = 0
     let dMissing = 0
     /**
@@ -1340,9 +1940,23 @@ export function runDocShape({ bad, ok, noObject, skip }) {
           const ref = m[0]
           // 通配（`TASK-*.md` 之类）不是具名引用 —— 跳过，不算数。
           if (ref.includes('*')) continue
+          // ⚠ **花括号枚举**（`{a,b,c}-check.mjs` 之类）也不是具名引用 —— 同理跳过。
+          //   ⚠ 2026-10-25 补：尾段字符类改成"到分隔符为止"后，这类枚举会被完整吃进来
+          //   （改前是被截断成目录名，碰巧"存在"）。⚠ 跳过它 ⛔ 不等于放过真文件：
+          //   具名路径（不带 `{}`）照旧逐条核。
+          if (ref.includes('{') || ref.includes('}')) continue
           dTotal++
           dFileHits++
-          if (!existsSync(join(LEDGER_ROOT, ref))) {
+          // ⚠ **2026-10-25（搬家单收口）：引用可能带 `.hob/` 前缀（相对工作区根）**。
+          //   ⚠ 账本搬进 `<工作区>/.hob/` 之后，"从工作区根看"的写法（`.hob/archive/…`）
+          //     与"从账本根看"的写法（`archive/…`）**两种都在用** —— 实测本条的出处正是前者：
+          //     `EXPERIENCE.md:291` 写 `.hob/archive/2026-10-07-experience-round2/evidence/03-…`，
+          //     文件**确实存在**（1906 B），但只按 LEDGER_ROOT 拼会多套一层 `.hob/` ⇒ 假"不存在"。
+          //   ⇒ **两处都试**（⛔ 不是放宽成"任意位置都算"：只多认这一个前缀）。
+          const refAlt = ref.startsWith('.hob/') ? ref.slice('.hob/'.length) : null
+          const existsAtLedger = existsSync(join(LEDGER_ROOT, ref))
+          const existsAtAlt = refAlt === null ? false : existsSync(join(LEDGER_ROOT, refAlt))
+          if (!existsAtLedger && !existsAtAlt) {
             dMissing++
             dFileMissing++
             bad(`D 正本 ${f}:${i + 1} 引用了**不存在**的路径：\`${ref}\``
@@ -1774,7 +2388,7 @@ export function runDocShape({ bad, ok, noObject, skip }) {
      *   ⚠ **若把记录层排除出去，同一后果会在两侧得到不同待遇**（⚠ 那正是本组要治的分叉）。
      *   ⚠ **代价照实写**：⚠ 记录层**只增不改**（历史读数保留）⇒ ⚠ **它一旦接近上限，
      *   处置办法⛔ 不是"删旧读数"**（那会撞 `E-142`：核的对象悄悄变少）⇒
-     *   ⚠ **应当按族再分册 / 另起索引**（⚠ 与 `.hob/README.md` §5.2 末节同一套办法）。
+     *   ⚠ **应当按族再分册 / 另起索引**（⚠ 与 `kit/README.md` §5.2 末节同一套办法）。
      *   ⚠ **在扩范围之前，这一侧 ⛔ 无人盯**（这就是本组要补的洞）。
      */
     {
@@ -1841,7 +2455,7 @@ export function runDocShape({ bad, ok, noObject, skip }) {
               + '\n      ⇒ ⚠ **这一侧原先 ⛔ 不在扫描面内**（第 217 轮读实现实测）⇒ 撞上限不会有任何红'
               + '\n      ⇒ 超限后 `read_contracts` / `hob_read_doc` 给的是**截断视图**（同一条默认读取路径）'
               + '\n      ⇒ 处置：⚠ 骨架侧⛔ 不可"压缩"（压必然丢信息）⇒ 按族**整块搬走 + 原位留指针**'
-              + '（先例：`.hob/README.md` §5.2 → `.hob/drafts/discipline-details.md` · 第 217 轮）')
+              + '（先例：`kit/README.md` §5.2 → `kit/drafts/discipline-details.md` · 第 217 轮）')
           }
         }
         if (mBad === 0) {
@@ -1919,7 +2533,7 @@ export function runDocShape({ bad, ok, noObject, skip }) {
  *   ⚠ **围栏代码块内不扫**（与断言 E / I 同口径）：文档要能安全地**讲"表格怎么写"**。
  *   ⚠ **豁免只到"不渲染"这一层，不延展** —— ⛔ 不引入"是否该有这一行"之类不可判的问题。
  *
- * ── 覆盖面（照实登记，见 `.hob/README.md` §1.4）─────────────────────────
+ * ── 覆盖面（照实登记，见 `kit/README.md` §1.4）─────────────────────────
  *   · **在辖**：`## ` 级文件（地图 + 卷内全部 `.md`）**正文里**的管道表。
  *   · **不在辖**：`.hob/**`（骨架层 —— ⚠ **已知边界**，与断言 D / D′ 同；
  *     扩到骨架**须先处理"举例式占位"豁免**，另议）。
@@ -2174,5 +2788,584 @@ export async function runResidualMarkers({ bad, ok }) {  // ── 断言 I · �
         + '\n      ⇒ 修法：确认 `hob-render.ts` 仍导出 `scanMarkers` 函数；'
         + '⛔ 不许把本组改成"跳过也打 ✓"')
     }
+  }
+}/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * ── 账本根治 · 第一批：**X（时间词）/ Y（字节预算）/ Z（指针必达）**（2026-10-25）──
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 本组守的三件事（作业书 = `archive/2026-10-25-ledger-cure/TASK.md`）──────────
+ *   **X 现状类文件禁时间词** —— 词表**可枚举**（见 `CURE_TIME_WORDS`，注释写明这是
+ *     "会随动作变假"的一类）；扫「账本根**正本** + `volumes/**` 的**卷正文**」；
+ *     ⚠ ⛔ **不按"某词出现几次"判**：逐条定位到**文件 + 整句**，便于逐条处置。
+ *   **Y 每份正本有字节预算** —— 上限**从预设行读**（`maxFileBytes`，⛔ **不硬编码**，
+ *     读完把**原行与值**贴出来）；**逐份**给读数与判定（⛔ 不给"全库一个数"当结论）；
+ *     超了 ⇒ 报出来，并给出该份**最肥三节**的字节数（便于下一步拆卷）。
+ *   **Z 指针必达** —— 正本里的 `volumes/**` · `archive/**` · `.hob/**` 路径**必须存在**；
+ *     `§x.y` 式节标必须能在**同一份文件**或**该行指明的卷**里检索到；
+ *     ⚠ 判"指不到"**必须同时贴两端原文**（引用处 + 检索范围），⛔ 不许只说"找不到"。
+ *
+ * ── 为什么**一律只报不拦**（第一批的边界，⛔ 不是省事）───────────────────────
+ *   存量没量清就转拦 ⇒ 第一天全库红 ⇒ **恒红的判据等于没有判据**（本仓既有教训，
+ *   见 `check-build-sync.mjs` 头注那三条）。⇒ 本组的三类违规一律走**报警明细**
+ *   （`⚠` 前缀；调用方 `check-gitignore.mjs` 的 `alarm` 收集器，**⛔ 不进 `fail`**、
+ *   **⛔ 不影响退出码**）。
+ *   ⚠ 且**⛔ 不进「查了」计数** —— 理由：存量清掉后计数若跟着变，该族在
+ *     `ASSERTION_FLOORS` 里的下界就会被存量牵着漂（**E-117** 同族：会自己漂的数
+ *     ⛔ 不许当下界）。进计数的只有**每组固定的汇总行**，它的条数**与存量多少无关**
+ *     ⇒ 清存量前后，"查了"这个数**逐字不变**。
+ *
+ * ── 白名单（三类，**逐条列名**，⛔ 不用通配）──────────────────────────────
+ *   ① **反引号内** —— 被反引号包住的片段（引用 / 名词 / 代码）不计：
+ *      它的方向是"**讲这个词**"，不是"**声称状态**"。判据先按 `` `…` `` 抹成**等长占位**
+ *      再扫（`maskInlineCode`，⛔ 不等长会让行内偏移全错 → 整句会错位）。
+ *   ② **历史件** —— `archive/<日期>-<名>/` 与 `volumes/<卷>/rounds/` **整片不扫**（历史就该保留原话）。
+ *      ⚠ 结构上它们本来就不在扫描面里（`B_FILES` 只取账本根**一层**、
+ *      `deriveVolumeFiles()` 只取 `volumes/<卷>/` **一层**）⇒ 本组**另立一行读数**
+ *      把"这两片没扫"印出来，防"结构上不在"变成"没人知道它不在"（**E-126** 同族）。
+ *   ③ **规则件** —— `CURE_RULE_WHITELIST` 里那**几份本身就是规则/禁令/判据说明**的文件：
+ *      词出现在这些件里是**在讲规则**，不是**在声称状态**。⚠ **只列整份、逐条列名**；
+ *      ⛔ **不按段落放行** —— 段落级放行会把同段的状态句一起放过：`DECISIONS.md` §八
+ *      第 60 行「不做硬机制：**当前**用默认预设模式」就躺在规约表里，那是**状态句**。
+ *      ⇒ 正本里的规则句**本批只分类、不放行**（见 `REPORT.md` 的存量清单）。
+ *
+ * ── ⚠ ⛔ 两条红线（作业书 §三）──────────────────────────────────────────
+ *   · ⛔ **不许为了让存量变少去放宽词表** —— 14 个词一个不改；
+ *   · ⛔ **不许把"有问题的"文件塞进白名单来消灭命中** —— 白名单只装"本身就是规则"的那几份，
+ *     且每份都写了理由（见 `CURE_RULE_WHITELIST`）。
+ */
+
+/**
+ * ① 的**词表**（可枚举）。⚠ 这一类的共同点 = **会随这份文件之外的一个动作变假**
+ *   （一次构建 / 一次部署 / 一次重跑 / 一次提交）⇒ 属"状态"，⛔ 不属"现状事实"。
+ * ⚠ 加词要同批改本表**并在报告里写明**（这是判据面，不是随手改的清单）。
+ */
+export const CURE_TIME_WORDS = Object.freeze([
+  '目前', '现在', '当前', '最新', '尚未', '已上线', '已加载',
+  '未加载', '未生效', '至今', '暂时', '近期', '已落地', '已完成',
+])
+
+/**
+ * ③ **规则件白名单**（逐条列名 · ⛔ 不用通配）。`section: null` = **整份**都在白名单里。
+ * ⚠ 收录判据只有一条：**这份文件本身就是规则 / 禁令 / 判据说明的载体**
+ *   （换句话：它写的不是"系统现在什么样"，而是"什么算对、什么不许写"）。
+ * ⚠ ⛔ 收录**不看"它有没有命中"** —— 否则就是"为了让存量变少去塞白名单"。
+ *   ⇒ 每一条都写明"这份是什么件"，读者可逐条复核；⚠ 存量清单里**仍然列出**这些命中，
+ *     只是分类写「规则」并注明"属白名单③，不报警"。
+ */
+export const CURE_RULE_WHITELIST = Object.freeze([
+  {
+    file: 'volumes/context/11-ledger-rules.md',
+    section: null,
+    why: '整份 = 「账本的写法口径」条文（形态 · 快照 · 措辞 · 状态字 CHG-030 · 版本 · 编年体红线 ·'
+      + ' 账本可读性预算 · 轮次号 · 取号前先实测 等）—— 它**本身就是判据说明**，'
+      + ' 里面的「当前 / 最新」是在**规定读数怎么取**（"要最新值一律命令实测"），不是在声称状态',
+  },
+  {
+    file: 'volumes/context/03-constraints.md',
+    section: null,
+    why: '整份 = 「关键约束速查」条文（机制类约束 + 账本预算口径）—— 规则件；'
+      + ' 里面的「当前」出现在"收缩前先把当前整份归档（R-17）"这条**动作规矩**里',
+  },
+  {
+    file: 'volumes/context/06-checklist.md',
+    section: '一、§4 开工检查单',
+    why: '该节 = 「开工检查单（每轮照做）」的**步骤条文**（含"宣布已加载/已生效前不能只靠自己交"'
+      + ' 这类**禁令**）—— 规则件。⚠ **只放这一节**：本件**页头那几行**（"本件现在只含 §4"）'
+      + ' 是**在声称状态**，⛔ 不在白名单里（见存量清单，分类=状态字）',
+  },
+  {
+    file: 'volumes/context/07-discipline.md',
+    section: '0.7 红线与纪律',
+    why: '§0.7 正文 = 逐条**红线与纪律**（禁令 + 判据 + 违规形态）—— 规则件；'
+      + ' 里面的「当前」出现在"先把当前整份逐字节归档（R-17），再动手改"这类**动作规矩**里。'
+      + ' ⚠ **只放 §0.7**：本件后面的「附 · 第 210–214 轮新立的五条」里有**状态句**'
+      + '（"另两处尚未落"）⇒ ⛔ 不在白名单里（见存量清单，分类=状态字）',
+  },
+  {
+    file: 'volumes/plan/12-glossary.md',
+    section: null,
+    why: '整份 = **术语定义表**（每个词条回答"在本文档体系里它指什么"）—— 判据说明件；'
+      + ' 「当前功能需求」「当前项目方案」「当前状态」这些词条**本身就是术语名**，'
+      + ' 它们是在**定义名词**，不是在声称系统状态',
+  },
+])
+
+/** ② 里用的：预设行里声明读上限的键名（值**必须从文件读**，⛔ 不在这里写死数字）。 */
+const CURE_BUDGET_KEY = 'maxFileBytes'
+
+/** 正本（账本根一层）+ 卷正文（`volumes/<卷>/` 一层）—— **扫描面派生点**，⛔ 不手抄。 */
+export function cureScanTargets() {
+  if (LEDGER_ROOT === undefined) return { root: [], volumes: [], reason: '账本根**解析不到**' }
+  return {
+    root: B_FILES.slice(),
+    volumes: (VOLUME_FILES_RESULT.files ?? []).slice(),
+    reason: '',
+  }
+}
+
+/** 行内代码抹成**等长**占位（⚠ 等长：否则同一行的字符偏移会全错 ⇒ 整句会错位）。 */
+function maskInlineCode(line) {
+  return line.replace(/`[^`\n]*`/g, (m) => '\u0000'.repeat(m.length))
+}
+
+/** 从一行里取出命中所在的**整句**（表格行取该格；散文按句读切）。 */
+function cureSentence(line, idx) {
+  const t = line.trim()
+  if (t.startsWith('|')) {
+    let off = 0
+    for (const cell of line.split('|')) {
+      if (idx >= off && idx < off + cell.length) return cell.trim().slice(0, 240)
+      off += cell.length + 1
+    }
+  }
+  let off = 0
+  for (const part of line.split(/(?<=[。！？；])/)) {
+    if (idx >= off && idx < off + part.length) return part.trim().slice(0, 240)
+    off += part.length
+  }
+  return t.slice(0, 240)
+}
+
+/**
+ * 当前行落在哪个节里（`(页头引注块)` = 首个二~六级标题之前）。
+ * ⚠ **二到六级都认**：规则件常把正文写成 `### 0.7 …` 这种三级标题（如
+ *   `volumes/context/07-discipline.md`）—— 只认 `## ` 会让"§0.7 正文"整片落进
+ *   `(页头引注块)`，于是白名单③按节放行**一条也匹配不上**（判据静默失效）。
+ * ⚠ 与 Y 的 `sectionByteSizes()` **口径不同、各管一段**：那个是"最肥三节"的分节键
+ *   （按 `## ` 顶层切，便于拆卷），这个是"命中归属哪一节"（分类用）⇒ ⛔ 不合并。
+ */
+function cureSectionOf(lines, idx) {
+  for (let i = idx; i >= 0; i--) {
+    const m = /^#{2,6}\s+(\S.*)$/.exec(lines[i])
+    if (m !== null) return m[1].replace(/^#+\s*/, '').trim()
+  }
+  return '(页头引注块)'
+}
+
+/**
+ * 规则件白名单命中（返回理由；`null` = 不在白名单）。
+ * ⚠ `section === null` = 整份放行；否则 **按节名前缀**匹配（⛔ 不用通配、⛔ 不用"包含某词"）。
+ */
+function cureRuleWhy(rel, sectionTitle) {
+  const hit = CURE_RULE_WHITELIST.find((w) => w.file === rel
+    && (w.section === null || String(sectionTitle ?? '').startsWith(w.section)))
+  return hit === undefined ? null : hit.why
+}
+
+/**
+ * ① 的纯函数：吃文本吐命中清单（`[{ln, word, sentence}]`，**围栏内与反引号内都不算**）。
+ * ⚠ 它是**纯函数**：自带样本在内存里造（⛔ 不真改账本），也是负向对拍的同一个入口。
+ */
+export function scanTimeWords(src) {
+  const lines = String(src ?? '').replace(/\r\n/g, '\n').split('\n')
+  const fenced = fencedMaskBelow(lines)
+  const hits = []
+  for (let i = 0; i < lines.length; i++) {
+    if (fenced[i]) continue // 围栏内是示例/代码，不参与（与 E / I / P 同口径）
+    const masked = maskInlineCode(lines[i])
+    for (const w of CURE_TIME_WORDS) {
+      let idx = 0
+      while ((idx = masked.indexOf(w, idx)) !== -1) {
+        hits.push({ ln: i + 1, word: w, sentence: cureSentence(lines[i], idx) })
+        idx += w.length
+      }
+    }
+  }
+  return hits
+}
+
+/** ① 的统计：某份文本里**只出现在反引号内**的命中数（白名单①的读数，⛔ 不算违规）。 */
+export function countInlineCodeTimeWords(src) {
+  const lines = String(src ?? '').replace(/\r\n/g, '\n').split('\n')
+  const fenced = fencedMaskBelow(lines)
+  let n = 0
+  for (let i = 0; i < lines.length; i++) {
+    if (fenced[i]) continue
+    const raw = lines[i]
+    for (const m of raw.matchAll(/`[^`\n]*`/g)) {
+      for (const w of CURE_TIME_WORDS) if (m[0].includes(w)) n += 1
+    }
+  }
+  return n
+}
+
+/** ② 的读数：预设行里的读上限（返回 `{ok, value, lineNo, rawLine, path}`）。 */
+export function readCureBudgetLimit() {
+  const p = join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')
+  let src = ''
+  try {
+    src = readFileSync(p, 'utf8')
+  } catch (e) {
+    return { ok: false, value: NaN, lineNo: 0, rawLine: '', path: p, reason: String(e?.message ?? e) }
+  }
+  const lines = src.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const m = new RegExp(`${CURE_BUDGET_KEY}:\\s*(\\d+)`).exec(lines[i])
+    if (m !== null) {
+      return { ok: true, value: Number(m[1]), lineNo: i + 1, rawLine: lines[i].trim(), path: p, reason: '' }
+    }
+  }
+  return { ok: false, value: NaN, lineNo: 0, rawLine: '', path: p, reason: `预设里没有 \`${CURE_BUDGET_KEY}:\`` }
+}
+
+/**
+ * ② 的纯函数：按 `## ` 切节并算**逐节字节数**（UTF-8 实测，⛔ 不按字符数）。
+ * ⚠ 用 `Buffer.byteLength` 逐行累加，起点 = 首行；末尾若文件不带换行，最后一节可能少 1 字节
+ *   —— ⛔ 不为此做"补偿"，读数照实（补偿出来的数才是假的）。
+ */
+export function sectionByteSizes(src) {
+  const text = String(src ?? '')
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const secs = []
+  let cur = { title: '(页头引注块)', bytes: 0 }
+  for (const l of lines) {
+    if (/^##\s+\S/.test(l)) {
+      if (cur.bytes > 0 || cur.title !== '(页头引注块)') secs.push(cur)
+      cur = { title: l.replace(/^##\s+/, '').trim(), bytes: 0 }
+      cur.bytes += Buffer.byteLength(l + '\n', 'utf8')
+      continue
+    }
+    cur.bytes += Buffer.byteLength(l + '\n', 'utf8')
+  }
+  secs.push(cur)
+  return secs
+}
+
+/** ③ 的：路径引用（只认**反引号里的具体路径**；`<…>` / `*` / `…` 是形态占位，另有计数）。 */
+export function scanPathRefs({ src, selfRel, ledgerRoot, workspaceRoot }) {
+  const lines = String(src ?? '').replace(/\r\n/g, '\n').split('\n')
+  const fenced = fencedMaskBelow(lines)
+  const concrete = []
+  const placeholder = []
+  for (let i = 0; i < lines.length; i++) {
+    if (fenced[i]) continue
+    for (const m of lines[i].matchAll(/`((?:volumes|archive|\.hob)\/[^`\n]*)`/g)) {
+      const p = m[1].trim()
+      const rec = { ln: i + 1, path: p, sentence: cureSentence(lines[i], m.index) }
+      if (/[<>…*]/.test(p)) { placeholder.push(rec); continue }
+      const abs = p.startsWith('.hob/') ? join(workspaceRoot, p) : join(ledgerRoot, p)
+      concrete.push({ ...rec, abs, exists: existsSync(abs) })
+    }
+  }
+  return { concrete, placeholder }
+}
+
+/** ③ 的：`§x.y` 引用 + 它的**检索范围**（同一份文件 ∪ 该行指明的卷/文件）。 */
+export function scanSectionRefs({ src, selfRel, ledgerRoot, workspaceRoot }) {
+  /** 档名 → 载体（⚠ 这是**枚举的别名表**，不是通配；每行都必须出现该档名才算）。 */
+  const ALIAS = [
+    { re: /方案/, paths: ['PROJECT.md', 'volumes/plan'] },
+    { re: /需求/, paths: ['REQUIREMENTS.md', 'volumes/requirements'] },
+    { re: /技术变更|变更记录/, paths: ['DECISIONS.md', 'volumes/decisions'] },
+    { re: /用户决策/, paths: ['volumes/user-decisions'] },
+    { re: /经验库|经验件/, paths: ['.hob/EXPERIENCE.md', '.hob/experience'] },
+    { re: /状态册/, paths: ['CONTEXT.md', 'volumes/context'] },
+  ]
+  const headsCache = new Map()
+  const headings = (abs) => {
+    if (headsCache.has(abs)) return headsCache.get(abs)
+    const s = new Set()
+    try {
+      for (const l of readFileSync(abs, 'utf8').split('\n')) {
+        const m = /^#{1,6}\s+(?:§\s*)?(\d+(?:\.\d+)*)/.exec(l)
+        if (m !== null) s.add(m[1])
+      }
+    } catch { /* 读不到 = 空集（由调用方按"范围里没有任何节标"报出） */ }
+    headsCache.set(abs, s)
+    return s
+  }
+  const collect = (p) => {
+    const out = []
+    const abs = p.startsWith('.hob/') ? join(workspaceRoot, p) : join(ledgerRoot, p)
+    let st
+    try { st = statSync(abs) } catch { return out }
+    if (st.isFile()) return [abs]
+    const walk = (d) => {
+      let entries = []
+      try { entries = readdirSync(d, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        const q = join(d, e.name)
+        if (e.isDirectory()) { if (basename(q) !== 'rounds') walk(q) } else if (e.name.endsWith('.md')) out.push(q)
+      }
+    }
+    walk(abs)
+    return out
+  }
+  const reach = (set, ref) => [...set].some((h) => h === ref || h.startsWith(`${ref}.`) || ref.startsWith(`${h}.`))
+  const lines = String(src ?? '').replace(/\r\n/g, '\n').split('\n')
+  const fenced = fencedMaskBelow(lines)
+  const refs = []
+  for (let i = 0; i < lines.length; i++) {
+    if (fenced[i]) continue
+    const line = lines[i]
+    for (const m of line.matchAll(/§\s?(\d+(?:\.\d+)*)/g)) {
+      const ref = m[1]
+      const scope = new Map([[join(ledgerRoot, selfRel), selfRel]])
+      for (const x of line.matchAll(/`([^`\n]+?\.md)`/g)) {
+        const p = x[1].trim()
+        if (/[<>…*]/.test(p)) continue
+        for (const q of collect(p)) scope.set(q, p)
+      }
+      for (const x of line.matchAll(/`(volumes\/[a-z-]+\/)`/g)) {
+        for (const q of collect(x[1])) scope.set(q, x[1])
+      }
+      for (const a of ALIAS) {
+        if (!a.re.test(line)) continue
+        for (const p of a.paths) for (const q of collect(p)) scope.set(q, p)
+      }
+      const found = [...scope.keys()].find((abs) => reach(headings(abs), ref))
+      refs.push({
+        ln: i + 1,
+        ref,
+        sentence: cureSentence(line, m.index),
+        reachedBy: found === undefined ? null : (scope.get(found) ?? found),
+        scope: [...scope.values()],
+        scopeHeads: [...scope.keys()].map((abs) => ({ from: scope.get(abs), nums: [...headings(abs)] })),
+      })
+    }
+  }
+  return refs
+}
+
+/** ③ 的 `§` 面：把"范围里到底有哪些节标"压成一行（判"指不到"时要贴的**检索范围原文**）。 */
+function cureScopeDigest(scopeHeads) {
+  const parts = []
+  for (const s of scopeHeads.slice(0, 6)) {
+    const nums = s.nums.slice(0, 14)
+    parts.push(`${s.from}〔${nums.length === 0 ? '无数字节标' : nums.join(' ')}${s.nums.length > 14 ? ' …' : ''}〕`)
+  }
+  if (scopeHeads.length > 6) parts.push(`…另 ${scopeHeads.length - 6} 份`)
+  return parts.join(' · ')
+}
+
+/**
+ * ── X / Y / Z 三组的执行体（**只报不拦**）────────────────────────────────
+ *
+ * ⚠ 三个参数契约（⛔ 不许改语义）：
+ *   · `ok`    → 进「过了」计数（**每组固定几行**，与存量无关）；
+ *   · `alarm` → **报警明细**（`⚠`）：⛔ 不进 `fail`、⛔ 不进退出码、⛔ 不进「查了」；
+ *   · `skip`  → 本组某处没对象（只计数，不退码；⛔ 不落成 ok）。
+ */
+export function runLedgerCure({ ok, bad, alarm, skip }) {
+  /**
+   * ⚠ **自带样本失败走 `bad`（不是 `alarm`）**：那是**判据自己哑了**，不是"账本存量脏了"。
+   *   两者的处置方向相反 —— 存量脏 ⇒ 清账本；判据哑 ⇒ 修判据。
+   *   ⚠ 若把判据哑也报成"只报不拦"，这条断言从上线那天起就**永远不会让任何人停下来**
+   *   （== 没加），正是 `E-126`「判据改哑与判据改对输出相同」的形态。
+   */
+  const badSink = typeof bad === 'function' ? bad : () => {}
+  const alarmSink = typeof alarm === 'function' ? alarm : () => {}
+  const skipSink = typeof skip === 'function' ? skip : () => {}
+  if (LEDGER_ROOT === undefined) {
+    skipSink('X / Y / Z【未执行】—— 账本根解析不到 ⇒ 三组都没有对象（⛔ 不代表通过）')
+    return
+  }
+  const targets = cureScanTargets()
+
+  // ── X0：自带样本**成对**（该咬必咬 / 不该咬必放过）───────────────────────
+  {
+    const MUST_BITE = [
+      ['裸写「目前」', '# x\n\n目前该模块已上线。\n'],
+      ['正文里的「现在」', '# x\n\n现在到哪一步。\n'],
+      ['表格单元格里的「尚未」', '# x\n\n| 项 | 尚未完成 |\n'],
+      ['行内引用之外同一行还有一个裸写', '# x\n\n讲 `目前` 这个词，但这一句也写着当前。\n'],
+    ]
+    const MUST_NOT_BITE = [
+      ['反引号内（白名单①）', '# x\n\n⛔ 不许写 `目前` / `已加载` 这类字。\n'],
+      ['围栏代码块内', '# x\n\n```\n目前\n```\n'],
+      ['纯陈述里没有时间词', '# x\n\n账本只写现状事实。\n'],
+      ['形近词不是词表成员（此刻 / 本次 / 眼下 / 编号）', '# x\n\n此刻进度、本次读数、眼下安排与编号规则。\n'],
+    ]
+    let xBad = 0
+    for (const [label, sample] of MUST_BITE) {
+      if (scanTimeWords(sample).length === 0) { xBad += 1; badSink(`X0 自带样本**没被咬**：${label} ⇒ 判据改哑了（⛔ 这不是存量问题，是判据问题）`) }
+    }
+    for (const [label, sample] of MUST_NOT_BITE) {
+      const h = scanTimeWords(sample)
+      if (h.length !== 0) { xBad += 1; badSink(`X0 自带样本**被误咬**：${label} ⇒ ${h.map((x) => x.word).join(' / ')}（判据过宽）`) }
+    }
+    if (xBad === 0) {
+      ok(`X0 ✓ 判据成对可验：${MUST_BITE.length} 组该咬**全咬住** · `
+        + `${MUST_NOT_BITE.length} 组不该咬**全放过**（⚠ 样本在内存里造，⛔ 不真改账本文件）`)
+    }
+  }
+
+  // ── X1：真文件扫描（正本 + 卷正文；历史件两片结构上不在面里，另印读数）──────
+  let scannedRoot = 0
+  let scannedVol = 0
+  let inlineHits = 0
+  let ruleHits = 0
+  let alarmHits = 0
+  const perFile = []
+  for (const rel of [...targets.root.map((f) => ({ rel: f, side: '正本' })), ...targets.volumes.map((f) => ({ rel: f, side: '卷正文' }))]) {
+    const abs = join(LEDGER_ROOT, rel.rel)
+    let src = ''
+    try { src = readFileSync(abs, 'utf8') } catch { skipSink(`X【读不到】${rel.rel} —— 该份未扫（⛔ 不代表通过）`); continue }
+    if (rel.side === '正本') scannedRoot += 1
+    else scannedVol += 1
+    inlineHits += countInlineCodeTimeWords(src)
+    const hits = scanTimeWords(src)
+    if (hits.length === 0) continue
+    const srcLines = src.replace(/\r\n/g, '\n').split('\n')
+    perFile.push({ rel: rel.rel, side: rel.side, hits })
+    for (const h of hits) {
+      const sec = cureSectionOf(srcLines, h.ln - 1)
+      if (cureRuleWhy(rel.rel, sec) !== null) { ruleHits += 1; continue } // 白名单③：不报警
+      alarmHits += 1
+      alarmSink(`X ① 时间词：\`${rel.rel}\`:${h.ln} 「${h.word}」 整句=「${h.sentence}」`
+        + `（节=「${sec}」；分类见 REPORT.md 存量清单；⚠ 只报不拦）`)
+    }
+  }
+  /**
+   * ⚠⚠ **两片的规模必须"数文件"，⛔ 不许数"有几个卷带 rounds 目录"**（2026-10-25 · 重启后续做时修）。
+   *
+   * ── 改前是什么（这是本单自己造的一处假读数，照实记）──────────────────
+   *   `VOLUME_FILES_RESULT.volumes.flatMap((v) => readdirSync(...).length).length`
+   *   —— `flatMap` 的回调返回的是**数字**，而 `flatMap` **不会**把数字摊平，
+   *   它把每个数字当**一个元素**放进结果数组 ⇒ `[...].length` = **有 rounds 目录的卷数**，
+   *   ⚠ 于是本行印成「rounds 下 **1** 份轮次件未参与」，而**实际有 341 份**。
+   *   ⚠ 这就是本仓最忌的那类：**读数看着有、其实是另一个量纲**（"卷数"冒名"文件数"）。
+   *   ⚠ 它没让判据变红（这行只是读数），⇒ **没有任何东西会告诉你它错了** ——
+   *   正是 `E-126` 的形状：**印出来的数与它声称的事不是一回事**。
+   * ⇒ 现在：**逐卷真数文件**，并把"带 rounds 的卷数"与"文件数"**分开报**（⛔ 不合并成一个数）。
+   */
+  const roundsStat = (() => {
+    let dirs = 0
+    let files = 0
+    try {
+      for (const v of VOLUME_FILES_RESULT.volumes) {
+        let entries = []
+        try { entries = readdirSync(join(LEDGER_ROOT, 'volumes', v, 'rounds'), { withFileTypes: true }) } catch { continue }
+        dirs += 1
+        files += entries.filter((e) => e.isFile() && e.name.endsWith('.md')).length
+      }
+    } catch { /* 读不到 ⇒ 两个数都留 0，下面照实印 0 */ }
+    return { dirs, files }
+  })()
+  ok(`X ✓ 扫描面：正本 ${scannedRoot} 份 + 卷正文 ${scannedVol} 份 = **${scannedRoot + scannedVol} 份**`
+    + `；\`archive/<日期>-<名>/\` 与 \`volumes/<卷>/rounds/\` **两片整片未扫**（历史件白名单②：`
+    + `archive 下 ${(() => { try { return readdirSync(join(LEDGER_ROOT, 'archive'), { withFileTypes: true }).filter((d) => d.isDirectory()).length } catch { return 0 } })()} 个归档目录 + `
+    + `rounds 下 **${roundsStat.files} 份轮次件**（分布在 ${roundsStat.dirs} 个卷的 \`rounds/\` 里）未参与）`)
+  ok(`X ✓ 判据读数（⚠ 只报不拦）：词表 ${CURE_TIME_WORDS.length} 词 · 命中 **${alarmHits + ruleHits}** 处`
+    + `（其中**规则件白名单③** ${CURE_RULE_WHITELIST.length} 份共 ${ruleHits} 处已列名放行 · `
+    + `**报警** ${alarmHits} 处）· 反引号内白名单①另有 ${inlineHits} 处**未咬**`
+    + `；⚠ 报警明细**不进「查了」计数**（存量清掉后这个数必须逐字不变）`)
+
+  // ── Y0：自带样本（预算判据成对）─────────────────────────────────────────
+  {
+    const yLimit = 100
+    const cases = [
+      ['未超（90 < 100）', 'a'.repeat(90), false],
+      ['恰好等于上限（100 = 100）', 'a'.repeat(100), false],
+      ['超 1 字节（101 > 100）', 'a'.repeat(101), true],
+    ]
+    let yBad = 0
+    for (const [label, body, shouldOver] of cases) {
+      const over = Buffer.byteLength(body, 'utf8') > yLimit
+      if (over !== shouldOver) { yBad += 1; badSink(`Y0 自带样本判错：${label} ⇒ 预算判据与本仓按字节的口径不一致`) }
+    }
+    const secs = sectionByteSizes('## a\n' + 'x'.repeat(10) + '\n## b\n' + 'y'.repeat(40) + '\n## c\n' + 'z'.repeat(5) + '\n')
+    const top3 = [...secs].sort((p, q) => q.bytes - p.bytes).slice(0, 3)
+    const ordered = top3.length === 3 && top3[0].title === 'b' && top3[1].title === 'a' && top3[2].title === 'c'
+    if (!ordered) { yBad += 1; badSink(`Y0 最肥三节排序判错：实测 ${top3.map((s) => `${s.title}=${s.bytes}`).join(' ')}`) }
+    if (yBad === 0) {
+      ok('Y0 ✓ 判据成对可验：预算边界 3 档（未超 / 持平 / 超 1 字节）+ 最肥三节排序 1 组 ⇒ 全部符合预期')
+    }
+  }
+
+  // ── Y1 / Y2：上限原文 + 逐份读数（超限 ⇒ 报警 + 最肥三节）──────────────────
+  const budget = readCureBudgetLimit()
+  if (!budget.ok) {
+    ok(`Y ✗ **读不到读上限**（\`${CURE_BUDGET_KEY}\`）⇒ 本组判不了（⛔ 不按通过处理）：${budget.reason}`)
+  } else {
+    ok(`Y ✓ 上限**从预设行读**（⛔ 不硬编码）：\`${relative(root, budget.path).split('\\').join('/')}\` `
+      + `**第 ${budget.lineNo} 行** 原文 = \`${budget.rawLine}\` ⇒ 值 = **${budget.value} 字节**`)
+    const rows = []
+    let overN = 0
+    for (const rel of targets.root) {
+      const abs = join(LEDGER_ROOT, rel)
+      let sz = -1
+      try { sz = statSync(abs).size } catch { sz = -1 }
+      if (sz < 0) { overN += 1; alarmSink(`Y ② 读不到：\`${rel}\` —— 预算判不了（⛔ 不按合规算，只报不拦）`); continue }
+      const head = budget.value - sz
+      rows.push(`${rel}=${sz}/${budget.value}（余 ${head}）`)
+      if (sz > budget.value) {
+        overN += 1
+        let src = ''
+        try { src = readFileSync(abs, 'utf8') } catch { src = '' }
+        const top3 = sectionByteSizes(src).sort((p, q) => q.bytes - p.bytes).slice(0, 3)
+        alarmSink(`Y ② **超过字节预算**：\`${rel}\` —— 实测 ${sz} 字节，上限 ${budget.value} 字节`
+          + `（超 ${sz - budget.value}）`
+          + `\n      ⇒ 该份**最肥三节**（逐节字节数）：${top3.map((s, i) => `${i + 1}. 「${s.title}」=${s.bytes}`).join(' · ')}`
+          + '\n      ⇒ ⚠ 只报不拦（第一批）；处置 = 按最肥那节拆卷（⛔ 不压缩：压必然丢信息）')
+      }
+    }
+    ok(`Y ✓ 逐份预算（**一份一条读数**，⛔ 不给"全库一个数"当结论）：${rows.join(' · ')}`
+      + (overN === 0 ? ' —— 全部在上限内' : ` —— **${overN} 份超限**（见上面报警行）`)
+      + `\n      ⇒ 口径：**本组只量"正本"= 账本根一层那 ${rows.length} 份**（作业书 ② 的原话是"每份**正本**"）；`
+      + `卷正文与骨架侧的上限由**既有断言 M** 用**同一个上限值**盯着（⛔ 不另立第二套口径）`)
+  }
+
+  // ── Z0：自带样本（路径存在 / 不存在 · § 可达 / 不可达 · 指明卷才可达）──────────
+  {
+    let zBad = 0
+    const ledgerLike = LEDGER_ROOT
+    const sampleSrcOk = '# t\n\n见 `volumes/plan/04-core-capabilities.md` 与 §4.1。\n'
+    const sampleSrcPathBad = '# t\n\n见 `volumes/plan/99-not-here.md`。\n'
+    const sampleSrcSecBad = '# t\n\n见 §99.99。\n'
+    const p1 = scanPathRefs({ src: sampleSrcOk, selfRel: 'PROJECT.md', ledgerRoot: ledgerLike, workspaceRoot: root })
+    if (p1.concrete.length !== 1 || p1.concrete[0].exists !== true) { zBad += 1; badSink('Z0 样本判错：真实存在的路径应判「存在」') }
+    const p2 = scanPathRefs({ src: sampleSrcPathBad, selfRel: 'PROJECT.md', ledgerRoot: ledgerLike, workspaceRoot: root })
+    if (p2.concrete.length !== 1 || p2.concrete[0].exists !== false) { zBad += 1; badSink('Z0 样本判错：不存在的路径应判「指不到」') }
+    const s2 = scanSectionRefs({ src: sampleSrcSecBad, selfRel: 'PROJECT.md', ledgerRoot: ledgerLike, workspaceRoot: root })
+    if (s2.length !== 1 || s2[0].reachedBy !== null) { zBad += 1; badSink('Z0 样本判错：不存在的节标应判「指不到」') }
+    // 指明卷才可达：同一句里指名 `volumes/plan/` ⇒ §4.1 能检索到
+    const s3 = scanSectionRefs({ src: '# t\n\n方案见 `volumes/plan/` 的 §4.1。\n', selfRel: 'CONTEXT.md', ledgerRoot: ledgerLike, workspaceRoot: root })
+    if (s3.length !== 1 || s3[0].reachedBy === null) { zBad += 1; badSink('Z0 样本判错：同一行指明了卷 ⇒ §4.1 应判「可达」') }
+    if (zBad === 0) {
+      ok('Z0 ✓ 判据成对可验：路径 2 例（存在 / 不存在）+ 节标 2 例（同文不可达 / 指明卷可达）⇒ 全部符合预期')
+    }
+  }
+
+  // ── Z1 / Z2：真文件（正本 5 份）─────────────────────────────────────────
+  {
+    let pathRefs = 0
+    let pathDangling = 0
+    let placeholders = 0
+    let secRefs = 0
+    let secDangling = 0
+    for (const selfRel of targets.root) {
+      const abs = join(LEDGER_ROOT, selfRel)
+      let src = ''
+      try { src = readFileSync(abs, 'utf8') } catch { continue }
+      const pr = scanPathRefs({ src, selfRel, ledgerRoot: LEDGER_ROOT, workspaceRoot: root })
+      pathRefs += pr.concrete.length
+      placeholders += pr.placeholder.length
+      for (const r of pr.concrete) {
+        if (r.exists) continue
+        pathDangling += 1
+        alarmSink(`Z ③ **路径指不到**：\`${selfRel}\`:${r.ln} 引用 \`${r.path}\``
+          + `\n      ⇒ 两端原文：引用处 = 「${r.sentence}」`
+          + `\n      ⇒ 检索范围 = \`${r.abs}\`（**不存在**：statSync 失败；⛔ 不是"没找"）`
+          + '\n      ⇒ ⚠ 只报不拦（第一批）')
+      }
+      const sr = scanSectionRefs({ src, selfRel, ledgerRoot: LEDGER_ROOT, workspaceRoot: root })
+      secRefs += sr.length
+      for (const r of sr) {
+        if (r.reachedBy !== null) continue
+        secDangling += 1
+        alarmSink(`Z ③ **节标指不到**：\`${selfRel}\`:${r.ln} 引用 §${r.ref}`
+          + `\n      ⇒ 两端原文：引用处 = 「${r.sentence}」`
+          + `\n      ⇒ 检索范围 = ${cureScopeDigest(r.scopeHeads)}`
+          + '\n      ⇒ ⚠ 只报不拦（第一批）；处置 = 在引用处**写明载体**（哪份文件 / 哪个卷）或修节号')
+      }
+    }
+    ok(`Z ✓ 路径面：正本 ${targets.root.length} 份里 **${pathRefs} 处**反引号具体路径`
+      + `（另有 ${placeholders} 处 \`<…>\` / \`**\` 形态占位，**不判**：它们本来就不是具体路径）`
+      + `；**指不到 ${pathDangling} 处**（⚠ 只报不拦）`)
+    ok(`Z ✓ 节标面：正本 ${targets.root.length} 份里 **${secRefs} 处** \`§x.y\` 引用`
+      + `（检索范围 = 同一份文件 ∪ **该行指明的卷/文件**；⚠ 未指明载体的按"指不到"报）`
+      + `；**指不到 ${secDangling} 处**（⚠ 只报不拦）`)
   }
 }

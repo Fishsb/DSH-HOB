@@ -545,7 +545,8 @@ console.log('')
 for (const n of note) console.log('  ✓', n)
 for (const k of skip) console.log('  ·', k)
 console.log('')
-console.log(`  处级口径：查了 ${note.length + skip.length} 处 · 过了 ${note.length} 处`
+console.log(`  处级口径：查了 ${note.length + fail.length + skip.length} 处 · 过了 ${note.length} 处`
+    + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
   + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
 console.log('')
 console.log('')

@@ -82,19 +82,31 @@
  *       ⚠ **源件的 mtime 晚于产物** ⇒ 报"这个产物的来源比它新"；
  *     · ⚠ **骨架件**（`templates/` 等，⚠ 被 `gen:skeleton` 派生成 `src/server/skeleton-manifest.ts`）
  *       **不单列** —— ⚠ 它们经派生件**已落在面 ② 的覆盖面里**（⚠ 这样不会造出第二条并行口径）。
- *   ⚠ **两条面都报**、各自给**逐条行**（⛔ 不合并成一句"落后了"）。
+ *   **面 ④：产物可加载 / 包装面**（2026-10-24 · B 席新增，⚠ 补的是"产物在、但没人验它能加载"）
+ *     · `lib/client.js` **真加载一遍**（vm + `window.__ModuleLoader__.load` 外壳），
+ *       断言模块 id、`apply` / `inject` 两个关键导出在位，且 `apply` 在**假 ctx** 上真跑通、
+ *       注册出 `conversation.hero.options`（= `installHobUnselectedGate` 那条**真被装配进来**）；
+ *       ⚠ 改前 `lib/client.js` **从未被任何判据加载过** ⇒ client 装配是**零运行时判据**。
+ *     · `package.json` 的 `exports` 里**每一条 `types` / `default` 指向的文件必须真实存在**
+ *       （⚠ 改前 `./client` 的 `types` 指向 `lib/types/client/index.d.ts`，而
+ *        `tsconfig.json` exclude `src/client` + `tsconfig.client.json` noEmit + tsdown
+ *        `dts:false` ⇒ 该文件**永不生成**，声明面是**空头支票**）。
+ *   ⚠ **四条面都报**、各自给**逐条行**（⛔ 不合并成一句"落后了"）。
  *
- * ── 退出码（三档，与 `check:host` 同族；⚠ 面 ③ 加一档见下）──────────────
- *   0 = **已执行**（⚠ ⚠ **面 ①② 不论有没有落后读数** —— "只报不拦"就落在这里；
+ * ── 退出码（三档，与 `check:host` 同族；⚠ 面 ③ / 面 ④ 见下）──────────────
+ *   0 = **已执行**（⚠ ⚠ **面 ①②④ 不论有没有落后读数** —— "只报不拦"就落在这里；
  *        ⚠ `--strict-instance` 下还要求：面 ③ **不是**"不同步"）；
- *   1 = **FAIL**（⚠ **只有** `--strict-instance` 下面 ③ 判"不同步"才用它 ——
- *        面 ①② 仍然**永不**用 1，那是它们"只报不拦"的口径，⛔ 没有被本批改掉）；
+ *   1 = **FAIL**（⚠ `--strict-instance` 下面 ③ 判"不同步"、或 `--strict-source` 下面 ①②④
+ *        判"落后 / 装不起来" 时用它）；
  *   2 = **未执行 / 基准缺失**（⚠ `lib/BUILD-STAMP` 读不到 / `lib/` 不在 ⇒ **不代表通过**；
+ *        ⚠ **面 ② 的比较对为 0** 也走这一档（改前漏了这一档：删光 `lib/*.js` 仍 exit 0）；
  *        ⚠ `--strict-instance` 下面 ③ 判"**判不出**"也走这一档 —— ⛔ 判不出不是通过）。
  *
  * ── ⚠ ⛔ 不许"扫 0 份报 ✓"（`E-126` 口径）──────────────────────────────
  *   面 ① 要有 `BUILD-STAMP` 可读；面 ② 的**比较对数必须 > 0**（⚠ 否则退 2 并说明）
  *   —— ⚠ 两条都在"覆盖面读数"里报出来，防"覆盖面静默缩水而判据照旧绿"（`E-160` 同族）。
+ *   ⚠ **实现落点**见下面 `compared === 0` 那一支（2026-10-24 · B 席补：文件头写了要求、
+ *     实现里此前**没有**，实测"删光 `lib/*.js` 仍 EXIT=0 并印已执行"）。
  *
  * 用法：
  *   node scripts/check-build-sync.mjs                     # 报警模（面 ③ 只报不拦）
@@ -108,6 +120,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import vm from 'node:vm'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -134,6 +147,39 @@ const productOf = (srcFile) => {
   const rel = relative(SRC_DIR, srcFile)
   return join(LIB_DIR, rel).replace(/\.tsx?$/, '.js')
 }
+
+/**
+ * ── ⚠⚠ **`src/client/**` 是结构性例外：`tsc` 不产它，它只有 tsdown 的一个单体产物** ──
+ *
+ * ── 改前是什么（这就是本单要治的那条）──────────────────────────────────
+ *   上面 `productOf()` 把 `src/client/foo.ts` 映射成 `lib/client/foo.js`。⚠ 而事实是：
+ *     · `tsconfig.json` 的 `exclude: ["src/client"]` ⇒ `tsc` **根本不编** client；
+ *     · `tsconfig.client.json` 的 `noEmit: true` ⇒ 只查类型、不出文件；
+ *     · `tsdown.config.ts` 的 `entry: { client: 'src/client/index.ts' }` +
+ *       `outputOptions.entryFileNames: 'client.js'` ⇒ **8 个源件合成一个 `lib/client.js`**。
+ *   ⇒ `productOf()` 对这 8 份**逐份 `existsSync` 全部为假** ⇒ 它们**全部进 `missingProduct`**，
+ *     **一对都不比较**（实测：35 份源件里 8 份「无独立产物」，恰好就是 client 那 8 份）。
+ *   ⇒ ⚠ 后果：**改 `src/client/index.ts` 而不 build，本判据照样绿** ——
+ *     而 client 半边正是"设置面板 / 新建会话弹窗"那一半，是本项目最常改的地方之一。
+ *   ⇒ 这就是文件头说的「覆盖面静默缩水而判据照旧绿」（`E-160` 同族）的一个**结构性**实例：
+ *     不是取数偶尔读不到，而是**取数规则本身**对这棵子树**恒为假**。
+ *
+ * ── 现在怎么判（⚠ 如实说清边界，⛔ 不假装精确到文件）────────────────────
+ *   判据只有一条：**`src/client/**` 里最新 mtime > `lib/client.js` 的 mtime** ⇒ 报落后。
+ *   ⚠ ⚠ **它的边界（必须写在输出里，⛔ 不许只写在注释里）**：
+ *     ① 单体产物**没有逐文件对应关系** ⇒ 本判据只能回答"client 树里**有没有**比产物新的源"，
+ *        **回答不了**"是哪一份"（要精确到文件得让 tsdown 出 `preserveModules`，那是改构建形态）；
+ *     ② 因此**只碰一个 client 源**但它的 mtime 恰好**早于**产物时（例如刚 checkout、
+ *        或把旧文件 `touch` 回来）仍可能漏 —— 这是**已知边界**，⛔ 不宣称"全覆盖"。
+ *     ③ ⚠ 但它堵住了改前那个**恒假**的口子：只要**编辑**了任何一个 client 源件，
+ *        它的 mtime 就一定晚于产物 ⇒ 一定报。
+ *   ⚠ 这一条**不冒充**面 ②：它单列在 `clientTrees` 读数里，⛔ 不混进"比较对 N 对"那个数
+ *     （不同分母不可相加 —— 本仓纪律）。`missingProduct` 的计数也**相应扣掉** client 那批，
+ *     但**条数照实报**（"client 8 份走单体判据"而不是"8 份没有产物"）。
+ */
+const CLIENT_DIR = join(SRC_DIR, 'client')
+const CLIENT_PRODUCT = join(LIB_DIR, 'client.js')
+const isClientSrc = (f) => relative(SRC_DIR, f).split(/[\\/]/)[0] === 'client'
 
 // ══════════════════════════════════════════════════════════════════════
 // 面 ③ 的取数（2026-10-19 新增 · `TASK-C`）——「运行实例是哪一版」
@@ -629,7 +675,7 @@ async function runningInstances() {
 const stampExists = existsSync(STAMP)
 const libExists = existsSync(LIB_DIR)
 
-console.log('`lib/` 同步自检 · dsh-hob（⚠ ⚠ **只报不拦** —— 落后只打印，⛔ 不 FAIL）')
+console.log('`lib/` 同步自检 · dsh-hob（⚠ 缺省只报不拦；⚠ **"比较对为 0" 例外：它 exit 2**）')
 console.log('')
 
 if (!stampExists || !libExists) {
@@ -720,8 +766,27 @@ const srcNewestMtime = (() => {
 let compared = 0
 let missingProduct = 0
 let staleProduct = 0
+/**
+ * ⚠ **client 树单列的三个读数**（见上面 `isClientSrc` 那段长注释）：
+ *   · `clientSrcs`  —— client 源件份数（⚠ 照实报，⛔ 不混进"比较对"）
+ *   · `clientSrcNewest` —— 这批源件里最新的 mtime（`null` = 一份都取不到）
+ *   · `clientStale` —— 单体产物**比它旧**（= 落后）
+ */
+const clientSrcs = srcFiles.filter(isClientSrc)
+let clientSrcNewest = null
+for (const f of clientSrcs) {
+  try {
+    const t = statSync(f).mtimeMs
+    if (clientSrcNewest === null || t > clientSrcNewest) clientSrcNewest = t
+  } catch { /* 单件读不到 ⇒ 不影响取到的那部分 */ }
+}
+const clientProductExists = existsSync(CLIENT_PRODUCT)
+const clientProductMtime = clientProductExists ? statSync(CLIENT_PRODUCT).mtimeMs : null
+const clientStale = clientSrcNewest !== null && clientProductMtime !== null
+  && clientSrcNewest > clientProductMtime + 1000
 const staleLines = []
 for (const f of srcFiles) {
+  if (isClientSrc(f)) continue   // ⚠ client 走下面的单体判据（⛔ 不在这里再逐份算一遍）
   const prod = productOf(f)
   if (!existsSync(prod)) {
     // ⚠ 有些源件**本就没有独立产物**（类型 / 被内联进别的 bundle）⇒ ⚠ **不计入"比较对"**，
@@ -748,6 +813,54 @@ if (staleProduct > 0) {
   lagBlocking.push('source-newer-than-product')
 } else if (compared > 0) {
   notes.push(`✓ 面 ②：**${compared}** 对「源 ↔ 产物」**逐对核过 mtime**，⛔ 无一件源比产物新`)
+} else {
+  /**
+   * ── ⚠⚠ **`compared === 0` ⇒ 不许报绿**（2026-10-24 · B 席 · 本单最高优先那一条）──────
+   *
+   * ── 改前是什么（文件头 :96 早写了这条要求，实现里**没有**）────────────────
+   *   这一段只有 `else if (compared > 0)` —— ⚠ **没有最后的 `else`** ⇒
+   *   比较对为 0 时**一条读数都不印、判定行照样走 `lag.length === 0` 那一支** ⇒
+   *   印「判定：**已执行** —— 面 ① / 面 ② **都没有落后读数**」并 **EXIT=0**。
+   *   ⚠ 实测（本单复核）：`rm lib/*.js` 之后仍 `EXIT=0` 且打「已执行」——
+   *     那正是文件头自己点名禁止的「**扫 0 份报 ✓**」（`E-126`）。
+   *   ⚠ 为什么它不是"落后"而是"基准缺失"：一份产物都没有 ⇒ **没有任何一对可以比** ⇒
+   *     本判据**没有替你检查任何东西** ⇒ 按本仓三档口径它是 **2（未执行）**，⛔ 不是 1。
+   */
+  lag.push('✗ 面 ②：**比较对为 0** ⇒ 本判据**一对「源 ↔ 产物」都没比过**'
+    + '（⚠ 这不是"没有落后"，而是"没有可比的产物"）'
+    + '\n      ⇒ 文件头 :96 早有这条要求：「面 ② 的**比较对数必须 > 0**，否则退 2 并说明」（`E-126` 口径）'
+    + '\n      ⇒ 修法：跑一次 `npm run build` 生成产物；⚠ 若 `lib/` 在、但源件一份都收不到，'
+    + '那是 `src/` 被搬走 / 权限问题，同样按"未执行"处理（⛔ 不按通过）')
+  lagBlocking.push('compared-zero')
+}
+
+/**
+ * ── 面 ②（client 单体）——⚠ 这一条**单列**，见 `isClientSrc` 上方那段长注释 ─────────
+ *
+ * ⚠ 三种读数**各自成一档**，⛔ 不许合并：
+ *   ① `src/client/**` 一份都取不到 ⇒ **FAIL**（覆盖面归零，⛔ 不许"没东西可比 ⇒ 绿"）；
+ *   ② `lib/client.js` 不在 ⇒ **报落后**（client 产物整份缺失）；
+ *   ③ 最新源 mtime > 产物 mtime ⇒ **报落后**，并在**输出里**明写那条边界。
+ */
+if (clientSrcs.length === 0) {
+  // ⚠ 取不到 = 覆盖面归零 ⇒ 与"落后"同档（⛔ 不落成"同步"）
+  lag.push('✗ 面 ②（client 单体）：`src/client/**` 一份源件都取不到 ⇒ **覆盖面归零**（⚠ 不按通过处理）')
+  lagBlocking.push('client-src-unreadable')
+} else if (!clientProductExists) {
+  lag.push(`✗ 面 ②（client 单体）：\`lib/client.js\` **不存在** ⇒ client 半边**没有任何产物**`
+    + '（⚠ 那 8 份 client 源件在本判据里**全无对照**）⇒ ⚠ 跑一次 `npm run build`')
+  lagBlocking.push('client-product-missing')
+} else if (clientStale) {
+  lag.push(`✗ 面 ②（client 单体）：\`src/client/**\` 里有源件**比 \`lib/client.js\` 新**`
+    + `（最新源 ${new Date(clientSrcNewest).toISOString()} > 产物 ${new Date(clientProductMtime).toISOString()}）`
+    + ' ⇒ ⚠ 跑一次 `npm run build`')
+  lagBlocking.push('client-source-newer-than-product')
+} else {
+  notes.push(`✓ 面 ②（client 单体）：**${clientSrcs.length}** 份 client 源件的最新 mtime`
+    + `（${new Date(clientSrcNewest).toISOString()}）**不晚于** \`lib/client.js\``
+    + `（${new Date(clientProductMtime).toISOString()}）`
+    + ' ⚠ **边界**：单体产物无逐文件对应关系 ⇒ 本判据只回答"树里有没有比产物新的源"，'
+    + '**答不了"是哪一份"**；⚠ 若某份 client 源的 mtime 被回拨到产物之前，**仍可能漏**')
 }
 /** ⚠ 骨架件经派生件已落在面 ② 的覆盖面里（⛔ 不另立口径）。 */
 const manifestSrc = join(SRC_DIR, 'server', 'skeleton-manifest.ts')
@@ -755,6 +868,211 @@ if (existsSync(manifestSrc)) {
   notes.push(`✓ 面 ②：骨架派生件 \`src/server/skeleton-manifest.ts\` 在位`
     + '（⚠ 骨架件 ⇒ 派生件 ⇒ 产物 的链路**已被面 ② 覆盖**，⛔ 不另立第二条口径）')
 }
+
+// ── 面 ④：产物**可加载** / 包装面（2026-10-24 · B 席新增）────────────────────
+//
+//   ⚠ 它守的是两条**结构性**缺口（都不是"偶发读不到"，是"从来没人在看"）：
+//     ① `lib/client.js` **从未被任何判据加载过** —— `check:client` 只读 `src/client/**`
+//        的源码文本、`check:hob-create-dom` 转译的也是**源码**（不是产物）⇒
+//        "产物能不能在宿主模块加载器下装起来、`apply` 会不会立刻抛"这件事**零判据**。
+//        ⚠ 而 client 半边是"设置面板 / 新建会话弹窗"那一半，坏了的用户可见面**最大**。
+//     ② `package.json` 的 `exports` 里**每一条目标文件必须真实存在** ——
+//        改前 `./client` 的 `types` 指向 `lib/types/client/index.d.ts`，而
+//        `tsconfig.json` exclude `src/client` + `tsconfig.client.json` `noEmit` +
+//        `tsdown` `dts:false` ⇒ 该文件**永不生成**（实测不存在）⇒ **声明面是空头支票**。
+//        ⚠ 这类缺陷的形态是：`npm pack` 出去的包里指着一个不存在的路径，
+//          而 `npm run check` **一片绿**。
+const EXPORTS_CHECK = (() => {
+  const bad = []
+  const good = []
+  let pkg = null
+  try { pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) } catch { pkg = null }
+  if (pkg === null) {
+    bad.push('✗ 面 ④（exports 包装面）：`package.json` 读不到 / 解析不了 ⇒ 基准缺失（⚠ 不按通过处理）')
+    return { bad, good, blocking: ['package-json-unreadable'] }
+  }
+  const exportsField = pkg.exports
+  if (exportsField === null || typeof exportsField !== 'object') {
+    bad.push('✗ 面 ④（exports 包装面）：`package.json` 里没有 `exports` 段 ⇒ 子路径声明面无从核对'
+      + '（⚠ 不按通过处理：没有 exports 时 `./client` / `./preset/tools` 都不可导入）')
+    return { bad, good, blocking: ['exports-missing'] }
+  }
+  /**
+   * ⚠ 递归收 `exports` 里的**目标字符串**（值可以是字符串，也可以是 `{ types, default }` 这种层）。
+   *   ⚠ 只收以 `.` 开头的（= 包内相对路径）；`"./package.json"` 这类也走同一条判据。
+   *   ⚠ 空字符串 / 非字符串一律跳过（那是写法错误，由 `check:config` 一类去管，⛔ 这里不越界）。
+   */
+  const targets = []
+  /** ⚠ `label` = 人读的"哪个子路径的哪一档"（如 `./client → types`）；⛔ 不是 JSON 路径拼接。 */
+  const walkExports = (node, subpath, cond) => {
+    if (typeof node === 'string') {
+      if (node.startsWith('.')) targets.push({ label: cond === '' ? subpath : `${subpath} → ${cond}`, target: node })
+      return
+    }
+    if (node === null || typeof node !== 'object') return
+    /** ⚠ 顶层之外的那一层是**条件名**（`types` / `default` / `import` …）—— 权威来源 = 键名本身。 */
+    if (subpath !== '' && cond === '' && !Object.keys(node).some((k) => k.startsWith('.'))) {
+      for (const [k, v] of Object.entries(node)) walkExports(v, subpath, k)
+      return
+    }
+    for (const [k, v] of Object.entries(node)) walkExports(v, subpath === '' ? k : subpath, cond)
+  }
+  walkExports(exportsField, '', '')
+  if (targets.length === 0) {
+    bad.push('✗ 面 ④（exports 包装面）：`exports` 里一条包内目标都没解析到 ⇒ 基准缺失（⚠ 不按通过处理）')
+    return { bad, good, blocking: ['exports-targets-unreadable'] }
+  }
+  for (const t of targets) {
+    const abs = join(root, t.target)
+    if (!existsSync(abs)) {
+      bad.push(`✗ 面 ④（exports 包装面）：\`exports\` 的 \`${t.label}\` 指向 \`${t.target}\`，`
+        + '**该文件不存在** ⇒ 声明面是空头支票'
+        + '\n      ⇒ ⚠ 消费者按这个子路径导入会拿到 ENOENT / 无类型；'
+        + '而 `npm run check` 改前**一片绿**（没人读过 `exports` 的目标）'
+        + '\n      ⇒ 修法二选一：① 让构建真的产出它（tsdown `dts:true` 或 tsc 出声明）；'
+        + '② 把这条 `exports` 改成指向**真实产出**的路径 / 删掉这一支')
+    }
+  }
+  if (bad.length === 0) {
+    good.push(`✓ 面 ④（exports 包装面）：\`exports\` 里 **${targets.length}** 条包内目标**逐个存在**`
+      + `（${targets.map((t) => t.target).join(' · ')}）`)
+  }
+  return { bad, good, blocking: bad.length > 0 ? ['exports-target-missing'] : [] }
+})()
+
+/**
+ * ⚠ **真加载 `lib/client.js`**（面 ④ 的第二条）。
+ *
+ * ── 为什么用 `vm` 而不是 `import()` ──────────────────────────────────
+ *   `lib/client.js` 是 tsdown 打的**浏览器模块**：外面包着
+ *   `window.__ModuleLoader__.load({ id, factory })`，⛔ 不是 ESM、⛔ 不是可 `import` 的 CJS。
+ *   ⇒ 在 Node 里只能给它一个 `window.__ModuleLoader__.load` **假外壳**、把 `factory` 取出来再调。
+ *   ⚠ 这与宿主浏览器里那条真路径**同形**（加载器做的事就是"取 factory 并调用"），
+ *     ⛔ 不是"另写一份判定"。
+ *
+ * ── 判据（四条，缺一条都算"装不起来"）────────────────────────────────
+ *   ① `load()` 被调用一次，且 `id === 'dsh-hob'`（模块表 key 错 ⇒ 宿主按名找不到）；
+ *   ② `factory(require)` 返回的对象里有 `apply`（函数）与 `inject`（数组）——
+ *      ⚠ 这是宿主 client 加载器**唯一**的契约面；
+ *   ③ `apply(ctx)` 在**假 ctx** 上真跑通（不抛），且 `ctx.slots.register` 被调到
+ *      `conversation.hero.options`（= `installHobUnselectedGate` 真的装配进来了，
+ *      而不是"打包时被 tree-shake 掉"）；
+ *   ④ 假 `require` 只认 external 清单里的裸包名 —— 出现清单外的 require ⇒ 报
+ *      （那意味着产物里打进了不该打的依赖，或漏了 external）。
+ */
+const CLIENT_LOAD = (() => {
+  const bad = []
+  const good = []
+  if (!existsSync(CLIENT_PRODUCT)) {
+    bad.push('✗ 面 ④（产物加载面）：`lib/client.js` **不存在** ⇒ client 半边一条运行时判据都跑不了'
+      + '（⚠ 不按通过处理；⚠ 这一档已在面 ② 的 client 单体里报过一次，这里如实再报一次读数面）')
+    return { bad, good, blocking: ['client-product-missing'] }
+  }
+  let code = ''
+  try { code = readFileSync(CLIENT_PRODUCT, 'utf8') } catch (e) {
+    bad.push(`✗ 面 ④（产物加载面）：\`lib/client.js\` 读不到（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+    return { bad, good, blocking: ['client-product-unreadable'] }
+  }
+  /**
+   * ⚠ external 清单的**唯一权威 = `tsdown.config.ts`**（⛔ 不在本判据里手抄一张会漂的表）。
+   *   读不到 ⇒ 判不了（⛔ 不落成"通过"）。
+   */
+  let externals = null
+  try {
+    const cfg = readFileSync(join(root, 'tsdown.config.ts'), 'utf8')
+    const m = /const CLIENT_EXTERNALS\s*=\s*\[([\s\S]*?)\]/.exec(cfg)
+    if (m !== null) externals = new Set([...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]))
+  } catch { externals = null }
+
+  const mods = []
+  const sandbox = {
+    console: { debug() {}, info() {}, warn() {}, error() {}, log() {} },
+    window: { __ModuleLoader__: { load: (m) => { mods.push(m) } } },
+  }
+  sandbox.globalThis = sandbox
+  try {
+    vm.runInNewContext(code, sandbox, { filename: 'lib/client.js', timeout: 20_000 })
+  } catch (e) {
+    bad.push(`✗ 面 ④（产物加载面）：\`lib/client.js\` **在加载器外壳下就抛了**：${String(e?.message ?? e)}`
+      + '\n      ⇒ 宿主里表现 = 整个 client 半边不激活（设置分区 / 弹窗全消失），而源码面判据全绿')
+    return { bad, good, blocking: ['client-product-throws'] }
+  }
+  if (mods.length !== 1) {
+    bad.push(`✗ 面 ④（产物加载面）：\`window.__ModuleLoader__.load\` 被调用 **${mods.length}** 次（应为 1）`
+      + ' ⇒ 产物外壳形态不对（宿主模块表会重复注册 / 或压根没注册）')
+    return { bad, good, blocking: ['client-loader-shape'] }
+  }
+  const mod = mods[0]
+  if (mod === null || typeof mod !== 'object' || mod.id !== 'dsh-hob' || typeof mod.factory !== 'function') {
+    bad.push(`✗ 面 ④（产物加载面）：\`load()\` 的入参形状不对（id=${JSON.stringify(mod?.id)} · `
+      + `factory=${typeof mod?.factory}）⇒ 宿主按模块名 \`dsh-hob\` 找不到它`)
+    return { bad, good, blocking: ['client-loader-id'] }
+  }
+  const strayReqs = []
+  const requireStub = (name) => {
+    if (externals !== null && !externals.has(name)) strayReqs.push(name)
+    // ⚠ 只给"够跑通"的假实现：React 的那几个 hook 用不到，⛔ 不伪造行为语义。
+    if (name === 'react') {
+      return { createElement: () => null, useState: (v) => [v, () => {}], useEffect: () => {}, Fragment: Symbol('f') }
+    }
+    return new Proxy({}, { get: () => () => undefined })
+  }
+  let exp = null
+  try { exp = mod.factory(requireStub) } catch (e) {
+    bad.push(`✗ 面 ④（产物加载面）：\`factory(require)\` 抛了：${String(e?.message ?? e)}`
+      + '\n      ⇒ 宿主里表现 = client 插件加载即失败（⛔ 不是"某个面板少了"）')
+    return { bad, good, blocking: ['client-factory-throws'] }
+  }
+  const hasApply = typeof exp?.apply === 'function'
+  const hasInject = Array.isArray(exp?.inject)
+  if (!hasApply || !hasInject) {
+    bad.push(`✗ 面 ④（产物加载面）：产物导出不全 —— \`apply\`=${typeof exp?.apply} · `
+      + `\`inject\`=${Array.isArray(exp?.inject) ? 'array' : typeof exp?.inject}`
+      + '（宿主 client 加载器的唯一契约面就是这两项）')
+    return { bad, good, blocking: ['client-exports-missing'] }
+  }
+  /**
+   * ⚠ `apply` 真跑一遍：**假 ctx** 只实现产物真的会用到的那几个成员。
+   *   ⚠ 任何一个用到但没实现的成员 ⇒ 抛 ⇒ 记为"装不起来"（那正是宿主里会发生的事）。
+   */
+  const registered = []
+  const ctx = {
+    logger: { debug() {}, info() {}, warn() {}, error() {} },
+    effect: (fn) => { try { fn() } catch { /* 产物内部已自行兜底 */ } return { dispose() {} } },
+    inject: (_deps, cb) => { try { cb(ctx) } catch { /* 同上 */ } return { dispose() {} } },
+    get: () => undefined,
+    slots: {
+      inject: (_name, fn) => { try { fn() } catch { /* 同上 */ } return { dispose() {} } },
+      register: (spec) => { registered.push(spec); return { dispose() {} } },
+    },
+  }
+  try { exp.apply(ctx) } catch (e) {
+    bad.push(`✗ 面 ④（产物加载面）：\`apply(fakeCtx)\` 抛了：${String(e?.message ?? e)}`
+      + '\n      ⇒ 宿主里表现 = 设置分区 / 弹窗全部装不上')
+    return { bad, good, blocking: ['client-apply-throws'] }
+  }
+  const slotNames = registered.map((r) => r?.name)
+  const gateWired = slotNames.includes('conversation.hero.options')
+  if (!gateWired) {
+    bad.push(`✗ 面 ④（产物加载面）：\`apply\` 跑通了，但**没有**注册到 \`conversation.hero.options\`'
+      + '（实际注册：${JSON.stringify(slotNames)}）`
+      + '\n      ⇒ \`installHobUnselectedGate\` 没被装配进来（打包时被裁掉 / 调用被删 / 注册改道）')
+  }
+  if (strayReqs.length > 0) {
+    bad.push(`✗ 面 ④（产物加载面）：产物 require 了 external 清单之外的裸包：${[...new Set(strayReqs)].join(' · ')}`
+      + '\n      ⇒ 那意味着产物里**打进了一份私有副本**（或 `tsdown.config.ts` 的 external 漏了它）')
+  } else if (externals === null) {
+    bad.push('✗ 面 ④（产物加载面）：读不到 `tsdown.config.ts` 的 `CLIENT_EXTERNALS` ⇒ '
+      + '"require 是否越界"这一条**判不了**（⚠ 不按通过处理；⛔ 不许当成"没有越界"）')
+  }
+  if (bad.length === 0) {
+    good.push(`✓ 面 ④（产物加载面）：\`lib/client.js\` **真加载了一遍** —— 模板块 id=\`dsh-hob\` · `
+      + `导出 \`apply\`(函数) / \`inject\`(${exp.inject.length} 项) 在位 · `
+      + `\`apply(fakeCtx)\` 不抛且注册出 **${registered.length}** 个槽条目`
+      + `（含 \`conversation.hero.options\` ⇒ \`installHobUnselectedGate\` 真的装配进来了）`)
+  }
+  return { bad, good, blocking: bad.length > 0 ? ['client-runtime-contract'] : [] }
+})()
 
 // ── 面 ③：运行实例面（⚠ 三档，⛔ 一行都不许省）────────────────────────────
 //
@@ -779,6 +1097,10 @@ console.log(`      · 面 ① 取数件：\`lib/BUILD-STAMP\`${stampExists ? '�
 console.log(`      · 面 ② 源件 **${srcFiles.length}** 份（\`src/**/*.ts(x)\`，⚠ 排除 \`.d.ts\`）·`
   + ` 有对应产物 ⇒ 比较对 **${compared}** 对 · ⚠ 无独立产物（类型 / 被内联）**${missingProduct}** 份`
   + '（⛔ 不计入比较对，⚠ **照实报出条数，不静默缩水**）')
+console.log(`      · 面 ②（client 单体）：\`src/client/**\` 源件 **${clientSrcs.length}** 份 ⇒ **不逐对比较**`
+  + `（tsdown 单体产物 \`lib/client.js\`${clientProductExists ? '在位' : '⚠ 不在'}）`
+  + ' —— ⚠ 它们**不计入上面的比较对**，由"最新源 mtime vs 产物 mtime"单列判（见下）')
+console.log(`      · 面 ④ 取数件：\`package.json\` 的 \`exports\` + \`lib/client.js\`（vm 假外壳真加载）`)
 console.log(`      · 戳读数：commit=${commit ?? '?'} · dirty=${dirty ?? '?'} · built_at=${builtAt ?? '?'}`)
 console.log(`      · 面 ③ 取数件：\`/proc/<pid>/stat\` + \`/proc/stat\` + profile 的 \`dsh.profile.bundles\``
   + ` · 已确认在跑本 checkout 的宿主进程 **${inst.procs.length}** 个`
@@ -786,6 +1108,16 @@ console.log(`      · 面 ③ 取数件：\`/proc/<pid>/stat\` + \`/proc/stat\` 
   + (instNotes.length > 0 ? ` · ⚠ **${instNotes.length} 处取不到**（见下）` : ''))
 console.log('')
 for (const n of notes) console.log('  ' + n)
+for (const n of EXPORTS_CHECK.good) console.log('  ' + n)
+for (const n of CLIENT_LOAD.good) console.log('  ' + n)
+/**
+ * ⚠ 面 ④ 的**失败行**放进 `lag`（= 与"落后"同一渲染面、同一个 `没过` 分母），
+ *   但**退出码归属**见下面 `lagBlocking` 的接线。
+ *   ⚠ 这样做的理由：面 ④ 的失败同样是"盘上这份产物不对"，与面 ①② 同类；
+ *     而"面 ④ 该不该拦"由 `--strict-source` 决定（与面 ①② 同档，⛔ 不新开一个开关）。
+ */
+for (const b of EXPORTS_CHECK.bad) lag.push(b)
+for (const b of CLIENT_LOAD.bad) lag.push(b)
 /**
  * ⚠ **处级口径**（2026-10-21 · 第 350 轮 · 甲-1 收尾）：`查了 = 过了 + 跳过`。
  *
@@ -800,11 +1132,48 @@ for (const n of notes) console.log('  ' + n)
  */
 const SKIP_BUILD = []
 console.log('')
-console.log(`  处级口径：查了 ${notes.length + SKIP_BUILD.length} 处 · 过了 ${notes.length - lag.length} 处`
-  + ` · **跳过 ${SKIP_BUILD.length} 处**（⚠ 跳过**不计入通过**；⚠ 本族口径按**读数行**、非逐条断言）`)
+/**
+ * ⚠⚠ **`查了` 必须同时数进 ✗ 读数**（2026-10-22 · SRE · 修「过了 -1 处」）───────────
+ *   改前：`查了 = notes.length`、`过了 = notes.length - lag.length` ⇒ 只要现场有一条 ✗
+ *   读数，`过了` 就可能**变负**（实测 `查了 2 处 · 过了 -1 处`）。负数通过不存在，
+ *   那个读数一出现就说明**账算错了**。
+ *   根因：✗ 读数只从分子里减、没进分母 —— 分母漏掉了「查了、但没过」的那批行。
+ *   ⇒ 现在 `查了 = ✓ 读数 + ✗ 读数`、`过了 = ✓ 读数`、`没过 = ✗ 读数`，
+ *     `查了 = 过了 + 没过 + 跳过` 恒成立（⛔ 不是只有全绿时才成立）。
+ *   ⚠ **不 clamp 成 0**：把负数抹平成 0 = 把「账算错了」洗成「全都过了」，正是本仓最忌的那类。
+ */
+console.log(`  处级口径：查了 ${notes.length + lag.length + SKIP_BUILD.length} 处 · 过了 ${notes.length} 处`
+  + ` · 没过 ${lag.length} 处 · **跳过 ${SKIP_BUILD.length} 处**`
+  + `（⚠ 跳过**不计入通过**；⚠ 本族口径按**读数行**、非逐条断言）`)
 console.log('')
+/**
+ * ⚠⚠ **"一对都没比过" ⇒ `exit 2`，且**不受开关控制**（2026-10-24 · B 席）─────────────
+ *   ⚠ 理由：`2` 的语义是"**未执行 / 基准缺失**"，而"没有可比对象"正是它 ——
+ *     与"刚改完源码还没 build"（可立刻消掉的中间态，`1`）**不是一个东西**。
+ *   ⚠ 所以这一档**不看** `--strict-source`：缺基准在任何跑法下都不该落 0
+ *     （文件头 `0 = 已执行` 的定义里没有它的位置）。
+ *   ⚠ 同理 `client-src-unreadable`（`src/client/**` 一份都取不到）也走这一档。
+ *   ⚠ 它**排在判定行之前**：⛔ 不许先印"已执行"再退 2（那正是"判定行与退出码打架"）。
+ */
+const BASELINE_GONE = lagBlocking.includes('compared-zero') || lagBlocking.includes('client-src-unreadable')
+if (BASELINE_GONE) {
+  console.log('判定：**未执行** —— **基准缺失**：本判据**没有替你检查任何东西**'
+    + '（⚠ 退出码 2 与"已执行"(0)、"落后"(1) 有意区分）。')
+  for (const l of lag) console.log('  ' + l)
+  console.log('')
+  console.log('       ⚠ 为什么不是 0：文件头 :96 明写「面 ② 的**比较对数必须 > 0**，否则退 2 并说明」'
+    + '（`E-126`：扫 0 份报 ✓ 是最坏的一类假绿）。')
+  console.log('       ⚠ 为什么不是 1：`1` 在本仓的语义是"查了、且查到落后"；'
+    + '这里**一对都没比过** ⇒ 说"落后"同样是谎报。')
+  console.log('')
+  console.log('       ⚠ 覆盖面 / 判读口径：面 ①② = **产物 vs 源**（client 那 8 份走单体判据）· '
+    + '面 ③ = **运行实例 vs 产物** · 面 ④ = **产物能装起来 / exports 目标在位**。')
+  process.exit(2)
+}
 if (lag.length === 0) {
-  console.log('判定：**已执行** —— 面 ① / 面 ② **都没有落后读数**（⚠ 产物跟得上源码）。')
+  console.log('判定：**已执行** —— 面 ① / 面 ②（含 client 单体）/ 面 ④ **都没有落后读数**'
+    + '（⚠ 产物跟得上源码、`lib/client.js` 装得起来、`exports` 各目标都在位）。')
+  console.log('       ⚠ ⛔ 面 ④ **不判**"产物在浏览器里跑起来对不对" —— 它只证"能装、导出契约在、apply 不抛"。')
   console.log('       ⚠ 面 ③（运行实例 vs 产物）**另在下面单独判**，⛔ 不并进这一句 ——'
     + ' 盘上绿**不代表**跑着的进程也绿（两者可以一个绿一个红）。')
   console.log('       ⚠ ⛔ 本判据**仍不判**"实例有没有在**服务里**用上这版产物" —— 那是 `E-168` 的〔实例层〕。')
@@ -821,8 +1190,8 @@ if (lag.length === 0) {
    */
   if (STRICT_SRC) {
     console.log(lagBlocking.length > 0
-      ? '判定：**FAIL**（⚠ 面 ①② **落后** ⇒ `--strict-source` 下**计入退出码**）'
-      : '判定：**PASS**（⚠ 面 ①② **没有落后** ⇒ `--strict-source` 下**不拦**；'
+      ? '判定：**FAIL**（⚠ 面 ①②（含 client 单体）/ 面 ④ **有落后或装不起来** ⇒ `--strict-source` 下**计入退出码**）'
+      : '判定：**PASS**（⚠ 面 ①②（含 client 单体）/ 面 ④ **没有落后** ⇒ `--strict-source` 下**不拦**；'
         + '⚠ 其余 `✗` 行是信息性读数，见各行末的"不计入退出码"说明）')
   } else {
     console.log('判定：**已执行**（⚠ ⚠ **有落后读数 —— 但本判据只报不拦，⛔ 不影响退出码**）')
@@ -830,7 +1199,7 @@ if (lag.length === 0) {
   for (const l of lag) console.log('  ' + l)
   console.log('')
   if (STRICT_SRC) {
-    console.log('       ⚠ 本轮是**源码面判据模**（`--strict-source`）：面 ①② 的落后 **exit 1**。'
+    console.log('       ⚠ 本轮是**源码面判据模**（`--strict-source`）：面 ①②（含 client 单体）/ 面 ④ 的落后 **exit 1**。'
       + '⚠ 修法就是跑一次 `npm run build`（⚠ 本判据**不替你 build**）。')
   } else {
     console.log('       ⚠ ⚠ **为什么只报不拦**：⚠ "`lib/` 落后"**可能是未提交态 / 刚改完还没 build**'
@@ -851,16 +1220,20 @@ if (STRICT) {
   console.log('       ⚠ 本轮是**判据模**（`--strict-instance`）：面 ③ 的不同步 / 判不出 **计入退出码**。')
 } else {
   console.log('       ⚠ 本轮是**报警模**（缺省）：面 ③ **只打印、不影响退出码**'
-    + '—— ⚠ 要让它长牙请用 `--strict-instance`（`npm run check` 就是这么传下去的）。')
+    + '—— ⚠ 要让它长牙请用 `--strict-instance`（⚠ **`npm run check` 不传它**：'
+    + '聚合入口只传 `--strict-source`，理由见 `check-all.mjs` 的 `STRICT_FAMILIES` —— '
+    + '"刚 build 完还没重启"会让面 ③ 恒红）')
 }
 console.log(STRICT_SRC
   ? '       ⚠ 面 ①②：本轮是**源码面判据模**（`--strict-source`）⇒ 落后 **exit 1**。'
   : '       ⚠ 面 ①②：本轮是**源码面报警模**（缺省）⇒ 落后**只打印、不影响退出码**'
     + '（⚠ 要让它长牙请用 `--strict-source`）。')
 console.log('')
-console.log('       ⚠ 覆盖面 / 判读口径：面 ①② = **产物 vs 源** · 面 ③ = **运行实例 vs 产物**'
+console.log('       ⚠ 覆盖面 / 判读口径：面 ①② = **产物 vs 源**（client 那 8 份走单体判据）· '
+  + '面 ③ = **运行实例 vs 产物** · 面 ④ = **产物能装起来 / exports 目标在位**'
   + '（⛔ 都不是"实例是否在服务里用上它"）；'
-  + '⚠ 退出码 0=已执行 · 1=面③不同步（仅判据模）· 2=未执行/基准缺失或面③判不出'
+  + '⚠ 退出码 0=已执行 · 1=落后/装不起来（仅对应判据模）· 2=未执行/基准缺失（⚠ **含"比较对为 0"**，'
+  + '该档**不受开关控制**）或面③判不出'
   + '（含"宿主在跑但没装配本插件"那一档 · 仅判据模）；'
   + '⚠ 另有 **`rebuilt-only`（重编但源码未变）** 一档 —— 它**算同步**，⛔ 不计入退出码。')
 /**

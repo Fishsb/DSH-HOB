@@ -72,6 +72,21 @@ export interface MarkerHit {
   line: number
   /** 标记原文。 */
   raw: string
+  /**
+   * ⚠ 标记在该行里的**起始字符偏移**（0 起，左闭）。
+   *
+   * ── 为什么必须记偏移，而不能让渲染侧再 `indexOf(raw)` 找（2026-10-24 · 本单必修 8）──
+   *   改前 `renderReadings` 是 `line.indexOf(h.raw)`。**同一行出现两个内容相同的标记**
+   *   （如 `共 <!-- hob:count | t --> 份 / 又 <!-- hob:count | t --> 份`）时，
+   *   两次 `indexOf` **都指到第一处** ⇒ 第一处被替换两次（数字变一次），
+   *   第二处**原样留在盘上**；而函数照样把这些标记记进 `rendered`、写入照样 `ok: true`
+   *   ⇒ **正文被写坏而读数说"渲染成功"**（本单实测的形态）。
+   *   ⇒ 偏移只认 `scanMarkers` 里 `matchAll` 给出的 `m.index`（**唯一来源**，天然按出现顺序、
+   *     天然互不重叠），渲染侧**按偏移顺序消费**，不再猜"是第几处"。
+   */
+  start: number
+  /** 标记在该行里的**结束偏移**（左开，`line.slice(start, end) === raw`）。 */
+  end: number
   /** 非空 = **形状非法**，值为原因（这类**必须**当拒绝处理，不许静默）。 */
   invalid?: string
 }
@@ -96,6 +111,16 @@ export type ReadingRefuseReason =
   | 'symlink'
   | 'target-missing'
   | 'kind-mismatch'
+  /**
+   * ── 两条**内部一致性**拒绝（2026-10-24 · 本单必修 8 新增）────────────────────
+   * ⚠ 它们不是"标记写错了"，而是"**本渲染器自己**的前提被破坏"：
+   *   · `offset-mismatch` —— 扫描给出的区间与这一行原文对不上；
+   *   · `overlap-guard`   —— 同一行里待替换的区间互相重叠（`matchAll` 本不该产出）。
+   * ⚠ 两者都**不渲染**（标记原样保留）⇒ 收尾机检（断言 I）会当场咬到，
+   *   ⛔ 绝不按错的/重叠的区间去切正文（那会静默写坏内容，仍回 `ok: true`）。
+   */
+  | 'offset-mismatch'
+  | 'overlap-guard'
 
 /** 一条**被拒绝渲染**的读数（标记原样保留）。 */
 export interface RefusedReading {
@@ -248,10 +273,11 @@ export function scanMarkers(content: string): MarkerHit[] {
       const end = at + m[0].length
       if (exempt.some(([a, b]) => at >= a && end <= b)) continue
       const raw = m[0]
+      const start = at
       const p = MARKER_PARSE_RE.exec(raw)
       if (p === null) {
         hits.push({
-          kind: '', target: '', line: i + 1, raw,
+          kind: '', target: '', line: i + 1, raw, start, end,
           invalid: '标记形状不完整（应为 `<!-- hob:<count|bytes> | <目标> -->`）',
         })
         continue
@@ -259,14 +285,14 @@ export function scanMarkers(content: string): MarkerHit[] {
       const kind = p[1]!
       const target = p[2]!
       if (kind !== 'count' && kind !== 'bytes') {
-        hits.push({ kind, target, line: i + 1, raw, invalid: `取值种类 \`${kind}\` 不认识（本轮只有 count / bytes）` })
+        hits.push({ kind, target, line: i + 1, raw, start, end, invalid: `取值种类 \`${kind}\` 不认识（本轮只有 count / bytes）` })
         continue
       }
       if (target.trim() === '') {
-        hits.push({ kind, target, line: i + 1, raw, invalid: '目标为空（没有对象可取）' })
+        hits.push({ kind, target, line: i + 1, raw, start, end, invalid: '目标为空（没有对象可取）' })
         continue
       }
-      hits.push({ kind, target, line: i + 1, raw })
+      hits.push({ kind, target, line: i + 1, raw, start, end })
     }
   })
   return hits
@@ -390,14 +416,37 @@ export function renderReadings(ledgerRoot: string, file: string, content: string
   }
 
   for (const [lineNo, lineHits] of byLine) {
-    let line = lines[lineNo - 1]!
+    const line = lines[lineNo - 1]!
+    /**
+     * ⚠⚠ **按偏移消费，不再 `indexOf(raw)`**（2026-10-24 · 本单必修 8）。
+     *
+     * 改前的病灶：同一行出现**两个内容完全相同**的标记时，两次 `indexOf` **都指到第一处**
+     *   ⇒ 第一处被替换两次（值只变一次），第二处**原样留在盘上**；而 `rendered` 里却记了两条、
+     *   写入照样 `ok: true` ⇒ **正文写坏了、读数说渲染成功**。
+     * ⇒ 现在只用 `scanMarkers` 给出的 `start` / `end`：
+     *   · 它来自 `String.prototype.matchAll` 的 `m.index`（**唯一来源**，天然按出现顺序、
+     *     天然互不重叠）；
+     *   · 因此"第几个标记"这件事**不再靠猜**，同内容标记各替换各的。
+     */
     const edits: Array<{ start: number; end: number; text: string }> = []
     for (const h of lineHits) {
       const d = decideOne(ledgerRoot, fileNorm, h)
       if ('value' in d) {
-        const start = line.indexOf(h.raw)
-        if (start === -1) continue // 理论上不会发生（raw 来自本行）
-        edits.push({ start, end: start + h.raw.length, text: String(d.value) })
+        /**
+         * ── 自检 ①：区间必须真的对得上那段原文 ───────────────────────────
+         *   ⚠ 对不上说明"扫描偏移"与"这一行"已经不是同一份文本了（违反本函数的前提）
+         *     ⇒ **拒绝这一处**（标记原样保留、点名），⛔ 绝不按错的偏移去切 ——
+         *     切错 = 正文被静默改写，正是本单要治的那一类。
+         */
+        if (line.slice(h.start, h.end) !== h.raw) {
+          refused.push({
+            kind: h.kind, target: h.target, line: h.line, reason: 'offset-mismatch', raw: h.raw,
+            note: '扫描给出的区间与这一行的原文对不上 ⇒ **不渲染**（标记原样保留）。这属于内部不一致，'
+              + '宁可留着让收尾的机检当场咬到（断言 I），也不按错的位置切正文',
+          })
+          continue
+        }
+        edits.push({ start: h.start, end: h.end, text: String(d.value) })
         rendered.push({
           kind: h.kind as ReadingKind,
           target: normalizeTarget(h.target),
@@ -411,10 +460,38 @@ export function renderReadings(ledgerRoot: string, file: string, content: string
         })
       }
     }
-    for (const e of edits.sort((a, b) => b.start - a.start)) {
-      line = line.slice(0, e.start) + e.text + line.slice(e.end)
+    /**
+     * ── 自检 ②：替换区间**不得重叠**（本单必修 8 明令）────────────────────
+     *   ⚠ `matchAll` 本来不会产出重叠区间 ⇒ 本检查**理应永不触发**；它的价值在于
+     *     "把这条前提变成当场可判的事实"：一旦有人改了扫描器（或将来加了别种标记），
+     *     重叠会让 `slice` 拼出**谁也预料不到的正文**，而写入照样回 `ok`。
+     *   ⇒ 触发时**整行都不渲染**（把该行所有待渲染标记一并转成拒绝），
+     *     理由写清楚 + 标记原样保留 ⇒ 收尾机检当场可见。⛔ 不猜"哪个更该赢"。
+     */
+    const sorted = [...edits].sort((a, b) => a.start - b.start)
+    let overlapped = false
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i]!.start < sorted[i - 1]!.end) { overlapped = true; break }
     }
-    lines[lineNo - 1] = line
+    if (overlapped) {
+      for (let i = rendered.length - 1; i >= 0; i--) {
+        if (rendered[i]!.line !== lineNo) continue
+        const r = rendered.splice(i, 1)[0]!
+        refused.push({
+          kind: r.kind, target: r.target, line: r.line, reason: 'overlap-guard', raw: r.raw,
+          note: '同一行里被判定要替换的区间**互相重叠** ⇒ **本行一律不渲染**（标记原样保留）。'
+            + '⚠ 这属于内部不一致（扫描器本不该产出重叠区间）：宁可留着让收尾机检当场咬到，'
+            + '也不按重叠区间去拼正文 —— 那会静默写出谁也预料不到的内容',
+        })
+      }
+      continue
+    }
+    // 从右往左替换（位移互不影响；顺序与"按偏移"并不矛盾：都只认同一条原始行文本）。
+    let out = line
+    for (const e of [...sorted].sort((a, b) => b.start - a.start)) {
+      out = out.slice(0, e.start) + e.text + out.slice(e.end)
+    }
+    lines[lineNo - 1] = out
   }
 
   return { content: lines.join('\n'), rendered, refused }

@@ -207,14 +207,50 @@ function isTerminalStatus(status: string): boolean {
  *   「把这一张卡从结果里剔除」，那是**掩盖**不是**纠偏**。
  *   `canceled` / `archived` 仍不报（既有口径，本批未动）。
  */
+/**
+ * 取"最近一次执行的结果字"——**两个数据源，同一判据**。
+ *
+ * ⚠⚠ **为什么必须两个都认**（2026-10-24 · 本单 §6）：
+ *   ① `taskboard_list` 的 `summarize()` 投影里**没有 `executions`**，
+ *      只有 `lastExecutionOutcome`（第三方包 `lib/shared/protocol.js:965-987` 原文）；
+ *   ② `taskboard_get` 的完整记录里**没有** `lastExecutionOutcome`，只有 `executions[]`。
+ *   ⇒ `readCards` 先用 ① 挑候选、再用 ② 取细节 —— **两个形状都会流经本函数**。
+ *   改前只读 `executions` ⇒ 在**候选筛选**这一步（①）恒读不到 ⇒
+ *   "执行失败"与 `done` 的卡**永远不进候选** ⇒ 状态行报「确实没有该报的卡」。
+ *   ⚠ 这就是"两种原因说成同一句话"的读数版：**没去看**被印成**没有**。
+ */
+function lastOutcomeOf(task: any): string | undefined {
+  // ① 摘要投影（`taskboard_list`）—— 真帧/摘要上唯一的来源。
+  const fromSummary = str(task?.lastExecutionOutcome)
+  if (fromSummary !== undefined) return fromSummary
+  // ② 完整记录（`taskboard_get`、以及机检的 `card()` 夹具）—— 最后一条执行。
+  const executions = Array.isArray(task?.executions) ? task.executions : []
+  const last = executions.length > 0 ? executions[executions.length - 1] : undefined
+  return str(last?.outcome)
+}
+
 function isReportable(task: any): boolean {
   const status = str(task?.status) ?? ''
   if (status === 'in_progress' || status === 'in_review') return true
-  // ⚠ 终态里**只有 `done` 会因受阻被"翻出来"报**；`canceled`/`archived` 不报（既有口径）。
+  /**
+   * ⚠⚠ **`done` 必须报**（2026-10-24 · 本单 §6 的第二半）。
+   *
+   * 改前 `done` 只有**挂了 `blocked`** 才被"翻出来"（见下一条），
+   * 而 `phaseOf` 的 ③ 明明把 `done` 归入「待验收」、文件头的三档也写着
+   * 「待验收：`in_review`（**或 `done`**）」⇒ **文档与实现相反**：
+   * 一张正常完成的卡（`done` 且标记已清）**永远进不了候选** ⇒ 派单方看不到它。
+   * ⚠ `canceled` / `archived` 仍不报（既有口径，本批未动）。
+   */
+  if (status === 'done') return true
+  // ⚠ 受阻：非终态的受阻卡必须报（分辨力，`L-g` 钉着它）。
   if (task?.blocked === true && status !== 'canceled' && status !== 'archived') return true
-  const executions = Array.isArray(task?.executions) ? task.executions : []
-  const last = executions.length > 0 ? executions[executions.length - 1] : undefined
-  const lastOutcome = str(last?.outcome)
+  /**
+   * ⚠ **执行失败/取消的卡也要报**（"失败/卡住"那一档的来源）。
+   *   判据用 {@link lastOutcomeOf}：摘要（`lastExecutionOutcome`）与完整记录
+   *   （`executions[].outcome`）**两个形状都认** —— 改前只认后者，
+   *   于是候选筛选用摘要时这一支**恒为假**。
+   */
+  const lastOutcome = lastOutcomeOf(task)
   if (lastOutcome === 'failed' || lastOutcome === 'cancelled') return true
   return false
 }
@@ -234,7 +270,14 @@ function phaseOf(task: any, now: number, stallMs: number): { phase: CardPhase; r
   const executions = Array.isArray(task?.executions) ? task.executions : []
   /** 最近一次执行（看板按时间追加 ⇒ 最后一条就是最近）。 */
   const last = executions.length > 0 ? executions[executions.length - 1] : undefined
-  const lastOutcome = str(last?.outcome)
+  /**
+   * ⚠⚠ **结果字走 {@link lastOutcomeOf}（摘要 + 完整记录两个形状都认）**（2026-10-24 · 本单 §6）。
+   *   改前只读 `executions` ⇒ 若上游只给摘要（`lastExecutionOutcome`），
+   *   一张**执行失败**的卡会被 ④ 判成"在跑"（甚至是"卡住"）—— 那是在**谎报还在跑**。
+   *   ⚠ 其余字段（`endedAt` / `error` / `startedAt` / 分支…）仍然只能来自完整记录：
+   *     摘要里没有它们 ⇒ 读不到就**不填**（⛔ 不编造，既有口径）。
+   */
+  const lastOutcome = lastOutcomeOf(task)
   const lastError = str(last?.error)
 
   // ── ① 失败 / 取消：最后一次执行明确失败 ⇒ **不能报"在跑"** ────────────────
@@ -275,7 +318,14 @@ function phaseOf(task: any, now: number, stallMs: number): { phase: CardPhase; r
 
   // ── ④ 在跑：`in_progress`，或有 `outcome='running'` 的执行 ────────────────
   const runningExec = executions.find((x: any) => str(x?.outcome) === 'running')
-  if (status === 'in_progress' || runningExec !== undefined) {
+  /**
+   * ⚠ **`lastExecutionOutcome === 'running'` 也算"在跑"**（同上）：摘要形状下
+   *   `executions` 为空，若不认这一档，一张正在跑的卡会落到末尾的兜底分支
+   *   （"按在跑兜底"，相位虽对、但**没有点火时刻/已跑多久**，且判不出"卡住"）。
+   *   认了它至少相位正确；时间字段仍然读不到就不填（⛔ 不编造）。
+   */
+  const summaryRunning = lastOutcome === 'running'
+  if (status === 'in_progress' || runningExec !== undefined || summaryRunning) {
     const focus = runningExec ?? last
     const startedAt = num(focus?.startedAt)
     const lastActivity = num(focus?.lastActivityAt) ?? startedAt
@@ -443,7 +493,48 @@ export async function readCards(opts: {
   }
 
   // ── ③ 逐个 get 取细节（只对**可能该报**的卡，避免为每张历史卡都读一次）──────
-  const candidates = summaries.filter((t: any) => isReportable(t))
+  /**
+   * ⚠⚠ **`done` 候选必须有上限**（2026-10-24 · 本单 §6 的配套护栏）。
+   *
+   * ── 为什么需要它（这是"修可见性"带出来的新成本）────────────────────────
+   *   本单让 `done` 卡进候选（否则"已完成"那一档永远看不见，与文件头三档的承诺相反）。
+   *   但真看板上 `done` 是**历史积压最多**的一档（现场曾有 16 张 `in_review` 积压，
+   *   `done` 只会更多）⇒ 若不设限，**每读一次状态就对每一张历史卡发一次
+   *   `taskboard_get`** —— 那会把一个诊断读数变成"几百次 HTTP + 全表 JSON"。
+   *
+   * ── 判据 ──────────────────────────────────────────────────────────────
+   *   · 先按"**是否真的需要现在看**"排序：`in_progress` / `in_review` / `blocked` /
+   *     执行失败 **优先**，`done` **最后** ⇒ 截断只会截到历史 `done`，⛔ 不会截掉在跑/待验收；
+   *   · `done` 候选**最多取 `MAX_DONE_CANDIDATES` 张**；
+   *   · 被跳过的**必须可读**（`detail` 里点名"因为上限没读"，⛔ ⛔ 不许说成"读不到"）——
+   *     那正是本项目最忌的"两种原因说成同一句话"。
+   *   ⚠ **⛔ 不是悄悄少报**：一条 `detail` 就把它说出来，并且点明用 `taskboard_list status=done` 看全。
+   */
+  const MAX_DONE_CANDIDATES = 20
+  const reportable = summaries.filter((t: any) => isReportable(t))
+  /** 排序权重：越小越先读（**`done` 恒最后**，见上）。 */
+  const candRank = (t: any): number => {
+    const status = str(t?.status) ?? ''
+    if (status === 'in_progress') return 0
+    if (status === 'in_review') return 1
+    if (t?.blocked === true) return 2
+    const o = lastOutcomeOf(t)
+    if (o === 'failed' || o === 'cancelled') return 3
+    if (status === 'done') return 4
+    return 5
+  }
+  const ordered = [...reportable].sort((a: any, b: any) => candRank(a) - candRank(b))
+  let doneSkipped = 0
+  /** 已经收下的 `done` 张数（⚠ 只数 `done`，不数别的档 —— 上限只管那一档）。 */
+  let doneTaken = 0
+  const candidates: any[] = []
+  for (const t of ordered) {
+    if ((str(t?.status) ?? '') === 'done') {
+      if (doneTaken >= MAX_DONE_CANDIDATES) { doneSkipped++; continue }
+      doneTaken++
+    }
+    candidates.push(t)
+  }
   const cards: CardReading[] = []
   const getFailures: string[] = []
   for (const summary of candidates) {
@@ -477,11 +568,21 @@ export async function readCards(opts: {
   //   理由：派单方最需要先看到"能收活的"和"要我处理的"，最后才是"还在等"。
   const rank: Record<CardPhase, number> = { 'awaiting-review': 0, failed: 1, stalled: 2, running: 3 }
   cards.sort((a, b) => (rank[a.phase] - rank[b.phase]) || a.id.localeCompare(b.id))
+  /**
+   * ⚠ **两种"少报"必须分开写**（⛔ 不许合成一句）：
+   *   · `getFailures` ⇒ **读失败**（调用抛错 / 返回值不认识）；
+   *   · `doneSkipped` ⇒ **因为上限没去读**（不是失败、也不是没有）。
+   */
+  const details: string[] = []
+  if (getFailures.length > 0) details.push(`${getFailures.length} 张卡细节读不到：${getFailures.join(' · ')}`)
+  if (doneSkipped > 0) {
+    details.push(`另有 ${doneSkipped} 张 \`done\` 卡**因为上限（${MAX_DONE_CANDIDATES} 张）没有去读**`
+      + '—— ⛔ 这不是"读不到"、也⛔ 不是"没有"：用 `taskboard_list status=done` 看全')
+  }
   return {
     cards,
     reachability: 'ok',
-    // ⚠ 部分 get 失败要留痕（⛔ 不许静默少报一张卡）。
-    ...(getFailures.length === 0 ? {} : { detail: `另有 ${getFailures.length} 张卡细节读不到：${getFailures.join(' · ')}` }),
+    ...(details.length === 0 ? {} : { detail: details.join(' · ') }),
   }
 }
 

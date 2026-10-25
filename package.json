@@ -14,7 +14,7 @@
     "planning"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18"
   },
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
@@ -24,7 +24,6 @@
       "default": "./lib/index.js"
     },
     "./client": {
-      "types": "./lib/types/client/index.d.ts",
       "default": "./lib/client.js"
     },
     "./preset/tools": {
@@ -49,6 +48,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "check:presets": "node scripts/check-preset-contracts.mjs",
     "check:config": "node scripts/check-config-face.mjs",
+    "check:policy": "node scripts/check-session-policy.mjs",
+    "check:policy-cross": "node scripts/check-policy-cross-instance.mjs",
+    "check:hob-create": "node scripts/check-hob-create-ui.mjs",
+    "check:hob-create-dom": "node scripts/check-hob-create-dom.mjs",
+    "check:hob-gate": "node scripts/check-hob-unselected-gate.mjs",
     "check:orch": "node scripts/check-orch-state.mjs",
     "check:client": "node scripts/check-client-deps.mjs",
     "check:gitignore": "node scripts/check-gitignore.mjs",
@@ -80,7 +84,9 @@
     "@deepseek-ai/schemastery": "3.18.5",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
+    "jsdom": "25.0.1",
     "react": "^19.0.0",
+    "react-dom": "19.3.1",
     "tsdown": "^0.15.12",
     "typescript": "^5.9.0"
   },
@@ -132,7 +138,8 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-api-remotes"
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ]
     }
   }

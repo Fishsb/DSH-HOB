@@ -12,7 +12,7 @@
  * 权限边界（硬约束）：
  *   只允许读工作区根目录下的 **.md**；非 .md 或越界一律拒绝。
  */
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { lstat, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
@@ -105,11 +105,38 @@ export function resolveLedgerRoot(
   const base = workspaceNameOf(ws)
   if (base === '' || base === sep) return undefined
 
-  const home = ledgerHome.trim()
-  if (home !== '') return resolve(home, base)   // ② 配了父目录 ⇒ 用它
+  // ③ **新正典**：本工作区自己的 `<工作区>/.hob/`（2026-10-25 · C 步）
+  //
+  //    ⚠ **改前**：缺省是 `resolve(dirname(ws), DEFAULT_LEDGER_DIR, base)`
+  //      ⇒ `<工作区父目录>/.hob-ledgers/<工作区名>/`（工作区**之外**、集中在一个父目录下）
+  //      ⇒ 病灶①：`ledgerHome` 写空时落进一个**从未存在过**的目录（静默、不报错）；
+  //      ⇒ 病灶②：账本靠**"名字"**做键 ⇒ 两个不同路径的同名目录**静默共用一份**。
+  //
+  //    ⚠ **改后**：键是**工作区路径**（`ws`），不是名字
+  //      ⇒ 病灶②消失：同名不同路径**各是各的**；
+  //      ⇒ 病灶①消失：最终兜底也变成这个路径式（见 ⑤），不再有"指向空目录"的暗路。
+  //
+  //    ⚠ 判据是"**这个目录看起来像不像账本**"（见 {@link looksLikeLedger}），
+  //      而不是"存在就算" —— 因为 `.hob/` 在本项目**同时**是记录层
+  //      （`EXPERIENCE.md` / `experience/`），光存在不能说明账本已经搬进来了。
+  if (looksLikeLedger(join(ws, LEDGER_DIR_IN_WORKSPACE))) {
+    return join(ws, LEDGER_DIR_IN_WORKSPACE)
+  }
 
-  // ③ 缺省：工作区的**兄弟目录**（可移植，不含本机绝对路径）
-  return resolve(dirname(ws), DEFAULT_LEDGER_DIR, base)
+  // ④ **过渡桥（分期迁移用，⛔ 不是正典）**：仍配着 `ledgerHome` 的部署照旧解析。
+  //
+  //    ⚠ 为什么保留它：C 步**只迁一个项目**，本项目的账本本单**不迁** ⇒
+  //      若这一档直接删掉，本项目全族判据会立刻"账本读不到"而集体变红
+  //      （那些红是"迁移没做完"，不是"代码错了" ⇒ 混在一起就看不见真问题）。
+  //    ⚠ 它的**已知缺陷照旧存在**：这一档仍然**按名字**拼（`resolve(home, base)`）
+  //      ⇒ 同名不同路径的两个工作区**仍会共用一份**。
+  //      ⇒ 所以它是**桥**：只在 `<工作区>/.hob` 还没有账本时走到；一旦迁完就永不再走到。
+  //      ⇒ 迁移全部完成后应**整档删除**（见 REPORT 待决问题）。
+  const home = ledgerHome.trim()
+  if (home !== '') return resolve(home, base)
+
+  // ⑤ **最终兜底**：仍是路径式（⛔ 不回到"指向从未存在过的 `.hob-ledgers`"那条暗路）
+  return join(ws, LEDGER_DIR_IN_WORKSPACE)
 }
 
 /**
@@ -169,13 +196,67 @@ export function workspaceNameOf(ws: string): string {
 }
 
 /**
- * 缺省账本父目录名（**相对**工作区的父目录）。
+ * 账本目录名（**工作区自己目录下的**一层）。
  *
- * ⚠ 这是**常量名**而不是绝对路径 —— 与工作区推导结合后天然可移植。
- *   `/home/lk/FF/dsh-hob`  ⇒ `/home/lk/FF/.hob-ledgers/dsh-hob`
- *   `/home/bob/work/myproj` ⇒ `/home/bob/work/.hob-ledgers/myproj`
+ * ⚠ 2026-10-25（C 步）：**这是"账本落在哪"的唯一常量**。
+ *   `/home/lk/FF/dsh-hob`  ⇒ `/home/lk/FF/dsh-hob/.hob`
+ *   `/home/bob/work/myproj` ⇒ `/home/bob/work/myproj/.hob`
+ *
+ * ⚠ **与它替代掉的旧常量 `DEFAULT_LEDGER_DIR = '.hob-ledgers'` 的区别**（不只是改名）：
+ *   · 旧：`<工作区父目录>/.hob-ledgers/<工作区名>/` —— 账本在工作区**之外**，且**用名字做子目录键**；
+ *   · 新：`<工作区>/.hob/` —— 账本在**工作区之内**，键就是工作区路径本身。
+ *
+ * ⚠ **为什么不再保留 `.hob-ledgers` 那个兜底**：实测 `resolve(dirname(ws), '.hob-ledgers', base)`
+ *   指向的 `/home/lk/FF/.hob-ledgers/dsh-hob` **从未存在过** ⇒ 保留它等于保留一条
+ *   "配置一空就静默落到空目录"的暗路。**已删除**（不是改名、不是改值）。
  */
-export const DEFAULT_LEDGER_DIR = '.hob-ledgers'
+export const LEDGER_DIR_IN_WORKSPACE = '.hob'
+
+/**
+ * 「这个目录看起来像不像一份账本」—— 用于 `resolveLedgerRoot` 的 ③ 档判定。
+ *
+ * ⚠ **为什么不能只判 `existsSync(dir)`**：`.hob/` 在本项目**同时承载记录层**
+ *   （`EXPERIENCE.md` / `experience/`），光"目录在"不能说明账本已经搬进来。
+ *   若只判存在 ⇒ 未迁移的部署会被误判成"账本在 `.hob/`" ⇒ 读到空账本、全族报绿/报红都不对。
+ *
+ * **判据**：目录在，且**至少有一件账本特征**：
+ *   · 正本之一（`REQUIREMENTS.md` / `PROJECT.md` / `DECISIONS.md` / `CONTEXT.md`），或
+ *   · `volumes/` / `archive/` / `runtime/` 任一子目录在。
+ *
+ * ⚠ 这是**启发式**，不是权威：⚠ 一个只有 `archive/` 的 `.hob/`（历史残留）也会被认成账本。
+ *   ⇒ 已知边界：本项目的 `.hob/archive` 目前是**空目录**且确实属记录层历史位，
+ *     若将来它变成非空，本函数会把 `.hob/` 认成账本 —— 那时应改用显式标记（见 REPORT 待决问题）。
+ */
+export function looksLikeLedger(dir: string): boolean {
+  try {
+    if (!statSync(dir).isDirectory()) return false
+  } catch {
+    return false   // 目录不在 / 无权限 ⇒ 不是账本（fail-closed，由调用方走下一档）
+  }
+  for (const f of LEDGER_CANON_FILES) {
+    try {
+      if (statSync(join(dir, f)).isFile()) return true
+    } catch { /* 该件不在 ⇒ 继续看 */ }
+  }
+  for (const d of LEDGER_SIDE_DIRS) {
+    try {
+      const p = join(dir, d)
+      // ⚠ **必须非空**：空目录不是账本证据（见下方「空目录不算账本」那一段）
+      if (statSync(p).isDirectory() && readdirSync(p).length > 0) return true
+    } catch { /* 该目录不在 / 读不到 ⇒ 继续看 */ }
+  }
+  // ⚠ **空目录不算账本**（2026-10-25 实测补的正门）：
+  //   本项目的 `.hob/archive/` 是**空目录**（记录层历史位），但按上面那条会被判成"像账本"
+  //   ⇒ 未迁移的部署会被误认成"账本已在 `.hob/`"，读到空账本。
+  //   ⇒ 只有**正本文件**或**非空的**侧目录才算证据。
+  return false
+}
+
+/** 「像账本」判据：正本文件名（⚠ 与 `kit/INIT.md` §3.1 的四份同源）。 */
+const LEDGER_CANON_FILES = ['REQUIREMENTS.md', 'PROJECT.md', 'DECISIONS.md', 'CONTEXT.md'] as const
+
+/** 「像账本」判据：账本侧目录（⚠ `volumes/` 是本项目独有；`archive/` `runtime/` 简版账本也有）。 */
+const LEDGER_SIDE_DIRS = ['volumes', 'archive', 'runtime'] as const
 
 /**
  * 把请求路径落到绝对路径，并判断是否真的落在 root 之内。

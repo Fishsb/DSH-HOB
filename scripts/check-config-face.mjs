@@ -50,11 +50,27 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { existsSync } from 'node:fs'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const root = join(here, '..')
+/**
+ * ⚠ **源码根可被 `HOB_CONFIG_ROOT` 指向一份临时副本**（负向对拍用：把真渲染点去掉、
+ *   只在注释里留一句 `MODE_KEYS.map(`，确认 G-3 ①**会红**而不是被注释满足）。
+ * ⚠ 与 `check:orch` 的 `HOB_SA_ROOT` / `check:policy` 的 `HOB_SP_ROOT` / `HOB_DOM_ROOT` /
+ *   `HOB_GATE_ROOT` / `HOB_CF_ROOT` **同一约定**（⛔ 不另造开关名）。
+ */
+const root = process.env.HOB_CONFIG_ROOT !== undefined && process.env.HOB_CONFIG_ROOT !== ''
+  ? process.env.HOB_CONFIG_ROOT
+  : join(here, '..')
 const CONFIG_TS = join(root, 'src', 'config.ts')
 const PATCH = join(root, 'cordis.patch.yml')
 const PANEL = join(root, 'src', 'client', 'settings-panel.tsx')
 const SETTINGS_CLIENT = join(root, 'src', 'client', 'settings.ts')
+/**
+ * ⚠ **「工作方式」控件的**新落点**（2026-10-24 · B 席）**：
+ *   死卡 `WorkModeCard` 已删（client 侧第 8 条「死代码」），控件搬进了**新建会话弹窗**
+ *   （`create-hob-dialog.tsx` 的 `MODE_OPTIONS` + `mode.label.*` 词典）。
+ *   ⇒ G-3 的"第 3 处（界面控件）"必须跟着落点走，⛔ 否则它会报"面板里没有控件"而
+ *     实际控件**已经在**（那是**判据落点过期**，不是产品缺功能）。
+ */
+const DIALOG_TSX = join(root, 'src', 'client', 'create-hob-dialog.tsx')
 
 /**
  * 宿主包的 `@deepseek-ai` 根（G-10 装配层判据要 import 宿主真包）。
@@ -96,6 +112,7 @@ const cfgSrc = readOr(CONFIG_TS, 'src/config.ts')
 const patchSrc = readOr(PATCH, 'cordis.patch.yml')
 const panelSrc = readOr(PANEL, '设置面板源码')
 const settingsClientSrc = readOr(SETTINGS_CLIENT, '设置绑定源码')
+const dialogSrc = readOr(DIALOG_TSX, '新建会话弹窗源码')
 
 /** 抽出 `src/config.ts` 里 `spawn: z.object({ … })` 的整段文本（含父收尾与可能的 `.volatile()` 尾巴）。 */
 function spawnSchemaBlock(src) {
@@ -485,64 +502,188 @@ function schemaTopGroups(src) {
       }
     }
 
-    // ── G-3 第 3 处 · 面板控件 ───────────────────────────────────────────
-    {
-      if (!/WORK_MODE_ORDER\.map\(/.test(panelSrc)) {
-        bad('G-3 面板里找不到 `WORK_MODE_ORDER.map(…)` —— 「工作方式」没有控件（三处只剩两处 ⇒ 有键无功能）')
-      } else ok('G-3 面板控件经 `WORK_MODE_ORDER.map(…)` 渲染（顺序派生，⛔ 无手写清单）')
+    /**
+     * ⚠ **「工作方式」控件的落点判定（G-3 / G-6 共用，⚠ 只算一次）**（2026-10-24 · B 席）：
+     *   定义在两组之前，⛔ 不许在 G-6 里再判一遍（同一事实两个来源必然漂）。
+     *   · 设置面板：`WORK_MODE_ORDER.map(`（旧落点，若还在就认）；
+     *   · 新建会话弹窗：`MODE_KEYS.map(` / `modeOptions.map(` / `WORK_MODE_ORDER.map(`
+     *     —— 三者都要求带 `.map(`，⛔ 手写三行不算。
+     */
+    /**
+     * ══ ⚠⚠ **必须先剥注释再扫 `.map(`**（t11 · 修上轮已报未改的缺口）══════════════
+     *   改前直接扫**原文**：两个 `.tsx` 的**头部注释里**都大量出现
+     *   `WorkModeCard` / `MODE_OPTIONS` / `WORK_MODE_ORDER` 这些词（它们是"讲历史"的），
+     *   ⇒ 只要注释里写过 `MODE_KEYS.map(` 这个形态，`dialogSpot` 就**恒真**
+     *   ⇒ G-3 ①"控件在位"**永远通过**，哪怕组件里根本没有渲染点。
+     *   ⚠ 这是"判据在认文本形态"的又一例（本仓 E-27 同族）。
+     *
+     *   ⇒ 现在用**同长度注释掩码**（与 `check:orch` 的 SE-a / `check:hob-gate` 同一套做法），
+     *     在**代码区**里找 `.map(`。⚠ 掩码是逐字符换空格 ⇒ 偏移不变、行号不变。
+     */
+    const maskComments = (t) => {
+      const out = t.split('')
+      for (const m of t.matchAll(/\/\*[\s\S]*?\*\//g)) {
+        for (let k = m.index; k < m.index + m[0].length; k += 1) if (out[k] !== '\n') out[k] = ' '
+      }
+      for (const m of t.matchAll(/(^|[^:'"`\\])(\/\/[^\n]*)/g)) {
+        const st = m.index + m[1].length
+        for (let k = st; k < st + m[2].length; k += 1) out[k] = ' '
+      }
+      return out.join('')
+    }
+    const panelCode = maskComments(panelSrc)
+    const dialogCode = maskComments(dialogSrc)
+    const panelSpot = /WORK_MODE_ORDER\.map\(/.test(panelCode)
+    const dialogSpot = /MODE_KEYS\.map\(|modeOptions\.map\(|WORK_MODE_ORDER\.map\(/.test(dialogCode)
 
+    // ── G-3 第 3 处 · 界面控件（⚠ 落点 2026-10-24 迁到新建会话弹窗）────────────
+    /**
+     * ══ 改前是什么（**判据落点过期** · 2026-10-24 · B 席）══════════════════════
+     *   改前只认 `panelSrc`（`settings-panel.tsx`）里有没有 `WORK_MODE_ORDER.map(`。
+     *   ⚠ 而设置面板里的 `WorkModeCard` 已被**删除**（client 侧第 8 条「死代码清理」），
+     *     「工作方式」的**控件搬进了新建会话弹窗**（`MODE_OPTIONS` + `mode.label.*`）。
+     *   ⇒ 本条会报"面板里找不到控件"—— ⚠ **那是判据的落点过期，不是产品缺功能**。
+     *
+     * ══ 现在（⚠ 判的是"控件真的在**某个**用户能看到的地方"，⛔ 不绑死文件名）══════
+     *   三段**各自能失败**：
+     *     ① **落点在位**：两个候选（设置面板 / 新建会话弹窗）**至少一处**有
+     *        `WORK_MODE_ORDER.map(` 或 `MODE_OPTIONS.map(`（⚠ 两者都是"从常量派生"，
+     *        ⛔ 手写三行字面不算 —— 那条由下面的词典同源判据兜）；
+     *     ② **弹窗词典齐备**：`mode.label.*` 三条在；
+     *     ③ **中英文显示名逐字同源**：弹窗词典 ↔ `WORK_MODE_DISPLAY` / `WORK_MODE_LABEL_EN`
+     *        （⚠ 这一条是主牙口 —— 改错一个字就红）。
+     *   ⚠ **落点写死成"必须是 panelSrc"会被判成"落点过期"**；而"只要任一处出现就算过"
+     *     又太松 ⇒ 所以 ① 只判"控件存在"，**严格的同源比对放在 ②③**。
+     */
+    {
+      /**
+       * ⚠ **落点判定**：两个候选里**任一处**有"从常量派生渲染"即可。
+       *   ⚠ 命中处**点名报出来**（⛔ 不许只说"通过了" —— 那看不出控件到底在哪）。
+       */
+      /**
+       * ⚠ **"从常量派生"的落点判据**（⛔ 不绑死变量名）：
+       *   · 设置面板：`WORK_MODE_ORDER.map(`（旧落点，若还在就认）；
+       *   · 新建会话弹窗：`MODE_KEYS.map(` —— ⚠ 实际常量名是 **`MODE_KEYS`**（不是
+       *     `MODE_OPTIONS`，那是**渲染期从服务枚举来**的数组）；**或者**
+       *     `modeOptions.map(`（渲染期枚举，同样是从外部数据派生、⛔ 不是手写三行）。
+       *   ⚠ 三个候选都认，但它们**都必须带 `.map(`** ⇒ 手写三行 `<label>` 不算过。
+       */
+      if (!panelSpot && !dialogSpot) {
+        bad('G-3 **两个候选落点里都没有「工作方式」控件**'
+          + '（`settings-panel.tsx` 无 `WORK_MODE_ORDER.map(`，`create-hob-dialog.tsx` 无 `MODE_KEYS.map(` / `modeOptions.map(`）'
+          + ' ⇒ 三处只剩两处 ⇒ 有键无功能：用户没有任何地方能选工作方式')
+      } else {
+        ok(`G-3 「工作方式」控件在位：${
+          [panelSpot ? '设置面板 `WORK_MODE_ORDER.map(`' : '', dialogSpot ? '新建会话弹窗 `MODE_KEYS.map(` / `modeOptions.map(`' : '']
+            .filter(Boolean).join(' + ')}`
+          + '（⚠ 判据只认"从常量派生"，⛔ 不绑死文件名 —— 落点可以搬）')
+      }
+      /**
+       * ⚠ **弹窗词典的三条标签**（新增落点也要齐备）：
+       *   缺一条 ⇒ 界面会**显示键名**（等于把这个档藏起来）。
+       *   ⚠ 只在弹窗真的承载控件时才要求（`dialogSpot`）——
+       *     否则会变成"给一个不存在的落点提要求"。
+       */
+      if (dialogSpot) {
+        const missDlg = values.filter((v) => !new RegExp(`'mode\\.label\\.${v}'\\s*:`).test(dialogCode))
+        if (missDlg.length > 0) {
+          bad(`G-3 弹窗词典缺这些档位的显示名：${missDlg.map((v) => `mode.label.${v}`).join(', ')}`
+            + ' ⇒ 缺一个就会在界面上**显示键名**（等于把这个档藏起来）')
+        } else {
+          ok(`G-3 弹窗词典三档标签齐备（${values.map((v) => `mode.label.${v}`).join(' · ')}）`)
+        }
+      }
+
+      /**
+       * ══ ⚠⚠ **同源比对：落点跟着控件走**（2026-10-24 · B 席 · 本组第二处落点过期）══
+       *
+       * ── 改前是什么 ────────────────────────────────────────────────────────
+       *   这一段只知道**设置面板**那套词典：`PANEL_ZH` / `PANEL_EN` 里的 `wm.mode.*`。
+       *   ⚠ `WorkModeCard` 删掉后，`wm.mode.*` 这三条**跟着一起没了**
+       *   （`settings-panel.tsx` 实测 0 处 `wm.mode.`）⇒ 这三条断言**全部变红**，
+       *   而显示名其实**完好地活在弹窗词典**里（`mode.label.*`）。
+       *   ⇒ ⚠ 那是"判据还盯着旧落点"，不是"显示名丢了"。
+       *
+       * ── 现在（⚠ 判**同源**，⛔ 不判"在哪个文件"）────────────────────────────
+       *   对**每一套真正承载控件的落点**（设置面板 / 新建会话弹窗）各判一次：
+       *     · 该落点里**必须**有那三档的**键**（缺一条 ⇒ 界面显示键名）；
+       *     · 且**标签值必须与唯一来源逐字相同**（`WORK_MODE_DISPLAY` 中文 /
+       *       `WORK_MODE_LABEL_EN` 英文）⇒ 这一条是**主牙口**（改错一个字就红）。
+       *   ⚠ 一个落点都没有承载控件 ⇒ 上面 G-3 的 ① 已经报过红（⛔ 不在这里重复刷红）。
+       */
       const mDisplay = /export\s+const\s+WORK_MODE_DISPLAY[^=]*=\s*\{([\s\S]*?)\n\}/.exec(sharedSrc)
       const displayPairs = mDisplay === null
         ? []
         : [...mDisplay[1].matchAll(/(\w+)\s*:\s*'([^']*)'/g)].map((x) => ({ key: x[1], label: x[2] }))
+      const mLabelEn = /export\s+const\s+WORK_MODE_LABEL_EN[^=]*=\s*\{([\s\S]*?)\n\}/.exec(sharedSrc)
+      const enPairs = mLabelEn === null
+        ? []
+        : [...mLabelEn[1].matchAll(/(\w+)\s*:\s*'([^']*)'/g)].map((x) => ({ key: x[1], label: x[2] }))
       if (displayPairs.length !== 3) {
         bad(`G-3 从 \`WORK_MODE_DISPLAY\` 抽到 ${displayPairs.length} 个显示名（应 3 个）⇒ 本组失去基准（不按通过处理）`)
-      }
-      for (const dict of ['PANEL_ZH', 'PANEL_EN']) {
-        const block = dictBlock(dict)
-        if (block === null) { bad(`G-3 抽不出面板词典 ${dict} ⇒ 显示名无从核对（不按通过处理）`); continue }
-        const missing = values.filter((v) => !new RegExp(`'wm\\.mode\\.${v}'\\s*:`).test(block))
-        if (missing.length > 0) {
-          bad(`G-3 ${dict} 缺这些档位的显示名：${missing.map((v) => `wm.mode.${v}`).join(', ')}`
-            + ' —— 缺一个就会在界面上**显示键名**（等于把这个档藏起来）')
-        }
-      }
-      const zhBlock = dictBlock('PANEL_ZH')
-      if (zhBlock === null) {
-        bad('G-3 抽不出 `PANEL_ZH` ⇒ 显示名同源无从核对（不按通过处理）')
+      } else if (enPairs.length !== 3) {
+        bad(`G-3 从 \`WORK_MODE_LABEL_EN\` 抽到 ${enPairs.length} 个英文名（应 3 个）⇒ 基准缺失（不按通过处理）`)
       } else {
-        const mismatched = []
-        for (const { key, label } of displayPairs) {
-          const hit = new RegExp(`'wm\\.mode\\.${key}'\\s*:\\s*'([^']*)'`).exec(zhBlock)
-          if (hit !== null && hit[1] !== label) mismatched.push(`${key}：来源「${label}」/ 面板「${hit[1]}」`)
+        /**
+         * ⚠ **落点清单**（派生：哪个文件真的承载控件就核哪个）。
+         *   键前缀（`wm.mode.` / `mode.label.`）是各落点自己的**内部命名**，
+         *   但**值必须同源** —— 那才是"不许两套说法"的落点。
+         */
+        /**
+         * ⚠ **每个落点各自的两本词典**（中文 / 英文**分开取** —— ⛔ 不能都拿整份源码，
+         *   否则英文明细会去中文词典里找、必然"缺"）。
+         *   · 设置面板：`PANEL_ZH` / `PANEL_EN`（既有）；
+         *   · 弹窗：`HOB_DIALOG_ZH` / `HOB_DIALOG_EN`（本文件的命名）。
+         *   ⚠ 抽不到 ⇒ 该落点报"基准缺失"，⛔ 不静默跳过。
+         */
+        const dialogDict = (name) => {
+          /** ⚠ 掩掉注释：词典的"说明文字"里可能逐字引用过 `mode.label.*` 的写法。 */
+          const re = new RegExp(`const\\s+${name}\\s*:[^=]*=\\s*\\{([\\s\\S]*?)\\n\\}`)
+          const m = re.exec(dialogCode)
+          return m === null ? null : m[1]
         }
-        if (mismatched.length > 0) {
-          bad(`G-3 面板中文显示名与 \`WORK_MODE_DISPLAY\` **不是同一套说法**：${mismatched.join('；')}`
-            + ' —— 显示名只有一个来源，两处各写一份必然漂')
-        } else ok(`G-3 三档显示名与来源逐字同源（${displayPairs.map((p) => p.label).join(' / ')}）`)
-      }
-      //   ⚠ 对称的一半：**英文**词典必须与 `WORK_MODE_LABEL_EN` 逐字相等（⛔ 两套英文）。
-      //     判据同源理由与中文那条一样；缺了它，模型面的英文名与面板英文名可以各说一套。
-      {
-        const enBlock = dictBlock('PANEL_EN')
-        const mLabel = /export\s+const\s+WORK_MODE_LABEL_EN[^=]*=\s*\{([\s\S]*?)\n\}/.exec(sharedSrc)
-        const enPairs = mLabel === null
-          ? []
-          : [...mLabel[1].matchAll(/(\w+)\s*:\s*'([^']*)'/g)].map((x) => ({ key: x[1], label: x[2] }))
-        if (enBlock === null) {
-          bad('G-3 抽不出 `PANEL_EN` ⇒ 英文显示名同源无从核对（不按通过处理）')
-        } else if (enPairs.length !== 3) {
-          bad(`G-3 从 \`WORK_MODE_LABEL_EN\` 抽到 ${enPairs.length} 个英文名（应 3 个）⇒ 基准缺失（不按通过处理）`)
-        } else {
+        const SPOTS = [
+          { name: '设置面板', prefix: 'wm.mode.', block: () => dictBlock('PANEL_ZH'), blockEn: () => dictBlock('PANEL_EN'), active: panelSpot },
+          { name: '新建会话弹窗', prefix: 'mode.label.', block: () => dialogDict('HOB_DIALOG_ZH'), blockEn: () => dialogDict('HOB_DIALOG_EN'), active: dialogSpot },
+        ].filter((x) => x.active)
+        if (SPOTS.length === 0) {
+          bad('G-3 没有任何承载「工作方式」控件的落点 ⇒ 显示名同源无从核对（⛔ 不按通过处理）')
+        }
+        for (const spot of SPOTS) {
+          const zhBlock = spot.block()
+          const enBlock = spot.blockEn()
+          if (zhBlock === null) { bad(`G-3 抽不出 ${spot.name} 词典 ⇒ 显示名同源无从核对（不按通过处理）`); continue }
+          /** ① **键必须齐**（缺一条 ⇒ 界面显示键名）。 */
+          const missing = displayPairs.filter(({ key }) => !new RegExp(`'${spot.prefix.replace(/\./g, '\\.')}${key}'\\s*:`).test(zhBlock))
+          if (missing.length > 0) {
+            bad(`G-3 ${spot.name} 词典缺这些档位的显示名：${missing.map(({ key }) => `${spot.prefix}${key}`).join(', ')}`
+              + ' ⇒ 缺一个就会在界面上**显示键名**（等于把这个档藏起来）')
+            continue
+          }
+          /** ② **中文值必须与 `WORK_MODE_DISPLAY` 逐字相同** —— 主牙口。 */
+          const mismatched = []
+          for (const { key, label } of displayPairs) {
+            const hit = new RegExp(`'${spot.prefix.replace(/\./g, '\\.')}${key}'\\s*:\\s*'([^']*)'`).exec(zhBlock)
+            if (hit !== null && hit[1] !== label) mismatched.push(`${key}：来源「${label}」/ ${spot.name}「${hit[1]}」`)
+          }
+          if (mismatched.length > 0) {
+            bad(`G-3 ${spot.name} 中文显示名与 \`WORK_MODE_DISPLAY\` **不是同一套说法**：${mismatched.join('；')}`
+              + ' —— 显示名只有一个来源，两处各写一份必然漂')
+          }
+          /** ③ **英文值必须与 `WORK_MODE_LABEL_EN` 逐字相同**（⛔ 两套英文）。 */
           const missEn = []
           for (const { key, label } of enPairs) {
-            const hit = new RegExp(`'wm\\.mode\\.${key}'\\s*:\\s*'([^']*)'`).exec(enBlock)
-            if (hit === null || hit[1] !== label) missEn.push(`${key}（来源「${label}」/ 面板「${hit?.[1] ?? '缺'}」）`)
+            const hit = new RegExp(`'${spot.prefix.replace(/\./g, '\\.')}${key}'\\s*:\\s*'([^']*)'`).exec(enBlock)
+            if (hit === null || hit[1] !== label) missEn.push(`${key}（来源「${label}」/ ${spot.name}「${hit?.[1] ?? '缺'}」）`)
           }
           if (missEn.length > 0) {
-            bad(`G-3 面板英文显示名与 \`WORK_MODE_LABEL_EN\` 不一致：${missEn.join('；')}`
-              + ' —— 模型面的英文名与面板英文名必须同一套')
-          } else ok(`G-3 面板英文显示名与来源逐字同源（${enPairs.map((p) => p.label).join(' / ')}）`)
+            bad(`G-3 ${spot.name} 英文显示名与 \`WORK_MODE_LABEL_EN\` 不一致：${missEn.join('；')}`
+              + ' —— 模型面的英文名与界面英文名必须同一套')
+          }
+          if (mismatched.length === 0 && missEn.length === 0) {
+            ok(`G-3 ${spot.name} 三档显示名与来源**逐字同源**（中：${displayPairs.map((p) => p.label).join(' / ')}`
+              + ` · 英：${enPairs.map((p) => p.label).join(' / ')}）`)
+          }
         }
       }
     }
@@ -552,13 +693,23 @@ function schemaTopGroups(src) {
       const consumers = [
         { label: 'host 收口函数 `workMode()`', src: cfgSrc, needle: 'export function workMode(' },
         { label: '入口 provide 现读服务', src: hostEntrySrc, needle: 'ctx.provide(WORK_MODE_SERVICE, () => workMode(config))' },
-        { label: '预设作用域挂载注入', src: presetToolsSrc, needle: 'injectWorkMode(ctx, modeOf, log)' },
+        //   ⚠ 2026-10-22 第 4 轮：`injectWorkMode` 多收一个 `policyOf`（要判 `mayProceed`）。
+        //     锚点随实现更新；⚠ 判据仍是"预设作用域里真的挂了这个注入"。
+        { label: '预设作用域挂载注入', src: presetToolsSrc, needle: 'injectWorkMode(ctx, modeOf, policyOf, log)' },
         //   ⚠ 2026-10-19（`TASK-D`①）改**判据词**、⛔ 不是放宽：改前这里钉的是**具名导入**的
         //     调用形态（`workModeInstruction(modeOf()) + workModeRedLine()`），而那个形态正是
         //     "一个名字不到就整块求值失败"的来源。现在钉的是**运行时命名空间取值**的同一处调用
         //     —— 语义（两条通路共用同一个现拼函数、且它确实拼出"档位口径 + 红线"）一字未变，
         //     只是把"从哪个面取"钉到了新形态上。
-        { label: '两条通路共用的现拼正文 `textNow()`', src: presetToolsSrc, needle: 'workModeFace.workModeInstruction(modeOf()) + workModeFace.workModeRedLine()' },
+        //   ⚠ 2026-10-22（`REQ-04`）：`modeOf()` 改为**按会话**取（`modeOf(context?.agent ?? context?.scope)`）
+        //      ⇒ 锚点跟着改，**语义一字未变**：两条通路共用同一个现拼函数、且它确实拼出「档位口径 + 红线」。
+        //      ⚠ 这不叫放宽：下面 G-4 另有一条**更强**的断言（textNow 必须接受 context 形参）。
+        /**
+         * ⚠ 2026-10-22 第 4 轮：`textNow` 现在先取 `verdict`（判 `mayProceed`）再拼正文，
+         *   局部变量名从 `mode` 变成 `verdict.workMode` ⇒ 锚点随实现更新。
+         *   ⚠ 语义**更强**：原文只要求"拼出「口径+红线」"，现在还要求"拼之前判过能不能推进"。
+         */
+        { label: '两条通路共用的现拼正文 `textNow()`', src: presetToolsSrc, needle: 'workModeFace.workModeInstruction(verdict.workMode as WorkMode) + workModeFace.workModeRedLine()' },
         { label: '段通路 `section()` 注册', src: presetToolsSrc, needle: 'spCtx.systemPrompt.section({' },
         { label: '上下文通路 `context()` 注册（G-10 证明它是生效那条）', src: presetToolsSrc, needle: 'spCtx.systemPrompt.context({' },
         { label: '上下文必须 `required: true`（否则被 suppress 丢）', src: presetToolsSrc, needle: 'required: true,' },
@@ -576,13 +727,36 @@ function schemaTopGroups(src) {
         //     且两条通路的 `text:` 都**引用它**（`text: textNow,`）—— ⛔ 不许写常量字符串。
         //     ⚠ 2026-10-19 第 2 轮起正文由 `textNow()` 统一现拼（两条通路共用一份，
         //     防"section 与 context 各拼一份、改一处漏一处"）。
-        const isFn = /const\s+textNow\s*=\s*\(\s*\)\s*:\s*string\s*=>/.test(fnBody)
+        /**
+         * ⚠ 2026-10-22（`REQ-04`）改锚点、**并加强**：
+         *   改前钉 `const textNow = (): string =>`（无参）。
+         *   现在必须**接受一个 context 形参** —— 因为「工作方式」要**按会话**取，
+         *   而会话身份只从装配 context 进来（宿主 `resolveContext()` 传 `entry.text(context)`）。
+         *   ⇒ 判据从"是个函数"升级成"是个**能按会话**的函数"（⛔ 不是放宽）。
+         */
+        const isFn = /const\s+textNow\s*=\s*\([^)]*\)\s*:\s*string\s*=>/.test(fnBody)
+        const takesContext = /const\s+textNow\s*=\s*\(\s*(context|ctx)\b/.test(fnBody)
+        /**
+         * ⚠ 2026-10-22 第 4 轮：判定口径从"传给 modeOf"升级为"**经 policyOf 取整份读数**"
+         *   —— 因为只回档位字符串问不出 `mayProceed`，而"能不能推进"是必须的一档。
+         *   ⚠ 判据**没有放宽**：仍然要求"会话身份从 context 进来"（`subject` 赋值那一句），
+         *     并且额外要求"那份读数被真正用于判定"。
+         */
+        const takesSubjectFromContext = /const\s+subject\s*=\s*context\?\.agent\s*\?\?\s*context\?\.scope/.test(fnBody)
+        const feedsContext = takesSubjectFromContext
+          && /const\s+verdict\s*=\s*policyOf\(\s*subject\s*\)/.test(fnBody)
         const sectionRef = /section\(\{[\s\S]{0,600}?text:\s*textNow,/.test(fnBody)
         const contextRef = /context\(\{[\s\S]{0,600}?text:\s*textNow,/.test(fnBody)
         if (!isFn) {
-          bad('G-4 注入正文不是**函数**（找不到 `const textNow = (): string =>`）'
+          bad('G-4 注入正文不是**函数**（找不到 `const textNow = (...) : string =>`）'
             + '\n      ⇒ 若是常量字符串，档位改了**已开会话仍按旧档**走到重挂载为止 ——'
             + '\n        那正是"设置页改了但行为没变"的静默失败')
+        } else if (!takesContext || !feedsContext) {
+          bad('G-4 `textNow` **不接受 context 形参**或没把会话身份喂给 `policyOf()`'
+            + `（形参=${takesContext} · 传给 modeOf=${feedsContext}）`
+            + '\n      ⇒ ⚠ `REQ-04` 起「工作方式」必须**按会话**取：会话身份只从装配 context 进来'
+            + '\n        （宿主 `resolveContext()` 调 `entry.text(context)`）'
+            + '\n        ⇒ 不收 context 就等于"又回到全局值"，与"取消全局联动"直接冲突')
         } else if (!sectionRef || !contextRef) {
           bad(`G-4 两条通路没有**共用**同一个现拼函数（section=${sectionRef} · context=${contextRef}）`
             + '\n      ⇒ 各拼一份的话，改一处必然漏一处（"+1 处口径"的分裂）')
@@ -791,22 +965,96 @@ function schemaTopGroups(src) {
           + '\n        不解除任何红线、不越过权限档位（名字带「全」⇒ 必须挡住"权限更大"那个误读）')
       } else ok('G-6 给模型看的口径含两条边界全部关键限定（多会话 / 全自动）')
 
-      const zhBlock = dictBlock('PANEL_ZH')
-      if (zhBlock === null) {
-        bad('G-6 抽不出 `PANEL_ZH` ⇒ 界面上的红线条无从核对（不按通过处理）')
-      } else {
-        //   ⚠ 界面侧同样**两段都要在**：多会话四限定 + 全自动那条边界
-        //     （⚠ 判据词取面板上真出现的措辞，⛔ 不按源码注释里的说法判）。
-        const missPanel = ['看板', '别人项目的卡', '判据', '权限'].filter((a) => !zhBlock.includes(a))
-        const missPanelAuto = ['全自动', '不越过权限档位'].filter((a) => !zhBlock.includes(a))
-        if (missPanel.length > 0) {
-          bad(`G-6 界面上的红线条缺关键限定：${missPanel.join(', ')}`
-            + ' —— 用户看不到就等于没有（本项名字自带"更多更强"的暗示，界面必须挡住那个误读）')
-        } else if (missPanelAuto.length > 0) {
-          bad(`G-6 界面上的红线条缺「全自动」边界：${missPanelAuto.join(', ')}`
-            + '\n      ⇒ 「自动」档显示名下一句都没有它，用户只会看到"全自动"三个字'
-            + '\n        （`UD-149` §一：凡出现这个名，紧邻必须有那句限定）')
-        } else ok('G-6 界面上有两条边界（多会话四限定 + 全自动那条）')
+      /**
+       * ── ⚠⚠ **界面侧红线条：落点跟着控件走**（2026-10-24 · B 席 · 第三处落点过期）──
+       *
+       * ── 改前是什么 ──────────────────────────────────────────────────────
+       *   只查 `PANEL_ZH`（设置面板词典）。⚠ `WorkModeCard` 删掉后，面板里那条红线
+       *   词条**跟着一起没了** ⇒ 本条变红，而红线**完好地活在弹窗词典**
+       *   （`HOB_DIALOG_ZH` 的 `redline.workMode`）。⇒ 又是"判据盯着旧落点"。
+       *
+       * ── 现在（⚠ 判"承载控件的那一屏有红线"，⛔ 不判在哪个文件）──────────
+       *   对每个**真的承载控件**的落点各判一次；一个落点都没有 ⇒ 上面 G-3 ① 已报红。
+       *   ⚠ 判据词仍是**面板/弹窗上真出现的措辞**（⛔ 不按源码注释里的说法判）。
+       */
+      {
+        const zhPanel = dictBlock('PANEL_ZH')
+        const zhDialog = (() => {
+          const m = /const\s+HOB_DIALOG_ZH\s*:[^=]*=\s*\{([\s\S]*?)\n\}/.exec(dialogSrc)
+          return m === null ? null : m[1]
+        })()
+        const RED_SPOTS = [
+          { name: '设置面板', block: panelSpot ? zhPanel : null, active: panelSpot },
+          { name: '新建会话弹窗', block: dialogSpot ? zhDialog : null, active: dialogSpot },
+        ].filter((x) => x.active)
+        if (RED_SPOTS.length === 0) {
+          bad('G-6 没有任何承载「工作方式」控件的落点 ⇒ 界面上的红线条无从核对（⛔ 不按通过处理）')
+        }
+        for (const spot of RED_SPOTS) {
+          if (spot.block === null) {
+            bad(`G-6 抽不出${spot.name}的中文词典 ⇒ 界面上的红线条无从核对（不按通过处理）`)
+            continue
+          }
+          /** ⚠ 界面侧同样**两段都要在**：多会话四限定 + 自动档那条边界。 */
+          const missPanel = ['看板', '别人项目的卡', '判据', '权限'].filter((a) => !spot.block.includes(a))
+          /**
+           * ⚠ **自动档边界**：判据词随实现措辞（`全自动` 是旧设置面板的说法；
+           *   弹窗里写的是「自动档同理：…不越过权限档位」）。
+           *   ⇒ 取"**要么出现「全自动」+「不越过权限档位」，要么出现「自动档」+「不越过权限档位」**"，
+           *     ⛔ 不许放宽成"只要有「不越过权限档位」就算"（那样少了"自动档"这个指向就分不清
+           *     它管的是哪一档）。
+           */
+          const autoNamed = spot.block.includes('全自动') || spot.block.includes('自动档')
+          const missPanelAuto = [
+            ...(autoNamed ? [] : ['全自动 / 自动档']),
+            ...(['不越过权限档位'].filter((a) => !spot.block.includes(a))),
+          ]
+          if (missPanel.length > 0) {
+            bad(`G-6 ${spot.name}的红线条缺关键限定：${missPanel.join(', ')}`
+              + ' —— 用户看不到就等于没有（本项名字自带"更多更强"的暗示，界面必须挡住那个误读）')
+          } else if (missPanelAuto.length > 0) {
+            bad(`G-6 ${spot.name}的红线条缺「自动档」边界：${missPanelAuto.join(', ')}`
+              + '\n      ⇒ 「自动」档显示名下一句都没有它，用户只会看到"自动"两个字'
+              + '\n        （`UD-149` §一：凡出现这一档的名，紧邻必须有那句限定）')
+          } else {
+            ok(`G-6 ${spot.name}上有两条边界（多会话四限定 + 自动档那条）`)
+          }
+        }
+      }
+
+      /**
+       * ── ⚠⚠ **G-6(反证)：把红线句改错一个字 ⇒ 必须红**（2026-10-24 · B 席）──────
+       *   ⚠ 为什么要它：本组的三条判据都是 `includes(锚点)` 形态 —— 那种形态**很容易**
+       *     退化成恒绿（例如锚点选得太泛、或者落点取到了**注释**）。⇒ 用一次真实的
+       *     "改错一个字"对拍，把"它到底咬不咬得住"变成读数。
+       *   ⚠ 做法：把 `WORK_MODE_RED_LINE` 的中文源常量里那句关键限定改一个字
+       *     （`不越过权限档位` ⇒ `不越过权限档委`），其余一字不动 ⇒
+       *     上面那个"中文源"判据必须**当场不成立**。
+       */
+      {
+        const KEY = '不越过权限档位'
+        const BROKEN = '不越过权限档委'
+        /**
+         * ⚠ **只在"中文红线常量体内"改字**（⛔ 不全文 `replace`）——
+         *   `work-mode.ts` 里 `KEY` 出现 **2 次**：一次在**注释**里（讲这条边界的来由）、
+         *   一次在**常量正文**里。全文 replace 只会改到第一处（注释）⇒ 对拍**没打到靶子**
+         *   ⇒ 反证误报"判据恒绿"（本组第一版就这么误报过一次，是反证自己的缺陷）。
+         *   ⇒ 先把常量体切出来、只在它里面替换，再拼回全文。
+         */
+        const rawShared = sharedSrc ?? ''
+        const zhStart0 = rawShared.indexOf('export const WORK_MODE_RED_LINE')
+        const zhEnd0 = zhStart0 < 0 ? -1 : rawShared.indexOf('\n\n', zhStart0)
+        const zhBodyRaw = zhStart0 < 0 || zhEnd0 < 0 ? '' : rawShared.slice(zhStart0, zhEnd0 + 2)
+        const mutBody = zhBodyRaw.includes(KEY) ? zhBodyRaw.replace(KEY, BROKEN) : ''
+        if (!zhBodyRaw.includes(KEY)) {
+          bad(`G-6(反证) 【失去靶子】中文红线源里找不到「${KEY}」⇒ 反证无从对拍（⛔ 不按通过处理）`)
+        } else if (mutBody.includes(KEY)) {
+          bad('G-6(反证) 【判据恒绿】把中文红线源改错一个字之后，那三条判据**仍然认为它在**'
+            + ' ⇒ 说明它们不是在比对这句话本身（锚点选得太泛 / 取到了注释）')
+        } else {
+          ok(`G-6(反证) ✓ 负向对拍：把中文红线源的「${KEY}」改一个字（⇒「${BROKEN}」）后，`
+            + '该判据**当场不成立** ⇒ 它咬的确实是这句限定本身')
+        }
       }
 
       const descBlock = (() => {
@@ -1208,8 +1456,44 @@ console.log(JSON.stringify({ evaluated, threw, degraded, warns }))
           const shellProto = {
             logger: { debug() {}, info() {}, warn() {} },
             get: (k) => {
+              // ⚠ 旧的两个全局服务**仍提供**（兼容面：入口仍 provide 它们）。
               if (k === 'hobPermission') return () => 'ledger'
               if (k === 'hobWorkMode') return () => mode
+              /**
+               * ⚠⚠ **2026-10-22（`REQ-04`）：必须同时提供逐会话权威**，否则本组测不到东西。
+               *
+               * ── 为什么必须加这一行 ──────────────────────────────────────────
+               *   改后「工作方式」**只认** `hobSessionPolicy`（按会话解析）；旧 `hobWorkMode`
+               *   已退成兼容面。若本 mock 只提供旧服务 ⇒ 策略服务缺席 ⇒ `modeOf()` 走
+               *   保守缺省 ⇒ **三档快照全一样** ⇒ G-10 ③ 会红。
+               *   ⚠ 那是**测试台缺依赖**，不是实现缺陷 —— 但⛔ 也不能因此把 ③ 删掉：
+               *     三档必须有区别，这条判据是对的。⇒ 正确做法是**让测试台提供真实契约**。
+               * ⚠ 这里返回的是一个**按档位回答的假会话策略**：宿主真实实现按 sessionId 查表；
+               *   本组只关心"档位口径是否随会话策略变化而进上下文"⇒ 用档位当输入即可。
+               */
+              if (k === 'hobSessionPolicy') {
+                return {
+                  /**
+                   * ⚠⚠ **2026-10-22 第 6 轮：必须返回 `mayProceed: true`。**
+                   *
+                   * ── 为什么这一行现在必须加 ──────────────────────────────────
+                   *   `src/preset/tools.ts` 的 `policyOf` 改成了 **fail-closed**：
+                   *   `mayProceed = r?.mayProceed === true`（缺字段 ⇒ 视为不可推进）。
+                   *   ⇒ 本 mock 只给 `isHob/level/workMode/source` ⇒ `mayProceed=false`
+                   *     ⇒ `textNow()` 按设计返回**暂停说明**而不是档位口径
+                   *     ⇒ G-10 报"快照不含档位口径"。
+                   *   ⚠ 那是**测试台缺契约**，不是实现缺陷 —— 但⛔ 也不能因此把 fail-closed 退回
+                   *     "缺字段默认 true"（那正是第 5 轮修掉的真缺陷）。
+                   *   ⇒ 正确做法：让 mock 提供**真实的**契约（含 `mayProceed`），
+                   *     这样它测的才是"档位口径真的进了上下文"。
+                   */
+                  of: () => ({
+                    isHob: true, level: 'ledger', workMode: mode, source: 'stored',
+                    reason: '', canReadWorkspace: false,
+                    persistence: 'persisted', mayProceed: true,
+                  }),
+                }
+              }
               return undefined
             },
             inject: (deps, cb) => {
@@ -1515,7 +1799,8 @@ console.log('')
 for (const n of note) console.log('  ✓', n)
 for (const k of skip) console.log('  ·', k)
 console.log('')
-console.log(`  处级口径：查了 ${note.length + skip.length} 处 · 过了 ${note.length} 处`
+console.log(`  处级口径：查了 ${note.length + fail.length + skip.length} 处 · 过了 ${note.length} 处`
+    + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
   + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
 console.log('')
 console.log('')

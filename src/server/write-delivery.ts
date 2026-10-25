@@ -61,7 +61,13 @@ export interface HandoffDeliveryInput {
   dispatchTo?: string
   /** `'manual'` = 本轮**有意人工转达**（不是忘了投）⇒ 记录带标注。 */
   delivery?: 'manual'
-  /** 派活方自己的会话 id（透传给编排层，用于"不派给自己"那道闸）。 */
+  /**
+   * 派活方自己的会话 id。
+   * ⚠ **两个用途**（2026-10-24 起，同一件事的两种消费）：
+   *   ① 透传给编排层，用于"不派给自己"那道闸；
+   *   ② 记成待投递记录的 `owner`（⛔ 不传 ⇒ 那条记录没有 owner ⇒ 读数里谁都看不到，
+   *      `write_hob` 的「写了却没投」会**恒为 0**）。
+   */
   self?: string
   /** 投递时随行的短指针正文（缺省时由本模块构造）。 */
   message?: string
@@ -143,6 +149,27 @@ export async function deliverHandoff(
       kind: 'task-file',
       ref: input.ref,
       at: input.at,
+      /**
+       * ⚠⚠ **待投递记录必须带 `owner`**（2026-10-24 · 本单 §3）。
+       *
+       * ── 改前是什么（读数恒 0 的那条缝）────────────────────────────────────
+       *   这里**不传 `owner`**（`at`/`kind`/`ref` 三个字段），而
+       *   `orchestrator.status()` 的 `handoffs` 是**按 `owner === 调用方` 过滤**的
+       *   （`mine.handoffs`）⇒ 一条没有 owner 的记录**谁都看不到**
+       *   ⇒ `write_hob` 的「**写了却没投**」在 `hob_orch_status` 里**恒为 0**
+       *   （用户看到的"没有待投递"是**假的**，真实情况是"有一条但没人认领"）。
+       *
+       * ── 现在：与 `bus.ts` 的 `noteHandoff` **同一口径** ────────────────────
+       *   取调用方会话 id（`input.self`，`tools.ts` 已经传）⇒ 记成 `owner`。
+       *   ⚠ **判不出就⛔ 不填**（⛔ 不许拿账本路径 / 工作区顶替，`I-1`）：
+       *     那种记录仍会落"无归属"一档（`status()` 的 `unownedWatches` 之外，
+       *     `handoffs` 那一侧暂不单列 —— ⚠ 这一点本单**没有**新增读数档，
+       *     只是把"有主的那条"从恒 0 修回可见）。
+       *   ⚠ `wsRoot` **不在这里补**：本模块拿不到工作区根（只有 `ledgerRoot`），
+       *     ⛔ 不许用账本路径冒充（`PersistedHandoff.wsRoot` 的语义是**工作区根**）。
+       *     `bus.noteHandoff` 那份由它的调用方给，两条路在"有 owner"这一点上**已对齐**。
+       */
+      ...(typeof input.self === 'string' && input.self !== '' ? { owner: input.self } : {}),
       // ⚠ `manual` 是**新增字段**（旧文件没有 ⇒ 读成 false，向后兼容）；
       //   `note` 是给人读的同一件事，两份都写：机器判 `manual`、人读 `note`。
       ...(manual ? { manual: true as const, note: '人工转达（有意，非漏投）' } : {}),
@@ -191,12 +218,28 @@ export async function deliverHandoff(
     }
   }
 
-  // ── 3：投递成功 ⇒ 清匹配的"待投递"（**保守方向：宁可少清**）──────────────
-  //   ⚠ 只有**真的投成功**才清；且清的依据是"这条记录在投递发生之前写出"
-  //     （与 `orchestrator.ts` / `bus.ts` 同一口径：**不按消息文本匹配**）。
+  // ── 3：投递成功 ⇒ 清**本次真正投出的那一份**（**保守方向：宁可少清**）──────
+  //   ⚠ 只有**真的投成功**才清；⛔ 不按消息文本匹配（与 `orchestrator.ts` /
+  //     `bus.ts` 同一口径）。
+  /**
+   * ⚠⚠ **判据必须是"同一条记录"，⛔ 不是一个时间窗口**（2026-10-24 · 本单 §4）。
+   *
+   * ── 改前是什么（一次投递清掉别人的账）──────────────────────────────────
+   *   `(h) => h.kind === 'task-file' && h.at <= input.at` —— **时间窗一刀切**。
+   *   ⇒ 只要盘上还有**别的**「写了但从未投出」的交接文件（`at` 更早 —— 那些恰恰是
+   *     **真漏派**，最该被看见的），它们会被**这一次投递一起清掉** ⇒ 读数变成"没有待投递"。
+   *   ⚠ 而本模块自己的纪律是「**宁可少清**」（`CHG-027`）：多报一条只是多一句提示，
+   *     清错 = 把真漏派抹掉 = 本缺陷复现。
+   *
+   * ── 现在：按 `ref` **精确匹配本次投出的那一份** ────────────────────────
+   *   `h.kind === 'task-file' && h.ref === input.ref`。
+   *   ⚠ 同一 `ref` 的旧记录（同一个文件被写了两次）仍会被清 —— 那是**同一个文件**，
+   *     本次投出就是它 ⇒ 清它是对的（`recordHandoff` 的去重键也正是 `(kind, ref)`）。
+   *   ⚠ `at` 不再参与判据：它表达不了"这是哪一份"，只会误伤。
+   */
   if (dispatched && opts.clearOnSuccess !== false) {
     try {
-      clearHandoffs(stateFile, (h) => h.kind === 'task-file' && h.at <= input.at)
+      clearHandoffs(stateFile, (h) => h.kind === 'task-file' && h.ref === input.ref)
     } catch { /* 清理失败不掩盖主结果；下面的读数会如实显示"还在" */ }
   }
 

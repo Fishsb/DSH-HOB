@@ -13,6 +13,29 @@ import { fileURLToPath } from 'node:url'
 import { workspaceName } from './workspace-name.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * 「这个目录看起来像不像一份账本」（⚠ 与产品代码 `src/server/doc-read.ts` 的 `looksLikeLedger`
+ * **逐条相同** —— 两侧各写一套就是新的漂移点）。
+ *
+ * 判据：目录在，且**至少有一件**账本特征 —— 正本之一，或**非空的** `volumes/` / `archive/` / `runtime/`。
+ * ⚠ **空目录不算**：本项目 `.hob/archive/` 是空的记录层历史位，算进去会把"未迁移"误判成"已迁移"。
+ */
+const CANON_FILES = ['REQUIREMENTS.md', 'PROJECT.md', 'DECISIONS.md', 'CONTEXT.md']
+const SIDE_DIRS = ['volumes', 'archive', 'runtime']
+function looksLikeLedger(dir) {
+  try { if (!statSync(dir).isDirectory()) return false } catch { return false }
+  for (const f of CANON_FILES) {
+    try { if (statSync(join(dir, f)).isFile()) return true } catch { /* 继续 */ }
+  }
+  for (const d of SIDE_DIRS) {
+    try {
+      const q = join(dir, d)
+      if (statSync(q).isDirectory() && readdirSync(q).length > 0) return true
+    } catch { /* 继续 */ }
+  }
+  return false
+}
 const root = join(here, '..')
 /**
  * 只要退出码，不关心输出；git 未安装/非 git 仓 时抛出真实错误。
@@ -21,10 +44,10 @@ const root = join(here, '..')
  *
  * 不加时，`git check-ignore` 会**优先信任 index**：一个**已被跟踪**的文件
  * **永远不会**被报告为 "ignored"，**即使 `.gitignore` 里确实有规则排除它**。
- * 实测（临时删掉 `!.hob/README.md` 之后）：
+ * 实测（临时删掉 `!kit/README.md` 之后）：
  * ```
- *   git check-ignore -q            .hob/README.md  →  exit 1（"未被排除"）← 漏报
- *   git check-ignore -q --no-index .hob/README.md  →  exit 0（"被排除"）  ← 抓到
+ *   git check-ignore -q            kit/README.md  →  exit 1（"未被排除"）← 漏报
+ *   git check-ignore -q --no-index kit/README.md  →  exit 0（"被排除"）  ← 抓到
  * ```
  * ⇒ 本脚本要断言的恰恰是**规则本身**（"这份清单是否与 README §1 一致"），
  *   而不是"当前 index 恰好看得见它"。若用默认行为，**已经被跟踪的骨架文件
@@ -75,30 +98,31 @@ export function runRepoRules({ bad, ok, skip }) {
    *     它在说"这个骨架文件还没进 git"，而不是等提交后才发现漏了。
    */
   const mustTrack = [
-    ['.hob/README.md', '骨架 · 约定归属地（README §1）'],
-    // ⚠ 2026-10-13（第 128 轮）新增 `.hob/INIT.md`（**新工作区初始化清单**）——
+    ['kit/README.md', '骨架 · 约定归属地（README §1）'],
+    // ⚠ 2026-10-13（第 128 轮）新增 `kit/INIT.md`（**新工作区初始化清单**）——
     //   按 README §6.1 的既有程序「**三处同批**」登记：① 骨架件落盘 · ② `.gitignore` 的 `!` 例外 ·
     //   ③ 本清单加一行。⚠ **缺 ②** ⇒ 该文件静默不入库，git 不报任何错（**E-70**）。
     //   ⚠ **反向**：README §1 骨架栏点名了它、而本清单没有 ⇒ 本脚本当场 FAIL
     //   （本轮实测：加 README §1 而不加本行 ⇒ `✗ …机检与约定已漂移`，EXIT=1）。
     //   ⇒ 本行是**新增**，不放松任何既有断言；两方向对账见 **E-128**。
-    ['.hob/INIT.md', '骨架 · 新工作区初始化清单（README §1 + §1.8）'],
+    ['kit/INIT.md', '骨架 · 新工作区初始化清单（README §1 + §1.8）'],
     ['.hob/EXPERIENCE.md', '骨架 · 经验库**索引**（README §1 + §1.7）'],
     // ⚠ 2026-10-11（第 81 轮）**原样加回** —— 第 80 轮曾因「目录尚不存在、.gitignore 也没放行」
     //   把它撤下；本轮目录真的建了、`!` 例外真的加了、文件真的入库了 ⇒ 三处同批恢复。
     //   ⚠ 目录形态的判据见 `inIndexDir()`（`git ls-files --error-unmatch` 对目录恒 false）。
     ['.hob/experience/', '骨架 · 经验库条目目录（README §1 + §1.7；一条一个 <编号数字>.md）'],
-    ['.hob/templates/DECISIONS.md', '骨架 · 空模板'],
-    ['.hob/templates/USER-DECISIONS.md', '骨架 · 空模板'],
-    ['.hob/templates/CONTEXT.md', '骨架 · 空模板'],
-    ['.hob/templates/ROLES.md', '骨架 · 角色簇（README §1.3）'],
-    ['.hob/templates/GATES.md', '骨架 · 阶段与门禁（README §1.3）'],
-    ['.hob/templates/TASK.md', '骨架 · 指令模板（v4 · 交接协议载体）'],
-    ['.hob/templates/REPORT.md', '骨架 · 回报模板（v4 · 交接协议载体）'],
-    ['.hob/roles/methods/qa.md', '骨架 · 角色方法论（README §1.3 · 代表项）'],
-    ['.hob/roles/methods/quality-gates.md', '骨架 · 门禁方法论源（README §1.3 · 代表项）'],
-    ['.hob/drafts/preset-contracts.md', '骨架 · 被 check:presets 读取的规范源（README §1.2）'],
-    ['.hob/drafts/restructure-plan.md', '骨架 · 重构方案人读版（README §1.2）'],
+    ['kit/templates/DECISIONS.md', '骨架 · 空模板'],
+    ['kit/templates/REQUIREMENTS.md', '骨架 · 空模板（当前需求根地图）'],
+    ['kit/templates/USER-DECISIONS.md', '骨架 · 空模板（历史用户决策 · 只读档）'],
+    ['kit/templates/CONTEXT.md', '骨架 · 空模板'],
+    ['kit/templates/ROLES.md', '骨架 · 角色簇（README §1.3）'],
+    ['kit/templates/GATES.md', '骨架 · 阶段与门禁（README §1.3）'],
+    ['kit/templates/TASK.md', '骨架 · 指令模板（v4 · 交接协议载体）'],
+    ['kit/templates/REPORT.md', '骨架 · 回报模板（v4 · 交接协议载体）'],
+    ['kit/roles/methods/qa.md', '骨架 · 角色方法论（README §1.3 · 代表项）'],
+    ['kit/roles/methods/quality-gates.md', '骨架 · 门禁方法论源（README §1.3 · 代表项）'],
+    ['kit/drafts/preset-contracts.md', '骨架 · 被 check:presets 读取的规范源（README §1.2）'],
+    ['kit/drafts/restructure-plan.md', '骨架 · 重构方案人读版（README §1.2）'],
     // ⚠ 顺带盯住"入库脚本不能依赖不入库文件"这条：这些脚本自己必须在库里
     ['scripts/check-preset-contracts.mjs', '入库脚本（被 package.json 的 check:presets 调用）'],
     ['scripts/check-archive-consistency.mjs', '入库脚本（被 package.json 的 check:archive 调用 · 归档一致性机检）'],
@@ -155,8 +179,8 @@ export function runRepoRules({ bad, ok, skip }) {
     //     输出行与退出码 ⇒ ⛔ 不进 `SCRIPT_LANDING_EXEMPT`，那份只放"纯库"）。
     //   ⚠ **本脚本的"反向自检"当场 FAIL 抓出本行缺失**（与上面六条同族的**第七次**现场抓获）——
     //     这正是"加完 script 未登记 ⇒ 直接红"这条自检形态有效的又一次证据。
-    //   ⚠ 它生成 `src/server/skeleton-manifest.ts`；⚠ 由 `check:gitignore` 的断言 **R** 反向核（同源）。
-    ['scripts/gen-skeleton-manifest.mjs', '入库脚本（被 package.json 的 gen:skeleton 调用 · 由 .gitignore 的 ! 例外派生骨架清单）'],
+    //   ⚠ **2026-10-25 `UD-159` B 步退役**：该脚本与它生成的 `skeleton-manifest.ts` 一并删除
+    //     （骨架不再每工作区一份 ⇒ 清单失去比对对象）⇒ 此行从 MUST-TRACK 移除。
     // ⚠ 2026-10-17 补（第 288 轮 · `UD-130` 放行「动判据脚本」）：**读数可指认**机检。
     //   ⚠ 同族的**第八次**现场抓获 —— 加完 `check:readings` 未登记时，
     //     本脚本的"反向自检"（读 package.json 的 scripts 反查 MUST-TRACK）**当场 FAIL**：
@@ -194,6 +218,20 @@ export function runRepoRules({ bad, ok, skip }) {
     //     `package.json` 的 `check:redeliver`（= 它因此被 `check-all` 的派生族表自动收录）。
     //   ⚠ ⛔ 本条只**新增一条登记**，上面既有条目一字未动（`UD-130` 的边界）。
     ['scripts/check-redeliver.mjs', '入库脚本（被 package.json 的 check:redeliver 调用 · 补投判据：错投回执按 owner 补送）'],
+    // ⚠ 2026-10-22（`REQ-04`）新增：逐会话策略权威的行为判据（`npm run check:policy`）。
+    //   ⚠ 这条判据是**先红后绿**的：改前那三把刀（glob/grep/read_image）直接 execute 能读工作区，
+    //     本脚本的 SP-6 组正是咬那一条。⇒ 它必须入库，否则 clone 后 `npm run check:policy` 直接 ENOENT。
+    ['scripts/check-session-policy.mjs', '入库脚本（被 package.json 的 check:policy 调用 · 逐会话策略：两会话不串 / 旧会话最低 / 无身份与坏记录不泄读 / execute 内兜底）'],
+    //     与「缺身份 / 伪造 id / 坏策略 ⇒ 拒且零 spawn」这两组相反方向。必须入库。
+    // ⚠ 2026-10-22 第 6 轮新增：新建 Hob 会话双轴弹窗与受信创建链（`npm run check:hob-create`）。
+    //   它守票据一次性/跨会话/过期、回滚与 orphan、普通预设不弹、执行层硬拒、枚举同源、槽注册。
+    ['scripts/check-hob-create-ui.mjs', '入库脚本（被 package.json 的 check:hob-create 调用 · 新会话双轴：票据防护 / 回滚 / 持久隔离 / 执行层硬拒 / 枚举同源 / 不碰 single 槽）'],
+    ['scripts/check-hob-create-dom.mjs', '入库脚本（被 package.json 的 check:hob-create-dom 调用 · **真 jsdom 挂载**：入口可点 / 零创建 / 焦点 / 无字面星号 / 枚举驱动）'],
+    // ⚠ 2026-10-22 第 7 轮新增：「未选档位」检测 + 自动弹窗 + 已有会话写入面（`npm run check:hob-gate`）。
+    //   它守四件事（逐条对应任务书 §三）：三态（recorded / unrecorded / 判不出）下**自动弹窗行为各异** /
+    //   `openForSession` 模式下**确认后零 create**（重复建会话风险钉死）/ 只读路由**只回 `state` 一个字段** /
+    //   非 Hob 会话**不适用、不挡**。⚠ 其中 G-11/G-12 是**正反双向**对拍（已有会话零 create + 新建模式未受影响）。
+    ['scripts/check-hob-unselected-gate.mjs', '入库脚本（被 package.json 的 check:hob-gate 调用 · **真 jsdom 挂载**：三态驱动弹窗 / 已有会话零 create / 线格式不泄档位 / 非 Hob 不挡）'],
     // ⚠ 2026-10-18 补（本批 · `UD-138` ⑥「补齐对外最小面」）：**聚合判据入口**与**前置条件预检**。
     //   ⚠ 由来：本仓此前有 12 条 `check:*`、**零聚合入口** ⇒ 对外标准「判据入口能一条命令跑」
     //     直接不成立（外部人不知道该跑哪条、跑了一半就以为全过了）。
@@ -215,6 +253,22 @@ export function runRepoRules({ bad, ok, skip }) {
     //     「未执行 / 失败」，⚠ **而 git 不报任何错**（正是本卡病灶的复发路径）。
     //   ⚠ 它不是脚本、没有落点问题：本条只是"必须能被 git 跟踪"的登记。
     ['dsh-hob.workspace.json', '配置文件（工作区名的唯一来源 · 由 scripts/workspace-name.mjs 读取 · 随分支走）'],
+    // ⚠ **2026-10-25（C 步）：账本搬回 `<工作区>/.hob/` ⇒ 这四条从 MUST-EXCLUDE 翻成 MUST-TRACK。**
+    //   由来：v4 把它们登记成"必须被排除"是**因为账本当时在工作区之外**（`防回迁`）。
+    //   现在回迁**就是本步的目标** ⇒ 同一批路径的方向必须反过来，否则判据会
+    //   一边要求"账本进 `.hob/`"、一边要求"`.hob/` 里的账本必须被忽略" —— 自相矛盾。
+    //   ⚠ **不是放宽**：断言条数不减（4 条 EXCLUDE → 4 条 TRACK），判据**更严**
+    //     （TRACK 还要求"真的进了 index"，EXCLUDE 只要求"规则匹配"）。
+    ['.hob/CONTEXT.md', '账本正本（C 步回迁后必须入库 · 项目文档不是可再生的运行数据）'],
+    ['.hob/DECISIONS.md', '账本正本（同上）'],
+    ['.hob/REQUIREMENTS.md', '账本正本（同上 · 现行需求根）'],
+    ['.hob/PROJECT.md', '账本正本（同上 · 项目方案）'],
+    // ⚠ **2026-10-25（搬家单收口）：`.hob/archive/` 从这里移出** —— 改前它要求在 MUST-TRACK 里（必须跟踪）。
+    //   ⚠ **为什么改**：账本搬进来之后 `.hob/archive/` 是 **1.31 GB / 60 697 文件**
+    //     ⇒ 要求它进库等于"仓库一次涨 1.3 GB + 每轮 `git status` 六万行新增" ⇒ **仓库不可用**。
+    //   ⚠ **⚠ 这不是放宽**：同一批在 mustExclude 里**补了一条反向断言**（`.hob/archive/` 必须被忽略）
+    //     ⇒ 它**仍然有人管**（从"必须跟踪"改成"必须忽略"），断言总条数**不减**。
+    //   ⚠ **判据侧不受影响**：`check:archive` 读的是**盘上目录**，⛔ 不是 `git ls-files`。
   ]
 
   /** 该路径是否已在 git index 里（= 已 `git add`）。 */
@@ -278,23 +332,29 @@ export function runRepoRules({ bad, ok, skip }) {
    */
   const mustExclude = [
     ['node_modules/', '依赖目录（.gitignore 构建产物段）'],
+    // ⚠ 2026-10-24（B 席 · 补 `runtime/` 规则）：**仓库根的运行态目录**必须被排除。
+    //   由来（实测）：宿主的编排看门狗按 cwd 派生出 `runtime/orch-watches.json`，
+    //   它出现在 `git status` 的未跟踪项里、并让 `lib/BUILD-STAMP` 的 `dirty` **恒为 true**
+    //   （⇒ 面 ① 那条报警器永远在响、于是被习惯性无视）。
+    //   ⚠ 判据用 `--no-index`（规则匹配与存在性无关）⇒ 这台机器上没有它时也照样核规则本身。
+    //   ⚠ 判据读的账本区运行态在**仓库之外**（`<ledgerHome>/<工作区名>/runtime/`）⇒
+    //     本行**不会**把判据的输入排掉。
+    ['runtime/', '运行态数据（宿主编排看门狗按 cwd 派生到仓库根 · 非骨架、非判据输入）'],
     ['lib/', '构建产物 · host（同一段）'],
     ['dist/', '构建产物（同一段）'],
-    // ⚠ **v4（2026-10-08）**：账本数据已迁出工作区（→ `/home/lk/.dsh/hob-ledgers/<工作区名>/`，
-    //   2026-10-09 按 UD-86/87 迁自 `/home/lk/FF/.hob-ledgers/<工作区名>/`），
-    //   故下面这些路径**在本仓库里已不存在**。
-    //   ⇒ 保留断言的意义变成**防回迁**：若有人把账本数据搬回 `.hob/`，
-    //     本组立刻 FAIL（`git check-ignore` 会对已入库路径返回未忽略）。
-    //   ⚠ 这是**改判据以跟随现状**，不是放宽 —— 断言条数不减，方向从
-    //     "数据必须被排除" 变成 "数据既不在库、也不被意外放行"。
-    ['.hob/DECISIONS.md', '运行数据 · 账本（v4 已迁出）'],
-    ['.hob/USER-DECISIONS.md', '运行数据 · 账本（v4 已迁出）'],
-    ['.hob/CONTEXT.md', '运行数据 · 账本（v4 已迁出）'],
-    ['.hob/archive/', '运行数据 · 归档（v4 已迁出）'],
-    ['.hob/backups/', '改前备份（v4 起仅存本仓库内的改前备份，账本备份已迁出）'],
-    ['.hob/CARRYOVER.md', '运行数据 · 可搬资产登记（v4 已迁出）'],
-    ['.hob/STEP6-REPORT.md', '运行数据 · 各轮报告的代表（v4 已迁出）'],
-    ['.hob/CLEANUP-REPORT.md', '运行数据 · 各轮报告的代表（v4 已迁出）'],
+    // ⚠ **v4（2026-10-08）**：账本数据曾迁出工作区；**2026-10-25（C 步）起又搬回 `<工作区>/.hob/`**
+    //   ⇒ 账本类路径的断言**方向反了**，见下方 mustTrack 那一段（同批移过去，条数不减）。
+    //
+    //   ⚠ **留在这里的仍成立**（它们都是"账本搬回来也不该入库"的生成物/历史件）：
+    ['.hob/backups/', '改前备份（逐轮改前副本 · 随工作区一次性消费 · 无跨项目价值）'],
+    // ⚠ **2026-10-25（搬家单收口）· 反向断言**：`.hob/archive/` 从 MUST-TRACK 移出后，
+    //   **必须在这里补一条"必须被忽略"** —— ⚠ 否则"移出清单"就等于"没人管它了"（那才是放宽）。
+    //   ⚠ 依据：它是 **1.31 GB / 60 697 文件**的账本历史；⚠ "证据不该丢"由**盘上文件**承担，不靠 git。
+    ['.hob/archive/', '账本历史（1.31 GB / 60 697 文件 · 不进版本库；`check:archive` 读盘上目录）'],
+    ['.hob/runtime/', '运行态数据（宿主编排看门狗按 cwd 派生 · 每次跑都会改写）'],
+    ['.hob/CARRYOVER.md', '运行数据 · 可搬资产登记（v4 已迁出，未回迁）'],
+    ['.hob/STEP6-REPORT.md', '运行数据 · 各轮报告的代表（v4 已迁出，未回迁）'],
+    ['.hob/CLEANUP-REPORT.md', '运行数据 · 各轮报告的代表（v4 已迁出，未回迁）'],
   ]
 
   for (const [p, why] of mustExclude) {
@@ -316,7 +376,7 @@ export function runRepoRules({ bad, ok, skip }) {
    * 本脚本没跟上 —— 那正是 E-70 的成因：清单有、机检没有）。
    * 判据：README §1 表格提到的骨架路径，逐一必须在 mustTrack 里出现过。
    */
-  const README = join(root, '.hob', 'README.md')
+  const README = join(root, 'kit', 'README.md')
   const readmeSrc = (() => {
     try { return execFileSync('cat', [README], { encoding: 'utf8' }) } catch { return '' }
   })()
@@ -343,7 +403,7 @@ export function runRepoRules({ bad, ok, skip }) {
    *   `.gitignore` 头部那条注释**自称**：「本清单与 README §1 是**同一份清单的两处载体**
    *   ⇒ 改一处必须同步另一处，并由 `npm run check:gitignore` 机检」。
    *   ⚠ **而它其实没有任何判据管** —— 上面那条断言读的是**README 与 `!` 规则**，
-   *   注释是**第三种载体**。第 146 轮实测：第 128 轮加 `.hob/INIT.md` 时改了
+   *   注释是**第三种载体**。第 146 轮实测：第 128 轮加 `kit/INIT.md` 时改了
    *   README + `!` 规则 + 本脚本清单，**唯独漏了注释** ⇒ 注释停在 6 项、README 是 7 项，
    *   **静默漂了很久**；并**现场实证**（往注释里塞一行噪音 ⇒ 判据输出与退出码**都不变**）。
    *
@@ -378,7 +438,7 @@ export function runRepoRules({ bad, ok, skip }) {
             + `\n       README 有、注释缺：${onlyReadme.join(', ') || '无'}`
             + `\n       注释有、README 缺：${onlyComment.join(', ') || '无'}`
             + '\n      ⇒ 那条注释自称"本清单与 README §1 是同一份清单的两处载体"'
-            + '\n        ⇒ 改一处必须同步另一处（第 128 轮加 `.hob/INIT.md` 时漏的正是注释）')
+            + '\n        ⇒ 改一处必须同步另一处（第 128 轮加 `kit/INIT.md` 时漏的正是注释）')
         } else {
           ok('`.gitignore` 注释的骨架清单与 README §1 骨架栏**两向一致**'
             + `（各 ${inComment.length} 项：${inComment.join(' ')}）`)
@@ -404,14 +464,14 @@ export function runRepoRules({ bad, ok, skip }) {
    *   ④ ⚠ **不写死任何数字**（E-117：写死会漂）—— 报的是**实测值**。
    */
   {
-    const rolesDir = join(root, '.hob', 'roles', 'methods')
+    const rolesDir = join(root, 'kit', 'roles', 'methods')
     let names = []
     let dirOk = true
     try { names = readdirSync(rolesDir).filter((n) => n.endsWith('.md')) } catch { dirOk = false }
     if (!dirOk) {
-      bad('`.hob/roles/methods/` 读不到（目录不在 / 不可读 ⇒ 基准缺失，不按通过处理）')
+      bad('`kit/roles/methods/` 读不到（目录不在 / 不可读 ⇒ 基准缺失，不按通过处理）')
     } else if (names.length === 0) {
-      bad('`.hob/roles/methods/` 里一份 `.md` 也没有（README §1.3 说它是"随角色数增长的多份" ⇒ 与约定不符）')
+      bad('`kit/roles/methods/` 里一份 `.md` 也没有（README §1.3 说它是"随角色数增长的多份" ⇒ 与约定不符）')
     } else {
       const unreadable = []
       const empty = []
@@ -421,15 +481,15 @@ export function runRepoRules({ bad, ok, skip }) {
           if (body.trim() === '') empty.push(n)
         } catch { unreadable.push(n) }
       }
-      const registered = mustTrack.filter(([p]) => p.startsWith('.hob/roles/')).length
-      if (unreadable.length > 0) bad('`.hob/roles/methods/` 有读不到的成员：' + unreadable.join(', '))
-      if (empty.length > 0) bad('`.hob/roles/methods/` 有空成员（0 字节）：' + empty.join(', '))
+      const registered = mustTrack.filter(([p]) => p.startsWith('kit/roles/')).length
+      if (unreadable.length > 0) bad('`kit/roles/methods/` 有读不到的成员：' + unreadable.join(', '))
+      if (empty.length > 0) bad('`kit/roles/methods/` 有空成员（0 字节）：' + empty.join(', '))
       if (names.length < registered) {
-        bad('`.hob/roles/methods/` 成员数（' + names.length + '）少于 MUST-TRACK 登记的 roles 条数（'
+        bad('`kit/roles/methods/` 成员数（' + names.length + '）少于 MUST-TRACK 登记的 roles 条数（'
           + registered + '）⇒ 登记的还在、别的成员已被删（或目录被截断）')
       }
       if (unreadable.length === 0 && empty.length === 0 && names.length >= registered) {
-        ok('`.hob/roles/methods/` 存在性断言通过：' + names.length + ' 份成员**逐个可读**、无空文件'
+        ok('`kit/roles/methods/` 存在性断言通过：' + names.length + ' 份成员**逐个可读**、无空文件'
           + '（⚠ 数字是**实测值**，⛔ 不写死）')
       }
     }
@@ -537,6 +597,13 @@ export function runRepoRules({ bad, ok, skip }) {
     //     现在**只有一个来源**（配置 + 本模块），调用方一律传自己的旧猜法兜底 ⇒
     //     未配置时与改动前逐字一致（⛔ 不是放宽，是收口）。
     ['scripts/workspace-name.mjs', '纯库：工作区名的唯一来源（配置优先 · 未配置落回调用方旧猜法），由各判据脚本 import 调用'],
+    // ⚠ 2026-10-24（B 席 · 治「真 DOM 判据靠侥幸才绿」）：**把 TS 源码树转译进一次性目录**。
+    //   ⚠ 它是**纯库**：只导出 `mountTsGraph()` / `verifyMounted()` / `rewriteRelImports()`
+    //     等函数，**没有自己的进程入口、输出段与退出码** ⇒ ⛔ 不该单独进 `npm run`。
+    //   ⚠ 存在的理由：`check:hob-create-dom` 与 `check:hob-gate` 原先**各写一份**单文件转译
+    //     （而且 dom 那份连路径重写都没有）⇒ 同一件事两处实现、其中一处一直是靠
+    //     "import 恰好被擦除"侥幸通过的。⇒ 现在只有**一个来源**，并带自证。
+    ['scripts/ts-mount.mjs', '纯库：把 src/**.ts(x) 按相对结构转译进一次性目录（含 relative-import 自证），由两个真 DOM 判据 import 调用'],
   ]
   {
     let onDisk = []
@@ -596,6 +663,148 @@ export function runRepoRules({ bad, ok, skip }) {
   }
 
   /**
+   * ── ⚠⚠ **落点必须是 `check:*`（2026-10-24 · B 席 · 治"改名就脱管"）**──────────────
+   *
+   * ── 改前是什么（这就是本单要治的）──────────────────────────────────────
+   *   上面那段只抽 `node scripts/<x>.mjs` 这个**路径**，⛔ **完全不看 script 名**。
+   *   ⇒ ⚠ 把 `"check:redeliver": "node scripts/check-redeliver.mjs"` 改名为
+   *     `"gen:redeliver": "node scripts/check-redeliver.mjs"` —— 路径一字未动
+   *     ⇒ **落点判据照样 PASS**，`check:all` 的族表里少一族（20→19），**而没有任何东西报红**。
+   *   实测（本单复核）：改名后 `check:gitignore` **PASS**、`check:all` **全部通过 exit 0**。
+   *   ⚠ 这是"派生式清单"的第二层盲区：族表从 `check:*` 键名派生（对），但**没有断言
+   *     "该进的族真的还在 `check:*` 名下"** ⇒ 改名 = 静默退管（`E-122` / `E-127` 同族）。
+   *
+   * ── 判据（⚠ 派生式，⛔ 不手抄族名表）────────────────────────────────────
+   *   ① `scripts/check-*.mjs`（文件名以 `check-` 开头）—— 这批**按定义**是判据族的实现件；
+   *   ② 每一份都**必须**至少被一个 **`check:`** 开头的 script 键调到；
+   *   ③ 只在 `gen:` / `exp:` / `build` / 其它名字下被调到 ⇒ **FAIL**（点名是哪个键）。
+   *   ⚠ 白名单复用下面那张 `SCRIPT_LANDING_EXEMPT`（纯库本来就不该被 `npm run` 调到）；
+   *     本断言**只收紧**"被调到时**必须叫 check:**"，⛔ 不改变"要不要有落点"那一条。
+   *   ⚠ 为什么限定 `check-` 前缀：`probe-selfwake-e2e.mjs`（`check:selfwake` 调的）
+   *     文件名不带 `check-`，但它**在 `check:*` 名下** —— 本断言不覆盖它也无妨
+   *     （覆盖它的活是"族数下界"，见 `check-all.mjs` 的 `FAMILY_FLOOR`）。
+   */
+  {
+    /**
+     * ⚠ **本地的目录常量**（⛔ 不要用下面那张白名单段的 `SCRIPTS_DIR`）：
+     *   那个 `const` 声明在本段**之后** ⇒ 在这里引用会落进 **TDZ**，
+     *   而它被 `try/catch` 吞掉 ⇒ 表现成"一份都读不到"的假基准缺失（本段首版就踩了这个）。
+     */
+    const scriptsDir = join(root, 'scripts')
+    let onDisk = []
+    try {
+      onDisk = readdirSync(scriptsDir, { withFileTypes: true })
+        .filter((d) => d.isFile() && d.name.endsWith('.mjs') && d.name.startsWith('check-'))
+        .map((d) => `scripts/${d.name}`)
+        .sort()
+    } catch { onDisk = [] }
+    if (onDisk.length === 0) {
+      bad('族落点名：`scripts/check-*.mjs` 一份都读不到 ⇒ 本断言失去基准（⛔ 不按通过处理）')
+    } else {
+      let declaredByName = undefined
+      try { declaredByName = JSON.parse(readFileSync(PKG, 'utf8')).scripts } catch { declaredByName = undefined }
+      if (declaredByName === undefined || typeof declaredByName !== 'object' || declaredByName === null) {
+        bad('族落点名：读不到 `package.json` 的 `scripts`（基准缺失 ⇒ 不按通过处理）')
+      } else {
+        /** `脚本路径 → [调用它的 script 键…]`（⚠ 键名是唯一权威，⛔ 不手抄）。 */
+        const invokersOf = new Map()
+        for (const [key, cmd] of Object.entries(declaredByName)) {
+          if (typeof cmd !== 'string') continue
+          for (const m of cmd.matchAll(/node\s+(scripts\/[A-Za-z0-9._-]+\.mjs)/g)) {
+            if (!invokersOf.has(m[1])) invokersOf.set(m[1], [])
+            invokersOf.get(m[1]).push(key)
+          }
+        }
+        const exemptSet = new Set(SCRIPT_LANDING_EXEMPT.map(([p]) => p))
+        let demoted = 0
+        for (const p of onDisk) {
+          if (exemptSet.has(p)) continue
+          const keys = invokersOf.get(p) ?? []
+          if (keys.length === 0) continue   // ⚠ 没有落点那条由下面的反向自检报（⛔ 不重复刷红）
+          if (keys.some((k) => k.startsWith('check:'))) continue
+          demoted++
+          bad(`族落点名：**判据族脚本只被非 \`check:*\` 名调用**：${p}`
+            + `\n      ⇒ 调用它的键：${keys.join(' · ')}`
+            + '\n      ⇒ ⚠ 后果：\`check:all\` 的族表**派生**自 \`check:*\` 键名 ⇒ 它会**静默退出总门**'
+            + '（实测：\`check:redeliver\` 改名成 \`gen:redeliver\` 后，本脚本仍 PASS、族数 20→19 全绿）'
+            + '\n      ⇒ 修法：用 \`check:*\` 名调用它；⚠ 若它**确实是生成器**（不该进判据族），'
+            + '那就把文件名里的 \`check-\` 前缀去掉并在 `SCRIPT_LANDING_EXEMPT` 里登记理由')
+        }
+        if (demoted === 0) {
+          ok(`族落点名 ✓ \`scripts/check-*.mjs\` 共 ${onDisk.length} 份，`
+            + '**全部**由 \`check:*\` 名调用（⚠ 排除纯库豁免与"压根没落点"那两类，后者另有断言）')
+        }
+      }
+    }
+  }
+
+  /**
+   * ── ⚠⚠ **`engines.node` 必须与"判据怎么加载 TS"一致**（2026-10-24 · B 席）────────────
+   *
+   * ── 改前是什么（声明与实现对不上）──────────────────────────────────────
+   *   `package.json` 的 `engines.node` 写着 **`>=20`**，而判据脚本大量
+   *   `import('./src/xxx.ts')` —— 那靠 **Node 的 type-stripping**：
+   *     · 22.18 起**默认开启**（`process.features.typescript === 'strip'`）；
+   *     · Node 20 上必然抛 `ERR_UNKNOWN_FILE_EXTENSION: Unknown file extension ".ts"`。
+   *   实测（本机）：`node --no-experimental-strip-types -e "import('./src/shared/work-mode.ts')"`
+   *     ⇒ `ERR_UNKNOWN_FILE_EXTENSION`（= Node 20 的行为）。
+   *   ⇒ 按 `engines` 装 Node 20 的人跑 `npm run check` 会看到**一串看不懂的崩溃**，
+   *     而没有任何提示说"是 Node 版本不够"。
+   *
+   * ── 判据（⚠ 派生式，⛔ 不手抄版本表）──────────────────────────────────
+   *   ① `engines.node` 必须**可解析**且下界 **≥ 22.18**（type-stripping 默认开启的版本）；
+   *   ② 读不到 / 解析不了 / 写成范围（`>=22 <23` 那种也算可解析，取**最低**那一端）
+   *      ⇒ FAIL（⛔ 不许"读不到就当通过"）。
+   *   ⚠ 这一条**不**检查"本机 Node 是否满足"（那是 `check:preflight` 的 ⓪ 项，只报不拦）——
+   *     本脚本在别人机器上也要能跑，而它自己就依赖 type-stripping 的话根本跑不到这里。
+   *   ⚠ 下界只准**升**：真要降回来，必须同批改**判据的加载方式**（例如改用 ts-mount 转译），
+   *     ⛔ 不许只改这个数字了事。
+   */
+  {
+    const NODE_FLOOR = [22, 18, 0]
+    let pkgRaw = ''
+    try { pkgRaw = readFileSync(PKG, 'utf8') } catch { pkgRaw = '' }
+    let engines
+    try { engines = pkgRaw === '' ? undefined : JSON.parse(pkgRaw).engines } catch { engines = undefined }
+    const nodeRange = engines !== null && typeof engines === 'object' ? engines.node : undefined
+    if (typeof nodeRange !== 'string' || nodeRange.trim() === '') {
+      bad('engines.node 读不到 / 不是字符串 ⇒ 运行时下界无从核对（⛔ 不按通过处理）'
+        + ' ⇒ 修法：在 `package.json` 的 `engines.node` 写一个**可解析**的下界（如 `">=22.18"`）')
+    } else {
+      /**
+       * ⚠ 只取**最低那一端**：`>=22.18` / `^22.18.0` / `22.18.x` / `>=22.18 <23` 都取
+       *   第一个出现的 `数字.数字[.数字]`。⚠ 一个数字都抽不到 ⇒ FAIL（⛔ 不猜）。
+       */
+      const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(nodeRange)
+      if (m === null) {
+        bad(`engines.node 抽不出任何版本号（原文 \`${nodeRange}\`）⇒ 运行时下界无从核对`
+          + '（⛔ 不按通过处理）')
+      } else {
+        const got = [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)]
+        const cmp = (a, b) => {
+          for (let i = 0; i < 3; i += 1) {
+            if (a[i] !== b[i]) return a[i] - b[i]
+          }
+          return 0
+        }
+        if (cmp(got, NODE_FLOOR) < 0) {
+          bad(`engines.node 的下界 \`${got.join('.')}\` **低于** 判据实际所需 \`${NODE_FLOOR.join('.')}\``
+            + `（原文 \`${nodeRange}\`）`
+            + '\n      ⇒ 本仓判据大量**直接 `import(\'.ts\')`**，靠 Node 的 type-stripping；'
+            + '它在 **22.18** 起默认开启，Node 20 上必抛 `ERR_UNKNOWN_FILE_EXTENSION`（实测）'
+            + '\n      ⇒ 按这个 `engines` 装 Node 20 的人，`npm run check` 会看到一串看不懂的崩溃，'
+            + '而没有任何东西说是"Node 太旧"'
+            + '\n      ⇒ 修法二选一：① 把 `engines.node` 提到 **≥ 22.18**；'
+            + '② 改判据的加载方式（统一走 `scripts/ts-mount.mjs` 转译）—— ⛔ 不许只改注释')
+        } else {
+          ok(`engines.node 下界 \`${got.join('.')}\` ≥ 判据所需 \`${NODE_FLOOR.join('.')}\``
+            + `（原文 \`${nodeRange}\`；⚠ 与"本机够不够"是两件事 —— 后者见 \`check:preflight\`）`)
+        }
+      }
+    }
+  }
+
+  /**
    * ── 断言 A（2026-10-14 第 148 轮）：骨架**活规矩层**的**引用闭合** ─────────────
    *
    * ── 为什么需要（缺口有实测出处）──────────────────────────────────────
@@ -621,7 +830,7 @@ export function runRepoRules({ bad, ok, skip }) {
   {
     const liveFiles = (() => {
       const out = []
-      const roots = ['.hob/templates', '.hob/roles', '.hob/drafts']
+      const roots = ['kit/templates', 'kit/roles', 'kit/drafts']
       for (const r of roots) {
         const abs = join(root, r)
         let es = []
@@ -641,7 +850,7 @@ export function runRepoRules({ bad, ok, skip }) {
           else if (/\.(md|html)$/.test(e.name)) out.push(p)
         }
       }
-      for (const f of ['.hob/README.md', '.hob/INIT.md', '.hob/EXPERIENCE.md']) {
+      for (const f of ['kit/README.md', 'kit/INIT.md', '.hob/EXPERIENCE.md']) {
         const p = join(root, f)
         try { readFileSync(p); out.push(p) } catch { /* 不在就跳过 */ }
       }
@@ -663,6 +872,9 @@ export function runRepoRules({ bad, ok, skip }) {
         // ⚠ 工作区名**从配置读**（唯一来源 = `scripts/workspace-name.mjs`）；
         //   未配置 ⇒ 落回 `basename(root)`（与改动前逐字一致）—— ⛔ 本脚本不再自己猜目录名。
         const wsName = workspaceName(() => basename(root))
+        // ② 新正典：本工作区自己的 `<工作区>/.hob/`（若它看起来像账本）
+        const inWs = join(root, '.hob')
+        if (looksLikeLedger(inWs)) return inWs
         for (const home of candidates) {
           const dir = join(home, wsName)
           if (existsSync(dir)) return dir
@@ -678,7 +890,7 @@ export function runRepoRules({ bad, ok, skip }) {
        *
        * ① **明示缺失 / 历史的叙述**：同一行里带这些标记词 ⇒ 该路径**本来就说的是"曾经/不在"**。
        *    例：`.hob/README.md:647`（`…**未搬运** —— 现役机检是…`）、
-       *        `.hob/drafts/restructure-plan.md:62`（`… | 删文件 |`）。
+       *        `kit/drafts/restructure-plan.md:62`（`… | 删文件 |`）。
        *    ⚠ 清单**逐条列出**而不是"看着像就算了"；新增豁免必须在这里显式登记 + 写理由。
        *
        * ② **声明为"外部/历史归档"的整节**：`.hob/EXPERIENCE.md` 的 `## 8. 可搬资产清单`
@@ -771,12 +983,12 @@ export function runRepoRules({ bad, ok, skip }) {
    *   「第 N 轮」那族 **0/2 命中**）。
    *
    * ── ⚠⚠ 豁免面**逐层点名 + 写明理由**（⛔ 不许用"通扫全文 = 0 命中"当判据）──────
-   *   · `.hob/templates/**` —— **在辖**（开箱层）；
-   *   · `.hob/roles/**`     —— **在辖**（开箱层，README §1.3 明写"可复用、可分发"）；
-   *   · `.hob/README.md` / `.hob/INIT.md` —— **豁免**：它们是**本项目骨架的说明书**，
+   *   · `kit/templates/**` —— **在辖**（开箱层）；
+   *   · `kit/roles/**`     —— **在辖**（开箱层，README §1.3 明写"可复用、可分发"）；
+   *   · `kit/README.md` / `kit/INIT.md` —— **豁免**：它们是**本项目骨架的说明书**，
    *     已由第 147 轮的**节级标注**声明"其中编号是本项目账本条目号、开箱不带"
    *     （标注位置：`README.md` 文件头、`INIT.md` 文件头）；
-   *   · `.hob/drafts/**`    —— **豁免**：它是**本项目自己的契约正文 / 草案**
+   *   · `kit/drafts/**`    —— **豁免**：它是**本项目自己的契约正文 / 草案**
    *     （README §1.2）—— ⚠ ⚠ **它确实随包分发**（在 `package.json` 的 `files` 里、
    *     也铺进新工作区）；⚠ ⚠ **豁免的真实理由是「随包分发的是本项目自己的契约正文、
    *     ⛔ 不是给别项目复用的模板」**（⚠ 第 292 轮更正：原措辞与「它随包发出」这一事实不一致）；
@@ -820,23 +1032,23 @@ export function runRepoRules({ bad, ok, skip }) {
     const PLACEHOLDER_PTR = /(?:UD-0{2}|CHG-0{3})(?![\d])/
     const PTR_RE = /(?:^|[^A-Za-z0-9._/-])((?:archive|volumes)\/[A-Za-z0-9._/-]*(?:\d{4}-\d{2}-\d{2}|(?:REPORT-R|TASK-R|UD-|CHG-)\d{1,4}|rounds\/\d{1,4}\.md)[A-Za-z0-9._/-]*)/g
     const FAMILIES = [
-      ['项目专有编号具体值', /\b(?:CHG|UD|E)-\d{1,3}\b/g, PLACEHOLDER, ['.hob/templates', '.hob/roles']],
-      ['项目名', /dsh-hob|hob-ledgers|prompt-enhancer/g, null, ['.hob/templates', '.hob/roles']],
+      ['项目专有编号具体值', /\b(?:CHG|UD|E)-\d{1,3}\b/g, PLACEHOLDER, ['kit/templates', 'kit/roles']],
+      ['项目名', /dsh-hob|hob-ledgers|prompt-enhancer/g, null, ['kit/templates', 'kit/roles']],
       ['本机路径', /\/home\/lk\b|\/mnt\/[a-z]\//g, null,
-        ['.hob/templates', '.hob/roles', '.hob/EXPERIENCE.md']],
+        ['kit/templates', 'kit/roles', '.hob/EXPERIENCE.md']],
       ['第N轮引用', /第 *\d+ *轮/g, null,
-        ['.hob/templates', '.hob/roles', '.hob/EXPERIENCE.md']],
+        ['kit/templates', 'kit/roles', '.hob/EXPERIENCE.md']],
       // ⚠ 第 5 族：⚠ **在辖面与 `IN_SCOPE` 逐字相同**（模板 + roles + 索引）——
-      //   ⚠ 它**不**扫 `.hob/drafts/**`（那是**本项目自己的契约正文**，见 `EXEMPT` 那行：
+      //   ⚠ 它**不**扫 `kit/drafts/**`（那是**本项目自己的契约正文**，见 `EXEMPT` 那行：
       //   它逐条引本项目归档件是**本职**，纳入会**恒红** ⇒ 与"恒红的判据等于没有判据"同族）。
       ['具体归档/账本指针', PTR_RE, PLACEHOLDER_PTR,
-        ['.hob/templates', '.hob/roles', '.hob/EXPERIENCE.md']],
+        ['kit/templates', 'kit/roles', '.hob/EXPERIENCE.md']],
     ]
-    const IN_SCOPE = ['.hob/templates', '.hob/roles', '.hob/EXPERIENCE.md']
+    const IN_SCOPE = ['kit/templates', 'kit/roles', '.hob/EXPERIENCE.md']
     const EXEMPT = [
-      ['.hob/README.md', '本项目骨架**说明书** —— 第 147 轮已加节级标注声明"编号是本项目账本条目号、开箱不带"'],
-      ['.hob/INIT.md', '同上（文件头已有节级标注）'],
-      ['.hob/drafts/', '本项目**自己的契约正文 / 草案**（README §1.2）—— ⚠ ⚠ **随包分发**'
+      ['kit/README.md', '本项目骨架**说明书** —— 第 147 轮已加节级标注声明"编号是本项目账本条目号、开箱不带"'],
+      ['kit/INIT.md', '同上（文件头已有节级标注）'],
+      ['kit/drafts/', '本项目**自己的契约正文 / 草案**（README §1.2）—— ⚠ ⚠ **随包分发**'
         + '（在 `package.json` 的 `files` 里、也铺进新工作区）；⚠ **分发的是本项目自己的契约正文，⛔ 不是给别项目复用的模板**'],
       ['.hob/EXPERIENCE.md', '**记录层索引** —— ⚠ **按族分**：其"编号具体值/项目名"两族**豁免**（引自己账本条目的编号是索引本职）；'
         + '"本机路径/第N轮"两族**在辖**（换机必断，且第 148 轮 ① 刚修净 ⇒ 必须留回归守卫）'],
@@ -909,13 +1121,13 @@ export function runRepoRules({ bad, ok, skip }) {
           + '\n      ⇒ 分族覆盖读数（核了多少行）：'
           + FAMILIES.map(([n]) => `${n} 核${checked.get(n)}行`).join(' · '))
       } else {
-        ok(`断言 B · 可分发层（templates/ ${collect('.hob/templates').length} 份 + roles/ ${collect('.hob/roles').length} 份`
+        ok(`断言 B · 可分发层（templates/ ${collect('kit/templates').length} 份 + roles/ ${collect('kit/roles').length} 份`
           + ` + EXPERIENCE.md 索引）**${FAMILIES.length} 族**命中**全 0**；**分族覆盖读数**（核了多少行 / 命中多少）：`
           + FAMILIES.map(([n]) => `${n} 核${checked.get(n)}行/命中0`).join(' · ')
           + `（⚠ 占位号 CHG-000/UD-00 **不计**，见 INIT.md 明文"有意占位"；`
           + `⚠ 族 ⑤「具体归档/账本指针」**只咬具体实例**（日期戳 / 报告号 / 轮次件），`
           + `**放过**占位形状 \`archive/<日期>-<名>/\` 与通用结构卷 \`volumes/plan/INDEX.md\`；`
-          + `⚠ ⛔ 它**不**扫 \`.hob/drafts/**\`（那是本项目自己的契约正文，纳入会恒红）；`
+          + `⚠ ⛔ 它**不**扫 \`kit/drafts/**\`（那是本项目自己的契约正文，纳入会恒红）；`
           + `⚠ 「命中 0」**不是**"干净"的证据 —— 覆盖读数才是，见上面每族的"核 N 行"）`)
       }
       // ⚠ 豁免面**逐层点名 + 理由**：让"没扫"可见（⛔ 不是静默跳过）
@@ -1107,6 +1319,111 @@ export function runRepoRules({ bad, ok, skip }) {
           + `（工作区 ⇄ \`${RT_SCOPE}\`），**逐包同代**、零告警`
           + `（⚠ 工作区共 ${Object.keys(wsTable).length} 个、运行时共 ${Object.keys(rtTable).length} 个，`
           + '取**交集**对拍；单边出现不判）')
+      }
+    }
+  }
+
+  /**
+   * ── 断言 MV（2026-10-25 · 本单新增）：**模板根上文档清单 == INIT 的复制清单** ─────
+   *
+   * ── 为什么单独立一条（⚠ 已有第 ⑥ 组，但它**两个方向都不咬**，实测）──────────────
+   *   `check-code-face.mjs` 的 `runSkeletonSource` 已有 ⑥ 组，判"模板根上清单 == INIT 复制清单"。
+   *   ⚠ ⚠ **实测（本单开工时，零改动状态下）：它抓不住任何一侧的不等** ——
+   *     · **多一份**：把 `ROLES` 加进 `INIT.md` 的 `for f in …` ⇒ 它报
+   *       `✓ …5 份逐名相等（… · ROLES.md）… 模板另有 4 份非根件` ⇒ **仍绿**（只是数字变了）；
+   *     · **少一份**：把 `REQUIREMENTS` 从 `for f in …` 删掉 ⇒ 它报
+   *       `✓ …3 份逐名相等 … 模板另有 6 份非根件（含 REQUIREMENTS.md）` ⇒ **仍绿**。
+   *   ⇒ **根因**：它拿"INIT 说复制到根的集合"与"模板目录全体 − 该集合"做**自洽比对**，
+   *     两端**同源**（都来自 `initCopied`）⇒ **集合永远相等**，那条 `✓` 是**恒真**的。
+   *   ⚠ 这正是本仓最忌的形态：**判据改哑与判据改对输出相同**（`E-126`）。
+   *
+   * ── 本条怎么避开那个坑（两端**互相独立**）──────────────────────────────
+   *   **端 A（INIT 侧）**：从 `INIT.md` 的**复制语句**里解析"目标落到根"的模板文件名 ——
+   *     ⛔ **不手写名单**；解析不到 ⇒ **FAIL**（⛔ 不许静默通过）。
+   *   **端 B（模板侧）**：`kit/templates/` 下**该进根的那些** ——
+   *     ⚠ **"该进"的判法**：模板**首行自述标题里点着自己的文件名**（`# <名>.md —— …`）。
+   *     依据：账本正本模板的第一行就是它自己的文件名（`# CONTEXT.md —— 当前工作上下文` 等），
+   *     而参照件/卷母本的自述标题**不是**文件名（`# 质量门禁（Gates）…` · `# 角色簇（Roles）…` ·
+   *     `# TASK —— <一句话标题>` · `# LEDGER-RULES —— …`）。
+   *     ⚠ 这条判法**与 INIT 无关** ⇒ 端 A 与端 B **不同源**，任一侧歪了都会**不等**。
+   *   **判若两端不等 ⇒ 红 + 点名"多的是谁 / 少的是谁"**。
+   *
+   * ⚠ 覆盖面（照实说）：本条只判"**哪些模板该进根**"这一层，⛔ **不判模板内容对不对**
+   *   （内容由 ② 的 sha256 同源判据 + 各模板自己的形态判据管）。
+   */
+  {
+    /** 端 A：从 INIT 的复制语句解析"目标 = 根"的模板名（⚠ 三种写法都收）。 */
+    const parseInitRootCopies = (src) => {
+      const out = new Set()
+      // 写法①：`for f in A B C; do … cp kit/templates/$f.md "$NEW/$f.md"` —— 循环变量展开到根
+      const loopRe = /for\s+f\s+in\s+([^;]+);\s*do\s*\n?\s*cp\s+[^\n]*templates\/\$f\.md\s+"\$NEW\/\$f\.md"/g
+      for (const m of src.matchAll(loopRe)) {
+        for (const tok of m[1].trim().split(/\s+/)) if (tok !== '') out.add(`${tok}.md`)
+      }
+      // 写法②：逐条 `cp kit/templates/<字面名>.md "$NEW/..."` —— 目标必须在根（`$NEW/` 后即文件名）
+      const litRe = /cp\s+[^\n]*templates\/([A-Za-z0-9._-]+\.md)\s+"?\$NEW\/[A-Za-z0-9._-]+\.md"?/g
+      for (const m of src.matchAll(litRe)) out.add(m[1])
+      return [...out].sort()
+    }
+    /** 端 B：模板里"该进根"的那些 —— 首行自述标题点着自己文件名。 */
+    const parseTemplateRootDocs = (dir) => {
+      const names = readdirSync(dir).filter((n) => n.endsWith('.md')).sort()
+      const root = []
+      const nonRoot = []
+      for (const n of names) {
+        let head = ''
+        try { head = readFileSync(join(dir, n), 'utf8').split('\n').slice(0, 5).join('\n') } catch { head = '' }
+        const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const selfTitles = new RegExp(`^#\\s+${esc}\\b`, 'm').test(head)
+        if (selfTitles) root.push(n)
+        else nonRoot.push(n)
+      }
+      return { root, nonRoot, all: names }
+    }
+
+    let initSrcMv = ''
+    try {
+      initSrcMv = readFileSync(join(root, 'kit', 'INIT.md'), 'utf8')
+    } catch {
+      bad('MV **读不到** `kit/INIT.md` ⇒ 端 A 失去基准（**不按通过处理**）')
+    }
+    const tplDir = join(root, 'kit', 'templates')
+    let tplProbe = { root: [], nonRoot: [], all: [] }
+    try {
+      tplProbe = parseTemplateRootDocs(tplDir)
+    } catch {
+      bad('MV **读不到** `kit/templates/` ⇒ 端 B 失去基准（**不按通过处理**）')
+    }
+
+    if (initSrcMv === '') {
+      // 上面已报；本条不再叠一条，避免同一原因两条红
+    } else if (tplProbe.all.length === 0) {
+      bad('MV `kit/templates/` 里一份 `.md` 都读不到 ⇒ 端 B 失去基准（**不按通过处理**）')
+    } else {
+      const initRoot = parseInitRootCopies(initSrcMv)
+      const tplRoot = tplProbe.root.slice().sort()
+      if (initRoot.length === 0) {
+        bad('MV **从 `kit/INIT.md` 的复制语句里抽不到任何"目标为根"的模板名** ⇒ 端 A 失去基准'
+          + '\n      ⇒ ⚠ 抽到 0 项多半是"复制语句换了写法 / 被挪走 / 目标不再是 `$NEW/<名>.md`"'
+          + '\n      ⇒ ⛔ **不许读成"本来就没有模板要复制到根"**（那会让本条永远绿）')
+      } else {
+        const onlyInit = initRoot.filter((n) => !tplRoot.includes(n))
+        const onlyTpl = tplRoot.filter((n) => !initRoot.includes(n))
+        if (onlyInit.length > 0 || onlyTpl.length > 0) {
+          bad(`MV **模板根上文档清单 ≠ INIT 的复制清单**（差 ${onlyInit.length + onlyTpl.length} 项）`
+            + `\n      ⇒ **多的是谁**（INIT 说要复制到根、而模板里它不是"根上文档"）：${onlyInit.join(' · ') || '无'}`
+            + `\n      ⇒ **少的是谁**（模板里是根上文档、而 INIT 没复制它到根）：${onlyTpl.join(' · ') || '无'}`
+            + `\n      ⇒ INIT 复制到根（${initRoot.length}）：${initRoot.join(' · ')}`
+            + `\n      ⇒ 模板根上文档（${tplRoot.length}）：${tplRoot.join(' · ')}`
+            + '\n      ⇒ ⚠ 后果：**新项目初始化会少建 / 多建一份账本，而 `sha256` 同源判据看不出来**'
+            + '（它只认"清单登记的那份 == 仓库那份"，认不出"盘上那份该不该是那样"）'
+            + '\n      ⇒ 修法：让两端一致 —— ⛔ **别改这条判据去迁就现状**')
+        } else {
+          ok(`MV ✓ 模板根上清单 == INIT 复制清单：**${initRoot.length} 份**逐名相等`
+            + `（${initRoot.join(' · ')}）`
+            + ` · 模板另有 ${tplProbe.nonRoot.length} 份非根件：${tplProbe.nonRoot.join(' · ')}`
+            + '（⚠ 参照件/卷母本，去处不是根 —— 由**首行自述标题**判定，与 INIT 无关）')
+        }
       }
     }
   }

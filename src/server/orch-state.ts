@@ -61,7 +61,7 @@
  * ⚠ 本模块**不 import `config.ts`**（同 `hob-write.ts` 的纪律）：
  *   配置由调用方以参数传入，便于独立测试、也避免模块间反向依赖。
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 /** 运行态子目录名（账本目录**之内**、非账本）。 */
@@ -462,6 +462,22 @@ export interface OrchStateReading {
   state: OrchStateFile
   /** ⚠ **"够不到"与"空"就是靠它分开的**（⛔ 不要把它丢掉只留 `state`）。 */
   reachability: StateReachability
+  /**
+   * ── ⚠⚠ **落盘文件里的原始 `version`**（2026-10-24 · 本单必修 7 新增）────────
+   *
+   * ⚠ **为什么必须单独带出来**：{@link narrowOrchState} 的宽容口径会把"版本不认识"
+   *   **静默读成当前版本**（缺字段 / 数字不对 ⇒ 用 {@link ORCH_STATE_VERSION} 填）。
+   *   读侧这么写是对的（旧文件必须读得进），但**写侧不能**顺着它重写：
+   *   ⚠ 那等于把一份"未来/未知结构"的文件**降级成我这一代的结构**并落盘
+   *   ⇒ 丢掉旧版本里我不认识的字段（`P3-①` 点名的形态）。
+   *
+   * ⇒ 本字段只在**真的读到文件**（`reachability === 'ok'`）时给出：
+   *   · `known === true`  —— 文件里的 version 与 {@link ORCH_STATE_VERSION} 一致；
+   *   · `known === false` —— 不认识（`found` 是原值，可能是 `undefined` / 字符串 / 别的数）。
+   * ⚠ **它不参与渲染**（状态行照旧按 `reachability` 四档；⛔ 不给正常档加任何标记）——
+   *   它只服务**写入前的守卫**（{@link readOrchStateForWrite}）。
+   */
+  version?: { found: unknown; known: boolean }
 }
 
 /**
@@ -497,10 +513,16 @@ export function readOrchStateDetailed(file: string): OrchStateReading {
   try {
     const raw = readFileSync(file, 'utf8')
     const parsed: unknown = JSON.parse(raw)
-    if (parsed === null || typeof parsed !== 'object') {
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { state: emptyOrchState(), reachability: 'unreadable' }
     }
-    return { state: narrowOrchState(parsed as Record<string, unknown>), reachability: 'ok' }
+    const o = parsed as Record<string, unknown>
+    return {
+      state: narrowOrchState(o),
+      reachability: 'ok',
+      // ⚠ 原始 version 如实带出（⛔ 不用 `narrowOrchState` 补过默认值的那一份 —— 那就看不出来了）
+      version: { found: o.version, known: o.version === ORCH_STATE_VERSION },
+    }
   } catch {
     // ⚠ 文件在却读不了 / JSON 坏 ⇒ **可读地报出来**（⛔ 不与"没有记录"混）
     return { state: emptyOrchState(), reachability: 'unreadable' }
@@ -791,6 +813,192 @@ export function writeOrchState(file: string, state: OrchStateFile): boolean {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// 写入前的**读盘守卫**：坏文件 / 版本不认识 ⇒ **拒写 + 留证**
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * ⚠⚠ **五个写路径的统一入口**（2026-10-24 · 本单必修 7 · `P3-①`）
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * ── 治的缺陷 ──────────────────────────────────────────────────────────
+ *   五个写函数（{@link recordHandoff} / {@link clearHandoffs} / {@link bindSession} /
+ *   {@link writePending} / {@link markLostInner}）都是"**读 → 改 → 写**"，
+ *   而"读"用的是 {@link readOrchState} —— 它的**宽容口径**把三件事读成同一个空态：
+ *     · 文件真的还不存在（`ENOENT`）         —— 正常，"首次"；
+ *     · 文件在、**读不了 / JSON 坏**         —— **危险**；
+ *     · 文件在、**version 不认识**            —— **危险**。
+ *   ⇒ 改前后果（`P3-①`）：
+ *     后两种**照旧被当成空态**，然后 `writeOrchState` 把空态 + 本次改动**整份落盘**
+ *     ⇒ ⚠ **一场坏 JSON / 一次版本漂移，就把盘上所有 pending / lost / handoffs / sessions
+ *       一次性清空**，而五个函数都只是回 `wrote: true`。这就是"坏 JSON 清空"与
+ *     "未知 version 静默降级重写"两条缺陷的同一处病根。
+ *
+ * ── 现在的判据（三档，⛔ 不许合并）───────────────────────────────────────
+ *   · `ok`            —— 照旧走（读到的就是盘上那份）；
+ *   · `no-records-yet` / `ledger-unreachable`（文件不存在）—— 照旧走（**首次创建**是正当路径）；
+ *   · `unreadable` / `version-unknown` —— **拒写**，并把坏文件**另存一份留证**
+ *     （`<file>.corrupt-<ts>`）。
+ *
+ * ⚠ ⚠ **为什么"留证"是必须的，不是锦上添花**：拒写之后，下一次写入仍会拒
+ *   （文件还是坏的）⇒ 若不在第一次就把**原字节**留一份，运维想修就只能靠猜，
+ *   而"拒写"会表现为"这个功能永远不记账"。留证让"盘上到底写坏了什么"可复核。
+ * ⚠ **另存用复制而非改名**（`copyFileSync`）：⛔ 不动原文件 —— 原文件保持可读，
+ *   `hob_orch_status` 的 `unreadable` 那一档**照旧报得出来**（改名会让它变成
+ *   "没有记录"，那是把一种假信号换成另一种）。
+ *
+ * ⚠ **同一份坏文件只留证一次**（按"已留过"判：`<file>.corrupt-*` 里已经有一份与它
+ *   字节相同的就不再复制）—— 否则每轮对账都会堆一份，把运行态目录撑爆。
+ */
+export type OrchWriteGuard =
+  | { ok: true; reading: OrchStateReading }
+  | { ok: false; reason: 'store-unreadable' | 'version-unknown'; message: string; evidence?: string }
+
+/** 一次写入前守卫的**判据**（见 {@link readOrchStateForWrite} 的注释）。 */
+export function readOrchStateForWrite(file: string): OrchWriteGuard {
+  const reading = readOrchStateDetailed(file)
+  if (reading.reachability === 'unreadable') {
+    const evidence = preserveCorruptCopy(file)
+    return {
+      ok: false,
+      reason: 'store-unreadable',
+      message: `拒绝写入：运行态文件 \`${file}\` **读不了 / 不是合法 JSON**`
+        + '（账本根在、文件也在）。'
+        + '\n      ⚠ 此时按空态重写会**把这个文件里原有的 pending / lost / handoffs / sessions 全部清空**，'
+        + '而调用方只会看到"写成功" ⇒ 本函数**拒写**。'
+        + (evidence === undefined
+          ? '\n      ⚠ 留证副本没能生成（见上一条原因）—— 请人工备份后修 / 删该文件。'
+          : `\n      ↳ 原字节已另存一份留证：\`${evidence}\`（⛔ 原文件一个字节都没动）`)
+        + '\n      ⇒ 处置：人工检查该 JSON（或删掉它让运行态从空重建），然后再重试。',
+      ...(evidence === undefined ? {} : { evidence }),
+    }
+  }
+  if (reading.version !== undefined && !reading.version.known) {
+    const evidence = preserveCorruptCopy(file)
+    /**
+     * ⚠ **"没有 version 字段"与"version 是别的值"要分开说**（两种成因，修法不同）：
+     *   · 没有 ⇒ 这份文件**不是本模块写的**（本模块从第一天起就写 version）⇒ 先查是谁写的；
+     *   · 是别的值 ⇒ **跨版本**（升级 / 降级 / 手工改）⇒ 先查版本再决定迁移。
+     *   ⚠ 两者都**拒写**（都不许"当自己这一代"重写），但话术不许合成一句。
+     */
+    const shown = reading.version.found === undefined
+      ? '文件里**没有** `version` 字段（不是本模块写的？）'
+      : `文件里是 ${JSON.stringify(reading.version.found)}`
+    return {
+      ok: false,
+      reason: 'version-unknown',
+      message: `拒绝写入：运行态文件 \`${file}\` 的**结构版本不认识**`
+        + `（${shown}；本插件只认 ${ORCH_STATE_VERSION}）。`
+        + '\n      ⚠ 按"不认识就当我这一代"重写 = **静默降级**：旧/新版本里本代不认识的字段会被丢掉，'
+        + '而盘上那份数据再也回不来（`P3-①` 点名的形态）⇒ 本函数**拒写**。'
+        + (evidence === undefined ? '' : `\n      ↳ 原字节已另存一份留证：\`${evidence}\``)
+        + '\n      ⇒ 处置：确认该版本由谁写（升级 / 降级 / 手工改），再决定迁移，⛔ 不要靠重写"修好"它。',
+      ...(evidence === undefined ? {} : { evidence }),
+    }
+  }
+  return { ok: true, reading }
+}
+
+/**
+ * 把"读不了 / 版本不认识"的运行态文件**原字节另存一份**留证。
+ *
+ * @returns 留证文件的路径；**没能留证**时 `undefined`（⚠ 调用方必须把这件事说出来 —— 见下）。
+ *
+ * ⚠ **为什么不抛**：留证失败不该把"拒写"变成"崩溃"（拒写本身已经是安全的方向）。
+ *   ⚠ 但⛔ 不许静默：{@link readOrchStateForWrite} 会把"没能留证"写进 message。
+ * ⚠ **去重**：同目录下已有的 `*.corrupt-*` 里若有一份与当前字节相同 ⇒ **不再复制**
+ *   （否则每轮对账都堆一份；留证是给"这一次写坏"用的，不是审计流水）。
+ */
+function preserveCorruptCopy(file: string): string | undefined {
+  try {
+    const dir = dirname(file)
+    const base = file.slice(dir.length + 1)
+    const prefix = `${base}.corrupt-`
+    let bytes: Buffer
+    try {
+      bytes = readFileSync(file)
+    } catch {
+      /** ⚠ 连原字节都读不出来（EACCES）⇒ 留证做不到；由调用方在 message 里说清。 */
+      return undefined
+    }
+    try {
+      for (const n of readdirSync(dir)) {
+        if (!n.startsWith(prefix)) continue
+        try {
+          if (readFileSync(join(dir, n)).equals(bytes)) return join(dir, n)
+        } catch { /* 那份读不到 ⇒ 继续找 */ }
+      }
+    } catch { /* 目录列不出来 ⇒ 直接新建一份（下面会失败并如实返回 undefined） */ }
+    const ts = new Date().toISOString().replace(/[:.]/g, '-')
+    const dest = join(dir, `${prefix}${ts}`)
+    copyFileSync(file, dest)
+    return dest
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * ── **拒写原因**的登记处（2026-10-24 · 本单必修 7 的"回可读原因"那一半）──────────
+ *
+ * ⚠ ⚠ **为什么需要它**：五个写函数的返回形状是**既有契约**（`boolean` 或
+ *   `{ wrote, state }`…），而调用方全都在 `src/modules/**`（本单**不许改**）。
+ *   ⇒ 拒写原因**不能塞进返回值的新字段里让调用方去读**（没人读 = 又是静默）；
+ *   也不能为了回一句原因就把 `boolean` 改成对象（`if (!writePending(…))` 会
+ *   把"真值对象"读成成功 —— 那是**更坏**的缺陷）。
+ *   ⇒ 用一张**按文件 keyed 的登记表**：拒写时登记"为什么 / 证据在哪 / 什么时候"，
+ *     由**读数面**（`hob_orch_status` 那一侧 / 机检）按文件查。
+ *
+ * ⚠ **它不是运行态数据**：只在**本进程内存**里（进程重载即清零）——
+ *   拒写这件事本来就该在**下一次读数**里被看见；落盘会引入"写不进去还要写"的坑（同丙-1）。
+ * ⚠ **成功写入会清掉该文件的登记**（"上一次拒了、这一次成了"不许一直挂着旧原因）。
+ */
+export interface OrchWriteRefusal {
+  /** `store-unreadable` = 读不了 / 坏 JSON；`version-unknown` = 结构版本不认识。 */
+  reason: 'store-unreadable' | 'version-unknown'
+  /** 给人读的一整段（含处置建议）。 */
+  message: string
+  /** 另存的留证副本路径（没能留证 ⇒ 缺省，message 里会说明）。 */
+  evidence?: string
+  /** 拒写时刻（毫秒）。 */
+  at: number
+}
+
+const writeRefusals = new Map<string, OrchWriteRefusal>()
+
+/** 读**某个文件最近一次拒写**的原因（没有 ⇒ `undefined`）。 */
+export function orchWriteRefusalOf(file: string): OrchWriteRefusal | undefined {
+  return writeRefusals.get(file)
+}
+
+/** 全部登记（供读数面 / 机检一次性取；⚠ 返回副本，外部改不到内部表）。 */
+export function orchWriteRefusals(): Array<{ file: string } & OrchWriteRefusal> {
+  return [...writeRefusals.entries()].map(([file, r]) => ({ file, ...r }))
+}
+
+/**
+ * 登记 / 清掉一次拒写（写入成功时清 —— 见 {@link OrchWriteRefusal} 的末条）。
+ *
+ * @returns 登记的那条**拒写原因**（成功 ⇒ `undefined`）。⚠ 有返回值的意义：那几个
+ *   "返回对象"的写函数把它**同时**放进自己的返回值（`refusal` 字段）——
+ *   既有的 `wrote` / `state` / `binding` 一个不动，读的人不必再去查登记表。
+ */
+function noteWriteOutcome(file: string, g: OrchWriteGuard): OrchWriteRefusal | undefined {
+  if (g.ok) {
+    writeRefusals.delete(file)
+    return undefined
+  }
+  const rec: OrchWriteRefusal = {
+    reason: g.reason,
+    message: g.message,
+    ...(g.evidence === undefined ? {} : { evidence: g.evidence }),
+    at: Date.now(),
+  }
+  writeRefusals.set(file, rec)
+  return rec
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // 运行态目录的**自忽略**（运行态不进账本历史）
 // ══════════════════════════════════════════════════════════════════════
 
@@ -859,6 +1067,12 @@ export interface MarkLostResult {
   state: OrchStateFile
   /** 是否真的写盘了。 */
   wrote: boolean
+  /**
+   * ⚠ **拒写原因**（2026-10-24 · 本单必修 7 新增；可选）：坏 JSON / 版本不认识 ⇒
+   *   `wrote: false` 且**一条都没挪、一条都没删**。⚠ 此时 `state` 是**空态** ——
+   *   ⛔ 不许当成"盘上真的空"来读（这正是空态与"读不出来"必须分开的地方）。
+   */
+  refusal?: OrchWriteRefusal
 }
 
 /**
@@ -1003,7 +1217,26 @@ function markLostInner(
   known: (w: PersistedWatch) => boolean,
   statusOf?: TargetStatusOf,
 ): MarkLostResult {
-  const state = readOrchState(file)
+  /**
+   * ⚠⚠ **读盘守卫（本单必修 7）**：坏 JSON / 版本不认识 ⇒ **拒写**（`wrote: false`）+ 留证。
+   *
+   * 改前：坏文件读成空态 ⇒ `state.pending` 为空 ⇒ `unknown.length === 0` ⇒ 直接早退，
+   *   看起来"什么都没发生"（还算安全）；⚠ 但这个函数的调用方是**对账**，
+   *   它同时会用空态去判"盘上还有什么" ⇒ **读数与写盘都建立在空态上**。
+   *   ⇒ 现在明确拒写：**一条都不挪、一条都不删**，并且原因可查（`orchWriteRefusalOf`）。
+   * ⚠ 返回 `state` 仍是空态（既有形状不变）——⛔ 不许当成"盘上真的空"来读；
+   *   辨认方法是 `wrote: false` + `orchWriteRefusalOf(file) !== undefined`。
+   */
+  const guard = readOrchStateForWrite(file)
+  if (!guard.ok) {
+    const refusal = noteWriteOutcome(file, guard)
+    return {
+      lost: [], reattach: [], unresolved: [], stuck: [], state: emptyOrchState(), wrote: false,
+      ...(refusal === undefined ? {} : { refusal }),
+    }
+  }
+  noteWriteOutcome(file, guard)
+  const state = guard.reading.state
   const unknown = state.pending.filter((w) => !known(w))
   if (unknown.length === 0) return { lost: [], reattach: [], unresolved: [], stuck: [], state, wrote: false }
 
@@ -1198,8 +1431,22 @@ export function writePending(
 ): boolean {
   /** ⚠ **丙-5**：整段「读回既有 → 组装 → 写」进单写者队列。 */
   return runSerialized(() => {
-  // 读回既有 handoffs / sessions（读不到 ⇒ 空数组，与 `readOrchState` 的宽容口径一致）。
-  const prev = readOrchState(file)
+  /**
+   * ⚠⚠ **读盘守卫（本单必修 7）**：坏 JSON / 版本不认识 ⇒ **拒写**，⛔ 不按空态重写。
+   *
+   * 改前这里用 {@link readOrchState}：坏文件被读成空态 ⇒ 下面组装出来的 `state`
+   *   里 `handoffs` / `sessions` **全是空数组** ⇒ 一落盘就把盘上那两摞清空，
+   *   而本函数只回 `true`（调用方以为记上了）。⇒ 现在先过 {@link readOrchStateForWrite}。
+   * ⚠ **"文件还不存在"照旧放行**（首次创建是正当路径）：守卫只拦 `unreadable` /
+   *   `version-unknown` 两档 —— 这两档的共同点是"**盘上有东西、但我读不懂它**"。
+   */
+  const guard = readOrchStateForWrite(file)
+  if (!guard.ok) {
+    noteWriteOutcome(file, guard)
+    return false
+  }
+  noteWriteOutcome(file, guard)
+  const prev = guard.reading.state
   const state: OrchStateFile = {
     version: ORCH_STATE_VERSION,
     updatedAt: Date.now(),
@@ -1239,6 +1486,15 @@ export interface HandoffWriteResult {
   wrote: boolean
   /** 落盘后的完整状态。 */
   state: OrchStateFile
+  /**
+   * ── ⚠ **拒写原因**（2026-10-24 · 本单必修 7 新增；**可选**）───────────────────
+   *
+   * ⚠ 只有"盘上有东西、但读不懂它"（坏 JSON / 版本不认识）时才有值 —— 此时
+   *   `wrote: false`，而**为什么**必须能读到（⛔ 不许让调用方自己去猜"是没匹配还是读坏了"）。
+   * ⚠ **向后兼容**：既有字段（`wrote` / `state`）名字与语义一个字未改，
+   *   旧调用方读 `wrote` 照旧；新增的只是这一个**可选**字段。
+   */
+  refusal?: OrchWriteRefusal
 }
 
 /**
@@ -1254,8 +1510,20 @@ export interface HandoffWriteResult {
 export function recordHandoff(file: string, h: PersistedHandoff): HandoffWriteResult {
   /** ⚠ **丙-5**：整段「读 → 改 → 写」进单写者队列（队列内**重新读盘** ⇒ 不用过期快照写）。 */
   return runSerialized(() => {
+    /**
+     * ⚠⚠ **读盘守卫（本单必修 7）**：坏 JSON / 版本不认识 ⇒ 拒写 + 留证。
+     *   改前坏文件被读成空态 ⇒ `rest` 为空 ⇒ 本次落盘把**盘上那 50 条待投递清成这 1 条**。
+     *   ⚠ 拒写时 `wrote: false` + `state` 给**空态**（既有形状不变：调用方只看 `wrote`；
+     *     ⛔ 不许把空态冒充成"读到的现状" —— 原因在 `orchWriteRefusalOf(file)` 里）。
+     */
+    const guard = readOrchStateForWrite(file)
+    if (!guard.ok) {
+      const refusal = noteWriteOutcome(file, guard)
+      return { wrote: false, state: emptyOrchState(), ...(refusal === undefined ? {} : { refusal }) }
+    }
+    noteWriteOutcome(file, guard)
     // ⚠ `sessions`（绑定表）由 `writeOrchState` 原样带着 —— 本函数只动 `handoffs`。
-    const state = readOrchState(file)
+    const state = guard.reading.state
     const rest = state.handoffs.filter((x) => !(x.kind === h.kind && x.ref === h.ref))
     // 新的在前；超过上限丢最老的（运行态，不是审计留档）。
     state.handoffs = [h, ...rest].slice(0, MAX_HANDOFFS)
@@ -1278,11 +1546,30 @@ export function recordHandoff(file: string, h: PersistedHandoff): HandoffWriteRe
 export function clearHandoffs(
   file: string,
   match: (h: PersistedHandoff) => boolean,
-): { cleared: PersistedHandoff[]; wrote: boolean; state: OrchStateFile } {
+): {
+  cleared: PersistedHandoff[]
+  wrote: boolean
+  state: OrchStateFile
+  /** ⚠ 拒写原因（坏 JSON / 版本不认识时才有；见 {@link HandoffWriteResult.refusal}）。 */
+  refusal?: OrchWriteRefusal
+} {
   /** ⚠ **丙-5**：整段「读 → 改 → 写」进单写者队列（同 `recordHandoff` 的理由）。 */
   return runSerialized(() => {
+    /**
+     * ⚠⚠ **读盘守卫（本单必修 7）**：坏 JSON / 版本不认识 ⇒ 拒写 + 留证。
+     *   改前坏文件读成空态 ⇒ `cleared` 为空 ⇒ 回 `{ cleared: [], wrote: false }`，
+     *   读的人会把它当成"没有匹配项（= 早就投出去了）"—— 而真相是**读不出来**。
+     *   ⇒ 现在同样回 `wrote: false`（既有形状不变），但**原因登记在
+     *     `orchWriteRefusalOf(file)`**，读数面能说清是哪一种。
+     */
+    const guard = readOrchStateForWrite(file)
+    if (!guard.ok) {
+      const refusal = noteWriteOutcome(file, guard)
+      return { cleared: [], wrote: false, state: emptyOrchState(), ...(refusal === undefined ? {} : { refusal }) }
+    }
+    noteWriteOutcome(file, guard)
     // ⚠ `sessions`（绑定表）同理原样保留 —— 清待投递⛔ 不许把归属也清掉。
-    const state = readOrchState(file)
+    const state = guard.reading.state
     const cleared = state.handoffs.filter(match)
     if (cleared.length === 0) return { cleared: [], wrote: false, state }
     state.handoffs = state.handoffs.filter((h) => !match(h))
@@ -1307,6 +1594,12 @@ export interface BindSessionResult {
    *   改绑必须显式报错并说明理由。
    */
   conflict?: { existing: PersistedSessionBinding; wantedOwner: string }
+  /**
+   * ⚠ **拒写原因**（2026-10-24 · 本单必修 7 新增；可选）：坏 JSON / 版本不认识 ⇒ `wrote: false`。
+   *   ⚠ 此时**没有** `binding`（读不出来就没有"结果态"——⛔ 不替盘上那份编一个归属）、
+   *   **也没有** `conflict`（我看不到任何东西，"别人绑着"这句话此刻无从说起）。
+   */
+  refusal?: OrchWriteRefusal
 }
 
 /**
@@ -1328,7 +1621,21 @@ export function bindSession(
   if (typeof b.owner !== 'string' || b.owner === '') return { wrote: false }
   /** ⚠ **丙-5**：入参校验在队列之外（不碰盘），「读 → 改 → 写」在队列之内。 */
   return runSerialized(() => {
-    const state = readOrchState(file)
+    /**
+     * ⚠⚠ **读盘守卫（本单必修 7）**：坏 JSON / 版本不认识 ⇒ 拒写 + 留证。
+     *   改前坏文件读成空态 ⇒ "这个会话还没有归属"⇒ **重新绑一次**（而盘上可能早就绑给
+     *   别人了）⇒ 回执投错人；且本次落盘会把**整张绑定表**清成这一条。
+     *   ⚠ 现在回 `{ wrote: false }`（⛔ **不带 `binding`**：读不出来就**没有**"结果态"，
+     *     给一个等于替盘上那份编一个归属 —— `I-6` 明令 ⛔ 不猜 owner）。
+     *   ⚠ 也⛔ **不报 `conflict`**：那是"我看到别人绑着"，此刻我看不到任何东西。
+     */
+    const guard = readOrchStateForWrite(file)
+    if (!guard.ok) {
+      const refusal = noteWriteOutcome(file, guard)
+      return { wrote: false, ...(refusal === undefined ? {} : { refusal }) }
+    }
+    noteWriteOutcome(file, guard)
+    const state = guard.reading.state
     const existing = state.sessions.find((x) => x.sessionId === b.sessionId)
     if (existing !== undefined) {
       if (existing.owner === b.owner) return { wrote: false, binding: existing }

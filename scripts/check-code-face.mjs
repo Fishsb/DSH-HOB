@@ -12,7 +12,16 @@ import { fileURLToPath } from 'node:url'
 import { workspaceName } from './workspace-name.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const root = join(here, '..')
+/**
+ * ⚠ **源码根可被 `HOB_CF_ROOT` 指向一份临时副本**（负向对拍用：把 `hob-write.ts` 回退成
+ *   改前的 `catch { exists = false }`，确认 H7 **会红**而不是恒绿）。
+ * ⚠ 与 `check:orch` 的 `HOB_SA_ROOT` / `check:policy` 的 `HOB_SP_ROOT` /
+ *   `HOB_DOM_ROOT` / `HOB_GATE_ROOT` **同一约定**（⛔ 不另造开关名）。
+ * ⚠ 它就是本文件的 `root`，所以**所有** join(root, …) 自动跟着走（含 skeleton 清单核对）。
+ */
+const root = process.env.HOB_CF_ROOT !== undefined && process.env.HOB_CF_ROOT !== ''
+  ? process.env.HOB_CF_ROOT
+  : join(here, '..')
 
 const ZERO_WIDTH_RE = /[\u200B\uFEFF\u200E\u200F]/
 
@@ -498,18 +507,298 @@ export async function runRender({ bad, ok }) {
         // ── H6 **幂等保住**：同一份含标记的输入写两次 ⇒ 第二次 skipped ──
         //   ⚠ 这条是本轮**最容易悄悄破的**：渲染若排在幂等比对**之后**，
         //     "标记原文"永远不等于"存量里的实值" ⇒ 每次写都"有变化"，幂等跳过失效。
+        //   ⚠ 2026-10-22：载体从 `USER-DECISIONS.md`（已退役、现在会被 `retired-historical` 拒）
+        //     改为 `REQUIREMENTS.md` —— 本组验的是**渲染与幂等的先后**，与哪个文件无关；
+        //     ⚠ 但新根有自己的形状判据（必须是地图）⇒ 内容里带一行指向卷条目的表格，
+        //     否则会先被 `bad-format` 挡在门外、验不到幂等（那是另一条断言的地盘）。
         {
-          const c = '共 <!-- hob:count | templates --> 份\n'
-          const r1 = await writeHobFile(dir, { file: 'USER-DECISIONS.md', content: c, mode: 'overwrite' }, opts)
-          const r2 = await writeHobFile(dir, { file: 'USER-DECISIONS.md', content: c, mode: 'overwrite' }, opts)
+          const c = '共 <!-- hob:count | templates --> 份\n\n| 编号 | 条目 |\n|---|---|\n| REQ-01 | `volumes/requirements/REQ-01.md` |\n'
+          const r1 = await writeHobFile(dir, { file: 'REQUIREMENTS.md', content: c, mode: 'overwrite' }, opts)
+          const r2 = await writeHobFile(dir, { file: 'REQUIREMENTS.md', content: c, mode: 'overwrite' }, opts)
           let disk = ''
-          try { disk = readFileSync(join(dir, 'USER-DECISIONS.md'), 'utf8') } catch { disk = '' }
+          try { disk = readFileSync(join(dir, 'REQUIREMENTS.md'), 'utf8') } catch { disk = '' }
           if (r1.ok === true && r2.action === 'skipped' && r2.reason === 'idempotent' && disk.trim().startsWith('共 ')) {
             ok('H6 ✓ 幂等保住：同一份**含标记**的输入写两次 ⇒ 第二次 `skipped`（渲染**先于**幂等比对）'
               + ' —— 否则幂等跳过失效、备份被反复刷屏')
           } else {
             bad(`H6 幂等被破坏：第一次=${r1.action} 第二次=${r2.action}/${r2.reason} 盘上=${JSON.stringify(disk)}`
               + ' ⇒ 渲染顺序错了（必须先渲染、再比对），这是本轮的**停手条件①**')
+          }
+        }
+        // ── H7 **读不出来 ≠ 文件不存在 ⇒ 拒写且原文不变**（2026-10-24 · t10 补）──
+        /**
+         * ══ 它守的是 A 席修的那条最严重的**假读数**（审查席实测：零判据覆盖）══════
+         *   改前 `hob-write.ts` 写的是 `try { existing = await readFile(…) } catch { exists = false }`
+         *   —— `catch` 把**一切**读取失败都读成"文件不存在"：
+         *     · `append` 于是用**空 `existing`** 拼内容 ⇒ **整本账本被这一条顶掉**，
+         *       而且返回值仍是 `ok:true` / `bytesBefore:0`（实测 200KB 账本被覆盖）；
+         *     · `overwrite` 于是跳过缩水守卫与幂等比对（两者都以 `exists` 为前提）；
+         *     · `backup()` 同理不备份。
+         *   修法：三态 `readTarget()` —— 只有 `missing` 才当首次创建，`error` 当场 `read-failed`。
+         *
+         * ── 判据（四条，缺一条就是"只修了一半"）──────────────────────────────
+         *   ① `ok === false`（⛔ 不许报成功）；
+         *   ② `reason === 'read-failed'`（**与 `write-failed` 分开**：修法完全不同）；
+         *   ③ **盘上原文一个字没变**（⚠ 这是最要紧的一条：改前会被覆盖成空 + 这一条）；
+         *   ④ 拒因**可读**（必须说清"这不是文件不存在"）—— 否则下一个人会照着
+         *      `exists=false` 的老思路去查。
+         *
+         * ── 怎么造"读不出来"（⚠ 可移植，不靠 chmod）────────────────────────────
+         *   **把一个目录放到目标路径上**：`readFile(<目录>)` ⇒ POSIX 上 `EISDIR`，
+         *   Windows 上 `EISDIR`/`EPERM` —— 两边都是"**路径在、但读不出内容**"，
+         *   正是本判据要的那个形态。⛔ 不用 `chmod 000`（root 跑就失效、CI 上不可靠）。
+         *
+         * ── 负向对拍（⚠ 改前是什么样，这里如实示范）──────────────────────────
+         *   把 `read.kind === 'error'` 那一支删掉（= 改前 `catch { exists = false }`）⇒
+         *   `append` 会用空 `existing` 拼内容 ⇒ 盘上那条**用户原有的内容被顶掉** ⇒ ③ 红。
+         *   ⚠ 本组**不断言"改前会红"**（改前的代码已经不在了），而是断言**现在必须有**这四条。
+         */
+        {
+          const DirCase = join(dir, 'hob-read-failed-case')
+          try {
+            /**
+             * ⚠ 造形态：`hob-read-failed-case/CONTEXT.md` 是**目录**（不是文件）。
+             *   把一条"看起来像账本内容"的东西放进去，好证明"没有把目录内容当原文"。
+             */
+            mkdirSync(join(DirCase, 'CONTEXT.md'), { recursive: true })
+            writeFileSync(join(DirCase, 'CONTEXT.md', 'decoy.md'), '这是目录里的诱饵，⛔ 不是账本原文', 'utf8')
+            /**
+             * ⚠ `append` 是最危险的一支（改前会把整本覆盖成"这一条"）——
+             *   所以正例就用 `append`。
+             */
+            const r = await writeHobFile(DirCase, {
+              file: 'CONTEXT.md', content: '# 新内容\n', mode: 'append',
+            }, opts)
+            /** ③ 盘上"原文"—— 目标仍应是那个目录，且里面只剩诱饵（⛔ 没被写成文件）。 */
+            const stillDir = (() => {
+              try { return readdirSync(join(DirCase, 'CONTEXT.md')).join(',') } catch { return null }
+            })()
+            const msg = String(r?.message ?? '')
+            if (r?.ok !== false) {
+              bad(`H7 ⚠⚠ **读不出来时仍然报成功**（ok=${r?.ok} · action=${r?.action}）`
+                + ' ⇒ 这正是改前那条假读数：`catch { exists = false }` 把"读不出"当成"不存在"'
+                + ' ⇒ `append` 会用空 existing 拼内容，**整本账本被这一条顶掉**')
+            } else if (r?.reason !== 'read-failed') {
+              bad(`H7 拒了但 reason=${JSON.stringify(r?.reason)}（应 \`read-failed\`）`
+                + ' ⇒ ⚠ 与 `write-failed` 混在一起了：这两种的修法完全不同（一个查读权限/路径，一个查写权限/磁盘）')
+            } else if (stillDir !== 'decoy.md') {
+              bad(`H7 ⚠⚠ **拒写之后盘上被改动了**（\`CONTEXT.md\` 现在的内容 = ${JSON.stringify(stillDir)}）`
+                + ' ⇒ 拒绝必须是**零副作用**：原文一个字都不许动（改前正是"覆盖成这一条还报成功"）')
+            } else if (!/读不出来|读不到|不是.*不存在|EISDIR/i.test(msg)) {
+              bad(`H7 拒因不可读（应说清"这不是文件不存在"）：${JSON.stringify(msg.slice(0, 160))}`
+                + ' ⇒ ⚠ 下一个人会照着旧的 `exists=false` 思路去查，永远查不到真原因')
+            } else {
+              ok('H7 ✓ **读不出来 ⇒ 拒写（`read-failed`）且原文一字未动**：'
+                + '目标是个目录（`EISDIR` 形态）· `ok:false` · `reason=read-failed` · '
+                + '`CONTEXT.md` 仍是那个目录、诱饵还在（⛔ 没被覆盖成"这一条"）· 拒因指明"这不是文件不存在"'
+                + '（⚠ A 席那条最严重的假读数现在有判据守着了）')
+            }
+          } catch (e) {
+            bad(`H7 用例本身抛错（${String(e?.message ?? e)}）⇒ 不按通过处理（⛔ 跑不起来 ≠ 通过）`)
+          }
+        }
+        // ── H8 **并发队列：同一文件的两次交叠 append 不许互相顶掉**（t11 补）──
+        /**
+         * ══ 它守的是什么（审查席实测：**6 族全绿而行为真丢数据**）══════════════
+         *   `writeHobFile` 外面套了一层**同进程按路径排队**（`withFileQueue`）。
+         *   去掉它以后：两次并发 `append` 各自读到**同一份旧内容**、各自拼上自己那一条、
+         *   后写的那份把先写的**整本顶掉** —— 而**两次都回 `ok:true`**。
+         *   审查席实测读数：`okA=false, 100001 字节, hasA=false`（A 那条**永久消失**）。
+         *
+         * ── 判据（⚠ 必须真并发，⛔ 不许顺序写两次充数）────────────────────────
+         *   `Promise.all([append A, append B])` —— 这才是"交叠"的形态：
+         *     · 两次都 `ok === true`；
+         *     · 盘上**两条都在**（A 那条不丢）；
+         *     · 字节数 > 单条（证明没有互相截断）。
+         *   ⚠ 顺序写两次**测不到**这件事（第二次会读到第一次的结果）——
+         *     所以这里**必须** `Promise.all`。
+         */
+        {
+          const qdir = mkdtempSync(join(tmpdir(), 'hob-queue-'))
+          try {
+            const big = 'x'.repeat(100000)
+            const A = '# 甲\n' + big + '\n'
+            const B = '# 乙\n' + big + '\n'
+            /** ⚠ `Promise.all`（真并发）：两个调用在同一 tick 里进入，必然交叠读。 */
+            const [ra, rb] = await Promise.all([
+              writeHobFile(qdir, { file: 'CONTEXT.md', content: A, mode: 'append' }, opts),
+              writeHobFile(qdir, { file: 'CONTEXT.md', content: B, mode: 'append' }, opts),
+            ])
+            let disk = ''
+            try { disk = readFileSync(join(qdir, 'CONTEXT.md'), 'utf8') } catch { disk = '' }
+            const hasA = disk.includes('# 甲')
+            const hasB = disk.includes('# 乙')
+            if (ra?.ok !== true || rb?.ok !== true) {
+              bad(`H8 并发 append 有调用**报失败**：A.ok=${ra?.ok}(${String(ra?.reason ?? '-')}) · B.ok=${rb?.ok}(${String(rb?.reason ?? '-')})`
+                + ' ⇒ 同一文件的两次写不该互相拖垮')
+            } else if (!hasA || !hasB) {
+              bad(`H8 ⚠⚠ **并发 append 丢数据**：盘上 甲=${hasA} · 乙=${hasB}（字节=${disk.length}）`
+                + '\n      ⇒ 这正是去掉 `withFileQueue` 的形态：两次读同一份旧内容、后写顶掉先写，'
+                + '**而两次都回 ok:true**（审查席实测 okA=false/100001 字节/hasA=false）')
+            } else if (disk.length < A.length + B.length - 100) {
+              bad(`H8 并发 append 被截断：盘上 ${disk.length} 字节，两次内容合计约 ${A.length + B.length}`
+                + ' ⇒ 有一条被顶掉了一半')
+            } else {
+              ok('H8 ✓ **同一文件的并发 append 不丢数据**：`Promise.all` 两次交叠写 ⇒ 两次都 `ok:true`、'
+                + `盘上**甲与乙都在**（${disk.length} 字节）⇒ 同进程按路径排队在位 `
+                + '（⚠ 去掉 `withFileQueue` 时本条会红：后写的那份把先写的整本顶掉）')
+            }
+          } finally {
+            try { rmSync(qdir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+          }
+        }
+
+        // ── H9 **mode 保留：覆盖写不许改掉原文件的权限位**（t11 补）──
+        /**
+         * ══ 它守的是什么（审查席实测：全绿）════════════════════════════════════
+         *   `atomicWriteWithMode` 会在 rename **之前**把原文件的 `mode & 0o777` chmod 到
+         *   临时件上。去掉那段 ⇒ 覆盖后权限被重置成系统默认（实测 `600 → 644`）
+         *   —— 对"用户特意设成 600 的账本"是**权限被悄悄放宽**。
+         *
+         * ── 判据 ──────────────────────────────────────────────────────────
+         *   建一个 `0o600` 的文件 → 覆盖写 → **仍是 `0o600`**。
+         *   ⚠ 用 `chmodSync` 显式造 600（⛔ 不依赖 umask / 默认值 —— 那在不同环境会漂）。
+         */
+        {
+          const mdir = mkdtempSync(join(tmpdir(), 'hob-mode-'))
+          try {
+            const f = join(mdir, 'CONTEXT.md')
+            writeFileSync(f, '# 旧\n', 'utf8')
+            const { chmodSync, statSync } = await import('node:fs')
+            chmodSync(f, 0o600)
+            const before = statSync(f).mode & 0o777
+            const r = await writeHobFile(mdir, { file: 'CONTEXT.md', content: '# 新内容\n', mode: 'overwrite' }, opts)
+            const after = (() => { try { return statSync(f).mode & 0o777 } catch { return -1 } })()
+            if (r?.ok !== true) {
+              bad(`H9 覆盖写失败（${String(r?.reason ?? '-')}）⇒ 本组失去读数`)
+            } else if (before !== 0o600) {
+              bad(`H9 前置不成立：造出来的文件 mode = 0o${before.toString(8)}（应 0o600）`)
+            } else if (after !== 0o600) {
+              bad(`H9 ⚠ **覆盖写把权限位改掉了**：0o600 ⇒ 0o${after.toString(8)}`
+                + ' ⇒ 用户特意收紧的账本权限被悄悄放宽（改前实测 600 → 644）')
+            } else {
+              ok('H9 ✓ **覆盖写保留原文件权限位**：`0o600` 的文件覆盖后仍是 `0o600`'
+                + '（⚠ 去掉 chmod-在-rename-之前那段时，本条会红：权限会被重置成系统默认）')
+            }
+          } finally {
+            try { rmSync(mdir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+          }
+        }
+
+        // ── H10 **同内容标记各替换各的（按偏移消费，⛔ 不 `indexOf(raw)`）**（t11 补）──
+        /**
+         * ══ 它守的是什么（审查席实测：全绿；上轮已报未补）══════════════════════
+         *   `hob-render.ts` 改前用 `line.indexOf(h.raw)` 定位每处标记。同一行出现**两个
+         *   内容完全相同**的标记时，两次 `indexOf` **都指到第一处**：
+         *     · 第一处被替换两次（值只变一次）；
+         *     · **第二处原样留在盘上**；
+         *     · 而 `rendered` 仍记两条、写入 `ok:true` ⇒ **正文写坏了、读数说渲染成功**。
+         *   修法：只用 `scanMarkers` 给的 `start/end`（`matchAll` 的唯一来源）。
+         *
+         * ── 判据（⚠ 造"同一行两个同内容标记"的形态）──────────────────────────
+         *   · 盘上**一个 `<!-- hob:` 都不剩**（两处都渲染了）；
+         *   · 两个位置的值**都对**（不是同一处被替换两次）。
+         *   ⚠ 回购 `indexOf(h.raw)` ⇒ 第二处残留 ⇒ 本条红。
+         */
+        {
+          const rdir = mkdtempSync(join(tmpdir(), 'hob-offset-'))
+          try {
+            mkdirSync(join(rdir, 'templates'), { recursive: true })
+            for (let k = 0; k < 3; k += 1) writeFileSync(join(rdir, 'templates', `t${k}.md`), 'x', 'utf8')
+            const want = readdirSync(join(rdir, 'templates')).length
+            /**
+             * ⚠ **同一行、两个内容完全相同的标记** —— 这正是 `indexOf` 会踩的形态。
+             *   两者之间用 ` / ` 分隔（⛔ 不放换行：那会分成两行、`indexOf` 也能过）。
+             */
+            const mk = '<!-- hob:count | templates -->'
+            const line = `第一处 ${mk} / 第二处 ${mk}`
+            const r = await writeHobFile(rdir, { file: 'CONTEXT.md', content: `${line}\n`, mode: 'overwrite' }, opts)
+            let disk = ''
+            try { disk = readFileSync(join(rdir, 'CONTEXT.md'), 'utf8') } catch { disk = '' }
+            const leftover = (disk.match(/<!--\s*hob:/g) ?? []).length
+            const valuesOk = (disk.match(new RegExp(`第一处 ${want} / 第二处 ${want}`, 'g')) ?? []).length === 1
+            if (r?.ok !== true) {
+              bad(`H10 写失败（${String(r?.reason ?? '-')}）⇒ 本组失去读数`)
+            } else if (leftover !== 0) {
+              bad(`H10 ⚠⚠ **同一行两个同内容标记只渲染了第一处**：盘上还剩 ${leftover} 个 \`<!-- hob:\``
+                + `（盘上=${JSON.stringify(disk.slice(0, 160))}）`
+                + '\n      ⇒ 这正是 `line.indexOf(h.raw)` 的形态：两次都指到第一处 ⇒ 第二处原样留着，'
+                + '而 `rendered` 记两条、`ok:true`（**正文写坏了、读数说成功**）')
+            } else if (!valuesOk) {
+              bad(`H10 两处渲染值不对：盘上=${JSON.stringify(disk.slice(0, 160))}（期望"第一处 ${want} / 第二处 ${want}"）`)
+            } else {
+              ok('H10 ✓ **同一行两个内容相同的标记各替换各的**：盘上零残留、两处都渲染成实值'
+                + `（"第一处 ${want} / 第二处 ${want}"）⇒ 按偏移消费在位（⚠ 回购 \`indexOf(h.raw)\` 时本条会红）`)
+            }
+          } finally {
+            try { rmSync(rdir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+          }
+        }
+
+        // ── H11 **read-failed §7 主读守卫**（⚠ 单回退它必须红）──
+        /**
+         * ══ 它守的是什么（审查席实测：**上一轮只覆盖了一半**）══════════════════════
+         *   `read-failed` 这条线上有**两处读**：
+         *     · **§7 主读守卫**（`hob-write.ts` 的 `const read = await readTarget(...)`）——
+         *       `append` / `overwrite` 每条写路径**都先过它**；
+         *     · **§12 备份读守卫**（`backup()` 里的 `BackupReadError`）—— 走到 §12 才用。
+         *   ⚠ 上一轮 H7 用"目录顶在目标上"造 EISDIR —— 那条**先撞 §7**
+         *     ⇒ 只回退 §12 备份守卫时 **H7 仍绿**（因为 §7 接住了）。
+         *     审查席的判词是"只覆盖一半"，**成立**。
+         *
+         * ── 现在①：把 §7 单独钉死（本条，⚠ 可确定性地判）────────────────────
+         *   形态 = 目录顶在目标上（读 ⇒ `EISDIR`），**两种 `keepBackups` 各跑一次**：
+         *     · `keepBackups: 0`（不备份）⇒ 只剩 §7；
+         *     · `keepBackups: 3`（备份）—— ⚠ §7 **仍在备份之前**。
+         *   两处都要求：`ok:false` + `reason==='read-failed'`
+         *   + **拒因来自 `describeReadFailure`**（消息含「**读不出来**」，⛔ **不含**「写前备份」）。
+         *   ⚠ 靠"消息出处"而不是只看 `reason` —— 两者 `reason` 都是 `read-failed`，
+         *     只看 `reason` 会让"备份代劳"冒充"§7 在工作"（那种假绿我 t11 当场撞过一次）。
+         *
+         * ── 现在②：§12 备份读守卫**如实登记为不可确定性判**（见 §1.4）──────────
+         *   它只在"§7 读得到、§12 读不到"那个 **TOCTOU 窗口**里触发
+         *   （两次读之间文件被换掉 / 权限被改）—— 那需要精确的时序注入，
+         *   ⛔ 本组做不到确定性复现 ⇒ **不假装测了它**，登记进 `.hob/README.md §1.4`。
+         *   ⚠ 但它的**存在性**仍判（`BackupReadError` 必须被导出、且 §12 的 catch 必须认它）
+         *     ⇒ 删掉那个 `instanceof` 分支会红。
+         */
+        {
+          const rf = (keep) => {
+            const d = mkdtempSync(join(tmpdir(), 'hob-rf-'))
+            mkdirSync(join(d, 'CONTEXT.md'), { recursive: true })
+            writeFileSync(join(d, 'CONTEXT.md', 'decoy.md'), '诱饵', 'utf8')
+            return { d, o: { ...opts, keepBackups: keep } }
+          }
+          const a = rf(0)
+          const b = rf(3)
+          try {
+            const ra = await writeHobFile(a.d, { file: 'CONTEXT.md', content: '# x\n', mode: 'append' }, a.o)
+            const rb = await writeHobFile(b.d, { file: 'CONTEXT.md', content: '# x\n', mode: 'append' }, b.o)
+            /** ⚠ 判据：`read-failed` **且**出自 §7（消息不含「写前备份」）。 */
+            const fromMainRead = (r) => r?.ok === false && r?.reason === 'read-failed'
+              && /读不出来/.test(String(r?.message ?? ''))
+              && !String(r?.message ?? '').includes('写前备份')
+            const mainA = fromMainRead(ra)
+            const mainB = fromMainRead(rb)
+            /** ⚠ 存在性：`BackupReadError` 必须被导出（删了它，§12 那道分支的判据就无从谈起）。 */
+            const hasBackupErr = typeof hw.BackupReadError === 'function'
+            if (!mainA || !mainB) {
+              const which = !mainA ? 'keepBackups:0' : 'keepBackups:3'
+              const r = !mainA ? ra : rb
+              bad(`H11 ⚠ **§7 主读守卫被回退**（${which}）：reason=${JSON.stringify(r?.reason)}`
+                + ` · 消息出处=${String(r?.message ?? '').includes('写前备份') ? '备份守卫（应为 §7 主读）' : '§7 主读'}`
+                + '\n      ⇒ 读不出来会被当成"文件不存在"⇒ 覆盖写 + 不备份（改前 200KB 账本被顶掉就是这条）')
+            } else if (!hasBackupErr) {
+              bad('H11 ⚠ `BackupReadError` **不再是导出**（§12 备份读守卫的类型没了）⇒ 那一档无从分类')
+            } else {
+              ok('H11 ✓ **§7 主读守卫在位**（`keepBackups:0` 与 `:3` 两种都判过）：目录顶在目标上 ⇒ '
+                + '`ok:false` · `reason=read-failed` · 拒因出自 `describeReadFailure`（「读不出来」，⛔ 不是备份代劳）；'
+                + '⚠ `BackupReadError` 导出仍在（§12 那道守卫的类型在位；⚠ 它只在 §7→§12 的 TOCTOU 窗口触发，'
+                + '确定性测不到 ⇒ 已登记进 `.hob/README.md §1.4`）')
+            }
+          } finally {
+            try { rmSync(a.d, { recursive: true, force: true }) } catch { /* 同上 */ }
+            try { rmSync(b.d, { recursive: true, force: true }) } catch { /* 同上 */ }
           }
         }
       } finally {
@@ -753,6 +1042,241 @@ export async function runWriteScope({ bad, ok }) {
     }
   } finally {
     rmSync(wsRoot, { recursive: true, force: true })
+  }
+}
+
+/**
+ * ── 断言 T · **现行需求根的迁移面**（2026-10-22 · 用户批准方案重构后）──────────────
+ *
+ * **它防的是什么**：现行需求根从 `USER-DECISIONS.md` 迁到 `REQUIREMENTS.md`。
+ *   ⚠ 这类迁移**最典型的失败形态是"两本都能写"** —— 旧根没关掉，于是两个
+ *   现行需求真相并存；⚠ 而**没有任何东西会红**（写哪本都成功）。
+ *
+ * **判据（成对，⛔ 缺一侧即假绿 —— E-126）**：
+ *   · **正向**：新根 `REQUIREMENTS.md` ⇒ **真跑写入器 ⇒ 放行**；
+ *     并且 `volumes/requirements/*.md`（条目正文落点）⇒ **也放行**；
+ *   · **负向**：旧根 `USER-DECISIONS.md` ⇒ **真跑写入器 ⇒ 拒绝**，
+ *     且 reason 必须是 **`retired-historical`**（⛔ 不许是 `not-whitelisted` ——
+ *     那等于把"退役"说成"不存在"，读者分不出该去改哪儿）；
+ *   · **形状负向**：往新根写**没有卷条目指向的地图**（纯散文）⇒ **`bad-format` 拒** ——
+ *     防"把需求正文直接写进根"，退回根文件无限增长的老形态；
+ *   · **读面未动**：旧根的**读**仍可用（`readMarkdownCapped` 读得到），
+ *     ⚠ 否则"保历史可读"这句话就是空的。
+ *
+ * ⚠ **全部在临时沙箱里真跑**（`mkdtempSync`，`finally` 里删净）—— ⛔ 不碰真账本。
+ * ⚠ **不 import 被测常量来自证**：目标路径**写死**成字面量（`REQUIREMENTS.md` /
+ *   `USER-DECISIONS.md`），这样"常量被改回旧值"这一侧才会**当场红**；
+ *   若从 `LEDGER_FILES` 取，自指恒绿 ⇒ 成对可验只剩一半（与 Q1 同款理由）。
+ */
+export async function runRequirementsRoot({ bad, ok }) {
+  const HOBWRITE_TS = join(root, 'src', 'server', 'hob-write.ts')
+  const DOCREAD_TS = join(root, 'src', 'server', 'doc-read.ts')
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { pathToFileURL } = await import('node:url')
+
+  let hw
+  let dr
+  let loadErr = null
+  try {
+    hw = await import(pathToFileURL(HOBWRITE_TS).href)
+    dr = await import(pathToFileURL(DOCREAD_TS).href)
+  } catch (e) {
+    loadErr = e
+    bad(`T 无法加载写入 / 读取模块（${String(e?.message ?? e)}）⇒ 需求根迁移面失去基准（不按通过处理）`)
+  }
+  if (loadErr !== null || hw === undefined || dr === undefined) return
+
+  const { writeHobFile } = hw
+  const { readMarkdownCapped } = dr
+  /** 与 `src/modules/tools.ts` 的 DEFAULTS 同口径（上限调小以便沙箱够用）。 */
+  const opts = { hobDir: '', keepBackups: 3, shrinkGuard: 0.5, maxFileBytes: 262144 }
+  const dir = mkdtempSync(join(tmpdir(), 'hob-tcheck-'))
+  try {
+    // 沙箱里先铺一份"迁移后"的形状：新根 + 需求卷目录 + 一份旧根的历史内容
+    mkdirSync(join(dir, 'volumes', 'requirements'), { recursive: true })
+    const LEGACY_BODY = '# USER-DECISIONS.md —— 历史（只读）\n\n| 编号 | 标题 |\n|---|---|\n| UD-01 | 历史条目 |\n'
+    writeFileSync(join(dir, 'USER-DECISIONS.md'), LEGACY_BODY, 'utf8')
+
+    // ── T1 正向：新根真跑 ⇒ 放行 ────────────────────────────────────────
+    const newRootMap = [
+      '# 用户当前功能需求 · 索引',
+      '',
+      '| 编号 | 当前功能目标 | 条目 |',
+      '|---|---|---|',
+      '| 01 | 总工程师 | `volumes/requirements/REQ-01.md` |',
+      '',
+    ].join('\n')
+    const t1 = await writeHobFile(dir, { file: 'REQUIREMENTS.md', content: newRootMap, mode: 'overwrite' }, opts)
+    if (t1.ok === true) {
+      ok('T1 ✓ 新根可写：`REQUIREMENTS.md` ⇒ 真跑写入器 ⇒ **放行**（现行需求只有一个写面）')
+    } else {
+      bad(`T1 新根**写不进**：\`REQUIREMENTS.md\` ⇒ [${t1.reason}] ${String(t1.message ?? '').split('\n')[0]}`
+        + '\n      ⇒ 这一侧红了说明「现行需求根搬不过去」—— 迁移没完成。')
+    }
+
+    // ── T2 正向：需求条目正文落点 volumes/requirements/*.md ⇒ 放行 ────────
+    const t2 = await writeHobFile(
+      dir,
+      { file: 'volumes/requirements/REQ-01.md', content: '# REQ-01\n\n**用户要实现的功能**：……\n', mode: 'overwrite' },
+      opts,
+    )
+    if (t2.ok === true) {
+      ok('T2 ✓ 需求卷可写：`volumes/requirements/REQ-01.md` ⇒ 真跑写入器 ⇒ **放行**（条目正文有落点）')
+    } else {
+      bad(`T2 需求卷**写不进**：\`volumes/requirements/REQ-01.md\` ⇒ [${t2.reason}] ${String(t2.message ?? '').split('\n')[0]}`
+        + '\n      ⇒ 这一侧红了说明"根能写、条目没处放"，等于把正文逼回根文件。')
+    }
+
+    // ── T3 负向：旧根 ⇒ 拒绝，且 reason 必须是 retired-historical ──────────
+    const t3 = await writeHobFile(dir, { file: 'USER-DECISIONS.md', content: '# 追加\n', mode: 'append' }, opts)
+    const t3msg = String(t3.message ?? '')
+    if (t3.ok !== true && t3.reason === 'retired-historical' && t3msg.includes('REQUIREMENTS.md')) {
+      ok('T3 ✓ 旧根**不再是写面**：`USER-DECISIONS.md` ⇒ 拒绝，reason = `retired-historical`，'
+        + '且话术里点名现行需求在 `REQUIREMENTS.md`（⚠ 不是笼统的 `not-whitelisted`）')
+    } else {
+      bad(`T3 旧根**仍可写 / 或拒绝理由不对**：\`USER-DECISIONS.md\` ⇒ ok=${t3.ok} reason=${t3.reason}`
+        + `\n      ⇒ 期望：拒绝 + reason=\`retired-historical\` + 话术指向 \`REQUIREMENTS.md\``
+        + '\n      ⇒ ⚠ 若 ok=true，说明**两个现行需求写面并存** —— 那正是本次重构要治的病。'
+        + '\n      ⇒ ⚠ 若 reason=not-whitelisted，说明"退役"被说成了"不存在"，读者分不出该去改哪儿。')
+    }
+
+    // ── T4 形状负向：往新根写纯散文（无卷条目指向）⇒ bad-format ────────────
+    const t4 = await writeHobFile(
+      dir,
+      { file: 'REQUIREMENTS.md', content: '# 需求\n\n这里直接塞一堆需求正文，根上没有一条指向卷。\n', mode: 'overwrite' },
+      opts,
+    )
+    if (t4.ok !== true && t4.reason === 'bad-format') {
+      ok('T4 ✓ 根必须是**地图**：写"没有卷条目指向的纯散文" ⇒ `bad-format` 拒'
+        + '（防把需求正文塞回根、退回无限增长的老形态）')
+    } else {
+      bad(`T4 纯散文**被放进根了**：ok=${t4.ok} reason=${t4.reason}`
+        + '\n      ⇒ 期望 `bad-format`；⚠ 这一侧红了说明新根退化成"正文容器"。')
+    }
+
+    // ── T5 读面未动：旧根**仍读得到**（逐字节）──────────────────────────
+    const t5 = await readMarkdownCapped(dir, 'USER-DECISIONS.md', 262144)
+    if (t5.ok === true && t5.text === LEGACY_BODY && t5.truncated === false) {
+      ok('T5 ✓ 旧根**仍逐字节可读**（读面未动）：抽取内容与写入时**逐字相同**'
+        + ' ⇒ "旧卷与归档副本逐个字节保留可读"这半句不是空话')
+    } else {
+      bad(`T5 旧根**读不到 / 内容变了**：ok=${t5.ok} truncated=${t5.truncated} bytes=${t5.bytes}`
+        + `\n      ⇒ ⚠ 拒绝写入**不许**连带把读面关掉 —— 那是把"保留可读"变成"删掉"。`)
+    }
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+  }
+}
+
+/**
+ * ── 断言 W · **方案卷的模块清单必须与 `src/modules/` 实际文件同源** ─────────────────
+ *
+ * **它防的是什么**（2026-10-22 实测形态）：`volumes/plan/03-architecture-modular.md` 长期列着一个
+ *   **`M2 预设装配挂点`** —— 而全仓 `agent-presets` **零命中**、`src/modules/` 里**没有那个文件**。
+ *   ⇒ 读者会去找一个**从不存在的模块**；⚠ 而**没有任何判据会红**（文档与代码各自看着都"正常"）。
+ *   ⚠ 同族形态还有一次：`09` 把**已实现的跨实例**与**暂缓的跨系统**合并写成"挂起"——
+ *     读者会以为跨实例没做。**本组管前者（模块清单），后者由人工核对**（见回报的"未验证"）。
+ *
+ * **判据（成对，⛔ 缺一侧即假绿）**：
+ *   · 正向：`src/modules/*.ts` **每个文件名主干**都必须在方案 §3 里出现（⛔ 不许有"写了代码没写方案"）；
+ *   · 反向：方案 §3 宿主模块表的**行数**必须等于实际模块文件数（⛔ 不许虚列一个不存在的模块）。
+ *
+ * ⚠ **为什么用"行数相等"而不是"id ↔ 文件名映射表"**：映射表会变成**第三份手抄事实**
+ *   （改一处忘另一处，正是本组要防的形态）；行数 + 主干出现这两条**都从两侧实测派生**。
+ * ⚠ **取不到任一侧 ⇒ FAIL**（⛔ 不静默通过 —— E-130/E-131）。
+ */
+export function runPlanModuleParity({ bad, ok }) {
+  const MOD_DIR = join(root, 'src', 'modules')
+  /**
+   * ⚠ **账本区在工作区之外** ⇒ 不能 `join(root,'volumes',...)`。
+   *   解析口径与 `runWriteScope` 的 Q3 逐字相同：预设行的 `ledgerHome` + 工作区名。
+   */
+  const LEDGER = (() => {
+    const candidates = []
+    try {
+      const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
+      const m = /ledgerHome:\s*(\S+)/.exec(preset)
+      if (m !== null) candidates.push(m[1])
+    } catch { /* 预设读不到 ⇒ 只走候选 */ }
+    const wsName = workspaceName(() => basename(root))
+    for (const home of candidates) {
+      const dir = join(home, wsName)
+      if (existsSync(dir)) return dir
+    }
+    return undefined
+  })()
+  if (LEDGER === undefined) {
+    bad('W 账本根**解析不到** ⇒ 方案 §3 模块清单同源判据失去基准（不按通过处理）')
+    return
+  }
+  const PLAN03 = join(LEDGER, 'volumes', 'plan', '03-architecture-modular.md')
+
+  let plan = ''
+  try { plan = readFileSync(PLAN03, 'utf8') } catch { plan = '' }
+  if (plan === '') {
+    bad('W 方案 §3 卷**读不到**（`volumes/plan/03-architecture-modular.md`）⇒ 模块清单同源判据失去基准（不按通过处理）')
+    return
+  }
+  let stems = []
+  try {
+    stems = readdirSync(MOD_DIR)
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => basename(f, '.ts'))
+      .sort()
+  } catch (e) {
+    bad(`W \`src/modules/\` **读不到**（${String(e?.message ?? e)}）⇒ 本组失去基准（不按通过处理）`)
+    return
+  }
+  if (stems.length === 0) {
+    bad('W `src/modules/` 下**没有任何 .ts** ⇒ 派生为空，本组不得报绿（E-126）')
+    return
+  }
+
+  /** 纯函数：从方案文本里数「宿主模块表」的模块行 —— 自带样本可在内存里造。 */
+  const countModuleRows = (src) => {
+    // 只认「行首是 | **M<数字>[字母]?** |」这种模块行；标题行与分隔行天然不匹配
+    return src.split('\n').filter((l) => /^\|\s*\*\*M\d+[a-z]?\*\*\s*\|/.test(l)).length
+  }
+
+  // ── W0 自带样本：该咬 / 不该咬成对（⛔ 缺一侧即"判据没牙"）──────────────
+  const MUST_BITE = [
+    ['虚列一个不存在的模块', '| **M1** | a | b | c |\n| **M2** | a | b | c |\n| **M3** | a | b | c |\n', 3],
+    ['少列一个真模块', '| **M1** | a | b | c |\n', 1],
+  ]
+  const MUST_NOT_BITE = [
+    ['分隔行与表头不计数', '| # | 模块 | 职责 | 依赖 |\n|---|---|---|---|\n| **M1** | a | b | c |\n', 1],
+  ]
+  let wBad = 0
+  for (const [label, sample, want] of MUST_BITE) {
+    if (countModuleRows(sample) !== want) { wBad++; bad(`W 自带样本**没被咬**：${label} ⇒ 计数判据失效`) }
+  }
+  for (const [label, sample, want] of MUST_NOT_BITE) {
+    if (countModuleRows(sample) !== want) { wBad++; bad(`W 自带样本**被误咬**：${label} ⇒ 计数判据过宽`) }
+  }
+  if (wBad === 0) {
+    ok(`W0 ✓ 计数判据成对可验：${MUST_BITE.length} 组该咬**全咬住** · ${MUST_NOT_BITE.length} 组不该咬**全放过**`)
+  }
+
+  // ── W1 实测两侧 ──────────────────────────────────────────────────────
+  const rows = countModuleRows(plan)
+  let w1Bad = 0
+  if (rows !== stems.length) {
+    w1Bad++
+    bad(`W 方案 §3 的宿主模块表**虚列/漏列**：表内 **${rows}** 行，而 \`src/modules/\` 实际 **${stems.length}** 个文件`
+      + `\n      ⇒ 实际模块（从目录派生）：${stems.map((x) => `\`${x}.ts\``).join(' · ')}`
+      + '\n      ⇒ ⚠ 两数不等 = 方案在描述一个**不存在的模块**（或漏写一个真的）—— 实测踩过：曾虚列 \`M2\`')
+  }
+  for (const stem of stems) {
+    // 主干必须作为代码标识出现（反引号里，避免"工具"这类中文词误命中）
+    if (!plan.includes(`\`${stem}.ts\``) && !plan.includes(`\`${stem}\``)) {
+      w1Bad++
+      bad(`W 模块 \`${stem}.ts\` **在方案 §3 里没被提到** ⇒ "写了代码没写方案"（读者找不到它）`)
+    }
+  }
+  if (w1Bad === 0) {
+    ok(`W ✓ 方案 §3 与 \`src/modules/\` **同源**：模块表 ${rows} 行 = 实际 ${stems.length} 个文件，`
+      + `且 ${stems.map((x) => `\`${x}\``).join(' · ')} 逐个在正文里点名`)
   }
 }
 
