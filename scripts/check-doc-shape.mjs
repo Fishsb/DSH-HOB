@@ -1726,7 +1726,21 @@ export function runDocShape({ bad, ok, noObject, skip }) {
       // ⚠ 备份**只读、只复制**（⛔ 绝不写 backups/）；坏的这份是 2026-10-11 第 52 轮
       //    Hob 写坏的那一版，`## 五、回复格式` 在第 200 与第 425 行各一个。
       // ⚠ 这条样本若**读不到**（别的机器上账本区可能不在）⇒ **明说"未取"，不静默当成通过**。
-      const BAD_SNAPSHOT = join(LEDGER_ROOT, 'backups', 'USER-DECISIONS.md.20261011-022744.bak')
+      /**
+       * ⚠ **2026-10-26（备份按卷分目录）**：`USER-DECISIONS.md` 是**账本根上的文件**
+       *   ⇒ 它的备份现在落 `backups/(root)/`。
+       * ⚠ 但历史那份是**迁移之前**落在平铺 `backups/` 下的（本单会把它移进 `(root)/`）。
+       *   ⇒ **两处都试**：否则迁移前的那一瞬 / 别的机器上，本判据会误报"未取"。
+       *   ⚠ 只多认**这一个固定路径前缀**，⛔ 不是"任意位置都算"。
+       */
+      const BAD_SNAPSHOT_CANDIDATES = [
+        join(LEDGER_ROOT, 'backups', '(root)', 'USER-DECISIONS.md.20261011-022744.bak'),
+        join(LEDGER_ROOT, 'backups', 'USER-DECISIONS.md.20261011-022744.bak'),
+      ]
+      let BAD_SNAPSHOT = BAD_SNAPSHOT_CANDIDATES[0]
+      for (const cand of BAD_SNAPSHOT_CANDIDATES) {
+        if (existsSync(cand)) { BAD_SNAPSHOT = cand; break }
+      }
       let snapSrc = ''
       try {
         snapSrc = readFileSync(BAD_SNAPSHOT, 'utf8')

@@ -984,6 +984,33 @@ async function listBackupEntries(backupDir: string, base: string): Promise<Backu
  *
  * @returns 备份文件名（相对备份目录）；未备份时 undefined。
  */
+/**
+ * **备份的卷限定目录**（2026-10-26 · 备份按卷分目录）。
+ *
+ * ⚠⚠ **为什么需要它**（上一单差点拿错备份去恢复）：
+ *   改前所有备份平铺在 `backups/` 下，名字 = `basename + 时戳`。
+ *   ⚠ 而 `volumes/user-decisions/INDEX.md` 与 `volumes/decisions/INDEX.md`
+ *   的 `basename` **都是 `INDEX.md`** ⇒ 两卷的备份**同名混放**，
+ *   ⇒ 只能靠**读内容**才能分辨哪份属于哪个卷。⛔ 那不是判据能依赖的东西。
+ *
+ * ⚠ **改法**：备份落到 `backups/<卷名>/<原名>.<时戳>.bak`。
+ *   · 卷名 = 目标文件相对**账本根**的路径里，`volumes/<卷名>/…` 的那一段；
+ *   · ⚠ **账本根上的文件**（`CONTEXT.md` / `PROJECT.md` / …）不属于任何卷
+ *     ⇒ 落在 `backups/(root)/`（⚠ 用带括号的名字，⛔ 不用空串 ⇒ 目录名不会是 `backups//`）。
+ *   · ⚠ **卷名从路径派生**（⛔ 不手写一张卷名表）：新增卷时**零改动**。
+ *
+ * ⚠ **`base` / `parseBackupName` / 去重 / 保留策略全部不变** ——
+ *   本函数只决定**目录**，备份文件名照旧 ⇒ 族判定与排序行为**不受影响**。
+ */
+function backupVolumeDir(hobRoot: string, absTarget: string): string {
+  const rel = relative(hobRoot, absTarget)
+  const parts = rel.split(sep)
+  // `volumes/<卷名>/<…>.md` ⇒ 取 `<卷名>`
+  if (parts.length >= 3 && parts[0] === 'volumes') return parts[1]!
+  // 账本根上的文件 ⇒ 归到 (root)
+  return '(root)'
+}
+
 async function backup(
   absTarget: string,
   backupDir: string,
@@ -1377,7 +1404,13 @@ async function writeHobFileInner(
   }
 
   // ── 12：备份 ────────────────────────────────────────────────────────────
-  const backupDir = join(hobRoot, BACKUP_DIR)
+  /**
+   * ⚠ **按卷分目录**（2026-10-26）：`backups/<卷名>/` —— 见 {@link backupVolumeDir}。
+   *   ⚠ 账本根上的文件落 `backups/(root)/`；卷内文件落 `backups/<卷名>/`。
+   *   ⚠ `backup()` 内部只认 `backupDir`，改名不影响它的任何逻辑。
+   */
+  const backupSubdir = backupVolumeDir(hobRoot, absTarget)
+  const backupDir = join(hobRoot, BACKUP_DIR, backupSubdir)
   let backupName: string | undefined
   try {
     backupName = await backup(absTarget, backupDir, opts.keepBackups)
@@ -1502,7 +1535,7 @@ async function writeHobFileInner(
     action: mode === 'overwrite' ? 'overwritten' : 'appended',
     file,
     id,
-    ...(backupName === undefined ? {} : { backup: `${BACKUP_DIR}/${backupName}` }),
+    ...(backupName === undefined ? {} : { backup: `${BACKUP_DIR}/${backupSubdir}/${backupName}` }),
     bytesBefore: Buffer.byteLength(existing, 'utf8'),
     bytesAfter: nextBytes,
     ...(isHandoffPath(file) ? { handoff: { kind: 'task-file' as const, ref: file } } : {}),
@@ -1514,7 +1547,7 @@ async function writeHobFileInner(
     ...(ledgerRootExistedBefore ? {} : { ledgerRootCreated: { ledgerRoot: root } }),
     message: `✅ 已${mode === 'overwrite' ? '覆盖' : '追加'} ${file}${id === undefined ? '' : `：${id}`}`
       + `（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节）`
-      + (backupName === undefined ? '' : `；备份 ${BACKUP_DIR}/${backupName}`)
+      + (backupName === undefined ? '' : `；备份 ${BACKUP_DIR}/${backupSubdir}/${backupName}`)
       + renderDanglingRefsNote(danglingRefs)
       // ── 读数渲染的**出处**（E-118：值是工具算的，就要说得出是哪些值）────────
       + renderReadingsNote(rendered)

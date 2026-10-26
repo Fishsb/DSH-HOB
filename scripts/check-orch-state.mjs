@@ -8260,12 +8260,19 @@ const orchCode = stripComments(orchSrc)
          */
         let files = []
         try {
-          files = qReaddir(join(lr, '.hob', 'backups'))
+          /**
+           * ⚠ **2026-10-26（备份按卷分目录）**：`PROJECT.md` 是**账本根上的文件**
+           *   ⇒ 它的备份现在落 `backups/(root)/`，⛔ 不再平铺在 `backups/` 下。
+           *   ⚠ 本判据是**活体测试**（自己写自己读），所以必须跟着改，
+           *     否则它会读不到自己刚造的备份 ⇒ 误报"只留后一份"。
+           */
+          const bdir = join(lr, '.hob', 'backups', '(root)')
+          files = qReaddir(bdir)
             .filter((n) => n.startsWith('PROJECT.md.') && n.endsWith('.bak'))
             .sort()
         } catch { files = [] }
         const contents = files.map((n) => {
-          try { return sdRf(join(lr, '.hob', 'backups', n), 'utf8') } catch { return '?' }
+          try { return sdRf(join(lr, '.hob', 'backups', '(root)', n), 'utf8') } catch { return '?' }
         })
         const hasA = contents.includes('A\n')
         const hasB = contents.includes('B\n')
