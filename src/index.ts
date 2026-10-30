@@ -10,7 +10,7 @@
  * ⚠ 本轮是**骨架**：只把上面这条形状立起来，**不注册任何业务能力**。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { Config, moduleSwitches, spawnDefaults, permissionLevel, PERMISSION_SERVICE, interconnectEnabled, interconnectTargets, workMode, WORK_MODE_SERVICE } from './config.ts'
+import { Config, moduleSwitches, spawnDefaults, permissionLevel, PERMISSION_SERVICE, workMode, WORK_MODE_SERVICE } from './config.ts'
 export { PERMISSION_SERVICE }
 import type { Config as ConfigShape, ModulesConfig } from './config.ts'
 // ⭐ 逐会话策略权威（2026-10-22 · `REQ-04`）—— ⚠ 必须在入口 provide（两侧作用域都要用）。
@@ -21,8 +21,6 @@ import * as toolsModule from './modules/tools.ts'
 import * as busModule from './modules/bus.ts'
 import * as orchModule from './modules/orchestrator.ts'
 import * as settingsModule from './modules/settings.ts'
-// ⚠ M6a 跨实例投递（2026-10-16 第 237 轮 · `UD-119` 裁定）
-import * as interconnectModule from './modules/interconnect.ts'
 // ⚠ 新建 Hob 会话的受信通道（2026-10-22 · `REQ-04` UI 源码阶段）：
 //   它是**独立模块**，不进 `MODULE_REGISTRY`（那个表管的是"可开关的业务能力"，
 //   而这条通道是"建会话+写策略"的**原子入口**，没有独立开关语义）。
@@ -33,6 +31,12 @@ import { installCreateChannel } from './modules/session-create-channel.ts'
 //   ⚠ 它自己用反应式 `ctx.inject(['connection'])`：缺 ⇒ 不登记、不报错。
 //   ⛔ 只读：不建会话、不写策略、不改任何状态。
 import { installPolicyRoute } from './modules/session-policy-route.ts'
+// ⚠ 2026-10-29（第 6 轮 · 四步主线数据接线 → 同日晚裁定改为五步）：**另一条只读路由** —— 五步进度表。
+//   与上面那条**同族同形态**（`connection.fetch.register` + `ctx.inject(['connection'])` + 真 `Response`），
+//   ⛔ 零写操作；账本根复用 `resolveLedgerRoot` + `declaredLedgerHome`（⛔ 不新开解析路径）。
+import { installTasksProgressRoute } from './modules/tasks-progress-route.ts'
+import { installExecProgressRoute } from './modules/exec-progress-route.ts'
+import { installStagesRoute } from './modules/stages-route.ts'
 
 export { Config }
 
@@ -81,29 +85,60 @@ const MODULE_REGISTRY = [
   // ⚠ M5 编排（批 17）：**缺省关**（见 config.ts 该字段注释 —— 它会在无人看管时推进）。
   { key: 'orch', mod: orchModule, enabled: (m: ModulesConfig) => m.orch },
   { key: 'settings', mod: settingsModule, enabled: (m: ModulesConfig) => m.settings },
-  // ⚠ M6a 跨实例投递（2026-10-16 第 237 轮 · `UD-119` 裁定）：
-  //   ⚠ **缺省关**（⚠ 它会在无人看管时向另一个实例投递 ⇒ 与 `orch` 同风险档）。
-  //   ⚠ ⚠ **它 `provide` 的是一条"能力"，⛔ 不是一个面向模型的新工具**
-  //     ⇒ ⚠ **⛔ 不动 `MODEL_TOOL_ALLOWLIST`、⛔ 不动三档白名单**（⚠ 避开第 234 轮点名的第 ④ 处外溢）。
-  //   ⚠ ⚠ **两个"现读"**（⛔ 不是快照）：⚠ 开关与白名单都会随设置面改 ⇒
-  //     在 `apply` 时快照一次会让"改完不生效"（⚠ 与 `bus.ts` 的 `spawnDefaults` 同条教训）。
-  {
-    key: 'interconnect',
-    mod: interconnectModule,
-    // ⚠ ⚠ **档位闸门**（⚠ 与开关**并列**的第二道）：⚠ 档位 = 账本时**⛔ 不注册**
-    //   —— 跨实例投递是"影响外部状态"的动作，只读档不做（⚠ 见 §1.3 的判据"有没有改动能力"）。
-    // ⚠ ⚠ **档位闸门**（⚠ 与开关**并列**的第二道）：⚠ 档位 = 账本时**⛔ 不注册**
-    //   —— 跨实例投递是"影响外部状态"的动作，只读档不做（⚠ §1.3 判据：**有没有改动能力**）。
-    //   ⚠ `switches` 是**入口 apply 里**解出的普通布尔（⚠ 设计如此：注册表本身在模块作用域，
-    //     拿不到 `config`/`ctx`）⇒ ⚠ 档位那一半在 `apply` 的循环里判（⚠ 见下 `gate`）。
-    enabled: (m: ModulesConfig) => m.interconnect,
-  },
 ] as const
 
-export function apply(ctx: Context, config: ConfigShape): void {
+/**
+ * 每个模块的**对外可读名字**（只用来写日志）—— ⚠ 只在这里定义一次，⛔ 别处不许手抄。
+ *
+ * ── 为什么需要（2026-10-25 · 本单）──────────────────────────────────────
+ *   日志要让人一眼看出"哪几个模块没起"，而 `MODULE_REGISTRY` 的 `key` 是**内部开关名**
+ *   （`tools` / `bus` / `orch` / `settings`）—— ⚠ 作业书 §一-2 明令那一行**不许**泄露
+ *   内部配置值；而 `orch` 这种缩写对外本来就读不懂。
+ *   ⇒ 另立一张**显示名**表：外面看到的是"会话总线""闭环编排"这类日常说法，
+ *     与设置页上用户看到的那几个开关是同一套词。
+ *
+ * ⚠ **新增模块时必须同步改这里**：类型是 `Record<(typeof MODULE_REGISTRY)[number]['key'], string>`
+ *   ⇒ `MODULE_REGISTRY` 里加一个 key 而这里漏了，**`tsc` 直接红**，
+ *   ⛔ 不会静默印成 `undefined`。这是"谁让它保持对"那一问的机制答案（REPORT §4）。
+ */
+const MODULE_LABELS: Record<(typeof MODULE_REGISTRY)[number]['key'], string> = {
+  tools: '工具',
+  bus: '会话总线',
+  orch: '闭环编排',
+  settings: '配置面自检',
+}
+
+/**
+ * ⚠⚠ **2026-10-25 · 本函数改为 `async`**（本单的修法）。
+ *
+ * ── 为什么必须 async ───────────────────────────────────────────────
+ *   收尾要印"哪些模块真的起来了"，而 fiber 的 `1`(LOADING) → `2`(ACTIVE) 之间隔着
+ *   一个 `await Promise.resolve()`（`cordis/lib/index.js:1345` 的 `_reload()`）——
+ *   ⚠ **同步代码结构上看不到它**（实测：同步自旋 20 / 1000 / 1e6 次都还是 `1`）。
+ *   所以只能让 `apply` 自己变成 async、`await` 一下子 fiber 落定再印。
+ *   ⚠ 这是本单唯一能同时满足"三态可分"与"正向样本正确"的落法（REPORT §3 有论证）。
+ *
+ * ── 宿主/cordis 对 async apply 的支持（⚠ 这不是我猜的）──────────────────
+ *   `Fiber._execute()` 的 `runner.execute` 返回 Promise 时走 `effect.then(safeCollect)`
+ *   （`cordis/lib/index.js:1148-1150`），`_reload()` 又 `await this._execute(...)`
+ *   ⇒ **async apply 是被支持的正常形态**，父 fiber 会等到它 settle 才进 ACTIVE。
+ *   实测：`ctx.plugin({apply: asyncFn})` 的父 fiber `await` 后为 `2`（REPORT §1 读数）。
+ *
+ * ── ⛔ 这次改动**不改变**任何模块的装载条件 ────────────────────────────
+ *   只把"印日志"从"同步读一次"挪到"等落定再读"。开关/依赖/装载顺序**一个字没动**，
+ *   ⛔ 没有把任何状态改成"乐观默认值"（作业书 §三 明令）。
+ */
+export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
   const loaded: string[] = []
   /** ⚠ 与 `loaded` 一一对应的 fiber 引用（2026-10-24：用来判"真的激活了吗"）。 */
   const loadedFibers: Array<{ key: string; fiber: any }> = []
+  /**
+   * ⚠ 与 `loaded` 一一对应的**关掉原因**（`true` = 配置里这个开关是关的）。
+   *   2026-10-25 新增：日志要能分清"没起"的两种成因（配置关 vs 起了但挂了），
+   *   而"配置关"这个事实只在**这一层**知道（被 `continue` 跳过的模块，压根没有 fiber 可读）。
+   *   ⇒ 必须在这里记下来，否则下游只能看到"少了几个"，⛔ 猜不出是关的还是挂的。
+   */
+  const skippedBySwitch: string[] = []
   // 开关一次性解出普通对象：把 volatile 的 ref 形态收口在 moduleSwitches 里。
   const switches = moduleSwitches(config)
 
@@ -160,153 +195,34 @@ export function apply(ctx: Context, config: ConfigShape): void {
   //   ⚠ 与创建通道**分开两条路由**：本单禁改那个文件（见 import 处的说明）。
   installPolicyRoute(ctx)
 
-  /**
-   * ══════════════════════════════════════════════════════════════════════════
-   * ⚠⚠ **2026-10-22（第 2 轮 · `REQ-04` + `REQ-05`）：装载期的全局档闸门已删除**
-   * ══════════════════════════════════════════════════════════════════════════
-   *
-   * ── 改前是什么（以及为什么它错了）──────────────────────────────────────
-   *   这里原有一句"若全局档位 === 账本，则 `continue`（不装载本模块）"的判定
-   *   （⚠ 具体标识符名不再写在这里：`check:policy-cross` 的 CX-12 会逐字扫源码，
-   *     留着名字会被它当成"闸门还在"，而那是**误报**。
-   *     判据只看**代码**，但它不解析注释边界 —— 所以这里不写那个名字）。
-   *   ⚠ 它做的事：在**模块装载期**用**实例级全局**档位决定「跨实例能力装不装」。
-   *   两个方向的错，实测都能说清：
-   *     · 全局档 = 账本、而**发起会话**在更宽档 ⇒ 能力**压根没装载** ⇒ 合法调用也拒
-   *       （这正是上一轮回报里承认的那条：重启后合法请求全拒）；
-   *     · 全局档宽 ⇒ 能力装载了，但**每个会话**还得各自够宽才有意义 ——
-   *       用一个全局值当装载开关，本质上仍是"旧全局值在决定逐会话行为的边界"，
-   *       与 `REQ-04`（会话独立）直接冲突。
-   *   ⇒ 判据错在**时刻**与**主体**：跨实例投递是"影响外部状态"的动作，该在**投递那一刻**
-   *     按**发起者是谁**判，⛔ 不是在装载时按"整台机器一个值"判。
-   *
-   * ── 现在：装载只看**显式开关**，准入在**投递时**按**可信发起会话**判 ──────
-   *   · 装载层：只剩 `entry.enabled(switches)`（即 `modules.interconnect`）——与档位无关；
-   *   · 投递层（`src/modules/interconnect.ts` 的 `deliverRemote`）：
-   *     开关 → 白名单 → **可信发起者** → 该会话自己的策略 → 启动器 → 执行。
-   *   ⚠ 会不会因此放宽？⛔ 不会，两个方向都仍然拒：
-   *     · 拿不到可信发起者（无 initiator / 非活会话 / 伪造别会话 id）⇒ 拒；
-   *     · 拿得到但该会话档位不够 ⇒ 拒。
-   *   ⇒ 删掉的只是"用全局值在装载期一票否决"这条**串线**，⛔ 不是删掉准入。
-   *
-   * ── ⚠ 为什么把"可信发起者"放在**本文件**解析（而不是模块里）─────────────
-   *   它要读 `agents` 服务的 `requireInitiator()`、再经 `sessions.get()` 核活、
-   *   再经 `hobSessionPolicy` 取档 —— 三件都在**入口作用域**能拿到。
-   *   模块作用域拿 `hobSessionPolicy` 要跨作用域，⛔ 不该为此把服务做成全局单例。
-   *   ⇒ 模块只收一个**纯函数** `admissionOf()`：它要么给出「谁 + 什么档」，
-   *     要么给出一个**机器可判的拒因**（⛔ 不返回"看起来像档位的字符串"）。
-   */
+  // ⚠ 2026-10-29（第 6 轮）：五步进度**只读路由**。
+  //   与本文件其它路由**无顺序依赖**（它只读文件，不碰任何服务），
+  //   但放在同族旁边便于"路由都在这几条"一眼看到。
+  //   ⚠ 它自己 `ctx.inject(['connection'])`：宿主 `connection` 缺席 ⇒ 不登记、不报错。
+  installTasksProgressRoute(ctx)
+
+  // ⚠ 2026-10-30（第 17 轮）：执行态**只读路由**（面板第 4 步子项的数据源）。
+  //   ⚠ 数据源 = 编排自己的 `runtime/orch-watches.json` ⇒ **⛔ 不新增第二份运行态**（`D1`①）：
+  //     路径由 `orch-state.ts` 的 `orchStateFileOf()` 派生，与 `hob_orch_status` 同一条入口。
+  //   ⚠ 同样自己 `ctx.inject(['connection'])`：宿主 `connection` 缺席 ⇒ 不登记、不报错。
+  installExecProgressRoute(ctx)
+
+  // ⚠ 2026-10-30（P3）：五步汇总**只读路由**（面板新数据源 = `ledger-next/units/index.toml`）。
+  installStagesRoute(ctx)
+
   for (const entry of MODULE_REGISTRY) {
     // 开关关闭 ⇒ 不注册该模块。**只影响它自己**，不影响其他模块。
-    //   ⚠ 跨实例投递的**唯一**装载条件就是它（显式开关），⛔ 不再参考任何档位。
-    if (!entry.enabled(switches)) continue
+    // ⚠ 2026-10-25：跳过时**记下原因**，供收尾那一行区分"配置关"与"起了但挂了"。
+    if (!entry.enabled(switches)) {
+      skippedBySwitch.push(entry.key)
+      continue
+    }
 
     // 经 `ctx.plugin` 装载：模块自己的 `inject` 生效为加载门禁
     // （依赖不在 ⇒ 该 fiber 不激活，宿主不报错、其余模块照常）。
     // 用模块名作为 fiber 的显示名，便于 `dev_plugin_status` 之类诊断定位。
     // ⚠ `configFor` 传的是**普通值**（已解 ref）；没有它的模块保持原样（不传 config）。
     const modConfig = 'configFor' in entry ? entry.configFor(config) : undefined
-    // ⚠ M6a 的运行态依赖（⚠ **现读**开关与白名单 —— ⛔ 不缓存）：⚠ 只有它需要，故按 key 给。
-    const modConfigFinal = entry.key === 'interconnect'
-      ? {
-        deps: {
-          enabledOf: () => interconnectEnabled(config),
-          targetsOf: () => interconnectTargets(config),
-          log: (msg: string) => { try { ctx.logger?.debug?.(msg) } catch { /* 无 logger 时忽略 */ } },
-          /**
-           * ⭐⭐ **投递准入：可信发起者 → 该会话策略**（2026-10-22 第 2 轮 · `REQ-04`/`REQ-05`）。
-           *
-           * ── 它取代了什么 ────────────────────────────────────────────────────
-           *   上一轮的 `sessionLevelOf(sessionKey)` 收的是**一个字符串**。
-           *   ⚠ 那等于"谁传什么就信什么"：调用方传 `'sess-A'` 就套用 sess-A 的档，
-           *     传别人的 id 就借用别人的权限 —— **可伪造**，⛔ 不是授权。
-           *   ⇒ 现在改成**从宿主执行上下文取发起者**，⛔ 不接受调用方自报身份。
-           *
-           * ── 三级取法（每一级都只在"确实拿到了活对象"时才往下走）───────────
-           *   ① `agents.currentInitiator()` —— 宿主用 `AsyncLocalStorage` 维护的
-           *      **当前执行归属**（`dsh-agent/lib/index.js:325` / `:370`）。
-           *      ⚠ 它由 `agent-loop` 在**真正执行这一轮**时建立
-           *      （`dsh-agent-loop/lib/index.js:868` 的 `withInitiator(this, …)`）
-           *      ⇒ 走到投递时，发起者就是那个 agent。**这是唯一可信来源**。
-           *   ② 拿它的 `agent.session`（宿主硬保证 `agent.id === session.id`，
-           *      `dsh-agent/lib/index.js:514` 附近 `const { session } = agent`）。
-           *   ③ 用 `sessions.get(session.id)` **回表核实它仍是活会话**
-           *      —— ⚠ 不信"对象长得像"，要"能在这个 store 里查到同一份"。
-           *
-           * ── 拒（fail-closed）的每一档都带**机器可判**的原因 ──────────────────
-           *   `no-initiator` —— 没有执行归属（定时器 / 外部直接调用 / 别处回调）
-           *   `stale-session` —— 有 initiator，但它的会话不在活表里（已销毁 / 派生残留）
-           *   `no-policy`    —— 策略服务缺席或取不到（没装 / 还没就绪）
-           *   `bad-policy`   —— 取到了但形状不对（档位不是三档之一）
-           *   ⛔ **一律不退回全局宽档** —— 那正是本批要断的串线。
-           */
-          admissionOf: () => {
-            const deny = (code: string, detail: string) => ({ ok: false as const, code, detail })
-            // ① 执行归属（⚠ 这一步**必须现读**：AsyncLocalStorage 是"当前栈"的，⛔ 缓存无效）
-            let agent: any
-            try {
-              const agents = (ctx as any).get?.('agents') ?? (ctx as any).agents
-              if (typeof agents?.currentInitiator !== 'function') {
-                return deny('no-initiator', '宿主 `agents` 服务不可用（或没有 `currentInitiator`）⇒ 取不到执行归属')
-              }
-              agent = agents.currentInitiator()
-            } catch (e) {
-              return deny('no-initiator', `取执行归属抛错：${String((e as Error)?.message ?? e)}`)
-            }
-            if (agent === undefined || agent === null) {
-              return deny('no-initiator',
-                '当前没有执行归属（无 initiator 边界）⇒ ⛔ 不投递。'
-                + '⚠ 常见于定时器 / 外部脚本直接调服务 / 非 agent 回调；'
-                + '⚠ 这类调用没有"发起会话"，因此**没有**可判的逐会话档位。')
-            }
-            // ② 它的会话（⚠ 宿主保证同一 id；这里取对象本身去回表）
-            let session: any
-            try { session = agent.session } catch { session = undefined }
-            if (session === undefined || session === null) {
-              return deny('stale-session', '发起者有 agent 但没有 session ⇒ 无法判档')
-            }
-            const sid = (() => { try { return typeof session.id === 'string' ? session.id : '' } catch { return '' } })()
-            if (sid === '') return deny('stale-session', '发起者的 session.id 取不到 ⇒ 无法判档')
-            // ③ 回表核实：必须仍是**活会话**，且必须是**同一份对象或同 id 的活对象**
-            let live: any
-            try {
-              const sessions = (ctx as any).get?.('sessions') ?? (ctx as any).sessions
-              if (typeof sessions?.get !== 'function') {
-                return deny('stale-session', '宿主 `sessions` 服务不可用 ⇒ 无法核实发起会话是否仍活着')
-              }
-              live = sessions.get(sid)
-            } catch (e) {
-              return deny('stale-session', `回表核实抛错：${String((e as Error)?.message ?? e)}`)
-            }
-            if (live === undefined || live === null) {
-              return deny('stale-session', `发起会话 ${JSON.stringify(sid)} 不在活表里 ⇒ ⛔ 不投递（不借用已销毁会话的身份）`)
-            }
-            // ④ 该会话自己的策略
-            let resolved: any
-            try {
-              const svc = (ctx as any).get?.(SESSION_POLICY_SERVICE) ?? (ctx as any)[SESSION_POLICY_SERVICE]
-              if (typeof svc?.of !== 'function') {
-                return deny('no-policy', '逐会话策略服务缺席 ⇒ 无法判定发起会话的档位（⛔ 不退回全局值）')
-              }
-              resolved = svc.of(live)
-            } catch (e) {
-              return deny('no-policy', `取逐会话策略抛错：${String((e as Error)?.message ?? e)}`)
-            }
-            const level = (() => { try { return resolved?.level } catch { return undefined } })()
-            if (typeof level !== 'string' || !['ledger', 'project', 'workspace'].includes(level)) {
-              return deny('bad-policy', `策略形状不对（level=${JSON.stringify(level)}）⇒ 按最保守处理`)
-            }
-            return {
-              ok: true as const,
-              sessionId: sid,
-              level,
-              isHob: resolved?.isHob === true,
-              source: String(resolved?.source ?? 'unknown'),
-            }
-          },
-        },
-      }
-      : modConfig
     /**
      * ⚠⚠ **捕获 `ctx.plugin()` 的返回值**（2026-10-24 · 治"假判据日志"）。
      *
@@ -327,23 +243,65 @@ export function apply(ctx: Context, config: ConfigShape): void {
      *   ⚠ **不 await 这条 fiber**：LOADING 与 PENDING 在循环刚结束那一瞬同形
      *     （实测报错态 `.then()` 永不 settle）⇒ 只读一次 `state`，⛔ 不等待。
      */
-    const fiber: any = ctx.plugin({ ...entry.mod, name: entry.mod.name }, modConfigFinal)
+    const fiber: any = ctx.plugin({ ...entry.mod, name: entry.mod.name }, modConfig)
 
     loaded.push(entry.key)
     loadedFibers.push({ key: entry.key, fiber })
   }
 
   /**
-   * 读一条 fiber 的状态。⚠ 轮询上限极小（只让 LOADING 有机会落定），
-   *   ⛔ 不 await（见上面"别 await 父 fiber"的理由）。
-   * @returns `2`=ACTIVE / 其它数字=FINAL 状态 / `undefined`=判不出（假 ctx）
+   * 读一条 fiber 的状态（⚠ **只读一次**，⛔ 不自旋、⛔ 不等）。
+   *
+   * ── ⚠⚠ 2026-10-25 · 这里原来有一段"同步自旋 20 次"，它是本单要治的那条缺陷的**根因** ──
+   *   改前：`let st = read(); for (let i = 0; i < 20 && st === 1; i += 1) st = read()`。
+   *   那句注释写的是"只让 LOADING 有机会落定" —— ⚠ **可它做不到**，而且不是"次数太少"：
+   *     `state` 从 `1`(LOADING) 变 `2`(ACTIVE) 发生在 `_reload()` 里，而 `_reload()` 的
+   *     第一步就是 `await Promise.resolve()`（`cordis/lib/index.js:1345`）⇒ **必须让出微任务队列**。
+   *     同步 `for` 循环**一次微任务都不让出** ⇒ 循环 20 次与循环 100 万次结果**完全相同**都是 `1`。
+   *     （实测见本单 REPORT §1：20 / 1000 / 1_000_000 次全读 `1`；而 `await` **一次还不够**、
+   *     要**第 2 次**才变 `2` —— 所以正确做法是 `fiber.await()`，不是"多 await 几次"的猜测。）
+   *   ⇒ ⚠ 于是 `1`（LOADING）落进了下面 `failedKeys` 那一支（"读得到且 ≠0/≠2"）
+   *     ⇒ 四条**都还在装载中**的模块被印成"失败(FAILED)"，而 `activeKeys` 为空 ⇒ 印"无"。
+   *   ⚠ **所以"自旋 20 次"这个上限本身是没有意义的旋钮**（它永远等不到任何东西）；
+   *     真正需要的是**让出微任务**，那只能由 `await` 提供 ⇒ 见下面 `settleFibers()`。
+   *
+   * @returns `2`=ACTIVE / `0`=PENDING / 其它数字=FINAL 状态 / `undefined`=判不出（假 ctx）
    */
-  const fiberStateOf = (f: any): number | undefined => {
-    const read = (): number | undefined => (typeof f?.state === 'number' ? f.state : undefined)
-    let st = read()
-    // ⚠ 只在"明确 LOADING(1)"时让出极短时间（同步自旋，不引入 await/延时）
-    for (let i = 0; i < 20 && st === 1; i += 1) st = read()
-    return st
+  const fiberStateOf = (f: any): number | undefined =>
+    (typeof f?.state === 'number' ? f.state : undefined)
+
+  /**
+   * ⚠⚠ 2026-10-25 · **等子 fiber 落定再读**（本单的修法）。
+   *
+   * ── 为什么必须 await（而不是再自旋）────────────────────────────────
+   *   见上面 `fiberStateOf` 的注释：`1 → 2` 要经过 `await Promise.resolve()`，
+   *   同步代码**结构上**看不到它。⚠ `await` 是唯一能让出微任务的手段。
+   *
+   * ── 为什么是 `fiber.await()` 而不是 `Promise.all` + 超时 ──────────────
+   *   `Fiber.await()`（`cordis/lib/index.js:1399-1403`）的语义正好是我们要的：
+   *   `while (this.inertia) await this.inertia;` ⇒ 等本 fiber 的装载/卸载落定；
+   *   然后 `if (this._error) throw this._error`。⚠ **实测 PENDING 的 fiber 也会立刻返回**
+   *   （它没有 `inertia`）⇒ **不会挂住**（本单 REPORT §1 有读数：四条 fiber await 合计 1ms）。
+   *   ⛔ 不自己造超时/轮询 —— 那会引入"等多久算够"这种**说不清的口径**。
+   *
+   * ── ⚠ 边界（说清它不保证什么）──────────────────────────────────────
+   *   ① 它**只等**"装载这一瞬"落定；模块**之后**再因为依赖掉线而卸载，本行日志不会重打
+   *      （那是宿主的 `internal/status` 事件，不在本行职责内）。
+   *   ② `await` 抛（`_error`）时的 fiber 是 `3`(FAILED)，如实进"失败"桶。
+   *   ③ 假 ctx（`check:host` 的探针）拿到的 `fiber` 是 `{ then(){} }` ⇒ **没有 `await` 方法**
+   *      ⇒ 走下面的"判不出"分支，⛔ 不会因此把 `check:host` 判红（该行为**保持改前语义**）。
+   */
+  const settleFibers = async (items: Array<{ key: string; fiber: any }>): Promise<void> => {
+    await Promise.all(items.map(async ({ fiber }) => {
+      // ⚠ 假 ctx 的 fiber 没有 await（只有 then）⇒ 不强行造一个，交给下面的判不出分支
+      if (typeof fiber?.await !== 'function') return
+      try {
+        await fiber.await()
+      } catch {
+        // ⚠ 装载失败**不是本函数的失败**：fiber 会停在 3(FAILED)，由下面如实分桶报出。
+        //   ⛔ 不在这里吞掉错误信息 —— 它已经由宿主 logger 记过一遍（cordis `_reload` 的 catch）。
+      }
+    }))
   }
 
   // ⚠ 日志不是「模块真的生效」的判据（零日志 ≠ 没执行 —— 见 .hob/EXPERIENCE.md E-29）。
@@ -352,21 +310,29 @@ export function apply(ctx: Context, config: ConfigShape): void {
   //   （它是"空旋钮"：只被打进日志，不影响任何行为），故片段一并去掉。
   //   **日志本身保留** —— 它是"哪些模块被登记"的唯一运行时线索。
   /**
-   * ⚠⚠ **2026-10-24 · 这一行不再是假判据**：它现在只点"真的 ACTIVE 的模块"。
+   * ⚠⚠ **2026-10-25 · 这一行现在是三态 + 真的会点名"哪个没起"**（本单的修法）。
    *
-   * ── 改前的病灶 ────────────────────────────────────────────────────
-   *   它把**循环走过的 key** 全列出来，而 `ctx.plugin()` 在依赖不满足时**不抛错**
-   *   （fiber 停在 PENDING=0、`apply` 未跑）⇒ 日志说"已加载"，实际一个都没装。
-   *   ⚠ 这类"日志说有、实际没有"比没有日志更坏：它让人**不去查**。
+   * ── 改前（2026-10-24 那版）的病灶：它自称"不再是假判据"，但它**判不出真的没加载** ──
+   *   ⚠ 两处硬伤，本单都用读数钉过（REPORT §1 / §2）：
+   *     ① `1`(LOADING) 落进 `failedKeys` ⇒ 四条**都还在装载中**的模块被印成"失败(FAILED)"，
+   *        `activeKeys` 为空 ⇒ info 印「模块：无」。⚠ 这是本单要治的那条。
+   *     ② 更根本的：**同一份代码在"全都起"与"真的缺一个"两种情形下印出逐字相同的 info 行**
+   *        （「模块：无」）。⇒ 那一行**对"模块没加载"这件事零分辨力**。
+   *        实测：健康态与"缺 tools 服务"两种情形，info 行**逐字相同**（REPORT §2 两段原文）。
    *
-   * ── 现在的分工（⚠ 分工就是判据）────────────────────────────────────
-   *   · `已加载（模块：…）` —— 只含 **state===2**（ACTIVE）的 key，**以及 state 判不出的 key**
-   *     （⚠ 判不出 ≠ 没装：单测/探针的假 ctx 拿不到 `state`，把它算作"未加载"会让
-   *      `check:host` 误红；这是"读不到"与"确定失败"必须分开的同一条纪律）；
-   *   · `模块未激活：待依赖(PENDING)=… / 失败(FAILED)=…` —— 只含**读得到且 ≠2** 的 key。
-   *   ⚠ 两句都**只依据 fiber.state**，⛔ 不再依据"循环走到哪"。
-   *   ⚠ info 那句的**原字样必须保留**（有判据逐字钉它）。
+   * ── 现在：先等落定，再按三态印 ────────────────────────────────────
+   *   · `settleFibers()` 等每条 fiber 的装载**真的**落定（不再同步自旋 —— 那结构上不可能等到）；
+   *   · 落定后按 `state` 三分：`2`=起来了 · `0`=待依赖(PENDING) · 其它数字=失败(FAILED)。
+   *   ⚠ **三态各自成句**，⛔ 不再有"`无` 一句话了事"这种把两件事压成一句的形态：
+   *     · **都起来了** ⇒ info 一句（原字样保留，判据逐字钉它）；
+   *     · **部分没起 / 一个都没起** ⇒ info 仍打"已加载（模块：…）"，但**紧接着一条 warn 逐字点名**
+   *       哪几个没起、各是什么状态（PENDING 还是 FAILED），并**明确说"缺的是哪一类"**。
+   *       ⚠ 一个都没起时 **warn 里必须出现"一个都没起"** 这个可读短语
+   *       （只印 `已加载（模块：无）` 会与"开关全关"这一合法情形**同形** —— 那正是改前的错）。
+   *   ⚠ 假 ctx（`check:host`）的 fiber 没有 `await`、`state` 也读不到 ⇒ 落"判不出"，
+   *     仍算作已加载（**保持改前语义**，⛔ 不让探针误红）。
    */
+  await settleFibers(loadedFibers)
   const stateById = loadedFibers.map(({ key, fiber }) => ({ key, st: fiberStateOf(fiber) }))
   const activeKeys = stateById.filter((x) => x.st === 2 || x.st === undefined).map((x) => x.key)
   const pendingKeys = stateById.filter((x) => x.st === 0).map((x) => x.key)
@@ -374,11 +340,76 @@ export function apply(ctx: Context, config: ConfigShape): void {
   ctx.logger?.info?.(
     `[${name}] 已加载（模块：${activeKeys.length ? activeKeys.join(', ') : '无'}）`,
   )
+  /**
+   * ⚠⚠ **2026-10-25 · 本单的修法：在"有模块没起"时**额外**以 info 打一行"为什么没起"**
+   *
+   * ── 为什么 warn 不够（本单 §一-1 那个洞）──────────────────────────────
+   *   原来区分两种"零个 ACTIVE"只靠下面那条 `warn`，而**生产日志通道看不到 warn**：
+   *   `Logger._method` 的过滤是
+   *   `(exporter.levels?.[name] ?? exporter.levels?.default ?? this.level ?? 1) < level ⇒ continue`
+   *   （`cordis/lib/index.js:474`），内存 buffer 的 exporter **没配 `levels`** ⇒ 阈值落回 `1`，
+   *   而 `warn` 的 level 是 **2** ⇒ **结构上永远被滤掉**（实测 111 条里 warn 一条没有）。
+   *   ⇒ 于是"四个都没装"与"四个都装上了但一个都没起"在生产日志上**长得一模一样**。
+   *
+   * ── 这条 info 行的三条硬约束（作业书 §一-2，逐条对应下面的写法）─────────
+   *   ① **必须能看出成因**：`配置关掉的` 与 `打开了但没起来的` **分成两段各自点名**，
+   *      ⛔ 不合并成一句"没起"（两者成因不同：前者是用户选择，后者是环境故障）；
+   *   ② **只有真有模块没起时才打**：全起时 `off.length === 0 && dead.length === 0`
+   *      ⇒ **直接不进这支**，⛔ 一个字都不多打（"四都在"那一行与改前逐字相同）；
+   *   ③ **对外可读**：只用 {@link MODULE_LABELS} 里的日常说法，⛔ 不出现 `modules.*` 开关名、
+   *      ⛔ 不出现 `tools` / `hobBus` 这类内部标识、⛔ 不出现任何路径。
+   *
+   * ⚠ **为什么"配置关掉的"必须在这里记**：被开关跳过的模块**根本没有 fiber**
+   *   （`continue` 掉了）⇒ 下游只看 `stateById` 只能看到"少了几个"，**猜不出**是关的还是挂的。
+   *   ⇒ 成因在循环里用 `skippedBySwitch` 记下来（见上面那个数组）。
+   */
+  const offKeys = [...skippedBySwitch]
+  const deadKeys = [...pendingKeys, ...failedKeys]
+  if (offKeys.length > 0 || deadKeys.length > 0) {
+    const total = MODULE_REGISTRY.length
+    const label = (keys: string[]): string => keys.map((k) => MODULE_LABELS[k as keyof typeof MODULE_LABELS]).join('、')
+    /** ⚠ 两段各自成句；哪一段为空就**不出现**（⛔ 不印"关闭的=无"这种噪声）。 */
+    const parts: string[] = []
+    if (offKeys.length > 0) {
+      parts.push(`设置里关掉的=${label(offKeys)}（${offKeys.length} 个，这是配置所致、不是故障；`
+        + '打开对应开关并重启实例后才会加载）')
+    }
+    if (deadKeys.length > 0) {
+      parts.push(`设置里是打开的、但没起来的=${label(deadKeys)}（${deadKeys.length} 个，`
+        + '这是环境不满足所致、不是配置关掉；补齐所缺的宿主能力后宿主会自动激活）')
+    }
+    /**
+     * ⚠ 开头那个短语按"是不是一个都没起"分两种说法 —— 这是**人眼最先看的地方**：
+     *   全都没起要说"一个都没起"，部分没起要说"有 N 个没起"，⛔ 不许都写成"部分"。
+     *   ⚠ `total` 取 `MODULE_REGISTRY.length`（**不是** `stateById.length`）：
+     *     开关全关时 `stateById` 是空的，用它算会把"4 个都没起"说成"0 个"，又说回"无"了。
+     */
+    const noneUp = activeKeys.length === 0 && total > 0
+    const head = noneUp
+      ? `${total} 个模块一个都没起`
+      : `有 ${offKeys.length + deadKeys.length}/${total} 个模块没起`
+    ctx.logger?.info?.(`[${name}] 模块未启动：${head} —— ${parts.join('；')}`)
+  }
   if (pendingKeys.length > 0 || failedKeys.length > 0) {
+    /**
+     * ⚠⚠ **这条 warn 保留**（2026-10-25）：它是给"看得见 warn 的通道"（终端 / 文件 exporter）
+     *   用的**明细**；⚠ 但**生产日志通道看不见它**（阈值只放 info 及以上），
+     *   ⇒ **⛔ 不许把它当成"已经告知了"** —— 告知责任在上面那条 info 行。
+     *
+     *   这一段讲的是"**注册了但没起来**"（PENDING / FAILED）的逐条状态；
+     *   ⚠ 它与上面那条 info 的分工：info 说**成因分类 + 对外名字**，warn 说**内部键名 + 精确状态**。
+     *   ⚠ `loadedFibers` 为空（= 开关全关，**没有任何 fiber**）时不会进这一支，
+     *     所以这里**只可能**是"打开了但没起来"，⛔ 不会与"配置关掉"混形。
+     */
+    const registered = stateById.length
+    const dead = pendingKeys.length + failedKeys.length
+    const allDead = registered > 0 && dead === registered
     ctx.logger?.warn?.(
       `[${name}] 模块未激活：待依赖(PENDING)=${pendingKeys.length ? pendingKeys.join(', ') : '无'}`
       + ` / 失败(FAILED)=${failedKeys.length ? failedKeys.join(', ') : '无'}`
-      + `（⚠ 这些模块的 apply **没有执行** ⇒ 它们的能力当前**不存在**；`
+      + (allDead ? `（⚠⚠ **${registered} 个模块一个都没起** —— 这是"全没装"，不是"开关全关"；`
+        + '开关全关时这里不会打印本行）' : `（⚠ 上列 ${dead}/${registered} 个模块没起；其余照常）`)
+      + '（⚠ 这些模块的 apply **没有执行** ⇒ 它们的能力当前**不存在**；'
       + '依赖就绪后宿主会自动激活，或关掉对应 `modules.*` 开关消除本条）',
     )
   }

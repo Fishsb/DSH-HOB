@@ -120,10 +120,17 @@ try {
       if (!Array.isArray(res.items) || res.items.length !== 3) probs.push(`items 不是 3 条：${JSON.stringify(res.items?.length)}`)
       else {
         const targets = res.items.map((x) => x.target)
-        const want = ['aaaaaaaa', 'bbbbbbbb', 'cccccccc']
+        /**
+         * ⚠ 2026-10-30 第 20 轮：排序口径改了（任务书 §一3）——
+         *   「现在」档整体在前；同档内 `running` 前、`stuck` 后。
+         *   ⇒ 期望序 = aaaaaaaa(now/running) → cccccccc(history/returned) → bbbbbbbb(history/stuck)。
+         */
+        const want = ['aaaaaaaa', 'cccccccc', 'bbbbbbbb']
         if (JSON.stringify(targets) !== JSON.stringify(want)) probs.push(`target 短标签/顺序不对：${JSON.stringify(targets)}（期望 ${JSON.stringify(want)}）`)
         const states = res.items.map((x) => x.state)
-        if (JSON.stringify(states) !== JSON.stringify(['running', 'stuck', 'returned'])) probs.push(`九态映射不对：${JSON.stringify(states)}（期望 ["running","stuck","returned"]）`)
+        if (JSON.stringify(states) !== JSON.stringify(['running', 'returned', 'stuck'])) probs.push(`九态映射不对：${JSON.stringify(states)}（期望 ["running","returned","stuck"]）`)
+        const buckets = res.items.map((x) => x.bucket)
+        if (JSON.stringify(buckets) !== JSON.stringify(['now', 'history', 'history'])) probs.push(`分档不对：${JSON.stringify(buckets)}（期望 ["now","history","history"]）`)
       }
     }
     if (probs.length === 0) ok('E-1 ✓ 正常三条（pending/lost/closed）⇒ ok:true · source 逐字 · readAt 是 ISO · 顺序原样 · 九态映射对')
@@ -302,6 +309,347 @@ try {
     const r = mod.handleExecProgress(deps({ readText: () => JSON.stringify(state) }), {})
     if (r.ok === true && r.items.length === 1 && r.items[0].rechecks === 0) ok('E-10 ✓ `rechecks` 缺字段 ⇒ 0（"没重核过"，如实；⛔ 不是判不出）')
     else bad(`E-10 · 期望 rechecks=0，实际 ${JSON.stringify(r).slice(0, 140)}`)
+  }
+
+  // ── E-12（判据 A）分档：pending 只进「现在」，lost/closed 只进「历史」──────
+  {
+    const state = {
+      version: 1, updatedAt: NOW_MS,
+      pending: [{ target: 'session-now00001-1', at: NOW_MS - 5000, sawRunning: true, sawRunningAt: NOW_MS - 4000 }],
+      lost: [{ target: 'session-lost0001-2', at: NOW_MS - 900000, sawRunning: true, settleState: 'stuck' }],
+      closed: [{ target: 'session-closed01-3', at: NOW_MS - 950000, sawRunning: true, deliveredAt: NOW_MS - 800000 }],
+      handoffs: [], sessions: [],
+    }
+    const res = mod.handleExecProgress(deps({ readText: () => JSON.stringify(state) }), {})
+    const probs = []
+    if (res.ok !== true) probs.push(`ok 不是 true：${JSON.stringify(res).slice(0, 120)}`)
+    else {
+      const byTarget = new Map(res.items.map((x) => [x.target, x]))
+      const n = byTarget.get('now00001')
+      const l = byTarget.get('lost0001')
+      const c = byTarget.get('closed01')
+      if (n === undefined || n.bucket !== 'now') probs.push(`pending 那条不在「现在」档：${JSON.stringify(n)}`)
+      if (l === undefined || l.bucket !== 'history') probs.push(`lost 那条不在「历史」档：${JSON.stringify(l)}`)
+      if (c === undefined || c.bucket !== 'history') probs.push(`closed 那条不在「历史」档：${JSON.stringify(c)}`)
+      // ⚠ 交叉出现即红：现在档里不许出现来自 lost/closed 的 target
+      const nowTargets = res.items.filter((x) => x.bucket === 'now').map((x) => x.target)
+      if (nowTargets.includes('lost0001') || nowTargets.includes('closed01')) probs.push(`「现在」档里混进了历史记录：${JSON.stringify(nowTargets)}`)
+      // ⚠ 排序：现在档整体在前
+      const firstHistory = res.items.findIndex((x) => x.bucket === 'history')
+      const lastNow = res.items.map((x) => x.bucket).lastIndexOf('now')
+      if (firstHistory !== -1 && lastNow > firstHistory) probs.push('「现在」档没有整体排在「历史」档之前')
+    }
+    if (probs.length === 0) ok('E-12 ✓ 判据A 分档：pending⇒「现在」· lost/closed⇒「历史」· 零交叉 · 现在档整体在前')
+    else for (const x of probs) bad(`E-12 · ${x}`)
+  }
+
+  // ── E-13（判据 B）同一 target 3 条 ⇒ 1 行 + count=3 ─────────────────────
+  {
+    const state = {
+      version: 1, updatedAt: NOW_MS,
+      pending: [], lost: [], handoffs: [], sessions: [],
+      closed: [
+        { target: 'session-dupdup00-9', at: NOW_MS - 3000, sawRunning: true, deliveredAt: NOW_MS - 2000 },
+        { target: 'session-dupdup00-9', at: NOW_MS - 2000, sawRunning: true, deliveredAt: NOW_MS - 1000 },
+        { target: 'session-dupdup00-9', at: NOW_MS - 1000, sawRunning: true, acceptedAt: NOW_MS - 500 },
+      ],
+    }
+    const res = mod.handleExecProgress(deps({ readText: () => JSON.stringify(state) }), {})
+    const probs = []
+    if (res.ok !== true) probs.push(`ok 不是 true：${JSON.stringify(res).slice(0, 120)}`)
+    else {
+      const rows = res.items.filter((x) => x.target === 'dupdup00')
+      if (rows.length !== 1) probs.push(`同一 target 出了 ${rows.length} 行（期望 1）`)
+      else {
+        if (rows[0].count !== 3) probs.push(`count 不是 3：${JSON.stringify(rows[0].count)}`)
+        // ⚠ 取**最新**那条：最新一条带 acceptedAt ⇒ 九态应为 accepted
+        if (rows[0].state !== 'accepted') probs.push(`没有取最新状态：state=${JSON.stringify(rows[0].state)}（期望 accepted）`)
+      }
+      if (res.items.length !== 1) probs.push(`总行数 ${res.items.length}（期望 1）`)
+    }
+    if (probs.length === 0) ok('E-13 ✓ 判据B 按目标合并：3 条同 target ⇒ 1 行 · count=3 · 取最新那条的状态（accepted）')
+    else for (const x of probs) bad(`E-13 · ${x}`)
+  }
+
+  // ── E-14（判据 C）无 ranMs 的非 pending 记录 ⇒ 展示词不含「执行中」──────
+  {
+    const state = {
+      version: 1, updatedAt: NOW_MS,
+      pending: [], lost: [], handoffs: [], sessions: [],
+      // ⚠ 夹具要造出**九态=running 但无 ranMs** 的形态（真机那 22 行的样子）：
+      //   sawRunning:true 且无 sawRunningAt ⇒ dispatchStateOf 给 'running'、dispatchProgressOf 给 ranMs=undefined；
+      //   ⛔ 不能带 deliveredAt（那会映射成 'returned'，测的就不是这条判据了）。
+      closed: [{ target: 'session-noran000-7', at: NOW_MS - 950000, sawRunning: true }],
+    }
+    const res = mod.handleExecProgress(deps({ readText: () => JSON.stringify(state) }), {})
+    const probs = []
+    if (res.ok !== true) probs.push(`ok 不是 true：${JSON.stringify(res).slice(0, 120)}`)
+    else if (res.items.length !== 1) probs.push(`行数 ${res.items.length}（期望 1）`)
+    else {
+      const it = res.items[0]
+      if ('elapsedMs' in it) probs.push(`没有 sawRunningAt 却带了 elapsedMs=${JSON.stringify(it.elapsedMs)}`)
+      const label = proto.execDisplayLabel(it)
+      if (label.includes('执行中')) probs.push(`展示词含「执行中」：${JSON.stringify(label)}（应改中性词）`)
+      if (label !== '未开跑') probs.push(`展示词不是「未开跑」：${JSON.stringify(label)}`)
+    }
+    // ⚠ 对照：真在跑的（pending + ranMs）**必须**仍是「执行中」
+    const state2 = {
+      version: 1, updatedAt: NOW_MS,
+      pending: [{ target: 'session-yesran00-8', at: NOW_MS - 9000, sawRunning: true, sawRunningAt: NOW_MS - 8000 }],
+      lost: [], closed: [], handoffs: [], sessions: [],
+    }
+    const res2 = mod.handleExecProgress(deps({ readText: () => JSON.stringify(state2) }), {})
+    if (res2.ok !== true || res2.items.length !== 1) probs.push('对照组（真在跑）读不到')
+    else {
+      const l2 = proto.execDisplayLabel(res2.items[0])
+      if (l2 !== '执行中') probs.push(`对照组展示词不是「执行中」：${JSON.stringify(l2)}`)
+    }
+    if (probs.length === 0) ok('E-14 ✓ 判据C 无 ranMs 的非 pending ⇒ 展示词「未开跑」（⛔ 不含「执行中」）；真在跑的**仍是**「执行中」')
+    else for (const x of probs) bad(`E-14 · ${x}`)
+  }
+
+  // ── E-12b（判据 E）负向对拍：去掉分档判断 ⇒ E-12 必红 ───────────────────
+  {
+    const { cpSync } = await import('node:fs')
+    const mutRoot = join(work, 'mutroot-bucket')
+    cpSync(join(root, 'src'), join(mutRoot, 'src'), { recursive: true })
+    const mutFile = join(mutRoot, 'src/shared/exec-progress.ts')
+    const orig = readFileSync(mutFile, 'utf8')
+    // 把"按来源摞分档"改成"全归现在档" ⇒ pending/lost/closed 混在一起
+    const mutated = orig.replace(
+      "bucket: from === 'pending' ? 'now' : 'history',",
+      "bucket: 'now',",
+    )
+    if (mutated === orig) {
+      bad('E-12b · 负向对拍**没能改到**分档那行（锚点失配）⇒ 这条对拍本身失效')
+    } else {
+      writeFileSync(mutFile, mutated)
+      const g2 = tsMount.mountTsGraph({ root: mutRoot, outDir: join(work, 'out-mut-bucket'), entries: ENTRIES, ts })
+      const out2 = g2.entries[ENTRY]
+      if (out2 === undefined) {
+        bad(`E-12b · 副本转译失败：${g2.problems.join(' / ')}`)
+      } else {
+        const f2 = join(work, 'entry-mut-bucket.mjs')
+        writeFileSync(f2, `export * from ${JSON.stringify(out2)}\n`)
+        const mod2 = await import(pathToFileURL(f2).href)
+        const state = {
+          version: 1, updatedAt: NOW_MS,
+          pending: [{ target: 'session-now00001-1', at: NOW_MS - 5000, sawRunning: true, sawRunningAt: NOW_MS - 4000 }],
+          lost: [{ target: 'session-lost0001-2', at: NOW_MS - 900000, sawRunning: true, settleState: 'stuck' }],
+          closed: [{ target: 'session-closed01-3', at: NOW_MS - 950000, sawRunning: true, deliveredAt: NOW_MS - 800000 }],
+          handoffs: [], sessions: [],
+        }
+        const r = mod2.handleExecProgress(deps({ readText: () => JSON.stringify(state) }), {})
+        const bad12 = r.ok !== true
+          || r.items.find((x) => x.target === 'lost0001')?.bucket !== 'history'
+          || r.items.find((x) => x.target === 'closed01')?.bucket !== 'history'
+        if (bad12) ok('E-12b ✓ 负向对拍（全部归「现在」档）⇒ E-12 的分档断言**必红**')
+        else bad('E-12b · 去掉分档后 E-12 仍通过 ⇒ 那条断言没有牙')
+      }
+    }
+  }
+
+  // ── E-13b（判据 E）负向对拍：去掉按 target 合并 ⇒ E-13 必红 ───────────────
+  {
+    const { cpSync } = await import('node:fs')
+    const mutRoot = join(work, 'mutroot-merge')
+    cpSync(join(root, 'src'), join(mutRoot, 'src'), { recursive: true })
+    const mutFile = join(mutRoot, 'src/shared/exec-progress.ts')
+    const orig = readFileSync(mutFile, 'utf8')
+    // 把 key 里带上"记录序号" ⇒ 同一 target 不再合并
+    const mutated = orig.replace(
+      "const key = `${row.bucket}\\u0000${row.target}`",
+      "const key = `${row.bucket}\\u0000${row.target}\\u0000${rows.indexOf(row)}`",
+    )
+    if (mutated === orig) {
+      bad('E-13b · 负向对拍**没能改到**合并 key（锚点失配）⇒ 这条对拍本身失效')
+    } else {
+      writeFileSync(mutFile, mutated)
+      const g2 = tsMount.mountTsGraph({ root: mutRoot, outDir: join(work, 'out-mut-merge'), entries: ENTRIES, ts })
+      const out2 = g2.entries[ENTRY]
+      if (out2 === undefined) {
+        bad(`E-13b · 副本转译失败：${g2.problems.join(' / ')}`)
+      } else {
+        const f2 = join(work, 'entry-mut-merge.mjs')
+        writeFileSync(f2, `export * from ${JSON.stringify(out2)}\n`)
+        const mod2 = await import(pathToFileURL(f2).href)
+        const state = {
+          version: 1, updatedAt: NOW_MS, pending: [], lost: [], handoffs: [], sessions: [],
+          closed: [
+            { target: 'session-dupdup00-9', at: NOW_MS - 3000, sawRunning: true, deliveredAt: NOW_MS - 2000 },
+            { target: 'session-dupdup00-9', at: NOW_MS - 2000, sawRunning: true, deliveredAt: NOW_MS - 1000 },
+            { target: 'session-dupdup00-9', at: NOW_MS - 1000, sawRunning: true, acceptedAt: NOW_MS - 500 },
+          ],
+        }
+        const r = mod2.handleExecProgress(deps({ readText: () => JSON.stringify(state) }), {})
+        const rows = r.ok === true ? r.items.filter((x) => x.target === 'dupdup00') : []
+        if (rows.length !== 1) ok(`E-13b ✓ 负向对拍（不合并）⇒ E-13 的"只出 1 行"**必红**：实际 ${rows.length} 行`)
+        else bad('E-13b · 去掉合并后仍然只有 1 行 ⇒ 那条断言没有牙')
+      }
+    }
+  }
+
+  // ── E-15 合并行的 elapsedMs = **最长一次**（任务书 §一5：56h/67h 不许丢）────
+  {
+    const state = {
+      version: 1, updatedAt: NOW_MS, pending: [], lost: [], handoffs: [], sessions: [],
+      closed: [
+        // ⚠ 最早那条开跑于 56 小时前（真机上就是用户点名要保住的那条），最新那条只有 1 秒
+        { target: 'session-longest0-1', at: NOW_MS - 56 * 3600 * 1000, sawRunning: true, sawRunningAt: NOW_MS - 56 * 3600 * 1000, deliveredAt: NOW_MS - 50 * 3600 * 1000 },
+        { target: 'session-longest0-1', at: NOW_MS - 1000, sawRunning: true, sawRunningAt: NOW_MS - 1000, acceptedAt: NOW_MS - 500 },
+      ],
+    }
+    const res = mod.handleExecProgress(deps({ readText: () => JSON.stringify(state) }), {})
+    const probs = []
+    if (res.ok !== true || res.items.length !== 1) probs.push(`行数不是 1：${JSON.stringify(res).slice(0, 140)}`)
+    else {
+      const it = res.items[0]
+      if (it.count !== 2) probs.push(`count 不是 2：${JSON.stringify(it.count)}`)
+      if (it.state !== 'accepted') probs.push(`状态不是取最新那条（accepted）：${JSON.stringify(it.state)}`)
+      const want = 56 * 3600 * 1000
+      if (typeof it.elapsedMs !== 'number') probs.push('合并行没有 elapsedMs（应取最长那次）')
+      else if (Math.abs(it.elapsedMs - want) > 5000) probs.push(`elapsedMs=${it.elapsedMs}（期望 ≈${want}，即 56 小时那次）`)
+    }
+    if (probs.length === 0) ok('E-15 ✓ 合并行 `elapsedMs` 取**最长一次**（56h 那条不丢）；状态仍取**最新**那条（accepted）')
+    else for (const x of probs) bad(`E-15 · ${x}`)
+  }
+
+  // ── E-16 排序：现在档在前；同档 running 前、stuck 后 ────────────────────
+  {
+    const state = {
+      version: 1, updatedAt: NOW_MS,
+      pending: [
+        { target: 'session-sortstuk-1', at: NOW_MS - 100, sawRunning: true, settleState: 'stuck' },
+        { target: 'session-sortrun0-2', at: NOW_MS - 200, sawRunning: true, sawRunningAt: NOW_MS - 150 },
+      ],
+      lost: [{ target: 'session-sorthist-3', at: NOW_MS - 300, sawRunning: true, settleState: 'stuck' }],
+      closed: [], handoffs: [], sessions: [],
+    }
+    const res = mod.handleExecProgress(deps({ readText: () => JSON.stringify(state) }), {})
+    const probs = []
+    if (res.ok !== true) probs.push(`ok 不是 true：${JSON.stringify(res).slice(0, 120)}`)
+    else {
+      const seq = res.items.map((x) => `${x.bucket}/${x.state}`)
+      const want = ['now/running', 'now/stuck', 'history/stuck']
+      if (JSON.stringify(seq) !== JSON.stringify(want)) probs.push(`排序不对：${JSON.stringify(seq)}（期望 ${JSON.stringify(want)}）`)
+    }
+    if (probs.length === 0) ok('E-16 ✓ 排序：现在档整体在前 · 同档内 running 前 / stuck 后')
+    else for (const x of probs) bad(`E-16 · ${x}`)
+  }
+
+  // ── E-17（判据E）三组对照：now+running⇒执行中 / history+running+无⇒未开跑 / history+running+有⇒曾运行 ──
+  {
+    const cases = [
+      ['现在档 running', { state: 'running', bucket: 'now', elapsedMs: 5000 }, '执行中'],
+      ['历史档 running 无 elapsedMs', { state: 'running', bucket: 'history' }, '未开跑'],
+      ['历史档 running 有 elapsedMs', { state: 'running', bucket: 'history', elapsedMs: 5000 }, '曾运行'],
+      // ⚠ 对照四：非 running 的九态仍走九态原词（⛔ 不许被这条新规则波及）
+      ['历史档 stuck', { state: 'stuck', bucket: 'history' }, '卡住'],
+    ]
+    const probs = []
+    for (const [label, item, want] of cases) {
+      const got = proto.execDisplayLabel(item)
+      if (got !== want) probs.push(`${label} ⇒ ${JSON.stringify(got)}（期望 ${JSON.stringify(want)}）`)
+    }
+    if (probs.length === 0) ok('E-17 ✓ 判据E 三组对照齐：now+running⇒执行中 · history+running+无⇒未开跑 · history+running+有⇒**曾运行**（非 running 仍走九态原词）')
+    else for (const x of probs) bad(`E-17 · ${x}`)
+  }
+
+  // ── E-18（判据F）消歧句里的 N = **未开跑条数**，⛔ 不是总条数 ─────────────
+  {
+    /**
+     * 夹具：同一 target 共 3 条 —— **2 条从未进过运行态**（无 `sawRunningAt`）+ **1 条曾运行**。
+     * ⇒ `count` 应为 3、`unrunCount` 应为 **2**，消歧句必须写「这 **2** 条」（⛔ 不是 3）。
+     */
+    const state = {
+      version: 1, updatedAt: NOW_MS, pending: [], lost: [], handoffs: [], sessions: [],
+      closed: [
+        // ⚠ 最新那条（at 最大）也是"从未开跑"的 stuck ⇒ 代表行 state=stuck，
+        //   这样夹具才真的是「卡住 · 未开跑 · 共 3 条」那个待消歧的形态。
+        { target: 'session-mixed000-1', at: NOW_MS - 3000, sawRunning: true, settleState: 'stuck' },
+        { target: 'session-mixed000-1', at: NOW_MS - 2000, sawRunning: true, sawRunningAt: NOW_MS - 1900, deliveredAt: NOW_MS - 1500 },
+        { target: 'session-mixed000-1', at: NOW_MS - 1000, sawRunning: true, settleState: 'stuck' },
+      ],
+    }
+    const res = mod.handleExecProgress(deps({ readText: () => JSON.stringify(state) }), {})
+    const probs = []
+    if (res.ok !== true || res.items.length !== 1) probs.push(`行数不是 1：${JSON.stringify(res).slice(0, 140)}`)
+    else {
+      const it = res.items[0]
+      if (it.count !== 3) probs.push(`count 不是 3：${JSON.stringify(it.count)}`)
+      // ⚠ 本条是本轮靶心：N 必须是未开跑条数（2），⛔ 不是总数（3）
+      if (it.unrunCount !== 2) probs.push(`unrunCount 不是 2（未开跑条数）：${JSON.stringify(it.unrunCount)}`)
+      const note = proto.execMergeNote(it)
+      if (!/这\s*2\s*条/.test(note)) probs.push(`消歧句里的 N 不是 2：${JSON.stringify(note)}`)
+      if (/这\s*3\s*条/.test(note)) probs.push(`消歧句写成了总条数 3（⛔ 本轮明令不许）：${JSON.stringify(note)}`)
+      if (!note.includes('都没进过运行态')) probs.push(`消歧句缺"都没进过运行态"：${JSON.stringify(note)}`)
+    }
+    // ⚠ 对照：单条记录不拼消歧句（"这 1 条都没进过运行态"读起来别扭）
+    const one = { version: 1, updatedAt: NOW_MS, pending: [], lost: [{ target: 'session-single00-2', at: NOW_MS - 1000, sawRunning: true, settleState: 'stuck' }], closed: [], handoffs: [], sessions: [] }
+    const r1 = mod.handleExecProgress(deps({ readText: () => JSON.stringify(one) }), {})
+    if (r1.ok === true && r1.items.length === 1 && proto.execMergeNote(r1.items[0]) !== '') probs.push('单条记录也拼了消歧句（应为空串）')
+    if (probs.length === 0) ok('E-18 ✓ 判据F 消歧句 N = **未开跑条数 2**（⛔ 不是总条数 3）· 单条记录不拼该句')
+    else for (const x of probs) bad(`E-18 · ${x}`)
+  }
+
+  // ── E-17b（判据E 负向对拍）改回旧口径（history 有 elapsedMs 仍写「执行中」）⇒ E-17 必红 ──
+  {
+    const { cpSync } = await import('node:fs')
+    const mutRoot = join(work, 'mutroot-label')
+    cpSync(join(root, 'src'), join(mutRoot, 'src'), { recursive: true })
+    const mutFile = join(mutRoot, 'src/shared/exec-protocol.ts')
+    const orig = readFileSync(mutFile, 'utf8')
+    const mutated = orig.replace(
+      "    return typeof item.elapsedMs === 'number' ? EXEC_LABEL_RAN_BEFORE : EXEC_LABEL_NOT_STARTED",
+      "    return typeof item.elapsedMs === 'number' ? EXEC_STATE_LABELS.running : EXEC_LABEL_NOT_STARTED",
+    )
+    if (mutated === orig) {
+      bad('E-17b · 负向对拍**没能改到**三档那一行（锚点失配）⇒ 这条对拍本身失效')
+    } else {
+      writeFileSync(mutFile, mutated)
+      const g2 = tsMount.mountTsGraph({ root: mutRoot, outDir: join(work, 'out-mut-label'), entries: ENTRIES, ts })
+      const out2 = g2.entries['src/shared/exec-protocol.ts']
+      if (out2 === undefined) {
+        bad(`E-17b · 副本转译失败：${g2.problems.join(' / ')}`)
+      } else {
+        const f2 = join(work, 'proto-mut.mjs')
+        writeFileSync(f2, `export * from ${JSON.stringify(out2)}\n`)
+        const proto2 = await import(pathToFileURL(f2).href)
+        const got = proto2.execDisplayLabel({ state: 'running', bucket: 'history', elapsedMs: 5000 })
+        if (got !== '曾运行') ok(`E-17b ✓ 负向对拍（改回旧口径）⇒ E-17 的"曾运行"断言**必红**：实际 ${JSON.stringify(got)}`)
+        else bad('E-17b · 改回旧口径后仍是「曾运行」⇒ 那条断言没有牙')
+      }
+    }
+  }
+
+  // ── E-18b（判据F 负向对拍）把 N 写成总条数 ⇒ E-18 必红 ──────────────────
+  {
+    const { cpSync } = await import('node:fs')
+    const mutRoot = join(work, 'mutroot-note')
+    cpSync(join(root, 'src'), join(mutRoot, 'src'), { recursive: true })
+    const mutFile = join(mutRoot, 'src/shared/exec-protocol.ts')
+    const orig = readFileSync(mutFile, 'utf8')
+    const mutated = orig.replace(
+      '  return `（这 ${unrun} 条都没进过运行态）`',
+      '  return `（这 ${count} 条都没进过运行态）`',
+    )
+    if (mutated === orig) {
+      bad('E-18b · 负向对拍**没能改到**消歧句（锚点失配）⇒ 这条对拍本身失效')
+    } else {
+      writeFileSync(mutFile, mutated)
+      const g2 = tsMount.mountTsGraph({ root: mutRoot, outDir: join(work, 'out-mut-note'), entries: ENTRIES, ts })
+      const out2 = g2.entries['src/shared/exec-protocol.ts']
+      if (out2 === undefined) {
+        bad(`E-18b · 副本转译失败：${g2.problems.join(' / ')}`)
+      } else {
+        const f2 = join(work, 'proto-mut2.mjs')
+        writeFileSync(f2, `export * from ${JSON.stringify(out2)}\n`)
+        const proto2 = await import(pathToFileURL(f2).href)
+        const note = proto2.execMergeNote({ count: 3, unrunCount: 2 })
+        if (/这\s*3\s*条/.test(note)) ok(`E-18b ✓ 负向对拍（N 写成总数）⇒ E-18 的"N=2"断言**必红**：实际 ${JSON.stringify(note)}`)
+        else bad(`E-18b · 改成总数后没印出 3：${JSON.stringify(note)}`)
+      }
+    }
   }
 
   // ── E-11 单条记录形态不认识 ⇒ row-shape-unknown（⛔ 不许静默丢）────────

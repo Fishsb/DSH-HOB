@@ -23,6 +23,13 @@
  *   1 = **有对象但不符合**（真缺陷：路由没注册 / 方法白名单不对 / 响应形状变了）
  *   2 = **拿不到活宿主或 token** ⇒ `noObject`，明说"没对象"，⛔ 不算通过
  *
+ * ══ 参数 ═══════════════════════════════════════════════════════════════════
+ *   `--session <id>` —— 指定 POST 用的会话 id。
+ *   ⚠ **不给才退回"最新会话"启发式**：从 `~/.dsh/sessions/<cwd 编码>/` 里挑 mtime 最新的
+ *     那个目录名。⚠ **那是启发式，不是权威来源** —— 多会话并行、旧会话已从宿主内存
+ *     淘汰时都可能取错（取到已不在实例里的 id ⇒ 服务端按设计回 `ledger-unreadable`，
+ *     看起来像真缺陷）。⇒ 需要硬结论时请显式给 `--session`。
+ *
  * ══ 它怎么拿凭据（⛔ 不写死任何 token）════════════════════════════════════════
  *   宿主启动时会把 `dsh web: http://127.0.0.1:<port>/?token=<token>` 打进日志
  *   （实测出自 `~/.dsh/logs/web-manual.log`）。本脚本：
@@ -43,6 +50,14 @@ import { join } from 'node:path'
 
 const ROUTE = '/api/dsh-hob/tasks-progress'
 const DEFAULT_PORT = 3080
+
+/**
+ * 命令行参数：`--session <id>`（可省）。
+ * ⚠ 解析刻意极简：只认这一个旗标，别的参数一律忽略（⛔ 不引第三方解析器）。
+ */
+const argv = process.argv.slice(2)
+const sessionArgIndex = argv.indexOf('--session')
+const SESSION_OVERRIDE = sessionArgIndex >= 0 ? (argv[sessionArgIndex + 1] ?? '') : ''
 
 /**
  * 日志候选（按顺序试）。
@@ -183,7 +198,12 @@ try {
 }
 
 // ── ① POST ⇒ 200 + JSON ──────────────────────────────────────────────────
-const sessionId = findWorkspaceSessionId()
+/**
+ * ⚠ 显式 `--session` 优先；不给才走**启发式**（见头注释）。
+ * 来源会打进读数行，⛔ 不许让"猜的"和"给的"看起来一样。
+ */
+const sessionId = SESSION_OVERRIDE !== '' ? SESSION_OVERRIDE : findWorkspaceSessionId()
+const sessionSource = SESSION_OVERRIDE !== '' ? '显式 --session' : '启发式（本工作区最新会话）'
 if (sessionId === undefined) {
   console.log('  ⚠ **noObject**：本工作区的会话目录里找不到任何 session（拿不到 sessionId）')
   console.log(`       ⇒ 服务端会按设计回 400 ledger-unreadable（"没给工作区根"），那不是"数据通了"`)
@@ -192,7 +212,7 @@ if (sessionId === undefined) {
   console.log('  ⛔ exit 2 —— 没对象（⛔ 不是通过）')
   process.exit(2)
 }
-console.log(`  读数：sessionId = ${sessionId}（本工作区最新会话）`)
+console.log(`  读数：sessionId = ${sessionId}（来源：${sessionSource}）`)
 {
   const res = await fetch(`${base}${ROUTE}`, {
     method: 'POST',
@@ -236,6 +256,39 @@ console.log(`  读数：sessionId = ${sessionId}（本工作区最新会话）`)
   if (!/text\/plain/.test(ctype)) problems.push(`content-type 不是 text/plain：${JSON.stringify(ctype)}`)
   if (problems.length === 0) ok(`H-2 ✓ GET ⇒ 404 + 纯文本 "not found"（⛔ 不是 405、不是 JSON —— 这条边界被钉住了）`)
   else for (const p of problems) bad(`H-2 · ${p}`)
+}
+
+// ── ③ 不存在的 sessionId ⇒ ok:false 且 reason **必须恰好**是 ledger-unreadable ──
+{
+  /**
+   * ⚠⚠ **不许接受"任何 ok:false 都算过"**（任务书 §2 明确）。
+   *   理由：`ok:false` 有三类可分辨 reason（`ledger-unreadable` / `table-missing` /
+   *   `row-shape-unknown`）。拿"是 ok:false"当通过 ⇒ 这条断言对"reason 归类坏了"
+   *   完全瞎。⇒ 本断言钉死 **`reason === 'ledger-unreadable'`**，并把实际值印出来。
+   * ⚠ 用一个**不可能存在**的 id（带随机后缀，与任何真会话都不撞）。
+   */
+  const ghostId = `session-nonexistent-${Date.now().toString(36)}`
+  const res = await fetch(`${base}${ROUTE}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ sessionId: ghostId }),
+  })
+  const status = res.status
+  const text = await res.text()
+  let parsed
+  try { parsed = JSON.parse(text) } catch { parsed = undefined }
+  console.log(`  ── POST ${ROUTE}（不存在的 sessionId=${ghostId}）⇒ HTTP ${status}`)
+  console.log(`     响应体前 200 字：${text.slice(0, 200)}`)
+  const problems = []
+  if (parsed === undefined) problems.push('响应体不是 JSON')
+  else {
+    if (parsed.ok !== false) problems.push(`ok 不是 false：${JSON.stringify(parsed.ok)}`)
+    // ⚠ 这一条是**精确值**断言，⛔ 不是"三选一"、⛔ 不是"只要 ok:false"
+    if (parsed.reason !== 'ledger-unreadable') problems.push(`reason 不是恰好 ledger-unreadable：${JSON.stringify(parsed.reason)}`)
+    if (typeof parsed.message !== 'string' || parsed.message.trim() === '') problems.push('没有给 message（"判不出"必须带一句原因）')
+  }
+  if (problems.length === 0) ok('H-3 ✓ 不存在的 sessionId ⇒ ok:false · reason **恰好** ledger-unreadable（⛔ 不是"任何 ok:false 都算过"）')
+  else for (const p of problems) bad(`H-3 · ${p}`)
 }
 
 console.log('')

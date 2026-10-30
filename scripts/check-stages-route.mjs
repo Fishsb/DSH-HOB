@@ -261,7 +261,11 @@ source = "夹具"
 
   // ── R-9 与生成器交叉验证（⚠ 两套解析器 + 两条渲染路径）───────────────
   {
-    const ledgerDir = join(root, 'ledger-next')
+    // ⚠ 2026-10-30 P4：索引已搬进**账本区** ⇒ 用脚本侧唯一解析实现，⛔ 不拼工作区路径。
+    const { ledgerHomeOf, resolveLedgerRoot } = await import('./lib/ledger-root.mjs')
+    const ledgerRoot = resolveLedgerRoot(root, undefined, ledgerHomeOf(root))
+    if (ledgerRoot === undefined) throw new Error('账本根判不出 ⇒ R-9 失去基准')
+    const ledgerDir = join(ledgerRoot, 'ledger-next')
     let indexPath = join(ledgerDir, 'units', 'index.toml')
     let stagesMdPath = join(ledgerDir, 'gen', 'stages.md')
     const probs = []
