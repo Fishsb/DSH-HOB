@@ -142,7 +142,19 @@ export function checkI1(units, pathExists) {
      * 改前：`I3`（`acc.actor ≠ built_by`）**只要有一条没写就静默不检查** ⇒ 那是一条会自己关掉的判据。
      * ⇒ 现在把"每条 kind 必须带哪些字段"变成 I1 的一部分；缺一 ⇒ 红。
      */
-    const required = REQUIRED_FIELDS[u.kind] ?? []
+    /**
+     * ⚠⚠ **2026-10-31 P29：`todo` 例外（只有这两个字段）** ─────────────────────
+     *   病：`TSK-048`（`status = "todo"`）**永远红** —— 一条还没开工的任务
+     *     显然没有 `built_by`（谁做的）与 `verify`（验出了什么），要求它们等于
+     *     **逼人给未开工的活编一份结果**。
+     *   ⇒ 现在：**仅当 `status === "todo"`** 时，`task` 的 `built_by` / `verify` 不要求。
+     *   ⚠⚠ **`doing` / `built` 仍然必填**（⚠ 两条负向对拍钉住这一点：N-I1e / N-I1f）。
+     *   ⚠ 这不是放宽：`todo` 本来就没有"完成态的证据"，⛔ 把它当已完工来要求才是错的。
+     */
+    const todoExempt = u.kind === 'task' && u.status === 'todo'
+      ? new Set(['built_by', 'verify'])
+      : new Set()
+    const required = (REQUIRED_FIELDS[u.kind] ?? []).filter((f) => !todoExempt.has(f))
     for (const f of required) {
       const v = u[f]
       // ⚠ `run` 的 `started_at` 允许用 `why` 顶替（判不出就该写为什么，⛔ 不许编一个时刻）
@@ -759,6 +771,48 @@ try {
       ok(`N-I1b ✓ 负向对拍（删掉 TSK-031 的 built_by）⇒ I1 的"按 kind 必填"**变红**：${hit.slice(0, 80)}`)
     } else {
       bad(`N-I1b · 删了 built_by 但 I1 没报必填缺失（实报：${JSON.stringify(probs.slice(0, 2))}）⇒ 那条断言没有牙`)
+    }
+  }
+
+  // ── N-I1e：`built` 缺 `built_by` ⇒ 必红（⚠ P29 的 todo 例外**不许**波及 built）──
+  /**
+   * ⚠⚠ **这条是 P29 `todo` 例外的护栏**（`TASK-P29` §一 明确要求两条，缺一条不算做完）：
+   *   例外只给 `status === "todo"`；⚠ **`built` 仍然必填** ——
+   *   没有这条，"加个 todo 例外"与"把手禁拆了"在读数上**分不开**（`E-27` 的形态）。
+   */
+  {
+    const fx = [
+      { id: 'TSK-901', kind: 'task', title: 't', parent: 'R-001', status: 'built', after: [], source: 'x', verify: 'v' },
+    ]
+    // ⚠ 先自证夹具真的缺字段（⛔ 不许"以为删了"）
+    const reallyMissing = fx[0].built_by === undefined && fx[0].status === 'built'
+    const probs = checkI1(fx, () => true)
+    const hit = probs.find((x) => x.includes('TSK-901') && x.includes('built_by') && x.includes('必填'))
+    if (!reallyMissing) {
+      bad('N-I1e · 夹具不是"built 且缺 built_by" ⇒ 这条负向对拍本身不可判')
+    } else if (hit !== undefined) {
+      ok(`N-I1e ✓ 负向对拍（\`status="built"\` 且缺 \`built_by\`）⇒ I1 **必红**：${hit.slice(0, 80)}`
+        + ' ⇒ **todo 例外没有波及 built**')
+    } else {
+      bad(`N-I1e · \`built\` 缺 \`built_by\` 却**没红** ⇒ todo 例外把手禁拆了（实报：${JSON.stringify(probs.slice(0, 2))}）`)
+    }
+  }
+
+  // ── N-I1f：`doing` 缺 `built_by` ⇒ 必红（⚠ 同上，中间态也不许免）──
+  {
+    const fx = [
+      { id: 'TSK-902', kind: 'task', title: 't', parent: 'R-001', status: 'doing', after: [], source: 'x', verify: 'v' },
+    ]
+    const reallyMissing = fx[0].built_by === undefined && fx[0].status === 'doing'
+    const probs = checkI1(fx, () => true)
+    const hit = probs.find((x) => x.includes('TSK-902') && x.includes('built_by') && x.includes('必填'))
+    if (!reallyMissing) {
+      bad('N-I1f · 夹具不是"doing 且缺 built_by" ⇒ 这条负向对拍本身不可判')
+    } else if (hit !== undefined) {
+      ok(`N-I1f ✓ 负向对拍（\`status="doing"\` 且缺 \`built_by\`）⇒ I1 **必红**：${hit.slice(0, 80)}`
+        + ' ⇒ **todo 例外没有波及 doing**')
+    } else {
+      bad(`N-I1f · \`doing\` 缺 \`built_by\` 却**没红** ⇒ todo 例外把手禁拆了（实报：${JSON.stringify(probs.slice(0, 2))}）`)
     }
   }
 
