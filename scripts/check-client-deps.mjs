@@ -250,6 +250,29 @@ function stripCommentsAndStrings(src) {
 }
 
 /** 带 1 基行号的命中列表：`[{ line, text }]`。 */
+/**
+ * **负向对拍（N-CLI · 2026-10-30 P7）**：`stripCommentsAndStrings` 必须真的把**字符串里的**
+ * ⚠ 先自证夹具坏掉：同一段 `serviceOf(...)` 分别放进代码/字符串/注释，先断言三者的剥离结果为 true/false/false。
+ * `serviceOf(...)` 剥掉 —— 否则"文档/示例里提到一次"会被当成"代码里用了"。
+ * ⚠ 本族此前 0 条负向对拍（M-1 实测）。
+ */
+function nCliNegCtl() {
+  const inCode = 'const a = serviceOf(NS_SESSION)'
+  const inString = 'const doc = "serviceOf(NS_SESSION) 这样用"'
+  const inComment = '// 用法：serviceOf(NS_SESSION)'
+  const codeHit = stripCommentsAndStrings(inCode).includes('serviceOf')
+  const strHit = stripCommentsAndStrings(inString).includes('serviceOf')
+  const cmtHit = stripCommentsAndStrings(inComment).includes('serviceOf')
+  const reallyBites = codeHit === true && strHit === false && cmtHit === false
+  if (!reallyBites) {
+    bad(`N-CLI · 负向对拍**没咬住**：真代码=${codeHit}（应 true）· 字符串=${strHit}（应 false）· 注释=${cmtHit}（应 false）`
+      + ' ⇒ 剥离器哑了（或过剥）')
+  } else {
+    ok('N-CLI ✓ 负向对拍（同一段 `serviceOf(NS_SESSION)` 分别放进 代码 / 字符串 / 注释）⇒ 只有真代码被算命中，字符串与注释**已被剥掉**')
+  }
+}
+nCliNegCtl()
+
 function hitsWithLines(stripped, re) {
   const res = []
   const lines = stripped.split('\n')

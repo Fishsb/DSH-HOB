@@ -37,6 +37,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { workspaceName as configuredWorkspaceName } from './workspace-name.mjs'
+/** ⚠⚠ **包 Q（`CHG-099` 第 4 条）**：账本根解析收成脚本侧唯一实现，本脚本只 import。 */
+import { resolveLedgerRoot as resolveLedgerRootShared, looksLikeLedger as looksLikeLedgerShared, workspaceNameOf as wsNameOfShared } from './lib/ledger-root.mjs'
 
 /**
  * 「这个目录看起来像不像一份账本」（⚠ 与产品代码 `src/server/doc-read.ts` 的 `looksLikeLedger`
@@ -48,17 +50,7 @@ import { workspaceName as configuredWorkspaceName } from './workspace-name.mjs'
 const CANON_FILES = ['REQUIREMENTS.md', 'PROJECT.md', 'DECISIONS.md', 'CONTEXT.md']
 const SIDE_DIRS = ['volumes', 'archive', 'runtime']
 function looksLikeLedger(dir) {
-  try { if (!statSync(dir).isDirectory()) return false } catch { return false }
-  for (const f of CANON_FILES) {
-    try { if (statSync(join(dir, f)).isFile()) return true } catch { /* 继续 */ }
-  }
-  for (const d of SIDE_DIRS) {
-    try {
-      const q = join(dir, d)
-      if (statSync(q).isDirectory() && readdirSync(q).length > 0) return true
-    } catch { /* 继续 */ }
-  }
-  return false
+  return looksLikeLedgerShared(dir)
 }
 
 const root = process.cwd()
@@ -112,14 +104,7 @@ function ledgerHome() {
 }
 
 function resolveLedgerRoot(cliLedger) {
-  if (typeof cliLedger === 'string' && cliLedger !== '') return cliLedger
-  // ② 新正典：本工作区自己的 `<工作区>/.hob/`（若它看起来像账本）
-  const inWs = join(root, '.hob')
-  if (looksLikeLedger(inWs)) return inWs
-  const home = ledgerHome()
-  if (home === null) return undefined
-  const cand = join(home, workspaceName())
-  return existsSync(cand) ? cand : undefined
+  return resolveLedgerRootShared(root, cliLedger)
 }
 
 // ── ③ 落点号可判据化（2026-10-15 · 第 220 轮新增 · `UD-117` 第 ③ 组）──────────────

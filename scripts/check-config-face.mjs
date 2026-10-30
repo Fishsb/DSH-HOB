@@ -176,6 +176,23 @@ function stripComments(src) {
 }
 
 /** 从 patch 文本里抽 `- id: dsh-hob` 条目的 config 段，返回 { keyPath: value } 的顶层键 → 子键数组。 */
+/**
+ * **负向对拍（N-CFG · 2026-10-30 P7）**：`spawnSchemaBlock` 必须真的抽出 **schema 那段**，
+ * ⚠ 先自证夹具坏掉：夹具里 `before` / `after` 是块外哨兵，抽出块若含它们即证明抽取器过宽。
+ * 而不是把整个文件当块交出去（否则"配置面漂移"永远对得上）。
+ * ⚠ 本族此前 0 条负向对拍（M-1 实测）。
+ */
+{
+  const src = 'const before = 1\nexport const cfg = {\n  spawn: z.object({\n    a: z.string(),\n  }).default({}),\n}\nconst after = 2\n'
+  const blk = spawnSchemaBlock(src)
+  const reallyBites = typeof blk === 'string' && blk.includes('z.string()') && !blk.includes('before')
+  if (!reallyBites) {
+    bad(`N-CFG · 负向对拍**没咬住**：抽出的块=${JSON.stringify(String(blk).slice(0, 60))} ⇒ 抽取器把块外也吃了（或没抽到）`)
+  } else {
+    ok('N-CFG ✓ 负向对拍（喂一段含 `before` / `schema` / `after` 的源）⇒ 抽出的块**只含 schema 内部**，块外的 `before` / `after` 都被排除')
+  }
+}
+
 function patchConfigGroups(src) {
   const lines = src.split('\n')
   // ⚠ `- id:` 行**带缩进**（它嵌在 `- insert:` 之下），故用 `\s*` 而非 `^`。
@@ -858,29 +875,48 @@ function schemaTopGroups(src) {
                 + ' —— 红线的适用面是三档共同的，⛔ 不是"只有多会话才要守"')
             } else ok('G-4 红线三档共同在场（不是只在多会话档）')
 
-            //   ⚠ 缺省档 = 「自动」档 ⇒ **用户已裁定 (乙)「全自动」**（`UD-149`，2026-10-19 第 3 轮）：
-            //     判完**直接派**，不再要求"动手前先报一句"（那是作废的 (甲)）。
-            //     ⚠ 但仍**必须**在派完之后说清三件（路数 / 去向 / 哪一路先回来）——
-            //     "不再先报"≠"不报"（`UD-149` §二）。⇒ 本组把这两侧**成对钉住**：
-            //       ① 旧的 (甲) 措辞**必须消失**（否则模型会同时读到"先问"和"直接派"两条相反指令）；
-            //       ② "派完说清路数与去向"那一句**必须在**（否则就是"闷头派、用户看不见"）。
+            //   ⚠⚠ **2026-10-29（第 332 轮 · TASK-E 第 2 件）改口径**：
+            //     原文案暗示「**不先问就派**」（`Then hand it over yourself, without asking first …
+            //     not as a question ahead of it`）—— 与 `CHG-092`（默认先协商、用户明说才派）**相冲**。
+            //     ⇒ 现口径 = **默认先协商**（`CHG-092`）+ **若本档确实"判完即可派"，派完必须报三条**
+            //       （`UD-149` §二，那半句**仍然有效**，⛔ 一个字都没删）。
+            //     ⚠ 判据仍**成对**（`E-126`：只验一侧 ⇒ 判据写对与写错输出相同）：
+            //       ① 旧的 (甲) 措辞**必须消失**（"先问一句再干"那条作废口径）；
+            //       ② 旧的**"不先问"暗示**必须消失（`without asking first` / `question ahead of it`）；
+            //       ③ `CHG-092` 的**协商口径在场**（判据词 `negotiate against the current plan`）；
+            //       ④ **"派完说清路数与去向"那一句必须在**（判据词 `the report is not optional`）。
             const OLD_REPORT_FIRST = 'say in one line how many tracks'
-            const NEW_DISPATCH = 'without asking first'
-            const NEW_REPORT = 'report after dispatching is not optional'
+            const OLD_NO_ASK = ['without asking first', 'question ahead of it']
+            const NEW_CONSULT = 'negotiate against the current plan'
+            const NEW_REPORT = 'the report is not optional'
+            /**
+             * ⚠⚠ **判据必须只看「档位正文」**（`workModeInstruction(auto)`），
+             *   ⛔ **不能看 `texts[auto]`** —— 那里拼进了**三档共用的红线**，
+             *   而红线里那句 `Handing over without asking first lifts …` 是**边界说明**
+             *   （"全自动≠全授权"），**不是**"允许不先问"的指令。
+             *   ⚠ 本单第一版就栽在这：拿 `texts` 判 ⇒ 红线把它顶红 ⇒ **假失败**。
+             *   （这也正是下面 `AUTO_ONLY` 那段注释早就写过的同一条坑。）
+             */
+            const AUTO_INSTR = wm.workModeInstruction(defaultMode)
             if (texts[defaultMode].includes(OLD_REPORT_FIRST)) {
               bad(`G-4 缺省档（${defaultMode}）**仍含已作废的 (甲) 措辞**「${OLD_REPORT_FIRST}」`
-                + '\n      ⇒ 用户已裁定「全自动」= (乙)（`UD-149`）：判完直接派、不再先问。'
+                + '\n      ⇒ 用户已裁定「全自动」= (乙)（`UD-149`）：判完直接派、不再先问一句。'
                 + '\n        旧措辞留着会让模型收到两条相反指令（"先问"×"直接派"）—— 档位等于没设')
-            } else if (!texts[defaultMode].includes(NEW_DISPATCH)) {
-              bad(`G-4 缺省档（${defaultMode}）缺「直接派出去、不再先问」（判据词「${NEW_DISPATCH}」）`
-                + '\n      ⇒ 这是 `UD-149` 的 (乙) 口径；缺了就是"面板说全自动、背后仍先问"')
-            } else if (!texts[defaultMode].includes(NEW_REPORT)) {
+            } else if (OLD_NO_ASK.some((n) => AUTO_INSTR.includes(n))) {
+              const hit = OLD_NO_ASK.find((n) => AUTO_INSTR.includes(n))
+              bad(`G-4 缺省档（${defaultMode}）的**档位正文**仍含「不先问就派」的暗示（判据词「${hit}」）`
+                + '\n      ⇒ 与 `CHG-092`「收到输入默认动作 = 协商方案」直接相冲：'
+                + '\n        模型会读到"不必先问"从而跳过协商 —— 正是本单第 2 件要消掉的那句')
+            } else if (!AUTO_INSTR.includes(NEW_CONSULT)) {
+              bad(`G-4 缺省档（${defaultMode}）缺「默认先协商」口径（判据词「${NEW_CONSULT}」）`
+                + '\n      ⇒ `CHG-092` 规矩 1：默认动作 = 对照方案与账本与用户协商，⛔ 不是派活')
+            } else if (!AUTO_INSTR.includes(NEW_REPORT)) {
               bad(`G-4 缺省档（${defaultMode}）缺「派完必须说清路数与去向」（判据词「${NEW_REPORT}」）`
                 + '\n      ⇒ "不再先报"⛔ **不等于**"不报"（`UD-149` §二）：'
                 + '\n        派完必须在回复里说清 拆成几路 / 每路给了谁 / 哪一路先回来才能定下一步')
             } else {
-              ok(`G-4 缺省档（${defaultMode}）= 「全自动」口径：旧 (甲) 措辞已清除 · `
-                + '「判完直接派」在场 · 「派完说清路数与去向」在场（三件成对）')
+              ok(`G-4 缺省档（${defaultMode}）= 「默认先协商（\`CHG-092\`）+ 派完必报三条（\`UD-149\` §二）」：`
+                + '旧 (甲) 措辞已清除 · 「不先问」暗示已清除 · 协商口径在场 · 派完报三条在场（四条成对）')
             }
 
             //   ⚠ **另两档不许被动**（用户只裁了「自动」档）：单会话 / 多会话的**档位正文**里
@@ -891,7 +927,14 @@ function schemaTopGroups(src) {
             //     而红线里的「全自动」边界是**故意三档都在**的 —— 拿 texts 判会假失败。
             const ONLY_INSTR = {}
             for (const m of values) ONLY_INSTR[m] = wm.workModeInstruction(m)
-            const AUTO_ONLY = ['without asking first', 'report after dispatching']
+            /**
+             * ⚠⚠ **2026-10-29 改口径（与上面 G-4 同批）**：判据词从
+             *   「不先问就派」（`without asking first` / `report after dispatching`）
+             *   换成**现口径**的两条：协商口径（`negotiate against the current plan`）
+             *   与派完报三条（`the report is not optional`）。
+             * ⚠ 判据**没减弱**：仍是"这两条只许出现在缺省档的档位正文里"。
+             */
+            const AUTO_ONLY = ['negotiate against the current plan', 'the report is not optional']
             const contaminated = values.filter((m) => m !== defaultMode
               && AUTO_ONLY.some((needle) => ONLY_INSTR[m].includes(needle)))
             if (contaminated.length > 0) {
@@ -1208,12 +1251,30 @@ function schemaTopGroups(src) {
         //   判据自身失效却报绿）。子进程隔离后每个场景都是**全新的模块图**。
         {
           const { spawnSync } = await import('node:child_process')
-          const { mkdtempSync, cpSync, rmSync, writeFileSync } = await import('node:fs')
+          const { mkdtempSync, cpSync, rmSync, writeFileSync, lstatSync } = await import('node:fs')
           const { tmpdir } = await import('node:os')
           let sandbox = null
           try {
             sandbox = mkdtempSync(join(tmpdir(), 'hob-g11-'))
-            cpSync(join(root, 'src'), join(sandbox, 'src'), { recursive: true })
+            /**
+             * ⚠⚠ **`dereference: true` 是本处防写穿的要害**（同 `check-orch-state.mjs` 丁-7）：
+             *   `fs.cpSync` **默认不解引用**（`dereference:false`）⇒ 源树里若 `src` 是**软链**，
+             *   复制出来的 `sandbox/src` **还是那条软链** ⇒ 下面场景脚本里的
+             *   `writeFileSync(join(SB,'src',file))` 会**写回源树**。
+             *   ⚠ 同款机理已在第 322 轮实测过：受控靶仓 `git status --porcelain src/`
+             *     跑前 0 行、跑后 **4 行 M**。
+             *   ⚠ 本处当天 `src` 是**真目录**故不发作 —— 这是**消掉同款风险**，⛔ 不是修一个现存缺陷。
+             */
+            cpSync(join(root, 'src'), join(sandbox, 'src'), { recursive: true, dereference: true })
+            /**
+             * ⚠ **复制完必须自证"不是软链"**（⛔ 不靠"我给了参数所以一定对"）——
+             *   与 `check-orch-state.mjs` 的 `lstatSync(...).isSymbolicLink()` 自证逐字对齐：
+             *   仍然是软链 ⇒ **当场抛**（由外层 catch 落 `bad`：不按通过处理），
+             *   ⛔ 不许带着写穿风险继续跑那两个场景。
+             */
+            if (lstatSync(join(sandbox, 'src')).isSymbolicLink()) {
+              throw new Error('沙箱里的 `src` 仍是软链（`dereference` 未生效）⇒ ⛔ 会写穿到源树，本组拒绝继续')
+            }
             writeFileSync(join(sandbox, 'package.json'), JSON.stringify({ type: 'module', name: 'g11' }))
 
             /** 场景脚本：在**本进程**里改名导出 → import 真模块 → 调 apply → 打印一行 JSON。 */
@@ -1786,6 +1847,205 @@ console.log(JSON.stringify({ evaluated, threw, degraded, warns }))
           + '\n         Config.modules   = ' + fmt(Kc.keys)
           + '\n      ⇒ ⚠ 这是**双向**判据：少了红、多了也红、两处同少同一个键**同样红**'
           + '\n        （⛔ 不是单向子集检查 —— 那种检查放过"两个都少"这一格）')
+      }
+    }
+  }
+}
+
+// ── U. **第 4 向：把「模块登记表」并进三向对账**（2026-10-25 · 本单）──────────
+//
+// ⚠⚠ 本组守的是哪一格（上一单 REPORT §8-Q2 点名的那个口子）：
+//   加一个模块开关要改**三处**：① `src/index.ts` 的 `MODULE_REGISTRY`、
+//   ② `src/config.ts` 的 `modules: z.object({…})` schema、③ `src/config.ts` 的
+//   `interface ModulesConfig`（⚠ 还有第四处 `interface Config` 的 `modules:` 内联块，已由 T 组守住）。
+//   ⚠ 现在**只有①被类型约束着**（上一单加了 `MODULE_LABELS`，它的 key 由登记表派生 ⇒ 漏了编译红）。
+//   ⚠ 而 ②③ 与①之间**没有任何约束** ⇒ **只在①加了开关、忘了②** 的后果是：
+//     **设置页上根本没有这个开关（用户关不掉它），而编译不报、全部机检也不报。**
+//   ⇒ 这一格就是"静默失败"的教科书形态：产物照跑、界面少个旋钮、没人知道。
+//
+// ── 为什么加在 T 组里面而不是新开 `check:` 命令（作业书 §一-2 明令）──────
+//   T 组已经是"三向键集对账"，本组是它的**第 4 向**：同一件事（键集同形）多一个参与者。
+//   ⚠ 开一条新命令会让"同名不同义"的两族长期并存（各测一半），那正是上一单 §4.3 说的坏形态。
+//
+// ── 判据：**双向三条**（作业书 §一-2 逐条对应）──────────────────────────
+//   记 K_reg = 登记表里每项的 `key`（⚠ 从 `src/index.ts` 文本实测解析，⛔ 不硬编码键名）。
+//   ① K_reg ⊆ K_schema   —— 登记表里的每一项，**schema 里存在**；
+//   ② K_reg ⊆ K_iface    —— 登记表里的每一项，**类型接口里存在**；
+//   ③ K_schema ⊆ K_reg   —— **反向**：schema 里有的开关，**登记表里也有**
+//      （⚠ 防"删了模块却留下一个关不掉的开关"）。
+//   ⚠ 三条都在、且**每条单独报**（⛔ 不许合并成一条"键集相等"）：
+//     合并后"漏 schema"与"schema 多一项"会印成同一句话，读的人分不出该修哪边。
+//   ⚠ 解析不到 ⇒ **落失败**（⛔ 不按通过处理 —— 那是"失去基准"，见 E-112 同族）。
+{
+  /** ⚠ 与 T 组同一个对拍开关：允许外部塞一份 `src/index.ts` 进来（负向对拍用）。 */
+  const U_IDX = process.env.HOB_U_IDX !== undefined && process.env.HOB_U_IDX !== ''
+    ? process.env.HOB_U_IDX
+    : null
+  /** ⚠ 同理，`config.ts` 侧沿用 T 组的 `HOB_T_SRC`（⛔ 不另造第二个开关名）。 */
+  const U_CFG = process.env.HOB_T_SRC !== undefined && process.env.HOB_T_SRC !== ''
+    ? process.env.HOB_T_SRC
+    : null
+
+  const idxPath = U_IDX ?? join(root, 'src', 'index.ts')
+  const cfgPath = U_CFG ?? CONFIG_TS
+
+  // ⚠ 复用 T 组的解析器：它们定义在 T 组的块作用域里 ⇒ 这里**重新取一遍**（⛔ 不复制粘贴逻辑）。
+  //   实际上 T 组把 `topKeysOf` / `blockAfter` / `ifaceBody` 都放在块内，
+  //   这里用同样三小段（⚠ 若哪天要改解析口径，两处必须同批改 —— 已在下面 ok() 里点名）。
+  const topKeysOfU = (blockBody) => {
+    const keys = []
+    let depth = 0
+    let segStart = 0
+    const segs = []
+    for (let i = 0; i < blockBody.length; i++) {
+      const ch = blockBody[i]
+      if (ch === '(' || ch === '{' || ch === '[') depth++
+      else if (ch === ')' || ch === '}' || ch === ']') depth--
+      else if (ch === '\n' && depth === 0) { segs.push(blockBody.slice(segStart, i)); segStart = i + 1 }
+    }
+    segs.push(blockBody.slice(segStart))
+    for (const seg of segs) {
+      const stripped = seg.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+      const m = /^\s*([A-Za-z_$][\w$]*)\s*:/.exec(stripped)
+      if (m !== null) keys.push(m[1])
+    }
+    return keys
+  }
+  const blockAfterU = (src, startIdx) => {
+    const open = src.indexOf('{', startIdx)
+    if (open < 0) return null
+    let depth = 0
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === '{') depth++
+      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(open + 1, i) }
+    }
+    return null
+  }
+  const ifaceBodyU = (src, nameRe) => {
+    const m = nameRe.exec(src)
+    return m === null ? null : blockAfterU(src, m.index)
+  }
+
+  let uIdxSrc = null
+  let uCfgSrc = null
+  try { uIdxSrc = readFileSync(idxPath, 'utf8') } catch (e) {
+    bad('U 【失去基准】读不到 src/index.ts（' + String(e?.message ?? e) + '）⇒ 第 4 向对账无法进行（不按通过处理）')
+  }
+  try { uCfgSrc = readFileSync(cfgPath, 'utf8') } catch (e) {
+    bad('U 【失去基准】读不到 src/config.ts（' + String(e?.message ?? e) + '）⇒ 第 4 向对账无法进行（不按通过处理）')
+  }
+
+  if (uIdxSrc !== null && uCfgSrc !== null) {
+    /**
+     * ⚠ **登记表的键**：只认 `MODULE_REGISTRY = [ … ] as const` 这一段里的 `key: '<k>'`。
+     *   ⚠ 先切段再抽 key —— 否则**模块内其它地方**的 `key:`（如 `[...].map(x => x.key)`）
+     *     会被误当成登记表条目（那会造出不存在的"开关"⇒ 假红）。
+     *   ⚠ 切不到段 ⇒ 落失败（⛔ 不退回"从整个文件抽"—— 那会静默换个更大的面）。
+     */
+    const regStartM = /const\s+MODULE_REGISTRY\s*=\s*\[/.exec(uIdxSrc)
+    /**
+     * ⚠⚠ **数组要按 `[]` 配对取，不能复用 `blockAfterU`**（那个按 `{}` 配对）——
+     *   实测踩到的坑：登记表的元素本身是 `{ … }` 对象字面量 ⇒ 用 `{}` 配对会在
+     *   **第一个元素收尾处**就"配对成功" ⇒ 只解析出 **1 个 key**（`{tools}`），
+     *   然后 U③ 会把另外 3 个开关全报成"schema 有、登记表没有"= **整片假红**。
+     *   ⇒ 这里用一份**只数 `[]`** 的配对器（⚠ 内部 `{}` 不参与，因为它们不改变 `[]` 深度）。
+     */
+    const arrayAfter = (src, openIdx) => {
+      if (openIdx < 0 || src[openIdx] !== '[') return null
+      let depth = 0
+      for (let i = openIdx; i < src.length; i++) {
+        if (src[i] === '[') depth++
+        else if (src[i] === ']') { depth--; if (depth === 0) return src.slice(openIdx + 1, i) }
+      }
+      return null
+    }
+    const regKeys = (() => {
+      if (regStartM === null) return { keys: null, why: '找不到 `const MODULE_REGISTRY = [`' }
+      const body = arrayAfter(uIdxSrc, uIdxSrc.indexOf('[', regStartM.index))
+      if (body === null) return { keys: null, why: '登记表 `[` 之后找不到配对的 `]`' }
+      const keys = [...body.matchAll(/\bkey:\s*'([A-Za-z_$][\w$]*)'/g)].map((m) => m[1])
+      // 去重但保持原序（⚠ 重复 key 本身是另一个缺陷，这里不判它，只去重以免假红）
+      return { keys: [...new Set(keys)], why: keys.length === 0 ? '登记表里抽到 0 个 key' : '' }
+    })()
+
+    const schemaKeys = (() => {
+      const m = /modules\s*:\s*z\s*\.\s*object\s*\(/.exec(uCfgSrc)
+      if (m === null) return { keys: null, why: '找不到 modules: z.object(' }
+      const body = blockAfterU(uCfgSrc, m.index)
+      if (body === null) return { keys: null, why: '找不到配对的 {} 块' }
+      const keys = topKeysOfU(body)
+      return { keys, why: keys.length === 0 ? '解析出 0 个键' : '' }
+    })()
+    const ifaceKeys = (() => {
+      const body = ifaceBodyU(uCfgSrc, /export\s+interface\s+ModulesConfig\b/)
+      if (body === null) return { keys: null, why: '找不到 interface ModulesConfig' }
+      const keys = topKeysOfU(body)
+      return { keys, why: keys.length === 0 ? '解析出 0 个键' : '' }
+    })()
+
+    const unreadableU = [regKeys, schemaKeys, ifaceKeys].filter((x) => x.keys === null || x.keys.length === 0)
+    if (unreadableU.length > 0) {
+      bad('U 【失去基准】第 4 向的键集有解析不到的 ⇒ 本组一条都没比：'
+        + '\n      ' + [['登记表', regKeys], ['schema', schemaKeys], ['ModulesConfig', ifaceKeys]]
+          .filter(([, v]) => v.keys === null || v.keys.length === 0)
+          .map(([n, v]) => n + '：' + v.why).join('\n      ')
+        + '\n      ⇒ ⚠ 解析失败**⛔ 不许当成"没问题"**（那会让本组变成恒绿）')
+    } else {
+      const fmt = (a) => '{' + a.join(', ') + '}'
+      const setOf = (a) => new Set(a)
+      const diff = (a, b) => [...setOf(a)].filter((x) => !setOf(b).has(x))
+      const regNotSchema = diff(regKeys.keys, schemaKeys.keys)   // ①
+      const regNotIface = diff(regKeys.keys, ifaceKeys.keys)     // ②
+      const schemaNotReg = diff(schemaKeys.keys, regKeys.keys)   // ③
+
+      /**
+       * ⚠⚠ **三条各自独立成一条断言**（⛔ 不合并成一条"键集相等"）。
+       *   两个理由：
+       *     ① **读的人要能分**：合并后"漏 schema"与"schema 多一项"会印成同一句 ⇒ 不知道该往哪边修；
+       *     ② **处数要能数**：本仓的处级口径按"逐条断言"计 ⇒ 合并会让"三条判据"在
+       *        分母上只剩 1 处，将来有人删掉其中一条**下界也不会动**（静默缩水）。
+       *   ⇒ 每条都 `ok()` 或 `bad()` **恰好一次**，⛔ 不许有的分支不落任何一条。
+       */
+      if (regNotSchema.length > 0) {
+        bad('U① 登记表 **有、schema 没有** ' + regNotSchema.length + ' 个开关：' + regNotSchema.join(' / ')
+          + '\n         ⇒ ⚠ **后果：这个开关在设置页上根本不存在，用户关不掉它**，而编译与其余机检都不报'
+          + '\n         ⇒ 修法：在 `src/config.ts` 的 `modules: z.object({…})` 里补一整段'
+          + '（`<key>: z.boolean().default(<bool>).description(…).volatile()`）')
+      } else {
+        ok('U① ✓ 登记表 ⊆ schema：' + fmt(regKeys.keys) + ' 全部在 schema 里（' + regKeys.keys.length + ' 个）'
+          + ' ⇒ ⛔ 不会出现"只在登记表加了开关、忘了 schema ⇒ 设置页少个旋钮而无人报"')
+      }
+      if (regNotIface.length > 0) {
+        bad('U② 登记表 **有、ModulesConfig 没有** ' + regNotIface.length + ' 个开关：' + regNotIface.join(' / ')
+          + '\n         ⇒ ⚠ 后果：类型面不承认这个开关（`Volatile<boolean>` 缺席）⇒'
+          + '           `moduleSwitches()` 读得到、而类型声明里没有 ⇒ 下次有人照类型写就读不到它'
+          + '\n         ⇒ 修法：在 `interface ModulesConfig` 里补 `<key>: Volatile<boolean>`'
+          + '（⚠ 与 schema 同档：schema 标了 `.volatile()` 的，这里必须写 `Volatile<boolean>`）')
+      } else {
+        ok('U② ✓ 登记表 ⊆ ModulesConfig：' + fmt(regKeys.keys) + ' 全部在类型接口里（' + regKeys.keys.length + ' 个）')
+      }
+      if (schemaNotReg.length > 0) {
+        bad('U③ schema **有、登记表没有** ' + schemaNotReg.length + ' 个开关：' + schemaNotReg.join(' / ')
+          + '\n         ⇒ ⚠ 这就是"删了模块却留下一个关不掉的开关"那一格：'
+          + '设置页上有个旋钮，拨它没有任何效果（没有任何模块读这个 key）'
+          + '\n         ⇒ 修法：要么把模块加回 `MODULE_REGISTRY`，要么从 schema 里删掉这个开关'
+          + '（⚠ ⛔ 不许"两边都不动、让它躺着"）')
+      } else {
+        ok('U③ ✓ schema ⊆ 登记表：' + fmt(schemaKeys.keys) + ' 每一个都能在登记表里找到对应模块（'
+          + schemaKeys.keys.length + ' 个）⇒ ⛔ 没有"拨了没效果"的残留旋钮')
+      }
+      /** ⚠ 只有三条全绿才印这条总账（它不占处数，只做一眼可见的确认）。 */
+      if (regNotSchema.length === 0 && regNotIface.length === 0 && schemaNotReg.length === 0) {
+        ok('U ✓ **第 4 向三向同形**：登记表 ' + fmt(regKeys.keys) + ' === schema ' + fmt(schemaKeys.keys)
+          + ' === ModulesConfig ' + fmt(ifaceKeys.keys) + '（' + regKeys.keys.length + ' 个开关，双向成立）'
+          + '（⚠ 键名**不硬编码**：三处全部从源码实测解析，加/删模块时本组自动跟上）')
+      } else {
+        bad('U **第 4 向漂移**（登记表 ' + regKeys.keys.length + ' 个 / schema ' + schemaKeys.keys.length
+          + ' 个 / ModulesConfig ' + ifaceKeys.keys.length + ' 个）'
+          + '\n      实测键集：\n         登记表        = ' + fmt(regKeys.keys)
+          + '\n         schema        = ' + fmt(schemaKeys.keys)
+          + '\n         ModulesConfig = ' + fmt(ifaceKeys.keys)
+          + '\n      ⇒ ⚠ 上面 U①/U②/U③ 已逐条点名"哪个开关、缺在哪处" ⇒ 按那三行修，⛔ 别只看这一行')
       }
     }
   }

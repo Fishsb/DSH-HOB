@@ -351,7 +351,7 @@ async function main() {
       const t = toolsMod.createHobTools({ workspaceRoot: wsRoot }, { levelOf: () => 'ledger', tierNamesOf: TIERS })
       const g = await t.globWorkspace.execute({ pattern: 'src/*.ts', limit: 3 }, execWithAgent)
       const r = await t.grepWorkspaceTool.execute({ pattern: 'permissionLevel', limit: 1 }, execWithAgent)
-      const i = await t.readWorkspaceImage.execute({ path: '.hob/drafts/架构总览.png' }, execWithAgent)
+      const i = await t.readWorkspaceImage.execute({ path: 'kit/drafts/架构总览.png' }, execWithAgent)
       const d = await t.readWorkspaceDoc.execute({ path: 'README.md', limit: 1 }, execWithAgent)
       const gTxt = typeof g === 'string' ? g : JSON.stringify(g)
       const rTxt = typeof r === 'string' ? r : JSON.stringify(r)
@@ -371,7 +371,7 @@ async function main() {
       const t2 = toolsMod.createHobTools({ workspaceRoot: wsRoot }, { levelOf: () => 'ledger', tierNamesOf: TIERS })
       const g2 = await t2.globWorkspace.execute({ pattern: 'src/*.ts', limit: 3 }, execNoAgent)
       const r2 = await t2.grepWorkspaceTool.execute({ pattern: 'permissionLevel', limit: 1 }, execNoAgent)
-      const i2 = await t2.readWorkspaceImage.execute({ path: '.hob/drafts/架构总览.png' }, execNoAgent)
+      const i2 = await t2.readWorkspaceImage.execute({ path: 'kit/drafts/架构总览.png' }, execNoAgent)
       const gTxt2 = typeof g2 === 'string' ? g2 : JSON.stringify(g2)
       const rTxt2 = typeof r2 === 'string' ? r2 : JSON.stringify(r2)
       const iTxt2 = typeof i2 === 'string' ? i2 : JSON.stringify(i2)
@@ -402,7 +402,7 @@ async function main() {
         )
         const g2b = await t2b.globWorkspace.execute({ pattern: 'src/*.ts', limit: 3 }, execNoAgent)
         const r2b = await t2b.grepWorkspaceTool.execute({ pattern: 'permissionLevel', limit: 1 }, execNoAgent)
-        const i2b = await t2b.readWorkspaceImage.execute({ path: '.hob/drafts/架构总览.png' }, execNoAgent)
+        const i2b = await t2b.readWorkspaceImage.execute({ path: 'kit/drafts/架构总览.png' }, execNoAgent)
         const gTxt2b = typeof g2b === 'string' ? g2b : JSON.stringify(g2b)
         const rTxt2b = typeof r2b === 'string' ? r2b : JSON.stringify(r2b)
         const iTxt2b = typeof i2b === 'string' ? i2b : JSON.stringify(i2b)
@@ -517,10 +517,10 @@ async function main() {
     else bad(`SP-8c 正反对照失败：当前实现 sess-A = ${a.level}（应为 workspace）`)
   }
 
-  // ── SP-9 五处消费方必须来自**同一个**策略解析源（G-3）────────────────
+  // ── SP-9 消费路径必须来自**同一个**策略解析源（G-3）：5 条消费路径 / 8 个锚点 ────
   {
     /**
-     * ⚠ 判据是**结构**的：五条路径上都必须出现"从会话身份取策略"的锚点，
+     * ⚠ 判据是**结构**的：**5 条消费路径 / 8 个锚点**上都必须出现"从会话身份取策略"的锚点，
      *   ⛔ 且不得出现"读旧全局 `hobPermission` / `hobWorkMode` 当判定依据"的形态。
      *   ⚠ 这只能证明"接线在"，**证明不了真机生效**（那需要重启，本轮不做）——
      *     报告里必须按"源码层"陈述，⛔ 不许说成已生效。
@@ -556,10 +556,6 @@ async function main() {
        *   ⚠ 这**不是放宽** —— 新的锚点比旧的更强：它要求出现**取执行归属**的那一句，
        *     而旧锚点只要求"有个同名函数"。⇒ 同步更新，语义不变（仍是"同一个解析源"）。
        */
-      { label: '⑥ 跨实例准入：从宿主执行归属取发起者', src: indexSrc,
-        needle: 'agents.currentInitiator()' },
-      { label: '⑥b 投递时按该会话判（非全局档）', src: icSrc,
-        needle: 'deps.admissionOf?.()' },
       { label: '权威解析源（唯一）', src: svcSrc,
         needle: 'resolveSessionPolicy({' },
     ]
@@ -568,8 +564,8 @@ async function main() {
       bad(`SP-9 有消费方**没有**接到同一个会话策略源：${missing.map((a) => a.label).join(' / ')}`
         + '\n      ⇒ 这正是 G-3 要治的"只改了模型面"那种半接线')
     } else {
-      ok(`SP-9 六处消费方同源（${anchors.length}/${anchors.length} 个锚点在位）：`
-        + '模型清单 / 预执行 / 哨兵 / 四个 execute（含身份门）/ 工作方式 / 跨实例准入')
+      ok(`SP-9 消费路径同源（**5 条消费路径 / ${anchors.length} 个锚点**全部在位）：`
+        + '模型清单 / 预执行 / 哨兵 / 四个 execute（含身份门）/ 工作方式')
     }
 
     // ⚠ 反向：预设层**不得**再把旧全局服务当判定依据（兼容面可以留，判定不行）

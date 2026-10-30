@@ -12,9 +12,15 @@
  * ⚠ 累计顺序**必须**与拆分前逐行一致（判定行的两个计数也来自本文件累计的清单）。
  */
 import { readFileSync } from 'node:fs'
+import { resolve, sep } from 'node:path'
+import { dirname, join as pjoin } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { runRepoRules } from './check-repo-rules.mjs'
-import { findDuplicateSectionHeadings, ledgerRootDiag, runDocShape, runRequirementPurity, runResidualMarkers, runTableIntegrity } from './check-doc-shape.mjs'
+import { findDuplicateSectionHeadings, ledgerRootDiag, runDocShape, runLedgerCure, runRequirementPurity, runResidualMarkers, runTableIntegrity } from './check-doc-shape.mjs'
 import { runDiscipline, runPlanModuleParity, runRender, runRequirementsRoot, runSameSource, runSkeletonSource, runWorkspaceNameSource, runWriteScope, runZeroWidth } from './check-code-face.mjs'
+
+/** ⚠ 本仓工作区根（从本文件位置现算，⛔ 不硬编码本机路径 —— `UD-73③`）。 */
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 const fail = []
 const note = []
@@ -46,6 +52,26 @@ const skip = []
 const noteSkip = (m) => skip.push(m)
 const bad = (m) => fail.push(m)
 const ok = (m) => note.push(m)
+/**
+ * ── ⚠⚠ **第四档：报警明细（只报不拦）**（2026-10-25 · 账本根治第一批）──────────
+ *
+ * ⚠ 它与前三档的关系（⛔ 不许含糊）：
+ *   · `fail`      ⇒ 查了、且查到违规 ⇒ `exit 1` · **计入「没过」**
+ *   · `noObject`  ⇒ **整族**没有对象 ⇒ `exit 2`
+ *   · `skip`      ⇒ 本组某处没对象 ⇒ 只计数
+ *   · **`alarm`** ⇒ **查到了，但这一批（第一批）有意不拦** ⇒ **⛔ 不进退出码 · ⛔ 不进「查了」**
+ *
+ * ⚠ **为什么要有这一档**（而不是直接 `bad()`）：账本根治第一批的边界是「**先量清存量**」——
+ *   存量没清就转拦 ⇒ 第一天全库红 ⇒ **恒红的判据等于没有判据**
+ *   （`check-build-sync.mjs` 头注那三条是同一个理由）。
+ * ⚠ **⛔ 不许把 `alarm` 塞进 `note`**：`note` 就是 `ok()` = "查过且过"；
+ *   存量违规不是"过"，它是"**查到了、暂不拦**"。
+ * ⚠ **⛔ 也不许进「查了」计数**：存量清掉后计数会跟着变小 ⇒ 那族的
+ *   `ASSERTION_FLOORS` 下界就被存量牵着漂（**E-117**：会自己漂的数 ⛔ 不许当下界）。
+ *   进计数的只有每组**固定的汇总行**，它的条数与存量多少无关。
+ */
+const alarm = []
+const noteAlarm = (m) => alarm.push(m)
 
 // ── 判据函数的**直接调用入口**（第 53 轮 · §1③ 的"可单测"要求）──────────────
 // ⚠ 只在**被直接执行**时生效（import 本模块做断言时**不会**触发）：
@@ -147,6 +173,17 @@ runWorkspaceNameSource({ bad, ok })
 // ── ② 四份正本形态机检 A / B / J / C / D / D′ / E ──────────────────────
 runDocShape({ bad, ok, noObject: noteNoObject, skip: noteSkip })
 
+/**
+ * ── ② X / Y / Z：账本根治第一批（2026-10-25 · **只报不拦**）───────────────────
+ *
+ * ⚠ 作业书 = `archive/2026-10-25-ledger-cure/TASK.md`。三组的判据体在
+ *   `check-doc-shape.mjs` 的 `runLedgerCure()`（与既有形态族同一族、同一入口，
+ *   ⛔ **不新增 `check:` 命令** —— 那会牵动 `package.json` / 正本收尾表 / 族数下界三处联动）。
+ * ⚠ **一律只报不拦**：报警明细走 `noteAlarm`（`⚠` 前缀、单列输出、**不进 `fail`**、
+ *   **不进「查了」**）⇒ 第一批只量存量，退出码一个字节都不动。
+ */
+runLedgerCure({ ok, bad, alarm: noteAlarm, skip: noteSkip })
+
 // ── ③ F / G / H ────────────────────────────────────────────────────────
 runDiscipline({ bad, ok, readmeSrc, PKG })
 runZeroWidth({ bad, ok })
@@ -157,6 +194,87 @@ await runResidualMarkers({ bad, ok })
 
 // ── ③ Q：卷下两层子目录的写侧白名单（成对 + 强制登记）──────────────
 await runWriteScope({ bad, ok })
+
+// ══════════════════════════════════════════════════════════════════════
+// M-1 · **元规则**：每条判据都必须自带一条负向对拍（2026-10-30 P6 · 任务书 §二）
+// ══════════════════════════════════════════════════════════════════════
+/**
+ * 为什么放在本入口：`check:gitignore` 是**所有"抄写类"判据**的收口处，
+ * 而元规则与它们同类（它守的不是产品行为，是"判据本身有没有牙"）。
+ *
+ * ⚠ 口径见 `scripts/check-meta-negctl.mjs` 头注释（只数 `ok`/`bad` 的字面量，沿 import 闭包累加）。
+ * ⚠ 登记表：`scripts/meta-negative-floor.json`（每族下限，**只准升不准降**）。
+ * ⚠⚠ **M-1 自己也有负向对拍**（见下方 N-M1）：把某族的来源换成"负向对拍 0 条"的文本 ⇒ 必须红。
+ */
+{
+  const { runNegativeCoverage, measureFamilies, compareFloors, familiesFromPkg } = await import('./check-meta-negctl.mjs')
+  const { measured, floor } = runNegativeCoverage({ bad, ok })
+
+  // ── M-1b 弱版：每族至少一条对拍写了「先自证」（⚠ 只把"退步"判红，见 runSelfProof 头注释）──
+  {
+    const { runSelfProof } = await import('./check-meta-negctl.mjs')
+    runSelfProof({ bad, ok, measured })
+
+    /**
+     * **N-M1b 负向对拍（自指）**：把某族的「先自证」标记清空 ⇒ M-1b 的"退步"必须红。
+     * ⚠ 先自证夹具坏掉：断言替换后该族读数真的变 0（不是"以为改了"）。
+     */
+    const target = 'check:ledger-next'
+    const fs = await import('node:fs')
+    const srcPath = `scripts/${target.replace('check:', '').replace(/-/g, '-')}.mjs`
+    const realFile = 'scripts/check-ledger-next.mjs'
+    let real = ''
+    try { real = fs.readFileSync(realFile, 'utf8') } catch { real = '' }
+    const stripped = real.replace(/先自证/g, 'XX')
+    const reallyZero = real !== '' && (stripped.match(/先自证/g) ?? []).length === 0
+    if (!reallyZero) {
+      bad('N-M1b · 负向对拍夹具没造出来（源码里找不到「先自证」或替换无效）⇒ 本条不可判')
+    } else {
+      const { measureSelfProof } = await import('./check-meta-negctl.mjs')
+      const probe = measureSelfProof(
+        { [target]: { count: 1 } },
+        () => [realFile.replace(/^scripts\//, '')],
+        () => stripped,
+      )
+      const hit = probe.problems.find((x) => x.includes(target))
+      if (hit !== undefined) {
+        ok(`N-M1b ✓ 负向对拍（把 ${target} 的「先自证」标记清空 ⇒ 实测 0）⇒ M-1b 的"该族无可信度标记"**必红**`)
+      } else {
+        bad('N-M1b · 清空标记后 M-1b 没报 ⇒ 它没在数实测')
+      }
+    }
+    void srcPath
+  }
+
+  // —— N-M1 负向对拍（⚠ 自指：先自证夹具真的把计数压到 0，再断言它红）——
+  {
+    /**
+     * ⚠ 只改**一个族**的读数（`check:ledger-next`，它的对拍标签数最多、最好辨认）。
+     *   把它的入口源换成"一条负向对拍都没有"的文本 ⇒ 实测计数变 0 ⇒ 必须 < 下限。
+     * ⚠ 绝不落盘（只在内存里换字符串）。
+     */
+    const fams = familiesFromPkg()
+    const target = 'check:ledger-next'
+    if (fams[target] === undefined) {
+      bad('N-M1 · 找不到 `check:ledger-next` 这个族 ⇒ 元规则的负向对拍失去对象（不按通过处理）')
+    } else {
+      const entryFile = fams[target].replace(/^scripts\//, '')
+      const fakeSrc = '// 夹具：把所有 ok/bad 的「负向对拍」字样删掉\nok(`L 组全绿`)\n'
+      const m2 = measureFamilies({ [target]: fams[target] }, { [entryFile]: fakeSrc })
+      // ⚠ **先自证夹具真坏掉**：那次读数必须是 0
+      const reallyZero = m2[target] !== undefined && m2[target].count === 0
+      const probs = compareFloors({ [target]: m2[target] }, floor)
+      if (!reallyZero) {
+        bad(`N-M1 · 夹具没真的把计数压到 0（实测 ${m2[target]?.count}）⇒ 这条自指对拍不可判`)
+      } else if (probs.length > 0) {
+        ok(`N-M1 ✓ 负向对拍（把 ${target} 的对拍标签清空 ⇒ 实测 0 < 下限 ${floor[target]}）⇒ **M-1 必红**：${probs[0].slice(0, 90)}`)
+      } else {
+        bad('N-M1 · 把某族对拍清空后 M-1 仍通过 ⇒ 它数的是登记表、不是实测（元规则没有牙）')
+      }
+    }
+    void measured
+  }
+}
 
 // ── ③ T：现行需求根的迁移面（新根可写 / 旧根拒写且理由分得开 / 旧根仍可读）──
 await runRequirementsRoot({ bad, ok })
@@ -180,12 +298,77 @@ runSkeletonSource({ bad, ok })
 console.log('`.gitignore` 一致性核对 · dsh-hob')
 console.log('约定归属地:', README)
 console.log('')
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * ⚠⚠ **反向断言：它读的必须是正本，⛔ 不许再读回工作区之内**（2026-10-27 · 包 Y §三·3）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 为什么需要它（⚠ 这条比"修好"更重要）──────────────────────────────────
+ *   本族改前读的是 `/home/lk/FF/dsh-hob/.hob` —— **工作区之内的旧落点**，
+ *   而那底下只剩 11 份残留副本（四份正本一份都不在）。
+ *   ⚠ 问题不在"它红了 65 条"，在 **"它读错了地方，红得真假都无从判断"**。
+ *   ⇒ 光把路径改对**不够**：下一个人（或下一次重构）完全可能又把它改回
+ *     "先试 `<工作区>/.hob`"那一档 —— 而**那时不会有任何东西响**。
+ *
+ * ── 判据（两条，都要）──────────────────────────────────────────────────
+ *   ① **打印**实际解析到的账本根绝对路径（⛔ 不许只印"已执行"，那看不出在哪）；
+ *   ② **断言**该路径**不在任何工作区之内** —— 具体做法：以 `root`（本仓工作区根）
+ *      为基准，正本**不得**等于 `root` 或位于其下；⛔ 也不许是它下面的 `.hob`。
+ *   ⚠ ②是**结构性**的：工作区路径是从 `import.meta.url` 现算的，⛔ 不硬编码本机路径
+ *     （`UD-73③`）⇒ 换一台机器、换一个检出位置，判据照样成立。
+ *
+ * ── ⚠ 它的"改前红"是怎么证明的（本单实跑，⛔ 不是声称）──────────────────
+ *   改前 `LEDGER_ROOT` 解析出 `/home/lk/FF/dsh-hob/.hob` ⇒ **它在 root 之下**
+ *   ⇒ 本条必红。修后解析出 `/home/lk/.dsh/hob-ledgers/dsh-hob` ⇒ 绿。
+ *   ⚠ 这两个读数在报告 §2/§3 都贴了原文。
+ */
+{
+  const diag = ledgerRootDiag
+  if (diag.kind !== 'ok') {
+    /**
+     * ⚠ 走不到（上面已经在闸门 `exit 2` 了）—— 留着是为了"将来有人搬走闸门"时仍能报，
+     *   ⛔ 不许把它降级成 `ok()`：那样就是本族改前那种"没查 = 查过且过"。
+     */
+    bad('R-root 账本根解析不到 ⇒ 反向断言无从判定（不按通过处理）')
+  } else {
+    const abs = resolve(diag.path)
+    const wsAbs = resolve(root)
+    /** ② 判"在不在工作区之内"：相等，或以下面这个分隔符开头。 */
+    const insideWorkspace = abs === wsAbs || abs.startsWith(wsAbs + sep)
+    /**
+     * ⚠ **先打印**（这里是 ① —— 读数必须出现在输出里，⛔ 不能只活在断言里）。
+     *   ⚠ 措辞用"正本根"而不是"账本根"：与本族既有那行 `正本根 = …` 同一口径。
+     */
+    console.log(`  正本根（反向断言）：${abs}`)
+    if (insideWorkspace) {
+      bad(`R-root **账本根落在工作区之内**：\`${abs}\`
+      ⇒ 工作区根 = \`${wsAbs}\`；二者相等或在其下 —— 而账本自 \`CHG-102\` 起**必须在工作区之外**。
+      ⇒ ⚠ 这多半是有人把它改回了"先试 \`<工作区>/.hob\`"那一档（改前就是这么读的，那底下只剩残留副本）
+      ⇒ 修法：走 \`scripts/lib/ledger-root.mjs\` 的共享解析（⛔ 不要再自己拼一份）`)
+    } else {
+      ok(`R-root ✓ 账本根**不在工作区之内**（正本 \`${abs}\` · 工作区 \`${wsAbs}\`）`
+        + ' ⇒ 本条会在有人把它改回旧落点时立刻红')
+    }
+  }
+}
+
 for (const n of note) console.log('  ✓', n)
 /**
  * ⚠⚠ **跳过类单列**（第 349 轮 · 甲方案）：⛔ 不进上面那堆 `✓`、⛔ 不计入"通过"的数。
  *   前缀 `·`（中性符号，与"未执行"同族），与 `✓ 通过` / `✗ 失败` 都不撞色。
  */
 for (const k of skip) console.log('  ·', k)
+/**
+ * ── ⚠⚠ **报警明细单列**（2026-10-25 · 账本根治第一批）：**只报不拦** ──────────
+ *   前缀 `⚠`，与 `✓`（过了）/ `✗`（没过）/ `·`（跳过）都不同色。
+ *   ⚠ **⛔ 不进 `fail`**：存量没清完之前拦 ⇒ 恒红 ⇒ 恒红判据等于没有判据。
+ *   ⚠ 但它**必须印出来**（"只报"不等于"不说"）：作业书要的就是这一批存量读数。
+ */
+for (const a of alarm) console.log('  ⚠', a)
+if (alarm.length > 0) {
+  console.log(`  ⚠ 上列 **${alarm.length} 条**是**报警明细**（只报不拦）：`
+    + '⛔ 不计入退出码、⛔ 不计入「查了」 —— 第一批只量存量，存量清完再转拦。')
+}
 console.log('')
 /**
  * ── ⚠⚠ **处级口径（机器可读）**（第 349 轮 · TASK §二 硬要求 3）────────────────

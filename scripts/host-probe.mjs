@@ -82,12 +82,20 @@ let fail = 0
 /**
  * 跑一条断言。`fn` 返回 `true` 表示通过；返回**字符串**表示失败并附原因；
  * 抛异常也算失败（附异常信息）。**任何情况都不中断后续断言。**
+ *
+ * ⚠⚠ **2026-10-25 · `fn` 允许是 async**（本单跟着入口 `apply` 改 async 而变化）：
+ *   入口 `apply()` 现在是 `async` —— 它要 `await` 子 fiber 落定再印模块清单
+ *   （理由见 `src/index.ts` 的 `apply` 注释）。⇒ 三条调 `apply` 的断言**必须等它 settle**，
+ *   否则判到的是"apply 还没印日志"的中间态 —— 实测会红成
+ *   `logs=["...逐会话策略权威已就位..."]`（只有第一行，模块清单那行还没打）。
+ *   ⚠ 这不是放宽：判据内容一字未改，只是**等它真的跑完再判**。
+ *   ⛔ 也不许用 `setTimeout` 猜一个"够长的等待" —— 那会变成"等多久算够"的说不清口径。
  */
-function check(name, fn) {
+async function check(name, fn) {
   let ok = false
   let extra = ''
   try {
-    const r = fn()
+    const r = await fn()
     if (r === true) {
       ok = true
     } else if (r === false || r === undefined) {
@@ -185,13 +193,13 @@ const MODULE_NAMES = (() => {
 const DEFAULT_MODULES_JSON = JSON.stringify(Object.fromEntries(SWITCH_KEYS.map((k) => [k, {}])))
 
 // ── 1) 默认配置：modules 的形状（五子字段全 ref）──────────────────────────
-check(`schema 校验：undefined → modules 形状 = ${DEFAULT_MODULES_JSON}`, () => {
+await check(`schema 校验：undefined → modules 形状 = ${DEFAULT_MODULES_JSON}`, () => {
   const got = JSON.stringify(mod.Config(undefined).modules)
   return got === DEFAULT_MODULES_JSON ? true : `got=${got} want=${DEFAULT_MODULES_JSON}`
 })
 
 // ── 2) 各开关都是 volatile ref（须 .get()），默认值实测 ─────────────────
-check(`schema 校验：${SWITCH_KEYS.length} 个开关都是 volatile ref（{} 且 .get() 返回布尔）且默认值与 schema 一致`, () => {
+await check(`schema 校验：${SWITCH_KEYS.length} 个开关都是 volatile ref（{} 且 .get() 返回布尔）且默认值与 schema 一致`, () => {
   const c = mod.Config(undefined)
   const shape = {}
   const bad = []
@@ -206,7 +214,7 @@ check(`schema 校验：${SWITCH_KEYS.length} 个开关都是 volatile ref（{} �
 })
 
 // ── 3) modules 父对象本身**不是** ref（方案 D 形状：父不标、子各标）────────
-check('schema 校验：modules 父对象本身不是 ref（只有子字段各标 volatile）', () => {
+await check('schema 校验：modules 父对象本身不是 ref（只有子字段各标 volatile）', () => {
   const m = mod.Config(undefined).modules
   if (m === null || typeof m !== 'object') return `modules 不是对象：${typeof m}`
   if (typeof m.get === 'function') return 'modules 竟带有 .get（父子同标会抛 ValidationError，与实测相反）'
@@ -214,7 +222,7 @@ check('schema 校验：modules 父对象本身不是 ref（只有子字段各标
 })
 
 // ── 4) 顶层键恰好 modules + spawn；未知键原样保留在顶层、不污染 modules ──
-check('schema 兼容：未知键（profile 旧配置段）原样保留在顶层，且 modules 形状不受污染', () => {
+await check('schema 兼容：未知键（profile 旧配置段）原样保留在顶层，且 modules 形状不受污染', () => {
   const c = mod.Config({ role: 'execution', deliveryMode: 'execute', autoSend: false, workspaceRoot: '' })
   const kept = { role: c.role, deliveryMode: c.deliveryMode, autoSend: c.autoSend, workspaceRoot: c.workspaceRoot }
   if (!(kept.role === 'execution' && kept.deliveryMode === 'execute' && kept.autoSend === false && kept.workspaceRoot === ''))
@@ -243,19 +251,19 @@ const DEFAULT_TOP_KEYS = (() => {
   return out
 })()
 
-check('schema 校验：`src/config.ts` 里抽得出顶层 `z.object` 组（⛔ 手抄表已删）', () => {
+await check('schema 校验：`src/config.ts` 里抽得出顶层 `z.object` 组（⛔ 手抄表已删）', () => {
   return DEFAULT_TOP_KEYS.length > 0 ? true : `抽到 0 个顶层组（基准读不到 ⇒ 不按通过处理）`
 })
 
-check(`schema 校验：Config(undefined) 的顶层键 === 从 \`src/config.ts\` 抽出的顶层组 ${JSON.stringify(DEFAULT_TOP_KEYS)}（⚠ 派生，⛔ 不手抄）`, () => {
+await check(`schema 校验：Config(undefined) 的顶层键 === 从 \`src/config.ts\` 抽出的顶层组 ${JSON.stringify(DEFAULT_TOP_KEYS)}（⚠ 派生，⛔ 不手抄）`, () => {
   const got = Object.keys(mod.Config(undefined))
   return JSON.stringify(got) === JSON.stringify(DEFAULT_TOP_KEYS) ? true : `got=${JSON.stringify(got)}`
 })
 
 // ── 6) apply 默认配置：登记 tools + bus + settings（且不抛错）─────────────
-check("apply：默认配置 ⇒ 登记 tools + bus + settings，日志含「模块：tools, bus, settings」", () => {
+await check("apply：默认配置 ⇒ 登记 tools + bus + settings，日志含「模块：tools, bus, settings」", async () => {
   const { ctx, plugins, logs } = fakeCtx()
-  mod.apply(ctx, mod.Config(undefined))
+  await mod.apply(ctx, mod.Config(undefined))
   const want = ['dsh-hob-tools', 'dsh-hob-bus', 'dsh-hob-settings']
   if (JSON.stringify(plugins) !== JSON.stringify(want)) return `plugins=${JSON.stringify(plugins)} want=${JSON.stringify(want)}`
   if (!logs.some((m) => m.includes('模块：tools, bus, settings'))) return `logs=${JSON.stringify(logs)}`

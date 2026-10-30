@@ -56,7 +56,26 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
-const HOB = join(root, '.hob')
+
+/**
+ * ⚠⚠ **2026-10-27 · 包 Q（`CHG-099` 第 4 条）**：这里原来是硬编码
+ *   `join(root, '.hob')` —— **没有任何回落逻辑**。
+ *   账本搬出工作区之后它直接指向一个不存在的目录，
+ *   而 `EXPERIENCE.md` 读不到时本脚本会走"文件不存在"那条路 ⇒ **整族形同废止**。
+ *   ⇒ 改成**与另外三族同一个实现**（`scripts/lib/ledger-root.mjs`），
+ *     ⛔ 不再抄第二份解析（抄一份就是第二个漂移点）。
+ *   ⚠ 与改前**唯一的行为差异**是"账本从哪来"；**判据本身一个字没改**。
+ */
+import { resolveLedgerRoot as resolveLedgerRootShared } from './lib/ledger-root.mjs'
+
+const cliIdx = process.argv.indexOf('--ledger')
+const LEDGER_ROOT = resolveLedgerRootShared(root, cliIdx >= 0 ? process.argv[cliIdx + 1] : undefined)
+if (LEDGER_ROOT === undefined) {
+  console.log('未执行（账本根判不出：没配 `ledgerHome`，或 `<ledgerHome>/<工作区名>/` 不存在）')
+  console.log('  ⚠ 这不是"通过"—— 是"没读到账本"。请检查预设行的 `ledgerHome`。')
+  process.exit(2)
+}
+const HOB = LEDGER_ROOT
 const EXP = join(HOB, 'EXPERIENCE.md')
 
 /**
@@ -133,6 +152,30 @@ const note = []
  */
 const skip = []
 const noteSkip = (m) => skip.push(m)
+
+/**
+ * **负向对拍（N-EXP · 2026-10-30 P7）**：四要素检测器必须**真的**能报缺。
+ * ⚠ 先自证夹具坏掉：`bodyBad` 里 `**现象**` 已降级成 `现象`，并现场断言 `lackOf` 恰好报它。
+ * ⚠ 本族此前**一条负向对拍都没有**（M-1 实测 0 条）—— 也就是说
+ *   "把 `**现象` 改成 `现象`"这种会让检测器哑掉的改动，**没有任何判据会红**。
+ * ⚠ 成对：缺一项 ⇒ 必报；四项齐 ⇒ 必不报（⛔ 不许只测"该咬"那一侧）。
+ */
+{
+  const bodyGood = '**现象**：x\n**根因**：y\n**正确做法**：z\n**出处**：w\n'
+  const bodyBad = '现象：x\n**根因**：y\n**正确做法**：z\n**出处**：w\n'
+  const lackOf = (b) => ELEMENTS.filter(([, re]) => !re.test(b)).map(([n]) => n)
+  const goodLack = lackOf(bodyGood)
+  const badLack = lackOf(bodyBad)
+  const reallyBites = badLack.length === 1 && badLack[0] === '现象'
+  if (goodLack.length !== 0) {
+    fail.push(`N-EXP · 负向对拍夹具坏了：四项齐全的样本却报缺 ${JSON.stringify(goodLack)}（判据过咬）`)
+  } else if (!reallyBites) {
+    fail.push(`N-EXP · 负向对拍**没咬住**：把「**现象」降级成「现象」后报缺 ${JSON.stringify(badLack)}（期望 ['现象']）—— 检测器哑了`)
+  } else {
+    note.push('N-EXP ✓ 负向对拍（四要素里把 `**现象**` 降级成 `现象`）⇒ 检测器**变红**（报缺「现象」）；四项齐全样本 ⇒ 不报（成对）')
+  }
+}
+
 const bad = (m) => fail.push(m)
 
 if (!existsSync(EXP)) {

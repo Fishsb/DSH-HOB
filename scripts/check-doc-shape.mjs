@@ -13,6 +13,28 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { workspaceName } from './workspace-name.mjs'
+/**
+ * ⚠⚠ **脚本侧唯一账本根解析**（`CHG-099` 第 4 条 · `scripts/lib/ledger-root.mjs`）。
+ *
+ * ── 为什么要 import 它（2026-10-27 · 包 Y）─────────────────────────────────
+ *   本文件此前的 `ledgerDiag` **自己拼了一份**：先试 `<工作区>/.hob`（若"看起来像账本"），
+ *   再退 `<ledgerHome>/<工作区名>`。⚠ 账本迁到工作区之外（`CHG-102`）之后，
+ *   第一档 `<工作区>/.hob` 里只剩**11 份残留副本**（`REQUIREMENTS.md` / `CONTEXT.md` /
+ *   `DECISIONS.md` / `PROJECT.md` 都不在）⇒ `looksLikeLedger()` 为假 ⇒ 落到第二档；
+ *   而第二档拼出来的是 `/home/lk/.dsh/hob-ledgers/dsh-hob` —— 那**本来是正本**，
+ *   可它在**正本清单派生**那一步返回了 0 份（详见下面的实测），于是全族红 65 条。
+ *   ⚠ 真正的根因是**这一处自己拼路径**，与 `CHG-099` 已经收敛掉的那几份同型 ——
+ *     本单把最后一处也收进共享实现，⛔ **不再写第五份解析**。
+ *
+ * ⚠ **口径差异（有意为之，⛔ 不是放宽）**：共享实现的 ③ 档是"都没有 ⇒ `undefined`"，
+ *   ⛔ 不再有"本工作区 `.hob` 看起来像账本就用它"那一档。这正是要的效果 ——
+ *   旧落点不该再被当成正典。
+ */
+import {
+  looksLikeLedger as looksLikeLedgerShared,
+  resolveLedgerRoot as resolveLedgerRootShared,
+  workspaceNameOf as workspaceNameOfShared,
+} from './lib/ledger-root.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -149,63 +171,87 @@ function fencedMaskBelow(lines) {
  * 判据：目录在，且**至少有一件**账本特征 —— 正本之一，或**非空的** `volumes/` / `archive/` / `runtime/`。
  * ⚠ **空目录不算**：本项目 `.hob/archive/` 是空的记录层历史位，算进去会把"未迁移"误判成"已迁移"。
  */
-const CANON_FILES = ['REQUIREMENTS.md', 'PROJECT.md', 'DECISIONS.md', 'CONTEXT.md']
-const SIDE_DIRS = ['volumes', 'archive', 'runtime']
-function looksLikeLedger(dir) {
-  try { if (!statSync(dir).isDirectory()) return false } catch { return false }
-  for (const f of CANON_FILES) {
-    try { if (statSync(join(dir, f)).isFile()) return true } catch { /* 继续 */ }
-  }
-  for (const d of SIDE_DIRS) {
-    try {
-      const q = join(dir, d)
-      if (statSync(q).isDirectory() && readdirSync(q).length > 0) return true
-    } catch { /* 继续 */ }
-  }
-  return false
-}
+/**
+ * ⚠⚠ **本文件不再自己实现 `looksLikeLedger`**（2026-10-27 · 包 Y）：
+ *   它原来是"与产品侧逐条相同"的**第二份**，靠人守。现在改为
+ *   `import { looksLikeLedger } from './lib/ledger-root.mjs'`，并由本文件末尾
+ *   `export { looksLikeLedgerShared as looksLikeLedger }` 转出 ——
+ *   ⚠ 这样**"两边逐条相同"从纪律变成结构**（只有一份实现，漂不了）。
+ *   ⛔ 若将来有人在这里重新内联一份，`check-orch-state` 的 `SV-n` 交叉断言会红。
+ */
 
 const ledgerDiag = (() => {
-  // ⚠ 与其它脚本同口径：账本父目录**不硬编码本机绝对路径**（UD-73③），
-  //   从 profile 的预设行声明 `ledgerHome` 读出；读不到再退回缺省候选。
-  const candidates = []
-  let presetErr
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **2026-10-27 · 包 Y：这一处改为 import 共享实现（⛔ 不再自己拼）**
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 改前（本文件自己写的那份，已删）────────────────────────────────────
+   *   · 先试 `<工作区>/.hob`（若 `looksLikeLedger()` 为真）；
+   *   · 再试 `<ledgerHome>/<工作区名>`（`existsSync` 为真即用）；
+   *   · 都失败 ⇒ `absent`。
+   *   ⚠ 账本迁出工作区（`CHG-102`）之后，第一档那个空壳目录**仍然"看起来像账本"**吗？
+   *     实测：`/home/lk/FF/dsh-hob/.hob` 里只剩 **11 份残留副本**，四份正本
+   *     （`REQUIREMENTS.md` / `PROJECT.md` / `DECISIONS.md` / `CONTEXT.md`）**一份都不在**，
+   *     而 `archive/` 与 `volumes/` 还非空 ⇒ `looksLikeLedger` **仍然为真**
+   *     ⇒ 它**一直选中旧落点** ⇒ 正本清单派生为空 ⇒ 全族 65 条红。
+   *   ⚠ 这不是"红得没道理"：**判据读错了地方，红的真假都无从判断**（包 Y §二·2 的原话）。
+   *
+   * ── 现在：口径只有一处（`scripts/lib/ledger-root.mjs`）──────────────────
+   *   **三档，逐条与产品代码 `doc-read.ts:resolveLedgerRoot` 相同**：
+   *     ① `cliLedger`（命令行显式给）⇒ 用它；
+   *     ② `ledgerHome` + 工作区名 ⇒ `<ledgerHome>/<工作区名>/`；
+   *     ③ 都没有 ⇒ `undefined`（⛔ **不派生回 `<工作区>/.hob`**）。
+   *   ⚠ **本处自己只做"把结果翻译成 `diag`"这件事**（哪一档读不到、为什么），
+   *     ⛔ 不再重算路径。三档文案保持原样（`preset-unreadable` / `no-ledger-home` / `absent`）。
+   *
+   * ── ⚠ 一个刻意的行为变化（如实登记，⛔ 不叫"放宽"）────────────────────
+   *   改前：`<ledgerHome>/<工作区名>` **存在**即采用（`existsSync`）。
+   *   改后：共享实现**不看存在性**（与产品侧一致："账本该在哪"与"在不在"是两件事），
+   *         存在性由**可达性判据**在下面单独判 —— 故 `absent` 这一档仍然会出，
+   *         ⛔ 不会因为"目录不在"就静默降级成一条 `ok()`。
+   */
+  const wsName = workspaceNameOfShared(root)
+  /** 预设行是否可读、有没有 `ledgerHome:` —— 这两档必须**先**分开报（⛔ 不许压成一句）。 */
+  let home = null
   try {
     const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
     const m = /ledgerHome:\s*(\S+)/.exec(preset)
-    if (m !== null) candidates.push(m[1])
-    else return { kind: 'no-ledger-home', path: undefined, wsName: undefined,
-      reason: '预设里没有 `ledgerHome:` 声明' }
+    if (m === null) {
+      return { kind: 'no-ledger-home', path: undefined, wsName,
+        reason: '预设里没有 `ledgerHome:` 声明' }
+    }
+    home = m[1]
   } catch (e) {
-    presetErr = String(e?.message ?? e)
-    return { kind: 'preset-unreadable', path: undefined, wsName: undefined,
-      reason: `读不到预设 ${join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')}（${presetErr}）` }
+    return { kind: 'preset-unreadable', path: undefined, wsName,
+      reason: `读不到预设 ${join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')}（${String(e?.message ?? e)}）` }
   }
-  // 候选（2026-10-25 · C 步改了顺序，⚠ 与产品代码 `resolveLedgerRoot` 同一套口径）：
-  //   ② **本工作区自己的 `<工作区>/.hob/`**（若它看起来像账本）—— 新正典；
-  //   ③ 过渡桥：<ledgerHome>/<工作区名>（⚠ 仍按名字拼 ⇒ 分期迁移期间用）。
-  const wsName = workspaceName(() => basename(root))
-  const inWs = join(root, '.hob')
-  if (looksLikeLedger(inWs)) return { kind: 'ok', path: inWs, wsName, reason: '' }
-  const tried = []
-  for (const home of candidates) {
-    const dir = join(home, wsName)
-    tried.push(dir)
-    if (existsSync(dir)) return { kind: 'ok', path: dir, wsName, reason: '' }
+  /** ① 命令行显式给的账本目录（与 `check-archive-consistency` / `check-experience` 同一入口）。 */
+  const cliLedger = (() => {
+    const i = process.argv.indexOf('--ledger')
+    return i >= 0 && process.argv[i + 1] !== undefined ? process.argv[i + 1] : undefined
+  })()
+  const resolved = resolveLedgerRootShared(root, cliLedger, home)
+  if (resolved === undefined) {
+    /**
+     * ⚠ 共享实现在"没有 `ledgerHome`"时给 `undefined` —— 但上面已经单独报过那一档了，
+     *   走到这里只剩"`root` 空"这一种（本文件里 `root` 恒有值）⇒ 报 `absent` 并给原因。
+     */
+    return { kind: 'absent', path: undefined, wsName,
+      reason: '共享解析器判不出账本根（`root` 为空）—— 见 `scripts/lib/ledger-root.mjs` 的 ③ 档' }
   }
   /**
    * ⚠ **"不存在"与"存在但读不了"要分开报**（本项目头号禁忌：两种原因说成同一句话）：
    *   后者（无权限 / 不是目录）是**环境坏了**，前者是**没建账本** —— 修法完全不同。
    */
-  const target = tried[0]
-  let why = '不存在'
   try {
-    const st = statSync(target)
-    why = st.isDirectory() ? '存在且是目录，但 `existsSync` 却为假（异常）' : '存在但**不是目录**'
+    const st = statSync(resolved)
+    if (st.isDirectory()) return { kind: 'ok', path: resolved, wsName, reason: '' }
+    return { kind: 'absent', path: resolved, wsName, reason: '存在但**不是目录**', tried: [resolved] }
   } catch (e) {
-    why = `不存在或读不到（${String(e?.code ?? '')} ${String(e?.message ?? e)}）`
+    return { kind: 'absent', path: resolved, wsName,
+      reason: `不存在或读不到（${String(e?.code ?? '')} ${String(e?.message ?? e)}）`, tried: [resolved] }
   }
-  return { kind: 'absent', path: target, wsName, reason: why, tried }
 })()
 
 /** 账本根（⚠ `undefined` = 读不到；**为什么**读不到见 {@link ledgerDiag}）。 */
@@ -214,8 +260,15 @@ const LEDGER_ROOT = ledgerDiag.kind === 'ok' ? ledgerDiag.path : undefined
 /**
  * 导出给入口做**前置闸门**（甲-1 试点）：`{ kind, path, wsName, reason }`。
  * ⚠ `kind !== 'ok'` ⇒ 入口 `exit 2`，⛔ 不许降级成一条 `ok()` 的"跳过"。
+ * ⚠ **另外导出了账本根的绝对路径本身**（包 Y §三·3 的反向断言要打印它并验它不在工作区内）。
  */
 export const ledgerRootDiag = ledgerDiag
+export const LEDGER_ROOT_ABS = LEDGER_ROOT
+/**
+ * ⚠ 同 `looksLikeLedger` 的共享版（本文件的私有版本已删）——
+ *   它原来与产品侧"逐条相同"是**靠人守**的，现在两边同一份实现 ⇒ 那条纪律变成结构性的。
+ */
+export { looksLikeLedgerShared as looksLikeLedger }
 
 /**
  * A 用的：正本文件名（**有配套空模板**的那三本 —— 断言 A 比的是「正本节名 ↔ 模板节名」）。
@@ -1096,255 +1149,32 @@ export function runDocShape({ bad, ok, noObject, skip }) {
         + '**不**代表"模板与正本逐字一致"（名单不写死：口径如上，以实测输出的表数为准）')
     }
 
-    // ── 断言 V：`package.json` 的每一个 `check:*` 族都必须在正本 §4.1 收尾表里 ──
+    // ══════════════════════════════════════════════════════════════════════
+    // ⚠⚠ **2026-10-30 P7：断言 `V` / `V2` 已删除**（连同它们的 4 组自带样本）。
     //
-    // ⚠ **为什么加这一组**（2026-10-20 第 320 轮 · TASK-D4）：
-    //   断言 N 管的是「**正本 → 模板**」（模板必须镜像正本的行）。它有一个**结构性盲区**：
-    //   ⚠ ⚠ **正本自己漏了一族时，N 组看不见** —— 它只要求"正本里有的，模板也得有"，
-    //   从不要求"`package.json` 里有的，正本也得有"。
-    //   实测出处：`check:redeliver` 于 `76e1bc3` 接进 `npm run check`（只改了 `package.json` +
-    //   `check-repo-rules.mjs` 的落点登记），**两份 `CONTEXT.md` 都没跟上** ⇒ 两侧各 14 族、
-    //   `package.json` 15 族，而**当时没有任何判据会红**。
-    //   ⇒ 后果与 E-122 同族：**族在、判据在、但照着 §4.1 手工跑收尾的人永远跳过它**。
-    //
-    // ⚠ **方向与 N 组相反、两条都要**（⛔ 不许拿本条替换 N 组）：
-    //   · N：正本 ⊆ 模板（模板别落后）
-    //   · V：`package.json` 的族 ⊆ 正本（**正本别落后**）
-    //   ⇒ 两条合起来才闭合"三处同批"：`package.json` · 正本 §4.1 · 模板 §4.1。
-    //
-    // ⚠ **扫描面派生、⛔ 不手抄族名**（E-133 同族；手抄一张会漂的期望表正是本条要治的病）：
-    //   族名一律从 `package.json` 的 `scripts` 键现读，只保留 `check:` 前缀。
-    //   ⚠ **排除 `check:all` 与 `check:preflight`** —— 它们自己就是聚合入口与体检
-    //   （与 `scripts/check-all.mjs` 的 `SELF` 同口径），⛔ 不是判据族。
-    //
-    // ⚠ **正本读不到 / 解析不到时**：⛔ **不许静默通过**（照 N 组同款口径 —— 它用 `bad(...)`
-    //   而不是 `ok(...)`：参见上面 `N 真断言的参照面**读不到**` 那一条）。
-    //   同理 `package.json` 读不到也 `bad`（基准缺失 ⇒ 不按通过处理）。
+    //   ── 为什么可以删（不是"为了少几条"）──────────────────────────────────
+    //     族清单**不再手抄**了。正本与模板的 §4.1 表体已换成一对标记之间的**生成块**，
+    //     由 `npm run gen:ledger` 从 `package.json` + `scripts/check-family-catalog.json` 渲染。
+    //     ⇒ 本组守的那个动作（"加了族忘了补 §4.1"）**已经不存在**。
+    //   ── 它守的漂移现在为什么不可能发生 ────────────────────────────────
+    //     · `V`（package.json 的族 ⊆ 正本 §4.1）：现在由 `renderCheckFamiliesBlock` 承担 ——
+    //       `package.json` 有而 catalog 没说明的族 ⇒ **渲染直接抛错**（不是"报红"，是根本生成不出来）。
+    //     · `V2`（§4.1 不许有死行）：catalog 多一行而 `package.json` 已没有那个族 ⇒ **同样抛错**。
+    //     · 两处块内容一致：由 `check:ledger-next` 的 **`I5b`** 逐字节核对（比 V/V2 的集合包含更强）。
+    //   ⚠ 保留 `vLedgerSrc` 等读数：下面的 `V3` 还要用它（V3 管的是 `build` / `typecheck`
+    //     这类**非 `check:*`** 的必跑命令，与族清单无关，⛔ 不受本次删除影响）。
     {
-      /** 从一份 Markdown 的「`### 4.1` 起、下一个 `## ` 止」这段里抽出 `check:*` 族名。 */
-      const vFamiliesInSection = (src) => {
-        const lines = src.split('\n')
-        let inSec = false
-        const found = new Set()
-        for (const l of lines) {
-          if (/^###\s+4\.1(\s|$)/.test(l)) { inSec = true; continue }
-          if (inSec && /^##\s+\S/.test(l)) break
-          if (!inSec) continue
-          if (!l.trim().startsWith('|')) continue
-          // ⚠ 只认**首格里的反引号 token**（与 N 组的收录口径同族：只看首格，不看说明列）
-          const first = (l.trim().replace(/^\|/, '').split('|')[0] || '')
-          for (const m of first.matchAll(/`npm run (check:[A-Za-z0-9:_-]+)`/g)) found.add(m[1])
-        }
-        return found
-      }
-      /** 从 `package.json` 的 `scripts` 派生判据族（⚠ 派生，⛔ 不手抄）。 */
-      const vFamiliesFromPkg = (raw) => {
-        const scripts = JSON.parse(raw)?.scripts ?? {}
-        const SELF_V = new Set(['check:all', 'check:preflight'])
-        return new Set(Object.keys(scripts).filter((k) => k.startsWith('check:') && !SELF_V.has(k)))
-      }
       let vPkgRaw = ''
-      try {
-        vPkgRaw = readFileSync(join(root, 'package.json'), 'utf8')
-      } catch { vPkgRaw = '' }
+      try { vPkgRaw = readFileSync(join(root, 'package.json'), 'utf8') } catch { vPkgRaw = '' }
       let vLedgerSrc = ''
-      try {
-        vLedgerSrc = readFileSync(join(LEDGER_ROOT, 'CONTEXT.md'), 'utf8')
-      } catch { vLedgerSrc = '' }
-
-      if (vPkgRaw === '') {
-        bad('V 读不到 `package.json` ⇒ 「`check:*` 族必须进正本 §4.1」这一条**失去基准**（不按通过处理）')
-      } else if (vLedgerSrc === '') {
-        bad('V 读不到正本 `CONTEXT.md` ⇒ 「`check:*` 族必须进正本 §4.1」这一条**失去基准**（不按通过处理）'
-          + `\n      ⇒ 期望路径：${join(LEDGER_ROOT, 'CONTEXT.md')}`)
-      } else {
-        let vPkgFams
-        let vLedgerFams
-        try {
-          vPkgFams = vFamiliesFromPkg(vPkgRaw)
-        } catch (e) {
-          vPkgFams = undefined
-          bad(`V \`package.json\` 不是合法 JSON ⇒ 本条失去基准（不按通过处理）：${String(e?.message ?? e)}`)
-        }
-        vLedgerFams = vFamiliesInSection(vLedgerSrc)
-        // ⚠ 正本这一段**一条都抽不到**也是一个错（可能是 §4.1 被搬走 / 标题被改），⛔ 不许当"全过"
-        if (vPkgFams !== undefined && vLedgerFams.size === 0) {
-          bad('V 正本 `CONTEXT.md` 的 `### 4.1` 段里**一条 `npm run check:*` 都没抽到**'
-            + ' ⇒ 扫描面为 0，本条**不是在通过**（⛔ 扫 0 份报 ✓ 是 E-126 假绿）'
-            + '\n      ⇒ 可能原因：§4.1 整节被搬走 / 标题被改成非 `### 4.1` / 表格结构变了'
-            + '\n      ⇒ 期望：`### 4.1 收尾必跑` 之后、下一个 `## ` 之前，有 `| \`npm run check:<名>\` | … |` 形态的行')
-        } else if (vPkgFams !== undefined) {
-          const vMissing = [...vPkgFams].filter((f) => !vLedgerFams.has(f)).sort()
-          if (vMissing.length > 0) {
-            bad(`V **收尾表漏族**：\`package.json\` 里有、而正本 \`CONTEXT.md\` §4.1 里**没有**的判据族：`
-              + ` ${vMissing.map((m) => '`' + m + '`').join(' · ')}`
-              + `\n      ⇒ 实测：\`package.json\` 的 \`check:*\` 族 **${vPkgFams.size}** 个 ·`
-              + ` 正本 §4.1 抽到 **${vLedgerFams.size}** 个 · **缺 ${vMissing.length} 个**`
-              + '\n      ⇒ ⚠ 这正是"族在、判据在、但**照着 §4.1 手工跑收尾的人永远跳过它**"那一形态'
-              + '（`E-122` 同族：机制没有喂养端）'
-              + '\n      ⇒ 处置：把缺的那几族**逐条补进正本 §4.1**（照该表既有行文：`| \\`npm run <族>\\` | <守什么> |`）'
-              + '\n      ⇒ ⚠ **同批还要改两处**，否则会当场再红：模板 §4.1（断言 N 管）+ 本表的登记面'
-              + '\n      ⇒ 加新 `check:` 族时必须同批改三处：`package.json` · 账本正本 `§4.1` · 模板 `§4.1`。')
-          } else {
-            ok(`V ✓ 收尾表**不漏族**：\`package.json\` 的 \`check:*\` 族 **${vPkgFams.size}** 个，`
-              + `正本 \`CONTEXT.md\` §4.1 里**全部在列**（⚠ 派生自 \`package.json\`，⛔ 不手抄族名）`
-              + ' ⇒ 与断言 N（正本 ⊆ 模板）方向相反、两条合起来才闭合"三处同批"：'
-              + '`package.json` · 账本正本 §4.1 · 模板 §4.1')
-          }
-        }
+      try { vLedgerSrc = readFileSync(join(LEDGER_ROOT, 'CONTEXT.md'), 'utf8') } catch { vLedgerSrc = '' }
+      if (vLedgerSrc === '') {
+        bad('V3 读不到正本 `CONTEXT.md` ⇒ 「§4.1 的非 check 必跑命令在场」失去基准（不按通过处理）')
       }
-
-      // ── 断言 V 的自带样本（⚠ **在内存里造**，⛔ 不改任何真文件）──────────────
-      //   ⚠ 与 N 组同法：样本**由机检自造**，⛔ 不拿真正本当基准
-      //     （否则"正本那条靶行被搬走"会误报成"判据改哑了"，第 179 轮的坑）。
-      //   ⚠ 成对纪律（E-126）：**该咬的真被咬** + **不该咬的真没被咬**，两条都要过。
-      {
-        const V_SAMPLE_M = [
-          '### 4.1 收尾必跑（全部 exit 0）',
-          '',
-          '| 命令 | 守什么 |',
-          '|---|---|',
-          '| `npm run build` | 构建 |',
-          '| `npm run check:orch` | 运行态 |',
-          '| `npm run check:redeliver` | 补投 |',
-          '',
-          '## 5. 本批登记',
-          '',
-          '| 项 | 读 |',
-          '|---|---|',
-          '| `npm run check:zzz-not-in-41` | ⚠ 这一行在 §4.1 **之外**，⛔ 不许被算进收尾表 |',
-          '',
-        ].join('\n')
-        const V_PKG = JSON.stringify({
-          scripts: {
-            'check:orch': 'node a.mjs',
-            'check:redeliver': 'node b.mjs',
-            'check:all': 'node c.mjs',
-            'check:preflight': 'node d.mjs',
-            build: 'tsc',
-          },
-        })
-        const vSafe = vFamiliesInSection(V_SAMPLE_M)
-        const vPkgSafe = vFamiliesFromPkg(V_PKG)
-        const vProbes = [
-          // ① **不该咬**：样本里 §4.1 的族齐全 ⇒ package.json 的族必须全部命中
-          ['样本 §4.1 齐全 ⇒ 不许报缺族',
-            () => {
-              const miss = [...vPkgSafe].filter((f) => !vSafe.has(f))
-              // check:all / check:preflight 必须被排除 ⇒ 否则本条会误报
-              return miss.length === 0 && !vPkgSafe.has('check:all') && !vPkgSafe.has('check:preflight')
-            }],
-          // ② **该咬**：把 check:redeliver 从样本 §4.1 里删掉 ⇒ 必须报缺它
-          ['样本 §4.1 删掉 `check:redeliver` ⇒ 必须报缺这一族',
-            () => {
-              const cut = V_SAMPLE_M.replace(/^\| `npm run check:redeliver` \|.*$/m, '')
-              const got = vFamiliesInSection(cut)
-              return [...vPkgSafe].filter((f) => !got.has(f)).includes('check:redeliver')
-            }],
-          // ③ **该排除**：写在 §4.1 **之外**的表行 ⛔ 不许被算进收尾表（否则"别处的表"能顶替收尾表）
-          ['§4.1 之外的表行 ⛔ 不算收尾表（`check:zzz-not-in-41` 不许被收进）',
-            () => !vSafe.has('check:zzz-not-in-41')],
-          // ④ `check:all` / `check:preflight` 必须被排除（它们是调度器与体检，不是判据族）
-          ['`check:all` / `check:preflight` 必须被排除（与 `check-all.mjs` 的 SELF 同口径）',
-            () => !vPkgSafe.has('check:all') && !vPkgSafe.has('check:preflight')],
-        ]
-        let vSampleBad = 0
-        for (const [why, fn] of vProbes) {
-          let bit = false
-          try { bit = fn() === true } catch { bit = false }
-          if (!bit) {
-            vSampleBad++
-            bad(`V 自带样本**不符合预期**：${why}`
-              + '\n      ⇒ 该组判据**改哑了**（或过咬）⇒ 真缺陷更会溜'
-              + '\n      ⇒ 与 N / I 组同法：**判据改哑与判据改对必须输出不同**（E-126）')
-          }
-        }
-        if (vSampleBad === 0) {
-          ok('V ✓ 自带样本：2 组"该咬/不该咬"成对（§4.1 齐全 ⇒ 不报缺；删 `check:redeliver` ⇒ 真报缺）'
-            + ' + 2 组排除面（§4.1 之外的表行不算 · `check:all`/`check:preflight` 不算）**全部符合预期**'
-            + ' ⇒ 本组还长着牙、且不过咬（⚠ 样本由机检自造，⛔ 不依赖真正本原文）')
-        }
-      }
-      /**
-       * ── 断言 V2：**反向闭合**「正本 / 模板 §4.1 多出来的族」（2026-10-25 · TASK-5）──────
-       *
-       * ── 它补的是什么空洞（有实测出处，不是假想）──────────────────────────────
-       *   · `V` 的方向是「`package.json` 的族 **⊆** 正本 §4.1」——**只管正本别落后**，
-       *     **不管正本多出来的行**；
-       *   · `N` 的方向是「正本 §4.1 **⊆** 模板 §4.1」——**只管模板别落后**，
-       *     **不管模板多出来的行**；
-       *   · `F` 只扫**工作区骨架说明**里那张纪律登记表，⛔ 不扫正本、也不扫模板。
-       *   ⇒ 三条合起来**仍有一个洞**：删掉一个判据族之后，**正本或模板里留一行指向已删族的死行，
-       *     没有任何断言会红**（本轮实测：删 `check:policy-cross` 后，正本 `CONTEXT.md:463`
-       *     与模板 `templates/CONTEXT.md:211` 各留一行，**只有 `F` 因别的原因红**，
-       *     而 `F` 根本不扫正本/模板）。
-       *
-       * ── 判定（⚠ 与 `V` / `N` **并存**，⛔ 不改它们的方向、⛔ 不放宽）─────────────
-       *   ① **正本** §4.1 的族集 **⊆** `package.json` 的族集；
-       *   ② **模板** §4.1 的族集 **⊆** `package.json` 的族集。
-       *   ⇒ 两边各有"多出来 ⇒ 报"的能力，「三处同批」才算闭上。
-       *   ⚠ **只在 §4.1 段内抽**（复用 `vFamiliesInSection`，与 `V` 同源口径）⇒
-       *     ⛔ 不把正文别处提到的族名算进来（那会误报）。
-       *   ⚠ **读不到基准** ⇒ `bad`（不按通过处理）：与 `V` / `N` 同款纪律。
-       */
-      {
-        const v2PkgRaw = (() => {
-          try { return readFileSync(join(root, 'package.json'), 'utf8') } catch { return '' }
-        })()
-        const v2TemplatePath = join(root, 'kit', 'templates', 'CONTEXT.md')
-        const v2TemplateSrc = (() => {
-          try { return readFileSync(v2TemplatePath, 'utf8') } catch { return '' }
-        })()
-        let v2PkgFams
-        try { v2PkgFams = vFamiliesFromPkg(v2PkgRaw) } catch { v2PkgFams = undefined }
-
-        if (v2PkgFams === undefined) {
-          bad('V2 读不到 `package.json` 的 `scripts` ⇒ 「§4.1 里不许有多出来的族」失去基准（不按通过处理）')
-        } else {
-          /**
-           * 一侧的核对（⚠ 两侧同一段逻辑，⛔ 不各写一份）。
-           * @param label - 人读名（'正本' / '模板'）
-           * @param src - 该侧 §4.1 所在文件的全文
-           * @param path - 文件路径（用于点名）
-           */
-          const v2CheckSide = (label, src, path) => {
-            if (src === '') {
-              bad(`V2 读不到${label} \`${path}\` ⇒ 「§4.1 里不许有多出来的族」失去基准（不按通过处理）`)
-              return
-            }
-            const fams = vFamiliesInSection(src)
-            if (fams.size === 0) {
-              /**
-               * ⚠ **一条都抽不到**也是一个错（§4.1 被搬走 / 标题改了）。
-               *   但这一档 `V`（正本侧）已经报过；此处**只为模板侧**报，
-               *   ⛔ 不与 `V` 重复刷同一条（正本侧交给 `V` 的"扫 0 份"那一档）。
-               */
-              if (label === '模板') {
-                bad(`V2 ${label} \`${path}\` 的 §4.1 里**一条 \`npm run check:*\` 都没抽到**`
-                  + ' ⇒ 扫描面为 0，本条**不是在通过**（⛔ 扫 0 份报 ✓ 是 E-126 假绿）')
-              }
-              return
-            }
-            const extra = [...fams].filter((f) => !v2PkgFams.has(f)).sort()
-            if (extra.length > 0) {
-              bad(`V2 **${label} §4.1 有「多出来的族」**：\`package.json\` 里**已经没有**、而`
-                + ` ${label} 收尾表里仍在列的判据族：`
-                + ` ${extra.map((m) => '`' + m + '`').join(' · ')}`
-                + `\n      ⇒ 实测：\`package.json\` 的 \`check:*\` 族 **${v2PkgFams.size}** 个 ·`
-                + ` ${label} §4.1 抽到 **${fams.size}** 个 · **多 ${extra.length} 个**`
-                + `\n      ⇒ 位置：\`${path}\` 的 §4.1 段`
-                + '\n      ⇒ 这正是**删了判据族、却留下死行**的形态：照着这张表跑收尾的人会去跑一个'
-                + '**已经不存在**的命令（⛔ 不是"多一条无害说明"，是**照着做会失败**）'
-                + '\n      ⇒ 处置：把这几行从该侧 §4.1 删掉（⚠ 三处同批：`package.json` · 正本 · 模板）')
-            } else {
-              ok(`V2 ✓ ${label} §4.1 **没有多出来的族**：抽到 ${fams.size} 个，全部都在`
-                + ` \`package.json\` 的 ${v2PkgFams.size} 个里（⚠ 方向与 \`V\` 相反、两条合起来才闭死"死行"）`)
-            }
-          }
-          v2CheckSide('正本', vLedgerSrc, join(LEDGER_ROOT, 'CONTEXT.md'))
-          v2CheckSide('模板', v2TemplateSrc, v2TemplatePath)
-        }
-      }
+      ok(`V / V2 **已删除**（2026-10-30 P7）：族清单改由 §4.1 生成块承载 —— `
+        + `少一族/多一族由生成器抛错拦住，两处块一致由 \`check:ledger-next\` 的 I5b 逐字节核对`
+        + `（⚠ 原 V 的 4 组自带样本一并删除：它们测的抽取器已不在本组里；`
+        + `I5b 自带一条"手改块内一字符 ⇒ 必红" + 一条"改块外 ⇒ 不许红"的反向对照）`)
 
       /**
        * ── 断言 V3：**§4.1 的非 `check:*` 必跑命令必须在场**（2026-10-25 · 本单 §一-1(b)）──
@@ -1582,15 +1412,62 @@ export function runDocShape({ bad, ok, noObject, skip }) {
           if (cells.length !== 3) continue
           if (cells[0] === '板块' || /^-{2,}$/.test(cells[0].replace(/:/g, ''))) continue
           const paths = [...cells[2].matchAll(/`([^`]+\.md)`/g)].map((m) => m[1])
-          if (paths.length === 0) continue
-          oRows.push({ lineNo: i + 1, name: cells[0], desc: cells[1], paths })
+          /**
+           * ⚠⚠ **包 Z（2026-10-27）：「去哪读」一格只写目录也必须进表**
+           *
+           * ── 改前为什么错 ──────────────────────────────────────────────────
+           *   这里写的是 `if (paths.length === 0) continue` —— **只认 `.md` 文件名**。
+           *   ⇒ `PROJECT.md:645` 那一行（`| **旧版分卷（14 份 · 历史留档）** | … | \`volumes/plan/\`（逐份见该目录） |`）
+           *     的"去哪读"格子里**只有目录、没有一个文件名** ⇒ 这一行被**整行丢掉**
+           *     ⇒ 它从此不可能把任何一份卷"点名" ⇒ 必然报"14 份只点到 2 份"。
+           *   ⚠ 这是**判据自己把正确写法读成了漏**（⛔ 不是账本漏了）。
+           *
+           * ── 现在：目录形也收（⚠ 但"算不算指到"由下面 ③ 的**措辞条件**决定，⛔ 不是收了就放过）──
+           */
+          const dirRefs = [...cells[2].matchAll(/`([^`]+\/)`/g)].map((m) => m[1])
+          if (paths.length === 0 && dirRefs.length === 0) continue
+          oRows.push({ lineNo: i + 1, name: cells[0], desc: cells[1], paths, dirRefs })
         }
         const oStripped = (v) => v.replace(/[`*\s｜|]/g, '')
         let oBad = 0
         // ③ 问一：卷里每一份节文件都必须被地图点到
         const oNamed = new Set()
-        for (const r of oRows) for (const pa of r.paths) oNamed.add(pa.split('/').pop())
-        const oMissing = oVols.filter((v) => !oNamed.has(v))
+        /**
+         * ⚠⚠ **包 Z（2026-10-27）：判据补"目录级整体指认"这一档**（⛔ 不是放宽，是补漏判）
+         *
+         * ── 改前为什么误报（实测原文）─────────────────────────────────────────
+         *   改前只认"逐份点名"（`` `volumes/plan/01-xxx.md` `` 一格一个文件名）。
+         *   而 `PROJECT.md:645` 写的是**一整行整体指认**：
+         *     `| **旧版分卷（14 份 · 历史留档）** | … | `volumes/plan/`（逐份见该目录） |`
+         *   ⇒ 那一格只出现目录 `volumes/plan/`，**一个 .md 文件名都没有**
+         *   ⇒ `oNamed` 一份都进不去 ⇒ 判据报"14 份只点到 2 份"。
+         *   ⚠ 而 `PROJECT.md:647` **明写着**「`volumes/plan/` 下 14 份旧卷全部由上一行指到；
+         *     **⛔ 不是漏了**」—— 判据把"整体指认"读成了"漏"。
+         *
+         * ── 现在：两种点名形态**都认**（⚠ 仍然要求"被指到"，⛔ 不是无条件放过）───
+         *   ① **逐份点名**：格子里出现 `<目录>/<文件名>.md`；
+         *   ② **目录级整体指认**：格子里出现 `` `<卷目录>/` ``，**且同一格**写明它覆盖了该目录
+         *      （条件 = 该行含 `逐份见|该目录|全部|整卷|历史留档`）。
+         *   ⚠⚠ **②必须带措辞条件** —— 否则任何写着目录名的行都会把整卷放过，
+         *     那等于把这条判据关掉（TASK §四 明令禁止）。
+         */
+        const oBulkDirs = new Set()
+        for (const r of oRows) {
+          for (const pa of (r.dirRefs ?? [])) {
+            /** ⚠ **同一格**（说明列 + 板块名）里必须写明"这是整体指认"。 */
+            const cellText = `${r.desc} ${r.name}`
+            if (/逐份见|该目录|全部|整卷|历史留档/.test(cellText)) {
+              oBulkDirs.add(pa.replace(/\/$/, '').split('/').filter(Boolean).pop())
+            }
+          }
+        }
+        for (const r of oRows) {
+          for (const pa of r.paths) if (!pa.endsWith('/')) oNamed.add(pa.split('/').pop())
+        }
+        /** ⚠ 卷目录名（`…/volumes/plan` ⇒ `plan`）。 */
+        const oVolDirName = oVolDir.replace(/\\/g, '/').split('/').filter(Boolean).pop()
+        const oWholeDirNamed = oBulkDirs.has(oVolDirName)
+        const oMissing = oWholeDirNamed ? [] : oVols.filter((v) => !oNamed.has(v))
         if (oMissing.length > 0) {
           oBad++
           bad(`O 地图**漏了板块**：卷里有 ${oVols.length} 份节文件，地图的「板块总览」表只点到 ${oNamed.size} 份`
@@ -1614,8 +1491,15 @@ export function runDocShape({ bad, ok, noObject, skip }) {
               + '\n      ⇒ 修法：写一到两句"解决什么问题 / 里面有什么"（写给人看，⛔ 不是关键词堆）')
           }
         }
-        // ⑤ 问三：地图点到的路径必须真实存在
+        // ⑤ 问三：地图点到的路径必须真实存在（⚠ 目录形**也核**：目录不在也要红）
         for (const r of oRows) {
+          for (const pa of (r.dirRefs ?? [])) {
+            if (!existsSync(join(LEDGER_ROOT, pa))) {
+              oBad++
+              bad(`O 地图点到**不存在的目录**：PROJECT.md:${r.lineNo} → \`${pa}\``
+                + '\n      ⇒ "去哪读"指不到实体 ⇒ 读者照它去找会落空')
+            }
+          }
           for (const pa of r.paths) {
             if (!existsSync(join(LEDGER_ROOT, pa))) {
               oBad++
@@ -1626,7 +1510,8 @@ export function runDocShape({ bad, ok, noObject, skip }) {
           }
         }
         if (oBad === 0) {
-          ok(`O ✓ 地图 ↔ 卷 两向完整：卷里 ${oVols.length} 份节文件**全部**被地图「板块总览」表点到；`
+          ok(`O ✓ 地图 ↔ 卷 两向完整：卷里 ${oVols.length} 份节文件**全部**被地图「板块总览」表点到`
+            + (oWholeDirNamed ? `（**目录级整体指认**：\`${oVolDirName}/\` 那一行写明覆盖该目录全部）` : '') + `；`
             + `${oRows.length} 行的"这一块讲什么"**均有实质内容**；地图点到的路径**全部真实存在**`
             + ' ⇒ 「读完地图知道项目由哪些板块组成」不再静默失效（覆盖面对照：卷目录实测派生，⛔ 非手抄）')
         }
@@ -1937,6 +1822,12 @@ export function runDocShape({ bad, ok, noObject, skip }) {
     //   ⚠ **为什么必须加**：`…/evidence/03-条件项查重证据.txt` 这种**真实存在**的文件，
     //     原字符类会在中文处**截断**成 `…/evidence/03-` ⇒ 拿截断路径 `existsSync` ⇒ 假报"不存在"。
     //   ⚠ **不是放宽**：8 个自带样本逐个复验 —— 该咬的 4 个仍咬、不该咬的 3 个仍未咬（N4 通配为例外）。
+    // ⚠⚠ **2026-10-29（TASK-R2）—— 本正则字面量 ⛔ 一个字符都不许改**：
+    //   它与 `src/server/hob-write.ts:218` 的 `REF_PATH_RE` 是**同源对**，
+    //   由 `check-code-face.mjs` 的断言 K 逐字比对（`E-110`）。而本单 §四 明令
+    //   **⛔ 不许改 `src/**`** ⇒ 改这一侧就等于把 K 逼红（实测踩过：k 报"两侧不一致"）。
+    //   ⇒ 提取口径的收窄**全部放到 `matchAll` 之后**做（见下方 `let ref = m[0]` 与 `negated` 两处），
+    //     ⛔ 不在这里动字符类。
     const D_REF_RE = /archive\/\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+\/[A-Za-z0-9._/\u4e00-\u9fa5-]*/g
     let dTotal = 0
     let dMissing = 0
@@ -1959,7 +1850,22 @@ export function runDocShape({ bad, ok, noObject, skip }) {
       let dFileMissing = 0
       src.split('\n').forEach((line, i) => {
         for (const m of line.matchAll(D_REF_RE)) {
-          const ref = m[0]
+          /**
+           * ⚠⚠ **2026-10-29（TASK-R2）· 只收窄提取口径，全部在提取之后做**。
+           *
+           * **① 通配补全（误报 1，实测出处 `CHG-154.md:63`）**：
+           *   `D_REF_RE` 的尾段字符类**不含 `*`** ⇒ 写 `…/EVIDENCE*.md` 时会在 `*` 处**截断**
+           *   成 `…/EVIDENCE` ⇒ 下面那条既有的 `if (ref.includes('*')) continue`
+           *   **永远接不到**（截断后已无 `*`）⇒ 拿一个**凭空少半截**的路径去 `existsSync`
+           *   ⇒ 假报"引用不存在"。而目录里 `EVIDENCE.md` / `EVIDENCE-2.md` **都在**。
+           *   ⇒ **在这里**（⛔ 不在正则里，正则受断言 K 同源锁）把紧跟的 `*` 补回 `ref`，
+           *     让"通配跳过"这条既有规则真正命中。
+           *   ⚠ 这是**收窄**：补回的 `*` 只会让"跳过"命中得更多，
+           *     ⛔ 不会把任何一个真·具名路径洗绿（真路径后没有 `*`）。
+           */
+          let ref = m[0]
+          let refEnd = m.index + m[0].length
+          while (line[refEnd] === '*') { ref += line[refEnd]; refEnd++ }
           // 通配（`TASK-*.md` 之类）不是具名引用 —— 跳过，不算数。
           if (ref.includes('*')) continue
           // ⚠ **花括号枚举**（`{a,b,c}-check.mjs` 之类）也不是具名引用 —— 同理跳过。
@@ -1979,6 +1885,39 @@ export function runDocShape({ bad, ok, noObject, skip }) {
           const existsAtLedger = existsSync(join(LEDGER_ROOT, ref))
           const existsAtAlt = refAlt === null ? false : existsSync(join(LEDGER_ROOT, refAlt))
           if (!existsAtLedger && !existsAtAlt) {
+            /**
+             * ⚠⚠ **2026-10-29（TASK-R2 · ② 排除被否定的语境）** —— 本支只**少报**一类文本，
+             *   ⛔ 不碰"路径在不在盘上"这件事本身。
+             *
+             * **为什么要它（实测出处）**：`CHG-189.md:12` 那一行整句的意思是
+             *   「**它说**：任务书写的 `archive/2026-10-29-stale-docs/TASK-NOTE.md` **不存在**」——
+             *   这句正文**恰好在陈述"这个路径不存在"**（它是决策件里认错的凭据）。
+             *   判据把**被否定的对象**当成**被引用的对象** ⇒ 报"引用了不存在的路径"⇒ **误报**。
+             *
+             * **判据形状（窄，⛔ 不做成"含'不存在'就放过"）**：
+             *   · 取路径**之后**的同一句，**先剥掉**纯装饰字符（反引号 / 星号 / 空白 / 括号 / 引号），
+             *   · 然后要求否词**紧贴路径**（`^` 锚定，⛔ 不是"句内任何位置出现"）；
+             *   · ⚠ 句界 = `。` / `！` / `？` / 换行 —— **跨句不算**。
+             *
+             * ⚠ **为什么必须 `^` 锚定（实测教训，本条改动的第一版就栽在这）**：
+             *   第一版写成"路径之后**同一句内**出现否词"，结果一条真·坏引用
+             *   （`` `archive/…/ghost/EVIDENCE.md` 这里指向一个真不存在的东西。``）
+             *   因为句尾**描述别的东西**时带了"不存在"三个字 ⇒ **被整条放过** ⇒ 判据改哑。
+             *   ⇒ 否词必须**就在路径屁股后面**（中间只许装饰字符），才算"在否定这个路径"。
+             *
+             * ⚠ **为什么这不是"把判据改哑"**：真·坏引用（`CHG-154` 那种"我还没读 X"、
+             *   或任何平铺直叙的引用）后面**不带**否词 ⇒ 照旧必红。
+             *   负向对拍见报告 §3（造一条 `…/ghost/EVIDENCE.md` 平铺引用 ⇒ 必须仍红）。
+             */
+            const negated = (() => {
+              const after = line.slice(refEnd)
+              const cut = after.search(/[。！？]/)
+              const tail = cut === -1 ? after : after.slice(0, cut)
+              /** ⚠ 剥掉路径与否词之间的纯装饰字符（反引号 / 星号 / 空白 / 括号 / 引号 / 破折号）。 */
+              const stripped = tail.replace(/^[\s`*'"“”‘’（）()【】\[\]—–\-:：,，、]+/, '')
+              return /^(?:并不|均|都)?(?:不存在|没有|找不到|查无|均无)/.test(stripped)
+            })()
+            if (negated) continue
             dMissing++
             dFileMissing++
             bad(`D 正本 ${f}:${i + 1} 引用了**不存在**的路径：\`${ref}\``

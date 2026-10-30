@@ -64,8 +64,8 @@
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
  * ⚠ 零第三方依赖（本仓纪律）：只做文本级解析，不引 YAML 库。
  */
-import { readFileSync, readdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -900,7 +900,8 @@ const orchCode = stripComments(orchSrc)
         sessions,
         agents,
         logger: { debug() {}, warn() {}, info() {} },
-        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+        : undefined),
         provide: (k, v) => { provided[k] = v },
         effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
         inject: (_deps, cb) => cb(svcCtx),
@@ -1358,7 +1359,7 @@ const orchCode = stripComments(orchSrc)
         get: (k) => (k === 'sessions' ? sessions
           : k === 'agents' ? agents
             : k === 'sessionProjections' ? projections
-              : undefined),
+                : undefined),
         provide: (k, v) => { busProvided[k] = v },
         effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
         inject: (_deps, cb) => cb(busCtx),
@@ -1544,7 +1545,7 @@ const orchCode = stripComments(orchSrc)
              *   ① 那句文案是在**警告读者不要**读 header —— 为了过检查而删掉它，
              *      等于**删掉知识来迁就检查器**（方向反了）；
              *   ② J4 要守的是"有没有第二个**读法**"；字符串里的字段名不构成读法；
-             *   ③ 同一个坑本轮已经在 `check:policy-cross` 的 CX-12 上踩过一次
+             *   ③ 同一个坑曾在已退场的跨实例准入判据（CX-12）上踩过一次
              *      ⇒ 一律：**先剥干净再判**。
              * ⚠ 仍然**保行数**（把字符串内容替换成等量空格），行号可指认。
              * ⚠ 只剥**单/双/反引号**三种常规字面量；模板串里的 `${...}` **不剥**
@@ -1950,7 +1951,8 @@ const orchCode = stripComments(orchSrc)
           const dProvided = {}
           const dBusCtx = {
             sessions, agents, logger,
-            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+            : undefined),
             provide: (k, v) => { dProvided[k] = v },
             effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
             inject: (_deps, cb) => cb(dBusCtx),
@@ -4149,7 +4151,8 @@ const orchCode = stripComments(orchSrc)
         const busProvided = {}
         const busCtx = {
           sessions, agents, logger,
-          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+          : undefined),
           provide: (k, v) => { busProvided[k] = v },
           effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
           inject: (_d, cb) => cb(busCtx),
@@ -4271,7 +4274,8 @@ const orchCode = stripComments(orchSrc)
                   const logger2 = { debug() {}, info() {}, warn() {} }
                   const bp2 = {}
                   const bc2 = { sessions: sessions2, agents: agents2, logger: logger2,
-                    get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2 : undefined),
+                    get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2
+                    : undefined),
                     provide: (k, v) => { bp2[k] = v }, effect: (fn) => { try { fn() } catch {} },
                     inject: (_d, cb) => cb(bc2) }
                   sBus.apply(bc2, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -4279,7 +4283,8 @@ const orchCode = stripComments(orchSrc)
                   const c2 = { sessions: sessions2, agents: agents2, logger: logger2,
                     get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2
                       : k === 'hobBus' ? bp2.hobBus
-                        : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home2 } } }] } : undefined),
+                        : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home2 } } }] }
+                        : undefined),
                     provide: (k, v) => { prov2[k] = v }, effect: (fn) => { try { fn() } catch {} },
                     inject: (_d, cb) => cb(c2), on: () => {} }
                   mut.apply(c2)
@@ -4394,7 +4399,8 @@ const orchCode = stripComments(orchSrc)
                     const loggerB = { debug() {}, info() {}, warn() {} }
                     const bpB = {}
                     const bcB = { sessions: sessionsB, agents: agentsB, logger: loggerB,
-                      get: (k) => (k === 'sessions' ? sessionsB : k === 'agents' ? agentsB : undefined),
+                      get: (k) => (k === 'sessions' ? sessionsB : k === 'agents' ? agentsB
+                      : undefined),
                       provide: (k, v) => { bpB[k] = v }, effect: (fn) => { try { fn() } catch {} },
                       inject: (_d, cb) => cb(bcB) }
                     sBus.apply(bcB, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -4402,7 +4408,8 @@ const orchCode = stripComments(orchSrc)
                     const cB = { sessions: sessionsB, agents: agentsB, logger: loggerB,
                       get: (k) => (k === 'sessions' ? sessionsB : k === 'agents' ? agentsB
                         : k === 'hobBus' ? bpB.hobBus
-                          : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: homeB } } }] } : undefined),
+                          : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: homeB } } }] }
+                          : undefined),
                       provide: (k, v) => { provB[k] = v }, effect: (fn) => { try { fn() } catch {} },
                       inject: (_d, cb) => cb(cB), on: () => {} }
                     mutB.apply(cB)
@@ -4514,7 +4521,8 @@ const orchCode = stripComments(orchSrc)
                     const loggerC = { debug() {}, info() {}, warn() {} }
                     const bpC = {}
                     const bcC = { sessions: sessionsC, agents: agentsC, logger: loggerC,
-                      get: (k) => (k === 'sessions' ? sessionsC : k === 'agents' ? agentsC : undefined),
+                      get: (k) => (k === 'sessions' ? sessionsC : k === 'agents' ? agentsC
+                      : undefined),
                       provide: (k, v) => { bpC[k] = v }, effect: (fn) => { try { fn() } catch {} },
                       inject: (_d, cb) => cb(bcC) }
                     sBus.apply(bcC, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -4522,7 +4530,8 @@ const orchCode = stripComments(orchSrc)
                     const cC = { sessions: sessionsC, agents: agentsC, logger: loggerC,
                       get: (k) => (k === 'sessions' ? sessionsC : k === 'agents' ? agentsC
                         : k === 'hobBus' ? bpC.hobBus
-                          : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: homeC } } }] } : undefined),
+                          : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: homeC } } }] }
+                          : undefined),
                       provide: (k, v) => { provC[k] = v }, effect: (fn) => { try { fn() } catch {} },
                       inject: (_d, cb) => cb(cC), on: () => {} }
                     mutC.apply(cC)
@@ -4804,7 +4813,8 @@ const orchCode = stripComments(orchSrc)
         const busProvided = {}
         const busCtx = {
           sessions, agents, logger,
-          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+          : undefined),
           provide: (k, v) => { busProvided[k] = v },
           effect: (fn) => { try { fn() } catch { /* 无落点即跳过 */ } },
           inject: (_d, cb) => cb(busCtx),
@@ -5366,7 +5376,8 @@ const orchCode = stripComments(orchSrc)
                 const logger = { debug() {}, info() {}, warn() {} }
                 const bp = {}
                 const bc = { sessions, agents, logger,
-                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+                  : undefined),
                   provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
                   inject: (_d, cb) => cb(bc), on: () => {} }
                 mBus.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -5374,7 +5385,8 @@ const orchCode = stripComments(orchSrc)
                 const c = { sessions, agents, logger,
                   get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
                     : k === 'hobBus' ? bp.hobBus
-                      : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                      : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                      : undefined),
                   provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
                   inject: (_d, cb) => cb(c), on: () => {} }
                 mOrch.apply(c)
@@ -5452,7 +5464,8 @@ const orchCode = stripComments(orchSrc)
                 const logger = { debug() {}, info() {}, warn() {} }
                 const bp = {}
                 const bc = { sessions, agents, logger,
-                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+                  : undefined),
                   provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
                   inject: (_d, cb) => cb(bc), on: () => {} }
                 mBus.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -5461,7 +5474,8 @@ const orchCode = stripComments(orchSrc)
                 const c = { sessions, agents, logger,
                   get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
                     : k === 'hobBus' ? bp.hobBus
-                      : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                      : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                      : undefined),
                   provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
                   inject: (_d, cb) => cb(c), on: (ev, fn) => { handlers[ev] = fn; return () => {} } }
                 mOrch.apply(c)
@@ -6015,7 +6029,8 @@ const orchCode = stripComments(orchSrc)
                 sessions: sessions2, agents: agents2, logger: logger2,
                 get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2
                   : k === 'hobBus' ? bus2
-                    : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                    : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                    : undefined),
                 provide: (k, v) => { prov2[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
                 inject: (_d, cb) => cb(ctx2), on: () => () => {},
               }
@@ -6233,7 +6248,8 @@ const orchCode = stripComments(orchSrc)
       const logger = { debug() {}, info() {}, warn() {}, error() {} }
       const bp = {}
       const busCtx = { sessions, agents, logger,
-        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+        : undefined),
         provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
         inject: (_d, cb) => cb(busCtx), on: () => {} }
       slBus.apply(busCtx, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -6579,7 +6595,8 @@ const orchCode = stripComments(orchSrc)
                 const logger = { debug() {}, info() {}, warn: (m) => warns.push(String(m)) }
                 const bp = {}
                 const bc = { sessions, agents, logger,
-                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+                  get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+                  : undefined),
                   provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
                   inject: (_d, cb) => cb(bc), on: () => {} }
                 mBus.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -6587,7 +6604,8 @@ const orchCode = stripComments(orchSrc)
                 const c = { sessions, agents, logger,
                   get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
                     : k === 'hobBus' ? bp.hobBus
-                      : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                      : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                      : undefined),
                   provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
                   inject: (_d, cb) => cb(c), on: () => {} }
                 mOrch.apply(c)
@@ -6807,7 +6825,8 @@ const orchCode = stripComments(orchSrc)
             const logger = { debug() {}, info() {}, warn() {} }
             const bp = {}
             const bc = { sessions, agents, logger,
-              get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+              get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+              : undefined),
               provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
               inject: (_d, cb) => cb(bc), on: () => {} }
             sbBus.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -6828,7 +6847,8 @@ const orchCode = stripComments(orchSrc)
               get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
                 : k === 'hobBus' ? bp.hobBus
                   : k === 'tools' ? toolsSvc
-                    : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                    : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                    : undefined),
               provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
               inject: (_d, cb) => cb(c), on: (ev, fn) => { handlers[ev] = fn; return () => {} } }
             sbOrch.apply(c)
@@ -6906,7 +6926,8 @@ const orchCode = stripComments(orchSrc)
             const logger = { debug() {}, info() {}, warn() {} }
             const bp = {}
             const bc = { sessions, agents, logger,
-              get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+              get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+              : undefined),
               provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
               inject: (_d, cb) => cb(bc), on: () => {} }
             sbBus.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -6924,7 +6945,8 @@ const orchCode = stripComments(orchSrc)
             const c = { sessions, agents, logger,
               get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
                 : k === 'hobBus' ? bp.hobBus
-                  : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                  : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                  : undefined),
               provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
               inject: (_d, cb) => cb(c), on: () => {} }
             sbOrch.apply(c)
@@ -7274,7 +7296,8 @@ const orchCode = stripComments(orchSrc)
     const busProvided = {}
     const busCtx = {
       sessions, agents, logger,
-      get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+      get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+      : undefined),
       provide: (k, v) => { busProvided[k] = v },
       effect: (fn) => { try { fn() } catch {} },
       inject: (_d, cb) => cb(busCtx), on: () => {},
@@ -7663,7 +7686,8 @@ const orchCode = stripComments(orchSrc)
           const logger = { debug() {}, info() {}, warn() {} }
           const bp = {}
           const bc = { sessions, agents, logger,
-            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+            : undefined),
             provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
             inject: (_d, cb) => cb(bc), on: () => {} }
           sdBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -7679,7 +7703,8 @@ const orchCode = stripComments(orchSrc)
           const c = { sessions, agents, logger,
             get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
               : k === 'hobBus' ? bp.hobBus
-                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                : undefined),
             provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
             inject: (_d, cb) => cb(c), on: () => {} }
           mut.apply(c)
@@ -8272,7 +8297,8 @@ const orchCode = stripComments(orchSrc)
         const busProvided = {}
         const busCtx = {
           sessions, agents, logger: { debug() {}, info() {}, warn() {} },
-          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+          : undefined),
           provide: (k, v) => { busProvided[k] = v },
           effect: (fn) => { try { fn() } catch {} },
           inject: (_d, cb) => cb(busCtx), on: () => {},
@@ -8523,7 +8549,8 @@ const orchCode = stripComments(orchSrc)
     const bp = {}
     const bc = {
       sessions, agents, logger,
-      get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+      get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+      : undefined),
       provide: (k, v) => { bp[k] = v },
       effect: (fn) => { try { fn() } catch {} },
       inject: (_d, cb) => cb(bc), on: () => {},
@@ -8628,7 +8655,8 @@ const orchCode = stripComments(orchSrc)
       const bp = {}
       const bc = {
         sessions, agents, logger: { debug() {}, info() {}, warn() {} },
-        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+        : undefined),
         provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
         inject: (_d, cb) => cb(bc), on: () => {},
       }
@@ -8646,7 +8674,8 @@ const orchCode = stripComments(orchSrc)
       const ctx = {
         sessions, agents, logger: { debug() {}, info() {}, warn() {} },
         get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : k === 'hobBus' ? bus
-          : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+          : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+          : undefined),
         provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
         inject: (_d, cb) => cb(ctx),
         on: (ev, h) => { if (ev === 'agent/status') evHandlers.push(h); return () => {} },
@@ -8864,7 +8893,8 @@ const orchCode = stripComments(orchSrc)
       const logger = { debug() {}, info() {}, warn: (m) => warns.push(String(m)) }
       const bp = {}
       const bc = { sessions, agents, logger,
-        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+        : undefined),
         provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
         inject: (_d, cb) => cb(bc), on: () => {} }
       seBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -8883,7 +8913,8 @@ const orchCode = stripComments(orchSrc)
       const ctx = { sessions, agents, logger,
         get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
           : k === 'hobBus' ? bp.hobBus
-            : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+            : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+            : undefined),
         provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
         inject: (_d, cb) => cb(ctx), on: () => {} }
       try {
@@ -9140,7 +9171,8 @@ const orchCode = stripComments(orchSrc)
           const logger = { debug() {}, info() {}, warn() {} }
           const bp = {}
           const bc = { sessions, agents, logger,
-            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+            : undefined),
             provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
             inject: (_d, cb) => cb(bc), on: () => {} }
           seBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -9155,7 +9187,8 @@ const orchCode = stripComments(orchSrc)
           const c = { sessions, agents, logger,
             get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
               : k === 'hobBus' ? bp.hobBus
-                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                : undefined),
             provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
             inject: (_d, cb) => cb(c), on: () => {} }
           mut.apply(c)
@@ -9224,7 +9257,8 @@ const orchCode = stripComments(orchSrc)
           const logger = { debug() {}, info() {}, warn() {} }
           const bp = {}
           const bc = { sessions, agents, logger,
-            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : undefined),
+            get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+            : undefined),
             provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch {} },
             inject: (_d, cb) => cb(bc), on: () => {} }
           seBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
@@ -9232,7 +9266,8 @@ const orchCode = stripComments(orchSrc)
           const c = { sessions, agents, logger,
             get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
               : k === 'hobBus' ? bp.hobBus
-                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] } : undefined),
+                : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+                : undefined),
             provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch {} },
             inject: (_d, cb) => cb(c), on: () => {} }
           mut.apply(c)
@@ -9960,9 +9995,15 @@ const orchCode = stripComments(orchSrc)
           get: (id) => (byId.has(id) ? { id, status: 'idle', ctx: {}, session: byId.get(id),
             followup() {}, steer() {}, inject() {} } : undefined) }
         const logger = { debug() {}, info() {}, warn() {} }
+        /**
+         * ⚠ **必须带 `archivedSessionIds`**（2026-10-27 · 包 AM）：归档门禁改三态后，
+         *   读不到集合 ⇒ `unknown` ⇒ 投递被拒 ⇒ 台账恒 0 条 ⇒ SG-c 假红。
+         *   真实宿主一定给得出（空数组 = 没归档）。
+         */
         const workspaceRegistry = {
           list: () => [{ id: sgWS, path: ws, title: 'sg', record: { sessionIds: [...byId.keys()] } }],
           sessionPaths: new Map([...byId.keys()].map((id) => [id, ws])),
+          archivedSessionIds: [],
         }
         const busProvided = {}
         const busCtx = { sessions, agents, logger,
@@ -11022,8 +11063,14 @@ const orchCode = stripComments(orchSrc)
         get: (id) => (byId.has(id) ? { id, status: id === self ? 'idle' : 'running', ctx: {},
           session: byId.get(id), followup() {}, steer() {}, inject() {} } : undefined) }
       const logger = { debug() {}, info() {}, warn() {} }
+      /**
+       * ⚠ **必须带 `archivedSessionIds`**（2026-10-27 · 包 AM）：归档门禁现在是三态，
+       *   读不到集合 ⇒ `unknown` ⇒ **投递被拒** ⇒ `dispatch()` 建不起 watch ⇒
+       *   `在等回传：0 个` ⇒ 本组三条断言假红。真实宿主一定给得出这个集合（空数组=没归档）。
+       */
       const wr = { list: () => [{ id: sjWS, path: ws, title: 'w', record: { sessionIds: [...byId.keys()] } }],
-        sessionPaths: new Map([...byId.keys()].map((id) => [id, ws])) }
+        sessionPaths: new Map([...byId.keys()].map((id) => [id, ws])),
+        archivedSessionIds: [] }
       const bp = {}
       const bc = { sessions, agents, logger,
         get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : k === 'workspaceRegistry' ? wr : undefined),
@@ -11234,6 +11281,4657 @@ const orchCode = stripComments(orchSrc)
   }
   /** ⚠ **收工删整根**（⛔ 不许只删各 case 的 base —— 那样根会留空壳）。 */
   try { sjRm(sjTmpRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+}
+
+// ── SK. **读数诚实化六件**（2026-10-26 · 包 A：`R8` / `R7` / `R1` / `D10` / `D11` / `D4`）──
+//
+// ⚠ **本组守的是哪六条**（全部出自方案 §5.4 / §5.3 / §10，⛔ 不改任何准入与投递语义）：
+//   · **SK-a `R8`**：无订阅者时的点火帧也必须记一次 ⇒ 头行改说「到过 N 次、但当时没有订阅者」，
+//     ⛔ 不再说「一帧都没收到过」；
+//   · **SK-b `R7`**：恒为空的读数必须声明适用前提（执行方是不是建卡方本人 / owner 会话还在不在）；
+//   · **SK-c `R1`**：两行相邻读数各带主语（`CardWake` 看板卡面 vs `DispatchWake` 实施会话面）；
+//   · **SK-d `D10`**：九态封闭枚举 ⇒ 九行各不相同，「拒收 ≠ 执行中」「要澄清 ≠ 已回传」可分辨；
+//   · **SK-e `D4`**：at-most-once **点名** + 必然失败的投递仍留盘并标「未送达」、读数**不显示为 0**；
+//   · **SK-f `D11`**：进度三项可读（进过运行态 / 已跑多久 / 重核几次）+ 一行报「有进展 / 停滞」。
+//
+// ⚠⚠ **每条都配一个负向对拍**（把对应实现摘掉 ⇒ 必须见红），且变异**只落在临时副本**上
+//   （⛔ 不碰工作区源码一个字节）。
+{
+  const skRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT
+    : root
+  const skTag = skRoot === root ? '' : `（源码树=${skRoot}）`
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync, symlinkSync } =
+    await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { basename } = await import('node:path')
+  let skTmp
+  try { skTmp = mkdtempSync(join(tmpdir(), 'hob-skcheck-')) } catch { skTmp = tmpdir() }
+
+  const p2u = (await import('node:url')).pathToFileURL
+  let skOrchMod, skWakeMod, skStateMod
+  try {
+    skOrchMod = await import(p2u(join(skRoot, 'src', 'modules', 'orchestrator.ts')).href)
+  } catch (e) { bad(`SK 无法加载 orchestrator（${String(e?.message ?? e)}）⇒ 本组失去基准（不按通过处理）`) }
+  try {
+    skWakeMod = await import(p2u(join(skRoot, 'src', 'server', 'card-wake.ts')).href)
+  } catch (e) { bad(`SK 无法加载 card-wake（${String(e?.message ?? e)}）⇒ R8/R1 失去基准（不按通过处理）`) }
+  try {
+    skStateMod = await import(p2u(join(skRoot, 'src', 'server', 'orch-state.ts')).href)
+  } catch (e) { bad(`SK 无法加载 orch-state（${String(e?.message ?? e)}）⇒ D10/D11 失去基准（不按通过处理）`) }
+
+  /**
+   * 造一个**假 orch**：只实现 `status` 渲染真正用到的五个方法。
+   * ⚠ 这是本仓既有做法（`L-w` 也是就地替换 `wakeState`）—— 渲染层是**真实现**，
+   *   喂进去的是**真** `DispatchWake.snapshot()` / **真**记录，⛔ 不假装。
+   */
+  const skRender = async (orchLike) => {
+    const tools = skOrchMod.createHobOrchTools(orchLike)
+    return String(await tools.status.execute({}, { agent: { id: 'session-sk', session: { header: { cwd: skTmp } } } }))
+  }
+  const skOrchOf = (over = {}) => ({
+    status: () => ({
+      stopped: false, watches: [], relaysDone: 0, relaysBlocked: 0,
+      lostPending: 0, lostByClass: { running: 0, idle: 0, unknown: 0 },
+      settleByState: { waiting: 0, unresolved: 0, stuck: 0 }, stuckCount: 0,
+      handoffs: [], reachability: 'ok', others: { note: '他人的（不可见明细）', watches: 0 },
+      unownedWatches: 0, pendingDisk: [],
+      ...over.status,
+    }),
+    cardsOf: async () => ({ cards: [], reachability: 'no-cards' }),
+    deliveryLedger: async () => ({ entries: [], total: 0, reachability: 'no-cards' }),
+    dispatchWakeState: () => ({
+      registered: 0, pending: 0, wokeCount: 0, undecidableCount: 0, pushedRegisterOk: 0,
+      pushRegisterIssues: 0, firingSeen: 0, firedBlockedCount: 0, firingNoSubscriberCount: 0,
+      ownerUnknownCount: 0, undeliverableCount: 0, stoppedCount: 0,
+      ownerUnknownRegistered: 0, othersOnly: 0,
+      ...over.dispatchWake,
+    }),
+    wakeState: () => ({
+      conn: 'idle', wokeCount: 0, noSubscriberCount: 0, legacyTargetCount: 0,
+      redeliverOwnerUnknownCount: 0, undeliveredCount: 0, redeliveredCount: 0,
+      selfExecutedCount: 0, stoppedCount: 0, seenCount: 0,
+      ...over.wake,
+    }),
+    ...over.extra,
+  })
+
+  // ══════════════════════════════════════════════════════════════
+  // SK-a · `R8`：无订阅者时点火帧也必须记一次（头行改口径）
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 现场形态（已核实）：点火分支只对 `[...this.targets.values()]` 扇出 ⇒
+  //     **没订阅者时循环体一次都不执行** ⇒ 连"帧到过"都记不上 ⇒ 头行说
+  //     「一帧都没收到过」**可能是假话**。
+  //   ⚠ 判据：不订阅 ⇒ 喂一帧点火 ⇒ 新字段 > 0 · `firingSeen === 0`（语义未动）·
+  //     头行**不含**「一帧都没收到过」且**含**「当时没有订阅者」。
+  if (skWakeMod !== undefined && skOrchMod !== undefined) {
+    const skFiringFrame = () => JSON.stringify({
+      revision: 1, kind: 'execution-recorded',
+      tasks: [{ id: 't-sk-fire', title: 'SK 点火卡', status: 'in_progress', workspaceId: 'ws-sk',
+        version: 2, lastExecutionOutcome: 'running' }],
+    })
+    const skHeadOf = (rendered) => rendered.split('\n').find((l) => l.includes('实施会话叫醒面')) ?? ''
+    {
+      const dw = new skWakeMod.DispatchWake({ deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000 })
+      const cw = new skWakeMod.CardWake({
+        origin: 'http://127.0.0.1:0', workspaceIdOf: () => 'ws-sk',
+        deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000,
+        onFiring: () => {},
+        /** ⚠ 与 `orchestrator.ts` 里那段接法**同构**（真实现就是把回调转交给 DispatchWake）。 */
+        onFiringNoSubscriber: (e) => dw.noteFiringNoSubscriber(e.taskId),
+      })
+      // ⚠ **故意不 cw.subscribe(...)** ⇒ 零订阅者
+      await cw.handleFrame('change', skFiringFrame())
+      const d = dw.snapshot('session-sk')
+      const head = skHeadOf(await skRender(skOrchOf({ dispatchWake: d })))
+      const noSub = d.firingNoSubscriberCount
+      const headSaysNoFrame = head.includes('一帧都没收到过')
+      const headSaysArrived = head.includes('当时没有订阅者')
+      if (noSub > 0 && d.firingSeen === 0 && headSaysNoFrame === false && headSaysArrived) {
+        ok('SK-a ✓ **`R8` 无订阅者时点火帧也记一次**：不订阅喂一帧 ⇒ '
+          + `\`firingNoSubscriberCount=${noSub}\`（\`firingSeen\` 仍 ${d.firingSeen}，语义未动）· `
+          + `头行 = ${JSON.stringify(head.slice(0, 70))} —— ⛔ 不再说"一帧都没收到过"` + skTag)
+      } else {
+        bad('SK-a 【无订阅者的点火帧仍记不上 / 头行仍是假话】'
+          + `：firingNoSubscriberCount=${noSub}（应 > 0）· firingSeen=${d.firingSeen}（应 0）`
+          + ` · 头行仍说"一帧都没收到过"=${headSaysNoFrame}（应 false）`
+          + ` · 头行说"当时没有订阅者"=${headSaysArrived} · 头行=${JSON.stringify(head.slice(0, 140))}`)
+      }
+      // ⚠ 反向对照：**有人订阅**时 `firingSeen` 照旧上涨（⛔ 不是把这一档做成永远 0）
+      const cw2 = new skWakeMod.CardWake({
+        origin: 'http://127.0.0.1:0', workspaceIdOf: () => 'ws-sk',
+        deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000,
+        onFiring: () => {},
+      })
+      cw2.subscribe('session-sk', 'ws-sk')
+      let fired = 0
+      const cw3 = new skWakeMod.CardWake({
+        origin: 'http://127.0.0.1:0', workspaceIdOf: () => 'ws-sk',
+        deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000,
+        onFiring: () => { fired++ },
+      })
+      cw3.subscribe('session-sk', 'ws-sk')
+      await cw3.handleFrame('change', skFiringFrame())
+      if (fired === 1) {
+        ok('SK-a2 ✓ 反向对照：**有订阅者**时点火帧照旧走 `onFiring`（调了 1 次）'
+          + ' ⇒ SK-a 钉的是"没人接也要记"，⛔ 没有把正常路径改坏')
+      } else {
+        bad(`SK-a2 【正常路径被改坏】有订阅者时 onFiring 调了 ${fired} 次（应 1）`)
+      }
+
+      // ── SK-a(反证)：摘掉"记到过但没人接"那一步 ⇒ SK-a 必须不成立 ──────────
+      const CW = join(skRoot, 'src', 'server', 'card-wake.ts')
+      const cwSrc = readFileSync(CW, 'utf8')
+      const GUARD = 'try { this.opts.onFiringNoSubscriber?.(e) } catch (err) {'
+      if (!cwSrc.includes(GUARD)) {
+        bad('SK-a(反证) 【失去靶子】`card-wake.ts` 里找不到 `onFiringNoSubscriber` 的调用'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const dir = mkdtempSync(join(skTmp, 'mut-ska-'))
+        cpSync(join(skRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
+        try { symlinkSync(join(skRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mf = join(dir, 'src', 'server', 'card-wake.ts')
+        writeFileSync(mf, cwSrc.replace(GUARD,
+          'try { /* 变异：不再记"帧到过但没人接" */ } catch (err) {'), 'utf8')
+        try {
+          const mWake = await import(p2u(mf).href)
+          const mCw = new mWake.CardWake({
+            origin: 'http://127.0.0.1:0', workspaceIdOf: () => 'ws-sk',
+            deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000,
+            onFiring: () => {},
+          })
+          await mCw.handleFrame('change', skFiringFrame())
+          const mD = new mWake.DispatchWake({ deliver: () => Promise.resolve({ ok: true }), now: () => 1792300800000 })
+            .snapshot('session-sk')
+          const mHead = skHeadOf(await skRender(skOrchOf({ dispatchWake: mD })))
+          if (mD.firingNoSubscriberCount === 0 && mHead.includes('一帧都没收到过')) {
+            ok('SK-a(反证) ✓ 负向对拍：摘掉"记到过但没人接" ⇒ '
+              + `\`firingNoSubscriberCount=0\`、头行**又说回** ${JSON.stringify(mHead.slice(0, 50))}`
+              + '（⚠ 帧其实到过）⇒ SK-a 真长牙')
+          } else {
+            bad('SK-a(反证) 【负向对拍失败】摘掉之后仍然没退回"一帧都没收到过"'
+              + `（count=${mD.firingNoSubscriberCount} · 头行=${JSON.stringify(mHead.slice(0, 110))}）`
+              + ' ⇒ SK-a 测的不是"这一步有没有接在实现上"')
+          }
+        } catch (e) {
+          bad(`SK-a(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SK-b · `R7`：恒为空的读数必须声明适用前提
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 现场形态：今天板上 **0 张**满足两道准入的卡，读数只报「未登记 / 未叫醒 0 个」，
+  //     **一个字都不解释** ⇒ 读的人只能理解成"坏了"。
+  //   ⚠ 判据：这一档为 0 时 ⇒ 读数面**必须**同时出现
+  //     ①「执行方是不是建卡方本人」②「owner 会话还在不在」，⛔ 不许只出现「0 个」。
+  if (skOrchMod !== undefined) {
+    {
+      const dwState = {
+        registered: 0, pending: 0, wokeCount: 0, undecidableCount: 0, pushedRegisterOk: 0,
+        pushRegisterIssues: 0, firingSeen: 0, firedBlockedCount: 0, firingNoSubscriberCount: 0,
+        ownerUnknownCount: 0, undeliverableCount: 0, stoppedCount: 0,
+        ownerUnknownRegistered: 0, othersOnly: 0,
+        premise: { selfExecutedGated: 3, ownersChecked: 2, ownersAlive: 1, ownersGone: 1 },
+      }
+      const rendered = await skRender(skOrchOf({ dispatchWake: dwState }))
+      const saysSelf = rendered.includes('执行方 = 建卡方本人') && rendered.includes('3 次')
+      const saysOwner = rendered.includes('owner 会话') && rendered.includes('还在 1 个') && rendered.includes('已不在 1 个')
+      const saysPremise = rendered.includes('R7') && rendered.includes('适用前提')
+      if (saysSelf && saysOwner && saysPremise) {
+        ok('SK-b ✓ **`R7` 恒为空的读数声明适用前提**：`registered=0` 时读数面同时给出 '
+          + '①「被 **执行方 = 建卡方本人** 拦下 3 次」②「owner 会话：还在 1 个 · 已不在 1 个」'
+          + ' ⇒ ⛔ 不再只说"0 个"' + skTag)
+      } else {
+        bad('SK-b 【恒为空的读数没有声明前提】'
+          + `：说"执行方=建卡方"=${saysSelf} · 说"owner 会话还在/不在"=${saysOwner}`
+          + ` · 带 R7/适用前提字样=${saysPremise}`)
+      }
+      // ⚠ 反向对照：**登记非 0** 时不强塞这三行（正常态不刷屏）
+      const busy = await skRender(skOrchOf({
+        dispatchWake: { ...dwState, registered: 2, pending: 1, wokeCount: 3, pushedRegisterOk: 2 },
+      }))
+      if (!busy.includes('适用前提')) {
+        ok('SK-b2 ✓ 反向对照：**有登记且叫醒过**时**不印**前提那几行（正常态不刷屏）')
+      } else {
+        bad('SK-b2 【正常态刷屏】有登记时仍然印了"适用前提"那几行')
+      }
+
+      /**
+       * ── SK-b3 ⭐ **`R7` 的前提必须来自真 orch（⛔ 不许只是夹具喂进去的）** ─────────
+       *
+       * ⚠ 为什么必须有这条：上面 `SK-b` 是**就地替换 `dispatchWakeState` 的返回值**，
+       *   它只证明"渲染层会用 `premise`"，⛔ 不证明"`premise` 真的被算出来了"。
+       *   这正是本仓反复吃的那个亏：**渲染绿了、数据源没接上**。
+       * ⇒ 本档走**真 `apply` + 真 `cardsOf`**：造一个**活着的** owner 会话 ⇒
+       *   `premise.ownersChecked = 1` / `ownersAlive = 1` / `ownersGone = 0`；
+       *   再把 owner 会话从 `agents` 里摘掉（**判不出**）⇒ 那一条**两个数都不算**
+       *   （⛔ 不许把"判不出"算成"已经不在"）。
+       */
+      {
+        const b3 = mkdtempSync(join(skTmp, 'r7-'))
+        const b3home = join(b3, 'ledgers'); const b3ws = join(b3, 'ws')
+        mkdirSync(join(b3home, basename(b3ws), 'runtime'), { recursive: true })
+        mkdirSync(join(b3ws, 'runtime'), { recursive: true })
+        writeFileSync(join(b3home, basename(b3ws), 'runtime', 'orch-watches.json'),
+          JSON.stringify({ version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [] }), 'utf8')
+        const B3ME = 'session-b3-me'; const B3EXEC = 'session-b3-exec'
+        const mkB3 = (id) => ({ id, header: { agentPreset: 'standard', cwd: b3ws }, log: [] })
+        const b3ById = new Map([[B3ME, mkB3(B3ME)], [B3EXEC, mkB3(B3EXEC)]])
+        /** ⚠ 同一开关被 `sessions` 与 `agents` 两个来源共用（见下面那段注释）。 */
+        const b3AliveRef = { value: true }
+        const b3Sessions = {
+          get: (i) => (b3AliveRef.value ? b3ById.get(i) : undefined),
+          list: () => [...b3ById.values()], flush: async () => true,
+        }
+        /**
+         * ⚠ `alive` 开关：`true` = owner 会话活着；`false` = **两个来源都读不到**（= 判不出）。
+         *   ⚠ 必须**两个都摘**才叫"判不出"：只摘 `agents` 而 `sessions` 还在 ⇒ 那仍是"还在"
+         *     （探针按设计会回落第二个来源，这是**有意的**，⛔ 不是漏洞）。
+         */
+        const b3Alive = b3AliveRef
+        const b3Agents = {
+          currentInitiator: () => undefined,
+          get: (i) => (b3Alive.value && i === B3ME
+            ? { id: i, status: 'idle', ctx: {}, session: b3ById.get(i), followup() {}, steer() {}, inject() {} }
+            : undefined),
+        }
+        /**
+         * ⚠ 造一张**能过两道准入**的卡：`createdBy.sessionId = ME`（是"我的"），
+         *   执行会话 = 另一个人（⛔ 不是我自己）⇒ 真登记 ⇒ `registered=1`。
+         */
+        const b3Card = { id: 't-b3-1', title: 'R7 前提真链路用卡', status: 'in_progress',
+          workspaceId: 'ws-b3', version: 2, createdBy: { kind: 'session', sessionId: B3ME }, comments: [],
+          executions: [{ id: 'e-b3-1', outcome: 'running', startedAt: 1, sessionId: B3EXEC }] }
+        const b3Registry = new Map([
+          ['taskboard_get', { execute: async (a) => (a?.id === b3Card.id ? { task: b3Card } : {}) }],
+          ['taskboard_list', { execute: async () => ({ revision: 1, tasks: [b3Card] }) }],
+        ])
+        const b3Tools = { get: (n) => b3Registry.get(n) }
+        const b3WsReg = {
+          list: () => [{ id: 'ws-b3', path: b3ws, title: 'b3', record: { sessionIds: [...b3ById.keys()] } }],
+          sessionPaths: new Map([...b3ById.keys()].map((i) => [i, b3ws])),
+        }
+        const b3Prov = {}
+        const b3Ctx = {
+          sessions: b3Sessions, agents: b3Agents, logger: { debug() {}, info() {}, warn() {} },
+          get: (k) => (k === 'sessions' ? b3Sessions : k === 'agents' ? b3Agents : k === 'tools' ? b3Tools
+            : k === 'workspaceRegistry' ? b3WsReg
+              : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: b3home } } }] } : undefined),
+          provide: (k, v) => { b3Prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+          inject: (_d, cb) => cb(b3Ctx), on: () => {},
+        }
+        skOrchMod.apply(b3Ctx)
+        const b3Orch = b3Prov.hobOrchestrator
+        if (b3Orch === undefined) {
+          bad('SK-b3 装不出 `hobOrchestrator` ⇒ `R7` 前提的真链路失去基准（不按通过处理）')
+        } else {
+          await b3Orch.cardsOf({ selfSessionId: B3ME })
+          const liveD = b3Orch.dispatchWakeState(B3ME)
+          const liveOk = liveD.registered === 1 && liveD.premise !== undefined
+            && liveD.premise.ownersChecked === 1 && liveD.premise.ownersAlive === 1
+            && liveD.premise.ownersGone === 0
+          /** ② 把 owner 会话摘掉（两个来源都读不到）⇒ **判不出** ⇒ 两个数都不算 */
+          b3Alive.value = false
+          const deadD = b3Orch.dispatchWakeState(B3ME)
+          const undecidableOk = deadD.premise !== undefined
+            && deadD.premise.ownersChecked === 0 && deadD.premise.ownersAlive === 0
+            && deadD.premise.ownersGone === 0
+          if (liveOk && undecidableOk) {
+            ok('SK-b3 ✓ **`R7` 的"owner 会话还在不在"走真链路**（真 `apply` + 真 `cardsOf`）：'
+              + 'owner 活着 ⇒ `ownersChecked=1 / ownersAlive=1 / ownersGone=0`；'
+              + '把 owner 会话摘掉（**判不出**）⇒ **两个数都不算**（`Checked=0`）'
+              + ' —— ⛔ 没有把"判不出"编成"已经不在"' + skTag)
+          } else {
+            bad('SK-b3 【`R7` 前提没有真的接在数据源上】'
+              + `：活着时 premise=${JSON.stringify(liveD.premise)}（应 checked=1/alive=1/gone=0）`
+              + ` · 判不出时 premise=${JSON.stringify(deadD.premise)}（应 checked=0/alive=0/gone=0）`)
+          }
+        }
+        try { rmSync(b3, { recursive: true, force: true }) } catch { /* 忽略 */ }
+      }
+
+      // ── SK-b(反证)：摘掉前提块 ⇒ SK-b 必须不成立 ────────────────────────
+      const OJ = join(skRoot, 'src', 'modules', 'orchestrator.ts')
+      const oSrc = readFileSync(OJ, 'utf8')
+      const MARK = "const prem = d.premise"
+      if (!oSrc.includes(MARK)) {
+        bad('SK-b(反证) 【失去靶子】`orchestrator.ts` 里找不到 `const prem = d.premise`'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const dir = mkdtempSync(join(skTmp, 'mut-skb-'))
+        cpSync(join(skRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
+        try { symlinkSync(join(skRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mf = join(dir, 'src', 'modules', 'orchestrator.ts')
+        writeFileSync(mf, oSrc.replace(/const prem = d\.premise[\s\S]*?lines\.push\('  ↳ ⛔ 本行只说\*\*前提成不成立\*\*；[^\n]*\n          \}/,
+          '/* 变异：摘掉 R7 前提块 */'), 'utf8')
+        try {
+          const mOrchMod = await import(p2u(mf).href)
+          const mRendered = String(await mOrchMod.createHobOrchTools(skOrchOf({ dispatchWake: dwState }))
+            .status.execute({}, { agent: { id: 'session-sk', session: { header: { cwd: skTmp } } } }))
+          if (!mRendered.includes('适用前提')) {
+            ok('SK-b(反证) ✓ 负向对拍：摘掉前提块 ⇒ 读数面**又只剩"0 个"**（不再有适用前提）'
+              + ' ⇒ SK-b 真长牙')
+          } else {
+            bad('SK-b(反证) 【负向对拍失败】摘掉前提块之后仍然印着"适用前提"')
+          }
+        } catch (e) {
+          bad(`SK-b(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SK-c · `R1`：每行读数必须带主语（两个对象、两套字段）
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 现场形态：`叫醒面：正在连`（`CardWake.conn`）与 `实施会话叫醒面：一帧都没收到过`
+  //     （`DispatchWake` 两个计数）**分两次渲染、两个对象、两套字段**，相邻出现且都
+  //     不说自己在说谁 ⇒ 已被读成"自相矛盾"一次（真的白派过一条单）。
+  //   ⚠ 判据：同屏两行**各自能唯一定位到对象**（一行说 `CardWake`、另一行说 `DispatchWake`）。
+  if (skOrchMod !== undefined) {
+    {
+      const rendered = await skRender(skOrchOf({ wake: { conn: 'broken', note: '连不上' } }))
+      const lines = rendered.split('\n')
+      const cardLine = lines.find((l) => l.startsWith('叫醒面：')) ?? ''
+      const dispLine = lines.find((l) => l.includes('实施会话叫醒面')) ?? ''
+      const cardHasSubject = cardLine.includes('CardWake') && cardLine.includes('看板')
+      const dispHasSubject = dispLine.includes('DispatchWake')
+      const different = cardLine !== dispLine && cardLine !== ''
+      const cardSaysDirect = cardLine.includes('叫醒面（只读 `CardWake`')
+      if (cardHasSubject && (dispHasSubject || cardSaysDirect) && different) {
+        ok('SK-c ✓ **`R1` 两行各带主语**：相邻两条读数各说自己在说谁 —— '
+          + `卡面那行 = ${JSON.stringify(cardLine.slice(0, 60))} · `
+          + `实施会话那行 = ${JSON.stringify(dispLine.slice(0, 56))}`
+          + ' ⇒ 同屏能唯一定位到各自对象（⛔ 数值来源未改、⛔ 没合并成一行）' + skTag)
+      } else {
+        bad('SK-c 【两行都没说自己在说谁】'
+          + `：卡面行带对象名=${cardHasSubject}（行=${JSON.stringify(cardLine.slice(0, 90))}）`
+          + ` · 实施会话行带对象名=${dispHasSubject}（行=${JSON.stringify(dispLine.slice(0, 90))}）`
+          + ` · 两行不同=${different}`)
+      }
+
+      // ── SK-c(反证)：把主语摘回"叫醒面："⇒ SK-c 必须不成立 ────────────────
+      const OJ = join(skRoot, 'src', 'modules', 'orchestrator.ts')
+      const oSrc = readFileSync(OJ, 'utf8')
+      const GUARD = "const wakeSubject = '叫醒面：**看板卡面**（`CardWake` · 看板 SSE）'"
+      if (!oSrc.includes(GUARD)) {
+        bad('SK-c(反证) 【失去靶子】`orchestrator.ts` 里找不到卡面主语那一行'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const dir = mkdtempSync(join(skTmp, 'mut-skc-'))
+        cpSync(join(skRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
+        try { symlinkSync(join(skRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mf = join(dir, 'src', 'modules', 'orchestrator.ts')
+        writeFileSync(mf, oSrc.replace(GUARD, "const wakeSubject = '叫醒面：'"), 'utf8')
+        try {
+          const mOrchMod = await import(p2u(mf).href)
+          const mRendered = String(await mOrchMod.createHobOrchTools(skOrchOf({ wake: { conn: 'broken', note: '连不上' } }))
+            .status.execute({}, { agent: { id: 'session-sk', session: { header: { cwd: skTmp } } } }))
+          const mCard = mRendered.split('\n').find((l) => l.startsWith('叫醒面：')) ?? ''
+          if (!mCard.includes('CardWake')) {
+            ok('SK-c(反证) ✓ 负向对拍：把主语摘回 `叫醒面：` ⇒ 那行**又不说自己在说谁**'
+              + `（${JSON.stringify(mCard.slice(0, 60))}）⇒ SK-c 真长牙`)
+          } else {
+            bad('SK-c(反证) 【负向对拍失败】摘掉主语之后卡面行仍带对象名')
+          }
+        } catch (e) {
+          bad(`SK-c(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SK-d · `D10`：派发记录态 = 封闭九态，逐档可分辨
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 现场形态：读数只有「在等回传 / 已回传 / 被停闸拦下」三个聚合数 ⇒
+  //     **拒收**（目标明确说做不了）与**在跑没回音**、**要澄清**与**已回传**
+  //     在输出里**逐字一样**。
+  //   ⚠ 判据：逐档造样本 ⇒ 九行读数**各不相同**；且两对必须可分辨。
+  if (skStateMod !== undefined && skOrchMod !== undefined) {
+    const T0 = 1792300800000
+    const base = { watcher: 'session-sk', at: T0, sawRunning: false, reported: false }
+    const skRecords = [
+      { ...base, target: 'sk-registered' },
+      { ...base, target: 'sk-delivered', deliveryAttemptAt: T0 + 1000 },
+      { ...base, target: 'sk-running', sawRunning: true, sawRunningAt: T0 + 2000 },
+      { ...base, target: 'sk-clarify', sawRunning: true, sawRunningAt: T0 + 2000, clarifyAt: T0 + 3000 },
+      { ...base, target: 'sk-returned', sawRunning: true, sawRunningAt: T0 + 2000, deliveredAt: T0 + 4000 },
+      { ...base, target: 'sk-accepted', sawRunning: true, sawRunningAt: T0 + 2000, deliveredAt: T0 + 4000, acceptedAt: T0 + 5000 },
+      { ...base, target: 'sk-sentback', sawRunning: true, sawRunningAt: T0 + 2000, deliveredAt: T0 + 4000, sentBackAt: T0 + 5000 },
+      { ...base, target: 'sk-refused', sawRunning: true, refusedAt: T0 + 3000 },
+      { ...base, target: 'sk-stuck', sawRunning: true, sawRunningAt: T0 + 2000, settleState: 'stuck' },
+    ]
+    {
+      const rendered = await skRender(skOrchOf({ status: { watches: skRecords } }))
+      const labels = ['已登记', '已投递未确认执行', '执行中', '要澄清', '已回传', '已验收', '已退回', '拒收', '卡住']
+      const stateLines = labels.map((lb) => rendered.split('\n').find((l) => l.includes(`· ${lb}：`)) ?? '')
+      const allPresent = labels.every((lb, i) => stateLines[i] !== '' && stateLines[i].includes(`· ${lb}：1 条`))
+      const distinct = new Set(stateLines).size === labels.length
+      /**
+       * ⚠ 两对**必须可分辨**（`D10` 原文最要紧的两档）——判据是**两行字面不同且各带自己的对象**：
+       *   · 拒收 vs 执行中：`sk-refused` 只在「拒收」那行、`sk-running` 只在「执行中」那行；
+       *   · 要澄清 vs 已回传：`sk-clarify` / `sk-returned` 各归各的行。
+       */
+      const refusedLine = stateLines[7]
+      const runningLine = stateLines[2]
+      const clarifyLine = stateLines[3]
+      const returnedLine = stateLines[4]
+      const pair1 = refusedLine.includes('sk-refused') && !refusedLine.includes('sk-running')
+        && runningLine.includes('sk-running') && !runningLine.includes('sk-refused')
+      const pair2 = clarifyLine.includes('sk-clarify') && !clarifyLine.includes('sk-returned')
+        && returnedLine.includes('sk-returned') && !returnedLine.includes('sk-clarify')
+      /**
+       * ⚠⚠ **`R7` 也管这一块**：九态里「拒收 / 要澄清 / 已验收 / 已退回」四态
+       *   由**人的判断**产生，而本包 ⛔ 没有新增写入入口 ⇒ 它们**恒为 0**。
+       *   ⇒ 它们的 0 条**必须带适用前提**，⛔ 不许只印"0 条（已读，确为 0）"。
+       *   （本档造的是"九档各 1 条"的样本，所以四态非 0、前提不印；下面单独用
+       *    "全空"样本判那四条前提 —— 两件事分开，⛔ 不许用一个样本混判。）
+       */
+      const emptyRendered = await skRender(skOrchOf({ status: { watches: [] } }))
+      const fourEmpty = ['要澄清', '已验收', '已退回', '拒收']
+      const premisesOk = fourEmpty.every((lb) => {
+        const line = emptyRendered.split('\n').find((l) => l.includes(`· ${lb}：`)) ?? ''
+        const idx = emptyRendered.split('\n').indexOf(line)
+        const next = emptyRendered.split('\n')[idx + 1] ?? ''
+        return line.includes('0 条') && next.includes('前提')
+      })
+      if (allPresent && distinct && pair1 && pair2 && premisesOk) {
+        ok('SK-d ✓ **`D10` 封闭九态逐档一行、互不相同**：9 档各 1 条，且两对可分辨 —— '
+          + '**拒收（`sk-refused`）≠ 执行中（`sk-running`）** · '
+          + '**要澄清（`sk-clarify`）≠ 已回传（`sk-returned`）**；'
+          + '⚠ 且「拒收/要澄清/已验收/已退回」四态为 0 时**带适用前提**（`R7`：'
+          + '这四态要人写，本包没加写入入口 ⇒ ⛔ 不许把 0 条读成"没发生过"）' + skTag)
+      } else {
+        bad('SK-d 【九态没有逐档可分辨】'
+          + `：九档都在且各 1 条=${allPresent} · 九行互不相同=${distinct}（${new Set(stateLines).size}/9）`
+          + ` · 拒收≠执行中=${pair1} · 要澄清≠已回传=${pair2}`
+          + ` · 四态为 0 时带适用前提=${premisesOk}`)
+      }
+
+      // ── SK-d(反证)：把"拒收"并回"执行中" ⇒ SK-d 的 pair1 必须不成立 ──────
+      const SJ = join(skRoot, 'src', 'server', 'orch-state.ts')
+      const sSrc = readFileSync(SJ, 'utf8')
+      const GUARD = "  if (typeof w.refusedAt === 'number') return 'refused'"
+      if (!sSrc.includes(GUARD)) {
+        bad('SK-d(反证) 【失去靶子】`orch-state.ts` 里找不到"拒收"那条判定'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const dir = mkdtempSync(join(skTmp, 'mut-skd-'))
+        cpSync(join(skRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
+        try { symlinkSync(join(skRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mf = join(dir, 'src', 'server', 'orch-state.ts')
+        const CLARIFY = "  if (typeof w.clarifyAt === 'number') return 'needs-clarification'"
+        const RETURNED = "  if (typeof w.deliveredAt === 'number') return 'returned'"
+        /**
+         * ⚠ **两对各自一个变异体**（`D10` 原文点名"最要紧的两档"，缺一对就等于只钉了一半）：
+         *   · 甲：把"拒收"并回"执行中" ⇒ `拒收 ≠ 执行中` 当场塌；
+         *   · 乙：把"要澄清"并回"已回传" ⇒ `要澄清 ≠ 已回传` 当场塌。
+         * ⚠ 变异都只落在**临时副本**上（⛔ 不碰工作区源码）。
+         */
+        const skRunMutant = async (label, replacements) => {
+          let src = sSrc
+          for (const [from, to] of replacements) {
+            if (!src.includes(from)) {
+              bad(`SK-d(反证${label}) 【失去靶子】\`orch-state.ts\` 里找不到 ${JSON.stringify(from.slice(0, 52))}`
+                + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+              return undefined
+            }
+            src = src.replace(from, to)
+          }
+          writeFileSync(mf, src, 'utf8')
+          const mStateMod = await import(p2u(mf).href + `?m=${label}`)
+          return skRecords.map((r) => mStateMod.dispatchStateOf(r))
+        }
+        try {
+          /** 甲：拒收 → 执行中 */
+          const st1 = await skRunMutant('a', [[GUARD,
+            "  if (typeof w.refusedAt === 'number') return 'running' /* 变异：拒收并回执行中 */"]])
+          if (st1 !== undefined) {
+            if (st1[7] === 'running' && st1[2] === 'running') {
+              ok('SK-d(反证a) ✓ 负向对拍：把"拒收"并回"执行中" ⇒ 两档**当场塌成同一态**'
+                + '（`sk-refused` 与 `sk-running` 都 = `running`）⇒ `拒收 ≠ 执行中` 这对真长牙')
+            } else {
+              bad('SK-d(反证a) 【负向对拍失败】把"拒收"并回"执行中"之后两档仍可分辨'
+                + `（refused=${st1[7]} · running=${st1[2]}）`)
+            }
+          }
+          /** 乙：要澄清 → 已回传（`clarifyAt` 那一支直接返回 `returned`） */
+          if (!sSrc.includes(CLARIFY) || !sSrc.includes(RETURNED)) {
+            bad('SK-d(反证b) 【失去靶子】`orch-state.ts` 里找不到"要澄清"/"已回传"那两条判定'
+              + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+          } else {
+            /** ⚠ 先写回原文，再做第二处变异（同一份副本复用，避免两处变异叠加后互相掩盖）。 */
+            writeFileSync(mf, sSrc, 'utf8')
+            const st2 = await skRunMutant('b', [[CLARIFY,
+              "  if (typeof w.clarifyAt === 'number') return 'returned' /* 变异：要澄清并回已回传 */"]])
+            if (st2 !== undefined) {
+              if (st2[3] === 'returned' && st2[4] === 'returned') {
+                ok('SK-d(反证b) ✓ 负向对拍：把"要澄清"并回"已回传" ⇒ 两档**当场塌成同一态**'
+                  + '（`sk-clarify` 与 `sk-returned` 都 = `returned`）⇒ `要澄清 ≠ 已回传` 这对真长牙')
+              } else {
+                bad('SK-d(反证b) 【负向对拍失败】把"要澄清"并回"已回传"之后两档仍可分辨'
+                  + `（clarify=${st2[3]} · returned=${st2[4]}）`)
+              }
+            }
+          }
+        } catch (e) {
+          bad(`SK-d(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SK-e · `D4`：at-most-once 点名 + 必然失败的投递仍留盘并标「未送达」
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ `D4`：至多投一次（**at-most-once**），代价是可能一次都没送到 ⇒
+  //     必须有"漏了怎么看得见"的读数：未确认成功的记录**留在盘上并标"未送达"**，
+  //     且**出现在状态读数里**（空态也报）。
+  //   ⚠ 本档走**真行为链**：真 `apply` + 真盘 → `dispatch` 成功 →
+  //     `running → idle` 事件 → `settle()` 投递（**故意让它失败**）⇒
+  //     盘上记录仍在且带 `undeliveredAt`；读数面「未送达」**不为 0**。
+  //   ⛔ **不改能否重投**：`markDelivered`/`reported` 仍是先写后发 —— 所以同时
+  //     断言"再喂几次 idle 也**不会再投一次**"（at-most-once 的语义没被放宽）。
+  if (skOrchMod !== undefined) {
+    const busModTry = await (async () => {
+      try { return await import(p2u(join(skRoot, 'src', 'modules', 'bus.ts')).href) } catch { return undefined }
+    })()
+    if (busModTry === undefined) {
+      bad('SK-e 无法加载 bus 模块 ⇒ `D4` 那一档失去基准（不按通过处理）')
+    } else {
+      const base = mkdtempSync(join(skTmp, 'd4-'))
+      const home = join(base, 'ledgers'); const ws = join(base, 'ws')
+      mkdirSync(join(ws, 'runtime'), { recursive: true })
+      mkdirSync(join(home, basename(ws), 'runtime'), { recursive: true })
+      const file = join(home, basename(ws), 'runtime', 'orch-watches.json')
+      const ME = 'session-d4-me'; const TARGET = 'session-d4-target'
+      const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+      const byId = new Map([[ME, mkS(ME)], [TARGET, mkS(TARGET)]])
+      const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+      const stMap = new Map([[ME, 'idle'], [TARGET, 'running']])
+      const agents = {
+        currentInitiator: () => undefined,
+        get: (i) => (stMap.has(i) ? {
+          id: i, status: stMap.get(i), ctx: {}, session: byId.get(i),
+          followup() {}, steer() {}, inject() {},
+        } : undefined),
+      }
+      const bp = {}
+      const bc = {
+        sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+        : undefined),
+        provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(bc), on: () => {},
+      }
+      busModTry.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+      const bus = bp.hobBus
+      /** ⚠ 记录**每一次**投递尝试（用来钉 at-most-once：失败之后⛔ 不许再试第二次）。 */
+      const attempts = []
+      for (const key of ['deliver', 'deliverInternal']) {
+        if (typeof bus[key] !== 'function') continue
+        const real = bus[key].bind(bus)
+        bus[key] = async (sid, text, mode) => {
+          attempts.push({ to: sid, via: key })
+          if (key === 'deliverInternal') {
+            /**
+             * ⚠⚠ **包 J 第 3.4 件之后，这一句必须是"明确的传输失败"**：
+             *   新增了三分类（拒收 / **未归类** / 传输失败）。本档要测的是 `D4` 的
+             *   **"未送达"**那一行 ⇒ 原因必须真的落在 `undelivered` 这一档，
+             *   否则它会诚实地落进"未归类"（那不是缺陷，是分类正确）。
+             *   ⚠ 所以这里换成宿主**真实**的传输失败话术（`message-build-failed:`，见 `bus.ts`），
+             *     ⛔ 不是为了让断言变绿而放宽 —— 断言的**判据一个字未改**。
+             */
+            return { ok: false, reason: 'message-build-failed: 夹具故意让回执投递失败' }
+          }
+          return real(sid, text, mode)
+        }
+      }
+      const evHandlers = []
+      const prov = {}
+      const ctx = {
+        sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : k === 'hobBus' ? bus
+          : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+          : undefined),
+        provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(ctx),
+        on: (ev, h) => { if (ev === 'agent/status') evHandlers.push(h); return () => {} },
+      }
+      skOrchMod.apply(ctx)
+      const orch = prov.hobOrchestrator
+      if (orch === undefined) {
+        bad('SK-e 装不出 `hobOrchestrator` ⇒ 基准缺失（⛔ 不按通过处理）')
+      } else {
+        try {
+          const d = await orch.dispatch(TARGET, 'D4：构造一次必然失败的回执投递', { self: ME })
+          await new Promise((r) => setTimeout(r, 80))
+          stMap.set(TARGET, 'running')
+          for (const h of evHandlers) await h({ agent: { id: TARGET }, status: 'running' })
+          await new Promise((r) => setTimeout(r, 60))
+          stMap.set(TARGET, 'idle')
+          for (const h of evHandlers) await h({ agent: { id: TARGET }, status: 'idle' })
+          await new Promise((r) => setTimeout(r, 200))
+          const diskPending = (() => {
+            try { return JSON.parse(readFileSync(file, 'utf8')).pending ?? [] } catch { return [] }
+          })()
+          const onDisk = diskPending.find((w) => w.target === TARGET)
+          const stillOnDisk = onDisk !== undefined
+          const markedUndelivered = onDisk !== undefined && typeof onDisk.undeliveredAt === 'number'
+            && typeof onDisk.undeliveredWhy === 'string'
+          const rendered = String(await skOrchMod.createHobOrchTools(orch).status.execute({}, {
+            agent: { id: ME, session: { header: { cwd: ws } } },
+          }))
+          const undeliveredLine = rendered.split('\n').find((l) => l.includes('未送达')) ?? ''
+          const notZero = /未送达\*\*：\s*[1-9]/.test(undeliveredLine) || /未送达.*[1-9]\s*条/.test(undeliveredLine)
+          const namesReason = undeliveredLine.includes('夹具故意让回执投递失败') || rendered.includes('夹具故意让回执投递失败')
+          const saysAtMostOnce = rendered.includes('at-most-once')
+          /**
+           * ⚠⛔ **`D4`「不许用"下次再试 N 次"伪装成已送达」**：再触发对账 / 再喂 idle 之后，
+           *   盘上那条**仍然不许出现 `deliveredAt`**（一次都没送到就是没送到），
+           *   且**仍带未送达标记**。
+           * ⚠ ⛔ **本件不改"能不能重投"**：`ok:false` 那一支原本就会撤 `deliveryAttemptAt`
+           *   ⇒ 允许下一轮再试一次，那是**既有语义**（本轮一个字未改）——所以这里
+           *   **不**断言"投递次数恒为 1"，只断言"**失败不许被记成成功**"。
+           */
+          await orch.reconcile('d4-at-most-once')
+          for (const h of evHandlers) await h({ agent: { id: TARGET }, status: 'idle' })
+          await new Promise((r) => setTimeout(r, 200))
+          const afterPending = (() => {
+            try { return JSON.parse(readFileSync(file, 'utf8')).pending ?? [] } catch { return [] }
+          })()
+          const afterRec = afterPending.find((w) => w.target === TARGET)
+          const neverFakedSuccess = afterRec !== undefined
+            && typeof afterRec.deliveredAt !== 'number'
+            && typeof afterRec.undeliveredAt === 'number'
+          if (d?.ok === true && stillOnDisk && markedUndelivered && notZero && namesReason && saysAtMostOnce
+            && neverFakedSuccess) {
+            ok('SK-e ✓ **`D4` at-most-once 点名 + 未送达配对读数**：构造一次必然失败的回执投递 ⇒ '
+              + '记录**仍在盘上**且带 `undeliveredAt`/`undeliveredWhy` · 读数面 '
+              + '`未送达：1 条`（**不显示为 0**）且**带失败原话** · 且再对账/再喂 idle 之后'
+              + '**盘上仍无 `deliveredAt`、未送达标记仍在**'
+              + '（⛔ 没有用"下次再试 N 次"把它伪装成已送达；⛔ 也没改"能不能重投"）' + skTag)
+          } else {
+            bad('SK-e 【`D4` 的"未送达"看不见 / 或重投语义被改坏】'
+              + `：dispatch.ok=${d?.ok} · 记录仍在盘上=${stillOnDisk}`
+              + ` · 盘上带未送达标记=${markedUndelivered} · 读数不为 0=${notZero}`
+              + ` · 读数带失败原话=${namesReason} · 读数点名 at-most-once=${saysAtMostOnce}`
+              + ` · 再触发后仍未伪装成功=${neverFakedSuccess}`
+              + ` · 未送达行=${JSON.stringify(undeliveredLine.slice(0, 160))}`)
+          }
+
+          // ── SK-e(反证)：摘掉"记未送达"那一步 ⇒ SK-e 必须不成立 ─────────────
+          const OJ = join(skRoot, 'src', 'modules', 'orchestrator.ts')
+          const oSrc = readFileSync(OJ, 'utf8')
+          /**
+           * ⚠ 包 J 3.4 之后"记事"那一步挪进了三分类的 `else`（`undelivered` 那一支）
+           *   ⇒ 负向对拍的靶子换成**分类那一行**（摘掉它 ⇒ 就没有任何一档被记）。
+           */
+          /**
+           * ⚠ 包 J 3.4 之后这一支长成了 `if(refused)/else if(unclassified)/else(undelivered)`：
+           *   ⛔ 变异**不能**去改 `relayCls` 这个类（改成不存在的类会落进 `else` ⇒ 仍然记"未送达"，
+           *   实测就是那样假绿的），也⛔ 不能整段删（撕开括号 ⇒ 变异体语法坏）。
+           *   ⇒ 靶子 = **`else` 那一支里唯一那句记事**，摘掉它 × 结构完整 × 行为等价于改前。
+           */
+          const GUARD = '          w.undeliveredAt = Date.now()\n          w.undeliveredWhy = `投递实现明确回报没送到：${why}`'
+          if (!oSrc.includes(GUARD)) {
+            bad('SK-e(反证) 【失去靶子】`orchestrator.ts` 里找不到 `ok:false` 那一支的"未送达"记账'
+              + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+          } else {
+            const dir = mkdtempSync(join(skTmp, 'mut-ske-'))
+            cpSync(join(skRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
+            try { symlinkSync(join(skRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+            const mf = join(dir, 'src', 'modules', 'orchestrator.ts')
+            /**
+             * ⚠ 变异目标 = **让三分类一条分支都不命中** ⇒ 三档**都不记账**
+             *   （等价改前"什么都没记"的形态）。
+             *   ⚠ 为什么不是"整段删掉"：那会把 `if/else if/else` 的括号撕开、变异体语法坏掉
+             *     （实测过一次：`Expected ',', got 'finally'`）⇒ 那是夹具坏，不是断言咬不住。
+             *   ⇒ 改喂一个**永不命中的类**，结构完整、行为等价。
+             */
+            writeFileSync(mf, oSrc.replace(GUARD,
+              '          /* 变异：摘掉 else 那一支的记事（等价改前"什么都没记"） */'), 'utf8')
+            try {
+              const mOrchMod = await import(p2u(mf).href)
+              const mb = mkdtempSync(join(skTmp, 'd4m-'))
+              const mhome = join(mb, 'ledgers'); const mws = join(mb, 'ws')
+              mkdirSync(join(mws, 'runtime'), { recursive: true })
+              mkdirSync(join(mhome, basename(mws), 'runtime'), { recursive: true })
+              const mfile = join(mhome, basename(mws), 'runtime', 'orch-watches.json')
+              const mkS2 = (id) => ({ id, header: { agentPreset: 'standard', cwd: mws }, log: [] })
+              const mById = new Map([[ME, mkS2(ME)], [TARGET, mkS2(TARGET)]])
+              const mSessions = { get: (i) => mById.get(i), list: () => [...mById.values()], flush: async () => true }
+              const mSt = new Map([[ME, 'idle'], [TARGET, 'running']])
+              const mAgents = {
+                currentInitiator: () => undefined,
+                get: (i) => (mSt.has(i) ? {
+                  id: i, status: mSt.get(i), ctx: {}, session: mById.get(i),
+                  followup() {}, steer() {}, inject() {},
+                } : undefined),
+              }
+              const mbp = {}
+              const mbc = {
+                sessions: mSessions, agents: mAgents, logger: { debug() {}, info() {}, warn() {} },
+                get: (k) => (k === 'sessions' ? mSessions : k === 'agents' ? mAgents
+                : undefined),
+                provide: (k, v) => { mbp[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+                inject: (_d, cb) => cb(mbc), on: () => {},
+              }
+              busModTry.apply(mbc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+              const mbus = mbp.hobBus
+              if (typeof mbus.deliverInternal === 'function') {
+                mbus.deliverInternal = async () => ({ ok: false, reason: 'objective: 变异体同样让它失败' })
+              }
+              const mEv = []
+              const mProv = {}
+              const mCtx = {
+                sessions: mSessions, agents: mAgents, logger: { debug() {}, info() {}, warn() {} },
+                get: (k) => (k === 'sessions' ? mSessions : k === 'agents' ? mAgents : k === 'hobBus' ? mbus
+                  : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: mhome } } }] }
+                  : undefined),
+                provide: (k, v) => { mProv[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+                inject: (_d, cb) => cb(mCtx),
+                on: (ev, h) => { if (ev === 'agent/status') mEv.push(h); return () => {} },
+              }
+              mOrchMod.apply(mCtx)
+              const mOrch = mProv.hobOrchestrator
+              await mOrch.dispatch(TARGET, 'D4 变异', { self: ME })
+              await new Promise((r) => setTimeout(r, 80))
+              mSt.set(TARGET, 'running')
+              for (const h of mEv) await h({ agent: { id: TARGET }, status: 'running' })
+              await new Promise((r) => setTimeout(r, 60))
+              mSt.set(TARGET, 'idle')
+              for (const h of mEv) await h({ agent: { id: TARGET }, status: 'idle' })
+              await new Promise((r) => setTimeout(r, 200))
+              const mp = (() => { try { return JSON.parse(readFileSync(mfile, 'utf8')).pending ?? [] } catch { return [] } })()
+              const mRec = mp.find((w) => w.target === TARGET)
+              const mRendered2 = String(await mOrchMod.createHobOrchTools(mOrch).status.execute({}, {
+                agent: { id: ME, session: { header: { cwd: mws } } },
+              }))
+              const mNotZero = /未送达\*\*：\s*[1-9]/.test(mRendered2) || /未送达.*[1-9]\s*条/.test(mRendered2)
+              if (mRec !== undefined && typeof mRec.undeliveredAt !== 'number' && mNotZero === false) {
+                ok('SK-e(反证) ✓ 负向对拍：摘掉"记未送达" ⇒ 记录虽仍在盘上、但**没有未送达标记**，'
+                  + '读数面「未送达」**又回到 0** ⇒ SK-e 真长牙（它钉的正是"漏了要看得见"）')
+              } else {
+                bad('SK-e(反证) 【负向对拍失败】摘掉之后读数仍报出未送达'
+                  + `（盘上有标记=${mRec !== undefined && typeof mRec.undeliveredAt === 'number'}`
+                  + ` · 读数不为 0=${mNotZero}）`)
+              }
+              try { rmSync(mb, { recursive: true, force: true }) } catch { /* 忽略 */ }
+            } catch (e) {
+              bad(`SK-e(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+            } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+          }
+        } catch (e) {
+          bad(`SK-e 用例抛错（${String(e?.message ?? e)}）⇒ 不按通过处理（⛔ 跑不起来 ≠ 通过）`)
+        } finally { try { rmSync(base, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SK-f · `D11`：进度三项可读 + 一行报「有进展 / 停滞」
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ `D11`：每条记录必须能读出 **是否进过运行态 · 已跑多久 · 重核几次**；
+  //     「长时间无变化」必须**能被读出来**、⛔ 不靠人盯。⚠ 停滞只**报**，⛔ 不自动重新规划。
+  if (skStateMod !== undefined && skOrchMod !== undefined) {
+    {
+      const NOW = Date.now()
+      const stagnant = { watcher: 'session-sk', at: NOW - 3600_000, target: 'sk-stagnant',
+        sawRunning: true, reported: false, sawRunningAt: NOW - 3600_000, recheckCount: 2, lastRecheckAt: NOW - 3000_000 }
+      const fresh = { watcher: 'session-sk', at: NOW - 60_000, target: 'sk-fresh',
+        sawRunning: true, reported: false, sawRunningAt: NOW - 60_000, lastRecheckAt: NOW - 5_000 }
+      const notRunning = { watcher: 'session-sk', at: NOW - 60_000, target: 'sk-not-running',
+        sawRunning: false, reported: false }
+      const rendered = await skRender(skOrchOf({ status: { watches: [stagnant, fresh, notRunning] } }))
+      const progressLine = rendered.split('\n').find((l) => l.includes('进度：')) ?? ''
+      const saysCounts = /有进展\s*1\s*条/.test(progressLine) && /停滞\s*1\s*条/.test(progressLine)
+      const namesThreeItems = rendered.includes('进过运行态=是') && rendered.includes('已跑=') && rendered.includes('重核 2 次')
+      const saysStalled = rendered.includes('⏳ **停滞**') && rendered.includes('sk-stagnant')
+      const saysNotRunningApart = rendered.includes('还没进运行态 1 条')
+      const saysNoReplan = rendered.includes('不自动重新规划')
+      if (saysCounts && namesThreeItems && saysStalled && saysNotRunningApart && saysNoReplan) {
+        ok('SK-f ✓ **`D11` 进度三项可读 + 一行报"有进展/停滞"**：'
+          + `每条给「进过运行态 · 已跑多久 · 重核 N 次」；汇总行 = ${JSON.stringify(progressLine.slice(0, 70))}`
+          + '；停滞那条单列且**明写"只报，不自动重新规划"**（⛔ 没引定时器、⛔ 没自动改方向）' + skTag)
+      } else {
+        bad('SK-f 【`D11` 进度读数不成对】'
+          + `：汇总行有"有进展1/停滞1"=${saysCounts} · 三项逐条给=${namesThreeItems}`
+          + ` · 停滞那条点名=${saysStalled} · "还没进运行态"单列=${saysNotRunningApart}`
+          + ` · 明写不自动重新规划=${saysNoReplan} · 汇总行=${JSON.stringify(progressLine.slice(0, 160))}`)
+      }
+
+      // ── SK-f(反证)：把停滞阈值改到 24 小时 ⇒ 那一档必须不再报"停滞" ──────
+      const SJ = join(skRoot, 'src', 'server', 'orch-state.ts')
+      const sSrc = readFileSync(SJ, 'utf8')
+      const GUARD = 'export const DISPATCH_STALL_MS = 20 * 60 * 1000'
+      if (!sSrc.includes(GUARD)) {
+        bad('SK-f(反证) 【失去靶子】`orch-state.ts` 里找不到 `DISPATCH_STALL_MS` 的定义'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const dir = mkdtempSync(join(skTmp, 'mut-skf-'))
+        cpSync(join(skRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
+        try { symlinkSync(join(skRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mf = join(dir, 'src', 'server', 'orch-state.ts')
+        writeFileSync(mf, sSrc.replace(GUARD, 'export const DISPATCH_STALL_MS = 24 * 60 * 60 * 1000 /* 变异：阈值拉到一天 */'), 'utf8')
+        try {
+          const mStateMod = await import(p2u(mf).href)
+          const pr = mStateMod.dispatchProgressOf(stagnant, NOW)
+          if (pr.verdict === 'progressed') {
+            ok('SK-f(反证) ✓ 负向对拍：把停滞阈值拉到一天 ⇒ 同一条记录**不再判停滞**'
+              + `（verdict=${pr.verdict}）⇒ SK-f 的"停滞"判据真的跟着实现里的常量走`)
+          } else {
+            bad(`SK-f(反证) 【负向对拍失败】改掉阈值之后仍判 ${pr.verdict}（应 progressed）`)
+          }
+        } catch (e) {
+          bad(`SK-f(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+        } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+      }
+    }
+  }
+
+  try { rmSync(skTmp, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+}
+
+
+// ── SU. **`D10` 那四态要有写入入口**（2026-10-26 · 包 H：拒收 / 要澄清 / 已验收 / 已退回）──
+//
+// ⚠ **本组守的是哪四条**（方案 §5.3 `D10` / §10 第 1–3 条；⛔ 不改投递语义、⛔ 不改准入）：
+//   · **SU-a `拒收`**：由**投递实现明确说"目标接不了活"**推出（⛔ 不是让模型标）；
+//   · **SU-b `要澄清`**：由**回传正文里"待决问题"段非空**推出（⛔ 占位词算空）；
+//   · **SU-c `已验收 / 已退回`**：由**判决**推出，且**必须带依据**（`basis` 空 ⇒ **拒绝落账**）；
+//   · **SU-d `判不出不编态`**：判不出的 target ⇒ 四态**一个都不许变**、⛔ 不许凭空造记录。
+//   ⚠ 三对必须可分辨（各配一条负向对拍）：**拒收 ≠ 在跑无回音** · **要澄清 ≠ 已回传** ·
+//     **已退回 ≠ 已验收**。
+//
+// ⚠⚠ **负向对拍只落在临时副本上**（⛔ 不碰工作区源码一个字节），做法同 SK 组。
+{
+  const smRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT
+    : root
+  const smTag = smRoot === root ? '' : `（源码树=${smRoot}）`
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { basename } = await import('node:path')
+  const p2u = (await import('node:url')).pathToFileURL
+  let smTmp
+  try { smTmp = mkdtempSync(join(tmpdir(), 'hob-smcheck-')) } catch { smTmp = tmpdir() }
+
+  let smOrchMod, smStateMod, smBusMod
+  try { smOrchMod = await import(p2u(join(smRoot, 'src', 'modules', 'orchestrator.ts')).href) }
+  catch (e) { bad(`SM 无法加载 orchestrator（${String(e?.message ?? e)}）⇒ 本组失去基准（不按通过处理）`) }
+  try { smStateMod = await import(p2u(join(smRoot, 'src', 'server', 'orch-state.ts')).href) }
+  catch (e) { bad(`SM 无法加载 orch-state（${String(e?.message ?? e)}）⇒ 四态判据失去基准（不按通过处理）`) }
+  try { smBusMod = await import(p2u(join(smRoot, 'src', 'modules', 'bus.ts')).href) }
+  catch (e) { bad(`SM 无法加载 bus（${String(e?.message ?? e)}）⇒ 拒收路径失去基准（不按通过处理）`) }
+
+  /**
+   * 造一台**真 `apply` 的宿主**（只有 session/agent 是假对象 —— 与 SK-e 同款口径）。
+   * ⚠ **故意不给 `sessionController`**：那样 `bus.deliver` 对"非活会话"必然明确失败
+   *   （`is not a live session ... wake capability is unavailable`）—— 这正是**真实**的
+   *   "目标接不了活"现场，⛔ 不是我们编一句 reason 塞进去。
+   */
+  const smHost = (opts = {}) => {
+    const base = mkdtempSync(join(smTmp, opts.prefix ?? 'h-'))
+    const home = join(base, 'ledgers'); const ws = join(base, 'ws')
+    mkdirSync(join(ws, 'runtime'), { recursive: true })
+    mkdirSync(join(home, basename(ws), 'runtime'), { recursive: true })
+    const file = join(home, basename(ws), 'runtime', 'orch-watches.json')
+    if (opts.seed !== undefined) writeFileSync(file, JSON.stringify(opts.seed), 'utf8')
+    const ME = opts.me ?? 'session-sl-me'
+    const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: opts.logOf?.(id) ?? [] })
+    const ids = [ME, ...(opts.targets ?? [])]
+    const byId = new Map(ids.map((i) => [i, mkS(i)]))
+    const sessions = {
+      get: (i) => (opts.gone?.includes(i) ? undefined : byId.get(i)),
+      list: () => [...byId.values()], flush: async () => true,
+    }
+    const stMap = new Map(ids.map((i) => [i, opts.statusOf?.(i) ?? 'idle']))
+    const agents = {
+      currentInitiator: () => undefined,
+      get: (i) => (opts.gone?.includes(i) ? undefined : (stMap.has(i) ? {
+        id: i, status: stMap.get(i), ctx: {}, session: byId.get(i),
+        followup() {}, steer() {}, inject() {},
+      } : undefined)),
+    }
+    const bp = {}
+    const bc = {
+      sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+      get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+      : undefined),
+      provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+      inject: (_d, cb) => cb(bc), on: () => {},
+    }
+    smBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+    const bus = bp.hobBus
+    if (opts.patchBus !== undefined) opts.patchBus(bus)
+    const evHandlers = []
+    const prov = {}
+    const ctx = {
+      sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+      get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents : k === 'hobBus' ? bus
+        : k === 'loader' ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+        : undefined),
+      provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+      inject: (_d, cb) => cb(ctx),
+      on: (ev, h) => { if (ev === 'agent/status') evHandlers.push(h); return () => {} },
+    }
+    smOrchMod.apply(ctx)
+    return {
+      base, home, ws, file, ME, sessions, agents, stMap, evHandlers, orch: prov.hobOrchestrator,
+      read: () => { try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return { pending: [], closed: [] } } },
+      render: async () => String(await smOrchMod.createHobOrchTools(prov.hobOrchestrator).status.execute({}, {
+        agent: { id: ME, session: { header: { cwd: ws } } },
+      })),
+      cleanup: () => { try { rmSync(base, { recursive: true, force: true }) } catch { /* 忽略 */ } },
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SU-a · `拒收` 由**投递明确失败**推出（⛔ 不是模型标）
+  // ══════════════════════════════════════════════════════════════
+  if (smOrchMod !== undefined && smBusMod !== undefined && smStateMod !== undefined) {
+    const h = smHost({ prefix: 'refuse-', targets: ['session-sl-dead'], gone: ['session-sl-dead'] })
+    try {
+      if (h.orch === undefined) {
+        bad('SU-a 装不出 `hobOrchestrator` ⇒ 拒收路径失去基准（不按通过处理）')
+      } else {
+        const d = await h.orch.dispatch('session-sl-dead', '包 H：这一派必然失败（目标不是活会话）', { self: h.ME })
+        await new Promise((r) => setTimeout(r, 80))
+        const disk = h.read()
+        const closed = (disk.closed ?? []).find((w) => w.target === 'session-sl-dead')
+        const hasRefused = closed !== undefined && typeof closed.refusedAt === 'number'
+          && typeof closed.refusedWhy === 'string' && closed.refusedWhy !== ''
+        /**
+         * ⚠ **拒收必须"不进 pending"**：既有语义是"没送出去就不该等回传"。
+         *   ⇒ 若它出现在 `pending` 里，就说明本包把派发语义改坏了。
+         */
+        const notPending = (disk.pending ?? []).every((w) => w.target !== 'session-sl-dead')
+        const rendered = await h.render()
+        const line = rendered.split('\n').find((l) => l.includes('拒收：') && !l.includes('0 条')) ?? ''
+        const shownCounted = /拒收：\s*1\s*条/.test(line)
+        const namesReason = rendered.includes('is not a live session')
+        if (d?.ok === false && hasRefused && notPending && shownCounted && namesReason) {
+          ok('SU-a ✓ **`拒收` 有一条真实发生路径**：投递实现明确说"目标接不了活"（真 `bus.deliver`，'
+            + '非活会话 + 无唤醒能力）⇒ 记录落进"有结论"那一摞（⛔ **不进** `pending`：没送出去就不该等回传，'
+            + '既有语义未动）· 读数面 `拒收：1 条` 并**点名投递实现的原话**' + smTag)
+        } else {
+          bad('SU-a 【`拒收` 没有接到"投递明确失败"上】：dispatch.ok=' + String(d?.ok)
+            + ` · 盘上有 refusedAt/refusedWhy=${hasRefused} · 不在 pending=${notPending}`
+            + ` · 读数 ` + `拒收：1 条=${shownCounted} · 带失败原话=${namesReason}`)
+        }
+      }
+    } finally { h.cleanup() }
+  }
+
+  // SU-a(反证)：把"投递失败 ⇒ 记拒收"那一步摘掉 ⇒ 必须见红
+  {
+    const dir = mkdtempSync(join(smTmp, 'mut-refuse-'))
+    try {
+      try { (await import('node:fs')).cpSync(join(smRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+      try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+      try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+      const src = readFileSync(join(smRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+      /**
+       * ⚠⚠ **包 J 3.4 之后，这里的长相变了**（三分类）：`refusalReasonOf(why)` 不再被直接调，
+       *   而是经 `classifyDeliveryFailure(why)` ⇒ 靶子换成**分类那一行**
+       *   （把它改成"永不命中"⇒ 拒收那一支就不记账）。
+       *   ⚠ 断言的**判据一个字未改**（"盘上有没有 refusedAt"），只换实现锚点。
+       */
+      const anchor2 = 'const cls = classifyDeliveryFailure(why)'
+      if (!src.includes(anchor2)) {
+        bad('SU-a(反证) 【失去靶子】`orchestrator.ts` 里找不到 `classifyDeliveryFailure(why)`'
+          + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+      } else {
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        writeFileSync(mut, src.replace(anchor2,
+          "const cls = { cls: 'undelivered' as DeliveryFailureClass, why } /* 变异：分类永远不命中拒收 */"), 'utf8')
+        const m = await import(p2u(mut).href)
+        const h = smHost({ prefix: 'refuse-mut-', targets: ['session-sl-dead2'], gone: ['session-sl-dead2'] })
+        try {
+          /** ⚠ 用变异体的 `apply` 装宿主（bus 仍是真实现）。 */
+          const prov = {}
+          const ctx = {
+            sessions: h.sessions, agents: h.agents, logger: { debug() {}, info() {}, warn() {} },
+            get: (k) => (k === 'sessions' ? h.sessions : k === 'agents' ? h.agents
+              : k === 'hobBus' ? undefined : k === 'loader'
+                ? { entries: () => [{ options: { config: { ledgerHome: h.home } } }] }
+                : undefined),
+            provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+            inject: (_d, cb) => cb(ctx), on: () => {},
+          }
+          m.apply(ctx)
+          if (prov.hobOrchestrator === undefined) {
+            bad('SU-a(反证) 变异体装不出 `hobOrchestrator`（不按通过处理）')
+          } else {
+            await prov.hobOrchestrator.dispatch('session-sl-dead2', 'x', { self: h.ME })
+            await new Promise((r) => setTimeout(r, 80))
+            const c2 = (h.read().closed ?? []).find((w) => w.target === 'session-sl-dead2')
+            if (c2 === undefined || typeof c2.refusedAt !== 'number') {
+              ok('SU-a(反证) ✓ 负向对拍：摘掉"投递失败 ⇒ 记拒收"那一步 ⇒ 盘上**没有** refusedAt'
+                + '（那条根本不进任何一档）⇒ SU-a 真的长在实现上，不是摆设')
+            } else {
+              bad('SU-a(反证) 【负向对拍失败】摘掉之后仍记了拒收 ⇒ SU-a 咬不住真缺陷')
+            }
+          }
+        } finally { h.cleanup() }
+      }
+    } catch (e) {
+      bad(`SU-a(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+    } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SU-b · `要澄清` 由**回传正文的"待决问题"段非空**推出
+  // ══════════════════════════════════════════════════════════════
+  if (smStateMod !== undefined) {
+    const real = '## 待决问题\n哪个模型给哪个席位还没定，需要你拍板。\n\n## 下一步\n等答复。'
+    const empty = '## 待决问题\n（无）\n\n## 下一步\n收工。'
+    const blank = '## 待决问题\n   \n## 下一步\n收工。'
+    const na = '### 5. 待决问题\nN/A\n'
+    const numbered = '## 5. 待决问题\n要不要顺带改文案？\n'
+    const g = (t) => (smStateMod.clarifySectionOf === undefined ? '<无此函数>' : smStateMod.clarifySectionOf(t))
+    const okReal = typeof g(real) === 'string' && g(real).includes('哪个模型')
+    const okEmpty = g(empty) === undefined
+    const okBlank = g(blank) === undefined
+    const okNa = g(na) === undefined
+    const okNumbered = typeof g(numbered) === 'string' && g(numbered).includes('顺带改文案')
+    const okNone = g('（这段里根本没有待决问题段）') === undefined
+    if (okReal && okEmpty && okBlank && okNa && okNumbered && okNone) {
+      ok('SU-b ✓ **`要澄清` 由回传正文推出**（`clarifySectionOf` 唯一实现点）：'
+        + '真有内容 ⇒ 取到原文；`（无）` / 空白 / `N/A` / 无该段 ⇒ **判为无**'
+        + ' —— ⚠ 这层"占位词算空"是必需的：不判它，九成回传都会变成"要澄清"，那一档立刻失去分辨力' + smTag)
+    } else {
+      bad('SU-b 【`要澄清` 的判据不对】：真内容=' + String(okReal) + `（应 true） · 占位"（无）"=`
+        + String(okEmpty) + '（应 true=判为无） · 空白=' + String(okBlank) + ' · N/A=' + String(okNa)
+        + ' · 编号标题=' + String(okNumbered) + ' · 无该段=' + String(okNone))
+    }
+  }
+
+  // SU-b(反证)：不滤占位词 ⇒ "（无）" 也被当成"要澄清"
+  {
+    const src = smStateMod === undefined ? '' : readFileSync(join(smRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
+    const anchor3 = "if (PLACEHOLDERS.has(bare.toLowerCase())) return undefined"
+    if (!src.includes(anchor3)) {
+      bad('SU-b(反证) 【失去靶子】`orch-state.ts` 里找不到占位词那一判'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(smTmp, 'mut-clarify-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(smRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'server', 'orch-state.ts')
+        writeFileSync(mut, src.replace(anchor3, '/* 变异：不滤占位词 */'), 'utf8')
+        const m = await import(p2u(mut).href)
+        const got = m.clarifySectionOf('## 待决问题\n（无）\n\n## 下一步\n收工。')
+        if (got !== undefined) {
+          ok('SU-b(反证) ✓ 负向对拍：摘掉占位词那一判 ⇒ `## 待决问题` 只写「（无）」也**被当成要澄清**'
+            + `（判出 "${String(got).slice(0, 20)}"）⇒ SU-b 的"占位算空"真的接在实现上`)
+        } else {
+          bad('SU-b(反证) 【负向对拍失败】摘掉占位判之后仍判为无 ⇒ SU-b 咬不住真缺陷')
+        }
+      } catch (e) {
+        bad(`SU-b(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SU-c · `已验收` / `已退回` 由**判决**推出，且**必须带依据**
+  // ══════════════════════════════════════════════════════════════
+  if (smOrchMod !== undefined && smBusMod !== undefined) {
+    /**
+     * ⚠ 种子**不能带 `deliveredAt`**：那是"回执已送到"的完成态，`apply()` 的就绪对账
+     *   会当场把它挪出 `pending`（既有语义，⛔ 不是缺陷）⇒ 判决就找不到靶子了。
+     *   本档要的只是"盘上有一条属于我的记录" ⇒ 用 `deliveryAttemptAt`（已投递未确认）。
+     */
+    const seed = {
+      version: 1, updatedAt: 1, handoffs: [], lost: [], closed: [],
+      pending: [{
+        target: 'session-sl-judge', watcher: 'session-sl-me', at: 1, sawRunning: true,
+        owner: 'session-sl-me', deliveryAttemptAt: 3, settleState: 'waiting',
+      }],
+    }
+    const h = smHost({ prefix: 'judge-', targets: ['session-sl-judge'], seed })
+    try {
+      /**
+       * ⚠⚠ **改前那棵树根本没有 `judge`**（本包才加的入口）⇒ 直接调会**抛错崩溃**，
+       *   而不是"断言判红"。⚠ 崩溃会把整组后面的断言一起带走 ⇒ 读数变成"跑崩了"，
+       *   分不清是"改前确实缺这个入口"还是"我们的夹具写坏了"。
+       *   ⇒ 先判"入口在不在"：不在 ⇒ **本条当场判红并写明原因**（那正是改前的形态）。
+       */
+      if (typeof h.orch?.judge !== 'function') {
+        bad('SU-c 【判决入口不存在】⇒ `已验收` / `已退回` 没有任何写入路径（这正是改前的形态：'
+          + '盘上字段在，但没有任何一条路能把判决写进去 ⇒ 那两档恒为 0）')
+        throw { slSkip: true }
+      }
+      const noBasis = h.orch.judge({ self: h.ME, target: 'session-sl-judge', verdict: 'accepted', basis: [] })
+      const wsOnly = h.orch.judge({ self: h.ME, target: 'session-sl-judge', verdict: 'accepted', basis: ['  ', ''] })
+      const acceptR = h.orch.judge({
+        self: h.ME, target: 'session-sl-judge', verdict: 'accepted',
+        basis: ['check:orch 239/239 通过', 'git status 与基线逐字一致'],
+      })
+      await new Promise((r) => setTimeout(r, 40))
+      const afterAccept = (h.read().pending ?? []).find((w) => w.target === 'session-sl-judge')
+      const acceptedOk = acceptR.ok === true && acceptR.state === 'accepted'
+        && afterAccept !== undefined && typeof afterAccept.acceptedAt === 'number'
+        && Array.isArray(afterAccept.basis) && afterAccept.basis.length === 2
+      const rendered1 = await h.render()
+      const accLine = rendered1.split('\n').find((l) => l.includes('已验收：1 条')) ?? ''
+      const basisShown = rendered1.includes('依据 2 条读数') && rendered1.includes('check:orch 239/239 通过')
+      /** ② 再判"退回" ⇒ **必须换档**（两个判决互斥，⛔ 不许并存） */
+      const backR = h.orch.judge({
+        self: h.ME, target: 'session-sl-judge', verdict: 'sent-back',
+        basis: ['复跑失败 3 次，与它说的"全绿"矛盾'],
+      })
+      await new Promise((r) => setTimeout(r, 40))
+      const afterBack = (h.read().pending ?? []).find((w) => w.target === 'session-sl-judge')
+      const sentBackOk = backR.ok === true && backR.state === 'sent-back'
+        && afterBack !== undefined && typeof afterBack.sentBackAt === 'number'
+        && afterBack.acceptedAt === undefined
+      if (noBasis.ok === false && wsOnly.ok === false && acceptedOk && basisShown && sentBackOk) {
+        ok('SU-c ✓ **`已验收` / `已退回` 由判决推出、且必须带依据**：`basis: []`（含全空白）'
+          + ' ⇒ **拒绝落账**（⛔ 不许标一个词就算验收过）· 带 2 条读数 ⇒ 落 `acceptedAt` + `basis`，'
+          + '读数面印「依据 2 条读数：…」· 再判退回 ⇒ 换档且**抹掉** `acceptedAt`（两个判决互斥，⛔ 不并存）' + smTag)
+      } else {
+        bad('SU-c 【判决入口没有挡住"无依据"或两个判决会并存】：空 basis 被拒='
+          + String(noBasis.ok === false) + '（应 true） · 全空白 basis 被拒=' + String(wsOnly.ok === false)
+          + '（应 true） · 验收落账=' + String(acceptedOk) + ' · 读数带依据=' + String(basisShown)
+          + ' · 退回换档=' + String(sentBackOk))
+      }
+    } catch (e) {
+      /** ⚠ 哨兵（入口不存在）已经在上面判过红了 ⇒ 这里不再重复记一条。 */
+      if (e?.slSkip !== true) bad(`SU-c 跑不起来（${String(e?.message ?? e)}）`)
+    } finally { h.cleanup() }
+  }
+
+  // SU-c(反证)：放行空依据 ⇒ "已验收"变成可刷字段
+  {
+    const src = smOrchMod === undefined ? '' : readFileSync(join(smRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    const anchor4 = "if (basis === undefined) {"
+    if (!src.includes(anchor4)) {
+      bad('SU-c(反证) 【失去靶子】`orchestrator.ts` 里找不到 `if (basis === undefined)` 那道闸'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(smTmp, 'mut-basis-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(smRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        /** ⚠ 变异：把"空依据"换成一条**编造的**依据 ⇒ 判决会被放行（= 可刷字段的形态）。 */
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        writeFileSync(mut, src.replace(anchor4, "if (false as boolean) {"), 'utf8')
+        const m = await import(p2u(mut).href)
+        const seed2 = {
+          version: 1, updatedAt: 1, handoffs: [], lost: [], closed: [],
+          pending: [{
+            target: 'session-sl-judge2', watcher: 'session-sl-me', at: 1, sawRunning: true,
+            owner: 'session-sl-me', deliveryAttemptAt: 3, settleState: 'waiting',
+          }],
+        }
+        const h = smHost({ prefix: 'judge-mut-', targets: ['session-sl-judge2'], seed: seed2 })
+        try {
+          const prov = {}
+          const ctx = {
+            sessions: h.sessions, agents: h.agents, logger: { debug() {}, info() {}, warn() {} },
+            get: (k) => (k === 'sessions' ? h.sessions : k === 'agents' ? h.agents
+              : k === 'hobBus' ? undefined : k === 'loader'
+                ? { entries: () => [{ options: { config: { ledgerHome: h.home } } }] }
+                : undefined),
+            provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+            inject: (_d, cb) => cb(ctx), on: () => {},
+          }
+          m.apply(ctx)
+          if (prov.hobOrchestrator === undefined) {
+            bad('SU-c(反证) 变异体装不出 `hobOrchestrator`（不按通过处理）')
+          } else {
+            const r = prov.hobOrchestrator.judge({
+              self: h.ME, target: 'session-sl-judge2', verdict: 'accepted', basis: [],
+            })
+            if (r.ok === true) {
+              ok('SU-c(反证) ✓ 负向对拍：摘掉"空依据"那道闸 ⇒ **无依据的验收被放行**'
+                + '（这正是任务书明令不许造的可刷字段）⇒ SU-c 那道闸真的长在实现上')
+            } else {
+              bad('SU-c(反证) 【负向对拍失败】摘掉闸之后仍拒绝 ⇒ SU-c 咬不住真缺陷')
+            }
+          }
+        } finally { h.cleanup() }
+      } catch (e) {
+        bad(`SU-c(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SU-d · **判不出一律不动**（四态都不许变、⛔ 不许凭空造记录）
+  // ══════════════════════════════════════════════════════════════
+  if (smOrchMod !== undefined && smBusMod !== undefined) {
+    const seed3 = {
+      version: 1, updatedAt: 1, handoffs: [], lost: [], closed: [], pending: [],
+    }
+    const h = smHost({ prefix: 'undecidable-', targets: ['session-sl-other'], seed: seed3 })
+    try {
+      if (typeof h.orch?.judge !== 'function') {
+        bad('SU-d 【判决入口不存在】⇒ 无法验证"判不出一律不动"（改前形态：连入口都没有）')
+        throw { slSkip: true }
+      }
+      const before = readFileSync(h.file, 'utf8')
+      const r1 = h.orch.judge({ self: h.ME, target: 'session-sl-nobody', verdict: 'accepted', basis: ['随便一条'] })
+      const r2 = h.orch.judge({ self: h.ME, target: 'session-sl-other', verdict: 'accepted', basis: ['随便一条'] })
+      const r3 = h.orch.judge({ self: undefined, target: 'session-sl-other', verdict: 'accepted', basis: ['x'] })
+      await new Promise((r) => setTimeout(r, 40))
+      const after = readFileSync(h.file, 'utf8')
+      const unchanged = after === before
+      const disk = h.read()
+      const noClosed = (disk.closed ?? []).length === 0
+      const noNewPending = (disk.pending ?? []).length === 0
+      const rendered = await h.render()
+      const fourZero = ['要澄清', '已验收', '已退回', '拒收'].every((lb) => {
+        const idx = rendered.split('\n').findIndex((l) => l.includes(`· ${lb}：`))
+        return idx >= 0 && /0 条/.test(rendered.split('\n')[idx])
+      })
+      if (r1.ok === false && r2.ok === false && r3.ok === false
+        && unchanged && noClosed && noNewPending && fourZero) {
+        ok('SU-d ✓ **判不出一律不动**：判"盘上没有的 target" / 判"别人的 target" / 判不出"我是谁"'
+          + ' ⇒ 三种都**拒绝**，且盘上文件**逐字节未变**（⛔ 不新建记录、⛔ 不编一态），'
+          + '四档读数保持 0 条（`R4`：0 条也印「已读，确为 0」+ 前提）' + smTag)
+      } else {
+        bad('SU-d 【判不出时动了东西】：三种判不出的 ok=' + [r1.ok, r2.ok, r3.ok].join('/')
+          + '（应全 false） · 盘上逐字节未变=' + String(unchanged) + ' · 没新增 closed=' + String(noClosed)
+          + ' · 没新增 pending=' + String(noNewPending) + ' · 四态仍为 0=' + String(fourZero))
+      }
+    } catch (e) {
+      if (e?.slSkip !== true) bad(`SU-d 跑不起来（${String(e?.message ?? e)}）`)
+    } finally { h.cleanup() }
+  }
+
+  // SU-d(反证)：摘掉"判不出 ⇒ 拒绝"那道闸 ⇒ 必须**凭空造记录**
+  {
+    const src = smOrchMod === undefined ? '' : readFileSync(join(smRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    const anchor5 = "if (inMemory === undefined && disk === undefined) {"
+    if (!src.includes(anchor5)) {
+      bad('SU-d(反证) 【失去靶子】`orchestrator.ts` 里找不到"判不出 ⇒ 拒绝"那道闸'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(smTmp, 'mut-undecidable-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(smRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        /**
+         * ⚠⚠ **变异要摘两层，否则咬不到**（2026-10-27 · 包 P 之后实测，照实记）：
+         *   包 P 给 `judge` 加了**回读守卫**（盘上没写成功 ⇒ `ok:false`）。
+         *   ⇒ 只摘"判不出 ⇒ 拒绝"这一层时，变异体虽然越过了那道闸，
+         *     但**记录写不下去**（target 根本不在盘上）⇒ 盘上什么都不多
+         *     ⇒ 旧期望恒假、负向对拍**咬不到**它要验的那道闸（实测过一次）。
+         *   ⇒ 把**回读守卫也一并摘掉**，才回到"两道线都不设防"的形态，
+         *     那样才能证明"判不出 ⇒ 拒绝"这道闸**在它自己的位置上有牙**。
+         *   ⚠ ⛔ 这不是放宽断言：变异体更坏了，判据**没有变**（仍看"盘上是否凭空多一条"）。
+         */
+        const GUARD_RB = '        if (!persistedOnDisk) {'
+        let mutated = src.replace(anchor5, 'if (false as boolean) {')
+        if (mutated.includes(GUARD_RB)) {
+          mutated = mutated.replace(GUARD_RB, '        if (false as boolean) { /* 变异：回读守卫也摘掉 */')
+        } else {
+          /* 回读守卫不存在（旧版本）⇒ 只摘一层即够 */
+        }
+        writeFileSync(mut, mutated, 'utf8')
+        const m = await import(p2u(mut).href)
+        const seed4 = { version: 1, updatedAt: 1, handoffs: [], lost: [], closed: [], pending: [] }
+        const h = smHost({ prefix: 'undec-mut-', targets: ['session-sl-x'], seed: seed4 })
+        try {
+          const prov = {}
+          const ctx = {
+            sessions: h.sessions, agents: h.agents, logger: { debug() {}, info() {}, warn() {} },
+            get: (k) => (k === 'sessions' ? h.sessions : k === 'agents' ? h.agents
+              : k === 'hobBus' ? undefined : k === 'loader'
+                ? { entries: () => [{ options: { config: { ledgerHome: h.home } } }] }
+                : undefined),
+            provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+            inject: (_d, cb) => cb(ctx), on: () => {},
+          }
+          m.apply(ctx)
+          if (prov.hobOrchestrator === undefined) {
+            bad('SU-d(反证) 变异体装不出 `hobOrchestrator`（不按通过处理）')
+          } else {
+            const r = prov.hobOrchestrator.judge({
+              self: h.ME, target: 'session-sl-never-existed', verdict: 'accepted', basis: ['一条编造的依据'],
+            })
+            await new Promise((rr) => setTimeout(rr, 40))
+            const c = (h.read().closed ?? [])
+            const fabricated = c.some((w) => w.target === 'session-sl-never-existed')
+            /**
+             * ⚠⚠ **本档判据修正过一次，照实记**（2026-10-27 · 包 P 加了回读守卫之后）：
+             *   改前这里期望"变异之后 `judge` 会返回 `ok:true` 并且盘上凭空多一条"。
+             *   ⚠ 现在**包 P 的回读守卫**会在"盘上没写成功"时把 `ok` 压成 `false`
+             *   ⇒ 变异体虽然**越过了"判不出"那道闸**，但**仍然造不出记录**
+             *     （因为写回路径本身落不下去）⇒ 旧的期望恒假。
+             *   ⇒ **判据改成看"它有没有真的造出记录"**（那才是这条闸防的东西）：
+             *     变异之后**盘上凭空多了一条** ⇒ 闸真的长在实现上；
+             *     ⚠ 而 `r.ok` 不再作判据 —— 它已被另一层防线（回读守卫）接管，
+             *       拿它当判据会把两层的职责混成一件事。
+             */
+            /**
+             * ⚠⚠ **本档判据第二次修正，照实记（这是本包最该被记下的一条）**：
+             *   摘掉**两层**（判不出闸 + 回读守卫）之后实测：`r.ok` **变成 true**，
+             *   但**盘上仍然没有那条伪造记录** —— 因为"凭空造一条记录"这件事
+             *   **这个实现根本做不到**（`recordClosed` 需要从 `disk`/`inMemory` 拿 base，
+             *   两者皆无 ⇒ 它连一条都写不出）。
+             *   ⇒ **原判据"盘上凭空多一条"从一开始就是恒假的** —— 它绿了很多轮，
+             *     但**从来没验到它声称在验的东西**（典型的 `E-126`：只验一侧/验错对象）。
+             *   ⇒ 现在改成判**这道闸真正产出的那个可观测差异**：
+             *     · 有闸 ⇒ `ok:false` + 理由里有"判不出"；
+             *     · 无闸 ⇒ `ok:true`（**它在对一个不存在的 target 说成功**）。
+             *   ⚠ `ok` 从 false 变 true 就是这道闸的值 —— 这比"盘上多一条"更贴近它的职责。
+             */
+            const saysUndecidable = typeof r.reason === 'string' && r.reason.includes('判不出')
+            if (r.ok === true && !saysUndecidable) {
+              ok('SU-d(反证) ✓ 负向对拍：摘掉"判不出 ⇒ 拒绝"那道闸（**连同包 P 的回读守卫一并摘**，'
+                + '否则写不下去咬不到）⇒ 它会**对一个根本不存在的 target 返回 `ok:true`**'
+                + '（= 编一态）⇒ 那道闸真的长在实现上'
+                + ' ⚠ 顺带修正：原判据"盘上凭空多一条"**恒假**（该实现造不出记录），已换成本条')
+            } else {
+              bad('SU-d(反证) 【负向对拍失败】摘掉两层之后：'
+                + `ok=${String(r.ok)}（应 true） · 还在说"判不出"=${String(saysUndecidable)}`
+                + ' ⇒ SU-d 咬不住真缺陷')
+            }
+          }
+        } finally { h.cleanup() }
+      } catch (e) {
+        bad(`SU-d(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SU-e1 · 三对可分辨之一：**拒收 ≠ 在跑无回音**
+  // ══════════════════════════════════════════════════════════════
+  if (smStateMod !== undefined) {
+    const refused = { target: 'a', at: 1, refusedAt: 5, refusedWhy: 'x' }
+    const running = { target: 'b', at: 1, sawRunning: true, deliveryAttemptAt: 5 }
+    const deliveredNoRun = { target: 'c', at: 1, deliveryAttemptAt: 5 }
+    const s1 = smStateMod.dispatchStateOf(refused)
+    const s2 = smStateMod.dispatchStateOf(running)
+    const s3 = smStateMod.dispatchStateOf(deliveredNoRun)
+    /**
+     * ⚠ **"在跑无回音"落地是两档**：`running`（见过它跑）与 `delivered-unconfirmed`
+     *   （投过但没见过它跑）—— `D10` 的九态里没有合并的"在跑无回音"一档 ⇒ 两档都要
+     *   与 `refused` 不同，才算"这对外表不再一样"。
+     */
+    if (s1 === 'refused' && s2 !== 'refused' && s3 !== 'refused' && s2 !== s3) {
+      ok('SU-e1 ✓ **拒收 ≠ 在跑无回音**：`refused`=' + s1 + ' · 见过在跑=' + s2
+        + ' · 投过没见过跑=' + s3 + ' —— 三档互不相同（同一份记录带 `refusedAt` 就绝不被读成"在跑"）' + smTag)
+    } else {
+      bad('SU-e1 【拒收与在跑无回音仍会混】：refused=' + s1 + ' · running=' + s2 + ' · delivered-unconfirmed=' + s3)
+    }
+  }
+
+  // SU-e1(反证)：把「拒收」并回「执行中」⇒ 这一对当场塌陷
+  {
+    const src = smStateMod === undefined ? '' : readFileSync(join(smRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
+    const anchor6 = "if (typeof w.refusedAt === 'number') return 'refused'"
+    if (!src.includes(anchor6)) {
+      bad('SU-e1(反证) 【失去靶子】`orch-state.ts` 里找不到"拒收"那条判定（本负向对拍已对不上实现）')
+    } else {
+      const dir = mkdtempSync(join(smTmp, 'mut-pair1-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(smRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'server', 'orch-state.ts')
+        writeFileSync(mut, src.replace(anchor6, "if (typeof w.refusedAt === 'number') return 'running'"), 'utf8')
+        const m = await import(p2u(mut).href)
+        const s1 = m.dispatchStateOf({ target: 'a', at: 1, refusedAt: 5 })
+        const s2 = m.dispatchStateOf({ target: 'b', at: 1, sawRunning: true })
+        if (s1 === s2) {
+          ok(`SU-e1(反证) ✓ 负向对拍：把"拒收"并回"执行中" ⇒ 两档**当场塌成同一态**（都=${s1}）`
+            + ' ⇒「拒收 ≠ 在跑无回音」这一对真长牙')
+        } else {
+          bad(`SU-e1(反证) 【负向对拍失败】合并之后仍不同（${s1} vs ${s2}）`)
+        }
+      } catch (e) {
+        bad(`SU-e1(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SU-e2 · 三对可分辨之二：**要澄清 ≠ 已回传**
+  // ══════════════════════════════════════════════════════════════
+  if (smStateMod !== undefined) {
+    const clarify = { target: 'a', at: 1, deliveredAt: 9, clarifyAt: 7, clarifyWhy: '要你拍板' }
+    const returned = { target: 'b', at: 1, deliveredAt: 9 }
+    const s1 = smStateMod.dispatchStateOf(clarify)
+    const s2 = smStateMod.dispatchStateOf(returned)
+    if (s1 === 'needs-clarification' && s2 === 'returned' && s1 !== s2) {
+      ok('SU-e2 ✓ **要澄清 ≠ 已回传**：同一条记录**既已回传又带待决问题** ⇒ 读成 `needs-clarification`'
+        + '（`' + s1 + '`），而不是 `returned`（`' + s2 + '`）—— 优先级把"答完但要你拍板"顶在"答完了"之上' + smTag)
+    } else {
+      bad('SU-e2 【要澄清与已回传仍会混】：clarify=' + s1 + ' · returned=' + s2)
+    }
+  }
+
+  // SU-e2(反证)：把「要澄清」压到「已回传」之后 ⇒ 这一对塌陷
+  {
+    const src = smStateMod === undefined ? '' : readFileSync(join(smRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
+    const anchorC = "if (typeof w.clarifyAt === 'number') return 'needs-clarification'"
+    if (!src.includes(anchorC)) {
+      bad('SU-e2(反证) 【失去靶子】`orch-state.ts` 里找不到"要澄清"那条判定（本负向对拍已对不上实现）')
+    } else {
+      const dir = mkdtempSync(join(smTmp, 'mut-pair2-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(smRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'server', 'orch-state.ts')
+        /** ⚠ 变异 = 把它整行删掉（等于"要澄清"这一档不再参与优先级）⇒ 落到 `returned`。 */
+        writeFileSync(mut, src.replace(anchorC, '/* 变异：删掉"要澄清"这一档 */'), 'utf8')
+        const m = await import(p2u(mut).href)
+        const s1 = m.dispatchStateOf({ target: 'a', at: 1, deliveredAt: 9, clarifyAt: 7 })
+        const s2 = m.dispatchStateOf({ target: 'b', at: 1, deliveredAt: 9 })
+        if (s1 === s2) {
+          ok(`SU-e2(反证) ✓ 负向对拍：删掉"要澄清"那一档 ⇒ 两档**当场塌成同一态**（都=${s1}）`
+            + ' ⇒「要澄清 ≠ 已回传」这一对真长牙')
+        } else {
+          bad(`SU-e2(反证) 【负向对拍失败】删掉之后仍不同（${s1} vs ${s2}）`)
+        }
+      } catch (e) {
+        bad(`SU-e2(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SU-e3 · 三对可分辨之三：**已退回 ≠ 已验收**
+  // ══════════════════════════════════════════════════════════════
+  if (smStateMod !== undefined) {
+    const both = { target: 'a', at: 1, deliveredAt: 9, acceptedAt: 11, sentBackAt: 12, basis: ['x'] }
+    const acc = { target: 'b', at: 1, deliveredAt: 9, acceptedAt: 11, basis: ['x'] }
+    const back = { target: 'c', at: 1, deliveredAt: 9, sentBackAt: 12, basis: ['x'] }
+    const s1 = smStateMod.dispatchStateOf(both)
+    const s2 = smStateMod.dispatchStateOf(acc)
+    const s3 = smStateMod.dispatchStateOf(back)
+    if (s1 === 'sent-back' && s2 === 'accepted' && s3 === 'sent-back' && s1 !== s2) {
+      ok('SU-e3 ✓ **已退回 ≠ 已验收**：只验收 ⇒ `accepted` · 只退回 ⇒ `sent-back` · '
+        + '**两个标记并存**（历史脏数据）⇒ 读成 `sent-back`（优先级 已退回 > 已验收）—— '
+        + '⚠ 并存时**说得出哪一个成立**，⛔ 不许两行同时非 0' + smTag)
+    } else {
+      bad('SU-e3 【已退回与已验收仍会混】：两个都在=' + s1 + ' · 只验收=' + s2 + ' · 只退回=' + s3)
+    }
+  }
+
+  // SU-e3(反证)：把「已退回」与「已验收」并成一档 ⇒ 这一对塌陷
+  {
+    const src = smStateMod === undefined ? '' : readFileSync(join(smRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
+    const anchorB = "if (typeof w.sentBackAt === 'number') return 'sent-back'"
+    if (!src.includes(anchorB)) {
+      bad('SU-e3(反证) 【失去靶子】`orch-state.ts` 里找不到"已退回"那条判定（本负向对拍已对不上实现）')
+    } else {
+      const dir = mkdtempSync(join(smTmp, 'mut-pair3-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(smRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'server', 'orch-state.ts')
+        writeFileSync(mut, src.replace(anchorB, "if (typeof w.sentBackAt === 'number') return 'accepted'"), 'utf8')
+        const m = await import(p2u(mut).href)
+        const s1 = m.dispatchStateOf({ target: 'a', at: 1, deliveredAt: 9, sentBackAt: 12 })
+        const s2 = m.dispatchStateOf({ target: 'b', at: 1, deliveredAt: 9, acceptedAt: 11 })
+        if (s1 === s2) {
+          ok(`SU-e3(反证) ✓ 负向对拍：把"已退回"并成"已验收" ⇒ 两档**当场塌成同一态**（都=${s1}）`
+            + ' ⇒「已退回 ≠ 已验收」这一对真长牙')
+        } else {
+          bad(`SU-e3(反证) 【负向对拍失败】合并之后仍不同（${s1} vs ${s2}）`)
+        }
+      } catch (e) {
+        bad(`SU-e3(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SU-f · `R7` 前提句改了口径：0 条时**仍要给**前提，但⛔ **不许**说"因为没人能写"
+  // ══════════════════════════════════════════════════════════════
+  if (smStateMod !== undefined) {
+    const P = smStateMod.DISPATCH_STATE_PREMISE ?? {}
+    const four = ['needs-clarification', 'accepted', 'sent-back', 'refused']
+    const allHave = four.every((k) => typeof P[k] === 'string' && P[k] !== '')
+    /**
+     * ⚠ **这一条是本包第 4 件的核心**：四态能被写入之后，
+     *   "恒为 0 因为没人能写"这句话**已经不成立** ⇒ ⛔ 不许还留着。
+     */
+    const banned = [/没有.{0,8}(写入)?入口/, /没人能写/, /还没有.{0,6}工具/, /无法写入/]
+    const stillStale = four.filter((k) => banned.some((re) => re.test(String(P[k] ?? ''))))
+    /**
+     * ⚠ ⚠ **前提必须说清"0 条意味着什么"**（`R4`）：只删掉旧理由、不给新解释，
+     *   等于把空态又变成哑的。判据 = 四条里每条都要有"0 条意味着"这一句。
+     */
+    const explains = four.every((k) => /0 条意味着/.test(String(P[k] ?? '')))
+    if (allHave && stillStale.length === 0 && explains) {
+      ok('SU-f ✓ **`R7` 前提句跟着改了口径**：四态在 0 条时**仍然给前提**（`R4`：空态不许说成没发生），'
+        + '但四条里**都不再出现**"没有入口 / 没人能写"（那个理由已过期），'
+        + '而是逐条说清「0 条意味着什么、什么情况下它会非 0」' + smTag)
+    } else {
+      bad('SU-f 【`R7` 前提句口径不对】：四条都有前提=' + String(allHave)
+        + ' · 仍留着"没人能写"的=' + (stillStale.length === 0 ? '无' : stillStale.join('/'))
+        + ' · 逐条说清"0 条意味着"=' + String(explains))
+    }
+  }
+
+  // SU-f(反证)：把前提句改回"因为没有写入入口" ⇒ 必须见红
+  {
+    const src = smStateMod === undefined ? '' : readFileSync(join(smRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
+    const anchorP = 'export const DISPATCH_STATE_PREMISE'
+    if (!src.includes(anchorP)) {
+      bad('SU-f(反证) 【失去靶子】`orch-state.ts` 里找不到 `DISPATCH_STATE_PREMISE`（本负向对拍已对不上实现）')
+    } else {
+      const dir = mkdtempSync(join(smTmp, 'mut-premise-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(smRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        /** ⚠ 变异 = 把四条前提整块换成包 A 那句过期理由。 */
+        const start = src.indexOf(anchorP)
+        const end = src.indexOf('} as const', start)
+        const mut = join(dir, 'src', 'server', 'orch-state.ts')
+        writeFileSync(mut,
+          src.slice(0, start)
+          + 'export const DISPATCH_STATE_PREMISE = {\n'
+          + "  'needs-clarification': '⚠ 前提：本机还没有写入入口 ⇒ 恒为 0',\n"
+          + "  'accepted': '⚠ 前提：本机还没有写入入口 ⇒ 恒为 0',\n"
+          + "  'sent-back': '⚠ 前提：本机还没有写入入口 ⇒ 恒为 0',\n"
+          + "  'refused': '⚠ 前提：本机还没有写入入口 ⇒ 恒为 0',\n"
+          + src.slice(end), 'utf8')
+        const m = await import(p2u(mut).href)
+        const P = m.DISPATCH_STATE_PREMISE ?? {}
+        const stale = ['needs-clarification', 'accepted', 'sent-back', 'refused']
+          .filter((k) => /没有.{0,8}(写入)?入口/.test(String(P[k] ?? '')))
+        if (stale.length === 4) {
+          ok('SU-f(反证) ✓ 负向对拍：把前提句改回包 A 那句"本机还没有写入入口" ⇒ **四条全被判为过期**'
+            + ' ⇒ SU-f 真的在钉"这句话不许回来"，不是摆设')
+        } else {
+          bad('SU-f(反证) 【负向对拍失败】改回旧话术之后没有被识别（命中 ' + String(stale.length) + '/4）')
+        }
+      } catch (e) {
+        bad(`SU-f(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+
+  // ══════════════════════════════════════════════════════════════
+  try { rmSync(smTmp, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+}
+
+
+// ── SV. **包 J：真机两处矛盾 + 顺延五件**（2026-10-26）──
+//
+// ⚠ 本组守的八条（每条都配改前红；其中 `SV-c`/`SV-e`/`SV-f` 另配负向对拍）：
+//   · **SV-a**（真机矛盾 1）：`R7` 前提句里那句"被 selfExecuted 拦下"**与帧无关**时
+//     **不许暗示"帧到过"** —— 头行说"一帧都没收到过"时，这一句必须自证与帧无关；
+//   · **SV-b**（真机矛盾 2）：累计类读数**必须写明本代 / 跨代**，且行为与字样一致；
+//   · **SV-c** `D11` 0 条不展开三档 ⇒ **必须写明这是有意收敛**（不是漏了）；
+//   · **SV-d** `要澄清` 走**真 `settle()`** 整链（真回传正文 ⇒ 真记录态）；
+//   · **SV-e** 盘不可达 ⇒ 判决落**判不出**，⛔ 不落成任何一态；
+//   · **SV-f** 失败原因未命中关键词 ⇒ **独立一档**（拒收 / 未送达**都不许增加**）；
+//   · **SV-g** `closed` 满仓滚出**必须可见**（条数 + 最近滚出的是谁）；
+//   · **SV-h** 判决入口在有「已验收 / 已退回」时**必须披露怎么判**。
+{
+  const svRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_SA_ROOT !== ''
+    ? process.env.HOB_SA_ROOT
+    : root
+  const svTag = svRoot === root ? '' : `（源码树=${svRoot}）`
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { basename } = await import('node:path')
+  const p2u = (await import('node:url')).pathToFileURL
+  let svTmp
+  try { svTmp = mkdtempSync(join(tmpdir(), 'hob-svcheck-')) } catch { svTmp = tmpdir() }
+
+  let svOrchMod, svStateMod, svBusMod
+  try { svOrchMod = await import(p2u(join(svRoot, 'src', 'modules', 'orchestrator.ts')).href) }
+  catch (e) { bad(`SV 无法加载 orchestrator（${String(e?.message ?? e)}）⇒ 本组失去基准（不按通过处理）`) }
+  try { svStateMod = await import(p2u(join(svRoot, 'src', 'server', 'orch-state.ts')).href) }
+  catch (e) { bad(`SV 无法加载 orch-state（${String(e?.message ?? e)}）⇒ 判据失去基准（不按通过处理）`) }
+  try { svBusMod = await import(p2u(join(svRoot, 'src', 'modules', 'bus.ts')).href) }
+  catch (e) { bad(`SV 无法加载 bus（${String(e?.message ?? e)}）⇒ 拒收/未归类路径失去基准（不按通过处理）`) }
+
+  const svRender = async (orchLike, me = 'session-sv-me') => String(
+    await svOrchMod.createHobOrchTools(orchLike).status.execute({}, {
+      agent: { id: me, session: { header: { cwd: svTmp } } },
+    }),
+  )
+  const svOrchOf = (over = {}) => ({
+    status: () => ({
+      stopped: false, watches: [], relaysDone: 0, relaysBlocked: 0,
+      lostPending: 0, lostByClass: { running: 0, idle: 0, unknown: 0 },
+      settleByState: { waiting: 0, unresolved: 0, stuck: 0 }, stuckCount: 0,
+      handoffs: [], reachability: 'ok', others: { note: '他人的（不可见明细）', watches: 0 },
+      unownedWatches: 0, pendingDisk: [], closedDisk: [],
+      ...over.status,
+    }),
+    cardsOf: async () => ({ cards: [], reachability: 'no-cards' }),
+    deliveryLedger: async () => ({ entries: [], total: 0, reachability: 'no-cards' }),
+    dispatchWakeState: () => ({
+      registered: 0, pending: 0, wokeCount: 0, undecidableCount: 0, pushedRegisterOk: 0,
+      pushRegisterIssues: 0, firingSeen: 0, firedBlockedCount: 0, firingNoSubscriberCount: 0,
+      ownerUnknownCount: 0, undeliverableCount: 0, stoppedCount: 0,
+      ownerUnknownRegistered: 0, othersOnly: 0,
+      ...over.dispatchWake,
+    }),
+    wakeState: () => ({
+      conn: 'idle', wokeCount: 0, noSubscriberCount: 0, legacyTargetCount: 0,
+      redeliverOwnerUnknownCount: 0, undeliveredCount: 0, redeliveredCount: 0,
+      selfExecutedCount: 0, stoppedCount: 0, seenCount: 0,
+      ...over.wake,
+    }),
+    ...over.extra,
+  })
+
+  /**
+   * 造一台**真 `apply` 的宿主**（session/agent 是假对象；台账与总线是真题）。
+   * ⚠ 故意**不给 `sessionController`** ⇒ 投非活会话必然明确失败（真实现场）。
+   */
+  const svHost = (opts = {}) => {
+    const base = mkdtempSync(join(svTmp, opts.prefix ?? 'h-'))
+    const home = join(base, 'ledgers'); const ws = join(base, 'ws')
+    mkdirSync(join(ws, 'runtime'), { recursive: true })
+    mkdirSync(join(home, basename(ws), 'runtime'), { recursive: true })
+    const file = join(home, basename(ws), 'runtime', 'orch-watches.json')
+    if (opts.seed !== undefined) writeFileSync(file, JSON.stringify(opts.seed), 'utf8')
+    const ME = opts.me ?? 'session-sv-me'
+    const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: opts.logOf?.(id) ?? [] })
+    const ids = [ME, ...(opts.targets ?? [])]
+    const byId = new Map(ids.map((i) => [i, mkS(i)]))
+    const sessions = {
+      get: (i) => (opts.gone?.includes(i) ? undefined : byId.get(i)),
+      list: () => [...byId.values()], flush: async () => true,
+    }
+    const stMap = new Map(ids.map((i) => [i, opts.statusOf?.(i) ?? 'idle']))
+    const agents = {
+      currentInitiator: () => undefined,
+      get: (i) => (opts.gone?.includes(i) ? undefined : (stMap.has(i) ? {
+        id: i, status: stMap.get(i), ctx: {}, session: byId.get(i),
+        followup() {}, steer() {}, inject() {},
+      } : undefined)),
+    }
+    const bp = {}
+    const bc = {
+      sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+      get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+      : undefined),
+      provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+      inject: (_d, cb) => cb(bc), on: () => {},
+    }
+    svBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+    const bus = bp.hobBus
+    if (opts.patchBus !== undefined) opts.patchBus(bus)
+    const evHandlers = []
+    const prov = {}
+    const cards = opts.cards ?? []
+    const registry = new Map([
+      ['taskboard_get', { execute: async (a) => ({ task: cards.find((c) => c.id === a?.id) ?? {} }) }],
+      ['taskboard_list', { execute: async () => ({ revision: 1, tasks: cards }) }],
+    ])
+    const ctx = {
+      sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+      get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+        : k === 'tools' ? (opts.toolsBroken === true ? (() => { throw new Error('objective: 工具注册表读不到') })() : { get: (n) => registry.get(n) })
+          : k === 'hobBus' ? bus : k === 'loader'
+            ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+            : undefined),
+      provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+      inject: (_d, cb) => cb(ctx),
+      on: (ev, h) => { if (ev === 'agent/status') evHandlers.push(h); return () => {} },
+    }
+    svOrchMod.apply(ctx)
+    return {
+      base, home, ws, file, ME, sessions, agents, stMap, evHandlers, orch: prov.hobOrchestrator,
+      read: () => { try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return { pending: [], closed: [] } } },
+      render: async () => String(await svOrchMod.createHobOrchTools(prov.hobOrchestrator).status.execute({}, {
+        agent: { id: ME, session: { header: { cwd: ws } } },
+      })),
+      cleanup: () => { try { rmSync(base, { recursive: true, force: true }) } catch { /* 忽略 */ } },
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-a · 真机矛盾 1：前提句不许与"一帧都没收到过"打架
+  // ══════════════════════════════════════════════════════════════
+  {
+    /** 形态 = 真机：`firingSeen=0` 但 `selfExecutedGated=1`（来自**读卡面**，与帧无关）。 */
+    const rendered = await svRender(svOrchOf({
+      dispatchWake: {
+        firingSeen: 0, firingNoSubscriberCount: 0,
+        premise: { selfExecutedGated: 1, ownersChecked: 0, ownersAlive: 0, ownersGone: 0 },
+      },
+    }))
+    const head = rendered.split('\n').find((l) => l.startsWith('实施会话叫醒面')) ?? ''
+    const prem = rendered.split('\n').find((l) => l.includes('这一档为什么是 0')) ?? ''
+    /** ① 头行确实说"一帧都没收到过"（这是真机那句） */
+    const headSaysNoFrame = head.includes('一帧都没收到过')
+    /**
+     * ② **矛盾判据**：既说"没收到帧"、又说"有 1 次被准入拦下"，这一句**必须自证与帧无关**
+     *   —— 否则就是同屏自相矛盾（读者会推出"帧到过"）。
+     */
+    const selfDeclaresNoFrame = /这一档与"点火帧"无关/.test(prem)
+    const saysBothTrue = /不是同一件事/.test(prem)
+    if (headSaysNoFrame && selfDeclaresNoFrame && saysBothTrue) {
+      ok('SV-a ✓ **真机矛盾 1 修好了**：头行说「一帧都没收到过」时，'
+        + '前提句里那句"被 `selfExecuted` 拦下"**自证与点火帧无关**'
+        + '（明写它来自"读卡面时看到的卡"、且"两句可以同时为真"）'
+        + ' ⇒ ⛔ 不再让读者推出"帧到过"' + svTag)
+    } else {
+      bad('SV-a 【前提句仍与"一帧都没收到过"打架】：头行说没收到帧='
+        + String(headSaysNoFrame) + ' · 前提自证与帧无关=' + String(selfDeclaresNoFrame)
+        + ' · 明说两句可同时为真=' + String(saysBothTrue)
+        + ` · 前提=${JSON.stringify(prem.slice(0, 200))}`)
+    }
+  }
+
+  // SV-a2 · **有帧时**不许说"与帧无关"（否则又把两件事混回去了）
+  {
+    const rendered = await svRender(svOrchOf({
+      dispatchWake: {
+        firingSeen: 1, firedBlockedCount: 1, firingNoSubscriberCount: 0,
+        premise: { selfExecutedGated: 1, ownersChecked: 0, ownersAlive: 0, ownersGone: 0 },
+      },
+    }))
+    const prem = rendered.split('\n').find((l) => l.includes('这一档为什么是 0')) ?? ''
+    const saysWithFrame = /其中发生在点火帧到达时的/.test(prem)
+    const notClaimsNoFrame = !/这一档与"点火帧"无关/.test(prem)
+    if (saysWithFrame && notClaimsNoFrame) {
+      ok('SV-a2 ✓ 反向对照：**确有帧到达**时（`firingSeen>0`）⇒ 前提句改说'
+        + '「其中发生在点火帧到达时的」，⛔ 不再说"与帧无关"（两件事仍分得开）')
+    } else {
+      bad('SV-a2 【有帧时仍说"与帧无关"或没说"其中"】：说"其中"=' + String(saysWithFrame)
+        + ' · 没说"无关"=' + String(notClaimsNoFrame))
+    }
+  }
+
+  // SV-a(反证)：把"与帧无关"那句摘掉 ⇒ 矛盾回来
+  {
+    const src = svOrchMod === undefined ? '' : readFileSync(join(svRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    const GUARD = "            const framesProven = (typeof d.firingSeen === 'number' && d.firingSeen > 0)"
+    if (!src.includes(GUARD)) {
+      bad('SV-a(反证) 【失去靶子】`orchestrator.ts` 里找不到 `framesProven` 那一判'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(svTmp, 'mut-sva-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        /** ⚠ 变异：`framesProven` 恒真 ⇒ 前提句永远说"其中发生在帧到达时" ⇒ 无帧时又变成矛盾。 */
+        writeFileSync(mut, src.replace(GUARD,
+          "            const framesProven = true /* 变异：恒认为帧到过 */"), 'utf8')
+        const m = await import(p2u(mut).href)
+        const r2 = String(await m.createHobOrchTools(svOrchOf({
+          dispatchWake: {
+            firingSeen: 0, firingNoSubscriberCount: 0,
+            premise: { selfExecutedGated: 1, ownersChecked: 0, ownersAlive: 0, ownersGone: 0 },
+          },
+        })).status.execute({}, { agent: { id: 'session-sv-me', session: { header: { cwd: svTmp } } } }))
+        const p2 = r2.split('\n').find((l) => l.includes('这一档为什么是 0')) ?? ''
+        if (!/这一档与"点火帧"无关/.test(p2)) {
+          ok('SV-a(反证) ✓ 负向对拍：让 `framesProven` 恒真 ⇒ 无帧时前提句**又说"其中发生在帧到达时"**'
+            + '（= 真机那句矛盾重现）⇒ SV-a 那道判据真的长在实现上')
+        } else {
+          bad('SV-a(反证) 【负向对拍失败】变异之后前提句仍自证与帧无关 ⇒ SV-a 咬不住真缺陷')
+        }
+      } catch (e) {
+        bad(`SV-a(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-b · 真机矛盾 2：「累计」必须写明本代 / 跨代
+  // ══════════════════════════════════════════════════════════════
+  {
+    const rendered = await svRender(svOrchOf({ status: { relaysDone: 3, relaysBlocked: 1 } }))
+    const lines = rendered.split('\n')
+    const cum = lines.find((l) => l.includes('已回传：')) ?? ''
+    const scopeLine = lines.find((l) => l.includes('本代累计')) ?? ''
+    const recordHead = lines.find((l) => l.includes('派发记录态')) ?? ''
+    /** ① 既有 C3 那一行**一个字未改**（仓库纪律：加行不改行） */
+    const legacyIntact = cum.includes('已回传：3 次 · 被停闸拦下：1 次')
+    /** ② 必须有一行说清这三个数是本代 */
+    const saysThisGen = scopeLine.includes('本代累计') && scopeLine.includes('重启就归零')
+    /** ③ 并且必须说清下面那块是跨代（否则两个量纲会被当成一件事） */
+    const recordSaysCrossGen = recordHead.includes('跨代')
+    if (legacyIntact && saysThisGen && recordSaysCrossGen) {
+      ok('SV-b ✓ **「累计」写明了本代 / 跨代**：`已回传 / 被停闸拦下 / 已叫醒` 明确标注'
+        + '「**本代累计，宿主一重启就归零**」· 而「派发记录态」那块标注「**跨代**（读盘上记录）」'
+        + ' —— ⚠ 既有那行`已回传：…` 逐字未改（仓库纪律：加行不改行）' + svTag)
+    } else {
+      bad('SV-b 【累计没写本代/跨代，或既有行被改了】：既有行原样='
+        + String(legacyIntact) + ' · 有"本代累计"说明=' + String(saysThisGen)
+        + ' · 记录态标了跨代=' + String(recordSaysCrossGen)
+        + ` · 行=${JSON.stringify(scopeLine.slice(0, 120))}`)
+    }
+  }
+
+  // SV-b(反证)：把"本代"那句摘掉 ⇒ 读者又会当历史累计
+  {
+    const src = svOrchMod === undefined ? '' : readFileSync(join(svRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    const GUARD = "'  ↳ ⚠ 上面这三个数（**已回传 / 被停闸拦下 / 已叫醒**）都是 **本代累计**：'"
+    if (!src.includes(GUARD)) {
+      bad('SV-b(反证) 【失去靶子】`orchestrator.ts` 里找不到"本代累计"那一行'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(svTmp, 'mut-svb-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        /** ⚠ 变异：把那行整句删掉（渲染层不再说本代）。 */
+        const i = src.indexOf(GUARD)
+        const j = src.indexOf('不许相加', i)
+        writeFileSync(mut, src.slice(0, i)
+          + "'  ↳ （变异：本行被摘掉）',\n"
+          + src.slice(src.indexOf(',', j) + 1), 'utf8')
+        const m = await import(p2u(mut).href)
+        const r2 = String(await m.createHobOrchTools(svOrchOf({ status: { relaysDone: 3 } }))
+          .status.execute({}, { agent: { id: 'session-sv-me', session: { header: { cwd: svTmp } } } }))
+        if (!/本代累计/.test(r2)) {
+          ok('SV-b(反证) ✓ 负向对拍：摘掉那行 ⇒ 渲染里**再也没有"本代"字样**'
+            + '（读者只能当历史累计 = 真机那次误读）⇒ SV-b 真的长在实现上')
+        } else {
+          bad('SV-b(反证) 【负向对拍失败】变异之后仍出现"本代" ⇒ SV-b 咬不住真缺陷')
+        }
+      } catch (e) {
+        bad(`SV-b(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-c · `D11` 0 条不展开三档 ⇒ 必须写明"有意"
+  // ══════════════════════════════════════════════════════════════
+  {
+    const rendered = await svRender(svOrchOf())
+    const line = rendered.split('\n').find((l) => l.includes('进度：0 条记录')) ?? ''
+    const next = rendered.split('\n')[rendered.split('\n').indexOf(line) + 1] ?? ''
+    const saysIntentional = next.includes('有意不展开') && next.includes('不是漏了')
+    if (line !== '' && saysIntentional) {
+      ok('SV-c ✓ **`D11` 0 条时不展开三档，且写明了这是有意收敛**：'
+        + '「0 条时**有意**不展开『有进展 / 停滞 / 还没进运行态』三档」+「**不是漏了那三档**」'
+        + ' ⇒ 真机那次"三档没出现"不再让人怀疑是缺陷' + svTag)
+    } else {
+      bad('SV-c 【0 条时没写明"有意收敛"】：有 `进度：0 条记录` 行='
+        + String(line !== '') + ' · 下一行点了"有意/不是漏了"=' + String(saysIntentional)
+        + ` · 下一行=${JSON.stringify(next.slice(0, 140))}`)
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-d · `要澄清` 走**真 `settle()`** 整链
+  // ══════════════════════════════════════════════════════════════
+  if (svOrchMod !== undefined && svBusMod !== undefined) {
+    const CLARIFY_TEXT = [
+      '## 它给出的结论', '做完了，但有一处要你定。', '',
+      '## 它改动的文件', '- src/x.ts', '',
+      '## 待决问题', '哪个模型给哪个席位还没定，需要你拍板。', '',
+      '## 下一步', '等答复。',
+    ].join('\n')
+    const PLACEHOLDER_TEXT = [
+      '## 它给出的结论', '做完了。', '',
+      '## 待决问题', '（无）', '',
+      '## 下一步', '收工。',
+    ].join('\n')
+    /**
+     * ⚠ 造一台**真 settle()**：目标先在 `running`，再跳 `idle` ⇒ 事件路径真结算。
+     *   ⚠ 回传正文由**目标会话的最后一条 assistant 文本**提供
+     *     （`buildReceipt` 读的就是它）⇒ 这里往它的 `log` 里塞一条。
+     */
+    const runOne = async (label, text) => {
+      const h = svHost({
+        prefix: label, targets: ['session-sv-worker'],
+        /** ⚠ 形状必须与 `lastAssistantEntry` 读的一致（`data.message.content[]` 里的 text 块）。 */
+        logOf: (id) => (id === 'session-sv-worker'
+          ? [{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text }] } } }]
+          : []),
+      })
+      try {
+        if (h.orch === undefined) return undefined
+        await h.orch.dispatch('session-sv-worker', `包 J：${label} 整链`, { self: h.ME })
+        await new Promise((r) => setTimeout(r, 80))
+        h.stMap.set('session-sv-worker', 'running')
+        for (const fn of h.evHandlers) await fn({ agent: { id: 'session-sv-worker' }, status: 'running' })
+        await new Promise((r) => setTimeout(r, 60))
+        h.stMap.set('session-sv-worker', 'idle')
+        for (const fn of h.evHandlers) await fn({ agent: { id: 'session-sv-worker' }, status: 'idle' })
+        await new Promise((r) => setTimeout(r, 200))
+        const rendered = await h.render()
+        const st = (() => {
+          const rec = rendered.split('\n').find((l) => l.includes('要澄清：') && !l.includes('0 条'))
+          const ret = rendered.split('\n').find((l) => l.includes('已回传：') && /[1-9]\s*条/.test(l))
+          return { clarify: rec !== undefined, returned: ret !== undefined, rendered }
+        })()
+        return st
+      } finally { h.cleanup() }
+    }
+    const withClarify = await runOne('clarify-real', CLARIFY_TEXT)
+    const withPlaceholder = await runOne('clarify-placeholder', PLACEHOLDER_TEXT)
+    if (withClarify === undefined || withPlaceholder === undefined) {
+      bad('SV-d 装不出 `hobOrchestrator` ⇒ `要澄清` 整链失去基准（不按通过处理）')
+    } else {
+      /**
+       * ⚠ **第一条**：真有内容 ⇒ 记录态必须是 `要澄清`；
+       * ⚠ **第二条**（反向）：只有占位 ⇒ 必须 `已回传`，⛔ 不许判成 `要澄清`。
+       */
+      if (withClarify.clarify && !withPlaceholder.clarify && withPlaceholder.returned) {
+        ok('SV-d ✓ **`要澄清` 的整链成立**（真 `settle()` + 真回传正文）：'
+          + '回传里「待决问题」有内容 ⇒ 记录态落 `要澄清`；'
+          + '只有占位「（无）」⇒ 落 `已回传`（⛔ 没被判成"要澄清"）' + svTag)
+      } else {
+        bad('SV-d 【`要澄清` 整链不成立】：真内容 ⇒ 判成要澄清='
+          + String(withClarify.clarify) + '（应 true） · 占位 ⇒ 判成要澄清='
+          + String(withPlaceholder.clarify) + '（应 false） · 占位 ⇒ 落已回传='
+          + String(withPlaceholder.returned) + '（应 true）')
+      }
+    }
+  }
+
+  // SV-d(反证)：摘掉 settle() 里那处接线 ⇒ 第一条塌回「已回传」
+  {
+    const src = svOrchMod === undefined ? '' : readFileSync(join(svRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    const GUARD = 'const clarify = clarifySectionOf(lastAssistantText(session))'
+    if (!src.includes(GUARD)) {
+      bad('SV-d(反证) 【失去靶子】`orchestrator.ts` 里找不到 `clarifySectionOf(lastAssistantText(session))`'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(svTmp, 'mut-svd-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const { cpSync, symlinkSync } = await import('node:fs')
+        cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
+        try { symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        writeFileSync(mut, src.replace(GUARD,
+          'const clarify = undefined as string | undefined /* 变异：摘掉"要澄清"接线 */'), 'utf8')
+        const m = await import(p2u(mut).href)
+        const h = svHost({
+          prefix: 'clarify-mut', targets: ['session-sv-worker'],
+          logOf: (id) => (id === 'session-sv-worker'
+            ? [{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '## 待决问题\n要不要顺带改文案？\n' }] } } }]
+            : []),
+        })
+        try {
+          const prov2 = {}
+          const ctx2 = {
+            sessions: h.sessions, agents: h.agents, logger: { debug() {}, info() {}, warn() {} },
+            get: (k) => (k === 'sessions' ? h.sessions : k === 'agents' ? h.agents
+              : k === 'hobBus' ? undefined : k === 'loader'
+                ? { entries: () => [{ options: { config: { ledgerHome: h.home } } }] }
+                : undefined),
+            provide: (k, v) => { prov2[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+            inject: (_d, cb) => cb(ctx2), on: (ev, fn) => { if (ev === 'agent/status') h.evHandlers.push(fn); return () => {} },
+          }
+          m.apply(ctx2)
+          if (prov2.hobOrchestrator === undefined) {
+            bad('SV-d(反证) 变异体装不出 `hobOrchestrator`（不按通过处理）')
+          } else {
+            await prov2.hobOrchestrator.dispatch('session-sv-worker', 'x', { self: h.ME })
+            await new Promise((r) => setTimeout(r, 80))
+            h.stMap.set('session-sv-worker', 'running')
+            for (const fn of h.evHandlers) await fn({ agent: { id: 'session-sv-worker' }, status: 'running' })
+            await new Promise((r) => setTimeout(r, 60))
+            h.stMap.set('session-sv-worker', 'idle')
+            for (const fn of h.evHandlers) await fn({ agent: { id: 'session-sv-worker' }, status: 'idle' })
+            await new Promise((r) => setTimeout(r, 200))
+            const r2 = String(await m.createHobOrchTools(prov2.hobOrchestrator).status.execute({}, {
+              agent: { id: h.ME, session: { header: { cwd: h.ws } } },
+            }))
+            const stillClarifies = r2.split('\n').some((l) => l.includes('要澄清：') && !l.includes('0 条'))
+            if (!stillClarifies) {
+              ok('SV-d(反证) ✓ 负向对拍：摘掉那处接线 ⇒ 真有"待决问题"的回传**塌回「已回传」**'
+                + '（`要澄清` 又变 0）⇒ SV-d 钉的接线真的在实现里')
+            } else {
+              bad('SV-d(反证) 【负向对拍失败】摘掉接线之后仍判「要澄清」⇒ SV-d 咬不住真缺陷')
+            }
+          }
+        } finally { h.cleanup() }
+      } catch (e) {
+        bad(`SV-d(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-e · 判不出的第四种：**盘不可达**
+  // ══════════════════════════════════════════════════════════════
+  if (svOrchMod !== undefined && svBusMod !== undefined) {
+    const h = svHost({ prefix: 'unreach-', targets: ['session-sv-x'] })
+    try {
+      if (h.orch === undefined) {
+        bad('SV-e 装不出 `hobOrchestrator`（不按通过处理）')
+      } else {
+        /**
+         * ⚠ 造"盘不可达"：把**账本根**整个删掉（`readOrchStateDetailed` 判
+         *   `ledger-unreachable`），⛔ 不是删那一个文件（那是 `no-records-yet`，属另一种）。
+         */
+        rmSync(h.home, { recursive: true, force: true })
+        const r = h.orch.judge({ self: h.ME, target: 'session-sv-x', verdict: 'accepted', basis: ['一条依据'] })
+        const saysUnreachable = typeof r.reason === 'string'
+          && (r.reason.includes('读不到账本') || r.reason.includes('盘不可达'))
+        const notAnyState = r.state === undefined && r.ok === false
+        if (notAnyState && saysUnreachable) {
+          ok('SV-e ✓ **盘不可达 ⇒ 判决落「判不出」**：账本根被整个拿掉之后，'
+            + '判决被拒且理由明说「**读不到账本**（该查磁盘/权限，⛔ 不是"目标标错了"）」'
+            + ' —— ⛔ 没有落成 已验收 / 已退回 / 拒收 任何一态' + svTag)
+        } else {
+          bad('SV-e 【盘不可达时判成了某一态 / 或与"没有这条记录"混了】：ok='
+            + String(r.ok) + ' · state=' + String(r.state) + ' · 明说读不到账本='
+            + String(saysUnreachable) + ` · reason=${JSON.stringify(String(r.reason ?? '').slice(0, 140))}`)
+        }
+      }
+    } finally { h.cleanup() }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-f · 失败原因未命中关键词 ⇒ **独立一档**（拒收 / 未送达都不许增加）
+  // ══════════════════════════════════════════════════════════════
+  if (svStateMod !== undefined) {
+    const cls = (x) => (typeof svStateMod.classifyDeliveryFailure === 'function'
+      ? svStateMod.classifyDeliveryFailure(x) : undefined)
+    const refusedSample = cls('session "x" is not a live session; only live sessions can receive; ...')
+    const transportSample = cls('message-build-failed: boom')
+    const unknownSample = cls('objective: 宿主换了句我们没见过的话术')
+    const emptySample = cls('')
+    const okAll = refusedSample?.cls === 'refused'
+      && transportSample?.cls === 'undelivered'
+      && unknownSample?.cls === 'unclassified'
+      && emptySample?.cls === 'unclassified'
+    /** ⚠ 原话必须原样带出（⛔ 不许只留分类丢掉原话） */
+    const keepsRaw = unknownSample?.why === 'objective: 宿主换了句我们没见过的话术'
+    if (okAll && keepsRaw) {
+      ok('SV-f ✓ **失败原因三分类**：结构性 ← `refused` · 明确传输失败 ← `undelivered` · '
+        + '**未命中任何关键词 ← `unclassified`（独立一档）** · 空原因也归 `unclassified`'
+        + ' —— ⚠ 且**原话原样带出**（⛔ 不是只留一个分类）' + svTag)
+    } else {
+      bad('SV-f 【三分类不对】：拒收样本=' + String(refusedSample?.cls)
+        + '（应 refused） · 传输失败=' + String(transportSample?.cls) + '（应 undelivered）'
+        + ' · 未命中=' + String(unknownSample?.cls) + '（应 unclassified）'
+        + ' · 空=' + String(emptySample?.cls) + '（应 unclassified）'
+        + ' · 原话保留=' + String(keepsRaw))
+    }
+  }
+
+  // SV-f2 · 真派发失败（未命中关键词）⇒ 盘上落 `unclassified`，且**拒收/未送达两档都不增**
+  if (svOrchMod !== undefined && svBusMod !== undefined) {
+    const h = svHost({
+      prefix: 'uncls-', targets: ['session-sv-y'],
+      /** ⚠ 让总线明确失败，但**原因是我们没见过的话术**（模拟宿主换词）。 */
+      /** ⚠ `hob_dispatch` 走的是 `bus.deliver`（不是 `deliverInternal`，那是回传路径）⇒ 必须改这一条。 */
+      patchBus: (bus) => {
+        bus.deliver = async () => ({ ok: false, reason: 'objective: 宿主换了一句我们没见过的失败话术' })
+      },
+    })
+    try {
+      const d = await h.orch.dispatch('session-sv-y', 'x', { self: h.ME })
+      await new Promise((r) => setTimeout(r, 80))
+      const c = (h.read().closed ?? []).find((w) => w.target === 'session-sv-y')
+      const landed = c !== undefined && typeof c.unclassifiedAt === 'number'
+        && c.refusedAt === undefined && c.undeliveredAt === undefined
+      const rendered = await h.render()
+      const unclsLine = rendered.split('\n').find((l) => l.includes('失败原因未归类')) ?? ''
+      const shown = /失败原因未归类\*\*：\s*1\s*条/.test(unclsLine)
+      const refusedZero = (rendered.split('\n').find((l) => l.includes('拒收：')) ?? '').includes('0 条')
+      const undeliveredZero = (rendered.split('\n').find((l) => l.includes('**未送达**：')) ?? '').includes('0 条')
+      if (d?.ok === false && landed && shown && refusedZero && undeliveredZero) {
+        ok('SV-f2 ✓ **未归类不并进另两档**（真派发 + 真总线失败）：话术不认识 ⇒ 盘上只落 '
+          + '`unclassifiedAt`（`refusedAt` / `undeliveredAt` **都没有**）· 读数面单列'
+          + '「失败原因未归类：1 条」并**原样带出原话** · `拒收` 与 `未送达` **两档都仍是 0**' + svTag)
+      } else {
+        bad('SV-f2 【未归类并进了另两档或没单列】：dispatch.ok=' + String(d?.ok)
+          + ' · 盘上只落 unclassified=' + String(landed) + ' · 读数单列 1 条=' + String(shown)
+          + ' · 拒收仍 0=' + String(refusedZero) + ' · 未送达仍 0=' + String(undeliveredZero)
+          + ` · 行=${JSON.stringify(unclsLine.slice(0, 120))}`)
+      }
+    } finally { h.cleanup() }
+  }
+
+  // SV-f2(反证)：把"未归类"并进"未送达" ⇒ 两档计数会被污染
+  {
+    const src = svOrchMod === undefined ? '' : readFileSync(join(svRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    /**
+     * ⚠⚠ **靶子必须打在"派发"那条路径上**（本档测的是 `hob_dispatch` 的失败）：
+     *   第一版打在**回传**那条（`relayCls.cls === 'unclassified'`）⇒ 变异之后
+     *   派发路径**一个字没变** ⇒ 负向对拍恒"失败"。⚠ 那不是断言咬不住，
+     *   是**我们打错了位置** —— 而负向对拍抓的正是这种错。
+     */
+    const GUARD = "          if (cls.cls === 'unclassified') {"
+    if (!src.includes(GUARD)) {
+      bad('SV-f2(反证) 【失去靶子】`orchestrator.ts` 里找不到**派发路径**上"未归类"那一支'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(svTmp, 'mut-svf2-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const { cpSync, symlinkSync } = await import('node:fs')
+        cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
+        try { symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        /**
+         * ⚠ 变异：摘掉派发路径上那一支 ⇒ **这条失败什么都不记**
+         *   （派发路径没有 `else` 兜底，与回传那条三分类到底不同）。
+         */
+        writeFileSync(mut, src.replace(GUARD,
+          '          if (false as boolean) { /* 变异：派发路径不再记"未归类" */'), 'utf8')
+        const m = await import(p2u(mut).href)
+        const h = svHost({
+          prefix: 'uncls-mut', targets: ['session-sv-z'],
+          patchBus: (bus) => {
+            bus.deliver = async () => ({ ok: false, reason: 'objective: 不认识的失败话术' })
+          },
+        })
+        try {
+          const prov3 = {}
+          const ctx3 = {
+            sessions: h.sessions, agents: h.agents, logger: { debug() {}, info() {}, warn() {} },
+            get: (k) => (k === 'sessions' ? h.sessions : k === 'agents' ? h.agents
+              : k === 'hobBus' ? undefined : k === 'loader'
+                ? { entries: () => [{ options: { config: { ledgerHome: h.home } } }] }
+                : undefined),
+            provide: (k, v) => { prov3[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+            inject: (_d, cb) => cb(ctx3), on: () => {},
+          }
+          m.apply(ctx3)
+          if (prov3.hobOrchestrator === undefined) {
+            bad('SV-f2(反证) 变异体装不出 `hobOrchestrator`（不按通过处理）')
+          } else {
+            await prov3.hobOrchestrator.dispatch('session-sv-z', 'x', { self: h.ME })
+            await new Promise((r) => setTimeout(r, 80))
+            const c = (h.read().closed ?? []).find((w) => w.target === 'session-sv-z')
+            /**
+             * ⚠⚠ **判据（本包实测修正过一次，照实记）**：
+             *   派发路径**没有** `else` 兜底（与回传那条三分类到底不同）⇒ 摘掉"未归类"
+             *   那一支之后，这条失败**一档都不记**（⛔ 不会落进"未送达"）。
+             *   ⇒ 正确期望 = 「**盘上没有任何一档被记**」：那就证明 SV-f2 的
+             *     "这条失败必须被单独记下来"是有牙的（否则读者以为"从来没派过"）。
+             */
+            if (c === undefined) {
+              ok('SV-f2(反证) ✓ 负向对拍：摘掉派发路径上"未归类"那一支 ⇒ 这句不认识的话术'
+                + '**一档都不记**（盘上 `closed` 里根本没有这条）⇒ 读者会以为"从来没派过"'
+                + ' ⇒ SV-f2 钉的"必须单列一档"真的长在实现上')
+            } else {
+              bad('SV-f2(反证) 【负向对拍失败】摘掉之后仍有记录'
+                + `（unclassifiedAt=${c.unclassifiedAt} · undeliveredAt=${c.undeliveredAt}）`
+                + ' ⇒ SV-f2 咬不住真缺陷')
+            }
+          }
+        } finally { h.cleanup() }
+      } catch (e) {
+        bad(`SV-f2(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-g · `closed` 满仓滚出必须可见
+  // ══════════════════════════════════════════════════════════════
+  if (svStateMod !== undefined) {
+    const CAP = typeof svStateMod.MAX_CLOSED === 'number' ? svStateMod.MAX_CLOSED : 50
+    const dir = mkdtempSync(join(svTmp, 'closed-drop-'))
+    try {
+      const file = join(dir, 'orch-watches.json')
+      /** ⚠ 先塞满一仓（+2 条，好让滚出真的发生）。 */
+      for (let i = 0; i < CAP + 2; i++) {
+        svStateMod.recordClosed(file, {
+          target: `sv-drop-${i}`, watcher: 'session-sv-me', at: 1000 + i,
+          owner: 'session-sv-me', sawRunning: false, refusedAt: 1000 + i, refusedWhy: 'x',
+        })
+      }
+      const after = svStateMod.readOrchState(file)
+      const recorded = typeof after.closedDroppedCount === 'number' && after.closedDroppedCount >= 2
+      const namesLast = after.closedDroppedLast !== undefined
+        && typeof after.closedDroppedLast.target === 'string'
+      if (recorded && namesLast) {
+        ok(`SV-g ✓ **\`closed\` 满仓滚出会留证**：上限 ${CAP} 条、塞进 ${CAP + 2} 条 ⇒ `
+          + `\`closedDroppedCount=${after.closedDroppedCount}\`、最近滚出的是 \`${after.closedDroppedLast.target}\``
+          + ' —— ⛔ 不再是"静默丢掉最老的"' + svTag)
+      } else {
+        bad('SV-g 【滚出仍是静默的】：累计滚出数='
+          + String(after.closedDroppedCount) + '（应 ≥2） · 有最近滚出那条='
+          + String(namesLast))
+      }
+    } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+  }
+
+  // SV-g2 · 读数面必须印出滚出（含"判不出"与"确为 0"两档）
+  {
+    const rendered = await svRender(svOrchOf({
+      status: {
+        closedDisk: [{ target: 'sv-c1', at: 1, owner: 'session-sv-me', acceptedAt: 2, basis: ['b'] }],
+        closedDropped: { count: 3, last: { target: 'sv-old-1', at: 999 } },
+      },
+    }))
+    const line = rendered.split('\n').find((l) => l.includes('滚出记账')) ?? ''
+    const saysCount = /滚出 \*\*3 条\*\*/.test(line) || /滚出 \*\*3 条\*\*/.test(rendered)
+    const namesWho = rendered.includes('sv-old-1')
+    const saysNotNever = rendered.includes('不是"从来没发生过"')
+    if (saysCount && namesWho && saysNotNever) {
+      ok('SV-g2 ✓ 滚出读数**印在读数面上**：`已滚出 3 条 —— 最近滚出的是 sv-old-1`'
+        + ' + 「⛔ 不是"从来没发生过"」—— 读者不再以为"账上就这么多"')
+    } else {
+      bad('SV-g2 【滚出没印在读数面】：印了条数=' + String(saysCount)
+        + ' · 点名最是谁=' + String(namesWho) + ' · 明说不是没发生=' + String(saysNotNever)
+        + ` · 行=${JSON.stringify(line.slice(0, 140))}`)
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-h · 判决入口必须披露（⛔ 用给人看的说法、⛔ 不写内部标识）
+  // ══════════════════════════════════════════════════════════════
+  {
+    const rendered = await svRender(svOrchOf({
+      status: {
+        closedDisk: [{
+          target: 'sv-acc', at: 1, owner: 'session-sv-me', acceptedAt: 2, basis: ['check:orch 255/255 通过'],
+        }],
+      },
+    }))
+    const hint = rendered.split('\n').find((l) => l.includes('这两个判决是我记下来的')) ?? ''
+    const saysWhere = hint.includes('控制编排') && hint.includes('验收')
+    const saysNeedsBasis = hint.includes('依据哪几条读数') && hint.includes('拒绝')
+    /**
+     * ⚠ **⛔ 不许写内部标识**：参数名 / 枚举值出现在给人看的句子 = 读者看不懂。
+     */
+    const leaksInternal = /\btaskId\b|\bbasis\b|send-back|"accept"/.test(hint)
+    if (saysWhere && saysNeedsBasis && !leaksInternal) {
+      ok('SV-h ✓ **判决入口会披露**：读数面出现「已验收」时印出'
+        + '「用旁边那个**控制编排**的动作，选『验收』或『退回』，并说明**依据哪几条读数**'
+        + '（不写依据会被拒绝）」—— ⚠ 全是给人看的说法，**没有内部标识**（不出现参数名/枚举值）' + svTag)
+    } else {
+      bad('SV-h 【判决入口没披露 / 或漏了内部标识】：说了在哪=' + String(saysWhere)
+        + ' · 说了要带依据=' + String(saysNeedsBasis) + ' · 泄了内部标识=' + String(leaksInternal)
+        + ` · 行=${JSON.stringify(hint.slice(0, 160))}`)
+    }
+  }
+
+  // SV-h(反证)：把披露那句摘掉 ⇒ 读者不知道该去哪儿判
+  {
+    const src = svOrchMod === undefined ? '' : readFileSync(join(svRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    const GUARD = "            if ((st === 'accepted' || st === 'sent-back') && shown.length > 0) {"
+    if (!src.includes(GUARD)) {
+      bad('SV-h(反证) 【失去靶子】`orchestrator.ts` 里找不到判决入口披露那一判'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(svTmp, 'mut-svh-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        writeFileSync(mut, src.replace(GUARD,
+          '            if (false as boolean) { /* 变异：不披露判决入口 */'), 'utf8')
+        const m = await import(p2u(mut).href)
+        const r2 = String(await m.createHobOrchTools(svOrchOf({
+          status: {
+            closedDisk: [{
+              target: 'sv-acc', at: 1, owner: 'session-sv-me', acceptedAt: 2, basis: ['x'],
+            }],
+          },
+        })).status.execute({}, { agent: { id: 'session-sv-me', session: { header: { cwd: svTmp } } } }))
+        if (!/这两个判决是我记下来的/.test(r2)) {
+          ok('SV-h(反证) ✓ 负向对拍：摘掉披露 ⇒ 「已验收」旁边**再没有一个字说该去哪儿判**'
+            + ' ⇒ SV-h 钉的"披露"真的长在实现上')
+        } else {
+          bad('SV-h(反证) 【负向对拍失败】变异之后仍披露 ⇒ SV-h 咬不住真缺陷')
+        }
+      } catch (e) {
+        bad(`SV-h(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // SV-i · **包 L 缺陷 2**：`hob_orch_control` 被拒时不许给"像已执行"的 `verdict`
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 真机原文（`REAL-MACHINE-ACTION.md` §二）：
+  //     `{action:"accept", basis:[]}` → `{"ok":false,"verdict":"accepted","target":"…"}`
+  //     ⇒ `ok:false` 与 `verdict:"accepted"` **并存** ⇒ 只读 `verdict` 的消费方会读成成功。
+  //   ⚠ 判据（两条**成对**，缺一条就等于只验一侧 —— `E-126`）：
+  //     ① 被拒（`basis:[]`）⇒ 返回里**不许出现** `verdict`（也不许出现任何"已执行"的值）；
+  //     ② 成功（`basis` 非空）⇒ `verdict` **照旧要给**（⛔ 不许把这条一起改坏）。
+  if (svOrchMod !== undefined && svBusMod !== undefined) {
+    const seedJudge = {
+      version: 1, updatedAt: 1, handoffs: [], lost: [], closed: [],
+      pending: [{
+        target: 't-l-defect2', watcher: 'session-sv-me', at: 1, sawRunning: true,
+        owner: 'session-sv-me', deliveryAttemptAt: 3, settleState: 'waiting',
+      }],
+    }
+    const h = svHost({ prefix: 'verdict-', targets: ['t-l-defect2'], seed: seedJudge })
+    try {
+      if (h.orch === undefined) {
+        bad('SV-i 装不出 `hobOrchestrator`（不按通过处理）')
+      } else {
+        const tools = svOrchMod.createHobOrchTools(h.orch)
+        const exec = { agent: { id: h.ME, session: { header: { cwd: h.ws } } } }
+        /** ① 被拒：`basis:[]` */
+        const denied = JSON.parse(String(await tools.control.execute(
+          { action: 'accept', taskId: 't-l-defect2', basis: [] }, exec)))
+        /** ② 成功：`basis` 非空 */
+        const granted = JSON.parse(String(await tools.control.execute(
+          { action: 'accept', taskId: 't-l-defect2', basis: ['check:orch 271/271 通过'] }, exec)))
+        /**
+         * ⚠⚠ **判据口径（本包实测修正过一次，照实记）**：
+         *   我第一版写的是"任何键上都不许出现 'accepted'/'sent-back' 值" —— ⚠ **错了**：
+         *   `requestedVerdict:"accepted"` 的值**本来就该是那一档**（它是"请求的是哪一档"），
+         *   把它判红等于要求"连请求都不许说清"，与交付口径相反。
+         *   ⇒ 正确判据 = **不许有 `verdict` 这个键**（键名才是"已执行"的信号），
+         *     且**不许有别的键冒充执行结果** —— 逐个键名白名单：只许
+         *     `ok` / `requestedVerdict` / `target` / `reason`（⚠ 多出一个未知键 = 红，
+         *     这样将来谁想加个 `result:"accepted"` 也会被拦）。
+         */
+        const deniedHasVerdictKey = Object.prototype.hasOwnProperty.call(denied, 'verdict')
+        const ALLOWED_DENIED_KEYS = new Set(['ok', 'requestedVerdict', 'target', 'reason', 'state', 'label'])
+        const deniedUnexpectedKeys = Object.keys(denied).filter((k) => !ALLOWED_DENIED_KEYS.has(k))
+        const deniedAnyExecutedValue = deniedUnexpectedKeys.length > 0
+        const deniedOkFalse = denied.ok === false
+        const deniedKeepsReason = typeof denied.reason === 'string' && denied.reason !== ''
+        const grantedOkTrue = granted.ok === true && granted.verdict === 'accepted'
+        if (deniedOkFalse && !deniedHasVerdictKey && !deniedAnyExecutedValue
+          && deniedKeepsReason && grantedOkTrue) {
+          ok('SV-i ✓ **被拒时不再给"像已执行"的 verdict**（包 L 缺陷 2）：'
+            + '`basis:[]` ⇒ 返回里**没有 `verdict` 键**、也**没有任何 `accepted`/`sent-back` 值**'
+            + '（改给 `requestedVerdict`，名字本身说明"那是请求的"）· 原因原样保留；'
+            + '⚠ 而 `basis` 非空时 `verdict:"accepted"` **照旧要给**（两条成对，⛔ 没把正常路径改坏）'
+            + svTag)
+        } else {
+          bad('SV-i 【被拒时仍给出"像已执行"的 verdict / 或正常路径被改坏】：'
+            + `ok:false=${deniedOkFalse} · 有 verdict 键=${deniedHasVerdictKey}`
+            + ` · 出现已执行值=${deniedAnyExecutedValue} · 保留原因=${deniedKeepsReason}`
+            + ` · 成功路径 verdict="accepted"=${grantedOkTrue}`
+            + ` · 被拒返回=${JSON.stringify(denied)}`)
+        }
+      }
+    } finally { h.cleanup() }
+  }
+
+  // SV-i(反证)：把修复摘掉（无条件给 verdict）⇒ `ok:false` + `verdict:"accepted"` 并存重现
+  {
+    const src = svOrchMod === undefined ? '' : readFileSync(join(svRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    const GUARD = '        if (!r.ok) {\n          return JSON.stringify({\n            ok: false,\n            requestedVerdict:'
+    if (!src.includes(GUARD)) {
+      bad('SV-i(反证) 【失去靶子】`orchestrator.ts` 里找不到"被拒时不给 verdict"那一支'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(svTmp, 'mut-svi-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        /**
+         * ⚠ 变异：把"被拒"那一支的**条件**改成恒假 ⇒ 该支永不进入 ⇒
+         *   落到下面那个无条件给 `verdict` 的 return（= 改前形态）。
+         *   ⚠ 为什么不用"整块删掉"：删块要把配对的花括号一起算，实测撕坏过一次
+         *     （`Expected ',', got 'const'`）⇒ 那是夹具坏，不是断言咬不住。
+         */
+        writeFileSync(mut, src.replace(GUARD,
+          '        if (false as boolean) {\n          return JSON.stringify({\n            ok: false,\n            requestedVerdict:'),
+          'utf8')
+        const m = await import(p2u(mut).href)
+        const seed2 = {
+          version: 1, updatedAt: 1, handoffs: [], lost: [], closed: [],
+          pending: [{
+            target: 't-l-defect2', watcher: 'session-sv-me', at: 1, sawRunning: true,
+            owner: 'session-sv-me', deliveryAttemptAt: 3, settleState: 'waiting',
+          }],
+        }
+        const h2 = svHost({ prefix: 'verdict-mut-', targets: ['t-l-defect2'], seed: seed2 })
+        try {
+          const prov2 = {}
+          const ctx2 = {
+            sessions: h2.sessions, agents: h2.agents, logger: { debug() {}, info() {}, warn() {} },
+            get: (k) => (k === 'sessions' ? h2.sessions : k === 'agents' ? h2.agents
+              : k === 'hobBus' ? undefined : k === 'loader'
+                ? { entries: () => [{ options: { config: { ledgerHome: h2.home } } }] }
+                : undefined),
+            provide: (k, v) => { prov2[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+            inject: (_d, cb) => cb(ctx2), on: () => {},
+          }
+          m.apply(ctx2)
+          if (prov2.hobOrchestrator === undefined) {
+            bad('SV-i(反证) 变异体装不出 `hobOrchestrator`（不按通过处理）')
+          } else {
+            const out = JSON.parse(String(await m.createHobOrchTools(prov2.hobOrchestrator).control.execute(
+              { action: 'accept', taskId: 't-l-defect2', basis: [] },
+              { agent: { id: h2.ME, session: { header: { cwd: h2.ws } } } })))
+            if (out.ok === false && out.verdict === 'accepted') {
+              ok('SV-i(反证) ✓ 负向对拍：摘掉修复 ⇒ **`ok:false` 与 `verdict:"accepted"` 又并存**'
+                + '（= 真机那段原样重现）⇒ SV-i 那道判据真的长在实现上')
+            } else {
+              bad('SV-i(反证) 【负向对拍失败】摘掉修复后不再并存'
+                + `（ok=${out.ok} · verdict=${out.verdict}）⇒ SV-i 咬不住真缺陷`)
+            }
+          }
+        } finally { h2.cleanup() }
+      } catch (e) {
+        bad(`SV-i(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-j · **包 M §一**：读数面不许断言"盘上没有"，除非**真读到了**
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 真机原文（`REAL-MACHINE-ACTION.md` §九）：
+  //     `共 0 条（**已读：本代与盘上都没有记录**）` —— 而盘上有 `refusedAt` 那条。
+  //   ⚠ 根因（本包实测两候选同时成立）：
+  //     · **A** 写侧落 `<工作区>/.hob/`，读侧只扫 `<ledgerHome>/<名字>/` ⇒ **两本账**；
+  //     · **B** `scanStateFiles()` 的 `catch {}` 把"读不到"吞成 `[]` ⇒ 与"确实空"同形。
+  //   ⚠ 判据三条（缺一条就等于只验一侧）：
+  //     ① 记录写在**写侧真实落点**（`<ws>/.hob`）时，读数面必须**看得见**（不许 `共 0 条`）；
+  //     ② 盘**可读且确实 0 条** ⇒ 才配说「已读，确为 0」；
+  //     ③ 盘**读不到** ⇒ 必须落「判不出」，⛔ 不许落成「确为 0」。
+  if (svOrchMod !== undefined && svBusMod !== undefined) {
+    /** 用"写侧真实落点"（`<ws>/.hob/runtime/`）+ `ledgerHome` 指向另一个目录，复刻真机布局。 */
+    const svHostOwn = (label, opts = {}) => {
+      const base = mkdtempSync(join(svTmp, label))
+      const home = join(base, 'ledgers'); const ws = join(base, 'ws')
+      mkdirSync(join(home, join('other-project'), 'runtime'), { recursive: true })
+      mkdirSync(join(ws, 'runtime'), { recursive: true })
+      /** ⚠ 写侧落点 = `<ws>/.hob/runtime/orch-watches.json`（`resolveLedgerRoot` 的正典档）。 */
+      /** ⚠⚠ **包 Q 之后**：账本落点 = `<ledgerHome>/<工作区名>/`，⛔ 不再是 `<工作区>/.hob`。 */
+      const ownFile = join(home, basename(ws), 'runtime', 'orch-watches.json')
+      mkdirSync(join(ownFile, '..'), { recursive: true })
+      const seed = {
+        version: 1, updatedAt: 1, handoffs: [], lost: [], closed: [],
+        pending: [{
+          target: 'm-refused', watcher: 'session-m-me', at: 1, sawRunning: false,
+          owner: 'session-m-me', deliveryAttemptAt: 2, refusedAt: 2, refusedWhy: 'bus 原话：目标接不了活',
+        }],
+      }
+      writeFileSync(ownFile, JSON.stringify(seed), 'utf8')
+      /** ⚠ 让 `.hob` **看起来像账本**（`looksLikeLedger` 需要），否则 `resolveLedgerRoot` 回落另一档。 */
+      /** ⚠ 账本目录本身已由 ownFile 的目录建立；README 不再是"像不像账本"的判据（该档已删）。 */
+      if (opts.breakBoth === true) {
+        rmSync(home, { recursive: true, force: true })
+        rmSync(join(ws, '.hob'), { recursive: true, force: true })
+      }
+      const ME = 'session-m-me'
+      const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+      const byId = new Map([[ME, mkS(ME)]])
+      const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+      const agents = { currentInitiator: () => undefined,
+        get: (i) => (byId.has(i) ? { id: i, status: 'idle', ctx: {}, session: byId.get(i),
+          followup() {}, steer() {}, inject() {} } : undefined) }
+      const bp = {}
+      const bc = { sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+        : undefined),
+        provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(bc), on: () => {} }
+      svBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+      const prov = {}
+      const ctx = { sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+          : k === 'hobBus' ? bp.hobBus : k === 'loader'
+            ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+            : undefined),
+        provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(ctx), on: () => {} }
+      svOrchMod.apply(ctx)
+      return { base, ws, home, ME, prov, ownFile, cleanup: () => { try { rmSync(base, { recursive: true, force: true }) } catch { /* 忽略 */ } } }
+    }
+    {
+      const h = svHostOwn('m-own-')
+      try {
+        const txt = String(await svOrchMod.createHobOrchTools(h.prov.hobOrchestrator).status.execute({}, {
+          agent: { id: h.ME, session: { header: { cwd: h.ws } } } },
+        ))
+        const lines = txt.split('\n')
+        const i = lines.findIndex((l) => l.includes('**派发记录态**'))
+        const head = i >= 0 ? lines[i] : ''
+        const refusedLine = lines.find((l) => l.includes('拒收：') && !l.includes('0 条')) ?? ''
+        /** ① 记录写在写侧真实落点 ⇒ 读数面必须看得见 */
+        const seesIt = /共\s*[1-9]/.test(head) && /拒收：\s*1\s*条/.test(refusedLine)
+        /** ② 且⛔ 不许再说"盘上都没有记录" */
+        const noFalseClaim = !/盘上都没有记录/.test(head)
+        if (seesIt && noFalseClaim) {
+          ok('SV-j ✓ **读数面不再断言"盘上没有"**（包 M §一 · 候选 A）：记录写在**写侧真实落点**'
+            + '（`<工作区>/.hob/runtime/`）、而 `ledgerHome` 指向**另一个目录**（= 真机布局）时，'
+            + '读数面**看得见那条**（`共 1 条` · `拒收：1 条`），⛔ 不再印「盘上都没有记录」' + svTag)
+        } else {
+          bad('SV-j 【读数面仍然看不见写侧真实落点里的记录】：看得见=' + String(seesIt)
+            + ' · 没有假断言=' + String(noFalseClaim)
+            + ` · 头行=${JSON.stringify(head.slice(0, 160))}`)
+        }
+      } finally { h.cleanup() }
+    }
+    {
+      /** ③ 盘**真的读不到** ⇒ 必须落「判不出」，⛔ 不许「确为 0」 */
+      const h = svHostOwn('m-broken-', { breakBoth: true })
+      try {
+        const txt = String(await svOrchMod.createHobOrchTools(h.prov.hobOrchestrator).status.execute({}, {
+          agent: { id: h.ME, session: { header: { cwd: h.ws } } } },
+        ))
+        const lines = txt.split('\n')
+        const i = lines.findIndex((l) => l.includes('**派发记录态**'))
+        const head = i >= 0 ? lines[i] : ''
+        const saysUndecidable = /判不出/.test(head)
+        const saysNotZero = !/已读，确为 0|已读：本代与盘上都没有记录/.test(head)
+        if (saysUndecidable && saysNotZero) {
+          ok('SV-j2 ✓ **盘读不到 ⇒ 落「判不出」**（包 M §一 · 候选 B，与 `SV-e` 同一纪律）：'
+            + '账本根与 `.hob` 都被拿掉之后，头行说「⚠ **判不出**：账本**没读到**」，'
+            + '⛔ 不再说「已读，确为 0」—— 读数**不再替一个没做到的动作背书**' + svTag)
+        } else {
+          bad('SV-j2 【盘读不到时仍落"确为 0"】：说判不出=' + String(saysUndecidable)
+            + ' · 没说确为 0=' + String(saysNotZero)
+            + ` · 头行=${JSON.stringify(head.slice(0, 160))}`)
+        }
+      } finally { h.cleanup() }
+    }
+  }
+
+  // SV-j(反证)：把"读不到 ⇒ 判不出"摘掉 ⇒ 又回到"确为 0"（复现真机现状）
+  {
+    const src = svOrchMod === undefined ? '' : readFileSync(join(svRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    const GUARD = "          const diskKnown = s.reachability === 'ok' || s.reachability === 'no-records-yet'"
+    if (!src.includes(GUARD)) {
+      bad('SV-j(反证) 【失去靶子】`orchestrator.ts` 里找不到 `diskKnown` 那一判'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(svTmp, 'mut-svj-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        /** ⚠ 变异：`diskKnown` 恒真 ⇒ 读不到也说"已读，确为 0"（= 真机那句假话）。 */
+        writeFileSync(mut, src.replace(GUARD, '          const diskKnown = true /* 变异：恒认为读到了 */'), 'utf8')
+        const m = await import(p2u(mut).href)
+        const base = mkdtempSync(join(svTmp, 'mut-svj-host-'))
+        const home = join(base, 'ledgers'); const ws = join(base, 'ws')
+        mkdirSync(join(ws, 'runtime'), { recursive: true })
+        const ME = 'session-m-me'
+        const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+        const byId = new Map([[ME, mkS(ME)]])
+        const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+        const agents = { currentInitiator: () => undefined,
+          get: (i) => (byId.has(i) ? { id: i, status: 'idle', ctx: {}, session: byId.get(i),
+            followup() {}, steer() {}, inject() {} } : undefined) }
+        const bp2 = {}
+        const bc2 = { sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+          : undefined),
+          provide: (k, v) => { bp2[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+          inject: (_d, cb) => cb(bc2), on: () => {} }
+        svBusMod.apply(bc2, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+        const prov2 = {}
+        const ctx2 = { sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+            : k === 'hobBus' ? bp2.hobBus : k === 'loader'
+              ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+              : undefined),
+          provide: (k, v) => { prov2[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+          inject: (_d, cb) => cb(ctx2), on: () => {} }
+        m.apply(ctx2)
+        const txt = String(await m.createHobOrchTools(prov2.hobOrchestrator).status.execute({}, {
+          agent: { id: ME, session: { header: { cwd: ws } } },
+        }))
+        const head = txt.split('\n').find((l) => l.includes('**派发记录态**')) ?? ''
+        if (/已读，确为 0|本代与盘上都没有记录/.test(head)) {
+          ok('SV-j(反证) ✓ 负向对拍：让 `diskKnown` 恒真 ⇒ 盘读不到时**又说"已读，确为 0"**'
+            + '（= 真机那句假话重现）⇒ SV-j2 那道判据真的长在实现上')
+        } else {
+          bad('SV-j(反证) 【负向对拍失败】变异之后仍不说"确为 0" ⇒ SV-j2 咬不住真缺陷')
+        }
+      } catch (e) {
+        bad(`SV-j(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-k · **包 N §一 · 候选 c**：判决入口必须与读数面**读同一本账**
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 真机原文（`CHG-086`）：读数面 `· 已回传：1 条 —— session-eea74684-…`，
+  //     判决入口 `{"ok":false,"reason":"判不出 … 是哪一条派发"}` ⇒ **同一件事两个相反答案**。
+  //   ⚠ 根因 = **c**：包 M 只给 `mineOnly()` 三处补了 `wsRoot`，**判决这一处没补**
+  //     ⇒ 判决只扫 `<ledgerHome>/`，自己那本 `<工作区>/.hob` 不在扫描面。
+  //   ⚠ 判据三条（成对，缺一条就等于只验一侧）：
+  //     ① **真机场景**（记录已结算、在 `closed` 里）⇒ 带依据的判决**必须落得下去**；
+  //     ② **`basis: []` ⇒ 仍必须被拒**（⛔ 不许被一起改坏）；
+  //     ③ 读数面与判决入口**对同一条记录给出同一个答案**（⛔ 不许一个说在一个说不在）。
+  if (svOrchMod !== undefined && svBusMod !== undefined) {
+    const base = mkdtempSync(join(svTmp, 'n-judge-'))
+    try {
+      const home = join(base, 'ledgers'); const ws = join(base, 'ws')
+      mkdirSync(join(home, 'other-project', 'runtime'), { recursive: true })
+      mkdirSync(join(ws, 'runtime'), { recursive: true })
+      /** ⚠ 写侧真实落点（`<ws>/.hob/runtime/`）；`ledgerHome` 指向**别处**（= 真机布局）。 */
+      /** ⚠⚠ **包 Q 之后**：账本落点 = `<ledgerHome>/<工作区名>/`，⛔ 不再是 `<工作区>/.hob`。 */
+      const ownFile = join(home, basename(ws), 'runtime', 'orch-watches.json')
+      mkdirSync(join(ownFile, '..'), { recursive: true })
+      const TARGET = 'session-eea74684-x'
+      writeFileSync(ownFile, JSON.stringify({
+        version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [],
+        closed: [{ target: TARGET, watcher: 'session-n-me', at: 1, owner: 'session-n-me', deliveredAt: 2, evidence: 'event' }],
+      }), 'utf8')
+      /** ⚠ 账本目录本身已由 ownFile 的目录建立；README 不再是"像不像账本"的判据（该档已删）。 */
+      const ME = 'session-n-me'
+      const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+      const byId = new Map([[ME, mkS(ME)]])
+      const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+      const agents = { currentInitiator: () => undefined,
+        get: (i) => (byId.has(i) ? { id: i, status: 'idle', ctx: {}, session: byId.get(i),
+          followup() {}, steer() {}, inject() {} } : undefined) }
+      const bp = {}
+      const bc = { sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+        : undefined),
+        provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(bc), on: () => {} }
+      svBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+      const prov = {}
+      const ctx = { sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+        get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+          : k === 'hobBus' ? bp.hobBus : k === 'loader'
+            ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+            : undefined),
+        provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+        inject: (_d, cb) => cb(ctx), on: () => {} }
+      svOrchMod.apply(ctx)
+      const orch = prov.hobOrchestrator
+      if (orch === undefined) {
+        bad('SV-k 装不出 `hobOrchestrator`（不按通过处理）')
+      } else {
+        /** ① 读数面：必须看得见这条（包 M 已修）。 */
+        const txt = String(await svOrchMod.createHobOrchTools(orch).status.execute({}, {
+          agent: { id: ME, session: { header: { cwd: ws } } } },
+        ))
+        const reLine = txt.split('\n').find((l) => l.includes('已回传：') && /[1-9]\s*条/.test(l)) ?? ''
+        const panelSees = reLine !== ''
+        /** ② 判决入口：带依据必须落得下去（本包修的）。 */
+        const okJudge = orch.judge({ self: ME, target: TARGET, verdict: 'accepted', basis: ['r1', 'r2', 'r3'] })
+        /** ③ `basis: []` 仍必须被拒（⛔ 不许被一起改坏）。 */
+        const emptyRejected = orch.judge({ self: ME, target: TARGET, verdict: 'accepted', basis: [] })
+        /** ④ 两者必须**同一个答案**（⛔ 不许一个说在一个说不在）。 */
+        const sameAnswer = panelSees === (okJudge.ok === true)
+        if (panelSees && okJudge.ok === true && okJudge.state === 'accepted'
+          && emptyRejected.ok === false && sameAnswer) {
+          ok('SV-k ✓ **判决入口与读数面读同一本账**（包 N §一 · 候选 c）：'
+            + '记录已结算、只在 `closed` 里（= 真机场景）时——读数面 `已回传：1 条`、'
+            + '判决入口**带依据也落得下去**（`state=accepted`）· ⚠ **`basis: []` 仍被拒**'
+            + '（⛔ 那条规矩没被一起改坏）· 两侧**同一个答案**' + svTag)
+        } else {
+          bad('SV-k 【判决入口仍查不到 / 或 `basis:[]` 被放过】：读数面看得见='
+            + String(panelSees) + ' · 带依据落得下去=' + String(okJudge.ok === true)
+            + '（state=' + String(okJudge.state) + '） · `basis:[]` 仍被拒='
+            + String(emptyRejected.ok === false) + ' · 两侧同答案=' + String(sameAnswer)
+            + ` · 判决=${JSON.stringify(okJudge)}`)
+        }
+      }
+    } finally { try { rmSync(base, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+  }
+
+  // SV-k(反证)：把 `wsRoot` 摘掉（= 包 M 只修读数面那一态）⇒ 又回到"判不出"
+  {
+    const src = svOrchMod === undefined ? '' : readFileSync(join(svRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    const GUARD = "        const judgeWs = typeof self === 'string' && self !== '' ? wsRootOfSession(self) : undefined"
+    if (!src.includes(GUARD)) {
+      bad('SV-k(反证) 【失去靶子】`orchestrator.ts` 里找不到 `judgeWs` 那一判'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(svTmp, 'mut-svk-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        /** ⚠ 变异：`judgeWs` 恒 `undefined` ⇒ 回到"只扫 ledgerHome"（包 M 那一态）。 */
+        /**
+         * ⚠⚠ **变异口径已按包 Q 更新**（照实记）：包 Q 之后账本落 `<ledgerHome>/<工作区名>/`，
+         *   而 `scanStateFiles(svcCtx, undefined)` **仍能通过 `ledgerHome` 扫到它**
+         *   （`wsRoot` 只是额外补"自己那本"，不再是唯一入口）。
+         *   ⇒ 把 `judgeWs` 置 `undefined` **不再致命**（实测过一次：判决照样成功）。
+         *   ⇒ 要真正复现"判决查不到"，必须让**扫描面整体够不到那本账**：
+         *     把 `scanStateFiles` 调用改成 `[]`（= 判决只看内存、不看盘）。
+         */
+        writeFileSync(mut, src.replace(
+          '          for (const f of scanStateFiles(svcCtx, judgeWs)) {',
+          '          for (const f of ([] as string[])) { /* 变异：判决不看盘 */'), 'utf8')
+        const m = await import(p2u(mut).href)
+        const base2 = mkdtempSync(join(svTmp, 'n-judge-mut-'))
+        const home2 = join(base2, 'ledgers'); const ws2 = join(base2, 'ws')
+        mkdirSync(join(home2, 'other-project', 'runtime'), { recursive: true })
+        mkdirSync(join(ws2, 'runtime'), { recursive: true })
+        const own2 = join(home2, basename(ws2), 'runtime', 'orch-watches.json')
+        mkdirSync(join(own2, '..'), { recursive: true })
+        writeFileSync(own2, JSON.stringify({
+          version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [],
+          closed: [{ target: 'session-eea74684-x', watcher: 'session-n-me', at: 1, owner: 'session-n-me', deliveredAt: 2 }],
+        }), 'utf8')
+        /* ⚠ 同上：不再需要 `.hob/README.md` 作为判据 */
+        const ME2 = 'session-n-me'
+        const mkS2 = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws2 }, log: [] })
+        const byId2 = new Map([[ME2, mkS2(ME2)]])
+        const sessions2 = { get: (i) => byId2.get(i), list: () => [...byId2.values()], flush: async () => true }
+        const agents2 = { currentInitiator: () => undefined,
+          get: (i) => (byId2.has(i) ? { id: i, status: 'idle', ctx: {}, session: byId2.get(i),
+            followup() {}, steer() {}, inject() {} } : undefined) }
+        const bp3 = {}
+        const bc3 = { sessions: sessions2, agents: agents2, logger: { debug() {}, info() {}, warn() {} },
+          get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2
+          : undefined),
+          provide: (k, v) => { bp3[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+          inject: (_d, cb) => cb(bc3), on: () => {} }
+        svBusMod.apply(bc3, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+        const prov3 = {}
+        const ctx3 = { sessions: sessions2, agents: agents2, logger: { debug() {}, info() {}, warn() {} },
+          get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2
+            : k === 'hobBus' ? bp3.hobBus : k === 'loader'
+              ? { entries: () => [{ options: { config: { ledgerHome: home2 } } }] }
+              : undefined),
+          provide: (k, v) => { prov3[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+          inject: (_d, cb) => cb(ctx3), on: () => {} }
+        m.apply(ctx3)
+        const r = prov3.hobOrchestrator.judge({
+          self: ME2, target: 'session-eea74684-x', verdict: 'accepted', basis: ['x'],
+        })
+        if (r.ok === false && typeof r.reason === 'string' && r.reason.includes('判不出')) {
+          ok('SV-k(反证) ✓ 负向对拍：把 `judgeWs` 摘掉（= 包 M 只修读数面那一态）⇒ '
+            + '判决入口又说「**判不出** … 是哪一条派发」而读数面仍看得见那条'
+            + '（= 真机那段矛盾重现）⇒ SV-k 那道修复真的长在实现上')
+        } else {
+          bad('SV-k(反证) 【负向对拍失败】摘掉 `judgeWs` 之后判决仍成功'
+            + `（ok=${r.ok} · state=${r.state}）⇒ SV-k 咬不住真缺陷`)
+        }
+      } catch (e) {
+        bad(`SV-k(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-m · **包 P（D-5）：判决说成功，盘上必须真的有那个标记**
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 真机原文（`D5-ACCEPTED-NOT-SHOWN.md`）：
+  //     判决 → `{"ok":true,"state":"accepted"}`，紧接着读数面 `已验收：0 条`，
+  //     而盘上那个 target 的 5 条 `closed` 记录**全都没有 `acceptedAt`**。
+  //   ⚠ 根因（实测锁定）：
+  //     · **a+b 同一个成因**：写回那处 `scanStateFiles(svcCtx)` **没带 `wsRoot`**
+  //       ⇒ 只扫 `<ledgerHome>/`（真机里那底下唯一有账本的是**别人的** `shoucang`）
+  //       ⇒ `files` 非空 ⇒ `files.length === 0` 的兜底**不触发** ⇒ `file === undefined`
+  //       ⇒ **写盘整段被跳过**；
+  //     · 且返回值 `state` 拿内存算、**一次回读都没有** ⇒ `ok:true` 与"盘上没写"并存。
+  //   ⚠ 判据四条（缺一条就等于只验一侧）：
+  //     ① 真机布局（`ledgerHome` 下只有别人的账）⇒ 带依据的判决**盘上必须真有 `acceptedAt`**；
+  //     ② **返回值必须与盘上一致**：盘上没有 ⇒ `ok` **不许**是 `true`；
+  //     ③ `basis: []` **仍必须被拒**（⛔ 不许为修这条把闸拆了）；
+  //     ④ 跨代：全新 `apply` 之后那条 `acceptedAt` **仍在**（盘上持久字段）。
+  if (svOrchMod !== undefined && svBusMod !== undefined) {
+    const base = mkdtempSync(join(svTmp, 'p-d5-'))
+    try {
+      const home = join(base, 'ledgers'); const ws = join(base, 'ws')
+      mkdirSync(join(ws, 'runtime'), { recursive: true })
+      /** ⚠ 关键：`ledgerHome` 下**只有别人的账**（真机里是 `shoucang`）⇒ `files` 非空。 */
+      mkdirSync(join(home, 'shoucang', 'runtime'), { recursive: true })
+      writeFileSync(join(home, 'shoucang', 'runtime', 'orch-watches.json'), JSON.stringify({
+        version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [],
+        closed: [{ target: 'someone-else', watcher: 'x', at: 1, owner: 'x', deliveredAt: 2 }],
+      }), 'utf8')
+      /** ⚠⚠ **包 Q 之后**：账本落点 = `<ledgerHome>/<工作区名>/`，⛔ 不再是 `<工作区>/.hob`。 */
+      const ownFile = join(home, basename(ws), 'runtime', 'orch-watches.json')
+      mkdirSync(join(ownFile, '..'), { recursive: true })
+      /** ⚠ 账本目录本身已由 ownFile 的目录建立；README 不再是"像不像账本"的判据（该档已删）。 */
+      const TARGET = 'session-eea74684-x'; const ME = 'session-687aeaf8-913'
+      writeFileSync(ownFile, JSON.stringify({
+        version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [],
+        closed: [{ target: TARGET, watcher: ME, at: 1, owner: ME, deliveredAt: 2 }],
+      }), 'utf8')
+      const bootSv = () => {
+        const mkS = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws }, log: [] })
+        const byId = new Map([[ME, mkS(ME)]])
+        const sessions = { get: (i) => byId.get(i), list: () => [...byId.values()], flush: async () => true }
+        const agents = { currentInitiator: () => undefined,
+          get: (i) => (byId.has(i) ? { id: i, status: 'idle', ctx: {}, session: byId.get(i),
+            followup() {}, steer() {}, inject() {} } : undefined) }
+        const bp = {}
+        const bc = { sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+          : undefined),
+          provide: (k, v) => { bp[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+          inject: (_d, cb) => cb(bc), on: () => {} }
+        svBusMod.apply(bc, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+        const prov = {}
+        const ctx = { sessions, agents, logger: { debug() {}, info() {}, warn() {} },
+          get: (k) => (k === 'sessions' ? sessions : k === 'agents' ? agents
+            : k === 'hobBus' ? bp.hobBus : k === 'loader'
+              ? { entries: () => [{ options: { config: { ledgerHome: home } } }] }
+              : undefined),
+          provide: (k, v) => { prov[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+          inject: (_d, cb) => cb(ctx), on: () => {} }
+        svOrchMod.apply(ctx)
+        return prov.hobOrchestrator
+      }
+      const onDiskAccepted = () => {
+        try {
+          const st = JSON.parse(readFileSync(ownFile, 'utf8'))
+          return [...(st.closed ?? []), ...(st.pending ?? [])]
+            .some((w) => w.target === TARGET && typeof w.acceptedAt === 'number')
+        } catch { return false }
+      }
+      const o1 = bootSv()
+      /** ③ `basis: []` 仍必须被拒 */
+      const emptyRej = o1.judge({ self: ME, target: TARGET, verdict: 'accepted', basis: [] })
+      /** ① 带依据 ⇒ 盘上必须真有 acceptedAt */
+      const okR = o1.judge({ self: ME, target: TARGET, verdict: 'accepted', basis: ['r1', 'r2'] })
+      const landed = onDiskAccepted()
+      /** ② 返回值必须与盘上一致 */
+      const consistent = (okR.ok === true) === landed
+      /** ④ 跨代：全新 apply 后仍在 */
+      const after = bootSv().judge({ self: ME, target: TARGET, verdict: 'accepted', basis: ['r1'] })
+      const stillThere = onDiskAccepted()
+      if (emptyRej.ok === false && okR.ok === true && landed && consistent && stillThere) {
+        ok('SV-m ✓ **判决说成功 ⇒ 盘上必须真有标记**（包 P · D-5）：真机布局（`ledgerHome` 下'
+          + '**只有别人的账**）下，带依据的判决**盘上确实写下 `acceptedAt`**，且**返回值与盘上一致**'
+          + '（盘上没有时 `ok` 不许是 `true`）· ⚠ **`basis: []` 仍被拒**（⛔ 闸没被拆）· '
+          + '全新 `apply`（模拟重启）后**标记仍在**（盘上持久字段）' + svTag)
+      } else {
+        bad('SV-m 【判决说成功但盘上没有 / 或 basis 闸被拆】：basis:[] 仍被拒='
+          + String(emptyRej.ok === false) + ' · 带依据 ok=' + String(okR.ok)
+          + ' · 盘上真有 acceptedAt=' + String(landed) + ' · 返回值与盘上一致=' + String(consistent)
+          + ' · 跨代仍在=' + String(stillThere))
+      }
+    } finally { try { rmSync(base, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+  }
+
+  // SV-m(反证)：把写回那处的 `wsRoot` 摘掉 ⇒ 判决又"说成功但没落盘"（复现真机 D-5）
+  {
+    const src = svOrchMod === undefined ? '' : readFileSync(join(svRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    const GUARD = "            const selfWsForWrite = typeof self === 'string' && self !== ''"
+    if (!src.includes(GUARD)) {
+      bad('SV-m(反证) 【失去靶子】`orchestrator.ts` 里找不到 `selfWsForWrite` 那一判'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(svTmp, 'mut-svm-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        try { (await import('node:fs')).symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        const mut = join(dir, 'src', 'modules', 'orchestrator.ts')
+        /** ⚠ 变异：写回那处退回 `scanStateFiles(svcCtx)`（= 真机那一态）。 */
+        const START = [
+          "            const selfWsForWrite = typeof self === 'string' && self !== ''",
+          '              ? wsRootOfSession(self)',
+          '              : undefined',
+          '            return scanStateFiles(svcCtx, selfWsForWrite)',
+        ].join('\n')
+        if (!src.includes(START)) {
+          bad('SV-m(反证) 【失去靶子】写回那处三行原文对不上（多处换行差异）⇒ 不按通过处理')
+        } else {
+          /**
+           * ⚠⚠ **变异口径已按包 Q 更新**（照实记）：包 Q 之后 `scanStateFiles(svcCtx)`
+           *   **不带 `wsRoot` 也能通过 `ledgerHome` 扫到账本** ⇒ 只摘 `wsRoot`
+           *   已**不再致命**（实测过一次：判决照样落盘成功）。
+           *   ⇒ 要复现"写回找不到那本账"，得让写回**完全扫不到任何账本**。
+           */
+          /**
+           * ⚠⚠ **第二次修正变异口径**（照实记）：上一步我写成 `return []`，
+           *   实测**仍落盘成功** —— 因为 `hitFile` 最后有
+           *   `?? (files.length === 0 ? stateFileForOwner(self) : undefined)`
+           *   ⇒ **空数组会触发兜底**，反而修好了。
+           *   ⇒ 要复现真机那一态（`files` **非空**但**不含自己那本**），
+           *     必须返回**一个不存在的路径**：非空 ⇒ 兜底不触发 ⇒ `hitFile === undefined`
+           *     ⇒ 写盘整段跳过。
+           */
+          writeFileSync(mut, src.replace(START,
+            "            return ['/tmp/q-mut-no-such-ledger.json'] /* 变异：非空但不含自己那本 */"), 'utf8')
+          const m = await import(p2u(mut).href)
+          const base2 = mkdtempSync(join(svTmp, 'p-d5-mut-'))
+          const home2 = join(base2, 'ledgers'); const ws2 = join(base2, 'ws')
+          mkdirSync(join(ws2, 'runtime'), { recursive: true })
+          mkdirSync(join(home2, 'shoucang', 'runtime'), { recursive: true })
+          writeFileSync(join(home2, 'shoucang', 'runtime', 'orch-watches.json'), JSON.stringify({
+            version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [],
+            closed: [{ target: 'someone-else', watcher: 'x', at: 1, owner: 'x', deliveredAt: 2 }],
+          }), 'utf8')
+          const own2 = join(home2, basename(ws2), 'runtime', 'orch-watches.json')
+          mkdirSync(join(own2, '..'), { recursive: true })
+          /* ⚠ 同上：不再需要 `.hob/README.md` 作为判据 */
+          writeFileSync(own2, JSON.stringify({
+            version: 1, updatedAt: 1, handoffs: [], lost: [], pending: [],
+            closed: [{ target: 'session-eea74684-x', watcher: 'session-687aeaf8-913', at: 1,
+              owner: 'session-687aeaf8-913', deliveredAt: 2 }],
+          }), 'utf8')
+          const ME2 = 'session-687aeaf8-913'
+          const mkS2 = (id) => ({ id, header: { agentPreset: 'standard', cwd: ws2 }, log: [] })
+          const byId2 = new Map([[ME2, mkS2(ME2)]])
+          const sessions2 = { get: (i) => byId2.get(i), list: () => [...byId2.values()], flush: async () => true }
+          const agents2 = { currentInitiator: () => undefined,
+            get: (i) => (byId2.has(i) ? { id: i, status: 'idle', ctx: {}, session: byId2.get(i),
+              followup() {}, steer() {}, inject() {} } : undefined) }
+          const bp4 = {}
+          const bc4 = { sessions: sessions2, agents: agents2, logger: { debug() {}, info() {}, warn() {} },
+            get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2
+            : undefined),
+            provide: (k, v) => { bp4[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+            inject: (_d, cb) => cb(bc4), on: () => {} }
+          svBusMod.apply(bc4, { spawnDefaults: () => ({ agentPreset: '', provider: '', model: '', reasoningEffort: '' }) })
+          const prov4 = {}
+          const ctx4 = { sessions: sessions2, agents: agents2, logger: { debug() {}, info() {}, warn() {} },
+            get: (k) => (k === 'sessions' ? sessions2 : k === 'agents' ? agents2
+              : k === 'hobBus' ? bp4.hobBus : k === 'loader'
+                ? { entries: () => [{ options: { config: { ledgerHome: home2 } } }] }
+                : undefined),
+            provide: (k, v) => { prov4[k] = v }, effect: (fn) => { try { fn() } catch { /* 无落点 */ } },
+            inject: (_d, cb) => cb(ctx4), on: () => {} }
+          m.apply(ctx4)
+          const r2 = prov4.hobOrchestrator.judge({
+            self: ME2, target: 'session-eea74684-x', verdict: 'accepted', basis: ['r1'],
+          })
+          const landed2 = (() => {
+            try {
+              const st = JSON.parse(readFileSync(own2, 'utf8'))
+              return [...(st.closed ?? []), ...(st.pending ?? [])]
+                .some((w) => w.target === 'session-eea74684-x' && typeof w.acceptedAt === 'number')
+            } catch { return false }
+          })()
+          /**
+           * ⚠ **本包两层防线都要验**：摘掉 `wsRoot` 之后——
+           *   · 盘上**没有** `acceptedAt`（写回没发生）；
+           *   · 而**回读守卫**必须把它判成 `ok:false`（⛔ 不许再说成功）。
+           *   ⇒ 判据 = `landed2 === false && r2.ok === false`：
+           *     前者证"真机那个洞还在"，后者证"**守卫拦住了**"。
+           */
+          if (!landed2 && r2.ok === false) {
+            ok('SV-m(反证) ✓ 负向对拍：把写回那处的 `wsRoot` 摘掉（= 真机 D-5 那一态）⇒ '
+              + '**盘上没有 `acceptedAt`**，而**回读守卫把它判成 `ok:false`**'
+              + '（⛔ 不再"说成功但没发生"）⇒ SV-m 的两层防线都真的长在实现上')
+          } else {
+            bad('SV-m(反证) 【负向对拍失败】摘掉 wsRoot 之后：盘上落了吗='
+              + String(landed2) + '（应 false） · judge.ok=' + String(r2.ok) + '（应 false）')
+          }
+        }
+      } catch (e) {
+        bad(`SV-m(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SV-n · **包 Q（`CHG-099` 第 4 条）：产品侧与脚本侧账本解析必须逐字同口径**
+  // ══════════════════════════════════════════════════════════════
+  //
+  //   ⚠ 为什么必须有这一条：`resolveLedgerRoot` 有**两份实现** ——
+  //     · `src/server/doc-read.ts`（宿主进程用，不能 import .mjs）；
+  //     · `scripts/lib/ledger-root.mjs`（四个判据脚本用）。
+  //   ⇒ 两份**结构上必然可能漂**。⛔ 不靠"两边都照文档写一遍"来保证一致，
+  //     而要一条**机器可检**的断言：同一组输入，两边算出的账本根必须相同。
+  //   ⚠ 这条断言的**改前红**已单独证过（故意让两边不一致 ⇒ 真的红，见报告 §3）。
+  if (svOrchMod !== undefined) {
+    const docRead = await import(p2u(join(svRoot, 'src', 'server', 'doc-read.ts')).href)
+    const libRoot = join(svRoot, 'scripts', 'lib', 'ledger-root.mjs')
+    /**
+     * ⚠ 库文件在 `HOB_SA_ROOT` 重定向时也要跟着走（`svRoot` 下那份），
+     *   否则"改前树"会拿到**当前树**的库 ⇒ 交叉断言两边都在读新代码、恒绿。
+     */
+    const lib = await import(p2u(libRoot).href)
+    const CASES = [
+      { root: '/home/lk/FF/dsh-hob', home: '/home/lk/.dsh/hob-ledgers', label: '正常配置' },
+      { root: '/home/lk/FF/dsh-hob', home: '', label: '未配 `ledgerHome`' },
+      { root: '/home/lk/FF/dsh-hob', home: '/tmp/q-nonexistent-home', label: '父目录不存在' },
+      { root: undefined, home: '/home/lk/.dsh/hob-ledgers', label: '工作区根判不出' },
+      { root: '/home/lk/FF/dsh-hob', home: '/home/lk/.dsh/hob-ledgers', label: '显式给 root', explicit: '/x/y/z' },
+    ]
+    const mismatches = []
+    for (const c of CASES) {
+      const a = docRead.resolveLedgerRoot(c.explicit ?? '', c.home, c.root)
+      const b = lib.resolveLedgerRoot(c.root, c.explicit, c.home)
+      if (a !== b) mismatches.push(`${c.label}: 产品=${String(a)} · 脚本=${String(b)}`)
+    }
+    /**
+     * ⚠ 另加一条**结构性**判据：产品侧**不许再把缺省派生回工作区**。
+     *   改前第 ⑤ 档 `return join(ws, '.hob')` 会让"没配 ledgerHome"时**静默落回工作区**
+     *   —— 那正是"账本还在工作区里"的假搬形态。
+     */
+    const noHome = docRead.resolveLedgerRoot('', '', '/home/lk/FF/dsh-hob')
+    const notInWorkspace = noHome === undefined
+      || !String(noHome).startsWith('/home/lk/FF/dsh-hob')
+    if (mismatches.length === 0 && notInWorkspace) {
+      ok('SV-n ✓ **账本解析两边同口径**（包 Q · `CHG-099` 第 4 条）：产品侧 '
+        + '`doc-read.ts:resolveLedgerRoot` 与脚本侧 `scripts/lib/ledger-root.mjs` '
+        + `在 ${CASES.length} 组输入下**逐组相同**（含"未配 ledgerHome"/"父目录不存在"/`
+        + '"工作区根判不出"/"显式给 root"）· ⚠ 且**没配 `ledgerHome` 时不再派生回工作区**'
+        + `（得 ${String(noHome)}，⛔ 不是 \`<工作区>/.hob\`）` + svTag)
+    } else {
+      bad('SV-n 【两边解析口径不一致 / 或缺省仍派生回工作区】：'
+        + (mismatches.length === 0 ? '' : mismatches.join(' | '))
+        + ` · 未配 ledgerHome 时得 ${String(noHome)}`)
+    }
+  }
+
+  // SV-n(反证)：故意让脚本侧多一档"判不出就派生回工作区" ⇒ 交叉断言必须红
+  {
+    const docReadPath = join(svRoot, 'src', 'server', 'doc-read.ts')
+    const libPath = join(svRoot, 'scripts', 'lib', 'ledger-root.mjs')
+    const srcDoc = svOrchMod === undefined ? '' : readFileSync(docReadPath, 'utf8')
+    const libExists = existsSync(libPath)
+    if (svOrchMod === undefined || !libExists) {
+      bad('SV-n(反证) 【失去靶子】`doc-read.ts` 或 `scripts/lib/ledger-root.mjs` 读不到'
+        + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
+    } else {
+      const dir = mkdtempSync(join(svTmp, 'mut-svn-'))
+      try {
+        try { (await import('node:fs')).cpSync(join(svRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
+        mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true })
+        try { (await import('node:fs')).symlinkSync(join(svRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
+        /** ⚠ 变异：让**脚本侧**在"判不出"时派生回工作区（= 改前第 ⑤ 档那种假搬）。 */
+        const libSrc = readFileSync(libPath, 'utf8')
+        const GUARD = "  if (root === undefined || root === '') return undefined"
+        if (!libSrc.includes(GUARD)) {
+          bad('SV-n(反证) 【失去靶子】`ledger-root.mjs` 里找不到 `root === undefined` 那一判')
+        } else {
+          /**
+           * ⚠⚠ **变异口径修正**（照实记）：上一步我只加了一行注释（**没改行为**）⇒
+           *   两边照样相等 ⇒ 负向对拍恒假。必须**真的改行为**：
+           *   让脚本侧在"没配 `ledgerHome`"时**派生回 `<工作区>/.hob`**（= 改前第 ⑤ 档那种假搬），
+           *   而产品侧此时返回 `undefined` ⇒ 两边**必然不一致**。
+           */
+          const HOME_GUARD = "  if (home === null || home.trim() === '') return undefined"
+          if (!libSrc.includes(HOME_GUARD)) {
+            bad('SV-n(反证) 【失去靶子】`ledger-root.mjs` 里找不到 `home === null` 那一判')
+          } else {
+            writeFileSync(join(dir, 'scripts', 'lib', 'ledger-root.mjs'),
+              libSrc.replace(HOME_GUARD,
+                "  if (home === null || home.trim() === '') return join(root, '.hob') /* 变异：假搬回工作区 */"),
+              'utf8')
+          }
+          const mutLib = await import(p2u(join(dir, 'scripts', 'lib', 'ledger-root.mjs')).href)
+          const docRead2 = await import(p2u(join(dir, 'src', 'server', 'doc-read.ts')).href)
+          const a = docRead2.resolveLedgerRoot('', '', '/home/lk/FF/dsh-hob')
+          const b = mutLib.resolveLedgerRoot('/home/lk/FF/dsh-hob', undefined, '')
+          if (a !== b) {
+            ok('SV-n(反证) ✓ 负向对拍：故意让**脚本侧**与产品侧不一致'
+              + `（产品=${String(a)} · 脚本=${String(b)}）⇒ 交叉断言**真的会红**`
+              + ' ⇒ SV-n 那道判据真的长在两份实现上')
+          } else {
+            bad('SV-n(反证) 【负向对拍失败】两边被人为改成不一致之后仍然相等'
+              + `（都是 ${String(a)}）⇒ SV-n 咬不住"两份实现漂移"`)
+          }
+        }
+      } catch (e) {
+        bad(`SV-n(反证) 变异体跑不起来（${String(e?.message ?? e)}）`)
+      } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+    }
+  }
+  try { rmSync(svTmp, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+}
+
+// ── D12. **说成功必须有前提（回读验证）**（2026-10-27 · 包 X · 方案 §5.6 `D12`）────────
+/**
+ * ══ 本组守的是什么（任务书 §二 的「第二步：改，并配断言」）════════════════════
+ *   `D12` 的原话：**凡"我改了盘上东西"的调用，返回成功之前必须回读确认。**
+ *   改前的真机故障（`CHG-086`）：**`ok:true` 而盘上没写** —— 返回值拿内存算、
+ *   一次回读都没有。⚠ 这不是"某处忘了"，是**一类**：本组按"写盘点清单"逐个钉。
+ *
+ * ── 判据（⚠ 真跑那几个写函数，⛔ 不扫源码找关键字）──────────────────────────
+ *   D12-a `writeOrchState`：写成功 ⇒ **盘上字节 == 预期串**（真跑 + 真读回）；
+ *   D12-b `writeOrchState` **改哑必红**：让落盘写成"别的内容"（用只读目录造写不成）
+ *          ⇒ **必须返回 `false`** —— 这条是"回读真的接在返回值上"的负向对拍；
+ *   D12-c `ensureRuntimeIgnored`：写成功 ⇒ `true` **且盘上内容真的是 `*` 那两行**；
+ *   D12-d `ensureRuntimeIgnored` **改哑必红**：把目标做成**目录**（写不成）⇒ 必须 `false`；
+ *   D12-e `writePolicyStore`：写成功 ⇒ 回读得到的那份 JSON 与预期**逐字节相同**；
+ *   D12-f `writePolicyStore` **改哑必红**：目标路径不可写 ⇒ `{ok:false}` **且 reason 非空**；
+ *   D12-g `writeHobFile` 的**备份**：备份文件必须**真在盘上且与原文逐字节相同**
+ *          （⚠ 备份是 `R-17` 的唯一凭据；它没落地而主写照做 = 改前那份原状永久丢失）。
+ *
+ * ⚠ **为什么这几条必须"真跑"而不是文本匹配**：改前那几个函数**源码里一个关键字都不缺**
+ *   （`writeFileSync` / `renameSync` 都在），文本断言照样 PASS —— 缺的是**回读那一步**，
+ *   而那一步只有真跑才看得见它的**返回值**变不变。
+ * ⚠ **负向对拍为什么用"造写不成"而不是"删掉回读那几行"**：后者要改仓再还原
+ *   （本仓记过的老病：判据可能把自己写坏）。造一个**合法但写不成**的场景
+ *   （目标是个目录 / 只读），得到的是**同一个返回值边界**，零破坏风险且等价。
+ */
+{
+  const { mkdtempSync: dMkdt, writeFileSync: dWf, readFileSync: dRf, rmSync: dRm,
+    mkdirSync: dMkdir, readdirSync: dRd } = await import('node:fs')
+  const { tmpdir: dTmp } = await import('node:os')
+  const { pathToFileURL: dP2u } = await import('node:url')
+
+  let orchMod, policyMod
+  try { orchMod = await import(dP2u(join(sourceTreeRoot, 'src', 'server', 'orch-state.ts')).href) } catch { orchMod = undefined }
+  try { policyMod = await import(dP2u(join(sourceTreeRoot, 'src', 'server', 'session-policy.ts')).href) } catch { policyMod = undefined }
+
+  const base = dMkdt(join(dTmp(), 'hob-d12-'))
+  try {
+    // ── D12-a / D12-b：writeOrchState ──────────────────────────────────
+    if (orchMod === undefined || typeof orchMod.writeOrchState !== 'function') {
+      bad('D12-a 无法直载 `orch-state.ts` 的 `writeOrchState` ⇒ 基准缺失（⛔ 不按通过处理）')
+    } else {
+      const target = join(base, 'a', 'orch.json')
+      const state = { version: 1, updatedAt: 12345, lost: [], handoffs: [], sessions: [], pending: [] }
+      const wrote = orchMod.writeOrchState(target, state)
+      let onDisk = ''
+      try { onDisk = dRf(target, 'utf8') } catch { onDisk = '' }
+      const expect = JSON.stringify(state, null, 2)
+      if (wrote !== true) {
+        bad(`D12-a \`writeOrchState\` 正常写**返回了非 true**（${String(wrote)}）⇒ 写不进去却报失败`)
+      } else if (onDisk !== expect) {
+        bad('D12-a `writeOrchState` **说成功但盘上不是预期内容**'
+          + `（盘上 ${onDisk.length} 字节 / 预期 ${expect.length} 字节）⇒ 正是 \`CHG-086\` 那个形态`)
+      } else {
+        ok('D12-a `writeOrchState` ✓ 说成功 ⇒ **盘上逐字节等于预期**（真跑 + 真读回，'
+          + `${Buffer.byteLength(onDisk, 'utf8')} 字节）`)
+      }
+
+      // 改哑对拍：目标路径的父级是个**文件**（建目录必失败）⇒ 必须 false
+      const blocker = join(base, 'a', 'blocker')
+      dWf(blocker, 'x', 'utf8')
+      const badTarget = join(blocker, 'nested', 'orch.json')
+      const wroteBad = orchMod.writeOrchState(badTarget, state)
+      if (wroteBad !== false) {
+        bad('D12-b 【负向对拍失败】`writeOrchState` 在**根本写不进去**的路径上'
+          + `仍返回 ${String(wroteBad)} ⇒ 回读没有接在返回值上（"说成功但没发生"仍在）`)
+      } else {
+        ok('D12-b ✓ 负向对拍：路径写不成（父级是个文件）⇒ `writeOrchState` 返回 **false**')
+      }
+    }
+
+    // ── D12-c / D12-d：ensureRuntimeIgnored ────────────────────────────
+    if (orchMod === undefined || typeof orchMod.ensureRuntimeIgnored !== 'function') {
+      bad('D12-c 无法直载 `ensureRuntimeIgnored` ⇒ 基准缺失（⛔ 不按通过处理）')
+    } else {
+      const dir = join(base, 'rt')
+      const r = orchMod.ensureRuntimeIgnored(dir)
+      let ig = ''
+      try { ig = dRf(join(dir, '.gitignore'), 'utf8') } catch { ig = '' }
+      const wantIg = '# dsh-hob 编排运行态（插件自管；不进账本历史）\n*\n'
+      if (r !== true) bad(`D12-c \`ensureRuntimeIgnored\` 正常写返回非 true（${String(r)}）`)
+      else if (ig !== wantIg) {
+        bad('D12-c `ensureRuntimeIgnored` **说成功但盘上不是 `*` 那两行**'
+          + `（实读 ${JSON.stringify(ig.slice(0, 40))}）⇒ 运行态可能被账本 git 收进历史`)
+      } else ok('D12-c `ensureRuntimeIgnored` ✓ 说成功 ⇒ 盘上内容**逐字节等于预期**（含 `*` 自忽略）')
+
+      // 改哑对拍：目标路径被一个**目录**占住 ⇒ 写不成 ⇒ 必须 false
+      const dir2 = join(base, 'rt2')
+      dMkdir(join(dir2, '.gitignore'), { recursive: true })
+      const r2 = orchMod.ensureRuntimeIgnored(dir2)
+      if (r2 !== false) {
+        bad(`D12-d 【负向对拍失败】\`.gitignore\` 位置被目录占住（写不成）时仍返回 ${String(r2)}`)
+      } else ok('D12-d ✓ 负向对拍：`.gitignore` 位置被目录占住（写不成）⇒ 返回 **false**')
+    }
+
+    // ── D12-e / D12-f：writePolicyStore ────────────────────────────────
+    if (policyMod === undefined || typeof policyMod.writePolicyStore !== 'function') {
+      bad('D12-e 无法直载 `session-policy.ts` 的 `writePolicyStore` ⇒ 基准缺失（⛔ 不按通过处理）')
+    } else {
+      const pf = join(base, 'pol', 'policy.json')
+      const pstate = { version: 1, migrationEpoch: 777, sessions: {} }
+      const w = policyMod.writePolicyStore(pf, pstate)
+      let back = ''
+      try { back = dRf(pf, 'utf8') } catch { back = '' }
+      const pexpect = JSON.stringify(pstate, null, 2)
+      if (w?.ok !== true) bad(`D12-e \`writePolicyStore\` 正常写未返回 ok:true（${JSON.stringify(w)}）`)
+      else if (back !== pexpect) {
+        bad(`D12-e \`writePolicyStore\` **说成功但盘上不符**（${back.length} vs ${pexpect.length} 字节）`)
+      } else ok('D12-e `writePolicyStore` ✓ 说成功 ⇒ 回读**逐字节等于预期**（真跑 + 真读回）')
+
+      const pblocker = join(base, 'pol', 'pblocker')
+      dWf(pblocker, 'x', 'utf8')
+      const wBad = policyMod.writePolicyStore(join(pblocker, 'nested', 'p.json'), pstate)
+      if (wBad?.ok !== false) {
+        bad(`D12-f 【负向对拍失败】\`writePolicyStore\` 在写不成的路径上仍 ${JSON.stringify(wBad)}`)
+      } else if (typeof wBad.reason !== 'string' || wBad.reason.trim() === '') {
+        bad('D12-f 【只说失败不给原因】`writePolicyStore` 返回 ok:false 但 reason 为空')
+      } else {
+        ok(`D12-f ✓ 负向对拍：写不成 ⇒ **ok:false 且带可读原因**（${JSON.stringify(wBad.reason.slice(0, 24))}…）`)
+      }
+    }
+
+    /**
+     * ══════════════════════════════════════════════════════════════════════
+     * ⚠⚠ **D12-h 「有回读」这条判据自己先证明"改之前是红的"**
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * ── 为什么必须有这一条（⚠ 是本组的靶心，⛔ 不是补充）────────────────────
+     *   `D12-a` ~ `D12-f` 是**行为**断言：它们钉"说成功 ⇒ 盘上对"。
+     *   ⚠ 但实测发现一个关键事实：**改前那版代码在正常路径上也能通过它们**
+     *     —— `renameSync` 成功时盘上确实就是预期内容。
+     *   ⇒ 那几条**证明不了"回读这一步存在"**：把回读整段删掉，它们照样绿。
+     *   ⚠ 这正是任务书 §二 要求的**"断言必须先证明改之前是红的"**没被满足的形态。
+     *
+     * ── 本条怎么做到"改前必红"（⚠ 自证式，⛔ 不靠外部夹具）──────────────────
+     *   ① 判据 `hasReadback`：源码里，**写动作之后**必须出现"重新从盘上读"
+     *      且"与预期比"这两件事（两个都要求，⛔ 只认"读了文件"出现就算）；
+     *   ② **正向**：真源码 ⇒ 必须 `true`；
+     *   ③ **反证（这就是"改之前"）**：把真源码里**写动作之后那一段**抹掉，
+     *      模拟改前形态 ⇒ 判据**必须变 `false`** —— 抹掉之后仍 true 说明判据
+     *      没长在回读上（它咬的是写之前那些守卫）。
+     *   ⚠ 抹的是**内存里的字符串**（⛔ 不改仓文件）：与 `check-presets` 的 `P-1(反证)`
+     *     同款纪律 —— 改仓再还原正是"判据可能把自己写坏"的老病。
+     */
+    {
+      /** 写动作的落点标记（同步写 / 原子写）。取**最后一次**出现的位置 ⛔ 不写死行号。 */
+      const WRITE_MARKS = ['writeFileSync(', 'renameSync(', 'atomicWriteWithMode(', 'copyFileSync(']
+      const lastWriteAt = (code) => {
+        let last = -1
+        for (const m of WRITE_MARKS) {
+          const i = code.lastIndexOf(m)
+          if (i > last) last = i
+        }
+        return last
+      }
+      /**
+       * ⚠ **判据**：写动作之后必须 (a) **重新从盘上读**、(b) **拿它和预期比**。
+       *   ⛔ (a) 不认"读了文件但读完扔掉"；(b) 不认"拿内存里那份比"。
+       */
+      const hasReadback = (code) => {
+        const last = lastWriteAt(code)
+        if (last < 0) return false
+        const tail = code.slice(last)
+        /**
+         * ① **重读**：写动作之后必须再读一次盘上那个文件。
+         * ⚠ **要把读出来的那个变量名抓下来** —— 否则无法判"它有没有被拿去比"
+         *   （本单实测：第一版只认固定几个名字，\`stopBack\` / \`rolledBack\` 全漏 ⇒ 误报）。
+         */
+        const reads = [...tail.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(?:await\s+)?(?:readFileSync|readFile)\(/g)]
+          .map((m) => m[1])
+        /**
+         * ⚠ **先判"就地比较"再判"变量形态"**（本单实测的顺序坑）：
+         *   第一版把 `if (reads.length === 0) return false` 放在最前 ⇒
+         *   `return readFileSync(p,'utf8') === expect` 这种**没有赋值给变量**的写法
+         *   在这里被提前判死，根本走不到下面那条分支 ⇒ 三处误报"没有回读"。
+         *   ⇒ 两条分支必须**并列**，⛔ 不许有先后短路。
+         */
+        if (/(?:readFileSync|readFile)\([^\n]*?(?:===|!==|\.equals\()/.test(tail)) return true
+        if (reads.length === 0) return false
+        /**
+         * ② **与预期比**：那个读出来的变量必须真的进了一次比较 ——
+         *   \`.equals(\` / \`X !== …\` / \`X === …\`（⛔ 只读出来就扔掉不算）。
+         */
+        for (const v of reads) {
+          const cmp = new RegExp(`(?:${v}\\.equals\\(|\\b${v}\\s*(?:===|!==))`)
+          if (cmp.test(tail)) return true
+        }
+        /**
+         * ③ **就地比较形态**（⛔ 不许只认"赋值给变量再比"）：
+         *   本仓有几处写成 `return readFileSync(p,'utf8') === 预期` 或
+         *   `Buffer.from(readFileSync(p)).equals(bytes)` —— 读与比在**同一个表达式**里。
+         *   ⚠ 本单实测踩过：只认变量形态 ⇒ 那几处被误报"没有回读"。
+         */
+        if (/(?:readFileSync|readFile)\([^\n]*?(?:===|!==|\.equals\()/.test(tail)) return true
+        if (/Buffer\.from\(\s*\w+\s*\)\.equals\(/.test(tail)) return true
+        return /(?:===|!==)\s*(?:expect|wantIg)\b/.test(tail)
+      }
+      /** 反证用：把**写动作那一行之后**全部抹掉 ⇒ 等价于改前形态（写完直接 return）。 */
+      const stripAfterWrite = (code) => {
+        const last = lastWriteAt(code)
+        if (last < 0) return code
+        const nl = code.indexOf('\n', last)
+        return nl < 0 ? code : code.slice(0, nl + 1)
+      }
+
+      const orchSrcText = (() => {
+        try { return dRf(join(sourceTreeRoot, 'src', 'server', 'orch-state.ts'), 'utf8') } catch { return '' }
+      })()
+      const policySrcText = (() => {
+        try { return dRf(join(sourceTreeRoot, 'src', 'server', 'session-policy.ts'), 'utf8') } catch { return '' }
+      })()
+      const orchTsText = (() => {
+        try { return dRf(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { return '' }
+      })()
+
+      /**
+       * 从源码里切出**单个函数体**。
+       * ⚠ 两种形态都要认（⛔ 只认 `export function` 会漏掉内部函数 —— 本单实测踩过：
+       *   `preserveCorruptCopy` 是模块内私有函数，写成 `function preserveCorruptCopy(`，
+       *   第一版只找 `export function` ⇒ 切出空串 ⇒ 误报"基准缺失"）。
+       */
+      const bodyOf = (code, name) => {
+        const i = Math.max(
+          code.indexOf('export function ' + name + '('),
+          code.indexOf('function ' + name + '('),
+        )
+        const start = i < 0 ? -1 : code.lastIndexOf('function ', i + 9)
+        if (start < 0) return ''
+        const j = code.indexOf('\n}\n', start)
+        return j < 0 ? code.slice(start) : code.slice(start, j + 3)
+      }
+
+      /** 从源码里切出一个**闭包**体（`const <名> = (` 起，到下一个顶层收尾）。 */
+      const closureOf = (code, name) => {
+        const i = code.indexOf('const ' + name + ' = (')
+        if (i < 0) return ''
+        const j = code.indexOf('\n    }\n', i)
+        return j < 0 ? code.slice(i) : code.slice(i, j + 7)
+      }
+
+      const cases = [
+        ['writeOrchState', bodyOf(orchSrcText, 'writeOrchState')],
+        ['ensureRuntimeIgnored', bodyOf(orchSrcText, 'ensureRuntimeIgnored')],
+        ['preserveCorruptCopy', bodyOf(orchSrcText, 'preserveCorruptCopy')],
+        ['writePolicyStore', bodyOf(policySrcText, 'writePolicyStore')],
+        ['ensurePolicyDirIgnored', bodyOf(policySrcText, 'ensurePolicyDirIgnored')],
+        /**
+         * ⚠ `orchestrator.ts` 的两处**直接 `writeFileSync`**（stop / resume 的落盘）——
+         *   它们不走 `writeOrchState`，是本清单里另一族"改了盘上东西还返成功"。
+         *   ⚠ 但它们是 `apply()` 内的**闭包**（`const persistStoppedFor = (…)`），
+         *   ⛔ 不是 `export function` ⇒ 用 `const <名> = (` 起头切。
+         */
+        ['persistStoppedFor', closureOf(orchTsText, 'persistStoppedFor')],
+        ['clearStoppedFor', closureOf(orchTsText, 'clearStoppedFor')],
+      ]
+      const empty = cases.filter(([, b]) => b === '')
+      if (empty.length > 0) {
+        bad('D12-h 【基准缺失】切不出这几个写函数的函数体：'
+          + empty.map(([n]) => n).join(' / ') + '（⛔ 不按通过处理）')
+      } else {
+        const notPinned = cases.filter(([, b]) => !hasReadback(b))
+        if (notPinned.length > 0) {
+          bad('D12-h 【写后没有回读】这几处"改了盘上东西还返成功"**没有回读这一步**：'
+            + notPinned.map(([n]) => n).join(' / ')
+            + '\n      ⇒ ⚠ 这正是 `CHG-086` 那个形态：返回值拿内存算，盘上没写也报成功')
+        } else {
+          ok('D12-h ✓ **全部写点**（' + cases.length + ' 处）写动作之后都有"重读 + 与预期比"：'
+            + cases.map(([n]) => n).join(' / '))
+        }
+        /** ── 反证：抹掉写动作之后那段 ⇒ 判据必须变 false（= "改之前是红的"）── */
+        const survivedStrip = cases.filter(([, b]) => hasReadback(stripAfterWrite(b)))
+        if (survivedStrip.length > 0) {
+          bad('D12-h(反证) 【反证不成立】把写之后的回读抹掉之后判据**仍然通过**：'
+            + survivedStrip.map(([n]) => n).join(' / ')
+            + '\n      ⇒ 说明这条判据没长在"回读"上（它咬的是写之前那些守卫）')
+        } else {
+          ok('D12-h(反证) ✓ 负向对拍：抹掉写动作之后那段（= **改前形态**）⇒ ' + cases.length + ' 处**全部变红**'
+            + ' ⇒ 这条判据真的接在"回读"上，⛔ 不是靠注释声称')
+        }
+      }
+    }
+
+    // ── D12-g：writeHobFile 的备份必须真在盘上 ─────────────────────────
+    const hwSrc = (() => { try { return dRf(join(sourceTreeRoot, 'src', 'server', 'hob-write.ts'), 'utf8') } catch { return '' } })()
+    /**
+     * ⚠ **为什么这一条是文本 + 结构而不是真跑 `writeHobFile`**：那个入口需要一份
+     *   完整账本根 + 白名单 + 渲染器，真跑会**动到真账本**（本单 ⛔ 不许）。
+     *   ⇒ 退一步钉**可判的三件事**，并把局限写在断言行里（⛔ 不假装是夹具绿）：
+     *     ① 备份写之后**真的有一次读回**；
+     *     ② 读回的结果**被拿去与原文逐字节比**（`Buffer.equals`，⛔ 不是字符串比）；
+     *     ③ 不符时**抛错**（⇒ 落既有 `write-failed`，⛔ 不是另行吞掉）。
+     */
+    const hasBackupReadback = /const backBytes = await readFile\(join\(backupDir, name\)\)/.test(hwSrc)
+    const hasBufferCompare = /Buffer\.from\(backBytes\)\.equals\(Buffer\.from\(original\)\)/.test(hwSrc)
+    const throwsOnMismatch = /备份回读与原文不符/.test(hwSrc)
+    if (!hasBackupReadback || !hasBufferCompare || !throwsOnMismatch) {
+      bad('D12-g `writeHobFile` 的**备份**缺回读（三件事缺一）：'
+        + `读回=${hasBackupReadback} · 逐字节比=${hasBufferCompare} · 不符即抛=${throwsOnMismatch}`
+        + ' ⇒ 备份没落地而主写照做 ⇒ 改前那份原状永久丢失（`R-17` 的唯一凭据没了）')
+    } else {
+      ok('D12-g `writeHobFile` 备份 ✓ 写后**独立读回 + Buffer 逐字节比 + 不符即抛**'
+        + '（⚠ 边界：本组是**结构**断言，⛔ 不是真跑 `writeHobFile` —— 真跑会动真账本）')
+    }
+  } finally {
+    try { dRm(base, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+  }
+}
+
+// ── WA. **推进看护：登记表两态 + 唯一那条判据**（2026-10-27 · 包 AB · 方案 §5.9 `D14`）──
+/**
+ * ══ 本组守的是什么（方案 §5.9，`⬜` → 落地）════════════════════════════════
+ *   用户否掉过的形态先钉死（⛔ 本组**不许**为它们留口子）：
+ *     · **⛔ 只有两个状态**（`waiting` / `awake`）—— 加第三态即红；
+ *     · **⛔ 不加原因码** —— 切回等待只写一句**说明**（`note`），⛔ 不是码表；
+ *     · **⛔ 进入 `awake` 只有一个入口：派发动作** —— 不许有"手工置 awake"的开关。
+ *
+ * ── 判据（⚠ 真跑那几个函数，⛔ 不扫源码找关键字）──────────────────────────
+ *   WA-a 登记：派发 ⇒ 进 `awake` 且 `targets` 含那个会话（真跑 + 真读回）
+ *   WA-b **合并**：同一 owner 再派一个 ⇒ `targets` **并进**（⛔ 不新建第二条）
+ *   WA-c **切回等待**：⇒ `state='waiting'` + `targets` 清空 + `note` 原样保留
+ *   WA-d **没登记过就切回 ⇒ `wrote:false`**（⛔ 不许凭空造一条假装切成功）
+ *   WA-e **判据三分量**：全都不在跑 + 超阈值 ⇒ `shouldWake:true`
+ *   WA-f **5 分钟门已删**（包 BL/BM）：未到阈值也叫 · 刚进 awake（1 秒）也叫
+ *   WA-g **有任一个在跑 ⇒ 不唤醒**（`still-running`）
+ *   WA-h **判不出 ⇒ 不唤醒**（`undecidable`，⛔ 不许当成"没在跑"）
+ *   WA-i **等待态 ⇒ 不唤醒**（`waiting`；⛔ 不与上面三档混成一句）
+ *   WA-j **⛔ 只有两个状态**：收窄器把第三个取值**整条丢掉**（⛔ 不许猜成等待）
+ *   WA-k **向后兼容**：旧文件没有 `watchEntries` ⇒ 读成空数组（⛔ 不判坏）
+ *   WA-l **读数面按 `owner` 分组**：他人的**只给条数**（`R10`），⛔ 不混成一行
+ *   WA-m **`self` 判不出 ⇒ `undecidable`**（⛔ 不许说成"我的登记 0 条"，`R9`）
+ *
+ * ⚠ **"改之前是红的"的实证**：本组全部函数**改前不存在**
+ *   （`src/server/orch-state.ts` 里 `watchEntries` / `registerWatchEntry` /
+ *    `setWatchState` / `readWatchEntries` 在 `HEAD` 版**零命中**；
+ *    `judgeWatchGuards` 同样零命中）⇒ 把本文件指向 `HEAD` 版源码树时，
+ *   本组会**全部报"基准缺失"**（`bad`），⛔ 不会静默通过。
+ *   ⚠ 这与"先写红、再改绿"等价：**对象不存在 ⇒ 断言必须红**（`E-126` 同族）。
+ */
+{
+  const { mkdtempSync: waMkdt, rmSync: waRm, writeFileSync: waWf } = await import('node:fs')
+  const { tmpdir: waTmp } = await import('node:os')
+  const { pathToFileURL: waP2u } = await import('node:url')
+
+  let waState, waOrch
+  try { waState = await import(waP2u(join(sourceTreeRoot, 'src', 'server', 'orch-state.ts')).href) } catch { waState = undefined }
+  try { waOrch = await import(waP2u(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts')).href) } catch { waOrch = undefined }
+
+  const needState = ['registerWatchEntry', 'setWatchState', 'readWatchEntries']
+  const missState = needState.filter((n) => waState === undefined || typeof waState[n] !== 'function')
+  if (missState.length > 0) {
+    bad(`WA 【基准缺失】\`orch-state.ts\` 缺看护登记入口：${missState.join(' / ')}`
+      + '\n      ⇒ ⚠ 方案 §5.9 的登记表**没有落地**（⛔ 不按通过处理）')
+  } else if (waOrch === undefined || typeof waOrch.judgeWatchGuards !== 'function') {
+    bad('WA 【基准缺失】`orchestrator.ts` 缺 `judgeWatchGuards`（§5.9 唯一那条判据）'
+      + '\n      ⇒ ⚠ 判据没落地（⛔ 不按通过处理）')
+  } else {
+    const waDir = waMkdt(join(waTmp(), 'hob-wa-'))
+    try {
+      const f = join(waDir, 'orch.json')
+
+      // ── WA-k 向后兼容：旧文件无 watchEntries ⇒ 空数组 ──────────────────
+      const oldF = join(waDir, 'old.json')
+      waWf(oldF, JSON.stringify({ version: 1, updatedAt: 1, pending: [], lost: [], handoffs: [], sessions: [], closed: [] }), 'utf8')
+      const oldRead = waState.readOrchState(oldF)
+      if (!Array.isArray(oldRead.watchEntries) || oldRead.watchEntries.length !== 0) {
+        bad('WA-k **向后兼容失败**：旧文件（无 `watchEntries`）没有读成空数组')
+      } else ok('WA-k ✓ 向后兼容：旧文件无 `watchEntries` ⇒ 读成**空数组**（⛔ 不判坏、⛔ 不猜状态）')
+
+      // ── WA-a 登记 ⇒ awake ────────────────────────────────────────────
+      const r1 = waState.registerWatchEntry(f, 'hob-1', 'sess-A')
+      const e1 = waState.readWatchEntries(f).find((e) => e.owner === 'hob-1')
+      if (!r1.wrote || e1 === undefined || e1.state !== 'awake' || !e1.targets.includes('sess-A')) {
+        bad(`WA-a 派发登记没进 \`awake\`：wrote=${r1.wrote} entry=${JSON.stringify(e1)}`)
+      } else ok('WA-a ✓ 派发 ⇒ 登记进 **awake** 且 `targets` 含该会话（真跑 + 真读回）')
+
+      // ── WA-b 同 owner 再派 ⇒ 合并 ────────────────────────────────────
+      waState.registerWatchEntry(f, 'hob-1', 'sess-B')
+      const all2 = waState.readWatchEntries(f)
+      const e2 = all2.find((e) => e.owner === 'hob-1')
+      const dupOwner = all2.filter((e) => e.owner === 'hob-1').length
+      if (dupOwner !== 1 || e2 === undefined || !e2.targets.includes('sess-A') || !e2.targets.includes('sess-B')) {
+        bad(`WA-b **同一 owner 出现了 ${dupOwner} 条**（应恰好 1 条）或 targets 没并进：${JSON.stringify(e2)}`
+          + '\n      ⇒ ⚠ 新建第二条会让读数面同一 owner 出现两行（`R10` 要求按 owner 分组）')
+      } else ok('WA-b ✓ 同一 owner 再派 ⇒ `targets` **并进**（去重 · 仍恰好 1 条 · ⛔ 不新建）')
+
+      // ── WA-d 没登记过就切回 ⇒ false ──────────────────────────────────
+      const rNo = waState.setWatchState(f, 'nobody', 'x')
+      if (rNo.wrote !== false) {
+        bad(`WA-d 没登记过的 owner 切回**返回了真值**（${String(rNo.wrote)}）⇒ ⛔ 凭空造了一条`)
+      } else if (waState.readWatchEntries(f).some((e) => e.owner === 'nobody')) {
+        bad('WA-d 切回"没登记过的 owner"时**盘上多了一条记录** ⇒ ⛔ 不许凭空造')
+      } else ok('WA-d ✓ 没登记过就切回 ⇒ `wrote:false`，且**盘上没多出记录**（⛔ 不假装切成功）')
+
+      // ── WA-c 切回等待 ────────────────────────────────────────────────
+      const r3 = waState.setWatchState(f, 'hob-1', '做完了')
+      const e3 = waState.readWatchEntries(f).find((e) => e.owner === 'hob-1')
+      if (!r3.wrote || e3 === undefined || e3.state !== 'waiting' || e3.targets.length !== 0 || e3.note !== '做完了') {
+        bad(`WA-c 切回等待不对：wrote=${r3.wrote} entry=${JSON.stringify(e3)}`)
+      } else ok('WA-c ✓ 切回 ⇒ `state=waiting` · `targets` 清空 · `note` 原样保留（⛔ 不是原因码）')
+
+      // ── WA-j 第三态整条丢掉 ──────────────────────────────────────────
+      const badF = join(waDir, 'third.json')
+      waWf(badF, JSON.stringify({
+        version: 1, updatedAt: 1, pending: [], lost: [], handoffs: [], sessions: [], closed: [],
+        watchEntries: [
+          { owner: 'ok', targets: ['a', 'a', 'b', ''], state: 'awake', stateAt: 2 },
+          { owner: 'third', targets: [], state: 'lost-state', stateAt: 3 },
+          { owner: '', targets: [], state: 'awake', stateAt: 4 },
+        ],
+      }), 'utf8')
+      const badRead = waState.readOrchState(badF).watchEntries
+      const hasThird = badRead.some((e) => e.state !== 'waiting' && e.state !== 'awake')
+      const hasEmptyOwner = badRead.some((e) => e.owner === '')
+      if (hasThird) bad('WA-j **收窄器放行了第三个状态** ⇒ ⛔ 用户已明确否掉"第三态"')
+      else if (hasEmptyOwner) bad('WA-j 收窄器放行了空 `owner` ⇒ ⛔ 不许猜一个默认 owner（`D15`）')
+      else if (badRead.length !== 1 || badRead[0].targets.length !== 2) {
+        bad(`WA-j 坏记录收窄不对（应只剩 1 条、targets 去重成 2）：${JSON.stringify(badRead)}`)
+      } else {
+        ok('WA-j ✓ **只有两个状态**：第三态 / 空 owner **整条丢掉**；`targets` 去重（4 项 ⇒ 2 个）')
+      }
+    } finally { try { waRm(waDir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+  }
+
+  // ── WA-e ~ WA-i：那条判据的五档（纯函数，⛔ 不需要真运行态文件）────────────
+  if (waOrch === undefined || typeof waOrch.judgeWatchGuards !== 'function') {
+    // 上面①已报过基准缺失，此处不重复
+  } else {
+    const NOW = 1793000000000
+    const TH = 5 * 60 * 1000
+    const dead = () => false
+    const alive = (id) => id === 't-b'
+    const unknown = (id) => (id === 't-a' ? false : undefined)
+    /**
+     * ⚠ **读数② 的测试替身**（2026-10-27 · 包 AD）：`judgeWatchGuards` 现在多收一个
+     *   `lastActiveProbe`。⚠ **不给它** ⇒ 判据落 `undecidable`（保守）⇒ 下面 WA-e/f/g
+     *   会全部退化成 `undecidable`，测不到各自那一档。
+     *   ⇒ 本组显式传一个"**很久没活动**"的探针（= 最有利于唤醒的那一侧），
+     *     让 WA-e/f/g 各自测的还是它们原本那一格。
+     *   ⚠ 读数② 自己那一组（WA-p/q/r）另有专门用例。
+     */
+    /**
+     * ⚠ **包 AG：读数②的替身从"时刻"改成"三态结论"**（`TASK` §一 第 1 档）。
+     *   `'ended'` = 本轮已结束 ∧ 无排队 ⇒ 映射成 `ownerActivity='idle'`。
+     *   ⚠ 不给它 ⇒ 判据落 `undecidable`（保守）⇒ WA-e/f/g 会全部退化成 `undecidable`。
+     */
+    const turnEnded = () => 'ended'
+    const awake = [{ owner: 'o1', targets: ['t-a', 't-b'], state: 'awake', stateAt: NOW - TH - 1000 }]
+    const j = (entries, probe, now) => waOrch.judgeWatchGuards(entries, probe, now, turnEnded)[0]
+
+    const jWake = j(awake, dead, NOW)
+    if (jWake.shouldWake !== true || jWake.reason !== 'wake') {
+      bad(`WA-e 全都不在跑 + 超阈值 ⇒ **没有唤醒**（reason=${jWake.reason}）`
+        + '\n      ⇒ ⚠ 方案 §5.9 的那条判据**没生效**')
+    } else ok('WA-e ✓ 全都不在跑 + 超阈值 ⇒ `shouldWake:true`（`wake`）—— §5.9 唯一那条判据生效')
+
+    /**
+     * ⚠⚠ **包 BL（2026-10-28）：本条判据随 5 分钟门一并改写**（用户裁定）。
+     *   改前：未到阈值 ⇒ 不唤醒 —— 那守的是**第二道门**。
+     *   改后：门已删，`elapsedMs` **不再是判定分量** ⇒ 改守新口径：
+     *     **刚进 `awake`（`elapsedMs` 极小）也一样叫** —— 即"满足条件当次就叫"。
+     *   ⚠ 这不是放宽：原来测"门挡住了"，现在测"门不在了"。两者**都要求判据存在**。
+     */
+    const jNoElapsed = j(awake, dead, NOW - TH + 60000)
+    const jJustArmed = j([{ owner: 'o1', targets: [], state: 'awake', stateAt: NOW - 1000 }], dead, NOW)
+    if (jNoElapsed.shouldWake !== true || jNoElapsed.reason !== 'wake') {
+      bad(`WA-f 未到阈值却没唤醒（reason=${jNoElapsed.reason}）`
+        + '\n      ⇒ ⚠ 5 分钟门应已删除：满足条件当次就叫（包 BL）')
+    } else if (jJustArmed.shouldWake !== true || jJustArmed.reason !== 'wake') {
+      bad(`WA-f 刚进 awake（1 秒前）却没叫（reason=${jJustArmed.reason}）`
+        + '\n      ⇒ ⚠ 说明还有别的"时间门"挡着 —— 用户要求只留 30 秒复查这一道')
+    } else ok('WA-f ✓ **5 分钟门已删**：未到阈值也叫 · 刚进 awake（1 秒）也叫 —— 只留 30 秒复查一道')
+
+    const jRunning = j(awake, alive, NOW)
+    if (jRunning.shouldWake !== false || jRunning.reason !== 'still-running') {
+      bad(`WA-g 观察集合里**还有在跑的**却也唤醒 / 原因不对（reason=${jRunning.reason}）`)
+    } else ok('WA-g ✓ 观察集合里任一个在跑 ⇒ **不唤醒**（`still-running`）')
+
+    const jUnknown = j(awake, unknown, NOW)
+    if (jUnknown.shouldWake !== false || jUnknown.reason !== 'undecidable') {
+      bad(`WA-h **判不出**时却唤醒了 / 原因不是 \`undecidable\`（reason=${jUnknown.reason}）`
+        + '\n      ⇒ ⚠ "判不出"被当成"没在跑"了 —— 那会**误唤醒**（`R-10`）')
+    } else ok('WA-h ✓ **判不出 ⇒ 不唤醒**（`undecidable`）—— ⛔ 不把"判不出"当"没在跑"')
+
+    const jWaiting = j([{ owner: 'o1', targets: [], state: 'waiting', stateAt: NOW - TH * 9 }], dead, NOW)
+    if (jWaiting.shouldWake !== false || jWaiting.reason !== 'waiting') {
+      bad(`WA-i 等待态却也唤醒 / 原因不对（reason=${jWaiting.reason}）`)
+    } else ok('WA-i ✓ **等待态 ⇒ 不唤醒**（`waiting`，⛔ 不与另外三档混成一句）')
+
+    /** ── WA-l / WA-m：读数面按 owner 分组 ──────────────────────────── */
+    const orchSrcWa = (() => { try { return readFileSync(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { return '' } })()
+    const hasBoard = /watchBoardOf/.test(orchSrcWa)
+    const othersCountOnly = /others:\s*number/.test(orchSrcWa) && /他人的\s*只给条数/.test(orchSrcWa)
+    if (!hasBoard) {
+      bad('WA-l **读数面没有按 `owner` 分组**（找不到 `watchBoardOf`）⇒ `R10` 没落地')
+    } else if (!othersCountOnly) {
+      bad('WA-l 读数面**没有把"他人的只给条数"写出来** ⇒ `R10` ② 没落地'
+        + '\n      ⇒ ⚠ 别把别人的活当成自己的，也别泄漏别人的会话 id')
+    } else {
+      ok('WA-l ✓ 读数面按 `owner` 分组（`watchBoardOf`）· 他人的**只给条数**（`R10` ②）')
+    }
+    if (!/undecidable:\s*true/.test(orchSrcWa)) {
+      bad('WA-m **`self` 判不出时没有落 `undecidable`** ⇒ 会把"判不出我是谁"说成"我没有登记"（`R9`）')
+    } else ok('WA-m ✓ `self` 判不出 ⇒ `undecidable:true`（⛔ 不说成"我的登记 0 条"）')
+
+    /** ── WA-n：⛔ 没有"手工置 awake"的开关（进入 awake 的唯一入口是派发）── */
+    const hasManualAwake = /setWatchState\([^)]*,\s*[^)]*'awake'/.test(orchSrcWa)
+    if (hasManualAwake) {
+      bad('WA-n 出现了**手工置 `awake`** 的调用 ⇒ ⛔ 方案 §5.9 定死"进入 awake 只有一个入口：派发"')
+    } else ok('WA-n ✓ 没有"手工置 `awake`"的调用 —— 进入 `awake` 的**唯一入口是派发**（§5.9）')
+
+    /** ── WA-o：⛔ 没有第三个状态名（`lost-ish` 之类）出现在判据里 ────── */
+    const stateUnionOk = /'waiting'\s*\|\s*'awake'/.test(
+      (() => { try { return readFileSync(join(sourceTreeRoot, 'src', 'server', 'orch-state.ts'), 'utf8') } catch { return '' } })(),
+    )
+    if (!stateUnionOk) {
+      bad('WA-o `PersistedWatchEntry.state` **不是** `\'waiting\' | \'awake\'` 两值类型 ⇒ ⛔ 第三态回来了')
+    } else ok("WA-o ✓ 类型层钉死**两态**（`'waiting' | 'awake'`）—— ⛔ 用户已明确否掉第三态")
+  }
+}
+
+// ── WC. **看护唤醒：`D16` 先落盘再投递 + 只发给 owner**（2026-10-27 · 包 AC）──
+/**
+ * ══ 本组守的是什么（`D16` / `D15` / `D4`，三条都是方案硬要求）══════════════
+ *   · **`D16`**：唤醒记录**先写盘、再投递** —— ⛔ 反过来宿主重启就丢事件，
+ *     那个 Hob **永远不知道**自己该被叫醒过；
+ *   · **`D15`**：唤醒**只发给该登记的 `owner`** —— ⛔ 广播、⛔ 按工作区挑、
+ *     ⛔ 按"谁读过卡面"挑；
+ *   · **`D4`**：at-most-once —— 投过就⛔ 不再投。
+ *
+ * ── 判据（⚠ 真跑那两个标记函数，⛔ 不扫源码找关键字）────────────────────
+ *   WC-a **先投后落 ⇒ 拒**（缺 `wakeLoggedAt` 时 `markWakeDelivered` 必须 `wrote:false`）
+ *        ⚠ 这一条是 `D16` 的**机检形态**：顺序错了当场红。
+ *   WC-b 先落盘 ⇒ `wakeLoggedAt` 落到盘上（真跑 + 真读回）
+ *   WC-c 落盘**幂等**：再调一次 ⇒ 时刻**不往后推**（否则"持续多久"会被自己刷新掉）
+ *   WC-d 投递标记 ⇒ `wakeDeliveredAt` 落盘；再投 ⇒ `skipped:true`（`D4` at-most-once）
+ *   WC-e 没登记过的 owner ⇒ 两个标记函数都**拒**（⛔ 不凭空造）
+ *   WC-f `wakeNow` **只发给 `owner`**，且 `owner` 与判定不一致时**拒投**（`D15`）
+ *   WC-g `wakeNow` **三步顺序**：落盘 → 投递 → 记标记（⚠ 源码结构断言 + 行为面 WC-a 双钉）
+ *
+ * ⚠ **"改之前是红的"的实证**：`markWakeLogged` / `markWakeDelivered` /
+ *   `wakeNow` / `wakeLoggedAt` / `wakeDeliveredAt` 在**本批之前源码里零命中**
+ *   ⇒ 指向改前源码树时，WC-a ~ WC-e 全部报"基准缺失"（`bad`），⛔ 不静默通过。
+ */
+{
+  const { mkdtempSync: wcMkdt, rmSync: wcRm } = await import('node:fs')
+  const { tmpdir: wcTmp } = await import('node:os')
+  const { pathToFileURL: wcP2u } = await import('node:url')
+
+  let wcState, wcOrchSrc2
+  try { wcState = await import(wcP2u(join(sourceTreeRoot, 'src', 'server', 'orch-state.ts')).href) } catch { wcState = undefined }
+  try { wcOrchSrc2 = readFileSync(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { wcOrchSrc2 = '' }
+
+  const missWc = ['markWakeLogged', 'markWakeDelivered'].filter(
+    (n) => wcState === undefined || typeof wcState[n] !== 'function',
+  )
+  if (missWc.length > 0) {
+    bad(`WC 【基准缺失】\`orch-state.ts\` 缺 D16 的两个标记函数：${missWc.join(' / ')}`
+      + '\n      ⇒ ⚠ 「先落盘再投递」**没有落地**（⛔ 不按通过处理）')
+  } else {
+    const wcDir = wcMkdt(join(wcTmp(), 'hob-wc-'))
+    try {
+      const f = join(wcDir, 'orch.json')
+      wcState.registerWatchEntry(f, 'o1', 't1')
+
+      // ── WC-a 先投后落 ⇒ 拒 ──────────────────────────────────────────
+      const early = wcState.markWakeDelivered(f, 'o1')
+      const entryAfterEarly = wcState.readWatchEntries(f).find((e) => e.owner === 'o1')
+      if (early.wrote !== false || early.skipped === true) {
+        bad(`WC-a **没落盘就投递，却没有被拒**（wrote=${early.wrote}）`
+          + '\n      ⇒ ⚠ 这正是 \`D16\` 禁的形态：先投后落 ⇒ 宿主重启就丢事件')
+      } else if (entryAfterEarly?.wakeDeliveredAt !== undefined) {
+        bad('WC-a 被拒了，但**盘上却有 `wakeDeliveredAt`** ⇒ 拒得不干净')
+      } else ok('WC-a ✓ **先投后落 ⇒ 拒**（缺 `wakeLoggedAt` 时 `markWakeDelivered` 返回 `wrote:false`）—— `D16` 的机检形态')
+
+      // ── WC-b 先落盘 ⇒ 落到盘上 ─────────────────────────────────────
+      const logged = wcState.markWakeLogged(f, 'o1')
+      const e1 = wcState.readWatchEntries(f).find((e) => e.owner === 'o1')
+      if (!logged.wrote || typeof e1?.wakeLoggedAt !== 'number') {
+        bad(`WC-b 先落盘没落成：wrote=${logged.wrote} wakeLoggedAt=${String(e1?.wakeLoggedAt)}`)
+      } else ok('WC-b ✓ 先落盘 ⇒ `wakeLoggedAt` **真的落到盘上**（真跑 + 真读回）')
+
+      // ── WC-c 落盘幂等：时刻不往后推 ────────────────────────────────
+      /**
+       * ⚠⚠ **必须先"睡一下"再调第二次**（本单负向对拍当场抓到的假通过）：
+       *   `markWakeLogged` 用的是 `Date.now()`，**同一毫秒内**两次调用即使幂等被摘掉，
+       *   时刻也相等 ⇒ 断言恒真。⚠ 实测过：把那行幂等判断改成"每次都写"，
+       *   本档**仍然 PASS**（`EXIT=0`）—— 那就是一条**不会失败的断言**（`E-27`）。
+       *   ⇒ 现在插 20ms 等待 ⇒ 幂等若被摘掉，两次时刻必然不同 ⇒ 必红。
+       */
+      await new Promise((r) => setTimeout(r, 20))
+      const before = e1.wakeLoggedAt
+      const logged2 = wcState.markWakeLogged(f, 'o1')
+      const e2 = wcState.readWatchEntries(f).find((e) => e.owner === 'o1')
+      if (!logged2.wrote) bad('WC-c 第二次落盘失败（应幂等成功）')
+      else if (e2.wakeLoggedAt !== before) {
+        bad('WC-c 落盘**不幂等**：第二次把 `wakeLoggedAt` 往后推了'
+          + '\n      ⇒ ⚠ 那会**刷新"持续多久"**，判据永远等不到阈值')
+      } else ok('WC-c ✓ 落盘**幂等**：再调一次时刻**不往后推**（"持续多久"不会被自己刷新）')
+
+      // ── WC-d 投递标记 + at-most-once ───────────────────────────────
+      const d1 = wcState.markWakeDelivered(f, 'o1')
+      const e3 = wcState.readWatchEntries(f).find((e) => e.owner === 'o1')
+      const d2 = wcState.markWakeDelivered(f, 'o1')
+      if (!d1.wrote || typeof e3?.wakeDeliveredAt !== 'number') {
+        bad(`WC-d 投递标记没落成：wrote=${d1.wrote}`)
+      } else if (d2.skipped !== true) {
+        bad('WC-d **重复投递没有被跳过** ⇒ `D4` at-most-once 破了')
+      } else ok('WC-d ✓ 投递标记落盘；**再投 ⇒ `skipped:true`**（`D4` at-most-once）')
+
+      // ── WC-e 没登记过 ⇒ 两个都拒 ───────────────────────────────────
+      const l3 = wcState.markWakeLogged(f, 'nobody')
+      const d3 = wcState.markWakeDelivered(f, 'nobody')
+      if (l3.wrote !== false || d3.wrote !== false) {
+        bad(`WC-e 没登记过的 owner 却被接受（logged=${l3.wrote} delivered=${d3.wrote}）⇒ ⛔ 凭空造`)
+      } else if (wcState.readWatchEntries(f).some((e) => e.owner === 'nobody')) {
+        bad('WC-e 盘上多出了 `nobody` 的记录 ⇒ ⛔ 不许凭空造')
+      } else ok('WC-e ✓ 没登记过的 owner ⇒ 两个标记函数**都拒**，且**盘上没多出记录**')
+
+      // ── WC-f wakeNow 只发给 owner（唯一归属来源）───────────────────
+      const hasWakeNow = /async wakeNow\(owner: string, verdict: WatchGuardVerdict\)/.test(wcOrchSrc2)
+      const guardsOwner = /verdict\.owner !== owner/.test(wcOrchSrc2)
+      if (!hasWakeNow) {
+        bad('WC-f 找不到 `wakeNow`（唤醒投递**没有实现**）⇒ `D15` 的"只发给 owner"无从落地')
+      } else if (!guardsOwner) {
+        bad('WC-f `wakeNow` **没有校验 `owner` 与判定一致** ⇒ ⛔ 可能投给别人（`D15`）')
+      } else ok('WC-f ✓ `wakeNow` 只发给 `owner`，且 `owner` 与判定不一致时**拒投**（`D15`）')
+
+      // ── WC-g 三步顺序（源码结构，⛔ 只是补充；行为面 WC-a 已钉）────
+      const iLog = wcOrchSrc2.indexOf('markWakeLogged(file, owner)')
+      const iDel = wcOrchSrc2.indexOf('await send(owner, body')
+      const iMark = wcOrchSrc2.indexOf('markWakeDelivered(file, owner)')
+      /**
+       * ⚠⚠ **本档已降级为补充断言、⛔ 不进「查了」计数**（2026-10-27 · 包 AD · `TASK-3` §三.2）。
+       *
+       * ── 为什么降级（`TASK-3` 原话）：「**一条能被绕过的断言当下界，就是虚的下界**」──
+       *   它是**源码结构**断言：把三段代码**挪到一起**（哪怕顺序逻辑上没意义）就能让它过。
+       *   ⇒ 它**挡不住**"顺序被破坏"，真正挡的是 `WC-a`（行为面：先投后落就拒）。
+       *   ⚠ 保留它的价值：**缺段**时能当场点名（`iLog < 0` 那种），比完全没有好。
+       *   ⚠ 但它**不配**当下界的一格 —— 下界是"这些断言一定守得住"的承诺。
+       */
+      if (iLog < 0 || iDel < 0 || iMark < 0) {
+        /**
+         * ⚠ **缺段仍然 `bad`**（那是真缺陷、⛔ 不是"可绕过"那一类）——
+         *   只有"顺序对不对"这一半降级。⚠ 这条区分很重要：⛔ 不能因为降级就整条不报。
+         */
+        bad(`WC-g 三步缺一：落盘=${iLog >= 0} · 投递=${iDel >= 0} · 记标记=${iMark >= 0}`)
+      } else {
+        const ordered = iLog < iDel && iDel < iMark
+        noteSkip(`WC-g（补充档 · **不进下界计数**）三步顺序=${ordered ? '落盘→投递→记标记' : '⚠ 顺序不符'}`
+          + ' —— ⚠ 本档是**源码结构**断言，可被"把三段挪到一起"绕过 ⇒ ⛔ 不当下界；'
+          + '真正挡顺序的是 `WC-a`（行为面）')
+      }
+    } finally { try { wcRm(wcDir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+  }
+}
+
+// ── WD. **看护复查入口：⛔ 不是定时器 / ⛔ 不是 Hob 自查**（2026-10-27 · 包 AC）──
+/**
+ * ══ 本组守的是什么（`TASK-2` §一.3 · 方案 §5.9）════════════════════════════
+ *   方案原话：**「Hob 判不了"Hob 没在运行"」⇒ 检测层 ⛔ 不能做成 Hob 自查**，
+ *   必须是**独立于所有 Hob 的机制**。
+ *
+ * ⚠ 这一条**极易做错**：把判据写成"每隔 N 秒跑一次 `judgeWatchGuards`"看起来
+ *   完全符合"要复查"，而它**正是方案禁的那一形态**（而且它**逻辑上不可能成立**：
+ *   定时器执行的那一刻它自己的进程必然在运行 ⇒ `ownerRunning` 恒 true
+ *   ⇒ 永远观察不到"全停了"）。
+ *
+ * ── 判据 ─────────────────────────────────────────────────────────────
+ *   WD-a `reviewWatchGuards` **存在**（显式入口，⛔ 死代码）
+ *   WD-b 它**没有**被任何 `setInterval` / 常驻 `setTimeout` 排程（⛔ Hob 自查）
+ *   WD-c 它**如实报** `uncapable`（跨进程存活读数拿不到 —— ⛔ 不许当成 0）
+ *   WD-d `wakeNow` 的投递**只认登记里的 owner**（`D15`；见 WC-f，此处只钉"无广播"）
+ */
+{
+  const wdSrc = (() => {
+    try { return readFileSync(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { return '' }
+  })()
+
+  // ── WD-a 入口存在 ──────────────────────────────────────────────────
+  const hasEntry = /reviewWatchGuards\(\): Promise</.test(wdSrc)
+    && /const reviewWatchGuards = async/.test(wdSrc)
+  if (!hasEntry) {
+    bad('WD-a **看护复查入口不存在**（`reviewWatchGuards`）⇒ 方案 §5.9 的复查无处可调'
+      + '\n      ⇒ ⚠ 那等于"判据写好了但没人会跑它"（`E-122`：机制在、没人跑）')
+  } else ok('WD-a ✓ 复查入口 `reviewWatchGuards()` 存在（**显式**入口，⛔ 死代码）')
+
+  // ── WD-b 定时器**只许有条件地武装、且零 `setInterval`**（2026-10-27 · 包 AD 改判）──
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **本档方向反转了 —— 依据是包 AC 那个论证的一个漏（如实登记）**
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 包 AC 的论证（当时对，但只覆盖一个分量）───────────────────────────
+   *   「本段代码跑在 Hob 进程里 ⇒ 它执行时自己必然在运行 ⇒ `ownerRunning` 恒 true
+   *    ⇒ 永远观察不到"全停了"」⇒ 所以"⛔ 不许在插件里开定时器"。
+   *
+   * ── 它漏了什么（`TASK-3` §二.2 的读数②）──────────────────────────────
+   *   判据的实质是「观察集合里**没有一个在动**」，而"**Hob 在不在动**"能**从数据面读**
+   *   （`session.log` 最后事件时刻，`lastActiveAtOfSession`）——
+   *   ⛔ 不需要"从进程外看自己"。⇒ **定时器 + 读数②** 才能覆盖"Hob 活着但瞎忙"那一格。
+   *   ⚠ 只有 ①③ 的定时器确实永远不成立 —— 那个论证**只对残缺的判据**成立。
+   *
+   * ── ⚠ 仍然成立的限制（⛔ 不掩饰，本单不 claim 覆盖）──────────────────
+   *   进程**整体挂掉**时这个定时器也一起没了 ⇒ 那种"停住"**看不见**。
+   *   那一格只有**进程外 supervisor** 能覆盖（宿主跨进程租约未实现，
+   *   见 `dsh-session-persistence/lib/index.js:71`）。
+   *
+   * ── 现在钉什么（⚠ 比"禁定时器"更细，⛔ 不是放宽）─────────────────────
+   *   ① **`setInterval` ⛔ 一处都不许有**（无条件常转 ⇒ 违反 §5.4"空闲时零定时器"）；
+   *   ② 排程必须走**有条件的 `armWatchTimer`**（武装判据 = 盘上有没有 `awake` 登记），
+   *      ⛔ 不许裸 `setTimeout(reviewWatchGuards…)`；
+   *   ③ `armWatchTimer` 必须带 **`unref`**（否则挂住宿主退出）。
+   */
+  const hasInterval = /\bsetInterval\s*\(/.test(wdSrc)
+  /** ⚠ 包 AG：`armWatchTimer` 现在收一个可选 `selfId`（用于把"武装时刻"落盘）⇒ 签名正则要跟着改。 */
+  const armFn = /const armWatchTimer = \(selfId\?: string\): void => \{/.test(wdSrc)
+  const conditionalArm = /if \(!hasAwakeWatch\(\)\) \{ clearWatchTimer\(\); return \}/.test(wdSrc)
+  const unrefed = /watchTimer[\s\S]{0,500}?unref/.test(wdSrc)
+  if (hasInterval) {
+    bad('WD-b `setInterval` 出现了 ⇒ ⛔ 违反方案 §5.4「空闲时零定时器」'
+      + '\n      ⇒ 周期性常转会让宿主永远退不出去，且账平了也停不下来')
+  } else if (!armFn || !conditionalArm) {
+    bad('WD-b 看护定时器**没有武装判据**（缺 `armWatchTimer` 或它的 `hasAwakeWatch()` 条件）'
+      + '\n      ⇒ ⛔ 那会变成"无条件常转" —— 方案 §5.4 明令"有条件才武装，清空即解除"')
+  } else if (!unrefed) {
+    bad('WD-b 看护定时器**没有 `unref`** ⇒ ⚠ 会挂住宿主退出（与 `armRecheck` 同一条纪律）')
+  } else {
+    ok('WD-b ✓ 看护定时器**有条件武装**（`armWatchTimer` + `hasAwakeWatch()`）· **零 `setInterval`** · 带 `unref`')
+  }
+
+  // ── WD-c 如实报 uncapable ──────────────────────────────────────────
+  /**
+   * ⚠ **判据要简单可判**（本组首版写得太绕、当场误报）：
+   *   ① 返回值里**真的**给 `uncapable: HOB_LIVENESS_NOTE`（⛔ 不是空串、⛔ 不是 0）；
+   *   ② 类型上它是 `string`（⛔ 不是 `number` / `boolean` —— 那会被读成"覆盖到了"）。
+   */
+  const hasUncapable = /uncapable:\s*HOB_LIVENESS_NOTE/.test(wdSrc)
+    && /uncapable:\s*string/.test(wdSrc)
+  if (!hasUncapable) {
+    bad('WD-c 复查入口**没有如实报 `uncapable`** ⇒ ⛔ 会把"跨进程读数拿不到"当成"覆盖到了"')
+  } else ok('WD-c ✓ 复查入口**如实报 `uncapable`**（跨进程存活读数拿不到 —— ⛔ 不当成 0）')
+
+  // ── WD-d 投递不广播 ────────────────────────────────────────────────
+  /**
+   * ⚠ 判据：投递调用必须**带着一个具体 owner**（`send(v.owner, …)` 形态），
+   *   ⛔ 不许出现"发给 all / 遍历所有会话"那种广播形态。
+   */
+  const broadcastRe = /(?:deliverInternal|\.deliver)\(\s*(?:'all'|"all"|\[\.\.\.)/.test(wdSrc)
+  /**
+   * ⚠⚠ **包 AE 收口后判据要跟着改**（⚠ 这不是放宽，是**跟着实现搬家**）：
+   *   改前两处各有一份投递，判据钉的是 `reviewWatchGuards` 里那句 `send(v.owner, body…`。
+   *   ⚠ 收口后**投递只剩一处**（`deliverWakeOnce` 里的 `send(owner, body, 'followup')`），
+   *     而**收件人来自参数 `owner`** —— 由两个调用者各自从登记取
+   *     （`wakeNow`：它的 `owner` 参数 + 一致性校验；`reviewWatchGuards`：`v.owner`）。
+   *   ⇒ 判据改成钉**两件**：
+   *     ① 收口链里那句投递**用的是 `owner`**（⛔ 不是别的变量 / 不是字面量）；
+   *     ② **两个调用者都把自己的 owner 传进去了**（`deliverWakeOnce(v.owner,` 存在）。
+   *   ⚠ 这样才真正钉住"归属来自登记"，而⛔ 不是钉某一句字符串。
+   */
+  /**
+   * ⚠ 这三条查的是**原始源码**（`wdSrc`，未剥字符串）⇒ 字面量可以照写；
+   *   但 `deliverWakeOnce(v.owner,` 与 `return deliverWakeOnce(owner, body)` 都对。
+   */
+  const chainSendsOwner = /await send\(owner, body, 'followup'\)/.test(wdSrc)
+  const callerPassesRegistryOwner = /deliverWakeOnce\(v\.owner,/.test(wdSrc)
+  const callerPassesToolOwner = /return deliverWakeOnce\(owner, body\)/.test(wdSrc)
+  if (broadcastRe) {
+    bad('WD-d 看护唤醒里出现**广播式投递** ⇒ ⛔ `D15` 明令只发给该登记的 owner')
+  } else if (!chainSendsOwner) {
+    bad('WD-d 收口链里的投递**不是发给 `owner` 参数**（找不到 `send(owner, body, \'followup\')`）'
+      + '\n      ⇒ ⛔ 归属来源不明')
+  } else if (!callerPassesRegistryOwner || !callerPassesToolOwner) {
+    bad(`WD-d 调用者**没把自己的 owner 传进收口链**（定时器=${callerPassesRegistryOwner} · 工具=${callerPassesToolOwner}）`
+      + '\n      ⇒ ⛔ 那会出现"第二个归属来源"（`D15` / `R-18`）')
+  } else ok('WD-d ✓ 收口链只发给 `owner` 参数；**两个调用者都传登记里的 owner**（`D15`）· 无广播形态')
+}
+
+  // ── WE 组（包 AG 重写）：读数② = **本轮已结束 ∧ 无排队** ──────────────
+  /**
+   * ⚠⚠ **本组在包 AG 整体重写过**（如实登记）：
+   *   包 AD 那版测的是"最近活动时刻的三档"。`TASK` §一 把那个问法**改成了**
+   *   「本轮结束没有 + 有没有新轮排队」⇒ 旧断言测的东西**已经不是现在的实现**
+   *   （旧 `WE-c` 会恒红：它拿"时刻久远"当 `idle`，而新实现看的是 `turn/end`）。
+   *   ⇒ 这里按新语义重写，**只保留"三档可分辨 + 判不出不许当没在跑"这两条精神**。
+   */
+  /** ⚠ 模块在**本组自己载**（⛔ 不跨组借作用域）。 */
+  const weOrch = await (async () => {
+    try {
+      const { pathToFileURL: p2u } = await import('node:url')
+      return await import(p2u(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts')).href)
+    } catch { return undefined }
+  })()
+  const weSrc = (() => {
+    try { return readFileSync(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { return '' }
+  })()
+
+  if (weOrch === undefined || typeof weOrch.judgeWatchGuards !== 'function'
+    || typeof weOrch.turnStateOfSession !== 'function') {
+    bad('WE 【基准缺失】`orchestrator.ts` 缺 `judgeWatchGuards` / `turnStateOfSession`'
+      + '\n      ⇒ ⚠ 读数②（本轮已结束∧无排队）**没有落地**（⛔ 不按通过处理）')
+  } else {
+    const NOW2 = 1793000000000
+    const TH2 = 5 * 60 * 1000
+    const deadProbe = () => false
+    const awake2 = [{ owner: 'o1', targets: ['t-a'], state: 'awake', stateAt: NOW2 - TH2 - 1000 }]
+    const J2 = (ts, now = NOW2) => weOrch.judgeWatchGuards(awake2, deadProbe, now, ts)[0]
+
+    // ── WE-a 判不出 ⇒ undecidable 且不唤醒 ───────────────────────────
+    const jU = J2(() => undefined)
+    if (jU.ownerActivity !== 'undecidable') {
+      bad(`WE-a 本轮状态判不出时 \`ownerActivity\` 应为 \`undecidable\`，实测 \`${jU.ownerActivity}\``)
+    } else if (jU.shouldWake !== false) {
+      bad('WE-a **判不出却唤醒了** ⇒ ⛔ 把"判不出"当"停住了"了（会误唤醒）')
+    } else ok('WE-a ✓ 本轮状态判不出 ⇒ `undecidable` **且不唤醒**')
+
+    // ── WE-b 本轮进行中 / 有排队 ⇒ active 不唤醒 ────────────────────
+    const jB = J2(() => 'busy')
+    if (jB.ownerActivity !== 'active') {
+      bad(`WE-b \`busy\` 应映射成 \`active\`，实测 \`${jB.ownerActivity}\``)
+    } else if (jB.shouldWake !== false) {
+      bad('WE-b **本轮还在进行/有排队却唤醒了** ⇒ ⛔ 会误唤醒正在思考的 Hob')
+    } else ok('WE-b ✓ 本轮进行中或有排队 ⇒ `active` **不唤醒**（⛔ 不误唤醒思考中的 Hob）')
+
+    // ── WE-c 本轮已结束且无排队 ⇒ idle ⇒ 才可能唤醒 ────────────────
+    const jC = J2(() => 'ended')
+    if (jC.ownerActivity !== 'idle') {
+      bad(`WE-c \`ended\` 应映射成 \`idle\`，实测 \`${jC.ownerActivity}\``)
+    } else if (jC.shouldWake !== true) {
+      bad(`WE-c 本轮已结束 + 无排队 + 全不跑 + 超阈值 ⇒ 应当唤醒，实测 reason=${jC.reason}`
+        + '\n      ⇒ ⚠ 那就是"判据又恒不成立了"（`R-24`）')
+    } else ok('WE-c ✓ 本轮**已结束 ∧ 无排队** ⇒ `idle` ⇒ **能唤醒**（判据不再恒不成立）')
+
+    // ── WE-d 三档可分辨 ─────────────────────────────────────────────
+    const trio2 = new Set([jU.ownerActivity, jB.ownerActivity, jC.ownerActivity])
+    if (trio2.size !== 3) {
+      bad(`WE-d 三档**不可分辨**（实际 ${trio2.size} 个取值：${[...trio2].join(' / ')}）`)
+    } else ok('WE-d ✓ 三档**互不相同**（`undecidable` / `active` / `idle`）—— `R-10` 可分辨')
+
+    // ── WE-e 取法同源：读 turn/end 与 inbox（⛔ 不第二套）──────────────
+    const readsTurn = /turn\/end/.test(weSrc) && /turn\/start/.test(weSrc)
+    const readsInbox = /inbox\?\.nextTurn|inbox\.nextTurn/.test(weSrc)
+    if (!readsTurn || !readsInbox) {
+      bad(`WE-e \`turnStateOfSession\` 取法不全（读 turn=${readsTurn} · 读 inbox=${readsInbox}）`
+        + '\n      ⇒ ⚠ "本轮已结束"要靠 `turn/end` vs `turn/start`；"无排队"要靠 `inbox.nextTurn/nextStep`')
+    } else ok('WE-e ✓ 取法：**`turn/end` vs `turn/start` 的 seq** + **`inbox.nextTurn`/`nextStep` 长度**')
+
+    // ── WE-f 判不出 ⇒ undefined（⛔ 不填 0/now；⛔ 不默认 ended）─────────
+    const noSvc = weOrch.turnStateOfSession(undefined, undefined, 'x')
+    const emptyLog = weOrch.turnStateOfSession({ get: () => ({ log: [] }) }, { get: () => ({ inbox: { nextTurn: [], nextStep: [] } }) }, 'x')
+    const noTurn = weOrch.turnStateOfSession(
+      { get: () => ({ log: [{ type: 'assistant/message', seq: 1 }] }) },
+      { get: () => ({ inbox: { nextTurn: [], nextStep: [] } }) }, 'x')
+    if (noSvc !== undefined || emptyLog !== undefined || noTurn !== undefined) {
+      bad(`WE-f 判不出时**没返回 \`undefined\`**（服务缺席=${String(noSvc)} · log 空=${String(emptyLog)} · 无 turn 事件=${String(noTurn)}）`
+        + '\n      ⇒ ⚠ 默认成 `ended` ⇒ "什么都没读到"会被读成"停住了" ⇒ 误唤醒')
+    } else {
+      // 对照：真给 turn 事件 ⇒ 必须判得出
+      const endedOk = weOrch.turnStateOfSession(
+        { get: () => ({ log: [{ type: 'turn/start', seq: 1, time: 1 }, { type: 'turn/end', seq: 2, time: 2 }] }) },
+        { get: () => ({ inbox: { nextTurn: [], nextStep: [] } }) }, 'x')
+      const busyOk = weOrch.turnStateOfSession(
+        { get: () => ({ log: [{ type: 'turn/end', seq: 1, time: 1 }, { type: 'turn/start', seq: 2, time: 2 }] }) },
+        { get: () => ({ inbox: { nextTurn: [], nextStep: [] } }) }, 'x')
+      const queueOk = weOrch.turnStateOfSession(
+        { get: () => ({ log: [{ type: 'turn/start', seq: 1, time: 1 }, { type: 'turn/end', seq: 2, time: 2 }] }) },
+        { get: () => ({ inbox: { nextTurn: [{ text: 'x' }], nextStep: [] } }) }, 'x')
+      if (endedOk !== 'ended' || busyOk !== 'busy' || queueOk !== 'busy') {
+        bad(`WE-f(对照) 判定不对：end 在后应 \`ended\`（实测 ${String(endedOk)}）· `
+          + `start 在后应 \`busy\`（${String(busyOk)}）· 有排队应 \`busy\`（${String(queueOk)}）`
+          + '\n      ⇒ ⚠ "恒 undefined"与"恒 ended"同罪')
+      } else {
+        ok('WE-f ✓ 判不出 ⇒ `undefined`（⛔ 不默认 ended）；**对照三例**：end 在后→`ended` · start 在后→`busy` · 有排队→`busy`')
+      }
+    }
+  }
+
+
+// ── WF. **`D16` 那条链只有一份实现**（2026-10-27 · 包 AE 收口 · `CHG-117` §四·3）──
+/**
+ * ══ 本组守的是什么（`R-18`：同一事实 N 个来源，改一处漂一处）════════════════
+ *   改前「落盘 → 投递 → 记标记」**有两份**（`wakeNow` 一份、`reviewWatchGuards` 一份）。
+ *   ⚠ 本组把"**只剩一份**"变成可判 —— 否则将来有人顺手再抄一份，**没有任何东西会响**。
+ *
+ * ── 判据（⚠ 结构断言，但**不可绕过**：它数的是"调用点出现在几处"）──────
+ *   WF-a `markWakeLogged` 在全文件**只被调用 1 次**
+ *   WF-b `markWakeDelivered` 在全文件**只被调用 1 次**
+ *   WF-c 两者在**同一段**（`deliverWakeOnce`）里，且**顺序 落盘 < 投递 < 记标记**
+ *   WF-d 两个调用者**都走它**（`wakeNow` / `reviewWatchGuards` 里各恰好一次 `deliverWakeOnce(`）
+ *   WF-e `deliverWakeOnce` **不引用 `orch`**（⛔ 否则就是自引用 / 要挪构造顺序）
+ */
+{
+  const wfSrc = (() => {
+    try { return readFileSync(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { return '' }
+  })()
+  /**
+   * ⚠ **数"调用点"而不是"出现次数"**：注释里也会提这两个名字（本文件注释很多）
+   *   ⇒ 必须**先剥注释与字符串**，否则数出来恒 > 1（那会让本组恒红 ⇒ 又变成"没人看"）。
+   *   ⚠ 剥法与本文件别处同款：去 `/* *\/`、去 `//…`、去 `'…'` / `"…"` / `` `…` ``。
+   */
+  const stripped = wfSrc
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    .replace(/`(?:\\[\s\S]|[^`\\])*`/g, '``')
+    .replace(/'(?:\\[\s\S]|[^'\\])*'/g, "''")
+    .replace(/"(?:\\[\s\S]|[^"\\])*"/g, '""')
+  const count = (re) => (stripped.match(re) ?? []).length
+
+  const nLogged = count(/\bmarkWakeLogged\s*\(/g)
+  const nDelivered = count(/\bmarkWakeDelivered\s*\(/g)
+  /**
+   * ⚠⚠ **首版这里数错了（本单当场抓到，如实登记）**：
+   *   写的是 `count(/\bdeliverWakeOnce\s*\(/g)` 并期望 **3**（定义 1 + 调用 2）。
+   *   ⚠ 但定义行是 `const deliverWakeOnce = async (` —— 名字后面跟的是 ` = `，**不是 `(`**
+   *   ⇒ 那条正则**匹配不到定义**，只数到 2 个调用 ⇒ 断言恒红。
+   *   ⇒ 拆成两个判据：**调用次数**（正则带 `(`）与**定义是否存在**（单独判）。
+   */
+  const nChainCalls = count(/\bdeliverWakeOnce\s*\(/g)
+  const hasChainDef = /const deliverWakeOnce = async/.test(stripped)
+
+  if (nLogged !== 1) {
+    bad(`WF-a \`markWakeLogged\` 被调用 **${nLogged}** 次（应恰好 1 次）`
+      + '\n      ⇒ ⚠ `D16` 那条链**又复制出第二份**了（`R-18`：改一处漂一处）')
+  } else ok('WF-a ✓ `markWakeLogged` 全文件**只被调用 1 次**（落盘只有一处入口）')
+
+  if (nDelivered !== 1) {
+    bad(`WF-b \`markWakeDelivered\` 被调用 **${nDelivered}** 次（应恰好 1 次）`)
+  } else ok('WF-b ✓ `markWakeDelivered` 全文件**只被调用 1 次**（记标记只有一处入口）')
+
+  /**
+   * ⚠ `deliverWakeOnce` 的名字会出现在：定义 ×1 + `wakeNow` 调用 ×1 + `reviewWatchGuards` 调用 ×1
+   *   = **3 次**。⛔ 不许是 2（少一个调用者）或 ≥4（多一份链或重复调用）。
+   */
+  if (!hasChainDef) {
+    bad('WF-d 找不到 `deliverWakeOnce` 定义 ⇒ 收口链不存在')
+  } else if (nChainCalls !== 2) {
+    bad(`WF-d \`deliverWakeOnce\` 被调用 **${nChainCalls}** 次（应恰好 2 = 两个调用者各 1）`
+      + '\n      ⇒ ⚠ 只有 1 ⇒ 有一处没走收口链；≥3 ⇒ 又抄了一份（`R-18`）')
+  } else ok('WF-d ✓ `deliverWakeOnce` **定义 1 + 调用 2**（`wakeNow` / `reviewWatchGuards` 各一次）')
+
+  // ── WF-c 同段 + 顺序 ────────────────────────────────────────────────
+  const iLog = stripped.indexOf('markWakeLogged(file, owner)')
+  /**
+   * ⚠ **剥字符串的影响**（同上，如实登记）：`stripped` 里 `'followup'` 已被换成 `''`
+   *   ⇒ 原文 `await send(owner, body, 'followup')` **匹配不到**。改用**不带字面量**的锚。
+   */
+  const iDel = stripped.indexOf('await send(owner, body,')
+  const iMark = stripped.indexOf('markWakeDelivered(file, owner)')
+  if (iLog < 0 || iDel < 0 || iMark < 0) {
+    bad(`WF-c 收口链里三段缺一：落盘=${iLog >= 0} · 投递=${iDel >= 0} · 记标记=${iMark >= 0}`)
+  } else if (!(iLog < iDel && iDel < iMark)) {
+    bad('WF-c **三段顺序不对**（要求：落盘 < 投递 < 记标记）⇒ `D16` 的顺序被破坏'
+      + '\n      ⇒ ⚠ 顺序是 `D16` 的全部内容，⛔ 不是实现细节')
+  } else {
+    /**
+     * ⚠ 还要确认它们**在同一段函数体**里（否则"顺序"跨函数没有意义）。
+     *   判据：`deliverWakeOnce` 的定义位置在三者之前，且三者都在它的括号范围内
+     *   —— 用"下一个顶层 `const ` 定义"作为段末近似（⚠ 足够判"同一段"）。
+     */
+    const iFn = stripped.indexOf('const deliverWakeOnce = async')
+    if (iFn < 0 || iFn > iLog) {
+      bad('WF-c 三段**不在 `deliverWakeOnce` 里**（定义缺失或在其后）⇒ 收口没真发生')
+    } else ok('WF-c ✓ 三段在**同一个 `deliverWakeOnce`** 里，顺序 = **落盘 → 投递 → 记标记**（`D16`）')
+  }
+
+  // ── WF-e 收口链不引用 orch（⛔ 自引用）───────────────────────────────
+  const iFnStart = stripped.indexOf('const deliverWakeOnce = async')
+  const iFnEnd = iFnStart < 0 ? -1 : (() => {
+    /** ⚠ 下一个顶层 `    const ` 或 `    let ` 定义 = 段末（本文件缩进 4 空格的都在 apply 作用域）。 */
+    const rest = stripped.slice(iFnStart + 10)
+    const m = /\n    (?:const|let)\s/.exec(rest)
+    return m === null ? stripped.length : iFnStart + 10 + m.index
+  })()
+  const chainBody = iFnStart < 0 ? '' : stripped.slice(iFnStart, iFnEnd)
+  if (iFnStart < 0) {
+    bad('WF-e 找不到 `deliverWakeOnce` 定义 ⇒ 无法判"是否引用 orch"')
+  } else if (/\borch\s*\./.test(chainBody)) {
+    bad('WF-e `deliverWakeOnce` **引用了 `orch`** ⇒ ⛔ 那就是自引用'
+      + '\n      ⇒ ⚠ 会逼着改 `orch` 的构造顺序（`reviewWatchGuards` 在它之前）'
+      + ' —— 而 `TASK-4` §二 明令"宁可留两份也⛔ 不许制造纠缠的依赖"')
+  } else ok('WF-e ✓ `deliverWakeOnce` **不引用 `orch`** ⇒ 无自引用、⛔ 没挪构造顺序')
+}
+
+// ── WG. **判据跑在"在不在运行"上 + 定时器武装落盘**（2026-10-27 · 包 AG）──
+/**
+ * ══ 本组守的是什么（`TASK` §三.1 与 `CHG-121` §五·2）════════════════════════
+ *   · **`probe` 的语义必须是"在不在运行"** —— ⛔ 不许再用"对象存在"。
+ *     ⚠ 这正是包 AF 之前的病根：`agents.get(id) !== undefined` 是「对象还在不在」，
+ *     而唤醒定时器就跑在那个进程里 ⇒ `ownerRunning` 恒 true ⇒ **判据恒不成立**。
+ *   · **"定时器武装"必须落盘** —— 只存在于返回值里的读数
+ *     ⛔ 不是读数，是"某一条路径的副产品"（`CHG-121` §五·2 原话）。
+ *
+ * ── 判据 ─────────────────────────────────────────────────────────────
+ *   WG-a `probe` 读的是 **`.status === 'running'`**（⛔ 不是 `!== undefined`）
+ *   WG-b `probe` 对 `'idle'` 返回 `false`、对不认识的值返回 `undefined`（三档分开）
+ *   WG-c 运行态类型里有 `watchTimerArmedAt` 字段（落盘）
+ *   WG-d `armWatchTimer` 真的调了 `recordWatchTimerArmed`（⛔ 只是定义了函数没用）
+ *   WG-e `recordWatchTimerArmed` 有写放大守卫（< 60s 不重写 —— 否则每 60 秒写一次盘）
+ */
+{
+  const wgSrc = (() => {
+    try { return readFileSync(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { return '' }
+  })()
+  const wgStateSrc = (() => {
+    try { return readFileSync(join(sourceTreeRoot, 'src', 'server', 'orch-state.ts'), 'utf8') } catch { return '' }
+  })()
+
+  // ── WG-a probe 语义 ────────────────────────────────────────────────
+  const oldSemantic = /return agents\.get\(id\) !== undefined/.test(wgSrc)
+  const newSemantic = /const st = \(a as any\)\?\.status/.test(wgSrc)
+  if (oldSemantic) {
+    bad('WG-a **`probe` 又用回"对象存在"了**（`agents.get(id) !== undefined`）'
+      + '\n      ⇒ ⚠ 那会让 `ownerRunning` 恒 true ⇒ **判据恒不成立**（`R-24` 的形态）'
+      + '\n      ⇒ 这正是包 AF 之前那个病根，⛔ 不许回归')
+  } else if (!newSemantic) {
+    bad('WG-a 找不到 `probe` 读 `.status` 的实现（既不是旧形态也不是新形态）⇒ 无法判')
+  } else ok('WG-a ✓ `probe` 读 **`.status === \'running\'`**（⛔ 不再是"对象存在"）')
+
+  // ── WG-b 三档 ───────────────────────────────────────────────────────
+  const idleFalse = /if \(st === 'idle'\) return false/.test(wgSrc)
+  const unknownUndef = /return undefined[\s\S]{0,80}?\n      \}/.test(wgSrc)
+  if (!idleFalse) {
+    bad('WG-b `probe` **没把 `idle` 判成"不在跑"**（缺 `if (st === \'idle\') return false`）'
+      + '\n      ⇒ ⚠ 那 `idle` 会被当成"判不出" ⇒ 判据永远落 `undecidable`（另一种恒不成立）')
+  } else if (!unknownUndef) {
+    bad('WG-b `probe` 对不认识的状态**没有返回 `undefined`** ⇒ ⛔ 会猜一个默认值')
+  } else ok("WG-b ✓ `probe` 三档：`running`→true · `idle`→false · 不认识→`undefined`（⛔ 不猜）")
+
+  // ── WG-c 落盘字段 ──────────────────────────────────────────────────
+  if (!/watchTimerArmedAt\?: number/.test(wgStateSrc)) {
+    bad('WG-c 运行态**没有 `watchTimerArmedAt` 字段** ⇒ 「定时器武装」仍只活在该返回值里'
+      + '\n      ⇒ ⚠ `CHG-121` §五·2：「那就不是读数，是某一条路径的副产品」')
+  } else if (!/recordWatchTimerArmed/.test(wgStateSrc)) {
+    bad('WG-c 有字段但**没有写它的函数**（缺 `recordWatchTimerArmed`）')
+  } else ok('WG-c ✓ 运行态有 `watchTimerArmedAt` 字段 + `recordWatchTimerArmed` 写函数（落盘）')
+
+  // ── WG-d 真的调用了 ─────────────────────────────────────────────────
+  if (!/recordWatchTimerArmed\(selfFile\)/.test(wgSrc)) {
+    bad('WG-d `armWatchTimer` **没有调用 `recordWatchTimerArmed`** ⇒ 字段永远空 ⇒ 又变成"看不见"')
+  } else ok('WG-d ✓ `armWatchTimer` **真的落盘了**武装时刻（⛔ 只是定义了函数没用）')
+
+  // ── WG-e 写放大守卫 ─────────────────────────────────────────────────
+  const guard = /Math\.abs\(at - prev\.watchTimerArmedAt\) < 60_000/.test(wgStateSrc)
+  if (!guard) {
+    bad('WG-e `recordWatchTimerArmed` **没有写放大守卫**'
+      + '\n      ⇒ ⚠ 定时器每 60 秒续排一次 ⇒ 每 60 秒一次写盘（本仓记过同一个病）')
+  } else ok('WG-e ✓ 有写放大守卫（相差 < 60s 不重写）')
+}
+
+// ── WH. **判不出要能点名 + 有出路 + 复查 30s**（2026-10-27 · 包 AI · `TASK-3` §三/§四）──
+/**
+ * ══ 本组守的是什么（三条都是用户点名要的）════════════════════════════════
+ *   · **`undecidableBecause`**：三个分量**压成一个布尔** ⇒ 读数面只能说"判不出"，
+ *     ⛔ 说不出是哪一格 ⇒ 上一单我因此**查错了对象**。现在必须点名。
+ *   · **放弃出路**：一条永远判不出的登记会**永久挂着 + 定时器永久武装 + 盘上看不出空转**。
+ *     ⇒ 超过 `THRESHOLD × FACTOR` 仍判不出 ⇒ **转回 `waiting` + 留可读说明**。
+ *   · **复查间隔 30s**（用户指令 `CHG-125`）：`60s → 30s`，⚠ **阈值 5 分钟不动**。
+ *
+ * ── 判据 ─────────────────────────────────────────────────────────────
+ *   WH-c `WATCH_GUARD_RECHECK_MS === 30_000`（用户指令）· 且 `THRESHOLD === 300_000` **未动**
+ *
+ * ── ⚠ 本组原有 6 条，现剩 1 条（2026-10-27 · 包 AP「全退」）──────────────────
+ *   退掉的 4 条与其被测对象**一起消失**（按本仓纪律：理由要写明、⛔ 不是为变绿放宽）：
+ *     · `WH-a`（`undecidableBecause` 逐个点名）—— 用户没要求过这个粒度，已随字段一并退回；
+ *     · `WH-b`（正常档不出现该字段）—— 字段整体退回 ⇒ 这条退化成恒真，留着就是"虚的下界"；
+ *     · `WH-d`（`WATCH_GIVE_UP_FACTOR`）—— 放弃线 15 分钟是自加的，已退回；
+ *     · `WH-e`（放弃分支调 `setWatchState`）—— 同上，被测行为已不存在；
+ *     · `WH-f`（放弃说明点名哪一格）—— 同上。
+ *   ⚠ 保留的 `WH-c` 仍咬得住：它钉的是**用户指令**（复查 30s、阈值 5 分钟不动）。
+ */
+{
+  const whOrch = await (async () => {
+    try {
+      const { pathToFileURL: p2u } = await import('node:url')
+      return await import(p2u(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts')).href)
+    } catch { return undefined }
+  })()
+  const whSrc = (() => {
+    try { return readFileSync(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { return '' }
+  })()
+
+  if (whOrch === undefined || typeof whOrch.judgeWatchGuards !== 'function') {
+    bad('WH 【基准缺失】`orchestrator.ts` 缺 `judgeWatchGuards` ⇒ 本组无从判定（⛔ 不按通过处理）')
+  } else {
+    const NOW = 1793000000000
+    /** 只满足一次的场景：观察集合已空、owner 没在跑、本轮已结束 —— 不等任何时长。 */
+    const entFresh = [{ owner: 'O', targets: ['T1', 'T2'], state: 'awake', stateAt: NOW - 1000 }]
+    /**
+     * ⚠⚠ **包 BN（2026-10-28）：`WH-c` 已从"守常量值"改成"守行为"**。
+     *
+     * ── 改前守的是什么（⚠ 为什么必须改）──────────────────────────────────
+     *   `WATCH_GUARD_THRESHOLD_MS === 300_000` —— 它证明的只是**一个常量没变**。
+     *   而包 BL 已经把「持续满 5 分钟」那道门从判定链里删掉
+     *   ⇒ **那个常量已不约束任何行为** ⇒ 本条**绿，但绿得没意义**。
+     *   ⚠ 比"文案说假话"更坏：**文案错了人还能看出来；断言绿了，人就不看了。**
+     *
+     * ── 现在守的新行为（用户裁定）──────────────────────────────────────
+     *   **「判定条件当次满足即唤醒」** —— 构造一个
+     *   **只满足一次、且不等任何时长**（`stateAt = NOW - 1000`，仅 1 秒）的场景，
+     *   看它是否**当次就唤醒**。⛔ 不再断言任何常量值。
+     *   ⚠ 若实现里又长出"等一段时间"的门 ⇒ 本场景落 `not-elapsed` 之类
+     *     ⇒ `shouldWake:false` ⇒ **本条立刻红**（能红的实证见 REPORT：把 5 分钟门加回去跑一次）。
+     */
+    if (whOrch.WATCH_GUARD_RECHECK_MS !== 30_000) {
+      bad(`WH-c 复查间隔不是 30s（实测 ${String(whOrch.WATCH_GUARD_RECHECK_MS)}）⇒ ⛔ 用户指令 CHG-125 没落`)
+    } else {
+      const jNow = whOrch.judgeWatchGuards(entFresh, () => false, NOW, () => 'ended')[0]
+      /** 反向对照：同样"当次满足"，只是把 stateAt 推到很久以前 —— 结果必须一样（证明不看时长）。 */
+      const entOld = [{ owner: 'O', targets: ['T1', 'T2'], state: 'awake', stateAt: NOW - 30 * 60 * 1000 }]
+      const jOld = whOrch.judgeWatchGuards(entOld, () => false, NOW, () => 'ended')[0]
+      if (jNow.shouldWake !== true || jNow.reason !== 'wake') {
+        bad(`WH-c **条件当次满足却没有唤醒**（reason=${jNow.reason} shouldWake=${jNow.shouldWake}）`
+          + '\n      ⇒ ⚠ 用户裁定：⛔ 不要"持续满多久"的第二道门 —— 满足就叫'
+          + '\n      ⇒ ⚠ 说明判定链里又长出了时间门')
+      } else if (jOld.shouldWake !== jNow.shouldWake || jOld.reason !== jNow.reason) {
+        bad(`WH-c 结果**取决于"已持续多久"**（1 秒=${jNow.reason} · 30 分=${jOld.reason}）`
+          + '\n      ⇒ ⚠ 那就是还有时间门在起作用 —— 本单要求"只看条件、不看时长"')
+      } else ok('WH-c ✓ 复查间隔 = **30s** · **条件当次满足即唤醒**（1 秒与 30 分结果相同 ⇒ 无第二道门）')
+    }
+
+  }
+}
+
+// ── WI. **唤醒成功后回等待（⛔ 不加第三态）**（2026-10-27 · 包 AJ · `CHG-131`）──
+/**
+ * ══ 本组守的是什么（用户原话：「否则它会一直叫我」）══════════════════════════
+ *   改前：唤醒成功 ⇒ `state` 恒 `awake` ⇒ 定时器永久武装 ⇒ 每 30 秒判一次
+ *         ⇒ 每次都 `shouldWake:true` ⇒ **一直叫**（`R-24`：永远在响的提醒 = 没提醒）。
+ *
+ * ── 判据（⚠ 全部**真跑**，⛔ 不扫源码找关键字）──────────────────────────
+ *   WI-a **唤醒成功后 state 变回 `waiting`**，且 `targets` 清空（真跑 + 真读回）
+ *   WI-b **两个 `D16` 时刻保留在盘上**（⚠ `setWatchState` 重建条目时曾把它们丢掉 —— 本单修了）
+ *   WI-c **再判一次不会唤醒**（`waiting` ⇒ `reason='waiting'` ⇒ `shouldWake:false`）
+ *   WI-d **投递失败 ⇒ ⛔ 不回等待**（`state` 仍 `awake`、`targets` 仍在）
+ *   WI-e **只有两个状态**（类型层 + 收窄器都把第三态丢掉）
+ *   WI-f **读数面能说出"刚唤醒过、已回等待"**（靠 WI-b 那两个时刻，⛔ 不靠第三态）
+ *   （⚠ `WI-g` 已随「放弃」一并退回 —— 用户没要求过放弃，理由见 WH 组那段）
+ *   WI-h "每 N 秒"那行**读真值**（⛔ 写死数字）
+ */
+{
+  const wiOrch = await (async () => {
+    try {
+      const { pathToFileURL: p2u } = await import('node:url')
+      return await import(p2u(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts')).href)
+    } catch { return undefined }
+  })()
+  const wiState = await (async () => {
+    try {
+      const { pathToFileURL: p2u } = await import('node:url')
+      return await import(p2u(join(sourceTreeRoot, 'src', 'server', 'orch-state.ts')).href)
+    } catch { return undefined }
+  })()
+  const wiSrc = (() => {
+    try { return readFileSync(join(sourceTreeRoot, 'src', 'modules', 'orchestrator.ts'), 'utf8') } catch { return '' }
+  })()
+  const wiStateSrc = (() => {
+    try { return readFileSync(join(sourceTreeRoot, 'src', 'server', 'orch-state.ts'), 'utf8') } catch { return '' }
+  })()
+
+  const missWi = ['registerWatchEntry', 'markWakeLogged', 'markWakeDelivered', 'setWatchState', 'readWatchEntries']
+    .filter((n) => wiState === undefined || typeof wiState[n] !== 'function')
+  if (missWi.length > 0 || wiOrch === undefined) {
+    bad(`WI 【基准缺失】缺：${missWi.join(' / ') || 'orchestrator.ts'}`)
+  } else {
+    const { mkdtempSync: wiMk, rmSync: wiRm, readFileSync: wiRf, writeFileSync: wiWf } = await import('node:fs')
+    const { tmpdir: wiTmp } = await import('node:os')
+    const dir = wiMk(join(wiTmp(), 'hob-wi-'))
+    try {
+      // ── WI-a / WI-b：唤醒成功 ⇒ 回 waiting，且两枚时刻保留 ─────────────
+      const f = join(dir, 'a.json')
+      wiState.registerWatchEntry(f, 'O', 'T')
+      const raw = JSON.parse(wiRf(f, 'utf8'))
+      raw.watchEntries[0].stateAt = Date.now() - 6 * 60 * 1000
+      wiWf(f, JSON.stringify(raw, null, 2), 'utf8')
+      // 复刻收口链：落盘 → 投递成功 → 记标记 → 回等待
+      wiState.markWakeLogged(f, 'O')
+      wiState.markWakeDelivered(f, 'O')
+      /**
+       * ⚠⚠ **包 BG：这里必须与真实源码**逐字同参**（`{ keepWakeAttempts: true }`）**。
+       *   ⚠ 本档上一轮实跑抓到过一次"夹具与实现不同参"的假红：
+       *     夹具不传这个开关 ⇒ 走的是 `watch-wait` 那条口径（清两枚时刻）
+       *     ⇒ 于是 WI-b 报"两枚时刻丢了"，**而真实链没这问题**。
+       *   ⇒ 现在两处**同参**，并且 WI-a 额外断言真实源码**确实传了这个开关**
+       *     （⛔ 否则夹具怎么传都不代表实现）。
+       */
+      /**
+       * ⚠⚠⚠ **包 BL（2026-10-28）：这里⛔ 不再调 `setWatchState`**（用户裁定）。
+       *   改前夹具"复刻收口链"时会调它回 `waiting` —— 但真链**现在不这么做了**：
+       *   投递成功 ⛔ 不改状态（「投递 ≠ 执行」）。
+       *   ⇒ 夹具与实现必须同形，否则测的是"夹具自己的行为"（本档上一轮正因夹具
+       *     与实现不同参假红过一次，见下面那段保留的注释）。
+       *   ⚠ 现在 `after` 就是"投递成功后的真实形状"：`awake` + `targets` 仍在。
+       */
+      const after = wiState.readWatchEntries(f)[0]
+      /**
+       * ⚠⚠ **首版这里写错了（本单负向对拍当场抓到，如实登记）**：
+       *   它只测"`markWakeDelivered` 之后我自己再调一次 `setWatchState`" ——
+       *   **复刻了链，而不是调真实实现** ⇒ 把那行真实代码删掉，本档**照样绿**（`EXIT=0`）。
+       *   ⚠ 那就是一条"不会失败的断言"（`E-27`）。
+       *   ⇒ 现在**两件一起判**：
+       *     ① **真实源码里那一步在，且在 `markWakeDelivered` 之后**（顺序 = `D16` 第四步）；
+       *     ② 行为面：回等待后 `state==='waiting'` 且 `targets` 空。
+       *   ⚠ 只判 ② 不够（复刻），只判 ① 也不够（可能写了没跑）。**两条都要。**
+       */
+      const srcBackIdx = wiSrc.indexOf('const back = setWatchState(')
+      const srcDeliverIdx = wiSrc.indexOf('markWakeDelivered(file, owner)')
+      /**
+       * ⚠⚠ **还要判"只有一次"**（本单第二次负向对拍抓到，如实登记）：
+       *   只判"存在且在之后"时，**再插一个提前调用的回等待**照样绿
+       *   （原来那一步还在 ⇒ 顺序判据仍真）。⚠ 那也是一条可被绕过的断言。
+       *   ⇒ 加上：`setWatchState(` 在**收口链那一段**里**只出现一次**。
+       */
+      const chainSeg = (() => {
+        const i = wiSrc.indexOf('const deliverWakeOnce = async')
+        if (i < 0) return ''
+        const rest = wiSrc.slice(i)
+        const m = /\n    (?:const|let)\s/.exec(rest.slice(10))
+        return m === null ? rest : rest.slice(0, 10 + m.index)
+      })()
+      const setWatchCallsInChain = (chainSeg.match(/setWatchState\(/g) ?? []).length
+      /**
+       * ⚠⚠ **包 BG：真实源码那一处必须传 `{ keepWakeAttempts: true }`**
+       *   （= "唤醒后回等待"，⛔ 不是"我不盯了"）。
+       *   ⚠ 少了它 ⇒ 每次唤醒返回都会把计数清 0 ⇒ **兜底永远到不了 3 次**
+       *     ⇒ `stuck` 那档永不成立（`TASK` §三 第 3 条落不了地）。
+       *   ⚠ 它是**行为前提**：下面的 WI-k/WI-l 都假设这一处传对了。
+       */
+      /**
+       * ⚠⚠⚠ **包 BL（2026-10-28）：WI-a 整条反转**（用户裁定，⚠ 这是他纠正我的那一条）
+       *
+       * ── 用户原话 ────────────────────────────────────────────────────────
+       *   「**『投递成功』⛔ 不等于『Hob 动了』。**」
+       *   「状态只由 **Hob 有没有动作** 改变」：
+       *     · 派了新活 → 新登记 → `awake`；
+       *     · 主动 `watch-wait` → `waiting`；
+       *     · **什么都没做 ⇒ 状态 ⛔ 不变，30 秒后再叫一次。**
+       *   「**如果现有代码里有『投递成功 ⇒ 自动回 waiting』这个行为，它是缺陷**」
+       *
+       * ── 所以本条改守什么 ────────────────────────────────────────────────
+       *   **改前**：要求源码里有"记标记之后回等待"那一步，且 `after.state === 'waiting'`。
+       *   **改后**：要求它**不在** —— 投递成功后状态**仍是 `awake`**、`targets` **不动**。
+       *   ⚠ 这⛔ 不是"放宽"：原来测"有那一步"，现在测"没那一步"，两者都要求判据真实成立。
+       *   ⚠ 用户同时点名了它的后果：**叫一次就永久安静**（下面这条会证明）。
+       */
+      const chainHasAutoReturn = /已唤醒并投递成功/.test(chainSeg)
+      if (chainHasAutoReturn) {
+        bad('WI-a **源码里仍有「投递成功 ⇒ 自动回 waiting」**'
+          + '\n      ⇒ ⚠ 违反不变量「投递 ≠ 执行」：投递成功不代表 Hob 动了（包 BL 用户裁定）'
+          + '\n      ⇒ ⚠ 且与 5 分钟门删除叠加会造成"叫一次就永久安静"，见 WI-c')
+      } else if (after.state !== 'awake') {
+        bad(`WI-a 投递成功后状态应仍为 awake，实测 ${after.state}`
+          + '\n      ⇒ ⚠ 状态只由"Hob 有没有动作"改变，⛔ 不由"投递成功"改变')
+      } else if (after.targets.length === 0) {
+        bad('WI-a 投递成功后 `targets` 被清空了 ⇒ ⚠ 它还要盯这几个，⛔ 投递不改观察对象')
+      } else ok('WI-a ✓ **投递成功 ⛔ 不改状态**：仍是 `awake`、`targets` 保留 —— 状态只由 Hob 的动作改变（包 BL 裁定）')
+
+      if (after.wakeLoggedAt === undefined || after.wakeDeliveredAt === undefined) {
+        bad(`WI-b 回等待后**两枚 \`D16\` 时刻丢了**（logged=${String(after.wakeLoggedAt)} · delivered=${String(after.wakeDeliveredAt)}）`
+          + '\n      ⇒ ⚠ 那"唤醒过"这件事就永远查不到（`R4`），且本单只能靠它替代第三态')
+      } else ok('WI-b ✓ 回等待后 `wakeLoggedAt` / `wakeDeliveredAt` **都保留**（本单修了 `setWatchState` 丢字段）')
+
+      // ── WI-c **Hob 没动作时会再叫**（包 BL · 用户裁定后的新判据）──────
+      /**
+       * ⚠⚠⚠ **包 BL（2026-10-28）：本条整条改写** —— 5 分钟门删掉之后，
+       *   原来那句"回等待当下不叫"**守的门已经不存在了**。
+       *
+       * ── 用户要求的判据（他原话）─────────────────────────────────────────
+       *   「判据相应调整：不再要求『叫完回等待有断言』，改成要求
+       *     **『Hob 没动作时会再次叫』有断言能证明**。」
+       *
+       * ── 所以本条改成证明这一件事（⚠ 这才是删门的目的）────────────────
+       *   同一条登记、投递成功过一次、**Hob 什么都没做**（`state` 仍 `awake`、
+       *   `targets` 仍在、`owner` 没在跑、本轮已结束）⇒ 下一轮复查**必须叫**。
+       *   ⚠ 而且**不管隔了多久都要叫** —— 刚叫完 1 秒也叫（5 分钟门已删）。
+       *   ⚠ 防连叫靠的是 `wakeAttempts` 到 3 转 `stuck`（`WI-j`/`WI-k` 守着），
+       *     ⛔ 不是靠时间窗。
+       */
+      const v2 = wiOrch.judgeWatchGuards(
+        [after], () => false, Date.now() + 1000, () => 'ended')[0]
+      const vSoon = wiOrch.judgeWatchGuards(
+        [{ ...after, stateAt: Date.now() }], () => false,
+        Date.now() + 1000, () => 'ended')[0]
+      if (v2.shouldWake !== true || v2.reason !== 'wake') {
+        bad(`WI-c **Hob 没动作，下一轮却没再叫**（reason=${v2.reason} shouldWake=${v2.shouldWake}）`
+          + '\n      ⇒ ⚠ 违反用户裁定：「Hob 什么都没做 ⇒ 状态不变，30 秒后再叫一次」'
+          + '\n      ⇒ ⚠ 那就是 `CHG-165` 那个病又回来了：叫过一次就永久安静')
+      } else if (vSoon.shouldWake !== true) {
+        bad(`WI-c 刚投递完 1 秒就没再叫（reason=${vSoon.reason}）`
+          + '\n      ⇒ ⚠ 5 分钟门应已删除 —— 满足条件当次就叫，⛔ 不受 elapsedMs 限制')
+      } else ok('WI-c ✓ **Hob 没动作 ⇒ 会再叫**（含刚投递完 1 秒也叫）—— 5 分钟门已删 · 防连叫靠 3 次上限')
+
+      /**
+       * ══════════════════════════════════════════════════════════════════════
+       * ── **WI-i / WI-j：本单的两条新断言**（`TASK` §五.2，⚠ 必须能红）───────
+       * ══════════════════════════════════════════════════════════════════════
+       *
+       * ── WI-i【兜底】唤醒后我没动 ⇒ **会再叫** ────────────────────────────
+       *   ⚠ 判据 = **行为**（⛔ 不是"源码里有那行"）：
+       *     把同一条登记（回等待后、`wakeAttempts=1`）的 `stateAt` 推过阈值，
+       *     再判一次 ⇒ 必须 `shouldWake:true` ∧ `wakeFallback:true`。
+       *   ⚠ **能红的实证**（本单实跑，见 REPORT）：把"`waiting` 那一支的兜底"
+       *     整段改回 `return {shouldWake:false, reason:'waiting'}`
+       *     ⇒ 本档报 `reason=waiting shouldWake=false` ⇒ FAIL。
+       *
+       * ── WI-j【到顶】我不动三次 ⇒ 转 `stuck` 且**读数可见** ──────────────
+       *   ⚠ 判据 = **行为 + 读数面同源**：
+       *     ① `wakeAttempts = 上限` 时判据**不再叫**（停止自动重试）；
+       *     ② `wakeGaveUp:true`（这是 `stuck` 那一档的**派生**读数）；
+       *     ③ 读数面源码里有"叫过 N 次没人应"的**原文**，且 N **读真值**；
+       *     ④ `watchNeedsTimer()` 到顶后**返回 false**（武装也停，⛔ 不留空转）。
+       *   ⚠ **能红的实证**：把 `wakeGaveUpOf` 的 `>=` 改成 `>`（永不成立）
+       *     ⇒ ② 报 `wakeGaveUp=false` ⇒ FAIL。
+       */
+      const LIMIT = wiOrch.WAKE_FALLBACK_LIMIT ?? wiState.WAKE_FALLBACK_LIMIT
+      if (typeof LIMIT !== 'number' || !(LIMIT > 1)) {
+        bad(`WI-i 【基准缺失】找不到 \`WAKE_FALLBACK_LIMIT\`（实测 ${String(LIMIT)}）`
+          + '\n      ⇒ ⚠ "同一批活最多叫 3 次"这个上限没有落成常量 ⇒ 无从判定')
+      } else {
+        // ── WI-i 兜底会再叫 ──────────────────────────────────────────
+        const fallbackEntry = {
+          owner: 'O', targets: ['T'], state: 'waiting',
+          /** ⚠ 推过阈值：模拟"上次叫完、我等了一个周期还没动"。 */
+          stateAt: Date.now() - 6 * 60 * 1000,
+          wakeLoggedAt: Date.now() - 10 * 60 * 1000,
+          wakeDeliveredAt: Date.now() - 10 * 60 * 1000,
+          wakeAttempts: 1,
+        }
+        const vF = wiOrch.judgeWatchGuards(
+          [fallbackEntry], () => false, Date.now(), () => 'ended')[0]
+        if (vF.shouldWake !== true || vF.wakeFallback !== true) {
+          bad(`WI-i **"唤醒后我没动"却没有再叫**（shouldWake=${vF.shouldWake} reason=${vF.reason} `
+            + `wakeFallback=${String(vF.wakeFallback)}）`
+            + '\n      ⇒ ⚠ 那就是 `CHG-165` 那个病又回来了：「叫过一次就永久安静」'
+            + '（回等待后重新进唤醒只能靠下一次派发，而派发恰好是我不动时不会发生的动作）')
+        } else ok(`WI-i ✓ **唤醒后我没动 ⇒ 会再叫一次**（\`shouldWake:true\` · \`wakeFallback:true\`）`
+          + ' —— 行为面，⛔ 不是"源码里有那行"')
+
+        // ── WI-j 到顶 ⇒ stuck ────────────────────────────────────────
+        const gaveUpEntry = { ...fallbackEntry, wakeAttempts: LIMIT }
+        const vG = wiOrch.judgeWatchGuards(
+          [gaveUpEntry], () => false, Date.now(), () => 'ended')[0]
+        if (vG.shouldWake !== false) {
+          bad(`WI-j 叫满 ${LIMIT} 次**还在叫**（shouldWake=${vG.shouldWake}）`
+            + '\n      ⇒ ⚠ 违反 `TASK` §三 第 3 条「同一批活最多叫 3 次」'
+            + '（无限叫 = `R-24` 的另一半：叫到人麻木，比不叫更糟）')
+        } else if (vG.wakeGaveUp !== true) {
+          bad(`WI-j 叫满 ${LIMIT} 次却**没转 \`stuck\`**（wakeGaveUp=${String(vG.wakeGaveUp)}）`
+            + '\n      ⇒ ⚠ 用户看不出"叫过 3 次没人应"——那就停得**无声无息**')
+        } else {
+          /** ② 读数面**原文**（`TASK` §五.3：`stuck` 这档在读数面上要有原文可读）。 */
+          const hasGiveUpLine = /叫过 \$\{attempts\} 次没人应/.test(wiSrc) && /stuck/.test(wiSrc)
+          /** ③ 那个 `N` **读真值**（⛔ 不许写死 `3` —— 两处会漂）。 */
+          const readsLimit = /上限 \$\{WAKE_FALLBACK_LIMIT\} 次/.test(wiSrc)
+          /** ④ 到顶后**武装也停**（⛔ 留着空转定时器 = 白烧 CPU，且掩盖"已停"）。 */
+          const timerStops = typeof wiState.watchNeedsTimer === 'function'
+            ? wiState.watchNeedsTimer([gaveUpEntry], LIMIT) === false
+            : undefined
+          if (!hasGiveUpLine) {
+            bad('WI-j(`stuck` 读数)**读数面没有"叫过 N 次没人应"这句原文**'
+              + '\n      ⇒ ⚠ `stuck` 与"刚叫过一次"在读面上**逐字一样**（`R4`：空态不许说成"没有发生"）')
+          } else if (!readsLimit) {
+            bad('WI-j(`stuck` 读数)那行的上限**没读 `WAKE_FALLBACK_LIMIT`**（写死了数字）'
+              + '\n      ⇒ ⚠ 常量与文案会漂（`R-18`：同一事实两个来源）')
+          } else if (timerStops !== true) {
+            bad(`WI-j 到顶后**定时器仍要武装**（\`watchNeedsTimer\`=${String(timerStops)}）`
+              + '\n      ⇒ ⚠ 那会永远每 30 秒判一次"叫不叫"，而答案永远是"不叫"（空转）')
+          } else {
+            ok(`WI-j ✓ 叫满 **${LIMIT}** 次 ⇒ **转 \`stuck\`**（\`wakeGaveUp:true\` · 不再叫 · `
+              + '武装也停）· 读数面有「**叫过 N 次没人应**」原文且 N 读真值')
+          }
+        }
+      }
+
+      // ── WI-d 投递失败 ⇒ 不回等待 ───────────────────────────────────
+      const f2 = join(dir, 'b.json')
+      wiState.registerWatchEntry(f2, 'O', 'T')
+      const raw2 = JSON.parse(wiRf(f2, 'utf8'))
+      raw2.watchEntries[0].stateAt = Date.now() - 6 * 60 * 1000
+      wiWf(f2, JSON.stringify(raw2, null, 2), 'utf8')
+      wiState.markWakeLogged(f2, 'O')
+      // ⚠ **不调 markWakeDelivered / setWatchState** —— 模拟"投递失败"（收口链的 else 分支）
+      const fail = wiState.readWatchEntries(f2)[0]
+      if (fail.state !== 'awake') {
+        bad(`WI-d 投递失败却也回到了 ${fail.state} ⇒ ⛔ "叫了但没叫到"被当成"叫过了"`)
+      } else if (fail.targets.length === 0) {
+        bad('WI-d 投递失败后 targets 丢了 ⇒ ⚠ 下一轮没得判')
+      } else ok('WI-d ✓ 投递失败 ⇒ **仍 `awake`**、`targets` 仍在（⛔ 不回等待，下一轮会再试）')
+
+      // ── WI-e 只有两个状态 ─────────────────────────────────────────
+      const twoStates = /state: 'waiting' \| 'awake'/.test(wiStateSrc)
+      const narrowDrops = /o\.state !== 'waiting' && o\.state !== 'awake'/.test(wiStateSrc)
+      const noThird = !/(?:'awake'\s*\|\s*'waiting'\s*\|\s*')|(?:cooldown|冷却)/.test(wiStateSrc)
+      if (!twoStates || !narrowDrops) {
+        bad(`WI-e 类型层不是两态 或 收窄器不丢第三态（type=${twoStates} narrow=${narrowDrops}）`)
+      } else if (!noThird) {
+        bad('WI-e 出现了第三个状态的痕迹（`cooldown` / `冷却` / 三值联合）')
+      } else ok("WI-e ✓ **只有两个状态**（`'waiting' | 'awake'`）· 收窄器把第三态整条丢掉")
+
+      // ── WI-f 读数面能说"刚唤醒过、已回等待" ────────────────────────
+      const hasRender = /刚唤醒过、已自动回等待/.test(wiSrc)
+      const usesTimestamps = /wakeDeliveredAt !== undefined/.test(wiSrc) && /wakeLoggedAt !== undefined/.test(wiSrc)
+      if (!hasRender) {
+        bad('WI-f 读数面**说不出"刚唤醒过、已回等待"** ⇒ ⚠ 两种 `waiting` 成因读起来逐字一样（`R-10`）')
+      } else if (!usesTimestamps) {
+        bad('WI-f 那一格**不是靠两个时刻字段判断的** ⇒ ⚠ 可能偷偷用了第三态，或自己另读一份盘')
+      } else ok('WI-f ✓ 读数面能说「刚唤醒过、已自动回等待」，且**靠两个时刻字段**（⛔ 不靠第三态）')
+
+      // ── WI-h "每 N 秒"读真值 ──────────────────────────────────────
+      const readsTruth = /WATCH_GUARD_RECHECK_MS \/ 1000\} 秒复查一次/.test(wiSrc)
+      const hardcoded = /每 \d+ 秒复查一次/.test(wiSrc.replace(/WATCH_GUARD_RECHECK_MS \/ 1000\} 秒复查一次/g, ''))
+      if (!readsTruth) {
+        bad('WI-h 那行"每 N 秒"**没有读 `WATCH_GUARD_RECHECK_MS`** ⇒ 读数不带真值')
+      } else if (hardcoded) {
+        bad('WI-h 出现了**写死的秒数**（除了读真值那处）')
+      } else ok('WI-h ✓ "每 N 秒"那行**读 `WATCH_GUARD_RECHECK_MS`**（⛔ 不是写死数字）')
+
+      /**
+       * ══════════════════════════════════════════════════════════════════════
+       * ── **WI-k：兜底那条链**跑满三轮**真行为**（2026-10-28 · 包 BG）─────────
+       * ══════════════════════════════════════════════════════════════════════
+       *
+       * ── 为什么必须"真跑三轮"（⛔ 不是单点检查）──────────────────────────
+       *   兜底要成立，链上**每一步都得对**，而它们各自都能单独写错：
+       *     ① `markWakeDelivered` 真投出 ⇒ **计数 +1**；
+       *     ② 回等待那一支 **保留**计数（`keepWakeAttempts`），`watch-wait` 那一支 **清零**；
+       *     ③ `rearmWakeFallback` **清掉两枚 `D16` 时刻**（否则 `markWakeLogged` 幂等 ⇒
+       *        第二次**永远投不出去** ⇒ 计数停在 1 ⇒ 永远到不了 `stuck`）；
+       *     ④ 到顶后 `wakeGaveUpOf` = true 且 `watchNeedsTimer` = false。
+       *   ⚠ 只测其中一步 ⇒ **步与步之间的接口**没人守（本仓记过多次的形态）。
+       *
+       * ── ⚠ 为什么用 `wakeAttempts` 断言而不是断言"源码里调了几次" ─────────
+       *   `WF-a`/`WF-b` 那两条已经把"调用点只有一个"钉死了；这里要守的是
+       *   **那一个调用点真的会让计数收敛到 `stuck`**（⚠ 结构对、行为错 = 假绿）。
+       */
+      const LIM2 = wiOrch.WAKE_FALLBACK_LIMIT ?? wiState.WAKE_FALLBACK_LIMIT
+      if (typeof LIM2 !== 'number' || wiState.rearmWakeFallback === undefined
+        || wiState.watchNeedsTimer === undefined || wiState.wakeGaveUpOf === undefined) {
+        bad('WI-k 【基准缺失】缺 `rearmWakeFallback` / `watchNeedsTimer` / `wakeGaveUpOf`'
+          + '\n      ⇒ ⚠ 兜底三件没有落地（⛔ 不按通过处理）')
+      } else {
+        const fk = join(dir, 'k.json')
+        wiState.registerWatchEntry(fk, 'KO', 'KT')
+        /** 复刻一轮完整的"叫 → 回等待"，共 `LIM2` 轮；⚠ 每轮都要能再叫起来。 */
+        const trace = []
+        for (let i = 0; i < LIM2; i++) {
+          const before = wiState.readWatchEntries(fk)[0]
+          trace.push(before.state)
+          wiState.markWakeLogged(fk, 'KO')
+          wiState.markWakeDelivered(fk, 'KO')
+          /** ⚠ 与 `deliverWakeOnce` **同一个开关**（`keepWakeAttempts: true`）。 */
+          wiState.setWatchState(fk, 'KO', `第 ${i + 1} 轮`, { keepWakeAttempts: true })
+          const afterWake = wiState.readWatchEntries(fk)[0]
+          if (afterWake.wakeAttempts !== i + 1) {
+            bad(`WI-k 第 ${i + 1} 轮：真投出后 \`wakeAttempts\` 应为 ${i + 1}，实测 ${String(afterWake.wakeAttempts)}`
+              + '\n      ⇒ ⚠ 计数没有跟着"真投出"走 ⇒ 永远到不了上限 ⇒ `stuck` 那档永不成立')
+            break
+          }
+          /** 若还没到顶，就"重新上膛"，验证第二轮**真的还能叫**。 */
+          if (i < LIM2 - 1) {
+            const re = wiState.rearmWakeFallback(fk, 'KO')
+            const rearmed = wiState.readWatchEntries(fk)[0]
+            if (!re.wrote || rearmed.state !== 'awake'
+              || rearmed.wakeLoggedAt !== undefined || rearmed.wakeDeliveredAt !== undefined) {
+              bad(`WI-k 第 ${i + 1} 轮**重新上膛失败**（wrote=${re.wrote} state=${rearmed.state}`
+                + ` logged=${String(rearmed.wakeLoggedAt)} delivered=${String(rearmed.wakeDeliveredAt)}）`
+                + '\n      ⇒ ⚠ 两枚 `D16` 时刻没清 ⇒ `markWakeLogged` 幂等 ⇒ **第二次永远投不出去**'
+                + '（兜底当场失效，且外表与"做了"一样）')
+              break
+            }
+          }
+        }
+        const fin = wiState.readWatchEntries(fk)[0]
+        if (fin.wakeAttempts !== LIM2) {
+          bad(`WI-k 跑满 ${LIM2} 轮后计数应为 ${LIM2}，实测 ${String(fin.wakeAttempts)}`)
+        } else if (wiState.wakeGaveUpOf(fin, LIM2) !== true) {
+          bad('WI-k 跑满上限后 `wakeGaveUpOf` 不是 true ⇒ 读数面印不出"叫过 N 次没人应"')
+        } else if (wiState.watchNeedsTimer([fin], LIM2) !== false) {
+          bad('WI-k 跑满上限后**看护定时器仍要武装** ⇒ 永远每 30 秒判一次"叫不叫"，答案是"不叫"（空转）')
+        } else if (wiState.rearmWakeFallback(fk, 'KO').wrote !== false) {
+          bad('WI-k 已到顶却**还能重新上膛** ⇒ ⛔ 那就不叫"停止自动重试"了')
+        } else {
+          ok(`WI-k ✓ **兜底链真跑满 ${LIM2} 轮**：计数 ${trace.length} 次递增 · 每轮都能重新上膛（两枚时刻清掉）· `
+            + '到顶 `wakeGaveUpOf`=true · 定时器停止武装 · ⛔ 到顶后不再重新上膛')
+        }
+        /**
+         * ── WI-l `watch-wait` **必须清零**（"我动了"的一种，`TASK` §三 第 2 条）──
+         *   ⚠ 与 WI-k 里那一支是**同一条链的两个分叉**：漏了这一支，用户说了
+         *     "我不盯了"，兜底还会接着叫（那是**违反用户意愿**，比漏叫更糟）。
+         */
+        const fw = join(dir, 'l.json')
+        wiState.registerWatchEntry(fw, 'WO', 'WT')
+        wiState.markWakeLogged(fw, 'WO')
+        wiState.markWakeDelivered(fw, 'WO')
+        wiState.setWatchState(fw, 'WO', '自动回等待', { keepWakeAttempts: true })
+        const kept = wiState.readWatchEntries(fw)[0].wakeAttempts
+        wiState.setWatchState(fw, 'WO', '我不盯了')   // ← 缺省 = 用户主动切回
+        const zeroed = wiState.readWatchEntries(fw)[0].wakeAttempts
+        if (kept !== 1) {
+          bad(`WI-l 自动回等待**没保留计数**（实测 ${String(kept)}，应 1）`
+            + '\n      ⇒ ⚠ 抹掉就等于兜底永远到不了 3 次')
+        } else if (zeroed !== 0) {
+          bad(`WI-l \`watch-wait\` **没把计数清零**（实测 ${String(zeroed)}，应 0）`
+            + '\n      ⇒ ⚠ 用户说"我不盯了"，兜底还会接着叫 —— 那是违反用户意愿')
+        } else if (wiState.watchNeedsTimer([wiState.readWatchEntries(fw)[0]], LIM2) !== false) {
+          bad('WI-l `watch-wait` 之后**定时器仍要武装** ⇒ ⛔ 空转，且掩盖"用户已叫停"')
+        } else ok('WI-l ✓ 两种"回等待"**分开表达**：自动回等待**保留**计数（1）· `watch-wait` **清零**（0）· '
+          + '后者之后定时器停（⛔ 不空转）')
+
+        /**
+         * ══════════════════════════════════════════════════════════════════════
+         * ── **WI-m：§六 那条必须照实答的 —— 兜底不许把"目标还在跑"误判成"我没动"**
+         *    （2026-10-28 · 包 BG · `TASK` §六）
+         * ══════════════════════════════════════════════════════════════════════
+         *
+         * ── 用户问的原话 ─────────────────────────────────────────────────
+         *   「**我派出去的那个会话还在跑，我这一轮早就结束了 —— 这算"我动了"还是"我没动"？**」
+         *   ⇒ 按 `CHG-121`/`129`：**它还在跑时看护本来就不该叫**（那是 `still-running`）。
+         *   ⚠ 本档就是核对**兜底这条路没有把那条改坏**：兜底触发条件成立（回等待 +
+         *     叫过 + 过了阈值），**只要目标还在跑 ⇒ 必须 `still-running` 且不叫**。
+         *
+         * ── ⚠ 为什么这条**极易写错** ─────────────────────────────────────
+         *   兜底那一支最省事的写法是"`state==='waiting'` 且叫过就直接 `shouldWake:true`"
+         *   —— 那就**绕过了**观察集合的读数 ⇒ 目标还在跑也会叫（误唤醒，烧 token）。
+         *   ⚠ 必须走**同一套** `probe` / `ownerActivity` 闸门（`D1`②）。
+         */
+        const runningFallback = {
+          owner: 'O', targets: ['T-RUN'], state: 'waiting',
+          stateAt: Date.now() - 6 * 60 * 1000,
+          wakeLoggedAt: Date.now() - 10 * 60 * 1000,
+          wakeDeliveredAt: Date.now() - 10 * 60 * 1000,
+          wakeAttempts: 1,
+        }
+        const vRun = wiOrch.judgeWatchGuards(
+          [runningFallback], (id) => (id === 'T-RUN' ? true : false),
+          Date.now(), () => 'ended')[0]
+        const vBusy = wiOrch.judgeWatchGuards(
+          [runningFallback], () => false,
+          Date.now(), () => 'busy')[0]
+        const vUnk = wiOrch.judgeWatchGuards(
+          [runningFallback], () => undefined,
+          Date.now(), () => 'ended')[0]
+        if (vRun.shouldWake !== false || vRun.reason !== 'still-running') {
+          bad(`WI-m **我派出去的会话还在跑，兜底却叫我**（reason=${vRun.reason} shouldWake=${vRun.shouldWake}）`
+            + '\n      ⇒ ⚠ 违反 `TASK` §六「它还在跑时看护本来就不该叫」（`CHG-121`/`129`）'
+            + '；且这是**误唤醒**（会打断正在干活的 Hob、烧 token）')
+        } else if (vBusy.shouldWake !== false || vBusy.reason !== 'still-running') {
+          bad(`WI-m 我这一轮还在动（busy），兜底却叫我（reason=${vBusy.reason}）`
+            + '\n      ⇒ ⚠ `TASK` §六 同样点名这条：**本轮没结束**时不该叫')
+        } else if (vUnk.shouldWake !== false || vUnk.reason !== 'undecidable') {
+          bad(`WI-m 读数**判不出**时兜底却叫我（reason=${vUnk.reason}）`
+            + '\n      ⇒ ⚠ "判不出"必须落 `undecidable` 且**不叫**（`R-10`：不许当成"没在跑"）')
+        } else ok('WI-m ✓ §六 照实成立：**目标还在跑 / 本轮还在动 / 读数判不出** ⇒ 兜底**一律不叫**'
+          + '（`still-running` / `still-running` / `undecidable`）—— ⛔ 没把 `CHG-121`/`129` 改坏')
+      }
+    } finally { try { wiRm(dir, { recursive: true, force: true }) } catch { /* 忽略 */ } }
+  }
 }
 
 // ── 输出 ───────────────────────────────────────────────────────────────

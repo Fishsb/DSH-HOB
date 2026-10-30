@@ -12,6 +12,8 @@
 > 正文只描述**现在是什么样**。**历史与原始读数**在 `archive/<日期>-<名>/`。
 > 本文件**重构前的整份**见 `archive/<日期>-<名>/CONTEXT.md`（逐字节快照）。
 >
+> ⚠ 填错会：快照缺失或路径写错 ⇒ 一旦本文件被整份重写（实测发生过、丢了 57 条实质内容），没有任何原件可倒回。
+>
 > ⚠ ⚠ **形态口径（分册改造）**（⚠ **出处见本项目账本，骨架不点名具体编号**）：**四份正本都是地图**（在根上、每轮必读）；
 > **条目正文按卷落、一事一文件** —— 变更记录在 `volumes/decisions/<编号>.md`、
 > 用户决策在 `volumes/user-decisions/<编号>.md`、经验在 `.hob/experience/<编号数字>.md`；
@@ -52,6 +54,11 @@
 | **`volumes/*/` 各卷** | **`PROJECT.md` 的正文按节** · **`CHG-nn`** · **`REQ-nn`** · **`UD-nn`（历史）** · **本文件的正文按节** —— 皆**一事一文件**；⚠ ⚠ **`volumes/context/rounds/` = 轮次记录（一轮一文件）** | `volumes/<卷>/<nn>-<slug>.md`；⚠ 轮次在 `volumes/context/rounds/<轮次标识>.md` | 各卷自带 `INDEX.md`；⚠ **`rounds/` 无独立索引**（⚠ **文件名即标识**） |
 | **经验库 · `.hob/EXPERIENCE.md` + `.hob/experience/`** | **机制细节与教训的唯一来源**（⚠ **在工作区骨架里，不在账本区**） | `.hob/experience/<编号数字>.md`（**文件名不补零**） | `.hob/EXPERIENCE.md` |
 | **`archive/<日期>-<名>/`** | **历史与归档**：改动前整份 · 移出的历史件 · 各批交接件（⚠ 正本里**只留"现在是什么样"**）。⚠ **含 `sources/` 的必须带 `README.md` 清单件** —— 它是归档判据的**唯一比对基准**，缺即 FAIL | 该目录下 | 无（按目录名与文件头自述） |
+| **规则卷**（`volumes/context/` 下按本项目命名的那一卷） | **账本怎么写 · 开工怎么守** —— 三条：改前逐字节副本 + 清单件三口径 · 账本职责边界表 + 判别法 · 文档噪音治理四条 | **正文只在那卷**（母本 = `.hob/templates/LEDGER-RULES.md`；⚠ **本文件⛔ 不复述**） | 该卷的卷索引 |
+
+> ⚠ **规则卷为什么只给指针**：同一处口径两处各写一遍**必然漂**（已多次实证）。
+> ⚠ **它怎么建、母本里那三条在别的项目里为什么只有人守** ⇒ 读 **`.hob/INIT.md` §5.5**。
+> ⚠ ⛔ **别在这里补一份正文** —— 那样本表就变成第二份来源。
 
 ### 0.2 预设（本插件自带一个）
 
@@ -186,30 +193,43 @@
 
 ### 4.1 收尾必跑（全部 exit 0；**条数以 `package.json` 的 `scripts` 实测为准**）
 
+<!-- BEGIN gen:check-families -->
+<!-- ⚠ 本块由 `npm run gen:ledger` 写入，⛔ 不许手改；族清单派生自 `package.json`，「守什么」那列的唯一手写源是 `scripts/check-family-catalog.json` -->
+
 | 命令 | 守什么 |
 |---|---|
-| `npm run build` | ... |
-| `npm run typecheck` | ... |
-| `npm run check:presets` | ... |
-| `npm run check:config` | ... |
-| `npm run check:orch` | ... |
-| `npm run check:redeliver` | ... |
-| `npm run check:client` | ... |
-| `npm run check:gitignore` | ... |
-| `npm run check:archive` | ... |
-| `npm run check:experience` | ... |
-| `npm run check:host` | ... |
-| `npm run check:modules` | ... |
-| `npm run check:profile` | ... |
-| `npm run check:selfwake` | ... |
-| `npm run check:rounds` | ... |
-| `npm run check:readings` | ... |
-| `npm run check:policy` | 逐会话策略权威（两会话不串 / 旧会话最低 / 无身份与坏记录不泄读 / execute 内兜底） |
-| `npm run check:hob-create` | 创建链：一次性票据（强随机，取不到即拒签）· 显式工作区入票据且服务端核已登记 · 建空白→写两值→回读 · 最坏格持久隔离（重载仍最低+不推进）· 不碰 single 槽 |
-| `npm run check:hob-create-dom` | 创建 UI 的**真 DOM**行为（jsdom 挂载）：入口可点且不自动弹窗 · 枚举驱动 · 未选/枚举缺失 ⇒ 提交禁用 · Escape/取消零创建 · 焦点 · 无字面标记 |
-| `npm run check:hob-gate` | 未选档位检测 + 自动弹窗 + 已有会话写入面（jsdom 挂载）：三态（已选/未选/判不出）下弹窗行为各异 · `openForSession` 零 create/零 issue（正反双向）· 路由只回 `state` · 非 Hob 不挡 · 取消零写入 |
-| `npm run check:policy-cross` | 跨实例准入：装载只认开关 / 身份只来自执行上下文 / 反例零 spawn |
-| `npm run check:build` | ... |
+| `npm run build` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run typecheck` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:presets` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:config` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:orch` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:redeliver` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:client` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:gitignore` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:archive` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:experience` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:host` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:modules` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:profile` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:selfwake` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:rounds` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:readings` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:policy` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:hob-create` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:hob-create-dom` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:hob-gate` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:stages-dom` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:tasks-progress` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:tasks-route-http` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:exec-progress` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:build` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:meta-negctl` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:stages-route` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:ledger-next` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:workflow` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+
+⚠ 本块共 **27** 个 `check:*` 族（另有 `build` / `typecheck` 两个非判据命令）；`check:all` 与 `check:preflight` 是调度器与体检，⛔ 不入本块（与 `SELF` 同口径）。
+<!-- END gen:check-families -->
 
 只读辅助（**不是判据**）：`npm run exp:next-id`（报下一个可用编号，不写任何文件）。
 

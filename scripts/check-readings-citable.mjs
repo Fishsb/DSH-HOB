@@ -44,6 +44,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { workspaceName as configuredWorkspaceName } from './workspace-name.mjs'
+/** ⚠⚠ **包 Q（`CHG-099` 第 4 条）**：账本根解析收成脚本侧唯一实现，本脚本只 import。 */
+import { resolveLedgerRoot as resolveLedgerRootShared, looksLikeLedger as looksLikeLedgerShared, workspaceNameOf as wsNameOfShared } from './lib/ledger-root.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -75,14 +77,31 @@ function workspaceName () {
 }
 
 /** 账本区根；⚠ `undefined` ⇒ 读不到（调用方**退 2**，⛔ 不静默）。 */
+/**
+ * 「这个目录看起来像不像一份账本」（⚠ 与产品代码 `src/server/doc-read.ts` 的 `looksLikeLedger`
+ * **逐条相同** —— 两侧各写一套就是新的漂移点）。
+ *
+ * 判据：目录在，且**至少有一件**账本特征 —— 正本之一，或**非空的** `volumes/` / `archive/` / `runtime/`。
+ * ⚠ **空目录不算**：本项目 `.hob/archive/` 是空的记录层历史位，算进去会把"未迁移"误判成"已迁移"。
+ */
+const CANON_FILES = ['REQUIREMENTS.md', 'PROJECT.md', 'DECISIONS.md', 'CONTEXT.md']
+const SIDE_DIRS = ['volumes', 'archive', 'runtime']
+function looksLikeLedger(dir) {
+  return looksLikeLedgerShared(dir)
+}
+
+/**
+ * 账本区根 —— **委托给脚本侧唯一实现**（`scripts/lib/ledger-root.mjs`）。
+ * ⚠ **包 Q（`CHG-099` 第 4 条）**：改前这里是本脚本自己写的第 N 份实现
+ *   （含"`<工作区>/.hob` 看起来像账本就用它"那一档）—— 账本搬走后它指向不存在的目录。
+ * ⚠ **`cliLedger` 那一档保留本脚本原有的额外判据**（必须含 `archive/` 才算数）
+ *   —— 那是本脚本**自己的**语义（它要读 `archive/**` 里的报告），⛔ 不是解析漂移。
+ */
 export function resolveLedgerRoot (cliLedger) {
   if (typeof cliLedger === 'string' && cliLedger !== '') {
     return existsSync(join(cliLedger, 'archive')) ? cliLedger : undefined
   }
-  const home = ledgerHome()
-  if (home === null) return undefined
-  const cand = join(home, workspaceName())
-  return existsSync(cand) ? cand : undefined
+  return resolveLedgerRootShared(root, undefined)
 }
 
 /** 强制起始轮（⚠ 见文件头「强制范围」；⚠ 更早只统计、⛔ 不 FAIL）。 */
@@ -350,7 +369,7 @@ if (process.argv[1] !== undefined && process.argv[1].endsWith('check-readings-ci
         fail.push(`${r.rel}:${ln} —— 这个块里有**读数命令**，⚠ 而既没贴输出、`
           + '也没内联给出结果、也没声明"为什么没有"\n'
           + '      ⇒ ⚠ 修法：贴输出 / 写成 `$ 命令 → 结果` / 或显式写「无输出」「未取」\n'
-          + '      ⇒ ⚠ 依据：`.hob/README.md` §5.1「读数可信」那一行（`E-144`）')
+          + '      ⇒ ⚠ 依据：`kit/README.md` §5.1「读数可信」那一行（`E-144`）')
       }
     } else if (a.miss.length > 0) {
       legacy.push(`${r.rel}（${a.miss.length} 处）`)

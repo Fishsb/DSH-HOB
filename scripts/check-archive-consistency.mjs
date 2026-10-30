@@ -62,6 +62,12 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { workspaceName as configuredWorkspaceName } from './workspace-name.mjs'
+/**
+ * ⚠⚠ **2026-10-27 · 包 Q（`CHG-099` 第 4 条）**：账本根解析**不再由本脚本自己写一份** ——
+ *   四个判据脚本 + 产品代码此前各有一份实现，账本一搬就有四份同时指向不存在的目录。
+ *   ⇒ 收成**脚本侧唯一实现** `scripts/lib/ledger-root.mjs`；本脚本只 import。
+ */
+import { resolveLedgerRoot as resolveLedgerRootShared, workspaceNameOf as wsNameOfShared } from './lib/ledger-root.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -165,52 +171,14 @@ function workspaceName() {
   })
 }
 
-/** 从预设行读 `ledgerHome`（与既有脚本同口径）。 */
-function ledgerHome() {
-  try {
-    const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
-    const m = /ledgerHome:\s*(\S+)/.exec(preset)
-    return m === null ? null : m[1]
-  } catch {
-    return null
-  }
-}
-
 /**
- * 账本区解析（⚠ 与产品代码 `src/server/doc-read.ts` 的 `resolveLedgerRoot` **同一套口径**）。
- *
- * 顺序（2026-10-25 · C 步改）：
- *   ① CLI 显式给 ⇒ 用它；
- *   ② **本工作区自己的 `<工作区>/.hob/`**（若它看起来像账本）—— 新正典；
- *   ③ 过渡桥：预设行的 `ledgerHome` + 工作区名（⚠ 仍按名字拼 ⇒ 分期迁移期间用）；
- *   ④ 都没有 ⇒ undefined（⇒ 退 2 档，⛔ 不静默通过）。
- *
- * ⚠ "看起来像账本"的判据与产品侧 `looksLikeLedger` 逐条相同（⛔ 两侧不许各写一套）：
- *   有正本文件之一，或有**非空的** `volumes/` / `archive/` / `runtime/`。
+ * 账本区解析 —— **委托给脚本侧唯一实现**（`scripts/lib/ledger-root.mjs`）。
+ * ⚠ 本脚本**不再自己写一份**：改前这里有 `looksLikeLedger` + `ledgerHome` +
+ *   `resolveLedgerRoot` 三份实现，账本搬走后它们全部指向不存在的 `<工作区>/.hob`。
+ * ⚠ `workspaceName()` 保留上面那一份（本脚本别处还在用），⛔ 不重复定义。
  */
-const CANON_FILES = ['REQUIREMENTS.md', 'PROJECT.md', 'DECISIONS.md', 'CONTEXT.md']
-const SIDE_DIRS = ['volumes', 'archive', 'runtime']
-function looksLikeLedger(dir) {
-  try { if (!statSync(dir).isDirectory()) return false } catch { return false }
-  for (const f of CANON_FILES) {
-    try { if (statSync(join(dir, f)).isFile()) return true } catch { /* 继续 */ }
-  }
-  for (const d of SIDE_DIRS) {
-    try {
-      const q = join(dir, d)
-      if (statSync(q).isDirectory() && readdirSync(q).length > 0) return true
-    } catch { /* 继续 */ }
-  }
-  return false
-}
 function resolveLedgerRoot(cliLedger) {
-  if (typeof cliLedger === 'string' && cliLedger !== '') return cliLedger
-  const inWs = join(root, '.hob')
-  if (looksLikeLedger(inWs)) return inWs
-  const home = ledgerHome()
-  if (home === null) return undefined
-  const cand = join(home, workspaceName())
-  return existsSync(cand) ? cand : undefined
+  return resolveLedgerRootShared(root, cliLedger)
 }
 
 // ── 解析：READM E 里的两种形态 ────────────────────────────────────────────────
@@ -406,6 +374,71 @@ function checkArchiveBytes({ ledgerRoot, bad, ok, skip }) {
       + '，**全部逐字节一致**')
   }
   return { executed: true, ...stat }
+}
+
+/**
+ * **AI1 · 归档目录清单 ↔ `gen/archive-index.md` 生成物**（2026-10-30 P7 · `TASK-P7.md` §三）。
+ *
+ * ── 为什么是"目录清单"而不是"每份件的字节数/md5"（⚠ 这是我对 §三 的一处判定偏离）──────
+ *   §三 让我把「① 的**清单比对**改为『盘上归档件 vs `gen/archive-index.md`』」。
+ *   ⚠ 实测的 ① **不是"全局手写清单"那回事**：它比的是**每个归档目录自己的 `README.md`**
+ *   里那张（`sources/<rel>` + 字节数 + md5）表 ↔ 该目录 `sources/` 下的真文件
+ *   （见上面 `checkArchiveBytes` 的形态 M）。⇒ **没有"一份全局清单"可替换**。
+ *   ⇒ 而 `gen/archive-index.md` 现在只有 (目录名, 文件数) 两列 —— 没有字节数、没有 md5。
+ *   ⇒ 判定：**① 的 md5 那一半 ⛔ 不能由生成物替代**（要补就得给 1795 份 `sources/` 件
+ *     各算一遍 md5，生成物会膨胀到兆级；而且它替代的其实是**每目录 README**，不是全局表）。
+ *     详见报告 §三。**② 一行未动**（成员完整性核，仍是真判据）。
+ *   ⇒ 本条做的是**能做的那个真断言**：**盘上的归档目录清单**（名字 + 各自文件数）
+ *     必须与生成物逐行一致。它替代的是"有人手工维护一张归档目录总表"这种形态 —— 本仓没有那张表，
+ *     但一旦有人加/删归档目录而忘了重跑生成器，本条会红。
+ *
+ * @param {{ledgerRoot: string, bad: Function, ok: Function, skip: Function}} o
+ * @returns {{executed: boolean, dirs?: number}}
+ */
+export function checkArchiveIndexGen({ ledgerRoot, bad, ok, skip }) {
+  const skipSink = typeof skip === 'function' ? skip : () => {}
+  const genPath = join(ledgerRoot, 'ledger-next', 'gen', 'archive-index.md')
+  let gen = ''
+  try { gen = readFileSync(genPath, 'utf8') } catch { gen = '' }
+  if (gen === '') {
+    skipSink('AI1 归档目录清单 ↔ 生成物【未执行】—— `ledger-next/gen/archive-index.md` 读不到 ⇒ 无对象可查（⛔ 不报 ✓）')
+    return { executed: false }
+  }
+  /** 从生成物解析 `| n | `archive/<名>/` | <文件数> |`。 */
+  const genRows = new Map()
+  for (const m of gen.matchAll(/^\| \d+ \| `archive\/([^`]+)\/` \| (\d+) \|$/gm)) {
+    genRows.set(m[1], Number(m[2]))
+  }
+  if (genRows.size === 0) {
+    bad('AI1 生成物 `gen/archive-index.md` 里**一行目录都解析不到** ⇒ 格式变了或文件被写坏（不按通过处理）')
+    return { executed: true, dirs: 0 }
+  }
+  const arcRoot = join(ledgerRoot, 'archive')
+  const disk = new Map()
+  try {
+    for (const e of readdirSync(arcRoot, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue
+      let files = []
+      try { files = readdirSync(join(arcRoot, e.name), { withFileTypes: true }).filter((x) => x.isFile()) } catch { files = [] }
+      disk.set(e.name, files.length)
+    }
+  } catch (e) {
+    bad(`AI1 账本区 \`archive/\` **读不到**（${String(e?.code ?? e?.message ?? e)}）⇒ 本条失去基准（不按通过处理）`)
+    return { executed: true, dirs: genRows.size }
+  }
+  let mismatch = 0
+  for (const [name, n] of disk) {
+    if (!genRows.has(name)) { mismatch++; bad(`AI1 盘上有归档目录 \`archive/${name}/\`，而生成物里**没有它** ⇒ 生成物过期（跑 \`npm run gen:ledger\`）`) }
+    else if (genRows.get(name) !== n) { mismatch++; bad(`AI1 \`archive/${name}/\`：盘上 **${n}** 个顶层文件，生成物写 **${genRows.get(name)}** ⇒ 生成物过期`) }
+  }
+  for (const [name] of genRows) {
+    if (!disk.has(name)) { mismatch++; bad(`AI1 生成物里的 \`archive/${name}/\` **盘上已不存在** ⇒ 死行（删了目录没重跑生成器）`) }
+  }
+  if (mismatch === 0) {
+    ok(`AI1 ✓ 归档目录清单与生成物 \`gen/archive-index.md\` **逐行一致**：${disk.size} 个目录（名字 + 各自顶层文件数）全部对上`
+      + '（⚠ 本条**不**替代 ① 的每目录 README md5 核 —— 那个没有生成物替代，见函数头注释）')
+  }
+  return { executed: true, dirs: disk.size }
 }
 
 /**
@@ -706,7 +739,9 @@ function runChecks(ledgerRoot) {
   const a = checkArchiveBytes({ ledgerRoot, bad: b, ok: o, skip: k })
   const c = crossCheckAgainstWorkspaceHistory({ ledgerRoot, bad: b, ok: o, skip: k })
   const d = checkDirRefs({ ledgerRoot, bad: b, ok: o, skip: k })
-  return { bad, notes, skips, a, c, d }
+  // ⚠ 2026-10-30 P7：归档目录清单 ↔ 生成物（`gen/archive-index.md`）
+  const am = checkArchiveIndexGen({ ledgerRoot, bad: b, ok: o, skip: k })
+  return { bad, notes, skips, a, c, d, am }
 }
 
 // ── 自带负向对拍夹具（⛔ 不依赖账本区内容、⛔ 不触碰账本区）────────────────────

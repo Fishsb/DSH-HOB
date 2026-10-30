@@ -11,6 +11,24 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { workspaceName } from './workspace-name.mjs'
+/**
+ * ⚠⚠ **脚本侧唯一账本根解析**（`CHG-099` 第 4 条 · `scripts/lib/ledger-root.mjs`）。
+ *
+ * ── 为什么要 import 它（2026-10-27 · 包 Z）──────────────────────────────────
+ *   本文件的断言 A 有一段**自己拼的**账本根（见下面 `ledgerRoot` 那处）：
+ *   先试 `<工作区>/.hob`（`looksLikeLedger` 为真就用），再退 `<ledgerHome>/<工作区名>`。
+ *   ⚠ 账本迁出工作区（`CHG-102`）之后，旧落点里 `volumes/` 与 `archive/` **仍非空**
+ *     ⇒ `looksLikeLedger` **仍为真** ⇒ 它一直拿**旧落点**去核 `volumes/**` 的引用
+ *     ⇒ **50 条"账本区引用断裂"全是拿错根产生的假红**（包 Z 实测：那 15 个目标路径
+ *       在正本里**逐个都存在**）。
+ *   ⚠ 包 Y 已经在这个族的上游（`check-doc-shape.mjs`）收进共享实现，
+ *     但**这一处漏了** —— 同一形状的第二次。⇒ 本单把它也收进共享实现。
+ */
+import {
+  looksLikeLedger as looksLikeLedgerShared,
+  resolveLedgerRoot as resolveLedgerRootShared,
+  workspaceNameOf as workspaceNameOfShared,
+} from './lib/ledger-root.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -21,21 +39,11 @@ const here = dirname(fileURLToPath(import.meta.url))
  * 判据：目录在，且**至少有一件**账本特征 —— 正本之一，或**非空的** `volumes/` / `archive/` / `runtime/`。
  * ⚠ **空目录不算**：本项目 `.hob/archive/` 是空的记录层历史位，算进去会把"未迁移"误判成"已迁移"。
  */
-const CANON_FILES = ['REQUIREMENTS.md', 'PROJECT.md', 'DECISIONS.md', 'CONTEXT.md']
-const SIDE_DIRS = ['volumes', 'archive', 'runtime']
-function looksLikeLedger(dir) {
-  try { if (!statSync(dir).isDirectory()) return false } catch { return false }
-  for (const f of CANON_FILES) {
-    try { if (statSync(join(dir, f)).isFile()) return true } catch { /* 继续 */ }
-  }
-  for (const d of SIDE_DIRS) {
-    try {
-      const q = join(dir, d)
-      if (statSync(q).isDirectory() && readdirSync(q).length > 0) return true
-    } catch { /* 继续 */ }
-  }
-  return false
-}
+/**
+ * ⚠⚠ **本文件不再自己实现 `looksLikeLedger`**（2026-10-27 · 包 Z）：
+ *   改为 `import` 共享实现 —— 从此"与产品侧逐条相同"是**结构性的**，⛔ 不靠人守。
+ */
+const looksLikeLedger = looksLikeLedgerShared
 const root = join(here, '..')
 /**
  * 只要退出码，不关心输出；git 未安装/非 git 仓 时抛出真实错误。
@@ -217,6 +225,9 @@ export function runRepoRules({ bad, ok, skip }) {
     //     `package.json` 的 `check:redeliver`（= 它因此被 `check-all` 的派生族表自动收录）。
     //   ⚠ ⛔ 本条只**新增一条登记**，上面既有条目一字未动（`UD-130` 的边界）。
     ['scripts/check-redeliver.mjs', '入库脚本（被 package.json 的 check:redeliver 调用 · 补投判据：错投回执按 owner 补送）'],
+    //   ⚠ 2026-10-27（包 AP · 用户「全退」）：**归档门禁断言族已随被测对象一起退回**
+    //     （门禁退回"读不到 ⇒ 不拦"的原状 ⇒ `check-archive-gate-am.mjs` 整个删除）。
+    //     ⚠ 清单条目同步移除：留着它 ⇒ MUST-TRACK 恒红（"盘上不存在"），而那不是在说真话。
     // ⚠ 2026-10-22（`REQ-04`）新增：逐会话策略权威的行为判据（`npm run check:policy`）。
     //   ⚠ 这条判据是**先红后绿**的：改前那三把刀（glob/grep/read_image）直接 execute 能读工作区，
     //     本脚本的 SP-6 组正是咬那一条。⇒ 它必须入库，否则 clone 后 `npm run check:policy` 直接 ENOENT。
@@ -231,6 +242,53 @@ export function runRepoRules({ bad, ok, skip }) {
     //   `openForSession` 模式下**确认后零 create**（重复建会话风险钉死）/ 只读路由**只回 `state` 一个字段** /
     //   非 Hob 会话**不适用、不挡**。⚠ 其中 G-11/G-12 是**正反双向**对拍（已有会话零 create + 新建模式未受影响）。
     ['scripts/check-hob-unselected-gate.mjs', '入库脚本（被 package.json 的 check:hob-gate 调用 · **真 jsdom 挂载**：三态驱动弹窗 / 已有会话零 create / 线格式不泄档位 / 非 Hob 不挡）'],
+    // ⚠ 2026-10-29 第 5 轮新增：四步主线面板的**位置判据**（`npm run check:stages-dom`）。
+    //   它守三件事：栏脚按钮**真渲染且可点** / 点击**真调到** `sidebarRight.openTab(kind)` 且参数是
+    //   `STAGES_TAB_KIND` / 面板四行**都在**且每行写「未接线」（零百分比、零假完成态）；
+    //   另含**两条负向对拍**（改步骤名 ⇒ 面板断言变红；改 kind ⇒ 打开链路断言变红）。
+    //   ⚠ 同族的**又一次**现场抓获：上一轮（第 4 轮）加完 `check:stages-dom` 未登记本清单 ⇒
+    //     本脚本的"反向自检"（读 package.json 的 scripts 反查 MUST-TRACK）当场 FAIL：
+    //     `✗ package.json 声明的脚本不在 MUST-TRACK 里：scripts/check-stages-panel-dom.mjs`。
+    //   ⚠ ⇒ 本条即那次的修正结果；⛔ 未放松任何既有断言（只新增一条登记，上面各条一字未动）。
+    //   ⚠⚠ **2026-10-29 第 10 轮：本条说明文字已过期，按"当下真实在跑的断言"重写**。
+    //     ── 改前那段为什么错（三样都已不成立）─────────────────────────────
+    //       ·「栏脚按钮可点」—— 第 9 轮用户裁定把入口搬到侧边栏 guide 排，栏脚注册**已删**；
+    //       ·「openTab 参数=常量」—— 对应断言（S-4 / S-4b）随入口删除一并删除；
+    //       ·「四步」「未接线」—— 第 6 轮已改五步，第 9 轮图例**不再写状态词**。
+    //     ⚠ 只改**说明文字**：条目数量、断言口径一字未动。
+    ['scripts/check-stages-panel-dom.mjs', '入库脚本（被 package.json 的 check:stages-dom 调用 · **真 jsdom 挂载**：图例只列五步名不写状态词（S-6，量 [data-dsh-hob=stages-legend] 容器）· 三态渲染（有数据 S-8a / 表里是空的 S-8b / 判不出+原因 S-8c）· sessionId 送进取数函数（S-9）· 侧边栏 guide 胶囊（id/order/title/kind，S-11）· 「5」与「done」两态不合并（S-8f）· 负向对拍 4 条（改步骤名 S-7a / 改 guide order S-7b / 改空态文案 S-8e / 把「未接线」加回图例 S-10））'],
+    // ⚠ 2026-10-29 第 6 轮新增：四步进度表的**服务端**行为判据（`npm run check:tasks-progress`）。
+    //   它守：正常两行 / 空表 ok:true / 三类失败 reason 互不相同 / 行序与不去重 /
+    //   七值封闭集（判不出不许塞成 '1'）/ 一条负向对拍（改 STEP_BY_NUMBER ⇒ 必红）。
+    ['scripts/check-tasks-progress.mjs', '入库脚本（被 package.json 的 check:tasks-progress 调用 · 真解析器 + 真夹具账本：三分支 reason / 空表≠判不出 / 八值封闭集（越界必报错、5 与 done 不合并）/ 负向对拍钉第 5 步）'],
+    // ⚠ 2026-10-30 第 17 轮新增：执行态（第 4 步子项）的服务端判据（`npm run check:exec-progress`）。
+    //   它守：三类 reason 互不相同 / 九态封闭集 / `elapsedMs` 判不出⇒缺字段（负向对拍钉住"不许变 0"）/
+    //   空表≠判不出 / 单条形态不认识不许静默丢 / 路径与九态措辞两份载体逐字一致。
+    ['scripts/check-exec-progress.mjs', '入库脚本（被 package.json 的 check:exec-progress 调用 · 真处理体 + 真夹具，15 条断言 E-0/E-0b/E-1/E-2/E-3/E-4/E-5/E-5b/E-6/E-7/E-7b/E-8/E-9/E-10/E-11：转译图自证 + 协议层在图内 / 正常三类记录（pending+lost+closed）映射与顺序 / 空≠判不出 / 三类 reason 互不相同（ledger-unreadable · state-missing · row-shape-unknown）/ 九态封闭集（15 组脏输入）/ elapsedMs 判不出⇒缺字段（负向对拍钉住不许变 0）/ 路径单一真源 / 九态措辞与 DISPATCH_STATE_LABELS 逐键逐值相同 / rechecks 缺字段读 0 / 单条形态不认识不许静默丢）'],
+
+    // ⚠ 2026-10-30 P1 新增：`ledger-next/` 的三条不变式（`npm run check:ledger-next`）。
+    //   I1 索引合法（id 唯一 / 前缀配 kind / 封闭状态集 / parent 与 after 存在 / 无环 / 状态只在一处）·
+    //   I2 阶段是算出来的（改 status ⇒ 只有对应那步变）· I5 gen/ 与生成器逐字节一致 · I4 cap 无终态无百分比。
+    //   三条各带一条**实测跑红**的负向对拍（成环夹具 / 冻结阶段行 / 手改一字符）。
+    ['scripts/check-ledger-next.mjs', '入库脚本（被 package.json 的 check:ledger-next 调用 · 三条不变式 I1/I2/I5 + I4：索引合法与状态单一真源 / 阶段由索引算出 / 生成物逐字节一致 / cap 无终态无百分比；三条负向对拍实测变红）'],
+    // ⚠ 同批：生成器本身（`npm run gen:ledger`）也入库 —— 它产出 `gen/`，手改生成物由 I5 咬住。
+    ['scripts/gen-ledger.mjs', '入库脚本（被 package.json 的 gen:ledger 调用 · ledger-next 生成器：读 units/index.toml 产出 gen/stages.md 与 gen/index.md，确定性=同输入两次跑逐字节相同，⛔ 不写时间戳）'],    // ⚠ 2026-10-29 第 10 轮新增：任务进度路由的**真机 HTTP 探针**（`npm run check:tasks-route-http`）。
+
+    // ⚠ 2026-10-30 P3 新增：五步汇总路由的服务端判据（`npm run check:stages-route`）。
+    //   它守：三类 reason 互不相同 / 五步顺序与名字逐字 / cap 不进分母 / 空步给 todo / 三态算对 /
+    //   items 顺序与去重 / lastReading 缺⇒判不出 / 一条负向对拍（cap 混进分母必红）/ **与生成器交叉验证**。
+    ['scripts/check-stages-route.mjs', '入库脚本（被 package.json 的 check:stages-route 调用 · 真处理体 + 真夹具，10 条：三类 reason / 五步顺序 / cap 不进分母 / 空步 todo / 三态 / items 次序 / lastReading 判不出 / 负向对拍 cap 混分母 / 与 gen/stages.md 交叉验证）'],    //   ⚠⚠ **按需档**：要**活宿主 + launch token**（CI / 干净 clone 里都没有）
+
+    // ⚠ 2026-10-30 P6 新增：**元规则机检**（`npm run check:meta-negctl`）+ 它的登记表。
+    //   它守：每族「负向对拍」标签数 ≥ 登记下限（⛔ 只准升不准降）；且自带一条自指负向对拍。
+    ['scripts/check-meta-negctl.mjs', '入库脚本（被 package.json 的 check:meta-negctl 调用 · 元规则：只数 ok()/bad() 字面量里含「负向对拍」的标签、沿 import 闭包累加，与 scripts/meta-negative-floor.json 的下限比；自带自指负向对拍）'],
+
+    // ⚠ 2026-10-30 P8 新增：Hob 工作流判据族 + 它的生成器。
+    ['scripts/check-workflow.mjs', '入库脚本（被 package.json 的 check:workflow 调用 · F1 机读源合法+source 子串核对 / F2 生成物与源逐字节一致 / F3 宪法 ≤2KB 且逐条 checked_by / F4 覆盖度；四条负向对拍）'],
+    ['scripts/gen-preset-contract.mjs', '入库脚本（被 package.json 的 gen:preset-contract 调用 · workflow.toml + spec/ ⇒ gen/persona.md + gen/contracts.md；纯函数、零时间戳）'],    ['scripts/meta-negative-floor.json', '入库数据（M-1 的每族负向对拍条数下限；⛔ 只准升不准降，有意减少须同批改本文件并写明理由）'],    //     ⇒ ⛔ 不进 `check:all` 的必跑套件；无对象时 **exit 2（noObject）**，⛔ 不算通过。
+    //   它守：POST 带 sessionId ⇒ 200 + 我们的 JSON（三选一 reason 也算「处理体在」）；
+    //         同路径 GET ⇒ 404 + 纯文本 not found（宿主「错门回 404 而不是 405」这条边界）。
+    ['scripts/probe-tasks-route-http.mjs', '按需档探针（被 package.json 的 check:tasks-route-http 调用 · 要活宿主+token · POST⇒200 JSON / GET⇒404 纯文本 · noObject 走 exit 2）'],
     // ⚠ 2026-10-18 补（本批 · `UD-138` ⑥「补齐对外最小面」）：**聚合判据入口**与**前置条件预检**。
     //   ⚠ 由来：本仓此前有 12 条 `check:*`、**零聚合入口** ⇒ 对外标准「判据入口能一条命令跑」
     //     直接不成立（外部人不知道该跑哪条、跑了一半就以为全过了）。
@@ -895,25 +953,34 @@ export function runRepoRules({ bad, ok, skip }) {
     } else {
       // 账本根：⚠ **与 check-doc-shape 同口径**（唯一权威 = 预设行声明的 `ledgerHome`）
       //   ⛔ **不硬编码本机绝对路径**（UD-73③）：从预设行读 `ledgerHome`，取 `<ledgerHome>/<工作区名>`。
-      const ledgerRoot = (() => {
-        const candidates = []
-        try {
-          const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
-          const m = /ledgerHome:\s*(\S+)/.exec(preset)
-          if (m !== null) candidates.push(m[1])
-        } catch { /* 预设读不到 ⇒ 下面的候选为空 ⇒ 走"未执行"分支 */ }
-        // ⚠ 工作区名**从配置读**（唯一来源 = `scripts/workspace-name.mjs`）；
-        //   未配置 ⇒ 落回 `basename(root)`（与改动前逐字一致）—— ⛔ 本脚本不再自己猜目录名。
-        const wsName = workspaceName(() => basename(root))
-        // ② 新正典：本工作区自己的 `<工作区>/.hob/`（若它看起来像账本）
-        const inWs = join(root, '.hob')
-        if (looksLikeLedger(inWs)) return inWs
-        for (const home of candidates) {
-          const dir = join(home, wsName)
-          if (existsSync(dir)) return dir
-        }
-        return undefined
-      })()
+      /**
+       * ══════════════════════════════════════════════════════════════════
+       * ⚠⚠ **改前（包 Z 删掉的那份）：自己拼，且第一档必然是旧落点**
+       * ══════════════════════════════════════════════════════════════════
+       *   · 先试 `<工作区>/.hob`（若 `looksLikeLedger` 为真）⇒ **一档必中**（旧落点仍非空）；
+       *   · 再退 `<ledgerHome>/<工作区名>`（`existsSync` 为真即用）。
+       *   ⚠ 后果：拿**旧落点**去核 `volumes/**` 的引用 ⇒ 15 个目标路径**逐个都不存在**
+       *     ⇒ 50 条假红（包 Z 实测：同样这 15 个路径在**正本**里**逐个都存在**）。
+       *   ⚠ 而它跑在本族的**上游**（`check-doc-shape` 已改对）之后 —— 同一个形状的第二次。
+       *
+       * ── 现在：共享实现，三档与产品侧逐条相同 ──────────────────────────────
+       *   ① 命令行显式给的账本目录；② `ledgerHome` + 工作区名；③ 都没有 ⇒ `undefined`。
+       *   ⚠ 存在性**不再参与解析**（与产品侧一致）；"在不在"由 `ledgerExists` 那一档单独判。
+       */
+      const ledgerHomes = []
+      try {
+        const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
+        const m = /ledgerHome:\s*(\S+)/.exec(preset)
+        if (m !== null) ledgerHomes.push(m[1])
+      } catch { /* 预设读不到 ⇒ 走下面的落空分支 */ }
+      const ledgerRoot = resolveLedgerRootShared(
+        root,
+        (() => {
+          const i = process.argv.indexOf('--ledger')
+          return i >= 0 && process.argv[i + 1] !== undefined ? process.argv[i + 1] : undefined
+        })(),
+        ledgerHomes.length > 0 ? ledgerHomes[0] : null,
+      )
       const ledgerExists = ledgerRoot !== undefined
       const wsRe = /`((?:src|scripts|preset|lib)\/[A-Za-z0-9._\/-]+)`/g
       const ledgerRe = /`((?:archive|volumes)\/[A-Za-z0-9._\/-]+)`/g

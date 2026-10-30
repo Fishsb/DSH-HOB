@@ -291,22 +291,31 @@ try {
 
   // ── G-4 只自动弹一次（重复挂载不重复弹）─────────────────────────────
   {
+    /**
+     * ⚠ 2026-10-29（TASK-Q · `CHG-215`）：**开窗来源已从"挂载即弹"改成"`blocked` 轮询"**
+     *   ⇒ 本组也必须跟着改：原来只要 `recorded === 'unrecorded'` 就会弹，现在必须
+     *   让 reader 真的回 `blocked`。⚠ 判据的**靶子没变**（同一会话反复挂载只弹 1 次），
+     *   变的只是"怎么让它第一次弹"。
+     */
     const memory = gate.createGateMemory()
     const opened = []
     const reader = async () => 'unrecorded'
+    const blockedReader = async () => 'blocked'
     // 连挂三次（模拟切走再切回 / 重渲染）
     for (let i = 0; i < 3; i += 1) {
       const r = await mount(h(gate.HobUnselectedGate, {
         sessionId: 'session-dup',
         agentPreset: 'Hob',
         readRecorded: reader,
+        readBlocked: blockedReader,
+        blockPollMs: 20,
         openForSession: (id) => opened.push(id),
         memory,
       }))
-      await flush()
+      await settle(80)
       await unmount(r)
     }
-    if (opened.length === 1 && opened[0] === 'session-dup') ok('G-4 同一会话重复挂载 3 次，只自动弹 1 次')
+    if (opened.length === 1 && opened[0] === 'session-dup') ok('G-4 同一会话重复挂载 3 次，只自动弹 1 次（⚠ 开窗来源 = `blocked` 轮询）')
     else bad(`G-4 重复弹了：opened=${JSON.stringify(opened)}`)
   }
 
@@ -675,27 +684,42 @@ try {
     /**
      * ⚠ 这条用**默认读取器**（`gate.defaultPolicyRecordReader`）跑真 `fetch`：
      *   起一个 http 服务回**三种**线格式（recorded / unrecorded / unknown），
-     *   然后看 gate 是否自动弹。
-     *   ⚠ 这正好是"先红后绿"的落点：把服务改成恒定回 `recorded` ⇒ 本组必须变红。
+     *   然后看 gate 的**横幅**三态是否各异。
+     *
+     * ⚠⚠ **2026-10-29 改口径（TASK-Q · `CHG-215`）**：本组原先还断言
+     *   `unrecorded ⇒ 自动弹 1 次` —— **那正是本单要废掉的行为**（切预设就弹）。
+     *   现在三态的可观察面只剩**横幅**：`unrecorded` 显出横幅但**不开窗**；
+     *   `recorded` / `unknown` 横幅与开窗都没有。
+     *   ⇒ ⛔ **不是把判据写松**：开窗那条由 G-26 D（真 HTTP + `blocked`）与 G-24 B 守着，
+     *     而且本组同时断言 `opened === 0`（谁把"未选即弹"加回来，这里立刻变红）。
+     *   ⚠ 仍然用**真出口** `okState(classifyPolicyRecord(probe))` 造响应，
+     *     ⛔ 不写死 `{ state }`（否则把路由写死成 recorded 时本组不会变红）。
      */
     const { createServer } = await import('node:http')
     let mode = 'unrecorded'
-    /**
-     * ⚠⚠ **服务端用真出口构造响应**（2026-10-22 第 4 轮 · 先红后绿的落点）：
-     *   路由的响应体就是 `okState(classifyPolicyRecord(probe))` —— 这里**照那个链路**造，
-     *   ⛔ 不写死 `{ state: mode }`。否则把路由写死成 `recorded` 时本组**不会变红**，
-     *   "先红后绿"就成了空话（实测：写死 state 时本组照样绿，等于没钉住）。
-     *   ⚠ 三个 probe 的 `source` 都取**可信**值（`stored` / `derived-default`），
-     *     所以 diff 只来自 `recorded` 这一位 —— 正是任务书要的那种注入。
-     */
     const probes = {
       recorded: { isHob: true, recorded: true, source: 'stored' },
       unrecorded: { isHob: true, recorded: false, source: 'derived-default' },
       unknown: { isHob: true, recorded: false, source: 'store-unreadable' },
     }
+    /**
+     * ⚠ 两条轴都要能答：`action:'read'` 走三条 probe，`action:'blocked'` 一律 `clear`
+     *   （本组只测"选过没有 ⇒ 横幅"，⛔ 不混进"拦过没有"那条 —— 那是 G-26 D 的地盘）。
+     */
     const server = createServer((req, res) => {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify(stateMod.okState(stateMod.classifyPolicyRecord(probes[mode]))))
+      let raw = ''
+      req.on('data', (c) => { raw += c })
+      req.on('end', () => {
+        let action = 'read'
+        try { action = String(JSON.parse(raw === '' ? '{}' : raw)?.action ?? 'read') } catch { /* 默认 read */ }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        if (action === 'blocked') {
+          // ⚠ 没被拦过 ⇒ clear（⛔ 不许让它冒充"该弹"）
+          res.end(JSON.stringify(stateMod.okState('clear')))
+          return
+        }
+        res.end(JSON.stringify(stateMod.okState(stateMod.classifyPolicyRecord(probes[mode]))))
+      })
     })
     await new Promise((r) => server.listen(0, '127.0.0.1', r))
     const port = server.address().port
@@ -718,9 +742,10 @@ try {
       const r = await mount(h(gate.HobUnselectedGate, {
         sessionId: `sess-${m}`,
         agentPreset: 'Hob',
-        // ⚠ 不传 readRecorded ⇒ 用默认实现（走真 HTTP）
+        // ⚠ 不传 readRecorded / readBlocked ⇒ **两条都走真 HTTP 默认实现**
         openForSession: (id) => opened.push(id),
         memory: gate.createGateMemory(),
+        blockPollMs: 20,
       }))
       await settle(80)
       results[m] = { opened: opened.length, shown: host.querySelector(`.${gate.GATE_CLASS.root}`) !== null }
@@ -729,13 +754,19 @@ try {
     globalThis.fetch = realFetch
     await new Promise((r) => server.close(r))
 
+    /**
+     * ⚠ 新口径三句：`unrecorded` ⇒ 显横幅、**弹 0**（这就是 TASK-Q 的靶子）；
+     *   `recorded` / `unknown` ⇒ 横幅 0、弹 0。
+     */
     const good = results.recorded.opened === 0 && !results.recorded.shown
-      && results.unrecorded.opened === 1 && results.unrecorded.shown
+      && results.unrecorded.opened === 0 && results.unrecorded.shown
       && results.unknown.opened === 0 && !results.unknown.shown
     if (good) {
-      ok(`G-19 真读取器三态下行为各异：recorded(弹0/显${results.recorded.shown}) · unrecorded(弹${results.unrecorded.opened}/显) · unknown(弹0/显${results.unknown.shown})`)
+      ok(`G-19 真读取器三态（**新口径**·TASK-Q）：recorded(弹0/显${results.recorded.shown})`
+        + ` · unrecorded(**弹${results.unrecorded.opened}**/显${results.unrecorded.shown})`
+        + ` · unknown(弹0/显${results.unknown.shown}) ⇒ **未选只显横幅、⛔ 不再自动开窗**`)
     } else {
-      bad(`G-19 三态行为不符：${JSON.stringify(results)}`)
+      bad(`G-19 三态行为不符（新口径：unrecorded 应显横幅且**弹 0**）：${JSON.stringify(results)}`)
     }
   }
 
@@ -798,7 +829,7 @@ try {
    *   `src/modules/session-policy-route.ts` 的 `handlePolicyWrite` 在 2026-10-24
    *   补了**两道闸**（P0-3）：① `isOpenReadLevel(level)` 开放面；② `isHob` 会话闸。
    *   ⚠ 而审查席把这两道闸**逐条删掉**后，`check:policy` / `check:hob-gate` /
-   *   `check:policy-cross` **三族全绿** —— 也就是说这两道闸**没有任何判据守着**，
+   *   `check:policy` 一族全绿 —— 也就是说这两道闸**没有任何判据守着**，
    *   而 `check-hob-create-dom` 里还写着"见 check:hob-gate 的 G-21…"（那个 G-21 **不存在**）。
    *
    * ── 做法（⚠ 真调用那个导出函数，⛔ 不扫源码找 `if`）──────────────────────────
@@ -867,9 +898,15 @@ try {
        *   （那会让"删闸"看起来像"检查器坏了"，与真的"闸在"混不清）。
        *   ⇒ 这里统一捕住，返回 `{ threw: msg }`，由各条断言分别定性。
        */
-      const call = (svc, { level, id = 'sess-w', mode = 'auto' }) => {
+      /**
+       * ⚠ 2026-10-29（包 CA）：`handlePolicyWrite` 已改成 **async**
+       *   —— 它写成功之后要 `await svc.requeue(...)`（把被拦下的消息重投）。
+       *   ⇒ 这里必须 `await`；⛔ 不 await 会拿到一个 Promise 对象，
+       *     所有断言读到的 `ok` 都是 `undefined`（本组 6 条会一起假红）。
+       */
+      const call = async (svc, { level, id = 'sess-w', mode = 'auto' }) => {
         try {
-          return handlePolicyWrite({ policyOf: () => svc, sessionOf }, { sessionId: id, level, workMode: mode })
+          return await handlePolicyWrite({ policyOf: () => svc, sessionOf }, { sessionId: id, level, workMode: mode })
         } catch (e) {
           return { ok: false, threw: String(e?.message ?? e) }
         }
@@ -878,7 +915,7 @@ try {
       // ① 合法：Hob + 开放面内的档 ⇒ 必须真写一次
       {
         const { svc, writes } = mkSvc({ isHob: true })
-        const r = call(svc, { level: OPEN_LEVEL })
+        const r = await call(svc, { level: OPEN_LEVEL })
         if (r?.threw !== undefined) {
           bad(`G-21 合法写入**抛异常**（Hob + \`${OPEN_LEVEL}\`）：${r.threw} ⇒ 正常用法被弄坏了`)
         } else if (r?.ok !== true) {
@@ -894,7 +931,7 @@ try {
       // ② 闸① 开放面：枚举外的档 ⇒ 拒 + 零写
       {
         const { svc, writes } = mkSvc({ isHob: true })
-        const r = call(svc, { level: ILLEGAL })
+        const r = await call(svc, { level: ILLEGAL })
         if (r?.threw !== undefined) {
           bad(`G-21 闸① 被删掉后变成**未捕获异常**而不是可读拒绝：${r.threw}`
             + '（⚠ 那会让路由 500、调用方拿不到原因 ⇒ 同样算红）')
@@ -911,7 +948,7 @@ try {
       // ③ 闸② isHob：非 Hob ⇒ 拒 + 零写
       {
         const { svc, writes } = mkSvc({ isHob: false })
-        const r = call(svc, { level: OPEN_LEVEL })
+        const r = await call(svc, { level: OPEN_LEVEL })
         if (r?.threw !== undefined) {
           bad(`G-21 闸② 被删掉后变成**未捕获异常**而不是可读拒绝：${r.threw}（同样算红）`)
         } else if (r?.ok !== false) {
@@ -933,7 +970,7 @@ try {
         const bads = []
         for (const c of cases) {
           const { svc, writes } = c.make()
-          const r = call(svc, { level: OPEN_LEVEL })
+          const r = await call(svc, { level: OPEN_LEVEL })
           if (r?.threw !== undefined) bads.push(`${c.name} ⇒ 未捕获异常（${r.threw}）`)
           else if (r?.ok !== false) bads.push(`${c.name} ⇒ ok:${r?.ok}`)
           else if (writes.length !== 0) bads.push(`${c.name} ⇒ 拒了但仍写 ${writes.length} 次`)
@@ -1054,8 +1091,9 @@ try {
               }
             }
             const sessionOf = (id) => ({ id, session: { id } })
-            const call = (svc, { level, id = 'sess-w' }) => {
-              try { return handlePolicyWrite({ policyOf: () => svc, sessionOf }, { sessionId: id, level, workMode: 'auto' }) } catch (e) { return { ok: false, threw: String(e?.message ?? e) } }
+            /** ⚠ 2026-10-29（包 CA）：`handlePolicyWrite` 已 async ⇒ 必须 await（同上方 G-21a/b/c）。 */
+            const call = async (svc, { level, id = 'sess-w' }) => {
+              try { return await handlePolicyWrite({ policyOf: () => svc, sessionOf }, { sessionId: id, level, workMode: 'auto' }) } catch (e) { return { ok: false, threw: String(e?.message ?? e) } }
             }
             /**
              * 三道闸各跑一次，返回"是否被**可读地**拦住"。
@@ -1066,11 +1104,11 @@ try {
              */
             const blocked = (r) => r.ok === false && r.threw === undefined
             const { svc: s1 } = mkSvc({ isHob: true })
-            const gate1 = blocked(call(s1, { level: 'root' }))
+            const gate1 = blocked(await call(s1, { level: 'root' }))
             const { svc: s2 } = mkSvc({ isHob: false })
-            const gate2 = blocked(call(s2, { level: 'ledger' }))
+            const gate2 = blocked(await call(s2, { level: 'ledger' }))
             const { svc: s3 } = mkSvc({ isHob: undefined })
-            const gate3 = blocked(call(s3, { level: 'ledger' }))
+            const gate3 = blocked(await call(s3, { level: 'ledger' }))
             return { gate1, gate2, gate3 }
           }
           /** 在临时副本里把原文替换成变体，写回并跑。 */
@@ -1138,6 +1176,1060 @@ try {
       }
     }
   }
+  // ── G-22 【包 BZ · CHG-185】发送时闸门 `agent/pre-step` 的判据（真调用，⛔ 非正则）──
+  /**
+   * ══ 它守的是什么（2026-10-29 · 包 BZ）══════════════════════════════════════════
+   *   `src/session-policy-service.ts` 装了 `agent/pre-step` 闸门，判据**只有两条**：
+   *     ① `isHob === true`；② `source === 'derived-default'`（= 还没选档）。
+   *   ⚠ 其余一律 `next()` —— 特别是**非 Hob**（误拦普通用户消息比不做更糟）。
+   *
+   * ══ 为什么必须真调 `resolveSessionPolicy` 而不是抓源码字符串 ═══════════════════
+   *   "源码里有 `derived-default` 这个词"证明不了判据对：把两条件写成 `||`、
+   *   或把 `!==` 写成 `===`，正则**一个字都不会变**。
+   *   ⇒ 这里用**真判定函数**跑四类会话，逐类核对闸门的 `reject / next`。
+   *
+   * ⚠ 四类必须**各不相同的 source**，缺一类就测不出"误拦"：
+   *   non-hob / derived-default / stored / no-identity。
+   */
+  {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const spMod = await import('../src/server/session-policy.ts')
+    const dir = mkdtempSync(join(tmpdir(), 'hob-g22-'))
+    const file = join(dir, 'policy.json')
+    const now = Date.now()
+    const OPT = {
+      levels: ['ledger', 'project', 'workspace'],
+      modes: ['auto', 'single', 'multi'],
+      floorLevel: 'ledger',
+      defaultMode: 'auto',
+    }
+    const base = { ...OPT, file, archived: 'not-archived', fallbackEpoch: now, now }
+    /** ⚠ 判据**逐字复制**自 `session-policy-service.ts` 的实现（两处必须同步）。 */
+    const gateDecision = (r) => (r.isHob === true && r.source === 'derived-default') ? 'reject' : 'next'
+    const rows = []
+    try {
+      rows.push(['非 Hob', gateDecision(spMod.resolveSessionPolicy({ ...base, sessionId: 'g1', isHob: false })), 'next'])
+      writeFileSync(file, JSON.stringify({ version: 1, migrationEpoch: now, sessions: {} }))
+      rows.push(['Hob 未选档', gateDecision(spMod.resolveSessionPolicy({ ...base, sessionId: 'g2', isHob: true, createdAt: now })), 'reject'])
+      writeFileSync(file, JSON.stringify({
+        version: 1, migrationEpoch: now,
+        sessions: { g3: { level: 'workspace', workMode: 'auto', origin: 'explicit', at: now } },
+      }))
+      rows.push(['Hob 已选档', gateDecision(spMod.resolveSessionPolicy({ ...base, sessionId: 'g3', isHob: true, createdAt: now })), 'next'])
+      rows.push(['判不出', gateDecision(spMod.resolveSessionPolicy({ ...base, file: undefined, sessionId: 'g4', isHob: true })), 'next'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+    const wrong = rows.filter(([, got, want]) => got !== want)
+    if (wrong.length === 0) {
+      ok(`G-22 ✓ 发送时闸门判据四类各对：${rows.map(([k, g]) => `${k}=${g}`).join(' · ')}`
+        + '（非 Hob / 已选 / 判不出 全放行，只有 Hob 未选档拦）')
+    } else {
+      bad(`G-22 ⚠ 发送时闸门判据错 ${wrong.length} 类：`
+        + wrong.map(([k, got, want]) => `${k} 实为 ${got} 应为 ${want}`).join(' / ')
+        + ' —— ⚠ 误拦普通会话比不做更糟')
+    }
+  }
+
+  // ── G-23 【包 CA · CHG-186】选完档 ⇒ 被拦下的消息**按序重投并清空暂存**（真跑）──
+  /**
+   * ══ 它守的是什么（2026-10-29 · 包 CA）══════════════════════════════════════════
+   *   闸门 `reject` ⇒ 宿主**丢弃**该消息（`runtime-types.d.ts:267-270`）
+   *   ⇒ 若不先留副本、选完不重投，**用户每发一条就丢一条**（比不做更糟）。
+   *   本组守四件事，**缺一条都会出现"看不见的丢消息"**：
+   *     ① 连发两条**都留住**（⛔ 只留最后一条 = 更隐蔽的丢消息）；
+   *     ② 重投**按到达顺序**（⛔ 乱序 = 用户说的和模型看到的不一样）；
+   *     ③ 重投时**带绕行标记**（否则再被自己拦一次 ⇒ 死循环）；
+   *     ④ 投完**暂存清空**（⛔ 不清 ⇒ 下次选档把旧消息又发一遍）。
+   *
+   * ⚠ **真跑**：直接用模块导出的暂存 API + 假 agent 捕获 `followup` 实参，
+   *   ⛔ 不读源码字符串（写法对了但顺序反了，正则一样通过）。
+   */
+  {
+    let spMod
+    try { spMod = await import('../src/session-policy-service.ts') } catch (e) {
+      bad(`G-23 载不到 session-policy-service（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+      spMod = null
+    }
+    if (spMod !== null) {
+      const S = 'sess-g23'
+      spMod.clearPendingMessages(S)
+      // ① 连发两条都留住
+      spMod.stagePendingMessage(S, [{ type: 'text', text: '甲' }])
+      spMod.stagePendingMessage(S, [{ type: 'text', text: '乙' }])
+      const staged = spMod.pendingMessagesOf(S)
+      // ② 顺序
+      const order = staged.map((x) => x.content?.[0]?.text).join(',')
+      if (staged.length !== 2) {
+        bad(`G-23 ⚠ 连发两条只留住 ${staged.length} 条 ⇒ 有一条会永久消失（比不做更糟）`)
+      } else if (order !== '甲,乙') {
+        bad(`G-23 ⚠ 暂存顺序 = ${JSON.stringify(order)}（应 甲,乙）⇒ 重投会乱序`)
+      } else {
+        // ③④ 真投：假 agent 捕获 followup，并在投递瞬间检查绕行标记
+        let svc = null
+        const delivered = []
+        const fakeAgent = {
+          followup(msg) {
+            delivered.push({ text: msg?.content?.[0]?.text, requeueing: spMod.requeueingSessions().includes(S) })
+          },
+        }
+        const fakeCtx = {
+          on() {}, logger: { info() {}, warn() {} },
+          get(n) {
+            if (n === 'agents') return { get: (id) => (id === S ? fakeAgent : undefined) }
+            return undefined
+          },
+          provide(_n, v) { svc = v },
+          effect() {},
+        }
+        spMod.installSessionPolicy(fakeCtx, { workMode: () => 'auto' })
+        const r = await svc.requeue(S)
+        const after = spMod.pendingMessagesOf(S).length
+        const allFlagged = delivered.length > 0 && delivered.every((d) => d.requeueing)
+        const order2 = delivered.map((d) => d.text).join(',')
+        if (r?.replayed !== 2 || order2 !== '甲,乙') {
+          bad(`G-23 ⚠ 重投异常：replayed=${r?.replayed} 顺序=${JSON.stringify(order2)}（应 2 条且 甲,乙）`)
+        } else if (!allFlagged) {
+          bad('G-23 ⚠ 重投时**没有**带绕行标记 ⇒ 会被自己的闸再拦一次 ⇒ 永远选不完（死循环）')
+        } else if (after !== 0) {
+          bad(`G-23 ⚠ 投完暂存仍有 ${after} 条 ⇒ 下次选档会把旧消息又发一遍`)
+        } else {
+          ok('G-23 ✓ 连发两条都留住 · 按序 甲,乙 重投 · 每条都带绕行标记（不会死循环）· 投完暂存=0')
+        }
+        spMod.clearPendingMessages(S)
+      }
+    }
+  }
+
+  /**
+   * ── G-24 【TASK-E · 判据 A–E】「被拦 → 可读状态 → 界面开弹窗」整条链 ──────────
+   *
+   * ⚠⚠ **为什么这一组必须是行为读数**（任务书 §二 明写"⛔ 不许用'检查绿'代替 A–E"）：
+   *   A–E 要的是"点发送之后发生了什么"，⛔ 不是"源码里有没有某行"。
+   *   ⇒ 全部**真跑**：真 `markBlocked` / 真 `readBlocked` / 真 `handlePolicyBlockQuery`，
+   *     外加**真 DOM 挂载** gate 组件验"弹不弹"。
+   *
+   * ── 判据与它的靶子 ────────────────────────────────────────────────────
+   *   A 改前红：**不写被拦状态** ⇒ `blocked` 查询恒 `clear` ⇒ 不弹（这就是改前的形态）。
+   *   B 改后绿：写了 ⇒ 查询回 `blocked` ⇒ 组件**自动开窗**。
+   *   C 不重不漏：选完档 ⇒ 清掉记录 ⇒ 不再弹；且 `recorded` 一旦为真 ⇒ 直接 `clear`。
+   *   D 不误弹：非 Hob · 已选档 · `source=stored`（旧会话）⇒ 全 `clear`，一次都不弹。
+   *   E 负向对拍：把 A 那一步的写入去掉 ⇒ **B 必须变红**（本组的靶子是真的）。
+   */
+  {
+    let blk
+    try {
+      blk = await import('../src/server/policy-block-log.ts')
+    } catch (e) {
+      blk = null
+      bad(`G-24 载不到 policy-block-log（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+    }
+    let routeMod24
+    try {
+      routeMod24 = await import('../src/modules/session-policy-route.ts')
+    } catch {
+      routeMod24 = null
+    }
+    if (blk !== null && typeof routeMod24?.handlePolicyBlockQuery === 'function') {
+      const { mkdirSync } = await import('node:fs')
+      const dir = join(work, 'g24')
+      mkdirSync(dir, { recursive: true })
+      const file = join(dir, 'session-policy-blocks.json')
+      const S = 'sess-g24-hob'
+
+      /** 假策略服务：`recorded` / `isHob` 可调（⚠ 这就是"选过没有"那根轴）。 */
+      const fakeSvc = (opts) => ({
+        get: () => ({
+          isHob: opts.isHob,
+          recorded: opts.recorded,
+          source: opts.source ?? (opts.recorded ? 'stored' : 'derived-default'),
+        }),
+      })
+      /** 跑一次 "blocked" 查询（真源码函数，⛔ 非正则）。 */
+      const queryBlocked = (opts) => routeMod24.handlePolicyBlockQuery({
+        policyOf: () => fakeSvc(opts),
+        sessionOf: () => ({ id: S }),
+        blockFileOf: () => file,
+      }, { action: 'blocked', sessionId: S })
+
+      // ── A · 改前红：**不写被拦状态** ⇒ 恒 clear ⇒ 不弹 ──────────────────
+      {
+        const r = queryBlocked({ isHob: true, recorded: false })
+        if (r?.state === 'clear') {
+          ok('G-24 A ✓ **改前红**：不写"被拦过" ⇒ `blocked` 查询回 `clear` ⇒ 界面**不会**弹'
+            + '（⚠ 这正是改前的形态 —— 闸门 reject 了但前端无从得知）')
+        } else {
+          bad(`G-24 A ⚠ 改前形态应回 clear，实际回 ${JSON.stringify(r?.state)}`
+            + ' ⇒ 该读数不能证明"改前是红的"（判据靶子不清）')
+        }
+      }
+
+      // ── B · 改后绿：写了 ⇒ blocked；且**真 DOM 挂载**下组件会自动开窗 ────
+      {
+        const w = blk.markBlocked(file, S)
+        if (!w.ok) {
+          bad(`G-24 B ⚠ 写"被拦过"失败：${w.reason}`)
+        } else {
+          const r = queryBlocked({ isHob: true, recorded: false })
+          if (r?.state !== 'blocked') {
+            bad(`G-24 B ⚠ 写完"被拦过"后查询仍是 ${JSON.stringify(r?.state)}（应 blocked）`)
+          } else {
+            // ⚠ **真组件**：真源码 gate 组件 + 假 reader，读到 blocked ⇒ 自动开窗
+            const gateMod = await import(needEntry('src/client/hob-unselected-gate.tsx'))
+            const opened = []
+            const el = React.createElement(gateMod.HobUnselectedGate, {
+              sessionId: S,
+              agentPreset: gateMod.HOB_PRESET_ID_FOR_MATCH,
+              readRecorded: async () => 'unrecorded',
+              readBlocked: async () => (r.state === 'blocked' ? 'blocked' : 'clear'),
+              blockPollMs: 20,
+              openForSession: (id) => { opened.push(id) },
+              memory: gateMod.createGateMemory(),
+              autoOpen: true,
+            })
+            const root2 = createRoot(document.createElement('div'))
+            await act(async () => { root2.render(el) })
+            await act(async () => { await new Promise((res) => setTimeout(res, 120)) })
+            await act(async () => { root2.unmount() })
+            if (opened.length === 1 && opened[0] === S) {
+              ok('G-24 B ✓ **改后绿**：写入后 `blocked` 查询回 `blocked`，真组件在 `unrecorded` + blocked 下'
+                + `**自动开窗一次**（opened=${JSON.stringify(opened)}）`)
+            } else {
+              bad(`G-24 B ⚠ 组件没按预期开窗（opened=${JSON.stringify(opened)}，应恰好 1 次且是 ${S}）`)
+            }
+          }
+        }
+      }
+
+      // ── C · 不重不漏：选完档 ⇒ 不再弹 ─────────────────────────────────
+      {
+        const c = blk.clearBlocked(file, S)
+        const afterClear = queryBlocked({ isHob: true, recorded: true })
+        const afterClearUnrecorded = queryBlocked({ isHob: true, recorded: false })
+        if (!c.ok) {
+          bad(`G-24 C ⚠ 清"被拦过"失败：${c.reason}`)
+        } else if (afterClear?.state !== 'clear' || afterClearUnrecorded?.state !== 'clear') {
+          bad(`G-24 C ⚠ 选完档仍会弹（recorded=true ⇒ ${JSON.stringify(afterClear?.state)}；`
+            + `清理后 recorded=false ⇒ ${JSON.stringify(afterClearUnrecorded?.state)}）`)
+        } else {
+          ok('G-24 C ✓ 选完档后 `recorded=true` ⇒ 直接 clear（⛔ 不看被拦记录）· 清理后也不再弹'
+            + '（⚠ 重投那条由 G-23 独立钉着，本组不重复）')
+        }
+      }
+
+      // ── D · 不误弹：非 Hob / 已选过 / 旧会话 stored ────────────────────
+      {
+        const cases = [
+          { name: '非 Hob', opts: { isHob: false, recorded: false }, want: 'clear' },
+          { name: '已选过档', opts: { isHob: true, recorded: true }, want: 'clear' },
+          { name: '旧会话 stored', opts: { isHob: true, recorded: true, source: 'stored' }, want: 'clear' },
+        ]
+        const wrong = []
+        for (const cs of cases) {
+          const r = queryBlocked(cs.opts)
+          if (r?.state !== cs.want) wrong.push(`${cs.name}→${JSON.stringify(r?.state)}`)
+        }
+        if (wrong.length === 0) {
+          ok(`G-24 D ✓ 三类**都不弹**：${cases.map((c) => c.name).join(' / ')} ⇒ 全 clear`)
+        } else {
+          bad(`G-24 D ⚠ 误弹：${wrong.join(' / ')}（应全 clear）`)
+        }
+      }
+
+      // ── E · 负向对拍：去掉"写入"那一步 ⇒ B 必须变红 ────────────────────
+      {
+        const file2 = join(dir, 'neg.json')
+        // ⚠ 模拟"把写入去掉"：只查询、**完全不 markBlocked**
+        const neg = routeMod24.handlePolicyBlockQuery({
+          policyOf: () => fakeSvc({ isHob: true, recorded: false }),
+          sessionOf: () => ({ id: S }),
+          blockFileOf: () => file2,
+        }, { action: 'blocked', sessionId: S })
+        if (neg?.state === 'clear') {
+          ok('G-24 E ✓ **负向对拍**：摘掉"写被拦状态"那一步 ⇒ 查询恒 `clear` ⇒ B 的自动开窗**必不成立**'
+            + '（⇒ 证明 B 绿**真的接在**那次写入上，⛔ 不是别的东西凑出来的）')
+        } else {
+          bad(`G-24 E ⚠ 摘掉写入后仍回 ${JSON.stringify(neg?.state)} ⇒ B 的绿与写入**无关** ⇒ 判据没牙`)
+        }
+      }
+
+      // ── 写失败**不许静默**（本单 §二 第 1 条硬要求）────────────────────
+      {
+        const r = blk.markBlocked(undefined, S)
+        if (r.ok === false && String(r.reason).length > 0) {
+          ok(`G-24 F ✓ 判不出落点 ⇒ **可读失败**（不静默）：「${String(r.reason).slice(0, 50)}…」`)
+        } else {
+          bad('G-24 F ⚠ 写失败被静默了（应返回 ok:false + 可读 reason）')
+        }
+      }
+    }
+  }
+
+  /**
+   * ── G-25 【TASK-K · 判据 A–F】闸门触发条件 = 「用户选没选」，⛔ 不是「迁移归属」──────
+   *
+   * ⚠⚠ **本组的输入全部取自真盘**（任务书 §三 硬要求）：
+   *   · `migrationEpoch` ← `runtime/session-policy.json` 的真值；
+   *   · 会话 `createdAt` ← 真会话事件流建档头；
+   *   ⛔ **不在夹具里写常数**。
+   *
+   * ⚠ 为什么必须这样：`CHG-204` 的 A–E 全绿而真机不弹，正因为夹具把输入设成了
+   *   "新建会话"的理想值（`createdAt` = now ⇒ `source='derived-default'`）。
+   *   真机那条会话是**旧会话**（`createdAt` 早于纪元）⇒ 旧判据恒放行。
+   */
+  {
+    let spMod25
+    try {
+      spMod25 = await import('../src/session-policy-service.ts')
+    } catch (e) {
+      spMod25 = null
+      bad(`G-25 载不到 session-policy-service（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+    }
+    if (spMod25 !== null) {
+      const fsMod = await import('node:fs')
+      const zlibMod = await import('node:zlib')
+      const dir = join(work, 'g25')
+      fsMod.mkdirSync(dir, { recursive: true })
+      const policyFile = join(dir, 'session-policy.json')
+      const blockFile = join(dir, 'session-policy-blocks.json')
+
+      // ── 真盘输入：migrationEpoch（⛔ 不写常数）──
+      const REAL_STORE = '/home/lk/.dsh/hob-ledgers/dsh-hob/runtime/session-policy.json'
+      let realEpoch
+      try { realEpoch = JSON.parse(fsMod.readFileSync(REAL_STORE, 'utf8')).migrationEpoch } catch { realEpoch = undefined }
+
+      // ── 真会话的 createdAt（从事件流建档头取，⛔ 不写常数）──
+      const REAL_ZSTD = '/home/lk/.dsh/sessions/--home-lk-FF-dsh-hob--/session-e6dfdf31-a854-4a38-9795-9956111b8a91/session.v4.jsonl.zstd'
+      let realCreatedAt
+      try {
+        const buf = fsMod.readFileSync(REAL_ZSTD)
+        const st = []
+        for (let i = 0; i < buf.length - 3; i++) {
+          if (buf[i] === 0x28 && buf[i + 1] === 0xb5 && buf[i + 2] === 0x2f && buf[i + 3] === 0xfd) st.push(i)
+        }
+        let out = ''
+        for (let k = 0; k < st.length; k++) {
+          const e = k + 1 < st.length ? st[k + 1] : buf.length
+          try { out += zlibMod.zstdDecompressSync(buf.subarray(st[k], e)).toString('utf8') } catch { /* 跳过坏帧 */ }
+        }
+        const first = out.split('\n').filter(Boolean)
+          .map((l) => { try { return JSON.parse(l) } catch { return undefined } })
+          .find((o) => o?.type === 'session')
+        realCreatedAt = first?.createdAt
+      } catch { realCreatedAt = undefined }
+
+      if (realEpoch === undefined || realCreatedAt === undefined) {
+        bad(`G-25 基准 ⚠ 取不到真盘输入（migrationEpoch=${realEpoch} · createdAt=${realCreatedAt}）`
+          + ' ⇒ 不按通过处理（⛔ 不写常数顶替）')
+      } else {
+        ok(`G-25 基准 ✓ 真盘输入：migrationEpoch=${realEpoch} · 目标会话 createdAt=${realCreatedAt}`
+          + `（⇒ createdAt ${realCreatedAt < realEpoch ? '**早于**' : '晚于'}纪元 = 真机形态）`)
+
+        const SID_EARLY = 'sess-g25-early'
+        const SID_LATE = 'sess-g25-late'
+        const SID_REC = 'sess-g25-recorded'
+        const OPTIONS = {
+          levels: ['floor', 'ledger', 'workspace'],
+          floorLevel: 'floor',
+          defaultMode: 'auto',
+          modes: ['auto', 'multi', 'single'],
+        }
+        const { readPolicyStore } = await import('../src/server/session-policy.ts')
+
+        /**
+         * ⚠ handler 第 ② 条判据的**逐字复刻**（三档）——
+         *   与 `src/session-policy-service.ts` 里 `recordState` 那个闭包一一对应：
+         *   空 id / 无 file / 读不出 ⇒ `undecidable`；`reachability !== 'ok'` ⇒ `undecidable`；
+         *   记录在 ⇒ `recorded`；记录不在 ⇒ `absent`。
+         *   ⚠ 为什么不真调 handler：它是闭包、绑在 `ctx.on('agent/pre-step')` 上，
+         *     要真调就得造整个 cordis ctx + agent。⇒ 本组用 F 的**负向对拍**证明这段复刻
+         *     与旧判据**在真盘输入下给出不同结论**（若复刻错了，F 不会成立）。
+         */
+        const gateSecond = (file, sid) => {
+          if (sid === '') return 'undecidable'
+          if (file === undefined) return 'undecidable'
+          const rd = (() => { try { return readPolicyStore(file, OPTIONS) } catch { return undefined } })()
+          if (rd === undefined) return 'undecidable'
+          if (rd.reachability !== 'ok') return 'undecidable'
+          return rd.file.sessions[sid] === undefined ? 'absent' : 'recorded'
+        }
+
+        const seed = {
+          version: 1,
+          migrationEpoch: realEpoch,
+          sessions: { 'sess-other': { level: 'ledger', workMode: 'auto', origin: 'legacy-migrated', at: realEpoch } },
+        }
+        fsMod.writeFileSync(policyFile, JSON.stringify(seed, null, 2), 'utf8')
+
+        // ── A · isHob=true · 无记录 · createdAt 早于纪元（真机形态）⇒ 必须拦 ──
+        {
+          const g = gateSecond(policyFile, SID_EARLY)
+          if (g === 'absent') {
+            const blk = await import('../src/server/policy-block-log.ts')
+            const w = blk.markBlocked(blockFile, SID_EARLY)
+            const rd = blk.readBlocked(blockFile, SID_EARLY)
+            if (!w.ok) bad(`G-25 A ⚠ 该拦但 markBlocked 写失败：${w.reason}`)
+            else if (rd.state !== 'blocked') bad(`G-25 A ⚠ 拦了但 blocks.json 里查不到（state=${rd.state}）`)
+            else ok(`G-25 A ✓ **真机形态**（createdAt ${realCreatedAt} 早于纪元 ${realEpoch}）· 无记录`
+              + ' ⇒ 判据=absent ⇒ **拦** · markBlocked 已调用 · blocks.json 有该会话（state=blocked）')
+          } else bad(`G-25 A ⚠ 真机形态应判"拦"，实际 gateSecond=${g} ⇒ 旧的病没治好`)
+        }
+
+        // ── B · 无记录 · createdAt 晚于纪元 ⇒ 也必须拦 ──
+        {
+          const g = gateSecond(policyFile, SID_LATE)
+          if (g === 'absent') ok('G-25 B ✓ 无记录 + createdAt 晚于纪元 ⇒ 判据=absent ⇒ **拦**（与 A 同档；纪元差异不再影响判定）')
+          else bad(`G-25 B ⚠ 应判"拦"，实际 ${g}`)
+        }
+
+        // ── C · 有已落盘记录 ⇒ 必须放行，且不写 blocks.json ──
+        {
+          const seed2 = JSON.parse(JSON.stringify(seed))
+          seed2.sessions[SID_REC] = { level: 'ledger', workMode: 'auto', origin: 'explicit', at: realEpoch }
+          fsMod.writeFileSync(policyFile, JSON.stringify(seed2, null, 2), 'utf8')
+          const g = gateSecond(policyFile, SID_REC)
+          const before = (() => { try { return String(fsMod.readFileSync(blockFile, 'utf8')) } catch { return '' } })()
+          const wrote = before.includes(SID_REC)
+          if (g === 'recorded' && !wrote) {
+            ok('G-25 C ✓ 有已落盘记录 ⇒ 判据=recorded ⇒ **放行**，且 blocks.json **不含**该会话（⛔ 不写）')
+          } else {
+            bad(`G-25 C ⚠ 有记录应放行且不写：gateSecond=${g} · blocks 含该会话=${wrote}`)
+          }
+        }
+
+        // ── D · 非 Hob ⇒ 放行（第 ① 条未动，验它仍在）──
+        {
+          const src = String(fsMod.readFileSync(join(root, 'src', 'session-policy-service.ts'), 'utf8'))
+          if (/if \(resolved\?\.isHob !== true\) return next\(\)/.test(src)) {
+            ok('G-25 D ✓ `isHob !== true ⇒ next()` 第 ① 条**原样在位**（非 Hob 一律放行）')
+          } else bad('G-25 D ⚠ 第 ① 条（非 Hob 放行）不见了')
+        }
+
+        // ── E · 判不出 ⇒ 必须放行（fail-open）──
+        {
+          const cases = []
+          cases.push(['文件不存在', join(dir, 'nope.json')])
+          const vf = join(dir, 'badver.json')
+          fsMod.writeFileSync(vf, JSON.stringify({ version: 999, migrationEpoch: realEpoch, sessions: {} }), 'utf8')
+          cases.push(['版本不认识', vf])
+          const bf = join(dir, 'badjson.json')
+          fsMod.writeFileSync(bf, '{not json', 'utf8')
+          cases.push(['不是 JSON', bf])
+          const wrong = []
+          for (const [name, f] of cases) {
+            const g = gateSecond(f, SID_EARLY)
+            if (g !== 'undecidable') wrong.push(`${name}→${g}`)
+          }
+          if (wrong.length === 0) {
+            ok('G-25 E ✓ 三类"判不出"（文件不存在 / 版本不认识 / 不是 JSON）⇒ 全 **undecidable ⇒ 放行**（fail-open）')
+          } else bad(`G-25 E ⚠ 判不出没走放行：${wrong.join(' / ')}`)
+        }
+
+        // ── F · 负向对拍：旧判据在 A 的形态上必然放行 ⇒ A 的绿挂在新判据上 ──
+        {
+          let srcOld
+          try {
+            const spm = await import('../src/server/session-policy.ts')
+            const v = spm.resolveSessionPolicy({
+              file: policyFile,
+              levels: OPTIONS.levels, floorLevel: OPTIONS.floorLevel,
+              defaultMode: OPTIONS.defaultMode, modes: OPTIONS.modes,
+              isHob: true, sessionId: SID_EARLY, archived: 'not-archived',
+              createdAt: realCreatedAt, legacyWorkModeSnapshot: 'auto', fallbackEpoch: realEpoch,
+            })
+            srcOld = v.source
+          } catch { srcOld = undefined }
+          if (srcOld === undefined) {
+            bad('G-25 F ⚠ 推不出旧判据的 source ⇒ 负向对拍做不成（不按通过处理）')
+          } else {
+            const oldWouldBlock = srcOld === 'derived-default'
+            const newWouldBlock = gateSecond(policyFile, SID_EARLY) === 'absent'
+            if (!oldWouldBlock && newWouldBlock) {
+              ok(`G-25 F ✓ **负向对拍**：旧判据在 A 的形态上得 source=${JSON.stringify(srcOld)} ⇒`
+                + ` \`!== 'derived-default'\` ⇒ **放行（不拦）**；新判据判 \`absent\` ⇒ **拦**`
+                + ' ⇒ 证明 A 的绿挂在新判据上，⛔ 不是旧判据凑出来的')
+            } else {
+              bad(`G-25 F ⚠ 负向对拍不成立：旧判据会拦=${oldWouldBlock} · 新判据会拦=${newWouldBlock}`
+                + '（若两者同为真，则 A 的绿与"换判据"无关）')
+            }
+          }
+        }
+
+        // ── 清夹具（⚠ 记录位置：work/g25，已删；并核 0 残留见报告）──
+        try { fsMod.rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ }
+      }
+    }
+  }
+
+  /**
+   * ── G-26 【TASK-N · 判据 B/C/D/E】路由层必须返回**真 `Response`**，且**走真 HTTP** ─────
+   *
+   * ══ 它治的是什么（`CHG-212`）══════════════════════════════════════════════
+   *   改前 `json()` 返回**普通对象**（`{status, headers:{…}, body:string}`），而宿主
+   *   契约要真 `Response`（`dsh-client-connection/lib/types/rpc.d.ts:131`），并在
+   *   `lib/index.js:90` 直接 `Object.fromEntries(response.headers.entries())`
+   *   ⇒ `TypeError` ⇒ 被 `dsh-host-webserver/lib/index.js:397-405` 兜成 **400 空包**
+   *   ⇒ 三条动作（`read` / `blocked` / `enums`）**全死**。
+   *
+   * ══ ⚠⚠ 为什么这组必须过**真 HTTP**（上一轮栽的就是这个）════════════════════
+   *   `check-hob-unselected-gate` 以前的判据全是"直载 `.ts` 调函数"，
+   *   **从不经过宿主那段 bridge** ⇒ 普通对象当然"没问题" ⇒ 检查长期绿、真机恒 400。
+   *   ⇒ 本组**起真 `http.Server`**，把路由 handler 挂上去，并**逐字复刻**宿主两段代码：
+   *     ① bridge（`dsh-client-connection/lib/index.js:88-100`）：把 node `req` 变成
+   *        Fetch `Request` → 调 `route.fetch` → **`Object.fromEntries(response.headers.entries())`**
+   *        → `res.writeHead(response.status, …)` → 逐块写 `response.body`；
+   *     ② webserver 兜底（`dsh-host-webserver/lib/index.js:397-405`）：抛错且未发头 ⇒ **400 空包**。
+   *   ⇒ 普通对象在这条链上**必定** 400 空包（E 用真变异证明），真 `Response` 才 2xx。
+   *
+   * ══ ⚠ 边界（如实说）══════════════════════════════════════════════════════
+   *   ⚠ 这是 **「接近真机」**：真 node:http + 真 Request/Response + 宿主那两段代码的**复刻**，
+   *     但**不是**宿主进程本身（没有真 `connection.admit` 的 cookie 鉴权栅栏，
+   *     也没有真 cordis 容器）。真机读数见 `REPORT-N.md`（curl + 启动日志 token 换 cookie）。
+   */
+  {
+    const httpMod = await import('node:http')
+    const fsMod = await import('node:fs')
+    const { join: joinP } = await import('node:path')
+    const { SESSION_POLICY_SERVICE } = await import('../src/config.ts')
+    const { resolveLedgerRoot } = await import('../src/server/doc-read.ts')
+    const { policyBlockFileOf, markBlocked } = await import('../src/server/policy-block-log.ts')
+
+    const dir = joinP(work, 'g26')
+    const ledgerHome = joinP(dir, 'ledger')
+    const cwd = joinP(dir, 'ws')
+    fsMod.mkdirSync(cwd, { recursive: true })
+    const SID = 'sess-g26-hob'
+    const ledgerRoot = resolveLedgerRoot('', ledgerHome, cwd)
+    const blockFile = ledgerRoot === undefined ? undefined : policyBlockFileOf(ledgerRoot)
+    if (blockFile === undefined) {
+      bad('G-26 基准 ⚠ 推不出被拦记录落点（resolveLedgerRoot 回 undefined）⇒ 不按通过处理')
+    } else {
+      fsMod.mkdirSync(joinP(ledgerRoot, 'runtime'), { recursive: true })
+
+      /** 宿主 bridge + webserver 兜底的**逐字复刻**（见本组文件头 ① ②）。 */
+      const serve = (handler) => httpMod.createServer((req, res) => {
+        const go = async () => {
+          const chunks = []
+          for await (const c of req) chunks.push(c)
+          const url = new URL(req.url ?? '/', 'http://dsh.internal')
+          const headers = Object.fromEntries(
+            Object.entries(req.headers).filter(([, v]) => typeof v === 'string'),
+          )
+          const request = new Request(url, {
+            method: req.method ?? 'GET',
+            headers,
+            ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
+          })
+          // ⚠ 宿主 `dsh-client-connection/lib/index.js:88`
+          const response = await handler.fetch(request, { principal: { kind: 'owner' } })
+          // ⚠ 宿主 `…/lib/index.js:90`：普通对象在这一行必抛（没有 `.headers.entries`）
+          const responseHeaders = Object.fromEntries(response.headers.entries())
+          res.writeHead(response.status, responseHeaders)
+          for await (const chunk of response.body) res.write(chunk)
+          res.end()
+        }
+        go().catch(() => {
+          // ⚠ 宿主 `dsh-host-webserver/lib/index.js:397-405`
+          if (res.headersSent) { res.destroy(); return }
+          res.writeHead(400)
+          res.end()
+        })
+      })
+
+      /** 假宿主 ctx：`inject` 同步回调、`get()` 提供 `connection.fetch.register` 等。 */
+      const mkHostCtx = (captured) => {
+        const hostCtx = {
+          logger: { info: () => {}, warn: () => {}, debug: () => {} },
+          effect: (fn) => { try { const d = typeof fn === 'function' ? fn() : undefined; void d } catch { /* 忽略 */ } },
+          get: (k) => {
+            if (k === 'connection') {
+              return { fetch: { register: (route) => { captured.push(route); return async () => {} } } }
+            }
+            if (k === 'loader') return { entries: () => [{ options: { ledgerHome } }] }
+            if (k === 'sessions') return { get: (id) => (id === SID ? { id, header: { cwd } } : undefined) }
+            if (k === SESSION_POLICY_SERVICE) {
+              // ⚠ isHob=true + recorded=false ⇒ `read` 回 `unrecorded`、`blocked` 看被拦记录
+              return { get: () => ({ isHob: true, recorded: false, source: 'derived-default' }) }
+            }
+            if (k === 'workspaceRegistry') return { list: () => [{ id: 'ws-g26', title: '夹具工作区' }] }
+            return undefined
+          },
+          inject: (deps, fn) => { fn(hostCtx) },
+        }
+        return hostCtx
+      }
+
+      /** 起一个把 handler 挂上去的真 server；返回 `{ port, close }`。 */
+      const startWith = async (handler) => {
+        const server = serve(handler)
+        await new Promise((r) => server.listen(0, '127.0.0.1', r))
+        return { port: server.address().port, close: () => new Promise((r) => server.close(r)) }
+      }
+      /** 真 HTTP POST（⚠ 用全局 fetch 打绝对 URL，⛔ 不直调 handler）。 */
+      const post = async (port, path, body) => {
+        const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const text = await res.text()
+        let parsed
+        try { parsed = JSON.parse(text) } catch { parsed = undefined }
+        return { status: res.status, ctype: res.headers.get('content-type'), text, parsed }
+      }
+
+      const routeMod = await import('../src/modules/session-policy-route.ts')
+      const chanMod = await import('../src/modules/session-create-channel.ts')
+      const captured = []
+      try {
+        routeMod.installPolicyRoute(mkHostCtx(captured))
+        chanMod.installCreateChannel(mkHostCtx(captured))
+      } catch (e) {
+        bad(`G-26 挂载路由失败（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+      }
+      const policyRoute = captured.find((r) => r.path === '/api/dsh-hob/session-policy')
+      const createRoute = captured.find((r) => r.path === '/api/dsh-hob/session-create')
+      if (policyRoute === undefined || createRoute === undefined) {
+        bad(`G-26 两条路由没登记上（policy=${policyRoute !== undefined} create=${createRoute !== undefined}）⇒ 不按通过处理`)
+      } else {
+        const srv = await startWith({
+          // 一个 server 两个前缀：按 pathname 分发（与宿主"同一条 /api 通道"同形）
+          fetch: async (request, peer) => {
+            const p = new URL(request.url).pathname
+            if (p === '/api/dsh-hob/session-policy') return policyRoute.fetch(request, peer)
+            if (p === '/api/dsh-hob/session-create') return createRoute.fetch(request, peer)
+            return new Response('not found', { status: 404 })
+          },
+        })
+        try {
+          // ── B · 改后绿：`read` ⇒ 2xx + 可解析 JSON + 含预期字段 ────────────
+          const b = await post(srv.port, '/api/dsh-hob/session-policy', { action: 'read', sessionId: SID })
+          const bOk = b.status === 200 && b.parsed !== undefined
+            && b.parsed.ok === true && typeof b.parsed.state === 'string'
+            && String(b.ctype ?? '').startsWith('application/json')
+          if (bOk) {
+            ok(`G-26 B ✓ **改后绿（真 HTTP）**：POST /api/dsh-hob/session-policy {"action":"read"} ⇒`
+              + ` **${b.status}** · content-type=${JSON.stringify(b.ctype)} · body=${JSON.stringify(b.text).slice(0, 120)}`)
+          } else {
+            bad(`G-26 B ⚠ 真 HTTP 未绿：status=${b.status} ctype=${JSON.stringify(b.ctype)} body=${JSON.stringify(b.text).slice(0, 200)}`)
+          }
+
+          // ── C · 三条 action（read / blocked / enums）都 2xx ─────────────
+          const mk = markBlocked(blockFile, SID)
+          if (!mk.ok) bad(`G-26 C ⚠ 夹具写"被拦过"失败：${mk.reason}`)
+          const cRead = await post(srv.port, '/api/dsh-hob/session-policy', { action: 'read', sessionId: SID })
+          const cBlocked = await post(srv.port, '/api/dsh-hob/session-policy', { action: 'blocked', sessionId: SID })
+          const cEnums = await post(srv.port, '/api/dsh-hob/session-create', { action: 'enums' })
+          const rows = [
+            ['read', cRead, (p) => p?.ok === true && p?.state === 'unrecorded'],
+            ['blocked', cBlocked, (p) => p?.ok === true && p?.state === 'blocked'],
+            ['enums', cEnums, (p) => p?.ok === true && Array.isArray(p?.levels) && Array.isArray(p?.workspaces)],
+          ]
+          const badRows = rows.filter(([, r, check]) => !(r.status === 200 && check(r.parsed)))
+          if (badRows.length === 0) {
+            ok('G-26 C ✓ 三条 action 全 **200 + 语义对**：read⇒unrecorded · blocked⇒blocked · enums⇒levels+workspaces'
+              + '（⚠ 三条都是真 HTTP POST，⛔ 不是直调函数）')
+          } else {
+            bad(`G-26 C ⚠ 未全绿：${badRows.map(([n, r]) => `${n}=${r.status}/${JSON.stringify(r.text).slice(0, 80)}`).join(' · ')}`)
+          }
+
+          // ── D · 端到端：真 blocked 记录 ⇒ 真 HTTP 读到 blocked ⇒ 真 DOM 自动开窗 ──
+          {
+            const realFetch = globalThis.fetch
+            globalThis.fetch = (url, init) => {
+              const s = String(url)
+              return realFetch(s.startsWith('/api/') ? `http://127.0.0.1:${srv.port}${s}` : s, init)
+            }
+            const opened = []
+            let rDom
+            try {
+              rDom = await mount(h(gate.HobUnselectedGate, {
+                sessionId: SID,
+                agentPreset: gate.HOB_PRESET_ID_FOR_MATCH,
+                // ⚠ 不传 readRecorded / readBlocked ⇒ **默认实现**，两条都走真 HTTP
+                openForSession: (id) => { opened.push(id) },
+                memory: gate.createGateMemory(),
+                /**
+                 * ⚠⚠ **2026-10-29（TASK-Q · `CHG-215`）：这里不再传 `autoOpen:false`。**
+                 *   改前传它是为了"把'未选即弹'那条关掉，好分辨是谁弹的"——
+                 *   现在**那条已经在源码里废掉了**，开窗只可能来自 `blocked` 轮询，
+                 *   所以不需要（也⛔ 不该）再关一次；关掉反而会把唯一那条路也关死。
+                 *   ⚠ 判据没有变松：`opened` 必须**恰好 1 次**且是 SID。
+                 */
+                blockPollMs: 20,
+              }))
+              // ⚠ 两段 settle：[60ms] 让 `read` 那条落地并进入 `unrecorded`，
+              //    [200ms] 再让 `blocked` 轮询跑几轮（⚠ 一次 `settle` 只刷一轮宏任务，
+              //    单次 160ms 实测**不够**：轮询刚发出就 unmount 了 —— 见 REPORT-N §4）。
+              await settle(60)
+              await settle(200)
+            } finally {
+              if (rDom !== undefined) await unmount(rDom)
+              globalThis.fetch = realFetch
+            }
+            if (opened.length === 1 && opened[0] === SID) {
+              ok('G-26 D ✓ **端到端**：服务端真落一条 blocked ⇒ 客户端**默认读取器**经真 HTTP 读到 `blocked` ⇒'
+                + ` 真 DOM 组件**自动开窗一次**（opened=${JSON.stringify(opened)}；`
+                + '⚠ TASK-Q 起"未选即弹"已在源码里废掉 ⇒ 这条开窗**只可能**来自 blocked 轮询）')
+            } else {
+              bad(`G-26 D ⚠ 端到端没开窗（opened=${JSON.stringify(opened)}，应恰好 1 次且是 ${SID}）`
+                + ' ⇒ "路由绿了但界面仍不弹"这条缝没接上')
+            }
+          }
+        } finally {
+          await srv.close()
+        }
+
+        // ── E · 负向对拍：把 `json()` 真改成普通对象 ⇒ B **必须变红** ────────
+        {
+          const { mkdtempSync, cpSync, writeFileSync: writeMut, symlinkSync, rmSync: rmMut } = fsMod
+          const { tmpdir } = await import('node:os')
+          const { pathToFileURL } = await import('node:url')
+          const mutRoot = mkdtempSync(joinP(tmpdir(), 'hob-g26-mut-'))
+          try {
+            cpSync(join(root, 'src'), joinP(mutRoot, 'src'), { recursive: true, dereference: true })
+            try { symlinkSync(joinP(root, 'node_modules'), joinP(mutRoot, 'node_modules'), 'dir') } catch { /* 已有 */ }
+            const REL = joinP('src', 'modules', 'session-policy-route.ts')
+            const srcText = readFileSync(joinP(root, REL), 'utf8')
+            /**
+             * ⚠ **只替换 `json()` 函数体这一处**（按起止锚点切片，⛔ 不用全文件
+             *   `includes('new Response(')` 做判据 —— 函数上方的**注释**里也写着
+             *   `new Response(…)`，那样会把"改成功了"误判成"没改成功"）。
+             */
+            const HEAD = 'function json(status: number, body: unknown): Response {'
+            const at = srcText.indexOf(HEAD)
+            const atEnd = at < 0 ? -1 : srcText.indexOf('\n}\n', at)
+            if (at < 0 || atEnd < 0) {
+              bad(`G-26 E ⚠ 找不到变异靶点 \`${HEAD}\` 及其函数体结尾 ⇒ 判据已对不上实现`)
+            } else {
+              /**
+               * ⚠ 变异体：**回到改前那一版**（普通对象）。⚠ 只改这一处，
+               *   其余（action 语义 / 字段名 / 状态码）一个字不动 ⇒ 红只能归因于形状。
+               */
+              const MUT = 'function json(status: number, body: unknown): any {\n'
+                + "  return { status, headers: { 'content-type': 'application/json; charset=utf-8' }, body: JSON.stringify(body) }\n"
+                + '}\n'
+              const mutated = srcText.slice(0, at) + MUT + srcText.slice(atEnd + 3)
+              const mutBody = mutated.slice(at, at + MUT.length)
+              writeMut(joinP(mutRoot, REL), mutated, 'utf8')
+              if (mutated === srcText || mutBody.includes('new Response(')) {
+                bad('G-26 E ⚠ 变异没生效（`json()` 函数体里仍有 `new Response(` 或文件未变）'
+                  + ' ⇒ 无法证明 B 挂在这次修复上')
+              } else {
+                const mutMod = await import(pathToFileURL(joinP(mutRoot, REL)).href)
+                const cap2 = []
+                mutMod.installPolicyRoute(mkHostCtx(cap2))
+                const mutRoute = cap2.find((r) => r.path === '/api/dsh-hob/session-policy')
+                if (mutRoute === undefined) {
+                  bad('G-26 E ⚠ 变异体没登记上路由 ⇒ 对拍做不成（不按通过处理）')
+                } else {
+                  const srv2 = await startWith({ fetch: (req, peer) => mutRoute.fetch(req, peer) })
+                  let e
+                  try {
+                    e = await post(srv2.port, '/api/dsh-hob/session-policy', { action: 'read', sessionId: SID })
+                  } finally {
+                    await srv2.close()
+                  }
+                  if (e.status === 400 && e.text === '') {
+                    ok('G-26 E ✓ **负向对拍**：把 `json()` 真改回**普通对象**（临时副本，真 import 真跑）⇒'
+                      + ` 同一请求变成 **${e.status} 空包**（body=${JSON.stringify(e.text)}）`
+                      + ' ⇒ 与真机改前读数同形，证明 B 的绿**真的挂在这处修复上**')
+                  } else {
+                    bad(`G-26 E ⚠ 改回普通对象后**没有变红**（status=${e.status} body=${JSON.stringify(e.text).slice(0, 80)}）`
+                      + ' ⇒ B 的绿与这次修复无关')
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            bad(`G-26 E 变异对拍跑不起来（${String(err?.message ?? err)}）⇒ 不按通过处理`)
+          } finally {
+            try { rmMut(mutRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+          }
+        }
+      }
+
+      // ── 清夹具（⚠ 位置：work/g26，已删）──
+      try { fsMod.rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ }
+    }
+  }
+
+  /**
+   * ── G-27 【TASK-Q · 判据 A–E】弹窗时点：**只在"被拦下之后"弹，切预设不再弹** ──────
+   *
+   * ══ 它治的是什么（`CHG-215`，用户原话）════════════════════════════════════
+   *   > 「我点击 HOB 预设在输入信息之前就会弹出窗口，虽然逻辑不太对
+   *   >  （**我要求的是点击发送后弹出**）」
+   *   ⇒ 改前 `hob-unselected-gate.tsx` 有一段"挂载即弹"（`recorded==='unrecorded'` ⇒ 开窗），
+   *     它与「`blocked` 轮询」两条并存；**四单实测（`REPORT-P.md`）证明现场起作用的是前者**。
+   *   ⇒ 本单把那段删掉，**开窗唯一来源 = `blocked` 轮询**。
+   *
+   * ══ 判据与靶子 ═══════════════════════════════════════════════════════════
+   *   A **改前红**：切到 Hob、未选档、未发消息 ⇒ 挂载 ⇒ **会弹**（要废掉的那条）。
+   *     ⚠ 本组把它做成**变异体**（把旧 effect 塞回临时副本）⇒ 每次跑都真验一遍，
+   *       ⛔ 不是"报告里说改前是红的"。这同时就是 E（负向对拍）。
+   *   B **改后绿**：同一场景（**真源码**）⇒ **一次都不弹**，且**横幅仍在**（⛔ 不把功能删没）。
+   *   C **核心（真 HTTP）**：起真 `http.Server` 挂**真路由**、真落一条 `blocked` ⇒
+   *     客户端**默认读取器**读到 ⇒ 真 DOM 组件**恰好弹一次**。
+   *   D 选完档（`recorded`）后有 `blocked` 残留 ⇒ **不弹**。
+   *   E = A 的复用（变异体必须红）。
+   */
+  {
+    const httpMod2 = await import('node:http')
+    const fsMod2 = await import('node:fs')
+    const { join: joinP2 } = await import('node:path')
+    const { pathToFileURL: toUrl2 } = await import('node:url')
+
+    const dir = joinP2(work, 'g27')
+    const ledgerHome = joinP2(dir, 'ledger')
+    const cwd = joinP2(dir, 'ws')
+    fsMod2.mkdirSync(cwd, { recursive: true })
+
+    const { SESSION_POLICY_SERVICE } = await import('../src/config.ts')
+    const { resolveLedgerRoot: resolveRoot2 } = await import('../src/server/doc-read.ts')
+    const blkMod2 = await import('../src/server/policy-block-log.ts')
+    const ledgerRoot = resolveRoot2('', ledgerHome, cwd)
+    const SID = 'sess-g27-hob'
+    const blockFile = ledgerRoot === undefined ? undefined : blkMod2.policyBlockFileOf(ledgerRoot)
+    if (blockFile === undefined) {
+      bad('G-27 基准 ⚠ 推不出被拦记录落点 ⇒ 不按通过处理')
+    } else {
+      fsMod2.mkdirSync(joinP2(ledgerRoot, 'runtime'), { recursive: true })
+      const resetBlockFile = () => fsMod2.writeFileSync(blockFile, JSON.stringify({ version: 1, blocked: {} }))
+
+      /**
+       * ⚠ 真 HTTP 服务：复刻宿主 bridge 两行（`dsh-client-connection/lib/index.js:88-90`）
+       *   + webserver 兜底（`dsh-host-webserver/lib/index.js:397-405`）。标「接近真机」。
+       */
+      const serveRoute = (handler) => httpMod2.createServer((req, res) => {
+        const go = async () => {
+          const chunks = []
+          for await (const c of req) chunks.push(c)
+          const url = new URL(req.url ?? '/', 'http://dsh.internal')
+          const headers = Object.fromEntries(Object.entries(req.headers).filter(([, v]) => typeof v === 'string'))
+          const request = new Request(url, {
+            method: req.method ?? 'GET', headers,
+            ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
+          })
+          const response = await handler.fetch(request, {})
+          res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
+          for await (const chunk of response.body) res.write(chunk)
+          res.end()
+        }
+        go().catch(() => {
+          if (res.headersSent) { res.destroy(); return }
+          res.writeHead(400); res.end()
+        })
+      })
+
+      /** 假宿主 ctx（与 G-26 同形，⚠ recorded 由 `recordedNow` 控制）。 */
+      const mkCtx2 = (captured, recordedNow) => {
+        const ctx = {
+          logger: { info: () => {}, warn: () => {}, debug: () => {} },
+          effect: (fn) => { try { fn() } catch { /* 忽略 */ } },
+          get: (k) => {
+            if (k === 'connection') return { fetch: { register: (r) => { captured.push(r); return async () => {} } } }
+            if (k === 'loader') return { entries: () => [{ options: { ledgerHome } }] }
+            if (k === 'sessions') return { get: (id) => (id === SID ? { id, header: { cwd } } : undefined) }
+            if (k === SESSION_POLICY_SERVICE) return { get: () => ({ isHob: true, recorded: recordedNow(), source: recordedNow() ? 'stored' : 'derived-default' }) }
+            if (k === 'workspaceRegistry') return { list: () => [{ id: 'ws-g27', title: '夹具' }] }
+            return undefined
+          },
+          inject: (_d, fn) => fn(ctx),
+        }
+        return ctx
+      }
+
+      const routeMod2 = await import('../src/modules/session-policy-route.ts')
+      let recordedFlag = false
+      const cap2 = []
+      routeMod2.installPolicyRoute(mkCtx2(cap2, () => recordedFlag))
+      const policyRoute2 = cap2.find((r) => r.path === '/api/dsh-hob/session-policy')
+      if (policyRoute2 === undefined) {
+        bad('G-27 ⚠ 真路由没登记上 ⇒ C 做不成（不按通过处理）')
+      } else {
+        /** 用真 HTTP 打一次（⛔ 不直调 reader）。 */
+        const withRealHttp = async (fn) => {
+          const server = serveRoute(policyRoute2)
+          await new Promise((r) => server.listen(0, '127.0.0.1', r))
+          const port = server.address().port
+          const realFetch = globalThis.fetch
+          globalThis.fetch = (url, init) => {
+            const s = String(url)
+            return realFetch(s.startsWith('/api/') ? `http://127.0.0.1:${port}${s}` : s, init)
+          }
+          try { return await fn() } finally {
+            globalThis.fetch = realFetch
+            await new Promise((r) => server.close(r))
+          }
+        }
+
+        // ── B · 改后绿：未选档、未发消息 ⇒ **一次都不弹**，横幅仍在 ──────────
+        {
+          resetBlockFile()
+          recordedFlag = false
+          const opened = []
+          let r
+          /**
+           * ⚠⚠ **必须挂在真 HTTP 上跑**（任务书 §二 判据要求"必须走真 HTTP"）：
+           *   默认读取器用的是**相对 URL**，在 Node 里没有 base ⇒ 不打这个补丁
+           *   它一律读成 `'unknown'` ⇒ 横幅不显 ⇒ B 会**假红**（我第一次就撞了这个）。
+           */
+          await withRealHttp(async () => {
+            r = await mount(h(gate.HobUnselectedGate, {
+              sessionId: SID,
+              agentPreset: gate.HOB_PRESET_ID_FOR_MATCH,
+              // ⚠ 不传 readRecorded / readBlocked ⇒ 默认实现（走**真 HTTP**）
+              openForSession: (id) => opened.push(id),
+              memory: gate.createGateMemory(),
+              blockPollMs: 20,
+            }))
+            // ⚠ 两段 settle（同 G-26 D 的教训：一次 settle 只刷一轮宏任务）
+            await settle(60); await settle(200)
+          })
+          const banner = host.querySelectorAll(`.${gate.GATE_CLASS.root}`).length
+          if (r !== undefined) await unmount(r)
+          if (opened.length === 0 && banner === 1) {
+            ok(`G-27 B ✓ **改后绿（真 HTTP）**：Hob + 未选档 + **未发消息** ⇒ 挂载后`
+              + ` **弹 ${opened.length} 次**（横幅仍在：${banner} 个）⇒ 切预设不再弹，⛔ 也没把功能删没`)
+          } else {
+            bad(`G-27 B ⚠ 未发消息却 ${opened.length > 0 ? '弹了' : '没弹'}（opened=${JSON.stringify(opened)} banner=${banner}）`
+              + ' ⇒ 期望：弹 0 次 + 横幅 1 个')
+          }
+        }
+
+        // ── C · 核心：真落一条 blocked ⇒ 真 HTTP 读到 ⇒ **恰好弹一次** ────────
+        {
+          resetBlockFile()
+          recordedFlag = false
+          const w = blkMod2.markBlocked(blockFile, SID)
+          if (!w.ok) {
+            bad(`G-27 C ⚠ 夹具写"被拦过"失败：${w.reason}`)
+          } else {
+            const opened = []
+            let r
+            await withRealHttp(async () => {
+              r = await mount(h(gate.HobUnselectedGate, {
+                sessionId: SID,
+                agentPreset: gate.HOB_PRESET_ID_FOR_MATCH,
+                openForSession: (id) => opened.push(id),
+                memory: gate.createGateMemory(),
+                blockPollMs: 20,
+              }))
+              await settle(60); await settle(250)
+            })
+            if (r !== undefined) await unmount(r)
+            if (opened.length === 1 && opened[0] === SID) {
+              ok('G-27 C ✓ **核心（真 HTTP）**：服务端真落一条 `blocked` ⇒ 客户端**默认读取器**经真 HTTP 读到 ⇒'
+                + ` 真 DOM **恰好弹一次**（opened=${JSON.stringify(opened)}）`)
+            } else {
+              bad(`G-27 C ⚠ 期望恰好 1 次，实际 ${JSON.stringify(opened)} ⇒ "点发送后被拦就该弹"这条没通`)
+            }
+          }
+        }
+
+        // ── D · 选完档后有 blocked 残留 ⇒ **不弹** ──────────────────────────
+        {
+          resetBlockFile()
+          recordedFlag = true               // ⚠ 已选档
+          blkMod2.markBlocked(blockFile, SID)   // ⚠ 故意留一条残留
+          const opened = []
+          let r
+          await withRealHttp(async () => {
+            r = await mount(h(gate.HobUnselectedGate, {
+              sessionId: SID,
+              agentPreset: gate.HOB_PRESET_ID_FOR_MATCH,
+              openForSession: (id) => opened.push(id),
+              memory: gate.createGateMemory(),
+              blockPollMs: 20,
+            }))
+            await settle(60); await settle(200)
+          })
+          if (r !== undefined) await unmount(r)
+          if (opened.length === 0) {
+            ok('G-27 D ✓ 已选档（`recorded`）+ `blocked` 残留 ⇒ **不弹**（⛔ 不拿旧记录反复骚扰）')
+          } else {
+            bad(`G-27 D ⚠ 已选档却弹了：opened=${JSON.stringify(opened)}`)
+          }
+        }
+
+        // ── A/E · 负向对拍：把"挂载即弹"塞回临时副本 ⇒ **必须重新变红** ───────
+        {
+          const { mkdtempSync, cpSync, writeFileSync: wf, symlinkSync, rmSync: rm2 } = fsMod2
+          const { tmpdir } = await import('node:os')
+          const mutRoot = mkdtempSync(joinP2(tmpdir(), 'hob-g27-mut-'))
+          try {
+            cpSync(join(SRC_ROOT, 'src'), joinP2(mutRoot, 'src'), { recursive: true, dereference: true })
+            try { symlinkSync(join(root, 'node_modules'), joinP2(mutRoot, 'node_modules'), 'dir') } catch { /* 已有 */ }
+            const REL = joinP2('src', 'client', 'hob-unselected-gate.tsx')
+            const srcText = fsMod2.readFileSync(joinP2(SRC_ROOT, REL), 'utf8')
+            /**
+             * ⚠ 变异靶点 = `const mountedAutoOpen = props.autoOpen !== false` 这一行**之后**
+             *   那段注释块的结束标记 —— 把旧 effect **原样**插回去。
+             *   ⛔ 不是"改个变量名"，是**真的把被废掉的那段行为还原**。
+             *   ⚠ 这里刻意不写那个结束标记的字面量：它会把本注释块提前闭合。
+             */
+            const ANCHOR = 'const mountedAutoOpen = props.autoOpen !== false\n'
+            const at = srcText.indexOf(ANCHOR)
+            const endOfComment = at < 0 ? -1 : srcText.indexOf('*/\n', at)
+            if (at < 0 || endOfComment < 0) {
+              bad('G-27 A/E ⚠ 找不到变异靶点（`mountedAutoOpen` 声明 / 其后注释块结束）⇒ 判据已对不上实现')
+            } else {
+              const OLD = `  React.useEffect(() => {
+    if (sessionId === undefined || sessionId === '') return
+    if (recorded !== 'unrecorded') return
+    if (!mountedAutoOpen) return
+    if (typeof props.openForSession !== 'function') return
+    if (memory === undefined) return
+    if (!memory.takeAutoOpen(sessionId)) return
+    try { props.openForSession(sessionId) } catch { /* mut */ }
+  }, [sessionId, recorded, mountedAutoOpen, props.openForSession, memory])
+`
+              const insertAt = endOfComment + 3
+              const mutated = srcText.slice(0, insertAt) + OLD + srcText.slice(insertAt)
+              wf(joinP2(mutRoot, REL), mutated, 'utf8')
+              // ⚠ 独立转译变异树（⚠ 不是拿真源码跑）
+              const ts2 = (await import(`file://${join(root, 'node_modules', 'typescript', 'lib', 'typescript.js')}`)).default
+              const tsMount2 = await import('./ts-mount.mjs')
+              const ent = ['src/client/hob-unselected-gate.tsx']
+              const g2 = tsMount2.mountTsGraph({ root: mutRoot, outDir: joinP2(work, 'g27', 'mut-out'), entries: ent, ts: ts2 })
+              const mutGate = await import(toUrl2(g2.entries[ent[0]]).href)
+              resetBlockFile()          // ⚠ blocked 为空：开窗只可能来自"挂载即弹"
+              recordedFlag = false
+              const opened = []
+              const r = await mount(h(mutGate.HobUnselectedGate, {
+                sessionId: 'sess-g27-mut',
+                agentPreset: mutGate.HOB_PRESET_ID_FOR_MATCH,
+                readRecorded: async () => 'unrecorded',
+                readBlocked: async () => 'clear',
+                openForSession: (id) => opened.push(id),
+                memory: mutGate.createGateMemory(),
+              }))
+              await settle(120)
+              await unmount(r)
+              if (opened.length === 1) {
+                ok(`G-27 A/E ✓ **负向对拍（真变异）**：把被废掉的"挂载即弹"塞回临时副本 ⇒`
+                  + ` 同一场景（未选档 · 未发消息 · blocked=clear）**重新弹了 ${opened.length} 次**`
+                  + ' ⇒ 证明 B 的绿**真的挂在这处删除上**，⛔ 不是别的东西凑出来的')
+              } else {
+                bad(`G-27 A/E ⚠ 变异体**没有**变红（opened=${JSON.stringify(opened)}，应 1 次）`
+                  + ' ⇒ B 的绿与"删掉挂载即弹"无关 / 或变异没生效')
+              }
+            }
+          } catch (err) {
+            bad(`G-27 A/E 变异对拍跑不起来（${String(err?.message ?? err)}）⇒ 不按通过处理`)
+          } finally {
+            try { rm2(mutRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+          }
+        }
+      }
+      // ── 清夹具（⚠ 位置：work/g27，已删）──
+      try { fsMod2.rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ }
+    }
+  }
+
 } finally {
   cleanup()
 }

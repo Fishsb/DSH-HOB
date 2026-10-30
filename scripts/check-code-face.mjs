@@ -6,12 +6,44 @@
  */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { workspaceName } from './workspace-name.mjs'
+/**
+ * ⚠⚠ **脚本侧唯一账本根解析**（`CHG-099` 第 4 条 · `scripts/lib/ledger-root.mjs`）。
+ *
+ * ── 为什么要 import 它（2026-10-27 · 包 Z · **同一形状第三次**）────────────────
+ *   本文件有**两处**自己拼的账本根（Q3 的 `LEDGER` 与 W 的 `LEDGER`），形状完全相同：
+ *   先试 `<工作区>/.hob`（`looksLikeLedger` 为真就用），再退 `<ledgerHome>/<工作区名>`。
+ *   ⚠ 账本迁出工作区（`CHG-102`）之后旧落点里 `volumes/` 与 `archive/` 仍非空
+ *     ⇒ `looksLikeLedger` **仍为真** ⇒ **两处都选中旧落点**：
+ *       · Q3：旧落点 `volumes/` 下**没有** `context/rounds` 两层目录 ⇒ `scanned = 0`，
+ *         而登记表有 1 项 ⇒ **"登记表与实测对不上"**（假红）；
+ *       · W：旧落点里没有 `volumes/plan/03-architecture-modular.md` ⇒
+ *         **"方案 §3 卷读不到"**（假红）。
+ *   ⇒ 本单把这两处一并收进共享实现。⚠ 包 Y 修的是 `check-doc-shape` 那一处、
+ *     包 Z 修了 `check-repo-rules` 与这里 —— **一共四处，全部收敛**。
+ */
+import {
+  looksLikeLedger as looksLikeLedgerShared,
+  resolveLedgerRoot as resolveLedgerRootShared,
+} from './lib/ledger-root.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * 「这个目录看起来像不像一份账本」（⚠ 与产品代码 `src/server/doc-read.ts` 的 `looksLikeLedger`
+ * **逐条相同** —— 两侧不许各写一套，否则"判据说在、产品说不在"就是新的漂移点）。
+ *
+ * 判据：目录在，且**至少有一件**账本特征 —— 正本之一，或**非空的** `volumes/` / `archive/` / `runtime/`。
+ * ⚠ **空目录不算**：本项目 `.hob/archive/` 是空的记录层历史位，算进去会把"未迁移"误判成"已迁移"。
+ */
+/**
+ * ⚠⚠ **本文件不再自己实现 `looksLikeLedger`**（2026-10-27 · 包 Z）：
+ *   改为 `import` 共享实现 —— "与产品侧逐条相同"从此是**结构性**的。
+ */
+const looksLikeLedger = looksLikeLedgerShared
 /**
  * ⚠ **源码根可被 `HOB_CF_ROOT` 指向一份临时副本**（负向对拍用：把 `hob-write.ts` 回退成
  *   改前的 `catch { exists = false }`，确认 H7 **会红**而不是恒绿）。
@@ -48,7 +80,7 @@ export function runSameSource({ bad, ok }) {
    *   · ⚠ **提取失败（找不到 / 换了写法）⇒ FAIL 并明说"提取不到"** ——
    *     ⛔ **不许静默通过**：静默通过等于这条机检不存在（与断言 I 的教训同族）。
    *
-   * ── 覆盖范围（**照实登记**，见 `.hob/README.md` §1.4）────────────────────
+   * ── 覆盖范围（**照实登记**，见 `kit/README.md` §1.4）────────────────────
    *   · **管**：两对**正则字面量** —— 归档路径（`REF_PATH_RE` ↔ `D_REF_RE`）·
    *     作业书文件名（`REF_TASK_RE` ↔ `D_TASK_RE`）。
    *     这些都是**具名声明**（`const X = /…/g`）⇒ 提取稳定。
@@ -758,7 +790,7 @@ export async function runRender({ bad, ok }) {
          * ── 现在②：§12 备份读守卫**如实登记为不可确定性判**（见 §1.4）──────────
          *   它只在"§7 读得到、§12 读不到"那个 **TOCTOU 窗口**里触发
          *   （两次读之间文件被换掉 / 权限被改）—— 那需要精确的时序注入，
-         *   ⛔ 本组做不到确定性复现 ⇒ **不假装测了它**，登记进 `.hob/README.md §1.4`。
+         *   ⛔ 本组做不到确定性复现 ⇒ **不假装测了它**，登记进 `kit/README.md §1.4`。
          *   ⚠ 但它的**存在性**仍判（`BackupReadError` 必须被导出、且 §12 的 catch 必须认它）
          *     ⇒ 删掉那个 `instanceof` 分支会红。
          */
@@ -794,7 +826,7 @@ export async function runRender({ bad, ok }) {
               ok('H11 ✓ **§7 主读守卫在位**（`keepBackups:0` 与 `:3` 两种都判过）：目录顶在目标上 ⇒ '
                 + '`ok:false` · `reason=read-failed` · 拒因出自 `describeReadFailure`（「读不出来」，⛔ 不是备份代劳）；'
                 + '⚠ `BackupReadError` 导出仍在（§12 那道守卫的类型在位；⚠ 它只在 §7→§12 的 TOCTOU 窗口触发，'
-                + '确定性测不到 ⇒ 已登记进 `.hob/README.md §1.4`）')
+                + '确定性测不到 ⇒ 已登记进 `kit/README.md §1.4`）')
             }
           } finally {
             try { rmSync(a.d, { recursive: true, force: true }) } catch { /* 同上 */ }
@@ -902,21 +934,20 @@ export async function runWriteScope({ bad, ok }) {
     }
 
     // ── Q3 强制登记：扫账本区真实存在的两层目录，未登记者 FAIL ─────────────
+    /**
+     * ⚠⚠ **包 Z：改前这份自己拼**（先 `<工作区>/.hob`，再 `<ledgerHome>/<工作区名>`）——
+     *   旧落点仍非空 ⇒ 必中第一档 ⇒ Q3 拿**旧落点**的 `volumes/` 去数两层目录
+     *   ⇒ `scanned = 0`（而正本里 `context/rounds` **确实存在**）⇒ 假红"登记表与实测对不上"。
+     *   ⇒ 现在走共享实现（三档与产品侧逐条相同，⛔ 不再有"本工作区 `.hob`"那一档）。
+     */
     const LEDGER = (() => {
-      const candidates = []
+      let home = null
       try {
         const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
         const m = /ledgerHome:\s*(\S+)/.exec(preset)
-        if (m !== null) candidates.push(m[1])
-      } catch { /* 预设读不到 ⇒ 只走候选 */ }
-      // ⚠ 工作区名**从配置读**（唯一来源 = `scripts/workspace-name.mjs`）；
-      //   未配置 ⇒ 落回 `basename(root)`（与改动前逐字一致）—— ⛔ 本脚本不再自己猜目录名。
-      const wsName = workspaceName(() => basename(root))
-      for (const home of candidates) {
-        const dir = join(home, wsName)
-        if (existsSync(dir)) return dir
-      }
-      return undefined
+        if (m !== null) home = m[1]
+      } catch { /* 预设读不到 ⇒ home 留 null ⇒ 共享实现给 undefined ⇒ 下面报"解析不到" */ }
+      return resolveLedgerRootShared(root, undefined, home)
     })()
     if (LEDGER === undefined) {
       bad('Q3 账本根**解析不到** ⇒ 「新两层目录必须登记」这条失去基准（不按通过处理）')
@@ -1192,19 +1223,19 @@ export function runPlanModuleParity({ bad, ok }) {
    * ⚠ **账本区在工作区之外** ⇒ 不能 `join(root,'volumes',...)`。
    *   解析口径与 `runWriteScope` 的 Q3 逐字相同：预设行的 `ledgerHome` + 工作区名。
    */
+  /**
+   * ⚠⚠ **包 Z：改前这份也自己拼**（与上面 Q3 逐字同形）—— 同一形状的第三次。
+   *   旧落点里没有 `volumes/plan/03-architecture-modular.md` ⇒ 假红"方案 §3 卷读不到"。
+   *   ⇒ 现在走共享实现。
+   */
   const LEDGER = (() => {
-    const candidates = []
+    let home = null
     try {
       const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
       const m = /ledgerHome:\s*(\S+)/.exec(preset)
-      if (m !== null) candidates.push(m[1])
-    } catch { /* 预设读不到 ⇒ 只走候选 */ }
-    const wsName = workspaceName(() => basename(root))
-    for (const home of candidates) {
-      const dir = join(home, wsName)
-      if (existsSync(dir)) return dir
-    }
-    return undefined
+      if (m !== null) home = m[1]
+    } catch { /* 预设读不到 ⇒ 下面报"解析不到" */ }
+    return resolveLedgerRootShared(root, undefined, home)
   })()
   if (LEDGER === undefined) {
     bad('W 账本根**解析不到** ⇒ 方案 §3 模块清单同源判据失去基准（不按通过处理）')

@@ -1239,15 +1239,18 @@ console.log(`      · 面 ②（client 单体）：\`src/client/**\` 源件 **${
   + `（tsdown 单体产物 \`lib/client.js\`${clientProductExists ? '在位' : '⚠ 不在'}）`
   + ' —— ⚠ 它们**不计入上面的比较对**，由"最新源 mtime vs 产物 mtime"单列判（见下）')
 console.log(`      · 面 ④ 取数件：\`package.json\` 的 \`exports\` + \`lib/client.js\`（vm 假外壳真加载）`)
+console.log(`      · 面 ⑤ 取数件：\`lib/**\` 逐文件 + \`src/**\` 源件存在性（⚠ 孤儿 = lib 有、src 没有）`)
 console.log(`      · 戳读数：commit=${commit ?? '?'} · dirty=${dirty ?? '?'} · built_at=${builtAt ?? '?'}`)
 console.log(`      · 面 ③ 取数件：\`/proc/<pid>/stat\` + \`/proc/stat\` + profile 的 \`dsh.profile.bundles\``
   + ` · 已确认在跑本 checkout 的宿主进程 **${inst.procs.length}** 个`
   + (srcNewestMtime === null ? ' · ⚠ 源码 mtime 取不到' : ` · 源码最新改动 ${new Date(srcNewestMtime).toISOString()}`)
   + (instNotes.length > 0 ? ` · ⚠ **${instNotes.length} 处取不到**（见下）` : ''))
-console.log('')
-for (const n of notes) console.log('  ' + n)
-for (const n of EXPORTS_CHECK.good) console.log('  ' + n)
-for (const n of CLIENT_LOAD.good) console.log('  ' + n)
+/**
+ * ⚠ 面 ④ / 面 ⑤ 的**取数与接线必须先于打印**（2026-10-25 · 本单实测踩到）：
+ *   面 ⑤ 的 `good` 行曾放在 `for (const n of notes)` **之后** push ⇒
+ *   它进了分母（`查了` 对了）却**一行都没印出来** ⇒ 读数与分母对不上。
+ *   ⇒ 所有 `push` 收在这里、打印放在下面。
+ */
 /**
  * ⚠ 面 ④ 的**失败行**放进 `lag`（= 与"落后"同一渲染面、同一个 `没过` 分母），
  *   但**退出码归属**见下面 `lagBlocking` 的接线。
@@ -1256,6 +1259,19 @@ for (const n of CLIENT_LOAD.good) console.log('  ' + n)
  */
 for (const b of EXPORTS_CHECK.bad) lag.push(b)
 for (const b of CLIENT_LOAD.bad) lag.push(b)
+/** ⚠ 面 ⑤ 的"无对象"档（与族内三态口径一致：⛔ 不按通过处理）。 */
+const SKIP_BUILD = []
+/** ⚠ 面 ⑤（孤儿产物）：失败行同样进 `lag`（同一渲染面、同一个 `没过` 分母）。 */
+for (const b of ORPHAN_CHECK.bad) lag.push(b)
+for (const g of ORPHAN_CHECK.good) notes.push(g)
+for (const k of ORPHAN_CHECK.skipped) SKIP_BUILD.push(k)
+/** ⚠ 面 ⑤ 的退出码归属（`--strict-source` 管，与面 ①②④ 同档）。 */
+for (const k of ORPHAN_CHECK.blocking) lagBlocking.push(k)
+
+console.log('')
+for (const n of notes) console.log('  ' + n)
+for (const n of EXPORTS_CHECK.good) console.log('  ' + n)
+for (const n of CLIENT_LOAD.good) console.log('  ' + n)
 /**
  * ⚠ **处级口径**（2026-10-21 · 第 350 轮 · 甲-1 收尾）：`查了 = 过了 + 跳过`。
  *
@@ -1268,7 +1284,6 @@ for (const b of CLIENT_LOAD.bad) lag.push(b)
  *     但它与"逐条断言族"的"处"**不是同一个分母**（一个按面、一个按条）。
  *   ⚠ 本族**没有**"跳过"分支 ⇒ `skip` 恒 0。⛔ `lag` 不进"过了"、也不进"跳过"。
  */
-const SKIP_BUILD = []
 console.log('')
 /**
  * ⚠⚠ **`查了` 必须同时数进 ✗ 读数**（2026-10-22 · SRE · 修「过了 -1 处」）───────────
@@ -1309,8 +1324,9 @@ if (BASELINE_GONE) {
   process.exit(2)
 }
 if (lag.length === 0) {
-  console.log('判定：**已执行** —— 面 ① / 面 ②（含 client 单体）/ 面 ④ **都没有落后读数**'
-    + '（⚠ 产物跟得上源码、`lib/client.js` 装得起来、`exports` 各目标都在位）。')
+  console.log('判定：**已执行** —— 面 ① / 面 ②（含 client 单体）/ 面 ④ / 面 ⑤ **都没有落后读数**'
+    + '（⚠ 产物跟得上源码、`lib/client.js` 装得起来、`exports` 各目标都在位、'
+    + '`lib/` 里没有孤儿产物）。')
   console.log('       ⚠ ⛔ 面 ④ **不判**"产物在浏览器里跑起来对不对" —— 它只证"能装、导出契约在、apply 不抛"。')
   console.log('       ⚠ 面 ③（运行实例 vs 产物）**另在下面单独判**，⛔ 不并进这一句 ——'
     + ' 盘上绿**不代表**跑着的进程也绿（两者可以一个绿一个红）。')

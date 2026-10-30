@@ -322,24 +322,45 @@ try {
     return { st, calls, r }
   }
 
-  // ── D-1 入口真的渲染且可点 ──────────────────────────────────────────
+  // ── D-1 入口：**弹窗打开时才渲染且可点**（2026-10-29 包 BZ · CHG-185 改口径）──
+  /**
+   * ⚠ 本组**改过口径**（2026-10-29）：原来断言"入口无条件渲染"，
+   *   而需求已改成"⛔ 不再常驻、只在弹窗打开时出现" ⇒ 旧口径会把**正确实现**判红。
+   * ⚠ 现在守的是两半：① 关闭时 **不渲染**（这就是"不常驻"的可判证据）；
+   *   ② 打开时渲染且可点（兜底入口没有被改坏）。
+   */
   {
+    const stClosed = ui.createDialogState()
+    mount(React.createElement(ui.HobCreateCommandEntry, { state: stClosed }))
+    if (document.querySelector('button.dsh-hob-entryBtn') !== null) {
+      bad('D-1 入口**在弹窗关闭时仍然渲染** ⇒ "不再常驻"这条没落地（CHG-185）')
+    } else {
+      ok('D-1a ✓ 弹窗关闭时入口**不渲染**（"不再常驻"落地）')
+    }
     const st = ui.createDialogState()
+    st.open()
     mount(React.createElement(ui.HobCreateCommandEntry, { state: st }))
     const btn = document.querySelector('button.dsh-hob-entryBtn')
-    if (btn === null) bad('D-1 入口**没有渲染出来**（DOM 里找不到 button.dsh-hob-entryBtn）')
+    if (btn === null) bad('D-1 弹窗已打开，入口**却没有渲染**（兜底入口坏了）')
     else if (btn.textContent !== '新建 Hob 会话') bad(`D-1 入口文案 = ${JSON.stringify(btn.textContent)}`)
-    else if (st.isOpen()) bad('D-1 入口**自动打开了弹窗**（应只在点击后打开）')
     else {
+      /**
+       * ⚠ 2026-10-29：`st` 是**已经 open()** 的状态（入口只在打开时渲染），
+       *   ⇒ 原来那条"入口不该自动打开弹窗"在这里**语义已不成立**（是我们打开的）。
+       *   ⛔ 删掉它不是为了让它变绿 —— 它守的那件事现在由 D-1a（关闭时不渲染）承担。
+       *   这里改守**它自己的职责**：点击入口 ⇒ 弹窗仍然开着（幂等、不把自己关掉）。
+       */
       act(() => { btn.dispatchEvent(new w.MouseEvent('click', { bubbles: true })) })
-      if (!st.isOpen()) bad('D-1 点了入口但弹窗**没打开**')
-      else ok('D-1 ✓ 入口**真渲染**为 <button>、文案正确、**不自动弹窗**；点击后 `isOpen()=true`')
+      if (!st.isOpen()) bad('D-1 点了入口但弹窗**被关掉了**（应是幂等打开）')
+      else ok('D-1b ✓ 入口**真渲染**为 <button>、文案正确；点击后弹窗仍为打开态')
     }
   }
 
   // ── D-2 不遮挡 ─────────────────────────────────────────────────────
   {
     const st = ui.createDialogState()
+    // ⚠ 2026-10-29：入口现在**只在弹窗打开时**才渲染 ⇒ 这里必须先 open() 才测得到它
+    st.open()
     mount(React.createElement(ui.HobCreateCommandEntry, { state: st }))
     const dock = document.querySelector('.dsh-hob-entryDock')
     const btn = document.querySelector('button.dsh-hob-entryBtn')

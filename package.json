@@ -53,6 +53,9 @@
     "check:hob-create": "node scripts/check-hob-create-ui.mjs",
     "check:hob-create-dom": "node scripts/check-hob-create-dom.mjs",
     "check:hob-gate": "node scripts/check-hob-unselected-gate.mjs",
+    "check:stages-dom": "node scripts/check-stages-panel-dom.mjs",
+    "check:tasks-progress": "node scripts/check-tasks-progress.mjs",
+    "check:tasks-route-http": "node scripts/probe-tasks-route-http.mjs",
     "check:orch": "node scripts/check-orch-state.mjs",
     "check:client": "node scripts/check-client-deps.mjs",
     "check:gitignore": "node scripts/check-gitignore.mjs",
@@ -69,7 +72,14 @@
     "exp:next-id": "node scripts/next-experience-id.mjs",
     "check:all": "node scripts/check-all.mjs",
     "check:preflight": "node scripts/preflight.mjs",
-    "check": "npm run check:all"
+    "check": "npm run check:all",
+    "check:exec-progress": "node scripts/check-exec-progress.mjs",
+    "gen:ledger": "node scripts/gen-ledger.mjs",
+    "check:ledger-next": "node scripts/check-ledger-next.mjs",
+    "check:stages-route": "node scripts/check-stages-route.mjs",
+    "check:meta-negctl": "node scripts/check-meta-negctl.mjs",
+    "gen:preset-contract": "node scripts/gen-preset-contract.mjs",
+    "check:workflow": "node scripts/check-workflow.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0-rc <5",
@@ -132,13 +142,21 @@
         "  依赖链随之成立。",
         "  ⚠ 这里**没有**列 @deepseek-ai/dsh-api-session-controller / dsh-agent-preset-registry：",
         "    它们是那两个 RPC 的**宿主**（host 半边）提供方，**没有** client 半边可供依赖",
-        "    （实测：dsh.client 段为空、无 ./client 导出）⇒ 列了会被静默忽略（E-61）。"
+        "    （实测：dsh.client 段为空、无 ./client 导出）⇒ 列了会被静默忽略（E-61）。",
+        "  ⚠ 2026-10-29（四步主线 · 只验位置）新增一项：",
+        "    @deepseek-ai/dsh-client-ui-sidebar-right —— 它提供 ctx.sidebarRight（openTab）",
+        "    与 ctx.sidebarRightTabs（标签类型注册）。实测该包 **有** dsh.client 段与",
+        "    exports./client（lib/types/client/index.d.ts + lib/client.js）⇒ 可列入。",
+        "    ⚠ 同族的 @deepseek-ai/dsh-client-ui-sidebar（左栏外壳）**没有** client 半边声明在",
+        "    本仓 inject 里 —— 我们只挂它的 sidebar.footer.action 槽，槽服务由 renderer 的",
+        "    slots 提供，不需要等它本身到达（槽位缺席时 ctx.slots.inject 不注册、不报错）。"
       ],
       "inject": [
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-api-remotes",
-        "@deepseek-ai/dsh-client-ui-workspace"
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
       ]
     }
   }

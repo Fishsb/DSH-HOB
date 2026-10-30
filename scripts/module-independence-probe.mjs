@@ -147,6 +147,34 @@ function registryNames(root) {
   return { names, ok: true, why: '' }
 }
 
+/**
+ * **负向对拍（N-MOD · 2026-10-30 P7）**：`registryNames` 必须把**取数面塌了**与
+ * ⚠ 先自证夹具坏掉：5 种坏 root 逐个断言 `ok === false && why !== ''`，再拿好 root 做反向对照。
+ * 「正常且为空」分开 —— 否则 `ok=false` 的三种成因会被静默当成"没有模块"。
+ * ⚠ 本族此前 0 条负向对拍（M-1 实测）。成对：坏 root ⇒ `ok=false`；好 root ⇒ `ok=true`。
+ */
+{
+  const bads = [
+    ['root 缺席', undefined],
+    ['registry 不是对象', {}],
+    ['values 不是函数', { registry: { values: 1 } }],
+    ['values 抛错', { registry: { values: () => { throw new Error('boom') } } }],
+    ['读完为空', { registry: { values: () => [] } }],
+  ]
+  const badResults = bads.map(([label, r]) => [label, registryNames(r)])
+  const allBad = badResults.every(([, x]) => x.ok === false && x.why !== '')
+  const good = registryNames({ registry: { values: () => [{ name: 'tools' }] } })
+  const reallyBites = good.ok === true && good.names.length === 1
+  if (!allBad) {
+    const leaked = badResults.filter(([, x]) => x.ok !== false).map(([l]) => l)
+    check('N-MOD · 负向对拍**没咬住**', false, `这些坏 root 被当成"正常"了：${leaked.join(' / ')}`)
+  } else if (!reallyBites) {
+    check('N-MOD · 反向对照失败', false, `好 root 却报 ok=${good.ok} names=${JSON.stringify(good.names)}（判据过咬）`)
+  } else {
+    check('N-MOD ✓ 负向对拍（5 种坏 root：缺席 / 非对象 / values 非函数 / values 抛错 / 读完为空）⇒ **全部 ok=false 且给了成因**；好 root ⇒ ok=true（成对）', true)
+  }
+}
+
 console.log('=== 路径 A：配置开关（默认 modules.bus=true，自 M3 / UD-77 起）===')
 {
   const { root } = await boot({})
@@ -306,6 +334,144 @@ console.log('\n=== 路径 B2：两种 inject 的**不同后果**（E-02 的实�
     `settings 服务缺席 ⇒ 其探测回调未执行（正控：有服务时**确实**打了「${PROBE_MARK}…」）`,
     noProbeRan && probeRan,
     `缺依赖时无该句=${noProbeRan} · 有依赖时该句${probeRan ? '出现' : '**未出现**（判据词或回调对不上）'}`,
+  )
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 路径 C：「没起」的两种成因必须在**生产日志通道**上分得开（2026-10-25 · 本单）
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 这一组守的是什么（作业书 §一-1 那个洞）──────────────────────────────
+ *   四个模块**全关**时印「模块：无」；四个模块**都打开但都挂了**时——**也**印「模块：无」。
+ *   而本该区分两者的那句 warn，在**生产日志通道里结构性看不见**：
+ *   `Logger._method` 的过滤是
+ *   `(exporter.levels?.[name] ?? exporter.levels?.default ?? this.level ?? 1) < level ⇒ continue`
+ *   （`cordis/lib/index.js:474`），内存 buffer / 文件 exporter **都不配 `levels`** ⇒ 阈值落回 `1`，
+ *   而 `warn` 的 level 是 **2** ⇒ **永远被滤掉**（真机实测：111 条里 warn 一条没有）。
+ *   ⇒ 于是"四个都挂了"在日志上与"四个都关了"**长得一模一样** ⇒ "让失败不可观测"。
+ *
+ * ── 为什么必须用**生产日志通道**来测（⛔ 不许用假 logger 糊过去）──
+ *   本探针前面几组用的是手搓 `logger.info = (...) => logs.push(...)`，那**根本不过滤**，
+ *   所以 warn 也会被收进 `logs` ⇒ **在这个夹具上，改前的缺陷根本复现不出来**
+ *   （旧的 warn 照样能被看见）。⇒ 本组必须挂一个**与生产同构的 exporter**：
+ *   `ctx.logger.exporter({ colors, export })`（⚠ **不配 `levels`**，与宿主一致）。
+ *   ⚠ 这是本组与前面几组**刻意不同**的地方，不是风格不一致。
+ *
+ * ── 三条断言（各自都有负向对拍，⛔ 不许只判"有那行"）────────────────────
+ *   ① 四都在 ⇒ 那一行**一个字都不许多打**（判"没有任何『没启动』行"，⛔ 只判长度不够）；
+ *   ② 全关 ⇒ 成因写的是**配置**（且**⛔ 不许**出现"环境"/"没起来"这种归因于故障的说法）；
+ *   ③ 全挂 ⇒ 成因写的是**环境**（且**⛔ 不许**出现"配置所致"）；
+ *   ⚠ ② 与 ③ 还要求**两段原文不同** —— 这是本组的靶心（作业书 §一-3 末句）。
+ */
+console.log('\n=== 路径 C：「没起」的两种成因在生产日志通道上必须分得开 ===')
+{
+  /** 挂一个与宿主同构的 exporter（⚠ 不配 levels ⇒ 与生产通道同阈值）。 */
+  const withProdChannel = (root) => {
+    const buf = []
+    root.logger.exporter({ colors: 3, export: (m) => buf.push(m) })
+    return buf
+  }
+  const visible = (buf) => buf.filter((m) => m.type === 'info' || m.type === 'error')
+    .map((m) => (m.args || []).map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '))
+  /** 那行"没启动"的判据词（⚠ 与实现里的字面量一致；改实现必须同批改这里，见注释）。 */
+  const MARK = '模块未启动'
+  const notStartedLines = (buf) => visible(buf).filter((l) => l.startsWith('[dsh-hob]') && l.includes(MARK))
+
+  // ① 四都在 ⇒ 一个字都不许多打
+  const r1 = new Context()
+  r1.provide?.('tools', {}); r1.provide?.('settings', { describe: () => [] })
+  r1.provide?.('sessions', {}); r1.provide?.('agents', {}); r1.provide?.('connection', {})
+  const b1 = withProdChannel(r1)
+  const f1 = r1.plugin(mod, { modules: { tools: true, bus: true, orch: true, settings: true } })
+  await f1
+  await sleep(80)
+  const loadLines1 = visible(b1).filter((l) => l.includes('已加载（模块'))
+  check(
+    '四都在 ⇒ **只印"已加载"那一行**，⛔ 一条"没启动"都不多打',
+    notStartedLines(b1).length === 0 && loadLines1.length === 1,
+    `没启动行=${notStartedLines(b1).length}（期望 0）· 已加载行=${loadLines1.length}（期望 1）`,
+  )
+
+  // ② 全关 ⇒ 成因 = 配置；③ 全挂 ⇒ 成因 = 环境
+  /** 造"全都打开了但都没起来"：把四个模块的静态 inject 指向不存在的服务（只改门禁，不改日志）。 */
+  const allDeadLines = await (async () => {
+    // ⚠ 用临时目录 + 符号链接回 node_modules：ESM 按真实路径解析依赖，
+    //   而**仓库内建临时目录会污染 `git status`**（本仓有硬规定，见 check:gitignore）。
+    const { mkdtempSync, writeFileSync, symlinkSync, readFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const tmp = mkdtempSync(join(tmpdir(), 'hob-probe-dead-'))
+    try {
+      // 逐个文件复制到临时根（⚠ 只复制一层 + modules 子目录：本探针只用到这两层）
+      const { cpSync } = await import('node:fs')
+      cpSync(LIB_ROOT, tmp, { recursive: true })
+      writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'hob-probe-dead', type: 'module' }))
+      /**
+       * ⚠ **只在副本里没有 `node_modules` 时才链接**：`LIB_ROOT` 若被 `HOB_PROBE_LIB`
+       *   指向一份**自带 node_modules 符号链接**的对比副本（负向对拍就是这么用的），
+       *   `cpSync` 会连那个链接一起搬过来 ⇒ 再建一次就 `EEXIST`。
+       *   ⛔ 不 `try/catch` 吞掉：那会把"链接真的失败"也变静默。
+       */
+      if (!existsSync(join(tmp, 'node_modules'))) {
+        symlinkSync(resolve(ROOT, 'node_modules'), join(tmp, 'node_modules'), 'dir')
+      }
+      for (const file of ['tools.js', 'bus.js', 'orchestrator.js', 'settings.js']) {
+        const fp = join(tmp, 'modules', file)
+        const src = readFileSync(fp, 'utf8')
+        const patched = /^export const inject = \[[^\]]*\];?$/m.test(src)
+          ? src.replace(/^export const inject = \[[^\]]*\];?$/m, "export const inject = ['__probe_no_such_service__'];")
+          : `export const inject = ['__probe_no_such_service__'];\n${src}`
+        writeFileSync(fp, patched)
+      }
+      const deadMod = await import(pathToFileURL(join(tmp, 'index.js')).href)
+      const r = new Context()
+      r.provide?.('tools', {}); r.provide?.('settings', { describe: () => [] })
+      r.provide?.('sessions', {}); r.provide?.('agents', {}); r.provide?.('connection', {})
+      const b = withProdChannel(r)
+      const f = r.plugin(deadMod, { modules: { tools: true, bus: true, orch: true, settings: true } })
+      await f
+      await sleep(120)
+      return { lines: notStartedLines(b), fiberStates: (() => {
+        const out = []
+        for (const rt of (r.registry?.values?.() ?? [])) for (const x of (rt.fibers ?? [])) {
+          if (String(x.name).startsWith('dsh-hob-')) out.push({ name: String(x.name), state: x.state })
+        }
+        return out
+      })() }
+    } finally { rmSync(tmp, { recursive: true, force: true }) }
+  })()
+
+  // 全关（配置成因）
+  const r2 = new Context()
+  r2.provide?.('tools', {}); r2.provide?.('settings', { describe: () => [] })
+  r2.provide?.('sessions', {}); r2.provide?.('agents', {}); r2.provide?.('connection', {})
+  const b2 = withProdChannel(r2)
+  const f2 = r2.plugin(mod, { modules: { tools: false, bus: false, orch: false, settings: false } })
+  await f2
+  await sleep(80)
+  const offLines = notStartedLines(b2)
+  const deadLines = allDeadLines.lines
+
+  check(
+    '全关（成因=配置）⇒ 印一行"没启动"，且**说清是配置所致**（⛔ 不许归因于环境故障）',
+    offLines.length === 1 && offLines[0].includes('关掉') && !/环境不满足|没起来/.test(offLines[0]),
+    `行数=${offLines.length} · 原文=${JSON.stringify(offLines)}`,
+  )
+  check(
+    '全挂（成因=环境）⇒ 印一行"没启动"，且**说清是环境所致**（⛔ 不许说成"配置所致"）',
+    deadLines.length === 1 && deadLines[0].includes('没起来') && !deadLines[0].includes('这是配置所致'),
+    `行数=${deadLines.length} · 模块 fiber=${JSON.stringify(allDeadLines.fiberStates)} · 原文=${JSON.stringify(deadLines)}`,
+  )
+  /**
+   * ⚠⚠ **本组的靶心**：两段原文**必须不一样**。
+   *   改前它们**都不存在**（都只有「模块：无」+ 被滤掉的 warn）⇒ 这一条在改前是 FAIL，
+   *   而且 FAIL 的方式正好是"两段都是空" —— ⛔ 不是"要求它们不同"这种弱判据。
+   */
+  check(
+    '**靶心**：全关那段 与 全挂那段 **原文不同**，且各自能看懂（这是本单要治的那条）',
+    offLines.length === 1 && deadLines.length === 1 && offLines[0] !== deadLines[0],
+    `different=${offLines[0] !== deadLines[0]}`,
   )
 }
 
