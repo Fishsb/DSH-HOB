@@ -137,3 +137,4 @@ runtime/
 #   异常退出会留成未跟踪残留，下一次 `git add -A` 就会把它带进库。
 #   ⇒ 显式忽略（正常路径本来就会 `rmSync` 自清；这条只管异常/被打断那一路）。
 .tmp-readings-selftest-*/
+/.agent-teams/
