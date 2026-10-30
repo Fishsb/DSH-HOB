@@ -303,6 +303,85 @@ source = "夹具"
     if (probs.length === 0) ok('R-9 ✓ 与生成器交叉验证：路由算出的五步（state + 完成数/总数）与 `gen/stages.md` 那五行逐项一致（两套独立解析器）')
     else for (const x of probs) bad(`R-9 · ${x}`)
   }
+  // ══════════════════════════════════════════════════════════════════════
+  // R-10 ⭐ **每个 kind 的每个合法状态都必须有中文标签**（2026-10-30 P21）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ── 它守什么 ────────────────────────────────────────────────
+   *   用户截图：面板把 `agreed` / `settled` / `built` / `unverified` 全印成「判不出」。
+   *   ⚠ 那不是"判不出"，是**标签表缺条目**。本组把"缺一个就红"做成判据。
+   *
+   * ── 口径（⚠ 逐条，⛔ 不数个数）────────────────────────────────
+   *   ① 状态集**从 `STAGE_KIND_STATUSES` 现读**（⛔ 本判据不抄第二份清单）；
+   *   ② 对每个 kind 的**每个** status 调 `stageStatusLabel(kind, status)`，
+   *      `known === true` **且** `label` 不含"判不出" ⇒ 才算有标签；
+   *   ③ ⚠ 另验**兜底仍在**：封闭集外的值必须 `known === false` 且 label 带原值；
+   *   ④ ⚠ 再验 **`run` 走九态表**（`running` ⇒ 执行中），⛔ 不许在这里另写一份。
+   */
+  {
+    const labMod = await import(pathToFileURL(join(root, 'src', 'shared', 'stage-status-labels.ts')).href)
+    const idxMod = await import(pathToFileURL(join(root, 'src', 'shared', 'stages-index.ts')).href)
+    const KINDS = Object.keys(idxMod.STAGE_KIND_STATUSES)
+    const problems = []
+    let checked = 0
+    for (const kind of KINDS) {
+      const statuses = idxMod.STAGE_KIND_STATUSES[kind].statuses
+      for (const st of statuses) {
+        checked += 1
+        const v = labMod.stageStatusLabel(kind, st)
+        if (v.known !== true) problems.push(`${kind}.${st} 判成「没有标签」（why=${v.why}）⇒ label=${JSON.stringify(v.label)}`)
+        else if (String(v.label).includes('判不出')) problems.push(`${kind}.${st} 的标签里仍含"判不出"：${JSON.stringify(v.label)}`)
+        else if (String(v.label).trim() === '') problems.push(`${kind}.${st} 的标签是空串`)
+      }
+    }
+    // ③ 兜底仍在
+    const ghost = labMod.stageStatusLabel('task', 'zzz-not-a-status')
+    if (ghost.known !== false) problems.push('封闭集外的值被判成"有标签"了 ⇒ 兜底被弄丢（⛔ 那才是真该判不出的情形）')
+    else if (!String(ghost.label).includes('zzz-not-a-status')) problems.push(`兜底没带原值：${JSON.stringify(ghost.label)}`)
+    // ④ run 转发九态
+    const runLabel = labMod.stageStatusLabel('run', 'running')
+    if (runLabel.label !== '执行中') problems.push(`run.running 应为「执行中」（走九态表），实际 ${JSON.stringify(runLabel.label)}`)
+
+    if (problems.length === 0) {
+      ok(`R-10 ✓ **${KINDS.length} 个 kind · ${checked} 个合法状态逐个都有中文标签**（缺一即红）`
+        + `；兜底仍在（封闭集外 ⇒ 「判不出（原值 …）」）；run.running ⇒ 执行中`)
+    } else for (const x of problems) bad(`R-10 · ${x}`)
+  }
+
+  // ── N-R-10 ⭐ 负向对拍：临时删掉 `task.built` 映射 ⇒ R-10 必红 ──────────
+  /**
+   * ⚠ **先自证**：删掉之后 `stageStatusLabel('task','built')` 必须**真的**变成
+   *   `known=false`（否则"删了没反应"与"判据没牙"分不开）。
+   * ⚠ 变异体写进 `src/shared/` 的临时文件（与源同目录 ⇒ 相对 import 仍解析得到），
+   *   验完 `rmSync`。
+   */
+  {
+    const LAB = join(root, 'src', 'shared', 'stage-status-labels.ts')
+    const src = readFileSync(LAB, 'utf8')
+    const NEEDLE = "    built: '已做完（等验收）',\n"
+    if (!src.includes(NEEDLE)) {
+      bad('N-R-10 · 源码里找不到 `built: \'已做完（等验收）\'` 那一行（形态变了）⇒ 负向对拍不可判')
+    } else {
+      const tmp = join(root, 'src', 'shared', `stage-status-labels.__negctl_${process.pid}.ts`)
+      writeFileSync(tmp, src.replace(NEEDLE, ''))
+      try {
+        const mm = await import(pathToFileURL(tmp).href)
+        const v = mm.stageStatusLabel('task', 'built')
+        // ⚠ 自证：删掉后必须"对不上"
+        if (v.known !== false) {
+          bad(`N-R-10 · 删掉 task.built 映射后仍 known=${v.known} ⇒ 夹具没造出"缺一条"`)
+        } else if (!String(v.label).includes('built')) {
+          bad(`N-R-10 · 删掉后 label 没带原值：${JSON.stringify(v.label)}`)
+        } else {
+          ok(`N-R-10 ✓ 负向对拍（先自证：删掉 \`task.built\` 那一行 ⇒ \`stageStatusLabel('task','built')\` `
+            + `变成 known=false，label=${JSON.stringify(v.label)}）⇒ R-10 的"缺一即红"**必红**`)
+        }
+      } finally {
+        try { rmSync(tmp, { force: true }) } catch { /* 清不掉不影响判定 */ }
+      }
+    }
+  }
+
 } catch (e) {
   bad(`R 组**自身异常**（⛔ 不算通过）：${String(e?.stack ?? e)}`)
 } finally {

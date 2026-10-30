@@ -40,6 +40,12 @@ import {
   EXEC_STATE_LABELS,
   execMergeNote,
 } from '../shared/exec-protocol.ts'
+/**
+ * ⚠⚠ **2026-10-30 P21：按 kind 取中文标签**（⛔ 不再把每个 kind 的状态都扔给九态表）。
+ *   病（用户截图）：`agreed`/`settled`/`built`/`unverified` 都是各自 kind 的**合法状态**，
+ *   却因为九态表里没有而印成「判不出（原值 X）」—— 那句话在骗人。
+ */
+import { stageStatusLabel } from '../shared/stage-status-labels.ts'
 
 /** 标签页**类型 id**（= 宿主 `sidebar.right.pane.tab` 的 `key`）。 */
 export const STAGES_TAB_ID = 'dsh-hob-stages'
@@ -64,6 +70,27 @@ export const STAGES_GUIDE_ORDER = 50
  * ⚠ 第 5 步「验收核对」是**新加的**（原四步之后）；⛔ 不许改顺序、⛔ 不许加第 6 个。
  */
 export const STAGES_STEP_NAMES = ['需求规格', '实现方案', '编码任务', '任务执行', '验收核对'] as const
+
+/**
+ * **步号 → kind**（`1..5`）。
+ *
+ * ⚠ 与账本侧 `src/shared/stages-index.ts` 的 `STAGE_DEFS` **同序**（`req/change/task/run/acc`）；
+ *   ⛔ 这里不 import 服务端模块（客户端包不该拉服务端解析器），所以是一张**三行小表**。
+ *   ⚠ 一致性由 `check:stages-route` 的 R-10 咬住（它逐 kind 点验标签表，
+ *     若这张表与 `STAGE_DEFS` 漂开，那一步的条目就会全变「判不出」⇒ DOM 断言必红）。
+ */
+export const STAGE_KIND_BY_STEP: Readonly<Record<number, string>> = {
+  1: 'req',
+  2: 'change',
+  3: 'task',
+  4: 'run',
+  5: 'acc',
+}
+
+/** 取某一步的 kind（判不出 ⇒ 空串，⚠ 让 `stageStatusLabel` 走"未知 kind"那条兜底）。 */
+export function kindOfStep(step: number): string {
+  return STAGE_KIND_BY_STEP[step] ?? ''
+}
 
 /** 「未接线」这个词 —— ⚠ **2026-10-29 第 9 轮起图例不再使用它**（数据已接通，见 `legend` 注释）。
  *  保留导出只为两件事：① 历史/文档一致性；② 判据可以断言「图例区不含它」。 */
@@ -880,17 +907,28 @@ export function StagesPanel(props?: {
                     React.createElement('span', { style: { minWidth: '5.5em' } }, String(it?.id ?? '')),
                     React.createElement('span', { style: { flex: '1 1 auto' } }, String(it?.title ?? '')),
                     /**
-                     * ⚠⚠ **2026-10-30 P13：这里原来直接打 `it.status` 原文** ⇒ 界面上出现英文
-                     *   `running`（用户截图正是这个）。`CHG-272` §三·2 要求走九态中文映射。
-                     * ⚠ 用 `EXEC_STATE_LABELS`（唯一真源），⛔ 不在这里另写一份中文。
-                     * ⚠ 不是九态的值（如索引里出现未知状态）⇒ **照实打原文 + 「（判不出）」前缀**
-                     *   —— ⛔ 不许美化成一个像模像样的中文词（那会把"判不出"说成"读到了"）。
+                     * ⚠⚠ **2026-10-30 P21：按 kind 取中文标签**（改前一律查九态表 ⇒ 见下方病）。
+                     *
+                     * ── 改前（P13）的病（用户截图）──────────────────────────────
+                     *   把**每个** kind 的 `status` 都扔给 `EXEC_STATE_LABELS`（九态）查；
+                     *   而 `agreed` / `settled` / `built` / `unverified` 是**各自 kind 的合法状态**，
+                     *   九态表里当然没有 ⇒ 一律印成「判不出（原值 X）」。
+                     *   ⚠ 那不是"判不出"：**值就在手里**（括号里都印出来了），缺的只是中文。
+                     *
+                     * ── 现在 ────────────────────────────────────────────────
+                     *   `stageStatusLabel(kind, status)` 先看该值**在不在这个 kind 的封闭集**里：
+                     *     · 在 ⇒ 中文（`run` 转发九态表，其余走 kind 表）；
+                     *     · 不在 ⇒ 「判不出（原值 X）」—— ⚠ **兜底留着**，只是⛔ 不当默认。
+                     *   ⚠ kind 从**步号**推（`STAGE_KIND_BY_STEP`，与索引 `STAGE_DEFS` 同序）。
                      */
                     React.createElement(
                       'span',
-                      { 'data-dsh-hob': 'stages-tree-item-status', style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '0.9em' } },
-                      (EXEC_STATE_LABELS as Record<string, string>)[String(it?.status ?? '')]
-                        ?? `判不出（原值 ${String(it?.status ?? '')}）`,
+                      {
+                        'data-dsh-hob': 'stages-tree-item-status',
+                        'data-status-known': stageStatusLabel(kindOfStep(step), String(it?.status ?? '')).known ? 'true' : 'false',
+                        style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '0.9em' },
+                      },
+                      stageStatusLabel(kindOfStep(step), String(it?.status ?? '')).label,
                     ),
                   ))),
                 // ⚠ 第 ④ 步展开体里**直接复用现有执行项**（现在/历史两档）—— ⛔ 不推翻
@@ -915,6 +953,24 @@ export function StagesPanel(props?: {
           { key: `${c?.id ?? 'cap'}-${k}`, 'data-dsh-hob': 'stages-cap-item', style: treeItemStyle },
           React.createElement('span', { style: { minWidth: '5.5em' } }, String(c?.id ?? '')),
           React.createElement('span', { style: { flex: '1 1 auto' } }, String(c?.title ?? '')),
+          /**
+           * ⚠⚠ **2026-10-30 P21 · `cap` 不加"状态"位（这是本轮的判断，理由见下）** ──────
+           *
+           * ── 判：⛔ 不加**进度式状态标签**，但读写**当下健康度**（`live/degraded/down`）────
+           *   ① **它不是进度**：`cap` 不进任何一步的分母、无终态（`CONSTITUTION` §6 / I4）——
+           *      给它加一个和五步条目同样形态的"状态位"，会让人以为它也在走那五步
+           *      （⚠ 这正是 R-005「零百分比」要防的观感）。
+           *   ② **但它有合法封闭集**（`live/degraded/down`，`STAGE_KIND_STATUSES.cap`）——
+           *      这个值是**当下健康度**，不是"到哪一步了"。⇒ 用**独立的一栏**表达
+           *      （`data-dsh-hob="stages-cap-item-state"`，写在读数**之前**），
+           *      ⛔ 不借用条目的 `stages-tree-item-status`（那个位置的语义是"进度状态"）。
+           *   ③ ⚠ 为什么不能干脆不显示：`down`/`degraded` 是**要人看见**的（长期能力挂了没人知道
+           *      比多一栏更糟）。⇒ 显示，但**换语义、换位置、换数据属性**。
+           */
+          React.createElement('span', {
+            'data-dsh-hob': 'stages-cap-item-state',
+            style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '0.9em', minWidth: '4em' },
+          }, stageStatusLabel('cap', String(c?.status ?? '')).label),
           React.createElement('span', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '0.9em' } }, String(c?.lastReading ?? '判不出')),
         ))),
     )

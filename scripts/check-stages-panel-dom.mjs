@@ -1442,46 +1442,95 @@ export function StateDot({ state, size, appearance }) {
       actFn(() => r.unmount())
     }
 
-    // —— S-17f 树内条目状态走九态中文映射（2026-10-30 P13 · `CHG-272` §三·2）——
+    // —— S-17f 树内条目状态**按 kind** 取中文（2026-10-30 P21 · `TASK-P21.md` §一）——
+    /**
+     * ⚠⚠ **这条断言的测量面变过（P21），逐条说明为什么不是放宽**：
+     *   · 改前（P13 版）：只喂**第 4 步**（`run`）两条 —— 一条九态 `running`、一条乱码；
+     *     期望 `running ⇒ 执行中`、乱码 ⇒ `判不出`。
+     *   · 改后（P21 版）：**必须同时喂 5 个 kind** —— 因为 P13 的病正是
+     *     "`agreed`/`settled`/`built`/`unverified` 被当成九态查 ⇒ 全印判不出"，
+     *     只测 `run` 的话**这条断言对那个病完全瞎**（它就是当时漏测的原因）。
+     *   ⇒ 断言**变严**：5 个 kind 的合法状态各一条、逐个点名比中文；
+     *     另加一条乱码（`zzz-nonsense`）验证**兜底仍在**（⛔ 没被删掉）。
+     */
     {
       const r = await mountTree({
         fetchStages: async () => ({
           ok: true, readAt: '2026-10-30T00:00:00.000Z',
           stages: [
-            { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [] },
-            { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [] },
-            { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [] },
+            { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-001', title: '需求', status: 'agreed', extra: '' }] },
+            { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [{ id: 'CHG-X', title: '方案', status: 'settled', extra: '' }] },
+            { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-X', title: '任务', status: 'built', extra: '' }] },
             {
               step: 4, name: '任务执行', state: 'doing', done: 0, total: 2,
-              // ⚠ 一条九态、一条**非九态**（必须照实说判不出，⛔ 不许编个中文词）
               items: [
                 { id: 'RUN-001', title: '第 27 轮', status: 'running', extra: '' },
                 { id: 'RUN-9XX', title: '怪值', status: 'zzz-nonsense', extra: '' },
               ],
             },
-            { step: 5, name: '验收核对', state: 'todo', done: 0, total: 0, items: [] },
+            { step: 5, name: '验收核对', state: 'todo', done: 0, total: 1, items: [{ id: 'ACC-001', title: '验收', status: 'unverified', extra: '' }] },
           ],
           caps: [],
         }),
       })
+      /**
+       * ⚠ 面板**只自动展开第一条 `doing` 的步**（见 `stages-panel.tsx` 的 effect）。
+       *   ⇒ 要量全部 5 个 kind，必须先把每一步都点开（⚠ 真点按钮，⛔ 不 hack 内部 state）。
+       */
+      for (const head of [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]) {
+        if (head.getAttribute('aria-expanded') !== 'true') actFn(() => head.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+      }
+      await tick(30)
       const probs = []
-      const itemSpans = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item-status"]')]
-      if (itemSpans.length !== 2) probs.push(`状态 span ${itemSpans.length} 个（期望 2）`)
-      const t0 = itemSpans[0]?.textContent ?? ''
-      if (t0 !== '执行中') probs.push(`\`running\` 没映射成「执行中」：${JSON.stringify(t0)}`)
-      if (/^running$/i.test(t0)) probs.push('状态仍打英文 `running`（这就是用户截图里那个 bug）')
-      const t1 = itemSpans[1]?.textContent ?? ''
-      if (!t1.includes('判不出')) probs.push(`非九态值没写「判不出」：${JSON.stringify(t1)}`)
-      if (probs.length === 0) ok('S-17f ✓ 树内条目状态走九态中文映射（`running` ⇒ **执行中**）· 非九态值照实写「判不出（原值 …）」⛔ 不许编中文')
-      else for (const x of probs) bad(`S-17f · ${x}`)
+      const spans = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item-status"]')]
+      const got = spans.map((e) => (e.textContent ?? '').trim())
+      // ⚠ 6 个 span：5 个 kind 各一条 + 第 4 步多一条乱码（RUN-9XX）
+      if (spans.length !== 6) probs.push(`状态 span ${spans.length} 个（期望 6 = 5 kind + 1 乱码）`)
+      /**
+       * ⚠ **按 `data-item-id` 精确取**（⛔ 用下标 —— 展开顺序一变就错位，我第一版就这么错过：
+       *   把 `acc` 那条读成了第 5 个，而第 5 个其实是 `RUN-9XX`）。
+       */
+      /**
+       * ⚠ `data-item-id` 在**外层条目 div** 上（`stages-tree-item`），⛔ 不在状态 span 上
+       *   —— 我第一版直接读 span 的 `data-item-id` ⇒ 全是空串 ⇒ 全报"(缺)"。
+       */
+      const byId = new Map([...document.querySelectorAll('[data-dsh-hob="stages-tree-item"]')].map((row) => [
+        row.getAttribute('data-item-id') ?? '',
+        (row.querySelector('[data-dsh-hob="stages-tree-item-status"]')?.textContent ?? '').trim(),
+      ]))
+      const WANT = [
+        ['R-001', 'req.agreed', '已定稿'],
+        ['CHG-X', 'change.settled', '已定案'],
+        ['TSK-X', 'task.built', '已做完（等验收）'],
+        ['RUN-001', 'run.running', '执行中'],
+        ['ACC-001', 'acc.unverified', '还没验'],
+      ]
+      for (const [id, label, want] of WANT) {
+        const v = byId.get(id)
+        if (v !== want) probs.push(`${label} 应为 ${JSON.stringify(want)}，实际 ${JSON.stringify(v ?? '(缺)')}`)
+        if (v !== undefined && /^[a-z-]+$/.test(v)) probs.push(`${label} 仍打英文原文 ${JSON.stringify(v)}`)
+      }
+      // ⚠ 兜底仍在：乱码那条必须是"判不出（原值 …）"（⛔ 没被删掉、也⛔ 没被美化）
+      const badTxt = byId.get('RUN-9XX') ?? ''
+      if (!/判不出/.test(badTxt)) probs.push(`封闭集外的值没写「判不出」：${JSON.stringify(badTxt)}`)
+      if (!/zzz-nonsense/.test(badTxt)) probs.push(`兜底没带原值（⛔ 会让人查不到是哪条）：${JSON.stringify(badTxt)}`)
+      if (probs.length === 0) {
+        ok('S-17f ✓ 树内条目状态**按 kind** 取中文：req.agreed⇒已定稿 · change.settled⇒已定案 · '
+          + 'task.built⇒已做完（等验收）· run.running⇒执行中 · acc.unverified⇒还没验；'
+          + '封闭集外的值仍写「判不出（原值 zzz-nonsense）」（兜底在）')
+      } else for (const x of probs) bad(`S-17f · ${x}`)
       actFn(() => r.unmount())
     }
 
     // —— S-17g 负向对拍：把映射改回原文直打 ⇒ S-17f 必红 ——
     {
+      /**
+       * ⚠ P21 改点：现在状态文本来自 `stageStatusLabel(kind, status).label`
+       *   ⇒ 变异体把它换成**原文直打**（正是 P13 那个 bug 的形态），S-17f 必红。
+       */
       const mutant = buildMutant('exec-raw-status', (t) => t.replace(
-        "(EXEC_STATE_LABELS as Record<string, string>)[String(it?.status ?? '')]\n                        ?? `判不出（原值 ${String(it?.status ?? '')}）`",
-        "String(it?.status ?? '')",
+        "stageStatusLabel(kindOfStep(step), String(it?.status ?? '')).label,",
+        "String(it?.status ?? ''),",
       ))
       if (mutant === undefined) {
         bad('S-17g · 造不出「状态直接打原文」的变体（源码形态变了）⇒ 负向对拍不可判')
@@ -1565,6 +1614,209 @@ export function StateDot({ state, size, appearance }) {
       }
     }
   }
+    // ══════════════════════════════════════════════════════════════════
+    // S-18 ⭐ **用真账本数据渲染一遍，扫全文：页面上不许出现「判不出」**
+    //      （2026-10-30 P21 · `TASK-P21.md` 判据 4）
+    // ══════════════════════════════════════════════════════════════════
+    /**
+     * ── 为什么要"真账本"而不是夹具 ───────────────────────────────────
+     *   用户截图那个 bug 只在**真数据**下出现（真索引里就是 `agreed`/`settled`/`built`/`unverified`）。
+     *   夹具是我们自己编的，编的时候很容易"恰好避开"那个值 —— 那就成了自证。
+     *   ⇒ 本组**真读** `<账本区>/ledger-next/units/index.toml`，走**真解析器**
+     *     （`buildStages`，与产品路由同一个），再把结果喂给**真组件**。
+     *
+     * ── 口径 ────────────────────────────────────────────────────
+     *   · 扫 `[data-dsh-hob="stages-panel"]` 的**全文**（`textContent`）；
+     *   · ⛔ 不许出现「判不出」三个字（⚠ 一处都不许）；
+     *   · ⚠ 另打印**每一条**条目的实际标签作为可复核读数。
+     *   ── 负向对拍（S-18b）──────────────────────────────────────
+     *   把真数据里**第一条 `req` 的 status 改成一个封闭集外的值**（`zzz-ghost`）
+     *   ⇒ 「判不出」**必须重新出现**（证明这条断言有牙、且兜底没被删）。
+     */
+    {
+      const { resolveLedgerRoot } = await import('./lib/ledger-root.mjs')
+      const ledgerRoot = resolveLedgerRoot(root, undefined, undefined)
+      if (ledgerRoot === undefined) {
+        bad('S-18 · 账本根判不出 ⇒ 无法用真账本数据渲染（⛔ 不按通过处理）')
+      } else {
+        const idx = await import(pathToFileURL(join(root, 'src', 'shared', 'stages-index.ts')).href)
+        const idxPath = join(ledgerRoot, idx.STAGES_INDEX_REL)
+        const units = idx.parseUnitsToml(readFileSync(idxPath, 'utf8'))
+        const built = idx.buildStages(units, '2026-10-30T00:00:00.000Z')
+        const r = mount(react.createElement(ui.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => built,
+          pollMs: 0,
+        }))
+        await tick(40)
+        for (const head of [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]) {
+          if (head.getAttribute('aria-expanded') !== 'true') actFn(() => head.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+        }
+        await tick(30)
+        const panel = document.querySelector('[data-dsh-hob="stages-panel"]')
+        const text = (panel?.textContent ?? '')
+        const probs = []
+        if (panel === null) probs.push('面板没渲染出来 ⇒ 本条失去测量面')
+        /**
+         * ⚠⚠ **口径修正（第一次跑就咬出我自己一个错）**：
+         *   "扫全文不出现判不出"**不能直接照字面判** —— 真账本里有一条**需求标题**是
+         *   `R-003「执行中」只给真的在跑的；判不出写「未开跑」`，它**正文里就有"判不出"三个字**
+         *   （那是需求文本，⛔ 不是状态标签）。
+         *   ⇒ 本组拆成**两条**，都保留：
+         *     ① **状态面**（`stages-tree-item-status` / `stages-cap-item`）⛔ 一个都不许有
+         *        —— 这才是用户截图那个 bug 的落点；
+         *     ② **全文**里的每一处「判不出」都必须**落在条目标题节点内**（数据文本），
+         *        落不到标题里的 ⇒ **红**（说明又跑到状态/读数里去了）。
+         */
+        const statusTexts = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item-status"]')].map((e) => e.textContent ?? '')
+        const capTexts = [...document.querySelectorAll('[data-dsh-hob="stages-cap-item"]')].map((e) => e.textContent ?? '')
+        const statusHits = [...statusTexts, ...capTexts].filter((t) => t.includes('判不出'))
+        if (statusHits.length > 0) probs.push(`**状态/读数面**出现「判不出」${statusHits.length} 处：${JSON.stringify(statusHits.slice(0, 3))}`)
+        // ② 全文出现次数 == 标题里的出现次数（多出来的就是跑到别处去了）
+        const titleTexts = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item"]')]
+          .map((row) => row.querySelectorAll('span')[1]?.textContent ?? '')
+        const count = (arr) => arr.reduce((n, t) => n + (t.split('判不出').length - 1), 0)
+        const inTitles = count(titleTexts)
+        const inAll = text.split('判不出').length - 1
+        if (inAll > inTitles) {
+          probs.push(`全文出现「判不出」${inAll} 处，但条目标题里只有 ${inTitles} 处 ⇒ 有 ${inAll - inTitles} 处跑到了状态/读数等非标题位置`)
+        }
+        const rows = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item"]')]
+        const labels = rows.map((row) => `${row.getAttribute('data-item-id')}:` + (row.querySelector('[data-dsh-hob="stages-tree-item-status"]')?.textContent ?? '').trim())
+        if (rows.length === 0) probs.push('一条条目都没渲染 ⇒ 扫全文这步没有对象（⛔ 不报 ✓）')
+        if (probs.length === 0) {
+          ok(`S-18 ✓ **真账本数据渲染（${rows.length} 条条目，${units.length} 条单元）**`
+            + ` · **状态/读数面 0 处「判不出」**（⚠ 全文另有 ${inTitles} 处，全在条目标题里 = 数据文本，⛔ 不算）`
+            + `\n      ⇒ 标签实测：${labels.join(' · ')}`)
+        } else for (const x of probs) bad(`S-18 · ${x}`)
+
+        /**
+         * ⚠⚠ **必须先把上一个实例卸掉再挂下一个**（`mount` 每次都 `createRoot` 同一个容器；
+         *   同一容器两次 `createRoot` 会告警，且卸载时抛 `NotFoundError`）。
+         *   ⇒ 串行：量完 S-18 立刻 `r.unmount()`，再挂 S-18b 用的实例。
+         */
+        actFn(() => r.unmount())
+
+        // ── S-18b 负向对拍：把一个 status 改成封闭集外的值 ⇒ 「判不出」必须回来 ──
+        const tampered = units.map((u) => (u.id === 'R-001' ? { ...u, status: 'zzz-ghost' } : u))
+        const built2 = idx.buildStages(tampered, '2026-10-30T00:00:00.000Z')
+        const r2 = mount(react.createElement(ui.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => built2,
+          pollMs: 0,
+        }))
+        await tick(40)
+        for (const head of [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]) {
+          if (head.getAttribute('aria-expanded') !== 'true') actFn(() => head.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+        }
+        await tick(30)
+        const t2 = document.querySelector('[data-dsh-hob="stages-panel"]')?.textContent ?? ''
+        if (t2.includes('判不出') && t2.includes('zzz-ghost')) {
+          ok('S-18b ✓ 负向对拍（把 R-001 的 status 改成封闭集外的 `zzz-ghost`）⇒ 「判不出（原值 zzz-ghost）」**重新出现**'
+            + ' ⇒ S-18 的"全文无判不出"有牙，且**兜底没被删**')
+        } else {
+          bad(`S-18b · 改成非法值后仍未出现「判不出（原值 zzz-ghost）」⇒ 兜底被弄丢了（或这条断言没牙）`)
+        }
+        /**
+         * ⚠⚠ **顺序要紧**（我第一次跑就崩了：`NotFoundError: The node to be removed is not a child`）：
+         *   两次 `mount` 挂的是**同一个 root 容器** ⇒ 必须先卸 `r2`（后挂的那个），
+         *   再卸 `r`；反过来卸会把已经不在树上的节点再摘一次 ⇒ 抛 DOMException。
+         */
+        actFn(() => r2.unmount())
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // S-19 `cap` 那一栏：**有健康度标签**，但⛔ 不借用"进度状态"位置（2026-10-30 P21 §二）
+    // ══════════════════════════════════════════════════════════════════
+    /**
+     * ── 本轮对 §二 的判断（写成断言，免得下一个人"别的行都有所以它也加"）──
+     *   **判：加"健康度"栏，⛔ 不加"进度状态"位。**
+     *   理由三条（源码 `capBlock` 里有同样一份）：
+     *     ① `cap` 无终态、不进分母 ⇒ 进度式状态位会误导成"它也在走五步"；
+     *     ② 但它有合法封闭集（`live/degraded/down`）= **当下健康度** ⇒ 该显示；
+     *     ③ 所以换**语义**（健康度而非进度）、换**位置**（读数之前）、换**数据属性**
+     *        （`stages-cap-item-state`，⛔ 不是 `stages-tree-item-status`）。
+     *   ⇒ 本组同时验：**在**（`正常`/`降级`/`不可用`）+ **没占用条目状态位**。
+     */
+    {
+      const caps = [
+        { id: 'CAP-01', title: '叫醒面', status: 'live', lastReading: '2026-10-30 07:29 · 有在途记录（pending 1 条）' },
+        { id: 'CAP-02', title: '降级的', status: 'degraded', lastReading: '2026-10-30 07:00 · 读不到' },
+        { id: 'CAP-03', title: '挂了的', status: 'down', lastReading: '2026-10-30 06:00 · 无响应' },
+        { id: 'CAP-04', title: '非法值', status: 'zzz-ghost', lastReading: 'x' },
+      ]
+      // ⚠ `mountTree` 是**内层块**作用域里的（`S-17*` 那一段），S-19 在它外面 ⇒ 直接用 `mount`
+      const r = mount(react.createElement(ui.StagesPanel, {
+        fetchProgress: async () => ({ ok: true, rows: [] }),
+        fetchExec: async () => ({ ok: true, items: [] }),
+        fetchStages: async () => ({
+          ok: true, readAt: '2026-10-30T00:00:00.000Z',
+          stages: [{ step: 1, name: '需求规格', state: 'done', done: 0, total: 0, items: [] }],
+          caps,
+        }),
+        pollMs: 0,
+      }))
+      await tick(40)
+      const probs = []
+      const states = [...document.querySelectorAll('[data-dsh-hob="stages-cap-item-state"]')].map((e) => (e.textContent ?? '').trim())
+      if (states.length !== 4) probs.push(`cap 健康度栏 ${states.length} 个（期望 4）`)
+      const WANT = [['live', '正常', 0], ['degraded', '降级', 1], ['down', '不可用', 2]]
+      for (const [st, want, idx] of WANT) {
+        if (states[idx] !== want) probs.push(`cap.${st} 应为 ${JSON.stringify(want)}，实际 ${JSON.stringify(states[idx] ?? '(缺)')}`)
+      }
+      if (!/判不出/.test(states[3] ?? '')) probs.push(`cap 非法值没写「判不出」：${JSON.stringify(states[3] ?? '')}`)
+      // ⚠ 关键：⛔ 不许占用条目的"进度状态"位
+      const treeStatus = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item-status"]')]
+      if (treeStatus.length !== 0) probs.push(`cap 把状态塞进了 \`stages-tree-item-status\`（${treeStatus.length} 个）⇒ 与"进度状态"语义混了`)
+      // ⚠ 读数仍在（健康度是**加**出来的，⛔ 没顶掉 last_reading）
+      const capsText = document.querySelector('[data-dsh-hob="stages-cap-item"]')?.textContent ?? ''
+      if (!capsText.includes('pending 1 条')) probs.push(`cap 行的 last_reading 被顶掉了：${JSON.stringify(capsText)}`)
+      if (probs.length === 0) {
+        ok('S-19 ✓ `cap` 有**健康度**栏（live⇒正常 · degraded⇒降级 · down⇒不可用 · 非法⇒判不出）'
+          + '，且⛔ 未占用进度状态位、⛔ 未顶掉 last_reading')
+      } else for (const x of probs) bad(`S-19 · ${x}`)
+      actFn(() => r.unmount())
+    }
+
+    // —— S-19b 负向对拍：把 cap 的映射删成直打原文 ⇒ S-19 必红 ——
+    {
+      /**
+       * ⚠ `buildMutant` 是 **S-7 那个块**里的局部函数（S-19b 在它外面）⇒ 这里直接用
+       *   顶层可用的 `writeMutant`（同一个实现，见 `:207`）。
+       */
+      const _built = ((t) => {
+        const m = t.replace(
+          "}, stageStatusLabel('cap', String(c?.status ?? '')).label),",
+          "}, String(c?.status ?? '')),",
+        )
+        return m === t ? undefined : writeMutant('cap-raw', m)
+      })(src)
+      const mutant = _built
+      if (mutant === undefined) {
+        bad('S-19b · 造不出「cap 直打原文」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const modRaw = await import(pathToFileURL(mutant).href)
+        const r = mount(react.createElement(modRaw.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => ({
+            ok: true, readAt: '2026-10-30T00:00:00.000Z',
+            stages: [{ step: 1, name: '需求规格', state: 'done', done: 0, total: 0, items: [] }],
+            caps: [{ id: 'CAP-01', title: '叫醒面', status: 'live', lastReading: 'x' }],
+          }),
+          pollMs: 0,
+        }))
+        await tick(30)
+        const t = document.querySelector('[data-dsh-hob="stages-cap-item-state"]')?.textContent ?? ''
+        if (t === 'live') ok(`S-19b ✓ 负向对拍（cap 映射改回原文直打）⇒ S-19 **必红**：实际 ${JSON.stringify(t)}`)
+        else bad(`S-19b · 变体仍没打出英文原文（实 ${JSON.stringify(t)}）⇒ 那条断言没有牙`)
+        actFn(() => r.unmount())
+      }
+    }
+
 } finally {
   cleanup()
 }

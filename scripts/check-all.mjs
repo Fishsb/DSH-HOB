@@ -628,7 +628,7 @@ export const ASSERTION_FLOORS = new Map([
   //   ⚠ 2026-10-29 第 10 轮：14 → **16**（新增 S-12「404 纯文本 ⇒ 明说没有处理体」与
   //     S-12b 负向对拍「去掉 404 判定 ⇒ 必红」，两条都是用户裁定的"打错门与读不到分开说"）。
   //     下界 = 本轮实测 16，零余量。
-  ['check:stages-dom', 43],
+  ['check:stages-dom', 47],
   // ⚠ 2026-10-29（第 6 轮）新增本族：四步进度表的**服务端**行为判据
   //   （`scripts/check-tasks-progress.mjs`，`npm run check:tasks-progress`）。
   //   下界 = **本轮实测值 14，零余量**：T-0（转译自证）· T-1（正常两行）· T-2（空表）·
@@ -642,7 +642,7 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ **2026-10-30 P1 新增**：`ledger-next` 三条不变式 + I4 顺带 + 三条负向对拍 = 12 条（实测；P2 加了 I3 / 按 kind 必填 / change 目录 / req spec 路径 + 三条新负向对拍）。
   ['check:ledger-next', 21],
   // ⚠ **2026-10-30 P3 新增**：五步汇总路由（10 条实测，含阻塞负向对拍与生成器交叉验证）。
-  ['check:stages-route', 10],
+  ['check:stages-route', 12],
   // ⚠ **2026-10-30 P6 新增**：元规则机检（2 条：M-1 实测 vs 下限 + N-M1 自指负向对拍）。
   ['check:meta-negctl', 3],
   // ⚠ **2026-10-30 P8 新增**：Hob 工作流（F1-F4 + 4 条负向对拍 = 8 处）。
