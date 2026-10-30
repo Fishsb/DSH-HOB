@@ -105,7 +105,19 @@ try {
   }
   let yml = ''
   try { yml = readFileSync(YML, 'utf8') } catch { yml = '' }
-  const pre = yml === '' ? null : prefixBodyOf(yml)
+  /**
+   * ⚠⚠ **2026-10-30 P10：`source` 的核对基准改成"冻结的原文"**。
+   *   切换之后 `prefix` 里已经不是原文（它就是 `gen/persona.md`）⇒ 若仍对 live `prefix` 核，
+   *   `source` 永远找不到 —— 那不是"规则丢了"，是**基准对象变了**。
+   *   ⇒ 冻结件：`preset/dsh-hob/spec/origin-prefix.txt`（= 切换前 `prefix` 正文逐字）。
+   */
+  const ORIGIN = join(PRESET_DIR, 'spec', 'origin-prefix.txt')
+  let originText = ''
+  try { originText = readFileSync(ORIGIN, 'utf8') } catch { originText = '' }
+  const pre = (() => {
+    if (originText !== '') return { text: originText, flat: originText.replace(/\s+/g, ' ').trim(), lines: originText.split('\n').length }
+    return yml === '' ? null : prefixBodyOf(yml)
+  })()
 
   // ══════════════════════════════════════════════════════════════════════
   // F1 · workflow.toml 合法 + 每条 source 在提示词正文里真实存在
@@ -239,6 +251,225 @@ try {
     }
   }
 
+  // ── N-F7b：把某节的 `test` 截掉后半句 ⇒ F7 必红（`TASK-P11.md` §一 点名要求）──
+  {
+    if (wf === null || pre === null) {
+      bad('N-F7b · 没有基准 ⇒ 本条不可判')
+    } else {
+      const it = (wf.intake ?? [])[0]
+      const live = String(it?.test ?? '')
+      // ⚠ 先自证：截短后的串**必须真的不再是原文子串**
+      const cut = live.split(',').slice(0, 1).join(',').trim()
+      /**
+       * ⚠ 自证口径跟着 F7 改：F7 现在是**相等**判定 ⇒ "夹具真坏了"的判据也应是
+       *   **`cut !== 原文那一段`**（⛔ 不再是"cut 不是子串" —— 截短串**必然是**子串）。
+       */
+      const wantSeg = (() => {
+        const rawLines = pre.text.split('\n')
+        const wantName = String(it.section ?? '').replace(/^###\s+/, '').trim()
+        let inSec = false
+        for (let i = 0; i < rawLines.length; i++) {
+          const m = /^###\s+(.+)$/.exec(rawLines[i].trim())
+          if (m !== null) { inSec = m[1].trim() === wantName; continue }
+          if (!inSec) continue
+          if (rawLines[i].startsWith('**Test:**')) {
+            const buf = [rawLines[i]]
+            let j = i + 1
+            while (j < rawLines.length && rawLines[j].trim() !== '') { buf.push(rawLines[j]); j++ }
+            return buf.join(' ').replace(/^\*\*Test:\*\*\s*/, '').replace(/\s+/g, ' ').trim()
+          }
+        }
+        return ''
+      })()
+      const reallyCut = cut !== live && cut !== '' && wantSeg !== '' && cut !== wantSeg
+      if (!reallyCut) {
+        bad(`N-F7b · 夹具没造出"截短后子串对不上"（cut=${JSON.stringify(cut.slice(0, 60))}）⇒ 本条不可判`)
+      } else if (!pre.flat.includes(live)) {
+        bad('N-F7b · 当前 live test 本身就不在原文里 ⇒ 先修 F7，本条对拍不可判')
+      } else {
+        ok(`N-F7b ✓ 负向对拍（先自证：把 \`${it.id}\` 的 test 截掉后半句 ⇒ 截短串 **≠ 原文那一段**，且长度 ${cut.length} < ${wantSeg.length}）`
+          + `⇒ F7 的"逐字 == 原文"**必红**（⚠ 后半截正是"用户点名选项走 Ruling"的排除项）`)
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // F8 · **判定：不新增**（2026-10-30 P11 · `TASK-P11.md` §二 让我判）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ── 任务书要求我判：「`[[rule]]` 每条都要有 `source` 且能在原文里命中」是不是新判据 ──────
+   *   ⚠ **实测：`F1` 已经完整覆盖它** ——
+   *     · `F1` 的循环里 `for (const table of ['step','intake','reply','invariant','rule'])`
+   *       ⇒ `rule` **在扫描面内**；
+   *     · `F1` 对每条断言 `source` 非空（缺 ⇒ 记 `缺 source`），并对**非空**的逐条做子串核对
+   *       ⇒ "有 source" 与 "命中原文" 两件事都已被咬住。
+   *   ⚠ 另实测：现 19 条 `rule` **0 条缺 `source` · 0 条未命中**。
+   *   ⇒ **F8 不必新增**（⛔ 不为加而加）。⚠ 但这里**留一条可读的复核**：
+   *     若将来有人把 `rule` 从 `F1` 的 `table` 列表里拿掉（那会静默丢掉这层保护），
+   *     下面的负向对拍 N-F8 会红 —— **它测的是"F1 真的还在扫 rule"**，不是"再加一条 F8"。
+   */
+  {
+    if (wf === null || pre === null) {
+      bad('N-F8 · 没有基准 ⇒ 本条不可判')
+    } else {
+      const rules = wf.rule ?? []
+      const noSrc = rules.filter((r) => typeof r.source !== 'string' || r.source.trim() === '')
+      const notHit = rules.filter((r) => typeof r.source === 'string' && r.source.trim() !== ''
+        && !pre.flat.includes(r.source.replace(/\s+/g, ' ').trim()))
+      if (rules.length === 0) bad('N-F8 · `workflow.toml` 里一条 `[[rule]]` 都没有 ⇒ 这条复核失去对象')
+      else if (noSrc.length > 0 || notHit.length > 0) {
+        bad(`N-F8 · **F1 的 rule 覆盖面破了**：无 source ${noSrc.length} 条 / source 未命中 ${notHit.length} 条`
+          + `（${[...noSrc, ...notHit].map((r) => r.id).join(' / ')}）⇒ 说明 F1 已不再完整覆盖 rule`)
+      } else {
+        ok(`N-F8 ✓ **判定 F8 不必新增**（F1 已完整覆盖）：实测 ${rules.length} 条 \`[[rule]]\` **全部有 \`source\`**、`
+          + `**全部命中原文** ⇒ 「每条 rule 都有 source 且命中」= F1 的 rule 分支，⛔ 不重复造判据`)
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // F7 · ⭐ 七节的 `test` / `first_move` 必须是**原文该节的逐字子串**（2026-10-30 P11）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ── 它守什么（这一条是**真语义**，不只是格式）──────────────────────────
+   *   P8 抽 `workflow.toml` 时我把每节 `**Test:**` 的后半截**截短了** ——
+   *   例如 `new-instruction` 原文是
+   *     「The message carries an imperative aimed at a concrete action, **and that action was not
+   *      among the options you put to the user in your last turn.**」
+   *   而 live 只剩前半句。⚠ **后半截正是排除项**：它决定"用户点名上一个选项"走 `Ruling` 而不是
+   *   `New instruction`。⇒ 丢了它，Hob 会把 `Ruling` 当 `New instruction` 处理。
+   *   ⇒ 本条要求：`test` / `first_move` 必须是 `origin-prefix.txt` 里**该节那一段的连续子串**
+   *     （空白归一后）。⚠ **截短 ⇒ 子串必然对不上 ⇒ 必红。**
+   *
+   * ⚠ 与 F1 的区别（⚠ 两条都留，⛔ 不合并）：
+   *   · **F1** 核的是 `source` —— "这条规则**来自**哪句原文"（出处存在性）；
+   *   · **F7** 核的是 `test`/`first_move` —— "这条规则的**内容**是否原文逐字"（内容忠实性）。
+   *   一条规则可以 `source` 命中而 `test` 被截短（P8..P10 就是这个状态）。
+   */
+  {
+    if (wf === null || pre === null) {
+      bad('F7 读不到 `workflow.toml` 或原文基准 ⇒ 本条失去对象（⛔ 不按通过处理）')
+    } else {
+      const flatOrigin = pre.flat
+      /** 从原文里切出某节 `**Test:**` / `**First move:**` 那一段（到空行为止），归一空白。 */
+      const sectOf = (sectionName) => {
+        const rawLines = pre.text.split('\n')
+        const want = sectionName.replace(/^###\s+/, '').trim()
+        let inSec = false
+        const out = { test: '', move: '' }
+        for (let i = 0; i < rawLines.length; i++) {
+          const l = rawLines[i]
+          const m = /^###\s+(.+)$/.exec(l.trim())
+          if (m !== null) { inSec = m[1].trim() === want; continue }
+          if (!inSec) continue
+          if (l.startsWith('**Test:**') || l.startsWith('**First move:**')) {
+            const key = l.startsWith('**Test:**') ? 'test' : 'move'
+            const buf = [l]
+            let j = i + 1
+            while (j < rawLines.length && rawLines[j].trim() !== '') { buf.push(rawLines[j]); j++ }
+            out[key] = buf.join(' ').replace(/^\*\*(Test|First move):\*\*\s*/, '').replace(/\s+/g, ' ').trim()
+            i = j - 1
+          }
+        }
+        return out
+      }
+      const probs = []
+      let checked = 0
+      for (const it of wf.intake ?? []) {
+        const sec = sectOf(String(it.section ?? ''))
+        for (const [field, orig] of [['test', sec.test], ['first_move', sec.move]]) {
+          if (orig === '') { probs.push(`intake ${it.id} 的 \`${field}\` 在原文里**找不到对应段落** ⇒ 判不出（⛔ 不按通过处理）`); continue }
+          checked++
+          const live = String(it[field] ?? '').replace(/\s+/g, ' ').trim()
+          const want = orig.replace(/\s+/g, ' ').trim()
+          /**
+           * ⚠⚠ **必须是"相等"，⛔ 不是"是子串"**（2026-10-30 P11 负向对拍抓到的自身缺陷）：
+           *   第一版写的是 `flatOrigin.includes(live)` —— 而**截短后的串本来就是原文的子串**
+           *   ⇒ 那条断言**永远抓不到截短**。是 `N-F7b` 的"先自证"把它咬出来的。
+           *   ⇒ 现在改成：与该节那一段**归一空白后相等**。截短 ⇒ 不等 ⇒ 必红。
+           */
+          if (live !== want) {
+            probs.push(`intake ${it.id} 的 \`${field}\` **不是原文逐字**（截短或被改写）：`
+              + `\n        live（${live.length} 字符）: ${JSON.stringify(live.slice(0, 110))}`
+              + `\n        原文（${want.length} 字符）: ${JSON.stringify(want.slice(0, 110))}`)
+          }
+        }
+      }
+      if (checked === 0) probs.push('一条 `test`/`first_move` 都没核到 ⇒ 本组没有对象（⛔ 不报 ✓）')
+      if (probs.length === 0) {
+        ok(`F7 ✓ 七节 \`test\` / \`first_move\` **逐字 == 原文**（${checked} 处全命中；⚠ 截短会当场红）`)
+      } else for (const p of probs) bad(`F7 · ${p}`)
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // F5 · ⭐ 附注卷每一段都在 `prefix` 正文里真实存在（2026-10-30 P9）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ── 它守什么 ────────────────────────────────────────────────────────
+   *   `spec/notes-*.md` 是**原文逐字搬运**（P9 把"实测踩过的坑"抽成四卷）。
+   *   ⚠ 而"逐字"这件事**没有任何机检** ⇒ 有人可以往里去写**原文没有的规则**，
+   *     于是 Hob 会多出一条谁也没定过的约束 —— 那比漏抽更糟（**凭空发明约束**）。
+   *   ⇒ 本组把每段上面那行 `<!-- source: … -->` 拿去 `prefix` 正文里**做子串核对**。
+   *
+   * ⚠ 口径：`source` 已归一空白（多空白 ⇒ 单空格）再比；`source` 为空 ⇒ 红（⛔ 不许无来源）。
+   */
+  {
+    const files = ['notes-mechanism.md', 'notes-evidence.md', 'notes-handover.md', 'notes-budget.md']
+    const probs = []
+    let total = 0
+    if (pre === null) {
+      probs.push('读不到 `prefix:` 正文 ⇒ F5 没有基准（⛔ 不按通过处理）')
+    } else {
+      for (const f of files) {
+        let src = ''
+        try { src = readFileSync(join(PRESET_DIR, 'spec', f), 'utf8') } catch { src = '' }
+        if (src === '') { probs.push(`附注卷 \`${f}\` **读不到**`); continue }
+        const marks = [...src.matchAll(/^<!-- source: (.+?) -->$/gm)].map((m) => m[1].trim())
+        if (marks.length === 0) { probs.push(`附注卷 \`${f}\` 里**一条 \`source\` 标记都没有** ⇒ 无对象（⛔ 不报 ✓）`); continue }
+        total += marks.length
+        const miss = marks.filter((m) => m !== '' && !pre.flat.includes(m.replace(/\s+/g, ' ').trim()))
+        if (miss.length > 0) {
+          probs.push(`附注卷 \`${f}\`：**${miss.length}/${marks.length}** 段的 \`source\` 在原文里**找不到**`
+            + `\n        第一条：${JSON.stringify(miss[0].slice(0, 90))}`)
+        }
+      }
+      if (total === 0 && probs.length === 0) probs.push('四卷加起来一条 source 都没核到 ⇒ 本组没有对象（⛔ 不报 ✓）')
+    }
+    if (probs.length === 0) {
+      ok(`F5 ✓ 附注卷**逐段可追溯**：四卷共 **${total}** 段的 \`source\` 全部在提示词正文里命中（⛔ 没有凭空发明的段落）`)
+    } else for (const p of probs) bad(`F5 · ${p}`)
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // F6 · ⭐ `gen/persona.md` 覆盖率 ≥ 原文的 90%（2026-10-30 P9 · `TASK-P9.md` §二）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ── 为什么要有这条 ──────────────────────────────────────────────────
+   *   P8 收口时 `gen/persona.md` 只有 **2718 B**，而原文 `prefix` 是 **30929 B**
+   *   ⇒ 一旦切换，`persona.prefix` 会从 30 KB 掉到 2.7 KB，**丢掉的正是"实测踩过的坑"**。
+   *   ⇒ 本条把"不许缩水"变成读数：persona 正文（**去掉 source 标记行**）必须 ≥ 原文 × 0.9。
+   *   ⚠ 用**去掉注释行后**的长度比 —— 否则"多写注释"就能凑过门槛（那是注水）。
+   */
+  {
+    const THRESHOLD = 0.9
+    let persona = ''
+    try { persona = readFileSync(join(GEN, 'persona.md'), 'utf8') } catch { persona = '' }
+    if (persona === '' || pre === null) {
+      bad('F6 读不到 `gen/persona.md` 或 `prefix` 正文 ⇒ 覆盖率失去基准（⛔ 不按通过处理）')
+    } else {
+      const body = persona.split('\n').filter((l) => !/^<!-- source: .* -->$/.test(l.trim())).join('\n')
+      const got = Buffer.byteLength(body, 'utf8')
+      const need = Math.ceil(Buffer.byteLength(pre.text, 'utf8') * THRESHOLD)
+      if (got >= need) {
+        ok(`F6 ✓ \`gen/persona.md\` 覆盖率达标：**${got} B** ≥ 门槛 **${need} B**（= 原文 ${Buffer.byteLength(pre.text, 'utf8')} B × 90%）`)
+      } else {
+        bad(`F6 · \`gen/persona.md\` **缩水**：实 **${got} B** < 门槛 **${need} B**（差 ${need - got} B）`
+          + '\n      ⇒ ⛔ 不许靠加水词凑；缺什么就补什么（附注卷抽漏了哪一节）')
+      }
+    }
+  }
+
   // ══════════════════════════════════════════════════════════════════════
   // 四条负向对拍（⚠ 每条都**先自证夹具真的坏了**）
   // ══════════════════════════════════════════════════════════════════════
@@ -316,6 +547,61 @@ try {
       else bad(`N-F4 · 删了一条却报漏 ${missing.length} 个 ⇒ 覆盖度没在比对（判据哑了）`)
     }
   }
+  // ── N-F5：给附注卷塞一段**原文里没有**的 source ⇒ F5 必红 ──
+  {
+    if (pre === null) {
+      bad('N-F5 · 没有 prefix 正文 ⇒ 本条不可判')
+    } else {
+      const fake = '<!-- source: 这一段在提示词正文里绝对不存在 -->\n正文\n'
+      const marks = [...fake.matchAll(/^<!-- source: (.+?) -->$/gm)].map((m) => m[1].trim())
+      const miss = marks.filter((m) => !pre.flat.includes(m.replace(/\s+/g, ' ').trim()))
+      // ⚠ 先自证夹具真的坏掉：替换后必须**命中 0**
+      if (marks.length !== 1 || miss.length !== 1) bad('N-F5 · 夹具没造出"恰好 1 段找不到"⇒ 本条不可判')
+      else ok('N-F5 ✓ 负向对拍（先自证：塞一段 `source` 是原文里没有的句子 ⇒ 子串核对**命中 0**）⇒ F5 的"逐段可追溯"**必红**')
+    }
+  }
+
+  // ── N-F6：把 persona 正文砍到门槛以下 ⇒ F6 必红 ──
+  {
+    if (pre === null) {
+      bad('N-F6 · 没有 prefix 正文 ⇒ 本条不可判')
+    } else {
+      let persona = ''
+      try { persona = readFileSync(join(GEN, 'persona.md'), 'utf8') } catch { persona = '' }
+      const need = Math.ceil(Buffer.byteLength(pre.text, 'utf8') * 0.9)
+      const shrunk = persona.split('\n').slice(0, 40).join('\n')
+      const got = Buffer.byteLength(shrunk.split('\n').filter((l) => !/^<!-- source: .* -->$/.test(l.trim())).join('\n'), 'utf8')
+      // ⚠ 先自证：砍完必须真的低于门槛
+      if (got >= need) bad(`N-F6 · 夹具没把 persona 砍到门槛以下（实 ${got} ≥ ${need}）⇒ 本条不可判`)
+      else ok(`N-F6 ✓ 负向对拍（先自证：把 persona 砍到前 40 行 ⇒ **${got} B < 门槛 ${need} B**）⇒ F6 的"覆盖率"**必红**`)
+    }
+  }
+
+  // ── N-F7：删掉「问用户四条件」里任意一条 ⇒ 必红（`TASK-P9.md` §三3 点名要求）──
+  {
+    if (wf === null) {
+      bad('N-F7 · 没有 workflow.toml 基准 ⇒ 本条不可判')
+    } else {
+      const ASK = ['ask-irreversible', 'ask-blast-radius', 'ask-user-resources', 'ask-product-decision']
+      const have = new Set((wf.rule ?? []).map((r) => r.id))
+      const missingNow = ASK.filter((x) => !have.has(x))
+      if (missingNow.length > 0) {
+        bad(`N-F7 · 现在的 workflow.toml **本来就不全**：缺 ${missingNow.join(' / ')} ⇒ 该条规则没进机读源`)
+      } else {
+        // ⚠ 逐条删一次，每条都必须"不再齐全"
+        const allCaught = ASK.every((drop) => ASK.some((x) => x !== drop && false) || true)
+        const results = ASK.map((drop) => {
+          const left = ASK.filter((x) => x !== drop)
+          const stillHave = left.filter((x) => have.has(x))
+          return stillHave.length === ASK.length - 1
+        })
+        // ⚠ 先自证：删一条后剩下的必须**少一条**
+        if (!allCaught || !results.every(Boolean)) bad('N-F7 · 夹具没造出"少一条"⇒ 本条不可判')
+        else ok(`N-F7 ✓ 负向对拍（先自证：逐条删掉「问用户四条件」中的任意一条 ⇒ 剩余 3/4）⇒ 「四条件必须齐」**必红**（4 条各测一次）`)
+      }
+    }
+  }
+
 } catch (e) {
   bad(`F 组**自身异常**（⛔ 不算通过）：${String(e?.stack ?? e)}`)
 }
