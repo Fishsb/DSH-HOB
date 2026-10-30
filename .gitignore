@@ -3,7 +3,7 @@
 #   漂移在 git status 里是**看不见的** —— 改完 src 必须重新 build。
 #   （这条是旧项目实测踩出来的，见 .hob/EXPERIENCE.md E-24 / E-25。）
 node_modules/
-lib/
+/lib/
 dist/
 *.tsbuildinfo
 *.tgz
@@ -138,3 +138,6 @@ runtime/
 #   ⇒ 显式忽略（正常路径本来就会 `rmSync` 自清；这条只管异常/被打断那一路）。
 .tmp-readings-selftest-*/
 /.agent-teams/
+# ⚠ 2026-10-31 P23：一份**零引用**的外部文档（华为云 CodeArts 架构梳理，13.5 KB）。
+#   用户裁定「不进库、也别删」⇒ 用**窄规则**（点名这一个文件）挡住它，文件留在盘上。
+/codearts-doer-architecture.md
