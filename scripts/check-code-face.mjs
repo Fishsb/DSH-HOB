@@ -1239,142 +1239,137 @@ export function runPlanModuleParity({ bad, ok }) {
     return src.split('\n').filter((l) => /^\|\s*\*\*M\d+[a-z]?\*\*\s*\|/.test(l)).length
   }
 
-  // ── W0 自带样本：该咬 / 不该咬成对（⛔ 缺一侧即"判据没牙"）──────────────
-  const MUST_BITE = [
-    ['虚列一个不存在的模块', '| **M1** | a | b | c |\n| **M2** | a | b | c |\n| **M3** | a | b | c |\n', 3],
-    ['少列一个真模块', '| **M1** | a | b | c |\n', 1],
-  ]
-  const MUST_NOT_BITE = [
-    ['分隔行与表头不计数', '| # | 模块 | 职责 | 依赖 |\n|---|---|---|---|\n| **M1** | a | b | c |\n', 1],
-  ]
-  let wBad = 0
-  for (const [label, sample, want] of MUST_BITE) {
-    if (countModuleRows(sample) !== want) { wBad++; bad(`W 自带样本**没被咬**：${label} ⇒ 计数判据失效`) }
+  // ── W0 自带样本（⚠ 2026-10-30 P7 改：测的是**现在真正跑的那条逻辑**）──────
+  /**
+   * ⚠ 旧 W0 测 `countModuleRows` —— 而那条**已从真实路径上删掉**（见 W1 头注释）。
+   *   ⇒ 留着它只会造成"判据有牙"的错觉：样本咬住的是一个**没人用的函数**。
+   *   现在改成抽出来的纯函数 {@link wGhosts}：喂"方案点名的 .ts"与"生成物里的模块"，
+   *   该报的必须报、不该报的必须不报（成对）。
+   */
+  const wGhosts = (planTs, genStems) => {
+    const genSet = new Set(genStems)
+    return [...new Set(planTs)].filter((x) => !genSet.has(x)).sort()
   }
-  for (const [label, sample, want] of MUST_NOT_BITE) {
-    if (countModuleRows(sample) !== want) { wBad++; bad(`W 自带样本**被误咬**：${label} ⇒ 计数判据过宽`) }
-  }
-  if (wBad === 0) {
-    ok(`W0 ✓ 计数判据成对可验：${MUST_BITE.length} 组该咬**全咬住** · ${MUST_NOT_BITE.length} 组不该咬**全放过**`)
-  }
-
-  // ── W1 实测两侧 ──────────────────────────────────────────────────────
-  const rows = countModuleRows(plan)
-  let w1Bad = 0
-  if (rows !== stems.length) {
-    w1Bad++
-    bad(`W 方案 §3 的宿主模块表**虚列/漏列**：表内 **${rows}** 行，而 \`src/modules/\` 实际 **${stems.length}** 个文件`
-      + `\n      ⇒ 实际模块（从目录派生）：${stems.map((x) => `\`${x}.ts\``).join(' · ')}`
-      + '\n      ⇒ ⚠ 两数不等 = 方案在描述一个**不存在的模块**（或漏写一个真的）—— 实测踩过：曾虚列 \`M2\`')
-  }
-  for (const stem of stems) {
-    // 主干必须作为代码标识出现（反引号里，避免"工具"这类中文词误命中）
-    if (!plan.includes(`\`${stem}.ts\``) && !plan.includes(`\`${stem}\``)) {
-      w1Bad++
-      bad(`W 模块 \`${stem}.ts\` **在方案 §3 里没被提到** ⇒ "写了代码没写方案"（读者找不到它）`)
+  {
+    const wProbes = [
+      ['该咬：方案点了 `M2.ts`（生成物里没有）', () => {
+        const g = wGhosts(['tools', 'M2'], ['tools', 'bus'])
+        return g.length === 1 && g[0] === 'M2'
+      }],
+      ['不该咬：方案点的都在生成物里', () => wGhosts(['tools', 'bus'], ['tools', 'bus']).length === 0],
+    ]
+    let w0Bad = 0
+    for (const [why, fn] of wProbes) {
+      let bit = false
+      try { bit = fn() === true } catch { bit = false }
+      if (!bit) { w0Bad++; bad(`W 自带样本**不符合预期**：${why} ⇒ 本组判据改哑了（或过咬）`) }
+    }
+    if (w0Bad === 0) {
+      ok('W0 ✓ 负向对拍（抽出的纯函数 `wGhosts`）：方案点名 `M2.ts` 而生成物没有 ⇒ **必报**；全在生成物里 ⇒ **不报**（成对，⛔ 不靠旧的行数计数）')
     }
   }
-  if (w1Bad === 0) {
-    ok(`W ✓ 方案 §3 与 \`src/modules/\` **同源**：模块表 ${rows} 行 = 实际 ${stems.length} 个文件，`
-      + `且 ${stems.map((x) => `\`${x}\``).join(' · ')} 逐个在正文里点名`)
+
+  // ── W1 实测两侧（⚠ 2026-10-30 P7：右侧基准从「目录手数」换成「生成物」）──
+  /**
+   * ── 改了什么、为什么 ────────────────────────────────────────────────
+   *   改前：`countModuleRows(plan)`（**手数模块表行数**）== `readdirSync(src/modules).length`。
+   *     ⚠ 两边都是"数量"，**不管名字**：表里写错一个名字、只要行数对得上，本条照样绿。
+   *   现在：右侧换成 **`<账本根>/ledger-next/gen/modules.md`**（生成物，由目录直出）⇒
+   *     · 生成物里**每一个**模块文件都必须在方案 §3 正文里点名（⛔ 不许漏写）；
+   *     · 方案 §3 模块表里点名的 `*.ts` **必须都出现在生成物里**（⛔ 不许虚列）。
+   *   ⚠ **「手数行数」那条已删除** —— 它只管量、不管名，是本段要治的那个洞。
+   *   ⚠ 为什么**不**把方案 §3 的表换成生成块（`TASK-P7.md` §二要我判的一件事）：
+   *     那张表有 **`inject` 列与「职责」列**（生成器不知道的信息）——
+   *     生成器只能产出"文件清单"，产不出职责/依赖 ⇒ 硬换成生成块会**丢掉信息**。
+   *     ⇒ 判定：**表保持手写**，只把**核对基准**换成生成物。理由写在此处与报告 §二。
+   */
+  const GEN_MODULES = join(LEDGER, 'ledger-next', 'gen', 'modules.md')
+  let genMd = ''
+  try { genMd = readFileSync(GEN_MODULES, 'utf8') } catch { genMd = '' }
+  let w1Bad = 0
+  if (genMd === '') {
+    w1Bad++
+    bad(`W 生成物 \`ledger-next/gen/modules.md\` **读不到**（\`${GEN_MODULES}\`）⇒ 本组失去基准（不按通过处理）`
+      + '\n      ⇒ 生成它：`npm run gen:ledger`（⚠ 手改它会被 I5 咬住）')
+  } else {
+    /** 生成物里的模块主干（⚠ 从生成物解析，⛔ 不再 `readdirSync`）。 */
+    const genStems = [...genMd.matchAll(/^\| \d+ \| `src\/modules\/([^`]+)\.ts` \|$/gm)].map((m) => m[1])
+    if (genStems.length === 0) {
+      w1Bad++
+      bad('W 生成物 `gen/modules.md` 里**一个模块行都解析不到** ⇒ 格式变了或文件被写坏（不按通过处理）')
+    }
+    // ① 生成物 → 方案：每个真模块都必须在方案正文里点名（⛔ 漏写）
+    for (const stem of genStems) {
+      if (!plan.includes(`\`${stem}.ts\``) && !plan.includes(`\`${stem}\``)) {
+        w1Bad++
+        bad(`W 模块 \`${stem}.ts\` **在方案 §3 里没被提到** ⇒ "写了代码没写方案"（读者找不到它）`)
+      }
+    }
+    // ② 方案 → 生成物：模块表里点名的 `*.ts` 必须真的存在（⛔ 虚列）
+    const planTs = new Set([...plan.matchAll(/`([A-Za-z0-9_-]+)\.ts`/g)].map((m) => m[1]))
+    const genSet = new Set(genStems)
+    const ghosts = [...planTs].filter((x) => !genSet.has(x)).sort()
+    if (ghosts.length > 0) {
+      w1Bad++
+      bad(`W 方案 §3 点名了**生成物里没有的** .ts：${ghosts.map((g) => `\`${g}.ts\``).join(' · ')}`
+        + `\n      ⇒ 生成物（\`gen/modules.md\`，由 \`src/modules/\` 直出）里只有：`
+        + ` ${genStems.map((x) => `\`${x}.ts\``).join(' · ')}`
+        + '\n      ⇒ ⚠ 这正是"方案在描述一个不存在的模块"（实测踩过：曾虚列 `M2`）')
+    }
+    if (w1Bad === 0) {
+      ok(`W ✓ 方案 §3 与**生成物** \`ledger-next/gen/modules.md\` **同源**：`
+        + `生成物 ${genStems.length} 个模块，逐个在方案正文里点名；方案点名的 .ts 也全在生成物里`
+        + '（⚠ 已删「手数行数」那条 —— 它只管量不管名）')
+    }
   }
 }
 
 /**
- * ── 断言 R · 骨架「同源」（2026-10-16 · 第 224 轮 · `UD-118`「C」· 约束 ⑤）──────────────
+ * ── 断言 R · 骨架材料（`kit/**`）的**打包面**（2026-10-25 · `UD-159` B 步改写）────────
  *
- * **它防的是什么**（⚠ 这是「C」的**第二个判据点**风险）：⚠ **仓库的 `.hob/**` 是唯一来源**，
- *   而随包发出去的那份（`src/server/skeleton-manifest.ts`）是**派生物** ⇒
- *   ⚠ ⚠ **两份会各自漂** —— ⚠ 改了一侧忘了另一侧时，⚠ **没有任何东西会报**
- *   （⚠ 而这正是 **E-130 / E-131** 记的形态："提取不到 ⇒ 静默通过"）。
+ * **它防的是什么**：`kit/**` 是**运行时**要读的工具材料（`package.json` 的 `files` 带出去），
+ *   ⚠ 而 `files` 与"盘上实有"是**两处独立声明** ⇒ ⚠ 加了件、`files` 忘了加 ⇒
+ *   **装机态读不到**，而**本机开发态照样正常**（开发态走的是仓库那份）⇒ **测不出来**。
+ *   ⚠ 这正是 `UD-118` / `UD-129` 要治的形态（"装到别处就少了东西"）。
  *
- * ── 判据（⚠ 逐条，⛔ 一条都不许静默）──────────────────────────────────────────
- *   ① ⚠ **提取不到即 FAIL**：清单文件读不到 / 抽不出 `SKELETON_ENTRIES` / 条数为 0
- *      ⇒ **FAIL**（⛔ 不按通过处理 —— **E-130 / E-131**）；
- *   ② ⚠ **逐件比对 `sha256`**：清单里每一条 `{path, sha256}` 都要与**仓库那份**重算值相等；
- *      ⚠ 仓库**缺该件** ⇒ FAIL；⚠ **值不等** ⇒ FAIL（并点名路径 + 两个值）；
- *   ③ ⚠ **反向完整性**（⚠ 防"漏登记"）：⚠ 按**同一个派生口径**（`.gitignore` 的 `!` 例外，
- *      剔除记录层）从仓库重算的文件集，必须与清单的**路径集逐名相等**
- *      ⇒ ⚠ 仓库**新增**一件而清单没跟 ⇒ FAIL（⚠ 这正是"漂"的主方向）；
- *   ④ ⚠ **派生口径同源**（⚠ 防"两套口径"）：⚠ `allowlist` 必须与该口径算出的集合相等。
+ * ── 为什么从"同源 sha256"改成这一条（本步的退役根据）────────────────────────────
+ *   ⚠ 原判据是"仓库 `.hob/**` ↔ 派生物 `skeleton-manifest.ts` 逐件 sha256"，
+ *     它**存在的前提是"有 N 份拷贝要保证一致"**（`UD-118`）。
+ *   ⇒ `UD-159` 取消每工作区一份之后，那份清单**没有比对对象**了（清单本体已退役）。
+ *   ⚠ 但它**还有一半的活是真的**：`kit/**` 仍要被 `files` 带进包 —— 这一半**保留**，
+ *     只是判法从"比对清单"改成"**直接核盘上 `kit/` 与 `files`**"。
  *
- * ⚠ ⚠ **判据读的是"仓库那份"，⛔ 不是"包内那份"** —— ⚠ 因为**唯一来源是仓库**；
- *   ⚠ 包内那份是**它的拷贝**（⚠ 由 `package.json` 的 `files` 带出去）。
- * ⚠ **本函数不 import 被测模块**（⚠ 与 `Q` 组不同）：⚠ 它要判的**恰恰是"清单本身对不对"** ⇒
- *   ⚠ 只能**独立重算**（⚠ 若调 `skeleton.ts` 的 `skeletonAllowlist()` 就等于**拿被测物自证**）。
+ * ── 判据（⚠ 两条，各自能失败）────────────────────────────────────────────────
+ *   ① `kit/` 下**每一件**都要被 `files` 里某一项覆盖（前缀语义：`kit/templates` 覆盖其下全部）；
+ *   ② ⛔ 不许把整个 `.hob` 或整个 `kit` 一刀切写进 `files`（那会连带打进不该发的层）。
+ *   ⚠ 读不到 `kit/` 或 `files` ⇒ **FAIL**（⛔ 基准读不到不按通过处理 —— `E-130`/`E-131`）。
  */
 export function runSkeletonSource({ bad, ok }) {
-  const MANIFEST = join(root, 'src', 'server', 'skeleton-manifest.ts')
-  const HOB = join(root, '.hob')
+  const KIT = join(root, 'kit')
+  const SKIP = new Set(['.DS_Store'])
 
-  // ── ① 提取（⚠ 提取不到 ⇒ FAIL，⛔ 不许静默）────────────────────────────────
-  let src = ''
-  try {
-    src = readFileSync(MANIFEST, 'utf8')
-  } catch {
-    bad('R **读不到骨架清单** `src/server/skeleton-manifest.ts` ⇒ 同源判据失去基准（**不按通过处理**）'
-      + '\n      ⇒ 修法：跑 `node scripts/gen-skeleton-manifest.mjs` 重新生成')
+  const walkAll = (dir, base, acc) => {
+    let es = []
+    try { es = readdirSync(dir, { withFileTypes: true }) } catch { return acc }
+    for (const e of es) {
+      if (SKIP.has(e.name)) continue
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walkAll(p, base, acc)
+      else if (e.isFile()) acc.push(relative(base, p).split('\\').join('/'))
+    }
+    return acc
+  }
+  if (!existsSync(KIT)) {
+    bad('R **读不到** `kit/` ⇒ 打包面判据失去基准（**不按通过处理**）'
+      + '\n      ⇒ ⚠ 基准读不到就默认通过 == 本条不存在（E-130 / E-131）')
     return
   }
-  const entriesBlock = /\bSKELETON_ENTRIES[^=]*=\s*\[([\s\S]*?)\n\]/.exec(src)
-  const allowBlock = /\bSKELETON_ALLOWLIST[^=]*=\s*\[([\s\S]*?)\n\]/.exec(src)
-  if (entriesBlock === null || allowBlock === null) {
-    bad('R **抽不出**清单里的 `SKELETON_ENTRIES` / `SKELETON_ALLOWLIST` ⇒ 同源判据失去基准（**不按通过处理**）'
-      + '\n      ⇒ ⛔ 提取不到即 FAIL，⛔ 不许静默通过（**E-130 / E-131**）')
-    return
-  }
-  // ⚠ 行级抽取（本仓零第三方依赖纪律：⛔ 不 eval 那个 TS 文件）
-  const entries = []
-  for (const line of entriesBlock[1].split('\n')) {
-    const m = /path:\s*'([^']+)'\s*,\s*sha256:\s*'([0-9a-f]{64})'/.exec(line)
-    if (m !== null) entries.push({ path: m[1], sha256: m[2] })
-  }
-  // ⚠ ⚠ **引号口径**（2026-10-16 当场抓到）：⚠ 生成器用 `JSON.stringify` 落的是**双引号**，
-  //   而本抽取一开始只认单引号 ⇒ ⚠ **抽出 0 项**（⚠ 那会让本条**误报"清单为空"**）。
-  //   ⇒ ⚠ 两种引号都认；⚠ **抽到 0 项 ⇒ FAIL**（⛔ 不许把它读成"清单本来就是空的"）。
-  const manifestAllow = [...allowBlock[1].matchAll(/["']([^"']+)["']/g)].map((m) => m[1])
-  if (manifestAllow.length === 0) {
-    bad('R `SKELETON_ALLOWLIST` **抽到 0 项** ⇒ 同上，同源判据失去基准（**不按通过处理**）'
-      + '\n      ⇒ ⚠ 若清单确实是空的 ⇒ 生成器或提取口径坏了（⛔ 不按通过处理）')
-    return
-  }
-  if (entries.length === 0) {
-    bad('R 清单里**一条 `SKELETON_ENTRIES` 都抽不到**（条数 0）⇒ 同源判据失去基准（**不按通过处理**）')
+  const kitFiles = walkAll(KIT, root, []).sort()
+  if (kitFiles.length === 0) {
+    bad('R `kit/` 下**一件文件都没有** ⇒ 打包面判据失去基准（**不按通过处理**）')
     return
   }
 
-  // ── ④ 派生口径（⚠ 与生成器**同一口径**：`.gitignore` 的 `!` 例外 − 记录层）──────
-  const EXCLUDE = ['.hob/EXPERIENCE.md', '.hob/experience']
-  const isExcluded = (p) => EXCLUDE.some((x) => p === x || p.startsWith(`${x}/`))
-  let giSrc = ''
-  try {
-    giSrc = readFileSync(join(root, '.gitignore'), 'utf8')
-  } catch {
-    bad('R 读不到 `.gitignore` ⇒ 派生口径失去基准（**不按通过处理**）')
-    return
-  }
-  const expectAllow = []
-  for (const line of giSrc.split('\n')) {
-    const m = /^!(\.hob\/.+)$/.exec(line.trim())
-    if (m !== null) expectAllow.push(m[1].replace(/\/$/, ''))
-  }
-  const expectAllowFiltered = expectAllow.filter((p) => !isExcluded(p))
-  const setEq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i])
-  if (!setEq(manifestAllow, expectAllowFiltered)) {
-    bad('R **清单的 `allowlist` 与派生口径不一致**（⚠ 两套口径 = 会各自漂）'
-      + `\n      ⇒ 清单：${manifestAllow.join(' · ')}`
-      + `\n      ⇒ 口径：${expectAllowFiltered.join(' · ')}`
-      + '\n      ⇒ 修法：跑 `node scripts/gen-skeleton-manifest.mjs`（⛔ 不许手改清单）')
-  }
-
-  // ── ⑤ ⚠ **打包面**：`package.json` 的 `files` 必须**带得走**清单里的每一条 ──────────
-  //   ⚠ **为什么这一条必须有**（⚠ 第三份会漂的地方）：⚠ `files` 与清单是**两处独立声明**
-  //     ⇒ ⚠ 清单里加了件、`files` 忘了加 ⇒ ⚠ **装机态读不到那份骨架**，
-  //       而**本机的开发态照样正常**（⚠ 因为开发态走的是仓库那份）⇒ ⚠ **测不出来**。
-  //     ⚠ 这正是 `UD-118` 要治的形态（"装到别处就少了东西"）。
-  //   ⚠ 判据：清单 `allowlist` 的**每一项**都要被 `files` 里某一项**覆盖**
-  //     （⚠ `files` 项是**前缀**语义：`.hob/templates` 覆盖 `.hob/templates/**`）。
-  //   ⚠ 读不到 `files`（文件缺失 / 段缺失）⇒ **FAIL**（⛔ 基准读不到不按通过处理）。
   let pkgFiles = undefined
   try {
     pkgFiles = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).files
@@ -1382,95 +1377,24 @@ export function runSkeletonSource({ bad, ok }) {
   if (!Array.isArray(pkgFiles)) {
     bad('R 读不到 `package.json` 的 `files` 段 ⇒ 打包面判据失去基准（**不按通过处理**）'
       + '\n      ⇒ ⚠ 跳过等于"基准读不到就默认通过"，那正是本条盯防的形态')
+    return
+  }
+
+  const uncovered = kitFiles.filter((f) => !pkgFiles.some((x) => typeof x === 'string' && (f === x || f.startsWith(`${x}/`))))
+  if (uncovered.length > 0) {
+    bad('R **`kit/` 里有件打不进包**（`package.json` 的 `files` 没覆盖）'
+      + `\n      ⇒ 未覆盖 ${uncovered.length} 件：${uncovered.slice(0, 10).join(' · ')}${uncovered.length > 10 ? ` …另有 ${uncovered.length - 10} 件` : ''}`
+      + '\n      ⇒ 实测后果：⚠ 装机态（装进别的实例）读不到那份工具材料，而本机开发态**照样正常** ⇒ 测不出来'
+      + '\n      ⇒ 修法：把缺的那几条加进 `package.json` 的 `files`（⚠ 逐项白名单，⛔ 别整个 `kit` 一刀切）')
   } else {
-    const uncovered = expectAllowFiltered.filter((a) => !pkgFiles.some((f) => typeof f === 'string' && (f === a || a.startsWith(`${f}/`))))
-    if (uncovered.length > 0) {
-      bad('R **清单里的骨架件打不进包**（`package.json` 的 `files` 没覆盖）'
-        + `\n      ⇒ 未覆盖：${uncovered.join(' · ')}`
-        + '\n      ⇒ 实测后果：⚠ 装机态（装进别的实例）读不到那份骨架，而本机开发态**照样正常** ⇒ 测不出来'
-        + '\n      ⇒ 修法：把缺的那几条加进 `package.json` 的 `files`（⚠ 只加白名单里的，⛔ 别整个 `.hob` 加进去 —— 那会连带打进 `backups/` 与本项目记录层）')
-    } else {
-      ok(`R ✓ 打包面：清单 **${expectAllowFiltered.length} 项**全部被 \`files\` 覆盖（⚠ 装机态拿得到骨架）`)
-    }
-    // ⚠ 反向：⛔ **不许把整个 `.hob` 加进 `files`** —— 那会连带打进本项目记录层与备份。
-    if (pkgFiles.some((f) => f === '.hob' || f === '.hob/' || f === '.hob/**')) {
-      bad('R `package.json` 的 `files` 里出现了整个 `.hob` ⇒ ⚠ 会连带打进**本项目记录层**'
-        + '（`.hob/experience/**`）与**本项目的改前备份**（`.hob/backups/**`）'
-        + '\n      ⇒ ⚠ 前者是"本项目自己的历史"（⚠ 换项目不该照抄）、后者是本机产物'
-        + '\n      ⇒ 修法：改成逐项白名单（`README.md` / `INIT.md` / `templates` / `drafts` / `roles`）')
-    }
+    ok(`R ✓ 打包面：\`kit/\` **${kitFiles.length} 件**全部被 \`files\` 覆盖（⚠ 装机态拿得到工具材料）`)
   }
 
-  // ── ③ 反向完整性：按同一口径从仓库重算路径集 ────────────────────────────────
-  const walkMd = (dir, base, acc) => {
-    let es = []
-    try { es = readdirSync(dir, { withFileTypes: true }) } catch { return acc }
-    for (const e of es) {
-      const p = join(dir, e.name)
-      if (e.isDirectory()) walkMd(p, base, acc)
-      else if (e.isFile()) acc.push(relative(base, p).split('\\').join('/'))
-    }
-    return acc
-  }
-  const expectPaths = []
-  for (const a of expectAllowFiltered) {
-    const rel = a.replace(/^\.hob\//, '')
-    const abs = join(HOB, rel)
-    if (!existsSync(abs)) continue
-    const st = readdirSync(dirname(abs), { withFileTypes: true }).find((e) => e.name === basename(abs))
-    if (st !== undefined && st.isDirectory()) {
-      for (const f of walkMd(abs, abs, []).sort()) expectPaths.push(`${rel}/${f}`)
-    } else {
-      expectPaths.push(rel)
-    }
-  }
-  expectPaths.sort()
-  const manifestPaths = entries.map((e) => e.path).sort()
-  const missingInManifest = expectPaths.filter((p) => !manifestPaths.includes(p))
-  const extraInManifest = manifestPaths.filter((p) => !expectPaths.includes(p))
-  if (missingInManifest.length > 0) {
-    bad('R **仓库有、清单没有**（⚠ 新增了骨架件而清单没跟 ⇒ 会漂）'
-      + `\n      ⇒ ${missingInManifest.slice(0, 10).join(' · ')}${missingInManifest.length > 10 ? ` …另有 ${missingInManifest.length - 10} 件` : ''}`
-      + '\n      ⇒ 修法：跑 `node scripts/gen-skeleton-manifest.mjs`（⛔ 不许手改清单）')
-  }
-  if (extraInManifest.length > 0) {
-    bad('R **清单有、仓库没有**（⚠ 清单登记了一件源里已不存在的件）'
-      + `\n      ⇒ ${extraInManifest.slice(0, 10).join(' · ')}`
-      + '\n      ⇒ 修法：同上（重新生成）')
-  }
-
-  // ── ② 逐件 sha256（⚠ 判据的主体）───────────────────────────────────────────
-  let compared = 0
-  let mismatch = 0
-  for (const e of entries) {
-    const abs = join(HOB, e.path)
-    if (!existsSync(abs)) {
-      mismatch++
-      bad(`R **仓库里缺该件**：\`.hob/${e.path}\` —— 清单登记了它，而源里读不到（⛔ 不按通过处理）`)
-      continue
-    }
-    let buf = null
-    try { buf = readFileSync(abs) } catch { buf = null }
-    if (buf === null) {
-      mismatch++
-      bad(`R **读不到源件**：\`.hob/${e.path}\`（⛔ 不按通过处理）`)
-      continue
-    }
-    compared++
-    const actual = createHash('sha256').update(buf).digest('hex')
-    if (actual !== e.sha256) {
-      mismatch++
-      bad(`R **同源漂了**：\`.hob/${e.path}\``
-        + `\n      ⇒ 清单 sha256：${e.sha256}`
-        + `\n      ⇒ 仓库 sha256：${actual}`
-        + '\n      ⇒ 修法：⚠ **以仓库那份为准**（它是唯一来源）⇒ 跑 `node scripts/gen-skeleton-manifest.mjs` 重生成')
-    }
-  }
-  if (mismatch === 0 && missingInManifest.length === 0 && extraInManifest.length === 0) {
-    ok(`R ✓ 骨架同源：清单 **${entries.length} 件**（逐件 sha256 比对 **${compared} 件全等**）·`
-      + ` 反向完整性 **${expectPaths.length} 件逐名相等** ·`
-      + ` 派生口径（\`.gitignore\` 的 \`!\` 例外 − 记录层）**${expectAllowFiltered.length} 项一致**`
-      + ' ⇒ ⚠ **仓库那份是唯一来源**，清单是它的派生物；⚠ 两侧任一漂 ⇒ 本条当场红')
+  // ⚠ 反向：⛔ 不许把整个 `.hob` / 整个 `kit` 一刀切写进 `files`
+  if (pkgFiles.some((f) => ['.hob', '.hob/', '.hob/**', 'kit', 'kit/', 'kit/**'].includes(f))) {
+    bad('R `package.json` 的 `files` 里出现了整个 `.hob` 或整个 `kit` ⇒ ⚠ 会连带打进**本项目记录层**'
+      + '（`.hob/experience/**`）与**本项目的改前备份**（`.hob/backups/**`）'
+      + '\n      ⇒ 修法：改成逐项白名单（`kit/README.md` / `kit/INIT.md` / `kit/templates` / `kit/drafts` / `kit/roles`）')
   }
 }
 

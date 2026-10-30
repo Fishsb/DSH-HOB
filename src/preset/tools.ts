@@ -1661,54 +1661,6 @@ function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any)
        */
       return Array.isArray(t) ? visibleNamesFor(t) : []
     },
-    // ⚠⚠ **「首次铺骨架」开关：这里**只作纯兜底**（2026-10-24 订正）**。
-    //
-    // ── 为什么降级（改前的病灶）──────────────────────────────────────────
-    //   改前它读的是**预设行的 `config`**（`HobToolsConfig`：workspaceRoot / ledgerHome / …），
-    //   那份配置里**根本没有 `skeleton` 段** ⇒ `skeletonEnabled()` 走自己的兜底 ⇒
-    //   **恒 `true`** ⇒ ⚠ 用户关掉「首次铺骨架」**不生效**，而代码看起来"读了开关"。
-    //   行为上无害（每轮都会铺一次，但 `skeleton.ts` 只补缺、⛔ 永不覆盖），
-    //   但**它是空旋钮**：读的位置不对，值永远等于缺省。
-    //
-    // ── 权威在哪（⛔ 别在这里再实现一遍）────────────────────────────────
-    //   `src/modules/tools.ts` 的 `apply` 用 `pluginEntryConfigOf(ctx)` 取**插件入口配置**
-    //   （那才是带 `skeleton.enabled` 的那份），装成 `setEntrySkeletonSwitch(...)`，
-    //   由 `currentEntrySkeletonSwitch()` / 门禁的 `skeletonEnabledOf` 现读提供。
-    //   ⇒ 本回调**只在该权威不可用时兜底**（`createHobTools` 直接调用、未跑 `apply` 的测试路径）。
-    //
-    // ⚠ 顺序：① 门禁的权威读法（`ctx.get(GATE_SERVICE)?.skeletonEnabledOf`，现读）
-    //        ② 模块级权威槽 `currentEntrySkeletonSwitch()`（命名空间取用 + 运行时取值）
-    //        ③ 都取不到 ⇒ `config.ts` 的 `skeletonEnabled()`（按旧行为，但**它读的是预设行配置**）
-    //        ④ 连导出都没有 ⇒ `true`（schema 缺省，后果最轻）并**说一句**（⛔ 不静默）。
-    skeletonEnabledOf: () => {
-      /**
-       * ⚠ 本函数在 `registerTools`（模块作用域）里 —— **拿不到 `apply` 里的 `GATE_SERVICE` 局部量**
-       *   ⇒ 从命名空间现取同名导出（`G-11` 允许的取法，⛔ 不是新抄一个字面值）。
-       */
-      const gateServiceName = (() => {
-        const v = (toolsFace as unknown as Record<string, unknown>).GATE_SERVICE
-        return typeof v === 'string' && v !== '' ? v : undefined
-      })()
-      const gate = (() => {
-        if (gateServiceName === undefined) return undefined
-        try { return ctx.get?.(gateServiceName) as { skeletonEnabledOf?: () => boolean } | undefined } catch { return undefined }
-      })()
-      if (typeof gate?.skeletonEnabledOf === 'function') {
-        try { const v = gate.skeletonEnabledOf(); if (typeof v === 'boolean') return v } catch { /* 落到下一层 */ }
-      }
-      const readEntry = (toolsFace as unknown as Record<string, unknown>).currentEntrySkeletonSwitch
-      if (typeof readEntry === 'function') {
-        try {
-          const v = (readEntry as () => boolean | undefined)()
-          if (typeof v === 'boolean') return v
-        } catch { /* 落到下一层 */ }
-      }
-      const fn = (configFace as unknown as Record<string, unknown>).skeletonEnabled
-      if (typeof fn === 'function') return Boolean((fn as (c: unknown) => unknown)(config))
-      // ⚠ 本函数作用域只有 `log`（没有 `diag`）；用 `log` 说这一句 —— 可读优先于通道区别。
-      log('⚠ `config.ts` 没有 `skeletonEnabled()` 导出（旧缓存？）⇒ 「首次铺骨架」按缺省值 true 处理')
-      return true
-    },
     // ⚠ 图片的存储走宿主 `attachments` 服务（实测：宿主平面 provide，
     //   **预设作用域取得到**）。⚠ 惰性取值 + 取不到时返回 undefined
     //   （工具会如实回"没有附件服务"，而不是假装图片已交给模型）。

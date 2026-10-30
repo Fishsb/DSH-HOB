@@ -65,7 +65,6 @@ import { basename } from 'node:path'
 import { LEDGER_FILES, writeHobFile } from '../server/hob-write.ts'
 // ── 首次铺骨架（2026-10-16 第 224 轮 · `UD-118`「C」）──────────────────────
 //   ⚠ 它是**插件的初始化行为**，⛔ 不是工具：⚠ 本模块的参数表**一个字段都没加**。
-import { scaffoldSkeletonForWorkspace } from '../server/skeleton.ts'
 // ── 待投递中间态记账（2026-10-10 · 用户报障修复）──────────────────────────
 //   ⚠ **分层纪律**：`hob-write.ts`（落盘层）**不 import** 运行态模块 ——
 //     它只回一个可判定的 `handoff` 字段，**由本层（工具层）决定记不记**。
@@ -339,30 +338,6 @@ export interface HobToolsDeps {
   /** 按执行上下文取编排服务（`hob_dispatch` 的同一条路径）。缺席 ⇒ 不投递。 */
   orchOf?: (exec: ToolRunContext) => DispatchLike | undefined
   /**
-   * **现读**「首次铺骨架」开关（2026-10-16 第 224 轮 · `UD-118`「C」）。
-   *
-   * ⚠ 与 `levelOf` 同一条纪律：必须是**函数**（⛔ 不是值）——
-   *   `skeleton.enabled` 标了 `.volatile()`（运行时是 ref 对象），
-   *   ⚠ 在 `createHobTools` 时读一次就是**装配期快照** ⇒ 用户改完开关后
-   *   **已开的会话仍按旧值**走到重挂载为止（正是 `spawnDefaults` 那条教训）。
-   *
-   * ── ⚠⚠ **2026-10-24 订正：它是【兜底】，不是权威** ─────────────────────
-   *   权威是 {@link setEntrySkeletonSwitch}（由 `apply` 从**插件入口配置**装上）。
-   *   **优先级：入口配置 > 本字段 > 兜底 `true`**（见 `writeHob` 里那段取值注释）。
-   *
-   *   ⚠ 为什么本字段**注定读不到用户那个开关**：真机唯一注入它的是
-   *   `src/preset/tools.ts`，传的是 `configFace.skeletonEnabled(config)` —— 那个
-   *   `config` 是**预设行的配置**（`HobToolsConfig`：workspaceRoot / ledgerHome / …），
-   *   **没有 `skeleton` 段** ⇒ `skeletonEnabled()` 按兜底返回 `true`。
-   *   ⇒ 只靠本字段 = **空旋钮**（用户在设置页关掉，照样铺骨架）。这正是本单必修 3。
-   *
-   *   ⚠ 那为什么**不删掉它**：不跑 `apply` 的调用方（`check:orch` 的 SM-a/SM-b
-   *   直接 `createHobTools(cfg, { skeletonEnabledOf: () => true })`）靠它指定行为；
-   *   删了会打断既有机检路径。⇒ 保留为**降级路径**，但**不再是权威**。
-   *   ⚠ 缺席 ⇒ 按 schema 的 `.default(true)` 处理（理由见 `skeleton.ts` 的兜底注释）。
-   */
-  skeletonEnabledOf?: () => boolean
-  /**
    * **现读**当前可读权限控制的档位（`ledger` / `project` / `workspace` —— 内部取值）。
    *
    * ⚠ 必须是**函数**（不是值）：档位可以**随时改**（volatile 值型配置，改完即生效），
@@ -454,22 +429,6 @@ function sessionIdOf(exec: any): string | undefined {
  *     而那种残留本就不该被执行（工具注册随 fiber 一起拆）。⚠ 这是**有意**的取舍，
  *     写在这里免得后人以为是漏了清理。
  */
-let entrySkeletonSwitch: (() => boolean) | undefined
-
-/** 写入权威读取器（只由 `apply` 调用）。 */
-export function setEntrySkeletonSwitch(fn: (() => boolean) | undefined): void {
-  entrySkeletonSwitch = fn
-}
-
-/** 读当前权威值（⚠ 没装 `apply` 时返回 `undefined`，调用方据此退回注入值 / 兜底）。 */
-export function currentEntrySkeletonSwitch(): boolean | undefined {
-  try {
-    return typeof entrySkeletonSwitch === 'function' ? entrySkeletonSwitch() : undefined
-  } catch {
-    return undefined
-  }
-}
-
 /**
  * 取**插件入口条目**（`id: dsh-hob`）的已解配置对象。
  *
@@ -933,74 +892,6 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         shrinkGuard: DEFAULTS.shrinkGuard,
         maxFileBytes: cfg.maxWriteBytes ?? DEFAULTS.maxWriteBytes,
       })
-      // ── ⚠ 触发点：**首次在某工作区干活时铺骨架**（2026-10-16 第 224 轮 · `UD-118`「C」）──
-      //   ⚠ **为什么挂在这里**：本工具是插件**唯一**会在"某个工作区"里干活的动作
-      //     （`rootOf(cfg, exec)` 从**本会话**解析出那个工作区根）⇒ ⚠ 它就是
-      //     "插件为该工作区初始化"这句话的**物理落点**，⛔ 不必另造一个触发器。
-      //   ⚠ **"什么叫首次"** = ⚠ **那个工作区根的 `.hob/` 目录还不存在**
-      //     （⚠ 判据在 `skeleton.ts` 的 `scaffoldSkeletonOnce`：已存在 ⇒ 整目录跳过、
-      //     ⛔ 一个字节都不动）⇒ ⚠ **重复调用是空操作**（幂等靠**盘上的既成事实**，
-      //     ⛔ 不靠这里记"铺过了"）。
-      //   ⚠ ⚠ **⛔ 它不是一个工具**（**约束 ⑥**）：⚠ 本工具的参数表**一个字段都没加**，
-      //     Hob 的工具面**不扩** —— ⚠ 这是**插件的初始化行为**，与"注册模块"同一档。
-      //   ⚠⚠ **只在「真写**且**写成功」时触发**（2026-10-21 · 第 329 轮 · **甲-10** 要求 1）——
-      //     条件 = `args.dryRun !== true` **且** `r.ok`。
-      //     ⚠ **改前只判了 `dryRun`，`r.ok` 一个字没判** —— 于是**写被拒时照样把骨架铺下去**：
-      //       用户想写的文件没写成，`.hob/` 却被建了出来（一次被拒的写入留下了它不该留的东西）。
-      //       ⚠ 而 `:637` 原注释还写着"只在真写时触发" ⇒ **注释与代码方向相反**（TASK 明令要改）。
-      //     ⚠ dryRun 那一半的理由不变：它的语义是"只看会发生什么、⛔ 不落盘"
-      //       ⇒ 在 dryRun 上真去建目录会**违背它自己的承诺**。
-      //   ⚠ ⚠ **不改写写入语义**：⚠ 骨架铺没铺、铺成没铺成，⛔ **都不影响**写入的结果字段 ——
-      //     只在返回值里**新增**一个 `skeletonScaffold` 字段如实回带（⛔ 不掩盖、⛔ 不冒充成功）。
-      /**
-       * ⚠ 类型带上 **`completeness`**（甲-10 要求 2）：`已铺 N / 共 M` 必须**能在
-       *   `write_hob` 的返回里看见**。⚠ 改前这个字段根本不存在 ⇒ 读者只看到
-       *   `written: [a,b,c,d]` 这个**没有分母**的分子，看不出是不是"半套"。
-       */
-      let skeletonNote: {
-        ok: boolean
-        wrote: boolean
-        written: readonly string[]
-        notes: readonly { kind: string; message: string }[]
-        completeness: { total: number; scaffolded: number; skippedExists: number; failed: number }
-      } | undefined
-      /**
-       * ⚠⚠ **触发条件 = 真写 且 写成功**（甲-10）。⛔ 不许只判 `dryRun`。
-       *   ⚠ 为什么不判 `r.ok` 会更糟：`r.ok === false` 的写入（越权 / 白名单外 / 目标不存在）
-       *     **一个字节都没落盘**，而这里却会建 `.hob/` 目录树 ⇒ 用户看到"被拒了但多了个目录"。
-       *   ⚠ `dryRun` 时 `r.ok` 是 `true`（预览成功）⇒ 两个条件都必须有，⛔ 不能只用 `r.ok`。
-       */
-      if (args.dryRun !== true && r.ok === true) {
-        const wsRoot = rootOf(cfg, exec)
-        if (wsRoot === undefined) {
-          // ⚠ 判不出工作区根 ⇒ **如实说**，⛔ 不猜、⛔ 不拿账本区顶上（fail-closed）。
-          skeletonNote = {
-            ok: false, wrote: false, written: [],
-            notes: [{ kind: 'source-missing', message: '首次铺骨架：判不出工作区根 ⇒ ⛔ 未铺任何文件（fail-closed，不猜）。' }],
-            completeness: { total: 0, scaffolded: 0, skippedExists: 0, failed: 0 },
-          }
-        } else {
-          /**
-           * ⚠⚠ **开关值的取法（2026-10-24 修正 · 治"空旋钮"）** ────────────────
-           *   **优先级：入口配置（权威） > 注入的 `deps.skeletonEnabledOf` > 兜底 `true`**。
-           *
-           *   ① `currentEntrySkeletonSwitch()` —— 由 {@link apply} 从**插件入口配置**装上的
-           *      现读器（`configFace.skeletonEnabled(入口 config)`）。**这才是用户那个开关**。
-           *   ② 注入的那个 —— ⚠ 真机它读的是**预设行配置**（`HobToolsConfig`，没有 `skeleton`
-           *      段）⇒ 恒落到兜底 `true`（**这就是空旋钮的成因**）。保留它只为
-           *      **不跑 `apply` 的调用方**（机检 SM-a/SM-b 直接传 `() => true`；语义不变）。
-           *   ③ 两者都没有 ⇒ `true`（与 schema 的 `.default(true)` 一致，理由见 `skeleton.ts`）。
-           *
-           *   ⚠ 为什么这一层不能"只用注入的"：那样关掉开关**永远不生效**（本单必修 3 的病灶）；
-           *   ⚠ 也不能"只读入口配置、丢掉注入"：那会打断机检直接调 `createHobTools` 的既有路径
-           *     （它们没有 ctx，拿不到入口配置）。
-           */
-          const authoritative = currentEntrySkeletonSwitch()
-          const injected = deps.skeletonEnabledOf?.()
-          const enabled = authoritative ?? injected ?? true
-          skeletonNote = scaffoldSkeletonForWorkspace(wsRoot, enabled)
-        }
-      }
       // ── 记账 + 投递：交给了交接文件（2026-10-10 新增；第 44 轮扩展为"写入即投递"）──
       //   ⚠ 为什么在这一层：落盘层（hob-write）刻意不碰运行态；本层有账本根。
       //   ⚠ 为什么必须记：`watches` 只在**投递成功之后**登记 ⇒ 不记这一条，
@@ -1096,10 +987,6 @@ export function apply(ctx: any): void {
    *   ⚠ 预设行那份传参因此**不再影响行为**（它读的是预设行配置，天生读不到本开关）；
    *     C 席应把它删掉或改成从门禁读（见交付报告「需转派」清单）。
    */
-  const entryConfig = pluginEntryConfigOf(ctx)
-  if (entryConfig !== undefined) {
-    setEntrySkeletonSwitch(() => configFace.skeletonEnabled(entryConfig))
-  }
 
   /**
    * ── ⚠ `inject = ['tools']` 的**真实使用点**（2026-10-24 · 本单必修 6）────────
@@ -1131,12 +1018,6 @@ export function apply(ctx: any): void {
        *   （那正是 {@link visibleToolsFor} 要处理的那一侧）。
        */
       toolNames: GATE_OWNED_TOOL_NAMES,
-      /**
-       * ⚠ 门禁**顺带**回带"铺骨架开关此刻的值"（只读、现解 ref）。
-       *   消费方（将来的预设行 / 诊断）可以从门禁拿到**同一份权威**，
-       *   ⛔ 不必再去读预设行配置里那个不存在的键（那正是空旋钮的成因）。
-       */
-      skeletonEnabledOf: () => currentEntrySkeletonSwitch(),
     })
   } else {
     ctx.logger?.warn?.(
