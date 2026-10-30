@@ -1,0 +1,24 @@
+{
+  "note": "⚠ M-1b 的「先自证」标记登记表（2026-10-30 P7）。⚠ 只准升不准降。⚠ 目标「每族 ≥ 1」本轮未达标 —— 缺口见 TASK-P7 报告「待决问题」。",
+  "floor": {
+    "check:client": 1,
+    "check:config": 1,
+    "check:exec-progress": 0,
+    "check:experience": 1,
+    "check:gitignore": 9,
+    "check:hob-create": 0,
+    "check:hob-create-dom": 0,
+    "check:hob-gate": 0,
+    "check:ledger-next": 4,
+    "check:meta-negctl": 11,
+    "check:modules": 1,
+    "check:orch": 0,
+    "check:policy": 0,
+    "check:presets": 0,
+    "check:redeliver": 0,
+    "check:stages-dom": 0,
+    "check:stages-route": 2,
+    "check:tasks-progress": 0
+  },
+  "totalFloor": 30
+}

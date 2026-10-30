@@ -1,0 +1,33 @@
+{
+  "note": "⚠ 每族**负向对拍**标签数的**下限**（2026-10-30 P6 · M-1）。⚠ 只准升不准降。⚠ 口径见 scripts/check-meta-negctl.mjs 头注释：只数 ok()/bad() 第一个字符串字面量里含「负向对拍」的，沿 import 闭包累加。",
+  "floor": {
+    "check:all": 0,
+    "check:archive": 0,
+    "check:build": 0,
+    "check:client": 0,
+    "check:config": 3,
+    "check:exec-progress": 11,
+    "check:experience": 0,
+    "check:gitignore": 4,
+    "check:hob-create": 6,
+    "check:hob-create-dom": 1,
+    "check:hob-gate": 6,
+    "check:host": 0,
+    "check:ledger-next": 17,
+    "check:meta-negctl": 3,
+    "check:modules": 0,
+    "check:orch": 163,
+    "check:policy": 5,
+    "check:preflight": 0,
+    "check:presets": 1,
+    "check:profile": 0,
+    "check:readings": 0,
+    "check:redeliver": 3,
+    "check:rounds": 0,
+    "check:selfwake": 0,
+    "check:stages-dom": 28,
+    "check:stages-route": 3,
+    "check:tasks-progress": 1,
+    "check:tasks-route-http": 0
+  }
+}

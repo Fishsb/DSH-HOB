@@ -1,0 +1,122 @@
+{
+  "note": "⚠ §4.1「收尾必跑」生成块的**唯一手写源**（2026-10-30 P7）。⚠ 族清单本身派生自 package.json：生成器逐族核对，**少一族 / 多一族 / 次序不符都当场抛错**（这接替了旧断言 V 的保护）。⚠ 本文件只提供「守什么」那一列的人类文字。",
+  "self": [
+    "check:all",
+    "check:preflight"
+  ],
+  "selfNote": "⚠ `self` 里的两族**不进本块**（`check:all` 是调度器、`check:preflight` 是体检，二者与 V 组的 `SELF` 同口径），但生成器仍要求它们**出现在 `package.json` 里**。",
+  "rows": [
+    {
+      "cmd": "build",
+      "what": "**两个半边都重建**（⚠ **清理类改动尤其必跑**）"
+    },
+    {
+      "cmd": "typecheck",
+      "what": "类型（host + client 各有 tsconfig）"
+    },
+    {
+      "cmd": "check:presets",
+      "what": "契约逐字一致 + 工具面声明与白名单（**按档位**）+ **职责边界 ⑤k**"
+    },
+    {
+      "cmd": "check:config",
+      "what": "配置面三处不漂移 + volatile 形状"
+    },
+    {
+      "cmd": "check:orch",
+      "what": "编排运行态 + **待投递** + 结构改造 ①② 行为 + **账本可达性四档（I 组）** + ⭐ **预设读数单点（J 组）** + **`SG` 组**（叫醒面记账 · 登记带 owner · 台账键空间同源，各带负向对拍）"
+    },
+    {
+      "cmd": "check:redeliver",
+      "what": "**补投**：收件人**只由那张卡自己的 `createdBy.sessionId`** 判；**判不出就不补**；去重键 **`(执行 id, 收件人)`**；含渲染面"
+    },
+    {
+      "cmd": "check:client",
+      "what": "client 半边取用宿主服务"
+    },
+    {
+      "cmd": "check:gitignore",
+      "what": "**薄调度入口** —— 仓库规则 + **正本形态多组**（含 **`N` 正本→模板**、**`V` `package.json`→正本**）+ 双向自检 + **脚本须进 `mustTrack`** + **骨架活规矩层引用闭合** + **可分发层「开箱即错」族** + **Q 组** + **R 组**"
+    },
+    {
+      "cmd": "check:archive",
+      "what": "**归档一致性**：归档件 ↔ **源修订逐字节** + **目录成员齐备**（⚠ **读数是时点量**）"
+    },
+    {
+      "cmd": "check:experience",
+      "what": "经验库编号 / 四要素 + **索引两向完整**"
+    },
+    {
+      "cmd": "check:host",
+      "what": "**host 半边真产物探针**（**退出码三档**；⚠ 它同时判\"src ↔ lib 是否同步\"，故须在 `build` 之后跑）"
+    },
+    {
+      "cmd": "check:modules",
+      "what": "**模块启停与 inject 语义探针**（**退出码三档**）"
+    },
+    {
+      "cmd": "check:profile",
+      "what": "**宿主 profile 装配面四条**（声明 / 依赖 / 解析 / 可修）+ `--self-check` 9 条 · `--fix`（⚠ **会写盘、先备份、之后必须重启**）"
+    },
+    {
+      "cmd": "check:selfwake",
+      "what": "**端到端行为探针**：真卡数据 + 已出货产物（⚠ **缺看板卡库 ⇒ 未执行 exit 2 是预期**）"
+    },
+    {
+      "cmd": "check:rounds",
+      "what": "**轮次标识「只增不减 · 且每个标识都有记录件」** + **落点号须真实存在** + **更正件须挂回被更正轮 · 野文件须 FAIL**"
+    },
+    {
+      "cmd": "check:readings",
+      "what": "**报告里的读数可指认**（含读数命令的代码块必须贴输出 / 内联给结果 / 或显式声明为什么没有）"
+    },
+    {
+      "cmd": "check:policy",
+      "what": "**逐会话策略权威**（`REQ-04`）：两会话不同档**互不串**（改一个不影响另一个）· 重载后仍各按自己的档 · **旧会话读档一律最低 + 工作方式承接迁移时生效值** · 新会话未选 ⇒ 最低档 · **无身份 / 记录坏 / 版本不认识 ⇒ 绝不退宽档** · 四个读工具 **`execute` 内兜底**（含无 agent 路径）· 三档**不增**写/命令/组队 ‖ 含程序内负向对拍（旧全局实现下 SP-1/SP-3 必须不成立）⚠ **真机重启未验**"
+    },
+    {
+      "cmd": "check:hob-create",
+      "what": "**新建 Hob 创建链**（`REQ-04`）：一次性票据（**强随机·无强随机即拒签**）· **显式 workspaceId 入票据且服务端核已登记**（⛔ 不取注册表第一项、⛔ 不省归属）· 建空白 → 写两值 → **回读确认** · **最坏格持久隔离**（`quarantined` 随记录落盘，重载后读档最低 + 不推进）· **隔离失败 ⇒ `unsafe`** · 不碰 `conversation.hero.agentPreset` 的 single 槽 ‖ 含负向对拍"
+    },
+    {
+      "cmd": "check:hob-create-dom",
+      "what": "**创建 UI 的\"真 DOM\"行为**（jsdom **真挂载**，⛔ 源码正则）：入口可点 / 不自动弹窗 / 三组控件 / **三档都呈现、后两项灰 + 标「暂未开放」、账本权限可选** / 推进三档仍在 / 选项由服务枚举驱动 / 未选或枚举缺失 ⇒ 提交禁用 / **取消 ⇒ 零 create** / 不露字面标记与内部值 / 「完全权限」四段边界句 / **可选面放宽也建不出宽档**（端到端）‖ ⚠ 真实宿主渲染未验"
+    },
+    {
+      "cmd": "check:hob-gate",
+      "what": "**未选档位检测 + 自动弹窗 + 已有会话写入面**（第 4 轮 · jsdom 真挂载）：三态（已选/未选/**判不出**）下**弹窗行为各异**（不弹/弹/**不弹**）· `openForSession` **零 create / 零 issue**（正反双向：新建模式仍 issue→create）· 路由**只回 `state`**（⛔ 不泄档位）· 非 Hob 不挡 · 取消零写入 ⚠ 真机渲染未验"
+    },
+    {
+      "cmd": "check:stages-dom",
+      "what": "**「任务进度」五步面板的位置判据**（jsdom **真挂载**）：入口 = 侧边栏 guide 排胶囊（断言 `id` / `order` / 标题「任务进度」）· 图例只列五步名**不写状态词**（量 `[data-dsh-hob=stages-legend]` 容器）· 三态渲染（有数据 / **表里是空的** / **判不出+原因**）· `sessionId` 真的送进取数函数 · `'5'`（在做验收）与 `'done'`（已验收通过）**两态不合并** · 四条负向对拍（改步骤名 / 改 guide order / 改空态文案 / 把「未接线」加回图例）"
+    },
+    {
+      "cmd": "check:tasks-progress",
+      "what": "**五步进度表的服务端行为判据**（真解析器 + 真夹具账本）：正常两行原样返回 · 表在零行 ⇒ `ok:true` 且 `rows:[]`（**空表 ≠ 判不出**）· 三类失败 reason **互不相同**（`ledger-unreadable` / `table-missing` / `row-shape-unknown`）· 行序与不去重 · `step` **八值**封闭集且判不出不许塞成 `'1'` · **越界步号必须报错**（⛔ 不兜底 unknown）· 一条负向对拍（改 `STEP_BY_NUMBER` 的第 5 步 ⇒ 必红）"
+    },
+    {
+      "cmd": "check:tasks-route-http",
+      "what": "**按需档**（⛔ **不在必跑套件里**：要**活宿主 + launch token**，CI 跑不了 ⇒ 与 `check:all` 的 `SELF` 同族，不进族数）：带会话 id 的 `POST` 打到本插件的进度路由 ⇒ **200 + 我们的 JSON**；同路径 `GET` ⇒ **404 + 纯文本 `not found`**（宿主「错门回 404 而非 405」的边界）· 不存在的 sessionId ⇒ `ok:false` 且 reason **恰好** `ledger-unreadable`。退出码三档：`0` 两条都对 / `1` 有对象但不符合 / `2` **noObject**（⛔ 不算通过）"
+    },
+    {
+      "cmd": "check:exec-progress",
+      "what": "**执行态（第 4 步子项）的服务端**行为判据（真处理体 + 真夹具）：三类 reason **互不相同**（`ledger-unreadable` / `state-missing` / `row-shape-unknown`）· **九态封闭集**（脏输入落点只可能在九态内）· **`elapsedMs` 判不出 ⇒ 缺字段**（⛔ 不许变 0，负向对拍钉住）· 空表 ≠ 判不出 · 单条形态不认识不许静默丢 · 路径与九态措辞**单一真源**"
+    },
+    {
+      "cmd": "check:build",
+      "what": "**`lib/` 跟不跟得上 `src/` 与骨架件**（⚠ **单跑只报不拦**：面 ①②③ 全走报警模，退出码 `0`=已执行 · `2`=基准缺失，⛔ **单跑不设 `1`** ⇒ **单跑全绿 ≠ `lib/` 跟得上 HEAD**）· ⚠ ⚠ **聚合入口 `check:all` 只再传 `--strict-source`**（`scripts/check-all.mjs:100`）⇒ **总跑时面 ①② 落后 ⇒ `exit 1`**（`scripts/check-build-sync.mjs:1421`）；⛔ **聚合入口不传面 ③ 的判据模开关** ⇒ **面 ③ 在 `check:all` 里仍然只报警**，要它长牙须**手工**单独跑那面（`scripts/check-build-sync.mjs:1422/1428`）· ⚠ **实例未重启期间面 ③ 恒红是预期的**（这正是它不进总门的原因）"
+    },
+    {
+      "cmd": "check:meta-negctl",
+      "what": "**元规则**：每条判据必须自带一条**负向对拍**。只数 `ok()`/`bad()` 字面量里含「负向对拍」的标签（沿 import 闭包累加），与 `scripts/meta-negative-floor.json` 的**每族下限**比 ⇒ **低于下限即红**（⛔ 只准升不准降）。⚠ 自带一条**自指**负向对拍（清空某族对拍标签 ⇒ 必红）。⚠ 它只证「条数不低于下限」，**不证「每条对拍真的会红」**"
+    },
+    {
+      "cmd": "check:stages-route",
+      "what": "**五步汇总路由**（新数据源 = `ledger-next/units/index.toml`）**服务端行为**判据（真处理体 + 真夹具）：三类 reason **互不相同**（`index-unreadable` / `index-malformed` / `row-shape-unknown`）· 五步顺序与名字逐字 · **`cap` 不进分母** · 空步给 `todo`（≠ 判不出）· 三态算对 · items 顺序原样不去重 · `lastReading` 缺 ⇒ 「判不出」· 负向对拍（cap 混进分母必红）· **与 `gen/stages.md` 交叉验证**（两套独立解析器）"
+    },
+    {
+      "cmd": "check:ledger-next",
+      "what": "**`ledger-next/` 的三条不变式**：I1 索引合法（id 唯一 · 前缀配 kind · 封闭状态集 · parent 与 after 存在 · **无环** · 状态只在一处 · **按 kind 必填**）· I2 **阶段是算出来的**（改 status ⇒ 只有对应那步变）· I5 **`gen/` 与生成器逐字节一致**（手改即红）· I4 顺带（`cap` 无终态、无百分比、不进分母）。⚠ 三条各带一条**实测跑红**的负向对拍。"
+    }
+  ]
+}
