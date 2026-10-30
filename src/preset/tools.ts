@@ -164,7 +164,7 @@ function makeDiag(config: Config): (msg: string) => void {
  * 为什么**屏蔽**与**收敛**都要放在门禁**外面**：它们是这个预设的**权限边界**与
  * **收敛措施**，不是"本插件工具模块"的附属物。即使 `modules.tools` 关掉
  * （门禁不在、不注册工具），助手会话也不该
- *   ① 突然多出 4 个 `interconnect_*` 工具（屏蔽）；
+ *   ① 突然多出 4 个 `interconnect_*` 工具（第三方插件 `dsh-interconnect` 的，屏蔽）；
  *   ② 突然拿到未被白名单放行的全部继承工具、且能直接执行任务看板/圆桌类工具（收敛）。
  *
  * ⚠ **F1 修正的行为倒挂**（阶段 E3 实测暴露）：这两处原先挂在 `ctx.inject([GATE_SERVICE])`
@@ -772,7 +772,7 @@ export function apply(ctx: any, config: Config = {}): void {
 /**
  * 屏蔽**继承来的**越界工具（{@link DEFAULT_DENY} + 配置追加）。
  *
- * ⚠ 为什么需要：`dsh-interconnect` 的四个工具是它自己的 bundle patch 作为
+ * ⚠ 为什么需要：`dsh-interconnect`（**第三方插件**，与本项目已退场的自研跨实例投递无关）的四个工具是它自己的 bundle patch 作为
  *   **宿主平面行**声明的，会被**每个 agent 继承** —— 只靠"预设不挂它"**摘不掉**
  *   （实测：不摘时助手会多出 4 个）。收敛要靠**允许清单**思维（§6.3）。
  */
@@ -835,11 +835,12 @@ function denyInheritedTools(ctx: any, log: (m: string) => void, defaultDeny: rea
  *   · **既有 11 个** = 本插件 2（`read_contracts` / `write_hob`）
  *                    + 检索 5 + 定时 4（`schedule_*`）                          = 11
  *   · **批 9 新增 5 个** = `taskboard_list` / `taskboard_get` / `taskboard_comments`
- *                        + `roundtable_status` + `web_fetch`                    = 16
+ *                        + `roundtable_status`[P15 已删] + `web_fetch`              = 16
  *   · **批 11 / 13 新增 3 个** = `ask_user_question` + `skill` + `present`     = 19
  *   · **批 14 新增 2 个** = `hob_sessions` / `hob_send`                         = 21
  *   · **批 16 新增 2 个** = `hob_workspaces` / `hob_spawn`                      = 23
- *   · **批 17 新增 3 个** = `hob_dispatch` / `hob_orch_status` / `hob_orch_control` = **26**。
+ *   · **批 17 新增 3 个** = `hob_dispatch` / `hob_orch_status` / `hob_orch_control` = **26**
+ *   · **P15 删除 1 个** = `roundtable_status`（本机无提供方，调用即 `unknown tool`） = **25**。
  *
  * ⚠⚠ **订正说明（2026-10-21 · 第 337 轮 · 丙-7）**：本条原写作一串从 11 加到 **30** 的加法链，
  *   并声称「批 9 新增 **9** = 20 … 批 16 新增 **2 = 27** … 批 17 新增 **3 = 30**」。
@@ -929,7 +930,7 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
    *     两种定性修法相反，本批按实测的那一种做：**删名字**。
    *
    * ── 代价（如实）─────────────────────────────────────────────────────
-   *   ⚠ 名数按实测：`ledger` 22 · `project` 23 · `workspace` 26（**以 `check:presets` 的判定为准**）。
+   *   ⚠ 名数按实测（**P15 删 `roundtable_status` 后**）：`ledger` **21** · `project` **22** · `workspace` **25**（**以 `check:presets` 的判定为准**）。
    *   ⚠ 受影响的断言（本批已全部跑过）：`P-1`（名数口径）、`⑤h`、`⑤m-3b`、`⑦`、`⑧`。
    *   ⚠ **能力面没有缩水** —— 那几个工具**本来就用不了**；删掉的只是"看起来能用"的假象。
    */
@@ -937,7 +938,11 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
   'taskboard_list',
   'taskboard_get',
   'taskboard_comments',
-  'roundtable_status',
+  // ⚠⚠ **2026-10-30 P15：`roundtable_status` 已删** —— 它在本机**没有提供方**
+  //   （`dsh-plugin-roundtable` 包在磁盘上，但**不在 profile 的 bundles / dependencies 里**
+  //   ⇒ 宿主不加载它 ⇒ 该名字在模型面里根本不存在，调用即 `unknown tool`）。
+  //   ⚠ 这正是 `Q8` 咬过的"白名单比实际能力宽"那类。⚠ 本轮顺手核过"有没有别的同类"：
+  //   **只剩它一个**（其余 21 名要么是宿主 100 名里真实存在的，要么是本插件自注册的）。
   // ── 批 9 / S2：打开网页取正文 1 个（需 `tool-web` 指名增行）─────────
   'web_fetch',
   // ── 批 21 / 权限收缩（**2026-10-14 · 用户裁定**）：~~批 9 / S3 只读看工作区文件 4 个~~ ──
@@ -1060,6 +1065,103 @@ export const PERMISSION_TIERS: Readonly<Record<'ledger' | 'project' | 'workspace
     'hob_grep',
     'hob_read_image',
   ],
+}
+
+/**
+ * **档位只管「可读范围」的那批名字**（2026-10-30 P14 · 用户裁定）。
+ *
+ * ── 用户原话（⛔ 不许改语义）────────────────────────────────────────
+ *   「把当前项目自己的工具和其他工具做区分，**档位以及工作推进方式权限控制都是通过当前项目的
+ *     工具去控制的不影响其他工具**」
+ *   「**档位一直都只是控制 HOB 预设的可读操作权限啊**」
+ *
+ * ── 结论（这条常量就是那句话的机械形态）────────────────────────────
+ *   `PERMISSION_TIERS` 从今往后**只**描述"这一档能读到哪里"：
+ *     · `hob_read_doc`（项目内 `.md`）—— 档 2 起；
+ *     · `hob_glob` / `hob_grep` / `hob_read_image`（目录/文本/图片）—— 档 3 才有。
+ *   ⚠ 其余工具（编排七件、台账两件、检索、网络、`ask_user_question`…）**与档位无关**：
+ *     它们的可达性由 deny 清单决定，⛔ 不再由档位开关。
+ *
+ * ── 为什么单列这张表而不是"档3 − 档1"───────────────────────────────
+ *   "档3 − 档1" 在**将来**某档多加一个非读名字时会**静默把那个名字也算成读范围**
+ *   （于是被判成"低档看不见"）。⇒ 读范围必须**指名**，⛔ 不许派生。
+ *   机检 ⑤n-1 拿它与"档3 − 档1"做**双向点验**，两边一旦漂开就红。
+ */
+export const READ_SCOPED_TOOLS: readonly string[] = [
+  'hob_read_doc',
+  'hob_glob',
+  'hob_grep',
+  'hob_read_image',
+]
+
+/**
+ * 一个工具名在**某一档**的模型面判决（**纯函数**，⛔ 不读任何全局状态）。
+ *
+ * ── 判决顺序（顺序本身是语义的一部分）────────────────────────────────
+ *   ① 保留传输名 `run_code` ⇒ 留（滤掉它助手会彻底失去能力）；
+ *   ② 在 deny 清单里 ⇒ **摘**（这是**唯一**的能力边界）；
+ *   ③ 是**读范围**名字 ⇒ 看这一档有没有它（档位只管这一件）；
+ *   ④ 其余 ⇒ **留**（默认放开），并标注"是否见过"。
+ *
+ * ── ⭐ 第 ④ 条的 `unseen` 就是"没见过的工具不静默放行"────────────────
+ *   ⚠ 语义取**主流 `ask` 去掉交互形态**：**照常放行**（用户要的"新装插件自动可用"），
+ *     但**必须留下一条待确认记录**并让它**可见**（调用方 `degrade('unseen-tool', …)` 一次一名）。
+ *   ⛔ 不静默 = 有记录 + 报告里说出来；⛔ 不是"拦下来"（那就退回白名单了）。
+ *
+ * @param name - 工具名
+ * @param level - 当前会话档位（`ledger` / `project` / `workspace`）
+ * @param deny - deny 清单（与 `src/modules/tools.ts` 的 `DEFAULT_DENY` 同一份，由调用方传入）
+ * @param known - 认识的名字（{@link MODEL_TOOL_ALLOWLIST} ∪ deny 清单；⚠ 其余一律算"没见过"）
+ * @returns `{ keep, unseen, why }`；`why` 只用于日志/报告，⛔ 不参与判定
+ */
+export function decideToolFace(
+  name: string,
+  level: string,
+  deny: readonly string[],
+  known: readonly string[],
+): { keep: boolean; unseen: boolean; why: string } {
+  if (name === RESERVED_TRANSPORT_TOOL) return { keep: true, unseen: false, why: 'reserved-transport' }
+  if (deny.includes(name)) return { keep: false, unseen: false, why: 'deny' }
+  const tier = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
+  if (READ_SCOPED_TOOLS.includes(name)) {
+    return tier.includes(name)
+      ? { keep: true, unseen: false, why: 'read-scope:in-tier' }
+      : { keep: false, unseen: false, why: 'read-scope:out-of-tier' }
+  }
+  return { keep: true, unseen: !known.includes(name), why: 'default-open' }
+}
+
+/**
+ * "见过"的名字 = 白名单 ∪ deny 清单 —— 判"没见过"用的**唯一**口径。
+ *
+ * ⚠⚠ **必须是函数、⛔ 不许做成模块顶层常量**：`toolsFace` 是命名空间导入，
+ *   在**本模块求值的那一刻** `DEFAULT_DENY` 可能还没就绪（实测：顶层算出来是 **0 名**，
+ *   于是 `bash` 之类会被误判成"没见过"）。⇒ 每次现读（O(1) 级别，调用点在装配/执行热路径上也不心疼）。
+ */
+function knownToolNames(): readonly string[] { return [...MODEL_TOOL_ALLOWLIST, ...DEFAULT_DENY_OF()] }
+
+/** deny 清单（⚠ 唯一来源 = `src/modules/tools.ts`，⛔ 不在这里抄第二份）。 */
+function DEFAULT_DENY_OF(): readonly string[] {
+  return ((toolsFace as unknown as Record<string, unknown>).DEFAULT_DENY as readonly string[] | undefined) ?? []
+}
+
+/** ⚠ 仅供机检读取"当前进程看到的 deny 清单"（⛔ 产品路径不用它判任何事）。 */
+export function __denyOf(): readonly string[] { return DEFAULT_DENY_OF() }
+
+/** 已报过的"没见过"名字（⚠ 每名只报一次，⛔ 不刷屏）。 */
+const UNSEEN_SEEN = new Set<string>()
+
+/** 装配期/执行期共用的"没见过"记录落点（⚠ 模块层只留一份，⛔ 两处各写一遍）。 */
+function reportUnseen(names: readonly string[]): void {
+  const fresh = names.filter((n) => !UNSEEN_SEEN.has(n))
+  if (fresh.length === 0) return
+  for (const n of fresh) UNSEEN_SEEN.add(n)
+  DEGRADED_CAPABILITIES.push({ key: 'unseen-tool',
+    why: `模型面里出现了 ${fresh.length} 个**没见过的工具**（不在白名单、也不在 deny 清单）：`
+    + fresh.map((n) => `"${n}"`).join(' / ')
+    + ' ⇒ ⚠ **已按"默认放开"放行**（用户裁定：新装插件自动可用），'
+    + ' ⛔ 但这不是"我确认过它安全" —— 是**待确认**。'
+    + ' ↳ 处置：属命令/写/组队/改共享状态类 ⇒ 加进 `DEFAULT_DENY`；确认放行 ⇒ 加进 `MODEL_TOOL_ALLOWLIST`。' })
 }
 
 /**
@@ -1364,9 +1466,37 @@ function filterModelToolList(
       const all: any[] = Array.isArray(assembled?.tools) ? assembled.tools : []
       // ⚠ 现读档位发生在**这一步**（每次装配）—— 这是"改档位不必重启"的落点。
       const subject = context?.agent ?? context?.scope
-      const allow = allowFor(subject)
-      const kept = all.filter((t) => allow.has(t?.name) || t?.name === RESERVED_TRANSPORT_TOOL)
-      if (kept.length !== all.length) log(`装配期白名单（档=${levelOf(subject)}）：模型面工具 ${all.length} ⇒ ${kept.length}`)
+      const level = levelOf(subject)
+      /**
+       * ⚠⚠ **2026-10-30 P14：白名单 ⇒ 默认放开 + deny 清单 + 读范围。**
+       *   用户裁定：**档位只管可读范围**，工具面与档位无关；工具面**默认放开**（新装插件自动可用），
+       *   靠 `DEFAULT_DENY` 那张 deny 清单收。
+       *   ⭐ 而"**没见过的工具**"**不静默放行** —— 照常放行，但逐名留一条待确认记录（见 {@link decideToolFace}）。
+       */
+      const kept: any[] = []
+      const unseen: string[] = []
+      const dropped: string[] = []
+      for (const t of all) {
+        const name = String(t?.name ?? '')
+        const v = decideToolFace(name, level, DEFAULT_DENY_OF(), knownToolNames())
+        /**
+         * ⚠⚠ **第三道：门禁缺席时，门禁拥有的那批名字要从模型面摘掉**（2026-10-30 P14 保持原行为）。
+         *   理由与"档位"无关 —— 那是**注册面**的事：`modules.tools:false` ⇒ 那批工具**根本没注册**，
+         *   留在清单里就是"看得见、点一下 `unknown tool`"。
+         *   ⚠ 判据仍走**同一个收口点** `visibleNamesFor`（⛔ 不在这里另判 `gateState`）。
+         */
+        const gateOk = v.keep && visibleNamesFor([name]).length > 0
+        if (gateOk) {
+          kept.push(t)
+          if (v.unseen) unseen.push(name)
+        } else dropped.push(name)
+      }
+      if (unseen.length > 0) reportUnseen(unseen)
+      if (kept.length !== all.length || unseen.length > 0) {
+        log(`装配期工具面（档=${level}）：模型面 ${all.length} ⇒ ${kept.length}`
+          + `（摘掉 ${dropped.length}：${dropped.join(', ') || '无'}）`
+          + `（没见过而放行 ${unseen.length}：${unseen.join(', ') || '无'}）`)
+      }
       return { ...assembled, tools: kept }
     }
     // ⚠ 监听器必须挂在 **ctx** 上，不能挂在服务实例上：`SystemPrompt` 是 cordis `Service`
@@ -1441,12 +1571,23 @@ function enforceToolAllowlist(
     //   任何异常都会让**这次工具调用**失败（含白名单里的）。宁可放行。
     try {
       const name = exec?.name
-      // ① 认识的、且在**当前档位**的名单里 ⇒ 放行（门槛 4：不阻断白名单内的名字）。
       if (typeof name !== 'string') return await next()
       // ⚠ 2026-10-22：判定主体 = `exec.agent`（宿主每条工具调用都带，见
-      //   `dsh-agent-loop/lib/index.js:509-518`）。⚠ **没有 agent ⇒ 最低档**（fail-closed）。
+      //   `dsh-agent-loop/lib/index.js:509-518`）。⚠ **没有 agent ⇒ 最低档**。
       const subject = exec?.agent
-      if (allowFor(subject).has(name)) return await next()
+      const level = levelOf(subject)
+      /**
+       * ⚠⚠ **2026-10-30 P14：执行期与装配期用同一个纯函数判决**（{@link decideToolFace}）。
+       *   改前是"在白名单里 ⇒ 放行，否则 deny"，改后是"在 deny 清单里 ⇒ 拒；读范围外 ⇒ 拒；
+       *   其余 ⇒ 放行"。两处**必须同源**，否则会出现"看不见却调得动"（旧批的反面）。
+       */
+      const v = decideToolFace(name, level, DEFAULT_DENY_OF(), knownToolNames())
+      if (v.keep) {
+        // ⚠ 与装配期同一道门：门禁缺席 ⇒ 门禁拥有的名字不可调用（否则就是"清单外放行"）。
+        if (visibleNamesFor([name]).length === 0) return { kind: 'deny', reason: `"${name}" is unavailable: the tools gate is off in this session.`, info: { name: 'ToolDeniedError', code: 'TOOL_NOT_ALLOWED' } }
+        if (v.unseen) reportUnseen([name])
+        return await next()
+      }
       // ② 保留传输名（ptc 的 `run_code`）⇒ 放行：滤掉它会让助手彻底失去能力。
       if (name === RESERVED_TRANSPORT_TOOL) return await next()
       // ③ 嵌套子派发（`exec.parent` 存在）⇒ 放行：那是 `run_code` 内部调用，

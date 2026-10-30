@@ -4,7 +4,7 @@
  *
  * 为什么需要它：正文有两份载体 ——
  *   · 机器读版 = 预设 patch 的 `prefix: |-` 块（宿主真正加载的那份）
- *   · 人读版   = `.hob/drafts/preset-contracts.md`（用户过目、将来改动的地方）
+ *   · 人读版   = `kit/drafts/preset-contracts.md`（用户过目、将来改动的地方）
  * 两份手工同步必然漂移（"守卫写两遍必然漂移"的同类）。本脚本把漂移变成 FAIL。
  *
  * ── 检查项 ──────────────────────────────────────────────────────────────
@@ -86,14 +86,14 @@
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
  * ⚠ 零第三方依赖（本仓纪律）：YAML 只做**行级**解析，不引 js-yaml。
  */
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const HO = join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')
-const DRAFT = join(root, '.hob', 'drafts', 'preset-contracts.md')
+const DRAFT = join(root, 'kit', 'drafts', 'preset-contracts.md')
 /** 权限三档表的落点（⑤m 组的唯一来源）。 */
 const TOOLS_TS = join(root, 'src', 'preset', 'tools.ts')
 /**
@@ -315,8 +315,8 @@ const STALE_APPELLATIONS = [
 {
   for (const [label, src] of [[NAME_HO, hoSrc]]) {
     const body = literalBlock(src, 'prefix') ?? ''
-    const has = /^## Language$/m.test(body) && /language the user is currently using/.test(body)
-    if (!has) bad(`④ ${label} 正文缺语言规则（应有 '## Language' + 'language the user is currently using'）`)
+    const has = /^#{2,3} Language$/m.test(body) && /language the user is currently using/.test(body)
+    if (!has) bad(`④ ${label} 正文缺语言规则（应有 '### Language' + 'language the user is currently using'）`)
     else ok(`④ ${label} 正文含语言规则`)
   }
 }
@@ -346,6 +346,51 @@ const STALE_APPELLATIONS = [
       }
       if (a.length !== b.length) bad(`     行数不同：预设 ${a.length} 行，人读 ${b.length} 行`)
     } else ok(`⑤ ${NAME_HO}：人读版引文块 == 预设正文（全文逐字）`)
+  }
+
+  /**
+   * ── ⑤v **五步段的位置断言**（2026-10-29 第 12 轮 · 用户裁定 A）──────────────
+   *
+   * ── 为什么必须有它（⑤ 的盲区）────────────────────────────────────────────
+   *   ⑤ 是**全文逐字相等**：把整段 `### The five steps` **挪到文件任何地方**，
+   *   两份一起挪 ⇒ ⑤ **照样 PASS**。⇒ 位置本身**没有任何判据**。
+   *   （本轮之前这条位置是我用 `grep -n` 人工核的，那不是判据。）
+   *
+   * ── 断言什么（两条载体各查一次）──────────────────────────────────────────
+   *   在**B 段正文**里，`### The five steps` 必须同时满足：
+   *     ① 出现在 `### Your duty boundary` **之后**；
+   *     ② 出现在 `## Taking input` **之前**；
+   *     ③ 三者都存在，且顺序严格 `duty boundary < five steps < Taking input`。
+   *   ⚠ 用 `indexOf` 判"位置"而不是"行号差"：行号会随别处插入而漂，而**相对顺序**不漂。
+   *   ⚠ 两份载体都查：`hoBody`（预设正文）与 `d0`（人读镜像块）。**任一不满足即 FAIL**。
+   */
+  {
+    const FIVE = '### The five steps'
+    const DUTY = '### Your duty boundary'
+    const INPUT = '## Taking input'
+    /** @returns 问题清单（空 = 通过） */
+    const positionProblems = (label, text) => {
+      const out = []
+      const atFive = text.indexOf(FIVE)
+      const atDuty = text.indexOf(DUTY)
+      const atInput = text.indexOf(INPUT)
+      if (atFive < 0) out.push(`${label}：找不到 \`${FIVE}\``)
+      if (atDuty < 0) out.push(`${label}：找不到 \`${DUTY}\``)
+      if (atInput < 0) out.push(`${label}：找不到 \`${INPUT}\``)
+      if (out.length > 0) return out
+      if (!(atDuty < atFive)) out.push(`${label}：\`${FIVE}\` **不在** \`${DUTY}\` 之后（duty=${atDuty} · five=${atFive}）`)
+      if (!(atFive < atInput)) out.push(`${label}：\`${FIVE}\` **不在** \`${INPUT}\` 之前（five=${atFive} · input=${atInput}）`)
+      return out
+    }
+    const problems = [
+      ...positionProblems('预设正文（prefix 块）', hoBody),
+      ...(d0 === undefined ? ['人读镜像块：不存在，无法核位置'] : positionProblems('人读镜像块', d0)),
+    ]
+    if (problems.length === 0) {
+      ok('⑤v ✓ 五步段位置两份都对：`### Your duty boundary` < `### The five steps` < `## Taking input`')
+    } else {
+      for (const p of problems) bad(`⑤v · ${p}`)
+    }
   }
 }
 
@@ -599,6 +644,168 @@ const STALE_APPELLATIONS = [
     }
   }
 
+  // ④i **2026-10-25 新增：`UD-152` 契约条文的**存在性**断言**（⛔ 不是"两份一致"）──
+  //
+  // ── 为什么必须单独一条（本单 §一-1(a) 点名的那处同型漏洞）────────────────
+  //   ⑤ 的判据是"人读版引文块 == 预设正文（全文逐字）"。⚠ 它有一个**结构性盲区**：
+  //   **两份一起删掉同一条，它照样 PASS** —— 因为"相等"这个关系在"两边都没有"时也成立。
+  //   ⚠ 实测（本单 REPORT §1 有原文）：把 `这轮做了什么` 那一条从两份里**同时**删掉，
+  //     `hoBody.trimEnd() === d0.trimEnd()` 仍然为 `true` ⇒ ⑤ 绿。
+  //   ⇒ `UD-152` 落进正文的那三条硬规矩（不再问已表态的 / 当轮落账 / 待决写"已认领"）
+  //     **此前零存在性断言**：两份一起删，全族全绿。
+  //
+  // ── 本条与 ⑤ 的分工（⚠ 两条都要，⛔ 不许拿一条替另一条）──────────────
+  //   · ⑤ ：**两份一致**（防"改一边漏一边"）
+  //   · ④i：**内容必须在**（防"两份一起删"）
+  //   ⇒ 这就是本单要补的"存在性"那一半。
+  //
+  // ── 判据口径（⚠ 三项，逐条点名缺哪个；⛔ 不退化成"出现一个词就算过"）────
+  //   每项用一条**足够具体的原文片段**（不是关键词），缺则该条 FAIL 并印出期望的原文片段。
+  //   ⚠ 片段取自正文现状（`preset/dsh-hob/preset-dsh-hob.patch.yml`），**逐字**；
+  //     若将来正文有意改写这三条，**必须同批改这里的片段**（否则会出现"改对了反而红"）——
+  //     ⚠ 这个代价写在这里，⛔ 不藏。
+  {
+    /**
+     * `UD-152` 的三条硬规矩（⚠ 片段逐字取自正文，语义 = 用户原话的三层修法）。
+     * ⚠ 每一项都带 `why`（缺了它意味着什么），FAIL 行里会一并印出来 ——
+     *   "只说缺哪条"不够，还得让人知道**缺这条会退回到哪种病**。
+     *
+     * ⚠⚠ **匹配方式：先做空白归一化，再做 `includes`**（2026-10-25 本单实测踩到）：
+     *   正文是 YAML `|-` 块，**长句会被折行**（同一句话跨两行、缩进 18 空格）。
+     *   ⇒ 若把片段写成**跨行原文**（含 `\n` 与缩进），它对"折行位置"极其敏感：
+     *     正文只是重新折行（语义一字未变）就会让本断言**假红** —— 那是"判据口径不对"，不是缺陷。
+     *   ⇒ 归一化 = 把连续空白（含换行）压成单个空格、两侧 trim。
+     *   ⚠ 这**不放宽**判据：比对仍是**逐字**的（只是不把"换行/缩进"当字面值的一部分）——
+     *     改一个字（哪怕只是词序）仍然会红。
+     */
+    const normWs = (s) => s.replace(/\s+/g, ' ').trim()
+    const hoBodyNorm = normWs(hoBody)
+    const UD152_RULES = [
+      {
+        label: '不再问用户已表态的事（"已定"就是已定）',
+        needle: 'Never ask again about something the user has already settled',
+        why: '缺它 ⇒ 用户已经拍过的事会被反复端回去问（`UD-152` 的原始病）',
+      },
+      {
+        label: '已定项必须当轮落账，写成 已定 / 已认领',
+        needle: 'Write a settled item into the ledger IN THE SAME TURN it is settled',
+        why: '缺它 ⇒ 用户这一轮说的话下一轮就蒸发（`UD-152` 的根因：当轮不落账）',
+      },
+      {
+        label: '待决项必须写"已认领"、⛔ 不许留在待用户拍板里',
+        needle: 'user has claimed is written 已认领 and is NOT left among the items awaiting the user',
+        why: '缺它 ⇒ 用户认领过的事仍以"待你决定"出现（`UD-152` 修法 ② 的落点）',
+      },
+    ]
+    const missingRules = []
+    for (const r of UD152_RULES) {
+      if (hoBodyNorm.includes(normWs(r.needle))) {
+        ok(`⑤b ${NAME_HO}：\`UD-152\` 契约条文在位（${r.label}，④i）`)
+      } else {
+        missingRules.push(r)
+      }
+    }
+    if (missingRules.length > 0) {
+      /**
+       * ⚠ **一行点名 + 逐条 why**：作业书 §一-1 要求"输出点名缺的是哪一条"。
+       *   把三条**全部**报出来（⛔ 不 first-fail 就 return）—— 否则补一条再跑一次才发现还缺一条。
+       */
+      bad(`④i ${NAME_HO}：**\`UD-152\` 契约条文缺失 ${missingRules.length}/${UD152_RULES.length} 条**`
+        + `（⚠ 这是"两份一起删"能逃过 ⑤ 的那一类：⑤ 只判两边一致，⛔ 判不出两边都没有）`
+        + '\n      ⇒ 缺的是：'
+        + missingRules.map((r) => `\n        · ${r.label}\n          ⚠ ${r.why}\n          期望片段：${JSON.stringify(r.needle)}`).join('')
+        + '\n      ⇒ 修法：把这几条**逐字**补回 `preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `prefix` 正文，'
+        + '并同步人读版引文块（`⑤` 会核两边一致）')
+    } else {
+      ok(`⑤b ${NAME_HO}：\`UD-152\` 契约条文 **${UD152_RULES.length}/${UD152_RULES.length} 条全在**`
+        + '（⚠ 存在性断言 —— 与 `⑤`（两份一致）分工不同：'
+        + '`⑤` 防"改一边漏一边"，本条防"**两份一起删**"）')
+    }
+  }
+
+  // ④j **2026-10-25 新增：问答轮那几段的**存在性**断言**（⛔ 不是"两份一致"）──
+  //
+  // ── 为什么必须单独一条（`archive/2026-10-25-reply-mode-3/NOTE.md` §二-Q2 点名的盲区）──
+  //   问答轮那 4 段（UD-158 落的）**此前只有 `⑤` 覆盖**，而 `⑤` 只判"人读版引文块 == 预设正文"。
+  //   ⚠ `⑤` 的结构性盲区：**两份一起删掉同一段，`trimEnd()` 仍然相等 ⇒ ⑤ 照样 PASS。**
+  //   ⇒ 问答轮是"用户点名的第三种回复形态"，两份一起被删掉时**全族全绿、无人报错**。
+  //
+  // ── 本条与 ⑤ 的分工（⚠ 两条并存，⛔ 不许拿一条替另一条）──────────────
+  //   · `⑤` ：**两份一致**（防"改一边漏一边"）
+  //   · `④j`：**这几段必须在**（防"两份一起删"）
+  //   ⚠ **⛔ 本单不许动 `⑤`**（作业书 §一-2 明令）；本条是**新增**，与 `⑤` 并存。
+  //
+  // ── 判据口径（⛔ 不退化成"出现一个词就算过"）──────────────────────────
+  //   每条用一段**足够具体的原文**（整句 / 整分句，⛔ 不是关键词）。缺则 FAIL 并印出期望片段。
+  //   ⚠ 匹配前做**空白归一化**（YAML `|-` 块会把长句折行；折行位置不是语义）。
+  //     ⇒ 归一化只压空白，**仍是逐字比对**：改一个字（哪怕词序）照样红。
+  //   ⚠ 片段取自正文现状，**逐字**；若将来有意改写这几段，**必须同批改这里的片段**
+  //     （否则会出现"改对了反而红"）—— 这个代价写在这里，⛔ 不藏。
+  {
+    const normWs2 = (s) => s.replace(/\s+/g, ' ').trim()
+    const hoBodyNorm2 = normWs2(hoBody)
+    const QT_REQUIRED = [
+      {
+        label: '第三种形态的定义（问答轮 = 用户提问且本轮不派活）',
+        needle: 'The question turn is the third form. It is used when the user asks a question and the turn dispatches nothing.',
+        why: '缺它 ⇒ "问答轮"这个形态在载体里没有定义，只剩两条别处的零散提示',
+      },
+      {
+        label: '判别法：用户问句 ⇒ 第一句必须是答案',
+        needle: '**The test, verbatim: a user question -> the first sentence must be the answer.**',
+        why: '缺它 ⇒ 问答轮没有可判的入口条件（UD-158 的核心判别法）',
+      },
+      {
+        label: '反例：开头若是"这轮做了什么 / 你说得对 / 我先说明"就不是问答轮',
+        needle: 'If the opening is "this round did" / "you are right" / "let me explain first", it is not a question turn.',
+        why: '缺它 ⇒ 用户点名的三种坏开头没有落进载体，问答轮会被套成说明轮',
+      },
+      {
+        label: '问答轮里这四块 ⛔ 不出现（逐块点名）',
+        needle: 'In a question turn these never appear: the four blocks (这轮做了什么 / 现在什么状态 / 要你决定的 / 还没验证)',
+        why: '缺它 ⇒ 问答轮会被套上四块（正是用户说"这不是问答轮"的那种回法）',
+      },
+      {
+        label: '⛔ 自我复盘只进账本，不进回复',
+        needle: 'self-review, self-criticism, or your own behaviour as the subject -- that belongs in the ledger, not in the reply',
+        why: '缺它 ⇒ 回复会变成会话复盘（全局指令里已实证过的那个病）',
+      },
+      {
+        label: '⛔ 不许用新派活回避问题',
+        needle: 'a fresh piece of dispatched work used to dodge the question',
+        why: '缺它 ⇒ 被问住时可以用"派一件新活"绕开问题',
+      },
+      {
+        label: '"这条没验过"只在答案本身没验过时加',
+        needle: 'Append "这条没验过" only when the answer itself has not been verified.',
+        why: '缺它 ⇒ 这句限定语会退化成口头禅，或干脆消失',
+      },
+    ]
+    const missingQt = []
+    for (const r of QT_REQUIRED) {
+      if (hoBodyNorm2.includes(normWs2(r.needle))) {
+        ok(`⑤b ${NAME_HO}：问答轮段落在位（${r.label}，④j）`)
+      } else {
+        missingQt.push(r)
+      }
+    }
+    if (missingQt.length > 0) {
+      /**
+       * ⚠ 三条**全部**报出来（⛔ 不 first-fail 就 return）—— 否则补一条再跑一次才发现还缺一条。
+       */
+      bad(`④j ${NAME_HO}：**问答轮段落缺失 ${missingQt.length}/${QT_REQUIRED.length} 段**`
+        + '（⚠ 这是"两份一起删"能逃过 ⑤ 的那一类：⑤ 只判两边一致，⛔ 判不出两边都没有）'
+        + '\n      ⇒ 缺的是：'
+        + missingQt.map((r) => `\n        · ${r.label}\n          ⚠ ${r.why}\n          期望片段：${JSON.stringify(r.needle)}`).join('')
+        + '\n      ⇒ 修法：把这几段**逐字**补回 `preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `prefix` 正文，'
+        + '并同步人读版引文块（`⑤` 会核两边一致）')
+    } else {
+      ok(`⑤b ${NAME_HO}：问答轮段落 **${QT_REQUIRED.length}/${QT_REQUIRED.length} 段全在**`
+        + '（⚠ 存在性断言 —— 与 `⑤`（两份一致）分工不同：'
+        + '`⑤` 防"改一边漏一边"，本条防"**两份一起删**"）')
+    }
+  }
+
   // ④g **v8 新增：预设 `description` 与人读版「§二 说明」格逐字相等 + 不含旧板块名**
   //     （2026-10-18 · 用户核过上批后指定的收口项）
   //
@@ -708,7 +915,7 @@ const STALE_APPELLATIONS = [
   const DUTY_PINS = [
     // [标签, 正文, 稳定短语]
     [NAME_HO, hoBody2, [
-      ['职责标题在位', '## Your duties'],
+      ['职责标题在位', '### Your duties'],
       ['与用户沟通 + 理解需求', 'Talk with the user and understand what they actually need'],
       ['拆分任务', 'Break that need into tasks'],
       ['编排任务', 'Arrange the tasks'],
@@ -858,17 +1065,9 @@ const STALE_APPELLATIONS = [
     }
   }
 
-  // ⚠ **形态负向断言**：批 6 条文**必须就地追加在既有段落正文内**，**不得新起 `##` 小节**。
-  //   本组不钉标题行（见上），但必须确认**没有人为这两段新起标题** ——
-  //   否则"就地追加"这一形态要求会被静默破坏（与批 5 同款纪律）。
-  for (const [label, body, forbidden] of [
-    [NAME_HO, hoBody4, ['## Delegation', '## How you delegate', '## Delegating']],
-    // ⚠ v4：`Hob-Execute` 侧的形态负向断言已随预设删除。
-  ]) {
-    const extra = forbidden.filter((h) => body.includes(h))
-    if (extra.length > 0) bad(`⑤e ${label}：批 6 条文新起了小节标题（${extra.join(', ')}）—— 应为就地追加`)
-    else ok(`⑤e ${label}：批 6 条文未新起小节标题（就地追加在既有段落内）`)
-  }
+  // ⚠ 2026-10-29（包 BT · CHG-175 §二）：原 ⑤e「批 6 条文不得新起小节标题」
+  //   的**3 条负向标题名禁令**（`## Delegation` / `## How you delegate` / `## Delegating`）
+  //   已删除 —— 负向禁令换个名字就过，改由 ⑤q 的**正向在册表**守结构。
 }
 
 // ── ⑤f 批 9 · Hob 能力扩展：白名单目标名 + 禁止项 + 失实句清除 ──────────────
@@ -905,8 +1104,12 @@ const STALE_APPELLATIONS = [
       const allow = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
       const allowSet = new Set(allow)
 
-      // ── 正向：S1/S2/S3 的 9 个目标名**必须**在白名单里 ────────────────
-      // ⚠ 这 9 名分三类，各自的能力落点不同（见 E-86）：
+      // ── 正向：S1/S2 的目标名**必须**在白名单里 ────────────────────────
+      // ⚠ **2026-10-30 P15**：`roundtable_status` 从本清单删掉 —— 它在三档里，
+      //   但本机**没有提供方**（`dsh-plugin-roundtable` 不在 profile 的 bundles / deps 里）
+      //   ⇒ "白名单比实际能力宽"，调用即 `unknown tool`（`Q8` 那类）。
+      //   ⚠ 这是**移除一个不存在的目标**，⛔ 不是放宽（另外 3 个仍逐个点验）。
+      // ⚠ 这些名分三类，各自的能力落点不同（见 E-86）：
       //   · S1（4）声明面**零增量** —— 已在插件平面被继承；
       //   · S2（1）/ S3（4）**必须**在声明面指名增行，否则执行时报 `unknown tool`。
       //     声明面那一侧由下面「声明面增行」子断言覆盖。
@@ -914,7 +1117,6 @@ const STALE_APPELLATIONS = [
         ['S1 编排只读查询', 'taskboard_list'],
         ['S1 编排只读查询', 'taskboard_get'],
         ['S1 编排只读查询', 'taskboard_comments'],
-        ['S1 编排只读查询', 'roundtable_status'],
         ['S2 打开网页取正文', 'web_fetch'],
         // ⚠ **S3 那 4 项已由批 21（2026-10-14 · 用户裁定）收缩掉** —— 它们**不再属于**"必须有"，
         //   改为下面的"**必须没有**"组。⛔ 别把它们加回本清单。
@@ -960,7 +1162,7 @@ const STALE_APPELLATIONS = [
       //   （见本函数上方 NEEDED 组与本批报告 §3 的原始读数）。
       // ⚠ 同步落点（三处必须一致，已同批改）：`src/preset/tools.ts` 的白名单、
       //   `preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `tool-ask-user` 声明行、
-      //   以及 `.hob/drafts/preset-contracts.md` 的引文块与 §五 断言清单。
+      //   以及 `kit/drafts/preset-contracts.md` 的引文块与 §五 断言清单。
       const present = FORBIDDEN.filter(([, n]) => allowSet.has(n))
       if (present.length > 0) {
         bad(`⑤f ${NAME_HO} 白名单**含禁止项**（${present.length} 个）：${present.map(([g, n]) => `${n}(${g})`).join(', ')}`)
@@ -1131,11 +1333,9 @@ const STALE_APPELLATIONS = [
     else bad(`⑤g ${NAME_HO}：决策自主条文缺失（${what}）—— 期望短语 ${JSON.stringify(phrase)}`)
   }
 
-  // 形态负向断言：批 11 条文必须**就地追加**，不得新起 `##` 小节
-  const newSections = ['## Deciding', '## Autonomy', '## Asking the user', '## When to ask']
-  const extra = newSections.filter((h) => hoBody6.includes(h))
-  if (extra.length > 0) bad(`⑤g ${NAME_HO}：批 11 条文新起了小节标题（${extra.join(', ')}）—— 应为就地追加`)
-  else ok(`⑤g ${NAME_HO}：批 11 条文未新起小节标题（就地追加在既有段落内）`)
+  // ⚠ 2026-10-29（包 BT · CHG-175 §二）：原 ⑤g「批 11 条文不得新起小节标题」
+  //   的**4 条负向标题名禁令**（`## Deciding` / `## Autonomy` / `## Asking the user` /
+  //   `## When to ask`）已删除 —— 改由 ⑤q 的正向在册表守结构。
 
   // ⚠ **不得与既有条文冲突**（任务书 §D1 明令：文件交接四条 / 委派门槛 / 指令自足 /
   //   攒批 / 验收只认读数 / 接住问题 / **投递口径** **逐字保留**）。
@@ -1231,16 +1431,17 @@ const STALE_APPELLATIONS = [
       /**
        * ⚠ **第 339 轮 · 丙-6**：原先这里写死 `26`。删掉 4 个 `schedule_*` 之后
        *   真值是 **22**（实测 `MODEL_TOOL_ALLOWLIST.length`）⇒ 判据跟着改。
+       *   ⚠ **2026-10-30 P15**：再删 1 个（`roundtable_status`，本机无提供方）⇒ **21**。
        *   ⚠ 这个数**只在本行与 `⑤m-3b` 的 `want` 里各写一次**（那是"档位表本体"，
        *     按 `P-1` 的口径它就是唯一允许写死的地方）。
        */
-      if (allow13.length !== 22) {
+      if (allow13.length !== 21) {
         const extra = known26 === null ? allow13 : allow13.filter((n) => !known26.has(n))
-        bad(`⑤h ${NAME_HO} 白名单应恰好 22 名，实测 ${allow13.length}`
+        bad(`⑤h ${NAME_HO} 白名单应恰好 21 名，实测 ${allow13.length}`
           + `（多出：${extra.join(', ') || '无'}）`
           + `\n      ⇒ ⚠ **批 21 起 ${SHRUNK21_NAMES} 属"已被收缩"项** ——`
           + `\n        它们出现即说明收缩被回退（用户的权限裁定失效），**须查明是谁加回来的**`)
-      } else ok(`⑤h ${NAME_HO}：白名单恰好 22 名（11 + 5 + 3 + 2 + 2 + 3 − 4[第 339 轮丙-6 删除 schedule_*]）`)
+      } else ok(`⑤h ${NAME_HO}：白名单恰好 21 名（11 + 5 + 3 + 2 + 2 + 3 − 4[丙-6 删 schedule_*] − 1[P15 删 roundtable_status]）`)
 
       // ── 正向·批 21 专项：**被收缩的 4 个必须确实不在**（防"收了个寂寞"）──────
       //   ⚠ 只靠总数不够：30 → 26 也可能是"删错 4 个、漏删目标 4 个"恰好凑成 26。
@@ -1425,12 +1626,9 @@ const STALE_APPELLATIONS = [
     else bad(`⑤i ${NAME_HO}：原始读数纪律条文缺失（${what}）—— 期望短语 ${JSON.stringify(phrase)}`)
   }
 
-  // 形态负向断言：该纪律必须**就地追加**，不得新起 `##` 小节
-  const readingSections = ['## Readings', '## Evidence', '## Tool hints', '## State before you speak']
-  const extraReading = readingSections.filter((h) => hoBody7.includes(h))
-  if (extraReading.length > 0) {
-    bad(`⑤i ${NAME_HO}：原始读数纪律新起了小节标题（${extraReading.join(', ')}）—— 应为就地追加`)
-  } else ok(`⑤i ${NAME_HO}：原始读数纪律未新起小节标题（就地追加在既有段落内）`)
+  // ⚠ 2026-10-29（包 BT · CHG-175 §二）：原 ⑤i「原始读数纪律不得新起小节标题」
+  //   的**4 条负向标题名禁令**（`## Readings` / `## Evidence` / `## Tool hints` /
+  //   `## State before you speak`）已删除 —— 改由 ⑤q 的正向在册表守结构。
 
   // ⚠ **不得与既有条文冲突**：本批追加**不得挤掉**既有编排条文（同 ⑤g 的 KEPT 口径）。
   //   判据：这几条的稳定短语在**追加后**必须仍然在位。
@@ -1462,7 +1660,7 @@ const STALE_APPELLATIONS = [
 //   —— **而用户看不到**，白找一趟（2026-10-10 真机发生过一次）。
 //
 // ⚠ 为什么它以前**不可能**被任何机检抓到（读这段注释的人请记住）：
-//   ① `check:presets` 的镜像断言读的是 `DRAFT`（`.hob/drafts/preset-contracts.md`）与
+//   ① `check:presets` 的镜像断言读的是 `DRAFT`（`kit/drafts/preset-contracts.md`）与
 //      `HO`（`preset/dsh-hob/preset-dsh-hob.patch.yml`）**这两个文件**，
 //      **不读 `src/modules/bus.ts` 的工具 description** ⇒ 那句自然语言**零断言覆盖**。
 //   ② 那句错话**不是全错**（"必须有工作区归属"半句是对的），且**只在
@@ -1609,7 +1807,7 @@ const STALE_APPELLATIONS = [
   // ── ① 正向：五类语义各钉稳定短语（任一缺失即 FAIL）──────────────────
   const BOUNDARY_PINS = [
     // ① 显式的边界块（自己的标题 + 正文）
-    ['①边界块标题在位（`## Your duty boundary`）', '## Your duty boundary'],
+    ['①边界块标题在位（`### Your duty boundary`）', '### Your duty boundary'],
     ['①边界块有自己的正文（"一次说清"起句）', 'What you do, once and for all'],
     // ② 做什么（沟通与理解需求 → 拆分 → 编排 → 分发 → 监督验收；只读自己直接做；维护自己的账本）
     ['②做什么：沟通与理解需求 → 拆分 → 编排 → 分发 → 监督验收', 'talk with the user and understand the need, break it'],
@@ -1670,12 +1868,9 @@ const STALE_APPELLATIONS = [
   // ── ② 负向：正文不得出现被禁的标题名（与 ⑤e 的形态负向同款）──────────
   //   理由：这块**必须是"职责边界"**，不是"怎么委派"。若以 Delegation 一族起标题，
   //   等于把委派教程当成边界声明（用户要的是**职责边界**，不是又一份派活说明）。
-  const BANNED_TITLES = ['## Delegation', '## How you delegate', '## Delegating']
-  const bannedHit = BANNED_TITLES.filter((h) => hoBody8.includes(h))
-  if (bannedHit.length > 0) {
-    bad(`⑤k ${NAME_HO}：职责边界块起用了被禁的标题名（${bannedHit.join(', ')}）`
-      + ' —— 这块必须是"职责边界"声明，不是"怎么委派"教程')
-  } else ok(`⑤k ${NAME_HO}：职责边界块未起用被禁标题名（${BANNED_TITLES.length} 个扫描项均为 0）`)
+  // ⚠ 2026-10-29（包 BT · CHG-175 §二）：原 ⑤k 的**3 条负向标题名禁令**
+  //   （`## Delegation` / `## How you delegate` / `## Delegating`）已删除 ——
+  //   改由 ⑤q 的正向在册表守结构。
 
   // ── ③ 既有条文逐字保留（本批追加**不许挤掉**任何一条既有条文）────────
   //   ⚠ 与 ⑤g / ⑤i 的 KEPT 口径同款：这里**单独可见地复述一次**"本批追加没把既有的挤掉"，
@@ -1739,12 +1934,10 @@ const STALE_APPELLATIONS = [
   // ── ② 形态负向①：正文不得出现被禁的标题名（与 ⑤e / ⑤g / ⑤k 同款）──
   //   理由：这一条是**运行口径**、就地写在既有的 `## Running the loop` 段里，
   //   起一个小节标题会把"就地追加"这一形态本身变成要求。
-  const BANNED_CONSULT_TITLES = ['## Working from the plan', '## First step', '## Every input']
-  const consultTitleHit = BANNED_CONSULT_TITLES.filter((h) => hoBody9.includes(h))
-  if (consultTitleHit.length > 0) {
-    bad(`⑤l ${NAME_HO}：先对照方案段起用了被禁的标题名（${consultTitleHit.join(', ')}）`
-      + ' —— 这一条是运行口径，须就地追加在既有段落内')
-  } else ok(`⑤l ${NAME_HO}：先对照方案段未起用被禁标题名（${BANNED_CONSULT_TITLES.length} 个扫描项均为 0）`)
+  // ⚠ 2026-10-29（包 BT · CHG-175 §二）：原 ⑤l 的**3 条负向标题名禁令**
+  //   （`## Working from the plan` / `## First step` / `## Every input`）已删除 ——
+  //   改由 ⑤q 的正向在册表守结构。⚠ 下面「形态负向②」的结构检查**保留**
+  //   （它不是"防名字"，是防"用任意新标题把它顶上去"，属另一类判据）。
 
   // ── ③ 形态负向②：第 1 条短语所在行，**向上第一条非空行不得是标题**──
   //   理由：负向①只挡三个**点名**标题名；换个名字的标题照样能把它顶上。
@@ -1775,7 +1968,7 @@ const STALE_APPELLATIONS = [
     ['接住待决问题（既有句）', 'Catch the questions'],
     ['验收只认读数（既有句）', 'Accept on readings only'],
     ['投递 ≠ 执行（既有句）', 'Delivering is not doing'],
-    ['职责边界块标题（既有块）', '## Your duty boundary'],
+    ['职责边界块标题（既有块）', '### Your duty boundary'],
     ['原始读数纪律（既有句）', 'State nothing to the user without a reading behind it'],
   ]
   const squeezedBy138 = KEPT_BY_138.filter(([, s]) => !hoBody9.includes(s))
@@ -1881,13 +2074,14 @@ const STALE_APPELLATIONS = [
       }
       // 名数也钉住（26 / 27 / 30）—— ⚠ 与包含链是**两条**判据：
       //   包含链能抓"档2 被抽走"，名数能抓"档2 被多加"（包含链对后者是哑的）。
-      /** ⚠ **第 339 轮 · 丙-6**：删掉 4 个 `schedule_*` ⇒ 26/27/30 → **22/23/26**。 */
-      const want = { ledger: 22, project: 23, workspace: 26 }
+      /** ⚠ **第 339 轮 · 丙-6**：删掉 4 个 `schedule_*` ⇒ 26/27/30 → 22/23/26；**P15** 再删 `roundtable_status` ⇒ 21/22/25。 */
+      // ⚠ **2026-10-30 P15**：删 `roundtable_status` ⇒ 22/23/26 → **21/22/25**（真数变化，照实改）。
+      const want = { ledger: 21, project: 22, workspace: 25 }
       const wrong = ['ledger', 'project', 'workspace'].filter((k) => full[k].length !== want[k])
       if (wrong.length > 0) {
         bad(`⑤m-3b 三档名数与裁定不符（${wrong.map((k) => `${k}=${full[k].length}（应 ${want[k]}）`).join('；')}）`)
       } else {
-        ok('⑤m-3b 三档名数 = 22 / 23 / 26（与裁定一致）')
+        ok('⑤m-3b 三档名数 = 21 / 22 / 25（P15 删 roundtable_status 后的真数）')
       }
     }
 
@@ -2076,7 +2270,7 @@ const STALE_APPELLATIONS = [
 //
 // ⚠ **为什么需要它**（实测缺口，不是假想）──────────────────────────────
 //   第 143 轮实测：真值 26，而**6 个"数字载体"**里 5 个写的不是 26
-//   （`.hob/README.md` 与 `preset-contracts.md` 写「30 名」、`src/preset/tools.ts`
+//   （`kit/README.md` 与 `preset-contracts.md` 写「30 名」、`src/preset/tools.ts`
 //   的 JSDoc 写「25」与「恰好 30」、脚本内联清单是**同一名字集的第二副本**）。
 //   ⚠ **它们全都没有任何判据盯着** ⇒ CHG-054 把 30 改成 26 时，这 5 处**没跟**、
 //     也**没有任何红**。这正是"文档里的数字会静默变旧"那一族的实例。
@@ -2107,14 +2301,14 @@ const STALE_APPELLATIONS = [
      *     草案**不面向用户**、也不被任何契约引用 ⇒ 重写它等于**伪造过程记录**。
      *   ⚠ 判据的价值在**面向用户的正文与面板**，⛔ 不在草案。
      */
-    ['\.hob/drafts/', '草案过程记录：记的是当时的数，重写即伪造过程'],
+    ['kit/drafts/', '草案过程记录：记的是当时的数，重写即伪造过程'],
     /**
-     * ⚠⚠ **骨架模板**（2026-10-21 · 第 337 轮）：`.hob/templates/**` 是**照模板起手**用的骨架，
+     * ⚠⚠ **骨架模板**（2026-10-21 · 第 337 轮）：`kit/templates/**` 是**照模板起手**用的骨架，
      *   里面的名数**必须是占位形状**（`注册 = N 个`）—— ⚠ 把占位符改成一个具体数字
      *   等于**把本项目现状复制给新工作区**（那正是模板纪律明令禁止的）。
      *   ⇒ 本判据的能量花在**面向用户的正文 / 面板**上，⛔ 不咬模板。
      */
-    ['\.hob/templates/', '骨架模板：名数必须是占位形状，改成具体数字即违反模板纪律'],
+    ['kit/templates/', '骨架模板：名数必须是占位形状，改成具体数字即违反模板纪律'],
   ]
   const p1Exempt = (relPosix) => P1_EXEMPT_DIRS.some(([pre]) => relPosix.startsWith(pre.replace(/\\/g, '/').replace(/^\./, '.')))
 
@@ -2128,7 +2322,7 @@ const STALE_APPELLATIONS = [
       if (e.name.endsWith('.md')) P1_TARGETS.push(p)
     }
   }
-  walkMd(join(root, '.hob'))
+  walkMd(join(root, 'kit'))
   const walkTs = (dir) => {
     let entries = []
     try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
@@ -2172,8 +2366,8 @@ const STALE_APPELLATIONS = [
    *
    * ── 为什么把「项」删掉（第 337 轮实测教训）────────────────────────────
    *   加上「项」之后，P-1 一次扫出 **28 处** 命中 —— 而它们**绝大多数是本判据不该管的**：
-   *   `.hob/EXPERIENCE.md:240`「39 项」（经验条目数）· `.hob/drafts/…`「14 项」
-   *   `.hob/README.md:385`「0 项」（文件数）· `.hob/templates/CONTEXT.md:29`「1 项」…
+   *   `.hob/EXPERIENCE.md:240`「39 项」（经验条目数）· `kit/drafts/…`「14 项」
+   *   `.hob/README.md:385`「0 项」（文件数）· `kit/templates/CONTEXT.md:29`「1 项」…
    *   ⚠ 这些都是**普通统计**，与"工具/模块名数"无关 ⇒ 那正是作业书警告的
    *     "宽到会误伤普通数字" ⇒ 误伤会让这条判据变成噪音，然后被人关掉。
    *
@@ -2194,7 +2388,7 @@ const STALE_APPELLATIONS = [
    */
   /**
    * ⚠⚠ **第 337 轮扩面时的第 5 类误伤：占位符 `N 个` / `<N> 个`** ─────────────
-   *   现场：`.hob/templates/CONTEXT.md:65` 写的是「### 0.3 工具面（本插件注册 = **N 个**）」——
+   *   现场：`kit/templates/CONTEXT.md:65` 写的是「### 0.3 工具面（本插件注册 = **N 个**）」——
    *   ⚠ 那是**模板占位符**（照模板起手的工作区该填自己的数），
    *     而正则把字母 `N` 当成了"数字前紧邻字母"的另一回事……
    *   ⚠ 实测：`(?<![A-Za-z0-9])` 挡不住它 —— 因为 `N` 与数字之间隔着 `= `，
@@ -2369,6 +2563,273 @@ const STALE_APPELLATIONS = [
   }
 }
 
+// ── ⑤o 2026-10-27（包 X · 方案 §4.1 / §3.5 / §5.8 三条 `🟡` 落进契约）────────────
+//
+// 为什么需要（本组存在的唯一理由，别删）：
+//   方案 §4.1（默认动作 = 协商）、§3.5（事实性断言必须带来源）、§5.8（交付六字段）
+//   在方案里都还是 `🟡`，**契约正文里一个字都没有** —— 也就是说这三条只有方案在说，
+//   契约（宿主真正加载的那份）不生效。本批把它们逐字写进两份载体。
+//
+// ⚠ 本组与 `⑤` 的分工（⚠ 两条都要，⛔ 不许拿一条替另一条）：
+//   · `⑤`  ：**两份载体一致**（防"改一边漏一边"）；
+//   · `⑤o` ：**内容真的在位**（防"两份一起删" —— `⑤` 对那种形态是结构性盲区）。
+//
+// ⚠ 口径（防误读）：
+//   · 钉的是**稳定短语**（首句 + 各档的关键词），⛔ 不钉整段逐字 —— 措辞可随文调整，
+//     只要该语义还在，句子就还在；**这是新增断言，不是放宽**：任一条缺失即 FAIL。
+//   · ⚠⚠ **不写"预期条数"**：下面按**缺项**判，⛔ 不设任何计数型期望值
+//     （计数型期望会在条文增删时静默变旧 —— 本仓反复记过的形态）。
+//   · 本段**就地追加**在 `## Running the loop` 既有段内（⛔ 不新起 `## ` 小节），
+//     故本组同时负向钉"未起标题 / 上方非标题"两条形态。
+{
+  const hoBody10 = literalBlock(hoSrc, 'prefix') ?? ''
+  const draftBody10 = draftBlock(0) ?? ''
+
+  /**
+   * ⚠ 三组稳定短语，**逐组独立判**（⛔ 不合并成一条"总字数在不在"）：
+   *   分组的意义 = 缺哪一条当场点得出是哪一条，而不是笼统一句"契约缺条文"。
+   */
+  const CLAUSE_PINS = [
+    ['§4.1 默认动作 = 协商方案', [
+      'Default action is to agree the plan with the user',
+      'Do not slide into implementation by default',
+      'Only when the user plainly says',
+      'does not count as saying so',
+      'must point back to the user',
+      'What counts as "plainly said"',
+      'merely describing a phenomenon',
+    ]],
+    ['§3.5 事实性断言必须带来源', [
+      'A factual claim carries its source',
+      'which search, at what moment, from which source',
+      '-- unverified',
+      'it must never be written as a claim',
+    ]],
+    ['§5.8 交付六字段', [
+      'A delivery carries its six fields of evidence',
+      'Missing any one of them means it is not a delivery',
+      'the conclusion',
+      'the readings taken before starting',
+      'what was not done or not verified',
+      'open questions',
+      'the evidence boundary',
+    ]],
+  ]
+
+  // ── ① 正向：三组短语在**契约正文**里逐条在位 ──────────────────────────
+  const missingInPreset = []
+  for (const [label, pins] of CLAUSE_PINS) {
+    for (const s of pins) if (!hoBody10.includes(s)) missingInPreset.push(`${label} → ${JSON.stringify(s)}`)
+  }
+  if (missingInPreset.length > 0) {
+    bad(`⑤o ${NAME_HO}：契约正文缺这三条方案条文的稳定短语（${missingInPreset.length} 处）：`
+      + `\n      ${missingInPreset.join('\n      ')}`
+      + '\n      ⇒ 方案 §4.1 / §3.5 / §5.8 是 `🟡`，而契约一个字都没有 ⇒ 宿主加载的那份**不生效**')
+  } else {
+    ok(`⑤o ${NAME_HO}：三条方案条文（§4.1 协商 / §3.5 来源 / §5.8 六字段）的稳定短语**全部在位**`
+      + `（${CLAUSE_PINS.length} 组 · 共 ${CLAUSE_PINS.reduce((n, [, p]) => n + p.length, 0)} 条短语）`)
+  }
+
+  // ── ② 两份载体**同一处**都要有（⛔ 不许只改机器读版）───────────────────
+  const missingInDraft = []
+  for (const [label, pins] of CLAUSE_PINS) {
+    for (const s of pins) if (!draftBody10.includes(s)) missingInDraft.push(`${label} → ${JSON.stringify(s)}`)
+  }
+  if (missingInDraft.length > 0) {
+    bad(`⑤o 人读版（.md）缺这三条条文的稳定短语（${missingInDraft.length} 处）：`
+      + `\n      ${missingInDraft.join('\n      ')}`
+      + '\n      ⇒ 人读版是"将来改动的地方"：它没有 ⇒ 下一个人改契约时看不到这三条')
+  } else {
+    ok('⑤o 人读版引文块同样含这三条条文的**全部**稳定短语（两份载体同一处，⛔ 不是只手改机器读版）')
+  }
+
+  // ── ③ 负向①：不得为这三条另起小节（与 ⑤e / ⑤g / ⑤k / ⑤l 同款）─────
+  // ⚠ 2026-10-29（包 BT · CHG-175 §二）：原 ⑤o 的**5 条负向标题名禁令**
+  //   （`## Default action` / `## Sources` / `## Evidence fields` /
+  //   `## Delivery evidence` / `## Provenance`）已删除 —— 改由 ⑤q 的正向在册表守结构。
+  //   ⚠ 下面「形态负向②」的结构检查**保留**。
+
+  // ── ④ 形态负向②：首句所在行，向上第一条非空行不得是标题 ──────────────
+  const clauseLines = hoBody10.split('\n')
+  const firstPin = CLAUSE_PINS[0][1][0]
+  const startLine = clauseLines.findIndex((l) => l.includes(firstPin))
+  if (startLine >= 0) {
+    let prevNonEmpty = null
+    for (let i = startLine - 1; i >= 0; i--) {
+      if (clauseLines[i].trim() === '') continue
+      prevNonEmpty = clauseLines[i]
+      break
+    }
+    if (prevNonEmpty === null) {
+      bad('⑤o 三条条文上方找不到任何非空行（它必须是就地追加在既有段落内，不是段首）')
+    } else if (/^#{1,6}\s/.test(prevNonEmpty.trim())) {
+      bad(`⑤o 三条条文被顶上了一个新标题（上一非空行 = ${JSON.stringify(prevNonEmpty.trim().slice(0, 60))}）`
+        + ' —— 本段须就地追加在既有段落内')
+    } else {
+      ok(`⑤o 三条条文上方是正文而非标题（上一非空行 = ${JSON.stringify(prevNonEmpty.trim().slice(0, 48))}…）`)
+    }
+  }
+
+  // ── ⑤ KEPT：本次追加**不许挤掉**既有条文（与 ⑤g / ⑤i / ⑤k / ⑤l 同款）──
+  const KEPT_BY_X = [
+    ['先对照方案（既有句）', 'Start from the plan, every time.'],
+    ['派出去指令的来源（既有句）', 'Take every directive from the plan'],
+    ['决策自主（既有句）', 'Decide on your own.'],
+    ['接住待决问题（既有句）', 'Catch the questions'],
+    ['验收只认读数（既有句）', 'Accept on readings only'],
+    ['投递 ≠ 执行（既有句）', 'Delivering is not doing'],
+    ['职责边界块标题（既有块）', '### Your duty boundary'],
+    ['原始读数纪律（既有句）', 'State nothing to the user without a reading behind it'],
+    ['语言规则（既有节）', '### Language'],
+  ]
+  const squeezedByX = KEPT_BY_X.filter(([, s]) => !hoBody10.includes(s))
+  if (squeezedByX.length > 0) {
+    bad(`⑤o ${NAME_HO}：三条条文的追加**挤掉了既有条文**（${squeezedByX.length} 处）：`
+      + `${squeezedByX.map(([l]) => l).join(' / ')} —— 本批只许追加，不许顶掉既有的`)
+  } else ok(`⑤o ${NAME_HO}：既有 ${KEPT_BY_X.length} 组条文逐字保留（三条条文的追加未挤掉任何一条）`)
+}
+
+// ── ⑤p 2026-10-27（包 AB 追加段）· **何时才允许拿问题打扰用户** ────────────────
+//
+// 为什么需要（本组存在的唯一理由，别删）：
+//   用户原话：「现在契约里**没有这一条**，所以我会问一些本不该问的（比如"先做 A 还是先做 B"）。」
+//   ⇒ 契约此前只有"**ask sparingly**"（少问）与"**ask only what genuinely belongs to the user**"
+//     （只问真正属于用户的事）—— 那两句**只给了方向**，⛔ 没有给**可判的准入清单**，
+//     于是"先做 A 还是先做 B"这种**依赖已经决定的顺序**被当成"该问的事"。
+//   ⇒ 本组把四条准入 + 六条禁问 + 一条格式钉成可判的断言。
+//
+// ⚠ 本组与 `⑤` 的分工（⚠ 两条都要，⛔ 不许拿一条替另一条）：
+//   · `⑤`  ：**两面一致**（防"改一边漏一边"）；
+//   · `⑤p` ：**内容真的在位**（防"两面一起删" —— `⑤` 对那种形态是结构性盲区）。
+//
+// ⚠ 口径（防误读）：
+//   · 钉的是**稳定短语**（逐条准入的**关键前提词**），⛔ 不钉整段逐字 ——
+//     ⚠ 但本段的**完整原文**另有 `⑤` 把两面钉死（两面必须相同），故此处只需保证"这一条还在"。
+//   · ⚠⚠ **不写"预期条数"**：按**缺项**判，⛔ 不设计数型期望（计数会在条文增删时静默变旧）。
+//   · 本段**就地追加**在 `## Running the loop` 既有段内（⛔ 不新起 `## ` 小节）。
+{
+  const hoBody11 = literalBlock(hoSrc, 'prefix') ?? ''
+  const draftBody11 = draftBlock(0) ?? ''
+
+  /**
+   * ⚠ 三组短语，**逐组独立判**（⛔ 不合并成一句"总字数在不在"）：
+   *   分组的意义 = 缺哪一条当场点得出是哪一条。
+   */
+  const ASK_PINS = [
+    ['总纲：只在四种情形之一才问', [
+      'Ask the user only when one of these is true',
+      'otherwise decide and move on',
+    ]],
+    ['准入 ① 不可逆 / 难撤回', [
+      'The action is irreversible or hard to undo',
+      'deleting data, overwriting',
+      'changing something already promised',
+    ]],
+    ['准入 ② 影响面离开本项目', [
+      'The blast radius leaves this project',
+      'permissions and allowlists, other',
+      'the real profile, anything published',
+    ]],
+    ['准入 ③ 花用户的钱 / 只有他能做', [
+      "It spends the user's resources and only they can do it",
+      'money, restarting',
+      'their attention for a check',
+    ]],
+    ['准入 ④ 产品决策', [
+      'It is a product decision',
+      'what to build, what cost to accept, where the',
+      'two acceptable paths that differ only in trade-off',
+    ]],
+    ['禁问六类', [
+      'Never ask about: the order of work that dependencies already decide',
+      'how to',
+      'implement something, naming and file placement, technology choices inside the',
+      'or whether to do something this plan already requires',
+    ]],
+    ['难度不是判据', [
+      'Difficulty is not a criterion',
+      'A hard but reversible choice is yours to make',
+    ]],
+    ['问法五要素', [
+      'When you do ask, the ask must name: the blocked action, the evidence, the',
+      'options, what each costs, and your recommendation',
+    ]],
+  ]
+
+  // ── ① 正向：八组短语在**契约正文**里逐条在位 ──────────────────────────
+  const missingInPreset = []
+  for (const [label, pins] of ASK_PINS) {
+    for (const s of pins) if (!hoBody11.includes(s)) missingInPreset.push(`${label} → ${JSON.stringify(s)}`)
+  }
+  if (missingInPreset.length > 0) {
+    bad(`⑤p ${NAME_HO}：契约正文缺「何时才允许问用户」这一条（${missingInPreset.length} 处）：`
+      + `\n      ${missingInPreset.join('\n      ')}`
+      + '\n      ⇒ ⚠ 缺了它，"先做 A 还是先做 B"这种**依赖已决定的顺序**会被当成该问的事')
+  } else {
+    ok(`⑤p ${NAME_HO}：**何时才允许问用户**一条全部在位`
+      + `（${ASK_PINS.length} 组 · 共 ${ASK_PINS.reduce((n, [, p]) => n + p.length, 0)} 条短语：`
+      + '四条准入 + 六类禁问 + 难度非判据 + 问法五要素）')
+  }
+
+  // ── ② 两面同一处都要有（⛔ 不许只改机器读版）───────────────────────────
+  const missingInDraft = []
+  for (const [label, pins] of ASK_PINS) {
+    for (const s of pins) if (!draftBody11.includes(s)) missingInDraft.push(`${label} → ${JSON.stringify(s)}`)
+  }
+  if (missingInDraft.length > 0) {
+    bad(`⑤p 人读版（.md）缺这一条的稳定短语（${missingInDraft.length} 处）：`
+      + `\n      ${missingInDraft.join('\n      ')}`
+      + '\n      ⇒ 人读版是"将来改动的地方"：它没有 ⇒ 下一个人改契约时看不到这一条')
+  } else {
+    ok('⑤p 人读版引文块同样含这一条的**全部**稳定短语（两面同一处，⛔ 不是只手改机器读版）')
+  }
+
+  // ── ③ 负向①：不得为这一条另起小节（与 ⑤e/⑤g/⑤k/⑤l/⑤o 同款）────────
+  // ⚠ 2026-10-29（包 BT · CHG-175 §二）：原 ⑤p 的**4 条负向标题名禁令**
+  //   （`## When to ask` / `## Asking the user` / `## Questions` / `## Ask policy`）
+  //   已删除 —— 改由 ⑤q 的正向在册表守结构。⚠ 下面「形态负向②」的结构检查**保留**。
+
+  // ── ④ 形态负向②：首句所在行，向上第一条非空行不得是标题 ──────────────
+  const askLines = hoBody11.split('\n')
+  const firstAskPin = ASK_PINS[0][1][0]
+  const askStart = askLines.findIndex((l) => l.includes(firstAskPin))
+  if (askStart >= 0) {
+    let prevNonEmpty = null
+    for (let i = askStart - 1; i >= 0; i--) {
+      if (askLines[i].trim() === '') continue
+      prevNonEmpty = askLines[i]
+      break
+    }
+    if (prevNonEmpty === null) {
+      bad('⑤p 这一条上方找不到任何非空行（必须是就地追加在既有段落内，不是段首）')
+    } else if (/^#{1,6}\s/.test(prevNonEmpty.trim())) {
+      bad(`⑤p 这一条被顶上了一个新标题（上一非空行 = ${JSON.stringify(prevNonEmpty.trim().slice(0, 60))}）`)
+    } else {
+      ok(`⑤p 这一条上方是正文而非标题（上一非空行 = ${JSON.stringify(prevNonEmpty.trim().slice(0, 48))}…）`)
+    }
+  }
+
+  // ── ⑤ KEPT：本次追加**不许挤掉**既有条文（与 ⑤g/⑤i/⑤k/⑤l/⑤o 同款）──
+  const KEPT_BY_AB = [
+    ['先对照方案（既有句）', 'Start from the plan, every time.'],
+    ['决策自主（既有句）', 'Decide on your own.'],
+    ['「少问」既有句', 'And ask sparingly'],
+    ['「只问真正属于用户的」既有句', 'Ask only what genuinely belongs to the user'],
+    ['「自己判得了就不停」既有句', 'Never stop for what you can judge yourself.'],
+    ['派出去指令的来源（既有句）', 'Take every directive from the plan'],
+    ['接住待决问题（既有句）', 'Catch the questions'],
+    ['验收只认读数（既有句）', 'Accept on readings only'],
+    ['投递 ≠ 执行（既有句）', 'Delivering is not doing'],
+    ['职责边界块标题（既有块）', '### Your duty boundary'],
+    ['语言规则（既有节）', '### Language'],
+  ]
+  const squeezedByAB = KEPT_BY_AB.filter(([, s]) => !hoBody11.includes(s))
+  if (squeezedByAB.length > 0) {
+    bad(`⑤p ${NAME_HO}：本段追加**挤掉了既有条文**（${squeezedByAB.length} 处）：`
+      + `${squeezedByAB.map(([l]) => l).join(' / ')} —— 本批只许追加，不许顶掉既有的`)
+  } else ok(`⑤p ${NAME_HO}：既有 ${KEPT_BY_AB.length} 组条文逐字保留（本段追加未挤掉任何一条）`)
+}
+
 // ── ⑤n 移交出去的核查记录必须「有人管」（2026-10-18 · UD-144 裁定三）──────
 //
 // 为什么需要（用户原话，逐字）：
@@ -2383,7 +2844,7 @@ const STALE_APPELLATIONS = [
 // ⚠ 本组是**新增断言，不是放宽** —— 它让一份原本零覆盖的文件进入机检面。
 // ⚠ 判据不钉具体行号、不钉字数（那会随搬移漂）；只钉"指针在 + 文件在 + 三节标题在"。
 {
-  const NOTES_REL = '.hob/drafts/contract-verification-notes.md'
+  const NOTES_REL = 'kit/drafts/contract-verification-notes.md'
   const notesAbs = join(root, NOTES_REL)
 
   // ① 指针行：人读版里必须同时出现"文件名"与"不是规范"这个断言
@@ -2424,6 +2885,49 @@ const STALE_APPELLATIONS = [
       } else {
         ok('⑤n 核查记录文件头有"不是规范"声明')
       }
+    }
+  }
+}
+
+// ── ⑤q 2026-10-29（包 BT · `CHG-175` §二）· **W1 正向在册表** ──────────────
+//
+// 背景：原先 W1 靠 **21 条负向禁令**守"不许起用某标题名"。`CHG-175` §二 已判：
+//   **换个名字就过 —— 那叫防名字，不叫防结构**。故本组改为**正向在册表**：
+//   只声明"W1 下必须有这 7 个小节、一个不多一个不少、名字逐字相符"。
+// ⚠ 本组是**唯一**守 W1 标题形态的断言；21 条负向禁令已全部删除（逐条登记见 REPORT.md）。
+{
+  const hoBodyW1 = literalBlock(hoSrc, 'prefix') ?? ''
+  // 正向在册表：W1 的 7 个三级小节名，**顺序即契约顺序**
+  const W1_ROSTER = [
+    'New instruction',
+    'Verdict on the work',
+    'Stop',
+    'Question turn',
+    'Ruling',
+    'No answer',
+    'Correction',
+  ]
+  const lines = hoBodyW1.split('\n')
+  // 取 W1 段：从 `## Taking input` 到下一个 `## ` 之前
+  const w1Start = lines.findIndex((l) => l.trim() === '## Taking input')
+  let w1End = lines.length
+  for (let i = w1Start + 1; i < lines.length; i++) {
+    if (/^## /.test(lines[i])) { w1End = i; break }
+  }
+  if (w1Start < 0) {
+    bad(`⑤q ${NAME_HO}：找不到 \`## Taking input\` 段 —— W1 正向在册表无法核对`)
+  } else {
+    const w1 = lines.slice(w1Start, w1End)
+    // 恰好这些 `###` 标题（一个不多一个不少）
+    const got = w1.filter((l) => /^###\s/.test(l)).map((l) => l.replace(/^###\s+/, '').trim())
+    const want = W1_ROSTER.slice()
+    const same = got.length === want.length && got.every((v, i) => v === want[i])
+    if (!same) {
+      bad(`⑤q ${NAME_HO}：W1 下的三级小节与正向在册表不符`
+        + `\n     ⇒ 应为（${want.length} 个，按序）：${want.join(' / ')}`
+        + `\n     ⇒ 实为（${got.length} 个）：${got.join(' / ') || '（无）'}`)
+    } else {
+      ok(`⑤q ${NAME_HO}：W1 下恰好 ${want.length} 个三级小节，名字逐字相符（${want.join(' / ')}）`)
     }
   }
 }
@@ -3015,6 +3519,157 @@ console.log('预设（机器读版）:', HO)
         + '\n         · 若它**本来该有** ⇒ 在本预设声明面补 `- id: <工具包 id>` 那一行；'
         + '\n         · 若它**本来就用不了** ⇒ 从 `MODEL_TOOL_ALLOWLIST` 删掉这个名字'
         + '\n        ⛔ 两种修法方向相反，⛔ 不许两边都动')
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ⑤o · 工具面与档位**解耦**（2026-10-30 P14 · 用户裁定）
+// ══════════════════════════════════════════════════════════════════════
+/**
+ * ── 它守的是什么（三条，各自可被单独弄坏）────────────────────────────
+ *   ① **读范围是"指名"的**：`READ_SCOPED_TOOLS` 必须**双向等于** `档3 − 档1`
+ *      —— 少了 ⇒ 某档白拿读能力；多了 ⇒ 把一个非读工具误判成"低档看不见"。
+ *   ② **档位只管读范围**：非读工具在**任何档**都要留（`web_search` 类"默认放开"），
+ *      而读范围名字必须**按档**判（`hob_glob` 档1 摘、档3 留）。
+ *   ③ ⭐ **没见过的工具不静默放行**：`unseen === true` 且 `keep === true`
+ *      （⚠ 语义 = 主流 `ask` 去掉交互形态：**放行 + 留待确认**，⛔ 不是拦下）。
+ *   ⚠ 负向对拍（⑤o-4）把 deny 分支改成恒假 ⇒ ②必须变红，用来证明这三条有牙。
+ */
+{
+  const MOD_TS = join(root, 'src', 'preset', 'tools.ts')
+  let m = null
+  try { m = await import(pathToFileURL(MOD_TS).href + '?p14=' + Date.now()) } catch (e) {
+    bad(`⑤o 无法直载 src/preset/tools.ts（${String(e?.message ?? e)}）⇒ 基准缺失，不按通过处理`)
+  }
+  if (m !== null) {
+    // ── ⑤o-1 读范围表 ≡ 档3 − 档1（双向）────────────────────────────
+    {
+      const readScoped = Array.isArray(m.READ_SCOPED_TOOLS) ? m.READ_SCOPED_TOOLS : null
+      const t1 = new Set(m.PERMISSION_TIERS.ledger)
+      const t3 = new Set(m.PERMISSION_TIERS.workspace)
+      const derived = [...t3].filter((n) => !t1.has(n))
+      if (readScoped === null || readScoped.length === 0) {
+        bad('⑤o-1 抽不出 READ_SCOPED_TOOLS（"档位只管读范围"的唯一来源缺失）')
+      } else {
+        const onlyTable = readScoped.filter((n) => !derived.includes(n))
+        const onlyDerived = derived.filter((n) => !readScoped.includes(n))
+        if (onlyTable.length > 0 || onlyDerived.length > 0) {
+          bad(`⑤o-1 READ_SCOPED_TOOLS 与「档3 − 档1」**不是逐名相等**`
+            + `（表里多：${onlyTable.join(', ') || '无'}；派生多：${onlyDerived.join(', ') || '无'}）`)
+        } else {
+          ok(`⑤o-1 读范围表逐名 == 档3 − 档1（${readScoped.length} 名：${readScoped.join(', ')}）`)
+        }
+      }
+    }
+
+    /** ⚠ deny 清单的**唯一来源**是 `src/modules/tools.ts`（`preset/tools.ts` 只是转口）。 */
+    let DENY = []
+    try {
+      const dm = await import(pathToFileURL(join(root, 'src', 'modules', 'tools.ts')).href + '?p14=' + Date.now())
+      DENY = dm.DEFAULT_DENY ?? []
+    } catch { DENY = [] }
+    if (DENY.length === 0) bad('⑤o 抽不出 DEFAULT_DENY（基准缺失 ⇒ 不按通过处理）')
+    const KNOWN = [...m.MODEL_TOOL_ALLOWLIST, ...DENY]
+    const decide = (n, lv) => m.decideToolFace(n, lv, DENY, KNOWN)
+
+    // ── ⑤o-2 档位只管读范围 / 其余默认放开 ────────────────────────────
+    {
+      const cases = [
+        ['hob_glob', 'ledger', false, '读范围名·档1 没有 ⇒ 摘'],
+        ['hob_glob', 'workspace', true, '读范围名·档3 有 ⇒ 留'],
+        ['hob_read_doc', 'project', true, '读范围名·档2 有 ⇒ 留'],
+        ['web_search', 'ledger', true, '**非读工具**（不在任何档）⇒ 档1 也留（默认放开）'],
+        ['hob_sessions', 'ledger', true, '编排名·非读 ⇒ 与档位无关，留'],
+        ['bash', 'workspace', false, 'deny 清单内 ⇒ 最高档也摘'],
+        ['write', 'workspace', false, 'deny 清单内 ⇒ 摘'],
+        ['run_code', 'ledger', true, '保留传输名 ⇒ 留'],
+      ]
+      const wrong = []
+      for (const [n, lv, want, why] of cases) {
+        const v = decide(n, lv)
+        if (v.keep !== want) wrong.push(`${n}@${lv}=${v.keep}（应 ${want}；${why}，实际 why=${v.why}）`)
+      }
+      if (wrong.length > 0) bad(`⑤o-2 工具面判决与"档位只管读范围"不符：${wrong.join(' / ')}`)
+      else ok(`⑤o-2 档位只决定读范围（${cases.length} 例全对）：读范围名按档判 · 非读名任何档都留 · deny 最高档也摘`)
+    }
+
+    // ── ⑤o-3 ⭐ 没见过的工具：放行 + 待确认（= ask 去掉交互形态）────────
+    {
+      const v = decide('brand_new_plugin_tool', 'ledger')
+      const vKnown = decide('read_contracts', 'ledger')
+      if (v.keep !== true) {
+        bad('⑤o-3 没见过的工具被**拦下**了 ⇒ 那是退回白名单，与用户裁定"默认放开"相反')
+      } else if (v.unseen !== true) {
+        bad('⑤o-3 没见过的工具被**静默放行**（unseen=false）⇒ 这正是本轮要治的"不吭声"')
+      } else if (vKnown.unseen !== false) {
+        bad('⑤o-3 认识的名字（`read_contracts`）被误判成"没见过" ⇒ unseen 口径错')
+      } else {
+        ok('⑤o-3 ⭐ 没见过的工具：`keep=true` + `unseen=true`（**放行且留待确认**，⛔ 不静默、⛔ 不拦下）')
+      }
+    }
+
+    // ── ⑤o-4 负向对拍：把 deny 分支改成恒假 ⇒ ⑤o-2 必红 ────────────────
+    {
+      let src = null
+      try { src = readFileSync(MOD_TS, 'utf8') } catch { src = null }
+      const NEEDLE = "if (deny.includes(name)) return { keep: false, unseen: false, why: 'deny' }"
+      // ⚠ 先自证：源码里**确实**有那句（否则"改不动"与"改了没用"无法区分）
+      const present = src !== null && src.includes(NEEDLE)
+      const mutated = present ? src.replace(NEEDLE, "if (false) return { keep: false, unseen: false, why: 'deny' }") : null
+      const changed = mutated !== null && mutated !== src
+      if (!present || !changed) {
+        bad('⑤o-4 造不出「deny 恒假」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const tmp = join(root, 'src', 'preset', `tools.__negctl_p14_${process.pid}.ts`)
+        writeFileSync(tmp, mutated)
+        try {
+          const mm = await import(pathToFileURL(tmp).href + '?t=' + Date.now())
+          const leak = mm.decideToolFace('bash', 'workspace', mm.DEFAULT_DENY, KNOWN)
+          if (leak.keep === true) {
+            ok(`⑤o-4 ✓ 负向对拍（deny 分支改成恒假）⇒ ⑤o-2 **必红**：\`bash\`@workspace 变成 keep=${leak.keep}`)
+          } else {
+            bad(`⑤o-4 变体仍把 \`bash\` 摘掉了（keep=${leak.keep}）⇒ 那条断言没有牙`)
+          }
+        } finally {
+          try { rmSync(tmp, { force: true }) } catch { /* 清不掉不影响判定 */ }
+        }
+      }
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ⑤o-5 · ⭐「没见过的工具要被看见」的**专属**负向对拍
+// ══════════════════════════════════════════════════════════════════════
+/**
+ * ⚠ ⑤o-4 打的是 deny 分支，**证明不了** `unseen` 这一侧有牙 ⇒ 单列一条。
+ * 手段：把 `unseen: !known.includes(name)` 改成 `unseen: false`（= **静默放行**，正是要治的病）
+ * ⇒ ⑤o-3 必红。⚠ 先自证源码里**确实**有那句（否则"改不动"与"改了没用"分不开）。
+ */
+{
+  const MOD_TS = join(root, 'src', 'preset', 'tools.ts')
+  let src = null
+  try { src = readFileSync(MOD_TS, 'utf8') } catch { src = null }
+  const NEEDLE = "return { keep: true, unseen: !known.includes(name), why: 'default-open' }"
+  const present = src !== null && src.includes(NEEDLE)
+  const mutated = present ? src.replace(NEEDLE, "return { keep: true, unseen: false, why: 'default-open' }") : null
+  if (!present || mutated === src) {
+    bad('⑤o-5 造不出「unseen 恒假」的变体（源码形态变了）⇒ 负向对拍不可判')
+  } else {
+    const tmp = join(root, 'src', 'preset', `tools.__negctl_p14u_${process.pid}.ts`)
+    writeFileSync(tmp, mutated)
+    try {
+      const mm = await import(pathToFileURL(tmp).href + '?t=' + Date.now())
+      const v = mm.decideToolFace('brand_new_plugin_tool', 'ledger', [], [])
+      if (v.keep === true && v.unseen === false) {
+        ok('⑤o-5 ✓ 负向对拍（`unseen` 改成恒假 = 静默放行）⇒ ⑤o-3 **必红**：'
+          + '没见过的工具变成 `keep=true, unseen=false`（正是"不吭声"那种形态）')
+      } else {
+        bad(`⑤o-5 变体仍报 unseen=${v.unseen}（keep=${v.keep}）⇒ 那条断言没有牙`)
+      }
+    } finally {
+      try { rmSync(tmp, { force: true }) } catch { /* 清不掉不影响判定 */ }
     }
   }
 }
