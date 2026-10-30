@@ -590,6 +590,15 @@ function checkDirRefs({ ledgerRoot, bad, ok, skip }) {
     scanFiles: 0, refs: 0, dirRefs: 0, dirRefsNamed: 0, dirRefsDerived: 0,
     memberPairs: 0, missing: 0, dirsWithoutMembers: 0, overlapSkipped: 0,
     dirsNotIndexed: 0, notIndexedMembers: 0,
+    /**
+     * ⚠⚠ **2026-10-30 P19：把「尚未入库」从"逐目录一条 note"改成"分组计数"**。
+     *   理由（用户裁定）：账本区 285 个归档**已按设计入库** ⇒ 那批 note 的**对象消失**，
+     *   分母从 240 掉到 4 —— 刻度该跟着走；⚠ 但**保护不许丢**：
+     *   对象还在（下次真出现"盘上有、index 无"时仍会被点名），只是**聚成一条**报。
+     *   ⚠ 这**不是放宽**：判据仍是"盘上有文件 / index 里 0 份 ⇒ 必须报"，
+     *     变的只是**报的粒度**（逐条 → 分组），⛔ 不是把这条检查删掉。
+     */
+    notIndexed: [],
   }
   const files = deriveScanFiles(ledgerRoot)
   stat.scanFiles = files.length
@@ -625,10 +634,8 @@ function checkDirRefs({ ledgerRoot, bad, ok, skip }) {
           if (onDiskNamed.length > 0) {
             stat.dirsNotIndexed += 1
             stat.notIndexedMembers += onDiskNamed.length
-            ok(`② ${f}:${i + 1} 引用的目录 \`${ref}\` —— ⚠ **盘上有 ${onDiskNamed.length} 份、但 index 里 0 份** ⇒ `
-              + `**"尚未入库"，⛔ 不是"无成员"**`
-              + `\n      ⇒ 逐份：${onDiskNamed.slice(0, 8).join(' · ')}${onDiskNamed.length > 8 ? ` …另有 ${onDiskNamed.length - 8} 份` : ''}`
-              + `\n      ⇒ ⚠ 成员面取自 \`git ls-files\`（index）⇒ "提交"这个动作会改变本断言的分母`)
+            // ⚠ P19：不再逐目录 ok() ⇒ 收进分组计数（见下方"② 尚未入库（分组）"那一行）
+            stat.notIndexed.push({ rel, kind: '正文点名', at: `${f}:${i + 1}`, files: onDiskNamed.length, sample: onDiskNamed.slice(0, 3) })
             continue
           }
           stat.dirsWithoutMembers += 1
@@ -673,13 +680,8 @@ function checkDirRefs({ ledgerRoot, bad, ok, skip }) {
       if (onDisk.length > 0) {
         stat.dirsNotIndexed += 1
         stat.notIndexedMembers += onDisk.length
-        ok(`② 盘上派生目录 \`${rel}/\` —— ⚠ **盘上有 ${onDisk.length} 份、但 index 里 0 份** ⇒ `
-          + `**"尚未入库"，⛔ 不是"无成员"**（⚠ 这两件事以前分不开）`
-          + `\n      ⇒ 逐份：${onDisk.slice(0, 8).join(' · ')}${onDisk.length > 8 ? ` …另有 ${onDisk.length - 8} 份` : ''}`
-          + `\n      ⇒ ⚠ **成员面取自 \`git ls-files\`（index）** ⇒ ⚠ **"提交"这个动作会改变本断言的分母**`
-          + `（第 215 / 217 轮实测：同一轮里 786 → 787 → 788）`
-          + `\n      ⇒ ⚠ 处置：⛔ 不改判据（那会放宽）；⚠ **让这一批可见就是它的用处** ——`
-          + `⚠ 入库之后同一目录就会开始产生成员比对对数`)
+        // ⚠ P19：同上，收进分组计数
+        stat.notIndexed.push({ rel, kind: '盘上派生', at: '', files: onDisk.length, sample: onDisk.slice(0, 3) })
         continue
       }
       stat.dirsWithoutMembers += 1
@@ -698,6 +700,33 @@ function checkDirRefs({ ledgerRoot, bad, ok, skip }) {
           + `\n      ⇒ 核实方式：在 ${ledgerRoot} 跑 \`ls ${memRel}\``)
       }
     }
+  }
+
+  /**
+   * ── ② 尚未入库（**分组计数** · 2026-10-30 P19）────────────────────────
+   *   ⚠ 改前：每个「盘上有、index 里 0 份」的目录各一条 `ok()` ⇒ 285 个归档 ⇒ 237 条 note
+   *     ⇒ 分母被**在途产物**撑到 240，而这些 note 一入库就全消失（刻度失真）。
+   *   ⚠ 改后：**聚成一条**（总数 + 前 8 个名字 + 分类计数），⚠ **保护不丢**：
+   *     对象仍然被点名（名字在），只是不再一条一记。
+   *   ⚠ 口径：**有对象才报**（0 个 ⇒ 不报，⛔ 不印空壳 ✓）。
+   */
+  /**
+   * ⚠⚠ **P19 定稿：这一行⛔ 不设"有对象才报"的开关** —— 它是本组的**固定读数行**：
+   *   0 个也报（"0 个目录"），因为"**这一项查过了、当前一个都没有**"本身就是要留下的读数；
+   *   ⚠ 与"空壳 ✓"的区别：空壳是**没查**却打勾，这里是**真查了、结果是 0**（分母照样算 1 处）。
+   *   ⇒ 这也是为什么下界能从 119 降到 **5**（= ① + ①c + ② + AI1 + 本行），
+   *     而不是"降到 4 就够"—— ⚠ 少的那条正是本行，它必须一直在。
+   */
+  {
+    const byKind = stat.notIndexed.reduce((m, x) => { m[x.kind] = (m[x.kind] ?? 0) + 1; return m }, {})
+    ok(`② 尚未入库（**分组**）—— ${stat.dirsNotIndexed} 个目录「盘上有、index 里 0 份」`
+      + `（共 ${stat.notIndexedMembers} 份文件；分类：${Object.entries(byKind).map(([k, v]) => `${k} ${v}`).join(' · ')}）`
+      + (stat.notIndexed.length > 0
+        ? `\n      ⇒ 前 8 个：\n` + stat.notIndexed.slice(0, 8).map((x) => `        · \`${x.rel}/\`（${x.files} 份${x.at === '' ? '' : `，${x.at}`}）`).join('\n')
+          + (stat.notIndexed.length > 8 ? `\n        · …另有 ${stat.notIndexed.length - 8} 个` : '')
+        : `\n      ⇒ 当前**一个都没有**（账本区归档已全部入库）`)
+      + `\n      ⇒ ⚠ 这是**在途产物**（⛔ 不是 FAIL）：入库之后它会从本行消失`
+      + `\n      ⇒ ⚠ 成员面取自 \`git ls-files\`（index）⇒ "提交"这个动作会改变本断言的分母`)
   }
 
   if (stat.dirRefs > 0 && stat.memberPairs === 0) {
