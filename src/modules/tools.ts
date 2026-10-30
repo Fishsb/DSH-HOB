@@ -288,12 +288,130 @@ export const DEFAULTS = {
  *   ⇒ 必须用 `ctx.tools.restrict({ deny })` 屏蔽。收敛要靠**允许清单**思维（§6.3）。
  *
  * ⚠ **本常量只服务「Hob」（规划侧）那一个预设**，语义自本文件建立以来未变（2026-10-07 批 6 复核）。
+ *
+ * ⚠⚠ **2026-10-24 · 本项目自研的跨实例投递模块已整体删除，与本常量无关**：
+ *   这里屏蔽的 `interconnect_*` 是**第三方插件 `dsh-interconnect`** 注册的工具名，
+ *   ⛔ **不是**本项目自研的那一套（已删除）。两条完全不同的东西，⛔ 别因为名字像就一起删 ——
+ *   删掉它们 ⇒ 若将来装了那个插件，Hob 会话会**多出一批跨实例工具**（等于放权）。
+ *   ⇒ 本常量**保留不动**，属「不碰既有行为」那一侧的边界。
  */
 export const DEFAULT_DENY = [
+  // ── ① 跨实例投递（第三方 `dsh-interconnect` 的宿主平面行，会被每个 agent 继承）──
+  //   理由：这条通道**不受本会话的策略约束** —— 它能把指令送到**别的宿主实例**上的会话，
+  //   而那不在本项目的账本与验收链里（送出去的东西既不进 `runs/`、也不进 `acc/`）。
+  //   ⇒ 一旦可达，"投递 ≠ 做完"这条不变量就失去了唯一的记录面。
   'interconnect_send',
   'interconnect_reply',
   'interconnect_ping',
   'interconnect_list',
+
+  // ── ②' 能力放大口（**P15 新增**：它自己不动任何文件，但能"点开"别的能力）────
+  //   `ops_discover_tools`（`dsh-ops` 的 discovery 行）做的事是：按查询**选择并发布**
+  //   `ops_*` 能力到下一步的模型面。⚠ 读它的实现（`lib/discovery/index.js:78-81`）：
+  //   过滤条件只有"该会话的 sandbox policy 不是 read-only" ⇒ 在 `danger-full-access`
+  //   会话里它能发布 `ops_write_file` / `ops_edit_file` / `ops_remove` / `ops_bash`。
+  //   ⇒ 它本身**不写**，但它是**通往写/命令的那扇门**；deny 掉它，`ops_*` 写类
+  //     就**无从进入**模型面（那批名字不在本清单里，只是"没被发布"）。
+  //   ⚠ 只读那几件（`ops_glob`/`ops_grep`/`ops_read_files`/`ops_inspect_local_file`/
+  //     `ops_result`）是**独立发布**的，不受本条影响 ⇒ 读能力一点没少。
+  'ops_discover_tools',
+
+  // ── ② 命令类（能在**本机**执行任意命令）──────────────────────────────
+  //   理由：Hob 的职责是"写清步骤交给实施会话"，**不是自己动手**（五步里第 4 步明确规定
+  //   `executor` 是 developer session）。`bash`/`pwsh` 一可达，就同时具备读写任意文件、
+  //   起任意进程、改任何仓库的能力 —— 那等于把第 4 步和第 5 步合并到同一个主体。
+  'bash',
+  'pwsh',
+  // ⚠⚠ **P14 实况补录**：本机还装了 `dsh-experimental-terminal-bundle` ⇒ 它带来 6 个
+  //   `terminal_*`（`open`/`send`/`signal`/`close`/`read`/`list`），那是**持久化的 shell**
+  //   —— 与 `bash` 同类同权（能起进程、能改文件），⛔ 不是"只是读终端"。
+  //   ⚠ 这条是"没见过的工具"那条判据**当场咬出来的**：不补进来的话它们会以
+  //   `unseen → 放行` 的形态进模型面（= 默认放开的副作用，必须靠 deny 清单收）。
+  'terminal_open',
+  'terminal_send',
+  'terminal_signal',
+  'terminal_close',
+  'terminal_read',
+  'terminal_list',
+
+  // ── ③ 写类（能改**任意路径**，含代码与账本之外的任何文件）────────────────
+  //   理由：账本写入已经收口到 `write_hob`（有白名单 + 缩水守卫 + 归档禁 overwrite）。
+  //   放行通用的 `write`/`edit` 等于绕过那一整套守卫 ⇒ "账本只有一个写者"从机制退回约定。
+  'write',
+  'edit',
+  'str_replace_editor',
+
+  // ── ④ 组队 / 派活类（能拉一支团队、给别的会话发指令、改它们的生命周期）──────
+  //   理由：本项目的编排口径是"**投递一条消息**"（`hob_send` / `hob_dispatch`，记账、可验收）。
+  //   而 `spawn_teammate` / `team_task_*` / `wait_agent` / `interrupt_agent` 是**另一套**团队
+  //   运行面：它自己建 roster、自己认领任务、自己判完成 —— 与五步里的 `run`/`acc` 两处记录
+  //   **对不上**。两套并存 ⇒ 同一件事有两个"谁在做、做完没有"的答案。
+  'spawn_teammate',
+  'team_task_create',
+  'team_task_get',
+  'team_task_list',
+  'team_task_update',
+  'send_message',
+  'wait_agent',
+  'interrupt_agent',
+  'list_agents',
+  // ⚠ **P14 实况补录**：本机 `@nanmicoder/dsh-agent-teams` 的 15 个 `agent_teams_*` 与
+  //   `team_task_*` 是**同一套团队运行面**（建 roster / 认领任务 / 改生命周期 / 自己判完成）。
+  //   ⇒ 与上面 `spawn_teammate`/`team_task_*` 同一条理由，⛔ 不能只挡一半。
+  'agent_teams_create',
+  'agent_teams_add_member',
+  'agent_teams_remove_member',
+  'agent_teams_create_task',
+  'agent_teams_claim_task',
+  'agent_teams_update_task',
+  'agent_teams_amend_task',
+  'agent_teams_reassign_task',
+  'agent_teams_approve',
+  'agent_teams_edit_plan',
+  'agent_teams_send_message',
+  'agent_teams_status',
+  'agent_teams_resume',
+  'agent_teams_delete',
+
+  // ── ⑤ 改共享工作状态类（看板卡的创建/移动/勾选/报告）──────────────────
+  //   理由：看板是**用户**的确认面（任务只有用户能移进 `done`）。Hob 若自己能建卡、移卡、
+  //   勾清单、交执行报告，"完成须用户确认"这条就变成自己给自己签字。
+  //   ⚠ 只读的三个（`taskboard_list`/`get`/`comments`）**不在本清单** —— 读看板是合法的。
+  'taskboard_create',
+  'taskboard_move',
+  'taskboard_update',
+  'taskboard_delete',
+  'taskboard_checklist',
+  'taskboard_comment_add',
+  'taskboard_execution_report',
+
+  // ── ⑥ 其它能改共享状态 / 起并行工作面的 ─────────────────────────────
+  //   `job_*`：后台任务本子（起/停/读别人起的活）；`todo_write`/`create_goal`/`update_goal`：
+  //   改写会话的目标与待办（那是**用户**的意图面）；`subagent*`/`workflow`/`ralph`：
+  //   另起一个独立 agent 去干活，同样绕开 `run`/`acc` 记录。
+  'job_kill',
+  'job_list',
+  'job_output',
+  'todo_write',
+  'create_goal',
+  'update_goal',
+  'subagent',
+  'subagent_codex',
+  'subagent_claude_code',
+  'subagent_fork',
+  'workflow',
+  'ralph',
+  // ⚠ **P14 实况补录（改共享状态 / 改宿主本身）**：
+  //   `create_worktree` 会在别的仓库里建分支与工作区（改**别的项目**的磁盘状态）；
+  //   `dshm_install`/`uninstall`/`upgrade`/`toggle`/`restart` 改的是**宿主 profile**
+  //   （装/卸插件、重启宿主）—— 那是比"改一个文件"更大的共享状态，且**用户看不见过程**。
+  //   ⚠ 市场**只读**三件（`dshm_search`/`dshm_list`/`dshm_outdated`）**不在此列**。
+  'create_worktree',
+  'dshm_install',
+  'dshm_uninstall',
+  'dshm_upgrade',
+  'dshm_toggle',
+  'dshm_restart',
 ] as const
 
 /** 解析工作区根：显式配置优先，其次会话 cwd；都没有则 undefined（fail-closed）。 */
@@ -935,12 +1053,10 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
           //   治的是"**够不到账本**"与"**真的没有待投递**"给同一读数这个缺陷
           //   （第 243 轮实测 · `REPORT-R205.md` §3.2-c）。
           handoffReading: renderHandoffReading(res.handoffs, res.reachability),
-          ...(skeletonNote === undefined ? {} : { skeletonScaffold: skeletonNote }),
         })
       }
       return JSON.stringify({
         ...r,
-        ...(skeletonNote === undefined ? {} : { skeletonScaffold: skeletonNote }),
       })
     },
   })
