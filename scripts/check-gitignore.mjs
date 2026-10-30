@@ -11,7 +11,8 @@
  *
  * ⚠ 累计顺序**必须**与拆分前逐行一致（判定行的两个计数也来自本文件累计的清单）。
  */
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { resolve, sep } from 'node:path'
 import { dirname, join as pjoin } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -160,6 +161,77 @@ if (ledgerRootDiag.kind !== 'ok') {
 
 // ── ① 入库与仓规（带回 README / PKG 两处共享读数）───────────────────────
 const { mustTrack, mustExclude, README, readmeSrc, PKG } = runRepoRules({ bad, ok, skip: noteSkip })
+
+// ── ③ L-177：源码目录不得被整目录忽略吞掉（`E-177`）────────────────────
+runSourceNotSwallowed({ bad, ok })
+
+/**
+ * ── ③ L-177：**源码目录不得被"整目录忽略"吞掉**（2026-10-31 P24 · `E-177`）──────────
+ *
+ * ⚠⚠ **它治的病（真实发生过，不是假想）**：
+ *   `.gitignore` 里一行 **未锚根** 的 `lib/` ⇒ 匹配**任意层级**的 `lib/`
+ *   ⇒ 把 `scripts/lib/ledger-root.mjs`（**113 行手写源码**，13 个判据脚本 import 它）
+ *     一起吞了 ⇒ **从未入库**，而**本地永远绿**（文件在盘上、`git status` 不显示被忽略项）。
+ *   爆点：**别人克隆本仓跑 `check:all` ⇒ `ERR_MODULE_NOT_FOUND`**，13 个族同时崩。
+ *
+ * ── 口径（⚠ 只查 `scripts/lib/`，**不是**全仓扫描 —— 见下方"为什么不做更强版"）──
+ *   对 `scripts/lib/` 下**每一个 `.mjs`**：`git ls-files --error-unmatch <path>` 必须成功。
+ *   ⚠ 失败 ⇒ 红，**并指名是哪个文件**（⛔ 只说"有文件没入库"没用，得让人知道去 add 哪个）。
+ *
+ * ── ⚠ 为什么不做更强版（"所有被忽略目录里的源码都该查"）──────────────
+ *   实测：`git ls-files --others --ignored --exclude-standard -- src scripts kit preset` = **0 条**
+ *   ⇒ 今天做强版**一条对象都没有**（空判据 = 恒绿 = 反而更危险，见 `E-27`）。
+ *   ⚠ 而"全仓扫描"要先把 `lib/`（3.5 M 编译产物）、`node_modules/`（3943 条）、
+ *     `.dsh-worktrees/`（110 M）全部排除掉才能跑 —— 那份排除表**本身就是新的漂移源**。
+ *   ⇒ **只做 `scripts/lib/`**：它是**唯一**一个"手写源码放进名叫 lib 的目录"的地方，
+ *     也正是这次真出事的地方。⚠ 判不出的部分⛔ 不假装判得出。
+ */
+function runSourceNotSwallowed({ bad, ok }) {
+  const dir = 'scripts/lib'
+  const abs = pjoin(root, dir)
+  let names = []
+  try {
+    names = readdirSync(abs).filter((n) => n.endsWith('.mjs')).sort()
+  } catch {
+    // ⚠ 目录不存在 ⇒ 没有对象可查。⛔ 不许记 ✓（"没查到"与"查过且通过"是两件事）
+    bad(`L-177 · 源码目录 \`${dir}/\` 读不到 ⇒ 本条失去对象（⛔ 不按通过处理）`)
+    return
+  }
+  if (names.length === 0) {
+    bad(`L · \`${dir}/\` 下**一个 .mjs 都没有** ⇒ 本条没有对象可查（⛔ 不按通过处理）`)
+    return
+  }
+  const missing = []
+  for (const n of names) {
+    const rel = `${dir}/${n}`
+    try {
+      execFileSync('git', ['ls-files', '--error-unmatch', '--', rel], { cwd: root, stdio: 'pipe' })
+    } catch {
+      missing.push(rel)
+    }
+  }
+  if (missing.length > 0) {
+    /**
+     * ⚠ 红的时候要能**直接照做**：指名文件 + 告诉它可能被哪条规则挡了。
+     *   `git check-ignore -v` 的输出正是"哪一行规则干的" —— 直接带出来。
+     */
+    const why = missing.map((rel) => {
+      let rule = '（未被任何规则命中 ⇒ 只是忘了 add）'
+      try {
+        rule = execFileSync('git', ['check-ignore', '-v', '--', rel], { cwd: root, stdio: 'pipe' }).toString().trim()
+      } catch { /* 没被忽略 ⇒ 保持上面那句 */ }
+      return `      · \`${rel}\` —— ${rule}`
+    }).join('\n')
+    bad(`L-177 **源码被"整目录忽略"吞掉了**：\`${dir}/\` 下 ${missing.length}/${names.length} 个 .mjs **不在库里**`
+      + `\n${why}`
+      + '\n      ⇒ 这正是 `E-177`：未锚根的 `lib/` 会匹配**任意层级**的 `lib/`'
+      + '\n      ⇒ 修法：把规则改成锚根（`/lib/`），然后逐路径 `git add` 那个文件'
+      + '\n      ⇒ ⚠ 后果不是"少一个文件"：这些是判据脚本的**共享源码**，别人克隆后 `check:all` 会 `ERR_MODULE_NOT_FOUND`')
+  } else {
+    ok(`L-177 ✓ \`${dir}/\` 下 ${names.length} 个 .mjs **全部在库里**`
+      + `（${names.join(' · ')}）⇒ 未锚根规则吞源码这件事会被当场咬住（\`E-177\`）`)
+  }
+}
 
 // ── ③ K：同源判据的字面量必须逐字相同 ───────────────────────────────────
 runSameSource({ bad, ok })
