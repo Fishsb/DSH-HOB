@@ -121,7 +121,7 @@ function deref(value: unknown): unknown {
  * ⚠ 显示名从第 8 轮起**走语言服务**（键 `module.<配置键>`）——
  *   本常量只保留**顺序与配置键**，中文名在 `PANEL_ZH` 里。
  */
-const VISIBLE_SWITCHES = ['tools', 'bus', 'orch', 'settings', 'interconnect'] as const
+const VISIBLE_SWITCHES = ['tools', 'bus', 'orch', 'settings'] as const
 
 /** 一个开关的显示名（经语言服务）。 */
 function switchName(key: string): string {
@@ -844,7 +844,6 @@ export function SettingsPanel(): ReactElement {
             bus: t('module.bus'),
             orch: t('module.orch'),
             settings: t('module.settings'),
-            interconnect: t('module.interconnect'),
           })}<b>{t('note.restart.strong')}</b>{t('note.restart.post')}
         </li>
         <li className={S.note}>
@@ -899,7 +898,6 @@ const PANEL_EN: Record<string, string> = {
   'module.bus': 'Session bus',
   'module.orch': 'Closed-loop orchestration',
   'module.settings': 'Settings',
-  'module.interconnect': 'Cross-instance',
   cardTitle: 'New-session defaults',
   'cardNote.pre': 'Affects only sessions this plugin creates (the ones Hob starts via ',
   'cardNote.mid': '); ',
@@ -975,7 +973,7 @@ const PANEL_EN: Record<string, string> = {
    *   ⇒ 改成「列出的每一个」：**不写死数**，以花括号里实际列出的那串为准。
    *   ⚠ 中文那一侧同步改（见 `:1191` 附近），⛔ 不许一边改一边不改。
    */
-  'note.restart.pre': '· Module switches ({tools} / {bus} / {orch} / {settings} / {interconnect}; every one listed here): a change needs ',
+  'note.restart.pre': '· Module switches ({tools} / {bus} / {orch} / {settings}; every one listed here): a change needs ',
   'note.restart.strong': 'an instance restart',
   'note.restart.post': ' to take effect — the host’s rule is that changing these values does not remount the plugin, and modules are loaded at plugin-load time.',
   'note.effective.pre': '· «{card}» is a ',
@@ -1005,7 +1003,6 @@ const PANEL_ZH: Record<string, string> = {
   'module.bus': '会话总线',
   'module.orch': '闭环编排',
   'module.settings': '设置',
-  'module.interconnect': '跨实例投递',
   cardTitle: '新建会话默认',
   'cardNote.pre': '仅影响本插件建出的会话（Hob 派活时经 ',
   'cardNote.mid': ' 新建的那些）；',
@@ -1060,21 +1057,8 @@ const PANEL_ZH: Record<string, string> = {
   // ── 工作方式（2026-10-19 · UD-97）──────────────────────────────────────
   // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
   // ⚠ 显示名只给人看 —— **配置值不进任何用户可见文本**（机检 G 组钉住）。
-  'skel.title': '首次使用时铺骨架',
-  'skel.note': '首次在某工作区干活时，把骨架铺进那个工作区。',
-  'skel.label': '开关',
-  'skel.on': '开',
-  'skel.off': '关',
-  'skel.meaning': '关掉之后的行为',
-  'skel.note.on': '工作区里还没有 .hob 时才铺；已经有了就一个字节都不动。',
-  'skel.note.off': '什么都不铺。新工作区就保持你手工复制的那份骨架（或者干脆没有）。',
-  'skel.result': '结果',
-  'skel.saved': '已保存：首次铺骨架现在是「{state}」。',
-  'note.skeleton.pre': '· 「首次使用时铺骨架」是',
-  'note.skeleton.strong': '永不覆盖',
-  'note.skeleton.post': '的行为 —— 只在还没有 .hob 时铺；已经有了就报一行跳过、一个字节都不动。它不建任何工具，也不是面向对话的能力。',
   /** ⚠ 与上面英文侧同步：⛔ 不写死数量，改成"上面列出的每一个"。 */
-  'note.restart.pre': '· 模块开关（{tools} / {bus} / {orch} / {settings} / {interconnect}，上面列出的每一个）：改完需要',
+  'note.restart.pre': '· 模块开关（{tools} / {bus} / {orch} / {settings}，上面列出的每一个）：改完需要',
   'note.restart.strong': '重启实例',
   'note.restart.post': '才生效 —— 宿主的规定是"改这些值不重挂插件"，而模块的装载发生在插件装载那一刻。',
   'note.effective.pre': '· 「{card}」是',

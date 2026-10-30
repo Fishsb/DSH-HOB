@@ -39,12 +39,6 @@
           #   关掉它只影响 M5：会话总线仍在（手工投递路不受影响）。
           orch: false
           settings: true
-          # ⚠ **缺省 false**（2026-10-16 第 237 轮 · M6a · `UD-119` 裁定）：跨实例投递
-          #   会**在无人看管时向另一个实例投递** ⇒ 与 `orch` 同风险档 ⇒ 显式打开。
-          #   ⚠ 另有一条**独立**的闸门：**权限档位 = 账本时，即便这里开着也不提供投递服务**
-          #     （跨实例投递是"影响外部状态"的动作，只读档不做）。
-          #   ⚠ 关掉它只影响 M6a：投递服务不提供，其余模块照常。
-          interconnect: false
         # ── 新建会话默认值（2026-10-09 本轮新增；与 src/config.ts 的 `spawn` 段一一对应）──
         # ⚠ 四个字段**都带 .volatile()** ⇒ 运行时都是 **ref 对象**，
         #   唯一允许解 ref 的地方是 `src/config.ts` 的 `spawnDefaults()`；
@@ -71,29 +65,6 @@
         # ⚠ 它带 `.volatile()` ⇒ 改档位走 volatile-only 通道、**不必重启**。
         permission:
           level: ledger
-        # ── 「首次使用时铺骨架」（2026-10-16 第 224 轮 · `UD-118` 用户裁定「C」）──
-        # ⚠ 它管的是：插件**首次**在某工作区干活时，把骨架（`.hob/**` 结构层）铺进去 ——
-        #   ⚠ 免得"装到别的实例"这件事**依赖人记得复制**（由来：第 221 轮实测
-        #   `npm pack` 里 `.hob/` 命中 0）。
-        # ⚠ ⚠ **它不是 agent 的工具**：Hob 的工具面一个都不多（约束 ⑥）——
-        #   ⛔ 别把它接到 `write_hob` 的入参上，也⛔ 别在预设里声明它；
-        #   它是**插件的初始化行为**（与"注册模块"同一档）。
-        # ⚠ **缺省 true（默认开）**：它**永不覆盖已存在的 `.hob/`**（只补缺）
-        #   ⇒ 对已有骨架的工作区是**空操作**（只打一行"已存在 ⇒ 跳过"）。
-        # ⚠ 形状与 `spawn` / `permission` 同形：父不标 volatile、子字段标
-        #   （父子同标会抛 ValidationError；非 volatile 路径会被宿主写入通道拒）。
-        # ⚠ 唯一允许解 ref 的地方是 `src/config.ts` 的 `skeletonEnabled()`。
-        skeleton:
-          enabled: true
-        # ── 跨实例投递的对端白名单（2026-10-16 第 237 轮 · M6a · `UD-119` 裁定）──
-        # ⚠ ⚠ **它是"⛔ 不做成能写任意远端"这条硬边界的载体**：对端地址**只从这里来**。
-        # ⚠ 格式：每行一个对端 —— `名字` 或 `名字=<launcher 路径>`（⚠ 不给 launcher 就用缺省）。
-        # ⚠ **空 = 谁都不许投**（⚠ 而拒的时候会**点名**说明"不在白名单内"，⛔ 不静默）。
-        # ⚠ 形状与 `spawn` / `permission` / `skeleton` 同形：父不标 volatile、子字段标
-        #   ⇒ ⚠ 改白名单**即改即生效**（⛔ 不必重启）；⚠ 写入走子字段路径。
-        # ⚠ 唯一允许解 ref 的地方是 `src/config.ts` 的 `interconnectTargets()`。
-        interconnectTargets:
-          list: []
         # ── 「Hob 推进项目的工作方式」（2026-10-19 · `UD-97` 推进优先）────────────
         # ⚠ **它管什么**：**Hob 怎么拆活、拆成几路** —— 三档：自动 / 单会话 / 多会话。
         #   ⛔ **不管**：权限档位（那是上面的 `permission`）、谁能写什么、验收口径。
@@ -101,7 +72,7 @@
         # ⚠ `auto`（缺省）/ `single` / `multi` —— 取值与顺序的**唯一来源**是
         #   `src/shared/work-mode.ts` 的 `WORK_MODE_VALUES`（⚠ 本文件只写声明值，
         #   ⛔ 不许在这里另立一套顺序；`check:config` 的 G 组双向比对）。
-        # ⚠ 形状与 `spawn` / `permission` / `skeleton` / `interconnectTargets` 同形：
+        # ⚠ 形状与 `spawn` / `permission` / `skeleton` 同形：
         #   父对象 `workMode` 不标 volatile、子字段 `mode` 标
         #   ⇒ ⚠ 设置面写入必须走**子字段路径** `['workMode','mode']`；
         #   ⚠ 父子同标会抛 `ValidationError`；非 volatile 路径会被宿主写入通道拒。

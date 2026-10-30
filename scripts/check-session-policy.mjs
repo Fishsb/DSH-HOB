@@ -530,8 +530,6 @@ async function main() {
     }
     const presetSrc = read('src/preset/tools.ts')
     const toolsSrc = read('src/modules/tools.ts')
-    const indexSrc = read('src/index.ts')
-    const icSrc = read('src/modules/interconnect.ts')
     const svcSrc = read('src/session-policy-service.ts')
 
     const anchors = [

@@ -140,7 +140,7 @@ function fakeCtx() {
 }
 
 // ── ⚠ ⚠ 模块开关清单：**派生，⛔ 不手抄**（2026-10-16 第 237 轮）──────────────────
-//   ⚠ **为什么要改**：⚠ 某一轮加了一个开关（`interconnect`）⇒
+//   ⚠ **为什么要改**：⚠ 历史上某一轮加过一个开关 ⇒
 //     ⚠ ⚠ **手抄的 key 表 / 默认值表 / 模块名表【当场全部过期】**
 //     ⇒ ⚠ 判据红（⚠ 而它红得**对**：⚠ 是本判据的手抄表旧了，⛔ 不是实现坏了）。
 //   ⚠ ⚠ **这正是 `E-117` 同族**（⚠ 与第 224 轮本文件那处"手抄顶层键表"**同一个病**，
@@ -265,20 +265,18 @@ check("apply：默认配置 ⇒ 登记 tools + bus + settings，日志含「模�
 // ── 7) 模块可独立启停：**逐个**单独关 ⇒ 只少它自己 ────────────────────────
 //   ⚠ 原先把"只测 tools=false 一条"扩成**每个开关逐个实测** ——
 //     因为它守的是"**模块可独立启停**"这条架构性质，而单测一个开关证明不了其余四个。
-check(`apply：${SWITCH_KEYS.length} 个开关**逐个**单独关 ⇒ 只少该模块自己，其余照常登记（模块可独立启停）`, () => {
+await check(`apply：${SWITCH_KEYS.length} 个开关**逐个**单独关 ⇒ 只少该模块自己，其余照常登记（模块可独立启停）`, async () => {
   const problems = []
   for (const off of SWITCH_KEYS) {
     const m = {}
     for (const k of SWITCH_KEYS) m[k] = true
     m[off] = false
     const { ctx, plugins, logs } = fakeCtx()
-    // ⚠ ⚠ **本条只测"开关"这一道闸门** ⇒ 必须把**另一道**（档位）开到位。
-    //   ⚠ 为什么：⚠ `interconnect` 有**两道并列**闸门（开关 + 档位）；
-    //     ⚠ 默认档位 = 账本 ⇒ 它不登记 ⇒ ⚠ 而那是**档位闸门**在起作用，⛔ 不是开关坏了。
-    //   ⚠ ⚠ 若不把档位开到"项目"，本条会把**正确的双重闸门**误报成"开关不管用"
-    //     （⚠ 本轮实测撞到过：⚠ 见报告 §3.6）。
-    //   ⚠ 档位闸门本身由**下一条**判据单独守（⚠ 别让一条判据同时测两件事）。
-    mod.apply(ctx, mod.Config({ modules: m, permission: { level: 'project' } }))
+    // ⚠ 2026-10-24：自研跨实例投递退场后**已无"档位闸门"**这一道 —— 装载条件只剩显式开关本身
+    //   （原先某个模块独有"开关 + 档位"两道并列，那条已随该模块删除）。
+    //   ⇒ 这里保留 `permission: { level: 'project' }` 只是**保持夹具与历史同一形态**，
+    //     ⛔ 它今天不参与任何装载判定（`check:host` 里已无档位闸门判据）。
+    await mod.apply(ctx, mod.Config({ modules: m, permission: { level: 'project' } }))
     const want = SWITCH_KEYS.filter((k) => k !== off).map((k) => MODULE_NAMES[k]).sort()
     const got = [...plugins].sort()
     if (JSON.stringify(got) !== JSON.stringify(want)) {
@@ -293,58 +291,18 @@ check(`apply：${SWITCH_KEYS.length} 个开关**逐个**单独关 ⇒ 只少该�
 })
 
 // ── 8) 全部开关全关 ⇒ 不登记任何模块 ─────────────────────────────────────
-check(`apply：${SWITCH_KEYS.length} 个开关全关 ⇒ 不登记任何子模块（日志「模块：无」）`, () => {
+await check(`apply：${SWITCH_KEYS.length} 个开关全关 ⇒ 不登记任何子模块（日志「模块：无」）`, async () => {
   const { ctx, plugins, logs } = fakeCtx()
   const all = {}
   for (const k of SWITCH_KEYS) all[k] = false
-  mod.apply(ctx, mod.Config({ modules: all }))
+  await mod.apply(ctx, mod.Config({ modules: all }))
   if (plugins.length !== 0) return `仍登记了=${JSON.stringify(plugins)}`
   if (!logs.some((m) => m.includes('模块：无'))) return `logs=${JSON.stringify(logs)}`
   return true
 })
 
-// ── 8b) ⚠ ⚠ **装载条件 = 只有开关**（2026-10-22 第 2 轮**改判据**，⚠ 不是放宽）──────
-//   ⚠ **它守什么（现在的口径）**：`interconnect` 的**装载**只看显式开关，
-//     ⚠ **与任何档位无关** —— 因为准入已经搬到"投递时按发起会话判"（`deliverRemote` ③）。
-//
-//   ── 为什么这条判据换了（原判据当场变红，必须处理，⛔ 不许删了了事）──────────
-//     原判据：`档位=账本 ⇒ 不登记 · 档位=项目 ⇒ 登记`（2026-10-16 第 237 轮）。
-//     ⚠ 它钉的是**装载期的全局档闸门**；本轮按 `REQ-04`/`REQ-05` 把那道门**删掉**了
-//       （理由见 `src/index.ts` 装载循环上方那段注释）。
-//     ⇒ 若原样保留，它会**恒红**；若直接删掉，就没人守"装载条件到底是什么"了。
-//     ⇒ 正确处理：**换成钉新契约，并且方向反过来仍成对**：
-//        · `档位=账本` 且开关开 ⇒ **必须登记**（这正是"不再被全局档一票否决"）；
-//        · 开关关 ⇒ **必须不登记**（显式开关仍是唯一装载条件）。
-//     ⚠ 这两条合起来**比原来更强**：原来只证明"档位能挡装载"，现在还证明
-//       "档位**不能**挡装载" + "开关仍然能挡装载"。⛔ 不是把断言写松。
-//   ⚠ 投递层的准入（谁能投）**不在这里测** —— 那是 `scripts/check-policy-cross-instance.mjs`
-//     的活（它跑真 `deliverRemote`，带假启动器）。别让一条判据同时测两件事。
-check('apply：⚠ 装载条件**只有开关** —— 开关开 + 档位=账本 ⇒ 仍登记；开关关 ⇒ 不登记', () => {
-  const problems = []
-  // ① 开关开 + 档位=账本 ⇒ **要**登记（旧口径是"不登记"；本轮该方向反转）
-  for (const level of ['ledger', 'project', 'workspace']) {
-    const { ctx, plugins } = fakeCtx()
-    mod.apply(ctx, mod.Config({ modules: { interconnect: true }, permission: { level } }))
-    const got = plugins.includes('dsh-hob-interconnect')
-    if (got !== true) {
-      problems.push(`开关开 + 档位=${level} ⇒ ${got ? '登记了' : '**未登记**'}（期望登记：装载⛔ 不看档位）`
-        + ` plugins=${JSON.stringify([...plugins])}`)
-    }
-  }
-  // ② 开关关 ⇒ **不**登记（显式开关仍是唯一装载条件，⚠ 别把这道也一起删了）
-  {
-    const { ctx, plugins } = fakeCtx()
-    mod.apply(ctx, mod.Config({ modules: { interconnect: false }, permission: { level: 'workspace' } }))
-    if (plugins.includes('dsh-hob-interconnect')) {
-      problems.push(`开关关 + 档位=workspace ⇒ **仍登记了**（期望不登记：开关是唯一装载条件）`
-        + ` plugins=${JSON.stringify([...plugins])}`)
-    }
-  }
-  return problems.length === 0 ? true : problems.join('；')
-})
-
 // ── 9) name 常量（entry id / 路由前缀 / settings ns 三契约）───────────────
-check('name 常量 = dsh-hob（entry id / 路由前缀 / settings ns 三契约）', () => {
+await check('name 常量 = dsh-hob（entry id / 路由前缀 / settings ns 三契约）', () => {
   return mod.name === 'dsh-hob' ? true : `name=${JSON.stringify(mod.name)}`
 })
 

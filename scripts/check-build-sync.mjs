@@ -1078,6 +1078,140 @@ const CLIENT_LOAD = (() => {
   return { bad, good, blocking: bad.length > 0 ? ['client-runtime-contract'] : [] }
 })()
 
+// ── 面 ⑤：**孤儿产物**（2026-10-25 · TASK-3 · 补"删了源、产物还在"这个盲区）─────────
+//
+//   ── 它守什么（本单的来由，有实测出处）────────────────────────────────────
+//     `npm run build` 是 **只写不删**：源文件删掉后，它的旧产物会**永久留在 `lib/` 里**。
+//     实测（`archive/2026-10-24-cancel-interconnect/REPORT-2.md` §3.1）：
+//       M6a 模块的源已删，而 `lib/modules/interconnect.{js,js.map}` +
+//       `lib/types/modules/interconnect.d.ts` 在盘上**躺了 8 小时**，
+//       **没有任何判据发现** —— 因为面 ② 是"源 → 产物"方向逐对核，
+//       **源不存在 ⇒ 那一对根本不在比较集里** ⇒ 整个面② 结构性无感。
+//     ⇒ 本面走**反方向**：`lib/**` 里每个文件都必须能找回对应源件，否则是孤儿。
+//
+//   ── 判定口径（⚠ 按"能不能找到对应源件"，⛔ 不是按文件名猜）──────────────
+//     · `lib/foo/bar.js`      ↔ `src/foo/bar.ts` / `.tsx` / `.mts` / `.cts`
+//     · `lib/foo/bar.js.map`  ↔ 同上（source map 从属它的 `.js`）
+//     · `lib/types/**/*.d.ts` ↔ 把 `lib/types/` 换成 `src/`、去掉 `.d.ts`、逐个试四个扩展名
+//       （例：`lib/types/modules/tools.d.ts` ↔ `src/modules/tools.ts`）
+//     · ⚠ **`lib/BUILD-STAMP`**：本插件自己写的构建戳，**没有源件**，⛔ 不是孤儿 ⇒ 白名单登记。
+//     · ⚠ 其余任何形态**判不出对应关系** ⇒ **如实报判不出**（点名 + 进 `lag`），
+//       ⛔ 不许"猜不到就跳过当通过"（那正是本仓最忌的假绿）。
+//
+//   ── 三条边界（本单 §四 要求先想清楚）──────────────────────────────────
+//     ① `lib/` **不存在**（全新克隆未 build）⇒ 判 **"无对象"**（`skipped`），
+//        ⛔ 不判"通过" —— 与族内既有三态口径一致：没对象与"核过了没问题"不是一件事。
+//     ② `src/` 有、`lib/` 没有（**少**产物）⇒ 那是**面 ①/面 ② 的活**，
+//        ⛔ 本面不重复判、不抢它的读数（本面只认"多出来的"）。
+//     ③ `lib/` 里多出来的**目录**（不是文件）⇒ **忽略**。理由：目录本身不是产物，
+//        它若含孤儿文件会被逐文件抓到；空目录不承载任何代码，报它也修不了什么。
+const ORPHAN_CHECK = (() => {
+  const bad = []
+  const good = []
+  const skipped = []
+  /** 登记：合法但**没有源件**的产物（⚠ 每一项必须写清为什么合法）。 */
+  const LEGIT_NO_SOURCE = new Map([
+    ['BUILD-STAMP', '本插件自己写的构建戳（`scripts/write-build-stamp.mjs`），不来自任何源件'],
+    /**
+     * ⚠⚠ **tsdown 的 client 单体产物**：`tsdown.config.ts` 的
+     *   `entry: { client: 'src/client/index.ts' }` + `entryFileNames: 'client.js'`
+     *   ⇒ `lib/client.js` 是**整棵 `src/client/**` 打成一个包**的结果，
+     *   ⛔ **不是** `src/client/index.ts → lib/client/index.js` 那种逐文件映射。
+     *   ⇒ 按"单文件 ↔ 单源件"判必然判成孤儿 —— 那是**判据口径不对**，不是产物有问题。
+     *   ⚠ 它的**新鲜度**另有判据：面 ② 的"client 单体"分支（最新源 mtime vs 本产物 mtime），
+     *     ⛔ 本面不重复判、不抢它读数。
+     */
+    ['client.js', 'tsdown 单体打包产物（entry=src/client/index.ts ⇒ client.js），⛔ 不是逐文件产物'],
+    ['client.js.map', '同上（`client.js` 的 source map，从属它）'],
+  ])
+  /** 源件扩展名（与 `tsconfig.json` 的 include 同口径）。 */
+  const SRC_EXTS = ['.ts', '.tsx', '.mts', '.cts']
+
+  if (!existsSync(LIB_DIR)) {
+    /**
+     * ⚠ **判"无对象"而不是"通过"**：`lib/` 不在 = 从没 build 过 ⇒ 本面**没有任何东西可核**。
+     *   这与"核过了、零孤儿"是两件事，⛔ 不许合并（本仓三态纪律：
+     *   没基准 ≠ 通过；见本文件头 `0 = 已执行` 与 `2 = 未执行` 的区分）。
+     */
+    skipped.push('面 ⑤（孤儿产物）：`lib/` 不存在（⚠ 全新克隆未 build）⇒ **无对象可核**'
+      + '（⛔ 不按"通过"处理；跑一次 `npm run build` 之后本面才有对象）')
+    return { bad, good, skipped, blocking: [] }
+  }
+
+  /** 递归收 `lib/**` 下的**文件**（⚠ 目录不收 —— 见上面边界③）。 */
+  const libFiles = (() => {
+    const out = []
+    const rec = (dir) => {
+      let es = []
+      try { es = readdirSync(dir, { withFileTypes: true }) } catch { return }
+      for (const e of es) {
+        const p = join(dir, e.name)
+        if (e.isDirectory()) rec(p)
+        else if (e.isFile()) out.push(p)
+      }
+    }
+    rec(LIB_DIR)
+    return out
+  })()
+
+  /** 一个 `lib/` 产物**能不能找回对应源件**（⚠ 返回 `true` / `false` / `'undecidable'`）。 */
+  const hasSource = (relFromLib) => {
+    // ① 构建戳等登记在案的合法无源件（只在顶层比较名字）
+    if (LEGIT_NO_SOURCE.has(relFromLib)) return true
+    // ② `.js.map` ⇒ 从属它的 `.js`（去掉 `.map` 再走 ③）
+    let rel = relFromLib
+    if (rel.endsWith('.js.map')) rel = rel.slice(0, -'.map'.length)
+    // ③ `lib/types/**/*.d.ts` ⇒ `src/**/*.<ext>`
+    if (rel.startsWith('types' + '/') && rel.endsWith('.d.ts')) {
+      const stem = rel.slice('types/'.length, -'.d.ts'.length)
+      return SRC_EXTS.some((ext) => existsSync(join(SRC_DIR, stem + ext)))
+    }
+    // ④ `lib/**/*.js` ⇒ `src/**/*.<ext>`
+    if (rel.endsWith('.js')) {
+      const stem = rel.slice(0, -'.js'.length)
+      return SRC_EXTS.some((ext) => existsSync(join(SRC_DIR, stem + ext)))
+    }
+    // ⑤ 其余形态（`.d.ts` 平铺 / `.json` / 别的扩展名）⇒ **判不出**
+    return 'undecidable'
+  }
+
+  const orphans = []
+  const undecidable = []
+  for (const abs of libFiles) {
+    const rel = relative(LIB_DIR, abs).split('\\').join('/')
+    const verdict = hasSource(rel)
+    if (verdict === true) continue
+    if (verdict === 'undecidable') { undecidable.push(rel); continue }
+    orphans.push(rel)
+  }
+
+  if (orphans.length > 0) {
+    bad.push(`✗ 面 ⑤（孤儿产物）：\`lib/\` 里有 **${orphans.length}** 个文件**找不到对应源件**`
+      + `（⚠ 源文件已删、而 \`npm run build\` 只写不删 ⇒ 旧产物留在盘上）：`
+      + orphans.map((p) => `\`lib/${p}\``).join(' · '))
+    bad.push('    ⇒ 修法：删掉这些产物文件（它们**没有任何 `src/` 源件**，删了不会被重建）；'
+      + '若要保留某个"合法无源件"，把它登记进 `ORPHAN_CHECK` 的 `LEGIT_NO_SOURCE`（须写清为什么合法）')
+  }
+  if (undecidable.length > 0) {
+    bad.push(`✗ 面 ⑤（孤儿产物）：**${undecidable.length}** 个产物的对应关系**判不出**`
+      + `（⚠ 不按通过处理）：` + undecidable.map((p) => `\`lib/${p}\``).join(' · ')
+      + ' ⇒ 请把该形态的映射规则补进 `hasSource()`，或登记为合法无源件')
+  }
+  if (orphans.length === 0 && undecidable.length === 0) {
+    good.push(`✓ 面 ⑤（孤儿产物）：\`lib/\` 里 **${libFiles.length}** 个文件**逐个找回了对应源件**`
+      + `（⚠ 零孤儿；登记在案的合法无源件：${[...LEGIT_NO_SOURCE.keys()].map((k) => `\`${k}\``).join(' · ')}）`
+      + ' ⇒ ⚠ 这条**平时就该是绿的**：`npm run build` 之后 `lib/` 天然与 `src/` 对齐；'
+      + '⚠ **它红的时候只有一种含义** —— 你删了源但没删旧产物（删掉那些文件即可，⛔ 不用改本判据）')
+  }
+  /**
+   * ⚠ 退出码归属：**孤儿是"盘上这份产物不对"，与面 ①②④ 同类** ⇒ 受 `--strict-source` 管
+   *   （⛔ 不新开开关、⛔ 不动模态阈值）。
+   *   ⚠ **`undecidable` 也计入**：判不出不是通过（与本文件既有口径一致）。
+   */
+  const blocking = (orphans.length > 0 || undecidable.length > 0) ? ['orphan-product'] : []
+  return { bad, good, skipped, blocking }
+})()
+
 // ── 面 ③：运行实例面（⚠ 三档，⛔ 一行都不许省）────────────────────────────
 //
 //   ⚠ 分档**只在** `classifyInstance()` 一处（本文件上半部）—— 这里只负责**取数 + 渲染**，

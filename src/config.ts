@@ -59,14 +59,6 @@ export interface ModulesConfig {
    *   ⇒ 关掉它**唯一**的后果：少掉 `modules/settings.ts` 里那条 `describe()` 可见性自检日志。
    */
   settings: boolean
-  /**
-   * M6a 跨实例投递模块（2026-10-16 第 237 轮 · `UD-119` 裁定）。
-   *
-   * ⚠ ⚠ **缺省 `false`** —— ⚠ 它会在**无人看管时向另一个实例投递**（⚠ 与 `orch` 同风险档）。
-   * ⚠ ⚠ **且它另有一道并列的闸门**：⚠ **可读权限控制 = 账本权限时，即便这里是 `true` 也不注册**
-   *   （⚠ 跨实例投递是"影响外部状态"的动作 ⇒ 只读档不做）。
-   */
-  interconnect: boolean
 }
 
 /**
@@ -134,8 +126,9 @@ export interface Config {
      *
      * ── 改前的病灶（`PROJECT-SURVEY-3` §6.2 乙-9，乙类最后一条）─────────────
      *   本接口的 `modules` **只声明了 3 个键**（`tools` / `bus` / `settings`），
-     *   而 {@link ModulesConfig} 与 schema（见 `:213` 起）都是 **5 个**。
-     *   ⇒ ⚠ 缺的正是 **`orch`** 与 **`interconnect`** —— 恰是那两个"高风险、默认关"的。
+     *   而 {@link ModulesConfig} 与 schema 当时都是 **5 个**（含 `orch` 与那个高风险默认关的开关）。
+     *   ⇒ ⚠ 缺的正是那两个"高风险、默认关"的。
+     *   ⚠ **2026-10-24 起那个自研跨实例投递模块已整族退场** ⇒ 现在 `modules` 是 **4 个键**（`tools` / `bus` / `orch` / `settings`）。
      *   ⚠ **运行期一律走 `moduleSwitches`** ⇒ 读的是运行时对象、不是本类型
      *     ⇒ **一件事都不响**：编译能过、`check:all` 全绿、设置页也照常显示这两项。
      *   ⇒ 这是**唯一一处"代码与注释都没发现"的缺陷落点**（乙类里其余都有读数）。
@@ -150,7 +143,6 @@ export interface Config {
      *   ⚠ 让这一格**以后不会再漂**：机检见 `check:config` 的 `T` 组（三向键集对账）。
      */
     orch: import('@deepseek-ai/cordis').Volatile<boolean>
-    interconnect: import('@deepseek-ai/cordis').Volatile<boolean>
   }
   /**
    * 「Hob 推进项目的工作方式」（2026-10-19 · `UD-97`）。
@@ -192,7 +184,7 @@ export const Config = z.object({
    *   `.hob/archive/2026-10-06-config-cleanup-evidence/分区可见性验证.mjs`）：
    *     · `volatileForm(schema)` 返回**非 undefined** ⇒ 分区仍可见 ✅
    *     · 返回的 form 顶层键 = `["modules"]`，其子字段 = `{tools, bus, settings}`
-   *       （批 14 起含 `bus`；后续批次又相继加入 `orch` / `interconnect`）
+   *       （批 14 起含 `bus`；后续批次又相继加入 `orch`；⚠ 自研跨实例投递已于 2026-10-24 退场）
    *       ⚠ 那是**该次实测当时的**返回值；本轮加了 `spawn` ⇒ 顶层键应为
    *         `["modules", "spawn"]`（**已按真 schema 复测**，读数在回报里）。
    *   ⇒ **"父不标 + 子各标"单独就足以让 entry 可见**，不需要任何顶层 volatile。
@@ -241,7 +233,7 @@ export const Config = z.object({
    * （复刻脚本与结论见 `.hob/archive/2026-10-05-step6rev-evidence/`。）
    *
    * ⚠ **代价（批 14 起四个子字段同形）**：
-   *   `tools` / `bus` / `settings`（及后续加入的 `orch` / `interconnect`）
+   *   `tools` / `bus` / `settings`（及后续加入的 `orch`；⚠ 自研跨实例投递已于 2026-10-24 退场）
    *   **各自都是 ref 对象** ⇒ `cfg.modules.tools`
    *   是 ref（**恒 truthy**！直接当布尔用会**永远为真**，且不报错）。
    *   ⇒ 这件事**只能**由 {@link moduleSwitches} 收口，调用方一律不许自己解。
@@ -287,25 +279,6 @@ export const Config = z.object({
       //   两者都与本开关无关（实测见 `src/modules/settings.ts` 文件头的「本模块不控制…」一节）。
       //   ⇒ 现在如实写成「配置面自检」：关掉它只是少掉那条 describe() 可见性探测日志。
       .description('配置面自检（⚠ 不是"设置页分区开关"）：打开时向宿主 describe() 问一次"本插件在设置面上可见吗"，并把结果（可见/不可见+原因）打进日志。⚠ 关掉它：设置页分区**照样在**，只是少掉这条自检。⚠ 改它要重启实例才生效（模块装载发生在插件装载那一刻）。')
-      .volatile(),
-    /**
-     * ── 跨实例投递开关（M6a · 2026-10-16 第 237 轮 · `UD-119` 裁定）─────────────
-     *
-     * **它管什么**：⚠ 允许把一条任务**投递给另一个 DSH 实例**（⚠ 走宿主原生
-     *   `dsh headless` —— ⚠ **一次性进程 + stdout**；⛔ 不写任何自研协议）。
-     *
-     * ⚠ ⚠ **缺省 `false`（与 `bus` 的 `true` 不同）** —— ⚠ 理由与 `orch` 同档：
-     *   ⚠ **它一旦转起来会在无人看管时向别处投递**（⚠ 而这次的"别处"是**另一个实例**）
-     *   ⇒ ⚠ 要用的人**显式打开**，且打开时就知道自己在开什么。
-     *   ⚠ **并据实说明**：⚠ **地址只能从白名单来** ⇒ ⛔ 它不是"能写任意远端"
-     *     （⚠ 白名单为空 ⇒ 每个对端都被拒，⚠ 且拒的时候**点名**说清楚）。
-     *
-     * ⚠ 关掉它只影响 M6a 自己：⚠ 投递服务不提供，⚠ 其余模块照常。
-     *   ⚠ ⚠ **且档位规则仍然生效**：⚠ 即便这里开着，**档位 = 账本时服务也不提供**
-     *     （⚠ 与"只读档不做影响外部状态的动作"同一条判据）。
-     */
-    interconnect: z.boolean().default(false)
-      .description('跨实例投递（M6a）：允许把任务投递给白名单里的另一个 DSH 实例（走宿主原生 dsh headless）。⚠ 缺省关；⚠ 地址只从白名单来。')
       .volatile(),
   }).default({}),
 
@@ -466,7 +439,7 @@ export const Config = z.object({
    *   ⚠ 顺序照 `WORK_MODE_VALUES`（面板渲染顺序同此）。
    *   ⚠ **另两档的口径不动**（用户只裁了「自动」档）；⚠ **档名不改**（`UD-149` §三）。
    *
-   * ── 形状（⚠ 与 `spawn` / `permission` / `skeleton` / `interconnectTargets` 同形）──
+   * ── 形状（⚠ 与 `spawn` / `permission` / `skeleton` 同形）──
    *   · 父对象 `workMode` **不标** `.volatile()`；
    *   · 子字段 `mode` **标** `.volatile()`。
    *   理由与那四段完全同源：父子同标会抛 `ValidationError`；
@@ -573,7 +546,7 @@ function deref(value: unknown): unknown {
  *
  * | 字段 | schema 上的 volatile | 运行时形态 | 直读 `modules.x` 得到 |
  * |---|---|---|---|
- * | `tools` / `bus` / `settings`（批 14 起；`orch` / `interconnect` 同形） | ✅ 有（为了显示） | **ref 对象** | **ref**（恒 truthy，`if (m.tools)` 永远为真） |
+ * | `tools` / `bus` / `settings`（批 14 起；`orch` 同形；⚠ 自研跨实例投递已于 2026-10-24 退场） | ✅ 有（为了显示） | **ref 对象** | **ref**（恒 truthy，`if (m.tools)` 永远为真） |
  *
  * ⇒ **任何"直接读 `config.modules.x` 当布尔用"的写法的后果都是静默的**（永远为真，
  *   且不报错）。本函数是**唯一**允许碰 `config.modules` 的地方：逐字段 `deref()`，
@@ -604,10 +577,6 @@ export function moduleSwitches(config: unknown): ModulesConfig {
     //   ⇒ **两个方向的兜底都取"后果更轻"的那一边**，不取"更保守"或"更激进"。
     orch: pick('orch', false),
     settings: pick('settings', true),
-    // ⚠ 缺省 **false**（与 schema 的 `.default(false)` 一致）：读不出来时**宁可不开** ——
-    //   它的失效方向是**在无人看管时向另一个实例投递**（⚠ 而"别处"是另一台机器/实例）
-    //   ⇒ 与 `orch` 同一条"取后果更轻的那一边"纪律。
-    interconnect: pick('interconnect', false),
   }
 }
 

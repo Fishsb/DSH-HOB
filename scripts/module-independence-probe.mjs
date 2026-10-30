@@ -25,7 +25,8 @@
  *   出处：`PROJECT.md` **R-10**「静默 skipped ⇒ exit 2，不是成功」。
  *
  * ── 断言口径的实测出处（2026-10-11 第 51 轮 · 用**真产物** `lib/` 复测，非推断）──
- *   · 默认 `modules` 开关（解 ref）=== `{tools:true, bus:true, orch:false, settings:true, interconnect:false}`
+ *   · 默认 `modules` 开关（解 ref）=== `{tools:true, bus:true, orch:false, settings:true}`
+ *     ⚠ 2026-10-24：自研跨实例投递退场 ⇒ 少了那一格
  *     ⚠ `bus` **自 M3（`a89111f` · 2026-10-08 · UD-77）起默认 `true`** ——
  *       本探针原先写在基线期（`a850ae6` · 2026-10-05），那时默认是 `false`
  *       ⇒ 本条期望**已过期**，第 51 轮按实测订正（⛔ **不是放宽，是订正事实**）。

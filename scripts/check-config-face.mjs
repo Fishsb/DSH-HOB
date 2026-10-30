@@ -339,7 +339,7 @@ function schemaTopGroups(src) {
 
   // ② 页脚开关清单必须在位（缺一个就是把真实开关藏起来）。
   //   ⚠ ⚠ **2026-10-16 第 237 轮改为派生**（⚠ 原先是手抄的 `FIVE` 数组）。
-  //     ⚠ **为什么要改**：⚠ 本轮给面板加了第六个开关（`interconnect`）⇒
+  //     ⚠ **为什么要改**：⚠ 历史上某一轮给面板加过一个新开关 ⇒
   //     ⚠ ⚠ **手抄的"五个"当场过期**（⚠ 而它的失败方式是**报一条与事实不符的判定行**，
   //     ⚠ 或者更糟：⚠ 有人为了让它过而**把一个真开关藏回面板外**）。
   //     ⚠ ⚠ **这正是 `E-117` 同族**（⚠ 与第 224 轮 `check:host` 那处手抄顶层键表**同形**）。
@@ -1597,7 +1597,8 @@ console.log(JSON.stringify({ evaluated, threw, degraded, warns }))
 //
 // ⚠⚠ 本组守的是哪一格（PROJECT-SURVEY-3 §6.2 乙-9，乙类最后一条）：
 //   Config.modules 只声明了 **3** 个键（tools / bus / settings），
-//   而 ModulesConfig 与 schema 都是 **5 个** ⇒ 缺的正是 **orch** 与 **interconnect**。
+//   而 ModulesConfig 与 schema 当时都是 **5 个** ⇒ 缺的正是那两个高风险开关。
+//   ⚠ 2026-10-24：自研跨实例投递退场 ⇒ 现在三处都是 **4 个** 键（tools / bus / orch / settings）。
 //   ⚠ 运行期一律走 moduleSwitches（读运行时对象、不读这个类型）
 //     ⇒ **一件事都不响**：编译能过、check:all 全绿、设置页照常显示这两项。
 //   ⇒ ⚠ 所以**光补齐接口不够** —— 不钉住的话，下次加一个模块键照样会漂，
@@ -1616,7 +1617,7 @@ console.log(JSON.stringify({ evaluated, threw, degraded, warns }))
 //
 // ⚠ 为什么用源码文本解析而不是 import 运行时对象：Config 是**纯类型接口**，
 //   运行期**不存在**（tsc 编译后擦除）⇒ 只能读源码。⚠ 这也是本缺陷当初看不见的原因之一。
-// ⚠ ⛔ 不硬编码键名清单：orch / interconnect 这些名字**一个都不写进判据**
+// ⚠ ⛔ 不硬编码键名清单：具体开关名**一个都不写进判据**
 //   —— 全部从上面三处源码里抽出来比对。⇒ 加模块/删模块时本组自动跟上。
 {
   /** ⚠ 便于跑"改前 / 改后 / 反向"三档：允许外部塞一份源码进来（默认读真仓）。 */
@@ -1751,7 +1752,7 @@ console.log(JSON.stringify({ evaluated, threw, degraded, warns }))
       if (ifaceNotCfg.length > 0) {
         problems.push('② Config.modules **缺** ' + ifaceNotCfg.length + ' 个键：' + ifaceNotCfg.join(' / ')
           + '\n         ⇒ 接口之间不一致：ModulesConfig 有、而 Config.modules 没有'
-          + '\n         ⇒ ⚠ 这正是乙-9 的原病（orch / interconnect 曾长期缺席）'
+          + '\n         ⇒ ⚠ 这正是乙-9 的原病（某些模块开关曾长期缺席）'
           + '\n         ⇒ 修法：在 interface Config 的 modules: 里补上这些键（与 ModulesConfig 同形）')
       }
       if (cfgNotIface.length > 0) {
