@@ -15946,11 +15946,31 @@ if (note.length > 0) console.log(note.join('\n'))
 console.log(`  处级口径：查了 ${note.length + fail.length + skip.length} 处 · 过了 ${note.length} 处`
     + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
   + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
+/**
+ * ⚠⚠ **2026-10-31 P30：这里❌ 不许用 `process.exit()`** ──────────────
+ *
+ * ── 它治的病（实测复现，不是猜）───────────────────────
+ *   本族开头把全部 `ok()` 攒在 `note` 里，最后一次 `console.log(note.join('\\n'))`
+ *   一口气写出（本机实测 ≈ 40 KB）。⚠ 而 `process.exit()` **不等 stdout 刷完** 就走了：
+ *   当 stdout 是**管道**（`| grep` / `| cat`）时，内核管道缓冲只有 64 KB、写入是**异步**的
+ *   ⇒ **尾部几行被截掉**，其中就包括那一行 `处级口径：查了 N 处 · 过了 M 处 · 跳过 K 处`。
+ *   ⚠ ⚠ 而 `check:all` 把它**重定向到文件**（非管道）⇒ 文件里有、人手动跑时看不见
+ *   ⇒ 这正是 `E-27` 的另一个入口：**有读数参与判定，但人看不见那读数**。
+ *
+ * ── 修法（⛔ 不只是“多打一道”）─────────────────────────
+ *   用 `process.exitCode = N` 代替 `process.exit(N)`：
+ *   → 脚本**自然跑完** ⇒ Node 会在退出前**把 stdout 刷干净** ⇒ 管道里也能看到全部行。
+ *   ⚠ 退出码语义**不变**（0 = 过· 1 = 没过），所以 `check:all` 读到的东西一字不变。
+ *   ⚠ 复现对照（本机实测）：
+ *     `node -e "...3000 行大输出...; console.log('TAIL'); process.exit(0)" | tail -1` ⇒ 打不出 TAIL
+ *     同样内容换成 `process.exitCode = 0` ⇒ TAIL 正常打出。
+ */
 if (fail.length > 0) {
   console.log('\n✗ 失败：')
   for (const m of fail) console.log('  ' + m)
   console.log(`\n判定：FAIL（${fail.length} 条）`)
-  process.exit(1)
+  process.exitCode = 1
+} else {
+  console.log(`\n判定：PASS —— 编排运行态跨重载可观测（共 ${note.length} 条断言）`)
+  process.exitCode = 0
 }
-console.log(`\n判定：PASS —— 编排运行态跨重载可观测（共 ${note.length} 条断言）`)
-process.exit(0)

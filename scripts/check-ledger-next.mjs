@@ -50,6 +50,23 @@ console.log('')
  * **按 kind 必填的字段**（任务书 §二那张表的逐条落地）。
  * ⚠ 顺序 = 表里的顺序，便于对着读。
  */
+/**
+ * **存量豁免名单：`verify` 只有结论、没有出处的 task**（2026-10-31 P30 新增判据时的实测存量）。
+ *
+ * ⚠⚠ **这是"棘轮"，⛔ 不是白名单**：
+ *   · 只许**缩**（改了其中一条 ⇒ 从本名单删掉它）；
+ *   · ⛔ 不许**长**（新增一条就要进名单 = 把这条判据拆掉）。
+ * ⚠ 每一个 id 都**逐个点名**，⛔ 不用"数量 ≤ N"那种软条件 —— 那可以被换个 id 蒙过去。
+ * ⚠ 下一轮把它们逐条补上出处后，本名单应当**清空**。
+ */
+export const STORED_VERIFY_NO_CITE = [
+  'TSK-038', // 实测原文：「真机 43 名（seq=3646 · 20:42:56）· 7 危险名 0 个在 · 9 只读名 9/9 全在」
+  'TSK-040', // 实测原文：「2 笔入库（7bcaecd / 83ba0da）· 按任务书 §二-1 触发停手并报 · 发现 HEAD 悬空 import」
+  'TSK-041', // 实测原文：「工作区 7 笔 + 账本区 3 笔入库 · 4475cf0 补掉 b21b238 的悬空 import」
+  'TSK-044', // 实测原文：「工作区 2 笔 + 账本区 3 笔入库 · diff ^> = 0 / ^< = 1 · .gitignore 只 1 行新增」
+  'TSK-045', // 实测原文：「4950 行全部有判决（A5/B1/C4937/D7）· 逮到 scripts/lib/ledger-root.mjs 被未锚根 lib/ 吞掉」
+]
+
 export const REQUIRED_FIELDS = {
   task: ['built_by', 'verify'],
   acc: ['actor', 'evidence'],
@@ -110,6 +127,8 @@ export function checkI3(units) {
  */
 export function checkI1(units, pathExists) {
   const problems = []
+  /** P30: the ids that hit the stored-exemption list this run (report only, never in problems). */
+  const verifyNoCiteStored = []
   const ids = new Set()
   const byId = new Map()
 
@@ -163,6 +182,44 @@ export function checkI1(units, pathExists) {
         || (typeof v === 'string' && v.trim() === '')
         || (Array.isArray(v) && v.length === 0)
       if (missing) problems.push(`${u.id}：kind=${u.kind} **必填字段 \`${f}\` 缺失**（⛔ 缺它会让相关判据静默失效）`)
+    }
+
+    /**
+     * ── ⭐ **`task.verify` 必须带可核出处**（2026-10-31 P30 · `TASK-P30` §二）──────────
+     *
+     * ── 它守什么 ────────────────────────────────────────────────
+     *   `verify` 是"这条任务**怎么被验过的**"。⚠ 若它只写「已完成」「通过」「OK」，
+     *   那**什么都没说** —— 读者既不知道验了什么，也无法复核。
+     *   ⚠ 真实教训：P29 回填 12 条 `verify` 时，全靠**人工**从 12 份 `CHG` 里翻读数 ——
+     *     那是**运气**不是机制；换个人写就会写成"已完成"。
+     *
+     * ── 口径（⚠ 四类出处，命中任一即可）────────────────────────────
+     *   `check:<族名>`（判据读数）/ `CHG-<数字>`（决策件）/ `TASK-P<数字>`（任务书）/ `npm run <脚本>`
+     *   ⚠ 只对 `kind === "task"` 且 **`status !== "todo"`** 的单元要求
+     *     （`todo` 还没开工，⛔ 逼它写出处等于逼人编 —— 与 `built_by` / `verify` 的 todo 例外同一条理由）。
+     */
+    if (u.kind === 'task' && u.status !== 'todo') {
+      const v = typeof u.verify === 'string' ? u.verify : ''
+      const CITABLE = /(check:[a-z][a-z0-9-]*|CHG-\d+|TASK-P\d+|npm run \S+)/
+      if (v.trim() !== '' && !CITABLE.test(v)) {
+        /**
+         * ⚠⚠ **存量 5 条按"棘轮"处理，⛔ 不硬拦**（2026-10-31 P30）──────────────
+         *   本轮**新增**这条判据时，实测有 **5 条**已有的 `verify` 只有结论、没有出处。
+         *   任务书明令 **⛔ 不许顺手改它们**（那是下一轮的事），⚠ 但也要求 `check:ledger-next` **exit 0**。
+         *   ⇒ 两条要求同时成立的唯一口径：**存量豁免、增量必红**（本仓既定形态，见 `UD-95` / `E-27` 的反面）：
+         *     · 这 5 个 id **逐个点名**（⛔ 不是"数量 ≤ 5"那种能被替换的软条件）；
+         *     · **任何一个不在名单里的** task 缺出处 ⇒ **红**（`STORED_VERIFY_NO_CITE`）；
+         *     · ⚠ 名单**只许缩不许长**：改了那 5 条里的任意一条 ⇒ 从名单里删掉它（下轮做）。
+         */
+        if (!STORED_VERIFY_NO_CITE.includes(u.id)) {
+          problems.push(`${u.id}：task 的 \`verify\` **没有可核出处**（只有结论、没有依据）：`
+            + `\n      ⇒ 实测原文：${JSON.stringify(v.slice(0, 90))}`
+            + `\n      ⇒ 必须含至少一个：\`check:<族>\` / \`CHG-<n>\` / \`TASK-P<n>\` / \`npm run …\``
+            + `\n      ⇒ 理由：只写「已完成」「通过」这类词，读者**无法复核**，也无法判断是不是编的`)
+        } else {
+          verifyNoCiteStored.push(u.id)
+        }
+      }
     }
 
     /**
@@ -813,6 +870,33 @@ try {
         + ' ⇒ **todo 例外没有波及 doing**')
     } else {
       bad(`N-I1f · \`doing\` 缺 \`built_by\` 却**没红** ⇒ todo 例外把手禁拆了（实报：${JSON.stringify(probs.slice(0, 2))}）`)
+    }
+  }
+
+
+  // ── N-I1g：把某条 task 的 verify 改成「已完成」（无出处）⇒ 必红 ──
+  /**
+   * ⚠ P30 §二 要求的负向对拍：把一条 **不在存量豁免名单里** 的 task 的 `verify`
+   *   改成只有结论的「已完成」 ⇒ 必须红。
+   *   ⚠⚠ **先自证夹具真的坏了**（改完后那条的 verify 确实不含出处）。
+   */
+  {
+    const target = units.find((u) => u.kind === 'task' && u.status !== 'todo'
+      && !STORED_VERIFY_NO_CITE.includes(String(u.id)))
+    if (target === undefined) {
+      bad('N-I1g · 找不到一条"不在存量名单里的已完工 task"⇒ 负向对拍不可判')
+    } else {
+      const fx = units.map((u) => (u.id === target.id ? { ...u, verify: '已完成' } : u))
+      const reallyChanged = fx.find((u) => u.id === target.id)?.verify === '已完成'
+      const probs = checkI1(fx, () => true)
+      const hit = probs.find((x) => x.includes(String(target.id)) && x.includes('没有可核出处'))
+      if (!reallyChanged) {
+        bad('N-I1g · 夹具没真的把 verify 改成「已完成」⇒ 负向对拍本身不可判')
+      } else if (!hit) {
+        bad(`N-I1g · 把 ${target.id} 的 verify 改成「已完成」却没报缺出处 ⇒ 那条断言没牙（实报：${JSON.stringify(probs.slice(0, 2))}）`)
+      } else {
+        ok(`N-I1g ✓ 负向对拍（把 ${target.id} 的 \`verify\` 改成「已完成」）⇒ 必红：${String(hit).slice(0, 80)}`)
+      }
     }
   }
 
