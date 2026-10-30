@@ -1148,6 +1148,21 @@ function DEFAULT_DENY_OF(): readonly string[] {
 /** ⚠ 仅供机检读取"当前进程看到的 deny 清单"（⛔ 产品路径不用它判任何事）。 */
 export function __denyOf(): readonly string[] { return DEFAULT_DENY_OF() }
 
+/**
+ * **当前进程抓到的「待确认工具」名单**（2026-10-31 P28 · `TSK-048` / `R-008`）。
+ *
+ * ⚠⚠ **它治的是"抓到了但看不见"**：`UNSEEN_SEEN` 原本只活在内存里，
+ *   重启即丢、`debugLog` 默认关 ⇒ 用户**永远看不到系统抓到了什么**。
+ *   本函数是那条记忆的**唯一只读出口**（⚠ 零写：不增不删不改 `UNSEEN_SEEN`）。
+ *
+ * ⚠ 返回的是**快照数组**（不是那个 Set 本身）—— 否则调用方 `clear()` 一下就把记录抹了。
+ * ⚠ 每条 `why` 只能给一句通用说明（真实原因在 `DEGRADED_CAPABILITIES` 的 `unseen-tool` 条里）；
+ *   本函数**只回名字**，原因由调用方按名去 `DEGRADED_CAPABILITIES` 里找。
+ *
+ * @returns 去重前的**按发现顺序**的名字快照（去重/排序交给 `describeUnseen`）
+ */
+export function __unseenToolsOf(): readonly string[] { return [...UNSEEN_SEEN] }
+
 /** 已报过的"没见过"名字（⚠ 每名只报一次，⛔ 不刷屏）。 */
 const UNSEEN_SEEN = new Set<string>()
 

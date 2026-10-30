@@ -3609,6 +3609,71 @@ console.log('预设（机器读版）:', HO)
       }
     }
 
+    /**
+     * ── ⑤r ⭐ **`unseen` 的可读出口：两种读数 + 负向对拍**（2026-10-31 P28 · `TSK-048` / `R-008`）──
+     *   治的病（`CHG-281` §六·1）：`UNSEEN_SEEN` 只活内存 + 宿主 warn（`debugLog` 默认关）
+     *   ⇒ **重启即丢、用户永远看不到"系统抓到了什么"**。
+     *   ⇒ 本组验 `src/shared/unseen-tools.ts` 的 `describeUnseen()`（纯函数，⛔ 不需要真宿主）：
+     *     ① **0 条**时 `summary` 必须**明说 0 条**（⛔ 不是空串 —— "空"与"没有"要分得开）；
+     *     ② **有名字**时逐个点出（⛔ 只给个数）；
+     *     ③ **负向对拍**：拿"有名字"的输入 ⇒ 若它返回 0 条（= 出口坏了）⇒ 本条必红。
+     */
+    {
+      const UNSEEN = join(root, 'src', 'shared', 'unseen-tools.ts')
+      let um = null
+      try { um = await import(pathToFileURL(UNSEEN).href + '?t=' + Date.now()) } catch { um = null }
+      if (um === null || typeof um.describeUnseen !== 'function') {
+        bad('⑤r 读不到 `src/shared/unseen-tools.ts` 的 `describeUnseen` ⇒ 本组失去对象（⛔ 不按通过处理）')
+      } else {
+        const p2 = []
+        // ① 0 条读数
+        const empty = um.describeUnseen([])
+        if (empty?.count !== 0) p2.push(`空输入时 count=${JSON.stringify(empty?.count)}（期望 0）`)
+        if (typeof empty?.summary !== 'string' || empty.summary.trim() === '') p2.push('空输入时 summary 是空串（⛔ 必须明说「0 条」）')
+        else if (!empty.summary.includes('0 条')) p2.push(`空输入时 summary 没写「0 条」：${JSON.stringify(empty.summary.slice(0, 60))}`)
+        // ② 有名字时逐名列出
+        const filled = um.describeUnseen([{ name: 'zzz-alpha', why: 'x' }, { name: 'zzz-beta', why: 'y' }])
+        if (filled?.count !== 2) p2.push(`两条输入时 count=${JSON.stringify(filled?.count)}（期望 2）`)
+        if (!Array.isArray(filled?.names) || filled.names.length !== 2) p2.push('两条输入时 names 不是长度 2 的数组')
+        for (const n of ['zzz-alpha', 'zzz-beta']) {
+          if (!String(filled?.summary ?? '').includes(n)) p2.push(`summary 里没逐个点出 ${n}（⛔ 只给个数不行）`)
+        }
+        // ③ 去重 + 稳定序（⚠ 同名两条只留一条；输出顺序必须可复现）
+        const dup = um.describeUnseen([{ name: 'zzz-b', why: '1' }, { name: 'zzz-a', why: '2' }, { name: 'zzz-b', why: '3' }])
+        if (dup?.count !== 2) p2.push(`同名去重失败：count=${JSON.stringify(dup?.count)}（期望 2）`)
+        if (JSON.stringify(dup?.names) !== JSON.stringify(['zzz-a', 'zzz-b'])) p2.push(`输出未按字典序稳定：${JSON.stringify(dup?.names)}`)
+        if (p2.length === 0) {
+          ok('⑤r ✓ `unseen` 只读出口两种读数都对：**0 条**时明说「0 条」（⛔ 非空白）· 有名字时**逐名点出** + 去重按字典序')
+        } else for (const x of p2) bad(`⑤r · ${x}`)
+
+        /**
+         * ── N-⑤r **负向对拍**：把 `describeUnseen` 改成"永远回 0 条"（= 出口坏了）⇒ ⑤p 必红 ──
+         *   ⚠ **先自证夹具真的坏了**（变体对两条输入必须回 0），再断言"⑤p 会因此变红"。
+         */
+        const src = readFileSync(UNSEEN, 'utf8')
+        const NEEDLE = "  const names = [...byName.keys()].sort()"
+        if (!src.includes(NEEDLE)) {
+          bad('N-⑤r · 源码里找不到 `const names = [...byName.keys()].sort()` 那一行（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const tmp = join(root, 'src', 'shared', `unseen-tools.__negctl_${process.pid}.ts`)
+          writeFileSync(tmp, src.replace(NEEDLE, '  const names = []'))
+          try {
+            const mm = await import(pathToFileURL(tmp).href + '?t=' + Date.now())
+            // 自证：变体必须真的"回 0 条"
+            const broken = mm.describeUnseen([{ name: 'zzz-alpha', why: 'x' }])
+            if (broken?.count !== 0) {
+              bad(`N-⑤r · 变体仍返回 count=${JSON.stringify(broken?.count)} ⇒ 夹具没造出"出口坏了"`)
+            } else {
+              ok('N-⑤r ✓ 负向对拍（先自证：把 `names` 改成 `[]` ⇒ 有输入也回 **0 条**）'
+                + ' ⇒ ⑤r 的"有名字必须逐个点出"**必红**（出口坏了会当场被咬）')
+            }
+          } finally {
+            try { rmSync(tmp, { force: true }) } catch { /* 清不掉不影响判定 */ }
+          }
+        }
+      }
+    }
+
     // ── ⑤o-4 负向对拍：把 deny 分支改成恒假 ⇒ ⑤o-2 必红 ────────────────
     {
       let src = null

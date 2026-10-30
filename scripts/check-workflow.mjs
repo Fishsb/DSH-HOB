@@ -95,7 +95,9 @@ console.log('')
 
 try {
   const gpc = await import(pathToFileURL(join(here, 'gen-preset-contract.mjs')).href)
-  const { parseWorkflow, renderAll, readInputs } = gpc
+  const { parseWorkflow, renderAll, readInputs, NOTE_FILES: NOTE_FILES_G } = gpc
+  /** ⚠ 附注卷清单（⚠ 唯一来源 = 生成器，⛔ 不在这里抄第二份）。 */
+  const NOTE_FILES = NOTE_FILES_G
 
   let wfSrc = ''
   try { wfSrc = readFileSync(WF, 'utf8') } catch { wfSrc = '' }
@@ -471,6 +473,86 @@ try {
   }
 
   // ══════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════
+  // F9 · ⭐ **附注卷里每一段正文都必须被解析进产物**（2026-10-31 P28 · `CHG-284` §四·1）
+  // ══════════════════════════════════════════════════════════════════
+  /**
+   * ── 它守什么（⚠ 真实丢过东西，不是假想）──────────────────────────
+   *   `parseNoteSections()`（`gen-preset-contract.mjs`）的 `flush()` **只收
+   *   `pendingSrc !== null` 的缓冲** ⇒ 在 `##` 标题下写了正文、**却没跟在
+   *   `<!-- source: … -->` 后面** ⇒ 那几行**被静默丢弃**，`gen/persona.md` 里没有它，
+   *   **而没有任何判据报红**。⚠ `P17` 那次三行的 `id` 就是这么丢的（靠人 `grep` 才发现）。
+   *
+   * ── 口径（⚠ 复刻 `flush()` 的判定，不是另写一套）──────────────────
+   *   逐行模拟解析器的状态机，数**"在 `##` 节内、非空、且此刻 `pendingSrc === null`"** 的行
+   *   ⇒ 这些行**正是**会被丢掉的。**一处都不许有。**
+   *   ⚠ 为什么不用"`##` 标题数 == 产物节数"那种计数法：同一节里**可以有多段**（多个
+   *     `source`），计数法会把"节数相等"当通过，而**节内第二段没写 source** 那种漏法它照样
+   *     放过 —— 那是**假绿**（`E-27`）。
+   *
+   * ── ⚠ 边界 ────────────────────────────────────
+   *   本组只核**解析器会不会丢**，⛔ 不核"`source` 指向的原文是否真有那句"（那是 F5 的活）。
+   */
+  {
+    const probs = []
+    const perFile = []
+    for (const f of NOTE_FILES) {
+      let src = ''
+      try { src = readFileSync(join(PRESET_DIR, 'spec', f), 'utf8') } catch { src = '' }
+      if (src === '') { probs.push(`附注卷 \`${f}\` **读不到** ⇒ 本文件失去对象（⛔ 不按通过处理）`); continue }
+      let cur = null
+      let pendingSrc = null
+      const dropped = []
+      for (const raw of src.split('\n')) {
+        const l = raw.trim()
+        /** ⚠ 四个"重置点"必须与 `parseNoteSections` 逐个对应。 */
+        if (/^<!-- order: \d+ -->$/.test(l)) { pendingSrc = null; continue }
+        if (/^<!-- level: \d+ -->$/.test(l)) { pendingSrc = null; continue }
+        if (/^#{2,4} .+（原文）$/.test(l)) { pendingSrc = null; cur = l; continue }
+        if (/^<!-- source: .+ -->$/.test(l)) { pendingSrc = l; continue }
+        if (cur !== null && l !== '' && pendingSrc === null) dropped.push(l)
+      }
+      perFile.push(`${f} ${dropped.length}`)
+      if (dropped.length > 0) {
+        probs.push(`附注卷 \`${f}\`：**${dropped.length} 行正文会被静默丢弃**（在 \`##\` 节内、却没跟在 \`<!-- source: … -->\` 后面）`
+          + `\n        第一条：${JSON.stringify(dropped[0].slice(0, 100))}`
+          + '\n        ⇒ 这些行**不会进** `gen/persona.md`，而**没有任何判据会红** —— 本组就是来填这个洞')
+      }
+    }
+    if (perFile.length === 0) probs.push('`NOTE_FILES` 一个都没核到 ⇒ 本组没有对象（⛔ 不按通过处理）')
+    if (probs.length === 0) {
+      ok(`F9 ✓ 附注卷**零静默丢弃**：四卷逐行过解析器状态机，会丢的行数 = **0**`
+        + `（${perFile.join(' · ')}）⇒ 往后谁再漏写 \`<!-- source: -->\`，本组当场红`)
+    } else for (const p of probs) bad(`F9 · ${p}`)
+  }
+
+  // ── N-F9：造一段**没有** `<!-- source: -->` 的正文 ⇒ F9 必红 ──
+  {
+    /** ⚠ **先自证夹具真的坏了**，再断言"F8 会因它变红"——两件事分开报（`E-112`）。 */
+    const probeFile = join(PRESET_DIR, 'spec', 'notes-mechanism.md')
+    let base = ''
+    try { base = readFileSync(probeFile, 'utf8') } catch { base = '' }
+    if (base === '') {
+      bad('N-F9 · 读不到 `notes-mechanism.md` ⇒ 负向对拍不可判')
+    } else {
+      const mutated = base.replace(/^(## .+（原文）)$/m, '$1\n\n这一行故意没有 source 标记 —— 探针。')
+      const changed = mutated !== base
+      let cur = null, pendingSrc = null, dropped = 0
+      for (const raw of mutated.split('\n')) {
+        const l = raw.trim()
+        if (/^<!-- order: \d+ -->$/.test(l)) { pendingSrc = null; continue }
+        if (/^<!-- level: \d+ -->$/.test(l)) { pendingSrc = null; continue }
+        if (/^#{2,4} .+（原文）$/.test(l)) { pendingSrc = null; cur = l; continue }
+        if (/^<!-- source: .+ -->$/.test(l)) { pendingSrc = l; continue }
+        if (cur !== null && l !== '' && pendingSrc === null) dropped++
+      }
+      if (!changed) bad('N-F9 · 造不出「无 source 的正文」变体（源码形态变了）⇒ 负向对拍不可判')
+      else if (dropped === 0) bad('N-F9 · 插了无 source 的正文，状态机却数出 0 行要丢 ⇒ 夹具没造对（⛔ 判据本身没验到）')
+      else ok(`N-F9 ✓ 负向对拍（先自证：在 \`##\` 标题后插一行无 \`source\` 的正文 ⇒ 状态机数出 **${dropped}** 行会被丢）`
+        + ' ⇒ F9 的"零丢弃"断言**必红**')
+    }
+  }
+
   // 四条负向对拍（⚠ 每条都**先自证夹具真的坏了**）
   // ══════════════════════════════════════════════════════════════════════
 

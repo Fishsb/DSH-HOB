@@ -37,6 +37,7 @@ import { installPolicyRoute } from './modules/session-policy-route.ts'
 import { installTasksProgressRoute } from './modules/tasks-progress-route.ts'
 import { installExecProgressRoute } from './modules/exec-progress-route.ts'
 import { installStagesRoute } from './modules/stages-route.ts'
+import { installUnseenToolsRoute } from './modules/unseen-tools-route.ts'
 
 export { Config }
 
@@ -209,6 +210,11 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
 
   // ⚠ 2026-10-30（P3）：五步汇总**只读路由**（面板新数据源 = `ledger-next/units/index.toml`）。
   installStagesRoute(ctx)
+
+  // ⚠ 2026-10-31（P28 · `TSK-048` / `R-008`）：**「待确认工具」只读路由**。
+  //   病：没见过的工具只进内存 + 宿主 warn，`debugLog` 默认关 ⇒ **重启即丢、用户永远看不到**。
+  //   本路由是那条记忆的唯一读出口（⚠ 零写：只回快照，⛔ 不清空）。
+  installUnseenToolsRoute(ctx)
 
   for (const entry of MODULE_REGISTRY) {
     // 开关关闭 ⇒ 不注册该模块。**只影响它自己**，不影响其他模块。

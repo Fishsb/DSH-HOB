@@ -2299,6 +2299,86 @@ export function runDocShape({ bad, ok, noObject, skip }) {
               + `\n      ⇒ 空卷 = "扫 0 份报 ✓" 的假绿源头（UD-95 明确要防）`)
           }
         }
+        /**
+         * ── L-5 ⭐ **小节编号必须唯一且可比**（2026-10-31 P28 · `CHG-301` §五·2）──────
+         *   病：`CHG-296` 漏登记进 `INDEX.md` 时，**没有任何判据看编号** ——
+         *     是 `L` 组"卷内每份必须被点名"兜住的（那是**另一件事**：点名 ≠ 编号对不对）。
+         *   而 `INDEX.md` 里 92 个小节**全靠人写中文数字** ⇒ 断号/重号/写错一个都无人发现。
+         *
+         * ── 口径（⚠ 逐条，⛔ 只数个数）──────────────────────────
+         *   ① 每个 `## <编号>、` 的编号必须能解析成中文数字（`一`…`九十九` / `一百零五`）；
+         *   ② **主号唯一**（⛔ 不许两个「八十五」）；
+         *   ③ **主号连号**：1..N 一个不许缺（断号 = 有人删了一节但没改后面的号）；
+         *   ④ **允许 `X之N` 子号**（⚠ 本仓真有「八十五之二」）——
+         *      但 `X` 必须是**已存在的主号**，且 `X之N` 自身唯一。
+         *      ⚠ 为什么不把它改成 `八十六`：见下方影响面注释，**改号会牵连 6 个后续小节**。
+         */
+        {
+          const CN = { 零: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
+          const parseCN = (t) => {
+            const m = /^([零一二三四五六七八九十百]+)(?:之([一二三四五六七八九]))?$/.exec(t)
+            if (m === null) return null
+            const main = m[1]
+            let n = 0
+            if (main.includes('百')) {
+              const [a, b] = main.split('百')
+              n = (CN[a] ?? 1) * 100
+              if (b !== undefined && b !== '') {
+                const sub = parseCN(b)
+                if (sub === null) return null
+                n += sub.n
+              }
+            } else if (main.includes('十')) {
+              const [a, b] = main.split('十')
+              n = (a === undefined || a === '' ? 1 : (CN[a] ?? NaN)) * 10
+              if (b !== undefined && b !== '') n += (CN[b] ?? NaN)
+            } else {
+              n = CN[main] ?? NaN
+            }
+            if (Number.isNaN(n)) return null
+            return { n, sub: m[2] === undefined ? null : CN[m[2]] }
+          }
+          const l5 = []
+          const perVol = []
+          let totalSec = 0
+          for (const vol of vols) {
+            const idxPath = join(volRoot, vol, 'INDEX.md')
+            let idxSrc = ''
+            try { idxSrc = readFileSync(idxPath, 'utf8') } catch { idxSrc = '' }
+            if (idxSrc === '') continue
+            const rows = []
+            idxSrc.split('\n').forEach((line, i) => {
+              const m = /^## (\S+?)、/.exec(line)
+              if (m !== null) rows.push({ raw: m[1], lineNo: i + 1, idx: parseCN(m[1]) })
+            })
+            if (rows.length === 0) continue
+            totalSec += rows.length
+            perVol.push(`${vol} ${rows.length}`)
+            const seen = new Map()
+            for (const r of rows) {
+              if (r.idx === null) { l5.push(`\`${vol}\` 第 ${r.lineNo} 行编号 \`${r.raw}\` **解析不出中文数字**`); continue }
+              const key = `${r.idx.n}:${r.idx.sub ?? 0}`
+              if (seen.has(key)) l5.push(`\`${vol}\` **重号**：\`${r.raw}\`（第 ${r.lineNo} 行）与 \`${seen.get(key)}\` 撞车`)
+              else seen.set(key, r.raw)
+            }
+            const mains = [...new Set(rows.filter((r) => r.idx !== null && r.idx.sub === null).map((r) => r.idx.n))]
+            const maxMain = mains.length === 0 ? 0 : Math.max(...mains)
+            const gaps = []
+            for (let i = 1; i <= maxMain; i++) if (!mains.includes(i)) gaps.push(i)
+            if (gaps.length > 0) l5.push(`\`${vol}\` **断号**：主号 1..${maxMain} 里缺 ${gaps.join(' / ')}（少 ${gaps.length} 个）`)
+            for (const r of rows) {
+              if (r.idx === null || r.idx.sub === null) continue
+              if (!mains.includes(r.idx.n)) l5.push(`\`${vol}\` 子号 \`${r.raw}\` 的父主号 ${r.idx.n} **不存在**`)
+            }
+          }
+          if (totalSec === 0) {
+            bad('L-5 各卷 `INDEX.md` 里**一个中文编号小节都没有** ⇒ 本条没有对象（⛔ 不按通过处理）')
+          } else if (l5.length === 0) {
+            ok(`L-5 ✓ 各卷 \`INDEX.md\` 小节编号**唯一且可比**：共 ${totalSec} 个小节`
+              + `（逐卷：${perVol.join(' · ')}）· 各自主号连号无断/无重 · 子号挂在已有主号上`)
+          } else for (const x of l5) bad(`L-5 · ${x}`)
+        }
+
         if (lBad === 0) {
           // ⚠ 构成标注（第 83 轮 · R82 复核 D6）：本行数的是**条目**（只数表格「文件」列），
           //   ⛔ 不含各卷的 `INDEX.md`，也⛔ 不含根上的地图 —— 与 M 的分母**不同**，
