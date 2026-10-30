@@ -134,6 +134,439 @@ const SETTLE_STATES = ['waiting', 'unresolved', 'stuck'] as const
 const SETTLE_EVIDENCES = ['event', 'board', 'session-log', 'agent-status'] as const
 
 /**
+ * ══════════════════════════════════════════════════════════════════════
+ * **派发记录态 = 封闭九态**（`D10`；2026-10-26 · 包 A 第 4 件）
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * ── 为什么必须是一个**封闭枚举**（而不是散在各处的字符串）──────────────
+ *   `D10` 要求「记录态必须是封闭集」，且**任何两态不许合并成一行读数**。
+ *   改前这套态**根本不存在**：读数只有「在等回传 / 已回传 / 被停闸拦下」三个聚合数，
+ *   于是两对**成因完全不同**的情形在输出里逐字一样：
+ *     · **拒收**（目标明确说做不了）与 **在跑只是没回音**；
+ *     · **要澄清**（跑到一半要补充信息）与 **已回传**。
+ *   ⇒ 读的人只能猜，而猜错的代价是"再等一个永远不会来的东西"或"重派一次已经做过的活"。
+ *
+ * ── 判据（每条都写在这个类型上，⛔ 不许在别处另写一套字符串）──────────────
+ *   · **封闭**：{@link DISPATCH_RECORD_STATES} 是唯一清单，渲染层**按它逐档出行**；
+ *   · **不合并**：渲染层**一态一行**，⛔ 不许把两态加起来印在同一行；
+ *   · **可分辨**：`拒收 ≠ 执行中`、`要澄清 ≠ 已回传`（见 {@link dispatchStateOf} 的优先级）。
+ */
+export type DispatchRecordState =
+  /** 已登记：记录刚落账，还没见到"投递已尝试"。 */
+  | 'registered'
+  /** 已投递未确认执行：投递动作已尝试，但**没见过目标进入运行态**。 */
+  | 'delivered-unconfirmed'
+  /** 执行中：见过目标 `running`（`sawRunning`）且还没回传。 */
+  | 'running'
+  /** 要澄清：对方跑到一半**要补充信息**（记录上带 `clarifyAt`）。 */
+  | 'needs-clarification'
+  /** 已回传：回执**已经送到**派活方（`deliveredAt` 在）。 */
+  | 'returned'
+  /** 已验收：派活方已判定这份产出可用（记录上带 `acceptedAt`）。 */
+  | 'accepted'
+  /** 已退回：派活方已判定这份产出不合格、退回重做（记录上带 `sentBackAt`）。 */
+  | 'sent-back'
+  /** 拒收：目标**明确说做不了**（记录上带 `refusedAt`）—— ⛔ 不是"在跑没回音"。 */
+  | 'refused'
+  /** 卡住：判不出/清账到顶，**不再自动重试，需人工裁**。 */
+  | 'stuck'
+
+/**
+ * 九态的**唯一清单**（顺序 = 渲染顺序；⚠ 一态一行，⛔ 不许合并）。
+ * ⚠ 运行期也用它做收窄（`asDispatchRecordState`），⛔ 不许在别处再列一遍。
+ */
+export const DISPATCH_RECORD_STATES: readonly DispatchRecordState[] = [
+  'registered',
+  'delivered-unconfirmed',
+  'running',
+  'needs-clarification',
+  'returned',
+  'accepted',
+  'sent-back',
+  'refused',
+  'stuck',
+] as const
+
+/**
+ * 九态给人看的名字（`D10` 原文用词，逐字对齐方案 §5.3）。
+ * ⚠ 渲染层只许从这里取措辞（同一事实两个来源必然漂，`E-128`）。
+ */
+export const DISPATCH_STATE_LABELS: Readonly<Record<DispatchRecordState, string>> = {
+  'registered': '已登记',
+  'delivered-unconfirmed': '已投递未确认执行',
+  'running': '执行中',
+  'needs-clarification': '要澄清',
+  'returned': '已回传',
+  'accepted': '已验收',
+  'sent-back': '已退回',
+  'refused': '拒收',
+  'stuck': '卡住',
+} as const
+
+/**
+ * 收窄一个字符串是不是九态之一（判不出 ⇒ `undefined`，⛔ 不猜一档）。
+ * ⚠ 与 `SETTLE_STATES` / `LOST_CLASSES` **同一条宽容纪律**：脏值不许漂进读数。
+ */
+export function asDispatchRecordState(v: unknown): DispatchRecordState | undefined {
+  return typeof v === 'string' && (DISPATCH_RECORD_STATES as readonly string[]).includes(v)
+    ? (v as DispatchRecordState)
+    : undefined
+}
+
+/**
+ * 一条派发记录**此刻**落在哪一态（`D10` 的**唯一判定点**）。
+ *
+ * ── 优先级（顺序本身就是要害，⛔ 不许改）──────────────────────────────
+ *   1. `stuck`                  —— 已放弃自动重试（终态里最该先说的一句）；
+ *   2. `refused`                —— 明确拒收（⛔ 不许被"在跑没回音"吞掉）；
+ *   3. `needs-clarification`    —— 要澄清（⛔ 与"已回传"分开）；
+ *   4. `sent-back`              —— 已退回；
+ *   5. `accepted`               —— 已验收；
+ *   6. `returned`               —— 回执已送到（`deliveredAt`）；
+ *   7. `running`                —— 见过 `running`；
+ *   8. `delivered-unconfirmed`  —— 投递尝试过、但没见过运行态；
+ *   9. `registered`             —— 兜底（记录刚落账）。
+ *   ⚠ 前五档由**显式标记**决定（记录上有那一刻才有）；后四档由**既有字段**派生 ——
+ *     这样"没记过"就落回"已登记/已投递"，⛔ 不许替旧记录编一个它没有的结论。
+ *
+ * ── ⚠⚠ **包 H（2026-10-26）：前五档现在**真的**有写入入口了** ────────────
+ *   包 A 只落了枚举与判定点 ⇒ 那四态**恒为 0**。包 H 给每一态接了一条**已经发生的事**
+ *   （⛔ 不是"让模型自己标"的通用入口），各自的判据在写入口那一侧（`orchestrator.ts`）：
+ *     · `refused`  ← **投递实现明确说"目标不能接"**（归档 / 非活会话 / 权限拒绝）；
+ *     · `needs-clarification` ← **回传正文里的"待决问题"段非空**（原文一并存进 `clarifyWhy`）；
+ *     · `accepted` / `sent-back` ← **判决**，且**必须带 `basis`（依据哪几条读数）**。
+ *   ⚠ 四态**没有**"模型随口标一个"的路径：`refused`/`clarify` 由**投递/回传的实际内容**驱动，
+ *     `accepted`/`sent-back` 由**只读判决工具**驱动且 `basis` 空数组一律拒绝落账。
+ *   ⚠ ⛔ **判不出的情形一律不动**：本函数只看"记录上有没有那个标记"，
+ *     读不出/算不出 ⇒ 保持原档（⛔ 不许把"判不出"编成任何一态）。
+ */
+export function dispatchStateOf(w: {
+  deliveredAt?: number
+  sawRunning?: boolean
+  deliveryAttemptAt?: number
+  undeliveredAt?: number
+  settleState?: SettleState
+  clarifyAt?: number
+  refusedAt?: number
+  acceptedAt?: number
+  sentBackAt?: number
+  /** ⚠ 包 H：判决依据（本函数**只判"有没有那个时刻"**，⛔ 不拿依据决定档位）。 */
+  basis?: string[]
+}): DispatchRecordState {
+  if (w.settleState === 'stuck') return 'stuck'
+  if (typeof w.refusedAt === 'number') return 'refused'
+  if (typeof w.clarifyAt === 'number') return 'needs-clarification'
+  if (typeof w.sentBackAt === 'number') return 'sent-back'
+  if (typeof w.acceptedAt === 'number') return 'accepted'
+  if (typeof w.deliveredAt === 'number') return 'returned'
+  if (w.sawRunning === true) return 'running'
+  /**
+   * ⚠⚠ **「投递尝试过」有两个来源**（`D4`）：`deliveryAttemptAt`（先写后发那一笔）与
+   *   `undeliveredAt`（明确没送到那一笔）。
+   *   ⚠ 后者必须也算 —— 总线缺席那一支会**删掉** `deliveryAttemptAt`（撤销"结果未知"
+   *     这个错误陈述），若这里只认前者，那条记录会**退回"已登记"**
+   *     ⇒ 「投过、没送到」与「还没派出去」印成同一态，正是 `D4` 要治的假话。
+   *   ⚠ 两档**仍然是同一态**（都=已投递**未确认执行**）：九态里没有第十档，
+   *     "未送达"是 `D4` 的**另一条配对读数**（见 `undeliveredAt` 字段），⛔ 不占记录态。
+   */
+  if (typeof w.deliveryAttemptAt === 'number' || typeof w.undeliveredAt === 'number') {
+    return 'delivered-unconfirmed'
+  }
+  return 'registered'
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * **「拒收」的唯一判据**（2026-10-26 · 包 H 第 1 件）
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * ── 它由什么推出（⛔ 不是"模型说它拒收了"）────────────────────────────
+ *   只有**投递实现自己明确回报"这个目标接不了活"**时才算拒收。判据是
+ *   `bus.deliver` 的 `{ok:false, reason}` 原话里**命中"结构性不能接"的那几类**：
+ *     · `is not a live session` —— 目标不是活会话（且唤醒也起不来）；
+ *     · `is archived`           —— 已归档（执行会被 `agent/pre-step` 拦掉）；
+ *     · `refusing to deliver to this session itself` —— 目标就是自己（不该派给自己）；
+ *     · `permission` / `not allowed` / `denied` —— 权限拒绝。
+ *
+ * ── ⚠⛔ 这几类**不算**"拒收"（它们是**别的成因**，⛔ 不许混进来）──────────
+ *   · `message-build-failed` / `delivery-failed` —— **我方没把消息造好 / 送的过程中抛错**，
+ *     目标接没接**完全未知** ⇒ 那是"**未送达**"（`undeliveredAt`，`D4` 那一档）；
+ *   · `no-session-id` / `empty message` —— **参数不合格**，压根没走到目标那里。
+ *   ⇒ 混进来就会把"我们自己的毛病"说成"对方拒收"（本项目头号禁忌的又一变种）。
+ *
+ * @param reason - 投递实现返回的 `reason` 原话（判不出 ⇒ `undefined`）。
+ * @returns 命中"结构性不能接" ⇒ 返回那句话（存进 `refusedWhy`）；否则 `undefined`。
+ */
+export function refusalReasonOf(reason: unknown): string | undefined {
+  if (typeof reason !== 'string' || reason === '') return undefined
+  const r = reason.toLowerCase()
+  /** ⚠ 逐条列举（⛔ 不许写成一条宽松正则：那会把"送失败"也算成拒收）。 */
+  const structural = [
+    'is not a live session',
+    'is archived',
+    'refusing to deliver to this session itself',
+    'permission',
+    'not allowed',
+    'denied',
+  ]
+  if (!structural.some((k) => r.includes(k))) return undefined
+  return reason
+}
+
+/**
+ * 投递失败的**三分类**（2026-10-26 · 包 J 第 3.4 件）。
+ *
+ * ── 为什么必须有第三档 ───────────────────────────────────────────────
+ *   `refusalReasonOf` 是 **6 个关键词硬编码**。宿主一旦换话术（升级、本地化、
+ *   换个包装层），这些关键词**一条都命中不了** ⇒ 改前会静默落进"未送达"那一行
+ *   ⇒ 读的人看到「未送达」以为"是我方没送好"，而真相是"**对方以一种我们不认识的
+ *   说法拒绝了**"或"**是另一个我们没归类的成因**"—— 又是一次"两种原因说成一句话"。
+ *
+ * ── 三档（⛔ 互斥，⛔ 不许合并）────────────────────────────────────────
+ *   · `refused`    —— 命中结构性关键词 ⇒ 目标是"接不了活"（归档 / 非活会话 / 权限）；
+ *   · `unclassified` —— **没命中任何关键词** ⇒ 归**独立一档**，⛔ 不并进"未送达"、
+ *                       ⛔ 也不并进"拒收"（那样等于替判不出编一个结论）；
+ *   · `undelivered` —— **明确的传输失败**（消息没造好 / 发送过程中抛错）⇒ `D4` 那一行。
+ *   ⚠ 判据：只有**认出是传输失败**才归 `undelivered`。认不出的**一律** `unclassified`
+ *     （⛔ 不许"默认当成未送达" —— 那是把未知冒充已知）。
+ */
+export type DeliveryFailureClass = 'refused' | 'unclassified' | 'undelivered'
+
+/**
+ * 把一次投递失败归到**三档之一**（唯一实现点）。
+ *
+ * ⚠ **输入是投递实现返回的原话**（`reason`）。判据全部在这一个函数里，⛔ 别处不许再分类。
+ * ⚠ **原话必须原样带出**（`why`）—— 分类是我们加的，原话是事实，⛔ 不许只留分类丢掉原话。
+ */
+export function classifyDeliveryFailure(reason: unknown): {
+  cls: DeliveryFailureClass
+  /** 投递实现返回的原话（判不出时是能读的说明，⛔ 不是空串）。 */
+  why: string
+} {
+  const raw = typeof reason === 'string' && reason !== '' ? reason : ''
+  if (raw === '') {
+    return { cls: 'unclassified', why: '投递实现没给失败原因（判不出是哪一类）' }
+  }
+  if (refusalReasonOf(raw) !== undefined) return { cls: 'refused', why: raw }
+  const r = raw.toLowerCase()
+  /**
+   * ⚠ **"明确的传输失败"只有这几类**（我方没造好 / 送的过程中抛错）：
+   *   它们共同说明"**消息压根没走到对方那里**"⇒ 归 `D4` 的"未送达"。
+   *   ⚠ 不在这个清单里 ⇒ **不许**假设是传输失败（那正是本件要治的默认假设）。
+   */
+  const transport = ['message-build-failed', 'delivery-failed', 'no-session-id', 'empty message']
+  if (transport.some((k) => r.includes(k))) return { cls: 'undelivered', why: raw }
+  return { cls: 'unclassified', why: raw }
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * **「要澄清」的唯一判据**（2026-10-26 · 包 H 第 1 件）
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * ── 它由什么推出（⛔ 不是"模型觉得对方要问"）──────────────────────────
+ *   **回传正文里那段"待决问题"非空**。本仓的回报体例（六段）第五段就是待决问题，
+ *   段落标题形如 `## 待决问题` / `## 待决` / `### 5. 待决问题`。
+ *   ⇒ 判据 = 找到该段、取它到下一个同级/更高级标题之间的正文，**去掉占位词后非空**。
+ *
+ * ── ⚠ 为什么必须"去掉占位词后非空"（这是本条的要害）─────────────────
+ *   实测里最常见的写法是 `## 待决问题
+（无）` / `无` / `没有` / `—` / `N/A` / `未发现`。
+ *   若只判"段落存在"，**九成回传都会变成"要澄清"** ⇒ 那一档立刻失去分辨力
+ *   （比不写更坏：它会训练人忽略它）。⇒ 占位词清单**必须显式判**。
+ *
+ * @param text - 回传/报告的正文（判不出 ⇒ `undefined`）。
+ * @returns 该段的**原文**（存进 `clarifyWhy`）；段落不存在或只有占位词 ⇒ `undefined`。
+ */
+export function clarifySectionOf(text: unknown): string | undefined {
+  if (typeof text !== 'string' || text === '') return undefined
+  const lines = text.split('\n')
+  /** 段标题：`#`~`######` + 可选的 `1.` / `5、` 这类编号 + 含"待决"（或无）问。 */
+  const headRe = /^\s{0,3}(#{1,6})\s*(?:\d+\s*[.、)）]\s*)?(待决问题|待决|待澄清|需要澄清)/
+  let start = -1
+  let level = 0
+  for (let i = 0; i < lines.length; i++) {
+    const m = headRe.exec(lines[i])
+    if (m !== null) { start = i; level = m[1].length; break }
+  }
+  if (start < 0) return undefined
+  /** 往后收到**同级或更高级**标题之前。 */
+  const body: string[] = []
+  for (let i = start + 1; i < lines.length; i++) {
+    const m = /^\s{0,3}(#{1,6})\s/.exec(lines[i])
+    if (m !== null && m[1].length <= level) break
+    body.push(lines[i])
+  }
+  const joined = body.join('\n').trim()
+  if (joined === '') return undefined
+  /**
+   * ⚠ **占位词**：去掉标点、空白、列表符号与强调符号之后，若整段只剩这些词 ⇒ 等于"无"。
+   *   ⚠ 清单**故意列全**（宁可把"无"判成无，也不要把"真有内容"误判成无）：
+   *     只去掉**整段**恰好是这些词的情形 ⇒ ⛔ 不会把"（无）但有个小问题：X"吃掉。
+   */
+  const bare = joined
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/^[-*+>\d.、)）]+/g, '')
+    .replace(/[*_`~]/g, '')
+    .replace(/[（）()\[\]【】「」:：,，.。;；—\-/／]+/g, '')
+  const PLACEHOLDERS = new Set(['', '无', '没有', '暂无', '未发现', '无待决', '无待决问题', 'na', 'none', 'nil', '无。', '待定'])
+  if (PLACEHOLDERS.has(bare.toLowerCase())) return undefined
+  /**
+   * ⚠ 整段只剩"（无）"这类标点包裹 ⇒ 上面已经归一成空串 ⇒ 命中 `''`。
+   *   而**真有内容**的段落（哪怕很短，如"谁的模型用哪个"）会保留下来。
+   */
+  return joined
+}
+
+/**
+ * **判决依据的规范化**（`D10` / §10：「必须带'依据哪几条读数'」）。
+ *
+ * ⚠ ⛔ **空数组一律视为"没有依据"**（返回 `undefined`）⇒ 写入口必须拒绝落账。
+ *   这一条是本包**防"可刷字段"**的关键：⛔ 不许出现"标一个词就算验收过"的记录。
+ */
+export function normalizeBasis(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const out: string[] = []
+  for (const x of v) {
+    if (typeof x !== 'string') continue
+    const t = x.trim()
+    if (t === '') continue
+    out.push(t)
+  }
+  return out.length === 0 ? undefined : out
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * **`D11` 进度三项 + 「有进展 / 停滞」判据**（2026-10-26 · 包 A 第 6 件）
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * ── 为什么要它（`D11` 原文）──────────────────────────────────────────
+ *   每条派发记录必须能读出 **是否进过运行态 · 已跑多久 · 重核几次**，
+ *   且「长时间无变化」必须**能被读出来**、⛔ 不靠人盯。
+ *
+ * ── ⛔ 它不做什么（硬边界）────────────────────────────────────────────
+ *   · ⛔ **不新增定时器**：本函数是**纯函数**，只在既有对账/读数触发点被调用
+ *     ⇒ 「空闲时零定时器」这条口径一个字不变；
+ *   · ⛔ **不自动重新规划**：停滞只**报**，判"要不要改方向"归用户（`D11` 末句）。
+ */
+/**
+ * 「停滞」阈值：**上次有动静**到**现在**超过这么久 ⇒ 报「停滞」。
+ *
+ * ── 为什么是 **20 分钟**（依据，不是随手取）────────────────────────────
+ *   · 与卡读数面既有的 `DEFAULT_CARD_STALL_MS`（`board-cards.ts`）**同值** ——
+ *     同一件事（卡/会话长时间没动静）⛔ 不许有两套相差很大的口径；
+ *   · 下界：一次正常的长活（写码 + 跑测试 + 自验）常见 5–15 分钟 ⇒ 阈值低于它
+ *     会把**正常在干**报成停滞（假告警会训练人忽略真告警，本仓明写的那条）；
+ *   · 上界：真停滞（死锁 / 会话丢了）在一小时内一定看得出来，20 分钟够早。
+ *   ⚠ 这不是"超时就重派"——`D11` 明令停滞**只报**。
+ */
+export const DISPATCH_STALL_MS = 20 * 60 * 1000
+
+/** {@link dispatchProgressOf} 的结果（渲染层只认这个形状）。 */
+export interface DispatchProgressReading {
+  /** 是否**进过**运行态（`sawRunning`）。 */
+  everRan: boolean
+  /** 已跑多久（毫秒）；**判不出** ⇒ `undefined`（⛔ 不许读成 0）。 */
+  ranMs?: number
+  /** 重核了几次（`recheckCount`；缺字段 ⇒ `0`，那是"没重核过"，如实）。 */
+  rechecks: number
+  /**
+   * `'progressed'` = 有进展（近 `DISPATCH_STALL_MS` 内有动静）；
+   * `'stalled'`    = 停滞（超过阈值没有任何动静）；
+   * `'not-running'`= 还没进过运行态 ⇒ **这条不谈停滞**（⛔ 不许把"还没开跑"说成"停滞"）。
+   */
+  verdict: 'progressed' | 'stalled' | 'not-running'
+  /** 最后一次"有动静"的时刻（诊断用；判不出 ⇒ 不填）。 */
+  lastActivityAt?: number
+}
+
+/**
+ * 算一条派发记录的**进度三项 + 停滞判读**（`D11` 的唯一实现点）。
+ *
+ * @param w - 记录（内存 `Watch` 或盘上 `PersistedWatch` 都满足这个形状）。
+ * @param now - 现取时刻（测试可固定）。
+ */
+export function dispatchProgressOf(
+  w: {
+    at: number
+    sawRunning?: boolean
+    sawRunningAt?: number
+    recheckCount?: number
+    lastRecheckAt?: number
+    deliveryAttemptAt?: number
+    deliveredAt?: number
+  },
+  now: number,
+): DispatchProgressReading {
+  const everRan = w.sawRunning === true
+  /**
+   * ⚠ **「已跑多久」的起点**：优先 `sawRunningAt`（它真的开跑那一刻）。
+   *   ⛔ **不许拿 `at` 顶替** —— `at` 是"交出去"的时刻，把它当开跑时刻会把排队等待
+   *   算成已跑时间（读数偏大，而偏大的"已跑多久"会让人误判"它卡住了"）。
+   *   两个都没有 ⇒ `undefined`（判不出）。
+   */
+  const startedAt = w.sawRunningAt
+  const ranMs = typeof startedAt === 'number' && Number.isFinite(startedAt)
+    ? Math.max(0, now - startedAt)
+    : undefined
+  const rechecks = typeof w.recheckCount === 'number' && Number.isFinite(w.recheckCount) ? w.recheckCount : 0
+  /**
+   * ⚠ **"最近一次有动静"取所有时刻的**最大值**（不是只取一个字段）——
+   *   重核 / 投递尝试 / 回执送达 / 开跑 都是"动静"，只认其中一个会把
+   *   "刚重核过"的活误报成停滞（假告警）。
+   */
+  const stamps = [w.sawRunningAt, w.lastRecheckAt, w.deliveryAttemptAt, w.deliveredAt]
+    .filter((x): x is number => typeof x === 'number' && Number.isFinite(x))
+  const lastActivityAt = stamps.length === 0 ? undefined : Math.max(...stamps)
+  const verdict: DispatchProgressReading['verdict'] = everRan === false
+    ? 'not-running'
+    : lastActivityAt === undefined
+      /** 进过运行态、但一个时刻都没记下来 ⇒ 判不出 ⇒ 按"有进展"报（⛔ 不拿判不出当停滞）。 */
+      ? 'progressed'
+      : (now - lastActivityAt >= DISPATCH_STALL_MS ? 'stalled' : 'progressed')
+  return {
+    everRan,
+    ...(ranMs === undefined ? {} : { ranMs }),
+    rechecks,
+    verdict,
+    ...(lastActivityAt === undefined ? {} : { lastActivityAt }),
+  }
+}
+
+/**
+ * 九态里**「由已发生的事推出、不会自己发生」的四态** —— 它们在 0 条时该说什么。
+ *
+ * ── ⚠⚠ 包 H 改写了这张表（`R7` 跟着改口径）────────────────────────────
+ *   **改前**（包 A）：这四态**没有任何写入入口** ⇒ 恒为 0 ⇒ 前提句写的是
+ *     「**本机还没有写入入口**」。
+ *   **现在**：四态各自有了一条**真实发生路径**（见 `refusalReasonOf` / `clarifySectionOf`
+ *     与 `orchestrator.ts` 的判决写入口）⇒ **"因为没人能写"这个理由不成立了**。
+ *
+ * ── ⛔ 前提句**仍然要给**（`R4`：空态不许说成"没发生"）──────────────────
+ *   但内容改成说清 **"0 条意味着什么、什么情况下它会非 0"**，
+ *   ⛔ **不许**再说"没有入口 / 没人能写"（那是已经过期的理由）。
+ * ⚠ 措辞都**只用一件能复核的事实**（哪条路径会产生它），⛔ 不写"以后会做"。
+ */
+export const DISPATCH_STATE_PREMISE: Readonly<Partial<Record<DispatchRecordState, string>>> = {
+  'needs-clarification': '⚠ **前提**：0 条意味着**这一轮派出去的回传里没有非空的"待决问题"段**'
+    + '（`## 待决问题` 只有"（无）/无/N/A"这类占位都算空）。'
+    + ' ⚠ 它由**回传正文**推出，⛔ 不是要谁去标；对方若在回复里问了事，这一档就会自己出现',
+  'accepted': '⚠ **前提**：0 条意味着**还没有人对这些产出做过带依据的验收判决**'
+    + '（验收要带依据：哪几条读数，⛔ 不是标一个词）。'
+    + ' ⚠ 它**只由判决产生**；产出本身好不好，这一档读不出来',
+  'sent-back': '⚠ **前提**：0 条意味着**还没有人对这些产出做过带依据的退回判决**。'
+    + ' ⚠ 与"已验收"是**两个判断**，⛔ 不能互相顶替；⛔ 也不等于"没人在等回音"（那是执行中）',
+  'refused': '⚠ **前提**：0 条意味着**这些记录里没有一条收到过"目标结构性接不了活"的投递失败**'
+    + '（归档 / 非活会话 / 派给自己 / 权限拒绝）。'
+    + ' ⚠ "消息没造好 / 发送抛错"**不算**拒收（那属于 `D4` 的 at-most-once 漏送，另有专行）；'
+    + '⛔ 也**不等于**"在跑却没回音"（那是"执行中"）',
+} as const
+
+/** 九态的**运行时集合**（{@link DispatchRecordState} 的同源副本）。 */
+export const DISPATCH_STATE_SET: ReadonlySet<string> = new Set(DISPATCH_RECORD_STATES)
+
+/**
  * **重核多少轮仍判不出 ⇒ 升 `stuck`**（`K = 3`，本单 B3）。
  *
  * ⚠ ⚠ 为什么必须有它：`unresolved` 是**可重入态**，若没有上限，一个永远读不到的目标
@@ -141,6 +574,32 @@ const SETTLE_EVIDENCES = ['event', 'board', 'session-log', 'agent-status'] as co
  * ⚠ 到顶后的行为：**停止自动重试** + 读数里单列 `stuck` 一档 + **明说"需人工裁"**。
  */
 export const STUCK_AFTER_RECHECKS = 3
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * **同一批活最多叫几次**（2026-10-28 · 包 BG · `CHG-165`）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 它治的是什么（`CHG-165` 的原话）──────────────────────────────────
+ *   包 AJ 把"不要乱唤醒"（**归属**问题）曲解成"不要重复叫"（**频次**问题），
+ *   于是加了"唤醒成功即回等待、不再叫"，**把兜底废掉了**：回等待后重新进唤醒
+ *   靠的是**下一次派发**，而"派发"恰好是"我还没动"时不会发生的那件事
+ *   ⇒ **兜底在我睡着那一刻恰好失效**。
+ *   ⇒ 现在：回等待照旧，但**若"这次唤醒之后我没动作"，定时器重新武装、再叫一次**；
+ *     叫满本常量次数仍没动 ⇒ 转 `stuck`（读数面写明"叫过 3 次没人应"）。
+ *
+ * ── ⚠ 为什么是 3（⚠ 工程判断，⛔ 不是实测最优值 —— 如实标注）─────────────
+ *   · 少了（1～2）＝ 兜底几乎等于没有：一次叫不到就放弃，与包 AJ 那版差别不大；
+ *   · 多了（≥4）＝ 复现 `R-24` 的另一半：**一直叫**，叫到人麻木（比不叫更糟）。
+ *   ⚠ 用户原话定的是 **3**（`TASK` §三 第 3 条）⇒ 本常量只是把那个数落成一处，
+ *     ⛔ 不许在别处再写一遍字面量（`R-18`：同一事实两个来源必然漂）。
+ *
+ * ── ⚠⛔ 它**不是第三个状态、也不是原因码** ─────────────────────────────
+ *   计数落在 {@link PersistedWatchEntry.wakeAttempts}，`state` 仍只有两个；
+ *   "到顶"由 `wakeAttempts >= 本常量` **派生**（⛔ 不另存一个 `stuck` 布尔 ——
+ *   两个来源必然漂）。
+ */
+export const WAKE_FALLBACK_LIMIT = 3
 
 /**
  * ══════════════════════════════════════════════════════════════════════
@@ -330,6 +789,85 @@ export interface PersistedWatch {
    * ⚠ 向后兼容：旧文件没有 ⇒ `undefined`（读成 0 次），⛔ 不判坏。
    */
   cleanupRetryCount?: number
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * **`D10` 的四个显式标记 + `D11` 的运行态时刻**（2026-10-26 · 包 A 第 4/6 件）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 为什么是**显式标记**而不是"从既有字段推" ─────────────────────────
+   *   九态里有四态**既有字段推不出来**（推出来的只是"它在等"）：
+   *     · `refusedAt`   —— 目标明确说做不了（⛔ 与"在跑没回音"外表相同）；
+   *     · `clarifyAt`   —— 对方跑到一半要补充信息（⛔ 与"已回传一份带问题的报告"外表相同）；
+   *     · `acceptedAt`  —— 派活方已验收（⛔ 与"已回传"不同事）；
+   *     · `sentBackAt`  —— 派活方已退回（⛔ 不是"没回音"）。
+   *   ⇒ 它们各自**只在那一刻**被写一次，读到"没有这个字段"就是"这件事没发生过"，
+   *     ⛔ 不许替旧记录编一个默认值（同 `lostClass` / `settleState` 的宽容纪律）。
+   *
+   * ⚠ 全部向后兼容：旧文件没有 ⇒ `undefined`，⛔ 不判坏、⛔ 不猜。
+   */
+  refusedAt?: number
+  clarifyAt?: number
+  acceptedAt?: number
+  sentBackAt?: number
+  /**
+   * **第一次见到目标进入运行态的时刻**（`D11`「已跑多久」的起点）。
+   *
+   * ⚠ 与 `at`（登记/派发时刻）**不是一回事**：`at` 是"我什么时候交出去的"，
+   *   本字段是"它什么时候真的开跑的" —— 两者之差就是"等了多久才开跑"。
+   *   ⛔ 不许拿 `at` 顶替它（那会把"排队等待"算成"已经跑了"）。
+   * ⚠ `sawRunning === true` 但本字段缺失（旧记录 / 重挂回来）⇒ 读成"判不出跑了多久"，
+   *   ⛔ 不许读成"刚开跑"。
+   */
+  sawRunningAt?: number
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * **`D4`「未送达」标记**（2026-10-26 · 包 A 第 5 件）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── `D4` 的原文（必须点名的那半句）──────────────────────────────────
+   *   投递语义是 **at-most-once**（至多投一次）：⛔ 不许重发，**代价是可能一次都没送到**。
+   *   ⇒ 因此**必须有"漏了怎么看得见"的读数**：投递未确认成功的记录**留在盘上并标"未送达"**，
+   *     且**出现在状态读数里**（空态也报）。
+   *
+   * ── 本字段的语义（⚠ 只记账，⛔ 不改"能不能重投"）──────────────────────
+   *   · `undeliveredAt` —— **最后一次投递被明确判为没送到**的时刻（`ok:false` /
+   *     总线缺席那一档）。⚠ 它是**事实记录**，⛔ **不是**重试开关：
+   *     `settle()` 的重投判定仍只看 `deliveryAttemptAt` / `deliveredAt`，一个字未改。
+   *   · `undeliveredWhy` —— 那一档的原话（⛔ 不许静默；⛔ 不许用"下次再试 N 次"伪装）。
+   * ⚠ 投递**成功**之后会被清掉（那条已经不该再自称"未送达"）。
+   */
+  undeliveredAt?: number
+  undeliveredWhy?: string
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * **包 H（2026-10-26）：四态的"依据"字段**
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 为什么四态需要"依据"而不只是一个时刻 ─────────────────────────────
+   *   `refusedAt` / `clarifyAt` / `acceptedAt` / `sentBackAt` 只说"这件事发生在这个时刻"，
+   *   而方案 §10 要求读数**有原始依据**。⇒ 四态各自配对一条**可指认的依据**：
+   *   · `refusedWhy`     —— **投递实现返回的原话**（哪一句判"目标不能接"）；
+   *   · `clarifyWhy`     —— **回传里那段待决问题的原文**（不是"我记得有"）；
+   *   · `basis`          —— 判决依据的**读数条目**（`D10`/§10：「必须带'依据哪几条读数'」）。
+   * ⚠ ⛔ **`basis` 不许为空数组**：判决没依据就该拦下（拦在写入口，见 `orchestrator.ts`）。
+   *   本字段只在**判决**时写；⛔ 不是"随便标一个词"的槽。
+   */
+  refusedWhy?: string
+  clarifyWhy?: string
+  /** 判决依据（人读的读数条目；⛔ 空数组不许写，见写入口）。 */
+  basis?: string[]
+  /**
+   * ⚠ **包 J 第 3.4 件：失败原因未归类**（既不是拒收、也不是明确的传输失败）。
+   *
+   * ── 为什么单独一个字段（⛔ 不并进 `undeliveredAt`）──────────────────────
+   *   `undeliveredAt` 的语义是"**确定没送到**"（`D4`）。而"没命中关键词"只说明
+   *   **我们认不出这句话属于哪一类** —— 它**可能是**对方拒了、**也可能**是别的成因。
+   *   ⇒ 并进"未送达"就是把未知冒充成已知（本项目头号禁忌）。
+   * ⚠ 与 `undeliveredAt` **可以并存**（"明确传输失败 + 原话里还有我们没归类的部分"），
+   *   但**不共享计数**（读数面分开报，⛔ 不许相加）。
+   */
+  unclassifiedAt?: number
+  unclassifiedWhy?: string
 }
 
 /**
@@ -407,6 +945,61 @@ export interface OrchStateFile {
    *   ⛔ 不判坏、⛔ **不猜一个默认 owner**（空表 = 谁都还没绑定）。
    */
   sessions: PersistedSessionBinding[]
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * **出了 `pending`、但读数必须还记得的派发记录**（2026-10-26 · 包 H）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 为什么必须单独一摞（⚠ 不并进 `pending` / `lost`）──────────────────
+   *   包 H 给四态接的路径里，有三条**发生在记录离开 `pending` 之后**：
+   *     · **拒收**：`dispatch()` 的投递**明确失败** ⇒ 那条 watch **根本没登记**
+   *       （既有语义：没送出去就不该等回传）⇒ `pending` 里**永远没有它**；
+   *     · **已验收 / 已退回**：判决发生在**回传已到、记录已结算删除之后**。
+   *   ⇒ 若不另存一摞，这三态就只能靠"当下内存里恰好还有那条 watch"来显示
+   *     —— 重载即抹，读数又变成"恒为 0"（等于没做）。
+   *
+   * ── ⚠⛔ 它与 `pending` / `lost` 的边界（不许混）──────────────────────
+   *   · `pending` —— **还在等回传**（参与 `在等回传` 计数、参与对账重挂）；
+   *   · `lost`    —— **判定丢失 / 重核到顶**（`stuck` 就在这一摞）；
+   *   · **本摞**  —— **已经有结论、不再等也不再重核**的（拒收 / 已回传 / 已验收 / 已退回）。
+   *   ⇒ 本摞**不参与** `在等回传`、**不参与**任何重试 ⇒ ⛔ 不会把 `D4` 的投递语义改坏。
+   * ⚠ 只读诊断用途 ⇒ 有上限、旧的丢（同 `MAX_LOST` 的理由）。
+   */
+  closed: PersistedWatch[]
+  /**
+   * ⚠ **包 J 第 3.5 件：`closed` 满仓后被滚出的累计条数**（⛔ 不许静默淘汰）。
+   *   ⚠ 向后兼容：旧文件没有 ⇒ `undefined`（读数面据此说"没听说过滚出"，
+   *     ⛔ 不许当成 0 条 —— 那会把"判不出"说成"一条都没滚出过"）。
+   */
+  closedDroppedCount?: number
+  /** 最近一次被滚出的那条（`target` + 它的 `at`）。 */
+  closedDroppedLast?: { target: string; at: number }
+  /**
+   * ⚠ **看护登记表**（2026-10-27 · 包 AB · 方案 §5.9）。
+   *
+   * ⚠ **向后兼容**：旧文件没有这个字段 ⇒ 读成**空数组**（同 `lost` / `handoffs` /
+   *   `sessions` / `closed` 的宽容纪律：缺字段 ≠ 文件坏了）。
+   *   ⚠ 空数组的语义 = **没有任何登记** ⇒ 看护**不武装**（与"等待"同效）。
+   */
+  watchEntries: PersistedWatchEntry[]
+  /**
+   * ══════════════════════════════════════════════════════════════════════════
+   * **看护定时器最近一次武装的时刻**（2026-10-27 · 包 AG · `CHG-121` §五·2）
+   * ══════════════════════════════════════════════════════════════════════════
+   *
+   * ── 为什么必须落盘（⛔ 不是"顺手记一个"）──────────────────────────────
+   *   改前"定时器武装没武装"**只存在于返回值里** ⇒ **只有模型面能看到**
+   *   ⇒ 按 `CHG-121` §五·2 的原话：「**那就不是读数，是"某一条路径的副产品"**」。
+   *   ⚠ 具体后果：`零点火`（定时器根本没武装）与 `已武装但没到点`
+   *     **在盘上完全一样** ⇒ 无法分辨（`R4`：空态不许说成"没有发生"）。
+   *
+   * ── ⚠ 语义（⛔ 别误读成"在跑"）────────────────────────────────────
+   *   它是「**最近一次成功排上定时器**的时刻」，⛔ **不是**"此刻有没有定时器"。
+   *   ⚠ 判断"此刻在不在跑"仍要结合 `updatedAt` 的远近 ——
+   *     本字段只保证"**曾经武装过**"这件事**在盘上可见**。
+   *   ⚠ 解除时**不清它**（清了就又变成"从来没武装过"，两种情形混成一档）。
+   */
+  watchTimerArmedAt?: number
 }
 
 /**
@@ -428,9 +1021,108 @@ export interface PersistedSessionBinding {
   via: 'spawn' | 'dispatch'
 }
 
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * **看护登记表的一条**（2026-10-27 · 包 AB · 方案 §5.9 `D14`）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 它治的是什么 ──────────────────────────────────────────────────────
+ *   方案 §5.9 的缺陷原话：**任务没完成、派出去的会话没在执行、Hob 自己也没在
+ *   活动思考，就这样停住了**。⇒ 需要一个**登记**来回答"该盯谁"，以及一条判据
+ *   （唤醒态下观察集合里没有一个在运行、且持续超过阈值 ⇒ 唤醒 Hob）。
+ *
+ * ── ⚠⛔ 只有两个状态、⛔ 不许加第三个（用户已明确否掉）──────────────────
+ *   · `waiting`   —— **等待**（缺省）：**不盯**。① 初始即此 ② Hob 主动切回
+ *   · `awake`     —— **唤醒**：盯观察集合。⚠ **只有一个入口：派发动作发生时**
+ *   ⛔ **不许加原因码** —— 方案 §5.9 明写"切回等待时顺手说一句为什么"，
+ *     那句话是**给人读的说明文本**（{@link note}），⛔ **不是可枚举的原因码**。
+ *     ⚠ 两者差别：码表会被当门槛（逼人编一个），一句说明不会。
+ *
+ * ── ⚠ 归属只认 `owner`（`D15` / `R10`）────────────────────────────────
+ *   `owner` = **发起那次派发的会话 id**。⛔ 不许按工作区推、⛔ 不许按目录推、
+ *   ⛔ 不许按"最近活跃"推、⛔ 不许退化成广播。⚠ **本类型刻意不存工作区根**：
+ *   存了就会诱使下游"按工作区挑"，那正是 `D15` 禁的。
+ */
+export interface PersistedWatchEntry {
+  /** 发起派发的会话 id（⚠ 唤醒只发给他）。 */
+  owner: string
+  /** 它派出去的、**当前登记在案**的会话 id 列表（观测集合减去 Hob 自己）。 */
+  targets: string[]
+  /** ⚠ **只有两个值**（用户否掉了第三态）。 */
+  state: 'waiting' | 'awake'
+  /** 进入当前状态的时刻（毫秒）。⚠ 判据的"持续多久"从它算。 */
+  stateAt: number
+  /**
+   * ⚠ **给人读的一句话**（切回等待时 Hob 顺手写）。
+   *   ⛔ 不是原因码：本字段**不参与任何判据**，只被读数面原样印出来。
+   */
+  note?: string
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * **这条"该唤醒了"的判定已经落过盘了**（`D16`：唤醒**先落盘再投递**）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 它治的是什么（`D16` 的原话）──────────────────────────────────────
+   *   **⛔ 不许反过来** —— 先投递再落盘的话，**宿主重启就丢事件**，
+   *   那个 Hob **永远不知道**自己该被叫醒过。
+   *
+   * ── ⚠ 为什么必须有这个字段（⛔ 不是"顺手记一个时间"）──────────────────
+   *   没有它，投递方**无法区分**下面两种情形：
+   *     · "判定出来了、但还没落盘" ⇒ **必须落盘**（否则重启丢事件）；
+   *     · "已经落过盘、正在投递 / 投过了" ⇒ ⛔ **不许再投一次**（`D4` at-most-once）。
+   *   ⚠ 两者在盘上"看起来一样"（都是 `state='awake'`）⇒ 那就是本仓最忌的
+   *     **"两种原因说成同一句话"**（`R-10`）。
+   *
+   * ── ⚠⛔ 它**不是第三个状态**（用户已明确否掉第三态）──────────────
+   *   状态仍然只有 `waiting` / `awake` 两个；本字段是**投递进度**，⛔ 不是状态。
+   *   ⚠ 判据**不看它**（`judgeWatchGuards` 只读 `state`/`targets`/`stateAt`）——
+   *     它只回答"这次唤醒通知发出去过没有"。
+   *
+   * ── ⚠ 它**不存原因码、不存失败原因**（`CHG-111` 明令）：只存"落过盘的时刻"。
+   */
+  wakeLoggedAt?: number
+  /**
+   * ⚠ **这次唤醒通知已经投出去了**（`D4` at-most-once：投过就不再投）。
+   *   ⚠ 与 {@link wakeLoggedAt} **分开**：落盘 ≠ 投出（`D16` 要的正是这个先后）。
+   *   ⛔ 丢了它会被重投（`D4` 不许）；⚠ 但**投失败也不重投**（同 `D4` 的既有语义）。
+   */
+  wakeDeliveredAt?: number
+  /**
+   * ══════════════════════════════════════════════════════════════════════════
+   * **这批活已经叫过几次**（2026-10-28 · 包 BG · `CHG-165` · 兜底修回来）
+   * ══════════════════════════════════════════════════════════════════════════
+   *
+   * ── 为什么需要它（⛔ 不是"再多一个计数"）──────────────────────────────
+   *   包 AJ 之后"叫过一次就永久安静"：回 `waiting` 要重新进 `awake` 只能靠
+   *   **下一次派发** —— 而"派发"恰好是"我还没动"时**不会发生**的动作
+   *   ⇒ 兜底在我睡着那一刻失效。现在要"我没动就再叫一次"，
+   *   那就**必须知道叫过几次**（否则既判不出"该再叫"、也判不出"到顶了"）。
+   *
+   * ── ⚠⛔ 它**不是第三个状态**（用户已明确否掉第三态）────────────────────
+   *   `state` 仍然只有 `waiting` / `awake` 两个；本字段是**计数事实**，与 `state` 正交。
+   *   到顶那一档（`>= `{@link WAKE_FALLBACK_LIMIT}）是**派生**的，⛔ 不另存布尔
+   *   （两个来源必然漂，`R-18`）。
+   *   ⚠ 判据 `judgeWatchGuards` **仍不看它**（它只读 `state`/`targets`/`stateAt`/两个时刻）。
+   *
+   * ── ⚠ 语义：**"同一批活"的界**（⛔ 别读成"这个 owner 一共叫过几次"）────────
+   *   一批活 = 一条登记从**某次派发**开始、到**它又派了新活**为止。
+   *   ⇒ `registerWatchEntry`（= 派发动作）把它**归零**（新的一批活，重新给 3 次机会）；
+   *     `resetWakeAttempts` 只在"我动了"（新派发 / `watch-wait`）时被走到。
+   *   ⚠ 所以它读作「**这一批活**已经被叫过几次」。
+   *
+   * ── ⚠ 向后兼容 ────────────────────────────────────────────────────────
+   *   旧盘没有这个字段 ⇒ 读成 **0**（= 从没叫过）—— 这是**如实**的：
+   *   那些记录本来就在包 AJ 之后、一次都没按本规则计过数。⛔ 不判坏、⛔ 不猜成 1。
+   */
+  wakeAttempts?: number
+}
+
 /** 空态（文件不存在/坏了时的返回值）。 */
 export function emptyOrchState(): OrchStateFile {
-  return { version: ORCH_STATE_VERSION, updatedAt: 0, pending: [], lost: [], handoffs: [], sessions: [] }
+  return {
+    version: ORCH_STATE_VERSION, updatedAt: 0, pending: [], lost: [], handoffs: [], sessions: [], closed: [],
+    watchEntries: [],
+  }
 }
 
 /**
@@ -597,6 +1289,29 @@ function asWatch(v: unknown): PersistedWatch | undefined {
     const v = (o as Record<string, unknown>)[k]
     if (typeof v === 'number' && Number.isFinite(v) && v > 0) out[k] = v
   }
+  /**
+   * ── **`D10` 四标记 + `D11` 运行态时刻**（包 A 第 4/6 件）──────────────────
+   *   ⚠ 同一条宽容纪律：有限数字才收，否则**不填**（⛔ 不许读成 0 —— 0 是"很久以前"，
+   *     而"没记过"是另一件事）。⚠ 这四个标记**互相独立**，⛔ 不许一个顶替另一个。
+   */
+  for (const k of ['refusedAt', 'clarifyAt', 'acceptedAt', 'sentBackAt', 'sawRunningAt', 'undeliveredAt'] as const) {
+    const v = (o as Record<string, unknown>)[k]
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) out[k] = v
+  }
+  if (typeof o.undeliveredWhy === 'string' && o.undeliveredWhy !== '') out.undeliveredWhy = o.undeliveredWhy
+  /** ⚠ 包 H：四态的依据（同一条宽容纪律 —— 类型不对就**不填**，⛔ 不猜）。 */
+  if (typeof o.refusedWhy === 'string' && o.refusedWhy !== '') out.refusedWhy = o.refusedWhy
+  /** ⚠ 包 J 3.4：未归类那一档（同一条宽容纪律）。 */
+  if (typeof o.unclassifiedAt === 'number' && Number.isFinite(o.unclassifiedAt) && o.unclassifiedAt > 0) {
+    out.unclassifiedAt = o.unclassifiedAt
+  }
+  if (typeof o.unclassifiedWhy === 'string' && o.unclassifiedWhy !== '') out.unclassifiedWhy = o.unclassifiedWhy
+  if (typeof o.clarifyWhy === 'string' && o.clarifyWhy !== '') out.clarifyWhy = o.clarifyWhy
+  if (Array.isArray(o.basis)) {
+    const b = o.basis.filter((x): x is string => typeof x === 'string' && x !== '')
+    /** ⚠ **空数组不填**：判决没依据 = 那条记录没有判决依据，⛔ 不许写成 `[]` 冒充"有依据"。 */
+    if (b.length > 0) out.basis = b
+  }
   return out
 }
 
@@ -691,6 +1406,53 @@ function asBindingList(v: unknown): PersistedSessionBinding[] {
 }
 
 /**
+ * 把数组字段读成 {@link PersistedWatchEntry}[]（逐条收窄，坏的丢掉）。
+ *
+ * ⚠ **收窄口径（⚠ 刻意严，因为下游要据它决定"叫醒谁"）**：
+ *   · `owner` 必须是非空字符串 —— ⛔ **不许猜一个默认 owner**（`§5.2`/`D15`）；
+ *   · `targets` 只收非空字符串、**去重**（同一个会话派两次只算一个观察对象）；
+ *   · `state` 只认 `waiting` / `awake` 两个值 —— ⚠ **不认识的取值整条丢掉**，
+ *     ⛔ **不许"猜成等待"**：那是"两种原因说成同一句话"（`R-10`）的形态。
+ *   · `stateAt` 必须是有限数（判据的"持续多久"靠它）。
+ *   ⚠ 一条坏记录**只丢自己**，⛔ 不连坐整张表（同 `asWatchList` / `asBindingList` 纪律）。
+ */
+function asWatchEntryList(v: unknown): PersistedWatchEntry[] {
+  if (!Array.isArray(v)) return []
+  const out: PersistedWatchEntry[] = []
+  for (const item of v) {
+    if (item === null || typeof item !== 'object') continue
+    const o = item as Record<string, unknown>
+    if (typeof o.owner !== 'string' || o.owner === '') continue
+    if (o.state !== 'waiting' && o.state !== 'awake') continue
+    if (typeof o.stateAt !== 'number' || !Number.isFinite(o.stateAt)) continue
+    const rawTargets = Array.isArray(o.targets) ? o.targets : []
+    const targets: string[] = []
+    for (const t of rawTargets) {
+      if (typeof t !== 'string' || t === '') continue
+      if (targets.includes(t)) continue
+      targets.push(t)
+    }
+    const e: PersistedWatchEntry = { owner: o.owner, targets, state: o.state, stateAt: o.stateAt }
+    if (typeof o.note === 'string' && o.note !== '') e.note = o.note
+    /** ⚠ `D16` 的两枚投递进度标记：类型不对就**不填**（⛔ 不猜、⛔ 不判坏整条）。 */
+    if (typeof o.wakeLoggedAt === 'number' && Number.isFinite(o.wakeLoggedAt)) e.wakeLoggedAt = o.wakeLoggedAt
+    if (typeof o.wakeDeliveredAt === 'number' && Number.isFinite(o.wakeDeliveredAt)) e.wakeDeliveredAt = o.wakeDeliveredAt
+    /**
+     * ⚠ 包 BG（兜底）：**叫过几次**。
+     *   · 类型不对 / 负数 ⇒ **不填**（读成 0 = 从没叫过，⚠ 不是猜 1：猜 1 会让
+     *     一条旧记录**凭空少掉一次机会**）；
+     *   · ⚠ 旧盘没有它 ⇒ 也是不填 ⇒ 读成 0 —— 这与"包 AJ 之后那些一次都没按本规则
+     *     计过数"的事实一致（如实，⛔ 不是编）。
+     */
+    if (typeof o.wakeAttempts === 'number' && Number.isFinite(o.wakeAttempts) && o.wakeAttempts >= 0) {
+      e.wakeAttempts = Math.floor(o.wakeAttempts)
+    }
+    out.push(e)
+  }
+  return out
+}
+
+/**
  * 把一个**已解析的普通对象**收窄成 {@link OrchStateFile}（⚠ 缺字段一律按宽容口径读）。
  *
  * ⚠ 抽出来是为了让 {@link readOrchState} 与 {@link readOrchStateDetailed}
@@ -708,6 +1470,26 @@ function narrowOrchState(o: Record<string, unknown>): OrchStateFile {
     handoffs: asHandoffList(o.handoffs),
     // ⚠ **向后兼容**（`I-6`）：旧文件没有 `sessions` ⇒ 空数组（⛔ 不判坏、⛔ 不猜归属）
     sessions: asBindingList(o.sessions),
+    /** ⚠ **向后兼容**（包 H）：旧文件没有 `closed` ⇒ 空数组（⛔ 不判坏、⛔ 不猜）。 */
+    closed: asWatchList(o.closed),
+    /** ⚠ **向后兼容**（包 AB）：旧文件没有 `watchEntries` ⇒ 空数组（⛔ 不判坏、⛔ 不猜状态）。 */
+    watchEntries: asWatchEntryList(o.watchEntries),
+    /** ⚠ **向后兼容**（包 AG）：旧文件没有它 ⇒ 不填（= "从没武装过"，⛔ 不猜一个时刻）。 */
+    ...(typeof o.watchTimerArmedAt === 'number' && Number.isFinite(o.watchTimerArmedAt)
+      ? { watchTimerArmedAt: o.watchTimerArmedAt } : {}),
+    /** ⚠ 包 J 3.5：滚出记账（同一条宽容纪律 —— 类型不对就不填）。 */
+    ...(typeof o.closedDroppedCount === 'number' && Number.isFinite(o.closedDroppedCount)
+      ? { closedDroppedCount: o.closedDroppedCount }
+      : {}),
+    ...((() => {
+      const v = o.closedDroppedLast as unknown
+      if (v === null || typeof v !== 'object') return {}
+      const t = (v as { target?: unknown }).target
+      const a = (v as { at?: unknown }).at
+      if (typeof t !== 'string' || t === '') return {}
+      if (typeof a !== 'number' || !Number.isFinite(a)) return {}
+      return { closedDroppedLast: { target: t, at: a } }
+    })()),
   }
   if (typeof o.lostAt === 'number' && Number.isFinite(o.lostAt)) out.lostAt = o.lostAt
   return out
@@ -801,13 +1583,40 @@ export function runSerialized<T>(fn: () => T): T {
 
 export function writeOrchState(file: string, state: OrchStateFile): boolean {
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+  /**
+   * ⚠⚠ **D12 回读验证（2026-10-27 · 包 X）**：写成功不等于**盘上**成功。
+   *
+   * ── 改前（本函数就是那个形态）──────────────────────────────────────────
+   *   `renameSync` 返回 ⇒ 直接 `return true`。⚠ 而实测过的真机故障正是
+   *   「`ok:true` 而盘上没写」（`CHG-086`）：**调用方以为落盘了，读数却是旧的**。
+   *
+   * ── 现在：三条判据（`D12` §5.6 逐条落）─────────────────────────────────
+   *   ① **对着预期值比**，⛔ 不是"文件存在"：序列化后的 `expect` 与盘上**逐字节**比；
+   *   ② **回读失败 ⇒ 返回 `false`**（⛔ 不许因为"我已经调过写函数"就报成功）；
+   *   ③ **回读必须是独立的一次读**：用 `readFileSync` **重新从盘上读**，
+   *      ⛔ 不是"看一眼刚序列化的内存对象"（那就是改前那个形态的变种）。
+   *
+   * ⚠ **为什么读的是 `Buffer` 再转串**：`readFileSync(p,'utf8')` 会静默做解码替换，
+   *   坏字节会变成 `U+FFFD` 而**与预期串仍然不等**（结果一样）；取 Buffer 是为了让
+   *   "长度先比"这一步有意义（报得出 `实际 N 字节 / 期望 M 字节`）。
+   * ⚠ **失败不回滚**：本函数**没有**备份（运行态不是账本），回滚无可回。
+   *   但**必须让调用方看见失败** —— 那正是 `D12` 要的"返回失败"。
+   */
+  const expect = JSON.stringify(state, null, 2)
   try {
     mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8')
+    writeFileSync(tmp, expect, 'utf8')
     renameSync(tmp, file)
-    return true
   } catch {
     try { rmSync(tmp, { force: true }) } catch { /* 清理失败不掩盖主错误 */ }
+    return false
+  }
+  try {
+    const back = readFileSync(file)
+    if (!back.equals(Buffer.from(expect, 'utf8'))) return false
+    return true
+  } catch {
+    /** ⚠ 读不回来 = 没确认 ⇒ 与"写失败"同档，⛔ 不许当成功。 */
     return false
   }
 }
@@ -932,6 +1741,18 @@ function preserveCorruptCopy(file: string): string | undefined {
     const ts = new Date().toISOString().replace(/[:.]/g, '-')
     const dest = join(dir, `${prefix}${ts}`)
     copyFileSync(file, dest)
+    /**
+     * ⚠⚠ **D12 回读（2026-10-27 · 包 X）**：留证副本也是"改了盘上东西"的一处。
+     *   ⚠ 它的返回值**被调用方当"留证成功"用**（写进 `refusal.evidence` 与 `message`）。
+     *   ⇒ 复制完**独立回读**并与原字节比；不符 ⇒ 返回 `undefined`（= 留证做不到），
+     *     由调用方在 message 里如实说清 —— ⛔ 不许拿"我调了 copy"当"证据在盘上"。
+     *   ⚠ 读不到（EACCES）同样返回 `undefined`：那与"没复制成功"是同一档诚实边界。
+     */
+    try {
+      if (!Buffer.from(readFileSync(dest)).equals(bytes)) return undefined
+    } catch {
+      return undefined
+    }
     return dest
   } catch {
     return undefined
@@ -1017,14 +1838,23 @@ export const ORCH_STATE_IGNORE = '.gitignore'
  *   `git status` 干净，不需要人工 `git add` 任何东西。
  */
 export function ensureRuntimeIgnored(dir: string): boolean {
+  /** ⚠ `D12`：内容固定 ⇒ 预期值也固定，回读**逐字节比这一串**（⛔ 不是"文件在就行"）。 */
+  const expect = '# dsh-hob 编排运行态（插件自管；不进账本历史）\n*\n'
+  const target = join(dir, ORCH_STATE_IGNORE)
   try {
     mkdirSync(dir, { recursive: true })
-    writeFileSync(
-      join(dir, ORCH_STATE_IGNORE),
-      '# dsh-hob 编排运行态（插件自管；不进账本历史）\n*\n',
-      'utf8',
-    )
-    return true
+    writeFileSync(target, expect, 'utf8')
+  } catch {
+    return false
+  }
+  /**
+   * ⚠⚠ **D12 回读（2026-10-27 · 包 X）**：本函数是"改了盘上东西还返成功"的一处 ——
+   *   它的返回值被**四处**用来决定"要不要告警"（例如 `orch-stopped.json` 含会话 id，
+   *   没被忽略就会被账本 git 收进历史）。⚠ 改前写完直接 `return true`。
+   *   ⇒ 现在：重新从盘上读，**与预期串逐字节比**；读不到 / 不一致 ⇒ `false`。
+   */
+  try {
+    return readFileSync(target, 'utf8') === expect
   } catch {
     return false
   }
@@ -1036,6 +1866,66 @@ export function ensureRuntimeIgnored(dir: string): boolean {
 
 /** 保留的"已丢失"记录上限（防止文件无限增长 —— 它是运行态、不是审计日志）。 */
 export const MAX_LOST = 50
+
+/**
+ * 保留的**"已有结论"**记录上限（包 H 的 `closed` 那一摞）。
+ *
+ * ⚠ 与 `MAX_LOST` **同量级、同一理由**：它服务的是**当下读数**（用户现在要分辨
+ *   "这条是拒收了 / 验收过了"），⛔ 不是审计留档。
+ * ⚠ 取更大会让运行态文件无谓变长；取更小会让"昨天验收的那条"今天就看不见
+ *   ⇒ 读数会开始骗人。50 与 `MAX_LOST` 对齐，避免两摞口径不一（`E-128` 同族）。
+ */
+export const MAX_CLOSED = 50
+
+/**
+ * 往 `closed` 里记一条**已有结论**的记录（包 H）。
+ *
+ * ⚠ **按键去重**（`target@at`，与 `pending` / `lost` **同一个键**）：同一条被判两次
+ *   （先退回、后验收）⇒ 后来者覆盖，⛔ 不许两行并存（那会让"已验收 / 已退回"
+ *   同时非 0，读的人没法判断到底哪个成立）。
+ * ⚠ 写盘失败**返回 `false`**（⛔ 不抛）：调用方记日志；⛔ 不许因为记账失败把
+ *   已经发生的事说成没发生（那是另一条假话）。
+ */
+export function recordClosed(file: string, w: PersistedWatch): boolean {
+  return runSerialized(() => {
+    const guard = readOrchStateForWrite(file)
+    if (!guard.ok) {
+      noteWriteOutcome(file, guard)
+      return false
+    }
+    noteWriteOutcome(file, guard)
+    const state = guard.reading.state
+    const k = watchKey(w)
+    /** ⚠ **新的在前** + 同键去重（后写的覆盖先写的：判决/拒收都是"最新那次成立"）。 */
+    const rest = state.closed.filter((x) => watchKey(x) !== k)
+    const full = [w, ...rest]
+    /**
+     * ══════════════════════════════════════════════════════════════════════
+     * ⚠⚠ **包 J 第 3.5 件：滚出（淘汰）必须留证，⛔ 不许静默**
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * ── 改前的形态（本件要治的）────────────────────────────────────────
+     *   `slice(0, MAX_CLOSED)` 一到顶就**静默丢掉最老的** ⇒ 读数面看不出
+     *   "有一条记录被挤掉了"，更看不出"被挤掉的是哪一条"
+     *   —— 又是一次"有记录，却读出来像没发生过"。
+     *
+     * ── 现在：滚出时把**被滚掉的那条**记进 `closedDropped` ────────────────
+     *   · 累计条数 `closedDroppedCount`（判"到底滚掉过多少条"）；
+     *   · 最近滚出的那条的 `target + 时刻`（判"滚掉的是谁"）。
+     *   ⚠ **⛔ 不改变淘汰策略**（仍是新的在前、上限 `MAX_CLOSED`）——本件只让这件事可读。
+     *   ⚠ 上限只保留一条详情（更早的滚出记录本身也会被滚 ⇒ 只留"最近一次"是诚实的）。
+     */
+    const dropped = full.length > MAX_CLOSED ? full.slice(MAX_CLOSED) : []
+    state.closed = full.slice(0, MAX_CLOSED)
+    if (dropped.length > 0) {
+      const last = dropped[0]
+      state.closedDroppedCount = (state.closedDroppedCount ?? 0) + dropped.length
+      state.closedDroppedLast = { target: last.target, at: last.at }
+    }
+    state.updatedAt = Date.now()
+    return writeOrchState(file, state)
+  })
+}
 
 /** 一条 watch 的身份：目标 + 登记时刻（两者合起来在本机内唯一）。 */
 export function watchKey(w: Pick<PersistedWatch, 'target' | 'at'>): string {
@@ -1424,6 +2314,564 @@ export function mergePendingByIdentity(
  *      而"为了让新代码过得去而改既有断言"是红线。
  *   ⇒ 在函数内读回，既有调用点与既有断言**一字不动**。
  */
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * **看护登记表的读写与状态迁移**（2026-10-27 · 包 AB · 方案 §5.9 `D14`/`D15`/`D16`）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 三个函数的分工（⛔ 不许合并）───────────────────────────────────────
+ *   · {@link registerWatchEntry}  —— **唯一进入 `awake` 的入口**（派发动作发生时调）
+ *   · {@link setWatchState}       —— Hob **主动切回** `waiting`（或再切回 `awake` 之外没有别的）
+ *   · {@link readWatchEntries}    —— 读数面 / 检测层读（⚠ 只读，不改）
+ *
+ * ── ⚠ 落盘纪律 ────────────────────────────────────────────────────────
+ *   · **读-改-写进单写者队列**（{@link runSerialized}）—— 同 `writePending` 的 **丙-5** 纪律：
+ *     两个 Hob 同时改同一张表会互相顶掉，而两次都回"写成功"。
+ *   · **写前过读盘守卫**（`readOrchStateForWrite`）：坏 JSON / 版本不认识 ⇒ **拒写**，
+ *     ⛔ 不许按空态重写（那会静默清空别人的登记）。
+ *   · **⚠ 只动 `watchEntries` 这一摞**，其余字段**原样保留**（同 `writePending` 的纪律）。
+ */
+
+/** {@link registerWatchEntry} / {@link setWatchState} 的结果。 */
+export interface WatchEntryWriteResult {
+  /** 是否真的写盘了。⚠ `false` ⇒ 调用方**必须**如实说明，⛔ 不许当成功。 */
+  wrote: boolean
+  /** 落盘后的完整状态（失败时是读到的原状态）。 */
+  state: OrchStateFile
+  /** 拒写原因（坏 JSON / 版本不认识）；成功时 `undefined`。 */
+  refusal?: OrchWriteRefusal
+}
+
+/**
+ * **唯一的进入 `awake` 入口**：派发动作发生时调用。
+ *
+ * ⚠⚠ **为什么只有这一个入口**（方案 §5.9 的原话）：
+ *   「**Hob 无法靠"说一句我在等"逃掉** —— 它要逃只能永远不派活，而"永远不派活"
+ *     本身就是任务没在推进，正是本节要抓的东西。」
+ *   ⇒ 本函数**只由派发路径调用**，⛔ 不提供"手工置 awake"的开关。
+ *
+ * ⚠ **重复派发是合并，不是覆盖**：同一 `owner` 已有一条记录 ⇒ 把 `target` **并进**
+ *   `targets`（去重），`stateAt` **更新为此刻**（判据的"持续多久"从最近一次派发算起），
+ *   `state` 置 `awake`。⛔ 不新建第二条（否则读数面会出现同一 owner 两行）。
+ *
+ * @param file - 运行态文件（`orchStateFileOf(...)` 现算，⛔ 不许上游传死值）
+ * @param owner - **发起这次派发的会话 id**（`D15`：唤醒只发给它）。空 ⇒ 拒写。
+ * @param target - 这次派出去的会话 id。空 ⇒ 拒写。
+ */
+export function registerWatchEntry(
+  file: string,
+  owner: string,
+  target: string,
+): WatchEntryWriteResult {
+  if (owner === '') return { wrote: false, state: emptyOrchState() }
+  if (target === '') return { wrote: false, state: emptyOrchState() }
+  return runSerialized(() => {
+    const guard = readOrchStateForWrite(file)
+    if (!guard.ok) {
+      noteWriteOutcome(file, guard)
+      /** ⚠ 拒写 ⇒ 返回**盘上那份**（读得到就读，读不到给空态），⛔ 不许返回"改了一半"的假状态。 */
+      return { wrote: false, state: readOrchState(file), refusal: noteWriteOutcome(file, guard) }
+    }
+    noteWriteOutcome(file, guard)
+    const prev = guard.reading.state
+    const at = Date.now()
+    const next: PersistedWatchEntry[] = []
+    let merged = false
+    for (const e of prev.watchEntries) {
+      if (e.owner !== owner) { next.push(e); continue }
+      merged = true
+      const targets = e.targets.includes(target) ? e.targets : [...e.targets, target]
+      next.push({ owner, targets, state: 'awake', stateAt: at, ...(e.note === undefined ? {} : { note: e.note }) })
+    }
+    if (!merged) next.push({ owner, targets: [target], state: 'awake', stateAt: at })
+    const state: OrchStateFile = {
+      version: ORCH_STATE_VERSION,
+      updatedAt: at,
+      pending: prev.pending,
+      lost: prev.lost,
+      handoffs: prev.handoffs,
+      sessions: prev.sessions,
+      closed: prev.closed,
+      watchEntries: next,
+    }
+    const wrote = writeOrchState(file, state)
+    return { wrote, state }
+  })
+}
+
+/**
+ * **Hob 主动切回 `waiting`**（做完了 / 需要用户决策 / 出了异常 —— 都走这同一个动作）。
+ *
+ * ⚠⚠ **因果顺序**（方案 §5.9 明写，⛔ 别倒过来）：
+ *   **不是"因为说了原因所以允许等待"，而是"切回等待时顺手说一句为什么"。**
+ *   前一种把原因变成门槛（⛔ 会逼人编原因，编出来的比没有更糟）。
+ *   ⇒ 故 `note` 是**可选**参数，⛔ **缺失不阻止切换**。
+ *
+ * ⚠ 切回时会**清空 `targets`**（不再盯任何人）—— 这是"不盯"的字面含义。
+ *   ⚠ 保留 `owner` 那条记录本身（⛔ 不删）⇒ 读数面仍能看出"这个 Hob 有过看护登记"。
+ *
+ * @returns `wrote`：`owner` 根本没有登记 ⇒ `wrote: false`（⚠ 如实说"没有可切回的东西"，
+ *   ⛔ 不许凭空造一条 `waiting` 记录假装切成功了）。
+ */
+export function setWatchState(
+  file: string,
+  owner: string,
+  note?: string,
+  opts?: {
+    /**
+     * ⚠⚠ **包 BG（2026-10-28 · `CHG-165`）：这次切回是"唤醒后回等待"，⛔ 不是"Hob 说我不盯了"**。
+     *
+     * ── 为什么必须有这个开关（⛔ 不是为了多一个参数）──────────────────────
+     *   兜底要数"同一批活叫了几次"（{@link PersistedWatchEntry.wakeAttempts}）。
+     *   ⚠ 而"唤醒投递成功 ⇒ 回等待"与"`watch-wait` ⇒ 切回等待"**在这一层长得一模一样**
+     *     （都是 `state='waiting'`）⇒ 若一律把计数清零：
+     *       · 唤醒返回那一支会**把刚记上的 1 次抹掉** ⇒ 永远到不了 3 次 ⇒ 兜底等于没做；
+     *     若一律不清零：
+     *       · 用户说了 `watch-wait`（= **我动了 / 我不盯了**）却还接着被叫 ⇒ 违反 `TASK` §三 第 2 条。
+     *   ⇒ **两种成因必须分开表达**（`R-10`：不同成因不许说成同一句话）。
+     *   · `keepWakeAttempts: true` —— 唤醒返回那一支（保留计数，⛔ 不重置）；
+     *   · 缺省（`false`）           —— `watch-wait` 那一支（**重置为 0**：我动了/我不盯了）。
+     */
+    keepWakeAttempts?: boolean
+  },
+): WatchEntryWriteResult {
+  if (owner === '') return { wrote: false, state: emptyOrchState() }
+  return runSerialized(() => {
+    const guard = readOrchStateForWrite(file)
+    if (!guard.ok) {
+      noteWriteOutcome(file, guard)
+      return { wrote: false, state: readOrchState(file), refusal: noteWriteOutcome(file, guard) }
+    }
+    noteWriteOutcome(file, guard)
+    const prev = guard.reading.state
+    const idx = prev.watchEntries.findIndex((e) => e.owner === owner)
+    /** ⚠ 没有这条登记 ⇒ **如实回 false**（⛔ 不许造一条）。 */
+    if (idx < 0) return { wrote: false, state: prev }
+    const at = Date.now()
+    const next = [...prev.watchEntries]
+    /**
+     * ⚠⚠ **必须保留 `D16` 的两枚投递时刻**（2026-10-27 · 包 AJ）。
+     *
+     * ── 改前的病（本单实测抓到的）──────────────────────────────────────
+     *   这里**重建了一个新对象**（`{ owner, targets, state, stateAt, note }`）
+     *   ⇒ `wakeLoggedAt` / `wakeDeliveredAt` **被静默丢掉**。
+     *   ⚠ 后果：唤醒成功 ⇒ 回等待 ⇒ 两个时刻**一起没了** ⇒
+     *     读数面**说不出"刚唤醒过、已回等待"**（`TASK` §零② 要的正是这一格）。
+     *   ⚠ 而且这与本单"回等待不新增状态"的**唯一补偿设计**冲突：
+     *     我刻意不引入"已唤醒"这个第三态，靠的就是**这两个时刻留在盘上**当证据
+     *     —— 它们被丢掉，就等于"唤醒过"这件事**永远查不到**（`R4`：空态不许说成"没有发生"）。
+     *
+     * ── 现在：**用展开保留**（⛔ 不逐字段列举 —— 列举法正是漏字段的成因）──────
+     *   `...cur` 先把原有字段全带上，再覆盖本函数**该改**的四样。
+     *   ⚠ `stateAt` 必须覆盖（它表示"进入当前状态的时刻"，回等待就该刷新）。
+     */
+    const cur = prev.watchEntries[idx]
+    next[idx] = {
+      ...cur,
+      owner,
+      targets: [],
+      state: 'waiting',
+      stateAt: at,
+      /**
+       * ⚠⚠ **包 BG：计数的两种处置（⛔ 不许一律清零 / 一律保留 —— 见参数注释）**
+       *   · `keepWakeAttempts: true`（唤醒返回那一支）—— **原样保留**：
+       *     这一格正是"叫过几次"的账，抹掉就等于兜底永远到不了 3 次；
+       *   · 缺省（`watch-wait` / 任何"我动了"）—— **归零**：
+       *     `TASK` §三 第 2 条把"我动了"只定义成「新派发」或「`watch-wait`」，
+       *     ⇒ 走到这里就是后者 ⇒ 这批活重新给满 3 次机会（兜底立即停）。
+       */
+      ...(opts?.keepWakeAttempts === true
+        ? {}
+        /**
+         * ⚠⚠ **包 BJ（2026-10-28 · `WI-l`）：缺省（= 用户主动 `watch-wait`）必须连两枚标记一起清**。
+         *
+         * ── 改前的病 ─────────────────────────────────────────────────────
+         *   只归零 `wakeAttempts` 挡不住**兜底重叫** —— 那条准入看的是
+         *   {@link rearmWakeFallback} / {@link watchNeedsTimer} 里的**两枚 `D16` 时刻**，
+         *   它们还在 ⇒ 用户说"我不盯了"，定时器照样武装、兜底照样叫（`TASK` §二"空转"）。
+         *
+         * ── 为什么"缺省清"是对的（⛔ 不是加了第二套真相）──────��─────────────
+         *   两种"回等待"**盘上形状本来就一样**，只能由**调用方**区分（`R-10`）：
+         *   · 唤醒后回等待 ⇒ 调用方显式传 `keepWakeAttempts: true` ⇒ **保留**两枚时刻
+         *     （它们是"刚唤醒过"的唯一证据，`WI-b` 要它）；
+         *   · 缺省（`watch-wait` / 任何"我动了"）⇒ **清** ⇒ 兜底立即停，⛔ 不再空转。
+         *   ⚠ 清的不是历史：历史在 `wakeAttempts`（读数面"叫过 N 次"读它）。
+         */
+        : { wakeAttempts: 0, wakeLoggedAt: undefined, wakeDeliveredAt: undefined }),
+      ...(note === undefined || note === '' ? {} : { note }),
+    }
+    const state: OrchStateFile = {
+      version: ORCH_STATE_VERSION,
+      updatedAt: at,
+      pending: prev.pending,
+      lost: prev.lost,
+      handoffs: prev.handoffs,
+      sessions: prev.sessions,
+      closed: prev.closed,
+      watchEntries: next,
+    }
+    const wrote = writeOrchState(file, state)
+    return { wrote, state }
+  })
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * **兜底：把这条登记重新上膛、再叫一次**（2026-10-28 · 包 BG · `CHG-165`）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 它治的是什么（`CHG-165` 的原话）──────────────────────────────────
+ *   包 AJ 之后：「唤醒投递成功 ⇒ 回 `waiting`」，而**重新进 `awake` 只能靠下一次派发**
+ *   ⇒ 「派发」恰好是"我还没动"时**不会发生**的动作 ⇒ **兜底在我睡着那一刻失效**。
+ *   本函数是那条兜底：**判定"这次唤醒之后我没有动作" ⇒ 重新武装定时器、再叫一次**。
+ *
+ * ── ⚠⚠ "我没动作"怎么判（⛔ 不许含糊 —— 这是本单的难点）────────────────
+ *   **判据只有两个，⛔ 没有第三个**：
+ *     ① **有没有发生新的派发**（`registerWatchEntry` 会刷新 `stateAt`；
+ *        且它把 `wakeAttempts` 归零 —— 见那边）；
+ *     ② **有没有 `watch-wait`**（`setWatchState` 会把记录置 `waiting` + 计数归零）。
+ *   ⇒ 落到本函数时，登记**仍是**"回等待后、count 小于上限"这一档 ⇒ 两者都没发生。
+ *   ⚠⛔ **绝不用"Hob 在不在跑"**（那个判不出，读数面自己写着 `HOB_LIVENESS_NOTE`；
+ *     拿它当判据就是把"判不出"当"没动" ⇒ 误唤醒，`R-10`）。
+ *
+ * ── ⚠ 它做什么（⚠ 三样，⛔ 不多不少）──────────────────────────────────
+ *   ① **清掉 `wakeLoggedAt` / `wakeDeliveredAt`** —— 它们是"**这一次**唤醒的进度"
+ *      （`D16`），重新武装 = **开始新的一次** ⇒ 不清的话 `markWakeLogged` 的幂等
+ *      会把它当成"这次已经落过盘了"，于是**永远不再投**（兜底当场失效）。
+ *      ⚠ 这不是"抹掉历史"：历史在**计数**里（`wakeAttempts`，由 `markWakeDelivered` 记）
+ *      与读数面的措辞里。
+ *   ② `state` **重新置 `awake`** 且 `stateAt = now`（⚠ 判据从此刻重新计"持续多久"，
+ *      所以"再叫一次"是**隔一个阈值窗口**，⛔ 不是每 30 秒连叫）。
+ *      ⚠ 这不是"手工置 awake 的第二个入口"：**入口仍然唯一（派发）** ——
+ *      本函数只在**该 owner 已有登记、且判定为"叫过了没人应"**时被调用，
+ *      它是派发那条链在**时间上的延续**，⛔ 不是"我说一句我在盯"。
+ *   ③ ⛔ **不在这里加计数** —— 计数只由 {@link markWakeDelivered} 在**真投出去**时 +1
+ *      （同一件事只有一个来源：`R-18`）。⚠ 在这里加会让"判了但没投成"也算一次叫
+ *      ⇒ 3 次机会被空转吃掉（正是本项目最忌的"叫了但没叫到当成叫过了"）。
+ *
+ * ── ⚠⛔ 准入（三条同时成立，否则 `wrote:false`）──────────────────────────
+ *   · `state === 'waiting'`      —— 才叫过一次、已经回等待了（`awake` 的本来就还在盯）；
+ *   · **两枚 `D16` 时刻在**       —— 证明"确实**叫过**"，⛔ 不是一条从没唤醒过的登记
+ *                                  （否则 `watch-wait` 之后也会被重新叫起来）；
+ *   · `wakeAttempts < 上限`      —— 到顶就**停止自动重试**（`stuck` 的既有语义：
+ *                                  不再自动重试 + 需人工裁）。
+ *
+ * @returns `{ wrote, entry?, attempts?, reason? }`
+ *   · `attempts` —— **当前**已叫次数（原样带出，⚠ 到顶那一档由读数面按
+ *     {@link WAKE_FALLBACK_LIMIT} 派生）；
+ *   · `wrote:false` ⇒ 盘上没变（⛔ 调用方不许当"已重新武装"）。
+ */
+export function rearmWakeFallback(file: string, owner: string): {
+  wrote: boolean
+  entry?: PersistedWatchEntry
+  attempts?: number
+  reason?: string
+} {
+  if (owner === '') return { wrote: false, reason: 'owner 为空 ⇒ 判不出该记谁的账（⛔ 不许猜）' }
+  return runSerialized(() => {
+    const guard = readOrchStateForWrite(file)
+    if (!guard.ok) {
+      noteWriteOutcome(file, guard)
+      return { wrote: false, reason: `读盘守卫拒写：${guard.reason}` }
+    }
+    noteWriteOutcome(file, guard)
+    const prev = guard.reading.state
+    const idx = prev.watchEntries.findIndex((e) => e.owner === owner)
+    /** ⚠ 没有这条登记 ⇒ **如实回 false**（⛔ 不为"判不出归属的兜底"造一条）。 */
+    if (idx < 0) return { wrote: false, reason: '没有该 owner 的看护登记（⛔ 不凭空造一条）' }
+    const cur = prev.watchEntries[idx]
+    if (cur.state !== 'waiting') {
+      return { wrote: false, reason: `登记仍是 ${cur.state}（⛔ 不是"回等待后没人应"，不重新武装）` }
+    }
+    /**
+     * ⚠⚠ **必须"确实叫过"才重新武装** —— 这是本函数最容易写错的一格：
+     *   少了它，`watch-wait` 之后那条（`state='waiting'`、`targets=[]`）会被
+     *   无端重新叫起来 ⇒ **用户说"我不盯了"，兜底却接着叫**。
+     *   ⚠ 判据用**两枚 D16 时刻**（它们只在真叫过之后才在），⛔ 不用"targets 空不空"。
+     */
+    if (cur.wakeLoggedAt === undefined && cur.wakeDeliveredAt === undefined) {
+      return { wrote: false, reason: '这条登记**从没叫过**（无 `D16` 时刻）⇒ ⛔ 不是"叫过了没人应"' }
+    }
+    const had = cur.wakeAttempts ?? 0
+    if (had >= WAKE_FALLBACK_LIMIT) {
+      return { wrote: false, reason: `已叫过 ${had} 次（≥ ${WAKE_FALLBACK_LIMIT}）⇒ 转 stuck、⛔ 不再自动重试` }
+    }
+    const at = Date.now()
+    const next = [...prev.watchEntries]
+    /**
+     * ⚠ **清两枚 `D16` 时刻**：它们属于"上一次叫"；不清就再也投不出去
+     *   （`markWakeLogged` 幂等会直接返回"已落过盘"）。
+     *   ⚠ 用解构剔除而不是 `delete`：`...cur` 展开后必须**真的没有**这两个键。
+     */
+    const { wakeLoggedAt: _l, wakeDeliveredAt: _d, ...rest } = cur
+    next[idx] = {
+      ...rest,
+      owner,
+      /** ⚠ 保持原有 `targets`（⚠ 它仍然"该盯这几个" —— 我没动，所以没换观察对象）。 */
+      targets: cur.targets,
+      state: 'awake',
+      stateAt: at,
+    }
+    const state: OrchStateFile = {
+      version: ORCH_STATE_VERSION,
+      updatedAt: at,
+      pending: prev.pending,
+      lost: prev.lost,
+      handoffs: prev.handoffs,
+      sessions: prev.sessions,
+      closed: prev.closed,
+      watchEntries: next,
+    }
+    const wrote = writeOrchState(file, state)
+    return wrote
+      ? { wrote: true, entry: next[idx], attempts: had }
+      : { wrote: false, reason: '落盘失败（写不进运行态）' }
+  })
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * **这条登记"该不该被看护定时器盯着"**（2026-10-28 · 包 BG · 兜底的武装判据）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 为什么需要它（⛔ 不是"把 `hasAwakeWatch` 改个名"）────────────────────
+ *   包 AJ 之后唤醒成功就回 `waiting` ⇒ 若武装判据仍只认 `state === 'awake'`，
+ *   **定时器在唤醒返回的那一刻就解除** ⇒ 兜底**根本没有机会跑**（`CHG-165` 的那个病）。
+ *   ⇒ 判据扩一条：**"回等待了、但叫过、且还没到顶"也是该盯的**。
+ *
+ * ⚠ ⚠ **它⛔ 不改变"两个状态"**：这里判的是"定时器该不该转"，⛔ 不是状态的第三个取值。
+ * ⚠ ⚠ **它⛔ 不用"Hob 在不在跑"**（`TASK` §三 的硬约束；那个判不出，见 `HOB_LIVENESS_NOTE`）：
+ *   只看**盘上登记的形态** —— 那正是"我有没有动作"留下的唯一痕迹。
+ *
+ * @param entries - 某本运行态里的看护登记
+ * @param limit - 叫几次到顶（默认 {@link WAKE_FALLBACK_LIMIT}；测试可注入）
+ * @returns 该不该武装
+ */
+export function watchNeedsTimer(
+  entries: readonly PersistedWatchEntry[],
+  limit: number = WAKE_FALLBACK_LIMIT,
+): boolean {
+  for (const e of entries) {
+    /** ① 还在盯 ⇒ 要武装。 */
+    if (e.state === 'awake') return true
+    /**
+     * ② 回等待了、但**这条路是"叫过之后回等待"**（两枚 `D16` 时刻在）且**还没到顶**
+     *    ⇒ 兜底还没走完 ⇒ 要武装（否则停了就再也起不来）。
+     */
+    if (e.state === 'waiting'
+      && (e.wakeLoggedAt !== undefined || e.wakeDeliveredAt !== undefined)
+      && (e.wakeAttempts ?? 0) < limit) return true
+  }
+  return false
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * **这条登记"叫到顶了没人应"**（`stuck` 那一档，2026-10-28 · 包 BG）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 为什么是**派生**而不是一个新字段（⛔ 不许再加一份真相）──────────────
+ *   `CHG-165` §三 第 3 条要的是"叫满 N 次仍没动 ⇒ 转 `stuck` 并在读数面写明"。
+ *   而 `stuck` **不是第三个状态**（用户已明确否掉三态）⇒ 它只能是
+ *   **"`waiting` + 叫满 N 次 + 确实叫过"** 这三件同时成立时的**读数结论**。
+ *   ⚠ 所以本函数不写盘、不存布尔 ⇒ ⛔ 不会与 `wakeAttempts` 漂成两个来源（`R-18`）。
+ *
+ * @param entry - 一条看护登记
+ * @param limit - 叫几次到顶（默认 {@link WAKE_FALLBACK_LIMIT}；测试可注入）
+ * @returns 是否"叫到顶、没人应、已停自动重试"
+ */
+export function wakeGaveUpOf(
+  entry: Pick<PersistedWatchEntry, 'state' | 'wakeAttempts' | 'wakeLoggedAt' | 'wakeDeliveredAt'>,
+  limit: number = WAKE_FALLBACK_LIMIT,
+): boolean {
+  if (entry.state !== 'waiting') return false
+  if (entry.wakeLoggedAt === undefined && entry.wakeDeliveredAt === undefined) return false
+  return (entry.wakeAttempts ?? 0) >= limit
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * **唤醒通知的「先落盘」那一步**（2026-10-27 · 包 AC · `D16`）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 为什么单独一个函数、⛔ 不并进 `setWatchState` ─────────────────────────
+ *   `D16` 要的是**两步的顺序**：「先落盘、再投递」。把两步写在一个函数里，
+ *   投递失败就没法区分"落过盘了"与"没落过" ⇒ 那正是本仓记过的
+ *   **"两种原因说成同一句话"**。⇒ 拆成两枚标记（`wakeLoggedAt` / `wakeDeliveredAt`）。
+ *
+ * ── 判据（⚠ 三条，缺一即等于没做 `D16`）────────────────────────────────
+ *   ① 本函数**只落盘**（⛔ 不碰网络、⛔ 不投递）—— 调用方必须**先**调它；
+ *   ② 已落过盘（`wakeLoggedAt` 有值）⇒ **幂等**：不重复改同一个时刻
+ *      （否则每次复查都把时刻往后推，"持续多久"的读数会被自己刷新掉）；
+ *   ③ 写失败 ⇒ `wrote:false` + 可读原因，⛔ 不许让调用方以为"落过盘了"。
+ *
+ * @param file - 运行态文件
+ * @param owner - **登记里的那个 `owner`**（`D15`：⛔ 不许重算"这活是谁的"）
+ * @returns `{ wrote, entry?, reason? }` —— `entry` 是落盘后的那一条（调用方据此投递）
+ */
+export function markWakeLogged(file: string, owner: string): {
+  wrote: boolean
+  entry?: PersistedWatchEntry
+  reason?: string
+} {
+  if (owner === '') return { wrote: false, reason: 'owner 为空 ⇒ 判不出该落谁的账（⛔ 不许猜）' }
+  return runSerialized(() => {
+    const guard = readOrchStateForWrite(file)
+    if (!guard.ok) {
+      noteWriteOutcome(file, guard)
+      return { wrote: false, reason: `读盘守卫拒写：${guard.reason}` }
+    }
+    noteWriteOutcome(file, guard)
+    const prev = guard.reading.state
+    const idx = prev.watchEntries.findIndex((e) => e.owner === owner)
+    /** ⚠ 没有这条登记 ⇒ **如实回 false**（⛔ 不许为一次"判不出归属的唤醒"造一条记录）。 */
+    if (idx < 0) return { wrote: false, reason: '没有该 owner 的看护登记（⛔ 不凭空造一条）' }
+    const cur = prev.watchEntries[idx]
+    /** ⚠ **幂等**：已经落过盘 ⇒ 原样返回那一条（⛔ 不推 `wakeLoggedAt`，那会刷新"持续多久"）。 */
+    if (cur.wakeLoggedAt !== undefined) return { wrote: true, entry: cur }
+    const at = Date.now()
+    const next = [...prev.watchEntries]
+    next[idx] = { ...cur, wakeLoggedAt: at }
+    const state: OrchStateFile = {
+      version: ORCH_STATE_VERSION,
+      updatedAt: at,
+      pending: prev.pending,
+      lost: prev.lost,
+      handoffs: prev.handoffs,
+      sessions: prev.sessions,
+      closed: prev.closed,
+      watchEntries: next,
+    }
+    const wrote = writeOrchState(file, state)
+    return wrote ? { wrote: true, entry: next[idx] } : { wrote: false, reason: '落盘失败（写不进运行态）' }
+  })
+}
+
+/**
+ * **唤醒通知的「后投递」那一步**（`D16` 的后半 · `D4` at-most-once）。
+ *
+ * ⚠⚠ **它的位置由 `D16` 定死：必须在 {@link markWakeLogged} 之后**
+ *   —— 调用方顺序错了就等于没做 `D16`。⚠ 本函数**不检查**这一点（⛔ 不造第二个来源），
+ *   但它的**前置条件写在返回值里**：`wakeLoggedAt` 不在 ⇒ 直接拒（`reason` 说清）。
+ *
+ * @returns `{ wrote, skipped?, reason? }`
+ *   · `skipped` —— 已经投过了（`wakeDeliveredAt` 有值）⇒ ⛔ 不重投（`D4`）；
+ */
+export function markWakeDelivered(file: string, owner: string): {
+  wrote: boolean
+  skipped?: boolean
+  attempts?: number
+  reason?: string
+} {
+  if (owner === '') return { wrote: false, reason: 'owner 为空 ⇒ 判不出该记谁的账' }
+  return runSerialized(() => {
+    const guard = readOrchStateForWrite(file)
+    if (!guard.ok) {
+      noteWriteOutcome(file, guard)
+      return { wrote: false, reason: `读盘守卫拒写：${guard.reason}` }
+    }
+    noteWriteOutcome(file, guard)
+    const prev = guard.reading.state
+    const idx = prev.watchEntries.findIndex((e) => e.owner === owner)
+    if (idx < 0) return { wrote: false, reason: '没有该 owner 的看护登记' }
+    const cur = prev.watchEntries[idx]
+    /**
+     * ⚠⚠ **`D16` 的前置条件**：没落过盘就投递 = 顺序错了。
+     *   ⛔ 不许"顺手补一个 wakeLoggedAt 让它过" —— 那会把"顺序错了"洗成"顺序对了"。
+     */
+    if (cur.wakeLoggedAt === undefined) {
+      return { wrote: false, reason: '**还没落盘就投递**（缺 `wakeLoggedAt`）⇒ ⛔ 顺序错了，先调 markWakeLogged' }
+    }
+    /** ⚠ **已经投过 ⇒ 不重投**（`D4` at-most-once）。 */
+    if (cur.wakeDeliveredAt !== undefined) return { wrote: true, skipped: true, attempts: cur.wakeAttempts ?? 0 }
+    const at = Date.now()
+    const next = [...prev.watchEntries]
+    /**
+     * ── ⚠⚠ **包 BG：真投出去一次 ⇒ 计数 +1**（`CHG-165` §三 第 3 条）─────────
+     *
+     * ── 为什么计数挂在这里（⛔ 不是挂在 `markWakeLogged` 或 `rearmWakeFallback`）──
+     *   `TASK` §三 说"**最多叫 3 次**"，而"叫"的字面含义是**投出去**。
+     *   · 挂在 `markWakeLogged`（落盘）⇒ "判了但没投成"也算一次 ⇒ 3 次机会被空转吃掉
+     *     ⇒ 正是本仓最忌的"叫了但没叫到，被当成叫过了"那一条；
+     *   · 挂在 `rearmWakeFallback`（重新武装）⇒ 那一步只该改"该盯谁"，⛔ 不该记"叫过几次"
+     *     （两件事混在一个函数里，将来改一处就会漂另一处）。
+     *   ⇒ 唯一来源 = **投递成功那一刻**（`D4` 的 at-most-once 也正好在这一格）。
+     *
+     * ⚠ `skipped`（已经投过）那一支**⛔ 不加计数** —— 那不是新的一次叫。
+     */
+    const attempts = (cur.wakeAttempts ?? 0) + 1
+    next[idx] = { ...cur, wakeDeliveredAt: at, wakeAttempts: attempts }
+    const state: OrchStateFile = {
+      version: ORCH_STATE_VERSION,
+      updatedAt: at,
+      pending: prev.pending,
+      lost: prev.lost,
+      handoffs: prev.handoffs,
+      sessions: prev.sessions,
+      closed: prev.closed,
+      watchEntries: next,
+    }
+    const wrote = writeOrchState(file, state)
+    return wrote
+      ? { wrote: true, attempts }
+      : { wrote: false, reason: '记录投递标记失败（写不进运行态）' }
+  })
+}
+
+/**
+ * **把"定时器最近一次武装的时刻"落盘**（2026-10-27 · 包 AG · `CHG-121` §五·2）。
+ *
+ * ── 为什么单独一个函数 ────────────────────────────────────────────────
+ *   ⚠ 它**不是**看护登记的一部分（⛔ 不许塞进 `watchEntries`：那是"谁被盯着"，
+ *     这是"监视器自己有没有上膛"—— 两个对象，⛔ 混一起就是 `R-10`）。
+ *   ⚠ 也**不是**状态（⛔ 不新增第三态：状态仍只有 `waiting`/`awake`）——
+ *     它是**运行期事实**，与 `state` 正交。
+ *
+ * @returns `wrote` —— 写盘成没成（⚠ 调用方⛔ 不许把它当"武装成功"，那是两件事）
+ */
+export function recordWatchTimerArmed(file: string, at: number = Date.now()): { wrote: boolean } {
+  return runSerialized(() => {
+    const guard = readOrchStateForWrite(file)
+    if (!guard.ok) {
+      noteWriteOutcome(file, guard)
+      return { wrote: false }
+    }
+    noteWriteOutcome(file, guard)
+    const prev = guard.reading.state
+    /**
+     * ⚠ **只在"变新"时写**：定时器每 60 秒续排一次，若每次都写
+     *   ⇒ 每 60 秒一次写盘（写放大，`RECHECK` 那条注释记过同一个病）。
+     *   ⚠ 判据：与已有值相差 **< 1 分钟**就不写（它本来就代表"最近武装过"，
+     *     精确到分钟足够回答"零点火 vs 武装过"）。
+     */
+    if (prev.watchTimerArmedAt !== undefined && Math.abs(at - prev.watchTimerArmedAt) < 60_000) {
+      return { wrote: true }
+    }
+    const state: OrchStateFile = {
+      version: ORCH_STATE_VERSION,
+      updatedAt: at,
+      pending: prev.pending,
+      lost: prev.lost,
+      handoffs: prev.handoffs,
+      sessions: prev.sessions,
+      closed: prev.closed,
+      watchEntries: prev.watchEntries,
+      watchTimerArmedAt: at,
+    }
+    return { wrote: writeOrchState(file, state) }
+  })
+}
+
+/**
+ * 读某份运行态里的看护登记（⚠ **只读**，不改任何东西）。
+ *
+ * ⚠ **不提供"只读某个 owner"的过滤**：过滤是**读数面**的事（`R10` 按 `owner` 分组），
+ *   在这里过滤就等于"检测层自己算该看谁"—— 那会变成第二个来源（`R-18`）。
+ */
+export function readWatchEntries(file: string): PersistedWatchEntry[] {
+  return readOrchState(file).watchEntries
+}
+
 export function writePending(
   file: string,
   pending: PersistedWatch[],
@@ -1459,6 +2907,20 @@ export function writePending(
      *   （与 `lost` / `handoffs` **同一条纪律**，不是顺手加的一行）。
      */
     sessions: prev.sessions.slice(0, MAX_BINDINGS),
+    /**
+     * ⚠⚠ **`closed` 必须原样保留**（包 H）：它记的是"已经有结论"的那些记录。
+     *   覆盖掉它 ⇒ 拒收 / 已验收 / 已退回**下一次任何落盘就消失**
+     *   ⇒ 那样包 H 等于没做（读数又回到"恒为 0"）。
+     *   与 `handoffs` / `sessions` **同一条纪律**，⛔ 不是顺手加的一行。
+     */
+    closed: prev.closed.slice(0, MAX_CLOSED),
+    /**
+     * ⚠⚠ **`watchEntries` 必须原样保留**（包 AB · §5.9）：它是"该盯谁"的唯一在盘记录。
+     *   覆盖掉它 ⇒ **任何一次写运行态（派发 / 回传 / 判决）都会把看护登记清空**
+     *   ⇒ 看护**静默失效**，而外表与"没有看护"完全一样（那正是 `R-24` 说的形态）。
+     *   与 `handoffs` / `sessions` / `closed` **同一条纪律**，⛔ 不是顺手加的一行。
+     */
+    watchEntries: prev.watchEntries,
   }
   return writeOrchState(file, state)
   })

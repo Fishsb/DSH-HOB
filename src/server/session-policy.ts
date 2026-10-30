@@ -377,14 +377,39 @@ export function readPolicyStore(file: string, opts: PolicyStoreOptions, now: num
  */
 export function writePolicyStore(file: string, state: SessionPolicyFile): { ok: boolean; reason: string } {
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+  /**
+   * ⚠⚠ **D12 回读验证（2026-10-27 · 包 X）**
+   *
+   * ── 改前 ──────────────────────────────────────────────────────────────
+   *   `renameSync` 返回 ⇒ `{ ok: true }`。⚠ 这是"改了盘上东西还返成功"的一处：
+   *   策略文件的**六个写入点**（`setSessionPolicy` / `quarantine` / 纪元补写 /
+   *   三处 migrate）全都以这个 `ok` 决定"要不要如实说没落盘"。
+   *
+   * ── 现在：三条判据（`D12` §5.6）──────────────────────────────────────────
+   *   ① **对着预期值比**：序列化后的 `expect` 与盘上**逐字节**比，⛔ 不是"文件存在"；
+   *   ② **回读失败 ⇒ `ok:false` + 可读原因**（⛔ 不许说成功）；
+   *   ③ **独立的一次读**：`readFileSync` 重新从盘上取，⛔ 不拿刚序列化的内存串充数。
+   *
+   * ⚠ **回读是第二道，不是替代**：写/rename 抛错仍走原 `catch`（原因文案一字未改）；
+   *   回读不符走**新的**可读原因 —— 两种成因**分开说**（本仓纪律）。
+   */
+  const expect = JSON.stringify(state, null, 2)
   try {
     mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8')
+    writeFileSync(tmp, expect, 'utf8')
     renameSync(tmp, file)
-    return { ok: true, reason: '' }
   } catch (e) {
     try { rmSync(tmp, { force: true }) } catch { /* 清理失败不掩盖主错误 */ }
     return { ok: false, reason: `策略写入失败：${String((e as Error)?.message ?? e)}` }
+  }
+  try {
+    const back = readFileSync(file)
+    if (!back.equals(Buffer.from(expect, 'utf8'))) {
+      return { ok: false, reason: '策略写入后回读与预期不符 ⇒ 视为未落盘（勿按已保存处理）' }
+    }
+    return { ok: true, reason: '' }
+  } catch (e) {
+    return { ok: false, reason: `策略写入后回读失败：${String((e as Error)?.message ?? e)}` }
   }
 }
 
@@ -452,10 +477,21 @@ export function ensurePolicyStoreEpoch(
 
 /** `<dir>` 的 `runtime/.gitignore`（内容 `*`）—— ⚠ 与本仓运行态同一口径：不进账本历史。 */
 export function ensurePolicyDirIgnored(dir: string): boolean {
+  /** ⚠ `D12`：内容固定 ⇒ 预期值固定，回读**逐字节比这一串**（⛔ 不是"文件在就行"）。 */
+  const expect = '# dsh-hob 逐会话策略运行态（插件自管；不进账本历史）\n*\n'
+  const target = `${dir}/.gitignore`
   try {
     mkdirSync(dir, { recursive: true })
-    writeFileSync(`${dir}/.gitignore`, '# dsh-hob 逐会话策略运行态（插件自管；不进账本历史）\n*\n', 'utf8')
-    return true
+    writeFileSync(target, expect, 'utf8')
+  } catch {
+    return false
+  }
+  /**
+   * ⚠⚠ **D12 回读（2026-10-27 · 包 X）**：返回值有**三处**调用方拿它决定"要不要告警"
+   *   （`session-policy-service.ts` 三处）⇒ 写没写进去必须当场核，⛔ 不许"调过写函数就算成"。
+   */
+  try {
+    return readFileSync(target, 'utf8') === expect
   } catch {
     return false
   }

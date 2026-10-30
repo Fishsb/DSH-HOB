@@ -105,38 +105,85 @@ export function resolveLedgerRoot(
   const base = workspaceNameOf(ws)
   if (base === '' || base === sep) return undefined
 
-  // ③ **新正典**：本工作区自己的 `<工作区>/.hob/`（2026-10-25 · C 步）
-  //
-  //    ⚠ **改前**：缺省是 `resolve(dirname(ws), DEFAULT_LEDGER_DIR, base)`
-  //      ⇒ `<工作区父目录>/.hob-ledgers/<工作区名>/`（工作区**之外**、集中在一个父目录下）
-  //      ⇒ 病灶①：`ledgerHome` 写空时落进一个**从未存在过**的目录（静默、不报错）；
-  //      ⇒ 病灶②：账本靠**"名字"**做键 ⇒ 两个不同路径的同名目录**静默共用一份**。
-  //
-  //    ⚠ **改后**：键是**工作区路径**（`ws`），不是名字
-  //      ⇒ 病灶②消失：同名不同路径**各是各的**；
-  //      ⇒ 病灶①消失：最终兜底也变成这个路径式（见 ⑤），不再有"指向空目录"的暗路。
-  //
-  //    ⚠ 判据是"**这个目录看起来像不像账本**"（见 {@link looksLikeLedger}），
-  //      而不是"存在就算" —— 因为 `.hob/` 在本项目**同时**是记录层
-  //      （`EXPERIENCE.md` / `experience/`），光存在不能说明账本已经搬进来了。
-  if (looksLikeLedger(join(ws, LEDGER_DIR_IN_WORKSPACE))) {
-    return join(ws, LEDGER_DIR_IN_WORKSPACE)
-  }
-
-  // ④ **过渡桥（分期迁移用，⛔ 不是正典）**：仍配着 `ledgerHome` 的部署照旧解析。
-  //
-  //    ⚠ 为什么保留它：C 步**只迁一个项目**，本项目的账本本单**不迁** ⇒
-  //      若这一档直接删掉，本项目全族判据会立刻"账本读不到"而集体变红
-  //      （那些红是"迁移没做完"，不是"代码错了" ⇒ 混在一起就看不见真问题）。
-  //    ⚠ 它的**已知缺陷照旧存在**：这一档仍然**按名字**拼（`resolve(home, base)`）
-  //      ⇒ 同名不同路径的两个工作区**仍会共用一份**。
-  //      ⇒ 所以它是**桥**：只在 `<工作区>/.hob` 还没有账本时走到；一旦迁完就永不再走到。
-  //      ⇒ 迁移全部完成后应**整档删除**（见 REPORT 待决问题）。
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * **2026-10-27 · 包 Q（`CHG-091` / `CHG-099`）：账本移出工作区**
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 为什么必须搬（不是洁癖）──────────────────────────────────────────
+   *   账本曾在 `<工作区>/.hob/`，而**实施侧对工作区有写权限**
+   *   ⇒ 「账本只有一个写者」从来是**约定，不是机制**。
+   *   ⇒ 只有搬到工作区之外，它才**够不到**。
+   *
+   * ── 改前那一版的三档（已删）──────────────────────────────────────────
+   *    ③ `looksLikeLedger(<ws>/.hob)` ⇒ 用它（**新正典**）；
+   *    ④ `ledgerHome` + 工作区名（过渡桥）；
+   *    ⑤ 兜底 `join(ws, '.hob')`（**又派生回工作区**）。
+   *   ⚠ 搬完之后 ③ **永远为假**（目录已不存在）、⑤ **会把账本重新指回工作区里**
+   *     —— 那等于"账本还在工作区"，是假搬。⇒ ③ 删、⑤ 删。
+   *
+   * ── 现在只有两档（`CHG-099` 已批）────────────────────────────────────
+   *    ① `ledgerRoot` 显式给 ⇒ 用它（最优先，不变）；
+   *    ② `ledgerHome` + 工作区名 ⇒ `<ledgerHome>/<工作区名>/`（**唯一缺省**）。
+   *   ⚠ **一个派生到工作区里的路径都不剩** —— 这是本档的全部意义。
+   *
+   * ── ⑤ 为什么**不返回 `undefined` 了事**（`CHG-099` 第 2 条）────────────────
+   *   "账本没读到" ≠ "没有账本"：前者该去查配置/磁盘，后者才是"这个项目还没有账本"。
+   *   两者给同一句 `undefined`，读的人会把"我配错了"读成"本来就没有"
+   *   ⇒ 与 `R4` / `R7` 同一族错误（**空态与没发生必须可分辨**）。
+   *   ⇒ 现在**没配 `ledgerHome`** 时返回 `undefined`，同时由
+   *     {@link ledgerRootWhy} 给出**可读原因**（调用方负责把它印出来）。
+   */
   const home = ledgerHome.trim()
   if (home !== '') return resolve(home, base)
 
-  // ⑤ **最终兜底**：仍是路径式（⛔ 不回到"指向从未存在过的 `.hob-ledgers`"那条暗路）
-  return join(ws, LEDGER_DIR_IN_WORKSPACE)
+  /**
+   * ⚠ **到此 = 判不出**（⛔ 不许再派生回工作区）。
+   *   `ledgerRootWhy()` 会给出原因；本条只负责**不猜**。
+   */
+  return undefined
+}
+
+/**
+ * ⚠⚠ **账本根"判不出"的可读原因**（`CHG-099` 第 2 条：⛔ 不许只 `return undefined`）────────
+ *
+ * ── 它治的病 ──────────────────────────────────────────────────────────
+ *   `resolveLedgerRoot()` 返回 `undefined` 是**同一个值**，可是它背后至少有三种成因：
+ *     · 没配 `ledgerHome`（**配置面**：该去补配置）；
+ *     · `workspaceRoot` 判不出（**调用面**：没给 cwd）；
+ *     · 工作区名解析成空（**路径面**：根目录本身没有名字）。
+ *   ⇒ 三者给同一句话 ⇒ 读的人只能猜。本条把它们**分开说**。
+ *
+ * ⚠ 只给原因，**不给结论**（仍然 `undefined` ⇒ 调用方仍然 fail-closed）。
+ */
+export type LedgerRootWhy =
+  | { kind: 'ok' }
+  | { kind: 'no-workspace'; why: string }
+  | { kind: 'no-name'; why: string }
+  | { kind: 'no-ledger-home'; why: string }
+
+export function ledgerRootWhy(
+  ledgerRoot: string,
+  ledgerHome: string,
+  workspaceRoot: string | undefined,
+): LedgerRootWhy {
+  if (ledgerRoot.trim() !== '') return { kind: 'ok' }
+  if (workspaceRoot === undefined) {
+    return { kind: 'no-workspace', why: '没给工作区根（`workspaceRoot` 为 undefined ⇒ 判不出该用哪本账）' }
+  }
+  const ws = resolve(workspaceRoot)
+  const base = workspaceNameOf(ws)
+  if (base === '' || base === sep) {
+    return { kind: 'no-name', why: `工作区 \`${ws}\` 解析不出目录名（根目录本身没有名字）` }
+  }
+  if (ledgerHome.trim() === '') {
+    return {
+      kind: 'no-ledger-home',
+      why: '没配 `ledgerHome`（账本已移出工作区，⛔ 不再派生到 `<工作区>/.hob`）'
+        + ' ⇒ 该去预设行补 `ledgerHome: <账本父目录>`',
+    }
+  }
+  return { kind: 'ok' }
 }
 
 /**

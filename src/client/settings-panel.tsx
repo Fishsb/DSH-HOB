@@ -75,7 +75,6 @@ import {
 //   ⚠ `settings.ts` 里那些函数**仍然保留**（迁移/兼容路径的写入口，见上面的替身注释）。
 import {
   getSettingsForm, getSettingsSnapshot, subscribeSettingsForm, writeSpawnFields,
-  readSkeletonEnabled, writeSkeletonEnabled,
   type SettingsSnapshot, type WriteResult,
 } from './settings.ts'
 import {
@@ -671,69 +670,6 @@ function SpawnDefaultsCard(props: {
  */
 
 
-/**
- * 「首次使用时铺骨架」开关卡片（2026-10-16 第 224 轮 · **`UD-118` 用户裁定「C」**）。
- *
- * ⚠ ⚠ **为什么它必须出现在面板上**（而不是藏在配置文件里）：
- *   它是**默认开**的行为 ⇒ ⚠ 用户有权看见"有这么个东西、且能关掉它"
- *   （PROJECT.md §5.3 的**静默失败**形态：真实开关不呈现 = 把真实能力藏起来）。
- *
- * ⚠ 与 {@link PermissionCard} 同形：受控组件（`value` 来自**外部存储快照**）·
- *   **先判可写性**（`writable !== true` ⇒ 如实拒写，⛔ 不假装保存）·
- *   写入必须走**子字段路径** `['skeleton','enabled']`。
- */
-function SkeletonCard(props: {
-  form: ReturnType<typeof getSettingsForm>
-  settings: SettingsSnapshot | null
-}): ReactElement {
-  const { form, settings } = props
-  const current = readSkeletonEnabled(settings)
-  const [pending, setPending] = useState(false)
-  const [result, setResult] = useState<string | null>(null)
-  const [failed, setFailed] = useState(false)
-
-  const onChange = async (next: boolean): Promise<void> => {
-    if (next === current) return
-    setPending(true); setResult(null); setFailed(false)
-    const r: WriteResult = await writeSkeletonEnabled(form, next)
-    setFailed(!r.ok)
-    setResult(r.ok ? t('skel.saved', { state: next ? t('skel.on') : t('skel.off') }) : (r.reason ?? t('perm.writeFailed')))
-    setPending(false)
-  }
-
-  return (
-    <div className={S.card}>
-      <div className={S.cardHead}>
-        <span className={S.cardTitle}>{t('skel.title')}</span>
-        <span className={S.cardNote}>{t('skel.note')}</span>
-      </div>
-      <Row label={t('skel.label')}>
-        <span className={S.inline}>
-          <SegmentedControl
-            id="dsh-hob-skeleton-enabled"
-            label={t('skel.label')}
-            value={current ? 'on' : 'off'}
-            disabled={pending}
-            options={[
-              { value: 'on', label: t('skel.on') },
-              { value: 'off', label: t('skel.off') },
-            ]}
-            onChange={(next) => { void onChange(next === 'on') }}
-          />
-          {pending ? <span className={S.cardNote}>{t('perm.writing')}</span> : null}
-        </span>
-      </Row>
-      <Row label={t('skel.meaning')}>
-        <span className={S.cardNote}>{current ? t('skel.note.on') : t('skel.note.off')}</span>
-      </Row>
-      {result !== null ? (
-        <Row label={t('skel.result')}>
-          <span className={failed ? S.warn : S.cardNote}>{result}</span>
-        </Row>
-      ) : null}
-    </div>
-  )
-}
 
 /**
  * 设置分区组件。
@@ -811,7 +747,7 @@ export function SettingsPanel(): ReactElement {
         *
         * ── 下线的**范围**（⚠ 精确，⛔ 不是把整页拆了）────────────────────
         *   · 只去掉这两张**控制卡**（`PermissionCard` / `WorkModeCard`）；
-        *   · **其余卡片照旧**：模块开关、{@link SpawnDefaultsCard}、{@link SkeletonCard}、页脚说明；
+        *   · **其余卡片照旧**：模块开关、{@link SpawnDefaultsCard}、页脚说明；
         *   · ⚠ **2026-10-24 订正（修复单第 8 条）**：这两个组件的**代码已删除**
         *     （此前那句"代码保留、将来可复用"是死代码的借口 —— 177 行零渲染点）。
         *     功能没丢：两个值现在在**新建会话弹窗**里按会话选（见
@@ -835,7 +771,6 @@ export function SettingsPanel(): ReactElement {
         <span className={S.cardNote}>{t('moved.body')}</span>
       </div>
 
-      <SkeletonCard form={form} settings={settings} />
 
       <ul className={S.notes}>
         <li className={S.note}>
@@ -856,9 +791,6 @@ export function SettingsPanel(): ReactElement {
             "即改即生效"的值型配置。它们描述的两张卡已删（见上面那条注释），
             而这两项现在在**新建会话弹窗**里按会话选 ⇒ 那两条说明的落点已不存在，
             留着只会让人以为设置页里还能改它们。 */}
-        <li className={S.note}>
-          {t('note.skeleton.pre')}<b>{t('note.skeleton.strong')}</b>{t('note.skeleton.post')}
-        </li>
         <li className={S.note}>
           {t('note.entry', { card: t('cardTitle') })}
         </li>
@@ -953,19 +885,6 @@ const PANEL_EN: Record<string, string> = {
   // ── 工作方式（2026-10-19 · UD-97）──────────────────────────────────────
   // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
   // ⚠ 显示名只给人看 —— **配置值不进任何用户可见文本**（机检 G 组钉住）。
-  'skel.title': 'Scaffold on first use',
-  'skel.note': 'Fills the skeleton into a workspace the first time the plugin works there.',
-  'skel.label': 'Enabled',
-  'skel.on': 'On',
-  'skel.off': 'Off',
-  'skel.meaning': 'What it does when off',
-  'skel.note.on': 'If the workspace has no .hob yet, the skeleton is filled in; if it already exists, not one byte is touched.',
-  'skel.note.off': 'Nothing is ever filled in. A new workspace keeps whatever skeleton you copied by hand, or none at all.',
-  'skel.result': 'Result',
-  'skel.saved': 'Saved: scaffold-on-first-use is now {state}.',
-  'note.skeleton.pre': '· «Scaffold on first use» is a ',
-  'note.skeleton.strong': 'never-overwrites',
-  'note.skeleton.post': ' behaviour — it fills the skeleton only where no .hob exists yet; when one already exists it reports the skip and touches nothing. It creates no tool, and it is not a conversation-facing capability.',
   /**
    * ⚠⚠ **数量词改成口径式**（2026-10-21 · 第 337 轮 · 丙-8）：
    *   原文在括号里写死了一个英文数量词（「多少个，合计」那半句）—— ⚠ 那是**政策读数**，

@@ -57,6 +57,10 @@ import { bindSettingsForm } from './settings.ts'
 import { bindCatalog, setCatalogContext } from './catalog.ts'
 import { ensurePanelStyles } from './panel-styles.ts'
 import { installHobUnselectedGate, notifySessionSelected } from './hob-unselected-gate.tsx'
+import {
+  STAGES_TAB_ID, STAGES_PANEL_TITLE, STAGES_GUIDE_ENTRY_ID, STAGES_GUIDE_ORDER,
+  StagesPanel, StagesTabTitle, bindStagesTabType,
+} from './stages-panel.tsx'
 
 /** 包名：同时作为模块 id、槽位条目来源标识、settings namespace。 */
 const PACKAGE_NAME = 'dsh-hob'
@@ -283,4 +287,64 @@ export function apply(ctx: any): void {
     // 「dsh-hob」，明确不要中文别名；便于与插件管理页里的包名对上。
     label: () => 'dsh-hob',
   }, SettingsPanel))
+
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * **五步主线：右侧栏标签页 + 侧边栏「开始」页胶囊入口**（2026-10-29 · 第 9 轮搬入口）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 为什么是这两个槽（**都读过宿主声明**，⛔ 不是猜的）──────────────
+   *   ⛔ `sidebar.footer.action` **已不再使用**（第 9 轮把入口搬去侧边栏 guide 排，
+   *      理由见下面那段"不再注册"的注释）。
+   *   · `sidebar.right.pane.tab` —— `kind:'keyed'` / `scope:'session'`
+   *     （`…/dsh-client-ui-sidebar-right/lib/types/client/contract/slots.d.ts:53-58`）
+   *     ⇒ keyed 按 `key` 分派，同 key 的一格；⛔ 不是 single，不会 shadow 宿主。
+   *   两者都**不是** single 槽 ⇒ 不碰 `sidebar` / `rightbar` / `shell.bottom` 等。
+   *
+   * ── 三步接线（⛔ 缺一步都打不开）────────────────────────────────────
+   *   ① `bindStagesTabType`：注册**类型**（`ctx.sidebarRightTabs.register`）。
+   *      ⚠ 少了它，`openTab(kind)` 会抛「A kind nothing registered throws」。
+   *   ② 两个 keyed 槽：body（`StagesPanel`）+ 标题（`StagesTabTitle`），`key` 都 = `STAGES_TAB_ID`。
+   *   ③ 入口 = 类型注册里的 `guide` 条目（侧边栏「开始」页那排的一个胶囊）。
+   *
+   * ── ⚠ 本轮**不做**的事 ──────────────────────────────────────────────
+   *   ⚠ **2026-10-29 第 9 轮更新**：数据已在第 6 轮接线并真机验证；
+   *   **图例不再写任何状态词**（`CHG-229`：数据已通，写"未接线"是假信息）。
+   *   真状态只在下面的进度表里。⛔ 仍然没有假数字、假进度、假勾选；仍然没有任何写操作。
+   *
+   * ── ⚠ 真机未验（如实说）─────────────────────────────────────────────
+   *   本文件只保证"注册到的槽与宿主声明一致、且不是 single"在**源码层**成立；
+   *   **真实宿主里的渲染（按钮出现 / 点开有标签页）要重启后人工验**。
+   *   隔离渲染的机检见 `scripts/check-stages-panel-dom.mjs`（`npm run check:stages-dom`）。
+   */
+  ctx.effect(() => bindStagesTabType(ctx), `${PACKAGE_NAME}: stages tab type`)
+
+  // ② 标签页本体（keyed/session，自有 key）
+  ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+    name: 'sidebar.right.pane.tab',
+    // ⚠ keyed 槽只给 `key`（与宿主 ui-plan 的最小先例同形：
+    //   `dsh-client-ui-plan/lib/client.js:691-695` 只写 name/key/locale）
+    key: STAGES_TAB_ID,
+    // ⚠⚠ **必须把 sessionId 交给面板**（2026-10-29 第 8 轮真机实测）：
+    //   服务端用 `session.header.cwd` 派生账本根 ⇒ 不带 sessionId 就"账本根判不出"
+    //   ⇒ 路由 200 但面板显示「判不出」。keyed/session 槽的 inject 第一参就是它
+    //   （宿主契约：`SidebarRightTabInjected`，`…/dsh-client-ui-sidebar-right/…/slots.d.ts:204-208`）。
+    inject: (sessionId: string) => ({ sessionId }),
+  }, StagesPanel))
+
+  // ②-b 标签页标题（keyed/session，同一 key）
+  ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
+    name: 'sidebar.right.pane.tab.title',
+    key: STAGES_TAB_ID,
+  }, StagesTabTitle))
+
+  /**
+   * ⛔ **不再注册 `sidebar.footer.action`**（2026-10-29 第 9 轮 · 用户裁定）
+   *
+   *   改前：左栏栏脚一个「任务进度」按钮（list/root 槽，`order: 90`）。
+   *   用户原话：「入口不要放在左下角，放在侧边栏挂载」⇒ 入口搬到**侧边栏「开始」页那排**
+   *   （见上面 `bindStagesTabType` 里 `guide` 的注册）。
+   *   ⚠ 两处都留 = **两个入口** —— 那比没有入口更糟（用户不知道该点哪个，
+   *     而且两处状态一旦不一致就是假信息）。
+   */
 }

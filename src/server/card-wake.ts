@@ -301,6 +301,16 @@ export interface CardWakeOpts {
    */
   onFiring?: (e: CardFiringEvent, subscribers: WakeTarget[]) => void
   /**
+   * ⚠⚠ **「点火帧到过、但当时一个订阅者都没有」的回调**（2026-10-26 · 包 A 第 1 件 · `R8`）。
+   *
+   * ⛔ **为什么不能复用 `onFiring(e, [])`**：那个回调**按订阅者循环**
+   *   （`for (const sub of subscribers) …`）⇒ 空数组 ⇒ 循环体一次都不执行
+   *   ⇒ 上层**记不上这一帧**。这正是 `R8` 要治的那格。
+   * ⚠ 只在 `subscribers.length === 0` 时调一次（同一帧不会两个回调都调）。
+   * ⚠ 回调是副作用：不 await、抛错不外溢。
+   */
+  onFiringNoSubscriber?: (e: CardFiringEvent) => void
+  /**
    * ⚠⚠ **`hello` 帧回调**（2026-10-20 · 本单 B5 的 **T4**）。
    *
    * ── 改前它被直接丢掉（`FINDINGS`/`DESIGN` §4.4 T4/T5 的原话）──────────────
@@ -772,6 +782,23 @@ export class CardWake {
      *   ⚠ 顺序有意义：点火帧在**落定帧之前**到达，先登记才可能在落定时叫得出来。
      * ⚠ 同一帧去重（`firedSeen`）—— 看板重连会补发/重发，⛔ 不许因此把登记做成风暴。
      */
+    /**
+     * ══════════════════════════════════════════════════════════════════════
+     * ⚠⚠ **`R8`（2026-10-26 · 包 A 第 1 件）：无订阅者时，点火帧也必须记一次**
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * ── 改前的病灶（已核实，⛔ 不是推断）─────────────────────────────────
+     *   点火分支**只对 `[...this.targets.values()]` 扇出** —— 而扇出在**回调里**
+     *   （`onFiring` 逐个订阅者调 `registerCardByPush`）⇒ **没有订阅者时循环体一次都不执行**
+     *   ⇒ 连"帧到过"都记不上 ⇒ 头行说「一帧都没收到过」**可能是假话**。
+     *
+     * ── 现在：两个计数各记一件事，⛔ 不合并、⛔ 不改彼此的语义 ──────────────
+     *   · `subscribers.length > 0` ⇒ 照旧 `onFiring(e, subscribers)`（**逐字未改**）；
+     *   · `subscribers.length === 0` ⇒ **只多记** `firingNoSubscriberCount`，
+     *     ⛔ **不调 `onFiring`**（没有收件人可判，调了也只是空转）、
+     *     ⛔ **不动 `firingSeen`**（那个数仍只回答"有人接时收到过几帧"）。
+     *   ⚠ 去重表 `firedSeen` 两档共用（同一帧不许因为"这轮没人订阅"就被重复计）。
+     */
     if (typeof this.opts.onFiring === 'function') {
       for (const e of cardFiringEventsOf(parsed, wsId)) {
         const key = `${e.taskId}@${Math.floor(e.at / 1000)}`
@@ -781,7 +808,21 @@ export class CardWake {
           const first = this.firedSeen.values().next().value
           if (first !== undefined) this.firedSeen.delete(first)
         }
-        try { this.opts.onFiring(e, [...this.targets.values()]) } catch (err) {
+        const subscribers = [...this.targets.values()]
+        if (subscribers.length === 0) {
+          /**
+           * ⚠ **帧到过、但没人接** ⇒ 记**独立一档**（`R8`）。这不是"没收到帧"，
+           *   也不是"被准入拦下"（准入压根没走到）——该查的是"为什么没有人订阅卡面"。
+           * ⚠⛔ **`onFiring` 仍然照旧调一次（传空数组）**：
+           *   它的扇出是"每个订阅者一次"，空数组本来就是零次 ⇒ **既有行为一个字未改**；
+           *   这里**只多记**一个数，⛔ 不 `continue`、⛔ 不改任何既有分支。
+           */
+          try { this.opts.onFiringNoSubscriber?.(e) } catch (err) {
+            this.state = { ...this.state, note: `⚠ 记"帧到过但没人接"时出错（${String((err as Error)?.message ?? err)}）` }
+            this.say(`[card-wake] ${this.state.note}`)
+          }
+        }
+        try { this.opts.onFiring(e, subscribers) } catch (err) {
           this.state = { ...this.state, note: `⚠ 点火帧回调出错（${String((err as Error)?.message ?? err)}）⇒ 那张卡这次**可能没登记上**` }
           this.say(`[card-wake] ${this.state.note}`)
         }
@@ -1629,6 +1670,40 @@ export interface DispatchWakeState {
    */
   firingSeen: number
   /**
+   * ── ⚠⚠ **「点火帧到过、但当时一个订阅者都没有」的次数**（2026-10-26 · 包 A 第 1 件 · `R8`）
+   *
+   * ── 改前是什么（已核实的假话）───────────────────────────────────────
+   *   点火分支只对 `[...this.targets.values()]` 扇出 —— **没有订阅者时循环体一次都不执行**
+   *   ⇒ `noteFiringSeen` 压根不被调用 ⇒ 连"帧到过"都记不上
+   *   ⇒ 头行说「**一帧都没收到过**」——而它**可能是假话**（帧其实到过，只是没人接）。
+   *
+   * ── 现在 ────────────────────────────────────────────────────────────
+   *   帧到、但 `subscribers.length === 0` ⇒ 记**本字段**（独立一档，⛔ 不并进 `firingSeen`）。
+   *   ⚠ **不改 `firingSeen` 的语义**：它仍然只回答"有人接的时候收到过几帧"。
+   *     两个数各回答一件事：`firingSeen`=有人接的帧、本字段=**到过但没人接**的帧。
+   * ⚠ 它是**进程级**的（那一刻根本没有订阅者 ⇒ 归不到任何 owner），
+   *   与 `ownerUnknownCount` 同款口径：`snapshot(owner)` **照样端出来**（⛔ 不压成 0）。
+   */
+  firingNoSubscriberCount: number
+  /** 最近一次「帧到过但没人接」的可读原话（⛔ 不许静默）。 */
+  firingNoSubscriberWhy?: string
+  /**
+   * ── ⚠⚠ **「未登记 / 未叫醒」这一档为空时的适用前提**（2026-10-26 · 包 A 第 2 件 · `R7`）
+   *
+   * `R7`：凡某条读数长期为空，⛔ 不许只说"0 个"，**必须说明"这里本该有什么、前提成不成立"**。
+   * 本字段就是那个前提的载体（由编排层现读补上"owner 会话还在不在"）：
+   *   · `selfExecutedGated` —— 我名下被「**执行方 = 建卡方本人**」这道准入拦下的次数
+   *     （> 0 ⇒ 这就是"0 个可叫醒"的**真实原因**，⛔ 不是坏了）；
+   *   · `ownersChecked` / `ownersAlive` / `ownersGone` —— 我名下登记过的会话里，
+   *     **owner 会话还在 / 已经不在**各几个（判不出 ⇒ 三个数加起来小于 checked 时如实说）。
+   */
+  premise?: {
+    selfExecutedGated: number
+    ownersChecked: number
+    ownersAlive: number
+    ownersGone: number
+  }
+  /**
    * ── ⚠⚠ **「收到过点火帧、但一次都没走到登记成功」的次数 + 被哪道准入拦下的点名** ──
    *
    * ⚠ 这是上面 `firingSeen > 0 而 pushedRegisterOk === 0` 那个格子的**具体成因**：
@@ -1751,7 +1826,7 @@ export class DispatchWake {
   private state: DispatchWakeState = {
     registered: 0, pending: 0, wokeCount: 0, undecidableCount: 0,
     pushedRegisterOk: 0, pushRegisterIssues: 0,
-    firingSeen: 0, firedBlockedCount: 0,
+    firingSeen: 0, firedBlockedCount: 0, firingNoSubscriberCount: 0,
     ownerUnknownCount: 0, undeliverableCount: 0, stoppedCount: 0,
     ownerUnknownRegistered: 0, othersOnly: 0,
   }
@@ -1783,6 +1858,16 @@ export class DispatchWake {
    */
   private readonly ownedFiringSeen = new Map<string, number>()
   private readonly ownedFiredBlocked = new Map<string, number>()
+  /**
+   * ⚠ **`R7` 的前提计数**：我名下被「执行方 = 建卡方本人」拦下的次数（逐 owner，同款形态）。
+   */
+  private readonly ownedSelfExecGated = new Map<string, number>()
+  /**
+   * ⚠ **`R7` 的活性探针**（`owner 会话还在不在`）—— 由编排层注入，**默认没有**。
+   *   ⚠ 用 setter 而不是加 `snapshot` 的第二个参数：`check:orch` 的 `SB-2a` 钉住了
+   *     `snapshot(owner?: string)` 这个签名（既有断言，⛔ 不许放宽它）。
+   */
+  private ownerLiveness?: (sessionId: string) => boolean | undefined
   /**
    * ⚠⚠ **判不出归属的累计去重键集**（2026-10-20 第 3 单 · 修 **960**）。
    *
@@ -1866,6 +1951,14 @@ export class DispatchWake {
 
   private say(line: string): void {
     this.opts.log?.(line)
+  }
+
+  /**
+   * 注入「owner 会话还在不在」的探针（`R7` 的适用前提读数）。
+   * ⚠ 只给 `snapshot()` 的 `premise` 用，⛔ 不影响任何计数与准入。
+   */
+  setOwnerLiveness(fn: ((sessionId: string) => boolean | undefined) | undefined): void {
+    this.ownerLiveness = fn
   }
 
   /** 记一次"某 owner 名下的某档 +1"（⛔ 无 owner ⇒ 不记给任何人，见各调用点的判据）。 */
@@ -1968,6 +2061,45 @@ export class DispatchWake {
        */
       firingSeen: countOf(this.ownedFiringSeen),
       firedBlockedCount: countOf(this.ownedFiredBlocked),
+      /**
+       * ⚠⚠ **进程级**（那一刻没有订阅者 ⇒ 不属于任何 owner）—— 与 `ownerUnknownCount`
+       *   同款纪律：`snapshot(owner)` **照样端出来**，⛔ 不许压成 0
+       *   （压成 0 就是把"到过但没人接"重新说成"没收到过"，那是本件要治的假话）。
+       */
+      firingNoSubscriberCount: this.state.firingNoSubscriberCount,
+      ...(this.state.firingNoSubscriberWhy === undefined ? {} : { firingNoSubscriberWhy: this.state.firingNoSubscriberWhy }),
+      /**
+       * ⚠⚠ **`R7` 的前提三件**（2026-10-26 · 包 A 第 2 件）—— 现算，⛔ 不落盘、⛔ 不缓存：
+       *   · `selfExecutedGated` —— 我名下被「执行方 = 建卡方本人」拦下的次数（累计）；
+       *   · `ownersChecked/Alive/Gone` —— 我名下**登记过的执行会话**里，它们各自的 owner
+       *     会话此刻**还在 / 已经不在**各几个。
+       *   ⚠ **判不出**（没给 `liveness` 探针 / 探针回 `undefined`）⇒ 那一条**两边都不算**
+       *     ⇒ 三个数加起来会小于 `Checked`，渲染层据此说"判不出"，
+       *     ⛔ **不许把它算进 alive 也不许算进 gone**（那是替判不出编一个结论）。
+       */
+      premise: (() => {
+        const liveness = this.ownerLiveness
+        const owners = new Set<string>()
+        for (const s of owned) if (typeof s.owner === 'string' && s.owner !== '') owners.add(s.owner)
+        let alive = 0
+        let gone = 0
+        let checked = 0
+        for (const id of owners) {
+          if (typeof liveness !== 'function') continue
+          let v: boolean | undefined
+          try { v = liveness(id) } catch { v = undefined }
+          if (v === undefined) continue
+          checked++
+          if (v) alive++
+          else gone++
+        }
+        return {
+          selfExecutedGated: countOf(this.ownedSelfExecGated),
+          ownersChecked: checked,
+          ownersAlive: alive,
+          ownersGone: gone,
+        }
+      })(),
       firedBlockedWhy: this.whyByOwner.get(self ?? '')?.firedBlocked,
       /**
        * ── ⚠⚠ **这里必须给"累计"，⛔ 不许给"此刻"**（2026-10-20 第 3 单 · 量纲分离）──
@@ -2303,6 +2435,38 @@ export class DispatchWake {
     this.bump(this.ownedFiringSeen, owner)
     this.state = { ...this.state, firingSeen: this.state.firingSeen + 1 }
     this.say(`[dispatch-wake] 收到点火帧（卡 ${cardId}）⇒ 接下来按卡现读会话并登记`)
+  }
+
+  /**
+   * 记一次「**点火帧到过、但当时一个订阅者都没有**」（2026-10-26 · 包 A 第 1 件 · `R8`）。
+   *
+   * ⚠ **为什么不并进 `noteFiringSeen`**：
+   *   `firingSeen` 的语义是"**有人接的时候**收到过几帧"（它驱动"收到了但没登记成功"那档），
+   *   而本档是"**根本没人接**" —— 两件事的后果完全相反：
+   *     · 前者 ⇒ 该查**准入**那两道；
+   *     · 本档 ⇒ 该查"**为什么没有人订阅卡面**"。
+   *   ⇒ 合成一个数就是把两种原因说成同一句话（本项目头号禁忌）。
+   * ⛔ 本方法**不触碰** `firingSeen` / `pushedRegisterOk` / 任何准入判定 —— 只多记一个数。
+   * ⚠ 它**不属于任何 owner**（那一刻没有订阅者 ⇒ 认不出收件人）⇒ **进程级**计数，
+   *   `snapshot(owner)` 照样端出来（与 `ownerUnknownCount` 同款口径）。
+   */
+  noteFiringNoSubscriber(cardId: string): void {
+    const why = `点火帧到过（卡 ${cardId}），但**当时一个订阅者都没有** ⇒ 这一帧没人接得住。`
+      + ' ⛔ 这**不是**"一帧都没收到过"，也⛔ 不是"被准入拦下"。'
+    this.state = {
+      ...this.state,
+      firingNoSubscriberCount: this.state.firingNoSubscriberCount + 1,
+      firingNoSubscriberWhy: why,
+    }
+    this.say(`[dispatch-wake] ${why}`)
+  }
+
+  /**
+   * 记一次「**执行方 = 建卡方本人**」这道准入拦下（`R7` 的前提计数）。
+   * ⚠ 只为让"未登记 / 未叫醒 0 个"能说清成因，⛔ 不改变任何准入判定。
+   */
+  noteSelfExecutedGate(owner?: string): void {
+    this.bump(this.ownedSelfExecGated, owner)
   }
 
   /**

@@ -46,6 +46,88 @@ import {
 } from './server/session-policy.ts'
 import { declaredLedgerHome } from './modules/orchestrator.ts'
 import { resolveLedgerRoot } from './server/doc-read.ts'
+import { markBlocked, policyBlockFileOf } from './server/policy-block-log.ts'
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * **被闸门拦下的消息暂存**（2026-10-29 · 包 CA · `CHG-186`）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ── 为什么必须有它（否则比不做更糟）────────────────────────────────────
+ *   宿主对 `{kind:'reject'}` 的语义是**丢弃**该条被 claim 的消息
+ *   （`dsh-agent/lib/types/runtime-types.d.ts:267-270`：
+ *    *"the claimed message ends here: it is neither discarded nor re-emitted"*
+ *    —— 措辞是"不再作为 user/message 重发"，实际效果由
+ *    `dsh-agent/lib/index.js:54-58` 说清：*"discarded the claimed messages"*）。
+ *   ⇒ 我们拦下它却不留副本，**用户的消息就永久消失了**。
+ *   ⚠ `CHG-185` §三 正是因为这一环缺失而判"功能链断在最后一环"。
+ *
+ * ── 存哪里 / 存多久 / 多条怎么办（本单 §三 三个问号）──────────────────
+ *   · **存哪里 = 进程内存**（`Map<sessionId, PendingMessage[]>`）。
+ *     理由：它是**一次交互的在途状态**，不是领域数据。落盘会引出"重启后该不该替用户
+ *     发一条他可能已经忘了的消息"这个更复杂的判断 —— ⛔ 超出本单。
+ *     ⇒ 代价：**进程重启即丢**（见 REPORT §七 F2，如实登记）。
+ *   · **存多久 = 到"选完档重投成功"或"该会话被显式放弃"为止**；
+ *     ⚠ 会话被关掉（`session/disposed`）⇒ 该 sid 的暂存一并清掉（见下）。
+ *     ⚠ 不清会永久占内存，且下次选档会把陈旧消息发出去。
+ *   · **多条 = 全存、按到达顺序存、按顺序重投**（⛔ 只存最后一条 ——
+ *     用户连发两条只回来一条，是**更隐蔽的丢消息**）。
+ *
+ * ⚠ **只存"文本 + 附件引用"，不存整个 message 对象**：
+ *   整个 `UserMessage` 带 `id` 与 `source`，`createUserMessage` 不收 `id`；
+ *   而且直接重发同一个 id 会与"已被丢弃"的那条**撞身份**。
+ *   ⇒ 重投时用 `createUserMessage` **新建**一条（新 id），内容取自这里。
+ */
+interface PendingMessage {
+  /** 原消息的 `content` 块（⚠ 原样保存，⛔ 不重排、不拼接）。 */
+  readonly content: readonly unknown[]
+  /** 入暂存时刻（⚠ 只用于诊断排序，⛔ 不参与判定）。 */
+  readonly at: number
+}
+/** `sessionId → 按到达顺序排队的待重投消息`。⚠ 进程内唯一一份。 */
+const pendingBySession = new Map<string, PendingMessage[]>()
+
+/** 把一条被拦下的消息按到达顺序追加（⚠ 不改动既有队列）。 */
+export function stagePendingMessage(sessionId: string, content: readonly unknown[]): void {
+  if (typeof sessionId !== 'string' || sessionId === '') return
+  if (!Array.isArray(content) || content.length === 0) return
+  const cur = pendingBySession.get(sessionId)
+  const next = cur === undefined ? [] : cur.slice()
+  next.push({ content: content.slice(), at: Date.now() })
+  pendingBySession.set(sessionId, next)
+}
+
+/** 读某会话的待重投队列（⚠ 返回副本；调用方不可改内部数组）。 */
+export function pendingMessagesOf(sessionId: string): readonly PendingMessage[] {
+  const cur = pendingBySession.get(sessionId)
+  return cur === undefined ? [] : cur.slice()
+}
+
+/** 清某会话的整条队列（⚠ 重投成功后调；会话结束也调）。 */
+export function clearPendingMessages(sessionId: string): void {
+  pendingBySession.delete(sessionId)
+}
+
+/**
+ * ⚠ **正在重投的会话**（⛔ 不是"已选档"的缓存，是**一道一次性绕行标记**）。
+ *
+ * ── 为什么必须有它（本单 §四 第 3 问 · **最要紧的一条**）──────────────
+ *   重投走 `agent.followup(message)` ⇒ `send(..., 'next-turn', true)`
+ *   ⇒ 一定会**再进一次 `agent/pre-step`**（`dsh-agent-loop/lib/index.js:909`
+ *   的 waterfall 每次提步都跑）。⚠ 而那一刻策略**可能还没生效**
+ *   （写完是 `pending-activation` 或读盘有几毫秒延迟）
+ *   ⇒ 我们的闸门会**再拦一次** ⇒ 消息又被丢弃 ⇒ **永远选不完、死循环**。
+ *
+ * ── 怎么绕（⛔ 不是放宽判据）─────────────────────────────────────────
+ *   **只对"我们自己刚投出去的那一条"放行**：重投前置位、`finally` 里立刻复位。
+ *   ⚠ 判据本身（`isHob ∧ derived-default`）**一个字没改** —— 只是在它**之前**
+ *   加一个"这条正在被我们重投"的短路。⛔ 这不是放宽：
+ *   该标记**只在本进程、只在一个同步段内**成立，用户自己发的消息永远碰不到它。
+ *   ⚠ 用 `Set` 而非布尔：并发两个会话同时重投时互不干扰。
+ */
+const requeueing = new Set<string>()
+/** 仅供机检与诊断：当前处于"重投中"的会话 id（副本）。 */
+export function requeueingSessions(): readonly string[] { return [...requeueing] }
 
 /**
  * 服务名。
@@ -173,6 +255,24 @@ function policyFileFor(hostCtx: any, session: any): string | undefined {
     const cwd = session?.header?.cwd
     const root = resolveLedgerRoot('', declaredLedgerHome(hostCtx), typeof cwd === 'string' ? cwd : undefined)
     return root === undefined ? undefined : policyStateFileOf(root)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 判定**「被拦记录」文件**的路径（`<账本目录>/runtime/session-policy-blocks.json`）。
+ *
+ * ⚠ **与 {@link policyFileFor} 同源同派生**：同一个 `resolveLedgerRoot` + 同一个
+ *   `declaredLedgerHome` + 同一个会话 cwd ⇒ 两者**必然落在同一个账本**里
+ *   （这是"与既有运行态同一处或相邻"的**结构**保证，⛔ 不是两个函数各写一遍路径）。
+ * ⚠ 判不出 ⇒ `undefined`（⇒ 记不上；闸门会打一条可读 warn，⛔ 不静默）。
+ */
+function policyBlockFileFor(hostCtx: any, session: any): string | undefined {
+  try {
+    const cwd = session?.header?.cwd
+    const root = resolveLedgerRoot('', declaredLedgerHome(hostCtx), typeof cwd === 'string' ? cwd : undefined)
+    return root === undefined ? undefined : policyBlockFileOf(root)
   } catch {
     return undefined
   }
@@ -962,6 +1062,11 @@ export function installSessionPolicy(
     }
     /** 立刻（重新）触发一次迁移（⚠ 幂等；给测试与诊断用，⛔ 产品路径不必调）。 */
     migrateNow(): Promise<{ migrated: string[]; perFile: any[]; failed: any[]; ok: boolean; reason: string }>
+    /**
+     * ⚠ **把被闸门拦下的消息按原顺序重投**（2026-10-29 · 包 CA）。
+     *   ⚠ 调用方须**先确认策略已写成功**（`set()` 回 ok）再调本函数。
+     */
+    requeue(sessionId: string): Promise<{ ok: boolean; replayed: number; remaining: number; reason: string }>
   } = {
     of: (session: any) => resolveFor(session),
 
@@ -1022,6 +1127,92 @@ export function installSessionPolicy(
         },
         OPTIONS,
       )
+    },
+
+    /**
+     * ════════════════════════════════════════════════════════════════════
+     * **选完档之后：把被拦下的消息按原顺序重投**（2026-10-29 · 包 CA）
+     * ════════════════════════════════════════════════════════════════════
+     *
+     * ── 顺序纪律（⚠ 三条都不能破）──────────────────────────────────────
+     *   ① **先写策略成功，再重投**：`set()` 回 `ok:false` ⇒ ⛔ 不重投
+     *      （否则消息会在"档位还没落盘"的状态下发出去，正是要修的那个病）。
+     *   ② **按到达顺序逐条投**（`pendingMessagesOf` 是队列，⛔ 不排序、不合并）。
+     *   ③ **投完才清**（`finally` 里清）：投一半失败 ⇒ 队列保留剩下的，
+     *      下选定档还能接着投；⚠ 全清会丢，不 clean 会重发 —— 两害取"留着"。
+     *
+     * ── 重投走哪条路（本单 §四 第 3 问）────────────────────────────────
+     *   `agent.followup(message)` —— 与 `src/modules/bus.ts:962` 同款
+     *   （`createUserMessage` 造新消息 + 原生 `followup`）。
+     *   ⚠ 它会**再进一次 `agent/pre-step`** ⇒ 靠 `requeueing` 标记短路放行
+     *     （见该集合的注释；⛔ 判据本身没改）。
+     *
+     * ⚠ **会话已不在本进程**（`agents.get` 拿不到）⇒ 如实回 `ok:false` 并**保留队列**，
+     *   ⛔ 不假装投递成功、⛔ 也不清队列（用户重开这个会话还能再选一次档）。
+     */
+    async requeue(sessionId: string): Promise<{ ok: boolean; replayed: number; remaining: number; reason: string }> {
+      const q = pendingMessagesOf(sessionId)
+      if (q.length === 0) return { ok: true, replayed: 0, remaining: 0, reason: '没有待重投的消息' }
+      const agents = (() => { try { return hostCtx.get?.('agents') } catch { return undefined } })()
+      const agent = (() => {
+        try { return typeof agents?.get === 'function' ? agents.get(sessionId) : undefined } catch { return undefined }
+      })()
+      if (agent === undefined) {
+        return {
+          ok: false, replayed: 0, remaining: q.length,
+          reason: `会话 ${JSON.stringify(sessionId)} 不在本进程 ⇒ 无法重投（⚠ 队列已保留，重开该会话后再选档仍会投）`,
+        }
+      }
+      let replayed = 0
+      requeueing.add(sessionId)
+      try {
+        for (const item of q) {
+          /**
+           * ⚠ **新建一条消息**（`createUserMessage`）：⛔ 不重用原 `id`
+           *   —— 那条已被宿主丢弃，重发同一个 id 会撞身份。
+           *   ⚠ `source.kind` 用 `'user'`（宿主原生用户来源）：这是我们**替用户**
+           *     把他刚说的那句话放回去，⛔ 不是插件自己的通知。
+           */
+          /**
+           * ⚠ 导入走**运行时动态 import**（与 `src/modules/bus.ts:954` 同款）：
+           *   `@deepseek-ai/dsh-llm` 从插件自己的 node_modules 解析，
+           *   与宿主那份同版本；用动态 import 是为了"这条路径坏了"不至于让模块装载失败。
+           */
+          const message: any = await (async () => {
+            try {
+              const llm: any = await import('@deepseek-ai/dsh-llm')
+              return llm.createUserMessage({ content: item.content, source: { kind: 'user' } })
+            } catch { return undefined }
+          })()
+          if (message === undefined) {
+            return {
+              ok: false, replayed, remaining: q.length - replayed,
+              reason: 'message-build-failed：拿不到 createUserMessage（⚠ 队列已保留）',
+            }
+          }
+          if (typeof agent.followup !== 'function') {
+            return {
+              ok: false, replayed, remaining: q.length - replayed,
+              reason: 'agent 无 followup ⇒ 无法重投（⚠ 队列已保留）',
+            }
+          }
+          agent.followup(message)
+          replayed += 1
+        }
+        return { ok: true, replayed, remaining: 0, reason: '' }
+      } catch (e) {
+        return {
+          ok: false, replayed, remaining: Math.max(0, q.length - replayed),
+          reason: `重投抛错：${String((e as Error)?.message ?? e)}（⚠ 队列已保留）`,
+        }
+      } finally {
+        /**
+         * ⚠ **只有全投成功才清**：投了一半失败 ⇒ 保留剩余，
+         *   ⛔ 不能因为 `finally` 就把没投出去的也抹掉。
+         */
+        if (replayed >= q.length) clearPendingMessages(sessionId)
+        requeueing.delete(sessionId)
+      }
     },
 
     /**
@@ -1196,6 +1387,203 @@ export function installSessionPolicy(
   }
 
   ctx.provide(SESSION_POLICY_SERVICE, service)
+
+  /**
+   * ══════════════════════════════════════════════════════════════════════════
+   * **发送时拦截：`agent/pre-step` 闸门**（2026-10-29 · 包 BZ · `CHG-185`）
+   * ══════════════════════════════════════════════════════════════════════════
+   *
+   * ── 它做什么 ──────────────────────────────────────────────────────────
+   *   **Hob 会话 ∧ 还没选档 ⇒ `{ kind: 'reject' }`**，其余一切情形 `next()`。
+   *   这就是"用户发消息时弹一次选档"的落点：拦下这一步，前端照既有只读路由
+   *   `POST /api/dsh-hob/session-policy` 的 `state === 'unrecorded'` 弹窗
+   *   （见 `src/client/hob-unselected-gate.tsx`）。⛔ 本文件不另造一份清单。
+   *
+   * ── ⚠ 为什么 reject 不会造成"消息发两遍"（本单问题 1）──────────────
+   *   宿主 `dsh-agent/lib/types/runtime-types.d.ts:267-270` 原文：
+   *     *"If the proposed step is rejected, the claimed message ends here:
+   *      it is neither discarded nor re-emitted as a user/message, and the
+   *      turn closes without a step."*
+   *   又 `dsh-agent/lib/index.js:54-58`：*"the pre-step rejection that produced
+   *   it discarded the claimed messages, so the work it took will never run."*
+   *   ⇒ **那条消息在这里被丢弃**：⛔ 不进模型、⛔ 不回 inbox、⛔ 不留对话行。
+   *   ⇒ 前端弹窗选完后**重新投递一次**，用户侧只会看到一条。
+   *   ⚠ 但也正因为"被丢弃" ⇒ **必须由我们重投**，⛔ 不能指望宿主还给它。
+   *
+   * ── ⚠ 判据只有两条，且**判不出就放行**（fail-open，本单问题 2）──────
+   *   ① `isHob`（宿主 `agentPreset` 投影 === `'Hob'`，与全仓同一取法 `presetOfSession`）；
+   *   ② 该会话**还没有选择记录** ⇒ 读数 `source === 'derived-default'`。
+   *   ⚠ ② 用的判据是**既有 resolver 的读数**，⛔ 不新造一套"选过没有"的判法
+   *     （`derived-default` 的语义原文见 `src/server/session-policy.ts:589`：
+   *      "无记录 + 会话不早于迁移纪元 ⇒ **新会话未选**"）。
+   *   ⚠⚠ **除这两种以外一律 `next()`**，特别是：
+   *     · 非 Hob ⇒ 放行（⛔ 误拦普通用户消息比不做更糟）；
+   *     · `stored` / `pending-activation` / 任何其它 source ⇒ 已选过或状态不明 ⇒ 放行；
+   *     · **`resolveFor` 抛错、`session` 取不到、判据读不出来 ⇒ 放行**（fail-open）。
+   *   ⚠ 这条纪律与读档闸门的 fail-closed **方向相反**，是有意的：
+   *     读档关系到"能读到什么"（判不出就往紧了收）；本闸门关系到"用户的消息发不发得出去"
+   *     （判不出就**别拦**）。⛔ 两者不可互相借用判据。
+   */
+  try {
+    const onPreStep = (ctx as any).on
+    if (typeof onPreStep !== 'function') {
+      ctx.logger?.warn?.('[dsh-hob] 宿主无 `agent/pre-step` ⇒ 发送时选档闸门未安装（不拦任何消息）')
+    } else {
+      ;(ctx as any).on('agent/pre-step', (payload: any, next: () => Promise<any>) => {
+        /**
+         * ⚠ **整段包在 try 里**：任何异常都必须落回 `next()`
+         *   —— ⛔ 不许因为本闸门自己的 bug 把用户的消息吞掉。
+         */
+        try {
+          const session = payload?.agent?.session
+          if (session === undefined || session === null) return next()
+          /**
+           * ⚠ sid 必须**先算出来**：下面的"重投绕行"短路要用它。
+           *   取不到 ⇒ 走到 ① 之后本来也会 `return next()`（那里再判一次）。
+           */
+          const sidEarly = (() => { try { return typeof session?.id === 'string' ? session.id : '' } catch { return '' } })()
+          /**
+           * ⚠⚠ **第 0 步：正在被我们重投的那一条 ⇒ 直接放行**（本单 §四 第 3 问）。
+           *   ⛔ 这不是"放宽判据"：判据本身一个字没改（见下面 ① ②），
+           *   只是在它之前短路 —— 否则重投会**再被自己拦一次**，消息又丢，
+           *   用户**永远选不完**（死循环）。
+           *   ⚠ 该集合只在 `requeuePending()` 的同步段里非空（`finally` 立刻删）。
+           */
+          if (requeueing.has(sidEarly)) return next()
+          const resolved = resolveFor(session)
+          /** ① 非 Hob ⇒ 放行。 */
+          if (resolved?.isHob !== true) return next()
+          /**
+           * ⚠⚠ **② 新判据（2026-10-29 · 第 332 轮 · TASK-K）：这条会话"用户选过档没有"**
+           *
+           * ── 为什么换掉旧的 `source !== 'derived-default'` ─────────────────────
+           *   `derived-default` 是**迁移口径**（"无记录 **且** 会话不早于迁移纪元"）。
+           *   而弹窗要问的是**用户给这条会话选过档没有** —— **两件事被当成了同一件**。
+           *   实测（`CHG-209` / `REPORT-J`）：`session-e6dfdf31…` 的 `createdAt` 是 2026-10-18、
+           *   **早于** `migrationEpoch`（10-22）⇒ `source='legacy-migrated'` ⇒
+           *   旧判据第 ② 条当场放行 ⇒ **从未 reject ⇒ markBlocked 从未被调用 ⇒ 弹窗不出现**。
+           *   ⇒ 旧判据在"旧会话"这一大片数据上**恒不成立**，而它们**同样没有用户的选择记录**。
+           *
+           * ── 新判据是什么 ─────────────────────────────────────────────────
+           *   **直接看盘上有没有这条会话的选择记录**（`readPolicyStore`），⛔ **不看 `createdAt` 与纪元的先后**。
+           *   这是"用户选没选"的**唯一权威**（那条记录只由 `handlePolicyWrite` 在用户确认后写入）。
+           *
+           * ── 三条纪律（本单 §二）────────────────────────────────────────────
+           *   ① **只看"记录在不在"** —— ⛔ 不看纪元、⛔ 不看 `source` 的归属分类；
+           *   ② **判不出 ⇒ 放行**（fail-open，与改前一致）：
+           *      `file === undefined`（判不出账本落点）/ `reachability !== 'ok'`（读不到 / 版本不认识）
+           *      ⇒ `next()`。⛔ 不许改成"判不出就拦"（那会把用户消息吞掉）。
+           *   ③ **非 Hob 放行** —— 上面第 ① 条未动。
+           *   ⚠ `source` 的 13 个取值**一个字未改**（本单只改**谁触发闸门**，不改状态机）。
+           *   ⚠ 允许在 warn 话术里带 `source` 以便排查，⛔ 但**不参与判定**。
+           */
+          const recordState = (() => {
+            /** `'recorded'` = 有已落盘记录 ⇒ 放行；`'absent'` = 确定没有 ⇒ 该拦；`'undecidable'` = 判不出 ⇒ 放行。 */
+            type RecordProbe = 'recorded' | 'absent' | 'undecidable'
+            const probe = (sidForProbe: string, sess: any): RecordProbe => {
+              if (sidForProbe === '') return 'undecidable'
+              const f = (() => { try { return policyFileFor(hostCtx, sess) } catch { return undefined } })()
+              if (f === undefined) return 'undecidable'
+              const rd = (() => { try { return readPolicyStore(f, OPTIONS) } catch { return undefined } })()
+              if (rd === undefined) return 'undecidable'
+              /**
+               * ⚠ **可达性不是 `ok` ⇒ 判不出**（⛔ 不能当成"没有记录"）：
+               *   `absent`（文件不存在）在本仓语义里 = "还没有任何会话策略记录"，
+               *   ⚠ 但**文件不存在**也可能是"账本落点算错/目录没建" —— 与"用户没选过"**是两件事**。
+               *   ⇒ 一律 `undecidable` ⇒ 放行（fail-open，⛔ 不拿它当拦截依据）。
+               */
+              if (rd.reachability !== 'ok') return 'undecidable'
+              return rd.file.sessions[sidForProbe] === undefined ? 'absent' : 'recorded'
+            }
+            return probe(sidEarly, session)
+          })()
+          /** 判不出 ⇒ 放行（fail-open）。⚠ 与旧的 `source !== 'derived-default'` 同一个方向。 */
+          if (recordState === 'undecidable') {
+            ctx.logger?.warn?.(
+              `[dsh-hob] 发送时选档闸门：**判不出"${sidEarly}"有没有选择记录** ⇒ 本次放行（fail-open）`
+              + `（策略读数 source=${JSON.stringify(resolved?.source ?? null)} 仅供排查，⛔ 不参与判定）`,
+            )
+            return next()
+          }
+          /** 已经有已落盘记录 ⇒ 用户选过了 ⇒ 放行。 */
+          if (recordState === 'recorded') return next()
+          const sid = (() => { try { return typeof session?.id === 'string' ? session.id : '' } catch { return '' } })()
+          if (sid === '') return next()
+          /**
+           * ⚠ **不在这里另存一份"待弹会话"清单**：
+           *   前端已有的只读路由 `POST /api/dsh-hob/session-policy`
+           *   （`src/modules/session-policy-route.ts`）就回答"这个会话选过没有"
+           *   ⇒ 弹窗靠那条路由判，⛔ 不再造第二份真相（会漂）。
+           *   这里只记一行日志，让拦下这件事在宿主日志里可见。
+           */
+          /**
+           * ⚠⚠ **先把内容留住，再 reject**（顺序不能反）：
+           *   宿主一 reject 就把这条消息丢弃了 ⇒ 这里不存，它就永久没了。
+           *   ⚠ `payload.messages` 是**本轮被 claim 的全部消息**（可能多条），
+           *     逐条追加进队列 ⇒ 用户连发两条也都会回来（本单 §三 第 3 个问号）。
+           */
+          const claimed: readonly any[] = Array.isArray(payload?.messages) ? payload.messages : []
+          let staged = 0
+          for (const m of claimed) {
+            const content = m?.content
+            if (Array.isArray(content) && content.length > 0) {
+              stagePendingMessage(sid, content)
+              staged += 1
+            }
+          }
+          const queued = pendingMessagesOf(sid).length
+          /**
+           * ⚠⚠ **落一条"这个会话被拦过"的可读状态**（2026-10-29 · 第 332 轮 · 包 cb）。
+           *
+           * ── 为什么必须落（否则这条链补不上）────────────────────────────────
+           *   `agent/pre-step` 是 **waterfall**，`reject` 的宿主语义是"消息到此为止、
+           *   turn 无 step 地关闭"（`dsh-agent/lib/types/runtime-types.d.ts:304 / :269-271`）
+           *   ⇒ **前端拿不到任何回调** ⇒ 客户端只能**主动来问**"这个会话被拦过没有"。
+           *   本行就是那个答案的**唯一写入口**。
+           *
+           * ── 为什么⛔ 不能拿 `source === 'derived-default'` 顶替 ────────────────
+           *   `unrecorded` 只说明"这个 Hob 会话还没选过" —— **新建的空白会话一打开就是它**。
+           *   拿它当"被拦过"的证据 ⇒ **一进会话就弹**（本单明令禁止的骚扰）。
+           *   ⇒ "选过没有"（策略主文件）与"被拦过没有"（本文件）是**两根轴**。
+           *
+           * ── ⚠ 顺序：**在 `reject` 之前写** ────────────────────────────────
+           *   宿主一 `reject` 就丢弃消息；若写在 `reject` 之后（例如 `finally`），
+           *   那次写是否来得及**取决于宿主何时真的结束这一步** ⇒ 不可靠。
+           *
+           * ── ⚠ 写失败**⛔ 不许静默**（本单 §二 第 1 条明令）──────────────────
+           *   `markBlocked` 返回 `{ok, reason}`；失败**必须**打成 `warn` 带原因。
+           *   ⚠ 但**失败也不能改变 `reject` 的结果**：拦不拦是安全判定，
+           *   落不落"被拦过"是可用性记录 —— 两件事⛔ 不能互相绑架。
+           */
+          {
+            const blockFile = policyBlockFileFor(hostCtx, session)
+            const w = markBlocked(blockFile, sid)
+            if (!w.ok) {
+              ctx.logger?.warn?.(
+                `[dsh-hob] 发送时选档闸门：**已拦下**会话 ${sid}，但"被拦过"状态**未落盘** ⇒ `
+                + `界面的选档弹窗将无法得知本次拦截（原因：${w.reason}）`,
+              )
+            } else if (w.reason !== '') {
+              // 写成功但读旧档时有可读问题 ⇒ 如实带出来（⛔ 不当没发生）
+              ctx.logger?.warn?.(`[dsh-hob] 发送时选档闸门：被拦状态已更新，但读旧档有异常：${w.reason}`)
+            }
+          }
+          ctx.logger?.info?.(
+            `[dsh-hob] 发送时选档闸门：拦下未选档的 Hob 会话 ${sid}`
+            + `（本次暂存 ${staged} 条，队列共 ${queued} 条，待选档后重投）`,
+          )
+          return Promise.resolve({ kind: 'reject' as const })
+        } catch (e) {
+          /** ⚠ fail-open：判不出就放行，并把原因说出来（⛔ 不静默）。 */
+          ctx.logger?.warn?.(`[dsh-hob] 发送时选档闸门判据抛错 ⇒ 本次放行：${String((e as Error)?.message ?? e)}`)
+          return next()
+        }
+      })
+      ctx.logger?.info?.('[dsh-hob] 发送时选档闸门已安装（`agent/pre-step`）：Hob ∧ 未选档 ⇒ 拦下；其余一律放行')
+    }
+  } catch (e) {
+    ctx.logger?.warn?.(`[dsh-hob] 发送时选档闸门安装失败（⛔ 不影响其它功能）：${String((e as Error)?.message ?? e)}`)
+  }
 
   /**
    * ⚠⚠ **在安装时先踢一次迁移**（2026-10-22 第 3 轮）。

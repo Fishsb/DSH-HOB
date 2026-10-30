@@ -159,6 +159,53 @@ export const defaultPolicyRecordReader: PolicyRecordReader = async (sessionId) =
 }
 
 /**
+ * **「这个会话被选档闸拦下过没有」的读取器**（2026-10-29 · 第 332 轮 · 包 cb）。
+ *
+ * ══ 为什么必须**单独**问这一句（本单最要紧的一条分界）════════════════════
+ *   `defaultPolicyRecordReader` 回的是"**选过档没有**"。⚠ 新建的空白 Hob 会话
+ *   一打开就是 `unrecorded` —— 拿它当"该弹窗"的证据 ⇒ **一进会话就弹**
+ *   （骚扰，本单明令禁止）。本单要的是"**用户刚点过发送、被拦了**"这个**一次性事件**。
+ *   ⇒ 服务端在 `reject` 时落一条"被拦过"（`src/server/policy-block-log.ts`），
+ *     客户端来这里问。**两根轴，⛔ 不能合并。**
+ *
+ * ══ 三态（⚠ 与服务端 `handlePolicyBlockQuery` 逐字对齐）════════════════════
+ *   · `'blocked'` —— 被拦过且尚未选档 ⇒ **该弹**；
+ *   · `'clear'`   —— 没被拦过 / 已选档 / 记录过期 ⇒ 不弹；
+ *   · `'unknown'` —— 判不出 ⇒ **不弹**（fail-closed：⛔ 判不出就不打扰）。
+ *
+ * ══ ⚠ 为什么用轮询而不是订阅（本单 §二 第 2 条允许二选一）══════════════════
+ *   宿主对 `reject` **不 emit 任何事件**（`agent/pre-step` 是 `waterfall`，
+ *   宿主 `runtime-types.d.ts:304 / :269-271`）⇒ 客户端**没有可订阅的东西**。
+ *   而本插件自己的通道是 `POST`（不是 SSE/WebSocket）⇒ 只能轮询。
+ *   ⚠ 频率取 **4 秒**：用户点发送到弹窗的容忍延迟是秒级；4s 下每会话每分钟 15 次
+ *     POST，且**只在该会话是 Hob 且尚未选档时**才轮询（见组件里 `needPoll` 的早退）。
+ *   ⛔ 不整页轮询：每个挂载的 gate 只查**自己的 `sessionId`**。
+ */
+export type PolicyBlockReader = (sessionId: string) => Promise<'blocked' | 'clear' | 'unknown'>
+
+/** 轮询间隔（ms）—— ⚠ 改这里必须同步改回报里的口径说明。 */
+export const BLOCK_POLL_INTERVAL_MS = 4000
+
+export const defaultPolicyBlockReader: PolicyBlockReader = async (sessionId) => {
+  try {
+    const res = await fetch('/api/dsh-hob/session-policy', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'blocked', sessionId }),
+    })
+    const parsed: any = await res.json().catch(() => undefined)
+    if (parsed?.ok !== true) return 'unknown'
+    const state = String(parsed.state ?? '')
+    if (state === 'blocked') return 'blocked'
+    if (state === 'clear') return 'clear'
+    return 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+/**
  * **"同一会话只自动弹一次"的记忆**（⚠ 模块级，跨挂载存活）。
  *
  * 为什么要模块级而不是组件内 ref：
@@ -342,6 +389,14 @@ export interface HobUnselectedGateProps {
   /** 策略记录读取器（默认走本插件通道；缺席 ⇒ 'unknown' ⇒ 不渲染）。 */
   readRecorded?: PolicyRecordReader | null
   /**
+   * **「被选档闸拦下过没有」读取器**（2026-10-29 · 第 332 轮 · 包 cb）。
+   * ⚠ 与上面的 `readRecorded` 是**两根轴**（选过没有 vs 拦过没有）。
+   *   缺席 ⇒ 用 {@link defaultPolicyBlockReader}；显式 `null` ⇒ 不轮询（机检用）。
+   */
+  readBlocked?: PolicyBlockReader | null
+  /** 轮询间隔（ms；机检可调小以免等 4 秒）。 */
+  blockPollMs?: number
+  /**
    * **为某个已有会话**打开选档弹窗。
    * ⚠ 现状缺席 —— 现有 `DialogState` 没有这个入口（详见文件头"为什么不直接调 state.open()"）。
    *   缺席 ⇒ 只显示横幅，按钮给"暂不可用"的说明。
@@ -349,7 +404,13 @@ export interface HobUnselectedGateProps {
   openForSession?: (sessionId: string) => void
   /** 只自动弹一次的共享记忆（⚠ 必须由调用方注入同一份，跨挂载才有效）。 */
   memory?: GateMemory
-  /** 是否允许自动打开（默认 true；机检可关掉以单独测横幅）。 */
+  /**
+   * 是否允许**本组件自动打开**弹窗（默认 true；机检可关掉以单独测横幅）。
+   *
+   * ⚠ 2026-10-29（TASK-Q · `CHG-215`）：这个开关现在只 gate「`blocked` 轮询开窗」那一条
+   *   （改前它 gate 的是「挂载即弹」，那段已废）。语义没变：`false` ⇒ 自动开窗一次都不发生；
+   *   ⚠ 用户点横幅按钮仍能开（那是用户动作，不归本开关管）。
+   */
   autoOpen?: boolean
 }
 
@@ -476,21 +537,104 @@ export function HobUnselectedGate(props: HobUnselectedGateProps): any {
   }, [sessionId, props.agentPreset, props.readRecorded, reload])
 
   /**
-   * 自动打开（⚠ 必须在 `recorded === 'unrecorded'` 且未弹过时才发生）。
+   * **挂载时"未选即弹"这条路已废（2026-10-29 · 第 333 轮 · TASK-Q · `CHG-215`）**。
    *
-   * ⚠ "只弹一次"用 `memory.takeAutoOpen()` —— 它是**原子**的（取与记号同一行），
-   *   所以即使本组件被并发挂载两次，也只有一次返回 true。
+   * ── 它原来是干什么的 ──────────────────────────────────────────────────
+   *   改前这里有一段 `useEffect`：只要 `recorded === 'unrecorded'`（= 切到 Hob 预设、
+   *   还一条消息都没发）就 `memory.takeAutoOpen()` ⇒ `openForSession(sid)`。
+   *
+   * ── 为什么必须废（用户原话）──────────────────────────────────────────
+   *   > 「我点击 HOB 预设在输入信息之前就会弹出窗口，虽然逻辑不太对
+   *   >  （**我要求的是点击发送后弹出**）」
+   *   ⇒ 改前的时点是"**切预设**"，而用户要的是"**点发送、被拦下之后**"。
+   *   ⚠ 实测归因（`REPORT-P.md` §3 格5）：现场 `blocks.json` 里没有该会话、
+   *     5 个 turn 全 `completed`、**无一条 blocked** ⇒ 那次弹窗**只能**来自这段代码，
+   *     ⛔ 不是 `blocked` 轮询。所以关掉的就是它。
+   *
+   * ── 现在开窗的唯一来源 ────────────────────────────────────────────────
+   *   下面那条「`blocked` 轮询」（{@link BLOCK_POLL_INTERVAL_MS} = 4 s，**挂载时先跑一次**）：
+   *   用户点发送 ⇒ 服务端闸门 `reject` 并落一条"被拦过" ⇒ 轮询读到 `blocked` ⇒ 才开窗。
+   *   ⇒ **未发消息 ⇒ 一次都不弹**；**被拦下 ⇒ 弹恰好一次**。
+   *
+   * ⚠ 三条不许动的边界（任务书 §二）：
+   *   ① 开窗**仍然只经过** `memory.takeAutoOpen(sessionId)` 这一个去重记号（⛔ 不拆两份，
+   *      否则"挂载一次 + 轮询一次"会双弹）；
+   *   ② ⛔ **不做常驻入口 / 不加新按钮**（`CHG-185` F4）：横幅与按钮仍是**既有的**那一个；
+   *   ③ `autoOpen === false` 仍是**总闸**（机检靠它造"零开窗"场景），只是现在它 gate 的是
+   *      轮询那条路（改前 gate 的是已废掉的那条）。
    */
   const mountedAutoOpen = props.autoOpen !== false
+
+  /**
+   * ⚠⚠ **"被拦过"轮询 → 开弹窗**（2026-10-29 · 第 332 轮 · 包 cb 的**主线**）。
+   *
+   * ── 它补的是哪一段 ────────────────────────────────────────────────────
+   *   用户点发送 ⇒ 服务端闸门 `reject`（消息被暂存）**并**落一条"被拦过"；
+   *   宿主对 `reject` **不 emit 事件** ⇒ 客户端只能轮询来发现它。
+   *   一旦读到 `'blocked'` ⇒ 走**既有的** `openForSession` 开弹窗
+   *   （⛔ 不新造第二个弹窗实现）。
+   *
+   * ── ⚠ 三条"不打扰"边界（本单 §二 第 2 条）──────────────────────────
+   *   ① **非 Hob / 无 sessionId ⇒ 一次请求都不发**（与上面 `recorded` 读取同一条早退）；
+   *   ② **已选档（`recorded !== 'unrecorded'`）⇒ 不停**：那说明用户已经选过了，
+   *      再问也没意义（⛔ 省掉无用的往返）；
+   *   ③ **同会话只自动弹一次**：用同一份 `memory.takeAutoOpen`（⚠ 与既有自动弹**共用**
+   *      一个记号 —— 否则会出现"横幅弹一次、轮询又弹一次"的双弹）。
+   *   ⚠ `'unknown'` ⇒ **不弹**（fail-closed）。
+   *
+   * ── ⚠ 轮询自身的纪律 ────────────────────────────────────────────────
+   *   · 只查**自己的** `sessionId`（⛔ 不整页轮询）；
+   *   · `sessionId` / `recorded` / reader 变化 ⇒ 重建定时器（⚠ 依赖数组写全）；
+   *   · 卸载 ⇒ `clearInterval`（⛔ 不留孤儿定时器）；
+   *   · 令牌规则与 `recorded` 读取**同形**：回包时代际不符 ⇒ 一个 state 都不写。
+   */
   React.useEffect(() => {
-    if (sessionId === undefined || sessionId === '') return
-    if (recorded !== 'unrecorded') return
-    if (!mountedAutoOpen) return
-    if (typeof props.openForSession !== 'function') return
-    if (memory === undefined) return
-    if (!memory.takeAutoOpen(sessionId)) return
-    try { props.openForSession(sessionId) } catch { /* 打不开不影响横幅显示 */ }
-  }, [sessionId, recorded, mountedAutoOpen, props.openForSession, memory])
+    if (sessionId === undefined || sessionId === '') return undefined
+    if (!isHobPreset(props.agentPreset)) return undefined
+    // ⚠ 已选档 / 判不出 ⇒ 不轮询（`unrecorded` 才可能是"被拦了但还没选"）
+    if (recorded !== 'unrecorded') return undefined
+    /**
+     * ⚠⚠ **`autoOpen === false` ⇒ 这条也不跑**（2026-10-29 · TASK-Q）。
+     *   改前 `autoOpen` 只 gate「挂载即弹」那一段；那段废掉后，本参数若不跟过来，
+     *   **机检就再也造不出"零开窗"场景**（它一直是靠 `autoOpen:false` 关掉开窗的）。
+     *   ⚠ 语义仍然是"**允不允许本组件自动开窗**"：`false` ⇒ 一次都不开；
+     *     用户点横幅按钮（`onClick → openForSession`）**不受影响** —— 那是用户动作，不是自动。
+     */
+    if (!mountedAutoOpen) return undefined
+    if (props.readBlocked === null) return undefined
+    const reader = props.readBlocked ?? defaultPolicyBlockReader
+    if (typeof reader !== 'function') return undefined
+    const interval = typeof props.blockPollMs === 'number' && props.blockPollMs > 0
+      ? props.blockPollMs
+      : BLOCK_POLL_INTERVAL_MS
+    let alive = true
+    const tick = async () => {
+      let next: 'blocked' | 'clear' | 'unknown' = 'unknown'
+      try {
+        next = await reader(sessionId)
+      } catch {
+        next = 'unknown'
+      }
+      if (!alive) return
+      if (next !== 'blocked') return
+      if (typeof props.openForSession !== 'function') return
+      if (memory === undefined) return
+      /**
+       * ⚠ **原子取记号**：`memory.takeAutoOpen` 是**本组件唯一的开窗去重记号**
+       *   （⚠ 改前它由"挂载即弹"与"轮询"两条路共用；TASK-Q 之后只剩这一条路，
+       *    但**记号本身一个字没改**、`memory.forget` 的清理路径也没改）。
+       *   ⚠ 取不到（已经弹过）⇒ 静默返回（⛔ 不重复开窗）。
+       */
+      if (!memory.takeAutoOpen(sessionId)) return
+      try { props.openForSession(sessionId) } catch { /* 打不开不影响其它 */ }
+    }
+    void tick()
+    const timer = setInterval(() => { void tick() }, interval)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [sessionId, props.agentPreset, props.readBlocked, props.blockPollMs, recorded, props.openForSession, memory, mountedAutoOpen])
 
   if (!shouldShowGate(props.agentPreset, recorded)) return null
 

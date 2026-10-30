@@ -1321,11 +1321,25 @@ export function installCreateChannel(ctx: Context): void {
   })
 }
 
-/** 小工具：统一 JSON 响应（⚠ 不引宿主私有类型，保持可离线机检）。 */
-function json(status: number, body: unknown): any {
-  return {
+/**
+ * 小工具：统一 JSON 响应（⚠ 不引宿主私有类型，保持可离线机检）。
+ *
+ * ⚠⚠ **必须返回真 `Response`**（2026-10-29 · 第 332 轮 · 包 N · `CHG-212`）。
+ *   改前返回普通对象（`{ status, headers: {…}, body: string }`），而宿主契约是
+ *   `dsh-client-connection/lib/types/rpc.d.ts:131`
+ *   `readonly fetch: (request: Request) => Promise<Response>;`
+ *   且宿主直接 `response.headers.entries()`（同包 `lib/index.js:88-90`）
+ *   ⇒ 普通对象没有 `.headers.entries` ⇒ `TypeError` ⇒ `dsh-host-webserver/lib/index.js:397-405`
+ *     兜成 **400 空包** ⇒ `action:'enums'`（新建弹窗的选项枚举）**整条死**。
+ *   ⚠ 实测（改前）：真机 `POST /api/dsh-hob/session-create` `{"action":"enums"}` 带 cookie
+ *     ⇒ **400 / 0 字节 / 无 content-type**。
+ *   ⚠ 状态码语义与字段名**一个都没动**（`issue`/`create`/`enums` 的出参形状不变）。
+ *   ⚠ 显式写 `content-type` 带 `charset=utf-8`（与改前逐字一致；`Response.json` 的缺省不带）。
+ *   ⚠ 不设 CORS 头：跨站栅栏由宿主 `connection` 的 trust/origin fence 负责。
+ */
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json; charset=utf-8' },
-    body: JSON.stringify(body),
-  }
+  })
 }

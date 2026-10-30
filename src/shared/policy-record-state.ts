@@ -31,8 +31,18 @@
  *   所以客户端侧不新增第四态（少一个能被写错的分支）。
  */
 
-/** 线格式的四态（⚠ 只有这四个值，⛔ 不许扩成"带档位"的复合对象）。 */
-export type PolicyRecordWireState = 'recorded' | 'unrecorded' | 'not-applicable' | 'unknown'
+/**
+ * 线格式的取值集。
+ *
+ * 前四个是 `action:'read'`（"选过没有"）的取值，⛔ **含义一个都没改**。
+ * 后两个是 `action:'blocked'`（"**被拦过没有**"，2026-10-29 · 第 332 轮 · 包 cb）的取值：
+ *   · `'blocked'` —— 被选档闸拦下过、且**尚未选档** ⇒ 客户端该弹窗；
+ *   · `'clear'`   —— 没被拦过（或已选档 / 记录过期）⇒ 不弹。
+ * ⚠ 为什么**共用** `state` 而不新增字段：`G-16` 钉着线格式"只有一个语义字段"，
+ *   新增字段会把那条既有判据顶红；而复用同一字段**不改变** `action:'read'` 的取值集。
+ * ⚠ 为什么**共用** `unknown` 而不另造一个：两轴的"判不出"行为必须一样（不打扰）。
+ */
+export type PolicyRecordWireState = 'recorded' | 'unrecorded' | 'not-applicable' | 'unknown' | 'blocked' | 'clear'
 
 /** 客户端用的三态（⚠ 与 `hob-unselected-gate.tsx` 的 `PolicyRecordState` 同义）。 */
 export type PolicyRecordClientState = 'recorded' | 'unrecorded' | 'unknown'
@@ -44,6 +54,12 @@ export interface PolicyRecordResponse {
   state?: PolicyRecordWireState
   /** ⚠ 只在请求不合法时给（如缺 sessionId）；⛔ 不含任何内部配置值。 */
   reason?: string
+  /**
+   * ⚠ **写路径的重投回执**（2026-10-29 · 包 CA）：仅在 `action:'write'` 且
+   *   真发生重投时出现。⚠ 它不属于策略值 —— ⛔ 不含档位 / 工作方式。
+   *   ⚠ 读路径**永远不带**这个字段 ⇒ 线格式不变。
+   */
+  replay?: { ok: boolean; replayed: number; remaining: number; reason: string }
 }
 
 /**
@@ -128,8 +144,17 @@ export function toClientState(state: PolicyRecordWireState | undefined): PolicyR
  * @param state - 四态之一。
  * @returns 线格式响应（`ok:true`）。
  */
-export function okState(state: PolicyRecordWireState): PolicyRecordResponse {
-  return { ok: true, state }
+export function okState(
+  state: PolicyRecordWireState,
+  /**
+   * ⚠ **选完档之后的重投结果**（2026-10-29 · 包 CA）。
+   *   ⚠ 只在 `action:'write'` 且真有重投动作时才带；缺省**不出现该字段**
+   *   ⇒ 读路径的线格式**一个字节不变**（D-16/G-16"只回一个语义字段"仍成立）。
+   *   ⚠ 它属于**写路径的执行回执**，不是策略值 —— ⛔ 不泄露档位/工作方式。
+   */
+  replay?: { ok: boolean; replayed: number; remaining: number; reason: string },
+): PolicyRecordResponse {
+  return replay === undefined ? { ok: true, state } : { ok: true, state, replay }
 }
 
 /**

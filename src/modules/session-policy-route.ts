@@ -60,6 +60,9 @@ import type { PolicyResolution } from '../server/session-policy.ts'
  *   抄一份的下场就是"重新收紧开放面时这里静默放行"。
  */
 import { isOpenReadLevel, readLevelNotOpenReason } from '../shared/read-level-policy.ts'
+import { clearBlocked, policyBlockFileOf, readBlocked } from '../server/policy-block-log.ts'
+import { declaredLedgerHome } from './orchestrator.ts'
+import { resolveLedgerRoot } from '../server/doc-read.ts'
 
 /**
  * ⚠⚠ **编译期对齐**（本文件是 host 半边，只有它能 import 那个类型）。
@@ -81,13 +84,41 @@ export const name = 'dsh-hob-session-policy-route'
 /** 本路由路径（⚠ 与 `/api/dsh-hob/session-create` 同族，⛔ 不撞名）。 */
 export const POLICY_ROUTE_PATH = '/api/dsh-hob/session-policy'
 
-/** 小工具：统一 JSON 响应（⚠ 与创建通道同一形状；不引宿主私有类型，保持可离线机检）。 */
-function json(status: number, body: unknown): any {
-  return {
+/**
+ * 小工具：统一 JSON 响应（⚠ 与创建通道同一形状；不引宿主私有类型，保持可离线机检）。
+ *
+ * ⚠⚠ **必须返回真 `Response`**（2026-10-29 · 第 332 轮 · 包 N · `CHG-212`）。
+ *
+ * ── 改前是什么（这条链为什么整段是死的）─────────────────────────────────
+ *   改前返回的是**普通对象** `{ status, headers: {…}, body: string }`。
+ *   而宿主的契约要的是真 `Response`：
+ *     · `@deepseek-ai/dsh-client-connection` 的 `lib/types/rpc.d.ts:131` 原文
+ *       `readonly fetch: (request: Request) => Promise<Response>;`
+ *     · 同一包 `lib/index.js:88-90` 把它**直接当 `Response` 用**：
+ *       `const response = await apiHandler.fetch(request, peer);`
+ *       `const responseHeaders = Object.fromEntries(response.headers.entries());`
+ *   ⇒ 对普通对象取 `.headers.entries()` 抛 `TypeError: … is not a function`
+ *   ⇒ 被 `dsh-host-webserver` 的兜底 `catch`（`lib/index.js:397-405`）写成 **400 空包**
+ *   ⇒ 客户端 `res.json()` 恒失败 ⇒ 本路由的动作全部读不到。
+ *   ⚠ 实测：真机 `POST /api/dsh-hob/session-policy` 带 cookie 恒 **400 / 0 字节 / 无 content-type**；
+ *     同链路 `GET /api/file` 200、不存在路径带 cookie 变 404（⇒ 已过鉴权，**不是** 401）。
+ *
+ * ── 现在 ────────────────────────────────────────────────────────────────
+ *   返回 `new Response(JSON.stringify(body), { status, headers })`：
+ *   `headers` 是真 `Headers`（`entries()` 可用）、`body` 是流
+ *   ⇒ 宿主 `:90` 的 `Object.fromEntries(response.headers.entries())` 能跑通。
+ *   ⚠ 状态码语义、字段名、取值**一个都没动**（仍是 `ok ? 200 : 400`）。
+ *   ⚠ 用 `new Response(…)` 而不是 `Response.json(…)`：两者都可用（Node 22 实测），
+ *     取前者是为了**显式**声明 `content-type` —— `Response.json` 的缺省是 `application/json`，
+ *     不带 `charset=utf-8`；本仓错误原因含中文，显式带 charset 与改前逐字一致。
+ *   ⚠ 不设 CORS 头：跨站栅栏由宿主 `connection` 的 trust/origin fence 负责
+ *     （未认证 401 / 跨站 403 都在到达本 handler **之前**），⛔ 不在这里另造一套。
+ */
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json; charset=utf-8' },
-    body: JSON.stringify(body),
-  }
+  })
 }
 
 /**
@@ -142,6 +173,79 @@ export function handlePolicyQuery(
 }
 
 /**
+ * **「这个会话被选档闸拦下过没有」的只读处理体**（2026-10-29 · 第 332 轮 · 包 cb）。
+ *
+ * ══ 它解决什么（缺了它客户端没有任何办法知道"该弹窗了"）════════════════════
+ *   `agent/pre-step` 是 **waterfall**，`reject` 的语义是"消息到此为止、turn 无 step 地关闭"
+ *   （宿主 `runtime-types.d.ts:304 / :269-271`）⇒ **前端零回调**。
+ *   客户端只能**主动来问**。本动作就是那个问句的答案。
+ *
+ * ══ ⚠ 为什么它⛔ 不能与 `action:'read'` 合并（本单最要紧的一条分界）═══════════
+ *   `action:'read'` 回的是"选过没有"（`recorded`）。⚠ **新建的空白 Hob 会话一打开就是
+ *   `unrecorded`** —— 拿它当"被拦过"的证据 ⇒ **一进会话就弹**（骚扰，本单明令禁止）。
+ *   "选过没有"与"被拦过没有"是**两根轴**：
+ *     · 选没选 = 策略主文件（长期事实）；
+ *     · 拦没拦 = 被拦记录（**一次性触发信号**，`src/server/policy-block-log.ts`）。
+ *
+ * ══ ⚠ 线格式⛔ 不新增字段（`G-16` 钉着 `{ok,state,reason}`）════════════════
+ *   本动作**复用既有 `state` 字段**承载三态：
+ *     · `'blocked'` —— 被拦过且**尚未选档**（⇒ 客户端该弹）；
+ *     · `'clear'`   —— 没被拦过（或已选档 / 记录已过期）；
+ *     · `'unknown'` —— 判不出（⛔ **不降级成 clear**：那会让该弹的不弹，且无声）。
+ *   ⚠ `state` 因此在**本动作**下多出两个值 —— 但那是**同一根线格式**（`{ok,state,reason}`），
+ *     ⛔ 不新增字段、⛔ 不动既有四态的含义（`action:'read'` 的取值集**一个都没变**）。
+ *
+ * @param deps - 取策略服务、活会话、与被拦记录落点。
+ * @param body - 已解析的请求体（只需要 `sessionId`）。
+ */
+export function handlePolicyBlockQuery(
+  deps: {
+    policyOf: () => any
+    sessionOf: (sessionId: string) => any
+    /** 取该会话的被拦记录落点（⚠ 判不出时返回 `undefined`，本函数会回 `unknown`）。 */
+    blockFileOf: (sessionId: string) => string | undefined
+  },
+  body: any,
+): PolicyRecordResponse {
+  const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
+  if (sessionId === '') return badRequest('缺 sessionId ⇒ 无法回答"这个会话被拦过没有"')
+
+  /**
+   * ⚠ 先判"该不该管这个会话"：**非 Hob ⇒ 一律 `clear`**
+   *   （本机制对非 Hob 不适用，⛔ 不能让一个非 Hob 会话上残留的旧记录把弹窗弹出来）。
+   */
+  const svc = (() => {
+    try { return deps.policyOf() } catch { return undefined }
+  })()
+  const session = (() => {
+    try { return deps.sessionOf(sessionId) } catch { return undefined }
+  })()
+  if (svc === undefined || svc === null || typeof svc.get !== 'function') return okState('unknown')
+  if (session === undefined || session === null) return okState('unknown')
+  let isHob = false
+  let recorded = false
+  try {
+    const v = svc.get(session)
+    if (v === undefined || v === null || typeof v !== 'object') return okState('unknown')
+    isHob = v.isHob === true
+    recorded = v.recorded === true
+  } catch {
+    return okState('unknown')
+  }
+  if (!isHob) return okState('clear')
+  /** ⚠ **选完档就不再弹**（本单 §二 第 2 条）：已记录 ⇒ 直接 `clear`，⛔ 不看被拦记录。 */
+  if (recorded) return okState('clear')
+
+  const file = (() => {
+    try { return deps.blockFileOf(sessionId) } catch { return undefined }
+  })()
+  if (file === undefined) return okState('unknown')
+  const r = readBlocked(file, sessionId)
+  if (r.state === 'unknown') return okState('unknown')
+  return okState(r.state === 'blocked' ? 'blocked' : 'clear')
+}
+
+/**
  * **已有会话的写入处理体**（2026-10-22 第 4 轮 · 任务书 §二②）。
  *
  * ══ 它为什么必须存在 ═══════════════════════════════════════════════════════
@@ -169,13 +273,15 @@ export function handlePolicyQuery(
  * @param body - 已解析的请求体（`sessionId` / `level` / `workMode`）。
  * @returns 线格式响应（⚠ `ok:true` 时**不回**任何档位值 —— 客户端不需要）。
  */
-export function handlePolicyWrite(
+export async function handlePolicyWrite(
   deps: {
     policyOf: () => any
     sessionOf: (sessionId: string) => any
+    /** 取该会话的被拦记录落点（⚠ 可选：缺席 ⇒ 选完档时不清"被拦过"，⛔ 不影响选档本身）。 */
+    blockFileOf?: (sessionId: string) => string | undefined
   },
   body: any,
-): PolicyRecordResponse {
+): Promise<PolicyRecordResponse> {
   const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
   const level = typeof body?.level === 'string' ? body.level : ''
   const workMode = typeof body?.workMode === 'string' ? body.workMode : ''
@@ -258,7 +364,51 @@ export function handlePolicyWrite(
   if (confirmed !== 'recorded') {
     return badRequest('写入后回读仍未看到记录 ⇒ 按失败处理（⚠ 本会话仍是未选状态）')
   }
-  return okState('recorded')
+  /**
+   * ════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **选完档 ⇒ 把被闸门拦下的消息重投**（2026-10-29 · 包 CA · `CHG-186`）
+   * ════════════════════════════════════════════════════════════════════
+   *
+   * ── 为什么必须在这里（而且必须在 `confirmed === 'recorded'` 之后）──────
+   *   这是"用户选完档"**唯一**的写入出口 ⇒ 只有在"策略确已落盘并回读确认"
+   *   之后重投，消息才不会在"档位还没生效"的状态下发出去。
+   *   ⚠ 放在回读确认**之前**会让那条消息按旧（未选）策略跑 —— 正是要修的病的另一面。
+   *
+   * ── 失败时怎么办 ────────────────────────────────────────────────────
+   *   ⚠ **不回滚策略写入**：用户的选择是有效的，只是消息没投出去。
+   *   ⇒ 把 `requeue` 的结果**一并回在响应里**（`replay` 字段），⛔ 不静默
+   *   —— 否则用户以为"选完了、消息该回来了"，实际没回来。
+   *   ⚠ 队列**保留**（`requeue` 内部纪律：投完才清）⇒ 用户再选一次仍会投。
+   */
+  let replay: { ok: boolean; replayed: number; remaining: number; reason: string } | undefined
+  try {
+    replay = await svc.requeue?.(sessionId)
+  } catch (e) {
+    replay = { ok: false, replayed: 0, remaining: -1, reason: `重投抛错：${String((e as Error)?.message ?? e)}` }
+  }
+  /**
+   * ⚠⚠ **选完档 ⇒ 清掉"被拦过"这条一次性信号**（2026-10-29 · 第 332 轮 · 包 cb）。
+   *
+   * ── 为什么必须清（本单 §二 第 2 条明写"选完之后必须不再弹"）───────────
+   *   "被拦过"是**一次性的触发信号**：用户选完档之后它就没有意义了。
+   *   不清的话，只要那条记录还在（24h 内），任何一次重挂载都可能再弹一次 ⇒ **变骚扰**。
+   *   ⚠ 与上面 `requeue` **互不依赖**：清理失败⛔ 不能让选档本身变成失败
+   *     （用户的选择已经落盘且回读确认过了）。
+   *   ⚠ 清理失败**必须可读**（⛔ 不静默）：打进响应 `reason` 不行（那会污染语义字段），
+   *     所以走日志 —— 但它不影响 `ok`。
+   */
+  try {
+    const file = (() => {
+      try { return deps.blockFileOf?.(sessionId) } catch { return undefined }
+    })()
+    const c = clearBlocked(file, sessionId)
+    if (!c.ok) {
+      console.warn(`[dsh-hob] 选档已成功，但"被拦过"记录清理失败（⚠ 该会话可能再弹一次）：${c.reason}`)
+    }
+  } catch (e) {
+    console.warn(`[dsh-hob] 选档已成功，但"被拦过"记录清理抛错：${String((e as Error)?.message ?? e)}`)
+  }
+  return okState('recorded', replay)
 }
 
 /**
@@ -294,7 +444,7 @@ export function installPolicyRoute(ctx: Context): void {
           } catch {
             return json(400, badRequest('请求体不是 JSON'))
           }
-          const out = (() => {
+          const out = await (async () => {
             /**
              * ⚠ **两个动作，按 `action` 分发**（2026-10-22 第 4 轮）：
              *   · `read`（默认）—— 只读，问"这个会话选过没有"；
@@ -311,10 +461,31 @@ export function installPolicyRoute(ctx: Context): void {
               sessionOf: (sessionId: string) => {
                 try { return hostCtx.get?.('sessions')?.get?.(sessionId) } catch { return undefined }
               },
+              /**
+               * ⚠ **被拦记录落点**：与策略主文件**同一套派生**（`resolveLedgerRoot` +
+               *   `declaredLedgerHome` + 会话 cwd），只是文件名换成 `session-policy-blocks.json`。
+               *   ⛔ 不在这里另写一份路径规则（那必然与服务侧 `policyBlockFileFor` 漂）。
+               */
+              blockFileOf: (sessionId: string): string | undefined => {
+                try {
+                  const session = (() => {
+                    try { return hostCtx.get?.('sessions')?.get?.(sessionId) } catch { return undefined }
+                  })()
+                  const cwd = session?.header?.cwd
+                  const root = resolveLedgerRoot('', declaredLedgerHome(hostCtx), typeof cwd === 'string' ? cwd : undefined)
+                  return root === undefined ? undefined : policyBlockFileOf(root)
+                } catch { return undefined }
+              },
             }
             if (action === 'read') return handlePolicyQuery(deps, body)
+            /**
+             * ⚠ `blocked` —— **"这个会话被选档闸拦过没有"**（2026-10-29 · 第 332 轮 · 包 cb）。
+             *   ⚠ 它与 `read` 是**两根轴**（选过没有 vs 拦过没有），⛔ 不能合并：
+             *     新建的空白 Hob 会话一打开就是 `unrecorded`，拿它当"被拦过"会**一进会话就弹**。
+             */
+            if (action === 'blocked') return handlePolicyBlockQuery(deps, body)
             if (action === 'write') return handlePolicyWrite(deps, body)
-            return badRequest(`未知 action：${JSON.stringify(action)}（只支持 read / write）`)
+            return badRequest(`未知 action：${JSON.stringify(action)}（只支持 read / blocked / write）`)
           })()
           return json(out.ok ? 200 : 400, out)
         },
