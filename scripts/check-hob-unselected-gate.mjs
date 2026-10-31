@@ -1225,7 +1225,8 @@ try {
     const wrong = rows.filter(([, got, want]) => got !== want)
     if (wrong.length === 0) {
       ok(`G-22 ✓ 发送时闸门判据四类各对：${rows.map(([k, g]) => `${k}=${g}`).join(' · ')}`
-        + '（非 Hob / 已选 / 判不出 全放行，只有 Hob 未选档拦）')
+        + '（非 Hob / 已选 / 判不出 全放行，只有 Hob 未选档拦）'
+        + ' ⚠ 本组测的是"逐字复刻"的实现（抄自 session-policy-service.ts:1432），对真源码漂移是盲的')
     } else {
       bad(`G-22 ⚠ 发送时闸门判据错 ${wrong.length} 类：`
         + wrong.map(([k, got, want]) => `${k} 实为 ${got} 应为 ${want}`).join(' / ')
@@ -1577,10 +1578,19 @@ try {
           } else bad(`G-25 A ⚠ 真机形态应判"拦"，实际 gateSecond=${g} ⇒ 旧的病没治好`)
         }
 
-        // ── B · 无记录 · createdAt 晚于纪元 ⇒ 也必须拦 ──
+        // ── B · 无记录（⚠ 与 A 同档：gateSecond 不收 createdAt）──
+        /**
+         * ⚠⚠ **2026-10-31 P32：本条审计发现它是 A 的重复。**
+         *   实测（`CHG-306` §二）：把 `SID_LATE` 改成 `SID_EARLY`（让 B 用 A 的输入）⇒ **B 照样绿**。
+         *   根因：`gateSecond(file, sid)` **签名里没有 `createdAt`** ⇒ A/B 喂的是同一输入。
+         *   ⚠ **保留而非删除**（P32 裁 (a)）：删了就看不出“这里曾经有一条以为在测别的东西的断言”。
+         *   ⛔ 本轮只改标题与说明，⛔ 不动判定逻辑、⛔ 不变强。
+         */
         {
           const g = gateSecond(policyFile, SID_LATE)
-          if (g === 'absent') ok('G-25 B ✓ 无记录 + createdAt 晚于纪元 ⇒ 判据=absent ⇒ **拦**（与 A 同档；纪元差异不再影响判定）')
+          if (g === 'absent') ok('G-25 B ✓ 无记录（⚠ 与 A 同档：`gateSecond` 不收 `createdAt`，'
+            + '本条的『晚于纪元』**未被真正喂入**）⇒ 判据=absent ⇒ **拦**'
+            + ' ⚠ 本条**不构成独立覆盖** —— 它与 G-25 A 喂的是同一输入（见 P32 审计）')
           else bad(`G-25 B ⚠ 应判"拦"，实际 ${g}`)
         }
 
@@ -1603,7 +1613,8 @@ try {
         {
           const src = String(fsMod.readFileSync(join(root, 'src', 'session-policy-service.ts'), 'utf8'))
           if (/if \(resolved\?\.isHob !== true\) return next\(\)/.test(src)) {
-            ok('G-25 D ✓ `isHob !== true ⇒ next()` 第 ① 条**原样在位**（非 Hob 一律放行）')
+            ok('G-25 D ✓ `isHob !== true ⇒ next()` 第 ① 条**原样在位**（非 Hob 一律放行）'
+              + ' ⚠ 本组是**源码正则**：抓得住"这行被改"，抓不住"这行还在但被短路"')
           } else bad('G-25 D ⚠ 第 ① 条（非 Hob 放行）不见了')
         }
 
