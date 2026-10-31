@@ -1,5 +1,5 @@
 {
-  "note": "⚠ 每族**负向对拍**标签数的**下限**（2026-10-30 P6 立 · P7 抬）。⚠ 只准升不准降：有意减少须同批改本文件并写明理由。⚠ 口径见 scripts/check-meta-negctl.mjs 头注释：只数一条断言调用（ok / bad / note.push / check）的第一个字符串字面量里含「负向对拍」的，沿 import 闭包累加。",
+  "note": "⚠ 每族**负向对拍**标签数的**下限**（2026-10-30 P6 立 · P7 抬 · P39 抬 check:stages-dom 30→45 · check:workflow 8→18）。⚠ 只准升不准降：有意减少须同批改本文件并写明理由。⚠ 口径见 scripts/check-meta-negctl.mjs 头注释：只数一条断言调用（ok / bad / note.push / check）的第一个字符串字面量里含「负向对拍」的，沿 import 闭包累加。",
   "floor": {
     "check:all": 0,
     "check:archive": 0,
@@ -25,10 +25,10 @@
     "check:redeliver": 3,
     "check:rounds": 0,
     "check:selfwake": 0,
-    "check:stages-dom": 30,
+    "check:stages-dom": 45,
     "check:stages-route": 3,
     "check:tasks-progress": 1,
     "check:tasks-route-http": 0,
-    "check:workflow": 8
+    "check:workflow": 18
   }
 }
