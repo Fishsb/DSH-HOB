@@ -1991,6 +1991,160 @@ export function StateDot({ state, size, appearance }) {
     }
 
 
+    // ══════════════════════════════════════════════════════════════════
+    // S-22 ⭐ **面板根可上下滚，且值可判**（2026-10-31 P36 · 用户报「展开后超出显示范围要能上下滑」）
+    // ══════════════════════════════════════════════════════════════════
+    /**
+     * ── 病 ──────────────────────────────────────────────────────
+     *   改前 `grep 'overflow|maxHeight|height:'` 在 `stages-panel.tsx` **零命中**
+     *   ⇒ 内容超出宿主 `tabBody`（`overflow:hidden`）就**被裁掉**，用户滚不了。
+     *
+     * ── 本组量什么（⚠ 逐条对应任务书 §二 的四条）──────────────
+     *   1. `overflowY === 'auto'`（⚠ **必须是 auto**，⛔ 不是 `scroll`/`visible`；
+     *      `scroll` 恒显滚动条 ⇒ 违反"只在超出时出现"）；
+     *   2. `maxHeight` **是具体值**（匹配 `\d+(\.\d+)?(vh|px|rem|em)`，⛔ 不许空/`100%`/`none`）；
+     *   3. 键盘可达：面板根 `tabIndex === '0'` 且 `role === 'region'` 且有可读 `aria-label`；
+     *   4. 无内层第二个滚动容器（扫描面板内所有节点，`overflowY` 为 `auto|scroll` 的**只能有根这一个**）。
+     *
+     * ⚠ ⚠ **本组特意不写"含 overflow 就过"** —— 那种写法对 `overflow: visible` 也绿（假绿）。
+     *   下面 S-22b 专测这一点。
+     */
+    {
+      const fx = {
+        ok: true, readAt: '2026-10-30T00:00:00.000Z',
+        stages: [
+          { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-001', title: 'a', status: 'agreed', extra: '' }] },
+          { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [{ id: 'CHG-X', title: 'b', status: 'settled', extra: '' }] },
+          { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-1', title: 'c', status: 'built', extra: '' }] },
+          { step: 4, name: '任务执行', state: 'done', done: 1, total: 1, items: [{ id: 'RUN-001', title: 'd', status: 'running', extra: '' }] },
+          { step: 5, name: '验收核对', state: 'todo', done: 0, total: 0, items: [] },
+        ],
+        caps: [],
+      }
+      const r = mount(react.createElement(ui.StagesPanel, {
+        fetchProgress: async () => ({ ok: true, rows: [] }),
+        fetchExec: async () => ({ ok: true, items: [] }),
+        fetchStages: async () => fx,
+        pollMs: 0,
+      }))
+      await tick(40)
+      const probs = []
+      const root = document.querySelector('[data-dsh-hob="stages-panel"]')
+      if (root === null) probs.push('找不到面板根（stages-panel）')
+      else {
+        const cs = root.ownerDocument.defaultView.getComputedStyle(root)
+        const oy = (cs.overflowY || root.style.overflowY || '').trim()
+        const mh = (cs.maxHeight || root.style.maxHeight || '').trim()
+        const ox = (cs.overflowX || root.style.overflowX || '').trim()
+        // ① 滚动只在超出时出现 ⇒ auto
+        if (oy !== 'auto') probs.push(`面板根 overflow-y 应为 \`auto\`（超出才显滚动条），实际 ${JSON.stringify(oy)}`)
+        // ② 高度上限是**具体值**
+        if (!/^\d+(\.\d+)?(vh|px|rem|em)$/.test(mh)) probs.push(`面板根 maxHeight 必须是具体值（如 70vh），实际 ${JSON.stringify(mh)}`)
+        // ③ 键盘可达
+        if (root.getAttribute('tabindex') !== '0') probs.push(`面板根不可聚焦（tabindex=${JSON.stringify(root.getAttribute('tabindex'))}）⇒ 键盘滚不了`)
+        if (root.getAttribute('role') !== 'region') probs.push(`面板根 role 应为 region，实际 ${JSON.stringify(root.getAttribute('role'))}`)
+        if (!(root.getAttribute('aria-label') ?? '').trim()) probs.push('面板根没有 aria-label（读屏无法报出这是可滚区域）')
+        // ④ 无第二个滚动容器
+        const scrollers = [...root.querySelectorAll('*')].filter((el) => {
+          const s2 = el.ownerDocument.defaultView.getComputedStyle(el)
+          const o = (s2.overflowY || '').trim()
+          return o === 'auto' || o === 'scroll'
+        })
+        if (scrollers.length > 0) {
+          probs.push(`面板内有 ${scrollers.length} 个内层滚动容器 ⇒ 双重滚动条（首个：${JSON.stringify((scrollers[0].textContent ?? '').slice(0, 30))}）`)
+        }
+        if (probs.length === 0) {
+          ok(`S-22 ✓ 面板根可上下滚且**值可判**：overflow-y=\`${oy}\` · maxHeight=\`${mh}\` · overflow-x=\`${ox}\``
+            + ' · 可聚焦（tabindex=0 / role=region / 有 aria-label）· **内层滚动容器 0 个**（⛔ 无双重滚动条）')
+        } else for (const x of probs) bad(`S-22 · ${x}`)
+      }
+      actFn(() => r.unmount())
+    }
+
+    // ── S-22a 负向对拍：把 `overflowY: 'auto'` 改成 `'scroll'` ⇒ S-22 必红（恒显滚动条） ──
+    {
+      const built = ((t) => {
+        const m = t.replace("  overflowY: 'auto',", "  overflowY: 'scroll',")
+        return m === t ? undefined : writeMutant('oy-scroll', m)
+      })(src)
+      if (built === undefined) {
+        bad('S-22a · 造不出「overflowY: scroll」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const modRaw = await import(pathToFileURL(built).href)
+        const r = mount(react.createElement(modRaw.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => ({ ok: true, readAt: 'x', stages: [], caps: [] }),
+          pollMs: 0,
+        }))
+        await tick(30)
+        const root = document.querySelector('[data-dsh-hob="stages-panel"]')
+        const oy = root === null ? '' : (root.ownerDocument.defaultView.getComputedStyle(root).overflowY || '').trim()
+        if (oy === 'scroll') ok('S-22a ✓ 负向对拍（overflowY: auto → **scroll**）⇒ S-22 **必红**：scroll 会恒显滚动条')
+        else bad(`S-22a · 变体 overflow-y 实为 ${JSON.stringify(oy)} ⇒ S-22 没有牙`)
+        actFn(() => r.unmount())
+      }
+    }
+
+    // ── S-22b ⚠⚠ **专项**：把 `overflowY: 'auto'` 改成 `'visible'` ⇒ S-22 必红 ──
+    {
+      /**
+       * ⚠ 任务书特别点名这一条：**若只写"含 overflow 就过"，`visible` 也会绿** ——
+       *   而 `visible` 的语义恰恰是"**不裁也不滚**"，是最坏的假绿形态。
+       *   本对拍证明 S-22 的判据是 `=== 'auto'`，⛔ 不是 `includes('overflow')`。
+       */
+      const built = ((t) => {
+        const m = t.replace("  overflowY: 'auto',", "  overflowY: 'visible',")
+        return m === t ? undefined : writeMutant('oy-visible', m)
+      })(src)
+      if (built === undefined) {
+        bad('S-22b · 造不出「overflowY: visible」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const modRaw = await import(pathToFileURL(built).href)
+        const r = mount(react.createElement(modRaw.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => ({ ok: true, readAt: 'x', stages: [], caps: [] }),
+          pollMs: 0,
+        }))
+        await tick(30)
+        const root = document.querySelector('[data-dsh-hob="stages-panel"]')
+        const oy = root === null ? '' : (root.ownerDocument.defaultView.getComputedStyle(root).overflowY || '').trim()
+        // ⚠ 关键：visible 的读数**不是** auto ⇒ S-22 的 `=== 'auto'` 必判红
+        if (oy !== 'auto') {
+          ok(`S-22b ✓ 负向对拍（overflowY: auto → **visible**）⇒ S-22 **必红**：`
+            + `读数为 ${JSON.stringify(oy)}，⛔ 不等于 \`auto\`（若判据写成"含 overflow 就过"这里会假绿）`)
+        } else bad('S-22b · 变体仍读到 auto ⇒ S-22 的判据不区分 visible')
+        actFn(() => r.unmount())
+      }
+    }
+
+    // ── S-22c 负向对拍：把 maxHeight 删掉 ⇒ S-22 必红（高度上限必须可判） ──
+    {
+      const built = ((t) => {
+        const m = t.replace("  maxHeight: STAGES_PANEL_SCROLL_MAX_HEIGHT,\n", "")
+        return m === t ? undefined : writeMutant('no-maxheight', m)
+      })(src)
+      if (built === undefined) {
+        bad('S-22c · 造不出「删掉 maxHeight」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const modRaw = await import(pathToFileURL(built).href)
+        const r = mount(react.createElement(modRaw.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => ({ ok: true, readAt: 'x', stages: [], caps: [] }),
+          pollMs: 0,
+        }))
+        await tick(30)
+        const root = document.querySelector('[data-dsh-hob="stages-panel"]')
+        const mh = root === null ? '' : (root.ownerDocument.defaultView.getComputedStyle(root).maxHeight || '').trim()
+        if (!/^\d+(\.\d+)?(vh|px|rem|em)$/.test(mh)) ok(`S-22c ✓ 负向对拍（删掉 maxHeight）⇒ S-22 **必红**：高度上限读数变成 ${JSON.stringify(mh)}`)
+        else bad(`S-22c · 变体仍读到具体上限 ${JSON.stringify(mh)} ⇒ S-22 没有牙`)
+        actFn(() => r.unmount())
+      }
+    }
+
+
 } finally {
   cleanup()
 }

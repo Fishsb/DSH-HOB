@@ -392,6 +392,43 @@ export class StaleRouteError extends Error {
   }
 }
 
+/**
+ * ── ⭐ **2026-10-31 P36：面板根可上下滚**（用户原话「展开之后已经超出显示范围之后，
+ *   需要提供上下滑动功能」）──────────────────────────────────────────
+ *
+ * ── 改前为什么必须改（不是"滚动做得不好"，是**压根没有**）────────────
+ *   `grep 'overflow|maxHeight|height:'` 在改前的 `stages-panel.tsx` **零命中**
+ *   ⇒ 面板既没有滚动容器、也没有高度上限，内容长了就**直接溢出被裁掉**。
+ *
+ * ── 谁的高度真的有限（量测，⛔ 不许猜）──────────────────────────
+ *   宿主 `@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js` 的 CSS（实测原文）：
+ *     · `.P3OORG_panel … {position:absolute;top:0;bottom:0;right:0;overflow:clip}`
+ *       ⇒ 宿主侧栏**自身 overflow: clip**（⛔ 不是 auto/scroll）
+ *     · `.P3OORG_tabBody {height:100%;min-height:0;display:flex;overflow:hidden}`
+ *       ⇒ 标签页身体**也不滚**，只是 `hidden`
+ *   ⇒ ⚠ **宿主这一层根本不会给滚动条** —— 它只会把超出部分**裁掉**。
+ *   ⇒ 所以「内层再加会不会双重滚动条」的答案是：**不会** —— 因为外层压根没有滚动条。
+ *     ⚠ 这一条必须先量宿主，否则"加 overflow:auto"可能变成第二个滚动条。
+ *
+ * ── 为什么加在**面板根**（而不是某个列表）────────────────────────
+ *   ① 一处管全部：五步树 + cap 区 + 展开体（现在/历史两档）都在面板根之下，
+ *      加在这里等于**所有内容**都进同一个滚动容器；
+ *   ② 若只给「展开体」加，`cap` 区和步头仍会溢出 ⇒ 用户还是要滚两次；
+ *   ③ 面板根本身就是 `display:flex; flexDirection:column` 的**单一纵向流**，
+ *      天然适合做滚动容器（不需要额外包一层 div）。
+ *
+ * ── 四条要求的落点（⚠ 逐条对应）──────────────────────────
+ *   1. **只在超出时出现滚动条** ⇒ `overflowY: 'auto'`（⛔ 不是 `scroll` —— scroll 会**恒显**滚动条）；
+ *   2. **⛔ 不双重滚动条** ⇒ 见上：宿主 `clip`/`hidden`，无第二滚动容器；
+ *   3. **高度上限有具体值** ⇒ `maxHeight: '70vh'`（⚠ 取面板可见高度的 7 成，
+ *      剩下的 3 成留给宿主标签栏与用户在会话区的视线；⛔ 不用 `100%`
+ *      —— 那会与 `min-height:0` 的父链耦合太紧，宿主一改就失效）；
+ *   4. **键盘可达** ⇒ `tabIndex: 0` + `role: 'region'` + `aria-label`，
+ *      容器能拿焦点后，方向键/PageUp/PageDown 由浏览器原生滚动处理（⛔ 不自己写键盘逻辑）。
+ *      ⚠ 同时给 `outlineOffset` 让焦点环不被 `overflow` 裁掉。
+ */
+export const STAGES_PANEL_SCROLL_MAX_HEIGHT = '70vh'
+
 const wrapStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
@@ -399,6 +436,12 @@ const wrapStyle: React.CSSProperties = {
   padding: '12px',
   color: 'var(--dsw-alias-label-primary)',
   font: 'inherit',
+  /** ⚠ 只在**超出**上限时才出滚动条（`auto`）；`scroll` 会恒显 ⇒ 违反"只在超出时"。 */
+  overflowY: 'auto',
+  /** ⚠ 具体值（⛔ 不用 100% / 不设 undefined）——判据要能读出这个数。 */
+  maxHeight: STAGES_PANEL_SCROLL_MAX_HEIGHT,
+  /** ⚠ 键盘可达：容器可聚焦 ⇒ 方向键 / PageUp / PageDown 原生滚动。 */
+  outlineOffset: '2px',
 }
 
 const treeHeadStyle: React.CSSProperties = {
@@ -1044,7 +1087,14 @@ export function StagesPanel(props?: {
 
   return React.createElement(
     'div',
-    { style: wrapStyle, 'data-dsh-hob': 'stages-panel' },
+    {
+      style: wrapStyle,
+      'data-dsh-hob': 'stages-panel',
+      /** ⚠ 键盘可达（第 4 条）：可聚焦 + 语义区域 + 可读名字。 */
+      tabIndex: 0,
+      role: 'region',
+      'aria-label': `${STAGES_PANEL_TITLE}（可上下滚动）`,
+    },
     React.createElement('div', { style: { fontWeight: 600 } }, STAGES_PANEL_TITLE),
     // ⭐ PRIMARY：五步树（新数据源 = units/index.toml）
     stageTree,
