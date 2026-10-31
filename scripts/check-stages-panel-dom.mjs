@@ -2145,6 +2145,202 @@ export function StateDot({ state, size, appearance }) {
     }
 
 
+    // ══════════════════════════════════════════════════════════════════
+    // S-23 ⭐ **面板内不许出现横向滚动条**（2026-10-31 P39 · 用户真机亲报）
+    // ══════════════════════════════════════════════════════════════════
+    /**
+     * ── 用户原话（两句话，按原顺序）──────────────────────────────
+     *   1. 「可以滚动了但是有个问题，就是下面左右滑动的滑块位置不对应该在最下方」
+     *   2. 「不要最下面的滑块」
+     *   ⇒ 第 2 句**作废**第 1 句的位置诉求：⛔ 不是"把滑块挪到底部"，是"滑块**不要存在**"。
+     *
+     * ── 病（CSS 计算规则，不是巧合）────────────────────────────────
+     *   改前 `wrapStyle` **只有 `overflowY: 'auto'`，没有 `overflowX`** ⇒ `overflowX` 是初始值
+     *   `visible`；而「一轴 `visible`、另一轴 `auto`/`scroll` ⇒ `visible` **计算为 `auto`**」
+     *   ⇒ 根容器实际**两轴都 auto** ⇒ 内容一横向溢出就长出横向滚动条。
+     *
+     * ── 本组量什么 ────────────────────────────────────────────────
+     *   ① 根容器 `overflowX === 'hidden'`（⚠ **必须 hidden**，⛔ `auto`/`scroll`/`visible`）；
+     *   ② 面板内**不存在任何横向滚动容器**：遍历所有后代，`overflowX` 为 `auto`/`scroll`
+     *      的一律不许有（⚠ 与 S-22 对 Y 轴的扫法**同构**，⛔ 不另立标准）。
+     *
+     * ⚠ ⚠ **本组⛔ 不写 `scrollWidth > clientWidth`** —— jsdom 无布局，它恒 0 ⇒ **假判据**。
+     *   本组判的是**声明**，不是"有没有真的溢出"（后者只能用户肉眼看，见报告第 4 段）。
+     */
+    const oxOf = (el) => {
+      const cs = el.ownerDocument.defaultView.getComputedStyle(el)
+      return (cs.overflowX || el.style.overflowX || '').trim()
+    }
+    /** 面板里 **所有**`flex: '1 1 auto'` 的节点都会渲染的夹具（S-24 用）。 */
+    const fullFx = {
+      ok: true, readAt: '2026-10-31T00:00:00.000Z',
+      stages: [
+        { step: 1, name: '需求规格', state: 'doing', done: 1, total: 2, items: [
+          { id: 'R-001', title: '一条很长的标题用来把行撑破看看会不会横向溢出', status: 'agreed', extra: '' },
+          { id: 'R-002-very-long-id-without-any-break-point', title: 'b', status: 'agreed', extra: '' },
+        ] },
+        { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [{ id: 'CHG-X', title: 'c', status: 'settled', extra: '' }] },
+        { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-1', title: 'd', status: 'built', extra: '' }] },
+        { step: 4, name: '任务执行', state: 'done', done: 1, total: 1, items: [{ id: 'RUN-001', title: 'e', status: 'running', extra: '' }] },
+        { step: 5, name: '验收核对', state: 'todo', done: 0, total: 0, items: [] },
+      ],
+      caps: [{ id: 'CAP-1', title: '长期能力的一条很长很长的标题也要能断行', status: 'live', lastReading: '2026-10-31' }],
+    }
+    const mountFull = async (mod) => {
+      const r = mount(react.createElement(mod.StagesPanel, {
+        fetchProgress: async () => ({ ok: true, rows: [{ name: '需求规格', step: '1', blockedBy: '' }] }),
+        fetchExec: async () => ({ ok: true, items: [] }),
+        fetchStages: async () => fullFx,
+        pollMs: 0,
+      }))
+      await tick(40)
+      return r
+    }
+    /** S-23 的判据（抽成函数 ⇒ 正向与负向对拍**共用同一份判据**，⛔ 不各写一份）。 */
+    const s23probs = (rootEl) => {
+      const probs = []
+      if (rootEl === null) return ['找不到面板根（stages-panel）']
+      const ox = oxOf(rootEl)
+      if (ox !== 'hidden') probs.push(`面板根 overflowX 应为 \`hidden\`，实际 ${JSON.stringify(ox)}`)
+      const scrollers = [...rootEl.querySelectorAll('*')].filter((el) => {
+        const o = oxOf(el)
+        return o === 'auto' || o === 'scroll'
+      })
+      if (scrollers.length > 0) {
+        probs.push(`面板内有 ${scrollers.length} 个横向滚动容器（首个：${
+          JSON.stringify((scrollers[0].textContent ?? '').slice(0, 30))} · overflowX=${
+          JSON.stringify(oxOf(scrollers[0]))}）`)
+      }
+      return probs
+    }
+    {
+      const r = await mountFull(ui)
+      const root = document.querySelector('[data-dsh-hob="stages-panel"]')
+      const probs = s23probs(root)
+      const ox = root === null ? '' : oxOf(root)
+      if (probs.length === 0) {
+        ok(`S-23 ✓ 面板根**声明不许横向滚**：overflowX=\`${ox}\` · 面板内横向滚动容器 **0 个**`
+          + '（⚠ 判的是声明值，⛔ 不是 `scrollWidth>clientWidth` 那种 jsdom 恒 0 的假判据）')
+      } else for (const x of probs) bad(`S-23 · ${x}`)
+      actFn(() => r.unmount())
+    }
+
+    // ── S-23a 负向对拍：把声明改成 `'auto'` ⇒ S-23 必红 ──
+    {
+      const built = ((t) => {
+        const m = t.replace("  overflowX: 'hidden',", "  overflowX: 'auto',")
+        return m === t ? undefined : writeMutant('ox-auto', m)
+      })(src)
+      if (built === undefined) {
+        bad('S-23a · 造不出「overflowX: auto」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const modRaw = await import(pathToFileURL(built).href)
+        const r = await mountFull(modRaw)
+        const probs = s23probs(document.querySelector('[data-dsh-hob="stages-panel"]'))
+        if (probs.length > 0) {
+          ok(`S-23a ✓ 负向对拍（overflowX: hidden → **auto**）⇒ S-23 **必红**：${probs[0]}`)
+        } else bad('S-23a · 变体仍全绿 ⇒ S-23 没有牙（`hidden` 与 `auto` 分不开）')
+        actFn(() => r.unmount())
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // S-24 ⭐ **横向溢出的根因：每个 `flex: '1 1 auto'` 的文本列都必须 `minWidth: 0`**
+    // ══════════════════════════════════════════════════════════════════
+    /**
+     * ── 为什么这条**必须**和 S-23 同时存在（⛔ 不是凑数）──────────────
+     *   flex 项的 `min-width` 默认是 `auto` ⇒ **不许缩到 `min-content` 以下**
+     *   ⇒ 长 id / 长标题把整行撑破。⚠ 只加 `overflowX: 'hidden'` 就是**把字裁掉** ——
+     *   用户会看到「字被切了一半」，那是**用新缺陷盖旧缺陷**。
+     *   ⇒ S-23 管"不许滚"，S-24 管"不许把字裁掉"（改根因而不是盖症状）。
+     *
+     * ── 本组量什么（两个角度，⛔ 缺一不算）──────────────────────────
+     *   ① **渲染面**：面板里**每个** `flex: '1 1 auto'` 的节点，`minWidth` 都读得到且为 `0`；
+     *   ② **源码面**：去掉块注释后，`flex: '1 1 auto'` 的出现次数 == 紧跟 `minWidth: 0` 的次数
+     *      （⚠ ① 只覆盖"夹具渲染到的那几个"，② 覆盖"源码里的每一个"，两者互补；
+     *        ⛔ ① 单独存在会漏掉没被夹具渲染的节点 ⇒ 假绿）。
+     */
+    const stripComments = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '')
+    const s24srcProbs = (t) => {
+      const code = stripComments(t)
+      const flexAll = (code.match(/flex:\s*'1 1 auto'/g) ?? []).length
+      const flexWithMin = (code.match(/flex:\s*'1 1 auto',\s*minWidth:\s*0\b/g) ?? []).length
+      const probs = []
+      if (flexAll === 0) probs.push('源码里找不到任何 `flex: \'1 1 auto\'`（形态变了 ⇒ 判据失效）')
+      else if (flexWithMin !== flexAll) {
+        probs.push(`源码里 \`flex: '1 1 auto'\` 共 ${flexAll} 处，紧跟 \`minWidth: 0\` 的只有 ${flexWithMin} 处`
+          + ` ⇒ 有 ${flexAll - flexWithMin} 处会因 \`min-width: auto\` 把行撑破`)
+      }
+      return probs
+    }
+    const s24domProbs = (rootEl) => {
+      if (rootEl === null) return ['找不到面板根（stages-panel）']
+      const probs = []
+      const flexers = [...rootEl.querySelectorAll('*')].filter((el) => {
+        const cs = el.ownerDocument.defaultView.getComputedStyle(el)
+        return (cs.flex || el.style.flex || '').trim().replace(/\s+/g, ' ') === '1 1 auto'
+      })
+      if (flexers.length === 0) {
+        probs.push('渲染面里一个 `flex: 1 1 auto` 节点都没找到（夹具没覆盖到 ⇒ 本条对渲染面失效）')
+        return probs
+      }
+      for (const el of flexers) {
+        const cs = el.ownerDocument.defaultView.getComputedStyle(el)
+        const mw = (cs.minWidth || el.style.minWidth || '').trim()
+        if (!/^(0|0px|0em|0rem)$/.test(mw)) {
+          probs.push(`\`flex: 1 1 auto\` 节点缺 \`minWidth: 0\`：minWidth=${JSON.stringify(mw)} · `
+            + `文本=${JSON.stringify((el.textContent ?? '').slice(0, 24))}`)
+        }
+      }
+      return probs
+    }
+    {
+      const r = await mountFull(ui)
+      const root = document.querySelector('[data-dsh-hob="stages-panel"]')
+      const domProbs = s24domProbs(root)
+      const srcProbs = s24srcProbs(src)
+      const flexers = root === null ? 0 : [...root.querySelectorAll('*')].filter((el) => {
+        const cs = el.ownerDocument.defaultView.getComputedStyle(el)
+        return (cs.flex || el.style.flex || '').trim().replace(/\s+/g, ' ') === '1 1 auto'
+      }).length
+      const probs = [...domProbs, ...srcProbs]
+      if (probs.length === 0) {
+        const code = stripComments(src)
+        const n = (code.match(/flex:\s*'1 1 auto'/g) ?? []).length
+        ok(`S-24 ✓ **${n} 处** \`flex: '1 1 auto'\` **全部**声明了 \`minWidth: 0\``
+          + `（渲染面实测 ${flexers} 个节点 · 源码面 ${n}/${n} 处 ⇒ 长 id / 长标题可被压缩断行，⛔ 不靠 \`overflowX:hidden\` 裁掉）`)
+      } else for (const x of probs) bad(`S-24 · ${x}`)
+      actFn(() => r.unmount())
+    }
+
+    // ── S-24a 负向对拍：把**其中一处**（条目标题那处）的 `minWidth: 0` 删掉 ⇒ S-24 必红 ──
+    {
+      /**
+       * ⚠ 任务书点名：**删掉其中一处**，⛔ 不是全删 —— 全删会让"有没有逐处声明"失去区分度
+       *   （全删之后任何"抓到一处就算"的弱判据也会绿）。
+       */
+      const TARGET = "React.createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflowWrap: 'anywhere' } }, String(it?.title ?? '')),"
+      const built = ((t) => {
+        const m = t.replace(TARGET, TARGET.replace(", minWidth: 0", ''))
+        return m === t ? undefined : writeMutant('no-minw-one', m)
+      })(src)
+      if (built === undefined) {
+        bad('S-24a · 造不出「删掉一处 minWidth: 0」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        /** ⚠ 源码面判据要用**变异后的源码文本**（⛔ 不能用 `src` 原件 —— 那样永远 3/3 全绿）。 */
+        const mutatedText = src.replace(TARGET, TARGET.replace(", minWidth: 0", ''))
+        const srcProbs = s24srcProbs(mutatedText)
+        const modRaw = await import(pathToFileURL(built).href)
+        const r = await mountFull(modRaw)
+        const domProbs = s24domProbs(document.querySelector('[data-dsh-hob="stages-panel"]'))
+        if (srcProbs.length > 0 || domProbs.length > 0) {
+          ok(`S-24a ✓ 负向对拍（删掉**条目标题**那处的 \`minWidth: 0\`）⇒ S-24 **必红**：`
+            + `${(srcProbs[0] ?? domProbs[0])}`)
+        } else bad('S-24a · 删掉一处后仍全绿 ⇒ S-24 没有牙（不能逐处判定）')
+        actFn(() => r.unmount())
+      }
+    }
+
 } finally {
   cleanup()
 }
