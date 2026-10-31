@@ -1817,6 +1817,180 @@ export function StateDot({ state, size, appearance }) {
       }
     }
 
+    // ══════════════════════════════════════════════════════════════════
+    // S-20 ⭐ **步头必须写出「里面有几条」**（2026-10-31 P35 · 用户报「我没找到展开历史档」）
+    // ══════════════════════════════════════════════════════════════════
+    /**
+     * ── 病（用户真碰到）──────────────────────────────────────────
+     *   第 ④ 步的**全部内容**（「现在」/「历史」两档 + 执行项）都在**展开体**里，
+     *   而默认展开**只对 `state === 'doing'`** 生效。第 ④ 步现在是 `✓ 完成`
+     *   ⇒ 用户看到 `4 任务执行 ✓ 完成 26/26 ▸`，**没有任何东西告诉他里面有 26 条**。
+     *
+     * ── 本组量什么 ────────────────────────────────────────────
+     *   每一行的步头里必须有 `data-dsh-hob="stages-tree-item-count"`，且文本是 `N 条`，
+     *   **且 N 必须等于该步 `items.length`**（⚠ 不许写死、⛔ 不许与数据脱钩）。
+     *   ⚠ 0 条时也要写「0 条」（"空"与"没有"要分得开，`E-172`）。
+     */
+    {
+      const fx = {
+        ok: true, readAt: '2026-10-30T00:00:00.000Z',
+        stages: [
+          { step: 1, name: '需求规格', state: 'done', done: 2, total: 2, items: [
+            { id: 'R-001', title: 'a', status: 'agreed', extra: '' },
+            { id: 'R-002', title: 'b', status: 'agreed', extra: '' },
+          ] },
+          { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [
+            { id: 'CHG-X', title: 'c', status: 'settled', extra: '' },
+          ] },
+          { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [
+            { id: 'TSK-1', title: 'd', status: 'built', extra: '' },
+          ] },
+          /** ⚠ 第 ④ 步刻意用 `done`（= 用户截图那天的真实状态）且放 3 条。 */
+          { step: 4, name: '任务执行', state: 'done', done: 3, total: 3, items: [
+            { id: 'RUN-001', title: 'e', status: 'returned', extra: '' },
+            { id: 'RUN-002', title: 'f', status: 'returned', extra: '' },
+            { id: 'RUN-003', title: 'g', status: 'returned', extra: '' },
+          ] },
+          { step: 5, name: '验收核对', state: 'todo', done: 0, total: 0, items: [] },
+        ],
+        caps: [],
+      }
+      const r = mount(react.createElement(ui.StagesPanel, {
+        fetchProgress: async () => ({ ok: true, rows: [] }),
+        fetchExec: async () => ({ ok: true, items: [] }),
+        fetchStages: async () => fx,
+        pollMs: 0,
+      }))
+      await tick(40)
+      const probs = []
+      const heads = [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]
+      const WANT = [2, 1, 1, 3, 0]
+      if (heads.length !== 5) probs.push(`步行头 ${heads.length} 个（期望 5）`)
+      heads.forEach((h, i) => {
+        const el = h.querySelector('[data-dsh-hob="stages-tree-item-count"]')
+        if (el === null) { probs.push(`第 ${i + 1} 步头没有「条目数」（stages-tree-item-count）`); return }
+        const t = (el.textContent ?? '').trim()
+        if (!/^\d+ 条$/.test(t)) probs.push(`第 ${i + 1} 步的条目数不是「N 条」：${JSON.stringify(t)}`)
+        else if (t !== `${WANT[i]} 条`) probs.push(`第 ${i + 1} 步条目数应为「${WANT[i]} 条」，实际 ${JSON.stringify(t)}`)
+      })
+      if (probs.length === 0) {
+        ok('S-20 ✓ **每步行头都写出「里面有几条」**（' + WANT.map((n, i) => `第${i + 1}步 ${n} 条`).join(' · ') + '）'
+          + ' ⇒ 用户不用点开就知道哪一步里有内容（⚠ 0 条也写「0 条」，⛔ 非空白）')
+      } else for (const x of probs) bad(`S-20 · ${x}`)
+      actFn(() => r.unmount())
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // S-21 ⭐ **点开第 ④ 步后必须看到「现在」/「历史」两档**（用户原话「我没找到展开历史档」）
+    // ══════════════════════════════════════════════════════════════════
+    /**
+     * ── 它回答什么 ──────────────────────────────────────────────
+     *   ⚠ 用户报的是**找不到**。⇒ 本组真点一下第 ④ 步的行头，然后**逐项点出**
+     *   展开体里到底有什么：两档标题、执行项、以及每条的执行态标签、条数读数。
+     *   ⚠ 这不是"源码里有没有那几行"（那种 grep 恒真），是**真 DOM 挂载 + 真派发 click**。
+     */
+    {
+      const fx = {
+        ok: true, readAt: '2026-10-30T00:00:00.000Z',
+        stages: [
+          { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-001', title: 'a', status: 'agreed', extra: '' }] },
+          { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [{ id: 'CHG-X', title: 'b', status: 'settled', extra: '' }] },
+          { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-1', title: 'c', status: 'built', extra: '' }] },
+          /** ⚠ `done` + 有 items ⇒ 默认**不**展开（正是用户的处境）。 */
+          { step: 4, name: '任务执行', state: 'done', done: 2, total: 2, items: [
+            { id: 'RUN-001', title: '在跑的那条', status: 'running', extra: '' },
+            { id: 'RUN-002', title: '历史那条', status: 'returned', extra: '' },
+          ] },
+          { step: 5, name: '验收核对', state: 'todo', done: 0, total: 0, items: [] },
+        ],
+        caps: [],
+      }
+      /**
+       * ⚠⚠ **第 ④ 步的「现在/历史」两档来自 `fetchExec`（执行态路由），⛔ 不是 `stages[].items`**
+       *   —— 我第一版把执行项喂进 `stages[].items`，两档一个都渲染不出来（S-21 当场红）。
+       *   ⇒ 这里按**真数据源**喂：`fetchExec().items` 每条带 `bucket`。
+       */
+      const EXEC_ITEMS = [
+        { target: 'hob-now-1', state: 'running', bucket: 'now', startedAt: '2026-10-31T00:00:00+08:00', elapsedMs: 60000, retries: 0 },
+        { target: 'hob-hist-1', state: 'returned', bucket: 'closed', closedAt: '2026-10-30T00:00:00+08:00', retries: 1 },
+      ]
+      const r = mount(react.createElement(ui.StagesPanel, {
+        fetchProgress: async () => ({ ok: true, rows: [] }),
+        fetchExec: async () => ({ ok: true, items: EXEC_ITEMS }),
+        fetchStages: async () => fx,
+        pollMs: 0,
+      }))
+      await tick(40)
+      const probs = []
+      const head4 = () => document.querySelector('[data-dsh-hob="stages-tree-step"][data-step="4"] [data-dsh-hob="stages-tree-head"]')
+      const body4 = () => document.querySelector('[data-dsh-hob="stages-tree-step"][data-step="4"] [data-dsh-hob="stages-tree-body"]')
+
+      // ① 默认（`done`）必须是折叠的 —— ⚠ 这证明本组测的正是用户那个处境
+      if (head4()?.getAttribute('aria-expanded') !== 'false') probs.push('第 ④ 步是 `done` 却默认展开了 ⇒ 与用户处境不符（本组失去意义）')
+      // ② 折叠时，步头仍必须写着条目数（S-20 的落点）
+      const cnt = head4()?.querySelector('[data-dsh-hob="stages-tree-item-count"]')?.textContent?.trim() ?? ''
+      if (cnt !== '2 条') probs.push(`折叠时步头没写着「2 条」：${JSON.stringify(cnt)}`)
+      // ③ 真点一下
+      actFn(() => head4().dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+      await tick(30)
+      if (head4()?.getAttribute('aria-expanded') !== 'true') probs.push('点了第 ④ 步行头却没展开')
+      const b = body4()
+      if (b === null) probs.push('第 ④ 步展开后没有 stages-tree-body')
+      else {
+        const txt = b.textContent ?? ''
+        // ④ 两档标题都在（⚠ 这是用户要的那个「历史」）
+        const buckets = [...b.querySelectorAll('[data-dsh-hob="stages-exec-bucket"]')].map((e) => e.getAttribute('data-bucket'))
+        for (const want of ['now', 'history']) {
+          if (!buckets.includes(want)) probs.push(`展开体里没有「${want}」档（实有：${JSON.stringify(buckets)}）`)
+        }
+        // ⑤ 执行项逐条在（⚠ 不是只给个数字）
+        const ids = [...b.querySelectorAll('[data-dsh-hob="stages-exec-item"]')].map((e) => e.getAttribute('data-target'))
+        for (const want of ['hob-now-1', 'hob-hist-1']) {
+          if (!ids.includes(want)) probs.push(`展开体里没有执行项 ${want}（实有：${JSON.stringify(ids)}）`)
+        }
+        if (!/历史/.test(txt)) probs.push(`展开体全文里没有「历史」二字：${JSON.stringify(txt.slice(0, 120))}`)
+      }
+      if (probs.length === 0) {
+        const b2 = body4()
+        const inv = [...b2.querySelectorAll('[data-dsh-hob="stages-exec-bucket"]')].map((e) => e.getAttribute('data-bucket') + ':' + (e.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 60))
+        ok('S-21 ✓ 点开第 ④ 步后**真的看到两档 + 两条执行项**：' + inv.join(' | '))
+      } else for (const x of probs) bad(`S-21 · ${x}`)
+      actFn(() => r.unmount())
+    }
+
+    // ── N-S20 负向对拍：把「N 条」那段渲染删掉 ⇒ S-20 必红 ──
+    {
+      const built = ((t) => {
+        const m = t.replace(
+          "`${items.length} 条`),",
+          "''),",
+        )
+        return m === t ? undefined : writeMutant('no-item-count', m)
+      })(src)
+      if (built === undefined) {
+        bad('N-S20 · 造不出「删掉条目数」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const modRaw = await import(pathToFileURL(built).href)
+        const r = mount(react.createElement(modRaw.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => ({
+            ok: true, readAt: '2026-10-30T00:00:00.000Z',
+            stages: [{ step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-001', title: 'a', status: 'agreed', extra: '' }] }],
+            caps: [],
+          }),
+          pollMs: 0,
+        }))
+        await tick(30)
+        const el = document.querySelector('[data-dsh-hob="stages-tree-head"] [data-dsh-hob="stages-tree-item-count"]')
+        const t = (el?.textContent ?? '').trim()
+        if (t === '') ok('N-S20 ✓ 负向对拍（把 `${items.length} 条` 改成空串）⇒ S-20 **必红**：条目数读数变成空串')
+        else bad(`N-S20 · 变体仍打出 ${JSON.stringify(t)} ⇒ S-20 没有牙`)
+        actFn(() => r.unmount())
+      }
+    }
+
+
 } finally {
   cleanup()
 }
