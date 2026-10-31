@@ -12,9 +12,9 @@
 | 要求 | 说明 |
 |---|---|
 | **DeepSeek Harness（`dsh`）** | 本插件对标的是上游的 **`next` 通道**，不是 npm `dist-tags` 里的 `latest`。⚠ 装之前请确认你的 `dsh` 走的是 `next` 通道 |
-| **Node.js** | `>= 20` |
+| **Node.js** | `>= 22.18` |
 | **包管理器** | `pnpm`（`dsh plugin` 子命令把参数转发给 profile 目录下的 pnpm） |
-| **一个工作区** | 一个你希望被协助的项目目录（插件把骨架铺进它，账本区建在它**之外**） |
+| **一个工作区** | 一个你希望被协助的项目目录（**账本区建在它之外**；插件不往里写结构层） |
 
 ⚠ ⚠ **上游是预发布版**：`next` 通道的相邻版本**可能删 API 且不给弃用窗口**。
 本插件依赖的宿主接口在版本之间变过（本项目为此专门保留了一条"依赖同代机检"）。
@@ -51,8 +51,8 @@ dsh --profile <profile> --dump-config | grep dsh-hob
 由 `package.json` 的 `dsh.bundle.patch` 统一列入。**不要再把 `preset/` 目录单独加进
 `dsh.profile.bundles`** —— 那会让同一个 patch 挂载两次，宿主 loader 会因条目 id 重复而崩。
 
-⚠ 装完**重启一次**（或重载 profile）。首次在某工作区干活时，插件会把骨架（`.hob/` 结构层）
-铺进那个工作区；目标已存在则**一个字节都不动**。
+⚠ 装完**重启一次**（或重载 profile）。首次在某工作区干活时，插件**只在账本区**
+（工作区之外的 `ledgerHome`）里建它的记录，⛔ **不往工作区里铺任何结构层**。
 
 ---
 
@@ -77,13 +77,12 @@ dsh --profile <profile> --dump-config | grep dsh-hob
 | `spawn.model` | `""` | 建出会话用哪个模型 | **空串 = 用宿主默认模型** |
 | `spawn.reasoningEffort` | `""` | 建出会话的思考档位 | **空串 = 用该模型自身默认档** |
 | `permission.level` | `ledger` | ⚠ **历史存档值：既不是当前生效档，也不是迁移取值来源**（迁移读的是 `floorLevel`）。改它不影响任何会话 —— 真正生效的是**每会话策略**。三档含义仅作历史说明：`ledger`（只读自己的记录与网络）· `project`（另可读工作区 `.md`）· `workspace`（另可读工作区任意文件与图片、可跨文件搜索） | 三选一，无空值。⚠ **任何一档都不能写、不能执行命令、不能组队**；档位只改「读」的范围，不改「写」的边界 |
-| `skeleton.enabled` | `true` | 首次在某工作区干活时，把骨架铺进那个工作区 | 布尔，无空值。⚠ **只补缺**：目标已存在 ⇒ 一个字节都不动，等于空操作 |
 
 ⚠ 上面这批里 `modules.*` 是**拓扑型**：改了要**重启实例**才生效（宿主语义如此，不是本插件的选择）。
-`spawn.*` / `skeleton.enabled` 是**值型**：改完即生效。
+`spawn.*` 是**值型**：改完即生效。
 ⚠ **`permission.level` 例外**：它虽仍带 `.volatile()`（所以出现在表单里），但**今天没有任何消费方**、也不是迁移来源 ⇒ 改它**不产生任何效果**。保留它只为不让 `permission` 这一组从表单里整组消失。真正的读档在**每会话策略**里（见 §3.1 首段）。
 
-⚠ `skeleton.enabled`：**开关真的双向生效**（关 ⇒ 一个文件都不铺；开 ⇒ 按缺失件补齐）。
+
 
 ⚠ 本插件的设置页里**每一项都有一句说明**；上面这张表是同一份口径的离线版。
 
@@ -145,14 +144,13 @@ dsh plugin --profile <profile> remove dsh-hob
 
 | # | 残留 | 位置 | 怎么清 |
 |---|---|---|---|
-| 1 | **骨架**（铺进每个被协助的工作区） | `<工作区>/.hob/` | `rm -rf <工作区>/.hob/`。⚠ 会连你自己加的模板一起删，先看一眼再删 |
-| 2 | **记录区**（在工作区之外） | `<记录区父目录>/<工作区名>/`（父目录 = 你配的 `ledgerHome`，或派生出的兄弟目录 `.hob-ledgers/`）。典型内容：项目档案 / 方案 / 决策 / 上下文 / 归档 / 改前备份 / 运行态 | ⛔ **这一条不能删** —— 那是**你的项目资料**（不是插件的缓存，删了没有第二份）。真要清就**先搬走**；卸载插件本身**不需要**动它 |
-| 3 | **profile 依赖** | `<profile>/package.json` 的 `dependencies` 与 `dsh.profile.bundles` 里的 `dsh-hob` | 由上面的 `remove` 处理（实测两处都会被清掉）。若你的环境里它没清干净，手工删那两处 |
-| 4 | **profile 的 id 定向覆盖条目** | `<profile>/cordis.patch.yml` 里 `- id: dsh-hob` 那一段 | **手工删**。⚠ `remove` **不清这一条**（实测）。不删的后果：每次启动 stderr 多一行 `patch: entry "dsh-hob" not found`，**不影响启动** |
-| 5 | **`node_modules` 里的符号链接**（用 `link:` 装过才会有） | `<profile>/node_modules/dsh-hob` | ⚠ **实测：`remove` 之后它仍然在**（不是"随 #3 一起消失"）。`rm <profile>/node_modules/dsh-hob` 手工删；再跑一次 `dsh plugin --profile <profile> install` 也不会替你清掉 |
-| 6 | **运行态** | `<记录区父目录>/<工作区名>/runtime/`（插件自己写的运行态文件，含一个自忽略的 `.gitignore`） | 随 #2 一起；它**不进 git**，留着也不污染 |
+| 1 | **记录区**（在工作区之外） | `<记录区父目录>/<工作区名>/`（父目录 = 你配的 `ledgerHome`，或派生出的兄弟目录 `.hob-ledgers/`）。典型内容：项目档案 / 方案 / 决策 / 上下文 / 归档 / 改前备份 / 运行态 | ⛔ **这一条不能删** —— 那是**你的项目资料**（不是插件的缓存，删了没有第二份）。真要清就**先搬走**；卸载插件本身**不需要**动它 |
+| 2 | **profile 依赖** | `<profile>/package.json` 的 `dependencies` 与 `dsh.profile.bundles` 里的 `dsh-hob` | 由上面的 `remove` 处理（实测两处都会被清掉）。若你的环境里它没清干净，手工删那两处 |
+| 3 | **profile 的 id 定向覆盖条目** | `<profile>/cordis.patch.yml` 里 `- id: dsh-hob` 那一段 | **手工删**。⚠ `remove` **不清这一条**（实测）。不删的后果：每次启动 stderr 多一行 `patch: entry "dsh-hob" not found`，**不影响启动** |
+| 4 | **`node_modules` 里的符号链接**（用 `link:` 装过才会有） | `<profile>/node_modules/dsh-hob` | ⚠ **实测：`remove` 之后它仍然在**（不是"随 #3 一起消失"）。`rm <profile>/node_modules/dsh-hob` 手工删；再跑一次 `dsh plugin --profile <profile> install` 也不会替你清掉 |
+| 5 | **运行态** | `<记录区父目录>/<工作区名>/runtime/`（插件自己写的运行态文件，含一个自忽略的 `.gitignore`） | 随 #2 一起；它**不进 git**，留着也不污染 |
 
-⚠ 插件**不写** `~/.dsh/**` 下除 profile 配置以外的任何东西（骨架铺装对被禁止的目录有显式拒绝）。
+⚠ 插件**不写** `~/.dsh/**` 下除 profile 配置以外的任何东西，也**不写**工作区内的任何文件。
 
 ### 5.1 升级不改你的设置
 

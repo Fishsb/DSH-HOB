@@ -1305,6 +1305,155 @@ try {
   }
 
   /**
+   * ══ G-28 ⭐ **部分重投不许重复发**（2026-10-31 P37 · 审计 `CHG-313` 查出的真 bug）══
+   *
+   * ── 病（改前的实际行为）────────────────────────────────────
+   *   `requeue()` 逐条从**原队列**重投，成功后**只 `replayed += 1`，不从队列移除**；
+   *   「全成功」时在 `finally` 清整队，**部分失败时保留完整旧队列**：
+   *     · 队列 `[甲, 乙]`，甲成功、乙抛错
+   *     · 返回 `{ replayed: 1, remaining: 1 }`
+   *     · ⚠ **但暂存仍是 `[甲, 乙]`** ⇒ **下次重投会把甲再发一遍**
+   *   ⇒ 用户看到的是「我选完档，同一条消息发了两遍」。
+   *
+   * ── 本组怎么证明（⚠ 行为读数，⛔ 不 grep 源码）──────────────
+   *   真建两条暂存 ⇒ 让假 agent 的 `followup` **第二条抛错** ⇒ 重投一次 ⇒
+   *   断言两件：
+   *     ① 第一次重投：甲被投出、乙抛错 ⇒ `replayed === 1`；
+   *     ② **暂存里必须只剩乙**（甲已消费掉）⇒ ⛔ 不能还是 `[甲,乙]`；
+   *   然后再重投一次 ⇒ 断言：**甲不能再被投第二次**（`delivered` 里 `甲` 只出现一次）。
+   *
+   * ⚠ ② 就是审计说的那一步：改前 `remaining` 虽是 1，但**暂存仍是 2 条** ⇒ 第二次重投必重发甲。
+   */
+  {
+    let spMod2
+    try { spMod2 = await import('../src/session-policy-service.ts') } catch (e) {
+      bad(`G-28 载不到 session-policy-service（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+      spMod2 = null
+    }
+    if (spMod2 !== null) {
+      const S2 = 'sess-g28-partial'
+      spMod2.clearPendingMessages(S2)
+      spMod2.stagePendingMessage(S2, [{ type: 'text', text: '甲' }])
+      spMod2.stagePendingMessage(S2, [{ type: 'text', text: '乙' }])
+      const delivered2 = []
+      /** ⚠ 第二条（乙）抛错 —— 精确模拟"部分失败"。 */
+      const fakeAgent2 = {
+        followup(msg) {
+          const t = msg?.content?.[0]?.text
+          if (t === '乙') throw new Error('模拟：第二条重投失败')
+          delivered2.push(t)
+        },
+      }
+      let svc2 = null
+      const fakeCtx2 = {
+        on() {}, logger: { info() {}, warn() {} },
+        get(n) {
+          if (n === 'agents') return { get: (id) => (id === S2 ? fakeAgent2 : undefined) }
+          return undefined
+        },
+        provide(_n, v) { svc2 = v },
+        effect() {},
+      }
+      spMod2.installSessionPolicy(fakeCtx2, { workMode: () => 'auto' })
+      const r1 = await svc2.requeue(S2)
+      const after1 = spMod2.pendingMessagesOf(S2).map((x) => x.content?.[0]?.text)
+      // 再投一次（⚠ 这次乙仍会抛错；关键看**甲会不会被再发一次**）
+      let r2 = null
+      try { r2 = await svc2.requeue(S2) } catch { r2 = null }
+      const deliveredAll = delivered2.join(',')
+      const jiaCount = delivered2.filter((t) => t === '甲').length
+      const probs = []
+      if (r1?.replayed !== 1) probs.push(`第一次重投 replayed 应为 1，实际 ${r1?.replayed}`)
+      // ① 甲必须已被消费掉
+      if (JSON.stringify(after1) !== JSON.stringify(['乙'])) {
+        probs.push(`第一次重投后暂存应为 ["乙"]（甲已消费），实际 ${JSON.stringify(after1)} ⇒ ⚠ 甲会被再发一次`)
+      }
+      // ② 更硬的读数：整个过程中甲只能出现一次
+      if (jiaCount !== 1) {
+        probs.push(`甲被投递了 ${jiaCount} 次（应恰好 1 次）⇒ **部分重投重复发消息**`)
+      }
+      if (probs.length === 0) {
+        ok(`G-28 ✓ 部分重投**不重复发**：队列 [甲,乙] 乙失败 ⇒ 暂存变 ${JSON.stringify(after1)}`
+          + ` · 甲全程只投 **1** 次（实 ${jiaCount} 次）· 第二次重投 delivered=${JSON.stringify(deliveredAll)}`)
+      } else for (const x of probs) bad(`G-28 · ${x}`)
+      spMod2.clearPendingMessages(S2)
+    }
+  }
+
+  /**
+   * ══ G-29 ⭐ **会话销毁清暂存 + 队列上限**（2026-10-31 P37 · 审计 `CHG-313` 第 2 条）══
+   *
+   * ── 病（改前）────────────────────────────────────────────────
+   *   注释承诺"会话关闭时清空暂存"，但**全仓没装销毁监听**
+   *   ⇒ 用户放弃会话后，那条被拦的消息**留到宿主进程重启**。
+   *
+   * ── 本组怎么证明（行为读数）────────────────────────────────
+   *   ① **真派发 `agent/disposed`** ⇒ 该 sid 的暂存必须变空；
+   *   ② 别的 sid 的暂存**不受牵连**（⛔ 不许一刀切清全表）；
+   *   ③ **上限真生效**：连塞超过 `PENDING_MAX_PER_SESSION` 条 ⇒ 队列长度被压在 32，
+   *      且**留下的是最新的**（⚠ 丢最旧，⛔ 不是丢新）。
+   */
+  {
+    let sp3
+    try { sp3 = await import('../src/session-policy-service.ts') } catch (e) {
+      bad(`G-29 载不到 session-policy-service（${String(e?.message ?? e)}）⇒ 不按通过处理`)
+      sp3 = null
+    }
+    if (sp3 !== null) {
+      const probs = []
+      const SA = 'sess-g29-a'
+      const SB = 'sess-g29-b'
+      sp3.clearPendingMessages(SA); sp3.clearPendingMessages(SB)
+      sp3.stagePendingMessage(SA, [{ type: 'text', text: '甲的待投' }])
+      sp3.stagePendingMessage(SB, [{ type: 'text', text: '乙的待投' }])
+      // 装监听：⚠ 真调 installSessionPolicy（它内部装 agent/disposed）
+      const handlers = new Map()
+      const fakeCtx3 = {
+        on(ev, fn) { handlers.set(ev, fn); return () => handlers.delete(ev) },
+        logger: { info() {}, warn() {} },
+        get() { return undefined },
+        provide() {},
+        effect() {},
+      }
+      sp3.installSessionPolicy(fakeCtx3, { workMode: () => 'auto' })
+      // ① 事件名必须是真实的 agent/disposed（⛔ 不是 session/disposed）
+      if (!handlers.has('agent/disposed')) {
+        probs.push(`没装名为 \`agent/disposed\` 的监听（已装：${JSON.stringify([...handlers.keys()])}）`)
+      } else {
+        // 真派发
+        handlers.get('agent/disposed')({ agent: { id: SA } })
+        const aLeft = sp3.pendingMessagesOf(SA).length
+        const bLeft = sp3.pendingMessagesOf(SB).length
+        if (aLeft !== 0) probs.push(`会话销毁后 SA 暂存仍有 ${aLeft} 条 ⇒ ⚠ 会留到进程重启`)
+        // ② 不许牵连别的会话
+        if (bLeft !== 1) probs.push(`销毁 SA 把 SB 的暂存也清了（剩 ${bLeft}，应 1）⇒ ⛔ 一刀切清全表`)
+      }
+      // ③ 条数上限
+      const SC = 'sess-g29-cap'
+      sp3.clearPendingMessages(SC)
+      const N = sp3.PENDING_MAX_PER_SESSION
+      if (typeof N !== 'number' || N <= 0) probs.push(`PENDING_MAX_PER_SESSION 应为正数，实际 ${JSON.stringify(N)}`)
+      else {
+        for (let i = 0; i < N + 8; i += 1) sp3.stagePendingMessage(SC, [{ type: 'text', text: `m${i}` }])
+        const q = sp3.pendingMessagesOf(SC)
+        if (q.length > N) probs.push(`连塞 ${N + 8} 条后队列仍有 ${q.length} 条（上限 ${N}）⇒ 上限没生效`)
+        // 丢最旧 ⇒ 最后一条必须还在，第一条必须没了
+        const texts = q.map((x) => x.content?.[0]?.text)
+        if (!texts.includes(`m${N + 7}`)) probs.push(`超限后**最新**那条 m${N + 7} 丢了 ⇒ 丢的是新不是旧`)
+        if (texts.includes('m0')) probs.push('超限后**最旧**那条 m0 还在 ⇒ 没丢最旧（上限只是记数）')
+        // 总字符上限也要存在且是正数
+        const C = sp3.PENDING_MAX_TOTAL_CHARS
+        if (typeof C !== 'number' || C <= 0) probs.push(`PENDING_MAX_TOTAL_CHARS 应为正数，实际 ${JSON.stringify(C)}`)
+      }
+      sp3.clearPendingMessages(SA); sp3.clearPendingMessages(SB); sp3.clearPendingMessages(SC)
+      if (probs.length === 0) {
+        ok(`G-29 ✓ 会话销毁**真清**暂存（\`agent/disposed\` ⇒ SA 归 0，SB 不受牵连）`
+          + ` · 上限真生效（${sp3.PENDING_MAX_PER_SESSION} 条 / ${sp3.PENDING_MAX_TOTAL_CHARS} 字符，超限**丢最旧**、最新仍在）`)
+      } else for (const x of probs) bad(`G-29 · ${x}`)
+    }
+  }
+
+  /**
    * ── G-24 【TASK-E · 判据 A–E】「被拦 → 可读状态 → 界面开弹窗」整条链 ──────────
    *
    * ⚠⚠ **为什么这一组必须是行为读数**（任务书 §二 明写"⛔ 不许用'检查绿'代替 A–E"）：

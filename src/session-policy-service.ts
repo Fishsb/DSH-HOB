@@ -68,7 +68,13 @@ import { markBlocked, policyBlockFileOf } from './server/policy-block-log.ts'
  *     发一条他可能已经忘了的消息"这个更复杂的判断 —— ⛔ 超出本单。
  *     ⇒ 代价：**进程重启即丢**（见 REPORT §七 F2，如实登记）。
  *   · **存多久 = 到"选完档重投成功"或"该会话被显式放弃"为止**；
- *     ⚠ 会话被关掉（`session/disposed`）⇒ 该 sid 的暂存一并清掉（见下）。
+ *     ⚠ 会话被销毁 ⇒ 该 sid 的暂存一并清掉。
+ *     ⚠⚠ **2026-10-31 P37 订正**：本文件此前写的是「`session/disposed`」——
+ *     **宿主根本没有这个事件**（实测：`AgentStatus` 只有 `'idle' | 'running'`，
+ *     且 `runtime-types.d.ts:87` 原文 *"Disposal removes the agent from its registry;
+ *     it is not a third observable status"*）。
+ *     ⇒ 真实事件是 **`agent/disposed`**（`runtime-types.d.ts:240`，payload `{ agent }`），
+ *     监听器已装在 {@link installSessionDisposeCleanup}，**由 `installSessionPolicy` 调用**。
  *     ⚠ 不清会永久占内存，且下次选档会把陈旧消息发出去。
  *   · **多条 = 全存、按到达顺序存、按顺序重投**（⛔ 只存最后一条 ——
  *     用户连发两条只回来一条，是**更隐蔽的丢消息**）。
@@ -79,6 +85,16 @@ import { markBlocked, policyBlockFileOf } from './server/policy-block-log.ts'
  *   ⇒ 重投时用 `createUserMessage` **新建**一条（新 id），内容取自这里。
  */
 interface PendingMessage {
+  /**
+   * ⭐ **稳定消息键**（2026-10-31 P37）。
+   *
+   * ── 为什么必须有一个"键"，而不能靠数组下标 ──────────────────
+   *   重投是**部分可能失败**的：投完第 1 条、第 2 条抛错 ⇒ 必须**只把第 1 条
+   *   从队列里摘掉**。⚠ 若用下标摘，一旦队列在重投期间被并发 append（用户又发一条），
+   *   下标就指向了**另一条** ⇒ 摘错 ⇒ **要么重发、要么丢消息**。
+   *   ⇒ 用**单调递增的稳定键**：摘的是"我确实投出去的那一条"，与位置无关。
+   */
+  readonly key: number
   /** 原消息的 `content` 块（⚠ 原样保存，⛔ 不重排、不拼接）。 */
   readonly content: readonly unknown[]
   /** 入暂存时刻（⚠ 只用于诊断排序，⛔ 不参与判定）。 */
@@ -87,14 +103,135 @@ interface PendingMessage {
 /** `sessionId → 按到达顺序排队的待重投消息`。⚠ 进程内唯一一份。 */
 const pendingBySession = new Map<string, PendingMessage[]>()
 
-/** 把一条被拦下的消息按到达顺序追加（⚠ 不改动既有队列）。 */
+/**
+ * ⭐ **每会话队列上限**（2026-10-31 P37 · 审计 `CHG-313` 第 2 条）。
+ *
+ * ── 为什么需要 ──────────────────────────────────────────────
+ *   暂存在**进程内存**里，而"用户放弃会话"曾经**不会被清理**（会话销毁不留痕）
+ *   ⇒ 极端情况下该 Map 会随会话数无限增长。上限是**第二道闸**（第一道是
+ *   `agent/disposed` 监听，见下方 `installSessionDisposeCleanup`；⚠ 2026-10-31 P37 订正了事件名）。
+ *
+ * ── 具体值与时代价（⚠ 逐条说明，⛔ 不写"合理值"了事）──────
+ *   · `PENDING_MAX_PER_SESSION = 32` 条：一个会话被拦下的消息通常是**个位数**
+ *     （用户连发几条就选档了）；32 已远超正常使用。⚠ 32 × 几百会话 ≈ 万余条，
+ *     每条只有 content 引用 + 两个数字 ⇒ 内存量级仍在 MB 内。
+ *   · `PENDING_MAX_TOTAL_CHARS = 256 * 1024`（约 25 万字符 ≈ 512 KB UTF-16）：
+ *     拦下的是**用户输入**，正常一条几十到几千字符；256K 相当于"一个人连发几百条长消息"。
+ *     ⚠ 之所以还要**字节**上限：只看条数挡不住"32 条 × 每条 100KB"的粘贴轰炸。
+ *
+ * ── 超限之后怎么办 = **丢最旧**（⛔ 不是拒新）──────────────
+ *   ⚠ **理由**：被拦下的消息**只有重投这一条出路**。若"拒新"，用户在被拦状态下
+ *   继续输入会被**静默吞掉**（他以为发出去了）—— 那正是本服务最初要修的病症（丢消息）。
+ *   丢最旧则是**可解释的**：最新的用户意图最相关，且我们在丢的时候会 **warn 日志**
+ *   点名"丢了哪一条"，⛔ 不静默。
+ *   ⚠ **代价（如实写）**：被丢掉的那条**永久消失**（宿主已经丢弃过它一次）。
+ *     所以上限设得足够宽（32 条 / 256K 字符），正常使用永远碰不到；
+ *     碰到就说明该会话已经异常，丢最旧比整队列撑爆更可接受。
+ */
+export const PENDING_MAX_PER_SESSION = 32
+export const PENDING_MAX_TOTAL_CHARS = 256 * 1024
+
+/** ⚠ 单调递增的稳定消息键（模块级；⛔ 不按会话重置，跨会话也不会撞）。 */
+let pendingKeySeq = 0
+
+/** content 的"字符量"估算（⚠ 只看文本块，⛔ 不去序列化整个对象）。 */
+function contentChars(content: readonly unknown[]): number {
+  let n = 0
+  for (const blk of content) {
+    const t = (blk as any)?.text
+    if (typeof t === 'string') n += t.length
+  }
+  return n
+}
+
+/**
+ * 把一条被拦下的消息按到达顺序追加（⚠ 不改动既有队列）。
+ *
+ * ⚠ **带上限**：超过条数或总字符量 ⇒ **丢最旧**并 warn（见上方常量说明）。
+ */
 export function stagePendingMessage(sessionId: string, content: readonly unknown[]): void {
   if (typeof sessionId !== 'string' || sessionId === '') return
   if (!Array.isArray(content) || content.length === 0) return
   const cur = pendingBySession.get(sessionId)
   const next = cur === undefined ? [] : cur.slice()
-  next.push({ content: content.slice(), at: Date.now() })
+  next.push({ key: ++pendingKeySeq, content: content.slice(), at: Date.now() })
+  // ⚠ 丢最旧：条数超限
+  while (next.length > PENDING_MAX_PER_SESSION) {
+    const dropped = next.shift()
+    loggerWarn(`⚠ 暂存超条数上限（${PENDING_MAX_PER_SESSION} 条）⇒ 丢弃最旧一条（key=${String(dropped?.key)}）`)
+  }
+  // ⚠ 丢最旧：总字符量超限（⚠ 至少留一条 —— 否则刚存进来的这条也会被丢）
+  let total = next.reduce((acc, x) => acc + contentChars(x.content), 0)
+  while (total > PENDING_MAX_TOTAL_CHARS && next.length > 1) {
+    const dropped = next.shift()
+    total -= contentChars(dropped?.content ?? [])
+    loggerWarn(`⚠ 暂存超总字符上限（${PENDING_MAX_TOTAL_CHARS}）⇒ 丢弃最旧一条（key=${String(dropped?.key)}）`)
+  }
   pendingBySession.set(sessionId, next)
+}
+
+/**
+ * ⭐ **按稳定键从队列里摘掉"确实投出去的"那一条**（2026-10-31 P37 · bug ① 的修法）。
+ *
+ * ⚠ 与 `clearPendingMessages` 的区别（**这是本 bug 的核心**）：
+ *   · `clearPendingMessages` 是**全有或全无**（整队删）；
+ *   · 本函数是**逐条确认后消费**（只摘投成功的那一条）。
+ *   ⇒ 部分失败时队列里**只剩没投出去的那些**，⛔ 不会把已投的再投一遍。
+ */
+export function consumePendingMessage(sessionId: string, key: number): void {
+  const cur = pendingBySession.get(sessionId)
+  if (cur === undefined) return
+  const next = cur.filter((x) => x.key !== key)
+  if (next.length === 0) pendingBySession.delete(sessionId)
+  else pendingBySession.set(sessionId, next)
+}
+
+/** ⚠ 供上限 warn 用的最小日志（⛔ 不引宿主 logger —— 那是可选依赖）。 */
+function loggerWarn(msg: string): void {
+  try { console.warn(`[dsh-hob][session-policy] ${msg}`) } catch { /* 无控制台也不影响功能 */ }
+}
+
+/**
+ * ⭐⭐ **会话销毁 ⇒ 清该会话暂存**（2026-10-31 P37 · 审计 `CHG-313` 第 2 条）。
+ *
+ * ── 病（改前）────────────────────────────────────────────────
+ *   本文件注释承诺「会话关闭时清空暂存」，但**全仓没有任何地方装销毁监听**；
+ *   删队列只有两处：① 整队重投成功；② 测试显式调 `clearPendingMessages`。
+ *   ⇒ 触发路径：消息被拦 → 进 `pendingBySession` → **用户放弃该会话** →
+ *     **那条消息留到宿主进程重启**（一直占内存，且该会话若再被打开会把陈旧消息发出去）。
+ *
+ * ── 事件名（⚠ 不是我照任务书字面抄的 `session/disposed`）──────────
+ *   实测宿主 `@deepseek-ai/dsh-agent/lib/types/runtime-types.d.ts`：
+ *     · `AgentStatus = 'idle' | 'running'`（⛔ 没有 disposed 状态）
+ *     · `:87` 原文 *"Disposal removes the agent from its registry; it is not a third
+ *       observable status."*
+ *     · `:240` 真正的销毁事件 = **`'agent/disposed'`**，payload `{ agent }`
+ *   ⇒ ⚠ **`session/disposed` 在宿主里根本不存在**（全仓 grep 零命中）——
+ *     照字面装会得到一个**永远不触发**的监听（比不装更坏：看起来装了）。
+ *
+ * ── 会话 id 怎么取 ─────────────────────────────────────────
+ *   `payload.agent.id` —— 宿主保证 `agent.id === session.id`
+ *   （本仓 `src/modules/tools.ts:694` 已按同一口径用）。
+ *
+ * ⚠ 监听用 `ctx.on(...)` 注册，并在 `ctx.effect(...)` 里返回 disposer
+ *   —— 插件卸载时一并摘掉，⛔ 不泄漏监听器。
+ */
+export function installSessionDisposeCleanup(ctx: Context): void {
+  const hostCtx = ctx as any
+  if (typeof hostCtx?.on !== 'function') return
+  const off = hostCtx.on('agent/disposed', (payload: any) => {
+    const sid = payload?.agent?.id
+    if (typeof sid !== 'string' || sid === '') return
+    const had = pendingMessagesOf(sid).length
+    if (had === 0) return
+    clearPendingMessages(sid)
+    loggerWarn(`会话 ${JSON.stringify(sid)} 已销毁 ⇒ 清掉其暂存 ${had} 条（⚠ P37 前会留到进程重启）`)
+  })
+  if (typeof hostCtx.effect === 'function') {
+    hostCtx.effect(() => () => {
+      try { if (typeof off === 'function') off() } catch { /* 已卸载 */ }
+    }, 'dsh-hob:session-policy/dispose-cleanup')
+  }
 }
 
 /** 读某会话的待重投队列（⚠ 返回副本；调用方不可改内部数组）。 */
@@ -349,6 +486,13 @@ export function installSessionPolicy(
    * ⚠ 它**会在解析前被落盘**（`ensurePolicyStoreEpoch`），⛔ 不只是内存值。
    */
   const installEpoch = Date.now()
+
+  /**
+   * ⭐ **2026-10-31 P37**：装"会话销毁 ⇒ 清暂存"监听。
+   * ⚠ 放在最前：即使后面的迁移/策略初始化抛错，**清理也不能漏装**
+   *   （漏装的后果是消息留到进程重启，与初始化成不成功无关）。
+   */
+  installSessionDisposeCleanup(ctx)
 
   /**
    * 迁移触发器的一次性闸门 + 最近一次报告（⚠ 诊断与"如实说没保住"都要它）。
@@ -1197,6 +1341,21 @@ export function installSessionPolicy(
             }
           }
           agent.followup(message)
+          /**
+           * ⭐⭐ **投成功这一条 ⇒ 立刻从队列摘下它**（2026-10-31 P37 · bug ① 的修法）。
+           *
+           * ── 改前的病 ────────────────────────────────────────
+           *   改前只 `replayed += 1`，**不动队列**，指望 `finally` 里
+           *   `if (replayed >= q.length) clearPendingMessages(...)` 一次清整队 ——
+           *   那是**全有或全无**：部分失败时分支不成立 ⇒ **整个旧队列原样留着**
+           *   ⇒ 下次重投把**已经投出去的甲**再发一遍（实测：甲被投 2 次）。
+           *
+           * ── 改后 ──────────────────────────────────────────
+           *   逐条按**稳定键**摘：投成功的立刻消失。部分失败时队列里
+           *   只剩**没投出去的**那些 ⇒ 重投**不会重发**。
+           *   ⚠ 用 key 而不是下标：重投期间若并发 append，下标会指错（见 `PendingMessage.key`）。
+           */
+          consumePendingMessage(sessionId, item.key)
           replayed += 1
         }
         return { ok: true, replayed, remaining: 0, reason: '' }
@@ -1207,10 +1366,19 @@ export function installSessionPolicy(
         }
       } finally {
         /**
-         * ⚠ **只有全投成功才清**：投了一半失败 ⇒ 保留剩余，
-         *   ⛔ 不能因为 `finally` 就把没投出去的也抹掉。
+         * ⭐ **2026-10-31 P37：这里⛔ 不再清整队。**
+         *
+         * ── 改前为什么错 ────────────────────────────────────────
+         *   改前写 `if (replayed >= q.length) clearPendingMessages(sessionId)` ——
+         *   它只在"全成功"时清**整队**，而"部分成功"时**什么都不清**
+         *   ⇒ 队列里**已投出去的**和**没投出去的**混在一起 ⇒ 重投**重复发**。
+         *
+         * ── 改后 ─────────────────────────────────────────────
+         *   **投一条摘一条**（见循环里的 `consumePendingMessage`）⇒
+         *   部分失败时队列**天然只剩没投的**，根本不需要在这里补救。
+         *   ⇒ 本 `finally` 只负责复位绕行标记。
+         *   ⚠ 队列**整队清空**只发生在两处：① 队列自然被摘空；② 会话销毁（见 `session/disposed`）。
          */
-        if (replayed >= q.length) clearPendingMessages(sessionId)
         requeueing.delete(sessionId)
       }
     },
