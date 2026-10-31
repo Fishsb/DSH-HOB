@@ -438,6 +438,23 @@ const wrapStyle: React.CSSProperties = {
   font: 'inherit',
   /** ⚠ 只在**超出**上限时才出滚动条（`auto`）；`scroll` 会恒显 ⇒ 违反"只在超出时"。 */
   overflowY: 'auto',
+  /**
+   * ⚠⚠ **2026-10-31 P39：显式禁掉横向滚**（用户真机报「下面左右滑动的滑块」）──────────
+   *
+   * ── 病（CSS 计算规则，不是巧合）──────────────────────────────────
+   *   改前本对象**只有 `overflowY`，没有 `overflowX`** ⇒ `overflowX` 落在初始值 `visible`；
+   *   而「一轴 `visible`、另一轴 `auto`/`scroll` 时，`visible` **计算为 `auto`**」
+   *   ⇒ 根容器实际是**两轴都 auto** ⇒ 内容一横向溢出就长出横向滚动条。
+   *
+   * ── 为什么写 `hidden` 而不是 `clip` ────────────────────────────────
+   *   ① `auto`/`scroll` ⛔ 本就是要删掉的东西，写回去等于没改；
+   *   ② `hidden` 仍是**滚动容器**语义（可被 `scrollLeft` 程序化移动、可被键盘聚焦滚动链影响），
+   *      `clip` 则完全退出滚动体系 —— 宿主父链 `.P3OORG_tabBody` 已 `overflow:hidden`，
+   *      再叠一层 `clip` 会让「焦点环被裁」的既有 `outlineOffset: 2px` 兜底失效；
+   *   ③ 但⚠ **`hidden` 只是"不滚"，它会把溢出的字裁掉** ⇒ 必须同时去掉溢出的
+   *      **根因**（见下方三处 `minWidth: 0` + 换行），⛔ 不靠裁切盖住。
+   */
+  overflowX: 'hidden',
   /** ⚠ 具体值（⛔ 不用 100% / 不设 undefined）——判据要能读出这个数。 */
   maxHeight: STAGES_PANEL_SCROLL_MAX_HEIGHT,
   /** ⚠ 键盘可达：容器可聚焦 ⇒ 方向键 / PageUp / PageDown 原生滚动。 */
@@ -448,6 +465,17 @@ const treeHeadStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: '8px',
+  /**
+   * ⚠⚠ **2026-10-31 P39：步头允许换行**（横向溢出的第二个根因）──────────
+   *   改前本行是**单行 flex**，且三列各带固定 `minWidth`（`1.2em` / `4.5em` / `4.5em`）
+   *   加「条数」那列 `3.4em` ⇒ **固定下界之和 13.6em**，再加 4 个 `gap: 8px`(32px)
+   *   与面板 `padding: 12px`(24px) —— 窄侧栏里这个**和**本身就可能超宽 ⇒ 撑破 ⇒ 横向滚。
+   *   ⇒ ① `flexWrap: 'wrap'`：装不下就换行（⛔ 不是裁掉，字一个不少）；
+   *     ② 两列 `4.5em` 收窄到 `3.2em` / `3.6em`：`minWidth` 只是**对齐下界**不是上限，
+   *        文字长了列仍会长（⛔ 不会截字），但下界之和降到 **11.4em**，窄侧栏下更少换行。
+   */
+  flexWrap: 'wrap',
+  rowGap: '2px',
   font: 'inherit',
   fontSize: '0.95em',
   color: 'inherit',
@@ -463,6 +491,9 @@ const treeItemStyle: React.CSSProperties = {
   alignItems: 'center',
   gap: '8px',
   fontSize: '0.9em',
+  /** ⚠ P39：长 id + 长标题 + 状态词装不下一行时**换行**（⛔ 不是横向溢出、⛔ 不是裁切）。 */
+  flexWrap: 'wrap',
+  rowGap: '1px',
 }
 
 const subNoteStyle: React.CSSProperties = {
@@ -477,6 +508,9 @@ const subRowStyle: React.CSSProperties = {
   gap: '8px',
   paddingLeft: '1.2em',
   fontSize: '0.92em',
+  /** ⚠ P39：执行项那一行列多（目标/标签/未跑说明/已跑/重核/共N条），同 `treeItemStyle` 处理。 */
+  flexWrap: 'wrap',
+  rowGap: '1px',
 }
 
 const refreshStyle: React.CSSProperties = {
@@ -494,6 +528,9 @@ const rowStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: '8px',
+  /** ⚠ P39：装不下就换行（⛔ 不是裁掉）—— 与 {@link treeHeadStyle} 同一处理。 */
+  flexWrap: 'wrap',
+  rowGap: '2px',
 }
 
 const indexStyle: React.CSSProperties = {
@@ -501,7 +538,20 @@ const indexStyle: React.CSSProperties = {
   minWidth: '1.2em',
 }
 
-const nameStyle: React.CSSProperties = { flex: '1 1 auto' }
+/**
+ * ⚠⚠ **2026-10-31 P39：`flex: '1 1 auto'` 的文本列必须 `minWidth: 0`** ⚠⚠
+ *
+ * ── 病（这才是横向溢出的**根因**，不是巧合）──────────────────────
+ *   flex 项的 `min-width` 默认是 `auto` ⇒ **不许缩到 `min-content` 以下**
+ *   ⇒ 长名称把整行撑破 ⇒ 父行溢出 ⇒ 根容器出横向滚动条。
+ *   光给根加 `overflowX: hidden` 只会把**字裁掉**（用户看到「字被切一半」），
+ *   ⇒ 必须同时把 `min-width` 从 `auto` 改成 `0`，让这一列**可以被压缩**，
+ *      再配 `overflowWrap: 'anywhere'` 让长串（长 id / 长标题）能**断行**而不是硬撑。
+ *   ⚠ 三处各自**显式**写 `minWidth: 0`（⛔ 不抽成一个共享常量）—— S-24 要求
+ *      「每个 `flex: 1 1 auto` 的文本节点**各自**声明」，抽共享会让"删掉其中一处"
+ *      这个负向对拍失去意义。
+ */
+const nameStyle: React.CSSProperties = { flex: '1 1 auto', minWidth: 0, overflowWrap: 'anywhere' }
 
 const noteStyle: React.CSSProperties = {
   marginTop: '4px',
@@ -799,7 +849,7 @@ export function StagesPanel(props?: {
         'data-exec-state': String(it?.state ?? ''),
         'data-bucket': String(it?.bucket ?? ''),
       },
-      React.createElement('span', { style: { minWidth: '6.5em' } }, String(it?.target ?? '')),
+      React.createElement('span', { style: { minWidth: '6.5em', overflowWrap: 'anywhere' } }, String(it?.target ?? '')),
       /**
        * ⚠ 展示词三条互斥（见 {@link execItemLabel}）：现在档 running=执行中 /
        *   历史档无 `elapsedMs`=未开跑 / 历史档有 `elapsedMs`=**曾运行**。
@@ -930,8 +980,8 @@ export function StagesPanel(props?: {
               onClick: () => toggleStep(step),
             },
             React.createElement('span', { style: { minWidth: '1.2em' } }, String(step)),
-            React.createElement('span', { style: { minWidth: '4.5em' } }, String(st?.name ?? '')),
-            React.createElement('span', { 'data-dsh-hob': 'stages-tree-icon', style: { minWidth: '4.5em' } },
+            React.createElement('span', { style: { minWidth: '3.2em', overflowWrap: 'anywhere' } }, String(st?.name ?? '')),
+            React.createElement('span', { 'data-dsh-hob': 'stages-tree-icon', style: { minWidth: '3.6em' } },
               `${STAGE_STATE_ICON[state]} ${STAGE_STATE_TEXT[state]}`),
             // ⚠ `完成数/总数`（⛔ 百分比）
             React.createElement('span', { 'data-dsh-hob': 'stages-tree-count' }, `${Number(st?.done ?? 0)}/${Number(st?.total ?? 0)}`),
@@ -970,8 +1020,8 @@ export function StagesPanel(props?: {
                   : items.map((it: any, k: number) => React.createElement(
                     'div',
                     { key: `${it?.id ?? 'it'}-${k}`, 'data-dsh-hob': 'stages-tree-item', 'data-item-id': String(it?.id ?? ''), style: treeItemStyle },
-                    React.createElement('span', { style: { minWidth: '5.5em' } }, String(it?.id ?? '')),
-                    React.createElement('span', { style: { flex: '1 1 auto' } }, String(it?.title ?? '')),
+                    React.createElement('span', { style: { minWidth: '5.5em', overflowWrap: 'anywhere' } }, String(it?.id ?? '')),
+                    React.createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflowWrap: 'anywhere' } }, String(it?.title ?? '')),
                     /**
                      * ⚠⚠ **2026-10-30 P21：按 kind 取中文标签**（改前一律查九态表 ⇒ 见下方病）。
                      *
@@ -1017,8 +1067,8 @@ export function StagesPanel(props?: {
         : caps.map((c: any, k: number) => React.createElement(
           'div',
           { key: `${c?.id ?? 'cap'}-${k}`, 'data-dsh-hob': 'stages-cap-item', style: treeItemStyle },
-          React.createElement('span', { style: { minWidth: '5.5em' } }, String(c?.id ?? '')),
-          React.createElement('span', { style: { flex: '1 1 auto' } }, String(c?.title ?? '')),
+          React.createElement('span', { style: { minWidth: '5.5em', overflowWrap: 'anywhere' } }, String(c?.id ?? '')),
+          React.createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflowWrap: 'anywhere' } }, String(c?.title ?? '')),
           /**
            * ⚠⚠ **2026-10-30 P21 · `cap` 不加"状态"位（这是本轮的判断，理由见下）** ──────
            *
