@@ -1603,8 +1603,19 @@ function selfTest(realLedgerRoot) {
      *   本函数用 `readings` 收集 `{label, exit, want, line, pass}` 再由尾部统一打印。
      *   ⇒ 这里做两个薄壳，把 E1 的四条对拍**并进同一份 readings**（⛔ 不另开一套输出通道）。
      */
-    const eOk = (m) => readings.push({ label: m.split('\n')[0], exit: 0, want: 0, line: m.split('\n')[0], pass: true })
-    const eBad = (m) => readings.push({ label: m.split('\n')[0], exit: 1, want: 0, line: m.split('\n')[0], pass: false })
+    /**
+     * ⚠⚠ **为什么叫 `ok` / `bad` 而不是 `eOk` / `eBad`**（2026-11-02 P50/M3 · `TASK-M3.md` §一第 3 件）：
+     *   `scripts/check-meta-negctl.mjs` 的计数口径是
+     *   `/(?:ok|bad|note\.push|check)\(\s*(?:\`([^\`]*)\`|'([^']*)')/gs` ——
+     *   它**只认这四个名字**开头的断言调用，且只取**第一个字符串字面量**里含「负向对拍」的。
+     *   ⇒ E1 那四条对拍原来走 `readings.push({...})`，名字既不是 `ok` 也不是 `bad`
+     *     ⇒ 元判据**数到 0 条** ⇒ 有人删掉这四条它也不会红（`VERDICT-M2` §二 的发现）。
+     *   ⚠ 改法**不是**把「负向对拍」塞进别的话凑数（那是假绿），而是让这四条**真的**
+     *     经由 `ok()` / `bad()` 输出 —— 语义一字不改：仍是「先自证 → 断言必红 → 断言能还原」三段。
+     *   ⚠ 运行时行为不变：这两个壳仍把结果并进 `readings`，由尾部统一打印。
+     */
+    const ok = (m) => readings.push({ label: m.split('\n')[0], exit: 0, want: 0, line: m.split('\n')[0], pass: true })
+    const bad = (m) => readings.push({ label: m.split('\n')[0], exit: 1, want: 0, line: m.split('\n')[0], pass: false })
     const e1Dir = join(fx.L, 'archive', '2026-01-09-new-no-manifest')
     const e1Dir2 = join(fx.L, 'archive', '2026-01-10-new-with-manifest')
 
@@ -1627,7 +1638,7 @@ function selfTest(realLedgerRoot) {
       && base.sh.skip.length === 0 && base.sh.ok.length === 1
 
     if (!baselineClean) {
-      eBad(`N-E · E1 基线**本身就不合法**（期望 checked + 1 条 ✓ + 0 bad，实测 bucket=${base.bucket} `
+      bad(`N-E · E1 基线**本身就不合法**（期望 checked + 1 条 ✓ + 0 bad，实测 bucket=${base.bucket} `
         + `ok=${base.sh.ok.length} bad=${base.sh.bad.length} skip=${base.sh.skip.length}）⇒ 下面三条对拍不可判`)
     } else {
       // ── N-E1：不在白名单且无清单件的新目录 ⇒ 必红且点名目录+缺失件 ──
@@ -1641,13 +1652,13 @@ function selfTest(realLedgerRoot) {
         const r = shadowRun(['2026-01-09-new-no-manifest'], (n) => existsSync(join(fx.L, 'archive', n, ARCHIVE_MANIFEST_NAME)))
         const hit = r.sh.bad.find((x) => x.includes('2026-01-09-new-no-manifest'))
         if (!reallyBroken) {
-          eBad('N-E1 · 夹具没造出"不在白名单 + 无清单件"的形态 ⇒ 本条不可判')
+          bad('N-E1 · 夹具没造出"不在白名单 + 无清单件"的形态 ⇒ 本条不可判')
         } else if (hit === undefined) {
-          eBad('N-E1 · 新目录无清单件却绿灯 ⇒ E1 哑了（那条判据等于没写）')
+          bad('N-E1 · 新目录无清单件却绿灯 ⇒ E1 哑了（那条判据等于没写）')
         } else if (!hit.includes(ARCHIVE_MANIFEST_NAME)) {
-          eBad(`N-E1 · 咬住了但**没说缺哪一份**（期望含 \`${ARCHIVE_MANIFEST_NAME}\`）：${hit.slice(0, 90)}`)
+          bad(`N-E1 · 咬住了但**没说缺哪一份**（期望含 \`${ARCHIVE_MANIFEST_NAME}\`）：${hit.slice(0, 90)}`)
         } else {
-          eOk(`N-E1 ✓ 负向对拍（先自证：\`archive/2026-01-09-new-no-manifest/\` 真建出来了、里面只有 \`TASK-R99.md\`、`
+          ok(`N-E1 ✓ 负向对拍（先自证：\`archive/2026-01-09-new-no-manifest/\` 真建出来了、里面只有 \`TASK-R99.md\`、`
             + `无 \`${ARCHIVE_MANIFEST_NAME}\`、且不在白名单）⇒ E1 **必红**且**点名目录 + 缺失件**：${hit.split('\n')[0].slice(0, 110)}`
             + '；**反面**：见 N-E2（补上清单即转绿，⛔ 不是恒红）')
         }
@@ -1662,13 +1673,13 @@ function selfTest(realLedgerRoot) {
         const reallyFixed = existsSync(join(e1Dir, ARCHIVE_MANIFEST_NAME))
         const r = shadowRun(['2026-01-09-new-no-manifest'], (n) => existsSync(join(fx.L, 'archive', n, ARCHIVE_MANIFEST_NAME)))
         if (!reallyFixed) {
-          eBad('N-E2 · 夹具没真把清单件写进去 ⇒ 本条不可判')
+          bad('N-E2 · 夹具没真把清单件写进去 ⇒ 本条不可判')
         } else if (r.sh.bad.length !== 0) {
-          eBad(`N-E2 · 补上 \`${ARCHIVE_MANIFEST_NAME}\` 之后仍红 ⇒ E1 恒红（${JSON.stringify(r.sh.bad).slice(0, 90)}）`)
+          bad(`N-E2 · 补上 \`${ARCHIVE_MANIFEST_NAME}\` 之后仍红 ⇒ E1 恒红（${JSON.stringify(r.sh.bad).slice(0, 90)}）`)
         } else if (r.sh.ok.length !== 1) {
-          eBad(`N-E2 · 补上清单后没有 ✓ 读数（ok=${r.sh.ok.length}）⇒ 判据没跑到`)
+          bad(`N-E2 · 补上清单后没有 ✓ 读数（ok=${r.sh.ok.length}）⇒ 判据没跑到`)
         } else {
-          eOk(`N-E2 ✓ 负向对拍（先自证：刚给 \`2026-01-09-new-no-manifest/\` 写进了 \`${ARCHIVE_MANIFEST_NAME}\`，实测 exists=true）`
+          ok(`N-E2 ✓ 负向对拍（先自证：刚给 \`2026-01-09-new-no-manifest/\` 写进了 \`${ARCHIVE_MANIFEST_NAME}\`，实测 exists=true）`
             + ' ⇒ E1 **转绿**（⛔ 不是恒红）：' + r.sh.ok[0].split('\n')[0].slice(0, 110))
         }
       }
@@ -1685,13 +1696,13 @@ function selfTest(realLedgerRoot) {
           && !existsSync(join(realLedgerRoot, 'archive', histName, ARCHIVE_MANIFEST_NAME))
         const r = shadowRun([histName], () => false)
         if (!histNoManifest) {
-          eBad(`N-E3 · 白名单成员 \`${histName}\` 竟然**有**清单件 ⇒ 本条证不了"历史不追溯"`)
+          bad(`N-E3 · 白名单成员 \`${histName}\` 竟然**有**清单件 ⇒ 本条证不了"历史不追溯"`)
         } else if (r.sh.bad.length !== 0) {
-          eBad(`N-E3 · 白名单里的历史目录无清单却被判红 ⇒ 违反"历史不追溯"（${JSON.stringify(r.sh.bad).slice(0, 90)}）`)
+          bad(`N-E3 · 白名单里的历史目录无清单却被判红 ⇒ 违反"历史不追溯"（${JSON.stringify(r.sh.bad).slice(0, 90)}）`)
         } else if (r.sh.ok.length !== 1) {
-          eBad(`N-E3 · 历史目录没进"已核"读数（ok=${r.sh.ok.length}）⇒ 判据没跑到`)
+          bad(`N-E3 · 历史目录没进"已核"读数（ok=${r.sh.ok.length}）⇒ 判据没跑到`)
         } else {
-          eOk(`N-E3 ✓ 负向对拍（先自证：白名单成员 \`${histName}\` **实测无 \`${ARCHIVE_MANIFEST_NAME}\`**，且它是白名单第 1 条）`
+          ok(`N-E3 ✓ 负向对拍（先自证：白名单成员 \`${histName}\` **实测无 \`${ARCHIVE_MANIFEST_NAME}\`**，且它是白名单第 1 条）`
             + ' ⇒ E1 **仍绿**（⛔ 不把历史目录判红）：' + r.sh.ok[0].split('\n')[0].slice(0, 100))
         }
       }
@@ -1710,19 +1721,19 @@ function selfTest(realLedgerRoot) {
         /** ⚠ 语义判（与 B/D 轨同口径，`VERDICT-B1.md` §2.1 已裁定按语义）：摘掉否定式后再查。 */
         const lineHasPass = ARCHIVE_NO_DIRS.replace('这不是通过', '').includes('通过')
         if (bucket !== 'skip') {
-          eBad(`N-E0 · 0 个目录时**没走 skip 档**（实测 ${bucket}）⇒ 档位判定哑了`)
+          bad(`N-E0 · 0 个目录时**没走 skip 档**（实测 ${bucket}）⇒ 档位判定哑了`)
         } else if (sh.ok.length !== 0) {
-          eBad(`N-E0 · 0 个目录时**计入了通过**（ok +${sh.ok.length}）⇒ "没判"被洗成"判过了"`)
+          bad(`N-E0 · 0 个目录时**计入了通过**（ok +${sh.ok.length}）⇒ "没判"被洗成"判过了"`)
         } else if (sh.skip.length !== 1) {
-          eBad(`N-E0 · 0 个目录时**没有计入跳过**（skip ${sh.skip.length}，期望 1）⇒ 那个档位没有落点`)
+          bad(`N-E0 · 0 个目录时**没有计入跳过**（skip ${sh.skip.length}，期望 1）⇒ 那个档位没有落点`)
         } else if (sh.skip[0] !== ARCHIVE_NO_DIRS) {
-          eBad(`N-E0 · 跳过那一行**不是约定的原文**：${JSON.stringify(sh.skip[0])}`)
+          bad(`N-E0 · 跳过那一行**不是约定的原文**：${JSON.stringify(sh.skip[0])}`)
         } else if (lineHasPass) {
-          eBad('N-E0 · 那一行里出现了非否定式的"通过"字样 ⇒ 读者会把它当成通过')
+          bad('N-E0 · 那一行里出现了非否定式的"通过"字样 ⇒ 读者会把它当成通过')
         } else if (bucket2 !== 'checked' || sh2.ok.length !== 1 || sh2.bad.length !== 0 || sh2.skip.length !== 0) {
-          eBad(`N-E0 · 反面不成立：给一个有清单的目录后应当 checked + ✓，实测 bucket=${bucket2} ok=${sh2.ok.length} bad=${sh2.bad.length} skip=${sh2.skip.length}`)
+          bad(`N-E0 · 反面不成立：给一个有清单的目录后应当 checked + ✓，实测 bucket=${bucket2} ok=${sh2.ok.length} bad=${sh2.bad.length} skip=${sh2.skip.length}`)
         } else {
-          eOk('N-E0 ✓ 负向对拍（先自证：喂 0 个目录名；影子 sink 不污染真实计数）'
+          ok('N-E0 ✓ 负向对拍（先自证：喂 0 个目录名；影子 sink 不污染真实计数）'
             + ' ⇒ 走 `⊘` 单列档：**ok +0**（⛔ 不计入通过）· **skip +1**（有自己的落点）'
             + `，且那行里**没有非否定式的"通过"** —— 原文：${ARCHIVE_NO_DIRS}`
             + '；**反面**：给一个有清单的目录 ⇒ 进 `checked` 档且 ✓（⛔ 不是恒跳过）')
