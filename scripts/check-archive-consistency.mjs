@@ -78,7 +78,21 @@ const md5 = (buf) => createHash('md5').update(buf).digest('hex')
 /** git（文本）；失败返回 null（⛔ 不把"跑不动"当成"没问题"）。 */
 function tryGit(args, cwd) {
   try {
-    return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      /**
+       * ⚠⚠ **必须吞掉 stderr**（2026-11-02 P50/M4 · `TASK-M4.md` §一第 2 件 · 情形 B）。
+       *   改前：`execFileSync` 默认把子进程 stderr **直接继承到本进程 stderr**
+       *   ⇒ 每次"这个 id 在本仓不存在"都会往终端喷一行
+       *     `fatal: invalid object name 'd391602'.`
+       *   ⇒ 实测 `check:all` 里连喷 **13+ 次**，而**判定照旧 EXIT=0**。
+       *   ⚠ 那正是"会让失败不可观测"：真错误被淹没在噪声里，且没人会去看。
+       *   ⇒ `stdio: ['ignore','pipe','ignore']`：只留 stdout，stderr 丢掉（判据靠返回值判，不靠 stderr）。
+       */
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
   } catch {
     return null
   }
@@ -87,7 +101,12 @@ function tryGit(args, cwd) {
 /** git（**字节**，无 encoding）—— 形态 S 的逐字节比对专用（⛔ 不经 UTF-8 转码）。 */
 function tryGitBuf(args, cwd) {
   try {
-    return execFileSync('git', args, { cwd, maxBuffer: 256 * 1024 * 1024 })
+    return execFileSync('git', args, {
+      cwd,
+      maxBuffer: 256 * 1024 * 1024,
+      /** ⚠ 同 `tryGit`：**吞掉 stderr**（2026-11-02 P50/M4 · 情形 B）。判据靠返回值判，⛔ 不靠 stderr。 */
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
   } catch {
     return null
   }
@@ -447,7 +466,7 @@ export function checkArchiveIndexGen({ ledgerRoot, bad, ok, skip }) {
  *   ⇒ 对上 = 该归档件**确曾是**那份源文件（独立证据）；对不上**不判 FAIL**
  *     （合法情形：归档时那份源从未提交 / 该路径不在本仓）。
  */
-function crossCheckAgainstWorkspaceHistory({ ledgerRoot, bad: _bad, ok, skip }) {
+function crossCheckAgainstWorkspaceHistory({ ledgerRoot, revRepos, bad: _bad, ok, skip }) {
   const skipSink = typeof skip === 'function' ? skip : () => {}
   const arcRoot = join(ledgerRoot, 'archive')
   let matched = 0
@@ -482,12 +501,28 @@ function crossCheckAgainstWorkspaceHistory({ ledgerRoot, bad: _bad, ok, skip }) 
           .update(`blob ${statSync(f).size}\0`)
           .update(readFileSync(f))
           .digest('hex')
-        const revs = tryGit(['log', '--all', '--format=%H', '-n', '200', '--', srcPath], root)
-        if (revs === null || revs.trim() === '') { notFound += 1; continue }
+        /**
+         * ⚠⚠ **跨仓取数**（2026-11-02 P50/M4 · 情形 B 的修法）。
+         *   改前：只在 `root`（**工作区仓**）里 `git log` / `git rev-parse`。
+         *   但 `①c` 要核的是"这份归档件能不能在**它的源修订**里逐字节找到"，
+         *   而形态 M 的源修订（`d391602` 等）**只在归档内层仓里**
+         *   （见 {@link resolveRevRepos} 的头注释：归档仓 446 提交 vs 工作区仓 280 提交）。
+         *   ⇒ 改前它在工作区仓里查不到 ⇒ 每份都 `notFound` + 每次喷一行 `fatal:`。
+         *   ⚠ 现在按 `revRepos` 的**同一顺序**（工作区仓 → 归档内层仓只读）取，
+         *     与 `checkArchiveBytes`（形态 S）**用同一套取数根** —— 覆盖面只增不减。
+         */
         let hit = false
-        for (const r of revs.split('\n').map((x) => x.trim()).filter(Boolean)) {
-          const sha = tryGit(['rev-parse', `${r}:${srcPath}`], root)
-          if (sha !== null && sha.trim() === want) { hit = true; break }
+        for (const repo of revRepos) {
+          const gitIn = (a) => (repo.gitDir === null
+            ? tryGit(a, repo.cwd)
+            : tryGit(['--git-dir', repo.gitDir, ...a], repo.cwd))
+          const revs = gitIn(['log', '--all', '--format=%H', '-n', '200', '--', srcPath])
+          if (revs === null || revs.trim() === '') continue
+          for (const r of revs.split('\n').map((x) => x.trim()).filter(Boolean)) {
+            const sha = gitIn(['rev-parse', `${r}:${srcPath}`])
+            if (sha !== null && sha.trim() === want) { hit = true; break }
+          }
+          if (hit) break
         }
         if (hit) matched += 1
         else { notFound += 1; notes.push(`${row.rel}（原路径 ${srcPath}）`) }
@@ -1418,8 +1453,14 @@ function runChecks(ledgerRoot, opts = {}) {
   const b = (m) => bad.push(m)
   const o = (m) => notes.push(m)
   const k = (m) => skips.push(m)
+  /**
+   * ⚠ 2026-11-02 P50/M4：**取数根在 `runChecks` 这一层解析一次**，供 ①（形态 S）与 ①c（历史交叉核）共用。
+   *   改前 ①c 只用 `root`（工作区仓）⇒ 形态 M 的源修订（`d391602` 等只在归档内层仓里）
+   *   一律查不到 ⇒ 每份喷一行 `fatal: invalid object name`（情形 B：跨仓查错对象）。
+   */
+  const revRepos = resolveRevRepos(ledgerRoot)
   const a = checkArchiveBytes({ ledgerRoot, bad: b, ok: o, skip: k })
-  const c = crossCheckAgainstWorkspaceHistory({ ledgerRoot, bad: b, ok: o, skip: k })
+  const c = crossCheckAgainstWorkspaceHistory({ ledgerRoot, revRepos, bad: b, ok: o, skip: k })
   const d = checkDirRefs({ ledgerRoot, bad: b, ok: o, skip: k })
   // ⚠ 2026-10-30 P7：归档目录清单 ↔ 生成物（`gen/archive-index.md`）
   const am = checkArchiveIndexGen({ ledgerRoot, bad: b, ok: o, skip: k })
@@ -1743,6 +1784,88 @@ function selfTest(realLedgerRoot) {
     // ⚠ 清理夹具目录（⛔ 不往真 archive/ 写；这些都在 mkdtemp 出来的 fx.L 里，最后 rmSync(fx.base) 一并清）
     rmSync(e1Dir, { recursive: true, force: true })
     rmSync(e1Dir2, { recursive: true, force: true })
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // N-M4 · ①c 的**跨仓取数**与 **stderr 静默**（2026-11-02 P50/M4 · `TASK-M4.md` §一第 2 件 · 情形 B）
+  // ⚠ 病：①c 原来只在 `root`（**工作区仓**）里 `git log`/`rev-parse`，
+  //   而形态 M 的源修订（`d391602` 等）**只在归档内层仓里**
+  //   ⇒ 每份查不到 ⇒ 喷 `fatal: invalid object name`，且判定照旧 EXIT=0（真错误不可观测）。
+  // ⚠ 本档要证两件：① 取数根真的**多了归档内层仓**（命中数因此上升）；② 坏 id 不会静默。
+  // ══════════════════════════════════════════════════════════════════════
+  {
+    /**
+     * ⚠ `selfTest()` 里**没有**模块级 `ok` / `bad`（那对只在 `runChecks` 内部）。
+     *   ⚠⚠ 但**名字必须叫 `ok` / `bad`** —— `check-meta-negctl.mjs` 只认
+     *     `/(?:ok|bad|note\.push|check)\(\s*(?:`([^`]*)`|'([^']*)')/gs` 这四个名字开头的调用。
+     *   ⇒ 这里在**块内**声明 `ok` / `bad` 两个局部函数（遮蔽外部无定义），
+     *     既进元判据计数、又把结果并进 `readings`。⛔ 不是把「负向对拍」塞进别的话凑数。
+     */
+    const ok = (m) => readings.push({ label: m.split('\n')[0], exit: 0, want: 0, line: m.split('\n')[0], pass: true })
+    const bad = (m) => readings.push({ label: m.split('\n')[0], exit: 1, want: 0, line: m.split('\n')[0], pass: false })
+
+    /** 影子 sink（⛔ 不污染真实计数）。 */
+    const sh = { bad: [], ok: [], skip: [] }
+    const sink = { bad: (m) => sh.bad.push(m), ok: (m) => sh.ok.push(m), skip: (m) => sh.skip.push(m) }
+
+    /** 夹具：一个账本根，里面造一份"清单声明源修订"的归档目录 + 一个真仓。 */
+    const fx2 = mkdtempSync(join(tmpdir(), 'hob-m4-'))
+    try {
+      const L2 = join(fx2, 'ledger')
+      const arc = join(L2, 'archive', '2026-01-20-crossrepo', 'sources')
+      mkdirSync(arc, { recursive: true })
+      const body = Buffer.from('cross-repo fixture\n')
+      writeFileSync(join(arc, 'x.txt'), body)
+      /** 源件放在**另一个仓**里（模拟"归档内层仓"），并造一次提交。 */
+      const repo2 = join(fx2, 'otherrepo')
+      mkdirSync(repo2, { recursive: true })
+      const gitq2 = (args) => execFileSync('git', args, { cwd: repo2, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      execFileSync('git', ['init', '-q'], { cwd: repo2 })
+      writeFileSync(join(repo2, 'x.txt'), body)
+      gitq2(['add', 'x.txt'])
+      execFileSync('git', ['-c', 'user.email=f@x', '-c', 'user.name=f', 'commit', '-q', '-m', 'fixture'], { cwd: repo2, stdio: ['ignore', 'pipe', 'ignore'] })
+      const goodRev = gitq2(['rev-parse', 'HEAD']).trim()
+
+      /** ⚠ 自证：好 id 在**那个仓**里存在、在**本仓**里不存在（正是跨仓形态）。 */
+      /**
+       * ⚠ 自证"跨仓形态"：好 id 在**夹具归档仓**（`repo2`）里存在，而在**另一个仓**（`L2`，模拟工作区仓）里不存在。
+       *   ⛔ 不拿真 `root` 判 —— 那个仓里本来就没有夹具的提交，永远为 null ⇒ 自证会变成恒真。
+       */
+      const otherRepo = join(fx2, 'workspacerepo')
+      mkdirSync(otherRepo, { recursive: true })
+      execFileSync('git', ['init', '-q'], { cwd: otherRepo, stdio: ['ignore', 'pipe', 'ignore'] })
+      /** ⚠ `tryGit` 带 `encoding: 'utf8'` ⇒ 返回值**含尾部换行**，比较前必须 `trim()`（否则 `'commit\n' !== 'commit'`）。 */
+      const inRepo2 = tryGit(['cat-file', '-t', goodRev], repo2)
+      const inOther = tryGit(['cat-file', '-t', goodRev], otherRepo)
+      const crossRepoShape = (inRepo2 ?? '').trim() === 'commit' && inOther === null
+
+      /** 好 id（在归档仓里）⇒ 用 `--git-dir` 指过去必须能取到 ⇒ 这是"喂好 id 必绿"。 */
+      const reposWith = [{ cwd: repo2, gitDir: null, label: '夹具归档仓' }]
+      const got = tryGitBufInRepos(['show', `${goodRev}:x.txt`], reposWith)
+      const goodOk = got !== null && got.equals(body)
+
+      /** 坏 id ⇒ 取不到（返回 null，⛔ 不抛、⛔ 不喷 stderr）⇒ 这是"喂坏 id 必红（判据能识别）"。 */
+      const badRev = 'ffffffffffffffffffffffffffffffffffffffff'
+      const gotBad = tryGitBufInRepos(['show', `${badRev}:x.txt`], reposWith)
+      const badNull = gotBad === null
+
+      if (!crossRepoShape) {
+        bad('N-M4 · 夹具没造出"跨仓"形态（好 id 在两个仓里的存在性没分开）⇒ 本条不可判')
+      } else if (!goodOk) {
+        bad(`N-M4 · 喂**好 id**（\`${goodRev.slice(0, 7)}\`，在夹具归档仓里真实存在）却取不到 ⇒ 跨仓取数没生效`)
+      } else if (!badNull) {
+        bad('N-M4 · 喂**坏 id**（40 个 f）却取到了内容 ⇒ 取数判据哑了（会把不存在当存在）')
+      } else {
+        ok(`N-M4 ✓ 负向对拍（先自证：好 id \`${goodRev.slice(0, 7)}\` 在**夹具归档仓**里 \`cat-file -t\` = commit、`
+          + '在**工作区仓**里取不到 ⇒ 正是 `d391602` 那种跨仓形态）'
+          + ` ⇒ 喂**好 id** 经 \`--git-dir\` 指过去**取到了且逐字节相同**（${body.length} 字节）；`
+          + '喂**坏 id**（40 个 f）**返回 null**（⛔ 不抛、⛔ 不喷 `fatal:`）'
+          + '；**反面**：改前只用工作区仓时，好 id 一律取不到 ⇒ 每份喷一行 `fatal: invalid object name`（实测 13+ 次）'
+          + '，判定却仍 EXIT=0 —— 那正是"会让失败不可观测"')
+      }
+    } finally {
+      rmSync(fx2, { recursive: true, force: true })
+    }
   }
 
   // ── 反假绿：把"含 sources/ 的归档目录"整个撤掉 ⇒ 必须走「无对象可查」而不是报 ✓ ──
