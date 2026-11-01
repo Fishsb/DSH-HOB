@@ -13,6 +13,10 @@
  *   ⚠ 这是在补 `DESIGN-V2.md` §十·4 自己点出的洞：「I5 只证生成物与生成器一致，不证生成器算对了」。
  */
 
+import { nextAction, type NextAction, type LedgerUnitLike } from './next-action.ts'
+import { portfolioOf, type Portfolio, type PortfolioUnit } from './portfolio.ts'
+import { convergenceOf } from './convergence.ts'
+
 /** 五步的名字与 kind（⚠ 唯一真源，顺序 = 渲染顺序）。 */
 export const STAGE_DEFS = [
   { step: 1, kind: 'req', name: '需求规格' },
@@ -30,6 +34,22 @@ export const STAGE_KIND_STATUSES: Readonly<Record<string, { statuses: string[]; 
   run: { statuses: ['registered', 'running', 'returned', 'refused', 'stuck'], init: 'registered', finals: ['returned', 'refused', 'stuck'] },
   acc: { statuses: ['pass', 'send-back', 'unverified'], init: 'unverified', finals: ['pass', 'send-back'] },
   cap: { statuses: ['live', 'degraded', 'down'], init: 'live', finals: [] },
+  /**
+   * ⚠⚠ **2026-10-31 P40/R2：三个受控对象**（`TASK-R2.md` §二）——————————————
+   *   加这三行**不是顺手重构**，而是 §八「条件式可以改 `src/**`」那一条的**唯一触发点**：
+   *   `check:stages-route` 的 R-9 拿这份表去核 `ledger-next/units/index.toml`，
+   *   账本里一有 `EVD-` 就报 `row-shape-unknown`（实测原文：`EVD-001: kind="evidence" 不在封闭集`）。
+   *   ⇒ 这处**正是在读 `ledger-next/gen` 的判定路径上**，且改动是**逐值追加**，
+   *     ⛔ 没动任何既有 kind、⛔ 没动面板样式、⛔ 没动渲染分支。
+   *
+   *   ⚠ 三者 `finals: []` = **无终态**，且它们在 `STAGE_DEFS` 里**没有对应的步**
+   *     ⇒ 不进任何一步的分母（与 `cap` 同一处置，`KIND_SPEC` 那边是 `step: null`）。
+   *   ⚠⚠ **这两份表必须同值**（本文件自己第 25 行的注释就写着"由 R-9 交叉验证"）：
+   *     本次同步的是 `scripts/gen-ledger.mjs` 的 `KIND_SPEC` —— 改一处不改另一处，R-9 当场红。
+   */
+  risk: { statuses: ['open', 'handling', 'closed'], init: 'open', finals: [] },
+  decision: { statuses: ['active', 'superseded'], init: 'active', finals: [] },
+  evidence: { statuses: ['recorded'], init: 'recorded', finals: [] },
 }
 
 /** 三类可分辨失败（`R-10`：⛔ 不许并成一句）。 */
@@ -69,6 +89,14 @@ export interface StagesOk {
   readAt: string
   stages: StageRow[]
   caps: CapRow[]
+  /** 「下一步」一条（⚠ 只读呈现，⛔ 不带任何可交互控件）。 */
+  next: NextAction
+  /**
+   * **项目组合层**（2026-11-01 P40/R6 · `TASK-R6.md` §三）。
+   * ⚠ 只回答"哪条已定需求没人接"；⛔ 不含百分比 / 完成度 / 趋势。
+   * ⚠ 算不出来时是 `undefined` ⇒ 面板显示「判不出」，⛔ 不许显示 0、⛔ 不许空白。
+   */
+  portfolio?: Portfolio
 }
 export interface StagesFail {
   ok: false
@@ -207,7 +235,56 @@ export function buildStages(units: Array<Record<string, unknown>>, readAt: strin
       ? String(u.last_reading)
       : '判不出（索引里没有 last_reading）',
   }))
-  return { ok: true, readAt, stages, caps }
+  /**
+   * ── **下一步**（2026-10-31 P42/R4 · `TASK-R4.md` §四）────────────────────
+   * ⚠ 纯函数 `nextAction`（`./next-action.ts`）算出**一条**建议；面板只**只读地**显示它。
+   * ⚠ 收敛判定这里**不注入**：`convergenceOf` 活在判据脚本里，import 它会把
+   *   `scripts/**` 拖进 client 半边（⛔ 那边跑不了 `node:fs`）。
+   *   ⇒ 第 ③ 步（`converge`）在本进程里**跳过**，其余五态照常。
+   *   ⚠ 这是**已知覆盖缺口**，不是"没有这个态"—— `NEXT_ACTION_KINDS` 六态全在。
+   */
+  let next: NextAction
+  try {
+    /**
+     * ⚠⚠ **注入收敛判定**（2026-10-31 P42b/R4b · `TASK-R4b.md` §一.3）：
+     *   不注入 ⇒ `nextAction` 的第 ③ 步（`converge`）**整段跳过** ⇒ 六态里有一态
+     *   在面板侧永远不出现（这正是 R4 验收指出的"六件里 A 只算一半"）。
+     *
+     * ⚠ `exemptReqIds` **传空**（⚠ `TASK-R4b.md` §一.3 明写这一条）：
+     *   `STORED_NO_NEW_FIELD` 那份豁免名单住在 `scripts/check-ledger-next.mjs`（判据侧），
+     *   ⛔ **不许把它搬进 `src/`** —— 那是判据的账，不是面板的账。
+     *   ⇒ 后果：**面板侧不豁免 ⇒ 第 ④ 步可能比判据侧多报一条** `wait-user`。
+     *     ⚠ 这是**已知差异**，不是 bug：面板说的是"按账本原样看该干什么"，
+     *       判据说的是"按已认下的豁免看还欠什么"。
+     */
+    next = nextAction(units as unknown as LedgerUnitLike[], {
+      convergence: (chg: any) => convergenceOf(chg, units as any),
+      exemptReqIds: [],
+    })
+  } catch (e) {
+    /**
+     * ⚠ 算不出来 ⇒ **判不出**（⛔ 不许静默回 dispatch、⛔ 不许显示成空）。
+     *   这符合 `TASK-R4.md` §一 ⑥ 与 §四「undecidable 时明写判不出」。
+     */
+    next = {
+      kind: 'undecidable',
+      target: null,
+      why: `下一步算不出来：${String((e as Error)?.message ?? e)}`,
+      blockedBy: [],
+    }
+  }
+  /**
+   * ── **项目组合层**（2026-11-01 P40/R6 · `TASK-R6.md` §三）──────────────────
+   * ⚠ 纯函数 `portfolioOf`（`./portfolio.ts`）算出跨 change 的覆盖读数；面板只**只读地**显示。
+   * ⚠ 它**零 import**（同 `convergence.ts` 的硬约束）⇒ 不会把 `scripts/**` 拖进 client 半边。
+   * ⚠ 算不出来 ⇒ `undefined`（面板显示「判不出」），⛔ **不许兜底成 0 条** ——
+   *   0 条孤儿是一条**读数**，算不出来是**没有读数**，两者不是一回事（`CONSTITUTION` §7）。
+   */
+  let portfolio: Portfolio | undefined
+  try {
+    portfolio = portfolioOf(units as unknown as PortfolioUnit[])
+  } catch { portfolio = undefined }
+  return { ok: true, readAt, stages, caps, next, portfolio }
 }
 
 /** 处理体依赖（全部注入 ⇒ 机检可跑真源码）。 */

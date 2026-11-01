@@ -45,6 +45,7 @@ import {
  *   病（用户截图）：`agreed`/`settled`/`built`/`unverified` 都是各自 kind 的**合法状态**，
  *   却因为九态表里没有而印成「判不出（原值 X）」—— 那句话在骗人。
  */
+import { UNSEEN_TOOLS_ROUTE_PATH } from '../modules/unseen-tools-route.ts'
 import { stageStatusLabel } from '../shared/stage-status-labels.ts'
 
 /** 标签页**类型 id**（= 宿主 `sidebar.right.pane.tab` 的 `key`）。 */
@@ -117,6 +118,18 @@ export const STAGES_EXEC_PATH = EXEC_PROGRESS_ROUTE_PATH
 
 /** 五步汇总路由（新数据源 = `ledger-next/units/index.toml`；⛔ 不再读散文账）。 */
 export const STAGES_ROUTE_PATH = '/api/dsh-hob/stages'
+
+/**
+ * 「待确认工具」只读路由（⚠ **值来自** `modules/unseen-tools-route.ts` 的同一份常量，
+ * ⛔ 不在这里再写一份字符串 —— 两边各写一份就会漂）。
+ *
+ * ── 为什么面板要读它（2026-11-01 P41/R20 · `TASK-R20.md` §一）────────────────
+ *   `R-008` 的标题是「「被判出」**必须能在界面上看见**，⛔ 不能只落日志」，
+ *   而那条只读路由早已存在、`describeUnseen` 也已完整 —— 但 `src/client/` 里**零处**读它。
+ *   ⇒ 标题这一条**今天没被满足**：判出来了，用户还是看不见。
+ *   ⛔ 本块**只读**：不新开路由、不改它的返回形状、不写任何东西。
+ */
+export const STAGES_UNSEEN_PATH = UNSEEN_TOOLS_ROUTE_PATH
 
 /** 三态图标（照 SDD Dashboard 的 circle / play / check；⛔ 无百分比）。 */
 export const STAGE_STATE_ICON: Readonly<Record<'done' | 'doing' | 'todo', string>> = {
@@ -384,6 +397,29 @@ export async function defaultFetchStages(sessionId?: string): Promise<any> {
   }
 }
 
+/**
+ * 默认取数：「待确认工具」只读路由（`POST /api/dsh-hob/unseen-tools`）。
+ *
+ * ⚠ 形状照 `defaultFetchStages`：POST + 带 `sessionId`（本路由其实不读会话，但保持一致），
+ *   ⛔ 零写、⛔ 不改服务端返回形状（`UnseenReport`：`{ok,count,names,summary,items}`）。
+ * ⚠ 404/405 ⇒ 抛 `StaleRouteError`（"打错门"与"读不到"必须分开说，同既有口径）。
+ */
+export async function defaultFetchUnseen(sessionId?: string): Promise<any> {
+  const body = sessionId === undefined || sessionId === '' ? {} : { sessionId }
+  const res = await fetch(STAGES_UNSEEN_PATH, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (res.status === 404 || res.status === 405) {
+    throw new StaleRouteError(
+      `这个路径没有处理体（可能是方法或前缀不对）：${STAGES_UNSEEN_PATH} · HTTP ${res.status}`,
+    )
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}：${STAGES_UNSEEN_PATH}`)
+  return await res.json()
+}
+
 export class StaleRouteError extends Error {
   /** @param message - 人读说明（已含路径与状态码） */
   constructor(message: string) {
@@ -596,6 +632,11 @@ export function StagesPanel(props?: {
    * ⚠ 省略 ⇒ 用 `defaultFetchStages`（生产路径）。
    */
   fetchStages?: (sessionId?: string) => Promise<any>
+  /**
+   * **待确认工具取数**（`R-008` 的界面出口）。
+   * ⚠ 省略 ⇒ 用 `defaultFetchUnseen`（生产路径）。
+   */
+  fetchUnseen?: (sessionId?: string) => Promise<any>
   /** 宿主给这个标签页的会话 id（`sidebar.right.pane.tab` 的 inject 第一参）。 */
   sessionId?: string
   /**
@@ -616,6 +657,14 @@ export function StagesPanel(props?: {
     const fn = props?.fetchStages ?? defaultFetchStages
     return () => fn(props?.sessionId)
   }, [props?.fetchStages, props?.sessionId])
+  /**
+   * 待确认工具取数（`R-008` 的界面出口）。
+   * ⚠ 与 `state` / `execState` / `stageState` **四路分治**：这一路读不到 ⛔ 不许把别的抹掉。
+   */
+  const loadUnseen = React.useMemo(() => {
+    const fn = props?.fetchUnseen ?? defaultFetchUnseen
+    return () => fn(props?.sessionId)
+  }, [props?.fetchUnseen, props?.sessionId])
   const [state, setState] = React.useState<{ kind: 'reading' } | { kind: 'ok'; rows: any[] } | { kind: 'fail'; reason: string; message: string }>({ kind: 'reading' })
   /**
    * 执行态。（⚠ 与 `state` **分开**：两条路由各判各的 —— 账面读不到不该把执行项也抹掉。）
@@ -638,6 +687,18 @@ export function StagesPanel(props?: {
   const [execState, setExecState] = React.useState<
     | { kind: 'reading' }
     | { kind: 'ok'; items: any[] }
+    | { kind: 'fail'; reason: string; message: string }
+  >({ kind: 'reading' })
+  /**
+   * **待确认工具**（`R-008` 的界面出口 · 2026-11-01 P41/R20）。
+   * ⚠ 与另外三路分治：这一路读不到 ⛔ 不许把别的抹掉。
+   * ⚠ `ok` 分支存的是**整份 `UnseenReport`**（含 `summary` / `names` / `count`）——
+   *   `summary` 就是"0 条也要写出 0 条"那句话的唯一来源（`describeUnseen` 已处理），
+   *   ⛔ 不在这里另写一份文案（两份文案会漂）。
+   */
+  const [unseenState, setUnseenState] = React.useState<
+    | { kind: 'reading' }
+    | { kind: 'ok'; report: any }
     | { kind: 'fail'; reason: string; message: string }
   >({ kind: 'reading' })
   /** 手动刷新的计数（`data-dsh-hob="stages-refresh"` 按钮点一次 +1；仅用于触发重跑）。 */
@@ -731,7 +792,28 @@ export function StagesPanel(props?: {
       }
       if (!alive) return
       if (res !== null && typeof res === 'object' && res.ok === true && Array.isArray(res.stages)) {
-        setStageState({ kind: 'ok', stages: res.stages, caps: Array.isArray(res.caps) ? res.caps : [] })
+        /**
+         * ⚠ **`next` 必须一起存进 state**（2026-10-31 P42/R4）——
+         *   实测踩过：只存 `stages`/`caps` 而把 `next` 漏掉 ⇒ 面板走进
+         *   「后端没有返回」那条兜底 ⇒ 真账本明明给出 `accept`，页面却显示「判不出」。
+         *   ⚠ 那正是 `TASK-R4.md` §四 明令 ⛔ 不许的两种错之一（"不许显示成空/已完成"的邻居：
+         *     把**判得出**的东西显示成**判不出**，同样是假读数）。
+         */
+        setStageState({
+          kind: 'ok',
+          stages: res.stages,
+          caps: Array.isArray(res.caps) ? res.caps : [],
+          next: res.next,
+          /**
+           * ⚠ **`portfolio` 也必须一起存进 state**（2026-11-01 P40/R6 · `TASK-R6.md` §三）——
+           *   漏存 ⇒ 面板永远拿不到它 ⇒ 组合层区块**恒显示「判不出」**。
+           *   ⚠ 这正是 `S-18`（真账本数据渲染 · 全文不许出现「判不出」）当场咬出来的：
+           *     第一次跑就红了 —— 组合层那一行的「判不出」跑到了读数位置。
+           *   ⇒ 存进来（⚠ 不兜底成 `undefined` 之外的任何值：后端没给就是没给，
+           *     由 `portfolioBlock` 显示「判不出」，⛔ 不显示 0）。
+           */
+          portfolio: (res as any).portfolio,
+        } as any)
       } else {
         setStageState({
           kind: 'fail',
@@ -740,7 +822,42 @@ export function StagesPanel(props?: {
         })
       }
     }
-    const pull = (): void => { void run(); void runExec(); void runStages() }
+    /**
+     * 待确认工具取数（`R-008`）。⚠ 单独一个函数：与三路各自独立，
+     *   它失败**只**把这一块落成「判不出」，⛔ 不影响五步树 / 执行态 / 账面表。
+     */
+    const runUnseen = async (): Promise<void> => {
+      let res: any
+      try {
+        res = await loadUnseen()
+      } catch (e) {
+        if (!alive) return
+        const isStale = e instanceof StaleRouteError
+        setUnseenState({
+          kind: 'fail',
+          reason: isStale ? 'stale-route' : 'network',
+          message: isStale
+            ? `接不上：${String((e as Error)?.message ?? e)}`
+            : `请求失败：${String((e as Error)?.message ?? e)}`,
+        })
+        return
+      }
+      if (!alive) return
+      /**
+       * ⚠ 形状校验照服务端的 `UnseenReport`：`ok===true` 且 `summary` 是**非空字符串**。
+       *   ⛔ 不兜底成 `''`：空串就是"没查"与"查了 0 条"混成一团，正是本条要治的病。
+       */
+      if (res !== null && typeof res === 'object' && res.ok === true && typeof res.summary === 'string' && res.summary !== '') {
+        setUnseenState({ kind: 'ok', report: res })
+      } else {
+        setUnseenState({
+          kind: 'fail',
+          reason: String(res?.reason ?? 'shape'),
+          message: String(res?.message ?? '路由没给出可读的 summary'),
+        })
+      }
+    }
+    const pull = (): void => { void run(); void runExec(); void runStages(); void runUnseen() }
     pull()
 
     /**
@@ -924,6 +1041,10 @@ export function StagesPanel(props?: {
    */
   const stages = stageState.kind === 'ok' ? stageState.stages : []
   const caps = stageState.kind === 'ok' ? stageState.caps : []
+  /** 「下一步」一条（⚠ 只读；后端 `buildStages` 已算好，这里只呈现）。 */
+  const next = stageState.kind === 'ok' ? (stageState as any).next : undefined
+  /** ⚠ 组合层读数（2026-11-01 P40/R6）；读不到 ⇒ `undefined` ⇒ 下面显示「判不出」。 */
+  const portfolio = stageState.kind === 'ok' ? (stageState as any).portfolio : undefined
 
   /** ⚠ **默认展开第一个 `doing` 的步**（任务书 §二②）；只算一次，⛔ 不覆盖用户手动开合。 */
   React.useEffect(() => {
@@ -945,6 +1066,118 @@ export function StagesPanel(props?: {
   }
 
   /** 五步树的三态（⚠ 读不到就整棵树走「判不出」，⛔ 不假装 0 步）。 */
+  /**
+   * ── **「下一步」与阻断原因**（2026-10-31 P42/R4 · `TASK-R4.md` §四）────────────
+   *
+   * ── ⚠⚠ 硬约束（作业书点名，⛔ 一条都不许破）────────────────────────────
+   *   · **仍然只读**：零按钮、零勾选、零百分比、零进度条 —— `check:stages-dom` 的
+   *     S-1..S-4 已钉住这几条，⛔ 本块一个可交互元素都不加；
+   *   · ⛔ **不加横向滚动条**：`wrapStyle` 的 `overflowX: 'hidden'` + 三处 `minWidth: 0`
+   *     是既有修法，⛔ 别回退 —— 所以本块的文字用 `overflowWrap: 'anywhere'` 换行，
+   *     ⛔ 不设 `minWidth` 硬下界、⛔ 不设 `whiteSpace: 'nowrap'`；
+   *   · ⛔ **不引入新的 client 依赖包**：只用 `React.createElement`。
+   *
+   * ── `undecidable` 的呈现（作业书 §四 明写）──────────────────────────
+   *   **明写判不出**：⛔ 不许显示成空、⛔ 不许显示成"已完成"。
+   *   ⇒ 走 `STAGES_UNDECIDABLE_TEXT`（既有常量，措辞与别处一致）。
+   */
+  const nextBlock = ((): React.JSX.Element => {
+    if (stageState.kind === 'reading') {
+      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-next', 'data-state': 'reading' }, '读取中…')
+    }
+    if (stageState.kind === 'fail') {
+      return React.createElement(
+        'div',
+        { style: subNoteStyle, 'data-dsh-hob': 'stages-next', 'data-state': 'undecidable' },
+        React.createElement('div', { style: { fontWeight: 600 } }, STAGES_UNDECIDABLE_TEXT),
+        React.createElement('div', { 'data-dsh-hob': 'stages-next-reason' }, stageState.message),
+      )
+    }
+    const a = next as { kind?: string; target?: string | null; why?: string; blockedBy?: string[] } | undefined
+    if (a === undefined || typeof a !== 'object') {
+      /** ⚠ 后端没给（老版本/半截响应）⇒ **判不出**，⛔ 不许当"没有下一步"。 */
+      return React.createElement(
+        'div',
+        { style: subNoteStyle, 'data-dsh-hob': 'stages-next', 'data-state': 'undecidable' },
+        React.createElement('div', { style: { fontWeight: 600 } }, STAGES_UNDECIDABLE_TEXT),
+        React.createElement('div', { 'data-dsh-hob': 'stages-next-reason' }, '后端没有返回「下一步」这一项'),
+      )
+    }
+    const kind = String(a.kind ?? '')
+    const why = typeof a.why === 'string' && a.why !== '' ? a.why : STAGES_UNDECIDABLE_TEXT
+    const blockers = Array.isArray(a.blockedBy) ? a.blockedBy.map((x) => String(x)) : []
+    /** ⚠ 最多列 3 条，超出写「另有 N 条」（作业书 §四）。 */
+    const SHOW = 3
+    const shown = blockers.slice(0, SHOW)
+    const rest = blockers.length - shown.length
+    return React.createElement(
+      'div',
+      { style: subNoteStyle, 'data-dsh-hob': 'stages-next', 'data-state': kind === 'undecidable' ? 'undecidable' : 'ok', 'data-next-kind': kind },
+      /**
+       * ⚠ `undecidable` **必须明写"判不出"**（⛔ 不许留空、⛔ 不许写"已完成"）。
+       *   其余五态写「下一步：<why>」。
+       */
+      React.createElement(
+        'div',
+        { style: { fontWeight: 600, overflowWrap: 'anywhere' }, 'data-dsh-hob': 'stages-next-line' },
+        kind === 'undecidable' ? `${STAGES_UNDECIDABLE_TEXT}：${why}` : `下一步：${why}`,
+      ),
+      ...(shown.length === 0 ? [] : [
+        React.createElement(
+          'div',
+          { style: { marginTop: '2px', overflowWrap: 'anywhere' }, 'data-dsh-hob': 'stages-next-blockers' },
+          ...shown.map((b, i) => React.createElement('div', { key: `nb-${i}`, 'data-dsh-hob': 'stages-next-blocker' }, `· ${b}`)),
+          ...(rest > 0 ? [React.createElement('div', { key: 'nb-rest', 'data-dsh-hob': 'stages-next-blocker-rest' }, `另有 ${rest} 条`)] : []),
+        ),
+      ]),
+    )
+  })()
+
+  /**
+   * ── **待确认工具**（`R-008` 的界面出口 · 2026-11-01 P41/R20）───────────────────
+   *
+   * ⚠⚠ `R-008` 的标题是「「被判出」**必须能在界面上看见**，⛔ 不能只落日志」。
+   *   只读路由与 `describeUnseen` 早就在（P28 落地），但 `src/client/` **零处**读它
+   *   ⇒ 标题这一条一直**没被满足**。本块就是补这一块。
+   *
+   * ── 三条硬约束（`TASK-R20.md` §一）──────────────────────────────────
+   *   ① **0 条也必须写出「0 条」**：文案直接取 `report.summary`（`describeUnseen` 已处理
+   *      「没查」与「查了、确实 0」的区分）⇒ ⛔ 本块**不另写一份文案**（两份文案会漂）。
+   *   ② **逐名列出**，⛔ 不只给一个数字。
+   *   ③ **零写 / 零百分比 / 零进度条 / 零勾选**（`R-005` 咬住这一条）——
+   *      ⛔ 本块里**没有任何** button / input / progress / role=checkbox。
+   *
+   * ⚠ 判不出时明写「判不出」+ 原因（⛔ 不显示成 0 条 —— 那正是把"读不到"说成"查过了"）。
+   */
+  const unseenBlock = ((): React.JSX.Element => {
+    if (unseenState.kind === 'reading') {
+      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-unseen', 'data-state': 'reading' }, '读取中…')
+    }
+    if (unseenState.kind === 'fail') {
+      return React.createElement(
+        'div',
+        { style: subNoteStyle, 'data-dsh-hob': 'stages-unseen', 'data-state': 'undecidable' },
+        React.createElement('div', { style: { fontWeight: 600 } }, STAGES_UNDECIDABLE_TEXT),
+        React.createElement('div', { 'data-dsh-hob': 'stages-unseen-reason' }, unseenState.message),
+      )
+    }
+    const report = unseenState.report
+    const names: string[] = Array.isArray(report?.names) ? report.names : []
+    return React.createElement(
+      'div',
+      { style: subNoteStyle, 'data-dsh-hob': 'stages-unseen', 'data-state': 'ok' },
+      React.createElement('div', { style: { fontWeight: 600 } }, '待确认工具'),
+      /** ⚠ 这一行就是"0 条也要写出 0 条"的落点：文案来自 `describeUnseen` 的 `summary`。 */
+      React.createElement('div', { 'data-dsh-hob': 'stages-unseen-summary' }, String(report?.summary ?? '')),
+      /** ⚠ 逐名列出（⛔ 不只给数字）。0 条时这一段自然是空的。 */
+      ...names.map((n, i) => React.createElement(
+        'div',
+        { key: `un-${i}`, 'data-dsh-hob': 'stages-unseen-item', style: { overflowWrap: 'anywhere' } },
+        `· ${n}`,
+      )),
+    )
+  })()
+
   const stageTree = ((): React.JSX.Element => {
     if (stageState.kind === 'reading') {
       return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-tree', 'data-state': 'reading' }, '读取中…')
@@ -1057,6 +1290,73 @@ export function StagesPanel(props?: {
   })()
 
   /** 长期能力（`cap` 单列 · ⛔ 不进分母 · ⛔ 无百分比 · ⛔ 无完成度）。 */
+  /**
+   * ── **项目组合层区块**（2026-11-01 P40/R6 · `TASK-R6.md` §三）──────────────────
+   *
+   * ── 作业书钉死的四条（⛔ 一条都不许破）──────────────────────────────
+   *   · **位置**：放在既有 `nextBlock` **之后**（`TASK-R6.md` §三 明写「⛔ 别打乱既有顺序」）
+   *     —— 实际接线在返回体里紧跟 `nextBlock`；
+   *   · **只要两行**：① 覆盖读数 ② 孤儿逐条点名（为空时**不显示第二行**，
+   *     ⛔ 不许显示空行 / 占位符）；
+   *   · ⛔ **不许**出现百分比、进度条、"完成度"；⛔ 不许横向滚动（`check:stages-dom` 会咬）
+   *     ⇒ 文字走 `overflowWrap: 'anywhere'`，⛔ 不设 `whiteSpace: 'nowrap'` / 硬 `minWidth`；
+   *   · **数据读不到 ⇒ 显示「判不出」**，⛔ 不许显示 0、⛔ 不许空白（`CONSTITUTION` §7）。
+   *
+   * ⚠⚠ **为什么"0 条孤儿"与"判不出"必须分开显示**：
+   *   0 条是一条**读数**（查过，确实没人被漏掉）；判不出是**没有读数**。
+   *   把后者显示成 0 等于"把一次故障伪装成一次干净的读数"—— 本仓最忌的形态。
+   */
+  const portfolioBlock = ((): React.JSX.Element | null => {
+    if (stageState.kind === 'reading') return null
+    if (stageState.kind === 'fail') return null
+    const p = portfolio as { counts?: any; orphans?: unknown; orphanNote?: unknown } | undefined
+    const counts = p?.counts
+    const orphans = Array.isArray(p?.orphans) ? p!.orphans.map((x: unknown) => String(x)) : undefined
+    /** ⚠ 第三行用（R7）：有 built 的 task 却没有 pass acc 的需求；⛔ 不是红项。 */
+    const builtNoAcc = Array.isArray((p as any)?.builtNoAcc) ? ((p as any).builtNoAcc as unknown[]).map((x) => String(x)) : undefined
+    /**
+     * ⚠ 判据：`counts` 的四个数**都必须是有限整数**才认这一份读数。
+     *   缺一个 ⇒ 「判不出」（⛔ 不许拿 `?? 0` 顶 —— 那会把"没读到"显示成"0 条"）。
+     */
+    const nums = ['total', 'covered', 'proven', 'orphan']
+    const okNums = counts !== undefined && counts !== null
+      && nums.every((k) => typeof counts[k] === 'number' && Number.isFinite(counts[k]))
+    const head = okNums
+      ? `需求覆盖：${counts.covered}/${counts.total} 有 change 承接 · ${counts.proven} 条已有 pass 验收 · ${counts.orphan} 条没人接`
+      : STAGES_UNDECIDABLE_TEXT
+    return React.createElement(
+      'div',
+      { style: subNoteStyle, 'data-dsh-hob': 'stages-portfolio', 'data-state': okNums ? 'ok' : 'undecidable' },
+      React.createElement('div', { 'data-dsh-hob': 'stages-portfolio-head' }, head),
+      /**
+       * ⚠ 第二行**只在真有孤儿时**出现（`orphans.length > 0`）。
+       *   `okNums === false` 时 `orphans` 一定是 `undefined` ⇒ 也不出第二行（第一行已写「判不出」）。
+       */
+      ...(okNums && orphans !== undefined && orphans.length > 0
+        ? [React.createElement(
+          'div',
+          { key: 'orphans', 'data-dsh-hob': 'stages-portfolio-orphans' },
+          `没人接：${orphans.join(' · ')}`,
+        )]
+        : []),
+      /**
+       * ── **第三行**（2026-11-01 P40/R7 · `TASK-R7.md` §三）─────────────────────
+       *   `builtNoAcc` 非空时显示「做完了没人验：…」；**为空则整行不出现**（⛔ 不许空行）。
+       * ⚠⚠ 这一行的存在理由就是 R6 被退回的那件事：R6 把这三条需求写进了「没人接」，
+       *   而它们的真名是「活做完了，缺的是第 5 步」。⇒ 单独一行说出来，
+       *   面板才不再需要靠「没人做」去表达它。
+       * ⚠ 它⛔ **不是红项**、⛔ 不进 P-1、⛔ 不算百分比。
+       */
+      ...(okNums && builtNoAcc !== undefined && builtNoAcc.length > 0
+        ? [React.createElement(
+          'div',
+          { key: 'built-no-acc', 'data-dsh-hob': 'stages-portfolio-built-no-acc' },
+          `做完了没人验：${builtNoAcc.join(' · ')}`,
+        )]
+        : []),
+    )
+  })()
+
   const capBlock = stageState.kind === 'ok'
     ? React.createElement(
       'div',
@@ -1148,6 +1448,12 @@ export function StagesPanel(props?: {
     React.createElement('div', { style: { fontWeight: 600 } }, STAGES_PANEL_TITLE),
     // ⭐ PRIMARY：五步树（新数据源 = units/index.toml）
     stageTree,
+    // ⭐ 「下一步」与阻断原因（只读 · ⛔ 零按钮/零勾选/零百分比/零进度条）
+    nextBlock,
+    // ⭐ 待确认工具（2026-11-01 P41/R20 · `R-008` 的界面出口 · 只读 · ⛔ 零交互元素）
+    unseenBlock,
+    // ⭐ 项目组合层（2026-11-01 P40/R6 · 只读 · ⛔ 零百分比/零进度条/零横向滚动）
+    portfolioBlock,
     capBlock,
     /**
      * ⚠ **旧「账面」表（`volumes/tasks/INDEX.md`）—— 2026-10-30 P4：视觉隐藏，⛔ DOM 不许删。**

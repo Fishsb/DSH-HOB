@@ -197,9 +197,9 @@ export function renderPersona(wf, specs = {}) {
    *   于是**每节只出现一次**，⛔ 不再有"骨架一份、附录一份"（`TASK-P10.md` §一）。
    *   ⚠ 这一段保留一句**索引**（⛔ 不复写 test），让读者知道七种在哪。
    */
-  L.push('## 七种输入（先判是哪一种，再动手）')
+  L.push('## 十种输入（先判是哪一种，再动手）')
   L.push('')
-  L.push('> ⚠ 七种输入各自的 `Test` / `First move` 与例子，**就在下面「附注」里各自的原文节内**'
+  L.push('> ⚠ 十种输入各自的 `Test` / `First move` 与例子，**就在下面「附注」里各自的原文节内**'
     + '（⛔ 本节不再复写一遍 —— 那样会变成两处真相）。索引：'
     + (wf.intake ?? []).map((it) => `\`${it.id}\`→「${String(it.section ?? '').replace(/^###\s+/, '')}」`).join(' · ')
     + '。')
@@ -210,12 +210,26 @@ export function renderPersona(wf, specs = {}) {
    *   ⚠ 判据不受影响：`F1` 的 `[[reply]]` 核的是 `workflow.toml` 的 `source`（对冻结原文），
    *     ⛔ 不是"persona 里有没有这行字"。
    */
-  L.push('## 三条不变量（不可协商）')
+  L.push('## 六条不变量（不可协商）')
   L.push('')
   for (const v of wf.invariant ?? []) {
     L.push(`- **${v.text}**（\`${v.id}\`）`)
   }
   L.push('')
+  /**
+   * ⚠⚠ **2026-10-31 P39：新增的三条不变量「没有原文出处」必须自己说清**。
+   *   前三条抽自切换前原文（`source` 在 `spec/origin-prefix.txt` 里）；
+   *   后三条逐字来自用户 2026-10-31 的原话（`spec/origin-user-2026-10-31.txt`）。
+   *   ⇒ 这一行是**读者（模型）**唯一能看到"这条是新立的、不是原文里就有的"的地方。
+   *   ⛔ 不许省：省了就是让新规则冒充原文规则（F1 核机读面，这一行核人读面）。
+   */
+  const newInvs = (wf.invariant ?? []).filter((v) => String(v.origin ?? 'original').trim() === 'new')
+  if (newInvs.length > 0) {
+    L.push(`> ⚠ 其中 **${newInvs.length} 条是 2026-10-31 新立的**（`
+      + newInvs.map((v) => `\`${v.id}\``).join(' · ')
+      + '）：出处是**用户当天的原话**，⛔ 不是这份提示词早有的句子。')
+    L.push('')
+  }
   L.push('## 纪律（每轮都要执行的）')
   L.push('')
   /**

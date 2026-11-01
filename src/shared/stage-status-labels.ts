@@ -64,6 +64,28 @@ export const STAGE_STATUS_LABELS_ZH: Readonly<Record<string, Readonly<Record<str
     degraded: '降级',
     down: '不可用',
   },
+  /**
+   * ⚠⚠ **2026-10-31 P40/R2：三个受控对象**（`TASK-R2.md` §二）——————————————
+   *   R-10 的护栏当场咬住了这处：新增 kind 而**不补标签** ⇒ 每个状态都判成
+   *   「判不出（原值 open）」（实测原文：`R-10 · risk.open 判成「没有标签」（why=标签表缺 risk.open）`）。
+   *   ⚠ 那是**护栏对的**，不是它多事 ——「判不出」正是在说"我方缺表"。
+   *
+   *   ⚠ 措辞口径照本文件第 31 行：**一句话、用户看得懂、⛔ 不照搬英文**。
+   *   ⚠⚠ **这三类不是"完成度"**，措辞里⛔ 不许出现"完成 / 进度"字样
+   *     （风险只有开/在处置/已处置，决策只有有效/已被取代，证据只有"记下了"）。
+   */
+  risk: {
+    open: '开着（还没处置）',
+    handling: '在处置',
+    closed: '已处置',
+  },
+  decision: {
+    active: '有效',
+    superseded: '已被取代',
+  },
+  evidence: {
+    recorded: '已记录读数',
+  },
 }
 
 /** 一个 kind 的合法状态集（⚠ 从 `STAGE_KIND_STATUSES` 现读，⛔ 不抄）。 */

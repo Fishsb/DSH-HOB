@@ -136,6 +136,43 @@ test = "The user says you have the requirement wrong -- the objection points at 
 first_move = "Say back what you now take the requirement to be, then read the plan again before doing anything else."
 source = "### Correction"
 
+# ── 三条新增输入（2026-10-31 · P39 · `TASK-P39.md` §三①）─────────────
+# ⚠ 新增节没有原文位置 ⇒ `order` 只决定渲染次序（147/148/149 排在原文七节 64..146 之后、
+#   `## Replying`(152) 之前）。⛔ 它**不**声称"原文里有这三节"。
+# ⚠ 它们的出处不是 `spec/origin-prefix.txt`（切换前的原文冻结件），而是用户 2026-10-31 的
+#   原话冻结件 `spec/origin-user-2026-10-31.txt` ⇒ 用 `origin = "new"` 标出；
+#   已有七条**不写** `origin`（缺省即 `original`）。⚠ 封闭集：只许 original / new。
+
+[[intake]]
+id = "defect-report"
+origin = "new"
+# ⚠ 新增节没有原文位置 ⇒ order 只决定渲染次序
+order = 147
+section = "### Defect report"
+test = "The message says something is broken or wrong, and does **not** say what it should become instead."
+first_move = "Reproduce first, then name the cause: a wrong requirement, a wrong plan, a wrong implementation, or the environment. ⛔ Never skip the five steps and go straight to code. A fix carries a regression check. If the original requirement was never clear, it goes back to step 1."
+source = "判断是需求错误、方案错误、实现错误还是环境问题；"
+
+[[intake]]
+id = "investigation"
+origin = "new"
+# ⚠ 新增节没有原文位置 ⇒ order 只决定渲染次序
+order = 148
+section = "### Investigation"
+test = "The message asks to find out, compare, or evaluate before deciding -- not to build."
+first_move = "The product is a note, not code: the question, the candidate approaches, the measurements taken, the trade-off, and whether it becomes a new requirement or a new plan. ⛔ Do not hand out coding work under this input."
+source = "当前“新指令”会把调研、修复、决策混在一起，导致 HOB 容易直接派活而跳过分析。"
+
+[[intake]]
+id = "resume"
+origin = "new"
+# ⚠ 新增节没有原文位置 ⇒ order 只决定渲染次序
+order = 149
+section = "### Resume"
+test = "Work that was stopped or paused is to be picked up again, and the message does not ask for it to become something else."
+first_move = "Re-check three things before anything moves: what changed outside while it was stopped, whether the disk state still matches, and whether the pending item still holds. Then decide whether the plan has to be re-agreed. ⛔ Never resume by dispatching."
+source = "暂停后恢复时，HOB 需要先核对："
+
 # ── 回复形态（三种；⚠ 第四种"没有回复"不存在 —— 不回复不是形态）──
 [[reply]]
 id = "two-part"
@@ -170,6 +207,30 @@ source = "delivering is not doing, creating a session is not delegating, and a r
 id = "result-is-not-acceptance"
 text = "回传 ≠ 验收"
 source = "Step 4 and step 5 are not the same person."
+
+# ── 三条新增不变量（2026-10-31 · P39 · `TASK-P39.md` §三①）──────────────
+# ⚠ 恰好 6 条：用户明令把「需求存在 ≠ 需求可验收」「决策可被取代」**降为检查规则**
+#   （落在 R2 的覆盖检查 / `decision.supersedes`），⛔ 不许顺手写第七、第八条。
+# ⚠ 前三条**一字不改**（不写 `origin`，缺省即 `original`）；新三条 `origin = "new"`，
+#   `source` 逐字取自 `spec/origin-user-2026-10-31.txt`。
+
+[[invariant]]
+id = "implementation-is-not-convergence"
+origin = "new"
+text = "实现 ≠ 收敛"
+source = "即使任务都已实现，也可能存在："
+
+[[invariant]]
+id = "test-pass-is-not-product-acceptance"
+origin = "new"
+text = "测试通过 ≠ 产品验收"
+source = "检查通过证明技术条件满足，用户是否接受产品行为和取舍仍然是另一件事。"
+
+[[invariant]]
+id = "claim-requires-reading"
+origin = "new"
+text = "没有读数不能陈述为事实"
+source = "任何“完成 / 已验证 / 已修复”的陈述都必须能指回："
 
 # ── 交付与预算（⚠ 这些是"每轮都要执行"的，故进机读源）────────────
 [[rule]]

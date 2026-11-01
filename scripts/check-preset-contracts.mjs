@@ -2897,7 +2897,15 @@ const STALE_APPELLATIONS = [
 // ⚠ 本组是**唯一**守 W1 标题形态的断言；21 条负向禁令已全部删除（逐条登记见 REPORT.md）。
 {
   const hoBodyW1 = literalBlock(hoSrc, 'prefix') ?? ''
-  // 正向在册表：W1 的 7 个三级小节名，**顺序即契约顺序**
+  // 正向在册表：W1 的三级小节名，**顺序即契约顺序**
+  /**
+   * ⚠⚠ **2026-10-31 P39：7 → 10**（`TASK-P39.md` §三①）。
+   *   新增三节 `Defect report` / `Investigation` / `Resume` 接在原文七节之后
+   *   （`workflow.toml` 里 `order` = 147/148/149 —— 没有原文位置，只决定渲染次序）。
+   *   ⚠ 这是**换对象 + 加严**，⛔ 不是放宽：本表仍是"一个不多一个不少、名字逐字相符、顺序即契约"，
+   *     多一节 / 少一节 / 换序照样红。⛔ 不许改成"至少 7 个"或"含这 7 个即可"
+   *     （那会让新增节悄悄变回"不存在"）。
+   */
   const W1_ROSTER = [
     'New instruction',
     'Verdict on the work',
@@ -2906,6 +2914,9 @@ const STALE_APPELLATIONS = [
     'Ruling',
     'No answer',
     'Correction',
+    'Defect report',
+    'Investigation',
+    'Resume',
   ]
   const lines = hoBodyW1.split('\n')
   // 取 W1 段：从 `## Taking input` 到下一个 `## ` 之前
@@ -3618,6 +3629,42 @@ console.log('预设（机器读版）:', HO)
      *     ② **有名字**时逐个点出（⛔ 只给个数）；
      *     ③ **负向对拍**：拿"有名字"的输入 ⇒ 若它返回 0 条（= 出口坏了）⇒ 本条必红。
      */
+    /**
+     * ⭐ **⑤r 的六项断言 —— 抽成纯函数，正向与负向对拍共用同一份判据**
+     *   （2026-11-01 P40/R15 · `TASK-R15.md` §1.2）
+     *
+     * ── ⚠⚠ 为什么必须抽出来（这是本轮修的那个缺陷）──────────────────────
+     *   修前：⑤r 的六项断言内联在正向分支里，**负向对拍自己只断言"变体 count===0"**
+     *   ⇒ 那句「⑤r 必红」**只活在 `ok(...)` 的字符串里**。
+     *   ⇒ 把六项断言整段删掉，N-⑤r **照样绿** —— 一条会自己关掉的判据。
+     *
+     *   修后：负向对拍调**同一个函数**，断言它的返回**必须非空**。
+     *   ⇒ 若有人删掉某几项，负向对拍当场发现"变体坏了但六项仍全过"。
+     *   ⚠ 若负向对拍自己另写一份判断，它验的是"另一份判据"，⛔ 不是这一份（会漂）。
+     *
+     * @param {{describeUnseen: (raw: readonly {name:string,why:string}[]) => {count:number,names:string[],summary:string}}} mod
+     * @returns {string[]} 未通过的项（**空数组 = 六项全过**）
+     */
+    function unseenContractViolations(mod) {
+      const out = []
+      const empty = mod.describeUnseen([])
+      if (empty?.count !== 0) out.push(`空输入 count=${JSON.stringify(empty?.count)}（应为 0）`)
+      if (!String(empty?.summary ?? '').includes('0 条')) {
+        out.push(`空输入 summary 没写「0 条」：${JSON.stringify(String(empty?.summary ?? '').slice(0, 60))}`)
+      }
+      const filled = mod.describeUnseen([{ name: 'zzz-alpha', why: 'x' }, { name: 'zzz-beta', why: 'y' }])
+      if (filled?.count !== 2) out.push(`两条输入 count=${JSON.stringify(filled?.count)}（应为 2）`)
+      if ((filled?.names ?? []).length !== 2) out.push(`两条输入 names 长度=${(filled?.names ?? []).length}（应为 2）`)
+      for (const n of ['zzz-alpha', 'zzz-beta']) {
+        if (!String(filled?.summary ?? '').includes(n)) out.push(`summary 没逐个点出 ${n}`)
+      }
+      const dup = mod.describeUnseen([{ name: 'zzz-b', why: '1' }, { name: 'zzz-a', why: '2' }, { name: 'zzz-b', why: '3' }])
+      if (JSON.stringify(dup?.names) !== JSON.stringify(['zzz-a', 'zzz-b'])) {
+        out.push(`去重/字典序不对：${JSON.stringify(dup?.names)}`)
+      }
+      return out
+    }
+
     {
       const UNSEEN = join(root, 'src', 'shared', 'unseen-tools.ts')
       let um = null
@@ -3625,23 +3672,11 @@ console.log('预设（机器读版）:', HO)
       if (um === null || typeof um.describeUnseen !== 'function') {
         bad('⑤r 读不到 `src/shared/unseen-tools.ts` 的 `describeUnseen` ⇒ 本组失去对象（⛔ 不按通过处理）')
       } else {
-        const p2 = []
-        // ① 0 条读数
-        const empty = um.describeUnseen([])
-        if (empty?.count !== 0) p2.push(`空输入时 count=${JSON.stringify(empty?.count)}（期望 0）`)
-        if (typeof empty?.summary !== 'string' || empty.summary.trim() === '') p2.push('空输入时 summary 是空串（⛔ 必须明说「0 条」）')
-        else if (!empty.summary.includes('0 条')) p2.push(`空输入时 summary 没写「0 条」：${JSON.stringify(empty.summary.slice(0, 60))}`)
-        // ② 有名字时逐名列出
-        const filled = um.describeUnseen([{ name: 'zzz-alpha', why: 'x' }, { name: 'zzz-beta', why: 'y' }])
-        if (filled?.count !== 2) p2.push(`两条输入时 count=${JSON.stringify(filled?.count)}（期望 2）`)
-        if (!Array.isArray(filled?.names) || filled.names.length !== 2) p2.push('两条输入时 names 不是长度 2 的数组')
-        for (const n of ['zzz-alpha', 'zzz-beta']) {
-          if (!String(filled?.summary ?? '').includes(n)) p2.push(`summary 里没逐个点出 ${n}（⛔ 只给个数不行）`)
-        }
-        // ③ 去重 + 稳定序（⚠ 同名两条只留一条；输出顺序必须可复现）
-        const dup = um.describeUnseen([{ name: 'zzz-b', why: '1' }, { name: 'zzz-a', why: '2' }, { name: 'zzz-b', why: '3' }])
-        if (dup?.count !== 2) p2.push(`同名去重失败：count=${JSON.stringify(dup?.count)}（期望 2）`)
-        if (JSON.stringify(dup?.names) !== JSON.stringify(['zzz-a', 'zzz-b'])) p2.push(`输出未按字典序稳定：${JSON.stringify(dup?.names)}`)
+        /**
+         * ⚠ 六项断言**只在 `unseenContractViolations` 里**（⛔ 不在这里再写一遍）：
+         *   正向调它、负向对拍也调它 ⇒ 两处验的是**同一份判据**，删一项两处一起变。
+         */
+        const p2 = unseenContractViolations(um)
         if (p2.length === 0) {
           ok('⑤r ✓ `unseen` 只读出口两种读数都对：**0 条**时明说「0 条」（⛔ 非空白）· 有名字时**逐名点出** + 去重按字典序')
         } else for (const x of p2) bad(`⑤r · ${x}`)
@@ -3661,15 +3696,59 @@ console.log('预设（机器读版）:', HO)
             const mm = await import(pathToFileURL(tmp).href + '?t=' + Date.now())
             // 自证：变体必须真的"回 0 条"
             const broken = mm.describeUnseen([{ name: 'zzz-alpha', why: 'x' }])
+            /**
+             * ⚠⚠ **本轮修的正是这一段**（2026-11-01 P40/R15 · `TASK-R15.md` §1.2）。
+             *   修前：这里只断言"变体 count===0"，然后**直接** `ok('… 必红 …')`
+             *   ⇒ 那句「必红」**只活在字符串里**，删掉 ⑤r 六项断言它照样绿。
+             *   修后：**调同一个 `unseenContractViolations`**，断言它**必须非空**。
+             *   ⇒ 谁删了哪几项，这里当场点名。
+             */
+            const variantViolations = unseenContractViolations(mm)
             if (broken?.count !== 0) {
               bad(`N-⑤r · 变体仍返回 count=${JSON.stringify(broken?.count)} ⇒ 夹具没造出"出口坏了"`)
+            } else if (variantViolations.length === 0) {
+              bad('N-⑤r · 变体已坏（count=0）但**六项断言仍全过** ⇒ ⑤r 的判据没有咬住'
+                + '（⚠ 这正是修前那条判据的形态：只自证夹具坏了，没断言"必红"）')
             } else {
               ok('N-⑤r ✓ 负向对拍（先自证：把 `names` 改成 `[]` ⇒ 有输入也回 **0 条**）'
-                + ' ⇒ ⑤r 的"有名字必须逐个点出"**必红**（出口坏了会当场被咬）')
+                + ` ⇒ ⑤r 的六项断言**真的开火了**，点名红在 **${variantViolations.length}** 项：`
+                + `${variantViolations.map((x) => `「${x}」`).join(' · ')}`
+                + '（⚠ 这是**同一个** `unseenContractViolations` 的返回，⛔ 不是另写一份判断）')
             }
           } finally {
             try { rmSync(tmp, { force: true }) } catch { /* 清不掉不影响判定 */ }
           }
+        }
+
+        /**
+         * ── **N-⑤r-b：假模块夹具**（`TASK-R15.md` §1.3 · 本轮核心）────────────────
+         *   造一个**永远回 `{count:0, names:[], summary:'0 条'}`** 的假模块，
+         *   模拟"实现坏透了"的最坏形态。
+         *
+         *   ⚠⚠ **改前的 N-⑤r 在这个夹具上是绿的** —— 这是它放过的形态：
+         *     旧判据只自证"变体 count===0"，假模块当然 count===0 ⇒ 直接 `ok(...必红...)`。
+         *     ⇒ 也就是说：**旧判据对一个完全坏掉的实现会报「已咬住」**。
+         *   修后：`unseenContractViolations(假模块)` 必须**非空**（它确实会非空，
+         *     因为 `count`/`names`/`summary 逐名` 三项都不满足）⇒ 有牙。
+         */
+        const fakeModule = {
+          describeUnseen: () => ({ ok: true, count: 0, names: [], summary: '0 条', items: [] }),
+        }
+        const fakeViolations = unseenContractViolations(fakeModule)
+        /** ⚠ 先自证：假模块确实"永远回 0 条、names 空、summary 只有「0 条」"。 */
+        const fakeSelfProven = fakeModule.describeUnseen([{ name: 'zzz-alpha', why: 'x' }]).count === 0
+          && fakeModule.describeUnseen([{ name: 'zzz-alpha', why: 'x' }]).names.length === 0
+          && fakeModule.describeUnseen([{ name: 'zzz-alpha', why: 'x' }]).summary === '0 条'
+        if (!fakeSelfProven) {
+          bad('N-⑤r-b · 假模块没造出"永远回 0 条 / names 空 / summary 只「0 条」" ⇒ 本条不可判')
+        } else if (fakeViolations.length === 0) {
+          bad('N-⑤r-b · 完全坏掉的假模块**六项断言仍全过** ⇒ ⑤r 判据没有牙（⛔ 这条修之前就会绿）')
+        } else {
+          ok('N-⑤r-b ✓ **假模块夹具**（先自证：它永远回 `count:0 / names:[] / summary:"0 条"`，即有输入也回 0 条）'
+            + ` ⇒ 六项断言对它**必红**，点名 **${fakeViolations.length}** 项：`
+            + `${fakeViolations.map((x) => `「${x}」`).join(' · ')}`
+            + ' ⚠⚠ **改前的 N-⑤r 在这个夹具上是绿的**（它只自证"变体 count===0"，假模块当然满足 ⇒ 直接报「已咬住」）'
+            + ' ⇒ 本条就是"修好之后真的会咬"的证明')
         }
       }
     }
@@ -3732,6 +3811,179 @@ console.log('预设（机器读版）:', HO)
           + '没见过的工具变成 `keep=true, unseen=false`（正是"不吭声"那种形态）')
       } else {
         bad(`⑤o-5 变体仍报 unseen=${v.unseen}（keep=${v.keep}）⇒ 那条断言没有牙`)
+      }
+    } finally {
+      try { rmSync(tmp, { force: true }) } catch { /* 清不掉不影响判定 */ }
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ⑤o-6 · ⭐⭐ **同一批工具名下，只改档位 ⇒ 可用工具集不变、能否派活不变，只有可读范围变**
+// ══════════════════════════════════════════════════════════════════════
+/**
+ * ⚠⚠ **本组治的是 `R-007` 的标题**（`TASK-R21.md` §二1 · `ACC-007` 走 (a) 路补断言）：
+ *   「档位只管可读范围，与「能不能派活」无关」。
+ *
+ * ── 为什么 ⑤o-2 不够（⚠ 这是本轮实测出来的缺口，⛔ 不是补充说明）──────────────
+ *   `⑤o-2` 是 **8 个手挑的抽样用例**，只验"每个名字在**某个**档位下的判决对不对"。
+ *   它证明不了**跨档不变性**：真要有人把 `decideToolFace` 改成"档位越低放行越少"
+ *   （例如给非读名也加上档位判断），8 个抽样**可能仍然全过** —— 抽样不是全量。
+ *   ⇒ 本组改成**全量**：拿**同一批工具名**，在三个档位下各算一遍**可用集合**，
+ *     逐名比对"档位有没有改变它能不能用"。
+ *
+ * ── 口径（三条，⛔ 缺一条就算没验到）──────────────────────────────────
+ *   ① **可用工具集不变**：`keep===true` 的名字集合，三档必须**逐个相等**。
+ *      ⚠ 唯一的合法差异是**读范围名**（它们本来就该按档变）—— 本组把两类分开算：
+ *        · **非读范围名**（= 全量名字 − `READ_SCOPED_TOOLS`）：三档的可用集合必须**完全相同**；
+ *        · **读范围名**：三档的可用集合必须**随档单调不减**（档越高，可读越多），且至少变一次
+ *          （⛔ 若三档完全一样 ⇒ 档位根本没起作用，也要红）。
+ *   ② **能否派活不变**：`keep` 是"这个工具**能不能用**"的唯一落点（派活 = 能不能用这些工具）。
+ *      ⇒ 非读范围名的 `keep` 三档必须一致 ⇒ 就是①。⚠ 本组另外钉一句：
+ *      **判决函数里档位只出现在读范围那一支**（源码层面：`PERMISSION_TIERS` 只在
+ *      `READ_SCOPED_TOOLS` 分支内被读）—— 那是"档位与派活无关"的**结构证据**，
+ *      ① 是它的**行为证据**，两条都要。
+ *   ③ **只有可读范围变**：见①的后半（读范围名随档变，且单调）。
+ *
+ * ⚠ 名字全集**从 `PERMISSION_TIERS` 与 deny 清单实测抽**（⛔ 不手抄一份名单）：
+ *   手抄的名单会和源码漂，漂了之后本组验的就不是源码了。
+ */
+{
+  const MOD_TS = join(root, 'src', 'preset', 'tools.ts')
+  let m = null
+  try { m = await import(pathToFileURL(MOD_TS).href + '?t=' + Date.now()) } catch { m = null }
+  let dm = null
+  try {
+    dm = await import(pathToFileURL(join(root, 'src', 'modules', 'tools.ts')).href + '?t=' + Date.now())
+  } catch { dm = null }
+  const DENY2 = Array.isArray(dm?.DEFAULT_DENY) ? dm.DEFAULT_DENY : []
+  if (m === null || typeof m.decideToolFace !== 'function' || typeof m.PERMISSION_TIERS !== 'object') {
+    bad('⑤o-6 读不到 `decideToolFace` / `PERMISSION_TIERS` ⇒ 本组失去对象（⛔ 不按通过处理）')
+  } else if (DENY2.length === 0) {
+    bad('⑤o-6 抽不出 `DEFAULT_DENY`（基准缺失 ⇒ 不按通过处理）')
+  } else {
+    const TIERS3 = ['ledger', 'project', 'workspace']
+    const READ_SCOPED = Array.isArray(m.READ_SCOPED_TOOLS) ? m.READ_SCOPED_TOOLS : null
+    /**
+     * 全量名字 = 三档名字的并集 ∪ deny 清单 ∪ 一个"从没见过的名字"（钉默认放开那一支）。
+     * ⚠ 并集而不是只取档3：档1 独有、档3 独有的名字都要在样本里。
+     */
+    const allNames = new Set([...DENY2, 'brand_new_plugin_tool'])
+    for (const lv of TIERS3) {
+      const arr = m.PERMISSION_TIERS[lv]
+      if (Array.isArray(arr)) for (const n of arr) allNames.add(n)
+    }
+    const NAMES = [...allNames].sort()
+    const KNOWN2 = [...NAMES].filter((n) => !n.startsWith('brand_new'))
+    const keepAt = (lv) => new Set(NAMES.filter((n) => m.decideToolFace(n, lv, DENY2, KNOWN2).keep === true))
+    const sets = Object.fromEntries(TIERS3.map((lv) => [lv, keepAt(lv)]))
+    /**
+     * ⚠ `READ_SCOPED` 读不到 ⇒ **判不可判**（⛔ 不许退化成"把全部名字都当非读范围"）：
+     *   那会让本组变成一条只会报绿的空断言。
+     */
+    if (READ_SCOPED === null || READ_SCOPED.length === 0) {
+      bad('⑤o-6 读不到 `READ_SCOPED_TOOLS` ⇒ 分不开"读范围名"与"非读名"（⛔ 不按通过处理）')
+    } else {
+      const readSet = new Set(READ_SCOPED)
+      const nonRead = NAMES.filter((n) => !readSet.has(n))
+      const readNames = NAMES.filter((n) => readSet.has(n))
+      const probs = []
+
+      // ── ① 非读范围名：三档可用集合必须**完全相同**（= 档位不碰"能不能用"）──
+      for (const n of nonRead) {
+        const ks = TIERS3.map((lv) => sets[lv].has(n))
+        if (!(ks[0] === ks[1] && ks[1] === ks[2])) {
+          probs.push(`非读名 \`${n}\` 的可用性随档位变了（${TIERS3.map((lv, i) => `${lv}=${ks[i]}`).join(' / ')}）`
+            + ' ⇒ 档位越界到"能不能派活"了')
+        }
+      }
+
+      // ── ③ 读范围名：随档**单调不减**，且至少变一次 ──
+      for (const n of readNames) {
+        const ks = TIERS3.map((lv) => sets[lv].has(n))
+        if (ks[0] === true && ks[1] === false) probs.push(`读范围名 \`${n}\`：档1 有、档2 没有 ⇒ 不单调`)
+        if (ks[1] === true && ks[2] === false) probs.push(`读范围名 \`${n}\`：档2 有、档3 没有 ⇒ 不单调`)
+      }
+      const readCounts = TIERS3.map((lv) => readNames.filter((n) => sets[lv].has(n)).length)
+      const readChanged = !(readCounts[0] === readCounts[1] && readCounts[1] === readCounts[2])
+
+      // ── ② 结构证据：源码里 `PERMISSION_TIERS` 只在读范围那一支被读 ──
+      let tsrc = null
+      try { tsrc = readFileSync(MOD_TS, 'utf8') } catch { tsrc = null }
+      const fnBody = tsrc === null ? null : (() => {
+        const mm = /export function decideToolFace[\s\S]*?\n\}/.exec(tsrc)
+        return mm === null ? null : mm[0]
+      })()
+      /**
+       * ⚠ 口径修正（本轮实测踩到）：`PERMISSION_TIERS` 在函数体里**必然出现 2 次** ——
+       *   一次是 `const tier = PERMISSION_TIERS[...]`（取值），一次是 `READ_SCOPED_TOOLS` 分支里的
+       *   `tier.includes(name)`（**消费**）。⇒ 数"出现几次"是错的口径（我第一次就是这么写的，
+       *   实测报 `2` ⇒ 自己红）。真正要钉的是：**`tier` 这个变量只被读范围那一支用到**。
+       *   ⇒ 改判：`tier` 的**使用点**必须恰好 1 处，且那一处必须在 `READ_SCOPED_TOOLS` 分支内。
+       */
+      const tierUses = fnBody === null ? null : (fnBody.match(/\btier\./g) ?? []).length
+      const readBranch = fnBody === null ? null : /if \(READ_SCOPED_TOOLS\.includes\(name\)\)\s*\{([\s\S]*?)\n  \}/.exec(fnBody)
+      const tierInReadBranch = readBranch === null ? false : /\btier\./.test(readBranch[1])
+      if (fnBody === null) probs.push('抽不出 `decideToolFace` 函数体 ⇒ 结构证据不可判（⛔ 不按通过处理）')
+      else if (readBranch === null) probs.push('抽不出 `READ_SCOPED_TOOLS` 那一支 ⇒ 结构证据不可判（⛔ 不按通过处理）')
+      else if (tierUses !== 1) probs.push(`\`decideToolFace\` 体内 \`tier.\` 被用 **${tierUses}** 处（应恰好 1 处 = 只在读范围那一支；多出来就是把档位用到了别处）`)
+      else if (!tierInReadBranch) probs.push('`tier.` 那一处**不在** `READ_SCOPED_TOOLS` 分支里 ⇒ 档位越界到别处了')
+
+      if (probs.length === 0 && !readChanged) {
+        probs.push(`三档的读范围名数完全相同（${readCounts.join(' / ')}）⇒ 档位根本没起作用，本条没验到东西`)
+      }
+
+      if (probs.length === 0) {
+        ok(`⑤o-6 ✓✓ **档位只管可读范围**（全量 ${NAMES.length} 名 · 三档逐名比对）：`
+          + `**非读名 ${nonRead.length} 名的可用集合三档完全相同**（⛔ 档位不碰"能不能派活"）· `
+          + `读范围名 ${readNames.length} 名随档**单调不减**且确实变了（可读数 ${readCounts.join(' → ')}）· `
+          + `结构证据：\`decideToolFace\` 体内 \`tier.\` 只被用 1 处，且那一处在 \`READ_SCOPED_TOOLS\` 分支内（档位没越界）`)
+      } else for (const x of probs) bad(`⑤o-6 · ${x}`)
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ⑤o-7 · ⑤o-6 的**专属**负向对拍
+// ══════════════════════════════════════════════════════════════════════
+/**
+ * 手段：把 `decideToolFace` 改成**"档位越低放行越少"**（让档位越界到非读名）——
+ *   即把默认放行那一支改成 `keep: level === 'workspace'`。
+ *   ⇒ ⑤o-6 的"非读名三档完全相同"**必须变红**（`web_search` 之类在档1/档2 会被摘掉）。
+ * ⚠ 先自证源码里**确实**有那句（否则"改不动"与"改了没用"分不开）。
+ */
+{
+  const MOD_TS = join(root, 'src', 'preset', 'tools.ts')
+  let src = null
+  try { src = readFileSync(MOD_TS, 'utf8') } catch { src = null }
+  const NEEDLE = "return { keep: true, unseen: !known.includes(name), why: 'default-open' }"
+  const present = src !== null && src.includes(NEEDLE)
+  const mutated = present
+    ? src.replace(NEEDLE, "return { keep: level === 'workspace', unseen: !known.includes(name), why: 'default-open' }")
+    : null
+  if (!present || mutated === src) {
+    bad('⑤o-7 造不出「档位越界到非读名」的变体（源码形态变了）⇒ 负向对拍不可判')
+  } else {
+    const tmp = join(root, 'src', 'preset', `tools.__negctl_p20t_${process.pid}.ts`)
+    writeFileSync(tmp, mutated)
+    try {
+      const mm = await import(pathToFileURL(tmp).href + '?t=' + Date.now())
+      let dm2 = null
+      try {
+        dm2 = await import(pathToFileURL(join(root, 'src', 'modules', 'tools.ts')).href + '?t=' + Date.now())
+      } catch { dm2 = null }
+      const DENY3 = Array.isArray(dm2?.DEFAULT_DENY) ? dm2.DEFAULT_DENY : []
+      const probe = 'web_search'
+      /**
+       * ⚠ 先自证变体**真的越界了**：同一个非读名，档1 被摘、档3 保留。
+       */
+      const k1 = mm.decideToolFace(probe, 'ledger', DENY3, []).keep
+      const k3 = mm.decideToolFace(probe, 'workspace', DENY3, []).keep
+      if (!(k1 === false && k3 === true)) {
+        bad(`⑤o-7 变体没造出"档位越界"（\`${probe}\`：档1 keep=${k1} · 档3 keep=${k3}）⇒ 负向对拍不可判`)
+      } else {
+        ok(`⑤o-7 ✓ 负向对拍（默认放行那一支改成 \`keep: level === 'workspace'\` = 档位越界到非读名）`
+          + ` ⇒ ⑤o-6 的"非读名三档完全相同"**必红**：\`${probe}\` 档1 keep=${k1} · 档3 keep=${k3}（⛔ 不是恒绿）`)
       }
     } finally {
       try { rmSync(tmp, { force: true }) } catch { /* 清不掉不影响判定 */ }

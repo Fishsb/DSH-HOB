@@ -194,6 +194,15 @@ export function runRepoRules({ bad, ok, skip }) {
     //     `✗ package.json 声明的脚本不在 MUST-TRACK 里：scripts/check-readings-citable.mjs`。
     //   ⚠ ⇒ 本条即那次的修正结果；⛔ **未放松任何既有断言**（`UD-130` 的边界）。
     ['scripts/check-readings-citable.mjs', '入库脚本（被 package.json 的 check:readings 调用 · 报告读数可指认机检）'],
+    // ⚠ 2026-10-31 补（P41/R3 · `TASK-R3.md` §二「在 check:all 里成族」）：
+    //   **收敛检查**。⚠ 同族的**又一次**现场抓获 —— 加完 `check:convergence` 未登记时，
+    //     本脚本的"反向自检"（读 package.json 的 scripts 反查 MUST-TRACK）**当场 FAIL**：
+    //     `✗ package.json 声明的脚本不在 MUST-TRACK 里：scripts/check-convergence.mjs`。
+    //   ⚠ ⇒ 本条即那次的修正结果；⛔ **未放松任何既有断言**。
+    //   ⚠⚠ 本文件**不在** `TASK-R3.md` §九 的"可以改"清单里 —— 但 §二 要求"在 check:all 里成族"，
+    //     而成族必然要 `package.json` 声明一个脚本，那条自检就必然要这一行。
+    //     ⇒ 这属**机械登记**（⛔ 不改任何判据口径），已在回传 §4 逐条写明。
+    ['scripts/check-convergence.mjs', '入库脚本（被 package.json 的 check:convergence 调用 · 变更收敛 K-1..K-6 机检）'],
     // ⚠ 2026-10-17 补（第 292 轮 · `TASK-R226` (c) · 依 `REPORT-R225.md` §3.4-b 首批 `#11`）：
     //   **`lib/` 同步自检**。⚠ 由来有实测：⚠ `lib/BUILD-STAMP` 停在 `26302ff`（= 第 272 轮），
     //   ⚠ ⚠ **而 `R219`/`R220`/`R221`/`R223` 四份报告都写了"`build` 已跑"**

@@ -89,6 +89,116 @@ export function inputSectionsOf(text) {
     .map((s) => s.name)
 }
 
+/**
+ * **F10 的判定核心**（⚠ 抽成纯函数，供负向对拍**真的喂夹具跑一遍**，⛔ 不另写一套口径）。
+ *
+ * @param {string} prefixText - `prefix` 正文（`prefixBodyOf().text`）
+ * @param {string} personaText - `gen/persona.md` 正文
+ * @param {Record<string,any>} wf - 机读源
+ * @param {string} INV_MARK_UNUSED - 占位（保持签名稳定）
+ * @returns {string[]} 红的行（空数组 = F10 会绿）
+ */
+export function f10ProbsOf(prefixText, personaText, wf) {
+  const out = []
+  const norm = (s) => String(s).replace(/^\n+/, '').replace(/\n+$/, '') + '\n'
+  const a = norm(prefixText)
+  const b = norm(personaText)
+  if (a !== b) {
+    const n = Math.min(a.length, b.length)
+    let k = 0
+    while (k < n && a[k] === b[k]) k++
+    out.push(`① \`prefix\` 正文与 \`gen/persona.md\` **不一致**（第 ${k + 1} 个字符起 · prefix ${Buffer.byteLength(a, 'utf8')} B vs persona ${Buffer.byteLength(b, 'utf8')} B）`)
+  }
+  const originOfX = (e) => (e.origin === undefined ? 'original' : String(e.origin).trim())
+  const missing = []
+  for (const v of wf?.invariant ?? []) {
+    if (!a.includes(String(v.id ?? '')) && !b.includes(String(v.id ?? ''))) missing.push(`不变量 id \`${v.id}\``)
+    if (!b.includes(String(v.text ?? ''))) missing.push(`不变量 text「${v.text}」`)
+  }
+  for (const it of wf?.intake ?? []) {
+    if (originOfX(it) !== 'new') continue
+    const secName = String(it.section ?? '').replace(/^###\s+/, '').trim()
+    if (!a.includes(`### ${secName}`)) missing.push(`新增 intake 的节名「${secName}」`)
+    if (!a.includes(String(it.id ?? ''))) missing.push(`新增 intake id \`${it.id}\``)
+  }
+  const needIds = (wf?.intake ?? []).filter((it) => originOfX(it) === 'new').map((it) => it.id)
+  if (needIds.length === 0) out.push('② 没有 `origin = "new"` 的 intake ⇒ "新三节真的进了 prefix"没有对象（⛔ 不报 ✓）')
+  if (missing.length > 0) out.push(`② prefix 正文里**缺**（新条文没进运行时提示词）：${missing.join(' · ')}`)
+  return out
+}
+
+/**
+ * **F1 的判定核心**（⚠ 顶层纯函数：F1 本体与 N-F1b/N-F1c/N-F1d **共用这一份**）。
+ *
+ * ── 为什么必须共用（⚠ 这是"自指"要求的一部分）──────────────────────────
+ *   负向对拍若自己**抄一份**判定逻辑，那么把 F1 里那条断言注释掉之后，
+ *   抄来的那份照样绿 ⇒ 对拍**永远发现不了"断言被摘"**（假保护）。
+ *   ⇒ 判定只有一份；摘掉 F1 里那行 ⇒ 本函数不再被 F1 调用 ⇒ F1 的输出里没有那条红。
+ *     ⚠ 而"那行被摘了"这件事由 **N-F1e** 直接读源码核（见下）。
+ *
+ * @param {Record<string,any>} mut - 机读源（可被夹具改过）
+ * @param {{flat:string}|null} pre - 冻结原文（`flat` 已归一空白）
+ * @param {string[]} userLines - 用户原话冻结件的**有效行**
+ * @param {string} userFlat - 上述有效行拼成的一行（空白已归一）
+ * @returns {{probs:string[], checked:number, byOrigin:{original:number,new:number}, originCount:{original:number,new:number}}}
+ */
+export function f1ProbsOf(mut, pre, userLines, userFlat) {
+  const probs = []
+  const steps = mut.step ?? []
+  if (steps.length !== 5) probs.push(`五步只有 ${steps.length} 条（期望 5）`)
+  const orders = steps.map((x) => Number(x.order)).sort((a, b) => a - b)
+  if (JSON.stringify(orders) !== JSON.stringify([1, 2, 3, 4, 5])) probs.push(`step.order 不是 1..5：${JSON.stringify(orders)}`)
+  const s4 = steps.find((x) => Number(x.order) === 4)
+  const s5 = steps.find((x) => Number(x.order) === 5)
+  if (s4 === undefined || s5 === undefined) probs.push('缺第 4 或第 5 步')
+  else if (s4.actor_role === s5.actor_role) probs.push(`第 4 步与第 5 步的 actor_role 相同（${s4.actor_role}）⇒ 违反"第 4 ≠ 第 5"`)
+  for (const x of steps) for (const k of ['id', 'name', 'who', 'judged_by', 'source']) {
+    if (typeof x[k] !== 'string' || x[k].trim() === '') probs.push(`step ${x.id ?? '?'} 缺 \`${k}\``)
+  }
+  const intakes = mut.intake ?? []
+  if (intakes.length === 0) probs.push('intake 一条都没有')
+  for (const it of intakes) for (const k of ['id', 'test', 'first_move', 'source']) {
+    if (typeof it[k] !== 'string' || it[k].trim() === '') probs.push(`intake ${it.id ?? '?'} 缺 \`${k}\``)
+  }
+  if ((mut.reply ?? []).length === 0) probs.push('reply 一条都没有')
+  /** ⚠⚠ 封闭集 = **恰好 6 条**（⛔ 不许写成 `>= 3`：多写一条没定过的不变量也会静默通过）。 */
+  if ((mut.invariant ?? []).length !== 6) probs.push(`invariant 应恰好 6 条（实 ${(mut.invariant ?? []).length}）`)
+
+  const originOfX = (e) => (e.origin === undefined ? 'original' : String(e.origin).trim())
+  const ORIGIN_DOMAIN_X = new Set(['original', 'new'])
+  const originCount = { original: 0, new: 0 }
+  for (const table of ['intake', 'invariant']) {
+    for (const e of mut[table] ?? []) {
+      const o = originOfX(e)
+      if (!ORIGIN_DOMAIN_X.has(o)) probs.push(`${table} \`${e.id ?? '?'}\` 的 \`origin\` = ${JSON.stringify(String(e.origin))} 不在封闭集 original/new 里`)
+      else originCount[o] += 1
+    }
+  }
+  if (originCount.new === 0) probs.push('一条 `origin = "new"` 都没有 ⇒ 新增条目没标出处（⛔ 不许把新条目混进 original）')
+
+  let checked = 0
+  const byOrigin = { original: 0, new: 0 }
+  for (const table of ['step', 'intake', 'reply', 'invariant', 'rule']) {
+    for (const e of mut[table] ?? []) {
+      if (typeof e.source !== 'string' || e.source.trim() === '') continue
+      checked++
+      const o = (table === 'intake' || table === 'invariant') ? originOfX(e) : 'original'
+      const needle = e.source.replace(/\s+/g, ' ').trim()
+      if (o === 'new') {
+        byOrigin.new += 1
+        if (userLines.length === 0) probs.push(`${table} \`${e.id}\` 标了 \`origin = "new"\`，而 \`spec/origin-user-2026-10-31.txt\` **是空的** ⇒ 出处没有基准（⛔ 不是 skip）`)
+        else if (!userFlat.includes(needle)) probs.push(`${table} \`${e.id}\` 的 \`source\` 在**用户原话冻结件**里找不到（\`origin = "new"\` 必须对那份核）：${JSON.stringify(e.source.slice(0, 70))}`)
+      } else {
+        byOrigin.original += 1
+        if (pre === null) probs.push('读不到 `prefix:` 正文 ⇒ `source` 子串核对**没有基准**（⛔ 不按通过处理）')
+        else if (!pre.flat.includes(needle)) probs.push(`${table} \`${e.id}\` 的 \`source\` 在提示词正文里**找不到**：${JSON.stringify(e.source.slice(0, 70))}`)
+      }
+    }
+  }
+  if (checked === 0) probs.push('一条 `source` 都没核对到 ⇒ 本组没有对象（⛔ 不报 ✓）')
+  return { probs, checked, byOrigin, originCount }
+}
+
 console.log('')
 console.log('F 组：Hob 自己的工作流（workflow.toml / 生成物 / 宪法 / 覆盖度）')
 console.log('')
@@ -116,6 +226,27 @@ try {
   const ORIGIN = join(PRESET_DIR, 'spec', 'origin-prefix.txt')
   let originText = ''
   try { originText = readFileSync(ORIGIN, 'utf8') } catch { originText = '' }
+  /**
+   * ⚠⚠ **2026-10-31 P39：`origin = "new"` 的条目另有一个冻结基准**。
+   *   新增的三条 intake / 三条不变量**没有原文出处**（`origin-prefix.txt` 里根本没有那几句），
+   *   它们逐字来自用户 2026-10-31 的原话 ⇒ 单独冻结成 `spec/origin-user-2026-10-31.txt`。
+   *   ⇒ `source` 核对**分路**：`original`（缺省）对老件，`new` 对新件。
+   *   ⚠ 空文件 ⇒ **红**，⛔ 不是 skip（否则清空它就能把"新增条目的出处"抹掉）。
+   */
+  const ORIGIN_USER = join(PRESET_DIR, 'spec', 'origin-user-2026-10-31.txt')
+  let originUserRaw = ''
+  try { originUserRaw = readFileSync(ORIGIN_USER, 'utf8') } catch { originUserRaw = '' }
+  /** 冻结件里**非注释、非空**的行（`#` 开头的是文件头说明，⛔ 不参与子串核对）。 */
+  const ORIGIN_USER_LINES = originUserRaw.split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !l.startsWith('#'))
+  const originUserFlat = ORIGIN_USER_LINES.join(' ').replace(/\s+/g, ' ').trim()
+  /**
+   * `origin` 的**封闭集**：缺省 = `original`，只许 `original` / `new`（其它值 ⇒ 红）。
+   * ⚠ 三个值不能用"非空即算" —— 那样 `legacy` 会被静默当成 original。
+   */
+  const originOf = (e) => (e.origin === undefined ? 'original' : String(e.origin).trim())
+  const ORIGIN_DOMAIN = new Set(['original', 'new'])
   const pre = (() => {
     if (originText !== '') return { text: originText, flat: originText.replace(/\s+/g, ' ').trim(), lines: originText.split('\n').length }
     return yml === '' ? null : prefixBodyOf(yml)
@@ -125,50 +256,17 @@ try {
   // F1 · workflow.toml 合法 + 每条 source 在提示词正文里真实存在
   // ══════════════════════════════════════════════════════════════════════
   if (wf !== null) {
-    const probs = []
-    const steps = wf.step ?? []
-    if (steps.length !== 5) probs.push(`五步只有 ${steps.length} 条（期望 5）`)
-    const orders = steps.map((s) => Number(s.order)).sort((a, b) => a - b)
-    if (JSON.stringify(orders) !== JSON.stringify([1, 2, 3, 4, 5])) probs.push(`step.order 不是 1..5：${JSON.stringify(orders)}`)
-    const s4 = steps.find((s) => Number(s.order) === 4)
-    const s5 = steps.find((s) => Number(s.order) === 5)
-    if (s4 === undefined || s5 === undefined) probs.push('缺第 4 或第 5 步')
-    else if (s4.actor_role === s5.actor_role) probs.push(`第 4 步与第 5 步的 actor_role 相同（${s4.actor_role}）⇒ 违反"第 4 ≠ 第 5"`)
-    for (const s of steps) for (const k of ['id', 'name', 'who', 'judged_by', 'source']) {
-      if (typeof s[k] !== 'string' || s[k].trim() === '') probs.push(`step ${s.id ?? '?'} 缺 \`${k}\``)
-    }
-    const intakes = wf.intake ?? []
-    if (intakes.length === 0) probs.push('intake 一条都没有')
-    for (const it of intakes) for (const k of ['id', 'test', 'first_move', 'source']) {
-      if (typeof it[k] !== 'string' || it[k].trim() === '') probs.push(`intake ${it.id ?? '?'} 缺 \`${k}\``)
-    }
-    if ((wf.reply ?? []).length === 0) probs.push('reply 一条都没有')
-    if ((wf.invariant ?? []).length !== 3) probs.push(`invariant 应恰好 3 条（实 ${(wf.invariant ?? []).length}）`)
-
-    // ⭐ 每条 source 必须在 prefix 正文里真实存在（⚠ 本轮"没丢东西"的唯一凭证）
-    if (pre === null) {
-      probs.push('读不到 `prefix:` 正文 ⇒ `source` 子串核对**没有基准**（⛔ 不按通过处理）')
-    } else {
-      let checked = 0
-      for (const table of ['step', 'intake', 'reply', 'invariant', 'rule']) {
-        for (const e of wf[table] ?? []) {
-          if (typeof e.source !== 'string' || e.source.trim() === '') continue
-          checked++
-          if (!pre.flat.includes(e.source.replace(/\s+/g, ' ').trim())) {
-            probs.push(`${table} \`${e.id}\` 的 \`source\` 在提示词正文里**找不到**：${JSON.stringify(e.source.slice(0, 70))}`)
-          }
-        }
-      }
-      if (checked === 0) probs.push('一条 `source` 都没核对到 ⇒ 本组没有对象（⛔ 不报 ✓）')
-      else probs.push(`__checked__${checked}`)
-    }
-    const numeric = probs.filter((x) => x.startsWith('__checked__'))
-    const real = probs.filter((x) => !x.startsWith('__checked__'))
-    if (real.length === 0) {
+    /**
+     * ⚠⚠ **判定只有一份**：这里调用顶层 `f1ProbsOf()`，负向对拍 N-F1b/N-F1c/N-F1d
+     *   也调**同一个函数** ⇒ 摘掉本组任何一行断言，那三条对拍会跟着失去对象（⛔ 不是抄一份逻辑）。
+     */
+    const { probs, checked, byOrigin, originCount } = f1ProbsOf(wf, pre, ORIGIN_USER_LINES, originUserFlat)
+    if (probs.length === 0) {
       ok(`F1 ✓ \`workflow.toml\` 合法：五步（order=1..5 · 第 4/5 步 actor_role 不同）· `
-        + `${intakes.length} 个 intake 各有 test/first_move/source · 3 条不变量 · `
-        + `**${numeric[0]?.slice(11) ?? 0} 条 source 全部在提示词正文里命中**`)
-    } else for (const p of real) bad(`F1 · ${p}`)
+        + `${(wf.intake ?? []).length} 个 intake 各有 test/first_move/source · **${(wf.invariant ?? []).length} 条不变量（封闭集）** · `
+        + `\`origin\` 封闭集（**继承 ${originCount.original} 条 · 新增 ${originCount.new} 条**）· `
+        + `**${checked} 条 source 全部命中**（原 ${byOrigin.original} 条 · 新 ${byOrigin.new} 条；⚠ original 对冻结原文、new 对用户原话）`)
+    } else for (const p of probs) bad(`F1 · ${p}`)
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -225,31 +323,64 @@ try {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  // F4 · ⭐ 覆盖度：intake 数 = prefix 正文里「输入判定节」数
+  // F4 · ⭐ 覆盖度（**P39 换口径**：从"数一下相等"改成三条更硬的判定）
   // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ── 为什么必须换（⚠ 这条是实测出来的，不是洁癖）──────────────────────
+   *   改前口径 = "`workflow.toml` 的 intake 数 == `prefix` 正文里 `###` 输入节数"。
+   *   入口 7 → 10 之后这个等式**恒红**：三条新节**不在原文里**（它们没有原文位置），
+   *   所以 `origin-prefix.txt` 永远是 7 节、而 toml 永远 10 条。
+   *   ⚠ 而"把两个数都改成 10"是不行的 —— 那等于**声称原文里有十节**（文档里说假话）。
+   *   ⇒ 换成按 `origin` 分路的三条，一条都不许少：
+   *
+   *   ① **原文一节都不许丢**：冻结原文里的输入判定节数 == `origin` 缺省（`original`）的 intake 条数；
+   *   ② **不许发明原文没有的**：每条 `original` 的 `section` 必须在原文节名集合里；
+   *   ③ **新增条目必须真有出处**：每条 `new` 的 `source` 命中用户原话冻结件，且**该件非空**
+   *      （空 ⇒ **红**，⛔ 不是 skip —— 否则清空它就能把"出处"抹掉）。
+   */
   {
     if (pre === null || wf === null) {
       bad('F4 读不到 `prefix` 正文或 `workflow.toml` ⇒ 覆盖度失去基准（⛔ 不按通过处理）')
     } else {
       const secs = inputSectionsOf(pre.text)
-      const sections = wf.intake ?? []
       const secNames = new Set(secs)
-      const declared = new Set(sections.map((s) => (s.section ?? '').replace(/^###\s+/, '').trim()))
+      const sections = wf.intake ?? []
+      const originals = sections.filter((s) => originOf(s) === 'original')
+      const news = sections.filter((s) => originOf(s) === 'new')
+      const declared = new Set(originals.map((s) => (s.section ?? '').replace(/^###\s+/, '').trim()))
       const probs = []
-      if (secs.length === 0) probs.push('提示词正文里**一个输入判定节都没数到** ⇒ 扫描面为 0（⛔ 这不是通过）')
-      if (secs.length !== sections.length) {
-        probs.push(`覆盖度对不上：正文 **${secs.length}** 节 vs \`workflow.toml\` **${sections.length}** 条`
-          + `\n        正文章节：${secs.join(' · ')}`
-          + `\n        toml 声明：${[...declared].join(' · ')}`)
+      if (secs.length === 0) probs.push('冻结原文里**一个输入判定节都没数到** ⇒ 扫描面为 0（⛔ 这不是通过）')
+      // ① 原文节数 == original 条数
+      if (secs.length !== originals.length) {
+        probs.push(`① **原文节数对不上**：冻结原文 **${secs.length}** 节 vs \`origin\` 缺省的 intake **${originals.length}** 条`
+          + `\n        原文节名：${secs.join(' · ')}`
+          + `\n        original 声明：${[...declared].join(' · ')}`)
       }
-      const missing = secs.filter((s) => !declared.has(s))
-      const ghost = [...declared].filter((s) => !secNames.has(s))
-      if (missing.length > 0) probs.push(`**正文有、toml 没有**（= 漏抽，这会让我少一条约束）：${missing.join(' · ')}`)
-      if (ghost.length > 0) probs.push(`**toml 有、正文没有**（= 发明了不存在的输入）：${ghost.join(' · ')}`)
+      // ② original 的 section 必须在原文节名集合里
+      const invented = [...declared].filter((s) => !secNames.has(s))
+      if (invented.length > 0) probs.push(`② **发明了原文没有的节名**（标 origin 缺省却指向原文里不存在的节）：${invented.join(' · ')}`)
+      // ①的反向：原文有、original 没有 ⇒ 漏抽
+      const dropped = secs.filter((s) => !declared.has(s))
+      if (dropped.length > 0) probs.push(`① **原文有、original 没有**（= 漏抽，这会让我少一条约束）：${dropped.join(' · ')}`)
+      // ③ new 的出处
+      if (news.length === 0) probs.push('③ 一条 `origin = "new"` 都没有 ⇒ 本组只核到原文七节（⛔ 新增三条的出处无人核）')
+      if (ORIGIN_USER_LINES.length === 0) {
+        probs.push('③ **用户原话冻结件是空的**（`spec/origin-user-2026-10-31.txt` 只剩注释或零字节）'
+          + ' ⇒ 新增条目的出处没有基准（⛔ 这不是 skip，清空它就能抹掉出处）')
+      }
+      const noHit = news.filter((e) => !originUserFlat.includes(String(e.source ?? '').replace(/\s+/g, ' ').trim()))
+      if (ORIGIN_USER_LINES.length > 0 && noHit.length > 0) {
+        probs.push(`③ **${noHit.length} 条 \`new\` 的 \`source\` 在用户原话冻结件里找不到**：${noHit.map((e) => e.id).join(' · ')}`)
+      }
       if (probs.length === 0) {
-        ok(`F4 ✓ **覆盖度对上**：提示词正文 \`###\` 输入判定节 **${secs.length}** 个 = \`workflow.toml\` 的 intake **${sections.length}** 条`);
-        console.log(`        节名清单（实测）：${secs.join(' · ')}`)
+        ok(`F4 ✓ **覆盖度三条全对**：冻结原文 \`###\` 输入判定节 **${secs.length}** 个 = \`origin\` 缺省的 intake **${originals.length}** 条（①原文一节没丢）· `
+          + `\`original\` 的 \`section\` **全部落在原文节名集合里**（②无发明）· `
+          + `**${news.length}** 条 \`new\` 的 \`source\` 全部命中用户原话冻结件（③冻结件 ${ORIGIN_USER_LINES.length} 行·非空）`)
+        console.log(`        原文节名清单（实测）：${secs.join(' · ')}`)
+        console.log(`        新增节（无原文位置 · 只由 order 决定渲染次序）：${news.map((e) => `${e.id}→${String(e.section ?? '').replace(/^###\s+/, '')}（order=${e.order}）`).join(' · ')}`)
       } else for (const p of probs) bad(`F4 · ${p}`)
+      /** ⚠ 供 F6 用：渲染后的 `prefix` 正文里必须真的出现这些节名与 id（见下面 F6）。 */
+      void secNames
     }
   }
 
@@ -377,7 +508,15 @@ try {
       }
       const probs = []
       let checked = 0
-      for (const it of wf.intake ?? []) {
+      /**
+       * ⚠⚠ **2026-10-31 P39：本条只核 `origin` 缺省（`original`）的那些节。**
+       *   新增三节**没有原文段落**（`origin-prefix.txt` 里根本没有它们）⇒ 若照旧全扫，
+       *   那六处 `test`/`first_move` 永远"找不到对应段落"，本条会变成**恒红**（假红）。
+       *   ⚠ 这是**换对象**，⛔ 不是放宽：`original` 七节的核对口径一字未变（仍是"逐字相等"）；
+       *     新增三节的忠实性由**另外两条**咬住 —— F1（`source` 必须命中用户原话冻结件）
+       *     与 F10（节名与 id 必须真的出现在 `prefix` 正文里）。
+       */
+      for (const it of (wf.intake ?? []).filter((x) => originOf(x) === 'original')) {
         const sec = sectOf(String(it.section ?? ''))
         for (const [field, orig] of [['test', sec.test], ['first_move', sec.move]]) {
           if (orig === '') { probs.push(`intake ${it.id} 的 \`${field}\` 在原文里**找不到对应段落** ⇒ 判不出（⛔ 不按通过处理）`); continue }
@@ -399,8 +538,8 @@ try {
       }
       if (checked === 0) probs.push('一条 `test`/`first_move` 都没核到 ⇒ 本组没有对象（⛔ 不报 ✓）')
       if (probs.length === 0) {
-        ok(`F7 ✓ 七节 \`test\` / \`first_move\` **逐字 == 原文**（${checked} 处全命中；⚠ 截短会当场红）`)
-      } else for (const p of probs) bad(`F7 · ${p}`)
+        ok(`F7 ✓ **原文七节**的 \`test\` / \`first_move\` **逐字 == 原文**（${checked} 处全命中；⚠ 截短会当场红；⚠ 新增三节无原文段落 ⇒ 不在本条对象内，见 F10）`)
+      } else for (const p of probs) bad(`F7 · ${p}`)  // ⚠ 2026-10-31 P40/D-1：此处原为 `F11`（另一条断言的编号）⇒ 红读数会指错断言
     }
   }
 
@@ -526,6 +665,109 @@ try {
     } else for (const p of probs) bad(`F9 · ${p}`)
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // F10 · ⭐ **运行时要真的变**：`prefix` 正文 == `gen/persona.md`（P39 · §三④(d)）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ── 它守什么（⚠ 这是本轮"新条文真的进到运行时提示词"的唯一证据）──────────
+   *   `workflow.toml` 与 `gen/persona.md` 都在仓里，**而宿主读的是 `prefix:` 正文**。
+   *   改前没有任何判据把这两者绑起来 ⇒ 可以把规则写进 toml、`prefix` 一个字节都不动，
+   *   于是**规则看着在、运行时根本到不了**（F1/F4 都会绿，因为它们只核 toml 与冻结原文）。
+   *   ⇒ 本条两条腿：
+   *     ① **逐字节一致**：`prefix` 正文（去缩进、去首尾空行后）=== `gen/persona.md`；
+   *     ② **内容在**：三条新不变量 id / 三节新 intake 的 section 名 / 三个新 id 必须真的
+   *        出现在 `prefix` 正文里 —— 防"两面同删照样绿"（①只证"两份一样"，两份一起删它照样过）。
+   */
+  {
+    const body = prefixBodyOf(yml)
+    let persona = ''
+    try { persona = readFileSync(join(GEN, 'persona.md'), 'utf8') } catch { persona = '' }
+    if (body === null || persona === '') {
+      bad('F10 读不到 `prefix:` 正文或 `gen/persona.md` ⇒ 本条失去对象（⛔ 不按通过处理）')
+    } else {
+      /**
+       * ⚠ 归一：`prefixBodyOf()` 已把每行 trim 过 ⇒ 去首尾空行后与 `persona.md` 比。
+       * ⚠ **⛔ 不做空白归一**（那会让"缩进被改坏"静默通过）；本条要的是**逐字节**。
+       * ⚠ 判定抽在 `f10ProbsOf()`（顶层纯函数）⇒ 负向对拍 N-F10 / N-F11 **喂夹具真跑一遍**，
+       *   ⛔ 不是"照理说会红"。
+       */
+      const probs = f10ProbsOf(body.text, persona, wf)
+      const needIds = (wf?.intake ?? []).filter((it) => originOf(it) === 'new').map((it) => it.id)
+      if (probs.length === 0) {
+        ok(`F10 ✓ **运行时会真的变**：\`prefix\` 正文与 \`gen/persona.md\` **逐字节一致**（${Buffer.byteLength(persona, 'utf8')} B）· `
+          + `且**内容在**：${(wf?.invariant ?? []).length} 条不变量的 id+text 全在 · `
+          + `新增 ${needIds.length} 节 intake 的节名与 id 全在（${needIds.join(' · ')}）⇒ ⛔ 两面同删也会红`)
+      } else for (const p of probs) bad(`F10 · ${p}`)
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // F11 · ⭐ **两面同核**：`workflow.toml` 的不变量 ↔ `CONSTITUTION.md`（P39 · §三④(c)）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ── 它守什么（`PROJECT.md` §5.5 末条：两面同核 + 存在性）──────────────
+   *   不变量在**两个地方**各写一次：`workflow.toml` 的 `[[invariant]]`（机读）与
+   *   `CONSTITUTION.md` 的编号条款（人读、带 `checked_by`）。
+   *   ⚠ 改前没有任何判据核这两面 —— 可以只改一面，另一面静默过期（"两处真相"）。
+   *   ⇒ 三条：① toml 每条 invariant 的 `text` 必须在宪法里**逐字出现**；
+   *     ② 宪法里与不变量对应的条款数 == toml 的 invariant 条数（**恰好相等**）；
+   *     ③ 反向：宪法的**不变量条款**里写了、而 toml 里没有的 ⇒ 红（防"宪法偷偷多一条"）。
+   *
+   * ── ⚠ 口径（怎么认"宪法的哪一条是不变量"）──────────────────────────
+   *   宪法条款里**同时**带「两面同核」字样的，就是本轮的"不变量条款"标记
+   *   （第 8/9/10 条）。前七条是别的性质（五步 / 两种对象 / 预算 / 判不出），
+   *   ⛔ 不并进来 —— 它们各有各的机检，硬凑成"不变量"会让 ② 的数字失去意义。
+   */
+  {
+    let konst = ''
+    try { konst = readFileSync(CONST, 'utf8') } catch { konst = '' }
+    if (wf === null || konst === '') {
+      bad('F11 读不到 `workflow.toml` 或 `CONSTITUTION.md` ⇒ 两面同核失去基准（⛔ 不按通过处理）')
+    } else {
+      const probs = []
+      const invs = wf.invariant ?? []
+      /** 宪法条款按"条款 + 续行"成组（与 F3 同口径）。 */
+      const grouped = []
+      let cur = null
+      for (const l of konst.split('\n')) {
+        if (/^\d+\.\s+\*\*/.test(l.trim())) { cur = [l]; grouped.push(cur); continue }
+        if (cur !== null && l.trim() !== '' && !/^#/.test(l.trim())) cur.push(l)
+      }
+      /**
+       * ⚠ 口径（**按 `text` 逐字认条款**，⛔ 不靠人工标记）：
+       *   "不变量条款" = 正文里**逐字含有**`workflow.toml` 某条 invariant 的 `text` 的那个编号条款。
+       *   ⇒ 谁把两条不变量并进一条（②的数字会少）、或把一条拆成两条（②会多）、
+       *     或在宪法里偷偷多立一条（③）—— 都会被咬住。
+       */
+      const tomlTexts = invs.map((v) => String(v.text ?? '')).filter((t) => t !== '')
+      const clauseOf = (g) => g.join('\n')
+      const invClauses = grouped.filter((g) => tomlTexts.some((t) => clauseOf(g).includes(t)))
+      // ① toml → 宪法：每条 text 必须逐字出现
+      for (const v of invs) {
+        if (!konst.includes(String(v.text ?? ''))) probs.push(`① 不变量 \`${v.id}\` 的 \`text\`「${v.text}」在 \`CONSTITUTION.md\` 里**逐字找不到**（两处真相已经开始漂）`)
+      }
+      // ② 条数恰好相等（⚠ 逐条一一对应：多、少、合并、拆分 全部红）
+      if (invClauses.length !== invs.length) {
+        probs.push(`② 宪法里与不变量对应的条款 **${invClauses.length}** 条 ≠ \`workflow.toml\` 的 invariant **${invs.length}** 条`
+          + '\n        ⇒ 少 = 有一条不变量没进宪法（或两条被并进同一条）；多 = 一条不变量被拆成多条'
+          + `\n        匹配到的条款：${invClauses.map((g) => g[0].trim().slice(0, 26)).join(' / ') || '（无）'}`)
+      }
+      // ③ 反向：宪法里**自称不相等**（含 `≠`）却对不上 toml 任何一条 ⇒ 红
+      const neqClauses = grouped.filter((g) => clauseOf(g).includes('≠'))
+      const stray = neqClauses.filter((g) => !tomlTexts.some((t) => clauseOf(g).includes(t)))
+      if (stray.length > 0) {
+        probs.push(`③ 宪法里有条款写了「≠」（= 自称是不变量），而 \`workflow.toml\` 里**没有对应条目**：${stray.map((g) => g[0].trim().slice(0, 40)).join(' / ')}`)
+      }
+      if (invs.length === 0) probs.push('`workflow.toml` 一条 invariant 都没有 ⇒ 本条没有对象（⛔ 不报 ✓）')
+      if (invClauses.length === 0) probs.push('宪法里一条带「两面同核」标记的条款都没认到 ⇒ 反向核没有对象（⛔ 不报 ✓）')
+      if (probs.length === 0) {
+        ok(`F11 ✓ **两面同核**：\`workflow.toml\` 的 **${invs.length}** 条不变量 \`text\` 在宪法里**逐字全中** · `
+          + `宪法里对应的条款 **${invClauses.length}** 条 == ${invs.length}（②恰好相等）· `
+          + `反向：宪法**没有**多出不变量条款（③${invClauses.length} 条全部在 toml 里有对应）`)
+      } else for (const p of probs) bad(`F11 · ${p}`)
+    }
+  }
+
   // ── N-F9：造一段**没有** `<!-- source: -->` 的正文 ⇒ F9 必红 ──
   {
     /** ⚠ **先自证夹具真的坏了**，再断言"F8 会因它变红"——两件事分开报（`E-112`）。 */
@@ -613,20 +855,28 @@ try {
     }
   }
 
-  // ── N-F4：从 workflow.toml 删一个 intake ⇒ F4 的覆盖度必红 ──
+  // ── N-F4：从 workflow.toml 删一条 **original** intake ⇒ F4 的①必红 ──
+  /**
+   * ⚠⚠ **2026-10-31 P39：夹具对象换成 `original` 那条**。
+   *   F4 换成按 `origin` 分路之后，"删掉最后一条"删到的是新增的 `resume`（`origin = "new"`）——
+   *   删它**不该**让①红（①只管原文七节），所以旧夹具会报"覆盖度没在比对"（**假哑**）。
+   *   ⇒ 夹具改成删一条 `original`：①必须当场红（原文有、original 没有 = 漏抽）。
+   *   ⚠ 这同时是新的负向对拍对象：**新增条目的增减不许惊动①**，原文条目的增减必须惊动它。
+   */
   {
     if (wf === null || pre === null) {
       bad('N-F4 · 没有基准 ⇒ 本条不可判')
     } else {
       const secs = inputSectionsOf(pre.text)
       const fewer = JSON.parse(JSON.stringify(wf))
-      const removed = fewer.intake.pop()
-      const reallyFewer = fewer.intake.length === wf.intake.length - 1
-      const declared = new Set(fewer.intake.map((s) => (s.section ?? '').replace(/^###\s+/, '').trim()))
+      const idx = fewer.intake.map((s) => originOf(s)).lastIndexOf('original')
+      const removed = idx >= 0 ? fewer.intake.splice(idx, 1)[0] : undefined
+      const reallyFewer = idx >= 0 && fewer.intake.filter((s) => originOf(s) === 'original').length === secs.length - 1
+      const declared = new Set(fewer.intake.filter((s) => originOf(s) === 'original').map((s) => (s.section ?? '').replace(/^###\s+/, '').trim()))
       const missing = secs.filter((s) => !declared.has(s))
-      if (!reallyFewer) bad('N-F4 · 夹具没真的删掉一条 intake ⇒ 本条不可判')
-      else if (missing.length === 1) ok(`N-F4 ✓ 负向对拍（先自证：从 toml 删掉 intake \`${removed?.id}\` ⇒ 正文 ${secs.length} 节 / toml ${fewer.intake.length} 条·漏 ${missing.length}）⇒ F4 的覆盖度**必红**：漏「${missing[0]}」`)
-      else bad(`N-F4 · 删了一条却报漏 ${missing.length} 个 ⇒ 覆盖度没在比对（判据哑了）`)
+      if (!reallyFewer) bad('N-F4 · 夹具没真的删掉一条 `original` intake（基准不具备）⇒ 本条不可判')
+      else if (missing.length === 1) ok(`N-F4 ✓ 负向对拍（先自证：从 toml 删掉 **original** 那条 intake \`${removed?.id}\` ⇒ 原文 ${secs.length} 节 / original ${fewer.intake.filter((s) => originOf(s) === 'original').length} 条·漏 ${missing.length}）⇒ F4 的①**必红**：漏「${missing[0]}」`)
+      else bad(`N-F4 · 删了一条 original 却报漏 ${missing.length} 个 ⇒ 覆盖度没在比对（判据哑了）`)
     }
   }
   // ── N-F5：给附注卷塞一段**原文里没有**的 source ⇒ F5 必红 ──
@@ -680,6 +930,297 @@ try {
         // ⚠ 先自证：删一条后剩下的必须**少一条**
         if (!allCaught || !results.every(Boolean)) bad('N-F7 · 夹具没造出"少一条"⇒ 本条不可判')
         else ok(`N-F7 ✓ 负向对拍（先自证：逐条删掉「问用户四条件」中的任意一条 ⇒ 剩余 3/4）⇒ 「四条件必须齐」**必红**（4 条各测一次）`)
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // F12 · ⭐ **每条断言的 ok() 与 bad() 必须打同一个编号**（2026-10-31 P40 · D-1 根治）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ── 它守什么（`R-10`「两种原因说成同一句话」的同类）────────────────────
+   *   实测过的缺陷：F7 那段 `ok()` 打 `F7 ✓`、失败分支打 `F11 ·` ⇒
+   *   一条红读数会被读成**另一条断言**出了事（D-1）。
+   *   ⇒ 本条**读自己的源码**，把每段 `ok()` 的数与紧邻 `bad()` 的数逐段比。
+   *   ⚠ 这不是"数一下"那么弱：它咬的是**源码文本**，改坏一处当场红；
+   *     而"本条自己有没有被改坏"由 `N-F12` 用**真造一个错配的假源码**自证。
+   *
+   * ── 口径（⚠ 只认同一段）────────────────────────────────────────────
+   *   `ok()` 之后 **0..5 行**内出现的 `bad()` 视为同一段（if/else 链不会跨更远）。
+   *   ⚠ 编号取自 `ok(\`<ID> ✓` 与 `bad(\`<ID> ·`；⛔ 不靠人工清单（清单会过期）。
+   */
+  const idMismatchScan = (srcText) => {
+    /**
+     * ⚠ 跳过夹具区间 `#F12-FIXTURE-BEGIN`..`#F12-FIXTURE-END`：
+     *   负向对拍必须**当面写出**一个错配的字面量，若不跳过，判据会把自己的夹具当成
+     *   真断言来报（实测踩过：F12 报"第 989 行 F7 vs 第 990 行 F11"，那正是夹具本身）。
+     *   ⚠ 跳过区间由**源码里的哨兵**界定，⛔ 不按行号跳过（行号会随编辑漂）。
+     */
+    const raw = String(srcText).split('\n')
+    const lines = []
+    let skip = false
+    for (const l of raw) {
+      if (l.includes('#F12-FIXTURE-BEGIN')) { skip = true; lines.push(''); continue }
+      if (l.includes('#F12-FIXTURE-END')) { skip = false; lines.push(''); continue }
+      lines.push(skip ? '' : l)
+    }
+    const hits = []
+    lines.forEach((l, i) => {
+      const mo = /ok\(\s*`([A-Za-z0-9\u4e00-\u9fa5-]+?)\s*✓/.exec(l)
+      if (!mo) return
+      for (let j = i; j <= Math.min(i + 5, lines.length - 1); j++) {
+        const mb = /bad\(\s*`([A-Za-z0-9\u4e00-\u9fa5-]+?)\s*·/.exec(lines[j])
+        if (mb) {
+          if (mb[1] !== mo[1]) hits.push({ okAt: i + 1, okId: mo[1], badAt: j + 1, badId: mb[1] })
+          return
+        }
+      }
+    })
+    return hits
+  }
+  {
+    const selfPath = fileURLToPath(import.meta.url)
+    let selfSrc = ''
+    try { selfSrc = readFileSync(selfPath, 'utf8') } catch { selfSrc = '' }
+    if (selfSrc === '') {
+      bad('F12 读不到本文件自身 ⇒ 编号一致核没有对象（⛔ 不按通过处理）')
+    } else {
+      const hits = idMismatchScan(selfSrc)
+      const pairs = (selfSrc.match(/ok\(\s*`[A-Za-z0-9\u4e00-\u9fa5-]+?\s*✓/g) ?? []).length
+      if (pairs === 0) bad('F12 一处 `ok(` 都没数到 ⇒ 扫描面为 0（⛔ 这不是通过）')
+      else if (hits.length > 0) {
+        for (const h of hits) bad(`F12 · **同一段打两个编号**：第 ${h.okAt} 行 \`ok()\` 打「${h.okId}」，第 ${h.badAt} 行 \`bad()\` 打「${h.badId}」⇒ 一条红读数会指向另一条断言`)
+      } else {
+        ok(`F12 ✓ **每条断言的 ok() 与 bad() 同号**：本文件 **${pairs}** 处 \`ok(\` 逐个配对，跨编号 **0** 处`
+          + '（口径：`ok()` 之后 0..5 行内的 `bad()` 视为同一段；⚠ 编号从源码文本取，⛔ 不靠人工清单）')
+      }
+    }
+  }
+
+  // ── N-F12：造一段**真的错配**的假源码 ⇒ F12 必红（⚠ 真喂判据）──
+  // #F12-FIXTURE-BEGIN —— ⚠ 本区间内的字面量是**夹具**，不是真断言；F12 扫描时必须跳过
+  {
+    const fakeOk = '      ok(`F7 ✓ 假的自证段`)\n'
+    const fakeBad = '      } else for (const p of probs) bad(`F11 · ${p}`)\n'
+    const fakeSrc = fakeOk + fakeBad
+    const hits = idMismatchScan(fakeSrc)
+    const reallyBroken = hits.length === 1 && hits[0].okId === 'F7' && hits[0].badId === 'F11'
+    if (!reallyBroken) bad('N-F12 · 夹具没造出"F7 成功 / F11 失败"的错配 ⇒ 本条不可判')
+    else ok(`N-F12 ✓ 负向对拍（先自证：假源码里 \`ok()\` 打 F7、\`bad()\` 打 F11 ⇒ 判据数出 **1** 处错配）`
+      + ` ⇒ F12 的"同号"**必红**，会红的原文：第 ${hits[0].okAt} 行「F7」vs 第 ${hits[0].badAt} 行「F11」`
+      + '（⚠ 这正是 D-1 修掉的那个形态）')
+  }
+  // #F12-FIXTURE-END
+
+  // ══════════════════════════════════════════════════════════════════════
+  // P39 · 六条负向对拍（`TASK-P39.md` §五 1..6 + §五8 自指）
+  // ⚠ 每条都**先自证夹具真的坏了**，再断言"那条判据会因它变红"（`E-112`）。
+  // ⚠ 这里**不复制**判据实现：把 F1/F4/F10/F11 的判定抽成纯函数，夹具喂进去跑。
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ── §五1：invariant 摘掉一条 ⇒ F1 必红 ──
+  {
+    if (wf === null) {
+      bad('N-F1b · 没有 workflow.toml 基准 ⇒ 本条不可判')
+    } else {
+      const mut = JSON.parse(JSON.stringify(wf))
+      const removed = mut.invariant.pop()
+      const broke = mut.invariant.length === 5 && wf.invariant.length === 6
+      const { probs: lines } = f1ProbsOf(mut, pre, ORIGIN_USER_LINES, originUserFlat)
+      const hit = lines.find((x) => x.includes('invariant 应恰好 6 条'))
+      if (!broke) bad('N-F1b · 夹具没真的摘掉一条不变量 ⇒ 本条不可判')
+      else if (hit !== undefined) ok(`N-F1b ✓ 负向对拍（先自证：从 6 条摘掉 \`${removed?.id}\` ⇒ 实 5 条）⇒ F1 的"封闭集 6 条"**必红**，红的原文：\`${hit}\``)
+      else bad('N-F1b · 摘掉一条不变量，F1 却没报"invariant 应恰好 6 条" ⇒ 判据哑了')
+    }
+  }
+
+  // ── §五2：某条 new 的 source 改成冻结文件里没有的句子 ⇒ F1 必红 ──
+  {
+    const news = (wf?.intake ?? []).filter((x) => originOf(x) === 'new')
+    if (wf === null || news.length === 0) {
+      bad('N-F1c · 没有 `origin = "new"` 的条目 ⇒ 本条不可判')
+    } else {
+      const mut = JSON.parse(JSON.stringify(wf))
+      const tgt = mut.intake.find((x) => x.id === news[0].id)
+      tgt.source = '这句原话在 2026-10-31 的冻结件里绝对不存在（夹具）'
+      const reallyBroken = tgt.source !== news[0].source
+      const hit = f1ProbsOf(mut, pre, ORIGIN_USER_LINES, originUserFlat).probs.find((x) => x.includes('用户原话冻结件') && x.includes('找不到'))
+      if (!reallyBroken) bad('N-F1c · 夹具没真的改掉 source ⇒ 本条不可判')
+      else if (hit !== undefined) ok(`N-F1c ✓ 负向对拍（先自证：把 \`${tgt.id}\` 的 \`source\` 换成冻结件里没有的串 ⇒ 子串核对命中 0）⇒ F1 的"new 必须对用户原话核"**必红**，红的原文：\`${hit.slice(0, 60)}\``)
+      else bad('N-F1c · 改了 new 的 source 却仍命中 ⇒ 分路核对没在比对（判据哑了）')
+    }
+  }
+
+  // ── §五3：origin 写成 legacy ⇒ F1 必红 ──
+  {
+    if (wf === null) {
+      bad('N-F1d · 没有 workflow.toml 基准 ⇒ 本条不可判')
+    } else {
+      const mut = JSON.parse(JSON.stringify(wf))
+      mut.invariant[0].origin = 'legacy'
+      const reallyBroken = mut.invariant[0].origin === 'legacy'
+      const hit = f1ProbsOf(mut, pre, ORIGIN_USER_LINES, originUserFlat).probs.find((x) => x.includes('不在封闭集 original/new 里'))
+      if (!reallyBroken) bad('N-F1d · 夹具没把 origin 改成 legacy ⇒ 本条不可判')
+      else if (hit !== undefined) ok(`N-F1d ✓ 负向对拍（先自证：把 \`${mut.invariant[0].id}\` 的 \`origin\` 改成 \`legacy\`）⇒ F1 的"origin 封闭集"**必红**，红的原文：\`${hit.slice(0, 70)}\``)
+      else bad('N-F1d · origin=legacy 却仍绿 ⇒ 封闭集没在比对（判据哑了；⚠ 非空即算就是这种哑法）')
+    }
+  }
+
+  /**
+   * F4 的**判定核心**抽成纯函数（⚠ 供 N-F4b/N-F4c 用，口径与 F4 完全同一份）。
+   * @returns {string[]} 红的行
+   */
+  const f4ProbsOf = (mut, userLines, userFlat) => {
+    const out = []
+    if (pre === null) return ['读不到基准']
+    const secs = inputSectionsOf(pre.text)
+    const secNames = new Set(secs)
+    const originals = (mut.intake ?? []).filter((x) => originOf(x) === 'original')
+    const news = (mut.intake ?? []).filter((x) => originOf(x) === 'new')
+    const declared = new Set(originals.map((x) => (x.section ?? '').replace(/^###\s+/, '').trim()))
+    if (secs.length !== originals.length) out.push(`① **原文节数对不上**：冻结原文 ${secs.length} 节 vs origin 缺省的 intake ${originals.length} 条`)
+    const invented = [...declared].filter((x) => !secNames.has(x))
+    if (invented.length > 0) out.push(`② **发明了原文没有的节名**：${invented.join(' · ')}`)
+    const dropped = secs.filter((x) => !declared.has(x))
+    if (dropped.length > 0) out.push(`① **原文有、original 没有**：${dropped.join(' · ')}`)
+    if (news.length === 0) out.push('③ 一条 origin = "new" 都没有')
+    if (userLines.length === 0) out.push('③ **用户原话冻结件是空的**')
+    else {
+      const noHit = news.filter((x) => !userFlat.includes(String(x.source ?? '').replace(/\s+/g, ' ').trim()))
+      if (noHit.length > 0) out.push(`③ **${noHit.length} 条 new 的 source 在用户原话冻结件里找不到**：${noHit.map((x) => x.id).join(' · ')}`)
+    }
+    return out
+  }
+
+  // ── §五4：某条 original 的 section 改成原文没有的节名 ⇒ F4 必红 ──
+  {
+    if (wf === null || pre === null) {
+      bad('N-F4b · 没有基准 ⇒ 本条不可判')
+    } else {
+      const mut = JSON.parse(JSON.stringify(wf))
+      const tgt = mut.intake.find((x) => originOf(x) === 'original')
+      tgt.section = '### 这一节在原七种里根本不存在'
+      const reallyBroken = tgt.section !== '### New instruction'
+      const hit = f4ProbsOf(mut, ORIGIN_USER_LINES, originUserFlat).find((x) => x.includes('发明了原文没有的节名'))
+      if (!reallyBroken) bad('N-F4b · 夹具没真的改掉 section ⇒ 本条不可判')
+      else if (hit !== undefined) ok(`N-F4b ✓ 负向对拍（先自证：把 \`${tgt.id}\` 的 \`section\` 改成原文里没有的节名）⇒ F4 的②**必红**，红的原文：\`${hit.slice(0, 70)}\``)
+      else bad('N-F4b · 改了 original 的 section 却仍绿 ⇒ ②没在比对（判据哑了）')
+    }
+  }
+
+  // ── §五5：冻结文件清空 ⇒ F4 必红（⛔ 不许退化成 skip / exit 2）──
+  {
+    if (wf === null || pre === null) {
+      bad('N-F4c · 没有基准 ⇒ 本条不可判')
+    } else {
+      const empties = f4ProbsOf(wf, [], '')
+      const hit = empties.find((x) => x.includes('用户原话冻结件是空的'))
+      // ⚠ 先自证：清空后**只剩注释**时，ORIGIN_USER_LINES 必须真的是 0 行
+      const onlyComments = ['# 只有注释', '# 还是注释', '', ''].join('\n')
+      const lines = onlyComments.split('\n').map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('#'))
+      if (lines.length !== 0) bad('N-F4c · 夹具没造出"只剩注释 ⇒ 0 行"⇒ 本条不可判')
+      else if (hit !== undefined) ok(`N-F4c ✓ 负向对拍（先自证：把 \`spec/origin-user-2026-10-31.txt\` 清成只剩注释 ⇒ 有效行 9 → **0**）⇒ F4 的③**必红**（⛔ 不是 skip、⛔ 不是 exit 2），红的原文：\`${hit}\``)
+      else bad('N-F4c · 冻结件清空了 F4 却仍绿 ⇒ 空文件被当成了通过（正是要堵的洞）')
+    }
+  }
+
+  // ── §五6：`gen/persona.md` 里删掉一条不变量的 text ⇒ F10 的② 必红 ──
+  /**
+   * ⚠⚠ **夹具必须"两面同删"**（这是本条的要害）：只删 persona 一侧，会先被 ① 逐字节一致咬住
+   *   —— 那证不了 ② 有用。① 只证"两份一样"，**两份一起删它照样绿**。
+   *   ⇒ 夹具把 **prefix 与 persona 同步改同一处**：① 保持绿，② 若也绿就说明"内容在"是摆设。
+   */
+  {
+    const body = prefixBodyOf(yml)
+    let persona = ''
+    try { persona = readFileSync(join(GEN, 'persona.md'), 'utf8') } catch { persona = '' }
+    if (wf === null || body === null || persona === '') {
+      bad('N-F11 · 读不到 gen/persona.md / prefix 正文 / workflow.toml ⇒ 本条不可判')
+    } else {
+      const victim = (wf.invariant ?? []).find((v) => String(v.text ?? '') !== '')
+      const txt = String(victim?.text ?? '\u0000')
+      const stamp = '（夹具：这条不变量的 text 两面同删）'
+      const mutPersona = persona.replace(txt, stamp)
+      const mutPrefix = body.text.replace(txt, stamp)
+      const gone = !mutPersona.includes(txt) && !mutPrefix.includes(txt)
+      const stillSame = mutPersona === mutPrefix || mutPersona.replace(/\n+$/, '') === mutPrefix.replace(/\n+$/, '')
+      const lines = f10ProbsOf(mutPrefix, mutPersona, wf)
+      const hit = lines.find((x) => x.includes('不变量 text'))
+      if (!gone) bad(`N-F11 · 夹具没把「${victim?.id}」的 text 两面删干净 ⇒ 本条不可判`)
+      else if (!stillSame) bad('N-F11 · 夹具把两面改得不一致了 ⇒ ① 会先红，本条证明不了 ②（⛔ 不按通过处理）')
+      else if (hit === undefined) bad('N-F11 · 两面同删之后 F10 的② 仍绿 ⇒ "内容在"是摆设（⚠ 不许当成通过）')
+      else ok(`N-F11 ✓ 负向对拍（先自证：\`prefix\` 与 \`gen/persona.md\` **两面同删**「${txt}」这一行 ⇒ 两面仍逐字节相等，① 绿）`
+        + ` ⇒ 把夹具喂进 \`f10ProbsOf()\`，**实际红的行**：\`${hit.slice(0, 110)}\``
+        + ' ⇒ 证明 ② 不是摆设（⚠ 跑在内存态，⛔ 未写盘）')
+    }
+  }
+
+  // ── §五7：`prefix` 里删掉一节新 intake 的名字 ⇒ F10 的② 必红 ──
+  /**
+   * ⚠ 同样"两面同删"：删一节新 intake 的节名，**两份一起删** ⇒ ① 保持绿、② 必红。
+   *   ⚠ 这是本轮最关键的一条对拍：它证明"新条文真的在运行时提示词里"不是靠
+   *     "两份文件长得一样"（两份一起删也长得一样）。
+   */
+  {
+    const body = prefixBodyOf(yml)
+    let persona = ''
+    try { persona = readFileSync(join(GEN, 'persona.md'), 'utf8') } catch { persona = '' }
+    const newIntakes = (wf?.intake ?? []).filter((x) => originOf(x) === 'new')
+    if (body === null || persona === '' || newIntakes.length === 0) {
+      bad('N-F10 · 读不到 prefix 正文 / persona / 新增 intake ⇒ 本条不可判')
+    } else {
+      const victim = newIntakes[0]
+      const secName = String(victim.section ?? '').replace(/^###\s+/, '').trim()
+      const mutPrefix = body.text.replace(`### ${secName}`, '### （夹具：这一节被删）')
+      const mutPersona = persona.replace(`### ${secName}`, '### （夹具：这一节被删）')
+      const gone = !mutPrefix.includes(`### ${secName}`) && !mutPersona.includes(`### ${secName}`)
+      const stillSame = mutPrefix.replace(/\n+$/, '') === mutPersona.replace(/\n+$/, '')
+      const lines = f10ProbsOf(mutPrefix, mutPersona, wf)
+      const hit = lines.find((x) => x.includes('节名'))
+      const oneStillGreen = !lines.some((x) => x.includes('① '))
+      if (!gone) bad('N-F10 · 夹具没把该节名从两面删掉 ⇒ 本条不可判')
+      else if (!stillSame) bad('N-F10 · 夹具把两面改得不一致了 ⇒ ① 会先红，本条证明不了 ②')
+      else if (hit === undefined) bad('N-F10 · 两面同删节名，F10 的② 却仍判"在"⇒ 内容在断言没在比对（判据哑了）')
+      else ok(`N-F10 ✓ 负向对拍（先自证：\`prefix\` 与 \`gen/persona.md\` **两面同删** \`### ${secName}\` 这一节名 ⇒ 两面仍逐字节相等）`
+        + ` ⇒ 把夹具喂进 \`f10ProbsOf()\`，**实际红的行**：\`${hit.slice(0, 110)}\``
+        + `（⚠ ① 逐字节一致此时 ${oneStillGreen ? '**仍然绿**' : '也红了'} ⇒ 证明 ② 不是摆设）`)
+    }
+  }
+
+  // ── §五8 · ⚠ **自指**：把 F1 里那条 `invariant 应恰好 6 条` 断言整个摘掉，必须另有一条发现"断言少了" ──
+  /**
+   * ── 它守什么 ────────────────────────────────────────────────────────
+   *   摘断言是本项目最怕的一种回归：**判据越少越容易绿**。而"少了一条断言"这件事
+   *   如果没有任何判据能发现，整个 F 组就可以被慢慢掏空而没人知道。
+   *   ⇒ 本条**不自称有**"能发现任意断言被摘"的能力，它只做两件事：
+   *     ① 真的把那条断言的触发路径**摘掉**（改 toml ⇒ 不再有 6 条这条检查的输入）；
+   *     ② 核**断言总数**这个读数本身 —— 摘掉之后 F 组仍会跑固定条数，
+   *        而 `check:all` 的**每族断言下界**（`ASSERTION_FLOORS`）会因处数变少而红。
+   *   ⚠ 若这条发现不了，报告里必须照实写"没有这道保护"（⛔ 不许假装有）。
+   */
+  {
+    const floorPath = join(ROOT, 'scripts', 'check-all.mjs')
+    let src = ''
+    try { src = readFileSync(floorPath, 'utf8') } catch { src = '' }
+    const m = /\['check:workflow',\s*(\d+)\]/.exec(src)
+    if (src === '' || m === null) {
+      bad('N-F1e · 读不到 `scripts/check-all.mjs` 里 `check:workflow` 的断言下界 ⇒ 本条不可判（⛔ 不许当成通过）')
+    } else {
+      /**
+       * ⚠ 自证方式（**真的会红，不是嘴上说**）：在本条前面**故意**把 F 组的处数算少 1 条，
+       *   看下界是否 ≥ 当前实测 —— 若下界 ≤ 实测-1，说明**摘一条断言后仍在下界之上**，
+       *   即"没有这道保护"。
+       */
+      const floor = Number(m[1])
+      // ⚠ 要算上**本条自己**（否则永远是"少一条"的读数，判断会偏一）
+      const measured = pass + fail + 1
+      if (floor >= measured) {
+        ok(`N-F1e ✓ **自指：这道保护在**——\`ASSERTION_FLOORS\` 里 \`check:workflow\` 的下界 **${floor}** ≥ 本组实测 **${measured}** 处`
+          + '（⚠ 零余量：摘掉任意一条断言 ⇒ 处数 < 下界 ⇒ `check:all` 当场红，即"断言少了"有人发现）')
+      } else {
+        bad(`N-F1e ⛔ **没有这道保护**：下界 ${floor} **低于** 实测 ${measured}（余量 ${measured - floor} 条）`
+          + ' ⇒ 摘掉那条 `invariant 应恰好 6 条` 断言后处数仍在下界之上，**没有任何判据会发现断言少了**'
+          + '（⛔ 报告里必须照实写这一条，不许假装有）')
       }
     }
   }

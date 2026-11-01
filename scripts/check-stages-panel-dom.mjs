@@ -53,6 +53,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const ENTRY = 'src/client/stages-panel.tsx'
 const SRC = join(root, ENTRY)
+/** 面板源码本体（S-28g 负向对拍要就地造变体，⚠ 与 `SRC` 那个入口文件不同）。 */
+const PANEL_TSX = join(root, 'src', 'client', 'stages-panel.tsx')
 const work = join(root, '.check-stages-work')
 
 let pass = 0
@@ -1647,6 +1649,14 @@ export function StateDot({ state, size, appearance }) {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => built,
+          /**
+           * ⚠⚠ **必须注入 `fetchUnseen`**（2026-11-01 P41/R20 加的）：本组扫全文不许出现
+           *   「判不出」，而新增的「待确认工具」块在**没有注入**时会走真实 `fetch`
+           *   ⇒ jsdom 里拿不到 ⇒ 落成「判不出」⇒ S-18 当场红（实测咬过一次）。
+           *   ⚠ 这不是为了让 S-18 变绿而放宽它：本组验的是**五步树/账面**的状态面，
+           *     与待确认工具那一块无关；给它一个**合法读数**才是诚实的夹具。
+           */
+          fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
           pollMs: 0,
         }))
         await tick(40)
@@ -1725,6 +1735,225 @@ export function StateDot({ state, size, appearance }) {
          *   再卸 `r`；反过来卸会把已经不在树上的节点再摘一次 ⇒ 抛 DOMException。
          */
         actFn(() => r2.unmount())
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // S-28 ⭐ **组合层区块的三种形态**（2026-11-01 P40/R8 · `TASK-R8.md` §二）
+    //
+    //   ⚠⚠ 这条是**连续两轮挂着的缺口**（R6 §4.3-1、R7 §4.3-1 都提过，作业书两次没要求）。
+    //   前两轮只有 `S-18`（真账本渲染 · 全文无「判不出」）的**间接**覆盖 ——
+    //   它只能证明"这行文字出现在某处"，⛔ 证明不了
+    //   "该出现时出现 / 该消失时消失 / 读不到时整行不出现"。
+    //
+    //   ── 为什么必须"喂自造 portfolio"而不是全文扫字符串 ────────────────────
+    //     真账本里 `builtNoAcc` 恰好**非空**（R-002/003/004）⇒ 用真数据**测不到**"为空则整行不出现"
+    //     这一支。⛔ 靠改账本去造那一支 = 造数据（§六 明令禁止）。
+    //     ⇒ 入口是现成的：`buildStages` 的返回值就是 `fetchStages` 的入参，
+    //       把 `portfolio` 字段**替换**掉即可 —— **⛔ 不需要改任何渲染逻辑**。
+    //     （`buildStages` 自己算的 portfolio 在返回值里，覆盖它即可；这不算"绕过"，
+    //       因为渲染逻辑读的就是这个字段，与产品路由给的是同一个字段。）
+    // ══════════════════════════════════════════════════════════════════
+    {
+      const { resolveLedgerRoot: rlr } = await import('./lib/ledger-root.mjs')
+      const ledgerRoot2 = rlr(root, undefined, undefined)
+      if (ledgerRoot2 === undefined) {
+        bad('S-28 · 账本根判不出 ⇒ 无法构造组合层夹具（⛔ 不按通过处理）')
+      } else {
+        const idx2 = await import(pathToFileURL(join(root, 'src', 'shared', 'stages-index.ts')).href)
+        const units2 = idx2.parseUnitsToml(readFileSync(join(ledgerRoot2, idx2.STAGES_INDEX_REL), 'utf8'))
+        const base2 = idx2.buildStages(units2, '2026-10-30T00:00:00.000Z')
+        /** ⚠ 先自证：真数据里 `builtNoAcc` **非空** ⇒ 才有"非空"这一支可测。 */
+        const realBuiltNoAcc = Array.isArray(base2.portfolio?.builtNoAcc) ? base2.portfolio.builtNoAcc : []
+        const mkPanel = (portfolio) => mount(react.createElement(ui.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => ({ ...base2, portfolio }),
+          pollMs: 0,
+        }))
+        const read3 = () => ({
+          head: document.querySelector('[data-dsh-hob="stages-portfolio-head"]')?.textContent ?? '',
+          orphans: document.querySelector('[data-dsh-hob="stages-portfolio-orphans"]')?.textContent ?? null,
+          builtNoAcc: document.querySelector('[data-dsh-hob="stages-portfolio-built-no-acc"]')?.textContent ?? null,
+          wrap: document.querySelector('[data-dsh-hob="stages-portfolio"]')?.getAttribute('data-state') ?? '',
+        })
+        const problems = []
+
+        // ── 形态 ①：`builtNoAcc` 非空 ⇒ 第三行**出现**，且逐条点名 ──
+        const fakeFull = {
+          reqs: [], orphans: ['R-971'], orphanNote: '1 条已定却完全没人接：R-971',
+          builtNoAcc: ['R-972', 'R-973'],
+          counts: { total: 3, covered: 0, proven: 0, orphan: 1, builtNoAcc: 2 },
+        }
+        const rA = mkPanel(fakeFull)
+        await tick(40)
+        const a = read3()
+        if (a.builtNoAcc === null) problems.push('① `builtNoAcc` 非空（2 条）但**第三行没出现**')
+        else {
+          for (const id of ['R-972', 'R-973']) if (!a.builtNoAcc.includes(id)) problems.push(`① 第三行没点名 \`${id}\`（实际：${JSON.stringify(a.builtNoAcc)}）`)
+          if (!a.builtNoAcc.includes('做完了没人验')) problems.push(`① 第三行缺"做完了没人验"这句（实际：${JSON.stringify(a.builtNoAcc)}）`)
+        }
+        if (!a.head.includes('0/3') || !a.head.includes('1 条没人接')) problems.push(`① 第一行读数不对（实际：${JSON.stringify(a.head)}）`)
+        if (!String(a.orphans ?? '').includes('R-971')) problems.push('① 第二行（孤儿）没点名 R-971')
+        actFn(() => rA.unmount())
+
+        // ── 形态 ②：`builtNoAcc` 为空 ⇒ 第三行**整行不出现**（⛔ 不许空行/占位符）──
+        const fakeEmpty = {
+          reqs: [], orphans: [], orphanNote: '0 条 —— 查过的读数',
+          builtNoAcc: [],
+          counts: { total: 3, covered: 3, proven: 3, orphan: 0, builtNoAcc: 0 },
+        }
+        const rB = mkPanel(fakeEmpty)
+        await tick(40)
+        const b = read3()
+        if (b.builtNoAcc !== null) problems.push(`② \`builtNoAcc\` 为空但**第三行仍存在**（${JSON.stringify(b.builtNoAcc)}）⇒ 空行/占位符`)
+        if (b.orphans !== null) problems.push(`② 孤儿为空但**第二行仍存在**（${JSON.stringify(b.orphans)}）⇒ 空行/占位符`)
+        if (!b.head.includes('3/3')) problems.push(`② 第一行读数不对（实际：${JSON.stringify(b.head)}）`)
+        actFn(() => rB.unmount())
+
+        // ── 形态 ③：`portfolio` 读不到 ⇒ 第一行「判不出」，第二、三行都**不出现** ──
+        const rC = mkPanel(undefined)
+        await tick(40)
+        const c = read3()
+        if (c.head !== '判不出') problems.push(`③ \`portfolio\` 缺失时第一行应是「判不出」，实际 ${JSON.stringify(c.head)}`)
+        if (c.builtNoAcc !== null) problems.push('③ `portfolio` 缺失却仍渲染第三行')
+        if (c.orphans !== null) problems.push('③ `portfolio` 缺失却仍渲染第二行')
+        if (c.wrap !== 'undecidable') problems.push(`③ \`data-state\` 应是 \`undecidable\`，实际 ${JSON.stringify(c.wrap)}`)
+        /**
+         * ⚠⚠ **③ 的判据是"第一行恰好是「判不出」"** —— 这条比"包含判不出"严：
+         *   如果哪天有人给它加了 `?? 0` 兜底，第一行会变成 `需求覆盖：0/0 …`，
+         *   本条立刻红。⇒ 它咬住的正是 `CONSTITUTION` §7 那条（⛔ 不许把"没读到"显示成 0）。
+         */
+        actFn(() => rC.unmount())
+
+        /**
+         * ── N-S28 · 负向对拍（⚠ 作业书 §二 要求"先自证夹具真的坏了"）────────────────
+         *
+         * ⚠⚠ **我第一次写的负向对拍失败了，而失败的方式本身是个读数**（如实记在这里）：
+         *   我造了一份"`counts` 缺失但 `builtNoAcc` 非空"的 portfolio，预期渲染出
+         *   「第一行判不出 · 第三行却仍点名」这一**自相矛盾**形态。
+         *   实际 `head="判不出"` 而 `builtNoAcc=null` —— **第三行没有出现**。
+         *   ⇒ 原因是 `portfolioBlock` 里第三行的门是 `okNums && ...`（不是 `builtNoAcc.length > 0`）：
+         *     读数判不出时**连第三行一起收起来**，比作业书假设的"只判第一行"更严。
+         *   ⚠ 所以那条夹具造不出矛盾 —— **不是断言没牙，是我预期错了**。
+         *
+         * ⇒ 改用**差分自证**（这才是"有牙"的正确证明方式）：
+         *   同一个选择器 `[data-dsh-hob="stages-portfolio-built-no-acc"]`，
+         *   在夹具 A（`builtNoAcc` 非空）下**必须拿到节点**、在夹具 B（为空）下**必须拿不到**。
+         *   ⇒ 两种输入给出不同结果，说明这条断言**在区分输入**，⛔ 不是"渲染器恰好没崩"。
+         *   ⚠ 另把"判不出时第三行也收起"这件事**钉成断言**（那是本轮实测出来的行为，比作业书更严）。
+         */
+        const rD = mkPanel({
+          reqs: [], orphans: [], orphanNote: '夹具',
+          builtNoAcc: ['R-974'],
+          // ⚠ 故意缺 counts ⇒ 第一行判不出
+        })
+        await tick(40)
+        const d = read3()
+        const stricterThanSpec = d.head === '判不出' && d.builtNoAcc === null
+        actFn(() => rD.unmount())
+        if (!stricterThanSpec) {
+          bad(`N-S28 · "读数判不出"时第三行**没有**一起收起（head=${JSON.stringify(d.head)} · builtNoAcc=${JSON.stringify(d.builtNoAcc)}）`
+            + ' ⇒ ⛔ 那会渲染出"读数判不出却还在点名某几条需求"的自相矛盾形态')
+        }
+        /**
+         * ⚠ 差分自证：A 有节点、B 没节点 ⇒ 选择器在区分输入。
+         *   （`a.builtNoAcc` / `b.builtNoAcc` 是上面两形态的实测读数，取自同一个选择器。）
+         */
+        const discriminates = a.builtNoAcc !== null && b.builtNoAcc === null
+        if (!discriminates) {
+          bad(`N-S28 · 差分自证失败：同一选择器在"非空"下=${JSON.stringify(a.builtNoAcc)}、在"为空"下=${JSON.stringify(b.builtNoAcc)}`
+            + ' ⇒ 它没有区分输入（要么恒有、要么恒无）')
+        }
+        /**
+         * ── **S-28b · 真账本锚点**（2026-11-01 P40/R9 · `TASK-R9.md` §二）─────────────
+         *   上面三形态全用**自造 portfolio**（`R-972/973/974`）⇒ 没有一条用**真账本**核第三行。
+         *   而真账本 `builtNoAcc` 现在**非空**（`R-002` · `R-003` · `R-004`）⇒ 有真实锚点可用。
+         *
+         * ── ⚠⚠ **划界：本条 ⛔ 不能当 `R-002` 的验收依据**（`TASK-R10.md` §四）──────
+         *   `S-28b` 核的是**面板组合层区块**（`builtNoAcc` 第三行出没出）—— 那是 P-1 那层的**显示**。
+         *   `R-002` 要的读数是**执行记录区块**（「现在/历史」两档、历史默认折叠）—— 那是**另一块 UI**
+         *   （由 `S-14a` / `S-14d` 覆盖）。
+         *   ⇒ ⛔ **不许**拿 `S-28b` 绿去当 `R-002` 的验收依据；两者对象不同，混了就是洗账。
+         *
+         * ⚠⚠ **若真账本的 `builtNoAcc` 将来归零，本条会红 —— 那是对的。**
+         *   它会逼人回来改锚点（改成新的真实需求 id，或连同 §二·B 一起裁掉），
+         *   ⛔ **不是静默变成恒绿**。这一句是本条存在的理由，别删。
+         */
+        /**
+         * ── **S-28b · 合成锚点**（2026-11-01 P41/R22 换夹具 · `TASK-R22.md` §一）────────────
+         *
+         * ⚠⚠ **换夹具的理由（⛔ 不是改判据、⛔ 也不是保留红着）**：
+         *   旧版拿**真账本**的 `portfolio.builtNoAcc` 当锚点。而 P41 收口之后，三条需求都补了
+         *   `acceptance_ids` 且全部 pass ⇒ `builtNoAcc` **归零** ⇒ 旧版当场红。
+         *   ⚠ 那条红**是对的**（它自己写着"归零时会红，逼人回来改锚点"），但修法不是删判据，
+         *     而是**换夹具来源** —— 与 `check-ledger-next.mjs` 的 `N-CF`（R17 修的）同一个写法：
+         *     自造合成单元、**调真函数**（`portfolioOf`），⛔ 不写第二份逻辑。
+         *
+         * ⚠ 三条硬要求（缺一条这次改动就不成立）：
+         *   ① 真账本 `builtNoAcc` 为空时，本组**仍能跑绿**（下面的 `realEmpty` 分支）；
+         *   ② 合成夹具 `builtNoAcc` 非空时，本组**仍能抓出来**（下面的 `synth` 分支）；
+         *   ③ 判据逻辑来自 `portfolioOf` 真函数，⛔ 不是我在夹具里手写"哪些算 builtNoAcc"。
+         */
+        const { portfolioOf } = await import(pathToFileURL(join(root, 'src', 'shared', 'portfolio.ts')).href + '?t=' + Date.now())
+        /**
+         * ⚠ 合成单元：一条 req + 一条 `built` 的 task + **零 pass acc** ⇒ `builtNoAcc` 必含它。
+         *   ⚠ 名字用 `R-981` 这种**账本里不存在**的号（⛔ 不冒充真单元）。
+         */
+        const synthUnits = [
+          { id: 'R-981', kind: 'req', status: 'agreed', parent: 'spec/probe' },
+          { id: 'TSK-981', kind: 'task', status: 'built', parent: 'R-981' },
+        ]
+        const synth = portfolioOf(synthUnits)
+        /**
+         * ⚠ 反面夹具：同样的 req + `built` 的 task，但**加一条 pass acc**
+         *   ⇒ `builtNoAcc` 必须**不含**它。这是"判据真的在看 acc"的证明。
+         */
+        const synthWithAcc = portfolioOf([
+          ...synthUnits,
+          { id: 'ACC-981', kind: 'acc', status: 'pass', parent: 'TSK-981' },
+        ])
+        const synthHit = Array.isArray(synth.builtNoAcc) && synth.builtNoAcc.includes('R-981')
+        const synthMiss = Array.isArray(synthWithAcc.builtNoAcc) && !synthWithAcc.builtNoAcc.includes('R-981')
+        /**
+         * ① 真账本现状：`builtNoAcc` 为空 ⇒ 本组**不许因此判红**（那是本轮收口的正常结果）。
+         *    ⚠ 但也不许"静默跳过"：要把它作为一个**读数**报出来。
+         */
+        const realEmpty = realBuiltNoAcc.length === 0
+        if (synthHit) {
+          ok(`S-28b ✓ **合成锚点**（TASK-R22.md §一 换夹具 · 照 N-CF 写法）：`
+            + `\`portfolioOf([R-981(req), TSK-981(built)])\` ⇒ \`builtNoAcc\` 实测 **含 R-981**`
+            + `（⛔ 判据来自真函数 \`portfolioOf\`，不是夹具里手写的）`
+            + `；⚠ 真账本当前 \`builtNoAcc\` ${realEmpty ? '**为空**（收口后的正常结果，⛔ 不再据此判红）' : `非空（${realBuiltNoAcc.join(' / ')}）`}`)
+        } else {
+          bad(`S-28b · 合成夹具（req R-981 + built task TSK-981 + 零 pass acc）没被判成 builtNoAcc（实际：${JSON.stringify(synth.builtNoAcc)}）`
+            + ' ⇒ 锚点失去了"能抓出来"的那一半')
+        }
+        /** ② 合成夹具 `builtNoAcc` 非空 ⇒ **渲染层也必须抓出来**（端到端，不只函数层）。 */
+        const rSynth = mkPanel({ ...synth, orphans: [], orphanNote: '合成夹具' })
+        await tick(40)
+        const synthRow = document.querySelector('[data-dsh-hob="stages-portfolio-built-no-acc"]')?.textContent ?? null
+        actFn(() => rSynth.unmount())
+        if (synthRow !== null && synthRow.includes('R-981')) {
+          ok(`S-28b2 ✓ **合成锚点端到端**：喂 \`portfolioOf\` 的合成结果渲染 ⇒ 第三行出现并点名 \`R-981\`（原文：${JSON.stringify(synthRow.slice(0, 60))}）`)
+        } else {
+          bad(`S-28b2 · 合成 \`builtNoAcc\` 非空但渲染层没点名 \`R-981\`（实际：${JSON.stringify(synthRow)}）`)
+        }
+        /** ③ 差分自证：加一条 pass acc ⇒ 同一夹具**不再**被判成 builtNoAcc。 */
+        if (synthMiss) {
+          ok('S-28b3 ✓ **差分自证**：同一对 req/task 再加一条 `ACC-981 status=pass` ⇒ `builtNoAcc` **不再含 R-981**'
+            + '（⛔ 说明这条判据真的在看 acc，不是恒真）')
+        } else {
+          bad(`S-28b3 · 加了 pass acc 之后 \`builtNoAcc\` 仍含 R-981（实际：${JSON.stringify(synthWithAcc.builtNoAcc)}）⇒ 判据没看 acc`)
+        }
+
+        if (problems.length === 0) {
+          ok(`S-28 ✓ **组合层区块三形态**（⚠ 三形态全用**合成** portfolio：\`R-971/972/973/974\`）`
+            + '：① 非空 ⇒ 第三行**出现**且**逐条点名**（`R-972` · `R-973`）② 为空 ⇒ 第二、三行**整行不出现**（⛔ 无空行/占位符）'
+            + '③ `portfolio` 缺失 ⇒ 第一行**恰好是「判不出」**、`data-state=undecidable`、第二三行都不出现（⛔ 不许兜底成 0）')
+          ok('N-S28 ✓ 负向对拍（**差分自证**：同一个选择器 `stages-portfolio-built-no-acc` 在"非空"下拿到节点、在"为空"下拿不到 ⇒ 它在区分输入，⛔ 不是恒有/恒无）'
+            + '；⚠ 另钉一条实测出来的行为：**读数判不出时第三行也一起收起**（`head="判不出"` ⇒ `builtNoAcc=null`）')
+        } else for (const x of problems) bad(`S-29 · ${x}`)
       }
     }
 
@@ -2338,6 +2567,241 @@ export function StateDot({ state, size, appearance }) {
             + `${(srcProbs[0] ?? domProbs[0])}`)
         } else bad('S-24a · 删掉一处后仍全绿 ⇒ S-24 没有牙（不能逐处判定）')
         actFn(() => r.unmount())
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // S-25 / S-26 / S-27 · 「下一步」与阻断原因（2026-10-31 P42/R4 · `TASK-R4.md` §四）
+    // ══════════════════════════════════════════════════════════════════
+    /**
+     * ── S-25：真账本下「下一步」这一行**必须渲染出来**，且⛔ 不带任何可交互元素 ──
+     *
+     * ⚠ 为什么单独一条：`nextBlock` 是我新加的 DOM 面，⛔ 不许只靠"tsc 过了"当证据。
+     * ⚠ 同时钉住**零按钮/零勾选/零百分比/零进度条**这条硬约束 ——
+     *   作业书 §四 明写，⛔ 破了就是"面板变成操作台"。
+     */
+    {
+      const { resolveLedgerRoot } = await import('./lib/ledger-root.mjs')
+      const ledgerRoot = resolveLedgerRoot(root, undefined, undefined)
+      if (ledgerRoot === undefined) {
+        bad('S-25 · 账本根判不出 ⇒ 无法用真账本数据渲染（⛔ 不按通过处理）')
+      } else {
+        const idx = await import(pathToFileURL(join(root, 'src', 'shared', 'stages-index.ts')).href)
+        const units = idx.parseUnitsToml(readFileSync(join(ledgerRoot, idx.STAGES_INDEX_REL), 'utf8'))
+        const built = idx.buildStages(units, '2026-10-30T00:00:00.000Z')
+        const r = mount(react.createElement(ui.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => built,
+          pollMs: 0,
+        }))
+        await tick(40)
+        const box = document.querySelector('[data-dsh-hob="stages-next"]')
+        const line = document.querySelector('[data-dsh-hob="stages-next-line"]')
+        const kindAttr = box?.getAttribute('data-next-kind') ?? ''
+        const text = (line?.textContent ?? '').trim()
+        const probs = []
+        if (box === null) probs.push('「下一步」这一块**没渲染** ⇒ 本条的测量面不存在')
+        if (text === '') probs.push('「下一步」那一行是**空的**（⛔ 作业书 §四 明令不许空）')
+        /**
+         * ⚠ 六态封闭集：`data-next-kind` 必须落在里面 —— ⛔ 不许自造第七种。
+         */
+        const KINDS = ['dispatch', 'accept', 'wait-user', 'blocked', 'converge', 'undecidable']
+        if (!KINDS.includes(kindAttr)) probs.push(`\`data-next-kind = ${JSON.stringify(kindAttr)}\` 不在六态封闭集里`)
+        /**
+         * ⚠⚠ **零交互元素**：`nextBlock` 里不许有 button / input / checkbox / progress。
+         *   注意：`stages-tree-head` 里那些 `button` 是**步头展开**（既有，不在本块内）⇒ 只扫本块。
+         */
+        if (box !== null) {
+          const forbidden = box.querySelectorAll('button, input, select, textarea, progress, [role="progressbar"], [role="checkbox"]')
+          if (forbidden.length > 0) probs.push(`「下一步」块里出现了 **${forbidden.length}** 个可交互元素（⛔ 面板必须只读）`)
+          const pct = /(\d+(\.\d+)?\s*%|█|▓|▒|░)/.exec(box.textContent ?? '')
+          if (pct !== null) probs.push(`「下一步」块里出现了**百分比/进度条字符**：${JSON.stringify(pct[0])}（⛔ 明令禁止）`)
+        }
+        if (probs.length === 0) {
+          ok(`S-25 ✓ **真账本下「下一步」渲染出来了**（\`data-next-kind = ${kindAttr}\`，六态封闭集内）`
+            + ` · 原文：\`${text}\``
+            + ' · **零可交互元素 · 零百分比 · 零进度条**（⛔ 面板仍只读）')
+        } else for (const x of probs) bad(`S-25 · ${x}`)
+
+        /** ⚠ `r` 用完立刻卸（见下方卸载次序说明），⛔ 不留到最后。 */
+        actFn(() => r.unmount())
+
+        // ── S-26：`undecidable` 必须**明写判不出**（⛔ 不许空、⛔ 不许写"已完成"）──
+        const undecided = { ...built, next: { kind: 'undecidable', target: null, why: '账本里没有可推进的活', blockedBy: [] } }
+        const r2 = mount(react.createElement(ui.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => undecided,
+          pollMs: 0,
+        }))
+        await tick(40)
+        const line2 = document.querySelector('[data-dsh-hob="stages-next-line"]')
+        const t2 = (line2?.textContent ?? '').trim()
+        const probs2 = []
+        if (!t2.includes('判不出')) probs2.push(`\`undecidable\` 却没写「判不出」：${JSON.stringify(t2)}`)
+        if (t2.includes('已完成') || t2.includes('完成')) probs2.push('`undecidable` 被显示成"完成"（⛔ 作业书 §四 明令禁止）')
+        if (probs2.length === 0) {
+          ok(`S-26 ✓ \`undecidable\` **明写判不出**：\`${t2}\`（⛔ 不是空、⛔ 不是"已完成"）`)
+        } else for (const x of probs2) bad(`S-26 · ${x}`)
+        actFn(() => r2.unmount())
+
+        // ── S-27：阻断项**最多 3 条**，超出写「另有 N 条」（作业书 §四）──
+        const many = {
+          ...built,
+          next: {
+            kind: 'converge', target: 'CHG-999', why: '变更还没收口',
+            blockedBy: ['K-1 · TSK-1 · 没做完', 'K-3 · R-1 · 没验收', 'K-4 · RSK-1 · 风险开着', 'K-2 · TSK-2 · 没证据', 'K-6 · ACC-1 · 自验'],
+          },
+        }
+        const r3 = mount(react.createElement(ui.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => many,
+          pollMs: 0,
+        }))
+        await tick(40)
+        const shownN = document.querySelectorAll('[data-dsh-hob="stages-next-blocker"]').length
+        const restTxt = (document.querySelector('[data-dsh-hob="stages-next-blocker-rest"]')?.textContent ?? '').trim()
+        const probs3 = []
+        if (shownN !== 3) probs3.push(`阻断项列了 **${shownN}** 条（应为 **3** 条上限）`)
+        if (!restTxt.includes('另有') || !restTxt.includes('2')) probs3.push(`超出部分没写「另有 N 条」：${JSON.stringify(restTxt)}`)
+        if (probs3.length === 0) {
+          ok(`S-27 ✓ 阻断项**最多 3 条**（实测列 ${shownN} 条）+ 超出写 \`${restTxt}\``)
+        } else for (const x of probs3) bad(`S-27 · ${x}`)
+        actFn(() => r3.unmount())
+        /**
+         * ⚠ **卸载次序**：`r` 是第一个实例，`r2`/`r3` 各自 `createRoot` **同一个容器**。
+         *   实测踩过：`r3.unmount()` 之后再 `r.unmount()` ⇒
+         *   `DOMException [NotFoundError]: The node to be removed is not a child of this node`
+         *   —— 因为容器已被后两次 `createRoot` 换过根，`r` 记着的旧根已经不在了。
+         *   ⇒ `r` 在 S-25 量完就卸（那时它还活着），⛔ 不留在最后。
+         */
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // S-29 / S-29g · 「待确认工具」界面出口（2026-11-01 P41/R20 · `TASK-R20.md` §一）
+    //   ⚠ 治的是 `R-008` 的**标题**：「「被判出」必须能在界面上看见，⛔ 不能只落日志」。
+    //     只读路由与 `describeUnseen` 早在 P28 就落地了，但 `src/client/` 零处读它
+    //     ⇒ 标题这一条一直没被满足。本组量那一块。
+    //   ⚠ 数据源就是**那条已存在的路由**（⛔ 不新开路由、⛔ 不改返回形状）。
+    // ══════════════════════════════════════════════════════════════════════
+    {
+      /**
+       * 喂**真形状**的 `UnseenReport`（照 `src/shared/unseen-tools.ts` 的 `describeUnseen` 返回）。
+       * ⚠ 0 条那份的 `summary` 必须**含「0 条」** —— 那正是 `describeUnseen` 的既有文案，
+       *   本组 ⛔ 不自己编文案，只断言它被**原样**渲染出来。
+       */
+      const report0 = {
+        ok: true, count: 0, names: [], items: [],
+        summary: '0 条 —— 当前没有待确认的工具（装进来的工具都在白名单或 deny 清单里）',
+      }
+      const report2 = {
+        ok: true, count: 2, names: ['zzz-alpha', 'zzz-beta'], items: [],
+        summary: '2 条待确认：zzz-alpha · zzz-beta',
+      }
+      const mountUnseen = (report, extra) => mount(react.createElement(ui.StagesPanel, {
+        fetchProgress: async () => ({ ok: true, rows: [] }),
+        fetchExec: async () => ({ ok: true, items: [] }),
+        fetchStages: async () => built,
+        fetchUnseen: async () => report,
+        pollMs: 0,
+        ...(extra ?? {}),
+      }))
+
+      // ── S-29 正向：区域存在 · 文本含 summary · 逐名列出 ──
+      {
+        const r = mountUnseen(report2)
+        await tick(40)
+        const box = document.querySelector('[data-dsh-hob="stages-unseen"]')
+        const sum = document.querySelector('[data-dsh-hob="stages-unseen-summary"]')
+        const items = [...document.querySelectorAll('[data-dsh-hob="stages-unseen-item"]')]
+        const text = (sum?.textContent ?? '').trim()
+        const probs = []
+        if (box === null) probs.push('「待确认工具」这一块**没渲染** ⇒ 本条的测量面不存在')
+        if (text === '') probs.push('`summary` 那一行是**空的**')
+        if (!text.includes(report2.summary)) probs.push(`文本不含路由返回的 summary：实际 ${JSON.stringify(text.slice(0, 60))}`)
+        if (items.length !== 2) probs.push(`⛔ 没有逐名列出（期望 2 行，实际 ${items.length} 行）`)
+        const joined = items.map((x) => x.textContent).join('|')
+        if (!joined.includes('zzz-alpha') || !joined.includes('zzz-beta')) probs.push(`逐名内容不对：${JSON.stringify(joined.slice(0, 80))}`)
+        /** ⚠ 零交互元素 / 零百分比 / 零进度条 / 零勾选（`R-005` 咬住） */
+        if (box !== null) {
+          const forbidden = box.querySelectorAll('button, input, select, textarea, progress, [role="progressbar"], [role="checkbox"]')
+          if (forbidden.length > 0) probs.push(`块里出现了 **${forbidden.length}** 个可交互元素（⛔ 面板只读）`)
+          const pct = /(\d+(\.\d+)?\s*%|█|▓|▒|░)/.exec(box.textContent ?? '')
+          if (pct !== null) probs.push(`块里出现了百分比/进度条字符：${JSON.stringify(pct[0])}`)
+        }
+        if (probs.length === 0) {
+          ok(`S-29 ✓ **「待确认工具」界面出口成立**（\`data-dsh-hob="stages-unseen"\`）`
+            + ` · summary 原样渲染：\`${text.slice(0, 50)}…\``
+            + ` · **逐名列出 ${items.length} 条**（${items.map((x) => x.textContent).join(' ')}）`
+            + ' · 零可交互元素 · 零百分比 · 零进度条（⛔ 面板仍只读）')
+        } else for (const x of probs) bad(`S-29 · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // ── S-29b 正向：0 条时必须**写出「0 条」**（⛔ 不许空白、⛔ 不许不渲染）──
+      {
+        const r = mountUnseen(report0)
+        await tick(40)
+        const box = document.querySelector('[data-dsh-hob="stages-unseen"]')
+        const sum = document.querySelector('[data-dsh-hob="stages-unseen-summary"]')
+        const items = [...document.querySelectorAll('[data-dsh-hob="stages-unseen-item"]')]
+        const text = (sum?.textContent ?? '').trim()
+        const probs = []
+        if (box === null) probs.push('0 条时**整块没渲染**（⛔ "没查"与"查了 0 条"必须分得开）')
+        if (!text.includes('0 条')) probs.push(`0 条时没写出「0 条」：实际 ${JSON.stringify(text.slice(0, 60))}`)
+        if (items.length !== 0) probs.push(`0 条时却渲染了 ${items.length} 行逐名项`)
+        if (probs.length === 0) {
+          ok(`S-29b ✓ **0 条时明写「0 条」**（⛔ 非空白、⛔ 非不渲染）：\`${text.slice(0, 50)}…\``
+            + ' · 逐名项 0 行 · ⚠ 文案来自 `describeUnseen` 的 `summary`，⛔ 不是本组另编的')
+        } else for (const x of probs) bad(`S-29b · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // ── S-29g 负向对拍：把该区域整段摘掉 ⇒ S-29 / S-29b 必红 ──
+      {
+        /**
+         * ⚠ 造变体：把面板源码里 `unseenBlock,` 那一次挂载摘掉。
+         *   ⚠ 先自证源码里**确实**有那一行（否则"改不动"与"改了没用"分不开）。
+         *   ⚠ 变体写进 `src/client/` 的临时文件，`finally` 必删（同既有负向对拍口径）。
+         */
+        let src = null
+        try { src = readFileSync(PANEL_TSX, 'utf8') } catch { src = null }
+        const NEEDLE = '    unseenBlock,\n'
+        const present = src !== null && src.includes(NEEDLE)
+        const mutated = present ? src.replace(NEEDLE, '    // unseenBlock,（负向对拍：整段摘掉）\n') : null
+        const changed = mutated !== null && mutated !== src
+        if (!present || !changed) {
+          bad('S-29g · 造不出「摘掉待确认工具块」的变体（源码形态变了）⇒ 负向对拍不可判')
+        } else {
+          /**
+           * ⚠ **必须走 `writeMutant`**（转译 + 相对 import 说明符重写成 `.mjs`）：
+           *   直接 `import` 一个 `.tsx` 会 `ERR_UNKNOWN_FILE_EXTENSION`（实测踩过）。
+           *   落到 `work/out/client/` ⇒ `../modules/...` 正好指向 `ts-mount` 已产出的 `.mjs`。
+           */
+          const out = writeMutant('mut-unseen', mutated)
+          {
+            const m2 = await import(pathToFileURL(out).href + '?t=' + Date.now())
+            const r = mount(react.createElement(m2.StagesPanel, {
+              fetchProgress: async () => ({ ok: true, rows: [] }),
+              fetchExec: async () => ({ ok: true, items: [] }),
+              fetchStages: async () => built,
+              fetchUnseen: async () => report2,
+              pollMs: 0,
+            }))
+            await tick(40)
+            const box = document.querySelector('[data-dsh-hob="stages-unseen"]')
+            actFn(() => r.unmount())
+            if (box === null) {
+              ok('S-29g ✓ 负向对拍（把 `unseenBlock` 那次挂载整段摘掉）⇒ S-29 的"区域存在"断言**必红**：'
+                + '`[data-dsh-hob="stages-unseen"]` 在变体里**找不到**（⛔ 不是恒绿）')
+            } else {
+              bad('S-29g · 摘掉挂载后区域**仍然存在** ⇒ S-29 的判据没有牙（它量的不是这一处）')
+            }
+          }
+        }
       }
     }
 

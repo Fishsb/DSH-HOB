@@ -76,6 +76,7 @@
     "check:exec-progress": "node scripts/check-exec-progress.mjs",
     "gen:ledger": "node scripts/gen-ledger.mjs",
     "check:ledger-next": "node scripts/check-ledger-next.mjs",
+    "check:convergence": "node scripts/check-convergence.mjs",
     "check:stages-route": "node scripts/check-stages-route.mjs",
     "check:meta-negctl": "node scripts/check-meta-negctl.mjs",
     "gen:preset-contract": "node scripts/gen-preset-contract.mjs",

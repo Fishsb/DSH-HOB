@@ -49,6 +49,23 @@ function git(args) {
 }
 
 const commit = git(['rev-parse', 'HEAD']) ?? 'unknown'
+/**
+ * ⭐ **`commit_time`** —— 这个 commit 的**提交时刻**（2026-11-01 P40/R10 · `TASK-R10.md` §二）。
+ *
+ * ── ⚠⚠ 为什么需要它（它与 `built_at` 的区别是本轮要拆的那个循环）───────────
+ *   `built_at` = **最后一次构建**的时刻 ⇒ **每跑一次 build 就往前跳**，而 `commit` 不变。
+ *   于是任何"对应当前 commit"的旧证据，一 build 就"早于构建戳" ⇒ E-2 全红。
+ *   ⚠ 这是**结构性**的：不是数据错，是判据拿了一个**会动的锚**。
+ *
+ *   `commit_time` = **这份代码诞生的时刻** ⇒ **同一 commit 反复 build 它不变**。
+ *   那才是"旧读数冒充当前代码"该用的锚：一条读数若早于代码诞生，它不可能是这份代码的读数。
+ *
+ * ── ⚠ 取不到怎么办 ────────────────────────────────────────────────
+ *   `git log` 不可用 / 非 git 仓 ⇒ 写 **`判不出`**（⛔ 不许编一个时刻）。
+ *   E-2 见到 `判不出` ⇒ 报"判不出 N 条"，⛔ **不判红**
+ *   （理由：拿一个不存在的锚去判红 = 每次 build 都误伤一遍，那正是本轮要拆的循环）。
+ */
+const commitTime = git(['log', '-1', '--format=%cI']) ?? '判不出'
 const porcelain = git(['status', '--porcelain'])
 const dirty = porcelain === null ? 'unknown' : porcelain === '' ? 'false' : 'true'
 
@@ -66,6 +83,7 @@ function localIso(d) {
 const stampPath = join(root, 'lib', 'BUILD-STAMP')
 const text = [
   `commit=${commit}`,
+  `commit_time=${commitTime}`,
   `dirty=${dirty}`,
   `built_at=${localIso(new Date())}`,
   'builder=build',
@@ -82,4 +100,4 @@ try {
 }
 
 console.log(`[build-stamp] ${stampPath}`)
-console.log(`[build-stamp] commit=${commit} dirty=${dirty}`)
+console.log(`[build-stamp] commit=${commit} commit_time=${commitTime} dirty=${dirty}`)

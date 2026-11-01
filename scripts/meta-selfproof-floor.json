@@ -9,17 +9,18 @@
     "check:hob-create": 0,
     "check:hob-create-dom": 0,
     "check:hob-gate": 0,
-    "check:ledger-next": 6,
+    "check:ledger-next": 60,
     "check:meta-negctl": 11,
     "check:modules": 1,
     "check:orch": 0,
     "check:policy": 0,
     "check:presets": 0,
     "check:redeliver": 0,
-    "check:stages-dom": 0,
-    "check:stages-route": 2,
+    "check:stages-dom": 1,
+    "check:stages-route": 5,
     "check:tasks-progress": 0,
-    "check:workflow": 14
+    "check:workflow": 17,
+    "check:convergence": 13
   },
-  "totalFloor": 46
+  "totalFloor": 140
 }

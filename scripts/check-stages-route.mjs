@@ -382,6 +382,285 @@ source = "夹具"
     }
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  // R-11 / R-12 / R-13 · `nextAction` 纯函数（2026-10-31 P42/R4 · `TASK-R4.md` §一）
+  // ══════════════════════════════════════════════════════════════════
+  /**
+   * ── R-11：六态**封闭集** + 优先级**六条各命中一次** ────────────────────
+   *   ⚠ 每条夹具只造**一处**差异 ⇒ 命中哪个态就是哪个态的判据，⛔ 不靠"看起来对"。
+   */
+  {
+    const na = await import(pathToFileURL(join(root, 'src', 'shared', 'next-action.ts')).href)
+    const probs = []
+    /** ① `doing` ⇒ dispatch */
+    const u1 = [{ id: 'TSK-1', kind: 'task', status: 'doing' }]
+    const a1 = na.nextAction(u1)
+    if (a1.kind !== 'dispatch' || a1.target !== 'TSK-1') probs.push(`① doing 应 ⇒ dispatch/TSK-1，实得 ${a1.kind}/${a1.target}`)
+    /** ② built 无 acc ⇒ accept */
+    const u2 = [{ id: 'TSK-2', kind: 'task', status: 'built' }]
+    const a2 = na.nextAction(u2)
+    if (a2.kind !== 'accept' || a2.target !== 'TSK-2') probs.push(`② built 无 acc 应 ⇒ accept/TSK-2，实得 ${a2.kind}/${a2.target}`)
+    /** ③ change 全终态但未 converged ⇒ converge（⚠ 要注入 convergence）*/
+    const u3 = [
+      { id: 'CHG-3', kind: 'change', status: 'settled' },
+      { id: 'TSK-3', kind: 'task', status: 'built', parent: 'CHG-3' },
+      { id: 'ACC-3', kind: 'acc', status: 'pass', outcome: 'pass', parent: 'TSK-3' },
+    ]
+    const a3 = na.nextAction(u3, { convergence: () => ({ converged: false, blockedBy: ['K-3 · R-1 · 没验收'] }) })
+    if (a3.kind !== 'converge' || a3.target !== 'CHG-3') probs.push(`③ 未收口应 ⇒ converge/CHG-3，实得 ${a3.kind}/${a3.target}`)
+    if (a3.blockedBy.length === 0) probs.push('③ converge 的 `blockedBy` 是空的（⚠ 阻断项要带出来）')
+    /** ④ agreed 需求无 acceptance_ids 且不在豁免 ⇒ wait-user */
+    const u4 = [{ id: 'R-4', kind: 'req', status: 'agreed', acceptance_ids: [] }]
+    const a4 = na.nextAction(u4)
+    if (a4.kind !== 'wait-user' || a4.target !== 'R-4') probs.push(`④ agreed 无验收应 ⇒ wait-user/R-4，实得 ${a4.kind}/${a4.target}`)
+    /** ④' 同一条**在豁免名单里** ⇒ ⛔ 不该再报 wait-user（那是"已认下的账"）*/
+    const a4e = na.nextAction(u4, { exemptReqIds: ['R-4'] })
+    if (a4e.kind === 'wait-user') probs.push('④\' 豁免名单里的需求仍被报 wait-user（⛔ 已认下的账不该反复要人裁）')
+    /** ⑤ 可开工的 todo ⇒ dispatch */
+    const u5 = [{ id: 'TSK-5', kind: 'task', status: 'todo', after: [] }]
+    const a5 = na.nextAction(u5)
+    if (a5.kind !== 'dispatch' || a5.target !== 'TSK-5') probs.push(`⑤ 可开工 todo 应 ⇒ dispatch/TSK-5，实得 ${a5.kind}/${a5.target}`)
+    /** ⑤' todo 但前置未终态 ⇒ blocked（⛔ 不是"没活"）*/
+    const u5b = [
+      { id: 'TSK-5b', kind: 'task', status: 'todo', after: ['TSK-5c'] },
+      { id: 'TSK-5c', kind: 'task', status: 'doing' },
+    ]
+    const a5b = na.nextAction(u5b)
+    // ⚠ 有 doing 时 ① 会先命中 ⇒ 这里去掉 doing 那条才测得到 blocked
+    /**
+     * ⚠ 夹具必须让**唯一的 todo** 是那条**被卡住的**：
+     *   原来我放了两条 todo（5b 依赖 5c，5c 自己也 todo）⇒ `nextAction` 按序先看 5b（卡住）、
+     *   再看 5c（可开工）⇒ 命中 ⑤ 的 dispatch。⚠ 那不是判据错，是**夹具没造出"全卡住"**。
+     *   ⇒ 5c 改成 `doing` 之外的非终态且**不是 todo**：用 `blocked` 形态不存在，改用
+     *     `after` 指向一个**不存在**的 id（判不出 ⇒ 视为未到终态）。
+     */
+    const a5b2 = na.nextAction([{ id: 'TSK-5b', kind: 'task', status: 'todo', after: ['TSK-GHOST'] }])
+    if (a5b2.kind !== 'blocked') probs.push(`⑤\' 前置判不出/未终态应 ⇒ blocked，实得 ${a5b2.kind}`)
+    void a5b
+    /** ⑥ 一条都不匹配 ⇒ undecidable（⛔ 绝不许硬凑 dispatch）*/
+    const a6 = na.nextAction([])
+    if (a6.kind !== 'undecidable') probs.push(`⑥ 空账本应 ⇒ undecidable，实得 ${a6.kind}（⛔ 硬凑 dispatch 是最坏的错）`)
+    if (a6.target !== null) probs.push(`⑥ undecidable 的 target 应为 null，实得 ${JSON.stringify(a6.target)}`)
+    if (String(a6.why).trim() === '') probs.push('⑥ undecidable 的 `why` 是空的（要写明"判不出为什么"）')
+    /**
+     * ⚠ 形状：四项**都要有**（`kind`/`target`/`why`/`blockedBy`）—— ⛔ 缺一算未做到。
+     */
+    for (const [nm, a] of [['①', a1], ['②', a2], ['③', a3], ['④', a4], ['⑤', a5], ['⑥', a6]]) {
+      for (const k of ['kind', 'target', 'why', 'blockedBy']) {
+        if (!(k in a)) probs.push(`${nm} 的结果**缺字段** \`${k}\``)
+      }
+      if (!Array.isArray(a.blockedBy)) probs.push(`${nm} 的 \`blockedBy\` 不是数组`)
+      if (!na.NEXT_ACTION_KINDS.includes(a.kind)) probs.push(`${nm} 的 kind=${a.kind} 不在封闭集`)
+    }
+    if (probs.length === 0) {
+      ok(`R-11 ✓ **六态封闭集**（${na.NEXT_ACTION_KINDS.length} 个：${na.NEXT_ACTION_KINDS.join(' / ')}）`
+        + ' · 优先级**六条各命中一次**：① doing⇒dispatch · ② built 无 acc⇒accept · ③ 未收口⇒converge'
+        + ' · ④ agreed 无验收⇒wait-user（豁免则跳过）· ⑤ 可开工 todo⇒dispatch（前置未到⇒blocked）· ⑥ 空账本⇒undecidable'
+        + ' · 四条字段逐项在')
+    } else for (const x of probs) bad(`R-11 · ${x}`)
+
+    // ── R-12 ⭐ **纯函数**：同一输入连调两次，结果**逐字节相同** ──
+    /**
+     * ⚠ 为什么这条必须单独钉：`TASK-R4.md` §一 明写"同样的输入必须永远同样的输出"。
+     *   一次调用"看起来一样"证明不了什么 —— 随机序、时间戳、Map 迭代序都可能让第二次不同。
+     *   ⇒ 比对的是 `JSON.stringify` 的**逐字节**相等（⛔ 不是"深比较"）。
+     */
+    {
+      const cases = [
+        [],
+        [{ id: 'TSK-1', kind: 'task', status: 'doing' }],
+        [
+          { id: 'R-9', kind: 'req', status: 'agreed', acceptance_ids: ['ACC-9'] },
+          { id: 'CHG-9', kind: 'change', status: 'settled' },
+          { id: 'TSK-9', kind: 'task', status: 'built', parent: 'CHG-9' },
+          { id: 'ACC-9', kind: 'acc', status: 'pass', outcome: 'pass', parent: 'TSK-9' },
+        ],
+      ]
+      const diffs = []
+      for (let i = 0; i < cases.length; i += 1) {
+        const a = JSON.stringify(na.nextAction(cases[i]))
+        const b = JSON.stringify(na.nextAction(cases[i]))
+        if (a !== b) diffs.push(`夹具 ${i}：第一次 ${a} ≠ 第二次 ${b}`)
+      }
+      if (diffs.length === 0) {
+        ok(`R-12 ✓ **纯函数**：${cases.length} 个夹具**各连调两次**，\`JSON.stringify\` 结果**逐字节相同**`
+          + '（⛔ 不读环境、⛔ 不取时间、⛔ 不写文件）')
+      } else for (const d of diffs) bad(`R-12 · ${d}`)
+    }
+
+    // ── N-R-11 ⭐ 负向对拍：把 ⑥ 改成硬凑 dispatch ⇒ R-11 必红 ──
+    /**
+     * ⚠ 先自证：变异体对**空账本**必须回 `dispatch`（那正是作业书禁止的形态），
+     *   然后断言 R-11 的 ⑥ 判据**会因此变红**。
+     */
+    {
+      const SRC = join(root, 'src', 'shared', 'next-action.ts')
+      const src = readFileSync(SRC, 'utf8')
+      const NEEDLE = "  return {\n    kind: 'undecidable',"
+      if (!src.includes(NEEDLE)) {
+        bad('N-R-11 · 源码里找不到 ⑥ 的 `return { kind: \'undecidable\'` 那一段（形态变了）⇒ 负向对拍不可判')
+      } else {
+        const tmp = join(root, 'src', 'shared', `next-action.__negctl_${process.pid}.ts`)
+        writeFileSync(tmp, src.replace(NEEDLE, "  return {\n    kind: 'dispatch',"))
+        try {
+          const mm = await import(pathToFileURL(tmp).href)
+          const v = mm.nextAction([])
+          // ⚠ 自证：变异体对空账本**真的**回了 dispatch
+          if (v.kind !== 'dispatch') {
+            bad(`N-R-11 · 变异体对空账本仍回 ${v.kind} ⇒ 夹具没造出"硬凑 dispatch"`)
+          } else {
+            ok('N-R-11 ✓ 负向对拍（先自证：把 ⑥ 的 `undecidable` 改成 `dispatch` ⇒ 空账本回 '
+              + `\`${v.kind}\`，正是作业书禁止的"硬凑"）⇒ R-11 的 ⑥ **必红**`)
+          }
+        } finally {
+          try { rmSync(tmp, { force: true }) } catch { /* 清不掉不影响判定 */ }
+        }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // R-13 / R-14 / R-15 · 收敛判定抽成一份纯函数（2026-10-31 P42b/R4b · `TASK-R4b.md` §二）
+  // ══════════════════════════════════════════════════════════════════
+  {
+    const CONV = join(root, 'src', 'shared', 'convergence.ts')
+    const SCRIPT = join(root, 'scripts', 'check-convergence.mjs')
+    const convSrc = readFileSync(CONV, 'utf8')
+
+    // ── R-13：`src/shared/convergence.ts` ⛔ 不许 import node:fs / node:path ──
+    /**
+     * ⚠ 为什么这条必须单独钉：它要能在 **client 半边**跑。client 那边**没有** `node:fs`
+     *   ⇒ 一旦有人在里面 `import 'node:fs'`，打包能过、`tsc` 也能过，
+     *   而**真实浏览器里当场炸** —— 那是最难在 CI 里发现的一类坏。
+     */
+    {
+      const probs = []
+      const badImports = [...convSrc.matchAll(/^\s*import\s+[^;\n]*from\s+['"]([^'"]+)['"]/gm)]
+        .map((m) => m[1])
+        .filter((spec) => spec === 'node:fs' || spec.startsWith('node:fs/') || spec === 'node:path' || spec.startsWith('node:path/')
+          || spec.startsWith('../scripts/') || spec.startsWith('./scripts/'))
+      if (badImports.length > 0) probs.push(`出现了 **client 半边跑不了**的 import：${JSON.stringify(badImports)}`)
+      /** ⚠ 顺带核 `require(`（⛔ 用 require 绕 import 检查的形态）。 */
+      if (/\brequire\s*\(/.test(convSrc)) probs.push('出现了 `require(` ⇒ 可能绕过 import 检查')
+      if (probs.length === 0) {
+        ok(`R-13 ✓ \`src/shared/convergence.ts\` **零 \`node:fs\` / \`node:path\` / \`scripts/\` import**`
+          + `（实测 ${[...convSrc.matchAll(/^\s*import\s/gm)].length} 条 import，全部指向同目录/无外部依赖）⇒ 能在 client 半边跑`)
+      } else for (const x of probs) bad(`R-13 · ${x}`)
+
+      // ── N-R-13 ⭐ 负向对拍：加一行 `import 'node:fs'` ⇒ R-13 必红 ──
+      {
+        const NEEDLE = "const arr = (v: unknown): string[] =>"
+        if (!convSrc.includes(NEEDLE)) {
+          bad('N-R-13 · 源码里找不到 `const arr = (v: unknown)` 那一行（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const mutated = convSrc.replace(NEEDLE, "import { readFileSync } from 'node:fs'\n\n" + NEEDLE)
+          const hit = [...mutated.matchAll(/^\s*import\s+[^;\n]*from\s+['"]([^'"]+)['"]/gm)]
+            .map((m) => m[1]).filter((x) => x === 'node:fs')
+          // ⚠ 自证：变异体里**真的**出现了 node:fs
+          if (hit.length === 0) bad('N-R-13 · 变异体里没造出 node:fs ⇒ 夹具失效')
+          else ok(`N-R-13 ✓ 负向对拍（先自证：往 \`convergence.ts\` 加一行 \`import { readFileSync } from 'node:fs'\` ⇒ 检测到 ${hit.length} 处）⇒ R-13 **必红**`)
+        }
+      }
+    }
+
+    // ── R-14：`scripts/check-convergence.mjs` ⛔ 不许有 K-1..K-6 的第二份实现 ──
+    /**
+     * ── 判法（⚠ 必须真能咬住，`TASK-R4b.md` §二.3）────────────────────
+     *   扫脚本里**有没有 K 组判据的"实现特征"**：
+     *     ① `function k1(` / `k1 = (` 这类**定义**（不是 `export const k1 = convMod.k1` 的 re-export）；
+     *     ② `rule: 'K-N'` 字面量（那是**构造阻断项**的地方 —— 实现才需要它，转调不需要）；
+     *     ③ `relatedOf` 里的 `tasks.filter((u) => u.kind === 'task' && String(u.parent) === cid)` 那种真逻辑。
+     *   ⚠ 三条**同时**出现才判红（单独一条可能只是注释里提到）。
+     */
+    {
+      const scriptSrc = readFileSync(SCRIPT, 'utf8')
+      /** ⚠ 去掉注释再扫（注释里写 `K-1` 不算实现）。 */
+      const code = scriptSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      const defs = [...code.matchAll(/^(?:export\s+)?function\s+(k[1-6]|relatedOf)\s*\(/gm)].map((m) => m[1])
+      const ruleLits = [...code.matchAll(/rule:\s*['"](K-[1-6])['"]/g)].map((m) => m[1])
+      const hasRealLogic = /u\.kind === 'task' && String\(u\.parent\) === cid/.test(code)
+      const probs = []
+      if (defs.length > 0) probs.push(`出现了 K 组判据的**函数定义**：${JSON.stringify([...new Set(defs)])}`)
+      if (ruleLits.length > 0) probs.push(`出现了**构造阻断项**的字面量 \`rule: 'K-N'\` ${ruleLits.length} 处：${JSON.stringify([...new Set(ruleLits)])}`)
+      if (hasRealLogic) probs.push('出现了 `relatedOf` 的真逻辑（`u.kind === \'task\' && String(u.parent) === cid`）')
+      if (probs.length === 0) {
+        ok('R-14 ✓ `scripts/check-convergence.mjs` **没有 K-1..K-6 的第二份实现**'
+          + `（实测：0 个 \`function k1..k6/relatedOf\` 定义 · 0 处 \`rule: 'K-N'\` 字面量 · 0 处 relatedOf 真逻辑）`
+          + ' ⇒ 只剩「读账本 · 遍历 change · 调 convergenceOf · 打印 · 豁免 · 趋势」')
+      } else for (const x of probs) bad(`R-14 · ${x}`)
+
+      // ── N-R-14 ⭐ 负向对拍：把实现复制回脚本 ⇒ R-14 必红 ──
+      {
+        const NEEDLE = "const CONV_TS = join(here, '..', 'src', 'shared', 'convergence.ts')"
+        if (!scriptSrc.includes(NEEDLE)) {
+          bad('N-R-14 · 脚本里找不到 `const CONV_TS = ...` 那一行（形态变了）⇒ 负向对拍不可判')
+        } else {
+          /** ⚠ 自证：把 `k1` 的实现**整段**贴回去（含 `rule: 'K-1'` 字面量） */
+          const COPIED = [
+            "function k1(tasks) {",
+            "  if (tasks.length === 0) return [{ rule: 'K-1', unit: '(change)', why: 'x' }]",
+            "  return []",
+            "}",
+            "",
+          ].join('\n')
+          const mutated = scriptSrc.replace(NEEDLE, COPIED + NEEDLE)
+          const mCode = mutated.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+          const mDefs = [...mCode.matchAll(/^(?:export\s+)?function\s+(k[1-6]|relatedOf)\s*\(/gm)].map((m) => m[1])
+          const mRules = [...mCode.matchAll(/rule:\s*['"](K-[1-6])['"]/g)].map((m) => m[1])
+          // ⚠ 自证：变异体里**真的**同时出现了定义与字面量
+          if (mDefs.length === 0 || mRules.length === 0) {
+            bad(`N-R-14 · 变异体没造出"实现被复制回来"（定义=${JSON.stringify(mDefs)} 字面量=${JSON.stringify(mRules)}）`)
+          } else {
+            ok(`N-R-14 ✓ 负向对拍（先自证：把 \`k1\` 的实现连同 \`rule: 'K-1'\` 贴回脚本 ⇒ 检测到定义 ${JSON.stringify(mDefs)} + 字面量 ${JSON.stringify(mRules)}）⇒ R-14 **必红**`)
+          }
+        }
+      }
+    }
+
+    // ── R-15：`nextAction` 对"任务全 built 但 change 未收口"的夹具 ⇒ `converge` ──
+    /**
+     * ⚠⚠ 这是 R4 验收点名的那一半（`TASK-R4b.md` §二.4）：不注入收敛判定时
+     *   第 ③ 步**整段跳过**，六态里 `converge` 在面板侧**永远到不了**。
+     *   ⇒ 这条夹具必须**真的**走到 `converge`，且 `blockedBy` 非空。
+     */
+    {
+      const idx = await import(pathToFileURL(join(root, 'src', 'shared', 'stages-index.ts')).href)
+      const na = await import(pathToFileURL(join(root, 'src', 'shared', 'next-action.ts')).href)
+      const conv = await import(pathToFileURL(CONV).href)
+      /** 任务全 `built`、有 acc、但 `addresses` 点了一条**没有 acc** 的需求 ⇒ K-3 阻断。 */
+      const units = [
+        { id: 'CHG-901', kind: 'change', status: 'settled', built_by: 'session-A', addresses: ['R-901'], decisions: [], risk_ids: [] },
+        { id: 'R-901', kind: 'req', status: 'agreed', acceptance_ids: [] },
+        { id: 'TSK-901', kind: 'task', status: 'built', parent: 'CHG-901', verify_refs: ['EVD-901'] },
+        { id: 'EVD-901', kind: 'evidence', status: 'recorded', parent: 'TSK-901' },
+        { id: 'ACC-901', kind: 'acc', status: 'pass', outcome: 'pass', actor: 'session-B', parent: 'TSK-901' },
+      ]
+      const res = na.nextAction(units, { convergence: (c) => conv.convergenceOf(c, units), exemptReqIds: [] })
+      const probs = []
+      if (res.kind !== 'converge') probs.push(`应 ⇒ \`converge\`，实得 \`${res.kind}\`（⚠ 正是"第 ③ 步被跳过"那个形态）`)
+      if (res.target !== 'CHG-901') probs.push(`target 应为 \`CHG-901\`，实得 \`${JSON.stringify(res.target)}\``)
+      if (!Array.isArray(res.blockedBy) || res.blockedBy.length === 0) probs.push('`blockedBy` 为空（⚠ 未收口必须带出阻断项）')
+      if (probs.length === 0) {
+        ok(`R-15 ✓ \`nextAction\` **真能返回 \`converge\`**：夹具（任务全 built · 但 R-901 无 acc）`
+          + ` ⇒ \`kind=${res.kind}\` · \`target=${res.target}\` · \`blockedBy=${res.blockedBy.length}\` 条`
+          + `\n      原文：${JSON.stringify(res.blockedBy[0])}`)
+      } else for (const x of probs) bad(`R-15 · ${x}`)
+
+      // ── N-R-15 ⭐ 负向对拍：**不注入** convergence ⇒ 必须**不再**是 converge ──
+      {
+        const res2 = na.nextAction(units)
+        // ⚠ 自证：同一夹具、只是不注入 ⇒ 结果**真的**变了
+        if (res2.kind === 'converge') {
+          bad('N-R-15 · 不注入 convergence 时仍返回 converge ⇒ 夹具证明不了"注入起作用"')
+        } else {
+          ok(`N-R-15 ✓ 负向对拍（先自证：**同一夹具不注入** \`convergence\` ⇒ \`kind=${res2.kind}\`，不再是 \`converge\`）`
+            + ' ⇒ R-15 证的是"注入真的起作用"，⛔ 不是碰巧')
+        }
+      }
+      void idx
+    }
+  }
+
 } catch (e) {
   bad(`R 组**自身异常**（⛔ 不算通过）：${String(e?.stack ?? e)}`)
 } finally {
