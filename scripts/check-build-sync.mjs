@@ -1259,6 +1259,22 @@ console.log(`      · 面 ③ 取数件：\`/proc/<pid>/stat\` + \`/proc/stat\` 
  */
 for (const b of EXPORTS_CHECK.bad) lag.push(b)
 for (const b of CLIENT_LOAD.bad) lag.push(b)
+/**
+ * ⚠⚠ **面 ④ 的 `blocking` 必须进 `lagBlocking`**（2026-11-02 P50/M6 · `TASK-M6.md` §一第 2.1 件）。
+ *
+ *   改前：`EXPORTS_CHECK.bad` / `CLIENT_LOAD.bad` **只进 `lag`**（渲染用），
+ *     而 `lagBlocking`（**退出码**用）**一条都没收** —— 只有 `ORPHAN_CHECK.blocking` 收了。
+ *   ⇒ 实测后果：`lib/client.js` 的 `factory(require)` 抛了
+ *     （`✗ 面 ④（产物加载面）：factory(require) 抛了：Cannot read properties of undefined (reading 'object')`），
+ *     面 ④ **明明报红**，而 `判定：PASS` + `EXIT=0` —— 面 ④ 装不起来**没人拦**。
+ *   ⇒ 那正是"会让失败不可观测"：宿主里整个 client 半边不激活，而检查器说通过。
+ *   ⚠ 修法：把这两批 `blocking` 也接进 `lagBlocking`（与上面 `ORPHAN_CHECK.blocking` 同档，
+ *     由 `--strict-source` 管，⛔ 不新开开关）。
+ *   ⚠⚠ **接上之后 `check:build` 会真的变红 —— 那是正确结果**（缺陷是真的），
+ *     ⛔ 不许为了变绿去绕（不许删这条、不许改 `--strict-source` 的默认值）。
+ */
+for (const k of EXPORTS_CHECK.blocking) lagBlocking.push(k)
+for (const k of CLIENT_LOAD.blocking) lagBlocking.push(k)
 /** ⚠ 面 ⑤ 的"无对象"档（与族内三态口径一致：⛔ 不按通过处理）。 */
 const SKIP_BUILD = []
 /** ⚠ 面 ⑤（孤儿产物）：失败行同样进 `lag`（同一渲染面、同一个 `没过` 分母）。 */

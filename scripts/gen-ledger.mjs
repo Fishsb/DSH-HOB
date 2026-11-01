@@ -762,7 +762,8 @@ export function readUnits(indexPath = INDEX_PATH) {
  *   那会让 `I5c` 的逐字节比对变成假红）。
  *
  * @param {Array<Record<string, any>>} units - 索引单元
- * @param {{constitutionBytes?: number|null, buildStamp?: string|null, convergence?: (chg: any) => {converged: boolean, blockedBy: string[]}}} extra - 外部读数
+ * @param {{constitutionBytes?: number|null, convergence?: (chg: any) => {converged: boolean, blockedBy: string[]}}} extra - 外部读数
+ *   ⚠ 2026-11-02 P50/M6：`buildStamp` **已从本参数移除**（入库生成物 ⛔ 不依赖未入库文件，见 `renderCheckpoint` 注释）。
  * @returns {string} markdown 全文
  */
 export function renderCheckpoint(units, extra = {}) {
@@ -828,8 +829,22 @@ export function renderCheckpoint(units, extra = {}) {
   L.push('|---|---|')
   const cb = extra.constitutionBytes
   L.push(`| \`CONSTITUTION.md\` 字节 | ${typeof cb === 'number' ? `${cb} B` : '**判不出**（未注入）'} |`)
-  const bs = extra.buildStamp
-  L.push(`| 构建戳 | ${typeof bs === 'string' && bs !== '' ? `\`${bs}\`` : '**判不出**（未注入）'} |`)
+  /**
+   * ⚠⚠ **不嵌构建戳**（2026-11-02 P50/M6 · `TASK-M6.md` §一第 1 件 · Hob 裁定 A）。
+   *
+   *   **病根**：本文件是**入库的生成物**，而被 I5c **逐字节**比对；
+   *   此前它嵌了 `lib/BUILD-STAMP` 的内容，那个文件**未入库**且 `built_at` **每次 build 都刷新**
+   *   ⇒ 每次 build 之后快照立刻过期 ⇒ 「build → gen → 提交」永远收不了尾
+   *   （实测 M5 因此提交了三次同一份文件）。
+   *
+   *   **为什么不是「只留 commit、不留 built_at」**：`commit` 同样是易变值 ——
+   *   任何新提交都让 HEAD 变，而 `check:build` 要求「戳 commit == HEAD」⇒ 逼你重编 ⇒ 戳变 ⇒ 又过期。
+   *   那只是把过期周期从「每次 build」拉长到「每次提交」，**病根不动**。
+   *
+   *   ⇒ **规则**：**入库的生成物，⛔ 不许依赖任何未入库文件的内容。**
+   *   ⇒ 构建戳的唯一来源仍是 `lib/BUILD-STAMP`（未入库 = 当次磁盘状态）；
+   *     resume 要核代码版本时**直接读它**，⛔ 不读快照里的副本。
+   */
   L.push('')
   L.push('> ⚠ 「判不出」是**读数**，不是错误：`CONSTITUTION` §7 明令 ⛔ 不许填 0、⛔ 不许拿推断当读数。')
   L.push('')
@@ -1052,16 +1067,10 @@ function main() {
    */
   let constitutionBytes = null
   try { constitutionBytes = Buffer.byteLength(readFileSync(join(ROOT, 'preset', 'dsh-hob', 'CONSTITUTION.md'), 'utf8'), 'utf8') } catch { constitutionBytes = null }
-  let buildStamp = null
-  try {
-    /**
-     * ⚠ 构建戳是**多行**的（commit / dirty / built_at / builder）⇒ 直接塞进 markdown 表格
-     *   会把表格撑断（实测：`| 构建戳 | \`commit=…` 后面几行掉出表格）。
-     *   ⇒ 压成一行、用 ` · ` 连。⛔ 不丢字段（那会让快照少读数）。
-     */
-    buildStamp = readFileSync(join(ROOT, 'lib', 'BUILD-STAMP'), 'utf8')
-      .split('\n').map((x) => x.trim()).filter((x) => x !== '').join(' · ')
-  } catch { buildStamp = null }
+  /**
+   * ⚠ 2026-11-02 P50/M6：**不再读 `lib/BUILD-STAMP`** —— 见 `renderCheckpoint` 里那段裁定 A 的注释。
+   *   （`lib/BUILD-STAMP` 文件本身照旧由 `npm run build` 写、照旧是唯一构建戳来源，只是本生成物不再引用它。）
+   */
   /**
    * ⚠ **注入收敛判定**（`TASK-R4b.md` §一.4）：不注入 ⇒ checkpoint 的「收口」列
    *   恒为「判不出（未注入收敛判定）」—— 那正是 R4 验收指出的那一半缺口。
@@ -1072,7 +1081,7 @@ function main() {
         return { converged: r.converged, blockedBy: r.blockedBy }
       }
     : undefined
-  const specOut = renderSpecArtifacts(units, { ...inputs, constitutionBytes, buildStamp, convergence: convFn })
+  const specOut = renderSpecArtifacts(units, { ...inputs, constitutionBytes, convergence: convFn })
   const stdoutOnly = process.argv.includes('--stdout')
   if (!stdoutOnly) mkdirSync(GEN_DIR, { recursive: true })
   for (const [name, text] of Object.entries(out)) {

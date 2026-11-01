@@ -3006,11 +3006,14 @@ if (IS_MAIN) try {
            */
           let cb = null
           try { cb = Buffer.byteLength(readFileSync(join(ROOT, 'preset', 'dsh-hob', 'CONSTITUTION.md'), 'utf8'), 'utf8') } catch { cb = null }
-          let bs = null
-          try {
-            bs = readFileSync(join(ROOT, 'lib', 'BUILD-STAMP'), 'utf8')
-              .split('\n').map((x) => x.trim()).filter((x) => x !== '').join(' · ')
-          } catch { bs = null }
+          /**
+           * ⚠⚠ **2026-11-02 P50/M6**：`buildStamp` **不再注入**（Hob 裁定 A）。
+           *   病根：`spec/checkpoint.md` 是**入库**生成物，却被要求逐字节等于生成器输出；
+           *   而它曾嵌 `lib/BUILD-STAMP`（**未入库**、`built_at` 每次 build 都变）
+           *   ⇒ 「build → gen → 提交」永远收不了尾（M5 实测提交了三次同一份文件）。
+           *   ⇒ 生成器侧已摘掉那一行，本判据侧**同步不再注入** —— 否则两边不同源会**假红**。
+           *   ⚠ 判据本身没放宽：仍是**逐字节**比。摘的是"依赖未入库文件"这一条，⛔ 不是比对强度。
+           */
           /**
            * ⚠⚠ **`convergence` 必须与生成器 `main()` 注入的同一份**（2026-10-31 P42b/R4b）——
            *   漏注入 ⇒ 生成器写 1913 B（带收口判定）、本判据算 1543 B（「判不出」）⇒ 假红。
@@ -3021,7 +3024,7 @@ if (IS_MAIN) try {
             const r = convMod.convergenceOf(chg, units)
             return { converged: r.converged, blockedBy: r.blockedBy }
           }
-          const p5c = checkI5c(LEDGER, renderSpecArtifacts, { constitutionBytes: cb, buildStamp: bs, convergence: convFn })
+          const p5c = checkI5c(LEDGER, renderSpecArtifacts, { constitutionBytes: cb, convergence: convFn })
           if (p5c.length === 0) {
             /**
              * ⚠⚠ **2026-11-01 P40/R6**：`renderSpecArtifacts` 现在返回**两份**
@@ -3029,7 +3032,7 @@ if (IS_MAIN) try {
              *   ⛔ 不许再只写 `spec/checkpoint.md` —— 那会让读者以为只核了一份，
              *   而实际漏核的那份**不会红**（"文案少说一份"正是本仓最忌的假覆盖形态）。
              */
-            const specNames = Object.keys(renderSpecArtifacts(units, { constitutionBytes: cb, buildStamp: bs, convergence: convFn }))
+            const specNames = Object.keys(renderSpecArtifacts(units, { constitutionBytes: cb, convergence: convFn }))
             const sizes = specNames.map((n) => `${n} ${Buffer.byteLength(readFileSync(join(LEDGER, 'spec', n), 'utf8'), 'utf8')} B`).join(' · ')
             ok(`I5c ✓ **${specNames.length} 份 spec 快照逐字节 == 生成器输出**（${sizes}）`
               + ' ⇒ 快照不可能被手改而不被发现')
@@ -3456,16 +3459,12 @@ if (IS_MAIN) try {
     const realExtra = () => {
       let cb = null
       try { cb = Buffer.byteLength(readFileSync(join(ROOT, 'preset', 'dsh-hob', 'CONSTITUTION.md'), 'utf8'), 'utf8') } catch { cb = null }
-      let bs = null
-      try {
-        bs = readFileSync(join(ROOT, 'lib', 'BUILD-STAMP'), 'utf8')
-          .split('\n').map((x) => x.trim()).filter((x) => x !== '').join(' · ')
-      } catch { bs = null }
+      /** ⚠ 2026-11-02 P50/M6：`buildStamp` 不再注入（同主流程；见上方裁定 A 注释）。 */
       const convFn2 = (chg) => {
         const r = convMod.convergenceOf(chg, readUnits(join(LEDGER, 'units', 'index.toml')))
         return { converged: r.converged, blockedBy: r.blockedBy }
       }
-      return { constitutionBytes: cb, buildStamp: bs, convergence: convFn2 }
+      return { constitutionBytes: cb, convergence: convFn2 }
     }
     const probs = checkI5c(tmp, renderSpecArtifacts, realExtra())
     const hit = probs.find((x) => x.includes('spec/checkpoint.md') && x.includes('不一致'))
@@ -3478,6 +3477,58 @@ if (IS_MAIN) try {
     else if (probs2.length !== 0) bad(`N-I5c · 写回原文后仍红 ⇒ 恒红（${JSON.stringify(probs2)}）`)
     else ok(`N-I5c ✓ 负向对拍（先自证：把 \`spec/checkpoint.md\` 里的「阶段快照」改成「阶段快照X」）⇒ I5c **必红**：${hit.slice(0, 80)}`
       + '；**反面**：写回原文 ⇒ **转绿**')
+  }
+
+  // ── N-I5c2 · **嵌构建戳必红 / 摘掉必绿**（2026-11-02 P50/M6 · `TASK-M6.md` §一第 1 件第 6 步）──
+  //   ⚠ 它补的是 N-I5c **守不到**的那一格：N-I5c 证明的是"手改正文 ⇒ 红"，
+  //     但**证明不了**"把未入库的构建戳塞回生成物 ⇒ 红"。
+  //     而那正是 M5 踩过的病根：入库生成物嵌了 `lib/BUILD-STAMP`（未入库、每次 build 都变）。
+  //   ⚠ 与 N-I5c 是**两条不同的对拍**，⛔ 不是重复造第二条：
+  //     N-I5c = 改正文一字符；N-I5c2 = **只差构建戳一行**的两份文本。
+  {
+    const tmp = join(WORK, 'mut-i5c2')
+    cpSync(LEDGER, tmp, { recursive: true })
+    const cp = join(tmp, 'spec', 'checkpoint.md')
+    const orig = readFileSync(cp, 'utf8')
+    /**
+     * 造"还嵌构建戳"的那一份：在「四、外部读数」表格里补回那一行。
+     *  ⚠ 只加这一行，其余**逐字不动** ⇒ 两份文本的差异**只有构建戳**。
+     */
+    const stampLine = '| 构建戳 | `commit=deadbeef · built_at=2026-11-01T00:00:00+08:00 · builder=build` |'
+    const withStamp = orig.replace(
+      '| `CONSTITUTION.md` 字节 |',
+      `${stampLine}\n| \`CONSTITUTION.md\` 字节 |`,
+    )
+    /** ⚠ 自证：夹具**真的**只差这一行（⛔ 不许"以为加了"）。 */
+    const reallyOnlyStamp = withStamp !== orig
+      && withStamp.split('\n').filter((l) => !l.includes('构建戳')).join('\n') === orig
+    /**
+     * ⚠ `realExtra()` 定义在**另一个块**里（N-I5c 那一块），本块看不见 ⇒ 这里自建一份**同源**的
+     *   （⛔ 不传 null：那会让"写回原文"也对不上 ⇒ 反面夹具假红。M5 前的 N-I5c 就踩过这个坑）。
+     */
+    const realExtra2 = () => {
+      let cb2 = null
+      try { cb2 = Buffer.byteLength(readFileSync(join(ROOT, 'preset', 'dsh-hob', 'CONSTITUTION.md'), 'utf8'), 'utf8') } catch { cb2 = null }
+      const convFn3 = (chg) => {
+        const r = convMod.convergenceOf(chg, readUnits(join(LEDGER, 'units', 'index.toml')))
+        return { converged: r.converged, blockedBy: r.blockedBy }
+      }
+      return { constitutionBytes: cb2, convergence: convFn3 }
+    }
+    writeFileSync(cp, withStamp)
+    const probsStamp = checkI5c(tmp, renderSpecArtifacts, realExtra2())
+    const hitStamp = probsStamp.find((x) => x.includes('spec/checkpoint.md') && x.includes('不一致'))
+    // 反面：摘掉构建戳（= 写回原文）⇒ 必绿
+    writeFileSync(cp, orig)
+    const probsClean = checkI5c(tmp, renderSpecArtifacts, realExtra2())
+    rmSync(tmp, { recursive: true, force: true })
+    if (!reallyOnlyStamp) bad('N-I5c2 · 夹具没造出"只差构建戳一行"的两份文本 ⇒ 本条不可判')
+    else if (hitStamp === undefined) bad('N-I5c2 · 生成物里**嵌回构建戳**却绿灯 ⇒ I5c 哑了（未入库依赖会悄悄回来）')
+    else if (probsClean.length !== 0) bad(`N-I5c2 · 摘掉构建戳后仍红 ⇒ 恒红（${JSON.stringify(probsClean)}）`)
+    else ok('N-I5c2 ✓ 负向对拍（先自证：在 `spec/checkpoint.md` 的「四、外部读数」表里**只补回构建戳那一行**，'
+      + '其余逐字不动）⇒ I5c **必红**：'
+      + `${hitStamp.slice(0, 80)}；**反面**：摘掉构建戳（写回原文）⇒ **转绿**`
+      + '。⚠ 它守的是「入库生成物 ⛔ 不许依赖未入库文件」这条 —— 嵌回去就红')
   }
 
   // ── N-RESUME：快照缺失 / 缺读数段 ⇒ 恢复入口**判得出**（⛔ 不许静默当"有"）──
