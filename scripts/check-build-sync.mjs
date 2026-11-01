@@ -123,6 +123,12 @@ import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 
 const here = dirname(fileURLToPath(import.meta.url))
+/**
+ * ⚠ **指向本仓的 CJS `require`**（2026-11-02 P50/M7）。
+ *   本文件是 ESM ⇒ 模块作用域没有 `require`；而面 ④ 的桩要**按宿主的方式取真包**
+ *   ⇒ 用 `createRequire(指向本仓 package.json)`，解析基准 = 本仓（与产物在宿主里一致）。
+ */
+const REPO_REQUIRE = createRequire(join(here, '..', 'package.json'))
 const root = join(here, '..')
 
 /** 编译产物面：`src/<x>.ts` ⇒ `lib/<x>.js`（⚠ 与 `tsconfig.json` 的 `rootDir: src` / `outDir: lib` 同口径）。 */
@@ -351,9 +357,56 @@ if (ARGV.includes('--self-check') || !ARGV.includes('--no-self-check')) {
       + ` · 源码改过=${rSrcChanged.verdict}（应 lagging）· 取不到=${rUnknownSrc.verdict}（应 lagging）`)
   }
 
+  // ── T-g ⭐ **负向对拍：面 ④ 的桩不许退回"空壳"**（2026-11-02 P50/M7 · `TASK-M7.md` §一第 1 件）──
+  //   ⚠ 它守的是 M7 定性的那条**假红**：桩若退回"任何属性都返回 () => undefined"的空壳，
+  //     `require('@deepseek-ai/schemastery').default.object(...)` 会读到 undefined ⇒ 抛
+  //     `Cannot read properties of undefined (reading 'object')` ⇒ 面 ④ 报 ✗
+  //     —— **而产品在宿主里是好的**（宿主模块表给真包）⇒ 那是**假红**，比不红更坏
+  //     （它会被人"绕过去"：放宽判据 / 加白名单）。
+  //   ⇒ 本条两个方向都验：**空壳 ⇒ 必抛**、**真包 ⇒ 不抛**。
+  {
+    let shellThrew = false
+    let realOk = false
+    let productCode = ''
+    try { productCode = readFileSync(CLIENT_PRODUCT, 'utf8') } catch { productCode = '' }
+    if (productCode !== '') {
+      const loadFactory = () => {
+        const got = []
+        const sb = {
+          console: { debug() {}, info() {}, warn() {}, error() {}, log() {} },
+          window: { __ModuleLoader__: { load: (m) => { got.push(m) } } },
+          __filename: CLIENT_PRODUCT,
+          __dirname: dirname(CLIENT_PRODUCT),
+        }
+        sb.globalThis = sb
+        vm.runInNewContext(productCode, sb, { filename: 'lib/client.js', timeout: 20_000 })
+        return got[0] ?? null
+      }
+      const modT = loadFactory()
+      if (modT !== null && typeof modT.factory === 'function') {
+        // ① 空壳（M7 前的形态）⇒ 必抛
+        try {
+          modT.factory(() => new Proxy({}, { get: () => () => undefined }))
+          shellThrew = false
+        } catch { shellThrew = true }
+        // ② 真包（M7 后的形态）⇒ 不抛
+        try {
+          modT.factory((n) => { try { return REPO_REQUIRE(n) } catch { return new Proxy({}, { get: () => () => undefined }) } })
+          realOk = true
+        } catch { realOk = false }
+      }
+    }
+    say(shellThrew && realOk,
+      'T-g ✓ 负向对拍 **面 ④ 的桩不许退回空壳**（先自证：拿真产物 `lib/client.js` 的 `factory` 各喂一次）：'
+      + '**空壳桩 ⇒ 必抛**（正是 M7 前的那条假红：`Cannot read properties of undefined (reading \'object\')`）；'
+      + '**真包桩 ⇒ 不抛**（与宿主模块表同形）'
+      + '。⚠ 桩若退回空壳，面 ④ 会**假红** —— 假红会被人绕过去，而不是被修',
+      `空壳必抛=${shellThrew}（应 true）· 真包不抛=${realOk}（应 true）· 产物字节=${Buffer.byteLength(productCode, 'utf8')}`)
+  }
+
   console.log('')
   if (bad === 0) {
-    console.log(`判定：**PASS** —— 面 ③ 三档 + 负向对拍，共 7 条断言。`)
+    console.log(`判定：**PASS** —— 面 ③ 三档 + 负向对拍，共 8 条断言。`)
     // ⚠ `--self-check` 只跑自检就退；`--self-check-then-report` 继续跑现场（⚠ `check:build` 用后者）
     if (ARGV.includes('--self-check')) process.exit(0)
   } else {
@@ -992,6 +1045,15 @@ const CLIENT_LOAD = (() => {
   const sandbox = {
     console: { debug() {}, info() {}, warn() {}, error() {}, log() {} },
     window: { __ModuleLoader__: { load: (m) => { mods.push(m) } } },
+    /**
+     * ⚠⚠ **必须给 `__filename` / `__dirname`**（2026-11-02 P50/M7）。
+     *   产物里有 `createRequire(pathToFileURL(__filename).href)('../package.json')`
+     *   （`@deepseek-ai/dsh-llm/attribution` 那一段取 `version`）⇒ 不给就抛
+     *   `ReferenceError: __filename is not defined` —— 那是**桩缺**，不是产品坏了。
+     *   ⚠ 指向真实的 `lib/client.js` 路径：宿主里它就在那儿，`../package.json` 才指得到仓根的那份。
+     */
+    __filename: CLIENT_PRODUCT,
+    __dirname: dirname(CLIENT_PRODUCT),
   }
   sandbox.globalThis = sandbox
   try {
@@ -1013,13 +1075,39 @@ const CLIENT_LOAD = (() => {
     return { bad, good, blocking: ['client-loader-id'] }
   }
   const strayReqs = []
+  /**
+   * ⚠⚠ **`requireStub` 必须先给真包**（2026-11-02 P50/M7 · `TASK-M7.md` §一第 1 件）。
+   *
+   * ── 改前是什么（以及为什么那是**假红**）──────────────────────────────
+   *   改前只认 `react`，**其余全部返回 `new Proxy({}, { get: () => () => undefined })`** ——
+   *   也就是"任何属性都返回一个返回 `undefined` 的函数"。
+   *   ⇒ 产物里的 `require('@deepseek-ai/schemastery').default.object({...})` 拿到的
+   *     `.default` 是个**函数**、不是 truthy 对象；再取 `.object` 就抛
+   *     `Cannot read properties of undefined (reading 'object')`（实测 `lib/client.js:3853`）。
+   *   ⚠ 而**宿主里根本不是这样**：`tsdown.config.ts` 的 `CLIENT_EXTERNALS` 里的模块
+   *     由浏览器模块表的 `makeRequire` 提供**真包**（seed 表 / 宿主依赖），⛔ 不是空壳。
+   *   ⇒ 用空壳去喂 ⇒ 面 ④ 报 ✗ ⇒ 但**产品在宿主里是好的** ⇒ **假红**。
+   *   ⚠ 假红比不红更坏：它会被人"绕过去"（放宽判据 / 加白名单），而不是被修。
+   *
+   * ── 改后（与宿主同形）────────────────────────────────────────────────
+   *   ① 能 `require.resolve` 到的 ⇒ **给真包**（这正是宿主模块表给的东西）；
+   *   ② 解析不到的 ⇒ 退回空壳 Proxy（⚠ 仍然记 `strayReqs`，那条判据照旧会红）。
+   *   ⚠ 这样 `面 ④` 判的才是"产物能不能在**真实依赖**下装起来"，⛔ 不是"能不能在空壳下装起来"。
+   *   ⚠ **没有**给 `factory` 套 `try/catch`（⛔ 不许吞异常，见 `TASK-M7.md` §二.5）。
+   *   ⚠ **没有**动 `lagBlocking` 那两行（那是 `135f559` 刚接上的牙）。
+   */
   const requireStub = (name) => {
     if (externals !== null && !externals.has(name)) strayReqs.push(name)
-    // ⚠ 只给"够跑通"的假实现：React 的那几个 hook 用不到，⛔ 不伪造行为语义。
-    if (name === 'react') {
-      return { createElement: () => null, useState: (v) => [v, () => {}], useEffect: () => {}, Fragment: Symbol('f') }
+    try {
+      /**
+       * ⚠ 本文件是 **ESM**（`import`/`import.meta.url`）⇒ 模块作用域里**没有** `require`。
+       *   用 `createRequire` 起一个**指向本仓**的 CJS require（与产物自己在宿主里的取法同形）。
+       */
+      return REPO_REQUIRE(name)
+    } catch {
+      // 解析不到 ⇒ 退回空壳（⚠ 与改前同形的兜底，不假装它能用）
+      return new Proxy({}, { get: () => () => undefined })
     }
-    return new Proxy({}, { get: () => () => undefined })
   }
   let exp = null
   try { exp = mod.factory(requireStub) } catch (e) {
