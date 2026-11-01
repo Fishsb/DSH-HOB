@@ -50,6 +50,25 @@ export const STAGE_KIND_STATUSES: Readonly<Record<string, { statuses: string[]; 
   risk: { statuses: ['open', 'handling', 'closed'], init: 'open', finals: [] },
   decision: { statuses: ['active', 'superseded'], init: 'active', finals: [] },
   evidence: { statuses: ['recorded'], init: 'recorded', finals: [] },
+  /**
+   * ⚠⚠ **2026-11-02 P50/M10：补 B 轨（`TASK-B1.md`）的收尾漏项**——————————————
+   *   B 轨加 `goal` 时只改了 `scripts/gen-ledger.mjs` 的 `KIND_SPEC`（那里现在是第 10 个 kind），
+   *   **没同步本表** ⇒ `check:stages-route` 的 R-9 拿本表去核 `ledger-next/units/index.toml`，
+   *   遇到 `G-01` / `G-02` 就报（实测原文）：
+   *     `R-9 · 真索引算不出：{"ok":false,"reason":"row-shape-unknown",… G-01: kind="goal" 不在封闭集 …}`
+   *
+   *   ⚠⚠ **它当时必然发现不了**：账本里一个 `goal` 单元都没有 ⇒ R-9 扫过的行全是旧 kind。
+   *     等 Hob 真落了 `goal` 数据，它**立刻**响了 —— 这正是本仓那条经验的反面实证：
+   *     **有的判据只有等真数据到位才可能红，「当时 check:all 是绿的」≠「这条路验过」。**
+   *
+   *   ⚠ 值**逐值照抄** `gen-ledger.mjs:218`（⛔ 不是自己设计）：
+   *     `goal: { step: null, statuses: ['active','done','retired'], init: 'active',
+   *              finals: ['done','retired'], prefix: 'G-' }`
+   *   ⇒ 本表只取 `statuses` / `init` / `finals` 三项（`step` / `prefix` 不在本表形状里）。
+   *   ⚠ 与 `risk` / `decision` / `evidence` 不同：**`goal` 有终态**（`done` / `retired`），
+   *     ⛔ 不许照抄那三行的 `finals: []`。
+   */
+  goal: { statuses: ['active', 'done', 'retired'], init: 'active', finals: ['done', 'retired'] },
 }
 
 /** 三类可分辨失败（`R-10`：⛔ 不许并成一句）。 */

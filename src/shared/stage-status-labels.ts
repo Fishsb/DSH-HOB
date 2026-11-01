@@ -86,6 +86,19 @@ export const STAGE_STATUS_LABELS_ZH: Readonly<Record<string, Readonly<Record<str
   evidence: {
     recorded: '已记录读数',
   },
+  /**
+   * ⚠ **2026-11-02 P50/M10**：B 轨加 `goal` 时漏了本表 —— 而本文件的 R-10 护栏会**当场咬住**
+   * （缺标签 ⇒ 每个状态都判成「判不出（原值 active）」）。
+   *   值照 `STAGE_KIND_STATUSES.goal.statuses`：`active` / `done` / `retired`。
+   *   ⚠ 措辞口径照本文件第 31 行：**一句话、用户看得懂、⛔ 不照搬英文**。
+   *   ⚠ 与 `risk`/`decision`/`evidence` 那三类的口径**不同**：`goal` 是**目标**，
+   *     它的终态是"做完了 / 撤了"，不是"处置完了 / 被取代"。
+   */
+  goal: {
+    active: '在追（还没实现）',
+    done: '已实现',
+    retired: '已撤销（不再追）',
+  },
 }
 
 /** 一个 kind 的合法状态集（⚠ 从 `STAGE_KIND_STATUSES` 现读，⛔ 不抄）。 */

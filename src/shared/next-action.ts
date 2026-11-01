@@ -104,6 +104,12 @@ const FINALS: Readonly<Record<string, string[]>> = {
   decision: [],
   evidence: [],
   cap: [],
+  /**
+   * ⚠ **2026-11-02 P50/M10**：B 轨加 `goal` 时漏了本表（同 `STAGE_KIND_STATUSES` 那次）。
+   *   值照 `gen-ledger.mjs` 的 `KIND_SPEC.goal.finals`：`['done','retired']`。
+   *   ⚠ 与上面 `risk`/`decision`/`evidence`/`cap` 的 `[]` **不同** —— `goal` 真有终态。
+   */
+  goal: ['done', 'retired'],
 }
 
 /**
