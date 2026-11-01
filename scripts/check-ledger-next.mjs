@@ -52,6 +52,15 @@ const WORK = join(ROOT, '.check-ledger-next-work')
 
 let pass = 0
 let fail = 0
+/**
+ * ⚠ **第三档：跳过**（2026-11-02 · P50/B1 · `TASK-B1.md` §一第 3 件）。
+ *   与 `check-gitignore.mjs` 的同名档同口径：**跳过 ≠ 通过**，⛔ 不进 `pass`。
+ *   ⚠ 为什么必须单列：`goal = 0` 时三条覆盖检查**一条也判不了**，
+ *     若塞进 `ok` ⇒ "目标层没做"被洗成"目标层全对"；若塞进 `bad` ⇒ 上线即红（用户裁决禁止）。
+ *   ⇒ 它有自己的计数，且在处级口径里单独印出来。
+ */
+const skip = []
+const noteSkip = (m) => { skip.push(m); console.log(`  ${m}`) }
 const ok = (m) => { pass++; console.log(`  ✓ ${m}`) }
 const bad = (m) => { fail++; console.log(`  ✗ ${m}`) }
 
@@ -209,6 +218,147 @@ export const REQUIRED_FIELDS = {
   cap: ['last_reading'],
   change: ['proposal', 'built_by'],
   req: ['spec'],
+}
+
+/**
+ * ══ **目标层覆盖：三条检查 + 一个"未落数据"档**（2026-11-02 · P50/B1 · `TASK-B1.md` §一第 2/3 件）══
+ *
+ * ── 它治什么 ────────────────────────────────────────────────────────
+ *   用户裁决（`CHG-2035` 第三行）：「每条活跃需求**恰好一个主目标**」。
+ *   ⚠ "恰好一个"是**两个方向的合取**，⛔ 不是一条：少一个（无人承接）与多一个（两个"主"）
+ *     都是坏，而且**坏在不同地方** ⇒ 必须分别可判、分别能指到 id。
+ *   ⇒ 三条（同时成立才算过，缺一条即红）：
+ *     · `GC-1` **至少**：每条 `agreed` 需求至少被一个 goal 的 `req_ids` 覆盖；
+ *     · `GC-2` **至多**：每条 `agreed` 需求至多被一个 goal 覆盖（两个"主"目标 ⇒ "主"字失效）；
+ *     · `GC-3` 每个 goal **至少**覆盖一条 `agreed` 需求（`req_ids` 空 / 只挂非活跃需求 = 装饰）。
+ *
+ * ── ⚠⚠ 为什么必须允许 `goal = 0` 而**报"未落数据"**（`TASK-B1.md` §一第 3 件）──────
+ *   用户裁决：「⚠ **不许上线即红**」（`DECISIONS.md` §八 刹车纪律）。
+ *   ⚠ 但反过来"没有 goal 就跳过、显示绿"是**假读数** —— 那会让"目标层根本没做"和
+ *     "目标层全对"变成同一句话（本仓最忌的形态）。
+ *   ⇒ 第三条路：`goal = 0` 时**单列一档** `⊘`，⛔ 不进 `ok`（`pass`），也⛔ 不进 `bad`。
+ *     `skip` 计入 `skip` 计数，并在处级口径里单独报。
+ *
+ * ⚠ **本组不写索引**：`goal` 单元由 Hob 自己写（§4.2 账本类写入永不外派）。
+ *   这里只读 `units`。
+ */
+
+/** `goal = 0` 时的那一行（⚠ 逐字被 `TASK-B1.md` §一第 3 件点名要求，⛔ 别改措辞去凑）。 */
+export const GOAL_NOT_LANDED = '⊘ 目标层尚未落数据（goal = 0）⇒ 三条覆盖检查无法执行，⛔ 这不是通过'
+
+/**
+ * **档位归属的唯一判定**：`goal = 0` ⇒ `'skip'`，否则 ⇒ `'checked'`。
+ *
+ * ⚠ 单独抽成函数，是为了让负向对拍 `N-GC0` **测的就是主流程用的那条规则**
+ *   （⛔ 夹具里另写一份 `if (goals === 0)` ⇒ 那是两份逻辑，改一处另一处静默过期）。
+ */
+export function goalLayerBucket(cov) {
+  return cov.goals === 0 ? 'skip' : 'checked'
+}
+
+/**
+ * **目标层报告体**（⚠ 主流程与负向对拍**共用这一个函数**，sink 由调用方注入）。
+ *
+ * ── 为什么 sink 要注入（这是 `N-GC0` 能诚实成立的关键）──────────────────
+ *   若这里直接调模块级的 `ok` / `bad` / `noteSkip`，`N-GC0` 一跑就会**污染真实计数**
+ *   （实测：`goal = 0` 那次会多算 1 条跳过，处级口径印成「跳过 2 处」而真实只有 1 处 ——
+ *     那正是本仓最忌的"读数说谎"）。
+ *   ⇒ sink 作参数传入：主流程传真 sink，`N-GC0` 传影子 sink ⇒ 两边跑的是**同一段判定**，
+ *     而影子那次的计数只落在局部变量里。
+ *
+ * @param {{goals:number,activeReqs:number,gc1:string[],gc2:string[],gc3:string[]}} cov
+ * @param {{ok:Function,bad:Function,noteSkip:Function}} sink
+ * @returns {'skip'|'checked'} 落在哪个档位
+ */
+export function reportGoalLayer(cov, sink) {
+  const bucket = goalLayerBucket(cov)
+  if (bucket === 'skip') {
+    sink.noteSkip(GOAL_NOT_LANDED)
+    return bucket
+  }
+  const IDS = [
+    ['GC-1', cov.gc1, '每条活跃需求**至少**被一个 goal 覆盖',
+      `GC-1 ✓ 目标层·至少：${cov.activeReqs} 条活跃需求**逐条都有 goal 承接**（goal ${cov.goals} 条）`],
+    ['GC-2', cov.gc2, '每条活跃需求**至多**被一个 goal 覆盖',
+      `GC-2 ✓ 目标层·至多：${cov.activeReqs} 条活跃需求**没有一条被两个 goal 同时认领**（"主"字成立）`],
+    ['GC-3', cov.gc3, '每个 goal **至少**覆盖一条活跃需求',
+      `GC-3 ✓ 目标层·非空：${cov.goals} 条 goal **每条都承接了至少一条活跃需求**（无装饰目标）`],
+  ]
+  for (const [id, probs, what, okMsg] of IDS) {
+    if (probs.length === 0) sink.ok(okMsg)
+    else for (const x of probs) sink.bad(`${id} · ${what}：${x}`)
+  }
+  return bucket
+}
+
+/** 一条需求算"活跃"的判据（⚠ 只写在这里一处，三条检查共用）。 */
+const isActiveReq = (u) => u.kind === 'req' && String(u.status) === 'agreed'
+
+/**
+ * **GC-1 / GC-2 / GC-3 的纯函数实现**。
+ *
+ * ⚠ 收 `units` 而⛔ 不自己去读盘：负向对拍要直接喂合成夹具（照 `N-G1` / `N-CF` 的形态）。
+ * ⚠ `req_ids` 缺失 / 非数组 ⇒ 按**空数组**处理，并在 `GC-3` 报出来（⛔ 不静默当"覆盖了 0 条"就完事）。
+ *
+ * @param {Array<Record<string, any>>} units - 单元数组
+ * @returns {{ goals: number, activeReqs: number, gc1: string[], gc2: string[], gc3: string[] }}
+ */
+export function checkGoalCoverage(units) {
+  const gc1 = []
+  const gc2 = []
+  const gc3 = []
+
+  const goals = units.filter((u) => u.kind === 'goal')
+  const activeReqs = units.filter(isActiveReq)
+  const activeReqIds = new Set(activeReqs.map((u) => String(u.id)))
+
+  /** 每条活跃需求 ← 被哪些 goal 认领（⚠ 一条需求挂两次会在这里出现两次 ⇒ GC-2 抓它）。 */
+  const owners = new Map()
+  for (const id of activeReqIds) owners.set(id, [])
+  for (const g of goals) {
+    const reqIds = Array.isArray(g.req_ids) ? g.req_ids.map(String) : []
+    for (const rid of reqIds) {
+      if (owners.has(rid)) owners.get(rid).push(String(g.id))
+    }
+  }
+
+  // ── GC-1 至少：每条活跃需求至少被一个 goal 覆盖 ─────────────────────
+  for (const r of activeReqs) {
+    const mine = owners.get(String(r.id)) ?? []
+    if (mine.length === 0) {
+      gc1.push(`${r.id}（${JSON.stringify(r.title ?? '')}）：**没有任何 goal 覆盖**（\`agreed\` 需求无人承接）`)
+    }
+  }
+
+  // ── GC-2 至多：每条活跃需求至多被一个 goal 覆盖 ─────────────────────
+  for (const r of activeReqs) {
+    const mine = owners.get(String(r.id)) ?? []
+    if (mine.length > 1) {
+      gc2.push(`${r.id}：**被 ${mine.length} 个 goal 同时覆盖**（${mine.join(' / ')}）`
+        + ' ⇒ 一个需求两个"主"目标，"主"字失效')
+    }
+  }
+
+  // ── GC-3 每个 goal 至少覆盖一条活跃需求 ─────────────────────────────
+  for (const g of goals) {
+    const raw = g.req_ids
+    const reqIds = Array.isArray(raw) ? raw.map(String) : []
+    if (!Array.isArray(raw)) {
+      gc3.push(`${g.id}：\`req_ids\` **不是数组**（${JSON.stringify(raw)}）⇒ 无法判断它承接了什么`)
+      continue
+    }
+    if (reqIds.length === 0) {
+      gc3.push(`${g.id}（${JSON.stringify(g.title ?? '')}）：\`req_ids\` **为空** ⇒ 空目标（装饰），⛔ 目标必须承接至少一条活跃需求`)
+      continue
+    }
+    const hitActive = reqIds.filter((rid) => activeReqIds.has(rid))
+    if (hitActive.length === 0) {
+      gc3.push(`${g.id}：\`req_ids\` = ${JSON.stringify(reqIds)} **一条活跃需求都没有**`
+        + '（挂的全是 draft / dropped / 不存在）⇒ 空目标（装饰）')
+    }
+  }
+
+  return { goals: goals.length, activeReqs: activeReqs.length, gc1, gc2, gc3 }
 }
 
 /**
@@ -2349,6 +2499,25 @@ if (IS_MAIN) try {
   }
 
   // ══════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════
+  // GC-1/2/3 · 目标层覆盖（2026-11-02 P50/B1 · `TASK-B1.md` §一第 2 件）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ⚠⚠ **`goal = 0` 走 `skip` 档，⛔ 不进 `ok`、⛔ 也不进 `bad`**（§一第 3 件）：
+   *   · 进 `ok` ⇒ "目标层没做"被洗成"目标层全对"（假绿，本仓最忌）；
+   *   · 进 `bad` ⇒ 上线即红（用户裁决明令禁止）。
+   *   ⇒ 第三条路：单列 `⊘`，并计入 `skip` 计数（处级口径里单独报，⛔ 不计入「过了」）。
+   */
+  {
+    const cov = checkGoalCoverage(units)
+    /** ⚠ 判定与输出都在 `reportGoalLayer` 里（与 `N-GC0` 共用同一段代码）。 */
+    const bucket = reportGoalLayer(cov, { ok, bad, noteSkip })
+    if (bucket === 'skip') {
+      console.log(`      ⇒ 实测：goal **0 条** · 活跃需求（\`agreed\`）**${cov.activeReqs} 条**`
+        + ' —— 需求侧有对象、目标侧没有 ⇒ 三条覆盖检查**一条也判不了**')
+    }
+  }
+
   // G-1..G-4 · 四条前置状态门禁（2026-10-31 P41/R3 · `TASK-R3.md` §四）
   // ⚠ 只落账本面：判"这个状态合法不合法"，⛔ 不拦写操作
   // ══════════════════════════════════════════════════════════════════════
@@ -4104,6 +4273,168 @@ if (IS_MAIN) try {
   }
 
 
+  /**
+   * ══ 目标层覆盖的四条负向对拍（2026-11-02 · P50/B1 · `TASK-B1.md` §一第 2/3 件）══
+   *
+   * ⚠⚠ **全部用合成夹具**（照 `N-G1` / `N-CF` 的形态）：自造单元 → 喂**真判据**
+   *   `checkGoalCoverage`（⛔ 夹具里没有第二份逻辑）→ 先自证夹具真的坏掉 → 再断言必红。
+   *
+   * ── ⚠ 为什么⛔ 不许拿真账本当夹具（任务书明令）──────────────────────
+   *   现在 `index.toml` 里 **goal = 0 条** ⇒ 拿真数据跑这三条，三条全是 **0 对象**：
+   *     `GC-1` 没有 goal 可归属 ⇒ 每条活跃需求都"没人覆盖"（会假红）；
+   *     `GC-2` / `GC-3` 没有 goal ⇒ 空数组 ⇒ **假绿**。
+   *   两头的读数都不可信 ⇒ 夹具必须合成。
+   *
+   * ── 每条对拍的判据（⛔ 不是 `exit ≠ 0`）────────────────────────────
+   *   输出里要有**可读断言行**，能看出**哪一条**（GC-1/2/3）**哪个 id**（R-9xx / G-9xx）被咬住。
+   *   反面还要验"还原 ⇒ 转绿"（⛔ 不许恒红）。
+   */
+  {
+    /**
+     * 基线夹具：两条活跃需求 + 两条 goal，**覆盖恰好一对一**（这是"合法"形态）。
+     * ⚠ 其它字段（`after` / `source`）这里用不到 —— 本组只读 `kind` / `status` / `req_ids` / `id`。
+     */
+    const base = [
+      { id: 'R-901', kind: 'req', status: 'agreed', title: '需求甲' },
+      { id: 'R-902', kind: 'req', status: 'agreed', title: '需求乙' },
+      { id: 'G-901', kind: 'goal', status: 'active', title: '目标甲', req_ids: ['R-901'] },
+      { id: 'G-902', kind: 'goal', status: 'active', title: '目标乙', req_ids: ['R-902'] },
+    ]
+    /** ⚠ **先自证夹具是"合法"的**：三条全空。否则后面的"造坏必红"可能只是继承了一个本来就红的基线。 */
+    const clean = checkGoalCoverage(base)
+    const baselineClean = clean.goals === 2 && clean.activeReqs === 2
+      && clean.gc1.length === 0 && clean.gc2.length === 0 && clean.gc3.length === 0
+
+    if (!baselineClean) {
+      bad('N-GC · 合成夹具基线**本身就不合法**（期望 2 goal / 2 活跃需求 / 三条全空，'
+        + `实测 goal=${clean.goals} req=${clean.activeReqs} gc1=${clean.gc1.length} gc2=${clean.gc2.length} gc3=${clean.gc3.length}）`
+        + ' ⇒ 下面三条对拍不可判')
+    } else {
+      // ── N-GC1：造一条活跃需求**没有任何 goal 覆盖** ⇒ GC-1 必红 ──────────
+      {
+        const mut = [...base, { id: 'R-903', kind: 'req', status: 'agreed', title: '需求丙（无人承接）' }]
+        const r = checkGoalCoverage(mut)
+        const hit = r.gc1.find((x) => x.includes('R-903'))
+        const stillOk2 = r.gc2.length === 0 && r.gc3.length === 0
+        if (hit === undefined) {
+          bad('N-GC1 · 造了一条无人承接的活跃需求 `R-903` 却绿灯 ⇒ GC-1（至少）哑了')
+        } else if (!stillOk2) {
+          bad(`N-GC1 · 只改一处却连带把别的咬了（gc2=${r.gc2.length} gc3=${r.gc3.length}）⇒ 夹具不干净`)
+        } else {
+          ok(`N-GC1 ✓ 负向对拍（先自证：基线 2 goal / 2 活跃需求、三条全空；再补一条无人承接的 \`R-903\`）`
+            + ` ⇒ GC-1（**至少**）**必红**且点名 id：${hit.slice(0, 90)}`
+            + '；**反面**：删掉 `R-903` 即回到基线全绿（⛔ 不是恒红）')
+        }
+      }
+
+      // ── N-GC2：造一条活跃需求**同时挂在两个 goal 下** ⇒ GC-2 必红 ─────────
+      {
+        const mut = base.map((u) => (u.id === 'G-902' ? { ...u, req_ids: ['R-902', 'R-901'] } : u))
+        const r = checkGoalCoverage(mut)
+        const hit = r.gc2.find((x) => x.includes('R-901'))
+        if (hit === undefined) {
+          bad('N-GC2 · 把 `R-901` 同时挂到 `G-902` 下却绿灯 ⇒ GC-2（至多）哑了 —— 两个"主"目标会被放过')
+        } else if (!hit.includes('G-901') || !hit.includes('G-902')) {
+          bad(`N-GC2 · 咬住了但**没点名两个 goal** ⇒ 读者看不出该去掉哪一个：${hit.slice(0, 90)}`)
+        } else {
+          ok('N-GC2 ✓ 负向对拍（先自证：基线里 `R-901` 只归 `G-901`；再把 `R-901` 也挂进 `G-902.req_ids`）'
+            + ` ⇒ GC-2（**至多**）**必红**且点名两个 goal：${hit.slice(0, 110)}`
+            + '；**反面**：还原 `G-902.req_ids` 即回到基线全绿（⛔ 不是恒红）')
+        }
+      }
+
+      // ── N-GC3：造一个 `req_ids` 为空的 goal ⇒ GC-3 必红 ────────────────
+      {
+        const mut = [...base, { id: 'G-903', kind: 'goal', status: 'active', title: '空目标（装饰）', req_ids: [] }]
+        const r = checkGoalCoverage(mut)
+        const hit = r.gc3.find((x) => x.includes('G-903'))
+        if (hit === undefined) {
+          bad('N-GC3 · 造了一个 `req_ids` 为空的 goal 却绿灯 ⇒ GC-3（非空）哑了 —— 装饰目标会被放过')
+        } else if (!hit.includes('为空')) {
+          bad(`N-GC3 · 咬住了但没说清理由（期望含「为空」）：${hit.slice(0, 90)}`)
+        } else {
+          ok(`N-GC3 ✓ 负向对拍（先自证：基线 2 条 goal 都有活跃需求；再补一条 \`req_ids: []\` 的 \`G-903\`）`
+            + ` ⇒ GC-3（**非空**）**必红**且点名 id：${hit.slice(0, 90)}`
+            + '；**反面**：删掉 `G-903` 即回到基线全绿（⛔ 不是恒红）')
+        }
+      }
+    }
+
+    /**
+     * ── N-GC0：`goal = 0` ⇒ 必须走 `⊘` 那一行，且**不计入通过**（§一第 3 件）──────
+     *
+     * ⚠ 这条验的是**档位归属**，⛔ 不是"有没有输出"：
+     *   · 必须有那一行（逐字 `GOAL_NOT_LANDED`）；
+     *   · 那行里**不许出现"通过"字样**（出现了就是把"没判"说成"判过了"）；
+     *   · 且它**不进** `pass` 计数 —— 这里直接比 `skip` 与 `pass` 的增量。
+     */
+    {
+      const zeroGoals = [
+        { id: 'R-901', kind: 'req', status: 'agreed', title: '需求甲' },
+        { id: 'R-902', kind: 'req', status: 'agreed', title: '需求乙' },
+      ]
+      const r = checkGoalCoverage(zeroGoals)
+      /** ⚠ 先自证：夹具真的 0 个 goal（⛔ 不是"忘了放 goal"却当成 0）。 */
+      const reallyZero = r.goals === 0 && zeroGoals.filter((u) => u.kind === 'goal').length === 0
+      /**
+       * ⚠⚠ **影子 sink**：调的是主流程同一段 `reportGoalLayer`，
+       *   但计数落在局部变量里 ⇒ ⛔ 不污染真实 `pass` / `skip`。
+       *   （改前直接调模块级 `noteSkip` 时实测把处级口径印成「跳过 2 处」而真实只有 1 处。）
+       */
+      const shadow = { pass: 0, fail: 0, skip: [] }
+      const sink = {
+        ok: (m) => { shadow.pass++; shadow.msgs = [...(shadow.msgs ?? []), `✓ ${m}`] },
+        bad: (m) => { shadow.fail++; shadow.msgs = [...(shadow.msgs ?? []), `✗ ${m}`] },
+        noteSkip: (m) => { shadow.skip.push(m) },
+      }
+      const bucket = reportGoalLayer(r, sink)
+      /** 反面：给同两条需求各配一个 goal ⇒ 必须离开 `skip` 档、进 `checked` 且三条全绿。 */
+      const withGoals = [...zeroGoals,
+        { id: 'G-901', kind: 'goal', status: 'active', title: '目标甲', req_ids: ['R-901'] },
+        { id: 'G-902', kind: 'goal', status: 'active', title: '目标乙', req_ids: ['R-902'] },
+      ]
+      const r2 = checkGoalCoverage(withGoals)
+      const shadow2 = { pass: 0, fail: 0, skip: [] }
+      const bucket2 = reportGoalLayer(r2, {
+        ok: () => { shadow2.pass++ },
+        bad: () => { shadow2.fail++ },
+        noteSkip: (m) => { shadow2.skip.push(m) },
+      })
+      /**
+       * ⚠⚠ **这一行的"不许出现通过"必须按语义判，⛔ 不能按子串判**（实测踩到，记进报告）：
+       *   任务书 §一第 3 件**同时**要求两件事——
+       *     ① 那一行形如「… ⇒ 三条覆盖检查无法执行，⛔ **这不是通过**」（自带"通过"两字）；
+       *     ② 「不能出现"通过"字样」。
+       *   两条按**子串**读直接互斥（① 的那行必然含"通过"）。
+       *   ⇒ 按语义读：**不许出现"通过"这个断言**，即——把那句**否定式** `这不是通过` 摘掉之后，
+       *     ⛔ 不许再有任何"通过"字样。这样既守住"别把没判说成判过了"，又不与 ① 打架。
+       */
+      const lineHasPass = GOAL_NOT_LANDED.replace('这不是通过', '').includes('通过')
+      if (!reallyZero) {
+        bad('N-GC0 · 夹具没造出"goal = 0"的形态 ⇒ 本条不可判')
+      } else if (bucket !== 'skip') {
+        bad(`N-GC0 · goal = 0 时**没走 skip 档**（实测 ${bucket}）⇒ 档位判定哑了`)
+      } else if (shadow.pass !== 0) {
+        bad(`N-GC0 · goal = 0 时**计入了通过**（pass +${shadow.pass}）⇒ "没判"被洗成"判过了"`)
+      } else if (shadow.skip.length !== 1) {
+        bad(`N-GC0 · goal = 0 时**没有计入跳过**（skip ${shadow.skip.length} 条，期望 1）⇒ 那个档位没有落点`)
+      } else if (shadow.skip[0] !== GOAL_NOT_LANDED) {
+        bad(`N-GC0 · 跳过那一行**不是约定的原文**：${JSON.stringify(shadow.skip[0])}`)
+      } else if (lineHasPass) {
+        bad('N-GC0 · 那一行里出现了"通过"字样 ⇒ 读者会把它当成通过')
+      } else if (bucket2 !== 'checked' || shadow2.pass !== 3 || shadow2.fail !== 0 || shadow2.skip.length !== 0) {
+        bad(`N-GC0 · 反面不成立：补上两个 goal 后应当 checked + 三条全绿，实测 `
+          + `bucket=${bucket2} pass=${shadow2.pass} fail=${shadow2.fail} skip=${shadow2.skip.length}`)
+      } else {
+        ok('N-GC0 ✓ 负向对拍（先自证：夹具 goal = 0 条、2 条活跃需求；影子 sink 不污染真实计数）'
+          + ' ⇒ 走 `⊘` 单列档：**pass +0**（⛔ 不计入通过）· **skip +1**（有自己的落点）'
+          + '，且那行里**没有"通过"字样**'
+          + ` —— 原文：${GOAL_NOT_LANDED}`
+          + '；**反面**：补两个 goal ⇒ 进 `checked` 档且 GC-1/2/3 三条全绿（⛔ 不是恒跳过）')
+      }
+    }
+  }
+
 } catch (e) {
   bad(`L 组**自身异常**（⛔ 不算通过）：${String(e?.stack ?? e)}`)
 } finally {
@@ -4113,7 +4444,14 @@ if (IS_MAIN) try {
 if (IS_MAIN) {
 console.log('')
 console.log(`L 组：通过 ${pass} · 失败 ${fail}`)
-console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 0 处**（⚠ 跳过**不计入通过**）`)
+/**
+ * ⚠ 处级口径的"跳过"档**必须如实印数**（2026-11-02 · P50/B1）：
+ *   改前这一行把 `跳过` **写死成 0 处**。⚠ 那不是"本族从不跳过"，而是"印了个常量"——
+ *   一旦真有跳过（`goal = 0` 就会有一次），**读数会说谎**（与 `check-all` 第 743 行
+ *   点名的那个病同形：族内明明跳了，汇总行印"跳过 0 处"）。
+ *   ⇒ 现在按实际 `skip.length` 印。
+ */
+console.log(`处级口径：查了 ${pass + fail + skip.length} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**；⚠ "查了"含跳过，故 查了 = 过了 + 没过 + 跳过）`)
 console.log('')
 if (fail > 0) {
   console.log('  ⛔ L 组有失败 —— 见上面逐条')

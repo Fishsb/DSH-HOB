@@ -188,6 +188,34 @@ export const KIND_SPEC = {
    */
   decision: { step: null, statuses: ['active', 'superseded'], init: 'active', finals: [], prefix: 'DEC-' },
   evidence: { step: null, statuses: ['recorded'], init: 'recorded', finals: [], prefix: 'EVD-' },
+  /**
+   * ══ 2026-11-02 P50/B1 · **`goal` 成为第 10 个 kind**（`TASK-B1.md` §一第 1 件）══════════
+   *
+   * ── 它治什么 ────────────────────────────────────────────────────────
+   *   账本链条的顶端此前**直接是 `req`** —— 没有目标层。用户方案的主链是
+   *   `Vision → Goal → Requirement → Change → Task → Run → Acceptance`，
+   *   而「每条活跃需求**恰好一个主目标**」是要被机检的三条读数（见 `check-ledger-next.mjs`
+   *   的 `GC-1` / `GC-2` / `GC-3`）。
+   *
+   * ── ⚠ 为什么 `step: null`（与 `cap` / `risk` 同档）──────────────────────
+   *   目标是**链顶**，不是流程里的一步：它回答"要做成什么"，⛔ 不回答"走到第几步"。
+   *   ⇒ ⛔ 不进五步分母。⚠ 若它占了分母，五步计数会从 `8/3/30/28` 变成别的数 ——
+   *     那是**读数被机制改坏**，不是进展。
+   *
+   * ── 状态封闭集（三档，⚠ 只写在这里一处）──────────────────────────────
+   *   · `active`  —— 正在追这个成果（`init`）；
+   *   · `done`    —— 成果已达成（终态）；
+   *   · `retired` —— 不追了（终态；⛔ 不是"失败"，是"不再是要做的事"）。
+   *   `finals: ['done', 'retired']` ⇒ 有终态（与 `cap` / `risk` 的 `finals: []` 不同：
+   *   那两类没有"做完"这回事，而一个成果**是能达成的**）。
+   *
+   * ── ⚠ 前缀 `G-`，且**没有 parent / after 语义** ──────────────────────────
+   *   它是链顶 ⇒ 没有上游。⚠ `after` 仍是 I1 的通用必填（数组，可为空），
+   *   ⛔ 但不许拿它编"目标之间的先后"（那会造出一条没有依据的甘特线）。
+   *   ⚠ 必填的 `req_ids`（承接哪些需求）由 `check-ledger-next.mjs` 的
+   *   `REQUIRED_FIELDS` 之外的**覆盖检查**核（理由见那里的注释：避免同一条缺口红两次）。
+   */
+  goal: { step: null, statuses: ['active', 'done', 'retired'], init: 'active', finals: ['done', 'retired'], prefix: 'G-' },
 }
 
 /**

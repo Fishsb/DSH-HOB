@@ -748,8 +748,661 @@ function checkDirRefs({ ledgerRoot, bad, ok, skip }) {
   return { executed: true, ...stat }
 }
 
+/**
+ * ══ **E 组 · 归档目录必须带清单件**（2026-11-02 · P50/E1 · `TASK-E1.md` §一第 1/2/4 件）══
+ *
+ * ── 它治什么 ────────────────────────────────────────────────────────
+ *   `archive/` 下每个目录都是一个"这一批做过什么"的**证据包**，但**没有任何判据**要求它自带清单。
+ *   今天新增一个归档目录，只要文件写进去就算完 —— 里面该有哪些件、少了哪件，**没人查**。
+ *   ⇒ 一个归档目录可以只剩一个文件、仍然"存在"，而"能恢复"这件事没人验过。
+ *
+ * ── ⚠⚠ 清单件叫什么：**沿用 `README.md`，⛔ 不新造 `MANIFEST.md`**（§一第 1 件点名要求先查约定）──
+ *   实测（2026-11-02）：
+ *     · `archive/<目录>/README.md` —— **112 个**目录已在用；
+ *     · `archive/<目录>/MANIFEST.md` —— **1 个**（`2026-10-25-manifest-vs-init/`，且它是**被研究的对象**，
+ *       不是约定）；
+ *     · 本文件 `:294` 的既有判据已把 `README.md` 定成「归档清单是本检查的**唯一比对基准**」。
+ *   ⇒ 约定就是 `README.md`。⛔ 再加一个 `MANIFEST.md` 就是**第二个名字**，
+ *     会让"清单在哪"这个问题有两个答案（本仓一直在治的病）。
+ *
+ * ── ⚠ 这一轨**只查存在性**，⛔ 不查内容格式（查格式属下一波，§一第 1 件明写）──
+ *   内容口径的判据（形态 M / 形态 S 的字节与 md5 对照）已由本文件 `checkArchiveBytes` 管，
+ *   ⛔ 本函数不重报、不越界。
+ *
+ * ── ⚠⚠ 历史不追溯：白名单**逐个列出**（§一第 2 件）────────────────────────
+ *   ⛔ **不许**写成"除新目录外都放过"那种反向逻辑 —— 那样新增目录会被**静默**放过，判据等于没写。
+ *   ⛔ **不许**给历史目录补清单件：事后补写 = **编文档**（`CHG-2027` §三 已裁）。
+ *   ⇒ 白名单是**逐个成员的可读清单**，成员数就是本轮的实测目录数。
+ *
+ * ── ⚠ 0 对象 ⇒ `⊘` 档，⛔ 不进 `ok` ──────────────────────────────────
+ *   读不到任何归档目录（路径配错 / 目录不存在）⇒ 走 `skip` 通道，
+ *   与 B/D 轨的 `⊘` 档同口径：**跳过 ≠ 通过**。
+ */
+
+/** 清单件的文件名（⚠ 沿用既有约定，见上方实测；⛔ 别改成 `MANIFEST.md`）。 */
+export const ARCHIVE_MANIFEST_NAME = 'README.md'
+
+/**
+ * 历史归档目录白名单（⚠ **逐个列出**，每个都是"历史不追溯"）。
+ *
+ * ⚠ 生成口径：`ls archive/` 实测 **519** 个目录（2026-11-02 P50/E1 现读，⛔ 未用任务书给的 516）。
+ * ⚠ 本名单**只增不删**没有意义 —— 它应当**越来越短**：新目录一律要带清单，
+ *   老目录只在"真的补齐了清单"时才移出（⚠ 但本轨⛔ 不给它们补，那是编文档）。
+ * ⚠ 新增一个归档目录时，⛔ **不许**把它加进这里 —— 加进来 = 亲手关掉本判据。
+ */
+export const ARCHIVE_HISTORICAL_NO_MANIFEST = [
+  '2026-10-05-cleanup2-evidence',
+  '2026-10-05-step1-archive-baseline',
+  '2026-10-05-step3-evidence',
+  '2026-10-05-step4-evidence',
+  '2026-10-05-step6-evidence',
+  '2026-10-05-step6rev-evidence',
+  '2026-10-05-step6rev2-evidence',
+  '2026-10-05-ui-rev-evidence',
+  '2026-10-06-config-cleanup-evidence',
+  '2026-10-06-final-review',
+  '2026-10-07-cleanup-tools-and-ask',
+  '2026-10-07-experience-notes',
+  '2026-10-07-experience-round2',
+  '2026-10-07-file-handoff',
+  '2026-10-07-hob-capability',
+  '2026-10-07-hob-capability-verify',
+  '2026-10-07-hob-standard-review',
+  '2026-10-07-merged-verify',
+  '2026-10-07-orchestration',
+  '2026-10-07-post-restart-verify',
+  '2026-10-08-batch11-verify',
+  '2026-10-08-hob-capability-batch2',
+  '2026-10-08-legacy',
+  '2026-10-08-project-review',
+  '2026-10-09-archify-housekeeping',
+  '2026-10-09-cleanup-buildstamp',
+  '2026-10-09-close-taskboard',
+  '2026-10-09-close-the-loop',
+  '2026-10-09-correct-no-popup',
+  '2026-10-09-desktop-copy',
+  '2026-10-09-drop-facts-cleanup',
+  '2026-10-09-drop-facts-review',
+  '2026-10-09-drop-facts-step1',
+  '2026-10-09-drop-facts-step2',
+  '2026-10-09-hob-event-flow',
+  '2026-10-09-ledger-history',
+  '2026-10-09-ledger-relocate',
+  '2026-10-09-ledger-relocate2',
+  '2026-10-09-ledger-relocate3',
+  '2026-10-09-ledger-slim-impl',
+  '2026-10-09-ledger-slim-move',
+  '2026-10-09-ledger-slim-review',
+  '2026-10-09-no-popup-rule',
+  '2026-10-09-orch-watch-audit',
+  '2026-10-09-post-restart-verify-facts',
+  '2026-10-09-post-restart-verify2',
+  '2026-10-09-project-audit',
+  '2026-10-09-project-md-batch17',
+  '2026-10-09-settings-spawn-defaults',
+  '2026-10-09-tool-copy-fix',
+  '2026-10-10-dispatch-gap',
+  '2026-10-10-docs-restructure',
+  '2026-10-10-ledger-root-housekeeping',
+  '2026-10-10-panel-l10n-style',
+  '2026-10-10-project-plan-move',
+  '2026-10-10-restart-acceptance',
+  '2026-10-10-settings-echo',
+  '2026-10-10-skeleton-restructure',
+  '2026-10-10-structural-fixes',
+  '2026-10-11-canon-slim',
+  '2026-10-11-ledger-volumes',
+  '2026-10-11-plan-v2-2',
+  '2026-10-11-status-refresh',
+  '2026-10-11-status-refresh-2',
+  '2026-10-12-context-closed-items',
+  '2026-10-12-independent-review',
+  '2026-10-12-instruction-from-plan',
+  '2026-10-12-ledger-cleanup',
+  '2026-10-12-map-readability',
+  '2026-10-12-parallel-first-run',
+  '2026-10-12-parallel-isolation-probe',
+  '2026-10-12-plan-v2-5',
+  '2026-10-12-plan-volumes',
+  '2026-10-12-rounds-101-102',
+  '2026-10-12-rounds-103-104',
+  '2026-10-12-rounds-95-100',
+  '2026-10-12-rounds-95-98',
+  '2026-10-12-skeleton-sync',
+  '2026-10-13-batch-rows',
+  '2026-10-13-context-closed-items',
+  '2026-10-13-context-trim',
+  '2026-10-13-duty-boundary',
+  '2026-10-13-ledger-portability',
+  '2026-10-13-preset-mismatch',
+  '2026-10-13-rounds-105-106',
+  '2026-10-13-rounds-107',
+  '2026-10-13-rounds-108',
+  '2026-10-13-rounds-109',
+  '2026-10-13-rounds-110',
+  '2026-10-13-rounds-111',
+  '2026-10-13-rounds-112-113',
+  '2026-10-13-rounds-114',
+  '2026-10-13-rounds-115',
+  '2026-10-13-rounds-116',
+  '2026-10-13-rounds-117',
+  '2026-10-13-rounds-118',
+  '2026-10-13-rounds-119',
+  '2026-10-13-rounds-120',
+  '2026-10-13-rounds-121',
+  '2026-10-13-rounds-122-124',
+  '2026-10-14-batch-closeout',
+  '2026-10-14-batch-v2-7-closed',
+  '2026-10-14-consult-plan-first',
+  '2026-10-14-context-batch-rows-2',
+  '2026-10-14-context-batch-rows-3',
+  '2026-10-14-context-batch-rows-4',
+  '2026-10-14-context-round-163',
+  '2026-10-14-context-round-164',
+  '2026-10-14-context-round-165',
+  '2026-10-14-context-round-166',
+  '2026-10-14-context-round-169',
+  '2026-10-14-context-round-170',
+  '2026-10-14-context-rounds-125-128',
+  '2026-10-14-context-rounds-129-134',
+  '2026-10-14-context-rounds-135',
+  '2026-10-14-context-rounds-137',
+  '2026-10-14-context-rounds-138-140',
+  '2026-10-14-context-rounds-146-148',
+  '2026-10-14-context-rounds-149-150',
+  '2026-10-14-context-rounds-151-152',
+  '2026-10-14-context-rounds-155',
+  '2026-10-14-context-rounds-156-157',
+  '2026-10-14-context-rounds-158-159',
+  '2026-10-14-context-rounds-160-162',
+  '2026-10-14-permission-levels',
+  '2026-10-14-plan-v2-7',
+  '2026-10-14-rounds-136',
+  '2026-10-14-skeleton-audit',
+  '2026-10-14-skeleton-check',
+  '2026-10-14-skeleton-discipline-sync',
+  '2026-10-14-skeleton-fix',
+  '2026-10-15-batch-rounds-173-175',
+  '2026-10-15-check-surface',
+  '2026-10-15-context-pre-194',
+  '2026-10-15-context-pre-197',
+  '2026-10-15-context-pre-199',
+  '2026-10-15-context-pre-slim',
+  '2026-10-15-context-r180',
+  '2026-10-15-context-round-171',
+  '2026-10-15-context-round-172',
+  '2026-10-15-context-round-173',
+  '2026-10-15-context-rounds-174-178',
+  '2026-10-15-context-slim',
+  '2026-10-15-growth-cap',
+  '2026-10-15-headroom-and-commit',
+  '2026-10-15-landing',
+  '2026-10-15-lessons-3places',
+  '2026-10-15-plan-fix',
+  '2026-10-15-r181',
+  '2026-10-15-r182',
+  '2026-10-15-r183',
+  '2026-10-15-r184',
+  '2026-10-15-r185',
+  '2026-10-15-round-211',
+  '2026-10-15-round-record-own',
+  '2026-10-15-rounds-log',
+  '2026-10-15-skeleton-followup',
+  '2026-10-15-skeleton-slim',
+  '2026-10-15-write-scope',
+  '2026-10-16-auto-skeleton',
+  '2026-10-16-close-224',
+  '2026-10-16-commit-223',
+  '2026-10-16-commit-229',
+  '2026-10-16-commit-231',
+  '2026-10-16-commit-236',
+  '2026-10-16-commit-242',
+  '2026-10-16-commit-250',
+  '2026-10-16-commit-254',
+  '2026-10-16-commit-256',
+  '2026-10-16-commit-262',
+  '2026-10-16-context-pre-rewrite',
+  '2026-10-16-context-pre-rewrite-2',
+  '2026-10-16-context-pre-rewrite-3',
+  '2026-10-16-context-pre-rewrite-4',
+  '2026-10-16-correction-form',
+  '2026-10-16-judge-false-green',
+  '2026-10-16-ledger-reachability',
+  '2026-10-16-m6-plan',
+  '2026-10-16-m6a',
+  '2026-10-16-m6b-design',
+  '2026-10-16-r17-refresh',
+  '2026-10-16-r17-refresh-2',
+  '2026-10-16-r17-refresh-3',
+  '2026-10-16-ud122-discipline',
+  '2026-10-16-ud122-landing',
+  '2026-10-17-board-closeout',
+  '2026-10-17-context-chronicle',
+  '2026-10-17-context-pre-278',
+  '2026-10-17-dispatch-reliability',
+  '2026-10-17-ledger-closeout',
+  '2026-10-17-module-reverify',
+  '2026-10-17-permission-rename',
+  '2026-10-17-plan-52-verify',
+  '2026-10-17-prompt-audit',
+  '2026-10-17-prompt-diet',
+  '2026-10-17-upstream-diff',
+  '2026-10-18-card-visibility',
+  '2026-10-18-card-wakeup',
+  '2026-10-18-delivery-audit',
+  '2026-10-18-delivery-d2',
+  '2026-10-18-dispatch-reliability',
+  '2026-10-18-gitignore-dirs',
+  '2026-10-18-isolated-batch',
+  '2026-10-18-post-restart-2',
+  '2026-10-18-preset-reply-format',
+  '2026-10-18-prompt-audit',
+  '2026-10-18-restart-closeout',
+  '2026-10-18-roles-gap',
+  '2026-10-18-tier-classification',
+  '2026-10-19-auto-mode',
+  '2026-10-19-board-closeout-owner',
+  '2026-10-19-build-stamp-alarm',
+  '2026-10-19-card-wake-broken-tree',
+  '2026-10-19-card-wake-legacy-gate',
+  '2026-10-19-card-wake-redeliver',
+  '2026-10-19-card-wake-scope',
+  '2026-10-19-dispatch-owner-isolation',
+  '2026-10-19-full-readings',
+  '2026-10-19-handoff-next-session',
+  '2026-10-19-ledger-hygiene',
+  '2026-10-19-orch-criteria-gap',
+  '2026-10-19-post-restart-reading',
+  '2026-10-19-preset-hardening',
+  '2026-10-19-redeliver-entry',
+  '2026-10-19-redeliver-wiring',
+  '2026-10-19-wake-registration',
+  '2026-10-19-work-mode-effective',
+  '2026-10-19-work-mode-setting',
+  '2026-10-20-code-survey',
+  '2026-10-20-contract-bite',
+  '2026-10-20-contract-matrix',
+  '2026-10-20-dup-relay-cause',
+  '2026-10-20-dup-relay-fix',
+  '2026-10-20-ledger-close',
+  '2026-10-20-module-survey',
+  '2026-10-20-plan-map-v14',
+  '2026-10-20-profile-hardening',
+  '2026-10-20-receipt-fix-1',
+  '2026-10-20-receipt-fix-2',
+  '2026-10-20-receipt-fix-3',
+  '2026-10-20-receipt-fix-4',
+  '2026-10-20-receipt-redesign',
+  '2026-10-20-receipt-root-cause',
+  '2026-10-20-redeliver-close',
+  '2026-10-20-self-wake-fix',
+  '2026-10-21-bing1-cleanup-stuck',
+  '2026-10-21-bing11-12-4',
+  '2026-10-21-bing5-10-9',
+  '2026-10-21-bing6-13-14',
+  '2026-10-21-bing7-8-3',
+  '2026-10-21-build-sync-gate',
+  '2026-10-21-check-all-three-tier',
+  '2026-10-21-check-count-correction',
+  '2026-10-21-commit-batches',
+  '2026-10-21-context-final',
+  '2026-10-21-context-proposal',
+  '2026-10-21-context-r17',
+  '2026-10-21-count-correction-2',
+  '2026-10-21-dropped-returns',
+  '2026-10-21-final-cleanup',
+  '2026-10-21-final-cleanup-2',
+  '2026-10-21-final-close',
+  '2026-10-21-gitignore-gate',
+  '2026-10-21-ledger-commit-plan',
+  '2026-10-21-ledger-land-and-plan',
+  '2026-10-21-ledger-pre-rewrite',
+  '2026-10-21-ledgerhome-silent-face',
+  '2026-10-21-lock-jia7-fakegreen',
+  '2026-10-21-orch-mutation-sandbox',
+  '2026-10-21-owner-fix',
+  '2026-10-21-owner-space-mismatch',
+  '2026-10-21-post-restart-verify',
+  '2026-10-21-process-incident-stale-premises',
+  '2026-10-21-readings-honest',
+  '2026-10-21-receipt-not-woken',
+  '2026-10-21-residue-cleanup',
+  '2026-10-21-runtime-evidence-bing2',
+  '2026-10-21-sd-tmp-leak',
+  '2026-10-21-skip-all-families',
+  '2026-10-21-skip-third-state',
+  '2026-10-21-survey-closure-table',
+  '2026-10-21-survey-criteria-hardening',
+  '2026-10-21-yi-class-silent-green',
+  '2026-10-21-yi8-yi10',
+  '2026-10-21-yi9-typeface',
+  '2026-10-22-auto-popup-closeout',
+  '2026-10-22-auto-popup-host-path',
+  '2026-10-22-auto-popup-wire',
+  '2026-10-22-closeout-register',
+  '2026-10-22-core-ledger-close',
+  '2026-10-22-core-ledger-close-baseline',
+  '2026-10-22-core-ledger-cutover',
+  '2026-10-22-core-reframe',
+  '2026-10-22-core-reframe-baseline',
+  '2026-10-22-core-reframe-snapshot',
+  '2026-10-22-create-handle-rollback',
+  '2026-10-22-cross-instance-status',
+  '2026-10-22-disposed-session-reopen',
+  '2026-10-22-failclosed-archive-status',
+  '2026-10-22-failed-create-archive',
+  '2026-10-22-legacy-policy-migration',
+  '2026-10-22-legacy-policy-race',
+  '2026-10-22-permission-guard-probe',
+  '2026-10-22-plan-doc-alignment',
+  '2026-10-22-plan-doc-alignment-r2',
+  '2026-10-22-plan-doc-alignment-r3',
+  '2026-10-22-policy-cross-instance-close',
+  '2026-10-22-post-restart-close',
+  '2026-10-22-pre-restart-preflight',
+  '2026-10-22-probe-cleanup',
+  '2026-10-22-read-level-ceiling',
+  '2026-10-22-requirements-first',
+  '2026-10-22-requirements-fulltext',
+  '2026-10-22-requirements-purity',
+  '2026-10-22-requirements-purity-baseline',
+  '2026-10-22-session-controls',
+  '2026-10-22-session-create-additive',
+  '2026-10-22-session-create-correctness',
+  '2026-10-22-session-create-correctness-baseline',
+  '2026-10-22-session-create-final-path',
+  '2026-10-22-session-create-ui',
+  '2026-10-22-session-policy-backend',
+  '2026-10-22-temp-preimage-close',
+  '2026-10-22-temp-preimage-ctx-t9',
+  '2026-10-22-three-tiers-visible',
+  '2026-10-22-tier-popup-mechanism',
+  '2026-10-22-tier-popup-probe',
+  '2026-10-24-cancel-interconnect',
+  '2026-10-25-close-out',
+  '2026-10-25-config-floor-margin',
+  '2026-10-25-context-pre-rewrite',
+  '2026-10-25-context-pre-rewrite-2',
+  '2026-10-25-context-pre-rewrite-3',
+  '2026-10-25-context-rules-split',
+  '2026-10-25-context-split',
+  '2026-10-25-contract-structure',
+  '2026-10-25-experience-lessons',
+  '2026-10-25-final-green',
+  '2026-10-25-final-two',
+  '2026-10-25-floor-dedup',
+  '2026-10-25-floor-zero-margin',
+  '2026-10-25-gate-existence',
+  '2026-10-25-human-facing-audit',
+  '2026-10-25-kit-body-fix',
+  '2026-10-25-kit-move',
+  '2026-10-25-ledger-cleanup',
+  '2026-10-25-ledger-cure',
+  '2026-10-25-ledger-redesign',
+  '2026-10-25-ledger-relocate',
+  '2026-10-25-ledger-relocation',
+  '2026-10-25-ledger-shape',
+  '2026-10-25-ledger-untrack',
+  '2026-10-25-ledgerhome-trace',
+  '2026-10-25-legacy-archive',
+  '2026-10-25-manifest-vs-init',
+  '2026-10-25-md5-fix',
+  '2026-10-25-migrate-csa',
+  '2026-10-25-module-log-mismatch',
+  '2026-10-25-module-log-three-state',
+  '2026-10-25-old-root-retired',
+  '2026-10-25-oldroot-retire',
+  '2026-10-25-other-projects-survey',
+  '2026-10-25-pay-debt',
+  '2026-10-25-plan-refactor',
+  '2026-10-25-post-migrate-fix',
+  '2026-10-25-post-restart-verify',
+  '2026-10-25-post-restart-verify-2',
+  '2026-10-25-post-restart-verify-3',
+  '2026-10-25-post-restart-verify-4',
+  '2026-10-25-post-restart-verify-5',
+  '2026-10-25-project-migrate',
+  '2026-10-25-project-rebuild',
+  '2026-10-25-queue-fix',
+  '2026-10-25-queue-split',
+  '2026-10-25-relocation-survey',
+  '2026-10-25-reply-mode-3',
+  '2026-10-25-reuse-audit',
+  '2026-10-25-reuse-land',
+  '2026-10-25-scaffold-retire',
+  '2026-10-25-skeleton-decopy',
+  '2026-10-25-skeleton-wording',
+  '2026-10-25-stale-fix',
+  '2026-10-25-stale-load-sentences',
+  '2026-10-25-switch-three-way',
+  '2026-10-25-unblock-commit',
+  '2026-10-26-backup-naming',
+  '2026-10-26-checks-face',
+  '2026-10-26-checks-triage',
+  '2026-10-26-closeout-verify',
+  '2026-10-26-consistency-fix',
+  '2026-10-26-coverage-meter',
+  '2026-10-26-dispatch-states',
+  '2026-10-26-dispatch-states-hardening',
+  '2026-10-26-external-reference-proposal',
+  '2026-10-26-final-cleanup',
+  '2026-10-26-index-restore',
+  '2026-10-26-ledger-reds',
+  '2026-10-26-migrate-batch2',
+  '2026-10-26-migrate-mana',
+  '2026-10-26-migrate-prompt-enhancer',
+  '2026-10-26-overturn-audit',
+  '2026-10-26-ratchet-audit',
+  '2026-10-26-readings-honesty',
+  '2026-10-26-rebuild-canonical',
+  '2026-10-26-receipt-refusals',
+  '2026-10-26-reply-shape-research',
+  '2026-10-26-state-read-mismatch',
+  '2026-10-26-wake-channel-check',
+  '2026-10-26-whole-scheme-research',
+  '2026-10-27-acceptable-red',
+  '2026-10-27-architecture-review',
+  '2026-10-27-archive-gate',
+  '2026-10-27-archive-gate-verify',
+  '2026-10-27-contract-batch',
+  '2026-10-27-contract-design',
+  '2026-10-27-contract-polarity',
+  '2026-10-27-external-patterns',
+  '2026-10-27-gitignore-residual',
+  '2026-10-27-gitignore-root',
+  '2026-10-27-ledger-reachable',
+  '2026-10-27-ledger-relocate',
+  '2026-10-27-mainline-design',
+  '2026-10-27-mainline-plan',
+  '2026-10-27-multi-hob',
+  '2026-10-27-preflight-root',
+  '2026-10-27-readpath-broken',
+  '2026-10-27-rollback-all',
+  '2026-10-27-scheme-catchup',
+  '2026-10-27-scheme-review',
+  '2026-10-27-scheme-sync',
+  '2026-10-27-transition-design',
+  '2026-10-27-verdict-not-shown',
+  '2026-10-27-verdict-path',
+  '2026-10-27-watch-feature',
+  '2026-10-27-watch-fix',
+  '2026-10-27-watch-verify-final',
+  '2026-10-27-watch-wait-loop',
+  '2026-10-28-assert-real-behavior',
+  '2026-10-28-cleanup-readable',
+  '2026-10-28-context-loss-audit',
+  '2026-10-28-context-restore',
+  '2026-10-28-contract-finalize',
+  '2026-10-28-contract-move',
+  '2026-10-28-contract-restructure',
+  '2026-10-28-contract-skeleton',
+  '2026-10-28-dialogue-contract',
+  '2026-10-28-drop-often',
+  '2026-10-28-drop-threshold',
+  '2026-10-28-effort-budget',
+  '2026-10-28-effort-budget-fix',
+  '2026-10-28-effort-budget-fix2',
+  '2026-10-28-fix-syntax',
+  '2026-10-28-header-fix',
+  '2026-10-28-index-fill',
+  '2026-10-28-ledger-inventory',
+  '2026-10-28-ledger-rebalance',
+  '2026-10-28-ledger-split',
+  '2026-10-28-mixed-split',
+  '2026-10-28-prompt-design',
+  '2026-10-28-split-diagnosis',
+  '2026-10-28-template-deletions',
+  '2026-10-28-template-why',
+  '2026-10-28-verify-contract-live',
+  '2026-10-28-watch-contract',
+  '2026-10-28-watch-fallback',
+  '2026-10-28-watch-fallback-audit',
+  '2026-10-28-wi-l',
+  '2026-10-29-attachment-check',
+  '2026-10-29-build',
+  '2026-10-29-four-stage-mainline',
+  '2026-10-29-host-hook-probe',
+  '2026-10-29-index-159-170',
+  '2026-10-29-index-titles',
+  '2026-10-29-ledger-copies',
+  '2026-10-29-open-read-level',
+  '2026-10-29-popup-not-shown',
+  '2026-10-29-popup-wire',
+  '2026-10-29-pre-build-audit',
+  '2026-10-29-pre-build-check',
+  '2026-10-29-pre-step-gate',
+  '2026-10-29-requeue',
+  '2026-10-29-restart-verify',
+  '2026-10-29-retire-09',
+  '2026-10-29-stale-files-audit',
+  '2026-10-29-state-docs-fix',
+  '2026-10-29-verify-contract-live',
+  '2026-10-30-archive-readme',
+  '2026-10-30-commit-plan',
+  '2026-10-30-context-41-fix',
+  '2026-10-30-context-refresh',
+  '2026-10-30-ctx41-gen-block',
+  '2026-10-30-ctx41-ledger-next',
+  '2026-10-30-ctx41-meta-negctl',
+  '2026-10-30-ctx41-stages-route',
+  '2026-10-30-example-path-fix',
+  '2026-10-30-ledger-next-move',
+  '2026-10-30-p13-reds',
+  '2026-10-30-p17-reds',
+  '2026-10-30-preset-switch',
+  '2026-10-30-progress-exec',
+  '2026-10-30-progress-research',
+  '2026-10-30-project-toc',
+  '2026-10-30-project-toc-close',
+  '2026-10-30-rearch-greenfield',
+  '2026-10-30-sdd-stage-ui',
+  '2026-10-30-tool-permission-survey',
+  '2026-10-30-v-refs-fix',
+  '2026-10-30-workflow-ui-survey',
+  '2026-10-31-full-audit',
+  '2026-10-31-index-fix',
+  '2026-10-31-index-split',
+  '2026-10-31-p39-intake-invariants',
+  '2026-10-31-panel-no-hscroll',
+  '2026-10-31-parent-fix',
+  '2026-10-31-run001-narrow',
+  '2026-11-01-p40-gap-close',
+  '2026-11-01-p41-acceptance-close',
+  '2026-11-02-decisions-snapshot',
+  '2026-11-02-p41-ledger-close',
+]
+
+/** `⊘` 那一行（读不到归档目录时；⚠ 与 B/D 轨同形）。 */
+export const ARCHIVE_NO_DIRS = '⊘ 读不到归档目录 ⇒ 这条判据无法执行，⛔ 这不是通过'
+
+/**
+ * **E 组判据的纯函数实现**（⚠ 收目录名数组 + 一个"有没有清单件"的判据，便于负向对拍直接喂夹具）。
+ *
+ * @param {string[]} dirNames - `archive/` 下的目录名
+ * @param {(name: string) => boolean} hasManifest - 该目录下有没有清单件
+ * @returns {{ checked:number, historical:number, missing:string[] }}
+ */
+export function archiveManifestProblems(dirNames, hasManifest) {
+  const missing = []
+  const white = new Set(ARCHIVE_HISTORICAL_NO_MANIFEST)
+  let checked = 0
+  let historical = 0
+  for (const name of dirNames) {
+    if (white.has(name)) { historical++; continue }
+    checked++
+    if (!hasManifest(name)) missing.push(name)
+  }
+  return { checked, historical, missing }
+}
+
+/**
+ * **档位归属的唯一判定**：0 个目录 ⇒ `'skip'`，否则 ⇒ `'checked'`。
+ * ⚠ 抽成函数，好让负向对拍 `N-E0` 测的就是主流程用的那条规则（⛔ 夹具里另写一份）。
+ */
+export function archiveManifestBucket(dirNames) {
+  return dirNames.length === 0 ? 'skip' : 'checked'
+}
+
+/**
+ * **E 组报告体**（⚠ 主流程与负向对拍**共用这一个函数**，sink 由调用方注入）。
+ *
+ * ── 为什么 sink 要注入（`TASK-E1.md` §一第 4 件点名要求）────────────────
+ *   若这里直接调模块级 `bad` / `skip`，对拍一跑就**污染真实计数**。
+ *   ⇒ sink 作参数传入：主流程传真 sink，对拍传影子 sink ⇒ 两边跑**同一段判定**。
+ *
+ * @param {{dirNames:string[], hasManifest:Function}} input
+ * @param {{bad:Function, ok:Function, skip:Function}} sink
+ * @returns {'skip'|'checked'}
+ */
+export function reportArchiveManifest({ dirNames, hasManifest }, sink) {
+  const bucket = archiveManifestBucket(dirNames)
+  if (bucket === 'skip') {
+    sink.skip(ARCHIVE_NO_DIRS)
+    return bucket
+  }
+  const r = archiveManifestProblems(dirNames, hasManifest)
+  if (r.missing.length === 0) {
+    sink.ok(`E1 ✓ 归档目录**都带清单件**：实测 ${dirNames.length} 个目录 = 历史不追溯 ${r.historical} 个（白名单逐个列出）`
+      + ` + 需核 ${r.checked} 个，需核的那些**逐个都有 \`${ARCHIVE_MANIFEST_NAME}\`**`
+      + '（⚠ 本判据只查存在性，内容格式由 ① 形态 M/S 管）')
+  } else {
+    for (const name of r.missing) {
+      sink.bad(`E1 · 归档目录 \`archive/${name}/\` **没有清单件 \`${ARCHIVE_MANIFEST_NAME}\`**`
+        + `\n      ⇒ 这个目录说不清"这一批做过什么、有哪些件" ⇒ 它是证据包却没有清单（⛔ 不许只把文件写进去就算归档）`
+        + `\n      ⇒ 修法：在该目录下写 \`${ARCHIVE_MANIFEST_NAME}\`，列出有哪些件 + 各自多少字节`
+        + `\n      ⇒ ⚠ 若这是**历史**目录（本轮之前就有），⛔ 不许事后补写（那是编文档）—— 加进 \`ARCHIVE_HISTORICAL_NO_MANIFEST\` 并注明理由`)
+    }
+  }
+  return bucket
+}
+
+/**
+ * 跑 E 组（读盘）。
+ *
+ * @param {{ledgerRoot: string, bad: Function, ok: Function, skip: Function}} o
+ * @returns {{executed:boolean, dirs:number}}
+ */
+export function checkArchiveManifests({ ledgerRoot, bad, ok, skip, fixtureNoManifest = [] }) {
+  const archiveDir = join(ledgerRoot, 'archive')
+  let dirNames = []
+  try {
+    dirNames = readdirSync(archiveDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+  } catch { dirNames = [] }
+  /**
+   * ⚠ `fixtureNoManifest` **只给 `--self-test` 用**（那些目录是"故意没清单"的测试对象）。
+   *   ⚠ 默认空数组 ⇒ 真实账本区跑时**没有任何豁免**（⛔ 不是"除…外都放过"的反向逻辑）。
+   */
+  const fixtureSet = new Set(fixtureNoManifest)
+  const names = dirNames.filter((n) => !fixtureSet.has(n))
+  const hasManifest = (name) => existsSync(join(archiveDir, name, ARCHIVE_MANIFEST_NAME))
+  const bucket = reportArchiveManifest({ dirNames: names, hasManifest }, { bad, ok, skip })
+  return { executed: bucket === 'checked', dirs: names.length }
+}
+
 // ── 跑一遍（给定账本根，返回 FAIL 清单）──────────────────────────────────────
-function runChecks(ledgerRoot) {
+function runChecks(ledgerRoot, opts = {}) {
   const bad = []
   const notes = []
   /**
@@ -770,7 +1423,18 @@ function runChecks(ledgerRoot) {
   const d = checkDirRefs({ ledgerRoot, bad: b, ok: o, skip: k })
   // ⚠ 2026-10-30 P7：归档目录清单 ↔ 生成物（`gen/archive-index.md`）
   const am = checkArchiveIndexGen({ ledgerRoot, bad: b, ok: o, skip: k })
-  return { bad, notes, skips, a, c, d, am }
+  // ⚠ 2026-11-02 P50/E1：归档目录必须带清单件（历史白名单不追溯）
+  /**
+   * ⚠⚠ **E1 在夹具上的口径**（2026-11-02 P50/E1）：`--self-test` 的夹具里有几个目录
+   *   **故意没有** `README.md`（`2026-01-04-bareindex` 就是"无清单载体"那一档的**测试对象**）。
+   *   ⇒ 若 E1 对夹具目录照样判红，它会把 `--self-test` 里"期望 0"的那几档全部污染成 FAIL
+   *     （实测：6 档从 PASS 变 FAIL）。⚠ 那是**判据生效**的证明，但**不是**那些档位要测的东西。
+   *   ⇒ 用 `noManifestFixture` 把"夹具里故意没清单的目录"显式点出来（⛔ 不是反向逻辑：
+   *     真实账本区跑时这个数组为空 ⇒ E1 对真目录**一个都不放过**）。
+   */
+  const e1 = checkArchiveManifests({ ledgerRoot, bad: b, ok: o, skip: k,
+    fixtureNoManifest: opts.fixtureNoManifest ?? [] })
+  return { bad, notes, skips, a, c, d, am, e1 }
 }
 
 // ── 自带负向对拍夹具（⛔ 不依赖账本区内容、⛔ 不触碰账本区）────────────────────
@@ -845,8 +1509,16 @@ function buildFixture() {
   }
 }
 
-function selfTest() {
+function selfTest(realLedgerRoot) {
   const fx = buildFixture()
+  /**
+   * ⚠⚠ **夹具里"故意没清单"的目录**（2026-11-02 P50/E1）：
+   *   `2026-01-04-bareindex` 是"无清单载体"那一档的**测试对象** —— 它没有 `README.md`
+   *   正是那一档要验的形态。⇒ E1 对它在 `--self-test` 里豁免，
+   *   ⛔ 否则 E1 会把 6 档"期望 0"的读数污染成 FAIL（实测过）。
+   *   ⚠ **真实账本区跑时这个名单是空的** ⇒ 对真目录一个都不放过。
+   */
+  const FIXTURE_OPTS = { fixtureNoManifest: ['2026-01-04-bareindex'] }
   /** 取**本半**的第一条断言行（⛔ 不拿另一半的 —— 否则"某一半从没咬过"会被掩盖）。 */
   const lineOf = (r, prefix) => {
     const hit = r.bad.find((l) => l.startsWith(prefix))
@@ -867,56 +1539,204 @@ function selfTest() {
     return other
   }
 
-  let r = runChecks(fx.L)
+  let r = runChecks(fx.L, FIXTURE_OPTS)
   expect('半 ① + ② 破坏前', r, 0, '①')
   const before = { half1: r.a.pairs, half2: r.d.memberPairs }
 
   // ── 半 ① 破坏：改掉归档件一个字节（清单随即不符）──
   writeFileSync(fx.aPath, Buffer.concat([fx.aBuf, Buffer.from('X')]))
-  r = runChecks(fx.L)
+  r = runChecks(fx.L, FIXTURE_OPTS)
   const other1 = expect('半 ① 破坏后（归档件被改 1 字节）', r, 1, '①')
   const half1Broken = lineOf(r, '①')
   // 还原
   writeFileSync(fx.aPath, fx.aBuf)
-  r = runChecks(fx.L)
+  r = runChecks(fx.L, FIXTURE_OPTS)
   expect('半 ① 还原后', r, 0, '①')
 
   // ── 半 ② 破坏：删掉一个**只在 index 里**的成员（清单不列它 ⇒ 半 ① 不受影响）──
   unlinkSync(fx.memberPath)
-  r = runChecks(fx.L)
+  r = runChecks(fx.L, FIXTURE_OPTS)
   const other2 = expect('半 ② 破坏后（目录引用缺一份成员）', r, 1, '②')
   const half2Broken = lineOf(r, '②')
   // 还原
   writeFileSync(fx.memberPath, fx.memberBuf)
-  r = runChecks(fx.L)
+  r = runChecks(fx.L, FIXTURE_OPTS)
   expect('半 ② 还原后', r, 0, '②')
 
   // ── 半 ②【新增档 · 第 121 轮】**盘上派生**面：一个**没有任何正文点名**的目录，
   //    破坏其成员 ⇒ 必须 FAIL（而"正文点名"那条路**看不见它**）——
   //    ⚠ 这一档正是第 120 轮那个静默缩水的**回归闸门**。
   unlinkSync(fx.derivedMemberPath)
-  r = runChecks(fx.L)
+  r = runChecks(fx.L, FIXTURE_OPTS)
   const other3 = expect('半 ②【派生面】破坏后（无正文点名的目录缺一份成员）', r, 1, '②')
   const half2DerivedBroken = lineOf(r, '②')
   // 还原
   writeFileSync(fx.derivedMemberPath, fx.derivedMemberBuf)
-  r = runChecks(fx.L)
+  r = runChecks(fx.L, FIXTURE_OPTS)
   const other3b = expect('半 ②【派生面】还原后', r, 0, '②')
 
   // ── 半 ②【新增档 · 第 122 轮】**无清单载体**的目录（既无 README 又无 sources/），
   //    成员**只来自 index** ⇒ 破坏它 ⇒ 必须 FAIL；还原 ⇒ PASS。
   //    ⚠ 这一档正是"收录判据自带排除面"那处口子的**回归闸门**。
   unlinkSync(fx.bareMemberPath)
-  r = runChecks(fx.L)
+  r = runChecks(fx.L, FIXTURE_OPTS)
   const other4 = expect('半 ②【无清单载体档】破坏后（既无 README 又无 sources/ 的目录缺成员）', r, 1, '②')
   const half2BareBroken = lineOf(r, '②')
   writeFileSync(fx.bareMemberPath, fx.bareMemberBuf)
-  r = runChecks(fx.L)
+  r = runChecks(fx.L, FIXTURE_OPTS)
   const other4b = expect('半 ②【无清单载体档】还原后', r, 0, '②')
+
+  // ══════════════════════════════════════════════════════════════════════
+  // E1 的四条负向对拍（2026-11-02 P50/E1 · `TASK-E1.md` §一第 3/4 件）
+  // ⚠ 全部在**临时夹具目录**里造（`fx.L` 是 mkdtempSync 出来的）⇒ ⛔ 不往真 archive/ 写测试目录
+  // ⚠ 每条：① 先自证基线全绿 ② 改坏 ⇒ 必红且点名目录+缺失件 ③ 还原 ⇒ 回绿
+  // ══════════════════════════════════════════════════════════════════════
+  {
+    /**
+     * ⚠ 这一组**不走 `runChecks`**，直接调 E1 的纯函数 + 报告体：
+     *   `runChecks` 会把①/② 那些半也跑一遍 ⇒ 本组要验的是 **E1 自己**，
+     *   混进别的半的读数会让"红的到底是不是 E1"判不出来。
+     *   ⚠ 判定逻辑仍是**同一份**（`reportArchiveManifest`），⛔ 夹具里没有第二份。
+     */
+    /**
+     * ⚠ `selfTest()` 里**没有**模块级 `ok` / `bad`（那对只在 `runChecks` 内部）——
+     *   本函数用 `readings` 收集 `{label, exit, want, line, pass}` 再由尾部统一打印。
+     *   ⇒ 这里做两个薄壳，把 E1 的四条对拍**并进同一份 readings**（⛔ 不另开一套输出通道）。
+     */
+    const eOk = (m) => readings.push({ label: m.split('\n')[0], exit: 0, want: 0, line: m.split('\n')[0], pass: true })
+    const eBad = (m) => readings.push({ label: m.split('\n')[0], exit: 1, want: 0, line: m.split('\n')[0], pass: false })
+    const e1Dir = join(fx.L, 'archive', '2026-01-09-new-no-manifest')
+    const e1Dir2 = join(fx.L, 'archive', '2026-01-10-new-with-manifest')
+
+    /** 影子 sink（⚠ 照 B/D 轨：⛔ 不许调模块级 `bad`/`ok`/`skip` 污染真实计数）。 */
+    const shadowRun = (names, has) => {
+      const sh = { bad: [], ok: [], skip: [] }
+      const sink = {
+        bad: (m) => sh.bad.push(m),
+        ok: (m) => sh.ok.push(m),
+        skip: (m) => sh.skip.push(m),
+      }
+      const bucket = reportArchiveManifest({ dirNames: names, hasManifest: has }, sink)
+      return { sh, bucket }
+    }
+
+    // ── 基线：一个白名单历史目录（无清单）+ 一个有清单的新目录 ⇒ 必须全绿 ──
+    const histName = ARCHIVE_HISTORICAL_NO_MANIFEST[0]
+    const base = shadowRun([histName, '2026-01-10-new-with-manifest'], (n) => n === '2026-01-10-new-with-manifest')
+    const baselineClean = base.bucket === 'checked' && base.sh.bad.length === 0
+      && base.sh.skip.length === 0 && base.sh.ok.length === 1
+
+    if (!baselineClean) {
+      eBad(`N-E · E1 基线**本身就不合法**（期望 checked + 1 条 ✓ + 0 bad，实测 bucket=${base.bucket} `
+        + `ok=${base.sh.ok.length} bad=${base.sh.bad.length} skip=${base.sh.skip.length}）⇒ 下面三条对拍不可判`)
+    } else {
+      // ── N-E1：不在白名单且无清单件的新目录 ⇒ 必红且点名目录+缺失件 ──
+      {
+        mkdirSync(e1Dir, { recursive: true })
+        writeFileSync(join(e1Dir, 'TASK-R99.md'), '# fixture: 只有一件、没有清单\n')
+        /** ⚠ 先自证：目录**真建出来了**、且**真没有**清单件、且**真不在**白名单里。 */
+        const reallyBroken = existsSync(e1Dir)
+          && !existsSync(join(e1Dir, ARCHIVE_MANIFEST_NAME))
+          && !ARCHIVE_HISTORICAL_NO_MANIFEST.includes('2026-01-09-new-no-manifest')
+        const r = shadowRun(['2026-01-09-new-no-manifest'], (n) => existsSync(join(fx.L, 'archive', n, ARCHIVE_MANIFEST_NAME)))
+        const hit = r.sh.bad.find((x) => x.includes('2026-01-09-new-no-manifest'))
+        if (!reallyBroken) {
+          eBad('N-E1 · 夹具没造出"不在白名单 + 无清单件"的形态 ⇒ 本条不可判')
+        } else if (hit === undefined) {
+          eBad('N-E1 · 新目录无清单件却绿灯 ⇒ E1 哑了（那条判据等于没写）')
+        } else if (!hit.includes(ARCHIVE_MANIFEST_NAME)) {
+          eBad(`N-E1 · 咬住了但**没说缺哪一份**（期望含 \`${ARCHIVE_MANIFEST_NAME}\`）：${hit.slice(0, 90)}`)
+        } else {
+          eOk(`N-E1 ✓ 负向对拍（先自证：\`archive/2026-01-09-new-no-manifest/\` 真建出来了、里面只有 \`TASK-R99.md\`、`
+            + `无 \`${ARCHIVE_MANIFEST_NAME}\`、且不在白名单）⇒ E1 **必红**且**点名目录 + 缺失件**：${hit.split('\n')[0].slice(0, 110)}`
+            + '；**反面**：见 N-E2（补上清单即转绿，⛔ 不是恒红）')
+        }
+      }
+
+      // ── N-E2：给同一个目录补上清单件 ⇒ 必绿 ──
+      {
+        writeFileSync(join(e1Dir, ARCHIVE_MANIFEST_NAME), [
+          '# 夹具清单', '',
+          '| 件 | 字节 |', '|---|---:|', '| `TASK-R99.md` | 32 |', '',
+        ].join('\n'))
+        const reallyFixed = existsSync(join(e1Dir, ARCHIVE_MANIFEST_NAME))
+        const r = shadowRun(['2026-01-09-new-no-manifest'], (n) => existsSync(join(fx.L, 'archive', n, ARCHIVE_MANIFEST_NAME)))
+        if (!reallyFixed) {
+          eBad('N-E2 · 夹具没真把清单件写进去 ⇒ 本条不可判')
+        } else if (r.sh.bad.length !== 0) {
+          eBad(`N-E2 · 补上 \`${ARCHIVE_MANIFEST_NAME}\` 之后仍红 ⇒ E1 恒红（${JSON.stringify(r.sh.bad).slice(0, 90)}）`)
+        } else if (r.sh.ok.length !== 1) {
+          eBad(`N-E2 · 补上清单后没有 ✓ 读数（ok=${r.sh.ok.length}）⇒ 判据没跑到`)
+        } else {
+          eOk(`N-E2 ✓ 负向对拍（先自证：刚给 \`2026-01-09-new-no-manifest/\` 写进了 \`${ARCHIVE_MANIFEST_NAME}\`，实测 exists=true）`
+            + ' ⇒ E1 **转绿**（⛔ 不是恒红）：' + r.sh.ok[0].split('\n')[0].slice(0, 110))
+        }
+      }
+
+      // ── N-E3：白名单里的历史目录没清单件 ⇒ 仍绿 ──
+      {
+        /** ⚠ 自证：这个历史目录**真的没有**清单件（⛔ 不是"有清单所以绿"）。 */
+        /**
+         * ⚠ 自证的两面：
+         *   ① 白名单**真含**这个名字（⛔ 不是靠"名字不在名单里所以放过了"）；
+         *   ② **真账本区**里这个目录**确实没有**清单件（⛔ 不是"有清单所以绿"）。
+         */
+        const histNoManifest = ARCHIVE_HISTORICAL_NO_MANIFEST.includes(histName)
+          && !existsSync(join(realLedgerRoot, 'archive', histName, ARCHIVE_MANIFEST_NAME))
+        const r = shadowRun([histName], () => false)
+        if (!histNoManifest) {
+          eBad(`N-E3 · 白名单成员 \`${histName}\` 竟然**有**清单件 ⇒ 本条证不了"历史不追溯"`)
+        } else if (r.sh.bad.length !== 0) {
+          eBad(`N-E3 · 白名单里的历史目录无清单却被判红 ⇒ 违反"历史不追溯"（${JSON.stringify(r.sh.bad).slice(0, 90)}）`)
+        } else if (r.sh.ok.length !== 1) {
+          eBad(`N-E3 · 历史目录没进"已核"读数（ok=${r.sh.ok.length}）⇒ 判据没跑到`)
+        } else {
+          eOk(`N-E3 ✓ 负向对拍（先自证：白名单成员 \`${histName}\` **实测无 \`${ARCHIVE_MANIFEST_NAME}\`**，且它是白名单第 1 条）`
+            + ' ⇒ E1 **仍绿**（⛔ 不把历史目录判红）：' + r.sh.ok[0].split('\n')[0].slice(0, 100))
+        }
+      }
+
+      // ── N-E0：0 个目录 ⇒ 走 ⊘ 档、不计入通过 ──
+      {
+        const sh = { bad: [], ok: [], skip: [] }
+        const bucket = reportArchiveManifest({ dirNames: [], hasManifest: () => false }, {
+          bad: (m) => sh.bad.push(m), ok: (m) => sh.ok.push(m), skip: (m) => sh.skip.push(m),
+        })
+        /** 反面：给一个目录 ⇒ 必须离开 skip、进 checked。 */
+        const sh2 = { bad: [], ok: [], skip: [] }
+        const bucket2 = reportArchiveManifest({ dirNames: ['2026-01-10-new-with-manifest'], hasManifest: () => true }, {
+          bad: (m) => sh2.bad.push(m), ok: (m) => sh2.ok.push(m), skip: (m) => sh2.skip.push(m),
+        })
+        /** ⚠ 语义判（与 B/D 轨同口径，`VERDICT-B1.md` §2.1 已裁定按语义）：摘掉否定式后再查。 */
+        const lineHasPass = ARCHIVE_NO_DIRS.replace('这不是通过', '').includes('通过')
+        if (bucket !== 'skip') {
+          eBad(`N-E0 · 0 个目录时**没走 skip 档**（实测 ${bucket}）⇒ 档位判定哑了`)
+        } else if (sh.ok.length !== 0) {
+          eBad(`N-E0 · 0 个目录时**计入了通过**（ok +${sh.ok.length}）⇒ "没判"被洗成"判过了"`)
+        } else if (sh.skip.length !== 1) {
+          eBad(`N-E0 · 0 个目录时**没有计入跳过**（skip ${sh.skip.length}，期望 1）⇒ 那个档位没有落点`)
+        } else if (sh.skip[0] !== ARCHIVE_NO_DIRS) {
+          eBad(`N-E0 · 跳过那一行**不是约定的原文**：${JSON.stringify(sh.skip[0])}`)
+        } else if (lineHasPass) {
+          eBad('N-E0 · 那一行里出现了非否定式的"通过"字样 ⇒ 读者会把它当成通过')
+        } else if (bucket2 !== 'checked' || sh2.ok.length !== 1 || sh2.bad.length !== 0 || sh2.skip.length !== 0) {
+          eBad(`N-E0 · 反面不成立：给一个有清单的目录后应当 checked + ✓，实测 bucket=${bucket2} ok=${sh2.ok.length} bad=${sh2.bad.length} skip=${sh2.skip.length}`)
+        } else {
+          eOk('N-E0 ✓ 负向对拍（先自证：喂 0 个目录名；影子 sink 不污染真实计数）'
+            + ' ⇒ 走 `⊘` 单列档：**ok +0**（⛔ 不计入通过）· **skip +1**（有自己的落点）'
+            + `，且那行里**没有非否定式的"通过"** —— 原文：${ARCHIVE_NO_DIRS}`
+            + '；**反面**：给一个有清单的目录 ⇒ 进 `checked` 档且 ✓（⛔ 不是恒跳过）')
+        }
+      }
+    }
+    // ⚠ 清理夹具目录（⛔ 不往真 archive/ 写；这些都在 mkdtemp 出来的 fx.L 里，最后 rmSync(fx.base) 一并清）
+    rmSync(e1Dir, { recursive: true, force: true })
+    rmSync(e1Dir2, { recursive: true, force: true })
+  }
 
   // ── 反假绿：把"含 sources/ 的归档目录"整个撤掉 ⇒ 必须走「无对象可查」而不是报 ✓ ──
   rmSync(join(fx.L, 'archive'), { recursive: true, force: true })
-  r = runChecks(fx.L)
+  r = runChecks(fx.L, FIXTURE_OPTS)
   const guardOk = r.a.executed === false && r.bad.length === 0
     && r.notes.some((n) => n.includes('无对象可查'))
   readings.push({
@@ -960,7 +1780,11 @@ const ledgerFlagIdx = argv.indexOf('--ledger')
 const cliLedger = ledgerFlagIdx >= 0 ? argv[ledgerFlagIdx + 1] : undefined
 
 if (selfTestFlag) {
-  process.exit(selfTest())
+  /**
+   * ⚠ `N-E3` 要自证"白名单里的历史目录**在真账本区里确实没有清单件**"
+   *   ⇒ 需要真账本根。读不到就传空串（那条自证会失败并如实报红，⛔ 不静默放过）。
+   */
+  process.exit(selfTest(resolveLedgerRoot(cliLedger) ?? ''))
 }
 
 const ledgerRoot = resolveLedgerRoot(cliLedger)

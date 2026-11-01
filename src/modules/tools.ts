@@ -593,7 +593,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
-    description: '只读本工作区账本内的 .md（项目方案/决策记录/用户决策/工作上下文）。',
+    description: '只读本工作区账本内的 .md / .toml（项目方案/决策记录/用户决策/工作上下文/账本索引）。',
     parameters: {
       path: {
         type: 'string',
@@ -601,7 +601,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         // ⚠ 2026-10-10（UD-88 / CHG-025）：原文写「相对**工作区根目录**…如 README.md、PROJECT.md」
         //    ——**两处都不实**：解析根**一直是账本区**（v4 / D7），工作区根本读不到（D6）；
         //    而 `PROJECT.md` 也**已于本批移入账本区**。⇒ 改准：根 = 账本区，示例换成账本区里真实存在的文件。
-        description: '相对**账本区根目录**的 .md 路径，如 PROJECT.md、CONTEXT.md。',
+        description: '相对**账本区根目录**的 .md / .toml 路径，如 PROJECT.md、CONTEXT.md、ledger-next/units/index.toml。',
       },
     },
     output: {

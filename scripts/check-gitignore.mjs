@@ -18,7 +18,7 @@ import { dirname, join as pjoin } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runRepoRules } from './check-repo-rules.mjs'
 import { findDuplicateSectionHeadings, ledgerRootDiag, runDocShape, runLedgerCure, runRequirementPurity, runResidualMarkers, runTableIntegrity } from './check-doc-shape.mjs'
-import { runDiscipline, runPlanModuleParity, runRender, runRequirementsRoot, runSameSource, runSkeletonSource, runWorkspaceNameSource, runWriteScope, runZeroWidth } from './check-code-face.mjs'
+import { runDiscipline, runPlanModuleParity, runReadWhitelist, runRender, runRequirementsRoot, runSameSource, runSkeletonSource, runWorkspaceNameSource, runWriteScope, runZeroWidth } from './check-code-face.mjs'
 
 /** ⚠ 本仓工作区根（从本文件位置现算，⛔ 不硬编码本机路径 —— `UD-73③`）。 */
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -350,6 +350,11 @@ await runWriteScope({ bad, ok })
 
 // ── ③ T：现行需求根的迁移面（新根可写 / 旧根拒写且理由分得开 / 旧根仍可读）──
 await runRequirementsRoot({ bad, ok })
+
+// ── ③ Y：账本读白名单（`.md` + `.toml`）—— 正向逐字节 + 三条负向 ─────────
+//   ⚠ 2026-11-02 · `CHG-2035` 轨 A：`units/index.toml` 是唯一状态源，
+//     而读侧此前只认 `.md` ⇒ 能写读不到 ⇒ 改索引是盲写（历史上盲写丢过 6417 字节）。
+await runReadWhitelist({ bad, ok })
 
 // ── ③ W：方案 §3 的模块清单 ↔ `src/modules/` 实际文件（虚列即红）──
 runPlanModuleParity({ bad, ok })

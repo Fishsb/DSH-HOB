@@ -1201,6 +1201,185 @@ export async function runRequirementsRoot({ bad, ok }) {
 }
 
 /**
+ * ── 断言 Y · **账本读白名单：`.md` + `.toml`（成对，⛔ 缺一侧即假绿）** ─────────────
+ *
+ * **它防的是什么**（`CHG-2035` 轨 A · 2026-11-02）：
+ *   `ledger-next/units/index.toml` 是账本的**唯一状态源**，而读侧此前只认 `.md`
+ *   ⇒ Hob **能写它、读不到它** ⇒ 每次改索引都是**盲写**（历史上盲写丢过 6417 字节）。
+ *   ⚠ 更坏的一种：拒绝文案被当成正文返回 —— 调用方**以为读到了**，拿"拒绝：只能读取……"
+ *     当索引去解析。所以本组**不判"没报错"**，判**字节数**。
+ *
+ * **判据（正向 2 条 + 负向 3 条，⛔ 少一条都不算）**：
+ *   · **Y1 正向**：账本区 `ledger-next/units/index.toml` 真读 ⇒ `ok` 且
+ *     **`Buffer.byteLength(text)` == `fs.statSync().size`**（给两个数）。
+ *     ⚠ 这一条才是"读到了"的证据：截断 / 空串 / 拒绝文案被当内容，三个都会让这两个数对不上。
+ *   · **Y2 正向（默认上限下的真实形态）**：同一份文件用**工具默认上限**读 ⇒
+ *     `ok` 且 `bytes` 仍 == 盘上 size，`truncated` 为真时正文尾部必须带那句截断标注。
+ *     ⚠ 记这一条是因为该文件 **101681 字节 > 默认上限 65536** ⇒ Hob 实际调用会拿到
+ *     **截断视图**（`bytes` 正确、正文不全）。⛔ 不许因为"它绿了"就把截断说成没发生。
+ *   · **Y3 负向**：账本区**外**的 `.toml`（`preset/dsh-hob/workflow.toml`）⇒ 拒，
+ *     reason 必须是 `outside-root`（⚠ 后缀放开了，**目录范围一个字节都没放开**）。
+ *   · **Y4 负向**：账本区**内**的 `.json`（`runtime/orch-watches.json`）⇒ 拒，
+ *     reason 必须是 `not-md`（⚠ 只加 `.toml` 一个后缀，⛔ 不是"什么都能读"）。
+ *   · **Y5 负向**：软链 ⇒ 拒，reason 必须是 `symlink`（与写侧同口径）。
+ *     ⚠ 在**临时沙箱**里造软链（`mkdtempSync` + `finally` 删净）—— ⛔ 不往真账本里放东西。
+ *
+ * ⚠ **负向的通过判据不是 `exit ≠ 0`**：每条都必须打一行**可读断言**，
+ *   写明"哪一条被拒、reason 是什么"。检查器崩了 ⇒ 走 `bad`，⛔ 不许当成"抓到了"。
+ * ⚠ **取不到任一侧 ⇒ FAIL**（基准缺失不静默通过）。
+ */
+export async function runReadWhitelist({ bad, ok }) {
+  const DOCREAD_TS = join(root, 'src', 'server', 'doc-read.ts')
+  const { mkdtempSync, mkdirSync, writeFileSync, statSync, symlinkSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { pathToFileURL } = await import('node:url')
+
+  let dr
+  try {
+    dr = await import(pathToFileURL(DOCREAD_TS).href)
+  } catch (e) {
+    bad(`Y 无法加载读取模块（${String(e?.message ?? e)}）⇒ 读白名单失去基准（不按通过处理）`)
+    return
+  }
+  const { readMarkdownCapped } = dr
+  if (typeof readMarkdownCapped !== 'function') {
+    bad('Y `doc-read.ts` 里没有 `readMarkdownCapped` ⇒ 读白名单断言失去对象（不按通过处理）')
+    return
+  }
+
+  // 账本根：与 Q3 逐字同口径（预设行 ledgerHome + 工作区名）
+  let home = null
+  try {
+    const preset = readFileSync(join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml'), 'utf8')
+    const m = /ledgerHome:\s*(\S+)/.exec(preset)
+    if (m !== null) home = m[1]
+  } catch { /* 读不到 ⇒ home 留 null ⇒ 下面报基准缺失 */ }
+  const LEDGER = resolveLedgerRootShared(root, undefined, home)
+  if (LEDGER === undefined) {
+    bad('Y 账本根**解析不到** ⇒ 读白名单断言失去基准（不按通过处理）')
+    return
+  }
+
+  const INDEX_REL = 'ledger-next/units/index.toml'
+  const INDEX_ABS = join(LEDGER, INDEX_REL)
+  let indexSize = 0
+  try {
+    indexSize = statSync(INDEX_ABS).size
+  } catch {
+    bad(`Y1 读不到盘上的 \`${INDEX_REL}\`（账本区 ${LEDGER}）⇒ 正向断言失去对象（不按通过处理）`)
+    return
+  }
+
+  // ── Y1 正向：大上限下真读，逐字节对齐 ────────────────────────────────
+  {
+    const CAP = Math.max(indexSize + 1024, 1 << 20)
+    const r = await readMarkdownCapped(LEDGER, INDEX_REL, CAP)
+    const got = r.ok === true ? Buffer.byteLength(String(r.text), 'utf8') : -1
+    if (r.ok === true && r.truncated === false && got === indexSize && r.bytes === indexSize) {
+      ok(`Y1 ✓ 账本区内的 \`.toml\` **可读且逐字节一致**：\`${INDEX_REL}\` `
+        + `正文 ${got} 字节 == 盘上 \`statSync().size\` ${indexSize} 字节（truncated=false）`
+        + ' ⇒ 读侧认这个后缀，"能写读不到"这条补上了')
+    } else {
+      bad(`Y1 账本区内的 \`.toml\` **读不到 / 内容对不上**：ok=${r.ok} truncated=${r.truncated} `
+        + `reason=${String(r.reason ?? '')} 正文=${got} 字节 vs 盘上=${indexSize} 字节`
+        + '\n      ⇒ 期望：ok=true、truncated=false、正文字节数 == 盘上 size'
+        + '\n      ⇒ ⚠ 正文 0 字节 / 等于拒绝文案 / 被截断，都会让这两个数对不上 —— 那正是本组要抓的形态。')
+    }
+  }
+
+  // ── Y2 正向：默认上限（65536）下的真实形态 —— 截断要说出来 ────────────
+  {
+    const DEFAULT_CAP = 65536
+    const r = await readMarkdownCapped(LEDGER, INDEX_REL, DEFAULT_CAP)
+    const willTruncate = indexSize > DEFAULT_CAP
+    const noteOk = r.truncated !== true
+      || (String(r.text).includes('[已截断]') && String(r.text).includes(String(indexSize)))
+    if (r.ok === true && r.bytes === indexSize && noteOk) {
+      ok(`Y2 ✓ 默认上限 ${DEFAULT_CAP} 下：\`${INDEX_REL}\` **仍可读**，\`bytes\` == 盘上 ${indexSize} 字节`
+        + (willTruncate
+          ? `，且 truncated=true 时正文尾部**带截断标注**（点名 ${indexSize} 字节）`
+            + ' ⇒ ⚠ 该文件超默认上限，Hob 实际调用拿到的是**截断视图**（bytes 正确、正文不全）'
+          : '，未触发截断（文件未超默认上限）'))
+    } else {
+      bad(`Y2 默认上限下 \`${INDEX_REL}\` **读数不老实**：ok=${r.ok} bytes=${r.bytes} truncated=${r.truncated} `
+        + `盘上=${indexSize} 字节`
+        + '\n      ⇒ 期望：ok=true、bytes == 盘上 size、截断时正文带标注'
+        + '\n      ⇒ ⚠ 截断了却不标注 = 调用方拿残页当全文，比读不到更坏。')
+    }
+  }
+
+  // ── Y3 负向：账本区**外**的 .toml ⇒ 仍被拒（目录范围没放开）─────────────
+  {
+    const OUT_REL = 'preset/dsh-hob/workflow.toml'
+    const OUT_ABS = join(root, 'preset', 'dsh-hob', 'workflow.toml')
+    let exists = true
+    try { statSync(OUT_ABS) } catch { exists = false }
+    if (!exists) {
+      bad(`Y3 【基准缺失】工作区根下找不到 \`${OUT_REL}\` ⇒ "账本区外 .toml 仍被拒"这条没有对象（不按通过处理）`)
+    } else {
+      const r = await readMarkdownCapped(LEDGER, OUT_ABS, 1 << 20)
+      if (r.ok !== true && r.reason === 'outside-root') {
+        ok(`Y3 ✓ 负向对拍 · 账本区**外**的 \`.toml\` 仍被拒：\`${OUT_REL}\` ⇒ reason=\`outside-root\`，`
+          + `话术「${String(r.text)}」`
+          + ' ⇒ ⚠ 这一轨只加后缀，**目录范围一个字节都没放宽**')
+      } else {
+        bad(`Y3 账本区**外**的 \`.toml\` **没被拒 / 理由不对**：ok=${r.ok} reason=${String(r.reason ?? '')}`
+          + '\n      ⇒ 期望：ok=false 且 reason=`outside-root`'
+          + '\n      ⇒ ⚠ ok=true 意味着**目录边界被顺手放宽了** —— 那是本轨明令禁止的那一条。')
+      }
+    }
+  }
+
+  // ── Y4 负向：账本区**内**的 .json ⇒ 仍被拒（只加了 .toml 一个后缀）──────
+  {
+    const JSON_REL = 'runtime/orch-watches.json'
+    const JSON_ABS = join(LEDGER, JSON_REL)
+    let exists = true
+    try { statSync(JSON_ABS) } catch { exists = false }
+    if (!exists) {
+      bad(`Y4 【基准缺失】账本区内找不到 \`${JSON_REL}\` ⇒ "账本区内 .json 仍被拒"这条没有对象（不按通过处理）`)
+    } else {
+      const r = await readMarkdownCapped(LEDGER, JSON_REL, 1 << 20)
+      if (r.ok !== true && r.reason === 'not-md') {
+        ok(`Y4 ✓ 负向对拍 · 账本区**内**的 \`.json\` 仍被拒：\`${JSON_REL}\` ⇒ reason=\`not-md\`，`
+          + `话术「${String(r.text)}」`
+          + ' ⇒ ⚠ 只放行 `.md` + `.toml` 两个后缀，⛔ 不是"账本区里什么都能读"')
+      } else {
+        bad(`Y4 账本区**内**的 \`.json\` **没被拒 / 理由不对**：ok=${r.ok} reason=${String(r.reason ?? '')}`
+          + '\n      ⇒ 期望：ok=false 且 reason=`not-md`'
+          + '\n      ⇒ ⚠ ok=true 意味着白名单被放宽成"任意后缀" —— 那超出本轨授权。')
+      }
+    }
+  }
+
+  // ── Y5 负向：软链 ⇒ 仍被拒（临时沙箱里造，⛔ 不碰真账本）────────────────
+  {
+    const sandbox = mkdtempSync(join(tmpdir(), 'hob-tomlcheck-'))
+    try {
+      mkdirSync(join(sandbox, 'volumes'), { recursive: true })
+      writeFileSync(join(sandbox, 'REQUIREMENTS.md'), '# 沙箱正本\n', 'utf8')
+      const outsideFile = join(sandbox, '..', `hob-tomlcheck-outside-${Date.now()}.toml`)
+      writeFileSync(outsideFile, 'key = "outside"\n', 'utf8')
+      const linkPath = join(sandbox, 'volumes', 'linked.toml')
+      symlinkSync(outsideFile, linkPath)
+      const r = await readMarkdownCapped(sandbox, 'volumes/linked.toml', 1 << 20)
+      if (r.ok !== true && r.reason === 'symlink') {
+        ok('Y5 ✓ 负向对拍 · 软链仍被拒：`volumes/linked.toml`（指向区外 .toml）⇒ '
+          + `reason=\`symlink\`，话术「${String(r.text)}」`
+          + ' ⇒ 与写侧同口径，⚠ 放宽后缀**没有**连带把软链守卫放掉')
+      } else {
+        bad(`Y5 软链**没被拒 / 理由不对**：ok=${r.ok} reason=${String(r.reason ?? '')}`
+          + '\n      ⇒ 期望：ok=false 且 reason=`symlink`'
+          + '\n      ⇒ ⚠ ok=true 意味着"账本区内放个软链就能读区外"—— 那是历史漏洞的形状。')
+      }
+      try { rmSync(outsideFile, { force: true }) } catch { /* 清理失败不影响判定 */ }
+    } finally {
+      try { rmSync(sandbox, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
+    }
+  }
+}
+
+/**
  * ── 断言 W · **方案卷的模块清单必须与 `src/modules/` 实际文件同源** ─────────────────
  *
  * **它防的是什么**（2026-10-22 实测形态）：`volumes/plan/03-architecture-modular.md` 长期列着一个

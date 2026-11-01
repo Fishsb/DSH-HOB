@@ -10,7 +10,9 @@
  *     ⇒ 读注释的人会去找两个找不到的文件。现在按**实际 import 本模块的地方**重写。
  *
  * 权限边界（硬约束）：
- *   只允许读工作区根目录下的 **.md**；非 .md 或越界一律拒绝。
+ *   只允许读**账本目录**内的 **.md** 与 **.toml**；其余后缀或越界一律拒绝。
+ *   ⚠ 2026-11-02（`CHG-2035` 轨 A）**只加了 `.toml` 一个后缀**，目录范围未动
+ *     —— 理由见 {@link isToml}（`units/index.toml` 是唯一状态源，此前能写读不到）。
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { lstat, readFile, stat } from 'node:fs/promises'
@@ -23,7 +25,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
  *   账本已迁出工作区（按工作区名派生到工作区之外）。
  *   ⇒ 话术同步改为「本工作区的账本」，否则**说法与行为不符**（挂着失效内容）。
  */
-export const DENIED = '拒绝：只能读取本工作区账本目录内的 .md 文档。'
+export const DENIED = '拒绝：只能读取本工作区账本目录内的 .md / .toml 文档。'
 
 /**
  * 解析工作区根目录（fail-closed）。
@@ -364,6 +366,32 @@ export function isMarkdown(p: string): boolean {
   return p.toLowerCase().endsWith('.md')
 }
 
+/**
+ * 是否为 `.toml`（大小写不敏感，理由同上）。
+ *
+ * ⚠ **只加这一个扩展名**（2026-11-02 · `CHG-2035` 轨 A）：
+ *   `ledger-next/units/index.toml` 是账本的**唯一状态源**，而读侧此前只认 `.md`
+ *   ⇒ Hob **能写它、读不到它** ⇒ 每次改索引都是**盲写**（历史上盲写丢过 6417 字节）。
+ *   ⇒ 读侧补上 `.toml`，让"写过的那个文件"读得回来。
+ *
+ * ⚠ ⚠ **目录范围一个字节都没放宽**：本函数只管**后缀**，越界仍由
+ *   {@link resolveInside} 挡、软链仍由 {@link findSymlinkOnPath} 挡。
+ *   ⛔ 别把这条理解成"账本区外也能读了" —— 那是另一条判据（`outside-root`），本条不碰它。
+ */
+export function isToml(p: string): boolean {
+  return p.toLowerCase().endsWith('.toml')
+}
+
+/**
+ * 读侧**可读后缀**的唯一判定（`.md` 与 `.toml`）。
+ *
+ * ⚠ 写成"一个函数"而不是两处 `if`：读侧只允许**一处**决定"什么后缀能读"，
+ *   否则加第三个后缀时会漏改一处而静默放行（与 `DENIED` 只写一处同一条纪律）。
+ */
+export function isReadableDoc(p: string): boolean {
+  return isMarkdown(p) || isToml(p)
+}
+
 export interface ReadResult {
   /** 是否成功读到内容。 */
   ok: boolean
@@ -382,7 +410,8 @@ export interface ReadResult {
    *     **用户**看到的话术仍不泄露存在性。
    *
    * 五族互不重叠（⛔ 不许把两族并成一个值 —— 那正是"原因取不到"的另一种形态）：
-   *   · `not-md`       —— 不是 `.md`（后缀不符）；
+   *   · `not-md`       —— 后缀不符（既不是 `.md` 也不是 `.toml`；⚠ 值名沿用旧称，
+   *                       改值会破坏 `tools.ts` 的透传契约，故只在此注明实际判定）；
    *   · `outside-root` —— 路径越出账本根（`../` 穿越、绝对路径越界等）；
    *   · `symlink`      —— 路径链上有符号链接（不跟随）；
    *   · `not-found`    —— `.md` 且在界内，但文件不存在 / 不可 stat；
@@ -416,7 +445,7 @@ export async function readMarkdownCapped(
   if (!inside) {
     return { ok: false, text: DENIED, truncated: false, bytes: 0, reason: 'outside-root' }
   }
-  if (!isMarkdown(abs)) {
+  if (!isReadableDoc(abs)) {
     return { ok: false, text: DENIED, truncated: false, bytes: 0, reason: 'not-md' }
   }
 

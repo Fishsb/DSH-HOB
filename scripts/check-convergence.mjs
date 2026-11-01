@@ -38,6 +38,14 @@ const LEDGER = LEDGER_DIR
 
 let pass = 0
 let fail = 0
+/**
+ * ⚠ **第三档：跳过**（2026-11-02 · P50/D1 · `TASK-D1.md` §一第 3 件）。
+ *   与 `check:ledger-next` 的同名档同口径：**跳过 ≠ 通过**，⛔ 不进 `pass`。
+ *   ⚠ 为什么必须单列：0 条取代关系时三条双向核**一条也判不了**，
+ *     塞进 `ok` ⇒ "没落数据"被洗成"全对"；塞进 `bad` ⇒ 上线即红。
+ */
+const skip = []
+const noteSkip = (m) => { skip.push(m); console.log(`  ${m}`) }
 const ok = (m) => { pass++; console.log(`  ✓ ${m}`) }
 const bad = (m) => { fail++; console.log(`  ✗ ${m}`) }
 
@@ -285,6 +293,146 @@ export function checkKE1(list) {
   return problems
 }
 
+/**
+ * ══ **S 组 · 取代关系双向核（扩到全部 kind）**（2026-11-02 · P50/D1 · `TASK-D1.md` §一第 1/3 件）══
+ *
+ * ── 它治什么 ────────────────────────────────────────────────────────
+ *   改前「A 取代 B」只在 **`decision`** 一类上被双向核过（`decisionChainProblems` ⇒ I8 / K-5）。
+ *   `req` / `change` / 其它 kind 就算写了 `supersedes`，**没人查对面有没有 `superseded_by`**
+ *   ⇒ 一条被取代的需求可以同时被当成"现行"，而账本不红。
+ *
+ * ── ⚠⚠ 与既有判据的分工（`TASK-D1.md` §一第 1 件：⛔ 不重复报同一处红）──────────
+ *   先查过：谁已经在管这件事？
+ *     · **`decision`** 的「单边 / 悬空 / 只能取代决策」已由
+ *       `src/shared/convergence.ts` 的 `decisionChainProblems` 管（`I8` 在
+ *       `check:ledger-next`、`K-5` 在本族各调一次）。
+ *       ⇒ 本组对 `decision` **⛔ 不重报**这三类，只在输出里**明说让位给谁**（⛔ 不静默漏）。
+ *     · **自指**：`decisionChainProblems` **管不住** —— 实测 `A.supersedes = A` 且
+ *       `A.superseded_by = A` 且 `status = superseded` 时它三条全不报（双向"对上了"、
+ *       状态也"对上了"）⇒ 一个自吞的环被判成绿的。⇒ 自指**所有 kind 都由本组核**（含 `decision`）。
+ *     · **悬空**：`checkI9` 的 `REF_FIELDS` **没有** `supersedes` / `superseded_by`
+ *       ⇒ 除 `decision` 外**没有任何判据**在管这两个字段的引用存在性。
+ *       ⇒ 本组对非 `decision` 补上（⚠ 不是重复，是真空白）。
+ *
+ * ── ⚠ 本组只核"已写出来的关系对不对" ──────────────────────────────────
+ *   ⛔ 不要求"每条 req 都必须有 supersedes"（那是 `gen-ledger.mjs` 的 `EXTENDED_FIELDS` 的事）。
+ */
+
+/** `supersedes` 一条都没落时的那一行（⚠ 逐字被 `TASK-D1.md` §一第 3 件点名要求）。 */
+export const SUPERSEDE_NOT_LANDED = '⊘ 取代关系尚未落数据（supersedes = 0 条）⇒ 双向核无法执行，⛔ 这不是通过'
+
+/** 取一个"单值引用字段"的字符串值（缺 / 非字符串 ⇒ 空串）。 */
+const refOne = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : '')
+
+/**
+ * **S-1 / S-2 / S-3 的纯函数实现**。
+ *
+ * ⚠ 收 `units` 而⛔ 不自己读盘：负向对拍要直接喂合成夹具（照 `N-GC1/2/3` 的形态）。
+ *
+ * @param {Array<Record<string, any>>} units - 单元数组
+ * @returns {{ relations:number, s1:string[], s2:string[], s3:string[] }}
+ *   `relations` = 真账本里**已写出来的取代关系条数**（0 ⇒ 走 ⊘ 档，⛔ 不判）
+ */
+export function supersedeBilateralProblems(units) {
+  const s1 = []   // 正向单向：A.supersedes ∋ B 而 B.superseded_by ∌ A
+  const s2 = []   // 反向单向：A.superseded_by ∋ B 而 B.supersedes ∌ A
+  const s3 = []   // 自指
+  const byId = new Map(units.map((u) => [String(u.id), u]))
+
+  /** 已写出来的取代关系条数（⚠ 一个字段非空 = 一条关系；用来判 ⊘ 档）。 */
+  let relations = 0
+  for (const u of units) {
+    if (refOne(u.supersedes) !== '') relations++
+    if (refOne(u.superseded_by) !== '') relations++
+  }
+
+  for (const a of units) {
+    const aid = String(a.id)
+    const sup = refOne(a.supersedes)
+    const by = refOne(a.superseded_by)
+
+    // ── S-3 自指：**所有 kind**（含 decision —— 见上方分工说明，那里 I8 管不住）──
+    if (sup === aid) {
+      s3.push(`${aid}：\`supersedes\` **指向它自己** ⇒ 自吞的环（⛔ 取代关系必须指向另一个单元）`)
+    }
+    if (by === aid) {
+      s3.push(`${aid}：\`superseded_by\` **指向它自己** ⇒ 自吞的环（⛔ 取代关系必须指向另一个单元）`)
+    }
+
+    /**
+     * ⚠ `decision` 让位给 `decisionChainProblems`（I8 / K-5）：
+     *   单边与悬空那两类它已经在报 ⇒ 这里⛔ 再报一遍（两处红同一件事 = 噪音掩盖真缺陷）。
+     *   自指**不**让位（上面已说明它管不住）。
+     */
+    if (a.kind === 'decision') continue
+
+    // ── S-1 正向单向 ──────────────────────────────────────────────
+    if (sup !== '' && sup !== aid) {
+      const b = byId.get(sup)
+      if (b === undefined) {
+        s1.push(`${aid}：\`supersedes = ${JSON.stringify(sup)}\` 指向的单元**不存在** ⇒ 判不出（⛔ 悬空引用不许放过）`)
+      } else if (refOne(b.superseded_by) !== aid) {
+        s1.push(`${aid} 说取代了 \`${sup}\`，而 \`${sup}.superseded_by = ${JSON.stringify(b.superseded_by ?? null)}\``
+          + ' ⇒ **单边声明**（⛔ 取代必须双向对上）')
+      }
+    }
+
+    // ── S-2 反向单向 ──────────────────────────────────────────────
+    if (by !== '' && by !== aid) {
+      const b = byId.get(by)
+      if (b === undefined) {
+        s2.push(`${aid}：\`superseded_by = ${JSON.stringify(by)}\` 指向的单元**不存在** ⇒ 判不出（⛔ 悬空引用不许放过）`)
+      } else if (refOne(b.supersedes) !== aid) {
+        s2.push(`${aid}：\`superseded_by = ${by}\` 而 \`${by}.supersedes = ${JSON.stringify(b.supersedes ?? null)}\``
+          + ' ⇒ **单边声明**（⛔ 反向也要对上）')
+      }
+    }
+  }
+
+  return { relations, s1, s2, s3 }
+}
+
+/**
+ * **档位归属的唯一判定**：0 条关系 ⇒ `'skip'`，否则 ⇒ `'checked'`。
+ * ⚠ 抽成函数，好让负向对拍 `N-S0` 测的就是主流程用的那条规则（⛔ 夹具里另写一份）。
+ */
+export function supersedeBucket(cov) {
+  return cov.relations === 0 ? 'skip' : 'checked'
+}
+
+/**
+ * **S 组报告体**（⚠ 主流程与负向对拍**共用这一个函数**，sink 由调用方注入）。
+ *
+ * ── 为什么 sink 要注入（`TASK-D1.md` §一第 3 件点名要求）────────────────
+ *   若这里直接调模块级 `ok` / `bad` / `noteSkip`，`N-S0` 一跑就**污染真实计数**。
+ *   ⇒ sink 作参数传入：主流程传真 sink，对拍传影子 sink ⇒ 两边跑**同一段判定**，
+ *     影子那次的计数只落在局部变量里。（这条坑 B 轨实测踩过：处级口径印成「跳过 2 处」而实际 1 处。）
+ *
+ * @param {{relations:number,s1:string[],s2:string[],s3:string[]}} cov
+ * @param {{ok:Function,bad:Function,noteSkip:Function}} sink
+ * @returns {'skip'|'checked'} 落在哪个档位
+ */
+export function reportSupersedeLayer(cov, sink) {
+  const bucket = supersedeBucket(cov)
+  if (bucket === 'skip') {
+    sink.noteSkip(SUPERSEDE_NOT_LANDED)
+    return bucket
+  }
+  const RULES = [
+    ['S-1', cov.s1, '正向：`A.supersedes ∋ B` ⇒ `B.superseded_by ∋ A`',
+      `S-1 ✓ 取代关系·正向双向：${cov.relations} 条已写出的关系里，\`supersedes\` 一侧**全部**在对面写回了 \`superseded_by\`（decision 让位 I8/K-5，⛔ 不重报）`],
+    ['S-2', cov.s2, '反向：`A.superseded_by ∋ B` ⇒ `B.supersedes ∋ A`',
+      `S-2 ✓ 取代关系·反向双向：\`superseded_by\` 一侧**全部**在对面写回了 \`supersedes\`（⛔ 不是只核一个方向）`],
+    ['S-3', cov.s3, '自指：`A` 指向自己 ⇒ 红',
+      `S-3 ✓ 取代关系·无自指：${cov.relations} 条关系里**没有一条指向自己**（含 decision —— 那里 I8 管不住全对上的自指）`],
+  ]
+  for (const [id, probs, what, okMsg] of RULES) {
+    if (probs.length === 0) sink.ok(okMsg)
+    else for (const x of probs) sink.bad(`${id} · ${what}：${x}`)
+  }
+  return bucket
+}
+
 try {
   console.log('')
   console.log('K 组：收敛检查 —— 一个**变更**收没收口（K-1..K-6）')
@@ -315,6 +463,24 @@ try {
       ok(`K-ALL · **存量未收口（点名豁免，不计退出码）**\n${text}\n    ⚠ 为什么豁免：${exempt.why}\n    ⚠ 清理计划：${exempt.plan}`)
     } else {
       bad(`K-ALL · ${text}`)
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // S 组 · 取代关系双向核（2026-11-02 P50/D1 · `TASK-D1.md` §一第 1/3 件）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ⚠⚠ **0 条关系走 `skip` 档，⛔ 不进 `ok`、⛔ 也不进 `bad`**：
+   *   · 进 `ok` ⇒ "取代关系根本没落数据"被洗成"双向全对"（假绿）；
+   *   · 进 `bad` ⇒ 上线即红。
+   *   ⇒ 单列 `⊘`，计入 `skip`（处级口径单独报，⛔ 不计入「过了」）。
+   */
+  {
+    const cov = supersedeBilateralProblems(units)
+    const bucket = reportSupersedeLayer(cov, { ok, bad, noteSkip })
+    if (bucket === 'skip') {
+      console.log(`      ⇒ 实测：\`supersedes\` / \`superseded_by\` **两个字段合计 0 条非空**`
+        + `（索引 ${units.length} 条单元里一条取代关系都没写）⇒ 三条双向核**一条也判不了**`)
     }
   }
 
@@ -646,13 +812,147 @@ try {
     } else bad(`N-KR · 输出缺项（计数=${hasCount} 编号=${listsRules} 单元=${listsUnits}）：${text.slice(0, 120)}`)
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // S 组的四条负向对拍（2026-11-02 P50/D1 · `TASK-D1.md` §一第 2/3 件）
+  // ⚠ 全部**合成夹具**（⛔ 不拿真账本当夹具：真账本 supersedes = 0 条 ⇒ 0 对象假绿）
+  // ⚠ 每条：① 先自证基线全绿 ② 改坏 ⇒ 必红且点名 id ③ 还原 ⇒ 回绿
+  // ══════════════════════════════════════════════════════════════════════
+  {
+    /**
+     * 基线夹具：**非 decision** 的一对（`change` 取代 `change`）+ 一对 `req`，
+     * 双向都写对 ⇒ 三条全绿。⚠ 故意用 `change` / `req` 而不是 `decision`：
+     * 本条要证的正是"**扩到全部 kind**"（decision 那类改前就已经被 I8 管着）。
+     */
+    const baseSup = () => ([
+      { id: 'CHG-950', kind: 'change', status: 'settled', parent: 'spec/progress', after: [], supersedes: '', superseded_by: 'CHG-951' },
+      { id: 'CHG-951', kind: 'change', status: 'settled', parent: 'spec/progress', after: [], supersedes: 'CHG-950', superseded_by: '' },
+      { id: 'R-950', kind: 'req', status: 'dropped', parent: 'spec/progress', after: [], supersedes: '', superseded_by: 'R-951' },
+      { id: 'R-951', kind: 'req', status: 'agreed', parent: 'spec/progress', after: [], supersedes: 'R-950', superseded_by: '' },
+    ])
+    const clean = supersedeBilateralProblems(baseSup())
+    const baselineClean = clean.relations === 4
+      && clean.s1.length === 0 && clean.s2.length === 0 && clean.s3.length === 0
+
+    if (!baselineClean) {
+      bad(`N-S · 合成夹具基线**本身就不合法**（期望 4 条关系 / 三条全空，实测 relations=${clean.relations} `
+        + `s1=${clean.s1.length} s2=${clean.s2.length} s3=${clean.s3.length}）⇒ 下面三条对拍不可判`)
+    } else {
+      // ── N-1 正向单向：A.supersedes=[B] 而 B.superseded_by 空 ⇒ 必红，点名两个 id ──
+      {
+        const mut = baseSup().map((u) => (u.id === 'CHG-950' ? { ...u, superseded_by: '' } : u))
+        const r = supersedeBilateralProblems(mut)
+        /** ⚠ 自证：真的只破坏了"正向"这一面（`CHG-951.supersedes` 仍在，对面没写回）。 */
+        const reallyBroken = mut.find((u) => u.id === 'CHG-951').supersedes === 'CHG-950'
+          && mut.find((u) => u.id === 'CHG-950').superseded_by === ''
+        const hit = r.s1.find((x) => x.includes('CHG-951') && x.includes('CHG-950'))
+        if (!reallyBroken) bad('N-1 · 夹具没造出"正向单向"形态 ⇒ 本条不可判')
+        else if (hit === undefined) bad(`N-1 · \`CHG-951.supersedes = CHG-950\` 而 \`CHG-950.superseded_by\` 空却绿灯 ⇒ S-1（正向）哑了`)
+        else if (r.s2.length !== 0 || r.s3.length !== 0) bad(`N-1 · 只改一处却连带咬了别的（s2=${r.s2.length} s3=${r.s3.length}）⇒ 夹具不干净`)
+        else ok(`N-1 ✓ 负向对拍（先自证：基线 4 条关系全绿；再清空 \`CHG-950.superseded_by\` 而 \`CHG-951.supersedes = CHG-950\` 仍在）`
+          + ` ⇒ S-1（**正向**）**必红**且**点名两个 id**：${hit.slice(0, 110)}`
+          + '；**反面**：写回 `CHG-950.superseded_by = CHG-951` ⇒ 回到基线全绿（⛔ 不是恒红）')
+      }
+
+      // ── N-2 反向单向：B.superseded_by=[A] 而 A.supersedes 空 ⇒ 必红，点名两个 id ──
+      {
+        const mut = baseSup().map((u) => (u.id === 'CHG-951' ? { ...u, supersedes: '' } : u))
+        const r = supersedeBilateralProblems(mut)
+        const reallyBroken = mut.find((u) => u.id === 'CHG-950').superseded_by === 'CHG-951'
+          && mut.find((u) => u.id === 'CHG-951').supersedes === ''
+        const hit = r.s2.find((x) => x.includes('CHG-950') && x.includes('CHG-951'))
+        if (!reallyBroken) bad('N-2 · 夹具没造出"反向单向"形态 ⇒ 本条不可判')
+        else if (hit === undefined) bad(`N-2 · \`CHG-950.superseded_by = CHG-951\` 而 \`CHG-951.supersedes\` 空却绿灯 ⇒ S-2（反向）哑了`)
+        else if (r.s1.length !== 0 || r.s3.length !== 0) bad(`N-2 · 只改一处却连带咬了别的（s1=${r.s1.length} s3=${r.s3.length}）⇒ 夹具不干净`)
+        else ok(`N-2 ✓ 负向对拍（先自证：基线全绿；再清空 \`CHG-951.supersedes\` 而 \`CHG-950.superseded_by = CHG-951\` 仍在）`
+          + ` ⇒ S-2（**反向**）**必红**且**点名两个 id**：${hit.slice(0, 110)}`
+          + '；**反面**：写回 `CHG-951.supersedes = CHG-950` ⇒ 回到基线全绿（⛔ 不是恒红）')
+      }
+
+      // ── N-3 自指：A.supersedes = [A] ⇒ 必红，点名该 id ──
+      {
+        /**
+         * ⚠ 用 `req` 造自指：证明**自指也是全 kind** 生效。
+         * ⚠ 且**双向都写上**（`superseded_by` 也指向自己）——
+         *   这样"双向一致性"那一面是**对上的** ⇒ 红的只可能是自指那一条
+         *   （否则这条对拍证明不了 S-3 存在，只证明了 S-1 在响）。
+         */
+        const mut = [...baseSup(), { id: 'R-952', kind: 'req', status: 'agreed', parent: 'spec/progress',
+          after: [], supersedes: 'R-952', superseded_by: 'R-952' }]
+        const r = supersedeBilateralProblems(mut)
+        const reallyBroken = mut.find((u) => u.id === 'R-952').supersedes === 'R-952'
+        const hit = r.s3.find((x) => x.includes('R-952'))
+        if (!reallyBroken) bad('N-3 · 夹具没造出"自指"形态 ⇒ 本条不可判')
+        else if (hit === undefined) bad('N-3 · `R-952.supersedes = R-952` 却绿灯 ⇒ S-3（自指）哑了')
+        else if (r.s1.length !== 0 || r.s2.length !== 0) bad(`N-3 · 自指却连带报了单边（s1=${r.s1.length} s2=${r.s2.length}）⇒ 夹具不干净，红的不是自指那条`)
+        else ok(`N-3 ✓ 负向对拍（先自证：基线全绿；再补一条 \`R-952\` 的 \`supersedes\` 与 \`superseded_by\` **都指向自己** ⇒ 双向"对上了"、只剩自指）`
+          + ` ⇒ S-3（**自指**）**必红**且点名该 id：${hit.slice(0, 100)}`
+          + '；**反面**：清空那两个字段 ⇒ 回到基线全绿（⛔ 不是恒红）')
+      }
+    }
+
+    /**
+     * ── N-S0：0 条关系 ⇒ 必须走 `⊘` 那一行、且**不计入通过**（§一第 3 件）──
+     * ⚠ **影子 sink**（照 `N-GC0` 的改法）：调主流程**同一段** `reportSupersedeLayer`，
+     *   但计数落在局部变量 ⇒ ⛔ 不污染真实 `pass` / `skip`。
+     */
+    {
+      const zeroRel = [
+        { id: 'R-960', kind: 'req', status: 'agreed', parent: 'spec/progress', after: [] },
+        { id: 'CHG-960', kind: 'change', status: 'settled', parent: 'spec/progress', after: [] },
+      ]
+      const r = supersedeBilateralProblems(zeroRel)
+      const reallyZero = r.relations === 0
+      const shadow = { pass: 0, fail: 0, skip: [] }
+      const sink = {
+        ok: () => { shadow.pass++ },
+        bad: () => { shadow.fail++ },
+        noteSkip: (m) => { shadow.skip.push(m) },
+      }
+      const bucket = reportSupersedeLayer(r, sink)
+      /** 反面：补一条合法关系 ⇒ 必须离开 `skip`、进 `checked` 且三条全绿。 */
+      const withRel = [...zeroRel,
+        { id: 'R-961', kind: 'req', status: 'dropped', parent: 'spec/progress', after: [], superseded_by: 'R-960' },
+      ].map((u) => (u.id === 'R-960' ? { ...u, supersedes: 'R-961' } : u))
+      const r2 = supersedeBilateralProblems(withRel)
+      const shadow2 = { pass: 0, fail: 0, skip: [] }
+      const bucket2 = reportSupersedeLayer(r2, {
+        ok: () => { shadow2.pass++ },
+        bad: () => { shadow2.fail++ },
+        noteSkip: (m) => { shadow2.skip.push(m) },
+      })
+      /** ⚠ 语义判（与 B 轨 `N-GC0` 同口径，`VERDICT-B1.md` §2.1 已裁定按语义）：摘掉否定式后再查。 */
+      const lineHasPass = SUPERSEDE_NOT_LANDED.replace('这不是通过', '').includes('通过')
+      if (!reallyZero) {
+        bad('N-S0 · 夹具没造出"0 条关系"的形态 ⇒ 本条不可判')
+      } else if (bucket !== 'skip') {
+        bad(`N-S0 · 0 条关系时**没走 skip 档**（实测 ${bucket}）⇒ 档位判定哑了`)
+      } else if (shadow.pass !== 0) {
+        bad(`N-S0 · 0 条关系时**计入了通过**（pass +${shadow.pass}）⇒ "没判"被洗成"判过了"`)
+      } else if (shadow.skip.length !== 1) {
+        bad(`N-S0 · 0 条关系时**没有计入跳过**（skip ${shadow.skip.length} 条，期望 1）⇒ 那个档位没有落点`)
+      } else if (shadow.skip[0] !== SUPERSEDE_NOT_LANDED) {
+        bad(`N-S0 · 跳过那一行**不是约定的原文**：${JSON.stringify(shadow.skip[0])}`)
+      } else if (lineHasPass) {
+        bad('N-S0 · 那一行里出现了"通过"字样（非否定式）⇒ 读者会把它当成通过')
+      } else if (bucket2 !== 'checked' || shadow2.pass !== 3 || shadow2.fail !== 0 || shadow2.skip.length !== 0) {
+        bad(`N-S0 · 反面不成立：补一条合法关系后应当 checked + 三条全绿，实测 `
+          + `bucket=${bucket2} pass=${shadow2.pass} fail=${shadow2.fail} skip=${shadow2.skip.length}`)
+      } else {
+        ok('N-S0 ✓ 负向对拍（先自证：夹具 \`supersedes\`/\`superseded_by\` 合计 0 条非空；影子 sink 不污染真实计数）'
+          + ' ⇒ 走 `⊘` 单列档：**pass +0**（⛔ 不计入通过）· **skip +1**（有自己的落点）'
+          + `，且那行里**没有非否定式的"通过"** —— 原文：${SUPERSEDE_NOT_LANDED}`
+          + '；**反面**：补一条合法关系 ⇒ 进 `checked` 档且 S-1/S-2/S-3 三条全绿（⛔ 不是恒跳过）')
+      }
+    }
+  }
+
   console.log('')
   console.log(`K 组：通过 ${pass} · 失败 ${fail}`)
-  console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 0 处**（⚠ 跳过**不计入通过**）`)
+  console.log(`处级口径：查了 ${pass + fail + skip.length} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**；⚠ "查了"含跳过，故 查了 = 过了 + 没过 + 跳过）`)
   process.exit(fail === 0 ? 0 : 1)
 } catch (e) {
   bad(`K 组**自身异常**（⛔ 不算通过）：${String(e?.stack ?? e)}`)
   console.log(`K 组：通过 ${pass} · 失败 ${fail}`)
-  console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处 · **跳过 0 处**`)
+  console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处 · **跳过 ${skip.length} 处**`)
   process.exit(1)
 }
