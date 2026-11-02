@@ -99,3 +99,30 @@ UI 新建入口
 - `stages`：权威五步汇总面；`tasks-progress` 仅保留兼容。
 
 完整术语见项目根 `TERMINOLOGY.md`。
+
+## 六、文档生命周期
+
+文档按职责分层，同一事实只允许一个权威落点：
+
+| 文档层 | 权威位置 | 写什么 | 不写什么 |
+|---|---|---|---|
+| 用户入口 | `README.md` | 安装、使用、限制 | 当前项目状态 |
+| 术语契约 | `TERMINOLOGY.md` | 固定名称与边界 | 实现细节 |
+| 架构说明 | `kit/drafts/architecture-overview.md` | 稳定层次与依赖方向 | 会漂移的文件数 |
+| 行为规格 | `preset/dsh-hob/spec/` · `ledger/spec/` | 当前可观察行为 | 历史过程 |
+| 机器状态 | `ledger/units/index.toml` | 唯一状态与正式关系 | 长篇说明 |
+| 派生视图 | `ledger/gen/` · `ledger/spec/current.md` · `REQUIREMENTS.md` | 从索引生成的人读汇总 | 手工状态更新 |
+| 方案变更 | `ledger/changes/` | 提案、差异、任务边界 | 长期现状 |
+| 历史追溯 | `volumes/` · `archive/` | 已退役正文与原始证据 | 当前执行依据 |
+
+更新规则：
+
+1. 当前事实变化时**替换原正文**，旧版本归档；⛔ 不在末尾持续追加“补充说明”。
+2. 同一主题只允许一份现行文档；被替代文档必须标明 `superseded_by` 或归档位置。
+3. `gen/`、`Current`、`requirements.md`、`portfolio.md`、`stages.md` 只读生成物，⛔ 手改。
+4. `PROJECT.md` 只做 ≤200 行薄地图；状态与计数留在索引或生成视图。
+5. 新文档增加前先回答“能否更新现有同主题文档”；只有职责不同才拆新文件。
+6. 历史文档可以保留旧称和旧路径，但必须明确标为只读追溯，⛔ 不再作为当前判断依据。
+
+需求变更沿 `Goal → Requirement → Change → Task → Run → Acceptance` 回流；
+任何一层缺失由账本判据点名，而不是靠新增一份说明文档补洞。

@@ -52,7 +52,7 @@ Hob 负责与用户明确目标和需求，组织实现方案与编码任务，�
 | `src/` | 插件运行时代码 |
 | `preset/dsh-hob/` | Hob 预设的机器可读工作流、规格和生成物 |
 | `kit/` | 可复用骨架、模板和角色方法论 |
-| `<ledgerHome>/<workspaceName>/ledger-next/` | 唯一现行项目账本 |
+| `<ledgerHome>/<workspaceName>/ledger/` | 唯一现行项目账本 |
 | `volumes/` | 历史账本文档，只读追溯 |
 | `archive/` | 原始证据和过程归档 |
 | `runtime/` | 运行状态，不进入 Git |

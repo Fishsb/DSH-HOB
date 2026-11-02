@@ -10,8 +10,10 @@
     "dsh-plugin",
     "deepseek-harness",
     "agent-preset",
-    "assistant",
-    "planning"
+    "project-owner",
+    "workflow",
+    "agent-orchestration",
+    "independent-acceptance"
   ],
   "engines": {
     "node": ">=22.18"
