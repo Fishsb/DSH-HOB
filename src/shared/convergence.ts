@@ -1,5 +1,5 @@
 /**
- * **一个变更收没收口** —— K-1..K-6 的**唯一实现**（纯函数，零 I/O）。
+ * **一个变更收没收口** —— K-1..K-7 的**唯一实现**（纯函数，零 I/O）。
  * 2026-10-31 · P42b/R4b · `TASK-R4b.md` §一。
  *
  * ══ 为什么它必须搬到 `src/shared/` ═══════════════════════════════════════════
@@ -14,7 +14,7 @@
  * ══ ⚠⚠ 硬约束 ═══════════════════════════════════════════════════════════════
  *   · ⛔ **不许** `import 'node:fs'` / `node:path` / 任何 `scripts/` 目录的东西
  *     —— 它要能在 **client 半边**跑（那边没有 `node:fs`）；
- *   · K-1..K-6 的**判定口径原样搬**（⛔ 借机改口径、⛔ 顺手优化）；
+ *   · K-1..K-6 的**判定口径原样搬**；K-7 为 2026-11-03 新增的完成→验收闭环；
  *   · `blockedBy` 形状照旧：`<判据编号> · <单元 id> · <原因>`。
  *   ⇒ 上面两条由 `check:stages-route` 的 **R-13 / R-14** 咬住（含负向对拍）。
  */
@@ -23,7 +23,7 @@ import { effectiveAcceptanceOf, type AcceptanceVerdictLike } from './acceptance-
 
 /** 一条阻断项（结构化）。 */
 export interface Blocker {
-  /** 判据编号（`K-1`..`K-6`）。 */
+  /** 判据编号（`K-1`..`K-7`）。 */
   rule: string
   /** 单元 id（`(change)` 表示"这条 change 本身"）。 */
   unit: string
@@ -393,7 +393,41 @@ export function k6(chg: ConvUnit, accs: readonly ConvUnit[]): Blocker[] {
 }
 
 /**
- * **一个 change 的完整收敛判定**（K-1..K-6 汇总）。
+ * **K-7** · 每个 `built` task 都必须有本任务的有效独立验收。
+ *
+ * ⚠ 不能拿同需求下别的 task 的 ACC、或同一 change 旧需求的既有 ACC 顶替。
+ * 同一 task 的复验仍按 `effectiveAcceptanceOf` 取最新；旧 SEND-BACK + 新 PASS
+ * ⇒ 收口，旧 PASS + 新 SEND-BACK ⇒ 重新阻断。
+ */
+export function k7(tasks: readonly ConvUnit[], accs: readonly ConvUnit[]): Blocker[] {
+  const out: Blocker[] = []
+  for (const t of tasks) {
+    if (String(t.status) !== 'built') continue
+    const own = accs.filter((a) => String(a.parent ?? '') === String(t.id))
+    if (own.length === 0) {
+      out.push({
+        rule: 'K-7',
+        unit: String(t.id),
+        why: 'task 已 built 但**没有直属验收** ⇒ 实现没有被独立证明（⛔ 用别的 task 的 ACC 顶替）',
+      })
+      continue
+    }
+    const verdict = effectiveAcceptanceOf(own)
+    if (verdict.verdict !== 'accepted') {
+      out.push({
+        rule: 'K-7',
+        unit: String(t.id),
+        why: `task 的有效验收是 \`${verdict.verdict}\``
+          + (verdict.reason === undefined ? '' : `（${verdict.reason}）`)
+          + ' ⇒ 实现尚未被独立验收',
+      })
+    }
+  }
+  return out
+}
+
+/**
+ * **一个 change 的完整收敛判定**（K-1..K-7 汇总）。
  *
  * ⚠ 签名照 `TASK-R4b.md` §一.1：`convergenceOf(change, units)`。
  * ⚠ 返回**结构化**结果，⛔ 不是布尔。
@@ -421,6 +455,7 @@ export function convergenceOf(
   blockers.push(...r4.blockers)
   blockers.push(...k5(units, decisions.map((d) => String(d.id)), deps.i8))
   blockers.push(...k6(chg, accs))
+  blockers.push(...k7(tasks, accs))
   return {
     converged: blockers.length === 0,
     /** ⚠ 形状照 `TASK-R4b.md` §一.1：`<判据编号> · <单元 id> · <原因>`。 */

@@ -30,7 +30,7 @@
     "check:tasks-progress": 1,
     "check:tasks-route-http": 0,
     "check:workflow": 18,
-    "check:convergence": 9,
+    "check:convergence": 14,
     "check:ledger-resources": 3,
     "check:effects": 4,
     "check:handoff-effects": 1,

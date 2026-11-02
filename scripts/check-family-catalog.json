@@ -120,7 +120,7 @@
     },
     {
       "cmd": "check:convergence",
-      "what": "**一个变更收没收口**（K-1..K-6：任务全 built · 证据齐 · 需求 acc=pass · 风险不开着 · 决策有效 · 非自验）"
+      "what": "**一个变更收没收口**（K-1..K-7：任务全 built · 证据齐 · 需求 acc=pass · 风险不开着 · 决策有效 · 非自验 · 每个 built task 有直属有效验收）"
     },
     {
       "cmd": "check:workflow",

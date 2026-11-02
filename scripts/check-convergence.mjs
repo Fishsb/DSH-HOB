@@ -5,10 +5,11 @@
  * ══ 它判什么（⚠ 先把边界钉死）═══════════════════════════════════════════════
  *   判的是 **"一个 change 收没收口"**，⛔ **不是**"某个 task 做没做完"。
  *   任务做完了 ≠ 变更收口了：变更收口还要求**需求被证明满足**（K-3）、
- *   **风险不开着**（K-4）、**依据的决策还有效**（K-5）、**不是自己验自己**（K-6）。
+ *   **风险不开着**（K-4）、**依据的决策还有效**（K-5）、**不是自己验自己**（K-6）、
+ *   **每个 built task 都有直属有效验收**（K-7）。
  *   ⚠ 这正是 `CONSTITUTION` 第 8/9/10 条要的"机制"——R2 时那三条只核"在册"，现在有判据了。
  *
- * ══ 六条判据（K-1..K-6）════════════════════════════════════════════════════
+ * ══ 七条判据（K-1..K-7）════════════════════════════════════════════════════
  *   K-1 该 change 下所有 task 都到终态（`built`）
  *   K-2 每个 `built` 的 task 的 `verify_refs` 都指向真实 `evidence`
  *       ⚠ **与 I7 同源**：直接调 `checkI7`，⛔ 不另写一套口径（两套口径 = 两处真相）
@@ -17,6 +18,7 @@
  *   K-5 相关 `decision` 里没有"已被取代却没指向继任者"的
  *       ⚠ **与 I8 同源**：直接调 `checkI8`
  *   K-6 该 change 的 `built_by` 与它下所有 `acc.actor` **不同一个人**
+ *   K-7 每个 `built` task 都有本任务直属的有效验收
  *
  * ══ 输出（⛔ 不许只给布尔）═════════════════════════════════════════════════
  *   `converged` 或 `not-converged: N 阻断项` + **逐条列出**阻断项编号与原因。
@@ -81,6 +83,7 @@ export const k3 = convMod.k3
 export const k4 = convMod.k4
 export const k5 = convMod.k5
 export const k6 = convMod.k6
+export const k7 = convMod.k7
 export const renderVerdict = convMod.renderVerdict
 
 /**
@@ -824,6 +827,20 @@ try {
     const hit = res.blockers.find((b) => b.rule === 'K-6' && b.why.includes('缺失'))
     if (hit !== undefined) ok(`N-K6b ✓ 负向对拍（先自证：删掉 \`CHG-900.built_by\`）⇒ K-6 的"判不出 ⇒ 红"**必红**：${hit.why.slice(0, 60)}`)
     else bad('N-K6b · built_by 缺失却绿灯 ⇒ 判不出被当成通过了')
+  }
+
+  // ── N-K7：built task 缺直属验收 / 同任务旧退回+新通过 ──
+  {
+    const task = { id: 'TSK-950', kind: 'task', status: 'built', parent: 'CHG-950' }
+    const noAcc = k7([task], [])
+    const oldBack = { id: 'ACC-950', kind: 'acc', status: 'send-back', parent: 'TSK-950', verified_at: '2026-11-02T10:00:00+08:00' }
+    const newPass = { id: 'ACC-951', kind: 'acc', status: 'pass', parent: 'TSK-950', verified_at: '2026-11-03T10:00:00+08:00' }
+    const repaired = k7([task], [oldBack, newPass])
+    const backAgain = k7([task], [newPass, { ...oldBack, id: 'ACC-952', verified_at: '2026-11-04T10:00:00+08:00' }])
+    if (noAcc.length === 1 && noAcc[0].rule === 'K-7'
+      && repaired.length === 0 && backAgain.length === 1) {
+      ok('N-K7 ✓ 负向对拍：built task 无直属 ACC 必红 · 旧退回+新通过转绿 · 新退回重新变红')
+    } else bad(`N-K7 · noAcc=${JSON.stringify(noAcc)} repaired=${JSON.stringify(repaired)} back=${JSON.stringify(backAgain)}`)
   }
 
   // ── N-TREND：趋势三态 + "上一轮判不出"不许拿本轮充数（`TASK-R3b.md` §二 B-2）──

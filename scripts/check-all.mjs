@@ -699,7 +699,9 @@ export const ASSERTION_FLOORS = new Map([
   //   ⇒ K-ALL 多一条真实 change 读数（不靠改宽松度）。下界仍与实测零余量。
   // ⚠ 2026-11-02：RSK-001 `open → handling` 后 26 处；随后新增 W-K3
   //   （多 ACC 最新判决五组对拍）⇒ 实测 27 处（26 通过 + 1 有落点跳过）。
-  ['check:convergence', 27],
+  // ⚠ 2026-11-03：27 → **29**（零余量 = 实测）。
+  //   + 新 change 的 K-ALL 读数；+ N-K7（built task 无直属验收必红、复验 PASS 转绿、新退回再红）。
+  ['check:convergence', 29],
   // ⚠ 2026-11-03：补齐 goal / risk / decision / cap 后，
   //   账本资源图 11 条正向 + 2 条负向对拍 = 实测 13。
   //   覆盖 10 类稳定 ID、四类新增列表与按 ID 读取、需求关联图可继续解析、

@@ -18,8 +18,8 @@
 7. **判不出就写「判不出」**，⛔ 不许填 0、⛔ 不许拿推断当读数。
    `checked_by`: `check:readings`（读数可指认）
 8. **实现 ≠ 收敛。** 任务全实现了也可能没收口。
-   `checked_by`: `check:convergence` K-1..K-6（任务全 built · 证据齐 · 需求 acc=pass · 风险不开 · 决策有效 · 非自验）+ F11（本句在册）
+   `checked_by`: `check:convergence` K-1..K-7（task 全 built · 证据齐 · req status=pass · 风险不开 · 决策有效 · 非自验 · task 有有效直验）+ F11（本句在册）
 9. **测试通过 ≠ 产品验收。** 技术满足，用户接不接受行为与取舍仍另一件事。
-   `checked_by`: `check:convergence` K-3（`acc.outcome = pass` 才算证明）+ F11（本句在册）
+   `checked_by`: `check:convergence` K-3（`acc.status = pass` 才算证明）+ F11（本句在册）
 10. **没有读数不能陈述为事实。** 「完成 / 已验证 / 已修复」必须能指回读数。
     `checked_by`: `check:convergence` K-2（`verify_refs` 指真实证据）· `check:readings` · F11（本句在册）
