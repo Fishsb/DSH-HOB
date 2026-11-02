@@ -75,6 +75,16 @@ try {
   const verdictUrl = new URL('../src/shared/acceptance-verdict.ts', import.meta.url)
   effectiveAcceptanceOfShared = (await import(verdictUrl.href)).effectiveAcceptanceOf
 } catch { effectiveAcceptanceOfShared = undefined }
+/**
+ * Current 的需求级状态必须与注意力视图共用同一份九态派生逻辑。
+ * ⚠ 尤其同一 parent 下的旧 SEND-BACK + 新 PASS：Current ⛔ 不能自己再写一套
+ *   “逐 acc 独立判”的旧口径，否则页面与注意力会互相打脸。
+ */
+let workStateOfShared
+try {
+  const stateUrl = new URL('../src/shared/work-state.ts', import.meta.url)
+  workStateOfShared = (await import(stateUrl.href)).workStateOf
+} catch { workStateOfShared = undefined }
 export const INDEX_PATH = join(LEDGER_DIR, 'units', 'index.toml')
 export const GEN_DIR = join(LEDGER_DIR, 'gen')
 
@@ -978,14 +988,12 @@ export function renderCurrent(units, extra = {}) {
    *   不能只数“执行中的任务”。截图实测旧页显示“0 条等验收”，
    *   而注意力视图列出 15 条验收事项时，读者会误以为账本已收口。
    */
+  const acceptanceById = new Map(accs.map((a) => [String(a.id), a]))
   const reqAcceptanceGaps = reqs.filter((r) => {
-    const ids = arr(r.acceptance_ids)
-    if (ids.length === 0) return false
-    const linked = accs.filter((a) => ids.includes(String(a.id)))
-    if (linked.length === 0) return true
-    const verdicts = linked.map((acc) => verdictOf([acc]))
-    return verdicts.some((v) => v.verdict === 'undecidable')
-      || verdicts.some((v) => v.verdict !== 'accepted')
+    if (arr(r.acceptance_ids).length === 0) return false
+    if (typeof workStateOfShared !== 'function') return true
+    const state = workStateOfShared(r, [], { acceptanceById }).state
+    return state === 'awaiting-acceptance' || state === 'undecidable'
   })
   const taskVerdicts = activeTasks
     .filter((t) => String(t.status) === 'built')

@@ -132,10 +132,26 @@ export function workStateOf(
         why: `引用的 ${missing.join(' / ')} 不存在或不可读`,
       }
     }
-    const pending = accepted.filter((x) => ['', 'unverified'].includes(String(x.status ?? '')))
-    const decided = accepted.filter((x) => !['', 'unverified'].includes(String(x.status ?? '')))
-    const verdicts = decided.map((x) => effectiveAcceptanceOf([x]))
-    const verdict = pending.length > 0
+    /**
+     * ⚠ 需求上的多个 ACC 必须**按 parent 分组**：
+     *   · 同一 task / change 的旧退回 + 新通过 ⇒ 只看最新；
+     *   · 不同 task / change 各自有判决 ⇒ 每组都必须通过。
+     * ⛔ 不能把同组历史退回当成第二道独立验收，否则旧的 SEND-BACK 会永久压住复验 PASS。
+     */
+    const groups = new Map<string, AttentionUnitLike[]>()
+    for (const a of accepted) {
+      const parent = String(a.parent ?? '')
+      const key = parent === '' ? `self:${a.id}` : parent
+      const list = groups.get(key)
+      if (list === undefined) groups.set(key, [a])
+      else list.push(a)
+    }
+    const grouped = [...groups.values()]
+    const pending = grouped.some((g) => g.some((x) => ['', 'unverified'].includes(String(x.status ?? ''))))
+    const verdicts = grouped
+      .filter((g) => !g.some((x) => ['', 'unverified'].includes(String(x.status ?? ''))))
+      .map((g) => effectiveAcceptanceOf(g))
+    const verdict = pending
       ? { verdict: 'awaiting' as const }
       : verdicts.some((x) => x.verdict === 'undecidable')
         ? { verdict: 'undecidable' as const, reason: verdicts.find((x) => x.verdict === 'undecidable')?.reason }

@@ -293,6 +293,31 @@ if (eq(WORK_STATES, ['awaiting-user', 'awaiting-acceptance', 'delivery-failed', 
   } else bad(`W-19 · verdict=${JSON.stringify(r)} task=${JSON.stringify(task)}`)
 }
 
+// W-20 需求下同一 parent 的旧 SEND-BACK + 新 PASS ⇒ 只认最新，不得永久卡住
+{
+  const oldBack = { id: 'ACC-OLD', kind: 'acc', parent: 'TSK-1', status: 'send-back', verified_at: '2026-11-02T10:00:00+08:00' }
+  const newPass = { id: 'ACC-NEW', kind: 'acc', parent: 'TSK-1', status: 'pass', verified_at: '2026-11-03T10:00:00+08:00' }
+  const r = workStateOf(
+    { id: 'R-1', kind: 'req', status: 'agreed', acceptance_ids: ['ACC-OLD', 'ACC-NEW'] },
+    [oldBack, newPass],
+    { acceptanceById: new Map([['ACC-OLD', oldBack], ['ACC-NEW', newPass]]) },
+  )
+  if (r.state === 'ended') {
+    ok('W-20 ✓ 需求下同一 parent 的旧 SEND-BACK + 新 PASS ⇒ 按最新判决收口')
+  } else bad(`W-20 · ${JSON.stringify(r)}`)
+}
+
+// N-W5 负向对拍：把同 parent 的两条判决当成两道独立验收 ⇒ 新 PASS 被旧退回压住
+{
+  const oldBack = { id: 'ACC-OLD', kind: 'acc', parent: 'TSK-1', status: 'send-back', verified_at: '2026-11-02T10:00:00+08:00' }
+  const newPass = { id: 'ACC-NEW', kind: 'acc', parent: 'TSK-1', status: 'pass', verified_at: '2026-11-03T10:00:00+08:00' }
+  const broken = [oldBack, newPass].map((x) => effectiveAcceptanceOf([x]))
+  const brokenBlocked = broken.some((x) => x.verdict === 'send-back')
+  if (brokenBlocked) {
+    ok('N-W5 ✓ 负向对拍（同 parent 逐条独立判决）⇒ 旧 SEND-BACK 会压住新 PASS，证明 W-20 的分组不是摆设')
+  } else bad(`N-W5 · broken=${JSON.stringify(broken)}`)
+}
+
 console.log(`\nWork State：通过 ${pass} · 失败 ${fail}`)
 console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处`
   + (fail > 0 ? ` · 没过 ${fail} 处` : '')

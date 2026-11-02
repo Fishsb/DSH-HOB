@@ -128,50 +128,15 @@ export const STORED_VERIFY_NO_CITE = [
  *      · `req` 3 条（`R-002`/`R-003`/`R-004`）—— 其下有 task，task 下有 acc，
  *        parent 链走得通 ⇒ 补 `acceptance_ids`。⇒ 这三条也⛔ 无豁免。
  *
- *   ② **回溯不了的 5 条，进名单（附原因与清理计划）**：
- *      这 5 条需求在账本里**从来没有过 `acc` 单元** —— 它们的覆盖目前只由
- *      `check:stages-dom` / `check:presets` / `check:orch` 的判据**间接**支撑，
- *      而 `acc` 单元要求 `actor`（谁验的）+ `evidence`（读数）两项。
- *      读数我能指出来，**"谁验的"我编不出来**（⛔ 编一个 actor 就是把"我的推断"
- *      洗成"一次真验收"，那正是本仓最忌的形态）。
- *      ⇒ **不补假 acc，进名单并写明清理计划**。
+ *   ② **后续已回溯完成（2026-11-03）**：
+ *      R-001 / R-005 / R-006 / R-007 / R-008 现在都有真实 ACC 沿正式父链回到需求。
+ *      其中 R-005 / R-008 原先各挂了一条父链对不上的历史 ACC；修正方式是撤销错误挂接，
+ *      ⛔ 不删判决、⛔ 不改判决、⛔ 不新增虚假验收。⇒ 存量豁免 **5 → 0**。
  *
- * ⚠⚠ 名单里的每一条都是**承认这条覆盖是假的**（`TASK-R2.md` §五3 要求逐条打印原因）。
- *   本轮 5 条 = 棘轮起点；往后只许减。
- *   ⚠⚠ **2026-10-31 P41/R3 订正（`REVIEW-R2.md` §五2）**：原先 `plan` 写着「R3 补一条真 acc」，
- *     那是把"编"写成了计划。现改为「**等真人验过再补**」—— 没人真验过的需求，⛔ 不许为它编 acc。
- *     名单长度保持 **5**（⛔ 不许借这次改措辞顺手删条目）。
- *
- * ⚠⚠ **本数组只许变短，不许变长**（`I-E1` 逐轮核）。
- *   加一条进来 = 承认"这条覆盖是假的"，必须同时写清为什么、何时清。
+ * ⚠⚠ 本名单已清零：**只许保持为空，不许重新变长**（`I-E1` 逐轮核）。
+ *   再加一条进来 = 承认新的覆盖是假的，必须单开一轮说明原因与替代链。
  */
-export const STORED_NO_NEW_FIELD = [
-  {
-    id: 'R-001',
-    why: '需求「五步主线各步有状态且可展开」账本里从无 `acc` 单元：它的覆盖只由 `check:stages-route` / `check:stages-dom` 间接支撑，而 `acc` 要 `actor`（谁验的）+`evidence`——读数指得出，"谁验的"我不编。',
-    plan: '**等真人验过再补** —— 只有当真有人（非实施者）给出 `actor` 与读数之后才补 `acc`，那时删本行。⛔ 不许为它编一条 acc。',
-  },
-  {
-    id: 'R-005',
-    why: '需求「面板只读、零百分比/零进度条/零勾选」账本里从无 `acc`：其覆盖由 `check:stages-dom` 的 S-* 判据支撑，但那条需求定稿时并无人写过验收单元。',
-    plan: '**等真人验过再补** —— 真有人验过 `check:stages-dom` 的 S-* 读数并给出 `actor` 之后才补，那时删本行。',
-  },
-  {
-    id: 'R-006',
-    why: '需求「工具面默认可放开、靠禁止清单收窄」账本里从无 `acc`：覆盖由 `check:presets` 的 ⑤o-* 判据支撑，⛔ 无验收单元。',
-    plan: '**等真人验过再补** —— 真有人验过 `check:presets` ⑤o-1..⑤o-5 读数并给出 `actor` 之后才补，那时删本行。',
-  },
-  {
-    id: 'R-007',
-    why: '需求「档位只管可读范围，与能不能派活无关」账本里从无 `acc`：覆盖由 `check:presets` 的档位判据支撑，⛔ 无验收单元。',
-    plan: '**等真人验过再补** —— 真有人验过 `check:presets` 档位读数并给出 `actor` 之后才补，那时删本行。',
-  },
-  {
-    id: 'R-008',
-    why: '需求「被判出必须能在界面上看见，不能只落日志」账本里从无 `acc`：覆盖由 `check:orch` 的三条路径判据支撑，⛔ 无验收单元。',
-    plan: '**等真人验过再补** —— 真有人验过 `check:orch` 路径 A/B/C 读数并给出 `actor` 之后才补，那时删本行。',
-  },
-]
+export const STORED_NO_NEW_FIELD = []
 
 /**
  * **I-E1** · 存量豁免名单**只减不增**（`TASK-R2.md` §五3）。
@@ -184,13 +149,14 @@ export const STORED_NO_NEW_FIELD = [
  * @returns {string[]} 问题清单（空 = 绿）
  */
 /**
- * ⚠⚠ **棘轮起点 = 5**（2026-10-31 P40/R2 首次实测）。
- *   本轮**先回溯**：29 条 task 的 `verify` → 29 条 `EVD-`；3 条 req 补 `acceptance_ids`
- *   （⇒ `I7` 0 问题、`R-002/003/004` 归零）。
- *   剩下 5 条 req 回溯不了的，才进名单。
- * ⇒ 往后只许 **≤ 5**，且**每减一条都要同批改这个常量**（⛔ 不许只改名单不改常量 —— 那会让棘轮失效）。
+ * ⚠⚠ **棘轮终点 = 0**（2026-11-03 关系补齐）。
+ *   旧 5 条已全部撤销：R-001 / R-005 / R-006 / R-007 / R-008 现在都有可沿
+ *   `acc.parent` + `task.req_ids` / `change.addresses` 回溯的正式验收链。
+ *   其中 R-005 / R-008 原先各挂了一条父链对不上的历史 ACC；本轮只撤销错误挂接，
+ *   ⛔ 不删除、不改写历史判决，也不新增虚假验收。
+ * ⇒ 往后只许保持 **0**；再加豁免 = 承认新的覆盖是假的，必须单开一轮并写明原因。
  */
-export const STORED_NO_NEW_FIELD_MAX = 5
+export const STORED_NO_NEW_FIELD_MAX = 0
 export function checkIE1(list) {
   const problems = []
   const arr = Array.isArray(list) ? list : []
@@ -2429,55 +2395,20 @@ export function checkF5(units) {
  */
 
 /**
- * ⭐ **P-1 的存量豁免名单**（⚠ 本轮实测 **5** 条 > 3 ⇒ 按 §2.3 决策规则**不强制**，故为空）。
+ * ⭐ **P-1 的存量豁免名单**（2026-11-03 已清零）。
  *
- * ── 本轮实测（作业书 §2.3 要求把实测数写进回传）───────────────────────
- *   孤儿 **5** 条：`R-002` · `R-003` · `R-004` · `R-005` · `R-008`（全部 `status = agreed`）。
- *   · `R-002` / `R-003` / `R-004`：各挂 2 条 acc，但 **pass 条数 0**（`ACC-001..003` 都是 `unverified`）；
- *   · `R-005` / `R-008`：**一条 acc 都没有**，也没有 change 承接。
- *   ⇒ 缺 **5** > 3 ⇒ 走 §2.3 第三档：**⛔ 不许强制**，退成「覆盖率 `note` + 生成物里照实列出」。
- *     ⚠ 因此本名单**保持为空**（登记豁免的前提是"≤3 条"那一档；5 条连豁免都不登记，
- *       豁免上限的意义就是"超过就别硬来"）。
- *
- * ── ⚠ 为什么这一条留到下一轮（作业书要求写进代码注释）─────────────────
- *   这 5 条**不是记账缺陷，是真实欠账**：`R-002`/`R-003`/`R-004` 的 acc 是 `unverified`
- *   （没人真验过），`R-005`/`R-008` 连 acc 都没有。要让它们不再是孤儿，只有两条路：
- *     ① 真派 change 去做（那是**派活**，是人的决定）；
- *     ② 补一条 `pass` 的 acc（那是**造假读数** —— `check-convergence.mjs:135` 已把
- *        「⛔ 不许为它们编 acc」写进代码）。
- *   ⇒ 现在强制，唯一"修法"就是造假或给 5 条永久豁免。⛔ 两条都不做。
- *   ⚠ 下一轮的正确做法：**派 change 承接它们**（`R-002`/`R-003`/`R-004` 是 R2 时补过
- *     `acceptance_ids` 的那三条，本就该有 change），而不是放宽判据。
- *
- * ⚠⚠ **只许变短**（`checkOrphanE1` 逐轮核）。
+ * 历史欠账已通过正式关系闭合：R-002/003/004 有 change 与 pass acc；
+ * R-005/R-008 也有正式 change/task/acceptance 链。⇒ 当前不再需要任何豁免。
+ * ⚠ 本名单只许保持为空；新增条目必须单开一轮并写明不可回溯的原因与替代计划。
  */
-export const STORED_ORPHAN_REQ = [
-  {
-    id: 'R-005',
-    why: '这条需求约束的是**面板形态**（零百分比 / 零进度条 / 零勾选 / 只读），'
-      + '已由 `check:stages-dom` 的 S-1..S-4 逐条咬住 —— 它的**验收落点是 DOM 断言**，'
-      + '⛔ 不是某一条 change 的交付物。⇒ 要求它为满足一条 UI 形态约束去开一条 change，等于造流程。',
-    plan: '**不派 change**：等 `check:stages-dom` 的 S-1..S-4 有一次真实的全绿读数（`last_reading` 落进 `CAP-` 或 `EVD-`）后，'
-      + '把那条读数作为它的 `acceptance_ids` 指向的 acc，`status` 置 `pass` ⇒ 它自然脱离孤儿（无需豁免）。',
-  },
-  {
-    id: 'R-008',
-    why: '⚠ 实测更正：R6 与 `REVIEW-R6.md` 都以为它底下有 `TSK-048`，**那是错的** —— '
-      + '`TSK-048` 的 `parent` 是 `CHG-2026-10-31-tool-policy`，`after = ["R-008"]` 是**前置引用**、不是承接关系。'
-      + '⇒ 按 `parent` 口径它确实没有任何 task 承接；而 `TSK-048` 正是它的**实现件**（「unseen 工具的可读出口」'
-      + '= R-008「被判出必须能在界面上看见」）。⇒ 它是**被 `after` 挂着、等 TSK-048 开工**，⛔ 不是没人管。',
-    plan: '**等 `TSK-048` 落地**：`TSK-048` 一旦 `built` 并产出 acc，R-008 就有承接方；'
-      + '⛔ 在此之前不派新 change（那会与 `TSK-048` 撞同一批文件）。⚠ 若最终裁定「`after` 也算承接」，'
-      + '那要改的是孤儿口径（`tasks` 那一项要把 `after` 引用算进来），不是这条豁免。',
-  },
-]
+export const STORED_ORPHAN_REQ = []
 
 /**
  * **P-1-E1** · 孤儿豁免名单**只减不增** + 每条必须有原因与清理计划（形态照 `checkReadyE1`）。
- * ⚠ 2026-11-01 P40/R7 重测：孤儿 **2** 条（`R-005` · `R-008`）⇒ 2 ≤ 3 ⇒ 走 §四 第二档
- *   **强制 + 登记豁免**，`_MAX` = 实测数 **2**。⛔ 只许变短（下轮清掉一条就必须降到 1）。
+ * ⚠ 2026-11-03：R-005 / R-008 已通过正式 change / task / acceptance 链闭合，孤儿 = 0
+ *   ⇒ 名单清零，`_MAX = 0`。往后新增豁免必须单开一轮说明原因，⛔ 不许静默加回。
  */
-export const STORED_ORPHAN_REQ_MAX = 2
+export const STORED_ORPHAN_REQ_MAX = 0
 export function checkOrphanE1(list) {
   const problems = []
   const arr = Array.isArray(list) ? list : []
@@ -2521,6 +2452,37 @@ export function checkP1(units, portfolioOfFn = portfolioOfShared, exempt = STORE
     problems.push(`${rid}：\`agreed\` 却没有任何 change 承接、没有 task 在管、也没有 acc ⇒ 已定的需求没人做`)
   }
   return { problems, portfolio: p }
+}
+
+/**
+ * **I13 · 需求链完整性**：每条活跃需求必须同时有方案、任务、验收三层正式关系。
+ *
+ * ⚠ 与 P-1 分开：P-1 只抓“四层全空”的完全孤儿；I13 抓任何一层缺失。
+ *   ⇒ 一条需求有方案但没任务、或有任务但没验收，P-1 都可能沉默，但“从需求出发”
+ *      的链路已经断了。⚠ 只读 `portfolioOf` 的唯一实现，⛔ 不另写一套反查。
+ *
+ * @param {Array<Record<string, any>>} units - 索引单元
+ * @param {(units:any)=>any} [portfolioOfFn] - 组合层实现（便于负向对拍注入）
+ * @returns {string[]} 问题清单（空 = 每条活跃需求四层关系齐全）
+ */
+export function checkI13(units, portfolioOfFn = portfolioOfShared) {
+  if (typeof portfolioOfFn !== 'function') {
+    return ['I13 **判不出**：`src/shared/portfolio.ts` 载入失败 ⇒ 无法核对需求链（⛔ 不按通过处理）']
+  }
+  const p = portfolioOfFn(units)
+  const problems = []
+  for (const r of p?.reqs ?? []) {
+    if (String(r.status) !== 'agreed') continue
+    const missing = []
+    if ((r.changes ?? []).length === 0) missing.push('方案')
+    if ((r.tasks ?? 0) === 0) missing.push('任务')
+    if ((r.accs ?? 0) === 0) missing.push('验收')
+    if (missing.length > 0) {
+      problems.push(`${r.id}：活跃需求链缺 **${missing.join(' / ')}**`
+        + ' ⇒ 需求不能继续显示为完整链路（⛔ 不从 `after` 或其它需求的验收推断）')
+    }
+  }
+  return problems
 }
 
 export function checkI4(units, render) {
@@ -3023,6 +2985,10 @@ if (IS_MAIN) try {
     const i12 = gate('I12', (xs) => checkI12(xs, (rel) => existsSync(join(dirname(LEDGER), rel))))
     if (i12.ok) ok(`I12 ✓ **退役可追踪且不可复活**：本索引 ${units.filter((u) => u.kind === 'req' && String(u.status) === 'retired').length} 条退役需求均保留标题 / 正文 / 原因 / 时间 / 承载体，且不被活跃方案 / 任务 / 目标引用（${i12.msg}）`)
     else for (const p of i12.probs) bad(`I12 · ${p}`)
+
+    const i13 = gate('I13', checkI13)
+    if (i13.ok) ok(`I13 ✓ **需求链完整**：本索引 ${units.filter((u) => u.kind === 'req' && String(u.status) === 'agreed').length} 条活跃需求均有方案 / 任务 / 验收三层正式关系（${i13.msg}）`)
+    else for (const p of i13.probs) bad(`I13 · ${p}`)
 
     {
       let current = ''
@@ -3598,6 +3564,34 @@ if (IS_MAIN) try {
     } else {
       ok('N-I12b ✓ 负向对拍（同一夹具同时放 agreed / retired / dropped）：需求轴与 REQUIREMENTS.md 只保留 agreed，退役/丢弃既不进活跃表也不进缺口；反面：活跃需求仍出现')
     }
+  }
+
+  // ── N-I13：活跃需求缺任一层正式关系 ⇒ I13 必须点名那一层 ──
+  {
+    const broken = [
+      { id: 'R-NO-CHG', kind: 'req', status: 'agreed', acceptance_ids: [] },
+      { id: 'R-NO-TASK', kind: 'req', status: 'agreed', acceptance_ids: [] },
+      { id: 'CHG-TASK-ONLY', kind: 'change', status: 'settled', addresses: ['R-NO-TASK'] },
+      { id: 'R-NO-ACC', kind: 'req', status: 'agreed', acceptance_ids: [] },
+      { id: 'CHG-ACC-MISS', kind: 'change', status: 'settled', addresses: ['R-NO-ACC'] },
+      { id: 'TSK-ACC-MISS', kind: 'task', status: 'built', parent: 'CHG-ACC-MISS', req_ids: ['R-NO-ACC'] },
+    ]
+    const good = [
+      { id: 'R-OK', kind: 'req', status: 'agreed', acceptance_ids: ['ACC-OK'] },
+      { id: 'CHG-OK', kind: 'change', status: 'settled', addresses: ['R-OK'] },
+      { id: 'TSK-OK', kind: 'task', status: 'built', parent: 'CHG-OK', req_ids: ['R-OK'] },
+      { id: 'ACC-OK', kind: 'acc', status: 'pass', parent: 'TSK-OK' },
+    ]
+    const probs = checkI13(broken)
+    const noChange = probs.find((x) => x.startsWith('R-NO-CHG') && x.includes('方案'))
+    const noTask = probs.find((x) => x.startsWith('R-NO-TASK') && x.includes('任务'))
+    const noAcc = probs.find((x) => x.startsWith('R-NO-ACC') && x.includes('验收'))
+    const goodProbs = checkI13(good)
+    if (noChange === undefined) bad('N-I13 · 需求无方案但 I13 没报 ⇒ 方案层缺失可静默通过')
+    else if (noTask === undefined) bad('N-I13 · 需求有方案但无任务，I13 没报 ⇒ 任务层缺失可静默通过')
+    else if (noAcc === undefined) bad('N-I13 · 需求有任务但无验收，I13 没报 ⇒ 验收层缺失可静默通过')
+    else if (goodProbs.length !== 0) bad(`N-I13 · 反向对照失败，完整夹具仍红：${JSON.stringify(goodProbs)}`)
+    else ok('N-I13 ✓ 负向对拍（三条独立夹具缺少方案 / 任务 / 验收）⇒ I13 逐层点名；反面：四层齐全 ⇒ 绿')
   }
 
   // ── F-9：新 run 必须记录实际使用的模型面版本与哈希 ──

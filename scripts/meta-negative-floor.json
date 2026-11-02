@@ -13,7 +13,7 @@
     "check:hob-create-dom": 1,
     "check:hob-gate": 6,
     "check:host": 0,
-    "check:ledger": 77,
+    "check:ledger": 78,
     "check:meta-negctl": 4,
     "check:modules": 2,
     "check:orch": 165,
@@ -34,6 +34,6 @@
     "check:ledger-resources": 3,
     "check:effects": 4,
     "check:handoff-effects": 1,
-    "check:work-state": 4
+    "check:work-state": 5
   }
 }
