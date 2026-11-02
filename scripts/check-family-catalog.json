@@ -36,7 +36,7 @@
     },
     {
       "cmd": "check:gitignore",
-      "what": "**薄调度入口** —— 仓库规则 + **正本形态多组**（含 **`N` 正本→模板**；⚠ 旧 `V` / `V2` **已删**，族清单改由 §4.1 生成块承载、两处块一致由 `check:ledger-next` 的 `I5b` 逐字节核对）+ 双向自检 + **脚本须进 `mustTrack`** + **骨架活规矩层引用闭合** + **可分发层「开箱即错」族** + **Q 组** + **R 组**"
+      "what": "**薄调度入口** —— 仓库规则 + **正本形态多组**（含 **`N` 正本→模板**；⚠ 旧 `V` / `V2` **已删**，族清单改由 §4.1 生成块承载、两处块一致由 `check:ledger` 的 `I5b` 逐字节核对）+ 双向自检 + **脚本须进 `mustTrack`** + **骨架活规矩层引用闭合** + **可分发层「开箱即错」族** + **Q 组** + **R 组**"
     },
     {
       "cmd": "check:archive",
@@ -112,11 +112,11 @@
     },
     {
       "cmd": "check:stages-route",
-      "what": "**五步汇总路由**（新数据源 = `ledger-next/units/index.toml`）**服务端行为**判据（真处理体 + 真夹具）：三类 reason **互不相同**（`index-unreadable` / `index-malformed` / `row-shape-unknown`）· 五步顺序与名字逐字 · **`cap` 不进分母** · 空步给 `todo`（≠ 判不出）· 三态算对 · items 顺序原样不去重 · `lastReading` 缺 ⇒ 「判不出」· 负向对拍（cap 混进分母必红）· **与 `gen/stages.md` 交叉验证**（两套独立解析器）"
+      "what": "**五步汇总路由**（新数据源 = `ledger/units/index.toml`）**服务端行为**判据（真处理体 + 真夹具）：三类 reason **互不相同**（`index-unreadable` / `index-malformed` / `row-shape-unknown`）· 五步顺序与名字逐字 · **`cap` 不进分母** · 空步给 `todo`（≠ 判不出）· 三态算对 · items 顺序原样不去重 · `lastReading` 缺 ⇒ 「判不出」· 负向对拍（cap 混进分母必红）· **与 `gen/stages.md` 交叉验证**（两套独立解析器）"
     },
     {
-      "cmd": "check:ledger-next",
-      "what": "**`ledger-next/` 的三条不变式**：I1 索引合法（id 唯一 · 前缀配 kind · 封闭状态集 · parent 与 after 存在 · **无环** · 状态只在一处 · **按 kind 必填**）· I2 **阶段是算出来的**（改 status ⇒ 只有对应那步变）· I5 **`gen/` 与生成器逐字节一致**（手改即红）· I4 顺带（`cap` 无终态、无百分比、不进分母）。⚠ 三条各带一条**实测跑红**的负向对拍。"
+      "cmd": "check:ledger",
+      "what": "**`ledger/` 的三条不变式**：I1 索引合法（id 唯一 · 前缀配 kind · 封闭状态集 · parent 与 after 存在 · **无环** · 状态只在一处 · **按 kind 必填**）· I2 **阶段是算出来的**（改 status ⇒ 只有对应那步变）· I5 **`gen/` 与生成器逐字节一致**（手改即红）· I4 顺带（`cap` 无终态、无百分比、不进分母）。⚠ 三条各带一条**实测跑红**的负向对拍。"
     },
     {
       "cmd": "check:convergence",
@@ -125,6 +125,22 @@
     {
       "cmd": "check:workflow",
       "what": "**Hob 自己的工作流**（`preset/dsh-hob/workflow.toml` + `spec/` + `gen/`）：F1 机读源合法且 **每条 `source` 在提示词正文里真实存在**（子串核对）· F2 **生成物与源逐字节一致**（手改即红）· F3 `CONSTITUTION.md` ≤ 2 KB 且 **逐条带 `checked_by`** · F4 ⭐ **覆盖度**：intake 数 = 正文 `###` 输入判定节数（⚠ 这是「没丢东西」唯一的机检）"
+    },
+    {
+      "cmd": "check:ledger-resources",
+      "what": "**账本按 ID 资源面**：覆盖 10 类单元（goal / req / change / task / run / acc / evidence / risk / decision / cap）；目标、需求、方案、任务、运行、验收、证据、风险、决策、能力均可列表与按稳定 ID 读取，需求关联图的每个读取指针须可继续解析；坏 kind / 不存在 / 未知资源必须拒绝，含正反向与形状对拍"
+    },
+    {
+      "cmd": "check:effects",
+      "what": "**持久 Effects/Outbox**：成功即删、失败退避不丢、重启恢复、同键合并与代际保护、严格顺序、并发上限、坏文件恢复，含负向对拍"
+    },
+    {
+      "cmd": "check:handoff-effects",
+      "what": "**handoff → Effects 桥**：投递成功精确清账、失败时 handoff 与 effect 双保留、重启恢复、不同 ref 不互相清除，且真实 `write_hob(dispatchTo)` 已接线"
+    },
+    {
+      "cmd": "check:work-state",
+      "what": "**派生工作状态九态**：等你决定 / 等验收 / 投递失败 / 阻塞 / 排队 / 执行中 / 空闲 / 已结束 / 判不出；含 `event_id` 去重、`thread_id` 同态合并、不同线程不误合并与负向对拍"
     }
   ]
 }

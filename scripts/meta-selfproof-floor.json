@@ -9,7 +9,7 @@
     "check:hob-create": 0,
     "check:hob-create-dom": 0,
     "check:hob-gate": 0,
-    "check:ledger-next": 60,
+    "check:ledger": 60,
     "check:meta-negctl": 11,
     "check:modules": 1,
     "check:orch": 0,

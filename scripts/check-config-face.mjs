@@ -1478,7 +1478,7 @@ console.log(JSON.stringify({ evaluated, threw, degraded, warns }))
         const { SystemPrompt, renderPrompt, renderContextSections, joinContextSections } = spMod
         const { createScope, scopeOf } = scopeMod
         const { Context } = cordisMod
-        const PERSONA_TEXT = 'You are the translation layer between the user and the developer session.\n'
+        const PERSONA_TEXT = 'You are Hob, the project owner between the user and the developer session.\n'
         const WANT = {
           mark: 'How work is split',
           red: 'never means more power',

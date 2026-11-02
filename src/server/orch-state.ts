@@ -61,8 +61,9 @@
  * ⚠ 本模块**不 import `config.ts`**（同 `hob-write.ts` 的纪律）：
  *   配置由调用方以参数传入，便于独立测试、也避免模块间反向依赖。
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { procProcessAlive } from './effects-queue.ts'
 
 /** 运行态子目录名（账本目录**之内**、非账本）。 */
 export const ORCH_STATE_SUBDIR = 'runtime'
@@ -1550,32 +1551,185 @@ export interface OrchWriteQueueStats {
   total: number
   /** 是否**曾经发生过重入**（= 有写事务在自己的读改写中间又调了写函数）。 */
   waited: boolean
+  /** 跨进程锁失败次数（0 = 从未撞锁；供读数面区分"写失败"与"拒绝争抢"）。 */
+  lockRejected: number
 }
 
-const queueStats: OrchWriteQueueStats = { depth: 0, total: 0, waited: false }
+const queueStats: OrchWriteQueueStats = { depth: 0, total: 0, waited: false, lockRejected: 0 }
 let inWrite = false
+
+/**
+ * ⚠ `runSerialized` 只防**同一进程里的重入**。本插件的账本文件会被多个 DSH
+ *   Web 进程同时写（本机曾同时跑 web / superagent），所以写事务的**最外层**
+ *   还需要跨进程锁；内层嵌套不再重复拿锁。
+ */
+let crossProcessDepth = 0
+/**
+ * 同进程内所有模块实例共享的**活锁表**（跨 `apply` / fiber reload）。
+ * ⚠ 这不能放在可被重载的模块作用域里：旧 fiber 的 `drain` 仍持旧模块实例，
+ *   若它只认自己的表，就会放掉新 fiber 的锁，留下“锁已丢但 writer 还在”的窗口。
+ */
+const LIVE_ORCH_LOCKS: Map<string, string> = ((globalThis as any).__dshHobOrchLocks ??=
+  new Map<string, string>())
+/**
+ * 当前**最外层事务拿锁失败**的文件。
+ *
+ * ⚠ 拿不到锁时不能抛给调用方：这些写函数的既有契约是 `wrote:false` 之类，
+ *   抛异常会把“拒绝争抢”变成主流程崩溃。做法是：跳过真正的读改写，让
+ *   {@link readOrchStateForWrite} 按既有「拒写」形状返回，原函数照常回失败。
+ */
+let crossProcessDeniedFile: string | undefined
+
+interface OrchLockRecord {
+  pid?: unknown
+  identity?: unknown
+  at?: unknown
+}
+
+function recoverAbandonedOrchLock(lockPath: string): boolean {
+  let rec: OrchLockRecord
+  try {
+    rec = JSON.parse(readFileSync(lockPath, 'utf8')) as OrchLockRecord
+  } catch {
+    return false
+  }
+  const pid = typeof rec.pid === 'number' && Number.isSafeInteger(rec.pid) && rec.pid > 0 ? rec.pid : undefined
+  if (pid === undefined || pid === process.pid) return false
+  let alive: boolean | undefined
+  try { alive = procProcessAlive(pid) } catch { alive = undefined }
+  if (alive !== false) return false
+  const quarantine = `${lockPath}.stale-${pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  try {
+    renameSync(lockPath, quarantine)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function noteLockRejected(file: string, error: unknown): void {
+  try {
+    writeRefusals.set(file, {
+      reason: 'store-unreadable',
+      message: `拒绝写入：运行态文件 \`${file}\` 的跨进程 writer 锁未取得 —— `
+        + `${String((error as Error)?.message ?? error)}。`
+        + '\n      ⇒ 这是「另一个 live 进程正在写」或「锁主判不出」，不是空账本；'
+        + '本进程未做任何 read-modify-write。',
+      at: Date.now(),
+    })
+  } catch { /* 登记失败不掩盖主错误 */ }
+}
+
+function acquireOrchLock(file: string): () => void {
+  const lockPath = `${file}.lock`
+  const identity = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+  mkdirSync(dirname(lockPath), { recursive: true })
+  let fd: number
+  try {
+    fd = openSync(lockPath, 'wx')
+  } catch (e: any) {
+    /**
+     * ⚠ 目录本身不可写时，**任何** writer（包括本进程）都不能落盘。
+     *   ⇒ 放行读改写走到既有的 `writeOrchState` 失败路径，保留“清账失败”
+     *     等既有可观测行为；⛔ 不把“目录只读”误报成“另一个 writer 活着”。
+     *   ⚠ 这不会打开双写窗口：连锁文件都创建不了的目录，也不可能产生并发写。
+     */
+    if (e?.code === 'EACCES' || e?.code === 'EROFS' || e?.code === 'ENOTDIR') {
+      if (typeof process.getuid === 'function' && process.getuid() === 0
+        && existsSync(dirname(lockPath))) {
+        /**
+         * ⚠ root 会绕过 `chmod 0555`，因此权限位无法模拟“清账失败”。
+         *   只有显式测试模式才走故障注入；生产（无该环境变量）仍 fail-closed。
+         */
+        const fail = process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE === '1'
+        return () => { if (fail) throw new Error('orch-state-test-write-failed') }
+      }
+      return () => {}
+    }
+    if (e?.code !== 'EEXIST' || !recoverAbandonedOrchLock(lockPath)) {
+      throw new Error(`orch-state-locked: ${file} 已有跨进程 writer（锁：${lockPath}）`)
+    }
+    try {
+      fd = openSync(lockPath, 'wx')
+    } catch (retry: any) {
+      if (retry?.code === 'EEXIST') {
+        throw new Error(`orch-state-locked: ${file} 锁接管竞争失败（锁：${lockPath}）`)
+      }
+      throw retry
+    }
+  }
+  try {
+    writeFileSync(fd, JSON.stringify({ pid: process.pid, identity, at: Date.now() }))
+  } finally {
+    closeSync(fd)
+  }
+  LIVE_ORCH_LOCKS.set(file, identity)
+  /**
+   * ⚠ 必须显式把 lockPath 绑进释放闭包：`file` 参数在图里是 `string`，
+   *   而 `readdirSync` 等路径也共用 `file` 名字；闭包里再拼会引入歧义。
+   */
+  return function releaseOrchLock(): void {
+    try {
+      const raw = JSON.parse(readFileSync(lockPath, 'utf8')) as { identity?: unknown }
+      if (raw.identity === identity || LIVE_ORCH_LOCKS.get(file) === identity) rmSync(lockPath, { force: true })
+    } catch { /* 不冒删别人的锁的风险 */ }
+    LIVE_ORCH_LOCKS.delete(file)
+  }
+}
 
 /** 读队列读数（**只读快照**）。⚠ 正常档（`waited === false`）调用方**不许印任何行**。 */
 export function orchWriteQueueStats(): OrchWriteQueueStats {
-  return { depth: queueStats.depth, total: queueStats.total, waited: queueStats.waited }
+  return {
+    depth: queueStats.depth,
+    total: queueStats.total,
+    waited: queueStats.waited,
+    lockRejected: queueStats.lockRejected,
+  }
 }
 
 /**
  * 在**单写者**保护下跑一段写事务（同步）。
  *
  * ⚠ **同步执行**：回调在当前调用栈内跑完，返回值原样返回（⛔ 不排队、不延后）。
+ * ⚠ **最外层拿跨进程锁**：`open(...,'wx')` → 事务 → 身份核对后删除；
+ *   内层 `runSerialized` 复用同一把锁（`crossProcessDepth > 0`）。
+ *   ⚠ 锁主确认已死时原子隔离陈旧锁；仍存活 / 判不出 / 锁坏 ⇒ fail-closed
+ *   并登记拒写原因。⛔ 不按锁年龄猜，也⛔ 不在没拿到锁时继续改盘。
  * ⚠ **重入如实记账**：进入时若已在写 ⇒ `waited = true`（这说明调用链里有写事务嵌套，
  *   也就是丢更新的形成机制）。⛔ 不在这里抛 —— 那会把记账缺陷变成主流程崩溃。
  */
-export function runSerialized<T>(fn: () => T): T {
+export function runSerialized<T>(file: string, fn: () => T): T {
   queueStats.total++
   if (inWrite) queueStats.waited = true
   queueStats.depth++
   const prev = inWrite
   inWrite = true
+  const needCrossLock = crossProcessDepth === 0 && crossProcessDeniedFile === undefined
+  let releaseCross: (() => void) | undefined
+  let deniedHere = false
   try {
+    if (needCrossLock) {
+      try {
+        releaseCross = acquireOrchLock(file)
+      } catch (e) {
+        queueStats.lockRejected++
+        noteLockRejected(file, e)
+        /**
+         * ⚠ 延续既有失败返回，不抛异常；本次事务随后由
+         *   {@link readOrchStateForWrite} 统一拒绝并留下可读原因。
+         */
+        crossProcessDeniedFile = file
+        deniedHere = true
+      }
+      if (!deniedHere) crossProcessDepth++
+    }
     return fn()
   } finally {
+    if (needCrossLock && !deniedHere) {
+      crossProcessDepth--
+      releaseCross?.()
+    }
+    if (deniedHere) crossProcessDeniedFile = undefined
     queueStats.depth--
     inWrite = prev
   }
@@ -1604,6 +1758,9 @@ export function writeOrchState(file: string, state: OrchStateFile): boolean {
    */
   const expect = JSON.stringify(state, null, 2)
   try {
+    if (process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE === '1') {
+      throw new Error('orch-state-test-write-failed')
+    }
     mkdirSync(dirname(file), { recursive: true })
     writeFileSync(tmp, expect, 'utf8')
     renameSync(tmp, file)
@@ -1665,6 +1822,14 @@ export type OrchWriteGuard =
 
 /** 一次写入前守卫的**判据**（见 {@link readOrchStateForWrite} 的注释）。 */
 export function readOrchStateForWrite(file: string): OrchWriteGuard {
+  if (crossProcessDeniedFile === file) {
+    return {
+      ok: false,
+      reason: 'store-unreadable',
+      message: `拒绝写入：运行态文件 \`${file}\` 的跨进程 writer 锁未取得。`
+        + '\n      ⇒ 另一个 live 进程可能正在写，或锁主判不出；本进程没有执行 read-modify-write。',
+    }
+  }
   const reading = readOrchStateDetailed(file)
   if (reading.reachability === 'unreadable') {
     const evidence = preserveCorruptCopy(file)
@@ -1887,7 +2052,7 @@ export const MAX_CLOSED = 50
  *   已经发生的事说成没发生（那是另一条假话）。
  */
 export function recordClosed(file: string, w: PersistedWatch): boolean {
-  return runSerialized(() => {
+  return runSerialized(file, () => {
     const guard = readOrchStateForWrite(file)
     if (!guard.ok) {
       noteWriteOutcome(file, guard)
@@ -2099,7 +2264,7 @@ export function markLost(
   known: (w: PersistedWatch) => boolean,
   statusOf?: TargetStatusOf,
 ): MarkLostResult {
-  return runSerialized(() => markLostInner(file, known, statusOf))
+  return runSerialized(file, () => markLostInner(file, known, statusOf))
 }
 
 function markLostInner(
@@ -2365,7 +2530,7 @@ export function registerWatchEntry(
 ): WatchEntryWriteResult {
   if (owner === '') return { wrote: false, state: emptyOrchState() }
   if (target === '') return { wrote: false, state: emptyOrchState() }
-  return runSerialized(() => {
+  return runSerialized(file, () => {
     const guard = readOrchStateForWrite(file)
     if (!guard.ok) {
       noteWriteOutcome(file, guard)
@@ -2436,7 +2601,7 @@ export function setWatchState(
   },
 ): WatchEntryWriteResult {
   if (owner === '') return { wrote: false, state: emptyOrchState() }
-  return runSerialized(() => {
+  return runSerialized(file, () => {
     const guard = readOrchStateForWrite(file)
     if (!guard.ok) {
       noteWriteOutcome(file, guard)
@@ -2568,7 +2733,7 @@ export function rearmWakeFallback(file: string, owner: string): {
   reason?: string
 } {
   if (owner === '') return { wrote: false, reason: 'owner 为空 ⇒ 判不出该记谁的账（⛔ 不许猜）' }
-  return runSerialized(() => {
+  return runSerialized(file, () => {
     const guard = readOrchStateForWrite(file)
     if (!guard.ok) {
       noteWriteOutcome(file, guard)
@@ -2715,7 +2880,7 @@ export function markWakeLogged(file: string, owner: string): {
   reason?: string
 } {
   if (owner === '') return { wrote: false, reason: 'owner 为空 ⇒ 判不出该落谁的账（⛔ 不许猜）' }
-  return runSerialized(() => {
+  return runSerialized(file, () => {
     const guard = readOrchStateForWrite(file)
     if (!guard.ok) {
       noteWriteOutcome(file, guard)
@@ -2764,7 +2929,7 @@ export function markWakeDelivered(file: string, owner: string): {
   reason?: string
 } {
   if (owner === '') return { wrote: false, reason: 'owner 为空 ⇒ 判不出该记谁的账' }
-  return runSerialized(() => {
+  return runSerialized(file, () => {
     const guard = readOrchStateForWrite(file)
     if (!guard.ok) {
       noteWriteOutcome(file, guard)
@@ -2830,7 +2995,7 @@ export function markWakeDelivered(file: string, owner: string): {
  * @returns `wrote` —— 写盘成没成（⚠ 调用方⛔ 不许把它当"武装成功"，那是两件事）
  */
 export function recordWatchTimerArmed(file: string, at: number = Date.now()): { wrote: boolean } {
-  return runSerialized(() => {
+  return runSerialized(file, () => {
     const guard = readOrchStateForWrite(file)
     if (!guard.ok) {
       noteWriteOutcome(file, guard)
@@ -2878,7 +3043,7 @@ export function writePending(
   lost: PersistedWatch[],
 ): boolean {
   /** ⚠ **丙-5**：整段「读回既有 → 组装 → 写」进单写者队列。 */
-  return runSerialized(() => {
+  return runSerialized(file, () => {
   /**
    * ⚠⚠ **读盘守卫（本单必修 7）**：坏 JSON / 版本不认识 ⇒ **拒写**，⛔ 不按空态重写。
    *
@@ -2971,7 +3136,7 @@ export interface HandoffWriteResult {
  */
 export function recordHandoff(file: string, h: PersistedHandoff): HandoffWriteResult {
   /** ⚠ **丙-5**：整段「读 → 改 → 写」进单写者队列（队列内**重新读盘** ⇒ 不用过期快照写）。 */
-  return runSerialized(() => {
+  return runSerialized(file, () => {
     /**
      * ⚠⚠ **读盘守卫（本单必修 7）**：坏 JSON / 版本不认识 ⇒ 拒写 + 留证。
      *   改前坏文件被读成空态 ⇒ `rest` 为空 ⇒ 本次落盘把**盘上那 50 条待投递清成这 1 条**。
@@ -3016,7 +3181,7 @@ export function clearHandoffs(
   refusal?: OrchWriteRefusal
 } {
   /** ⚠ **丙-5**：整段「读 → 改 → 写」进单写者队列（同 `recordHandoff` 的理由）。 */
-  return runSerialized(() => {
+  return runSerialized(file, () => {
     /**
      * ⚠⚠ **读盘守卫（本单必修 7）**：坏 JSON / 版本不认识 ⇒ 拒写 + 留证。
      *   改前坏文件读成空态 ⇒ `cleared` 为空 ⇒ 回 `{ cleared: [], wrote: false }`，
@@ -3082,7 +3247,7 @@ export function bindSession(
   if (typeof b.sessionId !== 'string' || b.sessionId === '') return { wrote: false }
   if (typeof b.owner !== 'string' || b.owner === '') return { wrote: false }
   /** ⚠ **丙-5**：入参校验在队列之外（不碰盘），「读 → 改 → 写」在队列之内。 */
-  return runSerialized(() => {
+  return runSerialized(file, () => {
     /**
      * ⚠⚠ **读盘守卫（本单必修 7）**：坏 JSON / 版本不认识 ⇒ 拒写 + 留证。
      *   改前坏文件读成空态 ⇒ "这个会话还没有归属"⇒ **重新绑一次**（而盘上可能早就绑给

@@ -3,23 +3,21 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "dsh-hob 的两个 Agent 预设声明（规划方 dsh-hob / 干活方 dsh-hob-work）",
+  "description": "dsh-hob 的项目总负责人 Agent 预设声明（Hob）",
   "//": [
     "⚠ 本目录不是被单独装进 profile bundles 的独立包 —— 它是本插件的一部分。",
-    "两个预设行的 patch 文件由父包（仓库根 package.json）的 dsh.bundle.patch 数组统一列入：",
+    "Hob 预设的 patch 文件由父包（仓库根 package.json）的 dsh.bundle.patch 数组统一列入：",
     "  ./preset/dsh-hob/preset-dsh-hob.patch.yml",
-    "  ./preset/dsh-hob/preset-dsh-hob-work.patch.yml",
-    "⇒ 装插件 = 两个预设就位，用户不需要额外装一次预设包。",
+    "⇒ 装插件 = Hob 项目总负责人预设就位，用户不需要额外装一次预设包。",
     "",
     "⚠ 这里故意不声明 dsh.bundle.patch：",
     "  本目录的 package.json 是为了让它成为一个合法的 Node 包目录（有 name/type），",
-    "  并不是让 profile 去装配它。两个预设行只由父包的 dsh.bundle.patch 列入一次。",
+    "  并不是让 profile 去装配它。Hob 预设行只由父包的 dsh.bundle.patch 列入一次。",
     "⚠ 未验证（诚实标注）：若有人把本目录也加进 profile 的 dsh.profile.bundles 且它自带",
-    "  dsh.bundle.patch，两个 patch 会挂载两次。按 dsh-app-boot 的 loadProfileDirectory，",
+    "  dsh.bundle.patch，同一 patch 会挂载两次。按 dsh-app-boot 的 loadProfileDirectory，",
     "  重复的 bundle 名会被 loader 以 entry id 重复处理（'duplicate loader entry id'）；",
     "  该失败形态**本轮未实测**（没构造这个场景），故只作为规避建议、不作为已验证结论。",
     "",
-    "⚠ 对照：旧项目的预设是独立包（@local/dsh-hob-translate-preset，单独 link 进 profile）。",
-    "  本项目改成一个包两个预设，理由与用户待确认项见 .hob/drafts/preset-contracts.md 第六节。"
+    "⚠ 对照：旧项目曾把预设作为独立包装配；现行设计是父包内的唯一 Hob 预设。"
   ]
 }

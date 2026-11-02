@@ -1204,13 +1204,13 @@ export async function runRequirementsRoot({ bad, ok }) {
  * ── 断言 Y · **账本读白名单：`.md` + `.toml`（成对，⛔ 缺一侧即假绿）** ─────────────
  *
  * **它防的是什么**（`CHG-2035` 轨 A · 2026-11-02）：
- *   `ledger-next/units/index.toml` 是账本的**唯一状态源**，而读侧此前只认 `.md`
+ *   `ledger/units/index.toml` 是账本的**唯一状态源**，而读侧此前只认 `.md`
  *   ⇒ Hob **能写它、读不到它** ⇒ 每次改索引都是**盲写**（历史上盲写丢过 6417 字节）。
  *   ⚠ 更坏的一种：拒绝文案被当成正文返回 —— 调用方**以为读到了**，拿"拒绝：只能读取……"
  *     当索引去解析。所以本组**不判"没报错"**，判**字节数**。
  *
  * **判据（正向 2 条 + 负向 3 条，⛔ 少一条都不算）**：
- *   · **Y1 正向**：账本区 `ledger-next/units/index.toml` 真读 ⇒ `ok` 且
+ *   · **Y1 正向**：账本区 `ledger/units/index.toml` 真读 ⇒ `ok` 且
  *     **`Buffer.byteLength(text)` == `fs.statSync().size`**（给两个数）。
  *     ⚠ 这一条才是"读到了"的证据：截断 / 空串 / 拒绝文案被当内容，三个都会让这两个数对不上。
  *   · **Y2 正向（默认上限下的真实形态）**：同一份文件用**工具默认上限**读 ⇒
@@ -1260,7 +1260,7 @@ export async function runReadWhitelist({ bad, ok }) {
     return
   }
 
-  const INDEX_REL = 'ledger-next/units/index.toml'
+  const INDEX_REL = 'ledger/units/index.toml'
   const INDEX_ABS = join(LEDGER, INDEX_REL)
   let indexSize = 0
   try {
@@ -1484,7 +1484,7 @@ export function runPlanModuleParity({ bad, ok }) {
    * ── 改了什么、为什么 ────────────────────────────────────────────────
    *   改前：`countModuleRows(plan)`（**手数模块表行数**）== `readdirSync(src/modules).length`。
    *     ⚠ 两边都是"数量"，**不管名字**：表里写错一个名字、只要行数对得上，本条照样绿。
-   *   现在：右侧换成 **`<账本根>/ledger-next/gen/modules.md`**（生成物，由目录直出）⇒
+   *   现在：右侧换成 **`<账本根>/ledger/gen/modules.md`**（生成物，由目录直出）⇒
    *     · 生成物里**每一个**模块文件都必须在方案 §3 正文里点名（⛔ 不许漏写）；
    *     · 方案 §3 模块表里点名的 `*.ts` **必须都出现在生成物里**（⛔ 不许虚列）。
    *   ⚠ **「手数行数」那条已删除** —— 它只管量、不管名，是本段要治的那个洞。
@@ -1493,13 +1493,13 @@ export function runPlanModuleParity({ bad, ok }) {
    *     生成器只能产出"文件清单"，产不出职责/依赖 ⇒ 硬换成生成块会**丢掉信息**。
    *     ⇒ 判定：**表保持手写**，只把**核对基准**换成生成物。理由写在此处与报告 §二。
    */
-  const GEN_MODULES = join(LEDGER, 'ledger-next', 'gen', 'modules.md')
+  const GEN_MODULES = join(LEDGER, 'ledger', 'gen', 'modules.md')
   let genMd = ''
   try { genMd = readFileSync(GEN_MODULES, 'utf8') } catch { genMd = '' }
   let w1Bad = 0
   if (genMd === '') {
     w1Bad++
-    bad(`W 生成物 \`ledger-next/gen/modules.md\` **读不到**（\`${GEN_MODULES}\`）⇒ 本组失去基准（不按通过处理）`
+    bad(`W 生成物 \`ledger/gen/modules.md\` **读不到**（\`${GEN_MODULES}\`）⇒ 本组失去基准（不按通过处理）`
       + '\n      ⇒ 生成它：`npm run gen:ledger`（⚠ 手改它会被 I5 咬住）')
   } else {
     /** 生成物里的模块主干（⚠ 从生成物解析，⛔ 不再 `readdirSync`）。 */
@@ -1527,7 +1527,7 @@ export function runPlanModuleParity({ bad, ok }) {
         + '\n      ⇒ ⚠ 这正是"方案在描述一个不存在的模块"（实测踩过：曾虚列 `M2`）')
     }
     if (w1Bad === 0) {
-      ok(`W ✓ 方案 §3 与**生成物** \`ledger-next/gen/modules.md\` **同源**：`
+      ok(`W ✓ 方案 §3 与**生成物** \`ledger/gen/modules.md\` **同源**：`
         + `生成物 ${genStems.length} 个模块，逐个在方案正文里点名；方案点名的 .ts 也全在生成物里`
         + '（⚠ 已删「手数行数」那条 —— 它只管量不管名）')
     }

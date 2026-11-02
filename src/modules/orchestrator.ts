@@ -54,7 +54,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, sep } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
+import { HOB_PRESET_ID } from '../shared/planning-preset.ts'
 import type { PresetSource } from './bus.ts'
 import { resolveLedgerRoot, workspaceNameOf } from '../server/doc-read.ts'
 /**
@@ -833,7 +833,7 @@ export interface OrchStatus {
    *     —— ⛔ 不许每轮都印（`TASK` 要求 3）。
    *   ⚠ `waited === true` 才说明"写事务发生过重入"（= 队列真的承过重）。
    */
-  writeQueue?: { depth: number; total: number; waited: boolean }
+  writeQueue?: { depth: number; total: number; waited: boolean; lockRejected: number }
   /**
    * **本代就绪时发现的、上一代遗留的丢失派发数**（本批新增）。
    *
@@ -1235,6 +1235,8 @@ export interface HobOrchestrator {
     verdict: 'accepted' | 'sent-back'
     basis: string[]
     note?: string
+    /** 判决发生时刻（ISO8601）；⚠ 必填，落盘前再核一次。 */
+    verifiedAt: string
   }): { ok: boolean; reason?: string; state?: DispatchRecordState }
 }
 
@@ -4276,7 +4278,9 @@ export function apply(ctx: any): void {
            * ⚠ **丙-5 的队列读数**：⚠ **只在发生过重入时出现**（`waited === true`）
            *   ⇒ 正常档**一个字都不多**（与改前逐字相同）。
            */
-          ...(orchWriteQueueStats().waited ? { writeQueue: orchWriteQueueStats() } : {}),
+          ...((orchWriteQueueStats().waited || orchWriteQueueStats().lockRejected > 0)
+            ? { writeQueue: orchWriteQueueStats() }
+            : {}),
           // ⚠ ⚠ **可达性**（第 247 轮）：⚠ 它与 `handoffs` **同一次读**吗？
           //   ⛔ 不是 —— `handoffs` 现在按 owner 过滤（`I-4`），
           //   而可达性问的是"**本会话这一份**账本够不够得到"（那才是"够不到"的形态）。
@@ -4704,6 +4708,7 @@ export function apply(ctx: any): void {
         verdict: 'accepted' | 'sent-back'
         basis: string[]
         note?: string
+        verifiedAt: string
       }): { ok: boolean; reason?: string; state?: DispatchRecordState } {
         const self = typeof input?.self === 'string' && input.self !== '' ? input.self : undefined
         if (self === undefined) {
@@ -4727,6 +4732,18 @@ export function apply(ctx: any): void {
         if (verdict !== 'accepted' && verdict !== 'sent-back') {
           return { ok: false, reason: "`verdict` 只能是 'accepted' 或 'sent-back'" }
         }
+        /**
+         * ⚠ 判决时刻是 RSK-001 的修复点：**缺时间就不落账**，避免又产生一条
+         *   无法解释“完成到判决隔了多久”的判决。⛔ 不用落账时的墙钟顶替坏输入。
+         */
+        const verifiedAtRaw = typeof input?.verifiedAt === 'string' ? input.verifiedAt.trim() : ''
+        if (verifiedAtRaw === '' || !Number.isFinite(Date.parse(verifiedAtRaw))) {
+          return {
+            ok: false,
+            reason: '判决缺可解析的 `verifiedAt` 时刻 ⇒ ⛔ 拒绝落账（没有判决时刻就无法度量完成到验收的间隔）',
+          }
+        }
+        const verifiedAt = verifiedAtRaw
         /**
          * ② **只认本会话认识的 target**（⚠ 逐面找，⛔ 不猜）。
          *   ⚠ 找的次序 = 内存（最新）→ 盘上 `pending` → 盘上 `closed`。
@@ -4846,7 +4863,12 @@ export function apply(ctx: any): void {
               + ' ⇒ ⛔ 不落判决、⛔ 不编一态',
           }
         }
-        const at = Date.now()
+        /**
+         * ⚠ 判决时刻**不再取墙钟**：使用上层校验过的 `verifiedAt`，并把它同时
+         * 写入运行态记录与可回读判据。`Date.now()` 在这里会让“历史补录”
+         * 与“真实判决时刻”混成同一个来源。
+         */
+        const at = Date.parse(verifiedAt)
         const patch = verdict === 'accepted'
           ? { acceptedAt: at, sentBackAt: undefined }
           : { sentBackAt: at, acceptedAt: undefined }
@@ -5164,7 +5186,9 @@ export function apply(ctx: any): void {
            * ⚠ **丙-5 的队列读数**：⚠ **只在发生过重入时出现**（`waited === true`）
            *   ⇒ 正常档**一个字都不多**（与改前逐字相同）。
            */
-          ...(orchWriteQueueStats().waited ? { writeQueue: orchWriteQueueStats() } : {}),
+          ...((orchWriteQueueStats().waited || orchWriteQueueStats().lockRejected > 0)
+            ? { writeQueue: orchWriteQueueStats() }
+            : {}),
           reachability: reach,
           ...(reach === 'ledger-home-unresolved' ? { ledgerHomeWhy: ledgerHomeDiag(svcCtx) } : {}),
           others: {
@@ -7821,7 +7845,7 @@ export function createHobOrchTools(
         `预设=${w.targetPreset ?? '(读不到)'}`
           + (w.targetPreset !== undefined && w.targetPresetSource === 'header'
             ? '（降级：取自建档头，可能非当前值）' : ''),
-        ...(w.targetPreset === PLANNING_PRESET_ID ? ['⚠ 规划侧预设·不能施工'] : []),
+        ...(w.targetPreset === HOB_PRESET_ID ? ['⚠ 规划侧预设·不能施工'] : []),
         ...(w.round === undefined ? [] : [`轮次=${w.round}`]),
         ...(w.task === undefined ? [] : [`任务=${w.task}`]),
         w.sawRunning ? '已开跑' : '尚未开跑',
@@ -8285,6 +8309,12 @@ export function createHobOrchTools(
         description: 'accept / send-back 专用：**依据哪几条读数**（字符串数组，⛔ 不许为空）。'
           + '例：["check:orch 239/239 通过", "git status 与基线逐字一致"]。',
       },
+      verifiedAt: {
+        type: 'string',
+        description: 'accept / send-back 专用：**判决发生时刻**（ISO8601，可写时区）。'
+          + '⚠ 省略时由工具在真正落账前取当前时刻；⛔ 不接受日期猜值，也⛔ 不补历史缺口。'
+          + '⚠ 这个时刻会写入运行态记录与判决回读；没有它不落账。',
+      },
       executionId: {
         type: 'string',
         description: 'redeliver 专用：那次执行的 id（错投的那条回执）。',
@@ -8310,6 +8340,8 @@ export function createHobOrchTools(
         taskId?: string
         /** ⚠ 包 H：判决依据（`accept` / `send-back` 专用；⛔ 空数组一律被拒）。 */
         basis?: string[]
+        /** ⚠ 判决时刻（ISO8601）；省略则现取。 */
+        verifiedAt?: string
         /** ⚠ 包 AB：`watch-wait` 的**可选**说明（⛔ 不是原因码、⛔ 不是必填）。 */
         note?: string
       },
@@ -8370,11 +8402,27 @@ export function createHobOrchTools(
          * ⚠ `basis` **必须是数组且非空**：这是 `D10`/§10 的"必须带依据哪几条读数"。
          *   ⚠ 传字符串也拒（⛔ 不许把一句话当"一条读数"，那会让依据不可核对）。
          */
+        /**
+         * ⚠ 判决时刻必须在**真正落账前**取定；传入的 `verifiedAt` 只允许
+         *   `Date.parse` 得出来的字符串。⚠ 空串 / 自由文本 / 非法日期 ⇒ 拒，
+         *   ⛔ 不用“现在”悄悄替换一个坏输入（那会把判不出洗成成功）。
+         */
+        const suppliedAt = typeof args.verifiedAt === 'string' ? args.verifiedAt.trim() : ''
+        if (suppliedAt !== '' && !Number.isFinite(Date.parse(suppliedAt))) {
+          return JSON.stringify({
+            ok: false,
+            requestedVerdict: args.action === 'accept' ? 'accepted' : 'sent-back',
+            target: args.taskId,
+            reason: `verifiedAt 不是可解析的 ISO8601 时刻：${JSON.stringify(suppliedAt)} ⇒ ⛔ 拒绝落账`,
+          })
+        }
+        const verifiedAt = suppliedAt === '' ? new Date().toISOString() : suppliedAt
         const r = orch.judge({
           self: selfSessionIdOf(exec),
           target: args.taskId,
           verdict: args.action === 'accept' ? 'accepted' : 'sent-back',
           basis: Array.isArray(args.basis) ? args.basis : [],
+          verifiedAt,
         })
         /**
          * ══════════════════════════════════════════════════════════════════════
@@ -8410,6 +8458,7 @@ export function createHobOrchTools(
           target: args.taskId,
           ...(r.state === undefined ? {} : { state: r.state, label: DISPATCH_STATE_LABELS[r.state] }),
           ...(r.reason === undefined ? {} : { reason: r.reason }),
+          verifiedAt,
         })
       }
       const selfId = selfSessionIdOf(exec)

@@ -247,15 +247,15 @@ if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.
   runSelfProof({ bad, ok, measured })
 
   /**
-   * ⚠ **本族自己的负向对拍**（自指）：把 `check:ledger-next` 的对拍标签清空 ⇒ 必须红。
+   * ⚠ **本族自己的负向对拍**（自指）：把 `check:ledger` 的对拍标签清空 ⇒ 必须红。
    *   ⚠ 与 `check:gitignore` 里的 `N-M1` 同款；这里再跑一次是为了让
    *     `npm run check:meta-negctl` **单跑也有牙**（⛔ 不能只在别处被验）。
    */
   {
     const fams0 = familiesFromPkg()
-    const target = 'check:ledger-next'
+    const target = 'check:ledger'
     if (fams0[target] === undefined) {
-      bad('N-M1 · 找不到 `check:ledger-next` ⇒ 本族负向对拍失去对象')
+      bad('N-M1 · 找不到 `check:ledger` ⇒ 本族负向对拍失去对象')
     } else {
       const entryFile = fams0[target].replace(/^scripts\//, '')
       const m2 = measureFamilies({ [target]: fams0[target] }, { [entryFile]: '// 夹具\nok(`x`)\n' })

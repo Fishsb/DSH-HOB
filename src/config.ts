@@ -315,7 +315,7 @@ export const Config = z.object({
    */
   spawn: z.object({
     agentPreset: z.string().default('')
-      .description('新建会话默认预设（id，如 `standard`）。⚠ 留空 = **出厂默认 `standard`**（标准模式），**不是**「用宿主默认预设」。⚠ 若这里填的是本插件的规划侧预设（`Hob`）⇒ 不套用它（它只规划、不施工），改走出厂默认并在返回里说明。只影响本插件建出的会话，不影响手工新建的会话。')
+      .description('新建会话默认预设（id，如 `standard`）。⚠ 留空 = **出厂默认 `standard`**（标准模式），**不是**「用宿主默认预设」。⚠ 若这里填的是本插件的项目总负责人预设（`Hob`）⇒ 不套用它（它负责组织与验收，不承担具体实施），改走出厂默认并在返回里说明。只影响本插件建出的会话，不影响手工新建的会话。')
       .volatile(),
     provider: z.string().default('')
       .description('新建会话默认模型的 provider 路由（如 `dshapi`）。留空 = 用宿主默认模型。')
@@ -603,14 +603,19 @@ export function moduleSwitches(config: unknown): ModulesConfig {
  */
 export const PERMISSION_SERVICE = 'hobPermission'
 
-/** 可读权限控制的三档合法值（**唯一**枚举来源；⛔ 取值自 2026-10-17 改名起一字未动）。 */
-export const PERMISSION_LEVELS = ['ledger', 'project', 'workspace'] as const
-
-/** 可读权限控制的档位类型。 */
-export type PermissionLevel = (typeof PERMISSION_LEVELS)[number]
-
-/** 缺省档位 = `ledger`（与 schema 的 `.default('ledger')` 一致）。 */
-export const DEFAULT_PERMISSION_LEVEL: PermissionLevel = 'ledger'
+/**
+ * 可读权限控制的三档合法值。
+ *
+ * ⚠ 实际值定义在**零依赖**的 `shared/permission-levels.ts`：client 也会间接
+ *   import 这个共享面，而本文件依赖 schemastery / Node 侧配置能力。
+ *   ⇒ **⛔ 不要在 client 可达的模块里直接 import 本文件**；这里只做兼容 re-export。
+ */
+import {
+  PERMISSION_LEVELS,
+  DEFAULT_PERMISSION_LEVEL,
+  type PermissionLevel,
+} from './shared/permission-levels.ts'
+export { PERMISSION_LEVELS, DEFAULT_PERMISSION_LEVEL, type PermissionLevel }
 
 /**
  * 读出 `permission.level` 的档位（`ledger` / `project` / `workspace` —— ⚠ 内部取值，⛔ 不是显示名）。

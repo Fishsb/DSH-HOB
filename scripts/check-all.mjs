@@ -149,7 +149,7 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *   ⇒ 若放进必跑，结果只能是"永远 exit 2"，那会把"没对象"污染成"判据没跑"（`E-122` 同族）。
  *   ⇒ 手工按需跑 `npm run check:tasks-route-http`；它的无对象档是 **exit 2**（noObject，⛔ 不算通过）。
  */
-export const FAMILY_FLOOR = 27
+export const FAMILY_FLOOR = 31
 //   ⚠ 2026-10-27（包 AP · 用户「全退」）：本条不再含 `check:archive-gate`（该族随归档门禁一起退回）。
 //     实测族数 = 19（`npm run check:all` 汇总行）⇒ 下界 19 = **零余量**，再少一族立刻红。
 //   ⚠ 2026-10-29（四步主线 · 只验位置）：**19 → 20**（同批新增 `check:stages-dom` 一族）。
@@ -244,7 +244,7 @@ export const ASSERTION_FLOORS = new Map([
   //   来源：DECISIONS.md 拆卷（15 条进卷）+ 两份模板补节（CONTEXT §6–§12 · DECISIONS 指针表）
   //   ⇒ 新增的"卷内每份 *.md 被 INDEX 点名"与"节名一致"判定全被这族吃掉，处数随之上升。
   //   ⚠ 零余量（1154 = 实测）：摘掉任意一条 ⇒ `check:all` 当场红。
-  ['check:gitignore', 1154],  // 2026-10-25 578 → 2026-10-30 P7 删 V/V2 段后按实测 **1002** 重定（⚠ 段删了，数字下降是预期；下界照实测写零余量）
+  ['check:gitignore', 1160],  // 2026-11-02：新族登记与四条新脚本 NOT-INDEX 修正后，按实测 1160 零余量重定
   //   ⚠ 理由：本单在 `check-repo-rules.mjs` 新增 **`MV`** 断言「模板根上文档清单 == INIT 的复制清单」
   //     ⇒ 该族多 **1 处**（577 → 578）。⚠ **只升不降**。
   //   ⚠ ⚠ **为什么不是改已有的第 ⑥ 组**：`check-code-face.mjs` 的 ⑥ 组**两个方向都不咬**（本单实测三段）——
@@ -502,7 +502,7 @@ export const ASSERTION_FLOORS = new Map([
   //        已加"真实源码里那一步存在且在 `markWakeDelivered` 之后"（加固后负向对拍 ⇒ FAIL）。
   //     ② 只判"存在且在之后"时，**再插一个提前调用的回等待照样 PASS**（原来那一步还在）；
   //        已加"链内 `setWatchState` **只出现一次**"（加固后负向对拍 ⇒ `次数=2` + FAIL）。
-  ['check:orch', 346],  // ⚠ **2026-10-28（包 BG · `CHG-165` 兜底修回来）：340 → 345，抬 5。**
+  ['check:orch', 347],  // ⚠ **2026-11-02：新增 WI-n 跨进程 writer 锁（+1），下界零余量。**
   //   ── 为什么抬（⚠ 是"新增了被测行为"，⛔ 不是为好看凑数）────────────────────
   //   本单把"叫过一次就永久安静"修回"**我没动就再叫，最多 3 次**"，新增 **5 条**：
   //     · `WI-c` **改判据**（⚠ 不是新条）：**Hob 没动作 ⇒ 再叫**（包 BL/BM 口径），
@@ -655,7 +655,12 @@ export const ASSERTION_FLOORS = new Map([
   //     · `S-29g` 负向对拍：把 `unseenBlock` 那次挂载整段摘掉 ⇒ `S-29` 必红。
   //   ⚠ 零余量（67 = 实测）：摘掉任意一条 ⇒ `check:all` 当场红。
   // ⚠ 2026-11-02（P41/R22 · `TASK-R22.md` §一）：67 → **69**（+2 = `S-28b2` 端到端 + `S-28b3` 差分自证）。
-  ['check:stages-dom', 69],
+  // ⚠ 2026-11-02（Project Hub · Current）：69 → **72**（+3 = S-30a 成功原文 / S-30b 失败分治 / S-30c 摘除必红）。
+  // ⚠ 2026-11-02（Project Hub · resource route）：72 → **75**
+  //   （+3 = S-31a 转译自证 / S-31b 真账本三类结果 / S-31c HTTP 处理体五档）。
+  // ⚠ 2026-11-02（Project Hub · attention）：75 → **78**
+  //   （+3 = S-32a 逐项显示 / S-32b 空数组 ≠ 判不出 / S-32c 字段缺失必判不出）。
+  ['check:stages-dom', 78],
   // ⚠ 2026-10-29（第 6 轮）新增本族：四步进度表的**服务端**行为判据
   //   （`scripts/check-tasks-progress.mjs`，`npm run check:tasks-progress`）。
   //   下界 = **本轮实测值 14，零余量**：T-0（转译自证）· T-1（正常两行）· T-2（空表）·
@@ -666,7 +671,7 @@ export const ASSERTION_FLOORS = new Map([
   ['check:tasks-progress', 14],
   // ⚠ **2026-10-30 第 17 轮新增**；**第 20 轮 22 条；第 21 轮抬到 26 条**（+E-17 三组对照 / E-18 消歧句 N / E-17b·E-18b 负向对拍）。
   ['check:exec-progress', 26],
-  // ⚠ **2026-10-30 P1 新增**：`ledger-next` 三条不变式 + I4 顺带 + 三条负向对拍 = 12 条（实测；P2 加了 I3 / 按 kind 必填 / change 目录 / req spec 路径 + 三条新负向对拍）。
+  // ⚠ **2026-10-30 P1 新增**：`ledger` 三条不变式 + I4 顺带 + 三条负向对拍 = 12 条（实测；P2 加了 I3 / 按 kind 必填 / change 目录 / req spec 路径 + 三条新负向对拍）。
   // ⚠ 2026-11-02（P41/R23）：103 → **108**（零余量 = 实测）。
   //   来源：拆卷 + 两族计数口径修正（"查了"含跳过）后实测值。
   // ⚠ 2026-11-02（P50/M7）：108 → **109**（零余量 = 实测）。
@@ -677,15 +682,39 @@ export const ASSERTION_FLOORS = new Map([
   //   来源：Hob 往 `units/index.toml` 落了目标层数据（`goal` 0 → 2 条）⇒ GC-1/2/3 三条
   //   从「1 条 ⊘ 跳过」变成「3 条真断言」⇒ 查了 109 → 111、过了 108 → 111、跳过 1 → 0。
   //   ⚠ 双向判据要求同批抬，否则恒红。
-  ['check:ledger-next', 111],
+  // ⚠ 2026-11-02：需求根派生化 + I12 退役完整性/不可复活 + N-I12 负向对拍 ⇒ 113 → 115。
+  //   同批新增根页 I5c 逐字节核对；下界按实测抬，删除任一条会当场红。
+  // ⚠ 2026-11-02（Project Hub · lifecycle）：115 → **118**。
+  //   来源：N-I12b（退役/丢弃需求不得进入需求轴或缺口）+ I5b/N-I5b 反向对照 + 目标层落地读数。
+  //   下界 = 本轮实测 118，零余量。
+  ['check:ledger', 120],
   // ⚠ **2026-10-31 P41/R3 新增**：收敛检查 K-1..K-6 + K-0 前置 + 12 条负向对拍/正向对照
   //   = **13 条实测**（`K-0` + 每个 change 一条 `K-ALL` + 11 条对拍）。
   //   ⚠ 下界取 **13**（K-0 + 11 条对拍 + 至少一条 K-ALL）；索引里 change 条数变多时本族只会更绿。
   // ⚠ 2026-11-02（P41/R23）：19 → **24**（零余量 = 实测）。
   //   来源：拆卷 + 两族计数口径修正（"查了"含跳过）后实测值。
-  ['check:convergence', 24],
+  // ⚠ 2026-11-02：25 → **26**。新增 `CHG-2026-11-02-host-read-verify`
+  //   ⇒ K-ALL 多一条真实 change 读数（不靠改宽松度）。下界仍与实测零余量。
+  // ⚠ 2026-11-02：RSK-001 `open → handling` 后 26 处；随后新增 W-K3
+  //   （多 ACC 最新判决五组对拍）⇒ 实测 27 处（26 通过 + 1 有落点跳过）。
+  ['check:convergence', 27],
+  // ⚠ 2026-11-03：补齐 goal / risk / decision / cap 后，
+  //   账本资源图 11 条正向 + 2 条负向对拍 = 实测 13。
+  //   覆盖 10 类稳定 ID、四类新增列表与按 ID 读取、需求关联图可继续解析、
+  //   直属子项、三类错误、纯函数、零路径泄漏。
+  ['check:ledger-resources', 13],
+  // ⚠ 2026-11-02（P3）：持久效果队列 8 条正向 + 2 条负向对拍 = 实测 10。
+  // ⚠ 2026-11-02（Project Hub · single-writer）：+ Q-9 同进程复用 + N-Q3 独占锁拒绝 = 实测 12。
+  // ⚠ 2026-11-02（crash recovery）：+ Q-10 陈旧锁接管 + N-Q4 三档 fail-closed = 实测 14。
+  ['check:effects', 14],
+  // ⚠ 2026-11-02（Project Hub · transactional handoff）：4 条正向 + 1 条负向对拍 = 实测 5。
+  ['check:handoff-effects', 5],
+  // ⚠ 2026-11-02（Project Hub · work state）：九态 9 + 事件去重 1 + 线程合并 2 + 负向对拍 4
+  //   + 最新 ACC 判决 6（旧退回→新通过 / 旧通过→新退回 / 多条缺时刻 / 同刻冲突 /
+  //     需求两路独立 / 单条缺时刻仍是确定判决）= 实测 23。
+  ['check:work-state', 23],
   // ⚠ **2026-10-30 P3 新增**：五步汇总路由（10 条实测，含阻塞负向对拍与生成器交叉验证）。
-  ['check:stages-route', 21],
+  ['check:stages-route', 22],
   // ⚠ **2026-10-30 P6 新增**：元规则机检（2 条：M-1 实测 vs 下限 + N-M1 自指负向对拍）。
   ['check:meta-negctl', 3],
   // ⚠ **2026-10-30 P8 新增**：Hob 工作流（F1-F4 + 4 条负向对拍 = 8 处）。
@@ -694,7 +723,7 @@ export const ASSERTION_FLOORS = new Map([
   //   N-F1b/N-F1c/N-F1d/N-F4b/N-F4c/N-F10/N-F11/N-F1e 新）。
   //   ⇒ 下界 = **本轮实测 28，零余量**（摘掉任意一条 ⇒ 27 < 28 ⇒ 本族当场红；
   //     这条零余量本身由 `check:workflow` 的 **N-F1e** 反过来核 —— 它读的就是这个数）。
-  ['check:workflow', 30],
+  ['check:workflow', 32],
   // ⚠ `check:build` 不在此表：它的"处"是**读数行**、分母不同（`per-reading-line`），
   //   与逐条断言不可比 —— 把它塞进这张表就是本仓明令禁止的"混量纲"。
 ])
@@ -1364,5 +1393,12 @@ if (process.argv[1] !== undefined && (process.argv[1].endsWith('check-all.mjs') 
     process.exit(2)
   }
   const results = runFamilies(names)
-  process.exit(printSummary(results))
+  /**
+   * ⚠ 不能在 `printSummary()` 后立刻 `process.exit()`：汇总文本可能还在
+   *   stdout 的可写缓冲里（大日志 + Windows/WSL 转发时尤其明显）。
+   *   抢退会把尾部截断，并让外部看到「exit 1 + 没有汇总」这种不可判形态。
+   *   ⇒ 只设 `exitCode`，让 Node 等 stdout/stderr 排空后自然退出。
+   *   ⚠ 不改三档判定的任何一位：返回值仍由 `printSummary()` 唯一决定。
+   */
+  process.exitCode = printSummary(results)
 }

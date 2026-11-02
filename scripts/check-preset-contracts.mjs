@@ -2992,10 +2992,10 @@ const STALE_APPELLATIONS = [
       + '本组无从判定（**不按通过处理**）')
   } else {
     // ── ① 常量值（**原始态取字面量**；本文件其它组同款口径）────────────────
-    const m7 = /export\s+const\s+PLANNING_PRESET_ID\s*=\s*'([^']*)'/.exec(sharedSrc7)
-      ?? /export\s+const\s+PLANNING_PRESET_ID\s*=\s*"([^"]*)"/.exec(sharedSrc7)
+    const m7 = /export\s+const\s+HOB_PRESET_ID\s*=\s*'([^']*)'/.exec(sharedSrc7)
+      ?? /export\s+const\s+HOB_PRESET_ID\s*=\s*"([^"]*)"/.exec(sharedSrc7)
     if (m7 === null) {
-      bad("⑦ src/shared/planning-preset.ts 里找不到 `export const PLANNING_PRESET_ID = '…'`"
+      bad("⑦ src/shared/planning-preset.ts 里找不到 `export const HOB_PRESET_ID = '…'`"
         + ' —— 唯一值不见了（两个消费方会各自硬编码，漂移无从发现）')
     } else {
       const excludedId = m7[1]
@@ -3009,7 +3009,7 @@ const STALE_APPELLATIONS = [
         if (declared7 === null) {
           bad('⑦ 从预设声明里读不到 `config.id`（解析口径可能已漂 ⇒ 不按通过处理）')
         } else if (declared7[1] !== excludedId) {
-          bad(`⑦ **漂移**：排除常量 PLANNING_PRESET_ID = ${JSON.stringify(excludedId)}，`
+          bad(`⑦ **漂移**：排除常量 HOB_PRESET_ID = ${JSON.stringify(excludedId)}，`
             + `而预设声明的 config.id = ${JSON.stringify(declared7[1])}`
             + ' —— 预设改名后必须同步改这一个常量（不一致 ⇒ 排除失效或排错东西）')
         } else {
@@ -3058,12 +3058,12 @@ const STALE_APPELLATIONS = [
         bad('⑦ 读不到 src/client/catalog.ts —— client 侧排除判据无从核对')
       } else {
         const catalogCode7 = stripCommentsOnlyLocal(catalogSrc7)
-        const hasEq = /\.id\s*===\s*PLANNING_PRESET_ID/.test(catalogCode7)
-        const hasNe = /\.id\s*!==\s*PLANNING_PRESET_ID/.test(catalogCode7)
+        const hasEq = /\.id\s*===\s*HOB_PRESET_ID/.test(catalogCode7)
+        const hasNe = /\.id\s*!==\s*HOB_PRESET_ID/.test(catalogCode7)
         if (!hasEq || !hasNe) {
           bad('⑦ catalog.ts 里没有**真的做排除比较**'
-            + `（${hasEq ? '' : '缺 `.id === PLANNING_PRESET_ID`' }`
-            + `${!hasEq && !hasNe ? ' 且 ' : ''}${hasNe ? '' : '缺 `.id !== PLANNING_PRESET_ID`'}）`
+            + `（${hasEq ? '' : '缺 `.id === HOB_PRESET_ID`' }`
+            + `${!hasEq && !hasNe ? ' 且 ' : ''}${hasNe ? '' : '缺 `.id !== HOB_PRESET_ID`'}）`
             + ' —— 只提到常量不算排除生效；候选会照旧列出规划侧预设（死循环）')
         } else ok('⑦ ✓ catalog.ts 真的做了排除比较（`===` 收被排除项 / `!==` 收可选集）')
         if (!/excludedPresets/.test(catalogSrc7)) {
@@ -3084,10 +3084,10 @@ const STALE_APPELLATIONS = [
       if (busSrc7 === undefined) {
         bad('⑦ 读不到 src/modules/bus.ts —— spawn 兜底判据无从核对')
       } else {
-        if (!/PLANNING_PRESET_ID/.test(busSrc7)) {
-          bad('⑦ bus.ts 没有引用 PLANNING_PRESET_ID —— 派活侧没有兜底'
+        if (!/HOB_PRESET_ID/.test(busSrc7)) {
+          bad('⑦ bus.ts 没有引用 HOB_PRESET_ID —— 派活侧没有兜底'
             + '（配了规划侧预设就照套 ⇒ 死循环）')
-        } else ok('⑦ ✓ bus.ts 的 spawn 经 PLANNING_PRESET_ID 做兜底')
+        } else ok('⑦ ✓ bus.ts 的 spawn 经 HOB_PRESET_ID 做兜底')
         if (!/explicitPreset\s*\?\?\s*\(/.test(busSrc7)) {
           bad('⑦ 找不到 `explicitPreset ?? (…)` 的优先级链 —— 显式传参可能被兜底覆盖'
             + '（那是调用方的明确选择，**不许**拦）')
@@ -3146,13 +3146,13 @@ const STALE_APPELLATIONS = [
   if (sharedSrc8 === undefined) {
     bad('⑧ 读不到 src/shared/planning-preset.ts —— 出厂默认常量无从核对（不按通过处理）')
   } else {
-    const mPlan = /export\s+const\s+PLANNING_PRESET_ID\s*=\s*'([^']*)'/.exec(sharedSrc8)
+    const mPlan = /export\s+const\s+HOB_PRESET_ID\s*=\s*'([^']*)'/.exec(sharedSrc8)
     const mFactory = /export\s+const\s+FACTORY_DEFAULT_PRESET_ID\s*=\s*'([^']*)'/.exec(sharedSrc8)
     if (mFactory === null) {
       bad("⑧ src/shared/planning-preset.ts 里找不到 `export const FACTORY_DEFAULT_PRESET_ID = '…'`"
         + ' —— 出厂默认 id 没有单源（会被各处硬编码，改不动）')
     } else if (mPlan === null) {
-      bad('⑧ 读不到 PLANNING_PRESET_ID —— 两个常量的"不相等"判据无从核对（不按通过处理）')
+      bad('⑧ 读不到 HOB_PRESET_ID —— 两个常量的"不相等"判据无从核对（不按通过处理）')
     } else if (mPlan[1] === mFactory[1]) {
       bad(`⑧ 出厂默认常量与规划侧常量**是同一个值**（都是 ${JSON.stringify(mFactory[1])}）—— `
         + '那等于"出厂默认就是规划侧预设"，与本轮需求（出厂默认 = 标准模式）**直接矛盾**')

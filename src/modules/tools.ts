@@ -61,6 +61,7 @@ import {
   readWorkspaceImage as readWorkspaceImageBytes,
   readWorkspaceText,
 } from '../server/workspace-read.ts'
+import { readLedgerResource, type LedgerUnitLike } from '../shared/ledger-resources.ts'
 import { basename } from 'node:path'
 import { LEDGER_FILES, writeHobFile } from '../server/hob-write.ts'
 // ── 首次铺骨架（2026-10-16 第 224 轮 · `UD-118`「C」）──────────────────────
@@ -77,6 +78,8 @@ import { LEDGER_FILES, writeHobFile } from '../server/hob-write.ts'
 //     故 `ensureRuntimeIgnored` / `orchStateFileOf` / `recordHandoff` / `dirname`
 //     在本模块**已不再直接使用**（由该模块统一持有）。
 import { deliverHandoff, renderHandoffReading, type DispatchLike } from '../server/write-delivery.ts'
+import type { EffectsQueue } from '../server/effects-queue.ts'
+import { enqueueHandoff, handoffEffectKey, pointerMessageForRef, HANDOFF_EFFECT } from '../server/handoff-effects.ts'
 // ── 「首次铺骨架」开关的**唯一解 ref 点**（2026-10-24 · 本单必修 3）───────────
 //   ⚠ `skeleton.enabled` 标了 `.volatile()` ⇒ 运行时是 **ref 对象**，直读拿到的是 ref
 //     （恒 truthy、且不报错）。⇒ 一律经 `config.ts` 的 `skeletonEnabled()` 解。
@@ -91,6 +94,77 @@ import * as configFace from '../config.ts'
 //   ⚠ `src/shared/capability-red-line.ts` **零 import**（纯常量模块）⇒ host 侧
 //     直接 import 安全（不需要 ctx、不会有循环依赖）。
 import { CAPABILITY_RED_LINE_ZH } from '../shared/capability-red-line.ts'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+/**
+ * 资源路径与文件路径的**判别点**。
+ * ⚠ 只认已知语义前缀；其余一律走旧文件读取路径，保持向后兼容。
+ */
+export function looksLikeResource(p: string): boolean {
+  const x = String(p ?? '').trim().replace(/^\/+|\/+$/g, '')
+  return /^(goals|requirements|changes|tasks|runs|acceptances|evidences|risks|decisions|capabilities|caps)$/.test(x)
+    || /^(goal|requirement|change|task|run|acceptance|evidence|risk|decision|capability)\/[^/]+(?:\/children)?$/.test(x)
+}
+
+/**
+ * 读取并解析账本索引（供工具资源面使用）。
+ * ⚠ 与 `gen-ledger` 的受限 TOML 子集同口径；这里只支持当前索引所需的键值形式。
+ *
+ * @param ledgerRoot - 账本区根
+ * @returns 单元数组
+ */
+export function readLedgerUnits(ledgerRoot: string): LedgerUnitLike[] {
+  const indexPath = join(ledgerRoot, 'ledger', 'units', 'index.toml')
+  const src = readFileSync(indexPath, 'utf8')
+  const out: LedgerUnitLike[] = []
+  let cur: Record<string, unknown> | null = null
+  let pendingKey: string | null = null
+  let pending: string[] = []
+  const parseString = (v: string): string => {
+    const m = /^"((?:[^"\\]|\\.)*)"\s*$/.exec(v.trim())
+    if (m === null) throw new Error(`不是字符串：${v}`)
+    return m[1]!.replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+  }
+  const parseArray = (v: string): string[] => {
+    const m = /^\[([\s\S]*)\]\s*$/.exec(v.trim())
+    if (m === null) throw new Error(`不是数组：${v}`)
+    return [...m[1]!.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((x) => x[1]!.replace(/\\"/g, '"').replace(/\\\\/g, '\\'))
+  }
+  for (const raw of src.split('\n')) {
+    const line = raw.trim()
+    if (line === '' || line.startsWith('#')) continue
+    if (line === '[[unit]]') {
+      if (cur !== null) out.push(cur as LedgerUnitLike)
+      cur = {}
+      continue
+    }
+    if (cur === null) continue
+    if (pendingKey !== null) {
+      pending.push(line)
+      if (line.includes(']')) {
+        cur[pendingKey] = parseArray(pending.join(' '))
+        pendingKey = null
+        pending = []
+      }
+      continue
+    }
+    const eq = line.indexOf('=')
+    if (eq < 0) continue
+    const key = line.slice(0, eq).trim()
+    const value = line.slice(eq + 1).trim()
+    if (value.startsWith('[') && !value.includes(']')) {
+      pendingKey = key
+      pending = [value]
+    } else if (value.startsWith('"')) {
+      cur[key] = parseString(value)
+    } else if (value.startsWith('[')) {
+      cur[key] = parseArray(value)
+    }
+  }
+  if (cur !== null) out.push(cur as LedgerUnitLike)
+  return out
+}
 
 /** 模块名（同时是 fiber 显示名）。 */
 export const name = 'dsh-hob-tools'
@@ -517,6 +591,11 @@ export interface HobToolsDeps {
     height: number
     name?: string
   } | undefined>
+  /**
+   * 可选：账本 handoff 持久队列。
+   * ⚠ 缺席 ⇒ 完全保持旧行为；有它时，投递失败会留下可恢复 effect。
+   */
+  handoffEffectsOf?: (ledgerRoot: string) => EffectsQueue | undefined
 }
 
 /**
@@ -593,7 +672,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
-    description: '只读本工作区账本内的 .md / .toml（项目方案/决策记录/用户决策/工作上下文/账本索引）。',
+    description: '只读本工作区账本内的 .md / .toml（项目方案/决策记录/工作上下文/账本索引），或按稳定 ID 读取全部账本资源（goal/G-…、requirement/R-…、change/CHG-…、task/TSK-…、run/RUN-…、acceptance/ACC-…、evidence/EVD-…、risk/RSK-…、decision/DEC-…、capability/CAP-…）。',
     parameters: {
       path: {
         type: 'string',
@@ -601,7 +680,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         // ⚠ 2026-10-10（UD-88 / CHG-025）：原文写「相对**工作区根目录**…如 README.md、PROJECT.md」
         //    ——**两处都不实**：解析根**一直是账本区**（v4 / D7），工作区根本读不到（D6）；
         //    而 `PROJECT.md` 也**已于本批移入账本区**。⇒ 改准：根 = 账本区，示例换成账本区里真实存在的文件。
-        description: '相对**账本区根目录**的 .md / .toml 路径，如 PROJECT.md、CONTEXT.md、ledger-next/units/index.toml。',
+        description: '相对**账本区根目录**的 .md / .toml 路径（如 PROJECT.md、ledger/spec/current.md），或资源读取路径（如 requirements/、goal/G-01、risk/RSK-001、decision/DEC-001、capability/CAP-01、task/TSK-061/children）。',
       },
     },
     output: {
@@ -622,6 +701,20 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       const root = ledgerRootOf(cfg, exec)
       if (root === undefined) {
         return { ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' }
+      }
+      /**
+       * ⚠ **资源语法先于文件路径**：`requirements/`、`task/TSK-…` 等不是文件路径，
+       * 它们必须在同一个只读边界内解析为账本资源图。
+       * ⛔ 不把它们当作工作区文件；⛔ 不新增写路径。
+       */
+      if (looksLikeResource(args.path)) {
+        try {
+          const units = readLedgerUnits(root)
+          const r = readLedgerResource(units, args.path)
+          return { ok: r.ok, text: JSON.stringify(r, null, 2), truncated: false, bytes: 0 }
+        } catch (e) {
+          return { ok: false, reason: 'resource-unreadable', message: `账本资源读取失败：${String((e as Error)?.message ?? e)}` }
+        }
       }
       const r = await readMarkdownCapped(root, args.path, cfg.maxFileBytes ?? DEFAULTS.maxFileBytes)
       if (r.ok) {
@@ -1037,6 +1130,26 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
           self: sessionIdOf(exec),
           ...(orch === undefined ? {} : { orch }),
         })
+        /**
+         * ⚠ **持久补投**：现有一投失败后，把同一条 handoff 放进 effect 队列。
+         * ⚠ 不改变本次返回值；队列只在后台补投，成功后清同一条 handoff。
+         */
+        const effects = deps.handoffEffectsOf?.(root)
+        if (args.dispatchTo !== undefined && res.dispatched !== true && effects !== undefined) {
+          enqueueHandoff(effects, {
+            kind: 'task-file',
+            ref: r.handoff.ref,
+            at: Date.now(),
+            ...(sessionIdOf(exec) === undefined ? {} : { owner: sessionIdOf(exec) }),
+          }, args.dispatchTo, pointerMessageForRef(r.handoff.ref))
+        }
+        if (args.dispatchTo !== undefined && res.dispatched === true && effects !== undefined) {
+          try {
+            const h = { kind: 'task-file' as const, ref: r.handoff.ref }
+            // handoffEffects 的 handler 成功时会清账；这里只需撤掉尚未跑的重复 effect。
+            effects.cancel?.(HANDOFF_EFFECT, handoffEffectKey(h))
+          } catch { /* 后台读数兜底 */ }
+        }
         return JSON.stringify({
           ...r,
           handoffRecorded: res.recorded,

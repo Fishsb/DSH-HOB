@@ -20,6 +20,13 @@
  * ⚠ 本文件是**纯函数**（零 IO），所以判据可以拿任意输入喂它、不需要真宿主。
  */
 
+/**
+ * 「待确认工具」只读路由路径。
+ *
+ * ⚠ 放在纯共享层，客户端只取这个字符串时不会把服务端路由及其依赖带进 browser bundle。
+ */
+export const UNSEEN_TOOLS_ROUTE_PATH = '/api/dsh-hob/unseen-tools'
+
 /** 一条待确认工具记录（⚠ 字段封闭：`name` + `why`）。 */
 export interface UnseenTool {
   /** 工具名（⚠ 原样，⛔ 不改写、⛔ 不排序前的名字就是模型面里那个）。 */

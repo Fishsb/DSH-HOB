@@ -50,7 +50,7 @@
  *      如实列出并标"不可用"（E-46 的教训：静默过滤让用户以为预设不存在）。
  */
 import type { ReactNode } from 'react'
-import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
+import { HOB_PRESET_ID } from '../shared/planning-preset.ts'
 
 /** 宿主预设清单里的一行（只取本面板用到的字段）。 */
 export interface PresetRow {
@@ -343,8 +343,8 @@ export function loadCatalog(): Promise<void> {
       //     并且「候选来源」的计数会讲清"可选 N 个（已排除规划侧预设）"。
       //   ⚠ 判据只用**逐字 id**（不看 name / broken），且 id 取自全仓唯一的
       //     `src/shared/planning-preset.ts` —— 与预设声明逐字交叉核对由 `check:presets` 钉住。
-      const excluded: PresetRow[] = mapped.filter((p) => p.id === PLANNING_PRESET_ID)
-      const selectable: PresetRow[] = mapped.filter((p) => p.id !== PLANNING_PRESET_ID)
+      const excluded: PresetRow[] = mapped.filter((p) => p.id === HOB_PRESET_ID)
+      const selectable: PresetRow[] = mapped.filter((p) => p.id !== HOB_PRESET_ID)
       update({
         status: 'ready',
         error: null,

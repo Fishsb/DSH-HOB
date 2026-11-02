@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * **`ledger-next/` 的三条不变式**（2026-10-30 · P1 · `DESIGN-V2.md` §五）。
+ * **`ledger/` 的三条不变式**（2026-10-30 · P1 · `DESIGN-V2.md` §五）。
  *
  * ══ 它守什么 ═════════════════════════════════════════════════════════════════════
  *   **I1** 索引合法：id 唯一 · 前缀与 kind 匹配 · status 在封闭集 · parent 存在 ·
@@ -15,7 +15,7 @@
  *   负向对拍**不是注释**：每条都会真的造一个必错的夹具、真的调用一次断言、真的看它红。
  *   ⛔ 只写注释不算（`CONSTITUTION` §7）。
  *
- * 用法：node scripts/check-ledger-next.mjs
+ * 用法：node scripts/check-ledger.mjs
  * 退出码：0 = 三条全绿；1 = 有失败
  */
 
@@ -43,12 +43,12 @@ const portfolioOfShared = portfolioMod?.portfolioOf
 
 const ROOT = join(here, '..')
 /**
- * ⚠⚠ **2026-10-30 P4：`ledger-next/` 已搬进账本区。**
- *   ⇒ 这里**不再**拼 `<工作区>/ledger-next`，而是用生成器导出的同一份解析结果
+ * ⚠⚠ **2026-10-30 P4：`ledger/` 已搬进账本区。**
+ *   ⇒ 这里**不再**拼 `<工作区>/ledger`，而是用生成器导出的同一份解析结果
  *     （⛔ 两处各自拼路径 = 两处真相）。
  */
 const LEDGER = LEDGER_DIR
-const WORK = join(ROOT, '.check-ledger-next-work')
+const WORK = join(ROOT, '.check-ledger-work')
 
 let pass = 0
 let fail = 0
@@ -78,7 +78,7 @@ if (IS_MAIN) {
   rmSync(WORK, { recursive: true, force: true })
   mkdirSync(WORK, { recursive: true })
   console.log('')
-  console.log('L 组：ledger-next · 三条不变式（I1 / I2 / I5）')
+  console.log('L 组：ledger · 三条不变式（I1 / I2 / I5）')
   console.log('')
 }
 
@@ -554,7 +554,7 @@ export function checkI1(units, pathExists) {
         /**
          * ⚠⚠ **存量 5 条按"棘轮"处理，⛔ 不硬拦**（2026-10-31 P30）──────────────
          *   本轮**新增**这条判据时，实测有 **5 条**已有的 `verify` 只有结论、没有出处。
-         *   任务书明令 **⛔ 不许顺手改它们**（那是下一轮的事），⚠ 但也要求 `check:ledger-next` **exit 0**。
+         *   任务书明令 **⛔ 不许顺手改它们**（那是下一轮的事），⚠ 但也要求 `check:ledger` **exit 0**。
          *   ⇒ 两条要求同时成立的唯一口径：**存量豁免、增量必红**（本仓既定形态，见 `UD-95` / `E-27` 的反面）：
          *     · 这 5 个 id **逐个点名**（⛔ 不是"数量 ≤ 5"那种能被替换的软条件）；
          *     · **任何一个不在名单里的** task 缺出处 ⇒ **红**（`STORED_VERIFY_NO_CITE`）；
@@ -638,7 +638,7 @@ export function checkI1(units, pathExists) {
 /**
  * **I1 的"状态只在一处"**：`units/index.toml` 之外，任何 `.md`/`.toml` 里出现 `status =` ⇒ 问题。
  *
- * @param {string} ledgerDir - `ledger-next/` 根
+ * @param {string} ledgerDir - `ledger/` 根
  * @returns {string[]} 问题清单
  */
 export function checkStatusSingleHome(ledgerDir) {
@@ -673,7 +673,7 @@ export function checkStatusSingleHome(ledgerDir) {
 /**
  * **I5 的实现**：把盘上 `gen/` 与"当场重算"的结果逐字节比。
  *
- * @param {string} ledgerDir - `ledger-next/` 根
+ * @param {string} ledgerDir - `ledger/` 根
  * @param {(units: Array<object>) => Record<string, string>} renderAll - 生成函数
  * @returns {string[]} 问题清单
  */
@@ -713,7 +713,7 @@ export function checkBlockEquality(files, want) {
 }
 
 /**
- * **I5c** · `spec/checkpoint.md` 必须**逐字节 == 生成器输出**（2026-10-31 P42/R4 · `TASK-R4.md` §三）。
+ * **I5c** · `spec/*.md` 与根 `REQUIREMENTS.md` 必须**逐字节 == 生成器输出**（2026-10-31 P42/R4 · `TASK-R4.md` §三）。
  *
  * ── 为什么它要和 `gen/**` 同一口径 ────────────────────────────────────
  *   快照的用途是"`resume` 之后核对外面变了什么"。⚠ 一份**手改过的**快照会让那次核对
@@ -723,7 +723,7 @@ export function checkBlockEquality(files, want) {
  * ⚠ 与 `I5` 分开写（`gen/` vs `spec/`）：`I5` 的清单来自 `renderAll`，
  *   而快照来自 `renderSpecArtifacts` —— 混进去会让 `I5` 去 `gen/` 里找 `checkpoint.md`。
  *
- * @param {string} ledgerDir - `ledger-next/` 目录
+ * @param {string} ledgerDir - `ledger/` 目录
  * @param {(units: Array<any>, extra?: object) => Record<string, string>} renderSpec - 生成器
  * @param {object} extra - 外部读数（⚠ 必须与生成器 `main()` 注入的**同一份**，否则逐字节比不了）
  * @returns {string[]} 问题清单（空 = 绿）
@@ -733,16 +733,22 @@ export function checkI5c(ledgerDir, renderSpec, extra = {}) {
   const units = readUnits(join(ledgerDir, 'units', 'index.toml'))
   const expected = renderSpec(units, extra)
   for (const [name, want] of Object.entries(expected)) {
-    const p = join(ledgerDir, 'spec', name)
+    /**
+     * ⚠ **需求根是派生视图**：它在账本根，不在 `ledger/spec/`。
+     * 但仍用同一份生成文本做逐字节核对 —— ⛔ 不跳过这条，否则手改根页不会被发现。
+     */
+    const p = name === 'requirement-root.md'
+      ? join(dirname(ledgerDir), 'REQUIREMENTS.md')
+      : join(ledgerDir, 'spec', name)
     let got = null
     try { got = readFileSync(p, 'utf8') } catch { got = null }
     if (got === null) {
-      problems.push(`spec/${name} **读不到**（⚠ 先跑 \`npm run gen:ledger\`；⛔ 不许手工补一份）`)
+      problems.push(`${name === 'requirement-root.md' ? 'REQUIREMENTS.md' : `spec/${name}`} **读不到**（⚠ 先跑 \`npm run gen:ledger\`；⛔ 不许手工补一份）`)
       continue
     }
     if (got !== want) {
       const i = [...got].findIndex((c, k) => c !== want[k])
-      problems.push(`spec/${name} 与生成器**不一致**（第 ${i < 0 ? '?' : i + 1} 个字符起；`
+      problems.push(`${name === 'requirement-root.md' ? 'REQUIREMENTS.md' : `spec/${name}`} 与生成器**不一致**（第 ${i < 0 ? '?' : i + 1} 个字符起；`
         + `实 ${Buffer.byteLength(got, 'utf8')} B vs 期望 ${Buffer.byteLength(want, 'utf8')} B）`
         + ' ⇒ ⛔ 手改的快照会让 `resume` 的核对拿假读数当真')
     }
@@ -760,7 +766,7 @@ export function checkI5c(ledgerDir, renderSpec, extra = {}) {
  *   ⛔ **明确不做**：不比对"上次 vs 这次"、不自动回滚、不改任何单元。
  *     —— 那是另一件事，作业书点名本轮不做。
  *
- * @param {string} ledgerDir - `ledger-next/` 目录
+ * @param {string} ledgerDir - `ledger/` 目录
  * @returns {{found: boolean, bytes: number|null, sections: string[], missing: string[]}}
  */
 export function readCheckpointForResume(ledgerDir) {
@@ -956,7 +962,8 @@ export function runtimeHasLiveTarget(run, rt) {
  * 每项指向真实存在的 `acc`，且该 `acc` 能经 `parent` 链指回这条 `req`。
  *
  * ⚠ 「能经 parent 链指回」= 允许 `acc.parent` 是**这条 req 本身**（直接验收需求），
- *   或 `acc.parent` 是挂在这条 req 下的 task/change（`parent` 一跳就指到 req）；
+ *   或沿 `acc → task → change → req` 的正式父链回到这条 req；
+ *   中间每一层都可以用 `req_ids` / `addresses` 指向需求，但最终必须**唯一落到本需求**。
  *   ⛔ 链长只算**到 req 为止**，⛔ 不做无限回溯（环路另有 I1 咬）。
  *
  * @param {Array<Record<string, any>>} units - 索引单元
@@ -984,7 +991,7 @@ export function checkI10(units) {
         problems.push(`${r.id}：\`acceptance_ids\` 里的 \`${aid}\` 是 \`${a.kind}\`（⛔ 不是验收单元）`)
         continue
       }
-      // 沿 parent 链最多两跳找这条 req
+      // 沿 parent 链最多三跳找这条 req（acc → task → change → req）
       let cur = byId.get(String(a.parent ?? ''))
       let reached = false
       for (let hop = 0; hop < 3 && cur !== undefined; hop++) {
@@ -992,8 +999,23 @@ export function checkI10(units) {
         if (cur.kind === 'req') break
         cur = byId.get(String(cur.parent ?? ''))
       }
+      /**
+       * ⚠ **关系边兜底**：任务和 Change 可以用 `req_ids` / `addresses` 正式承接需求，
+       * 不一定亲自挂在需求下面。只认 `parent` 会把合法的
+       * `acc → task(parent=change, req_ids=req) → change(addresses=req)` 判成覆盖假。
+       * ⚠ 不放松：被承接的需求必须是**同一目标**且仍为活跃 `agreed`。
+       */
       if (!reached) {
-        problems.push(`${r.id}：验收 \`${aid}\` 的 parent 链**指不回这条需求**（parent=${JSON.stringify(a.parent)}）`
+        const path = [byId.get(String(a.parent ?? '')), byId.get(String(byId.get(String(a.parent ?? ''))?.parent ?? ''))]
+        reached = path.some((node) => {
+          if (node === undefined) return false
+          if (node.kind === 'task') return Array.isArray(node.req_ids) && node.req_ids.map(String).includes(r.id)
+          if (node.kind === 'change') return Array.isArray(node.addresses) && node.addresses.map(String).includes(r.id)
+          return false
+        })
+      }
+      if (!reached) {
+        problems.push(`${r.id}：验收 \`${aid}\` 既没有沿 parent 链指回，也没有沿 task.req_ids / change.addresses 回到该需求`
           + ' ⇒ 覆盖是假的（⛔ 随便挂一条 acc 不算证明这条需求）')
       }
     }
@@ -1018,6 +1040,170 @@ export function checkI7(units) {
    *   ⛔ 别把逻辑复制回来；`check:stages-route` 的 **R-14** 会咬住。
    */
   return convMod.verifyRefsProblems(units)
+}
+
+/**
+ * **I11** · 任务 → 需求：`task.req_ids` 是正式承接关系，
+ * 不能与 `after` 的前置关系混用。
+ *
+ * ⚠ 与 `I9` 分层：I9 只核“引用存在 + kind 对”，本函数核“关系语义”。
+ *   当前账本 TSK-048 的旧形态是 `after=["R-008"]` 而非 `req_ids=["R-008"]`，
+ *   于是 R-008 被组合视图误读成“没人接”。
+ *
+ * @param {Array<Record<string, any>>} units - 索引单元
+ * @returns {string[]} 问题清单（空 = 绿）
+ */
+export function checkI11(units) {
+  const problems = []
+  const byId = new Map(units.map((u) => [String(u.id), u]))
+  for (const t of units.filter((u) => u.kind === 'task')) {
+    const raw = t.req_ids
+    if (raw === undefined) continue
+    if (!Array.isArray(raw)) {
+      problems.push(`${t.id}：\`req_ids\` **不是数组**（${JSON.stringify(raw)}）⇒ 无法判断它服务哪些需求`)
+      continue
+    }
+    const reqIds = raw.map((x) => String(x).trim()).filter((x) => x !== '')
+    if (reqIds.length === 0) {
+      problems.push(`${t.id}：\`req_ids\` **为空** ⇒ 写了就必须至少承接一条需求（⛔ 不用空数组占位）`)
+      continue
+    }
+    for (const rid of reqIds) {
+      const r = byId.get(rid)
+      if (r === undefined) {
+        problems.push(`${t.id}：\`req_ids\` 里的 \`${rid}\` **不存在** ⇒ 承接对象判不出`)
+      } else if (r.kind !== 'req') {
+        problems.push(`${t.id}：\`req_ids\` 里的 \`${rid}\` 是 \`${r.kind}\`（应为 req）⇒ 承接关系指向了别的对象`)
+      }
+    }
+    const afterReqs = (Array.isArray(t.after) ? t.after : [])
+      .map((x) => String(x))
+      .filter((x) => byId.get(x)?.kind === 'req')
+    const overlap = reqIds.filter((x) => afterReqs.includes(x))
+    if (overlap.length > 0) {
+      problems.push(`${t.id}：\`req_ids\` 与 \`after\` 同时包含 ${overlap.join(' / ')} ⇒ 承接与前置混用（⛔ 一条关系只落一个字段）`)
+    }
+  }
+  return problems
+}
+
+/**
+ * **I12 · 退役完整性与不可复活**。
+ *
+ * 用户冻结契约：退役需求必须保留原编号 / 原正文指针 / 原因 / 时间 /
+ * 替代者（若有）/ 承载体，并且不得再被活跃方案、任务或目标引用。
+ *
+ * ⚠ 不接受“标题像退役”这种自由文本；只认封闭字段与真实引用。
+ *
+ * @param {Array<Record<string, any>>} units - 索引单元
+ * @param {(p: string) => boolean} pathExists - 归档指针存在性
+ * @returns {string[]} 问题清单
+ */
+export function checkI12(units, pathExists = () => true) {
+  const problems = []
+  const byId = new Map(units.map((u) => [String(u.id), u]))
+  const retired = units.filter((u) => u.kind === 'req' && String(u.status) === 'retired')
+  const REQUIRED = [
+    ['retired_title', '退役前标题'],
+    ['retired_body', '逐字节原文归档指针'],
+    ['retired_reason', '退役原因'],
+    ['retired_at', '退役时间'],
+    ['carried_by', '承载体'],
+  ]
+  for (const r of retired) {
+    for (const [field, label] of REQUIRED) {
+      if (typeof r[field] !== 'string' || r[field].trim() === '') {
+        problems.push(`${r.id}：退役缺 \`${field}\`（${label}）⇒ 六项元数据不完整`)
+      }
+    }
+    if (typeof r.retired_body === 'string' && r.retired_body.trim() !== '' && !pathExists(r.retired_body)) {
+      problems.push(`${r.id}：退役正文归档 \`${r.retired_body}\` **不存在** ⇒ 原文没有保全`)
+    }
+    if (r.replaced_by !== undefined && String(r.replaced_by).trim() !== '') {
+      const rep = byId.get(String(r.replaced_by))
+      if (rep === undefined || rep.kind !== 'req' || String(rep.status) !== 'agreed') {
+        problems.push(`${r.id}：\`replaced_by=${r.replaced_by}\` 不是一条活跃需求 ⇒ 替代者判不出`)
+      }
+    }
+  }
+  /**
+   * ⚠ 退役需求可以继续出现在 `acc.acceptance_ids` 这是**历史覆盖**；
+   * 但 **change.addresses / goal.req_ids / task.req_ids** 是活跃依据，一律禁止。
+   */
+  for (const u of units) {
+    const refs = [
+      ...(u.kind === 'change' ? (Array.isArray(u.addresses) ? u.addresses : []) : []),
+      ...(u.kind === 'goal' ? (Array.isArray(u.req_ids) ? u.req_ids : []) : []),
+      ...(u.kind === 'task' ? (Array.isArray(u.req_ids) ? u.req_ids : []) : []),
+    ]
+    for (const ref of refs) {
+      const r = byId.get(String(ref))
+      if (r?.kind === 'req' && String(r.status) === 'retired') {
+        problems.push(`${u.id}：仍把退役需求 \`${ref}\` 当作活跃依据`)
+      }
+    }
+  }
+  return problems
+}
+
+/**
+ * **Current 页合约**：只读当前入口必须回答“在等谁、下一步是什么”。
+ *
+ * ⚠ 检查的是可消费结构，不是文风：
+ *   · 四类关键区必须存在：等你决定 / 验收行动项 / 执行异常或在途 / 风险与目标；
+ *   · 空态必须写“0 条”或“没有”，⛔ 不以空白冒充；
+ *   · ⛔ 不许出现百分比；
+ *   · 有实现证据但缺直属验收的任务，必须与“证据和验收都缺”分开。
+ *
+ * @param {string} src - Current 页全文
+ * @returns {string[]} 问题清单
+ */
+export function checkCurrent(src) {
+  const problems = []
+  const text = String(src ?? '')
+  if (text.trim() === '') return ['Current 页为空 ⇒ 无法回答当前在等谁']
+  const REQUIRED = [
+    '## 一、现在在等谁',
+    '### 等你决定',
+    '### 验收行动项',
+    '### 验收时间读数',
+    '### 执行异常 / 在途',
+    '## 二、风险与目标',
+    '## 三、最近有效决策',
+    '## 四、读数边界',
+  ]
+  for (const heading of REQUIRED) {
+    if (!text.includes(heading)) problems.push(`缺关键区：${heading}`)
+  }
+  if (!/(\*\*0 条\*\*|没有)/.test(text)) problems.push('空态没有明写“0 条 / 没有” ⇒ 空白可能被误读成没查')
+  /**
+   * ⚠ RSK-001 的可见面：Current 必须把“已判决验收 / 带 verified_at / 缺”
+   *   三个读数同时写出来；只写一句风险标题不算看见缺口。
+   */
+  if (!/已判决验收：\*\*\d+\*\* 条 · 带 `verified_at`：\*\*\d+\*\* 条 · 缺：\*\*\d+\*\* 条/.test(text)) {
+    problems.push('缺“验收时间读数”三档（已判决 / 带时间 / 缺）⇒ 判决时刻缺口不可见')
+  }
+  if (!text.includes('`hob_orch_control accept|send-back` 强制 `verifiedAt`')) {
+    problems.push('缺“新判决强制 verifiedAt”读数 ⇒ 看不到风险是止住新增还是继续扩大')
+  }
+  if (!text.includes('历史“完成 → 判决”时间差：**仍未被度量**')) {
+    problems.push('缺“历史时间差仍未被度量”读数 ⇒ 容易把新机制误读成历史缺口已补')
+  }
+  /**
+   * ⚠ 截图实测：旧页把“执行中的任务”叫“等验收”⇒ 上方写 0 条，
+   *   下方注意力视图却列 15 条验收事项。两处必须讲同一件事：
+   *   需求级未通过 + 任务直属缺口都算“验收行动项”。
+   */
+  if (!text.includes('仍需验收行动；这不表示还有执行中的活')) {
+    problems.push('缺“没有执行中的活 ≠ 验收已收口”的消歧句 ⇒ 容易把 0 条在途误读成账本已收口')
+  }
+  if (/(?<!\d)\d+(?:\.\d+)?\s*%/.test(text)) problems.push('Current 页出现百分比 ⇒ ⛔ 不许展示完成度')
+  if (text.includes('覆盖关系缺口（已结束但缺直属验收）')) {
+    // 两档同时在场：结构上可分辨。
+  } else if (text.includes('已交付但当前账本里')) {
+    problems.push('存在覆盖关系缺口，但没有单列“已结束但缺直属验收”一档')
+  }
+  return problems
 }
 
 /**
@@ -1062,6 +1248,7 @@ export function checkI9(units) {
     affects: [],          // risk 的影响面：可以是任何单元
     evidence_refs: ['evidence'],
     acceptance_ids: ['acc'],
+    req_ids: ['req'],
     basis: ['evidence'],
     basis_readings: [],
   }
@@ -1797,7 +1984,7 @@ export function accVerdict(a) {
  *   R5 的 `REPORT-R5.md` §五-1 自己写了"同一件事两个落点"，而它**只写在报告里** ——
  *   报告不会拦住下一个人的手。写进判据，下一轮的人才改不动它。
  *
- * ⚠⚠ **这条判据治的是一次真实的漂**：R5 给 `check-ledger-next.mjs` 加了 `outcome ?? status`，
+ * ⚠⚠ **这条判据治的是一次真实的漂**：R5 给 `check-ledger.mjs` 加了 `outcome ?? status`，
  *   而 `src/shared/convergence.ts` 的 K-3 **仍然只读 `outcome`** ⇒ 同一个事实两个落点、已经漂了。
  *   后果：本账本 28 条 acc 的 `outcome` 全空、其中 25 条 `status=pass`，
  *   一旦有 change 的 `addresses` 指向挂着 acc 的需求，K-3 会报「验收都不是 `pass`（实测：ACC-xxx=null）」
@@ -2180,7 +2367,7 @@ export function checkF3(units) {
 /**
  * **F-4** · `run.report` 出现时必须是账本区内**真实存在的 `.md`**（相对账本区根）。
  *
- * ⚠ 用现成的 `pathExists` 口径（相对 `ledger-next/` 根），⛔ 不另拼一套路径解析。
+ * ⚠ 用现成的 `pathExists` 口径（相对 `ledger/` 根），⛔ 不另拼一套路径解析。
  *
  * @param {Array<Record<string, any>>} units - 索引单元
  * @param {(p:string)=>boolean} pathExists - 相对账本区根的路径存在性判据
@@ -2399,7 +2586,7 @@ if (IS_MAIN) try {
       bad(`I5b **生成器自己渲染不出 §4.1 块** ⇒ 「两处块 == 生成器输出」失去基准（不按通过处理）：${renderErr}`)
     } else {
       /**
-       * ⚠ 正本 `CONTEXT.md` 在**账本根**上，不在 `ledger-next/` 里（`LEDGER` = `.../ledger-next`）。
+       * ⚠ 正本 `CONTEXT.md` 在**账本根**上，不在 `ledger/` 里（`LEDGER` = `.../ledger`）。
        *   ⇒ 用 `dirname(LEDGER)`。⛔ 别把两个根混成一个（P4 那次"索引在错的位置"就是这种）。
        */
       /**
@@ -2636,7 +2823,8 @@ if (IS_MAIN) try {
       const oe = checkOrphanE1(STORED_ORPHAN_REQ)
       if (oe.length === 0) {
         ok(`P-1-E1 ✓ **孤儿豁免名单只减不增**：当前 **${STORED_ORPHAN_REQ.length}** 条 ≤ 上一轮记录 **${STORED_ORPHAN_REQ_MAX}** 条`
-          + `（逐条：${STORED_ORPHAN_REQ.map((e) => e.id).join(' / ') || '空'}；⚠ 本轮实测孤儿 2 条 ≤ 3 ⇒ 走第二档"强制 + 登记豁免"）`)
+          + `（逐条：${STORED_ORPHAN_REQ.map((e) => e.id).join(' / ') || '空'}；⚠ 本轮实测孤儿 ${portfolio?.orphans?.length ?? '判不出'} 条`
+          + ` ≤ 3 ⇒ 走第二档"强制 + 登记豁免"）`)
       } else for (const x of oe) bad(`P-1-E1 · ${x}`)
     }
 
@@ -2690,16 +2878,16 @@ if (IS_MAIN) try {
     {
       /**
        * ⚠⚠ **2026-11-01 P40/R7 修的一处真 bug**：这里原来写的是 `join(LEDGER, p)`，
-       *   即**相对 `ledger-next/`** 解析；而 `checkF4` 的文档注释与作业书都写的是
-       *   **「相对账本区根」** —— 两者**矛盾**，且 `archive/` 是 `ledger-next/` 的**兄弟目录**
-       *   （`<账本根>/archive/…` vs `<账本根>/ledger-next/…`）⇒ 按旧写法，
+       *   即**相对 `ledger/`** 解析；而 `checkF4` 的文档注释与作业书都写的是
+       *   **「相对账本区根」** —— 两者**矛盾**，且 `archive/` 是 `ledger/` 的**兄弟目录**
+       *   （`<账本根>/archive/…` vs `<账本根>/ledger/…`）⇒ 按旧写法，
        *   任何指向 `archive/**` 的回传件都会被判「账本区里不存在这份文件」。
        *
        * ⚠ 为什么这个 bug 直到今天才现形：**`run.report` 此前一条真实数据都没有**
        *   （F-7 覆盖率读数：26 条 run 全空）⇒ 这条判据在真账本上**从没被执行过**。
        *   本轮 `RUN-027` 是第一条带 `report` 的 run，一上来就把它踩出来了。
        *
-       * ⇒ 按**文档口径**修（账本区根 = `ledger-next/` 的上级），⛔ 不是把文档改成迁就代码。
+       * ⇒ 按**文档口径**修（账本区根 = `ledger/` 的上级），⛔ 不是把文档改成迁就代码。
        */
       const LEDGER_ROOT = join(LEDGER, '..')
       const pathExistsInLedger = (p) => existsSync(join(LEDGER_ROOT, p))
@@ -2825,8 +3013,24 @@ if (IS_MAIN) try {
     else for (const p of i8.probs) bad(`I8 · ${p}`)
 
     const i9 = gate('I9', checkI9)
-    if (i9.ok) ok(`I9 ✓ **引用不断链**：\`risk_ids\` / \`addresses\` / \`decisions\` / \`affects\` / \`evidence_refs\` / \`acceptance_ids\` / \`basis\` 里的 id 全部真实存在（${i9.msg}）`)
+    if (i9.ok) ok(`I9 ✓ **引用不断链**：\`risk_ids\` / \`addresses\` / \`task.req_ids\` / \`decisions\` / \`affects\` / \`evidence_refs\` / \`acceptance_ids\` / \`basis\` 里的 id 全部真实存在（${i9.msg}）`)
     else for (const p of i9.probs) bad(`I9 · ${p}`)
+
+    const i11 = gate('I11', checkI11)
+    if (i11.ok) ok(`I11 ✓ **任务 → 需求正式承接**：本索引 ${units.filter((u) => u.kind === 'task' && Array.isArray(u.req_ids)).length} 条任务写了 \`req_ids\`；逐项指向真实 \`req\`，且不与 \`after\` 的前置关系混用（${i11.msg}）`)
+    else for (const p of i11.probs) bad(`I11 · ${p}`)
+
+    const i12 = gate('I12', (xs) => checkI12(xs, (rel) => existsSync(join(dirname(LEDGER), rel))))
+    if (i12.ok) ok(`I12 ✓ **退役可追踪且不可复活**：本索引 ${units.filter((u) => u.kind === 'req' && String(u.status) === 'retired').length} 条退役需求均保留标题 / 正文 / 原因 / 时间 / 承载体，且不被活跃方案 / 任务 / 目标引用（${i12.msg}）`)
+    else for (const p of i12.probs) bad(`I12 · ${p}`)
+
+    {
+      let current = ''
+      try { current = readFileSync(join(LEDGER, 'spec', 'current.md'), 'utf8') } catch { current = '' }
+      const probs = checkCurrent(current)
+      if (probs.length === 0) ok('CURRENT ✓ 当前页合约成立：等用户 / 验收行动项 / 执行异常 / 风险目标 / 最近决策五区齐全；空态明写；无百分比；需求级与任务直属验收缺口分开')
+      else for (const p of probs) bad(`CURRENT · ${p}`)
+    }
 
     /** ── I-E1 · 存量豁免名单只减不增 + 每条必须有原因与清理计划 ── */
     {
@@ -3033,7 +3237,12 @@ if (IS_MAIN) try {
              *   而实际漏核的那份**不会红**（"文案少说一份"正是本仓最忌的假覆盖形态）。
              */
             const specNames = Object.keys(renderSpecArtifacts(units, { constitutionBytes: cb, convergence: convFn }))
-            const sizes = specNames.map((n) => `${n} ${Buffer.byteLength(readFileSync(join(LEDGER, 'spec', n), 'utf8'), 'utf8')} B`).join(' · ')
+            const sizes = specNames.map((n) => {
+              const p = n === 'requirement-root.md'
+                ? join(dirname(LEDGER), 'REQUIREMENTS.md')
+                : join(LEDGER, 'spec', n)
+              return `${n} ${Buffer.byteLength(readFileSync(p, 'utf8'), 'utf8')} B`
+            }).join(' · ')
             ok(`I5c ✓ **${specNames.length} 份 spec 快照逐字节 == 生成器输出**（${sizes}）`
               + ' ⇒ 快照不可能被手改而不被发现')
           } else for (const x of p5c) bad(`I5c · ${x}`)
@@ -3262,39 +3471,24 @@ if (IS_MAIN) try {
 
   // ── N-I10b：验收 acc 的 parent 链指不回该需求 ⇒ I10 必红（⚠ 只测"挂了一条错 acc"，不只测空）──
   {
-    const target = units.find((u) => u.kind === 'req' && String(u.status) === 'agreed'
-      && Array.isArray(u.acceptance_ids) && u.acceptance_ids.length > 0)
     /**
-     * ⚠⚠ **夹具必须真挑一条"指不回 target"的 acc**（实测踩过）：
-     *   第一版随手取 `units.find(kind==='acc')` = `ACC-001`，而它**正好就是 R-002 的验收**
-     *   ⇒ 换上去仍然指得回 ⇒ I10 绿灯 ⇒ 对拍报"判据哑了"（**假哑**，实为夹具选错）。
-     *   ⇒ 现在**显式挑一条 parent 链走不到 target 的 acc**，并自证它确实走不到。
+     * ⚠ 合成账本，不借用真实条目：
+     *   R-A 要 ACC-X；ACC-X 挂在 TSK-B 下，TSK-B 承接 R-B，Change 也只承接 R-B。
+     *   这条“真实存在但到不了 R-A”的覆盖必须被 I10 判红。
      */
-    const reachTo = (acc) => {
-      const byId = new Map(units.map((x) => [x.id, x]))
-      let cur = byId.get(String(acc.parent ?? ''))
-      for (let hop = 0; hop < 3 && cur !== undefined; hop++) {
-        if (cur.id === target?.id) return true
-        if (cur.kind === 'req') return false
-        cur = byId.get(String(cur.parent ?? ''))
-      }
-      return false
-    }
-    const otherAcc = target === undefined
-      ? undefined
-      : units.find((u) => u.kind === 'acc' && u.parent !== undefined && !reachTo(u))
-    if (target === undefined || otherAcc === undefined) {
-      bad('N-I10b · 找不到「有 acceptance_ids 的需求」或「一条 parent 链真指不回它的 acc」⇒ 本条不可判')
-    } else {
-      // 把该需求的 acceptance_ids 换成一个**真实存在但 parent 链指不回来**的 acc
-      const mut = units.map((u) => (u.id === target.id ? { ...u, acceptance_ids: [otherAcc.id] } : u))
-      const reallyBroken = JSON.stringify(mut.find((u) => u.id === target.id).acceptance_ids) === JSON.stringify([otherAcc.id])
-      const probs = checkI10(mut)
-      const hit = probs.find((x) => x.startsWith(target.id) && x.includes('指不回'))
-      if (!reallyBroken) bad('N-I10b · 夹具没真的换掉 acceptance_ids ⇒ 本条不可判')
-      else if (hit !== undefined) ok(`N-I10b ✓ 负向对拍（先自证：把 \`${target.id}\` 的验收改成 \`${otherAcc.id}\`（真实存在但 parent 指不回它））⇒ I10 的"覆盖是假的"**必红**：${hit.slice(0, 90)}`)
-      else bad('N-I10b · 挂了条指不回需求的 acc，I10 却绿灯 ⇒ 只核了"有没有"，没核"指得回"')
-    }
+    const target = { id: 'R-A', kind: 'req', status: 'agreed', acceptance_ids: ['ACC-X'] }
+    const otherAcc = { id: 'ACC-X', kind: 'acc', parent: 'TSK-B' }
+    const fixture = [
+      target,
+      { id: 'R-B', kind: 'req', status: 'agreed', acceptance_ids: [] },
+      { id: 'CHG-B', kind: 'change', status: 'settled', addresses: ['R-B'] },
+      { id: 'TSK-B', kind: 'task', status: 'built', parent: 'CHG-B', req_ids: ['R-B'] },
+      otherAcc,
+    ]
+    const probs = checkI10(fixture)
+    const hit = probs.find((x) => x.startsWith(target.id) && x.includes('覆盖是假的'))
+    if (hit !== undefined) ok(`N-I10b ✓ 负向对拍（合成三跳夹具：\`${target.id}\` 的验收 \`${otherAcc.id}\` 存在，但整条父链与承接边只到 R-B）⇒ I10 的"覆盖是假的"**必红**：${hit.slice(0, 90)}`)
+    else bad('N-I10b · 挂了条指不回需求的 acc，I10 却绿灯 ⇒ 只核了"有没有"，没核"指得回"')
   }
 
   // ── N-I10c：acceptance_ids 指向**不存在**的 id ⇒ I10 必红（判不出 ⇒ 红）──
@@ -3313,6 +3507,139 @@ if (IS_MAIN) try {
       else if (hit !== undefined) ok(`N-I10c ✓ 负向对拍（先自证：\`${ghost}\` 在索引里不存在）⇒ I10 的"悬空引用不许放过"**必红**：${hit.slice(0, 90)}`)
       else bad('N-I10c · 指向不存在的 acc 却绿灯 ⇒ 悬空引用被静默放过了（正是 §四 要堵的洞）')
     }
+  }
+
+  // ── N-I11：task.req_ids 指向不存在的需求 / 与 after 混用 ⇒ I11 必红 ──
+  {
+    const badFixtures = [
+      { id: 'R-001', kind: 'req', title: '真实需求', parent: 'spec/progress', status: 'agreed', after: [], source: '夹具' },
+      { id: 'CHG-X', kind: 'change', title: '真实方案', parent: 'R-001', status: 'settled', after: [], source: '夹具', proposal: 'changes/x/proposal.md', built_by: 'session-X' },
+      { id: 'TSK-911', kind: 'task', title: '悬空承接', parent: 'CHG-X', status: 'todo', after: [], source: '夹具', req_ids: ['R-9999'] },
+      { id: 'TSK-912', kind: 'task', title: '承接与前置混用', parent: 'CHG-X', status: 'todo', after: ['R-001'], source: '夹具', req_ids: ['R-001'] },
+    ]
+    const badProbs = checkI11(badFixtures)
+    const ghostHit = badProbs.find((x) => x.includes('R-9999') && x.includes('不存在'))
+    const overlapHit = badProbs.find((x) => x.includes('同时包含') && x.includes('R-001'))
+    const goodProbs = checkI11([
+      { id: 'R-001', kind: 'req', title: '真实需求', parent: 'spec/progress', status: 'agreed', after: [], source: '夹具' },
+      { id: 'CHG-X', kind: 'change', title: '真实方案', parent: 'R-001', status: 'settled', after: [], source: '夹具', proposal: 'changes/x/proposal.md', built_by: 'session-X' },
+      { id: 'TSK-913', kind: 'task', title: '正确承接', parent: 'CHG-X', status: 'todo', after: [], source: '夹具', req_ids: ['R-001'] },
+    ])
+    if (ghostHit === undefined) {
+      bad('N-I11 · `req_ids` 指向不存在的需求，I11 **没报红** ⇒ 承接关系可指空气')
+    } else if (overlapHit === undefined) {
+      bad('N-I11 · `req_ids` 与 `after` 同时含同一条需求，I11 **没报红** ⇒ 前置与承接仍可混用')
+    } else if (goodProbs.length !== 0) {
+      bad(`N-I11 · 反向对照失败（正确的 req_ids 仍红：${JSON.stringify(goodProbs)}）`)
+    } else {
+      ok('N-I11 ✓ 负向对拍（先自证：`req_ids=["R-9999"]` 悬空；另一条 `req_ids` 与 `after` 同含 R-001）'
+        + ' ⇒ I11 对“悬空承接”与“承接/前置混用”两档都**变红**；**反面**：唯一承接 R-001、`after=[]` ⇒ 绿')
+    }
+  }
+
+  // ── N-I12：退役缺归档 / 仍被活跃引用 ⇒ I12 必红 ──
+  {
+    const retired = {
+      id: 'R-998',
+      kind: 'req',
+      status: 'retired',
+      title: 'R-998',
+      retired_title: '已退役需求',
+      retired_body: 'archive/2026-11-02-requirement-root-retire/REQ-99.md',
+      retired_reason: '已由其他契约承接',
+      retired_at: '2026-11-02',
+      carried_by: 'workflow.toml',
+      replaced_by: '',
+    }
+    const ghost = checkI12([retired], () => false)
+    const active = checkI12([
+      retired,
+      { id: 'G-998', kind: 'goal', title: '目标', status: 'active', req_ids: ['R-998'] },
+    ], () => true)
+    const good = checkI12([retired], () => true)
+    if (!ghost.some((x) => x.includes('不存在'))) {
+      bad('N-I12 · 退役正文归档不存在却未红 ⇒ 原文保全不可判')
+    } else if (!active.some((x) => x.includes('仍把退役需求'))) {
+      bad('N-I12 · 退役需求仍被目标引用却未红 ⇒ 退役仍可作为活跃依据')
+    } else if (good.length !== 0) {
+      bad(`N-I12 · 六项齐全且归档存在的正向对照仍红：${JSON.stringify(good)}`)
+    } else {
+      ok('N-I12 ✓ 负向对拍（先自证：归档指针指向空气；另一夹具把退役需求挂进 goal.req_ids）'
+        + ' ⇒ I12 对“原文丢失”与“退役复活”两档都**变红**；**反面**：六项齐全且不被活跃引用 ⇒ 绿')
+    }
+  }
+
+  // ── N-I12b：退役/丢弃需求不得进入“当前需求轴”和缺口统计 ──
+  {
+    const unitsWithLifecycle = [
+      { id: 'R-LIVE', kind: 'req', title: '仍在生效', parent: 'spec/x', status: 'agreed', after: [], source: '夹具', acceptance_ids: ['ACC-LIVE'] },
+      { id: 'R-RET', kind: 'req', title: '已退役', parent: 'spec/x', status: 'retired', after: [], source: '夹具' },
+      { id: 'R-DROP', kind: 'req', title: '已丢弃', parent: 'spec/x', status: 'dropped', after: [], source: '夹具' },
+      { id: 'G-LIVE', kind: 'goal', title: '用户目标', parent: '', status: 'active', after: [], source: '夹具', req_ids: ['R-LIVE'] },
+      { id: 'ACC-LIVE', kind: 'acc', title: '验收', parent: 'TSK-LIVE', status: 'pass', after: [], source: '夹具', actor: '第三方', basis: ['EVD-LIVE'] },
+      { id: 'TSK-LIVE', kind: 'task', title: '任务', parent: 'CHG-LIVE', status: 'built', after: [], source: '夹具', req_ids: ['R-LIVE'], verify_refs: ['EVD-LIVE'] },
+      { id: 'CHG-LIVE', kind: 'change', title: '方案', parent: 'R-LIVE', status: 'settled', after: [], source: '夹具', proposal: 'changes/live/proposal.md', built_by: '实施' , addresses: ['R-LIVE'] },
+      { id: 'EVD-LIVE', kind: 'evidence', title: '读数', parent: 'TSK-LIVE', status: 'recorded', after: [], source: '夹具', reading: '测试读数', taken_at: '2026-11-02', code_state: '判不出' },
+    ]
+    const axis = renderSpecArtifacts(unitsWithLifecycle)['requirements.md']
+    const root = renderSpecArtifacts(unitsWithLifecycle)['requirement-root.md']
+    const goneFromAxis = !axis.includes('| R-RET |') && !axis.includes('| R-DROP |')
+    const goneFromRoot = !root.includes('| R-RET |') && !root.includes('| R-DROP |')
+    const liveStillThere = axis.includes('| R-LIVE |') && root.includes('| R-LIVE |')
+    const retiredGaps = axis.includes('R-RET：') || axis.includes('R-DROP：')
+    if (!liveStillThere) {
+      bad('N-I12b · 正向对照失败：活跃需求没有出现在需求轴/需求根 ⇒ 对拍不可判')
+    } else if (!goneFromAxis) {
+      bad('N-I12b · `retired` 或 `dropped` 需求重新进入活跃需求轴 ⇒ 用户会同时看到“当前需求”和“已退役需求”')
+    } else if (!goneFromRoot) {
+      bad('N-I12b · `REQUIREMENTS.md` 泄漏退役/丢弃需求 ⇒ 根不再是单一活跃需求面')
+    } else if (retiredGaps) {
+      bad('N-I12b · 退役/丢弃需求被算进“当前链路缺口” ⇒ 缺口读数虚增')
+    } else {
+      ok('N-I12b ✓ 负向对拍（同一夹具同时放 agreed / retired / dropped）：需求轴与 REQUIREMENTS.md 只保留 agreed，退役/丢弃既不进活跃表也不进缺口；反面：活跃需求仍出现')
+    }
+  }
+
+  // ── F-9：新 run 必须记录实际使用的模型面版本与哈希 ──
+  {
+    const boundary = '2026-11-01T00:00:00+08:00'
+    const picked = units.filter((u) => u.kind === 'run'
+      && typeof u.delivered_at === 'string' && u.delivered_at >= boundary)
+    const problems = []
+    for (const r of picked) {
+      const v = String(r.prompt_version ?? '')
+      const h = String(r.prompt_hash ?? '')
+      if (!/^v\d+$/.test(v)) problems.push(`${r.id}：prompt_version=${JSON.stringify(v)}（要 vN）`)
+      if (!/^[a-f0-9]{64}$/.test(h)) problems.push(`${r.id}：prompt_hash=${JSON.stringify(h)}（要 64 位小写 SHA-256）`)
+    }
+    if (picked.length === 0) bad('F-9 · 没有新 run 可核 ⇒ 本条不可判（⛔ 不按通过）')
+    else if (problems.length === 0) {
+      ok(`F-9 ✓ **新 run 都钉住实际模型面**：${picked.length} 条（${picked.map((r) => r.id).join(' / ')}）逐条有 \`vN\` 与 64 位 SHA-256`)
+    } else for (const p of problems) bad(`F-9 · ${p}`)
+  }
+
+  // ── N-CURRENT：去掉风险区 / 写入百分比 ⇒ Current 合约必红 ──
+  {
+    let current = ''
+    try { current = readFileSync(join(LEDGER, 'spec', 'current.md'), 'utf8') } catch { current = '' }
+    const withoutRisk = current.replace('## 二、风险与目标', '## 二、其它')
+    const withPercent = current.replace('## 四、读数边界', '完成度 50%\n\n## 四、读数边界')
+    const withoutVerifiedReading = current.replace(
+      /### 验收时间读数[\s\S]*?(?=\n### 目标)/,
+      '',
+    )
+    const noMissing = checkCurrent(withoutRisk).some((x) => x.includes('风险与目标'))
+    const percentHit = checkCurrent(withPercent).some((x) => x.includes('百分比'))
+    const verifiedHit = checkCurrent(withoutVerifiedReading).some((x) => x.includes('验收时间读数'))
+    const good = checkCurrent(current)
+    if (!noMissing) bad('N-CURRENT · 删掉风险区后仍绿 ⇒ 页面栏目不是硬合约')
+    else if (!percentHit) bad('N-CURRENT · 写入百分比后仍绿 ⇒ “零完成度”合约失效')
+    else if (!verifiedHit) bad('N-CURRENT · 删掉“验收时间读数”后仍绿 ⇒ RSK-001 的缺口可在页面上消失')
+    else if (!checkCurrent(current.replace(/新判决入口：.*\n/, '')).some((x) => x.includes('新判决强制 verifiedAt'))) {
+      bad('N-CURRENT · 删掉“新判决强制 verifiedAt”后仍绿 ⇒ 看不到风险有没有继续扩大')
+    }
+    else if (good.length !== 0) bad(`N-CURRENT · 正向 Current 页仍红：${JSON.stringify(good)}`)
+    else ok('N-CURRENT ✓ 负向对拍（删掉风险区 / 插入 50% 完成度 / 删掉验收时间读数）⇒ 三条都必红；正向页绿')
   }
 
   // ── N-I7：`built` 任务的 `verify_refs` 置空 ⇒ I7 必红 ──
@@ -3445,6 +3772,11 @@ if (IS_MAIN) try {
   {
     const tmp = join(WORK, 'mut-checkpoint')
     cpSync(LEDGER, tmp, { recursive: true })
+    /**
+     * `checkI5c` 现在同时核派生根；临时账本副本的父目录不是真实账本根，
+     * 因此必须把真实根页放进副本父目录，否则“正向写回”仍会报读不到。
+     */
+    cpSync(join(dirname(LEDGER), 'REQUIREMENTS.md'), join(dirname(tmp), 'REQUIREMENTS.md'))
     const cp = join(tmp, 'spec', 'checkpoint.md')
     const orig = readFileSync(cp, 'utf8')
     // ⚠ 自证：改的确实是**快照正文**里的一个字符
@@ -3488,6 +3820,7 @@ if (IS_MAIN) try {
   {
     const tmp = join(WORK, 'mut-i5c2')
     cpSync(LEDGER, tmp, { recursive: true })
+    cpSync(join(dirname(LEDGER), 'REQUIREMENTS.md'), join(dirname(tmp), 'REQUIREMENTS.md'))
     const cp = join(tmp, 'spec', 'checkpoint.md')
     const orig = readFileSync(cp, 'utf8')
     /**
@@ -3936,6 +4269,32 @@ if (IS_MAIN) try {
     }
   }
 
+  // ── N-F9：新 run 缺模型面版本 / 哈希形态错 ⇒ 必红 ──
+  {
+    const modelRunProbs = (rs) => {
+      const out = []
+      for (const r of rs) {
+        const v = String(r.prompt_version ?? '')
+        const h = String(r.prompt_hash ?? '')
+        if (!/^v\d+$/.test(v)) out.push(`${r.id}:version`)
+        if (!/^[a-f0-9]{64}$/.test(h)) out.push(`${r.id}:hash`)
+      }
+      return out
+    }
+    const goodHash = 'e63b392868f49e44e3d02c582389843783c2f9f5b673dd9689a69bd27168b9f8'
+    const base = { kind: 'run', status: 'returned', delivered_at: '2026-11-02T10:00:00+08:00' }
+    const good = [{ ...base, id: 'RUN-951', prompt_version: 'v1', prompt_hash: goodHash }]
+    const noVersion = [{ ...base, id: 'RUN-952', prompt_hash: goodHash }]
+    const badHash = [{ ...base, id: 'RUN-953', prompt_version: 'v1', prompt_hash: 'latest' }]
+    const pGood = modelRunProbs(good)
+    const pV = modelRunProbs(noVersion)
+    const pH = modelRunProbs(badHash)
+    if (pGood.length !== 0) bad(`N-F9 · 正向对照失败（合法 v1+hash 仍红）：${JSON.stringify(pGood)}`)
+    else if (!pV.some((x) => x.endsWith(':version'))) bad('N-F9 · 缺 prompt_version 未被判红 ⇒ 运行可对不上提示词版本')
+    else if (!pH.some((x) => x.endsWith(':hash'))) bad('N-F9 · 非 64 位 SHA-256 未被判红 ⇒ “版本”可被自由文本冒充')
+    else ok('N-F9 ✓ 负向对拍（缺 prompt_version / prompt_hash="latest"）⇒ 两条各必红；正向 v1 + 64 位 SHA-256 ⇒ 绿')
+  }
+
   // ── N-P1：`agreed` 且无 change 无 pass acc ⇒ 必红；有 pass acc ⇒ 必绿 ──
   {
     /**
@@ -4158,7 +4517,7 @@ if (IS_MAIN) try {
     /**
      * ⚠⚠ **F-4 的正向对照必须用"真的解析"**（2026-11-01 P40/R7）：上面 `o4` 注入的是
      *   `() => true`，它只证明"给了 true 就不红"，⛔ 证明不了**路径基准对不对**。
-     *   而本轮修的正是基准（相对 `ledger-next/` → 相对账本区根）。
+     *   而本轮修的正是基准（相对 `ledger/` → 相对账本区根）。
      *   ⇒ 用**真文件 + 真基准**再核一遍：一份真存在、一份真不存在。
      */
     const realBase = join(LEDGER, '..')
@@ -4178,7 +4537,7 @@ if (IS_MAIN) try {
     /**
      * ⚠ **F-4 的基准自证**（R7 加）：
      *   ① 真文件 + 真基准 ⇒ **必须绿**（⛔ 否则修完恒红）；
-     *   ② 同一份文件 + **旧基准**（相对 `ledger-next/`）⇒ **必须红** ——
+     *   ② 同一份文件 + **旧基准**（相对 `ledger/`）⇒ **必须红** ——
      *      这条是**这个 bug 的活体标本**：它证明"基准写错就会把真文件判成空气"。
      */
     const baseProof = realExists && p4real.length === 0 && p4wrongBase.length > 0
@@ -4191,7 +4550,7 @@ if (IS_MAIN) try {
     else ok(`N-F1..N-F5 ✓ 负向对拍（先自证：五个夹具分别是 ${cases.map(([, , , b]) => b).join(' · ')}）`
       + `⇒ 五条形态判据**各必红一条**；**正向对照**：${cases.map(([, , , , g]) => g).join(' · ')} ⇒ **全绿**（⛔ 不是恒红）`
       + `；⚠ **F-4 另加基准自证**：真文件 \`${realReportPath}\` 用**账本区根**基准 ⇒ **绿**（${p4real.length} 条问题）`
-      + `，用**旧基准**（相对 \`ledger-next/\`）⇒ **红**（${p4wrongBase.length} 条）—— 这就是本轮修的那个 bug 的活体标本`)
+      + `，用**旧基准**（相对 \`ledger/\`）⇒ **红**（${p4wrongBase.length} 条）—— 这就是本轮修的那个 bug 的活体标本`)
   }
 
   // ── N-F6：`todo` 任务上游全绿却缺 `budget`/`scope_paths` ⇒ 必红；补齐 ⇒ 绿 ──

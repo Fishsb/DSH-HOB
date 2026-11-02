@@ -392,7 +392,7 @@ const PRIMARY_FILES = derivePrimaryFiles()
  *   旧历史怎么退场 —— 用户读到的第一条是**过程**，不是需求。
  *
  * **判据（只咬需求面，⛔ 不咬方案面）**：
- *   · 扫 `REQUIREMENTS.md` + `volumes/requirements/REQ-*.md`；
+ *   · 扫 `REQUIREMENTS.md` + 模板；旧 `REQ-*.md` 卷已转入历史索引，⛔ 不再作为活跃需求面；
  *   · **禁止出现**：具体日期字面（`YYYY-MM-DD`）· 写入/读取工具名（`write_hob` / `read_contracts`）·
  *     拒绝 reason 值（`retired-historical` / `not-whitelisted`）· 变更/决策编号（`CHG-nn` / `UD-nn`）·
  *     机检脚本名（`check:*`）· 过程词（`本轮` / `上轮` / `本批` / `上一批`）。
@@ -453,7 +453,7 @@ export function runRequirementPurity({ bad, ok, skip }) {
      * ⚠ **只咬"结构"，不做语义判别**（本轮明确不冒充语义理解）：
      *   ① **技术性附录标题**：`^#{2,6}\s*附` 且标题含 怎么写 / 如何写 / 维护 / 操作 / 步骤 / 机检 / 编号规则；
      *   ② **操作指令句**：正文里出现「写进…」「加一行」「两处同批」「必须同时改」这类**祈使式维护动作**。
-     *   ⚠ 两条都只在**需求面**扫（根 + REQ 卷），⛔ 不扫骨架与方案。
+     *   ⚠ 两条都只在**需求面**扫（根 + 模板），⛔ 不扫历史卷与方案。
      */
     const STRUCT_HEADING = /^#{2,6}\s*(?:附|附录)[^\n]*(?:怎么写|如何写|维护|操作|步骤|机检|编号规则)/
     const STRUCT_ORDER = /写进|加一行|两处同批|必须同时改|不要写本文件|不写本文件|逐行核/g
@@ -528,13 +528,11 @@ export function runRequirementPurity({ bad, ok, skip }) {
   const targets = [{ p: rootPath, rel: 'REQUIREMENTS.md' }]
   const tplPath = join(root, 'kit', 'templates', 'REQUIREMENTS.md')
   if (existsSync(tplPath)) targets.push({ p: tplPath, rel: 'kit/templates/REQUIREMENTS.md（骨架模板）' })
-  const reqDir = join(LEDGER_ROOT, 'volumes', 'requirements')
-  if (existsSync(reqDir)) {
-    for (const name of readdirSync(reqDir).sort()) {
-      if (!/^REQ-.+\.md$/.test(name)) continue
-      targets.push({ p: join(reqDir, name), rel: `volumes/requirements/${name}` })
-    }
-  }
+  /**
+   * ⚠ 旧 `REQ-*.md` 是退役历史，不是当前需求面：
+   *   它们已经由维护者批准退役并保留归档，⛔ 不再被“当前需求纯度”扫描。
+   *   否则一条已退役原文里的历史措辞会让当前根被误判为混入过程痕迹。
+   */
   let total = 0
   for (const t of targets) {
     let src = ''
@@ -547,7 +545,7 @@ export function runRequirementPurity({ bad, ok, skip }) {
     }
   }
   if (total === 0) {
-    ok(`U ✓ 需求面**只记当前功能**：\`REQUIREMENTS.md\`（1 份根）+ 其**骨架模板**（1 份）+ ${targets.length - 2} 份需求卷`
+    ok(`U ✓ 需求面**只记当前功能**：\`REQUIREMENTS.md\`（1 份根）+ 其**骨架模板**（1 份）`
       + '里**无**具体日期 / 工具名 / 拒绝 reason / 变更编号 / 机检名 / 过程词，'
       + '**也无独立的技术维护附录 / 操作指令句**'
       + '（⚠ 反引号里的 `archive/...` 来源指针属合法例外，未被误咬）')
@@ -1160,7 +1158,7 @@ export function runDocShape({ bad, ok, noObject, skip }) {
     //     · `V`（package.json 的族 ⊆ 正本 §4.1）：现在由 `renderCheckFamiliesBlock` 承担 ——
     //       `package.json` 有而 catalog 没说明的族 ⇒ **渲染直接抛错**（不是"报红"，是根本生成不出来）。
     //     · `V2`（§4.1 不许有死行）：catalog 多一行而 `package.json` 已没有那个族 ⇒ **同样抛错**。
-    //     · 两处块内容一致：由 `check:ledger-next` 的 **`I5b`** 逐字节核对（比 V/V2 的集合包含更强）。
+    //     · 两处块内容一致：由 `check:ledger` 的 **`I5b`** 逐字节核对（比 V/V2 的集合包含更强）。
     //   ⚠ 保留 `vLedgerSrc` 等读数：下面的 `V3` 还要用它（V3 管的是 `build` / `typecheck`
     //     这类**非 `check:*`** 的必跑命令，与族清单无关，⛔ 不受本次删除影响）。
     {
@@ -1172,7 +1170,7 @@ export function runDocShape({ bad, ok, noObject, skip }) {
         bad('V3 读不到正本 `CONTEXT.md` ⇒ 「§4.1 的非 check 必跑命令在场」失去基准（不按通过处理）')
       }
       ok(`V / V2 **已删除**（2026-10-30 P7）：族清单改由 §4.1 生成块承载 —— `
-        + `少一族/多一族由生成器抛错拦住，两处块一致由 \`check:ledger-next\` 的 I5b 逐字节核对`
+        + `少一族/多一族由生成器抛错拦住，两处块一致由 \`check:ledger\` 的 I5b 逐字节核对`
         + `（⚠ 原 V 的 4 组自带样本一并删除：它们测的抽取器已不在本组里；`
         + `I5b 自带一条"手改块内一字符 ⇒ 必红" + 一条"改块外 ⇒ 不许红"的反向对照）`)
 

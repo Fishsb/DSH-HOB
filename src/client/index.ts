@@ -60,7 +60,7 @@ import { installHobUnselectedGate, notifySessionSelected } from './hob-unselecte
 import {
   STAGES_TAB_ID, STAGES_PANEL_TITLE, STAGES_GUIDE_ENTRY_ID, STAGES_GUIDE_ORDER,
   StagesPanel, StagesTabTitle, bindStagesTabType,
-} from './stages-panel.tsx'
+} from './project-panel.tsx'
 
 /** 包名：同时作为模块 id、槽位条目来源标识、settings namespace。 */
 const PACKAGE_NAME = 'dsh-hob'

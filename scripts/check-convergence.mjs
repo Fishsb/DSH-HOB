@@ -40,7 +40,7 @@ let pass = 0
 let fail = 0
 /**
  * ⚠ **第三档：跳过**（2026-11-02 · P50/D1 · `TASK-D1.md` §一第 3 件）。
- *   与 `check:ledger-next` 的同名档同口径：**跳过 ≠ 通过**，⛔ 不进 `pass`。
+ *   与 `check:ledger` 的同名档同口径：**跳过 ≠ 通过**，⛔ 不进 `pass`。
  *   ⚠ 为什么必须单列：0 条取代关系时三条双向核**一条也判不了**，
  *     塞进 `ok` ⇒ "没落数据"被洗成"全对"；塞进 `bad` ⇒ 上线即红。
  */
@@ -146,11 +146,11 @@ export const STORED_NOT_CONVERGED = [
      * ⚠⚠ **这条与上面两条不同**：它不是"历史欠账"，它是**本轮刚立的 change 的正常初态**。
      *   `TASK-R9.md` §三 明确只做第 1/2 步（提议 + 定案），⛔ 不做第 5 步（验收）——
      *   因为验收要的是**真机读数**，本轮拿不到（§四）。
-     *   ⇒ 它**必然**未收口，且 5 条阻断项**全是真实的**：
-     *     · K-1：零 task（活早在 `TSK-031/032/033` 做完，⛔ 不许补假 task）
-     *     · K-3 ×3：`ACC-001/002/003` 全 `unverified`（真机没验）
-     *     · K-4：`RSK-001` `status=open`（⛔ 不许为了好看改成 closed）
-     *   ⚠ 这与"判据误报"是两件事 —— 判据**判对了**，账本确实是那样。
+     *   ⇒ 它**当初**是为承接三条验收欠账而开的；后续 `ACC-001/002/003` 已全部
+     *     `pass`，K-3 不再是阻断项。**今天仍只有 K-4**：`RSK-001.status = open`
+     *     （⛔ 不许为了好看改成 closed）。
+     *   ⚠ 本行保留在豁免名单里，是因为清账计划要求同时满足
+     *     「三项 acc pass」与「风险处置完」；前者已完成，后者未完成。
      */
     /**
      * ── ⚠⚠ **本条是唯一一处"抬棘轮"，按 `TASK-R10.md` §三 的写法记账** ──────────
@@ -163,7 +163,11 @@ export const STORED_NOT_CONVERGED = [
      *
      *   ⚠ R10 后阻断项从 5 条变 **4** 条（K-1 因 R10 裁定让位给 K-3，见 `k1` 上方注释）。
      */
-    why: '⚠ **这不是新缺陷，是为清旧债（builtNoAcc 那三条：R-002/003/004）而故意开的承接变更**。它的「未收口」是**过程态**：ACC-001/002/003 变 pass 的那一轮，本数**必须降回 2**。现有 4 条阻断全真实：K-3 ×3（ACC-001/002/003 全 unverified，真机读数未到）+ K-4（RSK-001 status=open，⛔ 不许为好看改它）。⚠ R10 前是 5 条，少的 K-1 是 R10 裁定让位给 K-3（零 task 但 addresses 非空 ⇒ 判得出，见 k1 注释）。',
+    why: '⚠ **这不是新缺陷，是为清旧债（builtNoAcc 那三条：R-002/003/004）而故意开的承接变更**。'
+      + 'ACC-001/002/003 现已全部 `pass`，所以 K-3 已转绿；**当前唯一阻断是 K-4**：'
+      + '`RSK-001.status=open`（⛔ 不许为好看改它）。本行仍保留，是因为其清账计划同时要求'
+      + '“三项 acc pass + 风险处置完”，前半已完成、后半未完成。'
+      + '⚠ 旧文案曾写“4 条阻断 / K-3 全 unverified”，那是过期的存量读数，已按当前索引作废。',
     plan: '**清账条件（可判定）**：ACC-001/002/003 各自 `status = "pass"` 且 `basis` 指真实 `EVD-`、`actor` 是真人而非实施者（否则 K-6 拦自验）⇒ K-3 ×3 转绿；同时 `RSK-001.disposition` 若随之处置完（`closed`）⇒ K-4 转绿。**两条都满足的那一轮，本条必须从名单移除、`_MAX` 降回 2**（⚠ 这是本数的清账口径：写明了等谁做什么、靠什么触发）。⛔ 不许为清本条而编 acc / 编 EVD- / 补假 task / 改 RSK-001.disposition。',
   },
   {
@@ -305,7 +309,7 @@ export function checkKE1(list) {
  *   先查过：谁已经在管这件事？
  *     · **`decision`** 的「单边 / 悬空 / 只能取代决策」已由
  *       `src/shared/convergence.ts` 的 `decisionChainProblems` 管（`I8` 在
- *       `check:ledger-next`、`K-5` 在本族各调一次）。
+ *       `check:ledger`、`K-5` 在本族各调一次）。
  *       ⇒ 本组对 `decision` **⛔ 不重报**这三类，只在输出里**明说让位给谁**（⛔ 不静默漏）。
  *     · **自指**：`decisionChainProblems` **管不住** —— 实测 `A.supersedes = A` 且
  *       `A.superseded_by = A` 且 `status = superseded` 时它三条全不报（双向"对上了"、
@@ -443,7 +447,7 @@ try {
   const changes = units.filter((u) => u.kind === 'change')
   ok(`K-0 ✓ 索引可读：${units.length} 条单元 · 其中 **${changes.length}** 条 change`)
 
-  const { checkI7, checkI8 } = await import(pathToFileURL(join(here, 'check-ledger-next.mjs')).href)
+  const { checkI7, checkI8 } = await import(pathToFileURL(join(here, 'check-ledger.mjs')).href)
   const deps = { i7: checkI7, i8: checkI8 }
 
   /** ⚠ 本轮阻断项总数（`TASK-R3b.md` §二 B-2 的趋势要用）。 */
@@ -526,6 +530,7 @@ try {
     { id: 'EVD-900', kind: 'evidence', status: 'recorded', parent: 'TSK-900', after: [],
       reading: 'check:x 1/1', taken_at: '判不出', code_state: '判不出' },
     { id: 'ACC-900', kind: 'acc', status: 'pass', parent: 'TSK-900', after: [],
+      verified_at: '2026-11-02T10:00:00+08:00',
       actor: 'session-VERIFIER', basis: ['EVD-900'], evidence: ['check:x 1/1'] },
   ])
   const stubI7 = (us) => {
@@ -642,7 +647,7 @@ try {
   // ══════════════════════════════════════════════════════════════════════
   // N-K3b · **K-3 的漂修复回归证明**（2026-11-01 P40/R5b · `TASK-R5b.md` §3.3）
   //
-  // ⚠⚠ 这一条治的是一次**真实的漂**：R5 给 `check-ledger-next.mjs` 加了 `outcome ?? status`，
+  // ⚠⚠ 这一条治的是一次**真实的漂**：R5 给 `check-ledger.mjs` 加了 `outcome ?? status`，
   //   而本文件的 `k3` **仍然只读 `outcome`** ⇒ 同一事实两个落点。
   //   后果：本账本 28 条 acc 的 `outcome` 全空、其中 25 条 `status=pass`，
   //   一旦 change 的 `addresses` 指向挂着 acc 的需求，K-3 会报
@@ -664,7 +669,8 @@ try {
       { id: 'EVD-901', kind: 'evidence', status: 'recorded', parent: 'TSK-901', after: [],
         reading: 'check:x 1/1', taken_at: '判不出', code_state: '判不出' },
       { id: 'ACC-901', kind: 'acc', status: accStatus, parent: 'TSK-901', after: [],
-        actor: 'session-VERIFIER', basis: ['EVD-901'], evidence: ['check:x 1/1'] },
+        actor: 'session-VERIFIER', basis: ['EVD-901'], evidence: ['check:x 1/1'],
+        verified_at: '2026-11-02T10:00:00+08:00' },
     ])
     const us = mk('pass')
     /** 先自证：夹具真的"只有 status、没有 outcome"，且 status 是 pass。 */
@@ -688,6 +694,71 @@ try {
     else ok(`N-K3b ✓ 负向对拍 **K-3 的漂已修好**（先自证：夹具的 \`ACC-901\` **只有 \`status="pass"\`、⛔ 没有 \`outcome\`** —— 与真账本 28 条 acc 同形）`
       + ` ⇒ K-3 **0 阻断 · \`converged=true\`**（⛔ 不再报"验收都不是 \`pass\`（实测：ACC-901=null）"那句假话）；`
       + ` **反证**：\`status\` 改 \`send-back\` ⇒ K-3 **必红**：${k3Hit2.why.slice(0, 60)}`)
+  }
+
+  // ── W-K3：同一任务多条 ACC 只认最新有效判决 ──
+  {
+    const mk = (accs, reqAccIds = []) => ([
+      { id: 'R-902', kind: 'req', status: 'agreed', parent: 'spec/progress', after: [], acceptance_ids: reqAccIds },
+      { id: 'CHG-902', kind: 'change', status: 'settled', parent: 'spec/progress', after: [], built_by: 'session-BUILDER',
+        addresses: ['R-902'], decisions: [], supersedes: '', risk_ids: [] },
+      { id: 'TSK-902', kind: 'task', status: 'built', parent: 'CHG-902', after: [], built_by: 'session-BUILDER',
+        verify_refs: ['EVD-902'], verify: 'check:x 1/1', risk_ids: [] },
+      { id: 'EVD-902', kind: 'evidence', status: 'recorded', parent: 'TSK-902', after: [],
+        reading: 'check:x 1/1', taken_at: '判不出', code_state: '判不出' },
+      ...accs,
+    ])
+    const verdictArgs = { id: 'x', kind: 'acc', parent: 'TSK-902', after: [], actor: 'session-VERIFIER',
+      basis: ['EVD-902'], evidence: ['EVD-902'] }
+
+    const oldBackIds = ['ACC-902-A', 'ACC-902-B']
+    const oldBack = mk([
+      { ...verdictArgs, id: 'ACC-902-A', status: 'send-back', verified_at: '2026-11-01T10:00:00+08:00' },
+      { ...verdictArgs, id: 'ACC-902-B', status: 'pass', verified_at: '2026-11-02T10:00:00+08:00' },
+    ], oldBackIds)
+    const hOldBack = convergenceOf(oldBack, oldBack[1], { i7: stubI7, i8: stubI8 })
+      .blockers.find((b) => b.rule === 'K-3')
+
+    const oldPassIds = ['ACC-903-A', 'ACC-903-B']
+    const oldPass = mk([
+      { ...verdictArgs, id: 'ACC-903-A', status: 'pass', verified_at: '2026-11-01T10:00:00+08:00' },
+      { ...verdictArgs, id: 'ACC-903-B', status: 'send-back', verified_at: '2026-11-02T10:00:00+08:00' },
+    ], oldPassIds)
+    const hOldPass = convergenceOf(oldPass, oldPass[1], { i7: stubI7, i8: stubI8 })
+      .blockers.find((b) => b.rule === 'K-3')
+
+    const missingAtIds = ['ACC-904-A', 'ACC-904-B']
+    const missingAt = mk([
+      { ...verdictArgs, id: 'ACC-904-A', status: 'send-back', verified_at: '2026-11-01T10:00:00+08:00' },
+      { ...verdictArgs, id: 'ACC-904-B', status: 'pass' },
+    ], missingAtIds)
+    const hMissingAt = convergenceOf(missingAt, missingAt[1], { i7: stubI7, i8: stubI8 })
+      .blockers.find((b) => b.rule === 'K-3')
+
+    const conflictIds = ['ACC-905-A', 'ACC-905-B']
+    const conflict = mk([
+      { ...verdictArgs, id: 'ACC-905-A', status: 'pass', verified_at: '2026-11-02T10:00:00+08:00' },
+      { ...verdictArgs, id: 'ACC-905-B', status: 'send-back', verified_at: '2026-11-02T10:00:00+08:00' },
+    ], conflictIds)
+    const hConflict = convergenceOf(conflict, conflict[1], { i7: stubI7, i8: stubI8 })
+      .blockers.find((b) => b.rule === 'K-3')
+
+    const sameAtPassIds = ['ACC-906-A', 'ACC-906-B']
+    const sameAtPass = mk([
+      { ...verdictArgs, id: 'ACC-906-A', status: 'pass', verified_at: '2026-11-02T10:00:00+08:00' },
+      { ...verdictArgs, id: 'ACC-906-B', status: 'pass', verified_at: '2026-11-02T10:00:00+08:00' },
+    ], sameAtPassIds)
+    const hSameAtPass = convergenceOf(sameAtPass, sameAtPass[1], { i7: stubI7, i8: stubI8 })
+      .blockers.find((b) => b.rule === 'K-3')
+
+    if (hOldBack === undefined && hOldPass !== undefined && hMissingAt !== undefined
+      && hConflict !== undefined && hSameAtPass === undefined) {
+      ok('W-K3 ✓ 多 ACC 最新判决：旧退回+新通过 ⇒ 绿；旧通过+新退回 ⇒ 红；缺时刻/同刻冲突 ⇒ 红；同刻双通过 ⇒ 绿')
+    } else {
+      bad(`W-K3 · 多 ACC 最新判决口径不一致（oldBack=${JSON.stringify(hOldBack)} · `
+        + `oldPass=${JSON.stringify(hOldPass)} · missing=${JSON.stringify(hMissingAt)} · `
+        + `conflict=${JSON.stringify(hConflict)} · samePass=${JSON.stringify(hSameAtPass)}）`)
+    }
   }
 
   // ── N-K4：**开着风险就宣布收口** ⇒ K-4 必红（⚠ 作业书点名要专测这条）──

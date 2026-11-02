@@ -25,7 +25,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { PERMISSION_LEVELS, DEFAULT_PERMISSION_LEVEL, SESSION_POLICY_SERVICE } from './config.ts'
 import { DEFAULT_WORK_MODE, WORK_MODE_VALUES } from './shared/work-mode.ts'
-import { PLANNING_PRESET_ID } from './shared/planning-preset.ts'
+import { HOB_PRESET_ID } from './shared/planning-preset.ts'
 import {
   POLICY_STATE_FILENAME,
   POLICY_STATE_SUBDIR,
@@ -378,7 +378,7 @@ function presetOfSession(hostCtx: any, session: any): { preset: string | undefin
  *   ⚠ 本轮我一度在这里新写了一个字面值 —— **被 ⑦ 组当场咬出来**（不是想当然的合规）。
  *   ⇒ 现在改成 import 复用；本文件**不再持有**这个值。
  */
-export { PLANNING_PRESET_ID as HOB_PRESET_ID } from './shared/planning-preset.ts'
+export { HOB_PRESET_ID } from './shared/planning-preset.ts'
 
 /**
  * 判定本次策略文件路径：`<账本目录>/runtime/session-policy.json`。
@@ -910,7 +910,7 @@ export function installSessionPolicy(
           notMigrated.push({ sessionId: id, why: '预设投影取不到（无法确证是 Hob）⇒ 不迁' })
           continue
         }
-        if (preset !== PLANNING_PRESET_ID) {
+        if (preset !== HOB_PRESET_ID) {
           notMigrated.push({ sessionId: id, why: `预设是 ${JSON.stringify(preset)}（非 Hob）⇒ 不写 Hob 策略` })
           continue
         }
@@ -1008,7 +1008,7 @@ export function installSessionPolicy(
     ensureLegacyMigrationOnce()
 
     const preset = session === undefined ? { preset: undefined, source: 'none' as const } : presetOfSession(hostCtx, session)
-    const isHob = preset.preset === PLANNING_PRESET_ID
+    const isHob = preset.preset === HOB_PRESET_ID
     /**
      * ⚠⚠ **读宿主的持久归档集合**（2026-10-22 · 本单第二核心）。
      *

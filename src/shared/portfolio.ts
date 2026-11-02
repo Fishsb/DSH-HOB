@@ -13,7 +13,7 @@
  *
  * ══ ⚠⚠ 硬约束（与 `convergence.ts` 同一条）═════════════════════════════════
  *   本文件**零 import**：⛔ 不许 import `node:fs` / `node:path` / `scripts/` 下任何东西。
- *   理由：它要被 `scripts/gen-ledger.mjs`（Node）与 `src/client/stages-panel.tsx`（浏览器）
+ *   理由：它要被 `scripts/gen-ledger.mjs`（Node）与 `src/client/project-panel.tsx`（浏览器）
  *   **同时**调用 —— 一份实现，两个消费者。⚠ 先例：`gen-ledger.mjs` 用
  *   `import(pathToFileURL('src/shared/convergence.ts'))` 载真源码，照它做。
  *   （判据：`check:stages-route` 的 R-13/R-14 会咬。）
@@ -32,6 +32,8 @@ export interface PortfolioUnit {
   acceptance_ids?: string[]
   /** `change`：满足哪几条需求。 */
   addresses?: string[]
+  /** `task`：正式承接哪几条需求。 */
+  req_ids?: string[]
 }
 
 /** 一条需求的覆盖读数。 */
@@ -62,9 +64,11 @@ export interface Portfolio {
    * ⚠⚠ **⛔ 不判红、⛔ 不进 P-1、⛔ 不算百分比** —— 它只是把「做完了没人验」这句话
    *   **单独说出来**，让面板/生成物不再需要靠"没人做"来表达它（那正是 R6 被退回的原因）。
    * ⚠ 与 `orphans` **互斥**（`orphans` 要求 `tasks === 0`，本项要求有 built 的 task）——
-   *   `check-ledger-next` 的 P-1 里有一条断言逐轮核这个互斥。
+   *   `check-ledger` 的 P-1 里有一条断言逐轮核这个互斥。
    */
   builtNoAcc: string[]
+  /** 任务 → 需求的正式承接边（⚠ 不含 `after` 前置）。 */
+  taskLinks: Array<{ task: string; reqs: string[] }>
   counts: { total: number; covered: number; proven: number; orphan: number; builtNoAcc: number }
 }
 
@@ -115,6 +119,10 @@ export function portfolioOf(units: readonly PortfolioUnit[]): Portfolio {
   const changes = list.filter((u) => u.kind === 'change')
   const accs = list.filter((u) => u.kind === 'acc')
   const tasks = list.filter((u) => u.kind === 'task')
+  const tksOfReq = (rid: string): PortfolioUnit[] => tasks.filter((t) => {
+    if (String(t.parent) === rid) return true
+    return arrOf(t.req_ids).includes(rid)
+  })
 
   const reqs: ReqCoverage[] = []
   for (const r of list.filter((u) => u.kind === 'req')) {
@@ -127,8 +135,13 @@ export function portfolioOf(units: readonly PortfolioUnit[]): Portfolio {
     const direct = arrOf(r.acceptance_ids)
       .map((x) => byId.get(x))
       .filter((x): x is PortfolioUnit => x !== undefined && x.kind === 'acc')
-    /** ⚠ 这条 req 底下的 task（R7 起是孤儿判据的**主判据**：有 task 就说明有人在管）。 */
-    const tks = tasks.filter((t) => String(t.parent) === rid)
+    /**
+     * ⚠ 这条 req 底下的 task：
+     *   · 直接归属：`task.parent === req.id`；
+     *   · 正式承接：`task.req_ids` 含 req.id（⚠ 任务仍可归在 change 下）。
+     * `after` 只是前置关系，**不参与**这里的承接反查。
+     */
+    const tks = tksOfReq(rid)
     const taskIdsOfReq = new Set(tks.map((t) => String(t.id)))
     const indirect = accs.filter((a) => taskIdsOfReq.has(String(a.parent)))
     const candidates = [...direct, ...indirect]
@@ -159,8 +172,13 @@ export function portfolioOf(units: readonly PortfolioUnit[]): Portfolio {
    */
   const builtNoAcc = reqs
     .filter((r) => r.passAccs === 0
-      && tasks.some((t) => String(t.parent) === r.id && String(t.status ?? '') === 'built'))
+      && tksOfReq(r.id).some((t) => String(t.status ?? '') === 'built'))
     .map((r) => r.id)
+
+  /** 正式的任务 → 需求承接边；`after` 只是前置，⛔ 不在此列。 */
+  const taskLinks = tasks
+    .filter((t) => arrOf(t.req_ids).length > 0)
+    .map((t) => ({ task: String(t.id), reqs: arrOf(t.req_ids) }))
 
   const counts = {
     total: reqs.length,
@@ -179,5 +197,5 @@ export function portfolioOf(units: readonly PortfolioUnit[]): Portfolio {
     ? `0 条 —— ${counts.total} 条需求逐条查过（有 change 承接 ${counts.covered} 条 · 有 task 在管 ${reqs.filter((r) => r.tasks > 0).length} 条 · 已有 pass 验收 ${counts.proven} 条），没有已定却完全没人接的需求`
     : `${orphans.length} 条已定却完全没人接：${orphans.join(' · ')}`
 
-  return { reqs, orphans, orphanNote, builtNoAcc, counts }
+  return { reqs, orphans, orphanNote, builtNoAcc, taskLinks, counts }
 }

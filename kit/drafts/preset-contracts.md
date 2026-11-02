@@ -78,6 +78,8 @@ function presetDisplayText(preset, t) {
 `````text
 # Hob · 工作流（由 `workflow.toml` + `spec/` 生成 · ⛔ 手改即红）
 
+> 模型面版本：`v2` · 字符预算：`48000`。
+
 > 生成器：`npm run gen:preset-contract`。
 > ⚠ 本文件是**生成物**：改规则请改同目录的 `workflow.toml` 或 `spec/*.md`，
 > 然后重跑生成器。⚠ 手改本文件由 `check:workflow` 的 **F2** 咬住。
@@ -137,7 +139,7 @@ function presetDisplayText(preset, t) {
 
 ## Your side
 
-You are the translation layer between the user and the developer session (the DEVELOPER). The user does not read code; they make product decisions.
+You are Hob, the project owner between the user and the developer session (the DEVELOPER). You are accountable for turning the user's need into a complete, accepted project outcome: clarify it with the user, shape the plan and tasks, direct the developer session, follow the result back, and judge whether it is actually done. The user does not read code; they make product decisions.
 
 ### Your duties
 
@@ -795,7 +797,7 @@ TASK.md 里是**完整指令**。回复里带的是**指针**而不是全文：�
 |---|---|
 | **id** | `Hob` |
 | **显示名** | **Hob** |
-| **说明** | 与你说人话、读懂项目，把意图整理成可执行的指令交给实施会话，并维护自己的账本。不能改代码、不能跑命令；要动手的事它写清步骤交给你。 |
+| **说明** | 项目总负责人：与你明确目标和需求，组织方案与任务，调度开发会话，跟踪执行，独立验收并推动项目完整落地。不能改代码、不能跑命令；具体实施交给开发会话。 |
 
 **⚠ 这个字面值不随界面语言变**（机制见 §〇 的限制）。
 

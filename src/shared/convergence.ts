@@ -19,6 +19,8 @@
  *   ⇒ 上面两条由 `check:stages-route` 的 **R-13 / R-14** 咬住（含负向对拍）。
  */
 
+import { effectiveAcceptanceOf, type AcceptanceVerdictLike } from './acceptance-verdict.ts'
+
 /** 一条阻断项（结构化）。 */
 export interface Blocker {
   /** 判据编号（`K-1`..`K-6`）。 */
@@ -40,16 +42,17 @@ export interface ConvergenceResult {
 }
 
 /** 账本单元的最小形状（⚠ 只要用到的字段，⛔ 不要整个 `any`）。 */
-export interface ConvUnit {
+export interface ConvUnit extends AcceptanceVerdictLike {
   id?: string
   kind?: string
   status?: string
   parent?: string
+  verified_at?: string
   actor?: string
   built_by?: string
   /**
    * ⚠⚠ **`acc` 的判决唯一落点是 `status`**（2026-11-01 P40/R5b · `TASK-R5b.md` §3.1-3）。
-   *   `outcome` 字段已从账本 `EXTENDED_FIELDS` 删除、并由 `check:ledger-next` 的 `S-1` 咬住
+   *   `outcome` 字段已从账本 `EXTENDED_FIELDS` 删除、并由 `check:ledger` 的 `S-1` 咬住
    *   「出现即红」。⛔ 这里**不许再加回** `outcome?: string`（哪怕只是"兼容"）——
    *   兼容 = 两个落点继续活着，下次谁改一个忘另一个仍然会漂。
    */
@@ -105,7 +108,7 @@ export function relatedOf(units: readonly ConvUnit[], chg: ConvUnit): {
 /**
  * **I7 的判定本体**（`built` 任务的 `verify_refs` 必须指向真实 `evidence`）。
  *
- * ⚠⚠ 这里**是唯一实现**：`scripts/check-ledger-next.mjs` 的 `checkI7` 现在是
+ * ⚠⚠ 这里**是唯一实现**：`scripts/check-ledger.mjs` 的 `checkI7` 现在是
  *   **re-export 本函数**（⛔ 不再是第二份）。理由见 `K-2` 的注释：两套口径会漂。
  *
  * @param units - 全部单元
@@ -140,7 +143,7 @@ export function verifyRefsProblems(units: readonly ConvUnit[]): string[] {
 /**
  * **I8 的判定本体**（决策取代必须**双向对上**且状态跟上）。
  *
- * ⚠⚠ 唯一实现；`scripts/check-ledger-next.mjs` 的 `checkI8` 现在是 re-export。
+ * ⚠⚠ 唯一实现；`scripts/check-ledger.mjs` 的 `checkI8` 现在是 re-export。
  *
  * @param units - 全部单元
  * @returns 问题清单（空 = 绿）
@@ -251,7 +254,7 @@ export function k2(units: readonly ConvUnit[], taskIds: readonly string[], i7?: 
 /**
  * **K-3** · 该 change 的 `addresses` 里每条需求都有 `acc` 且 `status = pass`。
  * ⚠ 判决只认 `status`（2026-11-01 R5b 裁定 A：`outcome` 已删）。
- *   ⚠⚠ 这条曾经**漂过**：R5 给 `check-ledger-next.mjs` 加了 `outcome ?? status`，
+ *   ⚠⚠ 这条曾经**漂过**：R5 给 `check-ledger.mjs` 加了 `outcome ?? status`，
  *   而这里**仍然只读 `outcome`** ⇒ 本账本 28 条 acc 的 `outcome` 全空，
  *   一旦触发就会报「验收都不是 `pass`（实测：ACC-xxx=null）」—— **那是假话**。
  *   当时没红只因为没被触发（两条 change 的 `addresses` 恰好指向没有 acc 的需求）。
@@ -278,20 +281,54 @@ export function k3(units: readonly ConvUnit[], chg: ConvUnit, accs: readonly Con
     /**
      * ⚠ 找这条需求的验收：`req.acceptance_ids` **或** 挂在该需求下的 task 的 acc。
      *   两条路都要走 —— 只走一条会把"验收挂在需求上"的形态误判成没验。
+     * ⚠ 同一验收路径的多条历史判决按 `verified_at` 取最新有效判决；
+     *   缺时刻 / 最新冲突 / 仍有待判决 ⇒ 判不出，⛔ 不许拿任一旧 PASS 代替。
      */
-    const direct = arr(r.acceptance_ids).map((x) => byId.get(x)).filter((x): x is ConvUnit => x !== undefined && x.kind === 'acc')
+    const directIds = arr(r.acceptance_ids)
+    const direct = directIds.map((x) => byId.get(x)).filter((x): x is ConvUnit => x !== undefined && x.kind === 'acc')
+    const missingDirect = directIds.filter((x) => {
+      const u = byId.get(x)
+      return u === undefined || u.kind !== 'acc'
+    })
     const taskIdsOfReq = new Set(units.filter((u) => u.kind === 'task' && String(u.parent) === rid).map((t) => String(t.id)))
     const indirect = accs.filter((a) => taskIdsOfReq.has(String(a.parent)))
-    const candidates = [...direct, ...indirect]
-    if (candidates.length === 0) {
+    const allCandidates = [...direct, ...indirect]
+    if (allCandidates.length === 0) {
       out.push({ rule: 'K-3', unit: rid, why: '这条需求**没有任何 acc** ⇒ 需求没被证明满足（⛔ 不许当已满足）' })
       continue
     }
-    /** ⚠ 单落点：只读 `status`（⛔ 不许写成 `a.status ?? a.outcome`）。 */
-    const passed = candidates.filter((a) => String(a.status ?? '') === 'pass')
-    if (passed.length === 0) {
-      const got = candidates.map((a) => `${a.id}=${JSON.stringify(a.status ?? null)}`).join(' / ')
-      out.push({ rule: 'K-3', unit: rid, why: `验收都不是 \`pass\`（实测：${got}）⇒ 需求没被证明满足` })
+    if (missingDirect.length > 0) {
+      out.push({ rule: 'K-3', unit: rid, why: `\`acceptance_ids\` 里的 ${missingDirect.join(' / ')} 不存在或不是 acc ⇒ 判不出` })
+      continue
+    }
+    /**
+     * ⚠ 每条被需求正式引用的 ACC 都是独立验收路径：不能因为其中一条 PASS
+     *   就替另一条 SEND-BACK 作证。同一路径的复验以新 ACC id 追加时，
+     *   按 `parent` 分组取最新有效判决。
+     */
+    /**
+     * ⚠ 同一路径 = 同一任务直属的 ACC 序列。需求直接引用的 ACC 仍逐条独立判定。
+     *   旧 ACC 没有 `parent` 时，用它的 id 作为自己的路径，避免不同历史记录互相覆盖。
+     */
+    const groups = new Map<string, ConvUnit[]>()
+    for (const a of allCandidates) {
+      const key = String(a.parent ?? '').trim() !== ''
+        ? `task:${String(a.parent)}`
+        : `direct:${String(a.id)}`
+      const list = groups.get(key) ?? []
+      list.push(a)
+      groups.set(key, list)
+    }
+    const unresolved: string[] = []
+    for (const group of groups.values()) {
+      const verdict = effectiveAcceptanceOf(group)
+      if (verdict.verdict !== 'accepted') {
+        unresolved.push(`${group.map((a) => String(a.id)).join(' / ')} = ${verdict.verdict}`
+          + (verdict.reason === undefined ? '' : `（${verdict.reason}）`))
+      }
+    }
+    if (unresolved.length > 0) {
+      out.push({ rule: 'K-3', unit: rid, why: `有效验收不是 \`pass\`（${unresolved.join('；')}）⇒ 需求没被证明满足` })
     }
   }
   return out

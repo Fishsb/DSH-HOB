@@ -45,8 +45,9 @@ import {
  *   病（用户截图）：`agreed`/`settled`/`built`/`unverified` 都是各自 kind 的**合法状态**，
  *   却因为九态表里没有而印成「判不出（原值 X）」—— 那句话在骗人。
  */
-import { UNSEEN_TOOLS_ROUTE_PATH } from '../modules/unseen-tools-route.ts'
 import { stageStatusLabel } from '../shared/stage-status-labels.ts'
+import { UNSEEN_TOOLS_ROUTE_PATH } from '../shared/unseen-tools.ts'
+import { CurrentPanel } from './current-panel.tsx'
 
 /** 标签页**类型 id**（= 宿主 `sidebar.right.pane.tab` 的 `key`）。 */
 export const STAGES_TAB_ID = 'dsh-hob-stages'
@@ -111,17 +112,18 @@ export const STAGES_EMPTY_TEXT = '表里是空的'
 export const STAGES_UNDECIDABLE_TEXT = '判不出'
 
 /** 本路由路径（客户端要与服务端逐字一致；⛔ 不许各写一份）。 */
+/** LEGACY：旧 `volumes/tasks/INDEX.md` 兼容视图；权威五步数据见 `STAGES_ROUTE_PATH`。 */
 export const STAGES_PROGRESS_PATH = '/api/dsh-hob/tasks-progress'
 
 /** 执行态路由路径（⚠ **值来自** `shared/exec-protocol.ts` —— 与服务端同一份，⛔ 不各写一份）。 */
 export const STAGES_EXEC_PATH = EXEC_PROGRESS_ROUTE_PATH
 
-/** 五步汇总路由（新数据源 = `ledger-next/units/index.toml`；⛔ 不再读散文账）。 */
+/** 五步汇总路由（新数据源 = `ledger/units/index.toml`；⛔ 不再读散文账）。 */
 export const STAGES_ROUTE_PATH = '/api/dsh-hob/stages'
 
 /**
- * 「待确认工具」只读路由（⚠ **值来自** `modules/unseen-tools-route.ts` 的同一份常量，
- * ⛔ 不在这里再写一份字符串 —— 两边各写一份就会漂）。
+ * 「待确认工具」只读路由（⚠ **值来自** 纯共享层的同一份常量，
+ * ⛔ 不在这里再写一份字符串，也⛔ 不从服务端路由导入实现）。
  *
  * ── 为什么面板要读它（2026-11-01 P41/R20 · `TASK-R20.md` §一）────────────────
  *   `R-008` 的标题是「「被判出」**必须能在界面上看见**，⛔ 不能只落日志」，
@@ -433,7 +435,7 @@ export class StaleRouteError extends Error {
  *   需要提供上下滑动功能」）──────────────────────────────────────────
  *
  * ── 改前为什么必须改（不是"滚动做得不好"，是**压根没有**）────────────
- *   `grep 'overflow|maxHeight|height:'` 在改前的 `stages-panel.tsx` **零命中**
+ *   `grep 'overflow|maxHeight|height:'` 在改前的 `project-panel.tsx` **零命中**
  *   ⇒ 面板既没有滚动容器、也没有高度上限，内容长了就**直接溢出被裁掉**。
  *
  * ── 谁的高度真的有限（量测，⛔ 不许猜）──────────────────────────
@@ -628,7 +630,7 @@ export function StagesPanel(props?: {
   /** 执行态取数（省略 ⇒ 用默认 HTTP 实现）。⚠ 与 `fetchProgress` 分开注入，两路各自可判不出。 */
   fetchExec?: (sessionId?: string) => Promise<any>
   /**
-   * **五步汇总取数**（PRIMARY 数据源：`ledger-next/units/index.toml`）。
+   * **五步汇总取数**（PRIMARY 数据源：`ledger/units/index.toml`）。
    * ⚠ 省略 ⇒ 用 `defaultFetchStages`（生产路径）。
    */
   fetchStages?: (sessionId?: string) => Promise<any>
@@ -637,6 +639,8 @@ export function StagesPanel(props?: {
    * ⚠ 省略 ⇒ 用 `defaultFetchUnseen`（生产路径）。
    */
   fetchUnseen?: (sessionId?: string) => Promise<any>
+  /** Current 页取数（独立只读区块；失败不遮蔽其它区块）。 */
+  fetchCurrent?: (sessionId?: string) => Promise<any>
   /** 宿主给这个标签页的会话 id（`sidebar.right.pane.tab` 的 inject 第一参）。 */
   sessionId?: string
   /**
@@ -813,6 +817,7 @@ export function StagesPanel(props?: {
            *     由 `portfolioBlock` 显示「判不出」，⛔ 不显示 0）。
            */
           portfolio: (res as any).portfolio,
+          attention: (res as any).attention,
         } as any)
       } else {
         setStageState({
@@ -1037,7 +1042,7 @@ export function StagesPanel(props?: {
    * 每步一行：`序号 + 步名 + 三态图标 + 完成数/总数`，**点行展开**列出该步的条目。
    * ⚠ 三态只认 `done / doing / todo`（⛔ 百分比、⛔ 进度条、⛔ 勾选）。
    * ⚠ `cap` **单列**在树下面，⛔ 不进分母、⛔ 无完成度。
-   * ⚠ 数据源 = `POST /api/dsh-hob/stages`（`ledger-next/units/index.toml`）。
+   * ⚠ 数据源 = `POST /api/dsh-hob/stages`（`ledger/units/index.toml`）。
    */
   const stages = stageState.kind === 'ok' ? stageState.stages : []
   const caps = stageState.kind === 'ok' ? stageState.caps : []
@@ -1163,18 +1168,34 @@ export function StagesPanel(props?: {
     }
     const report = unseenState.report
     const names: string[] = Array.isArray(report?.names) ? report.names : []
+    const count = typeof report?.count === 'number' && Number.isFinite(report.count) ? report.count : names.length
+    const items: any[] = Array.isArray(report?.items) ? report.items : []
     return React.createElement(
       'div',
-      { style: subNoteStyle, 'data-dsh-hob': 'stages-unseen', 'data-state': 'ok' },
-      React.createElement('div', { style: { fontWeight: 600 } }, '待确认工具'),
-      /** ⚠ 这一行就是"0 条也要写出 0 条"的落点：文案来自 `describeUnseen` 的 `summary`。 */
-      React.createElement('div', { 'data-dsh-hob': 'stages-unseen-summary' }, String(report?.summary ?? '')),
-      /** ⚠ 逐名列出（⛔ 不只给数字）。0 条时这一段自然是空的。 */
-      ...names.map((n, i) => React.createElement(
-        'div',
-        { key: `un-${i}`, 'data-dsh-hob': 'stages-unseen-item', style: { overflowWrap: 'anywhere' } },
-        `· ${n}`,
-      )),
+      { style: { ...subNoteStyle, display: 'flex', flexDirection: 'column', gap: 3 }, 'data-dsh-hob': 'stages-unseen', 'data-state': 'ok' },
+      /**
+       * ⚠ `summary` 仍是“0 条也要明写 0 条”的原始读数，但**有名字时不再把整份名单
+       *   塞进同一行**：那样会与下面的逐名清单重复两遍（截图实测 117 条 × 2）。
+       *   0 条时 summary 本身已经是完整说明，照原样显示。
+       */
+      React.createElement(
+        'details',
+        { open: count === 0 ? true : undefined, 'data-dsh-hob': 'stages-unseen-details' },
+        React.createElement('summary', { style: { fontWeight: 600, cursor: 'pointer' } }, '待确认工具'),
+        React.createElement(
+          'div',
+          { 'data-dsh-hob': 'stages-unseen-summary', style: count === 0 ? undefined : { color: 'var(--dsw-alias-label-secondary)' } },
+          count === 0 ? String(report?.summary ?? '') : `${count} 条待确认`,
+        ),
+        ...names.map((n, i) => {
+          const why = String(items.find((x) => x?.name === n)?.why ?? '').trim()
+          return React.createElement(
+            'div',
+            { key: `un-${i}`, 'data-dsh-hob': 'stages-unseen-item', style: { overflowWrap: 'anywhere', paddingLeft: 10, textIndent: '-10px' } },
+            `· ${n}${why === '' ? '' : ` — ${why}`}`,
+          )
+        }),
+      ),
     )
   })()
 
@@ -1252,8 +1273,13 @@ export function StagesPanel(props?: {
                   ? [React.createElement('div', { key: 'none', style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '0.9em' }, 'data-dsh-hob': 'stages-tree-empty' }, '这一步还没有条目')]
                   : items.map((it: any, k: number) => React.createElement(
                     'div',
-                    { key: `${it?.id ?? 'it'}-${k}`, 'data-dsh-hob': 'stages-tree-item', 'data-item-id': String(it?.id ?? ''), style: treeItemStyle },
-                    React.createElement('span', { style: { minWidth: '5.5em', overflowWrap: 'anywhere' } }, String(it?.id ?? '')),
+                    {
+                      key: `${it?.id ?? 'it'}-${k}`,
+                      'data-dsh-hob': 'stages-tree-item',
+                      'data-item-id': String(it?.id ?? ''),
+                      style: { ...treeItemStyle, alignItems: 'baseline', gap: 6 },
+                    },
+                    React.createElement('span', { style: { minWidth: '5.5em', overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-secondary)' } }, String(it?.id ?? '')),
                     React.createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflowWrap: 'anywhere' } }, String(it?.title ?? '')),
                     /**
                      * ⚠⚠ **2026-10-30 P21：按 kind 取中文标签**（改前一律查九态表 ⇒ 见下方病）。
@@ -1276,9 +1302,11 @@ export function StagesPanel(props?: {
                         'data-dsh-hob': 'stages-tree-item-status',
                         'data-status-known': stageStatusLabel(kindOfStep(step), String(it?.status ?? '')).known ? 'true' : 'false',
                         style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '0.9em' },
+                        'aria-hidden': 'true',
                       },
                       stageStatusLabel(kindOfStep(step), String(it?.status ?? '')).label,
                     ),
+                    React.createElement('span', { style: { minWidth: '4.5em', color: 'var(--dsw-alias-label-tertiary)', fontSize: '0.9em' } }, stageStatusLabel(kindOfStep(step), String(it?.status ?? '')).label),
                   ))),
                 // ⚠ 第 ④ 步展开体里**直接复用现有执行项**（现在/历史两档）—— ⛔ 不推翻
                 ...(step === 4 ? [execList] : []),
@@ -1392,6 +1420,51 @@ export function StagesPanel(props?: {
     )
     : null
 
+  /**
+   * **注意力视图**（只读派生）：只列需要人或验收方行动的条目。
+   * ⚠ 与五步/portfolio 分治；字段缺席 ⇒ 明写「判不出」，⛔ 不渲染成 0 条。
+   */
+  const attentionBlock = ((): React.JSX.Element => {
+    if (stageState.kind === 'reading') {
+      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-attention', 'data-state': 'reading' }, '读取中…')
+    }
+    if (stageState.kind === 'fail') {
+      return React.createElement(
+        'div',
+        { style: subNoteStyle, 'data-dsh-hob': 'stages-attention', 'data-state': 'undecidable' },
+        `判不出：${stageState.message}`,
+      )
+    }
+    const rows = (stageState as any).attention
+    if (!Array.isArray(rows)) {
+      return React.createElement(
+        'div',
+        { style: subNoteStyle, 'data-dsh-hob': 'stages-attention', 'data-state': 'undecidable' },
+        '判不出：后端没有返回注意力读数',
+      )
+    }
+    return React.createElement(
+      'div',
+      { style: { ...subNoteStyle, display: 'flex', flexDirection: 'column', gap: 3 }, 'data-dsh-hob': 'stages-attention', 'data-state': rows.length === 0 ? 'empty' : 'rows' },
+      React.createElement('div', { style: { fontWeight: 600 } }, '需要处理'),
+      ...(rows.length === 0
+        ? [React.createElement('div', { key: 'none', 'data-dsh-hob': 'stages-attention-empty' }, '没有需要人或验收方处理的事项')]
+        : rows.map((r: any, i: number) => React.createElement(
+          'div',
+          {
+            key: `${String(r?.id ?? 'row')}-${i}`,
+            'data-dsh-hob': 'stages-attention-item',
+            'data-item-id': String(r?.id ?? ''),
+            'data-work-state': String(r?.state ?? ''),
+            style: { overflowWrap: 'anywhere', display: 'grid', gridTemplateColumns: 'minmax(5.5em, auto) minmax(4.5em, auto) minmax(0, 1fr)', gap: 8, alignItems: 'baseline', paddingLeft: 0 },
+          },
+          React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, String(r?.id ?? '')),
+          React.createElement('span', { style: { color: 'var(--dsw-alias-label-tertiary)' } }, String(r?.label ?? '判不出')),
+          React.createElement('span', null, String(r?.why ?? '没给原因')),
+        ))),
+    )
+  })()
+
   const legend = React.createElement(
     'div',
     { 'data-dsh-hob': 'stages-legend', style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
@@ -1446,6 +1519,7 @@ export function StagesPanel(props?: {
       'aria-label': `${STAGES_PANEL_TITLE}（可上下滚动）`,
     },
     React.createElement('div', { style: { fontWeight: 600 } }, STAGES_PANEL_TITLE),
+    React.createElement(CurrentPanel, { sessionId: props?.sessionId, ...(props?.fetchCurrent === undefined ? {} : { fetchCurrent: props.fetchCurrent }) }),
     // ⭐ PRIMARY：五步树（新数据源 = units/index.toml）
     stageTree,
     // ⭐ 「下一步」与阻断原因（只读 · ⛔ 零按钮/零勾选/零百分比/零进度条）
@@ -1454,6 +1528,8 @@ export function StagesPanel(props?: {
     unseenBlock,
     // ⭐ 项目组合层（2026-11-01 P40/R6 · 只读 · ⛔ 零百分比/零进度条/零横向滚动）
     portfolioBlock,
+    // ⭐ 注意力视图（由账本派生 · 只列需行动项 · ⛔ 不等于五步完成度）
+    attentionBlock,
     capBlock,
     /**
      * ⚠ **旧「账面」表（`volumes/tasks/INDEX.md`）—— 2026-10-30 P4：视觉隐藏，⛔ DOM 不许删。**

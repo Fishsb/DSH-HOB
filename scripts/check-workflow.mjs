@@ -205,7 +205,10 @@ console.log('')
 
 try {
   const gpc = await import(pathToFileURL(join(here, 'gen-preset-contract.mjs')).href)
-  const { parseWorkflow, renderAll, readInputs, NOTE_FILES: NOTE_FILES_G } = gpc
+  const {
+    parseWorkflow, renderAll, readInputs, NOTE_FILES: NOTE_FILES_G,
+    MODEL_FACE_VERSION, MODEL_FACE_CHAR_BUDGET, modelFaceChars, modelFaceHash,
+  } = gpc
   /** ⚠ 附注卷清单（⚠ 唯一来源 = 生成器，⛔ 不在这里抄第二份）。 */
   const NOTE_FILES = NOTE_FILES_G
 
@@ -320,6 +323,37 @@ try {
       } else for (const p of probs) bad(`F3 · ${p}`)
       void clauses; void noChecked
     }
+  }
+
+  // ── F13 · 模型面版本 / 字符预算 / 哈希可追溯 ──────────────────────────
+  {
+    let persona = ''
+    try { persona = readFileSync(join(GEN, 'persona.md'), 'utf8') } catch { persona = '' }
+    const ymlNow = readFileSync(YML, 'utf8')
+    const flat = (s) => s.replace(/\s+/g, ' ').trim()
+    const problems = []
+    if (!Number.isInteger(MODEL_FACE_VERSION) || MODEL_FACE_VERSION < 1) {
+      problems.push(`MODEL_FACE_VERSION 不是正整数：${JSON.stringify(MODEL_FACE_VERSION)}`)
+    }
+    if (!Number.isInteger(MODEL_FACE_CHAR_BUDGET) || MODEL_FACE_CHAR_BUDGET < 1) {
+      problems.push(`MODEL_FACE_CHAR_BUDGET 不是正整数：${JSON.stringify(MODEL_FACE_CHAR_BUDGET)}`)
+    }
+    const chars = modelFaceChars(persona)
+    if (persona === '') problems.push('gen/persona.md 读不到')
+    else if (chars > MODEL_FACE_CHAR_BUDGET) problems.push(`persona ${chars} 字符 > 预算 ${MODEL_FACE_CHAR_BUDGET}`)
+    const versionNeedle = `> 模型面版本：\`v${MODEL_FACE_VERSION}\` · 字符预算：\`${MODEL_FACE_CHAR_BUDGET}\`。`
+    if (!persona.includes(versionNeedle)) problems.push(`persona 缺少版本/预算行：${versionNeedle}`)
+    if (!flat(ymlNow).includes(flat(versionNeedle))) problems.push('运行中的 `prefix` 缺少同一版本/预算行')
+    let contracts = ''
+    try { contracts = readFileSync(join(GEN, 'contracts.md'), 'utf8') } catch { contracts = '' }
+    const hash = modelFaceHash(persona)
+    if (!contracts.includes(`> 模型面版本：\`v${MODEL_FACE_VERSION}\``)) problems.push('contracts.md 缺少模型面版本')
+    if (!contracts.includes(`**${chars}** 字符`)) problems.push(`contracts.md 缺字符读数 ${chars}`)
+    if (!contracts.includes(`SHA-256：\`${hash}\``)) problems.push(`contracts.md 哈希与 persona 不一致：期望 ${hash}`)
+    if (problems.length === 0) {
+      ok(`F13 ✓ **模型面 v${MODEL_FACE_VERSION} 可追溯**：${chars}/${MODEL_FACE_CHAR_BUDGET} 字符（在预算内）`
+        + ` · persona SHA-256 \`${hash.slice(0, 16)}…\` · 运行时 prefix 与 contracts 读数同源`)
+    } else for (const x of problems) bad(`F13 · ${x}`)
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -1222,6 +1256,26 @@ try {
           + ' ⇒ 摘掉那条 `invariant 应恰好 6 条` 断言后处数仍在下界之上，**没有任何判据会发现断言少了**'
           + '（⛔ 报告里必须照实写这一条，不许假装有）')
       }
+    }
+  }
+
+  // ── N-F13：去掉版本行 / 超字符预算 / 篡改哈希 ⇒ 三条各必红 ──
+  {
+    let persona = ''
+    try { persona = readFileSync(join(GEN, 'persona.md'), 'utf8') } catch { persona = '' }
+    const versionLine = `> 模型面版本：\`v${MODEL_FACE_VERSION}\` · 字符预算：\`${MODEL_FACE_CHAR_BUDGET}\`。`
+    const withoutVersion = persona.replace(versionLine, '')
+    const overBudget = modelFaceChars(persona) > 0 ? `${persona}${'x'.repeat(MODEL_FACE_CHAR_BUDGET)}` : ''
+    const actual = modelFaceHash(persona)
+    const fake = modelFaceHash(persona + ' ')
+    const goodHash = modelFaceHash(persona) !== modelFaceHash(persona + ' ')
+    if (persona === '') bad('N-F13 · persona 读不到 ⇒ 本条不可判')
+    else if (!withoutVersion.includes(versionLine) && overBudget !== '' && modelFaceChars(overBudget) > MODEL_FACE_CHAR_BUDGET
+      && actual !== fake && goodHash) {
+      ok('N-F13 ✓ 负向对拍（先自证：去掉版本行 / 追加超预算字符 / 哈希差一位）：'
+        + '版本行缺失必红、字符数超预算必红、SHA-256 不再匹配必红；正面：现行 persona 三项都成立')
+    } else {
+      bad('N-F13 · 夹具没有同时造出“缺版本 / 超预算 / 哈希不匹配”三种形态 ⇒ 本条不可判')
     }
   }
 

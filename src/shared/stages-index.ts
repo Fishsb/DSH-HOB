@@ -1,5 +1,5 @@
 /**
- * **`ledger-next/units/index.toml` → 五步汇总 + cap 单列**（纯函数，零 I/O）—— 2026-10-30 · P3。
+ * **`ledger/units/index.toml` → 五步汇总 + cap 单列**（纯函数，零 I/O）—— 2026-10-30 · P3。
  *
  * ══ 它是什么 ═══════════════════════════════════════════════════════════════════
  *   面板新数据源的服务端处理体。读的是**机读索引**（⛔ 不再读 `volumes/tasks/INDEX.md` 那份散文账），
@@ -15,6 +15,7 @@
 
 import { nextAction, type NextAction, type LedgerUnitLike } from './next-action.ts'
 import { portfolioOf, type Portfolio, type PortfolioUnit } from './portfolio.ts'
+import { attentionOf, type WorkStateReading } from './work-state.ts'
 import { convergenceOf } from './convergence.ts'
 
 /** 五步的名字与 kind（⚠ 唯一真源，顺序 = 渲染顺序）。 */
@@ -28,7 +29,11 @@ export const STAGE_DEFS = [
 
 /** 封闭状态集（与 `DESIGN-V2.md` §3.3 一致；⚠ 与生成器那份必须同值，由 R-9 交叉验证）。 */
 export const STAGE_KIND_STATUSES: Readonly<Record<string, { statuses: string[]; init: string; finals: string[] }>> = {
-  req: { statuses: ['draft', 'agreed', 'dropped'], init: 'draft', finals: ['agreed', 'dropped'] },
+  /**
+   * `retired` 是**可追踪的退役态**，不是第六步：
+   * 退役需求保留原编号与六项元数据，但退出活跃覆盖与后续派工。
+   */
+  req: { statuses: ['draft', 'agreed', 'dropped', 'retired'], init: 'draft', finals: ['agreed', 'dropped', 'retired'] },
   change: { statuses: ['proposed', 'settled', 'superseded'], init: 'proposed', finals: ['settled', 'superseded'] },
   task: { statuses: ['todo', 'doing', 'built'], init: 'todo', finals: ['built'] },
   run: { statuses: ['registered', 'running', 'returned', 'refused', 'stuck'], init: 'registered', finals: ['returned', 'refused', 'stuck'] },
@@ -37,9 +42,9 @@ export const STAGE_KIND_STATUSES: Readonly<Record<string, { statuses: string[]; 
   /**
    * ⚠⚠ **2026-10-31 P40/R2：三个受控对象**（`TASK-R2.md` §二）——————————————
    *   加这三行**不是顺手重构**，而是 §八「条件式可以改 `src/**`」那一条的**唯一触发点**：
-   *   `check:stages-route` 的 R-9 拿这份表去核 `ledger-next/units/index.toml`，
+   *   `check:stages-route` 的 R-9 拿这份表去核 `ledger/units/index.toml`，
    *   账本里一有 `EVD-` 就报 `row-shape-unknown`（实测原文：`EVD-001: kind="evidence" 不在封闭集`）。
-   *   ⇒ 这处**正是在读 `ledger-next/gen` 的判定路径上**，且改动是**逐值追加**，
+   *   ⇒ 这处**正是在读 `ledger/gen` 的判定路径上**，且改动是**逐值追加**，
    *     ⛔ 没动任何既有 kind、⛔ 没动面板样式、⛔ 没动渲染分支。
    *
    *   ⚠ 三者 `finals: []` = **无终态**，且它们在 `STAGE_DEFS` 里**没有对应的步**
@@ -53,7 +58,7 @@ export const STAGE_KIND_STATUSES: Readonly<Record<string, { statuses: string[]; 
   /**
    * ⚠⚠ **2026-11-02 P50/M10：补 B 轨（`TASK-B1.md`）的收尾漏项**——————————————
    *   B 轨加 `goal` 时只改了 `scripts/gen-ledger.mjs` 的 `KIND_SPEC`（那里现在是第 10 个 kind），
-   *   **没同步本表** ⇒ `check:stages-route` 的 R-9 拿本表去核 `ledger-next/units/index.toml`，
+   *   **没同步本表** ⇒ `check:stages-route` 的 R-9 拿本表去核 `ledger/units/index.toml`，
    *   遇到 `G-01` / `G-02` 就报（实测原文）：
    *     `R-9 · 真索引算不出：{"ok":false,"reason":"row-shape-unknown",… G-01: kind="goal" 不在封闭集 …}`
    *
@@ -116,6 +121,11 @@ export interface StagesOk {
    * ⚠ 算不出来时是 `undefined` ⇒ 面板显示「判不出」，⛔ 不许显示 0、⛔ 不许空白。
    */
   portfolio?: Portfolio
+  /**
+   * **注意力视图**：只汇总需要人或验收方行动的事项。
+   * ⚠ 由 `work-state.ts` 从账本派生，⛔ 不是第六步、⛔ 不等于五步完成度。
+   */
+  attention?: WorkStateReading[]
 }
 export interface StagesFail {
   ok: false
@@ -229,7 +239,12 @@ function extraOf(u: Record<string, unknown>): string {
  */
 export function buildStages(units: Array<Record<string, unknown>>, readAt: string): StagesOk {
   const stages: StageRow[] = STAGE_DEFS.map((d) => {
-    const ofKind = units.filter((u) => u.kind === d.kind)
+    /**
+     * ⚠ `retired` / `dropped` 只保留为生命周期历史，⛔ 不再进入活跃需求步；
+     * 否则面板会把“已退役”计入需求完成数，并把它当当前工作继续提示。
+     */
+    const ofKind = units.filter((u) => u.kind === d.kind
+      && !(d.kind === 'req' && ['retired', 'dropped'].includes(String(u.status))))
     const { state, done, total } = summarizeStage(ofKind.map((u) => String(u.status)), d.kind)
     return {
       step: d.step,
@@ -270,7 +285,7 @@ export function buildStages(units: Array<Record<string, unknown>>, readAt: strin
      *   在面板侧永远不出现（这正是 R4 验收指出的"六件里 A 只算一半"）。
      *
      * ⚠ `exemptReqIds` **传空**（⚠ `TASK-R4b.md` §一.3 明写这一条）：
-     *   `STORED_NO_NEW_FIELD` 那份豁免名单住在 `scripts/check-ledger-next.mjs`（判据侧），
+     *   `STORED_NO_NEW_FIELD` 那份豁免名单住在 `scripts/check-ledger.mjs`（判据侧），
      *   ⛔ **不许把它搬进 `src/`** —— 那是判据的账，不是面板的账。
      *   ⇒ 后果：**面板侧不豁免 ⇒ 第 ④ 步可能比判据侧多报一条** `wait-user`。
      *     ⚠ 这是**已知差异**，不是 bug：面板说的是"按账本原样看该干什么"，
@@ -303,7 +318,28 @@ export function buildStages(units: Array<Record<string, unknown>>, readAt: strin
   try {
     portfolio = portfolioOf(units as unknown as PortfolioUnit[])
   } catch { portfolio = undefined }
-  return { ok: true, readAt, stages, caps, next, portfolio }
+  let attention: WorkStateReading[] | undefined
+  try {
+    const byParent = new Map<string, Array<Record<string, unknown>>>()
+    for (const u of units) {
+      const parent = String(u.parent ?? '')
+      if (parent === '') continue
+      const list = byParent.get(parent) ?? []
+      list.push(u)
+      byParent.set(parent, list)
+    }
+    attention = attentionOf(
+      units.filter((u) => ['req', 'task', 'run', 'acc'].includes(String(u.kind))) as any,
+      byParent as any,
+    )
+  } catch {
+    /** 算不出 ⇒ 缺字段（面板明写判不出），⛔ 不兜底为空数组冒充“没事”。 */
+    attention = undefined
+  }
+  return {
+    ok: true, readAt, stages, caps, next, portfolio,
+    ...(attention === undefined ? {} : { attention }),
+  }
 }
 
 /** 处理体依赖（全部注入 ⇒ 机检可跑真源码）。 */
@@ -314,7 +350,7 @@ export interface StagesDeps {
    */
   workRootOf: (sessionId: string) => string | undefined
   workRootWhyOf?: (sessionId: string) => string
-  /** 索引文件绝对路径（默认 `<workRoot>/ledger-next/units/index.toml`） */
+  /** 索引文件绝对路径（默认 `<workRoot>/ledger/units/index.toml`） */
   indexPathOf?: (workRoot: string) => string
   /** 读文本；`undefined` = 文件不存在；抛错 = 读失败 */
   readText?: (absPath: string) => string | undefined
@@ -325,11 +361,11 @@ export interface StagesDeps {
  * 索引的**相对落点**（⚠ 单一真源，服务端与机检都从这里取）。
  *
  * ⚠⚠ **2026-10-30 P4：它相对的是「账本根」**（改前是工作区根）。
- *   P3 时 `ledger-next/` 是源仓内目录 ⇒ 只有实施侧能维护它 ⇒ **Hob 改不动新账本**。
- *   P4 把它整树搬进账本区（`<ledgerHome>/<工作区名>/ledger-next/`）⇒ 索引与写面同源。
+ *   P3 时 `ledger/` 是源仓内目录 ⇒ 只有实施侧能维护它 ⇒ **Hob 改不动新账本**。
+ *   P4 把它整树搬进账本区（`<ledgerHome>/<工作区名>/ledger/`）⇒ 索引与写面同源。
  *   ⛔ **不再把工作区根当备选** —— 两处真相必然漂。
  */
-export const STAGES_INDEX_REL = 'ledger-next/units/index.toml'
+export const STAGES_INDEX_REL = 'ledger/units/index.toml'
 
 /**
  * 一条请求的处理体。
@@ -368,7 +404,7 @@ export function handleStages(deps: StagesDeps, body: any): StagesResponse {
     return {
       ok: false,
       reason: STAGES_REASON_INDEX_UNREADABLE,
-      message: `索引文件不存在：\`${abs}\` —— ⚠ 这通常意味着这个工作区还没建 \`ledger-next/\`，⛔ 不是文件坏了`,
+      message: `索引文件不存在：\`${abs}\` —— ⚠ 这通常意味着这个工作区还没建 \`ledger/\`，⛔ 不是文件坏了`,
     }
   }
   let units: Array<Record<string, unknown>>

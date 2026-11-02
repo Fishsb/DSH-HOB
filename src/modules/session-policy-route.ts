@@ -34,7 +34,7 @@
  * ══ 为什么门只按 `isHob` 判，而不在客户端再比一次预设名 ══════════════════════
  *   客户端若自己按 `agentPreset === 'Hob'` 过滤，就出现**第二份判据**（会漂）。
  *   本路由用宿主侧 `svc.get(session).isHob`（它读 `agentPreset` **投影**，
- *   见 `src/session-policy-service.ts:649` `preset.preset === PLANNING_PRESET_ID`）
+ *   见 `src/session-policy-service.ts:649` `preset.preset === HOB_PRESET_ID`）
  *   ⇒ 判据**只有一处**。客户端只消费 `state`。
  *   ⚠ 客户端侧**仍保留**一道 `isHobPreset` 前置闸（`hob-unselected-gate.tsx`）：
  *     那是为了"非 Hob 会话**零请求**"（省一次往返），**不是**把判定搬过去 ——

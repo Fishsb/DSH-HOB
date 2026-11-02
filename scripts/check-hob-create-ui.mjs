@@ -918,11 +918,19 @@ async function main() {
      */
     const openBody = /OPEN_READ_LEVELS\s*=\s*\[([^\]]*)\]/.exec(openSrc)
     const openItems = openBody === null ? [] : [...openBody[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
-    /** ⚠ 合法枚举的唯一来源 = `src/config.ts` 的 `PERMISSION_LEVELS`（⛔ 不在这里手抄）。 */
+    /**
+     * ⚠ 合法枚举的唯一来源 = `src/shared/permission-levels.ts`。
+     * 旧版本曾住在 `src/config.ts`；为兼容尚未迁移的工作树只作后备读取，
+     * 但新源存在时必须从新源抽，否则“迁移到零依赖模块”会被误判成枚举丢失。
+     */
+    const levelsSrc = (() => {
+      try { return readFileSync(join(srcRoot, 'src', 'shared', 'permission-levels.ts'), 'utf8') } catch { return '' }
+    })()
     const cfgSrc = (() => {
       try { return readFileSync(join(srcRoot, 'src', 'config.ts'), 'utf8') } catch { return '' }
     })()
-    const enumBody = /PERMISSION_LEVELS\s*=\s*\[([^\]]*)\]/.exec(cfgSrc)
+    const enumBody = /PERMISSION_LEVELS\s*=\s*\[([^\]]*)\]/.exec(levelsSrc)
+      ?? /PERMISSION_LEVELS\s*=\s*\[([^\]]*)\]/.exec(cfgSrc)
     const enumItems = enumBody === null ? [] : [...enumBody[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
     const openParsed = openItems.length > 0
     const openNotEmpty = openItems.length > 0

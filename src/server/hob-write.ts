@@ -128,10 +128,10 @@ const VOLUME_PATH_RE = /^volumes\/([^/]+)\/([A-Za-z0-9._-]+\.md)$/
 export const VOLUME_SUBDIRS = ['context/rounds'] as const
 
 /**
- * ⭐⭐ **新账本（`ledger-next/`）的写入面** —— 2026-10-30 · P4 · `TASK-P4.md` §一②。
+ * ⭐⭐ **新账本（`ledger/`）的写入面** —— 2026-10-30 · P4 · `TASK-P4.md` §一②。
  *
  * ── 为什么必须开（这一条是整期重构的"能不能用"分水岭）──────────────
- *   P3 结束时 `ledger-next/` 住在**工作区**里 —— ⚠ **Hob 只能写账本区**，
+ *   P3 结束时 `ledger/` 住在**工作区**里 —— ⚠ **Hob 只能写账本区**，
  *   它一个字节都改不了那份索引 ⇒ **新账本只是个陈列品**（面板显示一份写不动的数据）。
  *   ⇒ P4 把整树搬进账本区，并把这里的写入面开出来。
  *
@@ -139,16 +139,16 @@ export const VOLUME_SUBDIRS = ['context/rounds'] as const
  *   `gen/` 是 `npm run gen:ledger` 的**生成物**，手改即红（`CONSTITUTION` §2 / I5）。
  *   开它等于允许"绕过索引直接改产物" —— 那正是这次重构要消灭的编辑原语。
  */
-export const LEDGER_NEXT_WRITABLE_DIRS = ['ledger-next/units', 'ledger-next/spec', 'ledger-next/changes'] as const
+export const LEDGER_WRITABLE_DIRS = ['ledger/units', 'ledger/spec', 'ledger/changes'] as const
 
-/** 新账本里**唯一可写的单文件**（索引）；⚠ `ledger-next/gen/**` 与 `CONSTITUTION.md` / `PROJECT.md` 都不在此列。 */
-export const LEDGER_NEXT_WRITABLE_FILES = ['ledger-next/units/index.toml'] as const
+/** 新账本里**唯一可写的单文件**（索引）；⚠ `ledger/gen/**` 与 `CONSTITUTION.md` / `PROJECT.md` 都不在此列。 */
+export const LEDGER_WRITABLE_FILES = ['ledger/units/index.toml'] as const
 
 /**
- * 新账本写入面的**路径正则**（`ledger-next/<dir>/<任意相对路径>`；⚠ 只认登记的那几个 `<dir>`）。
+ * 新账本写入面的**路径正则**（`ledger/<dir>/<任意相对路径>`；⚠ 只认登记的那几个 `<dir>`）。
  * ⚠ 扩展名放开到 `.md` / `.toml` / `.json` —— `spec/` 与 `changes/` 里会有多种文本件。
  */
-const LEDGER_NEXT_PATH_RE = /^ledger-next\/(units|spec|changes)\/([A-Za-z0-9._/-]+)$/
+const LEDGER_PATH_RE = /^ledger\/(units|spec|changes)\/([A-Za-z0-9._/-]+)$/
 
 /** 具名两层子目录下的路径：`volumes/<卷>/<子目录>/<文件>.md`（⚠ 登记名含"卷/子目录"两层）。 */
 const VOLUME_SUBDIR_PATH_RE = /^volumes\/([a-z0-9-]+\/[a-z0-9-]+)\/([A-Za-z0-9._-]+\.md)$/
@@ -737,24 +737,24 @@ function checkWhitelist(file: string): WriteHobResult | null {
     return refuse(file, 'not-whitelisted', `拒绝：${BACKUP_DIR}/ 由 write_hob 自管，不接受写入。`)
   }
   /**
-   * ⭐ **新账本 `ledger-next/`**（2026-10-30 P4）。
+   * ⭐ **新账本 `ledger/`**（2026-10-30 P4）。
    * ⚠ 判定顺序：先撞 **`gen/` 与其它非白名单子目录的显式拒绝**，再认白名单 ——
    *   这样"想写生成物"会得到**点名 gen 的那句**，而不是笼统的"不在白名单内"。
    */
-  if (file === 'ledger-next' || file.startsWith('ledger-next/')) {
+  if (file === 'ledger' || file.startsWith('ledger/')) {
     // ⛔ 生成物：显式拒绝（有独立理由，⛔ 不混进笼统话术）
-    if (file.startsWith('ledger-next/gen/') || file === 'ledger-next/gen') {
+    if (file.startsWith('ledger/gen/') || file === 'ledger/gen') {
       return refuse(
         file,
         'not-whitelisted',
-        `拒绝：\`ledger-next/gen/\` 是**生成物**（\`npm run gen:ledger\` 产出），手改即红（\`CONSTITUTION\` §2 / I5）。`
-          + `\n      ⇒ 要改内容 ⇒ 改 \`ledger-next/units/index.toml\`，再跑 \`npm run gen:ledger\`。`,
+        `拒绝：\`ledger/gen/\` 是**生成物**（\`npm run gen:ledger\` 产出），手改即红（\`CONSTITUTION\` §2 / I5）。`
+          + `\n      ⇒ 要改内容 ⇒ 改 \`ledger/units/index.toml\`，再跑 \`npm run gen:ledger\`。`,
       )
     }
     // 单文件白名单（索引）
-    if ((LEDGER_NEXT_WRITABLE_FILES as readonly string[]).includes(file)) return null
+    if ((LEDGER_WRITABLE_FILES as readonly string[]).includes(file)) return null
     // 目录白名单
-    const ln = LEDGER_NEXT_PATH_RE.exec(file)
+    const ln = LEDGER_PATH_RE.exec(file)
     if (ln !== null) {
       // ⚠ 路径穿越守卫（`..` / 绝对路径已在正则字符集外，这里再挡一次显式）
       if (file.includes('..') || file.includes('//')) {
@@ -766,10 +766,10 @@ function checkWhitelist(file: string): WriteHobResult | null {
       file,
       'not-whitelisted',
       `拒绝：\`${file}\` 不在新账本的可写面内。`
-        + `\n      ⇒ 可写目录：${LEDGER_NEXT_WRITABLE_DIRS.join(' / ')}（及其下任意 .md/.toml/.json）；`
-        + `\n      ⇒ 可写单文件：${LEDGER_NEXT_WRITABLE_FILES.join(' / ')}；`
-        + `\n      ⇒ ⛔ \`ledger-next/gen/**\` 一律不可写（生成物）；`
-        + `\n      ⇒ ⛔ \`ledger-next/CONSTITUTION.md\` / \`PROJECT.md\` 也不可写（红线与地图走人工编辑 + commit）。`,
+        + `\n      ⇒ 可写目录：${LEDGER_WRITABLE_DIRS.join(' / ')}（及其下任意 .md/.toml/.json）；`
+        + `\n      ⇒ 可写单文件：${LEDGER_WRITABLE_FILES.join(' / ')}；`
+        + `\n      ⇒ ⛔ \`ledger/gen/**\` 一律不可写（生成物）；`
+        + `\n      ⇒ ⛔ \`ledger/CONSTITUTION.md\` / \`PROJECT.md\` 也不可写（红线与地图走人工编辑 + commit）。`,
     )
   }
   // 账本 + 项目方案 + 当前需求（PROJECT.md 自 2026-10-10 / UD-88 起与账本同级；
@@ -1286,12 +1286,12 @@ async function writeHobFileInner(
   /**
    * ⚠ **扩展名守卫**（2026-10-30 P4 放宽了一个**窄口**）：
    *   · 老账本侧：**仍然只许 `.md`**（⛔ 一字未放宽）；
-   *   · 新账本 `ledger-next/` 侧：额外允许 `.toml` / `.json` —— 因为那份索引**本身就是 TOML**
+   *   · 新账本 `ledger/` 侧：额外允许 `.toml` / `.json` —— 因为那份索引**本身就是 TOML**
    *     （`units/index.toml`），`spec/` 与 `changes/` 也可能有结构化文本。
-   *   ⚠ 只对 `ledger-next/` 前缀生效（下面前缀判断写死）；其它任何路径仍是"只许 .md"。
+   *   ⚠ 只对 `ledger/` 前缀生效（下面前缀判断写死）；其它任何路径仍是"只许 .md"。
    *   ⛔ 这不是"整体放开扩展名" —— 那会让 `archive/**` 等面都能写二进制旁路。
    */
-  const isLedgerNext = file === 'ledger-next' || file.startsWith('ledger-next/')
+  const isLedgerNext = file === 'ledger' || file.startsWith('ledger/')
   const lower = file.toLowerCase()
   const extOk = lower.endsWith('.md') || (isLedgerNext && (lower.endsWith('.toml') || lower.endsWith('.json')))
   if (!extOk) {
@@ -1299,7 +1299,7 @@ async function writeHobFileInner(
       file,
       'not-markdown',
       isLedgerNext
-        ? '拒绝：`ledger-next/` 下只允许写 .md / .toml / .json 文件。'
+        ? '拒绝：`ledger/` 下只允许写 .md / .toml / .json 文件。'
         : '拒绝：只允许写 .md 文件。',
     )
   }

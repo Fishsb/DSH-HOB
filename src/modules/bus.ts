@@ -34,7 +34,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { type SpawnDefaults } from '../config.ts'
-import { FACTORY_DEFAULT_PRESET_ID, PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
+import { FACTORY_DEFAULT_PRESET_ID, HOB_PRESET_ID } from '../shared/planning-preset.ts'
 // ⚠ 新建 Hob 会话的**可读档开放面**（唯一声明点；本模块只消费，⛔ 不另抄白名单）
 import { isOpenReadLevel, readLevelNotOpenReason } from '../shared/read-level-policy.ts'
 import { appendSessionModelSelection, installSessionModelSelection } from '../model-selection.ts'
@@ -92,7 +92,7 @@ export interface SessionInfo {
    */
   presetSource?: PresetSource
   /**
-   * 该会话在**哪一侧**（依 {@link agentPreset} 判定，口径同源 {@link PLANNING_PRESET_ID}）。
+   * 该会话在**哪一侧**（依 {@link agentPreset} 判定，口径同源 {@link HOB_PRESET_ID}）。
    *   · `'planning'` —— 规划侧（**不能施工**：无 shell、无 write/edit）；
    *   · `'implementation'` —— 实施侧；
    *   · ⛔ **不给值**（预设读不到）—— 如实留空，⛔ 不猜。
@@ -115,7 +115,7 @@ export interface DeliveryResult {
   mode?: DeliveryMode
   reason?: string
   /**
-   * **目标会话的预设是规划侧预设**（{@link PLANNING_PRESET_ID}）⇒ 响亮提示（第 129 轮新增）。
+   * **目标会话的预设是规划侧预设**（{@link HOB_PRESET_ID}）⇒ 响亮提示（第 129 轮新增）。
    *
    * ⚠ **只提示、不拦**：投递**照常成功**（`ok` 不受影响）—— 给规划侧会话发消息**本身可能合法**
    *   （问它状态、让它规划、传个读数）。本字段是"你这一步大概率不会得到实施产出"的**预警**，
@@ -128,7 +128,7 @@ export interface DeliveryResult {
    *   ⇒ 真因不是"投错了"（投递成功），而是**投递方不知道**目标不能施工 ⇒ **静默失败**。
    *     本字段把那个静默变成**响亮**。
    *
-   * ⚠ **口径同源**：判定用 {@link PLANNING_PRESET_ID}，⛔ **不另写字面量**。
+   * ⚠ **口径同源**：判定用 {@link HOB_PRESET_ID}，⛔ **不另写字面量**。
    */
   presetNotice?: string
   /**
@@ -932,9 +932,9 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
             return undefined
           }
         })()
-        const presetNotice = targetPreset === PLANNING_PRESET_ID
+        const presetNotice = targetPreset === HOB_PRESET_ID
           ? 'WARNING: the target session ' + sessionId + ' is running the PLANNING-side preset ('
-            + PLANNING_PRESET_ID + '). That preset plans work but CANNOT carry it out — it has no shell '
+            + HOB_PRESET_ID + '). That preset plans work but CANNOT carry it out — it has no shell '
             + 'and no write/edit tool, and its charter says so. A directive that asks it to implement, '
             + 'run, or verify something by doing the work will look like it is running (hob_orch_status '
             + 'shows "started", hob_sessions shows "running") but will NEVER produce the implementation — '
@@ -1047,10 +1047,10 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
               id,
               ...(typeof header.cwd === 'string' ? { cwd: header.cwd } : {}),
               ...(preset === undefined ? {} : { agentPreset: preset, presetSource }),
-              // ⚠ 「在哪一侧」由**同一个值**派生（口径同源 PLANNING_PRESET_ID，⛔ 不另写字面量）。
+              // ⚠ 「在哪一侧」由**同一个值**派生（口径同源 HOB_PRESET_ID，⛔ 不另写字面量）。
               ...(preset === undefined
                 ? {}
-                : { side: preset === PLANNING_PRESET_ID ? 'planning' as const : 'implementation' as const }),
+                : { side: preset === HOB_PRESET_ID ? 'planning' as const : 'implementation' as const }),
               ...(agent?.status === undefined ? {} : { status: String(agent.status) }),
               live: agent !== undefined,
               self: selfSessionId !== undefined && id === selfSessionId,
@@ -1236,11 +1236,11 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
         //        ⇒ 落地前**必须**确认出厂默认在名册里；不在 ⇒ **退回不指定**（= 交宿主默认，
         //        即本模块第 11 轮之前的行为）并**如实报告**，**绝不静默、绝不让 spawn 失败**。
         const configuredPreset = spawnCfg.agentPreset !== '' ? spawnCfg.agentPreset : undefined
-        const configuredIsPlanning = configuredPreset === PLANNING_PRESET_ID
+        const configuredIsPlanning = configuredPreset === HOB_PRESET_ID
         let presetId = explicitPreset ?? (configuredIsPlanning ? undefined : configuredPreset)
         let presetNote = configuredIsPlanning && explicitPreset === undefined
           ? 'The configured new-session default preset is this plugin\'s planning-side preset ('
-            + PLANNING_PRESET_ID + '). It was NOT applied: that preset plans work but cannot carry '
+            + HOB_PRESET_ID + '). It was NOT applied: that preset plans work but cannot carry '
             + 'it out, so a session started with it would only plan again. An explicitly passed '
             + 'agentPreset is unaffected.'
           : undefined
@@ -1257,14 +1257,14 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
             presetId = FACTORY_DEFAULT_PRESET_ID
             if (configuredIsPlanning) {
               presetNote = 'The configured new-session default preset is this plugin\'s planning-side '
-                + 'preset (' + PLANNING_PRESET_ID + '), so it was not applied. The session was created '
+                + 'preset (' + HOB_PRESET_ID + '), so it was not applied. The session was created '
                 + 'with the factory default preset (' + FACTORY_DEFAULT_PRESET_ID + ') instead. '
                 + 'An explicitly passed agentPreset is unaffected.'
             }
             // 配置本来为空 ⇒ 这是**正常路径**（不是"少做了一件事"）⇒ 不留 NOTE，不打扰调用方。
           } else if (configuredIsPlanning) {
             presetNote = 'The configured new-session default preset is this plugin\'s planning-side '
-              + 'preset (' + PLANNING_PRESET_ID + '), so it was not applied. The factory default '
+              + 'preset (' + HOB_PRESET_ID + '), so it was not applied. The factory default '
               + 'preset (' + FACTORY_DEFAULT_PRESET_ID + ') is not in the current preset roster, so '
               + 'no preset was passed and the host default applies. An explicitly passed agentPreset '
               + 'is unaffected.'
@@ -1632,7 +1632,7 @@ export function createHobBusTools(
       }
       const lines = rows.map((r) => {
         // ⚠ ⚠ 第 292 轮：**侧** 与 **预设** 都要能分辨（依据 CHG-058）——
-        //   ⚠ 侧由 `agentPreset` 派生（同一口径 PLANNING_PRESET_ID），⛔ 不另立判据；
+        //   ⚠ 侧由 `agentPreset` 派生（同一口径 HOB_PRESET_ID），⛔ 不另立判据；
         //   ⚠ 预设读不到 ⇒ 该列**留空并说明**，⛔ 不拿部署默认顶替、⛔ 不猜。
         const side = r.side === 'planning' ? '规划侧'
           : r.side === 'implementation' ? '实施侧'
@@ -1834,7 +1834,7 @@ export function createHobBusTools(
           '新会话用的预设 id（如 `' + FACTORY_DEFAULT_PRESET_ID + '`）。'
           + '⚠ 不填时的取值顺序：本参数 > 设置里「新建会话默认」> 出厂默认 `'
           + FACTORY_DEFAULT_PRESET_ID + '`（⛔ 不问宿主默认）。'
-          + '⚠ ②若恰好是规划侧预设（`' + PLANNING_PRESET_ID + '`）⇒ **不套用**（它只规划、不施工），'
+          + '⚠ ②若恰好是规划侧预设（`' + HOB_PRESET_ID + '`）⇒ **不套用**（它只规划、不施工），'
           + '改走出厂默认，并在返回里带 `presetNote` 说明。'
           + '⚠ 名册读不到时退回不传给宿主（由宿主默认决定），同样在 `presetNote` 里如实说明。',
       },
@@ -1876,7 +1876,7 @@ export function createHobBusTools(
        *     但会**如实报边界**（见返回值与 CONTEXT），⛔ 不说"所有路径都有弹窗"。
        */
       {
-        const wantsHob = args?.agentPreset === PLANNING_PRESET_ID
+        const wantsHob = args?.agentPreset === HOB_PRESET_ID
           || (args?.agentPreset === undefined || args?.agentPreset === '')
             && (args?.level !== undefined || args?.workMode !== undefined)
         if (wantsHob) {

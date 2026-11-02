@@ -416,11 +416,11 @@ function checkArchiveBytes({ ledgerRoot, bad, ok, skip }) {
  */
 export function checkArchiveIndexGen({ ledgerRoot, bad, ok, skip }) {
   const skipSink = typeof skip === 'function' ? skip : () => {}
-  const genPath = join(ledgerRoot, 'ledger-next', 'gen', 'archive-index.md')
+  const genPath = join(ledgerRoot, 'ledger', 'gen', 'archive-index.md')
   let gen = ''
   try { gen = readFileSync(genPath, 'utf8') } catch { gen = '' }
   if (gen === '') {
-    skipSink('AI1 归档目录清单 ↔ 生成物【未执行】—— `ledger-next/gen/archive-index.md` 读不到 ⇒ 无对象可查（⛔ 不报 ✓）')
+    skipSink('AI1 归档目录清单 ↔ 生成物【未执行】—— `ledger/gen/archive-index.md` 读不到 ⇒ 无对象可查（⛔ 不报 ✓）')
     return { executed: false }
   }
   /** 从生成物解析 `| n | `archive/<名>/` | <文件数> |`。 */
@@ -1317,11 +1317,11 @@ export const ARCHIVE_HISTORICAL_NO_MANIFEST = [
   '2026-10-30-context-41-fix',
   '2026-10-30-context-refresh',
   '2026-10-30-ctx41-gen-block',
-  '2026-10-30-ctx41-ledger-next',
+  '2026-10-30-ctx41-ledger',
   '2026-10-30-ctx41-meta-negctl',
   '2026-10-30-ctx41-stages-route',
   '2026-10-30-example-path-fix',
-  '2026-10-30-ledger-next-move',
+  '2026-10-30-ledger-move',
   '2026-10-30-p13-reds',
   '2026-10-30-p17-reds',
   '2026-10-30-preset-switch',

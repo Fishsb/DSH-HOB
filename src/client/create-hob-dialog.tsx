@@ -36,7 +36,7 @@
  */
 import * as React from 'react'
 // ⚠ 预设 id 唯一来源（⛔ 不在这里写那个字面值 —— `check:presets` ⑦ 组钉着全仓只有一处）
-import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
+import { HOB_PRESET_ID } from '../shared/planning-preset.ts'
 // ⚠ 红线句的**单一来源**（2026-10-24 · 修复单第 9 条）：⛔ 不在这里再抄一份中文。
 import { CAPABILITY_RED_LINE_EN, CAPABILITY_RED_LINE_ZH } from '../shared/capability-red-line.ts'
 // ⚠ 取词**只有一个入口**（`t()`，与设置面板同一条管线）：本文件只把自己这一屏的

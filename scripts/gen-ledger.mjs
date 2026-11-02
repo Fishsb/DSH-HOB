@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * **生成器**：`ledger-next/units/index.toml` ⇒ `ledger-next/gen/stages.md` + `ledger-next/gen/index.md`
+ * **生成器**：`ledger/units/index.toml` ⇒ `ledger/gen/stages.md` + `ledger/gen/index.md`
  * （2026-10-30 · P1 · `DESIGN-V2.md` §四 / §八 M2）。
  *
  * ══ 三条硬要求 ═══════════════════════════════════════════════════════════════════
  *   ① **确定性**：同样的输入两次跑，输出**逐字节相同**。
  *      ⚠ 所以⛔ **不写时间戳、不写"生成于…"**、不遍历 `Object.keys` 之外的顺序 —— 一律按索引里的声明顺序。
- *   ② **纯函数化**：`render()` 只吃字符串、只吐字符串（`check-ledger-next.mjs` 的 I2 直接调它，
+ *   ② **纯函数化**：`render()` 只吃字符串、只吐字符串（`check-ledger.mjs` 的 I2 直接调它，
  *      不需要落地文件就能验"改一条 status ⇒ 阶段跟着变"）。
  *   ③ **⛔ 零第三方依赖**：TOML 只用一个**受限子集解析器**（见 `parseTomlSubset`）——
  *      只认本索引用到的那几种写法；⛔ 不假装支持完整 TOML（那会是一个假的保证）。
@@ -24,22 +24,22 @@ const here = dirname(fileURLToPath(import.meta.url))
 export const ROOT = join(here, '..')
 
 /**
- * ⚠⚠ **2026-10-30 P4：`ledger-next/` 已搬进账本区**（Hob 只能写账本区 ⇒ 索引必须住那儿）。
+ * ⚠⚠ **2026-10-30 P4：`ledger/` 已搬进账本区**（Hob 只能写账本区 ⇒ 索引必须住那儿）。
  *   解析走**脚本侧唯一实现** `scripts/lib/ledger-root.mjs`（⛔ 不在这里再拼一套）。
  *   ⚠ 判不出账本根 ⇒ **抛错**（⛔ 不落回工作区根 —— 那会两处真相）。
  *
- * @returns 账本区里 `ledger-next/` 的绝对路径
+ * @returns 账本区里 `ledger/` 的绝对路径
  */
-export function resolveLedgerNextDir() {
+export function resolveLedgerDir() {
   // ⚠ 签名是 `(root, cliLedger, homeOverride)` —— 顺序错会把工作区根当 cliLedger。
   const ledgerRoot = resolveLedgerRoot(ROOT, undefined, ledgerHomeOf(ROOT))
   if (ledgerRoot === undefined || ledgerRoot === '') {
-    throw new Error('账本根判不出 ⇒ 不知道 ledger-next/ 在哪（⛔ 不猜、⛔ 不回退到工作区根）')
+    throw new Error('账本根判不出 ⇒ 不知道 ledger/ 在哪（⛔ 不猜、⛔ 不回退到工作区根）')
   }
-  return join(ledgerRoot, 'ledger-next')
+  return join(ledgerRoot, 'ledger')
 }
 
-export const LEDGER_DIR = resolveLedgerNextDir()
+export const LEDGER_DIR = resolveLedgerDir()
 
 /**
  * ⚠ **共享收敛判定**（2026-10-31 P42b/R4b · `TASK-R4b.md` §一.4）。
@@ -66,6 +66,15 @@ try {
   const portUrl = new URL('../src/shared/portfolio.ts', import.meta.url)
   portfolioOfShared = (await import(portUrl.href)).portfolioOf
 } catch { portfolioOfShared = undefined }
+/**
+ * ⚠ **有效验收判决**的唯一实现：同一任务多条 ACC 按 `verified_at` 取最新。
+ *   载入失败 ⇒ 保持 `undefined`；Current 明写“判不出”，⛔ 不回退成“有任一 pass 就算过”。
+ */
+let effectiveAcceptanceOfShared
+try {
+  const verdictUrl = new URL('../src/shared/acceptance-verdict.ts', import.meta.url)
+  effectiveAcceptanceOfShared = (await import(verdictUrl.href)).effectiveAcceptanceOf
+} catch { effectiveAcceptanceOfShared = undefined }
 export const INDEX_PATH = join(LEDGER_DIR, 'units', 'index.toml')
 export const GEN_DIR = join(LEDGER_DIR, 'gen')
 
@@ -101,7 +110,7 @@ export const GEN_DIR = join(LEDGER_DIR, 'gen')
  *   只要被某条无关 task 的 `after` 提了一下，就会被当成"已经有人管了"。
  *
  * ── ⚠ 为什么这里只是"写死语义"而不是"禁止重合"──────────────────────
- *   见 `check-ledger-next.mjs` 的 `checkA1`：**`after` 与 `parent` 重合是合法的、而且是常态**
+ *   见 `check-ledger.mjs` 的 `checkA1`：**`after` 与 `parent` 重合是合法的、而且是常态**
  *   （task 属于它的 change，同时要等那条 change 先落；run 属于它的 task，同时要等那条 task 先跑完）。
  *   ⇒ 真正要防的不是"重合"，而是"**只有 `after` 没有 `parent`**"那种误用。
  */
@@ -118,7 +127,7 @@ export const GEN_DIR = join(LEDGER_DIR, 'gen')
  *   等于**自证**：需求自己声明"我有证据"，而没有任何人验过。
  *   ⇒ 正确的路已经存在：`acc.basis` 指向 `EVD-`，那条路才让"证据"与"判决"分开。
  *
- * ⚠ 判据在 `check-ledger-next.mjs` 的 **A-2**（读本常量，⛔ 不另写一份清单）。
+ * ⚠ 判据在 `check-ledger.mjs` 的 **A-2**（读本常量，⛔ 不另写一份清单）。
  */
 export const EVIDENCE_PARENT_KINDS = ['task', 'change', 'decision', 'risk', 'cap']
 
@@ -128,7 +137,7 @@ export const PARENT_VS_AFTER = {
 }
 
 export const KIND_SPEC = {
-  req: { step: 1, statuses: ['draft', 'agreed', 'dropped'], init: 'draft', finals: ['agreed', 'dropped'], prefix: 'R-' },
+  req: { step: 1, statuses: ['draft', 'agreed', 'dropped', 'retired'], init: 'draft', finals: ['agreed', 'dropped', 'retired'], prefix: 'R-' },
   /**
    * ⚠⚠ **2026-10-31 P41/R3：`change` 的「聚合态」（`TASK-R3.md` §三）──────────────
    *
@@ -194,7 +203,7 @@ export const KIND_SPEC = {
    * ── 它治什么 ────────────────────────────────────────────────────────
    *   账本链条的顶端此前**直接是 `req`** —— 没有目标层。用户方案的主链是
    *   `Vision → Goal → Requirement → Change → Task → Run → Acceptance`，
-   *   而「每条活跃需求**恰好一个主目标**」是要被机检的三条读数（见 `check-ledger-next.mjs`
+   *   而「每条活跃需求**恰好一个主目标**」是要被机检的三条读数（见 `check-ledger.mjs`
    *   的 `GC-1` / `GC-2` / `GC-3`）。
    *
    * ── ⚠ 为什么 `step: null`（与 `cap` / `risk` 同档）──────────────────────
@@ -212,7 +221,7 @@ export const KIND_SPEC = {
    * ── ⚠ 前缀 `G-`，且**没有 parent / after 语义** ──────────────────────────
    *   它是链顶 ⇒ 没有上游。⚠ `after` 仍是 I1 的通用必填（数组，可为空），
    *   ⛔ 但不许拿它编"目标之间的先后"（那会造出一条没有依据的甘特线）。
-   *   ⚠ 必填的 `req_ids`（承接哪些需求）由 `check-ledger-next.mjs` 的
+   *   ⚠ 必填的 `req_ids`（承接哪些需求）由 `check-ledger.mjs` 的
    *   `REQUIRED_FIELDS` 之外的**覆盖检查**核（理由见那里的注释：避免同一条缺口红两次）。
    */
   goal: { step: null, statuses: ['active', 'done', 'retired'], init: 'active', finals: ['done', 'retired'], prefix: 'G-' },
@@ -221,9 +230,9 @@ export const KIND_SPEC = {
 /**
  * ⭐ **受控对象的必填字段**（2026-10-31 P40/R2 · `TASK-R2.md` §二）
  *
- * ⚠⚠ **为什么放在这里而不是 `check-ledger-next.mjs`**：本表是"这三类各要哪些字段"的
+ * ⚠⚠ **为什么放在这里而不是 `check-ledger.mjs`**：本表是"这三类各要哪些字段"的
  *   **唯一定义处**；判据（I1）从这里读。⛔ 在两处各列一遍 = 两处真相，改一处另一处静默过期。
- *   （既有五类的必填仍在 `check-ledger-next.mjs` 的 `REQUIRED_FIELDS` —— 那是 R2 之前就有的，
+ *   （既有五类的必填仍在 `check-ledger.mjs` 的 `REQUIRED_FIELDS` —— 那是 R2 之前就有的，
  *    本轮**不搬**它，⛔ 避免顺手重构；新增的这三类按任务书要求收在同一处。）
  *
  * ⚠ **语义**（判据按这个核，⛔ 不是"有字段就算"）：
@@ -244,7 +253,7 @@ export const CONTROLLED_FIELDS = {
 /**
  * ⭐ **五类既有单元的新增字段**（2026-10-31 P40/R2 · `TASK-R2.md` §三）
  *
- * ⚠ 与上面那张表分开写，是因为它们的**强制性按状态生效**（见 `check-ledger-next.mjs` 的
+ * ⚠ 与上面那张表分开写，是因为它们的**强制性按状态生效**（见 `check-ledger.mjs` 的
  *   `CONDITIONAL_FIELDS`）：`built` 才要 `verify_refs`，`agreed` 才要 `acceptance_ids` …
  *   ⛔ 对未开工的活要求结果 = 逼人编结果（`todo` 豁免是既有先例）。
  * ⚠ 本表只描述"有哪些新字段、语义是什么"，**不描述何时强制**（那是判据的事）。
@@ -263,7 +272,7 @@ export const CONTROLLED_FIELDS = {
  * ⚠ 封闭集**只在这里写一次**（⛔ 判据脚本里不许再列一遍 —— 两处真相会漂）。
  * ⚠⚠ `send_back_to` **只在 `status = send-back` 时必填**；`pass` 却填了它 ⇒ 自相矛盾 ⇒ 红。
  *   ⚠ 判决的唯一落点是 `status`（2026-11-01 R5b 裁定 A：`outcome` 已删）。
- *   （判据在 `check-ledger-next.mjs` 的 `checkB1`/`checkB2`。）
+ *   （判据在 `check-ledger.mjs` 的 `checkB1`/`checkB2`。）
  */
 export const SEND_BACK_TARGETS = ['back-to-task', 'back-to-plan', 'back-to-requirement']
 
@@ -275,10 +284,31 @@ export const SEND_BACK_ACTOR = {
 }
 
 export const EXTENDED_FIELDS = {
-  req: { acceptance_ids: '哪几条验收证明这条需求', risk_ids: '涉及哪几条风险', priority: '优先级' },
+  req: {
+    acceptance_ids: '哪几条验收证明这条需求',
+    risk_ids: '涉及哪几条风险',
+    priority: '优先级',
+    retired_title: '退役前标题（逐字）',
+    retired_body: '退役前正文的逐字节归档指针',
+    retired_reason: '退役原因',
+    retired_at: '退役时间',
+    replaced_by: '替代需求（若有）',
+    carried_by: '哪份文件或哪条判据接手',
+  },
   change: { addresses: '满足哪几条需求', decisions: '依哪几条决策', supersedes: '取代哪条旧方案', risk_ids: '涉及哪几条风险' },
-  task: { verify_refs: '该由哪几条证据证明', scope_paths: '允许改的路径', budget: '预算（几条调用 / 几轮）' },
-  run: { delivered_at: '投递时刻（不变量 1 的落点）', report: '回传件在哪', evidence_refs: '产出了哪几条证据' },
+  task: {
+    req_ids: '这条任务服务哪几条需求（⚠ 承诺关系；⛔ 不是 `after` 的前置关系）',
+    verify_refs: '该由哪几条证据证明',
+    scope_paths: '允许改的路径',
+    budget: '预算（几条调用 / 几轮）',
+  },
+  run: {
+    delivered_at: '投递时刻（不变量 1 的落点）',
+    report: '回传件在哪',
+    evidence_refs: '产出了哪几条证据',
+    prompt_version: '本次运行实际使用的模型面版本（如 v1；⛔ 不许从当前文件反推）',
+    prompt_hash: '本次运行实际使用的模型面 SHA-256（与 contracts.md 同源）',
+  },
   /**
    * ⚠⚠ **`acc` 没有 `outcome` 字段**（2026-11-01 P40/R5b · `TASK-R5b.md` §一 裁定走 A）。
    *   判决的**唯一落点**是 `KIND_SPEC.acc.statuses`（`['pass','send-back','unverified']`）——
@@ -295,7 +325,7 @@ export const EXTENDED_FIELDS = {
  * ⭐ **`req.priority` 的封闭集**（2026-11-01 P40/R5 · `TASK-R5.md` §五 F-1）
  *
  * ⚠⚠ **只写在这里一处**（⛔ 判据脚本里不许再列一遍 —— 两处真相会漂，`TASK-R5.md` §五 点名要求）。
- *   判据（`check-ledger-next.mjs` 的 `checkF1`）从这里读。
+ *   判据（`check-ledger.mjs` 的 `checkF1`）从这里读。
  * ⚠ 语义：`must` = 不做就不成立 · `should` = 该做 · `could` = 有余力才做。
  *   ⛔ 它不是"完成度"，⛔ 不许派生百分比。
  */
@@ -481,7 +511,12 @@ export function renderStages(units) {
   lines.push('|---|---|---|---|')
   for (const [kind, spec] of Object.entries(KIND_SPEC)) {
     if (spec.step === null) continue
-    const unitsOfStep = units.filter((u) => u.kind === kind)
+    /**
+     * ⚠ 退役 / 丢弃需求只留历史，⛔ 不进活跃五步分母。
+     * 与 `src/shared/stages-index.ts` 的路由同口径；`check:stages-route` R-9 交叉验证。
+     */
+    const unitsOfStep = units.filter((u) => u.kind === kind
+      && !(kind === 'req' && ['retired', 'dropped'].includes(String(u.status))))
     const { state, finals, total } = summarizeStep(unitsOfStep, spec)
     const label = state === 'done' ? `${STAGE_ICON.done} 完成`
       : state === 'doing' ? `${STAGE_ICON.doing} 进行中`
@@ -756,7 +791,7 @@ export function readUnits(indexPath = INDEX_PATH) {
  * ── ⚠ 为什么它必须**由生成器直出**（⛔ 不许手写）───────────────────────
  *   同 `gen/**` 的理由：手写的快照会**悄悄过期**，而"过期但看起来正常"的读数
  *   比没有读数更坏（`CONSTITUTION` §10：没有读数不能陈述为事实）。
- *   ⇒ 它落在 `ledger-next/spec/`，由 `npm run gen:ledger` 写；手改 ⇒ `I5c` 当场红。
+ *   ⇒ 它落在 `ledger/spec/`，由 `npm run gen:ledger` 写；手改 ⇒ `I5c` 当场红。
  *
  * ⚠ 纯函数：吃单元 + 若干"外部读数"，⛔ 不取时间戳（否则同一输入两次输出不同，
  *   那会让 `I5c` 的逐字节比对变成假红）。
@@ -881,7 +916,306 @@ export function renderSpecArtifacts(units, extra = {}) {
      *     生成器一改，`spec/portfolio.md` 必须同批重生成。
      */
     'portfolio.md': renderPortfolio(units, extra),
+    /**
+     * ⚠ **需求轴**：一条需求一行，沿主目标 → 方案 → 任务 → 执行 → 验收 → 最新证据
+     *   展示完整关系链。它只复用索引里已有的正式边，⛔ 不用 `after` 冒充承接。
+     */
+    'requirements.md': renderRequirementAxis(units),
+    /**
+     * ⚠ **根需求页**：由索引确定性生成，⛔ 不再是第二份手写清单。
+     * 只列 `agreed` 需求；`retired` / `dropped` 不进活跃表。
+     */
+    'requirement-root.md': renderRequirementRoot(units),
+    /**
+     * ⚠ **Current**：只读的当前工作入口。
+     * 它只汇总索引里已有的状态，⛔ 不本地另存状态、⛔ 不计算完成度。
+     */
+    'current.md': renderCurrent(units, extra),
   }
+}
+
+/**
+ * **当前页**：回答“现在在等谁、下一步干什么”。
+ *
+ * ⚠ 这是**派生视图**，不是第六步：
+ *   · 只汇总 `agreed` 需求、已开工任务、未终态运行、开放风险和未处理验收；
+ *   · 不新增状态字段，不计算百分比；
+ *   · 空态也要明写“没有”，⛔ 不能显示空白让人误以为没查。
+ *
+ * @param {Array<Record<string, any>>} units - 索引单元
+ * @param {{ convergence?: (chg: any) => { converged: boolean, blockedBy: string[] } }} extra
+ * @returns {string} markdown 正文
+ */
+export function renderCurrent(units, extra = {}) {
+  const L = []
+  const arr = (v) => (Array.isArray(v) ? v.map(String).filter((x) => x !== '') : [])
+  const id = (u) => `${String(u.id)} · ${String(u.title ?? '')}`
+  const reqs = units.filter((u) => u.kind === 'req' && String(u.status) === 'agreed')
+  const tasks = units.filter((u) => u.kind === 'task')
+  const accs = units.filter((u) => u.kind === 'acc')
+  const runs = units.filter((u) => u.kind === 'run')
+  const risks = units.filter((u) => u.kind === 'risk')
+  const decisions = units.filter((u) => u.kind === 'decision')
+  const goals = units.filter((u) => u.kind === 'goal')
+  const activeTasks = tasks.filter((t) => String(t.status) === 'doing'
+    || String(t.status) === 'built'
+    || String(t.status) === 'todo')
+
+  const waitingUser = reqs.filter((r) => arr(r.acceptance_ids).length === 0)
+  const verdictOf = (items) => {
+    if (typeof effectiveAcceptanceOfShared !== 'function') {
+      return { verdict: 'undecidable', reason: '有效判决模块未载入' }
+    }
+    return effectiveAcceptanceOfShared(items)
+  }
+  /**
+   * ⚠ 工作状态与五步正交：已经 `built` 且有证据的任务，
+   *  即使缺直属验收关系，也**不能**再报成“正在等验收”。
+   * 它属于“覆盖关系缺口”，是账本质量问题，不是一条仍在跑的活。
+   */
+  /**
+   * ⚠ 验收行动项必须覆盖**需求级未通过**与**任务直属缺口**两层，
+   *   不能只数“执行中的任务”。截图实测旧页显示“0 条等验收”，
+   *   而注意力视图列出 15 条验收事项时，读者会误以为账本已收口。
+   */
+  const reqAcceptanceGaps = reqs.filter((r) => {
+    const ids = arr(r.acceptance_ids)
+    if (ids.length === 0) return false
+    const linked = accs.filter((a) => ids.includes(String(a.id)))
+    if (linked.length === 0) return true
+    const verdicts = linked.map((acc) => verdictOf([acc]))
+    return verdicts.some((v) => v.verdict === 'undecidable')
+      || verdicts.some((v) => v.verdict !== 'accepted')
+  })
+  const taskVerdicts = activeTasks
+    .filter((t) => String(t.status) === 'built')
+    .map((t) => ({
+      task: t,
+      own: accs.filter((a) => String(a.parent ?? '') === String(t.id)),
+    }))
+    .map(({ task, own }) => ({ task, own, effective: own.length === 0 ? undefined : verdictOf(own) }))
+  const coverageGaps = taskVerdicts.filter(({ own }) => own.length === 0).map(({ task }) => task)
+  /**
+   * SEND-BACK 也是“已结束但验收未通过”，不能因为存在一条直属 ACC
+   * 就从行动项里消失；但同一任务的多条 ACC 必须按 `verified_at` 只看最新：
+   *   · 最新 PASS ⇒ 清缺口；
+   *   · 最新 SEND-BACK ⇒ 重新成为缺口；
+   *   · 缺时刻 / 同刻冲突 ⇒ 单列“判不出”，⛔ 不猜。
+   */
+  const sentBackRows = taskVerdicts.filter(({ effective }) => effective?.verdict === 'send-back')
+  const sentBackGaps = sentBackRows.map(({ task }) => task)
+  const undecidableRows = taskVerdicts.filter(({ effective }) =>
+    effective?.verdict === 'undecidable' && !effective.reason.includes('尚未判决'))
+  const undecidableGaps = undecidableRows.map(({ task }) => task)
+  const evidenceWithoutDirectAcc = coverageGaps.filter((t) => arr(t.verify_refs).length > 0)
+  const noEvidenceOrAcc = coverageGaps.filter((t) => arr(t.verify_refs).length === 0)
+  const acceptanceActions = reqAcceptanceGaps.length + coverageGaps.length
+    + sentBackGaps.length
+  const attentionRuns = runs.filter((r) => ['registered', 'running', 'stuck'].includes(String(r.status)))
+  const openRisks = risks.filter((r) => ['open', 'handling'].includes(String(r.status)))
+  const recentDecisions = decisions.filter((d) => String(d.status) === 'active').slice(-5).reverse()
+  /**
+   * ⚠ RSK-001 的可观测面：判决时刻覆盖率必须出现在 Current，而不是只在
+   *   判据脚本的输出里。⚠ 存量缺 `verified_at` 是真实历史缺口，⛔ 不编时间补绿；
+   *   但它必须被用户看见，并且新判决要由写入入口强制带时间。
+   */
+  const judgedAccs = accs.filter((a) => ['pass', 'send-back'].includes(String(a.status)))
+  const verifiedAccs = judgedAccs.filter((a) => typeof a.verified_at === 'string' && a.verified_at.trim() !== '')
+
+  L.push('# Current（**生成物** · 只读当前入口）')
+  L.push('')
+  L.push('> 所有状态来自 `ledger/units/index.toml`；本页只做汇总，⛔ 不手改、⛔ 不另存状态。')
+  L.push('')
+  L.push('## 一、现在在等谁')
+  L.push('')
+  L.push('### 等你决定')
+  L.push('')
+  if (waitingUser.length === 0) L.push('- **0 条** —— 当前没有“已定需求但没有验收路径”的悬项。')
+  else for (const r of waitingUser) L.push(`- ${id(r)}`)
+  L.push('')
+  L.push('### 验收行动项')
+  L.push('')
+  if (acceptanceActions === 0) {
+    L.push('- **0 条** —— 当前没有未通过、缺失或最新退回的验收行动项。')
+    L.push('- 口径：出现在途或未收口项时，仍需验收行动；这不表示还有执行中的活。')
+  }
+  else {
+    L.push(`- **${acceptanceActions} 条** —— 仍需验收行动；这不表示还有执行中的活。`)
+    L.push(`- 需求验收未通过：**${reqAcceptanceGaps.length} 条**${reqAcceptanceGaps.length === 0 ? '' : `（${reqAcceptanceGaps.map((r) => String(r.id)).join(' / ')}）`}`)
+    L.push(`- 已结束任务缺直属验收：**${coverageGaps.length} 条**${coverageGaps.length === 0 ? '' : `（${coverageGaps.map((t) => String(t.id)).join(' / ')}）`}`)
+    L.push(`- 已结束任务验收被退回：**${sentBackGaps.length} 条**${sentBackGaps.length === 0 ? '' : `（${sentBackGaps.map((t) => String(t.id)).join(' / ')}）`}`)
+    if (evidenceWithoutDirectAcc.length > 0) L.push(`- 有实现证据：${evidenceWithoutDirectAcc.map((t) => String(t.id)).join(' / ')}`)
+    if (noEvidenceOrAcc.length > 0) L.push(`- 无实现证据：${noEvidenceOrAcc.map((t) => String(t.id)).join(' / ')}`)
+  }
+  L.push('')
+  L.push('### 执行异常 / 在途')
+  L.push('')
+  if (attentionRuns.length === 0) L.push('- **0 条** —— 当前没有已登记、执行中或卡住的运行记录。')
+  else for (const r of attentionRuns) L.push(`- ${String(r.status)} · ${id(r)}`)
+  L.push('')
+  L.push('## 二、风险与目标')
+  L.push('')
+  if (openRisks.length === 0) L.push('- 风险：**0 条开放或在处置**。')
+  else for (const r of openRisks) L.push(`- 风险 ${String(r.status)} · ${id(r)}`)
+  L.push('')
+  L.push('### 验收时间读数')
+  L.push('')
+  L.push(`- 已判决验收：**${judgedAccs.length}** 条 · 带 \`verified_at\`：**${verifiedAccs.length}** 条`
+    + ` · 缺：**${judgedAccs.length - verifiedAccs.length}** 条。`)
+  if (undecidableRows.length > 0) {
+    L.push(`- 因缺时刻 / 同刻冲突而无法判最新判决的已结束任务：**${undecidableRows.length} 条**（${
+      undecidableRows.map(({ task, effective }) =>
+        `${String(task.id)}：${effective.reason ?? '缺可比较的判决时刻'}`).join(' / ')}）。`)
+  }
+  L.push('- ⚠ 存量缺时刻是历史缺口，⛔ 不补编造时间；新判决必须由判决入口写入真实时刻。')
+  L.push('- 新判决入口：`hob_orch_control accept|send-back` 强制 `verifiedAt`（省略时工具取真实当前时刻，底层缺时刻拒落账）。')
+  L.push('- 历史“完成 → 判决”时间差：**仍未被度量**（缺时刻的旧判决不能反推）；新判决起可度量。')
+  L.push('')
+  L.push('### 目标')
+  L.push('')
+  if (goals.length === 0) L.push('- **0 条** —— 当前没有目标单元。')
+  else for (const g of goals) L.push(`- ${id(g)} · 承接 ${arr(g.req_ids).join(' / ') || '无'}`)
+  L.push('')
+  L.push('## 三、最近有效决策')
+  L.push('')
+  if (recentDecisions.length === 0) L.push('- **0 条** —— 当前没有有效决策。')
+  else for (const d of recentDecisions) L.push(`- ${id(d)}`)
+  L.push('')
+  L.push('## 四、读数边界')
+  L.push('')
+  L.push('- “在途 / 异常”只认 `run.status`；⛔ 不从会话或文档猜运行状态。')
+  L.push('- “验收行动项”合并需求级验收未通过、任务直属缺口与最新退回；⛔ 不从回传正文推断。')
+  L.push('- 历史判决缺 `verified_at` 单列为数据质量读数，⛔ 不混入当前验收行动项，也⛔ 不补编时刻。')
+  L.push('- 同一任务 / 需求有多条 ACC 时，只认 `verified_at` 最新的有效判决；历史判决保留但不再主导状态。')
+  L.push('- 本页没有完成度、百分比或进度条。')
+  L.push('')
+  return L.join('\n')
+}
+
+/**
+ * **根需求页**（`REQUIREMENTS.md` 的生成源）。
+ *
+ * ⚠ 这是用户批准的“需求根 = 派生视图”落地：只从 `units/index.toml` 生成。
+ * ⚠ 只显示 `status=agreed` 的活跃需求；退役/丢弃需求只留在索引与归档，⛔ 不进活跃依据。
+ * ⚠ 不写日期、过程词、机检名或变更编号 —— 根页只回答“用户现在要什么”。
+ *
+ * @param {Array<Record<string, any>>} units - 索引单元
+ * @returns {string} markdown 正文
+ */
+export function renderRequirementRoot(units) {
+  const L = []
+  const reqs = units.filter((u) => u.kind === 'req' && String(u.status) === 'agreed')
+  L.push('# REQUIREMENTS.md —— 当前功能需求（**生成物**）')
+  L.push('')
+  L.push('> 本文件由 `npm run gen:ledger` 从 `ledger/units/index.toml` 生成，⛔ 不许手改。')
+  L.push('> 只列用户现在希望项目实现的功能目标与可观察结果；退役与历史需求不再进入活跃依据。')
+  L.push('')
+  L.push('## 一、当前功能需求')
+  L.push('')
+  L.push('| 编号 | 当前功能目标 | 条目 |')
+  L.push('|---|---|---|')
+  for (const r of reqs) {
+    const spec = typeof r.spec === 'string' && r.spec.trim() !== '' ? r.spec.trim() : ''
+    L.push(`| ${String(r.id)} | ${String(r.title ?? '')} | ${spec === '' ? '判不出' : `\`${spec}\``} |`)
+  }
+  L.push('')
+  L.push('## 二、收录边界')
+  L.push('')
+  L.push('- **收**：用户当前希望得到的功能结果，以及可观察的完成条件。')
+  L.push('- **不收**：技术实现、历史过程、退役需求、一次性决策。')
+  L.push('- **权威**：需求状态与内容只以机读索引为准；本页只是确定性派生视图。')
+  L.push('')
+  return L.join('\n')
+}
+
+/**
+ * **`spec/requirements.md` · 需求轴**（2026-11-02）。
+ *
+ * 用户视角只读投影：每条需求一行，回答“这条需求现在走到哪、下一步是什么”。
+ * ⚠ 不新增状态、不计算完成度、不把 `after` 当承接；缺失链路一律写「无」。
+ * ⚠ 该文件由 `npm run gen:ledger` 直出，并由 I5c 逐字节核。
+ *
+ * @param {Array<Record<string, any>>} units - 索引单元
+ * @returns {string} markdown 正文
+ */
+export function renderRequirementAxis(units) {
+  const L = []
+  L.push('# 需求轴（**生成物** · ⛔ 手改即红 · 由 `npm run gen:ledger` 直出）')
+  L.push('')
+  L.push('> 以用户需求为中心：一条需求一行，沿主目标 → 方案 → 任务 → 执行 → 验收 → 证据展开。')
+  L.push('> ⚠ 这里的“承接”只认 `goal.req_ids` / `task.req_ids` / `change.addresses` / `req.acceptance_ids`；`after` 只是前置，⛔ 不算承接。')
+  L.push('')
+
+  const byId = new Map(units.map((u) => [String(u.id), u]))
+  /**
+   * ⚠ 需求轴只投影**活跃依据**：`dropped` / `retired` 留在索引与归档里，
+   * ⛔ 不得重新进入用户当前需求轴，更⛔ 不得被算成活跃链路缺口。
+   * 这一条与 `renderRequirementRoot()` 同口径；由 `check-ledger` 的
+   * `N-I13` 以同一批夹具对拍，防止生成器再次漂回“所有 req 都算活跃”。
+   */
+  const reqs = units.filter((u) => u.kind === 'req' && String(u.status) === 'agreed')
+  const goals = units.filter((u) => u.kind === 'goal')
+  const changes = units.filter((u) => u.kind === 'change')
+  const tasks = units.filter((u) => u.kind === 'task')
+  const runs = units.filter((u) => u.kind === 'run')
+  const accs = units.filter((u) => u.kind === 'acc')
+  const evidences = units.filter((u) => u.kind === 'evidence')
+  const arr = (v) => (Array.isArray(v) ? v.map(String) : [])
+  const ids = (xs) => xs.map((x) => String(x.id)).join(' ') || '无'
+  const reqTasks = (rid) => tasks.filter((t) => String(t.parent ?? '') === rid || arr(t.req_ids).includes(rid))
+  const reqAccs = (r) => {
+    const direct = arr(r.acceptance_ids).map((id) => byId.get(id)).filter((x) => x?.kind === 'acc')
+    const tids = new Set(reqTasks(String(r.id)).map((t) => String(t.id)))
+    const indirect = accs.filter((a) => tids.has(String(a.parent ?? '')))
+    return [...new Map([...direct, ...indirect].map((a) => [String(a.id), a])).values()]
+  }
+
+  L.push('| 需求 | 主目标 | 方案 | 任务 | 执行 | 验收 | 最新证据 |')
+  L.push('|---|---|---|---|---|---|---|')
+  for (const r of reqs) {
+    const rid = String(r.id)
+    const gs = goals.filter((g) => arr(g.req_ids).includes(rid))
+    const cs = changes.filter((c) => arr(c.addresses).includes(rid))
+    const ts = reqTasks(rid)
+    const rs = runs.filter((run) => ts.some((t) => String(t.id) === String(run.parent ?? '')))
+    const as = reqAccs(r)
+    const evIds = [
+      ...as.flatMap((a) => arr(a.basis)),
+      ...ts.flatMap((t) => arr(t.verify_refs)),
+      ...rs.flatMap((run) => arr(run.evidence_refs)),
+    ]
+    const evs = [...new Set(evIds)].map((id) => byId.get(id)).filter((x) => x?.kind === 'evidence')
+    L.push(`| ${rid} | ${ids(gs)} | ${ids(cs)} | ${ids(ts)} | ${ids(rs)} | ${ids(as)} | ${ids(evs)} |`)
+  }
+  L.push('')
+  const gaps = []
+  for (const r of reqs) {
+    const rid = String(r.id)
+    const gs = goals.filter((g) => arr(g.req_ids).includes(rid))
+    const cs = changes.filter((c) => arr(c.addresses).includes(rid))
+    const ts = reqTasks(rid)
+    const as = reqAccs(r)
+    if (gs.length === 0) gaps.push(`${rid}：无主目标`)
+    if (cs.length === 0) gaps.push(`${rid}：无方案承接`)
+    if (ts.length === 0) gaps.push(`${rid}：无任务承接`)
+    if (as.length === 0) gaps.push(`${rid}：无验收`)
+  }
+  L.push('## 当前链路缺口（只读读数 · ⛔ 不判红）')
+  L.push('')
+  L.push(gaps.length === 0
+    ? `**0 条 —— ${reqs.length} 条需求逐条查过，主目标 / 方案 / 任务 / 验收四层都有正式关系**`
+    : `**${gaps.length} 条缺口：**`)
+  if (gaps.length > 0) for (const x of gaps) L.push(`- ${x}`)
+  L.push('')
+  L.push('⚠ 这些是**当前账本的覆盖读数**，不是完成度：缺执行历史可能早于 run 记账，⛔ 不许倒推成失败。')
+  L.push('')
+  L.push('## 读数边界')
+  L.push('')
+  L.push('- 本表只显示账本里已有正式关系；「无」表示没有这一层，⛔ 不表示完成度为 0。')
+  L.push('- 验收是否通过只认 `acc.status`；证据只认 `EVD-`，⛔ 不从运行记录或聊天内容推断。')
+  L.push('- 「最新证据」按验收 → 任务 → 执行的引用去重显示，⛔ 不按时间猜“最新”。')
+  L.push('')
+  return L.join('\n')
 }
 
 /**
@@ -935,11 +1269,12 @@ export function renderPortfolio(units, extra = {}) {
   // ── ① 需求覆盖表 ──
   L.push('## 一、需求覆盖表')
   L.push('')
-  L.push('| 需求 | 状态 | 被哪几条 change 承接 | task 条数 | acc 条数 | pass 条数 |')
-  L.push('|---|---|---|---:|---:|---:|')
+    L.push('| 需求 | 状态 | 主目标 | 被哪几条 change 承接 | task 条数 | acc 条数 | pass 条数 |')
+    L.push('|---|---|---|---|---:|---:|---:|')
   for (const r of p.reqs) {
     const chg = r.changes.length === 0 ? '—' : r.changes.join(', ')
-    L.push(`| ${r.id} | ${r.status} | ${chg} | ${r.tasks} | ${r.accs} | ${r.passAccs} |`)
+      const goals = units.filter((u) => u.kind === 'goal' && Array.isArray(u.req_ids) && u.req_ids.includes(r.id)).map((u) => String(u.id))
+      L.push(`| ${r.id} | ${r.status} | ${goals.length === 0 ? '判不出' : goals.join(', ')} | ${chg} | ${r.tasks} | ${r.accs} | ${r.passAccs} |`)
   }
   L.push('')
   L.push(`合计 **${p.counts.total}** 条需求：有 change 承接 **${p.counts.covered}** 条 · 已有 pass 验收 **${p.counts.proven}** 条 · **完全没人接 ${p.counts.orphan}** 条 · 做完了没人验 ${p.counts.builtNoAcc} 条。`)
@@ -975,7 +1310,7 @@ export function renderPortfolio(units, extra = {}) {
   L.push('')
   if ((p.builtNoAcc ?? []).length > 0) {
     L.push('⚠ **这不是孤儿**：活做完了，缺的是第 5 步（验收）。⛔ 本表不判它红。')
-    L.push('⚠ 它与上一节**互斥**（孤儿要求无 task，本节要求有 `built` 的 task）—— 判据 `check:ledger-next` 有断言逐轮核这一点。')
+    L.push('⚠ 它与上一节**互斥**（孤儿要求无 task，本节要求有 `built` 的 task）—— 判据 `check:ledger` 有断言逐轮核这一点。')
     L.push('')
     for (const id of (p.builtNoAcc ?? [])) {
       const r = p.reqs.find((x) => x.id === id)
@@ -984,9 +1319,24 @@ export function renderPortfolio(units, extra = {}) {
     L.push('')
   }
 
-  // ── ③ 跨 change 需求（⚠ 不判红，只提示）──
+  // ── ③ 任务 → 需求正式承接（⚠ 不是 `after`）──
+  const links = Array.isArray(p.taskLinks) ? p.taskLinks : []
+  L.push('## 三、任务 → 需求正式承接')
+  L.push('')
+  if (links.length === 0) {
+    L.push('**0 条** —— 本索引没有带 `task.req_ids` 的正式承接边（⚠ `after` 只是前置，⛔ 不算承接）。')
+  } else {
+    L.push('⚠ 本表只列 `task.req_ids` 的正式承接；`after` 只是前置，⛔ 不在此列。')
+    L.push('')
+    L.push('| task | 服务哪些需求 |')
+    L.push('|---|---|')
+    for (const x of links) L.push(`| ${x.task} | ${x.reqs.join(', ')} |`)
+  }
+  L.push('')
+
+  // ── ④ 跨 change 需求（⚠ 不判红，只提示）──
   const multi = p.reqs.filter((r) => r.changes.length >= 2)
-  L.push('## 三、跨 change 需求（被 ≥2 条 change 同时承接）')
+  L.push('## 四、跨 change 需求（被 ≥2 条 change 同时承接）')
   L.push('')
   if (multi.length === 0) {
     L.push(`**0 条** —— ${p.counts.total} 条需求逐条查过，没有被两条以上 change 同时承接的。`)
@@ -997,14 +1347,15 @@ export function renderPortfolio(units, extra = {}) {
   }
   L.push('')
 
-  // ── ④ 读数边界 ──
-  L.push('## 四、读数边界')
+  // ── ⑤ 读数边界 ──
+  L.push('## 五、读数边界')
   L.push('')
   L.push('- 本表**不判断完成度**、**不做趋势**、**不进五步分母**；⛔ 没有百分比、⛔ 没有进度条。')
   L.push('- 「有 change 承接」≠「做完了」：承接只说明有人在管它；收口由 `check:convergence` 的 K-1..K-6 判。')
   L.push('- 「已有 pass 验收」才说明它被证明满足过（判决唯一落点是 `acc.status`，2026-11-01 R5b 起 `outcome` 已删）。')
+  L.push('- 找 task 的两条路（`task.parent = req.id` 直接归属 + `task.req_ids` 正式承接）与 `portfolio.ts` 同一份实现；`after` 只表示前置，⛔ 不算承接。')
   L.push('- 找 acc 的两条路（`req.acceptance_ids` 直挂 + 经 task 间接）与 `convergence.ts` 的 `k3` **完全一致** —— ⛔ 两套口径会漂。')
-  L.push('- 判据是 `check:ledger-next` 的 **P-1**（⛔ 不是新族）。「二·B」**不进任何判据** —— 它是读数，⛔ 不是红项。')
+  L.push('- 判据是 `check:ledger` 的 **P-1**（⛔ 不是新族）。「二·B」**不进任何判据** —— 它是读数，⛔ 不是红项。')
   L.push('- `parent` = **归属**（承接）· `after` = **前置**（⛔ 不是承接）—— 混用会让"有人在管"这句话失真。')
   L.push('  ⚠ 本批为这件事判错过两次（R6 的孤儿口径 · `REVIEW-R6.md` 的 `R-008`）；语义写死在 `scripts/gen-ledger.mjs` 的 `PARENT_VS_AFTER`。')
   L.push('- ⚠ 口径改正史：R6 的孤儿口径少了一条「无 task 承接」，把 `R-002`/`R-003`/`R-004`（活做完了没人验）')
@@ -1016,7 +1367,7 @@ export function renderPortfolio(units, extra = {}) {
  * 采集"外部输入"（目录实测）—— ⚠ **读盘但不取时间**，所以仍然确定性。
  *
  * @param {string} root - 工作区根（取 `src/modules/`）
- * @param {string} ledgerDir - 账本区 `ledger-next/` 的**上级**（= 账本根；取 `archive/`）
+ * @param {string} ledgerDir - 账本区 `ledger/` 的**上级**（= 账本根；取 `archive/`）
  * @returns {{stems: string[], archiveDirs: Array<{name:string, files:string[]}>}}
  */
 export function collectInputs(root, ledgerDir) {
@@ -1096,6 +1447,31 @@ function main() {
     mkdirSync(SPEC_DIR, { recursive: true })
     writeFileSync(join(SPEC_DIR, name), text)
     console.log(`  写出 spec/${name}（${Buffer.byteLength(text, 'utf8')} 字节）`)
+  }
+  /**
+   * ⚠ **需求根是派生视图**（用户已冻结）：根页与 `spec/requirement-root.md` 必须逐字节一致。
+   * 这里只做**已经算好的那份文本**的落点同步，⛔ 不另写第三份渲染逻辑。
+   */
+  const requirementRoot = specOut['requirement-root.md']
+  if (!stdoutOnly && requirementRoot !== undefined) {
+    writeFileSync(join(dirname(LEDGER_DIR), 'REQUIREMENTS.md'), requirementRoot)
+    console.log(`  写出 REQUIREMENTS.md（${Buffer.byteLength(requirementRoot, 'utf8')} 字节）`)
+  }
+  /**
+   * §4.1 族清单块也由生成器就地同步。
+   * ⚠ 正本与模板共用族清单，但说明列按 `flavor` 分工；
+   *   `check:ledger` 的 I5b 仍逐字节核对，防止手工改块。
+   */
+  if (!stdoutOnly) {
+    const ledgerRoot = dirname(LEDGER_DIR)
+    const blocks = [
+      [join(ledgerRoot, 'CONTEXT.md'), renderCheckFamiliesBlock(ROOT, 'canonical')],
+      [join(ROOT, 'kit', 'templates', 'CONTEXT.md'), renderCheckFamiliesBlock(ROOT, 'template')],
+    ]
+    for (const [file, block] of blocks) {
+      const r = writeBlockInto(file, block)
+      console.log(`  ${r.changed ? '同步' : '保持'} §4.1 生成块：${file}（${r.why}）`)
+    }
   }
   if (!stdoutOnly) console.log(`\n  ✅ 已生成 ${Object.keys(out).length} 份 + ${Object.keys(specOut).length} 份快照（来源：units/index.toml · ${units.length} 条单元）`)
 }

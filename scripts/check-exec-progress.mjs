@@ -272,7 +272,7 @@ try {
 
   // ── E-8 路径单一真源（协议层 == 客户端常量）──────────────────────────
   {
-    const clientSrc = readFileSync(join(root, 'src/client/stages-panel.tsx'), 'utf8')
+    const clientSrc = readFileSync(join(root, 'src/client/project-panel.tsx'), 'utf8')
     const routeSrc = readFileSync(join(root, 'src/modules/exec-progress-route.ts'), 'utf8')
     const p = proto?.EXEC_PROGRESS_ROUTE_PATH
     const probs = []

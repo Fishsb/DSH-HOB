@@ -12,7 +12,7 @@
  *
  * ── 状态集从哪来（⚠ 不凭印象，逐条给落点）──────────────────────────
  *   · `src/shared/stages-index.ts:26-33` 的 `STAGE_KIND_STATUSES`（**机读唯一源**）；
- *   · 它逐条对应 `<账本区>/ledger-next/PROJECT.md:22-27` 的「§2 状态集（封闭）」表，
+ *   · 它逐条对应 `<账本区>/ledger/PROJECT.md:22-27` 的「§2 状态集（封闭）」表，
  *     以及 `archive/2026-10-30-rearch-greenfield/DESIGN-V2.md:146-153` 的 §3.3 表。
  *   ⚠ 本文件**不另写一份状态集**：{@link stageStatusLabel} 每次现读
  *     `STAGE_KIND_STATUSES`（⛔ 抄第二份就会漂）。
@@ -38,6 +38,7 @@ export const STAGE_STATUS_LABELS_ZH: Readonly<Record<string, Readonly<Record<str
     draft: '草稿（还没定稿）',
     agreed: '已定稿',
     dropped: '已放弃',
+    retired: '已退役（不再作为活跃依据）',
   },
   // ② 实现方案：在提 / 已定案 / 被后一版取代
   change: {

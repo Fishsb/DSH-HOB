@@ -22,6 +22,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 
 const here = dirname(fileURLToPath(import.meta.url))
 export const ROOT = join(here, '..')
@@ -31,6 +32,35 @@ export const SPEC_DIR = join(PRESET_DIR, 'spec')
 export const GEN_DIR = join(PRESET_DIR, 'gen')
 export const CONSTITUTION_PATH = join(PRESET_DIR, 'CONSTITUTION.md')
 export const PRESET_YML = join(PRESET_DIR, 'preset-dsh-hob.patch.yml')
+
+/**
+ * **模型面契约版本**（生成物版本，不是插件的 npm 版本）。
+ *
+ * ⚠ 修改任何会影响模型行为的 `workflow.toml` / `spec/*.md` / 生成器渲染时，
+ *   必须显式递增这里；`check:workflow` 的 F12 同时钉：
+ *   · 版本是整数且只增；
+ *   · `persona.md` 正文里嵌的版本 == 本常量；
+ *   · 生成物哈希 == 实际生成正文的 SHA-256；
+ *   · `persona.md` 字符数 ≤ `MODEL_FACE_CHAR_BUDGET`。
+ * ⛔ 不许用 `Date.now()` / mtime 自动生成 —— 那会让同输入不再确定。
+ */
+export const MODEL_FACE_VERSION = 2
+
+/**
+ * 模型面字符预算（按 Unicode code point 计，不是字节）。
+ * 超限 ⇒ 生成失败，⛔ 不截断：截断会静默删规则，比超预算更坏。
+ */
+export const MODEL_FACE_CHAR_BUDGET = 48_000
+
+/** 稳定计算 UTF-8 正文哈希（sha256 hex）。 */
+export function modelFaceHash(text) {
+  return createHash('sha256').update(String(text), 'utf8').digest('hex')
+}
+
+/** 按 Unicode code point 计数（与 `Array.from(text).length` 同义）。 */
+export function modelFaceChars(text) {
+  return [...String(text)].length
+}
 
 /** 三类 spec 文件（⚠ 顺序固定 = 渲染顺序）。 */
 export const SPEC_FILES = ['intake.md', 'reply.md', 'handover.md']
@@ -167,6 +197,13 @@ export function parseNoteSections(specs) {
 export function renderPersona(wf, specs = {}) {
   const L = []
   L.push('# Hob · 工作流（由 `workflow.toml` + `spec/` 生成 · ⛔ 手改即红）')
+  L.push('')
+  /**
+   * ⚠ 版本与预算必须进**模型实际读到的正文**：只写在仓库文档里，
+   *   运行中的旧提示词会把“我是哪一版”说错。
+   * ⚠ 哈希不嵌进自身（会自指），由生成的 `contracts.md` 和判据外部读 Persona 后计算。
+   */
+  L.push(`> 模型面版本：\`v${MODEL_FACE_VERSION}\` · 字符预算：\`${MODEL_FACE_CHAR_BUDGET}\`。`)
   L.push('')
   /**
    * ⚠⚠ **P10：persona 正文 ⛔ 不许出现内部标识**（`check:presets` 的 ③）——
@@ -343,6 +380,14 @@ export function renderContracts(wf, specs) {
   L.push('> 生成器：`npm run gen:preset-contract`。⚠ 本文件是**生成物**。')
   L.push('> 机器读的骨架在 `preset/dsh-hob/workflow.toml`；本体说明由下面的 `spec/` 原文拼接。')
   L.push('')
+  /**
+   * ⚠ 版本、字节、字符、哈希四个读数一起给：只给哈希，人读不出“有没有超预算”；
+   *   只给字节，Unicode 字符数仍可能越界。
+   */
+  const personaText = renderPersona(wf, specs)
+  L.push(`> 模型面版本：\`v${MODEL_FACE_VERSION}\` · Persona：**${modelFaceChars(personaText)}** 字符 / `
+    + `**${Buffer.byteLength(personaText, 'utf8')}** 字节 · SHA-256：\`${modelFaceHash(personaText)}\`。`)
+  L.push('')
   L.push(`共 **${(wf.step ?? []).length}** 步 · **${(wf.intake ?? []).length}** 种输入 · `
     + `**${(wf.reply ?? []).length}** 种回复形态 · **${(wf.invariant ?? []).length}** 条不变量 · `
     + `**${(wf.rule ?? []).length}** 条纪律。`)
@@ -369,8 +414,14 @@ export function renderContracts(wf, specs) {
  */
 export function renderAll(inputs) {
   const { wf, specs } = inputs ?? readInputs()
+  const persona = renderPersona(wf, specs)
+  const chars = modelFaceChars(persona)
+  if (chars > MODEL_FACE_CHAR_BUDGET) {
+    throw new Error(`模型面超预算：persona.md ${chars} 字符 > ${MODEL_FACE_CHAR_BUDGET}`
+      + '（⛔ 不许自动截断；请把规则移进按需读取的 spec/，或由用户批准调高预算）')
+  }
   return {
-    'persona.md': renderPersona(wf, specs),
+    'persona.md': persona,
     'contracts.md': renderContracts(wf, specs),
   }
 }

@@ -43,7 +43,7 @@
  *   请求方自行报一个开放面外的值、或用旧票据重放，都必须由服务端拒
  *   （见上面两个消费点，以及本轮补闸的策略写入路由）。
  */
-import { PERMISSION_LEVELS } from '../config.ts'
+import { PERMISSION_LEVELS } from './permission-levels.ts'
 /**
  * ⚠ **能力红线句的单一来源**（2026-10-24 · 与 client 侧同一份）。
  *   `capability-red-line.ts` 是**零 import 的纯模块** ⇒ host / client 两侧都能 import。

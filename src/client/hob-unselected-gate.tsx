@@ -104,13 +104,13 @@ const STYLE_TAG_ID = 'dsh-hob/unselected-gate.css'
  *   ⇒ 改为 import；`HOB_PRESET_ID_FOR_MATCH` 保留为**别名导出**（兼容既有引用，
  *     同时把"这是同一个值的引用"这件事写在类型系统里）。
  */
-import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
+import { HOB_PRESET_ID } from '../shared/planning-preset.ts'
 // ⚠ 取词**只有一个入口**（`t()`）—— 本文件只把自己这屏的中英词条当**入参**灌进去，
 //   ⛔ 不自建第二套查表（2026-10-24 · 修复单第 6 条：此前这里全是中文字面量）。
 import { addDictionaryLayer, getLocaleSnapshot, subscribeLocale, t } from './i18n.ts'
 
-/** ⚠ 别名（= `PLANNING_PRESET_ID`，⛔ 不是第二处字面值）。 */
-export const HOB_PRESET_ID_FOR_MATCH = PLANNING_PRESET_ID
+/** ⚠ 别名（= `HOB_PRESET_ID`，⛔ 不是第二处字面值）。 */
+export const HOB_PRESET_ID_FOR_MATCH = HOB_PRESET_ID
 
 /**
  * 策略记录的**三态**（⚠ 不是布尔）。

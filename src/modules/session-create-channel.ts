@@ -57,7 +57,7 @@ import { createRequire } from 'node:module'
 import type { Context } from '@deepseek-ai/cordis'
 import { PERMISSION_LEVELS, DEFAULT_PERMISSION_LEVEL, SESSION_POLICY_SERVICE } from '../config.ts'
 import { DEFAULT_WORK_MODE, WORK_MODE_VALUES } from '../shared/work-mode.ts'
-import { PLANNING_PRESET_ID } from '../shared/planning-preset.ts'
+import { HOB_PRESET_ID } from '../shared/planning-preset.ts'
 import {
   OPEN_READ_LEVELS, OPEN_READ_LEVELS_NOTE, isOpenReadLevel, readLevelNotOpenReason,
 } from '../shared/read-level-policy.ts'
@@ -520,7 +520,7 @@ export async function createHobSession(
   try {
     handle = await agents.create({
       sessionId: input.sessionId,
-      meta: { cwd: wsPath, agentPreset: PLANNING_PRESET_ID },
+      meta: { cwd: wsPath, agentPreset: HOB_PRESET_ID },
     })
   } catch (e) {
     return { ok: false, reason: `建会话失败：${String((e as Error)?.message ?? e)}（⛔ 没有开第一轮）` }
@@ -1305,7 +1305,7 @@ export function installCreateChannel(ctx: Context): void {
               defaultMode: DEFAULT_WORK_MODE,
               /** ⚠ 用户可见的原因说明（中文、无 markdown 标记、⛔ 不出现内部配置值）。 */
               levelsNote: OPEN_READ_LEVELS_NOTE,
-              preset: PLANNING_PRESET_ID,
+              preset: HOB_PRESET_ID,
               workspaces,
               ...(workspacesUnavailable === '' ? {} : { workspacesUnavailable }),
             })

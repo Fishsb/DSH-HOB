@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * **任务进度路由 · 真机 HTTP 探针（按需档）** —— 2026-10-29 · 第 10 轮。
+ * **HOB 只读路由 · 真机 HTTP 探针（按需档）** —— 2026-10-29 · 第 10 轮。
+ * 2026-11-02 增补 Current / 按 ID 资源 / 五步注意力字段。
  *
  * ══ ⚠⚠ **按需档：不在 `check:all` 的必跑套件里，也不是 `check:*` 的常规族** ═════
  *   理由：它**需要一个活着的宿主机进程 + 一个有效 launch token**。CI / 干净 clone /
@@ -18,15 +19,23 @@
  *      ⇒ 探针钉住它，是为了让"错门回 404 纯文本"这个**已知边界**保持可观测：
  *        哪天它变成 405 或变成 JSON，说明宿主语义变了，要重新评估客户端的 404 分支。
  *
+ * ══ 它守什么（后两条是 2026-11-02 增补）═══════════════════════════════════
+ *   ③ `POST /api/dsh-hob/ledger-resource`：
+ *      `resource:"current"` ⇒ 200 + Current 文本；
+ *      `resource:"requirement/R-009"` ⇒ 200 + 稳定 ID 卡片（⛔ 不内联正文）；
+ *   ④ `POST /api/dsh-hob/stages` ⇒ 200 + 五步顺序与 `attention` 字段。
+ *
  * ══ 退出码三档（⚠ 三档必须可分辨，⛔ 不许把 2 当 0）══════════════════════════
- *   0 = 两条都符合预期
+ *   0 = 所有有对象断言都符合预期
  *   1 = **有对象但不符合**（真缺陷：路由没注册 / 方法白名单不对 / 响应形状变了）
  *   2 = **拿不到活宿主或 token** ⇒ `noObject`，明说"没对象"，⛔ 不算通过
  *
  * ══ 参数 ═══════════════════════════════════════════════════════════════════
  *   `--session <id>` —— 指定 POST 用的会话 id。
- *   ⚠ **不给才退回"最新会话"启发式**：从 `~/.dsh/sessions/<cwd 编码>/` 里挑 mtime 最新的
- *     那个目录名。⚠ **那是启发式，不是权威来源** —— 多会话并行、旧会话已从宿主内存
+ *   ⚠ **不给才退回"最新会话"启发式**：从 `~/.dsh/sessions/<cwd 编码>/` 里先按持久件
+ *     活宿主当前打开的 `session.lock`（`/proc/<pid>/fd` 可见），再按持久件
+ *     `session.v4.jsonl.zstd` 的 `header.cwd` 校验，最后才退回目录 mtime。
+ *     ⚠ **那仍是启发式，不是权威来源** —— 多会话并行、旧会话已从宿主内存
  *     淘汰时都可能取错（取到已不在实例里的 id ⇒ 服务端按设计回 `ledger-unreadable`，
  *     看起来像真缺陷）。⇒ 需要硬结论时请显式给 `--session`。
  *
@@ -47,8 +56,11 @@
 import { existsSync, readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 
 const ROUTE = '/api/dsh-hob/tasks-progress'
+const RESOURCE_ROUTE = '/api/dsh-hob/ledger-resource'
+const STAGES_ROUTE = '/api/dsh-hob/stages'
 const DEFAULT_PORT = 3080
 
 /**
@@ -58,6 +70,16 @@ const DEFAULT_PORT = 3080
 const argv = process.argv.slice(2)
 const sessionArgIndex = argv.indexOf('--session')
 const SESSION_OVERRIDE = sessionArgIndex >= 0 ? (argv[sessionArgIndex + 1] ?? '') : ''
+
+/**
+ * 显式日志覆盖：`--log <file>`。
+ *
+ * ⚠ 为什么需要：宿主常被 `... 2>&1 | tee <file>` 启动，此时 `/proc/<pid>/fd/1`
+ *   指向的是**管道**，不是日志文件；旧启发式会因此判成 `noObject`。
+ *   给一个显式读入口，既不猜，也能让重启后的验收直接使用启动输出原文。
+ */
+const logArgIndex = argv.indexOf('--log')
+const LOG_OVERRIDE = logArgIndex >= 0 ? (argv[logArgIndex + 1] ?? '') : ''
 
 /**
  * 日志候选（按顺序试）。
@@ -79,7 +101,7 @@ const ok = (m) => { pass++; console.log(`  ✓ ${m}`) }
 const bad = (m) => { fail++; console.log(`  ✗ ${m}`) }
 
 console.log('')
-console.log('H 组：任务进度路由 · 真机 HTTP 探针（**按需档**，不在 check:all 必跑里）')
+console.log('H 组：HOB 只读路由 · 真机 HTTP 探针（**按需档**，不在 check:all 必跑里）')
 console.log('')
 
 /**
@@ -105,7 +127,7 @@ function liveHostStdoutLogs() {
 }
 
 function readLaunch() {
-  const candidates = [...liveHostStdoutLogs(), ...LOG_CANDIDATES]
+  const candidates = [...(LOG_OVERRIDE === '' ? [] : [LOG_OVERRIDE]), ...liveHostStdoutLogs(), ...LOG_CANDIDATES]
   for (const p of candidates) {
     if (!existsSync(p)) continue
     let text = ''
@@ -117,6 +139,34 @@ function readLaunch() {
     return { token: last[2], port: portMatch === null ? DEFAULT_PORT : Number(portMatch[1]), from: p }
   }
   return undefined
+}
+
+/**
+ * 从活 `dsh web` 进程的文件描述符里找它**当前打开的会话**。
+ *
+ * ⚠⚠ 这是比"最新会话"强得多的证据：宿主真的持有 `session.lock`。
+ *   ⇒ 优先选这些会话；若一个都拿不到，再退回持久件 header / mtime。
+ *   ⚠ 这只证明"宿主打开了它"，不证明面板当前正显示哪一页；错误仍要如实报。
+ */
+function liveSessionIds() {
+  const found = new Map()
+  let pids = []
+  try { pids = readdirSync('/proc').filter((n) => /^\d+$/.test(n)) } catch { return [] }
+  for (const pid of pids) {
+    let cmd = ''
+    try { cmd = readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ') } catch { continue }
+    if (!/dsh\b.*\bweb\b/.test(cmd)) continue
+    let fds = []
+    try { fds = readdirSync(`/proc/${pid}/fd`) } catch { continue }
+    for (const fd of fds) {
+      let link = ''
+      try { link = readlinkSync(`/proc/${pid}/fd/${fd}`) } catch { continue }
+      const m = /\/sessions\/[^/]+\/(session-[^/]+)\/session\.lock$/.exec(link)
+      if (m === null) continue
+      found.set(m[1], link)
+    }
+  }
+  return [...found.entries()].map(([id, lockPath]) => ({ id, lockPath }))
 }
 
 /**
@@ -154,7 +204,39 @@ function findWorkspaceSessionId() {
     try { at = statSync(join(dir, n)).mtimeMs } catch { at = 0 }
     if (at > bestAt) { bestAt = at; best = n }
   }
-  return best
+  /**
+   * ⚠ 先取一次活锁快照，再只在这个快照内选择。
+   *   旧实现先收 live，再跑可能阻塞的 zstd；宿主若在这期间打开/关闭会话，
+   *   会得到自相矛盾的候选集。
+   */
+  const live = liveSessionIds()
+  /**
+   * ⚠ 锁路径本身携带工作区编码目录，是*同一时刻*的权威证据：
+   *   `/sessions/<encoded>/<session>/session.lock`。
+   *   session.v4.jsonl.zstd 只作为崩溃恢复的持久件，不能在宿主已打开时
+   *   反向否定活锁；也不能用“最新会话”替代它。
+   */
+  const liveWorkspace = live
+    .filter(({ id, lockPath }) => names.includes(id)
+      && lockPath.startsWith(`${dir}/`) && lockPath.endsWith('/session.lock'))
+    .map(({ id }) => id)
+  let bestLive
+  let bestLiveAt = -1
+  for (const n of liveWorkspace) {
+    let at = 0
+    try { at = statSync(join(dir, n)).mtimeMs } catch { at = 0 }
+    if (at > bestLiveAt) { bestLiveAt = at; bestLive = n }
+  }
+  /**
+   * ⚠ 只有**当前宿主真的持有 session.lock** 的会话才能作为“有对象”的探针输入。
+   *   header.cwd / 目录最新只能证明“这是本工作区的持久会话”，不能证明它仍在
+   *   宿主内存里；拿它去测路由会稳定得到 `ledger-unreadable`，把环境问题伪装成产品红。
+   */
+  if (bestLive === undefined) return undefined
+  return {
+    id: bestLive,
+    source: '活宿主持有 session.lock（锁路径工作区匹配；单次快照）',
+  }
 }
 
 const launch = readLaunch()
@@ -202,8 +284,11 @@ try {
  * ⚠ 显式 `--session` 优先；不给才走**启发式**（见头注释）。
  * 来源会打进读数行，⛔ 不许让"猜的"和"给的"看起来一样。
  */
-const sessionId = SESSION_OVERRIDE !== '' ? SESSION_OVERRIDE : findWorkspaceSessionId()
-const sessionSource = SESSION_OVERRIDE !== '' ? '显式 --session' : '启发式（本工作区最新会话）'
+const foundSession = findWorkspaceSessionId()
+const sessionId = SESSION_OVERRIDE !== '' ? SESSION_OVERRIDE : foundSession?.id
+const sessionSource = SESSION_OVERRIDE !== ''
+  ? '显式 --session'
+  : (foundSession?.source ?? '启发式（本工作区最新会话）')
 if (sessionId === undefined) {
   console.log('  ⚠ **noObject**：本工作区的会话目录里找不到任何 session（拿不到 sessionId）')
   console.log(`       ⇒ 服务端会按设计回 400 ledger-unreadable（"没给工作区根"），那不是"数据通了"`)
@@ -289,6 +374,90 @@ console.log(`  读数：sessionId = ${sessionId}（来源：${sessionSource}）`
   }
   if (problems.length === 0) ok('H-3 ✓ 不存在的 sessionId ⇒ ok:false · reason **恰好** ledger-unreadable（⛔ 不是"任何 ok:false 都算过"）')
   else for (const p of problems) bad(`H-3 · ${p}`)
+}
+
+// ── ④ Current 资源 ⇒ 200 + 文本 ─────────────────────────────────────────
+{
+  const res = await fetch(`${base}${RESOURCE_ROUTE}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ sessionId, resource: 'current' }),
+  })
+  const status = res.status
+  const text = await res.text()
+  let parsed
+  try { parsed = JSON.parse(text) } catch { parsed = undefined }
+  console.log(`  ── POST ${RESOURCE_ROUTE}（resource=current）⇒ HTTP ${status}`)
+  console.log(`     响应体前 200 字：${text.slice(0, 200)}`)
+  const problems = []
+  if (status !== 200) problems.push(`状态码 ${status}（期望 200）`)
+  if (parsed === undefined || typeof parsed !== 'object' || parsed === null) problems.push('响应体不是 JSON 对象')
+  else {
+    if (parsed.ok !== true) problems.push(`ok 不是 true：${JSON.stringify(parsed.ok)}（${String(parsed.reason ?? '')}）`)
+    if (parsed.resource !== 'current') problems.push(`resource 不是 current：${JSON.stringify(parsed.resource)}`)
+    if (typeof parsed.text !== 'string' || parsed.text.trim() === '') problems.push('没有返回 Current 文本')
+    if (typeof parsed.bytes !== 'number' || parsed.bytes <= 0) problems.push(`bytes 不是正数：${JSON.stringify(parsed.bytes)}`)
+  }
+  if (problems.length === 0) ok(`H-4 ✓ Current 资源可达（${parsed.bytes} bytes；响应不含本机绝对路径=${!(text.includes('/home/') || text.includes('\\\\wsl'))}）`)
+  else for (const p of problems) bad(`H-4 · ${p}`)
+}
+
+// ── ⑤ 按 ID 读取需求 ⇒ 200 + 资源图卡片 ────────────────────────────────
+{
+  const resource = 'requirement/R-009'
+  const res = await fetch(`${base}${RESOURCE_ROUTE}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ sessionId, resource }),
+  })
+  const status = res.status
+  const text = await res.text()
+  let parsed
+  try { parsed = JSON.parse(text) } catch { parsed = undefined }
+  console.log(`  ── POST ${RESOURCE_ROUTE}（resource=${resource}）⇒ HTTP ${status}`)
+  console.log(`     响应体前 240 字：${text.slice(0, 240)}`)
+  const problems = []
+  if (status !== 200) problems.push(`状态码 ${status}（期望 200）`)
+  if (parsed === undefined || typeof parsed !== 'object' || parsed === null) problems.push('响应体不是 JSON 对象')
+  else {
+    if (parsed.ok !== true) problems.push(`ok 不是 true：${JSON.stringify(parsed.ok)}（${String(parsed.reason ?? '')}）`)
+    if (parsed.resource !== resource) problems.push(`resource 回显不对：${JSON.stringify(parsed.resource)}`)
+    if (parsed.card?.id !== 'R-009') problems.push(`card.id 不是 R-009：${JSON.stringify(parsed.card?.id)}`)
+    if (parsed.card?.read !== resource) problems.push(`card.read 不是稳定读取指针：${JSON.stringify(parsed.card?.read)}`)
+    if (!Array.isArray(parsed.children)) problems.push('children 不是数组')
+    if (text.includes('/home/') || text.includes('\\\\wsl')) problems.push('响应泄露了本机绝对路径')
+  }
+  if (problems.length === 0) ok(`H-5 ✓ 按 ID 读取 ${resource} ⇒ 200 + 摘要卡与 ${parsed.children.length} 个正式关联项（⛔ 不内联正文）`)
+  else for (const p of problems) bad(`H-5 · ${p}`)
+}
+
+// ── ⑥ 五步汇总 ⇒ 200 + 固定顺序 + attention 字段 ───────────────────────
+{
+  const res = await fetch(`${base}${STAGES_ROUTE}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ sessionId }),
+  })
+  const status = res.status
+  const text = await res.text()
+  let parsed
+  try { parsed = JSON.parse(text) } catch { parsed = undefined }
+  console.log(`  ── POST ${STAGES_ROUTE} ⇒ HTTP ${status}`)
+  console.log(`     响应体前 240 字：${text.slice(0, 240)}`)
+  const problems = []
+  if (status !== 200) problems.push(`状态码 ${status}（期望 200）`)
+  if (parsed === undefined || typeof parsed !== 'object' || parsed === null) problems.push('响应体不是 JSON 对象')
+  else if (parsed.ok !== true) {
+    problems.push(`ok 不是 true：${JSON.stringify(parsed.reason ?? parsed.ok)}`)
+  } else {
+    const want = [[1, '需求规格'], [2, '实现方案'], [3, '编码任务'], [4, '任务执行'], [5, '验收核对']]
+    const got = Array.isArray(parsed.stages) ? parsed.stages.map((s) => [s.step, s.name]) : []
+    if (JSON.stringify(got) !== JSON.stringify(want)) problems.push(`五步顺序/名字不对：${JSON.stringify(got)}`)
+    if (!('attention' in parsed)) problems.push('响应里没有 attention 字段（算不出也应为 undefined，但键必须可被路由层观测）')
+    else if (parsed.attention !== undefined && !Array.isArray(parsed.attention)) problems.push('attention 存在但不是数组')
+  }
+  if (problems.length === 0) ok(`H-6 ✓ 五步汇总 ⇒ 200 + 五步顺序固定 + attention ${parsed.attention === undefined ? '判不出（字段缺省）' : `${parsed.attention.length} 条`}`)
+  else for (const p of problems) bad(`H-6 · ${p}`)
 }
 
 console.log('')

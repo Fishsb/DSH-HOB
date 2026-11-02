@@ -1,7 +1,7 @@
 /**
  * **五步汇总 · 只读路由**（2026-10-30 · P3 · `TASK-P3.md` §二①）。
  *
- * 把面板的 `POST /api/dsh-hob/stages` 接到 {@link handleStages}，数据源 = `ledger-next/units/index.toml`。
+ * 把面板的 `POST /api/dsh-hob/stages` 接到 {@link handleStages}，数据源 = `ledger/units/index.toml`。
  * ⚠ **⛔ 不再读 `volumes/tasks/INDEX.md`**（那份散文账已不再是状态载体）。
  * ⚠ 分工与其它两条路由同构：归一/汇总在 `src/shared/stages-index.ts`（纯函数），本文件只做宿主接线。
  */
@@ -45,7 +45,7 @@ export function installStagesRoute(ctx: Context): void {
         return
       }
       /**
-       * 会话 → **账本根**（⚠ 2026-10-30 P4：`ledger-next/` 已搬进账本区）。
+       * 会话 → **账本根**（⚠ 2026-10-30 P4：`ledger/` 已搬进账本区）。
        * ⚠ 与 `tasks-progress-route` / `exec-progress-route` **同一条派生**
        *   （`D1`①：读侧与写侧必须用同一个解析入口）。
        * ⛔ 不把工作区根当备选 —— 那会两处真相（A 处读到旧树、B 处读到新树）。
@@ -85,7 +85,7 @@ export function installStagesRoute(ctx: Context): void {
             {
               workRootOf: ledgerRootOf,
               workRootWhyOf: ledgerRootWhyOf,
-              /** ⚠ 索引落点 = **账本根** + `ledger-next/units/index.toml`（P4 起同源派生）。 */
+              /** ⚠ 索引落点 = **账本根** + `ledger/units/index.toml`（P4 起同源派生）。 */
               indexPathOf: (ledgerRoot: string) => `${ledgerRoot}/${STAGES_INDEX_REL}`,
               readText: (abs: string) => {
                 try { return readFileSync(abs, 'utf8') } catch (e) {

@@ -1,5 +1,9 @@
 /**
- * **五步主线进度表 · 只读路由**（2026-10-29 · 第 6 轮 · 任务书 §3.2；四步→五步同日裁定）。
+ * **LEGACY · 五步主线进度表只读路由**（2026-10-29；2026-11-03 标为兼容面）。
+ *
+ * ⚠ 权威五步接口已迁移到 `POST /api/dsh-hob/stages`
+ *   （数据源 `ledger/units/index.toml`）。本路由仅保留读取旧
+ *   `volumes/tasks/INDEX.md` 的兼容能力，⛔ 不再新增消费者。
  *
  * ══ 它做什么 ═══════════════════════════════════════════════════════════════
  *   把账本区 `volumes/tasks/INDEX.md` 里那张 `|` 表格读出来，按**封闭**线格式送到浏览器：
@@ -36,6 +40,9 @@ import {
 } from '../shared/tasks-progress.ts'
 
 export const name = 'dsh-hob-tasks-progress-route'
+
+/** 机器可读的兼容标记；用于文档/诊断明确区分权威接口与旧接口。 */
+export const TASKS_PROGRESS_ROUTE_LEGACY = true
 
 /** 本路由路径（⚠ 与 `/api/dsh-hob/session-policy` 同族，⛔ 不撞名）。 */
 export const TASKS_PROGRESS_ROUTE_PATH = '/api/dsh-hob/tasks-progress'

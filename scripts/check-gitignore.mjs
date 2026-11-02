@@ -291,10 +291,10 @@ await runWriteScope({ bad, ok })
      * **N-M1b 负向对拍（自指）**：把某族的「先自证」标记清空 ⇒ M-1b 的"退步"必须红。
      * ⚠ 先自证夹具坏掉：断言替换后该族读数真的变 0（不是"以为改了"）。
      */
-    const target = 'check:ledger-next'
+    const target = 'check:ledger'
     const fs = await import('node:fs')
     const srcPath = `scripts/${target.replace('check:', '').replace(/-/g, '-')}.mjs`
-    const realFile = 'scripts/check-ledger-next.mjs'
+    const realFile = 'scripts/check-ledger.mjs'
     let real = ''
     try { real = fs.readFileSync(realFile, 'utf8') } catch { real = '' }
     const stripped = real.replace(/先自证/g, 'XX')
@@ -321,14 +321,14 @@ await runWriteScope({ bad, ok })
   // —— N-M1 负向对拍（⚠ 自指：先自证夹具真的把计数压到 0，再断言它红）——
   {
     /**
-     * ⚠ 只改**一个族**的读数（`check:ledger-next`，它的对拍标签数最多、最好辨认）。
+     * ⚠ 只改**一个族**的读数（`check:ledger`，它的对拍标签数最多、最好辨认）。
      *   把它的入口源换成"一条负向对拍都没有"的文本 ⇒ 实测计数变 0 ⇒ 必须 < 下限。
      * ⚠ 绝不落盘（只在内存里换字符串）。
      */
     const fams = familiesFromPkg()
-    const target = 'check:ledger-next'
+    const target = 'check:ledger'
     if (fams[target] === undefined) {
-      bad('N-M1 · 找不到 `check:ledger-next` 这个族 ⇒ 元规则的负向对拍失去对象（不按通过处理）')
+      bad('N-M1 · 找不到 `check:ledger` 这个族 ⇒ 元规则的负向对拍失去对象（不按通过处理）')
     } else {
       const entryFile = fams[target].replace(/^scripts\//, '')
       const fakeSrc = '// 夹具：把所有 ok/bad 的「负向对拍」字样删掉\nok(`L 组全绿`)\n'

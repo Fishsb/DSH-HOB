@@ -1,5 +1,5 @@
 /**
- * 助手预设的工具**挂载点** —— preset 行直接引用本模块。
+ * Hob 项目总负责人预设的工具**挂载点** —— preset 行直接引用本模块。
  *
  * ── 本文件与 `src/modules/tools.ts` 的分工（**一份实现、一处挂载**）──────
  *   · `src/modules/tools.ts`  = 两个工具的**定义**（唯一一份）+ 门禁服务 `hobTools`
@@ -33,6 +33,7 @@
  * ⚠ 本模块**不注册** DSH 原生 read/bash/write —— 与 `PROJECT.md` §5.2 同款纪律。
  */
 import { appendFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import type { HobToolsConfig } from '../modules/tools.ts'
 /**
  * ⚠⚠ **必须用「命名空间导入」，⛔ 不许写具名导入**（2026-10-19 · `TASK-D2`）。
@@ -83,6 +84,8 @@ import * as toolsFace from '../modules/tools.ts'
 import * as workModeFace from '../shared/work-mode.ts'
 import * as busFace from '../modules/bus.ts'
 import * as orchFace from '../modules/orchestrator.ts'
+import * as handoffEffectsFace from '../server/handoff-effects.ts'
+import type { EffectsQueue } from '../server/effects-queue.ts'
 // ⚠ ⚠ **只导类型**（`import type`）—— 类型在编译期擦除，**不产生运行时绑定** ⇒
 //   它们缺席不会造成 ESM 链接失败。这正是"值的面可降级、类型的面仍精确"的分界线。
 import type { HobBus } from '../modules/bus.ts'
@@ -90,7 +93,7 @@ import type { HobOrchestrator } from '../modules/orchestrator.ts'
 import type { WorkMode } from '../shared/work-mode.ts'
 
 /** 模块名（preset 行的 `name` 指向本模块）。 */
-export const name = 'dsh-hob-tools'
+export const name = 'dsh-hob-preset-tools'
 
 /**
  * 只声明 **tools**。
@@ -183,6 +186,41 @@ export function apply(ctx: any, config: Config = {}): void {
   // ⚠ 诊断器**每挂载构造一次**（不是模块级单例）：上限要按"这次挂载"读磁盘现值，
   //   模块级可变状态在 fiber reload 后既不可靠、也让本模块带上跨实例状态。
   const diag = makeDiag(config)
+  /** 按账本根复用后台补投队列；dispose 时 drain，未完成行留盘。 */
+  const handoffQueues = new Map<string, EffectsQueue>()
+  const handoffEffectsOf = (ledgerRoot: string): EffectsQueue | undefined => {
+    if (ledgerRoot === '') return undefined
+    const old = handoffQueues.get(ledgerRoot)
+    if (old !== undefined) return old
+    try {
+      /**
+       * ⚠ 命名空间导入：ESM 具名值导入在链接期校验名字，任何一处缺失都会让
+       *   整块预设模块求值失败 ⇒ `apply` 不跑 ⇒ `hob_*` 全消失。
+       *   `check:config` 的 G-11 对这一点有硬拒。
+       */
+      const start = handoffEffectsFace.startHandoffEffects
+      if (typeof start !== 'function') throw new Error('handoff effects 模块缺 startHandoffEffects')
+      const q = start(
+        ledgerRoot,
+        async (target, message) => {
+          const orch = ctx.get?.('hobOrchestrator') as HobOrchestrator | undefined
+          if (orch === undefined || typeof orch.dispatch !== 'function') throw new Error('orchestrator unavailable')
+          const r = await orch.dispatch(target, message, { self: undefined })
+          if (r?.ok !== true) throw new Error(r?.reason ?? 'delivery failed')
+        },
+        join(ledgerRoot, 'runtime', 'orch-watches.json'),
+      )
+      handoffQueues.set(ledgerRoot, q)
+      return q
+    } catch (e) {
+      log('handoff effects 队列未启动：' + String((e as Error)?.message ?? e))
+      return undefined
+    }
+  }
+  ctx.effect(() => () => {
+    for (const q of handoffQueues.values()) void q.drain()
+    handoffQueues.clear()
+  }, 'dsh-hob preset: handoff effects queues')
   const log = (m: string): void => {
     try { ctx.logger?.debug?.(m) } catch { /* 无 logger 时忽略 */ }
     diag(m)
@@ -694,7 +732,7 @@ export function apply(ctx: any, config: Config = {}): void {
     //   `ctx.inject(["settings"], (child) => {` 那一段 —— ⚠ 按**符号锚**定位，⛔ 别按行号）。
     //   子 ctx 继承依赖 API 且**拥有它自己创建的注册** ⇒ 门禁消失时这些注册随之拆除，
     //   不用手写卸载逻辑（§3.3 第 3 条：资源靠 ctx.effect 挂，卸载自动清理）。
-    registerTools(gatedCtx, config, levelOf, proceedGateFor, log, ORCH_SERVICE, createHobTools, visibleNamesFor)
+    registerTools(gatedCtx, config, levelOf, proceedGateFor, log, ORCH_SERVICE, createHobTools, handoffEffectsOf, visibleNamesFor)
   })
 
   // ── M3 · 会话总线工具（UD-77）────────────────────────────────────────
@@ -1766,6 +1804,8 @@ function installPermissionGuard(
 function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any) => string,
   proceedGateFor: (sessionOrAgent?: any) => string | undefined, log: (m: string) => void,
   orchServiceName: string, createTools: (...a: any[]) => any,
+  /** 按账本根惰性取补投队列；缺省不启用后台补投。 */
+  handoffEffectsOf?: (ledgerRoot: string) => EffectsQueue | undefined,
   /**
    * ⚠ 2026-10-24：名字集收口点（`apply` 的 `visibleNamesFor`）。
    *   `tierNamesOf` 要用它 —— 否则 `write_hob` 的 tier 名核对会把门禁不在时
@@ -1830,6 +1870,7 @@ function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any)
         return undefined
       }
     },
+    ...(handoffEffectsOf === undefined ? {} : { handoffEffectsOf }),
   })
 
   ctx.effect(() => ctx.tools.register(readContracts), 'dsh-hob preset: read_contracts tool')

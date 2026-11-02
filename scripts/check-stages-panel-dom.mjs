@@ -9,7 +9,7 @@
  *     · 点了**真的调用**了侧栏服务的打开方法，且参数是那个常量；
  *     · 面板挂上后 DOM 里**四个步骤名都在**，每格旁边是「未接线」；
  *     · **负向对拍**：把常量改掉 ⇒ 断言必须变红。
- *   ⇒ 本脚本把 `src/client/stages-panel.tsx` **真编译**（tsc API，内存/临时目录转译），
+ *   ⇒ 本脚本把 `src/client/project-panel.tsx` **真编译**（tsc API，内存/临时目录转译），
  *     用 **jsdom + react-dom** **真的挂载**、真的派发 click、真的读 DOM。
  *
  * ══ 沿用哪个既有机件的牙口 ═══════════════════════════════════════════════
@@ -51,10 +51,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
-const ENTRY = 'src/client/stages-panel.tsx'
+const ENTRY = 'src/client/project-panel.tsx'
 const SRC = join(root, ENTRY)
 /** 面板源码本体（S-28g 负向对拍要就地造变体，⚠ 与 `SRC` 那个入口文件不同）。 */
-const PANEL_TSX = join(root, 'src', 'client', 'stages-panel.tsx')
+const PANEL_TSX = join(root, 'src', 'client', 'project-panel.tsx')
 const work = join(root, '.check-stages-work')
 
 let pass = 0
@@ -280,6 +280,7 @@ export function StateDot({ state, size, appearance }) {
       // ⚠ 第 17 轮起面板**两路取数**（账面 + 执行态）⇒ 不注入执行态就会在 jsdom 里真发请求。
       fetchExec: async () => ({ ok: true, readAt: '2026-10-29T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
       fetchStages: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', stages: [], caps: [] }),
+      fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 测试注入的合法 Current 读数。' }),
       pollMs: 0,
     }))
     const rows = [...document.querySelectorAll('[data-dsh-hob="stages-row"]')]
@@ -342,6 +343,7 @@ export function StateDot({ state, size, appearance }) {
         fetchExec: async () => ({ ok: true, readAt: '2026-10-29T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
         // ⚠ P3 起面板有**第三路**取数（五步树）⇒ 不注入就会在 jsdom 里真发请求。
         fetchStages: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', stages: [], caps: [] }),
+        fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 测试注入的合法 Current 读数。' }),
         pollMs: 0,
         ...(extra ?? {}),
       }))
@@ -1476,7 +1478,7 @@ export function StateDot({ state, size, appearance }) {
         }),
       })
       /**
-       * ⚠ 面板**只自动展开第一条 `doing` 的步**（见 `stages-panel.tsx` 的 effect）。
+       * ⚠ 面板**只自动展开第一条 `doing` 的步**（见 `project-panel.tsx` 的 effect）。
        *   ⇒ 要量全部 5 个 kind，必须先把每一步都点开（⚠ 真点按钮，⛔ 不 hack 内部 state）。
        */
       for (const head of [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]) {
@@ -1624,7 +1626,7 @@ export function StateDot({ state, size, appearance }) {
      * ── 为什么要"真账本"而不是夹具 ───────────────────────────────────
      *   用户截图那个 bug 只在**真数据**下出现（真索引里就是 `agreed`/`settled`/`built`/`unverified`）。
      *   夹具是我们自己编的，编的时候很容易"恰好避开"那个值 —— 那就成了自证。
-     *   ⇒ 本组**真读** `<账本区>/ledger-next/units/index.toml`，走**真解析器**
+     *   ⇒ 本组**真读** `<账本区>/ledger/units/index.toml`，走**真解析器**
      *     （`buildStages`，与产品路由同一个），再把结果喂给**真组件**。
      *
      * ── 口径 ────────────────────────────────────────────────────
@@ -1657,6 +1659,7 @@ export function StateDot({ state, size, appearance }) {
            *     与待确认工具那一块无关；给它一个**合法读数**才是诚实的夹具。
            */
           fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+          fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 测试注入的合法 Current 读数。' }),
           pollMs: 0,
         }))
         await tick(40)
@@ -1676,28 +1679,35 @@ export function StateDot({ state, size, appearance }) {
          *   ⇒ 本组拆成**两条**，都保留：
          *     ① **状态面**（`stages-tree-item-status` / `stages-cap-item`）⛔ 一个都不许有
          *        —— 这才是用户截图那个 bug 的落点；
-         *     ② **全文**里的每一处「判不出」都必须**落在条目标题节点内**（数据文本），
-         *        落不到标题里的 ⇒ **红**（说明又跑到状态/读数里去了）。
+         *     ② **全文**里的每一处「判不出」都必须**落在条目标题或证据读数节点内**
+         *        （两者都是数据文本；证据的 `code_state=判不出` 是合法读数），
+         *        落不到这两处的 ⇒ **红**（说明又跑到状态标签里去了）。
          */
         const statusTexts = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item-status"]')].map((e) => e.textContent ?? '')
         const capTexts = [...document.querySelectorAll('[data-dsh-hob="stages-cap-item"]')].map((e) => e.textContent ?? '')
         const statusHits = [...statusTexts, ...capTexts].filter((t) => t.includes('判不出'))
         if (statusHits.length > 0) probs.push(`**状态/读数面**出现「判不出」${statusHits.length} 处：${JSON.stringify(statusHits.slice(0, 3))}`)
-        // ② 全文出现次数 == 标题里的出现次数（多出来的就是跑到别处去了）
+        // ② 全文出现次数 == 可指认数据来源里的出现次数：
+        //    条目标题 + 下一步说明行 + 派生注意力项。
+        //    ⚠ 证据正文不进五步树；不能把不存在的来源算进来。
         const titleTexts = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item"]')]
           .map((row) => row.querySelectorAll('span')[1]?.textContent ?? '')
+        const dataTexts = [
+          ...document.querySelectorAll('[data-dsh-hob="stages-next-line"]'),
+          ...document.querySelectorAll('[data-dsh-hob="stages-attention-item"]'),
+        ].map((node) => node.textContent ?? '')
         const count = (arr) => arr.reduce((n, t) => n + (t.split('判不出').length - 1), 0)
-        const inTitles = count(titleTexts)
+        const inTitles = count(titleTexts) + count(dataTexts)
         const inAll = text.split('判不出').length - 1
         if (inAll > inTitles) {
-          probs.push(`全文出现「判不出」${inAll} 处，但条目标题里只有 ${inTitles} 处 ⇒ 有 ${inAll - inTitles} 处跑到了状态/读数等非标题位置`)
+          probs.push(`全文出现「判不出」${inAll} 处，但标题/下一步/注意力数据里只有 ${inTitles} 处 ⇒ 有 ${inAll - inTitles} 处跑到了状态标签等非数据位置`)
         }
         const rows = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item"]')]
         const labels = rows.map((row) => `${row.getAttribute('data-item-id')}:` + (row.querySelector('[data-dsh-hob="stages-tree-item-status"]')?.textContent ?? '').trim())
         if (rows.length === 0) probs.push('一条条目都没渲染 ⇒ 扫全文这步没有对象（⛔ 不报 ✓）')
         if (probs.length === 0) {
           ok(`S-18 ✓ **真账本数据渲染（${rows.length} 条条目，${units.length} 条单元）**`
-            + ` · **状态/读数面 0 处「判不出」**（⚠ 全文另有 ${inTitles} 处，全在条目标题里 = 数据文本，⛔ 不算）`
+            + ` · **状态面 0 处「判不出」**（⚠ 全文另有 ${inTitles} 处，全在标题/下一步/注意力数据里，⛔ 不算）`
             + `\n      ⇒ 标签实测：${labels.join(' · ')}`)
         } else for (const x of probs) bad(`S-18 · ${x}`)
 
@@ -1715,6 +1725,8 @@ export function StateDot({ state, size, appearance }) {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => built2,
+          fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+          fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 测试注入的合法 Current 读数。' }),
           pollMs: 0,
         }))
         await tick(40)
@@ -1887,7 +1899,7 @@ export function StateDot({ state, size, appearance }) {
          *   旧版拿**真账本**的 `portfolio.builtNoAcc` 当锚点。而 P41 收口之后，三条需求都补了
          *   `acceptance_ids` 且全部 pass ⇒ `builtNoAcc` **归零** ⇒ 旧版当场红。
          *   ⚠ 那条红**是对的**（它自己写着"归零时会红，逼人回来改锚点"），但修法不是删判据，
-         *     而是**换夹具来源** —— 与 `check-ledger-next.mjs` 的 `N-CF`（R17 修的）同一个写法：
+         *     而是**换夹具来源** —— 与 `check-ledger.mjs` 的 `N-CF`（R17 修的）同一个写法：
          *     自造合成单元、**调真函数**（`portfolioOf`），⛔ 不写第二份逻辑。
          *
          * ⚠ 三条硬要求（缺一条这次改动就不成立）：
@@ -2225,7 +2237,7 @@ export function StateDot({ state, size, appearance }) {
     // ══════════════════════════════════════════════════════════════════
     /**
      * ── 病 ──────────────────────────────────────────────────────
-     *   改前 `grep 'overflow|maxHeight|height:'` 在 `stages-panel.tsx` **零命中**
+     *   改前 `grep 'overflow|maxHeight|height:'` 在 `project-panel.tsx` **零命中**
      *   ⇒ 内容超出宿主 `tabBody`（`overflow:hidden`）就**被裁掉**，用户滚不了。
      *
      * ── 本组量什么（⚠ 逐条对应任务书 §二 的四条）──────────────
@@ -2721,10 +2733,20 @@ export function StateDot({ state, size, appearance }) {
         const probs = []
         if (box === null) probs.push('「待确认工具」这一块**没渲染** ⇒ 本条的测量面不存在')
         if (text === '') probs.push('`summary` 那一行是**空的**')
-        if (!text.includes(report2.summary)) probs.push(`文本不含路由返回的 summary：实际 ${JSON.stringify(text.slice(0, 60))}`)
+        if (!text.includes('2 条')) probs.push(`数量行没有写出 2 条：实际 ${JSON.stringify(text.slice(0, 60))}`)
+        if (text === '') probs.push('数量行是空的')
         if (items.length !== 2) probs.push(`⛔ 没有逐名列出（期望 2 行，实际 ${items.length} 行）`)
         const joined = items.map((x) => x.textContent).join('|')
         if (!joined.includes('zzz-alpha') || !joined.includes('zzz-beta')) probs.push(`逐名内容不对：${JSON.stringify(joined.slice(0, 80))}`)
+        if (document.querySelector('[data-dsh-hob="stages-unseen-details"]')?.hasAttribute('open') !== false) {
+          probs.push('有 2 条工具时详情没有默认折叠')
+        }
+        /**
+         * ⚠ 截图实测：原实现把 `summary`（本来就是完整名单）与逐名清单各渲染一遍
+         *   ⇒ 117 条工具名出现两次。`summary` 只负责数量，逐名清单负责名字。
+         */
+        if (text.includes('zzz-alpha') || text.includes('zzz-beta')) probs.push('summary 行又把整份名单重复了一遍')
+        if (items.length !== new Set(items.map((x) => (x.textContent ?? '').trim())).size) probs.push('逐名清单出现重复项')
         /** ⚠ 零交互元素 / 零百分比 / 零进度条 / 零勾选（`R-005` 咬住） */
         if (box !== null) {
           const forbidden = box.querySelectorAll('button, input, select, textarea, progress, [role="progressbar"], [role="checkbox"]')
@@ -2734,7 +2756,7 @@ export function StateDot({ state, size, appearance }) {
         }
         if (probs.length === 0) {
           ok(`S-29 ✓ **「待确认工具」界面出口成立**（\`data-dsh-hob="stages-unseen"\`）`
-            + ` · summary 原样渲染：\`${text.slice(0, 50)}…\``
+            + ` · 数量行可读且不重复名单：\`${text.slice(0, 50)}…\``
             + ` · **逐名列出 ${items.length} 条**（${items.map((x) => x.textContent).join(' ')}）`
             + ' · 零可交互元素 · 零百分比 · 零进度条（⛔ 面板仍只读）')
         } else for (const x of probs) bad(`S-29 · ${x}`)
@@ -2753,6 +2775,9 @@ export function StateDot({ state, size, appearance }) {
         if (box === null) probs.push('0 条时**整块没渲染**（⛔ "没查"与"查了 0 条"必须分得开）')
         if (!text.includes('0 条')) probs.push(`0 条时没写出「0 条」：实际 ${JSON.stringify(text.slice(0, 60))}`)
         if (items.length !== 0) probs.push(`0 条时却渲染了 ${items.length} 行逐名项`)
+        if (document.querySelector('[data-dsh-hob="stages-unseen-details"]')?.hasAttribute('open') !== true) {
+          probs.push('0 条时详情没有默认展开，读数被藏起来')
+        }
         if (probs.length === 0) {
           ok(`S-29b ✓ **0 条时明写「0 条」**（⛔ 非空白、⛔ 非不渲染）：\`${text.slice(0, 50)}…\``
             + ' · 逐名项 0 行 · ⚠ 文案来自 `describeUnseen` 的 `summary`，⛔ 不是本组另编的')
@@ -2802,6 +2827,245 @@ export function StateDot({ state, size, appearance }) {
             }
           }
         }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // S-30 Current 面板（只读 · 与其它区块分治）
+    // ══════════════════════════════════════════════════════════════════
+    {
+      const mountCurrent = async (fetchCurrent) => {
+        const r = mount(react.createElement(ui.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => ({ ok: true, readAt: '2026-11-02T00:00:00.000Z', stages: [], caps: [] }),
+          fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+          fetchCurrent,
+          pollMs: 0,
+        }))
+        await tick(40)
+        return r
+      }
+      const CURRENT_TEXT = '# Current（测试）\n\n## 一、现在在等谁\n\n### 等你决定\n\n#### 覆盖关系缺口\n\n- **等你决定：0 条**\n\n## 二、风险与目标\n\n- 测试第二节'
+
+      // S-30a 正向：合法 Current 文本原样进入 Current 区块。
+      {
+        const r = await mountCurrent(async () => ({ ok: true, text: CURRENT_TEXT }))
+        const box = document.querySelector('[data-dsh-hob="stages-current"]')
+        const body = document.querySelector('[data-dsh-hob="stages-current-text"]')
+        const p = []
+        if (box === null) p.push('Current 区块不存在')
+        if (body === null) p.push('Current 正文不存在')
+        if (body?.querySelector('details[data-current-section="一、现在在等谁"]') === null) p.push('Current 二级标题没有被结构化成章节标题')
+        if (body?.querySelector('[data-current-kind="subheading"]') === null) p.push('Current 三级标题没有被结构化成 subheading')
+        if (body?.querySelector('[data-current-kind="subsection"]') === null) p.push('Current 四级标题没有被结构化成 subsection')
+        if (document.querySelectorAll('[data-dsh-hob="stages-current-text"] details[data-current-section]').length < 2) p.push('Current 章节没有按二级标题折叠分组')
+        if (document.querySelector('[data-dsh-hob="stages-current-text"] details[data-current-section]')?.hasAttribute('open') !== true) p.push('Current 首章节没有默认展开')
+        if (document.querySelector('[data-dsh-hob="stages-current-text"] details[data-current-section="preamble"]') !== null) p.push('Current 说明段被错误地做成折叠章节')
+        if (body?.querySelector('[data-current-kind="item"]') === null) p.push('Current 列表项没有被结构化成 item')
+        if ((body?.textContent ?? '').includes('#') || (body?.textContent ?? '').includes('**')) p.push('Current 仍把 Markdown 标记原样显示')
+        if (!(body?.textContent ?? '').includes('现在在等谁') || !(body?.textContent ?? '').includes('等你决定：0 条')) p.push('Current 正文内容在解析后丢失')
+        if (p.length === 0) ok('S-30a ✓ Current 取数成功 ⇒ 独立区块存在，Markdown 被结构化渲染且标点不裸露')
+        else for (const x of p) bad(`S-30a · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-30b 失败分治：只有 Current 区块落「判不出」，五步树仍在。
+      {
+        const r = await mountCurrent(async () => ({ ok: false, reason: 'ledger-unreadable', message: 'Current 测试失败' }))
+        const box = document.querySelector('[data-dsh-hob="stages-current"]')
+        const tree = document.querySelector('[data-dsh-hob="stages-tree"]')
+        const p = []
+        if (box === null || !(box.textContent ?? '').includes('判不出：Current 测试失败')) {
+          p.push(`Current 没有照实落「判不出」+ 原因：${JSON.stringify(box?.textContent ?? '')}`)
+        }
+        if (tree === null) p.push('Current 失败把五步树一起抹掉了 ⇒ 区块没有分治')
+        if (document.querySelector('[data-dsh-hob="stages-current-text"]') !== null) p.push('失败时仍渲染了 Current 正文')
+        if (p.length === 0) ok('S-30b ✓ Current 失败 ⇒ 只有本区块写「判不出」+ 原因，五步树仍在（失败不分治没有发生）')
+        else for (const x of p) bad(`S-30b · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-30c 负向对拍：摘掉唯一挂载 ⇒ S-30a 的"区块存在"必红。
+      {
+        const srcNow = readFileSync(PANEL_TSX, 'utf8')
+        const needle = '    React.createElement(CurrentPanel, '
+        const at = srcNow.indexOf(needle)
+        const lineEnd = at < 0 ? -1 : srcNow.indexOf('\n', at)
+        const mutated = at < 0 || lineEnd < 0
+          ? srcNow
+          : srcNow.slice(0, at) + '    // CurrentPanel 挂载已摘除（负向对拍）\n' + srcNow.slice(lineEnd + 1)
+        if (mutated === srcNow) {
+          bad('S-30c · 造不出「摘掉 CurrentPanel 挂载」的变体（源码形态变了）⇒ 负向对拍不可判')
+        } else {
+          const out = writeMutant('mut-current', mutated)
+          const modC = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          const r = mount(react.createElement(modC.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => ({ ok: true, readAt: '2026-11-02T00:00:00.000Z', stages: [], caps: [] }),
+            fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+            fetchCurrent: async () => ({ ok: true, text: CURRENT_TEXT }),
+            pollMs: 0,
+          }))
+          await tick(40)
+          const gone = document.querySelector('[data-dsh-hob="stages-current"]') === null
+          actFn(() => r.unmount())
+          if (gone) ok('S-30c ✓ 负向对拍（摘掉 CurrentPanel 的唯一挂载）⇒ S-30a 的区块存在断言必红：变体里找不到 stages-current')
+          else bad('S-30c · 摘掉挂载后 Current 区块仍在 ⇒ 断言没有牙')
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // S-32 注意力视图（派生工作状态，不等于五步进度）
+    // ══════════════════════════════════════════════════════════════════
+    {
+      const base = {
+        ok: true,
+        readAt: '2026-11-02T00:00:00.000Z',
+        stages: [],
+        caps: [],
+        next: { kind: 'undecidable', target: null, why: '夹具没有下一步', blockedBy: [] },
+      }
+      const mountWithAttention = async (attention) => {
+        const r = mount(react.createElement(ui.StagesPanel, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => ({ ...base, ...(attention === undefined ? {} : { attention }) }),
+          fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+          fetchCurrent: async () => ({ ok: true, text: CURRENT_TEXT }),
+          pollMs: 0,
+        }))
+        await tick(30)
+        return r
+      }
+
+      // S-32a 非空：逐条显示，且状态来自后端。
+      {
+        const rows = [
+          { id: 'R-001', state: 'awaiting-user', label: '等你决定', why: '没有验收路径' },
+          { id: 'TSK-001', state: 'blocked', label: '阻塞', why: '已交付但没有证据' },
+        ]
+        const r = await mountWithAttention(rows)
+        const items = [...document.querySelectorAll('[data-dsh-hob="stages-attention-item"]')]
+        const p = []
+        if (items.length !== 2) p.push(`注意力项 ${items.length} 条（期望 2）`)
+        if (items[0]?.getAttribute('data-work-state') !== 'awaiting-user') p.push('第一条没有携带 awaiting-user')
+        if (!(items[1]?.textContent ?? '').includes('阻塞')) p.push(`第二条没有中文状态：${JSON.stringify(items[1]?.textContent ?? '')}`)
+        if (p.length === 0) ok('S-32a ✓ 注意力视图逐条显示 2 项，id / work-state / 中文措辞都来自后端派生读数')
+        else for (const x of p) bad(`S-32a · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-32b 空数组是一条“查过、没事”的读数，必须与判不出分开。
+      {
+        const r = await mountWithAttention([])
+        const box = document.querySelector('[data-dsh-hob="stages-attention"]')
+        const p = []
+        if (box?.getAttribute('data-state') !== 'empty') p.push(`空数组 state 不是 empty：${JSON.stringify(box?.getAttribute('data-state'))}`)
+        if (!(box?.textContent ?? '').includes('没有需要人或验收方处理的事项')) p.push('空数组没有明确空态文案')
+        if ((box?.textContent ?? '').includes('判不出')) p.push('空数组被误写成判不出')
+        if (p.length === 0) ok('S-32b ✓ 注意力为 0 条 ⇒ 明写“没有需要…”，与字段缺失的判不出分开')
+        else for (const x of p) bad(`S-32b · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-32c 字段缺失 ⇒ 判不出，⛔ 不许退化成 0 条。
+      {
+        const r = await mountWithAttention(undefined)
+        const box = document.querySelector('[data-dsh-hob="stages-attention"]')
+        const p = []
+        if (box?.getAttribute('data-state') !== 'undecidable') p.push(`字段缺失 state 不是 undecidable：${JSON.stringify(box?.getAttribute('data-state'))}`)
+        if (!(box?.textContent ?? '').includes('判不出')) p.push('字段缺失没有明写判不出')
+        if (document.querySelectorAll('[data-dsh-hob="stages-attention-item"]').length !== 0) p.push('字段缺失却渲染了注意力项')
+        if (document.querySelector('[data-dsh-hob="stages-attention-empty"]') !== null) p.push('字段缺失被误写成 0 条')
+        if (p.length === 0) ok('S-32c ✓ attention 字段缺失 ⇒ 判不出 + 原因；⛔ 没有伪装成 0 条')
+        else for (const x of p) bad(`S-32c · ${x}`)
+        actFn(() => r.unmount())
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // S-31 账本资源按 ID 读取（HTTP 处理体 + 模型工具路径）
+    // ══════════════════════════════════════════════════════════════════
+    {
+      const ENTRY2 = 'src/modules/ledger-resource-route.ts'
+      const graph2 = tsMount.mountTsGraph({ root, outDir: join(work, 'out-resource'), entries: [ENTRY2], ts })
+      const probs2 = [
+        ...graph2.problems,
+        ...tsMount.verifyMounted({ root, entries: [ENTRY2], mounted: graph2.mounted, entryFiles: graph2.entries }),
+      ]
+      if (probs2.length > 0) for (const x of probs2) bad(`S-31a 转译/自证失败：${x}`)
+      else ok(`S-31a ✓ 账本资源路由转译图自证通过（${graph2.mounted.join(' · ')}）`)
+
+      const out2 = graph2.entries[ENTRY2]
+      if (out2 === undefined) throw new Error('账本资源路由没有产出（见 S-31a）')
+      const entry2 = join(work, 'resource-entry.mjs')
+      writeFileSync(entry2, `export * from ${JSON.stringify(out2)}\n`)
+      const routeMod = await import(pathToFileURL(entry2).href)
+      const { resolveLedgerRoot } = await import('./lib/ledger-root.mjs')
+      const ledgerRoot = resolveLedgerRoot(root, undefined, undefined)
+      if (ledgerRoot === undefined) {
+        bad('S-31b · 账本根判不出 ⇒ 资源路由处理体不可判')
+      } else {
+        const idx = await import(pathToFileURL(join(root, 'src', 'shared', 'stages-index.ts')).href)
+        const units = idx.parseUnitsToml(readFileSync(join(ledgerRoot, idx.STAGES_INDEX_REL), 'utf8'))
+        const resourceMod = await import(pathToFileURL(join(root, 'src', 'shared', 'ledger-resources.ts')).href)
+        const card = resourceMod.readLedgerResource(units, 'requirement/R-009')
+        const badKind = resourceMod.readLedgerResource(units, 'acceptance/TSK-061')
+        const missing = resourceMod.readLedgerResource(units, 'requirement/R-9999')
+        const p = []
+        if (card.ok !== true || card.card.id !== 'R-009') p.push(`R-009 读取失败：${JSON.stringify(card)}`)
+        if (badKind.ok !== false || badKind.reason !== 'unknown-id') p.push(`错误 kind 未拒绝：${JSON.stringify(badKind)}`)
+        if (missing.ok !== false || missing.reason !== 'not-found') p.push(`不存在 ID 未拒绝：${JSON.stringify(missing)}`)
+        if (p.length === 0) ok('S-31b ✓ 真账本资源：R-009 可读；错误 kind ⇒ unknown-id；不存在 ID ⇒ not-found（三类结果可分辨）')
+        else for (const x of p) bad(`S-31b · ${x}`)
+
+        // 真正执行路由注册：假 fetch.register 收到 POST 路径 + 一个可调用的处理体。
+        let handler
+        const registered = []
+        const fakeCtx = {
+          logger: { info: () => {}, warn: () => {} },
+          get: (n) => {
+            if (n === 'sessions') return { get: () => ({ header: { cwd: root } }) }
+            if (n === 'loader') return { entries: () => [{ options: { ledgerHome: join(ledgerRoot, '..') } }] }
+            return undefined
+          },
+          inject: (_names, cb) => {
+            cb({ get: (n) => n === 'connection'
+              ? { fetch: { register: (route) => { registered.push(route); handler = route.fetch; return () => {} } } }
+              : undefined })
+            return { dispose: () => {} }
+          },
+          effect: () => {},
+        }
+        routeMod.installLedgerResourceRoute(fakeCtx)
+        const route = registered[0]
+        const q = []
+        if (route?.path !== routeMod.LEDGER_RESOURCE_ROUTE_PATH) q.push(`注册路径不对：${JSON.stringify(route?.path)}`)
+        if (JSON.stringify(route?.methods) !== '["POST"]') q.push(`methods 不是 POST：${JSON.stringify(route?.methods)}`)
+        if (typeof handler !== 'function') q.push('没有可调用的处理体')
+        else {
+          const bodyReq = (body) => ({ text: async () => JSON.stringify(body) })
+          const okRes = await handler(bodyReq({ sessionId: 'fake', resource: 'requirement/R-009' }))
+          const badRes = await handler(bodyReq({ sessionId: 'fake', resource: 'acceptance/TSK-061' }))
+          const ghostRes = await handler(bodyReq({ sessionId: 'fake', resource: 'requirement/R-9999' }))
+          const curRes = await handler(bodyReq({ sessionId: 'fake', resource: 'current' }))
+          const badJson = await handler({ text: async () => '{broken' })
+          const okBody = await okRes.json()
+          const badBody = await badRes.json()
+          const ghostBody = await ghostRes.json()
+          const curBody = await curRes.json()
+          const badJsonBody = await badJson.json()
+          if (okRes.status !== 200 || okBody.ok !== true || okBody.card?.id !== 'R-009') q.push(`R-009 处理体返回不对：${okRes.status} ${JSON.stringify(okBody)}`)
+          if (badRes.status !== 200 || badBody.ok !== false || badBody.reason !== 'unknown-id') q.push(`错误 kind 处理体返回不对：${badRes.status} ${JSON.stringify(badBody)}`)
+          if (ghostRes.status !== 200 || ghostBody.ok !== false || ghostBody.reason !== 'not-found') q.push(`不存在 ID 处理体返回不对：${ghostRes.status} ${JSON.stringify(ghostBody)}`)
+          if (curRes.status !== 200 || curBody.ok !== true || typeof curBody.text !== 'string' || !curBody.text.includes('# Current')) q.push(`Current 处理体返回不对：${curRes.status} ${JSON.stringify(curBody).slice(0, 180)}`)
+          if (badJson.status !== 400 || badJsonBody.reason !== 'bad-request') q.push(`坏 JSON 未归 bad-request：${badJson.status} ${JSON.stringify(badJsonBody)}`)
+        }
+        if (q.length === 0) ok('S-31c ✓ 资源路由真处理体：注册 POST 路径；R-009 / 错误 kind / 不存在 ID / Current / 坏 JSON 五档状态与 reason 均可分辨')
+        else for (const x of q) bad(`S-31c · ${x}`)
       }
     }
 

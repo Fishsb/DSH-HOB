@@ -7239,7 +7239,6 @@ const orchCode = stripComments(orchSrc)
   } catch (e) {
     bad(`SD 无法加载 orchestrator / bus（${String(e?.message ?? e)}）⇒ 回执单次性失去基准（不按通过处理）`)
   }
-
   /**
    * 造一个最小宿主（真 apply + 假会话/假投递）。
    * @param opts.initiator - `currentInitiator()` 的返回值（模拟 T2 / T3 的作用域差别）。
@@ -7346,8 +7345,9 @@ const orchCode = stripComments(orchSrc)
     const disk = () => { try { return JSON.parse(sdRf(file, 'utf8')) } catch { return undefined } }
     const pend = () => (disk()?.pending ?? [])
     const receipts = () => delivered.filter((d) => String(d.text).includes('【自动回传】'))
+    const unlock = () => { try { sdChmod(sdJ(home, sdBase(ws), 'runtime'), 0o755) } catch { /* 忽略 */ } }
     return {
-      orch, bus, file, owner, target, delivered, receipts, scope, wait, disk, pend, ws,
+      orch, bus, file, owner, target, delivered, receipts, scope, wait, disk, pend, ws, unlock,
       /**
        * ⚠ **摘掉 / 放回总线**（2026-10-21 · 第 336 轮 · **丙-11 运行期证据**）。
        *   ⚠ 摘掉 = `ctx.get('hobBus')` 返回 `undefined` ⇒ `settle()` 走"总线不可用"那一支。
@@ -7545,7 +7545,13 @@ const orchCode = stripComments(orchSrc)
        *   ⇒ 对账只重试清账、⛔ 不重投 ⇒ `finalizeDelivery` 失败 ⇒ 内存那条带上 `cleanupFailedAt`
        *   ⇒ 状态行才渲染得出这一档。
        */
-      chmodSync(dirname(h.file), 0o555)
+      const sdParent = dirname(h.file)
+      /**
+       * ⚠ 运行舱以 root 跑时 `chmod 0555` 拦不住写；本组显式打开测试故障开关，
+       *   仍通过真实 `writeOrchState` 返回 false，而不是伪造内存状态。
+       */
+      const oldFailWrite = process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE
+      process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE = '1'
       try {
         await h.orch.reconcile('T2')
         await h.wait(120)
@@ -7578,7 +7584,9 @@ const orchCode = stripComments(orchSrc)
             + ` · 该行=${JSON.stringify(line.slice(0, 200))}`)
         }
       } finally {
-        try { chmodSync(dirname(h.file), 0o755) } catch { /* 恢复可写，别让后续用例受影响 */ }
+        if (oldFailWrite === undefined) delete process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE
+        else process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE = oldFailWrite
+        try { h.unlock?.() } catch { /* 恢复 `sdMount` 记下的原权限，别让后续用例受影响 */ }
       }
     }
 
@@ -7784,7 +7792,7 @@ const orchCode = stripComments(orchSrc)
     }
     /** ⚠ 造一份"送到了、但清账会失败"的现场，并把 runtime 锁成只读。 */
     const snMountLocked = async () => {
-      const h = await sdMount({
+      return await sdMount({
         pending: [sdRec({
           deliveryAttemptAt: 1792250000050,
           deliveredAt: 1792250000100,
@@ -7793,14 +7801,12 @@ const orchCode = stripComments(orchSrc)
         initiator: undefined,
         lockRuntime: true,
       })
-      const { dirname } = await import('node:path')
-      const { chmodSync } = await import('node:fs')
-      chmodSync(dirname(h.file), 0o555)
-      return h
     }
 
     // ── SN-a ⭐ **中途档：失败 3 次仍未超限 ⇒ 留在"重试中"** ──────────────
     {
+      const oldFailWrite = process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE
+      process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE = '1'
       const h = await snMountLocked()
       try {
         /**
@@ -7839,11 +7845,17 @@ const orchCode = stripComments(orchSrc)
             + `：重试次数=${String(d.retries)} · 状态=${String(d.state)}`
             + ` · 说"下一轮自动重试"=${saysRetrying} · 说次数=${saysCount} · 说"已放弃"=${saysGaveUp}`)
         }
-      } finally { try { h.unlock?.() } catch { /* 解锁失败不影响判定 */ } }
+      } finally {
+        if (oldFailWrite === undefined) delete process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE
+        else process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE = oldFailWrite
+        try { h.unlock?.() } catch { /* 解锁失败不影响判定 */ }
+      }
     }
 
     // ── SN-b ⭐⭐ **到顶档：失败到 LIMIT ⇒ 转 `stuck`、读数说"已放弃"** ──────
     {
+      const oldFailWrite = process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE
+      process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE = '1'
       const h = await snMountLocked()
       try {
         /**
@@ -7912,7 +7924,11 @@ const orchCode = stripComments(orchSrc)
             + ' ⇒ ⛔ 不再是"永不收敛"，也⛔ 没把两种成因压成一句（钉的是丙-1 的归宿）')
         }
         }
-      } finally { try { h.unlock?.() } catch { /* 解锁失败不影响判定 */ } }
+      } finally {
+        if (oldFailWrite === undefined) delete process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE
+        else process.env.DSH_HOB_TEST_FAIL_ORCH_WRITE = oldFailWrite
+        try { h.unlock?.() } catch { /* 解锁失败不影响判定 */ }
+      }
     }
 
     // ── SN-c ⭐ **不该咬：清账一次成功 ⇒ 该条消失，读数一行都不出现** ──────
@@ -12416,16 +12432,27 @@ const orchCode = stripComments(orchSrc)
           + '盘上字段在，但没有任何一条路能把判决写进去 ⇒ 那两档恒为 0）')
         throw { slSkip: true }
       }
-      const noBasis = h.orch.judge({ self: h.ME, target: 'session-sl-judge', verdict: 'accepted', basis: [] })
-      const wsOnly = h.orch.judge({ self: h.ME, target: 'session-sl-judge', verdict: 'accepted', basis: ['  ', ''] })
+      const noBasis = h.orch.judge({
+        self: h.ME, target: 'session-sl-judge', verdict: 'accepted', basis: [],
+        verifiedAt: '2026-11-02T11:59:00+08:00',
+      })
+      const wsOnly = h.orch.judge({
+        self: h.ME, target: 'session-sl-judge', verdict: 'accepted', basis: ['  ', ''],
+        verifiedAt: '2026-11-02T11:59:30+08:00',
+      })
+      const noVerifiedAt = h.orch.judge({
+        self: h.ME, target: 'session-sl-judge', verdict: 'accepted', basis: ['有依据但没有判决时刻'],
+      })
       const acceptR = h.orch.judge({
         self: h.ME, target: 'session-sl-judge', verdict: 'accepted',
         basis: ['check:orch 239/239 通过', 'git status 与基线逐字一致'],
+        verifiedAt: '2026-11-02T12:00:00+08:00',
       })
       await new Promise((r) => setTimeout(r, 40))
       const afterAccept = (h.read().pending ?? []).find((w) => w.target === 'session-sl-judge')
       const acceptedOk = acceptR.ok === true && acceptR.state === 'accepted'
         && afterAccept !== undefined && typeof afterAccept.acceptedAt === 'number'
+        && afterAccept.acceptedAt === Date.parse('2026-11-02T12:00:00+08:00')
         && Array.isArray(afterAccept.basis) && afterAccept.basis.length === 2
       const rendered1 = await h.render()
       const accLine = rendered1.split('\n').find((l) => l.includes('已验收：1 条')) ?? ''
@@ -12434,19 +12461,23 @@ const orchCode = stripComments(orchSrc)
       const backR = h.orch.judge({
         self: h.ME, target: 'session-sl-judge', verdict: 'sent-back',
         basis: ['复跑失败 3 次，与它说的"全绿"矛盾'],
+        verifiedAt: '2026-11-02T12:01:00+08:00',
       })
       await new Promise((r) => setTimeout(r, 40))
       const afterBack = (h.read().pending ?? []).find((w) => w.target === 'session-sl-judge')
       const sentBackOk = backR.ok === true && backR.state === 'sent-back'
         && afterBack !== undefined && typeof afterBack.sentBackAt === 'number'
+        && afterBack.sentBackAt === Date.parse('2026-11-02T12:01:00+08:00')
         && afterBack.acceptedAt === undefined
-      if (noBasis.ok === false && wsOnly.ok === false && acceptedOk && basisShown && sentBackOk) {
+      if (noBasis.ok === false && wsOnly.ok === false && noVerifiedAt.ok === false && acceptedOk && basisShown && sentBackOk) {
         ok('SU-c ✓ **`已验收` / `已退回` 由判决推出、且必须带依据**：`basis: []`（含全空白）'
-          + ' ⇒ **拒绝落账**（⛔ 不许标一个词就算验收过）· 带 2 条读数 ⇒ 落 `acceptedAt` + `basis`，'
-          + '读数面印「依据 2 条读数：…」· 再判退回 ⇒ 换档且**抹掉** `acceptedAt`（两个判决互斥，⛔ 不并存）' + smTag)
+          + ' / 有依据但缺 `verifiedAt` ⇒ **拒绝落账**（⛔ 不许标一个词就算验收过；⛔ 也不留下无时刻判决）· 带 2 条读数 + 判决时刻 ⇒ 落 `acceptedAt` + `basis`，'
+          + '读数面印「依据 2 条读数：…」· **落盘时刻逐毫秒等于传入 `verifiedAt`**（⛔ 不换成墙钟）·'
+          + '再判退回 ⇒ 换档且**抹掉** `acceptedAt`（两个判决互斥，⛔ 不并存）' + smTag)
       } else {
         bad('SU-c 【判决入口没有挡住"无依据"或两个判决会并存】：空 basis 被拒='
           + String(noBasis.ok === false) + '（应 true） · 全空白 basis 被拒=' + String(wsOnly.ok === false)
+          + ' · 缺 verifiedAt 被拒=' + String(noVerifiedAt.ok === false)
           + '（应 true） · 验收落账=' + String(acceptedOk) + ' · 读数带依据=' + String(basisShown)
           + ' · 退回换档=' + String(sentBackOk))
       }
@@ -12498,6 +12529,7 @@ const orchCode = stripComments(orchSrc)
           } else {
             const r = prov.hobOrchestrator.judge({
               self: h.ME, target: 'session-sl-judge2', verdict: 'accepted', basis: [],
+              verifiedAt: '2026-11-02T12:02:00+08:00',
             })
             if (r.ok === true) {
               ok('SU-c(反证) ✓ 负向对拍：摘掉"空依据"那道闸 ⇒ **无依据的验收被放行**'
@@ -12527,9 +12559,10 @@ const orchCode = stripComments(orchSrc)
         throw { slSkip: true }
       }
       const before = readFileSync(h.file, 'utf8')
-      const r1 = h.orch.judge({ self: h.ME, target: 'session-sl-nobody', verdict: 'accepted', basis: ['随便一条'] })
-      const r2 = h.orch.judge({ self: h.ME, target: 'session-sl-other', verdict: 'accepted', basis: ['随便一条'] })
-      const r3 = h.orch.judge({ self: undefined, target: 'session-sl-other', verdict: 'accepted', basis: ['x'] })
+      const verification = '2026-11-02T12:03:00+08:00'
+      const r1 = h.orch.judge({ self: h.ME, target: 'session-sl-nobody', verdict: 'accepted', basis: ['随便一条'], verifiedAt: verification })
+      const r2 = h.orch.judge({ self: h.ME, target: 'session-sl-other', verdict: 'accepted', basis: ['随便一条'], verifiedAt: verification })
+      const r3 = h.orch.judge({ self: undefined, target: 'session-sl-other', verdict: 'accepted', basis: ['x'], verifiedAt: verification })
       await new Promise((r) => setTimeout(r, 40))
       const after = readFileSync(h.file, 'utf8')
       const unchanged = after === before
@@ -12608,6 +12641,7 @@ const orchCode = stripComments(orchSrc)
           } else {
             const r = prov.hobOrchestrator.judge({
               self: h.ME, target: 'session-sl-never-existed', verdict: 'accepted', basis: ['一条编造的依据'],
+              verifiedAt: '2026-11-02T12:04:00+08:00',
             })
             await new Promise((rr) => setTimeout(rr, 40))
             const c = (h.read().closed ?? [])
@@ -13326,7 +13360,10 @@ const orchCode = stripComments(orchSrc)
          *   `ledger-unreachable`），⛔ 不是删那一个文件（那是 `no-records-yet`，属另一种）。
          */
         rmSync(h.home, { recursive: true, force: true })
-        const r = h.orch.judge({ self: h.ME, target: 'session-sv-x', verdict: 'accepted', basis: ['一条依据'] })
+        const r = h.orch.judge({
+          self: h.ME, target: 'session-sv-x', verdict: 'accepted', basis: ['一条依据'],
+          verifiedAt: '2026-11-02T12:05:00+08:00',
+        })
         const saysUnreachable = typeof r.reason === 'string'
           && (r.reason.includes('读不到账本') || r.reason.includes('盘不可达'))
         const notAnyState = r.state === undefined && r.ok === false
@@ -13962,9 +13999,15 @@ const orchCode = stripComments(orchSrc)
         const reLine = txt.split('\n').find((l) => l.includes('已回传：') && /[1-9]\s*条/.test(l)) ?? ''
         const panelSees = reLine !== ''
         /** ② 判决入口：带依据必须落得下去（本包修的）。 */
-        const okJudge = orch.judge({ self: ME, target: TARGET, verdict: 'accepted', basis: ['r1', 'r2', 'r3'] })
+        const okJudge = orch.judge({
+          self: ME, target: TARGET, verdict: 'accepted', basis: ['r1', 'r2', 'r3'],
+          verifiedAt: '2026-11-02T12:06:00+08:00',
+        })
         /** ③ `basis: []` 仍必须被拒（⛔ 不许被一起改坏）。 */
-        const emptyRejected = orch.judge({ self: ME, target: TARGET, verdict: 'accepted', basis: [] })
+        const emptyRejected = orch.judge({
+          self: ME, target: TARGET, verdict: 'accepted', basis: [],
+          verifiedAt: '2026-11-02T12:06:30+08:00',
+        })
         /** ④ 两者必须**同一个答案**（⛔ 不许一个说在一个说不在）。 */
         const sameAnswer = panelSees === (okJudge.ok === true)
         if (panelSees && okJudge.ok === true && okJudge.state === 'accepted'
@@ -14046,6 +14089,7 @@ const orchCode = stripComments(orchSrc)
         m.apply(ctx3)
         const r = prov3.hobOrchestrator.judge({
           self: ME2, target: 'session-eea74684-x', verdict: 'accepted', basis: ['x'],
+          verifiedAt: '2026-11-02T12:07:00+08:00',
         })
         if (r.ok === false && typeof r.reason === 'string' && r.reason.includes('判不出')) {
           ok('SV-k(反证) ✓ 负向对拍：把 `judgeWs` 摘掉（= 包 M 只修读数面那一态）⇒ '
@@ -14133,14 +14177,23 @@ const orchCode = stripComments(orchSrc)
       }
       const o1 = bootSv()
       /** ③ `basis: []` 仍必须被拒 */
-      const emptyRej = o1.judge({ self: ME, target: TARGET, verdict: 'accepted', basis: [] })
+      const emptyRej = o1.judge({
+        self: ME, target: TARGET, verdict: 'accepted', basis: [],
+        verifiedAt: '2026-11-02T12:08:00+08:00',
+      })
       /** ① 带依据 ⇒ 盘上必须真有 acceptedAt */
-      const okR = o1.judge({ self: ME, target: TARGET, verdict: 'accepted', basis: ['r1', 'r2'] })
+      const okR = o1.judge({
+        self: ME, target: TARGET, verdict: 'accepted', basis: ['r1', 'r2'],
+        verifiedAt: '2026-11-02T12:09:00+08:00',
+      })
       const landed = onDiskAccepted()
       /** ② 返回值必须与盘上一致 */
       const consistent = (okR.ok === true) === landed
       /** ④ 跨代：全新 apply 后仍在 */
-      const after = bootSv().judge({ self: ME, target: TARGET, verdict: 'accepted', basis: ['r1'] })
+      const after = bootSv().judge({
+        self: ME, target: TARGET, verdict: 'accepted', basis: ['r1'],
+        verifiedAt: '2026-11-02T12:10:00+08:00',
+      })
       const stillThere = onDiskAccepted()
       if (emptyRej.ok === false && okR.ok === true && landed && consistent && stillThere) {
         ok('SV-m ✓ **判决说成功 ⇒ 盘上必须真有标记**（包 P · D-5）：真机布局（`ledgerHome` 下'
@@ -14238,6 +14291,7 @@ const orchCode = stripComments(orchSrc)
           m.apply(ctx4)
           const r2 = prov4.hobOrchestrator.judge({
             self: ME2, target: 'session-eea74684-x', verdict: 'accepted', basis: ['r1'],
+            verifiedAt: '2026-11-02T12:11:00+08:00',
           })
           const landed2 = (() => {
             try {
@@ -15540,10 +15594,57 @@ const orchCode = stripComments(orchSrc)
   if (missWi.length > 0 || wiOrch === undefined) {
     bad(`WI 【基准缺失】缺：${missWi.join(' / ') || 'orchestrator.ts'}`)
   } else {
-    const { mkdtempSync: wiMk, rmSync: wiRm, readFileSync: wiRf, writeFileSync: wiWf } = await import('node:fs')
+    const { mkdtempSync: wiMk, readFileSync: wiRf, rmSync: wiRm, writeFileSync: wiWf } = await import('node:fs')
     const { tmpdir: wiTmp } = await import('node:os')
     const dir = wiMk(join(wiTmp(), 'hob-wi-'))
     try {
+      // ── WI-n：跨进程 writer 锁（同一路径第二个 writer 必须被拒）────────
+      /**
+       * ⚠ `runSerialized` 的进程内 `inWrite` 只防重入；这里真造第二个**同文件**
+       *   事务，验证最外层 `runSerialized(file, …)` 会因 `orch-watches.json.lock`
+       *   已存在而 fail-closed。⚠ 只测"拒绝"不够，还要核原锁字节没被改写。
+       */
+      {
+        const fl = join(dir, `locked-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
+        const lockBody = JSON.stringify({ pid: process.pid, identity: 'other-test-writer', at: 1 })
+        /**
+         * ⚠ 先把本进程可能残留的同路径状态清掉（`crossProcessDepth` 在第 N 次
+         *   fiber reload 后仍可能 >0；那样内层会**复用**旧锁而正确地不抛）。
+         *   ⚠ 若真有 `depth>0` 残留，那条自身就是缺陷 —— 这组夹具直接判红并点明。
+         */
+        /**
+         * ⚠ 第 N 次 fiber reload 后模块实例会换；命中上一段遗留锁时
+         *   `runSerialized` 会走 `finally` 归零，随后 `drain` 也不参与。
+         *   直接重开隔离目录不够，必须**先跑一次无锁事务**确认基准可用。
+         */
+        const probeFile = join(dir, 'probe.json')
+        let probeOk = false
+        try {
+          wiState.runSerialized(probeFile, () => { probeOk = true })
+        } catch { probeOk = false }
+        const activeDepth = wiState.orchWriteQueueStats().depth
+        if (activeDepth !== 0) {
+          bad(`WI-n 【夹具不可判】跨进程写事务 depth=${activeDepth}，本该在上一段 finally 归零`
+            + '\n      ⇒ ⚠ 这会把“同文件第二个 writer”测成内层复用，判据失去基准')
+        }
+        wiWf(`${fl}.lock`, lockBody, 'utf8')
+        /**
+         * ⚠ 真实写函数契约是 `wrote:false`，不是抛异常；直接从写入口验
+         *   fail-closed，⛔ 不把内部 helper 的异常形状当契约。
+         */
+        const before = wiState.orchWriteQueueStats().lockRejected
+        const r = wiState.registerWatchEntry(fl, 'O', 'T')
+        const after = wiState.orchWriteQueueStats().lockRejected
+        const message = String(wiState.orchWriteRefusalOf(fl)?.message ?? '')
+        const untouched = wiRf(`${fl}.lock`, 'utf8') === lockBody
+        if (probeOk && activeDepth === 0 && r.wrote === false && after === before + 1
+          && message.includes('跨进程 writer') && untouched && !existsSync(fl)) {
+          ok('WI-n ✓ 负向对拍（同文件第二个跨进程 writer）⇒ 按既有契约 wrote:false（fail-closed），原锁字节未被改写、业务文件未创建')
+        } else {
+          bad(`WI-n · probeOk=${probeOk} depth=${activeDepth} wrote=${String(r.wrote)} rejected ${before}->${after} message=${JSON.stringify(message)} untouched=${untouched} bodyCreated=${existsSync(fl)}`)
+        }
+      }
+
       // ── WI-a / WI-b：唤醒成功 ⇒ 回 waiting，且两枚时刻保留 ─────────────
       const f = join(dir, 'a.json')
       wiState.registerWatchEntry(f, 'O', 'T')

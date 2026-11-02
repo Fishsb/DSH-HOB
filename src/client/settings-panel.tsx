@@ -813,11 +813,12 @@ export function SettingsPanel(): ReactElement {
  *   它们由 `i18n.ts` 的兜底表负责（逐字同宿主），这里只放本插件自己的 UI 文案。
  */
 const PANEL_EN: Record<string, string> = {
-  sectionTitle: 'Human–agent translation layer',
+  sectionTitle: 'Hob project owner',
   sectionIntro:
-    'This plugin provides a tool surface that reads documents and writes only its ledger, and lets the «Hob» agent preset '
-    + 'turn what you say into instructions for an implementation session (the implementation-side preset Hob-Execute was '
-    + 'removed in v4, so Hob is the only one left). The current configuration summary follows.',
+    'Hob is the project owner preset: it agrees goals and requirements with you, shapes the plan and coding tasks, '
+    + 'directs development sessions, follows their results back, and independently accepts the outcome. Its tools read '
+    + 'documents and write only its own ledger; implementation is carried out by development sessions. The current '
+    + 'configuration summary follows.',
   configStatus: 'Configuration status',
   statusReady: 'Ready',
   statusLoading: 'Reading…',
@@ -852,12 +853,12 @@ const PANEL_EN: Record<string, string> = {
   'warn.presetBroken': 'The host marks this preset unavailable: {reason}',
   'warn.presetMissing': 'The stored preset “{id}” is not in the current list (it may have been deleted) — the value is kept so you can change it here.',
   'warn.presetExcluded': 'The stored preset “{id}” is not offered as a new-session default; hob_spawn will use the factory default (Standard mode) instead. The value is kept so you can change it here.',
-  'note.excluded': 'Not offered as a new-session default: {names} — this plugin’s planning-side preset cannot carry out work.',
+  'note.excluded': 'Not offered as a new-session default: {names} — Hob is the project-owner preset and cannot carry out implementation work.',
   'warn.modelMissing': 'The stored model “{provider} / {model}” is not in the current catalog (it may be retired) — the value is kept so you can change it here.',
   'catalog.status.loading': 'Reading candidates…',
   'catalog.status.idle': 'Candidates not loaded',
   'catalog.status.ready': 'Candidates ready ({presets} presets / {models} models){excluded}{failed}',
-  'catalog.status.excluded': ' ({count} planning-side preset(s) not offered here)',
+  'catalog.status.excluded': ' ({count} project-owner preset(s) not offered here)',
   'catalog.status.failedGroups': ' — {count} provider group(s) failed to load (see below)',
   'label.catalogFailures': 'Failed to load',
   'catalog.failure.row': '{name}: {message}',
@@ -906,10 +907,11 @@ const PANEL_EN: Record<string, string> = {
 
 /** 中文词典（键集与 {@link PANEL_EN} **完全相同**）。 */
 const PANEL_ZH: Record<string, string> = {
-  sectionTitle: '人机翻译层',
+  sectionTitle: 'Hob 项目总负责人',
   sectionIntro:
-    '本插件提供一个只读文档、只写账本的工具面，并让「Hob」这个 Agent 预设把你说的话整理成给实施会话的指令'
-    + '（实施侧预设 Hob-Execute 已于 v4 删除，现只剩 Hob 一个）。下面是当前配置摘要。',
+    '「Hob」是项目总负责人预设：与你明确目标和需求，组织实现方案与编码任务，调度开发会话，跟踪执行结果，'
+    + '并独立验收、推动项目完整落地。它的工具只读取文档并写自己的项目账本；真正实施由开发会话承担。'
+    + '下面是当前配置摘要。',
   configStatus: '配置状态',
   statusReady: '已就绪',
   statusLoading: '读取中…',
@@ -944,12 +946,12 @@ const PANEL_ZH: Record<string, string> = {
   'warn.presetBroken': '该预设被宿主标为不可用：{reason}',
   'warn.presetMissing': '已存预设「{id}」不在当前清单里（可能已被删除）—— 仍保留原值，可在此改掉。',
   'warn.presetExcluded': '已存预设「{id}」不作候选；派活时改用出厂默认（标准模式）。原值仍保留，可在此改掉。',
-  'note.excluded': '以下预设不作候选：{names} —— 本插件的规划侧预设，不能施工。',
+  'note.excluded': '以下预设不作候选：{names} —— Hob 是项目总负责人预设，不承担具体实施。',
   'warn.modelMissing': '已存模型「{provider} / {model}」不在当前目录里（可能已下线）—— 仍保留原值，可在此改掉。',
   'catalog.status.loading': '候选读取中…',
   'catalog.status.idle': '候选未加载',
   'catalog.status.ready': '候选已就绪（预设 {presets} 个 / 模型 {models} 个）{excluded}{failed}',
-  'catalog.status.excluded': '（另有 {count} 个规划侧预设不作候选）',
+  'catalog.status.excluded': '（另有 {count} 个项目总负责人预设不作候选）',
   'catalog.status.failedGroups': '—— 另有 {count} 个 provider 分组加载失败（见下）',
   'label.catalogFailures': '加载失败',
   'catalog.failure.row': '{name}：{message}',

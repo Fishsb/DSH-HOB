@@ -364,44 +364,37 @@ if (ARGV.includes('--self-check') || !ARGV.includes('--no-self-check')) {
   //     —— **而产品在宿主里是好的**（宿主模块表给真包）⇒ 那是**假红**，比不红更坏
   //     （它会被人"绕过去"：放宽判据 / 加白名单）。
   //   ⇒ 本条两个方向都验：**空壳 ⇒ 必抛**、**真包 ⇒ 不抛**。
+  //   ⚠ 用**合成 factory** 验这两条，⛔ 不拿真产物当样本：
+  //     真产物在正确修复后可能**根本不 require schemastery**（2026-11-02 的
+  //     `@deepseek-ai/schemastery missed the module table` 修复后就是这样）⇒
+  //     再拿真产物验“空壳必抛”会让 T-g 在**修复成功时假红**。
+  //     合成 factory 只复现宿主读取形态 `require(...).default.object(...)`，与产物内容解耦。
   {
     let shellThrew = false
     let realOk = false
-    let productCode = ''
-    try { productCode = readFileSync(CLIENT_PRODUCT, 'utf8') } catch { productCode = '' }
-    if (productCode !== '') {
-      const loadFactory = () => {
-        const got = []
-        const sb = {
-          console: { debug() {}, info() {}, warn() {}, error() {}, log() {} },
-          window: { __ModuleLoader__: { load: (m) => { got.push(m) } } },
-          __filename: CLIENT_PRODUCT,
-          __dirname: dirname(CLIENT_PRODUCT),
+    const syntheticFactory = (req) => req('@deepseek-ai/schemastery').default.object({})
+    // ① 空壳（M7 前的形态）⇒ 必抛
+    try {
+      syntheticFactory(() => new Proxy({}, { get: () => () => undefined }))
+      shellThrew = false
+    } catch { shellThrew = true }
+    // ② 真包（M7 后的形态）⇒ 不抛；用显式包形状模拟宿主模块表给出的值
+    try {
+      const hostRequire = (n) => {
+        if (n === '@deepseek-ai/schemastery') {
+          return { default: { object: () => ({}) } }
         }
-        sb.globalThis = sb
-        vm.runInNewContext(productCode, sb, { filename: 'lib/client.js', timeout: 20_000 })
-        return got[0] ?? null
+        return REPO_REQUIRE(n)
       }
-      const modT = loadFactory()
-      if (modT !== null && typeof modT.factory === 'function') {
-        // ① 空壳（M7 前的形态）⇒ 必抛
-        try {
-          modT.factory(() => new Proxy({}, { get: () => () => undefined }))
-          shellThrew = false
-        } catch { shellThrew = true }
-        // ② 真包（M7 后的形态）⇒ 不抛
-        try {
-          modT.factory((n) => { try { return REPO_REQUIRE(n) } catch { return new Proxy({}, { get: () => () => undefined }) } })
-          realOk = true
-        } catch { realOk = false }
-      }
-    }
+      syntheticFactory(hostRequire)
+      realOk = true
+    } catch { realOk = false }
     say(shellThrew && realOk,
-      'T-g ✓ 负向对拍 **面 ④ 的桩不许退回空壳**（先自证：拿真产物 `lib/client.js` 的 `factory` 各喂一次）：'
+      'T-g ✓ 负向对拍 **面 ④ 的桩不许退回空壳**（合成 factory 复现 `require(...).default.object(...)` 读取）：'
       + '**空壳桩 ⇒ 必抛**（正是 M7 前的那条假红：`Cannot read properties of undefined (reading \'object\')`）；'
       + '**真包桩 ⇒ 不抛**（与宿主模块表同形）'
       + '。⚠ 桩若退回空壳，面 ④ 会**假红** —— 假红会被人绕过去，而不是被修',
-      `空壳必抛=${shellThrew}（应 true）· 真包不抛=${realOk}（应 true）· 产物字节=${Buffer.byteLength(productCode, 'utf8')}`)
+      `空壳必抛=${shellThrew}（应 true）· 真包不抛=${realOk}（应 true）`)
   }
 
   console.log('')

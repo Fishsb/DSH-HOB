@@ -1,9 +1,14 @@
 # dsh-hob
 
-一个 DeepSeek Harness（`dsh`）插件：在**你**和**另一个开发会话**之间加一层翻译。
-它读项目文档、整理你的意图、把意图写成可执行的指令交给开发会话，并维护自己的记录。
+一个 DeepSeek Harness（`dsh`）插件：给 Harness 增加 **Hob 项目总负责人**预设。
+Hob 负责与你明确目标和需求、组织实现方案与编码任务、调度开发会话、跟踪执行、
+独立验收，并推动项目完整落地。
 
-它**不改代码、不跑命令**。需要动手的事，它写成步骤交出去。
+“总负责人”是结果责任和协调权，不代表亲自编码。Hob **不改代码、不跑命令**；
+真正动手的实现由开发会话承担，验收由独立于实现者的 Hob 判决。
+
+项目术语和命名约定见 [TERMINOLOGY.md](./TERMINOLOGY.md)。
+现行架构图与分层说明见 [architecture-overview.md](./kit/drafts/architecture-overview.md)。
 
 ---
 
@@ -72,7 +77,7 @@ dsh --profile <profile> --dump-config | grep dsh-hob
 | `modules.bus` | `true` | 关掉 ⇒ 同实例内的投递能力消失（少两个工具），其余模块照常 | 布尔，无空值 |
 | `modules.orch` | `false` | 打开 ⇒ 被派发的会话跑完会**自动唤醒派活方**，即**无人看管时也会继续推进**（会继续消耗 token）。⚠ 缺省关 | 布尔，无空值 |
 | `modules.settings` | `true` | 关掉 ⇒ 本插件不再做**设置面自检**（少一条诊断日志）。⚠ **设置页分区照旧在** —— 分区由客户端注册，与本开关无关（这是**探测开关**，不是分区开关） | 布尔，无空值 |
-| `spawn.agentPreset` | `""` | 插件建出的新会话用哪个预设 | **空串 = 出厂默认**（标准模式）；⚠ 填成本插件自带的规划侧预设时不会套用它（它只规划、不施工），会退回出厂默认并说明 |
+| `spawn.agentPreset` | `""` | 插件建出的新会话用哪个预设 | **空串 = 出厂默认**（标准模式）；⚠ 填成本插件自带的项目总负责人预设 `Hob` 时不会套用它（它负责组织与验收，不承担具体实施），会退回出厂默认并说明 |
 | `spawn.provider` | `""` | 建出会话用哪个模型路由 | **空串 = 用宿主默认模型** |
 | `spawn.model` | `""` | 建出会话用哪个模型 | **空串 = 用宿主默认模型** |
 | `spawn.reasoningEffort` | `""` | 建出会话的思考档位 | **空串 = 用该模型自身默认档** |
@@ -199,8 +204,17 @@ src/
   client/           设置面板那半边（浏览器侧）
   shared/           两侧共用（值域 / 词典 / 纯函数）：work-mode · read-level-policy ·
                     policy-record-state · planning-preset（改这里会同时影响 host 与 client）
-preset/             预设声明（patch）
-scripts/            判据脚本
+preset/dsh-hob/     Hob 预设输入：workflow.toml · spec/ · 生成物 gen/ · patch
+kit/                可复用骨架、模板和角色方法论
+cordis.patch.yml    插件本体 bundle patch
+scripts/            判据、生成器、探针与构建辅助
+lib/                构建产物（不入库；运行实例加载它）
+
+<ledgerHome>/<workspaceName>/
+  ledger/      唯一现行项目账本（units/index.toml 是状态唯一来源）
+  volumes/          历史账本文档（只读追溯）
+  archive/          原始证据与过程归档
+  runtime/          持久运行态（不进 Git）
 ```
 
 模块之间靠**依赖声明**解耦：依赖不在 ⇒ 该模块不激活，**插件整体照常加载、宿主不报错**。

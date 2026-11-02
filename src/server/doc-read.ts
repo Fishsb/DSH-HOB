@@ -370,7 +370,7 @@ export function isMarkdown(p: string): boolean {
  * 是否为 `.toml`（大小写不敏感，理由同上）。
  *
  * ⚠ **只加这一个扩展名**（2026-11-02 · `CHG-2035` 轨 A）：
- *   `ledger-next/units/index.toml` 是账本的**唯一状态源**，而读侧此前只认 `.md`
+ *   `ledger/units/index.toml` 是账本的**唯一状态源**，而读侧此前只认 `.md`
  *   ⇒ Hob **能写它、读不到它** ⇒ 每次改索引都是**盲写**（历史上盲写丢过 6417 字节）。
  *   ⇒ 读侧补上 `.toml`，让"写过的那个文件"读得回来。
  *

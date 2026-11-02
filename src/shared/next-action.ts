@@ -91,11 +91,11 @@ const arrOf = (v: unknown): string[] =>
   Array.isArray(v) ? v.map((x) => String(x).trim()).filter((x) => x !== '') : []
 
 /**
- * 各 kind 的**终态集**（⚠ 与 `ledger-next` 的 `KIND_SPEC` 同值；这里是 client 侧，
+ * 各 kind 的**终态集**（⚠ 与 `ledger` 的 `KIND_SPEC` 同值；这里是 client 侧，
  * 不能 import 脚本目录 ⇒ 只能重列一次。**两处不一致由 `check:stages-route` 的 R-9 交叉验证咬住**）。
  */
 const FINALS: Readonly<Record<string, string[]>> = {
-  req: ['agreed', 'dropped'],
+  req: ['agreed', 'dropped', 'retired'],
   change: ['settled', 'superseded'],
   task: ['built'],
   run: ['returned', 'refused', 'stuck'],

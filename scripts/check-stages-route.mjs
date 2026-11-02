@@ -58,7 +58,7 @@ try {
   const deps = (o = {}) => ({
     workRootOf: o.rootFn ?? (() => '/fix'),
     workRootWhyOf: o.whyFn ?? (() => '夹具：给了工作区根'),
-    indexPathOf: () => '/fix/ledger-next/units/index.toml',
+    indexPathOf: () => '/fix/ledger/units/index.toml',
     readText: o.readText ?? (() => undefined),
     now: () => FIXED_NOW,
   })
@@ -188,6 +188,26 @@ source = "夹具"
     else for (const x of probs) bad(`R-6 · ${x}`)
   }
 
+  // ── R-6b 退役/丢弃需求不进入活跃五步分母 ─────────────────────────────
+  {
+    const src = TOML([
+      { id: 'R-001', kind: 'req', status: 'agreed' },
+      { id: 'R-002', kind: 'req', status: 'retired' },
+      { id: 'R-003', kind: 'req', status: 'dropped' },
+    ])
+    const res = mod.handleStages(deps({ readText: () => src }), {})
+    const p = []
+    if (res.ok !== true) p.push(`退役夹具算不出：${JSON.stringify(res).slice(0, 120)}`)
+    else {
+      const step1 = res.stages.find((s) => s.step === 1)
+      const ids = step1?.items.map((x) => x.id) ?? []
+      if (step1?.total !== 1 || step1?.done !== 1) p.push(`活跃需求分母不是 1/1：${step1?.done}/${step1?.total}`)
+      if (JSON.stringify(ids) !== '["R-001"]') p.push(`退役/丢弃需求进入了活跃步：${JSON.stringify(ids)}`)
+    }
+    if (p.length === 0) ok('R-6b ✓ retired / dropped 需求只留历史，⛔ 不进活跃需求步与分母')
+    else for (const x of p) bad(`R-6b · ${x}`)
+  }
+
   // ── R-7 `lastReading` 缺 ⇒ 「判不出」 ────────────────────────────────
   {
     const src = `[[unit]]
@@ -265,7 +285,7 @@ source = "夹具"
     const { ledgerHomeOf, resolveLedgerRoot } = await import('./lib/ledger-root.mjs')
     const ledgerRoot = resolveLedgerRoot(root, undefined, ledgerHomeOf(root))
     if (ledgerRoot === undefined) throw new Error('账本根判不出 ⇒ R-9 失去基准')
-    const ledgerDir = join(ledgerRoot, 'ledger-next')
+    const ledgerDir = join(ledgerRoot, 'ledger')
     let indexPath = join(ledgerDir, 'units', 'index.toml')
     let stagesMdPath = join(ledgerDir, 'gen', 'stages.md')
     const probs = []

@@ -119,7 +119,7 @@ export function runRepoRules({ bad, ok, skip }) {
     //     改为**项目仓整目录忽略 `.hob/`、账本恢复自带 git 仓**（`<工作区>/.hob/.git`）。
     //   ⚠ 它们由**下面 mustExclude 里那一条 `.hob/`** 统一接管（⚠ 方向反转、不是"没人管"）。
     ['kit/templates/DECISIONS.md', '骨架 · 空模板'],
-    ['kit/templates/REQUIREMENTS.md', '骨架 · 空模板（当前需求根地图）'],
+    ['kit/templates/REQUIREMENTS.md', '骨架 · 需求根模板（当前需求由索引派生）'],
     ['kit/templates/USER-DECISIONS.md', '骨架 · 空模板（历史用户决策 · 只读档）'],
     ['kit/templates/CONTEXT.md', '骨架 · 空模板'],
     ['kit/templates/ROLES.md', '骨架 · 角色簇（README §1.3）'],
@@ -275,13 +275,13 @@ export function runRepoRules({ bad, ok, skip }) {
     //   空表≠判不出 / 单条形态不认识不许静默丢 / 路径与九态措辞两份载体逐字一致。
     ['scripts/check-exec-progress.mjs', '入库脚本（被 package.json 的 check:exec-progress 调用 · 真处理体 + 真夹具，15 条断言 E-0/E-0b/E-1/E-2/E-3/E-4/E-5/E-5b/E-6/E-7/E-7b/E-8/E-9/E-10/E-11：转译图自证 + 协议层在图内 / 正常三类记录（pending+lost+closed）映射与顺序 / 空≠判不出 / 三类 reason 互不相同（ledger-unreadable · state-missing · row-shape-unknown）/ 九态封闭集（15 组脏输入）/ elapsedMs 判不出⇒缺字段（负向对拍钉住不许变 0）/ 路径单一真源 / 九态措辞与 DISPATCH_STATE_LABELS 逐键逐值相同 / rechecks 缺字段读 0 / 单条形态不认识不许静默丢）'],
 
-    // ⚠ 2026-10-30 P1 新增：`ledger-next/` 的三条不变式（`npm run check:ledger-next`）。
+    // ⚠ 2026-10-30 P1 新增：`ledger/` 的三条不变式（`npm run check:ledger`）。
     //   I1 索引合法（id 唯一 / 前缀配 kind / 封闭状态集 / parent 与 after 存在 / 无环 / 状态只在一处）·
     //   I2 阶段是算出来的（改 status ⇒ 只有对应那步变）· I5 gen/ 与生成器逐字节一致 · I4 cap 无终态无百分比。
     //   三条各带一条**实测跑红**的负向对拍（成环夹具 / 冻结阶段行 / 手改一字符）。
-    ['scripts/check-ledger-next.mjs', '入库脚本（被 package.json 的 check:ledger-next 调用 · 三条不变式 I1/I2/I5 + I4：索引合法与状态单一真源 / 阶段由索引算出 / 生成物逐字节一致 / cap 无终态无百分比；三条负向对拍实测变红）'],
+    ['scripts/check-ledger.mjs', '入库脚本（被 package.json 的 check:ledger 调用 · 三条不变式 I1/I2/I5 + I4：索引合法与状态单一真源 / 阶段由索引算出 / 生成物逐字节一致 / cap 无终态无百分比；三条负向对拍实测变红）'],
     // ⚠ 同批：生成器本身（`npm run gen:ledger`）也入库 —— 它产出 `gen/`，手改生成物由 I5 咬住。
-    ['scripts/gen-ledger.mjs', '入库脚本（被 package.json 的 gen:ledger 调用 · ledger-next 生成器：读 units/index.toml 产出 gen/stages.md 与 gen/index.md，确定性=同输入两次跑逐字节相同，⛔ 不写时间戳）'],    // ⚠ 2026-10-29 第 10 轮新增：任务进度路由的**真机 HTTP 探针**（`npm run check:tasks-route-http`）。
+    ['scripts/gen-ledger.mjs', '入库脚本（被 package.json 的 gen:ledger 调用 · ledger 生成器：读 units/index.toml 产出 gen/stages.md 与 gen/index.md，确定性=同输入两次跑逐字节相同，⛔ 不写时间戳）'],    // ⚠ 2026-10-29 第 10 轮新增：任务进度路由的**真机 HTTP 探针**（`npm run check:tasks-route-http`）。
 
     // ⚠ 2026-10-30 P3 新增：五步汇总路由的服务端判据（`npm run check:stages-route`）。
     //   它守：三类 reason 互不相同 / 五步顺序与名字逐字 / cap 不进分母 / 空步给 todo / 三态算对 /
@@ -295,9 +295,13 @@ export function runRepoRules({ bad, ok, skip }) {
     // ⚠ 2026-10-30 P8 新增：Hob 工作流判据族 + 它的生成器。
     ['scripts/check-workflow.mjs', '入库脚本（被 package.json 的 check:workflow 调用 · F1 机读源合法+source 子串核对 / F2 生成物与源逐字节一致 / F3 宪法 ≤2KB 且逐条 checked_by / F4 覆盖度；四条负向对拍）'],
     ['scripts/gen-preset-contract.mjs', '入库脚本（被 package.json 的 gen:preset-contract 调用 · workflow.toml + spec/ ⇒ gen/persona.md + gen/contracts.md；纯函数、零时间戳）'],    ['scripts/meta-negative-floor.json', '入库数据（M-1 的每族负向对拍条数下限；⛔ 只准升不准降，有意减少须同批改本文件并写明理由）'],    //     ⇒ ⛔ 不进 `check:all` 的必跑套件；无对象时 **exit 2（noObject）**，⛔ 不算通过。
+    ['scripts/check-ledger-resources.mjs', '入库脚本（被 package.json 的 check:ledger-resources 调用 · 10 类账本单元稳定 ID 资源面：摘要卡 / 正式边 / 子节点 / 三类错误 / 全读取指针可解析 / 无路径泄漏）'],
+    ['scripts/check-effects-queue.mjs', '入库脚本（被 package.json 的 check:effects 调用 · 持久 Effects/Outbox：同键合并 / 代际保护 / 退避恢复 / 顺序 / 并发 / 独占单写者）'],
+    ['scripts/check-handoff-effects.mjs', '入库脚本（被 package.json 的 check:handoff-effects 调用 · handoff → Effects 桥：成功精确清账 / 失败双保留 / 重启恢复 / 真接线）'],
+    ['scripts/check-work-state.mjs', '入库脚本（被 package.json 的 check:work-state 调用 · 派生工作九态：事件去重 / 线程合并 / 不误合并 / 负向对拍）'],
     //   它守：POST 带 sessionId ⇒ 200 + 我们的 JSON（三选一 reason 也算「处理体在」）；
     //         同路径 GET ⇒ 404 + 纯文本 not found（宿主「错门回 404 而不是 405」这条边界）。
-    ['scripts/probe-tasks-route-http.mjs', '按需档探针（被 package.json 的 check:tasks-route-http 调用 · 要活宿主+token · POST⇒200 JSON / GET⇒404 纯文本 · noObject 走 exit 2）'],
+    ['scripts/probe-tasks-route-http.mjs', '按需档探针（被 package.json 的 check:tasks-route-http 调用 · 要活宿主+token · 任务进度 200 + GET 404 纯文本 / Current 与按 ID 资源 / 五步 attention · 会话优先取活锁 · noObject 走 exit 2）'],
     // ⚠ 2026-10-18 补（本批 · `UD-138` ⑥「补齐对外最小面」）：**聚合判据入口**与**前置条件预检**。
     //   ⚠ 由来：本仓此前有 12 条 `check:*`、**零聚合入口** ⇒ 对外标准「判据入口能一条命令跑」
     //     直接不成立（外部人不知道该跑哪条、跑了一半就以为全过了）。

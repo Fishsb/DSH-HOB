@@ -18,13 +18,17 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { describeUnseen, type UnseenReport } from '../shared/unseen-tools.ts'
+import {
+  UNSEEN_TOOLS_ROUTE_PATH,
+  describeUnseen,
+  type UnseenReport,
+} from '../shared/unseen-tools.ts'
 import { __unseenToolsOf } from '../preset/tools.ts'
 
 export const name = 'dsh-hob-unseen-tools-route'
 
-/** 本路由路径（⚠ 与 `stages` / `tasks-progress` / `exec-progress` 同族，⛔ 不撞名）。 */
-export const UNSEEN_TOOLS_ROUTE_PATH = '/api/dsh-hob/unseen-tools'
+/** 本路由路径（⚠ 真值在纯共享层；这里重新导出以保留既有服务端 API）。 */
+export { UNSEEN_TOOLS_ROUTE_PATH }
 
 /** 统一 JSON 响应。 */
 function json(status: number, body: unknown): Response {

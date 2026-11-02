@@ -37,6 +37,7 @@ import { installPolicyRoute } from './modules/session-policy-route.ts'
 import { installTasksProgressRoute } from './modules/tasks-progress-route.ts'
 import { installExecProgressRoute } from './modules/exec-progress-route.ts'
 import { installStagesRoute } from './modules/stages-route.ts'
+import { installLedgerResourceRoute } from './modules/ledger-resource-route.ts'
 import { installUnseenToolsRoute } from './modules/unseen-tools-route.ts'
 
 export { Config }
@@ -208,8 +209,9 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
   //   ⚠ 同样自己 `ctx.inject(['connection'])`：宿主 `connection` 缺席 ⇒ 不登记、不报错。
   installExecProgressRoute(ctx)
 
-  // ⚠ 2026-10-30（P3）：五步汇总**只读路由**（面板新数据源 = `ledger-next/units/index.toml`）。
+  // ⚠ 2026-10-30（P3）：五步汇总**只读路由**（面板新数据源 = `ledger/units/index.toml`）。
   installStagesRoute(ctx)
+  installLedgerResourceRoute(ctx)
 
   // ⚠ 2026-10-31（P28 · `TSK-048` / `R-008`）：**「待确认工具」只读路由**。
   //   病：没见过的工具只进内存 + 宿主 warn，`debugLog` 默认关 ⇒ **重启即丢、用户永远看不到**。
