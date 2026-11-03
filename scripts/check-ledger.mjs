@@ -715,6 +715,38 @@ export function checkDocLifecycle({
 }
 
 /**
+ * **禁止自指当前字节数**：`risk.reading` / `evidence.reading` 里若把当前分片字节写死，
+ * 修改该字段本身就会改变所在分片大小 ⇒ 记录永远追不上自己。
+ *
+ * 口径：只咬“当前 + 若干字节数 + B”这种会随写入变化的断言；
+ * 允许“拆分时 59214/59353/16841B”，并要求当前最大值由 Y1/Y2 当场输出。
+ */
+export function checkNoSelfReferentialReadings(units) {
+  const problems = []
+  for (const u of units) {
+    if (u.kind !== 'risk' && u.kind !== 'evidence') continue
+    const reading = String(u.reading ?? '')
+    const clauses = []
+    for (const marker of reading.matchAll(/当前/g)) {
+      const start = marker.index ?? 0
+      const tail = reading.slice(start)
+      const end = tail.search(/[。；;\n]/)
+      clauses.push(end < 0 ? tail : tail.slice(0, end))
+    }
+    const hasExactCurrentBytes = clauses.some((clause) => {
+      const withoutBounds = clause
+        .replace(/(?:小于|少于|低于|不超过|不高于|上限(?:为|是)?|阈值(?:为|是)?|限制(?:为|是)?)\s*(?:<|≤)?\s*\d+(?:\.\d+)?(?:\s*[/、,，]\s*\d+(?:\.\d+)?)*\s*B/gi, '')
+        .replace(/[<≤>≥]\s*=?\s*\d+(?:\.\d+)?(?:\s*[/、,，]\s*\d+(?:\.\d+)?)*\s*B/gi, '')
+      return /(?<![<≤>≥])\d+(?:\.\d+)?(?:\s*[/、,，]\s*\d+(?:\.\d+)?)*\s*B/i.test(withoutBounds)
+    })
+    if (hasExactCurrentBytes) {
+      problems.push(`${u.id}：reading 把“当前字节数”写进分片内部 ⇒ 写入自身会改变读数；改记拆分时点值 + 当前 \`<65536B\` 不变量，精确值由 Y1/Y2 输出`)
+    }
+  }
+  return problems
+}
+
+/**
  * **I5 的实现**：把盘上 `gen/` 与"当场重算"的结果逐字节比。
  *
  * @param {string} ledgerDir - `ledger/` 根
@@ -2780,6 +2812,37 @@ if (IS_MAIN) try {
       ok('N-LIFE ✓ 负向对拍：超限 / 日期化章节 / proposal 变体并存 / 归档哈希不符 ⇒ 四类各必红；合规夹具不误报')
     } else {
       bad(`N-LIFE · 负向对拍失效：good=${JSON.stringify(good)} bads=${JSON.stringify(bads)}`)
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // READING · **禁止把当前精确字节数写进被计量的分片内部**
+  // ══════════════════════════════════════════════════════════════════════
+  {
+    const probs = checkNoSelfReferentialReadings(units)
+    if (probs.length === 0) {
+      ok('READING ✓ risk/evidence 的 reading 未写死“当前精确字节数”；现场值只由 Y1/Y2 输出')
+    } else {
+      for (const p of probs) bad(`READING · ${p}`)
+    }
+
+    const clean = [
+      { id: 'RSK-CLEAN', kind: 'risk', reading: '当前全部 unit-*.toml 均须小于 65536 B；精确值由 Y1/Y2 当场输出。' },
+      { id: 'EVD-CLEAN', kind: 'evidence', reading: '拆分时为 59214 / 59353 / 16841 B；之后以现场读数和不变量为准。' },
+    ]
+    const dirty = [
+      { id: 'RSK-DIRTY', kind: 'risk', reading: '当前三片为 59214 / 59565 / 22065 B，仍低于上限。' },
+      { id: 'EVD-DIRTY', kind: 'evidence', reading: '当前 unit-01.toml 为 59214 B。' },
+    ]
+    const cleanProbs = checkNoSelfReferentialReadings(clean)
+    const dirtyProbs = checkNoSelfReferentialReadings(dirty)
+    const bites = dirtyProbs.some((x) => x.startsWith('RSK-DIRTY'))
+      && dirtyProbs.some((x) => x.startsWith('EVD-DIRTY'))
+    if (cleanProbs.length === 0 && bites) {
+      ok('N-CURRENT ✓ 负向对拍（先自证：拆分时点值与“当前 <65536 B”不变量合规；再把当前三片精确字节写进 reading）'
+        + ' ⇒ 列表与单值两类自指读数均必红；合规写法不误报')
+    } else {
+      bad(`N-CURRENT · 负向对拍失效：clean=${JSON.stringify(cleanProbs)} dirty=${JSON.stringify(dirtyProbs)}`)
     }
   }
 
