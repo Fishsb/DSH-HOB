@@ -20,6 +20,7 @@
  */
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, join, posix, resolve as resolvePath, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { KIND_SPEC, renderStages, parseTomlSubset, readUnits, summarizeStep, LEDGER_DIR, SEND_BACK_TARGETS, renderSpecArtifacts, REQ_PRIORITIES, BUDGET_KEYS, PARENT_VS_AFTER, EVIDENCE_PARENT_KINDS } from './gen-ledger.mjs'
@@ -638,6 +639,78 @@ export function checkStatusSingleHome(ledgerDir) {
     }
   }
   walk(ledgerDir)
+  return problems
+}
+
+/**
+ * **文档生命周期**：现行正文必须可读、不堆历史；方案目录只许一个活跃 proposal；
+ * 每个 `lifecycle-source` 指针必须指向真实归档且 SHA-256 对得上。
+ *
+ * ⚠ 这里只判可枚举的形态，不判断正文语义是否正确：
+ *   · 现行根文档 ≤ 读取上限；
+ *   · 现行根文档的二级标题不出现日期/轮次（历史应归档或进入卷）；
+ *   · `CONTEXT.md` 必须带一份可核的 `lifecycle-source`；
+ *   · 每个 change 恰好一份 `proposal.md`，不并存 `proposal-*` / `proposal_*`。
+ */
+export const CURRENT_ROOT_DOC_CONFIG = Object.freeze([
+  'CONTEXT.md',
+  'PROJECT.md',
+  'REQUIREMENTS.md',
+  'DECISIONS.md',
+])
+
+export const LIFECYCLE_SOURCE_RE = /<!--\s*lifecycle-source:\s*([^\s]+)\s+sha256=([0-9a-f]{64})\s*-->/g
+
+export function checkDocLifecycle({
+  docs = [],
+  changes = [],
+  hashOf = () => undefined,
+  maxBytes = 65536,
+} = {}) {
+  const problems = []
+  for (const doc of docs) {
+    const rel = String(doc.rel ?? '')
+    const bytes = Number(doc.bytes ?? 0)
+    const text = String(doc.text ?? '')
+    if (bytes > maxBytes) {
+      problems.push(`${rel}：现行正文 ${bytes} B > 读取上限 ${maxBytes} B ⇒ 先归档旧版，再收缩或分卷`)
+    }
+    const dated = text.match(/^##\s+.*(?:20\d{2}[-/]\d{1,2}[-/]\d{1,2}|第\s*\d+\s*轮).*$/gm) ?? []
+    if (dated.length > 0) {
+      problems.push(`${rel}：现行正文里有 ${dated.length} 个日期/轮次二级标题 ⇒ 过程材料应进 archive 或 volumes`)
+    }
+    const markers = [...text.matchAll(LIFECYCLE_SOURCE_RE)]
+    for (const marker of markers) {
+      const sourceRel = marker[1]
+      const want = marker[2]
+      if (!sourceRel.startsWith('archive/')) {
+        problems.push(`${rel}：lifecycle-source 必须指向 archive/，实为 ${JSON.stringify(sourceRel)}`)
+        continue
+      }
+      let got
+      try { got = hashOf(sourceRel) } catch { got = undefined }
+      if (got === undefined) {
+        problems.push(`${rel}：lifecycle-source 指向的归档不存在：${sourceRel}`)
+      } else if (String(got) !== want) {
+        problems.push(`${rel}：lifecycle-source SHA-256 不一致（${sourceRel}）`)
+      }
+    }
+    if (rel === 'CONTEXT.md' && markers.length === 0) {
+      problems.push('CONTEXT.md：缺少可核的 lifecycle-source 归档指针')
+    }
+  }
+
+  for (const change of changes) {
+    const name = String(change.name ?? '')
+    const files = Array.isArray(change.files) ? change.files.map(String) : []
+    if (!files.includes('proposal.md')) {
+      problems.push(`${name}：缺少唯一活跃 proposal.md`)
+    }
+    const variants = files.filter((f) => /^proposal(?:[-_.].*)?\.md$/i.test(f) && f !== 'proposal.md')
+    if (variants.length > 0) {
+      problems.push(`${name}：并存多个活跃方案正文（${variants.join(' / ')}）⇒ 只保留 proposal.md，旧版归档`)
+    }
+  }
   return problems
 }
 
@@ -2628,6 +2701,85 @@ if (IS_MAIN) try {
       ok('N-SHARD ✓ 分片合并：unit-01 → unit-02 顺序稳定；负向对拍：`rules.toml` 不被误读')
     } else {
       bad(`N-SHARD · 分片合并不对：ids=${JSON.stringify(ids)} ignored=${ignored.length}`)
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // LIFE · **现行正文 + 归档指针 + 方案单一正文**
+  // ══════════════════════════════════════════════════════════════════
+  {
+    const workspaceLedgerRoot = dirname(LEDGER)
+    const docs = []
+    for (const rel of CURRENT_ROOT_DOC_CONFIG) {
+      const abs = join(workspaceLedgerRoot, rel)
+      if (!existsSync(abs)) {
+        bad(`LIFE · 现行根文档缺失：${rel}`)
+        continue
+      }
+      docs.push({ rel, bytes: statSync(abs).size, text: readFileSync(abs, 'utf8') })
+    }
+    const changesRoot = join(LEDGER, 'changes')
+    const changes = []
+    if (existsSync(changesRoot)) {
+      for (const e of readdirSync(changesRoot, { withFileTypes: true })) {
+        if (!e.isDirectory()) continue
+        changes.push({
+          name: e.name,
+          files: readdirSync(join(changesRoot, e.name), { withFileTypes: true })
+            .filter((x) => x.isFile())
+            .map((x) => x.name)
+            .sort(),
+        })
+      }
+    }
+    const hashOf = (rel) => {
+      if (!rel.startsWith('archive/')) return undefined
+      try {
+        return createHash('sha256').update(readFileSync(join(workspaceLedgerRoot, rel))).digest('hex')
+      } catch {
+        return undefined
+      }
+    }
+    const probs = checkDocLifecycle({ docs, changes, hashOf })
+    if (probs.length === 0) {
+      const markerCount = docs.reduce((n, d) => n + [...d.text.matchAll(LIFECYCLE_SOURCE_RE)].length, 0)
+      ok(`LIFE ✓ ${docs.length} 份现行根文档均在读取上限内且无日期化二级标题 · ${changes.length} 个 change 各有唯一 proposal.md · ${markerCount} 个归档指针的 SHA-256 可核`)
+    } else {
+      for (const p of probs) bad(`LIFE · ${p}`)
+    }
+
+    const goodDoc = {
+      rel: 'CONTEXT.md',
+      bytes: 100,
+      text: '# 当前\n<!-- lifecycle-source: archive/x/sources/CONTEXT.md sha256=' + 'a'.repeat(64) + ' -->\n',
+    }
+    const goodChange = { name: 'CHG-OK', files: ['proposal.md', 'tasks.md'] }
+    const good = checkDocLifecycle({
+      docs: [goodDoc],
+      changes: [goodChange],
+      hashOf: () => 'a'.repeat(64),
+      maxBytes: 65536,
+    })
+    const bads = checkDocLifecycle({
+      docs: [
+        { ...goodDoc, bytes: 65537 },
+        { ...goodDoc, rel: 'PROJECT.md', text: '## 2026-11-01 第一段\n## 第 2 轮 第二段\n' },
+        { ...goodDoc, text: goodDoc.text.replace('a'.repeat(64), 'b'.repeat(64)) },
+      ],
+      changes: [{ name: 'CHG-BAD', files: ['proposal.md', 'proposal-v2.md'] }],
+      hashOf: () => 'a'.repeat(64),
+      maxBytes: 65536,
+    })
+    const bites = [
+      bads.some((x) => x.includes('> 读取上限')),
+      bads.some((x) => x.includes('日期/轮次二级标题')),
+      bads.some((x) => x.includes('并存多个活跃方案正文')),
+      bads.some((x) => x.includes('SHA-256 不一致')),
+    ]
+    if (good.length === 0 && bites.every(Boolean)) {
+      ok('N-LIFE ✓ 负向对拍：超限 / 日期化章节 / proposal 变体并存 / 归档哈希不符 ⇒ 四类各必红；合规夹具不误报')
+    } else {
+      bad(`N-LIFE · 负向对拍失效：good=${JSON.stringify(good)} bads=${JSON.stringify(bads)}`)
     }
   }
 
