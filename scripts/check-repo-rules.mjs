@@ -132,6 +132,7 @@ export function runRepoRules({ bad, ok, skip }) {
     ['kit/drafts/restructure-plan.md', '骨架 · 重构方案人读版（README §1.2）'],
     // ⚠ 顺带盯住"入库脚本不能依赖不入库文件"这条：这些脚本自己必须在库里
     ['scripts/check-preset-contracts.mjs', '入库脚本（被 package.json 的 check:presets 调用）'],
+    ['scripts/check-hob-skeleton.mjs', '入库脚本（被 package.json 的 check:skeleton 调用 · 通用骨架 ↔ 实例结构漂移机检）'],
     ['scripts/check-archive-consistency.mjs', '入库脚本（被 package.json 的 check:archive 调用 · 归档一致性机检）'],
     ['scripts/check-gitignore.mjs', '本脚本自身也必须入库（否则 clone 后无从核对）'],
     // ⚠ 2026-10-09 补：另两条**已声明**的命令脚本原先**没被盯住** ——

@@ -51,6 +51,7 @@
     "build:client": "tsdown --config tsdown.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "check:presets": "node scripts/check-preset-contracts.mjs",
+    "check:skeleton": "node scripts/check-hob-skeleton.mjs",
     "check:config": "node scripts/check-config-face.mjs",
     "check:policy": "node scripts/check-session-policy.mjs",
     "check:hob-create": "node scripts/check-hob-create-ui.mjs",

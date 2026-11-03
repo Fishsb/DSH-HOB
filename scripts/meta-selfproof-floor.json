@@ -16,11 +16,12 @@
     "check:policy": 0,
     "check:presets": 0,
     "check:redeliver": 0,
+    "check:skeleton": 1,
     "check:stages-dom": 1,
     "check:stages-route": 5,
     "check:tasks-progress": 0,
     "check:workflow": 17,
     "check:convergence": 13
   },
-  "totalFloor": 140
+  "totalFloor": 141
 }

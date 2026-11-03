@@ -25,6 +25,7 @@
     "check:redeliver": 3,
     "check:rounds": 0,
     "check:selfwake": 0,
+    "check:skeleton": 2,
     "check:stages-dom": 50,
     "check:stages-route": 6,
     "check:tasks-progress": 1,

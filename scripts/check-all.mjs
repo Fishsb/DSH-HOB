@@ -149,7 +149,7 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *   ⇒ 若放进必跑，结果只能是"永远 exit 2"，那会把"没对象"污染成"判据没跑"（`E-122` 同族）。
  *   ⇒ 手工按需跑 `npm run check:tasks-route-http`；它的无对象档是 **exit 2**（noObject，⛔ 不算通过）。
  */
-export const FAMILY_FLOOR = 31
+export const FAMILY_FLOOR = 32
 //   ⚠ 2026-10-27（包 AP · 用户「全退」）：本条不再含 `check:archive-gate`（该族随归档门禁一起退回）。
 //     实测族数 = 19（`npm run check:all` 汇总行）⇒ 下界 19 = **零余量**，再少一族立刻红。
 //   ⚠ 2026-10-29（四步主线 · 只验位置）：**19 → 20**（同批新增 `check:stages-dom` 一族）。
@@ -175,6 +175,10 @@ export const FAMILY_FLOOR = 31
  *     （已有的"N 族结构上没能报这个口径"那段就是它）。
  */
 export const ASSERTION_FLOORS = new Map([
+  // ⚠ 2026-11-03：骨架 ↔ 实例结构漂移族。
+  //   3 条自证（正向对照 + 标题负向 + 表头负向）+ 基准 / 标题 / 表结构各 1 条。
+  //   分母固定为 6，不随当前账本增加或删除模板文档而漂移。
+  ['check:skeleton', 6],
   /**
    * ⚠⚠ **2026-10-30 P19：119 → 5（用户明确授权）**。
    *   ── 为什么该降（⚠ 这是"刻度跟着对象走"，⛔ 不是放宽判据）──────────────
@@ -244,7 +248,8 @@ export const ASSERTION_FLOORS = new Map([
   //   来源：DECISIONS.md 拆卷（15 条进卷）+ 两份模板补节（CONTEXT §6–§12 · DECISIONS 指针表）
   //   ⇒ 新增的"卷内每份 *.md 被 INDEX 点名"与"节名一致"判定全被这族吃掉，处数随之上升。
   //   ⚠ 零余量（1154 = 实测）：摘掉任意一条 ⇒ `check:all` 当场红。
-  ['check:gitignore', 1160],  // 2026-11-02：新族登记与四条新脚本 NOT-INDEX 修正后，按实测 1160 零余量重定
+  // 2026-11-03：骨架检查新增一条 MUST-TRACK 后，实测 1161；按零余量抬平。
+  ['check:gitignore', 1161],
   //   ⚠ 理由：本单在 `check-repo-rules.mjs` 新增 **`MV`** 断言「模板根上文档清单 == INIT 的复制清单」
   //     ⇒ 该族多 **1 处**（577 → 578）。⚠ **只升不降**。
   //   ⚠ ⚠ **为什么不是改已有的第 ⑥ 组**：`check-code-face.mjs` 的 ⑥ 组**两个方向都不咬**（本单实测三段）——

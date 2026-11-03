@@ -201,6 +201,7 @@
 | `npm run build` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run typecheck` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:presets` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:skeleton` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:config` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:orch` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:redeliver` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
@@ -233,7 +234,7 @@
 | `npm run check:handoff-effects` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:work-state` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 
-⚠ 本块共 **32** 个 `check:*` 族（另有 `build` / `typecheck` 两个非判据命令）；`check:all` 与 `check:preflight` 是调度器与体检，⛔ 不入本块（与 `SELF` 同口径）。
+⚠ 本块共 **33** 个 `check:*` 族（另有 `build` / `typecheck` 两个非判据命令）；`check:all` 与 `check:preflight` 是调度器与体检，⛔ 不入本块（与 `SELF` 同口径）。
 <!-- END gen:check-families -->
 
 只读辅助（**不是判据**）：`npm run exp:next-id`（报下一个可用编号，不写任何文件）。
