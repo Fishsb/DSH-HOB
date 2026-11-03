@@ -282,7 +282,9 @@ export function runRepoRules({ bad, ok, skip }) {
     //   三条各带一条**实测跑红**的负向对拍（成环夹具 / 冻结阶段行 / 手改一字符）。
     ['scripts/check-ledger.mjs', '入库脚本（被 package.json 的 check:ledger 调用 · 三条不变式 I1/I2/I5 + I4：索引合法与状态单一真源 / 阶段由索引算出 / 生成物逐字节一致 / cap 无终态无百分比；三条负向对拍实测变红）'],
     // ⚠ 同批：生成器本身（`npm run gen:ledger`）也入库 —— 它产出 `gen/`，手改生成物由 I5 咬住。
-    ['scripts/gen-ledger.mjs', '入库脚本（被 package.json 的 gen:ledger 调用 · ledger 生成器：读 units/index.toml 产出 gen/stages.md 与 gen/index.md，确定性=同输入两次跑逐字节相同，⛔ 不写时间戳）'],    // ⚠ 2026-10-29 第 10 轮新增：任务进度路由的**真机 HTTP 探针**（`npm run check:tasks-route-http`）。
+    ['scripts/gen-ledger.mjs', '入库脚本（被 package.json 的 gen:ledger 调用 · ledger 生成器：读 units/（入口 index.toml + unit-*.toml 分片）产出 gen/*.md，确定性=同输入两次跑逐字节相同，⛔ 不写时间戳）'],
+    // ⚠ 2026-11-03 新增：64 KB 分片迁移工具也必须落在 npm 命令上，否则“机制在、无人跑”。
+    ['scripts/split-ledger-index.mjs', '入库脚本（被 package.json 的 split:ledger-index 调用 · 按 [[unit]] 边界机械分片，默认 dry-run，--apply 才写盘；已有分片安全跳过）'],    // ⚠ 2026-10-29 第 10 轮新增：任务进度路由的**真机 HTTP 探针**（`npm run check:tasks-route-http`）。
 
     // ⚠ 2026-10-30 P3 新增：五步汇总路由的服务端判据（`npm run check:stages-route`）。
     //   它守：三类 reason 互不相同 / 五步顺序与名字逐字 / cap 不进分母 / 空步给 todo / 三态算对 /

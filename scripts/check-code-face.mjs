@@ -1204,19 +1204,19 @@ export async function runRequirementsRoot({ bad, ok }) {
  * ── 断言 Y · **账本读白名单：`.md` + `.toml`（成对，⛔ 缺一侧即假绿）** ─────────────
  *
  * **它防的是什么**（`CHG-2035` 轨 A · 2026-11-02）：
- *   `ledger/units/index.toml` 是账本的**唯一状态源**，而读侧此前只认 `.md`
+ *   `ledger/units/` 是账本的**唯一状态源**（`index.toml` 导航 + `unit-*.toml` 分片），
+ *   而读侧此前只认 `.md`
  *   ⇒ Hob **能写它、读不到它** ⇒ 每次改索引都是**盲写**（历史上盲写丢过 6417 字节）。
  *   ⚠ 更坏的一种：拒绝文案被当成正文返回 —— 调用方**以为读到了**，拿"拒绝：只能读取……"
  *     当索引去解析。所以本组**不判"没报错"**，判**字节数**。
  *
  * **判据（正向 2 条 + 负向 3 条，⛔ 少一条都不算）**：
- *   · **Y1 正向**：账本区 `ledger/units/index.toml` 真读 ⇒ `ok` 且
+ *   · **Y1 正向**：账本区稳定入口 `index.toml` 与全部 `unit-*.toml` 真读 ⇒ `ok` 且
  *     **`Buffer.byteLength(text)` == `fs.statSync().size`**（给两个数）。
  *     ⚠ 这一条才是"读到了"的证据：截断 / 空串 / 拒绝文案被当内容，三个都会让这两个数对不上。
- *   · **Y2 正向（默认上限下的真实形态）**：同一份文件用**工具默认上限**读 ⇒
- *     `ok` 且 `bytes` 仍 == 盘上 size，`truncated` 为真时正文尾部必须带那句截断标注。
- *     ⚠ 记这一条是因为该文件 **101681 字节 > 默认上限 65536** ⇒ Hob 实际调用会拿到
- *     **截断视图**（`bytes` 正确、正文不全）。⛔ 不许因为"它绿了"就把截断说成没发生。
+ *   · **Y2 正向（默认上限下的真实形态）**：每个入口/分片都用**工具默认上限**读 ⇒
+ *     盘上 size <= 65536、`ok`、`bytes` == 盘上 size、`truncated=false`。
+ *     ⚠ 这同时守住 `RSK-002` 的优化目标：不能只把大文件切开，却留下一个分片仍读不全。
  *   · **Y3 负向**：账本区**外**的 `.toml`（`preset/dsh-hob/workflow.toml`）⇒ 拒，
  *     reason 必须是 `outside-root`（⚠ 后缀放开了，**目录范围一个字节都没放开**）。
  *   · **Y4 负向**：账本区**内**的 `.json`（`runtime/orch-watches.json`）⇒ 拒，
@@ -1230,7 +1230,9 @@ export async function runRequirementsRoot({ bad, ok }) {
  */
 export async function runReadWhitelist({ bad, ok }) {
   const DOCREAD_TS = join(root, 'src', 'server', 'doc-read.ts')
-  const { mkdtempSync, mkdirSync, writeFileSync, statSync, symlinkSync, rmSync } = await import('node:fs')
+  const {
+    mkdtempSync, mkdirSync, writeFileSync, readdirSync, statSync, symlinkSync, rmSync,
+  } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { pathToFileURL } = await import('node:url')
 
@@ -1260,51 +1262,90 @@ export async function runReadWhitelist({ bad, ok }) {
     return
   }
 
-  const INDEX_REL = 'ledger/units/index.toml'
+  const UNITS_REL = 'ledger/units'
+  const INDEX_REL = `${UNITS_REL}/index.toml`
   const INDEX_ABS = join(LEDGER, INDEX_REL)
-  let indexSize = 0
+  let shardNames = []
   try {
-    indexSize = statSync(INDEX_ABS).size
-  } catch {
-    bad(`Y1 读不到盘上的 \`${INDEX_REL}\`（账本区 ${LEDGER}）⇒ 正向断言失去对象（不按通过处理）`)
+    statSync(INDEX_ABS)
+    shardNames = readdirSync(join(LEDGER, UNITS_REL), { withFileTypes: true })
+      .filter((e) => e.isFile() && /^unit-[^/]+\.toml$/.test(e.name))
+      .map((e) => e.name)
+      .sort()
+  } catch (e) {
+    bad(`Y1 读不到盘上的 \`${INDEX_REL}\` 或其分片目录（账本区 ${LEDGER}）：${String(e?.message ?? e)}`
+      + ' ⇒ 正向断言失去对象（不按通过处理）')
+    return
+  }
+  if (shardNames.length === 0) {
+    bad(`Y1 \`${UNITS_REL}\` 下没有 \`unit-*.toml\` 分片 ⇒ 无法证明分片读取（不按通过处理）`)
+    return
+  }
+  const sourceRels = [INDEX_REL, ...shardNames.map((name) => `${UNITS_REL}/${name}`)]
+  const sourceSizes = new Map()
+  try {
+    for (const rel of sourceRels) sourceSizes.set(rel, statSync(join(LEDGER, rel)).size)
+  } catch (e) {
+    bad(`Y1 读不到某个入口/分片的磁盘字节数：${String(e?.message ?? e)}`
+      + ' ⇒ 正向断言失去对象（不按通过处理）')
     return
   }
 
-  // ── Y1 正向：大上限下真读，逐字节对齐 ────────────────────────────────
+  // ── Y1 正向：大上限下逐个真读，逐字节对齐 ────────────────────────────
   {
-    const CAP = Math.max(indexSize + 1024, 1 << 20)
-    const r = await readMarkdownCapped(LEDGER, INDEX_REL, CAP)
-    const got = r.ok === true ? Buffer.byteLength(String(r.text), 'utf8') : -1
-    if (r.ok === true && r.truncated === false && got === indexSize && r.bytes === indexSize) {
-      ok(`Y1 ✓ 账本区内的 \`.toml\` **可读且逐字节一致**：\`${INDEX_REL}\` `
-        + `正文 ${got} 字节 == 盘上 \`statSync().size\` ${indexSize} 字节（truncated=false）`
-        + ' ⇒ 读侧认这个后缀，"能写读不到"这条补上了')
+    const errors = []
+    const readings = []
+    for (const rel of sourceRels) {
+      const diskBytes = sourceSizes.get(rel)
+      const CAP = Math.max(diskBytes + 1024, 1 << 20)
+      const r = await readMarkdownCapped(LEDGER, rel, CAP)
+      const got = r.ok === true ? Buffer.byteLength(String(r.text), 'utf8') : -1
+      readings.push(`${rel.split('/').at(-1)}=${diskBytes}B`)
+      if (!(r.ok === true && r.truncated === false && got === diskBytes && r.bytes === diskBytes)) {
+        errors.push(`${rel}: ok=${r.ok} truncated=${r.truncated} reason=${String(r.reason ?? '')} `
+          + `正文=${got}B vs 盘上=${diskBytes}B`)
+      }
+    }
+    if (errors.length === 0) {
+      ok(`Y1 ✓ 稳定入口 + 全部分片 **可读且逐字节一致**：${readings.join(' · ')} `
+        + `（共 ${sourceRels.length} 个文件，truncated=false）`
+        + ' ⇒ 读侧认入口与分片，"能写读不到"这条补上了')
     } else {
-      bad(`Y1 账本区内的 \`.toml\` **读不到 / 内容对不上**：ok=${r.ok} truncated=${r.truncated} `
-        + `reason=${String(r.reason ?? '')} 正文=${got} 字节 vs 盘上=${indexSize} 字节`
-        + '\n      ⇒ 期望：ok=true、truncated=false、正文字节数 == 盘上 size'
-        + '\n      ⇒ ⚠ 正文 0 字节 / 等于拒绝文案 / 被截断，都会让这两个数对不上 —— 那正是本组要抓的形态。')
+      for (const error of errors) {
+        bad(`Y1 账本源文件 **读不到 / 内容对不上**：${error}`
+          + '\n      ⇒ 期望：ok=true、truncated=false、正文字节数 == 盘上 size'
+          + '\n      ⇒ ⚠ 正文 0 字节 / 等于拒绝文案 / 被截断，都会让这两个数对不上。')
+      }
     }
   }
 
-  // ── Y2 正向：默认上限（65536）下的真实形态 —— 截断要说出来 ────────────
+  // ── Y2 正向：默认上限（65536）下，入口与每个分片都必须读全 ──────────────
   {
     const DEFAULT_CAP = 65536
-    const r = await readMarkdownCapped(LEDGER, INDEX_REL, DEFAULT_CAP)
-    const willTruncate = indexSize > DEFAULT_CAP
-    const noteOk = r.truncated !== true
-      || (String(r.text).includes('[已截断]') && String(r.text).includes(String(indexSize)))
-    if (r.ok === true && r.bytes === indexSize && noteOk) {
-      ok(`Y2 ✓ 默认上限 ${DEFAULT_CAP} 下：\`${INDEX_REL}\` **仍可读**，\`bytes\` == 盘上 ${indexSize} 字节`
-        + (willTruncate
-          ? `，且 truncated=true 时正文尾部**带截断标注**（点名 ${indexSize} 字节）`
-            + ' ⇒ ⚠ 该文件超默认上限，Hob 实际调用拿到的是**截断视图**（bytes 正确、正文不全）'
-          : '，未触发截断（文件未超默认上限）'))
+    const errors = []
+    for (const rel of sourceRels) {
+      const diskBytes = sourceSizes.get(rel)
+      if (diskBytes > DEFAULT_CAP) {
+        errors.push(`${rel}: 盘上 ${diskBytes}B > 默认上限 ${DEFAULT_CAP}B`)
+        continue
+      }
+      const r = await readMarkdownCapped(LEDGER, rel, DEFAULT_CAP)
+      if (!(r.ok === true && r.bytes === diskBytes && r.truncated === false
+        && Buffer.byteLength(String(r.text), 'utf8') === diskBytes)) {
+        errors.push(`${rel}: ok=${r.ok} bytes=${r.bytes} truncated=${r.truncated} `
+          + `正文=${r.ok === true ? Buffer.byteLength(String(r.text), 'utf8') : -1}B 盘上=${diskBytes}B`)
+      }
+    }
+    if (errors.length === 0) {
+      const largest = Math.max(...sourceSizes.values())
+      ok(`Y2 ✓ 默认上限 ${DEFAULT_CAP} 下：${sourceRels.length} 个入口/分片全部读全，`
+        + `最大单文件 ${largest}B（truncated=false）⇒ 不靠截断视图维持可读性`)
     } else {
-      bad(`Y2 默认上限下 \`${INDEX_REL}\` **读数不老实**：ok=${r.ok} bytes=${r.bytes} truncated=${r.truncated} `
-        + `盘上=${indexSize} 字节`
-        + '\n      ⇒ 期望：ok=true、bytes == 盘上 size、截断时正文带标注'
-        + '\n      ⇒ ⚠ 截断了却不标注 = 调用方拿残页当全文，比读不到更坏。')
+      for (const error of errors) {
+        bad(`Y2 默认上限下 **仍有账本源文件读不全**：${error}`
+          + '\n      ⇒ 期望：每个入口/分片 size <= 65536、ok=true、bytes == 盘上 size、truncated=false'
+          + '\n      ⇒ ⚠ 分片迁移没有解决 64 KB 风险，或读侧把截断视图当成了全文。')
+      }
     }
   }
 

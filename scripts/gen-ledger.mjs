@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * **生成器**：`ledger/units/index.toml` ⇒ `ledger/gen/stages.md` + `ledger/gen/index.md`
+ * **生成器**：`ledger/units/`（index 导航 + unit-*.toml 分片）⇒ `ledger/gen/stages.md` + `ledger/gen/index.md`
  * （2026-10-30 · P1 · `DESIGN-V2.md` §四 / §八 M2）。
  *
  * ══ 三条硬要求 ═══════════════════════════════════════════════════════════════════
@@ -87,6 +87,9 @@ try {
 } catch { workStateOfShared = undefined }
 export const INDEX_PATH = join(LEDGER_DIR, 'units', 'index.toml')
 export const GEN_DIR = join(LEDGER_DIR, 'gen')
+
+/** 分片文件名：`unit-01.toml`、`unit-02.toml` …（⚠ 按文件名字典序合并，顺序稳定）。 */
+export const UNIT_SHARD_RE = /^unit-[^/]+\.toml$/
 
 /**
  * 封闭状态集（`DESIGN-V2.md` §3.3）—— ⚠ 唯一真源，⛔ 不许在别处再列一遍。
@@ -387,7 +390,7 @@ export const STAGE_ICON = { notStarted: '○', doing: '▶', done: '✓' }
 /**
  * **受限 TOML 子集解析器**。
  *
- * 只认本仓 `units/index.toml` 用到的那几种写法：
+ * 只认本仓 `units/`（入口 + `unit-*.toml` 分片）用到的那几种写法：
  *   · `[[unit]]` 数组表；
  *   · `key = "字符串"`；
  *   · `key = ["a", "b"]`（字符串数组，可跨行）；
@@ -514,7 +517,7 @@ export function renderStages(units) {
   const lines = []
   lines.push('# 五步阶段（**生成物** · ⛔ 手改即红）')
   lines.push('')
-  lines.push('> 由 `npm run gen:ledger` 从 `units/index.toml` 算出（依据 `DESIGN-V2.md` §四）。')
+  lines.push('> 由 `npm run gen:ledger` 从 `units/` 索引分片算出（依据 `DESIGN-V2.md` §四）。')
   lines.push('> ⚠ ⛔ 不许手改本文件：改索引，再重新生成（`CONSTITUTION` §2 / I5）。')
   lines.push('')
   lines.push('| 步 | 状态 | 完成/总数 | 条目 |')
@@ -750,7 +753,7 @@ export function renderIndex(units) {
   const lines = []
   lines.push('# 全量索引（**生成物** · ⛔ 手改即红）')
   lines.push('')
-  lines.push('> 由 `npm run gen:ledger` 从 `units/index.toml` 算出。⚠ 状态只在索引里，本文件是**读数投影**。')
+  lines.push('> 由 `npm run gen:ledger` 从 `units/` 索引分片算出。⚠ 状态只在索引分片里，本文件是**读数投影**。')
   lines.push('')
   for (const [kind, spec] of Object.entries(KIND_SPEC)) {
     const group = units.filter((u) => u.kind === kind)
@@ -769,11 +772,29 @@ export function renderIndex(units) {
   return lines.join('\n')
 }
 
-/** 读索引并解析（供生成器与判据共用 —— ⚠ 单一入口）。 */
+/**
+ * 读账本单元（供生成器、路由与判据共用 —— ⚠ 单一入口）。
+ *
+ * ⚠⚠ 2026-11-03：唯一索引已超过单文件读取上限，因此拆成
+ *   `units/index.toml`（说明/导航）+ `units/unit-*.toml`（单元分片）。
+ *   `index.toml` 仍是稳定入口；读取时按固定文件名顺序合并分片。
+ *   ⛔ 不递归、不读任意 `.toml`，只认 `unit-*.toml`，避免把别的配置误当账本。
+ */
+export function unitSourceFiles(indexPath = INDEX_PATH) {
+  const dir = dirname(indexPath)
+  const shards = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && UNIT_SHARD_RE.test(e.name))
+    .map((e) => e.name)
+    .sort()
+    .map((name) => join(dir, name))
+  return [indexPath, ...shards]
+}
+
 export function readUnits(indexPath = INDEX_PATH) {
-  const src = readFileSync(indexPath, 'utf8')
-  const parsed = parseTomlSubset(src)
-  return parsed.unit
+  return unitSourceFiles(indexPath).flatMap((file) => {
+    const src = readFileSync(file, 'utf8')
+    return parseTomlSubset(src).unit
+  })
 }
 
 /**
@@ -1032,7 +1053,7 @@ export function renderCurrent(units, extra = {}) {
 
   L.push('# Current（**生成物** · 只读当前入口）')
   L.push('')
-  L.push('> 所有状态来自 `ledger/units/index.toml`；本页只做汇总，⛔ 不手改、⛔ 不另存状态。')
+  L.push('> 所有状态来自 `ledger/units/`（稳定入口 `index.toml` + `unit-*.toml` 分片）；本页只做汇总，⛔ 不手改、⛔ 不另存状态。')
   L.push('')
   L.push('## 一、现在在等谁')
   L.push('')
@@ -1103,7 +1124,7 @@ export function renderCurrent(units, extra = {}) {
 /**
  * **根需求页**（`REQUIREMENTS.md` 的生成源）。
  *
- * ⚠ 这是用户批准的“需求根 = 派生视图”落地：只从 `units/index.toml` 生成。
+ * ⚠ 这是用户批准的“需求根 = 派生视图”落地：只从 `units/` 索引分片生成。
  * ⚠ 只显示 `status=agreed` 的活跃需求；退役/丢弃需求只留在索引与归档，⛔ 不进活跃依据。
  * ⚠ 不写日期、过程词、机检名或变更编号 —— 根页只回答“用户现在要什么”。
  *
@@ -1115,7 +1136,7 @@ export function renderRequirementRoot(units) {
   const reqs = units.filter((u) => u.kind === 'req' && String(u.status) === 'agreed')
   L.push('# REQUIREMENTS.md —— 当前功能需求（**生成物**）')
   L.push('')
-  L.push('> 本文件由 `npm run gen:ledger` 从 `ledger/units/index.toml` 生成，⛔ 不许手改。')
+  L.push('> 本文件由 `npm run gen:ledger` 从 `ledger/units/` 索引分片生成，⛔ 不许手改。')
   L.push('> 只列用户现在希望项目实现的功能目标与可观察结果；退役与历史需求不再进入活跃依据。')
   L.push('')
   L.push('## 一、当前功能需求')
@@ -1481,7 +1502,7 @@ function main() {
       console.log(`  ${r.changed ? '同步' : '保持'} §4.1 生成块：${file}（${r.why}）`)
     }
   }
-  if (!stdoutOnly) console.log(`\n  ✅ 已生成 ${Object.keys(out).length} 份 + ${Object.keys(specOut).length} 份快照（来源：units/index.toml · ${units.length} 条单元）`)
+  if (!stdoutOnly) console.log(`\n  ✅ 已生成 ${Object.keys(out).length} 份 + ${Object.keys(specOut).length} 份快照（来源：units/ 索引分片 · ${units.length} 条单元）`)
 }
 
 if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) main()

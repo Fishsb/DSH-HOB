@@ -79,6 +79,7 @@
     "check": "npm run check:all",
     "check:exec-progress": "node scripts/check-exec-progress.mjs",
     "gen:ledger": "node scripts/gen-ledger.mjs",
+    "split:ledger-index": "node scripts/split-ledger-index.mjs",
     "check:ledger": "node scripts/check-ledger.mjs",
     "check:convergence": "node scripts/check-convergence.mjs",
     "check:stages-route": "node scripts/check-stages-route.mjs",

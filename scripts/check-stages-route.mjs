@@ -16,7 +16,7 @@
  * 用法：node scripts/check-stages-route.mjs
  * 退出码：0 = 全通过；1 = 有失败
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -58,7 +58,8 @@ try {
   const deps = (o = {}) => ({
     workRootOf: o.rootFn ?? (() => '/fix'),
     workRootWhyOf: o.whyFn ?? (() => '夹具：给了工作区根'),
-    indexPathOf: () => '/fix/ledger/units/index.toml',
+    indexPathOf: o.indexPathOf ?? (() => '/fix/ledger/units/index.toml'),
+    unitShardPathsOf: o.unitShardPathsOf ?? (() => []),
     readText: o.readText ?? (() => undefined),
     now: () => FIXED_NOW,
   })
@@ -288,15 +289,24 @@ source = "夹具"
     const ledgerDir = join(ledgerRoot, 'ledger')
     let indexPath = join(ledgerDir, 'units', 'index.toml')
     let stagesMdPath = join(ledgerDir, 'gen', 'stages.md')
+    const unitShardPaths = readdirSync(join(ledgerDir, 'units'))
+      .filter((name) => /^unit-[^/]+\.toml$/.test(name))
+      .sort()
+      .map((name) => join(ledgerDir, 'units', name))
     const probs = []
     let realSrc
     try { realSrc = readFileSync(indexPath, 'utf8') } catch { realSrc = undefined }
     if (realSrc === undefined) {
       bad('R-9 · 读不到真索引 ⇒ 本条失去基准（⛔ 不按通过处理）')
     } else {
-      const res = mod.handleStages(deps({ rootFn: () => '/fix', readText: () => realSrc, indexPathOf: () => indexPath }), {})
+      const res = mod.handleStages(deps({
+        rootFn: () => '/fix',
+        readText: (p) => readFileSync(p, 'utf8'),
+        indexPathOf: () => indexPath,
+        unitShardPathsOf: () => unitShardPaths,
+      }), {})
       if (res.ok !== true) {
-        bad(`R-9 · 真索引算不出：${JSON.stringify(res).slice(0, 140)}`)
+        probs.push(`真索引算不出：${JSON.stringify(res).slice(0, 140)}`)
       } else {
         let gen = ''
         try { gen = readFileSync(stagesMdPath, 'utf8') } catch { gen = '' }

@@ -1,5 +1,5 @@
 /**
- * **`ledger/units/index.toml` → 五步汇总 + cap 单列**（纯函数，零 I/O）—— 2026-10-30 · P3。
+ * **`ledger/units/`（index 导航 + unit-*.toml 分片）→ 五步汇总 + cap 单列**（纯函数，零 I/O）—— 2026-10-30 · P3。
  *
  * ══ 它是什么 ═══════════════════════════════════════════════════════════════════
  *   面板新数据源的服务端处理体。读的是**机读索引**（⛔ 不再读 `volumes/tasks/INDEX.md` 那份散文账），
@@ -42,7 +42,7 @@ export const STAGE_KIND_STATUSES: Readonly<Record<string, { statuses: string[]; 
   /**
    * ⚠⚠ **2026-10-31 P40/R2：三个受控对象**（`TASK-R2.md` §二）——————————————
    *   加这三行**不是顺手重构**，而是 §八「条件式可以改 `src/**`」那一条的**唯一触发点**：
-   *   `check:stages-route` 的 R-9 拿这份表去核 `ledger/units/index.toml`，
+   *   当时 `check:stages-route` 的 R-9 拿这份表去核 `ledger/units/index.toml`，
    *   账本里一有 `EVD-` 就报 `row-shape-unknown`（实测原文：`EVD-001: kind="evidence" 不在封闭集`）。
    *   ⇒ 这处**正是在读 `ledger/gen` 的判定路径上**，且改动是**逐值追加**，
    *     ⛔ 没动任何既有 kind、⛔ 没动面板样式、⛔ 没动渲染分支。
@@ -58,7 +58,7 @@ export const STAGE_KIND_STATUSES: Readonly<Record<string, { statuses: string[]; 
   /**
    * ⚠⚠ **2026-11-02 P50/M10：补 B 轨（`TASK-B1.md`）的收尾漏项**——————————————
    *   B 轨加 `goal` 时只改了 `scripts/gen-ledger.mjs` 的 `KIND_SPEC`（那里现在是第 10 个 kind），
-   *   **没同步本表** ⇒ `check:stages-route` 的 R-9 拿本表去核 `ledger/units/index.toml`，
+   *   **没同步本表** ⇒ 当时 `check:stages-route` 的 R-9 拿本表去核 `ledger/units/index.toml`，
    *   遇到 `G-01` / `G-02` 就报（实测原文）：
    *     `R-9 · 真索引算不出：{"ok":false,"reason":"row-shape-unknown",… G-01: kind="goal" 不在封闭集 …}`
    *
@@ -350,15 +350,20 @@ export interface StagesDeps {
    */
   workRootOf: (sessionId: string) => string | undefined
   workRootWhyOf?: (sessionId: string) => string
-  /** 索引文件绝对路径（默认 `<workRoot>/ledger/units/index.toml`） */
+  /** 索引稳定入口绝对路径（默认 `<workRoot>/ledger/units/index.toml`） */
   indexPathOf?: (workRoot: string) => string
+  /**
+   * 同目录固定分片路径（`unit-*.toml`，已排序）。
+   * ⚠ 缺省 ⇒ 只读 `index.toml`，保持夹具与旧账本兼容。
+   */
+  unitShardPathsOf?: (unitsDir: string) => string[]
   /** 读文本；`undefined` = 文件不存在；抛错 = 读失败 */
   readText?: (absPath: string) => string | undefined
   now?: () => Date
 }
 
 /**
- * 索引的**相对落点**（⚠ 单一真源，服务端与机检都从这里取）。
+ * 索引稳定入口的**相对落点**（⚠ 单一真源，服务端与机检都从这里取）。
  *
  * ⚠⚠ **2026-10-30 P4：它相对的是「账本根」**（改前是工作区根）。
  *   P3 时 `ledger/` 是源仓内目录 ⇒ 只有实施侧能维护它 ⇒ **Hob 改不动新账本**。
@@ -392,21 +397,38 @@ export function handleStages(deps: StagesDeps, body: any): StagesResponse {
   if (typeof read !== 'function') {
     return { ok: false, reason: STAGES_REASON_INDEX_UNREADABLE, message: '调用方没有注入 `readText`（⛔ 不猜索引内容）' }
   }
-  let src: string | undefined
-  try { src = read(abs) } catch (e) {
+  const unitsDir = abs.replace(/[\\/]index\.toml$/, '')
+  let extraPaths: string[] = []
+  try {
+    extraPaths = deps.unitShardPathsOf?.(unitsDir) ?? []
+  } catch (e) {
     return {
       ok: false,
       reason: STAGES_REASON_INDEX_UNREADABLE,
-      message: `索引读不到：${String((e as Error)?.message ?? e)}`,
+      message: `索引分片列不出（${unitsDir}）：${String((e as Error)?.message ?? e)}`,
     }
   }
-  if (src === undefined) {
-    return {
-      ok: false,
-      reason: STAGES_REASON_INDEX_UNREADABLE,
-      message: `索引文件不存在：\`${abs}\` —— ⚠ 这通常意味着这个工作区还没建 \`ledger/\`，⛔ 不是文件坏了`,
+  const sourcePaths = [abs, ...extraPaths]
+  const sources: string[] = []
+  for (const path of sourcePaths) {
+    let text: string | undefined
+    try { text = read(path) } catch (e) {
+      return {
+        ok: false,
+        reason: STAGES_REASON_INDEX_UNREADABLE,
+        message: `索引读不到（${path}）：${String((e as Error)?.message ?? e)}`,
+      }
     }
+    if (text === undefined) {
+      return {
+        ok: false,
+        reason: STAGES_REASON_INDEX_UNREADABLE,
+        message: `索引文件不存在：\`${path}\` —— ⚠ 这通常意味着这个工作区还没建 \`ledger/\`，⛔ 不是文件坏了`,
+      }
+    }
+    sources.push(text)
   }
+  const src = sources.join('\n')
   let units: Array<Record<string, unknown>>
   try {
     units = parseUnitsToml(src) as Array<Record<string, unknown>>

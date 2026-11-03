@@ -211,7 +211,7 @@ scripts/            判据、生成器、探针与构建辅助
 lib/                构建产物（不入库；运行实例加载它）
 
 <ledgerHome>/<workspaceName>/
-  ledger/      唯一现行项目账本（units/index.toml 是状态唯一来源）
+  ledger/      唯一现行项目账本（units/ 是状态唯一来源；index.toml + unit-*.toml 分片）
   volumes/          历史账本文档（只读追溯）
   archive/          原始证据与过程归档
   runtime/          持久运行态（不进 Git）

@@ -209,7 +209,7 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
   //   ⚠ 同样自己 `ctx.inject(['connection'])`：宿主 `connection` 缺席 ⇒ 不登记、不报错。
   installExecProgressRoute(ctx)
 
-  // ⚠ 2026-10-30（P3）：五步汇总**只读路由**（面板新数据源 = `ledger/units/index.toml`）。
+  // ⚠ 2026-10-30（P3）：五步汇总**只读路由**（面板新数据源 = `ledger/units/` 索引分片）。
   installStagesRoute(ctx)
   installLedgerResourceRoute(ctx)
 

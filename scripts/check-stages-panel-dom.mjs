@@ -45,7 +45,7 @@
  * 退出码：0 = 全通过；1 = 有失败；2 = 依赖不可用（⛔ 不算通过）
  * ⚠ 依赖 `jsdom@25.0.1` / `react-dom@19.3.1` / `typescript` —— 均在 devDependencies。
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -1626,7 +1626,7 @@ export function StateDot({ state, size, appearance }) {
      * ── 为什么要"真账本"而不是夹具 ───────────────────────────────────
      *   用户截图那个 bug 只在**真数据**下出现（真索引里就是 `agreed`/`settled`/`built`/`unverified`）。
      *   夹具是我们自己编的，编的时候很容易"恰好避开"那个值 —— 那就成了自证。
-     *   ⇒ 本组**真读** `<账本区>/ledger/units/index.toml`，走**真解析器**
+     *   ⇒ 本组**真读** `<账本区>/ledger/units/`（入口 + 固定分片），走**真解析器**
      *     （`buildStages`，与产品路由同一个），再把结果喂给**真组件**。
      *
      * ── 口径 ────────────────────────────────────────────────────
@@ -1645,7 +1645,15 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const idx = await import(pathToFileURL(join(root, 'src', 'shared', 'stages-index.ts')).href)
         const idxPath = join(ledgerRoot, idx.STAGES_INDEX_REL)
-        const units = idx.parseUnitsToml(readFileSync(idxPath, 'utf8'))
+        const unitsDir = dirname(idxPath)
+        const sourcePaths = [
+          idxPath,
+          ...readdirSync(unitsDir)
+            .filter((name) => /^unit-[^/]+\.toml$/.test(name))
+            .sort()
+            .map((name) => join(unitsDir, name)),
+        ]
+        const units = sourcePaths.flatMap((p) => idx.parseUnitsToml(readFileSync(p, 'utf8')))
         const built = idx.buildStages(units, '2026-10-30T00:00:00.000Z')
         const r = mount(react.createElement(ui.StagesPanel, {
           fetchProgress: async () => ({ ok: true, rows: [] }),
@@ -3010,7 +3018,16 @@ export function StateDot({ state, size, appearance }) {
         bad('S-31b · 账本根判不出 ⇒ 资源路由处理体不可判')
       } else {
         const idx = await import(pathToFileURL(join(root, 'src', 'shared', 'stages-index.ts')).href)
-        const units = idx.parseUnitsToml(readFileSync(join(ledgerRoot, idx.STAGES_INDEX_REL), 'utf8'))
+        const idxPath = join(ledgerRoot, idx.STAGES_INDEX_REL)
+        const unitsDir = dirname(idxPath)
+        const sourcePaths = [
+          idxPath,
+          ...readdirSync(unitsDir)
+            .filter((name) => /^unit-[^/]+\.toml$/.test(name))
+            .sort()
+            .map((name) => join(unitsDir, name)),
+        ]
+        const units = sourcePaths.flatMap((p) => idx.parseUnitsToml(readFileSync(p, 'utf8')))
         const resourceMod = await import(pathToFileURL(join(root, 'src', 'shared', 'ledger-resources.ts')).href)
         const card = resourceMod.readLedgerResource(units, 'requirement/R-009')
         const badKind = resourceMod.readLedgerResource(units, 'acceptance/TSK-061')

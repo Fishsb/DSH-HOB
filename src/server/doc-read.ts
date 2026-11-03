@@ -12,7 +12,7 @@
  * 权限边界（硬约束）：
  *   只允许读**账本目录**内的 **.md** 与 **.toml**；其余后缀或越界一律拒绝。
  *   ⚠ 2026-11-02（`CHG-2035` 轨 A）**只加了 `.toml` 一个后缀**，目录范围未动
- *     —— 理由见 {@link isToml}（`units/index.toml` 是唯一状态源，此前能写读不到）。
+ *     —— 理由见 {@link isToml}（`units/` 是唯一状态源，此前能写读不到）。
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { lstat, readFile, stat } from 'node:fs/promises'
@@ -370,7 +370,7 @@ export function isMarkdown(p: string): boolean {
  * 是否为 `.toml`（大小写不敏感，理由同上）。
  *
  * ⚠ **只加这一个扩展名**（2026-11-02 · `CHG-2035` 轨 A）：
- *   `ledger/units/index.toml` 是账本的**唯一状态源**，而读侧此前只认 `.md`
+ *   `ledger/units/` 是账本的**唯一状态源**，而读侧此前只认 `.md`
  *   ⇒ Hob **能写它、读不到它** ⇒ 每次改索引都是**盲写**（历史上盲写丢过 6417 字节）。
  *   ⇒ 读侧补上 `.toml`，让"写过的那个文件"读得回来。
  *

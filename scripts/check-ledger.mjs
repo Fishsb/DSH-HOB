@@ -20,7 +20,7 @@
  */
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join, posix, resolve as resolvePath } from 'node:path'
+import { dirname, join, posix, resolve as resolvePath, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { KIND_SPEC, renderStages, parseTomlSubset, readUnits, summarizeStep, LEDGER_DIR, SEND_BACK_TARGETS, renderSpecArtifacts, REQ_PRIORITIES, BUDGET_KEYS, PARENT_VS_AFTER, EVIDENCE_PARENT_KINDS } from './gen-ledger.mjs'
 
@@ -602,7 +602,7 @@ export function checkI1(units, pathExists) {
 }
 
 /**
- * **I1 的"状态只在一处"**：`units/index.toml` 之外，任何 `.md`/`.toml` 里出现 `status =` ⇒ 问题。
+ * **I1 的"状态只在一处"**：`units/` 索引分片之外，任何 `.md`/`.toml` 里出现 `status =` ⇒ 问题。
  *
  * @param {string} ledgerDir - `ledger/` 根
  * @returns {string[]} 问题清单
@@ -621,13 +621,18 @@ export function checkStatusSingleHome(ledgerDir) {
         continue
       }
       if (!/\.(md|toml)$/.test(e.name)) continue
-      if (p === join(ledgerDir, 'units', 'index.toml')) continue
+      /**
+       * ⚠ 2026-11-03：状态唯一源已从单文件扩为 `units/index.toml` +
+       *   `units/unit-*.toml` 固定分片。整个 `units/` 都是合法状态落点；
+       *   ⛔ 别只排除 index.toml —— 否则分片里的每条 `status =` 都会被误报。
+       */
+      if (p.startsWith(join(ledgerDir, 'units') + sep)) continue
       let src = ''
       try { src = readFileSync(p, 'utf8') } catch { continue }
       src.split('\n').forEach((l, i) => {
         // ⚠ 只认**赋值**形态；说明性文字里提到 `status =` 不算（写成反引号包住的示例也不该算，但那种极少）
         if (/(^|\s)status\s*=/.test(l) && !/^\s*#/.test(l)) {
-          problems.push(`${posix.relative(ledgerDir, p)}:${i + 1} 出现了 \`status =\` —— 状态只许在 units/index.toml 里`)
+          problems.push(`${posix.relative(ledgerDir, p)}:${i + 1} 出现了 \`status =\` —— 状态只许在 units/ 索引分片里`)
         }
       })
     }
@@ -766,7 +771,7 @@ export function checkI5(ledgerDir, renderAll) {
       problems.push(`gen/${name} 与生成器**不一致**（第 ${at + 1} 个字符起；实 ${got.length} B vs 期望 ${want.length} B）`
         + `\n      ⇒ 实际：${JSON.stringify(got.slice(at, at + 40))}`
         + `\n      ⇒ 期望：${JSON.stringify(want.slice(at, at + 40))}`
-        + '\n      ⇒ 修法：⛔ 别手改生成物；改 units/index.toml 或生成器，再跑 npm run gen:ledger')
+        + '\n      ⇒ 修法：⛔ 别手改生成物；改 units/ 索引分片或生成器，再跑 npm run gen:ledger')
     }
   }
   return problems
@@ -1358,7 +1363,7 @@ export const REPORT_REQUIRED_FROM = '2026-11-01T00:00:00+08:00'
  *
  * ── ⚠⚠ 作业书给的口径是"两者不许重合"，**实测存量 42 条**，我先逐条分类再定 ──────
  *
- *   实测（`units/index.toml`，130 条单元）：
+ *   当时实测（单文件 `units/index.toml`，130 条单元）：
  *     `task → req`    **2** 条：`TSK-031→R-002` · `TSK-033→R-004`
  *     `task → change` **14** 条（`TSK-034/035/049/050/…→CHG-…`）
  *     `run  → task`   **26** 条（`RUN-001…026`）
@@ -1635,7 +1640,7 @@ export function checkReadiness(units) {
  * ══════════════════════════════════════════════════════════════════════════════
  * **四条前置状态门禁**（2026-10-31 P41/R3 · `TASK-R3.md` §四）
  *
- * ⚠⚠ **只落账本面**：这里读 `units/index.toml` 的**当前态**判"这个状态合法不合法"，
+ * ⚠⚠ **只落账本面**：这里读 `units/`（入口 + 分片）的**当前态**判"这个状态合法不合法"，
  *   ⛔ **不去拦截写操作** —— 那要改宿主写路径，属**单向门**
  *   （`PROJECT.md` §11.3 · `CHG-218` §二·2），作业书明写"本轮明确不做，也不许顺手做"。
  * ⚠ ⛔ 不碰看板、⛔ 不碰别的项目、⛔ 不新增权限面。
@@ -1789,7 +1794,7 @@ export function checkG4(units) {
  * ══════════════════════════════════════════════════════════════════════════════
  * **2026-11-01 P40/R5 · `TASK-R5.md` §二 · G-5 / G-6 / G-7 / G-8（前置状态门禁补齐）
  *
- * ⚠⚠ **全部落账本面**：只读 `units/index.toml` 的**当前态**判"这个状态合不合法"，
+ * ⚠⚠ **全部落账本面**：只读 `units/`（入口 + 分片）的**当前态**判"这个状态合不合法"，
  *   ⛔ **不去拦截写操作** —— 那要改宿主写路径，属**单向门**
  *   （`PROJECT.md` §11.3 · `CHG-218` §二·2，`TASK-R5.md` §二 明写"⛔ 不拦写操作"）。
  * ⚠ 与既有 `checkG1..checkG4` **同一族、同一形态**：**判不出 ⇒ 红**，⛔ 不许默认合法。
@@ -2583,6 +2588,47 @@ if (IS_MAIN) try {
     if (probs.length === 0) {
       ok(`I1 ✓ 索引合法：${units.length} 条 · id 唯一 · 前缀与 kind 匹配 · status 全在封闭集 · parent 全存在 · 无环 · after 全指向存在 · 状态不出现在别处`)
     } else for (const p of probs) bad(`I1 · ${p}`)
+  }
+
+  // ── N-SHARD：分片按固定文件名合并；只有 unit-*.toml 才是分片 ──
+  {
+    const dir = join(WORK, 'unit-shards')
+    const ignoredDir = join(WORK, 'unit-shards-ignored')
+    mkdirSync(dir, { recursive: true })
+    mkdirSync(ignoredDir, { recursive: true })
+    writeFileSync(join(dir, 'index.toml'), '# 导航\n', 'utf8')
+    writeFileSync(join(dir, 'unit-02.toml'), [
+      '[[unit]]',
+      'id = "R-S2"',
+      'kind = "req"',
+      'title = "第二片"',
+      'parent = "spec/progress"',
+      'status = "agreed"',
+      'after = []',
+      'source = "fixture"',
+      '',
+    ].join('\n'), 'utf8')
+    writeFileSync(join(dir, 'unit-01.toml'), [
+      '[[unit]]',
+      'id = "R-S1"',
+      'kind = "req"',
+      'title = "第一片"',
+      'parent = "spec/progress"',
+      'status = "agreed"',
+      'after = []',
+      'source = "fixture"',
+      '',
+    ].join('\n'), 'utf8')
+    writeFileSync(join(ignoredDir, 'index.toml'), '# 导航\n', 'utf8')
+    writeFileSync(join(ignoredDir, 'rules.toml'), '[[unit]]\nid = "R-S3"\nkind = "req"\ntitle = "不是分片"\nparent = "spec/progress"\nstatus = "agreed"\nafter = []\nsource = "fixture"\n', 'utf8')
+    const merged = readUnits(join(dir, 'index.toml'))
+    const ignored = readUnits(join(ignoredDir, 'index.toml'))
+    const ids = merged.map((u) => String(u.id))
+    if (JSON.stringify(ids) === JSON.stringify(['R-S1', 'R-S2']) && ignored.length === 0) {
+      ok('N-SHARD ✓ 分片合并：unit-01 → unit-02 顺序稳定；负向对拍：`rules.toml` 不被误读')
+    } else {
+      bad(`N-SHARD · 分片合并不对：ids=${JSON.stringify(ids)} ignored=${ignored.length}`)
+    }
   }
 
   // ══════════════════════════════════════════════════════════════════════

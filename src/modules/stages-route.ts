@@ -1,12 +1,12 @@
 /**
  * **五步汇总 · 只读路由**（2026-10-30 · P3 · `TASK-P3.md` §二①）。
  *
- * 把面板的 `POST /api/dsh-hob/stages` 接到 {@link handleStages}，数据源 = `ledger/units/index.toml`。
+ * 把面板的 `POST /api/dsh-hob/stages` 接到 {@link handleStages}，数据源 = `ledger/units/` 的索引分片。
  * ⚠ **⛔ 不再读 `volumes/tasks/INDEX.md`**（那份散文账已不再是状态载体）。
  * ⚠ 分工与其它两条路由同构：归一/汇总在 `src/shared/stages-index.ts`（纯函数），本文件只做宿主接线。
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { resolveLedgerRoot, ledgerRootWhy } from '../server/doc-read.ts'
 import { declaredLedgerHome } from './orchestrator.ts'
@@ -85,8 +85,12 @@ export function installStagesRoute(ctx: Context): void {
             {
               workRootOf: ledgerRootOf,
               workRootWhyOf: ledgerRootWhyOf,
-              /** ⚠ 索引落点 = **账本根** + `ledger/units/index.toml`（P4 起同源派生）。 */
+              /** ⚠ 状态源 = `ledger/units/`；这里给出稳定入口 `index.toml`，分片另行列举。 */
               indexPathOf: (ledgerRoot: string) => `${ledgerRoot}/${STAGES_INDEX_REL}`,
+              unitShardPathsOf: (unitsDir: string) => readdirSync(unitsDir)
+                .filter((name) => /^unit-[^/]+\.toml$/.test(name))
+                .sort()
+                .map((name) => `${unitsDir}/${name}`),
               readText: (abs: string) => {
                 try { return readFileSync(abs, 'utf8') } catch (e) {
                   if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined

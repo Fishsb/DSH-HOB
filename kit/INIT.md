@@ -40,7 +40,7 @@
 | **0** | ⚠ **写工作区名配置**（`dsh-hob.workspace.json`） | 工作区根上一份**被 git 跟踪**的 json | 见 **§2.1** |
 | **1** | **定账本区位置** | `<ledgerHome>/<workspaceName>/` | 见 §2 |
 | **2** | **建骨架**（使用 `kit/`） | 项目仓里出现 `kit/**` | `ls kit/` 与分发清单一致 |
-| **3** | **建 `ledger/` + 正本** | 账本区出现 `units/index.toml`、`PROJECT.md`、`CONSTITUTION.md`、`spec/` | 见 §3 |
+| **3** | **建 `ledger/` + 正本** | 账本区出现 `units/index.toml`（分片入口）、`PROJECT.md`、`CONSTITUTION.md`、`spec/` | 见 §3 |
 | **4** | **把账本纳入版本控制** | 账本文件被**账本仓**跟踪 | `git -C <账本区> status --short` / `git ls-files` 可核 |
 | **5** | **跑一遍自检** | 判定行 | 见 §6 |
 

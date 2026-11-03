@@ -94,7 +94,7 @@ import * as configFace from '../config.ts'
 //   ⚠ `src/shared/capability-red-line.ts` **零 import**（纯常量模块）⇒ host 侧
 //     直接 import 安全（不需要 ctx、不会有循环依赖）。
 import { CAPABILITY_RED_LINE_ZH } from '../shared/capability-red-line.ts'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
@@ -114,9 +114,7 @@ export function looksLikeResource(p: string): boolean {
  * @param ledgerRoot - 账本区根
  * @returns 单元数组
  */
-export function readLedgerUnits(ledgerRoot: string): LedgerUnitLike[] {
-  const indexPath = join(ledgerRoot, 'ledger', 'units', 'index.toml')
-  const src = readFileSync(indexPath, 'utf8')
+export function parseLedgerUnitsText(src: string): LedgerUnitLike[] {
   const out: LedgerUnitLike[] = []
   let cur: Record<string, unknown> | null = null
   let pendingKey: string | null = null
@@ -164,6 +162,19 @@ export function readLedgerUnits(ledgerRoot: string): LedgerUnitLike[] {
   }
   if (cur !== null) out.push(cur as LedgerUnitLike)
   return out
+}
+
+/**
+ * 读取并解析账本单元：`index.toml` 导航 + 固定 `unit-*.toml` 分片。
+ * ⚠ 只认固定文件名，⛔ 不把同目录其它 TOML 误当账本。
+ */
+export function readLedgerUnits(ledgerRoot: string): LedgerUnitLike[] {
+  const unitsDir = join(ledgerRoot, 'ledger', 'units')
+  const shards = readdirSync(unitsDir)
+    .filter((name) => /^unit-[^/]+\.toml$/.test(name))
+    .sort()
+  const files = ['index.toml', ...shards]
+  return files.flatMap((name) => parseLedgerUnitsText(readFileSync(join(unitsDir, name), 'utf8')))
 }
 
 /** 模块名（同时是 fiber 显示名）。 */

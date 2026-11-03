@@ -192,7 +192,7 @@ name = "问句轮（四块不出现）"
 when = "The question turn is the third form"
 source = "The question turn is the third form"
 
-# ── 三条不变量（⚠ `CONSTITUTION.md` 里逐条给 checked_by）──────────
+# ── 原始三条不变量（⚠ `CONSTITUTION.md` 里逐条给 checked_by）──────────
 [[invariant]]
 id = "delivering-is-not-doing"
 text = "投递 ≠ 做完"

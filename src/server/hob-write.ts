@@ -141,7 +141,11 @@ export const VOLUME_SUBDIRS = ['context/rounds'] as const
  */
 export const LEDGER_WRITABLE_DIRS = ['ledger/units', 'ledger/spec', 'ledger/changes'] as const
 
-/** 新账本里**唯一可写的单文件**（索引）；⚠ `ledger/gen/**` 与 `CONSTITUTION.md` / `PROJECT.md` 都不在此列。 */
+/**
+ * 新账本里**可写的稳定入口单文件**（`index.toml` 导航）；单元分片由
+ * {@link LEDGER_WRITABLE_DIRS} 的 `ledger/units` 覆盖。
+ * ⚠ `ledger/gen/**` 与 `CONSTITUTION.md` / `PROJECT.md` 都不在此列。
+ */
 export const LEDGER_WRITABLE_FILES = ['ledger/units/index.toml'] as const
 
 /**
@@ -748,10 +752,10 @@ function checkWhitelist(file: string): WriteHobResult | null {
         file,
         'not-whitelisted',
         `拒绝：\`ledger/gen/\` 是**生成物**（\`npm run gen:ledger\` 产出），手改即红（\`CONSTITUTION\` §2 / I5）。`
-          + `\n      ⇒ 要改内容 ⇒ 改 \`ledger/units/index.toml\`，再跑 \`npm run gen:ledger\`。`,
+          + `\n      ⇒ 要改内容 ⇒ 改 \`ledger/units/\` 的索引分片，再跑 \`npm run gen:ledger\`。`,
       )
     }
-    // 单文件白名单（索引）
+    // 单文件白名单（units 的稳定导航入口；分片走下面的目录白名单）
     if ((LEDGER_WRITABLE_FILES as readonly string[]).includes(file)) return null
     // 目录白名单
     const ln = LEDGER_PATH_RE.exec(file)
@@ -1286,8 +1290,9 @@ async function writeHobFileInner(
   /**
    * ⚠ **扩展名守卫**（2026-10-30 P4 放宽了一个**窄口**）：
    *   · 老账本侧：**仍然只许 `.md`**（⛔ 一字未放宽）；
-   *   · 新账本 `ledger/` 侧：额外允许 `.toml` / `.json` —— 因为那份索引**本身就是 TOML**
-   *     （`units/index.toml`），`spec/` 与 `changes/` 也可能有结构化文本。
+   *   · 新账本 `ledger/` 侧：额外允许 `.toml` / `.json` —— 因为稳定入口是
+   *     `units/index.toml`、状态正文在 `units/unit-*.toml`，`spec/` 与 `changes/`
+   *     也可能有结构化文本。
    *   ⚠ 只对 `ledger/` 前缀生效（下面前缀判断写死）；其它任何路径仍是"只许 .md"。
    *   ⛔ 这不是"整体放开扩展名" —— 那会让 `archive/**` 等面都能写二进制旁路。
    */

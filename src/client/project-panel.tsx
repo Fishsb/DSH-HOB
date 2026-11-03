@@ -118,7 +118,7 @@ export const STAGES_PROGRESS_PATH = '/api/dsh-hob/tasks-progress'
 /** 执行态路由路径（⚠ **值来自** `shared/exec-protocol.ts` —— 与服务端同一份，⛔ 不各写一份）。 */
 export const STAGES_EXEC_PATH = EXEC_PROGRESS_ROUTE_PATH
 
-/** 五步汇总路由（新数据源 = `ledger/units/index.toml`；⛔ 不再读散文账）。 */
+/** 五步汇总路由（新数据源 = `ledger/units/` 的索引分片；⛔ 不再读散文账）。 */
 export const STAGES_ROUTE_PATH = '/api/dsh-hob/stages'
 
 /**
@@ -630,7 +630,7 @@ export function StagesPanel(props?: {
   /** 执行态取数（省略 ⇒ 用默认 HTTP 实现）。⚠ 与 `fetchProgress` 分开注入，两路各自可判不出。 */
   fetchExec?: (sessionId?: string) => Promise<any>
   /**
-   * **五步汇总取数**（PRIMARY 数据源：`ledger/units/index.toml`）。
+   * **五步汇总取数**（PRIMARY 数据源：`ledger/units/` 的索引分片）。
    * ⚠ 省略 ⇒ 用 `defaultFetchStages`（生产路径）。
    */
   fetchStages?: (sessionId?: string) => Promise<any>
@@ -1042,7 +1042,7 @@ export function StagesPanel(props?: {
    * 每步一行：`序号 + 步名 + 三态图标 + 完成数/总数`，**点行展开**列出该步的条目。
    * ⚠ 三态只认 `done / doing / todo`（⛔ 百分比、⛔ 进度条、⛔ 勾选）。
    * ⚠ `cap` **单列**在树下面，⛔ 不进分母、⛔ 无完成度。
-   * ⚠ 数据源 = `POST /api/dsh-hob/stages`（`ledger/units/index.toml`）。
+   * ⚠ 数据源 = `POST /api/dsh-hob/stages`（`ledger/units/` 的索引分片）。
    */
   const stages = stageState.kind === 'ok' ? stageState.stages : []
   const caps = stageState.kind === 'ok' ? stageState.caps : []
@@ -1520,7 +1520,7 @@ export function StagesPanel(props?: {
     },
     React.createElement('div', { style: { fontWeight: 600 } }, STAGES_PANEL_TITLE),
     React.createElement(CurrentPanel, { sessionId: props?.sessionId, ...(props?.fetchCurrent === undefined ? {} : { fetchCurrent: props.fetchCurrent }) }),
-    // ⭐ PRIMARY：五步树（新数据源 = units/index.toml）
+    // ⭐ PRIMARY：五步树（新数据源 = units/ 索引分片）
     stageTree,
     // ⭐ 「下一步」与阻断原因（只读 · ⛔ 零按钮/零勾选/零百分比/零进度条）
     nextBlock,

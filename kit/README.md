@@ -4,7 +4,7 @@
 >
 > ```text
 > <ledgerHome>/<workspaceName>/ledger/
->   ├─ units/index.toml       ← 唯一机读状态源
+>   ├─ units/                 ← 唯一机读状态源（index.toml + unit-*.toml）
 >   ├─ spec/                  ← 当前系统规格与派生视图
 >   ├─ changes/               ← 方案与作业书
 >   ├─ gen/                   ← 生成物（不可手改）

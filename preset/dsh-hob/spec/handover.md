@@ -18,11 +18,14 @@
 
 重启 · 提交 · 别的项目 · 真实 profile —— 这几件事**不派**。
 
-## 三条不变量（`CONSTITUTION.md` 里逐条有 `checked_by`）
+## 六条交付不变量（`CONSTITUTION.md` 里逐条有 `checked_by`）
 
 - `delivering-is-not-doing` —— 投递不等于做完；
 - `creating-is-not-delegating` —— 建会话不等于派活；
 - `result-is-not-acceptance` —— 回传不等于验收。
+- `implementation-is-not-convergence` —— 实现不等于收敛；
+- `test-pass-is-not-product-acceptance` —— 测试通过不等于产品验收；
+- `claim-requires-reading` —— 没有读数不能陈述为事实。
 
 ## 问用户的四个条件 / 不问的五类
 

@@ -116,7 +116,7 @@
     },
     {
       "cmd": "check:stages-route",
-      "what": "**五步汇总路由**（新数据源 = `ledger/units/index.toml`）**服务端行为**判据（真处理体 + 真夹具）：三类 reason **互不相同**（`index-unreadable` / `index-malformed` / `row-shape-unknown`）· 五步顺序与名字逐字 · **`cap` 不进分母** · 空步给 `todo`（≠ 判不出）· 三态算对 · items 顺序原样不去重 · `lastReading` 缺 ⇒ 「判不出」· 负向对拍（cap 混进分母必红）· **与 `gen/stages.md` 交叉验证**（两套独立解析器）"
+      "what": "**五步汇总路由**（新数据源 = `ledger/units/`：`index.toml` 导航 + `unit-*.toml` 分片）**服务端行为**判据（真处理体 + 真夹具）：三类 reason **互不相同**（`index-unreadable` / `index-malformed` / `row-shape-unknown`）· 五步顺序与名字逐字 · **`cap` 不进分母** · 空步给 `todo`（≠ 判不出）· 三态算对 · items 顺序原样不去重 · `lastReading` 缺 ⇒ 「判不出」· 负向对拍（cap 混进分母必红）· **与 `gen/stages.md` 交叉验证**（两套独立解析器）"
     },
     {
       "cmd": "check:ledger",

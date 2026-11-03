@@ -34,7 +34,7 @@ flowchart TB
   Server[src/server · 落盘 / 守卫 / 编排 / Effects]
   Shared[src/shared · 纯函数与线协议]
   Client[src/client · 浏览器 UI]
-  Ledger[(ledger/units/index.toml)]
+  Ledger[(ledger/units/ · index + unit-*.toml shards)]
 
   Host --> Entry
   Entry --> Modules
@@ -83,7 +83,7 @@ UI 新建入口
 | 配置 schema | `src/config.ts` |
 | Hob 工作流 | `preset/dsh-hob/workflow.toml` + `spec/` |
 | 预设生成物 | `preset/dsh-hob/gen/` |
-| 项目账本 | `<ledgerHome>/<workspaceName>/ledger/units/index.toml` |
+| 项目账本 | `<ledgerHome>/<workspaceName>/ledger/units/` |
 | 当前视图 | `<ledgerHome>/<workspaceName>/ledger/spec/current.md` |
 | 权威阶段接口 | `POST /api/dsh-hob/stages` |
 | 按 ID 资源接口 | `POST /api/dsh-hob/ledger-resource` |
@@ -110,7 +110,7 @@ UI 新建入口
 | 术语契约 | `TERMINOLOGY.md` | 固定名称与边界 | 实现细节 |
 | 架构说明 | `kit/drafts/architecture-overview.md` | 稳定层次与依赖方向 | 会漂移的文件数 |
 | 行为规格 | `preset/dsh-hob/spec/` · `ledger/spec/` | 当前可观察行为 | 历史过程 |
-| 机器状态 | `ledger/units/index.toml` | 唯一状态与正式关系 | 长篇说明 |
+| 机器状态 | `ledger/units/` 索引分片 | 唯一状态与正式关系 | 长篇说明 |
 | 派生视图 | `ledger/gen/` · `ledger/spec/current.md` · `REQUIREMENTS.md` | 从索引生成的人读汇总 | 手工状态更新 |
 | 方案变更 | `ledger/changes/` | 提案、差异、任务边界 | 长期现状 |
 | 历史追溯 | `volumes/` · `archive/` | 已退役正文与原始证据 | 当前执行依据 |
