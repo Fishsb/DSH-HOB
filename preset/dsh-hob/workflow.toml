@@ -232,6 +232,24 @@ origin = "new"
 text = "没有读数不能陈述为事实"
 source = "任何“完成 / 已验证 / 已修复”的陈述都必须能指回："
 
+[[invariant]]
+id = "current-is-replace-only"
+origin = "new"
+text = "当前正文只能整份替换"
+source = "当前正文只能整份替换，不能追加历史说明。"
+
+[[invariant]]
+id = "history-is-append-only"
+origin = "new"
+text = "证据和归档只能增加"
+source = "证据和归档只能增加，不能覆盖已有历史。"
+
+[[invariant]]
+id = "active-zone-is-bounded"
+origin = "new"
+text = "活跃区只保留当前方案材料"
+source = "活跃区只保留当前方案材料，过程件必须进入证据或归档。"
+
 # ── 交付与预算（⚠ 这些是"每轮都要执行"的，故进机读源）────────────
 [[rule]]
 id = "six-fields"

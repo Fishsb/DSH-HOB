@@ -149,7 +149,7 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *   ⇒ 若放进必跑，结果只能是"永远 exit 2"，那会把"没对象"污染成"判据没跑"（`E-122` 同族）。
  *   ⇒ 手工按需跑 `npm run check:tasks-route-http`；它的无对象档是 **exit 2**（noObject，⛔ 不算通过）。
  */
-export const FAMILY_FLOOR = 32
+export const FAMILY_FLOOR = 33
 //   ⚠ 2026-10-27（包 AP · 用户「全退」）：本条不再含 `check:archive-gate`（该族随归档门禁一起退回）。
 //     实测族数 = 19（`npm run check:all` 汇总行）⇒ 下界 19 = **零余量**，再少一族立刻红。
 //   ⚠ 2026-10-29（四步主线 · 只验位置）：**19 → 20**（同批新增 `check:stages-dom` 一族）。
@@ -695,7 +695,8 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ 2026-11-03：120 → **122**（零余量 = 实测）。
   //   + I13（活跃需求链必须同时有方案 / 任务 / 验收）+ N-I13（三层缺失逐层点名）。
   // ⚠ 2026-11-03：分片读数和生命周期的正向断言，以及 N-CURRENT 自指读数负向对拍 ⇒ 实测 127。
-  ['check:ledger', 127],
+  ['check:ledger', 128],
+  ['check:ledger-write-policy', 9],
   // ⚠ **2026-10-31 P41/R3 新增**：收敛检查 K-1..K-6 + K-0 前置 + 12 条负向对拍/正向对照
   //   = **13 条实测**（`K-0` + 每个 change 一条 `K-ALL` + 11 条对拍）。
   //   ⚠ 下界取 **13**（K-0 + 11 条对拍 + 至少一条 K-ALL）；索引里 change 条数变多时本族只会更绿。

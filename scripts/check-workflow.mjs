@@ -161,8 +161,8 @@ export function f1ProbsOf(mut, pre, userLines, userFlat) {
     if (typeof it[k] !== 'string' || it[k].trim() === '') probs.push(`intake ${it.id ?? '?'} 缺 \`${k}\``)
   }
   if ((mut.reply ?? []).length === 0) probs.push('reply 一条都没有')
-  /** ⚠⚠ 封闭集 = **恰好 6 条**（⛔ 不许写成 `>= 3`：多写一条没定过的不变量也会静默通过）。 */
-  if ((mut.invariant ?? []).length !== 6) probs.push(`invariant 应恰好 6 条（实 ${(mut.invariant ?? []).length}）`)
+  /** ⚠⚠ 封闭集 = **恰好 9 条**（新增三条账本清洁不变量，仍不许随手多写）。 */
+  if ((mut.invariant ?? []).length !== 9) probs.push(`invariant 应恰好 9 条（实 ${(mut.invariant ?? []).length}）`)
 
   const originOfX = (e) => (e.origin === undefined ? 'original' : String(e.origin).trim())
   const ORIGIN_DOMAIN_X = new Set(['original', 'new'])
@@ -236,9 +236,13 @@ try {
    *   ⇒ `source` 核对**分路**：`original`（缺省）对老件，`new` 对新件。
    *   ⚠ 空文件 ⇒ **红**，⛔ 不是 skip（否则清空它就能把"新增条目的出处"抹掉）。
    */
-  const ORIGIN_USER = join(PRESET_DIR, 'spec', 'origin-user-2026-10-31.txt')
-  let originUserRaw = ''
-  try { originUserRaw = readFileSync(ORIGIN_USER, 'utf8') } catch { originUserRaw = '' }
+  const ORIGIN_USER_FILES = [
+    join(PRESET_DIR, 'spec', 'origin-user-2026-10-31.txt'),
+    join(PRESET_DIR, 'spec', 'origin-user-2026-11-03-ledger-clean.txt'),
+  ]
+  const originUserRaw = ORIGIN_USER_FILES
+    .map((path) => { try { return readFileSync(path, 'utf8') } catch { return '' } })
+    .join('\n')
   /** 冻结件里**非注释、非空**的行（`#` 开头的是文件头说明，⛔ 不参与子串核对）。 */
   const ORIGIN_USER_LINES = originUserRaw.split('\n')
     .map((l) => l.trim())
@@ -1059,12 +1063,12 @@ try {
     } else {
       const mut = JSON.parse(JSON.stringify(wf))
       const removed = mut.invariant.pop()
-      const broke = mut.invariant.length === 5 && wf.invariant.length === 6
+      const broke = mut.invariant.length === 8 && wf.invariant.length === 9
       const { probs: lines } = f1ProbsOf(mut, pre, ORIGIN_USER_LINES, originUserFlat)
-      const hit = lines.find((x) => x.includes('invariant 应恰好 6 条'))
+      const hit = lines.find((x) => x.includes('invariant 应恰好 9 条'))
       if (!broke) bad('N-F1b · 夹具没真的摘掉一条不变量 ⇒ 本条不可判')
-      else if (hit !== undefined) ok(`N-F1b ✓ 负向对拍（先自证：从 6 条摘掉 \`${removed?.id}\` ⇒ 实 5 条）⇒ F1 的"封闭集 6 条"**必红**，红的原文：\`${hit}\``)
-      else bad('N-F1b · 摘掉一条不变量，F1 却没报"invariant 应恰好 6 条" ⇒ 判据哑了')
+      else if (hit !== undefined) ok(`N-F1b ✓ 负向对拍（先自证：从 9 条摘掉 \`${removed?.id}\` ⇒ 实 8 条）⇒ F1 的"封闭集 9 条"**必红**，红的原文：\`${hit}\``)
+      else bad('N-F1b · 摘掉一条不变量，F1 却没报"invariant 应恰好 9 条" ⇒ 判据哑了')
     }
   }
 

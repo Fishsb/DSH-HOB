@@ -629,7 +629,7 @@ export async function runRender({ bad, ok }) {
             bad(`H7 用例本身抛错（${String(e?.message ?? e)}）⇒ 不按通过处理（⛔ 跑不起来 ≠ 通过）`)
           }
         }
-        // ── H8 **并发队列：同一文件的两次交叠 append 不许互相顶掉**（t11 补）──
+        // ── H8 **并发队列：同一归档/证据文件的两次交叠 append 不许互相顶掉**（t11 补）──
         /**
          * ══ 它守的是什么（审查席实测：**6 族全绿而行为真丢数据**）══════════════
          *   `writeHobFile` 外面套了一层**同进程按路径排队**（`withFileQueue`）。
@@ -652,12 +652,14 @@ export async function runRender({ bad, ok }) {
             const A = '# 甲\n' + big + '\n'
             const B = '# 乙\n' + big + '\n'
             /** ⚠ `Promise.all`（真并发）：两个调用在同一 tick 里进入，必然交叠读。 */
+            const QUEUE_FILE = 'archive/2026-11-03-concurrency/HISTORY.md'
+            mkdirSync(join(qdir, 'archive', '2026-11-03-concurrency'), { recursive: true })
             const [ra, rb] = await Promise.all([
-              writeHobFile(qdir, { file: 'CONTEXT.md', content: A, mode: 'append' }, opts),
-              writeHobFile(qdir, { file: 'CONTEXT.md', content: B, mode: 'append' }, opts),
+              writeHobFile(qdir, { file: QUEUE_FILE, content: A, mode: 'append' }, opts),
+              writeHobFile(qdir, { file: QUEUE_FILE, content: B, mode: 'append' }, opts),
             ])
             let disk = ''
-            try { disk = readFileSync(join(qdir, 'CONTEXT.md'), 'utf8') } catch { disk = '' }
+            try { disk = readFileSync(join(qdir, QUEUE_FILE), 'utf8') } catch { disk = '' }
             const hasA = disk.includes('# 甲')
             const hasB = disk.includes('# 乙')
             if (ra?.ok !== true || rb?.ok !== true) {

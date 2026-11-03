@@ -33,6 +33,7 @@
     "check:workflow": 18,
     "check:convergence": 14,
     "check:ledger-resources": 3,
+    "check:ledger-write-policy": 4,
     "check:effects": 4,
     "check:handoff-effects": 1,
     "check:work-state": 5

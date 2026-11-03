@@ -87,6 +87,7 @@
     "gen:preset-contract": "node scripts/gen-preset-contract.mjs",
     "check:workflow": "node scripts/check-workflow.mjs",
     "check:ledger-resources": "node scripts/check-ledger-resources.mjs",
+    "check:ledger-write-policy": "node scripts/check-ledger-write-policy.mjs",
     "check:effects": "node scripts/check-effects-queue.mjs",
     "check:handoff-effects": "node scripts/check-handoff-effects.mjs",
     "check:work-state": "node scripts/check-work-state.mjs"

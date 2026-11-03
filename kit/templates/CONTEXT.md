@@ -2,8 +2,6 @@
 
 > 每轮开工先读这一份。它只写现行状态、仍欠事项和当前判断依据。
 > 三份现行真相：`REQUIREMENTS.md` 回答用户现在要什么；`PROJECT.md` 回答项目现在按什么方案推进；本文件回答现在在推进什么、下一步等谁。
-> 最后更新：[日期]（Asia/Shanghai）· 更新者：[谁]。
-
 > 重写前整份必须归档到 `archive/<日期>-<名>/sources/CONTEXT.md`，并在同目录 `README.md` 登记字节数与 SHA-256。
 
 ---
@@ -120,11 +118,12 @@
 | `npm run check:convergence` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:workflow` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:ledger-resources` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:ledger-write-policy` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:effects` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:handoff-effects` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:work-state` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 
-⚠ 本块共 **33** 个 `check:*` 族（另有 `build` / `typecheck` 两个非判据命令）；`check:all` 与 `check:preflight` 是调度器与体检，⛔ 不入本块（与 `SELF` 同口径）。
+⚠ 本块共 **34** 个 `check:*` 族（另有 `build` / `typecheck` 两个非判据命令）；`check:all` 与 `check:preflight` 是调度器与体检，⛔ 不入本块（与 `SELF` 同口径）。
 <!-- END gen:check-families -->
 
 ---

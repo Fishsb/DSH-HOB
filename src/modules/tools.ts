@@ -64,6 +64,7 @@ import {
 import { readLedgerResource, type LedgerUnitLike } from '../shared/ledger-resources.ts'
 import { basename } from 'node:path'
 import { LEDGER_FILES, writeHobFile } from '../server/hob-write.ts'
+import { HOB_WRITE_OPERATIONS, classifyHobWritePath, isCurrentRootDoc, type HobWriteOperation } from '../shared/ledger-write-policy.ts'
 // ── 首次铺骨架（2026-10-16 第 224 轮 · `UD-118`「C」）──────────────────────
 //   ⚠ 它是**插件的初始化行为**，⛔ 不是工具：⚠ 本模块的参数表**一个字段都没加**。
 // ── 待投递中间态记账（2026-10-10 · 用户报障修复）──────────────────────────
@@ -1021,7 +1022,10 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       + '骨架（README.md / templates/）只读。'
       + '⚠ `PROJECT.md`（项目方案）与账本同级、同在此可写面内；'
       + '但**方案只有用户能批准变更、Hob 只提议**（程序纪律，不是工具闸门）。'
-      + 'append=追加一条（默认，编号须与账本现有编号连续）；overwrite=整文件重写（受缩水守卫保护）。'
+      + '当前正文（CONTEXT / PROJECT / DECISIONS）只能 overwrite 整份替换，append 会被拒绝；'
+      + '替换前自动归档旧版。ledger/gen 与 ledger/spec 是生成物，不可写。'
+      + '活跃 change 只允许 proposal.md / tasks.md / deltas.md。'
+      + 'append=新增不可变条目；overwrite=整文件重写（受缩水守卫保护）。'
       + '写入前自动备份到账本区的 backups/；相同编号+相同内容会被幂等跳过。'
       + '建议先用 dryRun:true 预演。',
     parameters: {
@@ -1040,7 +1044,12 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       mode: {
         type: 'string',
         enum: ['append', 'overwrite'],
-        description: 'append（默认）/ overwrite；归档目录不允许 overwrite。',
+        description: 'append/overwrite。当前根正文必须 overwrite；归档目录不允许 overwrite。',
+      },
+      operation: {
+        type: 'string',
+        enum: [...HOB_WRITE_OPERATIONS],
+        description: '显式账本写操作。省略时按路径推断以兼容旧调用，但写入边界仍由工具强制。',
       },
       reason: {
         type: 'string',
@@ -1074,6 +1083,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         file: string
         content: string
         mode?: 'append' | 'overwrite'
+        operation?: HobWriteOperation
         reason?: string
         dryRun?: boolean
         dispatchTo?: string
@@ -1094,6 +1104,36 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
             ok: false, reason: 'proceed-not-confirmed', message: blocked,
           })
         }
+      }
+      const inferred = classifyHobWritePath(args.file)
+      const operation = args.operation ?? inferred
+      if (operation === undefined) {
+        return JSON.stringify({
+          ok: false,
+          reason: 'operation-unclassified',
+          message: `拒绝：无法从路径 ${args.file} 判定账本写操作。`,
+        })
+      }
+      if (isCurrentRootDoc(args.file) && operation !== 'replace-current') {
+        return JSON.stringify({
+          ok: false,
+          reason: 'operation-path-mismatch',
+          message: `拒绝：当前正文 ${args.file} 只能使用 replace-current。`,
+        })
+      }
+      if (isCurrentRootDoc(args.file) && args.mode !== 'overwrite') {
+        return JSON.stringify({
+          ok: false,
+          reason: 'append-current-denied',
+          message: `拒绝：当前正文 ${args.file} 不能 append；请提交完整替换内容并使用 overwrite。`,
+        })
+      }
+      if (isCurrentRootDoc(args.file) && String(args.reason ?? '').trim() === '') {
+        return JSON.stringify({
+          ok: false,
+          reason: 'missing-reason',
+          message: `拒绝：替换当前正文 ${args.file} 必须写 reason，说明这次替换改变了什么。`,
+        })
       }
       // v4：账本目录按工作区派生（在工作区之外）⇒ 边界仍是「账本目录」，只是位置变了。
       const root = ledgerRootOf(cfg, exec)

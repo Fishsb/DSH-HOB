@@ -281,6 +281,7 @@ export function runRepoRules({ bad, ok, skip }) {
     //   I2 阶段是算出来的（改 status ⇒ 只有对应那步变）· I5 gen/ 与生成器逐字节一致 · I4 cap 无终态无百分比。
     //   三条各带一条**实测跑红**的负向对拍（成环夹具 / 冻结阶段行 / 手改一字符）。
     ['scripts/check-ledger.mjs', '入库脚本（被 package.json 的 check:ledger 调用 · 三条不变式 I1/I2/I5 + I4：索引合法与状态单一真源 / 阶段由索引算出 / 生成物逐字节一致 / cap 无终态无百分比；三条负向对拍实测变红）'],
+    ['scripts/check-ledger-write-policy.mjs', '入库脚本（被 package.json 的 check:ledger-write-policy 调用 · 真实写入器验证当前正文 replace-only、自动归档、生成物拒写、活跃 change 白名单、历史 append-only 与三轮有界增长）'],
     // ⚠ 同批：生成器本身（`npm run gen:ledger`）也入库 —— 它产出 `gen/`，手改生成物由 I5 咬住。
     ['scripts/gen-ledger.mjs', '入库脚本（被 package.json 的 gen:ledger 调用 · ledger 生成器：读 units/（入口 index.toml + unit-*.toml 分片）产出 gen/*.md，确定性=同输入两次跑逐字节相同，⛔ 不写时间戳）'],
     // ⚠ 2026-11-03 新增：64 KB 分片迁移工具也必须落在 npm 命令上，否则“机制在、无人跑”。

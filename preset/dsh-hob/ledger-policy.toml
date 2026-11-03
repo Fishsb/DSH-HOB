@@ -1,0 +1,29 @@
+# HOB 账本写入策略（机器可读）
+version = 1
+current_root_docs = ["CONTEXT.md", "PROJECT.md", "DECISIONS.md"]
+generated_prefixes = ["ledger/gen/", "ledger/spec/"]
+active_change_files = ["proposal.md", "tasks.md", "deltas.md"]
+operations = [
+  "create-unit",
+  "transition-unit",
+  "link-unit",
+  "append-evidence",
+  "replace-current",
+  "compact-archive",
+  "write-active-change",
+  "write-ledger-source",
+]
+
+[[rule]]
+kind = "current"
+operations = ["replace-current"]
+forbid = ["append"]
+
+[[rule]]
+kind = "generated"
+operations = ["generate"]
+forbid = ["write"]
+
+[[rule]]
+kind = "active-change"
+allowed_files = ["proposal.md", "tasks.md", "deltas.md"]

@@ -40,6 +40,8 @@ const convMod = await import(pathToFileURL(join(here, '..', 'src', 'shared', 'co
  */
 const portfolioMod = await import(pathToFileURL(join(here, '..', 'src', 'shared', 'portfolio.ts')).href).catch(() => undefined)
 const portfolioOfShared = portfolioMod?.portfolioOf
+const writePolicyMod = await import(pathToFileURL(join(here, '..', 'src', 'shared', 'ledger-write-policy.ts')).href)
+const ACTIVE_CHANGE_FILES = writePolicyMod.ACTIVE_CHANGE_FILES
 
 
 const ROOT = join(here, '..')
@@ -695,8 +697,8 @@ export function checkDocLifecycle({
         problems.push(`${rel}：lifecycle-source SHA-256 不一致（${sourceRel}）`)
       }
     }
-    if (rel === 'CONTEXT.md' && markers.length === 0) {
-      problems.push('CONTEXT.md：缺少可核的 lifecycle-source 归档指针')
+    if (['CONTEXT.md', 'PROJECT.md', 'DECISIONS.md'].includes(rel) && markers.length === 0) {
+      problems.push(`${rel}：缺少可核的 lifecycle-source 归档指针`)
     }
   }
 
@@ -741,6 +743,48 @@ export function checkNoSelfReferentialReadings(units) {
     })
     if (hasExactCurrentBytes) {
       problems.push(`${u.id}：reading 把“当前字节数”写进分片内部 ⇒ 写入自身会改变读数；改记拆分时点值 + 当前 \`<65536B\` 不变量，精确值由 Y1/Y2 输出`)
+    }
+  }
+  return problems
+}
+
+/**
+ * Active change directories form a closed, bidirectionally indexed active zone.
+ *
+ * A directory is current only when a `change` unit points at its proposal, and
+ * its top-level file set is limited to current material. Process artifacts
+ * belong in evidence or archive.
+ */
+export function checkActiveChangeZone(units, changes) {
+  const problems = []
+  const registered = new Map()
+  for (const u of units) {
+    if (u.kind !== 'change') continue
+    const proposal = String(u.proposal ?? '')
+    const m = /^changes\/([^/]+)\/proposal\.md$/.exec(proposal)
+    if (m === null) {
+      problems.push(`${u.id}：proposal 必须指向 changes/<目录>/proposal.md，实为 ${JSON.stringify(proposal)}`)
+      continue
+    }
+    const prev = registered.get(m[1])
+    if (prev !== undefined) problems.push(`${m[1]}：被两个 change 单元同时登记（${prev} / ${u.id}）`)
+    else registered.set(m[1], String(u.id))
+  }
+  const disk = new Set(changes.map((c) => String(c.name)))
+  for (const [dir, id] of registered) {
+    if (!disk.has(dir)) problems.push(`${id}：登记了 changes/${dir}，但盘上目录不存在`)
+  }
+  for (const c of changes) {
+    const name = String(c.name)
+    if (!registered.has(name)) {
+      problems.push(`changes/${name}：盘上存在但没有任何 change 单元登记`)
+      continue
+    }
+    const extra = (Array.isArray(c.files) ? c.files : [])
+      .map(String)
+      .filter((f) => !ACTIVE_CHANGE_FILES.includes(f))
+    if (extra.length > 0) {
+      problems.push(`changes/${name}：活跃区出现过程件（${extra.join(' / ')}）⇒ 只允许 ${ACTIVE_CHANGE_FILES.join(' / ')}`)
     }
   }
   return problems
@@ -2772,10 +2816,14 @@ if (IS_MAIN) try {
         return undefined
       }
     }
-    const probs = checkDocLifecycle({ docs, changes, hashOf })
+    const activeChangeProbs = checkActiveChangeZone(units, changes)
+    const probs = [
+      ...checkDocLifecycle({ docs, changes, hashOf }),
+      ...activeChangeProbs,
+    ]
     if (probs.length === 0) {
       const markerCount = docs.reduce((n, d) => n + [...d.text.matchAll(LIFECYCLE_SOURCE_RE)].length, 0)
-      ok(`LIFE ✓ ${docs.length} 份现行根文档均在读取上限内且无日期化二级标题 · ${changes.length} 个 change 各有唯一 proposal.md · ${markerCount} 个归档指针的 SHA-256 可核`)
+      ok(`LIFE ✓ ${docs.length} 份现行根文档均在读取上限内且无日期化二级标题 · ${changes.length} 个 change 均双向登记且只含当前材料 · ${markerCount} 个归档指针的 SHA-256 可核`)
     } else {
       for (const p of probs) bad(`LIFE · ${p}`)
     }
@@ -2812,6 +2860,25 @@ if (IS_MAIN) try {
       ok('N-LIFE ✓ 负向对拍：超限 / 日期化章节 / proposal 变体并存 / 归档哈希不符 ⇒ 四类各必红；合规夹具不误报')
     } else {
       bad(`N-LIFE · 负向对拍失效：good=${JSON.stringify(good)} bads=${JSON.stringify(bads)}`)
+    }
+
+    const activeClean = checkActiveChangeZone(
+      [{ id: 'CHG-A', kind: 'change', proposal: 'changes/a/proposal.md' }],
+      [{ name: 'a', files: ['proposal.md', 'tasks.md', 'deltas.md'] }],
+    )
+    const activeBad = checkActiveChangeZone(
+      [{ id: 'CHG-A', kind: 'change', proposal: 'changes/a/proposal.md' }],
+      [
+        { name: 'a', files: ['proposal.md', 'VERDICT-X.md'] },
+        { name: 'orphan', files: ['proposal.md', 'TASK.md'] },
+      ],
+    )
+    const activeBites = activeBad.some((x) => x.includes('VERDICT-X.md'))
+      && activeBad.some((x) => x.includes('changes/orphan'))
+    if (activeClean.length === 0 && activeBites) {
+      ok('N-LIFE-Z ✓ 负向对拍（先自证：合规 change 只含当前材料且双向登记；再同时造过程件与孤儿目录）⇒ 两类都必红')
+    } else {
+      bad(`N-LIFE-Z · 负向对拍失效：clean=${JSON.stringify(activeClean)} bad=${JSON.stringify(activeBad)}`)
     }
   }
 

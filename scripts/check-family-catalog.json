@@ -135,6 +135,10 @@
       "what": "**账本按 ID 资源面**：覆盖 10 类单元（goal / req / change / task / run / acc / evidence / risk / decision / cap）；目标、需求、方案、任务、运行、验收、证据、风险、决策、能力均可列表与按稳定 ID 读取，需求关联图的每个读取指针须可继续解析；坏 kind / 不存在 / 未知资源必须拒绝，含正反向与形状对拍"
     },
     {
+      "cmd": "check:ledger-write-policy",
+      "what": "**账本写入边界**：当前正文 append 被拒且替换前自动归档 · 生成视图不可手写 · 活跃 change 只含当前材料 · 历史不可覆盖 · 三轮替换不线性增长"
+    },
+    {
       "cmd": "check:effects",
       "what": "**持久 Effects/Outbox**：成功即删、失败退避不丢、重启恢复、同键合并与代际保护、严格顺序、并发上限、坏文件恢复，含负向对拍"
     },

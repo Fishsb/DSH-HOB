@@ -24,9 +24,11 @@
  */
 import { lstat, readFile, writeFile, rename, readdir, unlink, mkdir, rm, open, chmod, stat } from 'node:fs/promises'
 import { existsSync, readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, join, relative, sep } from 'node:path'
 import { resolveInside } from './doc-read.ts'
 import { renderReadings, renderReadingsNote, type RenderResult } from './hob-render.ts'
+import { isActiveChangeFile, isCurrentRootDoc, isGeneratedLedgerPath } from '../shared/ledger-write-policy.ts'
 
 // ── 白名单：骨架只读，运行数据/方案可写（与 UD-05 的切分同一条线）─────────────
 
@@ -139,7 +141,7 @@ export const VOLUME_SUBDIRS = ['context/rounds'] as const
  *   `gen/` 是 `npm run gen:ledger` 的**生成物**，手改即红（`CONSTITUTION` §2 / I5）。
  *   开它等于允许"绕过索引直接改产物" —— 那正是这次重构要消灭的编辑原语。
  */
-export const LEDGER_WRITABLE_DIRS = ['ledger/units', 'ledger/spec', 'ledger/changes'] as const
+export const LEDGER_WRITABLE_DIRS = ['ledger/units', 'ledger/changes'] as const
 
 /**
  * 新账本里**可写的稳定入口单文件**（`index.toml` 导航）；单元分片由
@@ -363,6 +365,10 @@ export type RefuseReason =
   | 'id-conflict'
   | 'shrinking'
   | 'archive-overwrite-denied'
+  | 'append-current-denied'
+  | 'generated-write-denied'
+  | 'active-change-file-denied'
+  | 'archive-snapshot-failed'
   /**
    * **读不出来 ≠ 不存在**（2026-10-24 · 本单必修 1/2/3）。
    *
@@ -385,6 +391,14 @@ export interface WriteHobResult {
   id?: string
   /** 备份路径（相对 `.hob/`）；无备份时缺省。 */
   backup?: string
+  /** 根文档整份替换前自动创建的不可变归档快照。 */
+  archiveSnapshot?: {
+    directory: string
+    source: string
+    manifest: string
+    bytes: number
+    sha256: string
+  }
   bytesBefore?: number
   bytesAfter?: number
   /** 给人/模型看的一句话。 */
@@ -728,7 +742,22 @@ async function withFileQueue<T>(key: string, fn: () => Promise<T>): Promise<T> {
 import { findSymlinkOnPath } from './doc-read.ts'
 
 /** 白名单判定：返回拒绝结果，或 `null` 表示放行。 */
-function checkWhitelist(file: string): WriteHobResult | null {
+function checkWhitelist(file: string, mode: 'append' | 'overwrite'): WriteHobResult | null {
+  if (isGeneratedLedgerPath(file)) {
+    return refuse(
+      file,
+      'generated-write-denied',
+      `拒绝：\`${file}\` 是生成物；HOB 只能写源数据，再运行 \`npm run gen:ledger\` 重建视图。`,
+    )
+  }
+  if (file.startsWith('ledger/changes/') && !isActiveChangeFile(file)) {
+    return refuse(
+      file,
+      'active-change-file-denied',
+      `拒绝：\`${file}\` 不在活跃方案的白名单内。活跃 change 只允许 proposal.md / tasks.md / deltas.md；`
+        + `任务书、验收工作表、判决和报告请写进证据或 archive/。`,
+    )
+  }
   // 骨架：显式拒绝（并说明原因，别让调用方猜）
   if ((SKELETON_FILES as readonly string[]).includes(file)) {
     return refuse(file, 'skeleton', `拒绝：${file} 是**骨架**（格式契约，进 git），write_hob 不可写。骨架变更请走人工编辑 + commit。`)
@@ -747,11 +776,11 @@ function checkWhitelist(file: string): WriteHobResult | null {
    */
   if (file === 'ledger' || file.startsWith('ledger/')) {
     // ⛔ 生成物：显式拒绝（有独立理由，⛔ 不混进笼统话术）
-    if (file.startsWith('ledger/gen/') || file === 'ledger/gen') {
+  if (file.startsWith('ledger/gen/') || file === 'ledger/gen' || file.startsWith('ledger/spec/') || file === 'ledger/spec') {
       return refuse(
         file,
-        'not-whitelisted',
-        `拒绝：\`ledger/gen/\` 是**生成物**（\`npm run gen:ledger\` 产出），手改即红（\`CONSTITUTION\` §2 / I5）。`
+        'generated-write-denied',
+        `拒绝：\`ledger/gen/\` 与 \`ledger/spec/\` 都是**生成物**（\`npm run gen:ledger\` 产出），手改即红（\`CONSTITUTION\` §2 / I5）。`
           + `\n      ⇒ 要改内容 ⇒ 改 \`ledger/units/\` 的索引分片，再跑 \`npm run gen:ledger\`。`,
       )
     }
@@ -1074,6 +1103,69 @@ function backupVolumeDir(hobRoot: string, absTarget: string): string {
   return '(root)'
 }
 
+/**
+ * Snapshot a current root document before it is replaced.
+ *
+ * The snapshot is immutable: the source and manifest are both created with
+ * `wx`, so an existing archive is never overwritten. A second replacement in
+ * the same second receives a numeric suffix.
+ */
+async function archiveCurrentSnapshot(
+  hobRoot: string,
+  file: string,
+  original: Buffer,
+): Promise<NonNullable<WriteHobResult['archiveSnapshot']>> {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  const base = file.replace(/\.md$/i, '').toLowerCase().replace(/[^a-z0-9]+/g, '-')
+  const archiveRoot = join(hobRoot, 'archive')
+  await mkdir(archiveRoot, { recursive: true })
+
+  let dirname = `${date}-current-${base}-${time}`
+  let absArchive = join(archiveRoot, dirname)
+  for (let n = 1; ; n++) {
+    try {
+      await mkdir(absArchive)
+      break
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || n >= 100) throw error
+      dirname = `${date}-current-${base}-${time}-${n}`
+      absArchive = join(archiveRoot, dirname)
+    }
+  }
+
+  const sources = join(absArchive, 'sources')
+  await mkdir(sources)
+  const sourceName = file.split('/').at(-1)!
+  const sourceAbs = join(sources, sourceName)
+  await writeFile(sourceAbs, original, { flag: 'wx' })
+  const sha256 = createHash('sha256').update(original).digest('hex')
+  const bytes = original.byteLength
+  const relDirectory = `archive/${dirname}`
+  const relSource = `${relDirectory}/sources/${sourceName}`
+  const relManifest = `${relDirectory}/README.md`
+  const manifest = [
+    `# ${file} 替换前快照`,
+    '',
+    `- 原始路径：\`${file}\``,
+    `- 归档件：\`${relSource}\``,
+    `- 字节数：${bytes}`,
+    `- SHA-256：${sha256}`,
+    `- 原因：当前正文整份替换前自动归档`,
+    '',
+  ].join('\n')
+  await writeFile(join(absArchive, 'README.md'), manifest, { flag: 'wx' })
+  return {
+    directory: relDirectory,
+    source: relSource,
+    manifest: relManifest,
+    bytes,
+    sha256,
+  }
+}
+
 async function backup(
   absTarget: string,
   backupDir: string,
@@ -1308,7 +1400,7 @@ async function writeHobFileInner(
         : '拒绝：只允许写 .md 文件。',
     )
   }
-  const wl = checkWhitelist(file)
+  const wl = checkWhitelist(file, mode)
   if (wl !== null) return wl
 
   // .hob/ 自身若是软链，写出去就逃逸了 —— 连带检查
@@ -1381,6 +1473,14 @@ async function writeHobFileInner(
   }
   const exists = read.kind === 'ok'
   const existing = read.kind === 'ok' ? read.content : ''
+  if (isCurrentRootDoc(file) && mode === 'append') {
+    return refuse(
+      file,
+      'append-current-denied',
+      `拒绝：\`${file}\` 是当前正文，只能整份替换，不能追加历史说明。`
+        + `\n      ⇒ 用 \`mode="overwrite"\` 提交完整的新当前版本；写入器会先自动归档旧版。`,
+    )
+  }
 
   // ── 8：编号校验 + 幂等（append 才需要）────────────────────────────────
   let id: string | undefined
@@ -1438,6 +1538,24 @@ async function writeHobFileInner(
     }
   }
 
+  /**
+   * Current root documents are replace-only. Preserve their exact bytes before
+   * a new current version is written; a failed snapshot blocks the replacement.
+   */
+  let archiveSnapshot: WriteHobResult['archiveSnapshot']
+  if (mode === 'overwrite' && exists && isCurrentRootDoc(file) && input.dryRun !== true) {
+    try {
+      const originalBytes = await readFile(absTarget)
+      archiveSnapshot = await archiveCurrentSnapshot(hobRoot, file, originalBytes)
+    } catch (error) {
+      return refuse(
+        file,
+        'archive-snapshot-failed',
+        `拒绝：替换 ${file} 前无法创建不可变归档快照（${error instanceof Error ? error.message : String(error)}）。`,
+      )
+    }
+  }
+
   // ── 10.5：②「先落副本」提醒（⚠ **只判事实，⛔ 不拒写**）──────────────────────
   //   ⚠ 位置：⚠ **在缩水守卫（§9）与幂等跳过（§10）之后** ⇒
   //     · 被拒的写**根本不会走到这里**（⛔ 不会为一次拒绝发提醒）；
@@ -1489,6 +1607,7 @@ async function writeHobFileInner(
       // ⚠ ⚠ **dryRun 也要给同一条提醒**（⚠ 否则试跑与真跑不一致 —— 与 `readings` 同一条纪律）
       ...(copyReminder === undefined ? {} : { preOverwriteBackupReminder: copyReminder }),
       message: `[dryRun] 校验全过，将${mode === 'overwrite' ? '覆盖' : '追加'} ${file}（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节），未落盘。`
+        + (mode === 'overwrite' && exists && isCurrentRootDoc(file) ? ' ⚠ 真写时会先自动归档旧版。' : '')
         + renderDanglingRefsNote(dRefs)
         // ⚠ `dryRun` **也要渲染**（否则试跑与真跑不一致）：本函数在 §6.5 已渲染，
         //   这里只是**如实报出**它渲染了哪些值 —— 而**未落盘**。
@@ -1642,6 +1761,7 @@ async function writeHobFileInner(
     file,
     id,
     ...(backupName === undefined ? {} : { backup: `${BACKUP_DIR}/${backupSubdir}/${backupName}` }),
+    ...(archiveSnapshot === undefined ? {} : { archiveSnapshot }),
     bytesBefore: Buffer.byteLength(existing, 'utf8'),
     bytesAfter: nextBytes,
     ...(isHandoffPath(file) ? { handoff: { kind: 'task-file' as const, ref: file } } : {}),
@@ -1654,6 +1774,7 @@ async function writeHobFileInner(
     message: `✅ 已${mode === 'overwrite' ? '覆盖' : '追加'} ${file}${id === undefined ? '' : `：${id}`}`
       + `（${Buffer.byteLength(existing, 'utf8')} → ${nextBytes} 字节）`
       + (backupName === undefined ? '' : `；备份 ${BACKUP_DIR}/${backupSubdir}/${backupName}`)
+      + (archiveSnapshot === undefined ? '' : `；旧版已归档 ${archiveSnapshot.source}`)
       + renderDanglingRefsNote(danglingRefs)
       // ── 读数渲染的**出处**（E-118：值是工具算的，就要说得出是哪些值）────────
       + renderReadingsNote(rendered)

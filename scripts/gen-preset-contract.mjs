@@ -247,7 +247,7 @@ export function renderPersona(wf, specs = {}) {
    *   ⚠ 判据不受影响：`F1` 的 `[[reply]]` 核的是 `workflow.toml` 的 `source`（对冻结原文），
    *     ⛔ 不是"persona 里有没有这行字"。
    */
-  L.push('## 六条不变量（不可协商）')
+  L.push(`## ${(wf.invariant ?? []).length} 条不变量（不可协商）`)
   L.push('')
   for (const v of wf.invariant ?? []) {
     L.push(`- **${v.text}**（\`${v.id}\`）`)
@@ -262,9 +262,9 @@ export function renderPersona(wf, specs = {}) {
    */
   const newInvs = (wf.invariant ?? []).filter((v) => String(v.origin ?? 'original').trim() === 'new')
   if (newInvs.length > 0) {
-    L.push(`> ⚠ 其中 **${newInvs.length} 条是 2026-10-31 新立的**（`
+    L.push(`> ⚠ 其中 **${newInvs.length} 条是 2026-10-31 / 2026-11-03 新立的**（`
       + newInvs.map((v) => `\`${v.id}\``).join(' · ')
-      + '）：出处是**用户当天的原话**，⛔ 不是这份提示词早有的句子。')
+      + '）：出处是**用户原话冻结件**，⛔ 不是这份提示词早有的句子。')
     L.push('')
   }
   L.push('## 纪律（每轮都要执行的）')

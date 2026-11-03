@@ -101,9 +101,9 @@ git add dsh-hob.workspace.json      # ⚠ 必须入库：它随分支走，隔�
 
 ---
 
-## 3. 第 2–3 步 · 四份正本从哪来 · 卷怎么建
+## 3. 第 2–3 步 · 五份正本从哪来 · 卷怎么建
 
-### 3.1 五份正本 —— **四份有模板、一份没有**（⚠ 这是最容易踩的一处）
+### 3.1 五份正本 —— **全部由模板起手**
 
 | 正本 | 从哪来 | 谁填 |
 |---|---|---|
@@ -111,22 +111,22 @@ git add dsh-hob.workspace.json      # ⚠ 必须入库：它随分支走，隔�
 | `CONTEXT.md` | **模板** ✅ `.hob/templates/CONTEXT.md` | 复制后替换占位（`[日期]` / `[谁]` / `第 N 轮`） |
 | `DECISIONS.md` | **模板** ✅ `.hob/templates/DECISIONS.md` | 同上（模板里的 `CHG-000` **是有意的占位号，⛔ 别当残留改掉**） |
 | `USER-DECISIONS.md` | **模板** ✅ `.hob/templates/USER-DECISIONS.md` | ⛔ **历史档，只读** —— 建出来是当**历史位**的，**当前需求不写这里**；⚠ **本项目**该份**已退场**（整份在账本区 `archive/` 下、不再留在根上），⚠ **新项目照旧建它**（模板面⛔ 不缩小） |
-| **`PROJECT.md`** | ⚠ **没有模板** —— **须自行起草** | ⚠ **这是有意的**：方案是**逐项目唯一的整篇文档**，与"同构空模板 + 每项目填条目"的账本形态本就不同 ⇒ ⛔ 别去"补一个方案模板" |
+| **`PROJECT.md`** | **模板** ✅ `.hob/templates/PROJECT.md` | 复制后填当前定位、范围、架构、约束与依据；只写现在，旧版整份归档 |
 
-**命令（四份有模板的）**：
+**命令（五份有模板的）**：
 
 ```bash
 NEW="<工作区>/.hob"
 mkdir -p "$NEW"/{volumes,archive,backups,runtime}
-for f in REQUIREMENTS CONTEXT DECISIONS USER-DECISIONS; do
+for f in REQUIREMENTS PROJECT CONTEXT DECISIONS USER-DECISIONS; do
   cp .hob/templates/$f.md "$NEW/$f.md"
 done
-ls -1 "$NEW"      # 期望：REQUIREMENTS.md CONTEXT.md DECISIONS.md USER-DECISIONS.md volumes archive backups runtime
+ls -1 "$NEW"      # 期望：REQUIREMENTS.md PROJECT.md CONTEXT.md DECISIONS.md USER-DECISIONS.md volumes archive backups runtime
 # ⚠ 上面是**新工作区**的期望清单（模板面⛔ 不缩小 ⇒ `USER-DECISIONS.md` 照建）；
 #   ⚠ **本项目例外**：该份已退场、⛔ 不在根上（整份在账本区 `archive/` 下）。
 ```
 
-⚠ **`PROJECT.md` 要自己写**：**建议只留 文件头 + 项目概览 + §0**（它是**地图**），正文按节落 `volumes/plan/`。
+⚠ **`PROJECT.md` 从模板起手**：只写当前方案；正文过长时按节拆到 `volumes/plan/`，根上保留地图与当前约束。
 
 ⚠ ⚠ **两条"根"的分工（开箱就得对，⛔ 别等以后再说）**：
 **`REQUIREMENTS.md` = 现行需求根（唯一写面）**；**`USER-DECISIONS.md` = 历史档（只读）**。
@@ -253,7 +253,7 @@ ls -1 "$NEW"      # 期望：REQUIREMENTS.md CONTEXT.md DECISIONS.md USER-DECISI
 
 | 要自己填 | 是模板 / 现成的 |
 |---|---|
-| **`PROJECT.md` 全文**（无模板） | `CONTEXT.md` / `DECISIONS.md` / `USER-DECISIONS.md` |
+| `PROJECT.md` 的项目专有内容 | `PROJECT.md` / `CONTEXT.md` / `DECISIONS.md` / `USER-DECISIONS.md` 的空模板 |
 | 每份正本的占位（`[日期]` / `[谁]` / `第 N 轮`） | `.hob/README.md`（骨架说明）· `.hob/INIT.md`（本文件） |
 | 各卷的条目标题 + 索引行 | `.hob/templates/TASK.md` / `REPORT.md`（交接协议） |
 | **`.hob/README.md §3 归档表**（本项目专属 ⇒ 清掉或换成本项目的行） | `.hob/templates/ROLES.md` / `GATES.md`（角色 / 门禁） |
@@ -287,7 +287,7 @@ ls -1 "$NEW"      # 期望：REQUIREMENTS.md CONTEXT.md DECISIONS.md USER-DECISI
 ├── README.md        骨架说明（§1 两栏清单 · §1.4 机检 · §5.1 纪律登记表 · §3 归档指针表）
 ├── INIT.md          本文件（初始化清单）
 ├── EXPERIENCE.md    经验库**索引**（+ experience/ 条目目录；一条一个 <编号数字>.md，文件名不补零）
-├── templates/       空模板（CONTEXT / DECISIONS / REQUIREMENTS / USER-DECISIONS / ROLES / GATES / TASK / REPORT）
+├── templates/       空模板（PROJECT / CONTEXT / DECISIONS / REQUIREMENTS / USER-DECISIONS / ROLES / GATES / TASK / REPORT）
 ├── drafts/          契约正文人读版（被 check:presets 读取；⚠ 本项目专有内容随骨架走，按需清）
 └── roles/           角色簇方法论（methods/*.md）
 ```
@@ -348,7 +348,7 @@ ls -1 "$NEW"      # 期望：REQUIREMENTS.md CONTEXT.md DECISIONS.md USER-DECISI
 | 2 | **骨架自洽**（模板之间不打架） | `grep -nE '(三[本]\|四[本])' .hob/templates/*.md` | **0 命中** |
 | 3 | **⛔ 无本项目专有编号**（引用会断链） | `grep -rnoE '\b(UD\|CHG)-[0-9]+\b' .hob/templates/ \| grep -vE 'CHG-000\|UD-00'` | **0 命中**（只有有意的占位号） |
 | 4 | **⛔ 无写死的本项目账本区路径** | `grep -rn '/ho[m]e/lk' .hob/templates/ .hob/INIT.md` | **0 命中** —— 见下方「口径」 |
-| 5 | **正本可起手** | `ls <工作区>/.hob/` | 4 份正本中**至少 3 份**从模板来；占位齐全 |
+| 5 | **正本可起手** | `ls <工作区>/.hob/` | 5 份正本**全部**从模板来；占位齐全 |
 | 6 | **卷索引两向完整** | `ls volumes/*/INDEX.md` | 每卷一份（**没有卷时**该项不适用） |
 | 7 | **骨架 ↔ 实例不漂移** | 收尾命令逐条 | **全部 EXIT=0**（条数以 `package.json` 的 `scripts` 实测为准） |
 | 8 | **零宽 / 符号链接** | `grep -rP '[\x{200B}\x{FEFF}]' .hob/` · `find .hob -type l` | 均 **0** |
