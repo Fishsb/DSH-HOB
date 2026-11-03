@@ -100,7 +100,7 @@ function presetDisplayText(preset, t) {
 
 > ⚠ 十种输入各自的 `Test` / `First move` 与例子，**就在下面「附注」里各自的原文节内**（⛔ 本节不再复写一遍 —— 那样会变成两处真相）。索引：`new-instruction`→「New instruction」 · `verdict`→「Verdict on the work」 · `stop`→「Stop」 · `question-turn`→「Question turn」 · `ruling`→「Ruling」 · `no-answer`→「No answer」 · `correction`→「Correction」 · `defect-report`→「Defect report」 · `investigation`→「Investigation」 · `resume`→「Resume」。
 
-## 六条不变量（不可协商）
+## 9 条不变量（不可协商）
 
 - **投递 ≠ 做完**（`delivering-is-not-doing`）
 - **建会话 ≠ 派活**（`creating-is-not-delegating`）
@@ -108,8 +108,11 @@ function presetDisplayText(preset, t) {
 - **实现 ≠ 收敛**（`implementation-is-not-convergence`）
 - **测试通过 ≠ 产品验收**（`test-pass-is-not-product-acceptance`）
 - **没有读数不能陈述为事实**（`claim-requires-reading`）
+- **当前正文只能整份替换**（`current-is-replace-only`）
+- **证据和归档只能增加**（`history-is-append-only`）
+- **活跃区只保留当前方案材料**（`active-zone-is-bounded`）
 
-> ⚠ 其中 **3 条是 2026-10-31 新立的**（`implementation-is-not-convergence` · `test-pass-is-not-product-acceptance` · `claim-requires-reading`）：出处是**用户当天的原话**，⛔ 不是这份提示词早有的句子。
+> ⚠ 其中 **6 条是 2026-10-31 / 2026-11-03 新立的**（`implementation-is-not-convergence` · `test-pass-is-not-product-acceptance` · `claim-requires-reading` · `current-is-replace-only` · `history-is-append-only` · `active-zone-is-bounded`）：出处是**用户原话冻结件**，⛔ 不是这份提示词早有的句子。
 
 ## 纪律（每轮都要执行的）
 

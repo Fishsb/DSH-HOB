@@ -36,6 +36,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { CURRENT_ROOT_DOCS } from '../src/shared/ledger-write-policy.ts'
 import { resolveLedgerRoot } from './lib/ledger-root.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -139,8 +140,18 @@ export function compareDocument(templateText, instanceText) {
   const instanceTitle = documentTitle(instanceText)
   if (templateTitle === null) issues.push('模板缺一级标题')
   if (instanceTitle === null) issues.push('实例缺一级标题')
-  if (templateTitle !== null && instanceTitle !== null && templateTitle !== instanceTitle) {
+  const templatePrefix = templateTitle?.split(' —— ', 1)[0]
+  const instancePrefix = instanceTitle?.split(' —— ', 1)[0]
+  const templateFileName = templateTitle?.split(' —— ', 2)[0] ?? ''
+  const instanceFileName = instanceTitle?.split(' —— ', 2)[0] ?? ''
+  const projectPair = templateFileName === 'PROJECT.md' || templatePrefix === 'PROJECT.md'
+  if (templateTitle !== null && instanceTitle !== null
+    && !projectPair
+    && templateTitle !== instanceTitle) {
     issues.push(`标题漂移：模板「${templateTitle}」≠ 实例「${instanceTitle}」`)
+  }
+  if (projectPair && templateFileName !== instanceFileName) {
+    issues.push(`标题漂移：模板文件名前缀「${templateFileName}」≠ 实例「${instanceFileName}」）`)
   }
 
   const templateTables = uniqueTables(tableHeaders(templateText))
@@ -174,6 +185,8 @@ function templateDocumentNames(templateRoot) {
   for (const name of readdirSync(templateRoot).filter((n) => n.endsWith('.md')).sort()) {
     const file = join(templateRoot, name)
     if (!statSync(file).isFile()) continue
+    // Registered current roots are templates even when the title is project-specific.
+    if (CURRENT_ROOT_DOCS.includes(name)) { names.push(name); continue }
     const title = documentTitle(readFileSync(file, 'utf8'))
     if (title !== null && title.startsWith(name)) names.push(name)
   }
@@ -245,19 +258,26 @@ function fixtureText({ title, header, extraTable = false, optionalSection = true
   ].join('\n')
 }
 
-function runFixture(base, { instanceTitle, instanceHeader, extraTable = false }) {
+function runFixture(base, { instanceTitle, instanceHeader, extraTable = false, projectTitle = '[项目名] 当前方案' }) {
   const templateRoot = join(base, 'templates-' + String(Math.random()).slice(2))
   const instanceRoot = join(base, 'instance-' + String(Math.random()).slice(2))
   mkdirSync(templateRoot, { recursive: true })
   mkdirSync(instanceRoot, { recursive: true })
   const canonicalHeader = ['轮', '内容', '落点']
   writeFileSync(join(templateRoot, 'CONTEXT.md'), fixtureText({ title: '当前工作上下文', header: canonicalHeader }), 'utf8')
+  writeFileSync(join(templateRoot, 'PROJECT.md'), fixtureText({ title: '[项目名] 当前方案', header: canonicalHeader }).replace(/^# CONTEXT\.md/, '# PROJECT.md'), 'utf8')
   writeFileSync(join(instanceRoot, 'CONTEXT.md'), fixtureText({
     title: instanceTitle,
     header: instanceHeader,
     extraTable,
     optionalSection: false,
   }), 'utf8')
+  writeFileSync(join(instanceRoot, 'PROJECT.md'), fixtureText({
+    title: projectTitle,
+    header: instanceHeader,
+    extraTable,
+    optionalSection: false,
+  }).replace(/^# CONTEXT\.md/, '# PROJECT.md'), 'utf8')
   return spawnSync(process.execPath, [
     fileURLToPath(import.meta.url),
     '--template-root', templateRoot,
@@ -303,6 +323,18 @@ function runSelfTests(ok, crash, verbose) {
     } else {
       crash('检查器自证失败：标题漂移夹具没有产生预期红'
         + `（status=${String(titleDrift.status)} / stdout=${String(titleDrift.stdout).trim()}）`)
+      return false
+    }
+
+    const projectsOnly = runFixture(base, {
+      instanceTitle: '当前工作上下文',
+      instanceHeader: ['轮', '内容', '落点'],
+      projectTitle: 'demo 当前方案',
+    })
+    if (projectsOnly.status === 0) {
+      ok('✓ 先自证 · 当前方案标题允许实例项目名：模板 PROJECT.md 与实例 PROJECT.md 配对时不误咬')
+    } else {
+      crash(`检查器自证失败：当前方案标题被误判为漂移（status=${String(projectsOnly.status)}）`)
       return false
     }
 
