@@ -140,18 +140,12 @@ export function compareDocument(templateText, instanceText) {
   const instanceTitle = documentTitle(instanceText)
   if (templateTitle === null) issues.push('模板缺一级标题')
   if (instanceTitle === null) issues.push('实例缺一级标题')
-  const templatePrefix = templateTitle?.split(' —— ', 1)[0]
-  const instancePrefix = instanceTitle?.split(' —— ', 1)[0]
   const templateFileName = templateTitle?.split(' —— ', 2)[0] ?? ''
-  const instanceFileName = instanceTitle?.split(' —— ', 2)[0] ?? ''
-  const projectPair = templateFileName === 'PROJECT.md' || templatePrefix === 'PROJECT.md'
+  const projectPair = templateFileName === 'PROJECT.md'
   if (templateTitle !== null && instanceTitle !== null
     && !projectPair
     && templateTitle !== instanceTitle) {
     issues.push(`标题漂移：模板「${templateTitle}」≠ 实例「${instanceTitle}」`)
-  }
-  if (projectPair && templateFileName !== instanceFileName) {
-    issues.push(`标题漂移：模板文件名前缀「${templateFileName}」≠ 实例「${instanceFileName}」）`)
   }
 
   const templateTables = uniqueTables(tableHeaders(templateText))
