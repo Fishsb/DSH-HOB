@@ -266,14 +266,18 @@ export function createGateMemory(): GateMemory {
  */
 const HOB_GATE_ZH: Record<string, string> = {
   'gate.banner': '本会话尚未选择可读范围，暂不推进。',
+  'gate.banner.selected': '本会话已选择档位，可随时重新选择。',
   'gate.btn': '选择可读范围',
+  'gate.btn.selected': '重新选择档位',
   'gate.btn.unavailable': '选择入口暂不可用',
   'gate.alert.unavailable': '本版尚未接上为此会话选档位的入口。',
 }
 
 const HOB_GATE_EN: Record<string, string> = {
   'gate.banner': 'This session has not chosen a readable range yet, so it does not advance.',
+  'gate.banner.selected': 'This session already has levels selected; you can change them at any time.',
   'gate.btn': 'Choose the readable range',
+  'gate.btn.selected': 'Change the levels',
   'gate.btn.unavailable': 'The chooser is not available',
   'gate.alert.unavailable': 'This version has no entry point yet for choosing this session’s levels.',
 }
@@ -369,13 +373,15 @@ export function ensureGateStyles(): HTMLStyleElement | null {
  *     机检与别的调用点若还按"值是字符串"读，会读到**当前语言**的文案（比字面量更准）。
  */
 const GATE_TEXT_KEY = 'gate.banner'
+const GATE_TEXT_SELECTED_KEY = 'gate.banner.selected'
 const GATE_BTN_KEY = 'gate.btn'
+const GATE_BTN_SELECTED_KEY = 'gate.btn.selected'
 const GATE_BTN_UNAVAILABLE_KEY = 'gate.btn.unavailable'
 
 /** 横幅主文案（⭐ 每次调用现读语言）。 */
-export function gateText(): string { return t(GATE_TEXT_KEY) }
-/** 按钮文案（可开时）。 */
-export function gateButtonText(): string { return t(GATE_BTN_KEY) }
+export function gateText(selected = false): string { return t(selected ? GATE_TEXT_SELECTED_KEY : GATE_TEXT_KEY) }
+/** 按钮文案（可开时；selected=true ⇒ 二次切换话术）。 */
+export function gateButtonText(selected = false): string { return t(selected ? GATE_BTN_SELECTED_KEY : GATE_BTN_KEY) }
 /** 读取器缺席/判不出时的按钮说明（诚实话术，⛔ 不假装能开）。 */
 export function gateButtonUnavailableText(): string { return t(GATE_BTN_UNAVAILABLE_KEY) }
 
@@ -440,7 +446,13 @@ export function shouldShowGate(
   recorded: PolicyRecordState,
 ): boolean {
   /** 横幅入口保留；发送被拦后的自动弹窗由常驻轮询负责（见 `showBanner`）。 */
-  return isHobPreset(agentPreset) && recorded === 'unrecorded'
+  /**
+   * 入口在**未选**和**已选**两种状态下都存在：
+   * · 未选：提示尚未选择；
+   * · 已选：提示可以重新选择（二次切换能力）。
+   * `unknown` 仍不显示（判不出不打扰）。
+   */
+  return isHobPreset(agentPreset) && (recorded === 'unrecorded' || recorded === 'recorded')
 }
 
 /**
@@ -645,9 +657,10 @@ export function HobUnselectedGate(props: HobUnselectedGateProps): any {
   if (!shouldShowGate(props.agentPreset, recorded)) return null
 
   const canOpen = typeof props.openForSession === 'function'
+  const selected = recorded === 'recorded'
   return h('div', { className: GATE_CLASS.root, role: 'status', 'aria-live': 'polite' },
     // ⚠ 文案经 `t()` **现读**（切语言 ⇒ 订阅触发重渲染 ⇒ 这里拿到新语言的句子）
-    h('span', { className: GATE_CLASS.text }, gateText()),
+    h('span', { className: GATE_CLASS.text }, gateText(selected)),
     h('button', {
       type: 'button',
       className: GATE_CLASS.btn,
@@ -659,13 +672,13 @@ export function HobUnselectedGate(props: HobUnselectedGateProps): any {
         if (!canOpen || sessionId === undefined) {
           try {
             // ⚠ 如实说明，⛔ 不假装已经打开
-            globalThis.alert?.(`${gateText()}\n${gateButtonUnavailableText()}：${t('gate.alert.unavailable')}`)
+            globalThis.alert?.(`${gateText(selected)}\n${gateButtonUnavailableText()}：${t('gate.alert.unavailable')}`)
           } catch { /* 无 alert 环境 ⇒ 静默（横幅文案已可见） */ }
           return
         }
         props.openForSession?.(sessionId)
       },
-    }, canOpen ? gateButtonText() : gateButtonUnavailableText()),
+    }, canOpen ? gateButtonText(selected) : gateButtonUnavailableText()),
   )
 }
 

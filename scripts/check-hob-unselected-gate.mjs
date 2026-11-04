@@ -232,7 +232,7 @@ try {
   {
     const cases = [
       { name: 'Hob + 未选', preset: 'Hob', recorded: 'unrecorded', want: true },
-      { name: 'Hob + 已选', preset: 'Hob', recorded: 'recorded', want: false },
+      { name: 'Hob + 已选', preset: 'Hob', recorded: 'recorded', want: true },
       { name: 'Hob + 判不出', preset: 'Hob', recorded: 'unknown', want: false },
       { name: '非 Hob(standard) + 未选', preset: 'standard', recorded: 'unrecorded', want: false },
       { name: '非 Hob(cordis) + 未选', preset: 'cordis', recorded: 'unrecorded', want: false },
@@ -249,7 +249,7 @@ try {
     const mkReader = (v) => async () => v
     const rows = [
       { name: 'Hob + 未选', preset: 'Hob', rec: 'unrecorded', wantShown: true },
-      { name: 'Hob + 已选', preset: 'Hob', rec: 'recorded', wantShown: false },
+      { name: 'Hob + 已选', preset: 'Hob', rec: 'recorded', wantShown: true },
       { name: 'Hob + 判不出', preset: 'Hob', rec: 'unknown', wantShown: false },
       { name: '非 Hob + 未选', preset: 'standard', rec: 'unrecorded', wantShown: false },
     ]
@@ -376,6 +376,27 @@ try {
       ok(`G-6b ✓ 安装面两处都注册：hero 横幅 + composer 常驻轮询（${pollId}）`)
     } else {
       bad(`G-6b · slots=${JSON.stringify(names)} pollId=${JSON.stringify(pollId)}`)
+    }
+  }
+
+  // ── G-6c 已选 ⇒ 入口仍在，文案变成“可重新选择” ───────────────────
+  {
+    const r = await mount(h(gate.HobUnselectedGate, {
+      sessionId: 'session-selected',
+      agentPreset: 'Hob',
+      readRecorded: async () => 'recorded',
+      memory: gate.createGateMemory(),
+      autoOpen: false,
+      openForSession: () => {},
+    }))
+    await flush()
+    const text = host.querySelector(`.${gate.GATE_CLASS.text}`)?.textContent ?? ''
+    const btn = host.querySelector(`.${gate.GATE_CLASS.btn}`)?.textContent ?? ''
+    await unmount(r)
+    if (text.includes('已选择') && btn.includes('重新选择')) {
+      ok(`G-6c ✓ 已选档后入口仍保留，文案「${text}」按钮「${btn}」`)
+    } else {
+      bad(`G-6c · text=${JSON.stringify(text)} btn=${JSON.stringify(btn)}`)
     }
   }
 
@@ -782,15 +803,15 @@ try {
      * ⚠ 新口径三句：`unrecorded` ⇒ 显横幅、**弹 0**（这就是 TASK-Q 的靶子）；
      *   `recorded` / `unknown` ⇒ 横幅 0、弹 0。
      */
-    const good = results.recorded.opened === 0 && !results.recorded.shown
+    const good = results.recorded.opened === 0 && results.recorded.shown
       && results.unrecorded.opened === 0 && results.unrecorded.shown
       && results.unknown.opened === 0 && !results.unknown.shown
     if (good) {
       ok(`G-19 真读取器三态（**新口径**·TASK-Q）：recorded(弹0/显${results.recorded.shown})`
         + ` · unrecorded(**弹${results.unrecorded.opened}**/显${results.unrecorded.shown})`
-        + ` · unknown(弹0/显${results.unknown.shown}) ⇒ **未选只显横幅、⛔ 不自动开窗**`)
+        + ` · unknown(弹0/显${results.unknown.shown}) ⇒ **未选/已选都显入口、⛔ 不自动开窗**`)
     } else {
-      bad(`G-19 三态行为不符（新口径：unrecorded 应显横幅且**弹 0**）：${JSON.stringify(results)}`)
+      bad(`G-19 三态行为不符（新口径：unrecorded 与 recorded 都显示入口且弹 0；unknown 不显示）：${JSON.stringify(results)}`)
     }
   }
 
