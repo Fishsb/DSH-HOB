@@ -82,10 +82,12 @@ const PACKAGE_NAME = 'dsh-hob'
  *   ⇒ **传 sessionId 就能把该会话显示到主视图**，不要求它已有第一条消息。
  *   ⚠ 这是"建完用户能进去"的唯一**受支持**路径：空白会话被宿主**有意**从列表里
  *     过滤掉（本仓 `bus.ts` 有同口径记录）⇒ "让用户按 id 去列表找"是**假入口**。
- *   ⚠ 提供方 = `@deepseek-ai/dsh-client-ui-workspace`（有 `dsh.client` 段与 `./client` 导出）
- *     ⇒ 可列入 `package.json` 的 `dsh.client.inject`。
+ *   ⚠ 提供方 = `@deepseek-ai/dsh-client-ui-workspace`（有 `dsh.client` 段与 `./client` 导出）。
+ *   ⚠ 它是**可选服务**：`inject` 是加载门禁，列进来会让整个 client 插件等它；
+ *     而「创建成功后自动打开会话」只是增强能力 ⇒ 这里用 `ctx.get()` 现取，
+ *     取不到时由按钮如实降级，不阻断弹窗、设置、任务进度等全部主功能。
  */
-export const inject = ['slots', 'uiWorkspace']
+export const inject = ['slots']
 
 export function apply(ctx: any): void {
   ctx.logger?.debug?.(`[${PACKAGE_NAME}] client 半边已加载`)
@@ -217,7 +219,7 @@ export function apply(ctx: any): void {
      */
     openSession: (sessionId: string) => {
       try {
-        const svc = ctx.uiWorkspace
+        const svc = typeof ctx?.get === 'function' ? ctx.get('uiWorkspace') : undefined
         if (typeof svc?.openSession !== 'function') {
           ctx.logger?.warn?.('[dsh-hob] uiWorkspace.openSession 不可用 ⇒ 创建成功后无法自动打开会话')
           return

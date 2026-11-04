@@ -1341,7 +1341,8 @@ try {
    *   判据：`src/client/index.ts` 必须
    *     ① 注册 `HOB_CREATED_NOTICE_ID`（结果条有自己的槽条目）；
    *     ② 传给它的 `openSession` 里**真的调** `uiWorkspace.openSession`；
-   *     ③ `inject` 里声明了 `uiWorkspace`（否则运行时取不到那个服务）。
+   *     ③ `uiWorkspace` 必须是**可选读取**、不得放进 `inject` 加载门禁：
+   *        该服务缺席时只降级「自动打开会话」，不能阻断整个 client 插件。
    *   ⚠ 这是**源码契约**判据（本组唯一一条）—— 它是"装配对不对"，不是"UI 行为"，
    *     所以放这里而不是伪装成 DOM 测试。
    */
@@ -1350,14 +1351,16 @@ try {
     try { idx = readFileSync(join(root, 'src', 'client', 'index.ts'), 'utf8') } catch { idx = '' }
     const registered = /HOB_CREATED_NOTICE_ID/.test(idx) && /id:\s*HOB_CREATED_NOTICE_ID/.test(idx)
     const callsOpen = /uiWorkspace/.test(idx) && /\.openSession\s*\(/.test(idx)
-    const injects = /export const inject = \[[^\]]*'uiWorkspace'[^\]]*\]/.test(idx)
+    const hasInjectUiWorkspace = /export const inject = \[[^\]]*'uiWorkspace'[^\]]*\]/.test(idx)
+    const optionalRead = /ctx\.get\(\s*['"]uiWorkspace['"]\s*\)/.test(idx)
     if (idx === '') bad('D-17 读不到 client 入口源码 ⇒ 失去基准')
     else if (!registered) bad('D-17 生产里**没有注册**结果条（`HOB_CREATED_NOTICE_ID` 未出现在注册里）')
     else if (!callsOpen) bad('D-17 生产里的 `openSession` **没有真的调** `uiWorkspace.openSession`')
-    else if (!injects) bad("D-17 `inject` 没声明 `uiWorkspace` ⇒ 运行时取不到那个服务")
+    else if (!optionalRead) bad("D-17 `uiWorkspace` 没有经 `ctx.get('uiWorkspace')` 可选读取")
+    else if (hasInjectUiWorkspace) bad('D-17 `uiWorkspace` 不得放进 `inject` 加载门禁')
     else {
       ok('D-17 ✓ 生产装配齐备：结果条有**独立 overlay 条目**、其 `openSession` 真的调'
-        + ' `uiWorkspace.openSession`、`inject` 里也声明了该服务')
+        + ' `uiWorkspace.openSession`、该服务缺席时只降级而不阻断整个插件')
     }
   }
 

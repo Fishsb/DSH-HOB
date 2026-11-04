@@ -83,7 +83,7 @@ import * as React from 'react'
 
 /** list 槽里的条目 id（⚠ 自有 id，⛔ 不复用宿主或他插件的 id）。 */
 export const HOB_GATE_SLOT_ID = 'dsh-hob.unselected-gate'
-/** 常驻轮询实例（composer 槽；不渲染横幅）。 */
+/** 常驻轮询实例（会话输入区 list 槽；不渲染横幅）。 */
 export const HOB_GATE_POLL_SLOT_ID = 'dsh-hob.unselected-gate-poll'
 
 /** 排序：排在宿主自己的 hero 选项**之后**（不抢先，⛔ 不遮挡）。 */
@@ -420,8 +420,10 @@ export interface HobUnselectedGateProps {
    *   ⚠ 用户点横幅按钮仍能开（那是用户动作，不归本开关管）。
    */
   autoOpen?: boolean
-  /** 是否渲染可见横幅；常驻轮询实例传 false（默认 true）。 */
+  /** 是否渲染可见横幅；仅轮询实例传 false（默认 true）。 */
   showBanner?: boolean
+  /** 会话输入区的紧凑入口：只渲染一个小按钮，不渲染整段横幅。 */
+  compact?: boolean
 }
 
 /**
@@ -653,6 +655,21 @@ export function HobUnselectedGate(props: HobUnselectedGateProps): any {
     }
   }, [sessionId, props.agentPreset, props.readBlocked, props.blockPollMs, recorded, props.openForSession, memory, mountedAutoOpen])
 
+  if (props.compact === true) {
+    if (!isHobPreset(props.agentPreset)) return null
+    if (recorded !== 'unrecorded' && recorded !== 'recorded') return null
+    const selectedCompact = recorded === 'recorded'
+    const canOpenCompact = typeof props.openForSession === 'function'
+    return h('button', {
+      type: 'button',
+      className: GATE_CLASS.btn,
+      'data-hob-compact-gate': selectedCompact ? 'selected' : 'unselected',
+      'aria-label': selectedCompact ? '重新选择档位' : '选择档位',
+      onClick: () => {
+        if (canOpenCompact && sessionId !== undefined) props.openForSession?.(sessionId)
+      },
+    }, selectedCompact ? '重新选择档位' : '选择档位')
+  }
   if (props.showBanner === false) return null
   if (!shouldShowGate(props.agentPreset, recorded)) return null
 
@@ -699,6 +716,7 @@ export function HobUnselectedGateLive(props: {
   memory: GateMemory
   autoOpen?: boolean
   showBanner?: boolean
+  compact?: boolean
 }): any {
   const useProjection = props.useProjection
   const preset = typeof useProjection === 'function'
@@ -712,6 +730,7 @@ export function HobUnselectedGateLive(props: {
     memory: props.memory,
     ...(props.autoOpen === undefined ? {} : { autoOpen: props.autoOpen }),
     ...(props.showBanner === undefined ? {} : { showBanner: props.showBanner }),
+    ...(props.compact === undefined ? {} : { compact: props.compact }),
   })
 }
 
@@ -757,8 +776,8 @@ export function installHobUnselectedGate(ctx: any, deps: {
    * 在**会话常驻**的 composer 槽再挂一个**只轮询、不渲染横幅**的实例，
    * 与 hero 实例**共用同一份 memory** ⇒ 读到 blocked 时仍只弹一次。
    */
-  ctx.slots.inject('conversation.composer.bar', () => ctx.slots.register({
-    name: 'conversation.composer.bar',
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right',
     id: HOB_GATE_POLL_SLOT_ID,
     order: HOB_GATE_ORDER,
   }, (slotProps: any) => React.createElement(HobUnselectedGateLive, {
@@ -769,6 +788,7 @@ export function installHobUnselectedGate(ctx: any, deps: {
     memory,
     ...(deps.autoOpen === undefined ? {} : { autoOpen: deps.autoOpen }),
     showBanner: false,
+    compact: true,
   })))
 
   return memory

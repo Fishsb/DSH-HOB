@@ -369,8 +369,8 @@ try {
     gate.installHobUnselectedGate(fakeCtx, {})
     const names = registered.map((r) => r.name)
     const hasHero = names.includes('conversation.hero.options')
-    const hasComposer = names.includes('conversation.composer.bar')
-    const pollId = registered.find((r) => r.name === 'conversation.composer.bar')?.id
+    const hasComposer = names.includes('conversation.input.right')
+    const pollId = registered.find((r) => r.name === 'conversation.input.right')?.id
     for (const c of cleanups.reverse()) { try { c() } catch { /* 忽略 */ } }
     if (hasHero && hasComposer && pollId === gate.HOB_GATE_POLL_SLOT_ID) {
       ok(`G-6b ✓ 安装面两处都注册：hero 横幅 + composer 常驻轮询（${pollId}）`)
@@ -397,6 +397,31 @@ try {
       ok(`G-6c ✓ 已选档后入口仍保留，文案「${text}」按钮「${btn}」`)
     } else {
       bad(`G-6c · text=${JSON.stringify(text)} btn=${JSON.stringify(btn)}`)
+    }
+  }
+
+  // ── G-6d 输入区紧凑入口：已选档仍显示“重新选择档位”且可打开 ──────────
+  {
+    const opened = []
+    const r = await mount(h(gate.HobUnselectedGate, {
+      sessionId: 'session-compact',
+      agentPreset: 'Hob',
+      readRecorded: async () => 'recorded',
+      memory: gate.createGateMemory(),
+      autoOpen: false,
+      openForSession: (id) => opened.push(id),
+      compact: true,
+    }))
+    await flush()
+    const btn = host.querySelector('[data-hob-compact-gate]')
+    const text = btn?.textContent ?? ''
+    if (btn !== null) btn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+    await flush()
+    await unmount(r)
+    if (text.includes('重新选择') && opened.length === 1 && opened[0] === 'session-compact') {
+      ok('G-6d ✓ 输入区紧凑入口在已选档后仍显示，点击打开二次切换')
+    } else {
+      bad(`G-6d · text=${JSON.stringify(text)} opened=${JSON.stringify(opened)}`)
     }
   }
 

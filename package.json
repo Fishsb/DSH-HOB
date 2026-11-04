@@ -132,7 +132,6 @@
     },
     "client": {
       "platform": "web",
-      "immediately": true,
       "//": [
         "⚠ inject 里只能列**在 client 模块图里有 client 半边的包**（即自己声明了",
         "  dsh.client 且 exports 里有 ./client 的包）。列一个没有 client 半边的包",
