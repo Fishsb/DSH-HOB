@@ -83,6 +83,8 @@ import * as React from 'react'
 
 /** list 槽里的条目 id（⚠ 自有 id，⛔ 不复用宿主或他插件的 id）。 */
 export const HOB_GATE_SLOT_ID = 'dsh-hob.unselected-gate'
+/** 常驻轮询实例（composer 槽；不渲染横幅）。 */
+export const HOB_GATE_POLL_SLOT_ID = 'dsh-hob.unselected-gate-poll'
 
 /** 排序：排在宿主自己的 hero 选项**之后**（不抢先，⛔ 不遮挡）。 */
 export const HOB_GATE_ORDER = 900
@@ -412,6 +414,8 @@ export interface HobUnselectedGateProps {
    *   ⚠ 用户点横幅按钮仍能开（那是用户动作，不归本开关管）。
    */
   autoOpen?: boolean
+  /** 是否渲染可见横幅；常驻轮询实例传 false（默认 true）。 */
+  showBanner?: boolean
 }
 
 /**
@@ -435,6 +439,7 @@ export function shouldShowGate(
   agentPreset: string | null | undefined,
   recorded: PolicyRecordState,
 ): boolean {
+  /** 横幅入口保留；发送被拦后的自动弹窗由常驻轮询负责（见 `showBanner`）。 */
   return isHobPreset(agentPreset) && recorded === 'unrecorded'
 }
 
@@ -636,6 +641,7 @@ export function HobUnselectedGate(props: HobUnselectedGateProps): any {
     }
   }, [sessionId, props.agentPreset, props.readBlocked, props.blockPollMs, recorded, props.openForSession, memory, mountedAutoOpen])
 
+  if (props.showBanner === false) return null
   if (!shouldShowGate(props.agentPreset, recorded)) return null
 
   const canOpen = typeof props.openForSession === 'function'
@@ -679,6 +685,7 @@ export function HobUnselectedGateLive(props: {
   openForSession?: (sessionId: string) => void
   memory: GateMemory
   autoOpen?: boolean
+  showBanner?: boolean
 }): any {
   const useProjection = props.useProjection
   const preset = typeof useProjection === 'function'
@@ -691,6 +698,7 @@ export function HobUnselectedGateLive(props: {
     ...(props.openForSession === undefined ? {} : { openForSession: props.openForSession }),
     memory: props.memory,
     ...(props.autoOpen === undefined ? {} : { autoOpen: props.autoOpen }),
+    ...(props.showBanner === undefined ? {} : { showBanner: props.showBanner }),
   })
 }
 
@@ -729,6 +737,25 @@ export function installHobUnselectedGate(ctx: any, deps: {
     ...(deps.openForSession === undefined ? {} : { openForSession: deps.openForSession }),
     memory,
     ...(deps.autoOpen === undefined ? {} : { autoOpen: deps.autoOpen }),
+  })))
+
+  /**
+   * ⚠ 2026-11-04：发送后 `conversation.hero.options` 会卸载 ⇒ 轮询跟着消失。
+   * 在**会话常驻**的 composer 槽再挂一个**只轮询、不渲染横幅**的实例，
+   * 与 hero 实例**共用同一份 memory** ⇒ 读到 blocked 时仍只弹一次。
+   */
+  ctx.slots.inject('conversation.composer.bar', () => ctx.slots.register({
+    name: 'conversation.composer.bar',
+    id: HOB_GATE_POLL_SLOT_ID,
+    order: HOB_GATE_ORDER,
+  }, (slotProps: any) => React.createElement(HobUnselectedGateLive, {
+    sessionId: typeof slotProps?.sessionId === 'string' ? slotProps.sessionId : undefined,
+    ...(typeof slotProps?.useProjection === 'function' ? { useProjection: slotProps.useProjection } : {}),
+    ...(deps.readRecorded === undefined ? {} : { readRecorded: deps.readRecorded }),
+    ...(deps.openForSession === undefined ? {} : { openForSession: deps.openForSession }),
+    memory,
+    ...(deps.autoOpen === undefined ? {} : { autoOpen: deps.autoOpen }),
+    showBanner: false,
   })))
 
   return memory

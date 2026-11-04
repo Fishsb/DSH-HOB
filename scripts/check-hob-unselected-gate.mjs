@@ -331,7 +331,7 @@ try {
     } else bad(`G-5 原子性不符：a=${a} b=${b} c=${c} d=${d}`)
   }
 
-  // ── G-6 未选 ⇒ 不删除、不静默：横幅 + 按钮 + aria-live 都在 ──────────
+  // ── G-6 未选 ⇒ 横幅 + 按钮 + aria-live 保留（入口可与发送弹窗共存）──
   {
     const r = await mount(h(gate.HobUnselectedGate, {
       sessionId: 'session-banner',
@@ -352,6 +352,30 @@ try {
       ok(`G-6 横幅可见且非静默（role=status · aria-live=${live} · 真 <button> · 文案「${text}」）`)
     } else {
       bad(`G-6 横幅不合格：root=${rootEl !== null} text=${JSON.stringify(text)} btn=${isBtn} live=${live}`)
+    }
+  }
+
+  // ── G-6b 安装面：hero 横幅 + composer 常驻轮询两处都注册 ──────────────
+  {
+    const registered = []
+    const cleanups = []
+    const fakeCtx = {
+      effect: (fn) => { try { const d = fn(); if (typeof d === 'function') cleanups.push(d) } catch { /* 忽略 */ } },
+      slots: {
+        inject: (_name, fn) => fn(),
+        register: (spec) => { registered.push(spec); return () => {} },
+      },
+    }
+    gate.installHobUnselectedGate(fakeCtx, {})
+    const names = registered.map((r) => r.name)
+    const hasHero = names.includes('conversation.hero.options')
+    const hasComposer = names.includes('conversation.composer.bar')
+    const pollId = registered.find((r) => r.name === 'conversation.composer.bar')?.id
+    for (const c of cleanups.reverse()) { try { c() } catch { /* 忽略 */ } }
+    if (hasHero && hasComposer && pollId === gate.HOB_GATE_POLL_SLOT_ID) {
+      ok(`G-6b ✓ 安装面两处都注册：hero 横幅 + composer 常驻轮询（${pollId}）`)
+    } else {
+      bad(`G-6b · slots=${JSON.stringify(names)} pollId=${JSON.stringify(pollId)}`)
     }
   }
 
@@ -764,7 +788,7 @@ try {
     if (good) {
       ok(`G-19 真读取器三态（**新口径**·TASK-Q）：recorded(弹0/显${results.recorded.shown})`
         + ` · unrecorded(**弹${results.unrecorded.opened}**/显${results.unrecorded.shown})`
-        + ` · unknown(弹0/显${results.unknown.shown}) ⇒ **未选只显横幅、⛔ 不再自动开窗**`)
+        + ` · unknown(弹0/显${results.unknown.shown}) ⇒ **未选只显横幅、⛔ 不自动开窗**`)
     } else {
       bad(`G-19 三态行为不符（新口径：unrecorded 应显横幅且**弹 0**）：${JSON.stringify(results)}`)
     }
@@ -1550,6 +1574,34 @@ try {
               bad(`G-24 B ⚠ 组件没按预期开窗（opened=${JSON.stringify(opened)}，应恰好 1 次且是 ${S}）`)
             }
           }
+        }
+      }
+
+      // ── B2 · 常驻轮询实例（横幅 false）：hero 卸载后仍能因 blocked 弹窗 ──
+      {
+        const gateMod2 = await import(needEntry('src/client/hob-unselected-gate.tsx'))
+        const opened2 = []
+        const rootB2 = createRoot(document.createElement('div'))
+        await act(async () => {
+          rootB2.render(React.createElement(gateMod2.HobUnselectedGate, {
+            sessionId: S,
+            agentPreset: gateMod2.HOB_PRESET_ID_FOR_MATCH,
+            readRecorded: async () => 'unrecorded',
+            readBlocked: async () => 'blocked',
+            blockPollMs: 20,
+            openForSession: (id) => { opened2.push(id) },
+            memory: gateMod2.createGateMemory(),
+            autoOpen: true,
+            showBanner: false,
+          }))
+        })
+        await act(async () => { await new Promise((res) => setTimeout(res, 100)) })
+        const banner2 = document.querySelectorAll(`.${gateMod2.GATE_CLASS.root}`).length
+        await act(async () => { rootB2.unmount() })
+        if (opened2.length === 1 && opened2[0] === S && banner2 === 0) {
+          ok('G-24 B2 ✓ 常驻轮询实例（showBanner=false）读到 blocked ⇒ 自动开窗 1 次，且不渲染横幅')
+        } else {
+          bad(`G-24 B2 · opened=${JSON.stringify(opened2)} banner=${banner2}`)
         }
       }
 
