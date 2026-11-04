@@ -184,7 +184,7 @@ export const ASSERTION_FLOORS = new Map([
   ['check:work-plan', 34],
   ['check:work-plan-state', 17],
   ['check:work-plan-dispatch', 13],
-  ['check:work-plan-runtime', 23],
+  ['check:work-plan-runtime', 25],
   // ⚠ 2026-11-04：面板族（真 DOM + 真路由处理体）。10 处零余量。
   ['check:work-plan-panel', 10],
   // ⚠ 2026-11-03：骨架 ↔ 实例结构漂移族。

@@ -1809,6 +1809,8 @@ function persistWatches(file: string | undefined, pending: PersistedWatch[]): bo
 
 /** 就绪时挂上的实现。 */
 export function apply(ctx: any): void {
+  /** 本进程启动时刻：用于区分「重启前建的计划」与「本次刚建的计划」。 */
+  const processBootAt = Date.now()
   ctx.logger?.debug?.(`[${name}] 已激活，等待 sessions/agents`)
 
   ctx.inject(['sessions', 'agents'], (svcCtx: any) => {
@@ -3985,6 +3987,24 @@ export function apply(ctx: any): void {
          * ⇒ 终态优先；只有非终态才由 watch / closed 继续推进。
          */
         if (isTerminalTrackState(states[track.trackId] ?? 'pending')) continue
+        /**
+         * ⚠⚠ **先看目标会话日志**（2026-11-04）：重启时 watch 可能丢失/晚重建，
+         *   而目标已经在 `plan.createdAt` 之后 `turn/end(completed)`。
+         *   ⚠ 顺序必须在 watch 之前：否则重建出的 watch 会把"已完成"重新压回 running。
+         *   ⚠ 只认日志里的 completed，⛔ 不看 idle 猜完成。
+         */
+        try {
+          const session = sessions.get?.(track.sessionId) ?? agents.get?.(track.sessionId)?.session
+          const log = (session as any)?.log
+          if (Array.isArray(log) && log.some((e: any) => e?.type === 'turn/end'
+            && Number(e?.time) >= plan.createdAt
+            && e?.data?.reason?.kind === 'completed')) {
+            states[track.trackId] = 'returned'
+            const stale = watches.get(track.sessionId)
+            if (stale !== undefined && stale.deliveredAt === undefined) watches.delete(track.sessionId)
+            continue
+          }
+        } catch { /* 日志读不到 ⇒ 继续走 watch/closed */ }
         const w = watches.get(track.sessionId)
         if (w !== undefined && (w.task === undefined || w.task === track.taskId)) {
           states[track.trackId] = w.deliveredAt !== undefined
@@ -4000,7 +4020,9 @@ export function apply(ctx: any): void {
             || closed.settleState === 'stuck'
             ? 'failed'
             : 'returned'
+          continue
         }
+
       }
       return states
     }
@@ -4026,6 +4048,39 @@ export function apply(ctx: any): void {
             if (owner !== undefined && plan.joinOwnerSessionId !== owner) continue
             if (plan.planId === skipPlanId) continue
             const before = JSON.stringify({ state: plan.state, trackStates: plan.trackStates })
+            /**
+             * ⚠ **重启后从计划重建缺失 watch**：计划是意图权威，watch 是投递机制。
+             *   只对**本进程启动前**创建的计划做；本次刚建的计划由派发路径负责。
+             *   ⚠ 目标会话不在实例里 ⇒ 不造 watch（保持待收口，⛔ 不假装在等）。
+             */
+            if (plan.createdAt < processBootAt) {
+              for (const track of plan.tracks) {
+                const known = watches.get(track.sessionId)
+                if (known !== undefined && !known.reported) continue
+                if (isTerminalTrackState(plan.trackStates?.[track.trackId] ?? 'pending')) continue
+                if (closedForTrack(ledgerRoot, plan, track) !== undefined) continue
+                const agent = agents.get?.(track.sessionId)
+                const session = sessions.get?.(track.sessionId)
+                if (agent === undefined && session === undefined) continue
+                const at = Date.now()
+                watches.set(track.sessionId, {
+                  target: track.sessionId,
+                  watcher: plan.joinOwnerSessionId,
+                  task: track.taskId,
+                  at,
+                  sawRunning: true,
+                  sawRunningAt: at,
+                  reported: false,
+                  owner: plan.joinOwnerSessionId,
+                  ownerWsRoot: plan.workspaceRoot,
+                  lastStatus: 'running',
+                  settleState: 'waiting',
+                })
+                const file = plan.workspaceRoot === undefined ? undefined : runtimeFileOf(svcCtx, plan.workspaceRoot)
+                if (file !== undefined) stateFileFor.set(track.sessionId, file)
+                svcCtx.logger?.debug?.(`[${name}] 从计划重建 watch：${track.taskId} → ${track.sessionId}`)
+              }
+            }
             const states = mergeTrackStates(ledgerRoot, plan)
             /**
              * 首波刚派完 ⇒ 本进程已有 watch（`sawRunning=false` 也可能），
@@ -5484,8 +5539,38 @@ export function apply(ctx: any): void {
         if (self === undefined) {
           return { ok: false, reason: '判不出"我"是谁 ⇒ ⛔ 不落判决（⛔ 不许替别人判）' }
         }
-        const target = typeof input?.target === 'string' ? input.target : ''
-        if (target === '') return { ok: false, reason: '缺 `target`（判哪一条）⇒ ⛔ 不猜一条来标' }
+        const requestedTarget = typeof input?.target === 'string' ? input.target : ''
+        if (requestedTarget === '') return { ok: false, reason: '缺 `target`（判哪一条）⇒ ⛔ 不猜一条来标' }
+        /**
+         * ⚠⚠ **轨道 `taskId` 也能作为判决对象**（2026-11-04 真机实测）。
+         *
+         *   多轨计划里每条轨都有真实 `taskId`（如 `TSK-live-a`），工具参数叫 `taskId`
+         *   就应当接受它；但底层 watch 是按**执行会话 `target`** 记的
+         *   ⇒ 直接拿 taskId 去查必然「判不出是哪一条派发」。
+         *   ⇒ 先按 `(owner, taskId|trackId)` 在活动/已收口计划里解析出执行会话。
+         *   ⚠ 只解析**本 owner 自己**的计划；解析不到就保持原值，走原来的判不出分支
+         *     （⛔ 不跨 owner 猜，也⛔ 不凭空造一条）。
+         */
+        const judgeWsForTrack = typeof self === 'string' && self !== '' ? wsRootOfSession(self) : undefined
+        /** ⚠ 原判据名保留（`check:orch` 的 SV-k 反证以它为靶子；两者本就同源）。 */
+        const judgeWs = typeof self === 'string' && self !== '' ? wsRootOfSession(self) : undefined
+        const trackTarget = (() => {
+          if (judgeWsForTrack === undefined) return undefined
+          try {
+            const root = resolveLedgerRoot('', declaredLedgerHome(svcCtx), judgeWsForTrack)
+            if (root === undefined) return undefined
+            const plans = [
+              ...activePlansAt(root),
+              ...listClosedWorkPlans(root),
+            ].filter((plan) => plan.joinOwnerSessionId === self)
+            for (const plan of plans) {
+              const hit = plan.tracks.find((track) => track.taskId === requestedTarget || track.trackId === requestedTarget)
+              if (hit !== undefined && hit.sessionId !== requestedTarget) return hit.sessionId
+            }
+            return undefined
+          } catch { return undefined }
+        })()
+        const target = trackTarget ?? requestedTarget
         const basis = normalizeBasis(input?.basis)
         if (basis === undefined) {
           /**
@@ -5594,7 +5679,6 @@ export function apply(ctx: any): void {
          *   ⚠ 判不出 `self` 的工作区根 ⇒ `undefined` ⇒ 行为与改前**完全一致**
          *     （⛔ 不猜一个工作区；那种情形仍落"判不出"，如实）。
          */
-        const judgeWs = typeof self === 'string' && self !== '' ? wsRootOfSession(self) : undefined
         try {
           for (const f of scanStateFiles(svcCtx, judgeWs)) {
             const reading = readOrchStateDetailed(f)

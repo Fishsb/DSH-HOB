@@ -13,7 +13,7 @@
  * ⚠ 本族仍不替代真实 DSH 宿主验收；它证明的是代码行为，不是宿主装得起来。
  */
 import { mkdtempSync, rmSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { fileURLToPath } from 'node:url'
@@ -431,6 +431,29 @@ try {
     } else bad(`WPR-19 · r=${JSON.stringify(r)} delivered=${h.delivered.length}`)
   }
 
+  // WPR-24 用轨道 taskId 判决：judge 先解析到执行会话再落账
+  {
+    const h = makeHost('multi')
+    await h.orch.dispatchPlan(planInput({ planId: 'WP-judge-track' }), { self: 'session-hob', wsRoot, mode: 'multi' })
+    for (const id of ['session-a', 'session-b']) {
+      h.sessions.get(id).log.push({ type: 'assistant/message', time: Date.now(), text: `done ${id}` })
+      h.agents.get(id).status = 'idle'
+      await h.orch.reconcile(`relay-${id}`)
+    }
+    await flush()
+    /** ⚠ 传的是 track 的 taskId（TSK-a），不是执行会话 id。 */
+    const r = h.orch.judge({
+      self: 'session-hob',
+      target: 'TSK-a',
+      verdict: 'accepted',
+      basis: ['track output'],
+      verifiedAt: new Date().toISOString(),
+    })
+    if (r.ok && r.state === 'accepted') {
+      ok('WPR-24 ✓ 判决可直接传轨道的 taskId：先解析到执行会话，再落 accepted')
+    } else bad(`WPR-24 · ${JSON.stringify(r)}`)
+  }
+
   // WPR-22 合法 same-file 单轨能在派单层走通（证据必须真的被接受，不是门恒拒）
   {
     const h = makeHost('multi')
@@ -544,6 +567,30 @@ try {
     if (!early.ok && String(early.reason).includes('joining')) {
       ok('WPR-17 ✓ 未汇合就收口被拒：只有 joining 才能 completed')
     } else bad(`WPR-17 · ${JSON.stringify(early)}`)
+  }
+
+  // WPR-25 重启后 watch 丢失：目标日志已 completed ⇒ 计划轨道必须结算为 returned
+  {
+    const h = makeHost('multi')
+    const plan = {
+      version: 1, planId: 'WP-log-fallback', changeId: 'CHG-runtime', mode: 'multi',
+      modeSnapshot: 'multi', workspaceRoot: wsRoot, rationale: 'restart fallback',
+      tracks: [track('a'), track('b')], joinPolicy: 'all', joinOwnerSessionId: 'session-hob',
+      state: 'running', createdAt: 1, trackStates: { a: 'running', b: 'running' },
+    }
+    const { mkdirSync, writeFileSync } = await import('node:fs')
+    const dir = join(h.caseRoot, basename(wsRoot), 'runtime', 'work-plans', 'active')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'WP-log-fallback.json'), JSON.stringify({ storeVersion: 1, plan }, null, 2) + '\n')
+    for (const id of ['session-a', 'session-b']) {
+      h.sessions.get(id).log.push({ type: 'turn/end', time: 10, data: { reason: { kind: 'completed' } } })
+      h.agents.get(id).status = 'idle'
+    }
+    const after = await h.orch.workPlans({ self: 'session-hob', wsRoot, mode: 'multi' })
+    const shown = after.plans.find((p) => p.planId === 'WP-log-fallback')
+    if (shown?.state === 'joining' && shown.returned === 2) {
+      ok('WPR-25 ✓ 重启后 watch 缺失但目标日志已 completed ⇒ 两条轨都结算为 returned')
+    } else bad(`WPR-25 · ${JSON.stringify(shown)}`)
   }
 
   // WPR-7 计划内两条写轨 ⇒ 串行成链，首波只派一条（不伪并行）

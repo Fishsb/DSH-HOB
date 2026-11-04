@@ -303,6 +303,15 @@ export interface SessionPolicyInbound {
    */
   set(sessionId: string, level: string, workMode: string): { ok: boolean; reason: string }
   /**
+   * 读**盘上原始记录**（不经过安全降档），**只给写入侧的回读确认**用。
+   *
+   * ⚠ `get()` 返回的是解析后的值，而解析对 `activation:'pending'` 一律降到最低档
+   *   （那是"未确认不激活宽档"的安全落点）⇒ 拿它做 `pending` 阶段的回读确认
+   *   **永远对不上**，创建链会必然失败并回滚（真机可复现）。
+   *   ⛔ 任何判定/闸门都不许拿本方法当授权依据。
+   */
+  readRawPolicy(sessionId: string): { level: string; workMode: string; activation?: string; quarantined?: boolean } | undefined
+  /**
    * ⚠ **持久隔离**（2026-10-22）：把该会话的策略记录标记作废并落盘 + 回读确认。
    *   用于创建链"写成功 / 回读不一致 / 空白会话撤不掉"这一格 ——
    *   ⛔ 只报 `stranded` 不算修好：那个会话仍能按高档执行。
@@ -1229,6 +1238,39 @@ export function installSessionPolicy(
         canReadWorkspace: r.canReadWorkspace,
         recorded: reading?.file.sessions[sid] !== undefined,
       }
+    },
+
+    /**
+     * 读**盘上原始记录**（不经过安全降档）。
+     *
+     * ── 为什么必须有它（2026-11-04 实测）────────────────────────────────
+     *   创建链的顺序是：写 `pending` → 回读确认 → 再 `activate()`。
+     *   而 {@link of} / {@link get} 返回的是**解析后**的值，解析对 `pending`
+     *   **按设计一律降到最低档**（那是"未确认不激活宽档"的安全落点）。
+     *   ⇒ 用解析值做回读确认，`pending` 阶段**永远对不上**：
+     *     期望 `project/multi`、回读 `ledger/auto` ⇒ 创建链必然失败并回滚
+     *     （真机复现：任何一次新建 Hob 会话都返回「写入后回读不一致」）。
+     *
+     * ⚠ 这个出口**只给写入侧的回读确认**用，⛔ 不许任何判定/闸门拿它当授权依据
+     *   （它绕过安全降档，只能用来证明"写进去了什么"）。
+     */
+    readRawPolicy(sessionId: string): { level: string; workMode: string; activation?: string; quarantined?: boolean } | undefined {
+      try {
+        const sessions = hostCtx.get?.('sessions')
+        const session = typeof sessions?.get === 'function' ? sessions.get(sessionId) : undefined
+        if (session === undefined) return undefined
+        const file = policyFileFor(hostCtx, session)
+        if (file === undefined) return undefined
+        const reading = readPolicyStore(file, OPTIONS)
+        const rec = reading.file.sessions[sessionId]
+        if (rec === undefined) return undefined
+        return {
+          level: rec.level,
+          workMode: rec.workMode,
+          ...(rec.activation === undefined ? {} : { activation: rec.activation }),
+          ...(rec.quarantined === true ? { quarantined: true } : {}),
+        }
+      } catch { return undefined }
     },
 
     set(sessionId: string, level: string, workMode: string, activation?: 'pending' | 'active') {

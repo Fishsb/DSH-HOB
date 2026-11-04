@@ -357,6 +357,15 @@ export interface CreateDeps {
    */
   readPolicy: (sessionId: string) => { level: string; workMode: string; source: string; mayProceed?: boolean } | undefined
   /**
+   * 读**盘上原始记录**（不经过安全降档），**只给写入侧的回读确认**用。
+   *
+   * ⚠ 为什么需要它：`readPolicy` 返回的是**解析后**的值，而解析对
+   *   `activation:'pending'` 一律降到最低档（那是"未确认不激活宽档"的安全落点）。
+   *   ⇒ 用解析值做回读确认，`pending` 阶段**永远对不上** ⇒ 创建必然失败并回滚。
+   *   ⛔ 任何判定/闸门都不许拿它当授权依据。
+   */
+  readRawPolicy?: (sessionId: string) => { level: string; workMode: string; activation?: string } | undefined
+  /**
    * ⚠ **持久隔离**（2026-10-22 · 治 `stranded`）：把该会话的策略记录标记作废并落盘。
    *   缺省（`undefined`）⇒ 创建链在需要隔离时会**如实报"无法隔离"并失败**，
    *   ⛔ 绝不假装已隔离。
@@ -656,15 +665,26 @@ export async function createHobSession(
    *
    * ⚠ 三种都**不**返回 `ok: true`；⚠ 也**不**用 `orphan` 这个名字（它暗示"无害"）。
    */
+  /**
+   * ⚠⚠ **回读必须看"盘上写了什么"，而不是"解析后允许什么"**（2026-11-04 真机修复）。
+   *
+   *   解析对 `pending` 一律降档 ⇒ 用解析值比 `t.level/t.workMode` **永远不相等**
+   *   ⇒ 每次新建 Hob 会话都会走"回读不一致"并回滚（真机可稳定复现）。
+   *   ⇒ 这里优先读原始记录；服务没提供这个出口时**退回解析值**
+   *     （旧组合仍按原语义工作，⛔ 不静默放宽）。
+   */
+  const rawBack = typeof deps.readRawPolicy === 'function' ? deps.readRawPolicy(createdId) : undefined
   const readBack = deps.readPolicy(createdId)
-  if (readBack === undefined || readBack.level !== t.level || readBack.workMode !== t.workMode) {
+  const backLevel = rawBack === undefined ? readBack?.level : rawBack.level
+  const backMode = rawBack === undefined ? readBack?.workMode : rawBack.workMode
+  if (backLevel === undefined || backLevel !== t.level || backMode !== t.workMode) {
     const back = await rollback(deps, createdRef, log)
     const base = {
       ok: false,
       rolledBack: back,
         ...(back ? { rollbackResidual: rollbackResidual(deps, createdRef.sessionId) } : {}),
       reason: '写入后**回读不一致** ⇒ 视为失败（⛔ 不报成功）'
-        + `（期望 ${t.level}/${t.workMode}，回读 ${readBack === undefined ? '无记录' : `${readBack.level}/${readBack.workMode}`}）`,
+        + `（期望 ${t.level}/${t.workMode}，回读 ${backLevel === undefined ? '无记录' : `${backLevel}/${backMode}`}）`,
     }
     if (back) return base
     return { ...base, ...(await quarantineStranded(deps, createdId, log)) }
@@ -1177,7 +1197,15 @@ export function installCreateChannel(ctx: Context): void {
         return { ok: false, reason: `激活抛错：${String((e as Error)?.message ?? e)}` }
       }
     },
-    readPolicy: (sessionId) => {
+    /** ⚠ 原始记录读回（不降档），只给创建链的回读确认用。 */
+  readRawPolicy: (sessionId) => {
+      try {
+        const svc = hostCtx.get?.(SESSION_POLICY_SERVICE) ?? hostCtx[SESSION_POLICY_SERVICE]
+        if (typeof svc?.readRawPolicy !== 'function') return undefined
+        return svc.readRawPolicy(sessionId)
+      } catch { return undefined }
+    },
+  readPolicy: (sessionId) => {
       try {
         const svc = hostCtx.get?.(SESSION_POLICY_SERVICE) ?? hostCtx[SESSION_POLICY_SERVICE]
         if (typeof svc?.get !== 'function') return undefined
