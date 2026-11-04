@@ -422,8 +422,6 @@ export interface HobUnselectedGateProps {
   autoOpen?: boolean
   /** 是否渲染可见横幅；仅轮询实例传 false（默认 true）。 */
   showBanner?: boolean
-  /** 会话输入区的紧凑入口：只渲染一个小按钮，不渲染整段横幅。 */
-  compact?: boolean
 }
 
 /**
@@ -655,21 +653,6 @@ export function HobUnselectedGate(props: HobUnselectedGateProps): any {
     }
   }, [sessionId, props.agentPreset, props.readBlocked, props.blockPollMs, recorded, props.openForSession, memory, mountedAutoOpen])
 
-  if (props.compact === true) {
-    if (!isHobPreset(props.agentPreset)) return null
-    if (recorded !== 'unrecorded' && recorded !== 'recorded') return null
-    const selectedCompact = recorded === 'recorded'
-    const canOpenCompact = typeof props.openForSession === 'function'
-    return h('button', {
-      type: 'button',
-      className: GATE_CLASS.btn,
-      'data-hob-compact-gate': selectedCompact ? 'selected' : 'unselected',
-      'aria-label': selectedCompact ? '重新选择档位' : '选择档位',
-      onClick: () => {
-        if (canOpenCompact && sessionId !== undefined) props.openForSession?.(sessionId)
-      },
-    }, selectedCompact ? '重新选择档位' : '选择档位')
-  }
   if (props.showBanner === false) return null
   if (!shouldShowGate(props.agentPreset, recorded)) return null
 
@@ -716,7 +699,6 @@ export function HobUnselectedGateLive(props: {
   memory: GateMemory
   autoOpen?: boolean
   showBanner?: boolean
-  compact?: boolean
 }): any {
   const useProjection = props.useProjection
   const preset = typeof useProjection === 'function'
@@ -730,7 +712,6 @@ export function HobUnselectedGateLive(props: {
     memory: props.memory,
     ...(props.autoOpen === undefined ? {} : { autoOpen: props.autoOpen }),
     ...(props.showBanner === undefined ? {} : { showBanner: props.showBanner }),
-    ...(props.compact === undefined ? {} : { compact: props.compact }),
   })
 }
 
@@ -788,7 +769,6 @@ export function installHobUnselectedGate(ctx: any, deps: {
     memory,
     ...(deps.autoOpen === undefined ? {} : { autoOpen: deps.autoOpen }),
     showBanner: false,
-    compact: true,
   })))
 
   return memory

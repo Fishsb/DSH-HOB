@@ -1443,10 +1443,13 @@ export function HobCreateOverlayLive(props: {
     ...(target === undefined ? {} : { targetSessionId: target }),
     onClose: () => props.state.close(),
     onCreated: (sid: string) => {
-      props.state.markCreated(sid)
+      /**
+       * ⚠ 已有会话模式只是“写档位”，⛔ 没有创建任何会话。
+       * 旧实现在这里无条件 markCreated ⇒ 界面误报“已创建 Hob 会话”并多出一个
+       * “打开该会话”入口。新建模式才写创建结果条；已有会话模式只关窗并广播已选。
+       */
+      if (target === undefined) props.state.markCreated(sid)
       props.state.close()
-      // ⚠ **不静默关窗**：成功后在状态里留下 sessionId，由下面 `HobCreatedNoticeLive`
-      //   给出**可见、可点**的准确入口（见 `DialogState.created`）。⛔ 不是 UI 假动作。
       props.onCreated?.(sid)
     },
   })

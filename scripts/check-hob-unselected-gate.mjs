@@ -400,28 +400,24 @@ try {
     }
   }
 
-  // ── G-6d 输入区紧凑入口：已选档仍显示“重新选择档位”且可打开 ──────────
+  // ── G-6d 输入区轮询实例：不可见（唯一可见入口在预设右侧）──────────────
   {
-    const opened = []
     const r = await mount(h(gate.HobUnselectedGate, {
-      sessionId: 'session-compact',
+      sessionId: 'session-poll-hidden',
       agentPreset: 'Hob',
       readRecorded: async () => 'recorded',
       memory: gate.createGateMemory(),
       autoOpen: false,
-      openForSession: (id) => opened.push(id),
-      compact: true,
+      showBanner: false,
     }))
     await flush()
+    const root = host.querySelector(`.${gate.GATE_CLASS.root}`)
     const btn = host.querySelector('[data-hob-compact-gate]')
-    const text = btn?.textContent ?? ''
-    if (btn !== null) btn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
-    await flush()
     await unmount(r)
-    if (text.includes('重新选择') && opened.length === 1 && opened[0] === 'session-compact') {
-      ok('G-6d ✓ 输入区紧凑入口在已选档后仍显示，点击打开二次切换')
+    if (root === null && btn === null) {
+      ok('G-6d ✓ 输入区轮询实例完全不可见，不再产生第二个档位入口')
     } else {
-      bad(`G-6d · text=${JSON.stringify(text)} opened=${JSON.stringify(opened)}`)
+      bad(`G-6d · root=${root !== null} btn=${btn !== null}`)
     }
   }
 
