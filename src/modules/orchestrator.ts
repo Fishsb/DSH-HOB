@@ -57,6 +57,29 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { HOB_PRESET_ID } from '../shared/planning-preset.ts'
 import type { PresetSource } from './bus.ts'
 import { resolveLedgerRoot, workspaceNameOf } from '../server/doc-read.ts'
+import { WORK_MODE_VALUES, type WorkMode } from '../shared/work-mode.ts'
+import {
+  initiallyDispatchable,
+  isTerminalTrackState,
+  planModeOf,
+  validateWorkPlan,
+  workPlanProgress,
+  type WorkPlan,
+  type WorkPlanInput,
+  type WorkTrack,
+  type WorkTrackState,
+} from '../shared/work-plan.ts'
+import {
+  closeWorkPlan,
+  listWorkPlans,
+  listClosedWorkPlans,
+  newWorkPlan as buildStoredWorkPlan,
+  removeStaleWorkPlanTemps,
+  pruneClosedWorkPlans,
+  readWorkPlan,
+  removeWorkPlan,
+  writeWorkPlan,
+} from '../server/work-plan-state.ts'
 /**
  * ══════════════════════════════════════════════════════════════════════════
  * **看护判定**（2026-10-27 · 包 AB · 方案 §5.9 唯一那条判据）
@@ -818,7 +841,56 @@ export interface Watch {
 }
 
 /** 编排状态快照（给工具与探针读）。 */
+export interface WorkPlanTrackStatus {
+  trackId: string
+  taskId: string
+  sessionId: string
+  accessType: 'read' | 'write'
+  dependsOn: string[]
+  state: WorkTrackState
+}
+
+export interface WorkPlanStatus {
+  mode: WorkMode | 'unknown'
+  plans: Array<{
+    planId: string
+    state: string
+    trackCount: number
+    running: number
+    waiting: number
+    returned: number
+    failed: number
+    singleTrackReason?: string
+    rationale: string
+    /** 计划创建时冻结的档位（`WM-8`）；旧计划回落到 `mode`。 */
+    modeSnapshot?: WorkMode
+    /** 写轨被串行化的依据（`WM-3`）：原因 + 真实重叠路径。 */
+    serialized?: { reason: string; groups: string[][]; sharedPaths?: string[] }
+    /** 每条轨的执行者与状态（面板据此显示「谁在跑、谁在等谁」）。 */
+    tracks: WorkPlanTrackStatus[]
+  }>
+  unreadable: Array<{ planId: string; reason: string }>
+}
+
+export interface PlanDispatchResult {
+  ok: boolean
+  planId?: string
+  accepted: number
+  tracks: Array<{
+    trackId: string
+    sessionId: string
+    ok: boolean
+    state: 'running' | 'waiting' | 'failed' | 'not-started'
+    messageId?: string
+    reason?: string
+  }>
+  problems?: Array<{ code: string; message: string; trackId?: string }>
+  join?: { state: 'waiting' | 'joining' | 'completed' | 'failed'; reason?: string }
+}
+
 export interface OrchStatus {
+  /** 当前会话的工作计划读数。 */
+  workPlans?: WorkPlanStatus
   /** 是否已停（`true` = 闸门关闭，不回传也不接收新派发）。 */
   stopped: boolean
   /** 在等的派发（按登记时间）。 */
@@ -1024,11 +1096,38 @@ export interface OrchStatus {
 /** `hobOrchestrator` 服务的形状。 */
 export interface HobOrchestrator {
   readonly version: number
+  /**
+   * 缺省是否允许 `dispatch()` 的单目标兼容入口。
+   *
+   * `true`：尚未接入计划的旧组合 / 兼容面；
+   * `false`：本代编排器已支持计划，单目标派活必须挂到隐式计划或显式轨道。
+   */
+  readonly planAware?: boolean
+  /**
+   * 批量计划的对外入口。⚠ 实现必须复用同一 `dispatch()`，不得另写投递语义。
+   */
+  dispatchPlan: (
+    input: WorkPlanInput,
+    opts: { self: string | undefined; wsRoot?: string; mode: WorkMode | undefined },
+  ) => Promise<PlanDispatchResult>
   /** 登记一次派发并投递（**唯一的进入闭环入口**）。 */
   dispatch(
     target: string,
     message: string,
-    opts: { self: string | undefined; round?: number; task?: string; mode?: 'followup' | 'steer' },
+    opts: {
+      self: string | undefined
+      round?: number
+      task?: string
+      mode?: 'followup' | 'steer'
+      /**
+       * 计划轨道的读写类型。
+       * ⚠ 旧单目标调用**不声明**读写：它不是计划轨道，不能冒充写轨去占单写槽
+       *   （旧接口本来就允许同 owner 连续派多个目标，`SA-f` 钉着这条）。
+       */
+      accessType?: 'read' | 'write'
+      /** 所属计划（由计划推进器传入；旧单目标调用可省略）。 */
+      planId?: string
+    },
   ): Promise<{
     ok: boolean
     sessionId?: string
@@ -1051,6 +1150,11 @@ export interface HobOrchestrator {
    *   ⛔ 绝不退化成"全实例汇总"（那正是本件要治的形态：一条 Hob 看见 9 条别人的在等回传）。
    */
   status(opts?: { wsRoot?: string; self?: string }): OrchStatus
+  /**
+   * 当前会话的 WorkPlan 读数。⚠ 只读、不投递、不改计划。
+   * `workMode` 由逐会话策略现读；判不出返回 `undefined`，不猜。
+   */
+  workPlans(opts?: { wsRoot?: string; self?: string; mode?: string }): Promise<WorkPlanStatus>
   /**
    * 读**卡进度**（隔离执行卡：在跑 / 待验收 / 失败·卡住）。
    *
@@ -1195,6 +1299,8 @@ export interface HobOrchestrator {
    * @returns `{ ok, file, reason? }` —— `ok:false` ⇒ **如实说没切成功**，⛔ 不假装。
    */
   watchWait(owner: string, note?: string): { ok: boolean; file?: string; reason?: string }
+  /** 汇合责任人显式把 `joining` 计划收成 `completed`；失败计划不接受收口。 */
+  closePlan(planId: string, self: string | undefined): Promise<{ ok: boolean; planId?: string; file?: string; reason?: string }>
   /**
    * **把一条"该唤醒了"的判定落成事件**（2026-10-27 · 包 AC · `D16`）。
    *
@@ -3709,6 +3815,362 @@ export function apply(ctx: any): void {
     }
 
     /**
+     * 活动计划读取面：`planned / running / joining / failed` 都算未收口。
+     *
+     * ⚠ `failed` 在**轨道尚未全部终态**时仍占单会话槽：失败不等于可以立刻
+     *   绕开隔离再开一路。全轨终态后由推进器自动归档，活动文件随之消失。
+     * ⚠ 计划文件本身是唯一权威；轨道状态只从 `trackStates` 与 watch/closed 派生。
+     */
+    const activePlansAt = (ledgerRoot: string): WorkPlan[] => listWorkPlans(ledgerRoot)
+      .filter((x) => x.state === 'ok' && x.plan !== undefined
+        && (x.plan.state === 'planned' || x.plan.state === 'running' || x.plan.state === 'joining'
+          || x.plan.state === 'failed'))
+      .map((x) => x.plan!)
+
+    const activeTracksOfPlan = (plan: WorkPlan): WorkTrack[] => plan.tracks
+      .filter((track) => !isTerminalTrackState(plan.trackStates?.[track.trackId] ?? 'pending'))
+
+    /**
+     * 新计划预检：拒绝跨计划单轨 / 跨计划同会话 / 同工作区多写轨。
+     * ⚠ 同一个 planId 的内部轨道由 `opts.planId` 排除，不在这里误伤。
+     */
+    const planConflictProblems = (
+      ledgerRoot: string,
+      input: WorkPlanInput,
+      self: string,
+    ): Array<{ code: string; message: string; trackId?: string }> => {
+      const problems: Array<{ code: string; message: string; trackId?: string }> = []
+      const active = activePlansAt(ledgerRoot)
+      if (active.some((plan) => plan.planId === input.planId)) {
+        problems.push({
+          code: 'duplicate-plan',
+          message: `计划 ${input.planId} 已经存在；⛔ 不覆盖活动计划文件`,
+        })
+        return problems
+      }
+      const tracks = active.flatMap((plan) => activeTracksOfPlan(plan).map((track) => ({ plan, track })))
+      if (input.mode === 'single') {
+        const own = tracks.filter((x) => x.plan.joinOwnerSessionId === self)
+        if (own.length > 0) {
+          problems.push({
+            code: 'single-mode-one-track',
+            message: `单会话档已有活动轨道（${own.map((x) => x.track.trackId).join(', ')}）⇒ 新计划被拒`,
+          })
+        }
+      }
+      const writeTracks = tracks.filter((x) => x.track.accessType === 'write')
+      if (input.tracks.some((track) => track.accessType === 'write') && writeTracks.length > 0) {
+        problems.push({
+          code: 'multiple-write-tracks',
+          message: `同一工作区已有写轨（${writeTracks.map((x) => x.track.trackId).join(', ')}）⇒ 新写轨被拒`,
+        })
+      }
+      const occupied = new Set(tracks.map((x) => x.track.sessionId))
+      for (const track of input.tracks) {
+        if (occupied.has(track.sessionId)) {
+          problems.push({
+            code: 'duplicate-session',
+            message: `执行会话 ${track.sessionId} 已在另一条活动轨道上，不能同时承担两条轨`,
+            trackId: track.trackId,
+          })
+        }
+      }
+      return problems
+    }
+
+    /**
+     * 一个计划文件的显示口径（状态、轨道计数、隔离原因）。
+     *
+     * ⚠ `status()` 与 `workPlans()` 必须共用这一处：两处各写一遍 `completed`
+     *   三元式，等于同一个事实有两个来源，改一处漏一处就会让两个读数漂移。
+     */
+    const summarizePlan = (
+      plan: WorkPlan,
+      states: Record<string, WorkTrackState>,
+      progress: ReturnType<typeof workPlanProgress>,
+    ): WorkPlanStatus['plans'][number] => {
+      const returned = plan.tracks.filter((track) => states[track.trackId] === 'returned').length
+      const failed = plan.tracks.filter((track) => states[track.trackId] === 'failed').length
+      const running = plan.tracks.filter((track) => states[track.trackId] === 'running').length
+      return {
+        planId: plan.planId,
+        state: plan.state === 'completed' ? 'completed'
+          : plan.state === 'failed' || progress.failed ? 'failed'
+            : progress.nextState,
+        trackCount: plan.tracks.length,
+        running,
+        waiting: progress.waiting.length,
+        returned,
+        failed,
+        ...(plan.singleTrackReason === undefined ? {} : { singleTrackReason: plan.singleTrackReason }),
+        rationale: plan.rationale,
+        modeSnapshot: planModeOf(plan),
+        ...(plan.serialized === undefined ? {} : {
+          serialized: {
+            reason: plan.serialized.reason,
+            groups: plan.serialized.groups,
+            ...(plan.serialized.sharedPaths === undefined ? {} : { sharedPaths: plan.serialized.sharedPaths }),
+          },
+        }),
+        tracks: plan.tracks.map((track) => ({
+          trackId: track.trackId,
+          taskId: track.taskId,
+          sessionId: track.sessionId,
+          accessType: track.accessType,
+          dependsOn: [...track.dependsOn],
+          state: states[track.trackId] ?? 'pending',
+        })),
+      }
+    }
+
+    /**
+     * 同步计划摘要（`status()` 不能 await 异步推进，只能读当前已落盘的状态）。
+     * ⚠ 真正的推进在 `advanceWorkPlans()`；这里不派单、不写盘。
+     */
+    const workPlanSummarySync = (
+      self: string | undefined,
+      wsRoot: string | undefined,
+      mode: WorkMode | 'unknown',
+    ): WorkPlanStatus => {
+      const root = (() => {
+        if (wsRoot === undefined) return undefined
+        try { return resolveLedgerRoot('', declaredLedgerHome(svcCtx), wsRoot) } catch { return undefined }
+      })()
+      if (root === undefined) return { mode, plans: [], unreadable: [] }
+      const listed = listWorkPlans(root)
+      const planned = listed.filter((x) => x.state === 'ok' && x.plan !== undefined
+        && (self === undefined || x.plan.joinOwnerSessionId === self))
+      const plans = planned.map((x) => {
+        const plan = x.plan!
+        const states = mergeTrackStates(root, plan)
+        const progress = workPlanProgress(plan, states)
+        return summarizePlan(plan, states, progress)
+      })
+      return {
+        mode,
+        plans: [...plans, ...closedPlanSummary(root, self)],
+        unreadable: listed.filter((x) => x.state !== 'ok')
+          .map((x) => ({ planId: x.planId, reason: x.reason ?? 'unreadable' })),
+      }
+    }
+
+    /** 一个计划文件里，某条轨道的 closed 记录（重载后 watch 内存为空时的兜底）。 */
+    const closedForTrack = (
+      ledgerRoot: string,
+      plan: WorkPlan,
+      track: WorkTrack,
+    ): PersistedWatch | undefined => {
+      try {
+        const closed = readOrchState(orchStateFileOf(ledgerRoot)).closed
+        return closed.find((rec) => rec.target === track.sessionId
+          && (rec.task === undefined || rec.task === track.taskId)
+          && rec.at >= plan.createdAt)
+      } catch { return undefined }
+    }
+
+    /** 当前所有活动计划里，按 watch / closed 合并出的轨道状态。 */
+    const mergeTrackStates = (
+      ledgerRoot: string,
+      plan: WorkPlan,
+      base: Record<string, WorkTrackState> = plan.trackStates ?? {},
+    ): Record<string, WorkTrackState> => {
+      const states = { ...base } as Record<string, WorkTrackState>
+      for (const track of plan.tracks) {
+        /**
+         * 盘上已经是终态的轨道不能被旧 watch 复活。
+         *
+         * ⚠ 重载/重读时内存里可能还留着上一代的 watch（或本进程早期的 watch），
+         *   而盘上的 `failed` / `returned` 是已经落定的事实。若这里先按 watch
+         *   写回 `running`，失败计划会永远占着 `active/`，也永远到不了归档分支。
+         * ⇒ 终态优先；只有非终态才由 watch / closed 继续推进。
+         */
+        if (isTerminalTrackState(states[track.trackId] ?? 'pending')) continue
+        const w = watches.get(track.sessionId)
+        if (w !== undefined && (w.task === undefined || w.task === track.taskId)) {
+          states[track.trackId] = w.deliveredAt !== undefined
+            ? 'returned'
+            : w.error !== undefined
+              ? 'failed'
+              : 'running'
+          continue
+        }
+        const closed = closedForTrack(ledgerRoot, plan, track)
+        if (closed !== undefined) {
+          states[track.trackId] = closed.refusedAt !== undefined || closed.error !== undefined
+            || closed.settleState === 'stuck'
+            ? 'failed'
+            : 'returned'
+        }
+      }
+      return states
+    }
+
+    const advancingWorkPlans = new Set<string>()
+
+    /**
+     * 唯一的计划推进入口：合并回传态 → 派发 ready 轨 → 写回 plan。
+     * ⚠ 调用点：派单后 / 回传结算后 / 插件就绪扫描 / 状态读取。
+     */
+    const advanceWorkPlans = async (
+      ledgerRoots: readonly string[],
+      owner: string | undefined,
+      trigger: string,
+      skipPlanId?: string,
+    ): Promise<void> => {
+      for (const ledgerRoot of ledgerRoots) {
+        const key = `${ledgerRoot}\u0000${owner ?? ''}`
+        if (advancingWorkPlans.has(key)) continue
+        advancingWorkPlans.add(key)
+        try {
+          for (const plan of activePlansAt(ledgerRoot)) {
+            if (owner !== undefined && plan.joinOwnerSessionId !== owner) continue
+            if (plan.planId === skipPlanId) continue
+            const before = JSON.stringify({ state: plan.state, trackStates: plan.trackStates })
+            const states = mergeTrackStates(ledgerRoot, plan)
+            /**
+             * 首波刚派完 ⇒ 本进程已有 watch（`sawRunning=false` 也可能），
+             * 此时不能再把同一批 pending 轨重派一遍；等回传/读取推进。
+             *
+             * ⚠ 但不能只认「本进程见过 sawRunning」：单目标兼容入口与重启恢复
+             *   的计划在盘上已有 `trackStates`，内存里却可能没有对应 watch。
+             *   若继续用 `sawRunning` 当门槛，这类计划会永久停在 `running`
+             *   （真机已出现：派发记录已回传、计划仍显示运行 1 / 返回 0）。
+             * ⇒ 判据改为：**盘上已有任何轨道离开 pending** 就允许推进；
+             *   首波刚落的计划所有轨道都是 `pending`，因此不会被重派。
+             */
+            const persistedProgress = plan.tracks.some((track) => {
+              const state = states[track.trackId]
+              return state !== undefined && state !== 'pending'
+            })
+            const ready = persistedProgress
+              ? workPlanProgress(plan, states).ready
+              : []
+            for (const track of ready) {
+              const result = await orch.dispatch(track.sessionId, track.message, {
+                self: plan.joinOwnerSessionId,
+                task: track.taskId,
+                accessType: track.accessType,
+                planId: plan.planId,
+              })
+              states[track.trackId] = result.ok ? 'running' : 'failed'
+              svcCtx.logger?.debug?.(
+                `[${name}] WorkPlan ${plan.planId} ${result.ok ? '已派发' : '派发失败'}轨道 ${track.trackId}`
+                + `（${trigger}）${result.ok ? '' : `：${result.reason ?? 'unknown'}`}`,
+              )
+            }
+            const progress = workPlanProgress(plan, states)
+            plan.trackStates = states
+            plan.state = progress.nextState
+            const after = JSON.stringify({ state: plan.state, trackStates: plan.trackStates })
+            let persisted = after === before
+            if (!persisted) {
+              const written = writeWorkPlan(ledgerRoot, plan)
+              if (!written.ok) {
+                svcCtx.logger?.warn?.(
+                  `[${name}] WorkPlan ${plan.planId} 状态写回失败（${trigger}）：${written.reason ?? 'unknown'}`,
+                )
+              } else {
+                persisted = true
+              }
+            }
+            /**
+             * 失败且全部轨道终态 ⇒ 自动归档；成功汇合仍必须由汇合责任人显式收口。
+             *
+             * ⚠ 不能只在 `after !== before` 时归档：重启后读到一份**已经落成
+             *   failed、且轨道全终态**的计划，本次推进不会改状态；若把它漏掉，
+             *   这份计划会永久占着 `active/` 的单会话槽，也进不了 `completed/`。
+             * ⇒ 只要盘上已是同一份失败终态（或本次刚写成功），就收口。
+             */
+            if (persisted && progress.terminal && progress.failed) {
+              const closed = closeWorkPlan(ledgerRoot, plan, 'failed')
+              if (!closed.ok) {
+                svcCtx.logger?.warn?.(
+                  `[${name}] WorkPlan ${plan.planId} 失败归档失败（${trigger}）：${closed.reason ?? 'unknown'}`,
+                )
+              }
+            }
+          }
+        } finally {
+          advancingWorkPlans.delete(key)
+        }
+      }
+    }
+
+    /** 结算成功后只推进这条 watch 所属计划；不扫描别的账本。 */
+    const advanceWorkPlansForWatch = (w: Watch, trigger: string): void => {
+      const owner = w.owner ?? (w.watcher === '' ? undefined : w.watcher)
+      if (owner === undefined) return
+      const roots = new Set<string>()
+      const ws = w.ownerWsRoot ?? wsRootOfSession(owner)
+      if (ws !== undefined) {
+        try {
+          const root = resolveLedgerRoot('', declaredLedgerHome(svcCtx), ws)
+          if (root !== undefined) roots.add(root)
+        } catch { /* 判不出账本根 ⇒ 不推进 */ }
+      }
+      const file = stateFileFor.get(w.target)
+      if (file !== undefined && file !== '') roots.add(dirname(dirname(file)))
+      if (roots.size === 0) return
+      void advanceWorkPlans([...roots], owner, trigger).catch((e) => {
+        svcCtx.logger?.warn?.(
+          `[${name}] WorkPlan 推进失败（${trigger}）：${String((e as Error)?.message ?? e)}`,
+        )
+      })
+    }
+
+    /**
+     * 汇合已完成但还没验收的计划仍要能显示。
+     * ⚠ 只读 `completed/`；不重新派发、不删除，也不把 `joining` 当活动轨。
+     */
+    const closedPlanSummary = (ledgerRoot: string, self: string | undefined) =>
+      listClosedWorkPlans(ledgerRoot)
+        .filter((plan) => self === undefined || plan.joinOwnerSessionId === self)
+        .map((plan) => {
+          const returned = plan.tracks.filter((track) => plan.trackStates?.[track.trackId] === 'returned').length
+          const failed = plan.tracks.filter((track) => plan.trackStates?.[track.trackId] === 'failed').length
+          return {
+            planId: plan.planId,
+            state: plan.state,
+            trackCount: plan.tracks.length,
+            running: 0,
+            waiting: 0,
+            returned,
+            failed,
+            ...(plan.singleTrackReason === undefined ? {} : { singleTrackReason: plan.singleTrackReason }),
+            rationale: plan.rationale,
+            modeSnapshot: planModeOf(plan),
+            ...(plan.serialized === undefined ? {} : {
+              serialized: {
+                reason: plan.serialized.reason,
+                groups: plan.serialized.groups,
+                ...(plan.serialized.sharedPaths === undefined ? {} : { sharedPaths: plan.serialized.sharedPaths }),
+              },
+            }),
+            tracks: plan.tracks.map((track) => ({
+              trackId: track.trackId,
+              taskId: track.taskId,
+              sessionId: track.sessionId,
+              accessType: track.accessType,
+              dependsOn: [...track.dependsOn],
+              state: plan.trackStates?.[track.trackId] ?? 'pending',
+            })),
+          }
+        })
+
+    /** 重启/就绪扫描：只推进 owner 仍在本进程活着的计划，避免替离线会话派单。 */
+    const advanceAllWorkPlans = async (trigger: string): Promise<void> => {
+      const roots = new Set<string>()
+      for (const file of scanStateFiles(svcCtx)) roots.add(dirname(dirname(file)))
+      try {
+        const home = declaredLedgerHome(svcCtx)
+        if (home !== '') {
+          for (const name of readdirSync(home)) roots.add(join(home, name))
+        }
+      } catch { /* 账本父目录不可读 ⇒ 只推进已扫到的 */ }
+      await advanceWorkPlans([...roots], undefined, trigger)
+    }
+
+    /**
      * **按 owner 分档的累计回传计数**（`I-4`：读数分母变成"我的"）。
      * ⚠ 与既有 `relaysDone` / `relaysBlocked` 两个数字**同源同义**，只是拆到各 owner 名下。
      */
@@ -3723,6 +4185,155 @@ export function apply(ctx: any): void {
 
     const orch: HobOrchestrator = {
       version: 1,
+      planAware: true,
+
+      /**
+       * 批量入口：只做计划预检、落盘、首波扇出和逐轨复用 `dispatch()`。
+       * 单目标兼容仍在 `dispatch()` 里。
+       */
+      async dispatchPlan(input, opts): Promise<PlanDispatchResult> {
+        const self = opts.self
+        if (self === undefined || self === '') {
+          return { ok: false, accepted: 0, tracks: [], problems: [{ code: 'empty-plan', message: '没有可信的调用方会话身份' }] }
+        }
+        if (opts.mode === undefined) {
+          return { ok: false, accepted: 0, tracks: [], problems: [{ code: 'invalid-rationale', message: '无法现读工作方式' }] }
+        }
+        const inputWithMode: WorkPlanInput = {
+          ...input,
+          mode: opts.mode,
+          workspaceRoot: opts.wsRoot,
+        }
+        const verdict = validateWorkPlan(inputWithMode)
+        if (!verdict.ok || verdict.normalized === undefined) {
+          return { ok: false, accepted: 0, tracks: [], problems: verdict.problems }
+        }
+        /**
+         * ⚠ 必须用**规范化后**的计划：多条写轨已被串成一条链，且
+         *   `singleTrackReason` / `serialized` 已按真实重叠补齐。
+         *   用手写入参继续派发会绕过这条隔离（同一工作树两条写者）。
+         */
+        const normalized = verdict.normalized
+        if (opts.wsRoot === undefined) {
+          return { ok: false, accepted: 0, tracks: [], problems: [{ code: 'invalid-join', message: '判不出本会话的账本根' }] }
+        }
+        const ledgerRoot = (() => {
+          try { return resolveLedgerRoot('', declaredLedgerHome(svcCtx), opts.wsRoot) } catch { return undefined }
+        })()
+        if (ledgerRoot === undefined) {
+          return { ok: false, accepted: 0, tracks: [], problems: [{ code: 'invalid-join', message: '判不出本会话的账本根' }] }
+        }
+
+        const conflict = planConflictProblems(ledgerRoot, normalized, self)
+        if (conflict.length > 0) {
+          return { ok: false, accepted: 0, tracks: [], problems: conflict as PlanDispatchResult['problems'] }
+        }
+
+        const firstWave = initiallyDispatchable(normalized)
+        /**
+         * ⚠⚠ **不许生出"永远不动"的计划**（独立验收两轮都咬到同一类）。
+         *
+         * 若首波一条都派不出去，而计划里也没有任何已返回的轨道可供推进，
+         * 那这份计划永远不会 ready、不会 failed、也不会 joining —— 它会一直挂在
+         * 状态面上显示 `running`，而实际上一条活都没派。
+         * ⇒ 这里**当场拒绝**，把原因说清（环 / 全等待），⛔ 不返回 `ok:true, accepted:0`。
+         */
+        const persistedNone = normalized.tracks.every((track) => track.dependsOn.length > 0)
+        if (firstWave.length === 0 && persistedNone) {
+          return {
+            ok: false,
+            accepted: 0,
+            tracks: normalized.tracks.map((track) => ({
+              trackId: track.trackId,
+              sessionId: track.sessionId,
+              ok: false,
+              state: 'waiting' as const,
+              reason: `等待前置：${track.dependsOn.join(', ')}`,
+            })),
+            problems: [{
+              code: 'dependency-cycle',
+              message: '首波没有任何可派轨道（每条轨都在等前置）⇒ 计划会永远不动，拒绝派发',
+            }],
+          }
+        }
+        /**
+         * ⚠ `normalized.serialized` 是校验器按真实范围算出的串行化依据，
+         *   随计划一起落盘（状态面据此显示「为什么只有一条在跑」）。
+         */
+        const plan = buildStoredWorkPlan(normalized)
+        plan.trackStates = Object.fromEntries(plan.tracks.map((track) => [
+          track.trackId, 'pending',
+        ])) as Record<string, WorkTrackState>
+        const isolated: WorkTrack[] = []
+        for (const track of firstWave) {
+          if (isolated.some((prior) => prior.trackId === track.trackId)) continue
+          isolated.push(track)
+        }
+        const stored = writeWorkPlan(ledgerRoot, plan)
+        if (!stored.ok) {
+          return { ok: false, planId: plan.planId, accepted: 0, tracks: [], problems: [{ code: 'invalid-join', message: `计划未落盘：${stored.reason ?? 'unknown'}` }] }
+        }
+        /**
+         * 计划落盘后再登记本计划，`dispatch()` 的全局门禁才看得见它。
+         * ⚠ 这组键只用于“计划内轨道可同时起步”；跨计划的单写轨限制由
+         *   `activePlansAt()` 与 `planConflictProblems()` 读取真实活动计划。
+         */
+        const rows: PlanDispatchResult['tracks'] = normalized.tracks.map((track) => ({
+          trackId: track.trackId,
+          sessionId: track.sessionId,
+          ok: false,
+          state: firstWave.some((t) => t.trackId === track.trackId) ? 'not-started' : 'waiting',
+          ...(firstWave.some((t) => t.trackId === track.trackId) ? {} : { reason: `等待前置：${track.dependsOn.join(', ')}` }),
+        }))
+        for (const track of isolated) {
+          const index = rows.findIndex((row) => row.trackId === track.trackId)
+          const result = await orch.dispatch(track.sessionId, track.message, {
+            self,
+            task: track.taskId,
+            accessType: track.accessType,
+            planId: plan.planId,
+          })
+          if (result.ok) {
+            rows[index] = {
+              trackId: track.trackId,
+              sessionId: track.sessionId,
+              ok: true,
+              state: 'running',
+              ...(result.messageId === undefined ? {} : { messageId: result.messageId }),
+            }
+          } else {
+            rows[index] = {
+              trackId: track.trackId,
+              sessionId: track.sessionId,
+              ok: false,
+              state: 'failed',
+              ...(result.reason === undefined ? {} : { reason: result.reason }),
+            }
+          }
+        }
+        const accepted = rows.filter((row) => row.ok).length
+        const failed = rows.filter((row) => row.state === 'failed').length
+        const waiting = rows.filter((row) => row.state === 'waiting').length
+        plan.state = failed > 0 ? 'failed' : 'running'
+        plan.trackStates = Object.fromEntries(rows.map((row) => [
+          row.trackId,
+          row.ok ? 'running' : row.state === 'failed' ? 'failed' : 'pending',
+        ])) as Record<string, WorkTrackState>
+        writeWorkPlan(ledgerRoot, plan)
+        /** 首波已经由本函数同步派完，不需要再在同一个 tick 里推一遍。 */
+        return {
+          ok: failed === 0,
+          planId: plan.planId,
+          accepted,
+          tracks: rows,
+          /**
+           * 派发成功只代表“已经交出去”，一条轨道都还没返回 ⇒ 不能报 joining。
+           * 后续汇合状态由 `advanceWorkPlans()` 从真实 `trackStates` 派生。
+           */
+          join: failed > 0 ? { state: 'failed', reason: '首波有轨道派发失败' }
+            : { state: 'waiting', reason: waiting > 0 ? '仍有依赖轨等待前置' : '已派出，等待回传' },
+        }
+      },
 
       async dispatch(target, message, opts) {
         const self = opts?.self
@@ -3753,6 +4364,67 @@ export function apply(ctx: any): void {
         if (typeof message !== 'string' || message.trim() === '') {
           return { ok: false, reason: 'empty message' }
         }
+      /**
+       * 单会话硬门禁也覆盖旧单目标入口。
+       *
+       * 没有显式计划的旧调用不会因此失效；它等价于一个隐式单轨计划。
+       * 但一旦本会话已经有活动的多轨计划，或当前是单会话档且存在另一条
+       * 未结算执行轨，就必须拒绝，不能绕过 `dispatchPlan()` 的约束。
+       */
+      const modeVerdict = (() => {
+        try {
+          const svcName = 'hobSessionPolicy'
+          const svc: any = svcCtx.get?.(svcName) ?? svcCtx[svcName]
+          const session = typeof self === 'string'
+            ? (agents.get?.(self)?.session ?? sessions.get?.(self) ?? undefined)
+            : undefined
+          if (session === undefined || typeof svc?.of !== 'function') return undefined
+          const r = svc.of(session)
+          return typeof r?.workMode === 'string' && (WORK_MODE_VALUES as readonly string[]).includes(r.workMode)
+            ? r.workMode as WorkMode
+            : undefined
+        } catch { return undefined }
+      })()
+      const wsRootForGate = typeof self === 'string' && self !== '' ? wsRootOfSession(self) : undefined
+      const ledgerForGate = wsRootForGate === undefined
+        ? undefined
+        : (() => { try { return resolveLedgerRoot('', declaredLedgerHome(svcCtx), wsRootForGate) } catch { return undefined } })()
+      if (ledgerForGate !== undefined) {
+        try {
+          const active = activePlansAt(ledgerForGate)
+            .filter((plan) => plan.joinOwnerSessionId === self)
+          const activeTracks = active.flatMap((plan) => activeTracksOfPlan(plan))
+          const samePlanTracks = opts?.planId === undefined
+            ? []
+            : activeTracks.filter((track) => active.some((plan) => plan.planId === opts.planId
+              && plan.tracks.some((item) => item.trackId === track.trackId)))
+          /**
+           * 单会话：任何其它活动轨都拒绝（跨计划也算）。
+           * 多会话 / 自动：允许并行，但同一工作区仍最多一条写轨。
+           */
+          if (modeVerdict === 'single' && activeTracks.some((t) => t.sessionId !== target
+            && !samePlanTracks.some((own) => own.trackId === t.trackId))) {
+            return {
+              ok: false,
+              reason: '单会话档只允许一个执行轨；已有活动轨道，第二轨派发被拒。'
+                + ' ⚠ 先等当前轨回传，或改用一份新的允许并行的计划。',
+            }
+          }
+          const requestedAccess = opts?.accessType
+          if (requestedAccess === 'write') {
+            const otherWrite = activeTracks.find((t) => t.accessType === 'write'
+              && t.sessionId !== target
+              && !samePlanTracks.some((own) => own.trackId === t.trackId))
+            if (otherWrite !== undefined) {
+              return {
+                ok: false,
+                reason: `同一工作区最多一条写轨；已有写轨 ${otherWrite.trackId}（${otherWrite.sessionId}）尚未结算。`
+                  + ' ⚠ 先等它回传，或把本条改成只读轨 / 依赖轨。',
+              }
+            }
+          }
+        } catch { /* 计划读不到时由下面的正常 dispatch 路径处理其自身状态 */ }
+      }
         // ── ⚠⚠ 同目标重复派发闸门（2026-10-09 修）──────────────────────────
         //   病灶：`watches` 以**目标会话 id** 为键（`watches.set(target, w)`）。
         //   同一会话在**上一轮尚未回传**时又被派一轮 ⇒ **后一轮直接覆盖前一轮的 watch**
@@ -4043,6 +4715,60 @@ export function apply(ctx: any): void {
         }
         watches.set(target, w)
         lastStatus.set(target, cur ?? 'unknown')
+        /**
+         * 单目标兼容路径也会被记录到当前唯一的活动计划中，
+         * 让单会话门禁与状态读数能看见“已有一条执行轨”。
+         */
+        if (owner !== undefined && ownerWsRoot !== undefined) {
+          try {
+            const ledgerRoot = resolveLedgerRoot('', declaredLedgerHome(svcCtx), ownerWsRoot)
+            if (ledgerRoot !== undefined) {
+              const listed = activePlansAt(ledgerRoot)
+                .filter((plan) => plan.joinOwnerSessionId === owner)
+              const attached = opts?.planId === undefined
+                ? listed.find((plan) => plan.tracks.some((track) => track.sessionId === target
+                  && track.taskId === (opts?.task ?? track.taskId)))
+                : listed.find((plan) => plan.planId === opts.planId)
+              if (attached !== undefined) {
+                const track = attached.tracks.find((item) => item.sessionId === target
+                  && (opts?.task === undefined || item.taskId === opts.task))
+                if (track !== undefined) {
+                  const states = { ...(attached.trackStates ?? {}) } as Record<string, WorkTrackState>
+                  states[track.trackId] = 'running'
+                  attached.trackStates = states
+                  attached.state = 'running'
+                  writeWorkPlan(ledgerRoot, attached)
+                }
+              } else if (opts?.planId === undefined && listed.length === 0) {
+                const implicit = buildStoredWorkPlan({
+                  planId: `WP-implicit-${owner}-${Date.now()}`,
+                  changeId: opts?.task ?? 'implicit',
+                  mode: 'auto',
+                  workspaceRoot: ownerWsRoot,
+                  rationale: 'legacy single-target dispatch',
+                  tracks: [{
+                    trackId: 'single',
+                    taskId: opts?.task ?? 'implicit',
+                    sessionId: target,
+                    goal: opts?.task ?? 'single-target dispatch',
+                    scopePaths: ['.'],
+                    accessType: opts?.accessType ?? 'read',
+                    dependsOn: [],
+                    budget: 'unbounded-legacy',
+                    acceptance: ['legacy dispatch receipt'],
+                    message,
+                  }],
+                  joinPolicy: 'all',
+                  joinOwnerSessionId: owner,
+                })
+                implicit.state = 'running'
+                /** `WM-10`：旧单目标入口自动生成的隐式单轨计划，可被状态面识别。 */
+                implicit.implicit = true
+                writeWorkPlan(ledgerRoot, implicit)
+              }
+            }
+          } catch { /* 计划可见性是附加读数，不改变既有投递结果 */ }
+        }
         svcCtx.logger?.debug?.(`[${name}] 已登记回传 watch：${target} → ${w.watcher}`)
         // ── 落盘（**本批新增**）：让"有未结算派发"这件事活过下一次重载 ──
         //   ⚠ 写失败必须留 warn：静默的"记不上账"正是本批要修的失败模式。
@@ -4217,9 +4943,52 @@ export function apply(ctx: any): void {
         }
       },
 
+      async workPlans(opts) {
+        const self = opts?.self
+        const mode = opts?.mode !== undefined && (WORK_MODE_VALUES as readonly string[]).includes(opts.mode)
+          ? opts.mode as WorkMode
+          : 'unknown'
+        const wsRoot = opts?.wsRoot ?? (typeof self === 'string' && self !== '' ? wsRootOfSession(self) : undefined)
+        if (wsRoot === undefined) return { mode, plans: [], unreadable: [] }
+        const ledgerRoot = (() => {
+          try { return resolveLedgerRoot('', declaredLedgerHome(svcCtx), wsRoot) } catch { return undefined }
+        })()
+        if (ledgerRoot === undefined) return { mode, plans: [], unreadable: [] }
+        try { removeStaleWorkPlanTemps(ledgerRoot) } catch { /* 清理失败不影响读取 */ }
+        /**
+         * 收口区不是历史档案：只保留「等独立验收」这一段。
+         * ⚠ 失败不阻塞读数；但删不掉只会变旧，不会变错（不会复活成活动计划）。
+         */
+        try { pruneClosedWorkPlans(ledgerRoot) } catch { /* 维护动作，不影响读数 */ }
+        const listed = listWorkPlans(ledgerRoot)
+        /**
+         * 读之前先走唯一推进器：回传结算后依赖轨可以启动。
+         * ⚠ 推进器会写计划；本函数只回报推进后的读数。
+         */
+        await advanceWorkPlans([ledgerRoot], self, 'work-plans-read')
+        const refreshed = listWorkPlans(ledgerRoot)
+        const planned = refreshed.filter((x) => x.state === 'ok' && x.plan !== undefined
+          && (self === undefined || x.plan.joinOwnerSessionId === self))
+        const unreadable = refreshed
+          .filter((x) => x.state !== 'ok')
+          .filter((x) => self === undefined || x.planId !== '')
+          .map((x) => ({ planId: x.planId, reason: x.reason ?? 'unreadable' }))
+        return {
+          mode,
+          plans: [...planned.map((x) => {
+            const plan = x.plan!
+            const states = mergeTrackStates(ledgerRoot, plan)
+            const progress = workPlanProgress(plan, states)
+            return summarizePlan(plan, states, progress)
+          }), ...closedPlanSummary(ledgerRoot, self)],
+          unreadable,
+        }
+      },
+
       status(opts?: { wsRoot?: string; self?: string }) {
         const self = typeof opts?.self === 'string' && opts.self !== '' ? opts.self : undefined
         const mine = mineOnly(self)
+        const plans = workPlanSummarySync(self, opts?.wsRoot ?? (self === undefined ? undefined : wsRootOfSession(self)), 'unknown')
         /**
          * ⚠ **一次算、两处用**（2026-10-21 · 第 326 轮 · **甲-7**）：
          *   `reachability` 的值与"要不要带成因"必须来自**同一个结果** ——
@@ -4228,6 +4997,7 @@ export function apply(ctx: any): void {
          */
         const reach = reachabilityFor(opts?.wsRoot)
         return {
+          workPlans: plans,
           /**
            * ⚠ 停/未停**也是自己的那一份**（`I-4` 末条）：别人停了不该让我的读数显示"已停"。
            */
@@ -5081,6 +5851,44 @@ export function apply(ctx: any): void {
           }
         }
         return { ok: true, file }
+      },
+
+      /**
+       * 汇合责任人显式收口：只允许把已经进入 `joining` 的计划收成 `completed`。
+       *
+       * ⚠ 不自动收口：轨道返回只证明“执行方说做完了”，最终完成必须由汇合责任人
+       *   （= 派发计划的 Hob 自己）按下这个动作。失败计划不接受收口。
+       */
+      async closePlan(planId: string, self: string | undefined) {
+        if (typeof self !== 'string' || self === '') {
+          return { ok: false, reason: '判不出我是谁 ⇒ ⛔ 不替别人收口' }
+        }
+        const ws = wsRootOfSession(self)
+        const ledgerRoot = ws === undefined
+          ? undefined
+          : (() => { try { return resolveLedgerRoot('', declaredLedgerHome(svcCtx), ws) } catch { return undefined } })()
+        if (ledgerRoot === undefined) {
+          return { ok: false, reason: '判不出该读哪本账 ⇒ ⛔ 不收口' }
+        }
+        /** 先走唯一推进器，让刚回传的终态落盘，再判能否收口。 */
+        await advanceWorkPlans([ledgerRoot], self, 'plan-close')
+        const found = listWorkPlans(ledgerRoot)
+          .find((row) => row.state === 'ok' && row.plan?.planId === planId)
+        if (found?.plan === undefined) {
+          return { ok: false, reason: `活动计划 ${planId} 不存在 ⇒ ⛔ 不伪造收口` }
+        }
+        const plan = found.plan
+        if (plan.joinOwnerSessionId !== self) {
+          return { ok: false, reason: '只有该计划的汇合责任人可以收口' }
+        }
+        if (plan.state !== 'joining') {
+          return { ok: false, reason: `计划当前是 ${plan.state}，只有 joining 才能收成 completed` }
+        }
+        plan.state = 'completed'
+        const closed = closeWorkPlan(ledgerRoot, plan, 'completed')
+        return closed.ok
+          ? { ok: true, planId: plan.planId, file: closed.file ?? '' }
+          : { ok: false, reason: closed.reason ?? 'unknown' }
       },
       control(action, opts?: { wsRoot?: string; self?: string }) {
         const self = typeof opts?.self === 'string' && opts.self !== '' ? opts.self : undefined
@@ -5941,6 +6749,8 @@ export function apply(ctx: any): void {
         if (res?.ok) {
           relaysDone++
           bumpRelay(relaysByOwner.done, w.owner ?? (w.watcher === '' ? undefined : w.watcher))
+          /** 回传成功 ⇒ 立刻推进该 owner 的计划；依赖轨不必等下一次状态查询。 */
+          advanceWorkPlansForWatch(w, 'relay-settled')
           // ── ④ 成功 ⇒ 该条离开 `pending`（⛔ 不许只删内存不落盘 —— 那就是 W4）──
           /**
            * ⚠⚠ **先落 `deliveredAt` 再清账**（2026-10-20 · 第 4 单）。
@@ -5978,7 +6788,10 @@ export function apply(ctx: any): void {
             w.clarifyWhy = clarify.length > 500 ? `${clarify.slice(0, 500)}…（原文更长）` : clarify
           }
           flushWatches()
-          if (finalizeDelivery(w, id, 'delivered')) return true
+          if (finalizeDelivery(w, id, 'delivered')) {
+            advanceWorkPlansForWatch(w, 'relay-finalized')
+            return true
+          }
           /**
            * ⚠ 清账失败 ⇒ **当场可读**（`finalizeDelivery` 里已留 warn + `cleanupFailedAt`）。
            *   返回值仍是 `false`：**"账没清掉"就是没结算完**，⛔ 不许报成功。
@@ -6616,7 +7429,9 @@ export function apply(ctx: any): void {
      *   · 仍在跑 ⇒ 已重挂，这里的对账会确认它还在跑（⛔ 不误结）；
      *   · 已空闲 / 判不出 ⇒ 由对账**再核一次**（判不出 ⇒ `unresolved`，不是终态）。
      */
-    void reconcile('ready-scan').catch(() => { /* reconcile 自己已接住 */ })
+    void reconcile('ready-scan')
+      .then(() => advanceAllWorkPlans('ready-scan'))
+      .catch(() => { /* reconcile / 计划推进各自已接住 */ })
     /**
      * ⚠⚠ **就绪时也武装一次**（`TASK-3` §二.1 的"保证型"）：
      *   重启后盘上可能**已经有** `awake` 的看护登记（上一代留下的）——
@@ -6817,6 +7632,13 @@ function selfWorkspaceRootOf(exec: any): string | undefined {
   return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
 }
 
+/** 将计划里由工具层补的 `planId` 收成稳定、可落盘的形式。 */
+function normalizedPlanId(raw: unknown, now = Date.now()): string {
+  const text = typeof raw === 'string' ? raw.trim() : ''
+  if (/^[A-Za-z0-9._-]+$/.test(text)) return text
+  return `WP-${now}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 /**
  * 造编排的三个工具。
  *
@@ -6834,6 +7656,7 @@ function selfWorkspaceRootOf(exec: any): string | undefined {
 export function createHobOrchTools(
   orch: HobOrchestrator,
   proceedGateOf?: (exec: any) => string | undefined,
+  workModeOf?: (exec: any) => WorkMode | undefined,
 ): {
   dispatch: ReturnType<typeof defineTool>
   status: ReturnType<typeof defineTool>
@@ -6844,26 +7667,69 @@ export function createHobOrchTools(
     description:
       '**派活并登记回传**：把指令投给指定会话，系统在**它这一轮跑完后自动把结果送回来**。'
       + '与 `hob_send` 的区别：`hob_send` 投完就结束（结果不回来），`hob_dispatch` 会**等它跑完再叫醒你**。'
-      + '⚠ 回传是「对方说它做了什么」，**不是验收**。⚠ 停了（`hob_orch_control stop`）之后本工具直接拒绝。',
+      + '⚠ 回传是「对方说它做了什么」，**不是验收**。⚠ 停了（`hob_orch_control stop`）之后本工具直接拒绝。'
+      + '⚠ 单目标参数保留兼容；多轨传入 `tracks`，一次完成计划、隔离、档位与汇合校验。',
     parameters: {
       sessionId: {
         type: 'string',
-        required: true,
-        description: '目标会话 id（取自 hob_sessions；要用新会话就先 hob_spawn）。',
+        description: '目标会话 id（取自 hob_sessions；要用新会话就先 hob_spawn）。单目标派活必填。',
       },
       message: {
         type: 'string',
-        required: true,
-        description: '要派的事。给路径与要点，勿把整篇正文塞在这里。',
+        description: '要派的事。单目标派活必填；多轨派活把每条指令写在对应 track.message。',
       },
       round: { type: 'number', description: '第几轮（回传时原样带回，便于对号）。' },
       task: { type: 'string', description: '一句话说明这一轮派什么（回传带回）。' },
+      changeId: { type: 'string', description: '多轨派活必填：本计划对应的现有 CHG 编号。' },
+      planId: { type: 'string', description: '多轨派活可选：稳定计划编号；省略时自动生成。' },
+      rationale: { type: 'string', description: '多轨派活必填：为什么这样拆分。' },
+      joinPolicy: {
+        type: 'string',
+        enum: ['all', 'dependency-gated'],
+        description: '多轨派活可选：汇合策略，默认 all。',
+      },
+      joinOwnerSessionId: {
+        type: 'string',
+        description: '多轨派活可选：汇合责任人；省略时默认本会话。',
+      },
+      singleTrackReason: {
+        type: 'string',
+        enum: ['same-file', 'shared-contract', 'strict-order', 'single-acceptance-unit', 'insufficient-independent-scope'],
+        description: '多轨派活可选：多会话/自动档只有一条轨时的封闭原因（必填才能派单轨）。',
+      },
+      /**
+       * ⚠ 单轨原因的**可核对依据**。缺了它，`same-file` / `strict-order` 会被
+       *   服务端拒绝（那不是"少个可选字段"，而是"没有证据"）。
+       */
+      singleTrackEvidence: {
+        type: 'json',
+        description: '多轨派活可选但 same-file / strict-order 必填：{ piecePaths?: {片段名: [路径...]}, orderedSteps?: [步骤...] }。'
+          + 'same-file 要用 piecePaths 给出 ≥2 个片段，每个带非空路径，且至少一对片段真的写同一处；'
+          + 'strict-order 要用 orderedSteps 给出 ≥2 个不同的有序子步骤。',
+      },
+      tracks: {
+        type: 'json',
+        description: '多轨派活：轨道数组。每项含 trackId/taskId/sessionId/goal/scopePaths/accessType/dependsOn/budget/acceptance/message。',
+      },
     },
     output: {
       schema: { type: 'string' },
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
-    async execute(args: { sessionId: string; message: string; round?: number; task?: string }, exec: any): Promise<string> {
+    async execute(args: {
+      sessionId?: string
+      message?: string
+      round?: number
+      task?: string
+      changeId?: string
+      planId?: string
+      rationale?: string
+      joinPolicy?: 'all' | 'dependency-gated'
+      joinOwnerSessionId?: string
+      singleTrackReason?: string
+      singleTrackEvidence?: unknown
+      tracks?: unknown
+    }, exec: any): Promise<string> {
       /**
        * ⚠⚠ **派活前先过执行层闸门**（2026-10-22 第 5 轮 · 任务书第 12 条）。
        *   ⚠ `hob_dispatch` 是"真实派活"的主路径 ⇒ 必须在这里挡，
@@ -6878,8 +7744,75 @@ export function createHobOrchTools(
           message: `拒绝：无法确认本会话的原「推进工作方式」（闸门抛错：${String((e as Error)?.message ?? e)}）`,
         })
       }
+      const self = selfSessionIdOf(exec)
+      const mode = workModeOf?.(exec)
+      if (Array.isArray(args.tracks)) {
+        if (self === undefined) {
+          return JSON.stringify({
+            ok: false,
+            reason: 'no-session-identity',
+            message: '多轨派活必须有可信的调用方会话身份。',
+          })
+        }
+        if (mode === undefined) {
+          return JSON.stringify({
+            ok: false,
+            reason: 'work-mode-unknown',
+            message: '无法现读本会话的工作方式 ⇒ 不派多轨（⛔ 不按缺省档猜）。',
+          })
+        }
+        const now = Date.now()
+        const rawTracks = args.tracks as Array<Partial<WorkTrack>>
+        const input: WorkPlanInput = {
+          planId: normalizedPlanId(args.planId, now),
+          changeId: String(args.changeId ?? ''),
+          mode,
+          rationale: String(args.rationale ?? ''),
+          tracks: rawTracks.map((raw) => ({
+            trackId: String(raw?.trackId ?? ''),
+            taskId: String(raw?.taskId ?? ''),
+            sessionId: String(raw?.sessionId ?? ''),
+            goal: String(raw?.goal ?? ''),
+            scopePaths: Array.isArray(raw?.scopePaths) ? raw.scopePaths.map(String) : [],
+            accessType: raw?.accessType === 'read' ? 'read' : 'write',
+            dependsOn: Array.isArray(raw?.dependsOn) ? raw.dependsOn.map(String) : [],
+            budget: String(raw?.budget ?? ''),
+            acceptance: Array.isArray(raw?.acceptance) ? raw.acceptance.map(String) : [],
+            message: String(raw?.message ?? ''),
+          })),
+          joinPolicy: args.joinPolicy === 'dependency-gated' ? 'dependency-gated' : 'all',
+          joinOwnerSessionId: typeof args.joinOwnerSessionId === 'string' && args.joinOwnerSessionId.trim() !== ''
+            ? args.joinOwnerSessionId.trim()
+            : self,
+          ...(typeof args.singleTrackReason === 'string'
+            ? { singleTrackReason: args.singleTrackReason as WorkPlanInput['singleTrackReason'] }
+            : {}),
+          /** ⚠ 证据必须原样透传：缺了它 same-file / strict-order 在生产路径永远被拒。 */
+          ...(args.singleTrackEvidence !== undefined && args.singleTrackEvidence !== null
+            && typeof args.singleTrackEvidence === 'object'
+            ? { singleTrackEvidence: args.singleTrackEvidence as WorkPlanInput['singleTrackEvidence'] }
+            : {}),
+        }
+        const planResult = await orch.dispatchPlan(input, {
+          self,
+          mode,
+          ...(selfWorkspaceRootOf(exec) === undefined ? {} : { wsRoot: selfWorkspaceRootOf(exec)! }),
+        })
+        return JSON.stringify({
+          ...planResult,
+          note2: 'Plan dispatch only: a track returning is not acceptance, and the whole plan is not done until its join completes.',
+        })
+      }
+      if (typeof args.sessionId !== 'string' || args.sessionId === ''
+        || typeof args.message !== 'string' || args.message.trim() === '') {
+        return JSON.stringify({
+          ok: false,
+          reason: 'missing-dispatch-target',
+          message: '单目标派活需要 sessionId + message；多轨派活需要 tracks。',
+        })
+      }
       const r = await orch.dispatch(args.sessionId, args.message, {
-        self: selfSessionIdOf(exec),
+        self,
         ...(args.round === undefined ? {} : { round: args.round }),
         ...(args.task === undefined ? {} : { task: args.task }),
       })
@@ -6919,6 +7852,13 @@ export function createHobOrchTools(
        */
       const selfId = selfSessionIdOf(exec)
       const s = orch.status({ wsRoot: selfWorkspaceRootOf(exec), ...(selfId === undefined ? {} : { self: selfId }) })
+      const planState = typeof orch.workPlans === 'function'
+        ? await orch.workPlans({
+        ...(selfWorkspaceRootOf(exec) === undefined ? {} : { wsRoot: selfWorkspaceRootOf(exec)! }),
+        ...(selfId === undefined ? {} : { self: selfId }),
+        ...(workModeOf?.(exec) === undefined ? {} : { mode: workModeOf!(exec)! }),
+        })
+        : { mode: 'unknown' as const, plans: [], unreadable: [] }
       /**
        * ── 卡进度（2026-10-18 · 用户报障：隔离卡跑了 22 分钟，这边一行都看不见）──
        *
@@ -8281,6 +9221,18 @@ export function createHobOrchTools(
             + '，本进程内存里没有对应 `watch`'
             + ' ⇒ 上面"无归属"那个数**只覆盖内存**（⛔ 别把它读成"盘上也干净"）；'
             + '⚠ 成因：重载后还没被认领 / 上一代留下的（本进程只看得见自己的 `watches`）']),
+        /**
+         * 工作计划读数：只在存在活动计划或坏计划时出现；正常单目标兼容派发不刷屏。
+         */
+        ...(planState.plans.length === 0 && planState.unreadable.length === 0
+          ? []
+          : [`  ▸ **工作计划**：${planState.plans.length} 个活动 · 工作方式=${planState.mode}`,
+            ...planState.plans.map((p) =>
+              `    · ${p.planId} · ${p.state} · 轨道 ${p.trackCount}`
+              + `（运行 ${p.running} / 等待 ${p.waiting} / 返回 ${p.returned} / 失败 ${p.failed}）`
+              + `${p.singleTrackReason === undefined ? '' : ` · 单轨原因=${p.singleTrackReason}`}`),
+            ...planState.unreadable.map((p) =>
+              `    · ⚠ ${p.planId || '(判不出 planId)'} **读不出**：${p.reason}`)]),
       ].join('\n')
     },
   })
@@ -8296,9 +9248,10 @@ export function createHobOrchTools(
       action: {
         type: 'string',
         required: true,
-        enum: ['stop', 'resume', 'redeliver', 'accept', 'send-back', 'watch-wait'],
+        enum: ['stop', 'resume', 'redeliver', 'accept', 'send-back', 'watch-wait', 'plan-complete'],
         description: 'stop=停；resume=恢复；redeliver=**显式补投**一条投错人的回执（需 executionId + taskId）；'
           + 'accept=**验收**（需 taskId + basis）；send-back=**退回重做**（需 taskId + basis）；'
+          + 'plan-complete=**汇合责任人收口计划**（需 planId；计划须先到 joining）；'
           + 'watch-wait=**看护切回「等待」**（做完了 / 需要用户决策 / 出了异常都走这一个动作；'
           + '可用 `note` 顺手写一句为什么 —— ⚠ 那句话是给人读的，⛔ 不是必填、⛔ 不是原因码）。'
           + '⚠ accept / send-back 的 `basis` **必须非空**（D10/§10：判决要带"依据哪几条读数"）'
@@ -8328,6 +9281,11 @@ export function createHobOrchTools(
         description: 'watch-wait 专用（**可选**）：一句话说明为什么切回等待。'
           + '⚠ 它是给人读的说明，⛔ 不是原因码、⛔ 不是门槛 —— 不填也能切。',
       },
+      planId: {
+        type: 'string',
+        description: 'plan-complete 专用：要收口的计划编号。只有该计划汇合责任人可收；'
+          + '计划必须先到 joining。',
+      },
     },
     output: {
       schema: { type: 'string' },
@@ -8335,7 +9293,7 @@ export function createHobOrchTools(
     },
     async execute(
       args: {
-        action: 'stop' | 'resume' | 'redeliver' | 'accept' | 'send-back' | 'watch-wait'
+        action: 'stop' | 'resume' | 'redeliver' | 'accept' | 'send-back' | 'watch-wait' | 'plan-complete'
         executionId?: string
         taskId?: string
         /** ⚠ 包 H：判决依据（`accept` / `send-back` 专用；⛔ 空数组一律被拒）。 */
@@ -8344,6 +9302,7 @@ export function createHobOrchTools(
         verifiedAt?: string
         /** ⚠ 包 AB：`watch-wait` 的**可选**说明（⛔ 不是原因码、⛔ 不是必填）。 */
         note?: string
+        planId?: string
       },
       exec: any,
     ): Promise<string> {
@@ -8353,8 +9312,17 @@ export function createHobOrchTools(
        *   ⚠ 只在文案里把新增的 `redeliver` 也列进去（否则报错话会把合法值说漏一个）。
        */
       if (args?.action !== 'stop' && args?.action !== 'resume' && args?.action !== 'redeliver'
-        && args?.action !== 'accept' && args?.action !== 'send-back' && args?.action !== 'watch-wait') {
-        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume' or 'redeliver' or 'accept' or 'send-back' or 'watch-wait'" })
+        && args?.action !== 'accept' && args?.action !== 'send-back' && args?.action !== 'watch-wait'
+        && args?.action !== 'plan-complete') {
+        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume' or 'redeliver' or 'accept' or 'send-back' or 'watch-wait' or 'plan-complete'" })
+      }
+      /** 汇合责任人显式收口；⛔ 不新增工具名，挂在本写工具上。 */
+      if (args.action === 'plan-complete') {
+        if (typeof args.planId !== 'string' || args.planId === '') {
+          return JSON.stringify({ ok: false, reason: 'plan-complete 需要 `planId`' })
+        }
+        const r = await orch.closePlan(args.planId, selfSessionIdOf(exec))
+        return JSON.stringify(r)
       }
       // ── 新增一支：显式补投（⛔ 不新增工具名，挂在本写工具上）──────────────────
       //   ⚠ 本支**不碰** `stopped`：补投是一次"人按的补发"，与"停不停自动回传"无关

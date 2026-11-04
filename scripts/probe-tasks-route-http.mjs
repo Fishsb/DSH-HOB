@@ -61,6 +61,7 @@ import { spawnSync } from 'node:child_process'
 const ROUTE = '/api/dsh-hob/tasks-progress'
 const RESOURCE_ROUTE = '/api/dsh-hob/ledger-resource'
 const STAGES_ROUTE = '/api/dsh-hob/stages'
+const WORK_PLANS_ROUTE = '/api/dsh-hob/work-plans'
 const DEFAULT_PORT = 3080
 
 /**
@@ -284,7 +285,12 @@ try {
  * ⚠ 显式 `--session` 优先；不给才走**启发式**（见头注释）。
  * 来源会打进读数行，⛔ 不许让"猜的"和"给的"看起来一样。
  */
-const foundSession = findWorkspaceSessionId()
+/**
+ * ⚠ 显式 `--session` 时**不再跑启发式**：那条启发式会扫 `/proc/<pid>/fd` 与
+ *   全部会话目录；在 WSL / 管道启动等环境下可能长时间阻塞，而结果又会被
+ *   显式值覆盖 ⇒ 等于白扫。这里按调用方给的值直接用，来源仍照实打印。
+ */
+const foundSession = SESSION_OVERRIDE !== '' ? undefined : findWorkspaceSessionId()
 const sessionId = SESSION_OVERRIDE !== '' ? SESSION_OVERRIDE : foundSession?.id
 const sessionSource = SESSION_OVERRIDE !== ''
   ? '显式 --session'
@@ -458,6 +464,34 @@ console.log(`  读数：sessionId = ${sessionId}（来源：${sessionSource}）`
   }
   if (problems.length === 0) ok(`H-6 ✓ 五步汇总 ⇒ 200 + 五步顺序固定 + attention ${parsed.attention === undefined ? '判不出（字段缺省）' : `${parsed.attention.length} 条`}`)
   else for (const p of problems) bad(`H-6 · ${p}`)
+}
+
+// ── ⑦ 工作计划只读路由 ⇒ 200 + 计划读数（⛔ 不推进、不写盘）──────────────
+{
+  const res = await fetch(`${base}${WORK_PLANS_ROUTE}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ sessionId }),
+  })
+  const status = res.status
+  const text = await res.text()
+  let parsed
+  try { parsed = JSON.parse(text) } catch { parsed = undefined }
+  console.log(`  ── POST ${WORK_PLANS_ROUTE} ⇒ HTTP ${status}`)
+  console.log(`     响应体前 240 字：${text.slice(0, 240)}`)
+  const problems = []
+  if (status !== 200) problems.push(`状态码 ${status}（期望 200；404/405 说明路由没登记）`)
+  if (parsed === undefined || typeof parsed !== 'object' || parsed === null) problems.push('响应体不是 JSON 对象')
+  else {
+    if (parsed.ok !== true) problems.push(`ok 不是 true：${JSON.stringify(parsed.reason ?? parsed.ok)}`)
+    if (!Array.isArray(parsed.plans)) problems.push('plans 不是数组（⛔ 空表也必须是 []）')
+    if (!Array.isArray(parsed.unreadable)) problems.push('unreadable 不是数组')
+    if (typeof parsed.mode !== 'string') problems.push('mode 不是字符串')
+    if (text.includes('/home/') || text.includes('\\\\wsl')) problems.push('响应泄露了本机绝对路径')
+  }
+  if (problems.length === 0) {
+    ok(`H-7 ✓ 工作计划只读路由可达（${parsed.plans.length} 份活动计划 · 工作方式=${parsed.mode} · 读不出 ${parsed.unreadable.length}）`)
+  } else for (const p of problems) bad(`H-7 · ${p}`)
 }
 
 console.log('')

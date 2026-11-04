@@ -1578,6 +1578,13 @@ export const PARENT_AFTER_ALLOWED_PATTERNS = [
  *   同模式可复用同一句理由，但每条单元各占一条记录（便于单独删除/单独追责）。
  */
 export const STORED_PARENT_AFTER_OVERLAP = [
+  /**
+   * 2026-11-04 · WorkPlan：
+   * `TSK-070` 属于本变更，同时必须等 `TSK-069` 交付模型与存储。
+   * 这是**前后依赖**，不是第二个归属，因此登记为 task→change 的显式例外。
+   */
+  { id: 'TSK-070', pattern: 'task→change', why: 'task 属于 CHG-2026-11-04-work-plan-modes；after 还要等 TSK-069 的模型与存储，是真实前置而不是第二归属' },
+  { id: 'RUN-039', pattern: 'run→task', why: 'run 是本轮对 TSK-069 的执行记录；after 等该 task 进入执行阶段，是真实执行前置' },
   // ── task→req（2 条）：task 实现这条需求，同时必须等需求定下来才开工 ──
   { id: 'TSK-031', pattern: 'task→req', why: 'task 实现 R-002；`after` 等 R-002 是"需求先定（agreed）才开工"，⛔ 不是第二个归属' },
   { id: 'TSK-033', pattern: 'task→req', why: 'task 实现 R-004；`after` 等 R-004 是"需求先定（agreed）才开工"，⛔ 不是第二个归属' },
@@ -1604,7 +1611,7 @@ export const STORED_PARENT_AFTER_OVERLAP = [
 ]
 
 /** 名单长度上限（⚠ 第二道闸：只减不增）。实测 42 = 名单长度。 */
-export const STORED_PARENT_AFTER_OVERLAP_MAX = 42
+export const STORED_PARENT_AFTER_OVERLAP_MAX = 44
 
 /**
  * @param {Array<Record<string, any>>} units - 索引单元

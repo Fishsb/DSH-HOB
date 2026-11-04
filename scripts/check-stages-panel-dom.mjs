@@ -1668,6 +1668,11 @@ export function StateDot({ state, size, appearance }) {
            */
           fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
           fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 测试注入的合法 Current 读数。' }),
+          /**
+           * ⚠ 工作计划块同理：不注入就会走真 HTTP ⇒ jsdom 里「判不出」⇒ 本组全文口径误伤。
+           *   给一个**合法空读数**，与「没有活动计划」这一档一致。
+           */
+          fetchPlans: async () => ({ ok: true, mode: 'multi', plans: [], unreadable: [] }),
           pollMs: 0,
         }))
         await tick(40)
@@ -1735,6 +1740,11 @@ export function StateDot({ state, size, appearance }) {
           fetchStages: async () => built2,
           fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
           fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 测试注入的合法 Current 读数。' }),
+          /**
+           * ⚠ 工作计划块同理：不注入就会走真 HTTP ⇒ jsdom 里「判不出」⇒ 本组全文口径误伤。
+           *   给一个**合法空读数**，与「没有活动计划」这一档一致。
+           */
+          fetchPlans: async () => ({ ok: true, mode: 'multi', plans: [], unreadable: [] }),
           pollMs: 0,
         }))
         await tick(40)

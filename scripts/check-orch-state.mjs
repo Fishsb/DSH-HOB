@@ -5335,6 +5335,22 @@ const orchCode = stripComments(orchSrc)
               + ` · 判不出"我"时不说 0=${noZeroLie}`)
           }
         }
+        // ── SA-plan ⭐ **计划面在编排模块里确实有可执行落点**（2026-11-04）──
+        //
+        //   ⚠ 独立验收指出的缺口：`check:orch` 346 条里 **0 条**触碰 WorkPlan，
+        //     而计划面是编排模块新增的承重结构。这里不重复 WPR 的九点行为，
+        //     只钉住“编排服务对外真的提供计划入口/读数/收口”，防止整块被摘掉。
+        {
+          const h = await saMount({})
+          const has = (method) => typeof h.orch?.[method] === 'function'
+          if (has('dispatchPlan') && has('workPlans') && has('closePlan')
+            && h.orch.planAware === true) {
+            ok('SA-plan ✓ 编排服务暴露计划入口 `dispatchPlan` / 读数 `workPlans` / 汇合责任人收口 `closePlan`，且 `planAware=true`')
+          } else {
+            bad(`SA-plan 【计划面入口缺失】dispatchPlan=${has('dispatchPlan')} workPlans=${has('workPlans')}`
+              + ` closePlan=${has('closePlan')} planAware=${String(h.orch?.planAware)}`)
+          }
+        }
         // ══════════════════════════════════════════════════════════════════
         // **SA-x 负向对拍**（任务书 §3 硬要求：每条都要有，⛔ 不许恒真跳过）
         // ══════════════════════════════════════════════════════════════════

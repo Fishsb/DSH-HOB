@@ -38,6 +38,8 @@ import { installTasksProgressRoute } from './modules/tasks-progress-route.ts'
 import { installExecProgressRoute } from './modules/exec-progress-route.ts'
 import { installStagesRoute } from './modules/stages-route.ts'
 import { installLedgerResourceRoute } from './modules/ledger-resource-route.ts'
+// 工作计划（WorkPlan）只读出口：面板显示计划、轨道、执行者与等待关系（⛔ 零写、零派单）。
+import { installWorkPlansRoute } from './modules/work-plans-route.ts'
 import { installUnseenToolsRoute } from './modules/unseen-tools-route.ts'
 
 export { Config }
@@ -212,6 +214,7 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
   // ⚠ 2026-10-30（P3）：五步汇总**只读路由**（面板新数据源 = `ledger/units/` 索引分片）。
   installStagesRoute(ctx)
   installLedgerResourceRoute(ctx)
+  installWorkPlansRoute(ctx)
 
   // ⚠ 2026-10-31（P28 · `TSK-048` / `R-008`）：**「待确认工具」只读路由**。
   //   病：没见过的工具只进内存 + 宿主 warn，`debugLog` 默认关 ⇒ **重启即丢、用户永远看不到**。

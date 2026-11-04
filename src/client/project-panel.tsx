@@ -48,6 +48,8 @@ import {
 import { stageStatusLabel } from '../shared/stage-status-labels.ts'
 import { UNSEEN_TOOLS_ROUTE_PATH } from '../shared/unseen-tools.ts'
 import { CurrentPanel } from './current-panel.tsx'
+// 工作计划面板（第五波）：计划 / 轨道 / 执行者 / 等待关系 / 单轨原因，只读。
+import { WorkPlanPanel } from './work-plan-panel.tsx'
 
 /** 标签页**类型 id**（= 宿主 `sidebar.right.pane.tab` 的 `key`）。 */
 export const STAGES_TAB_ID = 'dsh-hob-stages'
@@ -641,6 +643,8 @@ export function StagesPanel(props?: {
   fetchUnseen?: (sessionId?: string) => Promise<any>
   /** Current 页取数（独立只读区块；失败不遮蔽其它区块）。 */
   fetchCurrent?: (sessionId?: string) => Promise<any>
+  /** 工作计划取数（独立只读区块；省略 ⇒ 用默认 HTTP 实现）。 */
+  fetchPlans?: (sessionId?: string) => Promise<any>
   /** 宿主给这个标签页的会话 id（`sidebar.right.pane.tab` 的 inject 第一参）。 */
   sessionId?: string
   /**
@@ -1520,6 +1524,8 @@ export function StagesPanel(props?: {
     },
     React.createElement('div', { style: { fontWeight: 600 } }, STAGES_PANEL_TITLE),
     React.createElement(CurrentPanel, { sessionId: props?.sessionId, ...(props?.fetchCurrent === undefined ? {} : { fetchCurrent: props.fetchCurrent }) }),
+    // ⭐ 工作计划：几条轨、给了谁、在等谁、为什么只有一路（⛔ 零按钮/零百分比）
+    React.createElement(WorkPlanPanel, { sessionId: props?.sessionId, ...(props?.fetchPlans === undefined ? {} : { fetchPlans: props.fetchPlans }) }),
     // ⭐ PRIMARY：五步树（新数据源 = units/ 索引分片）
     stageTree,
     // ⭐ 「下一步」与阻断原因（只读 · ⛔ 零按钮/零勾选/零百分比/零进度条）

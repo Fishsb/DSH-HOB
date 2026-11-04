@@ -460,6 +460,15 @@ export function apply(ctx: any, config: Config = {}): void {
     }
   }
 
+  /** 供编排工具读取的现读工作方式（⛔ 不在挂载时快照）。 */
+  const workModeForExec = (exec: any): WorkMode | undefined => {
+    try {
+      return modeOf(exec?.agent ?? exec)
+    } catch {
+      return undefined
+    }
+  }
+
   /**
    * ⭐ **执行层"能不能推进"闸门**（2026-10-22 第 5 轮 · 任务书第 12 条）。
    *
@@ -802,7 +811,7 @@ export function apply(ctx: any, config: Config = {}): void {
         return
       }
       log('闭环编排就绪 ⇒ 注册 M5 工具')
-      registerOrchTools(orchCtx, orch as HobOrchestrator, log, createHobOrchTools, proceedGateFor)
+      registerOrchTools(orchCtx, orch as HobOrchestrator, log, createHobOrchTools, proceedGateFor, workModeForExec)
     })
   }
 }
@@ -1963,8 +1972,13 @@ function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, confi
 function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => void,
   createOrchTools: (...a: any[]) => any,
   /** ⚠ 2026-10-22 第 5 轮：`hob_dispatch` 的执行层闸门（§任务书第 12 条）。 */
-  proceedGateFor: (sessionOrAgent?: any) => string | undefined): void {
-  const { dispatch, status, control } = createOrchTools(orch, (exec: any) => proceedGateFor(exec?.agent ?? exec))
+  proceedGateFor: (sessionOrAgent?: any) => string | undefined,
+  workModeFor: (exec: any) => WorkMode | undefined): void {
+  const { dispatch, status, control } = createOrchTools(
+    orch,
+    (exec: any) => proceedGateFor(exec?.agent ?? exec),
+    workModeFor,
+  )
   ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')
   ctx.effect(() => ctx.tools.register(status), 'dsh-hob preset: hob_orch_status tool')
   ctx.effect(() => ctx.tools.register(control), 'dsh-hob preset: hob_orch_control tool')

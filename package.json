@@ -90,7 +90,12 @@
     "check:ledger-write-policy": "node scripts/check-ledger-write-policy.mjs",
     "check:effects": "node scripts/check-effects-queue.mjs",
     "check:handoff-effects": "node scripts/check-handoff-effects.mjs",
-    "check:work-state": "node scripts/check-work-state.mjs"
+    "check:work-state": "node scripts/check-work-state.mjs",
+    "check:work-plan": "node scripts/check-work-plan.mjs",
+    "check:work-plan-state": "node scripts/check-work-plan-state.mjs",
+    "check:work-plan-dispatch": "node scripts/check-work-plan-dispatch.mjs",
+    "check:work-plan-runtime": "node scripts/check-work-plan-runtime.mjs",
+    "check:work-plan-panel": "node scripts/check-work-plan-panel.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0-rc <5",

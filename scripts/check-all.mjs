@@ -149,7 +149,7 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *   ⇒ 若放进必跑，结果只能是"永远 exit 2"，那会把"没对象"污染成"判据没跑"（`E-122` 同族）。
  *   ⇒ 手工按需跑 `npm run check:tasks-route-http`；它的无对象档是 **exit 2**（noObject，⛔ 不算通过）。
  */
-export const FAMILY_FLOOR = 33
+export const FAMILY_FLOOR = 38
 //   ⚠ 2026-10-27（包 AP · 用户「全退」）：本条不再含 `check:archive-gate`（该族随归档门禁一起退回）。
 //     实测族数 = 19（`npm run check:all` 汇总行）⇒ 下界 19 = **零余量**，再少一族立刻红。
 //   ⚠ 2026-10-29（四步主线 · 只验位置）：**19 → 20**（同批新增 `check:stages-dom` 一族）。
@@ -175,6 +175,18 @@ export const FAMILY_FLOOR = 33
  *     （已有的"N 族结构上没能报这个口径"那段就是它）。
  */
 export const ASSERTION_FLOORS = new Map([
+  /**
+   * 2026-11-04 · WorkPlan 落地：
+   * 新增纯函数计划校验、运行态存储、派单层与运行行为四族，零余量。
+   * ⚠ 运行行为族在复验后补了盘上写回、真实 status、失败归档、重启恢复四条
+   *   （9 → 13）；下界必须同步抬起，否则删掉任一断言都不会变红。
+   */
+  ['check:work-plan', 34],
+  ['check:work-plan-state', 17],
+  ['check:work-plan-dispatch', 13],
+  ['check:work-plan-runtime', 23],
+  // ⚠ 2026-11-04：面板族（真 DOM + 真路由处理体）。10 处零余量。
+  ['check:work-plan-panel', 10],
   // ⚠ 2026-11-03：骨架 ↔ 实例结构漂移族。
   //   3 条自证（正向对照 + 标题负向 + 表头负向）+ 基准 / 标题 / 表结构各 1 条。
   //   分母固定为 6，不随当前账本增加或删除模板文档而漂移。
@@ -249,7 +261,7 @@ export const ASSERTION_FLOORS = new Map([
   //   ⇒ 新增的"卷内每份 *.md 被 INDEX 点名"与"节名一致"判定全被这族吃掉，处数随之上升。
   //   ⚠ 零余量（1154 = 实测）：摘掉任意一条 ⇒ `check:all` 当场红。
   // 2026-11-03：分片迁移新增脚本登记与 Y1 分片逐文件断言后，实测 1162；按零余量抬平。
-  ['check:gitignore', 1163],
+  ['check:gitignore', 1168],
   //   ⚠ 理由：本单在 `check-repo-rules.mjs` 新增 **`MV`** 断言「模板根上文档清单 == INIT 的复制清单」
   //     ⇒ 该族多 **1 处**（577 → 578）。⚠ **只升不降**。
   //   ⚠ ⚠ **为什么不是改已有的第 ⑥ 组**：`check-code-face.mjs` 的 ⑥ 组**两个方向都不咬**（本单实测三段）——
@@ -507,7 +519,7 @@ export const ASSERTION_FLOORS = new Map([
   //        已加"真实源码里那一步存在且在 `markWakeDelivered` 之后"（加固后负向对拍 ⇒ FAIL）。
   //     ② 只判"存在且在之后"时，**再插一个提前调用的回等待照样 PASS**（原来那一步还在）；
   //        已加"链内 `setWatchState` **只出现一次**"（加固后负向对拍 ⇒ `次数=2` + FAIL）。
-  ['check:orch', 347],  // ⚠ **2026-11-02：新增 WI-n 跨进程 writer 锁（+1），下界零余量。**
+  ['check:orch', 348],  // ⚠ **2026-11-04：新增 SA-plan 计划面入口（+1），下界零余量。**
   //   ── 为什么抬（⚠ 是"新增了被测行为"，⛔ 不是为好看凑数）────────────────────
   //   本单把"叫过一次就永久安静"修回"**我没动就再叫，最多 3 次**"，新增 **5 条**：
   //     · `WI-c` **改判据**（⚠ 不是新条）：**Hob 没动作 ⇒ 再叫**（包 BL/BM 口径），
@@ -708,7 +720,7 @@ export const ASSERTION_FLOORS = new Map([
   //   （多 ACC 最新判决五组对拍）⇒ 实测 27 处（26 通过 + 1 有落点跳过）。
   // ⚠ 2026-11-03：27 → **29**（零余量 = 实测）。
   //   + 新 change 的 K-ALL 读数；+ N-K7（built task 无直属验收必红、复验 PASS 转绿、新退回再红）。
-  ['check:convergence', 29],
+  ['check:convergence', 30],
   // ⚠ 2026-11-03：补齐 goal / risk / decision / cap 后，
   //   账本资源图 11 条正向 + 2 条负向对拍 = 实测 13。
   //   覆盖 10 类稳定 ID、四类新增列表与按 ID 读取、需求关联图可继续解析、

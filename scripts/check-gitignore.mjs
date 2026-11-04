@@ -294,19 +294,22 @@ await runWriteScope({ bad, ok })
     const target = 'check:ledger'
     const fs = await import('node:fs')
     const srcPath = `scripts/${target.replace('check:', '').replace(/-/g, '-')}.mjs`
-    const realFile = 'scripts/check-ledger.mjs'
+    const realFile = new URL('./check-ledger.mjs', import.meta.url).pathname
     let real = ''
     try { real = fs.readFileSync(realFile, 'utf8') } catch { real = '' }
     const stripped = real.replace(/先自证/g, 'XX')
     const reallyZero = real !== '' && (stripped.match(/先自证/g) ?? []).length === 0
     if (!reallyZero) {
-      bad('N-M1b · 负向对拍夹具没造出来（源码里找不到「先自证」或替换无效）⇒ 本条不可判')
+      bad(`N-M1b · 负向对拍夹具没造出来（${realFile} 里找不到「先自证」或替换无效）⇒ 本条不可判`)
     } else {
       const { measureSelfProof } = await import('./check-meta-negctl.mjs')
+      const replaced = 'XX'
+      const replacedValid = !replaced.includes('先自证')
       const probe = measureSelfProof(
         { [target]: { count: 1 } },
-        () => [realFile.replace(/^scripts\//, '')],
+        () => ['check-ledger.mjs'],
         () => stripped,
+        replacedValid ? { 'check-ledger.mjs': replaced } : {},
       )
       const hit = probe.problems.find((x) => x.includes(target))
       if (hit !== undefined) {

@@ -303,6 +303,11 @@ export function runRepoRules({ bad, ok, skip }) {
     ['scripts/check-effects-queue.mjs', '入库脚本（被 package.json 的 check:effects 调用 · 持久 Effects/Outbox：同键合并 / 代际保护 / 退避恢复 / 顺序 / 并发 / 独占单写者）'],
     ['scripts/check-handoff-effects.mjs', '入库脚本（被 package.json 的 check:handoff-effects 调用 · handoff → Effects 桥：成功精确清账 / 失败双保留 / 重启恢复 / 真接线）'],
     ['scripts/check-work-state.mjs', '入库脚本（被 package.json 的 check:work-state 调用 · 派生工作九态：事件去重 / 线程合并 / 不误合并 / 负向对拍）'],
+    ['scripts/check-work-plan.mjs', '入库脚本（被 package.json 的 check:work-plan 调用 · WorkPlan 纯函数：档位 / 写范围 / 依赖 / 预算 / 验收校验与两条负向对拍）'],
+    ['scripts/check-work-plan-state.mjs', '入库脚本（被 package.json 的 check:work-plan-state 调用 · 活动计划原子写 / 恢复 / 坏件分档 / 临时件清理与两条负向对拍）'],
+    ['scripts/check-work-plan-dispatch.mjs', '入库脚本（被 package.json 的 check:work-plan-dispatch 调用 · 多轨一次进入计划入口 / 运行时档位 / 兼容单目标 / 依赖等待 / 状态可见与两条负向对拍）'],
+    ['scripts/check-work-plan-runtime.mjs', '入库脚本（被 package.json 的 check:work-plan-runtime 调用 · 真编排器行为：多轨并行 / 单会话跨计划拒派 / 依赖轨自动推进 / 汇合与单写轨门禁）'],
+    ['scripts/check-work-plan-panel.mjs', '入库脚本（被 package.json 的 check:work-plan-panel 调用 · 真 DOM：工作计划面板挂载 / 轨道与执行者 / 单轨原因 / 判不出与空表 / 只读路由真处理体 / 摘挂载负向对拍）'],
     //   它守：POST 带 sessionId ⇒ 200 + 我们的 JSON（三选一 reason 也算「处理体在」）；
     //         同路径 GET ⇒ 404 + 纯文本 not found（宿主「错门回 404 而不是 405」这条边界）。
     ['scripts/probe-tasks-route-http.mjs', '按需档探针（被 package.json 的 check:tasks-route-http 调用 · 要活宿主+token · 任务进度 200 + GET 404 纯文本 / Current 与按 ID 资源 / 五步 attention · 会话优先取活锁 · noObject 走 exit 2）'],
