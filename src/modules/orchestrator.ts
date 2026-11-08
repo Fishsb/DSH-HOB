@@ -57,12 +57,19 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { HOB_PRESET_ID } from '../shared/planning-preset.ts'
 import type { PresetSource } from './bus.ts'
 import { resolveLedgerRoot, workspaceNameOf } from '../server/doc-read.ts'
+import { applyProjection } from '../server/projection-writer.ts'
 import { WORK_MODE_VALUES, type WorkMode } from '../shared/work-mode.ts'
 import {
+  guardIntentForOwner,
+  guardIntentOf,
+  guardIntentAllowsWake,
+  closePlanProblems,
   initiallyDispatchable,
   isTerminalTrackState,
+  planGuardFactsOf,
   planModeOf,
   validateWorkPlan,
+  type GuardIntent,
   workPlanProgress,
   type WorkPlan,
   type WorkPlanInput,
@@ -76,6 +83,7 @@ import {
   newWorkPlan as buildStoredWorkPlan,
   removeStaleWorkPlanTemps,
   pruneClosedWorkPlans,
+  archiveAbandonedWorkPlan,
   readWorkPlan,
   removeWorkPlan,
   writeWorkPlan,
@@ -320,6 +328,8 @@ export const WATCH_GUARD_THRESHOLD_IS_FIXED =
 
 /** 一条登记的**判定读数**（⚠ 三个分量各自可读，⛔ 不许压成一句）。 */
 export interface WatchGuardVerdict {
+  /** 派生看护意图（只有 `expecting-return` 允许唤醒）。 */
+  intent: GuardIntent
   /** 登记的 `owner`（⚠ **只用它**，⛔ 不重算）。 */
   owner: string
   /** 登记状态（原样回带，⛔ 不改）。 */
@@ -387,7 +397,13 @@ export interface WatchGuardVerdict {
    *     而实际没有 —— 与"读数面印假话"是同一类病。
    *   ⛔ 不要为了"以后可能用得上"把它加回来：真需要时再加，属正常改动。
    */
+  /**
+   * ⚠ 2026-11-04：除原有四档外，**意图闸拦下的原因原样带出**
+   *   （`stopped` / `waiting-user` / `completed` / `joining` / `failed` / `stale` / `working`）。
+   *   ⛔ 不许把这些压成 `waiting` —— 那会让读数面分不清"我不盯"与"任务做完了"。
+   */
   reason: 'waiting' | 'still-running' | 'undecidable' | 'wake'
+    | 'stopped' | 'waiting-user' | 'completed' | 'joining' | 'failed' | 'stale' | 'working'
   /**
    * ⚠ **这条登记的两枚 `D16` 时刻**（原样带出来，供读数面说"刚唤醒过、已回等待"）。
    *
@@ -463,6 +479,17 @@ export function judgeWatchGuards(
    *     ⛔ 回答不了"本轮结束没有、有没有排队"。现在返回 `'ended' | 'busy' | undefined`。
    */
   turnStateProbe?: (owner: string) => 'ended' | 'busy' | undefined,
+  /**
+   * ⚠ 看护意图读取器（2026-11-04）：`owner` 是否已停止 / 是否有活动计划 /
+   *   是否在等用户。**缺省 ⇒ `undecidable`**（⛔ 不许当成可以叫）。
+   */
+  intentProbe?: (owner: string) => GuardIntent,
+  /**
+   * ⚠ 运行态意图读取器（2026-11-04）：HOB 或任一执行目标**正在跑 / 有排队** ⇒ `working`。
+   *   缺省 ⇒ 由 `ownerRunning` / `targetRunning` / `ownerActivity` 直接派生。
+   *   ⚠ 只影响 `expecting-return` 与 `working` 的**读数区分**；两者都不唤醒。
+   */
+  workingProbe?: (owner: string) => boolean | undefined,
 ): WatchGuardVerdict[] {
   return entries.map((e) => {
     const targetRunning = e.targets.map((t) => ({ target: t, running: probe(t) }))
@@ -487,7 +514,27 @@ export function judgeWatchGuards(
     /**
      * ⚠ `D16` 两枚时刻**原样带出**（`undefined` 就不出现 —— 旧盘没有这两个字段）。
      */
+    /**
+     * ⚠⚠ **意图优先于运行态**（2026-11-04）：用户已停、任务已完成、正在等用户时，
+     *   运行态"都没在跑"恰好是正常状态 —— ⛔ 不许据此唤醒。
+     */
+    /**
+     * ⚠ **未传意图读取器 = 旧调用（夹具 / 只读复查）**，按 `expecting-return` 兼容；
+     *   ⚠ 生产路径（`reviewWatchGuards` / `hasAwakeWatch`）**始终传**它，
+     *     所以真实环境里"读不出意图"仍落 `undecidable` ⇒ 不唤醒（WG-12）。
+     *   ⛔ 不把"没传"当成"判不出"：那会让所有既有只读判据恒不唤醒、失去对照。
+     */
+    const baseIntent: GuardIntent = intentProbe === undefined ? 'expecting-return' : intentProbe(e.owner)
+    const working = workingProbe === undefined
+      ? (ownerRunning === true || targetRunning.some((t) => t.running === true) || ownerActivity === 'active'
+        ? true
+        : ownerRunning === undefined || targetRunning.some((t) => t.running === undefined) || ownerActivity === 'undecidable'
+          ? undefined
+          : false)
+      : workingProbe(e.owner)
+    const intent: GuardIntent = baseIntent === 'expecting-return' && working === true ? 'working' : baseIntent
     const base = {
+      intent,
       owner: e.owner, state: e.state, targets: e.targets.length, ownerRunning, targetRunning, elapsedMs,
       ...(e.wakeLoggedAt === undefined ? {} : { wakeLoggedAt: e.wakeLoggedAt }),
       ...(e.wakeDeliveredAt === undefined ? {} : { wakeDeliveredAt: e.wakeDeliveredAt }),
@@ -502,7 +549,26 @@ export function judgeWatchGuards(
      */
     const wakeGaveUp = wakeGaveUpOf(e)
 
+    /**
+     * ⚠ 非 `expecting-return` 一律不唤醒（含 stopped / completed / joining /
+     *   waiting-user / stale / undecidable）。⚠ 这一条必须在两条状态分支之前。
+     */
+    if (!guardIntentAllowsWake(intent)) {
+      /** ⚠ `working` 是展示用意图；判定原因沿用既有 `still-running`（兼容既有读数判据）。 */
+      const reason = intent === 'expecting-return' || intent === 'working' ? 'still-running' : intent
+      return { ...withAct, shouldWake: false, reason, wakeFallback: false, wakeGaveUp }
+    }
     if (e.state === 'waiting') {
+      /**
+       * ⚠⚠ **2026-11-04 用户裁定：已叫过且没人应 ⇒ 不自动再叫**。
+       *
+       * 目的（用户原话）：只有「未完成 + 无用户介入 + 无人推进」才唤醒，
+       * 且**唤醒一次就够**。旧兜底按 `wakeAttempts` 每轮重叫三次，造成同一现场
+       * 连续叫；`wakeAttempts` 仍保留为「叫过几次」的读数，但不再驱动自动重叫。
+       *
+       * ⚠ 重新进入 `awake` 的唯一入口仍是派发；用户若继续推进，新派发会自然重新上膛。
+       * ⛔ 不加第三态、⛔ 不删计数。
+       */
       /**
        * ══════════════════════════════════════════════════════════════════════
        * ⚠⚠ **兜底：回等待了，但我还没动 ⇒ 再叫一次**（2026-10-28 · 包 BG · `CHG-165`）
@@ -528,8 +594,15 @@ export function judgeWatchGuards(
        *   只要观察集合里还有在跑的、或本轮还在动、或判不出 ⇒ **一律不叫**
        *   （下面三个 `return` 就是它，⛔ 不许在兜底这条路上跳过它们）。
        */
-      const fallbackEligible = (e.wakeLoggedAt !== undefined || e.wakeDeliveredAt !== undefined)
-        && !wakeGaveUp
+      const fallbackEligible = false
+      /**
+       * ⚠ **判不出仍优先报 `undecidable`**：`waiting` 只表示"不自动重叫"，
+       *   ⛔ 不许把"目标运行态判不出"压成 `waiting`（两种成因必须分开）。
+       */
+      if (ownerRunning === undefined
+        || targetRunning.some((t) => t.running === undefined)) {
+        return { ...withAct, shouldWake: false, reason: 'undecidable', wakeFallback: false, wakeGaveUp }
+      }
       if (!fallbackEligible) {
         return { ...withAct, shouldWake: false, reason: 'waiting', wakeFallback: false, wakeGaveUp }
       }
@@ -708,6 +781,19 @@ export interface Watch {
   round?: number
   /** 派了什么（回传里带上，便于派活方对上号）。 */
   task?: string
+  /**
+   * **账本投影**：这次派发对应的真实 task id（⚠ 与 `task` 不同）。
+   *
+   * ⚠ `task` 是"派了什么"的自由描述；`taskId` 是账本里**真实存在的任务号**。
+   *   运行态投影只认 `taskId`（`implicit` 占位不落账），⛔ 不从描述文本猜任务号。
+   *   ⚠ 缺省 = 旧调用没给任务号 ⇒ 不投影（⛔ 不猜一条来标）。
+   */
+  taskId?: string
+  /** 本轮回传落账结果（⚠ 失败时保留原因，供读数与重试）。 */
+  ledgerProjection?: {
+    dispatch?: { ok: boolean; applied: number; reason?: string }
+    return?: { ok: boolean; applied: number; reason?: string }
+  }
   /** 登记时间（毫秒）。 */
   at: number
   /** 是否已见过它进入 `running`（没见过就 idle 不算"跑完"）。 */
@@ -809,6 +895,8 @@ export interface Watch {
   clarifyAt?: number
   acceptedAt?: number
   sentBackAt?: number
+  /** 退回目标阶段；旧记录缺省。 */
+  returnTo?: string
   /** 第一次见到目标进入运行态的时刻（`D11`「已跑多久」的起点；⛔ 不许拿 `at` 顶替）。 */
   sawRunningAt?: number
   /**
@@ -852,6 +940,17 @@ export interface WorkPlanTrackStatus {
 
 export interface WorkPlanStatus {
   mode: WorkMode | 'unknown'
+  /**
+   * 过期归档的计划（移出 active、原状态保留）。
+   * ⚠ 单独一档：⛔ 不并进 `plans`（那不是活动计划），⛔ 也不并进 completed。
+   */
+  abandoned?: Array<{
+    planId: string
+    state: string
+    abandonedAt: string
+    abandonedWhy: string
+    trackCount: number
+  }>
   plans: Array<{
     planId: string
     state: string
@@ -860,6 +959,12 @@ export interface WorkPlanStatus {
     waiting: number
     returned: number
     failed: number
+    /** 计划创建至今的小时数（读数用；⛔ 不参与自动决策）。 */
+    ageHours?: number
+    /** 是否仍占执行槽（派活方 stop 后为 false）。 */
+    occupiesSlot?: boolean
+    /** 非终态且超过 24h ⇒ true（需人工处置）。 */
+    stale?: boolean
     singleTrackReason?: string
     rationale: string
     /** 计划创建时冻结的档位（`WM-8`）；旧计划回落到 `mode`。 */
@@ -1127,6 +1232,12 @@ export interface HobOrchestrator {
       accessType?: 'read' | 'write'
       /** 所属计划（由计划推进器传入；旧单目标调用可省略）。 */
       planId?: string
+      /**
+       * **账本里的真实任务号**（`TSK-…`）；运行态投影只认它。
+       * ⚠ 与 `task`（自由描述）分开：`task` 回传给派活方看，`taskId` 用来落账。
+       * ⚠ 缺省 / `implicit` ⇒ 不投影（⛔ 不猜一条任务来标）。
+       */
+      taskId?: string
     },
   ): Promise<{
     ok: boolean
@@ -1149,7 +1260,7 @@ export interface HobOrchestrator {
    * @param opts.self - 调用方会话 id = **owner 过滤键**。⚠ 不给 ⇒ 只能报"无归属"那一部分，
    *   ⛔ 绝不退化成"全实例汇总"（那正是本件要治的形态：一条 Hob 看见 9 条别人的在等回传）。
    */
-  status(opts?: { wsRoot?: string; self?: string }): OrchStatus
+  status(opts?: { wsRoot?: string; self?: string; ledgerRoot?: string }): OrchStatus
   /**
    * 当前会话的 WorkPlan 读数。⚠ 只读、不投递、不改计划。
    * `workMode` 由逐会话策略现读；判不出返回 `undefined`，不猜。
@@ -1274,6 +1385,8 @@ export interface HobOrchestrator {
    * ⚠ `uncapable` 字段如实说明**本函数覆盖不到的那一档**（跨进程存活读数），
    *   ⛔ 不许把它当成 0、也⛔ 不许省略。
    */
+  /** 看护意图对账：返回被切回等待的条数。 */
+  reconcileWatchIntents(trigger?: string): Promise<number>
   reviewWatchGuards(): Promise<{
     entries: number
     woke: number
@@ -1288,6 +1401,16 @@ export interface HobOrchestrator {
    * ⚠ 改前是一个**进程级布尔** ⇒ 一个工作区 `stop` 会把所有工作区一起停。
    * ⚠ 现在按 `opts.self`（owner）分档：只停那一侧，别人不受影响。
    */
+  /**
+   * 把超时未收口的计划移出活动区（2026-11-06）。
+   * ⚠ 不改 plan.state；必须显式 planId + 汇合责任人本人。
+   */
+  archiveStalePlan(planId: string, why: string, self: string | undefined): Promise<{
+    ok: boolean
+    planId?: string
+    file?: string
+    reason?: string
+  }>
   control(action: 'stop' | 'resume', opts?: { wsRoot?: string; self?: string }): OrchStatus
   /**
    * **看护切回「等待」**（2026-10-27 · 包 AB · 方案 §5.9 `D14`）。
@@ -1426,6 +1549,29 @@ function changedFiles(session: any, max = 40): string[] {
 }
 
 /** 构造回传给派活方的正文。 */
+/**
+ * **从回传正文里提取可复核的进度读数**（⚠ 只提取"长得像读数"的行，⛔ 不编造）。
+ *
+ * 判据（宁可漏，⛔ 不可造）：
+ *   · 行内必须同时有**数字 + 结果词**（exit 0 / 12/12 / PASS / 通过 / 失败），
+ *     或明确是 `check:<族> … N/N` / `npm run …` 形态；
+ *   · 最多取 12 条，按原文顺序；⛔ 不去重成一句结论。
+ * ⚠ 提取不到 ⇒ 返回空数组（调用方据此只迁 RUN、不迁 TSK —— 回传 ≠ 做完）。
+ */
+function receiptProgressRefsOf(text: string | undefined): string[] {
+  if (typeof text !== 'string' || text.trim() === '') return []
+  const out: string[] = []
+  for (const raw of text.split('\n')) {
+    const line = raw.trim().replace(/^[-*+]\s+/, '')
+    if (line === '' || line.length > 240) continue
+    const looksLikeReading = /(?:check:[a-z][a-z0-9-]*|npm run|exit\s*[-:]?\s*\d+|\b\d+\s*\/\s*\d+\b|\b\d+\s*(?:条|处|个|次|项|秒|毫秒|字节|B|KB|MB)\b)/i.test(line)
+      && /(?:通过|失败|PASS|FAIL|exit|✓|✗|成功|报错|红|绿|\d+\s*\/\s*\d+)/i.test(line)
+    if (looksLikeReading) out.push(line.slice(0, 200))
+    if (out.length >= 12) break
+  }
+  return out
+}
+
 function buildReceipt(w: Watch, session: any): string {
   const conclusion = lastAssistantText(session)
   const files = changedFiles(session)
@@ -1703,6 +1849,8 @@ function toPersisted(w: Watch): PersistedWatch {
     watcher: w.watcher,
     ...(w.round === undefined ? {} : { round: w.round }),
     ...(w.task === undefined ? {} : { task: w.task }),
+    ...(w.taskId === undefined ? {} : { taskId: w.taskId }),
+    ...(w.ledgerProjection === undefined ? {} : { ledgerProjection: w.ledgerProjection }),
     at: w.at,
     sawRunning: w.sawRunning,
     ...(w.error === undefined ? {} : { error: w.error }),
@@ -1737,6 +1885,7 @@ function toPersisted(w: Watch): PersistedWatch {
     ...(w.clarifyAt === undefined ? {} : { clarifyAt: w.clarifyAt }),
     ...(w.acceptedAt === undefined ? {} : { acceptedAt: w.acceptedAt }),
     ...(w.sentBackAt === undefined ? {} : { sentBackAt: w.sentBackAt }),
+    ...(w.returnTo === undefined ? {} : { returnTo: w.returnTo }),
     ...(w.sawRunningAt === undefined ? {} : { sawRunningAt: w.sawRunningAt }),
     /** ⚠ `D4` 未送达事实：与上面同一条纪律（内存与盘上必须一致）。 */
     ...(w.undeliveredAt === undefined ? {} : { undeliveredAt: w.undeliveredAt }),
@@ -2630,68 +2779,22 @@ export function apply(ctx: any): void {
         } else {
           /**
            * ══════════════════════════════════════════════════════════════════
-           * ── 第四步：**回等待**（2026-10-27 · 包 AJ · `CHG-131`）─────────────
+           * **投递成功 ⇒ 回 `waiting`（2026-11-04 用户裁定）**
            * ══════════════════════════════════════════════════════════════════
            *
-           * ── 为什么必须有这一步（三条独立依据，⛔ 不是拍脑袋）────────────────
-           *   ① **用户原话**（`CHG-105`）：「等用户介入完成，hob 预设继续发出指令，
-           *      状态会自动切换到触发状态」⇒ **反过来同样成立**：唤醒发出去了，
-           *      **这一轮就结束了**，它该回等待。
-           *   ② **`CHG-111`**：进入"唤醒"的唯一入口是**派发** ⇒ **没有派发就不该留在唤醒**。
-           *   ③ **`R-24` 那一族**：**一条永远在响的提醒，与没有提醒一样**（都会被忽略）。
-           *      ⚠ 不改的话：`state` 恒 `awake` ⇒ 定时器永久武装 ⇒ 每 30 秒判一次、
-           *      每次都 `shouldWake:true` ⇒ **一直叫**（用户原话："它会一直叫我"）。
+           * 用户目标：同一现场**只唤醒一次**；只有新的派发 / 新的用户消息 /
+           * 计划推进才重新评估。⚠ 旧「留在 awake、每 30 秒再叫」会让同一现场重复打扰。
            *
-           * ── ⚠ 位置由 `D16` 定死：**落盘 → 投递 → 记标记 → 回等待** ──────────
-           *   ⛔ 不许提前（提前了"叫了但没叫到"会被当成"叫过了"）。
-           *   ⚠ **只在 `d.wrote` 成功这一支里**（`else` 分支）：
-           *     投递失败走的是外层 `if (delivered) ... else`，**根本到不了这里**。
-           *
-           * ── ⚠⛔ 不新增状态 ─────────────────────────────────────────────
-           *   回的是**本来就有的 `waiting`**（`CHG-111`：只有两个状态）。
-           *   ⛔ 没有"已唤醒"、⛔ 没有"冷却"、⛔ 没有"最后一次唤醒时刻"这类第三态。
-           *   ⚠ 唤醒过这件事**本来就留在盘上**：`wakeLoggedAt` / `wakeDeliveredAt`
-           *     两个时刻字段（`D16` 的记账）在回等待后**一字不动**保留 ——
-           *     读数面据此可以说"刚唤醒过、已回等待"，⛔ 不需要新状态。
-           *
-           * ── ⚠ 说明写什么（⛔ 不是原因码）──────────────────────────────
-           *   `setWatchState` 的 `note` 是**给人读的一句话**：写清"刚唤醒过"，
-           *   让人看得出"这条不是从没动过，是叫过一次又回去等了"。
+           * ⚠ `keepWakeAttempts: true` 保留「叫过几次」与两枚 `D16` 时刻，
+           *   读数面仍能说"刚唤醒过、已回等待"；⛔ 不新增第三态。
            */
-          /**
-           * ══════════════════════════════════════════════════════════════════
-           * ⚠⚠ **包 BL（2026-10-28）：第四步「投递成功 ⇒ 自动回 `waiting`」已删除**
-           * ══════════════════════════════════════════════════════════════════
-           *
-           * ── 为什么删（用户裁定，⚠ 这是他自己的不变量，我上一版写反了）─────
-           *   **「投递成功」⛔ 不等于「Hob 动了」。**
-           *   状态只由 **Hob 有没有动作** 改变：
-           *     · Hob 派了新活 → 新登记 → 自然进 `awake`；
-           *     · Hob 主动 `watch-wait` → `waiting`；
-           *     · **Hob 什么都没做 → 状态 ⛔ 不变，30 秒后再叫一次。**
-           *   ⇒ 「投递成功就回等待」是**缺陷**，⛔ 不是前提。
-           *
-           * ── ⚠⚠ 为什么这一步是"叫一次就永久安静"的元凶 ─────────────────
-           *   删掉 5 分钟门之后（本单第 2 件事），兜底分支的准入是
-           *   `fallbackEligible = 两枚 D16 时刻在 ∧ !wakeGaveUp`（见 `judgeWatchGuards`）——
-           *   **它不看 `stateAt`**。
-           *   若这里回 `waiting`：
-           *     ① `setWatchState` 刷新 `stateAt`，但**两枚时刻原样保留**（`keepWakeAttempts: true`）
-           *     ② ⇒ 30 秒后复查，该条仍是 `waiting` ∧ 两枚时刻在 ∧ 计数未到顶
-           *     ③ ⇒ `fallbackEligible` 成立 ⇒ `shouldWake:true` ⇒ **立刻再叫**
-           *     ④ ⇒ 而每次再叫又回 `waiting` ⇒ **每 30 秒叫一次、直到 3 次转 `stuck`**
-           *   ⚠ 那正是用户说的"它会一直叫我"。
-           *
-           * ── 现在：**什么都不做，让状态留在 `awake`**（⛔ 不刷新、⛔ 不改状态）
-           *   留在 `awake` ⇒ 下一轮复查走 `awake` 那一支（`state === 'awake'`），
-           *   而不是兜底的 `waiting` 分支 ⇒ 由那条支的闸门（`still-running` /
-           *   `active` / `undecidable` / **`elapsedMs < thresholdMs` —— 本单已删**）决定。
-           *   ⚠ 于是"Hob 什么都没做"时，30 秒后**会再叫一次**（这正是本单要的行为）；
-           *   而 `wakeAttempts` 由 `markWakeDelivered` 照常 +1，到 3 次转 `stuck` 停。
-           *
-           * ── ⛔ 不新增状态 / 不新增字段 ─────────────────────────────────
-           *   `awake` 是本来就有的两个状态之一。两枚 `D16` 时刻仍留在盘上当证据。
-           */
+          const back = setWatchState(file, owner, '刚唤醒过，回等待；等新的推进动作', { keepWakeAttempts: true })
+          if (!back.wrote) {
+            svcCtx.logger?.warn?.(
+              `[${name}] 唤醒已投出，但**没切回等待**（${file} · owner=${owner}）`
+              + ` ⇒ ⚠ 下一次复查可能再叫一次：${String(back.refusal?.reason ?? 'unknown')}`,
+            )
+          }
         }
       } else {
         svcCtx.logger?.warn?.(
@@ -2981,6 +3084,7 @@ export function apply(ctx: any): void {
             ...(w.clarifyAt === undefined ? {} : { clarifyAt: w.clarifyAt }),
             ...(w.acceptedAt === undefined ? {} : { acceptedAt: w.acceptedAt }),
             ...(w.sentBackAt === undefined ? {} : { sentBackAt: w.sentBackAt }),
+            ...(w.returnTo === undefined ? {} : { returnTo: w.returnTo }),
             ...(w.sawRunningAt === undefined ? {} : { sawRunningAt: w.sawRunningAt }),
             ...(w.undeliveredAt === undefined ? {} : { undeliveredAt: w.undeliveredAt }),
             ...(w.undeliveredWhy === undefined ? {} : { undeliveredWhy: w.undeliveredWhy }),
@@ -3582,7 +3686,12 @@ export function apply(ctx: any): void {
        *   ⚠ 读法与 `turnStateOfSession` **同一份实现**（`D1`②，⛔ 不另开一套）。
        */
       const turnState = (id: string): 'ended' | 'busy' | undefined => turnStateOfSession(sessions, agents, id)
-      const all = judgeWatchGuards(entries, probe, Date.now(), turnState)
+      /**
+       * ⚠ 状态面与复查走**同一个意图读取实现**（2026-11-04）：
+       *   否则面板会按旧口径显示"唤醒/等待"，而复查已经按计划状态拦下。
+       */
+      const intentOf = (owner: string): GuardIntent => guardIntentContextOf(owner).intent
+      const all = judgeWatchGuards(entries, probe, Date.now(), turnState, intentOf)
       const mine = all.find((v) => v.owner === self)
       const others = all.filter((v) => v.owner !== self).length
       /** ⚠ 唤醒只发给 `mine.owner`（`D15`）—— ⛔ 不广播、⛔ 不挑别人的。 */
@@ -3823,6 +3932,12 @@ export function apply(ctx: any): void {
      *   绕开隔离再开一路。全轨终态后由推进器自动归档，活动文件随之消失。
      * ⚠ 计划文件本身是唯一权威；轨道状态只从 `trackStates` 与 watch/closed 派生。
      */
+    /**
+     * 计划多久算"没人管了"：24 小时。⚠ 只用于**读数标记**，⛔ 不触发自动删除 ——
+     * 删除活动计划是不可逆动作，必须由人确认（agent 不替用户做这个决定）。
+     */
+    const STALE_PLAN_HOURS = 24
+
     const activePlansAt = (ledgerRoot: string): WorkPlan[] => listWorkPlans(ledgerRoot)
       .filter((x) => x.state === 'ok' && x.plan !== undefined
         && (x.plan.state === 'planned' || x.plan.state === 'running' || x.plan.state === 'joining'
@@ -3831,6 +3946,29 @@ export function apply(ctx: any): void {
 
     const activeTracksOfPlan = (plan: WorkPlan): WorkTrack[] => plan.tracks
       .filter((track) => !isTerminalTrackState(plan.trackStates?.[track.trackId] ?? 'pending'))
+
+    /**
+     * **已停止的派活方是否仍占执行槽**（2026-11-06 · 梳理发现的缺口）。
+     *
+     * ⚠ 现场：用户按下 `stop` 之后，`hob_dispatch` 会被拒（那是"别再派了"），
+     *   但**盘上那份计划仍在 `active/`、轨道仍是 `running`** ⇒
+     *   `planConflictProblems` / 单目标门禁继续把它算作"已有活动轨"
+     *   ⇒ 用户恢复后切到单会话档会被自己 50 小时前的残留挡住，
+     *   ⛔ 而计划推进器并不会替它收口（它只按真实回传推进）。
+     *
+     * ⚠ 判据只用既有事实：`isStoppedFor(owner, wsRoot)`（用户 stop，跨重载持久化）。
+     *   ⛔ 不按"多久没动"猜废弃；⛔ 不改计划文件的 state（那是另一条事实）。
+     *   ⇒ 停止 ≠ 计划消失：`workPlans()` 仍照实显示它，只是**不再占槽**。
+     */
+    const stoppedPlanOccupiesSlot = (plan: WorkPlan): boolean => {
+      const owner = plan.joinOwnerSessionId
+      if (typeof owner !== 'string' || owner === '') return false
+      try { return isStoppedFor(owner, plan.workspaceRoot) } catch { return false }
+    }
+
+    /** 占槽的轨道：非终态 **且** 派活方没有停在等待。 */
+    const occupyingTracksOfPlan = (plan: WorkPlan): WorkTrack[] =>
+      stoppedPlanOccupiesSlot(plan) ? [] : activeTracksOfPlan(plan)
 
     /**
      * 新计划预检：拒绝跨计划单轨 / 跨计划同会话 / 同工作区多写轨。
@@ -3850,7 +3988,7 @@ export function apply(ctx: any): void {
         })
         return problems
       }
-      const tracks = active.flatMap((plan) => activeTracksOfPlan(plan).map((track) => ({ plan, track })))
+      const tracks = active.flatMap((plan) => occupyingTracksOfPlan(plan).map((track) => ({ plan, track })))
       if (input.mode === 'single') {
         const own = tracks.filter((x) => x.plan.joinOwnerSessionId === self)
         if (own.length > 0) {
@@ -3894,6 +4032,18 @@ export function apply(ctx: any): void {
       const returned = plan.tracks.filter((track) => states[track.trackId] === 'returned').length
       const failed = plan.tracks.filter((track) => states[track.trackId] === 'failed').length
       const running = plan.tracks.filter((track) => states[track.trackId] === 'running').length
+      /**
+       * **长期机制：计划不能"看起来还在跑"**（2026-11-06）。
+       *
+       * ⚠ 现场：5 份计划在 `active/` 里停留 47–56 小时，仍显示 `running`，
+       *   而派活方早已不在 —— 人读读数时无法区分"正在推进"与"没人管了"。
+       * ⇒ 这里补三个**可核对**的读数（⛔ 不改 state、⛔ 不自动删计划）：
+       *   · `ageHours`   —— 从 `createdAt` 到现在；
+       *   · `occupiesSlot` —— 这份计划当前是否仍占执行槽（stop 后不占）；
+       *   · `stale`      —— 非终态且超过 `STALE_PLAN_HOURS`，需要人工处置。
+       */
+      const ageHours = plan.createdAt === undefined ? null : Math.max(0, (Date.now() - plan.createdAt) / 3_600_000)
+      const terminal = plan.state === 'completed' || plan.state === 'failed' || progress.terminal
       return {
         planId: plan.planId,
         state: plan.state === 'completed' ? 'completed'
@@ -3904,6 +4054,9 @@ export function apply(ctx: any): void {
         waiting: progress.waiting.length,
         returned,
         failed,
+        ...(ageHours === null ? {} : { ageHours: Math.round(ageHours * 10) / 10 }),
+        occupiesSlot: !stoppedPlanOccupiesSlot(plan) && !terminal,
+        stale: !terminal && ageHours !== null && ageHours >= STALE_PLAN_HOURS,
         ...(plan.singleTrackReason === undefined ? {} : { singleTrackReason: plan.singleTrackReason }),
         rationale: plan.rationale,
         modeSnapshot: planModeOf(plan),
@@ -3933,12 +4086,19 @@ export function apply(ctx: any): void {
       self: string | undefined,
       wsRoot: string | undefined,
       mode: WorkMode | 'unknown',
+      /**
+       * ⚠ **直接指定账本根**（2026-11-07 · `R-020`）：面板切到别的账本时，
+       *   调用方已用白名单校验过账本名并解析出绝对路径 ⇒ 这里**直接用**，
+       *   ⛔ 不再从 `wsRoot` 反推（账本名反推工作区路径是刻意不做的能力）。
+       */
+      ledgerRootDirect?: string,
     ): WorkPlanStatus => {
       const root = (() => {
+        if (typeof ledgerRootDirect === 'string' && ledgerRootDirect !== '') return ledgerRootDirect
         if (wsRoot === undefined) return undefined
         try { return resolveLedgerRoot('', declaredLedgerHome(svcCtx), wsRoot) } catch { return undefined }
       })()
-      if (root === undefined) return { mode, plans: [], unreadable: [] }
+      if (root === undefined) return { mode, plans: [], abandoned: [], unreadable: [] }
       const listed = listWorkPlans(root)
       const planned = listed.filter((x) => x.state === 'ok' && x.plan !== undefined
         && (self === undefined || x.plan.joinOwnerSessionId === self))
@@ -3948,12 +4108,78 @@ export function apply(ctx: any): void {
         const progress = workPlanProgress(plan, states)
         return summarizePlan(plan, states, progress)
       })
+      /**
+       * ⚠ **过期归档也要可见**（2026-11-06）：把长期没人管的计划移出 `active/` 之后，
+       *   如果状态面什么都不显示，读的人会以为"从来没存在过"。
+       *   ⇒ 单独一档 `abandoned`，⛔ 不并进活动计划、⛔ 不并进 completed。
+       */
+      const abandoned = (() => {
+        try {
+          const dir = join(root, 'runtime', 'work-plans', 'abandoned')
+          if (!existsSync(dir)) return []
+          return readdirSync(dir)
+            .filter((name) => name.endsWith('.json'))
+            .sort()
+            .map((name) => {
+              try {
+                const parsed = JSON.parse(readFileSync(join(dir, name), 'utf8')) as {
+                  abandonedAt?: string
+                  abandonedWhy?: string
+                  plan?: { planId?: string; state?: string; tracks?: unknown[] }
+                }
+                const owner = (parsed.plan as { joinOwnerSessionId?: string } | undefined)?.joinOwnerSessionId
+                if (self !== undefined && owner !== undefined && owner !== self) return undefined
+                return {
+                  planId: String(parsed.plan?.planId ?? name.replace(/\.json$/, '')),
+                  state: String(parsed.plan?.state ?? 'unknown'),
+                  abandonedAt: String(parsed.abandonedAt ?? ''),
+                  abandonedWhy: String(parsed.abandonedWhy ?? ''),
+                  trackCount: Array.isArray(parsed.plan?.tracks) ? parsed.plan.tracks.length : 0,
+                }
+              } catch { return undefined }
+            })
+            .filter((x) => x !== undefined)
+        } catch { return [] }
+      })()
       return {
         mode,
         plans: [...plans, ...closedPlanSummary(root, self)],
+        abandoned,
         unreadable: listed.filter((x) => x.state !== 'ok')
           .map((x) => ({ planId: x.planId, reason: x.reason ?? 'unreadable' })),
       }
+    }
+
+    /**
+     * **过期归档摘要**（2026-11-06）：读 `runtime/work-plans/abandoned/`。
+     * ⚠ 单独一档：⛔ 不并进活动计划，⛔ 不并进 completed。
+     */
+    const abandonedSummary = (ledgerRoot: string, self: string | undefined) => {
+      const dir = join(ledgerRoot, 'runtime', 'work-plans', 'abandoned')
+      try {
+        if (!existsSync(dir)) return []
+        return readdirSync(dir)
+          .filter((name) => name.endsWith('.json'))
+          .sort()
+          .flatMap((name) => {
+            try {
+              const parsed = JSON.parse(readFileSync(join(dir, name), 'utf8')) as {
+                abandonedAt?: string
+                abandonedWhy?: string
+                plan?: { planId?: string; state?: string; joinOwnerSessionId?: string; tracks?: unknown[] }
+              }
+              const owner = parsed.plan?.joinOwnerSessionId
+              if (self !== undefined && owner !== undefined && owner !== self) return []
+              return [{
+                planId: String(parsed.plan?.planId ?? name.replace(/\.json$/, '')),
+                state: String(parsed.plan?.state ?? 'unknown'),
+                abandonedAt: String(parsed.abandonedAt ?? ''),
+                abandonedWhy: String(parsed.abandonedWhy ?? ''),
+                trackCount: Array.isArray(parsed.plan?.tracks) ? parsed.plan.tracks.length : 0,
+              }]
+            } catch { return [] }
+          })
+      } catch { return [] }
     }
 
     /** 一个计划文件里，某条轨道的 closed 记录（重载后 watch 内存为空时的兜底）。 */
@@ -4025,6 +4251,151 @@ export function apply(ctx: any): void {
 
       }
       return states
+    }
+
+    /** 会话日志里一条事件的文本（只认 message 事件；别的形状 ⇒ 空串）。 */
+    const messageTextOf = (event: any): string => {
+      if (event?.type === 'user/message') {
+        const content = event?.data?.content
+        return Array.isArray(content)
+          ? content.filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
+            .map((p: any) => p.text).join('\n')
+          : ''
+      }
+      if (event?.type === 'assistant/message') {
+        const content = event?.data?.message?.content
+        return Array.isArray(content)
+          ? content.filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
+            .map((p: any) => p.text).join('\n')
+          : ''
+      }
+      return ''
+    }
+
+    /** 会话日志里，该事件之后是否还有一条**真实用户消息**。 */
+    const userReplyAfter = (log: readonly any[], index: number): boolean => {
+      for (let i = index + 1; i < log.length; i++) {
+        const e: any = log[i]
+        if (e?.type !== 'user/message') continue
+        if (e?.data?.source?.kind === 'user' && messageTextOf(e).trim() !== '') return true
+      }
+      return false
+    }
+
+    /**
+     * **该 owner 是否正在等用户**（2026-11-04）。
+     *
+     * ⚠ 只认**当前仍未回答**的问题，⛔ 不认历史 `clarifyAt`：
+     *   · 会话 `log` 里最后一条助手消息含待决问题段（`clarifySectionOf` 唯一实现）；
+     *   · 且它之后**没有**真实用户回复（`source.kind === 'user'`；relay / injected 不算）；
+     *   · `closed` 里带 `clarifyAt` 的记录只在**没有更新的会话消息**时才作为兼容来源，
+     *     避免旧回传把看护永久锁在等待态。
+     *
+     * ⚠ 判不出 ⇒ `false`（不因此阻断看护；真正判不出时 `intent` 会落 `undecidable`）。
+     *   ⛔ 不把"读不到"当成"在等用户" —— 那会让看护永远不叫。
+     */
+    const awaitingUserOf = (ledgerRoot: string, owner: string): boolean => {
+      let sessionLastAt: number | undefined
+      try {
+        const session = sessions.get?.(owner) ?? agents.get?.(owner)?.session
+        const log = (session as any)?.log
+        if (Array.isArray(log)) {
+          for (let i = log.length - 1; i >= 0; i--) {
+            const e: any = log[i]
+            if (typeof e?.time === 'number' && Number.isFinite(e.time)) { sessionLastAt = e.time; break }
+          }
+          for (let i = log.length - 1; i >= 0; i--) {
+            const e: any = log[i]
+            if (e?.type !== 'assistant/message') continue
+            if (clarifySectionOf(messageTextOf(e)) === undefined) return false
+            return !userReplyAfter(log, i)
+          }
+        }
+      } catch { /* 读不到会话 ⇒ 看兼容来源 */ }
+      try {
+        const st = readOrchState(orchStateFileOf(ledgerRoot))
+        const own = st.closed.filter((rec) => (rec.owner ?? rec.watcher) === owner)
+        own.sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
+        const latest = own[0]
+        if (latest !== undefined && typeof latest.clarifyAt === 'number') {
+          /** 会话里已有更新消息 ⇒ 那条旧回传不再代表"此刻仍在等"。 */
+          return sessionLastAt === undefined || latest.clarifyAt >= sessionLastAt
+        }
+      } catch { /* 读不到 ⇒ 判不出 */ }
+      return false
+    }
+
+    /**
+     * **用户是否主动停止了这一轮**（2026-11-04）。
+     *
+     * ⚠ 与 `isStoppedFor` 互补：后者只覆盖 `hob_orch_control stop`；
+     *   用户在界面上直接停止 HOB 时，日志里留下的是
+     *   `turn/end.reason = { kind: 'aborted', reason: { kind: 'user' } }`。
+     *   ⇒ 取最后一条 `turn/end`：它是用户取消，且之后没有新的 `turn/start`
+     *     或真实用户消息 ⇒ 派生 `stopped`。
+     *   ⛔ 不把普通 `completed` 当成用户停止，也不把 relay 当成用户回复。
+     *
+     * @returns `true` 用户停在这一轮；`false` 没有停止；`undefined` 判不出
+     */
+    const userStoppedSessionOf = (owner: string): boolean | undefined => {
+      try {
+        const session = sessions.get?.(owner) ?? agents.get?.(owner)?.session
+        const log = (session as any)?.log
+        if (!Array.isArray(log) || log.length === 0) return undefined
+        let lastEndIndex = -1
+        for (let i = log.length - 1; i >= 0; i--) {
+          if (log[i]?.type === 'turn/end') { lastEndIndex = i; break }
+        }
+        if (lastEndIndex < 0) return undefined
+        const reason = log[lastEndIndex]?.data?.reason
+        if (reason?.kind !== 'aborted' || reason?.reason?.kind !== 'user') return false
+        for (let i = lastEndIndex + 1; i < log.length; i++) {
+          const e: any = log[i]
+          if (e?.type === 'turn/start') return false
+          if (e?.type === 'user/message' && e?.data?.source?.kind === 'user'
+            && messageTextOf(e).trim() !== '') return false
+        }
+        return true
+      } catch { return undefined }
+    }
+
+    /**
+     * **看护意图的唯一读取实现**（2026-11-04）。
+     *
+     * ⚠ 复查、定时器武装、状态面三处都调它，⛔ 不各写一份「停止 + 计划 + 等用户」：
+     *   三份实现必然漂，而它们漂的恰好是"为什么没叫"这一格。
+     * ⚠ 只做**事实读取**；`working` 由 `judgeWatchGuards` 结合运行态派生。
+     */
+    const guardIntentContextOf = (owner: string): {
+      intent: GuardIntent
+      ledgerRoot?: string
+      plans: WorkPlan[]
+      facts?: ReturnType<typeof planGuardFactsOf>
+    } => {
+      try {
+        const ws = wsRootOfSession(owner)
+        if (isStoppedFor(owner, ws) || userStoppedSessionOf(owner) === true) {
+          return { intent: 'stopped', plans: [] }
+        }
+        const ledgerRoot = ws === undefined
+          ? undefined
+          : (() => { try { return resolveLedgerRoot('', declaredLedgerHome(svcCtx), ws) } catch { return undefined } })()
+        if (ledgerRoot === undefined) return { intent: 'undecidable', plans: [] }
+        const plans = activePlansAt(ledgerRoot).filter((plan) => plan.joinOwnerSessionId === owner)
+        const derived = guardIntentForOwner({
+          plans,
+          stopped: false,
+          awaitingUser: awaitingUserOf(ledgerRoot, owner),
+        })
+        return {
+          intent: derived.intent,
+          ledgerRoot,
+          plans,
+          ...(derived.facts === undefined ? {} : { facts: derived.facts }),
+        }
+      } catch {
+        return { intent: 'undecidable', plans: [] }
+      }
     }
 
     const advancingWorkPlans = new Set<string>()
@@ -4144,6 +4515,30 @@ export function apply(ctx: any): void {
                 )
               }
             }
+            /**
+             * ⚠⚠ **计划不再需要看护 ⇒ 自动切等待**（2026-11-04 用户裁定）。
+             *
+             *   看护只该催「任务未完成、没人等用户、也没人在推进」。
+             *   而计划进入 `joining`（全部轨已返回）或 `completed` / `failed`
+             *   ⇒ **没有要催的执行轨了** ⇒ 必须当场切 `waiting` 并解除定时器。
+             *
+             * ⚠ 以前这一步只能靠 Hob 主动 `watch-wait`，模型忘了就一直在叫。
+             *   ⛔ 不许等下一轮复查：那时它已经多叫过一次了。
+             */
+            if (progress.terminal || plan.state === 'joining') {
+              const file = plan.workspaceRoot === undefined ? undefined : runtimeFileOf(svcCtx, plan.workspaceRoot)
+              if (file !== undefined) {
+                const r = setWatchState(file, plan.joinOwnerSessionId,
+                  plan.state === 'joining' ? '计划已汇合，等待收口' : '计划已终态，不再需要看护')
+                if (!r.wrote) {
+                  svcCtx.logger?.debug?.(
+                    `[${name}] 计划 ${plan.planId} 已无需看护，但没有可切回的登记（${trigger}）`,
+                  )
+                } else {
+                  try { armWatchTimer() } catch { /* 定时器重算失败不影响读数 */ }
+                }
+              }
+            }
           }
         } finally {
           advancingWorkPlans.delete(key)
@@ -4211,6 +4606,36 @@ export function apply(ctx: any): void {
             })),
           }
         })
+
+    /**
+     * **把不再需要看护的登记切回等待**（2026-11-04）。
+     *
+     * ⚠ 这是「重启后旧 `awake` 不复活」与「计划做完自动停」的**唯一实现点**：
+     *   启动对账、以及任何"计划状态刚变化"的路径都调它，⛔ 不各写一份。
+     *
+     * @param trigger - 触发来源（只进日志，不参与判定）
+     * @returns 被切回等待的条数（读数用）
+     */
+    const reconcileWatchIntents = async (trigger: string): Promise<number> => {
+      let switched = 0
+      for (const file of scanStateFiles(svcCtx)) {
+        for (const e of readWatchEntries(file)) {
+          const intent = guardIntentContextOf(e.owner).intent
+          if (guardIntentAllowsWake(intent)) continue
+          const r = setWatchState(file, e.owner,
+            intent === 'stopped' ? '用户已停止，保持等待'
+              : intent === 'waiting-user' ? '正在等用户决定'
+                : intent === 'joining' ? '计划已汇合，等待收口'
+                  : intent === 'completed' ? '计划已完成'
+                    : intent === 'failed' ? '计划已失败，等待处理'
+                      : intent === 'stale' ? '没有对应的活动计划'
+                        : '判不出看护意图，保守等待')
+          if (r.wrote) switched++
+        }
+      }
+      if (switched > 0) svcCtx.logger?.debug?.(`[${name}] 看护意图对账（${trigger}）：${switched} 条切回等待`)
+      return switched
+    }
 
     /** 重启/就绪扫描：只推进 owner 仍在本进程活着的计划，避免替离线会话派单。 */
     const advanceAllWorkPlans = async (trigger: string): Promise<void> => {
@@ -4448,7 +4873,7 @@ export function apply(ctx: any): void {
         try {
           const active = activePlansAt(ledgerForGate)
             .filter((plan) => plan.joinOwnerSessionId === self)
-          const activeTracks = active.flatMap((plan) => activeTracksOfPlan(plan))
+          const activeTracks = active.flatMap((plan) => occupyingTracksOfPlan(plan))
           const samePlanTracks = opts?.planId === undefined
             ? []
             : activeTracks.filter((track) => active.some((plan) => plan.planId === opts.planId
@@ -4756,6 +5181,7 @@ export function apply(ctx: any): void {
           watcher: typeof self === 'string' ? self : '',
           ...(opts?.round === undefined ? {} : { round: opts.round }),
           ...(opts?.task === undefined ? {} : { task: opts.task }),
+          ...(typeof opts?.taskId === 'string' && opts.taskId.trim() !== '' ? { taskId: opts.taskId.trim() } : {}),
           at: Date.now(),
           // 投递时它若已在跑，直接算"见过 running"，否则等状态事件点亮。
           sawRunning: cur === 'running',
@@ -4770,6 +5196,45 @@ export function apply(ctx: any): void {
         }
         watches.set(target, w)
         lastStatus.set(target, cur ?? 'unknown')
+        /**
+         * ══════════════════════════════════════════════════════════════════════
+         * **运行态 → 账本投影：派发成功**
+         * ══════════════════════════════════════════════════════════════════════
+         *
+         * ⚠ 这是本轮补上的管线断点：改前 `hob_dispatch` 只登记运行态 watch，
+         *   **不创建 RUN、不迁 TSK** ⇒ 面板第 4 步永远显示「无独立执行记录」。
+         * ⚠ 投影是**附加事实**，不改投递语义：投递已经成功（`ok:true`），
+         *   账本落不落**都不回滚这次投递**；失败只记在 watch 上并如实回带。
+         * ⚠ 只投影**真实 task**（`taskId`）；`implicit` / 缺省 ⇒ 纯函数会 `skipped`。
+         */
+        if (ownerWsRoot !== undefined && typeof w.taskId === 'string' && w.taskId !== '') {
+          try {
+            const ledgerRoot = resolveLedgerRoot('', declaredLedgerHome(svcCtx), ownerWsRoot)
+            if (ledgerRoot !== undefined) {
+              const projection = await applyProjection(ledgerRoot, {
+                kind: 'dispatch',
+                taskId: w.taskId,
+                target,
+                ...(owner === undefined ? {} : { owner }),
+                at: w.at,
+                ...(w.task === undefined ? {} : { task: w.task }),
+              })
+              w.ledgerProjection = {
+                ...(w.ledgerProjection ?? {}),
+                dispatch: { ok: projection.ok, applied: projection.applied, ...(projection.reason === undefined ? {} : { reason: projection.reason }) },
+              }
+              if (!projection.ok) {
+                svcCtx.logger?.warn?.(`[${name}] 派发已成功，但账本投影未落：${projection.reason ?? 'unknown'}`)
+              }
+            }
+          } catch (e) {
+            w.ledgerProjection = {
+              ...(w.ledgerProjection ?? {}),
+              dispatch: { ok: false, applied: 0, reason: `投影抛错：${String((e as Error)?.message ?? e)}` },
+            }
+            svcCtx.logger?.warn?.(`[${name}] 派发已成功，但账本投影抛错：${String((e as Error)?.message ?? e)}`)
+          }
+        }
         /**
          * 单目标兼容路径也会被记录到当前唯一的活动计划中，
          * 让单会话门禁与状态读数能看见“已有一条执行轨”。
@@ -5036,14 +5501,24 @@ export function apply(ctx: any): void {
             const progress = workPlanProgress(plan, states)
             return summarizePlan(plan, states, progress)
           }), ...closedPlanSummary(ledgerRoot, self)],
+          /**
+           * 过期归档：单独一档（⛔ 不并进活动计划）。
+           * ⚠ 与 `workPlans()` 同一口径：两处都要有，否则面板与路由会各自读到一个空数组。
+           */
+          abandoned: abandonedSummary(ledgerRoot, self),
           unreadable,
         }
       },
 
-      status(opts?: { wsRoot?: string; self?: string }) {
+      status(opts?: { wsRoot?: string; self?: string; ledgerRoot?: string }) {
         const self = typeof opts?.self === 'string' && opts.self !== '' ? opts.self : undefined
         const mine = mineOnly(self)
-        const plans = workPlanSummarySync(self, opts?.wsRoot ?? (self === undefined ? undefined : wsRootOfSession(self)), 'unknown')
+        const plans = workPlanSummarySync(
+          self,
+          opts?.wsRoot ?? (self === undefined ? undefined : wsRootOfSession(self)),
+          'unknown',
+          opts?.ledgerRoot,
+        )
         /**
          * ⚠ **一次算、两处用**（2026-10-21 · 第 326 轮 · **甲-7**）：
          *   `reachability` 的值与"要不要带成因"必须来自**同一个结果** ——
@@ -5509,6 +5984,11 @@ export function apply(ctx: any): void {
         return reviewWatchGuards()
       },
 
+      /** ⚠ 看护意图对账（重启 / 计划收口后把不再需要的登记切回等待）。 */
+      async reconcileWatchIntents(trigger = 'manual'): Promise<number> {
+        return reconcileWatchIntents(trigger)
+      },
+
       /**
        * ══════════════════════════════════════════════════════════════════════
        * **判决入口**（包 H · 第 1 件）：`accepted` / `sent-back` 的唯一写入口
@@ -5534,6 +6014,7 @@ export function apply(ctx: any): void {
         basis: string[]
         note?: string
         verifiedAt: string
+        returnTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
       }): { ok: boolean; reason?: string; state?: DispatchRecordState } {
         const self = typeof input?.self === 'string' && input.self !== '' ? input.self : undefined
         if (self === undefined) {
@@ -5725,7 +6206,11 @@ export function apply(ctx: any): void {
         const at = Date.parse(verifiedAt)
         const patch = verdict === 'accepted'
           ? { acceptedAt: at, sentBackAt: undefined }
-          : { sentBackAt: at, acceptedAt: undefined }
+          : {
+            sentBackAt: at,
+            acceptedAt: undefined,
+            returnTo: input.returnTo ?? 'back-to-task',
+          }
         /**
          * ⚠ **两个判决字段互斥**：后一次判决**必须**把前一次抹掉，
          *   否则一条记录会同带 `acceptedAt` 与 `sentBackAt` ⇒ 优先级只看得见高的那个
@@ -5735,6 +6220,8 @@ export function apply(ctx: any): void {
           if (patch.acceptedAt !== undefined) { inMemory.acceptedAt = patch.acceptedAt; delete inMemory.sentBackAt }
           else { inMemory.sentBackAt = patch.sentBackAt; delete inMemory.acceptedAt }
           inMemory.basis = basis
+          if (patch.returnTo !== undefined) inMemory.returnTo = patch.returnTo
+          else delete inMemory.returnTo
         }
         /**
          * ⚠ **盘上两摞都要更新**：
@@ -5791,9 +6278,17 @@ export function apply(ctx: any): void {
             const inPending = st.pending.findIndex((w) => w.target === target && (w.owner ?? '') === self)
             if (inPending >= 0) {
               const cur = st.pending[inPending]
-              const next: PersistedWatch = { ...cur, basis, ...(verdict === 'accepted' ? { acceptedAt: at } : { sentBackAt: at }) }
-              if (verdict === 'accepted') delete (next as { sentBackAt?: number }).sentBackAt
-              else delete (next as { acceptedAt?: number }).acceptedAt
+              const next: PersistedWatch = {
+                ...cur,
+                basis,
+                ...(verdict === 'accepted'
+                  ? { acceptedAt: at }
+                  : { sentBackAt: at, returnTo: input.returnTo ?? cur.returnTo ?? 'back-to-task' }),
+              }
+              if (verdict === 'accepted') {
+                delete (next as { sentBackAt?: number }).sentBackAt
+                delete next.returnTo
+              } else delete (next as { acceptedAt?: number }).acceptedAt
               const rows = [...st.pending]
               rows[inPending] = next
               writePending(file, rows, st.lost)
@@ -5803,7 +6298,9 @@ export function apply(ctx: any): void {
                 recordClosed(file, {
                   ...base,
                   basis,
-                  ...(verdict === 'accepted' ? { acceptedAt: at, sentBackAt: undefined } : { sentBackAt: at, acceptedAt: undefined }),
+                  ...(verdict === 'accepted'
+                    ? { acceptedAt: at, sentBackAt: undefined }
+                    : { sentBackAt: at, acceptedAt: undefined, returnTo: input.returnTo ?? base.returnTo ?? 'back-to-task' }),
                 } as PersistedWatch)
               }
             }
@@ -5862,7 +6359,13 @@ export function apply(ctx: any): void {
           basis,
           ...(verdict === 'accepted' ? { acceptedAt: at } : { sentBackAt: at }),
         })
-        return { ok: true, state }
+        return {
+          ok: true,
+          state,
+          ...(verdict === 'sent-back'
+            ? { returnTo: input.returnTo ?? 'back-to-task' }
+            : {}),
+        }
       },
 
       async wakeNow(owner: string, verdict: WatchGuardVerdict) {
@@ -5965,15 +6468,86 @@ export function apply(ctx: any): void {
         if (plan.joinOwnerSessionId !== self) {
           return { ok: false, reason: '只有该计划的汇合责任人可以收口' }
         }
-        if (plan.state !== 'joining') {
-          return { ok: false, reason: `计划当前是 ${plan.state}，只有 joining 才能收成 completed` }
+        /**
+         * ⚠ **收口必须同时看轨道终态**（2026-11-06 · Wave 1）：
+         *   `joining` 可以从「轨道都返回」派生，而返回 ≠ 验收；
+         *   失败轨道也不该被收成 completed。判据只在 `closePlanProblems` 一处。
+         */
+        const closeProblems = closePlanProblems(plan)
+        if (closeProblems.length > 0) {
+          return { ok: false, reason: `拒绝收口：${closeProblems.join('；')}` }
         }
         plan.state = 'completed'
         const closed = closeWorkPlan(ledgerRoot, plan, 'completed')
+        /**
+         * ⚠ **收口即解除看护**（2026-11-04）：计划做完了就不该再被"推进看护"叫醒。
+         *   ⛔ 不依赖 Hob 记得另调 `watch-wait` —— 那正是误唤醒的来源之一。
+         */
+        if (closed.ok) {
+          const watchFile = plan.workspaceRoot === undefined ? undefined : runtimeFileOf(svcCtx, plan.workspaceRoot)
+          if (watchFile !== undefined) {
+            try {
+              setWatchState(watchFile, self, '计划已收口完成，不再需要看护')
+              armWatchTimer(self)
+            } catch { /* 看护状态写失败不影响收口结论 */ }
+          }
+        }
         return closed.ok
           ? { ok: true, planId: plan.planId, file: closed.file ?? '' }
           : { ok: false, reason: closed.reason ?? 'unknown' }
       },
+      /**
+       * **把长期没人管的计划移出活动区**（2026-11-06）。
+       *
+       * ⚠ 为什么需要人工入口而不是自动清理：移动活动计划会改变"还有哪些活在跑"，
+       *   那是不可逆动作，必须由人确认。
+       * ⚠ 本方法**不改 plan.state**：整份计划原样移进 `abandoned/` 并写上原因，
+       *   ⛔ 不用 `completed` / `failed` 冒充业务结果。
+       * ⚠ 只处理已超时（>= STALE_PLAN_HOURS）且非终态的计划；必须显式给 planId。
+       */
+      async archiveStalePlan(planId: string, why: string, self: string | undefined): Promise<{
+        ok: boolean
+        planId?: string
+        file?: string
+        reason?: string
+      }> {
+        const id = String(planId ?? '').trim()
+        if (id === '') return { ok: false, reason: 'archiveStalePlan 需要 planId' }
+        if (typeof self !== 'string' || self === '') return { ok: false, reason: '判不出我是谁 => 不替别人清计划' }
+        /**
+         * ⚠ **原因在方法层也要核**：工具层核 `note` 只保护"从工具进来的调用"，
+         *   而本方法可被内部直接调用 ⇒ 缺原因就归档，归档件里就只剩一句空话。
+         */
+        if (String(why ?? '').trim() === '') {
+          return { ok: false, reason: '归档必须写明原因（why 为空 => 不归档）' }
+        }
+        const ws = wsRootOfSession(self)
+        const ledgerRoot = ws === undefined
+          ? undefined
+          : (() => { try { return resolveLedgerRoot('', declaredLedgerHome(svcCtx), ws) } catch { return undefined } })()
+        if (ledgerRoot === undefined) return { ok: false, reason: '判不出该读哪本账 => 不归档' }
+        const found = listWorkPlans(ledgerRoot).find((row) => row.state === 'ok' && row.plan?.planId === id)
+        if (found?.plan === undefined) return { ok: false, reason: `活动计划 ${id} 不存在 => 不伪造归档` }
+        const plan = found.plan
+        if (plan.joinOwnerSessionId !== self) {
+          return { ok: false, reason: '只有该计划的汇合责任人可以归档' }
+        }
+        if (plan.state === 'completed' || plan.state === 'failed') {
+          return { ok: false, reason: `计划已是终态 ${plan.state} => 走既有收口路径，不进 abandoned` }
+        }
+        const ageHours = plan.createdAt === undefined ? 0 : (Date.now() - plan.createdAt) / 3_600_000
+        if (ageHours < STALE_PLAN_HOURS) {
+          return {
+            ok: false,
+            reason: `计划只存在 ${ageHours.toFixed(1)}h（< ${STALE_PLAN_HOURS}h）=> 未超时，不归档`,
+          }
+        }
+        const r = archiveAbandonedWorkPlan(ledgerRoot, plan, String(why ?? '').trim() || '超时未收口', Date.now())
+        return r.ok
+          ? { ok: true, planId: id, ...(r.file === undefined ? {} : { file: r.file }) }
+          : { ok: false, planId: id, reason: r.reason ?? 'unknown' }
+      },
+
       control(action, opts?: { wsRoot?: string; self?: string }) {
         const self = typeof opts?.self === 'string' && opts.self !== '' ? opts.self : undefined
         if (self === undefined) {
@@ -6185,10 +6759,24 @@ export function apply(ctx: any): void {
      *   ⚠ 判据**不看"Hob 在不在跑"**（那个判不出，见 `HOB_LIVENESS_NOTE`；
      *     `TASK` §三 明令"我没动作"的判据不许用它）。
      */
+    /**
+     * ⚠⚠ **武装判据必须同时看意图**（2026-11-04 用户裁定）。
+     *
+     *   改前只看盘上登记形态（`awake` 或"叫过还没到顶"）⇒ 用户已 `stop`、
+     *   计划已完成、旧计划已不存在时，**定时器照样被武装** ⇒ 重启也复活。
+     *   ⇒ 现在逐条过 {@link guardIntentForOwner}：只有 `expecting-return` 才算"该盯"。
+     *
+     * ⚠ 读不到意图 ⇒ **不武装**（fail-closed：没有证据就不起定时器）。
+     */
     const hasAwakeWatch = (): boolean => {
       try {
         for (const f of scanStateFiles(svcCtx)) {
-          if (watchNeedsTimer(readWatchEntries(f))) return true
+          const entries = readWatchEntries(f)
+          if (!watchNeedsTimer(entries)) continue
+          for (const e of entries) {
+            const intent = guardIntentContextOf(e.owner).intent
+            if (guardIntentAllowsWake(intent)) return true
+          }
         }
         return false
       } catch {
@@ -6851,6 +7439,48 @@ export function apply(ctx: any): void {
           delete w.undeliveredAt
           delete w.undeliveredWhy
           /**
+           * ══════════════════════════════════════════════════════════════════════
+           * **运行态 → 账本投影：回传成功**
+           * ══════════════════════════════════════════════════════════════════════
+           *
+           * ⚠ 这是管线第二个断点：改前回传只把运行态记成 `returned`，账本里的
+           *   `RUN` / `TSK` 要模型手工写 ⇒ 面板与运行态长期不同步。
+           * ⚠ 回传 ≠ 验收：这里只落**执行事实**（RUN returned + TSK built），
+           *   ⛔ 不建 ACC、⛔ 不写 pass。
+           * ⚠ 任务转 `built` 需要**小步验证读数**（C-6）；没有读数时纯函数会
+           *   `undecidable`，只迁 RUN、不迁 TSK —— 那正是"回传了但没做完"的如实表达。
+           * ⚠ 投影失败不回滚回传：回执已经送到（`deliveredAt` 已置），失败只记读数。
+           */
+          if (typeof w.taskId === 'string' && w.taskId !== '') {
+            try {
+              const ledgerRoot = resolveLedgerRoot('', declaredLedgerHome(svcCtx), w.ownerWsRoot)
+              if (ledgerRoot !== undefined) {
+                const progressRefs = receiptProgressRefsOf(lastAssistantText(session))
+                const projection = await applyProjection(ledgerRoot, {
+                  kind: 'return',
+                  taskId: w.taskId,
+                  target: w.target,
+                  at: w.at,
+                  deliveredAt: new Date(w.deliveredAt).toISOString(),
+                  ...(progressRefs.length === 0 ? {} : { progressRefs }),
+                })
+                w.ledgerProjection = {
+                  ...(w.ledgerProjection ?? {}),
+                  return: { ok: projection.ok, applied: projection.applied, ...(projection.reason === undefined ? {} : { reason: projection.reason }) },
+                }
+                if (!projection.ok) {
+                  svcCtx.logger?.warn?.(`[${name}] 回传已送达，但账本投影未落：${projection.reason ?? 'unknown'}`)
+                }
+              }
+            } catch (e) {
+              w.ledgerProjection = {
+                ...(w.ledgerProjection ?? {}),
+                return: { ok: false, applied: 0, reason: `投影抛错：${String((e as Error)?.message ?? e)}` },
+              }
+              svcCtx.logger?.warn?.(`[${name}] 回传已送达，但账本投影抛错：${String((e as Error)?.message ?? e)}`)
+            }
+          }
+          /**
            * ══════════════════════════════════════════════════════════════════
            * **「要澄清」的写入路径**（包 H · 第 1 件）
            * ══════════════════════════════════════════════════════════════════
@@ -7066,7 +7696,19 @@ export function apply(ctx: any): void {
       } catch { /* 读不到 ⇒ 下面按 0 报（但 uncapable 里会说清） */ }
       /** ⚠ **读数②注入**（同 `watchBoardOf`，⛔ 不另写一套取法）。 */
       const turnState = (id: string): 'ended' | 'busy' | undefined => turnStateOfSession(sessions, agents, id)
-      const verdicts = judgeWatchGuards(entries, probe, Date.now(), turnState)
+      /**
+       * ⚠⚠ **看护意图读取器**（2026-11-04）：用户已停 / 计划已完成 / 正在等用户
+       *   都**不是**"该催"的现场 —— 运行态"都没在跑"恰好是它们正常的样子。
+       *
+       * ⚠ 三个来源都是**可验证事实**，⛔ 不读模型自述：
+       *   · 停止：`isStoppedFor(owner, wsRoot)`（持久化在 `orch-stopped.json`）；
+       *   · 计划：该 owner 自己的活动 WorkPlan（`active/` 里唯一权威）；
+       *   · 等用户：`awaitingUserOf(owner)`（active 用户问题 / 回传里的待决问题）。
+       */
+      const intentOf = (owner: string): GuardIntent => {
+        return guardIntentContextOf(owner).intent
+      }
+      const verdicts = judgeWatchGuards(entries, probe, Date.now(), turnState, intentOf)
       let woke = 0
       let delivered = 0
       for (const v of verdicts) {
@@ -7515,6 +8157,15 @@ export function apply(ctx: any): void {
      */
     void reconcile('ready-scan')
       .then(() => advanceAllWorkPlans('ready-scan'))
+      /**
+       * ⚠⚠ **重启对账的最后一步：把不再需要看护的登记切回等待**（2026-11-04）。
+       *
+       *   只看"计划还在不在等回传"：`stopped` / `completed` / `joining` / `waiting-user`
+       *   / `stale` 一律切 `waiting`，⛔ 不保留上一代的 `awake`。
+       *   ⚠ 这一步必须在计划推进**之后**跑：推进会把终态轨落盘，
+       *     先切就会用旧状态判"还在等"。
+       */
+      .then(async () => { await reconcileWatchIntents('ready-scan') })
       .catch(() => { /* reconcile / 计划推进各自已接住 */ })
     /**
      * ⚠⚠ **就绪时也武装一次**（`TASK-3` §二.1 的"保证型"）：
@@ -7739,8 +8390,46 @@ function normalizedPlanId(raw: unknown, now = Date.now()): string {
  */
 export function createHobOrchTools(
   orch: HobOrchestrator,
-  proceedGateOf?: (exec: any) => string | undefined,
+  /**
+   * ⚠ **作用域参数**（2026-11-06 · Wave 1）：`hob_dispatch` 把自己的 `task` / `planId`
+   * 带下来，门禁才能按任务链或计划链判定，⛔ 而不是扫全账本。
+   * 其他调用方不传 ⇒ 按项目健康口径（不硬拦）。
+   */
+  proceedGateOf?: (exec: any, scope?: { taskId?: string; planId?: string }) => string | undefined,
   workModeOf?: (exec: any) => WorkMode | undefined,
+  /**
+   * **验收门禁**（2026-11-06 · Wave 1）：按账本真实单元校验 `accept`。
+   *
+   * ⚠ 为什么注入而不是直接读盘：本模块拿不到 `modules/tools.ts` 的账本解析闭包，
+   *   反向 import 会让编排模块依赖工具模块（循环）。由预设层把「读单元 + 判定」
+   *   作为一个函数传进来，判据仍只有 `stage-controls.ts` 一份。
+   * ⚠ 不传 ⇒ **fail-closed**：`accept` 拒绝，⛔ 不退回「只看参数」的旧行为。
+   */
+  acceptanceGateOf?: (exec: any, taskId: string) => { ok: boolean; reason?: string },
+  /**
+   * **判决落账器**（2026-11-08 · 运行态 → 账本）。
+   *
+   * ⚠ 注入而不是直接 import：本模块不能依赖 `modules/tools.ts` 的账本解析闭包
+   *   （反向 import 会成环）。预设层把「按执行上下文取账本根 + 调投影器」传进来。
+   * ⚠ 缺席 ⇒ 判决仍会落运行态，但返回 `ledgerProjection` 明确写"未落账"，
+   *   ⛔ 不假装账本已经写成功。
+   */
+  ledgerProjectionOf?: (exec: any) => {
+    apply: (fact: {
+      kind: 'verdict'
+      taskId: string
+      verdict: 'pass' | 'send-back'
+      verifiedAt: string
+      basis: string[]
+      actor: string
+      acceptanceSession?: string
+      existingAcceptanceSession?: string
+      productConfirmation?: string
+      verificationRefs?: string[]
+      exampleResults?: string[]
+      sendBackTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
+    }) => Promise<{ ok: boolean; applied: number; reason?: string }>
+  } | undefined,
 ): {
   dispatch: ReturnType<typeof defineTool>
   status: ReturnType<typeof defineTool>
@@ -7764,6 +8453,11 @@ export function createHobOrchTools(
       },
       round: { type: 'number', description: '第几轮（回传时原样带回，便于对号）。' },
       task: { type: 'string', description: '一句话说明这一轮派什么（回传带回）。' },
+      taskId: {
+        type: 'string',
+        description: '**账本里的真实任务号**（如 TSK-080）。⚠ 派活对象就是它：门禁按它判链，派发成功后在账本建 RUN、任务转 doing。'
+          + ' ⚠ 不要在这里填需求号 / 方案号；`implicit` 占位不落账。',
+      },
       changeId: { type: 'string', description: '多轨派活必填：本计划对应的现有 CHG 编号。' },
       planId: { type: 'string', description: '多轨派活可选：稳定计划编号；省略时自动生成。' },
       rationale: { type: 'string', description: '多轨派活必填：为什么这样拆分。' },
@@ -7813,6 +8507,7 @@ export function createHobOrchTools(
       singleTrackReason?: string
       singleTrackEvidence?: unknown
       tracks?: unknown
+      taskId?: string
     }, exec: any): Promise<string> {
       /**
        * ⚠⚠ **派活前先过执行层闸门**（2026-10-22 第 5 轮 · 任务书第 12 条）。
@@ -7820,7 +8515,17 @@ export function createHobOrchTools(
        *     ⛔ 不能只靠 `hob_send` 那道（两条路都能让别人开跑）。
        */
       try {
-        const blocked = proceedGateOf?.(exec)
+        /**
+         * ⚠ **作用域随本次派单参数走**（2026-11-06 · Wave 1）：
+         *   单目标带 `task`、多轨带 `planId`；两者都交给门禁，由它逐链判定，
+         *   ⛔ 不再用「全账本有缺口」当拒绝理由。
+         */
+        const blocked = proceedGateOf?.(exec, {
+          ...(typeof args.taskId === 'string' && args.taskId.trim() !== ''
+            ? { taskId: args.taskId.trim() }
+            : typeof args.task === 'string' && args.task.trim() !== '' ? { taskId: args.task.trim() } : {}),
+          ...(typeof args.planId === 'string' && args.planId.trim() !== '' ? { planId: args.planId.trim() } : {}),
+        })
         if (blocked !== undefined) return JSON.stringify({ ok: false, reason: 'proceed-not-confirmed', message: blocked })
       } catch (e) {
         return JSON.stringify({
@@ -7899,6 +8604,7 @@ export function createHobOrchTools(
         self,
         ...(args.round === undefined ? {} : { round: args.round }),
         ...(args.task === undefined ? {} : { task: args.task }),
+        ...(args.taskId === undefined ? {} : { taskId: args.taskId }),
       })
       if (!r.ok) return JSON.stringify({ ok: false, reason: r.reason })
       return JSON.stringify({
@@ -8366,6 +9072,7 @@ export function createHobOrchTools(
             undeliveredWhy?: string; recheckCount?: number; lastRecheckAt?: number
             settleState?: SettleState; clarifyAt?: number; refusedAt?: number
             acceptedAt?: number; sentBackAt?: number
+            returnTo?: string
             /** ⚠ 包 H：四态的依据（拒收原话 / 澄清原文 / 判决依据哪几条读数）。 */
             refusedWhy?: string; clarifyWhy?: string; basis?: string[]
             /** ⚠ 包 J 3.4：失败原因未归类（独立一档，⛔ 不并进未送达/拒收）。 */
@@ -8401,6 +9108,8 @@ export function createHobOrchTools(
               ...(w.refusedAt === undefined ? {} : { refusedAt: w.refusedAt }),
               ...(w.acceptedAt === undefined ? {} : { acceptedAt: w.acceptedAt }),
               ...(w.sentBackAt === undefined ? {} : { sentBackAt: w.sentBackAt }),
+              ...(w.returnTo === undefined ? {} : { returnTo: w.returnTo }),
+              ...(w.returnTo === undefined ? {} : { returnTo: w.returnTo }),
               ...(w.refusedWhy === undefined ? {} : { refusedWhy: w.refusedWhy }),
               ...(w.clarifyWhy === undefined ? {} : { clarifyWhy: w.clarifyWhy }),
               ...(w.basis === undefined ? {} : { basis: w.basis }),
@@ -8515,7 +9224,10 @@ export function createHobOrchTools(
                   : (st === 'accepted' || st === 'sent-back')
                     ? (r.basis === undefined || r.basis.length === 0
                       ? undefined
-                      : `依据 ${r.basis.length} 条读数：${r.basis.join(' · ')}`)
+                      : `依据 ${r.basis.length} 条读数：${r.basis.join(' · ')}`
+                        + (st === 'sent-back'
+                          ? `；回流目标：${r.returnTo ?? '判不出（旧记录没有目标阶段）'}`
+                          : ''))
                     : undefined
               if (why === undefined) {
                 /**
@@ -8526,6 +9238,9 @@ export function createHobOrchTools(
                 if (st === 'refused' || st === 'needs-clarification'
                   || st === 'accepted' || st === 'sent-back') {
                   lines.push(`    ↳ \`${r.target}\`：⚠ **这一档有记录、但没有落依据**`
+                    + (st === 'sent-back' && r.returnTo !== undefined
+                      ? `；回流目标：${r.returnTo}`
+                      : '')
                     + '（旧记录 / 或写入口没带依据）—— ⛔ 别把它当成"已核实"')
                 }
                 continue
@@ -8900,6 +9615,22 @@ export function createHobOrchTools(
                 + ' ⇒ ⛔ 不用重派、也不会重发；下一轮自动重试清账'
                 + `（⚠ 到第 ${CLEANUP_RETRY_LIMIT} 次仍失败就转 stuck、不再自动重试）`,
           ]),
+        /**
+         * ⚠ **账本投影失败必须可见**（2026-11-08 · 管线闭环）。
+         *   派发 / 回传已经成功，但账本没写上 ⇒ 面板仍显示旧状态。
+         *   ⚠ 只在这一条**确实有失败读数**时出现；正常档一个字都不多。
+         *   ⚠ 三档分开：`dispatch` / `return`；⛔ 不压成"投影失败"一句。
+         */
+        ...(w.ledgerProjection === undefined
+          ? []
+          : [
+            ...(w.ledgerProjection.dispatch?.ok === false
+              ? [`⚠ 账本投影（派发）未落：${w.ledgerProjection.dispatch.reason ?? '没有可读原因'}`]
+              : []),
+            ...(w.ledgerProjection.return?.ok === false
+              ? [`⚠ 账本投影（回传）未落：${w.ledgerProjection.return.reason ?? '没有可读原因'}`]
+              : []),
+          ]),
       ].join(' · '))
       const hh = s.handoffs.map((h) => {
         const when = new Date(h.at).toLocaleString('zh-CN', { hour12: false })
@@ -9031,7 +9762,23 @@ export function createHobOrchTools(
                 ? ` · 已叫过 **${attempts}** 次（上限 ${WAKE_FALLBACK_LIMIT} 次 —— `
                   + '⚠ 我再不动就还会再叫，到顶转 `stuck`）'
                 : '')
-            out.push(`看护：**${m.state === 'awake' ? '唤醒' : '等待'}**${wokePart}${giveUpPart} · `
+            /**
+             * ⚠ 2026-11-04：**先说看护意图**，再说运行态。
+             *   ⛔ 不许只印"唤醒/等待"：用户要能看出"为什么没叫"（做完了 / 等用户 / 已停止）。
+             */
+            const INTENT_TEXT: Record<string, string> = {
+              'working': '正在推进（不叫）',
+              'expecting-return': '等待回传',
+              'waiting-user': '等待用户决定',
+              'joining': '计划正在汇合',
+              'completed': '计划已完成',
+              'failed': '计划已失败',
+              'stopped': '用户已停止',
+              'stale': '没有对应的活动计划',
+              'undecidable': '判不出（不会唤醒）',
+            }
+            out.push(`看护：**${INTENT_TEXT[m.intent] ?? m.intent}** · `
+              + `${m.state === 'awake' ? '唤醒' : '等待'}${wokePart}${giveUpPart} · `
               + `Hob 自己：${fmt(m.ownerRunning)} · ${targetsPart} · `
               + `已持续 ${elapsedMin} 分钟（⚠ ${WATCH_GUARD_THRESHOLD_IS_FIXED}）`
               + (m.shouldWake ? ' ⇒ ⚠ **该唤醒了**' : `（判定：${m.reason}）`))
@@ -9332,10 +10079,11 @@ export function createHobOrchTools(
       action: {
         type: 'string',
         required: true,
-        enum: ['stop', 'resume', 'redeliver', 'accept', 'send-back', 'watch-wait', 'plan-complete'],
+        enum: ['stop', 'resume', 'redeliver', 'accept', 'send-back', 'watch-wait', 'plan-complete', 'archive-stale-plan'],
         description: 'stop=停；resume=恢复；redeliver=**显式补投**一条投错人的回执（需 executionId + taskId）；'
           + 'accept=**验收**（需 taskId + basis）；send-back=**退回重做**（需 taskId + basis）；'
           + 'plan-complete=**汇合责任人收口计划**（需 planId；计划须先到 joining）；'
+          + 'archive-stale-plan=**把超时未收口的计划移出活动区**（需 planId + note；不改业务状态、不删除原件）；'
           + 'watch-wait=**看护切回「等待」**（做完了 / 需要用户决策 / 出了异常都走这一个动作；'
           + '可用 `note` 顺手写一句为什么 —— ⚠ 那句话是给人读的，⛔ 不是必填、⛔ 不是原因码）。'
           + '⚠ accept / send-back 的 `basis` **必须非空**（D10/§10：判决要带"依据哪几条读数"）'
@@ -9365,6 +10113,12 @@ export function createHobOrchTools(
         description: 'watch-wait 专用（**可选**）：一句话说明为什么切回等待。'
           + '⚠ 它是给人读的说明，⛔ 不是原因码、⛔ 不是门槛 —— 不填也能切。',
       },
+      returnTo: {
+        type: 'string',
+        enum: ['back-to-requirement', 'back-to-plan', 'back-to-task'],
+        description: 'send-back 专用：退回目标阶段。需求错回 1、方案错回 2、实现错回 3；缺省 back-to-task。'
+          + '⚠ 它不是自由文本：只允许这三个值。',
+      },
       planId: {
         type: 'string',
         description: 'plan-complete 专用：要收口的计划编号。只有该计划汇合责任人可收；'
@@ -9377,7 +10131,7 @@ export function createHobOrchTools(
     },
     async execute(
       args: {
-        action: 'stop' | 'resume' | 'redeliver' | 'accept' | 'send-back' | 'watch-wait' | 'plan-complete'
+        action: 'stop' | 'resume' | 'redeliver' | 'accept' | 'send-back' | 'watch-wait' | 'plan-complete' | 'archive-stale-plan'
         executionId?: string
         taskId?: string
         /** ⚠ 包 H：判决依据（`accept` / `send-back` 专用；⛔ 空数组一律被拒）。 */
@@ -9387,6 +10141,7 @@ export function createHobOrchTools(
         /** ⚠ 包 AB：`watch-wait` 的**可选**说明（⛔ 不是原因码、⛔ 不是必填）。 */
         note?: string
         planId?: string
+        returnTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
       },
       exec: any,
     ): Promise<string> {
@@ -9397,8 +10152,27 @@ export function createHobOrchTools(
        */
       if (args?.action !== 'stop' && args?.action !== 'resume' && args?.action !== 'redeliver'
         && args?.action !== 'accept' && args?.action !== 'send-back' && args?.action !== 'watch-wait'
-        && args?.action !== 'plan-complete') {
-        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume' or 'redeliver' or 'accept' or 'send-back' or 'watch-wait' or 'plan-complete'" })
+        && args?.action !== 'plan-complete' && args?.action !== 'archive-stale-plan') {
+        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume' or 'redeliver' or 'accept' or 'send-back' or 'watch-wait' or 'plan-complete' or 'archive-stale-plan'" })
+      }
+      /**
+       * **过期计划归档**（2026-11-06）：把超时未收口的计划移出活动区。
+       * ⚠ 这是不可逆动作（会改变"还有哪些活在跑"）⇒ 必须显式 planId + 原因；
+       *   ⛔ 不改 plan.state、⛔ 不删除原件（移进 `abandoned/`，可完整还原）。
+       */
+      if (args.action === 'archive-stale-plan') {
+        if (typeof args.planId !== 'string' || args.planId.trim() === '') {
+          return JSON.stringify({ ok: false, reason: 'archive-stale-plan 需要 `planId`（⛔ 不支持"全部清理"）' })
+        }
+        const why = String(args.note ?? '').trim()
+        if (why === '') {
+          return JSON.stringify({
+            ok: false,
+            reason: 'archive-stale-plan 需要 `note` 写清为什么判定它已过期（人读原因，进归档件）',
+          })
+        }
+        const r = await orch.archiveStalePlan(args.planId.trim(), why, selfSessionIdOf(exec))
+        return JSON.stringify(r)
       }
       /** 汇合责任人显式收口；⛔ 不新增工具名，挂在本写工具上。 */
       if (args.action === 'plan-complete') {
@@ -9469,12 +10243,51 @@ export function createHobOrchTools(
           })
         }
         const verifiedAt = suppliedAt === '' ? new Date().toISOString() : suppliedAt
+        /**
+         * **验收前必须过账本判据**（2026-11-06 · Wave 1）。
+         *
+         * ⚠ 只校验 `taskId` + `basis` 会把"回传"当成"验收"：验收单元可能根本不存在，
+         *   或存在但缺独立会话 / 技术证据 / 用户例子结果。
+         * ⚠ `send-back` **不走**这条：退回不需要先有一个合格的 ACC 单元
+         *   （否则"发现问题"反而被拦，止损就做不了）。
+         * ⚠ 未注入 `acceptanceGateOf` ⇒ fail-closed（⛔ 不退回旧行为）。
+         */
+        if (args.action === 'accept') {
+          if (acceptanceGateOf === undefined) {
+            return JSON.stringify({
+              ok: false,
+              requestedVerdict: 'accepted',
+              target: args.taskId,
+              reason: '验收门禁未接入（acceptanceGateOf 缺席）⇒ 本次不落账',
+            })
+          }
+          let verdict: { ok: boolean; reason?: string }
+          try {
+            verdict = acceptanceGateOf(exec, args.taskId)
+          } catch (e) {
+            return JSON.stringify({
+              ok: false,
+              requestedVerdict: 'accepted',
+              target: args.taskId,
+              reason: `验收门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不落账`,
+            })
+          }
+          if (!verdict.ok) {
+            return JSON.stringify({
+              ok: false,
+              requestedVerdict: 'accepted',
+              target: args.taskId,
+              reason: verdict.reason ?? '验收门禁未通过',
+            })
+          }
+        }
         const r = orch.judge({
           self: selfSessionIdOf(exec),
           target: args.taskId,
           verdict: args.action === 'accept' ? 'accepted' : 'sent-back',
           basis: Array.isArray(args.basis) ? args.basis : [],
           verifiedAt,
+          ...(args.returnTo === undefined ? {} : { returnTo: args.returnTo }),
         })
         /**
          * ══════════════════════════════════════════════════════════════════════
@@ -9504,6 +10317,40 @@ export function createHobOrchTools(
             ...(r.reason === undefined ? {} : { reason: r.reason }),
           })
         }
+        /**
+         * ══════════════════════════════════════════════════════════════════════
+         * **运行态判决 → 账本 ACC**（2026-11-08 · 管线闭环）
+         * ══════════════════════════════════════════════════════════════════════
+         *
+         * ⚠ 顺序：**先落运行态（`orch.judge` 成功），再投影账本**。
+         *   投影失败不回滚判决 —— 它们是两件事；返回体用 `ledgerProjection` 分开报。
+         * ⚠ `accept` 在门禁通过时，账本里**已经有** pass ACC；本段是幂等补充
+         *   （同一 `verifiedAt` 已有 ACC ⇒ 纯函数 `skipped`，不重复建）。
+         * ⚠ `send-back` 没有前置门禁 ⇒ 本段是它**唯一**的账本落点，必须落。
+         */
+        let ledgerProjection: { ok: boolean; applied: number; reason?: string } | undefined
+        const projector = ledgerProjectionOf?.(exec)
+        if (projector !== undefined && typeof args.taskId === 'string' && args.taskId !== '') {
+          try {
+            const basis = Array.isArray(args.basis) ? args.basis.map(String) : []
+            ledgerProjection = await projector.apply({
+              kind: 'verdict',
+              taskId: args.taskId,
+              verdict: args.action === 'accept' ? 'pass' : 'send-back',
+              verifiedAt,
+              basis,
+              actor: selfSessionIdOf(exec) ?? '',
+              /**
+               * ⚠ 验收会话：`accept` 时账本里的 ACC 已由独立验收会话填写；
+               *   本入口的 `self` 只是"调用判决的派活方"，⛔ 不能冒充独立验收会话。
+               *   ⇒ 投影器自己从账本读已有 ACC 的 `acceptance_session`（见 `verdictOps`）。
+               */
+              ...(args.returnTo === undefined ? {} : { sendBackTo: args.returnTo }),
+            })
+          } catch (e) {
+            ledgerProjection = { ok: false, applied: 0, reason: `判决投影抛错：${String((e as Error)?.message ?? e)}` }
+          }
+        }
         return JSON.stringify({
           ok: r.ok,
           verdict: args.action === 'accept' ? 'accepted' : 'sent-back',
@@ -9511,6 +10358,7 @@ export function createHobOrchTools(
           ...(r.state === undefined ? {} : { state: r.state, label: DISPATCH_STATE_LABELS[r.state] }),
           ...(r.reason === undefined ? {} : { reason: r.reason }),
           verifiedAt,
+          ...(ledgerProjection === undefined ? {} : { ledgerProjection }),
         })
       }
       const selfId = selfSessionIdOf(exec)

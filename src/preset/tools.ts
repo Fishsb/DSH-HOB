@@ -82,6 +82,7 @@ import * as configFace from '../config.ts'
  */
 import * as toolsFace from '../modules/tools.ts'
 import * as workModeFace from '../shared/work-mode.ts'
+import * as projectionWriterFace from '../server/projection-writer.ts'
 import * as busFace from '../modules/bus.ts'
 import * as orchFace from '../modules/orchestrator.ts'
 import * as handoffEffectsFace from '../server/handoff-effects.ts'
@@ -864,7 +865,26 @@ export function apply(ctx: any, config: Config = {}): void {
       log('闭环编排就绪 ⇒ 注册 M5 工具')
       registerOrchTools(orchCtx, orch as HobOrchestrator, log, createHobOrchTools, proceedGateFor, workModeForExec, dispatchGateAt,
         // ⚠ 同 `acceptanceGateFor`：传执行上下文本身，⛔ 不传 `exec.agent`。
-        (exec: any) => ledgerRootOf(config, exec), acceptanceGateFor)
+        (exec: any) => ledgerRootOf(config, exec), acceptanceGateFor,
+        /**
+         * **判决落账器**（2026-11-08 · 管线闭环）。
+         * ⚠ 只做 I/O 适配：账本根按执行上下文现读；判据在投影纯函数里。
+         * ⚠ 账本根判不出 / 写入失败 ⇒ 返回 `ok:false` 与可读原因，由工具返回值如实回带。
+         */
+        (exec: any) => ({
+          apply: async (fact: any) => {
+            const root = ledgerRootOf(config, exec)
+            if (root === undefined) {
+              return { ok: false, applied: 0, reason: '账本根判不出 ⇒ 判决未落账' }
+            }
+            const applyFn = (projectionWriterFace as unknown as { applyProjection?: (root: string, fact: any) => Promise<any> }).applyProjection
+            if (typeof applyFn !== 'function') {
+              return { ok: false, applied: 0, reason: '投影写入器不可用（旧模块缓存）⇒ 判决未落账' }
+            }
+            const r = await applyFn(root, fact)
+            return { ok: r.ok, applied: r.applied, ...(r.reason === undefined ? {} : { reason: r.reason }) }
+          },
+        }))
     })
   }
 }
@@ -2067,7 +2087,27 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
    */
   dispatchGateAt: (root: string, opts: { taskId?: string; planId?: string }) => string | undefined = () => undefined,
   ledgerRootFor: (exec: any) => string | undefined = () => undefined,
-  acceptanceGateFor?: (exec: any, taskId: string) => { ok: boolean; reason?: string }): void {
+  acceptanceGateFor?: (exec: any, taskId: string) => { ok: boolean; reason?: string },
+  /**
+   * **判决落账器**（2026-11-08 · 管线闭环）：把已发生的判决投影成账本 ACC。
+   * ⚠ 只做 I/O 适配；判据在 `server/ledger-projection.ts` 的纯函数里。
+   */
+  ledgerProjectionOf?: (exec: any) => {
+    apply: (fact: {
+      kind: 'verdict'
+      taskId: string
+      verdict: 'pass' | 'send-back'
+      verifiedAt: string
+      basis: string[]
+      actor: string
+      acceptanceSession?: string
+      existingAcceptanceSession?: string
+      productConfirmation?: string
+      verificationRefs?: string[]
+      exampleResults?: string[]
+      sendBackTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
+    }) => Promise<{ ok: boolean; applied: number; reason?: string }>
+  } | undefined): void {
   /**
    * ⚠ 作用域参数从**本次执行参数**里取（`hob_dispatch { task, planId, tracks }`）：
    *   `tracks` 时逐轨 `taskId` 由 `dispatchGateAtLedger` 的计划分支覆盖，
@@ -2088,6 +2128,7 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
       proceedGateFor(exec?.agent ?? exec) ?? stageGateFor(exec, scope),
     workModeFor,
     acceptanceGateFor,
+    ledgerProjectionOf,
   )
   ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')
   ctx.effect(() => ctx.tools.register(status), 'dsh-hob preset: hob_orch_status tool')

@@ -320,9 +320,12 @@ source = "夹具"
       const s = res.summary
       if (s === undefined || s === null || typeof s !== 'object') p.push('summary 缺失')
       else {
-        const current = res.stages.find((x) => x.state !== 'done')
-          ?? res.stages[res.stages.length - 1]
-        if (s.stage === null || s.stage?.step !== current?.step) p.push(`summary.stage 不是当前步（第一条未完成 → 最后一步）：${JSON.stringify(s.stage)} vs ${JSON.stringify(current)}`)
+        /**
+         * ⚠⚠ **2026-11-08：全局 `summary.stage` 已退役**（当前阶段唯一出口 = 单需求链）。
+         *   改前这里要求它等于"全账本第一条未完成步"；那与面板的 `currentStep`
+         *   是**两套算法**。现在项目级摘要必须恒为 `null`，⛔ 不许再拿它当当前阶段。
+         */
+        if (s.stage !== null) p.push(`summary.stage 应为 null（项目级摘要不再回答"当前第几步"）：${JSON.stringify(s.stage)}`)
         if (s.action?.kind !== res.next.kind || s.action?.target !== res.next.target) p.push(`summary.action 与 next 不一致：${JSON.stringify(s.action)} vs ${JSON.stringify(res.next)}`)
         if (s.waitingFor === undefined || s.waitingFor === '') p.push('summary.waitingFor 为空')
         if (res.next.blockedBy.length > 0 && s.blocker !== res.next.blockedBy[0]) p.push(`summary.blocker 不是主阻断：${JSON.stringify(s.blocker)}`)
@@ -337,7 +340,7 @@ source = "夹具"
       }
     }
     if (p.length === 0) {
-      ok(`R-16 ✓ summary 与 next / attention 交叉一致（阶段=${res.summary.stage?.name} · 动作=${res.summary.action?.kind} · 等待=${res.summary.waitingFor} · 主阻断=${JSON.stringify(res.summary.blocker)} · 注意力去重）`)
+      ok(`R-16 ✓ summary 与 next / attention 交叉一致（全局阶段=null（单链 currentStep 才是唯一出口）· 动作=${res.summary.action?.kind} · 等待=${res.summary.waitingFor} · 主阻断=${JSON.stringify(res.summary.blocker)} · 注意力去重）`)
     } else for (const x of p) bad(`R-16 · ${x}`)
   }
 

@@ -34,7 +34,7 @@ name = "实现方案"
 who = "Hob"
 what = "You draft it; changing it needs the user's approval."
 change_needs = "user"
-judged_by = "change 单元 status=settled 且 proposal.md 存在"
+judged_by = "C-3 + C-4 + C-15：change 单元 status=settled 且 proposal.md 存在；路径比较 / 取舍 / 推荐 / 需求映射齐全；高风险必须有独立评审（reviewer ≠ built_by）与 review_refs"
 actor_role = "author"
 source = "You draft it; changing it needs the user's approval."
 
@@ -45,7 +45,7 @@ name = "编码任务"
 who = "Hob"
 what = "the concrete pieces, each with a boundary and a way to be judged. You write them."
 change_needs = "Hob"
-judged_by = "每个 task 单元有 built_by 与 verify"
+judged_by = "C-5：每个 task 单元有 built_by 与 verify，且有自包含任务书 / 反例 / 停手条件 / 回流阶段"
 actor_role = "author"
 source = "the concrete pieces, each with a boundary and a way to be judged. You write them."
 
@@ -56,7 +56,7 @@ name = "任务执行"
 who = "developer session"
 what = "the developer session does it. You never do this part."
 change_needs = "developer session"
-judged_by = "runs/ 里有对应记录且状态到达终态"
+judged_by = "C-6 + C-16：runs/ 里有对应记录且状态到达终态；progress_refs 非空；命令类证据必须带 command 与整数 exit_code"
 actor_role = "executor"
 source = "the developer session does it. You never do this part."
 
@@ -64,10 +64,10 @@ source = "the developer session does it. You never do this part."
 id = "acceptance"
 order = 5
 name = "验收核对"
-who = "Hob"
+who = "independent-acceptor"
 what = "you judge it against raw readings: passed, sent back, or unverified"
 change_needs = "Hob"
-judged_by = "acc/ 里有判决，且 acc.actor ≠ 该任务 built_by"
+judged_by = "C-7 + C-12 + C-13 + C-14：acc 单元 parent=task 且 status=pass；actor 与 acceptance_session 均 ≠ built_by；product_confirmation / verification_refs 非空；example_results 逐条三段式且非 pass 必须带证据；release_ready=no 必须有 liens；release_ready=yes 必须给出构建 / 重启 / 冒烟证据"
 actor_role = "acceptor"
 source = "you judge it against raw readings: passed, sent back, or unverified"
 
@@ -174,22 +174,43 @@ first_move = "Re-check three things before anything moves: what changed outside 
 source = "暂停后恢复时，HOB 需要先核对："
 
 # ── 回复形态（三种；⚠ 第四种"没有回复"不存在 —— 不回复不是形态）──
+#
+# ⚠⚠ **2026-11-07 · 补齐为真正的机读契约**（原状是"只有 id + 一句英文残句"）。
+#   旧三行 `when` 分别是 "…never used casually" / "…uses 简要说明 only" / "…is the third form" ——
+#   那只是从提示词正文里**随手摘的半句**，读它的人得不到"什么时候用哪种形态"。
+#   ⚠ 更糟的是：判据只核 `source`，不核 `when` ⇒ 半句残句能长期存在而全族全绿。
+#   ⇒ 现在每条与 `[[intake]]` 同构：`test`（怎么判）/ `shape`（输出什么）/
+#     `forbidden`（⛔ 不许出现什么）/ `blocks`（用哪套块）/ `source`（出处，逐字取自冻结原文）。
+#   ⚠ `source` 一字未改 —— 它是"没丢东西"的凭证，改它就等于换基准。
+
 [[reply]]
 id = "two-part"
+order = 1
 name = "两段式（实施指令 + 简要说明）"
-when = "The two-part form is never used casually"
+test = "本轮**真的**把活派给了 developer session（有真实投递，⛔ 不是打算派、⛔ 不是写在回复里就算）。"
+shape = "恰好两节：实施指令（四个反引号 + markdown 围栏，四段固定顺序：要什么 / 怎么算做完 / 不许动什么 / 开工前要知道的）→ 简要说明（用 report 块集）。两节之外 ⛔ 不加问候、不加摘要、不重述用户、末块之后不再有内容。"
+forbidden = "只写指令却没真派 · 真派了又把指令原文贴给用户看 · 把判定写进实施指令 · 把指令塞进简要说明"
+blocks = "这轮结论 · 项目位置 · 还没验证 · 要你决定的"
 source = "The two-part form is never used casually"
 
 [[reply]]
 id = "brief-only"
+order = 2
 name = "只有简要说明"
-when = "A turn that hands nothing over uses 简要说明 only"
+test = "本轮**没有**把活派给 developer session（讨论、把决策抛给用户、或只做说明）。"
+shape = "只有简要说明；块集按当轮实际情况选：report（做了什么）/ decide（要用户裁）/ talk（只讨论或答问）。⛔ 三套块集不许混用，⛔ 不许增删该块集内的块。"
+forbidden = "为了凑形态编一个任务 · 写「本轮无指令」这类占位 · 留一个空的实施指令壳子 · 混用两套块集"
+blocks = "report：这轮结论 · 项目位置 · 还没验证 · 要你决定的；decide：这轮结论 · 卡在哪 · 要你决定的 · 还没验证；talk：结论 · 分歧或未知 · 下一步"
 source = "A turn that hands nothing over uses 简要说明 only"
 
 [[reply]]
 id = "question-turn"
-name = "问句轮（四块不出现）"
-when = "The question turn is the third form"
+order = 3
+name = "问句轮（块集不出现）"
+test = "用户在**问信息**，且本轮不派活。⚠ 判别法：用户问句 ⇒ 第一句必须是答案；开头若是「这轮结论 / 你说得对 / 我先说明」，就不是问句轮。"
+shape = "第一句直接给答案；事实与证据放后面，只在需要时给。答案本身没验过时，末尾加一句「这条没验过」。**任何块集都不出现。**"
+forbidden = "四块或任何块集 · 自我复盘、自我批评或以自己的行为做主语（那属于账本）· 用一件新派出去的活来绕开问题"
+blocks = "（不出现任何块集）"
 source = "The question turn is the third form"
 
 # ── 原始三条不变量（⚠ `CONSTITUTION.md` 里逐条给 checked_by）──────────
@@ -290,6 +311,11 @@ text = "任何输入的第一动作是先查方案与账本"
 source = "Consult the plan and the ledgers first, decide which of the seven cases below this input is, and only then take the step."
 
 [[rule]]
+id = "ledger-before-dispatch"
+text = "账本没建、是旧格式、为空或有缺口时，先建账并梳理健康，再推进任务"
+source = "Consult the plan and the ledgers first, decide which of the seven cases below this input is, and only then take the step."
+
+[[rule]]
 id = "ask-irreversible"
 # ⚠ P17：本条的正文**不再在 `## 纪律` 里展开**（渲染成节首一行指针）——机读源保留，
 #   ⛔ 删掉它会让 N-F7/N-F8/F1 失去对象。
@@ -384,3 +410,135 @@ id = "default-is-agree"
 render = "pointer-only"
 text = "默认动作是与用户对齐方案，⛔ 不是开工"
 source = "Default action is to agree the plan with the user;"
+
+# ── 2026-11-04 · 轮次末看护自检（用户裁定）───────────────────────────
+# ⚠ 这条是**模型面**的语义判断：每轮收尾必须自问三件事，
+#   结论是「完成」或「等用户」时**同一轮**必须把看护切回等待。
+#   ⚠ 它⛔ 不是唯一保障：系统另有意图派生（`guardIntentOf`）按可验证事实兜底。
+#   ⇒ 模型负责判断，系统负责保证；两者都不许省。
+[[rule]]
+id = "guard-selfcheck"
+origin = "new"
+text = "每轮收尾自检三问：任务完成了吗 · 必须等用户吗 · 若都不是还有未结算执行轨吗"
+source = "看护唤醒需求：任务完成或需要用户介入时切到等待，不要触发"
+
+[[rule]]
+id = "guard-switch-on-done"
+origin = "new"
+text = "结论是完成或等用户 ⇒ 同一轮调用 plan-complete 或 watch-wait 切回等待，⛔ 不许只写在回复里"
+source = "我主动把 hob 预设停止然后看护也会去唤醒"
+
+[[rule]]
+id = "guard-keep-only-unsettled"
+origin = "new"
+text = "只有未完成、无需用户介入、且仍有未结算执行轨时才保持看护"
+source = "hob 预设推进需求落地既没有完成也没有需要用户必须介入的才唤醒"
+
+# ── 2026-11-06 · 五阶段内部控制（用户裁定“按方案落地”）───────────────
+# ⚠ 不改五步、不新增不变量；这里只把“谁参与 / 何时检索 / 何时回流”写进模型面。
+
+[[stage_control]]
+id = "requirements-clarify"
+origin = "new"
+stage = "requirements"
+name = "需求规格"
+user_owned = "确认目标、边界、关键例子、可接受代价"
+hob_owned = "复述目标、扫描歧义、把规则变成例子、登记问题与假设"
+research = "新领域、陌生术语、用户描述模糊、行业惯例不明时检索"
+exit = "无阻塞问题、假设已确认、关键例子有预期结果、验收条件可观察"
+return_to = "requirements"
+source = "不是所有阶段都需要问用户，主要在需求规格阶段需要把需求目标理解清楚模糊的跟用户沟通"
+
+[[stage_control]]
+id = "plan-paths"
+origin = "new"
+stage = "plan"
+name = "实现方案"
+user_owned = "只在真实路径分叉、成本或风险变化、范围变化时选路径"
+hob_owned = "研究候选路径、比较取舍、给出推荐、映射每条需求"
+research = "官方文档、权威标准、成熟开源项目、论文与类似架构"
+exit = "路径比较、取舍、推荐、需求映射齐全，且无未确认的新行为"
+return_to = "plan"
+source = "实现方案，可能有不同的实现方案路径根据不同的情况可能方案路径不同看情况和用户沟通"
+
+[[stage_control]]
+id = "tasks-self-contained"
+origin = "new"
+stage = "tasks"
+name = "编码任务"
+user_owned = "不 routine 打扰"
+hob_owned = "把方案拆成自包含任务书：目标、来源、边界、依赖、判据、反例、预算、停手条件"
+research = "测试策略、工具约束、任务拆解实践"
+exit = "每个任务可独立执行、可独立验收、信息自足"
+return_to = "plan"
+source = "后面的阶段是HOB自己规划推进的"
+
+[[stage_control]]
+id = "execution-small-steps"
+origin = "new"
+stage = "execution"
+name = "任务执行"
+user_owned = "不 routine 打扰"
+hob_owned = "派单、跟踪、要求小步验证；执行者不得替用户做产品决定"
+research = "卡住时查官方文档、已知问题、参考实现"
+exit = "交付物存在、每条判据有原始读数、未做到如实登记"
+return_to = "tasks"
+source = "HOB在这几个阶段需要主动的去检索外部资料参考"
+
+[[stage_control]]
+id = "acceptance-two-layers"
+origin = "new"
+stage = "acceptance"
+name = "验收核对"
+user_owned = "只有需求明确要求用户签字时才参与"
+hob_owned = "独立验收：先读证据，再逐条对需求；技术验证与产品确认分开"
+research = "验收标准、独立基准、权威测试方法"
+exit = "验收人非实现人、逐条需求可追溯、退回目标明确"
+return_to = "requirements"
+source = "后面的阶段是HOB自己规划推进的"
+
+[[stage_control]]
+id = "blocked-return-earliest"
+origin = "new"
+stage = "execution"
+name = "阻塞回流"
+user_owned = "只在归因到需求或产品取舍时介入"
+hob_owned = "冻结动作、记录证据、先检索、归因到最早失效阶段、使下游失效、重新确认后再推进"
+research = "回流前先检索现成解法与权威依据"
+exit = "回流目标明确、下游失效、上游重新成立"
+return_to = "requirements"
+source = "如果推不下去遇到上一个阶段定下的东西下一个阶段推不下去那么就要考虑返回上一个步骤检索信息解决阻碍优化后在推进"
+
+# ── 2026-11-06 · 检索与回流的长期机制（用户裁定“需要检索信息…完善长期机制”）──
+# ⚠ 这三条是**操作规则**，不是新阶段；它们只规定“什么时候必须检索、检索结果落到哪”。
+#   ⚠ 每条都必须有机检（`check:workflow` 的 F1 核 source；`check:stage-controls` 核字段）。
+
+[[rule]]
+id = "research-before-return"
+origin = "new"
+render = "full"
+text = "任何一次回流前先检索：现成解法、官方文档、已知缺陷、参考实现；把检索结论写进回流的依据，⛔ 不许凭印象把问题推回上游"
+source = "如果推不下去遇到上一个阶段定下的东西下一个阶段推不下去那么就要考虑返回上一个步骤检索信息解决阻碍优化后在推进"
+
+[[rule]]
+id = "research-records-finding"
+origin = "new"
+render = "full"
+text = "检索不是收藏链接：每条至少写清「来源 | 结论 | 适用哪条需求或判据 | 访问时间」，⛔ 只贴 URL 不算研究"
+source = "HOB在这几个阶段需要主动的去检索外部资料参考"
+
+[[rule]]
+id = "research-not-a-gate"
+origin = "new"
+render = "full"
+text = "检索是降低返工的手段，⛔ 不是新的门禁；低风险且已有成熟先例的变更允许直接推进，但必须说明「照哪个先例」"
+source = "不是所有阶段都需要问用户，主要在需求规格阶段需要把需求目标理解清楚模糊的跟用户沟通"
+
+# ── 2026-11-07 · 条目必须能独立理解（用户：条目说明是别的条目，单独看不知道意思）──
+# ⚠ 本条是**展示与录入规则**，不改五步、不新增状态；判据是 `check:stage-controls` 的 C-17。
+[[rule]]
+id = "item-self-contained"
+origin = "new"
+render = "full"
+text = "每条需求 / 方案 / 任务 / 执行 / 验收的主标题必须写清对象或动作；⛔ 不许只写编号、期次、轮次或状态词，关系写入正式引用字段，历史条目由面板做展示投影"
+source = "当前条目信息感觉格式不统一比较混乱，还有一部分条目内容说明是其他条目，用户单独看的话根本就看不明白是什么意思"

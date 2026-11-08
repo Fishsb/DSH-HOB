@@ -25,6 +25,21 @@ console.log('')
 
 const U = (id, kind, status, extra = {}) => ({ id, kind, status, title: id, created_at: '2026-11-07T00:00:00+08:00', ...extra })
 
+/**
+ * **C-5 任务书就绪的最小形状**（2026-11-08 · 第 3 步语义收口）。
+ *
+ * ⚠ 改前第 3 步拿 `task.status = built` 当完成信号 ⇒ 夹具里的任务不需要任务书字段。
+ *   现在第 3 步只问「活拆清楚了没有」（C-5），所以凡是**应当算第 3 步完成**的
+ *   任务夹具都必须带齐这四项；否则测试测到的是「任务书未齐」，不是原断言的对象。
+ *   ⚠ 这是**补夹具**，⛔ 不是放宽判据：缺任一项的真实任务仍会被 C-5 拦。
+ */
+const BRIEF = {
+  task_brief: 'archive/x/TASK.md',
+  counterexamples: ['空输入不崩溃'],
+  stop_conditions: ['与方案冲突即停'],
+  return_to: 'back-to-plan',
+}
+
 function auditChains(out) {
   const problems = []
   if (out?.ok !== true) return ['投影没有返回 ok:true']
@@ -54,26 +69,30 @@ function auditChains(out) {
   return problems
 }
 
-// RC-1 单需求完整链：第 4 步等待、第 5 步等待，当前只落在第 3 步。
+// RC-1 单需求完整链：任务书已齐、正在执行 ⇒ 第 3 步完成，当前步落在第 4 步。
+//
+// ⚠ 2026-11-08 语义收口：第 3 步只问「活拆清楚了没有」，第 4 步才问「执行事实成立没有」。
+//   旧夹具把「任务 doing」当作第 3 步未完成，那是旧口径；现在 doing 的任务书已齐 ⇒
+//   第 3 步 done，当前步 = 4（任务执行）。⚠ 这条正是本轮要钉的语义，⛔ 不把期望改回去。
 {
   const units = [
     U('R-1', 'req', 'agreed', { acceptance_criteria: ['a', 'b'], clarify_examples: ['x'] }),
     U('CHG-1', 'change', 'settled', { addresses: ['R-1'], path_decision: '选 B' }),
-    U('TSK-1', 'task', 'doing', { parent: 'CHG-1', req_ids: ['R-1'] }),
-    U('RUN-1', 'run', 'returned', { parent: 'TSK-1' }),
+    U('TSK-1', 'task', 'doing', { parent: 'CHG-1', req_ids: ['R-1'], ...BRIEF }),
+    U('RUN-1', 'run', 'running', { parent: 'TSK-1' }),
     U('ACC-1', 'acc', 'unverified', { parent: 'TSK-1' }),
   ]
   const out = mod.buildRequirementChains(units, '2026-11-07T00:00:00.000Z')
   const c = out.chains[0]
   const p = []
   if (out.activeCount !== 1 || out.completedCount !== 0) p.push(`计数不对：${out.activeCount}/${out.completedCount}`)
-  if (c?.reqId !== 'R-1' || c.currentStep !== 3) p.push(`当前步不对：${JSON.stringify(c?.currentStep)}`)
-  if (c?.steps[3]?.displayState !== 'waiting') p.push(`第 4 步不是等待：${JSON.stringify(c?.steps[3]?.displayState)}`)
+  if (c?.reqId !== 'R-1' || c.currentStep !== 4) p.push(`当前步不对：${JSON.stringify(c?.currentStep)}`)
+  if (c?.steps[3]?.displayState !== 'doing') p.push(`第 4 步不是进行中：${JSON.stringify(c?.steps[3]?.displayState)}`)
   if (c?.steps[4]?.displayState !== 'waiting') p.push(`第 5 步不是等待：${JSON.stringify(c?.steps[4]?.displayState)}`)
   if (c?.next?.target !== 'TSK-1') p.push(`下一步不是 TSK-1：${JSON.stringify(c?.next)}`)
   if (c?.steps[0]?.summary !== '验收条件 2 条 · 例子 1 条') p.push(`需求概要不对：${JSON.stringify(c?.steps[0]?.summary)}`)
-  if (c?.steps[2]?.summary !== 'TSK-1 在做') p.push(`任务概要不对：${JSON.stringify(c?.steps[2]?.summary)}`)
-  if (p.length === 0) ok('RC-1 ✓ 单需求五步：当前=3 · 4/5 等待 · next=TSK-1 · 概要来自账本字段')
+  if (c?.steps[2]?.summary !== 'TSK-1 已派，执行中') p.push(`任务概要不对：${JSON.stringify(c?.steps[2]?.summary)}`)
+  if (p.length === 0) ok('RC-1 ✓ 单需求五步：任务书已齐 ⇒ 当前=4（执行中）· 5 等待 · next=TSK-1 · 概要来自账本字段')
   else for (const x of p) bad(`RC-1 · ${x}`)
   const audit = auditChains(out)
   if (audit.length === 0) ok('RC-2 ✓ 链的 currentStep/complete/inFlight/total 互相一致')
@@ -85,7 +104,7 @@ function auditChains(out) {
   const units = [
     U('R-1', 'req', 'agreed'),
     U('CHG-1', 'change', 'settled', { addresses: ['R-1'] }),
-    U('TSK-1', 'task', 'built', { parent: 'CHG-1', req_ids: ['R-1'] }),
+    U('TSK-1', 'task', 'built', { parent: 'CHG-1', req_ids: ['R-1'], ...BRIEF }),
     U('RUN-1', 'run', 'returned', { parent: 'TSK-1' }),
     U('ACC-1', 'acc', 'pass', { parent: 'TSK-1', verified_at: '2026-11-07T01:00:00+08:00' }),
   ]
@@ -104,7 +123,8 @@ function auditChains(out) {
   const base = [
     U('R-1', 'req', 'agreed'),
     U('CHG-1', 'change', 'settled', { addresses: ['R-1'] }),
-    U('TSK-1', 'task', 'built', { parent: 'CHG-1' }),
+    U('TSK-1', 'task', 'built', { parent: 'CHG-1', ...BRIEF }),
+    U('RUN-1', 'run', 'returned', { parent: 'TSK-1' }),
   ]
   const newerPass = mod.buildRequirementChains([
     ...base,
@@ -129,7 +149,8 @@ function auditChains(out) {
   const mk = (to) => mod.buildRequirementChains([
     U('R-1', 'req', 'agreed'),
     U('CHG-1', 'change', 'settled', { addresses: ['R-1'] }),
-    U('TSK-1', 'task', 'built', { parent: 'CHG-1' }),
+    U('TSK-1', 'task', 'built', { parent: 'CHG-1', ...BRIEF }),
+    U('RUN-1', 'run', 'returned', { parent: 'TSK-1' }),
     U('ACC-1', 'acc', 'send-back', { parent: 'TSK-1', send_back_to: to, verified_at: '2026-11-07T01:00:00+08:00' }),
   ], 'x').chains[0]
   const p = []
@@ -193,8 +214,8 @@ function auditChains(out) {
     U('R-1', 'req', 'agreed'),
     U('CHG-A', 'change', 'settled', { addresses: ['R-1'], created_at: '2026-11-01T00:00:00+08:00' }),
     U('CHG-B', 'change', 'settled', { addresses: ['R-1'], created_at: '2026-11-02T00:00:00+08:00' }),
-    U('TSK-A', 'task', 'built', { parent: 'CHG-A', req_ids: ['R-1'] }),
-    U('TSK-B', 'task', 'built', { parent: 'CHG-B', req_ids: ['R-1'] }),
+    U('TSK-A', 'task', 'built', { parent: 'CHG-A', req_ids: ['R-1'], ...BRIEF }),
+    U('TSK-B', 'task', 'built', { parent: 'CHG-B', req_ids: ['R-1'], ...BRIEF }),
   ], 'x')
   const c = out.chains[0]
   const p = []
@@ -203,6 +224,34 @@ function auditChains(out) {
   if (!c?.steps[1]?.itemIds.includes('CHG-A') || !c?.steps[1]?.itemIds.includes('CHG-B')) p.push('方案 ID 丢失')
   if (p.length === 0) ok('RC-9 ✓ 多方案 / 多任务全部保留（2 / 2），⛔ 不按“第一条”丢其余')
   else for (const x of p) bad(`RC-9 · ${x}`)
+}
+
+// RC-11 已建任务 + 待判决验收：next 必须点名 ACC，⛔ 不许退化成“判不出”。
+{
+  const units = [
+    U('R-1', 'req', 'agreed', { acceptance_ids: ['ACC-1'] }),
+    U('CHG-1', 'change', 'settled', { addresses: ['R-1'] }),
+    U('TSK-1', 'task', 'built', { parent: 'CHG-1', req_ids: ['R-1'], ...BRIEF }),
+    U('RUN-1', 'run', 'returned', { parent: 'TSK-1' }),
+    U('ACC-1', 'acc', 'unverified', { parent: 'TSK-1' }),
+  ]
+  const c = mod.buildRequirementChains(units, 'x').chains[0]
+  const p = []
+  if (c?.currentStep !== 5) p.push(`等待验收时当前步=${c?.currentStep}（期望 5）`)
+  if (c?.steps[4]?.displayState !== 'waiting') p.push(`第 5 步不是等待：${c?.steps[4]?.displayState}`)
+  if (c?.next?.kind !== 'accept') p.push(`next.kind=${JSON.stringify(c?.next?.kind)}（期望 accept）`)
+  if (c?.next?.target !== 'ACC-1') p.push(`next.target=${JSON.stringify(c?.next?.target)}（期望 ACC-1）`)
+  if (c?.next?.why === '' || typeof c?.next?.why !== 'string') p.push('next.why 为空')
+  if (p.length === 0) ok('RC-11 ✓ built 任务 + 待判决验收 ⇒ currentStep=5 · 第 5 步 waiting · next=accept/ACC-1（⛔ 不退化成“判不出”）')
+  else for (const x of p) bad(`RC-11 · ${x}`)
+
+  const mutant = structuredClone(c)
+  mutant.next = { kind: 'undecidable', target: null, why: '判不出下一步', blockedBy: [] }
+  const problems = []
+  if (mutant.next.kind !== 'accept') problems.push('next.kind 不是 accept')
+  if (mutant.next.target !== 'ACC-1') problems.push('next.target 不是 ACC-1')
+  if (problems.length === 2) ok('RC-11b ✓ 负向对拍（把 next 改回 undecidable）⇒ RC-11 的“必须点名 ACC”**必红**')
+  else bad(`RC-11b · 负向对拍没有咬住：${JSON.stringify(problems)}`)
 }
 
 // RC-10 负向对拍：用“全局条目塞进每条链”的旧投影，auditChains 必须红。
@@ -228,4 +277,7 @@ function auditChains(out) {
 
 console.log('')
 console.log(`RC 组：通过 ${pass} · 失败 ${fail}`)
+console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处`
+  + (fail > 0 ? ` · 没过 ${fail} 处` : '')
+  + ' · 跳过 0 处')
 if (fail > 0) process.exitCode = 1

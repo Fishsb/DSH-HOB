@@ -92,7 +92,7 @@
     },
     {
       "cmd": "check:stages-dom",
-      "what": "**「任务进度」五步面板的位置判据**（jsdom **真挂载**）：入口 = 侧边栏 guide 排胶囊（断言 `id` / `order` / 标题「任务进度」）· 图例只列五步名**不写状态词**（量 `[data-dsh-hob=stages-legend]` 容器）· 三态渲染（有数据 / **表里是空的** / **判不出+原因**）· `sessionId` 真的送进取数函数 · `'5'`（在做验收）与 `'done'`（已验收通过）**两态不合并** · 四条负向对拍（改步骤名 / 改 guide order / 改空态文案 / 把「未接线」加回图例）"
+      "what": "**「任务进度」面板的信息架构与位置判据**（jsdom **真挂载**）：入口胶囊 · 五步名与三态 · 第一屏「阶段 / 下一步 / 在等谁 / 主阻断」四行 · 四视图切换只改 `display`、不卸载数据 · 阶段地图聚焦当前条目且历史默认折叠仍在 DOM · 验收计数 `N/M 已判决` 与当前待处理分开 · **条目固定主行 + 关系行 + 一条关键读数 + 固定异常项**、首屏不预读正文、展开按稳定 ID 懒读原句与依据 · 待确认工具按前缀分组并逐名保留 · Current 与工作计划共用刷新 tick · 空 / 判不出 / 读取中三态可分 · 只读边界 · 多条负向对拍"
     },
     {
       "cmd": "check:tasks-progress",
@@ -116,7 +116,15 @@
     },
     {
       "cmd": "check:stages-route",
-      "what": "**五步汇总路由**（新数据源 = `ledger/units/`：`index.toml` 导航 + `unit-*.toml` 分片）**服务端行为**判据（真处理体 + 真夹具）：三类 reason **互不相同**（`index-unreadable` / `index-malformed` / `row-shape-unknown`）· 五步顺序与名字逐字 · **`cap` 不进分母** · 空步给 `todo`（≠ 判不出）· 三态算对 · items 顺序原样不去重 · `lastReading` 缺 ⇒ 「判不出」· 负向对拍（cap 混进分母必红）· **与 `gen/stages.md` 交叉验证**（两套独立解析器）"
+      "what": "**五步汇总路由**（新数据源 = `ledger/units/`：`index.toml` 导航 + `unit-*.toml` 分片）**服务端行为**判据（真处理体 + 真夹具）：三类 reason **互不相同**（`index-unreadable` / `index-malformed` / `row-shape-unknown`）· 五步顺序与名字逐字 · **`cap` 不进分母** · 空步给 `todo`（≠ 判不出）· 三态算对 · items 顺序原样不去重 · `lastReading` 缺 ⇒ 「判不出」· **第一屏 `summary` 与 `next` / `attention` 交叉一致且注意力去重** · **条目列表投影只带主标题 / 关系 ID / 最多两条短读数 / 诊断代码，真实响应 ≤ 64 KB，完整正文按 ID 读取** · 真实五类样例逐条核标题 / 关系 / 读数 / 原句 · 负向对拍（cap 混进分母 / summary 等待对象写死 / 详情回塞列表必红）· **与 `gen/stages.md` 交叉验证**（两套独立解析器）"
+    },
+    {
+      "cmd": "check:requirement-chains",
+      "what": "**需求链投影**（R-020）：单需求五步 / 正式关系（addresses / parent / req_ids / acceptance_ids）/ 唯一 currentStep / 缺失步判不出 / 有效验收按 verified_at 取最新且同刻冲突判不出 / send-back 回流 / 退役不进活跃 / 未归属单列 / 多方案多任务不丢 / 含负向对拍"
+    },
+    {
+      "cmd": "check:ledgers-route",
+      "what": "**账本目录只读路由**（`R-020`）：列举 `ledgerHome` 下全部账本、**有数据的在前**、`readable:false` 与「空账本」分开、`current` 标记来自会话 cwd 且能区分判不出、**安全边界**（`../` 与绝对路径一律拒）、默认选中三级回落。含**负向对拍**：去掉白名单校验 ⇒ 能拼出账本区外路径 ⇒ 必红。"
     },
     {
       "cmd": "check:ledger",
@@ -132,7 +140,7 @@
     },
     {
       "cmd": "check:ledger-resources",
-      "what": "**账本按 ID 资源面**：覆盖 10 类单元（goal / req / change / task / run / acc / evidence / risk / decision / cap）；目标、需求、方案、任务、运行、验收、证据、风险、决策、能力均可列表与按稳定 ID 读取，需求关联图的每个读取指针须可继续解析；坏 kind / 不存在 / 未知资源必须拒绝，含正反向与形状对拍"
+      "what": "**账本按 ID 资源面**：覆盖 10 类单元（goal / req / change / task / run / acc / evidence / risk / decision / cap）；目标、需求、方案、任务、运行、验收、证据、风险、决策、能力均可列表与按稳定 ID 读取，按 ID 读取附带完整展示投影（原句 / 依据 / 固定异常）而列表不含正文，需求关联图的每个读取指针须可继续解析；坏 kind / 不存在 / 未知资源必须拒绝，含正反向与形状对拍"
     },
     {
       "cmd": "check:ledger-write-policy",
@@ -169,6 +177,14 @@
     {
       "cmd": "check:work-plan-panel",
       "what": "**工作计划面板**：真 DOM 挂载证明计划/轨道数/执行者/等待关系/单轨原因可见 · 判不出与空表各自可读 · 零可交互元素 · 只读路由真注册且不调用会写盘的 `workPlans()` · 编排器缺席时降级不登记；含摘挂载负向对拍"
+    },
+    {
+      "cmd": "check:stage-controls",
+      "what": "**五阶段内部控制**：需求澄清（问题 / 假设 / 例子 / 验收条件）· 方案路径比较与需求映射 · 任务自包含 · 小步验证 · 产品确认 · 阻塞回流五类归因 · 阶段摘要与研究引用可追溯；历史存量只读豁免，新数据必过门禁；**C-17 条目标题自包含门禁**（新条目 title=id / 纯编号 / 期次 / 状态词与无关编号必红，历史 title=id 不误伤）"
+    },
+    {
+      "cmd": "check:ledger-projection",
+      "what": "**运行态 → 账本投影**：派发成功建 RUN registered 且任务转 doing · 回传成功迁 RUN returned、**有进度读数才迁任务 built**（回传 ≠ 做完）· 判决建 ACC pass/send-back · implicit / 缺独立验收会话 / 自己验自己三档可辨 · 同一事件幂等 · 真写入器落盘（含进度读数与依据）"
     }
   ]
 }

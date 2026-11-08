@@ -149,7 +149,7 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *   ⇒ 若放进必跑，结果只能是"永远 exit 2"，那会把"没对象"污染成"判据没跑"（`E-122` 同族）。
  *   ⇒ 手工按需跑 `npm run check:tasks-route-http`；它的无对象档是 **exit 2**（noObject，⛔ 不算通过）。
  */
-export const FAMILY_FLOOR = 40
+export const FAMILY_FLOOR = 41
 //   ⚠ 2026-10-27（包 AP · 用户「全退」）：本条不再含 `check:archive-gate`（该族随归档门禁一起退回）。
 //     实测族数 = 19（`npm run check:all` 汇总行）⇒ 下界 19 = **零余量**，再少一族立刻红。
 //   ⚠ 2026-10-29（四步主线 · 只验位置）：**19 → 20**（同批新增 `check:stages-dom` 一族）。
@@ -193,6 +193,9 @@ export const ASSERTION_FLOORS = new Map([
   //   （+4 = SC-24 孤立方案不健康 / SC-25 派活只认 task / SC-26 作用域爬到需求层 /
   //    SC-27 孤立任务不放行）。
   ['check:stage-controls', 99],
+  // ⚠ 2026-11-08（运行态 → 账本投影）：LP-1..LP-9 九条，零余量。
+  //   ⚠ 这族钉的是本轮补上的管线断点：派发建 RUN、回传迁 RUN、判决建 ACC、三档可辨、幂等。
+  ['check:ledger-projection', 9],
   // ⚠ 2026-11-04：面板族（真 DOM + 真路由处理体）。10 处零余量。
   ['check:work-plan-panel', 11],
   // ⚠ 2026-11-03：骨架 ↔ 实例结构漂移族。
@@ -271,7 +274,9 @@ export const ASSERTION_FLOORS = new Map([
   // 2026-11-03：分片迁移新增脚本登记与 Y1 分片逐文件断言后，实测 1162；按零余量抬平。
   // ⚠ 2026-11-07（R-020 收口）：新增需求链 / 账本目录登记与方案模块行后实测 1187。
   //   顺带补齐上一批遗留的 2 条差额（117? → 1187）。只准升不准降。
-  ['check:gitignore', 1187],
+  // ⚠ 2026-11-08：MUST-TRACK 新增 `check-ledger-projection.mjs` 一行 ⇒ 实测 1187 → **1188**。
+  //   这是覆盖面随新增入库脚本同步增长，⛔ 不是放宽判据。
+  ['check:gitignore', 1188],
   //   ⚠ 理由：本单在 `check-repo-rules.mjs` 新增 **`MV`** 断言「模板根上文档清单 == INIT 的复制清单」
   //     ⇒ 该族多 **1 处**（577 → 578）。⚠ **只升不降**。
   //   ⚠ ⚠ **为什么不是改已有的第 ⑥ 组**：`check-code-face.mjs` 的 ⑥ 组**两个方向都不咬**（本单实测三段）——

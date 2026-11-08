@@ -154,7 +154,15 @@ export interface StagesOk {
   }
   /** 「下一步」一条（⚠ 只读呈现，⛔ 不带任何可交互控件）。 */
   next: NextAction
-  /** 第一屏结论：阶段、主动作、等待对象、主阻断。 */
+  /**
+   * ⚠⚠ **已退役的全局摘要**（2026-11-08 · 当前阶段唯一出口收口）。
+   *
+   * 改前这里按**全账本**取"第一条未完成步"当当前阶段，而面板主视图按**单条需求链**
+   * 取 `currentStep` ⇒ 同一本账有两个"当前阶段"，且算法不同。
+   * ⇒ 现在只保留**项目级**的动作 / 等待 / 阻断；`stage` 恒为 `null`。
+   *   单条需求的当前阶段**只**由 `/requirement-chains` 的 `currentStep` 提供。
+   * ⚠ 字段保留是为了不破坏旧消费者；⛔ 不许再把它渲染成"当前阶段"。
+   */
   summary: PanelSummary
   /** 关系标题共享表：每个稳定 ID 只存一份，条目行只引用 ID。 */
   relations: Record<string, string>
@@ -396,7 +404,11 @@ export function buildStages(
     : attentionAfterMainAction(attention, next, units)
   const out: StagesOk = {
     ok: true, readAt, stages, caps, next,
-    summary: panelSummaryOf({ stages, next, attention: visibleAttention }),
+    /**
+     * ⚠ `stages: []` ⇒ `summary.stage === null`：项目级摘要不再回答"当前在第几步"。
+     *   动作 / 等待 / 主阻断仍从同一个 `next` 派生（与面板一致）。
+     */
+    summary: panelSummaryOf({ stages: [], next, attention: visibleAttention }),
     relations: relationTitlesOf(units as any),
     portfolio,
     ...(visibleAttention === undefined ? {} : { attention: visibleAttention }),

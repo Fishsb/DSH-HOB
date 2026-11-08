@@ -13,6 +13,7 @@
 import { effectiveAcceptanceOf, type AcceptanceVerdictLike } from './acceptance-verdict.ts'
 import { nextAction, type NextAction } from './next-action.ts'
 import { panelSummaryOf, type PanelSummary } from './panel-summary.ts'
+import { taskProblems, type StageControlUnit } from './stage-controls.ts'
 import type { StageRow } from './stages-index.ts'
 
 export type ChainDisplayState = 'done' | 'doing' | 'waiting' | 'blocked' | 'todo'
@@ -86,6 +87,13 @@ type ChainUnit = Record<string, unknown> & {
   path_decision?: string
   acceptance_criteria?: string[]
   clarify_examples?: string[]
+  clarify_legacy?: string
+  task_brief?: string
+  counterexamples?: string[]
+  stop_conditions?: string[]
+  return_to?: string
+  progress_refs?: string[]
+  report?: string
 }
 
 const STEP_DEFS = [
@@ -120,8 +128,15 @@ function chainUnitsOf(req: ChainUnit, units: readonly ChainUnit[]): {
     .filter((u) => u.kind === 'change' && arr(u.addresses).includes(rid))
     .sort(byCreated)
   const changeIds = new Set(changes.map(idOf))
+  /**
+   * ⚠ **历史兼容**：`pre-control` 任务允许 `parent = req`（旧账本 3 条），
+   *   但新任务必须 `parent = change`（与 L-2 闭环判据同一条语义）。
+   *   ⛔ 不把这条兼容写成"新任务也可直挂需求" —— 那正是两套关系语法的来源。
+   */
   const tasks = units
-    .filter((u) => u.kind === 'task' && (changeIds.has(text(u.parent)) || arr(u.req_ids).includes(rid) || text(u.parent) === rid))
+    .filter((u) => u.kind === 'task' && (changeIds.has(text(u.parent))
+      || arr(u.req_ids).includes(rid)
+      || (text(u.parent) === rid && text(u.clarify_legacy) === 'pre-control')))
     .sort(byCreated)
   const taskIds = new Set(tasks.map(idOf))
   const runs = units
@@ -158,6 +173,30 @@ function countLabel(n: number, unit: string): string {
   return `${n} ${unit}`
 }
 
+/**
+ * **第 3 步：任务书是否就绪**（唯一判据，与 `stage-controls.ts` 的 C-5 同一份实现）。
+ *
+ * ⚠ 它**不问执行**。改前第 3 步拿 `task.status = built` 当完成信号 ⇒
+ *   任务书建好但没执行时第 3 步仍是 `todo`，执行期间当前步也停在「编码任务」。
+ *   现在第 3 步只回答「活拆清楚了没有」。
+ */
+function taskBriefReady(t: ChainUnit): boolean {
+  return taskProblems(t as StageControlUnit).length === 0
+}
+
+/**
+ * **第 4 步：执行事实是否成立**（唯一判据）。
+ *
+ * ⚠ 必须**同时**满足：该任务有 `returned` 的运行记录，且任务已到 `built`。
+ *   两者缺一都不是完成：
+ *     · 零 RUN + built ⇒ G-1 的「跳过执行」，⛔ 不许判第 4 步完成；
+ *     · 有 returned RUN + 任务仍 doing ⇒ G-7 的「没开工就收到回传」，⛔ 也不完成。
+ */
+function taskExecuted(t: ChainUnit, runs: readonly ChainUnit[]): boolean {
+  if (statusOf(t) !== 'built') return false
+  return runs.some((r) => statusOf(r) === 'returned')
+}
+
 function stepSummaryOf(step: number, req: ChainUnit, chain: ReturnType<typeof chainUnitsOf>, groups: ReturnType<typeof verdictGroups>): string {
   if (step === 1) {
     const criteria = arr(req.acceptance_criteria)
@@ -176,20 +215,26 @@ function stepSummaryOf(step: number, req: ChainUnit, chain: ReturnType<typeof ch
   }
   if (step === 3) {
     if (chain.tasks.length === 0) return '还没建任务'
-    const built = chain.tasks.filter((t) => statusOf(t) === 'built').length
-    const doing = chain.tasks.filter((t) => statusOf(t) === 'doing').length
+    const ready = chain.tasks.filter(taskBriefReady).length
+    const running = chain.tasks.filter((t) => statusOf(t) === 'doing').length
     if (chain.tasks.length === 1) {
       const t = chain.tasks[0]
-      return statusOf(t) === 'doing' ? `${idOf(t)} 在做` : statusOf(t) === 'built' ? `${idOf(t)} 已做完` : `${idOf(t)} 待开工`
+      if (!taskBriefReady(t)) return `${idOf(t)} 任务书未齐`
+      return statusOf(t) === 'doing' ? `${idOf(t)} 已派，执行中` : statusOf(t) === 'built' ? `${idOf(t)} 已回传` : `${idOf(t)} 任务书已齐，待派`
     }
-    return `${countLabel(chain.tasks.length, '个任务')} · ${built} 个已做完${doing > 0 ? ` · ${doing} 个在做` : ''}`
+    return `${countLabel(chain.tasks.length, '个任务')} · ${ready} 个任务书已齐${running > 0 ? ` · ${running} 个执行中` : ''}`
   }
   if (step === 4) {
     if (chain.tasks.length === 0) return '还没有任务'
-    if (chain.runs.length === 0) return '无独立执行记录'
+    const executed = chain.tasks.filter((t) => taskExecuted(t, chain.runs)).length
     const running = chain.runs.filter((r) => statusOf(r) === 'running').length
     const returned = chain.runs.filter((r) => statusOf(r) === 'returned').length
-    return `${running} 在跑 · ${returned} 已回传`
+    if (chain.runs.length === 0) {
+      return chain.tasks.every((t) => statusOf(t) === 'built')
+        ? '有任务标了 built，但没有任何执行记录 —— 执行事实判不出'
+        : '还没有执行记录'
+    }
+    return `${executed}/${chain.tasks.length} 任务执行成立 · ${running} 在跑 · ${returned} 已回传`
   }
   if (chain.accs.length === 0) return '还没有验收'
   const accepted = groups.filter((g) => g.verdict.verdict === 'accepted').length
@@ -207,16 +252,20 @@ function stateOfStep(step: number, req: ChainUnit, chain: ReturnType<typeof chai
   }
   if (step === 3) {
     if (chain.tasks.length === 0) return 'todo'
-    if (chain.tasks.every((t) => statusOf(t) === 'built')) return 'done'
-    if (chain.tasks.some((t) => statusOf(t) === 'doing')) return 'doing'
-    return 'todo'
+    if (chain.tasks.every(taskBriefReady)) return 'done'
+    return 'doing'
   }
   if (step === 4) {
     if (chain.tasks.length === 0) return 'todo'
-    if (chain.runs.length === 0) return chain.tasks.every((t) => statusOf(t) === 'built') ? 'done' : 'waiting'
+    /**
+     * ⚠ **零 RUN 永远不是 `done`**（改前的反向判据已删）：
+     *   `built` 但零 RUN 是 G-1 的「跳过执行」，不是执行完成。
+     *   没有执行记录 ⇒ `waiting`（等执行事实），⛔ 不许显示成完成。
+     */
+    if (chain.runs.length === 0) return 'waiting'
     if (chain.runs.some((r) => ['stuck', 'refused'].includes(statusOf(r)))) return 'blocked'
     if (chain.runs.some((r) => statusOf(r) === 'running')) return 'doing'
-    if (chain.tasks.every((t) => statusOf(t) === 'built')) return 'done'
+    if (chain.tasks.every((t) => taskExecuted(t, chain.runs))) return 'done'
     return 'waiting'
   }
   if (chain.accs.length === 0) return 'todo'
@@ -260,16 +309,16 @@ export function buildRequirementChain(req: ChainUnit, units: readonly ChainUnit[
       : d.step === 2
         ? chain.changes.filter((c) => ['settled', 'superseded'].includes(statusOf(c))).length
         : d.step === 3
-          ? chain.tasks.filter((t) => statusOf(t) === 'built').length
+          ? chain.tasks.filter(taskBriefReady).length
           : d.step === 4
-            ? chain.runs.filter((r) => ['returned', 'refused', 'stuck'].includes(statusOf(r))).length
+            ? chain.tasks.filter((t) => taskExecuted(t, chain.runs)).length
             : groups.filter((g) => g.verdict.verdict === 'accepted').length
     const doing = d.step === 1
       ? (statusOf(req) === 'agreed' ? 0 : 1)
       : d.step === 2
         ? chain.changes.filter((c) => statusOf(c) === 'proposed').length
         : d.step === 3
-          ? chain.tasks.filter((t) => statusOf(t) === 'doing').length
+          ? chain.tasks.filter((t) => !taskBriefReady(t)).length
           : d.step === 4
             ? chain.runs.filter((r) => statusOf(r) === 'running').length
             : groups.filter((g) => g.verdict.verdict === 'undecidable').length
@@ -294,8 +343,12 @@ export function buildRequirementChain(req: ChainUnit, units: readonly ChainUnit[
   if (chain.accs.length === 0) missing.push('acc')
 
   const accepted = groups.length > 0 && groups.every((g) => g.verdict.verdict === 'accepted')
-  const tasksDone = chain.tasks.every((t) => statusOf(t) === 'built')
-  const complete = accepted && tasksDone
+  /**
+   * ⚠ 完成 = 第 1–5 步全部 `done`（与 `currentStep` 同一套口径）。
+   *   改前只查 `accepted && tasks.every(built)`，漏掉第 3 步「任务书是否就绪」
+   *   与第 4 步「执行事实是否成立」，于是会出现「完成链里还有未完成任务书」。
+   */
+  const complete = accepted && steps.every((s) => s.displayState === 'done')
   const retired = ['retired', 'dropped'].includes(statusOf(req))
 
   let currentStep: RequirementChain['currentStep'] = null
@@ -319,6 +372,29 @@ export function buildRequirementChain(req: ChainUnit, units: readonly ChainUnit[
       target: null,
       why: `下一步算不出来：${String((e as Error)?.message ?? e)}`,
       blockedBy: [],
+    }
+  }
+  /**
+   * ⚠⚠ **链内“等验收”必须点名那条待判决的 ACC，⛔ 不许退化成“判不出”**。
+   *
+   * 病灶（2026-11-07 收口实测）：`TSK-080` 标 `built` 之后，全局 `nextAction()`
+   *   看不到父 change 的未收口状态（`convergence` 没注入），于是六步都匹配不上 ⇒
+   *   `undecidable / target=null`。面板「下一步」于是写成“判不出”，
+   *   而账本事实上很明确：**第 5 步在等 `ACC-066`**。
+   *   ⚠ 那是把“判得出”显示成“判不出”，比没有结论更坏。
+   *
+   * 口径：只在该链**确实还有未判决验收**、且全局 `nextAction()` 给不出更好的目标时补一条
+   *   `accept`，目标取第一条 `unverified` 的 ACC；⛔ 不改账本、⛔ 不猜判决、⛔ 不伪造通过。
+   */
+  if ((next.kind === 'undecidable' || next.target === null) && currentStep === 5) {
+    const pending = chain.accs.filter((a) => statusOf(a) === 'unverified').map(idOf).filter((x) => x !== '')
+    if (pending.length > 0) {
+      next = {
+        kind: 'accept',
+        target: pending[0]!,
+        why: `「${pending[0]!}」等着独立验收 —— 没判决前这条需求不算走完`,
+        blockedBy: [],
+      }
     }
   }
 

@@ -35,6 +35,51 @@ export type AssumptionState = (typeof ASSUMPTION_STATES)[number]
 export const STAGE_RETURN_TARGETS = ['back-to-requirement', 'back-to-plan', 'back-to-task'] as const
 export type StageReturnTarget = (typeof STAGE_RETURN_TARGETS)[number]
 
+/**
+ * **五步的完成语义（唯一真源）** —— 2026-11-08 · 用户裁定「阶段语义收口」。
+ *
+ * ⚠⚠ 这不是又一张状态表；它是**每一步"什么算完成"的口径**。改前第 3 步与
+ *   第 4 步都拿 `task.status = built` 当完成信号，于是：
+ *     · 任务书刚建好、还没执行时，第 3 步仍是 `todo`；
+ *     · 真正执行期间，当前步仍显示「编码任务」；
+ *     · 回传后第 3 步完成，第 4 步通常也同时完成。
+ *   ⇒ 「任务执行」很难成为独立的当前阶段。根因是**完成定义重叠**，不是面板文案。
+ *
+ * 现行口径（⛔ 不许再让两步共用一个完成信号）：
+ *   · `tasks`     —— **任务书就绪**：至少一条 `task` 且 C-5 通过；
+ *                    ⚠ 与「是否已执行完」无关。
+ *   · `execution` —— **执行事实成立**：该任务有 `run.status = returned`，
+ *                    且 `task.status = built`；两者必须**同时**成立。
+ *                    ⚠ 零 `run` 的 `built` 不是完成，是 G-1 的「跳过执行」缺口。
+ */
+export const STAGE_COMPLETION: Readonly<Record<StageId, {
+  /** 一句话口径（给人读）。 */
+  definition: string
+  /** 权威判据（机读代码的入口名 / 规则号；⛔ 不许写成另一套实现）。 */
+  judgedBy: string
+}>> = {
+  requirements: {
+    definition: '需求已定稿，且澄清问题、假设、关键例子、可观察验收条件齐全',
+    judgedBy: 'R.status=agreed + C-1/C-2',
+  },
+  plan: {
+    definition: '方案已定，且候选路径、取舍、推荐、需求映射齐全；高风险有独立评审',
+    judgedBy: 'CHG.status=settled + C-3/C-4/C-15',
+  },
+  tasks: {
+    definition: '任务已拆清：至少一条任务，且任务书、反例、停手条件、回流阶段齐全',
+    judgedBy: 'TSK exists + C-5',
+  },
+  execution: {
+    definition: '执行事实成立：任务有已回传的运行记录，且任务已到 built',
+    judgedBy: 'RUN.status=returned + TSK.status=built + C-6',
+  },
+  acceptance: {
+    definition: '独立验收已判决：有有效 ACC，且独立会话、产品确认、技术证据、例子结果齐全',
+    judgedBy: 'ACC.status=pass/send-back + C-7/C-12/C-13/C-14',
+  },
+}
+
 export interface StageControlUnit {
   id?: string
   kind?: string

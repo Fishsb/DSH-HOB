@@ -126,6 +126,8 @@ export function runRepoRules({ bad, ok, skip }) {
     ['kit/templates/GATES.md', '骨架 · 阶段与门禁（README §1.3）'],
     ['kit/templates/TASK.md', '骨架 · 指令模板（v4 · 交接协议载体）'],
     ['kit/templates/REPORT.md', '骨架 · 回报模板（v4 · 交接协议载体）'],
+    ['kit/templates/ACCEPTANCE-PACKET.md', '骨架 · 独立验收包模板（自包含交接件）'],
+    ['kit/templates/ACCEPTANCE-REPORT.md', '骨架 · 独立验收报告模板（逐条例子结果与退回目标）'],
     ['kit/roles/methods/qa.md', '骨架 · 角色方法论（README §1.3 · 代表项）'],
     ['kit/roles/methods/quality-gates.md', '骨架 · 门禁方法论源（README §1.3 · 代表项）'],
     ['kit/drafts/preset-contracts.md', '骨架 · 被 check:presets 读取的规范源（README §1.2）'],
@@ -135,6 +137,7 @@ export function runRepoRules({ bad, ok, skip }) {
     ['scripts/check-hob-skeleton.mjs', '入库脚本（被 package.json 的 check:skeleton 调用 · 通用骨架 ↔ 实例结构漂移机检）'],
     ['scripts/check-archive-consistency.mjs', '入库脚本（被 package.json 的 check:archive 调用 · 归档一致性机检）'],
     ['scripts/check-gitignore.mjs', '本脚本自身也必须入库（否则 clone 后无从核对）'],
+    ['scripts/rebalance-ledger-shards.mjs', '入库脚本（被 package.json 的 rebalance:ledger-shards 调用 · 分片再平衡）'],
     // ⚠ 2026-10-09 补：另两条**已声明**的命令脚本原先**没被盯住** ——
     //   与 E-70 / E-73 同族：脚本一旦被 `.gitignore` 静默排除，
     //   **clone 后收尾命令直接 ENOENT**，而当时的机检**不会报**。
@@ -267,7 +270,7 @@ export function runRepoRules({ bad, ok, skip }) {
     //       ·「openTab 参数=常量」—— 对应断言（S-4 / S-4b）随入口删除一并删除；
     //       ·「四步」「未接线」—— 第 6 轮已改五步，第 9 轮图例**不再写状态词**。
     //     ⚠ 只改**说明文字**：条目数量、断言口径一字未动。
-    ['scripts/check-stages-panel-dom.mjs', '入库脚本（被 package.json 的 check:stages-dom 调用 · **真 jsdom 挂载**：图例只列五步名不写状态词（S-6，量 [data-dsh-hob=stages-legend] 容器）· 三态渲染（有数据 S-8a / 表里是空的 S-8b / 判不出+原因 S-8c）· sessionId 送进取数函数（S-9）· 侧边栏 guide 胶囊（id/order/title/kind，S-11）· 「5」与「done」两态不合并（S-8f）· 负向对拍 4 条（改步骤名 S-7a / 改 guide order S-7b / 改空态文案 S-8e / 把「未接线」加回图例 S-10））'],
+    ['scripts/check-stages-panel-dom.mjs', '入库脚本（被 package.json 的 check:stages-dom 调用 · **真 jsdom 挂载**：图例只列五步名不写状态词（S-6）· 三态渲染（S-8a/b/c）· sessionId 送进取数函数（S-9）· guide 胶囊（S-11）· 「5」与「done」两态不合并（S-8f）· 第一屏摘要四行与缺失判不出（S-33a/b）· 四视图只改 display 不卸载（S-34）· 阶段地图聚焦与历史默认折叠（S-35）· 验收计数消歧（S-36）· 工具前缀分组与次级折叠（S-37）· 统一刷新（S-38）· 条目固定两行、关系行、唯一状态、固定异常项，首屏不读正文、展开按稳定 ID 懒读（S-43）· 负向对拍（改步骤名 / guide order / 空态文案 / 图例 / summary 写死 / 条件卸载 / 历史铺开 / 缺失显示 0 / 分组清空 / 原始标题直打））'],
     // ⚠ 2026-10-29 第 6 轮新增：四步进度表的**服务端**行为判据（`npm run check:tasks-progress`）。
     //   它守：正常两行 / 空表 ok:true / 三类失败 reason 互不相同 / 行序与不去重 /
     //   七值封闭集（判不出不许塞成 '1'）/ 一条负向对拍（改 STEP_BY_NUMBER ⇒ 必红）。
@@ -291,7 +294,10 @@ export function runRepoRules({ bad, ok, skip }) {
     // ⚠ 2026-10-30 P3 新增：五步汇总路由的服务端判据（`npm run check:stages-route`）。
     //   它守：三类 reason 互不相同 / 五步顺序与名字逐字 / cap 不进分母 / 空步给 todo / 三态算对 /
     //   items 顺序与去重 / lastReading 缺⇒判不出 / 一条负向对拍（cap 混进分母必红）/ **与生成器交叉验证**。
-    ['scripts/check-stages-route.mjs', '入库脚本（被 package.json 的 check:stages-route 调用 · 真处理体 + 真夹具，10 条：三类 reason / 五步顺序 / cap 不进分母 / 空步 todo / 三态 / items 次序 / lastReading 判不出 / 负向对拍 cap 混分母 / 与 gen/stages.md 交叉验证）'],    //   ⚠⚠ **按需档**：要**活宿主 + launch token**（CI / 干净 clone 里都没有）
+    ['scripts/check-stages-route.mjs', '入库脚本（被 package.json 的 check:stages-route 调用 · 真处理体 + 真夹具：三类 reason / 五步顺序 / cap 不进分母 / 空步 todo / 三态 / items 次序 / lastReading 判不出 / 第一屏 summary / 条目完整与紧凑投影（最多两条读数）/ 关系缺失判不出 / 默认兼容线格式 / 真实紧凑响应 ≤64 KB / 真实五类样例 / 负向对拍 / 与 gen/stages.md 交叉验证）'],    //   ⚠⚠ **按需档**：要**活宿主 + launch token**（CI / 干净 clone 里都没有）
+    // ⚠ 2026-11-07 补（`R-020` 跨账本总览）：账本目录只读路由判据。
+    ['scripts/check-requirement-chains.mjs', '入库脚本（被 package.json 的 check:requirement-chains 调用 · 单需求五步 / 正式关系 / 唯一 currentStep / 缺失步 / 有效验收取最新 / 回流 / 退役 / 未归属 / 多方案多任务 / 负向对拍）'],
+    ['scripts/check-ledgers-route.mjs', '入库脚本（被 package.json 的 check:ledgers-route 调用 · 账本列举 / 读不了≠空 / current 标记 / 安全边界 / 默认选中，含负向对拍）'],
 
     // ⚠ 2026-10-30 P6 新增：**元规则机检**（`npm run check:meta-negctl`）+ 它的登记表。
     //   它守：每族「负向对拍」标签数 ≥ 登记下限（⛔ 只准升不准降）；且自带一条自指负向对拍。
@@ -300,7 +306,7 @@ export function runRepoRules({ bad, ok, skip }) {
     // ⚠ 2026-10-30 P8 新增：Hob 工作流判据族 + 它的生成器。
     ['scripts/check-workflow.mjs', '入库脚本（被 package.json 的 check:workflow 调用 · F1 机读源合法+source 子串核对 / F2 生成物与源逐字节一致 / F3 宪法 ≤2KB 且逐条 checked_by / F4 覆盖度；四条负向对拍）'],
     ['scripts/gen-preset-contract.mjs', '入库脚本（被 package.json 的 gen:preset-contract 调用 · workflow.toml + spec/ ⇒ gen/persona.md + gen/contracts.md；纯函数、零时间戳）'],    ['scripts/meta-negative-floor.json', '入库数据（M-1 的每族负向对拍条数下限；⛔ 只准升不准降，有意减少须同批改本文件并写明理由）'],    //     ⇒ ⛔ 不进 `check:all` 的必跑套件；无对象时 **exit 2（noObject）**，⛔ 不算通过。
-    ['scripts/check-ledger-resources.mjs', '入库脚本（被 package.json 的 check:ledger-resources 调用 · 10 类账本单元稳定 ID 资源面：摘要卡 / 正式边 / 子节点 / 三类错误 / 全读取指针可解析 / 无路径泄漏）'],
+    ['scripts/check-ledger-resources.mjs', '入库脚本（被 package.json 的 check:ledger-resources 调用 · 10 类账本单元稳定 ID 资源面：摘要卡 / 正式边 / 子节点 / 按 ID 完整展示投影而列表不含正文 / 三类错误 / 全读取指针可解析 / 无路径泄漏）'],
     ['scripts/check-effects-queue.mjs', '入库脚本（被 package.json 的 check:effects 调用 · 持久 Effects/Outbox：同键合并 / 代际保护 / 退避恢复 / 顺序 / 并发 / 独占单写者）'],
     ['scripts/check-handoff-effects.mjs', '入库脚本（被 package.json 的 check:handoff-effects 调用 · handoff → Effects 桥：成功精确清账 / 失败双保留 / 重启恢复 / 真接线）'],
     ['scripts/check-work-state.mjs', '入库脚本（被 package.json 的 check:work-state 调用 · 派生工作九态：事件去重 / 线程合并 / 不误合并 / 负向对拍）'],
@@ -309,7 +315,8 @@ export function runRepoRules({ bad, ok, skip }) {
     ['scripts/check-work-plan-dispatch.mjs', '入库脚本（被 package.json 的 check:work-plan-dispatch 调用 · 多轨一次进入计划入口 / 运行时档位 / 兼容单目标 / 依赖等待 / 状态可见与两条负向对拍）'],
     ['scripts/check-work-plan-runtime.mjs', '入库脚本（被 package.json 的 check:work-plan-runtime 调用 · 真编排器行为：多轨并行 / 单会话跨计划拒派 / 依赖轨自动推进 / 汇合与单写轨门禁）'],
     ['scripts/check-work-plan-panel.mjs', '入库脚本（被 package.json 的 check:work-plan-panel 调用 · 真 DOM：工作计划面板挂载 / 轨道与执行者 / 单轨原因 / 判不出与空表 / 只读路由真处理体 / 摘挂载负向对拍）'],
-    ['scripts/check-stage-controls.mjs', '入库脚本（被 package.json 的 check:stage-controls 调用 · 五阶段内部控制：需求澄清 / 方案路径 / 任务自包含 / 小步验证 / 产品确认 / 回流归因 / 文件引用可追溯）'],
+    ['scripts/check-stage-controls.mjs', '入库脚本（被 package.json 的 check:stage-controls 调用 · 五阶段内部控制：需求澄清 / 方案路径 / 任务自包含 / 小步验证 / 产品确认 / 回流归因 / 文件引用可追溯 / C-17 新条目标题自包含（含 title=id））'],
+    ['scripts/check-ledger-projection.mjs', '入库脚本（被 package.json 的 check:ledger-projection 调用 · 运行态 → 账本投影：派发建 RUN / 回传迁 RUN 且无读数不迁 TSK / 判决建 ACC / 三档可辨 / 幂等）'],
     //   它守：POST 带 sessionId ⇒ 200 + 我们的 JSON（三选一 reason 也算「处理体在」）；
     //         同路径 GET ⇒ 404 + 纯文本 not found（宿主「错门回 404 而不是 405」这条边界）。
     ['scripts/probe-tasks-route-http.mjs', '按需档探针（被 package.json 的 check:tasks-route-http 调用 · 要活宿主+token · 任务进度 200 + GET 404 纯文本 / Current 与按 ID 资源 / 五步 attention · 会话优先取活锁 · noObject 走 exit 2）'],
