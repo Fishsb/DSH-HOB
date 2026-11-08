@@ -23,12 +23,15 @@
  *   这样它可以被独立测试，也避免 core/server 反向依赖配置类型。
  */
 import { lstat, readFile, writeFile, rename, readdir, unlink, mkdir, rm, open, chmod, stat } from 'node:fs/promises'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { dirname, join, relative, sep } from 'node:path'
 import { resolveInside } from './doc-read.ts'
 import { renderReadings, renderReadingsNote, type RenderResult } from './hob-render.ts'
 import { isActiveChangeFile, isCurrentRootDoc, isGeneratedLedgerPath } from '../shared/ledger-write-policy.ts'
+import { parseUnitsToml } from '../shared/stages-index.ts'
+import { unitShapeProblems } from '../shared/ledger-validation.ts'
+import { ledgerClosureProblems, stageControlProblems, type StageControlUnit } from '../shared/stage-controls.ts'
 
 // ── 白名单：骨架只读，运行数据/方案可写（与 UD-05 的切分同一条线）─────────────
 
@@ -369,6 +372,10 @@ export type RefuseReason =
   | 'generated-write-denied'
   | 'active-change-file-denied'
   | 'archive-snapshot-failed'
+  /** 账本单元格式 / 结构 / 关系 / 字段控制不成立（⚠ 必须在落盘前拒）。 */
+  | 'ledger-unit-malformed'
+  | 'ledger-duplicate-id'
+  | 'ledger-structure-invalid'
   /**
    * **读不出来 ≠ 不存在**（2026-10-24 · 本单必修 1/2/3）。
    *
@@ -477,6 +484,16 @@ export interface WriteHobOptions {
   shrinkGuard: number
   /** 结果文件字节上限（含 content）。 */
   maxFileBytes: number
+  /**
+   * 是否在写 `ledger/units/*.toml` 前做结构 / 关系 / 字段校验。
+   *
+   * ⚠ 缺省 `true`：所有外部写入口（`write_hob`、建账、投影）默认受同一套契约约束。
+   *   只有投影落盘器会传 `false`，因为它刚刚用纯函数校验了**它自己的操作**，
+   *   而账本里可能还留着历史缺口；它必须能把合法的新 RUN 追加进去，
+   *   再让读侧如实报告还有哪些旧缺口。这不等于放宽：新投影单元仍按封闭契约生成，
+   *   且 `check-ledger-projection` 的落盘断言逐字段核对。
+   */
+  validateLedgerStructure?: boolean
 }
 
 export interface WriteHobInput {
@@ -980,6 +997,83 @@ function checkFormat(file: string, content: string): WriteHobResult | null {
   return null
 }
 
+/**
+ * **账本单元写入前的结构校验**（2026-11-08 · 用户报「旧账本梳理不到完全健康」）。
+ *
+ * 真实故障：一本账的 `TSK-345.status = "settled"` 被 `write_hob` 原样接受；
+ * 之后阶段接口才以「整本形态不认识」拒绝读取，而健康面仍可能只报字段缺口。
+ *
+ * 本函数在落盘前按**合并后的账本全文**校验：
+ *   ① 新文本必须是现行 `[[unit]]` 格式；
+ *   ② 每个 `kind/status` 必须来自封闭契约，且 ID 不重复；
+ *   ③ 关系必须闭合（方案→需求、任务→方案、执行/验收→任务）；
+ *   ④ 字段控制（C-1..C-17）必须满足。
+ *
+ * ⚠ 修复写（`gateIntent=repair`）可能暂时触碰一条**已知坏行**，此函数只拒绝
+ *   “这次新写入了另一处非法结构”，不要求整本在修复前已健康；旧缺口由读侧/门禁报告。
+ */
+function checkLedgerUnitWrite(
+  hobRoot: string,
+  file: string,
+  content: string,
+  mode: string,
+): WriteHobResult | null {
+  if (!file.startsWith('ledger/units/') || file.endsWith('.md') || !file.endsWith('.toml')) return null
+  let incoming: Array<Record<string, unknown>>
+  try {
+    incoming = parseUnitsToml(content) as Array<Record<string, unknown>>
+  } catch (e) {
+    return refuse(
+      file,
+      'ledger-unit-malformed',
+      `拒绝：新内容不是现行 \`[[unit]]\` TOML 子集：${String((e as Error)?.message ?? e)}`
+        + '\n  ⇒ 先按现行索引格式改正，再提交。',
+    )
+  }
+  const unitsDir = join(hobRoot, 'ledger', 'units')
+  const readToml = (name: string): Array<Record<string, unknown>> => {
+    try { return parseUnitsToml(readFileSync(join(unitsDir, name), 'utf8')) as Array<Record<string, unknown>> } catch { return [] }
+  }
+  const shardNames = (() => {
+    try {
+      return readdirSync(unitsDir)
+        .filter((n) => /^unit-[^/]+\.toml$/.test(n))
+        .sort()
+    } catch { return [] }
+  })()
+  const rel = file.slice('ledger/units/'.length)
+  const merged = [
+    ...readToml('index.toml'),
+    ...shardNames.filter((n) => n !== rel).flatMap(readToml),
+    ...(mode === 'append' ? [...readToml(rel), ...incoming] : incoming),
+  ]
+  const idSeen = new Set<string>()
+  const shape = merged.flatMap((u) => unitShapeProblems(u, idSeen))
+  if (shape.some((x) => x.includes('重复 ID'))) {
+    return refuse(file, 'ledger-duplicate-id', `拒绝：${shape.find((x) => x.includes('重复 ID'))} ⇒ 一个 ID 只能有一个单元。`)
+  }
+  if (shape.length > 0) {
+    return refuse(
+      file,
+      'ledger-structure-invalid',
+      `拒绝：账本单元结构不合法（${shape.length} 条）：${shape.slice(0, 8).join('；')}`
+        + '\n  ⇒ 先按封闭状态表改正，再提交。',
+    )
+  }
+  const problems = [
+    ...stageControlProblems(merged as StageControlUnit[]),
+    ...ledgerClosureProblems(merged as StageControlUnit[]),
+  ]
+  if (problems.length === 0) return null
+  const first = problems.slice(0, 8).map((p) => `${p.rule} · ${p.unit} · ${p.why}`).join('；')
+  return refuse(
+    file,
+    'ledger-structure-invalid',
+    `拒绝：账本结构不合法（${problems.length} 条缺口）：${first}`
+      + '\n  ⇒ 先补齐 / 改正这些行；⛔ 不把非法状态写进账本、等到面板才暴露。',
+  )
+}
+
 // ── 备份 ────────────────────────────────────────────────────────────────────
 
 async function ensureDir(p: string): Promise<void> {
@@ -1444,6 +1538,18 @@ async function writeHobFileInner(
   if (file === 'REQUIREMENTS.md') {
     const rootFmt = checkFormat(file, content)
     if (rootFmt !== null) return rootFmt
+  }
+
+  /**
+   * ── 6.7：**账本单元的结构必须在提交前成立** ─────────────────────────────
+   *
+   * `hob-write` 的守卫只回答“这个路径能不能写”；它此前不读 `kind/status`，
+   * 于是一条 `task.status = settled` 被成功写进账本，直到阶段接口整本拒绝才暴露。
+   * 读侧与写侧必须共用 `stage-controls` / `stages-index` 的同一份封闭契约。
+   */
+  if (opts.validateLedgerStructure !== false) {
+    const ledgerFmt = checkLedgerUnitWrite(hobRoot, file, content, mode)
+    if (ledgerFmt !== null) return ledgerFmt
   }
 
   const contentBytes = Buffer.byteLength(content, 'utf8')

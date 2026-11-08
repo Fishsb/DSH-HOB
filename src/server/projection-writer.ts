@@ -50,6 +50,35 @@ export const PROJECTION_WRITE_OPTS = {
   maxFileBytes: 262144,
 } as const
 
+/**
+ * **按账本根串行**：一场投影横跨「读全账本 → 分配编号 → 写多个分片」。
+ *
+ * ⚠ `writeHobFile` 只按**单个目标文件**排队。两个并发投影会各自读到同一份旧账本，
+ *   都算出 `RUN-001`，再分别追加到同一个分片 ⇒ 最终出现两条相同 ID。
+ *   2026-11-08 用临时账本并行派发两条真实 todo 任务，实测两次都返回成功，
+ *   `unit-projection.toml` 里确实写出两条 `RUN-001`。
+ *
+ * ⇒ 临界区必须是**整场投影**，不是每次写文件。键用规范化后的账本根；
+ *   ⛔ 堆在文件级队列之后不解决问题（编号已经分配完才开始写）。
+ *
+ * ⚠ 与其他运行态队列同口径：只做同进程串行。跨进程单写者前提仍由账本区
+ *   `doc-read.ts` 的 Single Writer Principle 承担，⛔ 本队列不冒充文件锁。
+ */
+const projectionQueues = new Map<string, Promise<unknown>>()
+
+async function withProjectionQueue<T>(ledgerRoot: string, fn: () => Promise<T>): Promise<T> {
+  const key = ledgerRoot.replace(/[\\/]+$/, '')
+  const prev = projectionQueues.get(key) ?? Promise.resolve()
+  const run = prev.then(() => fn(), () => fn())
+  const tail = run.then(() => undefined, () => undefined)
+  projectionQueues.set(key, tail)
+  try {
+    return await run
+  } finally {
+    if (projectionQueues.get(key) === tail) projectionQueues.delete(key)
+  }
+}
+
 /** 一次投影落盘的结果（⚠ 三档：applied / skipped / undecidable / failed）。 */
 export interface ProjectionApplyResult {
   ok: boolean
@@ -127,7 +156,7 @@ async function appendUnit(
     file: `ledger/units/${PROJECTION_SHARD}`,
     content: renderUnit(unit),
     mode: 'append',
-  }, { hobDir: '', ...opts })
+  }, { hobDir: '', ...opts, validateLedgerStructure: false })
 }
 
 /**
@@ -146,6 +175,15 @@ export async function applyProjection(
   ledgerRoot: string,
   fact: ProjectionFact,
   opts: { keepBackups: number; shrinkGuard: number; maxFileBytes: number } = PROJECTION_WRITE_OPTS,
+): Promise<ProjectionApplyResult> {
+  return withProjectionQueue(ledgerRoot, () => applyProjectionLocked(ledgerRoot, fact, opts))
+}
+
+/** 已进入本账本临界区的投影实现；⛔ 不得从外部直接调用。 */
+async function applyProjectionLocked(
+  ledgerRoot: string,
+  fact: ProjectionFact,
+  opts: { keepBackups: number; shrinkGuard: number; maxFileBytes: number },
 ): Promise<ProjectionApplyResult> {
   const units = readProjectionUnits(ledgerRoot)
   /**
@@ -221,7 +259,7 @@ export async function applyProjection(
         file: `ledger/units/${shard}`,
         content,
         mode: 'overwrite',
-      }, { hobDir: '', ...opts })
+      }, { hobDir: '', ...opts, validateLedgerStructure: false })
       if (!w.ok) {
         return { ok: false, key: result.key, applied, ops: result.ops, reason: `更新 ${op.id} 失败：${w.reason ?? 'write-failed'}（${w.message}）`, files }
       }

@@ -54,6 +54,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, sep } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { HOB_PRESET_ID } from '../shared/planning-preset.ts'
 import type { PresetSource } from './bus.ts'
 import { resolveLedgerRoot, workspaceNameOf } from '../server/doc-read.ts'
@@ -3061,6 +3062,8 @@ export function apply(ctx: any): void {
             watcher: w.watcher,
             ...(w.round === undefined ? {} : { round: w.round }),
             ...(w.task === undefined ? {} : { task: w.task }),
+            /** ⚠ 重挂也要带回真实任务号，否则重启后这条活回传时无法投影回账本。 */
+            ...(w.taskId === undefined ? {} : { taskId: w.taskId }),
             at: w.at,
             sawRunning: w.sawRunning,
             reported: false,
@@ -4438,6 +4441,8 @@ export function apply(ctx: any): void {
                   target: track.sessionId,
                   watcher: plan.joinOwnerSessionId,
                   task: track.taskId,
+                  /** ⚠ 重启后恢复的 watch 也要能投影回账本（否则这条活永远不落）。 */
+                  taskId: track.taskId,
                   at,
                   sawRunning: true,
                   sawRunningAt: at,
@@ -4475,6 +4480,8 @@ export function apply(ctx: any): void {
               const result = await orch.dispatch(track.sessionId, track.message, {
                 self: plan.joinOwnerSessionId,
                 task: track.taskId,
+                /** ⚠ 账本投影只认 `taskId`；多轨派发与单目标走同一条落账路径。 */
+                taskId: track.taskId,
                 accessType: track.accessType,
                 planId: plan.planId,
               })
@@ -4770,6 +4777,8 @@ export function apply(ctx: any): void {
           const result = await orch.dispatch(track.sessionId, track.message, {
             self,
             task: track.taskId,
+            /** ⚠ 账本投影只认 `taskId`（与 `plan` 恢复路径同一口径）。 */
+            taskId: track.taskId,
             accessType: track.accessType,
             planId: plan.planId,
           })
@@ -7940,6 +7949,8 @@ export function apply(ctx: any): void {
                 watcher: rec.watcher,
                 ...(rec.round === undefined ? {} : { round: rec.round }),
                 ...(rec.task === undefined ? {} : { task: rec.task }),
+                /** ⚠ 结算重建同样要带回真实任务号（否则账本投影丢失引用）。 */
+                ...(rec.taskId === undefined ? {} : { taskId: rec.taskId }),
                 at: rec.at,
                 sawRunning: true,
                 ...(rec.sawRunningAt === undefined ? {} : { sawRunningAt: rec.sawRunningAt }),
@@ -8520,10 +8531,30 @@ export function createHobOrchTools(
          *   单目标带 `task`、多轨带 `planId`；两者都交给门禁，由它逐链判定，
          *   ⛔ 不再用「全账本有缺口」当拒绝理由。
          */
+        /**
+         * ⚠⚠ **单目标派活必须有真实 `taskId`**（2026-11-08 管线收口）。
+         *
+         * 改前 `taskId` 缺省时把自由描述 `task` 当作任务号交给门禁：
+         *   · 若描述恰好是一句自然语言，门禁 `hold`，错误理由指向「对象不在账本里」；
+         *   · 若调用方给 `taskId: 'implicit'`（旧计划占位），门禁放行，但投影明确
+         *     不落账 ⇒ 用户看到“派活成功”，账本里却没有 RUN，阶段反馈当然消失。
+         * `implicit` 只允许保留在**已有计划的恢复/推进**内部，不是外部派活入口。
+         *
+         * ⇒ 外部 `hob_dispatch` 的单目标模式：`taskId` 必须是 `TSK-...`；
+         *   `task` 仅作回传描述。多轨 `tracks` 每条已由计划校验器要求真实任务号。
+         */
+        const taskId = typeof args.taskId === 'string' ? args.taskId.trim() : ''
+        if (!Array.isArray(args.tracks) && !/^TSK-[A-Za-z0-9-]+$/.test(taskId)) {
+          return JSON.stringify({
+            ok: false,
+            reason: 'task-id-required',
+            message: '拒绝：单目标派活必须给账本里的真实任务号 `taskId`（形如 TSK-080）；'
+              + '自由描述 `task` 只作回传说明，不能代替账本对象。'
+              + ' ⚠ 先走需求 → 方案 → 任务三步，再把任务派给执行会话。',
+          })
+        }
         const blocked = proceedGateOf?.(exec, {
-          ...(typeof args.taskId === 'string' && args.taskId.trim() !== ''
-            ? { taskId: args.taskId.trim() }
-            : typeof args.task === 'string' && args.task.trim() !== '' ? { taskId: args.task.trim() } : {}),
+          ...(taskId !== '' ? { taskId } : {}),
           ...(typeof args.planId === 'string' && args.planId.trim() !== '' ? { planId: args.planId.trim() } : {}),
         })
         if (blocked !== undefined) return JSON.stringify({ ok: false, reason: 'proceed-not-confirmed', message: blocked })
@@ -10081,7 +10112,8 @@ export function createHobOrchTools(
         required: true,
         enum: ['stop', 'resume', 'redeliver', 'accept', 'send-back', 'watch-wait', 'plan-complete', 'archive-stale-plan'],
         description: 'stop=停；resume=恢复；redeliver=**显式补投**一条投错人的回执（需 executionId + taskId）；'
-          + 'accept=**验收**（需 taskId + basis）；send-back=**退回重做**（需 taskId + basis）；'
+          + 'accept=**验收**（需 taskId + basis + productConfirmation + verificationRefs + exampleResults）；'
+          + 'send-back=**退回重做**（需 taskId + basis + returnTo）；'
           + 'plan-complete=**汇合责任人收口计划**（需 planId；计划须先到 joining）；'
           + 'archive-stale-plan=**把超时未收口的计划移出活动区**（需 planId + note；不改业务状态、不删除原件）；'
           + 'watch-wait=**看护切回「等待」**（做完了 / 需要用户决策 / 出了异常都走这一个动作；'
@@ -10119,6 +10151,18 @@ export function createHobOrchTools(
         description: 'send-back 专用：退回目标阶段。需求错回 1、方案错回 2、实现错回 3；缺省 back-to-task。'
           + '⚠ 它不是自由文本：只允许这三个值。',
       },
+      productConfirmation: {
+        type: 'string',
+        description: 'accept 专用：产品确认（用户接受结果符合目标）。⚠ 不接受技术测试结论代替产品确认。',
+      },
+      verificationRefs: {
+        type: 'json',
+        description: 'accept 专用：技术验证证据数组（优先 EVD-*）；缺 ⇒ 投影判不出，不落 ACC。',
+      },
+      exampleResults: {
+        type: 'json',
+        description: 'accept 专用：用户例子逐条结果数组，每条形如 `EX-1 | pass | EVD-001 | 注`；非 pass 必须带证据引用。',
+      },
       planId: {
         type: 'string',
         description: 'plan-complete 专用：要收口的计划编号。只有该计划汇合责任人可收；'
@@ -10142,6 +10186,9 @@ export function createHobOrchTools(
         note?: string
         planId?: string
         returnTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
+        productConfirmation?: string
+        verificationRefs?: JsonValue
+        exampleResults?: JsonValue
       },
       exec: any,
     ): Promise<string> {
@@ -10333,6 +10380,20 @@ export function createHobOrchTools(
         if (projector !== undefined && typeof args.taskId === 'string' && args.taskId !== '') {
           try {
             const basis = Array.isArray(args.basis) ? args.basis.map(String) : []
+            const stringList = (v: unknown): string[] | undefined => {
+              if (v === undefined || v === null) return undefined
+              if (Array.isArray(v)) return v.map(String).map((x) => x.trim()).filter((x) => x !== '')
+              if (typeof v === 'string' && v.trim() !== '') {
+                try {
+                  const parsed = JSON.parse(v)
+                  if (Array.isArray(parsed)) return parsed.map(String).map((x) => x.trim()).filter((x) => x !== '')
+                } catch { /* 非 JSON 字符串按单条读数处理 */ }
+                return [v.trim()]
+              }
+              return undefined
+            }
+            const verificationRefs = stringList(args.verificationRefs)
+            const exampleResults = stringList(args.exampleResults)
             ledgerProjection = await projector.apply({
               kind: 'verdict',
               taskId: args.taskId,
@@ -10346,6 +10407,16 @@ export function createHobOrchTools(
                *   ⇒ 投影器自己从账本读已有 ACC 的 `acceptance_session`（见 `verdictOps`）。
                */
               ...(args.returnTo === undefined ? {} : { sendBackTo: args.returnTo }),
+              /**
+               * ⚠ C-7 / C-12 的结构字段必须从真实判决参数进入投影。
+               *   缺省时不下发，让投影器明确判“缺产品确认 / 缺技术证据 / 缺例子结果”；
+               *   ⛔ 不用空串或占位数组把 ACC 洗成合法。
+               */
+              ...(typeof args.productConfirmation === 'string' && args.productConfirmation.trim() !== ''
+                ? { productConfirmation: args.productConfirmation.trim() }
+                : {}),
+              ...(verificationRefs === undefined ? {} : { verificationRefs }),
+              ...(exampleResults === undefined ? {} : { exampleResults }),
             })
           } catch (e) {
             ledgerProjection = { ok: false, applied: 0, reason: `判决投影抛错：${String((e as Error)?.message ?? e)}` }

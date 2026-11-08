@@ -1032,6 +1032,12 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
    */
   'hob_ledger_status',
   'hob_ledger_init',
+  /**
+   * ⚠ 旧账本迁移不是“新建账”；但它只接受内置有限映射，默认只预演，真写需显式确认。
+   *   若不给这一项，旧格式 / 旧状态词项目只能靠人工改账，Hob 的“先梳理健康再推进”
+   *   在真实存量上就会卡住。三档都可见：它只碰本账本索引，仍走同一写入守卫。
+   */
+  'hob_ledger_migrate',
   // ── 检索 5 个（既有）──────────────────────────────────────────────
   'advanced_search',
   'multi_search',
@@ -1917,7 +1923,7 @@ function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any)
   const {
     readContracts, writeHob,
     readWorkspaceDoc, globWorkspace: globTool, grepWorkspaceTool, readWorkspaceImage,
-    ledgerStatus, ledgerInit,
+    ledgerStatus, ledgerInit, ledgerMigrate,
   } = createTools(config, {
     // ⚠ **惰性取值**（每次执行时才 `ctx.get`），见上面那段注释的同一个理由。
     orchOf: () => {
@@ -1994,7 +2000,10 @@ function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any)
    */
   ctx.effect(() => ctx.tools.register(ledgerStatus), 'dsh-hob preset: hob_ledger_status tool')
   ctx.effect(() => ctx.tools.register(ledgerInit), 'dsh-hob preset: hob_ledger_init tool')
-  log('已注册 hob_ledger_status / hob_ledger_init（账本先建后推进）')
+  if (ledgerMigrate !== undefined) {
+    ctx.effect(() => ctx.tools.register(ledgerMigrate), 'dsh-hob preset: hob_ledger_migrate tool')
+  }
+  log('已注册 hob_ledger_status / hob_ledger_init / hob_ledger_migrate（账本先建后推进）')
 
   if (writeHob === undefined) {
     log('enableWrite=false ⇒ 不注册 write_hob（该工具根本不出现）')

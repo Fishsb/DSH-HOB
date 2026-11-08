@@ -245,6 +245,14 @@ export const GATE_OWNED_TOOL_NAMES: readonly string[] = [
   // 账本两件（`modules.tools` 关 ⇒ 这两个也不存在）
   'read_contracts',
   'write_hob',
+  /**
+   * ⚠ 账本先建 / 迁移三件同样由本模块注册：
+   *   `modules.tools` 关掉时它们根本不存在 ⇒ 必须从可见名里一起摘掉，
+   *   否则模型面会出现“看得见、点一下 unknown tool”的假能力。
+   */
+  'hob_ledger_status',
+  'hob_ledger_init',
+  'hob_ledger_migrate',
   // 四个自注册只读工具（`modules.tools` 关 ⇒ 同样不存在；它们正是"看得见却调不到"的那四个）
   'hob_read_doc',
   'hob_glob',
@@ -988,6 +996,8 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
   ledgerStatus: ReturnType<typeof defineTool>
   /** **建账本 / 补齐**（2026-11-08 · 用户裁定「预设本身要具备这个能力」）。 */
   ledgerInit: ReturnType<typeof defineTool>
+  /** **旧 kind/status 词迁移**（内置有限映射，默认预演）。 */
+  ledgerMigrate: ReturnType<typeof defineTool>
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
@@ -1636,6 +1646,132 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
   })
 
   /**
+   * **账本状态词迁移**（2026-11-08 · 真实账本实测）。
+   *
+   * 现实旧账本不只是 `[units."ID"]` 旧格式；还有一类**表头已经换成 `[[unit]]`、
+   * 但状态用了别的时代词**：
+   *   · `task.status="settled"`（实际含义：任务已交付）
+   *   · `kind="evd"`（实际含义：证据）
+   *   · `decision.status="settled"`（实际含义：现行决策）
+   *
+   * 这些不是“自由文本”，而是语义可判的旧词。本工具只接受**声明式映射**，
+   * 默认只预演；真写必须 `dryRun:false`，并且先备份。⛔ 不凭空猜任意未知状态。
+   */
+  const ledgerMigrate = defineTool({
+    name: 'hob_ledger_migrate',
+    description: '把旧账本里可判定的旧 kind/status 词迁移到现行封闭集。默认只预演；'
+      + '要真写必须显式传 `dryRun:false`。⚠ 不做任意值替换：只接受内置的有限映射。',
+    parameters: {
+      dryRun: {
+        type: 'boolean',
+        description: '（可选）缺省 true = 只预演。真要迁移请显式传 false。',
+      },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: String((value as { message?: string })?.message ?? '') }],
+    },
+    async execute(args: { dryRun?: boolean }, exec: ToolRunContext): Promise<JsonValue> {
+      const root = ledgerRootOf(cfg, exec)
+      if (root === undefined || root.trim() === '') {
+        return { ok: false, reason: 'no-ledger-root', message: '拒绝：账本落点判不出。' } as unknown as JsonValue
+      }
+      const unitsDir = join(root, 'ledger', 'units')
+      const indexPath = join(unitsDir, 'index.toml')
+      let src = ''
+      try { src = readFileSync(indexPath, 'utf8') } catch (e) {
+        return { ok: false, reason: 'index-unreadable', message: `账本索引读不到：${String((e as Error)?.message ?? e)}` } as unknown as JsonValue
+      }
+      /**
+       * 迁移规则**只改等号右边的可识别旧词**，并只在对应的 kind 块内应用；
+       * ⛔ 不做全局字符串替换（那会把正文里出现的同名词一起改掉）。
+       */
+      const lines = src.replace(/\r\n/g, '\n').split('\n')
+      const changes: Array<{ line: number; id: string; field: string; from: string; to: string }> = []
+      const blocks: Array<{ start: number; end: number; id: string; kind: string }> = []
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i]!.trim() !== '[[unit]]') continue
+        let end = i + 1
+        while (end < lines.length && lines[end]!.trim() !== '[[unit]]') end++
+        const body = lines.slice(i, end)
+        const get = (k: string): string => {
+          const l = body.find((x) => new RegExp(`^${k}\\s*=`).test(x.trim()))
+          return l === undefined ? '' : (/=\s*"([^"]*)"/.exec(l)?.[1] ?? '')
+        }
+        blocks.push({ start: i, end, id: get('id'), kind: get('kind') })
+      }
+      const setFieldInBlock = (b: { start: number; end: number; id: string }, field: string, to: string): void => {
+        for (let i = b.start; i < b.end; i++) {
+          const m = new RegExp(`^(\\s*${field}\\s*=\\s*)"([^"]*)"(\\s*)$`).exec(lines[i]!)
+          if (m === null) continue
+          if (m[2] === to) return
+          changes.push({ line: i + 1, id: b.id, field, from: m[2]!, to })
+          lines[i] = `${m[1]}"${to}"${m[3] ?? ''}`
+          return
+        }
+      }
+      for (const b of blocks) {
+        const oldKind = b.kind
+        const kind = oldKind === 'evd' ? 'evidence' : oldKind
+        if (kind !== oldKind) {
+          setFieldInBlock(b, 'kind', kind)
+          const oldStatus = blocks.find((x) => x.start === b.start)?.kind === oldKind
+            ? (/status\s*=\s*"([^"]*)"/.exec(lines.slice(b.start, b.end).join('\n'))?.[1] ?? '')
+            : ''
+          if (oldStatus === 'settled' || oldStatus === '') setFieldInBlock(b, 'status', 'recorded')
+          b.kind = kind
+        }
+        const statusLine = lines.slice(b.start, b.end).join('\n')
+        const status = /status\s*=\s*"([^"]*)"/.exec(statusLine)?.[1] ?? ''
+        if (kind === 'task' && status === 'settled') setFieldInBlock(b, 'status', 'built')
+        if (kind === 'decision' && status === 'settled') setFieldInBlock(b, 'status', 'active')
+      }
+      if (changes.length === 0) {
+        return {
+          ok: true, dryRun: args?.dryRun !== false, changes: [], state: 'nothing-to-migrate',
+          message: '没有发现可自动迁移的已知旧词；⛔ 未写盘。',
+        } as unknown as JsonValue
+      }
+      const out = lines.join('\n')
+      if (args?.dryRun !== false) {
+        return {
+          ok: true, dryRun: true, changes, state: 'preview',
+          message: `[演练] 将迁移 ${changes.length} 处：`
+            + changes.map((c) => `${c.id}.${c.field} ${c.from}→${c.to}`).join('；')
+            + '\n  ⚠ 未落盘。确认后传 `dryRun:false`。',
+        } as unknown as JsonValue
+      }
+      const w = await writeHobFile(root, {
+        file: 'ledger/units/index.toml',
+        content: out,
+        mode: 'overwrite',
+        reason: '迁移旧账本 kind/status 词到现行封闭集',
+      }, {
+        hobDir: '',
+        keepBackups: DEFAULTS.keepBackups,
+        shrinkGuard: DEFAULTS.shrinkGuard,
+        maxFileBytes: cfg.maxWriteBytes ?? DEFAULTS.maxWriteBytes,
+        /**
+         * ⚠ 迁移前这本账按定义还不合法，必须允许“把坏行改成合法行”；
+         *   写入后由 `ledgerReadinessOfRoot(root)` 重新核全账，若仍坏就如实回报。
+         */
+        validateLedgerStructure: false,
+      })
+      if (!w.ok) {
+        return { ok: false, reason: w.reason, message: `迁移写盘失败：${w.message}`, changes } as unknown as JsonValue
+      }
+      const after = ledgerReadinessOfRoot(root)
+      return {
+        ok: after.state === 'ready', state: after.state, gapCount: after.gapCount, gaps: after.gaps,
+        changes,
+        message: after.state === 'ready'
+          ? `已迁移 ${changes.length} 处；账本现在就绪。`
+          : `已迁移 ${changes.length} 处，但账本仍有 ${after.gapCount} 条缺口 ⇒ 先补齐再推进。`,
+      } as unknown as JsonValue
+    },
+  })
+
+  /**
    * ══ **建账本 / 补齐**（2026-11-08 · 用户裁定「Hob 预设本身要具备这个能力」）══
    *
    * ── 它做什么（**只做"让账本可推进"所需的最小集**）──────────────────────
@@ -1797,6 +1933,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
     },
   })
 
+
   return {
     readContracts,
     writeHob: cfg.enableWrite === false ? undefined : writeHob,
@@ -1806,6 +1943,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
     readWorkspaceImage: readWorkspaceImageTool,
     ledgerStatus,
     ledgerInit,
+    ledgerMigrate,
   }
 }
 

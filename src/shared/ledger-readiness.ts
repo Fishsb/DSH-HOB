@@ -29,6 +29,7 @@
  */
 
 import { parseUnitsToml } from './stages-index.ts'
+import { unitShapeProblems } from './ledger-validation.ts'
 import { ledgerClosureProblems, stageControlProblems, type StageControlUnit } from './stage-controls.ts'
 
 /** 就绪度五档 + 一档"能建"（`unresolved` 不可建，其余四档都有明确动作）。 */
@@ -270,8 +271,27 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
      *   ⇒ 再加 `ledgerClosureProblems`：引用必须指向**真实存在**的上游
      *     （change→req / task→change / run→task / acc→task）。
      */
+    /**
+     * ⚠ **结构合法性先于字段完整性**（2026-11-08 真账本实测）：
+     *   一本账里出现 `task.status = settled` 时，
+     *     · 阶段接口整本返回 `row-shape-unknown`；
+     *     · 就绪度只跑字段门禁，却可能说「健康」。
+     *   ⇒ 两种读数来自同一条坏行，却给用户相反结论。
+     *   现在先把 `unitShapeProblems` 并进同一份问题集，健康面板、派活门禁、
+     *   阶段接口对这本账给出同一个「坏在哪一行」的结论。
+     */
+    const shapeProblems = units.flatMap((u) => unitShapeProblems(u)).map((why) => {
+      const m = /^(.+?): kind=.*kind=([^\s（]+)/.exec(why)
+        ?? /^(.+?): status=.*不属于 kind=([^\s（]+)/.exec(why)
+      return {
+        rule: 'S-0',
+        unit: m?.[1] ?? '(unit)',
+        why: `${why} ⇒ 先按封闭状态表改正这一行，再推进`,
+      }
+    })
     const cast = units as unknown as StageControlUnit[]
     problems = [
+      ...shapeProblems,
       ...(stageControlProblems(cast) as unknown as typeof problems),
       ...(ledgerClosureProblems(cast) as unknown as typeof problems),
     ]

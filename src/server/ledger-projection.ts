@@ -314,7 +314,16 @@ function returnOps(units: readonly ProjectionUnitLike[], fact: ReturnFact): Proj
       },
     })
   }
-  if (text(task.status) === 'doing') {
+  /**
+   * ⚠ **回传 ≠ 做完**：没有小步验证读数时，只能证明执行会话答复了，
+   *   不能证明任务已到交付态。此时只迁 RUN，TSK 保持 doing；
+   *   C-6 会把这条 returned RUN 作为缺口点名，要求补 `progress_refs`。
+   *
+   *   ⚠ 改前这里无条件迁移，和 `check-ledger-projection` 的 LP-3 直接冲突：
+   *     自检说「无读数只迁 RUN」，实现却迁了 TSK ⇒ 真集成路径重新产生
+   *     「回传即完成」。本条件把纯函数、判据与五步口径重新对齐。
+   */
+  if (text(task.status) === 'doing' && arr(fact.progressRefs).length > 0) {
     ops.push({
       op: 'transition-unit', id: task.id, from: 'doing', to: 'built',
       fields: {
@@ -366,7 +375,23 @@ function verdictOps(units: readonly ProjectionUnitLike[], fact: VerdictFact): Pr
   const acceptanceSession = text(fact.acceptanceSession)
     || text(fact.existingAcceptanceSession)
     || text((preexistingAcc as unknown as { acceptance_session?: unknown } | undefined)?.acceptance_session)
-  if (acceptanceSession === '') {
+  /**
+   * ⚠⚠ **`send-back` 的验收会话不能靠 `actor` 猜**（2026-11-08 真机入口核对）。
+   *
+   * 运行态 `hob_orch_control send-back` 没有单独的 `acceptanceSession` 参数。
+   * 它目前把调用判决的会话 id 放在 `actor` 字段里传下来；若这里要求另一个
+   * 不存在的字段，所有真实的 send-back 都会落成「判不出独立验收会话」，
+   * 于是退回永远不落账，账本只能在运行态里看见。
+   *
+   * 口径：
+   *   · `pass`：仍优先使用账本里**已有合格 ACC** 的独立会话，⛔ 不许拿派活方顶替；
+   *   · `send-back`：没有前置 ACC；此时判决者就是提出退回的一方，
+   *     `actor` 是唯一可信的验收者读数 —— 但必须明确不是执行者（下方独立性检查）。
+   */
+  const verdictSession = fact.verdict === 'send-back' && acceptanceSession === ''
+    ? text(fact.actor)
+    : acceptanceSession
+  if (verdictSession === '') {
     return { key, ops: [], undecidable: '判决缺独立验收会话 ⇒ 判不出独立性，不落账' }
   }
   /**
@@ -379,7 +404,7 @@ function verdictOps(units: readonly ProjectionUnitLike[], fact: VerdictFact): Pr
     if (same !== undefined) return { key, ops: [], skipped: `账本已有同一判决 ${same.id} ⇒ 不重复建` }
   }
   const builder = text(task.built_by)
-  if (builder !== '' && (text(fact.actor) === builder || acceptanceSession === builder)) {
+  if (builder !== '' && (text(fact.actor) === builder || verdictSession === builder)) {
     return { key, ops: [], skipped: `验收者/验收会话与实现者 ${builder} 相同 ⇒ 自己验自己，不落账` }
   }
   if (fact.verdict === 'pass') {
@@ -399,7 +424,7 @@ function verdictOps(units: readonly ProjectionUnitLike[], fact: VerdictFact): Pr
         parent: task.id,
         status: fact.verdict,
         actor: text(fact.actor),
-        acceptance_session: acceptanceSession,
+        acceptance_session: verdictSession,
         verified_at: fact.verifiedAt,
         basis: arr(fact.basis),
         ...(fact.verdict === 'pass'

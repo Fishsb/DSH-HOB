@@ -20,6 +20,9 @@ import { convergenceOf } from './convergence.ts'
 import { attentionAfterMainAction, panelSummaryOf, type PanelSummary } from './panel-summary.ts'
 import { listPresentationOf, relationTitlesOf, type ItemListPresentation } from './item-presentation.ts'
 import { ledgerClosureProblems, stageControlProblems, type StageControlUnit } from './stage-controls.ts'
+export { changeRequirementIds } from './ledger-relations.ts'
+export { UNIT_STATUSES, unitShapeProblems } from './ledger-validation.ts'
+import { unitShapeProblems as shapeProblemsOf } from './ledger-validation.ts'
 
 /** 五步的名字与 kind（⚠ 唯一真源，顺序 = 渲染顺序）。 */
 export const STAGE_DEFS = [
@@ -78,6 +81,7 @@ export const STAGE_KIND_STATUSES: Readonly<Record<string, { statuses: string[]; 
    */
   goal: { statuses: ['active', 'done', 'retired'], init: 'active', finals: ['done', 'retired'] },
 }
+
 
 /** 三类可分辨失败（`R-10`：⛔ 不许并成一句）。 */
 export const STAGES_REASON_INDEX_UNREADABLE = 'index-unreadable'
@@ -749,16 +753,7 @@ export function handleStages(deps: StagesDeps, body: any): StagesResponse {
    * ⚠ 形态核：`kind` 必须在封闭集里、`status` 必须属于该 kind。
    *   ⇒ 任一条不认识 = `row-shape-unknown`（⛔ 不许静默跳过那一条，否则面板会"看起来少一条"）。
    */
-  const badRows: string[] = []
-  for (const u of units) {
-    const id = String(u.id ?? '(无 id)')
-    const kind = String(u.kind ?? '')
-    const spec = STAGE_KIND_STATUSES[kind]
-    if (spec === undefined) { badRows.push(`${id}: kind=${JSON.stringify(kind)} 不在封闭集`); continue }
-    if (!spec.statuses.includes(String(u.status))) {
-      badRows.push(`${id}: status=${JSON.stringify(u.status)} 不属于 kind=${kind}`)
-    }
-  }
+  const badRows = units.flatMap((u) => shapeProblemsOf(u))
   if (badRows.length > 0) {
     return {
       ok: false,

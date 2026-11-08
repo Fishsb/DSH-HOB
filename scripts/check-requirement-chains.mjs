@@ -118,6 +118,72 @@ function auditChains(out) {
   else for (const x of p) bad(`RC-3 · ${x}`)
 }
 
+// RC-3b 方案承接字段的三种现行写法必须都能把 change 挂回需求。
+//
+// ⚠ 真账本 `prompt-enhancer-release` 的 `CHG-344` 写的是
+//   `req_ids = ["R-001"]`，旧需求链只认 `addresses` ⇒ 明明有方案却显示
+//   「还没定方案」，当前步错误停在 2。这里三种写法各跑一次，防止再回退。
+{
+  const expected = '已定：选 B'
+  const make = (changeFields) => mod.buildRequirementChains([
+    U('R-1', 'req', 'agreed', { acceptance_criteria: ['a'], clarify_examples: ['x'] }),
+    U('CHG-1', 'change', 'settled', { path_decision: '选 B', ...changeFields }),
+    U('TSK-1', 'task', 'todo', { parent: 'CHG-1', ...BRIEF }),
+  ], '2026-11-07T00:00:00.000Z').chains[0]
+  const cases = [
+    ['req_ids', { req_ids: ['R-1'] }],
+    ['addresses', { addresses: ['R-1'] }],
+    ['requirement_coverage', { requirement_coverage: ['R-1 → 方案第 1 条'] }],
+  ]
+  const p = []
+  for (const [name, fields] of cases) {
+    const c = make(fields)
+    if (c?.steps[1]?.total !== 1) p.push(`${name}: change 没挂回需求（step2 total=${c?.steps[1]?.total}）`)
+    if (c?.steps[1]?.displayState !== 'done') p.push(`${name}: 第 2 步不是 done（${c?.steps[1]?.displayState}）`)
+    if (c?.steps[1]?.summary !== expected) p.push(`${name}: 方案概要不对（${c?.steps[1]?.summary}）`)
+  }
+  if (p.length === 0) ok('RC-3b ✓ 方案承接需求：req_ids / addresses / requirement_coverage 三种写法都挂得回需求')
+  else for (const x of p) bad(`RC-3b · ${x}`)
+}
+
+// RC-3c 派发投影刚建的 RUN 是 registered，也必须让第 4 步显示“执行中”。
+//
+// ⚠ `ledger-projection` 的 LP-1 明确写 RUN registered；若需求链只认 running，
+//   用户会在“已派活、执行会话尚未开始跑”这段真实窗口里看到“等待”，
+//   从而以为派活没发生。registered / running 都属于执行已经开始。
+{
+  const out = mod.buildRequirementChains([
+    U('R-1', 'req', 'agreed', { acceptance_criteria: ['a'], clarify_examples: ['x'] }),
+    U('CHG-1', 'change', 'settled', { addresses: ['R-1'], path_decision: '选 B' }),
+    U('TSK-1', 'task', 'doing', { parent: 'CHG-1', ...BRIEF }),
+    U('RUN-1', 'run', 'registered', { parent: 'TSK-1' }),
+  ], '2026-11-07T00:00:00.000Z')
+  const c = out.chains[0]
+  const p = []
+  if (c?.currentStep !== 4) p.push(`当前步=${c?.currentStep}（期望 4）`)
+  if (c?.steps[3]?.displayState !== 'doing') p.push(`第 4 步=${c?.steps[3]?.displayState}（registered RUN 应为 doing）`)
+  if (!String(c?.steps[3]?.summary ?? '').includes('1 在跑')) p.push(`第 4 步概要没把 registered 算作在跑：${c?.steps[3]?.summary}`)
+  if (p.length === 0) ok('RC-3c ✓ RUN registered ⇒ 第 4 步 doing（派发投影刚建 RUN 时不会误显示等待）')
+  else for (const x of p) bad(`RC-3c · ${x}`)
+}
+
+// RC-3d 执行阶段没有 RUN 时，下一步必须点名缺口，不许落成“判不出”。
+{
+  const out = mod.buildRequirementChains([
+    U('R-1', 'req', 'agreed', { acceptance_criteria: ['a'], clarify_examples: ['x'] }),
+    U('CHG-1', 'change', 'settled', { addresses: ['R-1'], path_decision: '选 B' }),
+    U('TSK-1', 'task', 'built', { parent: 'CHG-1', ...BRIEF }),
+    U('ACC-1', 'acc', 'pass', { parent: 'TSK-1', verified_at: '2026-11-07T01:00:00+08:00' }),
+  ], '2026-11-07T00:00:00.000Z')
+  const c = out.chains[0]
+  const p = []
+  if (c?.currentStep !== 4) p.push(`当前步=${c?.currentStep}（期望 4）`)
+  if (c?.next?.kind !== 'blocked') p.push(`next=${c?.next?.kind}（built 但零 RUN 应 blocked）`)
+  if (!String(c?.next?.why ?? '').includes('零 RUN') && !String(c?.next?.why ?? '').includes('执行记录')) p.push(`下一步没点名执行缺口：${c?.next?.why}`)
+  if (p.length === 0) ok('RC-3d ✓ built 但零 RUN ⇒ 下一步 blocked 且点名执行缺口（⛔ 不退化成判不出）')
+  else for (const x of p) bad(`RC-3d · ${x}`)
+}
+
 // RC-4 有效验收取最新；同刻冲突判不出。
 {
   const base = [

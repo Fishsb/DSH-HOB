@@ -88,6 +88,17 @@ UI 新建入口
 
 跨进程副作用使用 Effects/Outbox；运行态落在账本区 `runtime/`，不进入 Git。
 
+### 3. 账本契约与投影边界
+
+账本单元的 `kind/status` 是封闭契约。结构校验只有 `ledger-validation.ts` 一份，
+阶段接口、就绪度门禁和写入守卫都调用它；字段与关系门禁仍在 `stage-controls.ts`。
+方案承接需求统一读取 `req_ids / addresses / requirement_coverage`，
+不允许各视图只认其中一种字段。
+
+运行态投影按**账本根**串行：一次投影包含“读全账本 → 分配编号 → 写多分片”，
+单个文件队列不足以保护它。回传只迁 `RUN.returned`；只有带小步验证读数时才把
+`TSK` 迁到 `built`。单目标派活必须给真实 `TSK-*`，自由描述不能代替账本对象。
+
 ## 四、权威入口
 
 | 对象 | 权威位置 |

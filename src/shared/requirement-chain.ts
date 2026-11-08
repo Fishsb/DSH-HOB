@@ -4,7 +4,8 @@
  * 面板的主线不是“按阶段堆叠全部条目”，而是**一条需求从需求规格走到验收核对**。
  * 本模块只认账本的正式关系字段，把同一份 units 折成每条需求的链摘要：
  *
- *   需求 → change.addresses → task.parent / task.req_ids → run.parent / acc.parent
+ *   需求 → change(req_ids / addresses / requirement_coverage)
+ *        → task.parent / task.req_ids → run.parent / acc.parent
  *
  * ⛔ 不从标题里的编号反推关系；⛔ 不用 after 当承接；⛔ 不挂到最近条目。
  * ⛔ 不新增账本字段、不写盘、不取时间。
@@ -14,7 +15,8 @@ import { effectiveAcceptanceOf, type AcceptanceVerdictLike } from './acceptance-
 import { nextAction, type NextAction } from './next-action.ts'
 import { panelSummaryOf, type PanelSummary } from './panel-summary.ts'
 import { taskProblems, type StageControlUnit } from './stage-controls.ts'
-import type { StageRow } from './stages-index.ts'
+import { type StageRow } from './stages-index.ts'
+import { changeRequirementIds } from './ledger-relations.ts'
 
 export type ChainDisplayState = 'done' | 'doing' | 'waiting' | 'blocked' | 'todo'
 
@@ -125,7 +127,7 @@ function chainUnitsOf(req: ChainUnit, units: readonly ChainUnit[]): {
 } {
   const rid = idOf(req)
   const changes = units
-    .filter((u) => u.kind === 'change' && arr(u.addresses).includes(rid))
+    .filter((u) => u.kind === 'change' && changeRequirementIds(u).includes(rid))
     .sort(byCreated)
   const changeIds = new Set(changes.map(idOf))
   /**
@@ -228,13 +230,14 @@ function stepSummaryOf(step: number, req: ChainUnit, chain: ReturnType<typeof ch
     if (chain.tasks.length === 0) return '还没有任务'
     const executed = chain.tasks.filter((t) => taskExecuted(t, chain.runs)).length
     const running = chain.runs.filter((r) => statusOf(r) === 'running').length
+    const registered = chain.runs.filter((r) => statusOf(r) === 'registered').length
     const returned = chain.runs.filter((r) => statusOf(r) === 'returned').length
     if (chain.runs.length === 0) {
       return chain.tasks.every((t) => statusOf(t) === 'built')
         ? '有任务标了 built，但没有任何执行记录 —— 执行事实判不出'
         : '还没有执行记录'
     }
-    return `${executed}/${chain.tasks.length} 任务执行成立 · ${running} 在跑 · ${returned} 已回传`
+    return `${executed}/${chain.tasks.length} 任务执行成立 · ${registered + running} 在跑 · ${returned} 已回传`
   }
   if (chain.accs.length === 0) return '还没有验收'
   const accepted = groups.filter((g) => g.verdict.verdict === 'accepted').length
@@ -264,7 +267,12 @@ function stateOfStep(step: number, req: ChainUnit, chain: ReturnType<typeof chai
      */
     if (chain.runs.length === 0) return 'waiting'
     if (chain.runs.some((r) => ['stuck', 'refused'].includes(statusOf(r)))) return 'blocked'
-    if (chain.runs.some((r) => statusOf(r) === 'running')) return 'doing'
+    /**
+     * ⚠ 投影刚建立的新 RUN 状态是 `registered`（派发已成功、执行尚未自报 running）。
+     *   第 4 步若只把 `running` 认作进行中，会在“已派、正在跑”的整个最早阶段
+     *   错误显示 `waiting`。两种都属执行已开始：`registered` / `running`。
+     */
+    if (chain.runs.some((r) => ['registered', 'running'].includes(statusOf(r)))) return 'doing'
     if (chain.tasks.every((t) => taskExecuted(t, chain.runs))) return 'done'
     return 'waiting'
   }
@@ -320,7 +328,7 @@ export function buildRequirementChain(req: ChainUnit, units: readonly ChainUnit[
         : d.step === 3
           ? chain.tasks.filter((t) => !taskBriefReady(t)).length
           : d.step === 4
-            ? chain.runs.filter((r) => statusOf(r) === 'running').length
+            ? chain.runs.filter((r) => ['registered', 'running'].includes(statusOf(r))).length
             : groups.filter((g) => g.verdict.verdict === 'undecidable').length
     const waiting = displayState === 'waiting' ? 1 : 0
     return {
@@ -394,6 +402,41 @@ export function buildRequirementChain(req: ChainUnit, units: readonly ChainUnit[
         target: pending[0]!,
         why: `「${pending[0]!}」等着独立验收 —— 没判决前这条需求不算走完`,
         blockedBy: [],
+      }
+    }
+  }
+  /**
+   * **执行阶段“判不出”必须点名缺口，⛔ 不许把明确事实写成说不清。**
+   *
+   * 真账本 `dsh-hob` 的 R-002/R-003/R-004 都是：任务 `built`、验收 `pass`、
+   * 却**零 RUN**。这是 G-1「跳过执行」的确定缺口；全局 `nextAction()` 在
+   * 四类入口都不匹配时回 `undecidable`，于是面板把它们说成“不知道下一步”。
+   *
+   * ⚠ 不是伪造执行记录，也不是把阶段改成完成：
+   *   · 有可开工任务 ⇒ `dispatch` 该任务；
+   *   · 只有 built 任务却零执行记录 ⇒ 明确写成执行缺口，先补可核执行事实。
+   */
+  /**
+   * ⚠ 不能只接 `undecidable`：全局 `nextAction()` 在没有“待派任务”时
+   *   会先落 `wait-user`（拿需求正文里有没有验收记录来判），但本链已经有
+   *   `pass` ACC，真正缺口是执行事实。四类“没指向本轮主线动作”的值都允许补。
+   */
+  const genericNext = next.kind === 'undecidable' || next.kind === 'wait-user' || next.target === null
+  if (genericNext && currentStep === 4) {
+    const runnable = chain.tasks.find((t) => ['todo', 'doing'].includes(statusOf(t)))
+    if (runnable !== undefined && statusOf(runnable) !== 'doing') {
+      next = {
+        kind: 'dispatch',
+        target: idOf(runnable),
+        why: `「${idOf(runnable)}」任务书已齐、还没派活 —— 没有执行记录，第 4 步不能算完成`,
+        blockedBy: [],
+      }
+    } else if (runnable === undefined && chain.runs.length === 0) {
+      next = {
+        kind: 'blocked',
+        target: chain.tasks[0] === undefined ? null : idOf(chain.tasks[0]),
+        why: '任务已标完成，但账本里没有任何执行记录 —— 执行事实判不出；先补可核的运行读数，再谈验收',
+        blockedBy: chain.tasks.map((t) => `${idOf(t)} 零 RUN`),
       }
     }
   }

@@ -172,28 +172,38 @@ const exec = {
   } else bad(`WPD-4 · ${raw}`)
 }
 
-// WPD-5 旧单目标仍工作
+// WPD-5 旧单目标参数仍工作，但必须自带真实 taskId
 {
   const orch = makeOrch()
   const tools = mod.createHobOrchTools(orch, undefined, () => 'single')
   const raw = await tools.dispatch.execute({
-    sessionId: 'session-a', message: 'legacy', task: 'TSK-a',
+    sessionId: 'session-a', message: 'legacy', task: '回传说明', taskId: 'TSK-a',
   }, exec)
   const result = JSON.parse(raw)
-  if (result.ok && orch.state.dispatches.length === 1 && orch.state.plans.length === 0) {
-    ok('WPD-5 ✓ 单目标旧入口保留，且不伪造新计划')
+  if (result.ok && orch.state.dispatches.length === 1 && orch.state.plans.length === 0
+    && orch.state.dispatches[0]?.opts?.taskId === 'TSK-a') {
+    ok('WPD-5 ✓ 单目标旧入口保留（真实 taskId），且不伪造新计划')
   } else bad(`WPD-5 · ${raw} dispatches=${orch.state.dispatches.length}`)
 }
 
-// WPD-6 单目标缺目标 -> 明确拒绝
+// WPD-6 单目标缺目标 -> 明确拒绝（有 taskId 时落到缺 session/message 分支）
 {
   const orch = makeOrch()
   const tools = mod.createHobOrchTools(orch, undefined, () => 'auto')
-  const raw = await tools.dispatch.execute({ message: 'x' }, exec)
+  const raw = await tools.dispatch.execute({ message: 'x', taskId: 'TSK-x' }, exec)
   const result = JSON.parse(raw)
   if (!result.ok && result.reason === 'missing-dispatch-target') {
     ok('WPD-6 ✓ 既无 sessionId 又无 tracks ⇒ 明确拒绝')
   } else bad(`WPD-6 · ${raw}`)
+  /**
+   * ⚠ 反向对照：连 taskId 都没有时，必须在投递前被
+   *   `task-id-required` 拦住。它证明“缺 session”不是唯一入口。
+   */
+  const rawNoTask = await tools.dispatch.execute({ message: 'x' }, exec)
+  const noTaskObj = JSON.parse(String(rawNoTask))
+  if (noTaskObj.ok === false && noTaskObj.reason === 'task-id-required') {
+    ok('WPD-6b ✓ 缺真实 taskId ⇒ task-id-required（⛔ 不把自由描述当任务号）')
+  } else bad(`WPD-6b · ${rawNoTask}`)
 }
 
 // WPD-7 join 状态透传

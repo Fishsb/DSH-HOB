@@ -113,6 +113,71 @@ try {
     && policyMod.GENERATED_LEDGER_PREFIXES.every((x) => policyFile.includes(`"${x}"`))
   if (policySynced) ok('WP-9 ✓ 机器策略文件与运行时策略常量同集')
   else bad('WP-9 · 机器策略文件与运行时策略常量不一致')
+
+  // ── WP-10：写入前结构校验必须挡住非法 kind/status ───────────────────────
+  //
+  // 真实故障：`TSK-345.status = "settled"` 被 `write_hob` 成功写入；
+  // 阶段接口直到读取时才整本拒绝，而健康面只报字段缺口。
+  const unitsDir = join(work, 'ledger', 'units')
+  mkdirSync(unitsDir, { recursive: true })
+  writeFileSync(join(unitsDir, 'index.toml'), '', 'utf8')
+  const badTask = await writeHobFile(work, {
+    file: 'ledger/units/unit-01.toml',
+    content: [
+      '[[unit]]',
+      'id = "TSK-BAD"',
+      'kind = "task"',
+      'status = "settled"',
+      'title = "非法状态"',
+      'parent = "CHG-MISSING"',
+      '',
+    ].join('\n'),
+    mode: 'append',
+  }, opts)
+  if (badTask.ok === false && badTask.reason === 'ledger-structure-invalid') {
+    ok('WP-10 ✓ 写入前结构校验：task.status=settled 被拒（不再等读侧才发现）')
+  } else bad(`WP-10 · 非法 task 状态没有被写入前拒绝：${JSON.stringify(badTask)}`)
+
+  // ⚠ 反向对照：同一路径写合法任务必须能过（证明拒绝不是恒拒）。
+  const goodTask = await writeHobFile(work, {
+    file: 'ledger/units/unit-01.toml',
+    content: [
+      '[[unit]]',
+      'id = "R-GOOD"',
+      'kind = "req"',
+      'status = "agreed"',
+      'title = "合法需求"',
+      'clarify_examples = ["输入 A ⇒ 输出 B"]',
+      'acceptance_criteria = ["点保存后出现成功提示"]',
+      '',
+      '[[unit]]',
+      'id = "CHG-GOOD"',
+      'kind = "change"',
+      'status = "settled"',
+      'title = "合法方案"',
+      'req_ids = ["R-GOOD"]',
+      'path_options = ["A"]',
+      'path_tradeoffs = ["A 快"]',
+      'path_decision = "选 A"',
+      'requirement_coverage = ["R-GOOD → A"]',
+      '',
+      '[[unit]]',
+      'id = "TSK-GOOD"',
+      'kind = "task"',
+      'status = "todo"',
+      'title = "合法任务"',
+      'parent = "CHG-GOOD"',
+      'task_brief = "archive/x/TASK.md"',
+      'counterexamples = ["c"]',
+      'stop_conditions = ["s"]',
+      'return_to = "back-to-plan"',
+      '',
+    ].join('\n'),
+    mode: 'overwrite',
+  }, opts)
+  if (goodTask.ok === true) {
+    ok('WP-10b ✓ 反向对照：合法需求→方案→任务链可正常写入（校验不是恒拒）')
+  } else bad(`WP-10b · 合法链被误拒：${JSON.stringify(goodTask)}`)
 } catch (error) {
   bad(`WP 组自身异常：${error instanceof Error ? error.stack ?? error.message : String(error)}`)
 } finally {

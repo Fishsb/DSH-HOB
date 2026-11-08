@@ -5,6 +5,8 @@
  * 不新增第六阶段；五步仍是唯一生命周期。
  */
 
+import { changeRequirementIds } from './ledger-relations.ts'
+
 export const STAGE_IDS = ['requirements', 'plan', 'tasks', 'execution', 'acceptance'] as const
 export type StageId = (typeof STAGE_IDS)[number]
 
@@ -506,22 +508,25 @@ export function ledgerClosureProblems(units: readonly StageControlUnit[]): Stage
     const id = txt(u.id) || '(unit)'
     const kind = txt(u.kind)
     if (kind === 'change') {
-      const refs = [...arr(u.req_ids), ...arr(u.requirement_coverage)
-        .map((x) => (/^([A-Z]+-[A-Za-z0-9-]+)/.exec(x)?.[1] ?? ''))]
-        .map((x) => txt(x)).filter((x) => x !== '')
+      const refs = changeRequirementIds(u)
       const real = refs.filter((x) => ids.has(x) && kindOf.get(x) === 'req')
       if (real.length === 0) {
         out.push({
           rule: 'L-1', unit: id,
           why: refs.length === 0
-            ? '方案没有指向任何需求（req_ids / requirement_coverage 都空）⇒ 方案没有需求托底'
+            ? '方案没有指向任何需求（req_ids / addresses / requirement_coverage 都空）⇒ 方案没有需求托底'
             : '方案指向的需求在账本里都不存在（' + refs.slice(0, 3).join(' / ') + '）⇒ 先落需求',
         })
       }
     }
     if (kind === 'task') {
       const parent = txt(u.parent)
-      if (parent === '' || kindOf.get(parent) !== 'change') {
+      /**
+       * ⚠ 历史兼容：控制上线前的 3 条任务允许直挂 `req`。
+       *   与 `requirement-chain.ts` 的同一条兼容口径一致；新任务仍只许 `change`。
+       */
+      const historicalDirectReq = legacy(u) && kindOf.get(parent) === 'req'
+      if (!historicalDirectReq && (parent === '' || kindOf.get(parent) !== 'change')) {
         out.push({
           rule: 'L-2', unit: id,
           why: parent === ''
@@ -541,7 +546,10 @@ export function ledgerClosureProblems(units: readonly StageControlUnit[]): Stage
     }
     if (kind === 'acc') {
       const parent = txt(u.parent)
-      if (parent === '' || kindOf.get(parent) !== 'task') {
+      const parentUnit = units.find((x) => txt(x.id) === parent)
+      const historicalTask = String(parentUnit?.kind ?? '') === 'task'
+        && legacy(parentUnit as StageControlUnit)
+      if (!historicalTask && (parent === '' || kindOf.get(parent) !== 'task')) {
         out.push({
           rule: 'L-4', unit: id,
           why: '验收对象的任务 ' + (parent || '(空)') + ' 在账本里不存在或不是 task',
@@ -562,7 +570,21 @@ export function gateScopeUnits(units: readonly StageControlUnit[], scope: GateSc
   const root = units.find((u) => txt(u.id) === id)
   if (root !== undefined) {
     add(root.parent)
-    for (const r of [...arr(root.req_ids), ...arr(root.addresses), ...arr(root.acceptance_ids), ...arr(root.verify_refs), ...arr(root.evidence_refs)]) add(r)
+    /**
+     * ⚠ 方案承接需求必须走**同一个关系读取函数**：
+     *   只把 `addresses` 纳入作用域时，`CHG.req_ids = ["R-1"]` 的需求层
+     *   不会被门禁检查 ⇒ 任务会带着没澄清的需求通过。
+     */
+    for (const r of [
+      ...arr(root.req_ids),
+      ...(root.kind === 'change'
+        ? changeRequirementIds(root)
+        : []),
+      ...arr(root.addresses),
+      ...arr(root.acceptance_ids),
+      ...arr(root.verify_refs),
+      ...arr(root.evidence_refs),
+    ]) add(r)
     /**
      * ⚠⚠ **2026-11-08：沿 `parent` 一路向上爬到根**（用户报「新任务没走阶段流程」）。
      *
@@ -597,6 +619,7 @@ export function gateScopeUnits(units: readonly StageControlUnit[], scope: GateSc
       const linked = ids.has(txt(u.parent))
         || arr(u.req_ids).some((x) => ids.has(x))
         || arr(u.addresses).some((x) => ids.has(x))
+        || (u.kind === 'change' && changeRequirementIds(u).some((x) => ids.has(x)))
         || arr(u.acceptance_ids).some((x) => ids.has(x))
         || arr(u.verify_refs).some((x) => ids.has(x))
       if (linked && !ids.has(uid)) { ids.add(uid); changed = true }

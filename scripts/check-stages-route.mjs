@@ -171,6 +171,23 @@ source = "夹具"
     else for (const x of probs) bad(`R-1 · ${x}`)
   }
 
+  // ── R-1b 合法 kind + 非法 status 也必须点名**该行**，不能只说“形态不认识”
+  //
+  // 真账本 `prompt-enhancer-release` 的 `TSK-345.status=settled` 就是这类：
+  // kind 合法，只有状态越界。R-1 只用一个 bogus kind，因而测不到这条分支。
+  {
+    const r = mod.handleStages(deps({
+      readText: () => TOML([{ id: 'TSK-BADSTATUS', kind: 'task', status: 'settled' }]),
+    }), {})
+    const p = []
+    if (r.ok !== false || r.reason !== mod.STAGES_REASON_ROW_SHAPE_UNKNOWN) p.push(`未落 row-shape-unknown：${JSON.stringify(r).slice(0, 160)}`)
+    if (!String(r.message ?? '').includes('TSK-BADSTATUS')) p.push('错误没有点名具体单元')
+    if (!String(r.message ?? '').includes('settled')) p.push('错误没有点名非法状态值')
+    if (!String(r.message ?? '').includes('todo')) p.push('错误没有给出该 kind 的合法状态集')
+    if (p.length === 0) ok('R-1b ✓ 合法 kind + 非法 status ⇒ row-shape-unknown，点名单元 / 原值 / 合法集')
+    else for (const x of p) bad(`R-1b · ${x}`)
+  }
+
   // ── R-2 五步顺序固定 + 名字逐字 ──────────────────────────────────────
   {
     const res = mod.handleStages(deps({ readText: () => ALL_KINDS }), {})

@@ -9,7 +9,7 @@
  *
  * ⚠ 全部用**真源码 + 临时账本目录**跑（⛔ 不碰真账本）。
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -90,7 +90,9 @@ console.log('')
 // ── LP-3：回传（无进度读数）⇒ 只迁 RUN，不迁 TSK ────────────────────────
 {
   const at = 1_700_000_000_000
-  const withRun = [...chain,
+  const withRun = [
+    chain[0], chain[1],
+    { ...todoTask, status: 'doing' },
     { id: 'RUN-001', kind: 'run', status: 'registered', parent: 'TSK-PROJ', built_by: 'session-dev', projection_key: `dispatch:TSK-PROJ:session-dev:${at}` },
   ]
   const r = mod.projectFact(withRun, {
@@ -104,6 +106,12 @@ console.log('')
   if (runTrans === undefined || runTrans.to !== 'returned') p.push(`RUN 未迁 returned：${JSON.stringify(runTrans)}`)
   const taskTrans = trans.find((o) => o.id === 'TSK-PROJ')
   if (taskTrans !== undefined) p.push(`无进度读数却迁了 TSK ⇒ ${JSON.stringify(taskTrans)}（回传 ≠ 做完）`)
+  /**
+   * ⚠ 自证夹具**确实处在可迁移状态**：任务必须是 doing。
+   *   改前夹具任务仍是 todo，于是“没迁 TSK”只是因为 `todo` 本来就不能迁，
+   *   并不是在验证“无读数不迁” —— 同一族断言会假绿。
+   */
+  if (withRun[2]?.status !== 'doing') p.push('夹具错误：任务不是 doing，无法证明“无读数不迁”')
   if (p.length === 0) ok('LP-3 ✓ 回传无进度读数 ⇒ 只迁 RUN returned，不迁 TSK built（回传 ≠ 做完）')
   else for (const x of p) bad(`LP-3 · ${x}`)
 }
@@ -259,6 +267,145 @@ console.log('')
     if (p.length === 0) ok('LP-9 ✓ 判决落盘 + 幂等：同一判决只建 1 条 ACC，字段完整')
     else for (const x of p) bad(`LP-9 · ${x}`)
   } finally { cleanup(tmp) }
+}
+
+console.log('')
+// ── LP-9b：ACC 投影字段必须通过同一份验收门禁 ─────────────────────────────
+//
+// `LP-9` 只落 send-back，因而只验证了“依据 + 目标阶段”。pass 分支还要求
+// 产品确认 / 技术证据 / 逐条例子结果 —— 缺了它们，写出的 ACC 一进账本就会
+// 被 C-7/C-12 判坏。这里在临时账本上真实写入一条 pass，再调用
+// `acceptanceProblems` 核它，并在同一夹具上删掉例子结果做负向对拍。
+{
+  const tmp = mkdtempSync(join(tmpdir(), 'dsh-hob-lp9b-'))
+  try {
+    const target = join(tmp, 'ledger', 'units')
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(target, 'unit-01.toml'), [
+      '[[unit]]',
+      'id = "TSK-PASS"',
+      'kind = "task"',
+      'status = "built"',
+      'title = "验收投影夹具"',
+      'parent = "CHG-PASS"',
+      'built_by = "session-dev"',
+      'verify_refs = ["EVD-PASS"]',
+      '',
+    ].join('\n'), 'utf8')
+    const fact = {
+      kind: 'verdict', taskId: 'TSK-PASS', verdict: 'pass', verifiedAt: '2026-11-08T12:00:00+08:00',
+      basis: ['EVD-PASS'], actor: 'session-acceptor', acceptanceSession: 'session-acceptor',
+      productConfirmation: '用户接受结果符合目标',
+      verificationRefs: ['EVD-PASS'],
+      exampleResults: ['EX-1 | pass | EVD-PASS | 保存后出现成功提示'],
+    }
+    const applied = await writer.applyProjection(tmp, fact)
+    const after = writer.readProjectionUnits(tmp)
+    const acc = after.find((u) => u.kind === 'acc' && u.parent === 'TSK-PASS')
+    const sc = await import(pathToFileURL(join(root, 'src', 'shared', 'stage-controls.ts')).href)
+    const problems = acc === undefined ? ['没有写出 ACC'] : sc.acceptanceProblems(acc, after)
+    const badAcc = acc === undefined ? [] : sc.acceptanceProblems({ ...acc, example_results: [] }, after)
+    const p = []
+    if (!applied.ok) p.push(`pass 投影未落盘：${applied.reason}`)
+    if (problems.length > 0) p.push(`新 ACC 未通过 C-7/C-12：${problems.map((x) => `${x.rule} ${x.why}`).join('；')}`)
+    if (!badAcc.some((x) => x.rule === 'C-7')) p.push('负向对拍失败：删掉例子结果后 C-7 未开火')
+    if (p.length === 0) ok('LP-9b ✓ pass 投影写出结构健康 ACC；删例子结果 ⇒ C-7 必红（不是只写字段就完事）')
+    else for (const x of p) bad(`LP-9b · ${x}`)
+  } finally { cleanup(tmp) }
+}
+
+// ── LP-9c：真实 send-back 入口只有 actor，不得因此整条退回落不了账 ─────────
+{
+  const r = mod.projectFact([
+    { id: 'TSK-BACK', kind: 'task', status: 'built', title: '退回夹具', parent: 'CHG-BACK', built_by: 'session-dev' },
+  ], {
+    kind: 'verdict', taskId: 'TSK-BACK', verdict: 'send-back',
+    verifiedAt: '2026-11-08T13:00:00+08:00', basis: ['EVD-BACK'],
+    actor: 'session-acceptor', sendBackTo: 'back-to-plan',
+  })
+  const acc = r.ops.find((o) => o.op === 'create-unit')
+  const p = []
+  if (acc === undefined || acc.fields.status !== 'send-back') p.push(`退回没有建 ACC：${JSON.stringify(r)}`)
+  else if (acc.fields.acceptance_session !== 'session-acceptor') p.push(`验收会话未取可信 actor：${JSON.stringify(acc.fields)}`)
+  const selfBack = mod.projectFact([
+    { id: 'TSK-SELF', kind: 'task', status: 'built', title: '自退夹具', parent: 'CHG-BACK', built_by: 'session-dev' },
+  ], {
+    kind: 'verdict', taskId: 'TSK-SELF', verdict: 'send-back',
+    verifiedAt: '2026-11-08T13:00:00+08:00', basis: ['EVD-BACK'],
+    actor: 'session-dev', sendBackTo: 'back-to-plan',
+  })
+  if (!String(selfBack.skipped ?? '').includes('自己验自己')) p.push(`实现者自退未被识别：${JSON.stringify(selfBack)}`)
+  if (p.length === 0) ok('LP-9c ✓ send-back 用可信 actor 作验收会话可落账；实现者自退仍被拒')
+  else for (const x of p) bad(`LP-9c · ${x}`)
+}
+
+// ── LP-10：多轨 / 恢复路径也把真实任务号传给派发（否则不落账）────────────
+{
+  const src = readFileSync(join(root, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+  const p = []
+  /**
+   * ⚠ 三条入口都必须带 `taskId`：
+   *   · 单目标 `hob_dispatch`（`args.taskId`）；
+   *   · 多轨 `dispatchPlan`（`track.taskId`）；
+   *   · 计划推进 / 重启恢复 `advanceWorkPlans`（`track.taskId`）。
+   * ⚠ 只查"出现过 taskId"会假绿 —— 必须查**同一处 dispatch 调用块内**同时有
+   *   `task: track.taskId` 与 `taskId: track.taskId`。
+   */
+  const trackCalls = [...src.matchAll(/orch\.dispatch\(track\.sessionId, track\.message, \{([\s\S]{0,400}?)\}\)/g)].map((m) => m[1])
+  if (trackCalls.length < 2) p.push(`找到 ${trackCalls.length} 处 track 派发（期望 ≥2：计划推进 + 多轨首波）`)
+  for (const [i, body] of trackCalls.entries()) {
+    if (!/taskId:\s*track\.taskId/.test(body)) p.push(`第 ${i + 1} 处 track 派发缺 taskId ⇒ 不会投影回账本`)
+  }
+  if (!/taskId:\s*track\.taskId/.test(src)) p.push('orchestrator 里没有任何 track.taskId 落账引用')
+  /** 重启恢复的 watch 也必须带 taskId（否则下一轮回传无法投影）。 */
+  const restored = src.slice(src.indexOf('watches.set(track.sessionId'), src.indexOf('watches.set(track.sessionId') + 600)
+  if (!/taskId:\s*track\.taskId/.test(restored)) p.push('从计划恢复的 watch 没带 taskId ⇒ 重启后回传不落账')
+  if (p.length === 0) ok(`LP-10 ✓ 负向对拍：多轨 / 计划推进 / 重启恢复三条路径都带 taskId（${trackCalls.length} 处 track 派发逐处核过）`)
+  else for (const x of p) bad(`LP-10 · ${x}`)
+}
+
+// ── LP-11：两个并发派发不得分配同一个 RUN 编号 ─────────────────────────────
+//
+// ⚠ `writeHobFile` 只按单文件排队；投影横跨“读全账本 → 分配编号 → 写多分片”。
+//   改前实测：两条 todo 任务并行派发，两次都返回 ok，却写出两条 RUN-001。
+{
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-hob-lp11-'))
+  const unitsDir = join(dir, 'ledger', 'units')
+  mkdirSync(unitsDir, { recursive: true })
+  const task = (id) => [
+    '[[unit]]',
+    `id = "${id}"`,
+    'kind = "task"',
+    'status = "todo"',
+    `title = "并发夹具 ${id}"`,
+    'parent = "CHG-CONCURRENT"',
+    'task_brief = "archive/x/TASK.md"',
+    'counterexamples = ["c"]',
+    'stop_conditions = ["s"]',
+    'return_to = "back-to-plan"',
+    '',
+  ].join('\n')
+  writeFileSync(join(unitsDir, 'unit-01.toml'), task('TSK-CONCURRENT-A') + '\n' + task('TSK-CONCURRENT-B'))
+  writeFileSync(join(unitsDir, 'index.toml'), '', 'utf8')
+  const at = Date.now()
+  const results = await Promise.all([
+    writer.applyProjection(dir, {
+      kind: 'dispatch', taskId: 'TSK-CONCURRENT-A', target: 'session-a', at: at + 1, task: '并发 A',
+    }),
+    writer.applyProjection(dir, {
+      kind: 'dispatch', taskId: 'TSK-CONCURRENT-B', target: 'session-b', at: at + 2, task: '并发 B',
+    }),
+  ])
+  const p = []
+  if (!results.every((r) => r.ok)) p.push(`并发投影失败：${JSON.stringify(results.map((r) => ({ ok: r.ok, reason: r.reason })))}`)
+  const projectionFile = join(unitsDir, 'unit-projection.toml')
+  const content = existsSync(projectionFile) ? readFileSync(projectionFile, 'utf8') : ''
+  const runIds = [...content.matchAll(/^id = "(RUN-[^"]+)"$/gm)].map((m) => m[1])
+  if (runIds.length !== 2) p.push(`应创建 2 条 RUN，实际 ${runIds.length}：${runIds.join(' / ') || '(无)'}`)
+  if (new Set(runIds).size !== runIds.length) p.push(`出现重复 RUN 编号：${runIds.join(' / ')}`)
+  if (p.length === 0) ok(`LP-11 ✓ 两条并发派发 ⇒ 2 条唯一 RUN（${runIds.join(' / ')}），整场投影按账本串行`)
+  else for (const x of p) bad(`LP-11 · ${x}`)
+  cleanup(dir)
 }
 
 console.log('')

@@ -14,6 +14,8 @@
  * 只拿列表投影，完整原文由 `/ledger-resource` 按 ID 读取。
  */
 
+import { changeRequirementIds } from './ledger-relations.ts'
+
 export type ItemFlagCode =
   | 'title-generic'
   | 'title-status-conflict'
@@ -142,7 +144,7 @@ const relationOf = (u: PresentationUnit, units: readonly PresentationUnit[]): It
       ? { key: 'goal', label: '所属目标', id: null, title: null, state: 'undecidable' }
       : { key: 'goal', label: '所属目标', id: String(goal.id), title: text(goal.title) === '' ? null : text(goal.title), state: 'ok' }
   }
-  if (u.kind === 'change') return fromId('requirement', '承接需求', arr(u.addresses)[0] ?? '')
+  if (u.kind === 'change') return fromId('requirement', '承接需求', changeRequirementIds(u)[0] ?? '')
   if (u.kind === 'task') return fromId('change', '所属方案', parentId)
   if (u.kind === 'run') return fromId('task', '执行对象', parentId)
   if (u.kind === 'acc') return fromId('task', '验收对象', parentId)
@@ -221,10 +223,12 @@ const detailFactsOf = (u: PresentationUnit, relation: ItemRelation | null): Item
     add('path_decision', '方案决策', u.path_decision)
     addList('requirement_coverage', '需求映射', u.requirement_coverage)
     /**
-     * 主关系只显示 `addresses[0]`；其余正式承接需求必须在展开详情里逐条保留，
-     * ⛔ 不许因为主行只放一个关系而把它们丢掉。
+     * 主关系只显示第一个正式承接需求；其余必须在展开详情里逐条保留。
+     * ⚠ 三种承载方式共用 `changeRequirementIds`，⛔ 不只认 `addresses`：
+     *   新方案只写 `req_ids` 时，主行会显示「承接需求 判不出」，即使需求真实存在。
      */
-    const rest = arr(u.addresses).slice(1)
+    const requirementIds = changeRequirementIds(u)
+    const rest = requirementIds.slice(1)
     if (rest.length > 0) add('additional_requirements', '其余需求', rest.join(' · '))
     add('stage_summary', '阶段摘要', u.stage_summary)
     if (text(u.stage_summary) === '') out.push(fact('stage_summary', '阶段摘要', '判不出', 'undecidable'))
@@ -315,9 +319,9 @@ const foldedFactsOf = (u: PresentationUnit): ItemFact[] => {
      *   ⇒ 用**正式承接需求数**兜底：那是账本已有的 `addresses`，⛔ 不新造状态、不猜内容。
      */
     if (out.length === 0) {
-      const addresses = arr(u.addresses)
-      out.push(addresses.length > 0
-        ? fact('addresses_count', '承接需求', `${addresses.length} 条`)
+      const requirementIds = changeRequirementIds(u)
+      out.push(requirementIds.length > 0
+        ? fact('addresses_count', '承接需求', `${requirementIds.length} 条`)
         : fact('addresses_count', '承接需求', '判不出', 'undecidable'))
     }
   }

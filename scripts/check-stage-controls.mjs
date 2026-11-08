@@ -48,6 +48,97 @@ console.log('')
   else bad(`SC-0 ${legacyNoStamp.length}/${legacyUnits.length} 条历史豁免缺 created_at：${legacyNoStamp.slice(0, 5).map((u) => u.id).join(' / ')}`)
 }
 
+// ── SC-0b：就绪度必须同时报“结构非法”和“字段缺口” ─────────────────────────
+//
+// 真实故障：`prompt-enhancer-release` 的 `TSK-345.status=settled` 让阶段接口整本
+// `row-shape-unknown`，而就绪度只跑字段门禁 ⇒ 两边对同一本账给出相反结论。
+{
+  const readinessMod = await import(pathToFileURL(join(root, 'src', 'shared', 'ledger-readiness.ts')).href)
+  const shape = readinessMod.assessLedgerReadiness({
+    ledgerRoot: '/fixture',
+    unitsDirExists: true,
+    indexText: [
+      '[[unit]]',
+      'id = "TSK-BAD"',
+      'kind = "task"',
+      'status = "settled"',
+      'title = "非法状态"',
+      '',
+    ].join('\n'),
+    shardTexts: [],
+  })
+  const p = []
+  if (shape.state !== 'unhealthy') p.push(`非法状态没有判 unhealthy：${shape.state}`)
+  if (!shape.gaps.some((g) => g.rule === 'S-0' && g.unit === 'TSK-BAD')) {
+    p.push(`缺口未点名 S-0 / TSK-BAD：${JSON.stringify(shape.gaps)}`)
+  }
+  if (!shape.headline.includes('缺口')) p.push(`结论没有说缺口：${shape.headline}`)
+  if (p.length === 0) ok('SC-0b ✓ 非法 kind/status 在就绪度里被 S-0 点名，与阶段接口同口径')
+  else for (const x of p) bad(`SC-0b · ${x}`)
+}
+
+// ── SC-0c：旧 kind/status 词迁移必须只预演、可真落盘且不碰无关值 ───────────
+{
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const toolsMod = await import(pathToFileURL(join(root, 'src', 'modules', 'tools.ts')).href)
+  const tmp = mkdtempSync(join(tmpdir(), 'dsh-hob-migrate-'))
+  try {
+    mkdirSync(join(tmp, 'ledger', 'units'), { recursive: true })
+    writeFileSync(join(tmp, 'ledger', 'units', 'index.toml'), [
+      '[[unit]]',
+      'id = "TSK-OLD"',
+      'kind = "task"',
+      'status = "settled"',
+      'title = "old task"',
+      '',
+      '[[unit]]',
+      'id = "EVD-OLD"',
+      'kind = "evd"',
+      'status = "settled"',
+      'title = "old evidence"',
+      '',
+      '[[unit]]',
+      'id = "DEC-OLD"',
+      'kind = "decision"',
+      'status = "settled"',
+      'title = "old decision"',
+      '',
+    ].join('\n'), 'utf8')
+    const toolset = toolsMod.createHobTools({
+      workspaceRoot: tmp,
+      ledgerRoot: tmp,
+      ledgerHome: tmp,
+      enableWrite: true,
+      maxFileBytes: 65536,
+      maxWriteBytes: 262144,
+    }, {})
+    const exec = { agent: { session: { header: { cwd: tmp } } } }
+    const dryRaw = await toolset.ledgerMigrate.execute({}, exec)
+    const dry = typeof dryRaw === 'string' ? JSON.parse(dryRaw) : dryRaw
+    const srcAfterDry = readFileSync(join(tmp, 'ledger', 'units', 'index.toml'), 'utf8')
+    const wetRaw = await toolset.ledgerMigrate.execute({ dryRun: false }, exec)
+    const wet = typeof wetRaw === 'string' ? JSON.parse(wetRaw) : wetRaw
+    const after = readFileSync(join(tmp, 'ledger', 'units', 'index.toml'), 'utf8')
+    const p = []
+    if (dry.dryRun !== true || dry.changes?.length !== 4) p.push(`预演不完整：${JSON.stringify(dry)}`)
+    if (!srcAfterDry.includes('status = "settled"')) p.push('预演竟然写盘了')
+    if (wet.changes?.length !== 4) p.push(`真迁移失败：${JSON.stringify(wet)}`)
+    /**
+     * ⚠ 迁移只负责把旧**词**换成现行词；它不伪造任务书或父方案。
+     *   夹具因此保留真实缺口，期望 `ok:false + state:unhealthy`，并明确回报缺口。
+     */
+    if (wet.ok !== false || wet.state !== 'unhealthy' || !(wet.gapCount > 0)) p.push(`迁移后未如实报告剩余缺口：${JSON.stringify(wet)}`)
+    if (!/id = "TSK-OLD"[\s\S]*?status = "built"/.test(after)) p.push('task settled 未迁 built')
+    if (!/id = "EVD-OLD"\nkind = "evidence"\nstatus = "recorded"/.test(after)) p.push('evd/settled 未迁 evidence/recorded')
+    if (!/id = "DEC-OLD"[\s\S]*?status = "active"/.test(after)) p.push('decision settled 未迁 active')
+    if (p.length === 0) ok('SC-0c ✓ 旧词迁移：预演零写盘 / 3 类映射真落盘 / 无关字段保留')
+    else for (const x of p) bad(`SC-0c · ${x}`)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
 {
   if (problems.length === 0 && fileProblems.length === 0) {
     ok('SC-1 ✓ 当前账本 **0 条**阶段控制缺口（需求 / 方案 / 任务 / 执行 / 验收五层都满足）')
