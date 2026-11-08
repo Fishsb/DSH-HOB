@@ -2101,6 +2101,22 @@ export function StagesPanel(props?: {
       return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-mainline', 'data-state': 'empty' })
     }
     /**
+     * ⚠ **验收材料三件不藏在展开体里**（2026-11-08 · 阶段反馈核对）。
+     *   当前步一旦是第 5 步，用户最需要知道的是“产品确认 / 技术证据 / 例子结果”
+     *   哪件还缺；把它放进折叠条目里等于让验收再次靠猜。
+     *   ⚠ 这里只显示账本已经给出的事实：AC 条目与候选证据的**存在数**；
+     *     ⛔ 不在这里推导“通过”、⛔ 不显示百分比。
+     */
+    const acceptanceReadout = selectedCurrentStep === 5
+      ? (() => {
+          const items = selectedChain.steps[4]?.itemIds
+            .map((id) => stageItemsById.get(id))
+            .filter((x) => x !== undefined) ?? []
+          const accs = items.filter((it: any) => it.kind === 'acc')
+          return `验收材料：候选 ACC ${accs.length} 条。产品确认、技术证据、用户例子逐条结果须在 ACC 内逐项可核。`
+        })()
+      : ''
+    /**
      * ⚠ **一棵树、两种 marker**：外层是 `stages-mainline`（R-020 正典），
      *   同一节点同时挂 `stages-tree`（旧判据兼容锚点）。
      *   ⛔ 不再复制第二棵步骤树 —— 那会让同一份数据渲染两遍。
@@ -2117,6 +2133,13 @@ export function StagesPanel(props?: {
       },
       React.createElement('div', { style: { fontWeight: 600, fontSize: '0.95em', overflowWrap: 'anywhere' }, 'data-dsh-hob': 'stages-mainline-title' },
         `${selectedChain.state === 'completed' ? '历史' : '当前'}：${selectedChain.reqId}`),
+      ...(acceptanceReadout === ''
+        ? []
+        : [React.createElement(
+            'div',
+            { key: 'acceptance-materials', 'data-dsh-hob': 'stages-current-acceptance-materials', style: { fontSize: '0.9em', overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-secondary)' } },
+            acceptanceReadout,
+          )]),
       React.createElement(
         'div',
         { style: { display: 'flex', flexDirection: 'column', gap: 2 }, 'data-dsh-hob': 'stages-tree', 'data-state': 'rows' },

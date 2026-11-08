@@ -202,6 +202,11 @@ export const PANEL_MARKERS = Object.freeze({
     who: 'panel',
     why: '唯一“当前”标记；同一时刻最多一个',
   }),
+  currentAcceptanceMaterials: Object.freeze({
+    literal: 'stages-current-acceptance-materials',
+    who: 'panel',
+    why: '当前第 5 步的验收材料提醒：产品确认 / 技术证据 / 用户例子逐条结果必须在首屏点名，⛔ 不藏在条目展开体里',
+  }),
   historySection: Object.freeze({
     literal: 'stages-history-section',
     who: 'panel',

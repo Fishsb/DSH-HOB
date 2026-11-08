@@ -4796,6 +4796,77 @@ export function StateDot({ state, size, appearance }) {
       }
     }
 
+  // ── S-44：第 5 步的验收材料在首屏可见，不藏在条目展开体里 ─────────────────
+  {
+  const h = mount(react.createElement(StagesPanelHarness, {
+    fetchProgress: async () => ({ ok: true, rows: [] }),
+    fetchExec: async () => ({ ok: true, items: [] }),
+    fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条' }),
+    fetchPlans: async () => ({ ok: true, mode: 'auto', plans: [], unreadable: [] }),
+    fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [{ name: 'fixture', units: 1, state: 'data', current: true }] }),
+    fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 夹具' }),
+    pollMs: 0,
+    fetchChains: async () => ({
+      ok: true,
+      readAt: 'x',
+      activeCount: 1,
+      completedCount: 0,
+      retiredCount: 0,
+      historyItemCount: 0,
+      unattached: [],
+      chains: [{
+        reqId: 'R-ACC', title: '验收材料夹具', reqStatus: 'agreed', state: 'active', inFlight: true,
+        complete: false, currentStep: 5, missing: [], itemIds: ['R-ACC', 'ACC-ACC'],
+        next: { kind: 'accept', target: 'ACC-ACC', why: '等独立验收', blockedBy: [] },
+        steps: [
+          { step: 1, name: '需求规格', displayState: 'done', summary: '验收条件 1 条', total: 1, done: 1, doing: 0, waiting: 0, itemIds: ['R-ACC'] },
+          { step: 2, name: '实现方案', displayState: 'done', summary: '已定', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+          { step: 3, name: '编码任务', displayState: 'done', summary: '任务书已齐', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+          { step: 4, name: '任务执行', displayState: 'done', summary: '执行事实成立', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+          { step: 5, name: '验收核对', displayState: 'waiting', summary: '0/1 已判决', total: 1, done: 0, doing: 0, waiting: 1, itemIds: ['ACC-ACC'] },
+        ],
+      }],
+      retiredChains: [],
+    }),
+    fetchStages: async () => ({
+      ok: true,
+      readAt: '2026-11-07T00:00:00.000Z',
+      relations: { 'TSK-ACC': '验收夹具任务' },
+      stages: [
+        { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-ACC', status: 'agreed', kind: 'req', presentation: { displayTitle: '验收夹具', relation: { key: 'goal', id: 'G-ACC', state: 'ok' }, facts: [], flags: [] } }] },
+        { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [{ id: 'CHG-ACC', status: 'settled', kind: 'change', presentation: { displayTitle: '方案', relation: { key: 'requirement', id: 'R-ACC', state: 'ok' }, facts: [], flags: [] } }] },
+        { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-ACC', status: 'built', kind: 'task', presentation: { displayTitle: '任务', relation: { key: 'change', id: 'CHG-ACC', state: 'ok' }, facts: [], flags: [] } }] },
+        { step: 4, name: '任务执行', state: 'done', done: 1, total: 1, items: [{ id: 'RUN-ACC', status: 'returned', kind: 'run', presentation: { displayTitle: '执行', relation: { key: 'task', id: 'TSK-ACC', state: 'ok' }, facts: [], flags: [] } }] },
+        { step: 5, name: '验收核对', state: 'doing', done: 0, total: 1, items: [{ id: 'ACC-ACC', status: 'unverified', kind: 'acc', presentation: { displayTitle: '待判', relation: { key: 'task', id: 'TSK-ACC', state: 'ok' }, facts: [['判决', '还没验'], ['依据', '判不出']], flags: [] } }] },
+      ],
+      caps: [],
+      attention: [],
+      next: { kind: 'accept', target: 'ACC-ACC', why: '等独立验收', blockedBy: [] },
+      summary: { stage: null, action: { kind: 'accept', target: 'ACC-ACC', headline: '验收 ACC-ACC' }, waitFor: 'acceptance', waitingFor: '独立验收会话', blocker: null, openItems: 0 },
+      relations: { 'TSK-ACC': '验收夹具任务' },
+      stageHealth: { ok: true, count: 0, problems: [] },
+    }),
+  }))
+  try {
+    await tick(40)
+    const readout = document.querySelector('[data-dsh-hob="stages-current-acceptance-materials"]')
+    const p = []
+    if (readout === null) p.push('当前第 5 步没有首屏验收材料读数')
+    else {
+      const txt = readout.textContent ?? ''
+      if (!txt.includes('产品确认')) p.push('没有点名产品确认')
+      if (!txt.includes('技术证据')) p.push('没有点名技术证据')
+      if (!txt.includes('例子')) p.push('没有点名用户例子结果')
+      if (/百分比|%|进度条/.test(txt)) p.push('验收材料读数出现了百分比/进度条')
+    }
+    const outsideMainline = readout !== null && readout.closest('[data-dsh-hob="stages-tree-body"]') !== null
+    if (outsideMainline) p.push('验收材料被藏在条目展开体里')
+    if (p.length === 0) ok('S-44 ✓ 当前第 5 步首屏点名产品确认 / 技术证据 / 用户例子结果，⛔ 不藏在展开体、⛔ 不显示百分比')
+    else for (const x of p) bad(`S-44 · ${x}`)
+  } finally {
+    actFn(() => h.unmount())
+  }
+}
 } finally {
   cleanup()
 }
