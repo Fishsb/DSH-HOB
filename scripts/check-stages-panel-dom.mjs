@@ -3931,6 +3931,71 @@ export function StateDot({ state, size, appearance }) {
       }
 
       /**
+       * S-33h2：**账本健康缺口必须显示在面板上**（2026-11-08 用户报「梳理不到完全健康」）。
+       *
+       *   ⚠ 改前面板只显示"在途需求 / 五步"，一本**只有孤立方案**的账看起来
+       *     "没有在途需求"（好像没事），而派活又会被拒 —— 两处读数打架。
+       *   ⚠ 数据源必须是 `/stages` 的 `stageHealth`（与门禁同一份函数）；
+       *     实测踩过：从旧的 `/tasks-progress`（`state`）取会**永远是 undefined**，
+       *     面板"看起来没缺口"、派活却被拒。
+       */
+      {
+        const p = []
+        const r = await iaMount({
+          fetchStages: async () => ({
+            ok: true, readAt: '2026-11-08T00:00:00+08:00',
+            stages: [
+              { step: 1, name: '需求规格', state: 'todo', done: 0, total: 0, items: [] },
+              { step: 2, name: '实现方案', state: 'doing', done: 0, total: 1, items: [] },
+              { step: 3, name: '编码任务', state: 'todo', done: 0, total: 0, items: [] },
+              { step: 4, name: '任务执行', state: 'todo', done: 0, total: 0, items: [] },
+              { step: 5, name: '验收核对', state: 'todo', done: 0, total: 0, items: [] },
+            ],
+            caps: [],
+            stageHealth: {
+              ok: false, count: 1,
+              problems: [{ rule: 'L-1', unit: 'CHG-344', why: '方案指向的需求在账本里都不存在（UD-0052）⇒ 先落需求' }],
+            },
+          }),
+        })
+        const node = document.querySelector('[data-dsh-hob="stages-health"]')
+        if (node === null) p.push('有缺口时面板没有健康区块（用户看不出差什么）')
+        else {
+          if (node.getAttribute('data-state') !== 'unhealthy') p.push(`健康区块 data-state=${JSON.stringify(node.getAttribute('data-state'))}`)
+          const t = node.textContent ?? ''
+          if (!t.includes('1 条缺口')) p.push(`没有说清缺口条数：${JSON.stringify(t.slice(0, 80))}`)
+          const item = node.querySelector('[data-dsh-hob="stages-health-item"]')
+          if (item === null) p.push('健康区块里没有逐条缺口')
+          else {
+            const it = item.textContent ?? ''
+            for (const want of ['L-1', 'CHG-344', '先落需求']) {
+              if (!it.includes(want)) p.push(`缺口行缺「${want}」：${JSON.stringify(it.slice(0, 80))}`)
+            }
+          }
+        }
+        actFn(() => r.unmount())
+        /** ⚠ 反向对拍：健康时**不许**出现这个红块（⛔ 不是恒显）。 */
+        const r2 = await iaMount({
+          fetchStages: async () => ({
+            ok: true, readAt: '2026-11-08T00:00:00+08:00',
+            stages: [
+              { step: 1, name: '需求规格', state: 'todo', done: 0, total: 0, items: [] },
+              { step: 2, name: '实现方案', state: 'todo', done: 0, total: 0, items: [] },
+              { step: 3, name: '编码任务', state: 'todo', done: 0, total: 0, items: [] },
+              { step: 4, name: '任务执行', state: 'todo', done: 0, total: 0, items: [] },
+              { step: 5, name: '验收核对', state: 'todo', done: 0, total: 0, items: [] },
+            ],
+            caps: [],
+            stageHealth: { ok: true, count: 0, problems: [] },
+          }),
+        })
+        if (document.querySelector('[data-dsh-hob="stages-health"]') !== null) p.push('账本健康时仍显示缺口区块（恒显）')
+        actFn(() => r2.unmount())
+        if (p.length === 0) ok('S-33h2 ✓ 账本有缺口 ⇒ 面板显示「N 条缺口」+ 逐条（规则·单元·下一步）；健康时不显示')
+        else for (const x of p) bad(`S-33h2 · ${x}`)
+      }
+
+      /**
        * S-33c / S-33d / S-33e：预设门禁必须 fail-closed。
        *   · Hob ⇒ 正常取数；
        *   · standard ⇒ 零请求、只留一行说明；

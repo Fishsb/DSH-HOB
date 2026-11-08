@@ -875,7 +875,16 @@ export function StagesPanel(props?: {
     const fn = props?.fetchResource ?? defaultFetchResource
     return (resource: string) => fn(props?.sessionId, resource, selectedLedger)
   }, [props?.fetchResource, props?.sessionId, selectedLedger])
-  const [state, setState] = React.useState<{ kind: 'reading' } | { kind: 'ok'; rows: any[] } | { kind: 'fail'; reason: string; message: string }>({ kind: 'reading' })
+  /**
+   * ⚠ 2026-11-08：`ok` 档多带一份 `stageHealth`（服务端算好的账本缺口清单）。
+   *   ⚠ 改前这里只存 `rows`，于是健康清单**拿到了但没被保存** ——
+   *     面板看起来"没有在途需求"、派活却被拒，两处读数打架。
+   */
+  const [state, setState] = React.useState<
+    | { kind: 'reading' }
+    | { kind: 'ok'; rows: any[]; stageHealth?: { ok: boolean; count: number; problems?: Array<{ rule: string; unit: string; why: string }>; truncated?: boolean } }
+    | { kind: 'fail'; reason: string; message: string }
+  >({ kind: 'reading' })
   /** 手动刷新的计数（`data-dsh-hob="stages-refresh"` 按钮点一次 +1；仅用于触发重跑）。 */
   const [refreshTick, setRefreshTick] = React.useState(0)
   /**
@@ -1044,7 +1053,11 @@ export function StagesPanel(props?: {
       }
       if (!alive) return
       if (res !== null && typeof res === 'object' && res.ok === true && Array.isArray(res.rows)) {
-        setState({ kind: 'ok', rows: res.rows })
+        setState({
+          kind: 'ok',
+          rows: res.rows,
+          ...(res.stageHealth === undefined || res.stageHealth === null ? {} : { stageHealth: res.stageHealth }),
+        })
       } else {
         setState({
           kind: 'fail',
@@ -1132,6 +1145,8 @@ export function StagesPanel(props?: {
            */
           truncated: (res as any).truncated,
           relations: (res as any).relations,
+          /** ⚠ 账本健康清单（2026-11-08）：与派活门禁同一份函数的产物，面板只展示。 */
+          stageHealth: (res as any).stageHealth,
         } as any)
       } else {
         setStageState({
@@ -1931,6 +1946,53 @@ export function StagesPanel(props?: {
     setExpanded(new Set())
   }, [selectedLedger])
 
+  /**
+   * **账本健康（只读）**（2026-11-08 · 用户报「旧账本梳理不到完全健康」）。
+   *
+   * ⚠ 它回答一个此前**看不见**的问题：这本账"差什么才算健康"。
+   *   改前只有"在途需求 / 五步 / 下一步"——一本**只有一条孤立方案**的账
+   *   （`prompt-enhancer-release`）在面板上看起来"没有在途需求"，
+   *   而派活又会被拒，两处读数互相打架。
+   *
+   * ⚠ 数据源 = `stages` 路由返回的 `stageHealth`（服务端用与门禁**同一个**
+   *   `stageControlProblems` + `ledgerClosureProblems` 算出来的）——
+   *   ⛔ 不在客户端另算一份（两处漂开就会"面板说健康、派活说不行"）。
+   * ⚠ 只读：⛔ 零写操作、⛔ 零百分比。
+   */
+  const healthBlock = ((): React.JSX.Element | null => {
+    if (blockedByPreset) return null
+    /**
+     * ⚠⚠ **数据源是 `stageState`（`/stages` 路由），⛔ 不是 `state`**（2026-11-08 实测踩到）：
+     *   `state` 走的是旧的 `/tasks-progress`（线格式是 `{ok, rows}`），
+     *   健康清单只在 `/stages` 的返回里。从 `state` 取会**永远是 undefined**
+     *   ⇒ 面板"看起来没有缺口"、派活却被拒，两处读数打架。
+     */
+    if (stageState.kind !== 'ok') return null
+    const health = (stageState as any).stageHealth as
+      | { ok?: boolean; count?: number; problems?: Array<{ rule?: string; unit?: string; why?: string }>; truncated?: boolean }
+      | undefined
+    if (health === undefined) return null
+    const problems = Array.isArray(health.problems) ? health.problems : []
+    if (health.ok === true && problems.length === 0) return null
+    return React.createElement(
+      'details',
+      { 'data-dsh-hob': 'stages-health', 'data-state': problems.length === 0 ? 'ok' : 'unhealthy', style: { fontSize: '0.9em' } },
+      React.createElement(
+        'summary',
+        { style: { cursor: 'pointer', color: 'var(--dsw-alias-state-error-primary)' } },
+        `账本健康：${problems.length} 条缺口（先补齐才能派活）`,
+      ),
+      ...problems.slice(0, 12).map((p, i) => React.createElement(
+        'div',
+        { key: `health-${i}`, 'data-dsh-hob': 'stages-health-item', style: { paddingLeft: '1.2em', overflowWrap: 'anywhere' } },
+        `${String(p.rule ?? '?')} · ${String(p.unit ?? '?')} · ${String(p.why ?? '')}`,
+      )),
+      ...(problems.length > 12
+        ? [React.createElement('div', { key: 'health-more', style: { paddingLeft: '1.2em', color: 'var(--dsw-alias-label-tertiary)' } }, `另有 ${problems.length - 12} 条`)]
+        : []),
+    )
+  })()
+
   /** 需求列表：只显示在途需求；完成/退役进底部历史。 */
   const inFlightBlock = ((): React.JSX.Element => {
     if (blockedByPreset) return React.createElement('div', null)
@@ -2481,6 +2543,7 @@ export function StagesPanel(props?: {
     },
     React.createElement('div', { style: { fontWeight: 600 } }, STAGES_PANEL_TITLE),
     ledgerPicker,
+    healthBlock,
     inFlightBlock,
     mainlineBlock,
     selectedNextBlock,

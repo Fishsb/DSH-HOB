@@ -288,20 +288,56 @@ console.log('')
     bad('SC-11 作用域门禁入口缺失 ⇒ 运行时仍只能全局阻塞')
   }
 
-  // 用一个**合成作用域**验证纯函数：A 链干净、B 链有缺口 ⇒ A 放行、B 回流。
+  /**
+   * 用一个**合成作用域**验证纯函数：A 链干净、B 链有缺口 ⇒ A 放行、B 回流。
+   *
+   * ⚠⚠ **2026-11-08 修夹具**：改前这里把 `TSK-A.parent` 直接指向 `R-A`（需求），
+   *   即**跳过了方案那一步**。加了闭环判据（L-2：任务的 parent 必须是 change）之后
+   *   它当场变红 —— 而这恰恰是**夹具本身错了**，不是判据错了：
+   *   「任务直接挂在需求下」正是用户报的「新任务没走阶段流程」那种形态。
+   *   ⇒ 补一条真实方案 `CHG-A`，让 A 链成为一条**完整**的链：
+   *     需求 → 方案（settled，四件齐全）→ 任务（字段齐全）。
+   */
   const scopeUnits = [
     { id: 'R-A', kind: 'req', status: 'agreed', clarify_examples: ['例子'], acceptance_criteria: ['点保存后出现成功提示'] },
-    { id: 'TSK-A', kind: 'task', status: 'todo', parent: 'R-A', task_brief: 'archive/x/TASK-A.md', counterexamples: ['空输入'], stop_conditions: ['冲突即停'], return_to: 'back-to-plan' },
+    {
+      id: 'CHG-A', kind: 'change', status: 'settled', parent: 'R-A', req_ids: ['R-A'],
+      path_options: ['A 直接改', 'B 抽公共层'], path_tradeoffs: ['A 快但耦合', 'B 慢但可复用'],
+      path_decision: '选 A：改动面小', requirement_coverage: ['R-A → 保存按钮'],
+    },
+    { id: 'TSK-A', kind: 'task', status: 'todo', parent: 'CHG-A', task_brief: 'archive/x/TASK-A.md', counterexamples: ['空输入'], stop_conditions: ['冲突即停'], return_to: 'back-to-plan' },
+    /**
+     * ⚠ B 链只留**一处**缺口：需求 `R-B` 缺例子与验收条件（C-1）。
+     *   方案与任务的字段都写全 —— 否则缺口会同时落在 CHG-B / TSK-B 上，
+     *   就测不到"回流指到**最早失效阶段**"这条语义了。
+     */
     { id: 'R-B', kind: 'req', status: 'agreed' },
-    { id: 'TSK-B', kind: 'task', status: 'todo', parent: 'R-B' },
+    {
+      id: 'CHG-B', kind: 'change', status: 'settled', parent: 'R-B', req_ids: ['R-B'],
+      path_options: ['A', 'B'], path_tradeoffs: ['A 快', 'B 稳'],
+      path_decision: '选 A', requirement_coverage: ['R-B → 某处'],
+    },
+    {
+      id: 'TSK-B', kind: 'task', status: 'todo', parent: 'CHG-B',
+      task_brief: 'archive/x/TASK-B.md', counterexamples: ['空输入'],
+      stop_conditions: ['冲突即停'], return_to: 'back-to-requirement',
+    },
   ]
   const cleanA = mod.evaluateGate({ action: 'write-forward', scope: { kind: 'task', id: 'TSK-A' }, units: scopeUnits })
   const dirtyB = mod.evaluateGate({ action: 'write-forward', scope: { kind: 'task', id: 'TSK-B' }, units: scopeUnits })
   if (cleanA.decision === 'go') ok('SC-11 ✓ 作用域门禁：A 链干净 ⇒ 放行（B 链缺口不在 A 的作用域内）')
   else bad(`SC-11 A 链应放行，实得 ${cleanA.decision}：${cleanA.blockers.map((p) => p.rule + '·' + p.unit).join(' / ')}`)
-  if (dirtyB.decision === 'return' && dirtyB.blockers.some((p) => p.unit === 'R-B')) {
-    ok('SC-11 ✓ 作用域门禁：B 链自身有缺口 ⇒ 回流，且指到最早失效阶段')
-  } else bad(`SC-11 B 链应回流，实得 ${dirtyB.decision}`)
+  /**
+   * ⚠ 2026-11-08：B 链现在有**两处**缺口（需求缺例子/验收条件 + 方案缺路径比较），
+   *   而断言原来只认 `R-B` 那一条。⚠ 判据该问的是"缺口是否落在**B 这条链自己**身上"，
+   *   ⛔ 不是"缺口必须恰好是 R-B"（那会把"多报了一条真缺口"也判成错）。
+   */
+  const bOwned = new Set(['R-B', 'CHG-B', 'TSK-B'])
+  if (dirtyB.decision === 'return' && dirtyB.blockers.length > 0
+    && dirtyB.blockers.every((p) => bOwned.has(p.unit))
+    && dirtyB.blockers.some((p) => p.unit === 'R-B')) {
+    ok('SC-11 ✓ 作用域门禁：B 链自身有缺口 ⇒ 回流（缺口全落在 B 链内，且包含最早失效的需求）')
+  } else bad(`SC-11 B 链应回流且缺口只在 B 链内，实得 ${dirtyB.decision}：${dirtyB.blockers.map((p) => p.rule + '·' + p.unit).join(' / ')}`)
   const repairAny = mod.evaluateGate({ action: 'write-repair', scope: { kind: 'task', id: 'TSK-B' }, units: scopeUnits })
   if (repairAny.decision === 'go') ok('SC-11 ✓ 修复写：允许补 blocker（不会被同一 blocker 死锁）')
   else bad('SC-11 修复写仍被 blocker 拦住 ⇒ 账本缺陷永远修不掉')
@@ -557,6 +593,89 @@ console.log('')
     if (realTask.blocked !== undefined) p.push(`真实任务 TSK-076 被误拦：${realTask.blocked}`)
     if (p.length === 0) ok('SC-23 ✓ 不存在的任务号 ⇒ hold（⛔ 不许 go）；占位号 implicit 与真实任务照常放行')
     else for (const x of p) bad(`SC-23 · ${x}`)
+  }
+}
+
+/**
+ * ══ SC-24 ~ SC-27：**账本闭环 + 派活只落在任务上**（2026-11-08 用户报障）══════
+ *
+ *   用户原话：「没有账单的或者旧账单梳理不到完全健康，并且新的任务没有走阶段流程」。
+ *
+ *   ⚠ 三条实测缺陷（改前）：
+ *     ① 一本账只有一条 `change` ⇒ `stageControlProblems = []` ⇒ **判成"完全健康"**
+ *        （`prompt-enhancer-release` 就是这样：只有 `CHG-344`，没有需求、没有任务）
+ *     ② `R-020` / `CHG-…` / `RUN-056` / `ACC-066` **都能当任务号派活并放行**
+ *     ③ 任务 → 方案 → 需求，作用域**只爬到方案一层**，需求层的缺口不检查
+ */
+{
+  const toolsMod = await import(pathToFileURL(join(root, 'src', 'modules', 'tools.ts')).href)
+  const readinessMod = await import(pathToFileURL(join(root, 'src', 'shared', 'ledger-readiness.ts')).href)
+
+  // ── SC-24：孤立的 change（没有需求托底）⇒ 不健康 ─────────────────────
+  {
+    const p = []
+    const onlyChange = { id: 'CHG-ONLY', kind: 'change', status: 'settled', path_options: ['a'], path_tradeoffs: ['b'], path_decision: 'c', requirement_coverage: ['R-NOT-EXIST'] }
+    const closure = mod.ledgerClosureProblems([onlyChange])
+    if (!closure.some((x) => x.rule === 'L-1' && x.unit === 'CHG-ONLY')) p.push('方案指向不存在的需求 ⇒ 没有报 L-1')
+    const bad = readinessMod.assessLedgerReadiness({
+      ledgerRoot: '/x', unitsDirExists: true,
+      indexText: '[[unit]]\nid = "CHG-ONLY"\nkind = "change"\nstatus = "settled"\ntitle = "t"\npath_options = ["a"]\npath_tradeoffs = ["b"]\npath_decision = "c"\nrequirement_coverage = ["R-NOT-EXIST"]\n',
+    })
+    if (bad.state === 'ready') p.push('只有一条孤立方案也判成 ready（这正是"旧账本梳理不到完全健康"）')
+    if (bad.canProceed === true) p.push('只有一条孤立方案也说可以推进')
+    /** ⚠ 反向对拍：补上真实需求后必须变回 ready（⛔ 不是恒红）。 */
+    const good = readinessMod.assessLedgerReadiness({
+      ledgerRoot: '/x', unitsDirExists: true,
+      indexText: '[[unit]]\nid = "R-1"\nkind = "req"\nstatus = "agreed"\ntitle = "t"\nclarify_examples = ["例子"]\nacceptance_criteria = ["点保存后出现提示"]\n'
+        + '[[unit]]\nid = "CHG-1"\nkind = "change"\nstatus = "settled"\ntitle = "t"\nparent = "R-1"\nreq_ids = ["R-1"]\npath_options = ["a"]\npath_tradeoffs = ["b"]\npath_decision = "c"\nrequirement_coverage = ["R-1 → 某处"]\n',
+    })
+    if (good.state !== 'ready') p.push(`补齐需求托底后仍不是 ready：${good.state}（${good.headline}）`)
+    if (p.length === 0) ok('SC-24 ✓ 孤立方案（需求托底不存在）⇒ L-1 缺口、判不健康；补上真实需求后恢复 ready')
+    else for (const x of p) bad(`SC-24 · ${x}`)
+  }
+
+  // ── SC-25：派活只能落在 task 上（需求号 / 方案号 / 执行号 / 验收号都不行）──
+  {
+    const p = []
+    const realRoot = join(ledgerRoot, '..')
+    for (const [id, want] of [['R-020', 'req'], ['CHG-2026-11-07-progress-multiproject', 'change'], ['RUN-056', 'run'], ['ACC-066', 'acc']]) {
+      const r = toolsMod.dispatchGateAtLedger(realRoot, { taskId: id })
+      if (r.blocked === undefined) p.push(`拿 ${want} 号 ${id} 派活仍被放行（这就是"新任务没走阶段流程"）`)
+      else if (!String(r.blocked).includes('不是 task')) p.push(`${id} 被拒了，但没说清"不是任务"：${String(r.blocked).slice(0, 60)}`)
+    }
+    const realTask = toolsMod.dispatchGateAtLedger(realRoot, { taskId: 'TSK-080' })
+    if (realTask.blocked !== undefined) p.push(`真实任务 TSK-080 被误拦：${realTask.blocked}`)
+    if (p.length === 0) ok('SC-25 ✓ 派活只认 task：需求 / 方案 / 执行 / 验收号一律拒且说清原因；真实任务照常放行')
+    else for (const x of p) bad(`SC-25 · ${x}`)
+  }
+
+  // ── SC-26：作用域必须爬到需求层（否则需求缺口被漏检）────────────────────
+  {
+    const p = []
+    const chain = [
+      { id: 'R-C', kind: 'req', status: 'agreed' },                      // ⚠ 缺例子 / 缺验收条件
+      { id: 'CHG-C', kind: 'change', status: 'settled', parent: 'R-C', req_ids: ['R-C'], path_options: ['a'], path_tradeoffs: ['b'], path_decision: 'c', requirement_coverage: ['R-C → x'] },
+      { id: 'TSK-C', kind: 'task', status: 'todo', parent: 'CHG-C', task_brief: 'x/TASK.md', counterexamples: ['e'], stop_conditions: ['s'], return_to: 'back-to-requirement' },
+    ]
+    const scope = mod.gateScopeUnits(chain, { kind: 'task', id: 'TSK-C' }).map((u) => u.id)
+    if (!scope.includes('R-C')) p.push(`作用域没有爬到需求层：${JSON.stringify(scope)}（需求缺口会被漏检）`)
+    const gate = mod.evaluateGate({ action: 'dispatch', scope: { kind: 'task', id: 'TSK-C' }, units: chain })
+    if (gate.decision !== 'return') p.push(`需求缺例子/验收条件，任务却仍 ${gate.decision}`)
+    if (!gate.blockers.some((x) => x.unit === 'R-C')) p.push('缺口没有指到需求 R-C（回流到最早失效阶段失效）')
+    if (p.length === 0) ok('SC-26 ✓ 作用域沿 parent 爬到需求层：需求缺例子/验收条件 ⇒ 任务被回流，且缺口指到 R-C')
+    else for (const x of p) bad(`SC-26 · ${x}`)
+  }
+
+  // ── SC-27：孤立任务（父方案不存在）⇒ 不放行 ────────────────────────────
+  {
+    const p = []
+    const orphan = { id: 'TSK-ORPHAN', kind: 'task', status: 'todo', parent: 'CHG-MISSING', task_brief: 'x/T.md', counterexamples: ['e'], stop_conditions: ['s'], return_to: 'back-to-plan' }
+    const closure = mod.ledgerClosureProblems([orphan])
+    if (!closure.some((x) => x.rule === 'L-2')) p.push('任务父方案不存在 ⇒ 没有报 L-2')
+    const gate = mod.evaluateGate({ action: 'dispatch', scope: { kind: 'task', id: 'TSK-ORPHAN' }, units: [orphan] })
+    if (gate.decision === 'go') p.push('孤立任务（父方案不存在）仍被放行')
+    if (p.length === 0) ok('SC-27 ✓ 孤立任务（父方案在账本里不存在）⇒ L-2 缺口且不放行')
+    else for (const x of p) bad(`SC-27 · ${x}`)
   }
 }
 

@@ -19,6 +19,7 @@ import { attentionOf, type WorkStateReading } from './work-state.ts'
 import { convergenceOf } from './convergence.ts'
 import { attentionAfterMainAction, panelSummaryOf, type PanelSummary } from './panel-summary.ts'
 import { listPresentationOf, relationTitlesOf, type ItemListPresentation } from './item-presentation.ts'
+import { ledgerClosureProblems, stageControlProblems, type StageControlUnit } from './stage-controls.ts'
 
 /** 五步的名字与 kind（⚠ 唯一真源，顺序 = 渲染顺序）。 */
 export const STAGE_DEFS = [
@@ -134,6 +135,23 @@ export interface StagesOk {
   readAt: string
   stages: StageRow[]
   caps: CapRow[]
+  /**
+   * **账本健康**（2026-11-08 · 用户报「旧账本梳理不到完全健康」）。
+   *
+   * ⚠ 它把"派活为什么被拒"直接搬到面板上：服务端用与门禁**同一个**
+   *   `stageControlProblems` + `ledgerClosureProblems` 算出缺口清单，
+   *   面板只负责展示（⛔ 不在客户端另算一份，那会两处漂开）。
+   * ⚠ 缺口为空**不等于**账本可推进：空账本由 `ledger-missing` / `empty` 那几档说。
+   */
+  stageHealth?: {
+    ok: boolean
+    /** 缺口总数（⚠ 紧凑模式下也一定给）。 */
+    count: number
+    /** 缺口全文（紧凑模式最多 40 条；超出时 `truncated=true` 且 `count` 仍给全量）。 */
+    problems?: Array<{ rule: string; unit: string; why: string }>
+    /** 缺口是否被截断（⚠ 为 true 时面板必须写"另有 N 条"）。 */
+    truncated?: boolean
+  }
   /** 「下一步」一条（⚠ 只读呈现，⛔ 不带任何可交互控件）。 */
   next: NextAction
   /** 第一屏结论：阶段、主动作、等待对象、主阻断。 */
@@ -382,6 +400,37 @@ export function buildStages(
     relations: relationTitlesOf(units as any),
     portfolio,
     ...(visibleAttention === undefined ? {} : { attention: visibleAttention }),
+    /**
+     * ⚠ **健康清单**（2026-11-08）：字段门禁 + 闭环判据，与派活门禁**同一份函数**。
+     *
+     * ⚠⚠ **只在非紧凑模式给**：真机实测，极端规模（数千单元）时把每条缺口全文塞进
+     *   主响应会让整包从 65 KB 涨到 **347 KB**（`R-18d` 当场红）。
+     *   ⇒ 紧凑模式（列表本身已截断）只给**计数**；全文由面板按需另取
+     *     （`stageHealth.problems` 缺省 = 本次没随响应返回，⛔ 不是"没有缺口"）。
+     *   ⚠ 算不出来（异常）⇒ 整个字段缺席 ⇒ 面板不显示这一块，
+     *     ⛔ 不许兜底成"健康"（那是把判不出读成没事）。
+     */
+    ...(() => {
+      try {
+        const cast = units as unknown as StageControlUnit[]
+        const all = [...stageControlProblems(cast), ...ledgerClosureProblems(cast)]
+          .map((p) => ({ rule: String(p.rule), unit: String(p.unit), why: String(p.why) }))
+        /**
+         * ⚠ 紧凑模式也带**前 40 条**全文（缺口通常只有几条，代价可忽略）；
+         *   超出部分只给计数 —— 实测极端规模下全文塞进主响应会把整包顶到 347 KB。
+         *   ⚠ `truncated=true` 时面板必须说"另有 N 条"，⛔ 不许看起来只有这些。
+         */
+        const cap = opts.compact === true ? 40 : all.length
+        return {
+          stageHealth: {
+            ok: all.length === 0,
+            count: all.length,
+            ...(all.length > cap ? { truncated: true } : {}),
+            problems: all.slice(0, cap),
+          },
+        }
+      } catch { return {} }
+    })(),
   }
   /**
    * ══════════════════════════════════════════════════════════════════════════

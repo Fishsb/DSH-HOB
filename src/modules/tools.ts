@@ -619,9 +619,36 @@ export function stageGateAtLedger(
        */
       const isPlaceholder = wanted === 'implicit'
       if (!isPlaceholder) {
-        const exists = units.some((u) => String((u as unknown as { id?: unknown }).id ?? '').trim() === wanted)
-        if (!exists) {
-          return { decision: 'hold', scope: scopeText, blockers: [], allowedRepairs: [] }
+        const hit = units.find((u) => String((u as unknown as { id?: unknown }).id ?? '').trim() === wanted)
+        if (hit === undefined) {
+          return {
+            decision: 'hold', scope: scopeText, blockers: [], allowedRepairs: [],
+            reason: `派活对象 \`${wanted}\` 不在账本里 ⇒ 先按五步把它落成真实单元（需求 → 方案 → 任务），再派。`,
+          }
+        }
+        /**
+         * ⚠⚠ **2026-11-08 · 用户报「新的任务没有走阶段流程」：派活只能落在 `task` 上。**
+         *
+         *   ── 病（实测）────────────────────────────────────────────────────
+         *     改前只核"这个 id 在账本里存在"，于是 `R-020` / `CHG-…` / `RUN-056` / `ACC-066`
+         *     **都能当任务号派活并放行**：
+         *       `dispatchGateAtLedger(root, { taskId: 'R-020' })` ⇒ 放行
+         *       `dispatchGateAtLedger(root, { taskId: 'CHG-2026-…' })` ⇒ 放行
+         *     ⇒ 用户一句话 → Hob 拿一个需求号/方案号就去派活，**前 3 步等于没走**。
+         *
+         *   ── 判据 ────────────────────────────────────────────────────────
+         *     派活对象必须是 `kind = task` 的单元。
+         *     ⚠ 需求 / 方案 / 执行 / 验收**都不是派活对象**：它们各自是五步里的一步，
+         *       派活的语义是"把第 3 步拆出来的任务交给执行者"。
+         *     ⚠ 这不限制"读"：`read_contracts` 照旧能按任意 ID 读。
+         */
+        const kind = String((hit as unknown as { kind?: unknown }).kind ?? '').trim()
+        if (kind !== 'task') {
+          return {
+            decision: 'hold', scope: scopeText, blockers: [], allowedRepairs: [],
+            reason: `派活对象 \`${wanted}\` 是 ${kind}（不是 task）⇒ 派活只能落在第 3 步拆出的任务上。`
+              + ' ⚠ 需求 / 方案 / 执行 / 验收都不是派活对象。',
+          }
         }
       }
     }
@@ -635,6 +662,8 @@ export function stageGateAtLedger(
 export function gateMessageOf(d: GateDecision): string | undefined {
   if (d.decision === 'go') return undefined
   if (d.decision === 'hold') {
+    /** ⚠ 2026-11-08：有具体原因就说具体原因（⛔ 不再一律"账本读不到或作用域缺 id"）。 */
+    if (typeof d.reason === 'string' && d.reason.trim() !== '') return d.reason
     return `阶段门禁判不出（${d.scope}）：账本读不到或作用域缺 id ⇒ 本次不推进。`
   }
   const first = d.blockers.slice(0, 5).map((p) => `${p.rule} · ${p.unit} · ${p.why}`).join('；')

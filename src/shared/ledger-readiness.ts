@@ -29,7 +29,7 @@
  */
 
 import { parseUnitsToml } from './stages-index.ts'
-import { stageControlProblems, type StageControlUnit } from './stage-controls.ts'
+import { ledgerClosureProblems, stageControlProblems, type StageControlUnit } from './stage-controls.ts'
 
 /** 就绪度五档 + 一档"能建"（`unresolved` 不可建，其余四档都有明确动作）。 */
 export type LedgerReadinessState =
@@ -260,7 +260,21 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
   // ⑥ 有单元 ⇒ 数缺口（⚠ 与派活门禁同一个纯函数，⛔ 不另判一份）
   let problems: Array<{ rule: string; unit: string; why: string }>
   try {
-    problems = stageControlProblems(units as unknown as StageControlUnit[]) as unknown as typeof problems
+    /**
+     * ⚠⚠ **2026-11-08 加第二道：闭环**（用户报「旧账本梳理不到完全健康」）。
+     *
+     *   `stageControlProblems` 是**逐条单元的字段门禁**，它回答"这一条填全了没有"。
+     *   ⇒ 一本账里**只有一条 `change`**（没有 req / task / run / acc）也判"无缺口"，
+     *     于是面板与派活都说"完全健康"。实测：`prompt-enhancer-release` 只有 `CHG-344`
+     *     ⇒ `problems = []` ⇒ ready（这是**假的健康**）。
+     *   ⇒ 再加 `ledgerClosureProblems`：引用必须指向**真实存在**的上游
+     *     （change→req / task→change / run→task / acc→task）。
+     */
+    const cast = units as unknown as StageControlUnit[]
+    problems = [
+      ...(stageControlProblems(cast) as unknown as typeof problems),
+      ...(ledgerClosureProblems(cast) as unknown as typeof problems),
+    ]
   } catch (e) {
     return {
       state: 'unhealthy',
