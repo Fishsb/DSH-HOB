@@ -296,6 +296,20 @@ try {
       }
     }
   }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // T-9：旧接口显式退役，⛔ 不许再冒充账本读坏
+  // ══════════════════════════════════════════════════════════════════════
+  {
+    const routeSrc = readFileSync(join(root, 'src', 'modules', 'tasks-progress-route.ts'), 'utf8')
+    const p = []
+    if (!routeSrc.includes("reason: 'route-retired'")) p.push('没有 route-retired 原因码')
+    if (!routeSrc.includes('body?.legacy !== true')) p.push('没有 legacy:true 的显式兼容分支')
+    if (!routeSrc.includes('/api/dsh-hob/stages')) p.push('退役响应没有指向 /api/dsh-hob/stages')
+    if (!routeSrc.includes('json(410')) p.push('退役响应没有使用 410')
+    if (p.length === 0) ok('T-9 ✓ 旧 /tasks-progress 显式退役：410 route-retired · 指向新接口 · legacy:true 才读旧表')
+    else for (const x of p) bad(`T-9 · ${x}`)
+  }
 } catch (e) {
   bad(`T-9 · 本组执行中断：${String(e?.message ?? e)}`)
 } finally {

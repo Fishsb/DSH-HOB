@@ -118,6 +118,24 @@ export function installTasksProgressRoute(ctx: Context): void {
           } catch {
             return json(400, { ok: false, reason: 'bad-request', message: '请求体不是 JSON' })
           }
+          /**
+           * ⚠ **旧接口退役必须自己说出来**（2026-11-08 真机探针）。
+           *
+           * 本路由早已被 `/api/dsh-hob/stages` 取代；新账本没有
+           * `volumes/tasks/INDEX.md` 是正常形态。仍走旧处理体只会回
+           * `ledger-unreadable`，把“你调了退役入口”误报成“账本坏了”。
+           *
+           * 兼容口径：显式 `legacy:true` 时仍读旧表（给真正的历史消费者）；
+           * 其余调用一律回 `route-retired` + 新接口路径。
+           */
+          if (body?.legacy !== true) {
+            return json(410, {
+              ok: false,
+              reason: 'route-retired',
+              message: '旧五步进度接口已退役；请改用 POST /api/dsh-hob/stages。'
+                + ' ⚠ 仅确需读取旧 volumes/tasks/INDEX.md 的历史消费者可传 legacy:true。',
+            })
+          }
           const out: TasksProgressResponse = handleTasksProgress({ ledgerRootOf, ledgerRootWhyOf }, body)
           return json(out.ok ? 200 : 400, out)
         },
