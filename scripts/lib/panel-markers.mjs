@@ -312,8 +312,10 @@ function PANEL_MARKERS_SAFE_LIST() {
     'stages-next', // 下一步块
     'stages-next-reason', // 下一步的原因行
     'stages-state', // 面板整体状态
-    'stages-ledgers-empty-group', // 空账本收起组（state=empty）
-    'stages-ledgers-unreadable-group', // 读不了账本收起组（state=unreadable）
+    // ⚠ 2026-11-08 用户裁定「点项目名就是账本切换」：这两组从「收起组」改成
+    //   **平铺的分组标题**（仍是独立分组，三态不混；但 ⛔ 不再是 <details>）。
+    'stages-ledgers-empty-group', // 空账本分组（state=empty · 平铺，⛔ 不折叠）
+    'stages-ledgers-unreadable-group', // 读不了账本分组（state=unreadable · 平铺，⛔ 不折叠）
     'stages-ledgers-current-missing', // 当前工作区没有对应账本时的说明
     'stages-preset-blocked', // 非 Hob / 预设判不出时的唯一说明行
   ]) out.add(extra)

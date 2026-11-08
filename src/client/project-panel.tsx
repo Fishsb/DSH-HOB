@@ -2375,17 +2375,23 @@ export function StagesPanel(props?: {
         ...(empty.length === 0
           ? []
           : [React.createElement(
-              'details',
+              'div',
               { key: 'ledgers-empty', 'data-dsh-hob': 'stages-ledgers-empty-group', 'data-state': 'empty', className: 'dsh-hob-ledger-group' },
-              React.createElement('summary', { className: 'dsh-hob-ledger-group-summary' }, `空账本 ${empty.length} 个`),
+              /**
+               * ⚠ **只做小标题，⛔ 不再折叠**（2026-11-08 用户裁定）：
+               *   「点项目名就是要能直接切换账本」—— 菜单里再套一层「空账本 N 个」折叠，
+               *   等于让用户点两下才看得到可选项，也容易被读成“又套了个壳”。
+               *   ⚠ 三态**仍然分开**（S-34b 的被测物）：这里只是把「折叠」降级成「分组标题」。
+               */
+              React.createElement('div', { className: 'dsh-hob-ledger-group-title' }, `空账本 ${empty.length} 个`),
               ...empty.map(row),
             )]),
         ...(unreadable.length === 0
           ? []
           : [React.createElement(
-              'details',
+              'div',
               { key: 'ledgers-unreadable', 'data-dsh-hob': 'stages-ledgers-unreadable-group', 'data-state': 'unreadable', className: 'dsh-hob-ledger-group' },
-              React.createElement('summary', { className: 'dsh-hob-ledger-group-summary' }, `读不了的账本 ${unreadable.length} 个`),
+              React.createElement('div', { className: 'dsh-hob-ledger-group-title' }, `读不了的账本 ${unreadable.length} 个`),
               ...unreadable.map(row),
             )]),
         ...(current === undefined

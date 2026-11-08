@@ -205,7 +205,8 @@ const CSS = [
   `.dsh-hob-ledger-row-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`,
   `.dsh-hob-ledger-row-meta{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px}`,
   `.dsh-hob-ledger-group{border-top:0.5px solid var(--dsw-alias-border-l2)}`,
-  `.dsh-hob-ledger-group-summary{cursor:pointer;padding:4px 8px;color:var(--dsw-alias-label-tertiary);font-size:12px}`,
+  /** 分组小标题（⚠ 不是可折叠项：点开下拉就能直接看到并切换）。 */
+  `.dsh-hob-ledger-group-title{padding:6px 8px 2px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.4}`,
   `.dsh-hob-ledger-note{padding:4px 8px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5}`,
   // 菜单行内的次级文本（预设「不可用」、模型 id、档位说明）——
   // 用宿主菜单的 caption 层级（`Menu.module.css` 的 `.shortcut` 用同一令牌）。

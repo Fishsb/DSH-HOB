@@ -3758,7 +3758,14 @@ export function StateDot({ state, size, appearance }) {
         actFn(() => r.unmount())
       }
 
-      // S-34b 账本三态：data / empty / unreadable 不混组；默认选中当前账本。
+      /**
+       * S-34b 账本三态：data / empty / unreadable 不混组；默认选中当前账本。
+       *
+       * ⚠⚠ 2026-11-08 用户裁定：「点项目名就是账本切换」——
+       *   菜单里**不许再有第二层折叠**（原来那层是 `空账本 N 个` 的 `<details>`，
+       *   等于让用户点两下才看得到可选项，观感上又是一次“套壳”）。
+       *   ⇒ 分组仍是**独立分组**（三态不许混），但必须是**平铺可见**的普通节点。
+       */
       {
         const r = await iaMount({
           fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [
@@ -3775,15 +3782,68 @@ export function StateDot({ state, size, appearance }) {
         const broken = document.querySelector('[data-dsh-hob="stages-ledger-item"][data-ledger="broken"]')
         if (alpha?.getAttribute('data-selected') !== 'true') p.push('没有默认选中当前账本 alpha')
         if (alpha?.getAttribute('data-state') !== 'data') p.push(`alpha 三态不是 data：${JSON.stringify(alpha?.getAttribute('data-state'))}`)
-        if (emptyGroup === null || emptyGroup.tagName.toLowerCase() !== 'details' || emptyGroup.hasAttribute('open')) p.push('空账本组缺失或未默认收起')
-        if (badGroup === null || badGroup.tagName.toLowerCase() !== 'details' || badGroup.hasAttribute('open')) p.push('读不了账本组缺失或未默认收起')
+        /** 分组必须存在，且**不许是可折叠节点**（`details` ⇒ 又套一层）。 */
+        for (const [label, node] of [['空账本组', emptyGroup], ['读不了账本组', badGroup]]) {
+          if (node === null) { p.push(`${label}缺失`); continue }
+          if (node.tagName.toLowerCase() === 'details') p.push(`${label}仍是可折叠 <details> ⇒ 点开下拉还要再点一次`)
+          if (node.querySelector(':scope > summary') !== null) p.push(`${label}带 <summary> ⇒ 又套了一层折叠`)
+        }
+        /** ⚠ 分组标题必须**可见**（用户点开下拉就该看到它们，而不是收起状态）。 */
+        for (const [label, node] of [['空账本组', emptyGroup], ['读不了账本组', badGroup]]) {
+          if (node === null) continue
+          if (window.getComputedStyle(node).display === 'none') p.push(`${label}被隐藏`)
+        }
         if (hollow?.getAttribute('data-state') !== 'empty' || !(hollow.textContent ?? '').includes('空账本')) p.push(`空账本行不诚实：${JSON.stringify(hollow?.textContent)}`)
         if (broken?.getAttribute('data-state') !== 'unreadable' || !(broken.textContent ?? '').includes('读不了')) p.push(`读不了行不诚实：${JSON.stringify(broken?.textContent)}`)
         if (hollow !== null && badGroup !== null && badGroup.contains(hollow)) p.push('空账本被塞进了“读不了”组')
         if (broken !== null && emptyGroup !== null && emptyGroup.contains(broken)) p.push('读不了账本被塞进了“空账本”组')
-        if (p.length === 0) ok('S-34b ✓ 账本三态分开：data 常显并默认选中 current；empty 与 unreadable 各自收起，文案不互相冒充')
+        if (p.length === 0) ok('S-34b ✓ 账本三态分开：data 常显并默认选中 current；empty 与 unreadable 各自分组、平铺可见（⛔ 无二级折叠），文案不互相冒充')
         else for (const x of p) bad(`S-34b · ${x}`)
         actFn(() => r.unmount())
+      }
+
+      /**
+       * S-34b2 负向对拍：把分组**改回可折叠 `<details>`** ⇒ S-34b 的
+       *   「⛔ 无二级折叠」必红。
+       *
+       * ⚠ 为什么需要它：S-34b 那句“不许 `<details>`”如果不做对拍，
+       *   下次有人把折叠加回来时，判据可能因为选择器改名而静默失效（假绿）。
+       */
+      {
+        const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+        const NEEDLE = "{ key: 'ledgers-empty', 'data-dsh-hob': 'stages-ledgers-empty-group', 'data-state': 'empty', className: 'dsh-hob-ledger-group' }"
+        if (!panelSrc.includes(NEEDLE)) {
+          bad('S-34b2 · 源码里找不到空账本分组节点（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const mutated = panelSrc
+            .replace(`'div',\n              ${NEEDLE}`, `'details',\n              ${NEEDLE}`)
+            .replace("React.createElement('div', { className: 'dsh-hob-ledger-group-title' }, `空账本 ${empty.length} 个`)", "React.createElement('summary', { className: 'dsh-hob-ledger-group-title' }, `空账本 ${empty.length} 个`)")
+          const out = writeMutant('mut-ledger-group-fold', mutated)
+          const modG = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          const r = mount(react.createElement(modG.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => ({ ok: true, stages: [] }),
+            fetchChains: async () => ({ ok: true, activeCount: 0, completedCount: 0, retiredCount: 0, historyItemCount: 0, chains: [], unattached: [] }),
+            fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条' }),
+            fetchPlans: async () => ({ ok: true, mode: 'multi', plans: [], unreadable: [] }),
+            fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 夹具' }),
+            fetchResource: async () => ({ ok: false, message: '夹具' }),
+            fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [
+              { name: 'alpha', units: 2, state: 'data', current: true },
+              { name: 'hollow', units: 0, state: 'empty', current: false },
+            ] }),
+            pollMs: 0,
+          }))
+          await tick(40)
+          const g = document.querySelector('[data-dsh-hob="stages-ledgers-empty-group"]')
+          if (g !== null && g.tagName.toLowerCase() === 'details') {
+            ok('S-34b2 ✓ 负向对拍（把空账本分组改回 <details>）⇒ S-34b 的"⛔ 无二级折叠"**必红**：变体里分组又成了可折叠节点')
+          } else {
+            bad('S-34b2 · 变体里空账本分组仍不是 <details> ⇒ 断言没有牙')
+          }
+          actFn(() => r.unmount())
+        }
       }
 
       // S-34c 没有在途需求 ⇒ 主线写“没有”，不把已完成需求顶上来重复展示。

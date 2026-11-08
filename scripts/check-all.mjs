@@ -685,7 +685,11 @@ export const ASSERTION_FLOORS = new Map([
   //   账本三态 / 无在途需求 / Hob 正控 / standard 与判不出零请求 / guide 胶囊门禁。
   //   实测 114（S-33g 不请求旧 /tasks-progress · S-33h 宿主 useProjection 契约 ·
   //   S-33i guide 点击顺序 · S-34d 切账本不混会话运行态），零余量（少一条即红）。
-  ['check:stages-dom', 114],
+  // ⚠ 2026-11-08（项目下拉收成一套）：115 → **116**
+  //   （+1 = S-34b2 负向对拍：把「空账本 N 个」分组改回 `<details>` ⇒ S-34b 的
+  //    「⛔ 无二级折叠」必红。⚠ 同批 S-34b 的判定从「必须收起」改成「必须平铺可见」，
+  //    因为用户裁定「点项目名就是账本切换」。）
+  ['check:stages-dom', 116],
   // ⚠ 2026-10-29（第 6 轮）新增本族：四步进度表的**服务端**行为判据
   //   （`scripts/check-tasks-progress.mjs`，`npm run check:tasks-progress`）。
   //   下界 = **本轮实测值 14，零余量**：T-0（转译自证）· T-1（正常两行）· T-2（空表）·
@@ -731,7 +735,7 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ 2026-11-03：27 → **29**（零余量 = 实测）。
   //   + 新 change 的 K-ALL 读数；+ N-K7（built task 无直属验收必红、复验 PASS 转绿、新退回再红）。
   // ⚠ 2026-11-07：实测 35（新增 change 的 K-ALL 读数 + 多条对拍）⇒ 下界同步抬到 35，零余量。
-  ['check:convergence', 35],
+  ['check:convergence', 36],
   // ⚠ 2026-11-03：补齐 goal / risk / decision / cap 后，
   //   账本资源图 11 条正向 + 2 条负向对拍 = 实测 13。
   //   覆盖 10 类稳定 ID、四类新增列表与按 ID 读取、需求关联图可继续解析、
