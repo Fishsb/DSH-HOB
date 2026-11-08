@@ -186,7 +186,10 @@ export const ASSERTION_FLOORS = new Map([
   ['check:work-plan-dispatch', 13],
   ['check:work-plan-runtime', 40],
   // ⚠ 2026-11-07：SC-12b 三条（执行上下文能解析 / Agent 形态必拒 / 预设层无恒判不出写法）。
-  ['check:stage-controls', 92],
+  // ⚠ 2026-11-08：92 → **95**（+3 = SC-21 就绪度五档互不冒充 / SC-22 账本不健康 ⇒ 派活被拒 /
+  //   SC-23 不存在的任务号 ⇒ hold 且 implicit 与真实任务照常放行）。
+  //   ⚠ 这三条钉的是用户裁定「没有账本的项目必须先建立账本才能推进任务」。
+  ['check:stage-controls', 95],
   // ⚠ 2026-11-04：面板族（真 DOM + 真路由处理体）。10 处零余量。
   ['check:work-plan-panel', 11],
   // ⚠ 2026-11-03：骨架 ↔ 实例结构漂移族。
@@ -689,7 +692,9 @@ export const ASSERTION_FLOORS = new Map([
   //   （+1 = S-34b2 负向对拍：把「空账本 N 个」分组改回 `<details>` ⇒ S-34b 的
   //    「⛔ 无二级折叠」必红。⚠ 同批 S-34b 的判定从「必须收起」改成「必须平铺可见」，
   //    因为用户裁定「点项目名就是账本切换」。）
-  ['check:stages-dom', 116],
+  // ⚠ 2026-11-08（面板别再一律判不出）：116 → **117**
+  //   （+1 = S-33b2：「还没开账」与「旧格式」各自说清，⛔ 不冒用「判不出」）。
+  ['check:stages-dom', 117],
   // ⚠ 2026-10-29（第 6 轮）新增本族：四步进度表的**服务端**行为判据
   //   （`scripts/check-tasks-progress.mjs`，`npm run check:tasks-progress`）。
   //   下界 = **本轮实测值 14，零余量**：T-0（转译自证）· T-1（正常两行）· T-2（空表）·

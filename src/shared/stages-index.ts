@@ -17,6 +17,8 @@ import { nextAction, type NextAction, type LedgerUnitLike } from './next-action.
 import { portfolioOf, type Portfolio, type PortfolioUnit } from './portfolio.ts'
 import { attentionOf, type WorkStateReading } from './work-state.ts'
 import { convergenceOf } from './convergence.ts'
+import { attentionAfterMainAction, panelSummaryOf, type PanelSummary } from './panel-summary.ts'
+import { listPresentationOf, relationTitlesOf, type ItemListPresentation } from './item-presentation.ts'
 
 /** 五步的名字与 kind（⚠ 唯一真源，顺序 = 渲染顺序）。 */
 export const STAGE_DEFS = [
@@ -79,15 +81,34 @@ export const STAGE_KIND_STATUSES: Readonly<Record<string, { statuses: string[]; 
 /** 三类可分辨失败（`R-10`：⛔ 不许并成一句）。 */
 export const STAGES_REASON_INDEX_UNREADABLE = 'index-unreadable'
 export const STAGES_REASON_INDEX_MALFORMED = 'index-malformed'
+/**
+ * ⚠ **2026-11-08 两类新原因**（用户报「面板进度全是判不出」）。
+ *
+ *   改前这两种情形都落 `index-unreadable`，面板只能说「判不出 + 一段 ENOENT」：
+ *     · `ledger/units/` 整个不在 ⇒ 这个项目**还没开账**（该去建）
+ *     · 索引是 `[units."ID"]` 旧格式 ⇒ 账本**在，但格式旧**（该去迁移）
+ *
+ *   ⚠ 它们与"真读坏了"**下一步动作完全不同**，混成一个原因就只能让人猜。
+ *   ⚠ 这与 `R-4`（空 ≠ 判不出）是同一条纪律的延伸。
+ */
+export const STAGES_REASON_LEDGER_MISSING = 'ledger-missing'
+export const STAGES_REASON_INDEX_LEGACY = 'index-legacy'
 export const STAGES_REASON_ROW_SHAPE_UNKNOWN = 'row-shape-unknown'
 
 /** 一条步内条目（字段**封闭**）。 */
 export interface StageItem {
   id: string
-  title: string
+  /** 旧客户端兼容字段：默认线格式原样返回；紧凑模式省略。 */
+  title?: string
+  /** 旧客户端兼容字段：默认线格式原样返回；紧凑模式省略。 */
+  extra?: string
   status: string
-  /** 附加读数（`task` 的 `verify` / `run` 的 `started_at` / `acc` 的 `actor` …）。判不出 ⇒ 空串。 */
-  extra: string
+  kind: string
+  /**
+   * 紧凑列表投影：自包含主标题、正式关系 ID、最多一条短读数、诊断代码。
+   * ⚠ 不含原句、详情或重复的父标题；完整字段由 `/ledger-resource` 按 ID 读取。
+   */
+  presentation: ItemListPresentation
 }
 
 /** 一步。 */
@@ -115,6 +136,10 @@ export interface StagesOk {
   caps: CapRow[]
   /** 「下一步」一条（⚠ 只读呈现，⛔ 不带任何可交互控件）。 */
   next: NextAction
+  /** 第一屏结论：阶段、主动作、等待对象、主阻断。 */
+  summary: PanelSummary
+  /** 关系标题共享表：每个稳定 ID 只存一份，条目行只引用 ID。 */
+  relations: Record<string, string>
   /**
    * **项目组合层**（2026-11-01 P40/R6 · `TASK-R6.md` §三）。
    * ⚠ 只回答"哪条已定需求没人接"；⛔ 不含百分比 / 完成度 / 趋势。
@@ -126,6 +151,13 @@ export interface StagesOk {
    * ⚠ 由 `work-state.ts` 从账本派生，⛔ 不是第六步、⛔ 不等于五步完成度。
    */
   attention?: WorkStateReading[]
+  /**
+   * **紧凑线截断说明**（2026-11-07 · 只在极端规模触发）。
+   * ⚠ 出现它 = 本次响应**没有**列出全部条目；`omitted` 是未随本次返回的条数。
+   * ⛔ 不许把它当成"账本只有这些条目" —— 面板必须原样显示这段说明。
+   * 缺省 = 全部条目都在（正常情况，线格式与以前逐字节一致）。
+   */
+  truncated?: { omitted: number; reason: string }
 }
 export interface StagesFail {
   ok: false
@@ -216,7 +248,7 @@ export function summarizeStage(statuses: string[], kind: string): { state: 'done
   return { state: 'doing', done, total }
 }
 
-/** 取一条单元里"给人看的那点附加读数"（每个 kind 一条，判不出 ⇒ 空串）。 */
+/** 取一条单元里“旧客户端看的那点附加读数”（紧凑模式不返回）。 */
 function extraOf(u: Record<string, unknown>): string {
   const pick = (k: string): string => (typeof u[k] === 'string' ? String(u[k]) : '')
   switch (u.kind) {
@@ -237,7 +269,11 @@ function extraOf(u: Record<string, unknown>): string {
  * @param readAt - ISO 时刻
  * @returns 线格式响应
  */
-export function buildStages(units: Array<Record<string, unknown>>, readAt: string): StagesOk {
+export function buildStages(
+  units: Array<Record<string, unknown>>,
+  readAt: string,
+  opts: { compact?: boolean } = {},
+): StagesOk {
   const stages: StageRow[] = STAGE_DEFS.map((d) => {
     /**
      * ⚠ `retired` / `dropped` 只保留为生命周期历史，⛔ 不再进入活跃需求步；
@@ -254,9 +290,10 @@ export function buildStages(units: Array<Record<string, unknown>>, readAt: strin
       total,
       items: ofKind.map((u) => ({
         id: String(u.id ?? ''),
-        title: String(u.title ?? ''),
+        ...(opts.compact === true ? {} : { title: String(u.title ?? ''), extra: extraOf(u) }),
         status: String(u.status ?? ''),
-        extra: extraOf(u),
+        kind: d.kind,
+        presentation: listPresentationOf(u as any, units as any),
       })),
     }
   })
@@ -336,10 +373,186 @@ export function buildStages(units: Array<Record<string, unknown>>, readAt: strin
     /** 算不出 ⇒ 缺字段（面板明写判不出），⛔ 不兜底为空数组冒充“没事”。 */
     attention = undefined
   }
-  return {
-    ok: true, readAt, stages, caps, next, portfolio,
-    ...(attention === undefined ? {} : { attention }),
+  const visibleAttention = attention === undefined
+    ? undefined
+    : attentionAfterMainAction(attention, next, units)
+  const out: StagesOk = {
+    ok: true, readAt, stages, caps, next,
+    summary: panelSummaryOf({ stages, next, attention: visibleAttention }),
+    relations: relationTitlesOf(units as any),
+    portfolio,
+    ...(visibleAttention === undefined ? {} : { attention: visibleAttention }),
   }
+  /**
+   * ══════════════════════════════════════════════════════════════════════════
+   * **紧凑线体积兜底**（2026-11-07 · 方案 §七「响应体变大」的落点）
+   * ══════════════════════════════════════════════════════════════════════════
+   * 病灶：`compact` 只去掉旧 `title` / `extra`，条目数一多仍会顶破 64 KB。
+   * 出口判据（`check:tasks-route-http` H-6）是硬上限，越界即红；
+   * 但账本条目只会增加 ⇒ 不兜底就是"迟早会红"。
+   *
+   * 处置（**只减可从展开详情复得的计数读数，⛔ 不删主行/关系/判决**）：
+   *   ① 先删「依据 N 条」「需求映射 N 条」「承接需求 N 条」这类**纯计数**；
+   *     它们的实际内容本来就在 `/ledger-resource` 的展开详情里。
+   *   ② 仍超 ⇒ 把每个条目的读数压到最多 1 条（主行仍保留"判决"这类结论）。
+   *   ⚠ 判决格**永不删**：验收条目没有判决就等于没给结论。
+   *   ⚠ 这是**确定性**降级（同一输入同输出），且只在超预算时触发；
+   *     不超预算时线格式与以前逐字节一致。
+   */
+  if (opts.compact === true) {
+    const LIMIT = 65536
+    /**
+     * ⚠ 本模块是**两端共用**的纯函数（client 半边也 import）⇒ ⛔ 不能用 `Buffer`。
+     *   UTF-8 字节数按码点手算：ASCII 1、两字节 2、其余 3（代理对按 4）。
+     *   ⚠ 这是**保守估算**（可能略大于真实值 ⇒ 更早触发降级，⛔ 不会放过越界）。
+     */
+    const utf8Bytes = (s: string): number => {
+      let n = 0
+      for (const ch of s) {
+        const cp = ch.codePointAt(0) ?? 0
+        n += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+      }
+      return n
+    }
+    const bytesOf = (v: unknown): number => utf8Bytes(JSON.stringify(v))
+    /**
+     * ⚠⚠ **降级顺序在 2026-11-07 R-020 收口时改过一次**，原因有实测：
+     *   旧顺序先删「依据」⇒ 紧凑响应里 66 条验收只剩「判决」一格，
+     *   用户只看折叠行就少了"这个判决有没有依据"这一维；而实测体积 **63618 B**，
+     *   离 65536 B 只有 1918 B，**根本不需要**动验收的两条固定读数。
+     *
+     * 现行顺序（确定性，且尽量保住"结论型读数"）：
+     *   ① 先压**关系标题共享表**（`relations` 是纯展示标题，完整标题可按 ID 读回）；
+     *   ② 再删普通条目的纯计数第二格（映射 N 条 / 验收条件 N 条 …）；
+     *   ③ 仍超才把**非验收**条目压到一格；验收固定保留「判决 + 依据」；
+     *   ④ 最后才截断条目。
+     *
+     * ⚠⚠ **验收的「依据」也是受保护格**（2026-11-08 独立验收实测）：
+     *   旧实现把 `basis_count` 当纯计数删掉 ⇒ 真实紧凑响应里 66 条验收只剩「判决」，
+     *   用户只看折叠行就不知道判决有没有依据（H-6 实测红）。
+     *   依据条数本身是**结论的一部分**，不是可丢弃的装饰；完整依据内容仍在展开详情。
+     *   ⚠ 验收条目在 202 条真实账本里占 66 条 ⇒ 保两格约多 1.5 KB；
+     *     这 1.5 KB 从普通条目的第二格腾出来，⛔ 不许因此把条目截掉。
+     */
+    if (bytesOf(out) > LIMIT) {
+      for (const [id, title] of Object.entries(out.relations ?? {})) {
+        if (typeof title === 'string' && title.length > 24) out.relations[id] = `${title.slice(0, 23)}…`
+      }
+    }
+    if (bytesOf(out) > LIMIT) {
+      /**
+       * ⚠ `basis_count` **不在此列**：它是验收条目的固定第二格（判决 + 依据）。
+       *   其余计数都可在展开详情按 ID 复得，删掉只损失折叠行的密度。
+       */
+      const countOnly = new Set(['coverage', 'addresses_count', 'acceptance_count', 'example_count', 'progress_count', 'scope_count'])
+      for (const row of out.stages) {
+        for (const it of row.items) {
+          const facts = (it.presentation as any)?.facts
+          if (!Array.isArray(facts)) continue
+          /** ⚠ 验收的「判决 + 依据」是固定两格，⛔ 不在这一档删。 */
+          if (String(it?.kind ?? '') === 'acc') continue
+          const kept = facts.filter((f: any) => !countOnly.has(String(f?.[0] ?? '')))
+          if (kept.length !== facts.length) (it.presentation as any).facts = kept
+        }
+      }
+    }
+    if (bytesOf(out) > LIMIT) {
+      for (const row of out.stages) {
+        for (const it of row.items) {
+          const facts = (it.presentation as any)?.facts
+          if (!Array.isArray(facts) || facts.length <= 1) continue
+          /** ⚠ 验收固定两格；其余条目才压到一格。 */
+          if (String(it?.kind ?? '') === 'acc') continue
+          /**
+           * ⚠ 非验收条目压到一格：保留第一条（各 kind 的首条都是结论型读数）。
+           *   验收条目在上面已跳过，仍固定「判决 + 依据」。
+           */
+          ;(it.presentation as any).facts = facts.slice(0, 1)
+        }
+      }
+    }
+    /**
+     * ③ 仍超 ⇒ 只压**关系标题共享表**里的展示标题（⛔ 不动条目主标题，避免读不懂）。
+     *   ⚠ 关系行同时显示 `ID · 标题`，ID 已能定位对象；标题过长时截断仍可读，
+     *     完整标题在展开详情里由 `/ledger-resource` 给出。
+     */
+    if (bytesOf(out) > LIMIT) {
+      const relIds = Object.keys(out.relations)
+      for (const id of relIds) {
+        const t = String(out.relations[id] ?? '')
+        if (t.length > 24) out.relations[id] = `${t.slice(0, 23)}…`
+        if (bytesOf(out) <= LIMIT) break
+      }
+    }
+    /**
+     * ③b **仍超 ⇒ 把共享关系标题压到 16 字**（⛔ 不截条目、⛔ 不压主标题、⛔ 不碰验收两格）。
+     *
+     * ⚠⚠ 病灶（2026-11-08 独立验收实测）：保验收「依据」后 202 条真实账本约
+     *   66.9 KB；若直接进 ④ 截断，会丢掉最后 4 条（含 ACC-064）。
+     *   `relations` 共 80 项、约 5.4 KB；它只是**父对象的展示标题**，
+     *   关系 ID 已在每条主行上，完整标题仍可按 ID 读取。
+     *   ⇒ 压这一层既保住全部条目，也不改用户看到的主标题（R-18c 要求完整）。
+     *   ⚠ 从长到短压（最长的先让位），确定性排序，同一输入同输出。
+     */
+    if (bytesOf(out) > LIMIT) {
+      const rels = Object.entries(out.relations ?? {})
+        .filter(([, t]) => typeof t === 'string' && t.length > 16)
+        .sort((a, b) => b[1].length - a[1].length)
+      for (const [id, t] of rels) {
+        out.relations[id] = `${String(t).slice(0, 15)}…`
+        if (bytesOf(out) <= LIMIT) break
+      }
+    }
+    /**
+     * ④ 仍超 ⇒ **按阶段末尾截断**，并**如实标注**未返回条数。
+     *   ⚠ 极端规模（数百条以上）下，条目本身约 270 B/条 ⇒ 单次 64 KB 装不下；
+     *     此时宁可少列并说清楚，⛔ 不许超预算静默返回（那会让客户端拿到被截断的 JSON）。
+     *   ⚠ 截断**从最后一阶段末尾往前收**，前面的阶段保持完整；`total` / `done` 仍是**全账本**读数，
+     *     所以阶段计数不会被截断影响（⛔ 不能把"没列出来"读成"不存在"）。
+     */
+    if (bytesOf(out) > LIMIT) {
+      /**
+       * ③b 先收**注意力清单**（它是"需要人行动的事项"汇总，可随条目重算）：
+       *   ⚠ 只留前若干条，并保持顺序；⛔ 不把空数组当成"没有事项"（那要由 `attention` 缺省表达）。
+       */
+      if (Array.isArray(out.attention) && out.attention.length > 0) {
+        while (out.attention.length > 1 && bytesOf(out) > LIMIT) out.attention.pop()
+      }
+    }
+    if (bytesOf(out) > LIMIT) {
+      /**
+       * ⚠ 逐条从**最后一个阶段末尾**往前收；收完仍超就继续收前一个阶段。
+       *   ⚠ 收空的行**整行去掉**（⛔ 不留 `items: []` 的空壳：那既不省字节，
+       *     又会让面板显示一个"这个阶段什么都没有"的假象）。
+       *   ⚠ 阶段 `done/total` 保持**全账本**读数，⛔ 不因截断改写。
+       */
+      let omitted = 0
+      /**
+       * ⚠ `truncated` 说明本身也占字节 ⇒ **先占位再收紧**，否则会差几十字节仍然越界
+       *   （实测：不加占位时收到最后一条仍 65637 B > 65536 B）。
+       *   ⚠ 文案保持**短**：面板只需要知道"少了多少、去哪拿完整内容"。
+       */
+      const markTruncated = (n: number): void => {
+        ;(out as any).truncated = { omitted: n, reason: '超 64 KB 已截断；完整内容按 ID 读取' }
+      }
+      markTruncated(0)
+      for (let s = out.stages.length - 1; s >= 0 && bytesOf(out) > LIMIT; s--) {
+        const row = out.stages[s]!
+        while (row.items.length > 0 && bytesOf(out) > LIMIT) {
+          row.items.pop()
+          omitted += 1
+          markTruncated(omitted)
+        }
+        /**
+         * ⚠ **阶段行必须留下**：`done/total` 是全账本读数，删掉整行会让
+         *   "这个阶段有 200 条"变成"没有这个阶段"（R-18d 实测抓到）。
+         *   ⇒ 只清空 `items`，阶段名 / 分母原样保留。
+         */
+      }
+      markTruncated(omitted)
+    }
+  }
+  return out
 }
 
 /** 处理体依赖（全部注入 ⇒ 机检可跑真源码）。 */
@@ -402,6 +615,17 @@ export function handleStages(deps: StagesDeps, body: any): StagesResponse {
   try {
     extraPaths = deps.unitShardPathsOf?.(unitsDir) ?? []
   } catch (e) {
+    /**
+     * ⚠ `ENOENT` = **`ledger/units/` 根本不在** ⇒ 「还没开账」，⛔ 不是"索引坏了"。
+     *   两者给同一句话，读的人只能猜（这正是用户报「全是判不出」的来源之一）。
+     */
+    if ((e as { code?: string } | undefined)?.code === 'ENOENT') {
+      return {
+        ok: false,
+        reason: STAGES_REASON_LEDGER_MISSING,
+        message: `这个项目还没有账本（\`${unitsDir}\` 不存在）⇒ 先建账本，再看进度。`,
+      }
+    }
     return {
       ok: false,
       reason: STAGES_REASON_INDEX_UNREADABLE,
@@ -420,6 +644,14 @@ export function handleStages(deps: StagesDeps, body: any): StagesResponse {
       }
     }
     if (text === undefined) {
+      /** ⚠ 入口 `index.toml` 缺 = 还没开账；分片缺 = 账本在但残了（两种不同）。 */
+      if (path === abs) {
+        return {
+          ok: false,
+          reason: STAGES_REASON_LEDGER_MISSING,
+          message: `这个项目还没有账本入口（\`${path}\` 不存在）⇒ 先建账本，再看进度。`,
+        }
+      }
       return {
         ok: false,
         reason: STAGES_REASON_INDEX_UNREADABLE,
@@ -433,10 +665,23 @@ export function handleStages(deps: StagesDeps, body: any): StagesResponse {
   try {
     units = parseUnitsToml(src) as Array<Record<string, unknown>>
   } catch (e) {
+    /**
+     * ⚠ **旧格式**（`[meta]` / `[units."ID"]`）与"真写坏了"必须分开：
+     *   旧格式是**已知的、可迁移的**形态 ⇒ 说清"迁移"，⛔ 不要让人以为账本坏了。
+     */
+    const msg = String((e as Error)?.message ?? e)
+    const legacy = /不支持的 TOML 表头\s*"\[(?:meta|units)/.test(msg)
+    if (legacy) {
+      return {
+        ok: false,
+        reason: STAGES_REASON_INDEX_LEGACY,
+        message: '这本账是旧格式（`[meta]` / `[units."ID"]`），现行面板读不进来 ⇒ 需要按现行 `[[unit]]` 格式迁移。',
+      }
+    }
     return {
       ok: false,
       reason: STAGES_REASON_INDEX_MALFORMED,
-      message: `索引不是合法 TOML 子集：${String((e as Error)?.message ?? e)}`,
+      message: `索引不是合法 TOML 子集：${msg}`,
     }
   }
   /**
@@ -461,5 +706,5 @@ export function handleStages(deps: StagesDeps, body: any): StagesResponse {
         + (badRows.length > 5 ? ` …另有 ${badRows.length - 5} 条` : ''),
     }
   }
-  return buildStages(units, nowFn().toISOString())
+  return buildStages(units, nowFn().toISOString(), { compact: body?.compact === true })
 }

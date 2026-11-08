@@ -3587,18 +3587,63 @@ export function StateDot({ state, size, appearance }) {
         else for (const x of p) bad(`S-33g · ${x}`)
       }
 
-      // S-33b 需求链缺失 ⇒ 主线明写判不出，⛔ 不伪装成空完成。
+      /**
+       * S-33b 需求链读不到 ⇒ **按原因分流**，⛔ 不伪装成空完成。
+       *
+       * ⚠⚠ 2026-11-08 改判（用户报「面板进度全是判不出」）：
+       *   改前：任何 `ok:false` 都在主线上写「判不出：<message>」，且**主线/下一步/历史各写一遍**。
+       *   ⇒ 一个没建账的项目，首屏被三份同样的长句占满，读者反而不知道该干什么。
+       *
+       *   现在：
+       *     · `ledger-missing` ⇒ 在途区写「这个项目还没有账本」+ 一句怎么做（⛔ 不说"判不出"）
+       *     · `index-legacy`   ⇒ 在途区写「旧格式」+ 一句怎么做
+       *     · 其它（真读坏 / 网络） ⇒ 仍写「判不出」+ 原因（**只在第一处**）
+       *     · 主线 / 下一步 / 历史 ⇒ 只留 `data-state` 锚点，⛔ 不复述原因
+       */
       {
         const r = await iaMount({ fetchChains: async () => ({ ok: false, reason: 'index-unreadable', message: '链路由读不到（夹具）' }) })
+        const inflight = document.querySelector('[data-dsh-hob="stages-inflight"]')
         const mainline = document.querySelector('[data-dsh-hob="stages-mainline"]')
-        const t = mainline?.textContent ?? ''
+        const t = inflight?.textContent ?? ''
         const p = []
+        if (!t.includes('判不出')) p.push(`真读坏时首屏没写「判不出」：${JSON.stringify(t)}`)
+        if (!t.includes('链路由读不到（夹具）')) p.push('真读坏时没有把原因带上')
         if (mainline?.getAttribute('data-state') !== 'undecidable') p.push(`链路缺失时 data-state=${JSON.stringify(mainline?.getAttribute('data-state'))}`)
-        if (!t.includes('判不出')) p.push(`链路缺失时没写「判不出」：${JSON.stringify(t)}`)
+        /** ⚠ 同一句原因**只许出现一次**（用户报的"三处重复"）。 */
+        const panel = document.querySelector('[data-dsh-hob="stages-panel"]')
+        const occurrences = ((panel?.textContent ?? '').match(/链路由读不到（夹具）/g) ?? []).length
+        if (occurrences !== 1) p.push(`同一条原因出现了 ${occurrences} 次（期望 1 次）`)
         if (document.querySelectorAll('[data-dsh-hob="stages-current-step"]').length !== 0) p.push('链路缺失时仍标了“当前”')
-        if (p.length === 0) ok('S-33b ✓ 需求链读不到 ⇒ 主线明写「判不出」+ 原因，⛔ 不伪装成空/完成')
+        if (p.length === 0) ok('S-33b ✓ 需求链真读坏 ⇒ 首屏写「判不出」+ 原因**且只写一次**；主线只留状态锚点，⛔ 不伪装成空/完成')
         else for (const x of p) bad(`S-33b · ${x}`)
         actFn(() => r.unmount())
+      }
+
+
+      /**
+       * S-33b2：**"还没开账"与"旧格式"不许说成"判不出"**（2026-11-08 用户裁定）。
+       *
+       *   ⚠ 这两种都是**已知状态**，下一步动作明确（建账本 / 迁移），
+       *     顶着"判不出"只会让人以为账本坏了。
+       */
+      {
+        const p = []
+        for (const [reason, wantState, wantWords] of [
+          ['ledger-missing', 'not-initialized', '还没有账本'],
+          ['index-legacy', 'legacy', '旧格式'],
+        ]) {
+          const r = await iaMount({ fetchChains: async () => ({ ok: false, reason, message: '夹具原因' }) })
+          const inflight = document.querySelector('[data-dsh-hob="stages-inflight"]')
+          const text = inflight?.textContent ?? ''
+          if (inflight?.getAttribute('data-state') !== wantState) {
+            p.push(`${reason} ⇒ data-state=${JSON.stringify(inflight?.getAttribute('data-state'))}（期望 ${wantState}）`)
+          }
+          if (!text.includes(wantWords)) p.push(`${reason} 没有说清「${wantWords}」：${JSON.stringify(text)}`)
+          if (text.includes('判不出')) p.push(`${reason} 仍被说成「判不出」`)
+          actFn(() => r.unmount())
+        }
+        if (p.length === 0) ok('S-33b2 ✓ 「还没开账」与「旧格式」各自说清（⛔ 不冒用「判不出」），且都给出下一步')
+        else for (const x of p) bad(`S-33b2 · ${x}`)
       }
 
       /**
@@ -4360,7 +4405,12 @@ export function StateDot({ state, size, appearance }) {
          *   ⛔ 不删负向对拍，只把替换范围扩大到分支边界。
          */
         const NEEDLE_START = "    if (chainState.kind === 'fail') {\n"
-        const NEEDLE_END = "      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-mainline', 'data-state': 'undecidable' }, `${STAGES_UNDECIDABLE_TEXT}：${chainState.message}`)\n    }\n"
+        /**
+         * ⚠ 2026-11-08：主线的 fail 分支已改成**无文案的状态锚点**
+         *   （同一条原因只在在途区说一次）⇒ 锚点跟着改。
+         *   ⚠ 它仍必须覆盖**整个分支**：只替换其中一行会留下悬空 `)`，变体无法转译。
+         */
+        const NEEDLE_END = "      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-mainline', 'data-state': 'undecidable' })\n    }\n"
         /** ⚠ 从 `mainlineBlock` 内定位：文件里另有 inFlight/next/history 的 fail 分支。 */
         const blockStart = panelSrc.indexOf('const mainlineBlock')
         const start = blockStart < 0 ? -1 : panelSrc.indexOf(NEEDLE_START, blockStart)

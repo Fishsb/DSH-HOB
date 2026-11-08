@@ -543,12 +543,27 @@ const STALE_APPELLATIONS = [
   //     ⚠ 为什么单列：这些是用户**这一轮的原话要求**，而 ④ 一族只管 ## Rules。
   //       "四小块在不在"、"禁用物清单在不在"没有任何既有断言覆盖（两份一起删照样 PASS）。
   for (const [label, needle] of [
-    ['四小块之一（这轮做了什么）', /\*\*这轮做了什么\*\*/],
-    ['四小块之二（现在什么状态）', /\*\*现在什么状态\*\*/],
-    ['四小块之三（要你决定的）', /\*\*要你决定的\*\*/],
-    ['四小块之四（还没验证 / 还有风险）', /\*\*还没验证 \/ 还有风险\*\*/],
-    ['无内容可省、不许留空标题', /no heading left without content/],
-    ['禁用物清单（硬约束）', /Banned from 简要说明 as a hard rule/],
+    // ── **2026-11-07 · 四块 → 三套块集**（用户裁定：四块不够用，块名与内容不匹配）──
+    //   ⚠ 旧断言钉的是"四块标题在位"。现在改成"**块集选择规则在位 + 八个块各有定义**"，
+    //     因为固定四块会让"什么都没改"的轮次被迫写「这轮做了什么」、
+    //     让"不需要用户决定"的轮次留一块空的「要你决定的」。
+    ['块集选择：不是一套固定模板', /The brief is not one fixed template/],
+    ['块集选择：选错块集与写错字一样严重', /Picking the wrong set is as wrong as writing the wrong words/],
+    ['块集 report 在位', /`report` \(nothing dispatched, reporting\): 这轮结论 \/ 项目位置 \/ 还没验证 \/ 要你决定的/],
+    ['块集 decide 在位', /`decide` \(blocked, user must choose\): 这轮结论 \/ 卡在哪 \/ 要你决定的 \/ 还没验证/],
+    ['块集 talk 在位', /`talk` \(nothing changed, only answered or discussed\): 结论 \/ 分歧或未知 \/ 下一步/],
+    ['⛔ 不许混用块集', /Never mix sets/],
+    ['⛔ 不许加该块集没有的块', /never add a block the set lacks/],
+    ['⛔ 不许删该块集有的块（空块按该块规则写）', /never drop one it has/],
+    ['块定义：这轮结论', /### 这轮结论/],
+    ['块定义：项目位置', /### 项目位置/],
+    ['块定义：还没验证', /### 还没验证/],
+    ['块定义：要你决定的', /### 要你决定的/],
+    ['块定义：卡在哪', /### 卡在哪/],
+    ['块定义：结论', /### 结论/],
+    ['块定义：分歧或未知', /### 分歧或未知/],
+    ['块定义：下一步', /### 下一步/],
+    ['禁用物清单（硬约束）', /Banned from every block:/],
     ['禁用物：文件路径', /file paths/],
     ['禁用物：行号', /line numbers/],
     ['禁用物：提交号 / 哈希', /commit hashes/],
@@ -560,15 +575,34 @@ const STALE_APPELLATIONS = [
     ['禁用物：英文标识符', /English identifiers/],
     ['禁用物：代码块', /and code blocks/],
     ['长度：正文不超过 6 句', /at most six sentences/],
-    ['唯一判据：用户读完能答三问', /after reading 简要说明 the user can answer three questions/],
-    ['三问：做了什么 / 是好是坏 / 要不要做什么', /what this round did, whether the project is now better or worse, and whether they must do anything/],
-    ['答不出 ⇒ 作废重写', /the section is void and gets rewritten/],
-    ['细节留在账本与报告件里', /Keep the readings, the numbers and the paths in the ledger and in the report files/],
+    ['唯一判据：用户读完能答三问', /after reading it the user can answer three questions/],
+    ['三问：发生了什么 / 是好是坏 / 要不要做什么', /what happened, whether the project is better or worse, and whether they must do anything/],
+    ['答不出 ⇒ 作废重写', /the brief is void and gets rewritten/],
+    ['细节留在账本与报告件里', /Keep readings, numbers and paths in the ledger and report files/],
     ['未验证 / 风险 必须照实说、不许省', /never dropped because it is awkward to put simply/],
     ['要你决定的必须留', /A decision that belongs to the user is never taken for them/],
     ['实施指令不许碰什么必须留', /what must NOT be touched/],
     ['实施指令技术密度照旧、不许稀释', /never thin it out to make it easier to read/],
     ['没有要派的活时只出 简要说明（⛔ 不硬凑空壳指令段）', /do not add an empty 实施指令 shell/],
+    // ── **2026-11-07 · 四块写法与指令排版的实质约束**（外部参考：BLUF / 倒金字塔 /
+    //    problem statement / acceptance testing / runbook，结论见 `spec/reply.md`）──
+    //   ⚠ 光有四个标题不够：标题底下写成"动作清单 + 百分比 + 应该没问题"同样不合格。
+    //     这组断言钉的是**每块必须写成什么**，不是"标题在不在"。
+    ['这轮结论：一句、回答成没成', /One sentence answering "did it work": worked \/ did not work \/ stopped at X/],
+    ['这轮结论：单句即可独立行动', /a reader must be able to act on it alone/],
+    ['项目位置：写差距', /The GAP in one or two sentences/],
+    ['项目位置：⛔ 不写百分比（并说明为什么）', /Never a percentage, never a progress report/],
+    ['要你决定的：每行必须带选项 / 代价 / 默认', /the choice, its cost, and the default you take if the user says nothing/],
+    ['要你决定的：用户一个字就能回', /answerable with one word/],
+    ['还没验证：点名哪条结论未证明', /Name the claim that is not yet proven and what would prove it/],
+    ['还没验证：⛔ 不许「应该没问题」', /Never "should be fine"/],
+    ['块内排版：⛔ 表格 / 嵌套列表 / 句中加粗 / 分隔线', /No tables, no nested bullets, no mid-sentence bold, no rules between blocks/],
+    ['篇幅：六句是上限不是目标', /Six is a ceiling, not a target/],
+    ['实施指令四段：要什么 / 怎么算做完 / 不许动什么 / 开工前要知道的', /要什么[\s\S]{0,400}怎么算做完[\s\S]{0,400}不许动什么[\s\S]{0,400}开工前要知道的/],
+    ['实施指令：判据须第三方不问也能核', /phrased so a third party can check it without asking you/],
+    ['实施指令：边界必须给理由（无理由会被忽略）', /A boundary with no reason gets ignored/],
+    ['实施指令：无内容则整节省略（空标题有害）', /Omit this section entirely when there is nothing; an empty section teaches the reader that headings do not matter/],
+    ['实施指令：指针在前、细节在后', /Put the pointer before the detail, so the whole directive is scannable top-down/],
     // ── **v9（2026-10-18 第 2 轮 · `UD-137` 裁定 1 取 B）**「写发合一」条文 ──────
     //   ⚠ 这四条钉的是**用户本轮的原话**：写指令与发出去必须是**同一个动作**，
     //     且每条派发**同轮**给出读数（口径 = 目标 + **登记时刻**，⛔ 不是"轮次"）。
@@ -1435,13 +1469,18 @@ const STALE_APPELLATIONS = [
        *   ⚠ 这个数**只在本行与 `⑤m-3b` 的 `want` 里各写一次**（那是"档位表本体"，
        *     按 `P-1` 的口径它就是唯一允许写死的地方）。
        */
-      if (allow13.length !== 21) {
+      /**
+       * ⚠ **2026-11-08**：新增两件「账本先建后推进」（`hob_ledger_status` / `hob_ledger_init`）
+       *   ⇒ 21 → **23**。理由：账本没建时连派活都过不去，建账工具必须三档都可见，
+       *   否则那一档只能等人手工建账（正是改前"建账只是文档规定"的形态）。
+       */
+      if (allow13.length !== 23) {
         const extra = known26 === null ? allow13 : allow13.filter((n) => !known26.has(n))
-        bad(`⑤h ${NAME_HO} 白名单应恰好 21 名，实测 ${allow13.length}`
+        bad(`⑤h ${NAME_HO} 白名单应恰好 23 名，实测 ${allow13.length}`
           + `（多出：${extra.join(', ') || '无'}）`
           + `\n      ⇒ ⚠ **批 21 起 ${SHRUNK21_NAMES} 属"已被收缩"项** ——`
           + `\n        它们出现即说明收缩被回退（用户的权限裁定失效），**须查明是谁加回来的**`)
-      } else ok(`⑤h ${NAME_HO}：白名单恰好 21 名（11 + 5 + 3 + 2 + 2 + 3 − 4[丙-6 删 schedule_*] − 1[P15 删 roundtable_status]）`)
+      } else ok(`⑤h ${NAME_HO}：白名单恰好 23 名（21 + 2[账本先建后推进：hob_ledger_status / hob_ledger_init]）`)
 
       // ── 正向·批 21 专项：**被收缩的 4 个必须确实不在**（防"收了个寂寞"）──────
       //   ⚠ 只靠总数不够：30 → 26 也可能是"删错 4 个、漏删目标 4 个"恰好凑成 26。
@@ -1894,6 +1933,37 @@ const STALE_APPELLATIONS = [
   } else ok(`⑤k ${NAME_HO}：既有 ${KEPT_BY_111.length} 组条文逐字保留（职责边界块的追加未挤掉任何一条）`)
 }
 
+// ── ⑤s 2026-11-06 · **项目总代理的定位与有限授权**（用户本轮原话）──────────────
+//
+// 为什么需要：定位从“项目总负责人”改为“项目总代理”后，真正变的不只是称呼，
+// 而是**委托关系**：用户保留目标与产品取舍，Hob 只在其授权内组织项目。
+// ⚠ 若只改称呼、正文仍以 owner 自居，模型会把“结果负责”误读成“可替用户决定”；
+// 若把它改成无限代理，又会越出产品决定权。两边都错，故正向与负向都要钉。
+{
+  const norm = (s) => s.replace(/\s+/g, ' ').trim()
+  const body = norm(literalBlock(hoSrc, 'prefix') ?? '')
+  const PINS = [
+    ['角色称呼为用户的项目代理', "You are Hob, the user's project agent between the user and the developer session"],
+    ['代理范围仅限项目目标', "You act for the user on the project's goal, not on everything the user could personally do"],
+    ['用户保留目标 / 产品取舍 / 代价 / 不可逆决定', 'The user owns the goal, product trade-offs, accepted cost and any irreversible action'],
+    ['Hob 的授权是组织与协调', 'Within that mandate you own organisation and coordination'],
+    ['不得自行扩权', 'You cannot widen your own mandate'],
+    ['不得替用户接受自己的实现', "you cannot accept your own implementation on the user's behalf"],
+    ['职责边界再述：产品取舍 / 范围 / 新代价 / 不可逆动作交回用户', 'a product trade-off, a change of scope, a new cost, or an irreversible action goes back to the user'],
+  ]
+  const missing = PINS.filter(([, s]) => !body.includes(norm(s)))
+  if (missing.length > 0) {
+    bad(`⑤s ${NAME_HO}：项目总代理定位或有限授权缺失（${missing.length} 处）：${missing.map(([l]) => l).join(' / ')}`)
+  } else ok(`⑤s ${NAME_HO}：项目总代理定位与有限授权完整（${PINS.length} 条语义）`)
+
+  const stale = ['the project owner between the user', 'Hob project owner']
+    .filter((s) => body.includes(s))
+  if (stale.length > 0) {
+    bad(`⑤s ${NAME_HO}：运行正文仍残留旧定位（${stale.map((s) => JSON.stringify(s)).join(', ')}）`
+      + ' ⇒ 只改界面称呼不够，模型仍会按“项目负责人”理解自己的权力')
+  } else ok(`⑤s ${NAME_HO}：运行正文无旧“项目负责人”定位残留（${2} 个负向锚点均不在）`)
+}
+
 // ── ⑤l 2026-10-14（第 138 轮 · 用户本轮原话）· Hob 契约的**「先对照方案」**段 ──
 //
 // 为什么需要（本组存在的唯一理由，别删）：用户本轮原话是
@@ -2076,12 +2146,13 @@ const STALE_APPELLATIONS = [
       //   包含链能抓"档2 被抽走"，名数能抓"档2 被多加"（包含链对后者是哑的）。
       /** ⚠ **第 339 轮 · 丙-6**：删掉 4 个 `schedule_*` ⇒ 26/27/30 → 22/23/26；**P15** 再删 `roundtable_status` ⇒ 21/22/25。 */
       // ⚠ **2026-10-30 P15**：删 `roundtable_status` ⇒ 22/23/26 → **21/22/25**（真数变化，照实改）。
-      const want = { ledger: 21, project: 22, workspace: 25 }
+      /** ⚠ **2026-11-08**：+2 账本工具（三档都可见）⇒ 21/22/25 → **23/24/27**。 */
+      const want = { ledger: 23, project: 24, workspace: 27 }
       const wrong = ['ledger', 'project', 'workspace'].filter((k) => full[k].length !== want[k])
       if (wrong.length > 0) {
         bad(`⑤m-3b 三档名数与裁定不符（${wrong.map((k) => `${k}=${full[k].length}（应 ${want[k]}）`).join('；')}）`)
       } else {
-        ok('⑤m-3b 三档名数 = 21 / 22 / 25（P15 删 roundtable_status 后的真数）')
+        ok('⑤m-3b 三档名数 = 23 / 24 / 27（含账本先建后推进那两件）')
       }
     }
 

@@ -135,20 +135,39 @@ source = "夹具"
     { id: 'CAP-01', kind: 'cap', status: 'live' },
   ])
 
-  // ── R-1 三类 reason 互不相同 ─────────────────────────────────────────
+  /**
+   * ── R-1 reason 互不相同（2026-11-08 扩为**五种**）────────────────────────
+   *
+   * ⚠⚠ 改前这里断的是「根判不出 / 文件不存在 **共用** `index-unreadable`」。
+   *   用户报「面板进度全是判不出」时，真实成因正是这个共用：
+   *     · `Mana` 这类**还没开账**的项目
+   *     · `prompt-enhancer-release` 这类**旧格式**账本
+   *     · 真正**读坏了**的账本
+   *   三者给同一句话 ⇒ 读的人只看到"判不出 + 一段 ENOENT"，不知道下一步是
+   *   **建账**、**迁移**还是**修文件**。
+   *   ⇒ 现在各给一个 reason：`ledger-missing` / `index-legacy` / `index-unreadable`
+   *     / `index-malformed` / `row-shape-unknown`，**五者互不相同**。
+   *   ⚠ 这条与本项目 `R-4`（空 ≠ 判不出）同源：**不同的下一步动作必须不同的话**。
+   */
   {
     const unreadable = mod.handleStages(deps({ rootFn: () => undefined, whyFn: () => '夹具判不出根' }), {})
     const missing = mod.handleStages(deps({ readText: () => undefined }), {})
+    const legacy = mod.handleStages(deps({ readText: () => '[meta]\nschema = 1\n[units."CHG-1"]\nkind = "change"\nstatus = "settled"\ntitle = "t"\n' }), {})
     const malformed = mod.handleStages(deps({ readText: () => '[[unit]\nid = "x"' }), {})
     const shape = mod.handleStages(deps({ readText: () => TOML([{ id: 'X-1', kind: 'bogus', status: 'zzz' }]) }), {})
     const probs = []
     if (unreadable.ok !== false || unreadable.reason !== mod.STAGES_REASON_INDEX_UNREADABLE) probs.push(`根判不出 ⇒ ${JSON.stringify(unreadable).slice(0, 100)}`)
-    if (missing.ok !== false || missing.reason !== mod.STAGES_REASON_INDEX_UNREADABLE) probs.push(`文件不存在 ⇒ ${JSON.stringify(missing).slice(0, 100)}`)
+    if (missing.ok !== false || missing.reason !== mod.STAGES_REASON_LEDGER_MISSING) probs.push(`还没开账 ⇒ ${JSON.stringify(missing).slice(0, 100)}（期望 ledger-missing）`)
+    if (legacy.ok !== false || legacy.reason !== mod.STAGES_REASON_INDEX_LEGACY) probs.push(`旧格式账本 ⇒ ${JSON.stringify(legacy).slice(0, 100)}（期望 index-legacy）`)
     if (malformed.ok !== false || malformed.reason !== mod.STAGES_REASON_INDEX_MALFORMED) probs.push(`TOML 坏 ⇒ ${JSON.stringify(malformed).slice(0, 100)}`)
     if (shape.ok !== false || shape.reason !== mod.STAGES_REASON_ROW_SHAPE_UNKNOWN) probs.push(`kind 不认识 ⇒ ${JSON.stringify(shape).slice(0, 100)}`)
-    const set = new Set([unreadable.reason, missing.reason, malformed.reason, shape.reason])
-    if (set.size !== 3) probs.push(`四类情形只产生 ${set.size} 种 reason（期望 3 种：unreadable 两种 + malformed + shape）`)
-    if (probs.length === 0) ok('R-1 ✓ 三类 reason 互不相同：index-unreadable（根判不出 / 文件不存在共用）· index-malformed · row-shape-unknown')
+    const set = new Set([unreadable.reason, missing.reason, legacy.reason, malformed.reason, shape.reason])
+    if (set.size !== 5) probs.push(`五类情形只产生 ${set.size} 种 reason（期望 5 种：unreadable / ledger-missing / index-legacy / malformed / shape）`)
+    /** ⚠ 文案也要可分辨：光 reason 不同、话术一样等于没分。 */
+    if (String(missing.message ?? '').includes('ENOENT')) probs.push('「还没开账」仍然把 ENOENT 原文抛给用户')
+    if (!String(missing.message ?? '').includes('建账本')) probs.push('「还没开账」没有告诉用户下一步是建账本')
+    if (!String(legacy.message ?? '').includes('旧格式')) probs.push('「旧格式」没有说清是旧格式')
+    if (probs.length === 0) ok('R-1 ✓ 五类情形五句话：根判不出 · 还没开账（⇒建账本）· 旧格式（⇒迁移）· TOML 坏 · 形态不认识')
     else for (const x of probs) bad(`R-1 · ${x}`)
   }
 
@@ -674,6 +693,26 @@ actor = "session-pending"
        */
       const small = mod.buildStages(units.slice(0, 30), '2026-11-07T00:00:00.000Z', { compact: true })
       if (small.ok === true && small.truncated !== undefined) p.push(`小账本被误截断：${JSON.stringify(small.truncated)}`)
+      /**
+       * ⚠⚠ **降级不许动验收的固定两格**（2026-11-08 独立验收 H-6 实测）：
+       *   极端规模触发兜底后，每条验收仍必须是「判决 + 依据」。
+       *   ⛔ 不能把 `basis_count` 当纯计数删掉 —— 那样用户只看折叠行就少了依据维度。
+       */
+      /**
+       * ⚠ 极端规模会触发末尾截断（这是 R-18d 的另一条判据），截断后第 5 步可能为空。
+       *   本断言只针对**实际返回**的验收条目：只要有一条，就必须是「判决 + 依据」。
+       *   ⛔ 不许把“截断到零条”当成通过，也不许因此判红 —— 那是两条不同的事实。
+       */
+      const accRow = res.stages.find((s) => s.step === 5)
+      const accItems = Array.isArray(accRow?.items) ? accRow.items : []
+      for (const it of accItems) {
+        const facts = it?.presentation?.facts
+        if (!Array.isArray(facts) || facts.length !== 2
+          || facts[0]?.[0] !== '判决' || facts[1]?.[0] !== '依据') {
+          p.push(`极端规模下 ${it?.id} 折叠读数不是「判决 + 依据」：${JSON.stringify(facts)}`)
+          break
+        }
+      }
     }
     if (p.length === 0) ok('R-18d ✓ 体积兜底：极端规模 ≤ 64 KB 且如实标注 omitted · 阶段 done/total 保持全账本 · 正常规模不触发')
     else for (const x of p) bad(`R-18d · ${x}`)

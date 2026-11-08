@@ -1,5 +1,5 @@
 /**
- * Hob 项目总负责人预设的工具**挂载点** —— preset 行直接引用本模块。
+ * Hob 项目总代理预设的工具**挂载点** —— preset 行直接引用本模块。
  *
  * ── 本文件与 `src/modules/tools.ts` 的分工（**一份实现、一处挂载**）──────
  *   · `src/modules/tools.ts`  = 两个工具的**定义**（唯一一份）+ 门禁服务 `hobTools`
@@ -279,6 +279,46 @@ export function apply(ctx: any, config: Config = {}): void {
   const stageGateOfLedger = (root: string): string | undefined => {
     const fn = (toolsFace as unknown as { stageGateOfLedger?: (r: string) => string | undefined }).stageGateOfLedger
     return typeof fn === 'function' ? fn(root) : undefined
+  }
+  /**
+   * **作用域门禁**（2026-11-06 · Wave 1）：`hob_send` / `hob_spawn` / `hob_dispatch`
+   * 按「任务 / 活动计划」判定，而不是扫全账本。
+   *
+   * ⚠ 取不到该导出（旧模块缓存）⇒ 回落到全局门禁，⛔ 不放行；
+   *   但回落时**明确**说明是回落口径（读数可辨，不许静默换成宽判）。
+   */
+  const dispatchGateAt = (root: string, opts: { taskId?: string; planId?: string }): string | undefined => {
+    const fn = (toolsFace as unknown as {
+      dispatchGateAtLedger?: (
+        r: string,
+        o: { taskId?: string; planId?: string },
+      ) => { blocked: string | undefined }
+    }).dispatchGateAtLedger
+    if (typeof fn !== 'function') {
+      const legacy = stageGateOfLedger(root)
+      return legacy === undefined ? undefined : `${legacy}（⚠ 作用域门禁导出缺席，按旧全局口径判定）`
+    }
+    return fn(root, opts).blocked
+  }
+  /**
+   * **验收门禁**（2026-11-06 · Wave 1）：与阶段门禁同源，由 `modules/tools.ts` 提供。
+   * ⚠ 取不到 ⇒ 返回 fail-closed 的拒绝理由（⛔ 不让 accept 退回"只看参数"的旧行为）。
+   *
+   * ⚠⚠ **`exec` 必须是工具执行上下文本身**（`{ agent: { session: … } }`），
+   *   ⛔ 不能再传 `exec?.agent ?? exec` —— `ledgerRootOf` 读的是
+   *   `exec.agent.session.header.cwd`（与 `rootOf` 同源）。传 Agent 会**恒定判不出**
+   *   ⇒ `accept` 永远回「验收门禁判不出：无法确定账本目录」（2026-11-07 真机实测）。
+   */
+  const acceptanceGateFor = (exec: any, taskId: string): { ok: boolean; reason?: string } => {
+    const root = ledgerRootOf(config, exec)
+    if (root === undefined) return { ok: false, reason: '验收门禁判不出：无法确定账本目录' }
+    const fn = (toolsFace as unknown as {
+      acceptanceGateOfLedger?: (root: string, taskId: string) => { ok: boolean; reason?: string }
+    }).acceptanceGateOfLedger
+    if (typeof fn !== 'function') {
+      return { ok: false, reason: '验收门禁未接入（modules/tools.ts 缺 acceptanceGateOfLedger）⇒ 本次不落账' }
+    }
+    return fn(root, taskId)
   }
 
   /**
@@ -790,6 +830,13 @@ export function apply(ctx: any, config: Config = {}): void {
               void Promise.resolve(orchSvc.reconcile('hob-tool')).catch(() => { /* 对账失败不影响投递 */ })
             }
           } catch { /* 取不到就是不装 M5 ⇒ 没账可对 */ }
+        },
+        (exec: any) => {
+          // ⚠ `ledgerRootOf` 读 `exec.agent.session.header.cwd` ⇒ 这里必须传执行上下文本身。
+          const root = ledgerRootOf(config, exec)
+          return root === undefined
+            ? '阶段门禁判不出：无法确定本会话的账本目录 ⇒ 本次不推进。'
+            : dispatchGateAt(root, {})
         })
     })
   }
@@ -815,8 +862,9 @@ export function apply(ctx: any, config: Config = {}): void {
         return
       }
       log('闭环编排就绪 ⇒ 注册 M5 工具')
-      registerOrchTools(orchCtx, orch as HobOrchestrator, log, createHobOrchTools, proceedGateFor, workModeForExec, stageGateOfLedger,
-        (exec: any) => ledgerRootOf(config, exec?.agent ?? exec))
+      registerOrchTools(orchCtx, orch as HobOrchestrator, log, createHobOrchTools, proceedGateFor, workModeForExec, dispatchGateAt,
+        // ⚠ 同 `acceptanceGateFor`：传执行上下文本身，⛔ 不传 `exec.agent`。
+        (exec: any) => ledgerRootOf(config, exec), acceptanceGateFor)
     })
   }
 }
@@ -953,6 +1001,17 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
   // ── 本插件的两个工具 ──────────────────────────────────────────────
   'read_contracts',
   'write_hob',
+  /**
+   * ── **账本先建后推进**（2026-11-08 · 用户裁定）──────────────────────────
+   *   `hob_ledger_status` 只读诊断；`hob_ledger_init` 建账 / 补齐（默认演练）。
+   *
+   *   ⚠ 为什么**三档都要有**：账本没建时**连派活都过不去**（`dispatchGateAtLedger`
+   *     的第一道闸门），若建账工具在某档看不见，那一档的会话就**只能等着人手工建** ——
+   *     这正是改前"建账只是文档里的规定"的形态。
+   *   ⚠ 它们只碰**本账本区**，不扩大任何读 / 写面（落盘仍走 `writeHobFile` 同一道守卫）。
+   */
+  'hob_ledger_status',
+  'hob_ledger_init',
   // ── 检索 5 个（既有）──────────────────────────────────────────────
   'advanced_search',
   'multi_search',
@@ -1838,6 +1897,7 @@ function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any)
   const {
     readContracts, writeHob,
     readWorkspaceDoc, globWorkspace: globTool, grepWorkspaceTool, readWorkspaceImage,
+    ledgerStatus, ledgerInit,
   } = createTools(config, {
     // ⚠ **惰性取值**（每次执行时才 `ctx.get`），见上面那段注释的同一个理由。
     orchOf: () => {
@@ -1902,6 +1962,20 @@ function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any)
   ctx.effect(() => ctx.tools.register(readWorkspaceImage), 'dsh-hob preset: hob_read_image tool')
   log('已注册 hob_read_doc / hob_glob / hob_grep / hob_read_image（只读；按档可见）')
 
+  /**
+   * ── **账本就绪度两件**（2026-11-08 · 用户裁定「不管旧会话还是空会话，先建账并梳理健康才能推进」）──
+   *
+   *   `hob_ledger_status` 只读诊断；`hob_ledger_init` 建账 / 补齐（默认演练）。
+   *
+   * ⚠ 它们**始终注册**（与上面四个只读工具同一理由）：可见性由 `PERMISSION_TIERS` 按档过滤，
+   *   ⛔ 不按档增删注册 —— 否则换档要重挂载。
+   * ⚠ `hob_ledger_init` **不随 `enableWrite=false` 消失**：它是"开张"而不是"推进"，
+   *   而且它落盘走 `writeHobFile`（同一道守卫）。⛔ 关掉写工具 ≠ 不许建账本本身。
+   */
+  ctx.effect(() => ctx.tools.register(ledgerStatus), 'dsh-hob preset: hob_ledger_status tool')
+  ctx.effect(() => ctx.tools.register(ledgerInit), 'dsh-hob preset: hob_ledger_init tool')
+  log('已注册 hob_ledger_status / hob_ledger_init（账本先建后推进）')
+
   if (writeHob === undefined) {
     log('enableWrite=false ⇒ 不注册 write_hob（该工具根本不出现）')
     return
@@ -1927,7 +2001,15 @@ function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, confi
    * **T2 的挂点**（2026-10-20 · B5）：每次 `hob_*` 读写路径顺手对账一次。
    * ⚠ 缺省不传 ⇒ 不对账（旧调用形状**照旧可用**，向后兼容）。
    */
-  onRead?: () => void): void {
+  onRead?: () => void,
+  /** 阶段门禁：与 hob_dispatch 共用同一份账本判定。 */
+  stageGateFor?: (exec: any) => string | undefined): void {
+  const stageGate = (exec: any): string | undefined => {
+    if (stageGateFor === undefined) return undefined
+    try { return stageGateFor(exec) } catch (e) {
+      return `阶段门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不推进。`
+    }
+  }
   // ⚠ 把**账本根解析闭包**交给 bus 工具（2026-10-10 新增）：`hob_spawn` / `hob_send`
   //   要用它记 / 清"待投递"。理由：解析逻辑（`ledgerRootOf` + config）**只在本层**，
   //   传给 bus 层就不必在那里再造一份 —— 两处各写一份必然漂（见 `EXPERIENCE.md` E-110）。
@@ -1940,7 +2022,7 @@ function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, confi
     } catch {
       return undefined
     }
-  }, onRead, (exec: any) => proceedGateFor(exec?.agent ?? exec),
+  }, onRead, (exec: any) => proceedGateFor(exec?.agent ?? exec) ?? stageGate(exec),
   /**
    * ⚠ 2026-10-22 第 5 轮：`hob_spawn` 显式给了两值 ⇒ **必须真写进去**。
    *   这里把策略服务的 `set` 透下去（⛔ 不让 bus 层自己去摸服务 —— 它拿不到同一份权威）。
@@ -1979,21 +2061,33 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
   /** ⚠ 2026-10-22 第 5 轮：`hob_dispatch` 的执行层闸门（§任务书第 12 条）。 */
   proceedGateFor: (sessionOrAgent?: any) => string | undefined,
   workModeFor: (exec: any) => WorkMode | undefined,
-  stageGateOf: (root: string) => string | undefined = () => undefined,
-  ledgerRootFor: (exec: any) => string | undefined = () => undefined): void {
-  const stageGateFor = (exec: any): string | undefined => {
+  /**
+   * **作用域门禁**（2026-11-06 · Wave 1）：按任务 / 计划判定，⛔ 不扫全账本。
+   *  `opts.taskId` / `opts.planId` 由派单参数带下来；都没有时只报健康。
+   */
+  dispatchGateAt: (root: string, opts: { taskId?: string; planId?: string }) => string | undefined = () => undefined,
+  ledgerRootFor: (exec: any) => string | undefined = () => undefined,
+  acceptanceGateFor?: (exec: any, taskId: string) => { ok: boolean; reason?: string }): void {
+  /**
+   * ⚠ 作用域参数从**本次执行参数**里取（`hob_dispatch { task, planId, tracks }`）：
+   *   `tracks` 时逐轨 `taskId` 由 `dispatchGateAtLedger` 的计划分支覆盖，
+   *   这里只传计划号；单目标派活传 `task`。
+   */
+  const stageGateFor = (exec: any, scope: { taskId?: string; planId?: string } = {}): string | undefined => {
     try {
       const root = ledgerRootFor(exec)
       if (root === undefined) return '阶段门禁判不出：无法确定本会话的账本目录 ⇒ 本次不派单。'
-      return stageGateOf(root)
+      return dispatchGateAt(root, scope)
     } catch (e) {
       return `阶段门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不派单。`
     }
   }
   const { dispatch, status, control } = createOrchTools(
     orch,
-    (exec: any) => proceedGateFor(exec?.agent ?? exec) ?? stageGateFor(exec),
+    (exec: any, scope?: { taskId?: string; planId?: string }) =>
+      proceedGateFor(exec?.agent ?? exec) ?? stageGateFor(exec, scope),
     workModeFor,
+    acceptanceGateFor,
   )
   ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')
   ctx.effect(() => ctx.tools.register(status), 'dsh-hob preset: hob_orch_status tool')

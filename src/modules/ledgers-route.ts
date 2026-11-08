@@ -36,30 +36,49 @@ function json(status: number, body: unknown): Response {
  * ⚠ 只数 `[[unit]]` 行 —— ⛔ 不解析 TOML、⛔ 不建索引。
  * ⚠ 读不到 `ledger/units/` ⇒ `readable: false`（⛔ 不是 0 单元）。
  */
-export function countUnitsOf(ledgerDir: string): { units: number; readable: boolean } {
+export function countUnitsOf(ledgerDir: string): { units: number; state: 'data' | 'empty' | 'unreadable' } {
   const unitsDir = join(ledgerDir, 'ledger', 'units')
   let names: string[]
   try {
     names = readdirSync(unitsDir)
   } catch {
-    return { units: 0, readable: false }
+    /**
+     * ⚠ 目录存在但没有 `ledger/units/` 是**空骨架**，不是"读不了"。
+     *   只有目录本身都拿不到（statSync 失败）才由调用方判 unreadable。
+     *
+     * ⚠⚠ **2026-11-08 补一条**：`ledger/units/` 在、但 `index.toml` 是**旧格式**
+     *   （`[meta]` / `[units."ID"]`）时，本函数数出的 `[[unit]]` 行数是 0
+     *   ⇒ 会显示成「空账本」。实测：`prompt-enhancer-release` 有 `CHG-344` 一条真实单元，
+     *   下拉却写「空账本 0 单元」—— 这是**把有内容的账说成空的**（`R-4` 的镜像错误）。
+     *   ⇒ 这里先看入口有没有旧格式表头；有 ⇒ 如实标 `unreadable`（读不进来 ≠ 没有内容）。
+     */
+    try {
+      const idx = readFileSync(join(ledgerDir, 'ledger', 'units', 'index.toml'), 'utf8')
+      if (/^\s*\[(?:meta|units[."])/m.test(idx)) return { units: 0, state: 'unreadable' }
+    } catch { /* 入口也没有 ⇒ 真的是空骨架 */ }
+    return { units: 0, state: 'empty' }
   }
+  /**
+   * ⚠ 目录在时同样要辨旧格式（⚠ 别只靠"数到 0 就当空"）。
+   */
+  try {
+    const idx = readFileSync(join(unitsDir, 'index.toml'), 'utf8')
+    if (/^\s*\[(?:meta|units[."])/m.test(idx)) return { units: 0, state: 'unreadable' }
+  } catch { /* 没有 index.toml ⇒ 继续按分片数 */ }
   let units = 0
-  let readAny = false
   for (const n of names) {
     if (!/^unit-[^/]+\.toml$/.test(n)) continue
     try {
       const text = readFileSync(join(unitsDir, n), 'utf8')
-      readAny = true
       for (const line of text.split('\n')) {
         if (line.trim() === '[[unit]]') units += 1
       }
     } catch {
       // ⚠ 单个分片读失败 ⇒ 该账本整体标不可读（⛔ 静默少算）
-      return { units: 0, readable: false }
+      return { units: 0, state: 'unreadable' }
     }
   }
-  return { units, readable: readAny }
+  return { units, state: units > 0 ? 'data' : 'empty' }
 }
 
 /**
@@ -75,7 +94,7 @@ export function listLedgers(home: string, currentName: string | undefined): Retu
   } catch {
     names = []
   }
-  const raw: Array<{ name: string; units: number; readable: boolean }> = []
+  const raw: Array<{ name: string; units: number; state: 'data' | 'empty' | 'unreadable' }> = []
   for (const n of names) {
     const dir = join(home, n)
     try {
@@ -83,6 +102,10 @@ export function listLedgers(home: string, currentName: string | undefined): Retu
     } catch {
       continue
     }
+    /**
+     * 目录能 stat，但它的 `ledger/` 或分片读不了 ⇒ unreadable；
+     * 目录能 stat 且没有 `ledger/units/` ⇒ empty（由 countUnitsOf 区分）。
+     */
     raw.push({ name: n, ...countUnitsOf(dir) })
   }
   return buildLedgerCatalog(home, raw, currentName)

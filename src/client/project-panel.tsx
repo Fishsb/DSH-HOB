@@ -1938,6 +1938,27 @@ export function StagesPanel(props?: {
       return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-inflight', 'data-state': 'reading' }, '读取中…')
     }
     if (chainState.kind === 'fail') {
+      /**
+       * ⚠⚠ **2026-11-08：这两种失败不是"判不出"，而是"还没开张"**（用户报「全是判不出」）。
+       *
+       *   `ledger-missing` = 这个项目**还没建账本**；`index-legacy` = 账本**是旧格式**。
+       *   两者都**已知**、都有明确下一步，⛔ 不该顶着「判不出」三个字让人去猜。
+       *   ⚠ 说法与 `hob_ledger_status` / `hob_ledger_init` 的返回值同源（同一套 reason）。
+       *   ⚠ 这里**只在本面板说一次**（下面主线 / 下一步 / 历史不再复述）。
+       */
+      const knownGap = chainState.reason === 'ledger-missing'
+        ? { state: 'not-initialized', title: '这个项目还没有账本', how: '在 Hob 会话里让 Hob 先建账本（`hob_ledger_init`），建好后再回来看进度。' }
+        : chainState.reason === 'index-legacy'
+          ? { state: 'legacy', title: '这本账是旧格式，现行面板读不进来', how: '需要先按现行格式迁移 `ledger/units/index.toml`；`hob_ledger_init` 会说明要改哪里。' }
+          : undefined
+      if (knownGap !== undefined) {
+        return React.createElement(
+          'div',
+          { style: subNoteStyle, 'data-dsh-hob': 'stages-inflight', 'data-state': knownGap.state },
+          React.createElement('div', { style: { fontWeight: 600 } }, knownGap.title),
+          React.createElement('div', { 'data-dsh-hob': 'stages-inflight-reason' }, knownGap.how),
+        )
+      }
       return React.createElement(
         'div',
         { style: subNoteStyle, 'data-dsh-hob': 'stages-inflight', 'data-state': 'undecidable' },
@@ -1995,13 +2016,16 @@ export function StagesPanel(props?: {
        *   对用户应说“这本账还没有可展示的需求链”，⛔ 不把 ENOENT 原文抛到首屏。
        *   ⚠ 只有**空账本**这一种成因走这句；其它读失败仍是“判不出 + 原因”。
        */
-      const selectedEntry = ledgerState.kind === 'ok'
-        ? ledgerState.items.find((x: any) => x?.name === selectedLedger)
-        : undefined
-      if (String(selectedEntry?.state ?? '') === 'empty') {
-        return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-mainline', 'data-state': 'empty' }, '这本账还没有可展示的需求链')
-      }
-      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-mainline', 'data-state': 'undecidable' }, `${STAGES_UNDECIDABLE_TEXT}：${chainState.message}`)
+      /**
+       * ⚠⚠ **2026-11-08：同一句原因只在首屏出现一次**（用户报「全是判不出」）。
+       *
+       *   改前这段文案（`判不出：<message>`）在主线性、下一步、历史**各印一遍**，
+       *   而 message 本身就有 60+ 字（含绝对路径与 ENOENT 原文）⇒ 首屏被三份同样的
+       *   长句占满，读的人反而找不到"那到底该怎么办"。
+       *   ⇒ 现在：**在途区（第一处）说完整原因**，其余三处只留状态锚点（`undecidable`），
+       *     ⛔ 不再复述 —— 判据仍能按 `data-state` 找到它们。
+       */
+      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-mainline', 'data-state': 'undecidable' })
     }
     if (selectedChain === undefined) {
       /**
@@ -2106,7 +2130,8 @@ export function StagesPanel(props?: {
       return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-next', 'data-state': 'reading' }, '读取中…')
     }
     if (chainState.kind === 'fail') {
-      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-next', 'data-state': 'undecidable' }, `${STAGES_UNDECIDABLE_TEXT}：${chainState.message}`)
+      /** ⚠ 同一条原因只在在途区说（见 `mainlineBlock` 那段注释）。 */
+      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-next', 'data-state': 'undecidable' })
     }
     if (selectedChain === undefined) {
       /** ⚠ 同上：没有在途时结论已在在途区说过，这里不再重复第二句。 */
@@ -2137,7 +2162,8 @@ export function StagesPanel(props?: {
       return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-history-section', 'data-state': 'reading' }, '读取中…')
     }
     if (chainState.kind === 'fail') {
-      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-history-section', 'data-state': 'undecidable' }, `${STAGES_UNDECIDABLE_TEXT}：${chainState.message}`)
+      /** ⚠ 同一条原因只在在途区说（见 `mainlineBlock` 那段注释）。 */
+      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-history-section', 'data-state': 'undecidable' })
     }
     const total = chainState.kind === 'ok' ? chainState.historyItemCount : 0
     const renderChainHistory = (c: RequirementChain, i: number): React.JSX.Element => React.createElement(

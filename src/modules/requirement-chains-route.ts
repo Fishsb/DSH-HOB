@@ -16,7 +16,12 @@ import type { Context } from '@deepseek-ai/cordis'
 import { resolveLedgerRoot, ledgerRootWhy } from '../server/doc-read.ts'
 import { declaredLedgerHome } from './orchestrator.ts'
 import { resolveLedgerByName } from '../shared/ledger-catalog.ts'
-import { parseUnitsToml, STAGES_INDEX_REL } from '../shared/stages-index.ts'
+import {
+  parseUnitsToml,
+  STAGES_INDEX_REL,
+  STAGES_REASON_INDEX_LEGACY,
+  STAGES_REASON_LEDGER_MISSING,
+} from '../shared/stages-index.ts'
 import {
   buildRequirementChains,
   type RequirementChainsResponse,
@@ -43,6 +48,22 @@ export function readUnitsOfLedger(root: string): {
   try {
     shardNames = readdirSync(unitsDir).filter((n) => /^unit-[^/]+\.toml$/.test(n)).sort()
   } catch (e) {
+    /**
+     * ⚠⚠ **2026-11-08 与 `stages-index.ts` 同口径**（用户报「面板全是判不出」）。
+     *
+     *   改前这里把"目录不存在"也说成 `index-unreadable` + 一段 `ENOENT` 原文 ——
+     *   面板于是只能显示「判不出：索引目录读不到…」，读者不知道下一步该**建账**。
+     *   ⇒ 与 `STAGES_REASON_LEDGER_MISSING` 同一句话：**还没开账**，去建账本。
+     */
+    if ((e as { code?: string } | undefined)?.code === 'ENOENT') {
+      return {
+        units: [],
+        error: {
+          reason: STAGES_REASON_LEDGER_MISSING,
+          message: `这个项目还没有账本（\`${unitsDir}\` 不存在）⇒ 先建账本，再看进度。`,
+        },
+      }
+    }
     return {
       units: [],
       error: {
@@ -58,6 +79,16 @@ export function readUnitsOfLedger(root: string): {
       text = readFileSync(path, 'utf8')
     } catch (e) {
       if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        /** ⚠ 入口缺 = 还没开账；分片缺 = 账本在但残了（两种不同，同 `stages-index.ts`）。 */
+        if (path === abs) {
+          return {
+            units: [],
+            error: {
+              reason: STAGES_REASON_LEDGER_MISSING,
+              message: `这个项目还没有账本入口（\`${path}\` 不存在）⇒ 先建账本，再看进度。`,
+            },
+          }
+        }
         return {
           units: [],
           error: {
@@ -79,11 +110,25 @@ export function readUnitsOfLedger(root: string): {
   try {
     return { units: parseUnitsToml(sources.join('\n')) as Array<Record<string, unknown>> }
   } catch (e) {
+    /**
+     * ⚠ 旧格式（`[meta]` / `[units."ID"]`）≠ 写坏了：它是**已知、可迁移**的形态。
+     *   与 `stages-index.ts` 判定同一份正则，⛔ 不许两处各写一套。
+     */
+    const msg = String((e as Error)?.message ?? e)
+    if (/不支持的 TOML 表头\s*"\[(?:meta|units)/.test(msg)) {
+      return {
+        units: [],
+        error: {
+          reason: STAGES_REASON_INDEX_LEGACY,
+          message: '这本账是旧格式（`[meta]` / `[units."ID"]`），现行面板读不进来 ⇒ 需要按现行 `[[unit]]` 格式迁移。',
+        },
+      }
+    }
     return {
       units: [],
       error: {
         reason: 'index-malformed',
-        message: `索引不是合法 TOML 子集：${String((e as Error)?.message ?? e)}`,
+        message: `索引不是合法 TOML 子集：${msg}`,
       },
     }
   }

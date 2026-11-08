@@ -53,7 +53,24 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
-import { stageControlProblems, type StageControlUnit } from '../shared/stage-controls.ts'
+import {
+  acceptanceProblems,
+  evaluateGate,
+  gateScopeUnits,
+  stageControlProblems,
+  type GateAction,
+  type GateDecision,
+  type GateScope,
+  type StageControlUnit,
+} from '../shared/stage-controls.ts'
+import {
+  assessLedgerReadiness,
+  initialIndexToml,
+  initialProjectMd,
+  probeFromDirListing,
+  readinessLineOf,
+  type LedgerReadiness,
+} from '../shared/ledger-readiness.ts'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { readMarkdownCapped, resolveLedgerRoot, resolveWorkspaceRoot } from '../server/doc-read.ts'
 import {
@@ -63,6 +80,7 @@ import {
   readWorkspaceText,
 } from '../server/workspace-read.ts'
 import { readLedgerResource, type LedgerUnitLike } from '../shared/ledger-resources.ts'
+import { listWorkPlans } from '../server/work-plan-state.ts'
 import { basename } from 'node:path'
 import { LEDGER_FILES, writeHobFile } from '../server/hob-write.ts'
 import { HOB_WRITE_OPERATIONS, classifyHobWritePath, isCurrentRootDoc, type HobWriteOperation } from '../shared/ledger-write-policy.ts'
@@ -96,7 +114,7 @@ import * as configFace from '../config.ts'
 //   ⚠ `src/shared/capability-red-line.ts` **零 import**（纯常量模块）⇒ host 侧
 //     直接 import 安全（不需要 ctx、不会有循环依赖）。
 import { CAPABILITY_RED_LINE_ZH } from '../shared/capability-red-line.ts'
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
@@ -540,6 +558,240 @@ export function stageGateOfLedger(ledgerRoot: string): string | undefined {
   }
 }
 
+/**
+ * **按作用域判定的阶段门禁**（2026-11-06 · Wave 1）。
+ *
+ * ── 它治什么 ──────────────────────────────────────────────────────────────
+ *   `stageGateOfLedger` 用**全账本**判据：别的需求缺一个字段，就把当前这一单也拦下。
+ *   用户要的是「推进受阻才回流」，⛔ 不是「账本全局有任何欠账就全体停工」。
+ *   ⇒ 本入口先按 `task / requirement / change / plan` 收敛作用域，再看该链上的缺口。
+ *
+ * ── 三档语义（⛔ 不许合并）────────────────────────────────────────────────
+ *   · `go`      —— 该作用域无阻塞，可以推进；
+ *   · `return`  —— 该作用域有阻塞，须回到最早失效阶段；
+ *   · `hold`    —— 判不出（账本读不到 / 作用域缺 id）⇒ 不推进，且**不冒充**成 `return`。
+ *   `project` 作用域只出**健康报告**（blockers 非空但 decision = go），⛔ 不用它拦单。
+ *
+ * @param ledgerRoot - 账本区根
+ * @param input - 动作 + 作用域
+ */
+export function stageGateAtLedger(
+  ledgerRoot: string,
+  input: { action: GateAction; scope: GateScope },
+): GateDecision {
+  const scopeText = input.scope.kind === 'project'
+    ? 'project'
+    : `${input.scope.kind}:${String(input.scope.id ?? '').trim() || '(missing)'}`
+  if (input.scope.kind !== 'project' && String(input.scope.id ?? '').trim() === '') {
+    return { decision: 'hold', scope: scopeText, blockers: [], allowedRepairs: [] }
+  }
+  try {
+    const units = readLedgerUnits(ledgerRoot) as StageControlUnit[]
+    /**
+     * ⚠⚠ **2026-11-08 · 用户裁定：作用域指向的单元不存在 ⇒ `hold`，⛔ 不许 `go`。**
+     *
+     * ── 病（真机 + 纯函数双向实测）──────────────────────────────────────────
+     *   `evaluateGate` 走 `gateScopeUnits`：把作用域 id 在账本里**找它自己与上下游**。
+     *   找不到 ⇒ 作用域解析出**空集** ⇒ 空集上没有缺口 ⇒ **判 `go`**。
+     *   实测：`scope.id = 'TSK-079'`（真实存在）⇒ `return`（4 条阻塞）；
+     *        `scope.id = '随便一句话'` / 任何不存在的号 ⇒ **`go`（0 条阻塞）**。
+     *
+     *   ⇒ 后果正是用户报的「说个东西直接就派活了」：需求没落成 R、方案没落成 CHG、
+     *     任务没落成 TSK 时，只要 `task` 参数不是一个真实存在的号，**门禁等于不存在**。
+     *
+     * ── 为什么不能靠"补全上游"来救 ────────────────────────────────────────
+     *   空集不是"这条链很干净"，而是"**根本没有这条链**"。两者给同一个 `go`，
+     *   就是把"判不出"读成"没有缺口" —— 与 `R-4` 同一条错误的镜像。
+     *
+     * ⚠ `project` 作用域**不受本档影响**（它本来就只报健康、不拦推进）。
+     */
+    if (input.scope.kind !== 'project') {
+      const wanted = String(input.scope.id ?? '').trim()
+      /**
+       * ⚠⚠ **两条豁免，缺一就会误伤历史**（2026-11-08 实测）：
+       *   ① `implicit`：`hob_dispatch` **不给 `task`** 时，编排器自己写下的计划用
+       *      `taskId: 'implicit'` 占位（`orchestrator.ts` 的 `WP-implicit-…`）。
+       *      它不是真实 TSK，⛔ 不能按"账本里没有 ⇒ hold"处理 —— 那会把
+       *      所有"没写 task 的老计划"一起判死（真机当场就红：`task:implicit`）。
+       *   ② 形如 `TSK-…` / `CHG-…` 这类**账本编号**才做存在性核对；
+       *      其余自由文本（用户一句话被当成 task 传下来）**也拦**，因为那正是
+       *      "说个东西直接就派活"的入口形态。
+       */
+      const isPlaceholder = wanted === 'implicit'
+      if (!isPlaceholder) {
+        const exists = units.some((u) => String((u as unknown as { id?: unknown }).id ?? '').trim() === wanted)
+        if (!exists) {
+          return { decision: 'hold', scope: scopeText, blockers: [], allowedRepairs: [] }
+        }
+      }
+    }
+    return evaluateGate({ action: input.action, scope: input.scope, units })
+  } catch {
+    return { decision: 'hold', scope: scopeText, blockers: [], allowedRepairs: [] }
+  }
+}
+
+/** 把结构化判决渲染成一行可读拒绝理由（⛔ 不吞掉 `hold` 与 `return` 的区别）。 */
+export function gateMessageOf(d: GateDecision): string | undefined {
+  if (d.decision === 'go') return undefined
+  if (d.decision === 'hold') {
+    return `阶段门禁判不出（${d.scope}）：账本读不到或作用域缺 id ⇒ 本次不推进。`
+  }
+  const first = d.blockers.slice(0, 5).map((p) => `${p.rule} · ${p.unit} · ${p.why}`).join('；')
+  return `阶段门禁未通过（${d.scope}）：${d.blockers.length} 条缺口（${first}）⇒ 先回查需求 / 方案 / 任务，补齐后再推进。`
+}
+
+/** 某任务的作用域链是否干净；供派单 / 判决路径复用（⚠ 只判该链，不判全账本）。 */
+export function stageGateOfTask(ledgerRoot: string, taskId: string, action: GateAction = 'write-forward'): string | undefined {
+  return gateMessageOf(stageGateAtLedger(ledgerRoot, { action, scope: { kind: 'task', id: taskId } }))
+}
+
+/** 项目健康报告：**只报不拦**。`project` 作用域永远 `go`，缺口列在 blockers 里。 */
+export function stageHealthOfLedger(ledgerRoot: string): { ok: boolean; blockers: GateDecision['blockers']; message?: string } {
+  const d = stageGateAtLedger(ledgerRoot, { action: 'write-forward', scope: { kind: 'project' } })
+  if (d.decision === 'hold') return { ok: false, blockers: [], message: gateMessageOf(d) }
+  return {
+    ok: d.blockers.length === 0,
+    blockers: d.blockers,
+    ...(d.blockers.length === 0 ? {} : {
+      message: `账本健康：${d.blockers.length} 条全局缺口（不阻塞当前单；逐条见 blockers）`,
+    }),
+  }
+}
+
+/**
+ * **派活 / 投递前的作用域门禁**（2026-11-06 · Wave 1 接线）。
+ *
+ * ── 它替掉什么 ────────────────────────────────────────────────────────────
+ *   `hob_send` / `hob_spawn` 原先调 `stageGateOfLedger`（全账本），
+ *   ⇒ 别的需求缺一个字段，就把这一条投递也拦下。方案 §4.1 明确要求
+ *   「项目作用域只生成健康报告，不作为所有动作的硬阻断」。
+ *
+ * ── 作用域怎么取（⚠ 顺序即优先级）────────────────────────────────────────
+ *   ① 有 `taskId` ⇒ `task` 作用域（只判这条任务链）；
+ *   ② 无 taskId、但有活动工作计划 ⇒ `plan` + 计划内各轨任务；
+ *   ③ 两者都没有 ⇒ **不硬拦**（只返回健康读数）——
+ *      此时"没有对应的计划/任务"本身就是**判不出该判谁**，
+ *      ⛔ 不能拿"全账本有缺口"当拒绝理由。
+ *
+ * ⚠ 判不出账本根 / 账本读不到 ⇒ 仍然 fail-closed（与既有口径一致）。
+ */
+/**
+ * **读一本书的就绪度**（2026-11-08 · 用户裁定「不管旧会话还是空会话，先建账并梳理健康才能推进」）。
+ *
+ * ⚠ 走 {@link assessLedgerReadiness} 的**同一个纯函数**（⛔ 不在这里另判一份）。
+ * ⚠ 读盘失败一律折成 `unhealthy`（带原因），⛔ 不许当成 `ready`。
+ */
+export function ledgerReadinessOfRoot(ledgerRoot: string | undefined): LedgerReadiness {
+  if (ledgerRoot === undefined || ledgerRoot.trim() === '') {
+    return assessLedgerReadiness({ unitsDirExists: false })
+  }
+  const probe = probeFromDirListing({
+    ledgerRoot,
+    listUnitsDir: () => readdirSync(join(ledgerRoot, 'ledger', 'units')),
+    readText: (abs: string) => {
+      try { return readFileSync(abs, 'utf8') } catch (e) {
+        if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined
+        throw e
+      }
+    },
+  })
+  return assessLedgerReadiness(probe)
+}
+
+export function dispatchGateAtLedger(
+  ledgerRoot: string,
+  opts: { taskId?: string; planId?: string } = {},
+): { blocked: string | undefined; health: { ok: boolean; blockers: GateDecision['blockers'] } } {
+  /**
+   * ⚠⚠ **第一道：账本先得能推进**（2026-11-08 · 用户裁定）。
+   *
+   *   用户原话：「没有账本的项目必须先建立账本才能推进任务」「不管是旧的还是空的 hob 会话
+   *   在工作之前必须把账本建立梳理健康才能推进任务」。
+   *
+   *   ⚠ 改前这一档是**漏的**，三处实测：
+   *     · `Mana`（没建账）+ 不给 `task` ⇒ **放行**
+   *     · `prompt-enhancer-release`（旧格式账本）⇒ **放行**
+   *     · `dsh-hob`（真账本）+ 不存在的任务号 ⇒ **放行**（见 `stageGateAtLedger` 那条补丁）
+   *   ⇒ 「先建账」曾经只是文档里的规定，**运行时不拦**。
+   *
+   *   ⚠ 本档与作用域无关：**任何派活都先过它**，然后再看具体任务链。
+   *   ⛔ 不许把它降级成"只报健康"—— 那等于回到改前。
+   */
+  const readiness = ledgerReadinessOfRoot(ledgerRoot)
+  if (!readiness.canProceed) {
+    return {
+      blocked: `账本还不能推进：${readiness.headline} ⇒ ${readiness.nextAction}`,
+      health: { ok: false, blockers: [] },
+    }
+  }
+  const taskId = String(opts.taskId ?? '').trim()
+  if (taskId !== '') {
+    const d = stageGateAtLedger(ledgerRoot, { action: 'dispatch', scope: { kind: 'task', id: taskId } })
+    return {
+      blocked: gateMessageOf(d),
+      health: { ok: d.decision === 'go', blockers: d.blockers },
+    }
+  }
+  let plans: Array<{ plan?: { planId?: string; tracks?: Array<{ taskId?: string }> } }> = []
+  try { plans = listWorkPlans(ledgerRoot).filter((row) => row.state === 'ok') as typeof plans } catch { plans = [] }
+  const wantedPlan = String(opts.planId ?? '').trim()
+  const plan = wantedPlan === ''
+    ? plans[0]
+    : plans.find((row) => String(row.plan?.planId ?? '') === wantedPlan)
+  if (plan?.plan !== undefined) {
+    const tasks = (plan.plan.tracks ?? []).map((t) => String(t.taskId ?? '')).filter((x) => x !== '')
+    for (const id of tasks) {
+      const d = stageGateAtLedger(ledgerRoot, { action: 'dispatch', scope: { kind: 'task', id } })
+      if (d.decision !== 'go') {
+        return { blocked: gateMessageOf(d), health: { ok: false, blockers: d.blockers } }
+      }
+    }
+    return { blocked: undefined, health: { ok: true, blockers: [] } }
+  }
+  /** ③ 无任务、无活动计划 ⇒ 只报健康，⛔ 不拿全局缺口当拒绝理由。 */
+  const h = stageHealthOfLedger(ledgerRoot)
+  return { blocked: undefined, health: { ok: h.ok, blockers: h.blockers } }
+}
+
+/**
+ * **验收门禁**（2026-11-06 · Wave 1）：按账本真实 ACC 单元判 `accept` 能不能落账。
+ *
+ * 判据：
+ *   ① 账本里必须有 `acc` 单元，且 `parent = taskId`；
+ *   ② 该 ACC 必须已 `pass`（退回中的任务不能被"验收"）；
+ *   ③ 判据走 `acceptanceProblems`（同一份纯函数），因此独立会话 / 证据 / 例子结果缺一不可；
+ *   ④ `actor` 与 `acceptance_session` 必须**不同**于该任务的 `built_by`。
+ *
+ * ⚠ 判不出（账本读不到 / 找不到 ACC）⇒ 拒绝，⛔ 不把"没有验收单元"当成"验收通过"。
+ */
+export function acceptanceGateOfLedger(
+  ledgerRoot: string,
+  taskId: string,
+): { ok: boolean; reason?: string } {
+  try {
+    const units = readLedgerUnits(ledgerRoot) as StageControlUnit[]
+    const accs = units.filter((u) => u.kind === 'acc' && String(u.parent ?? '').trim() === taskId)
+    if (accs.length === 0) {
+      return { ok: false, reason: `拒绝：账本里没有挂在 ${taskId} 下的验收单元 ⇒ 回传不等于验收。` }
+    }
+    const passed = accs.filter((u) => String(u.status ?? '').trim() === 'pass')
+    if (passed.length === 0) {
+      return { ok: false, reason: `拒绝：${taskId} 没有 status=pass 的验收单元（当前：${accs.map((u) => `${u.id}=${u.status}`).join(' / ')}）。` }
+    }
+    const problems = passed.flatMap((u) => acceptanceProblems(u, units))
+    if (problems.length > 0) {
+      const first = problems.slice(0, 5).map((p) => `${p.rule} · ${p.unit} · ${p.why}`).join('；')
+      return { ok: false, reason: `验收门禁未通过：${problems.length} 条缺口（${first}）` }
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, reason: `验收门禁判不出：账本读不到（${String((e as Error)?.message ?? e)}）` }
+  }
+}
+
+export { gateScopeUnits }
+
 /** @deprecated v4 起账本已迁出工作区，账本位置改由 {@link ledgerRootOf} 解析。 */
 export function hobDirOf(cfg: HobToolsConfig): string {
   return cfg.hobDir ?? DEFAULTS.hobDir
@@ -700,6 +952,13 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
   globWorkspace: ReturnType<typeof defineTool>
   grepWorkspaceTool: ReturnType<typeof defineTool>
   readWorkspaceImage: ReturnType<typeof defineTool>
+  /**
+   * **账本就绪度（只读）**（2026-11-08 · 用户裁定「先建账并梳理健康才能推进」）。
+   * ⚠ 它与派活门禁**共用同一个纯函数**，⛔ 不是第二次判断。
+   */
+  ledgerStatus: ReturnType<typeof defineTool>
+  /** **建账本 / 补齐**（2026-11-08 · 用户裁定「预设本身要具备这个能力」）。 */
+  ledgerInit: ReturnType<typeof defineTool>
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
@@ -1092,6 +1351,20 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         description: '（可选）`manual` = 本轮**有意人工转达**（不自动投）⇒ 该条待投递记录带标注，'
           + '状态行会把"有意转达"与"漏投"分开报。⚠ 与 dispatchTo 同时给时以 dispatchTo（真投）为准。',
       },
+      gateIntent: {
+        type: 'string',
+        enum: ['forward', 'repair'],
+        description: '（可选）`forward`（缺省）= 正常推进，必须过当前作用域门禁；'
+          + '`repair` = **修复写**，用于补当前 blocker（如补验收证据、加历史字段）。'
+          + '⚠ repair 不是无条件放行：给了 `repairOf` 时必须命中真实 blocker；'
+          + '不给 `repairOf` 时只允许写 `ledger/units/` 与 `archive/`（补证据的落点）。',
+      },
+      repairOf: {
+        type: 'string',
+        description: '（可选）`gateIntent=repair` 专用：要修复的单元 id（如 `ACC-062`）。'
+          + '⚠ 它必须是当前账本里真实存在、且确实触发 blocker 的单元；'
+          + '⛔ 用一个无关 id 逃闸会被拒。',
+      },
     },
     output: {
       schema: { type: 'string' },
@@ -1107,6 +1380,8 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         dryRun?: boolean
         dispatchTo?: string
         delivery?: 'manual'
+        gateIntent?: 'forward' | 'repair'
+        repairOf?: string
       },
       exec: ToolRunContext,
     ): Promise<string> {
@@ -1160,7 +1435,43 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         return JSON.stringify({ ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' })
       }
       if (args.dryRun !== true) {
-        const stageBlocked = stageGateOfLedger(root)
+        /**
+         * **修复写 vs 推进写**（2026-11-06 · Wave 1）。
+         *
+         * ⚠ 为什么不能全走 `stageGateOfLedger`：补 blocker 本身就是一次账本写入，
+         *   若它也被同一个 blocker 拦住，账本里的缺陷就**永远修不掉**——
+         *   这不是"严格"，是死锁。
+         * ⚠ 为什么 repair 不能完全绕闸：`repairOf` 必须命中**当前真实 blocker**；
+         *   未指定目标时只允许 `ledger/units/` 与 `archive/`（补证据的落点），
+         *   ⛔ 不能拿 repair 当"随便写当前正文"的后门。
+         */
+        let stageBlocked: string | undefined
+        if (args.gateIntent === 'repair') {
+          const target = String(args.repairOf ?? '').trim()
+          const repairAllowedPath = args.file.startsWith('ledger/units/') || args.file.startsWith('archive/')
+          if (target === '') {
+            if (!repairAllowedPath) {
+              return JSON.stringify({
+                ok: false,
+                reason: 'repair-scope-denied',
+                message: `拒绝：未指定 repairOf 时，修复写只允许 ledger/units/ 与 archive/；`
+                  + `当前路径 ${args.file} 不属于补证据的落点。`,
+              })
+            }
+          } else {
+            const health = stageHealthOfLedger(root)
+            if (health.blockers.every((p) => p.unit !== target)) {
+              return JSON.stringify({
+                ok: false,
+                reason: 'repair-target-not-a-blocker',
+                message: `拒绝：${target} 不是当前账本的真实 blocker ⇒ repair 不能用来逃闸。`
+                  + `当前 blocker：${health.blockers.slice(0, 5).map((p) => `${p.rule} · ${p.unit}`).join('；') || '无'}`,
+              })
+            }
+          }
+        } else {
+          stageBlocked = stageGateOfLedger(root)
+        }
         if (stageBlocked !== undefined) {
           return JSON.stringify({ ok: false, reason: 'stage-gate-blocked', message: stageBlocked })
         }
@@ -1250,6 +1561,213 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
     },
   })
 
+  /**
+   * ══ **账本就绪度查询**（2026-11-08 · 用户裁定「先建账并梳理健康才能推进」）══
+   *
+   * ⚠ 这是**只读**诊断：⛔ 不建任何目录、⛔ 不写任何文件。
+   * ⚠ 它调的判定与派活门禁**同一个纯函数**（`assessLedgerReadiness`）——
+   *   ⛔ 不许在这条路上另写一份"看起来差不多"的判定：两处漂开的后果是
+   *   「工具说就绪、派活仍被拦」或者更坏的反过来。
+   *
+   * ⚠ 为什么单独做成一个工具（而不是只在拒绝时回一句话）：
+   *   模型需要**在动手之前**就能问"这本账现在什么状态、下一步该做什么"，
+   *   而不是反复撞到拒绝才知道缺哪一步。
+   */
+  const ledgerStatus = defineTool({
+    name: 'hob_ledger_status',
+    description: '**只读**：报告本会话对应账本的就绪度（未建 / 旧格式 / 空 / 有缺口 / 就绪），'
+      + '并给出下一步该做什么。⚠ 它不建目录、不写文件。'
+      + '⚠ 派活前如果被判"账本还不能推进"，先用它看原因。',
+    parameters: {},
+    output: {
+      schema: { type: 'json' },
+      render: (_args: unknown, value: unknown) => {
+        const v = value as Partial<LedgerReadiness> & { ok?: boolean }
+        return [{ type: 'text', text: readinessLineOf(v as LedgerReadiness) }]
+      },
+    },
+    async execute(_args: unknown, exec: ToolRunContext): Promise<JsonValue> {
+      const root = ledgerRootOf(cfg, exec)
+      const readiness = ledgerReadinessOfRoot(root)
+      return {
+        ok: true,
+        canProceed: readiness.canProceed,
+        canInitialize: readiness.canInitialize,
+        state: readiness.state,
+        headline: readiness.headline,
+        nextAction: readiness.nextAction,
+        unitCount: readiness.unitCount,
+        gapCount: readiness.gapCount,
+        gaps: readiness.gaps,
+        ...(readiness.reason === undefined ? {} : { reason: readiness.reason }),
+        ...(readiness.detail === undefined ? {} : { detail: readiness.detail }),
+        ...(root === undefined ? {} : { ledgerRoot: root }),
+      } as unknown as JsonValue
+    },
+  })
+
+  /**
+   * ══ **建账本 / 补齐**（2026-11-08 · 用户裁定「Hob 预设本身要具备这个能力」）══
+   *
+   * ── 它做什么（**只做"让账本可推进"所需的最小集**）──────────────────────
+   *   · `missing`   ⇒ 建 `ledger/units/index.toml`（空索引）+ `PROJECT.md` 起手
+   *   · `empty`     ⇒ 只补缺失的那几份（⛔ 不覆盖已有内容）
+   *   · `legacy`    ⇒ **不自动迁移**：旧索引里是别人的真实数据，
+   *                   自动改写 = 替用户重写历史（⛔ 越权）。这里只给出迁移清单。
+   *   · `unhealthy` ⇒ 只回缺口清单（补内容是指挥的活，⛔ 不是建账工具该干的）
+   *   · `ready`     ⇒ 什么都不做
+   *
+   * ── 三条硬边界 ────────────────────────────────────────────────────────
+   *   ① **不越写面**：落盘一律走 `writeHobFile`（同一道白名单 / 同一条守卫），
+   *      ⛔ 不自己拼路径 `mkdir` + `writeFile` —— 那会在守卫旁边开一个后门；
+   *   ② **不覆盖**：`mode: 'append'` 且先探测存在性；已存在就跳过并如实回报"跳过"；
+   *   ③ **默认演练**：`dryRun` 缺省 `true`；要真落盘必须显式 `dryRun: false`。
+   *      ⚠ 这是"建账本"这种**结构性写入**该有的默认姿态。
+   */
+  const ledgerInit = defineTool({
+    name: 'hob_ledger_init',
+    description: '**给当前工作区建账本**（或补齐缺失件）：账本没建 / 是空账本时，先跑它。'
+      + '⚠ 默认只演练（`dryRun` 缺省 true），要真落盘请显式给 `dryRun: false`。'
+      + '⚠ 不覆盖已有文件；⚠ 旧格式账本**不自动改写**（只给迁移清单）。'
+      + '⚠ 账本就绪之前 `hob_dispatch` / `hob_send` 会被拒 —— 这是设计，不是故障。',
+    parameters: {
+      dryRun: {
+        type: 'boolean',
+        description: '（可选）**缺省 true = 只演练不落盘**。要真建账本请显式传 false。',
+      },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: String((value as { message?: string })?.message ?? '') }],
+    },
+    async execute(args: { dryRun?: boolean }, exec: ToolRunContext): Promise<JsonValue> {
+      const dryRun = args?.dryRun !== false
+      const root = ledgerRootOf(cfg, exec)
+      if (root === undefined || root.trim() === '') {
+        return {
+          ok: false,
+          reason: 'no-ledger-root',
+          message: '拒绝：账本落点判不出（会话没有工作区根，或 `ledgerHome` 没配）⇒ 不知道该在哪儿建。'
+            + '先确认会话从哪个工作区打开，再重试。',
+        } as unknown as JsonValue
+      }
+      const before = ledgerReadinessOfRoot(root)
+      /**
+       * ⚠ 旧格式 / 真坏账本：**只报清单**。
+       *   自动改写别人的真实数据 = 替用户重写历史，⛔ 这不是建账工具能做的事。
+       */
+      if (before.state === 'legacy' || before.state === 'unhealthy' && before.reason === 'index-malformed') {
+        return {
+          ok: false,
+          reason: before.reason ?? 'legacy',
+          state: before.state,
+          message: `不自动改写：${before.headline}。`
+            + '\n  最近这一步需要人确认后再动：把 `ledger/units/index.toml` 里'
+            + ' `[meta]` / `[units."ID"]` 这类表头改成 `[[unit]]`（现行格式只认这一种）。'
+            + '\n  ⚠ 迁移前后都要逐字节留副本（规则：证据与历史只增不改）。',
+          ledgerRoot: root,
+        } as unknown as JsonValue
+      }
+      if (before.state === 'unhealthy') {
+        return {
+          ok: false,
+          reason: before.reason ?? 'unhealthy',
+          state: before.state,
+          gapCount: before.gapCount,
+          gaps: before.gaps,
+          message: `账本已建，但有 ${before.gapCount} 条缺口 ⇒ 先补齐再推进。`
+            + (before.gaps.length === 0 ? '' : `\n  前几条：${before.gaps.slice(0, 5).map((g) => `${g.rule} · ${g.unit} · ${g.why}`).join('；')}`),
+          ledgerRoot: root,
+        } as unknown as JsonValue
+      }
+      if (before.state === 'ready') {
+        return {
+          ok: true,
+          state: 'ready',
+          noop: true,
+          message: `${before.headline} ⇒ 不需要建账本。`,
+          ledgerRoot: root,
+        } as unknown as JsonValue
+      }
+      /**
+       * `missing` / `empty` / 索引缺：按清单补齐**缺失件**。
+       * ⚠ 只用 `existsSync` 判"在不在"；⛔ 不读内容判断"该不该改"（那不是建账）。
+       */
+      const workspaceName = (() => {
+        const base = root.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? 'project'
+        return base === '' ? 'project' : base
+      })()
+      const nowIso = new Date().toISOString()
+      /**
+       * ⚠ 每份文件的落盘形态**不同**，必须逐份声明（真机踩过）：
+       *   · `ledger/units/index.toml` ⇒ `append`（它是索引，允许追加）；
+       *   · `PROJECT.md` ⇒ **`overwrite` + `reason`** —— 当前正文只接受整份替换，
+       *     `append` 会被守卫直接拒（`append-current-denied`，实测原文）。
+       *   ⛔ 不许为了省事把两者写成同一种 mode。
+       */
+      const plan: Array<{ file: string; content: string; mode: 'append' | 'overwrite'; reason?: string }> = []
+      const indexPath = join(root, 'ledger', 'units', 'index.toml')
+      if (!existsSync(indexPath)) {
+        plan.push({ file: 'ledger/units/index.toml', content: initialIndexToml(nowIso), mode: 'append' })
+      }
+      const projectPath = join(root, 'PROJECT.md')
+      if (!existsSync(projectPath)) {
+        plan.push({ file: 'PROJECT.md', content: initialProjectMd(workspaceName), mode: 'overwrite', reason: '建账本：起手 PROJECT.md（待填）' })
+      }
+      if (plan.length === 0) {
+        return {
+          ok: false,
+          reason: 'nothing-to-create',
+          state: before.state,
+          message: `判不出该建什么：就绪度=${before.state}，但清单里的文件都在。`
+            + '⚠ 这通常意味着账本格式或单元内容需要人确认 ⇒ 先用 `hob_ledger_status` 看明细。',
+          ledgerRoot: root,
+        } as unknown as JsonValue
+      }
+      if (dryRun) {
+        return {
+          ok: true,
+          dryRun: true,
+          state: before.state,
+          willCreate: plan.map((p) => p.file),
+          message: `[演练] 将新建 ${plan.length} 份文件：${plan.map((p) => p.file).join(' · ')}`
+            + '\n  ⚠ 未落盘。确认后传 `dryRun: false` 真建。',
+          ledgerRoot: root,
+        } as unknown as JsonValue
+      }
+      const created: string[] = []
+      const failures: Array<{ file: string; reason?: string; message: string }> = []
+      for (const item of plan) {
+        const w = await writeHobFile(root, {
+          file: item.file,
+          content: item.content,
+          mode: item.mode,
+          ...(item.reason === undefined ? {} : { reason: item.reason }),
+        }, {
+          hobDir: '',
+          keepBackups: DEFAULTS.keepBackups,
+          shrinkGuard: DEFAULTS.shrinkGuard,
+          maxFileBytes: cfg.maxWriteBytes ?? DEFAULTS.maxWriteBytes,
+        })
+        if (w.ok === true) created.push(item.file)
+        else failures.push({ file: item.file, ...(w.reason === undefined ? {} : { reason: w.reason }), message: w.message })
+      }
+      const after = ledgerReadinessOfRoot(root)
+      return {
+        ok: failures.length === 0,
+        state: after.state,
+        created,
+        ...(failures.length === 0 ? {} : { failures }),
+        message: failures.length === 0
+          ? `已建 ${created.length} 份：${created.join(' · ')}。`
+            + `\n  现在就绪度 = ${after.state}：${after.headline}`
+            + (after.state === 'ready' ? '' : ` ⇒ ${after.nextAction}`)
+          : `${created.length} 份成功、${failures.length} 份失败：${failures.map((f) => `${f.file}（${f.reason ?? '?'}）`).join('；')}`,
+        ledgerRoot: root,
+      } as unknown as JsonValue
+    },
+  })
+
   return {
     readContracts,
     writeHob: cfg.enableWrite === false ? undefined : writeHob,
@@ -1257,6 +1775,8 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
     globWorkspace,
     grepWorkspaceTool,
     readWorkspaceImage: readWorkspaceImageTool,
+    ledgerStatus,
+    ledgerInit,
   }
 }
 
