@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart TB
-  User[用户] <--> Hob[Hob 项目总负责人]
+  User[用户] <--> Hob[Hob 项目总代理]
   Hob <--> Ledger[(项目账本)]
   Hob --> Dispatch[会话调度与闭环编排]
   Dispatch <--> Dev[开发 / 实施会话]
@@ -20,8 +20,11 @@ flowchart TB
   Views --> Hob
 ```
 
-“总负责人”是结果责任和协调权。Hob 不实现业务代码、不执行命令；
+“总代理”是用户授权范围内的项目协调权。Hob 不实现业务代码、不执行命令；
 开发会承担实施，验收由独立于实施者的判决产生。
+
+委托关系里，用户始终保留目标、产品取舍、可接受代价与不可逆动作的决定权。Hob 只在
+这份授权内组织项目；它不能扩大自己的权限，也不能代替用户接受自己的实现。
 
 ## 二、代码分层
 
@@ -68,10 +71,20 @@ UI 新建入口
   → Goal / Requirement
   → Change / Task
   → Dispatch
-  → Run / 回传
+  → Run / 回传（运行态事实自动投影成账本 RUN / TSK 状态）
   → Acceptance / Evidence
   → Current 与下一步
 ```
+
+运行态与账本是**两个事件源、一条事实链**：派发 / 回传 / 判决先在运行态发生，
+再由 `ledger-projection.ts` 的纯函数算出确定性账本操作，最后由 `projection-writer.ts`
+经 `writeHobFile` 同一道守卫落盘。投影失败**不回滚**已发生的运行态事实，
+但必须在 `hob_orch_status` 与工具返回值里如实报出「账本未落」。
+
+五步的完成口径**只在 `stage-controls.ts` 的 `STAGE_COMPLETION` 定义一次**：
+第 3 步只看任务书是否就绪（C-5），第 4 步要求 `RUN returned + TSK built` 同时成立。
+单条需求的「当前阶段」只由 `requirement-chain.currentStep` 提供；
+`/stages` 的项目级摘要不再回答「当前第几步」。
 
 跨进程副作用使用 Effects/Outbox；运行态落在账本区 `runtime/`，不进入 Git。
 
@@ -92,7 +105,7 @@ UI 新建入口
 ## 五、命名原则
 
 - `dsh-hob`：包、插件 entry、设置 namespace、HTTP 路由前缀。
-- `Hob`：项目总负责人预设和角色。
+- `Hob`：项目总代理预设和角色。
 - `hob_*`：Hob 对外行为工具。
 - `G- / R- / CHG- / TSK- / RUN- / ACC- / EVD- / RSK- / DEC- / CAP-`：账本稳定 ID。
 - `Current`：当前工作入口。
