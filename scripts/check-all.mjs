@@ -149,7 +149,7 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *   ⇒ 若放进必跑，结果只能是"永远 exit 2"，那会把"没对象"污染成"判据没跑"（`E-122` 同族）。
  *   ⇒ 手工按需跑 `npm run check:tasks-route-http`；它的无对象档是 **exit 2**（noObject，⛔ 不算通过）。
  */
-export const FAMILY_FLOOR = 38
+export const FAMILY_FLOOR = 40
 //   ⚠ 2026-10-27（包 AP · 用户「全退」）：本条不再含 `check:archive-gate`（该族随归档门禁一起退回）。
 //     实测族数 = 19（`npm run check:all` 汇总行）⇒ 下界 19 = **零余量**，再少一族立刻红。
 //   ⚠ 2026-10-29（四步主线 · 只验位置）：**19 → 20**（同批新增 `check:stages-dom` 一族）。
@@ -181,12 +181,14 @@ export const ASSERTION_FLOORS = new Map([
    * ⚠ 运行行为族在复验后补了盘上写回、真实 status、失败归档、重启恢复四条
    *   （9 → 13）；下界必须同步抬起，否则删掉任一断言都不会变红。
    */
-  ['check:work-plan', 34],
+  ['check:work-plan', 45],
   ['check:work-plan-state', 17],
   ['check:work-plan-dispatch', 13],
-  ['check:work-plan-runtime', 25],
+  ['check:work-plan-runtime', 40],
+  // ⚠ 2026-11-07：SC-12b 三条（执行上下文能解析 / Agent 形态必拒 / 预设层无恒判不出写法）。
+  ['check:stage-controls', 92],
   // ⚠ 2026-11-04：面板族（真 DOM + 真路由处理体）。10 处零余量。
-  ['check:work-plan-panel', 10],
+  ['check:work-plan-panel', 11],
   // ⚠ 2026-11-03：骨架 ↔ 实例结构漂移族。
   //   3 条自证（正向对照 + 标题负向 + 表头负向）+ 基准 / 标题 / 表结构各 1 条。
   //   分母固定为 6，不随当前账本增加或删除模板文档而漂移。
@@ -205,8 +207,8 @@ export const ASSERTION_FLOORS = new Map([
    */
   // ⚠ 2026-11-02（P41/R23）：5 → **6**（零余量 = 实测）。
   //   来源：拆卷 + 两族计数口径修正（"查了"含跳过）后实测值。
-  ['check:archive', 6],
-  ['check:client', 50],
+  ['check:archive', 7],
+  ['check:client', 51],   // 2026-11-06：项目总代理在设置页两套文案的存在性与旧称呼负向锚点。
   ['check:config', 62],   // ⚠ **2026-10-25（本单）：按实测下调 62 → 61，零余量。**
   //   ── 为什么下调（⚠ 是「合法地少一条」，不是为变绿）────────────────────
   //   `skeleton.enabled` 配置段按 `UD-159` 退役 ⇒ `config.ts` 的 schema 少了那个子字段,
@@ -261,7 +263,9 @@ export const ASSERTION_FLOORS = new Map([
   //   ⇒ 新增的"卷内每份 *.md 被 INDEX 点名"与"节名一致"判定全被这族吃掉，处数随之上升。
   //   ⚠ 零余量（1154 = 实测）：摘掉任意一条 ⇒ `check:all` 当场红。
   // 2026-11-03：分片迁移新增脚本登记与 Y1 分片逐文件断言后，实测 1162；按零余量抬平。
-  ['check:gitignore', 1168],
+  // ⚠ 2026-11-07（R-020 收口）：新增需求链 / 账本目录登记与方案模块行后实测 1187。
+  //   顺带补齐上一批遗留的 2 条差额（117? → 1187）。只准升不准降。
+  ['check:gitignore', 1187],
   //   ⚠ 理由：本单在 `check-repo-rules.mjs` 新增 **`MV`** 断言「模板根上文档清单 == INIT 的复制清单」
   //     ⇒ 该族多 **1 处**（577 → 578）。⚠ **只升不降**。
   //   ⚠ ⚠ **为什么不是改已有的第 ⑥ 组**：`check-code-face.mjs` 的 ⑥ 组**两个方向都不咬**（本单实测三段）——
@@ -282,7 +286,7 @@ export const ASSERTION_FLOORS = new Map([
   //   ⚠ 负向对拍 = **抬到 579 造红**（⛔ 不删真实断言，两者落在同一个 `实测 < 下界` 边界上）。
   ['check:hob-create', 53],
   ['check:hob-create-dom', 31],  // t10 新增 D-18b（真 DOM 两次渲染的开放面对照）
-  ['check:hob-gate', 56],  // t10 的 G-21 系列；t11 只改实现（不再加条数），标签数不变
+  ['check:hob-gate', 59],  // 2026-11-05：+G-21d（写入确认不等待重投）
   ['check:host', 9],
   ['check:modules', 16],  // ⚠ **2026-10-25 上调 11 → 15：新增「路径 C」4 条**（三态日志的两种成因在生产通道上可分）。
   //   ⚠ 抬下界是**本次改动的一部分、不是顺手改**：新加的 4 条断言若将来被人删掉，
@@ -594,7 +598,7 @@ export const ASSERTION_FLOORS = new Map([
   //     （它只自证"变体 count===0"，假模块当然满足 ⇒ 直接报「已咬住」）。
   //   ⚠ 零余量照旧（249 = 本单实测值）：再少一条立刻红。
   // ⚠ 2026-11-02（P41/R22 · `TASK-R22.md` §一）：249 → **251**（+2 = `⑤o-6` 正向 + `⑤o-7` 负向对拍）。
-  ['check:presets', 251],  // 沿革：224（2026-10-25 前）→ 236（2026-10-25）→ 241（包 X）→ 248 → **249**（R15）；⚠ 全程**未入库** 246。
+  ['check:presets', 279],  // 沿革：… → 253（2026-11-06）→ **279**（2026-11-07 块集化：八个块定义 + 选择规则 + 实施指令四段）；⚠ 只准升。
   //   本轮理由 = 新增 **⑤p 组**（"**何时才允许拿问题打扰用户**"落进契约两面）：
   //     · ① 契约正文含八组稳定短语（8 组 · 22 条：四条准入 + 六类禁问 + 难度非判据 + 问法五要素）
   //     · ② **人读版**引文块同样含全部短语（⛔ 不许只手改机器读版）
@@ -677,7 +681,11 @@ export const ASSERTION_FLOORS = new Map([
   //   （+3 = S-31a 转译自证 / S-31b 真账本三类结果 / S-31c HTTP 处理体五档）。
   // ⚠ 2026-11-02（Project Hub · attention）：75 → **78**
   //   （+3 = S-32a 逐项显示 / S-32b 空数组 ≠ 判不出 / S-32c 字段缺失必判不出）。
-  ['check:stages-dom', 78],
+  // ⚠ 2026-11-07（R-020 落地）：主视图改为单需求主线后重建旧断言，并新增
+  //   账本三态 / 无在途需求 / Hob 正控 / standard 与判不出零请求 / guide 胶囊门禁。
+  //   实测 114（S-33g 不请求旧 /tasks-progress · S-33h 宿主 useProjection 契约 ·
+  //   S-33i guide 点击顺序 · S-34d 切账本不混会话运行态），零余量（少一条即红）。
+  ['check:stages-dom', 114],
   // ⚠ 2026-10-29（第 6 轮）新增本族：四步进度表的**服务端**行为判据
   //   （`scripts/check-tasks-progress.mjs`，`npm run check:tasks-progress`）。
   //   下界 = **本轮实测值 14，零余量**：T-0（转译自证）· T-1（正常两行）· T-2（空表）·
@@ -707,7 +715,9 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ 2026-11-03：120 → **122**（零余量 = 实测）。
   //   + I13（活跃需求链必须同时有方案 / 任务 / 验收）+ N-I13（三层缺失逐层点名）。
   // ⚠ 2026-11-03：分片读数和生命周期的正向断言，以及 N-CURRENT 自指读数负向对拍 ⇒ 实测 127。
-  ['check:ledger', 128],
+  // ⚠ 2026-11-07（检查硬化轮）：128 → **129**（+1 = `N-I9c`：`basis` 路径分支五条读数 ——
+  //   ① 真 id ⇒ 绿 ② 真路径 ⇒ 绿 ③ 假路径 ⇒ 必红 ④ 假 id ⇒ 必红 ⑤ 没拿到检查器 ⇒ 按红）。
+  ['check:ledger', 129],
   ['check:ledger-write-policy', 9],
   // ⚠ **2026-10-31 P41/R3 新增**：收敛检查 K-1..K-6 + K-0 前置 + 12 条负向对拍/正向对照
   //   = **13 条实测**（`K-0` + 每个 change 一条 `K-ALL` + 11 条对拍）。
@@ -720,12 +730,13 @@ export const ASSERTION_FLOORS = new Map([
   //   （多 ACC 最新判决五组对拍）⇒ 实测 27 处（26 通过 + 1 有落点跳过）。
   // ⚠ 2026-11-03：27 → **29**（零余量 = 实测）。
   //   + 新 change 的 K-ALL 读数；+ N-K7（built task 无直属验收必红、复验 PASS 转绿、新退回再红）。
-  ['check:convergence', 30],
+  // ⚠ 2026-11-07：实测 35（新增 change 的 K-ALL 读数 + 多条对拍）⇒ 下界同步抬到 35，零余量。
+  ['check:convergence', 35],
   // ⚠ 2026-11-03：补齐 goal / risk / decision / cap 后，
   //   账本资源图 11 条正向 + 2 条负向对拍 = 实测 13。
   //   覆盖 10 类稳定 ID、四类新增列表与按 ID 读取、需求关联图可继续解析、
   //   直属子项、三类错误、纯函数、零路径泄漏。
-  ['check:ledger-resources', 13],
+  ['check:ledger-resources', 15],
   // ⚠ 2026-11-02（P3）：持久效果队列 8 条正向 + 2 条负向对拍 = 实测 10。
   // ⚠ 2026-11-02（Project Hub · single-writer）：+ Q-9 同进程复用 + N-Q3 独占锁拒绝 = 实测 12。
   // ⚠ 2026-11-02（crash recovery）：+ Q-10 陈旧锁接管 + N-Q4 三档 fail-closed = 实测 14。
@@ -739,7 +750,13 @@ export const ASSERTION_FLOORS = new Map([
   //   + W-20（同一 parent 的旧退回 + 新通过按最新收口）+ N-W5（同 parent 逐条独立会卡住）。
   ['check:work-state', 25],
   // ⚠ **2026-10-30 P3 新增**：五步汇总路由（10 条实测，含阻塞负向对拍与生成器交叉验证）。
-  ['check:stages-route', 22],
+  // ⚠ 2026-11-07：R-18d 体积兜底（极端规模 ≤ 64 KB · 如实标注 omitted · 分母不改写）。
+  //   2026-11-08：R-18e / R-18e-b（正式依据不算“别的条目”）+ R-18f（空壳标题补父链上下文）⇒ 35 条。
+  ['check:stages-route', 35],
+  // ⚠ 2026-11-07 R-020：需求链投影（单需求五步 / 正式关系 / 当前步骤 / 历史收口 / 待验收点名）= 12 条。
+  ['check:requirement-chains', 12],
+  // ⚠ 2026-11-07：账本目录（列举 / 空≠读不了 / 分片失败 / current 标记 / 安全边界 / Unicode / 默认选中 / 路径回显）= 8 条。
+  ['check:ledgers-route', 8],
   // ⚠ **2026-10-30 P6 新增**：元规则机检（2 条：M-1 实测 vs 下限 + N-M1 自指负向对拍）。
   ['check:meta-negctl', 3],
   // ⚠ **2026-10-30 P8 新增**：Hob 工作流（F1-F4 + 4 条负向对拍 = 8 处）。
@@ -748,7 +765,9 @@ export const ASSERTION_FLOORS = new Map([
   //   N-F1b/N-F1c/N-F1d/N-F4b/N-F4c/N-F10/N-F11/N-F1e 新）。
   //   ⇒ 下界 = **本轮实测 28，零余量**（摘掉任意一条 ⇒ 27 < 28 ⇒ 本族当场红；
   //     这条零余量本身由 `check:workflow` 的 **N-F1e** 反过来核 —— 它读的就是这个数）。
-  ['check:workflow', 32],
+  // ⚠ 2026-11-07：F14「回复契约三处互核」+ F1 的回复形态契约校验（恰好 3 种 /
+  //   字段齐全 / 长度下限 / 不得照抄 source）⇒ 实测 33，零余量。
+  ['check:workflow', 33],
   // ⚠ `check:build` 不在此表：它的"处"是**读数行**、分母不同（`per-reading-line`），
   //   与逐条断言不可比 —— 把它塞进这张表就是本仓明令禁止的"混量纲"。
 ])

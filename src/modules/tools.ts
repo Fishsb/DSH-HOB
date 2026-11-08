@@ -53,6 +53,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
+import { stageControlProblems, type StageControlUnit } from '../shared/stage-controls.ts'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { readMarkdownCapped, resolveLedgerRoot, resolveWorkspaceRoot } from '../server/doc-read.ts'
 import {
@@ -519,6 +520,24 @@ export function ledgerRootOf(cfg: HobToolsConfig, exec: ToolRunContext): string 
     cfg.ledgerHome ?? DEFAULTS.ledgerHome,
     rootOf(cfg, exec),
   )
+}
+
+/**
+ * 派单 / 写入前的阶段门禁：从**真实账本**读单元，再用与检查族同一套纯函数判定。
+ *
+ * ⚠ 只拒绝**非历史豁免**的新单元缺口；历史存量仍按 `pre-control` 只读豁免。
+ * ⚠ 读不到账本 ⇒ 返回可读原因，⛔ 不放行（fail-closed），避免“判不出”被当成“没有缺口”。
+ */
+export function stageGateOfLedger(ledgerRoot: string): string | undefined {
+  try {
+    const units = readLedgerUnits(ledgerRoot) as StageControlUnit[]
+    const problems = stageControlProblems(units)
+    if (problems.length === 0) return undefined
+    const first = problems.slice(0, 5).map((p) => `${p.rule} · ${p.unit} · ${p.why}`).join('；')
+    return `阶段门禁未通过：${problems.length} 条缺口（${first}）⇒ 先回查需求 / 方案 / 任务，补齐后再推进。`
+  } catch (e) {
+    return `阶段门禁判不出：账本读不到（${String((e as Error)?.message ?? e)}）⇒ 本次不推进（⛔ 不把“判不出”当成“没有缺口”）。`
+  }
 }
 
 /** @deprecated v4 起账本已迁出工作区，账本位置改由 {@link ledgerRootOf} 解析。 */
@@ -1139,6 +1158,12 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       const root = ledgerRootOf(cfg, exec)
       if (root === undefined) {
         return JSON.stringify({ ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' })
+      }
+      if (args.dryRun !== true) {
+        const stageBlocked = stageGateOfLedger(root)
+        if (stageBlocked !== undefined) {
+          return JSON.stringify({ ok: false, reason: 'stage-gate-blocked', message: stageBlocked })
+        }
       }
       const r = await writeHobFile(root, {
         file: args.file,

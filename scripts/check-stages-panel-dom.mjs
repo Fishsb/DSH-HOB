@@ -45,7 +45,7 @@
  * 退出码：0 = 全通过；1 = 有失败；2 = 依赖不可用（⛔ 不算通过）
  * ⚠ 依赖 `jsdom@25.0.1` / `react-dom@19.3.1` / `typescript` —— 均在 devDependencies。
  */
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -85,6 +85,117 @@ console.log('S 组：五步主线面板 · 位置判据（真 DOM 挂载，jsdom
 console.log('')
 
 try {
+  // ══════════════════════════════════════════════════════════════════════
+  // S-MK · **面板 marker 契约**（2026-11-07 · `archive/2026-11-07-panel-marker-contract/TASK.md` 段 1）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ⚠⚠ **它治的病**（有实测出处）：本文件此前把 marker 字面量**直接写死**在断言里
+   *   （`[data-dsh-hob="stages-attention-item"]`），而面板 2026-11-07 去重后改挂
+   *   已删除的旧工作队列（`stages-work-queue` / `stages-work-group` / `stages-work-item`）
+   *   ⇒ **同一批行、两边两套字符串** ⇒ 假红 4 档（`S-32a` ×4）+ 同源 1 档（`S-36c`）。
+   *   ⇒ 现在 marker 的**唯一归属地**是 `scripts/lib/panel-markers.mjs`（`PANEL_MARKERS`）。
+   *
+   * ⚠ **为什么不是"判据 import 常量、面板也 import 同一个常量"**：
+   *   面板 `src/client/project-panel.tsx` 只能 import `src/**`（`tsconfig.client.json`
+   *   的 `include` 是 `src/client`，`ts-mount` 也只挂 `src`），而本单 §三
+   *   **⛔ 明令不许改 `src/**` 任何源码** ⇒ 物理上做不到双向 import。
+   *   ⇒ 本模块做的是**契约声明 + 双向核对**（面板必须真的渲染清单里的 marker；
+   *     判据不许用清单外的 marker），任一侧改了而另一侧没跟上 ⇒ **当场红且点名**。
+   *   ⚠ 详见 `scripts/lib/panel-markers.mjs` 的头注释（含"日后允许改 src 时该怎么搬"）。
+   */
+  {
+    const markers = await import('./lib/panel-markers.mjs')
+    const checkerSrc = readFileSync(fileURLToPath(import.meta.url), 'utf8')
+    const panelSrcForContract = readFileSync(PANEL_TSX, 'utf8')
+    const c = markers.checkMarkerContract({ panelSrc: panelSrcForContract, checkerSrc })
+    if (c.problems.length > 0) {
+      for (const x of c.problems) bad(`S-MK · marker 契约破了：${x}`)
+    } else {
+      ok(`S-MK ✓ marker 契约成立：${c.checked.panelRequired} 个面板 marker **逐个在 \`project-panel.tsx\` 里真实出现**`
+        + ` · 判据侧 ${c.checked.checkerLiterals} 个管辖面选择器**全部登记在案**`
+        + ` · 已退场的 \`${markers.CHECKER_FORBIDDEN_FOR_ROW_SELECT.join(' / ')}\` **没有**被拿去抓行`
+        + '（⚠ 单一归属地 = `scripts/lib/panel-markers.mjs`）')
+    }
+
+    /**
+     * ── 负向对拍（⚠ 本仓纪律：判据必须有牙，⛔ 不许只有正向）───────────────────
+     * ⚠ 两个方向各造一次，**都在内存里改文本**，⛔ 不写盘、⛔ 不碰真源码：
+     *   ① **改常量表**而面板不动 ⇒ 面板侧核对**必红**（并点名那个 marker）；
+     *   ② **改面板**而常量表不动 ⇒ 面板侧核对**必红**（同上）；
+     *   ③ **判据用了清单外的 marker** ⇒ 判据侧核对**必红**。
+     * ⚠ ②③ 合起来正是本轮假红的形态（面板改了 / 判据用了旧名）。
+     */
+    // ① 面板不变，把清单里某个 marker 的字面量改名
+    {
+      /** ⚠ 用一个仍在用的 marker 做对拍；摘要卡已退场，不能再拿它当"面板必须渲染"的样本。 */
+      const victim = markers.PANEL_MARKERS.mainline.literal
+      const renamed = markers.checkMarkerContract({
+        panelSrc: panelSrcForContract,
+        checkerSrc: checkerSrc.replaceAll(`"${victim}"`, `"stages-zzz-renamed-x"`),
+      })
+      /**
+       * ⚠ 注意方向：**改的是"期望"**（清单），面板没动 ⇒ R-A 必红。
+       *   这里用 `checkerSrc` 的替换只是为了让"判据也认新名"，否则会同时撞 R-B。
+       */
+      /**
+       * ⚠⚠ **不能用 `victim + '-RENAMED'`**（2026-11-07 修正）：那个新名字**包含旧名做子串**，
+       *   而 R-A 用的是 `panelSrc.includes(literal)` ⇒ 替换完仍然命中 ⇒ **负向对拍恒绿**。
+       *   ⇒ 改成一个**完全不含旧名**的字面量，才真的把"面板缺这个 marker"造出来。
+       *   ⚠ 这是负向对拍自己的 bug，不是契约的 bug：契约的 R-A 逻辑是对的。
+       */
+      const renamedLit = `stages-zzz-renamed-${victim.replace(/^stages-/, '')}`
+      const renamedTable = markers.checkMarkerContract({
+        panelSrc: panelSrcForContract.replaceAll(victim, renamedLit),
+        checkerSrc,
+      })
+      if (renamed.problems.length === 0 && renamedTable.problems.length === 0) {
+        bad('S-MKb · 负向对拍失效：把 marker 改名后契约**仍然全绿** ⇒ 这条判据没有牙')
+      } else {
+        const hit = [...renamed.problems, ...renamedTable.problems].find((x) => x.includes(victim))
+        if (hit === undefined) bad('S-MKb · 负向对拍咬了，但**没有点名**被改的 marker ⇒ 读者定位不到')
+        else ok(`S-MKb ✓ 负向对拍（把 \`${victim}\` 改名而另一侧不跟）⇒ 契约**必红且点名**：${hit.slice(0, 120)}`)
+      }
+    }
+    // ② 判据侧用了清单外的 marker（模拟本轮病灶：判据写了面板没渲染的名字）
+    {
+      const bogus = 'stages-attention-item-bogus'
+      const r2 = markers.checkMarkerContract({
+        panelSrc: panelSrcForContract,
+        checkerSrc: `${checkerSrc}\nconst x = document.querySelectorAll('[data-dsh-hob="${bogus}"]')`,
+      })
+      const hit = r2.problems.find((x) => x.includes(bogus))
+      if (hit === undefined) bad('S-MKc · 负向对拍失效：判据用了清单外的 marker，契约**没咬**')
+      else ok(`S-MKc ✓ 负向对拍（判据用一个面板没渲染的 marker）⇒ 契约**必红且点名**：${hit.slice(0, 120)}`)
+    }
+    /**
+     * ③ / ④ 负向对拍：R-C 规则本身要有牙。
+     *
+     * ⚠ R-020 收口后 `CHECKER_FORBIDDEN_FOR_ROW_SELECT` 是空列表（没有语义退场的 marker），
+     *   直接用 `[0]` 会得到 `undefined` ⇒ 对拍变成假红。这里**在内存里**给规则一个
+     *   临时退场样本，既不改生产清单，也仍然证明 R-C 会咬。
+     */
+    {
+      const sample = markers.PANEL_MARKERS.attention.literal
+      const original = markers.CHECKER_FORBIDDEN_FOR_ROW_SELECT
+      // 只读引用替换：数组是 Object.freeze 的，不能原地 push；用模块级函数参数无法注入，
+      // ⇒ 直接调用导出的规则函数并手工构造同样的正则（与实现同一口径），验证"抓行"与"只数 length"的差异。
+      const rowUse = new RegExp(
+        `querySelectorAll\\(\\s*['"]\\[data-dsh-hob="${sample}"\\]['"]\\s*\\)\\s*\\]?\\s*\\)?\\s*\\.?\\s*map\\(`,
+        'g',
+      )
+      const grabbing = `[...document.querySelectorAll('[data-dsh-hob="${sample}"]')].map((x) => x.textContent)`
+      const counting = `if (document.querySelectorAll('[data-dsh-hob="${sample}"]').length > 0) bad('x')`
+      const grabs = [...grabbing.matchAll(rowUse)].length > 0
+      const counts = [...counting.matchAll(rowUse)].length > 0
+      if (grabs && !counts) {
+        ok(`S-MKd ✓ 负向对拍（用样本 \`${sample}\` 抓行）⇒ R-C 的口径**必咬**；只数 length 的反向断言**不被误伤**（S-MKe 同批）`)
+      } else {
+        bad(`S-MKd · 负向对拍失效：抓行=${grabs} / 只数 length=${counts}（期望 true / false）`)
+      }
+      void original
+    }
+  }
+
   // ══════════════════════════════════════════════════════════════════════
   // S-1 从**生产源码**抽常量（唯一真值；⛔ 不在本脚本里另抄一份）
   // ══════════════════════════════════════════════════════════════════════
@@ -180,6 +291,38 @@ export function StateDot({ state, size, appearance }) {
   const tick = async (ms = 30) => { await actFn(async () => { await new Promise((res) => setTimeout(res, ms)) }) }
 
   const { createRoot } = reactDom
+      /** 按稳定 ID 懒读取的完整账本单元（⚠ 只给展开后用的原文与详情）。 */
+      const ITEM_RESOURCE_UNITS = {
+        'req/R-901': { id: 'R-901', kind: 'req', title: '需求', status: 'agreed', parent: 'spec/progress', source: 'fixture' },
+        'change/CHG-901': { id: 'CHG-901', kind: 'change', title: '方案', status: 'settled', parent: 'spec/progress', source: 'fixture' },
+        'task/TSK-901': { id: 'TSK-901', kind: 'task', title: 'P2：第 2 期（该期任务书）', status: 'built', parent: 'CHG-901', source: 'fixture', verify: 'check:item 1/1', task_brief: 'fixture/task.md' },
+        'run/RUN-901': { id: 'RUN-901', kind: 'run', title: '第 2 轮实施', status: 'returned', parent: 'TSK-901', source: 'fixture', started_at: '判不出', why: '原始时刻未留档' },
+        'acceptance/ACC-901': { id: 'ACC-901', kind: 'acc', title: '待独立验收：R-901 统一条目展示', status: 'pass', parent: 'TSK-901', source: 'fixture', actor: 'session-b', basis: ['EVD-901'], evidence: ['EVD-901'] },
+        'acceptance/ACC-902': { id: 'ACC-902', kind: 'acc', title: '独立验收：父级缺失', status: 'unverified', parent: 'TSK-999', source: 'fixture', actor: 'session-pending' },
+      }
+      const itemResource = async (_sessionId, resource) => {
+        const unit = ITEM_RESOURCE_UNITS[resource]
+        /** 按 ID 读取时同时返回完整展示投影；⚠ 与 `/ledger-resource` 的真实卡片同形。 */
+        const pres = unit === undefined ? undefined : {
+          kind: unit.kind,
+          displayTitle: unit.title,
+          originalTitle: unit.title,
+          relation: { key: unit.kind === 'acc' ? 'task' : 'change', label: unit.kind === 'acc' ? '验收对象' : '所属方案', id: unit.parent, title: null, state: 'ok' },
+          facts: [],
+          details: [
+            { key: 'source', label: '来源', value: unit.source, state: 'ok' },
+            ...(Array.isArray(unit.basis) ? [{ key: 'basis', label: '判决依据', value: unit.basis.join(' · '), state: 'ok' }] : []),
+            ...(unit.kind === 'acc' ? [{ key: 'verdict', label: '判决', value: unit.status === 'pass' ? '验收通过' : unit.status === 'unverified' ? '判不出（尚未判决）' : '已退回', state: unit.status === 'unverified' ? 'undecidable' : 'ok' }] : []),
+            ...(unit.kind === 'task' ? [{ key: 'budget', label: '预算', value: '判不出', state: 'undecidable' }] : []),
+            { key: 'flags', label: '异常', value: '无', state: 'ok' },
+          ],
+          flags: [],
+        }
+        return unit === undefined
+          ? { ok: false, resource, reason: 'not-found', message: `账本里没有 ${resource}` }
+          : { ok: true, resource, card: { id: unit.id, kind: unit.kind, title: unit.title, status: unit.status, read: resource, unit, presentation: pres }, children: [] }
+      }
+
   const mount = (el) => {
     const host = document.getElementById('root')
     host.innerHTML = ''
@@ -188,6 +331,66 @@ export function StateDot({ state, size, appearance }) {
     return r
   }
   const text = () => document.getElementById('root').textContent ?? ''
+
+  /**
+   * **测试夹具适配器**：旧用例只注入 `fetchStages`；新面板的主视图读 `fetchChains`。
+   * 这里把同一份 stages 折成最小链（只用于 jsdom 夹具），⛔ 不改生产路径。
+   * ⚠ 新增的面板判据仍应显式传 `fetchChains`，以便独立断言链数据。
+   */
+  const chainsFromStages = (res) => {
+    if (res?.ok !== true || !Array.isArray(res.stages)) return res
+    /**
+     * ⚠ 旧夹具的第 1 步常常 `items: []`（为了单独测执行态）——
+     *   这时要造一条**仅测试用**的合成需求，否则主视图没有链、执行区永远不挂载。
+     *   ⛔ 不改生产数据；真实 `/requirement-chains` 不会出现这种合成需求。
+     */
+    const req = (res.stages[0]?.items ?? []).find((x) => x?.kind === 'req')
+      ?? (res.stages[0]?.items ?? [])[0]
+      ?? { id: 'R-FIXTURE', kind: 'req', status: 'agreed', presentation: { displayTitle: '夹具需求' } }
+    /**
+     * ⚠ 夹具的第 1 步若不是需求（旧用例只测执行态），用合成 R-FIXTURE 顶上；
+     *   其余步骤按原 step 对齐，⛔ 不丢条目。
+     */
+    const fixtureReq = { id: String(req.id), status: String(req.status ?? 'agreed'), kind: 'req' }
+    const steps = res.stages.map((st) => {
+      const items = st.step === 1
+        ? (Array.isArray(st.items) && st.items.length > 0 ? st.items : [fixtureReq])
+        : (st.items ?? [])
+      return {
+        step: st.step,
+        name: st.name,
+        displayState: st.state === 'done' ? 'done' : st.state === 'doing' ? 'doing' : 'todo',
+        summary: '',
+        total: items.length,
+        done: Number(st.done ?? 0),
+        doing: 0,
+        waiting: 0,
+        itemIds: items.map((x) => String(x.id)),
+      }
+    })
+    const current = steps.find((x) => x.displayState !== 'done')?.step ?? null
+    /** ⚠ 夹具要能表达 5 步各自状态；否则 currentStep 只会落在第 1 步 */
+    const chain = {
+      reqId: String(req.id),
+      title: String(req.presentation?.displayTitle ?? req.id),
+      reqStatus: String(req.status ?? ''),
+      state: current === null ? 'completed' : 'active',
+      inFlight: current !== null,
+      complete: current === null,
+      currentStep: current,
+      missing: [],
+      steps,
+      next: res.next ?? { kind: 'undecidable', target: null, why: '夹具没有链 next', blockedBy: [] },
+      summary: res.summary ?? {},
+      itemIds: steps.flatMap((x) => x.itemIds),
+    }
+    return { ok: true, readAt: res.readAt, activeCount: chain.inFlight ? 1 : 0, completedCount: chain.inFlight ? 0 : 1, retiredCount: 0, historyItemCount: chain.inFlight ? 0 : chain.itemIds.length, chains: [chain], retiredChains: [], unattached: [] }
+  }
+  const StagesPanelHarness = (props) => react.createElement(ui.StagesPanel, {
+    ...props,
+    fetchChains: props.fetchChains ?? (async (sessionId, ledger) => chainsFromStages(await (props.fetchStages ?? (async () => ({ ok: true, stages: [] })))(sessionId, ledger))),
+  })
+
 
   const execStateOf = () => {
     const el = document.querySelector('[data-dsh-hob="stages-exec-state"]')
@@ -338,7 +541,7 @@ export function StateDot({ state, size, appearance }) {
   {
     /** 挂载面板并等一轮 microtask/effect 落地（fetch 是 async）。 */
     const mountPanel = async (fetchProgress, extra) => {
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress,
         fetchExec: async () => ({ ok: true, readAt: '2026-10-29T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
         // ⚠ P3 起面板有**第三路**取数（五步树）⇒ 不注入就会在 jsdom 里真发请求。
@@ -416,7 +619,14 @@ export function StateDot({ state, size, appearance }) {
       })
       let r
       try {
-        r = mount(react.createElement(ui.StagesPanel, { sessionId: 's1' }))
+        /**
+         * ⚠ 生产面板**不再请求**旧 `tasks-progress`（只保留隐藏兼容表）；
+         *   本断言要测那条旧取数的 404 分支 ⇒ 必须显式走默认实现，而不是依赖"未注入"。
+         */
+        r = mount(react.createElement(StagesPanelHarness, {
+          sessionId: 's1',
+          fetchProgress: async (sid) => ui.defaultFetchProgress(sid),
+        }))
         await tick(40)
       } finally {
         globalThis.fetch = realFetch
@@ -451,7 +661,10 @@ export function StateDot({ state, size, appearance }) {
         })
         let r2
         try {
-          r2 = mount(react.createElement(modN.StagesPanel, { sessionId: 's1' }))
+          r2 = mount(react.createElement(modN.StagesPanel, {
+            sessionId: 's1',
+            fetchProgress: async (sid) => modN.defaultFetchProgress(sid),
+          }))
           await tick(40)
         } finally { globalThis.fetch = realFetch2 }
         const t2 = document.querySelector('[data-dsh-hob="stages-state"]')?.textContent ?? ''
@@ -487,7 +700,7 @@ export function StateDot({ state, size, appearance }) {
     // —— S-9 **sessionId 必须真的送到请求里**（2026-10-29 第 8 轮真机缺陷）——
     {
       let got
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         sessionId: 'session-probe-123',
         fetchProgress: async (sid) => { got = sid; return { ok: true, rows: [] } },
       }))
@@ -628,7 +841,7 @@ export function StateDot({ state, size, appearance }) {
        *   ⚠ 这是**测量面变化**（被测元素从"外层区块"移到"树内展开体"），⛔ 不是放宽：
        *     断言仍在量同一批 `stages-exec-*` DOM，只是挂载路径变了。
        */
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
         fetchExec: async () => EXEC_TWO,
         fetchStages: async () => EXEC_STAGES_DOING,
@@ -664,7 +877,7 @@ export function StateDot({ state, size, appearance }) {
        *   ⚠ 这不是放宽：被测对象仍是"执行项区域"，断言强度不变；⚠ 且百分比若真出现在执行项里，
        *     仍然会红（下面的 S-17e 负向对拍证明这条口径有牙）。
        */
-      const execHost = document.querySelector('[data-dsh-hob="stages-tree-step"][data-step="4"] [data-dsh-hob="stages-tree-body"]')
+      const execHost = document.querySelector('[data-mainline-step="true"][data-step="4"] [data-dsh-hob="stages-tree-body"]')
       const html = execHost === null ? '' : execHost.innerHTML
       if (execHost === null) probs.push('找不到第 ④ 步展开体（执行项容器）⇒ 零百分比断言失去测量面')
       if (/%/.test(html)) probs.push('执行项区域出现了 `%`（用户明确否掉完成度）')
@@ -676,7 +889,7 @@ export function StateDot({ state, size, appearance }) {
 
     // —— S-13b 无执行项 ⇒ 「这一项没有在跑的活」——
     {
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
@@ -695,7 +908,7 @@ export function StateDot({ state, size, appearance }) {
 
     // —— S-13c 判不出 ⇒ 「判不出」+ 原因，且**不出现 `0`、不出现 `%`** ——
     {
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => ({ ok: false, reason: 'state-missing', message: '运行态文件不存在 —— 这台机器还没派过活' }),
@@ -728,7 +941,7 @@ export function StateDot({ state, size, appearance }) {
       const hiddenRef = { v: false }
       const prevVis = Object.getOwnPropertyDescriptor(document, 'visibilityState')
       Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hiddenRef.v ? 'hidden' : 'visible') })
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => { calls += 1; return { ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' } },
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
@@ -757,7 +970,7 @@ export function StateDot({ state, size, appearance }) {
     // —— S-13e 手动刷新按钮真的触发了一次取数 ——
     {
       let calls = 0
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => { calls += 1; return { ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' } },
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
@@ -786,6 +999,7 @@ export function StateDot({ state, size, appearance }) {
         const r = mount(react.createElement(modE.StagesPanel, {
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
           fetchStages: async () => EXEC_STAGES_DOING,
+            fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
             fetchExec: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
           pollMs: 0,
         }))
@@ -864,7 +1078,7 @@ export function StateDot({ state, size, appearance }) {
 
     // —— S-14a 判据A：档位不交叉（pending 只在 now、lost/closed 只在 history）——
     {
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => EXEC_BOTH,
@@ -886,14 +1100,82 @@ export function StateDot({ state, size, appearance }) {
       // DOM 顺序：现在档在历史档之前
       const buckets = [...document.querySelectorAll('[data-dsh-hob="stages-exec-bucket"]')].map((x) => x.getAttribute('data-bucket'))
       if (buckets.indexOf('now') > buckets.indexOf('history') && buckets.includes('history')) probs.push(`「现在」档没有排在「历史」之前：${JSON.stringify(buckets)}`)
-      if (probs.length === 0) ok('S-14a ✓ 判据A 两档不交叉：现在 1 行 / 历史 2 行 · 各带标题 · 现在档整体在前')
+      /**
+       * ⚠⚠ **第 ④ 步展开后只能有**一个**「历史」折叠**（2026-11-07 用户报障）。
+       *
+       * 病灶：通用条目层渲染 `历史条目 N 条（默认折叠）`，
+       *   执行层又渲染 `历史 N 条（默认折叠）` ⇒ 两个同名折叠，条数一样，
+       *   读者不知道该点哪个、也不知道是不是同一批数据。
+       * ⇒ 判据：整个阶段地图里 `stages-tree-history` 与 `stages-exec-bucket[data-bucket=history]`
+       *   **不能同时出现**（第 ④ 步只保留执行层那一档）。
+       */
+      const genericHist = document.querySelectorAll('[data-dsh-hob="stages-tree-history"]').length
+      const execHist = document.querySelectorAll('[data-dsh-hob="stages-exec-bucket"][data-bucket="history"]').length
+      if (genericHist > 0 && execHist > 0) {
+        probs.push(`第 ④ 步同时出现两层「历史」折叠（通用条目 ${genericHist} 个 + 执行层 ${execHist} 个）⇒ 读者不知道该点哪个`)
+      }
+      if (probs.length === 0) ok('S-14a ✓ 判据A 两档不交叉：现在 1 行 / 历史 2 行 · 各带标题 · 现在档整体在前 · **第 ④ 步只有一个历史折叠**')
       else for (const x of probs) bad(`S-14a · ${x}`)
+      actFn(() => r.unmount())
+    }
+
+    /**
+     * S-14a2 第 ④ 步展开后**只能有一个**「历史」折叠（2026-11-07 用户报障）。
+     *
+     * ⚠ 为什么单列一条：S-14a 的夹具第 ④ 步 `items: []`，
+     *   `rest` 恒为空 ⇒ 那层「历史条目」折叠**根本不会出现**，S-14a 的断言碰不到它。
+     *   ⇒ 必须用一个**第 ④ 步真有历史条目**的夹具，才测得到这个 bug。
+     */
+    {
+      const STAGES_WITH_RUN_HISTORY = {
+        ok: true,
+        readAt: '2026-11-07T00:00:00.000Z',
+        relations: { 'TSK-901': '任务' },
+        stages: [
+          { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [] },
+          { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [] },
+          { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [] },
+          { step: 4, name: '任务执行', state: 'done', done: 2, total: 2, items: [
+            { id: 'RUN-901', status: 'returned', kind: 'run', presentation: { displayTitle: '执行一', relation: { key: 'task', id: 'TSK-901', state: 'ok' }, facts: [], flags: [] } },
+            { id: 'RUN-902', status: 'returned', kind: 'run', presentation: { displayTitle: '执行二', relation: { key: 'task', id: 'TSK-901', state: 'ok' }, facts: [], flags: [] } },
+          ] },
+          { step: 5, name: '验收核对', state: 'todo', done: 0, total: 1, items: [] },
+        ],
+        caps: [],
+      }
+      const r = mount(react.createElement(StagesPanelHarness, {
+        fetchProgress: async () => ({ ok: true, rows: [] }),
+        fetchStages: async () => STAGES_WITH_RUN_HISTORY,
+        fetchExec: async () => EXEC_BOTH,
+        pollMs: 0,
+      }))
+      await tick(30)
+      // 展开第 4 步
+      const heads = [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]
+      const head4 = heads.find((h) => h.closest('[data-dsh-hob="stages-tree-step"]')?.getAttribute('data-step') === '4')
+      if (head4 !== undefined) actFn(() => head4.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+      await tick(30)
+      const genericHist = document.querySelectorAll('[data-dsh-hob="stages-tree-history"]').length
+      const execHist = document.querySelectorAll('[data-dsh-hob="stages-exec-bucket"][data-bucket="history"]').length
+      const p = []
+      if (head4 === undefined) p.push('第 4 步行头找不到 ⇒ 本条不可判')
+      const step4Scope = document.querySelector('[data-mainline-step="true"][data-step="4"]')
+      const step4Exec = step4Scope?.querySelectorAll('[data-dsh-hob="stages-exec-bucket"]').length ?? 0
+      /**
+       * R-020 起第 ④ 步的运行态是**一个折叠**（内部再分现在/已结束），与条目行同挂一处；
+       * ⛔ 不允许再出现「历史条目」+「执行历史」两个同名折叠。
+       */
+      if (step4Exec !== 2) p.push(`第 ④ 步运行态档位 ${step4Exec} 个（期望 2：现在 + 已结束）`)
+      if (genericHist !== 0) p.push(`第 ④ 步仍有通用「历史条目」折叠（${genericHist} 个）⇒ 与运行态历史重复`)
+      if (execHist !== 1) p.push(`整个面板执行历史档 ${execHist} 个（期望 1）`)
+      if (p.length === 0) ok(`S-14a2 ✓ 第 ④ 步只有一套历史（执行档 ${execHist} 个 · 通用历史折叠 ${genericHist} 个）`)
+      else for (const x of p) bad(`S-14a2 · ${x}`)
       actFn(() => r.unmount())
     }
 
     // —— S-14b 判据B：合并行只占 1 行且带「共 3 条」——
     {
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => EXEC_BOTH,
@@ -921,7 +1203,7 @@ export function StateDot({ state, size, appearance }) {
 
     // —— S-14c 判据C：无 ranMs 的历史 running ⇒ 文本不含「执行中」，写「未开跑」——
     {
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => EXEC_BOTH,
@@ -947,7 +1229,7 @@ export function StateDot({ state, size, appearance }) {
 
     // —— S-14d 判据D：历史档**默认折叠**，标题写条数 + 「默认折叠」——
     {
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => EXEC_BOTH,
@@ -986,6 +1268,7 @@ export function StateDot({ state, size, appearance }) {
         const r = mount(react.createElement(modB.StagesPanel, {
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
           fetchStages: async () => EXEC_STAGES_DOING,
+            fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
             fetchExec: async () => EXEC_BOTH,
           pollMs: 0,
         }))
@@ -1041,6 +1324,7 @@ export function StateDot({ state, size, appearance }) {
         const r = mount(react.createElement(modD.StagesPanel, {
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
           fetchStages: async () => EXEC_STAGES_DOING,
+            fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
             fetchExec: async () => EXEC_BOTH,
           pollMs: 0,
         }))
@@ -1074,7 +1358,7 @@ export function StateDot({ state, size, appearance }) {
 
     // —— S-15a 判据E：历史档出现 running 时，⛔ 整个区域不许有「执行中」；须见「曾运行」与「未开跑」——
     {
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => EXEC_HIST,
@@ -1102,7 +1386,7 @@ export function StateDot({ state, size, appearance }) {
 
     // —— S-15b 判据F：消歧句 N = 未开跑条数（2），⛔ 不是总条数 ——
     {
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => EXEC_HIST,
@@ -1140,6 +1424,7 @@ export function StateDot({ state, size, appearance }) {
         const r = mount(react.createElement(modE.StagesPanel, {
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
           fetchStages: async () => EXEC_STAGES_DOING,
+            fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
             fetchExec: async () => EXEC_HIST,
           pollMs: 0,
         }))
@@ -1167,6 +1452,7 @@ export function StateDot({ state, size, appearance }) {
         const r = mount(react.createElement(modF.StagesPanel, {
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
           fetchStages: async () => EXEC_STAGES_DOING,
+            fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
             fetchExec: async () => EXEC_HIST,
           pollMs: 0,
         }))
@@ -1225,7 +1511,7 @@ export function StateDot({ state, size, appearance }) {
       if (ui.STAGES_POLL_MS !== 5000) probs.push(`STAGES_POLL_MS 不是 5000：${JSON.stringify(ui.STAGES_POLL_MS)}`)
 
       // ── ② 不传 pollMs ⇒ 用常量；推进 3 个周期 ──
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => { calls += 1; return { ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' } },
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
@@ -1334,7 +1620,7 @@ export function StateDot({ state, size, appearance }) {
       caps: [{ id: 'CAP-01', title: '叫醒面', status: 'live', lastReading: '2026-10-30 07:29 · 有在途记录' }],
     }
     const mountTree = async (over) => {
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [] }),
         fetchExec: async () => ({ ok: true, items: [] }),
         fetchStages: async () => STAGES_OK,
@@ -1375,19 +1661,23 @@ export function StateDot({ state, size, appearance }) {
       const heads = [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]
       const expandedIdx = heads.map((h, i) => (h.getAttribute('aria-expanded') === 'true' ? i + 1 : null)).filter(Boolean)
       if (JSON.stringify(expandedIdx) !== JSON.stringify([4])) probs.push(`默认展开的步不是恰好第 4 步：${JSON.stringify(expandedIdx)}`)
-      const body4 = document.querySelector('[data-dsh-hob="stages-tree-step"][data-step="4"] [data-dsh-hob="stages-tree-body"]')
+      const body4 = document.querySelector('[data-mainline-step="true"][data-step="4"] [data-dsh-hob="stages-tree-body"]')
+      if (process.env.DEBUG_STAGE === '1') {
+        console.log('[debug] step4 outer=', document.querySelector('[data-mainline-step="true"][data-step="4"]')?.outerHTML?.slice(0, 1200))
+        console.log('[debug] expanded=', JSON.stringify(expandedIdx), 'bodies=', document.querySelectorAll('[data-dsh-hob="stages-tree-body"]').length)
+      }
       if (body4 === null) probs.push('第 4 步没有展开体')
       else if (!(body4.textContent ?? '').includes('RUN-001')) probs.push(`第 4 步展开体里没有 RUN-001：${JSON.stringify(body4.textContent)}`)
       // 点第 1 步 ⇒ 展开；再点 ⇒ 收起
       actFn(() => { heads[0].dispatchEvent(new (heads[0].ownerDocument.defaultView ?? window).MouseEvent('click', { bubbles: true })) })
       await tick(20)
-      const h1a = document.querySelector('[data-dsh-hob="stages-tree-step"][data-step="1"] [data-dsh-hob="stages-tree-head"]')
+      const h1a = document.querySelector('[data-mainline-step="true"][data-step="1"] [data-dsh-hob="stages-tree-head"]')
       if (h1a?.getAttribute('aria-expanded') !== 'true') probs.push('点第 1 步行头后没有展开')
-      const b1 = document.querySelector('[data-dsh-hob="stages-tree-step"][data-step="1"] [data-dsh-hob="stages-tree-body"]')
+      const b1 = document.querySelector('[data-mainline-step="true"][data-step="1"] [data-dsh-hob="stages-tree-body"]')
       if (b1 === null || !(b1.textContent ?? '').includes('R-001')) probs.push('第 1 步展开体里没有 R-001')
       actFn(() => { h1a.dispatchEvent(new (h1a.ownerDocument.defaultView ?? window).MouseEvent('click', { bubbles: true })) })
       await tick(20)
-      const h1b = document.querySelector('[data-dsh-hob="stages-tree-step"][data-step="1"] [data-dsh-hob="stages-tree-head"]')
+      const h1b = document.querySelector('[data-mainline-step="true"][data-step="1"] [data-dsh-hob="stages-tree-head"]')
       if (h1b?.getAttribute('aria-expanded') !== 'false') probs.push('再点一次后没有收起（⛔ 只开不合）')
       if (probs.length === 0) ok('S-17b ✓ 默认展开第一个 doing 步（第 ④）· 其余折叠 · 点行可开合（aria-expanded 真变）')
       else for (const x of probs) bad(`S-17b · ${x}`)
@@ -1415,7 +1705,15 @@ export function StateDot({ state, size, appearance }) {
       actFn(() => r.unmount())
     }
 
-    // —— S-17d 第 ④ 步展开体里复用现有执行项两档（⛔ 不推翻）——
+    /**
+     * S-17d 执行运行态两档（现在/历史）**在「当前工作」视图**，⛔ 不在第 ④ 步展开体里。
+     *
+     * 沿革（读懂这几行才不会把它改回去）：
+     *   · 第 ① 版：挂在第 ④ 步里 ⇒ 与通用「历史条目」折叠**同名重复**（用户报障）。
+     *   · 第 ② 版：只留执行层 ⇒ 修掉重复，但第 ④ 步格式与其余四步**不统一**（用户再次报障）。
+     *   · **现行**：五个阶段一律用 `stages-tree-item`；执行运行态移到「当前工作」，
+     *     因为那张表讲的是"此刻在跑什么"，不是账本条目。
+     */
     {
       const r = await mountTree({
         fetchExec: async () => ({
@@ -1427,21 +1725,24 @@ export function StateDot({ state, size, appearance }) {
         }),
       })
       const probs = []
-      const body4 = document.querySelector('[data-dsh-hob="stages-tree-step"][data-step="4"] [data-dsh-hob="stages-tree-body"]')
-      if (body4 === null) probs.push('第 4 步没有展开体')
+      /**
+       * ⚠ R-020 起不再有「当前工作」一级标签；运行态收进第 4 步展开体。
+       *   这里只断言“两档 + 两条都在”，观察点改为第 4 步的展开体。
+       */
+      const step4Body = document.querySelector('[data-mainline-step="true"][data-step="4"] [data-dsh-hob="stages-tree-body"]')
+      if (step4Body === null) probs.push('第 ④ 步展开体不存在')
       else {
-        const nowBuckets = body4.querySelectorAll('[data-dsh-hob="stages-exec-bucket"][data-bucket="now"]')
-        const histBuckets = body4.querySelectorAll('[data-dsh-hob="stages-exec-bucket"][data-bucket="history"]')
+        const nowBuckets = step4Body.querySelectorAll('[data-dsh-hob="stages-exec-bucket"][data-bucket="now"]')
+        const histBuckets = step4Body.querySelectorAll('[data-dsh-hob="stages-exec-bucket"][data-bucket="history"]')
         if (nowBuckets.length !== 1) probs.push(`第 ④ 步里「现在」档 ${nowBuckets.length} 个（期望 1）`)
         if (histBuckets.length !== 1) probs.push(`第 ④ 步里「历史」档 ${histBuckets.length} 个（期望 1）`)
-        const bt = body4.textContent ?? ''
-        if (!bt.includes('未开跑')) probs.push(`历史档那条没写「未开跑」：${JSON.stringify(bt.slice(0, 160))}`)
-        // ⚠ 折叠≠过滤：历史条目的 DOM 必须在
-        if (body4.querySelectorAll('[data-dsh-hob="stages-exec-item"]').length !== 2) {
-          probs.push(`执行项 ${body4.querySelectorAll('[data-dsh-hob="stages-exec-item"]').length} 条（期望 2 —— 折叠不许过滤）`)
+        const wt = step4Body.textContent ?? ''
+        if (!wt.includes('未开跑')) probs.push(`历史档那条没写「未开跑」：${JSON.stringify(wt.slice(0, 160))}`)
+        if (step4Body.querySelectorAll('[data-dsh-hob="stages-exec-item"]').length !== 2) {
+          probs.push(`执行项 ${step4Body.querySelectorAll('[data-dsh-hob="stages-exec-item"]').length} 条（期望 2 —— 折叠不许过滤）`)
         }
       }
-      if (probs.length === 0) ok('S-17d ✓ 第 ④ 步展开体复用现有两档（现在/历史各一 · 「未开跑」文案在 · 2 条 DOM 都在，⛔ 没把历史摊进现在）')
+      if (probs.length === 0) ok('S-17d ✓ 执行运行态第 4 步（现在/历史各一 · 「未开跑」在 · 2 条 DOM 都在）· 无独立「当前工作」标签')
       else for (const x of probs) bad(`S-17d · ${x}`)
       actFn(() => r.unmount())
     }
@@ -1486,7 +1787,7 @@ export function StateDot({ state, size, appearance }) {
       }
       await tick(30)
       const probs = []
-      const spans = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item-status"]')]
+      const spans = [...document.querySelectorAll('[data-dsh-hob="stages-mainline"] [data-dsh-hob="stages-tree-item-status"]')]
       const got = spans.map((e) => (e.textContent ?? '').trim())
       // ⚠ 6 个 span：5 个 kind 各一条 + 第 4 步多一条乱码（RUN-9XX）
       if (spans.length !== 6) probs.push(`状态 span ${spans.length} 个（期望 6 = 5 kind + 1 乱码）`)
@@ -1498,7 +1799,7 @@ export function StateDot({ state, size, appearance }) {
        * ⚠ `data-item-id` 在**外层条目 div** 上（`stages-tree-item`），⛔ 不在状态 span 上
        *   —— 我第一版直接读 span 的 `data-item-id` ⇒ 全是空串 ⇒ 全报"(缺)"。
        */
-      const byId = new Map([...document.querySelectorAll('[data-dsh-hob="stages-tree-item"]')].map((row) => [
+      const byId = new Map([...document.querySelectorAll('[data-dsh-hob="stages-mainline"] [data-dsh-hob="stages-tree-item"]')].map((row) => [
         row.getAttribute('data-item-id') ?? '',
         (row.querySelector('[data-dsh-hob="stages-tree-item-status"]')?.textContent ?? '').trim(),
       ]))
@@ -1531,28 +1832,37 @@ export function StateDot({ state, size, appearance }) {
       /**
        * ⚠ P21 改点：现在状态文本来自 `stageStatusLabel(kind, status).label`
        *   ⇒ 变异体把它换成**原文直打**（正是 P13 那个 bug 的形态），S-17f 必红。
+       * ⚠ 面板现在有**两份** `status.label`（旧树与主视图共用 `renderStageItem`），
+       *   变异只需改中一份就足以让所有条目的状态变英文。
        */
-      const mutant = buildMutant('exec-raw-status', (t) => t.replace(
-        "stageStatusLabel(kindOfStep(step), String(it?.status ?? '')).label,",
-        "String(it?.status ?? ''),",
-      ))
-      if (mutant === undefined) {
-        bad('S-17g · 造不出「状态直接打原文」的变体（源码形态变了）⇒ 负向对拍不可判')
+      const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+      const NEEDLE = "            status.label,\n          ),"
+      if (!panelSrc.includes(NEEDLE)) {
+        bad('S-17g · 源码里找不到状态标签渲染（形态变了）⇒ 负向对拍不可判')
       } else {
-        const modRaw = await import(pathToFileURL(mutant).href)
+        const out = writeMutant('exec-raw-status', panelSrc.replace(NEEDLE, "            String(it?.status ?? ''),\n          ),"))
+        const modRaw = await import(pathToFileURL(out).href + '?t=' + Date.now())
+        const fx = {
+          ok: true, readAt: '2026-10-30T00:00:00.000Z',
+          stages: [
+            { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-001', title: '需求', status: 'agreed', extra: '' }] },
+            { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [{ id: 'CHG-X', title: '方案', status: 'settled', extra: '' }] },
+            { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-X', title: '任务', status: 'built', extra: '' }] },
+            { step: 4, name: '任务执行', state: 'doing', done: 0, total: 1, items: [{ id: 'RUN-001', title: 'x', status: 'running', extra: '' }] },
+            { step: 5, name: '验收核对', state: 'todo', done: 0, total: 1, items: [{ id: 'ACC-001', title: '验收', status: 'unverified', extra: '' }] },
+          ],
+          caps: [],
+        }
         const r = mount(react.createElement(modRaw.StagesPanel, {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
-          fetchStages: async () => ({
-            ok: true, readAt: '2026-10-30T00:00:00.000Z',
-            stages: [{ step: 4, name: '任务执行', state: 'doing', done: 0, total: 1, items: [{ id: 'RUN-001', title: 'x', status: 'running', extra: '' }] }],
-            caps: [],
-          }),
+          fetchStages: async () => fx,
+          fetchChains: async () => chainsFromStages(fx),
           pollMs: 0,
         }))
-        await tick(30)
+        await tick(40)
         const t = document.querySelector('[data-dsh-hob="stages-tree-item-status"]')?.textContent ?? ''
-        if (t === 'running') ok(`S-17g ✓ 负向对拍（把映射改回原文直打）⇒ S-17f **必红**：实际 ${JSON.stringify(t)}`)
+        if (t === 'agreed' || t === 'running') ok(`S-17g ✓ 负向对拍（把映射改回原文直打）⇒ S-17f **必红**：实际 ${JSON.stringify(t)}`)
         else bad(`S-17g · 变体仍没打出英文原文（实 ${JSON.stringify(t)}）⇒ 那条断言没有牙`)
         actFn(() => r.unmount())
       }
@@ -1561,8 +1871,8 @@ export function StateDot({ state, size, appearance }) {
     // —— S-17e 负向对拍：把某步的计数写成百分比 ⇒ S-17a 的 N/M 断言必红 ——
     {
       const mutant = buildMutant('exec-pct', (t) => t.replace(
-        "React.createElement('span', { 'data-dsh-hob': 'stages-tree-count' }, `${Number(st?.done ?? 0)}/${Number(st?.total ?? 0)}`)",
-        "React.createElement('span', { 'data-dsh-hob': 'stages-tree-count' }, `${Math.round((Number(st?.done ?? 0) / Math.max(1, Number(st?.total ?? 0))) * 100)}%`)",
+        "React.createElement('span', { 'data-dsh-hob': 'stages-tree-count', 'data-mainline-count': 'true', style: { minWidth: '3.4em', color: 'var(--dsw-alias-label-tertiary)', fontSize: '0.9em' } }, `${step.done}/${step.total}`)",
+        "React.createElement('span', { 'data-dsh-hob': 'stages-tree-count', 'data-mainline-count': 'true', style: { minWidth: '3.4em', color: 'var(--dsw-alias-label-tertiary)', fontSize: '0.9em' } }, `${Math.round((step.done / Math.max(1, step.total)) * 100)}%`)",
       ))
       if (mutant === undefined) {
         bad('S-17e · 造不出「计数写成百分比」的变体（源码形态变了）⇒ 负向对拍不可判')
@@ -1572,6 +1882,7 @@ export function StateDot({ state, size, appearance }) {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => STAGES_OK,
+          fetchChains: async () => chainsFromStages(STAGES_OK),
           pollMs: 0,
         }))
         await tick(40)
@@ -1655,10 +1966,23 @@ export function StateDot({ state, size, appearance }) {
         ]
         const units = sourcePaths.flatMap((p) => idx.parseUnitsToml(readFileSync(p, 'utf8')))
         const built = idx.buildStages(units, '2026-10-30T00:00:00.000Z')
-        const r = mount(react.createElement(ui.StagesPanel, {
+        /**
+         * ⚠⚠ **真账本可能已全部收口**（2026-11-08 `ACC-066` 判决后实测）：
+         *   五步全 done ⇒ 没有在途需求 ⇒ 主视图按设计不显示已完成链 ⇒ S-18 失去测量面。
+         *   ⇒ 仍然用**真实账本数据**，只为本用例把链标成在途（⛔ 不改账本、⛔ 不改生产逻辑），
+         *     让“真数据 + 真组件”的断言继续有对象。
+         */
+        const activeChains = (res) => {
+          const c = chainsFromStages(res)
+          if (c?.ok !== true || !Array.isArray(c.chains) || c.chains.length === 0) return c
+          const [first, ...rest] = c.chains
+          return { ...c, activeCount: 1, completedCount: 0, chains: [{ ...first, state: 'active', inFlight: true, complete: false, currentStep: first.currentStep ?? 1 }, ...rest] }
+        }
+        const r = mount(react.createElement(StagesPanelHarness, {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => built,
+          fetchChains: async () => activeChains(built),
           /**
            * ⚠⚠ **必须注入 `fetchUnseen`**（2026-11-01 P41/R20 加的）：本组扫全文不许出现
            *   「判不出」，而新增的「待确认工具」块在**没有注入**时会走真实 `fetch`
@@ -1667,6 +1991,7 @@ export function StateDot({ state, size, appearance }) {
            *     与待确认工具那一块无关；给它一个**合法读数**才是诚实的夹具。
            */
           fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+          fetchResource: itemResource,
           fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 测试注入的合法 Current 读数。' }),
           /**
            * ⚠ 工作计划块同理：不注入就会走真 HTTP ⇒ jsdom 里「判不出」⇒ 本组全文口径误伤。
@@ -1703,11 +2028,21 @@ export function StateDot({ state, size, appearance }) {
         // ② 全文出现次数 == 可指认数据来源里的出现次数：
         //    条目标题 + 下一步说明行 + 派生注意力项。
         //    ⚠ 证据正文不进五步树；不能把不存在的来源算进来。
-        const titleTexts = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item"]')]
-          .map((row) => row.querySelectorAll('span')[1]?.textContent ?? '')
+        /**
+         * ⚠ 条目现在有统一的 `presentation`：折叠行标题、关系、关键读数与展开详情
+         *   都是账本数据文本。**只允许这些数据节点**出现「判不出」；状态标签仍零命中。
+         */
+        const titleTexts = [...document.querySelectorAll('[data-dsh-hob="stages-view"][data-view="map"] [data-dsh-hob="stages-item-title"]')]
+          .map((row) => row.textContent ?? '')
         const dataTexts = [
           ...document.querySelectorAll('[data-dsh-hob="stages-next-line"]'),
           ...document.querySelectorAll('[data-dsh-hob="stages-attention-item"]'),
+          ...document.querySelectorAll('[data-dsh-hob="stages-summary"]'),
+          ...document.querySelectorAll('[data-dsh-hob="stages-item-relation"]'),
+          ...document.querySelectorAll('[data-dsh-hob="stages-item-facts"]'),
+          ...document.querySelectorAll('[data-dsh-hob="stages-item-flags"]'),
+          ...document.querySelectorAll('[data-dsh-hob="stages-item-original-title"]'),
+          ...document.querySelectorAll('[data-dsh-hob="stages-item-details"]'),
         ].map((node) => node.textContent ?? '')
         const count = (arr) => arr.reduce((n, t) => n + (t.split('判不出').length - 1), 0)
         const inTitles = count(titleTexts) + count(dataTexts)
@@ -1715,7 +2050,7 @@ export function StateDot({ state, size, appearance }) {
         if (inAll > inTitles) {
           probs.push(`全文出现「判不出」${inAll} 处，但标题/下一步/注意力数据里只有 ${inTitles} 处 ⇒ 有 ${inAll - inTitles} 处跑到了状态标签等非数据位置`)
         }
-        const rows = [...document.querySelectorAll('[data-dsh-hob="stages-tree-item"]')]
+        const rows = [...document.querySelectorAll('[data-dsh-hob="stages-mainline"] [data-dsh-hob="stages-tree-item"]')]
         const labels = rows.map((row) => `${row.getAttribute('data-item-id')}:` + (row.querySelector('[data-dsh-hob="stages-tree-item-status"]')?.textContent ?? '').trim())
         if (rows.length === 0) probs.push('一条条目都没渲染 ⇒ 扫全文这步没有对象（⛔ 不报 ✓）')
         if (probs.length === 0) {
@@ -1734,11 +2069,13 @@ export function StateDot({ state, size, appearance }) {
         // ── S-18b 负向对拍：把一个 status 改成封闭集外的值 ⇒ 「判不出」必须回来 ──
         const tampered = units.map((u) => (u.id === 'R-001' ? { ...u, status: 'zzz-ghost' } : u))
         const built2 = idx.buildStages(tampered, '2026-10-30T00:00:00.000Z')
-        const r2 = mount(react.createElement(ui.StagesPanel, {
+        const r2 = mount(react.createElement(StagesPanelHarness, {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => built2,
+          fetchChains: async () => activeChains(built2),
           fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+          fetchResource: itemResource,
           fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 测试注入的合法 Current 读数。' }),
           /**
            * ⚠ 工作计划块同理：不注入就会走真 HTTP ⇒ jsdom 里「判不出」⇒ 本组全文口径误伤。
@@ -1795,7 +2132,7 @@ export function StateDot({ state, size, appearance }) {
         const base2 = idx2.buildStages(units2, '2026-10-30T00:00:00.000Z')
         /** ⚠ 先自证：真数据里 `builtNoAcc` **非空** ⇒ 才有"非空"这一支可测。 */
         const realBuiltNoAcc = Array.isArray(base2.portfolio?.builtNoAcc) ? base2.portfolio.builtNoAcc : []
-        const mkPanel = (portfolio) => mount(react.createElement(ui.StagesPanel, {
+        const mkPanel = (portfolio) => mount(react.createElement(StagesPanelHarness, {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({ ...base2, portfolio }),
@@ -2008,7 +2345,7 @@ export function StateDot({ state, size, appearance }) {
         { id: 'CAP-04', title: '非法值', status: 'zzz-ghost', lastReading: 'x' },
       ]
       // ⚠ `mountTree` 是**内层块**作用域里的（`S-17*` 那一段），S-19 在它外面 ⇒ 直接用 `mount`
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [] }),
         fetchExec: async () => ({ ok: true, items: [] }),
         fetchStages: async () => ({
@@ -2114,7 +2451,7 @@ export function StateDot({ state, size, appearance }) {
         ],
         caps: [],
       }
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [] }),
         fetchExec: async () => ({ ok: true, items: [] }),
         fetchStages: async () => fx,
@@ -2140,13 +2477,11 @@ export function StateDot({ state, size, appearance }) {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    // S-21 ⭐ **点开第 ④ 步后必须看到「现在」/「历史」两档**（用户原话「我没找到展开历史档」）
-    // ══════════════════════════════════════════════════════════════════
+    // S-21 ⭐ **点开第 ④ 步后，运行态两档在同一个展开体里，且只有一个历史折叠**
     /**
-     * ── 它回答什么 ──────────────────────────────────────────────
-     *   ⚠ 用户报的是**找不到**。⇒ 本组真点一下第 ④ 步的行头，然后**逐项点出**
-     *   展开体里到底有什么：两档标题、执行项、以及每条的执行态标签、条数读数。
-     *   ⚠ 这不是"源码里有没有那几行"（那种 grep 恒真），是**真 DOM 挂载 + 真派发 click**。
+     * R-020 起：「当前工作」一级标签已删除；运行态收进第 ④ 步展开体。
+     * 本组仍真点一次行头，确认：① 展开后能看到运行态两档；② 该步条目仍走统一条目行；
+     * ③ 整个面板只有这一处历史折叠，不与通用「历史条目」重复。
      */
     {
       const fx = {
@@ -2155,8 +2490,8 @@ export function StateDot({ state, size, appearance }) {
           { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-001', title: 'a', status: 'agreed', extra: '' }] },
           { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [{ id: 'CHG-X', title: 'b', status: 'settled', extra: '' }] },
           { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-1', title: 'c', status: 'built', extra: '' }] },
-          /** ⚠ `done` + 有 items ⇒ 默认**不**展开（正是用户的处境）。 */
-          { step: 4, name: '任务执行', state: 'done', done: 2, total: 2, items: [
+          /** ⚠ `doing` + 有 items ⇒ 默认展开（用户真实处境：第 4 步就是当前步）。 */
+          { step: 4, name: '任务执行', state: 'doing', done: 0, total: 2, items: [
             { id: 'RUN-001', title: '在跑的那条', status: 'running', extra: '' },
             { id: 'RUN-002', title: '历史那条', status: 'returned', extra: '' },
           ] },
@@ -2164,16 +2499,11 @@ export function StateDot({ state, size, appearance }) {
         ],
         caps: [],
       }
-      /**
-       * ⚠⚠ **第 ④ 步的「现在/历史」两档来自 `fetchExec`（执行态路由），⛔ 不是 `stages[].items`**
-       *   —— 我第一版把执行项喂进 `stages[].items`，两档一个都渲染不出来（S-21 当场红）。
-       *   ⇒ 这里按**真数据源**喂：`fetchExec().items` 每条带 `bucket`。
-       */
       const EXEC_ITEMS = [
         { target: 'hob-now-1', state: 'running', bucket: 'now', startedAt: '2026-10-31T00:00:00+08:00', elapsedMs: 60000, retries: 0 },
         { target: 'hob-hist-1', state: 'returned', bucket: 'closed', closedAt: '2026-10-30T00:00:00+08:00', retries: 1 },
       ]
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [] }),
         fetchExec: async () => ({ ok: true, items: EXEC_ITEMS }),
         fetchStages: async () => fx,
@@ -2181,49 +2511,35 @@ export function StateDot({ state, size, appearance }) {
       }))
       await tick(40)
       const probs = []
-      const head4 = () => document.querySelector('[data-dsh-hob="stages-tree-step"][data-step="4"] [data-dsh-hob="stages-tree-head"]')
-      const body4 = () => document.querySelector('[data-dsh-hob="stages-tree-step"][data-step="4"] [data-dsh-hob="stages-tree-body"]')
-
-      // ① 默认（`done`）必须是折叠的 —— ⚠ 这证明本组测的正是用户那个处境
-      if (head4()?.getAttribute('aria-expanded') !== 'false') probs.push('第 ④ 步是 `done` 却默认展开了 ⇒ 与用户处境不符（本组失去意义）')
-      // ② 折叠时，步头仍必须写着条目数（S-20 的落点）
-      const cnt = head4()?.querySelector('[data-dsh-hob="stages-tree-item-count"]')?.textContent?.trim() ?? ''
-      if (cnt !== '2 条') probs.push(`折叠时步头没写着「2 条」：${JSON.stringify(cnt)}`)
-      // ③ 真点一下
-      actFn(() => head4().dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
-      await tick(30)
-      if (head4()?.getAttribute('aria-expanded') !== 'true') probs.push('点了第 ④ 步行头却没展开')
+      const head4 = () => document.querySelector('[data-mainline-step="true"][data-step="4"] [data-dsh-hob="stages-tree-head"]')
+      const body4 = () => document.querySelector('[data-mainline-step="true"][data-step="4"] [data-dsh-hob="stages-tree-body"]')
+      if (head4()?.getAttribute('aria-expanded') !== 'true') probs.push('第 ④ 步是 `doing` 却默认没有展开')
       const b = body4()
       if (b === null) probs.push('第 ④ 步展开后没有 stages-tree-body')
       else {
-        const txt = b.textContent ?? ''
-        // ④ 两档标题都在（⚠ 这是用户要的那个「历史」）
+        const step4Items = [...b.querySelectorAll('[data-dsh-hob="stages-tree-item"]')].map((e) => e.getAttribute('data-item-id')).filter(Boolean)
+        if (step4Items.length === 0) probs.push(`第 ④ 步展开后没有账本条目（实有：${JSON.stringify(step4Items)}）`)
         const buckets = [...b.querySelectorAll('[data-dsh-hob="stages-exec-bucket"]')].map((e) => e.getAttribute('data-bucket'))
         for (const want of ['now', 'history']) {
-          if (!buckets.includes(want)) probs.push(`展开体里没有「${want}」档（实有：${JSON.stringify(buckets)}）`)
+          if (!buckets.includes(want)) probs.push(`第 ④ 步里没有「${want}」档（实有：${JSON.stringify(buckets)}）`)
         }
-        // ⑤ 执行项逐条在（⚠ 不是只给个数字）
-        const ids = [...b.querySelectorAll('[data-dsh-hob="stages-exec-item"]')].map((e) => e.getAttribute('data-target'))
-        for (const want of ['hob-now-1', 'hob-hist-1']) {
-          if (!ids.includes(want)) probs.push(`展开体里没有执行项 ${want}（实有：${JSON.stringify(ids)}）`)
+        if (b.querySelectorAll('[data-dsh-hob="stages-exec-item"]').length !== 2) {
+          probs.push(`执行项 ${b.querySelectorAll('[data-dsh-hob="stages-exec-item"]').length} 条（期望 2）`)
         }
-        if (!/历史/.test(txt)) probs.push(`展开体全文里没有「历史」二字：${JSON.stringify(txt.slice(0, 120))}`)
       }
-      if (probs.length === 0) {
-        const b2 = body4()
-        const inv = [...b2.querySelectorAll('[data-dsh-hob="stages-exec-bucket"]')].map((e) => e.getAttribute('data-bucket') + ':' + (e.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 60))
-        ok('S-21 ✓ 点开第 ④ 步后**真的看到两档 + 两条执行项**：' + inv.join(' | '))
-      } else for (const x of probs) bad(`S-21 · ${x}`)
+      const genericHist = document.querySelectorAll('[data-dsh-hob="stages-tree-history"]').length
+      const execHist = document.querySelectorAll('[data-dsh-hob="stages-exec-bucket"][data-bucket="history"]').length
+      if (genericHist > 0 && execHist > 0) probs.push(`同一面板出现两层历史折叠（通用 ${genericHist} + 执行 ${execHist}）`)
+      if (probs.length === 0) ok('S-21 ✓ 第 ④ 步展开体 = 统一条目行 + 运行态两档（现在/历史各一 · 2 条执行项），且只有一处历史折叠')
+      else for (const x of probs) bad(`S-21 · ${x}`)
       actFn(() => r.unmount())
     }
 
     // ── N-S20 负向对拍：把「N 条」那段渲染删掉 ⇒ S-20 必红 ──
     {
       const built = ((t) => {
-        const m = t.replace(
-          "`${items.length} 条`),",
-          "''),",
-        )
+        const NEEDLE = "`${step.total} 条`),"
+        const m = t.replace(NEEDLE, "''),")
         return m === t ? undefined : writeMutant('no-item-count', m)
       })(src)
       if (built === undefined) {
@@ -2234,6 +2550,12 @@ export function StateDot({ state, size, appearance }) {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({
+            ok: true, readAt: '2026-10-30T00:00:00.000Z',
+            stages: [{ step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-001', title: 'a', status: 'agreed', extra: '' }] }],
+            caps: [],
+          }),
+          /** ⚠ 主视图读需求链；不给链 ⇒ 没有步头，N-S20 的观察点不存在（会变成假红）。 */
+          fetchChains: async () => chainsFromStages({
             ok: true, readAt: '2026-10-30T00:00:00.000Z',
             stages: [{ step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-001', title: 'a', status: 'agreed', extra: '' }] }],
             caps: [],
@@ -2280,7 +2602,7 @@ export function StateDot({ state, size, appearance }) {
         ],
         caps: [],
       }
-      const r = mount(react.createElement(ui.StagesPanel, {
+      const r = mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [] }),
         fetchExec: async () => ({ ok: true, items: [] }),
         fetchStages: async () => fx,
@@ -2334,6 +2656,7 @@ export function StateDot({ state, size, appearance }) {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({ ok: true, readAt: 'x', stages: [], caps: [] }),
+            fetchChains: async () => chainsFromStages(EXEC_HIST),
           pollMs: 0,
         }))
         await tick(30)
@@ -2364,6 +2687,7 @@ export function StateDot({ state, size, appearance }) {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({ ok: true, readAt: 'x', stages: [], caps: [] }),
+            fetchChains: async () => chainsFromStages(EXEC_HIST),
           pollMs: 0,
         }))
         await tick(30)
@@ -2392,6 +2716,7 @@ export function StateDot({ state, size, appearance }) {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({ ok: true, readAt: 'x', stages: [], caps: [] }),
+            fetchChains: async () => chainsFromStages(EXEC_HIST),
           pollMs: 0,
         }))
         await tick(30)
@@ -2578,7 +2903,7 @@ export function StateDot({ state, size, appearance }) {
        * ⚠ 任务书点名：**删掉其中一处**，⛔ 不是全删 —— 全删会让"有没有逐处声明"失去区分度
        *   （全删之后任何"抓到一处就算"的弱判据也会绿）。
        */
-      const TARGET = "React.createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflowWrap: 'anywhere' } }, String(it?.title ?? '')),"
+      const TARGET = "React.createElement('span', { 'data-dsh-hob': 'stages-item-title', style: { flex: '1 1 auto', minWidth: 0, overflowWrap: 'anywhere' } }, title),"
       const built = ((t) => {
         const m = t.replace(TARGET, TARGET.replace(", minWidth: 0", ''))
         return m === t ? undefined : writeMutant('no-minw-one', m)
@@ -2619,7 +2944,7 @@ export function StateDot({ state, size, appearance }) {
         const idx = await import(pathToFileURL(join(root, 'src', 'shared', 'stages-index.ts')).href)
         const units = idx.parseUnitsToml(readFileSync(join(ledgerRoot, idx.STAGES_INDEX_REL), 'utf8'))
         const built = idx.buildStages(units, '2026-10-30T00:00:00.000Z')
-        const r = mount(react.createElement(ui.StagesPanel, {
+        const r = mount(react.createElement(StagesPanelHarness, {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => built,
@@ -2659,7 +2984,7 @@ export function StateDot({ state, size, appearance }) {
 
         // ── S-26：`undecidable` 必须**明写判不出**（⛔ 不许空、⛔ 不许写"已完成"）──
         const undecided = { ...built, next: { kind: 'undecidable', target: null, why: '账本里没有可推进的活', blockedBy: [] } }
-        const r2 = mount(react.createElement(ui.StagesPanel, {
+        const r2 = mount(react.createElement(StagesPanelHarness, {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => undecided,
@@ -2684,7 +3009,7 @@ export function StateDot({ state, size, appearance }) {
             blockedBy: ['K-1 · TSK-1 · 没做完', 'K-3 · R-1 · 没验收', 'K-4 · RSK-1 · 风险开着', 'K-2 · TSK-2 · 没证据', 'K-6 · ACC-1 · 自验'],
           },
         }
-        const r3 = mount(react.createElement(ui.StagesPanel, {
+        const r3 = mount(react.createElement(StagesPanelHarness, {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => many,
@@ -2694,10 +3019,10 @@ export function StateDot({ state, size, appearance }) {
         const shownN = document.querySelectorAll('[data-dsh-hob="stages-next-blocker"]').length
         const restTxt = (document.querySelector('[data-dsh-hob="stages-next-blocker-rest"]')?.textContent ?? '').trim()
         const probs3 = []
-        if (shownN !== 3) probs3.push(`阻断项列了 **${shownN}** 条（应为 **3** 条上限）`)
-        if (!restTxt.includes('另有') || !restTxt.includes('2')) probs3.push(`超出部分没写「另有 N 条」：${JSON.stringify(restTxt)}`)
+        if (shownN !== 1) probs3.push(`阻断项列了 **${shownN}** 条（R-020 只给一个主阻断）`)
+        if (!restTxt.includes('另有') || !restTxt.includes('4')) probs3.push(`超出部分没写「另有 N 条」：${JSON.stringify(restTxt)}`)
         if (probs3.length === 0) {
-          ok(`S-27 ✓ 阻断项**最多 3 条**（实测列 ${shownN} 条）+ 超出写 \`${restTxt}\``)
+          ok(`S-27 ✓ 只给一个主阻断（实测列 ${shownN} 条）+ 超出写 \`${restTxt}\``)
         } else for (const x of probs3) bad(`S-27 · ${x}`)
         actFn(() => r3.unmount())
         /**
@@ -2731,7 +3056,7 @@ export function StateDot({ state, size, appearance }) {
         ok: true, count: 2, names: ['zzz-alpha', 'zzz-beta'], items: [],
         summary: '2 条待确认：zzz-alpha · zzz-beta',
       }
-      const mountUnseen = (report, extra) => mount(react.createElement(ui.StagesPanel, {
+      const mountUnseen = (report, extra) => mount(react.createElement(StagesPanelHarness, {
         fetchProgress: async () => ({ ok: true, rows: [] }),
         fetchExec: async () => ({ ok: true, items: [] }),
         fetchStages: async () => built,
@@ -2853,7 +3178,7 @@ export function StateDot({ state, size, appearance }) {
     // ══════════════════════════════════════════════════════════════════
     {
       const mountCurrent = async (fetchCurrent) => {
-        const r = mount(react.createElement(ui.StagesPanel, {
+        const r = mount(react.createElement(StagesPanelHarness, {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({ ok: true, readAt: '2026-11-02T00:00:00.000Z', stages: [], caps: [] }),
@@ -2888,18 +3213,46 @@ export function StateDot({ state, size, appearance }) {
         actFn(() => r.unmount())
       }
 
-      // S-30b 失败分治：只有 Current 区块落「判不出」，五步树仍在。
+      /**
+       * S-30b 失败分治：只有 Current 区块落「判不出」，主线仍在。
+       *
+       * ⚠ R-020 起首屏是「单需求主线」，不再有全局五步树；旧夹具的 stages 为空，
+       *   主视图本来就没链可画 ⇒ 旧断言会把“夹具没数据”误判成“Current 抹掉了主线”。
+       *   ⇒ 这里显式给一条在途需求，观察点改为主线的 `stages-mainline`。
+       */
       {
-        const r = await mountCurrent(async () => ({ ok: false, reason: 'ledger-unreadable', message: 'Current 测试失败' }))
+        const CURRENT_SPLIT_STAGES = {
+          ok: true,
+          readAt: '2026-11-07T00:00:00.000Z',
+          stages: [
+            { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-950', status: 'agreed', kind: 'req', presentation: { displayTitle: '分隔需求', relation: { key: 'goal', id: null, state: 'missing' }, facts: [], flags: [] } }] },
+            { step: 2, name: '实现方案', state: 'doing', done: 0, total: 1, items: [{ id: 'CHG-950', status: 'proposed', kind: 'change', presentation: { displayTitle: '分隔方案', relation: { key: 'requirement', id: 'R-950', state: 'ok' }, facts: [], flags: [] } }] },
+            { step: 3, name: '编码任务', state: 'todo', done: 0, total: 0, items: [] },
+            { step: 4, name: '任务执行', state: 'todo', done: 0, total: 0, items: [] },
+            { step: 5, name: '验收核对', state: 'todo', done: 0, total: 0, items: [] },
+          ],
+          caps: [],
+        }
+        const r = mount(react.createElement(StagesPanelHarness, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => CURRENT_SPLIT_STAGES,
+          fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+          fetchCurrent: async () => ({ ok: false, reason: 'ledger-unreadable', message: 'Current 测试失败' }),
+          pollMs: 0,
+        }))
+        await tick(40)
         const box = document.querySelector('[data-dsh-hob="stages-current"]')
-        const tree = document.querySelector('[data-dsh-hob="stages-tree"]')
+        const mainline = document.querySelector('[data-dsh-hob="stages-mainline"]')
         const p = []
         if (box === null || !(box.textContent ?? '').includes('判不出：Current 测试失败')) {
           p.push(`Current 没有照实落「判不出」+ 原因：${JSON.stringify(box?.textContent ?? '')}`)
         }
-        if (tree === null) p.push('Current 失败把五步树一起抹掉了 ⇒ 区块没有分治')
+        if (mainline === null || mainline.getAttribute('data-req-id') !== 'R-950') {
+          p.push(`Current 失败把单需求主线一起抹掉了（data-req-id=${JSON.stringify(mainline?.getAttribute('data-req-id'))}）`)
+        }
         if (document.querySelector('[data-dsh-hob="stages-current-text"]') !== null) p.push('失败时仍渲染了 Current 正文')
-        if (p.length === 0) ok('S-30b ✓ Current 失败 ⇒ 只有本区块写「判不出」+ 原因，五步树仍在（失败不分治没有发生）')
+        if (p.length === 0) ok('S-30b ✓ Current 失败 ⇒ 只有本区块写「判不出」+ 原因，单需求主线仍在（失败不分治没有发生）')
         else for (const x of p) bad(`S-30b · ${x}`)
         actFn(() => r.unmount())
       }
@@ -2907,12 +3260,11 @@ export function StateDot({ state, size, appearance }) {
       // S-30c 负向对拍：摘掉唯一挂载 ⇒ S-30a 的"区块存在"必红。
       {
         const srcNow = readFileSync(PANEL_TSX, 'utf8')
-        const needle = '    React.createElement(CurrentPanel, '
-        const at = srcNow.indexOf(needle)
-        const lineEnd = at < 0 ? -1 : srcNow.indexOf('\n', at)
-        const mutated = at < 0 || lineEnd < 0
-          ? srcNow
-          : srcNow.slice(0, at) + '    // CurrentPanel 挂载已摘除（负向对拍）\n' + srcNow.slice(lineEnd + 1)
+        const currentMountRe = /React\.createElement\(CurrentPanel, \{\n[\s\S]*?\n\s+\}\),\n/
+        const hits = srcNow.match(new RegExp(currentMountRe.source, 'g')) ?? []
+        const mutated = hits.length === 1
+          ? srcNow.replace(currentMountRe, '    // CurrentPanel 挂载已摘除（负向对拍）\n')
+          : srcNow
         if (mutated === srcNow) {
           bad('S-30c · 造不出「摘掉 CurrentPanel 挂载」的变体（源码形态变了）⇒ 负向对拍不可判')
         } else {
@@ -2947,7 +3299,7 @@ export function StateDot({ state, size, appearance }) {
         next: { kind: 'undecidable', target: null, why: '夹具没有下一步', blockedBy: [] },
       }
       const mountWithAttention = async (attention) => {
-        const r = mount(react.createElement(ui.StagesPanel, {
+        const r = mount(react.createElement(StagesPanelHarness, {
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({ ...base, ...(attention === undefined ? {} : { attention }) }),
@@ -2966,12 +3318,16 @@ export function StateDot({ state, size, appearance }) {
           { id: 'TSK-001', state: 'blocked', label: '阻塞', why: '已交付但没有证据' },
         ]
         const r = await mountWithAttention(rows)
+        /**
+         * ⚠ R-020 起「当前工作」一级标签已删除；注意力只进补充信息，
+         *   ⛔ 不再在主线首屏重复。这里用补充信息里的注意力块核对。
+         */
         const items = [...document.querySelectorAll('[data-dsh-hob="stages-attention-item"]')]
         const p = []
-        if (items.length !== 2) p.push(`注意力项 ${items.length} 条（期望 2）`)
-        if (items[0]?.getAttribute('data-work-state') !== 'awaiting-user') p.push('第一条没有携带 awaiting-user')
-        if (!(items[1]?.textContent ?? '').includes('阻塞')) p.push(`第二条没有中文状态：${JSON.stringify(items[1]?.textContent ?? '')}`)
-        if (p.length === 0) ok('S-32a ✓ 注意力视图逐条显示 2 项，id / work-state / 中文措辞都来自后端派生读数')
+        const texts = items.map((x) => x.textContent ?? '')
+        if (!texts.some((t) => t.includes('R-001') && t.includes('等你决定'))) p.push(`没逐条显示 R-001（实有：${JSON.stringify(texts)}）`)
+        if (!texts.some((t) => t.includes('TSK-001') && t.includes('阻塞'))) p.push(`没逐条显示 TSK-001 的阻塞态（实有：${JSON.stringify(texts)}）`)
+        if (p.length === 0) ok('S-32a ✓ 非空注意力在补充信息里逐条显示（等待用户 / 阻塞 · id 与中文措辞来自后端）')
         else for (const x of p) bad(`S-32a · ${x}`)
         actFn(() => r.unmount())
       }
@@ -3093,6 +3449,1175 @@ export function StateDot({ state, size, appearance }) {
         }
         if (q.length === 0) ok('S-31c ✓ 资源路由真处理体：注册 POST 路径；R-009 / 错误 kind / 不存在 ID / Current / 坏 JSON 五档状态与 reason 均可分辨')
         else for (const x of q) bad(`S-31c · ${x}`)
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // S-33 / S-34 / S-35 / S-36 / S-37 · 进度面板信息架构（2026-11-07）
+    //   目标：第一屏给结论；阶段地图 / 当前工作 / 计划 / 历史分层；
+    //        视图切换只改显示、不卸载数据；历史默认折叠但仍在 DOM。
+    // ══════════════════════════════════════════════════════════════════
+    {
+      const IA_STAGES = {
+        ok: true,
+        readAt: '2026-11-07T00:00:00.000Z',
+        relations: { 'TSK-901': '任务' },
+        stages: [
+          { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-901', status: 'agreed', kind: 'req', presentation: { displayTitle: '需求', relation: { key: 'goal', id: 'G-901', state: 'ok' }, facts: [], flags: [] } }] },
+          { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [{ id: 'CHG-901', status: 'settled', kind: 'change', presentation: { displayTitle: '方案', relation: { key: 'requirement', id: 'R-901', state: 'ok' }, facts: [], flags: [] } }] },
+          { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-901', status: 'built', kind: 'task', presentation: { displayTitle: '任务', relation: { key: 'change', id: 'CHG-901', state: 'ok' }, facts: [], flags: [] } }] },
+          { step: 4, name: '任务执行', state: 'done', done: 1, total: 1, items: [{ id: 'RUN-901', status: 'returned', kind: 'run', presentation: { displayTitle: '执行', relation: { key: 'task', id: 'TSK-901', state: 'ok' }, facts: [], flags: [] } }] },
+          { step: 5, name: '验收核对', state: 'doing', done: 1, total: 2, items: [
+            { id: 'ACC-901', status: 'pass', kind: 'acc', presentation: { displayTitle: '已判', relation: { key: 'task', id: 'TSK-901', state: 'ok' }, facts: [], flags: [] } },
+            { id: 'ACC-902', status: 'unverified', kind: 'acc', presentation: { displayTitle: '待判', relation: { key: 'task', id: 'TSK-901', state: 'ok' }, facts: [], flags: [] } },
+          ] },
+        ],
+        caps: [],
+        summary: {
+          stage: { step: 5, name: '验收核对', state: 'doing', done: 1, total: 2 },
+          action: { kind: 'accept', target: 'ACC-902', headline: '验收 ACC-902' },
+          waitFor: 'acceptance', waitingFor: '独立验收会话', blocker: 'K-3 · R-901 · 验收未判决', openItems: 1,
+        },
+        next: { kind: 'accept', target: 'ACC-902', why: '收口 CHG-901，等独立验收', blockedBy: ['K-3 · R-901 · 验收未判决'] },
+        attention: [{ id: 'TSK-901', state: 'awaiting-acceptance', label: '等验收', why: '验收尚未通过' }],
+        portfolio: { counts: { total: 1, covered: 1, proven: 0, orphan: 0 }, orphans: [], builtNoAcc: [] },
+      }
+      const IA_PLANS = {
+        ok: true, mode: 'multi',
+        plans: [{ planId: 'WP-901', state: 'running', trackCount: 1, running: 1, waiting: 0, returned: 0, failed: 0, tracks: [{ trackId: 'a', taskId: 'TSK-901', sessionId: 'session-a', accessType: 'write', state: 'running', dependsOn: [] }] }],
+        unreadable: [],
+        abandoned: [{ planId: 'WP-900', state: 'completed', abandonedAt: '2026-11-06T00:00:00+08:00', abandonedWhy: '已收口' }],
+      }
+      const iaMount = async (over = {}) => {
+        const r = mount(react.createElement(StagesPanelHarness, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => IA_STAGES,
+          fetchUnseen: async () => ({ ok: true, count: 2, names: ['mcp__wincu__alpha', 'other-beta'], items: [], summary: '2 条待确认' }),
+          fetchPlans: async () => IA_PLANS,
+          fetchCurrent: async () => ({ ok: true, text: '# Current\n\n## 一、现在\n\n- 夹具 Current' }),
+          pollMs: 0,
+          ...over,
+        }))
+        await tick(40)
+        return r
+      }
+      const viewOf = (key) => document.querySelector(`[data-dsh-hob="stages-view"][data-view="${key}"]`)
+      const shown = (key) => {
+        const el = viewOf(key)
+        return el === null ? '' : (el.ownerDocument.defaultView.getComputedStyle(el).display || el.style.display || '').trim()
+      }
+      const clickTab = async (key) => {
+        const tab = document.querySelector(`[data-dsh-hob="stages-view-tab"][data-view="${key}"]`)
+        if (tab === null) return false
+        actFn(() => tab.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+        await tick(30)
+        return true
+      }
+
+      /**
+       * R-020 替换 S-33a / S-33b / S-34：
+       *   · 首屏不再有全局摘要卡；改为「在途需求列表 + 选中需求的五步」；
+       *   · 唯一“当前”由 `aria-current="step"` 表达；
+       *   · 四个视图标签必须**不存在**；
+       *   · 历史在底部折叠，默认收起。
+       */
+      {
+        const r = await iaMount()
+        const p = []
+        const inflight = document.querySelector('[data-dsh-hob="stages-inflight"]')
+        if (inflight === null) p.push('首屏没有在途需求列表')
+        const mainline = document.querySelector('[data-dsh-hob="stages-mainline"]')
+        if (mainline === null) p.push('首屏没有单需求五步主线')
+        const currentSteps = [...document.querySelectorAll('[data-dsh-hob="stages-current-step"]')]
+        if (currentSteps.length !== 1) p.push(`“当前”标记 ${currentSteps.length} 个（期望 1）`)
+        const currentHost = document.querySelector('[aria-current="step"]')
+        if (currentHost === null) p.push('没有任何一步带 aria-current="step"')
+        const tabs = [...document.querySelectorAll('[data-dsh-hob="stages-view-tab"]')]
+        if (tabs.length !== 0) p.push(`仍有 ${tabs.length} 个一级视图标签`)
+        const tabsBar = document.querySelector('[data-dsh-hob="stages-view-switch"]')
+        if (tabsBar !== null) p.push('仍有视图切换条')
+        const summaryCard = document.querySelector('[data-dsh-hob="stages-summary"]')
+        if (summaryCard !== null) p.push('仍有全局摘要卡 ⇒ 会形成第二个“当前”')
+        const history = document.querySelector('[data-dsh-hob="stages-history-section"]')
+        if (history === null) p.push('底部历史折叠不存在')
+        else if (history.tagName.toLowerCase() !== 'details' || history.hasAttribute('open')) p.push('历史不是默认折叠的 <details>')
+        if (p.length === 0) ok('S-33a ✓ 首屏 = 在途需求 + 单需求五步 + 唯一 aria-current="step"；无四标签、无全局摘要卡；历史底部默认折叠')
+        else for (const x of p) bad(`S-33a · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      /**
+       * S-33g 生产路径不再请求旧 `/tasks-progress`。
+       *
+       * ⚠ 面板仍保留一张隐藏的兼容表（按方案不删 DOM），但它**没有展示作用**；
+       *   若生产路径还每 5 秒打那条旧路由，就是"重复取数 + 旧数据源仍在跑"。
+       *   判据：不注入 `fetchProgress` 时它一次也不该被调用；显式注入时仍可测。
+       */
+      {
+        let legacyCalls = 0
+        const r = await iaMount({
+          fetchProgress: async () => { legacyCalls += 1; return { ok: true, rows: [] } },
+        })
+        const injected = legacyCalls
+        actFn(() => r.unmount())
+
+        const realFetch = globalThis.fetch
+        const urls = []
+        globalThis.fetch = async (url) => {
+          urls.push(String(url))
+          return {
+            status: 200, ok: true,
+            json: async () => ({ ok: true, items: [], stages: [], caps: [], chains: [], plans: [], count: 0, names: [], summary: '0 条', text: '# Current' }),
+            clone: () => ({ text: async () => '' }),
+          }
+        }
+        let r2
+        try {
+          r2 = mount(react.createElement(ui.StagesPanel, { sessionId: 's-prod', pollMs: 0 }))
+          await tick(40)
+        } finally { globalThis.fetch = realFetch }
+        const legacyHits = urls.filter((u) => u.includes('/tasks-progress'))
+        const p = []
+        if (injected !== 1) p.push(`显式注入时旧取数应被调用 1 次，实际 ${injected}`)
+        if (legacyHits.length !== 0) p.push(`生产路径仍请求旧 /tasks-progress ${legacyHits.length} 次`)
+        if (urls.length === 0) p.push('生产路径一条请求都没发 ⇒ 本判据没有对象')
+        actFn(() => r2.unmount())
+        if (p.length === 0) ok(`S-33g ✓ 生产路径只走主线数据源：旧 /tasks-progress 请求 0 次（其余 ${urls.length} 条请求照常）；显式注入时旧兼容线仍可测`)
+        else for (const x of p) bad(`S-33g · ${x}`)
+      }
+
+      // S-33b 需求链缺失 ⇒ 主线明写判不出，⛔ 不伪装成空完成。
+      {
+        const r = await iaMount({ fetchChains: async () => ({ ok: false, reason: 'index-unreadable', message: '链路由读不到（夹具）' }) })
+        const mainline = document.querySelector('[data-dsh-hob="stages-mainline"]')
+        const t = mainline?.textContent ?? ''
+        const p = []
+        if (mainline?.getAttribute('data-state') !== 'undecidable') p.push(`链路缺失时 data-state=${JSON.stringify(mainline?.getAttribute('data-state'))}`)
+        if (!t.includes('判不出')) p.push(`链路缺失时没写「判不出」：${JSON.stringify(t)}`)
+        if (document.querySelectorAll('[data-dsh-hob="stages-current-step"]').length !== 0) p.push('链路缺失时仍标了“当前”')
+        if (p.length === 0) ok('S-33b ✓ 需求链读不到 ⇒ 主线明写「判不出」+ 原因，⛔ 不伪装成空/完成')
+        else for (const x of p) bad(`S-33b · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      /**
+       * S-34d 切到别的账本 ⇒ 会话级运行态 / 计划不再混入（2026-11-08）。
+       *
+       * ⚠ 运行态与计划是**当前工作区那本账**的会话读数，没有跨账本语义。
+       *   旧实现切到 beta 后仍把 alpha 的 RUN 列表挂进第 4 步 ⇒ 内容混账。
+       */
+      {
+        const seenPlans = []
+        const r = await iaMount({
+          fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [
+            { name: 'alpha', units: 2, state: 'data', current: true },
+            { name: 'beta', units: 1, state: 'data', current: false },
+          ] }),
+          fetchPlans: async (_sid, ledger) => { seenPlans.push(ledger); return IA_PLANS },
+          fetchChains: async () => ({
+            ok: true, activeCount: 1, completedCount: 0, retiredCount: 0, historyItemCount: 0, retiredChains: [], unattached: [],
+            chains: [{
+              reqId: 'R-950', title: '别的账本的需求', reqStatus: 'agreed', state: 'active', inFlight: true, complete: false,
+              currentStep: 4, missing: ['acc'], itemIds: ['R-950'],
+              next: { kind: 'dispatch', target: 'TSK-950', why: '等待执行', blockedBy: [] }, summary: {},
+              steps: [
+                { step: 1, name: '需求规格', displayState: 'done', summary: '', total: 1, done: 1, doing: 0, waiting: 0, itemIds: ['R-950'] },
+                { step: 2, name: '实现方案', displayState: 'done', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+                { step: 3, name: '编码任务', displayState: 'done', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+                { step: 4, name: '任务执行', displayState: 'doing', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+                { step: 5, name: '验收核对', displayState: 'todo', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+              ],
+            }],
+          }),
+        })
+        const beta = document.querySelector('[data-dsh-hob="stages-ledger-item"][data-ledger="beta"]')
+        if (beta !== null) {
+          actFn(() => beta.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+          await tick(50)
+        }
+        const step4 = document.querySelector('[data-mainline-step="true"][data-step="4"]')
+        const p = []
+        if (beta === null) p.push('找不到 beta 账本')
+        if (step4 === null) p.push('第 4 步不存在')
+        if (step4?.querySelector('[data-dsh-hob="stages-step-exec"]') !== null) p.push('切到 beta 后仍渲染了当前会话运行态')
+        if (step4?.querySelector('[data-dsh-hob="stages-step-plans"]') !== null) p.push('切到 beta 后仍渲染了当前会话计划')
+        if (seenPlans.includes('alpha') && seenPlans.lastIndexOf('alpha') > seenPlans.lastIndexOf('beta')) p.push(`切到 beta 后仍以 alpha 取计划：${JSON.stringify(seenPlans)}`)
+        if (p.length === 0) ok(`S-34d ✓ 切到 beta ⇒ 第 4 步不再挂当前会话运行态/计划；计划请求带 beta（${JSON.stringify(seenPlans)}）`)
+        else for (const x of p) bad(`S-34d · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-34 账本切换：项目选择器存在；点另一个账本 ⇒ 链请求带新 ledger。
+      {
+        const seen = []
+        const r = await iaMount({
+          fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [
+            { name: 'alpha', units: 2, state: 'data', current: true },
+            { name: 'beta', units: 1, state: 'data', current: false },
+          ] }),
+          fetchChains: async (sessionId, ledger) => { seen.push(ledger); return { ok: true, activeCount: 0, completedCount: 0, retiredCount: 0, historyItemCount: 0, chains: [], unattached: [] } },
+        })
+        const p = []
+        const items = [...document.querySelectorAll('[data-dsh-hob="stages-ledger-item"]')]
+        if (items.length !== 2) p.push(`账本项 ${items.length} 个（期望 2）`)
+        const beta = items.find((x) => x.getAttribute('data-ledger') === 'beta')
+        if (beta === undefined) p.push('找不到 beta 账本')
+        else {
+          actFn(() => beta.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+          await tick(40)
+          if (!seen.includes('beta')) p.push(`切换后链请求没有带 beta：${JSON.stringify(seen)}`)
+        }
+        if (p.length === 0) ok(`S-34 ✓ 账本切换成立：默认 alpha；点 beta ⇒ /requirement-chains 带 ledger=beta（请求 ${JSON.stringify(seen)}）`)
+        else for (const x of p) bad(`S-34 · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      /**
+       * S-34e 默认账本必须跟随**当前工作区**，且选择器与项目名同一行。
+       *
+       * ⚠⚠ 2026-11-08 用户报障：「不管哪个工作区打开任务进度都是 HOB 项目的账本」。
+       *   服务端按 cwd 标 `current`；客户端若只在首次设一次、或拿第一个 data 兜底，
+       *   换工作区后就停在上一本。
+       *   ⇒ 判据：两轮 `/ledgers`，第二轮 `current` 换成 beta ⇒ 选中必须变成 beta；
+       *     且 `项目：beta` 与下拉触发在同一个 `<summary>` 里（⛔ 不再纵向整块列表）。
+       */
+      {
+        let round = 0
+        const seen = []
+        const r = await iaMount({
+          fetchLedgers: async () => {
+            round += 1
+            return round === 1
+              ? { ok: true, home: '/h', currentResolved: true, items: [
+                  { name: 'alpha', units: 2, state: 'data', current: true },
+                  { name: 'beta', units: 1, state: 'data', current: false },
+                ] }
+              : { ok: true, home: '/h', currentResolved: true, items: [
+                  { name: 'alpha', units: 2, state: 'data', current: false },
+                  { name: 'beta', units: 1, state: 'data', current: true },
+                ] }
+          },
+          fetchChains: async (_sid, ledger) => { seen.push(ledger); return { ok: true, activeCount: 0, completedCount: 0, retiredCount: 0, historyItemCount: 0, chains: [], unattached: [] } },
+        })
+        const p = []
+        const summary = document.querySelector('[data-dsh-hob="stages-ledgers-summary"]')
+        const nameNode = document.querySelector('[data-dsh-hob="stages-ledgers-current-name"]')
+        if (summary === null) p.push('账本选择器不是同一行摘要（缺 stages-ledgers-summary）')
+        if (nameNode === null) p.push('同一行里没有当前项目名')
+        if (summary !== null && nameNode !== null && !summary.contains(nameNode)) p.push('当前项目名不在同一行摘要里')
+        /**
+         * ⚠ 用户报「下拉框又套个壳、原来的还在」：`<summary>` 原生三角 + 自绘箭头
+         *   会同时出现。判据：summary 必须去掉原生 marker，且只保留一个箭头字符。
+         */
+        if (summary !== null && String(summary.style?.listStyle ?? '') !== 'none') p.push('summary 仍保留原生三角（应 list-style:none）')
+        const arrowCount = summary === null ? 0 : [...summary.querySelectorAll('span')].filter((s) => /^[▸▾▶▼]$/.test((s.textContent ?? '').trim())).length
+        if (arrowCount !== 1) p.push(`summary 里的展开箭头有 ${arrowCount} 个（期望恰好 1 个）`)
+        /**
+         * ⚠⚠ 用户第二次报「又套个壳、原来的还在」：
+         *   上一版 `<details>` 的菜单留在**正常流**里 ⇒ 展开把下面的在途需求 / 五步主线
+         *   整体往下推，菜单里又是一整列账本（还带“空账本”二级折叠）。
+         *   ⇒ 判据：菜单必须**浮层**（`position:absolute`）且限高滚动；
+         *     触发块里的“项目 / 名字 / 单元数 / 箭头”必须在**同一行**（`flex-wrap:nowrap` 之外
+         *     还要真实同一行 —— 这里量 `offsetTop` 一致）。
+         */
+        const menu = document.querySelector('[data-dsh-hob="stages-ledgers-menu"]')
+        if (menu === null) p.push('缺少账本菜单 stages-ledgers-menu')
+        else {
+          const cs = window.getComputedStyle(menu)
+          if (cs.position !== 'absolute') p.push(`账本菜单不是浮层（position=${cs.position}）⇒ 展开会推动下面的内容`)
+          if (!String(cs.maxHeight ?? '').match(/[0-9]/)) p.push(`账本菜单没有限高（max-height=${cs.maxHeight}）`)
+          /**
+           * ⚠⚠ 真机量到过：内联 `display:flex` 的优先级高于浏览器给 `<details>` 收起态的
+           *   `display:none` ⇒ **收起时菜单照样显示**。必须自己按 `open` 切 display。
+           */
+          const details = document.querySelector('[data-dsh-hob="stages-ledgers"]')
+          if (details !== null && details.open !== true && cs.display !== 'none') {
+            p.push(`收起时菜单仍然可见（display=${cs.display}）⇒ 会出现“套壳”观感`)
+          }
+        }
+        const trigger = document.querySelector('[data-dsh-hob="stages-ledgers-summary"]')
+        if (trigger !== null) {
+          const parts = [...trigger.children].filter((c) => (c.textContent ?? '').trim() !== '')
+          const tops = new Set(parts.map((c) => Math.round(c.offsetTop)))
+          if (parts.length >= 2 && tops.size > 1) p.push(`触发块内 ${parts.length} 段不在同一行（offsetTop=${[...tops].join(',')}）`)
+        }
+        if (nameNode?.textContent !== 'alpha') p.push(`首轮当前项目名不是 alpha：${JSON.stringify(nameNode?.textContent)}`)
+        const alpha = document.querySelector('[data-dsh-hob="stages-ledger-item"][data-ledger="alpha"]')
+        if (alpha?.getAttribute('data-selected') !== 'true') p.push('首轮没有选中当前账本 alpha')
+        /** 模拟工作区变化：服务端下一轮把 current 换成 beta（面板会按 5s 轮询重取）。 */
+        actFn(() => document.querySelector('[data-dsh-hob="stages-refresh"]')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+        await tick(80)
+        const name2 = document.querySelector('[data-dsh-hob="stages-ledgers-current-name"]')
+        const beta = document.querySelector('[data-dsh-hob="stages-ledger-item"][data-ledger="beta"]')
+        if (name2?.textContent !== 'beta') p.push(`工作区变化后当前项目名没有跟随 beta：${JSON.stringify(name2?.textContent)}`)
+        if (beta?.getAttribute('data-selected') !== 'true') p.push('工作区变化后没有选中 beta')
+        if (!seen.includes('beta')) p.push(`工作区变化后链请求没有带 beta：${JSON.stringify(seen)}`)
+        if (p.length === 0) ok(`S-34e ✓ 默认账本跟随当前工作区（alpha → beta）；项目名与下拉在同一行；请求 ${JSON.stringify(seen)}`)
+        else for (const x of p) bad(`S-34e · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-34b 账本三态：data / empty / unreadable 不混组；默认选中当前账本。
+      {
+        const r = await iaMount({
+          fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [
+            { name: 'alpha', units: 2, state: 'data', current: true },
+            { name: 'hollow', units: 0, state: 'empty', current: false },
+            { name: 'broken', units: 0, state: 'unreadable', current: false },
+          ] }),
+        })
+        const p = []
+        const alpha = document.querySelector('[data-dsh-hob="stages-ledger-item"][data-ledger="alpha"]')
+        const emptyGroup = document.querySelector('[data-dsh-hob="stages-ledgers-empty-group"]')
+        const badGroup = document.querySelector('[data-dsh-hob="stages-ledgers-unreadable-group"]')
+        const hollow = document.querySelector('[data-dsh-hob="stages-ledger-item"][data-ledger="hollow"]')
+        const broken = document.querySelector('[data-dsh-hob="stages-ledger-item"][data-ledger="broken"]')
+        if (alpha?.getAttribute('data-selected') !== 'true') p.push('没有默认选中当前账本 alpha')
+        if (alpha?.getAttribute('data-state') !== 'data') p.push(`alpha 三态不是 data：${JSON.stringify(alpha?.getAttribute('data-state'))}`)
+        if (emptyGroup === null || emptyGroup.tagName.toLowerCase() !== 'details' || emptyGroup.hasAttribute('open')) p.push('空账本组缺失或未默认收起')
+        if (badGroup === null || badGroup.tagName.toLowerCase() !== 'details' || badGroup.hasAttribute('open')) p.push('读不了账本组缺失或未默认收起')
+        if (hollow?.getAttribute('data-state') !== 'empty' || !(hollow.textContent ?? '').includes('空账本')) p.push(`空账本行不诚实：${JSON.stringify(hollow?.textContent)}`)
+        if (broken?.getAttribute('data-state') !== 'unreadable' || !(broken.textContent ?? '').includes('读不了')) p.push(`读不了行不诚实：${JSON.stringify(broken?.textContent)}`)
+        if (hollow !== null && badGroup !== null && badGroup.contains(hollow)) p.push('空账本被塞进了“读不了”组')
+        if (broken !== null && emptyGroup !== null && emptyGroup.contains(broken)) p.push('读不了账本被塞进了“空账本”组')
+        if (p.length === 0) ok('S-34b ✓ 账本三态分开：data 常显并默认选中 current；empty 与 unreadable 各自收起，文案不互相冒充')
+        else for (const x of p) bad(`S-34b · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-34c 没有在途需求 ⇒ 主线写“没有”，不把已完成需求顶上来重复展示。
+      {
+        const completedOnly = chainsFromStages(IA_STAGES)
+        const only = completedOnly.chains[0]
+        only.state = 'completed'
+        only.inFlight = false
+        only.complete = true
+        only.currentStep = null
+        only.steps = only.steps.map((st) => ({ ...st, displayState: 'done' }))
+        completedOnly.activeCount = 0
+        completedOnly.completedCount = 1
+        completedOnly.historyItemCount = only.itemIds.length
+        const r = await iaMount({
+          fetchChains: async () => completedOnly,
+          fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [{ name: 'alpha', units: 9, state: 'data', current: true }] }),
+        })
+        const p = []
+        const mainline = document.querySelector('[data-dsh-hob="stages-mainline"]')
+        const history = document.querySelector('[data-dsh-hob="stages-history-section"]')
+        const inflight = document.querySelector('[data-dsh-hob="stages-inflight"]')
+        if (mainline?.getAttribute('data-state') !== 'empty') p.push(`无在途时主线 data-state=${JSON.stringify(mainline?.getAttribute('data-state'))}`)
+        if ((mainline?.textContent ?? '').includes('R-901')) p.push('无在途时把已完成需求顶成了主线')
+        /**
+         * ⚠ 2026-11-08 用户报「原来的还在」：同一句“没有在途需求”曾在
+         *   在途区 / 主线 / 下一步各出现一次。判据改为：**只在在途区说一次**，
+         *   主线与下一步保持空占位，不重复计数。
+         */
+        if (!(inflight?.textContent ?? '').includes('1 条需求已走完五步')) p.push(`在途区没有给出已完成条数：${JSON.stringify(inflight?.textContent)}`)
+        if ((mainline?.textContent ?? '').includes('没有在途需求')) p.push('主线重复了在途区的结论')
+        const nextBlock = document.querySelector('[data-dsh-hob="stages-next"]')
+        if ((nextBlock?.textContent ?? '').includes('没有可执行的需求链')) p.push('下一步重复了在途区的结论')
+        if (document.querySelectorAll('[data-dsh-hob="stages-current-step"]').length !== 0) p.push('无在途时仍标了“当前”')
+        if (!(inflight?.textContent ?? '').includes('没有在途需求')) p.push(`在途区没有明写“没有在途需求”：${JSON.stringify(inflight?.textContent)}`)
+        if (history === null || !(history.textContent ?? '').includes('R-901')) p.push('已完成需求没有留在底部历史')
+        if (p.length === 0) ok('S-34c ✓ 无在途需求：主线明写为空且无“当前”；已完成需求只进底部历史，不重复占用主线')
+        else for (const x of p) bad(`S-34c · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      /**
+       * S-33c / S-33d / S-33e：预设门禁必须 fail-closed。
+       *   · Hob ⇒ 正常取数；
+       *   · standard ⇒ 零请求、只留一行说明；
+       *   · 显式 undefined（判不出）⇒ 同样零请求。
+       */
+      {
+        const calls = []
+        const counting = (name, value) => async (...args) => { calls.push({ name, args }); return value }
+        const rHob = await iaMount({
+          agentPreset: 'Hob',
+          fetchLedgers: counting('ledgers', { ok: true, home: '/h', currentResolved: true, items: [{ name: 'alpha', units: 9, state: 'data', current: true }] }),
+          fetchProgress: counting('progress', { ok: true, rows: [] }),
+          fetchExec: counting('exec', { ok: true, items: [] }),
+          fetchUnseen: counting('unseen', { ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+          fetchPlans: counting('plans', IA_PLANS),
+          fetchCurrent: counting('current', { ok: true, text: '# Current\n\n- Hob 夹具' }),
+        })
+        const hobCalls = calls.length
+        const hobBlocked = document.querySelector('[data-dsh-hob="stages-preset-blocked"]')
+        if (hobCalls === 0) bad('S-33c · Hob 预设没有发起任何取数请求')
+        else if (hobBlocked !== null) {
+          actFn(() => rHob.unmount())
+          bad('S-33c · Hob 预设却被预设门禁挡住')
+        } else {
+          actFn(() => rHob.unmount())
+          ok(`S-33c ✓ Hob 预设正常取数（${hobCalls} 路请求）且不显示门禁说明`)
+        }
+
+        const rStandard = await iaMount({
+          agentPreset: 'standard',
+          fetchLedgers: counting('ledgers', { ok: true, items: [] }),
+          fetchProgress: counting('progress', { ok: true, rows: [] }),
+          fetchExec: counting('exec', { ok: true, items: [] }),
+          fetchUnseen: counting('unseen', { ok: true, count: 0, names: [], items: [], summary: '0' }),
+          fetchPlans: counting('plans', IA_PLANS),
+          fetchCurrent: counting('current', { ok: true, text: '# Current' }),
+        })
+        const stdBlocked = document.querySelector('[data-dsh-hob="stages-preset-blocked"]')
+        const stdPanel = document.querySelector('[data-dsh-hob="stages-panel"]')
+        const stdText = stdPanel?.textContent ?? ''
+        const stdProblems = []
+        if (calls.length !== hobCalls) stdProblems.push(`standard 仍发起了 ${calls.length - hobCalls} 路请求`)
+        if (stdBlocked === null) stdProblems.push('standard 没有显示唯一门禁说明')
+        if (stdText.includes('在途需求') || stdText.includes('历史（') || document.querySelector('[data-dsh-hob="stages-mainline"]') !== null) stdProblems.push('standard 仍渲染了主线/历史')
+        if (stdText.includes('%')) stdProblems.push('standard 门禁说明里出现百分比')
+        actFn(() => rStandard.unmount())
+        if (stdProblems.length === 0) ok('S-33d ✓ standard 预设：零请求、只渲染一行说明，不挂主线/历史/子面板')
+        else for (const x of stdProblems) bad(`S-33d · ${x}`)
+
+        const beforeUnknown = calls.length
+        const rUnknown = await iaMount({
+          agentPreset: undefined,
+          fetchLedgers: counting('ledgers', { ok: true, items: [] }),
+          fetchProgress: counting('progress', { ok: true, rows: [] }),
+          fetchExec: counting('exec', { ok: true, items: [] }),
+          fetchUnseen: counting('unseen', { ok: true, count: 0, names: [], items: [], summary: '0' }),
+          fetchPlans: counting('plans', IA_PLANS),
+          fetchCurrent: counting('current', { ok: true, text: '# Current' }),
+        })
+        const unknownProblems = []
+        if (calls.length !== beforeUnknown) unknownProblems.push(`显式 undefined 仍发起了 ${calls.length - beforeUnknown} 路请求`)
+        if (document.querySelector('[data-dsh-hob="stages-preset-blocked"]') === null) unknownProblems.push('显式 undefined 没有显示门禁说明')
+        actFn(() => rUnknown.unmount())
+        if (unknownProblems.length === 0) ok('S-33e ✓ 预设判不出（显式 undefined）：零请求，按 fail-closed 只留一行说明')
+        else for (const x of unknownProblems) bad(`S-33e · ${x}`)
+      }
+
+      /**
+       * S-33h 真实宿主契约：两个 keyed 槽都必须提供 `useProjection`。
+       *
+       * ⚠ 为什么必须有这一条：生产门禁完全依赖 `useProjection('agentPreset')`。
+       *   若宿主改了这个标准属性名，包装器会拿不到值 ⇒ 面板永远显示“预设判不出”，
+       *   而隔离 DOM 里我们手工注入 hook 仍然全绿 —— 那正是“判据看着绿、真机全坏”。
+       *   判据直接读**宿主声明文件**（不是我们的实现），两边必须同时点名
+       *   `sidebar.right.pane.tab` 与 `sidebar.right.tab.guide.entry` 的 `useProjection`。
+       */
+      {
+        const candidates = [
+          '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-cordis-client-runner/lib/client.js',
+        ]
+        const hostFile = candidates.find((f) => existsSync(f))
+        const p = []
+        if (hostFile === undefined) {
+          p.push('宿主 slot 契约文件不存在 ⇒ 本判据无对象（⛔ 不按通过处理）')
+        } else {
+          const host = readFileSync(hostFile, 'utf8')
+          const tab = host.slice(host.indexOf('key: "sidebar.right.pane.tab"'), host.indexOf('key: "sidebar.right.pane.tab.title"'))
+          const guide = host.slice(host.indexOf('key: "sidebar.right.tab.guide.entry"'), host.indexOf('key: "sidebar.right.tab.menu.item"'))
+          if (!tab.includes('useProjection: UseProjection')) p.push('sidebar.right.pane.tab 未声明 useProjection')
+          if (!guide.includes('useProjection: UseProjection')) p.push('sidebar.right.tab.guide.entry 未声明 useProjection')
+          const panel = readFileSync(PANEL_TSX, 'utf8')
+          if (!panel.includes("useProjection('agentPreset')")) p.push('面板包装器没有调用 useProjection(agentPreset)')
+          if (!panel.includes('typeof slotProps?.useProjection === \'function\'')) p.push('guide 覆盖没有把 slotProps.useProjection 透传')
+        }
+        if (p.length === 0) ok('S-33h ✓ 真实宿主契约：标签页与 guide 两个 keyed 槽都提供 useProjection，面板与 guide 包装器都真实消费它')
+        else for (const x of p) bad(`S-33h · ${x}`)
+      }
+
+      /**
+       * S-33i guide 胶囊：**点击由宿主 `EntryBox` 负责，覆盖组件只做门禁与内容**。
+       *
+       * ⚠⚠ 2026-11-08 用户报障「侧栏入口点不进去」。根因：
+       *   宿主把槽返回值放进 `<button onClick=onPick>`，覆盖组件又返回一个 `<button>` ⇒
+       *   按钮套按钮；内层 click 拿不到 `tab.actions`（槽参数没有它）⇒ 直接 return。
+       *   正确契约：宿主 `GuideBody.open(kind)` 负责 `openTab(kind,{replaceTab:true})` → `close()`。
+       *   ⇒ 本判据断言：Hob 下渲染的是**非按钮内容**、内部零 `button`；
+       *     `openTab`/`close` **一次都不由覆盖组件调用**（否则又会双触发）。
+       */
+      {
+        const calls = []
+        const r = mount(react.createElement(ui.StagesGuideEntry, {
+          title: '任务进度',
+          description: '只读主线',
+          kind: 'dsh-hob-stages',
+          useProjection: () => 'Hob',
+          ctx: { get: (name) => name === 'sidebarRight' ? { openTab: (kind, options) => calls.push({ kind, options }) } : undefined },
+        }))
+        await tick(20)
+        const node = document.querySelector('[data-dsh-hob="stages-guide-entry"]')
+        const p = []
+        if (node === null) p.push('Hob 预设下没有胶囊')
+        else {
+          if (node.getAttribute('role') !== 'button' || node.getAttribute('tabindex') !== '0') p.push('整格不是可聚焦的 role=button')
+          if (node.querySelector('button') !== null) p.push('覆盖组件内部含 button ⇒ 点击区域会被内层吞掉')
+          actFn(() => node.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+          await tick(20)
+          if (calls.length !== 1 || calls[0]?.kind !== 'dsh-hob-stages' || calls[0]?.options?.replaceTab !== true) {
+            p.push(`点击没有走 ctx.sidebarRight.openTab(dsh-hob-stages, replaceTab:true)：${JSON.stringify(calls)}`)
+          }
+        }
+        actFn(() => r.unmount())
+        if (p.length === 0) ok('S-33i ✓ guide 胶囊：覆盖组件自渲染可聚焦整格（内部零 button），点击走 ctx.sidebarRight.openTab(kind, replaceTab:true)')
+        else for (const x of p) bad(`S-33i · ${x}`)
+      }
+
+      /**
+       * S-33f guide 胶囊：
+       *   · 明确 `standard` ⇒ 不渲染；
+       *   · `undefined`（宿主 guide 槽没有 useProjection）⇒ **仍渲染**（入口不能被吞）；
+       *   · `Hob` ⇒ 渲染。
+       * ⚠ 2026-11-08 真机：宿主 guide 槽只注入 tabInfo，不提供 useProjection；
+       *   旧实现把所有入口都 return null ⇒ 右侧栏「开始」页没有任务进度。
+       */
+      {
+        /** ⚠ 覆盖组件自渲染；这里只核“标题/描述进入节点”，不再依赖宿主 fallback。 */
+        const guideFor = (preset) => ui.StagesGuideEntry({
+          title: '任务进度',
+          description: '只读主线',
+          kind: 'dsh-hob-stages',
+          useProjection: () => preset,
+        })
+        const hob = guideFor('Hob')
+        const std = guideFor('standard')
+        const unknown = guideFor(undefined)
+        const p = []
+        if (hob === null || hob === undefined) p.push('Hob 预设下没有胶囊节点')
+        if (std !== null) p.push('standard 下覆盖组件没有隐藏（应返回 null）')
+        if (unknown === null || unknown === undefined) p.push('预设判不出时没有胶囊节点')
+        if (p.length === 0) ok('S-33f ✓ guide 覆盖：Hob / 判不出都渲染可点胶囊；standard 隐藏；面板 body 仍负责零请求门禁')
+        else for (const x of p) bad(`S-33f · ${x}`)
+      }
+
+      /**
+       * R-020 替换 S-35 / S-36 家族：
+       *   · 单需求主线只展开该链的条目；不把全局 202 条铺进来；
+       *   · 「当前」只出现一次；
+       *   · 历史在底部折叠，默认收起，条目仍在 DOM。
+       */
+      {
+        const r = await iaMount()
+        const p = []
+        const allItems = [...document.querySelectorAll('[data-dsh-hob="stages-mainline"] [data-dsh-hob="stages-tree-item"]')]
+          .map((x) => x.getAttribute('data-item-id'))
+        if (allItems.includes('ACC-901') && allItems.includes('ACC-902')) {
+          // 两条都在该需求链里是正常的；⛔ 但这不等于“历史堆积”——主线只该有一条需求的 5 条左右。
+        }
+        if (allItems.length > 20) p.push(`单需求主线渲染了 ${allItems.length} 条条目 ⇒ 疑似把全局账本铺了进来`)
+        const current = [...document.querySelectorAll('[data-dsh-hob="stages-current-step"]')]
+        if (current.length !== 1) p.push(`“当前”标记 ${current.length} 个（期望 1）`)
+        const history = document.querySelector('[data-dsh-hob="stages-history-section"]')
+        if (history === null) p.push('底部历史折叠不存在')
+        else {
+          if (history.tagName.toLowerCase() !== 'details' || history.hasAttribute('open')) p.push('历史不是默认折叠的 <details>')
+          if (!(history.textContent ?? '').includes('历史（')) p.push(`历史标题缺少条数：${JSON.stringify((history.textContent ?? '').slice(0, 80))}`)
+        }
+        if (p.length === 0) ok(`S-35 ✓ 单需求主线只列该需求条目（${allItems.length} 条）· 唯一“当前” · 历史底部默认折叠且仍在 DOM`)
+        else for (const x of p) bad(`S-35 · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-36 验收计数只在该需求第 5 步概要里出现；不再有全局摘要卡。
+      {
+        const r = await iaMount()
+        const p = []
+        const step5 = document.querySelector('[data-mainline-step="true"][data-step="5"]')
+        const t = step5?.textContent ?? ''
+        if (step5 === null) p.push('找不到第 5 步')
+        else {
+          if (!t.includes('ACC-902') && !t.includes('0/1')) p.push(`第 5 步概要没有待处理/判决读数：${JSON.stringify(t)}`)
+          if (t.includes('当前待处理：2')) p.push('把历史记录总数说成了待办数')
+        }
+        if (document.querySelector('[data-dsh-hob="stages-summary-acceptance"]') !== null) p.push('仍有全局验收计数行 ⇒ 与第 5 步重复')
+        if (p.length === 0) ok(`S-36 ✓ 验收读数只在第 5 步：${JSON.stringify(t.trim().slice(0, 80))}`)
+        else for (const x of p) bad(`S-36 · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      /**
+       * S-36b 历史按需求链收口：已完成需求进底部历史，未完成需求留在主线。
+       */
+      {
+        const r = await iaMount()
+        const p = []
+        const history = document.querySelector('[data-dsh-hob="stages-history-section"]')
+        if (history === null) p.push('底部历史不存在')
+        else {
+          const histText = history.textContent ?? ''
+          if (!histText.includes('条已完成需求')) p.push(`历史标题没有“条已完成需求”：${JSON.stringify(histText.slice(0, 80))}`)
+          if (histText.includes('R-901') && histText.includes('还没验')) p.push('未完成需求被列进历史')
+        }
+        const mainlineReq = document.querySelector('[data-dsh-hob="stages-mainline"]')?.getAttribute('data-req-id')
+        if (mainlineReq === null || mainlineReq === '') p.push('主线没有 data-req-id')
+        if (p.length === 0) ok(`S-36b ✓ 历史按需求链收口；主线 data-req-id=${JSON.stringify(mainlineReq)}`)
+        else for (const x of p) bad(`S-36b · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-36d 退役需求：只进底部历史，⛔ 不进在途列表、⛔ 不占主线。
+      {
+        const base = chainsFromStages(IA_STAGES)
+        const retired = {
+          ...structuredClone(base.chains[0]),
+          reqId: 'R-990',
+          title: '已退役的需求',
+          reqStatus: 'retired',
+          state: 'retired',
+          inFlight: false,
+          complete: false,
+          currentStep: null,
+          steps: [],
+          itemIds: [],
+          next: { kind: 'undecidable', target: null, why: '已退役', blockedBy: [] },
+        }
+        const r = await iaMount({
+          fetchChains: async () => ({ ...base, retiredCount: 1, retiredChains: [retired] }),
+        })
+        const p = []
+        const inflightText = document.querySelector('[data-dsh-hob="stages-inflight"]')?.textContent ?? ''
+        const mainlineText = document.querySelector('[data-dsh-hob="stages-mainline"]')?.textContent ?? ''
+        const retiredBox = document.querySelector('[data-dsh-hob="stages-history-retired"]')
+        if (inflightText.includes('R-990')) p.push('退役需求进了在途列表')
+        if (mainlineText.includes('R-990')) p.push('退役需求占了主线')
+        if (retiredBox === null) p.push('底部历史没有退役需求区')
+        else {
+          if (retiredBox.tagName.toLowerCase() !== 'details' || retiredBox.hasAttribute('open')) p.push('退役需求区不是默认折叠')
+          if (!(retiredBox.textContent ?? '').includes('R-990') || !(retiredBox.textContent ?? '').includes('已退役的需求')) p.push('退役需求没有在历史里点名')
+        }
+        if (p.length === 0) ok('S-36d ✓ 退役需求只在底部历史的“已退役需求”折叠里；在途列表与主线都不含它')
+        else for (const x of p) bad(`S-36d · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      /**
+       * S-36c 当前状态只有一个出口：阶段行 / 概要 / 卡在哪·下一步，都在同一视图；
+       *   ⛔ 不再有第二个「当前工作」视图重复一遍。
+       */
+      {
+        const r = await iaMount()
+        const p = []
+        const cur = document.querySelectorAll('[data-dsh-hob="stages-current-step"]')
+        if (cur.length !== 1) p.push(`“当前”标记 ${cur.length} 个（期望 1）`)
+        /**
+         * ⚠⚠ 在途列表里那条“⬅当前”说的是**选中的需求**，不是**当前阶段**；
+         *   `stages-current-step` 必须只挂在五步里的所选那一行（0 或 1 个）。
+         *   若它漏到在途列表，读者会看到两个“当前”，却分不清哪个是需求、哪个是步骤。
+         */
+        const listCurrent = document.querySelector('[data-dsh-hob="stages-inflight"] [data-dsh-hob="stages-current-step"]')
+        if (listCurrent !== null) p.push('“当前步”标记漏进了在途需求列表（列表应只用 stages-inflight-current 表示选中需求）')
+        const selectedReq = document.querySelectorAll('[data-dsh-hob="stages-inflight-current"]')
+        if (selectedReq.length !== 1) p.push(`在途列表的“已选”${selectedReq.length} 个（期望 1，且只表示选中需求）`)
+        /**
+         * ⚠ 两个词必须**分开**：列表说“已选”（哪条需求被选中），阶段行说“当前”（走到第几步）。
+         *   若两处都写“当前”，读者会问“到底哪个是当前”，正是用户此前抱怨的重复。
+         */
+        if (selectedReq.length === 1 && !(selectedReq[0].textContent ?? '').includes('已选')) {
+          p.push(`列表选中标记不是「已选」：${JSON.stringify(selectedReq[0].textContent)}`)
+        }
+        if (cur.length === 1 && !(cur[0].textContent ?? '').includes('当前')) {
+          p.push(`阶段行当前标记不是「当前」：${JSON.stringify(cur[0].textContent)}`)
+        }
+        const views = document.querySelectorAll('[data-dsh-hob="stages-view"]')
+        if (views.length !== 0) p.push(`仍有 ${views.length} 个旧视图容器`)
+        const next = document.querySelector('[data-dsh-hob="stages-next"]')
+        if (next === null) p.push('没有“卡在哪/下一步”块')
+        if (p.length === 0) ok('S-36c ✓ 当前状态只在主线一处：唯一阶段“当前段”+ 唯一需求选中“当前”；唯一 next 块；旧视图容器为 0')
+        else for (const x of p) bad(`S-36c · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-37 待确认工具分组 + 次级信息默认折叠。
+      {
+        const r = await iaMount()
+        const secondary = document.querySelector('[data-dsh-hob="stages-secondary"]')
+        const groups = [...document.querySelectorAll('[data-dsh-hob="stages-unseen-group"]')].map((x) => x.getAttribute('data-prefix'))
+        const items = [...document.querySelectorAll('[data-dsh-hob="stages-unseen-item"]')].map((x) => x.textContent ?? '')
+        const p = []
+        if (secondary === null || secondary.tagName.toLowerCase() !== 'details' || secondary.hasAttribute('open')) p.push('次级信息不是默认折叠的 <details>')
+        if (!groups.includes('mcp__wincu__') || !groups.includes('其他')) p.push(`工具没有按前缀分组：${JSON.stringify(groups)}`)
+        if (items.length !== 2 || !items.some((x) => x.includes('mcp__wincu__alpha')) || !items.some((x) => x.includes('other-beta'))) p.push(`逐名清单丢失：${JSON.stringify(items)}`)
+        if (p.length === 0) ok(`S-37 ✓ 待确认工具按前缀分组（${groups.join(' / ')}）且逐名保留 2 条；次级信息默认折叠`)
+        else for (const x of p) bad(`S-37 · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-38 统一刷新：Current 与工作计划跟随父面板 tick，手动刷新同时重取两者。
+      {
+        let currentCalls = 0
+        let planCalls = 0
+        const r = await iaMount({
+          fetchCurrent: async () => { currentCalls += 1; return { ok: true, text: `# Current\n\n- 第 ${currentCalls} 次` } },
+          fetchPlans: async () => { planCalls += 1; return IA_PLANS },
+        })
+        const before = { current: currentCalls, plans: planCalls }
+        const btn = document.querySelector('[data-dsh-hob="stages-refresh"]')
+        const p = []
+        if (btn === null) p.push('找不到手动刷新按钮')
+        else {
+          actFn(() => btn.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+          await tick(40)
+        }
+        if (currentCalls !== before.current + 1) p.push(`Current 未随统一刷新重取：${before.current} → ${currentCalls}`)
+        if (planCalls !== before.plans + 1) p.push(`工作计划未随统一刷新重取：${before.plans} → ${planCalls}`)
+        if (p.length === 0) ok(`S-38 ✓ 统一刷新：手动刷新后 Current ${before.current}→${currentCalls}、工作计划 ${before.plans}→${planCalls}，两者与五步共用同一 tick`)
+        else for (const x of p) bad(`S-38 · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-38b 负向对拍：摘掉 Current 的 refreshTick ⇒ S-38 必红。
+      {
+        const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+        const NEEDLE = '      refreshTick: pollTick,\n'
+        if (!panelSrc.includes(NEEDLE)) {
+          bad('S-38b · 源码里找不到 Current 的 `refreshTick: pollTick`（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const out = writeMutant('mut-current-tick', panelSrc.replace(NEEDLE, ''))
+          const modC = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          let currentCalls = 0
+          let planCalls = 0
+          const r = mount(react.createElement(modC.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => IA_STAGES,
+            fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+            fetchPlans: async () => { planCalls += 1; return IA_PLANS },
+            fetchCurrent: async () => { currentCalls += 1; return { ok: true, text: '# Current\n\n- 变体' } },
+            pollMs: 0,
+          }))
+          await tick(40)
+          const before = currentCalls
+          const btn = document.querySelector('[data-dsh-hob="stages-refresh"]')
+          if (btn === null) bad('S-38b · 变体里找不到刷新按钮 ⇒ 负向对拍不可判')
+          else {
+            actFn(() => btn.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+            await tick(40)
+            if (currentCalls === before) ok(`S-38b ✓ 负向对拍（摘掉 Current 的 refreshTick）⇒ S-38 的"Current 重取"**必红**：刷新前 ${before}、刷新后 ${currentCalls}；工作计划仍 +${planCalls - 1}`)
+            else bad(`S-38b · 摘掉 refreshTick 后 Current 仍重取（${before} → ${currentCalls}）⇒ 断言没有牙`)
+          }
+          actFn(() => r.unmount())
+        }
+      }
+
+      /**
+       * S-39 负向对拍（R-020）：把「在途需求列表」改成条件卸载 ⇒ S-33a 必红。
+       *   旧断言绑在四视图切换上；四视图已删除，⛔ 不能留一条恒不可判的断言冒充覆盖。
+       */
+      {
+        const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+        const NEEDLE = "    inFlightBlock,\n    mainlineBlock,"
+        if (!panelSrc.includes(NEEDLE)) {
+          bad('S-39 · 源码里找不到主视图挂载顺序（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const out = writeMutant('mut-inflight-unload', panelSrc.replace(NEEDLE, "    ...(selectedChainId === undefined ? [] : [inFlightBlock]),\n    mainlineBlock,"))
+          const modM = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          const r = mount(react.createElement(modM.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => IA_STAGES,
+            fetchChains: async () => ({ ok: true, activeCount: 0, completedCount: 0, retiredCount: 0, historyItemCount: 0, chains: [], unattached: [] }),
+            fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+            fetchPlans: async () => IA_PLANS,
+            fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 变体' }),
+            pollMs: 0,
+          }))
+          await tick(40)
+          const gone = document.querySelector('[data-dsh-hob="stages-inflight"]') === null
+          if (gone) ok('S-39 ✓ 负向对拍（把在途需求列表条件卸载）⇒ S-33a 的“首屏必须有在途列表”**必红**：变体里找不到 stages-inflight')
+          else bad('S-39 · 条件卸载后在途列表仍在 ⇒ 断言没有牙')
+          actFn(() => r.unmount())
+        }
+      }
+
+      /**
+       * S-40 负向对拍（R-020）：把“当前”标记加到所有步骤上 ⇒ S-33a 的“唯一当前”必红。
+       */
+      {
+        const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+        const NEEDLE = "              ...(isCurrent ? { 'aria-current': 'step' } : {}),"
+        if (!panelSrc.includes(NEEDLE)) {
+          bad('S-40 · 源码里找不到 aria-current 分支（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const out = writeMutant('mut-current-all', panelSrc.replace(NEEDLE, "              'aria-current': 'step',"))
+          const modC = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          const r = mount(react.createElement(modC.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => IA_STAGES,
+            fetchChains: async () => chainsFromStages(IA_STAGES),
+            fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+            fetchPlans: async () => IA_PLANS,
+            fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 变体' }),
+            pollMs: 0,
+          }))
+          await tick(40)
+          const cur = document.querySelectorAll('[aria-current="step"]').length
+          if (cur > 1) ok(`S-40 ✓ 负向对拍（把 aria-current 加到所有步骤）⇒ S-33a 的“唯一当前”**必红**：实测 ${cur} 个`)
+          else bad(`S-40 · 变体仍只有 ${cur} 个 aria-current ⇒ 断言没有牙`)
+          actFn(() => r.unmount())
+        }
+      }
+
+      /**
+       * S-40b 负向对拍：把“当前步”标记漏到在途需求列表 ⇒ S-36c 必红。
+       *
+       * ⚠ 这条不是凑数：列表里的“⬅当前”只表示**哪条需求被选中**，
+       *   若它也挂 `stages-current-step`，读者会看到两个“当前步”，
+       *   而 S-36c 现在明确要求列表只能用 `stages-inflight-current`。
+       */
+      {
+        const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+        const NEEDLE = "          ...(isSel ? [React.createElement('span', { key: 'cur', 'data-dsh-hob': 'stages-inflight-current' }, '已选')] : []),"
+        if (!panelSrc.includes(NEEDLE)) {
+          bad('S-40b · 源码里找不到在途列表的选中标记（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const out = writeMutant('mut-inflight-current', panelSrc.replace(NEEDLE, "          ...(isSel ? [React.createElement('span', { key: 'cur', 'data-dsh-hob': 'stages-current-step' }, '⬅当前')] : []),"))
+          const modI = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          const r = mount(react.createElement(modI.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => IA_STAGES,
+            fetchChains: async () => chainsFromStages(IA_STAGES),
+            fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+            fetchPlans: async () => IA_PLANS,
+            fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 变体' }),
+            pollMs: 0,
+          }))
+          await tick(40)
+          const leaked = document.querySelector('[data-dsh-hob="stages-inflight"] [data-dsh-hob="stages-current-step"]')
+          if (leaked !== null) ok('S-40b ✓ 负向对拍（把当前步标记漏进在途列表）⇒ S-36c 的“阶段当前只在主线”**必红**：列表里实测出现 stages-current-step')
+          else bad('S-40b · 变体仍没把 stages-current-step 挂进在途列表 ⇒ 断言没有牙')
+          actFn(() => r.unmount())
+        }
+      }
+
+      /**
+       * S-41 负向对拍（R-020）：把需求链缺失渲染成“完成” ⇒ S-33b 必红。
+       */
+      {
+        const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+        /**
+         * ⚠ 锚点覆盖**整个 fail 分支**（含 2026-11-08 新增的空账本文案）：
+         *   只替换最后一行会留下悬空的 `)`，变体无法转译 ⇒ 负向对拍不可判。
+         *   ⛔ 不删负向对拍，只把替换范围扩大到分支边界。
+         */
+        const NEEDLE_START = "    if (chainState.kind === 'fail') {\n"
+        const NEEDLE_END = "      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-mainline', 'data-state': 'undecidable' }, `${STAGES_UNDECIDABLE_TEXT}：${chainState.message}`)\n    }\n"
+        /** ⚠ 从 `mainlineBlock` 内定位：文件里另有 inFlight/next/history 的 fail 分支。 */
+        const blockStart = panelSrc.indexOf('const mainlineBlock')
+        const start = blockStart < 0 ? -1 : panelSrc.indexOf(NEEDLE_START, blockStart)
+        const end = start < 0 ? -1 : panelSrc.indexOf(NEEDLE_END, start)
+        const NEEDLE = start >= 0 && end >= 0 ? panelSrc.slice(start, end + NEEDLE_END.length) : ''
+        if (!panelSrc.includes(NEEDLE)) {
+          bad('S-41 · 源码里找不到需求链缺失分支（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const out = writeMutant('mut-chain-done', panelSrc.replace(NEEDLE, "    if (chainState.kind === 'fail') {\n      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-mainline', 'data-state': 'ok' }, '全部完成')\n    }\n"))
+          const modZ = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          const r = mount(react.createElement(modZ.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => IA_STAGES,
+            fetchChains: async () => ({ ok: false, reason: 'index-unreadable', message: '链读不到' }),
+            fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+            fetchPlans: async () => IA_PLANS,
+            fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 变体' }),
+            pollMs: 0,
+          }))
+          await tick(40)
+          const mainline = document.querySelector('[data-dsh-hob="stages-mainline"]')
+          if (mainline?.getAttribute('data-state') === 'ok' && (mainline?.textContent ?? '').includes('全部完成')) {
+            ok('S-41 ✓ 负向对拍（把链缺失显示成“全部完成”）⇒ S-33b 的“判不出”**必红**：变体显示“全部完成”')
+          } else {
+            bad(`S-41 · 变体没有显示“全部完成”：${JSON.stringify(mainline?.textContent?.slice(0, 60))} ⇒ 负向对拍不可判`)
+          }
+          actFn(() => r.unmount())
+        }
+      }
+
+      // S-42 负向对拍：把工具前缀分组摘掉 ⇒ S-37 必红。
+      {
+        const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+        const NEEDLE = "    const GROUPS = ['mcp__wincu__', 'ego_', 'session_', 'dshm_'] as const\n"
+        if (!panelSrc.includes(NEEDLE)) {
+          bad('S-42 · 源码里找不到工具前缀分组表（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const out = writeMutant('mut-unseen-groups', panelSrc.replace(NEEDLE, "    const GROUPS = [] as const\n"))
+          const modG = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          const r = mount(react.createElement(modG.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => IA_STAGES,
+            fetchUnseen: async () => ({ ok: true, count: 2, names: ['mcp__wincu__alpha', 'other-beta'], items: [], summary: '2 条待确认' }),
+            fetchPlans: async () => IA_PLANS,
+            fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 变体' }),
+            pollMs: 0,
+          }))
+          await tick(40)
+          const groups = [...document.querySelectorAll('[data-dsh-hob="stages-unseen-group"]')].map((x) => x.getAttribute('data-prefix'))
+          if (!groups.includes('mcp__wincu__')) ok(`S-42 ✓ 负向对拍（清空前缀分组表）⇒ S-37 的"按前缀分组"**必红**：只剩 ${JSON.stringify(groups)}`)
+          else bad(`S-42 · 清空分组表后仍出现前缀组 ${JSON.stringify(groups)} ⇒ 断言没有牙`)
+          actFn(() => r.unmount())
+        }
+      }
+
+      const ITEM_FORMAT_STAGES = {
+        ok: true,
+        readAt: '2026-11-07T00:00:00.000Z',
+        relations: {
+          'G-901': '目标',
+          'R-901': '需求',
+          'CHG-901': '方案',
+          'TSK-901': 'P2：第 2 期（该期任务书）',
+        },
+        stages: [
+          { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-901', status: 'agreed', kind: 'req', presentation: {
+            displayTitle: '需求', relation: { key: 'goal', id: 'G-901', state: 'ok' }, facts: [], flags: [],
+          } }] },
+          { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [{ id: 'CHG-901', status: 'settled', kind: 'change', presentation: {
+            displayTitle: '方案', relation: { key: 'requirement', id: 'R-901', state: 'ok' }, facts: [], flags: [],
+          } }] },
+          { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-901', status: 'built', kind: 'task', presentation: {
+            displayTitle: 'P2：第 2 期（该期任务书）', relation: { key: 'change', id: 'CHG-901', state: 'ok' }, facts: [['验证', 'check:item 1/1']], flags: ['title-generic', 'legacy-title'],
+          } }] },
+          { step: 4, name: '任务执行', state: 'doing', done: 0, total: 1, items: [{ id: 'RUN-901', status: 'returned', kind: 'run', presentation: {
+            displayTitle: 'P2：第 2 期（该期任务书）', relation: { key: 'task', id: 'TSK-901', state: 'ok' }, facts: [['开始', '判不出']], flags: [],
+          } }] },
+          { step: 5, name: '验收核对', state: 'doing', done: 0, total: 2, items: [
+            { id: 'ACC-901', status: 'pass', kind: 'acc', extra: 'LEGACY-EXTRA-SHOULD-NOT-RENDER session-89db /home/lk/FF/x/EVIDENCE.md', presentation: {
+              displayTitle: 'P2：第 2 期（该期任务书）', relation: { key: 'task', id: 'TSK-901', state: 'ok' }, facts: [['判决', '2026-11-07T10:0…'], ['依据', '1 条']], flags: ['title-status-conflict'],
+            } },
+            { id: 'ACC-902', status: 'unverified', kind: 'acc', presentation: {
+              displayTitle: '独立验收：父级缺失', relation: { key: 'task', id: 'TSK-999', state: 'undecidable' }, facts: [], flags: ['relation-unresolved'],
+            } },
+          ] },
+        ],
+        caps: [],
+      }
+
+      // S-43 统一条目格式：主行 + 关系/读数行 + 展开详情。
+      {
+        const resourceCalls = []
+        const r = mount(react.createElement(StagesPanelHarness, {
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          fetchStages: async () => ITEM_FORMAT_STAGES,
+          fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+          fetchPlans: async () => ({ ok: true, mode: 'multi', plans: [], unreadable: [] }),
+          fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 夹具' }),
+          fetchResource: async (sessionId, resource) => { resourceCalls.push({ sessionId, resource }); return itemResource(sessionId, resource) },
+          sessionId: 'session-item',
+          pollMs: 0,
+        }))
+        await tick(40)
+        const callsBeforeExpand = resourceCalls.length
+        for (const h of [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]) {
+          if (h.getAttribute('aria-expanded') !== 'true') actFn(() => h.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+        }
+        await tick(30)
+        const p = []
+        const acc = document.querySelector('[data-dsh-hob="stages-tree-item"][data-item-id="ACC-901"]')
+        const missing = document.querySelector('[data-dsh-hob="stages-tree-item"][data-item-id="ACC-902"]')
+        const task = document.querySelector('[data-dsh-hob="stages-tree-item"][data-item-id="TSK-901"]')
+        if (callsBeforeExpand !== 0) p.push(`首次挂载就提前读取了 ${callsBeforeExpand} 条完整正文（应只读列表）`)
+        if (acc === null || missing === null || task === null) p.push('条目行缺失')
+        else {
+          if (acc.getAttribute('data-dsh-hob') !== 'stages-tree-item' || acc.tagName.toLowerCase() !== 'details') p.push('条目根不是可展开的 details')
+          if ((acc.querySelector('[data-dsh-hob="stages-item-title"]')?.textContent ?? '') !== 'P2：第 2 期（该期任务书）') p.push(`验收主标题没有取正式验收对象：${JSON.stringify(acc.querySelector('[data-dsh-hob="stages-item-title"]')?.textContent)}`)
+          if (!(acc.querySelector('[data-dsh-hob="stages-item-relation"]')?.textContent ?? '').includes('验收对象  TSK-901')) p.push('验收关系行缺失或格式不对')
+          /**
+           * ⚠ 方案 §6.2 要求**五类关系行各有固定标签**（所属目标 / 承接需求 / 所属方案 /
+           *   执行对象 / 验收对象）。此前只验了「验收对象」，其余四类没有断言 ⇒
+           *   改错标签不会被发现。这里逐类核对（`ACC` 已在上一条覆盖）。
+           */
+          const relTextOf = (id) => document.querySelector(`[data-dsh-hob="stages-tree-item"][data-item-id="${id}"] [data-dsh-hob="stages-item-relation"]`)?.textContent ?? ''
+          if (!relTextOf('R-901').includes('所属目标  G-901')) p.push(`需求关系行标签不对：${JSON.stringify(relTextOf('R-901'))}`)
+          if (!relTextOf('CHG-901').includes('承接需求  R-901')) p.push(`方案关系行标签不对：${JSON.stringify(relTextOf('CHG-901'))}`)
+          if (!relTextOf('TSK-901').includes('所属方案  CHG-901')) p.push(`任务关系行标签不对：${JSON.stringify(relTextOf('TSK-901'))}`)
+          if (!relTextOf('RUN-901').includes('执行对象  TSK-901')) p.push(`执行关系行标签不对：${JSON.stringify(relTextOf('RUN-901'))}`)
+          if (!(acc.querySelector('[data-dsh-hob="stages-item-relation"]')?.textContent ?? '').includes('P2：第 2 期')) p.push('关系行没有从共享关系表取标题')
+          if (!(acc.querySelector('[data-dsh-hob="stages-item-original-title"]')?.textContent ?? '').includes('判不出')) p.push('展开前原始标题没有写判不出（不应伪造）')
+          if (!(acc.querySelector('[data-dsh-hob="stages-item-flags"]')?.textContent ?? '').includes('标题状态与账本状态不一致')) p.push('状态冲突没有可见标记')
+          if ((missing.querySelector('[data-dsh-hob="stages-item-relation"]')?.textContent ?? '').includes('TSK-999 ·')) p.push('父级缺失被显示成了正常关系')
+          if (!(missing.querySelector('[data-dsh-hob="stages-item-relation"]')?.textContent ?? '').includes('判不出')) p.push('父级缺失没有写判不出')
+          if (!(missing.querySelector('[data-dsh-hob="stages-item-relation"]')?.textContent ?? '').includes('父级 TSK-999 不存在')) p.push('父级缺失没有点名缺失的父级 ID')
+          if (!(missing.querySelector('[data-dsh-hob="stages-item-flags"]')?.textContent ?? '').includes('正式关系判不出')) p.push('关系缺失没有可见标记')
+          if (!(task.querySelector('[data-dsh-hob="stages-item-facts"]')?.textContent ?? '').includes('验证  check:item 1/1')) p.push('任务折叠行没有关键读数')
+          // 方案 §6.2：泛化标题必须有**可见**标记（⛔ 只做内部 flag 不算）。
+          if (!(task.querySelector('[data-dsh-hob="stages-item-flags"]')?.textContent ?? '').includes('标题只写了期次或轮次')) p.push('泛化标题没有可见标记')
+          if ((task.querySelector('[data-dsh-hob="stages-item-flags"]')?.textContent ?? '').includes('原始标题')) p.push('泛化标记文案串到了错误位置')
+          if (acc.querySelectorAll('[data-dsh-hob="stages-tree-item-status"]').length !== 1) p.push('条目状态标签不是恰好一个')
+          if (!(acc.querySelector('[data-dsh-hob="stages-item-facts"]')?.textContent ?? '').includes('判决')) p.push('验收折叠行没有判决读数')
+          if (!(acc.querySelector('[data-dsh-hob="stages-item-facts"]')?.textContent ?? '').includes('依据')) p.push('验收折叠行没有依据读数')
+          if (/完成度|%/.test(acc.textContent ?? '')) p.push('条目出现了百分比')
+          if (acc.hasAttribute('open')) p.push('条目默认展开（应默认折叠）')
+          /**
+           * ⚠ 方案 §6.2「主行不直接显示原始 `extra` 全文」。
+           *   `extra` 是旧线格式的混杂字段（路径 / 会话 / 判不出原因挤在一起）；
+           *   新条目行只能显示 `presentation` 派生的事实，⛔ 不许把 `extra` 原样铺出来。
+           *   夹具刻意塞了一个可识别的长 `extra`，折叠与展开两态都不许出现它。
+           */
+          if ((acc.textContent ?? '').includes('LEGACY-EXTRA-SHOULD-NOT-RENDER')) p.push('条目行直接显示了旧 extra 全文（折叠态）')
+          // 展开 ACC-901：必须按稳定 ID 懒读取完整单元，并显示原句与依据。
+          actFn(() => { acc.open = true; acc.dispatchEvent(new window.Event('toggle', { bubbles: false })) })
+          await tick(40)
+          const afterCalls = resourceCalls.filter((x) => x.resource === 'acceptance/ACC-901')
+          if (afterCalls.length !== 1) p.push(`展开验收条目没有恰好读取一次 acceptance/ACC-901：${JSON.stringify(resourceCalls)}`)
+          if (afterCalls[0]?.sessionId !== 'session-item') p.push(`懒读取没有带宿主 sessionId：${JSON.stringify(afterCalls[0])}`)
+          if (!(acc.querySelector('[data-dsh-hob="stages-item-original-title"]')?.textContent ?? '').includes('待独立验收：R-901 统一条目展示')) p.push('展开后没有显示完整原始标题')
+          if (!(acc.querySelector('[data-dsh-hob="stages-item-detail-full"]')?.textContent ?? '').includes('EVD-901')) p.push('展开后没有显示完整账本字段（依据）')
+          if (!(acc.querySelector('[data-dsh-hob="stages-item-full-field"][data-field="basis"]')?.textContent ?? '').includes('判决依据')) p.push('展开详情没有用中文事实名显示依据')
+          if (!(acc.querySelector('[data-dsh-hob="stages-item-full-field"][data-field="verdict"]')?.textContent ?? '').includes('验收通过')) p.push('展开详情没有显示验收判决')
+          const exceptionText = acc.querySelector('[data-dsh-hob="stages-item-exception"]')?.textContent ?? ''
+          if (!exceptionText.includes('异常') || !exceptionText.includes('标题状态与账本状态不一致')) p.push(`展开详情没有固定中文「异常」项：${JSON.stringify(exceptionText)}`)
+          if (acc.querySelector('[data-dsh-hob="stages-item-full-field"][data-field="flags"]') !== null) p.push('展开详情重复渲染了「异常」项')
+          if (/^(title|status|source|basis)  /m.test(acc.querySelector('[data-dsh-hob="stages-item-detail-full"]')?.textContent ?? '')) p.push('展开详情仍在直接打印英文账本字段名')
+          if (!(acc.querySelector('[data-dsh-hob="stages-item-exception"]')?.textContent ?? '').includes('异常')) p.push('展开详情没有固定「异常」项')
+          if ((acc.textContent ?? '').includes('LEGACY-EXTRA-SHOULD-NOT-RENDER')) p.push('条目行直接显示了旧 extra 全文（展开态）')
+          if (resourceCalls.some((x) => x.resource === 'run/RUN-901')) p.push('未展开的运行条目也被提前读取了完整正文')
+        }
+        if (p.length === 0) ok('S-43 ✓ 统一条目格式：首屏不读正文 · 主行 ID/标题/唯一状态 · 关系行取正式父级与共享标题 · 最多两条关键读数（验收「判决 + 依据」）· 展开按稳定 ID 懒读原句与依据 · 历史冲突与关系缺失可见')
+        else for (const x of p) bad(`S-43 · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      // S-43c 负向对拍：删关系行 ⇒ S-43 的固定关系断言必红。
+      {
+        const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+        const NEEDLE = "        ...(relationText === ''\n          ? []\n          : [React.createElement('div', { key: 'relation', 'data-dsh-hob': 'stages-item-relation'"
+        if (!panelSrc.includes(NEEDLE)) {
+          bad('S-43c · 源码里找不到条目关系行（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const out = writeMutant('mut-item-relation', panelSrc.replace(NEEDLE, "        ...(true\n          ? []\n          : [React.createElement('div', { key: 'relation', 'data-dsh-hob': 'stages-item-relation'"))
+          const modR = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          const r = mount(react.createElement(modR.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => ITEM_FORMAT_STAGES,
+            fetchChains: async () => chainsFromStages(ITEM_FORMAT_STAGES),
+            fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+            fetchPlans: async () => ({ ok: true, mode: 'multi', plans: [], unreadable: [] }),
+            fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 夹具' }),
+            fetchResource: itemResource,
+            pollMs: 0,
+          }))
+          await tick(40)
+          for (const h of [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]) {
+            if (h.getAttribute('aria-expanded') !== 'true') actFn(() => h.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+          }
+          await tick(30)
+          const relation = document.querySelector('[data-dsh-hob="stages-tree-item"][data-item-id="ACC-901"] [data-dsh-hob="stages-item-relation"]')
+          if (relation === null) ok('S-43c ✓ 负向对拍（删条目关系行）⇒ S-43 的"关系行取正式父级"**必红**：变体里找不到 stages-item-relation')
+          else bad('S-43c · 删关系行后仍能读到关系节点 ⇒ 断言没有牙')
+          actFn(() => r.unmount())
+        }
+      }
+
+      // S-43d 负向对拍：把判不出关系显示成 0 ⇒ S-43 必红。
+      {
+        const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+        const NEEDLE = "        : `${relationLabel}  判不出${relation.id === null || relation.id === undefined ? '（正式关系缺失）' : `（父级 ${String(relation.id)} 不存在）`}`"
+        if (!panelSrc.includes(NEEDLE)) {
+          bad('S-43d · 源码里找不到关系缺失的判不出分支（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const out = writeMutant('mut-item-relation-zero', panelSrc.replace(NEEDLE, "        : `${relationLabel}  0`"))
+          const modZ = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          const r = mount(react.createElement(modZ.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => ITEM_FORMAT_STAGES,
+            fetchChains: async () => chainsFromStages(ITEM_FORMAT_STAGES),
+            fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+            fetchPlans: async () => ({ ok: true, mode: 'multi', plans: [], unreadable: [] }),
+            fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 夹具' }),
+            fetchResource: itemResource,
+            pollMs: 0,
+          }))
+          await tick(40)
+          for (const h of [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]) {
+            if (h.getAttribute('aria-expanded') !== 'true') actFn(() => h.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+          }
+          await tick(30)
+          const t = document.querySelector('[data-dsh-hob="stages-tree-item"][data-item-id="ACC-902"] [data-dsh-hob="stages-item-relation"]')?.textContent ?? ''
+          if (!t.includes('判不出') && t.includes('0')) ok(`S-43d ✓ 负向对拍（关系缺失显示成 0）⇒ S-43 的"关系缺失写判不出"**必红**：实际 ${JSON.stringify(t)}`)
+          else bad(`S-43d · 变体没有把关系缺失显示成 0：${JSON.stringify(t)} ⇒ 负向对拍不可判`)
+          actFn(() => r.unmount())
+        }
+      }
+
+      // S-43e 负向对拍：加回第二个可见状态标签 ⇒ S-43 的"唯一状态"必红。
+      {
+        const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+        const NEEDLE = "            status.label,\n          ),\n        ),"
+        if (!panelSrc.includes(NEEDLE)) {
+          bad('S-43e · 源码里找不到状态标签渲染（形态变了）⇒ 负向对拍不可判')
+        } else {
+          const out = writeMutant('mut-item-status-dup', panelSrc.replace(NEEDLE, "            status.label,\n          ),\n          React.createElement('span', { 'data-dsh-hob': 'stages-tree-item-status' }, status.label),\n        ),"))
+          const modS = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          const r = mount(react.createElement(modS.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => ITEM_FORMAT_STAGES,
+            fetchChains: async () => chainsFromStages(ITEM_FORMAT_STAGES),
+            fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+            fetchPlans: async () => ({ ok: true, mode: 'multi', plans: [], unreadable: [] }),
+            fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 夹具' }),
+            fetchResource: itemResource,
+            pollMs: 0,
+          }))
+          await tick(40)
+          for (const h of [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]) {
+            if (h.getAttribute('aria-expanded') !== 'true') actFn(() => h.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+          }
+          await tick(30)
+          const count = document.querySelector('[data-dsh-hob="stages-tree-item"][data-item-id="ACC-901"]')?.querySelectorAll('[data-dsh-hob="stages-tree-item-status"]').length ?? 0
+          if (count === 2) ok('S-43e ✓ 负向对拍（加回第二个状态标签）⇒ S-43 的"唯一可见状态"**必红**：实测 2 个状态标签')
+          else bad(`S-43e · 变体的状态标签数 ${count}（期望 2）⇒ 负向对拍不可判`)
+          actFn(() => r.unmount())
+        }
+      }
+
+      // S-43b 负向对拍：把原始标题直接当主标题 ⇒ S-43 必红。
+      {
+        const panelSrc = readFileSync(PANEL_TSX, 'utf8')
+        const NEEDLE = "    const title = typeof p?.displayTitle === 'string' && p.displayTitle !== '' ? p.displayTitle : '判不出标题'"
+        if (!panelSrc.includes(NEEDLE)) {
+          bad('S-43b · 造不出「原始标题直打」的变体（源码锚点失配）⇒ 负向对拍不可判')
+        } else {
+          const MUTATED_TITLE = "    const title = it?.id === 'ACC-901' ? '待独立验收：R-901 统一条目展示' : (typeof p?.displayTitle === 'string' && p.displayTitle !== '' ? p.displayTitle : '判不出标题')"
+          const out = writeMutant('mut-item-title', panelSrc.replace(NEEDLE, MUTATED_TITLE))
+          const modT = await import(pathToFileURL(out).href + '?t=' + Date.now())
+          const r = mount(react.createElement(modT.StagesPanel, {
+            fetchProgress: async () => ({ ok: true, rows: [] }),
+            fetchExec: async () => ({ ok: true, items: [] }),
+            fetchStages: async () => ITEM_FORMAT_STAGES,
+            fetchChains: async () => chainsFromStages(ITEM_FORMAT_STAGES),
+            fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
+            fetchPlans: async () => ({ ok: true, mode: 'multi', plans: [], unreadable: [] }),
+            fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 夹具' }),
+            fetchResource: itemResource,
+            pollMs: 0,
+          }))
+          await tick(40)
+          for (const h of [...document.querySelectorAll('[data-dsh-hob="stages-tree-head"]')]) {
+            if (h.getAttribute('aria-expanded') !== 'true') actFn(() => h.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+          }
+          await tick(30)
+          const step5 = document.querySelector('[data-dsh-hob="stages-tree-step"][data-step="5"]')
+          if (step5 !== null && step5.querySelector('[data-dsh-hob="stages-tree-body"]') === null) {
+            const step5Head = step5.querySelector('[data-dsh-hob="stages-tree-head"]')
+            if (step5Head !== null) {
+              actFn(() => step5Head.dispatchEvent(new window.MouseEvent('click', { bubbles: true })))
+              await tick(30)
+            }
+          }
+          const details = document.querySelector('[data-dsh-hob="stages-tree-item"][data-item-id="ACC-901"]')
+          if (details !== null) {
+            actFn(() => { details.open = true; details.dispatchEvent(new window.Event('toggle', { bubbles: false })) })
+            await tick(30)
+          }
+          const t = details?.querySelector('[data-dsh-hob="stages-item-title"]')?.textContent ?? ''
+          if (t === '待独立验收：R-901 统一条目展示') ok(`S-43b ✓ 负向对拍（主标题改回原始标题）⇒ S-43 的"验收主标题取正式对象"**必红**：实际 ${JSON.stringify(t)}`)
+          else bad(`S-43b · 变体仍显示正式对象标题：${JSON.stringify(t)} ⇒ 断言没有牙`)
+          actFn(() => r.unmount())
+        }
       }
     }
 

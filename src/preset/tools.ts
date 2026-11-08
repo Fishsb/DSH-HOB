@@ -276,6 +276,10 @@ export function apply(ctx: any, config: Config = {}): void {
   const DEFAULTS = faceOf('DEFAULTS') as { debugLogMaxBytes: number }
   const createHobTools = faceOf('createHobTools') as (...a: any[]) => any
   const ledgerRootOf = faceOf('ledgerRootOf') as (...a: any[]) => any
+  const stageGateOfLedger = (root: string): string | undefined => {
+    const fn = (toolsFace as unknown as { stageGateOfLedger?: (r: string) => string | undefined }).stageGateOfLedger
+    return typeof fn === 'function' ? fn(root) : undefined
+  }
 
   /**
    * 从 `config.ts` 的面里**运行时**取一个具名服务的服务名（⛔ 不是模块顶层快照）。
@@ -811,7 +815,8 @@ export function apply(ctx: any, config: Config = {}): void {
         return
       }
       log('闭环编排就绪 ⇒ 注册 M5 工具')
-      registerOrchTools(orchCtx, orch as HobOrchestrator, log, createHobOrchTools, proceedGateFor, workModeForExec)
+      registerOrchTools(orchCtx, orch as HobOrchestrator, log, createHobOrchTools, proceedGateFor, workModeForExec, stageGateOfLedger,
+        (exec: any) => ledgerRootOf(config, exec?.agent ?? exec))
     })
   }
 }
@@ -1973,10 +1978,21 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
   createOrchTools: (...a: any[]) => any,
   /** ⚠ 2026-10-22 第 5 轮：`hob_dispatch` 的执行层闸门（§任务书第 12 条）。 */
   proceedGateFor: (sessionOrAgent?: any) => string | undefined,
-  workModeFor: (exec: any) => WorkMode | undefined): void {
+  workModeFor: (exec: any) => WorkMode | undefined,
+  stageGateOf: (root: string) => string | undefined = () => undefined,
+  ledgerRootFor: (exec: any) => string | undefined = () => undefined): void {
+  const stageGateFor = (exec: any): string | undefined => {
+    try {
+      const root = ledgerRootFor(exec)
+      if (root === undefined) return '阶段门禁判不出：无法确定本会话的账本目录 ⇒ 本次不派单。'
+      return stageGateOf(root)
+    } catch (e) {
+      return `阶段门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不派单。`
+    }
+  }
   const { dispatch, status, control } = createOrchTools(
     orch,
-    (exec: any) => proceedGateFor(exec?.agent ?? exec),
+    (exec: any) => proceedGateFor(exec?.agent ?? exec) ?? stageGateFor(exec),
     workModeFor,
   )
   ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')

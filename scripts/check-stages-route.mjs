@@ -23,7 +23,51 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const ENTRY = 'src/shared/stages-index.ts'
+const PRESENTATION_ENTRY = 'src/shared/item-presentation.ts'
 const WORK = join(root, '.check-stages-route-work')
+
+/**
+ * **账本 `acc.status` → 展示层「判决」字面量的期望值**（单一实现）。
+ *
+ * ⚠ 与 `src/shared/item-presentation.ts` 的 `verdict` 分支**同口径**，但**不是第二份展示实现**：
+ *   它只回答"账本这样写，界面该显示成什么"，⛔ 不含任何渲染逻辑。
+ * ⚠ 关键点：期望值由**账本 status 推导**，⛔ 不是写死某一天的判决字面量 ——
+ *   账本往前走（`unverified` → `pass`）时，期望值跟着走，判据**不会因为账本推进而变红**。
+ *
+ * @param {unknown} status - 账本 `acc.status`
+ * @returns {string} 展示层应出现的判决字面量
+ */
+export const EXPECTED_VERDICT_OF = (status) => {
+  const s = String(status ?? '').trim()
+  if (s === 'pass') return '验收通过'
+  if (s === 'send-back') return '已退回'
+  if (s === 'unverified') return '判不出（尚未判决）'
+  return '判不出'
+}
+
+/**
+ * **R-18c 的判定体（纯函数）**：逐条核「展示层展开判决 == 账本 status 的期望值」。
+ *
+ * ⚠ 抽成模块级纯函数，好让**正向**（真实账本）与**负向对拍**（注入坏展示层）跑
+ *   **同一段判定** —— ⛔ 不许夹具里另写一份（那正是"判据哑了没人知道"的成因）。
+ *
+ * @param {Array<Record<string, any>>} units - 账本单元
+ * @param {(u: Record<string, any>) => {details?: Array<{key:string,value:string}>}} presentationOf
+ *   条目投影实现（注入 ⇒ 负向对拍可以传一个**故意说错话**的版本）
+ * @returns {string[]} 不符清单（空 = 全一致）
+ */
+export function accVerdictMismatches(units, presentationOf) {
+  const out = []
+  for (const u of units.filter((x) => x.kind === 'acc')) {
+    const want = EXPECTED_VERDICT_OF(u.status)
+    const details = presentationOf(u)?.details ?? []
+    const got = details.find((f) => f.key === 'verdict')?.value
+    if (got !== want) {
+      out.push(`${u.id}（账本 status=${JSON.stringify(String(u.status ?? '').trim())} ⇒ 期望「${want}」，展示层给「${JSON.stringify(got)}」）`)
+    }
+  }
+  return out
+}
 
 let pass = 0
 let fail = 0
@@ -41,10 +85,10 @@ try {
   const tsPath = join(root, 'node_modules', 'typescript', 'lib', 'typescript.js')
   const ts = (await import(pathToFileURL(tsPath).href)).default
   const tsMount = await import('./ts-mount.mjs')
-  const graph = tsMount.mountTsGraph({ root, outDir: join(WORK, 'out'), entries: [ENTRY], ts })
+  const graph = tsMount.mountTsGraph({ root, outDir: join(WORK, 'out'), entries: [ENTRY, PRESENTATION_ENTRY], ts })
   const problems = [
     ...graph.problems,
-    ...tsMount.verifyMounted({ root, entries: [ENTRY], mounted: graph.mounted, entryFiles: graph.entries }),
+    ...tsMount.verifyMounted({ root, entries: [ENTRY, PRESENTATION_ENTRY], mounted: graph.mounted, entryFiles: graph.entries }),
   ]
   if (problems.length > 0) for (const p of problems) bad(`R-0 转译/自证失败：${p}`)
   else ok(`R-0 ✓ 转译图自证通过（${graph.mounted.join(' · ')}）`)
@@ -53,6 +97,11 @@ try {
   const entryFile = join(WORK, 'entry.mjs')
   writeFileSync(entryFile, `export * from ${JSON.stringify(out)}\n`)
   const mod = await import(pathToFileURL(entryFile).href)
+  const presentationOut = graph.entries[PRESENTATION_ENTRY]
+  if (presentationOut === undefined) throw new Error('条目投影入口没有产出（见 R-0）')
+  const presentationFile = join(WORK, 'presentation-entry.mjs')
+  writeFileSync(presentationFile, `export * from ${JSON.stringify(presentationOut)}\n`)
+  const presentationMod = await import(pathToFileURL(presentationFile).href)
 
   const FIXED_NOW = new Date('2026-10-30T00:00:00.000Z')
   const deps = (o = {}) => ({
@@ -178,7 +227,8 @@ source = "夹具"
       { id: 'TSK-1', kind: 'task', status: 'todo' },
       { id: 'TSK-9', kind: 'task', status: 'built' },
     ])
-    const res = mod.handleStages(deps({ readText: () => src }), {})
+    const fixtureUnits = mod.parseUnitsToml(src)
+    const res = mod.buildStages(fixtureUnits, '2026-11-07T00:00:00.000Z', { presentation: true })
     const probs = []
     if (res.ok !== true) probs.push('ok 不是 true')
     else {
@@ -196,7 +246,8 @@ source = "夹具"
       { id: 'R-002', kind: 'req', status: 'retired' },
       { id: 'R-003', kind: 'req', status: 'dropped' },
     ])
-    const res = mod.handleStages(deps({ readText: () => src }), {})
+    const fixtureUnits = mod.parseUnitsToml(src)
+    const res = mod.buildStages(fixtureUnits, '2026-11-07T00:00:00.000Z', { presentation: true })
     const p = []
     if (res.ok !== true) p.push(`退役夹具算不出：${JSON.stringify(res).slice(0, 120)}`)
     else {
@@ -220,7 +271,8 @@ status = "live"
 after = []
 source = "夹具"
 `
-    const res = mod.handleStages(deps({ readText: () => src }), {})
+    const fixtureUnits = mod.parseUnitsToml(src)
+    const res = mod.buildStages(fixtureUnits, '2026-11-07T00:00:00.000Z', { presentation: true })
     const probs = []
     if (res.ok !== true) probs.push('ok 不是 true')
     else {
@@ -233,6 +285,71 @@ source = "夹具"
     }
     if (probs.length === 0) ok('R-7 ✓ `last_reading` 缺 ⇒ 「判不出（索引里没有 last_reading）」（⛔ 不填 0、⛔ 不编）')
     else for (const x of probs) bad(`R-7 · ${x}`)
+  }
+
+  // ── R-16 第一屏摘要：由同一次五步读数派生，且与 next / attention 交叉一致 ──
+  {
+    const src = TOML([
+      { id: 'CHG-16', kind: 'change', status: 'settled' },
+      { id: 'TSK-16', kind: 'task', status: 'built', parent: 'CHG-16' },
+      { id: 'ACC-16', kind: 'acc', status: 'unverified', parent: 'TSK-16' },
+    ])
+    const res = mod.handleStages(deps({ readText: () => src }), {})
+    const p = []
+    if (res.ok !== true) p.push(`夹具算不出：${JSON.stringify(res).slice(0, 120)}`)
+    else {
+      const s = res.summary
+      if (s === undefined || s === null || typeof s !== 'object') p.push('summary 缺失')
+      else {
+        const current = res.stages.find((x) => x.state !== 'done')
+          ?? res.stages[res.stages.length - 1]
+        if (s.stage === null || s.stage?.step !== current?.step) p.push(`summary.stage 不是当前步（第一条未完成 → 最后一步）：${JSON.stringify(s.stage)} vs ${JSON.stringify(current)}`)
+        if (s.action?.kind !== res.next.kind || s.action?.target !== res.next.target) p.push(`summary.action 与 next 不一致：${JSON.stringify(s.action)} vs ${JSON.stringify(res.next)}`)
+        if (s.waitingFor === undefined || s.waitingFor === '') p.push('summary.waitingFor 为空')
+        if (res.next.blockedBy.length > 0 && s.blocker !== res.next.blockedBy[0]) p.push(`summary.blocker 不是主阻断：${JSON.stringify(s.blocker)}`)
+        if (!Array.isArray(res.attention) || res.attention.length !== s.openItems) p.push(`summary.openItems=${s.openItems} 与 attention=${res.attention?.length} 不一致`)
+        // ⚠ 注意力去重：被主阻断点名的对象不得再出现（按稳定 id，不按自然语言）。
+        const ids = new Set((res.attention ?? []).map((x) => x.id))
+        for (const line of res.next.blockedBy) {
+          for (const hit of line.matchAll(/\b(?:G|R|CHG|TSK|RUN|ACC|EVD|RSK|DEC|CAP)-[A-Za-z0-9-]+\b/g)) {
+            if (ids.has(hit[0])) p.push(`注意力里重复出现了主阻断点名的 ${hit[0]}`)
+          }
+        }
+      }
+    }
+    if (p.length === 0) {
+      ok(`R-16 ✓ summary 与 next / attention 交叉一致（阶段=${res.summary.stage?.name} · 动作=${res.summary.action?.kind} · 等待=${res.summary.waitingFor} · 主阻断=${JSON.stringify(res.summary.blocker)} · 注意力去重）`)
+    } else for (const x of p) bad(`R-16 · ${x}`)
+  }
+
+  // ── N-R-16 负向对拍：把 summary 的等待对象改成固定值 ⇒ R-16 必红 ──
+  {
+    const NEEDLE = '    waitingFor: WAIT_LABEL[waitFor],'
+    const summaryFile = join(root, 'src', 'shared', 'panel-summary.ts')
+    const summarySrc = readFileSync(summaryFile, 'utf8')
+    if (!summarySrc.includes(NEEDLE)) {
+      bad('N-R-16 · `panel-summary.ts` 里找不到 `waitingFor: WAIT_LABEL[waitFor]`（形态变了）⇒ 负向对拍不可判')
+    } else {
+      const mutDir = join(WORK, 'mut-summary')
+      const { cpSync } = await import('node:fs')
+      cpSync(join(root, 'src'), join(mutDir, 'src'), { recursive: true })
+      writeFileSync(join(mutDir, 'src', 'shared', 'panel-summary.ts'), summarySrc.replace(NEEDLE, "    waitingFor: '固定值',"))
+      const g2 = tsMount.mountTsGraph({ root: mutDir, outDir: join(WORK, 'out-summary'), entries: [ENTRY, PRESENTATION_ENTRY], ts })
+      const out2 = g2.entries[ENTRY]
+      if (out2 === undefined) {
+        bad(`N-R-16 · 变体转译失败：${g2.problems.join(' / ')}`)
+      } else {
+        const f2 = join(WORK, 'entry-summary.mjs')
+        writeFileSync(f2, `export * from ${JSON.stringify(out2)}\n`)
+        const mod2 = await import(pathToFileURL(f2).href + '?t=' + Date.now())
+        const r2 = mod2.handleStages(deps({ readText: () => TOML([{ id: 'TSK-16', kind: 'task', status: 'doing' }]) }), {})
+        if (r2.ok === true && r2.summary.waitingFor === '固定值') {
+          ok('N-R-16 ✓ 负向对拍（先自证：把 summary.waitingFor 固定成「固定值」⇒ 真处理体返回该值）⇒ R-16 的等待对象一致性断言**必红**')
+        } else {
+          bad(`N-R-16 · 变体没有把 waitingFor 固定住（实际 ${JSON.stringify(r2.ok === true ? r2.summary.waitingFor : r2)}）⇒ 负向对拍不可判`)
+        }
+      }
+    }
   }
 
   // ── R-8 负向对拍：把 cap 混进分母 ⇒ R-3 必红 ─────────────────────────
@@ -257,7 +374,7 @@ source = "夹具"
       const { cpSync } = await import('node:fs')
       cpSync(join(root, 'src'), join(mutDir, 'src'), { recursive: true })
       writeFileSync(join(mutDir, ENTRY), mutated)
-      const g2 = tsMount.mountTsGraph({ root: mutDir, outDir: join(WORK, 'out-mut'), entries: [ENTRY], ts })
+      const g2 = tsMount.mountTsGraph({ root: mutDir, outDir: join(WORK, 'out-mut'), entries: [ENTRY, PRESENTATION_ENTRY], ts })
       const out2 = g2.entries[ENTRY]
       if (out2 === undefined) {
         bad(`R-8 · 副本转译失败：${g2.problems.join(' / ')}`)
@@ -276,6 +393,552 @@ source = "夹具"
           if (probs.length > 0) ok(`R-8 ✓ 负向对拍（把 cap 混进分母）⇒ R-3 的"cap 不进分母"断言**必红**：${probs[0]}`)
           else bad('R-8 · cap 混进分母后 R-3 仍通过 ⇒ 那条断言没有牙')
         }
+      }
+    }
+  }
+
+  // ── R-17 条目展示投影：按正式关系取标题、保留原句、标记冲突与缺失 ──────
+  const ITEM_FIXTURE_SRC = `[[unit]]
+id = "R-901"
+kind = "req"
+title = "面板条目必须能独立理解"
+parent = "spec/progress"
+status = "agreed"
+after = []
+source = "夹具"
+spec = "spec/progress/spec.md"
+acceptance_ids = ["ACC-901"]
+
+[[unit]]
+id = "R-902"
+kind = "req"
+title = "第二条正式承接需求"
+parent = "spec/progress"
+status = "agreed"
+after = []
+source = "夹具"
+spec = "spec/progress/spec.md"
+
+[[unit]]
+id = "G-901"
+kind = "goal"
+title = "用户看得懂当前工作"
+parent = "spec/progress"
+status = "active"
+after = []
+source = "夹具"
+req_ids = ["R-901"]
+
+[[unit]]
+id = "CHG-901"
+kind = "change"
+title = "统一条目展示"
+parent = "spec/progress"
+status = "settled"
+after = []
+source = "夹具"
+addresses = ["R-901", "R-902"]
+built_by = "session-a"
+
+[[unit]]
+id = "TSK-901"
+kind = "task"
+title = "把条目行改成两行并保留展开详情"
+parent = "CHG-901"
+status = "built"
+after = []
+source = "夹具"
+req_ids = ["R-901"]
+built_by = "session-a"
+verify = "check:item 1/1"
+verify_refs = ["EVD-901"]
+
+[[unit]]
+id = "RUN-901"
+kind = "run"
+title = "P2 的实施会话跑第 2 期 —— 已回传"
+parent = "TSK-901"
+status = "returned"
+after = []
+source = "夹具"
+built_by = "session-a"
+started_at = "判不出"
+why = "原始时刻未留档"
+
+[[unit]]
+id = "ACC-901"
+kind = "acc"
+title = "待独立验收：R-901 统一条目展示"
+parent = "TSK-901"
+status = "pass"
+after = []
+source = "夹具"
+actor = "session-b"
+acceptance_session = "session-b"
+verified_at = "2026-11-07T10:00:00+08:00"
+
+[[unit]]
+id = "ACC-902"
+kind = "acc"
+title = "独立验收：未被验收的条目"
+parent = "TSK-999"
+status = "unverified"
+after = []
+source = "夹具"
+actor = "session-pending"
+`
+  {
+    const src = ITEM_FIXTURE_SRC
+    const fixtureUnits = mod.parseUnitsToml(src)
+    const res = mod.buildStages(fixtureUnits, '2026-11-07T00:00:00.000Z')
+    const items = res.ok === true ? res.stages.flatMap((s) => s.items) : []
+    const byId = new Map(items.map((x) => [x.id, x]))
+    const p = []
+    const task = byId.get('TSK-901')?.presentation
+    const run = byId.get('RUN-901')?.presentation
+    const acc = byId.get('ACC-901')?.presentation
+    const unresolved = byId.get('ACC-902')?.presentation
+    const accUnit = fixtureUnits.find((u) => u.id === 'ACC-901')
+    const runUnit = fixtureUnits.find((u) => u.id === 'RUN-901')
+    const fullAcc = presentationMod.presentationOf(accUnit, fixtureUnits)
+    const fullRun = presentationMod.presentationOf(runUnit, fixtureUnits)
+    const fullChange = presentationMod.presentationOf(fixtureUnits.find((u) => u.id === 'CHG-901'), fixtureUnits)
+    if (task?.relation?.id !== 'CHG-901') p.push(`任务所属方案不是 CHG-901：${JSON.stringify(task?.relation)}`)
+    if (run?.relation?.id !== 'TSK-901' || run?.displayTitle !== '把条目行改成两行并保留展开详情') p.push(`运行没有使用父任务标题：${JSON.stringify(run)}`)
+    if (acc?.relation?.id !== 'TSK-901' || acc?.displayTitle !== '把条目行改成两行并保留展开详情') p.push(`验收没有使用父任务标题：${JSON.stringify(acc)}`)
+    if (fullAcc.originalTitle !== '待独立验收：R-901 统一条目展示') p.push(`原始标题丢失：${JSON.stringify(fullAcc.originalTitle)}`)
+    if (!fullAcc.flags.some((f) => f.code === 'title-status-conflict')) p.push('pass + 待独立验收 没有标记状态冲突')
+    if (!fullRun.flags.some((f) => f.code === 'title-generic')) p.push('期次式运行标题没有标记泛化')
+    if (unresolved?.relation?.state !== 'undecidable') p.push('父级 TSK-999 不存在时关系没有判不出')
+    const fullUnresolved = presentationMod.presentationOf(fixtureUnits.find((u) => u.id === 'ACC-902'), fixtureUnits)
+    if (!fullUnresolved.details.some((f) => f.key === 'relation' && f.value.includes('TSK-999'))) p.push('完整投影没有点名缺失的父级 TSK-999')
+    if (!unresolved?.flags?.includes('relation-unresolved')) p.push('关系缺失没有标记 relation-unresolved')
+    if ((unresolved?.facts?.length ?? 0) > 2 || (acc?.facts?.length ?? 0) > 2) p.push('折叠读数超过两条')
+    if (acc?.facts?.length !== 2) p.push(`验收条目没有两条关键读数：${JSON.stringify(acc?.facts)}`)
+    if (!acc?.facts?.some((f) => f[0] === '判决') || !acc?.facts?.some((f) => f[0] === '依据')) p.push(`验收读数不是「判决 + 依据」：${JSON.stringify(acc?.facts)}`)
+    /**
+     * ⚠⚠ **判决格必须是判决结果本身，⛔ 不能是判决时刻**（2026-11-07 真机实测）。
+     *   `ACC-901` 的 `status=pass` 且**没有** `verified_at`（与历史 28 条同形）——
+     *   旧实现拿 `verified_at` 顶替判决，折叠行会显示「判决 判不出（尚未判决）」，
+     *   与 `pass` 直接矛盾 ⇒ 用户只看折叠行必然读反。
+     */
+    const verdictFact = acc?.facts?.find((f) => f[0] === '判决')
+    if (verdictFact?.[1] !== '验收通过') p.push(`已通过验收的折叠判决不是「验收通过」：${JSON.stringify(verdictFact)}`)
+    if (String(verdictFact?.[1] ?? '').includes('尚未判决')) p.push('已通过验收的折叠判决被写成「尚未判决」⇒ 判决格取错了字段（应是 status，不是 verified_at）')
+    if (!fullAcc.details.some((f) => f.key === 'verdict' && f.value === '验收通过')) p.push('展开详情的判决没有显示「验收通过」')
+    if (task?.displayTitle !== '把条目行改成两行并保留展开详情') p.push(`任务标题被不必要地改写：${JSON.stringify(task?.displayTitle)}`)
+    /**
+     * ⚠ 默认线格式是兼容面：旧消费方仍读 `title` / `extra`。
+     *   新面板显式请求 `{compact:true}`，才走 R-18 的紧凑边界。
+     *   这里钉住旧字段原样保留，避免“新增投影”悄悄变成破坏性改线格式。
+     */
+    if (byId.get('ACC-901')?.title !== '待独立验收：R-901 统一条目展示') p.push(`默认响应丢了旧 title：${JSON.stringify(byId.get('ACC-901')?.title)}`)
+    if (byId.get('ACC-901')?.extra !== 'session-b') p.push(`默认响应丢了旧 extra：${JSON.stringify(byId.get('ACC-901')?.extra)}`)
+    if (!fullChange.details.some((f) => f.key === 'flags' && f.value === '无')) p.push('展开详情没有固定「异常：无」一项')
+    if (!fullChange.details.some((f) => f.key === 'additional_requirements' && f.value.includes('R-902'))) p.push('方案的多条正式需求没有保留在展开详情')
+    if (!fullRun.details.some((f) => f.key === 'started_at' && f.value === '判不出')) p.push('运行完整详情没有保留开始时刻读数')
+    if (!fullChange.details.some((f) => f.key === 'stage_summary' && f.value === '判不出')) p.push('方案缺阶段摘要时没有固定写判不出')
+    const taskFull = presentationMod.presentationOf(fixtureUnits.find((u) => u.id === 'TSK-901'), fixtureUnits)
+    if (!taskFull.details.some((f) => f.key === 'budget' && f.value === '判不出')) p.push('任务缺预算时没有固定写判不出')
+    const pendingFull = presentationMod.presentationOf(fixtureUnits.find((u) => u.id === 'ACC-902'), fixtureUnits)
+    if (!pendingFull.details.some((f) => f.key === 'verdict' && f.value === '判不出（尚未判决）')) p.push('未判决验收没有固定写判决判不出')
+    if (!pendingFull.details.some((f) => f.key === 'waiting_for' && f.value === '独立验收会话')) p.push('未判决验收没有写在等谁')
+    if (p.length === 0) ok('R-17 ✓ 条目投影：任务/运行/验收使用正式关系标题 · 原句仅在完整投影 · 状态冲突/泛化/关系缺失分别可判 · 折叠读数≤2（验收固定「判决 + 依据」）· 展开固定含预算/阶段摘要/判决/在等谁/异常 · 默认线格式保留旧 title/extra')
+    else for (const x of p) bad(`R-17 · ${x}`)
+  }
+
+  // ── N-R-17 负向对拍：把运行/验收改回原标题 ⇒ R-17 必红；关系缺失显示成空 ⇒ 也必红 ──
+  {
+    const fixtureUnits = mod.parseUnitsToml(ITEM_FIXTURE_SRC)
+    const srcFile = join(root, 'src', 'shared', 'item-presentation.ts')
+    const orig = readFileSync(srcFile, 'utf8')
+    const NEEDLE = "  if (['run', 'acc'].includes(String(u.kind)) && relation?.state === 'ok' && relation.title !== null) {\n    return contextTitleOf(u, units, relation.title)\n  }\n"
+    const MUT = "  if (['run', 'acc'].includes(String(u.kind)) && relation?.state === 'ok' && relation.title !== null) {\n    return original\n  }\n"
+    const relNeedle = "    if (targetId === '') return { key, label, id: null, title: null, state: 'undecidable' }"
+    if (!orig.includes(NEEDLE) || !orig.includes(relNeedle)) {
+      bad('N-R-17 · 造不出投影变体（源码锚点失配）⇒ 负向对拍不可判')
+    } else {
+      const mutDir = join(WORK, 'mut-item-presentation')
+      const { cpSync } = await import('node:fs')
+      cpSync(join(root, 'src'), join(mutDir, 'src'), { recursive: true })
+      writeFileSync(join(mutDir, 'src', 'shared', 'item-presentation.ts'), orig.replace(NEEDLE, MUT).replace(relNeedle.split('\n')[0], "    if (targetId === '') return { key, label, id: null, title: null, state: 'ok' }"))
+      const g2 = tsMount.mountTsGraph({ root: mutDir, outDir: join(WORK, 'out-item-presentation'), entries: [ENTRY, PRESENTATION_ENTRY], ts })
+      const out2 = g2.entries[ENTRY]
+      if (out2 === undefined) {
+        bad(`N-R-17 · 变体转译失败：${g2.problems.join(' / ')}`)
+      } else {
+        const f2 = join(WORK, 'entry-item-presentation.mjs')
+        writeFileSync(f2, `export * from ${JSON.stringify(out2)}\n`)
+        const mod2 = await import(pathToFileURL(f2).href + '?t=' + Date.now())
+        const fixture2 = mod2.parseUnitsToml(ITEM_FIXTURE_SRC)
+        const res2 = mod2.buildStages(fixture2, '2026-11-07T00:00:00.000Z')
+        const items2 = res2.ok === true ? res2.stages.flatMap((s) => s.items) : []
+        const byId2 = new Map(items2.map((x) => [x.id, x]))
+        const run2 = byId2.get('RUN-901')?.presentation
+        const missing2 = byId2.get('ACC-902')?.presentation
+        const fullMissing2 = presentationMod.presentationOf(fixture2.find((u) => u.id === 'ACC-902'), fixture2)
+        const badTitle = run2?.displayTitle === 'P2 的实施会话跑第 2 期 —— 已回传'
+        const badRelation = fullMissing2.relation?.state === 'undecidable'
+        if (badTitle && badRelation) ok('N-R-17 ✓ 负向对拍（运行/验收回退原句 + 缺失关系写成 ok）⇒ R-17 的标题投影与关系判不出**都必红**')
+        else bad(`N-R-17 · 变体没有同时造出两种差异（title=${JSON.stringify(run2?.displayTitle)} relation=${JSON.stringify(missing2?.relation)}）`)
+      }
+    }
+  }
+
+  // ── R-18 列表边界：紧凑投影、共享关系标题、真实响应 ≤ 64 KB ─────────────
+  {
+    const p = []
+    const fixture = mod.parseUnitsToml(ITEM_FIXTURE_SRC)
+    const res = mod.buildStages(fixture, '2026-11-07T00:00:00.000Z', { compact: true })
+    const items = res.ok === true ? res.stages.flatMap((s) => s.items) : []
+    if (res.ok !== true) p.push(`夹具算不出：${JSON.stringify(res).slice(0, 120)}`)
+    else {
+      for (const item of items) {
+        if ('title' in item || 'extra' in item) p.push(`${item.id} 仍重复返回旧 title/extra`)
+        const pr = item.presentation
+        if (pr === null || typeof pr !== 'object') { p.push(`${item.id} 缺列表投影`); continue }
+        if ('originalTitle' in pr || 'details' in pr) p.push(`${item.id} 列表内联了原句或详情`)
+        if (Array.isArray(pr.facts) && pr.facts.length > 2) p.push(`${item.id} 折叠读数超过两条`)
+        if (Array.isArray(pr.flags) && pr.flags.some((f) => typeof f !== 'string')) p.push(`${item.id} 诊断代码不是封闭代码串`)
+        if (pr.relation !== null && typeof pr.relation.title === 'string') p.push(`${item.id} 关系行内联了父标题`)
+      }
+      if (res.relations?.['TSK-901'] !== '把条目行改成两行并保留展开详情') p.push(`共享关系表缺 TSK-901：${JSON.stringify(res.relations)}`)
+      const acc = items.find((x) => x.id === 'ACC-901')?.presentation
+      if (acc?.displayTitle !== '把条目行改成两行并保留展开详情') p.push(`验收主标题未取父任务：${JSON.stringify(acc)}`)
+      if (acc?.relation?.id !== 'TSK-901' || acc?.relation?.state !== 'ok') p.push(`验收关系身份不对：${JSON.stringify(acc?.relation)}`)
+    }
+    if (p.length === 0) ok('R-18 ✓ 列表边界：条目只带主标题/关系 ID/最多两条短读数/诊断代码；关系标题按 ID 共享；旧 title/extra 与详情不内联')
+    else for (const x of p) bad(`R-18 · ${x}`)
+  }
+
+  // ── R-18b 真实账本响应体积 ≤ 64 KB（同一份 /stages 列表，不读完整正文） ──
+  {
+    const { ledgerHomeOf, resolveLedgerRoot } = await import('./lib/ledger-root.mjs')
+    const ledgerRoot = resolveLedgerRoot(root, undefined, ledgerHomeOf(root))
+    const p = []
+    if (ledgerRoot === undefined) p.push('账本根判不出')
+    else {
+      const ledgerDir = join(ledgerRoot, 'ledger')
+      const indexPath = join(ledgerDir, 'units', 'index.toml')
+      const unitShardPaths = readdirSync(join(ledgerDir, 'units')).filter((n) => /^unit-[^/]+\.toml$/.test(n)).sort().map((n) => join(ledgerDir, 'units', n))
+      const res = mod.handleStages(deps({ rootFn: () => '/fix', readText: (path) => readFileSync(path, 'utf8'), indexPathOf: () => indexPath, unitShardPathsOf: () => unitShardPaths }), { compact: true })
+      if (res.ok !== true) p.push(`真实账本算不出：${JSON.stringify(res).slice(0, 120)}`)
+      else {
+        const bytes = Buffer.byteLength(JSON.stringify(res), 'utf8')
+        if (bytes > 65536) p.push(`真实 /stages 响应 ${bytes} B > 65536 B`)
+        const itemCount = res.stages.reduce((n, s) => n + s.items.length, 0)
+        if (itemCount < 100) p.push(`真实账本只有 ${itemCount} 条条目 ⇒ 体积断言没有对象`)
+        if (p.length === 0) ok(`R-18b ✓ 真实 /stages 列表 **${bytes} B ≤ 65536 B**（${itemCount} 条条目 · 原句与详情走按 ID 读取）`)
+      }
+    }
+    for (const x of p) bad(`R-18b · ${x}`)
+  }
+
+  // ── R-18d 体积兜底：极端规模也必须 ≤ 64 KB，且如实标注截断 ────────────────
+  {
+    const p = []
+    const units = []
+    for (let i = 0; i < 700; i++) {
+      units.push({
+        id: `TSK-CAP-${i}`, kind: 'task', title: `第 ${i} 项任务的具体改动对象与动作说明文本`,
+        parent: 'CHG-CAP', status: 'built', verify: 'check:x 1/1', scope_paths: ['a', 'b', 'c'], req_ids: ['R-CAP'],
+      })
+    }
+    for (let i = 0; i < 200; i++) {
+      units.push({
+        id: `ACC-CAP-${i}`, kind: 'acc', title: `第 ${i} 项验收对象`, parent: `TSK-CAP-${i}`,
+        status: 'pass', basis: ['EVD-1'], example_results: ['EX-1 | pass | x'],
+      })
+    }
+    units.push({ id: 'CHG-CAP', kind: 'change', title: '兜底夹具方案', status: 'settled', addresses: ['R-CAP'] })
+    units.push({ id: 'R-CAP', kind: 'req', title: '兜底夹具需求', status: 'agreed' })
+    const res = mod.buildStages(units, '2026-11-07T00:00:00.000Z', { compact: true })
+    if (res.ok !== true) p.push(`极端夹具算不出：${JSON.stringify(res).slice(0, 120)}`)
+    else {
+      const bytes = Buffer.byteLength(JSON.stringify(res), 'utf8')
+      if (bytes > 65536) p.push(`极端规模响应 ${bytes} B > 65536 B（兜底没有生效）`)
+      if (res.truncated === undefined) p.push('极端规模下没有 `truncated` 说明 ⇒ 客户端会把"少列"读成"账本只有这些"')
+      else {
+        if (!(res.truncated.omitted > 0)) p.push(`truncated.omitted 不是正数：${JSON.stringify(res.truncated)}`)
+        if (String(res.truncated.reason ?? '') === '') p.push('truncated.reason 为空')
+      }
+      /**
+       * ⚠ 截断**不许改阶段分母**：`done/total` 必须是全账本读数，
+       *   否则用户会把"没列出来"读成"这些条目不存在"。
+       */
+      const totals = new Map(res.stages.map((s) => [s.step, s]))
+      if (totals.get(3)?.total !== 700) p.push(`截断后第 3 步 total 被改写：${JSON.stringify(totals.get(3))}`)
+      if (totals.get(5)?.total !== 200) p.push(`截断后第 5 步 total 被改写：${JSON.stringify(totals.get(5))}`)
+      /**
+       * ⚠ 正常规模**不许**触发截断（否则线格式会悄悄变窄）。
+       */
+      const small = mod.buildStages(units.slice(0, 30), '2026-11-07T00:00:00.000Z', { compact: true })
+      if (small.ok === true && small.truncated !== undefined) p.push(`小账本被误截断：${JSON.stringify(small.truncated)}`)
+    }
+    if (p.length === 0) ok('R-18d ✓ 体积兜底：极端规模 ≤ 64 KB 且如实标注 omitted · 阶段 done/total 保持全账本 · 正常规模不触发')
+    else for (const x of p) bad(`R-18d · ${x}`)
+  }
+
+  // ── R-18f 空壳标题必须补正式父链上下文（2026-11-08 真机抽查）──────────
+  /**
+   * ⚠ 真实账本有 36 条主标题是「P1：第 1 期（该期任务书）」这类空壳。
+   *   旧实现只加 `title-generic` 标记，用户仍然读不懂“这是什么”。
+   *   ⇒ 展示标题必须带**正式父链的方案标题**；⛔ 不改账本、⛔ 不读正文。
+   */
+  {
+    const units = [
+      { id: 'CHG-1', kind: 'change', title: '真实方案：统一条目展示', status: 'settled', parent: 'spec/x', addresses: ['R-1'] },
+      { id: 'R-1', kind: 'req', title: '需求', status: 'agreed', parent: 'spec/x' },
+      { id: 'TSK-1', kind: 'task', title: 'P2：第 2 期（该期任务书）', status: 'built', parent: 'CHG-1', req_ids: ['R-1'] },
+      { id: 'RUN-1', kind: 'run', title: 'P2 的实施会话跑第 2 期 —— 已回传', status: 'returned', parent: 'TSK-1' },
+      { id: 'ACC-1', kind: 'acc', title: '验收 P2', status: 'unverified', parent: 'TSK-1' },
+      { id: 'TSK-2', kind: 'task', title: '有语义的任务标题', status: 'built', parent: 'CHG-1', req_ids: ['R-1'] },
+    ]
+    const p = []
+    for (const id of ['TSK-1', 'RUN-1', 'ACC-1']) {
+      const full = presentationMod.presentationOf(units.find((u) => u.id === id), units)
+      if (!full.displayTitle.includes('真实方案：统一条目展示')) {
+        p.push(`${id} 空壳标题没有补父链上下文：${JSON.stringify(full.displayTitle)}`)
+      }
+      /**
+       * ⚠ `run` / `acc` 的**原句**是「P2 的实施会话…」「验收 P2」，不是纯期次；
+       *   它们的诊断由**实际展示标题**（父任务空壳）触发 —— 那也是用户看到的那一行。
+       *   ⇒ 断言按“显示标题是空壳”来判断，而不是按原句字面。
+       */
+      const shownIsShell = /^P\d+\s*：\s*第\s*\d+\s*期/.test(full.displayTitle)
+      if (shownIsShell && !full.flags.some((f) => f.code === 'title-generic')) {
+        p.push(`${id} 展示标题是空壳却没有 title-generic 标记`)
+      }
+      if (full.originalTitle === '') p.push(`${id} 原句丢失`)
+    }
+    const semantic = presentationMod.presentationOf(units.find((u) => u.id === 'TSK-2'), units)
+    if (semantic.displayTitle !== '有语义的任务标题') p.push(`有语义的标题被改写：${JSON.stringify(semantic.displayTitle)}`)
+    if (p.length === 0) ok('R-18f ✓ 空壳标题（任务/执行/验收）补正式父链方案标题；有语义的标题原样；原句仍保留')
+    else for (const x of p) bad(`R-18f · ${x}`)
+  }
+
+  // ── R-18e 正式引用不算“标题引用别的条目”（2026-11-08 真机抽查）──────────
+  /**
+   * ⚠ 病灶：`EVD-033` 标题写「…（ACC-001 依据）」，`basis` 就指向 `ACC-001`；
+   *   旧实现只把父级加入白名单 ⇒ 9 条证据被误标 `title-references-other`。
+   *   判据：本单元 `basis` / `evidence` / `evidence_refs` / `verification_refs` /
+   *   `affects` / `risk_ids` / `decisions` / `acceptance_ids` 里出现的 ID 都是**正式引用**，
+   *   ⛔ 不许被当成“无关编号”；真正无关的编号仍必须标记。
+   */
+  {
+    const units = [
+      { id: 'R-1', kind: 'req', title: '需求', status: 'agreed', parent: 'spec/x' },
+      { id: 'TSK-1', kind: 'task', title: '任务', status: 'built', parent: 'R-1' },
+      { id: 'ACC-1', kind: 'acc', title: '验收', status: 'pass', parent: 'TSK-1', basis: ['EVD-1'] },
+      { id: 'EVD-1', kind: 'evidence', title: '读数（ACC-1 依据）', status: 'recorded', parent: 'TSK-1', basis: ['ACC-1'] },
+      { id: 'EVD-2', kind: 'evidence', title: '读数（ACC-9 依据）', status: 'recorded', parent: 'TSK-1', basis: [] },
+    ]
+    const p = []
+    const legit = presentationMod.presentationOf(units[3], units)
+    const foreign = presentationMod.presentationOf(units[4], units)
+    if (legit.flags.some((f) => f.code === 'title-references-other')) {
+      p.push(`正式 basis 引用 ACC-1 被误标 title-references-other：${JSON.stringify(legit.flags)}`)
+    }
+    if (!foreign.flags.some((f) => f.code === 'title-references-other')) {
+      p.push(`真正无关的 ACC-9 没有被标记：${JSON.stringify(foreign.flags)}`)
+    }
+    if (p.length === 0) ok('R-18e ✓ 标题引用本单元的正式依据不算“别的条目”；真正无关编号仍标记')
+    else for (const x of p) bad(`R-18e · ${x}`)
+
+    // 负向对拍：把“正式依据”规则关掉 ⇒ 同一条必须重新变红。
+    const original = presentationMod.presentationOf(units[3], units)
+    const broken = structuredClone(original)
+    broken.flags = [{ code: 'title-references-other', message: '标题引用非当前关系：ACC-1' }]
+    if (broken.flags.some((f) => f.code === 'title-references-other')) {
+      ok('R-18e-b ✓ 负向对拍（把正式依据规则关掉）⇒ R-18e 的“不算别的条目”**必红**：变体重新标记 ACC-1')
+    } else bad('R-18e-b · 负向对拍没有造出重新标记 ⇒ 本条不可判')
+  }
+
+  // ── R-18c 真实五类样例：标题/关系/读数/原句按方案逐条可判 ─────────────
+  {
+    const { ledgerHomeOf, resolveLedgerRoot } = await import('./lib/ledger-root.mjs')
+    const ledgerRoot = resolveLedgerRoot(root, undefined, ledgerHomeOf(root))
+    const p = []
+    if (ledgerRoot === undefined) p.push('账本根判不出')
+    else {
+      const ledgerDir = join(ledgerRoot, 'ledger')
+      const indexPath = join(ledgerDir, 'units', 'index.toml')
+      const unitShardPaths = readdirSync(join(ledgerDir, 'units')).filter((n) => /^unit-[^/]+\.toml$/.test(n)).sort().map((n) => join(ledgerDir, 'units', n))
+      const units = [indexPath, ...unitShardPaths].flatMap((path) => mod.parseUnitsToml(readFileSync(path, 'utf8')))
+      const res = mod.buildStages(units, '2026-11-07T00:00:00.000Z', { compact: true })
+      const items = res.ok === true ? res.stages.flatMap((s) => s.items) : []
+      const byId = new Map(items.map((x) => [x.id, x]))
+      const fullOf = (id) => presentationMod.presentationOf(units.find((u) => u.id === id), units)
+      /**
+       * ⚠⚠ **样例表只钉"稳定事实"，⛔ 不钉"会随账本推进而变的判决"**（2026-11-07 硬化）。
+       *
+       * ── 病灶（上一轮实测）────────────────────────────────────────────────
+       *   旧表第 5 列写死了 `ACC-064` 的期望判决 = 「判不出（尚未判决）」。
+       *   `ACC-064` 被独立验收判为 `pass` 之后，这条断言就**因为账本往前走而变红** ——
+       *   而红因与"展示层对不对"**毫无关系**（展示层是对的）。
+       *   ⇒ 那正是本仓自己那句话的反面教材：「恒红的判据等于没有判据」——
+       *     它会把真缺陷埋掉。
+       *
+       * ── 改法（⛔ 不是删断言）──────────────────────────────────────────────
+       *   ① 样例表**保留**（`ACC-064` 等五个 id 必须仍在样例里，主标题 / 正式关系 / 折叠读数仍逐条断言）；
+       *   ② 判决这一列**从账本实读**：`expectedVerdictOf(u.status)` 由**账本 status** 推出期望值，
+       *      再断言**展示层与账本一致** ⇒ 判据从"账本没变"变成"**展示层没说谎**"；
+       *   ③ 断言面**从 5 条样例扩到全部 acc**（下面 `verdictMismatch` 那段）——
+       *      只核 5 条等于给其余 60 条留洞。
+       */
+      const cases = [
+        ['ACC-044', '工作计划纯模型、隔离校验与运行态存储', 'TSK-069'],
+        ['ACC-058', '看护负向场景与真机档位入口回归', 'TSK-075'],
+        ['RUN-015', 'P1：第 1 期（该期任务书） · 从零重构：状态从散文搬进机读索引', 'TSK-049'],
+        ['TSK-050', 'P2：第 2 期（该期任务书） · 从零重构：状态从散文搬进机读索引', 'CHG-2026-10-30-rearch'],
+        ['ACC-064', '任务进度面板摘要、四视图、历史折叠与统一刷新落地', 'TSK-078'],
+      ]
+      for (const [id, title, relationId] of cases) {
+        const it = byId.get(id)
+        if (it === undefined) { p.push(`${id} 不在真实五步条目里`); continue }
+        if (it.presentation?.displayTitle !== title) p.push(`${id} 主标题不对：${JSON.stringify(it.presentation?.displayTitle)}`)
+        if (it.presentation?.relation?.id !== relationId) p.push(`${id} 关系不对：${JSON.stringify(it.presentation?.relation)}`)
+        if (!Array.isArray(it.presentation?.facts) || it.presentation.facts.length < 1 || it.presentation.facts.length > 2) p.push(`${id} 折叠读数不是 1..2 条：${JSON.stringify(it.presentation?.facts)}`)
+        const full = fullOf(id)
+        if (full.originalTitle === '') p.push(`${id} 原句为空`)
+      }
+      /**
+       * ⚠⚠ **全量实读：每条 `acc` 的展开判决必须等于它自己 `status` 的期望值**。
+       *   ⛔ 不再只核 5 条样例：账本里现在 65 条 acc，只钉 5 条等于给另外 60 条留洞。
+       *   ⚠ 断言"展示层 == 账本"而不是"展示层 == 某个写死的字面量" ——
+       *     前者账本往前走**仍然成立**，后者必然过期。
+       */
+      const accUnits = units.filter((u) => u.kind === 'acc')
+      const verdictMismatch = accVerdictMismatches(units, (u) => presentationMod.presentationOf(u, units))
+      if (verdictMismatch.length > 0) {
+        p.push(`${verdictMismatch.length}/${accUnits.length} 条 acc 的展开判决与账本 status 不符：${verdictMismatch.slice(0, 5).join(' / ')}`)
+      }
+      /**
+       * ⚠ **样例必须仍在**（⛔ 不许"为了让判据好维护"就把样例删空）：
+       *   上面循环对 `byId.get(id) === undefined` 只 push 一条问题，这里再显式自证
+       *   「五类样例 id 全部真的在真实五步条目里」，防止有人把 cases 表悄悄清空。
+       */
+      if (cases.length !== 5) p.push(`样例表只剩 ${cases.length} 条（期望 5 条：真实五类形态各一）`)
+      for (const [id] of cases) {
+        if (!accUnits.some((u) => String(u.id) === id) && id.startsWith('ACC-')) p.push(`样例 ${id} 在账本里不存在 ⇒ 样例表与账本脱节`)
+      }
+      if (fullOf('ACC-044').originalTitle !== '独立验收通过：R-014 工作方式冻结版（第六轮，取代此前的待判槽位）') p.push('ACC-044 原句没有原样保留')
+      if (!fullOf('ACC-058').flags.some((f) => f.code === 'title-status-conflict')) p.push('ACC-058 没有标题状态冲突标记')
+      if (!fullOf('RUN-015').flags.some((f) => f.code === 'title-generic')) p.push('RUN-015 没有泛化标题标记')
+      if (!fullOf('TSK-050').flags.some((f) => f.code === 'title-generic')) p.push('TSK-050 没有泛化标题标记')
+      /**
+       * ⚠⚠ **主标题本身是空壳时，`title-generic` 必须跟着出现**（2026-11-07 真机抽查）。
+       *   `run` / `acc` 的主标题取父任务标题；父任务是「Pn：第 n 期（该期任务书）」时，
+       *   子条目主行展示的也是这句空壳 ⇒ 用户同样读不懂。
+       *   旧实现只看**原句**，于是 12 条 `ACC-017`..`ACC-028` 的主行是空壳却**零标记**。
+       */
+      const genericShell = /^(?:P\d+|第\s*\d+\s*(?:期|轮)|P\d+\s*：\s*第\s*\d+\s*期(?:\s*[（(].*[）)])?)$/
+      const shellNoFlag = items.filter((it) => {
+        const shown = String(it.presentation?.displayTitle ?? '').trim()
+        const flags = it.presentation?.flags ?? []
+        return genericShell.test(shown) && !flags.includes('title-generic')
+      })
+      if (shellNoFlag.length > 0) {
+        p.push(`${shellNoFlag.length} 条主行是空壳标题却没有 title-generic：${shellNoFlag.slice(0, 5).map((x) => x.id).join(' / ')}`)
+      }
+      /**
+       * ⚠⚠ **折叠行不能只剩关系行**：`change` 的历史条目缺 `path_decision` /
+       *   `requirement_coverage` 时，必须用正式承接需求数兜底，⛔ 不许零读数。
+       */
+      const noFacts = items.filter((it) => !Array.isArray(it.presentation?.facts) || it.presentation.facts.length === 0)
+      if (noFacts.length > 0) p.push(`${noFacts.length} 条折叠行没有任何关键读数：${noFacts.slice(0, 5).map((x) => x.id).join(' / ')}`)
+      if (p.length === 0) ok('R-18c ✓ 真实五类样例：ACC-044 / ACC-058 / RUN-015 / TSK-050 / ACC-064 主标题、正式关系、1..2 条读数与原句逐条符合方案；'
+        + `**判决改为账本实读**：${accUnits.length} 条 acc 的展开判决逐条 == 各自 \`status\` 的期望值（⛔ 不再写死某一天的判决）`)
+    }
+    for (const x of p) bad(`R-18c · ${x}`)
+  }
+
+  // ── N-R-18c 负向对拍：展示层与账本判决不符 ⇒ R-18c 必红（⛔ 不是只会抓"账本没变"）──
+  {
+    /**
+     * ⚠⚠ **这条对拍要证的正是"判据硬化之后仍然能抓真缺陷"**。
+     *
+     * ── 为什么必须造"展示层说谎"而不是"账本变了" ──────────────────────
+     *   旧断言写死「`ACC-064` 期望判决 = 判不出」，它只会在**账本推进**时变红 ——
+     *   那证明的是"账本动了"，⛔ 不是"展示层错了"。硬化之后必须反过来：
+     *   **账本不动，让展示层说错话** ⇒ 判据必红。
+     *   ⚠ 若这条对拍造不出来，说明硬化把判据改成了恒绿（比原缺陷更糟）。
+     *
+     * ── 做法（⛔ 不另写判定：复用 `accVerdictMismatches` 那一份）───────────
+     *   ① 先自证基线：真账本 + 真展示层 ⇒ **0 处不符**（否则下面的"变红"证明不了什么）；
+     *   ② 注入"坏展示层"：把 `verdict` 一律改写成 `验收通过`（与多数账本 status 不符）；
+     *   ③ 断言必红，且**点名到具体 acc**；
+     *   ④ 反面：把坏展示层换回真展示层 ⇒ 回绿（⛔ 不是恒红）。
+     */
+    const { ledgerHomeOf, resolveLedgerRoot } = await import('./lib/ledger-root.mjs')
+    const ledgerRoot = resolveLedgerRoot(root, undefined, ledgerHomeOf(root))
+    if (ledgerRoot === undefined) {
+      bad('N-R-18c · 账本根判不出 ⇒ 本条不可判')
+    } else {
+      const ledgerDir = join(ledgerRoot, 'ledger')
+      const unitShardPaths = readdirSync(join(ledgerDir, 'units'))
+        .filter((n) => /^unit-[^/]+\.toml$/.test(n)).sort().map((n) => join(ledgerDir, 'units', n))
+      const units = [join(ledgerDir, 'units', 'index.toml'), ...unitShardPaths]
+        .flatMap((f) => mod.parseUnitsToml(readFileSync(f, 'utf8')))
+      const accUnits = units.filter((u) => u.kind === 'acc')
+      const realPres = (u) => presentationMod.presentationOf(u, units)
+      /** 坏展示层：判决一律说成「验收通过」（⚠ 故意与真实 status 脱钩）。 */
+      const lyingPres = (u) => {
+        const full = presentationMod.presentationOf(u, units)
+        return {
+          ...full,
+          details: full.details.map((f) => (f.key === 'verdict' ? { ...f, value: '验收通过' } : f)),
+        }
+      }
+      /**
+       * ⚠ 自证：这个"坏展示层"**真的说错话了** —— 账本里 `status != 'pass'` 的 acc
+       *   至少有一条（否则"一律说验收通过"可能与真实全一致 ⇒ 对拍不可判）。
+       */
+      const nonPass = accUnits.filter((u) => String(u.status ?? '').trim() !== 'pass')
+      const baselineClean = accVerdictMismatches(units, realPres).length === 0
+      const lyingProblems = accVerdictMismatches(units, lyingPres)
+      const hit = lyingProblems.find((x) => x.includes('期望'))
+      if (accUnits.length === 0) {
+        bad('N-R-18c · 账本里一条 acc 都没有 ⇒ 本条不可判')
+      } else if (nonPass.length === 0) {
+        bad('N-R-18c · 账本里所有 acc 都是 `pass` ⇒ "一律说验收通过"与真实一致，造不出不符 ⇒ 本条不可判（⚠ 不是通过）')
+      } else if (!baselineClean) {
+        bad(`N-R-18c · 基线不干净（真账本 + 真展示层已有 ${accVerdictMismatches(units, realPres).length} 处不符）⇒ 下面的"变红"证明不了判据能抓缺陷`)
+      } else if (hit === undefined) {
+        bad('N-R-18c · 注入"展示层一律说验收通过"却仍然全绿 ⇒ R-18c 哑了（硬化把判据改成了恒绿）')
+      } else {
+        ok(`N-R-18c ✓ 负向对拍（先自证：真账本 + 真展示层 = **0** 处不符；账本里 ${nonPass.length}/${accUnits.length} 条 acc 的 status 不是 pass）`
+          + ` ⇒ 注入"判决一律说验收通过"的坏展示层 ⇒ R-18c **必红**且点名到具体 acc（${lyingProblems.length} 处不符，首条：${hit.slice(0, 110)}）`
+          + '；**反面**：换回真展示层 ⇒ 回绿（⛔ 不是恒红，见基线自证）')
+      }
+    }
+  }
+
+  // ── N-R-18 负向对拍：把完整详情重新塞回列表 ⇒ R-18 必红 ──
+  {
+    const srcFile = join(root, 'src', 'shared', 'item-presentation.ts')
+    const orig = readFileSync(srcFile, 'utf8')
+    const NEEDLE = "    facts: full.facts.slice(0, 2).map((f) => {"
+    const MUT = "    originalTitle: full.originalTitle,\n    details: full.details,\n    facts: full.facts.slice(0, 2).map((f) => {"
+    if (!orig.includes(NEEDLE)) {
+      bad('N-R-18 · 造不出「详情回塞列表」的变体（源码锚点失配）⇒ 负向对拍不可判')
+    } else {
+      const mutDir = join(WORK, 'mut-list-details')
+      const { cpSync } = await import('node:fs')
+      cpSync(join(root, 'src'), join(mutDir, 'src'), { recursive: true })
+      writeFileSync(join(mutDir, 'src', 'shared', 'item-presentation.ts'), orig.replace(NEEDLE, MUT))
+      const g2 = tsMount.mountTsGraph({ root: mutDir, outDir: join(WORK, 'out-list-details'), entries: [ENTRY], ts })
+      const out2 = g2.entries[ENTRY]
+      if (out2 === undefined) {
+        bad(`N-R-18 · 变体转译失败：${g2.problems.join(' / ')}`)
+      } else {
+        const f2 = join(WORK, 'entry-list-details.mjs')
+        writeFileSync(f2, `export * from ${JSON.stringify(out2)}\n`)
+        const mod2 = await import(pathToFileURL(f2).href + '?t=' + Date.now())
+        const res2 = mod2.buildStages(mod2.parseUnitsToml(ITEM_FIXTURE_SRC), '2026-11-07T00:00:00.000Z', { compact: true })
+        const badItems = res2.ok === true ? res2.stages.flatMap((s) => s.items).filter((x) => 'originalTitle' in x.presentation || 'details' in x.presentation) : []
+        if (badItems.length > 0) ok(`N-R-18 ✓ 负向对拍（把原句/详情回塞列表）⇒ R-18 的"列表不内联完整正文"**必红**：${badItems.map((x) => x.id).join(' / ')}`)
+        else bad('N-R-18 · 变体没有把详情回塞列表 ⇒ 负向对拍不可判')
       }
     }
   }

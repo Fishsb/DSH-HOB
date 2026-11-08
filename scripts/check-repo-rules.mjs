@@ -141,6 +141,7 @@ export function runRepoRules({ bad, ok, skip }) {
     //   `check:experience` 自批 11 起是**收尾必跑四条命令之一** ⇒ 这个缺口的影响面比前两条更大。
     ['scripts/check-experience.mjs', '入库脚本（被 package.json 的 check:experience 调用 · 收尾四条命令之一）'],
     ['scripts/next-experience-id.mjs', '入库脚本（被 package.json 的 exp:next-id 调用 · 取下一个经验编号）'],
+    ['scripts/sync-draft-block.mjs', '入库脚本（被 package.json 的 sync:preset-draft 调用 · 同步人读版镜像块）'],
     // ⚠ 2026-10-09 补（本批 · 用户裁定 A 方案）：build 末尾新增的构建戳脚本。
     //   它由 `build` 串联调用（`node scripts/write-build-stamp.mjs`），
     //   与上面两条**同族**：一旦被 `.gitignore` 静默排除，clone 后 `npm run build`
@@ -308,6 +309,7 @@ export function runRepoRules({ bad, ok, skip }) {
     ['scripts/check-work-plan-dispatch.mjs', '入库脚本（被 package.json 的 check:work-plan-dispatch 调用 · 多轨一次进入计划入口 / 运行时档位 / 兼容单目标 / 依赖等待 / 状态可见与两条负向对拍）'],
     ['scripts/check-work-plan-runtime.mjs', '入库脚本（被 package.json 的 check:work-plan-runtime 调用 · 真编排器行为：多轨并行 / 单会话跨计划拒派 / 依赖轨自动推进 / 汇合与单写轨门禁）'],
     ['scripts/check-work-plan-panel.mjs', '入库脚本（被 package.json 的 check:work-plan-panel 调用 · 真 DOM：工作计划面板挂载 / 轨道与执行者 / 单轨原因 / 判不出与空表 / 只读路由真处理体 / 摘挂载负向对拍）'],
+    ['scripts/check-stage-controls.mjs', '入库脚本（被 package.json 的 check:stage-controls 调用 · 五阶段内部控制：需求澄清 / 方案路径 / 任务自包含 / 小步验证 / 产品确认 / 回流归因 / 文件引用可追溯）'],
     //   它守：POST 带 sessionId ⇒ 200 + 我们的 JSON（三选一 reason 也算「处理体在」）；
     //         同路径 GET ⇒ 404 + 纯文本 not found（宿主「错门回 404 而不是 405」这条边界）。
     ['scripts/probe-tasks-route-http.mjs', '按需档探针（被 package.json 的 check:tasks-route-http 调用 · 要活宿主+token · 任务进度 200 + GET 404 纯文本 / Current 与按 ID 资源 / 五步 attention · 会话优先取活锁 · noObject 走 exit 2）'],

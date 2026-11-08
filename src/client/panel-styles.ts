@@ -159,6 +159,54 @@ const CSS = [
   `.dsh-hob-trigger-icon{flex:none;color:var(--dsw-alias-menu-icon)}`,
   `.dsh-hob-chevron{color:var(--dsw-alias-label-caption);flex:none;transition:transform .12s}`,
   `.dsh-hob-chevron-open{transform:rotate(180deg)}`,
+  /**
+   * 项目选择器的行内箭头：收起朝右、展开朝下。
+   * ⚠ `<summary>` 的原生三角已用内联 `listStyle:none` 去掉，只保留这一个箭头。
+   */
+  `details[data-dsh-hob="stages-ledgers"] > summary > span[aria-hidden="true"]{transition:transform .12s}`,
+  `details[data-dsh-hob="stages-ledgers"][open] > summary > span[aria-hidden="true"]{transform:rotate(90deg)}`,
+  /**
+   * ══ 项目选择器 = **一行触发 + 浮层菜单**（2026-11-08 第 2 次修正）══════════
+   *
+   * 病（真机 DOM 核对）：上一版 `<details>` 把菜单留在**正常流**里 ⇒ 展开后把下面
+   *   在途需求 / 五步主线整体往下推，菜单里又是一整列账本（还带“空账本”二级折叠）
+   *   ⇒ 用户看到的就是“一行控件里又套了一份旧列表”。
+   *
+   * 改法（三条都不引新令牌，全部用宿主既有 `--dsw-*`）：
+   *   ① 容器 `position:relative`，菜单 `position:absolute;top:100%` **浮在内容之上**；
+   *   ② 菜单 `max-height` + `overflow-y:auto`：窄侧栏也不撑爆面板；
+   *   ③ 触发块做成宿主设置页输入框的同款描边/底色（`.dsh-hob-trigger` 已按该度量抄过），
+   *      并把「项目 / 名字 / 单元数 / 箭头」压成**同一行**（⛔ 不再各占一行）。
+   */
+  `.dsh-hob-ledger-picker{position:relative;display:block}`,
+  `.dsh-hob-ledger-trigger{height:30px;box-sizing:border-box;align-items:center;gap:6px;`,
+  `padding:0 10px;border:0.5px solid var(--dsw-alias-border-l4);`,
+  `border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-3);`,
+  `font-size:13px;font-weight:600;line-height:1.5;white-space:nowrap;`,
+  `overflow:hidden;text-overflow:ellipsis}`,
+  `.dsh-hob-ledger-trigger:hover{background:var(--dsw-alias-interactive-bg-hover)}`,
+  `.dsh-hob-ledger-trigger:focus-visible{outline:none;border-color:var(--dsw-alias-state-business-primary)}`,
+  `.dsh-hob-ledger-label{color:var(--dsw-alias-label-tertiary);font-weight:400;flex:none}`,
+  `.dsh-hob-ledger-name{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis}`,
+  `.dsh-hob-ledger-units{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400;flex:none}`,
+  `.dsh-hob-ledger-caret{color:var(--dsw-alias-label-caption);font-size:12px;flex:none;transition:transform .12s}`,
+  /** 浮层：贴住触发块下沿，宽度跟随触发块，最高 60vh（超出内部滚动）。 */
+  `.dsh-hob-ledger-menu{position:absolute;left:0;right:0;top:100%;z-index:30;margin-top:4px;`,
+  `box-sizing:border-box;max-height:min(60vh,320px);overflow-y:auto;padding:4px;`,
+  `display:flex;flex-direction:column;gap:2px;`,
+  `border:0.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);`,
+  `background:var(--dsw-alias-bg-layer-1);box-shadow:0 6px 18px rgba(0,0,0,.18)}`,
+  `.dsh-hob-ledger-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px;`,
+  `width:100%;box-sizing:border-box;padding:4px 8px;font:inherit;font-size:13px;text-align:left;`,
+  `color:var(--dsw-alias-label-primary);background:transparent;border:0;border-radius:var(--dsw-radius-sm,4px);cursor:pointer}`,
+  `.dsh-hob-ledger-row:hover{background:var(--dsw-alias-interactive-bg-hover)}`,
+  `.dsh-hob-ledger-row[data-selected="true"]{background:var(--dsw-alias-interactive-bg-active)}`,
+  `.dsh-hob-ledger-row[data-selected="true"] .dsh-hob-ledger-row-name{font-weight:600}`,
+  `.dsh-hob-ledger-row-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`,
+  `.dsh-hob-ledger-row-meta{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px}`,
+  `.dsh-hob-ledger-group{border-top:0.5px solid var(--dsw-alias-border-l2)}`,
+  `.dsh-hob-ledger-group-summary{cursor:pointer;padding:4px 8px;color:var(--dsw-alias-label-tertiary);font-size:12px}`,
+  `.dsh-hob-ledger-note{padding:4px 8px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5}`,
   // 菜单行内的次级文本（预设「不可用」、模型 id、档位说明）——
   // 用宿主菜单的 caption 层级（`Menu.module.css` 的 `.shortcut` 用同一令牌）。
   `.dsh-hob-item-note{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}`,
