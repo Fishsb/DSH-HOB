@@ -406,36 +406,31 @@ export function buildRequirementChain(req: ChainUnit, units: readonly ChainUnit[
     }
   }
   /**
-   * **执行阶段“判不出”必须点名缺口，⛔ 不许把明确事实写成说不清。**
+   * **当前步优先于全局下一步**（2026-11-08 收口）。
    *
-   * 真账本 `dsh-hob` 的 R-002/R-003/R-004 都是：任务 `built`、验收 `pass`、
-   * 却**零 RUN**。这是 G-1「跳过执行」的确定缺口；全局 `nextAction()` 在
-   * 四类入口都不匹配时回 `undecidable`，于是面板把它们说成“不知道下一步”。
+   * 全局 `nextAction()` 看的是全账本：当一条链第 4 步零 RUN、但后面已有一个
+   * `built` 任务时，它可能先给出 `accept`/TSK —— 那会让“下一步”跨过尚未完成的
+   * 执行阶段，直接跳到后面的验收对象。`currentStep` 是本链唯一当前态，必须先判。
    *
-   * ⚠ 不是伪造执行记录，也不是把阶段改成完成：
-   *   · 有可开工任务 ⇒ `dispatch` 该任务；
-   *   · 只有 built 任务却零执行记录 ⇒ 明确写成执行缺口，先补可核执行事实。
+   * ⚠ 真账本 `dsh-hob` R-002..004 与 `prompt-enhancer-release` R-001 都命过这条：
+   *   前者曾显示 `undecidable`，后者曾显示 `accept:TSK-…`，两者都不是“下一步”。
    */
-  /**
-   * ⚠ 不能只接 `undecidable`：全局 `nextAction()` 在没有“待派任务”时
-   *   会先落 `wait-user`（拿需求正文里有没有验收记录来判），但本链已经有
-   *   `pass` ACC，真正缺口是执行事实。四类“没指向本轮主线动作”的值都允许补。
-   */
-  const genericNext = next.kind === 'undecidable' || next.kind === 'wait-user' || next.target === null
-  if (genericNext && currentStep === 4) {
+  if (currentStep === 4 && chain.runs.length === 0) {
     const runnable = chain.tasks.find((t) => ['todo', 'doing'].includes(statusOf(t)))
-    if (runnable !== undefined && statusOf(runnable) !== 'doing') {
+    if (runnable !== undefined && statusOf(runnable) === 'todo') {
       next = {
         kind: 'dispatch',
         target: idOf(runnable),
         why: `「${idOf(runnable)}」任务书已齐、还没派活 —— 没有执行记录，第 4 步不能算完成`,
         blockedBy: [],
       }
-    } else if (runnable === undefined && chain.runs.length === 0) {
+    } else {
       next = {
         kind: 'blocked',
         target: chain.tasks[0] === undefined ? null : idOf(chain.tasks[0]),
-        why: '任务已标完成，但账本里没有任何执行记录 —— 执行事实判不出；先补可核的运行读数，再谈验收',
+        why: runnable !== undefined
+          ? `「${idOf(runnable)}」已标执行中，但账本里没有任何执行记录 —— 先补可核运行读数`
+          : '任务已标完成，但账本里没有任何执行记录 —— 执行事实判不出；先补可核的运行读数，再谈验收',
         blockedBy: chain.tasks.map((t) => `${idOf(t)} 零 RUN`),
       }
     }

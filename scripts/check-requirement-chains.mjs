@@ -173,12 +173,15 @@ function auditChains(out) {
     U('R-1', 'req', 'agreed', { acceptance_criteria: ['a'], clarify_examples: ['x'] }),
     U('CHG-1', 'change', 'settled', { addresses: ['R-1'], path_decision: '选 B' }),
     U('TSK-1', 'task', 'built', { parent: 'CHG-1', ...BRIEF }),
+    U('TSK-2', 'task', 'built', { parent: 'CHG-1', ...BRIEF }),
     U('ACC-1', 'acc', 'pass', { parent: 'TSK-1', verified_at: '2026-11-07T01:00:00+08:00' }),
+    U('ACC-2', 'acc', 'unverified', { parent: 'TSK-2' }),
   ], '2026-11-07T00:00:00.000Z')
   const c = out.chains[0]
   const p = []
   if (c?.currentStep !== 4) p.push(`当前步=${c?.currentStep}（期望 4）`)
-  if (c?.next?.kind !== 'blocked') p.push(`next=${c?.next?.kind}（built 但零 RUN 应 blocked）`)
+  if (c?.next?.kind !== 'blocked') p.push(`next=${c?.next?.kind}（built 但零 RUN 应 blocked，⛔ 不许跳过执行先去 accept）`)
+  if (c?.next?.kind === 'accept') p.push(`next 跨过当前第 4 步去验收：${JSON.stringify(c?.next)}`)
   if (!String(c?.next?.why ?? '').includes('零 RUN') && !String(c?.next?.why ?? '').includes('执行记录')) p.push(`下一步没点名执行缺口：${c?.next?.why}`)
   if (p.length === 0) ok('RC-3d ✓ built 但零 RUN ⇒ 下一步 blocked 且点名执行缺口（⛔ 不退化成判不出）')
   else for (const x of p) bad(`RC-3d · ${x}`)
