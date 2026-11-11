@@ -109,6 +109,73 @@ const parseRows = (text) => {
   }
 }
 
+// ── ⑤ 证据位置必须指向真实文件，且行号不越界 ──────────────────────────────
+/**
+ * ── 守什么 ────────────────────────────────────────────────────────
+ *   STATUS.md 的「注记」列大量写 `文件:行号`。它是**人读证据**，也是唯一能
+ *   反查「改在哪」的东西 —— 如果它指向不存在的文件，这张表就失去可核性。
+ *
+ * ⚠ 2026-11-11 实测：100 处可验证引用，0 处缺失、0 处行号越界。
+ *   （⚠ 首次检查用错了正则 —— `ts|tsx` 顺序导致 `.tsx` 被截成 `.ts`，
+ *     报出 23 处假缺失。修正为 `tsx|ts` 后才得到真实结果。）
+ *
+ * ── 判据 ──────────────────────────────────────────────────────────
+ *   ① 引用的文件必须存在（⚠ 允许省略目录的简写，用 basename 兜底查找）；
+ *   ② 若带行号，该行号不得超出文件总行数。
+ *
+ * ⚠ 只证「位置指向真实文件」，⛔ 不证「那一行真的做了修复」。
+ */
+{
+  const { readFileSync: rfA, existsSync: exA } = await import('node:fs')
+  const { join: pjA } = await import('node:path')
+  const { execSync: exA2 } = await import('node:child_process')
+  /** ⚠ 正则顺序必须是 tsx 在 ts 前（否则 `.tsx` 被截成 `.ts`）。 */
+  const REF_RE = /`?([a-zA-Z0-9_./-]+\.(?:tsx|ts|mjs|json|md))(?::(\d+))?`?/g
+  /** 全仓文件索引（按 basename 兜底简写）。 */
+  const allFiles = (() => {
+    try {
+      return exA2('git ls-files', { cwd: root, encoding: 'utf8' }).split('\n').filter(Boolean)
+    } catch { return [] }
+  })()
+  const byBase = new Map()
+  for (const f of allFiles) {
+    const b = f.split('/').pop()
+    if (!byBase.has(b)) byBase.set(b, [])
+    byBase.get(b).push(f)
+  }
+  const p = []
+  let verified = 0
+  for (const row of parseRows(src)) {
+    if (row.note === '') continue
+    REF_RE.lastIndex = 0
+    const seen = new Set()
+    let m
+    while ((m = REF_RE.exec(row.note)) !== null) {
+      const raw = m[1]
+      const ln = m[2]
+      if (seen.has(raw)) continue
+      seen.add(raw)
+      /** ① 先按字面路径找，再按 basename 兜底（允许 `stage-controls.ts` 这种简写）。 */
+      let rel = raw
+      if (!exA(pjA(root, rel))) {
+        const cands = byBase.get(raw.split('/').pop()) ?? []
+        if (cands.length === 0) { p.push(`${row.id} · 引用的文件不存在：${raw}`); continue }
+        rel = cands[0]
+      }
+      /** ② 行号不越界。 */
+      if (ln !== undefined) {
+        const total = rfA(pjA(root, rel), 'utf8').split('\n').length
+        if (Number(ln) > total) { p.push(`${row.id} · 行号越界：${raw}:${ln}（文件仅 ${total} 行）`); continue }
+      }
+      verified++
+    }
+  }
+  if (p.length === 0) {
+    ok(`**证据位置可核**：${verified} 处引用全部指向真实文件，行号无越界`
+      + '（⚠ 只证「位置存在」，⛔ 不证「那一行真做了修复」）')
+  } else for (const x of p.slice(0, 5)) bad('⑤ ' + x)
+}
+
 console.log(`处级口径：查了 ${note.length + fail.length} 处 · 过了 ${note.length} 处`
   + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
   + ' · **跳过 0 处**（⚠ 跳过**不计入通过**）')
