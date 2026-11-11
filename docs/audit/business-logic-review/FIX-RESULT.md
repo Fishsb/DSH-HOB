@@ -52,11 +52,13 @@
 | 新增模块 | `src/shared/ledger-health.ts`（172 行，四出口唯一判据） |
 | 当前 `src/` 总行数 | 61,737 |
 | 缺陷总数（REVIEW §5 总表） | **112** |
-| **已修** | **108** |
+| **已修** | **106** |
 | 已排除（复核证伪） | **3** | **S-08 / O-24 / O-15**（都在 112 内，参与算术）。另有 `C-01` 等**清单外**观察项，不参与算术 |
-| **已处理（保留 + 标注）** | **1** | **O-16**：按裁定**保留现状并在代码处标注理由**（⛔ 不是"修好"，也不是"证伪"）⇒ 参与算术 |
-| **未修**（见 §5 / §66.3） | **0** |
-| **算术核对** | **112** | 108 + 3 + 1 = **112** ✅（⚠ 缺 O-16 那行时是 108+3=111，**差 1**） |
+| **按设计处理** | **2** | **T-07**：不保证原子，但半完成可见（`LP-17` 守）。**T-13**：给 `migrate` 加门会堵死唯一修复通道 |
+| **未修**（见 §5 / §66.3） | **1** | **S-01**：C1/C2 依赖的宿主 API 在 `ToolRunContext` 类型里**不存在**（只有 `deferContext`/`concludeTurn`），仓内无法实现 |
+| **算术核对** | **112** | 106 + 3 + 2 + 1 = **112** ✅（⚠ 2026-11-11 订正：原表 108+3+1 漏记 S-01 未修与 T-07/T-13 归属） |
+
+> ⚠ **唯一权威是 `STATUS.md`**（112 行逐条，脚本可核 `npm run check:audit-status`）。 |
 
 ⚠ 本表是**当前终值**。各分节里的中间数（如 §5.1 的「未修 77 条」、§10.5 的「已修 37」）是**当时**的读数，
 已在原处标注为「上一版 / 本轮」，**以本表为准**。
@@ -66,19 +68,19 @@
 ```
 （⚠ 以下为**当前终值**，随每轮修复更新；早期中间读数见各轮小结）
 
-check:pipeline              26 · 失败 0     （R-15 新增 PIPE-5b）
-check:stage-controls       104 · 失败 0
-check:ledger               129 · 失败 0
-check:ledger-write-policy   16 · 失败 0     （R-19 新增 WP-12/12b、T-24 新增 WP-13）
-check:ledger-projection     15 · 失败 0     （R-18 新增 LP-14）
+check:pipeline              31 · 失败 0     （R-15 新增 PIPE-5b）
+check:stage-controls       114 · 失败 0
+check:ledger               130 · 失败 0
+check:ledger-write-policy   18 · 失败 0     （R-19 新增 WP-12/12b、T-24 新增 WP-13）
+check:ledger-projection     18 · 失败 0     （R-18 新增 LP-14）
 check:ledger-resources      18 · 失败 0     （T-23 新增 kind 表对拍）
-check:hob-create            54 · 失败 0     （T-15 新增 CU-44）
-check:workflow              33 · 失败 0
+check:hob-create            55 · 失败 0     （T-15 新增 CU-44）
+check:workflow              34 · 失败 0
 check:meta-negctl            5 · 失败 0
-check:requirement-chains    19 · 失败 0
-check:stages-dom           137 · 失败 0
+check:requirement-chains    20 · 失败 0
+check:stages-dom           149 · 失败 0
 check:tasks-route-http      15 · 失败 0
-check:policy                46 · 失败 0
+check:policy                49 · 失败 0
 
 typecheck  exit 0
 build      OK
