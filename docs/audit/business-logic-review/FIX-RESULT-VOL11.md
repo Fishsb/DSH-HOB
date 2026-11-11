@@ -1400,3 +1400,71 @@ grep -rn 'docs/audit/business-logic-review' docs/audit/ | wc -l
    ⇒ 但**对人不友好**（读者会找不到）。⇒ 需要同批更新，见下一节。
 
 ---
+
+---
+
+## §153 ✅ 四批提交完成 + 提交后全量验证通过
+
+### 153.1 提交结果
+
+```
+分支： fix/business-logic-review-2026-11-11（从 codex/item-presentation 新建）
+提交： 4 个
+  5cc08d4  chore(gitignore): 补两条临时目录模式
+  0616d4c  docs: 骨架契约、模板、预设文档与审查记录        （72 文件）
+  90b5dbc  feat: 业务逻辑审查修复 + 自检体系增强            （110 文件）
+  50b5386  feat(shared): 新增 8 个纯逻辑模块                （3323 行）
+
+变更： 191 files changed, +50330 / -2197
+工作区：git status --short = 0（干净）
+```
+
+### 153.2 ✅ 提交后全量验证
+
+```
+npm run build        →  BUILD=0
+npm run typecheck    →  TYPECHECK=0（双 tsconfig）
+npm run check:all    →  CHECKALL=0 · 47/47 · 123 秒
+```
+
+⚠ **提交没有引入任何回归** —— 三个入口全绿。
+
+### 153.3 ✅ 完整性核对
+
+| 检查 | 结果 |
+|---|---|
+| 工作区干净 | ✅ 0 条 |
+| 新分支领先 4 个提交 | ✅ |
+| `docs/audit` 入库 | ✅ 41 个文件 |
+| 8 个新模块入库 | ✅ 8/8 |
+
+### 153.4 ⚠ 提交时发现的一个隐患（已避开）
+
+```
+第①批我执行 git add 时发现：暂存区里**原本就有 17 个文件处于已暂存状态**
+  （live-protocol.ts / live-hub.ts 等，HEAD 里不存在）
+  ⇒ 之前的会话 git add 过但从未 commit
+
+⚠ 若直接 commit，第①批会变成 9 个模块 + 8 个 live 文件，
+   而按 §130 的验证，只有那 8 个模块能独立编译 ⇒ **依赖顺序会乱**。
+
+✅ 处置：git reset 清空暂存区 → 重新精确 add 那 8 个 → 才提交。
+```
+
+⚠ 这是「**未提交工作**」的**第三个来源**，前两个是 §139 记的：
+
+```
+① git status（工作区）        ← 一直在看
+② git stash list（存档栈）    ← 第 72 轮补查
+③ git 暂存区（index）         ← 本轮才发现
+```
+
+### 153.5 本轮未做的
+
+```
+⛔ 未 push —— 用户只批了「新建分支再提交」，没提 push
+⛔ 未合并回 master —— 同上
+⛔ 未删 .agent-teams/ 下的团队状态（那是另一件事）
+```
+
+---
