@@ -69,6 +69,21 @@ const ARGV = process.argv.slice(2)
  *   严格说是**加严**；同时它仍不把"本来就不该装"的那些算红（⛔ 恒红判据 = 没用）。
  */
 const FIX = ARGV.includes('--fix')
+/**
+ * ── D-22 保险：⛔ 不许在聚合入口里跑 `--fix` ────────────────────────────
+ *   `--fix` 会写盘（补 profile 的 bundles 行）。聚合入口 `check:all` 的纪律是
+ *   「判据只读；写盘必须显式」。⚠ 目前 `check-all.mjs` **确实**不传 `--fix`，
+ *   所以这只是保险 —— 但若哪天有人给它加上，这里会当场红。
+ *
+ *   ⚠ 判据用 `CHECK_ALL=1`（聚合入口派生子进程时由父进程置位），
+ *     ⛔ 不用「argv 里有没有 check:all」这种猜法。
+ */
+const IN_AGGREGATE = process.env.CHECK_ALL === '1'
+if (IN_AGGREGATE && FIX) {
+  console.error('✗ D-22 · `--fix` 不许在聚合入口里跑（check:all 的纪律是判据只读）')
+  console.error('  ⇒ 单跑 `npm run check:profile -- --fix` 补完再跑 `npm run check`')
+  process.exit(1)
+}
 const ALL = ARGV.includes('--all')
 const pi = ARGV.indexOf('--profile')
 const NAMED = pi >= 0 && typeof ARGV[pi + 1] === 'string' && !ARGV[pi + 1].startsWith('-')

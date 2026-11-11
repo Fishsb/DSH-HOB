@@ -1108,6 +1108,12 @@ export function runFamilies(names) {
       encoding: 'utf8',
       // ⚠ 不设 timeout：有一族要跑 60+ 秒（真跑组）；超时会把它误报成失败。
       shell: process.platform === 'win32',
+      /**
+       * ⚠ **D-22**：给子进程置 `CHECK_ALL=1`。
+       *   有族带 `--fix` 时会写盘（如 `check:profile`），聚合入口必须能识别"
+       *   ⚠ 我现在跑在 check:all 里" 并拒绝写盘，⛔ 不能靠 argv 猜。
+       */
+      env: { ...process.env, CHECK_ALL: '1' },
       // ⚠ 输出可能较大（`check:orch` 单族几百行）⇒ 给足缓冲，⛔ 不让它被截断成"读不到"。
       maxBuffer: 64 * 1024 * 1024,
     })
