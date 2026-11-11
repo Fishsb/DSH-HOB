@@ -1169,3 +1169,64 @@ const otherGaps = viewOf('dev-B').blockedBy.filter(x => /强判据/.test(x))
 ```
 
 ---
+
+---
+
+## §203 ❌ 「断言插入位置」无法机检 —— 试过，6 个候选全是误报
+
+### 203.1 我想做什么
+
+我在 4 个不同脚本里犯过同一个错：**断言块插到了 `process.exit(0)` 之后 ⇒ 从不执行**。
+（§113 SC-37 三次、§197、§202 LP-17）
+
+⇒ 想加一条机检：`process.exit(0)` 不能在 `处级口径` 之前。
+
+### 203.2 实测：50 个脚本有 `处级口径`，6 个「可疑」
+
+```
+scripts/check-build-sync.mjs        (exit:404 < 口径:1380)
+scripts/check-config-face.mjs       (exit:1352 < 口径:2061)
+scripts/check-experience.mjs        (exit:356 < 口径:547)
+scripts/check-gitignore.mjs         (exit:99 < 口径:532)
+scripts/check-profile-assembly.mjs  (exit:1294 < 口径:1348)
+scripts/probe-selfwake-e2e.mjs      (exit:277 < 口径:305)
+```
+
+### 203.3 ⛔ 逐个核实后：**6 个全是误报**
+
+查 `check-build-sync.mjs:404`：
+
+```js
+if (ARGV.includes('--self-check')) process.exit(0)
+```
+
+⇒ 它在**条件分支**里（只在 `--self-check` 模式下退出），⛔ 不是主路径。
+
+```bash
+npm run -s check:build | grep -c '处级口径'   →  1   ✅ 正常打印
+```
+
+⚠ 其余 5 个同理（都是 `--xxx` 模式分支或提前返回）。
+
+### 203.4 ⇒ 结论：这条机检**做不了**
+
+```
+行号顺序 ≠ 执行顺序。
+`process.exit(0)` 可能在 if 分支里、可能在箭头函数里、可能被 return 挡住。
+要判「某段代码是否可达」需要**控制流分析**，而那不是一条 grep 能做的。
+```
+
+⚠ 这与 §139 的教训一致：**「看起来像的问题」必须先验证，⛔ 不能直接当缺陷报**。
+   如果我当时写了这条判据，它会**让 6 个正常的族变红**。
+
+### 203.5 那这个错怎么防
+
+```
+✅ 可做：跑完检查后**看完整输出**，确认 ✓ 文案真的出现了、处级口径数字变了。
+⛔ 不可做：靠静态规则判断「这段代码会不会执行到」。
+```
+
+⚠ 所以本轮的净产出是：**证明了这条机检不可行**，并留下 6 个误报的分析。
+   这比写一条会让 6 个族假红的判据要好。
+
+---

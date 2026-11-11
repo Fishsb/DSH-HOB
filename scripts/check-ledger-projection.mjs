@@ -689,11 +689,55 @@ console.log('')
 }
 console.log('')
 console.log(`LP 组：通过 ${pass} · 失败 ${fail}`)
+
+
+
+// ── LP-17 · T-07：半完成必须可见（`partial` + 「需人工修账」）────────────────
+/**
+ * ── 守什么 ────────────────────────────────────────────────────────
+ *   T-07 的 `failedApply` 注释写着：
+ *     「半完成不是「没有变化」：applied 条操作已经写进分片…」
+ *     「有半完成时：返回 partial: {created, failed}；reason 里点名「需人工修账」」
+ *     「第一步就失败（applied === 0）**不给 partial**」
+ *
+ *   ⚠ 这段逻辑在 `scripts/` 里**一条断言都没有**（2026-11-11 实测 grep `partial` 0 命中）
+ *     ⇒ 有人把 `...(half ? { partial: … } : {})` 删掉，`check:all` 不会红。
+ *
+ * ── 判据（源码层，照 SC-39 的先例）──────────────────────────────────
+ *   ① `failedApply` 函数体里必须有 `applied > 0` 的判定；
+ *   ② 必须有 `partial:` 字段；
+ *   ③ `reason` 的文案必须含「需人工修账」（人读侧不把半完成压成一句失败）。
+ *
+ * ⚠ 只证「代码写了这三件事」，⛔ 不证「运行时真的产出」（那要造半完成夹具）。
+ */
+{
+  const { readFileSync: rfX } = await import('node:fs')
+  const { join: pjX, dirname: dnX } = await import('node:path')
+  const { fileURLToPath: f2uX } = await import('node:url')
+  const src = rfX(pjX(dnX(f2uX(import.meta.url)), '..', 'src', 'server', 'projection-writer.ts'), 'utf8')
+  const at = src.indexOf('function failedApply(')
+  const body = at < 0 ? '' : src.slice(at, src.indexOf('\n}', at) + 2)
+  const p = []
+  if (body === '') p.push('读不到 `failedApply` 的函数体（形态变了）⇒ 本条失去基准')
+  else {
+    if (!/applied\s*>\s*0/.test(body)) p.push('`failedApply` 里没有 `applied > 0` 的判定 ⇒ 半完成与「什么都没发生」分不开')
+    if (!/partial:/.test(body)) p.push('`failedApply` 不再返回 `partial` 字段 ⇒ 调用方/面板拿不到半完成读数（T-07 复发）')
+    if (!/需人工修账/.test(body)) p.push('`reason` 文案没有点名「需人工修账」⇒ 人读侧把半完成压成一句「失败」')
+  }
+  if (p.length === 0) {
+    ok('LP-17 ✓ **T-07 半完成可见**（源码层）：`failedApply` 有 `applied > 0` 判定、'
+      + '返回 `partial` 字段、`reason` 点名「需人工修账」'
+      + '（⚠ 只证「代码写了」，⛔ 不证「运行时产出」）')
+  } else for (const x of p) bad('LP-17 · ' + x)
+}
+
 console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 0 处**`)
 console.log('')
 if (fail > 0) {
   console.log('  ⛔ 有失败项 ⇒ 本组不算通过')
   process.exit(1)
 }
+
+
 console.log('  ✅ LP 组全绿（运行态事实 ⇒ 账本事实；三档可辨；幂等）')
 process.exit(0)
