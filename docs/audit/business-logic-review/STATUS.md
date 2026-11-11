@@ -93,7 +93,7 @@
 | R-27 | 已修 | `scripts/check-work-plan-runtime.mjs:976` |
 | R-28 | 已修 | `src/modules/orchestrator.ts:4834` |
 | R-29 | 已修 | `scripts/check-work-plan-runtime.mjs:1012` |
-| S-01 | 未修 | ⚠ 需宿主改档或提供 API |
+| S-01 | 未修 | ⚠ A 方案已落地（攻击面收窄）；C1/C2 两条根治路径依赖的宿主 API **类型里都不存在**（`ToolRunContext` 只有 `deferContext`/`concludeTurn`），需宿主扩展 |
 | S-02 | 已修 | `src/modules/tools.ts:260` |
 | S-03 | 已修 | `src/server/hob-write.ts:1331` |
 | S-04 | 已修 | `src/shared/stage-controls.ts:1343` |

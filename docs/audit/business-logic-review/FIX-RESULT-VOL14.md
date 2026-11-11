@@ -349,3 +349,43 @@ grep -n 'hob_ledger_migrate' src/modules/tools.ts
 ⚠ 只有 T-07 是真正闭合的（设计已声明）；其余 4 条都需要外部输入。
 
 ---
+
+### 192.4 ✅ C2 的可行性也查清了：**宿主 `ToolRunContext` 没有消息回读能力**
+
+REVIEW 对 C2 写的是「需宿主提供『会话消息可回读』的 API（**未验证**）」。
+本轮把它验了：
+
+```bash
+grep -rn 'sessions.message|messageOf|readMessage|messages.get' src/   →  0 处
+grep -rn 'ctx.sessions' src/                                          →  0 处
+```
+
+⇒ 看宿主类型定义（`@deepseek-ai/dsh-tools/lib/types/contracts.d.ts`）：
+
+```ts
+export interface ToolRunContext extends ToolExecution {
+  deferContext(context: UserMessage): void;
+  concludeTurn(): void;
+  // ⚠ 就这两个方法，**没有任何消息回读入口**
+}
+```
+
+⇒ **C1（`ctx.approval.request`）与 C2（消息回读）两条路都不可行** ——
+   不是「当前配置下不可用」，而是**宿主类型里就没有这两个能力**。
+
+### 192.5 ⚠ 这让 S-01 的定性更清楚
+
+| 方案 | 依赖 | 实测 |
+|---|---|---|
+| C1 `ctx.approval.request()` | 宿主提供 approval 服务 | ⛔ 类型里没有 |
+| C2 消息 MessageId 凭据 | 宿主提供消息回读 | ⛔ 类型里没有 |
+
+⇒ REVIEW 给的两条根治路径**都依赖宿主扩展**，本仓无解。
+
+⚠ 而 A 方案（`APPROVAL_ONLY_SHARDS` 收窄写入面）已经落地 ——
+   它把攻击面从**两条**收窄成**一条**，是本仓在现有能力下能做的极限。
+
+⇒ S-01 的正确记账是：**「A 已落地（攻击面收窄），根治需宿主新增能力」**。
+   ⛔ 不是「未修」，⛔ 也不是「已修」。
+
+---
