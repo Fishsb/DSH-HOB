@@ -693,3 +693,102 @@ npm run -s check:stages-route
    ⛔ 不该改。⇒ 正确做法：在 `STATUS.md` 写明「规格第①条经复核与设计相反」。
 
 ---
+
+### 198.5 ⚠ 我试图用真实账本实测，但**数据不支持**
+
+```
+账本：dsh-hob · 292 单元 · 20 条需求
+pipelineViewOf state 分布：
+  legacy  17 条
+  retired  3 条
+  ⇒ **没有一条 v3 需求**
+```
+
+⚠ 我写的验证脚本先按 `v.state === 'legacy'` 跳过 ⇒ 逐格比较 **0 对**。
+   这不是「一致」，是**没有可比对象**。
+
+⇒ **「requirement-chain 派生自 pipeline-view」这条结论，只能靠读码证明，⛔ 无法用真实账本实测。**
+
+### 198.6 读码证据（仍然成立）
+
+```bash
+grep -n 'pipelineViewOf' src/shared/requirement-chain.ts
+→  :22   import { pipelineViewOf, type PipelineView } from './pipeline-view.ts'
+→  :348  const pipeline = pipelineViewOf(req as any, units as any)
+
+grep -n 'pipeline.stages' src/shared/requirement-chain.ts
+→  :381  const v3Stage = legacy ? undefined : pipeline.stages.find((s) => s.id === d.kind)
+→  :616  target: partial.pipeline.stages[1]?.itemIds[0] ?? null
+```
+
+⇒ ✅ **派生关系成立**（R-13 的改动没有破坏它）。
+   ⚠ 但这是**静态证据**，不是运行时实测 —— 两者强度不同，⛔ 不该混说。
+
+### 198.7 ⚠ 顺带发现：这个账本**没有 v3 需求**
+
+| 观察 | 含义 |
+|---|---|
+| 20 条需求全 legacy/retired | 本账本**从未真正启用过** v3 主线 |
+| 但 `built 50` / `pass 55` | 任务与验证**是按 v3 形态写的** |
+
+⚠ 这个组合很奇怪：**单元按 v3 写，需求却判 legacy**。
+   可能原因：需求的 `pipeline_version` 没标，或 `clarify_legacy=pre-control`。
+
+⇒ 这解释了为什么 §191 测 `[宽限]/[影子]` 标签时 0 命中 ——
+   不是代码不可达，而是**这本账本根本没有 v3 需求**。
+
+⚠ 所以 §191 的结论「段 2 不可达」**需要修正**：
+
+```
+之前：段 2 在真实账本中不可达（292 单元 / 20 需求 / 0 标签）
+现在：这本账本**没有 v3 需求** ⇒ 段 2 的代码路径**从未有机会执行**
+⇒ 不是「不可达」，是「没有适用输入」
+```
+
+---
+
+### 198.8 ⛔ 决定性的实测：这本账本**一个 `pipeline_version` 都没有**
+
+```bash
+grep -h 'pipeline_version' /home/lk/.dsh/hob-ledgers/dsh-hob/ledger/units/*.toml | sort | uniq -c
+→  **0 行**
+
+grep -c 'clarify_legacy' …/unit-*.toml
+→  unit-01.toml: 52
+→  unit-02.toml: 42
+→  unit-03.toml: 17
+→  合计 **111 次**
+```
+
+⇒ **这本账本全部是 legacy 单元，没有任何 v3 标记。**
+
+| 推论 | 含义 |
+|---|---|
+| `pipelineViewOf` 对 17/20 需求返回 `legacy` | 因为它们确实没有 v3 标记 |
+| `[宽限]/[影子]` 标签 0 命中 | **不是代码不可达，是没有适用输入** |
+| `built 50` / `pass 55` 仍存在 | 任务/验证单元按 v3 形态写，但需求没标 v3 |
+
+### 198.9 ⛔ 所以 §191 的结论必须修正
+
+| 之前 | 现在 |
+|---|---|
+| 「段 2 在真实账本中**不可达**（死代码）」 | **「段 2 从未有机会执行 —— 这本账本没有 v3 需求」** |
+
+⚠ 这两个说法的区别很关键：
+
+```
+「不可达」= 任何输入都触发不了 ⇒ 代码有问题
+「没有适用输入」= 代码可能没问题，只是数据是 legacy 的
+⇒ 我上一轮的结论**越界了** —— 用一本 legacy 账本推出了「代码不可达」。
+```
+
+⚠ 这是本轮第二次「单一证据下全局结论」：
+
+```
+第一次：读码说「派生成立」→ 想实测 → 发现 20 条需求全 legacy（不可比）
+第二次：§191 用 legacy 账本的 0 命中 → 推出「不可达」
+```
+
+⇒ 两条都**高估了证据的适用范围**。
+
+---
