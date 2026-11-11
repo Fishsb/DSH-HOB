@@ -452,3 +452,54 @@ if (already !== undefined) return { key, ops: [], skipped: `同一派发已投�
 | ⬜ 未核 | **60** |
 
 ---
+
+---
+
+## §175 ✅ T-09 已修：`count` 与 `truncated` 都读了，且注释记下**改前的两个假读数**
+
+### 175.1 修复
+
+`project-panel.tsx:3085-3098`：
+
+```ts
+const total = typeof health.count === 'number' && Number.isFinite(health.count) ? health.count : undefined
+const problems = Array.isArray(health.problems) ? health.problems : []
+const shown = problems.length
+/**
+ * ⚠ truncated 有**两个来源**：服务端置位（>40 条），或「回来的比全量少」
+ *   （体积兜底丢了全文）⇒ 两个都要算。
+ */
+const truncated = health.truncated === true || (total !== undefined && shown < total)
+```
+
+并落成 DOM 属性：`:3116` `'data-truncated': truncated ? 'true' : 'false'`，
+`:3162` `'data-kind': truncated ? 'truncated' : 'folded'`。
+
+### 175.2 ⚠ 注释记下的两个假读数（这是最值得留的部分）
+
+```
+⚠ 改前的两个假读数（必须写进 PR，否则会被当成回归）：
+  · 41~300 条缺口时，「另有 N 条」用的是 problems.length - 12 ⇒ **少数 10 条**；
+  · 体积兜底把 problems 丢空而 count=300 时，旧码印「0 条缺口」+ data-state='ok'
+    —— **把 300 条缺口说成健康**。
+```
+
+⇒ ✅ 第二条尤其严重：**300 条缺口被显示成健康**，
+   而这正是 T-09 标题「账本健康假报 0 条」的准确描述。
+
+⚠ 「必须写进 PR，否则会被当成回归」这句话点出了另一件事：
+   修好后读数会**变大**（从假 0 变成 300），不知情的人会以为修坏了。
+   ⇒ 记录改动前后的读数变化，是修复的一部分。
+
+### 175.3 进度
+
+| 状态 | 条数 |
+|---|---|
+| ✅ 全量已修 | **49**（+T-09） |
+| ⚠ 部分修 | 1（R-01） |
+| ⚠ 核心已修 + 规格需修订 | 1（R-02） |
+| ⚠ 按设计处理 | 1（T-07） |
+| ⛔ 未修 | 1（S-01） |
+| ⬜ 未核 | **59** |
+
+---
