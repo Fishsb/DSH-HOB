@@ -969,3 +969,88 @@ R-29 / T-18：整段删除
 ```
 
 ---
+
+---
+
+## §165 ✅ S-02 复核：第三层**真的生效了**，我上轮的判断偏保守
+
+### 165.1 我上轮说「第三层默认不生效」—— 查证后是错的
+
+```bash
+grep -rn 'setProvenanceResolver|withProvenanceResolver' src/   →  我漏看了 tools.ts
+```
+
+**实际注入链完整**：
+
+```ts
+// tools.ts:322-324
+function withLedgerProvenance<T>(ledgerRoot: string, run: () => T): T {
+  return withProvenanceResolver(provenanceResolverOf(ledgerRoot), run)
+}
+
+// 8 处调用（:695 :798 :837 …），注释写明：
+// 「⚠ 所有『读账本 + 跑阶段判据』的出口都必须经过本函数（01-judgment.md §9 #10）」
+```
+
+### 165.2 ✅ 而且 resolver 的判定是**他证**，不是自填
+
+```ts
+export function provenanceResolverOf(ledgerRoot: string): UnitProvenanceResolver {
+  // 按**分片文件名**建 id → shard 索引
+  for (const name of ['index.toml', ...shards]) {
+    try { units = parseUnitsToml(readFileSync(join(unitsDir, name), 'utf8')) }
+    catch { /** 读不出来的分片不猜：其单元保持 unknown（⛔ 不按「历史」放行） */ continue }
+  }
+  const historic = new Set(HISTORIC_UNIT_SHARDS)
+  return (u) => …
+}
+```
+
+⚠ 关键点：**判定依据是「单元在哪个分片文件里」**，那是 I/O 侧的事实，
+   ⛔ 不是单元自己声明的字段。这正是 S-02 要的「他证」。
+
+⚠ 而且**读不出的分片保持 `unknown`**（⛔ 不按历史放行）—— 这是 fail-closed。
+
+### 165.3 ⚠ 唯一未注入的出口：多轨入口，但有正当理由
+
+`orchestrator.ts:4885-4893` 的注释：
+
+```
+⚠ 历史豁免口径（clarify_legacy）由调用方的 provenance 注入决定；
+  多轨入口在编排器里，**拿不到** tools.ts 的 withLedgerProvenance
+  （会形成循环依赖）⇒ 这里不注入 ⇒ provenanceOf 返回 unknown
+  ⇒ 按存量字段走老逻辑（= 不改存量结果）。
+  ⚠ 这**不是放宽**：新写的 v3 单元在 legacy() 第二层就被拒（isPipelineV3），
+    与注入与否无关（见 stage-controls.ts 的 legacy() 三层）。
+```
+
+⇒ **攻击链已被第②层切断**：
+
+```
+攻击者要豁免，必须让 pipeline_version 不是 v3；
+而 v3 单元结构上就不豁免 —— 不依赖任何注入。
+⇒ 多轨入口「不注入」只影响**非 v3 存量单元**的判定，而那本就是兼容目标。
+```
+
+### 165.4 ⚠ 修正 S-02 的结论
+
+| 上轮的判断 | 本轮的查证 |
+|---|---|
+| 「第三层默认不生效」 | ❌ 错：8 处出口都注入 |
+| 「攻击面仍在」 | ❌ 错：第②层已切断，不依赖注入 |
+| 「S-02 = 第一档」 | ⚠ 部分对：兼容期只影响**非 v3 存量**，新 v3 已完全受控 |
+
+⇒ **S-02 应当算「已修」**，但要注明「兼容期仅针对非 v3 存量单元」。
+
+⚠ 这与 R-01 不同：R-01 的第 1 段**明确不改变判定结果**（`activeStage` 逐字相同）；
+   而 S-02 的第②层**已经改变了判定**（v3 条目结构上不豁免）。
+
+### 165.5 更新后的严格账
+
+| 状态 | 条数 | 编号 |
+|---|---|---|
+| ✅ 全量已修 | **34** | 含 S-02 |
+| ⚠ 部分修 | **1** | R-01（段 2/3 未做） |
+| ⬜ 未核 | **77** | |
+
+---
