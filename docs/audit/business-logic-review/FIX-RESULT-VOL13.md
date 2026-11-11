@@ -628,3 +628,72 @@ grep -n 'lastError' src/server/effects-queue.ts
 | ⬜ 未核 | **57** |
 
 ---
+
+---
+
+## §178 ✅ T-11 / T-13 / T-16 三条全部已修
+
+### 178.1 T-11：`writeWorkPlan` 返回值不再被丢弃
+
+REVIEW 说「三处被丢弃」（`:4878` / `:5437` / `:5478`）。实测**四处调用全部检查了返回值**：
+
+```
+:4605  const written = writeWorkPlan(...)          → 检查 .ok
+:5017  const stored = writeWorkPlan(...)           → 检查 .ok
+:5094  const firstWaveWritten = writeWorkPlan(...) → 检查 .ok
+:5690  const attachWritten = writeWorkPlan(...)     → 检查 .ok
+```
+
+⇒ ✅ 已修，且比 REVIEW 要求的多覆盖了一处（`:4605` 就是 REVIEW 提到的 `:4556-4564` 那处「有检查」的）。
+
+### 178.2 T-13：批准工具已过 `proceedGate`
+
+`tools.ts:2345-2369`，注释完整记录了病与边界：
+
+```
+── 病（实测）────────────────────────────────────────
+  hob_pipeline_approve / hob_ledger_init / hob_ledger_migrate / hob_ledger_rebuild
+  四个写工具**都不过 proceedGate**（grep 只命中 :1306 定义与 :1582 的 write_hob）。
+  ⇒ archived / quarantined / pending-activation / unknown-legacy 的会话（mayProceed=false）
+    **仍能写「用户批准」落账** —— 「被隔离的会话不能推进」在写路径上有一个旁路。
+
+⚠ dryRun 保持放行（纯预演不改变任何东西，与 write_hob 一致）。
+⚠ hob_ledger_init 不过闸门是**有理由的**（它是开张而不是推进），本批不动它；
+  approve 没有这个理由。
+```
+
+```ts
+if (args.dryRun === false) {
+  const blocked = proceedGate(exec)
+  if (blocked !== undefined) return { ok: false, reason: 'proceed-not-confirmed', message: blocked }
+}
+```
+
+⚠ **注意它是「四个工具里只修 approve」** —— 并说明了为什么其余三个不动：
+   `init` 是开张（有理由）；`migrate` / `rebuild` 未提，可能仍待处理。
+   ⇒ 本条只对 `approve` 的判定成立。
+
+### 178.3 T-16：切换账本时 `itemDetails` 一起清
+
+`project-panel.tsx:3043`：
+
+```
+⚠⚠ **必须一起清 itemDetails**（T-16）。
+```
+
+⇒ ✅ 已修：改前只重置另外两样，展开详情的缓存会串到另一本账。
+
+### 178.4 进度
+
+| 状态 | 条数 |
+|---|---|
+| ✅ 全量已修 | **54**（+T-11 +T-13 +T-16） |
+| ⚠ 部分修 | 1（R-01） |
+| ⚠ 核心已修 + 规格需修订 | 1（R-02） |
+| ⚠ 按设计处理 | 1（T-07） |
+| ⛔ 未修 | 1（S-01） |
+| ⬜ 未核 | **54** |
+
+⚠ **已核 58 / 112，正好过半。**
+
+---
