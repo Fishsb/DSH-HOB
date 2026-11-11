@@ -572,8 +572,22 @@ export function pipelineViewOf(
            * 段 1 是「只报不拦」。段 2 的区别只有**前缀**：
            *   历史单元标「宽限」、新单元标「影子」，让读的人看出「这条已经开始算了，只是还没拦」。
            *
-           * ⚠ **本段仍不改 `verified` / `accepted`** —— 段 3 才真的拦。
-           *   直接做段 3 会让存量账本大面积变红，而证据补不回来（当时就没留）。
+           * ⚠ 本段（段 2）**不**改 `verified` / `accepted` —— 段 3 才真的拦。
+           *   ⚠ **段 3 已于 2026-11-11 实施**：`allTasksVerified` / `allTasksAccepted`
+           *   现在会调 `verificationProblems` / `acceptanceProblems`，强判据命中即不算通过。
+           *   ⛔ 但**宽限分支保留**（历史单元仍需按 provenance 豁免）。
+           *
+           * ── ⚠ 给后人：造「到达阶段 5」的夹具需要同时满足 4 条（2026-11-11 实测踩过）──
+           *   ① `decision` 单元必须带 `decision_kind: 'stage-approval'` 与 `artifact_id`
+           *      （⛔ 不是 `parent`），否则 `approvalDecisionsOf` 找不到它 ⇒ 报 `missing`；
+           *   ② `decision.decision` 必须在 `APPROVAL_DECISIONS = ['approve','request-changes']` 里
+           *      （⚠ 是 `approve`，⛔ 不是 `approved`）；
+           *   ③ `artifact_digest` 必须**基于带 revision 的完整单元**算：
+           *      先 `{ ...base, kind, ...o }` 再 `artifactDigestOf(u)`。
+           *      ⚠ 因为 `revisionOf` 只认数字，无 revision 时 canonicalText 里是 `""` ⇒ digest 不同；
+           *   ④ 方案批准必须带 `selected_option`（必须是 `path_options` 里的一项），否则报 `invalid`。
+           *   ⚠ 即使 4 条全过，`activeStage` 仍可能停在 2（G3/G4 还有门禁）——
+           *     要看到阶段 5 的 `completed`，整条链都得通。
            *
            * ⚠ 判定口径：`provenanceOf(u) === 'legacy-migrated'` ⇒ 历史单元。
            *   它由 I/O 侧按**分片文件名**给出（⛔ 不是自填字段），与 S-02 同源。
