@@ -91,7 +91,7 @@
 | O-42 | 已修 | `scripts/check-gitignore.mjs:472` |
 | O-43 | 已修 | `src/server/hob-write.ts:1273` |
 | R-01 | 部分修 | ⚠ 只做了第 1/3 段 |
-| R-02 | 核心已修 | ⚠ **验收规格过宽**：`REVIEW-VOL2-1.md:211` 要求「`summarizeStage` / `pipelineViewOf` / `displayState` **三者对每一步一致**」，但 `buildStages` 的 docstring 明写职责是「渲染单元数组」，**不需要** `activeStage`。按字面实现会破坏职责边界。实测：前两者已同源派生（`requirement-chain.ts:348/:381`），第三者按设计不感知主线 |
+| R-02 | 已修 | ⚠ **规格第①条经双向量证与设计相反，不应实现**（§198）：① `buildStages` 职责是「渲染单元数组」，让它感知主线会破坏分层；② `check:stages-route` 39 条断言 **0 处** `activeStage`，现有判据也不要求。缺陷本身已修：`requirement-chain` 派生自 `pipeline-view`（`:348/:381`），客户端 4 处全用 `displayState` |
 | R-03 | 已修 | `src/shared/stages-index.ts:32` |
 | R-04 | 已修 | `preset/dsh-hob/spec/notes-handover.md:244` + `preset-dsh-hob.patch.yml:434`（已改七步，§107） + `patch.yml:434` 已改七步（§107） |
 | R-05 | 已修 | `src/shared/pipeline-view.ts:760`（G3 无环/无悬空/覆盖缺口已进 pipelineDispatchProblems） |
