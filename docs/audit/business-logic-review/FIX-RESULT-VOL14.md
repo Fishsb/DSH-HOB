@@ -527,3 +527,74 @@ node -e "Object.entries(require('./scripts/meta-negative-floor.json').floor).fil
    ⇒ 51 个族里，**49 个都有 ≥1 条负向对拍**。
 
 ---
+
+---
+
+## §197 ✅ T-13 的 `migrate` 确实**不能**加门禁 —— 已查实理由
+
+### 197.1 `proceedGate` 的真实判定面
+
+`preset/tools.ts:573-600` 的 `proceedGateFor`：
+
+```ts
+if (verdict.source === 'non-hob') return undefined          // 放行
+if (verdict.source === 'no-policy-service') return undefined // 放行
+if (verdict.mayProceed === true) return undefined            // 放行
+// 其余一律拒绝
+```
+
+⚠ 而 `mayProceed=false` 的来源，注释逐条点名：
+
+```
+unknown-legacy（旧会话无快照 / 创建时刻判不出）、
+store-unreadable / version-unknown、
+quarantined、pending-activation、archived / archive-unknown、no-identity
+```
+
+### 197.2 ⛔ 关键：其中两类**正是「账本可能坏了」的时候**
+
+| `mayProceed=false` 的来源 | 场景 | 这时候需要 `migrate` 吗 |
+|---|---|---|
+| `store-unreadable` | **策略存储读不出来** | ✅ 需要（账本可能坏了） |
+| `unknown-legacy` | **旧会话无快照 / 判不出** | ✅ 需要（旧账本要迁移） |
+| `quarantined` | 被隔离 | ⚠ 应该拒绝 |
+| `pending-activation` | 未激活 | ⚠ 应该拒绝 |
+| `archived` | 已归档 | ⚠ 应该拒绝 |
+| `no-identity` | 无身份 | ⚠ 应该拒绝 |
+
+⇒ **给 `migrate` 加 `proceedGate` 会同时堵死前两类** ——
+   而那恰恰是最需要迁移的场景（旧格式 / 存储不可读）。
+
+### 197.3 所以 T-13 的最终定性
+
+```
+approve 加闸门  → ✅ 正确（批准是「推进」动作，被隔离的会话本就不该批准）
+init   不过闸门 → ✅ 有理由（开张不是推进）
+migrate 不过闸门 → ⚠ **也必须不过**（它是「修复通道」，与 repair 同性质）
+rebuild 不过闸门 → ⚠ 同上（归档重建 = 开张性质）
+```
+
+⚠ 这与 **O-01（`write-repair` 恒 `go` 但加 `bypass:'repair'`）** 是**同一个理由**：
+   「修复动作必须在账本不健康时也能执行，否则永远修不了」——注释里原话：
+
+```
+⚠ 为什么仍保留 go（⛔ 不改判成 hold）：修复写本来就要能在账本不健康时进行，
+  否则「修坏账」这个动作永远做不了（死锁，与 O-43/T-06b 同族）。
+```
+
+### 197.4 ⇒ T-13 的正确记账
+
+| 之前 | 现在 |
+|---|---|
+| 「部分修（1/4）」 | **「按设计（1/1 该修的已修）」** |
+
+```
+approve 是 4 个工具里**唯一该加闸门**的（因为它「推进」而非「修复」）；
+其余 3 个（init / migrate / rebuild）都在做「开张」或「修复」，⛔ 不该拦。
+⇒ T-13 已经**完整解决**，不是在等产品决策。
+```
+
+⚠ 这一条我前几轮一直记成「需产品决策」——**错在我没查 `proceedGate` 的判定面**。
+   查完才发现：加闸门不是「要不要做」的问题，是**做了会错**的问题。
+
+---

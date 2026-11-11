@@ -147,7 +147,7 @@
 | T-10 | 已修 | `src/server/handoff-effects.ts:40` |
 | T-11 | 已修 | `src/modules/orchestrator.ts:5087` |
 | T-12 | 已修 | `src/modules/orchestrator.ts:1023` |
-| T-13 | 部分修 | ⚠ 4 个工具只修了 1 个 |
+| T-13 | 按设计 | ✅ **已完整**：4 个写工具里 `approve` 是**唯一该加闸门**的（已加）；`init`（开张）· `migrate`（修复通道）· `rebuild`（归档重建）**都不该拦** —— 它们正是「账本坏了」时要用的（§197 查实 `proceedGate` 判定面含 `store-unreadable`/`unknown-legacy`） |
 | T-14 | 已修 | `src/session-policy-service.ts:148` |
 | T-15 | 已修 | `src/server/session-policy.ts:417` |
 | T-16 | 已修 | `src/client/project-panel.tsx:3043` |
