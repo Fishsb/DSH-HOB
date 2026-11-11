@@ -1716,3 +1716,94 @@ stale:      true   （>= 24h）
 ⚠ **本节的净产出是「否证我自己的怀疑」**，⛔ 不是「新增一个待办」。
 
 ---
+
+---
+
+## §210 S-01 的定性精确化：不是「宿主缺 API」，是「审批接缝在 pipeline 内部」
+
+### 210.1 此前的说法
+
+```
+S-01 未修 —— 宿主 ToolRunContext 只有 deferContext / concludeTurn，
+            没有 ctx.approval.request ⇒ 仓内无解
+```
+
+⚠ 这个说法**结论对，理由不完整**：宿主其实**有**审批机制。
+
+### 210.2 宿主确实有审批接缝
+
+```ts
+// node_modules/@deepseek-ai/dsh-tools/lib/types/pipeline.d.ts:110
+/**
+ * Resolve an `ask` decision to allow/deny through the approval seam. The
+ * seam is consumed opportunistically with `ctx.get('approval')` — a
+ * deployment that composes no ApprovalService keeps the historical degrade
+ * to deny, and an unmount mid-session degrades the same way on the next ask.
+ *
+ * `allowed-once` proceeds; the three non-grants deny with distinct reasons
+ * so the model can tell a human "no" from an absent approval channel.
+ */
+private serviceAsk;
+```
+
+⇒ 语义完整：allowed-once 放行；其余三种拒绝且**理由各不相同**（让模型能区分
+   「人说不」与「审批通道不存在」）；无 agent / 未装配 ⇒ 降级拒绝。
+
+### 210.3 ⛔ 但工具侧够不到
+
+```
+· serviceAsk 是 ToolExecutionPipeline 的 private 方法
+· 工具实现体拿到的是 ToolRunContext，成员只有：
+    deferContext(context: UserMessage): void
+    concludeTurn(): void
+  ⇒ 没有 requestApproval
+```
+
+### 210.4 ⛔ 工具声明层也没有
+
+逐字段读过 `ToolDefinition`（`contracts.d.ts:23`），全部字段：
+
+```
+output: ToolOutputDefinition            必填
+execute(args, exec): Promise<unknown>   必填
+projectContent?(...)                    内容投影
+finalizeContent?(...)                   末尾内容变换
+timeoutMs?                              超时预算
+isConcurrencySafe?(args)                并发分类
+```
+
+⇒ **没有** `requiresApproval` / `ask` / `approval` 之类的声明字段。
+
+### 210.5 ⇒ 两条路径都不通
+
+```
+路径 A  工具内主动请求审批
+        需 ctx.approval.request  ⇒ ToolRunContext 没有        ❌
+
+路径 B  声明「本工具需要审批」，让策略自动走审批
+        需 ToolDefinition 的 approval 字段  ⇒ 没有            ❌
+```
+
+### 210.6 ⇒ 宿主需要做什么（明确到可执行）
+
+```
+二选一：
+① 在 ToolRunContext 暴露
+     requestApproval(reason: string): Promise<'allowed-once' | 'denied' | ...>
+② 在 ToolDefinition 加
+     approval?: 'never' | 'ask'
+   声明字段，让 pipeline 的 serviceAsk 能按声明触发
+```
+
+### 210.7 ⇒ 结论
+
+```
+✅ S-01 仓内无解 —— 结论不变
+✅ 但理由是「审批接缝在 pipeline 内部，工具实现体与声明层都够不到」
+   ⛔ 不是「宿主没有审批机制」
+```
+
+⚠ 这个区别重要：前者说明**宿主已有一半**（机制在、入口没开），
+   后者会让人以为要从零设计审批系统。
+
+---
