@@ -1341,8 +1341,16 @@ console.log('')
     const m = /legacy\(u\)\)\s*return/.exec(b)
     if (m === null) {
       p.push('`' + name + '` 里没有 `legacy(u)) return` 的提前返回 ⇒ ' + label + '侧的历史单元豁免没了（R-01 段 3 会拦死存量）')
-    } else if (m.index > b.length / 2) {
-      p.push('`' + name + '` 的豁免式不在函数体前半段（位置 ' + m.index + ' / ' + b.length + '）⇒ 疑似末尾兜底，⛔ 挡不住已 push 的问题')
+    } else {
+      /**
+       * ⚠ 位置判据：豁免必须早于**任何** `out.push`。
+       *   用「函数体前半段」判是**错的**（2026-11-11 实测：把豁免挪到 pos 356 / 3931，
+       *   仍在「前半段」⇒ 判据放行，但它已经在一条 `out.push` 之后了）。
+       */
+      const firstPush = b.indexOf('out.push')
+      if (firstPush >= 0 && m.index > firstPush) {
+        p.push('`' + name + '` 的豁免式在首个 `out.push` 之后（豁免 ' + m.index + ' > push ' + firstPush + '）⇒ 末尾兜底挡不住已 push 的问题')
+      }
     }
   }
   if (p.length === 0) {
