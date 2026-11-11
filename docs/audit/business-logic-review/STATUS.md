@@ -40,7 +40,7 @@
 | O-08 | 已修 | `src/shared/policy-record-state.ts:46` |
 | O-09 | 已修 | `src/server/projection-writer.ts:124` |
 | O-10 | 已修 | `src/modules/orchestrator.ts:4467` |
-| O-11 | 已修 | `orchestrator.ts` 首波失败不再整体置 failed（§160） |
+| O-11 | 已修 | ⚠ **逻辑推断**（代码无编号）：`src/modules/orchestrator.ts:3998` 明写「轨道状态只从 trackStates 派生」⇒ 旧形态不可表达（§160） |
 | O-12 | 已修 | `src/server/session-policy.ts:197` |
 | O-13 | 已修 | `src/session-policy-service.ts:707` |
 | O-14 | 已修 | `src/modules/tools.ts:146` |
@@ -61,9 +61,9 @@
 | O-29 | 已修 | `scripts/check-gitignore.mjs:437` |
 | O-30 | 已修 | `scripts/check-hob-unselected-gate.mjs:1892` |
 | O-31 | 已修 | `scripts/check-profile-assembly.mjs:1245` |
-| O-32 | 已修 | `pipeline-view.ts` blockedBy 两来源处理不同对象（§161 实测） |
+| O-32 | 已修 | ⚠ **实测推断**（代码无编号）：`src/shared/pipeline-view.ts` 的 blockedBy 两来源分别处理 plan 与 task，集合不重叠；造夹具实测重复 0（§161） |
 | O-33 | 已修 | `src/server/hob-write.ts:386` |
-| O-34 | 已修 | `src/shared/pipeline-view.ts:816` |
+| O-34 | 已修 | `src/shared/pipeline-view.ts:834`（任务图只认当前方案） |
 | O-35 | 已修 | `src/modules/orchestrator.ts:10954` |
 | O-36 | 已修 | `src/client/project-panel.tsx:265` |
 | O-37 | 已修 | `src/modules/tools.ts:2051` |
@@ -76,8 +76,8 @@
 | R-01 | 部分修 | ⚠ 只做了第 1/3 段 |
 | R-02 | 核心已修 | ⚠ **验收规格过宽**：`REVIEW-VOL2-1.md:211` 要求「`summarizeStage` / `pipelineViewOf` / `displayState` **三者对每一步一致**」，但 `buildStages` 的 docstring 明写职责是「渲染单元数组」，**不需要** `activeStage`。按字面实现会破坏职责边界。实测：前两者已同源派生（`requirement-chain.ts:348/:381`），第三者按设计不感知主线 |
 | R-03 | 已修 | `src/shared/stages-index.ts:32` |
-| R-04 | 已修 | `spec/notes-handover.md:244` + `patch.yml:434` 已改七步（§107） |
-| R-05 | 已修 | `src/shared/pipeline-view.ts:742` |
+| R-04 | 已修 | `preset/dsh-hob/spec/notes-handover.md:244` + `preset-dsh-hob.patch.yml:434`（已改七步，§107） + `patch.yml:434` 已改七步（§107） |
+| R-05 | 已修 | `src/shared/pipeline-view.ts:760`（G3 无环/无悬空/覆盖缺口已进 pipelineDispatchProblems） |
 | R-06 | 已修 | `src/modules/tools.ts:97` |
 | R-07 | 已修 | 读盘实现已收敛（§146 分类） |
 | R-08 | 已修 | `src/client/project-panel.tsx:190` |
@@ -107,17 +107,17 @@
 | S-03 | 已修 | `src/server/hob-write.ts:1331` |
 | S-04 | 已修 | `src/shared/stage-controls.ts:1343` |
 | S-05 | 已修 | `src/shared/stage-controls.ts:922` |
-| S-06 | 已修 | `meta-negative-floor.json` 只剩 2 族为 0 且合理（§131） |
+| S-06 | 已修 | `scripts/meta-negative-floor.json`（现只剩 2 族为 0 且合理，§133） 只剩 2 族为 0 且合理（§131） |
 | S-07 | 已修 | `scripts/check-workflow.mjs:404` |
 | S-08 | 已排除 | ⚠ 复核证伪：CU-5 正则指向的常量已改名（§150） |
 | S-09 | 已修 | `src/client/project-panel.tsx:56` |
 | S-10 | 已修 | `src/client/project-panel.tsx:20` |
-| S-11 | 已修 | `scripts/check-all.mjs:756` |
-| S-12 | 已修 | `scripts/check-all.mjs:758` |
+| S-11 | 已修 | `scripts/check-all.mjs:785`（同批新增 S-11 纪律） |
+| S-12 | 已修 | `scripts/check-all.mjs:787`（14 → 16） |
 | S-13 | 已修 | `scripts/check-all.mjs:48` |
 | S-14 | 已修 | `src/client/create-hob-dialog.tsx:1200` |
 | S-15 | 已修 | `src/server/orch-state.ts:2852` |
-| S-16 | 已修 | `scripts/check-all.mjs:793` |
+| S-16 | 已修 | ⚠ **实测**：负控计数已做词法安全的注释剥离（`check-meta-negctl.mjs` 的 `stripComments`），「注释掉的负控」不再被算作一条 |
 | T-01 | 已修 | `src/server/hob-write.ts:1210` |
 | T-02 | 已修 | `src/modules/tools.ts:124` |
 | T-03 | 已修 | `src/modules/orchestrator.ts:5611` |
