@@ -645,6 +645,20 @@ export function HobUnselectedGate(props: HobUnselectedGateProps): any {
      * ⛔ 不要改成「谁先挂载谁轮询」—— 挂载顺序由宿主决定，那会让频率随机。
      * ⛔ 也不要三个都轮询再"去重请求"—— 请求已经发出去了，去重来不及。
      */
+    /**
+     * ⚠⚠ **O-19：轮询只由「专职那一份」跑**（2026-11-11 落实 §61.4 的修法）。
+     *
+     * 本组件注册到**三个槽**（hero.options / session.header.actions / input.right），
+     * 三者各有一份 effect ⇒ 若都轮询，实际频率是注释所写间隔的 **3 倍**。
+     *
+     * ⇒ 只有 `showBanner === false` 的那份（注册在 `conversation.input.right`，
+     *   **会话常驻**）负责轮询；两个渲染横幅的实例**只读状态、不轮询**。
+     *
+     * ⚠ 三个实例**共用同一份 memory** ⇒ 开窗去重仍然只弹一次（不变）。
+     * ⛔ 不要改成「谁先挂载谁轮询」—— 挂载顺序由宿主决定，那会让频率随机。
+     * ⛔ 也不要三个都轮询再"去重请求"—— 请求已经发出去了，去重来不及。
+     */
+    if (props.showBanner !== false) return undefined
     // ⚠ 已选档 / 判不出 ⇒ 不轮询（`unrecorded` 才可能是"被拦了但还没选"）
     if (recorded !== 'unrecorded') return undefined
     /**
@@ -688,7 +702,7 @@ export function HobUnselectedGate(props: HobUnselectedGateProps): any {
       alive = false
       clearInterval(timer)
     }
-  }, [sessionId, props.agentPreset, props.readBlocked, props.blockPollMs, recorded, props.openForSession, memory, mountedAutoOpen])
+  }, [sessionId, props.agentPreset, props.readBlocked, props.blockPollMs, recorded, props.openForSession, memory, mountedAutoOpen, props.showBanner])
 
   if (props.showBanner === false) return null
   if (!shouldShowGate(props.agentPreset, recorded)) return null

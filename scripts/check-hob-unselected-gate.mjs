@@ -317,6 +317,8 @@ try {
         readBlocked: blockedReader,
         blockPollMs: 20,
         openForSession: (id) => opened.push(id),
+        /** ⚠ O-19：轮询只由专职实例（showBanner=false）跑 */
+        showBanner: false,
         memory,
       }))
       await settle(80)
@@ -1698,6 +1700,8 @@ try {
               openForSession: (id) => { opened.push(id) },
               memory: gateMod.createGateMemory(),
               autoOpen: true,
+              /** ⚠ O-19：轮询只由专职实例（showBanner=false）跑 */
+              showBanner: false,
             })
             const root2 = createRoot(document.createElement('div'))
             await act(async () => { root2.render(el) })
@@ -1738,6 +1742,56 @@ try {
           ok('G-24 B2 ✓ 常驻轮询实例（showBanner=false）读到 blocked ⇒ 自动开窗 1 次，且不渲染横幅')
         } else {
           bad(`G-24 B2 · opened=${JSON.stringify(opened2)} banner=${banner2}`)
+        }
+      }
+
+      /**
+       * ── B3 · **O-19：轮询只由专职实例跑，⛔ 三个槽各跑一遍** ──────────────
+       *
+       * ⚠ 本组件注册到三个槽（hero.options / session.header.actions / input.right），
+       *   若三者都轮询，实际频率是注释所写间隔的 **3 倍**。
+       *   ⇒ 判据：**同一份 memory 下挂三个实例（两横幅 + 一轮询），
+       *     `readBlocked` 的调用次数必须接近「一个实例」的量级，⛔ 不是三倍**。
+       *
+       * ⚠ 计数用**注入的 reader**（生产代码只调它，⛔ 不自己算次数）。
+       */
+      {
+        const mem = gate.createGateMemory()
+        let calls = 0
+        const countingReader = async () => { calls += 1; return 'clear' }
+        const mk = (extra) => React.createElement(gate.HobUnselectedGate, {
+          sessionId: S,
+          agentPreset: gate.HOB_PRESET_ID_FOR_MATCH,
+          readRecorded: async () => 'unrecorded',
+          readBlocked: countingReader,
+          blockPollMs: 20,
+          openForSession: () => {},
+          memory: mem,
+          autoOpen: true,
+          ...extra,
+        })
+        const roots = []
+        await act(async () => {
+          for (const extra of [{}, { placement: 'header' }, { showBanner: false }]) {
+            const r3 = createRoot(document.createElement('div'))
+            r3.render(mk(extra))
+            roots.push(r3)
+          }
+        })
+        await act(async () => { await new Promise((res) => setTimeout(res, 100)) })
+        const withFix = calls
+        await act(async () => { for (const r3 of roots) r3.unmount() })
+        /**
+         * 100ms / 20ms ≈ 5 轮。**一个**实例应 ≈ 5～8 次（含首次 `void tick()`）；
+         * 三个实例各跑 ⇒ ≈ 15～24 次。
+         * ⚠ 阈值取 12：⛔ 不是"恰好 5"，那样会被调度抖动误伤。
+         */
+        if (withFix > 0 && withFix <= 12) {
+          ok(`G-24 B3 ✓ **O-19：轮询只由专职实例跑** —— 三实例挂载 100ms 内 \`readBlocked\` 仅 `
+            + `${withFix} 次（单实例量级；⚠ 三倍会是 15+）`)
+        } else {
+          bad(`G-24 B3 · O-19 复发：三实例挂载 100ms 内 \`readBlocked\` 被调 ${withFix} 次`
+            + ' ⇒ 三个槽各自轮询（实际频率是注释的 3 倍）。修法：effect 里只让 `showBanner === false` 那份轮询')
         }
       }
 
@@ -2293,6 +2347,8 @@ try {
                  *   ⚠ 判据没有变松：`opened` 必须**恰好 1 次**且是 SID。
                  */
                 blockPollMs: 20,
+                /** ⚠ O-19：轮询只由专职实例（showBanner=false）跑 */
+                showBanner: false,
               }))
               // ⚠ 两段 settle：[60ms] 让 `read` 那条落地并进入 `unrecorded`，
               //    [200ms] 再让 `blocked` 轮询跑几轮（⚠ 一次 `settle` 只刷一轮宏任务，
@@ -2551,6 +2607,8 @@ try {
                 openForSession: (id) => opened.push(id),
                 memory: gate.createGateMemory(),
                 blockPollMs: 20,
+                /** ⚠ O-19：轮询只由专职实例（showBanner=false）跑 */
+                showBanner: false,
               }))
               await settle(60); await settle(250)
             })

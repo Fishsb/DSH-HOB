@@ -1235,7 +1235,8 @@ check:ledger-resources  查了 18 处 · 过了 18 处   （新增 T-23）
 | [`FIX-RESULT-VOL8.md`](./FIX-RESULT-VOL8.md) | §88–§96 | A 方案第 7 轮（自引用事故 / 批替换纪律）+ 后续 |
 | [`FIX-RESULT-VOL9.md`](./FIX-RESULT-VOL9.md) | §88–§118 | 验证与进度观察 + 入口清单 / 族数算术 / S-48② 渲染层 |
 | [`FIX-RESULT-VOL10.md`](./FIX-RESULT-VOL10.md) | §119–§135 | 判据写源码根治（4 处）· 文档断链 · 英文质量 10 维 · 负向对拍逐族复算 · `as any` 根因 |
-| [`FIX-RESULT-VOL11.md`](./FIX-RESULT-VOL11.md) | §136– | 范围自我纠正（`as any` 清理的实际代价）|
+| [`FIX-RESULT-VOL11.md`](./FIX-RESULT-VOL11.md) | §136–§152 | 范围自我纠正 · 记账偏差审计 · 审查记录迁出 kit/ |
+| [`FIX-RESULT-VOL12.md`](./FIX-RESULT-VOL12.md) | §153– | 四批提交 + O-19 真正修复（6 vs 18 双向验证）|
 | [`FIX-RESULT-VOL10.md`](./FIX-RESULT-VOL10.md) | §119–§122 | build 流程债 + 并发假红 + **判据往生产源码写盘**（已根治） |
 
 ⚠ **拆分的唯一原因是读上限**（64KB），⛔ 不是因为内容变了。
