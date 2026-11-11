@@ -1148,3 +1148,82 @@ S-01 的根治需要产品决策：
 | ⬜ 未核 | **76** | |
 
 ---
+
+---
+
+## §167 ⛔ 第 5 条记账偏差：R-04（blocker）**未修**
+
+### 167.1 三条 blocker 的核查结果
+
+| 编号 | 缺陷 | 实测 | 判定 |
+|---|---|---|---|
+| **R-05** | G3 不进任何派活闸门 | `pipeline-view.ts:497-499`：`graph.cycles.length === 0 && graph.dangling.length === 0 && graph.coverageGaps.length === 0` 已进入 `pipelineDispatchProblems` | ✅ **已修** |
+| **R-02** | 「链完成了吗」有 5 份实现 | 见 167.3（未完全查清） | ⚠ 未判定 |
+| **R-04** | 运行时教「五步」、面板与文档「七步」 | 见 167.2 | ⛔ **未修** |
+
+### 167.2 ⛔ R-04 的证据链（三层都对上）
+
+**① 生成物里明写五步**：
+
+```
+preset/dsh-hob/gen/persona.md:364
+  "N and the step name come from the five steps
+   (需求规格 / 实现方案 / 编码任务 / 任务执行 / 验收核对)"
+```
+
+⚠ 注意这五个名字里 **「编码任务」「验收核对」是 LEGACY 五步**，而 v3 七步是
+   「任务图」「产品验收」。⇒ **运行时教给模型的是旧口径。**
+
+**② 源码里同样如此**：
+
+```
+preset/dsh-hob/preset-dsh-hob.patch.yml:223   "### The five steps"
+preset/dsh-hob/preset-dsh-hob.patch.yml:227   "it has all five steps"
+preset/dsh-hob/preset-dsh-hob.patch.yml:334   "⛔ Never skip the five steps"
+```
+
+**③ 而生成链是单向的**：
+
+```
+scripts/gen-preset-contract.mjs:7
+  "⇒ preset/dsh-hob/gen/persona.md · preset/dsh-hob/gen/contracts.md"
+⇒ 改 gen/ 会被下一次生成覆盖，**必须改源码** preset-dsh-hob.patch.yml
+```
+
+### 167.3 ⚠ 为什么 R-02 我判不了
+
+R-02 说「链完成了吗」有 **5 份实现**（4 份服务端 + 1 处客户端）。
+判「已修」需要证明：**那 5 份已经收敛成 1 份**。
+
+```
+我查到：stage-controls.ts / pipeline-view.ts / stages-index.ts /
+        requirement-chain.ts / project-panel.tsx 里都还有「完成判定」的痕迹
+⛔ 但我**没有**逐一证明它们是「同一份派生」还是「各自独立实现」
+⇒ 贸然判「已修」会是第 9 次「单一证据下全局结论」
+```
+
+⚠ 正确做法：读每一处的实现，看它们是否调用同一个函数。那是下一轮的事。
+
+### 167.4 更新后的严格账
+
+| 状态 | 条数 | 编号 |
+|---|---|---|
+| ✅ 全量已修 | **35** | 含 R-05 |
+| ⚠ 部分修 | **1** | R-01（段 2/3） |
+| ⛔ **仍是 blocker** | **2** | **S-01 · R-04** |
+| ⚠ 未判定 | **1** | R-02 |
+| ⬜ 未核 | **73** | |
+
+### 167.5 ⚠ 五条记账偏差的清单
+
+| # | 编号 | 级别 | 记账 | 实际 |
+|---|---|---|---|---|
+| 1 | O-19 | medium | 已修 | 未修 → **§87 已修好** |
+| 2 | R-03 | blocker | 已修 | 部分修 → **§90 已修好** |
+| 3 | R-01 | blocker | 已修 | **1/3** |
+| 4 | S-01 | blocker | 总表算「剩余 0」 | **正文写明仍是 blocker** → 总表已订正 |
+| 5 | **R-04** | **blocker** | 总表算「剩余 0」 | **未修**（五步仍在运行时） |
+
+⚠ **5 条里 4 条是 blocker** —— 这说明总表的「剩余 0」不是小误差。
+
+---
