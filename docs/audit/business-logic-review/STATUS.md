@@ -90,7 +90,7 @@
 | O-41 | 已修 | `src/client/project-panel.tsx:1434` |
 | O-42 | 已修 | `scripts/check-gitignore.mjs:472` |
 | O-43 | 已修 | `src/server/hob-write.ts:1273` |
-| R-01 | 部分修 | ⚠ **段 1/2/3 实现均已完成**（段 3 两侧：`allTasksVerified` 调 `verificationProblems`、`allTasksAccepted` 调 `acceptanceProblems`）；**断言 SC-38（运行时分辨力）+ SC-39（源码层调用）**已加并各自负向对拍成立。**剩余唯一缺口**：REVIEW 段 3 定义含「删宽限分支」，未删——因「将来出现 v3 存量账本时如何豁免」无答案（§200/§202） |
+| R-01 | 已修 | ✅ **段 1/2/3 全部完成，且宽限豁免已有判据**。段 3：`allTasksVerified`→`verificationProblems`、`allTasksAccepted`→`acceptanceProblems`；**宽限分支在判据函数内部**（`stage-controls.ts` 两处 `legacy(u)) return []` 提前返回）。判据：SC-38（运行时分辨力）+ SC-39（源码层调用）+ **SC-40（宽限豁免位置）**，三者负向对拍均成立。⚠ 原先误判为「删宽限分支未做」，实为豁免就在 `verificationProblems`/`acceptanceProblems` 第一行（§204） |
 | R-02 | 已修 | ⚠ **规格第①条经双向量证与设计相反，不应实现**（§198）：① `buildStages` 职责是「渲染单元数组」，让它感知主线会破坏分层；② `check:stages-route` 39 条断言 **0 处** `activeStage`，现有判据也不要求。缺陷本身已修：`requirement-chain` 派生自 `pipeline-view`（`:348/:381`），客户端 4 处全用 `displayState` |
 | R-03 | 已修 | `src/shared/stages-index.ts:32` |
 | R-04 | 已修 | `preset/dsh-hob/spec/notes-handover.md:244` + `preset-dsh-hob.patch.yml:434`（已改七步，§107） + `patch.yml:434` 已改七步（§107） |

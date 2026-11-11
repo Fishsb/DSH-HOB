@@ -1304,6 +1304,53 @@ console.log('')
   } else for (const x of p) bad('SC-39 · ' + x)
 }
 
+
+// ── SC-40 · R-01 段 3 的宽限豁免必须在**判据函数内部** ─────────────────────
+/**
+ * ── 守什么 ────────────────────────────────────────────────────────
+ *   R-01 的「宽限分支」到底在哪？
+ *   ⛔ 不在 `pipeline-view.ts` 的 `legacyTag`（那只是给问题文字加 `[宽限]` 前缀）；
+ *   ✅ 在 `stage-controls.ts` 的判据函数**第一行**：
+ *        `verificationProblems`: `if (u.kind !== 'verification' || legacy(u)) return []`
+ *        `acceptanceProblems`  : `if (legacy(u)) return []`
+ *
+ *   ⇒ 删掉这个 `legacy(u)` 判定，历史单元就会被强判据拦死，
+ *     而 `SC-38` 测的是「有没有判据」、`SC-39` 测的是「有没有调」，**都测不到这个**。
+ *
+ * ── 判据（源码层）──────────────────────────────────────────────────
+ *   ① 两个函数体里都要出现 `legacy(` 的**豁免式**调用（`legacy(u)) return`）；
+ *   ② 且该调用必须出现在函数体**前半段**（是提前返回，⛔ 不是末尾兜底）。
+ *
+ * ⚠ 只证「代码写了提前返回」，⛔ 不证「历史单元真的被判成 legacy」（那要注入 provenance）。
+ */
+{
+  const { readFileSync: rfW } = await import('node:fs')
+  const { join: pjW, dirname: dnW } = await import('node:path')
+  const { fileURLToPath: f2uW } = await import('node:url')
+  const src = rfW(pjW(dnW(f2uW(import.meta.url)), '..', 'src', 'shared', 'stage-controls.ts'), 'utf8')
+  const bodyOf = (name) => {
+    const at = src.indexOf('function ' + name + '(')
+    if (at < 0) return undefined
+    const end = src.indexOf('\n}', at)
+    return end < 0 ? undefined : src.slice(at, end + 2)
+  }
+  const p = []
+  for (const [name, label] of [['verificationProblems', '技术验证'], ['acceptanceProblems', '产品验收']]) {
+    const b = bodyOf(name)
+    if (b === undefined) { p.push('读不到 `' + name + '` 的函数体（形态变了）'); continue }
+    const m = /legacy\(u\)\)\s*return/.exec(b)
+    if (m === null) {
+      p.push('`' + name + '` 里没有 `legacy(u)) return` 的提前返回 ⇒ ' + label + '侧的历史单元豁免没了（R-01 段 3 会拦死存量）')
+    } else if (m.index > b.length / 2) {
+      p.push('`' + name + '` 的豁免式不在函数体前半段（位置 ' + m.index + ' / ' + b.length + '）⇒ 疑似末尾兜底，⛔ 挡不住已 push 的问题')
+    }
+  }
+  if (p.length === 0) {
+    ok('SC-40 ✓ **R-01 段 3 的宽限豁免在判据函数内部**（源码层）：'
+      + '`verificationProblems` / `acceptanceProblems` 都在函数体前部以 `legacy(u)) return` 提前返回'
+      + '（⚠ 只证「写了提前返回」，⛔ 不证「历史单元真被判成 legacy」）')
+  } else for (const x of p) bad('SC-40 · ' + x)
+}
 console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 0 处**`)
 console.log('')
 console.log(`SC 组：通过 ${pass} · 失败 ${fail}`)

@@ -1230,3 +1230,86 @@ npm run -s check:build | grep -c '处级口径'   →  1   ✅ 正常打印
    这比写一条会让 6 个族假红的判据要好。
 
 ---
+
+---
+
+## §204 ✅ R-01 收口 —— 「删宽限分支」原来早就做了，是我读漏了
+
+### 204.1 我之前怎么判的
+
+> 「段 3 唯一剩余缺口：REVIEW 定义含「删宽限分支」，未删——因为「将来出现 v3 存量账本时如何豁免」无答案」
+
+⚠ 这条判断**错了**，而且错了 3 轮。错因：只读 `pipeline-view.ts` 的 `legacyTag`，
+   看到它「只加前缀、不影响 verified」，就认定「宽限还在」。
+
+### 204.2 真正的豁免位置
+
+```js
+// src/shared/stage-controls.ts:784  verificationProblems
+if (u.kind !== 'verification' || legacy(u)) return []   ← 宽限在此
+
+// src/shared/stage-controls.ts:661  acceptanceProblems
+if (legacy(u)) return []                                ← 宽限在此
+```
+
+⇒ **段 3 的语义是**：`verificationProblems` / `acceptanceProblems` **无条件**参与判定；
+   历史单元的豁免由 `legacy()` 在**函数内部**完成（三层他证：自报 + 非 v3 + provenance）。
+   ⇒ 「删宽限分支」= 删掉 `pipeline-view.ts:439` 那种**整段跳过**的分叉，
+     ⛔ 不是删掉 `legacy()` —— 后者是**豁免的凭据**，不是豁免的分支。
+
+### 204.3 ⚠ 但没有任何断言在守这个豁免
+
+```bash
+grep 'legacy(u)\|宽限' scripts/check-stage-controls.mjs   →  0 处
+```
+
+| 断言 | 测什么 | 删掉 `|| legacy(u)` 会红吗 |
+|---|---|---|
+| SC-38 | 判据有没有**分辨力** | ❌ 不红 |
+| SC-39 | `allTasksVerified` 有没有**调**判据 | ❌ 不红 |
+| **SC-40**（新） | 豁免式**在不在、在不在前半段** | ✅ 红 |
+
+### 204.4 ✅ SC-40
+
+```
+✓ SC-40 ✓ R-01 段 3 的宽限豁免在判据函数内部（源码层）：
+        verificationProblems / acceptanceProblems 都在函数体前部
+        以 `legacy(u)) return` 提前返回
+```
+
+两条检查：
+
+```
+① 两个函数体里都要有 `legacy(u)) return` 的豁免式；
+② 位置必须在函数体**前半段** —— 防止有人把它挪到末尾兜底，
+   那样已 push 进 out[] 的问题仍然算数，豁免等于失效。
+```
+
+### 204.5 ✅ 负向对拍
+
+```
+删掉 `|| legacy(u)`
+→ ✗ SC-40 · `verificationProblems` 里没有 `legacy(u)) return` 的提前返回
+           ⇒ 技术验证侧的历史单元豁免没了（R-01 段 3 会拦死存量）
+```
+
+### 204.6 验证
+
+```
+check:stage-controls   114/114（原 113，+1）· 下界 113 → 114
+grep 'legacy(u)) return' src/shared/stage-controls.ts   →  10 处
+```
+
+### 204.7 ⚠ 教训
+
+```
+「某段文字还在」≠「那个缺陷还在」。
+我看到 `legacyTag` 里写着「宽限」，就以为宽限分支没删。
+实际上：`legacyTag` 是**显示层**（加 [宽限] 前缀），
+        `legacy(u)` 是**判定层**（要不要豁免）—— 两者同名不同层。
+```
+
+⚠ 这与 §155（grep 命中数 ≠ 缺陷还在）、§137（按编号 grep 不可靠）同族：
+   **变量名/文案相似的两个东西，可能处于完全不同的层次。**
+
+---
