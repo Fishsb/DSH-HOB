@@ -389,3 +389,81 @@ export interface ToolRunContext extends ToolExecution {
    ⛔ 不是「未修」，⛔ 也不是「已修」。
 
 ---
+
+---
+
+## §193 ✅ 核实 A 方案的防护完整性：**没有遗漏分片**
+
+### 193.1 防护点在最前面（关键）
+
+`hob-write.ts:825-838`：
+
+```ts
+function checkWhitelist(file, mode, allowApprovalShard = false) {
+  /**
+   * ⚠ 批准分片只有专用工具能写（S-01(A)）：
+   *   放在白名单**最前面** —— 否则会先被下面的 LEDGER_PATH_RE 放行。
+   *   ⚠ allowApprovalShard 只由 hob_pipeline_approve 传 true。
+   */
+  if (isApprovalOnlyPath(file) && !allowApprovalShard) {
+    return refuse(file, 'not-whitelisted',
+      `拒绝：\`${file}\` 是**用户批准**的专用分片，\`write_hob\` 不能写。`
+      + '\n      ⇒ 批准必须走 hob_pipeline_approve（它带用户回执校验）；'
+      + '⛔ 直接写这个分片等于伪造一条「用户已批准」。')
+  }
+```
+
+⚠ 三点都是正确的：
+
+```
+① 放在 LEDGER_PATH_RE 之前 —— 否则通用规则会先放行
+② 错误消息说明了「为什么不能写」与「应该走哪条路」
+③ 通行证是显式参数（allowApprovalShard），⛔ 不是绕过白名单
+```
+
+### 193.2 ⚠ 但我还要确认一件事：**批准是否只落这一个分片**
+
+如果批准产物还能写到别的分片，那 `APPROVAL_ONLY_SHARDS` 只覆盖一个就是漏洞。
+
+```bash
+grep -n 'unit-pipeline-approval' src/modules/tools.ts
+→  :2369  file: 'ledger/units/unit-pipeline-approval.toml'   （唯一写点）
+
+grep -rn 'kind.*decision|DEC-' src/modules/tools.ts | grep -i 'write|file'
+→  0 处（没有第二个写 decision 的路径）
+```
+
+⇒ ✅ **批准产物只落这一个分片，`APPROVAL_ONLY_SHARDS` 精确覆盖它，没有遗漏。**
+
+### 193.3 ⚠ 但这条「唯一写点」有前提
+
+```
+它只保证「本仓代码里」批准只落这一个分片；
+⛔ 不保证「没有别的工具能往这个分片写」—— 那由 allowApprovalShard 的传参面决定
+```
+
+⚠ 检查传参面：
+
+```bash
+grep -rn 'allowApprovalShard' src/
+→  :528  类型定义
+→  :811  注释
+→  （只有 hob_pipeline_approve 一处传 true）
+```
+
+⇒ ✅ **传参面也是收敛的。**
+
+### 193.4 S-01(A) 的最终定性
+
+| 维度 | 结论 |
+|---|---|
+| 防护位置 | ✅ 在最前，先于通用白名单 |
+| 覆盖分片 | ✅ `unit-pipeline-approval.toml`，且只此一个写点 |
+| 传参面 | ✅ 只有 approve 一处传 true |
+| 错误消息 | ✅ 说明原因与正确路径 |
+| **剩余风险** | ⚠ 批准工具**仍由 Hob 调用**、`decided_by` **仍是硬编码** |
+
+⇒ A 方案在**本仓能做到的范围内是完整的**；
+   剩余风险只能靠宿主提供「用户本人触发通路」（C1/C2），而那两条已验为不可行。
+
+---
