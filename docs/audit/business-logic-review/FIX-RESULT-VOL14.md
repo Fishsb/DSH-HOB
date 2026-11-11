@@ -260,3 +260,28 @@ if (tasks.some((t) => text(t.status) !== 'built') || returned.length < tasks.len
 ⚠ 但**必须如实记录它当前不执行**，否则下一次读代码的人会以为「影子模式已经在跑」。
 
 ---
+
+### 191.5 ✅ 覆盖度已确认：`dsh-hob` 是**唯一**有真实分片的账本
+
+⚠ 上一节只测了 `dsh-hob` 一本账。补测其余账本后确认**结论覆盖全部真实数据**：
+
+```bash
+find /home/lk/.dsh/hob-ledgers -path '*/units/unit-*.toml' | sed 's|/units/.*||' | sort -u
+→  仅 ./dsh-hob/ledger
+```
+
+| 账本 | units 目录 | unit-*.toml 分片 | 结论 |
+|---|---|---|---|
+| `dsh-hob` | ✅ | ✅ | **292 单元 / 20 需求 / 0 标签**（已测） |
+| `Mana` | ❌ | ❌ | 无数据 |
+| `customer-service-agent` | ❌ | ❌ | 无数据 |
+| `prompt-enhancer-release` | ✅ | ❌ | 旧格式（`ACC-001.md`，非 toml） |
+| `prompt-enhancer-release.backup-*`（2 个） | ✅ | ❌ | 备份，非现行 |
+| 其余（`dsh-plugin-roundtable` / `project-nav` / `shoucang` / `video-transcribe` / `workspace`） | ❌ | ❌ | 无 units |
+
+⇒ **「段 2 在真实账本中不可达」这条结论覆盖了所有现行分片数据。**
+
+⚠ 但如果将来 `prompt-enhancer-release` 按现行契约重开账，**它会是第二个可测样本** ——
+   届时这条结论应当重测，⛔ 不能当作永久有效。
+
+---
