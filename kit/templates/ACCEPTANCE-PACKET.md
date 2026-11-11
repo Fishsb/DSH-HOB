@@ -49,8 +49,16 @@
 
 <如实写；⛔ 不写"应该没问题"。>
 
+## 8b. 风险控制与残余风险
+
+- 固有风险与硬触发：<risk_tier + 每条六段式事实的摘要与证据引用>
+- 残余风险：<等级、影响、接受人、接受条件；由用户 / 授权人明确接受>
+- 残余风险触发条件与监控 / 回退：<`risk_residual_impact` + `risk_residual_monitoring`>
+- 技术验证的逐项控制证据：<每条硬触发至少一份 `risk_review_refs`>
+
 ## 9. 验收会话的交付要求
 
 - 逐条给 `EX-n | pass/fail | 证据 | 注`
 - 技术验证与产品确认分开
 - 退回时必须给 `back-to-requirement` / `back-to-plan` / `back-to-task` 之一
+- G6 交付收口须绑定本包的 G5 接受、风险评定与残余风险决定；`skipped` 也要写明理由和决定者

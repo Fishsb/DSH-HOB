@@ -30,7 +30,7 @@
 | 骨架 | `.hob/README.md` | §6.1 实况 | 每批改 +1 行 | 59643 | 5893 | **滚动窗口**：只留当前实况；⚠ 历史读数进 `archive/` | `未机器化`（⚠ 照实登记） |
 | 骨架 | `.hob/EXPERIENCE.md` | 索引表（两个分节） | 每踩一个坑 +1 行 | 31550 | 33986 | **派生 + 另起一册**：⚠ 条目实体在 `.hob/experience/<编号>.md` ⇒ 索引到顶时按编号段分册；⚠ 另有 `exp:next-id` 取号 | `check:experience`（编号唯一连续 + 索引两向完整） |
 | 骨架 | `.hob/INIT.md` | 全文 | 每加一条初始化口径 +1 段 | 20916 | 44620 | **另起一册**：⚠ 本件即"初始化清单"，到顶时按步骤分段搬进 `.hob/drafts/` | `check:gitignore`（M 不扫骨架 ⇒ 未机器化） |
-| 骨架 | `.hob/drafts/preset-contracts.md` | 全文 | 每加一条契约 +1 段 | 56754 | 8782 | **另起一册**：按契约族分册（`preset-contracts-*.md`）；⚠ 消费方路径须同批改 | `check:presets`（⑤k 等逐条断言） |
+| 骨架 | `kit/drafts/preset-contracts.md` | 全文 | 每加一条契约 +1 段 | 65421 | 8782 | **另起一册**：按契约族分册（`preset-contracts-*.md`）；⚠ 消费方路径须同批改 | `check:presets`（⑤k 等逐条断言） |
 | 骨架 | `.hob/drafts/check-gitignore-guide.md` | 全文 | 每加一条机检口径 +1 段 | 19714 | 45822 | **另起一册**（同 preset-contracts 手法）；⚠ 到顶时须留指针回 `README §1.4` | `未机器化` |
 | 骨架 | `.hob/drafts/archive-index.md` | 归档去向表 | 每次归档 +1 行 | 7967 | 57569 | **另起一册**：按年份 / 批次段分册（⚠ 本件自身即 §3 的到顶产物） | `check:archive`（形态 M/S 比对） |
 | 骨架 | `.hob/templates/ROLES.md` | 角色表 | 每加一个角色 +1 行 | 14476 | 51060 | **分区**：按角色族拆分（⚠ 该件是**模板**，到顶时先看是否该只留格式、把实体移出） | `check:presets`（角色面断言） |
@@ -54,7 +54,7 @@
 
 | 件 | 字节 | 余量（上限 `65536`） | ⚠ 到顶动作 | 谁执行 |
 |---|---|---|---|---|
-| `preset-contracts.md` | 56754 | 8782 | ⚠ ⚠ **按契约族分册**（`preset-contracts-*.md`）；⚠ **消费方路径须同批改**（`scripts/check-preset-contracts.mjs` 的 `const DRAFT`） | `check:presets`（⚠ 逐字一致） |
+| `preset-contracts.md` | 65421 | 8782 | ⚠ ⚠ **按契约族分册**（`preset-contracts-*.md`）；⚠ **消费方路径须同批改**（`scripts/check-preset-contracts.mjs` 的 `const DRAFT`） | `check:presets`（⚠ 逐字一致） |
 | `discipline-details.md` | 35992 | 29544 | ⚠ ⚠ **按族再分册**（① `§5.1 背书` → ② `INIT §3.2 实测代价` → ③ `§0.7 来历` → ④ 旧五要素留档段） | `check:gitignore`（**M 骨架侧**） |
 | `check-gitignore-guide.md` | 19714 | 45822 | ⚠ 见本表上一节的逐件行（⚠ 同一动作） | ⚠ 见上一层 |
 | `restructure-plan.md` | 18638 | 46898 | ⚠ 见本表上一节的逐件行（⚠ 同一动作） | ⚠ 见上一层 |

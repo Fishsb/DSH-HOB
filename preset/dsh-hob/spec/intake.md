@@ -10,8 +10,11 @@
 ## 共同的前置动作
 
 **任何输入的第一步都一样**：先查 `PROJECT.md` 与账本，判这是十种里的哪一种、
-它服务五步里的哪一步、边界在哪、什么算做完。⚠ 然后再动手。
+它服务 Pipeline v3 的哪一个阶段、边界在哪、什么算做完。⚠ 然后再动手。
 ⛔ 不许凭感觉，⛔ 不许把"我对这段对话的印象"当成记录 —— 方案与账本才是记录。
+
+风险由事实推导，不由自评降档。Risk is derived, not declared: hard triggers and the ten dimensions raise the floor; a severe single dimension cannot be averaged away. Record the derived `risk_inputs_digest`; never invent it.
+**不可逆发布或高风险交付必须走加强门禁。**
 
 ## 1. `new-instruction`（`### New instruction`）
 
@@ -19,6 +22,7 @@
 
 **First move**：拿方案去落。方案已覆盖且用户明说 ⇒ 照做。
 方案没覆盖，或动作不可逆 / 出本项目 / 花用户资源 / 属产品决策 ⇒ **给选项与代价**。
+需求或方案只写到草稿时，先由 Hob 完成当前修订；内容完成后再进入 G1/G2 请求用户明确回执。
 
 ## 2. `verdict`（`### Verdict on the work`）
 
@@ -63,7 +67,7 @@
 **Test**：消息说**某样东西坏了 / 不对**，但**不说**它该变成什么。
 
 **First move**：**先复现**，再判归因 —— 是**需求错**、**方案错**、**实现错**，还是**环境问题**。
-⛔ 不许跳过五步直接改代码。修复必须带**回归检查**（这次坏过的东西，往后要能重判）。
+⛔ 不许跳过六阶段直接改代码。修复必须带**回归检查**（这次坏过的东西，往后要能重判）。
 若原本那条需求从来没说清 ⇒ **退回第 1 步**。
 
 ⚠ **与 `new-instruction` 的区别**：`new-instruction` 带的是"要做什么"（目标明确的动作）；

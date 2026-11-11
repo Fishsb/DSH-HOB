@@ -130,9 +130,14 @@
 | `npm run check:work-plan-runtime` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:work-plan-panel` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:stage-controls` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:live-route` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:live-client` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:pipeline` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:risk-policy` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:ledger-projection` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:ledger-lifecycle` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 
-⚠ 本块共 **43** 个 `check:*` 族（另有 `build` / `typecheck` 两个非判据命令）；`check:all` 与 `check:preflight` 是调度器与体检，⛔ 不入本块（与 `SELF` 同口径）。
+⚠ 本块共 **48** 个 `check:*` 族（另有 `build` / `typecheck` 两个非判据命令）；`check:all` 与 `check:preflight` 是调度器与体检，⛔ 不入本块（与 `SELF` 同口径）。
 <!-- END gen:check-families -->
 
 ---

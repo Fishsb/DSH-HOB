@@ -16,7 +16,7 @@ flowchart TB
   Result --> Hob
   Hob --> Acceptance[独立验收]
   Acceptance --> Ledger
-  Ledger --> Views[Current / 五步进度 / 注意力 / 资源视图]
+  Ledger --> Views[Current / 六阶段进度 / 风险与收口 / 注意力 / 资源视图]
   Views --> Hob
 ```
 
@@ -68,9 +68,12 @@ UI 新建入口
 
 ```text
 用户需求
-  → Goal / Requirement
-  → Change / Task
-  → Dispatch
+  → Requirement（v3，内容完成）
+  → G1 用户确认需求当前修订
+  → Change（v3，内容完成 + 风险评定）
+  → G2 用户确认方案当前修订并选择路径
+  → Task graph（v3，DAG + 覆盖）
+  → Dispatch（任务、父方案、承接需求全部过闸）
   → Run / 回传（运行态事实自动投影成账本 RUN / TSK 状态）
   → Acceptance / Evidence
   → Current 与下一步
@@ -81,14 +84,41 @@ UI 新建入口
 经 `writeHobFile` 同一道守卫落盘。投影失败**不回滚**已发生的运行态事实，
 但必须在 `hob_orch_status` 与工具返回值里如实报出「账本未落」。
 
-五步的完成口径**只在 `stage-controls.ts` 的 `STAGE_COMPLETION` 定义一次**：
-第 3 步只看任务书是否就绪（C-5），第 4 步要求 `RUN returned + TSK built` 同时成立。
-单条需求的「当前阶段」只由 `requirement-chain.currentStep` 提供；
-`/stages` 的项目级摘要不再回答「当前第几步」。
+阶段字段与完成口径仍在 `stage-controls.ts` 定义；单条需求的「当前阶段」、
+当前闸门与责任方**只由 `pipeline-view.ts` 提供**。`/stages` 的 `pipelines` 与
+`/requirement-chains` 的 `pipeline` 都是这份视图的投影，面板不得另算一套。
+第 3 步要求任务图无环、无悬空依赖且每个验收条件都有任务覆盖（G3/C-5）；
+第 4 步要求 `RUN returned + TSK built` 同时成立；第 5 步是独立技术验证（G4/C-25）；
+第 6 步是产品验收（G5）；第 7 列是按风险启用的交付收口（G6/C-27）。全局 `stages`
+数组只作为账本清单与历史展开，不回答「当前在第几步」。
+
+### 3. Pipeline v3 · 六阶段、风险门与 clean cut
+
+- 正式六阶段：需求 → 方案 → 任务图 → 执行 → 技术验证 → 产品验收。
+- 交付收口是产品验收后的风险启用门，不冒充第七个业务阶段。
+- 第 1、2 步各有独立用户闸门：`G1-requirement` / `G2-plan`。
+- 内容完成、状态写成 `agreed/settled`、或用户只说「继续 / 可以」，
+  都**不构成批准**。批准必须是一条独立的 `decision` 审计单元：
+  `decision_kind=stage-approval`、当前 `artifact_revision`、内容摘要、
+  `decided_by=user`、用户回执原文与时刻。
+- `draft/proposed` 属于 Hob 仍在起草，允许保存但不能表达成“等用户确认”；
+  内容写到 `agreed/settled` 后才进入 G1/G2 等用户回执。
+- 需求或方案内容改变必须递增正整数 `revision`；旧批准随即因版本或摘要不符而
+  `stale`，必须重新确认。方案批准还必须选中当前 `path_options` 中的路径。
+- v3 是 clean cut：新 `req/change/task/run/verification/acc/closure` 必须带
+  `pipeline_version="v3"` 与 `revision`。v2 旧条目保留只读展示，不回填、不伪造批准，
+  也不得进入 v3 派发。
+- 风险由 `risk-policy.ts` 唯一推导：硬触发与单维下限取最高档，不允许平均降档；
+  固有风险决定评审深度和 G6 档位，残余风险决定验收/交付是否可接受。
+- 每条硬触发必须有六段式事实（事实 / 影响 / 证据 / 控制 / 残余），并与方案事实摘要绑定；
+  任务执行风险（`task_risk`）独立决定拆小、隔离、独立复核与串行，同路径任务不得并行。
+- G6 必须绑定 G5 接受、所用风险评定与残余风险决定；`skipped` 也留下理由与决定者。
+- 派发门禁同时检查任务、父方案、方案承接的每条需求、方案未被取代与任务书完整；
+  任一闸门未过即拒绝，并返回可读原因。
 
 跨进程副作用使用 Effects/Outbox；运行态落在账本区 `runtime/`，不进入 Git。
 
-### 3. 账本契约与投影边界
+### 4. 账本契约与投影边界
 
 账本单元的 `kind/status` 是封闭契约。结构校验只有 `ledger-validation.ts` 一份，
 阶段接口、就绪度门禁和写入守卫都调用它；字段与关系门禁仍在 `stage-controls.ts`。
@@ -120,7 +150,7 @@ UI 新建入口
 - `hob_*`：Hob 对外行为工具。
 - `G- / R- / CHG- / TSK- / RUN- / ACC- / EVD- / RSK- / DEC- / CAP-`：账本稳定 ID。
 - `Current`：当前工作入口。
-- `stages`：权威五步汇总面；`tasks-progress` 仅保留兼容。
+- `stages`：权威阶段清单与七列汇总面；`tasks-progress` 仅保留兼容。
 
 完整术语见项目根 `TERMINOLOGY.md`。
 

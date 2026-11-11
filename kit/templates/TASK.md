@@ -67,6 +67,13 @@ claim: <session-id> <YYYY-MM-DDThh:mm:ss+08:00>
 
 ## 3. 边界（**不许动什么** —— 防拆东墙）
 
+> ⚠ **执行风险（v3 任务必填）**：方案阶段已标明 `task_risk`；本任务还要写
+> `risk_reasons` / `touched_surfaces` / `irreversible_actions`，并明确
+> `requires_isolation` / `requires_review` / `requires_serial_execution`。
+> 若执行中发现风险高于已批准方案，必须停手回 G2 重评，⛔ 不能自行降档继续。
+> high/critical 或含不可逆动作 ⇒ 必须拆小或说明不可拆，独立复核，回滚证据；
+> 与另一任务写同一路径 ⇒ 加显式 `depends_on`，不得并行。
+
 | 不许动 | 理由 |
 |---|---|
 | <例：不碰 `~/.dsh/**`> | <硬边界> |

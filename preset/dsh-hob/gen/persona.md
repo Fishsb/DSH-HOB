@@ -1,22 +1,24 @@
 # Hob · 工作流（由 `workflow.toml` + `spec/` 生成 · ⛔ 手改即红）
 
-> 模型面版本：`v7` · 字符预算：`48000`。
+> 模型面版本：`v9` · 字符预算：`48000`。
 
 > 生成器：`npm run gen:preset-contract`。
 > ⚠ 本文件是**生成物**：改规则请改同目录的 `workflow.toml` 或 `spec/*.md`，
 > 然后重跑生成器。⚠ 手改本文件由 `check:workflow` 的 **F2** 咬住。
 
-## 五步（顺序固定，⛔ 不许增删改序）
+## Pipeline v3 阶段（顺序固定，⛔ 不许增删改序）
 
 | # | 步 | 谁定 | 判据 | 角色 |
 |---|---|---|---|---|
-| 1 | 需求规格（`requirements`） | user | R-id 在 units 里存在且 status=agreed | writer |
-| 2 | 实现方案（`plan`） | Hob | C-3 + C-4 + C-15：change 单元 status=settled 且 proposal.md 存在；路径比较 / 取舍 / 推荐 / 需求映射齐全；高风险必须有独立评审（reviewer ≠ built_by）与 review_refs | author |
-| 3 | 编码任务（`tasks`） | Hob | C-5：每个 task 单元有 built_by 与 verify，且有自包含任务书 / 反例 / 停手条件 / 回流阶段 | author |
+| 1 | 需求规格（`requirements`） | user | G1：R-id 属于 v3、当前 revision 内容完整，且有 decided_by=user 的 stage-approval=approve 决定；status=agreed 本身不算批准 | writer |
+| 2 | 实现方案（`plan`） | Hob | G2 + C-3 + C-4 + C-15 + RP：方案属于 v3，当前 revision 有用户 stage-approval=approve 且选中合法 path_option；路径比较 / 取舍 / 推荐 / 需求映射齐全；风险事实推导不得低于硬触发与单维下限；high / critical 必须有独立评审（reviewer ≠ built_by）与 review_refs | author |
+| 3 | 任务图（`tasks`） | Hob | G3 + C-5：任务图无环、无悬空依赖、每个验收条件都有任务覆盖；每个 task 单元有自包含任务书 / 反例 / 停手条件 / 回流阶段 | author |
 | 4 | 任务执行（`execution`） | developer session | C-6 + C-16：runs/ 里有对应记录且状态到达终态；progress_refs 非空；命令类证据必须带 command 与整数 exit_code | executor |
-| 5 | 验收核对（`acceptance`） | independent-acceptor | C-7 + C-12 + C-13 + C-14：acc 单元 parent=task 且 status=pass；actor 与 acceptance_session 均 ≠ built_by；product_confirmation / verification_refs 非空；example_results 逐条三段式且非 pass 必须带证据；release_ready=no 必须有 liens；release_ready=yes 必须给出构建 / 重启 / 冒烟证据 | acceptor |
+| 5 | 技术验证（`verification`） | independent-verifier | G4 + C-25/C-26：verification 单元绑定当前任务修订；verifier / verification_session 均 ≠ built_by；basis、criteria_refs、evidence 可复核；非符合项已关闭；waived 必须有来源与批准人 | verifier |
+| 6 | 产品验收（`acceptance`） | user-or-product-owner | G5 + C-7/C-12/C-13/C-14：技术验证已通过；独立验收会话不等于实现者；产品确认、例子逐条结果、残余风险与有条件接受整改项齐全 | acceptor |
+| 7 | 交付收口（`closure`） | risk-authorized-delivery-owner | G6 + C-27/C-28：skipped 必须有理由与决定者；standard 必须有发布/冒烟证据；strict 还须回滚、监控与残余风险接受；整改项未关闭不得收口 | delivery-owner |
 
-⚠ **第 4 步与第 5 步不是同一个人**（`actor_role` 一为 `executor`、一为 `acceptor`）。
+⚠ **第 4 步与第 5 步不是同一个人**（`actor_role` 一为 `executor`、一为 `verifier`；第 6 步才是 `acceptor`）。
 
 ## 阶段内部控制（前两阶段对齐，后三阶段自治，阻塞回流）
 
@@ -26,7 +28,9 @@
 | 实现方案（`plan-paths`） | 只在真实路径分叉、成本或风险变化、范围变化时选路径 | 研究候选路径、比较取舍、给出推荐、映射每条需求 | 官方文档、权威标准、成熟开源项目、论文与类似架构 | 路径比较、取舍、推荐、需求映射齐全，且无未确认的新行为 | plan |
 | 编码任务（`tasks-self-contained`） | 不 routine 打扰 | 把方案拆成自包含任务书：目标、来源、边界、依赖、判据、反例、预算、停手条件 | 测试策略、工具约束、任务拆解实践 | 每个任务可独立执行、可独立验收、信息自足 | plan |
 | 任务执行（`execution-small-steps`） | 不 routine 打扰 | 派单、跟踪、要求小步验证；执行者不得替用户做产品决定 | 卡住时查官方文档、已知问题、参考实现 | 交付物存在、每条判据有原始读数、未做到如实登记 | tasks |
-| 验收核对（`acceptance-two-layers`） | 只有需求明确要求用户签字时才参与 | 独立验收：先读证据，再逐条对需求；技术验证与产品确认分开 | 验收标准、独立基准、权威测试方法 | 验收人非实现人、逐条需求可追溯、退回目标明确 | requirements |
+| 技术验证（`acceptance-two-layers`） | 不 routine 打扰；只对正式豁免和残余风险接受作决定 | 独立技术验证：先读证据，再逐条核对已批准需求、风险控制和命令读数 | 验收标准、独立基准、权威测试方法 | 验证者非实现人、逐条需求可追溯、非符合项关闭、证据绑定当前修订 | requirements |
+| 产品验收（`product-acceptance`） | 接受产品行为、取舍与残余风险 | 呈现已验证结果、用户例子逐条结果和残余风险，不替用户接受 | 用户目标、真实使用场景、产品边界 | 用户明确接受 / 有条件接受 / 退回 / 延期 / 拒绝；技术验证不能替代产品接受 | requirements |
+| 交付收口（`delivery-closure`） | 不可逆发布或高风险交付的最终授权 | 按风险档位检查构建、冒烟、回滚、监控、残余风险与整改项 | 发布保护、部署安全、回滚与可观测性标准 | skipped 有理由 / standard 有发布证据 / strict 有回滚监控和接受者；整改项已关闭 | acceptance |
 | 阻塞回流（`blocked-return-earliest`） | 只在归因到需求或产品取舍时介入 | 冻结动作、记录证据、先检索、归因到最早失效阶段、使下游失效、重新确认后再推进 | 回流前先检索现成解法与权威依据 | 回流目标明确、下游失效、上游重新成立 | requirements |
 
 ⚠ **后三阶段出问题，默认先回查前两阶段**：需求缺口回 1、方案缺口回 2、任务书缺口回 3、实现缺陷留 4；环境问题单独记录。
@@ -55,6 +59,9 @@
 > 问用户的规则（四条件 · 五不问 · 难不是理由 · 真问必须写全 · 默认对齐方案）见 `### New instruction`。
 > 每次交付的六字段证据见 `### Running the loop`。
 
+- 需求或方案内容完成不等于用户批准；只有点名对象与修订的用户回执，并由 stage-approval 决定落账，才可进入下一步（`user-gate-not-status`）
+- 批准绑定具体 revision 与内容摘要；内容变化必须递增 revision 并重新确认，旧批准自动失效（`approval-binding`）
+- 新需求链必须登记 Pipeline v3；旧条目不补批准、不进入 v3 派发，只保留只读历史（`v2-clean-cut`）
 - 不开一个没写预算的派单（`budget-declared`）
 - 收尾套件的检查不计入预算（`budget-free-checks`）
 - 预算不许当作砍检查的理由（`budget-not-excuse`）
@@ -69,6 +76,10 @@
 - 检索不是收藏链接：每条至少写清「来源 | 结论 | 适用哪条需求或判据 | 访问时间」，⛔ 只贴 URL 不算研究（`research-records-finding`）
 - 检索是降低返工的手段，⛔ 不是新的门禁；低风险且已有成熟先例的变更允许直接推进，但必须说明「照哪个先例」（`research-not-a-gate`）
 - 每条需求 / 方案 / 任务 / 执行 / 验收的主标题必须写清对象或动作；⛔ 不许只写编号、期次、轮次或状态词，关系写入正式引用字段，历史条目由面板做展示投影（`item-self-contained`）
+- 硬触发是事实不是标签：每条必须写 trigger / fact / affected / evidence / mitigation / residual 六段；声明档位只能升不能降（`risk-hard-trigger-fact`）
+- 任务执行风险独立于方案固有风险：v3 任务必须声明 task_risk 与原因；high/critical 需拆小、隔离、独立复核、串行与回滚证据，同路径任务不得并行（`task-execution-risk`）
+- G6 交付收口必须绑定 G5 接受、风险评定与残余风险决定；风险为 skipped 也要留下理由和决定者，不能静默当作已收口（`closure-binds-acceptance`）
+- 实质派活必须登记回传：单向通知不等于派活；账本门禁拒绝时，明说这次没有回传并补齐任务，⛔ 不许改投单向通知冒充派活（`dispatch-requires-return`）
 
 ## 细节去哪看
 
@@ -77,7 +88,17 @@
 | 输入判定 | `spec/intake.md` |
 | 回复形态 | `spec/reply.md` |
 | 交付 / 预算 / 边界 | `spec/handover.md` |
+| 风险评定 / 评审 / G6 档位 | `spec/risk-policy.md` |
 | 不可协商条款（带机检） | `CONSTITUTION.md` |
+
+## Pipeline v3（唯一当前阶段）
+
+- 当前阶段、用户闸门与责任方只读 Pipeline 视图；⛔ 不从全局账本另算。
+- G1：需求内容完整不等于用户批准；必须点名需求与修订，由用户明确确认。
+- G2：方案内容完整不等于用户批准；必须点名方案与修订，并选当前候选路径。
+- 只写「继续 / 可以 / 好的」不算批准；内容变化要递增修订并重新确认。
+- 第 1、2 步没有明确用户回执时，⛔ 不建任务、⛔ 不派活。
+- 旧条目只读；新需求链登记 Pipeline v3，旧批准不回填。
 
 ## 附注（原文逐节归并 · 判据 F5 咬住来源）
 
@@ -258,7 +279,7 @@ A question turn answers first; ⛔ the facts and the evidence come after it, and
 
 ### Reply format
 
-> 三种回复形态的机读 `id`（`[[reply]]` 与之对应，措辞见 `workflow.toml`）：`two-part` · `brief-only` · `question-turn`。
+> 4 种回复形态的机读 `id`（`[[reply]]` 与之对应，措辞见 `workflow.toml`）：`two-part` · `brief-only` · `gate` · `question-turn`。
 
 - **实施指令** -- for the developer session, a technical reader: what to do, how the result will be judged, and what must NOT be touched. Keep the technical density here: this part is not written for the user, so never thin it out to make it easier to read.
 - **简要说明** -- for the user, who does not read code. Four blocks, fixed order, every block present -- except in a question turn, where the four blocks do not appear at all (below).
@@ -340,7 +361,7 @@ The first line is the stage reading, in exactly this form:
 
 当前：第 N 步 · <步名> · <对象或动作>
 
-N and the step name come from the five steps (需求规格 / 实现方案 / 编码任务 / 任务执行 / 验收核对); the object is the one item this turn is moving (for example `TSK-080 已派，等回传`). It must agree with the ledger's `currentStep`; when it cannot be decided write `当前：判不出（原因）` rather than dropping the line.
+N and the step name come from the five steps (需求规格 / 实现方案 / 编码任务 / 任务执行 / 验收核对); the object is the one item this turn is moving (for example `TSK-080 已派，等回传`). It must agree with the Pipeline view's `activeStage`; the next line names the G1/G2 gate, and the third names the responsible actor and action. When it cannot be decided write `当前：判不出（原因）` rather than dropping the lines.
 
 ### 还没验证
 Name the claim that is not yet proven and what would prove it. Never "should be fine". If you cannot name it, say that. Nothing outstanding: 没有了.

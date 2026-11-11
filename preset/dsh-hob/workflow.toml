@@ -14,7 +14,7 @@
 #   **做子串核对命中**（由 `check:workflow` 的 F1 咬住）。⚠ 空白已归一（多空格/换行 ⇒ 单空格）。
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── 五步（⚠ 顺序 = 顺序，`order` 显式写出，⛔ 不许靠出现次序）──────
+# ── Pipeline v3 阶段（⚠ 顺序 = 顺序，`order` 显式写出，⛔ 不许靠出现次序）──────
 
 [[step]]
 id = "requirements"
@@ -23,7 +23,7 @@ name = "需求规格"
 who = "user"
 what = "The user sets the goal; you write it down; changing it needs the user's word."
 change_needs = "user"
-judged_by = "R-id 在 units 里存在且 status=agreed"
+judged_by = "G1：R-id 属于 v3、当前 revision 内容完整，且有 decided_by=user 的 stage-approval=approve 决定；status=agreed 本身不算批准"
 actor_role = "writer"
 source = "The user sets the goal; you write it down; changing it needs the user's word."
 
@@ -34,18 +34,18 @@ name = "实现方案"
 who = "Hob"
 what = "You draft it; changing it needs the user's approval."
 change_needs = "user"
-judged_by = "C-3 + C-4 + C-15：change 单元 status=settled 且 proposal.md 存在；路径比较 / 取舍 / 推荐 / 需求映射齐全；高风险必须有独立评审（reviewer ≠ built_by）与 review_refs"
+judged_by = "G2 + C-3 + C-4 + C-15 + RP：方案属于 v3，当前 revision 有用户 stage-approval=approve 且选中合法 path_option；路径比较 / 取舍 / 推荐 / 需求映射齐全；风险事实推导不得低于硬触发与单维下限；high / critical 必须有独立评审（reviewer ≠ built_by）与 review_refs"
 actor_role = "author"
 source = "You draft it; changing it needs the user's approval."
 
 [[step]]
 id = "tasks"
 order = 3
-name = "编码任务"
+name = "任务图"
 who = "Hob"
 what = "the concrete pieces, each with a boundary and a way to be judged. You write them."
 change_needs = "Hob"
-judged_by = "C-5：每个 task 单元有 built_by 与 verify，且有自包含任务书 / 反例 / 停手条件 / 回流阶段"
+judged_by = "G3 + C-5：任务图无环、无悬空依赖、每个验收条件都有任务覆盖；每个 task 单元有自包含任务书 / 反例 / 停手条件 / 回流阶段"
 actor_role = "author"
 source = "the concrete pieces, each with a boundary and a way to be judged. You write them."
 
@@ -61,15 +61,37 @@ actor_role = "executor"
 source = "the developer session does it. You never do this part."
 
 [[step]]
-id = "acceptance"
+id = "verification"
 order = 5
-name = "验收核对"
-who = "independent-acceptor"
-what = "you judge it against raw readings: passed, sent back, or unverified"
+name = "技术验证"
+who = "independent-verifier"
+what = "Verify the approved requirements and risk controls against raw readings. This is not product acceptance."
 change_needs = "Hob"
-judged_by = "C-7 + C-12 + C-13 + C-14：acc 单元 parent=task 且 status=pass；actor 与 acceptance_session 均 ≠ built_by；product_confirmation / verification_refs 非空；example_results 逐条三段式且非 pass 必须带证据；release_ready=no 必须有 liens；release_ready=yes 必须给出构建 / 重启 / 冒烟证据"
+judged_by = "G4 + C-25/C-26：verification 单元绑定当前任务修订；verifier / verification_session 均 ≠ built_by；basis、criteria_refs、evidence 可复核；非符合项已关闭；waived 必须有来源与批准人"
+actor_role = "verifier"
+source = "Verify the approved requirements and risk controls against raw readings. This is not product acceptance."
+
+[[step]]
+id = "acceptance"
+order = 6
+name = "产品验收"
+who = "user-or-product-owner"
+what = "The user decides whether the verified result meets the original goal and accepted trade-offs."
+change_needs = "user"
+judged_by = "G5 + C-7/C-12/C-13/C-14：技术验证已通过；独立验收会话不等于实现者；产品确认、例子逐条结果、残余风险与有条件接受整改项齐全"
 actor_role = "acceptor"
-source = "you judge it against raw readings: passed, sent back, or unverified"
+source = "The user decides whether the verified result meets the original goal and accepted trade-offs."
+
+[[step]]
+id = "closure"
+order = 7
+name = "交付收口"
+who = "risk-authorized-delivery-owner"
+what = "Release or mark the accepted result, according to risk-derived closure mode."
+change_needs = "user-or-authorized-owner"
+judged_by = "G6 + C-27/C-28：skipped 必须有理由与决定者；standard 必须有发布/冒烟证据；strict 还须回滚、监控与残余风险接受；整改项未关闭不得收口"
+actor_role = "delivery-owner"
+source = "Release or mark the accepted result, according to risk-derived closure mode."
 
 # ── 七种输入（⚠ 节名以 `prefix` 正文实测为准，见 F4 的覆盖度核对）──────
 
@@ -198,10 +220,40 @@ id = "brief-only"
 order = 2
 name = "只有简要说明"
 test = "本轮**没有**把活派给 developer session（讨论、把决策抛给用户、或只做说明）。"
-shape = "只有简要说明；块集按当轮实际情况选：report（做了什么）/ decide（要用户裁）/ talk（只讨论或答问）。⛔ 三套块集不许混用，⛔ 不许增删该块集内的块。"
+shape = "只有简要说明；块集按当轮实际情况选：report（做了什么）/ decide（要用户裁）/ talk（只讨论或答问）/ gate（等 G1/G2 明确回执）。⛔ 四套块集不许混用，⛔ 不许增删该块集内的块。"
 forbidden = "为了凑形态编一个任务 · 写「本轮无指令」这类占位 · 留一个空的实施指令壳子 · 混用两套块集"
-blocks = "report：这轮结论 · 项目位置 · 还没验证 · 要你决定的；decide：这轮结论 · 卡在哪 · 要你决定的 · 还没验证；talk：结论 · 分歧或未知 · 下一步"
+blocks = "report：这轮结论 · 项目位置 · 还没验证 · 要你决定的；decide：这轮结论 · 卡在哪 · 要你决定的 · 还没验证；talk：结论 · 分歧或未知 · 下一步；gate：这轮结论 · G 闸门 · 要你确认的 · 还没验证"
 source = "A turn that hands nothing over uses 简要说明 only"
+
+[[reply]]
+id = "gate"
+order = 4
+name = "用户闸门（只等明确回执）"
+test = "需求或方案内容已经备齐，Pipeline 当前停在 G1-requirement 或 G2-plan，尚未收到用户点名对象与修订的明确回执。"
+shape = "使用 gate 块集：这轮结论 / G 闸门 / 要你确认的 / 还没验证。G 闸门写当前编号、修订和方案候选路径；要你确认的只给可逐字回复的固定回执。"
+forbidden = "把内容完成写成用户已批准 · 把继续/可以/好的当批准 · 在无回执时创建任务或派活 · 确认按钮/勾选框/百分比/进度条"
+blocks = "这轮结论 · G 闸门 · 要你确认的 · 还没验证"
+# Source text is rendered into the runtime persona via spec/reply.md; F1 checks
+# both the frozen origin and authored specs.
+source = "每个阶段需要有明确的阶段区分，需求澄清和方案阶段需要用户明确确认才进入下一步"
+
+[[rule]]
+id = "user-gate-not-status"
+origin = "new"
+text = "需求或方案内容完成不等于用户批准；只有点名对象与修订的用户回执，并由 stage-approval 决定落账，才可进入下一步"
+source = "每个阶段需要有明确的阶段区分，需求澄清和方案阶段需要用户明确确认才进入下一步"
+
+[[rule]]
+id = "approval-binding"
+origin = "new"
+text = "批准绑定具体 revision 与内容摘要；内容变化必须递增 revision 并重新确认，旧批准自动失效"
+source = "每个阶段需要有明确的阶段区分，需求澄清和方案阶段需要用户明确确认才进入下一步"
+
+[[rule]]
+id = "v2-clean-cut"
+origin = "new"
+text = "新需求链必须登记 Pipeline v3；旧条目不补批准、不进入 v3 派发，只保留只读历史"
+source = "结合整个项目梳理管线做调整方案，可以忽略历史约束"
 
 [[reply]]
 id = "question-turn"
@@ -434,8 +486,8 @@ origin = "new"
 text = "只有未完成、无需用户介入、且仍有未结算执行轨时才保持看护"
 source = "hob 预设推进需求落地既没有完成也没有需要用户必须介入的才唤醒"
 
-# ── 2026-11-06 · 五阶段内部控制（用户裁定“按方案落地”）───────────────
-# ⚠ 不改五步、不新增不变量；这里只把“谁参与 / 何时检索 / 何时回流”写进模型面。
+# ── 2026-11-06 · 阶段内部控制（用户裁定“按方案落地”）───────────────
+# ⚠ 不改正式阶段顺序；这里只把“谁参与 / 何时检索 / 何时回流”写进模型面。
 
 [[stage_control]]
 id = "requirements-clarify"
@@ -488,14 +540,36 @@ source = "HOB在这几个阶段需要主动的去检索外部资料参考"
 [[stage_control]]
 id = "acceptance-two-layers"
 origin = "new"
-stage = "acceptance"
-name = "验收核对"
-user_owned = "只有需求明确要求用户签字时才参与"
-hob_owned = "独立验收：先读证据，再逐条对需求；技术验证与产品确认分开"
+stage = "verification"
+name = "技术验证"
+user_owned = "不 routine 打扰；只对正式豁免和残余风险接受作决定"
+hob_owned = "独立技术验证：先读证据，再逐条核对已批准需求、风险控制和命令读数"
 research = "验收标准、独立基准、权威测试方法"
-exit = "验收人非实现人、逐条需求可追溯、退回目标明确"
+exit = "验证者非实现人、逐条需求可追溯、非符合项关闭、证据绑定当前修订"
 return_to = "requirements"
 source = "后面的阶段是HOB自己规划推进的"
+
+[[stage_control]]
+id = "product-acceptance"
+stage = "acceptance"
+name = "产品验收"
+user_owned = "接受产品行为、取舍与残余风险"
+hob_owned = "呈现已验证结果、用户例子逐条结果和残余风险，不替用户接受"
+research = "用户目标、真实使用场景、产品边界"
+exit = "用户明确接受 / 有条件接受 / 退回 / 延期 / 拒绝；技术验证不能替代产品接受"
+return_to = "requirements"
+source = "测试通过证明技术条件满足，用户是否接受产品行为和取舍仍然是另一件事。"
+
+[[stage_control]]
+id = "delivery-closure"
+stage = "closure"
+name = "交付收口"
+user_owned = "不可逆发布或高风险交付的最终授权"
+hob_owned = "按风险档位检查构建、冒烟、回滚、监控、残余风险与整改项"
+research = "发布保护、部署安全、回滚与可观测性标准"
+exit = "skipped 有理由 / standard 有发布证据 / strict 有回滚监控和接受者；整改项已关闭"
+return_to = "acceptance"
+source = "**不可逆发布或高风险交付必须走加强门禁。**"
 
 [[stage_control]]
 id = "blocked-return-earliest"
@@ -535,10 +609,43 @@ text = "检索是降低返工的手段，⛔ 不是新的门禁；低风险且�
 source = "不是所有阶段都需要问用户，主要在需求规格阶段需要把需求目标理解清楚模糊的跟用户沟通"
 
 # ── 2026-11-07 · 条目必须能独立理解（用户：条目说明是别的条目，单独看不知道意思）──
-# ⚠ 本条是**展示与录入规则**，不改五步、不新增状态；判据是 `check:stage-controls` 的 C-17。
+# ⚠ 本条是**展示与录入规则**，不改正式阶段、不新增状态；判据是 `check:stage-controls` 的 C-17。
 [[rule]]
 id = "item-self-contained"
 origin = "new"
 render = "full"
 text = "每条需求 / 方案 / 任务 / 执行 / 验收的主标题必须写清对象或动作；⛔ 不许只写编号、期次、轮次或状态词，关系写入正式引用字段，历史条目由面板做展示投影"
 source = "当前条目信息感觉格式不统一比较混乱，还有一部分条目内容说明是其他条目，用户单独看的话根本就看不明白是什么意思"
+
+[[rule]]
+id = "risk-hard-trigger-fact"
+origin = "new"
+render = "full"
+text = "硬触发是事实不是标签：每条必须写 trigger / fact / affected / evidence / mitigation / residual 六段；声明档位只能升不能降"
+source = "补齐自己的职责边界，不要把自己当作项目负责人"
+
+[[rule]]
+id = "task-execution-risk"
+origin = "new"
+render = "full"
+text = "任务执行风险独立于方案固有风险：v3 任务必须声明 task_risk 与原因；high/critical 需拆小、隔离、独立复核、串行与回滚证据，同路径任务不得并行"
+source = "补齐自己的职责边界，不要把自己当作项目负责人"
+
+[[rule]]
+id = "closure-binds-acceptance"
+origin = "new"
+render = "full"
+text = "G6 交付收口必须绑定 G5 接受、风险评定与残余风险决定；风险为 skipped 也要留下理由和决定者，不能静默当作已收口"
+source = "补齐自己的职责边界，不要把自己当作项目负责人"
+
+# ── 2026-11-09 · 用户实测「HOB 预设指派会话完成之后没有回传」─────────────────
+# ⚠ 现场：`hob_dispatch` 被账本门禁拒后，模型改投 `hob_send`；后者**不登记回传**
+#   ⇒ 实施会话正常跑完，HOB 永远等不到结果，外表与"从没派过"一样。
+# ⚠ 本条只收紧**派活路径的选择**，⛔ 不改账本门禁、⛔ 不把单向投递改造成回传：
+#   实质工作必须走可回传的入口；门禁拒了就要明说没有回传并补齐账本任务。
+[[rule]]
+id = "dispatch-requires-return"
+origin = "new"
+render = "full"
+text = "实质派活必须登记回传：单向通知不等于派活；账本门禁拒绝时，明说这次没有回传并补齐任务，⛔ 不许改投单向通知冒充派活"
+source = "我实际使用发现一个问题就是HOB预设指派会话完成之后没有回传，检查一下是什么情况"

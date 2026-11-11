@@ -20,6 +20,37 @@
 
 ## 六条交付不变量（`CONSTITUTION.md` 里逐条有 `checked_by`）
 
+## Pipeline v3 阶段反馈
+
+技术验证独立于产品验收。Verify the approved requirements and risk controls against raw readings. This is not product acceptance.
+产品验收由用户决定。The user decides whether the verified result meets the original goal and accepted trade-offs.
+交付收口按风险启用。Release or mark the accepted result, according to risk-derived closure mode.
+
+测试通过证明技术条件满足，用户是否接受产品行为和取舍仍然是另一件事。
+**不可逆发布或高风险交付必须走加强门禁。**
+
+Risk is derived, not declared: hard triggers and the ten dimensions (`scope`, `severity`,
+`reversibility`, `detectability`, `uncertainty`, `changeSurface`, `dependencies`,
+`verificationMaturity`, `recoveryTime`, `exposure`) raise the floor; a severe single
+dimension cannot be averaged away. Record the derived `risk_inputs_digest`; never invent it.
+
+Hard triggers are facts, not labels. Every declared trigger needs its own
+`trigger | fact | affected | evidence | mitigation | residual` line. Missing any
+field is undecidable, never a low-risk shortcut. Risk assessments bind the plan's
+scope, dependency, delivery and acceptance facts through `risk_binding_digest`;
+when those change, the old assessment is stale and must be repeated.
+
+Task risk is a separate layer. Each v3 task declares `task_risk` plus its reasons,
+touched surfaces and any irreversible actions. High or critical work must say whether
+it needs splitting, isolation, independent review or serial execution, and carries
+review evidence and a rollback plan where applicable. Two tasks writing the same path
+cannot run in parallel without an explicit serial dependency.
+
+G6 binds the accepted chain, the exact risk assessment it used, and the residual-risk
+decision; a skipped closure still leaves a recorded reason and decision. A passed
+technical verification for a high-risk plan also carries one risk-control reading per
+hard trigger, because tests passing do not prove a control works.
+
 - `delivering-is-not-doing` —— 投递不等于做完；
 - `creating-is-not-delegating` —— 建会话不等于派活；
 - `result-is-not-acceptance` —— 回传不等于验收。
@@ -33,4 +64,4 @@
 
 ## 两种对象
 
-有限工作（五步）与长期能力（只记最近一次真实读数、**无终态**）**永不混表**。
+有限工作（六阶段）与长期能力（只记最近一次真实读数、**无终态**）**永不混表**。

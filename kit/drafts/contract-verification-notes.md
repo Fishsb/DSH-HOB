@@ -1,7 +1,7 @@
 # 契约核查记录（**不是规范**）
 
 > ⚠ **这是核查记录，不是规范。** 规范以契约正本为准：
-> 机器读版 = `preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `prefix: |-` 块；人读版 = `.hob/drafts/preset-contracts.md`。
+> 机器读版 = `preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `prefix: |-` 块；人读版 = `kit/drafts/preset-contracts.md`。
 > **本文件不在任何机检的断言面内**（`check-presets` 只读人读版的引文块），它的内容会随考证对象漂移 ——
 > 读它请当作**某一时点的原始读数**，⛔ 不要当作"现在仍然成立"的规则。
 >
@@ -10,7 +10,7 @@
 > ⚠ **而不是因为它们没有价值** —— 里面有机制考证的**原始读数**（宿主源码行号、实测计数、断言分工），
 > 删掉就只能重新考一遍。故**只搬不删**。
 >
-> **来历**：2026-10-18 从 `.hob/drafts/preset-contracts.md` §三 / §四 / §五 原文逐字搬出。
+> **来历**：2026-10-18 从 `kit/drafts/preset-contracts.md` §三 / §四 / §五 原文逐字搬出。
 
 ---
 
