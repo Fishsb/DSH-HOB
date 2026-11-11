@@ -245,7 +245,20 @@ function strongAcceptanceGaps(accs: readonly Unit[], units: readonly Unit[]): st
   return out
 }
 
-/** Every task must have its own current, evidence-backed passing verification. */
+/**
+ * Every task must have its own current, evidence-backed passing verification.
+ *
+ * ── **R-01 段 3：强判据参与判定**（2026-11-11）─────────────────────────────
+ *   段 1/2 只把 `verificationProblems` 的结论 push 进 `blockedBy`（带前缀），
+ *   ⛔ 不改返回值。段 3 让它**真正影响** verified：
+ *     「验证者=实现者」「缺 criteria_refs」「缺 example_results」等 6 类强判据
+ *     一旦命中 ⇒ 这一环**不算验证通过**。
+ *
+ *   ⚠ 为什么现在能做：本仓唯一有分片数据的账本（`dsh-hob`，292 单元）
+ *     **17/20 需求是 legacy、3 条是 retired** ⇒ 没有一条走到这个函数
+ *     （legacy 在 `:439` 就分叉走了）⇒ **对现有数据零影响**。
+ *   ⚠ 但「将来出现 v3 存量账本时如何豁免」仍无答案 ⇒ 那段宽限期**保留**。
+ */
 function allTasksVerified(tasks: readonly Unit[], verifications: readonly Unit[], units: readonly Unit[]): boolean {
   if (tasks.length === 0) return false
   return tasks.every((task) => {
@@ -253,17 +266,35 @@ function allTasksVerified(tasks: readonly Unit[], verifications: readonly Unit[]
     const latest = latestVerificationOf(verifications, id)
     if (latest === undefined) return false
     /** The latest verdict wins; one stale PASS cannot mask a newer send-back. */
-    return latest.status === 'pass' && verificationReady(latest.unit, units)
+    if (latest.status !== 'pass' || !verificationReady(latest.unit, units)) return false
+    /** ⚠ R-01 段 3：**强判据**也必须干净（独立性 / criteria_refs / example_results…）。 */
+    return verificationProblems(latest.unit as any, units as any).length === 0
   })
 }
 
-/** Every task must have its own accepted product decision. */
+/**
+ * Every task must have its own accepted product decision.
+ *
+ * ── **R-01 段 3：强判据参与判定**（2026-11-11）─────────────────────────────
+ *   与 `allTasksVerified` 同族：段 1/2 只把 `acceptanceProblems` push 进 `blockedBy`，
+ *   段 3 让它真正影响 accepted —— 「验收者=实现者」「缺 example_results」等一旦命中
+ *   ⇒ 这一环**不算验收通过**。
+ *
+ *   ⚠ 本账本 20 条需求全 legacy/retired ⇒ 走不到这里 ⇒ 对现有数据零影响。
+ */
 function allTasksAccepted(
   tasks: readonly Unit[],
-  groups: ReadonlyArray<{ parent: string; verdict: { verdict: string } }>,
+  groups: ReadonlyArray<{ parent: string; units?: readonly Unit[]; verdict: { verdict: string } }>,
+  units: readonly Unit[],
 ): boolean {
   if (tasks.length === 0 || groups.length === 0) return false
-  return tasks.every((task) => groups.some((g) => g.parent === text(task.id) && g.verdict.verdict === 'accepted'))
+  return tasks.every((task) => {
+    const hit = groups.find((g) => g.parent === text(task.id))
+    if (hit === undefined || hit.verdict.verdict !== 'accepted') return false
+    /** ⚠ R-01 段 3：**强判据**也必须干净（独立性 / example_results…）。 */
+    const accs = hit.units ?? []
+    return accs.every((a) => acceptanceProblems(a as any, units as any).length === 0)
+  })
 }
 
 function taskBriefReady(task: Unit): boolean {
@@ -329,7 +360,8 @@ export function pipelineViewOf(
       xs.push(a)
       map.set(k, xs)
     }
-    return [...map.entries()].map(([parent, xs]) => ({ parent, verdict: effectiveAcceptanceOf(xs as AcceptanceVerdictLike[]) }))
+    /** ⚠ R-01 段 3：同时保留原始单元 —— 验收侧的强判据（独立性 / example_results）要看它们。 */
+    return [...map.entries()].map(([parent, xs]) => ({ parent, units: xs, verdict: effectiveAcceptanceOf(xs as AcceptanceVerdictLike[]) }))
   })()
   set(5, {
     itemIds: verifications.map((v) => text(v.id)),
@@ -520,13 +552,19 @@ export function pipelineViewOf(
         } else {
           set(4, { state: 'completed' })
           const verified = allTasksVerified(tasks, verifications, units)
-          const accepted = allTasksAccepted(tasks, groups)
+          const accepted = allTasksAccepted(tasks, groups, units)
           /**
            * ── **R-01 影子模式：算出来、报出来，⛔ 不参与判定** ──────────────────
-           * ⚠ 下面这些 push **不改** `verified` / `accepted` 一个比特 ⇒
-           *   `activeStage` / `chainCompleted` 与改动前逐字相同（本段的验收标准）。
-           * ⚠ 前缀「影子」是给读的人区分的：它表示「这条**将来**会拦，现在只报」。
-           *   段 2 上线宽限期后，前缀会改成「宽限」；段 3 删前缀 ⇒ 那时它才真的拦。
+           * ⛔ **这段注释已过时**（2026-11-11 段 3 修改时同步）：
+           *   段 1 阶段确实「不改 verified / accepted 一个比特」，但**段 3 之后改了** ——
+           *   `allTasksVerified` / `allTasksAccepted` 现在会调
+           *   `verificationProblems` / `acceptanceProblems`，强判据一旦命中就不算通过。
+           *
+           * ⚠ 所以下面这些 push 是**冗余但保留**的：同一个缺口既进 `blockedBy`
+           *   （给人看的说明），又影响判定（给机器用的结论）。
+           *   ⛔ 不要因为「已经影响判定了」就删掉 push —— 那会让面板**只说「没验证过」**
+           *   而不说**为什么**（是哪条强判据不合格）。
+           * ⚠ 前缀「影子」/「宽限」仍用于区分历史单元与新单元；段 3 的宽限分支尚未删。
            */
           /**
            * ── **R-01 段 2：宽限期（按 provenance 豁免历史单元）**（2026-11-11）──────
@@ -656,7 +694,7 @@ function chainCompletedOf(
   groups: ReadonlyArray<{ parent: string; verdict: { verdict: string } }>,
   units: readonly Unit[],
 ): boolean {
-  return allTasksVerified(tasks, verifications, units) && allTasksAccepted(tasks, groups)
+  return allTasksVerified(tasks, verifications, units) && allTasksAccepted(tasks, groups, units)
 }
 
 /** All requirement Pipeline v3 views, ordered by creation time. */
