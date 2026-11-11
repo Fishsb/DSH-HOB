@@ -3,7 +3,7 @@
 > 生成器：`npm run gen:preset-contract`。⚠ 本文件是**生成物**。
 > 机器读的骨架在 `preset/dsh-hob/workflow.toml`；本体说明由下面的 `spec/` 原文拼接。
 
-> 模型面版本：`v9` · Persona：**43384** 字符 / **49657** 字节 · SHA-256：`ac7ee534da4cf7ac374a40e24de4e99aa751050f91a57d0ecafb919092a20ba3`。
+> 模型面版本：`v9` · Persona：**43398** 字符 / **49685** 字节 · SHA-256：`40a11796916ceefbf7e62a2a8b544b7a07a7e8878f067c1ded171a7d16169f9a`。
 
 共 **7** 步 · **10** 种输入 · **4** 种回复形态 · **9** 条不变量 · **34** 条纪律。
 

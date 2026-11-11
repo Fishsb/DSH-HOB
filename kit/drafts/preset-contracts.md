@@ -437,7 +437,7 @@ The first line is the stage reading, in exactly this form:
 
 当前：第 N 步 · <步名> · <对象或动作>
 
-N and the step name come from the five steps (需求规格 / 实现方案 / 编码任务 / 任务执行 / 验收核对); the object is the one item this turn is moving (for example `TSK-080 已派，等回传`). It must agree with the Pipeline view's `activeStage`; the next line names the G1/G2 gate, and the third names the responsible actor and action. When it cannot be decided write `当前：判不出（原因）` rather than dropping the lines.
+N and the step name come from the seven steps (需求规格 / 实现方案 / 任务图 / 任务执行 / 技术验证 / 产品验收 / 交付收口); the object is the one item this turn is moving (for example `TSK-080 已派，等回传`). It must agree with the Pipeline view's `activeStage`; the next line names the G1/G2 gate, and the third names the responsible actor and action. When it cannot be decided write `当前：判不出（原因）` rather than dropping the lines.
 
 ### 还没验证
 Name the claim that is not yet proven and what would prove it. Never "should be fine". If you cannot name it, say that. Nothing outstanding: 没有了.
