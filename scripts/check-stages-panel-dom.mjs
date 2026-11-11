@@ -1237,8 +1237,6 @@ export function StateDot({ state, size, appearance }) {
       const r = mount(react.createElement(modC.StagesPanel, {
         /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
         agentPreset: HOB_PRESET_ID,
-        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
-        agentPreset: HOB_PRESET_ID,
         fetchProgress: async () => ({ ok: true, rows: [] }),
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
@@ -1260,6 +1258,38 @@ export function StateDot({ state, size, appearance }) {
         bad(`S-13i · 未接本地时钟时读数仍在变（${JSON.stringify(before)} → ${JSON.stringify(after)}）⇒ 断言来源不是本地时钟`)
       }
       }
+    }
+
+    // —— S-13j：O-18 —— Current 面板不许每秒重取 /ledger-resource ——
+    /**
+     * O-18 的判据此前完全没有机检 —— REVIEW 写明「10 秒内请求数 <= 2」，
+     *   而全仓 grep -rn fetchCurrentResource scripts/ = 0。
+     *   ⇒ 本条是补的，且补的是**根因**而不是症状：
+     *     fetchCurrentResource 若不是稳定引用，CurrentPanel 的 effect（依赖它）
+     *     会被面板每秒的本地时钟重渲染带着重跑 ⇒ 每秒一条请求。
+     *
+     * 判法：源码层核对 useCallback 包了它、且依赖数组只含 loadResource。
+     *   不做「真挂 10 秒数请求数」—— 那要 10 秒真实时钟，会把整族拖慢 10 倍。
+     */
+    {
+      const src18 = readFileSync(PANEL_TSX, 'utf8')
+      const p18 = []
+      if (!/const fetchCurrentResource = React\.useCallback\(/.test(src18)) {
+        p18.push('fetchCurrentResource 不是 React.useCallback 包裹的 ⇒ 每次渲染都是新引用，'
+          + 'CurrentPanel 的 effect 会被每秒时钟带着重跑（O-18 复发）')
+      } else {
+        const m18 = /const fetchCurrentResource = React\.useCallback\([\s\S]{0,200}?\[([^\]]*)\]/.exec(src18)
+        const deps18 = (m18?.[1] ?? '').split(',').map((x) => x.trim()).filter(Boolean)
+        if (deps18.length === 0) p18.push('fetchCurrentResource 的依赖数组为空或抽不到 ⇒ 判据失去基准')
+        else if (deps18.length !== 1 || deps18[0] !== 'loadResource') {
+          p18.push('fetchCurrentResource 的依赖是 ' + JSON.stringify(deps18) + "，应为 ['loadResource']"
+            + '（多一个依赖都会让它在渲染间换引用 ⇒ O-18 复发）')
+        }
+      }
+      if (p18.length === 0) {
+        ok('S-13j ✓ O-18：fetchCurrentResource 用 useCallback 钉在 [loadResource] 上'
+          + '（引用稳定 ⇒ 面板每秒时钟不会带着 CurrentPanel 重取 /ledger-resource）')
+      } else for (const x of p18) bad('S-13j · ' + x)
     }
 
     // —— S-13f 负向对拍：空态文案改掉 ⇒ S-13b 必红 ——
@@ -1574,8 +1604,6 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modC = await import(pathToFileURL(mutant).href)
         const r = mount(react.createElement(modC.StagesPanel, {
-        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
-        agentPreset: HOB_PRESET_ID,
         /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
         agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
@@ -2411,8 +2439,6 @@ export function StateDot({ state, size, appearance }) {
           start: () => {}, stop: () => { stops2 += 1 }, state: () => 'live', onStateChange: () => () => {},
         })
         const Frame2 = (p) => react.createElement(modM.StagesPanel, {
-        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
-        agentPreset: HOB_PRESET_ID,
         /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
         agentPreset: HOB_PRESET_ID,
           fetchProgress: fetchProgress2, fetchStages: fetchStages2,
@@ -4148,8 +4174,6 @@ export function StateDot({ state, size, appearance }) {
           const r = mount(react.createElement(modC.StagesPanel, {
         /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
         agentPreset: HOB_PRESET_ID,
-        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
-        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => ({ ok: true, readAt: '2026-11-02T00:00:00.000Z', stages: [], caps: [] }),
@@ -5321,8 +5345,6 @@ export function StateDot({ state, size, appearance }) {
           const r = mount(react.createElement(modC.StagesPanel, {
         /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
         agentPreset: HOB_PRESET_ID,
-        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
-        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => IA_STAGES,
@@ -5360,8 +5382,6 @@ export function StateDot({ state, size, appearance }) {
           const r = mount(react.createElement(modM.StagesPanel, {
         /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
         agentPreset: HOB_PRESET_ID,
-        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
-        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => IA_STAGES,
@@ -5391,8 +5411,6 @@ export function StateDot({ state, size, appearance }) {
           const out = writeMutant('mut-current-all', panelSrc.replace(NEEDLE, "              'aria-current': 'step',"))
           const modC = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modC.StagesPanel, {
-        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
-        agentPreset: HOB_PRESET_ID,
         /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
         agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),

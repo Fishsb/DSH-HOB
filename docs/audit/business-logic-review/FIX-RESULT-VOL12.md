@@ -545,3 +545,68 @@ pipeline-view.ts 3 条 O-34 O-38 O-32             ← O-34 已核，剩 O-38 O-3
    它只是把「找证据」变成「在同一份文件里找」，不能自动判定。
 
 ---
+
+---
+
+## §159 ✅ `tools.ts` 组 5 条全部核实（含断言层）
+
+### 159.1 五条逐个查证
+
+| 编号 | 级别 | 缺陷 | 实现证据 | 断言证据 | 判定 |
+|---|---|---|---|---|---|
+| **O-05** | low | `indexIntegrityProblems` 只在 `activation==='active'` 时生效 | `tools.ts:956` 注释「改前条件是 `activation === 'active'`」；`:970` 已改为 `active \|\| legacyCompatible \|\| missing` 三条件 | `check-ledger.mjs:5271`「O-05：A-4 必须对所有有 index 的账本跑，⛔ 不只是已激活的」 | ✅ |
+| **O-14** | low | `skeletonEnabled` 权威读取器退役 | §155 已核：18 处全是「已退役」注释 | — | ✅ |
+| **O-15** | low | `ledger` 档可跨项目读 | §150 已核：`PERMISSION_TIERS` 封闭集 | `check:policy` | ✅ |
+| **O-17** | low | 死代码/空导出 | §156 已核：文件 44 → 34 行 | — | ✅ |
+| **O-37** | medium | `hob_ledger_migrate` 只重写 `index.toml` | `tools.ts:306` migrate 内部调 `readLedgerUnits(ledgerRoot)`；`:197-207` 该函数遍历「`index.toml` 导航 + 固定 `unit-*.toml` 分片」 | `check-ledger.mjs:5233`「O-37：迁移必须遍历分片，⛔ 不能只重写 index.toml」 | ✅ |
+
+### 159.2 ⚠ O-05 的修复形态值得记
+
+```ts
+// 改前
+if (probe.indexText !== undefined && lifecycle.activation === 'active')
+
+// 改后 —— 三个条件并列
+if (probe.indexText !== undefined && (
+  lifecycle.activation === 'active' ||
+  lifecycle.legacyCompatible ||
+  lifecycle.activation === 'missing'
+))
+```
+
+⚠ 注释原文：「改前条件是 `lifecycle.activation === 'active'`。而**现行真实账本没有 ledger.toml**」
+   ⇒ 这正是 O-05 的要害：**现行实例永远不核**。三条件并列后，缺 `ledger.toml` 的账本也会被核。
+
+### 159.3 ⚠ O-37 的修复是「换掉整条读盘路径」
+
+```ts
+// tools.ts:306 —— migrate 内部
+const units = readLedgerUnits(ledgerRoot) as StageControlUnit[]
+```
+
+⇒ 它复用了 `readLedgerUnits`，而那个函数的注释写明：
+
+```
+读取并解析账本单元：`index.toml` 导航 + 固定 `unit-*.toml` 分片。
+⚠ 入口 `index.toml` 缺 = 还没开账；分片缺 = 账本在但残了（与 `stages-index` 同口径）。
+```
+
+⚠ 这比「加个 for 循环遍历分片」更强 —— 它让 migrate 与**读盘唯一入口**同源，
+   不会出现「读的时候看分片、写的时候只看 index」这种半吊子状态。
+
+### 159.4 累计复核进度（去重）
+
+| 类别 | 条数 |
+|---|---|
+| 有独立证据「已修」 | **27**（+O-05 · O-37） |
+| 位置核验通过但未验修复 | 16 |
+| 完全未触及 | 69 |
+
+### 159.5 剩余分组线索
+
+```
+orchestrator.ts  4 条  O-10 O-11 O-35 O-39   ← O-35 已核，剩 O-10 O-11 O-39
+pipeline-view.ts 3 条  O-34 O-38 O-32        ← O-34 已核，剩 O-38 O-32
+```
+
+---
