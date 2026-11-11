@@ -1254,7 +1254,8 @@ check:ledger-resources  查了 18 处 · 过了 18 处   （新增 T-23）
 | [`FIX-RESULT-VOL10.md`](./FIX-RESULT-VOL10.md) | §119–§135 | 判据写源码根治（4 处）· 文档断链 · 英文质量 10 维 · 负向对拍逐族复算 · `as any` 根因 |
 | [`FIX-RESULT-VOL11.md`](./FIX-RESULT-VOL11.md) | §136–§152 | 范围自我纠正 · 记账偏差审计 · 审查记录迁出 kit/ |
 | [`FIX-RESULT-VOL12.md`](./FIX-RESULT-VOL12.md) | §153–§168 | 四批提交 · O-19/R-03/O-18/R-04/R-12/R-13 修复 · 逐条复核 · 记账偏差 |
-| [`FIX-RESULT-VOL13.md`](./FIX-RESULT-VOL13.md) | §169– | R-02 最终判定（核心已修，验收规格过宽）|
+| [`FIX-RESULT-VOL13.md`](./FIX-RESULT-VOL13.md) | §169–§190 | R-02 判定 · T 组收口 · STATUS.md 建立 · 段2 实现 |
+| [`FIX-RESULT-VOL14.md`](./FIX-RESULT-VOL14.md) | §191– | 段2 在真实账本中不可达（死代码） |
 | [`FIX-RESULT-VOL10.md`](./FIX-RESULT-VOL10.md) | §119–§122 | build 流程债 + 并发假红 + **判据往生产源码写盘**（已根治） |
 
 ⚠ **拆分的唯一原因是读上限**（64KB），⛔ 不是因为内容变了。
