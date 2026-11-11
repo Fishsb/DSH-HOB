@@ -161,15 +161,15 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *
  *   | 量 | 实测 | 说明 |
  *   |---|---|---|
- *   | `package.json` 的 `check:*` | **50** | 全部检查族 |
+ *   | `package.json` 的 `check:*` | **51** | 全部检查族（⚠ 2026-11-11 新增 `check:audit-status`） |
  *   | 其中**不进聚合**的 | **3** | `check:all`（本入口自身）· `check:preflight`（只体检不判定）· `check:tasks-route-http`（需活宿主，按需跑） |
- *   | `listFamilies()` 实际 | **47** | = 50 − 3，这才是 `FAMILY_FLOOR` 的分母 |
+ *   | `listFamilies()` 实际 | **48** | = 51 − 3，这才是 `FAMILY_FLOOR` 的分母 |
  *
  *   ⚠ **为什么必须写清分母**：改前这里写「为什么是 20」，而常量已是 45 —— **注释与值差了 25**。
- *     更要紧的是「余量」：改前 `FAMILY_FLOOR = 45`、实测 47 ⇒ **余量 2**
+ *     更要紧的是「余量」：改前 `FAMILY_FLOOR = 46`、实测 47 ⇒ **余量 2**
  *     ⇒ **从 `package.json` 删掉一族（连带脚本），`check:all` 仍全绿 exit 0** ——
  *     而这正是本段开头说的那个盲区（「派生源自己少了」）**本该被堵住的地方**。
- *   ⇒ 改成**零余量 47**：再少一族立刻红。
+ *   ⇒ 改成**零余量 48**：再少一族立刻红。
  *   ⚠ 只准升不准降；有意收缩须同批改本常量并写明理由。
  */
 /**
@@ -179,7 +179,35 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *   ⇒ 若放进必跑，结果只能是"永远 exit 2"，那会把"没对象"污染成"判据没跑"（`E-122` 同族）。
  *   ⇒ 手工按需跑 `npm run check:tasks-route-http`；它的无对象档是 **exit 2**（noObject，⛔ 不算通过）。
  */
-export const FAMILY_FLOOR = 47
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * **新增一个 `check:` 族，必须同批做这 8 件事**（2026-11-11 实测踩全）
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ```
+ * ① package.json                     加 "check:<name>": "node scripts/check-<name>.mjs"
+ * ② 本文件 ASSERTION_FLOORS          加一行 ['check:<name>', <实测断言数>]
+ * ③ 本文件 FAMILY_FLOOR              抬 1（= package.json 的 check:* 总数 − 3）
+ * ④ scripts/check-family-catalog.json 加一行 { cmd: 'check:<name>', what: '<守什么>' }
+ * ⑤ scripts/meta-negative-floor.json  登记下限（无负向对拍就写 0 + 在 note 里说明）
+ * ⑥ npm run gen:ledger                重跑（否则 §4.1 生成块与 gen/stages.md 全滞后）
+ * ⑦ scripts/check-repo-rules.mjs      mustTrack 加一行（否则 `check:gitignore` 报「不在 MUST-TRACK 里」）
+ * ⑧ 本文件 ASSERTION_FLOORS 的 check:gitignore  抬 1（⚠ ⑦ 会让它的断言数 +1）
+ * ```
+ *
+ * ⚠ **漏任何一条都会被判据当场抓住，但抓的是「别的族」**：
+ *   · 漏 ② / ⑤ ⇒ `check:meta-negctl` 的 M-1 红（「没有登记下限」）
+ *   · 漏 ④     ⇒ `check:ledger` 的 I5b 红（「生成器自己渲染不出 §4.1 块」）
+ *   · 漏 ⑥     ⇒ `check:ledger` 的 I5b / I5 红（「生成块与生成器不一致」）
+ *   · 漏 ⑦     ⇒ `check:gitignore` 红（「package.json 声明的脚本不在 MUST-TRACK 里」）
+ *   · 漏 ⑧     ⇒ `check:all` 整体 EXIT=1（「断言数下界被突破」，而**各族本身全绿**）
+ *   ⇒ 症状看起来跟新族无关，**排查成本很高**。
+ *
+ * ⚠ 我在 2026-11-11 加 `check:audit-status` 时只做了 ①②③，
+ *   结果 `check:ledger` 与 `check:meta-negctl` 双双变红，原因就是漏了 ④⑤⑥。
+ *   ⇒ 把它写成这份清单，⛔ 不要靠记忆。
+ */
+export const FAMILY_FLOOR = 48
 //   ⚠ 2026-10-27（包 AP · 用户「全退」）：本条不再含 `check:archive-gate`（该族随归档门禁一起退回）。
 //   ⚠ 2026-10-29（四步主线 · 只验位置）：新增 `check:stages-dom` 一族，下界同批抬起。
 //     抬下界是本次改动的**一部分**、不是顺手改：新族若将来被人从 scripts 里删掉，
@@ -285,6 +313,7 @@ export const ASSERTION_FLOORS = new Map([
    */
   // ⚠ 2026-11-02（P41/R23）：5 → **6**（零余量 = 实测）。
   //   来源：拆卷 + 两族计数口径修正（"查了"含跳过）后实测值。
+  ['check:audit-status', 4],
   ['check:archive', 7],
   /**
    * ⚠ **54 → 53**（2026-11-11 · A 方案收尾）：
@@ -358,7 +387,7 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ 2026-11-09（实时通道入库）：1190 → **1192**
   //   （+2 = `check-live-route.mjs` / `check-live-client.mjs` 进入 MUST-TRACK，
   //   仓库族逐条核到它们“在盘上、规则放行、已入 git index”）。
-  ['check:gitignore', 1195],  // §79：6 处超限修好后（拆卷）去重后实际 1195（原 1200 含那 6 处失败）
+  ['check:gitignore', 1196],  // §79：拆卷后 1195；2026-11-11 加 check-audit-status 的 MUST-TRACK 行 ⇒ 1196
   //   ⚠ 理由：本单在 `check-repo-rules.mjs` 新增 **`MV`** 断言「模板根上文档清单 == INIT 的复制清单」
   //     ⇒ 该族多 **1 处**（577 → 578）。⚠ **只升不降**。
   //   ⚠ ⚠ **为什么不是改已有的第 ⑥ 组**：`check-code-face.mjs` 的 ⑥ 组**两个方向都不咬**（本单实测三段）——

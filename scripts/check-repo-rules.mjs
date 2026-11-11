@@ -106,6 +106,12 @@ export function runRepoRules({ bad, ok, skip }) {
    *     它在说"这个骨架文件还没进 git"，而不是等提交后才发现漏了。
    */
   const mustTrack = [
+    /**
+     * ⚠ 2026-11-11 新增：审计状态表的机检脚本。
+     *   它被 `package.json` 的 `check:audit-status` 调用 ⇒ 落进本清单的对象。
+     *   ⚠ 不加这一行 ⇒ `✗ package.json 声明的脚本不在 MUST-TRACK 里`（本轮实测踩过）。
+     */
+    ['scripts/check-audit-status.mjs', '审计状态表形态机检（check:audit-status 的落点）'],
     ['kit/README.md', '骨架 · 约定归属地（README §1）'],
     // ⚠ 2026-10-13（第 128 轮）新增 `kit/INIT.md`（**新工作区初始化清单**）——
     //   按 README §6.1 的既有程序「**三处同批**」登记：① 骨架件落盘 · ② `.gitignore` 的 `!` 例外 ·

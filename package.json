@@ -106,7 +106,8 @@
     "check:pipeline": "node scripts/check-pipeline.mjs",
     "check:risk-policy": "node scripts/check-risk-policy.mjs",
     "check:ledger-projection": "node scripts/check-ledger-projection.mjs",
-    "check:ledger-lifecycle": "node scripts/check-ledger-lifecycle.mjs"
+    "check:ledger-lifecycle": "node scripts/check-ledger-lifecycle.mjs",
+    "check:audit-status": "node scripts/check-audit-status.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0-rc <5",

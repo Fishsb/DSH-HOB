@@ -250,7 +250,9 @@ runDocShape({ bad, ok, noObject: noteNoObject, skip: noteSkip })
  *
  * ⚠ 作业书 = `archive/2026-10-25-ledger-cure/TASK.md`。三组的判据体在
  *   `check-doc-shape.mjs` 的 `runLedgerCure()`（与既有形态族同一族、同一入口，
- *   ⛔ **不新增 `check:` 命令** —— 那会牵动 `package.json` / 正本收尾表 / 族数下界三处联动）。
+ *   ⛔ **不新增 `check:` 命令** —— 那会牵动 **6 处**联动（见 `check-all.mjs` 的 FAMILY_FLOOR 上方清单：
+ *     `package.json` · `ASSERTION_FLOORS` · `FAMILY_FLOOR` · `check-family-catalog.json` ·
+ *     `meta-negative-floor.json` · `gen:ledger` 重跑）。⚠ 原文写「三处」是**低估**。
  * ⚠ **一律只报不拦**：报警明细走 `noteAlarm`（`⚠` 前缀、单列输出、**不进 `fail`**、
  *   **不进「查了」**）⇒ 第一批只量存量，退出码一个字节都不动。
  */
