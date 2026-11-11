@@ -35,6 +35,7 @@ let src = ''
 try { src = readFileSync(FILE, 'utf8') } catch {
   bad(`读不到 STATUS.md ⇒ 审计状态表缺失（⛔ 不按通过处理）`)
   console.log('')
+
   console.log(`处级口径：查了 ${fail.length} 处 · 过了 0 处 · **跳过 0 处**`)
   process.exit(fail.length > 0 ? 1 : 2)
 }
@@ -73,6 +74,41 @@ if (noNote.length > 0) {
 } else ok(`**${rows.length}** 行全部有注记（证据位置或明确说明）`)
 
 console.log('')
+/**
+ * ── 负向对拍（M-1 元规则：每条判据必须自带一条）────────────────────────
+ *
+ * ⚠ **不能用「删掉文件」来对拍** —— 那会让 readFileSync 抛错走进「读不到」分支，
+ *   而那条分支测的是「文件缺失」，⛔ 不是「表格形态坏了」。
+ *
+ * ⇒ 方式：拿**当前文件内容**在内存里造三份「必错」变体，
+ *   逐一喂给同一个解析函数，断言它们**必须**被同一个判据咬住。⛔ 不落盘。
+ */
+const parseRows = (text) => {
+  const out = []
+  for (const line of text.split(String.fromCharCode(10))) {
+    const m = line.match(/^\| ([RSTO]-\d{2}) \| ([^|]+) \| ([^|]*) \|$/)
+    if (m !== null) out.push({ id: m[1], status: m[2].trim(), note: m[3].trim() })
+  }
+  return out
+}
+{
+  const dropRow = src.replace(/^\| [RSTO]-\d{2} \| [^|]+ \| [^|]* \|\n/m, "")
+  const badStatusV = src.replace(/^(\| [RSTO]-\d{2} \| )[^|]+( \|)/m, "$1乱写的状态$2")
+  const emptyNoteV = src.replace(/^(\| [RSTO]-\d{2} \| [^|]+ \| )[^|]+( \|)$/m, "$1$2")
+  const hits = {
+    "少一行": parseRows(dropRow).length !== EXPECTED_ROWS,
+    "状态越界": parseRows(badStatusV).some((x) => !STATUSES.includes(x.status)),
+    "注记清空": parseRows(emptyNoteV).some((x) => x.note === ""),
+  }
+  const missed = Object.entries(hits).filter(([, hit]) => hit !== true).map(([k]) => k)
+  if (missed.length > 0) {
+    bad(`负向对拍失败：${missed[0]} 的变体**没有被咬住**`
+      + " ⇒ 本族的判据是假绿（⛔ 不按通过处理）")
+  } else {
+    ok("**负向对拍**：少一行 / 状态越界 / 注记清空 三种必错变体**逐个被咬住**（⚠ 内存里造，⛔ 不落盘）")
+  }
+}
+
 console.log(`处级口径：查了 ${note.length + fail.length} 处 · 过了 ${note.length} 处`
   + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
   + ' · **跳过 0 处**（⚠ 跳过**不计入通过**）')

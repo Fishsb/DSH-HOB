@@ -313,7 +313,7 @@ export const ASSERTION_FLOORS = new Map([
    */
   // ⚠ 2026-11-02（P41/R23）：5 → **6**（零余量 = 实测）。
   //   来源：拆卷 + 两族计数口径修正（"查了"含跳过）后实测值。
-  ['check:audit-status', 4],
+  ['check:audit-status', 5],
   ['check:archive', 7],
   /**
    * ⚠ **54 → 53**（2026-11-11 · A 方案收尾）：
