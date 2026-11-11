@@ -35,7 +35,7 @@
 | O-12 | 已修 | `src/server/session-policy.ts:197` |
 | O-13 | 已修 | `src/session-policy-service.ts:707` |
 | O-14 | 已修 | `src/modules/tools.ts:146` |
-| O-15 | 已排除 | |
+| O-15 | 已排除 | ⚠ 复核证伪（§150） |
 | O-16 | 已修 | ⚠ 保留 + 标注（不是删掉） |
 | O-17 | 已修 | `src/preset/tools.ts:1744` |
 | O-18 | 已修 | `src/client/project-panel.tsx:1560` |
@@ -44,7 +44,7 @@
 | O-21 | 已修 | ⚠ 按裁定 B 关闭（面板仅中文） |
 | O-22 | 已修 | `src/client/create-hob-dialog.tsx:1215` |
 | O-23 | 已修 | `src/client/project-panel.tsx:1677` |
-| O-24 | 已排除 | |
+| O-24 | 已排除 | ⚠ 复核证伪；`t()` 兜底行为是有意设计（§150） |
 | O-25 | 已修 | `src/client/hob-unselected-gate.tsx:725` |
 | O-26 | 已修 | `scripts/check-workflow.mjs:7` |
 | O-27 | 已修 | `scripts/check-stages-route.mjs:3` |
@@ -100,7 +100,7 @@
 | S-05 | 已修 | `src/shared/stage-controls.ts:922` |
 | S-06 | 已修 | `meta-negative-floor.json` 只剩 2 族为 0 且合理（§131） |
 | S-07 | 已修 | `scripts/check-workflow.mjs:404` |
-| S-08 | 已排除 | |
+| S-08 | 已排除 | ⚠ 复核证伪：CU-5 正则指向的常量已改名（§150） |
 | S-09 | 已修 | `src/client/project-panel.tsx:56` |
 | S-10 | 已修 | `src/client/project-panel.tsx:20` |
 | S-11 | 已修 | `scripts/check-all.mjs:756` |
@@ -115,7 +115,7 @@
 | T-04 | 已修 | `src/client/project-panel.tsx:1499` |
 | T-05 | 已修 | `src/modules/tools.ts:124` |
 | T-06 | 已修 | `src/server/hob-write.ts:1252` |
-| T-07 | 按设计处理 |
+| T-07 | 按设计处理 | ⚠ `projection-writer.ts:89` 明写「保证不并发、**不保证原子**」；半完成已可见（`partial{created,failed}`），不做回滚是设计取舍 |
 | T-08 | 已修 | `src/shared/requirement-chain.ts:636` |
 | T-09 | 已修 | `src/client/project-panel.tsx:63` |
 | T-10 | 已修 | `src/server/handoff-effects.ts:40` |
