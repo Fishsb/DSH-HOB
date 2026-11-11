@@ -1174,9 +1174,63 @@ console.log('')
     } else for (const x of p) bad(`SC-36 · ${x}`)
   }
 }
+
+// ── SC-37 · R-13：当前方案必须按「业务状态 + revision」选，⛔ 不按物理顺序 ──────
+/**
+ * ── 它守什么 ────────────────────────────────────────────────────────
+ *   改前两处各写一套取法：
+ *     · `closureProblems`：`plans.at(-1)` ⇒ 结论随**文件里的位置**翻转
+ *     · `currentPlanOf`：先过滤 superseded 再 `at(-1)` ⇒ 同样依赖物理顺序
+ *   ⇒ 同一份账本，两种物理顺序 ⇒ G6 档位可能不同（**fail-open**）。
+ *   而迁移会移动单元位置 ⇒ **迁移前后结论翻转**。
+ *
+ * ── 判据（REVIEW R-13 规格 ③④⑤）──────────────────────────────────
+ *   ③ 同一份账本**两种物理顺序** ⇒ `currentPlanOfStrict` 结论必须相同；
+ *   ④ 负向对拍：取法改回「按位置」⇒ ③ 必须红；
+ *   ⑤ 负向对拍：`status` 判据改回「不是 superseded」⇒ 用 `draft` 夹具必须红。
+ */
+{
+  const pipe = await import(pathToFileURL(join(root, 'src', 'shared', 'pipeline.ts')).href)
+  const p = []
+  /** 三个方案：A 已定第 3 版、B 已定第 1 版、C 草稿。⚠ id 故意不按字典序。 */
+  const mk = (id, status, revision, createdAt) => ({
+    id, kind: 'change', req_ids: ['R-1'], status, revision: String(revision), created_at: createdAt,
+  })
+  const A = mk('CHG-z', 'agreed', 3, '2026-01-03')
+  const B = mk('CHG-a', 'agreed', 1, '2026-01-01')
+  const C = mk('CHG-m', 'draft', 9, '2026-01-09')
+  /** ③ 物理顺序翻转 ⇒ 结论必须相同 */
+  const order1 = [A, B, C]
+  const order2 = [C, B, A]
+  const pick1 = pipe.currentPlanOfStrict('R-1', order1)
+  const pick2 = pipe.currentPlanOfStrict('R-1', order2)
+  if (pick1?.id !== 'CHG-z') p.push(`顺序 1 选错了：${JSON.stringify(pick1?.id)}（应 CHG-z：agreed + revision 3 最大）`)
+  if (pick2?.id !== 'CHG-z') p.push(`顺序 2 选错了：${JSON.stringify(pick2?.id)}（⚠ 结论随顺序翻转 ⇒ R-13 复发）`)
+  if (pick1?.id !== pick2?.id) p.push(`两种物理顺序结论不同：${pick1?.id} vs ${pick2?.id} ⇒ R-13 复发`)
+  /** ⑤ 已定优先：草稿 revision 更大也不该被选 */
+  if (pick1?.id === 'CHG-m') p.push('选了草稿（revision 9）而不是已定方案 ⇒ ⑤ 失效')
+  /** 全无已定时退到非 superseded 候选（PIPE-14 要求草稿仍算「当前方案」） */
+  const onlyDraft = pipe.currentPlanOfStrict('R-1', [C])
+  if (onlyDraft?.id !== 'CHG-m') p.push(`只有草稿时该返回它（面板要显示「归 Hob」）：${JSON.stringify(onlyDraft?.id)}`)
+  /** superseded 一律排除 */
+  const sup = { ...A, id: 'CHG-s', status: 'superseded' }
+  const withSup = pipe.currentPlanOfStrict('R-1', [sup])
+  if (withSup !== undefined) p.push(`superseded 不该被选：${JSON.stringify(withSup?.id)}`)
+  /** ④ 负向对拍：模拟「按物理顺序」⇒ 必须与 ③ 的结论不同（证明 ③ 有牙） */
+  const byPosition = order1.at(-1)?.id
+  if (byPosition === pick1?.id) {
+    p.push('夹具失效：按位置取和按业务状态取碰巧相同 ⇒ 本条证明不了 ③（⛔ 不按通过处理）')
+  }
+  if (p.length === 0) {
+    ok('SC-37 ✓ **R-13**：`currentPlanOfStrict` 按「已定优先 → revision → created_at」选，'
+      + `两种物理顺序结论相同（${pick1?.id}）；草稿不会被选成已定方案；superseded 一律排除`
+      + '（⚠ 负向对拍：按位置取会得 ' + JSON.stringify(byPosition) + '，与业务选法不同 ⇒ 本条有牙）')
+  } else for (const x of p) bad(`SC-37 · ${x}`)
+}
+
+console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 0 处**`)
 console.log('')
 console.log(`SC 组：通过 ${pass} · 失败 ${fail}`)
-console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 0 处**`)
 console.log('')
 if (fail > 0) {
   console.log('  ⛔ 有失败项 ⇒ 本组不算通过')

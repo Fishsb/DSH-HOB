@@ -243,7 +243,7 @@ export const ASSERTION_FLOORS = new Map([
   //    SC-27 孤立任务不放行）。
   // ⚠ 2026-11-08：99 → **100**（+1 = SC-0b 非法 kind/status 在就绪度里被 S-0 点名）。
   // ⚠ 2026-11-08：100 → **101**（+1 = SC-0c 旧词迁移预演 / 落盘 / 映射）。
-  ['check:stage-controls', 110],
+  ['check:stage-controls', 111],
   // 2026-11-08（Pipeline v2）：14 条零余量 = G1/G2、内容摘要、revision、自批、
   // 回执、request-changes、写入守卫、clean cut、多需求逐条批准、阶段/面板接线、
   // RUN/ACC 任务修订绑定、未批准草稿可保存但不可推进、草稿待办不冒充用户闸门。

@@ -14,6 +14,7 @@ import {
   PIPELINE_VERSION,
   isPipelineV3,
   revisionOf,
+  currentPlanOfStrict,
 } from './pipeline.ts'
 import {
   residualRiskProblems, riskAssessmentOf, riskAssessmentProblems, riskFactsOf, riskObjectProblems,
@@ -121,14 +122,7 @@ function missingApproval(stage: 'requirements' | 'plan', id: string): ApprovalRe
   }
 }
 
-function currentPlanOf(req: Unit, units: readonly Unit[]): Unit | undefined {
-  const rid = text(req.id)
-  const plans = units
-    .filter((u) => text(u.kind) === 'change' && changeRequirementIds(u).includes(rid))
-    .sort(byCreated)
-  const active = plans.filter((u) => !['superseded'].includes(text(u.status)))
-  return active.at(-1) ?? plans.at(-1)
-}
+
 
 function currentTasksOf(plan: Unit | undefined, units: readonly Unit[]): Unit[] {
   if (plan === undefined) return []
@@ -292,7 +286,8 @@ export function pipelineViewOf(
 ): PipelineView {
   const reqId = text(req.id)
   const title = text(req.title)
-  const plan = currentPlanOf(req, units)
+  /** ⚠ **R-13**：直接调 `currentPlanOfStrict`（业务状态 + revision）；旧薄包装已按规格删除。 */
+  const plan = currentPlanOfStrict(text(req.id), units as unknown as readonly Record<string, unknown>[]) as Unit | undefined
   const tasks = currentTasksOf(plan, units)
   const runs = currentRunsOf(tasks, units)
   const verifications = currentVerificationsOf(tasks, units)

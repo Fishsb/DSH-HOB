@@ -6,7 +6,7 @@
  */
 
 import { changeRequirementIds } from './ledger-relations.ts'
-import { approvalStateOf, isPipelineV3 } from './pipeline.ts'
+import { approvalStateOf, isPipelineV3 , currentPlanOfStrict } from './pipeline.ts'
 import {
   RISK_TIERS, riskAssessmentProblems, riskFactsOf, riskAssessmentOf, riskGateRequirements,
   taskRiskProblems, taskRiskOf, taskScopeConflict, riskObjectProblems,
@@ -869,8 +869,14 @@ export function closureProblems(
     out.push({ rule: 'C-27', unit: id, why: `closure_mode 不在封闭集：${mode || '(空)'}` })
   }
   const req = units.find((x) => txt(x.id) === txt(u.parent))
-  const plans = units.filter((x) => txt(x.kind) === 'change' && (Array.isArray(x.req_ids) ? x.req_ids.map(String) : []).includes(txt(req?.id)))
-  const plan = plans.at(-1)
+  /**
+   * ⚠ **R-13：⛔ 不按物理顺序取**。改前是 `plans.at(-1)` ⇒ 结论随文件位置翻转，
+   *   而迁移会移动位置 ⇒ 迁移前后 G6 档位可能不同（fail-open）。
+   *   ⇒ 统一走 `currentPlanOfStrict`（业务状态 + revision）；判不出时返回 undefined。
+   */
+  const plan = req === undefined
+    ? undefined
+    : currentPlanOfStrict(txt(req.id), units as unknown as readonly Record<string, unknown>[])
   const assessed = plan === undefined ? undefined : riskAssessmentOf(riskFactsOf(plan as any))
   if (status === 'skipped') {
     if (txt(u.skip_reason) === '') out.push({ rule: 'C-27', unit: id, why: '跳过交付收口必须写 skip_reason' })

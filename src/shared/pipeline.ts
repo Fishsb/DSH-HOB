@@ -110,6 +110,60 @@ export function isPipelineV3(unit: Record<string, unknown>): boolean {
   return text(unit.pipeline_version) === PIPELINE_VERSION
 }
 
+/**
+ * ── **R-13：当前方案必须按「业务状态 + revision」选，⛔ 不按物理顺序** ────────────
+ *
+ * 改前两处各写一套：
+ *   · `stage-controls.ts` 的 `closureProblems`：`plans.at(-1)` ⇒ 结论随**文件里的位置**翻转
+ *   · `pipeline-view.ts` 的 `currentPlanOf`：先过滤 superseded 再 `at(-1)`
+ * ⇒ 同一份账本，两种物理顺序 ⇒ G6 档位可能不同。⚠ 方向是 **fail-open**（该拦的没拦），
+ *   而迁移会移动单元位置 ⇒ **迁移前后结论翻转**。
+ *
+ * 判据（REVIEW R-13 规格逐条）：
+ *   ① `status ∈ {agreed, settled}` 优先（那是「已定」的两个状态）；
+ *   ② 同级按 `revision` 最大；
+ *   ③ 再按 `created_at`（`revision` 缺失时兜底）；
+ *   ④ **全无则返回 `undefined`** —— ⛔ 不回落 `at(-1)`，那正是本条要消灭的行为。
+ *
+ * ⚠ 纯函数、零 import server 侧 ⇒ 客户端与服务端可用同一份。
+ */
+export const CLOSED_PLAN_STATUSES = ['agreed', 'settled'] as const
+
+/** 从同一条需求下的全部 change 里选出「当前方案」；判不出时返回 undefined（⛔ 不猜）。 */
+export function currentPlanOfStrict(
+  reqId: string,
+  units: readonly Record<string, unknown>[],
+): Record<string, unknown> | undefined {
+  const rid = text(reqId)
+  if (rid === '') return undefined
+  const candidates = units.filter((u) => text(u.kind) === 'change'
+    && (Array.isArray(u.req_ids) ? u.req_ids.map(String) : []).includes(rid))
+  if (candidates.length === 0) return undefined
+  /**
+   * ① 已定的优先；若一个都没有 ⇒ 退到「未定但仍是当前候选」的状态。
+   *
+   * ⚠ **为什么不能直接返回 undefined**（2026-11-11 实测踩过）：
+   *   草稿阶段的方案 `status = 'proposed'`，面板要显示「归 Hob」而不是「等用户确认」
+   *   （`PIPE-14` 钉着这条）。若这里判不出 ⇒ `currentPlanOf` 返回 undefined ⇒
+   *   面板把草稿显示成用户闸门 ⇒ 行为回退。
+   *   ⇒ 已定（agreed/settled）**优先**，没有时用其余非 superseded 的候选。
+   *   ⛔ 但仍然**不按物理顺序** —— 排序键是 revision/created_at。
+   */
+  const closed = candidates.filter((u) => (CLOSED_PLAN_STATUSES as readonly string[]).includes(text(u.status)))
+  const pool = closed.length > 0
+    ? closed
+    : candidates.filter((u) => !['superseded'].includes(text(u.status)))
+  if (pool.length === 0) return undefined
+  /** ② revision 最大；③ 再按 created_at。⚠ 排序键都缺失时保持稳定（不依赖输入顺序）。 */
+  const sorted = [...pool].sort((a, b) => {
+    const ra = revisionOf(a) ?? -1
+    const rb = revisionOf(b) ?? -1
+    if (ra !== rb) return rb - ra
+    return text(b.created_at).localeCompare(text(a.created_at))
+  })
+  return sorted[0]
+}
+
 /** Compatibility name retained for existing call sites. */
 export function isPipelineV2(unit: Record<string, unknown>): boolean {
   return isPipelineV3(unit)
