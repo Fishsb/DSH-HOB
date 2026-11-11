@@ -5607,6 +5607,32 @@ export function apply(ctx: any): void {
          *   账本落不落**都不回滚这次投递**；失败只记在 watch 上并如实回带。
          * ⚠ 只投影**真实 task**（`taskId`）；`implicit` / 缺省 ⇒ 纯函数会 `skipped`。
          */
+        /**
+         * ── **T-03：判不出 `ownerWsRoot` ⇒ 必须留显式「未投影」读数，⛔ 不许静默跳过** ──────
+         *
+         * 改前：条件不成立时**根本没有赋值语句** ⇒ `w.ledgerProjection` 保持 `undefined`
+         *   ⇒ 渲染层对 `undefined` 的处理是**输出空数组**（不是输出「未落」）
+         *   ⇒ **「失败」与「没发生」在读数面上不可区分**。
+         *
+         * 后果链（REVIEW 原文）：工具返回 ok:true、watch 正常落盘、回执正常回来，
+         *   但账本里没有 RUN、TSK 不动、面板第 4 步永远「无独立执行记录」——
+         *   **失败长得和「没派过活」一样**。同时 I-2（同 task 互斥）在这一档整段失效。
+         *
+         * ⚠ 注意：这是**跳过**，不是**失败** —— 所以 `ledgerProjectionFailures`（T-12）
+         *   挡不住它：那个字段读的是 `dispatch.ok === false`，而这里连
+         *   `applyProjection` 都没被调用。⇒ 必须在这里自己写。
+         */
+        const cannotProject = ownerWsRoot === undefined
+          ? '判不出派活方工作区根 ⇒ 未预登记 RUN'
+          : (typeof w.taskId !== 'string' || w.taskId === '')
+            ? '这条 watch 没有真实 taskId（implicit / 缺省）⇒ 不创建 RUN'
+            : undefined
+        if (cannotProject !== undefined) {
+          w.ledgerProjection = {
+            ...(w.ledgerProjection ?? {}),
+            dispatch: { ok: false, applied: 0, reason: cannotProject },
+          }
+        }
         if (ownerWsRoot !== undefined && typeof w.taskId === 'string' && w.taskId !== '') {
           try {
             const ledgerRoot = resolveLedgerRoot('', declaredLedgerHome(svcCtx), ownerWsRoot)

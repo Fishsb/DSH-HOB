@@ -16335,6 +16335,45 @@ const orchCode = stripComments(orchSrc)
   } else for (const x of p) bad(`TP-p · ${x}`)
 }
 
+// ── TP-r · T-03：判不出 `ownerWsRoot` ⇒ 必须留显式「未投影」读数，⛔ 不许静默跳过 ──
+/**
+ * ── 它守什么 ──────────────────────────────────────────────────────
+ *   改前条件不成立时**根本没有赋值语句** ⇒ `w.ledgerProjection` 保持 `undefined`
+ *   ⇒ 渲染层对 `undefined` 输出空数组（不是「未落」）
+ *   ⇒ **「失败」与「没发生」在读数面上不可区分**。
+ *
+ * ⚠ 与 T-12 的区别：T-12 读 `dispatch.ok === false`（**失败**）；
+ *   本条是**跳过** —— `applyProjection` 根本没被调用，所以那个字段挡不住。
+ */
+{
+  const p = []
+  /** ① 源码层：必须有 `cannotProject` 这个显式分支。 */
+  if (!/const cannotProject = ownerWsRoot === undefined/.test(src)) {
+    p.push('没有 `cannotProject` 显式分支 ⇒ 判不出 ownerWsRoot 时仍会静默跳过（T-03 复发）')
+  }
+  /** ② 该分支必须写 `ok: false` + `applied: 0` + 可读 `reason`。 */
+  if (!/dispatch: \{ ok: false, applied: 0, reason: cannotProject \}/.test(src)) {
+    p.push('`cannotProject` 分支没有写成 `{ ok:false, applied:0, reason }` ⇒ 读数面仍分不清「失败」与「没发生」')
+  }
+  /** ③ 文案必须点明「未预登记 RUN」（那是后果链的关键）。 */
+  if (!/未预登记 RUN/.test(src)) {
+    p.push('reason 文案没点明「未预登记 RUN」 ⇒ 读者不知道后果是什么')
+  }
+  /** ④ 负向对拍：把 mustProject 的赋值删掉 ⇒ ③ 的正则当场失配（证明本条有牙）。 */
+  const mutated = src.replace(
+    'dispatch: { ok: false, applied: 0, reason: cannotProject }',
+    "dispatch: { ok: true, applied: 0, reason: cannotProject }",
+  )
+  if (mutated === src) {
+    p.push('负向对拍造不出变异（找不到目标串）⇒ 本条不可判')
+  } else if (/dispatch: \{ ok: false, applied: 0, reason: cannotProject \}/.test(mutated)) {
+    p.push('变异后仍匹配 ⇒ 判据没有牙')
+  }
+  if (p.length === 0) {
+    ok('TP-r ✓ **T-03**：判不出 `ownerWsRoot` / 无真实 `taskId` ⇒ `ledgerProjection.dispatch = { ok:false, applied:0, reason }`'
+      + '（⛔ 不再静默跳过；⚠ 与 T-12 的「失败」信号是两档，本条补的是「跳过」那一档）')
+  } else for (const x of p) bad(`TP-r · ${x}`)
+}
 // ── TP-q · 负向对拍：把「非零才出」改成恒出 ⇒ TP-p 必红 ──
 /**
  * ⚠⚠ **2026-11-11 第 54 轮：本块原先直接改写生产源码** ──────────────────────
