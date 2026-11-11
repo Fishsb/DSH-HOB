@@ -792,3 +792,73 @@ grep -c 'clarify_legacy' …/unit-*.toml
 ⇒ 两条都**高估了证据的适用范围**。
 
 ---
+
+---
+
+## §199 ✅ 顺带实测确认：O-05 的修复对本账本**真的生效**
+
+### 199.1 本账本的完整画像
+
+```
+路径：/home/lk/.dsh/hob-ledgers/dsh-hob/ledger/
+目录：CONSTITUTION.md PROJECT.md acc/ archive/ changes/ gen/ runs/ spec/ units/
+⚠ **没有 ledger.toml**
+
+单元：292 个
+  kind 分布：acc 66 · evidence 75 · run 56 · task 50 · req 20 · change 13 ·
+             goal 5 · risk 5 · cap 1 · decision 1
+  status 分布：pass 55 · built 50 · agreed 17 · active 6 · closed 2 · handling 2 · …
+  pipeline_version：**0 个**
+  clarify_legacy：**111 次**
+```
+
+### 199.2 ✅ 这正好命中 O-05 描述的形态
+
+O-05 原文：「`indexIntegrityProblems` 只在 `activation==='active'` 时生效 ⇒ **现行实例永远不核**」
+病因注释：「而**现行真实账本没有 ledger.toml**」
+
+⇒ **本账本正是那个「没有 ledger.toml」的现行真实账本。**
+
+### 199.3 修复条件逐条对照
+
+`tools.ts:970`：
+
+```ts
+if (probe.indexText !== undefined && (
+  lifecycle.activation === 'active' ||
+  lifecycle.legacyCompatible ||
+  lifecycle.activation === 'missing'
+)) { … 跑 A-4 索引完整性检查 … }
+```
+
+| 条件 | 本账本是否命中 |
+|---|---|
+| `activation === 'active'` | ❌（无 ledger.toml，不会是 active） |
+| `legacyCompatible` | ✅（111 处 clarify_legacy ⇒ 是 legacy 兼容账本） |
+| **`activation === 'missing'`** | ✅ **（正是这个新加的条件）** |
+
+⇒ **O-05 的修复不是纸面改动 —— 它让本账本从「永远不核」变成「会被核」。**
+
+### 199.4 ⚠ 这也解释了为什么会有这篇审计
+
+```
+本账本：292 单元 · 10 种 kind · 111 处 legacy 标记 · 0 个 pipeline_version
+⇒ 它是 **v2 时期积累的存量账本**，一直在用
+⇒ 而 O-05 说的「现行实例永远不核」意味着：
+   **这 292 个单元的索引完整性，在修复前从未被检查过一次**
+```
+
+⚠ 这是个具体的、可量化的后果 —— 不是抽象的质量问题。
+
+### 199.5 仍未解释的一件事
+
+```
+任务 status=built 50 条、验证 status=pass 55 条 —— 这些是 v3 形态的词；
+但需求 pipeline_version 0 个 —— 那是 v2 形态。
+⇒ 同一本账里混着两代词。
+```
+
+⚠ 可能的解释：`built` / `pass` 在 v2 里也有（属于 `UNIT_STATUSES` 封闭集），
+   ⛔ 不一定是 v3 引入的。⇒ **本轮不深究**，登记为观察。
+
+---
