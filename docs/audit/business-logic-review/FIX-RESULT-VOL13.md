@@ -117,3 +117,73 @@ grep -n 'summarizeStage|displayState' src/client/project-panel.tsx
 | ⬜ 未核 | **68** | |
 
 ---
+
+---
+
+## §170 ✅ T 组核查（一）：T-01 已修，注释精确记录了病与修法
+
+### 170.1 T-01 的缺陷与修复
+
+缺陷（blocker）：`index.toml` 被守卫重复计入 ⇒ 第二条单元永远写不进，且错误原因说谎。
+
+`hob-write.ts:1208-1222` 的注释逐字核对：
+
+```
+⚠⚠ 不变量：**每个物理文件在 merged 里最多贡献一次**（T-01）。
+
+旧实现让 index.toml 贡献两次：合并数组第一项 readToml('index.toml')
+  ＋ mode==='append' 时的第三项 readToml(rel)（rel==='index.toml'）；
+  而 shardNames 只匹配 ^unit-*.toml（**不含** index.toml）⇒ 第二项排不掉它
+  ⇒ index 里每条既有单元都命中「合并后的账本出现重复 ID」。
+
+⇒ 正确形状是「rel 是 index.toml 时**第一项不读**」——
+  ⛔ **不是**「第三项去掉旧内容」：后者修得了 append、修不了 overwrite
+  （02-ledger.md 附录 A-4 实测：overwrite 到 index 仍报重复）。
+```
+
+实现：
+
+```ts
+const relIsIndex = rel === 'index.toml'
+const selfRead = readUnitSource(rel)
+/** 关键：rel 是 index 时这里**不读**，否则它与 selfRead 是同一份物理文件。 */
+const indexPathRead = relIsIndex ? undefined : readUnitSource('index.toml')
+const others = shardNames.filter((n) => n !== rel).map(readUnitSource)
+```
+
+⇒ ✅ **已修，且修在根因上**（让同一文件只读一次），⛔ 不是打补丁。
+
+### 170.2 ⚠ 这段注释比修复本身更有价值
+
+它明确排除了一个**看起来更简单但修不干净**的方案：
+
+```
+⛔ 「第三项去掉旧内容」 —— 修得了 append、修不了 overwrite
+✅ 「rel 是 index 时第一项不读」 —— 两种模式都对
+```
+
+⚠ 这类「为什么不用那个显而易见的方案」的记录，是本仓最有价值的部分之一：
+   它让下一个读代码的人**不会把已排除的错误方案再试一遍**。
+
+### 170.3 顺带发现的另一条修复（同一函数内）
+
+```
+⚠ B0.2b / t22 修复点：旧实现只含 index.toml 与**其它**分片，漏了 rel 自己的旧内容
+  ⇒ 目标分片里每一条既有单元都被 pipelineWriteProblems 当成「本次新增」
+  ⇒ 对 v2 存量单元触发 C-23「新单元必须登记 pipeline_version=v3」。
+  实测：真实账本副本上原样 overwrite unit-01.toml（内容逐字节不变）被 81 条 C-23 拒绝。
+```
+
+⚠ 这条不在 REVIEW 的 112 条里 —— 是**修 T-01 时自己发现的相邻问题**，已一并修好。
+
+### 170.4 进度
+
+| 状态 | 条数 |
+|---|---|
+| ✅ 全量已修 | **42**（+T-01） |
+| ⚠ 部分修 | 1（R-01） |
+| ⚠ 核心已修 + 规格需修订 | 1（R-02） |
+| ⛔ 未修 | 1（S-01） |
+| ⬜ 未核 | **67** |
+
+---
