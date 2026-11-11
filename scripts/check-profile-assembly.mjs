@@ -40,6 +40,7 @@
  *   `npm run check:profile -- --all`     检查 `$DSH_HOME/profiles/*` 下**所有** profile
  */
 import { copyFileSync, existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -79,8 +80,31 @@ const FIX = ARGV.includes('--fix')
  *     ⛔ 不用「argv 里有没有 check:all」这种猜法。
  */
 const IN_AGGREGATE = process.env.CHECK_ALL === '1'
-if (IN_AGGREGATE && FIX) {
-  console.error('✗ D-22 · `--fix` 不许在聚合入口里跑（check:all 的纪律是判据只读）')
+/**
+ * ⚠⚠ **2026-11-11 修正（D-22 首版放错了层）**：
+ *   首版把门禁放在**脚本入口** ⇒ 连 P-4 / P-7 这两条**在沙箱里用 --fix 自测**的断言
+ *   也一起被挡掉 ⇒ `check:all` 里 check:profile 直接 FAIL（实测 47/48）。
+ *   ⇒ 门禁必须放在「**真实写盘的那一刻**」，⛔ 不是「一开始就 --fix 了」。
+ *     沙箱自测走 `--fix` 但目标目录是临时件，⛔ 不碰真 profile。
+ */
+function guardRealFix(target) {
+  if (!IN_AGGREGATE || !FIX) return
+  /**
+   * ⚠⚠ **2026-11-11 第二次修正（判据一开始写错了）**：
+   *
+   *   首修版判据是「目标是否在 `${DSH_HOME}/profiles` 下」⇒ **错**。
+   *   因为 P-4/P-7 的自测**把 DSH_HOME 指到 `mkdtempSync(join(tmpdir(),'hob-prof-'))`**
+   *   ⇒ 沙箱目标**恰好**就在 `$DSH_HOME/profiles/web` 下 ⇒ 被判成真 profile ⇒ 自测被拦。
+   *   （实测：`check:all` 里 check:profile FAIL，P-4 报「修后再判 exit=1（应 0）」）
+   *
+   *   ⇒ 真判据是「**目标不在系统临时目录下**」：沙箱一律 `mkdtempSync(join(tmpdir(), …))`，
+   *     真 profile 在 `~/.dsh/profiles/` ⇒ 两者结构上分得开。
+   */
+  const tmp = realpathSync(tmpdir())
+  let real = target
+  try { real = realpathSync(target) } catch { /* 不存在就按字面判 */ }
+  if (real.startsWith(tmp + '/') || real === tmp) return
+  console.error('✗ D-22 · `--fix` 不许在聚合入口里改写真 profile（check:all 的纪律是判据只读）')
   console.error('  ⇒ 单跑 `npm run check:profile -- --fix` 补完再跑 `npm run check`')
   process.exit(1)
 }
@@ -741,6 +765,8 @@ for (const profile of names) {
         '⚠ 防"修一个地方、悄悄改了别处"')
       continue
     }
+    /** ⚠ D-22：真实写盘前的最后一道闸（沙箱临时件放行，真 profile 在聚合入口里拒绝）。 */
+    guardRealFix(manifestPath)
     const backup = `${manifestPath}.bak-bundles-${new Date().toISOString().replace(/[:.]/g, '-')}`
     try {
       copyFileSync(manifestPath, backup)
