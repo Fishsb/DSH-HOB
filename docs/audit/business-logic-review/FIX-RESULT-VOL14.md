@@ -862,3 +862,66 @@ if (probe.indexText !== undefined && (
    ⛔ 不一定是 v3 引入的。⇒ **本轮不深究**，登记为观察。
 
 ---
+
+### 199.6 ❌ 「混着两代词」是误报 —— 已查清
+
+`ledger-validation.ts:14-27` 的 `UNIT_STATUSES`（**唯一权威的 status 封闭集**）：
+
+```ts
+task:         ['todo', 'doing', 'built']
+acc:          ['pass', 'send-back', 'unverified']
+verification: ['unverified', 'pass', 'send-back', 'waived']
+…
+```
+
+⇒ **`built` / `pass` 本来就在 v2 与 v3 共用的封闭集里**，⛔ 不是「v3 才引入的词」。
+
+| 上一轮的观察 | 实际情况 |
+|---|---|
+| 「任务 `built` / 验证 `pass` 是 v3 形态的词」 | ❌ 它们在**共用封闭集**里 |
+| 「同一本账里混着两代词」 | ❌ 误报 |
+
+⚠ 我在上一轮把「v2 账本没有 `pipeline_version`」和「有 `built`/`pass`」
+   当成了两个时代的冲突，而实际上**这两个词从来不属于某个时代**。
+
+⇒ 这解释了为什么本账本能一边是 legacy、一边又有 `built`/`pass`：
+   **`pipeline_version` 标的是「这条单元是否走 v3 阶段机」，⛔ 不是「用哪套词表」。**
+   两个维度正交。
+
+---
+
+### 199.7 ✅ 实测确认：新建单元**必须**标 v3，存量豁免
+
+```js
+// 新建 req，不标 v3
+pipelineWriteProblems([], [{ id: 'R-NEW', kind: 'req', status: 'draft', revision: '1' }])
+→  问题数 1 · C-23: 新 req 必须登记 pipeline_version="v3"
+
+// 标了 v3
+pipelineWriteProblems([], [{ …同一条…, pipeline_version: 'v3' }])
+→  问题数 0
+```
+
+⇒ **本账本「0 个 `pipeline_version`」是历史存量的正常状态**：
+
+```
+292 个单元全是存量 ⇒ 不需要标 v3（C-23 只对 old === undefined 的新单元生效）
+将来新建任何 req / change / task / run / acc ⇒ **必须**标 v3，否则当场 C-23
+```
+
+⚠ 所以这本账本是**「纯 legacy 存量 + 未来必然 v3」**的过渡态，⛔ 不是配置错误。
+
+### 199.8 本轮小结：一条观察的完整生命周期
+
+| 步骤 | 内容 |
+|---|---|
+| ① 提出 | 「同一本账混着两代词」（§199.5） |
+| ② 怀疑 | 去查 `UNIT_STATUSES` 封闭集 |
+| ③ 否定 | `built`/`pass` 是**共用词**，⛔ 不属于某个时代 |
+| ④ 补实证 | 新建单元实测：不标 v3 ⇒ C-23 拒绝；标了 ⇒ 通过 |
+| ⑤ 结论 | 本账本是「纯 legacy 存量」的过渡态，正常 |
+
+⚠ **这条观察从提出到定性用了两轮** —— 而它本可以在提出时就查 `UNIT_STATUSES` 一次解决。
+   ⇒ 教训：**观察要立刻去证实或证伪，⛔ 不要「登记为观察」就放下**。
+
+---
