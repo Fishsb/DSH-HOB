@@ -252,3 +252,67 @@ import { describeLedgerHealth, ledgerHealthOf, type LedgerHealthProblem } from '
 | ⬜ 未核 | **65** |
 
 ---
+
+---
+
+## §172 T-04 已修（7/7 取数函数有超时）；T-03 **仍未修**（跳过仍静默）
+
+### 172.1 ✅ T-04：一次挂起的 HTTP 不再让面板永久停止刷新
+
+| 证据 | 实测 |
+|---|---|
+| `timeoutSignal(ms)` 实现 | `:726-748`「`AbortController` 不可用时退化为「只计时不取消」」 |
+| `timeoutMessage(ms)` | `:749` |
+| 接收 `signal` 的取数函数 | **7 个**：`defaultFetchProgress` / `Ledgers` / `Exec` / `Stages` / `Chains` / `Unseen` / `Resource` |
+| `timeoutSignal(` 调用处 | **7 次**（与上表**一一对应**） |
+| `pulling` 闸 | `:2162-2190` |
+
+⇒ ✅ **REVIEW 所述「六个取数函数全都没有超时」已经不成立。**
+
+⚠ 而且实现考虑了一致性边界：「`AbortController` 不可用时退化为只计时不取消」——
+   即**耗时上限仍然生效**（不会被挂起的 promise 卡死），只是不真取消请求。
+
+### 172.2 ⛔ T-03：`ownerWsRoot` 判不出时**仍然静默跳过**
+
+`orchestrator.ts:5610-5630`：
+
+```ts
+if (ownerWsRoot !== undefined && typeof w.taskId === 'string' && w.taskId !== '') {
+  try {
+    const ledgerRoot = resolveLedgerRoot('', declaredLedgerHome(svcCtx), ownerWsRoot)
+    if (ledgerRoot !== undefined) {          // ← 第二层跳过
+      const projection = await applyProjection(...)
+      w.ledgerProjection = { dispatch: { ok: projection.ok, ... } }
+      ...
+    }
+    // ⚠ ledgerRoot === undefined ⇒ 什么都不写（w.ledgerProjection 保持 undefined）
+  } catch (e) { ... }
+}
+// ⚠ ownerWsRoot === undefined ⇒ 整段跳过，同样什么都不写
+```
+
+⇒ **REVIEW 描述的症状仍在**：
+
+```
+「判不出 ownerWsRoot ⇒ 账本投影整段静默跳过，工具仍报 ok:true」
+```
+
+⚠ **`ledgerProjectionFailures`（T-12 加的）挡不住这一条**：
+
+```
+它记录的是 return.ok === false / dispatch.ok === false —— 那是【失败】；
+而 T-03 是【跳过】：applyProjection 根本没被调用，没有 ok 可言。
+⇒ 「跳过」与「失败」是两种不同的静默形态，前者至今没有可见信号。
+```
+
+### 172.3 进度
+
+| 状态 | 条数 |
+|---|---|
+| ✅ 全量已修 | **45**（+T-04） |
+| ⚠ 部分修 | 1（R-01） |
+| ⚠ 核心已修 + 规格需修订 | 1（R-02） |
+| ⛔ 未修 | **2**（S-01 · **T-03**） |
+| ⬜ 未核 | **63** |
+
+---
