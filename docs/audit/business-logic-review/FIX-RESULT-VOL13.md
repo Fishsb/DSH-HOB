@@ -503,3 +503,64 @@ const truncated = health.truncated === true || (total !== undefined && shown < t
 | ⬜ 未核 | **59** |
 
 ---
+
+---
+
+## §176 ✅ T-08 已修（我上一轮差点误判为未修）
+
+### 176.1 我上一轮的错在哪
+
+```
+我 grep 'G1-requirement|G2-plan|blockedBy' 只看到前两个分支：
+  :603  if (gate === 'G1-requirement')
+  :613  else if (gate === 'G2-plan')
+⇒ 据此判「只处理 G1/G2，T-08 未修」
+
+⚠ 漏掉了第三个 else if（:625-627）—— 它才是 T-08 的修复点。
+```
+
+### 176.2 ✅ 真正的修复
+
+`requirement-chain.ts:625-659`：
+
+```ts
+} else if (pipelineGoverns && partial.next.blockedBy.length === 0
+  && partial.pipeline.blockedBy.length > 0) {
+  /**
+   * **T-08：G3–G6 的阻断原因也要进 next**（2026-11-10）
+   *
+   * ── 修法：只补 blockedBy，⛔ 不改 kind / target / why ─────────────
+   *   ⚠ 那两个字段由 nextAction 的全局六态优先级决定，改它等于另造一套
+   *     「下一步」判据（正是 R-02 / R-14 的形态）。
+   *   ⇒ 只在 next.blockedBy 为空、而 pipeline 有阻断时**补进去**；kind / why 一个字不动。
+   *   ⚠ 为什么条件是「next.blockedBy 为空」：若全局 nextAction 已经给了阻断，
+   *     它比链内视图更了解「该先做哪一件」⇒ **不覆盖它**（保持既有优先级）。
+   */
+  partial.next = { ...partial.next, blockedBy: partial.pipeline.blockedBy }
+}
+```
+
+⇒ ✅ **已修**，而且修复范围**精确**：只补 `blockedBy`，不动 `kind`/`target`/`why`。
+
+### 176.3 ⚠ 这段注释的价值
+
+```
+「改 kind/target/why 等于另造一套「下一步」判据（正是 R-02 / R-14 的形态）」
+⇒ 它明确说明了【为什么只改最小面】—— 那不是偷懒，是避免复发 R-02。
+```
+
+⚠ 这与 §171（T-02/T-05 必须同批）是**同一种思维方式**：
+   修一处时必须想「改大了会撞上哪条既有判据」。
+
+### 176.4 进度
+
+| 状态 | 条数 |
+|---|---|
+| ✅ 全量已修 | **50**（+T-08） |
+| ⚠ 部分修 | 1（R-01） |
+| ⚠ 核心已修 + 规格需修订 | 1（R-02） |
+| ⚠ 按设计处理 | 1（T-07） |
+| ⛔ 未修 | 1（S-01） |
+| ⬜ 未核 | **58** |
+
+---
