@@ -668,11 +668,40 @@ export function pipelineWriteProblems(
         const n = Number(text(d.artifact_revision))
         return Number.isSafeInteger(n) && n > max ? n : max
       }, 0)
-      if (decisions.length > 0 && revision <= maxApprovedRevision) {
+      /**
+       * ── **R-12：与「是否有 decision」解耦** ──────────────────────────────
+       * 改前条件是 `decisions.length > 0 && revision <= maxApprovedRevision`：
+       * 把强制范围限定在「**已经有过批准**」的条目上 ⇒ **首次批准前**的每一次内容改写
+       * 都不需要递增 revision，digest 随之漂移，而账本里没有任何记录能证明
+       * 「用户当时批准的是哪一版内容」。
+       *
+       * ⇒ 现在的判据：**内容（digest）变了 ⇒ revision 必须递增**，与 decision 无关。
+       *   ⚠ 有 decision 时额外要求「不低于已批准的最高版」（保留原语义）。
+       */
+      /**
+       * ⚠ **只约束「需要用户批准的产物」**：`req` / `change`。
+       *
+       *   实测教训（2026-11-11）：第一版把它套到**全部** artifact kind 上，
+       *   于是投影层给 RUN 写 `progress_refs`（正常运行时进度）也被判 C-23，
+       *   `check:ledger-projection` 的 LP-8 当场红。
+       *
+       *   ⚠ 改前的 `decisions.length > 0` 其实**无意中**挡掉了这些 ——
+       *     RUN/ACC 没有 decision，所以从来不会被拦。R-12 要解耦的是
+       *     「首次批准前的 req/change 内容改写」，⛔ 不是运行时投影。
+       */
+      const needsApproval = APPROVAL_STAGES.length > 0 && (kind === 'req' || kind === 'change')
+      const mustBump = !needsApproval
+        ? false
+        : decisions.length > 0
+          ? revision <= maxApprovedRevision
+          : revision <= (oldRevision ?? 0)
+      if (mustBump) {
         out.push({
           rule: 'C-23',
           unit: id,
-          why: `内容已变但 revision 未递增（已有决定最高第 ${maxApprovedRevision} 版，当前第 ${revision} 版）`,
+          why: decisions.length > 0
+            ? `内容已变但 revision 未递增（已有决定最高第 ${maxApprovedRevision} 版，当前第 ${revision} 版）`
+            : `内容已变但 revision 未递增（原文第 ${oldRevision ?? '?'} 版，当前第 ${revision} 版；⚠ 首次批准前也不许原地改内容）`,
         })
       }
     }

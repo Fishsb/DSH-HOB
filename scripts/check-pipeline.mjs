@@ -758,6 +758,45 @@ console.log('')
 }
 console.log('')
 console.log(`PIPE 组：通过 ${pass} · 失败 ${fail}`)
+
+// PIPE-31: R-12 —— 首次批准前改内容也必须递增 revision（⛔ 与是否有 decision 解耦）
+{
+  /** ⚠ kind 必须是 PIPELINE_ARTIFACT_KINDS 之一（req/change/task/run/acc），⛔ 不是 'plan' */
+  const base = { id: 'CHG-1', kind: 'change', req_ids: ['R-1'], pipeline_version: pipeline.PIPELINE_VERSION, revision: '1', title: 'v1' }
+  const changedSameRev = { ...base, title: 'v2' }                 // 内容变、revision 不动
+  const changedBumped = { ...base, title: 'v2', revision: '2' }   // 内容变、revision 递增
+  /** ⚠ 注意：before 与 after 里**都没有 decision** —— 这正是 R-12 的靶子。 */
+  const noDecUnbumped = pipeline.pipelineWriteProblems([base], [changedSameRev])
+  const noDecBumped = pipeline.pipelineWriteProblems([base], [changedBumped])
+  const p = []
+  if (!noDecUnbumped.some((x) => x.rule === 'C-23')) {
+    p.push('首次批准前改内容但 revision 未递增 ⇒ 未报 C-23（R-12 复发：decisions.length > 0 又挡住了）')
+  }
+  if (noDecBumped.some((x) => x.rule === 'C-23')) p.push('递增了 revision 却被拒 ⇒ 误报')
+  /** 负向对照：未改动的内容不该报 */
+  const untouched = pipeline.pipelineWriteProblems([base], [{ ...base }])
+  if (untouched.some((x) => x.rule === 'C-23')) p.push('内容没变却报 C-23 ⇒ 误报')
+  /**
+   * ⚠⚠ **R-12 只约束「需要用户批准的产物」（req/change）**（2026-11-11 实测踩过）。
+   *
+   *   第一版把判据套到**全部** artifact kind 上 ⇒ 投影层给 RUN 写 `progress_refs`
+   *   （正常运行时进度）也被判 C-23 ⇒ `check:ledger-projection` 的 LP-8 当场红，
+   *   `check:live-route` 也跟着红。
+   *
+   *   ⇒ 本条钉住「运行时投影不参与 R-12」，⛔ 防止后人再把范围放大。
+   */
+  const runBase = { id: 'RUN-1', kind: 'run', parent: 'T-1', pipeline_version: pipeline.PIPELINE_VERSION, revision: '1', title: 'r1', progress_refs: 'a' }
+  const runProgress = { ...runBase, progress_refs: 'a,b' }   // 投影层正常写进度
+  const runProblems = pipeline.pipelineWriteProblems([runBase], [runProgress])
+  if (runProblems.some((x) => x.rule === 'C-23')) {
+    p.push('运行时投影改 progress_refs 被判 C-23 ⇒ R-12 范围放大到 run（⛔ 那是投影层正常写入）')
+  }
+  if (p.length === 0) {
+    ok('PIPE-31 ✓ **R-12**：无 decision（首次批准前）改内容却不递增 revision ⇒ C-23 必报；'
+      + '递增后放行；内容未变不误报（⚠ 与 decisions.length 解耦）')
+  } else for (const x of p) bad(`PIPE-31 · ${x}`)
+}
+
 console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 0 处**`)
 console.log('')
 if (fail > 0) process.exit(1)

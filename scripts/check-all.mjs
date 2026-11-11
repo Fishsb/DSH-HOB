@@ -247,7 +247,7 @@ export const ASSERTION_FLOORS = new Map([
   // 2026-11-08（Pipeline v2）：14 条零余量 = G1/G2、内容摘要、revision、自批、
   // 回执、request-changes、写入守卫、clean cut、多需求逐条批准、阶段/面板接线、
   // RUN/ACC 任务修订绑定、未批准草稿可保存但不可推进、草稿待办不冒充用户闸门。
-  ['check:pipeline', 30],
+  ['check:pipeline', 31],
   // 2026-11-10（统一准入 + 归档重建）：17 条零余量。
   ['check:ledger-lifecycle', 21],
   // 2026-11-08（Pipeline v3 risk policy）：10 条零余量。
