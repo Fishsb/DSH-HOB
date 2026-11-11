@@ -21,6 +21,7 @@ Hob 代表你承接项目目标，负责明确目标和需求、组织实现方�
 
 项目术语和命名约定见 [TERMINOLOGY.md](./TERMINOLOGY.md)。
 现行架构图与分层说明见 [architecture-overview.md](./kit/drafts/architecture-overview.md)。
+**业务判定在哪判、判什么、属于哪一层** 见 [judgement-index.md](./kit/drafts/judgement-index.md)（41 个判定函数的唯一地图）。
 
 ---
 

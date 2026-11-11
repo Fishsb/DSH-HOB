@@ -59,6 +59,14 @@
       "what": "**模块启停与 inject 语义探针**（**退出码三档**）"
     },
     {
+      "cmd": "check:architecture",
+      "what": "**架构纪律**：分层方向零违规（shared 无反向依赖 / client 不碰 server·modules / server 不碰 client）· import 图**零环** · 8 个重点文件不超登记上限（只准降不准升）· 关键判据（ledgerHealthOf / proceedGateFor）全仓唯一实现"
+    },
+    {
+      "cmd": "check:judgement-index",
+      "what": "**业务判定索引与源码同源**：41 个判定函数（Problems/Gate/Health/Valid 族 + 显式登记项）必须全部出现在 kit/drafts/judgement-index.md，且该表写的文件:行号指向函数自己的定义行（容差 ±8），并**禁止编外判定**（新增判定不补索引即红）"
+    },
+    {
       "cmd": "check:profile",
       "what": "**宿主 profile 装配面四条**（声明 / 依赖 / 解析 / 可修）+ `--self-check` 9 条 · `--fix`（⚠ **会写盘、先备份、之后必须重启**）"
     },

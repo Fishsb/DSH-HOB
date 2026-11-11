@@ -777,6 +777,22 @@ import {
 } from '../server/orch-state.ts'
 
 /** 模块名（同时是 fiber 显示名）。 */
+import {
+  readHandoffsAt,
+  closedForTrackAt,
+  abandonedPlansAt,
+  closedPlanSummariesAt,
+  targetPresetAt,
+  presetReadingOf,
+  wsRootOfSessionAt,
+  stateFileForOwnerAt,
+  /** ⚠ 别名导入：本文件闭包里已有同名 `messageTextOf` / `userReplyAfter`（薄包装），
+   *  不别名会让导入被局部声明**遮蔽**，包装就变成了自引用死循环。 */
+  messageTextOf as messageTextOfImported,
+  userReplyAfter as userReplyAfterImported,
+  awaitingUserOfAt,
+} from './orchestrator-phase-readings.ts'
+
 export const name = 'dsh-hob-orchestrator'
 
 /** 本模块对外提供的服务名（预设行据此反应式注册工具）。 */
@@ -2061,18 +2077,28 @@ export function apply(ctx: any): void {
      * @returns `[preset, source]`；读不到（总线缺席 / 会话没了 / 两个来源都空）⇒
      *   `[undefined, undefined]`，由调用方渲染成 `(读不到)` —— ⛔ 不编造、不猜默认值。
      */
+    /**
+     * ⚠ 2026-11-11：归约逻辑已搬到 `orchestrator-phase-readings.ts` 的 `targetPresetAt`
+     *   （那边可单独读、单独测，不必翻这个 6800 行的闭包）。
+     *
+     * ⚠⚠ **但 `hobBus.presetOf(...)` 这个调用点必须留在本文件** ——
+     *   `check:orch` 的 J3 判的是「**编排侧**的预设读数经总线单点进入」，
+     *   它扫的就是本文件的源码文本。移到辅助文件会让 J3 报「经总线入口=false」
+     *   （实测过：那不是缺陷，是判据的锚点）。
+     *   ⇒ 本包装**先自己取总线、确认入口存在**，再交给纯函数归约。
+     */
+    /**
+     * ⚠ 2026-11-11：归约已搬到 `orchestrator-phase-readings.ts` 的 `presetReadingOf`；
+     *   取哪个服务仍留在本处（`svcCtx` 是闭包上下文，本就不该外泄）。
+     *
+     * ⚠⚠ **`.presetOf(` 这个调用点必须在本文件里出现** ——
+     *   `check:orch` 的 J3 判的是「**编排侧**的预设读数经总线单点进入」，它扫本文件源码。
+     *   实测：把调用整个搬进辅助文件 ⇒ J3 报 `经总线入口=false`（那不是缺陷，是判据的锚点）。
+     */
     const targetPresetOf = (target: string): [string | undefined, PresetSource | undefined] => {
-      try {
-        const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
-        if (bus === undefined || typeof bus.presetOf !== 'function') return [undefined, undefined]
-        const r = bus.presetOf(target)
-        if (r === undefined || r === null) return [undefined, undefined]
-        const preset = typeof r.preset === 'string' && r.preset !== '' ? r.preset : undefined
-        const source = r.source === 'projection' || r.source === 'header' ? r.source : undefined
-        return [preset, preset === undefined ? undefined : source]
-      } catch {
-        return [undefined, undefined]
-      }
+      const bus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
+      if (bus === undefined || typeof bus.presetOf !== 'function') return [undefined, undefined]
+      return presetReadingOf(bus.presetOf(target))
     }
 
     /**
@@ -2741,13 +2767,10 @@ export function apply(ctx: any): void {
       }
     } catch { /* 读不到 ⇒ 当作没停（fail-closed 的方向在这里是"不误停"），下一次 stop 会重写 */ }
     /** 某个 owner 用哪一份运行态文件（`stop`/`resume` 落盘时用；判不出 ⇒ 不落盘）。 */
-    const stateFileForOwner = (owner: string): string | undefined => {
-      try {
-        return runtimeFileOf(svcCtx, wsRootOfSession(owner))
-      } catch {
-        return undefined
-      }
-    }
+    /** ⚠ 2026-11-11：函数体已搬到 `orchestrator-phase-readings.ts`。
+     *  两个解析器都当参数传进去 —— 那边不认识 `svcCtx`，也不该认识。 */
+    const stateFileForOwner = (owner: string): string | undefined =>
+      stateFileForOwnerAt(owner, (wsRoot) => runtimeFileOf(svcCtx, wsRoot), wsRootOfSession)
 
     /**
      * ══════════════════════════════════════════════════════════════════════════
@@ -3285,14 +3308,12 @@ export function apply(ctx: any): void {
      *
      * ⚠ 读不到 ⇒ 空数组（不抛）：诊断用途不该让 status 崩掉（同 `readOrchState` 纪律）。
      */
-    const readHandoffs = (): PersistedHandoff[] => {
-      const out: PersistedHandoff[] = []
-      try {
-        for (const file of scanStateFiles(svcCtx)) out.push(...readOrchState(file).handoffs)
-      } catch { /* 读不到就当空 */ }
-      // 新的在前（最近的漏派最要紧）。
-      return out.sort((a, b) => b.at - a.at)
-    }
+    /**
+     * ⚠ 2026-11-11：函数体已搬到 `orchestrator-phase-readings.ts`（无状态读数）。
+     *   本处只保留**取运行态文件清单**这一步（`scanStateFiles` 需要 `svcCtx`，属闭包上下文），
+     *   其余逻辑在那边 —— 那里可以单独读、单独测，不必翻这个 6806 行的闭包。
+     */
+    const readHandoffs = (): PersistedHandoff[] => readHandoffsAt(scanStateFiles(svcCtx))
 
     /**
      * ⚠ ⚠ **本会话那一份账本的可达性**（2026-10-16 · 第 247 轮 · `TASK-R207`）。
@@ -3402,15 +3423,9 @@ export function apply(ctx: any): void {
      *   ⚠ 在**派发时**取（那时目标会话一定在），而不是在重载后取 ——
      *   重载后新代可能还没有任何目标会话可问。
      */
-    const wsRootOfSession = (sessionId: string): string | undefined => {
-      try {
-        const s = sessions.get?.(sessionId)
-        const cwd = s?.header?.cwd
-        return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
-      } catch {
-        return undefined
-      }
-    }
+    /** ⚠ 2026-11-11：函数体已搬到 `orchestrator-phase-readings.ts`（无状态读数）。 */
+    const wsRootOfSession = (sessionId: string): string | undefined =>
+      wsRootOfSessionAt(sessionId, sessions)
 
     /**
      * 把当前活着的 watch 落盘（结算/清理后调用）。
@@ -4219,47 +4234,17 @@ export function apply(ctx: any): void {
      * **过期归档摘要**（2026-11-06）：读 `runtime/work-plans/abandoned/`。
      * ⚠ 单独一档：⛔ 不并进活动计划，⛔ 不并进 completed。
      */
-    const abandonedSummary = (ledgerRoot: string, self: string | undefined) => {
-      const dir = join(ledgerRoot, 'runtime', 'work-plans', 'abandoned')
-      try {
-        if (!existsSync(dir)) return []
-        return readdirSync(dir)
-          .filter((name) => name.endsWith('.json'))
-          .sort()
-          .flatMap((name) => {
-            try {
-              const parsed = JSON.parse(readFileSync(join(dir, name), 'utf8')) as {
-                abandonedAt?: string
-                abandonedWhy?: string
-                plan?: { planId?: string; state?: string; joinOwnerSessionId?: string; tracks?: unknown[] }
-              }
-              const owner = parsed.plan?.joinOwnerSessionId
-              if (self !== undefined && owner !== undefined && owner !== self) return []
-              return [{
-                planId: String(parsed.plan?.planId ?? name.replace(/\.json$/, '')),
-                state: String(parsed.plan?.state ?? 'unknown'),
-                abandonedAt: String(parsed.abandonedAt ?? ''),
-                abandonedWhy: String(parsed.abandonedWhy ?? ''),
-                trackCount: Array.isArray(parsed.plan?.tracks) ? parsed.plan.tracks.length : 0,
-              }]
-            } catch { return [] }
-          })
-      } catch { return [] }
-    }
+    /** ⚠ 2026-11-11：函数体已搬到 `orchestrator-phase-readings.ts`（无状态读数）。 */
+    const abandonedSummary = (ledgerRoot: string, self: string | undefined) =>
+      abandonedPlansAt(ledgerRoot, self)
 
     /** 一个计划文件里，某条轨道的 closed 记录（重载后 watch 内存为空时的兜底）。 */
+    /** ⚠ 2026-11-11：函数体已搬到 `orchestrator-phase-readings.ts`（无状态读数）。 */
     const closedForTrack = (
       ledgerRoot: string,
       plan: WorkPlan,
       track: WorkTrack,
-    ): PersistedWatch | undefined => {
-      try {
-        const closed = readOrchState(orchStateFileOf(ledgerRoot)).closed
-        return closed.find((rec) => rec.target === track.sessionId
-          && (rec.task === undefined || rec.task === track.taskId)
-          && rec.at >= plan.createdAt)
-      } catch { return undefined }
-    }
+    ): PersistedWatch | undefined => closedForTrackAt(ledgerRoot, plan, track)
 
     /** 当前所有活动计划里，按 watch / closed 合并出的轨道状态。 */
     const mergeTrackStates = (
@@ -4318,34 +4303,11 @@ export function apply(ctx: any): void {
       return states
     }
 
-    /** 会话日志里一条事件的文本（只认 message 事件；别的形状 ⇒ 空串）。 */
-    const messageTextOf = (event: any): string => {
-      if (event?.type === 'user/message') {
-        const content = event?.data?.content
-        return Array.isArray(content)
-          ? content.filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
-            .map((p: any) => p.text).join('\n')
-          : ''
-      }
-      if (event?.type === 'assistant/message') {
-        const content = event?.data?.message?.content
-        return Array.isArray(content)
-          ? content.filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
-            .map((p: any) => p.text).join('\n')
-          : ''
-      }
-      return ''
-    }
+    /** ⚠ 2026-11-12：函数体已搬到 `orchestrator-phase-readings.ts`（无状态读数）。 */
+    const messageTextOf = (event: any): string => messageTextOfImported(event)
 
-    /** 会话日志里，该事件之后是否还有一条**真实用户消息**。 */
-    const userReplyAfter = (log: readonly any[], index: number): boolean => {
-      for (let i = index + 1; i < log.length; i++) {
-        const e: any = log[i]
-        if (e?.type !== 'user/message') continue
-        if (e?.data?.source?.kind === 'user' && messageTextOf(e).trim() !== '') return true
-      }
-      return false
-    }
+    /** ⚠ 2026-11-12：函数体已搬到 `orchestrator-phase-readings.ts`（无状态读数）。 */
+    const userReplyAfter = (log: readonly any[], index: number): boolean => userReplyAfterImported(log, index)
 
     /**
      * **该 owner 是否正在等用户**（2026-11-04）。
@@ -4359,36 +4321,10 @@ export function apply(ctx: any): void {
      * ⚠ 判不出 ⇒ `false`（不因此阻断看护；真正判不出时 `intent` 会落 `undecidable`）。
      *   ⛔ 不把"读不到"当成"在等用户" —— 那会让看护永远不叫。
      */
-    const awaitingUserOf = (ledgerRoot: string, owner: string): boolean => {
-      let sessionLastAt: number | undefined
-      try {
-        const session = sessions.get?.(owner) ?? agents.get?.(owner)?.session
-        const log = (session as any)?.log
-        if (Array.isArray(log)) {
-          for (let i = log.length - 1; i >= 0; i--) {
-            const e: any = log[i]
-            if (typeof e?.time === 'number' && Number.isFinite(e.time)) { sessionLastAt = e.time; break }
-          }
-          for (let i = log.length - 1; i >= 0; i--) {
-            const e: any = log[i]
-            if (e?.type !== 'assistant/message') continue
-            if (clarifySectionOf(messageTextOf(e)) === undefined) return false
-            return !userReplyAfter(log, i)
-          }
-        }
-      } catch { /* 读不到会话 ⇒ 看兼容来源 */ }
-      try {
-        const st = readOrchState(orchStateFileOf(ledgerRoot))
-        const own = st.closed.filter((rec) => (rec.owner ?? rec.watcher) === owner)
-        own.sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
-        const latest = own[0]
-        if (latest !== undefined && typeof latest.clarifyAt === 'number') {
-          /** 会话里已有更新消息 ⇒ 那条旧回传不再代表"此刻仍在等"。 */
-          return sessionLastAt === undefined || latest.clarifyAt >= sessionLastAt
-        }
-      } catch { /* 读不到 ⇒ 判不出 */ }
-      return false
-    }
+    /** ⚠ 2026-11-12：函数体已搬到 `orchestrator-phase-readings.ts`（无状态读数）。
+     *  两个服务对象当参数传入 —— 那边不认识闭包，也不该认识。 */
+    const awaitingUserOf = (ledgerRoot: string, owner: string): boolean =>
+      awaitingUserOfAt(ledgerRoot, owner, sessions, agents)
 
     /**
      * **用户是否主动停止了这一轮**（2026-11-04）。
@@ -4692,40 +4628,9 @@ export function apply(ctx: any): void {
      * 汇合已完成但还没验收的计划仍要能显示。
      * ⚠ 只读 `completed/`；不重新派发、不删除，也不把 `joining` 当活动轨。
      */
+    /** ⚠ 2026-11-11：函数体已搬到 `orchestrator-phase-readings.ts`（无状态读数）。 */
     const closedPlanSummary = (ledgerRoot: string, self: string | undefined) =>
-      listClosedWorkPlans(ledgerRoot)
-        .filter((plan) => self === undefined || plan.joinOwnerSessionId === self)
-        .map((plan) => {
-          const returned = plan.tracks.filter((track) => plan.trackStates?.[track.trackId] === 'returned').length
-          const failed = plan.tracks.filter((track) => plan.trackStates?.[track.trackId] === 'failed').length
-          return {
-            planId: plan.planId,
-            state: plan.state,
-            trackCount: plan.tracks.length,
-            running: 0,
-            waiting: 0,
-            returned,
-            failed,
-            ...(plan.singleTrackReason === undefined ? {} : { singleTrackReason: plan.singleTrackReason }),
-            rationale: plan.rationale,
-            modeSnapshot: planModeOf(plan),
-            ...(plan.serialized === undefined ? {} : {
-              serialized: {
-                reason: plan.serialized.reason,
-                groups: plan.serialized.groups,
-                ...(plan.serialized.sharedPaths === undefined ? {} : { sharedPaths: plan.serialized.sharedPaths }),
-              },
-            }),
-            tracks: plan.tracks.map((track) => ({
-              trackId: track.trackId,
-              taskId: track.taskId,
-              sessionId: track.sessionId,
-              accessType: track.accessType,
-              dependsOn: [...track.dependsOn],
-              state: plan.trackStates?.[track.trackId] ?? 'pending',
-            })),
-          }
-        })
+      closedPlanSummariesAt(ledgerRoot, self)
 
     /**
      * **把不再需要看护的登记切回等待**（2026-11-04）。

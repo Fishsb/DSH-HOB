@@ -176,6 +176,124 @@ const parseRows = (text) => {
   } else for (const x of p.slice(0, 5)) bad('⑤ ' + x)
 }
 
+// ── ⑥ 主交付卷的结论必须与本表同口径 ──────────────────────────────────────
+/**
+ * ── 守什么 ────────────────────────────────────────────────────────
+ *   `FIX-RESULT.md` 是**交付结论**，`STATUS.md` 是**逐条账**。两者必须同一口径。
+ *
+ * ⚠ 2026-11-11 实测的失同步（本节存在的理由）：
+ *   `FIX-RESULT.md` §1 写「106 已修 · 1 已处理 · 2 未完成」，§5 标题写「未修（0 条）」，
+ *   而同一节 5.2 表里 3 行标「❌ 未修」、5.3 又写「76 条未修」 ⇒ **同一份文件里四个口径**。
+ *   本表（STATUS.md）那时早就是 `106 / 3 / 2 / 1`。
+ *   ⇒ 没有任何判据读 `FIX-RESULT.md`（`docs/` 不在三个扫描根内）⇒ 失同步不会被发现。
+ *
+ * ── 判据（两条）────────────────────────────────────────────────────
+ *   ① `FIX-RESULT.md` 必须出现那行汇总：「N 条已修 · N 条已排除 · N 条按设计处理 · N 条未修」；
+ *   ② 四个数必须**逐个等于**本表算出来的值。
+ *
+ * ⚠ 只证「两处数字同口径」，⛔ 不证「每条修得对不对」（那要人读代码，见文件头）。
+ */
+{
+  const RESULT_FILE = join(root, 'docs', 'audit', 'business-logic-review', 'FIX-RESULT.md')
+  /** 本表算出来的四个数（⚠ 从**同一份 rows** 派生，⛔ 不另写常量）。 */
+  const countOf = (s) => rows.filter((r) => r.status === s).length
+  const truth = {
+    已修: countOf('已修'),
+    已排除: countOf('已排除'),
+    按设计: countOf('按设计处理'),
+    未修: countOf('未修'),
+  }
+  let resultSrc = ''
+  try { resultSrc = readFileSync(RESULT_FILE, 'utf8') } catch {
+    bad('⑥ 读不到 FIX-RESULT.md ⇒ 主交付卷缺失（⛔ 不按通过处理）')
+  }
+  if (resultSrc !== '') {
+    /**
+     * ⚠ 只认 §1 那句精确形状，避免匹配到正文里的随机数字。
+     * ⚠ **刻意不用正则**：2026-11-11 实测，在 TS 模板里写 `\\d` 会被转义成 `\\\\d`
+     *   ⇒ 判据「恒假」却看起来像「主卷格式不对」。改成逐标签取前置数字，⛔ 不依赖转义。
+     */
+    const LABELS = [['已修', '条已修'], ['已排除', '条已排除'], ['按设计', '条按设计处理'], ['未修', '条未修']]
+    const sumLine = resultSrc
+      .split(String.fromCharCode(10))
+      .find((l) => l.includes('条已修 ·') && l.includes('条已排除 ·')
+        && l.includes('条按设计处理 ·') && l.includes('条未修'))
+    /** 取 `tag` 前面的那段连续数字；取不到 ⇒ null。 */
+    const numBefore = (line, tag) => {
+      const at = line.indexOf(tag)
+      if (at < 0) return null
+      let i = at - 1
+      while (i >= 0 && line[i] === ' ') i--
+      let j = i
+      while (j >= 0 && line[j] >= '0' && line[j] <= '9') j--
+      if (j === i) return null
+      const n = Number(line.slice(j + 1, i + 1))
+      return Number.isSafeInteger(n) ? n : null
+    }
+    const got = {}
+    let parseable = sumLine !== undefined
+    if (sumLine !== undefined) {
+      for (const [k, tag] of LABELS) {
+        const n = numBefore(sumLine, tag)
+        if (n === null) { parseable = false; break }
+        got[k] = n
+      }
+    }
+    /**
+     * ── ⑥ 的负向对拍（M-1：每条判据自带一条）──────────────────────────────
+     *   ⚠ 内存里造「主卷数字与本表不一致」的变体，喂给**同一段解析逻辑**，
+     *     断言它**必须**被咬住。⛔ 不落盘、⛔ 不改真实文件。
+     */
+    {
+      /** 把汇总行第一个数字改掉（已修 106 → 105）。 */
+      const bump = (line) => {
+        const at = line.indexOf('条已修')
+        if (at < 0) return line
+        let i = at - 1
+        while (i >= 0 && line[i] === ' ') i--
+        let j = i
+        while (j >= 0 && line[j] >= '0' && line[j] <= '9') j--
+        if (j === i) return line
+        return line.slice(0, j + 1) + '105' + line.slice(i + 1)
+      }
+      const probe = (line) => {
+        if (line === undefined) return null
+        const g = {}
+        for (const [k, tag] of LABELS) {
+          const n = numBefore(line, tag)
+          if (n === null) return null
+          g[k] = n
+        }
+        return Object.keys(truth).some((k) => g[k] !== truth[k])
+      }
+      const hit = probe(bump(sumLine)) === true
+      const shapeMissed = probe('没有汇总行的一行字') === null
+      if (hit && shapeMissed) {
+        ok('**负向对拍**：主卷数字被改一个（106→105）**必红** · 汇总行缺失也**必红**（⚠ 内存里造，⛔ 不落盘）')
+      } else {
+        bad('⑥ 的负向对拍失败：' + (hit ? '' : '数字不一致没被咬住 ') + (shapeMissed ? '' : '汇总行缺失没被咬住')
+          + ' ⇒ 本断言是假绿（⛔ 不按通过处理）')
+      }
+    }
+    if (!parseable) {
+      bad('⑥ FIX-RESULT.md §1 找不到汇总行「N 条已修 · N 条已排除 · N 条按设计处理 · N 条未修」'
+        + String.fromCharCode(10) + '      ⇒ 交付结论必须与 STATUS.md 同形状，否则无法对拍')
+    } else {
+      const diff = Object.keys(truth).filter((k) => got[k] !== truth[k])
+      if (diff.length > 0) {
+        bad('⑥ FIX-RESULT.md 与 STATUS.md **口径不一致**：'
+          + diff.map((k) => k + ' 主卷=' + got[k] + ' / 本表=' + truth[k]).join(' · ')
+          + String.fromCharCode(10) + '      ⇒ 改了一条就两边一起改；⛔ 不许只改一边（这正是本断言存在的原因）')
+      } else {
+        ok('**主卷与本表同口径**：已修 ' + truth['已修'] + ' · 已排除 ' + truth['已排除']
+          + ' · 按设计 ' + truth['按设计'] + ' · 未修 ' + truth['未修']
+          + '（⚠ 只证「两处数字一致」，⛔ 不证「每条真修好了」）')
+      }
+    }
+}
+
+}
+
 console.log(`处级口径：查了 ${note.length + fail.length} 处 · 过了 ${note.length} 处`
   + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
   + ' · **跳过 0 处**（⚠ 跳过**不计入通过**）')

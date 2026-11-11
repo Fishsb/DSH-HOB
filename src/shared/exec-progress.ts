@@ -24,7 +24,13 @@
  *   ⚠ 三者的**修法完全不同**（查配置 / 从来没派过活 / 查那份文件的形态）⇒ ⛔ 不许并成一句。
  */
 
-import { dispatchStateOf, dispatchProgressOf } from '../server/orch-state.ts'
+/**
+ * ⚠ 2026-11-11（架构健康化）：原来是 `from '../server/orch-state.ts'` ——
+ *   **shared 反向依赖 server**，而本文件的头注释自称"纯函数、零 I/O"。
+ *   那两个函数本身是纯的，只是住在了有 17 处 I/O 的文件里。
+ *   ⇒ 它们已下沉到 `shared/dispatch-reading.ts`，本文件改为同层 import。
+ */
+import { dispatchStateOf, dispatchProgressOf } from './dispatch-reading.ts'
 import {
   asExecState,
   type ExecBucket,

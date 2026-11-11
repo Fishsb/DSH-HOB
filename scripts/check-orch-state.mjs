@@ -87,6 +87,35 @@ const sourceTreeRoot = process.env.HOB_SA_ROOT !== undefined && process.env.HOB_
 const sourceTreeTag = sourceTreeRoot === root ? '' : `（源码树=${sourceTreeRoot}）`
 
 const STATE_TS = join(root, 'src', 'server', 'orch-state.ts')
+
+/**
+ * ── ⚠⚠ 派发读数（`D10` 九态 / `D11` 进度）的源码现在在**两个可能位置** ──────────
+ *   2026-11-11（架构健康化）：`SettleState` / `DispatchRecordState` / `dispatchStateOf` /
+ *   `dispatchProgressOf` / `DISPATCH_STATE_LABELS` / `DISPATCH_STALL_MS` 已下沉到
+ *   `src/shared/dispatch-reading.ts`（原来它们住在有 17 处 I/O 的 `orch-state.ts` 里，
+ *   ⇒ `shared/exec-progress.ts` 复用纯判定函数时形成 **shared → server 反向依赖**）。
+ *
+ *   ⇒ 本文件里凡是"按源码文本找靶点"的断言（SK-d / SK-f / SU-e1 / SU-e2 / SU-e3），
+ *     都改成用下面这个助手**按顺序找**：先新位置、再旧位置。
+ *   ⛔ 不要写死单一路径 —— 那会让搬迁一次就把 5 条负向对拍变成"失去靶子"（实测过）。
+ *   ⚠ 两处都找不到 ⇒ 返回 `undefined`，调用方**照旧判 bad（失去靶子）**，
+ *     ⛔ 不许退化成"跳过"或"通过"。
+ */
+const DISPATCH_READING_REL = 'src/shared/dispatch-reading.ts'
+const ORCH_STATE_REL = 'src/server/orch-state.ts'
+/**
+ * 读一份**含派发读数定义**的源码。返回 `{ src, rel }`（rel 是命中的相对路径）或 `undefined`。
+ *   @param rootDir - 源码树根（工作区根，或某个变异副本根）。
+ *   @param needle - 用来判定"这份源码里确实有靶点"的特征串（如守卫原文）。
+ */
+function readDispatchSrc(rootDir, needle) {
+  for (const rel of [DISPATCH_READING_REL, ORCH_STATE_REL]) {
+    let src = ''
+    try { src = readFileSync(join(rootDir, rel), 'utf8') } catch { continue }
+    if (src.includes(needle)) return { src, rel }
+  }
+  return undefined
+}
 const ORCH_TS = join(root, 'src', 'modules', 'orchestrator.ts')
 const HOBWRITE_TS = join(root, 'src', 'server', 'hob-write.ts')
 const DELIVERY_TS = join(root, 'src', 'server', 'write-delivery.ts')
@@ -11881,17 +11910,20 @@ const orchCode = stripComments(orchSrc)
       }
 
       // ── SK-d(反证)：把"拒收"并回"执行中" ⇒ SK-d 的 pair1 必须不成立 ──────
-      const SJ = join(skRoot, 'src', 'server', 'orch-state.ts')
-      const sSrc = readFileSync(SJ, 'utf8')
       const GUARD = "  if (typeof w.refusedAt === 'number') return 'refused'"
+      /** ⚠ 2026-11-11：靶点现在在 `shared/dispatch-reading.ts`（详见 readDispatchSrc 头注释）。 */
+      const found1 = readDispatchSrc(skRoot, GUARD)
+      const sSrc = found1 === undefined ? '' : found1.src
+      const SJ = found1 === undefined ? '' : join(skRoot, found1.rel)
       if (!sSrc.includes(GUARD)) {
-        bad('SK-d(反证) 【失去靶子】`orch-state.ts` 里找不到"拒收"那条判定'
+        bad('SK-d(反证) 【失去靶子】`dispatch-reading.ts` / `orch-state.ts` 里都找不到"拒收"那条判定'
           + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
       } else {
         const dir = mkdtempSync(join(skTmp, 'mut-skd-'))
         cpSync(join(skRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true })
         try { symlinkSync(join(skRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
-        const mf = join(dir, 'src', 'server', 'orch-state.ts')
+        /** ⚠ 变异必须写回**靶点所在的那个文件**（可能是 dispatch-reading.ts）。 */
+        const mf = join(dir, found1 === undefined ? 'src/server/orch-state.ts' : found1.rel)
         const CLARIFY = "  if (typeof w.clarifyAt === 'number') return 'needs-clarification'"
         const RETURNED = "  if (typeof w.deliveredAt === 'number') return 'returned'"
         /**
@@ -12236,11 +12268,13 @@ const orchCode = stripComments(orchSrc)
       }
 
       // ── SK-f(反证)：把停滞阈值改到 24 小时 ⇒ 那一档必须不再报"停滞" ──────
-      const SJ = join(skRoot, 'src', 'server', 'orch-state.ts')
-      const sSrc = readFileSync(SJ, 'utf8')
       const GUARD = 'export const DISPATCH_STALL_MS = 20 * 60 * 1000'
+      /** ⚠ 2026-11-11：靶点现在在 `shared/dispatch-reading.ts`。 */
+      const found2 = readDispatchSrc(skRoot, GUARD)
+      const sSrc = found2 === undefined ? '' : found2.src
+      const SJ = found2 === undefined ? '' : join(skRoot, found2.rel)
       if (!sSrc.includes(GUARD)) {
-        bad('SK-f(反证) 【失去靶子】`orch-state.ts` 里找不到 `DISPATCH_STALL_MS` 的定义'
+        bad('SK-f(反证) 【失去靶子】`dispatch-reading.ts` / `orch-state.ts` 里都找不到 `DISPATCH_STALL_MS` 的定义'
           + ' ⇒ 本负向对拍已对不上实现，不按通过处理')
       } else {
         const dir = mkdtempSync(join(skTmp, 'mut-skf-'))
@@ -12839,17 +12873,20 @@ const orchCode = stripComments(orchSrc)
 
   // SU-e1(反证)：把「拒收」并回「执行中」⇒ 这一对当场塌陷
   {
-    const src = smStateMod === undefined ? '' : readFileSync(join(smRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
     const anchor6 = "if (typeof w.refusedAt === 'number') return 'refused'"
+    /** ⚠ 2026-11-11：靶点现在在 `shared/dispatch-reading.ts`（用 readDispatchSrc 两处找）。 */
+    const found6 = smStateMod === undefined ? undefined : readDispatchSrc(smRoot, anchor6)
+    const src = found6 === undefined ? '' : found6.src
     if (!src.includes(anchor6)) {
-      bad('SU-e1(反证) 【失去靶子】`orch-state.ts` 里找不到"拒收"那条判定（本负向对拍已对不上实现）')
+      bad('SU-e1(反证) 【失去靶子】`dispatch-reading.ts` / `orch-state.ts` 里都找不到"拒收"那条判定（本负向对拍已对不上实现）')
     } else {
       const dir = mkdtempSync(join(smTmp, 'mut-pair1-'))
       try {
         try { (await import('node:fs')).cpSync(join(smRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
         try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
         try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
-        const mut = join(dir, 'src', 'server', 'orch-state.ts')
+        /** ⚠ 变异必须写回**靶点所在的那个文件**（可能是 dispatch-reading.ts）。 */
+        const mut = join(dir, found6 === undefined ? 'src/server/orch-state.ts' : found6.rel)
         writeFileSync(mut, src.replace(anchor6, "if (typeof w.refusedAt === 'number') return 'running'"), 'utf8')
         const m = await import(p2u(mut).href)
         const s1 = m.dispatchStateOf({ target: 'a', at: 1, refusedAt: 5 })
@@ -12884,17 +12921,21 @@ const orchCode = stripComments(orchSrc)
 
   // SU-e2(反证)：把「要澄清」压到「已回传」之后 ⇒ 这一对塌陷
   {
-    const src = smStateMod === undefined ? '' : readFileSync(join(smRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
     const anchorC = "if (typeof w.clarifyAt === 'number') return 'needs-clarification'"
+    /** ⚠ 2026-11-11：靶点现在在 `shared/dispatch-reading.ts`（readDispatchSrc 两处找）。 */
+    const foundC = smStateMod === undefined ? undefined : readDispatchSrc(smRoot, anchorC)
+    const src = foundC === undefined ? '' : foundC.src
+    const srcRel = foundC === undefined ? 'src/server/orch-state.ts' : foundC.rel
     if (!src.includes(anchorC)) {
-      bad('SU-e2(反证) 【失去靶子】`orch-state.ts` 里找不到"要澄清"那条判定（本负向对拍已对不上实现）')
+      bad('SU-e2(反证) 【失去靶子】`dispatch-reading.ts` / `orch-state.ts` 里都找不到"要澄清"那条判定（本负向对拍已对不上实现）')
     } else {
       const dir = mkdtempSync(join(smTmp, 'mut-pair2-'))
       try {
         try { (await import('node:fs')).cpSync(join(smRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
         try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
         try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
-        const mut = join(dir, 'src', 'server', 'orch-state.ts')
+        /** ⚠ 变异必须写回**靶点所在的那个文件**（可能是 dispatch-reading.ts）。 */
+        const mut = join(dir, srcRel)
         /** ⚠ 变异 = 把它整行删掉（等于"要澄清"这一档不再参与优先级）⇒ 落到 `returned`。 */
         writeFileSync(mut, src.replace(anchorC, '/* 变异：删掉"要澄清"这一档 */'), 'utf8')
         const m = await import(p2u(mut).href)
@@ -12933,17 +12974,21 @@ const orchCode = stripComments(orchSrc)
 
   // SU-e3(反证)：把「已退回」与「已验收」并成一档 ⇒ 这一对塌陷
   {
-    const src = smStateMod === undefined ? '' : readFileSync(join(smRoot, 'src', 'server', 'orch-state.ts'), 'utf8')
     const anchorB = "if (typeof w.sentBackAt === 'number') return 'sent-back'"
+    /** ⚠ 2026-11-11：靶点现在在 `shared/dispatch-reading.ts`（readDispatchSrc 两处找）。 */
+    const foundB = smStateMod === undefined ? undefined : readDispatchSrc(smRoot, anchorB)
+    const src = foundB === undefined ? '' : foundB.src
+    const srcRelB = foundB === undefined ? 'src/server/orch-state.ts' : foundB.rel
     if (!src.includes(anchorB)) {
-      bad('SU-e3(反证) 【失去靶子】`orch-state.ts` 里找不到"已退回"那条判定（本负向对拍已对不上实现）')
+      bad('SU-e3(反证) 【失去靶子】`dispatch-reading.ts` / `orch-state.ts` 里都找不到"已退回"那条判定（本负向对拍已对不上实现）')
     } else {
       const dir = mkdtempSync(join(smTmp, 'mut-pair3-'))
       try {
         try { (await import('node:fs')).cpSync(join(smRoot, 'src'), join(dir, 'src'), { recursive: true, dereference: true }) } catch { /* 忽略 */ }
         try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
         try { (await import('node:fs')).symlinkSync(join(smRoot, 'node_modules'), join(dir, 'node_modules'), 'dir') } catch { /* 已有 */ }
-        const mut = join(dir, 'src', 'server', 'orch-state.ts')
+        /** ⚠ 变异必须写回**靶点所在的那个文件**（可能是 dispatch-reading.ts）。 */
+        const mut = join(dir, srcRelB)
         writeFileSync(mut, src.replace(anchorB, "if (typeof w.sentBackAt === 'number') return 'accepted'"), 'utf8')
         const m = await import(p2u(mut).href)
         const s1 = m.dispatchStateOf({ target: 'a', at: 1, deliveredAt: 9, sentBackAt: 12 })

@@ -10,7 +10,7 @@
 
 | 分卷 |
 |---|
-| [`01-judgment-VOL1.md`](./fix/01-judgment-VOL1.md) |
-| [`01-judgment-VOL2.md`](./fix/01-judgment-VOL2.md) |
+| [`01-judgment-VOL1.md`](./01-judgment-VOL1.md) |
+| [`01-judgment-VOL2.md`](./01-judgment-VOL2.md) |
 
 ⚠ **拆分的唯一原因是读上限**（`check:gitignore` 的 M 判据），⛔ 不是内容变了。

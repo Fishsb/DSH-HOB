@@ -112,6 +112,8 @@ export function runRepoRules({ bad, ok, skip }) {
      *   ⚠ 不加这一行 ⇒ `✗ package.json 声明的脚本不在 MUST-TRACK 里`（本轮实测踩过）。
      */
     ['scripts/check-audit-status.mjs', '审计状态表形态机检（check:audit-status 的落点）'],
+    ['scripts/check-architecture.mjs', '架构纪律机检（check:architecture 的落点）：分层方向 / 无环 / 文件规模 / 单源权威'],
+    ['scripts/check-judgement-index.mjs', '业务判定索引机检（check:judgement-index 的落点）：索引函数存在 / 位置可核 / 无编外判定'],
     ['kit/README.md', '骨架 · 约定归属地（README §1）'],
     // ⚠ 2026-10-13（第 128 轮）新增 `kit/INIT.md`（**新工作区初始化清单**）——
     //   按 README §6.1 的既有程序「**三处同批**」登记：① 骨架件落盘 · ② `.gitignore` 的 `!` 例外 ·

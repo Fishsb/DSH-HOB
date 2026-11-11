@@ -99,6 +99,8 @@
 | `npm run check:experience` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:host` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:modules` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:architecture` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
+| `npm run check:judgement-index` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:profile` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:selfwake` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:rounds` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
@@ -138,7 +140,7 @@
 | `npm run check:ledger-projection` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 | `npm run check:ledger-lifecycle` | 见本仓 §4.1 的说明（⚠ 开箱层不搬项目专有值） |
 
-⚠ 本块共 **49** 个 `check:*` 族（另有 `build` / `typecheck` 两个非判据命令）；`check:all` 与 `check:preflight` 是调度器与体检，⛔ 不入本块（与 `SELF` 同口径）。
+⚠ 本块共 **51** 个 `check:*` 族（另有 `build` / `typecheck` 两个非判据命令）；`check:all` 与 `check:preflight` 是调度器与体检，⛔ 不入本块（与 `SELF` 同口径）。
 <!-- END gen:check-families -->
 
 ---

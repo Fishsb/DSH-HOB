@@ -6,7 +6,11 @@
  * ⛔ 不新增状态、⛔ 不读时间、⛔ 不猜缺失值。
  */
 import type { NextAction } from './next-action.ts'
-import type { StageRow } from './stages-index.ts'
+/**
+ * ⚠ 2026-11-11：原为 `from './stages-index.ts'` ⇒ 与 `stages-index` 形成类型环。
+ *   行类型已提到 `panel-row-types.ts`，两边都从这里取 ⇒ 环消失。
+ */
+import type { StageRow } from './panel-row-types.ts'
 import type { WorkStateReading } from './work-state.ts'
 
 export type PanelWaitFor = 'user' | 'acceptance' | 'execution' | 'upstream' | 'undecidable'

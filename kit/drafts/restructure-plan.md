@@ -17,6 +17,11 @@
 > ⚠ **为什么不直接改这份文件**：它是**2026-10-08 的决策原稿**，7 处路径是它**论证的一部分**
 > （"为什么要把账本搬出工作区"那一整段逻辑就架在这些路径上）。
 > ⇒ 改成实况会**制造一份"当时就这么想"的假文件**；⛔ 历史文件不改，只加这段声明。
+>
+> ⚠⚠ **2026-11-11 补一条：文中出现的 `.hob/README.md` 现在已不存在** ——
+> 骨架整体搬到了 `kit/`（`kit/README.md` §1 就是那张「骨架 vs 运行数据」两栏表）。
+> 正文里的 `.hob/README.md` **保持原样**（它是当时的路径，属于论证的一部分），
+> 只有**超链接**改成了可点的 `kit/README.md`。⛔ 不要按字面去找 `.hob/README.md`。
 
 > **出具方**：助手（Hob 侧）｜ **日期**：2026-10-08 ｜ **依据**：UD-73 · UD-75 · CHG-018 · CHG-019（本次）
 > **性质**：**方案文档**。本文件**不改任何代码、不改任何预设、不改 PROJECT.md**。
@@ -252,7 +257,7 @@ Hob 读项目文档的能力**由通用 `read` 承担，并未消失**（这正�
 **理由三条**：
 1. **判据来自你项目自己的分类**（不是我发明的）：`.hob/README.md` §1 的两栏表已明写
    「**骨架** = 格式契约 / 可复用、可分发、新建工作区时用它初始化 ⇒ **进 git**」
-   （[README.md:14](.hob/README.md#L14)），并把 `EXPERIENCE.md` / `templates/` / `drafts/` / `roles/`
+   （[kit/README.md:14](../../kit/README.md#L14)；⚠ 原文指向 `.hob/README.md`，该文件已随骨架迁到 `kit/`），并把 `EXPERIENCE.md` / `templates/` / `drafts/` / `roles/`
    明确列在**骨架**栏；[check-gitignore.mjs:99](scripts/check-gitignore.mjs#L99) 亦称其为「**骨架 · 经验库**」。
 2. **边界即代码**：`write_hob` 能写的**只有**四本账本 + `archive/` + 自管的 `backups/`
    （[hob-write.ts:32-41](src/server/hob-write.ts#L32-L41)），且 `SKELETON_FILES`/`SKELETON_DIRS`

@@ -294,11 +294,28 @@ try {
 
   // ── E-9 九态措辞单一真源（与 `DISPATCH_STATE_LABELS` 逐键逐值）────────
   {
-    const serverSrc = readFileSync(join(root, 'src/server/orch-state.ts'), 'utf8')
-    const block = serverSrc.slice(
-      serverSrc.indexOf('export const DISPATCH_STATE_LABELS'),
-      serverSrc.indexOf('} as const', serverSrc.indexOf('export const DISPATCH_STATE_LABELS')),
-    )
+    /**
+     * ⚠ 2026-11-11（架构健康化）：`DISPATCH_STATE_LABELS` 已随派发读数一起下沉到
+     *   `src/shared/dispatch-reading.ts`（原来它住在 `orch-state.ts`，而那个文件有 I/O ⇒
+     *   `shared/exec-progress.ts` 复用纯判定函数时会形成 shared→server 反向依赖）。
+     *
+     *   ⇒ 判据改为**先读新家、再读老家**：
+     *     · 新家命中 ⇒ 正常；
+     *     · 新家没有而老家有 ⇒ 说明有人把它搬回去了，**照样判**（不因搬家而假红）；
+     *     · 两处都没有 ⇒ `block` 为空 ⇒ 下面 `pairs.length !== 9` 会红（⛔ 不是静默跳过）。
+     */
+    const labelSources = [
+      join(root, 'src/shared/dispatch-reading.ts'),
+      join(root, 'src/server/orch-state.ts'),
+    ]
+    let block = ''
+    for (const p of labelSources) {
+      const src = readFileSync(p, 'utf8')
+      const at = src.indexOf('export const DISPATCH_STATE_LABELS')
+      if (at < 0) continue
+      block = src.slice(at, src.indexOf('} as const', at))
+      break
+    }
     const pairs = [...block.matchAll(/'([a-z-]+)':\s*'([^']+)'/g)].map((m) => [m[1], m[2]])
     const labels = proto?.EXEC_STATE_LABELS ?? {}
     const probs = []

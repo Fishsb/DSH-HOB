@@ -1,6 +1,12 @@
 # dsh-hob 现行架构
 
 > 本图只表达稳定层次和依赖方向，不写会漂移的文件数。
+> ⚠ **本文件里有几处是机检的**（`check:architecture`，五组）：
+>   · §2.1 的分层规则与 §2 的分层图方向（A 组）；
+>   · C 组登记的文件规模（只准降不准升）；
+>   · **本文件里每一处 `文件:行号 符号` 形态的引用**（E 组）—— 行号漂了会红。
+>   ⚠ 改了这些规则**必须同批改判据**，否则文档与判据会各说各话。
+>   其余（§三 主链路叙述、§六 文档生命周期）仍是人读约定，⛔ 没有机检覆盖。
 > 旧 v4 图已移至账本区
 > `archive/2026-11-03-architecture-refresh/legacy/`，只作历史参考。
 
@@ -16,7 +22,7 @@ flowchart TB
   Result --> Hob
   Hob --> Acceptance[独立验收]
   Acceptance --> Ledger
-  Ledger --> Views[Current / 六阶段进度 / 风险与收口 / 注意力 / 资源视图]
+  Ledger --> Views[Current / 六阶段进度（1..6） / 风险与收口（G6） / 注意力 / 资源视图]
   Views --> Hob
 ```
 
@@ -50,6 +56,49 @@ flowchart TB
   Modules --> Ledger
   Client --> Ledger
 ```
+
+### 2.1 层职责与禁止事项（⚠ 由 `check:architecture` 机检）
+
+| 层 | 职责 | **禁止** |
+|---|---|---|
+| `src/shared/` | 纯函数与线协议：**给定输入必得同一输出** | ⛔ 不许依赖 `server/` `modules/` `preset/` `client/`（可用 `node:` 内置，但只有当消费方在服务端时） |
+| `src/server/` | 落盘 · 守卫 · 编排 · 投影 · Effects | ⛔ 不许依赖 `client/` |
+| `src/preset/` | Hob 预设作用域：装配与降级 | ⛔ 不许被 `modules/` 依赖（反向） |
+| `src/modules/` | 宿主模块与只读路由 | ⛔ 不许依赖 `client/` |
+| `src/client/` | 浏览器 UI | ⛔ 不许依赖 `server/` `modules/`（**实测可达性分析：0 处**） |
+| `src/*.ts`（根） | `index.ts` 入口 · `config.ts` **全层共用契约** | 不作业务层；改动等于改对外契约 |
+
+**四组机检断言**（`check:architecture`，每族自带负向对拍）：
+
+```
+A 分层方向   shared 无反向依赖 · client 不碰 server/modules · server 不碰 client
+B 依赖成环   import 图零环（⚠ 含 import type 的环 —— 类型环同样让分层失真）
+C 文件规模   8 个重点文件不超登记上限，**只准降不准升**（零余量）
+D 单源权威   ledgerHealthOf / proceedGateFor 全仓**各有唯一实现**
+E 文档引用   本文件里每处 `文件:行号 符号` 都必须在该行真实出现（行号漂了会红）
+```
+
+⚠ **为什么 B 组连类型环也禁**：`stages-index ↔ panel-summary` 曾经只有一个 `import type` 在往回走，
+看起来无害；但类型环会让「谁是这一层的上游」变得说不清，且绕过任何只查运行时的判据。
+⇒ 2026-11-11 把共享的行类型提到 `panel-row-types.ts`，环从图上**真正消失**，而不是加白名单豁免。
+
+⚠ **拆分 `orchestrator.ts` 的唯一安全顺序**（2026-11-11 实测）：
+
+```
+① 先搬「零闭包状态依赖」的（readHandoffs / closedForTrack / targetPresetOf / wsRootOfSession …）
+   ⇒ 只依赖模块级导入或注入的服务对象 ⇒ 移动是行为等价的。
+② 再谈「碰 watches 的」（84 处引用）—— 那要先把这些共享可变状态改成显式 context 对象，
+   属行为等价性重构，⛔ 不能与 ① 混在一批做。
+```
+
+⚠ **反例（实测）**：把 `targetPresetOf` 的总线调用整个搬走，会让 `check:orch` 的 **J3** 报
+  `经总线入口=false` —— 那条判据的锚点就是本文件里的 `.presetOf(` 调用式。
+  ⇒ 正确做法：**归约搬走、取值留下**，并在包装器上写清「这个调用点是判据锚点」。
+
+⚠ **为什么 D 组只登记 2 个符号**：它们各自代表一类**唯一判据** ——
+`ledgerHealthOf`（账本健康，4 个出口都调它）与 `proceedGateFor`（执行层闸门，3 个工具都调它）。
+REVIEW 的 R-02（「链完成了吗」曾有 5 份实现）就是这条纪律被违反的后果。
+新增「必须唯一」的符号时，同批加进 `SINGLE_SOURCE`，⛔ 不要等到出问题才补。
 
 ## 三、两条主链路
 
@@ -92,7 +141,25 @@ UI 新建入口
 第 6 步是产品验收（G5）；第 7 列是按风险启用的交付收口（G6/C-27）。全局 `stages`
 数组只作为账本清单与历史展开，不回答「当前在第几步」。
 
-### 3. Pipeline v3 · 六阶段、风险门与 clean cut
+### 3. Pipeline v3 · 六阶段 + G6 交付收口门（⚠ `STAGE_NAMES` 是 7 项，不是 6 项）
+
+```
+src/shared/stage-controls.ts:46  STAGE_NAMES = {
+  requirements 需求规格 · plan 实现方案 · tasks 任务图 · execution 任务执行 ·
+  verification 技术验证 · acceptance 产品验收 · closure 交付收口
+}
+```
+
+⚠ **「六阶段」与「7 项」不矛盾，但必须说清**（此前本节标题只写「六阶段」，读者看不出到底几项）：
+
+| 说法 | 指什么 | 谁的权威 |
+|---|---|---|
+| **六阶段** | **业务阶段**：需求 → 方案 → 任务图 → 执行 → 技术验证 → 产品验收 | `pipeline-view.ts` 的 `activeStage` 只落到 1..6 |
+| **第 7 项 `closure`** | **交付收口**，是产品验收之后的**风险启用门**（G6），⛔ 不冒充第七个业务阶段 | 按风险启用，`closurePending` 与 `activeStage` 互斥 |
+
+⇒ 读法：**业务阶段 6 个 + 收口门 1 个 = `STAGE_NAMES` 7 项**。
+  ⚠ 任何「六阶段已走完」的文案（如面板 `stages.sixStagesDone`）指的都是 1..6，
+    ⛔ 不含 `closure` —— 别把它读成「第 7 步没做」。
 
 - 正式六阶段：需求 → 方案 → 任务图 → 执行 → 技术验证 → 产品验收。
 - 交付收口是产品验收后的风险启用门，不冒充第七个业务阶段。
@@ -131,17 +198,54 @@ UI 新建入口
 
 ## 四、权威入口
 
+### 4.1 核心对象
+
 | 对象 | 权威位置 |
 |---|---|
-| 插件与模块入口 | `src/index.ts` |
-| 配置 schema | `src/config.ts` |
+| 插件与模块入口 | `src/index.ts`（**只做登记**，一模块一行） |
+| 配置 schema | `src/config.ts`（全层共用的契约面） |
 | Hob 工作流 | `preset/dsh-hob/workflow.toml` + `spec/` |
 | 预设生成物 | `preset/dsh-hob/gen/` |
 | 项目账本 | `<ledgerHome>/<workspaceName>/ledger/units/` |
 | 当前视图 | `<ledgerHome>/<workspaceName>/ledger/spec/current.md` |
+| **业务判定索引** | `kit/drafts/judgement-index.md`（由 `check:judgement-index` 机检） |
 | 权威阶段接口 | `POST /api/dsh-hob/stages` |
 | 按 ID 资源接口 | `POST /api/dsh-hob/ledger-resource` |
 | 运行态 | `<ledgerHome>/<workspaceName>/runtime/` |
+
+### 4.2 模块清单（⚠ 此前只列了 2 个路由，实际 18 项）
+
+⚠ **本节由 `src/index.ts` 的登记顺序派生**。加模块 = 加文件 + 入口登记一行，
+  然后**同批**把这一行补上（⛔ 别让它长期落后于代码）。
+
+| # | 模块 | `name` / 服务 | 形态 |
+|---|---|---|---|
+| 1 | `session-policy-service.ts` | `SESSION_POLICY_SERVICE` | 入口直接 `install`（两侧作用域都要用） |
+| 2 | `modules/tools.ts` | `dsh-hob-tools` / `hobTools` | 可开关业务模块（`MODULE_REGISTRY`） |
+| 3 | `modules/bus.ts` | `dsh-hob-bus` / `hobBus` | 可开关业务模块 |
+| 4 | `modules/orchestrator.ts` | `dsh-hob-orchestrator` / `hobOrchestrator` | 可开关业务模块（⚠ `apply()` 闭包 6800 行；**无状态读数**已拆到 `orchestrator-phase-readings.ts`） |
+| 5 | `modules/settings.ts` | `dsh-hob-settings` | 可开关业务模块 |
+| 6 | `modules/session-create-channel.ts` | `dsh-hob-create-channel` | 原子入口（无独立开关） |
+| 7 | `modules/session-policy-route.ts` | `dsh-hob-session-policy-route` | 只读路由 |
+| 8 | `modules/tasks-progress-route.ts` | `dsh-hob-tasks-progress-route` | 只读路由（旧进度表兼容） |
+| 9 | `modules/exec-progress-route.ts` | `dsh-hob-exec-progress-route` | 只读路由 |
+| 10 | `modules/stages-route.ts` | `dsh-hob-stages-route` | **权威**阶段接口 |
+| 11 | `modules/ledgers-route.ts` | `dsh-hob-ledgers-route` | 只读路由 |
+| 12 | `modules/requirement-chains-route.ts` | `dsh-hob-requirement-chains-route` | 只读路由 |
+| 13 | `modules/ledger-resource-route.ts` | `dsh-hob-ledger-resource-route` | 只读路由（按 ID 取全文） |
+| 14 | `modules/work-plans-route.ts` | `dsh-hob-work-plans-route` | 只读路由（计划/轨道/等待关系） |
+| 15 | `modules/unseen-tools-route.ts` | `dsh-hob-unseen-tools-route` | 只读路由 |
+| 16 | `modules/live-route.ts` | `dsh-hob-live-route` | 只读路由（SSE 推送） |
+| 17 | `server/live-hub.ts` | `LiveHub` | 被 16 引用，非独立模块 |
+| 18 | `client/*` | 浏览器半边（`lib/client.js`） | 独立产物，不进服务端模块表 |
+
+⚠ **准入规则**（`src/index.ts` 头注释的三条架构性质）：
+```
+① 一个模块一个文件，各自 apply(ctx, config)；
+② 依赖靠 inject 声明 ⇒ 依赖不在就不激活，不报错、不阻塞整插件；
+③ 资源靠 ctx.effect 挂 ⇒ 卸载自动清理。
+```
+这三点由 `check:modules`（真产物启停探针）守着。
 
 ## 五、命名原则
 
@@ -163,6 +267,7 @@ UI 新建入口
 | 用户入口 | `README.md` | 安装、使用、限制 | 当前项目状态 |
 | 术语契约 | `TERMINOLOGY.md` | 固定名称与边界 | 实现细节 |
 | 架构说明 | `kit/drafts/architecture-overview.md` | 稳定层次与依赖方向 | 会漂移的文件数 |
+| **业务判定索引** | `kit/drafts/judgement-index.md` | 41 个判定函数**在哪 / 判什么 / 在哪一层** | 判定依据的论证过程（在源码注释里） |
 | 行为规格 | `preset/dsh-hob/spec/` · `ledger/spec/` | 当前可观察行为 | 历史过程 |
 | 机器状态 | `ledger/units/` 索引分片 | 唯一状态与正式关系 | 长篇说明 |
 | 派生视图 | `ledger/gen/` · `ledger/spec/current.md` · `REQUIREMENTS.md` | 从索引生成的人读汇总 | 手工状态更新 |

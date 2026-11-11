@@ -161,9 +161,9 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *
  *   | 量 | 实测 | 说明 |
  *   |---|---|---|
- *   | `package.json` 的 `check:*` | **51** | 全部检查族（⚠ 2026-11-11 新增 `check:audit-status`） |
+ *   | `package.json` 的 `check:*` | **53** | 全部检查族（⚠ 2026-11-11 新增 `check:audit-status` / `check:architecture` / `check:judgement-index`） |
  *   | 其中**不进聚合**的 | **3** | `check:all`（本入口自身）· `check:preflight`（只体检不判定）· `check:tasks-route-http`（需活宿主，按需跑） |
- *   | `listFamilies()` 实际 | **48** | = 51 − 3，这才是 `FAMILY_FLOOR` 的分母 |
+ *   | `listFamilies()` 实际 | **50** | = 53 − 3，这才是 `FAMILY_FLOOR` 的分母 |
  *
  *   ⚠ **为什么必须写清分母**：改前这里写「为什么是 20」，而常量已是 45 —— **注释与值差了 25**。
  *     更要紧的是「余量」：改前 `FAMILY_FLOOR = 46`、实测 47 ⇒ **余量 2**
@@ -207,7 +207,7 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *   结果 `check:ledger` 与 `check:meta-negctl` 双双变红，原因就是漏了 ④⑤⑥。
  *   ⇒ 把它写成这份清单，⛔ 不要靠记忆。
  */
-export const FAMILY_FLOOR = 48
+export const FAMILY_FLOOR = 50
 //   ⚠ 2026-10-27（包 AP · 用户「全退」）：本条不再含 `check:archive-gate`（该族随归档门禁一起退回）。
 //   ⚠ 2026-10-29（四步主线 · 只验位置）：新增 `check:stages-dom` 一族，下界同批抬起。
 //     抬下界是本次改动的**一部分**、不是顺手改：新族若将来被人从 scripts 里删掉，
@@ -313,7 +313,14 @@ export const ASSERTION_FLOORS = new Map([
    */
   // ⚠ 2026-11-02（P41/R23）：5 → **6**（零余量 = 实测）。
   //   来源：拆卷 + 两族计数口径修正（"查了"含跳过）后实测值。
-  ['check:audit-status', 6],
+  // ⚠ 2026-11-11：6 → 8（+2 = ⑥ 主卷与 STATUS 同口径 + 它自己的负向对拍）
+  ['check:audit-status', 8],
+  // ⚠ 2026-11-11（架构健康化）：新增一族。8 处断言 = A 分层 + A 负向 + B 无环 + B 负向
+  //   + C 规模 + C 负向 + D 单源 + D 负向（实测 8 处，零余量）。
+  // ⚠ 同日追加 E 组（架构文档里的「文件:行号 符号」引用必须可核）⇒ 8 → 10。
+  ['check:architecture', 10],
+  // ⚠ 2026-11-11（业务逻辑清晰化）：新增一族。4 处 = ① 函数存在 + ② 位置可核 + ③ 无编外 + 负向对拍
+  ['check:judgement-index', 4],
   ['check:archive', 7],
   /**
    * ⚠ **54 → 53**（2026-11-11 · A 方案收尾）：
@@ -387,7 +394,7 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ 2026-11-09（实时通道入库）：1190 → **1192**
   //   （+2 = `check-live-route.mjs` / `check-live-client.mjs` 进入 MUST-TRACK，
   //   仓库族逐条核到它们“在盘上、规则放行、已入 git index”）。
-  ['check:gitignore', 1196],  // §79：拆卷后 1195；2026-11-11 加 check-audit-status 的 MUST-TRACK 行 ⇒ 1196
+  ['check:gitignore', 1198],  // §79：拆卷后 1195；2026-11-11 加 check-audit-status ⇒ 1196；同日加 check-architecture ⇒ 1197；加 check-judgement-index ⇒ 1198
   //   ⚠ 理由：本单在 `check-repo-rules.mjs` 新增 **`MV`** 断言「模板根上文档清单 == INIT 的复制清单」
   //     ⇒ 该族多 **1 处**（577 → 578）。⚠ **只升不降**。
   //   ⚠ ⚠ **为什么不是改已有的第 ⑥ 组**：`check-code-face.mjs` 的 ⑥ 组**两个方向都不咬**（本单实测三段）——

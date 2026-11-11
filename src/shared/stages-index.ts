@@ -112,38 +112,14 @@ export const STAGES_REASON_INDEX_LEGACY = 'index-legacy'
 export const STAGES_REASON_ROW_SHAPE_UNKNOWN = 'row-shape-unknown'
 
 /** 一条步内条目（字段**封闭**）。 */
-export interface StageItem {
-  id: string
-  /** 旧客户端兼容字段：默认线格式原样返回；紧凑模式省略。 */
-  title?: string
-  /** 旧客户端兼容字段：默认线格式原样返回；紧凑模式省略。 */
-  extra?: string
-  status: string
-  kind: string
-  /**
-   * 紧凑列表投影：自包含主标题、正式关系 ID、最多一条短读数、诊断代码。
-   * ⚠ 不含原句、详情或重复的父标题；完整字段由 `/ledger-resource` 按 ID 读取。
-   */
-  presentation: ItemListPresentation
-}
-
-/** 一步。 */
-export interface StageRow {
-  step: number
-  name: string
-  state: 'done' | 'doing' | 'todo'
-  done: number
-  total: number
-  items: StageItem[]
-}
-
-/** 长期能力（⚠ 无终态、不进分母、无百分比）。 */
-export interface CapRow {
-  id: string
-  title: string
-  status: string
-  lastReading: string
-}
+/**
+ * ⚠ 这三个行类型已提到 `panel-row-types.ts`（2026-11-11 · 架构健康化）：
+ *   `panel-summary.ts` 需要 `StageRow`，而本文件需要 `panelSummaryOf` ⇒ 原来是一个环。
+ *   环的真相是**只有类型往回走**；提到独立类型文件后，环从 import 图上真正消失。
+ *   ⚠ 本文件**继续再导出**它们 ⇒ 既有引用点（`from './stages-index.ts'`）不破。
+ */
+export type { StageItem, StageRow, CapRow } from './panel-row-types.ts'
+import type { StageItem, StageRow, CapRow } from './panel-row-types.ts'
 
 export interface StagesOk {
   ok: true
