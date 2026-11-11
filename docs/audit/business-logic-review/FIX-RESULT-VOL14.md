@@ -1520,3 +1520,199 @@ STATUS.md 文件头：
    我此前每轮都在验「112 是否闭合」，但**闭合是必要条件，不是充分条件**。
 
 ---
+
+---
+
+## §208 ⚠ 又一次「grep 错文件 ⇒ 报出不存在的风险」（stages 容量）
+
+### 208.1 我报了什么
+
+宿主重启后 `check:tasks-route-http` 首次真跑通（15/15），其中：
+
+```
+H-6：七阶段汇总 61664 B ≤ 65536 B（202 条 · 关系标题 80 个）
+```
+
+我据此报了一个「真实风险」：余量只有 3872 B（5.9%），而 `stages` 路由
+**不做任何截断/分页**，完全靠探针的 65536 B 硬闸 ⇒ 面板坏掉前 48 族里没有一条会红。
+
+### 208.2 ⛔ 前提是错的
+
+我 grep 的是 `src/modules/stages-route.ts`：
+
+```bash
+grep -nE 'max|cap|limit|bytes|truncat|slice|64' src/modules/stages-route.ts
+# (无任何上限相关代码)
+```
+
+⚠ 但**上限机制不在那个文件里**，在 `src/shared/stages-index.ts:502`：
+
+```js
+if (opts.compact === true) {
+  const LIMIT = 65536
+  if (bytesOf(out) > LIMIT) { /* ① 压 relations 标题表 */ }
+  if (bytesOf(out) > LIMIT) { /* ② 删普通条目的纯计数格 */ }
+  if (bytesOf(out) > LIMIT) { /* ③ 非验收条目压到一格 */ }
+  /* ④ 最后才截断条目 */
+}
+```
+
+### 208.3 现有机制比我建议的方案更细
+
+我建议「照 `doc-read.ts:431` 加 maxBytes + 尾部标注」。
+实际已有的是**四级确定性降级**，且有保护格：
+
+```
+⚠ 判决格永不删：验收条目没有判决就等于没给结论
+⚠ 验收的「判决 + 依据」是固定两格，⛔ 不在第②档删
+⚠ 确定性降级：同一输入同输出；不超预算时线格式与以前逐字节一致
+```
+
+⚠ 降级顺序在 2026-11-07 / 11-08 **两轮实测调过**（旧顺序先删「依据」⇒ 66 条验收只剩判决）。
+⇒ 这比我从零提的方案成熟得多。
+
+### 208.4 ✅ 它确实在工作
+
+```
+探针发 compact: true（probe:714 / :940）
+→ buildStages:814 按 body.compact 触发降级
+→ 实测 61664 B，落在 65536 以内
+```
+
+⇒ 61664 B 是**降级之后**的结果，⛔ 不是「危险地贴着上限」。
+
+### 208.5 教训
+
+```
+「在 A 文件里没找到」≠「系统里没有这个机制」。
+必须先确认「这个机制应该属于哪个文件」，再去查。
+```
+
+⚠ 这是本会话第 N 次同类错误（此前：grep 首个命中当修复位置、按编号 grep 找不到就报未修、
+   把「前半段」当位置判据）。**共同点是：把「我没查到」当成「不存在」。**
+
+### 208.6 一个仍然成立的观察
+
+降级是**静默**的：超预算时自动压字段，调用方拿不到任何标记。
+
+```
+若哪天降到第 ④ 档（截断条目），面板会悄悄少几条，
+而响应里没有 degraded: true 之类的读数。
+```
+
+⚠ 这不是缺陷（H-6 保证不超限），但「降了多少」**不可观测**。
+   是否加标记取决于对面板可解释性的要求 —— 记录待决策，⛔ 不擅自改。
+
+---
+
+---
+
+## §209 ✅ `active/` 里的 `joining` 计划**不是缺陷**：`closePlan()` 是人工动作
+
+### 209.1 我一开始怀疑什么
+
+重启宿主后查真实账本，发现：
+
+```
+/home/lk/.dsh/hob-ledgers/dsh-hob/runtime/work-plans/
+  active     1 个   （createdAt 2026-11-07，挂了 4 天）
+  completed  7 个
+  abandoned  5 个
+```
+
+那个 active 计划的读数：
+
+```json
+state:       "joining"
+trackStates: { "single": "returned" }   ← 唯一轨道已返回
+implicit:    true
+joinPolicy:  "all"
+joinOwnerSessionId: "session-4471675a-…"
+```
+
+⇒ 我当时怀疑：「轨道全返回了，计划却停在 joining ⇒ 漏判」。
+
+### 209.2 ⛔ 查实现后否定
+
+`orchestrator.ts:1484`：
+
+```ts
+/** 汇合责任人**显式**把 `joining` 计划收成 `completed`；失败计划不接受收口。 */
+closePlan(planId: string, self: string | undefined): Promise<...>
+```
+
+`orchestrator.ts:4640`：
+
+```ts
+if (progress.terminal || plan.state === 'joining') {
+  ... plan.state === 'joining' ? '计划已汇合，等待收口'
+```
+
+⇒ **`joining → completed` 只由 `closePlan()` 触发，⛔ 不自动。**
+   这个计划停在那里是**设计**：等 `joinOwnerSessionId` 那个人收口。
+
+### 209.3 那为什么挂了 4 天
+
+```
+joinOwnerSessionId = session-4471675a-…（2026-11-07 的会话）
+那个会话早就结束了 ⇒ 没人调 closePlan()
+⇒ 这是**孤儿计划**，⛔ 不是**逻辑缺陷**
+```
+
+### 209.4 ⚠ 我一度以为这是「没有清理机制」的可用性问题
+
+```
+我当时的判断：implicit 计划 + 责任人会话结束 ⇒ 永远停在 active/joining
+              ⇒ 没有自动清理 ⇒ active/ 会持续堆积孤儿
+```
+
+⛔ **查完实现后发现：机制早就有了。**
+
+### 209.5 ✅ `STALE_PLAN_HOURS` 已实现「标记 stale、⛔ 不自动删」
+
+`orchestrator.ts:4004`：
+
+```ts
+const STALE_PLAN_HOURS = 24
+/**
+ * 计划多久算"没人管了"：24 小时。
+ * ⚠ 只用于**读数标记**，⛔ 不触发自动删除 ——
+ *   删除活动计划是不可逆动作，必须由人确认（agent 不替用户做这个决定）。
+ */
+```
+
+`orchestrator.ts:4124`：
+
+```ts
+stale: !terminal && ageHours !== null && ageHours >= STALE_PLAN_HOURS,
+```
+
+`orchestrator.ts:7047`（人工归档入口，同样要求超时）：
+
+```ts
+if (ageHours < STALE_PLAN_HOURS) {
+  reason: `计划只存在 ${...}h（< 24h）=> 未超时，不归档`
+}
+```
+
+### 209.6 ✅ 那个孤儿确实会被标记
+
+```
+createdAt:  2026-11-07T04:30:28Z
+ageHours:   101.1
+stale:      true   （>= 24h）
+```
+
+⇒ 它**不是不可见的**：`activePlansAt` 会带 `stale: true` 读数，归档入口也已就位。
+
+### 209.7 ⇒ 结论：现有机制完整，⛔ 无需改动
+
+```
+✅ joining 是设计（closePlan 人工触发）
+✅ 超 24h 会标记 stale（读数可见）
+✅ 归档需人工确认（不可逆动作，agent 不替用户决定）
+```
+
+⚠ **本节的净产出是「否证我自己的怀疑」**，⛔ 不是「新增一个待办」。
+
+---
