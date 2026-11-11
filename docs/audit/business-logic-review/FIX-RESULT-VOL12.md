@@ -1546,3 +1546,47 @@ REVIEW 原文：「同时调 `summarizeStage` / `pipelineViewOf().stages[i].stat
 ```
 
 ---
+
+### 169.7 ✅ 规格③「客户端不再并置两个来源」—— **已满足**
+
+```bash
+grep -n 'summarizeStage|displayState' src/client/project-panel.tsx
+→  4 处，**全部只用 displayState**（即 requirement-chain 的派生值）：
+   :3253  `${step.name} · ${CHAIN_STATE_TEXT[step.displayState]}`
+   :3488  由 displayState 映射出 legacyState
+   :3513  `data-mainline-state` 用 CHAIN_STATE_ICON[step.displayState]
+   :3603  `${s.step} ${s.name} · ${CHAIN_STATE_TEXT[s.displayState]}`
+→  summarizeStage 命中 **0 处**
+```
+
+⚠ 改前是「客户端把前两套**并排印在同一行**」；现在只剩一套。
+   ⇒ **R-02 规格③ 满足**。
+
+### 169.8 R-02 的**最终记账**
+
+| 规格 | 要求 | 结果 |
+|---|---|---|
+| ① | 三者对每一步一致 | ⚠ **规格过宽**（见 169.4）；但其中「pipeline-view ↔ requirement-chain」**已一致**（派生） |
+| ② | 负向对拍：`done === total` 改 `done >= total - 1` ⇒ 断言红 | ⚠ 未单独验证 |
+| ③ | `grep` 确认同一行不再并置两个来源 | ✅ **已满足**（4 处全用 displayState，summarizeStage 0 命中） |
+
+⇒ **R-02 记为「核心已修」**：
+
+```
+✅ 客户端同屏并置两个来源 —— 已消除（规格③，实测）
+✅ pipeline-view 与 requirement-chain —— 同源派生（实测 :348/:381）
+⚠ buildStages 与另两者不一致 —— 设计如此（docstring 明写「渲染单元数组」）
+⚠ 规格①「三者一致」按字面实现会破坏 buildStages 的职责边界
+```
+
+### 169.9 当前严格账（本批终值）
+
+| 状态 | 条数 | 编号 |
+|---|---|---|
+| ✅ 全量已修 | **41** | |
+| ⚠ 部分修 | **1** | R-01（段 2/3） |
+| ⚠ 核心已修 + 规格需修订 | **1** | R-02 |
+| ⛔ 未修 | **1** | S-01（需宿主改档或 API） |
+| ⬜ 未核 | **68** | |
+
+---
