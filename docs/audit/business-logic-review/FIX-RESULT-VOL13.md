@@ -564,3 +564,67 @@ const truncated = health.truncated === true || (total !== undefined && shown < t
 | ⬜ 未核 | **58** |
 
 ---
+
+---
+
+## §177 ✅ T-10 三重静默全部处理（其中一条是误判）
+
+### 177.1 三重静默的逐条核实
+
+| # | 原缺陷 | 现状 | 判定 |
+|---|---|---|---|
+| ① | `onError = opts.onError ?? (() => {})` 默认空函数 | 仍原样 | ⚠ **不是缺陷**（见 177.2） |
+| ② | 失败只记 `attempts/lastError`，**无上限** | `:364-382` 到 `maxAttempts` ⇒ 记 `abandonedAt`、`dueAt = Infinity`、调 `onError` | ✅ 已修 |
+| ③ | 补投传 `{ self: undefined }` ⇒ 三处整段静默跳过 | `tools.ts:210-220` 改为用 `handoff.owner` | ✅ 已修 |
+
+### 177.2 ⚠ ①「默认空函数」我判错了
+
+我一开始按 REVIEW 的描述把「`opts.onError ?? (() => {})`」当成静默通道。查证后**不是**：
+
+```bash
+grep -n 'this.onError(' src/server/effects-queue.ts
+→  :381  this.onError(kind, new Error('已放弃重试（…）：' + String(error)))
+→  :387  this.onError(kind, error)
+→  :404  this.onError('persist', error)
+
+grep -n 'lastError' src/server/effects-queue.ts
+→  :29   lastError?: string        （行结构里）
+→  :362  current.lastError = String(error)   （失败时落）
+→  :371  「行**保留**（⛔ 不删）⇒ 状态面仍看得到它，lastError 与 attempts 都在」
+```
+
+⇒ **`onError` 只是回调，不是唯一可见通道** ——
+   `lastError` 与 `attempts` 落在**队列行**上，即使调用方不传 `onError`，状态面也能读到。
+
+⚠ **REVIEW 这条写的是「三重静默」，但第①重其实不构成静默** ——
+   真正让错误不可见的是②③（无上限 ⇒ 永久空转；`self: undefined` ⇒ 三处跳过），
+   而那两条都已修。
+
+### 177.3 ✅ ② 的修法值得记
+
+```
+改前：只增 attempts 且**从不判上限** ⇒ 退避封顶 60s 后**一直重试**
+      对「目标已归档」这类**永久失败** ⇒ **永久空转**，而状态面只看到 attempts 在涨
+
+修法：把「放弃」做成一条**可读状态**，不是静默消失
+  · 行保留（⛔ 不删）⇒ 状态面仍看得到它
+  · dueAt 推到 Infinity ⇒ 调度器不会再选中它（dueAt <= now 永假）
+  · 记 abandonedAt ⇒ 读的人能区分「还在退避」与「已放弃」
+  ⚠ 它**不是**「投递成功」：delivered 从未置位，回执也不会回来
+```
+
+⚠ 最后那句尤其重要：**「已放弃」与「投递成功」必须在读数上区分开**。
+   否则又回到 T-09 的形态（把 300 条缺口说成健康）。
+
+### 177.4 进度
+
+| 状态 | 条数 |
+|---|---|
+| ✅ 全量已修 | **51**（+T-10） |
+| ⚠ 部分修 | 1（R-01） |
+| ⚠ 核心已修 + 规格需修订 | 1（R-02） |
+| ⚠ 按设计处理 | 1（T-07） |
+| ⛔ 未修 | 1（S-01） |
+| ⬜ 未核 | **57** |
+
+---
