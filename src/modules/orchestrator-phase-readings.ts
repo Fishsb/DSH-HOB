@@ -18,7 +18,8 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { readOrchState, orchStateFileOf, clarifySectionOf, type PersistedHandoff, type PersistedWatch } from '../server/orch-state.ts'
-import { planModeOf, type WorkPlan } from '../shared/work-plan.ts'
+import { planModeOf, type WorkPlan, type WorkTrackState, type WorkPlanSerialization, type WorkPlanProgress, type WorkPlanSummary } from '../shared/work-plan.ts'
+import type { WorkMode } from '../shared/work-mode.ts'
 import { listClosedWorkPlans } from '../server/work-plan-state.ts'
 
 /**
@@ -349,4 +350,83 @@ export function awaitingUserOfAt(
     }
   } catch { /* 读不到 ⇒ 判不出 */ }
   return false
+}
+/**
+ * ⚠ `PlanProgressLike` 已删：`workPlanProgress` 的返回类型 `WorkPlanProgress`
+ *   本来就在 `shared/work-plan.ts:951`（不依赖 orchestrator）⇒ 直接复用，
+ *   ⛔ 手写一个「最小面」反而与源类型漂移（实测 `nextState`/`rationale` 两处）。
+ */
+
+/**
+ * 一个计划文件的**显示口径**（状态、轨道计数、隔离原因、是否占槽、是否过期）。
+ *
+ * ⚠⚠ `status()` 与 `workPlans()` **必须共用这一处**：两处各写一遍 `completed`
+ *   三元式，等于同一个事实有两个来源，改一处漏一处就会让两个读数漂移。
+ *
+ * ── **长期机制：计划不能"看起来还在跑"**（2026-11-06）──────────────────
+ *   现场：5 份计划在 `active/` 里停留 47–56 小时仍显示 `running`，
+ *   而派活方早已不在 ⇒ 人读读数时无法区分「正在推进」与「没人管了」。
+ *   ⇒ 三个**可核对**的读数（⛔ 不改 state、⛔ 不自动删计划）：
+ *     `ageHours`（createdAt 至今）· `occupiesSlot`（是否仍占执行槽）·
+ *     `stale`（非终态且超 `STALE_PLAN_HOURS`，需人工处置）。
+ *
+ * @param occupiesSlot - 「该计划是否仍占执行槽」由调用方判定后传入
+ *   （编排侧实现：`!stoppedPlanOccupiesSlot(plan)` —— 判据在闭包里，依赖 `isStoppedFor`）。
+ * @param stalePlanHours - 过期阈值（编排侧传 `STALE_PLAN_HOURS` = 24）。
+ */
+/**
+ * `summarizePlanAt` 的返回形状（⚠ 结构化最小面，⛔ 不 import `WorkPlanStatus` ——
+ *   那个类型定义在 `orchestrator.ts:976`，import 它就是环）。
+ *   ⚠ 调用方（orchestrator）的 `WorkPlanStatus['plans'][number]` 与它**逐字段兼容**；
+/**
+ * ⚠⚠ **返回类型 = `WorkPlanSummary`（shared/work-plan.ts）**：
+ *   2026-11-12 教训 —— 手写「PlanSummaryLike 最小面」连错 3 处（`rationale` 可选性 /
+ *   `modeSnapshot` / `tracks.taskId`），每处都是与源类型的**真实漂移**。
+ *   ⇒ 源类型已在 shared（`WorkPlanStatus.plans` 与本函数三处同源），直接复用，
+     ⛔ 不要再手写同形状的字面类型。
+ */
+export function summarizePlanAt(
+  plan: WorkPlan,
+  states: Record<string, WorkTrackState>,
+  progress: WorkPlanProgress,
+  occupiesSlot: boolean,
+  stalePlanHours: number,
+): WorkPlanSummary {
+  const returned = plan.tracks.filter((track) => states[track.trackId] === 'returned').length
+  const failed = plan.tracks.filter((track) => states[track.trackId] === 'failed').length
+  const running = plan.tracks.filter((track) => states[track.trackId] === 'running').length
+  const ageHours = plan.createdAt === undefined ? null : Math.max(0, (Date.now() - plan.createdAt) / 3_600_000)
+  const terminal = plan.state === 'completed' || plan.state === 'failed' || progress.terminal
+  return {
+    planId: plan.planId,
+    state: plan.state === 'completed' ? 'completed'
+      : plan.state === 'failed' || progress.failed ? 'failed'
+        : progress.nextState,
+    trackCount: plan.tracks.length,
+    running,
+    waiting: progress.waiting.length,
+    returned,
+    failed,
+    ...(ageHours === null ? {} : { ageHours: Math.round(ageHours * 10) / 10 }),
+    occupiesSlot: occupiesSlot && !terminal,
+    stale: !terminal && ageHours !== null && ageHours >= stalePlanHours,
+    ...(plan.singleTrackReason === undefined ? {} : { singleTrackReason: plan.singleTrackReason }),
+    rationale: plan.rationale,
+    modeSnapshot: planModeOf(plan),
+    ...(plan.serialized === undefined ? {} : {
+      serialized: {
+        reason: plan.serialized.reason,
+        groups: plan.serialized.groups,
+        ...(plan.serialized.sharedPaths === undefined ? {} : { sharedPaths: plan.serialized.sharedPaths }),
+      },
+    }),
+    tracks: plan.tracks.map((track) => ({
+      trackId: track.trackId,
+      taskId: track.taskId,
+      sessionId: track.sessionId,
+      accessType: track.accessType,
+      dependsOn: [...track.dependsOn],
+      state: states[track.trackId] ?? 'pending',
+    })),
+  }
 }

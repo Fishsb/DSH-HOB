@@ -333,7 +333,7 @@ function findCycles(edges) {
  *     那是一次**行为等价性重构**，`check:orch`（357 处断言）只能兜住已覆盖的行为。
  *
  *   ⚠ 本组现在的作用是**把上限钉死**：11347 行**只准降不准升**。
- *   ✅ **2026-11-11/12 已拆 10 个**（`orchestrator-phase-readings.ts`）：
+ *   ✅ **2026-11-11/12 已拆 11 个**（`orchestrator-phase-readings.ts`）：
  *      `readHandoffs` · `closedForTrack` · `abandonedSummary` · `closedPlanSummary`
  *      · `targetPresetOf` · `wsRootOfSession`（后两个需把服务对象当参数传入）
  *   ✅ **2026-11-12 再拆 4 个**：`stateFileForOwner`（两个解析器都当参数）·
@@ -342,16 +342,17 @@ function findCycles(edges) {
  *      —— 它们**零闭包状态依赖**，只依赖模块级导入 ⇒ 移动是行为等价的。
  *      实测 `check:orch` 357 处断言**修前修后逐条相同**（这是"没改坏"的证据）。
  *
- *   ⏳ **下一步可拆**（同样零闭包状态的，按依赖复杂度排）：
- *      `targetPresetOf`（23 行，依赖 `svcCtx.get`）· `stateFileForOwner`（53 行）·
- *      `planConflictProblems`（50 行）· `summarizePlan`（58 行）· `awaitingUserOf`（43 行）
+ *   ⏳ **下一步可拆**：`planConflictProblems`（50 行）—— ⚠ 它依赖 `activePlansAt` /
+ *      `occupyingTracksOfPlan` ⇒ 那条链扎进 `isStoppedFor`（13 处引用，闭包核心），
+ *      要么把「占槽判定」当参数传入，要么与 ② 档（解 `watches`）同批做。
  *   ⛔ **不要先拆碰 `watches` 的**（84 处引用）：那需要先把共享状态改成显式 context，
  *      属行为等价性重构，风险与上面这一档**完全不同**。
  */
 const FILE_CEILINGS = new Map([
   // ⚠ 2026-11-11：11347 → 11298（6 个无状态读数搬到 orchestrator-phase-readings.ts）
   // ⚠ 2026-11-12：11298 → 11252（再搬 stateFileForOwner / messageTextOf / userReplyAfter / awaitingUserOf）
-  ['modules/orchestrator.ts', 11252],
+  // ⚠ 2026-11-12 续：11252 → 11183（summarizePlan 搬出；WorkPlanTrackStatus/WorkPlanSummary 下沉到 shared/work-plan.ts）
+  ['modules/orchestrator.ts', 11183],
   ['client/project-panel.tsx', 4307],
   // ⚠ 2026-11-11：3334 → 3122（派发读数下沉到 shared/dispatch-reading.ts，−212 行）
   ['server/orch-state.ts', 3122],

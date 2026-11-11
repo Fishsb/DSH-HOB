@@ -63,6 +63,7 @@ import { applyProjection, readProjectionUnits, readProjectionUnitsState } from '
 import { pipelineDispatchProblems } from '../shared/pipeline-view.ts'
 import { publishLiveChange } from '../server/live-hub.ts'
 import { WORK_MODE_VALUES, workModePolicy, workModePolicySummary, type WorkMode } from '../shared/work-mode.ts'
+import type { WorkPlanSummary } from '../shared/work-plan.ts'
 import {
   guardIntentForOwner,
   guardIntentOf,
@@ -791,6 +792,7 @@ import {
   messageTextOf as messageTextOfImported,
   userReplyAfter as userReplyAfterImported,
   awaitingUserOfAt,
+  summarizePlanAt,
 } from './orchestrator-phase-readings.ts'
 
 export const name = 'dsh-hob-orchestrator'
@@ -963,15 +965,10 @@ export interface Watch {
   unclassifiedWhy?: string
 }
 
-/** 编排状态快照（给工具与探针读）。 */
-export interface WorkPlanTrackStatus {
-  trackId: string
-  taskId: string
-  sessionId: string
-  accessType: 'read' | 'write'
-  dependsOn: string[]
-  state: WorkTrackState
-}
+/** ⚠ 2026-11-12：`WorkPlanTrackStatus` / `WorkPlanSummary` 已下沉到 `shared/work-plan.ts`
+ *   （它们是纯数据形状，`summarizePlanAt` 的返回也用它们 ⇒ 放 shared 三处同源）。
+ *   本文件**再导出**以保持既有引用不破。 */
+export type { WorkPlanTrackStatus, WorkPlanSummary } from '../shared/work-plan.ts'
 
 export interface WorkPlanStatus {
   mode: WorkMode | 'unknown'
@@ -986,29 +983,8 @@ export interface WorkPlanStatus {
     abandonedWhy: string
     trackCount: number
   }>
-  plans: Array<{
-    planId: string
-    state: string
-    trackCount: number
-    running: number
-    waiting: number
-    returned: number
-    failed: number
-    /** 计划创建至今的小时数（读数用；⛔ 不参与自动决策）。 */
-    ageHours?: number
-    /** 是否仍占执行槽（派活方 stop 后为 false）。 */
-    occupiesSlot?: boolean
-    /** 非终态且超过 24h ⇒ true（需人工处置）。 */
-    stale?: boolean
-    singleTrackReason?: string
-    rationale: string
-    /** 计划创建时冻结的档位（`WM-8`）；旧计划回落到 `mode`。 */
-    modeSnapshot?: WorkMode
-    /** 写轨被串行化的依据（`WM-3`）：原因 + 真实重叠路径。 */
-    serialized?: { reason: string; groups: string[][]; sharedPaths?: string[] }
-    /** 每条轨的执行者与状态（面板据此显示「谁在跑、谁在等谁」）。 */
-    tracks: WorkPlanTrackStatus[]
-  }>
+  /** ⚠ 2026-11-12：内联形状改为引用 `WorkPlanSummary`（shared/work-plan.ts）—— 三处同源。 */
+  plans: WorkPlanSummary[]
   unreadable: Array<{ planId: string; reason: string }>
 }
 
@@ -4099,64 +4075,19 @@ export function apply(ctx: any): void {
     }
 
     /**
-     * 一个计划文件的显示口径（状态、轨道计数、隔离原因）。
-     *
-     * ⚠ `status()` 与 `workPlans()` 必须共用这一处：两处各写一遍 `completed`
-     *   三元式，等于同一个事实有两个来源，改一处漏一处就会让两个读数漂移。
+     * ⚠ 2026-11-12：函数体已搬到 `orchestrator-phase-readings.ts` 的 `summarizePlanAt`。
+     *   本处只负责两件闭包事：
+     *   · `occupiesSlot` —— 依赖 `stoppedPlanOccupiesSlot`（其判据链扎进 `isStoppedFor`，
+     *     那是闭包核心，⛔ 不外泄）⇒ 由调用方算好传进去；
+     *   · `STALE_PLAN_HOURS`（=24）—— 常量留在这里，阈值语义归编排侧。
+     *   ⚠ `status()` 与 `workPlans()` 仍共用这一处（单源不变），只是正文在辅助文件。
      */
     const summarizePlan = (
       plan: WorkPlan,
       states: Record<string, WorkTrackState>,
       progress: ReturnType<typeof workPlanProgress>,
-    ): WorkPlanStatus['plans'][number] => {
-      const returned = plan.tracks.filter((track) => states[track.trackId] === 'returned').length
-      const failed = plan.tracks.filter((track) => states[track.trackId] === 'failed').length
-      const running = plan.tracks.filter((track) => states[track.trackId] === 'running').length
-      /**
-       * **长期机制：计划不能"看起来还在跑"**（2026-11-06）。
-       *
-       * ⚠ 现场：5 份计划在 `active/` 里停留 47–56 小时，仍显示 `running`，
-       *   而派活方早已不在 —— 人读读数时无法区分"正在推进"与"没人管了"。
-       * ⇒ 这里补三个**可核对**的读数（⛔ 不改 state、⛔ 不自动删计划）：
-       *   · `ageHours`   —— 从 `createdAt` 到现在；
-       *   · `occupiesSlot` —— 这份计划当前是否仍占执行槽（stop 后不占）；
-       *   · `stale`      —— 非终态且超过 `STALE_PLAN_HOURS`，需要人工处置。
-       */
-      const ageHours = plan.createdAt === undefined ? null : Math.max(0, (Date.now() - plan.createdAt) / 3_600_000)
-      const terminal = plan.state === 'completed' || plan.state === 'failed' || progress.terminal
-      return {
-        planId: plan.planId,
-        state: plan.state === 'completed' ? 'completed'
-          : plan.state === 'failed' || progress.failed ? 'failed'
-            : progress.nextState,
-        trackCount: plan.tracks.length,
-        running,
-        waiting: progress.waiting.length,
-        returned,
-        failed,
-        ...(ageHours === null ? {} : { ageHours: Math.round(ageHours * 10) / 10 }),
-        occupiesSlot: !stoppedPlanOccupiesSlot(plan) && !terminal,
-        stale: !terminal && ageHours !== null && ageHours >= STALE_PLAN_HOURS,
-        ...(plan.singleTrackReason === undefined ? {} : { singleTrackReason: plan.singleTrackReason }),
-        rationale: plan.rationale,
-        modeSnapshot: planModeOf(plan),
-        ...(plan.serialized === undefined ? {} : {
-          serialized: {
-            reason: plan.serialized.reason,
-            groups: plan.serialized.groups,
-            ...(plan.serialized.sharedPaths === undefined ? {} : { sharedPaths: plan.serialized.sharedPaths }),
-          },
-        }),
-        tracks: plan.tracks.map((track) => ({
-          trackId: track.trackId,
-          taskId: track.taskId,
-          sessionId: track.sessionId,
-          accessType: track.accessType,
-          dependsOn: [...track.dependsOn],
-          state: states[track.trackId] ?? 'pending',
-        })),
-      }
-    }
+    ): WorkPlanStatus['plans'][number] =>
+      summarizePlanAt(plan, states, progress, !stoppedPlanOccupiesSlot(plan), STALE_PLAN_HOURS)
 
     /**
      * 同步计划摘要（`status()` 不能 await 异步推进，只能读当前已落盘的状态）。

@@ -15,6 +15,8 @@
  *   不改变该会话的可读范围、工具面或审批档。
  */
 import { workModePolicy, type WorkMode } from './work-mode.ts'
+/** ⚠ 再导出：`WorkPlanSummary.modeSnapshot` 用它，而消费方（phase-readings）不该各自再 import 一遍。 */
+export type { WorkMode } from './work-mode.ts'
 
 export const WORK_PLAN_VERSION = 1
 export const WORK_PLAN_STATE_VALUES = ['planned', 'running', 'joining', 'completed', 'failed'] as const
@@ -1173,4 +1175,42 @@ export function guardIntentForOwner(input: {
   }
   const first = ranked[0]!
   return { intent: first.intent, plan: first.plan, facts: first.facts }
+}
+/**
+ * 编排状态快照里**一条轨**的读数（2026-11-12 从 orchestrator.ts 下沉）：
+ * 纯数据形状，放 shared 让「读数构造」与「编排状态」三处同源
+ * （orchestrator 的 WorkPlanStatus.plans / phase-readings 的 summarizePlanAt / 本文件），
+ * ⛔ 不要在任何一处再手写同形状的字面类型。
+ */
+export interface WorkPlanTrackStatus {
+  trackId: string
+  taskId: string
+  sessionId: string
+  accessType: 'read' | 'write'
+  dependsOn: string[]
+  state: WorkTrackState
+}
+
+export interface WorkPlanSummary {
+  planId: string
+  state: string
+  trackCount: number
+  running: number
+  waiting: number
+  returned: number
+  failed: number
+  /** 计划创建至今的小时数（读数用；⛔ 不参与自动决策）。 */
+  ageHours?: number
+  /** 是否仍占执行槽（派活方 stop 后为 false）。 */
+  occupiesSlot?: boolean
+  /** 非终态且超过 24h ⇒ true（需人工处置）。 */
+  stale?: boolean
+  singleTrackReason?: string
+  rationale: string
+  /** 计划创建时冻结的档位（WM-8）；旧计划回落到 mode。 */
+  modeSnapshot?: WorkMode
+  /** 写轨被串行化的依据（WM-3）：原因 + 真实重叠路径。 */
+  serialized?: WorkPlanSerialization
+  /** 每条轨的执行者与状态（面板据此显示「谁在跑、谁在等谁」）。 */
+  tracks: WorkPlanTrackStatus[]
 }
