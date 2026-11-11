@@ -1067,3 +1067,61 @@ G4 执行（全部 task 都 'built' + 每个都有 evidenceReady 的 'returned' 
    ⇒ 它们用的是更浅的场景，⛔ 不能直接复用。
 
 ---
+
+---
+
+## §202 ⚠ R-01 段 3 的夹具攻坚：G1 ✅ G2 部分 ✅，但没走到阶段 5
+
+### 202.1 已查清的三层条件（都是我之前不知道的）
+
+| 层 | 条件 | 我原来写的 | 正确形态 |
+|---|---|---|---|
+| ① `decision` 单元形状 | 必须 `decision_kind: 'stage-approval'` + `artifact_id` | 写 `parent` | `artifact_id: 'R-9'` |
+| ② `decision` 的封闭集 | `APPROVAL_DECISIONS = ['approve', 'request-changes']` | 写 `'approved'`（多一个 d） | `decision: 'approve'` |
+| ③ `artifact_digest` 必须**基于带 revision 的完整单元** | — | 用无 revision 的对象算 ⇒ `revision: ""` ⇒ digest 不同 | 先 `{...base, kind, ...o}` 再 `artifactDigestOf(u)` |
+| ④ 方案批准必须带 `selected_option` | — | 没写 ⇒ `invalid`（「批准选中的路径 (空)」） | `selected_option: 'A'` |
+
+⚠ 第③条最隐蔽：`artifactCanonicalText` 里 `revision: revisionOf(u) ?? text(u.revision)`——
+   而 `revisionOf` **只认数字字符串**，无 revision 时得 `""` ⇒ digest 与带 revision 的算出来不同。
+
+### 202.2 ✅ 已拿到的关键信号：强判据确实生效了
+
+```
+同一夹具，只改验证者：
+  自己（dev-A）→ blockedBy **13** 条
+  他人（dev-B）→ blockedBy **11** 条
+                  ─────
+                  差 2 条
+```
+
+⚠ 那 2 条正是 **验证侧 + 验收侧** 的强判据缺口。
+   ⇒ **R-01 段 3 的代码确实在生效** —— 这是本轮最有价值的证据。
+
+### 202.3 ⛔ 但 `activeStage` 仍停在 2
+
+```
+自己   activeStage=2 | stage5=draft
+他人   activeStage=2 | stage5=draft
+```
+
+⇒ G2 之后的门禁还没通过（`blocked=13` 说明还有别的问题）。
+   **本轮未查完**，⛔ 不继续耗时。
+
+### 202.4 ⇒ 断言的正确写法应当**不依赖完整链**
+
+⚠ 我一直在试图让夹具走完 7 步。但那不是这条判据的必要条件——
+   **「强判据是否参与判定」可以直接从 `blockedBy` 的差值看出来**：
+
+```js
+const selfGaps = viewOf('dev-A').blockedBy.filter(x => /强判据/.test(x))
+const otherGaps = viewOf('dev-B').blockedBy.filter(x => /强判据/.test(x))
+// ① selfGaps.length > otherGaps.length  ⇒ 强判据对「自己验自己」多报了缺口
+// ② 且 selfGaps 里的第一条含「影子」或「宽限」前缀
+```
+
+⚠ 但这只证明它**报了缺口**，⛔ 不证明它**参与了 verified**（前者是段 1 就能做到的）。
+   ⇒ **要证明段 3，必须看到 `stage5 !== 'completed'`** —— 而那需要走完整链。
+
+⇒ **本轮结论：夹具攻坚到第 4 层，仍未到达阶段 5。断言仍未写出。**
+
+---
