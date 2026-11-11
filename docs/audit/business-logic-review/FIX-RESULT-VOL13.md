@@ -187,3 +187,68 @@ const others = shardNames.filter((n) => n !== rel).map(readUnitSource)
 | ⬜ 未核 | **67** |
 
 ---
+
+---
+
+## §171 ✅ T-02 与 T-05 **同批修复**（正如注释所说「必须同批」）
+
+### 171.1 T-02：4 套账本健康判据 → **收敛成 1 套**
+
+`tools.ts:124-128`：
+
+```
+// ── 账本健康的**唯一判据**（B1.3 / T-02 / T-05）────────────────────────
+//   ⚠ 四个出口（readiness / stageGateOfLedger / stageHealthOfLedger / /stages.stageHealth）
+//     必须共用它；⛔ 任何出口都不得自己再拼一份判据集（那正是 T-02 的病）。
+import { describeLedgerHealth, ledgerHealthOf, type LedgerHealthProblem } from '../shared/ledger-health.ts'
+```
+
+**四个出口实测**：
+
+| 出口 | 调用点 | 证据 |
+|---|---|---|
+| `stageGateOfLedger` | `:695` | `withLedgerProvenance(ledgerRoot, () => ledgerHealthOf(units))` |
+| `stageHealthOfLedger` | `:837` | 同上；`:828` 注释「现在直接调唯一判据 `ledgerHealthOf`，⛔ 不再经 project 分支」 |
+| `/stages.stageHealth` | `stages-index.ts:459` | 「**B1.3（T-02）：唯一判据 = `ledgerHealthOf`**（⛔ 不在这里再拼一份）」 |
+| `readiness` | `:944` | 「`ledgerHealthOf` 现在**带 `seenIds`** 查重复 ID」 |
+
+⚠ 改前 `stageHealthOfLedger` 走的是 `stageGateAtLedger({ scope: 'project' })`，
+   拿的是 `stageControlProblems`（**field + approval**，⛔ 无 closure、⛔ 无 shape）
+   ⇒ 与 readiness / `/stages` 对同一本账给出不同结论。
+
+### 171.2 T-05：`repairOf` 与 forward 的判据**已同源**
+
+`tools.ts:831-833` 的注释直接点明了这条耦合：
+
+```
+── 与 T-05 的关系（必须同批）──────────────────────────────
+  `repairOf` 命中判据读的正是本函数的 `blockers`：只改它、不改 ① 会让
+  「修复写认的 blocker」与「推进门禁认的 blocker」继续分叉 ⇒ 死锁换个方向。
+```
+
+⇒ 因为 `stageHealthOfLedger`（`repairOf` 读它）与 `stageGateOfLedger`（forward 读它）
+   **现在都调 `ledgerHealthOf`** ⇒ 两者看到的是**同一份 blockers** ⇒ 死锁的成因消失。
+
+### 171.3 ⚠ 这段注释点出了一件重要的事
+
+```
+「只改它、不改 ① 会让死锁换个方向」
+
+⇒ 修 T-02（统一判据）而不修 T-05（让两处都读统一判据），
+  死锁不会消失，只会从「repair 认 A、forward 认 B」变成别的形态。
+⇒ 所以 REVIEW 把它们列为两条，但**修复必须同批**。
+```
+
+⚠ 这是「缺陷之间的耦合」的典型例子：**分开看是两条，合起来是一个病**。
+
+### 171.4 进度
+
+| 状态 | 条数 |
+|---|---|
+| ✅ 全量已修 | **44**（+T-02 +T-05） |
+| ⚠ 部分修 | 1（R-01） |
+| ⚠ 核心已修 + 规格需修订 | 1（R-02） |
+| ⛔ 未修 | 1（S-01） |
+| ⬜ 未核 | **65** |
+
+---
