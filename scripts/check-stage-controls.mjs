@@ -1228,6 +1228,82 @@ console.log('')
   } else for (const x of p) bad(`SC-37 · ${x}`)
 }
 
+
+// ── SC-38 · R-01 段 3：强判据必须能区分「自己验自己」与「他人验」 ───────────
+/**
+ * ── 守什么 ────────────────────────────────────────────────────────
+ *   R-01 段 3 让 `allTasksVerified` / `allTasksAccepted` 调
+ *   `verificationProblems` / `acceptanceProblems`。
+ *   ⚠ 段 3 的判定链太深（7 步门禁，造不出夹具），
+ *   但**这两个函数本身**是可直调的 —— 本条钉的就是它们的分辨力。
+ *   ⇒ 若有人把 `verificationProblems` 改成永远返回 `[]`（或漏掉独立性那条），
+ *     段 3 的整条链就失效了，而 `check:all` 不会红。本条挡住这个。
+ *
+ * ⚠ 这**不等于**「段 3 的判定链已验证」：它只证「强判据有分辨力」。
+ */
+{
+  const V = gen.PIPELINE_VERSION ?? 'v3'
+  const b = { pipeline_version: V, revision: '1' }
+  const task = { ...b, id: 'TSK-R', kind: 'task', status: 'built', parent: 'CHG-R', title: 'T', built_by: 'dev-A' }
+  const mk = (who) => ({ ...b, id: 'VER-R', kind: 'verification', status: 'pass', parent: 'TSK-R', verifier: who, task_revision: '1', title: 'v', basis: 'x', evidence_refs: 'y', verified_at: '2026-01-01', verification_session: 'sess-1', criteria_refs: 'AC-1' })
+  const p = []
+  const self = mod.verificationProblems(mk('dev-A'), [task, mk('dev-A')])
+  const other = mod.verificationProblems(mk('dev-B'), [task, mk('dev-B')])
+  if (!self.some((x) => /独立|verifier|实现者/.test(String(x.why)))) {
+    p.push('验证者=实现者时没有「独立性」相关的问题 ⇒ 强判据失去分辨力（R-01 段 3 失效）')
+  }
+  if (self.length <= other.length) {
+    p.push('「自己验自己」的问题数（' + self.length + '）<= 「他人验」（' + other.length + '）⇒ 判据不区分这两种情形')
+  }
+  if (p.length === 0) {
+    ok('SC-38 ✓ **R-01 段 3 的判据有分辨力**：验证者=实现者 ⇒ 报 ' + self.length + ' 条；'
+      + '他人验 ⇒ ' + other.length + ' 条（⚠ 只证「强判据能区分」，⛔ 不证「判定链已接通」）')
+  } else for (const x of p) bad('SC-38 · ' + x)
+}
+
+
+// ── SC-39 · R-01 段 3：判定链**必须真的调用**强判据（源码层）─────────────
+/**
+ * ── 它补 SC-38 覆盖不到的那一半 ────────────────────────────────────
+ *   SC-38 只证「`verificationProblems` 有分辨力」；
+ *   ⛔ 它证不了「`allTasksVerified` 有没有把那个判据接进去」。
+ *   ⇒ 若有人在 `allTasksVerified` 里删掉那一行，SC-38 **仍然绿**。
+ *
+ * ⚠ 本条是**源码层**检查（照 `:1156` 的先例）：
+ *   断言 `allTasksVerified` 的函数体里出现 `verificationProblems(`，
+ *   `allTasksAccepted` 里出现 `acceptanceProblems(`。
+ *   ⛔ 它不证「运行时真的生效」—— 那需要走完 7 步门禁，夹具造不出（见 §202）。
+ */
+{
+  const { readFileSync: rfX } = await import('node:fs')
+  const { join: pjX, dirname: dnX } = await import('node:path')
+  const { fileURLToPath: f2uX } = await import('node:url')
+  const src = rfX(pjX(dnX(f2uX(import.meta.url)), '..', 'src', 'shared', 'pipeline-view.ts'), 'utf8')
+  const bodyOf = (name) => {
+    const at = src.indexOf(`function ${name}(`)
+    if (at < 0) return undefined
+    /** 从函数起点找到下一处顶格 '}'（本文件的函数都是顶格结束）。 */
+    const end = src.indexOf('\n}', at)
+    return end < 0 ? src.slice(at) : src.slice(at, end)
+  }
+  const p = []
+  const vBody = bodyOf('allTasksVerified')
+  const aBody = bodyOf('allTasksAccepted')
+  if (vBody === undefined) p.push('读不到 `allTasksVerified` 的函数体（形态变了）')
+  else if (!/verificationProblems\s*\(/.test(vBody)) {
+    p.push('`allTasksVerified` 没有调用 `verificationProblems` ⇒ R-01 段 3 的判定链断了（SC-38 测不到这个）')
+  }
+  if (aBody === undefined) p.push('读不到 `allTasksAccepted` 的函数体（形态变了）')
+  else if (!/acceptanceProblems\s*\(/.test(aBody)) {
+    p.push('`allTasksAccepted` 没有调用 `acceptanceProblems` ⇒ R-01 段 3 的验收侧链路断了')
+  }
+  if (p.length === 0) {
+    ok('SC-39 ✓ **R-01 段 3 的判定链已接通**（源码层）：'
+      + '`allTasksVerified` 调 `verificationProblems`、`allTasksAccepted` 调 `acceptanceProblems`'
+      + '（⚠ 只证「调了」，⛔ 不证「运行时生效」—— 后者需走完 7 步门禁）')
+  } else for (const x of p) bad('SC-39 · ' + x)
+}
+
 console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 0 处**`)
 console.log('')
 console.log(`SC 组：通过 ${pass} · 失败 ${fail}`)
