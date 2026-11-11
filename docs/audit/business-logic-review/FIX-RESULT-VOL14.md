@@ -1392,3 +1392,58 @@ build 后仍打印：
 ⇒ 要重启宿主才会真正转绿，那是外部动作。
 
 ---
+
+---
+
+## §206 ✅ 找到了 `check:build` 反复变红的真正机制：**build 必须在最后一次 commit 之后**
+
+### 206.1 现象
+
+本会话中 `check:build` **红了 4 次**（v46 / v50 / v51 等），每次都是同一句：
+
+```
+✗ 面 ①：产物落后于当前提交 —— 戳 commit=xxx · HEAD=yyy
+```
+
+⚠ 其中**有一次我只改了文档**（`FIX-RESULT.md`），它照样红。
+
+### 206.2 根因
+
+`check-build-sync.mjs` 的面① 判的是「**产物戳的 commit 是否等于当前 HEAD**」，
+⛔ 不是「有没有编译过」。
+
+```
+我在 ea19aa5 上 build  → 戳记下 commit=ea19aa5
+之后提交文档改动       → HEAD 变成 7cc896c
+⇒ 戳 ≠ HEAD ⇒ 面① 红（与改动内容无关，改文档也一样）
+```
+
+### 206.3 ✅ 验证
+
+```
+npm run build
+→ STRICT_EXIT=0
+→ 戳 commit=7cc896c（= HEAD）· dirty=false
+```
+
+### 206.4 ⇒ 正确顺序
+
+```
+❌ 我之前：  改代码 → build → 验证 → commit     （戳永远落后一步）
+✅ 正确：    改代码 → commit → build → 验证     （戳与 HEAD 对齐）
+```
+
+⚠ **跑完 `check:all` 之后不要再提交**；要提交就再 build 一次。
+
+### 206.5 这与 `--strict-source` 的设计一致
+
+```
+STRICT_FAMILIES 加 --strict-source，不加 --strict-instance
+理由：面①② 的恒红风险（改完没 build）**可以立刻消掉**；
+      面③  的恒红风险（刚 build 完还没重启）**消不掉**。
+```
+
+⇒ 我遇到的红灯**是这套设计在正确工作**，⛔ 不是缺陷。
+   要做的是按正确顺序操作，⛔ 不是去改判据。
+
+---
