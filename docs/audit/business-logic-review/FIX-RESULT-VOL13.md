@@ -1396,3 +1396,91 @@ check-workflow.mjs:7  「O-26 更正：原文写「五步齐（order = 1..5）�
 ⚠ **还差 4 条没核到** —— 不把它凑掉，下一轮查清是哪 4 条。
 
 ---
+
+---
+
+## §189 R-01 段 2 已实现（并连带纠正我一次误判）
+
+### 189.1 实现（`pipeline-view.ts:534-554`）
+
+```ts
+/**
+ * ── R-01 段 2：宽限期（按 provenance 豁免历史单元）（2026-11-11）──────
+ * 段 1 是「只报不拦」。段 2 的区别只有**前缀**：
+ *   历史单元标「宽限」、新单元标「影子」
+ * ⚠ 本段仍不改 verified / accepted —— 段 3 才真的拦。
+ * ⚠ 判定口径：provenanceOf(u) === 'legacy-migrated' ⇒ 历史单元。
+ */
+const legacyTag = (unitId: string): string => {
+  const u = units.find((x) => text(x.id) === unitId.split(' · ')[0])
+  return u !== undefined && provenanceOf(u as StageControlUnit) === 'legacy-migrated'
+    ? '[宽限]' : '[影子]'
+}
+for (const g of strongVerificationGaps(tasks, verifications, units).slice(0, 5)) {
+  blockedBy.push(`${legacyTag(g)} 技术验证强判据 · ${g}`)
+}
+for (const g of strongAcceptanceGaps(accs, units).slice(0, 5)) {
+  blockedBy.push(`${legacyTag(g)} 产品验收强判据 · ${g}`)
+}
+```
+
+### 189.2 ⚠ 我一次误判：grep 关键词不对就判「未实现」
+
+```bash
+grep -n 'legacyTag|宽限|影子' src/shared/pipeline-view.ts
+→  只有 :194-221 的段 1 注释，没有 legacyTag
+⇒ 我判「段 2 没落进文件」
+
+实际：代码在 :534-554，我 grep 的三个词里「宽限」「影子」确实在、
+     但 legacyTag **在注释之后**，而我的 grep 输出被 head 截断了。
+```
+
+⚠ 这与 §128（grep 只看到前两个分支）**同一个错**：`head` 截断导致漏看。
+   ⇒ 教训：**判断「某段代码在不在」，⛔ 不能用 `head` 截断的 grep**。
+
+### 189.3 ⚠ 但段 2 的标签在实际输出里**看不到**
+
+实测（构造「验证者=实现者」夹具）：
+
+```
+blockedBy 6 条：
+  R-1 · G1 需求未批准
+  C-1 · G2 方案未批准
+  V-1 · 技术验证缺可复核证据
+  V-1 · C-25 · 技术验证结论缺依据
+  V-1 · C-25 · 技术验证缺可解析的 verified_at
+  V-1 · C-25 · 技术验证缺独立会话 verification_session
+⇒ **没有一条来自 strongVerificationGaps**
+```
+
+原因：`strongVerificationGaps` 只对**已经 pass 的验证**看强判据：
+
+```ts
+if (latest === undefined || latest.status !== 'pass') continue
+```
+
+⚠ 而我的夹具里那条 VER 虽然 `status='pass'`，但**缺 `basis`/`verified_at`/`verification_session`**
+   ⇒ `verificationProblems` 报了 4 条 C-25，但 `strongVerificationGaps` 仍然通过（因为它只看独立性，不看这些字段）。
+
+⇒ **段 2 的代码是对的，只是我的夹具没触发它**。
+   要触发需要「验证者=实现者」这一个条件 —— 我的夹具里 `verifier='dev-A'` 且 `built_by='dev-A'`，**应该触发**。
+
+⚠ 可能原因：`latestVerificationOf` 取到的不是 V-1，或 `strongVerificationGaps` 的 `units` 参数路径不同。
+   ⇒ **本轮未查清**，⛔ 不声称「已验证段 2 生效」。
+
+### 189.4 状态
+
+| 项 | 状态 |
+|---|---|
+| 段 2 代码 | ✅ 已实现（`:534-554`） |
+| 段 2 行为 | ⚠ **未验证**（夹具未触发标签输出） |
+| 段 3 | ⛔ 需产品决策（存量账本会大面积变红） |
+
+```
+check:all  47/47 · EXIT=0 · 105 秒
+typecheck  EXIT=0
+```
+
+⚠ R-01 记账改为「段 2 已实现，行为待验证」。⛔ 不记为「2/3 完成」。
+
+---

@@ -8,6 +8,7 @@
 
 import { effectiveAcceptanceOf, type AcceptanceVerdictLike } from './acceptance-verdict.ts'
 import { changeRequirementIds } from './ledger-relations.ts'
+import { provenanceOf, type StageControlUnit } from './stage-controls.ts'
 import {
   approvalStateOf,
   type ApprovalReadout,
@@ -527,11 +528,28 @@ export function pipelineViewOf(
            * ⚠ 前缀「影子」是给读的人区分的：它表示「这条**将来**会拦，现在只报」。
            *   段 2 上线宽限期后，前缀会改成「宽限」；段 3 删前缀 ⇒ 那时它才真的拦。
            */
+          /**
+           * ── **R-01 段 2：宽限期（按 provenance 豁免历史单元）**（2026-11-11）──────
+           *
+           * 段 1 是「只报不拦」。段 2 的区别只有**前缀**：
+           *   历史单元标「宽限」、新单元标「影子」，让读的人看出「这条已经开始算了，只是还没拦」。
+           *
+           * ⚠ **本段仍不改 `verified` / `accepted`** —— 段 3 才真的拦。
+           *   直接做段 3 会让存量账本大面积变红，而证据补不回来（当时就没留）。
+           *
+           * ⚠ 判定口径：`provenanceOf(u) === 'legacy-migrated'` ⇒ 历史单元。
+           *   它由 I/O 侧按**分片文件名**给出（⛔ 不是自填字段），与 S-02 同源。
+           */
+          const legacyTag = (unitId: string): string => {
+            const u = units.find((x) => text(x.id) === unitId.split(' · ')[0])
+            return u !== undefined && provenanceOf(u as StageControlUnit) === 'legacy-migrated'
+              ? '[宽限]' : '[影子]'
+          }
           for (const g of strongVerificationGaps(tasks, verifications, units).slice(0, 5)) {
-            blockedBy.push(`[影子] 技术验证强判据 · ${g}`)
+            blockedBy.push(`${legacyTag(g)} 技术验证强判据 · ${g}`)
           }
           for (const g of strongAcceptanceGaps(accs, units).slice(0, 5)) {
-            blockedBy.push(`[影子] 产品验收强判据 · ${g}`)
+            blockedBy.push(`${legacyTag(g)} 产品验收强判据 · ${g}`)
           }
           if (!verified) {
             activeStage = 5
