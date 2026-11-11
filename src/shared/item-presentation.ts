@@ -48,7 +48,7 @@ export const RELATION_LABELS: Readonly<Record<ItemRelationKey, string>> = {
  */
 export function relationLabelOf(relation: { key: ItemRelationKey } | null | undefined, kind: string): string {
   if (relation === null || relation === undefined) return '关系'
-  if (relation.key === 'task') return kind === 'acc' ? '验收对象' : '执行对象'
+  if (relation.key === 'task') return kind === 'acc' ? '验收对象' : kind === 'verification' ? '验证对象' : '执行对象'
   return RELATION_LABELS[relation.key]
 }
 
@@ -148,6 +148,7 @@ const relationOf = (u: PresentationUnit, units: readonly PresentationUnit[]): It
   if (u.kind === 'task') return fromId('change', '所属方案', parentId)
   if (u.kind === 'run') return fromId('task', '执行对象', parentId)
   if (u.kind === 'acc') return fromId('task', '验收对象', parentId)
+  if (u.kind === 'verification') return fromId('task', '验证对象', parentId)
   return null
 }
 
@@ -178,7 +179,7 @@ const contextTitleOf = (u: PresentationUnit, units: readonly PresentationUnit[],
   const kind = String(u.kind)
   let node: PresentationUnit | undefined
   if (kind === 'task') node = unitOf(units, text(u.parent))
-  else if (kind === 'run' || kind === 'acc') {
+  else if (kind === 'run' || kind === 'acc' || kind === 'verification') {
     const task = unitOf(units, text(u.parent))
     node = task === undefined ? undefined : unitOf(units, text(task.parent))
   }
@@ -264,6 +265,29 @@ const detailFactsOf = (u: PresentationUnit, relation: ItemRelation | null): Item
     addList('evidence', '证据', u.evidence)
     addList('example_results', '例子结果', u.example_results)
     add('product_confirmation', '产品确认', u.product_confirmation)
+    add('risk_residual_tier', '残余风险', u.risk_residual_tier)
+    add('risk_accepted_by', '残余风险接受人', u.risk_accepted_by)
+    add('risk_residual_impact', '残余风险影响', u.risk_residual_impact)
+    add('risk_residual_monitoring', '残余风险监控', u.risk_residual_monitoring)
+  } else if (u.kind === 'verification') {
+    out.push(fact('verification_verdict', '验证结论', text(u.status) === 'pass' ? '通过' : text(u.status) === 'send-back' ? '退回' : text(u.status) === 'waived' ? '正式豁免' : '判不出', ['pass', 'send-back', 'waived'].includes(text(u.status)) ? 'ok' : 'undecidable'))
+    add('verifier', '验证者', u.verifier)
+    add('verification_session', '独立会话', u.verification_session)
+    add('verified_at', '验证时刻', u.verified_at)
+    addList('criteria_refs', '验收条件', u.criteria_refs)
+    addList('evidence_refs', '验证证据', u.evidence_refs)
+    addList('risk_review_refs', '风险控制证据', u.risk_review_refs)
+    addList('nonconformance_refs', '非符合项', u.nonconformance_refs)
+  } else if (u.kind === 'closure') {
+    out.push(fact('closure_status', '收口状态', text(u.status) === 'closed' ? '已收口' : text(u.status) === 'skipped' ? '按风险跳过' : text(u.status) === 'blocked' ? '受阻' : '判不出', ['closed', 'skipped'].includes(text(u.status)) ? 'ok' : 'undecidable'))
+    add('closure_mode', '收口档位', u.closure_mode)
+    add('chain_acceptance_ref', '产品接受依据', u.chain_acceptance_ref)
+    add('risk_assessment_ref', '风险评定', u.risk_assessment_ref)
+    add('residual_risk_decision_ref', '残余风险决定', u.residual_risk_decision_ref)
+    addList('release_refs', '发布证据', u.release_refs)
+    addList('rollback_refs', '回滚证据', u.rollback_refs)
+    addList('monitoring_refs', '监控证据', u.monitoring_refs)
+    addList('liens', '整改项', u.liens)
   }
   add('source', '来源', u.source)
   return out
@@ -324,6 +348,17 @@ const foldedFactsOf = (u: PresentationUnit): ItemFact[] => {
         ? fact('addresses_count', '承接需求', `${requirementIds.length} 条`)
         : fact('addresses_count', '承接需求', '判不出', 'undecidable'))
     }
+  } else if (u.kind === 'verification') {
+    const verdict = text(u.status) === 'pass' ? '通过' : text(u.status) === 'send-back' ? '退回' : text(u.status) === 'waived' ? '豁免' : '判不出'
+    out.push(fact('verification_verdict', '验证结论', verdict, ['通过', '退回', '豁免'].includes(verdict) ? 'ok' : 'undecidable'))
+    const controls = arr(u.risk_review_refs)
+    if (controls.length > 0) out.push(fact('risk_control_count', '风险控制', `${controls.length} 条`))
+    else out.push(fact('risk_control_count', '风险控制', '未记录', 'undecidable'))
+  } else if (u.kind === 'closure') {
+    const mode = text(u.closure_mode)
+    out.push(fact('closure_mode', '收口档位', mode === '' ? '判不出' : mode, mode === '' ? 'undecidable' : 'ok'))
+    const release = arr(u.release_refs)
+    out.push(fact('release_count', '发布证据', release.length > 0 ? `${release.length} 条` : '判不出', release.length > 0 ? 'ok' : 'undecidable'))
   }
   return out.slice(0, 2)
 }

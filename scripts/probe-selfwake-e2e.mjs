@@ -163,7 +163,7 @@ if (process.argv.includes('--selftest')) {
   }
   say(r1.status === 0, 'S-1 ✓ 真产物 + 最小真形卡库 ⇒ **PASS**', `exit=${r1.status}（应 0）`)
   say(hasGuard, 'S-2 ✓ 产物里找得到那道闸（⛔ 找不到就没法做反证）', '在产物里找不到该行原文')
-  say(r2.status === 1, 'S-3 ✓ **摘掉那道闸 ⇒ 探针当场 FAIL**（⇒ 它测的确实是那道闸）',
+  say(r2.status === 1, 'S-3 ✓ **负向对拍**：摘掉那道闸 ⇒ 探针当场 FAIL（⇒ 它测的确实是那道闸）',
     `exit=${r2.status}（应 1）· 输出=${String(r2.stdout).slice(0, 200)}`)
   console.log('')
   if (bad === 0) {

@@ -14,15 +14,33 @@
  */
 
 /** 一个账本的目录项（⚠ 名字只允许单段目录名）。 */
+/** A backup/history directory is not an active project that needs migration. */
+export function isBackupLedgerName(name: string): boolean {
+  return /\.(?:backup|bak)(?:-|$)|(?:^|-)backup(?:-|$)|before-ledger-contract/i.test(name)
+}
+
 export interface LedgerEntry {
   /** 账本目录名（= 项目名）。 */
   name: string
   /** 单元数；`readable: false` 时该值无意义。 */
   units: number
+  /**
+   * 三态：有数据 / 空骨架 / 读不了。
+   * ⚠ `empty` 与 `unreadable` 不是一回事：前者是查过、确实没有单元；后者是没有读数。
+   */
+  state: 'data' | 'empty' | 'unreadable'
   /** 能否读到 `ledger/units/`；false ⇒ 该账本不可用（⛔ 不等于空账本）。 */
   readable: boolean
   /** 是否为本会话工作区对应的那本。 */
   current: boolean
+  /**
+   * Project-level freshness readout. It deliberately separates "the ledger is
+   * structurally readable" from "it still needs a v3 pipeline migration".
+   */
+  health?: 'current' | 'outdated' | 'unreadable' | 'empty' | 'backup'
+  /** Counts for the readout; 0 is a real count, undefined means undecidable. */
+  v3Units?: number
+  legacyUnits?: number
 }
 
 export interface LedgerCatalog {
@@ -32,6 +50,14 @@ export interface LedgerCatalog {
   items: LedgerEntry[]
   /** 是否找到了本会话对应的账本。false ⇒ 面板要显示一行说明。 */
   currentResolved: boolean
+  /** Optional project-level summary; absent means the catalog could not decide. */
+  summary?: {
+    current: number
+    outdated: number
+    empty: number
+    unreadable: number
+    backup: number
+  }
 }
 
 /**
@@ -45,30 +71,51 @@ export function isSafeLedgerName(name: unknown): name is string {
   const n = name.trim()
   if (n === '' || n === '.' || n === '..') return false
   if (n.includes('/') || n.includes('\\') || n.includes('\0')) return false
-  // ⚠ 只认 ASCII 安全字符：字母数字、点、下划线、连字符（覆盖现有全部账本名）。
-  return /^[A-Za-z0-9._-]+$/.test(n)
+  if (n.startsWith('.')) return false
+  /**
+   * ⚠ 单段目录名，允许 Unicode（中文项目名是真实需求）。
+   * 拒绝控制字符与路径分隔符；其余交给目录存在性白名单兜底。
+   */
+  return !/[\u0000-\u001f\u007f]/.test(n)
 }
 
 /**
  * 把原始目录项整理成面板要的目录。
  *
  * @param home - 账本父目录（仅回显）
- * @param raw - 原始项：`name` + `units` + `readable`
+ * @param raw - 原始项：`name` + `units` + `state`（或兼容的 `readable`）
  * @param currentName - 本会话工作区对应的账本名（判不出则 `undefined`）
  */
 export function buildLedgerCatalog(
   home: string,
-  raw: ReadonlyArray<{ name: string; units: number; readable: boolean }>,
+  raw: ReadonlyArray<{
+    name: string
+    units: number
+    state?: 'data' | 'empty' | 'unreadable'
+    readable?: boolean
+    health?: 'current' | 'outdated' | 'unreadable' | 'empty' | 'backup'
+    v3Units?: number
+    legacyUnits?: number
+  }>,
   currentName: string | undefined,
 ): LedgerCatalog {
   const safe = raw
     .filter((x) => isSafeLedgerName(x.name))
-    .map((x) => ({
-      name: x.name.trim(),
-      units: Number.isFinite(x.units) && x.units >= 0 ? Math.floor(x.units) : 0,
-      readable: x.readable === true,
-      current: false,
-    }))
+    .map((x) => {
+      const state = x.state ?? (x.readable === true ? (x.units > 0 ? 'data' : 'empty') : 'unreadable')
+      const health = x.health ?? (state === 'unreadable' ? 'unreadable' : state === 'empty' ? 'empty' : undefined)
+      const effectiveHealth = isBackupLedgerName(x.name) ? 'backup' as const : health
+      return {
+        name: x.name.trim(),
+        units: Number.isFinite(x.units) && x.units >= 0 ? Math.floor(x.units) : 0,
+        state,
+        readable: state !== 'unreadable',
+        current: false,
+        ...(effectiveHealth === undefined ? {} : { health: effectiveHealth }),
+        ...(x.v3Units === undefined ? {} : { v3Units: x.v3Units }),
+        ...(x.legacyUnits === undefined ? {} : { legacyUnits: x.legacyUnits }),
+      }
+    })
   // ⚠ 同名去重（目录列举理论上不会重，但外部注入可能给重名；保留首见）。
   const seen = new Set<string>()
   const deduped = safe.filter((x) => (seen.has(x.name) ? false : (seen.add(x.name), true)))
@@ -79,9 +126,18 @@ export function buildLedgerCatalog(
    * 排序：有数据（readable 且 units > 0）在前，其余在后；段内按名升序。
    * ⚠ 不用 mtime：同一份账在不同时刻会排出不同顺序。
    */
-  const rank = (x: { readable: boolean; units: number }): number => (x.readable && x.units > 0 ? 0 : 1)
+  const rank = (x: { state: string }): number => (x.state === 'data' ? 0 : x.state === 'empty' ? 1 : 2)
   deduped.sort((a, b) => (rank(a) - rank(b)) || a.name.localeCompare(b.name, 'en'))
-  return { home, items: deduped, currentResolved }
+  const summary = deduped.every((x) => x.health !== undefined)
+    ? {
+        current: deduped.filter((x) => x.health === 'current').length,
+        outdated: deduped.filter((x) => x.health === 'outdated').length,
+        empty: deduped.filter((x) => x.health === 'empty').length,
+        unreadable: deduped.filter((x) => x.health === 'unreadable').length,
+        backup: deduped.filter((x) => x.health === 'backup').length,
+      }
+    : undefined
+  return { home, items: deduped, currentResolved, ...(summary === undefined ? {} : { summary }) }
 }
 
 /**
@@ -96,8 +152,10 @@ export function buildLedgerCatalog(
 export function defaultLedgerOf(catalog: LedgerCatalog): string | undefined {
   const cur = catalog.items.find((x) => x.current)
   if (cur !== undefined) return cur.name
-  const firstWithData = catalog.items.find((x) => x.readable && x.units > 0)
+  const firstWithData = catalog.items.find((x) => x.state === 'data')
   if (firstWithData !== undefined) return firstWithData.name
+  const firstEmpty = catalog.items.find((x) => x.state === 'empty')
+  if (firstEmpty !== undefined) return firstEmpty.name
   return catalog.items[0]?.name
 }
 

@@ -64,6 +64,7 @@
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { procProcessAlive } from './effects-queue.ts'
+import { publishLiveChangeForFile } from './live-hub.ts'
 
 /** 运行态子目录名（账本目录**之内**、非账本）。 */
 export const ORCH_STATE_SUBDIR = 'runtime'
@@ -251,6 +252,8 @@ export function dispatchStateOf(w: {
   refusedAt?: number
   acceptedAt?: number
   sentBackAt?: number
+  /** 退回目标阶段（back-to-requirement / back-to-plan / back-to-task）；旧记录缺省。 */
+  returnTo?: string
   /** ⚠ 包 H：判决依据（本函数**只判"有没有那个时刻"**，⛔ 不拿依据决定档位）。 */
   basis?: string[]
 }): DispatchRecordState {
@@ -699,6 +702,20 @@ export interface PersistedWatch {
   round?: number
   /** 派了什么。 */
   task?: string
+  /**
+   * **账本里的真实任务号**（`TSK-…`）—— 运行态 → 账本投影的引用键。
+   * ⚠ 与 `task`（自由描述）分开：`task` 是回传给派活方看的一句话，`taskId` 才是账本引用。
+   * ⚠ 缺省 = 旧记录没记过任务号 ⇒ 不投影（⛔ 不拿描述文本猜一个）。
+   */
+  taskId?: string
+  /** Stable dispatch identity (task + target + attempt). Old records may omit it. */
+  dispatchId?: string
+  /** Ledger RUN created before delivery; recovery binds completion to this RUN. */
+  runId?: string
+  /** Requested target before any explicit user-approved replacement. */
+  requestedTarget?: string
+  /** True only when the caller explicitly approved a different target. */
+  targetChanged?: boolean
   /** 登记时间（毫秒）。 */
   at: number
   /** 是否已见它进入 `running`。 */
@@ -810,6 +827,8 @@ export interface PersistedWatch {
   clarifyAt?: number
   acceptedAt?: number
   sentBackAt?: number
+  /** 退回目标阶段；旧记录缺省。 */
+  returnTo?: string
   /**
    * **第一次见到目标进入运行态的时刻**（`D11`「已跑多久」的起点）。
    *
@@ -869,6 +888,9 @@ export interface PersistedWatch {
    */
   unclassifiedAt?: number
   unclassifiedWhy?: string
+  /** Completion observed without a matching dispatch/watch. Never a receipt. */
+  orphanCompletionAt?: number
+  orphanCompletionWhy?: string
 }
 
 /**
@@ -1249,6 +1271,11 @@ function asWatch(v: unknown): PersistedWatch | undefined {
   }
   if (typeof o.round === 'number' && Number.isFinite(o.round)) out.round = o.round
   if (typeof o.task === 'string') out.task = o.task
+  /**
+   * ⚠ `taskId` 的宽容读法与 `owner` 同一条纪律：字符串且非空才收；
+   *   缺字段 ⇒ 不填（= 旧记录）⇒ 投影侧按"没有真实任务号"处理，⛔ 不猜。
+   */
+  if (typeof o.taskId === 'string' && o.taskId !== '') out.taskId = o.taskId
   if (typeof o.error === 'string') out.error = o.error
   if (typeof o.wsRoot === 'string' && o.wsRoot !== '') out.wsRoot = o.wsRoot
   /**
@@ -1300,6 +1327,7 @@ function asWatch(v: unknown): PersistedWatch | undefined {
     if (typeof v === 'number' && Number.isFinite(v) && v > 0) out[k] = v
   }
   if (typeof o.undeliveredWhy === 'string' && o.undeliveredWhy !== '') out.undeliveredWhy = o.undeliveredWhy
+  if (typeof o.returnTo === 'string' && o.returnTo !== '') out.returnTo = o.returnTo
   /** ⚠ 包 H：四态的依据（同一条宽容纪律 —— 类型不对就**不填**，⛔ 不猜）。 */
   if (typeof o.refusedWhy === 'string' && o.refusedWhy !== '') out.refusedWhy = o.refusedWhy
   /** ⚠ 包 J 3.4：未归类那一档（同一条宽容纪律）。 */
@@ -1307,6 +1335,8 @@ function asWatch(v: unknown): PersistedWatch | undefined {
     out.unclassifiedAt = o.unclassifiedAt
   }
   if (typeof o.unclassifiedWhy === 'string' && o.unclassifiedWhy !== '') out.unclassifiedWhy = o.unclassifiedWhy
+  if (typeof o.orphanCompletionAt === 'number' && Number.isFinite(o.orphanCompletionAt) && o.orphanCompletionAt > 0) out.orphanCompletionAt = o.orphanCompletionAt
+  if (typeof o.orphanCompletionWhy === 'string' && o.orphanCompletionWhy !== '') out.orphanCompletionWhy = o.orphanCompletionWhy
   if (typeof o.clarifyWhy === 'string' && o.clarifyWhy !== '') out.clarifyWhy = o.clarifyWhy
   if (Array.isArray(o.basis)) {
     const b = o.basis.filter((x): x is string => typeof x === 'string' && x !== '')
@@ -1771,6 +1801,12 @@ export function writeOrchState(file: string, state: OrchStateFile): boolean {
   try {
     const back = readFileSync(file)
     if (!back.equals(Buffer.from(expect, 'utf8'))) return false
+    /**
+     * Publish only after the independent readback confirmed the bytes. The
+     * ledger root is the directory above `runtime/`; a path that does not have
+     * that shape simply has no attached viewer and the publish is a no-op.
+     */
+    publishLiveChangeForFile(file, ['runtime'])
     return true
   } catch {
     /** ⚠ 读不回来 = 没确认 ⇒ 与"写失败"同档，⛔ 不许当成功。 */
@@ -1958,10 +1994,6 @@ export function orchWriteRefusalOf(file: string): OrchWriteRefusal | undefined {
 }
 
 /** 全部登记（供读数面 / 机检一次性取；⚠ 返回副本，外部改不到内部表）。 */
-export function orchWriteRefusals(): Array<{ file: string } & OrchWriteRefusal> {
-  return [...writeRefusals.entries()].map(([file, r]) => ({ file, ...r }))
-}
-
 /**
  * 登记 / 清掉一次拒写（写入成功时清 —— 见 {@link OrchWriteRefusal} 的末条）。
  *
@@ -2816,16 +2848,31 @@ export function watchNeedsTimer(
   entries: readonly PersistedWatchEntry[],
   limit: number = WAKE_FALLBACK_LIMIT,
 ): boolean {
+  /**
+   * ── **S-15：只认 `awake`，⛔ 不再认「叫过之后回 waiting」** ─────────────────
+   *
+   * ⚠ 改前这里还有第②分支：
+   * ```
+   * if (e.state === 'waiting'
+   *   && (e.wakeLoggedAt !== undefined || e.wakeDeliveredAt !== undefined)
+   *   && (e.wakeAttempts ?? 0) < limit) return true
+   * ```
+   * 它服务的是**兜底重叫链**，而那条链在 `orchestrator.ts` 里被 `fallbackEligible = false`
+   * **硬编码关掉了**（`rearmWakeFallback` 因此**零可达调用**）。
+   *
+   * ⇒ 第②分支的**唯一效果**是：让 30 秒定时器在「已经不会再叫」的登记上**永远续排**，
+   *   每轮全账本扫盘 + 逐 owner 读会话日志 —— **纯烧 IO，且读数面还显示"在看护"**。
+   *
+   * ⚠ 删掉之后的语义（照实说）：**回 `waiting` 就不再武装** ⇒ 不再有定时器空转。
+   *   要重新盯，靠下一轮业务事件把它置回 `awake`（那才是真的在盯）。
+   * ⛔ 不要为了「保险」把第②分支加回来 —— 它保护的是一条不存在的链。
+   *
+   * @param limit - ⚠ **保留参数但不再使用**：调用方仍在传，且删掉它会动 API。
+   *   它原本只服务第②分支的「还没到顶」判断。**留一个显式标注，好过留一个静默未用参数。**
+   */
+  void limit
   for (const e of entries) {
-    /** ① 还在盯 ⇒ 要武装。 */
     if (e.state === 'awake') return true
-    /**
-     * ② 回等待了、但**这条路是"叫过之后回等待"**（两枚 `D16` 时刻在）且**还没到顶**
-     *    ⇒ 兜底还没走完 ⇒ 要武装（否则停了就再也起不来）。
-     */
-    if (e.state === 'waiting'
-      && (e.wakeLoggedAt !== undefined || e.wakeDeliveredAt !== undefined)
-      && (e.wakeAttempts ?? 0) < limit) return true
   }
   return false
 }
@@ -3286,7 +3333,3 @@ export function bindSession(
  *
  * @returns 绑定（没有 ⇒ `undefined` = **无归属**，⛔ 不许猜一个默认 owner）。
  */
-export function ownerOfSession(file: string, sessionId: string): PersistedSessionBinding | undefined {
-  if (typeof sessionId !== 'string' || sessionId === '') return undefined
-  return readOrchState(file).sessions.find((x) => x.sessionId === sessionId)
-}

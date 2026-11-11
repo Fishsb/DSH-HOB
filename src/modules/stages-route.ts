@@ -1,15 +1,16 @@
 /**
- * **五步汇总 · 只读路由**（2026-10-30 · P3 · `TASK-P3.md` §二①）。
+ * **阶段清单 · 只读路由**（2026-10-30 · P3 · `TASK-P3.md` §二①）。
  *
  * 把面板的 `POST /api/dsh-hob/stages` 接到 {@link handleStages}，数据源 = `ledger/units/` 的索引分片。
  * ⚠ **⛔ 不再读 `volumes/tasks/INDEX.md`**（那份散文账已不再是状态载体）。
  * ⚠ 分工与其它两条路由同构：归一/汇总在 `src/shared/stages-index.ts`（纯函数），本文件只做宿主接线。
  */
 
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { resolveLedgerRoot, ledgerRootWhy } from '../server/doc-read.ts'
 import { declaredLedgerHome } from './orchestrator.ts'
+import { resolveLedgerByName } from '../shared/ledger-catalog.ts'
 import {
   handleStages,
   STAGES_INDEX_REL,
@@ -41,7 +42,7 @@ export function installStagesRoute(ctx: Context): void {
       const conn = svcCtx.get?.('connection') ?? svcCtx.connection
       const fetch = conn?.fetch
       if (fetch === undefined || typeof fetch.register !== 'function') {
-        hostCtx.logger?.warn?.('[dsh-hob] 宿主 `connection.fetch` 不可用 ⇒ 五步汇总**只读路由未登记**')
+        hostCtx.logger?.warn?.('[dsh-hob] 宿主 `connection.fetch` 不可用 ⇒ 阶段清单**只读路由未登记**')
         return
       }
       /**
@@ -59,6 +60,13 @@ export function installStagesRoute(ctx: Context): void {
           return resolveLedgerRoot('', declaredLedgerHome(hostCtx), typeof cwd === 'string' ? cwd : undefined)
         } catch { return undefined }
       }
+      /**
+       * ⚠ **指定账本**（2026-11-07 · `R-020`）：面板切到别的账本时用。
+       *   走 {@link resolveLedgerByName} 的**白名单校验** —— ⛔ 不接受路径，
+       *   只接受 `ledgerHome` 下真实存在的单段目录名；`../` 与绝对路径一律拒。
+       */
+      const ledgerRootByName = (name: unknown): string | undefined =>
+        resolveLedgerByName(declaredLedgerHome(hostCtx), name, existsSync)
       const ledgerRootWhyOf = (sessionId: string): string => {
         try {
           const session = (() => {
@@ -81,9 +89,25 @@ export function installStagesRoute(ctx: Context): void {
           } catch {
             return json(400, { ok: false, reason: 'bad-request', message: '请求体不是 JSON' })
           }
+          /**
+           * ⚠ 指定了 `ledger` ⇒ 用它；**非法名字必须拒绝**（⛔ 静默回落到 cwd 派生，
+           *   那会让"切到不存在的账本"看起来像"切换成功"）。
+           */
+          const wanted = body?.ledger
+          let byName: string | undefined
+          if (wanted !== undefined && wanted !== null && wanted !== '') {
+            byName = ledgerRootByName(wanted)
+            if (byName === undefined) {
+              return json(400, {
+                ok: false,
+                reason: 'ledger-not-allowed',
+                message: `账本名不在白名单内或不存在：${JSON.stringify(String(wanted))}（⛔ 不接受路径）`,
+              })
+            }
+          }
           const out: StagesResponse = handleStages(
             {
-              workRootOf: ledgerRootOf,
+              workRootOf: byName === undefined ? ledgerRootOf : () => byName,
               workRootWhyOf: ledgerRootWhyOf,
               /** ⚠ 状态源 = `ledger/units/`；这里给出稳定入口 `index.toml`，分片另行列举。 */
               indexPathOf: (ledgerRoot: string) => `${ledgerRoot}/${STAGES_INDEX_REL}`,
@@ -104,9 +128,9 @@ export function installStagesRoute(ctx: Context): void {
         },
       })
       ctx.effect(() => () => { try { disposer?.() } catch { /* 忽略 */ } }, 'dsh-hob: stages read route')
-      hostCtx.logger?.info?.(`[dsh-hob] 五步汇总只读路由已登记：POST ${STAGES_ROUTE_PATH}`)
+      hostCtx.logger?.info?.(`[dsh-hob] 阶段清单只读路由已登记：POST ${STAGES_ROUTE_PATH}`)
     } catch (e) {
-      hostCtx.logger?.warn?.(`[dsh-hob] 五步汇总只读路由登记失败：${String((e as Error)?.message ?? e)}`)
+      hostCtx.logger?.warn?.(`[dsh-hob] 阶段清单只读路由登记失败：${String((e as Error)?.message ?? e)}`)
     }
   })
 }

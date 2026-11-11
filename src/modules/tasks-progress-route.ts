@@ -1,7 +1,7 @@
 /**
  * **LEGACY · 五步主线进度表只读路由**（2026-10-29；2026-11-03 标为兼容面）。
  *
- * ⚠ 权威五步接口已迁移到 `POST /api/dsh-hob/stages`
+ * ⚠ 权威阶段接口已迁移到 `POST /api/dsh-hob/stages`
  *   （数据源 `ledger/units/` 索引分片）。本路由仅保留读取旧
  *   `volumes/tasks/INDEX.md` 的兼容能力，⛔ 不再新增消费者。
  *

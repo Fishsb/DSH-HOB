@@ -44,7 +44,7 @@ export const PRESET_YML = join(PRESET_DIR, 'preset-dsh-hob.patch.yml')
  *   · `persona.md` 字符数 ≤ `MODEL_FACE_CHAR_BUDGET`。
  * ⛔ 不许用 `Date.now()` / mtime 自动生成 —— 那会让同输入不再确定。
  */
-export const MODEL_FACE_VERSION = 2
+export const MODEL_FACE_VERSION = 9
 
 /**
  * 模型面字符预算（按 Unicode code point 计，不是字节）。
@@ -62,8 +62,8 @@ export function modelFaceChars(text) {
   return [...String(text)].length
 }
 
-/** 三类 spec 文件（⚠ 顺序固定 = 渲染顺序）。 */
-export const SPEC_FILES = ['intake.md', 'reply.md', 'handover.md']
+/** 四类 spec 文件（⚠ 顺序固定 = 渲染顺序）。 */
+export const SPEC_FILES = ['intake.md', 'reply.md', 'handover.md', 'risk-policy.md']
 
 /**
  * **附注卷**（2026-10-30 P9）：把 `prefix` 里"实测踩过的坑"按主题抽成四卷，
@@ -217,7 +217,7 @@ export function renderPersona(wf, specs = {}) {
   L.push('> ⚠ 本文件是**生成物**：改规则请改同目录的 `workflow.toml` 或 `spec/*.md`，')
   L.push('> 然后重跑生成器。⚠ 手改本文件由 `check:workflow` 的 **F2** 咬住。')
   L.push('')
-  L.push('## 五步（顺序固定，⛔ 不许增删改序）')
+  L.push('## Pipeline v3 阶段（顺序固定，⛔ 不许增删改序）')
   L.push('')
   L.push('| # | 步 | 谁定 | 判据 | 角色 |')
   L.push('|---|---|---|---|---|')
@@ -226,8 +226,34 @@ export function renderPersona(wf, specs = {}) {
     L.push(`| ${s.order} | ${s.name}（\`${s.id}\`） | ${s.who} | ${s.judged_by} | ${s.actor_role} |`)
   }
   L.push('')
-  L.push('⚠ **第 4 步与第 5 步不是同一个人**（`actor_role` 一为 `executor`、一为 `acceptor`）。')
+  /**
+   * ⚠ **T-22 更正**：原文写「一为 `executor`、一为 `acceptor`」—— **括号里的理由错**。
+   *   第 5 步是**技术验证**，其 `actor_role` 是 `verifier`；`acceptor` 是**第 6 步**产品验收。
+   *   结论「不是同一个人」仍成立（F1 核的是 `s4.actor_role !== s5.actor_role` ⇒ 机检不报），
+   *   所以这条错误一直没被发现。
+   *
+   * ⚠ **为什么必须改**：这句话会**原样进模型上下文**。模型若照它推理「第 5 步是验收人」，
+   *   会把「技术验证」当成「产品验收」—— 恰好踩宪法第 8 条的反面（通过测试 ≠ 产品接受）。
+   * ⛔ 不要在这里改成动态取值：步骤名与角色名的**唯一来源**是 `workflow.toml` 的 step 表，
+   *   而本函数生成的是**人读的说明文字**；写死角色名可以，写错不行。
+   */
+  L.push('⚠ **第 4 步与第 5 步不是同一个人**（`actor_role` 一为 `executor`、一为 `verifier`；'
+    + '第 6 步才是 `acceptor`）。')
   L.push('')
+  const controls = wf.stage_control ?? []
+  if (controls.length > 0) {
+    L.push('## 阶段内部控制（前两阶段对齐，后三阶段自治，阻塞回流）')
+    L.push('')
+    L.push('| 阶段 | 用户管什么 | Hob 管什么 | 何时检索 | 退出判据 | 回流到 |')
+    L.push('|---|---|---|---|---|---|')
+    for (const c of controls) {
+      L.push(`| ${c.name}（\`${c.id}\`） | ${c.user_owned} | ${c.hob_owned} | ${c.research} | ${c.exit} | ${c.return_to} |`)
+    }
+    L.push('')
+    L.push('⚠ **后三阶段出问题，默认先回查前两阶段**：需求缺口回 1、方案缺口回 2、任务书缺口回 3、实现缺陷留 4；环境问题单独记录。')
+    L.push('⚠ **不得用“先假设一下”绕过产品歧义**；假设必须写成 `pending/confirmed/rejected: 正文`，pending 不得进入方案阶段。')
+    L.push('')
+  }
   /**
    * ⚠⚠ **2026-10-30 P10：七种输入不再单独成节** —— 它们**并回下面「附注」里各自的原文节**
    *   （`**Test**` / `**First move**` 来自 `workflow.toml`，例子与坑来自附注卷），
@@ -291,7 +317,22 @@ export function renderPersona(wf, specs = {}) {
   L.push('| 输入判定 | `spec/intake.md` |')
   L.push('| 回复形态 | `spec/reply.md` |')
   L.push('| 交付 / 预算 / 边界 | `spec/handover.md` |')
+  L.push('| 风险评定 / 评审 / G6 档位 | `spec/risk-policy.md` |')
   L.push('| 不可协商条款（带机检） | `CONSTITUTION.md` |')
+  L.push('')
+  /**
+   * Pipeline v3 is a runtime contract, not merely a note inside `spec/reply.md`.
+   * Keep the four moving facts visible in the persona itself so every reply and
+   * every dispatch decision reads the same stage authority.
+   */
+  L.push('## Pipeline v3（唯一当前阶段）')
+  L.push('')
+  L.push('- 当前阶段、用户闸门与责任方只读 Pipeline 视图；⛔ 不从全局账本另算。')
+  L.push('- G1：需求内容完整不等于用户批准；必须点名需求与修订，由用户明确确认。')
+  L.push('- G2：方案内容完整不等于用户批准；必须点名方案与修订，并选当前候选路径。')
+  L.push('- 只写「继续 / 可以 / 好的」不算批准；内容变化要递增修订并重新确认。')
+  L.push('- 第 1、2 步没有明确用户回执时，⛔ 不建任务、⛔ 不派活。')
+  L.push('- 旧条目只读；新需求链登记 Pipeline v3，旧批准不回填。')
   L.push('')
   L.push('## 附注（原文逐节归并 · 判据 F5 咬住来源）')
   L.push('')
@@ -347,7 +388,7 @@ export function renderPersona(wf, specs = {}) {
        * ⚠ 只留 `id` + 一句指针（⛔ 不复制 `name`/`when` —— 那些正是本轮砍掉的"重复措辞"）。
        *   省字节与"id 不能丢"两个要求在这里同时满足。
        */
-      L.push('> 三种回复形态的机读 `id`（`[[reply]]` 与之对应，措辞见 `workflow.toml`）：'
+  L.push(`> ${(wf.reply ?? []).length} 种回复形态的机读 \`id\`（\`[[reply]]\` 与之对应，措辞见 \`workflow.toml\`）：`
         + (wf.reply ?? []).map((r) => `\`${r.id}\``).join(' · ') + '。')
       L.push('')
     }

@@ -46,7 +46,17 @@ export interface DispatchLike {
     target: string,
     message: string,
     opts: { self?: string | undefined; round?: number; task?: string; mode?: 'followup' | 'steer' },
-  ): Promise<{ ok: boolean; sessionId?: string; messageId?: string; reason?: string; watching?: boolean }>
+  ): Promise<{
+    ok: boolean
+    sessionId?: string
+    messageId?: string
+    reason?: string
+    message?: string
+    needsUser?: boolean
+    configuredPreset?: string
+    targetPreset?: string
+    watching?: boolean
+  }>
   status(): { handoffs: PersistedHandoff[] }
 }
 
@@ -84,6 +94,10 @@ export interface HandoffDeliveryResult {
   dispatched: boolean
   /** 投递被**拒绝/失败**时的原因（给人/模型看）。 */
   dispatchReason?: string
+  /** 派活预设校验要求先问用户（⚠ 不是投递失败）。 */
+  needsUser?: boolean
+  configuredPreset?: string
+  targetPreset?: string
   /** 投递后（或记账后）的**待投递**记录快照。 */
   handoffs: PersistedHandoff[]
   /**
@@ -202,6 +216,9 @@ export async function deliverHandoff(
   // ── 2：投递（**只有给了 dispatchTo 且编排服务在**才投）──────────────────
   let dispatched = false
   let dispatchReason: string | undefined
+  let needsUser: boolean | undefined
+  let configuredPreset: string | undefined
+  let targetPreset: string | undefined
   if (typeof input.dispatchTo === 'string' && input.dispatchTo !== '') {
     if (input.orch === undefined) {
       dispatchReason = 'orchestration unavailable; the file was written but nothing was delivered.'
@@ -211,7 +228,12 @@ export async function deliverHandoff(
           self: input.self,
         })
         dispatched = r.ok === true
-        if (!r.ok) dispatchReason = r.reason ?? 'delivery failed'
+        if (!r.ok) {
+          dispatchReason = r.message ?? r.reason ?? 'delivery failed'
+          if (r.needsUser === true) needsUser = true
+          if (typeof r.configuredPreset === 'string') configuredPreset = r.configuredPreset
+          if (typeof r.targetPreset === 'string') targetPreset = r.targetPreset
+        }
       } catch (e) {
         dispatchReason = `投递时出错：${String((e as Error)?.message ?? e)}`
       }
@@ -249,6 +271,9 @@ export async function deliverHandoff(
     manual,
     dispatched,
     ...(dispatchReason === undefined ? {} : { dispatchReason }),
+    ...(needsUser === true ? { needsUser: true } : {}),
+    ...(configuredPreset === undefined ? {} : { configuredPreset }),
+    ...(targetPreset === undefined ? {} : { targetPreset }),
     handoffs: reading.handoffs,
     reachability: reading.reachability,
     ...(note === undefined ? {} : { note }),

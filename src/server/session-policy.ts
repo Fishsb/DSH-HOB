@@ -191,7 +191,27 @@ export interface PolicyResolution {
     | 'unknown-legacy'
   /** 人读原因（`stored` / `non-hob` 时也可能非空，用于说明没写记录的理由）。 */
   reason: string
-  /** 是否允许读工作区文件。⚠ 只有 `workspace` 档为 `true`；其余一律 `false`。 */
+  /**
+   * 是否允许读工作区文件。⚠ 只有 `workspace` 档为 `true`；其余一律 `false`。
+   *
+   * ⚠⚠ **仅供显示** —— ⛔ 本字段不参与任何判定（O-12）。
+   *
+   * ⚠ 实测：全仓**零条件消费**（没有一处 `if (x.canReadWorkspace)` / `&&` / `||`），
+   *   客户端也零引用。它被计算、被赋值、被带出去，然后**没有人看**。
+   *
+   * ⚠ **为什么标「仅供显示」而不是删掉**：
+   *   · 它是**读面**的唯一机器可读读数 —— 面板/诊断要展示「这个会话能不能读工作区」时，
+   *     应该读它，⛔ 不是各自去重算 `level === 'workspace'`（那会造出第二份口径）；
+   *   · 删掉它，下一个人要展示这个信息时**只能自己推**，而推导规则藏在
+   *     `canRead(level)` 里（含"合法档"校验）—— 那正是本仓反复记的「同一事实两份来源」。
+   *
+   * ⛔ **不要把它接进任何门禁判定** —— 真正的读面门禁在
+   *   `session-policy-service.ts` 的读工具 `execute` 里按 `level` 现判，
+   *   两者若都判，迟早分叉。
+   *
+   * ⚠ 与 `mayProceed` **是两根独立的轴**（见下方那段注释）：
+   *   读不到工作区**不代表**不能推进 —— `ledger` 档的旧会话读档=最低，但仍可按原 `multi` 推进。
+   */
   canReadWorkspace: boolean
   /**
    * ⚠⚠ **工作方式是否已经落盘**（2026-10-22 第 4 轮新增，治的是"先给值再偷偷改"）。
@@ -393,6 +413,37 @@ export function writePolicyStore(file: string, state: SessionPolicyFile): { ok: 
    * ⚠ **回读是第二道，不是替代**：写/rename 抛错仍走原 `catch`（原因文案一字未改）；
    *   回读不符走**新的**可读原因 —— 两种成因**分开说**（本仓纪律）。
    */
+  /**
+   * ⚠⚠ **T-15：先把 `.gitignore` 写进去，再写策略正文**（2026-11-10）。
+   *
+   * ── 病（改前）──────────────────────────────────────────────────────
+   *   `ensurePolicyDirIgnored()` 全仓 **6 处**调用（本文件 3 处 + `session-policy-service.ts` 3 处），
+   *   **没有一处接住返回值**，而它的注释却写着「返回值有**三处**调用方拿它决定"要不要告警"」
+   *   —— **注释与实现相反**。同族函数 `ensureRuntimeIgnored` 在别处是**被接住并告警**的。
+   *   ⇒ `runtime/.gitignore` 写失败 ⇒ `session-policy.json`（含 sessionId）可能被 git 收进历史，
+   *     且**没有任何告警**；注释还宣称这件事已被处理 ⇒ **下一个人不会去查**。
+   *
+   * ── 为什么收进 `writePolicyStore` 而不是在 6 处各加一个 `if` ──────────────
+   *   6 处 `ensurePolicyDirIgnored` 与 6 处 `writePolicyStore` **一一对应且紧邻**
+   *   （`:464→465` / `:1121→1122` / `:1216→1217`，service 侧同理）。
+   *   ⇒ 收进这里 = **一处守住 6 条写路径**，且天然复用已有的 `ok`/`reason` 通道，
+   *     ⛔ 不需要在 `session-policy.ts` 里凭空加一套日志设施（本文件没有任何 logger）。
+   *
+   * ── 语义：.gitignore 写失败算不算「策略写失败」？────────────────────
+   *   **算。** 理由：本函数返回的是「这次写入是否**安全地**落盘」。
+   *   策略文件里有 sessionId，没有 `.gitignore` 护着就可能进 git 历史 ——
+   *   那不是"写成功但有瑕疵"，而是**这次写入不安全**。
+   *   ⚠ 且必须**先写 .gitignore 再写正文**：反过来的话，正文已落盘、.gitignore 没落，
+   *     中间那一瞬策略文件是裸露的（哪怕只持续几毫秒，也够一个并发 git add 抓到）。
+   */
+  const ignored = ensurePolicyDirIgnored(dirname(file))
+  if (!ignored) {
+    return {
+      ok: false,
+      reason: '策略目录的 .gitignore 未能写入并回读确认 ⇒ 拒绝落盘策略正文'
+        + '（策略文件含 sessionId，无 .gitignore 保护可能被 git 收进历史）',
+    }
+  }
   const expect = JSON.stringify(state, null, 2)
   try {
     mkdirSync(dirname(file), { recursive: true })
@@ -461,7 +512,6 @@ export function ensurePolicyStoreEpoch(
     migrationEpoch: epoch,
     sessions: { ...reading.file.sessions },
   }
-  ensurePolicyDirIgnored(dirname(file))
   const w = writePolicyStore(file, state)
   if (!w.ok) return { ok: false, epoch, wrote: false, reason: w.reason }
   /**
@@ -487,8 +537,15 @@ export function ensurePolicyDirIgnored(dir: string): boolean {
     return false
   }
   /**
-   * ⚠⚠ **D12 回读（2026-10-27 · 包 X）**：返回值有**三处**调用方拿它决定"要不要告警"
-   *   （`session-policy-service.ts` 三处）⇒ 写没写进去必须当场核，⛔ 不许"调过写函数就算成"。
+   * ⚠⚠ **D12 回读（2026-10-27 · 包 X）**：写没写进去必须当场核，
+   *   ⛔ 不许"调过写函数就算成"（下面这行回读逐字节比 `expect`，不是"文件在就行"）。
+   *
+   * ⚠ **T-15 更正（2026-11-10）**：本注释原文写的是
+   *   「返回值有**三处**调用方拿它决定"要不要告警"（`session-policy-service.ts` 三处）」
+   *   —— **与实现相反**：全仓 6 处调用**没有一处**接住返回值。
+   *   现在不再由 6 处各接一次，而是**收进 `writePolicyStore` 内部**
+   *   （见该函数开头：`const ignored = ensurePolicyDirIgnored(...)`，失败即拒写）。
+   *   ⇒ 本函数仍返回 `boolean`，但**唯一调用方是 `writePolicyStore`**，它接住了。
    */
   try {
     return readFileSync(target, 'utf8') === expect
@@ -1118,7 +1175,6 @@ export function ensureLegacyMigrated(
     migrated.push(s.sessionId)
   }
   if (migrated.length === 0) return { migrated, reason: reading.reachability === 'absent' ? '尚无记录，且没有可迁移的旧会话' : '' }
-  ensurePolicyDirIgnored(dirname(file))
   const w = writePolicyStore(file, state)
   if (!w.ok) return { migrated: [], reason: w.reason }
   return { migrated, reason: '' }
@@ -1213,7 +1269,6 @@ export function ensureLegacyMigratedByFile(
       outcome.migrated.push(s.sessionId)
     }
     if (outcome.migrated.length === 0) { perFile.push(outcome); continue }
-    ensurePolicyDirIgnored(dirname(file))
     const w = writePolicyStore(file, state)
     if (!w.ok) {
       outcome.ok = false
@@ -1272,8 +1327,3 @@ export function createdAtOf(session: any): number | undefined {
   }
 }
 
-/** 文件是否存在（⚠ 只读；给诊断用，⛔ 不触发创建）。 */
-export function policyFileExists(file: string | undefined): boolean {
-  if (file === undefined) return false
-  try { return statSync(file).isFile() } catch { return false }
-}

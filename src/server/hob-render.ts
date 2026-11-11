@@ -378,7 +378,19 @@ function decideOne(
       return { reason: 'kind-mismatch', note: `目标是**文件**（\`${target}\`），而 \`count\` 取的是**目录的条目数** ⇒ 不渲染` }
     }
     try {
-      return { value: readdirSync(abs).length }
+      /**
+       * ── **O-06：`count` 不把符号链接算进条目数** ─────────────────────────────
+       *
+       * ⚠ 改前是 `readdirSync(abs).length` —— **软链也被算一条**。
+       *   而软链在本仓是**逃逸风险**（`hob-write` 专门有 `findSymlinkOnPath` 挡它），
+       *   把它算进「这个目录有几条」会让读数**虚高**，而读者无从分辨。
+       *
+       * ⚠ 用 `withFileTypes` + `isSymbolicLink()`：**只数真实条目**。
+       *   ⛔ 不要改用 `lstatSync` 逐个判 —— 那是 N 次系统调用，`withFileTypes` 一次就够。
+       *   ⚠ `isSymbolicLink()` 来自 dirent 的 **lstat 语义**（⛔ 不是 stat），
+       *     所以它报的是「这个目录项本身是不是链接」，正是本条要的。
+       */
+      return { value: readdirSync(abs, { withFileTypes: true }).filter((e) => !e.isSymbolicLink()).length }
     } catch {
       return { reason: 'target-missing', note: `目录 \`${target}\` 读不到（权限？）⇒ 不渲染` }
     }

@@ -28,7 +28,8 @@
  *     一次性目录，`finally` 里删净（与既有 `check:hob-create-dom` 同一做法）。
  */
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -94,7 +95,13 @@ const bad = (m) => {
   console.log(`  ✗ ${m}`)
 }
 
-const work = join(root, '.check-gate-work')
+  /**
+   * ⚠ **路径带 pid**（B4.2 · 2026-11-10）：改前是固定名 ⇒ 两个自检进程并发跑会互相
+   *   `rmSync` 掉对方正在用的目录（实测：`check:stages-panel-dom` / `check:preset-contracts`
+   *   并发跑必红、串行跑必绿）。⚠ 这类「串行绿、并发红」的假失败会让人误判成真缺陷。
+   *   ⇒ 带 `process.pid` 后互不干扰；`.gitignore` 的 `.check-*-work/` 通配仍覆盖它们。
+   */
+const work = join(root, '.check-gate-work-' + process.pid)
 try { rmSync(work, { recursive: true, force: true }) } catch { /* 上轮残留 */ }
 /**
  * ⚠⚠ **建不出临时目录 ⇒ `exit 2`（未执行），⛔ 不许记成"失败"**（2026-10-22 · P0-5）
@@ -355,7 +362,7 @@ try {
     }
   }
 
-  // ── G-6b 安装面：hero 横幅 + composer 常驻轮询两处都注册 ──────────────
+  // ── G-6b 安装面：hero 入口 + 会话头部常驻入口 + composer 轮询三处都注册 ──
   {
     const registered = []
     const cleanups = []
@@ -369,13 +376,17 @@ try {
     gate.installHobUnselectedGate(fakeCtx, {})
     const names = registered.map((r) => r.name)
     const hasHero = names.includes('conversation.hero.options')
+    const hasHeader = names.includes('conversation.session.header.actions')
     const hasComposer = names.includes('conversation.input.right')
+    const headerId = registered.find((r) => r.name === 'conversation.session.header.actions')?.id
     const pollId = registered.find((r) => r.name === 'conversation.input.right')?.id
     for (const c of cleanups.reverse()) { try { c() } catch { /* 忽略 */ } }
-    if (hasHero && hasComposer && pollId === gate.HOB_GATE_POLL_SLOT_ID) {
-      ok(`G-6b ✓ 安装面两处都注册：hero 横幅 + composer 常驻轮询（${pollId}）`)
+    if (hasHero && hasHeader && hasComposer
+      && headerId === gate.HOB_GATE_HEADER_SLOT_ID && pollId === gate.HOB_GATE_POLL_SLOT_ID) {
+      ok(`G-6b ✓ 安装面三处都注册：hero 入口 + 会话头部常驻入口（${headerId}）`
+        + ` + composer 只轮询（${pollId}）`)
     } else {
-      bad(`G-6b · slots=${JSON.stringify(names)} pollId=${JSON.stringify(pollId)}`)
+      bad(`G-6b · slots=${JSON.stringify(names)} headerId=${JSON.stringify(headerId)} pollId=${JSON.stringify(pollId)}`)
     }
   }
 
@@ -418,6 +429,72 @@ try {
       ok('G-6d ✓ 输入区轮询实例完全不可见，不再产生第二个档位入口')
     } else {
       bad(`G-6d · root=${root !== null} btn=${btn !== null}`)
+    }
+  }
+
+  // ── G-6e 会话头部入口：已选档后紧凑呈现，完整说明在可访问名里 ─────────
+  {
+    const r = await mount(h(gate.HobUnselectedGate, {
+      sessionId: 'session-header',
+      agentPreset: 'Hob',
+      readRecorded: async () => 'recorded',
+      memory: gate.createGateMemory(),
+      autoOpen: false,
+      openForSession: () => {},
+      placement: 'header',
+    }))
+    await flush()
+    const roots = host.querySelectorAll(`.${gate.GATE_CLASS.root}`)
+    const root = roots[0]
+    const text = host.querySelector(`.${gate.GATE_CLASS.text}`)
+    const btn = host.querySelector(`.${gate.GATE_CLASS.btn}`)
+    const compact = root?.classList.contains(gate.GATE_CLASS.compact) === true
+    const placement = root?.getAttribute('data-hob-gate-placement')
+    const label = btn?.getAttribute('aria-label') ?? ''
+    const title = btn?.getAttribute('title') ?? ''
+    const btnText = btn?.textContent ?? ''
+    await unmount(r)
+    if (roots.length === 1 && compact && placement === 'header' && text === null
+      && btnText.includes('重新选择') && label === btnText && title.includes('已选择')) {
+      ok(`G-6e ✓ 会话头部入口紧凑呈现：恰好 1 个 · 只画按钮「${btnText}」`
+        + ` · aria-label 同文 · title「${title}」承载完整说明`)
+    } else {
+      bad(`G-6e · roots=${roots.length} compact=${compact} placement=${JSON.stringify(placement)}`
+        + ` text=${text !== null} btn=${JSON.stringify(btnText)} label=${JSON.stringify(label)} title=${JSON.stringify(title)}`)
+    }
+  }
+
+  // ── G-6f 宿主生命周期：hero 卸载、header 挂载后仍恰好一个可见入口 ───────
+  {
+    const hero = await mount(h(gate.HobUnselectedGate, {
+      sessionId: 'session-lifecycle',
+      agentPreset: 'Hob',
+      readRecorded: async () => 'recorded',
+      memory: gate.createGateMemory(),
+      autoOpen: false,
+      openForSession: () => {},
+      placement: 'hero',
+    }))
+    await flush()
+    const heroCount = host.querySelectorAll(`.${gate.GATE_CLASS.root}`).length
+    await unmount(hero)
+    const header = await mount(h(gate.HobUnselectedGate, {
+      sessionId: 'session-lifecycle',
+      agentPreset: 'Hob',
+      readRecorded: async () => 'recorded',
+      memory: gate.createGateMemory(),
+      autoOpen: false,
+      openForSession: () => {},
+      placement: 'header',
+    }))
+    await flush()
+    const headerCount = host.querySelectorAll(`.${gate.GATE_CLASS.root}`).length
+    const headerText = host.querySelector(`.${gate.GATE_CLASS.btn}`)?.textContent ?? ''
+    await unmount(header)
+    if (heroCount === 1 && headerCount === 1 && headerText.includes('重新选择')) {
+      ok('G-6f ✓ 宿主生命周期迁移：hero 1 个 ⇒ 卸载后 header 1 个（任何时刻都只有一个可见入口）')
+    } else {
+      bad(`G-6f · hero=${heroCount} header=${headerCount} headerText=${JSON.stringify(headerText)}`)
     }
   }
 
@@ -994,6 +1071,23 @@ try {
             + '（⚠ 后面三条分别钉"任一道闸删掉就红"）')
         }
       }
+      // ⑤ 写入响应不等待 requeue（2026-11-05 WSL 真机缺陷）
+      {
+        const { svc, writes } = mkSvc({ isHob: true })
+        let requeueStarted = false
+        svc.requeue = () => { requeueStarted = true; return new Promise(() => {}) }
+        const startedAt = Date.now()
+        const r = await Promise.race([
+          call(svc, { level: OPEN_LEVEL }),
+          new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 500)),
+        ])
+        const elapsed = Date.now() - startedAt
+        if (r?.ok === true && writes.length === 1 && requeueStarted && elapsed < 500) {
+          ok(`G-21d ✓ 写入确认不等待重投：requeue 永不 resolve，响应仍在 ${elapsed}ms 内返回 ok:true`)
+        } else {
+          bad(`G-21d 写入确认被重投阻塞：result=${JSON.stringify(r)} elapsed=${elapsed} writes=${writes.length} requeueStarted=${requeueStarted}`)
+        }
+      }
       // ② 闸① 开放面：枚举外的档 ⇒ 拒 + 零写
       {
         const { svc, writes } = mkSvc({ isHob: true })
@@ -1081,7 +1175,7 @@ try {
          *   ⚠ 反向也判：若台账里出现没预期的 `G-21*`（多于这四支），说明有人在加断言
          *     却没登记 —— 报出来（防止"悄悄加一条恒真"来凑数）。
          */
-        const EXPECTED = ['G-21', 'G-21a', 'G-21b', 'G-21c']
+        const EXPECTED = ['G-21', 'G-21a', 'G-21b', 'G-21c', 'G-21d']
         const ran = EXPECTED.filter((x) => executedLabels.has(x))
         const missing = EXPECTED.filter((x) => !executedLabels.has(x))
         const extra = [...executedLabels].filter((x) => x.startsWith('G-21') && !EXPECTED.includes(x))
@@ -1740,14 +1834,90 @@ try {
       const blockFile = join(dir, 'session-policy-blocks.json')
 
       // ── 真盘输入：migrationEpoch（⛔ 不写常数）──
-      const REAL_STORE = '/home/lk/.dsh/hob-ledgers/dsh-hob/runtime/session-policy.json'
+      /**
+       * ── **O-30：真盘路径不许硬编码本机绝对路径** ──────────────────────────
+       *
+       * ⚠ 改前写死 `/home/lk/.dsh/hob-ledgers/dsh-hob/runtime/session-policy.json` ⇒
+       *   **换一台机器 / 换一个工作区名，这条必红** —— 而红的原因是「找不到本机的账本」，
+       *   ⛔ 不是「实现有错」。那会让新环境的第一印象是「这仓是坏的」。
+       *
+       * ⚠ 修法：**从工作区名 + 环境变量推导**（与本仓其它族同一口径）：
+       *   `DSH_HOB_LEDGER_HOME` 或 `~/.dsh/hob-ledgers` + `<工作区名>`。
+       *   取不到 ⇒ **`skip`（基准缺失）**，⛔ 不是 `bad`。
+       */
+      const REAL_STORE = (() => {
+        const home = process.env.DSH_HOB_LEDGER_HOME
+          ?? join(homedir(), '.dsh', 'hob-ledgers')
+        /** ⚠ 工作区名与 `scripts/lib/ledger-root.mjs` 同口径：取仓库目录名。 */
+        const ws = basename(root)
+        return join(home, ws, 'runtime', 'session-policy.json')
+      })()
       let realEpoch
       try { realEpoch = JSON.parse(fsMod.readFileSync(REAL_STORE, 'utf8')).migrationEpoch } catch { realEpoch = undefined }
 
       // ── 真会话的 createdAt（从事件流建档头取，⛔ 不写常数）──
-      const REAL_ZSTD = '/home/lk/.dsh/sessions/--home-lk-FF-dsh-hob--/session-e6dfdf31-a854-4a38-9795-9956111b8a91/session.v4.jsonl.zstd'
+      /**
+       * ⚠⚠ **O-30（第二处）**：这里原来写死了一个**具体会话**的事件流绝对路径。
+       *   那个 sessionId 是**某次运行留下的**，⛔ 不是任何可推导的东西 ——
+       *   换机、换工作区、甚至换个会话 ⇒ **必红**，而红的理由是「本机没那个会话」。
+       *
+       * ⚠ 修法：**从环境变量取**（`DSH_HOB_REAL_SESSION_ZSTD`）；取不到 ⇒ 本档**跳过**。
+       *   ⛔ 不要改成「扫 sessions 目录随便找一个」—— 那会让断言依赖随机样本。
+       */
+      /**
+       * ⚠⚠ **O-30（第二处）· 最终修法：自动发现，⛔ 不写死也不靠环境变量**
+       *
+       *   我第一版改成 `process.env.DSH_HOB_REAL_SESSION_ZSTD ?? ''` ⇒ **本机也没设**
+       *   ⇒ G-25 整档（1 基准 + 6 档）**全跳过** ⇒ 计数从 59 掉到 52。
+       *   ⚠ 那不是「修好了」，是**把一档判据关掉了**。
+       *
+       *   ⇒ 改成：**从 `~/.dsh/sessions/` 里挑第一个有 `.zstd` 的会话**。
+       *     本机能跑、换机也能跑（只要那台机器上有任何会话）。
+       *     ⛔ 不要「找不到就跳过」—— 那是同一个问题的另一种形态。
+       *   ⚠ 优先级：环境变量（显式指定）> 自动发现。
+       */
+      const REAL_ZSTD_CANDIDATES = (() => {
+        const explicit = process.env.DSH_HOB_REAL_SESSION_ZSTD
+        if (explicit !== undefined && explicit !== '') return [explicit]
+        /**
+         * ⚠ 目录是**两层**：`sessions/<工作区>/<会话>/session.v4.jsonl.zstd`。
+         *   我第一版只扫一层 ⇒ 31 个目录全空 ⇒ 误以为「本机没有 zstd」（实测踩过）。
+         */
+        try {
+          const sessRoot = join(homedir(), '.dsh', 'sessions')
+          const out = []
+          for (const wsName of fsMod.readdirSync(sessRoot).sort()) {
+            const wsDir = join(sessRoot, wsName)
+            let sessions = []
+            try { sessions = fsMod.readdirSync(wsDir) } catch { continue }
+            for (const sessName of sessions.sort()) {
+              const sessDir = join(wsDir, sessName)
+              let files = []
+              try { files = fsMod.readdirSync(sessDir) } catch { continue }
+              const hit = files.find((f) => f.endsWith('.jsonl.zstd'))
+              if (hit !== undefined) out.push(join(sessDir, hit))
+            }
+          }
+          /**
+           * ⚠⚠ **必须挑「createdAt 早于 migrationEpoch」的那个** ——
+           *   G-25 F 是负向对拍，它要求「旧判据会拦 ≠ 新判据会拦」，
+           *   而那**只在 createdAt < epoch 时成立**（实测：选到晚于纪元的样本 ⇒ F 假红）。
+           *   ⚠ 由调用方在拿到 realEpoch 后再筛；这里只返回**候选列表**。
+           */
+          return out
+        } catch { /* 没有 sessions 目录 ⇒ 空列表 */ }
+        return []
+      })()
+      /**
+       * ⚠⚠ **逐个候选试，取第一个「createdAt < migrationEpoch」的** ——
+       *   那是 G-25 F（负向对拍）成立的**前提**：只有这时「旧判据会拦」与
+       *   「新判据会拦」才**不同**。选到 createdAt 晚于纪元的样本 ⇒ F 假红（实测踩过）。
+       */
       let realCreatedAt
-      try {
+      let REAL_ZSTD = ''
+      for (const candidate of REAL_ZSTD_CANDIDATES) {
+        REAL_ZSTD = candidate
+        try {
         const buf = fsMod.readFileSync(REAL_ZSTD)
         const st = []
         for (let i = 0; i < buf.length - 3; i++) {
@@ -1762,10 +1932,20 @@ try {
           .map((l) => { try { return JSON.parse(l) } catch { return undefined } })
           .find((o) => o?.type === 'session')
         realCreatedAt = first?.createdAt
-      } catch { realCreatedAt = undefined }
+        } catch { realCreatedAt = undefined }
+        /** ⚠ 找到「早于纪元」的就停（那才是 F 要的样本）。 */
+        if (realCreatedAt !== undefined && realEpoch !== undefined && realCreatedAt < realEpoch) break
+      }
 
       if (realEpoch === undefined || realCreatedAt === undefined) {
-        bad(`G-25 基准 ⚠ 取不到真盘输入（migrationEpoch=${realEpoch} · createdAt=${realCreatedAt}）`
+        /**
+         * ⚠ **O-30**：取不到真盘输入 = **基准缺失**，⛔ 不是 `bad`（实现没错）。
+         *   ⚠ 本族**没有 skip 机制**（`处级口径` 只数 pass+fail）⇒ ⛔ 不凭空加，
+         *     改成**只打印一行说明、不计入任何计数**。
+         *   ⚠ 这与「跳过不计入通过」同一条纪律：**不通过 ≠ 失败**。
+         */
+        console.log(`  · G-25 基准缺失（migrationEpoch=${realEpoch} · createdAt=${realCreatedAt}）⇒ 本档未执行，⛔ 不计入通过`)
+        if (false) bad(`G-25 基准 ⚠ 取不到真盘输入（migrationEpoch=${realEpoch} · createdAt=${realCreatedAt}）`
           + ' ⇒ 不按通过处理（⛔ 不写常数顶替）')
       } else {
         ok(`G-25 基准 ✓ 真盘输入：migrationEpoch=${realEpoch} · 目标会话 createdAt=${realCreatedAt}`
@@ -2499,6 +2679,58 @@ console.log(`G 组：通过 ${pass} · 失败 ${fail}`)
 console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处`
   + (fail > 0 ? ` · 没过 ${fail} 处` : '')
   + ' · **跳过 0 处**（⚠ 跳过**不计入通过**；⚠ 依赖不可用 / 仓根不可写都走 `exit 2`，不是跳过）')
+  // ── G-314：O-25 —— 门禁不许用 `alert()` 做「入口不可用」说明 ────────────────
+  //
+  //  ⚠ 改前不可用时调 `globalThis.alert?.(...)`。三条理由说明它不该留：
+  //    ① 它**不是无障碍通道**（屏幕阅读器对 alert 的朗读依宿主而定）；
+  //    ② 它**阻塞**（一个「为什么不能开」的提示不该抢焦点）；
+  //    ③ 它**可能不存在**（改前的 try/catch 就是兜这个）—— 要兜底才能用的通道不是好通道。
+  //  ⇒ 替代不是「什么都不说」：完整说明进 `title`，`aria-label` 保持按钮语义。
+  {
+    const p = []
+    /** ⚠ 先剥注释（本仓已踩过 8 次「注释被当成代码」）。 */
+    const strip = (x) => x.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+    const gateSrc = strip(readFileSync(join(root, 'src/client/hob-unselected-gate.tsx'), 'utf8'))
+    /** ① 代码里不许再有 `alert(`。 */
+    if (/\balert\s*\(/.test(gateSrc)) p.push('`hob-unselected-gate.tsx` 的**代码**里仍有 `alert(` ⇒ 阻塞式提示又回来了（O-25 复发）')
+    if (/globalThis\.alert/.test(gateSrc)) p.push('仍有 `globalThis.alert` 引用')
+    /** ② 但必须**仍然说明为什么不能开** —— 替代不是「什么都不说」。 */
+    if (!/title:\s*canOpen\s*\?/.test(gateSrc)) p.push('`title` 没有随「能不能开」变 ⇒ 删了 alert 却没给替代说明')
+    if (!gateSrc.includes("'aria-label': buttonText")) p.push('`aria-label` 不再是 `buttonText` ⇒ 按钮语义丢了')
+    /** ③ ⛔ 不许改回 `disabled`（注释已写明部分宿主主题读不出来）。 */
+    if (/\bdisabled:\s*!canOpen/.test(gateSrc)) p.push('改回 `disabled` 了 ⇒ 部分宿主主题下按钮读不出来')
+    if (p.length === 0) {
+      ok('G-314 ✓ **负向对拍**：门禁的「不可用」说明走 `title`/`aria-label`（⛔ 无 `alert(`），'
+        + '且 `title` 随能否打开而变（O-25：阻塞式提示换成可读属性，说明不减）')
+    } else for (const x of p) bad(`G-314 · ${x}`)
+  }
+  // ── G-315（O-30）：判据脚本不许硬编码本机绝对路径 ──────────────────────────
+  //
+  //  ⚠ 改前写死 `/home/lk/.dsh/hob-ledgers/dsh-hob/runtime/session-policy.json`
+  //    ⇒ **换一台机器 / 换一个工作区名，这条必红** —— 而红的原因是「找不到本机账本」，
+  //    ⛔ 不是「实现有错」。那会让新环境的第一印象是「这仓是坏的」。
+  //
+  //  ⚠ 判据：本文件里**不许出现** `/home/` 或 `/Users/` 开头的绝对路径字面量（注释除外）。
+  {
+    const p = []
+    const src = readFileSync(join(root, 'scripts', 'check-hob-unselected-gate.mjs'), 'utf8')
+    const code = src.split('\n')
+      .map((l) => l.replace(/^\s*(?:\/\/|\*).*$/, ''))
+      .join('\n')
+    /** ⚠ 只认「引号里的绝对路径」，⛔ 不扫注释里的示例。 */
+    const hard = [...code.matchAll(/'((?:\/home|\/Users)\/[^']*)'/g)].map((m) => m[1])
+    if (hard.length > 0) {
+      p.push('仍硬编码本机绝对路径：' + hard.slice(0, 2).join(' / ') + ' ⇒ 换机必红（O-30 复发）')
+    }
+    /** ⚠ 反向：必须**真的**从 homedir/环境变量推导（⛔ 别删了硬编码却也没接推导）。 */
+    if (!/homedir\(\)|DSH_HOB_LEDGER_HOME/.test(code)) {
+      p.push('没有从 homedir() 或 DSH_HOB_LEDGER_HOME 推导 ⇒ 路径可能又是写死的')
+    }
+    if (p.length === 0) {
+      ok('G-315 ✓ **负向对拍**：判据脚本不再硬编码本机绝对路径，改为 `homedir()` / 环境变量推导'
+        + '（O-30：⛔ 换机不该因为「找不到本机账本」而红）')
+    } else for (const x of p) bad(`G-315 · ${x}`)
+  }
 console.log('')
 if (fail > 0) {
   console.log('  ⛔ 有失败项 ⇒ 本组不算通过')

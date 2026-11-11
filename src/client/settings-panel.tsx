@@ -277,10 +277,10 @@ function MenuSelect(props: {
 }
 
 /**
- * 「新建会话默认」卡片（批 18 · 2026-10-09；第 8 轮换控件 + 走语言）。
+ * 「执行预设」卡片（批 18 · 2026-10-09；第 8 轮换控件 + 走语言）。
  *
  * ── 它写什么 ──────────────────────────────────────────────────────────
- *   本插件建出的会话（`hob_spawn`）套用的**预设 / 模型 / 思考档位**默认值。
+ *   「执行预设」= 每次派活前核对的目标会话预设；模型 / 思考档位只用于新建会话。
  *   写入走宿主 `configForms` 的 `mutate`（**子字段路径**，见 `settings.ts`）。
  *
  * ── 三条**必须写在界面上**的边界（用户看不到就等于没有）───────────────
@@ -471,10 +471,7 @@ function SpawnDefaultsCard(props: {
     <div className={S.card}>
       <div className={S.cardHead}>
         <span className={S.cardTitle}>{t('cardTitle')}</span>
-        <span className={S.cardNote}>
-          {t('cardNote.pre')}<code>hob_spawn</code>{t('cardNote.mid')}
-          <b>{t('cardNote.noAffect')}</b>{t('cardNote.post')}
-        </span>
+        <span className={S.cardNote}>{t('cardNote.execution')}</span>
       </div>
 
       {/* ── 预设 ───────────────────────────────────────────────────── */}
@@ -511,6 +508,7 @@ function SpawnDefaultsCard(props: {
         {excludedNames.length > 0 ? (
           <span className={S.subNote}>{t('note.excluded', { names: excludedNames.join(' / ') })}</span>
         ) : null}
+        <span className={S.subNote}>{t('note.presetGate')}</span>
       </Row>
 
       {/* ── 模型（按 provider 分组）────────────────────────────────── */}
@@ -735,6 +733,13 @@ export function SettingsPanel(): ReactElement {
 
       <SpawnDefaultsCard form={form} settings={settings} value={value} snapshot={catalog} />
 
+      {/* 推进方式按会话选择：这里只指路，不放一个改了也不生效的全局旋钮。 */}
+      <div className={S.card}>
+        <Row label={t('workModeWhere')}>
+          <span>{t('workModeWhereHint')}</span>
+        </Row>
+      </div>
+
       {/**
         * ⚠⚠ **2026-10-22 第 6 轮（`REQ-04` UI 源码阶段）：两张"全局联动"卡片已下线。**
         *
@@ -761,40 +766,32 @@ export function SettingsPanel(): ReactElement {
         *     否则"控件没了"会被误读成"配置也没了"，而后者会破坏迁移。
         */}
       {/**
-        * ⚠ 这里保留一个**只读提示**：告诉用户"这两项设到哪儿去了"。
-        *    ⛔ 不是控件、不可点、不写任何值 —— 只是别让老用户找不到入口又不明原因。
+        * 旧设置项的历史迁移说明已移除；当前设置面只展示今天仍然有效的项。
         */}
-      <div className={S.card}>
-        <div className={S.cardHead}>
-          <span className={S.cardTitle}>{t('moved.title')}</span>
-        </div>
-        <span className={S.cardNote}>{t('moved.body')}</span>
-      </div>
 
-
-      <ul className={S.notes}>
-        <li className={S.note}>
-          {t('note.restart.pre', {
-            tools: t('module.tools'),
-            bus: t('module.bus'),
-            orch: t('module.orch'),
-            settings: t('module.settings'),
-          })}<b>{t('note.restart.strong')}</b>{t('note.restart.post')}
-        </li>
-        <li className={S.note}>
-          {t('note.buildrestart.pre')}<b>{t('note.buildrestart.strong')}</b>{t('note.buildrestart.post')}
-        </li>
-        <li className={S.note}>
-          {t('note.effective.pre', { card: t('cardTitle') })}<b>{t('note.effective.strong')}</b>{t('note.effective.post')}
-        </li>
-        {/* ⚠ 原先这里还有两条：分别介绍「可读权限控制」与「推进项目的工作方式」是
-            "即改即生效"的值型配置。它们描述的两张卡已删（见上面那条注释），
-            而这两项现在在**新建会话弹窗**里按会话选 ⇒ 那两条说明的落点已不存在，
-            留着只会让人以为设置页里还能改它们。 */}
-        <li className={S.note}>
-          {t('note.entry', { card: t('cardTitle') })}
-        </li>
-      </ul>
+      {/* 生效条件按需展开：首屏只留当前配置，说明不再长期占位。 */}
+      <details data-dsh-hob="settings-notes">
+        <summary className={S.cardNote} style={{ cursor: 'pointer' }}>{t('notes.title')}</summary>
+        <ul className={S.notes}>
+          <li className={S.note}>
+            {t('note.restart.pre', {
+              tools: t('module.tools'),
+              bus: t('module.bus'),
+              orch: t('module.orch'),
+              settings: t('module.settings'),
+            })}<b>{t('note.restart.strong')}</b>{t('note.restart.post')}
+          </li>
+          <li className={S.note}>
+            {t('note.buildrestart.pre')}<b>{t('note.buildrestart.strong')}</b>{t('note.buildrestart.post')}
+          </li>
+          <li className={S.note}>
+            {t('note.effective.pre', { card: t('cardTitle') })}<b>{t('note.effective.strong')}</b>{t('note.effective.post')}
+          </li>
+          <li className={S.note}>
+            {t('note.entry', { card: t('cardTitle') })}
+          </li>
+        </ul>
+      </details>
     </section>
   )
 }
@@ -813,9 +810,9 @@ export function SettingsPanel(): ReactElement {
  *   它们由 `i18n.ts` 的兜底表负责（逐字同宿主），这里只放本插件自己的 UI 文案。
  */
 const PANEL_EN: Record<string, string> = {
-  sectionTitle: 'Hob project owner',
+  sectionTitle: 'Hob project agent',
   sectionIntro:
-    'Hob is the project owner preset: it agrees goals and requirements with you, shapes the plan and coding tasks, '
+    'Hob is the project agent preset: it agrees goals and requirements with you, shapes the plan and coding tasks, '
     + 'directs development sessions, follows their results back, and independently accepts the outcome. Its tools read '
     + 'documents and write only its own ledger; implementation is carried out by development sessions. The current '
     + 'configuration summary follows.',
@@ -831,13 +828,10 @@ const PANEL_EN: Record<string, string> = {
   'module.bus': 'Session bus',
   'module.orch': 'Closed-loop orchestration',
   'module.settings': 'Settings',
-  cardTitle: 'New-session defaults',
-  'cardNote.pre': 'Affects only sessions this plugin creates (the ones Hob starts via ',
-  'cardNote.mid': '); ',
-  'cardNote.noAffect': 'sessions you create by hand are unaffected',
-  'cardNote.post': ' — their defaults come from DSH’s own settings page.',
-  'label.preset': 'Default preset',
-  'label.model': 'Default model',
+  cardTitle: 'Execution preset',
+  'cardNote.execution': 'Checked against every dispatch target. Matching sessions receive work directly; a mismatch asks you first. Model and effort apply only to sessions this plugin creates.',
+  'label.preset': 'Execution preset',
+  'label.model': 'Model for new sessions',
   'label.effort': 'Reasoning effort',
   'label.catalog': 'Candidate sources',
   'label.writeResult': 'Write result',
@@ -852,8 +846,9 @@ const PANEL_EN: Record<string, string> = {
   'tag.notACandidate': ' · not offered as a new-session default',
   'warn.presetBroken': 'The host marks this preset unavailable: {reason}',
   'warn.presetMissing': 'The stored preset “{id}” is not in the current list (it may have been deleted) — the value is kept so you can change it here.',
-  'warn.presetExcluded': 'The stored preset “{id}” is not offered as a new-session default; hob_spawn will use the factory default (Standard mode) instead. The value is kept so you can change it here.',
-  'note.excluded': 'Not offered as a new-session default: {names} — Hob is the project-owner preset and cannot carry out implementation work.',
+  'warn.presetExcluded': 'The stored preset “{id}” cannot be used for implementation; dispatch falls back to the factory default (Standard mode). The value is kept so you can change it here.',
+  'note.excluded': 'Not offered as an execution preset: {names} — Hob is the project-owner preset and cannot carry out implementation work.',
+  'note.presetGate': 'Before every dispatch, the target session’s current preset is checked. If it differs from this setting, you choose whether to keep the active session or create one with this preset. Hob sessions can never receive implementation work.',
   'warn.modelMissing': 'The stored model “{provider} / {model}” is not in the current catalog (it may be retired) — the value is kept so you can change it here.',
   'catalog.status.loading': 'Reading candidates…',
   'catalog.status.idle': 'Candidates not loaded',
@@ -872,15 +867,14 @@ const PANEL_EN: Record<string, string> = {
   'catalog.fail.model': 'Reading the model catalog failed — {message}',
   'catalog.fail.exception': 'Reading candidates threw — {message}',
   'action.reload': 'Reload',
-  'write.ok': 'Written (takes effect for the sessions this plugin creates from now on).',
+  'write.ok': 'Written. The new execution preset applies to the next dispatch; model and effort apply to the next session this plugin creates.',
   'write.rejected': 'The host rejected this write (no reason given).',
   'write.notWritable.pre': 'This page does ',
   'write.notWritable.noWrite': 'not allow writes',
   'write.notWritable.post': ') — on non-loopback access the host only changes settings in memory, so this panel refuses the write instead of pretending it saved.',
   // ── 可读权限控制（2026-10-14 第 144 轮；2026-10-17 改名）──────────────────
   // ⚠ 两份词典的**键集必须完全一致**（机检 J-5）；值里**不得含 markdown 标记**（J-6）。
-  'moved.title': 'Readable range and work mode',
-  'moved.body': 'These two are now chosen per new Hob session (in the new-session dialog), not globally. Existing Hob sessions are migrated once: readable range goes to the lowest tier, and each keeps the work mode it had. The old global settings are kept only as the source of that one-time migration and no longer drive any session. Where each of the two now lives: readable range and how work gets split are the two controls in the new-session dialog, and the dialog states the capability red line right next to them.',
+  'notes.title': 'When changes take effect',
   'perm.writing': 'Writing…',
   'perm.writeFailed': 'Write failed (no reason returned).',
   // ── 工作方式（2026-10-19 · UD-97）──────────────────────────────────────
@@ -896,9 +890,11 @@ const PANEL_EN: Record<string, string> = {
   'note.restart.pre': '· Module switches ({tools} / {bus} / {orch} / {settings}; every one listed here): a change needs ',
   'note.restart.strong': 'an instance restart',
   'note.restart.post': ' to take effect — the host’s rule is that changing these values does not remount the plugin, and modules are loaded at plugin-load time.',
-  'note.effective.pre': '· «{card}» is a ',
-  'note.effective.strong': 'takes-effect-immediately',
-  'note.effective.post': ' value-type configuration (no restart after a host write) — it is a different path from the module switches above; do not mix up their conditions.',
+  'workModeWhere': 'Work mode',
+  'workModeWhereHint': 'Work mode is chosen per session: in the dialog when creating a Hob session, or through “Choose the work mode again” in an existing session header. This page has no global work-mode switch.',
+  'note.effective.pre': '· «{card}» contains both an ',
+  'note.effective.strong': 'execution preset that takes effect on the next dispatch',
+  'note.effective.post': ' and model / effort values that apply only when this plugin creates a new session. No restart is needed after a host write; this is a different path from the module switches above.',
   'note.buildrestart.pre': '· Changing this plugin’s own code is not one step but two, and they are different steps: ',
   'note.buildrestart.strong': 'a build only writes files to disk',
   'note.buildrestart.post': ' — the running instance keeps the code it loaded at startup, so after a rebuild nothing has changed until the instance is restarted. A restart is not a casual action either: it drops every dispatch that is still waiting to come back, so wait until the work in flight has landed before restarting.',
@@ -907,9 +903,9 @@ const PANEL_EN: Record<string, string> = {
 
 /** 中文词典（键集与 {@link PANEL_EN} **完全相同**）。 */
 const PANEL_ZH: Record<string, string> = {
-  sectionTitle: 'Hob 项目总负责人',
+  sectionTitle: 'Hob 项目总代理',
   sectionIntro:
-    '「Hob」是项目总负责人预设：与你明确目标和需求，组织实现方案与编码任务，调度开发会话，跟踪执行结果，'
+    '「Hob」是项目总代理预设：代表你承接项目目标，明确需求、组织方案与任务、调度开发会话、跟踪执行，'
     + '并独立验收、推动项目完整落地。它的工具只读取文档并写自己的项目账本；真正实施由开发会话承担。'
     + '下面是当前配置摘要。',
   configStatus: '配置状态',
@@ -924,13 +920,10 @@ const PANEL_ZH: Record<string, string> = {
   'module.bus': '会话总线',
   'module.orch': '闭环编排',
   'module.settings': '设置',
-  cardTitle: '新建会话默认',
-  'cardNote.pre': '仅影响本插件建出的会话（Hob 派活时经 ',
-  'cardNote.mid': ' 新建的那些）；',
-  'cardNote.noAffect': '不影响',
-  'cardNote.post': '你手工新建的会话 —— 后者的默认由宿主自己的设置页管。',
-  'label.preset': '默认预设',
-  'label.model': '默认模型',
+  cardTitle: '执行预设',
+  'cardNote.execution': '每次派活前都会核对目标会话的当前预设；一致就直接派，不一致会先问你。模型与思考档位只用于本插件新建的会话。',
+  'label.preset': '执行预设',
+  'label.model': '新会话模型',
   'label.effort': '思考档位',
   'label.catalog': '候选来源',
   'label.writeResult': '写入结果',
@@ -945,13 +938,14 @@ const PANEL_ZH: Record<string, string> = {
   'tag.notACandidate': '（不作候选）',
   'warn.presetBroken': '该预设被宿主标为不可用：{reason}',
   'warn.presetMissing': '已存预设「{id}」不在当前清单里（可能已被删除）—— 仍保留原值，可在此改掉。',
-  'warn.presetExcluded': '已存预设「{id}」不作候选；派活时改用出厂默认（标准模式）。原值仍保留，可在此改掉。',
-  'note.excluded': '以下预设不作候选：{names} —— Hob 是项目总负责人预设，不承担具体实施。',
+  'warn.presetExcluded': '已存预设「{id}」不能承担实施；派活会改按出厂默认（标准模式）核对。原值仍保留，可在此改掉。',
+  'note.excluded': '以下预设不作执行预设：{names} —— Hob 是项目总代理预设，不承担具体实施。',
+  'note.presetGate': '派活时先核对目标会话的当前预设：一致直接派；不一致会先问你是继续用活跃会话，还是按这个预设新建。Hob 会话不能承担具体实施。',
   'warn.modelMissing': '已存模型「{provider} / {model}」不在当前目录里（可能已下线）—— 仍保留原值，可在此改掉。',
   'catalog.status.loading': '候选读取中…',
   'catalog.status.idle': '候选未加载',
   'catalog.status.ready': '候选已就绪（预设 {presets} 个 / 模型 {models} 个）{excluded}{failed}',
-  'catalog.status.excluded': '（另有 {count} 个项目总负责人预设不作候选）',
+  'catalog.status.excluded': '（另有 {count} 个项目总代理预设不作候选）',
   'catalog.status.failedGroups': '—— 另有 {count} 个 provider 分组加载失败（见下）',
   'label.catalogFailures': '加载失败',
   'catalog.failure.row': '{name}：{message}',
@@ -965,14 +959,13 @@ const PANEL_ZH: Record<string, string> = {
   'catalog.fail.model': '模型目录读取失败 —— {message}',
   'catalog.fail.exception': '候选读取异常 —— {message}',
   'action.reload': '重新读取',
-  'write.ok': '已写入（本插件建出的会话下次生效）。',
+  'write.ok': '已写入。执行预设从下一次派活起生效；模型与思考档位用于本插件下一次新建的会话。',
   'write.rejected': '写入被拒（未说明原因）。',
   'write.notWritable.pre': '当前页面',
   'write.notWritable.noWrite': '不允许写入',
   'write.notWritable.post': '）—— 非本机回环访问时宿主只在内存里改、不落盘，故这里会如实拒写而不是假装保存。',
   // ── 可读权限控制（2026-10-14 第 144 轮；2026-10-17 改名）──────────────────
-  'moved.title': '可读范围与推进方式',
-  'moved.body': '这两项现在改为「每个新建 Hob 会话自己选」（在新建弹窗里），不再是全局开关。已开的旧 Hob 会话会做一次性迁移：读档统一收到最低档，工作方式保持它原来的值。旧的全局设置只作为那次迁移的取值来源保留，不再驱动任何会话。这两项现在的落点：可读范围与推进方式就是新建弹窗里的那两个控件，能力红线也写在它们旁边。',
+  'notes.title': '生效条件与修改入口',
   'perm.writing': '正在写入…',
   'perm.writeFailed': '写入失败（宿主未给原因）。',
   // ── 工作方式（2026-10-19 · UD-97）──────────────────────────────────────
@@ -982,9 +975,11 @@ const PANEL_ZH: Record<string, string> = {
   'note.restart.pre': '· 模块开关（{tools} / {bus} / {orch} / {settings}，上面列出的每一个）：改完需要',
   'note.restart.strong': '重启实例',
   'note.restart.post': '才生效 —— 宿主的规定是"改这些值不重挂插件"，而模块的装载发生在插件装载那一刻。',
-  'note.effective.pre': '· 「{card}」是',
-  'note.effective.strong': '即改即生效',
-  'note.effective.post': '的值型配置（宿主写入后不必重启）—— 它和上面的模块开关是两条不同的路径，别把两者的生效条件混起来。',
+  'workModeWhere': '推进方式',
+  'workModeWhereHint': '推进方式按会话选择：新建 Hob 会话时在弹窗里选；已有会话用会话头部的「重新选择档位」入口修改。本页不提供全局推进方式开关。',
+  'note.effective.pre': '· 「{card}」里有两类值：',
+  'note.effective.strong': '执行预设从下一次派活起生效',
+  'note.effective.post': '；模型与思考档位只在本插件下一次新建会话时使用。宿主写入后都不必重启，这与上面的模块开关是两条不同的路径。',
   'note.buildrestart.pre': '· 改本插件自己的代码不是一步、是两步，而且两步不一样：',
   'note.buildrestart.strong': 'build 只是把文件写到盘上',
   'note.buildrestart.post': ' —— 运行中的实例用的还是它启动那一刻加载的那份代码，所以重 build 之后不重启，等于没改。⚠ 重启也不是随手就点：它会把还在等回传的派发一起冲掉，要等手上的活落地了再重启。',

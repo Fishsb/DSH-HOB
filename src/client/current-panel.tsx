@@ -5,8 +5,9 @@
  * ⚠ 只渲染服务端生成的 Current；前端不自行重算状态。
  */
 import * as React from 'react'
+import { LEDGER_RESOURCE_PATH as LEDGER_RESOURCE_PATH_SHARED } from './routes.ts'
 
-export const LEDGER_RESOURCE_PATH = '/api/dsh-hob/ledger-resource'
+export const LEDGER_RESOURCE_PATH = LEDGER_RESOURCE_PATH_SHARED
 
 /** 受限 Markdown 视图的一行：只识别标题 / 列表 / 引用，其余按纯文本处理。 */
 export interface CurrentMarkdownLine {
@@ -88,6 +89,8 @@ export async function fetchCurrent(sessionId?: string): Promise<any> {
 export interface CurrentPanelProps {
   sessionId?: string
   fetchCurrent?: (sessionId?: string) => Promise<any>
+  /** 外部刷新信号；值变化时重取（缺省 0 = 只取一次）。 */
+  refreshTick?: number
 }
 
 export const CurrentPanel: React.FC<CurrentPanelProps> = (props) => {
@@ -105,17 +108,18 @@ export const CurrentPanel: React.FC<CurrentPanelProps> = (props) => {
       }
     })()
     return () => { alive = false }
-  }, [props.fetchCurrent, props.sessionId])
+  }, [props.fetchCurrent, props.sessionId, props.refreshTick])
   const lines = state.kind === 'ok' ? currentMarkdownLines(state.text) : []
   const sections = currentSections(lines)
   const firstHeadingIndex = sections.findIndex((section) => section.heading !== '')
-  return React.createElement('section', { 'data-dsh-hob': 'stages-current', style: { marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--dsw-alias-border-l4, transparent)', display: 'flex', flexDirection: 'column', gap: 4 } },
-    React.createElement('h3', { style: { margin: '0 0 6px', fontSize: '1em' } }, '当前'),
-    state.kind === 'reading'
-      ? React.createElement('div', { style: { opacity: 0.75 } }, '读取中…')
-      : state.kind === 'fail'
-        ? React.createElement('div', { style: { color: 'var(--dsw-alias-status-error, #d11)' } }, `判不出：${state.message}`)
-        : React.createElement(
+  return React.createElement('section', { 'data-dsh-hob': 'stages-current', style: { marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 } },
+    React.createElement('details', { 'data-dsh-hob': 'stages-current-details' },
+      React.createElement('summary', { style: { cursor: 'pointer', fontWeight: 600, fontSize: '0.95em' } }, '完整 Current 说明（默认折叠）'),
+      state.kind === 'reading'
+        ? React.createElement('div', { style: { opacity: 0.75 } }, '读取中…')
+        : state.kind === 'fail'
+          ? React.createElement('div', { style: { color: 'var(--dsw-alias-status-error, #d11)' } }, `判不出：${state.message}`)
+          : React.createElement(
             'div',
             { 'data-dsh-hob': 'stages-current-text', style: { display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 } },
             ...sections.map((section, si) => {
@@ -158,5 +162,6 @@ export const CurrentPanel: React.FC<CurrentPanelProps> = (props) => {
                 )
             }),
           ),
+    ),
   )
 }

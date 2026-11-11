@@ -56,10 +56,13 @@ import { basename, dirname, join, sep } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { HOB_PRESET_ID } from '../shared/planning-preset.ts'
+import { admitWork, dispatchIdOf, type LedgerLifecycle } from '../shared/ledger-lifecycle.ts'
 import type { PresetSource } from './bus.ts'
 import { resolveLedgerRoot, workspaceNameOf } from '../server/doc-read.ts'
-import { applyProjection } from '../server/projection-writer.ts'
-import { WORK_MODE_VALUES, type WorkMode } from '../shared/work-mode.ts'
+import { applyProjection, readProjectionUnits, readProjectionUnitsState } from '../server/projection-writer.ts'
+import { pipelineDispatchProblems } from '../shared/pipeline-view.ts'
+import { publishLiveChange } from '../server/live-hub.ts'
+import { WORK_MODE_VALUES, workModePolicy, workModePolicySummary, type WorkMode } from '../shared/work-mode.ts'
 import {
   guardIntentForOwner,
   guardIntentOf,
@@ -70,7 +73,10 @@ import {
   planGuardFactsOf,
   planModeOf,
   validateWorkPlan,
+  validateSingleTargetDispatch,
   type GuardIntent,
+  type MultiSingleTrackReason,
+  type SingleTrackEvidence,
   workPlanProgress,
   type WorkPlan,
   type WorkPlanInput,
@@ -595,21 +601,37 @@ export function judgeWatchGuards(
        *   只要观察集合里还有在跑的、或本轮还在动、或判不出 ⇒ **一律不叫**
        *   （下面三个 `return` 就是它，⛔ 不许在兜底这条路上跳过它们）。
        */
-      const fallbackEligible = false
       /**
-       * ⚠ **判不出仍优先报 `undecidable`**：`waiting` 只表示"不自动重叫"，
-       *   ⛔ 不许把"目标运行态判不出"压成 `waiting`（两种成因必须分开）。
+       * ── **S-15：兜底唤醒已停用（`wakeFallback` 恒 `false`）** ──────────────────
+       *
+       * ⚠⚠ **这里原来有一整条兜底链，现在是**死代码**，已删除。**
+       *   原逻辑：`fallbackEligible = false` 之后的 40 行（三个 `return` 分支 + 一段
+       *   「删了 5 分钟门之后靠什么不连叫」的长注释）**永远执行不到**。
+       *
+       * ⚠ **为什么必须删而不是留着**（两半危害，缺一都不足以说明）：
+       *   · **一半空转**：`deliverWakeOnce` 成功后 `setWatchState(..., keepWakeAttempts: true)`
+       *     会回 `waiting` 并保留两枚 `D16` 时刻 ⇒ `watchNeedsTimer` 的第②分支**恒真**
+       *     ⇒ **30 秒定时器永远续排**，每轮全账本扫盘 + 逐 owner 读会话日志。
+       *     而判定侧因 `fallbackEligible === false` **永远不会再叫** ⇒ 纯烧 IO。
+       *   · **一半读数说假话**：原注释、`wakeAttempts`、「叫满 3 次转 stuck」
+       *     都描述了一个**不可能发生的行为** ⇒ 下一个人会照着它推理。
+       *
+       * ⚠ **删掉之后的实际语义**（照实说，⛔ 不粉饰）：
+       *   唤醒只有 **`awake` 一条路**；回 `waiting` 之后**不再自动重叫**，
+       *   要等用户自己叫、或下一轮业务事件把它重新置为 `awake`。
+       *   ⇒ `watchNeedsTimer` 现在只认 `awake`（同批改的）。
+       *
+       * ⛔ **不要恢复这条链**：它从未真正启用过（`fallbackEligible` 一直是硬编码 `false`），
+       *   所以「恢复」等于**新开一个未经设计的行为**，不是回滚。
+       *   真要重叫，先把设计写清楚（谁触发 / 隔多久 / 叫几次停 / 停了怎么让人看见）。
        */
-      if (ownerRunning === undefined
-        || targetRunning.some((t) => t.running === undefined)) {
-        return { ...withAct, shouldWake: false, reason: 'undecidable', wakeFallback: false, wakeGaveUp }
-      }
-      if (!fallbackEligible) {
-        return { ...withAct, shouldWake: false, reason: 'waiting', wakeFallback: false, wakeGaveUp }
-      }
       /**
-       * ⚠ 过了下面三道闸才叫 —— **与 `awake` 那条路逐条同源**（`D1`②）：
-       *   判不出 ⇒ 不叫；还有在跑 ⇒ 不叫；本轮还在动 ⇒ 不叫；没到阈值 ⇒ 不叫。
+       * ⚠⚠ **这两道读数必须保留**（`R-10` / `TASK` §六）—— 它们**不是兜底的一部分**：
+       *   即使不再自动重叫，**读数面也必须如实说「目标还在跑」/「判不出」**，
+       *   否则用户看到的是一个笼统的 `waiting`，分不清「没人应」和「人家正在干」。
+       *   ⚠ 我第一版把这两道一起删了，`WI-m` 当场红：
+       *     `✗ WI-m 读数判不出时兜底却叫我（reason=waiting）`
+       *   ⇒ **删兜底 ≠ 删读数**。这是两件事。
        */
       if (ownerRunning === undefined
         || targetRunning.some((t) => t.running === undefined)
@@ -622,19 +644,7 @@ export function judgeWatchGuards(
       if (ownerActivity === 'active') {
         return { ...withAct, shouldWake: false, reason: 'still-running', wakeFallback: false, wakeGaveUp }
       }
-      /**
-       * ⚠⚠ **包 BL（2026-10-28）：兜底这一支的 5 分钟门也删了**（用户指令：只留 30 秒一道）。
-       *
-       * ── 删了之后靠什么"不连叫"（`TASK` §三 第 3 条，⚠ 这是前提不是可选）──
-       *   兜底每叫一次走 `deliverWakeOnce`：`markWakeDelivered` **把 `wakeAttempts` +1**，
-       *   随后 `setWatchState(..., { keepWakeAttempts: true })` **回 `waiting` 并刷新 `stateAt`**。
-       *   ⇒ 下一轮复查时它**不再满足 `fallbackEligible`**（`state === 'waiting'` 走的是
-       *   `rearmWakeFallback` 那条：先 `awake` 再判，而不是在这里原地再叫）。
-       *   ⇒ **计数仍在涨、到 3 次转 `stuck` 停**（`WI-j` / `WI-k` 守着这条），
-       *   ⇒ **不会每 30 秒连叫**。
-       *   ⚠ 原来的 `elapsedMs < thresholdMs` 只是"隔得更久"，⛔ 不是防连叫的那道闸。
-       */
-      return { ...withAct, shouldWake: true, reason: 'wake', wakeFallback: true, wakeGaveUp }
+      return { ...withAct, shouldWake: false, reason: 'waiting', wakeFallback: false, wakeGaveUp }
     }
     /**
      * ⚠⚠ **"判不出"绝不许当成"没在跑"**（`R-10` / `R-9`）。
@@ -790,6 +800,14 @@ export interface Watch {
    *   ⚠ 缺省 = 旧调用没给任务号 ⇒ 不投影（⛔ 不猜一条来标）。
    */
   taskId?: string
+  /** Stable identity binding task + target + attempt. */
+  dispatchId?: string
+  /** RUN created before delivery, when the ledger projection succeeded. */
+  runId?: string
+  /** Requested target before any explicit replacement. */
+  requestedTarget?: string
+  /** True only when target replacement was explicitly approved. */
+  targetChanged?: boolean
   /** 本轮回传落账结果（⚠ 失败时保留原因，供读数与重试）。 */
   ledgerProjection?: {
     dispatch?: { ok: boolean; applied: number; reason?: string }
@@ -1001,6 +1019,26 @@ export interface OrchStatus {
   stopped: boolean
   /** 在等的派发（按登记时间）。 */
   watches: Watch[]
+  /**
+   * ⚠⚠ **T-12（2026-11-11）：投影失败的回传数**（0 ⇒ 不出现，输出与改前逐字相同）。
+   *
+   *   为什么需要它：回执是**先发、投影后落**（`buildReceipt` 在投影之前），
+   *   ⇒ 回执正文里**不可能**带投影结果。派活方读回执看到「活干完了」，
+   *   而账本里 RUN 仍可能是 `registered`。
+   *
+   *   ⛔ **不改投递语义**（先写后发是对的 —— 反了会在投影失败时丢掉回执）；
+   *   ⇒ 把"上次投影没落"这个事实**带到下一次** `hob_orch_status` 的头行。
+   *
+   *   ⚠ 只在 `> 0` 时出现：正常档多印一行 = 噪音，且会让既有输出快照全红。
+   */
+  ledgerProjectionFailures?: {
+    /** 落账失败的回传条数（`return.ok === false`）。 */
+    returnFailed: number
+    /** 落账失败的派发条数（`dispatch.ok === false`）。 */
+    dispatchFailed: number
+    /** 头行（人读，已含原因；⛔ 渲染层不许自己再拼一份）。 */
+    headline: string
+  }
   /** 已完成的回传次数（累计，便于观察循环转了几次）。 */
   relaysDone: number
   /** 被闸门拦下的回传次数（停了之后对方又跑完的次数）。 */
@@ -1233,6 +1271,12 @@ export interface HobOrchestrator {
       accessType?: 'read' | 'write'
       /** 所属计划（由计划推进器传入；旧单目标调用可省略）。 */
       planId?: string
+      /** 本次派活使用的档位（工具入口现读后传入；旧内部调用可省略）。 */
+      workMode?: WorkMode
+      /** 单目标隐式计划的判路依据（由工具入口校验后透传）。 */
+      singleTrackReason?: MultiSingleTrackReason
+      /** 单目标隐式计划的候选证据（多会话档必填）。 */
+      singleTrackEvidence?: SingleTrackEvidence
       /**
        * **账本里的真实任务号**（`TSK-…`）；运行态投影只认它。
        * ⚠ 与 `task`（自由描述）分开：`task` 回传给派活方看，`taskId` 用来落账。
@@ -1245,7 +1289,21 @@ export interface HobOrchestrator {
     sessionId?: string
     messageId?: string
     reason?: string
+    /** 给人/模型读的拒绝说明（预设校验、用户取消等必须原样带回）。 */
+    message?: string
+    /** 预设不一致，已在派活前向用户提问；本次未投递。 */
+    needsUser?: boolean
+    configuredPreset?: string
+    targetPreset?: string
     watching?: boolean
+    /** Stable dispatch identity; completion and RUN bind to this value. */
+    dispatchId?: string
+    /** RUN created before delivery when the ledger projection succeeded. */
+    runId?: string
+    /** Target requested by the caller before any explicit replacement. */
+    requestedTarget?: string
+    /** True only when an explicit user-approved target replacement happened. */
+    targetChanged?: boolean
     /**
      * 目标预设预警（第 129 轮）—— **由 `bus.deliver()` 算出，这里只透传**。
      *
@@ -1851,6 +1909,10 @@ function toPersisted(w: Watch): PersistedWatch {
     ...(w.round === undefined ? {} : { round: w.round }),
     ...(w.task === undefined ? {} : { task: w.task }),
     ...(w.taskId === undefined ? {} : { taskId: w.taskId }),
+    ...(w.dispatchId === undefined ? {} : { dispatchId: w.dispatchId }),
+    ...(w.runId === undefined ? {} : { runId: w.runId }),
+    ...(w.requestedTarget === undefined ? {} : { requestedTarget: w.requestedTarget }),
+    ...(w.targetChanged === undefined ? {} : { targetChanged: w.targetChanged }),
     ...(w.ledgerProjection === undefined ? {} : { ledgerProjection: w.ledgerProjection }),
     at: w.at,
     sawRunning: w.sawRunning,
@@ -3992,7 +4054,7 @@ export function apply(ctx: any): void {
         return problems
       }
       const tracks = active.flatMap((plan) => occupyingTracksOfPlan(plan).map((track) => ({ plan, track })))
-      if (input.mode === 'single') {
+      if (workModePolicy(input.mode).maxActiveTracks === 1) {
         const own = tracks.filter((x) => x.plan.joinOwnerSessionId === self)
         if (own.length > 0) {
           problems.push({
@@ -4401,7 +4463,20 @@ export function apply(ctx: any): void {
       }
     }
 
-    const advancingWorkPlans = new Set<string>()
+    /**
+     * ── **O-10：重入守卫不能「静默丢弃」，必须记 dirty 并在 finally 里再跑一遍** ──
+     *
+     * ⚠ 改前是 `Set` + `continue`：推进进行中又来了一个请求（派单后 / 回传结算后 /
+     *   就绪扫描 / 状态读取**四条路**都可能撞上）⇒ **那一次推进被直接丢掉**，
+     *   而调用方以为已经推过了。
+     *
+     * ⚠ 后果：**盘上计划停在旧状态**，要等下一次触发才补上 —— 而「下一次」可能很久。
+     *   这与「漏派」不同：**计划面看起来推过了**。
+     *
+     * ⚠ 修法：`Map<key, {dirty}>`。命中时**置 dirty**（⛔ 不 continue），
+     *   `finally` 里若 dirty ⇒ **再跑一遍**（最多补一次，避免活锁）。
+     */
+    const advancingWorkPlans = new Map<string, { dirty: boolean }>()
 
     /**
      * 唯一的计划推进入口：合并回传态 → 派发 ready 轨 → 写回 plan。
@@ -4415,13 +4490,27 @@ export function apply(ctx: any): void {
     ): Promise<void> => {
       for (const ledgerRoot of ledgerRoots) {
         const key = `${ledgerRoot}\u0000${owner ?? ''}`
-        if (advancingWorkPlans.has(key)) continue
-        advancingWorkPlans.add(key)
+        const inflight = advancingWorkPlans.get(key)
+        if (inflight !== undefined) {
+          /**
+           * ⚠ **记下「有人想推」然后返回** —— ⛔ 不 continue 掉不记录。
+           *   真正的补跑在 finally 里（那里才拿得到 dirty 的最新值）。
+           */
+          inflight.dirty = true
+          continue
+        }
+        const slot = { dirty: false }
+        advancingWorkPlans.set(key, slot)
         try {
           for (const plan of activePlansAt(ledgerRoot)) {
             if (owner !== undefined && plan.joinOwnerSessionId !== owner) continue
             if (plan.planId === skipPlanId) continue
-            const before = JSON.stringify({ state: plan.state, trackStates: plan.trackStates })
+            const planBindingSnapshot = (): string => JSON.stringify({
+              state: plan.state,
+              trackStates: plan.trackStates,
+              tracks: plan.tracks.map((track) => ({ trackId: track.trackId, sessionId: track.sessionId })),
+            })
+            const before = planBindingSnapshot()
             /**
              * ⚠ **重启后从计划重建缺失 watch**：计划是意图权威，watch 是投递机制。
              *   只对**本进程启动前**创建的计划做；本次刚建的计划由派发路径负责。
@@ -4437,12 +4526,19 @@ export function apply(ctx: any): void {
                 const session = sessions.get?.(track.sessionId)
                 if (agent === undefined && session === undefined) continue
                 const at = Date.now()
+                const recoveredDispatchId = dispatchIdOf({
+                  owner: plan.joinOwnerSessionId,
+                  target: track.sessionId,
+                  taskId: track.taskId,
+                  at,
+                })
                 watches.set(track.sessionId, {
                   target: track.sessionId,
                   watcher: plan.joinOwnerSessionId,
                   task: track.taskId,
                   /** ⚠ 重启后恢复的 watch 也要能投影回账本（否则这条活永远不落）。 */
                   taskId: track.taskId,
+                  dispatchId: recoveredDispatchId,
                   at,
                   sawRunning: true,
                   sawRunningAt: at,
@@ -4479,12 +4575,21 @@ export function apply(ctx: any): void {
             for (const track of ready) {
               const result = await orch.dispatch(track.sessionId, track.message, {
                 self: plan.joinOwnerSessionId,
-                task: track.taskId,
+                /** ⚠ RUN 标题取 `goal`（理由见首波那处注释；⛔ 不用 taskId，会被 C-17 拒）。 */
+                task: track.goal,
                 /** ⚠ 账本投影只认 `taskId`；多轨派发与单目标走同一条落账路径。 */
                 taskId: track.taskId,
                 accessType: track.accessType,
                 planId: plan.planId,
               })
+              /**
+               * The preset gate may have created a replacement session. The plan
+               * must follow the session that actually received the work; keeping
+               * the old id would make every later receipt and advance miss it.
+               */
+              if (result.ok && typeof result.sessionId === 'string' && result.sessionId !== '') {
+                track.sessionId = result.sessionId
+              }
               states[track.trackId] = result.ok ? 'running' : 'failed'
               svcCtx.logger?.debug?.(
                 `[${name}] WorkPlan ${plan.planId} ${result.ok ? '已派发' : '派发失败'}轨道 ${track.trackId}`
@@ -4494,7 +4599,7 @@ export function apply(ctx: any): void {
             const progress = workPlanProgress(plan, states)
             plan.trackStates = states
             plan.state = progress.nextState
-            const after = JSON.stringify({ state: plan.state, trackStates: plan.trackStates })
+            const after = planBindingSnapshot()
             let persisted = after === before
             if (!persisted) {
               const written = writeWorkPlan(ledgerRoot, plan)
@@ -4548,7 +4653,15 @@ export function apply(ctx: any): void {
             }
           }
         } finally {
+          /**
+           * ⚠ **O-10：期间若有人想推 ⇒ 再跑一遍**（⛔ 不静默丢弃）。
+           *   ⚠ **只补一次**：补跑期间再来的请求会让 `dirty` 再次为 true，
+           *     但那一次由**下一轮外部触发**处理 —— 否则这里是活锁。
+           */
           advancingWorkPlans.delete(key)
+          if (slot.dirty) {
+            try { await advanceWorkPlans([ledgerRoot], owner, `${trigger}(补跑)`, skipPlanId) } catch { /* 补跑失败不影响本次 */ }
+          }
         }
       }
     }
@@ -4716,6 +4829,151 @@ export function apply(ctx: any): void {
           return { ok: false, accepted: 0, tracks: [], problems: conflict as PlanDispatchResult['problems'] }
         }
 
+        /**
+         * ══════════════════════════════════════════════════════════════════════
+         * ⚠⚠ **R-28：多轨必须在这里过任务链门禁，⛔ 不能等计划落盘之后**（2026-11-10）
+         * ══════════════════════════════════════════════════════════════════════
+         *
+         * ── 病（实测）────────────────────────────────────────────────────────
+         *   改前多轨派活的门禁在 `dispatchGateAtLedger` 里，而它是**从盘上找计划**
+         *   （`listWorkPlans(ledgerRoot)`）再逐轨判 `pipelineDispatchProblems`。
+         *   而计划的**写盘在本函数更下面**（`writeWorkPlan`）⇒ 首次派发时
+         *   `listWorkPlans` 里**根本没有这份计划** ⇒ 门禁落到末尾的
+         *   「③ 无任务、无活动计划 ⇒ 只报健康」分支 ⇒ `blocked: undefined`。
+         *   ⇒ **多轨是当时唯一能绕过任务链门禁的入口**：
+         *     G1/G2 未批准、非 v3 任务、父方案不存在，全部照发。
+         *   ⚠ 想「先落盘再派」也不行：同一 `planId` 第二次进入会被
+         *     `duplicate-plan` 拒（见 `planConflictProblems`）。
+         *
+         * ── 修法：把判据前移到写盘之前，且**与单目标同源** ────────────────────
+         *   逐轨用 `pipelineDispatchProblems`（⛔ 不另写一份判据），
+         *   任一非空即整份拒绝并原样带出 blockers。
+         *   ⚠ `implicit` 是编排器的历史占位（不建 RUN、没有 v3 上游链）⇒ 跳过，
+         *     与 `dispatchGateAtLedger` 的多轨分支保持同一口径。
+         *   ⚠ 账本读不到 ⇒ **fail-closed**（⛔ 不把"判不出"当成"没有缺口"）。
+         */
+        try {
+          /**
+           * ⚠ **O-09：改用三态读法** —— 单分片读不出时**点名那个分片**，
+           *   ⛔ 不再只得到一句 `EACCES`（那分不清「空账」与「读不出」）。
+           * ⚠ 三态都按 fail-closed 处理：`missing` 也是「判不出」——
+           *   没有账本就判不出「这条任务是不是真实任务」，⛔ 不按「没有缺口」放行。
+           */
+          const gateRead = readProjectionUnitsState(ledgerRoot)
+          if (gateRead.kind !== 'ok') {
+            return {
+              ok: false, planId: String((normalized as { planId?: unknown }).planId ?? ''), accepted: 0, tracks: [], problems: [{
+                code: 'ledger-unreadable',
+                message: gateRead.kind === 'missing'
+                  ? `账本目录不存在（${ledgerRoot}/ledger/units）⇒ 判不出这些任务是否真实存在，⛔ 不按"没有缺口"放行。`
+                  : `账本分片 \`${gateRead.shard}\` 读不出来（${gateRead.code}）⇒ 判不出这些任务是否真实存在，⛔ 不整体抛、也不放行。`,
+              }],
+            }
+          }
+          const gateUnits = gateRead.units
+          const gateProblems: string[] = []
+          for (const track of normalized.tracks) {
+            const tid = String(track.taskId ?? '').trim()
+            if (tid === '' || tid === 'implicit') continue
+            const taskUnit = gateUnits.find((u) => String(u.id ?? '').trim() === tid)
+            if (taskUnit === undefined) {
+              gateProblems.push(`轨道 ${track.trackId}：${tid} 不是账本里的真实任务`)
+              continue
+            }
+            /**
+             * ⚠ **与单目标门禁同源**：`pipelineDispatchProblems` 是 `shared` 纯函数，
+             *   ⛔ 不在这里另写一份判据（那正是 R-02 的根因形态）。
+             * ⚠ 历史豁免口径（`clarify_legacy`）由调用方的 provenance 注入决定；
+             *   多轨入口在编排器里，**拿不到** `tools.ts` 的 `withLedgerProvenance`
+             *   （会形成循环依赖）⇒ 这里不注入 ⇒ `provenanceOf` 返回 `unknown`
+             *   ⇒ 按存量字段走老逻辑（= 不改存量结果）。
+             *   ⚠ 这**不是放宽**：新写的 v3 单元在 `legacy()` 第二层就被拒（`isPipelineV3`），
+             *     与注入与否无关（见 `stage-controls.ts` 的 `legacy()` 三层）。
+             */
+            const p = pipelineDispatchProblems(gateUnits as any, taskUnit as any)
+            for (const x of p) gateProblems.push(`轨道 ${track.trackId}：${x.rule} · ${x.unit} · ${x.why}`)
+          }
+          if (gateProblems.length > 0) {
+            return {
+              ok: false,
+              accepted: 0,
+              tracks: normalized.tracks.map((track) => ({
+                trackId: track.trackId,
+                sessionId: track.sessionId,
+                ok: false,
+                state: 'failed' as const,
+                reason: 'pipeline-gate-blocked',
+              })),
+              problems: [{
+                code: 'pipeline-gate-blocked',
+                message: `任务链门禁未通过（${gateProblems.length} 条）⇒ 本次没有派发任何轨道：`
+                  + gateProblems.slice(0, 8).join('；')
+                  + (gateProblems.length > 8 ? `；…（另有 ${gateProblems.length - 8} 条）` : ''),
+              }],
+            }
+          }
+        } catch (e) {
+          return {
+            ok: false,
+            accepted: 0,
+            tracks: [],
+            problems: [{
+              code: 'pipeline-gate-undecidable',
+              message: `任务链门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不派单（⛔ 不把"判不出"当成"没有缺口"）。`,
+            }],
+          }
+        }
+
+        /**
+         * ══════════════════════════════════════════════════════════════════════
+         * ⚠⚠ **O-39：多轨的 sessionId 与会话身份必须真实存在，⛔ 不能只判非空**
+         * ══════════════════════════════════════════════════════════════════════
+         *
+         * ── 病 ────────────────────────────────────────────────────────────────
+         *   `validateWorkPlan` 对 `joinOwnerSessionId` 与每条 `track.sessionId`
+         *   **只判 `nonEmpty`** ⇒ 传一个**拼错的 / 已删除的 / 从没存在过的** id
+         *   也会写进计划、也会派发 ⇒ 计划面上显示 `running`，实际**没有会话在跑**。
+         *
+         * ⚠ 这与「漏派」不同：**计划说派出去了，会话表里查无此人**。
+         *   读者看到 `running` 会以为在干活，⛔ 不会去查会话表。
+         *
+         * ── 判法 ──────────────────────────────────────────────────────────────
+         *   用宿主 `sessions.get(id)` 逐个核：**取不到 ⇒ 拒绝并点名**。
+         *   ⚠ `sessions` 服务不可用（`get` 不是函数）⇒ **fail-closed**：
+         *     判不出就不派 —— 与 R-28 门禁同一口径（⛔ 不把"判不出"当成"没问题"）。
+         *   ⚠ `implicit` 占位跳过（它不建真实会话，与 R-28 同一豁免）。
+         */
+        {
+          const canCheck = typeof (sessions as { get?: unknown } | undefined)?.get === 'function'
+          if (!canCheck) {
+            return {
+              ok: false, accepted: 0, tracks: [],
+              problems: [{
+                code: 'session-unverifiable',
+                message: '会话表读不到 ⇒ 判不出轨道目标会话是否存在，本次不派单（⛔ 不把"判不出"当成"没问题"）。',
+              }],
+            }
+          }
+          const missing: string[] = []
+          const need = [normalized.joinOwnerSessionId, ...normalized.tracks.map((t) => t.sessionId)]
+          for (const raw of need) {
+            const id = String(raw ?? '').trim()
+            if (id === '' || id === 'implicit') continue
+            const hit = (sessions as { get: (x: string) => unknown }).get(id)
+            if (hit === undefined || hit === null) missing.push(id)
+          }
+          if (missing.length > 0) {
+            return {
+              ok: false, accepted: 0, tracks: [],
+              problems: [{
+                code: 'session-not-found',
+                message: `这些会话在会话表里**不存在** ⇒ 派出去也没有东西在跑（⛔ 不是"没派"）：${[...new Set(missing)].join(' / ')}`
+                  + '。⚠ 请核对 sessionId 是否拼错、或该会话是否已被删除；'
+                  + '⛔ 不要把不存在的 id 写进计划（那会让计划面显示 running 而实际没人跑）。',
+              }],
+            }
+          }
+        }
         const firstWave = initiallyDispatchable(normalized)
         /**
          * ⚠⚠ **不许生出"永远不动"的计划**（独立验收两轮都咬到同一类）。
@@ -4774,18 +5032,35 @@ export function apply(ctx: any): void {
         }))
         for (const track of isolated) {
           const index = rows.findIndex((row) => row.trackId === track.trackId)
+          /**
+           * ⚠ **RUN 标题取 `goal`，⛔ 不是 `taskId`**（2026-11-10 · B2.2 连带修复）。
+           *   改前传 `task: track.taskId` ⇒ 投影把 `RUN.title` 写成 `"TSK-a"`
+           *   ⇒ C-17 判「标题只有编号，未说明实际对象或动作」⇒ 整条派发被拒
+           *   （`run-intent-failed`）。这个缺陷以前被 `validateLedgerStructure:false`
+           *   豁免掩盖；B1.4 删掉豁免后立刻暴露。
+           *   `goal` 是「这一轨要达成什么」（一行）；`message` 是完整指令（可能带换行）。
+           */
           const result = await orch.dispatch(track.sessionId, track.message, {
             self,
-            task: track.taskId,
-            /** ⚠ 账本投影只认 `taskId`（与 `plan` 恢复路径同一口径）。 */
+            task: track.goal,
             taskId: track.taskId,
             accessType: track.accessType,
             planId: plan.planId,
           })
           if (result.ok) {
+            const deliveredTo = typeof result.sessionId === 'string' && result.sessionId !== ''
+              ? result.sessionId
+              : track.sessionId
+            /**
+             * User chose “new session” at the preset gate: rewrite the plan's
+             * target before it is persisted, so receipt matching and later
+             * dependent tracks point at the session that actually got the work.
+             */
+            const planTrack = plan.tracks.find((item) => item.trackId === track.trackId)
+            if (planTrack !== undefined) planTrack.sessionId = deliveredTo
             rows[index] = {
               trackId: track.trackId,
-              sessionId: track.sessionId,
+              sessionId: deliveredTo,
               ok: true,
               state: 'running',
               ...(result.messageId === undefined ? {} : { messageId: result.messageId }),
@@ -4808,7 +5083,22 @@ export function apply(ctx: any): void {
           row.trackId,
           row.ok ? 'running' : row.state === 'failed' ? 'failed' : 'pending',
         ])) as Record<string, WorkTrackState>
-        writeWorkPlan(ledgerRoot, plan)
+        /**
+         * ⚠ **T-11：返回值必须接住。**
+         *
+         * 改前这里是裸调用。写失败 ⇒ 盘上计划停在「全 pending」⇒ 推进器 `ready=[]`
+         * ⇒ **依赖轨永不接力**；而内存里那几条 watch 照常收尾
+         * ⇒ 用户看到「计划面一直 running / 全 pending，而实际活都跑完了」。
+         * ⚠ 这个症状**没有任何报错**，只能靠这条 warn 才看得出来。
+         */
+        const firstWaveWritten = writeWorkPlan(ledgerRoot, plan)
+        if (!firstWaveWritten.ok) {
+          svcCtx.logger?.warn?.(
+            `[${name}] WorkPlan ${plan.planId} 首波派发后写盘失败：`
+              + `${firstWaveWritten.reason ?? 'unknown'}`
+              + ' ⇒ 盘上计划可能停在 pending，依赖轨不会接力',
+          )
+        }
         /** 首波已经由本函数同步派完，不需要再在同一个 tick 里推一遍。 */
         return {
           ok: failed === 0,
@@ -4826,6 +5116,42 @@ export function apply(ctx: any): void {
 
       async dispatch(target, message, opts) {
         const self = opts?.self
+        /**
+         * ⚠⚠ **派活前的执行预设硬校验**（2026-11-09 · 用户裁定）。
+         *
+         * 唯一实现点是 `hobBus.resolveDispatchTarget()`：
+         *   · 目标预设 == 设置里的执行预设 ⇒ 自动派活；
+         *   · 不一致 / 读不到 ⇒ 向用户提问（继续用活跃会话 / 按设置新建 / 取消）；
+         *   · 目标是 Hob ⇒ 只允许新建或取消，⛔ 不把 Hob 当实施会话。
+         *
+         * ⚠ 本步在**其它闸门之前**：用户尚未确认执行对象时，不应先做绑定、
+         *   查重、落 watch 等依赖最终目标的事。
+         * ⚠ 用户选择“新建”后，下面所有逻辑都用 `resolvedTarget`；⛔ 不再使用原 target。
+         */
+        let resolvedTarget = target
+        if (typeof target === 'string' && target !== '') {
+          const presetBus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
+          if (presetBus === undefined || typeof presetBus.resolveDispatchTarget !== 'function') {
+            return {
+              ok: false,
+              reason: 'preset-gate-unavailable',
+              message: '无法核对目标会话的执行预设（会话总线未提供预设校验入口）⇒ 本次不派活。',
+            }
+          }
+          const resolved = await presetBus.resolveDispatchTarget(target, typeof self === 'string' ? self : undefined)
+          if (resolved?.ok !== true || typeof resolved.sessionId !== 'string' || resolved.sessionId === '') {
+            return {
+              ok: false,
+              sessionId: target,
+              reason: resolved?.reason ?? 'preset-gate-refused',
+              message: resolved?.message ?? '目标会话的执行预设未通过校验 ⇒ 本次不派活。',
+              ...(resolved?.needsUser === true ? { needsUser: true } : {}),
+              ...(resolved?.configuredPreset === undefined ? {} : { configuredPreset: resolved.configuredPreset }),
+              ...(resolved?.targetPreset === undefined ? {} : { targetPreset: resolved.targetPreset }),
+            }
+          }
+          resolvedTarget = resolved.sessionId
+        }
         /**
          * ⚠ **闸门按调用方自己的 owner 判**（`I-4`）：
          *   改前是进程级 `stopped` ⇒ 别人一停我也停（跨工作区互相影响）。
@@ -4845,9 +5171,9 @@ export function apply(ctx: any): void {
               + ' ⚠ 只有**你自己**这一侧、这一本账的闭环被停（别人的不受影响）。',
           }
         }
-        if (typeof target !== 'string' || target === '') return { ok: false, reason: 'no-session-id' }
+        if (typeof resolvedTarget !== 'string' || resolvedTarget === '') return { ok: false, reason: 'no-session-id' }
         // ⚠ 不接受"派给自己"：那既不构成闭环，也会把派活方自己刷起来。
-        if (typeof self === 'string' && target === self) {
+        if (typeof self === 'string' && resolvedTarget === self) {
           return { ok: false, reason: 'refusing to dispatch to this session itself' }
         }
         if (typeof message !== 'string' || message.trim() === '') {
@@ -4890,8 +5216,12 @@ export function apply(ctx: any): void {
           /**
            * 单会话：任何其它活动轨都拒绝（跨计划也算）。
            * 多会话 / 自动：允许并行，但同一工作区仍最多一条写轨。
+           * ⚠ 单会话的“只一条”来自策略表（`maxActiveTracks`），⛔ 不在这里另写 `mode === 'single'`：
+           *   以后档位语义调整时，这一处与计划校验必须同时变。
            */
-          if (modeVerdict === 'single' && activeTracks.some((t) => t.sessionId !== target
+          if (modeVerdict !== undefined
+            && workModePolicy(modeVerdict).maxActiveTracks === 1
+            && activeTracks.some((t) => t.sessionId !== resolvedTarget
             && !samePlanTracks.some((own) => own.trackId === t.trackId))) {
             return {
               ok: false,
@@ -4902,7 +5232,7 @@ export function apply(ctx: any): void {
           const requestedAccess = opts?.accessType
           if (requestedAccess === 'write') {
             const otherWrite = activeTracks.find((t) => t.accessType === 'write'
-              && t.sessionId !== target
+              && t.sessionId !== resolvedTarget
               && !samePlanTracks.some((own) => own.trackId === t.trackId))
             if (otherWrite !== undefined) {
               return {
@@ -4933,11 +5263,11 @@ export function apply(ctx: any): void {
         //   ⚠ 只拦**还在等**的那一份（`!reported`）。一个 `reported` 却带回传错误的 watch
         //     是**已尝试过、不会再回来**的残骸（回传时总线不可用等），把它也算作"未结算"
         //     会让该会话**永久不能再派** —— 那是另一个方向的坏掉。
-        const pending = watches.get(target)
+        const pending = watches.get(resolvedTarget)
         if (pending !== undefined && !pending.reported) {
           return {
             ok: false,
-            sessionId: target,
+            sessionId: resolvedTarget,
             reason: `session "${target}" already has an unsettled round (round ${pending.round ?? '?'}`
               + `${pending.task === undefined ? '' : `: ${pending.task}`}); its result has not come back yet. `
               + 'Wait for that relay (hob_orch_status shows it), or dispatch to a different live session.',
@@ -4990,7 +5320,7 @@ export function apply(ctx: any): void {
          *   ⚠ 与上面 `const ws = ...` 同一口径（那段注释解释了为什么 owner 优先）。
          */
         const myWsRoot = (typeof self === 'string' ? wsRootOfSession(self) : undefined)
-          ?? wsRootOfSession(target)
+          ?? wsRootOfSession(resolvedTarget)
         let diskPending: PersistedWatch | undefined
         let diskFile: string | undefined
         try {
@@ -5001,7 +5331,7 @@ export function apply(ctx: any): void {
               if (!dExists(f)) continue
               const rows = readOrchState(f).pending
               for (const r of rows) {
-                if (r.target !== target) continue
+                if (r.target !== resolvedTarget) continue
                 /** ⚠ 已 `reported` 的不算未结算（与内存那条同口径）。 */
                 if (r.deliveredAt !== undefined) continue
                 /** ⚠ 跨工作区不算同一目标（丙-12 要求 4）。 */
@@ -5017,7 +5347,7 @@ export function apply(ctx: any): void {
         if (diskPending !== undefined) {
           return {
             ok: false,
-            sessionId: target,
+            sessionId: resolvedTarget,
             reason: `session "${target}" already has an unsettled round **recorded on disk**`
               + ` (round ${diskPending.round ?? '?'}`
               + `${diskPending.task === undefined ? '' : `: ${diskPending.task}`}`
@@ -5031,7 +5361,7 @@ export function apply(ctx: any): void {
         }
         if (pending !== undefined) {
           svcCtx.logger?.warn?.(
-            `[${name}] 覆盖一条回传失败的残骸：${target}（${pending.error ?? 'unknown error'}）`,
+            `[${name}] 覆盖一条回传失败的残骸：${resolvedTarget}（${pending.error ?? 'unknown error'}）`,
           )
         }
         // 走会话总线投递（复用它的全部闸门：活会话校验、归档拒绝、落库确认）。
@@ -5058,7 +5388,7 @@ export function apply(ctx: any): void {
           if (bindFile !== undefined) {
             try {
               const b = bindSession(bindFile, {
-                sessionId: target,
+                sessionId: resolvedTarget,
                 owner: selfId,
                 via: 'dispatch',
                 ...(wsRootOfSession(selfId) === undefined ? {} : { ownerWsRoot: wsRootOfSession(selfId) as string }),
@@ -5071,7 +5401,7 @@ export function apply(ctx: any): void {
                  */
                 return {
                   ok: false,
-                  sessionId: target,
+                  sessionId: resolvedTarget,
                   reason: `session "${target}" is already bound to another session (owner ${b.conflict.existing.owner}, `
                     + `bound via ${b.conflict.existing.via}) — it is occupied by another side. `
                     + 'A session belongs to exactly one dispatcher: dispatching here would send its receipts '
@@ -5087,7 +5417,41 @@ export function apply(ctx: any): void {
             }
           }
         }
-        const r = await bus.deliver(target, message, opts?.mode === 'steer' ? 'steer' : 'followup')
+        /**
+         * Pre-delivery ledger intent: a dispatch without a RUN is not a dispatch.
+         * The projection is idempotent, so the post-delivery projection below can
+         * remain as a compatibility path.
+         */
+        const preTaskId = typeof opts?.taskId === 'string' ? opts.taskId.trim() : ''
+        const preOwnerWsRoot = typeof self === 'string' && self !== '' ? wsRootOfSession(self) : undefined
+        let preRunId: string | undefined
+        let preDispatchKey: string | undefined
+        /** One attempt has exactly one timestamp; identity, RUN and watch all bind to it. */
+        const dispatchAt = Date.now()
+        if (preTaskId !== '' && preTaskId !== 'implicit' && preOwnerWsRoot !== undefined) {
+          const ledgerRoot = (() => { try { return resolveLedgerRoot('', declaredLedgerHome(svcCtx), preOwnerWsRoot) } catch { return undefined } })()
+          /** No ledger root means this is a legacy/composed path; the dispatch gate decides. */
+          if (ledgerRoot === undefined || !existsSync(ledgerRoot)) {
+            preRunId = undefined
+          } else {
+          const preAt = dispatchAt
+          const projection = await applyProjection(ledgerRoot, {
+            kind: 'dispatch', taskId: preTaskId, target: resolvedTarget,
+            ...(typeof self === 'string' ? { owner: self } : {}), at: preAt,
+            ...(typeof opts?.task === 'string' ? { task: opts.task } : {}),
+          })
+          preDispatchKey = projection.key
+          if (!projection.ok || projection.createdRunId === undefined) {
+            return {
+              ok: false, reason: 'run-intent-failed',
+              message: `账本 RUN 预登记失败：${projection.reason ?? '没有返回 RUN 编号'} ⇒ 本次没有投递。`,
+              ...(projection.reason === undefined ? {} : { detail: projection.reason }),
+            }
+          }
+          preRunId = projection.createdRunId
+          }
+        }
+        const r = await bus.deliver(resolvedTarget, message, opts?.mode === 'steer' ? 'steer' : 'followup')
         if (!r?.ok) {
           const why = r?.reason ?? 'delivery failed'
           /**
@@ -5124,7 +5488,7 @@ export function apply(ctx: any): void {
             if (f0 !== undefined) {
               try {
                 recordClosed(f0, {
-                  target, watcher: owner0 ?? '', at: Date.now(),
+                  target: resolvedTarget, watcher: owner0 ?? '', at: Date.now(),
                   ...(owner0 === undefined ? {} : { owner: owner0 }),
                   ...(typeof opts?.task === 'string' ? { task: opts.task } : {}),
                   ...(typeof opts?.round === 'number' ? { round: opts.round } : {}),
@@ -5148,7 +5512,7 @@ export function apply(ctx: any): void {
                  *     后一次把前一次盖掉（读数只看见最后一次）。
                  */
                 recordClosed(file, {
-                  target, watcher: owner ?? '', at: Date.now(),
+                  target: resolvedTarget, watcher: owner ?? '', at: Date.now(),
                   ...(owner === undefined ? {} : { owner }),
                   ...(typeof opts?.task === 'string' ? { task: opts.task } : {}),
                   ...(typeof opts?.round === 'number' ? { round: opts.round } : {}),
@@ -5168,12 +5532,29 @@ export function apply(ctx: any): void {
               }
             }
           }
+          /** Settle the RUN intent as refused; never leave registered/running as if work started. */
+          if (preRunId !== undefined && preTaskId !== '' && preTaskId !== 'implicit' && preOwnerWsRoot !== undefined) {
+            try {
+              const ledgerRoot = resolveLedgerRoot('', declaredLedgerHome(svcCtx), preOwnerWsRoot)
+              if (ledgerRoot !== undefined) {
+                const projection = await applyProjection(ledgerRoot, {
+                  kind: 'refuse', taskId: preTaskId, target: resolvedTarget, at: dispatchAt,
+                  refusedAt: new Date().toISOString(), reason: why,
+                })
+                if (!projection.ok) {
+                  svcCtx.logger?.warn?.(`[${name}] 投递失败后的 RUN 结算未落账：${projection.reason ?? 'unknown'}`)
+                }
+              }
+            } catch (e) {
+              svcCtx.logger?.warn?.(`[${name}] 投递失败后的 RUN 结算抛错：${String((e as Error)?.message ?? e)}`)
+            }
+          }
           return { ok: false, reason: why }
         }
 
         // 登记 watch（**投递成功之后**才登记 —— 没送出去就不该等回传）。
         const cur = (() => {
-          try { const a = agents.get?.(target); return a?.status } catch { return undefined }
+          try { const a = agents.get?.(resolvedTarget); return a?.status } catch { return undefined }
         })()
         /**
          * ⚠⚠ **owner = 派这一单的那个会话**（`I-1`）。它同时是一等公民：
@@ -5185,13 +5566,23 @@ export function apply(ctx: any): void {
          */
         const owner = typeof self === 'string' && self !== '' ? self : undefined
         const ownerWsRoot = owner === undefined ? undefined : wsRootOfSession(owner)
+        const dispatchId = dispatchIdOf({
+          owner: typeof self === 'string' ? self : '',
+          target: resolvedTarget,
+          taskId: typeof opts?.taskId === 'string' ? opts.taskId : '',
+          at: dispatchAt,
+        })
         const w: Watch = {
-          target,
+          target: resolvedTarget,
           watcher: typeof self === 'string' ? self : '',
+          dispatchId,
+          ...(preRunId === undefined ? {} : { runId: preRunId }),
+          requestedTarget: target,
+          targetChanged: target !== resolvedTarget,
           ...(opts?.round === undefined ? {} : { round: opts.round }),
           ...(opts?.task === undefined ? {} : { task: opts.task }),
           ...(typeof opts?.taskId === 'string' && opts.taskId.trim() !== '' ? { taskId: opts.taskId.trim() } : {}),
-          at: Date.now(),
+          at: dispatchAt,
           // 投递时它若已在跑，直接算"见过 running"，否则等状态事件点亮。
           sawRunning: cur === 'running',
           /**
@@ -5203,8 +5594,8 @@ export function apply(ctx: any): void {
           ...(owner === undefined ? {} : { owner }),
           ...(ownerWsRoot === undefined ? {} : { ownerWsRoot }),
         }
-        watches.set(target, w)
-        lastStatus.set(target, cur ?? 'unknown')
+        watches.set(resolvedTarget, w)
+        lastStatus.set(resolvedTarget, cur ?? 'unknown')
         /**
          * ══════════════════════════════════════════════════════════════════════
          * **运行态 → 账本投影：派发成功**
@@ -5223,7 +5614,7 @@ export function apply(ctx: any): void {
               const projection = await applyProjection(ledgerRoot, {
                 kind: 'dispatch',
                 taskId: w.taskId,
-                target,
+                target: resolvedTarget,
                 ...(owner === undefined ? {} : { owner }),
                 at: w.at,
                 ...(w.task === undefined ? {} : { task: w.task }),
@@ -5255,30 +5646,54 @@ export function apply(ctx: any): void {
               const listed = activePlansAt(ledgerRoot)
                 .filter((plan) => plan.joinOwnerSessionId === owner)
               const attached = opts?.planId === undefined
-                ? listed.find((plan) => plan.tracks.some((track) => track.sessionId === target
-                  && track.taskId === (opts?.task ?? track.taskId)))
+                ? listed.find((plan) => plan.tracks.some((track) => track.sessionId === resolvedTarget
+                  && track.taskId === (opts?.taskId ?? track.taskId)))
                 : listed.find((plan) => plan.planId === opts.planId)
               if (attached !== undefined) {
-                const track = attached.tracks.find((item) => item.sessionId === target
-                  && (opts?.task === undefined || item.taskId === opts.task))
+                const track = attached.tracks.find((item) => item.sessionId === resolvedTarget
+                  && (opts?.taskId === undefined || item.taskId === opts.taskId))
                 if (track !== undefined) {
                   const states = { ...(attached.trackStates ?? {}) } as Record<string, WorkTrackState>
                   states[track.trackId] = 'running'
                   attached.trackStates = states
                   attached.state = 'running'
-                  writeWorkPlan(ledgerRoot, attached)
+                  /**
+                   * ⚠ **T-11：返回值必须接住。** 附挂写失败 ⇒ 内存里这条轨是 running，
+                   *   盘上却还是 pending ⇒ 重启后这条轨「凭空消失」，用户找不到它为什么没跑。
+                   */
+                  const attachWritten = writeWorkPlan(ledgerRoot, attached)
+                  if (!attachWritten.ok) {
+                    svcCtx.logger?.warn?.(
+                      `[${name}] WorkPlan ${attached.planId} 附挂轨道后写盘失败：`
+                        + `${attachWritten.reason ?? 'unknown'} ⇒ 重启后该轨可能丢失`,
+                    )
+                  }
                 }
               } else if (opts?.planId === undefined && listed.length === 0) {
+                /**
+                 * ⚠ 隐式计划必须记录**本次真实档位**（`opts.workMode`）。
+                 *   改前写死 `auto` ⇒ 单会话/多会话会话的计划在面板上被显示成「自动」，
+                 *   用户据此误判“档位没生效”。旧内部调用不带档位时才回落缺省档。
+                 */
+                const implicitMode = opts?.workMode ?? 'auto'
                 const implicit = buildStoredWorkPlan({
                   planId: `WP-implicit-${owner}-${Date.now()}`,
                   changeId: opts?.task ?? 'implicit',
-                  mode: 'auto',
+                  mode: implicitMode,
                   workspaceRoot: ownerWsRoot,
                   rationale: 'legacy single-target dispatch',
+                  ...(opts?.singleTrackReason === undefined ? {} : { singleTrackReason: opts.singleTrackReason }),
+                  ...(opts?.singleTrackEvidence === undefined ? {} : { singleTrackEvidence: opts.singleTrackEvidence }),
                   tracks: [{
                     trackId: 'single',
-                    taskId: opts?.task ?? 'implicit',
-                    sessionId: target,
+                    /**
+                     * ⚠ 隐式计划的轨道任务号只认真实 `taskId`。
+                     *   改前用自由描述 `task` 顶替 ⇒ 面板/看护把它当成一个“任务”，
+                     *   而账本里根本没有这个对象（投影也会 skipped）。
+                     *   没有真实任务号时保留 `implicit` 占位，并让计划自己标 `implicit`。
+                     */
+                    taskId: opts?.taskId ?? 'implicit',
+                    sessionId: resolvedTarget,
                     goal: opts?.task ?? 'single-target dispatch',
                     scopePaths: ['.'],
                     accessType: opts?.accessType ?? 'read',
@@ -5293,12 +5708,25 @@ export function apply(ctx: any): void {
                 implicit.state = 'running'
                 /** `WM-10`：旧单目标入口自动生成的隐式单轨计划，可被状态面识别。 */
                 implicit.implicit = true
-                writeWorkPlan(ledgerRoot, implicit)
+                /**
+                 * ⚠ **T-11：返回值必须接住，且这条最隐蔽。**
+                 *   隐式计划写失败时，下一次派活会**再生成一份新的隐式计划**（`:5439` 的判据依赖
+                 *   「盘上有没有 active 计划」）⇒ 盘上永远没有，于是**每派一次多一份**。
+                 *   表现不是"报错"，而是"计划列表越用越长、每条都是刚建的"。
+                 */
+                const implicitWritten = writeWorkPlan(ledgerRoot, implicit)
+                if (!implicitWritten.ok) {
+                  svcCtx.logger?.warn?.(
+                    `[${name}] 隐式 WorkPlan ${implicit.planId} 写盘失败：`
+                      + `${implicitWritten.reason ?? 'unknown'}`
+                      + ' ⇒ 下次派活会再生成一份新的隐式计划（盘上永远没有 active）',
+                  )
+                }
               }
             }
           } catch { /* 计划可见性是附加读数，不改变既有投递结果 */ }
         }
-        svcCtx.logger?.debug?.(`[${name}] 已登记回传 watch：${target} → ${w.watcher}`)
+        svcCtx.logger?.debug?.(`[${name}] 已登记回传 watch：${resolvedTarget} → ${w.watcher}`)
         // ── 落盘（**本批新增**）：让"有未结算派发"这件事活过下一次重载 ──
         //   ⚠ 写失败必须留 warn：静默的"记不上账"正是本批要修的失败模式。
         try {
@@ -5308,9 +5736,9 @@ export function apply(ctx: any): void {
            * ⚠ owner 判不出（没给 `self`）⇒ 退回目标的 cwd（**只为让这次派发可观测**，
            *   并照实记 warn）—— ⚠ 但那条记录的 `owner` 仍是空 ⇒ 读数侧**不会**把它算给任何人。
            */
-          const ws = ownerWsRoot ?? wsRootOfSession(target)
+          const ws = ownerWsRoot ?? wsRootOfSession(resolvedTarget)
           const file = runtimeFileOf(svcCtx, ws)
-          stateFileFor.set(target, file ?? '')
+          stateFileFor.set(resolvedTarget, file ?? '')
           /**
            * ⚠⚠ **登记"这个 owner 用过这个落点"**（2026-10-24 · 本单 §1）——
            *   零组分支（本代已无活着的记录）靠它决定该对哪些 `(文件, owner)` 做分区合并，
@@ -5329,10 +5757,10 @@ export function apply(ctx: any): void {
            *   ⛔ 不去 `w.stateFile` 里取、⛔ 不去猜一个相邻文件。
            *   ⚠ 判据见 `check:orch` 的 **SB-1b**（摘掉落点登记 ⇒ 盘上不许出现该记录 + 必须有可读 warn）。
            */
-          const located = stateFileFor.get(target)
+          const located = stateFileFor.get(resolvedTarget)
           if (located !== file) {
             svcCtx.logger?.warn?.(
-              `[${name}] 落点登记缺失（target=${target} · 算出的 file=${String(file)}`
+              `[${name}] 落点登记缺失（target=${resolvedTarget} · 算出的 file=${String(file)}`
               + ` · stateFileFor=${String(located)}）⇒ **本次派发不落盘**`
               + '（⛔ 不猜一个文件：重载后这次派发将不可观测）。',
             )
@@ -5413,7 +5841,7 @@ export function apply(ctx: any): void {
              */
             if (owner !== undefined && owner !== '') {
               try {
-                const we = registerWatchEntry(file, owner, target)
+                const we = registerWatchEntry(file, owner, resolvedTarget)
                 /**
                  * ⚠ **进入 `awake` ⇒ 武装看护定时器**（`TASK-3` §二.1 的"武装"那一格）。
                  *   ⚠ 写失败 ⇒ **不武装**（没有登记就没有"该盯谁"的依据，⛔ 不许空转）。
@@ -5425,7 +5853,7 @@ export function apply(ctx: any): void {
                 }
                 if (!we.wrote) {
                   svcCtx.logger?.warn?.(
-                    `[${name}] 看护登记**没写成**（${file} · owner=${owner} · target=${target}）`
+                    `[${name}] 看护登记**没写成**（${file} · owner=${owner} · target=${resolvedTarget}）`
                     + ' ⇒ ⚠ 这条派发不会被看护盯着（外表与"没有看护"一样，⛔ 别当它已登记）。',
                   )
                 }
@@ -5436,22 +5864,36 @@ export function apply(ctx: any): void {
                 )
               }
             }
-            // ── 清"待投递"（2026-10-10 新增）：这次投递成功 ⇒ 之前的欠账已还 ──
-            //   ⚠ 匹配细则（见回报说明）：
-            //     · `spawned-session`：**目标会话 id === ref**（它已被投过）；
-            //     · `task-file`：**投递发生在其 `at` 之后**（`h.at <= w.at`）——
-            //       不去猜"这条消息投的是哪个文件"（按文本匹配会误判），
-            //       只问"这份文件写出之后，**有没有发生过一次投递**"。
+            // ── 清"待投递"：这次投递成功 ⇒ 之前的欠账已还 ──────────────────────
+            //   ⚠ 匹配细则：
+            //     · `spawned-session`：**目标会话 id === ref**（它已被投过）—— 精确匹配；
+            //     · `task-file`：**⛔ 本处不清**（R-25 更正）。
+            //
+            //   ⚠⚠ **为什么 `task-file` 必须由别处清，而不是按时间窗清**（实测复核）：
+            //
+            //     改前这里是 `return h.at <= w.at` ——「这份文件写出之后有没有发生过一次投递」。
+            //     ⚠ 但 `task-file` 的 `ref` 是**被写的那个文件路径**，而**本次派发不知道是哪个文件**
+            //       （`w` 是 watch 记录，只有 `target` / `at`，没有文件信息）。
+            //     ⇒ 时间窗会**误清别人的记录**：同一工作区里，
+            //       A 写了 `archive/x/TASK-A.md`（`at` 较早、**还没投递**），
+            //       B 此刻投递成功（`w.at` 较晚）⇒ A 那条**被 B 的成功投递清掉** ⇒
+            //       **真漏派被抹掉**，而「抹掉真漏派」正是本仓最忌的失败形态。
+            //
+            //   ⚠ **正确的清法在 `write-delivery.ts:264`**：它**知道 `input.ref`**
+            //     （那正是本次写的文件）⇒ 用 `h.ref === input.ref` 精确匹配。
+            //   ⚠ 另有 `bus.ts` 记录的 `task-file`（派发失败的待重投）—— 同样带确切 `ref`，
+            //     由**那条派发自己**的成功路径清，⛔ 不该被这里按时间窗扫掉。
+            //
             //   ⚠ 保守方向：宁可少清（多报一条待投递 = 多一句提示，无害），
             //     **不清错**（清错 = 把真漏派抹掉 = 本缺陷复现）。
             const cleared = clearHandoffs(file, (h) => {
               if (h.wsRoot !== undefined && ws !== undefined && h.wsRoot !== ws) return false
-              if (h.kind === 'spawned-session') return h.ref === target
-              return h.at <= w.at
+              if (h.kind === 'spawned-session') return h.ref === resolvedTarget
+              return false
             })
             if (cleared.cleared.length > 0) {
               svcCtx.logger?.debug?.(
-                `[${name}] 已清 ${cleared.cleared.length} 条待投递记录（本次投递：${target}）`,
+                `[${name}] 已清 ${cleared.cleared.length} 条待投递记录（本次投递：${resolvedTarget}）`,
               )
             }
           } else {
@@ -5462,9 +5904,13 @@ export function apply(ctx: any): void {
         }
         return {
           ok: true,
-          sessionId: target,
+          sessionId: resolvedTarget,
           ...(r.messageId === undefined ? {} : { messageId: r.messageId }),
           watching: w.watcher !== '',
+          ...(w.dispatchId === undefined ? {} : { dispatchId: w.dispatchId }),
+          ...(w.runId === undefined ? {} : { runId: w.runId }),
+          ...(w.requestedTarget === undefined ? {} : { requestedTarget: w.requestedTarget }),
+          ...(w.targetChanged === undefined ? {} : { targetChanged: w.targetChanged }),
           // ── 目标预设预警（第 129 轮）—— **透传服务层的判定**，⛔ 不重写措辞 ────
           //   ⚠ 编排器**自己不去读预设**：`deliver()` 已经读过了（那是服务层的活），
           //     在这里再读一次 = 同一事实两个来源 ⇒ 必然漂移（E-128 的口径）。
@@ -5535,8 +5981,35 @@ export function apply(ctx: any): void {
          *   而漂的正是"读数说的"与"读数凭的"这件事，`E-160` 同族）。
          */
         const reach = reachabilityFor(opts?.wsRoot)
+        /**
+         * ⚠⚠ **T-12：把"上次投影没落"带进本次读数**（⛔ 不改投递语义）。
+         *
+         *   回执先发、投影后落 ⇒ 回执正文里不可能带投影结果。
+         *   这里从**已回传的 watch** 里数出失败条数，让派活方**下一次**看状态时能看见。
+         *
+         *   ⚠ 只在 `> 0` 时给值（正常档不出现 ⇒ 既有输出快照逐字不变）。
+         *   ⚠ 原因取**第一条**（⛔ 不拼一长串：头行是一行，多了没人读）。
+         */
+        const projectionFailures = (() => {
+          const relFailed = mine.watches.filter((w) => w.ledgerProjection?.return?.ok === false)
+          const disFailed = mine.watches.filter((w) => w.ledgerProjection?.dispatch?.ok === false)
+          if (relFailed.length === 0 && disFailed.length === 0) return undefined
+          const firstWhy = relFailed[0]?.ledgerProjection?.return?.reason
+            ?? disFailed[0]?.ledgerProjection?.dispatch?.reason
+          const parts: string[] = []
+          if (relFailed.length > 0) parts.push(`回传 ${relFailed.length} 条`)
+          if (disFailed.length > 0) parts.push(`派发 ${disFailed.length} 条`)
+          return {
+            returnFailed: relFailed.length,
+            dispatchFailed: disFailed.length,
+            headline: `⚠ 账本投影**没落**：${parts.join(' · ')}（回执已发出，但账本未更新）`
+              + `${firstWhy === undefined || firstWhy === '' ? '' : ` ⇒ 原因：${firstWhy}`}`
+              + ' —— ⛔ 别把"回执发出"当成"账本已落"',
+          }
+        })()
         return {
           workPlans: plans,
+          ...(projectionFailures === undefined ? {} : { ledgerProjectionFailures: projectionFailures }),
           /**
            * ⚠ 停/未停**也是自己的那一份**（`I-4` 末条）：别人停了不该让我的读数显示"已停"。
            */
@@ -8204,6 +8677,17 @@ export function apply(ctx: any): void {
         const before = lastStatus.get(id)
         lastStatus.set(id, status)
         /**
+         * Session status is a supplementary invalidation only. It lets an open
+         * panel re-read its snapshots when dispatch or completion changes what
+         * the user should see, without treating the event as stage truth.
+         */
+        const liveRoot = (() => {
+          const liveWs = wsRootOfSession(id)
+          if (liveWs === undefined) return undefined
+          try { return resolveLedgerRoot('', declaredLedgerHome(svcCtx), liveWs) } catch { return undefined }
+        })()
+        if (liveRoot !== undefined) publishLiveChange(liveRoot, ['session'])
+        /**
          * ⚠ ⚠ **实施会话叫醒面**（2026-10-19 · `TASK-2` · **主信号源**）──────────
          *   ⚠ 它与下面的 `watches` **是两张独立的表**：
          *     · `watches` = `hob_dispatch` 派出去的活（**含重挂恢复逻辑，一行未动**）；
@@ -8215,6 +8699,24 @@ export function apply(ctx: any): void {
          */
         void dispatchWake.observe(id, typeof status === 'string' ? status : undefined)
         const w = watches.get(id)
+        /**
+         * A completion without a matching watch is an orphan, never a receipt.
+         * Record it in the existing closed ledger so the event is auditable; do
+         * not synthesize a relay or infer which task it belonged to.
+         */
+        if (w === undefined && status === 'idle' && before === 'running') {
+          try {
+            const ws = wsRootOfSession(id)
+            const file = ws === undefined ? undefined : runtimeFileOf(svcCtx, ws)
+            if (file !== undefined) {
+              recordClosed(file, {
+                target: id, watcher: '', at: Date.now(), sawRunning: true,
+                orphanCompletionAt: Date.now(),
+                orphanCompletionWhy: 'completion observed without a matching dispatch/watch; no receipt generated',
+              })
+            }
+          } catch { /* orphan is diagnostic; never break the status handler */ }
+        }
         if (w !== undefined && !w.reported) {
           if (status === 'running') {
             // 见过 running 才算"它真的开始跑了" —— 光看到 idle 不能当"跑完"。
@@ -8417,6 +8919,8 @@ export function createHobOrchTools(
    * ⚠ 不传 ⇒ **fail-closed**：`accept` 拒绝，⛔ 不退回「只看参数」的旧行为。
    */
   acceptanceGateOf?: (exec: any, taskId: string) => { ok: boolean; reason?: string },
+  /** Unified ledger lifecycle; absent means fail closed for new protocol work. */
+  lifecycleOf?: (exec: any) => LedgerLifecycle,
   /**
    * **判决落账器**（2026-11-08 · 运行态 → 账本）。
    *
@@ -8426,20 +8930,56 @@ export function createHobOrchTools(
    *   ⛔ 不假装账本已经写成功。
    */
   ledgerProjectionOf?: (exec: any) => {
-    apply: (fact: {
-      kind: 'verdict'
-      taskId: string
-      verdict: 'pass' | 'send-back'
-      verifiedAt: string
-      basis: string[]
-      actor: string
-      acceptanceSession?: string
-      existingAcceptanceSession?: string
-      productConfirmation?: string
-      verificationRefs?: string[]
-      exampleResults?: string[]
-      sendBackTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
-    }) => Promise<{ ok: boolean; applied: number; reason?: string }>
+    apply: (fact:
+      | {
+        kind: 'verdict'
+        taskId: string
+        verdict: 'pass' | 'send-back'
+        verifiedAt: string
+        basis: string[]
+        actor: string
+        acceptanceSession?: string
+        existingAcceptanceSession?: string
+        productConfirmation?: string
+        verificationRefs?: string[]
+        exampleResults?: string[]
+        sendBackTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
+      }
+      | {
+        kind: 'verify'
+        taskId: string
+        verdict: 'pass' | 'send-back' | 'waived'
+        verifiedAt: string
+        basis: string[]
+        verifier: string
+        verificationSession?: string
+        criteriaRefs?: string[]
+        evidenceRefs?: string[]
+        nonconformanceRefs?: string[]
+        sendBackTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
+        waiverSource?: string
+        waivedBy?: string
+        riskReviewRefs?: string[]
+      }
+      | {
+        kind: 'close'
+        reqId: string
+        status: 'closed' | 'skipped' | 'blocked'
+        closureMode: 'skipped' | 'standard' | 'strict'
+        basis: string[]
+        releaseRefs?: string[]
+        rollbackRefs?: string[]
+        monitoringRefs?: string[]
+        liens?: string[]
+        acceptedBy?: string
+        approvalRef?: string
+        closedAt: string
+        skipReason?: string
+        chainAcceptanceRef?: string
+        riskAssessmentRef?: string
+        residualRiskDecisionRef?: string
+      }
+    ) => Promise<{ ok: boolean; applied: number; reason?: string }>
   } | undefined,
 ): {
   dispatch: ReturnType<typeof defineTool>
@@ -8451,8 +8991,12 @@ export function createHobOrchTools(
     description:
       '**派活并登记回传**：把指令投给指定会话，系统在**它这一轮跑完后自动把结果送回来**。'
       + '与 `hob_send` 的区别：`hob_send` 投完就结束（结果不回来），`hob_dispatch` 会**等它跑完再叫醒你**。'
+      + '⚠ **实质工作必须走这条**；若它被账本门禁拒绝，⛔ 不要改投 `hob_send` 假装派活 —— '
+      + '按拒绝里给的原因先建/修账本任务，或如实告诉用户这次没有可回传的执行轨。'
       + '⚠ 回传是「对方说它做了什么」，**不是验收**。⚠ 停了（`hob_orch_control stop`）之后本工具直接拒绝。'
-      + '⚠ 单目标参数保留兼容；多轨传入 `tracks`，一次完成计划、隔离、档位与汇合校验。',
+      + '⚠ 单目标参数保留兼容；多轨传入 `tracks`，一次完成计划、隔离、档位与汇合校验。'
+      + '⚠ 单目标也受推进方式约束：自动档要 `singleTrackReason`；多会话档还要 `singleTrackEvidence.candidatePieces`，'
+      + '且候选里存在独立对时必须改用 `tracks` 多轨。单会话档不接受单轨原因。',
     parameters: {
       sessionId: {
         type: 'string',
@@ -8484,7 +9028,8 @@ export function createHobOrchTools(
       singleTrackReason: {
         type: 'string',
         enum: ['same-file', 'shared-contract', 'strict-order', 'single-acceptance-unit', 'insufficient-independent-scope'],
-        description: '多轨派活可选：多会话/自动档只有一条轨时的封闭原因（必填才能派单轨）。',
+        description: '单轨判路依据：自动档的单目标/单轨派活必填；多会话档还必须配 candidatePieces；'
+          + '单会话档不接受该字段。多轨派活可选（写轨被串行化时由系统补齐）。',
       },
       /**
        * ⚠ 单轨原因的**可核对依据**。缺了它，`same-file` / `strict-order` 会被
@@ -8492,9 +9037,10 @@ export function createHobOrchTools(
        */
       singleTrackEvidence: {
         type: 'json',
-        description: '多轨派活可选但 same-file / strict-order 必填：{ piecePaths?: {片段名: [路径...]}, orderedSteps?: [步骤...] }。'
+        description: '单轨证据：{ piecePaths?: {片段名: [路径...]}, orderedSteps?: [步骤...], candidatePieces?: [{pieceId, scopePaths, acceptance, dependsOn?, sharedContracts?, acceptanceUnit?}] }。'
           + 'same-file 要用 piecePaths 给出 ≥2 个片段，每个带非空路径，且至少一对片段真的写同一处；'
-          + 'strict-order 要用 orderedSteps 给出 ≥2 个不同的有序子步骤。',
+          + 'strict-order 要用 orderedSteps 给出 ≥2 个不同的有序子步骤；'
+          + '多会话档单目标/单轨必须用 candidatePieces（最多 8 个）证明没有独立候选对。',
       },
       tracks: {
         type: 'json',
@@ -8544,23 +9090,53 @@ export function createHobOrchTools(
          *   `task` 仅作回传描述。多轨 `tracks` 每条已由计划校验器要求真实任务号。
          */
         const taskId = typeof args.taskId === 'string' ? args.taskId.trim() : ''
+        if (!Array.isArray(args.tracks)) {
+          const life = lifecycleOf?.(exec)
+          /** Legacy test compositions do not pass a lifecycle; the existing gate remains authoritative for them. */
+          if (life !== undefined) {
+          /**
+           * Only the lifecycle/identity row belongs here. Task-chain, task status and
+           * target-preset checks stay in the existing scoped gate so the two paths
+           * cannot drift or be mistaken for one another.
+           */
+          if (life.state !== 'active' || life.active !== true) {
+            return JSON.stringify({ ok: false, reason: 'ledger-invalid', returnRegistered: false,
+              message: `账本不是当前可用账本：${life.headline} ⇒ ${life.nextAction}`,
+              blockers: life.blockers })
+          }
+          if (taskId === '' || taskId === 'implicit') {
+            return JSON.stringify({ ok: false, reason: 'task-id-required', returnRegistered: false,
+              message: '派发必须给真实 taskId（形如 TSK-…）；本次没有投递、没有回传。' })
+          }
+          }
+        }
         if (!Array.isArray(args.tracks) && !/^TSK-[A-Za-z0-9-]+$/.test(taskId)) {
           return JSON.stringify({
             ok: false,
             reason: 'task-id-required',
+            returnRegistered: false,
             message: '拒绝：单目标派活必须给账本里的真实任务号 `taskId`（形如 TSK-080）；'
               + '自由描述 `task` 只作回传说明，不能代替账本对象。'
-              + ' ⚠ 先走需求 → 方案 → 任务三步，再把任务派给执行会话。',
+              + ' ⚠ 先走需求 → 方案 → 任务三步，再把任务派给执行会话。'
+              + ' ⛔ **本次没有登记回传**：不要改投 hob_send；那只是单向通知，对方跑完不会回来。',
           })
         }
         const blocked = proceedGateOf?.(exec, {
           ...(taskId !== '' ? { taskId } : {}),
           ...(typeof args.planId === 'string' && args.planId.trim() !== '' ? { planId: args.planId.trim() } : {}),
         })
-        if (blocked !== undefined) return JSON.stringify({ ok: false, reason: 'proceed-not-confirmed', message: blocked })
+        if (blocked !== undefined) {
+          return JSON.stringify({
+            ok: false,
+            reason: 'proceed-not-confirmed',
+            returnRegistered: false,
+            message: blocked + ' ⛔ 本次没有登记回传。不要用 hob_send 冒充派活（它不会回传）；'
+              + '先按上面的门禁原因补齐账本任务，或如实告诉用户这次只有通知、没有可回传的执行轨。',
+          })
+        }
       } catch (e) {
         return JSON.stringify({
-          ok: false, reason: 'proceed-gate-error',
+          ok: false, reason: 'proceed-gate-error', returnRegistered: false,
           message: `拒绝：无法确认本会话的原「推进工作方式」（闸门抛错：${String((e as Error)?.message ?? e)}）`,
         })
       }
@@ -8620,6 +9196,11 @@ export function createHobOrchTools(
         })
         return JSON.stringify({
           ...planResult,
+          mode,
+          trackCount: planResult.tracks.length,
+          modePolicy: workModePolicySummary(mode),
+          /** ⚠ 模型要能一眼看出“下一份计划按哪一档执行”，而不是自己从工具名猜。 */
+          workModeNote: `${workModePolicySummary(mode)}。本计划创建时冻结该档位；之后改档只影响下一份计划。`,
           note2: 'Plan dispatch only: a track returning is not acceptance, and the whole plan is not done until its join completes.',
         })
       }
@@ -8631,19 +9212,78 @@ export function createHobOrchTools(
           message: '单目标派活需要 sessionId + message；多轨派活需要 tracks。',
         })
       }
+      /**
+       * ⚠⚠ **单目标派活也受档位约束**（`WM-30`）。
+       *
+       * 单目标等价于一条隐式单轨计划：
+       *   · 档位判不出 ⇒ 不派（⛔ 不按缺省档猜）；
+       *   · 单会话 ⇒ 设定本身，不接受单轨原因；
+       *   · 自动 ⇒ 必须有封闭原因；
+       *   · 多会话 ⇒ 原因 + 候选证据；候选存在独立对 ⇒ 必须改用多轨。
+       */
+      if (mode === undefined) {
+        return JSON.stringify({
+          ok: false,
+          reason: 'work-mode-unknown',
+          returnRegistered: false,
+          message: '无法现读本会话的工作方式 ⇒ 本次不派单（⛔ 不按缺省档猜）。',
+        })
+      }
+      const singleTrackReason = typeof args.singleTrackReason === 'string'
+        ? args.singleTrackReason as MultiSingleTrackReason
+        : undefined
+      const singleTrackEvidence = args.singleTrackEvidence !== undefined && args.singleTrackEvidence !== null
+        && typeof args.singleTrackEvidence === 'object'
+        ? args.singleTrackEvidence as SingleTrackEvidence
+        : undefined
+      const targetVerdict = validateSingleTargetDispatch({
+        mode,
+        ...(singleTrackReason === undefined ? {} : { singleTrackReason }),
+        ...(singleTrackEvidence === undefined ? {} : { singleTrackEvidence }),
+      })
+      if (!targetVerdict.ok) {
+        return JSON.stringify({
+          ok: false,
+          reason: targetVerdict.problems[0]?.code ?? 'single-target-reason-required',
+          returnRegistered: false,
+          mode,
+          problems: targetVerdict.problems,
+          message: targetVerdict.problems.map((p) => p.message).join('；'),
+        })
+      }
       const r = await orch.dispatch(args.sessionId, args.message, {
         self,
         ...(args.round === undefined ? {} : { round: args.round }),
         ...(args.task === undefined ? {} : { task: args.task }),
         ...(args.taskId === undefined ? {} : { taskId: args.taskId }),
+        workMode: mode,
+        ...(singleTrackReason === undefined ? {} : { singleTrackReason }),
+        ...(singleTrackEvidence === undefined ? {} : { singleTrackEvidence }),
       })
-      if (!r.ok) return JSON.stringify({ ok: false, reason: r.reason })
+      if (!r.ok) {
+        return JSON.stringify({
+          ok: false,
+          reason: r.reason,
+          ...(r.message === undefined ? {} : { message: r.message }),
+          ...(r.needsUser === true ? { needsUser: true } : {}),
+          ...(r.configuredPreset === undefined ? {} : { configuredPreset: r.configuredPreset }),
+          ...(r.targetPreset === undefined ? {} : { targetPreset: r.targetPreset }),
+        })
+      }
       return JSON.stringify({
         ok: true,
         dispatched: true,
         sessionId: r.sessionId,
         ...(r.messageId === undefined ? {} : { messageId: r.messageId }),
         watching: r.watching,
+        ...(r.dispatchId === undefined ? {} : { dispatchId: r.dispatchId }),
+        ...(r.runId === undefined ? {} : { runId: r.runId }),
+        ...(r.requestedTarget === undefined ? {} : { requestedTarget: r.requestedTarget }),
+        ...(r.targetChanged === undefined ? {} : { targetChanged: r.targetChanged }),
+        mode,
+        trackCount: 1,
+        modePolicy: workModePolicySummary(mode),
+        workModeNote: `${workModePolicySummary(mode)}。本次单目标派活按隐式单轨计划记录该档位。`,
         // ── 目标预设预警（判据 3）—— 与 `hob_send` **同源同措辞**（都来自服务层）──
         ...(r.presetNotice === undefined ? {} : { presetNotice: r.presetNotice }),
         note2: 'Dispatched only: the work is not done. You will be woken with its result; '
@@ -10025,6 +10665,17 @@ export function createHobOrchTools(
          *     而下面那两行是**旁证通道**（SSE 连没连上），层次不同。
          */
         ...recordLines,
+        /**
+         * ⚠⚠ **T-12：上次账本投影没落 ⇒ 头行必须说**（⛔ 只在非零时出现）。
+         *
+         *   回执是**先发、投影后落** ⇒ 派活方读回执看到「活干完了」，
+         *   而账本里 RUN 仍可能是 `registered`。⛔ 不改投递语义（先写后发是对的），
+         *   ⇒ 把这件事带进**下一次**读数。
+         *
+         *   ⚠ 措辞必须点明「回执已发出、账本未更新」—— 只说「投影失败」会让人
+         *     以为是写盘出错，而实际是**两件事的时序差**。
+         */
+        ...(s.ledgerProjectionFailures === undefined ? [] : [s.ledgerProjectionFailures.headline]),
         // ── ⚠ 以下是**旁证通道**的行（看板 SSE —— `TASK-2` 里已降为旁证）──────
         //   它们只在**叫醒面不正常**时出现（连不上 / 没订阅过），
         //   ⛔ 不在正常态刷屏；措辞里必须写清"这不等于没有卡跑完"。
@@ -10088,7 +10739,8 @@ export function createHobOrchTools(
          */
         ...(planState.plans.length === 0 && planState.unreadable.length === 0
           ? []
-          : [`  ▸ **工作计划**：${planState.plans.length} 个活动 · 工作方式=${planState.mode}`,
+          : [`  ▸ **工作计划**：${planState.plans.length} 个活动 · 工作方式=${planState.mode}`
+            + `${planState.mode === 'unknown' ? '' : `（${workModePolicySummary(planState.mode)}）`}`,
             ...planState.plans.map((p) =>
               `    · ${p.planId} · ${p.state} · 轨道 ${p.trackCount}`
               + `（运行 ${p.running} / 等待 ${p.waiting} / 返回 ${p.returned} / 失败 ${p.failed}）`
@@ -10110,9 +10762,11 @@ export function createHobOrchTools(
       action: {
         type: 'string',
         required: true,
-        enum: ['stop', 'resume', 'redeliver', 'accept', 'send-back', 'watch-wait', 'plan-complete', 'archive-stale-plan'],
+        enum: ['stop', 'resume', 'redeliver', 'verify', 'accept', 'send-back', 'close-delivery', 'watch-wait', 'plan-complete', 'archive-stale-plan'],
         description: 'stop=停；resume=恢复；redeliver=**显式补投**一条投错人的回执（需 executionId + taskId）；'
           + 'accept=**验收**（需 taskId + basis + productConfirmation + verificationRefs + exampleResults）；'
+          + 'verify=**独立技术验证**（需 taskId + verdict + basis + verifier + criteriaRefs）；'
+          + 'close-delivery=**交付收口**（需 reqId + closureMode + basis；strict 还须回滚与监控证据）；'
           + 'send-back=**退回重做**（需 taskId + basis + returnTo）；'
           + 'plan-complete=**汇合责任人收口计划**（需 planId；计划须先到 joining）；'
           + 'archive-stale-plan=**把超时未收口的计划移出活动区**（需 planId + note；不改业务状态、不删除原件）；'
@@ -10159,6 +10813,52 @@ export function createHobOrchTools(
         type: 'json',
         description: 'accept 专用：技术验证证据数组（优先 EVD-*）；缺 ⇒ 投影判不出，不落 ACC。',
       },
+      verdict: {
+        type: 'string',
+        enum: ['pass', 'send-back', 'waived'],
+        description: 'verify 专用：技术验证结论。',
+      },
+      verifier: {
+        type: 'string',
+        description: 'verify 专用：独立技术验证者会话 id。',
+      },
+      verificationSession: {
+        type: 'string',
+        description: 'verify 专用：独立技术验证会话 id（缺省用 verifier）。',
+      },
+      criteriaRefs: {
+        type: 'json',
+        description: 'verify 专用：逐条验收条件引用数组。',
+      },
+      nonconformanceRefs: {
+        type: 'json',
+        description: 'verify 专用：未关闭非符合项引用数组；pass 时必须为空。',
+      },
+      riskReviewRefs: {
+        type: 'json',
+        description: 'verify 专用：逐条风险控制证据数组；方案有硬触发或 high/critical 时，pass 必须至少每条硬触发一份。',
+      },
+      newRiskRefs: { type: 'json', description: 'verify 专用：发现但方案未声明的风险引用；有值时不能 pass，必须回 G2 重评。' },
+      newRiskReason: { type: 'string', description: 'verify 专用：发现新风险的事实依据。' },
+      reqId: {
+        type: 'string',
+        description: 'close-delivery 专用：要收口的需求 id。',
+      },
+      closureMode: {
+        type: 'string',
+        enum: ['skipped', 'standard', 'strict'],
+        description: 'close-delivery 专用：收口档位。',
+      },
+      releaseRefs: { type: 'json', description: 'close-delivery 专用：构建 / 发布证据。' },
+      rollbackRefs: { type: 'json', description: 'strict 收口专用：回滚 / 恢复证据。' },
+      monitoringRefs: { type: 'json', description: 'strict 收口专用：发布后监控证据。' },
+      chainAcceptanceRef: { type: 'string', description: 'close-delivery 专用：G5 产品验收接受证据（ACC- 或链引用）。' },
+      riskAssessmentRef: { type: 'string', description: 'close-delivery 专用：本次收口使用的风险评定修订 / 摘要引用。' },
+      residualRiskDecisionRef: { type: 'string', description: 'close-delivery 专用：残余风险接受决定（或明确的无需接受证据）引用。' },
+      skipReason: { type: 'string', description: 'skipped 收口专用：跳过理由。' },
+      liens: { type: 'json', description: 'close-delivery 专用：未关闭整改项数组；有值不得收口。' },
+      acceptedBy: { type: 'string', description: 'close-delivery 专用：收口决定者（skipped / strict 必填）。' },
+      approvalRef: { type: 'string', description: 'strict 收口专用：独立发布审批引用。' },
       exampleResults: {
         type: 'json',
         description: 'accept 专用：用户例子逐条结果数组，每条形如 `EX-1 | pass | EVD-001 | 注`；非 pass 必须带证据引用。',
@@ -10175,7 +10875,7 @@ export function createHobOrchTools(
     },
     async execute(
       args: {
-        action: 'stop' | 'resume' | 'redeliver' | 'accept' | 'send-back' | 'watch-wait' | 'plan-complete' | 'archive-stale-plan'
+        action: 'stop' | 'resume' | 'redeliver' | 'verify' | 'accept' | 'send-back' | 'close-delivery' | 'watch-wait' | 'plan-complete' | 'archive-stale-plan'
         executionId?: string
         taskId?: string
         /** ⚠ 包 H：判决依据（`accept` / `send-back` 专用；⛔ 空数组一律被拒）。 */
@@ -10189,6 +10889,26 @@ export function createHobOrchTools(
         productConfirmation?: string
         verificationRefs?: JsonValue
         exampleResults?: JsonValue
+        verdict?: 'pass' | 'send-back' | 'waived'
+        verifier?: string
+        verificationSession?: string
+        criteriaRefs?: JsonValue
+        nonconformanceRefs?: JsonValue
+        riskReviewRefs?: JsonValue
+        newRiskRefs?: JsonValue
+        newRiskReason?: string
+        reqId?: string
+        closureMode?: 'skipped' | 'standard' | 'strict'
+        releaseRefs?: JsonValue
+        rollbackRefs?: JsonValue
+        monitoringRefs?: JsonValue
+        chainAcceptanceRef?: string
+        riskAssessmentRef?: string
+        residualRiskDecisionRef?: string
+        skipReason?: string
+        liens?: JsonValue
+        acceptedBy?: string
+        approvalRef?: string
       },
       exec: any,
     ): Promise<string> {
@@ -10198,9 +10918,54 @@ export function createHobOrchTools(
        *   ⚠ 只在文案里把新增的 `redeliver` 也列进去（否则报错话会把合法值说漏一个）。
        */
       if (args?.action !== 'stop' && args?.action !== 'resume' && args?.action !== 'redeliver'
+        && args?.action !== 'verify' && args?.action !== 'close-delivery'
         && args?.action !== 'accept' && args?.action !== 'send-back' && args?.action !== 'watch-wait'
         && args?.action !== 'plan-complete' && args?.action !== 'archive-stale-plan') {
-        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume' or 'redeliver' or 'accept' or 'send-back' or 'watch-wait' or 'plan-complete' or 'archive-stale-plan'" })
+        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume' or 'redeliver' or 'verify' or 'accept' or 'send-back' or 'close-delivery' or 'watch-wait' or 'plan-complete' or 'archive-stale-plan'" })
+      }
+      /**
+       * ══════════════════════════════════════════════════════════════════════
+       * **O-35：写账本的四个动作必须过 `proceedGate`**（2026-11-10）
+       * ══════════════════════════════════════════════════════════════════════
+       *
+       * ── 病（实测）────────────────────────────────────────────────────────
+       *   `hob_orch_control` 的 `verify` / `accept` / `send-back` / `close-delivery`
+       *   四个动作会**直接写账本**（`projector.apply(...)`），
+       *   而本工具**全文没有 `proceedGateOf`**（`awk` 实测零命中）。
+       *   ⇒ 它是**第 5 个不过闸门的写工具**（前四个是 init / migrate / rebuild / approve）。
+       *   ⚠ 而它在 `MODEL_TOOL_ALLOWLIST` **三档都有** ⇒ 被隔离 / 归档的会话
+       *     **仍能写验证判决与验收结论**。
+       *   ⇒ 这是 S-01 的**下游**：即使批准链被修，判决链仍无门禁。
+       *
+       * ── 为什么只拦这四个 ──────────────────────────────────────────────────
+       *   · `stop` / `resume` / `watch-wait` —— **必须放行**：它们是「停手」与「报告状态」，
+       *     被隔离的会话**尤其需要**能停下来；拦了就是死锁。
+       *   · `redeliver` / `plan-complete` / `archive-stale-plan` —— 改运行态不改业务判决，
+       *     且 `archive-stale-plan` 是**清理**动作（拦住会让过期计划永远占槽）。
+       *   ⇒ 只拦「**写业务判决**」那四个。
+       *
+       * ⚠ 与 `dispatch` 的闸门**同一份实现**（`proceedGateOf`），⛔ 不另写判据。
+       * ⚠ 判不出（闸门抛错）⇒ **拒绝**（fail-closed，与 `dispatch` 同向）。
+       */
+      const LEDGER_WRITING_ACTIONS = ['verify', 'accept', 'send-back', 'close-delivery'] as const
+      if ((LEDGER_WRITING_ACTIONS as readonly string[]).includes(args.action)) {
+        try {
+          const blocked = proceedGateOf?.(exec, {
+            ...(typeof args.taskId === 'string' && args.taskId.trim() !== '' ? { taskId: args.taskId.trim() } : {}),
+            ...(typeof args.planId === 'string' && args.planId.trim() !== '' ? { planId: args.planId.trim() } : {}),
+          })
+          if (blocked !== undefined) {
+            return JSON.stringify({
+              ok: false, reason: 'proceed-not-confirmed',
+              message: blocked + ' ⛔ 本次没有写账本（验证判决 / 验收结论都不落）。',
+            })
+          }
+        } catch (e) {
+          return JSON.stringify({
+            ok: false, reason: 'proceed-gate-error',
+            message: `拒绝：无法确认本会话的原「推进工作方式」（闸门抛错：${String((e as Error)?.message ?? e)}）`,
+          })
+        }
       }
       /**
        * **过期计划归档**（2026-11-06）：把超时未收口的计划移出活动区。
@@ -10248,6 +11013,72 @@ export function createHobOrchTools(
           ...(r.owner === undefined ? {} : { owner: r.owner }),
           reason: r.reason,
           redeliveredCount: orch.wakeState().redeliveredCount,
+        })
+      }
+      if (args.action === 'verify') {
+        if (typeof args.taskId !== 'string' || args.taskId.trim() === '') {
+          return JSON.stringify({ ok: false, reason: 'verify 需要 taskId' })
+        }
+        const verdict = args.verdict
+        if (verdict !== 'pass' && verdict !== 'send-back' && verdict !== 'waived') {
+          return JSON.stringify({ ok: false, reason: 'verify 需要 verdict: pass / send-back / waived' })
+        }
+        const at = typeof args.verifiedAt === 'string' ? args.verifiedAt.trim() : new Date().toISOString()
+        if (!Number.isFinite(Date.parse(at))) {
+          return JSON.stringify({ ok: false, reason: `verifiedAt 不是可解析时刻：${JSON.stringify(at)}` })
+        }
+        const verifier = String(args.verifier ?? '').trim() || selfSessionIdOf(exec) || ''
+        if (verifier === '') return JSON.stringify({ ok: false, reason: 'verify 判不出 verifier' })
+        const projector = ledgerProjectionOf?.(exec)
+        if (projector === undefined) return JSON.stringify({ ok: false, reason: '账本投影器未接入 ⇒ 技术验证不落账' })
+        const list = (v: unknown): string[] => Array.isArray(v)
+          ? v.map(String).map((x) => x.trim()).filter((x) => x !== '')
+          : []
+        const projection = await projector.apply({
+          kind: 'verify', taskId: args.taskId, verdict, verifiedAt: at,
+          basis: list(args.basis), verifier,
+          ...(typeof args.verificationSession === 'string' ? { verificationSession: args.verificationSession } : {}),
+          criteriaRefs: list(args.criteriaRefs), evidenceRefs: list(args.verificationRefs),
+          nonconformanceRefs: list(args.nonconformanceRefs),
+          riskReviewRefs: list(args.riskReviewRefs),
+          ...(args.returnTo === undefined ? {} : { sendBackTo: args.returnTo }),
+        })
+        return JSON.stringify({
+          ok: projection.ok, target: args.taskId, verdict,
+          ...(projection.reason === undefined ? {} : { reason: projection.reason }),
+          ledgerProjection: projection,
+        })
+      }
+      if (args.action === 'close-delivery') {
+        if (typeof args.reqId !== 'string' || args.reqId.trim() === '') {
+          return JSON.stringify({ ok: false, reason: 'close-delivery 需要 reqId' })
+        }
+        if (args.closureMode !== 'skipped' && args.closureMode !== 'standard' && args.closureMode !== 'strict') {
+          return JSON.stringify({ ok: false, reason: 'close-delivery 需要 closureMode: skipped / standard / strict' })
+        }
+        const projector = ledgerProjectionOf?.(exec)
+        if (projector === undefined) return JSON.stringify({ ok: false, reason: '账本投影器未接入 ⇒ 交付收口不落账' })
+        const list = (v: unknown): string[] => Array.isArray(v)
+          ? v.map(String).map((x) => x.trim()).filter((x) => x !== '')
+          : []
+        const status = args.closureMode === 'skipped' ? 'skipped' : 'closed'
+        const projection = await projector.apply({
+          kind: 'close', reqId: args.reqId, status, closureMode: args.closureMode,
+          basis: list(args.basis), releaseRefs: list(args.releaseRefs),
+          rollbackRefs: list(args.rollbackRefs), monitoringRefs: list(args.monitoringRefs),
+          liens: list(args.liens),
+          acceptedBy: String(args.acceptedBy ?? '').trim(),
+          approvalRef: String(args.approvalRef ?? '').trim(),
+          chainAcceptanceRef: String(args.chainAcceptanceRef ?? '').trim(),
+          riskAssessmentRef: String(args.riskAssessmentRef ?? '').trim(),
+          residualRiskDecisionRef: String(args.residualRiskDecisionRef ?? '').trim(),
+          closedAt: new Date().toISOString(),
+          ...(typeof args.skipReason === 'string' && args.skipReason.trim() !== '' ? { skipReason: args.skipReason.trim() } : {}),
+        })
+        return JSON.stringify({
+          ok: projection.ok, reqId: args.reqId, closureMode: args.closureMode,
+          ...(projection.reason === undefined ? {} : { reason: projection.reason }),
+          ledgerProjection: projection,
         })
       }
       /**

@@ -17,6 +17,8 @@ export const UNIT_STATUSES: Readonly<Record<string, readonly string[]>> = {
   task: ['todo', 'doing', 'built'],
   run: ['registered', 'running', 'returned', 'refused', 'stuck'],
   acc: ['pass', 'send-back', 'unverified'],
+  verification: ['unverified', 'pass', 'send-back', 'waived'],
+  closure: ['open', 'closed', 'skipped', 'blocked'],
   cap: ['live', 'degraded', 'down'],
   risk: ['open', 'handling', 'closed'],
   decision: ['active', 'superseded'],

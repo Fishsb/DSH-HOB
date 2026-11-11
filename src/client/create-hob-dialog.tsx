@@ -35,6 +35,7 @@
  *   ⛔ 不说"所有 API 都有弹窗"。
  */
 import * as React from 'react'
+import { SESSION_CREATE_PATH, SESSION_POLICY_PATH } from './routes.ts'
 // ⚠ 预设 id 唯一来源（⛔ 不在这里写那个字面值 —— `check:presets` ⑦ 组钉着全仓只有一处）
 import { HOB_PRESET_ID } from '../shared/planning-preset.ts'
 // ⚠ 红线句的**单一来源**（2026-10-24 · 修复单第 9 条）：⛔ 不在这里再抄一份中文。
@@ -181,9 +182,9 @@ const HOB_DIALOG_ZH: Record<string, string> = {
   'mode.label.auto': '自动',
   'mode.label.single': '单会话',
   'mode.label.multi': '多会话',
-  'mode.hint.auto': '由 Hob 自行判断下一步推进多少。',
-  'mode.hint.single': '始终只推一条线，不并行拆。',
-  'mode.hint.multi': '可以拆成更细的多条并行推进。',
+  'mode.hint.auto': 'Hob 在已批准范围内自行判断最少必要轨数；可以只开一轨，但要说明原因；读轨可并行，写轨串行；派完报告路数、去向和下一门槛。',
+  'mode.hint.single': '固定一条执行轨；第二条活动轨会被运行时拒绝；大任务在同一轨内分阶段推进。',
+  'mode.hint.multi': '显式扇出；列出两个以上独立工作单元时必须拆轨；每轨独立范围和验收；读轨可并行，写轨仍串行；只开一轨必须给出候选证据和合并原因。',
   'blocked.enumsUnavailable': '服务枚举不可用：{reason}',
   'blocked.enumsLoading': '正在获取可选项…',
   'blocked.workspace': '请选择工作区',
@@ -249,9 +250,9 @@ const HOB_DIALOG_EN: Record<string, string> = {
   'mode.label.auto': 'Automatic',
   'mode.label.single': 'One session',
   'mode.label.multi': 'Many sessions',
-  'mode.hint.auto': 'Hob works out itself how far to push the next step.',
-  'mode.hint.single': 'Always one track, never split in parallel.',
-  'mode.hint.multi': 'May split into finer tracks that run in parallel.',
+  'mode.hint.auto': 'Hob decides the minimum necessary track count within the approved scope; one track is allowed but needs a reason; reads may run in parallel, writes stay serial; report track count, owners and the next gate after dispatch.',
+  'mode.hint.single': 'One execution track, enforced by the runtime: a second active track is refused; large work is sequenced inside that track.',
+  'mode.hint.multi': 'Explicit fan-out: two or more genuinely independent pieces must become separate tracks with independent scope and acceptance; reads may run in parallel, writes stay serial; a single track needs candidate evidence and a merge reason.',
   'blocked.enumsUnavailable': 'Service options unavailable: {reason}',
   'blocked.enumsLoading': 'Reading the available options…',
   'blocked.workspace': 'Choose a workspace',
@@ -372,8 +373,8 @@ export interface HobCreateDialogProps {
  */
 const DEFAULT_CALL_TIMEOUT_MS = 30000
 
-const CREATE_ROUTE = '/api/dsh-hob/session-create'
-const POLICY_ROUTE = '/api/dsh-hob/session-policy'
+const CREATE_ROUTE = SESSION_CREATE_PATH
+const POLICY_ROUTE = SESSION_POLICY_PATH
 
 /** 按 `action` 选路由（⚠ 默认落到创建路由，保持既有动作行为不变）。 */
 function routeOf(action: string): string {
@@ -632,6 +633,9 @@ export function HobCreateDialog(props: HobCreateDialogProps): any {
           return
         }
         setPhase({ kind: 'done', sessionId: targetId })
+        // 2026-11-05 WSL 真机缺陷：成功必须就地关窗，不能只依赖父级 onCreated 链。
+        // DialogState.close() 幂等，overlay 再关闭一次没有副作用。
+        props.onClose?.()
         props.onCreated?.(targetId)
       } catch (e) {
         if (!stillWanted()) return
@@ -669,6 +673,8 @@ export function HobCreateDialog(props: HobCreateDialogProps): any {
         return
       }
       setPhase({ kind: 'done', sessionId: String(r.sessionId ?? sessionId) })
+      // 同已有会话模式：成功即关闭，父级回调可能缺失或延迟。
+      props.onClose?.()
       props.onCreated?.(String(r.sessionId ?? sessionId))
     } catch (e) {
       if (!stillWanted()) return
@@ -1177,9 +1183,21 @@ export function HobCreateCommandEntry(props: { state: DialogState }): any {
    *
    * ── 现在什么时候出现 ──────────────────────────────────────────────────
    *   **只在弹窗已打开时**（那一下由发送时闸门或未选横幅触发）。
-   *   ⚠ 选的是「条件化」而**不是「撤掉」**：撤掉会让"想手动补选档位"的用户
-   *     完全没有入口（闸门只在**发送时**拦，用户若不发消息就永远弹不出来）。
-   *   ⇒ 留它当**兜底入口**，但⛔ 不再常驻。
+   *   ⚠ 选的是「条件化」而**不是「撤掉」**。
+   *
+   * ── ⚠⚠ O-20（2026-11-11）：它**不是**「打开弹窗」的入口 ────────────────
+   *   本组件唯一的 `state.open()` 调用在 `if (!isOpen) return null` **之后**
+   *   ⇒ 弹窗关着时它**根本不存在**，因此**无法**充当「手动打开弹窗」的入口。
+   *   旧注释写「留它当**兜底入口**」—— 那是**错的**（自相矛盾：兜底入口必须先于弹窗存在）。
+   *
+   *   ⇒ 准确说法：**本入口是「弹窗打开时的可见锚点」，不提供手动打开能力。**
+   *     · 想**新建** Hob 会话：走宿主自己的入口（`createDialogState().open()` 的宿主侧调用方）。
+   *     · 想给**已有会话补选档位**：走 `hob-unselected-gate.tsx` 的横幅
+   *       （它在弹窗**关着**时也渲染，那才是真正的兜底入口）。
+   *
+   *   ⚠ 为什么保留它而不删：弹窗开着时用户需要看到「这个入口在这儿」，
+   *     否则会以为功能消失了。⛔ 但**不要**再把它描述成「能打开弹窗」。
+   *   ⚠ 机检见 `check:hob-create-dom` 的 **S-14**（断言「弹窗关着时横幅入口在、本锚点不在」）。
    *
    * ⚠ 判据只用 `state.isOpen`（弹窗自己的开关），⛔ 不新读会话/策略
    *   —— 那会让这个纯展示组件多一条会漂的判据。
@@ -1194,7 +1212,8 @@ export function HobCreateCommandEntry(props: { state: DialogState }): any {
     className: 'dsh-hob-entryBtn',
     // ⚠ 按钮接指针事件（容器是 none）
     style: { pointerEvents: 'auto' },
-    'aria-label': '新建 Hob 会话：选择可读范围与推进方式',
+    /** ⚠ **O-22**：词典里早有 `entry.aria`（中英双语），⛔ 不硬编码中文。 */
+    'aria-label': d('entry.aria'),
     'aria-haspopup': 'dialog',
     'aria-expanded': isOpen ? 'true' : 'false',
     onClick: () => props.state.open(),
@@ -1368,9 +1387,8 @@ export function HobCreatedNotice(props: {
      *   空白会话不可见是宿主的既定行为 ⇒ 唯一让它变成可见的办法是
      *   **给它投第一条消息**（那需要一个受支持的入口，见 `hintNoNav`）。
      */
-    ? h('span', { className: 'dsh-hob-createdHint' },
-      '（⚠ 该会话在收到第一条消息之前被宿主从会话列表过滤，现在看不到；'
-      + '请从宿主的会话创建面板继续，或先给它发一条消息）')
+    /** ⚠ **O-22**：词典里早有 `created.noNav`（中英双语），⛔ 不硬编码中文。 */
+    ? h('span', { className: 'dsh-hob-createdHint' }, d('created.noNav'))
     : h('button', {
       type: 'button',
       className: 'dsh-hob-btn dsh-hob-btnPrimary',

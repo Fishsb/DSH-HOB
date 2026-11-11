@@ -35,8 +35,16 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { type SpawnDefaults } from '../config.ts'
 import { FACTORY_DEFAULT_PRESET_ID, HOB_PRESET_ID } from '../shared/planning-preset.ts'
+import {
+  PRESET_CHOICE_LABELS,
+  decideDispatchPreset,
+  parsePresetChoice,
+  presetChoiceQuestion,
+  type PresetTargetResolution,
+} from '../shared/dispatch-preset.ts'
 // ⚠ 新建 Hob 会话的**可读档开放面**（唯一声明点；本模块只消费，⛔ 不另抄白名单）
-import { isOpenReadLevel, readLevelNotOpenReason } from '../shared/read-level-policy.ts'
+import { isOpenReadLevel, OPEN_READ_LEVELS, readLevelNotOpenReason } from '../shared/read-level-policy.ts'
+import { admitWork } from '../shared/ledger-lifecycle.ts'
 import { appendSessionModelSelection, installSessionModelSelection } from '../model-selection.ts'
 // ── 待投递中间态记账（2026-10-10 · 用户报障修复）──────────────────────────
 //   ⚠ 为什么在**工具层**（而不是服务实现 `spawn()` 里）：服务被别的路径调用时
@@ -117,7 +125,9 @@ export interface DeliveryResult {
   /**
    * **目标会话的预设是规划侧预设**（{@link HOB_PRESET_ID}）⇒ 响亮提示（第 129 轮新增）。
    *
-   * ⚠ **只提示、不拦**：投递**照常成功**（`ok` 不受影响）—— 给规划侧会话发消息**本身可能合法**
+   * ⚠ `deliver()` 本身**只提示、不拦**：给规划侧会话发消息可能合法（例如问状态）。
+   *   **派活入口**（`hob_send` / `hob_dispatch` / `write_hob(dispatchTo)`）在调用它之前
+   *   另有**执行预设硬校验**；因此这条预警不会把任何合法投递误拦。
    *   （问它状态、让它规划、传个读数）。本字段是"你这一步大概率不会得到实施产出"的**预警**，
    *   不是拒绝。
    *
@@ -461,6 +471,73 @@ function makeControllerLookup(svcCtx: any): any {
 }
 
 /**
+ * 向**调用方这个会话**提问一次（派活预设不一致时用）。
+ *
+ * ⚠ 与 `ask_user_question` 工具**同一服务**（`ctx.userQuestions.ask`），
+ *   ⛔ 不自造弹窗、⛔ 不把问题塞进投递正文当作“问过了”。
+ * ⚠ 失败**不抛**：返回可读原因，由调用方转成 `needsUser` 拒绝。
+ *   ⚠ 这里刻意区分“没有提问服务”与“用户取消/没回答”—— 前者是环境问题，
+ *     后者是用户决定；两者都**不能**被当成“继续派活”。
+ */
+async function askDispatchPresetChoice(
+  svcCtx: any,
+  selfSessionId: string | undefined,
+  target: string,
+  verdict: ReturnType<typeof decideDispatchPreset>,
+  options: ReadonlyArray<{ label: string; description?: string }>,
+): Promise<{ ok: true; selected: string[]; custom?: string } | { ok: false; reason: string; message: string }> {
+  const service = (() => {
+    try { return typeof svcCtx.get === 'function' ? svcCtx.get('userQuestions') : svcCtx.userQuestions } catch { return undefined }
+  })()
+  if (service === undefined || typeof service.ask !== 'function') {
+    return {
+      ok: false,
+      reason: 'preset-confirmation-unavailable',
+      message: '目标会话的预设与设置不一致，但当前没有可用的用户提问服务 ⇒ 本次不派活。'
+        + ' 请先在界面上确认会话，或检查提问服务是否已装载。',
+    }
+  }
+  const agent = (() => {
+    try {
+      if (typeof selfSessionId !== 'string' || selfSessionId === '') return undefined
+      return svcCtx.agents?.get?.(selfSessionId)
+    } catch { return undefined }
+  })()
+  if (agent === undefined) {
+    return {
+      ok: false,
+      reason: 'preset-confirmation-no-agent',
+      message: '目标会话的预设与设置不一致，但取不到本会话的活 agent ⇒ 无法向用户确认，本次不派活。',
+    }
+  }
+  try {
+    const answer = await service.ask({
+      questions: [{
+        id: 'dispatch-preset',
+        header: '选择执行会话',
+        question: presetChoiceQuestion(verdict, target),
+        options: options.map((o) => ({ label: o.label, ...(o.description === undefined ? {} : { description: o.description }) })),
+        multiSelect: false,
+      }],
+      agent,
+    })
+    const first = Array.isArray(answer?.answers) ? answer.answers[0] : undefined
+    return {
+      ok: true,
+      selected: Array.isArray(first?.selected) ? first.selected.map(String) : [],
+      ...(typeof first?.custom === 'string' ? { custom: first.custom } : {}),
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      reason: 'preset-confirmation-failed',
+      message: '向用户确认执行会话时失败：' + String((e as Error)?.message ?? e)
+        + ' ⇒ 本次不派活（⛔ 不按默认选择继续）。',
+    }
+  }
+}
+
+/**
  * 预设读数的**来源标记**（⚠ 让"降级"可见，⛔ 不静默）。
  *
  * · `'projection'` —— 取自宿主 `agentPreset` 投影（**权威**）；
@@ -504,6 +581,19 @@ export interface HobBus {
    * @returns 见 {@link PresetReading}；会话不存在 / 两个来源都读不到 ⇒ `{}`（⛔ 不猜默认值）。
    */
   presetOf(sessionId: string): PresetReading
+  /**
+   * **派活前的执行预设硬校验**（2026-11-09 · 用户裁定）。
+   *
+   * 规则（唯一实现点，所有派活入口都必须调用）：
+   *   · 目标当前预设 == 设置里的执行预设 ⇒ 直接返回原目标（自动派活）；
+   *   · 不一致 / 读不到 ⇒ **先问用户**：继续用这个活跃会话，还是按执行预设新建；
+   *   · 目标是 Hob 项目总代理预设 ⇒ **绝不继续用该会话施工**，只允许新建或取消。
+   *
+   * @param sessionId - 调用方点名的活跃会话。
+   * @param selfSessionId - 调用方自己的会话 id（向用户提问需要活的根 agent）。
+   * @returns 最终目标（可能是新建的会话 id）或可读拒绝；**不抛错**。
+   */
+  resolveDispatchTarget(sessionId: string, selfSessionId: string | undefined): Promise<PresetTargetResolution>
   /** 向指定会话投递一条 user 消息。 */
   deliver(sessionId: string, text: string, mode: DeliveryMode): Promise<DeliveryResult>
   /**
@@ -907,7 +997,8 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
             }
           }
         }
-        // ② **目标预设预警**（第 129 轮新增）—— 只提示、不拦、不改投递成败。
+        // ② **目标预设预警**（第 129 轮新增）—— 本方法只提示、不拦、不改投递成败。
+        //    ⚠ 派活入口在调用本方法前另有执行预设硬校验；本预警不替代那道闸。
         //
         //   ⚠ **为什么下沉到服务层**（而不是只在 `hob_send` / `hob_dispatch` 的工具层）：
         //     与本文件 ⓪-1 那条自检**同一条纪律**（见上方 `:449-454` 的既有注释）：
@@ -1018,6 +1109,109 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
         } catch {
           // 单个会话读不出来 ⇒ 空读数（调用方渲染成 `(读不到)`，⛔ 不编造、不猜默认值）。
           return {}
+        }
+      },
+      /**
+       * ⚠⚠ **派活前的执行预设硬校验**（2026-11-09 · 用户裁定）。
+       *
+       * ── 为什么放在 `hobBus` 而不是 orchestrator 里 ─────────────────────
+       *   · 目标预设的权威读法已经在这里（{@link HobBus.presetOf}，唯一实现点）；
+       *   · 按设置新建会话也在这里（{@link HobBus.spawn}）；
+       *   · 向用户提问需要活 agent，而 `agents` 同样在这里。
+       *   ⇒ orchestrator 只调用本方法，⛔ 不再复制第二套判定 / 建会话逻辑。
+       *
+       * ── 用户选择“新建”时 ────────────────────────────────────────────
+       *   用**设置里的执行预设**建会话（`spawn(..., configuredPreset, ...)`）。
+       *   ⚠ `spawn` 内部仍走同一条“显式传参优先”的路径；这里传的就是归一后的
+       *     设置值，因此不会出现“用户选了新建、却仍落到宿主默认预设”。
+       *
+       * ── 目标会话是 Hob 时 ────────────────────────────────────────────
+       *   只给“新建 / 取消”，**不提供继续用该会话**：Hob 没有 shell 与写工具，
+       *   继续投递只会得到“看在跑、永远没有产出”。即使用户选了活跃会话，
+       *   也按取消处理并说明原因（fail-closed）。
+       */
+      async resolveDispatchTarget(
+        sessionId: string,
+        selfSessionId: string | undefined,
+      ): Promise<PresetTargetResolution> {
+        if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+          return { ok: false, reason: 'no-session-id', message: '没有指定要派活的会话。' }
+        }
+        const target = sessionId.trim()
+        const reading = this.presetOf(target)
+        const verdict = decideDispatchPreset(readSpawn().agentPreset, reading.preset)
+        if (verdict.kind === 'match') {
+          return {
+            ok: true,
+            sessionId: target,
+            created: false,
+            configuredPreset: verdict.configuredPreset,
+            targetPreset: verdict.targetPreset,
+          }
+        }
+
+        const options = verdict.kind === 'target-hob'
+          ? [
+            { label: PRESET_CHOICE_LABELS.new, description: `用当前执行预设「${verdict.configuredPreset}」建一个可施工的会话。` },
+            { label: PRESET_CHOICE_LABELS.cancel, description: '不派这次活。' },
+          ]
+          : [
+            { label: PRESET_CHOICE_LABELS.new, description: `用当前执行预设「${verdict.configuredPreset}」建一个新会话。` },
+            { label: PRESET_CHOICE_LABELS.active, description: '仍派给这个已存在的会话（它的预设与设置不同）。' },
+            { label: PRESET_CHOICE_LABELS.cancel, description: '不派这次活。' },
+          ]
+
+        const asked = await askDispatchPresetChoice(svcCtx, selfSessionId, target, verdict, options)
+        if (!asked.ok) {
+          return {
+            ok: false,
+            reason: asked.reason,
+            message: asked.message,
+            configuredPreset: verdict.configuredPreset,
+            ...(verdict.kind === 'unknown' ? {} : { targetPreset: verdict.targetPreset }),
+            needsUser: true,
+          }
+        }
+        const choice = parsePresetChoice(asked.selected, asked.custom)
+        if (choice === 'cancel' || (verdict.kind === 'target-hob' && choice === 'active')) {
+          return {
+            ok: false,
+            reason: 'dispatch-cancelled',
+            message: verdict.kind === 'target-hob' && choice === 'active'
+              ? `已取消：${target} 是 Hob 项目总代理预设，不能承担具体实施；请选择新建或取消。`
+              : '已取消本次派活（用户选择不继续）。',
+            configuredPreset: verdict.configuredPreset,
+            ...(verdict.kind === 'unknown' ? {} : { targetPreset: verdict.targetPreset }),
+            needsUser: true,
+          }
+        }
+        if (choice === 'active') {
+          return {
+            ok: true,
+            sessionId: target,
+            created: false,
+            configuredPreset: verdict.configuredPreset,
+            ...(verdict.kind === 'unknown' ? {} : { targetPreset: verdict.targetPreset }),
+            choice,
+          }
+        }
+
+        const created = await this.spawn(undefined, verdict.configuredPreset, selfSessionId)
+        if (created.ok !== true || typeof created.sessionId !== 'string' || created.sessionId === '') {
+          return {
+            ok: false,
+            reason: 'preset-spawn-failed',
+            message: `按当前执行预设新建会话失败：${created.reason ?? '宿主未返回会话 id'} ⇒ 本次未派活。`,
+            configuredPreset: verdict.configuredPreset,
+          }
+        }
+        return {
+          ok: true,
+          sessionId: created.sessionId,
+          created: true,
+          configuredPreset: verdict.configuredPreset,
+          ...(created.agentPreset === undefined ? {} : { targetPreset: created.agentPreset }),
+          choice,
         }
       },
       list(selfSessionId: string | undefined): SessionInfo[] {
@@ -1427,6 +1621,8 @@ export function createHobBusTools(
    * ⚠ 返回字符串 ⇒ 拒绝理由；`undefined` ⇒ 放行。⛔ 非 Hob 由注入方放行。
    */
   proceedGateOf?: (exec: any) => string | undefined,
+  /** Unified ledger lifecycle provided by the preset composition. */
+  lifecycleOf?: (exec: any) => any,
   /**
    * ⚠⚠ **写入两轴策略**（2026-10-22 第 5 轮 · 任务书第 4 条无界面路径）。
    *
@@ -1677,6 +1873,9 @@ export function createHobBusTools(
     description:
       '把一段文本作为一条消息投递给**指定会话**（同实例内）。它会被唤醒并把这当成指令来读，'
       + '回复出现在**它自己的会话里**，不会回到本会话。'
+      + '⚠ **纯通知，不是派活**：必须显式给 `notificationOnly:true`；实质工作（要产出、要回来接着判断的那一种）⛔ 不要用它。'
+      + '它不登记「等回传」，对方跑完也不会叫醒你；不会因预设不一致而自动新建或改投目标。'
+      + '实质工作请走 `hob_dispatch`（可回传），或先按需求 → 方案 → 任务建立真实账本任务再派。'
       + '⚠ 投递≠完成：这是「我交给了那个会话」，不是「我做了」。'
       + '⚠ 目标必须是 `hob_sessions` 列出的活会话；投给**已归档**的会话会被拒绝。'
       + '⚠ 有实质改动的工作，指令仍应先按交接格式写成文件（账本区 `archive/<YYYY-MM-DD-slug>/TASK.md`，'
@@ -1692,6 +1891,10 @@ export function createHobBusTools(
         required: true,
         description: '要投递的文本。给路径与要点，勿把整篇正文塞在这里。',
       },
+      notificationOnly: {
+        type: 'boolean',
+        description: '**纯通知必须显式传 true**。它不会承载实质工作、不会登记回传；要派活请用 hob_dispatch。',
+      },
       mode: {
         type: 'string',
         enum: ['followup', 'steer'],
@@ -1703,7 +1906,7 @@ export function createHobBusTools(
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
     async execute(
-      args: { sessionId: string; message: string; mode?: 'followup' | 'steer' },
+      args: { sessionId: string; message: string; mode?: 'followup' | 'steer'; notificationOnly?: boolean },
       exec: any,
     ): Promise<string> {
       /**
@@ -1721,16 +1924,26 @@ export function createHobBusTools(
           message: `拒绝：无法确认本会话的原「推进工作方式」（闸门抛错：${String((e as Error)?.message ?? e)}）`,
         })
       }
-      /** ⚠ T2（B5）：同上 —— 投递路径也顺手对账（对账读盘，⛔ 不改投递语义）。 */
-      pokeReconcile()
       const self = selfSessionIdOf(exec)
       if (self !== undefined && args.sessionId === self) {
         return JSON.stringify({ ok: false, reason: 'refusing to deliver to this session itself' })
       }
+      /** Notify is a separate admission row: it must never be a work side door. */
+      const notifyAdmission = admitWork({
+        action: 'notify',
+        lifecycle: lifecycleOf?.(exec) ?? { state: 'invalid', integrity: 'invalid', active: false, activation: 'missing', headline: '账本生命周期判不出', nextAction: '先恢复统一准入。', blockers: [], legacyCompatible: false },
+        notificationOnly: args.notificationOnly === true,
+      })
+      if (!notifyAdmission.ok) {
+        return JSON.stringify({ ok: false, reason: 'notification-only-required', message: notifyAdmission.reason, deliveryBlocked: true })
+      }
+      /** ⚠ T2（B5）：同上 —— 投递路径也顺手对账（对账读盘，⛔ 不改投递语义）。 */
+      pokeReconcile()
       const text = typeof args.message === 'string' ? args.message : ''
       if (text.trim() === '') {
         return JSON.stringify({ ok: false, reason: 'empty message' })
       }
+      /** A notification may not silently replace its target with a freshly spawned session. */
       const r = await bus.deliver(args.sessionId, text, args.mode === 'steer' ? 'steer' : 'followup')
       if (!r.ok) return JSON.stringify({ ok: false, reason: r.reason ?? 'delivery failed' })
       // ── 投递成功 ⇒ 清匹配的"待投递"（2026-10-10 新增）────────────────────
@@ -1756,7 +1969,12 @@ export function createHobBusTools(
          *   ⚠ 正常档（没有匹配项 / 清成功）这里是 `undefined` ⇒ 返回体**一个字都不多**。
          */
         ...(handoffWriteNote === undefined ? {} : { handoffWriteNote }),
-        note2: 'Delivered only: the reply lands in that session, not here. Do not claim the work itself was done.',
+        note2: 'Delivered only: the reply lands in that session, not here, and this is NOT registered as a return. '
+          + 'For work that must come back, use hob_dispatch with a real ledger taskId. '
+          + 'Do not claim the work itself was done.',
+        dispatchHint: 'This was a notification, not a dispatch. If the result must come back to you, '
+          + 'do not treat this as dispatched; use hob_dispatch with a real ledger taskId.',
+        returnRegistered: false,
       })
     },
   })
@@ -1818,10 +2036,42 @@ export function createHobBusTools(
        */
       level: {
         type: 'string',
-        enum: ['ledger', 'project', 'workspace'],
+        /**
+         * ── **O-40：档位枚举必须从常量派生，⛔ 不手写** ──────────────────────────
+         *
+         * ⚠ 改前这里是手写的 `['ledger','project','workspace']` —— 与本文件 :46 已 import 的
+         *   `OPEN_READ_LEVELS`（`read-level-policy.ts:61`）、`PERMISSION_LEVELS`
+         *   （`permission-levels.ts:10`）构成**三份同源字面量**。
+         *
+         * ⚠ 三份同时正确只是"当下巧合"：任何一处增删档位，另外两处不会跟着变，
+         *   而 `enum` 是**建会话的入参契约** ⇒ 漏改一处就是「模型能选、服务端拒」或反之。
+         *
+         * ⚠ **用 `OPEN_READ_LEVELS` 而不是 `PERMISSION_LEVELS`**：本字段是
+         *   「**读**开放面」（决定这个会话能读哪些路径），语义上就是 `OPEN_READ_LEVELS`；
+         *   `PERMISSION_LEVELS` 是更宽的权限枚举，两者将来**可能分叉**（读面窄于权限面是正常的）。
+         *   ⇒ 选语义最近的那个，⛔ 不要因为"现在值相同"就随便挑一个。
+         */
+        enum: [...OPEN_READ_LEVELS],
+        /**
+         * ⚠ **R-22：描述必须从 `OPEN_READ_LEVELS` 派生**（2026-11-10）。
+         *
+         * ── 病（实测）────────────────────────────────────────────────────────
+         *   改前写死「**当前只有 ledger 开放**：其余两档会被服务端拒签/拒建」，
+         *   而 `read-level-policy.ts:61` 的 `OPEN_READ_LEVELS` 早已是
+         *   **`['ledger', 'project', 'workspace']` 三档全开**（2026-10-24 扩档）。
+         *   ⇒ **模型读到描述后会主动放弃 `project` / `workspace`**，以为会被拒；
+         *     而服务端实际放行。这是「文档比实现落后」的**反向漂移**：
+         *     不是放宽，而是**自我限制 + 说假话**。
+         *
+         * ── 为什么改成派生而不是改字面量 ────────────────────────────────────
+         *   改字面量只是把「今天的正确值」写死，下次扩/收档仍会漂。
+         *   ⇒ 直接从常量算，**描述永远跟着实现走**。
+         */
         description: '（**新建 Hob 会话时必填**）可读档：ledger / project / workspace。非 Hob 预判可省略。'
-          + '⚠ **当前只有 ledger 开放**：其余两档会被服务端拒签/拒建并给可读原因'
-          + '（待宿主具备可靠的持久清理能力后开放）。',
+          + `⚠ **当前开放：${OPEN_READ_LEVELS.join(' / ')}**`
+          + (OPEN_READ_LEVELS.length === 3
+            ? '（三档全开；档位只改「读」的范围，⛔ 不改「写」的边界 —— 三档里都没有写类与命令类工具）。'
+            : `：未列出的档位会被服务端拒签/拒建并给可读原因。`),
       },
       workMode: {
         type: 'string',
@@ -1847,6 +2097,7 @@ export function createHobBusTools(
       args: { workspace?: string; agentPreset?: string; level?: string; workMode?: string },
       exec: any,
     ): Promise<string> {
+      /** Existing target preset is checked by resolveDispatchTarget, not by this creation request. */
       /**
        * ⚠⚠ **建会话之前先过"能不能推进"闸门**（2026-10-22 第 5 轮）。
        *   ⚠ 这条在 `pokeReconcile()` **之前**：被拒的调用不该产生任何副作用

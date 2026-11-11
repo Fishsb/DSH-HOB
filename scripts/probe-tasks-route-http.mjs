@@ -33,6 +33,7 @@
  *
  * ══ 参数 ═══════════════════════════════════════════════════════════════════
  *   `--session <id>` —— 指定 POST 用的会话 id。
+ *   `--catalog` —— 只跑不需要活会话的账本目录 + 实时通道边界断言（活宿主 + cookie 即可，⛔ 不伪造会话）。
  *   ⚠ **不给才退回"最新会话"启发式**：从 `~/.dsh/sessions/<cwd 编码>/` 里先按持久件
  *     活宿主当前打开的 `session.lock`（`/proc/<pid>/fd` 可见），再按持久件
  *     `session.v4.jsonl.zstd` 的 `header.cwd` 校验，最后才退回目录 mtime。
@@ -65,6 +66,7 @@ const STAGES_ROUTE = '/api/dsh-hob/stages'
 const WORK_PLANS_ROUTE = '/api/dsh-hob/work-plans'
 const LEDGERS_ROUTE = '/api/dsh-hob/ledgers'
 const CHAINS_ROUTE = '/api/dsh-hob/requirement-chains'
+const LIVE_ROUTE = '/api/dsh-hob/live'
 const DEFAULT_PORT = 3080
 
 /**
@@ -84,6 +86,7 @@ const SESSION_OVERRIDE = sessionArgIndex >= 0 ? (argv[sessionArgIndex + 1] ?? ''
  */
 const logArgIndex = argv.indexOf('--log')
 const LOG_OVERRIDE = logArgIndex >= 0 ? (argv[logArgIndex + 1] ?? '') : ''
+const CATALOG_ONLY = argv.includes('--catalog')
 
 /**
  * 日志候选（按顺序试）。
@@ -307,15 +310,175 @@ const sessionId = SESSION_OVERRIDE !== '' ? SESSION_OVERRIDE : foundSession?.id
 const sessionSource = SESSION_OVERRIDE !== ''
   ? '显式 --session'
   : (foundSession?.source ?? '启发式（本工作区最新会话）')
-if (sessionId === undefined) {
-  console.log('  ⚠ **noObject**：本工作区的会话目录里找不到任何 session（拿不到 sessionId）')
-  console.log(`       ⇒ 服务端会按设计回 400 ledger-unreadable（"没给工作区根"），那不是"数据通了"`)
-  console.log('       ⇒ **本条未执行、不算通过**')
+/**
+ * Missing a workspace session is not grounds to skip authentication and
+ * negative-path checks. Those checks do not need a live session; only the
+ * positive snapshot/stream assertions do. Probe them before deciding noObject.
+ */
+const hasSession = sessionId !== undefined
+if (hasSession) console.log(`  读数：sessionId = ${sessionId}（来源：${sessionSource}）`)
+else console.log('  ⚠ **noObject（正向快照/流）**：本工作区找不到 sessionId ⇒ 正向路由断言无对象；先跑不依赖会话的边界断言')
+
+// ── 边界断言（不需要活会话；在 noObject 退出之前跑）─────────────────────
+{
+  const cases = [
+    ['缺 sessionId', { ledger: 'dsh-hob' }, 400, 'no-session'],
+    ['路径穿越账本', { sessionId: sessionId ?? 'session-boundary-probe', ledger: '../dsh-hob' }, 400, 'ledger-not-allowed'],
+  ]
+  const seen = []
+  const problems = []
+  for (const [label, body, wantStatus, wantReason] of cases) {
+    const res = await fetch(`${base}${LIVE_ROUTE}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body),
+    })
+    const text = await res.text()
+    let parsed
+    try { parsed = JSON.parse(text) } catch { parsed = undefined }
+    seen.push(`${label}=${res.status}/${parsed?.reason ?? 'no-json'}`)
+    if (res.status !== wantStatus) problems.push(`${label} 状态码 ${res.status}（期望 ${wantStatus}）`)
+    else if (parsed?.ok !== false || parsed?.reason !== wantReason) {
+      problems.push(`${label} reason=${JSON.stringify(parsed?.reason)}（期望 ${wantReason}）`)
+    }
+  }
+  if (problems.length === 0) ok(`H-0b ✓ 实时通道边界可判（不需要活会话）：${seen.join(' · ')}`)
+  else for (const p of problems) bad(`H-0b · ${p}`)
+}
+
+if (!hasSession && CATALOG_ONLY) {
+  /**
+   * Catalog-only mode needs no live session: list the real ledgers directly and
+   * prove the realtime route's authentication boundary. It is still opt-in so
+   * a normal `check:tasks-route-http` remains an honest noObject without one.
+   */
+  const ledgerRes = await fetch(`${base}${LEDGERS_ROUTE}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({}),
+  })
+  const ledgerText = await ledgerRes.text()
+  let ledgerBody
+  try { ledgerBody = JSON.parse(ledgerText) } catch { ledgerBody = undefined }
+  console.log(`  ── POST ${LEDGERS_ROUTE}（catalog-only）⇒ HTTP ${ledgerRes.status}`)
+  console.log(`     响应体前 300 字：${ledgerText.slice(0, 300)}`)
+  if (ledgerRes.status !== 200 || ledgerBody?.ok !== true || !Array.isArray(ledgerBody.items)) {
+    bad(`H-cat · 账本目录不可达：status=${ledgerRes.status} reason=${JSON.stringify(ledgerBody?.reason)}`)
+  } else {
+    const names = ledgerBody.items.map((x) => String(x?.name ?? ''))
+    ok(`H-cat ✓ 账本目录可达：${ledgerBody.items.length} 个（${names.slice(0, 6).join(' · ')}${names.length > 6 ? ' …' : ''}）`)
+  }
+  /**
+   * A fake session id with a ledger selected is expected to establish a
+   * whitelisted ledger stream: the ledger name, not the session, selects the
+   * watched root. Do not hang on its body; read the hello then abort.
+   */
+  const liveCtl = new AbortController()
+  const liveTimer = setTimeout(() => liveCtl.abort(), 1500)
+  let liveHello = ''
+  let liveStatus = 0
+  let liveType = ''
+  try {
+    const liveRes = await fetch(`${base}${LIVE_ROUTE}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ sessionId: 'session-probe-no-session', ledger: 'dsh-hob' }),
+      signal: liveCtl.signal,
+    })
+    liveStatus = liveRes.status
+    liveType = liveRes.headers.get('content-type') ?? ''
+    if (liveRes.body !== null) {
+      const reader = liveRes.body.getReader()
+      const first = await reader.read()
+      liveHello = first.done === true ? '' : new TextDecoder().decode(first.value)
+      liveCtl.abort()
+      await reader.cancel().catch(() => {})
+    }
+  } catch (e) {
+    if (!(liveCtl.signal.aborted && liveHello !== '')) {
+      bad(`H-cat-live · 实时通道请求失败：${String(e?.message ?? e)}`)
+    }
+  } finally {
+    clearTimeout(liveTimer)
+  }
+  if (liveStatus === 200 && liveType.includes('text/event-stream') && liveHello.startsWith('event: hello\n')) {
+    ok('H-cat-live ✓ 实时通道路由已登记：带白名单账本返回 SSE hello；读取首帧后主动断开（不等待无限流）')
+  } else {
+    bad(`H-cat-live · status=${liveStatus} type=${liveType} hello=${JSON.stringify(liveHello.slice(0, 80))}`)
+  }
+  let helloBody
+  try { helloBody = JSON.parse(liveHello.split('\n').find((l) => l.startsWith('data: '))?.slice(6) ?? '') } catch { helloBody = undefined }
+  if (helloBody?.ledger === 'dsh-hob') {
+    ok('H-cat-live2 ✓ 显式选择 dsh-hob ⇒ hello.ledger 逐字为 dsh-hob（项目切换不串账本）')
+  } else {
+    bad(`H-cat-live2 · 显式 dsh-hob 的 hello.ledger=${JSON.stringify(helloBody?.ledger)}`)
+  }
+  /**
+   * Verify the live subscription limit through the real authenticated route:
+   * 8 per ledger is accepted, the 9th gets a readable error frame. Abort every
+   * stream afterwards and open one more to prove teardown released the slots.
+   */
+  const opened = []
+  const openOne = async () => {
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), 1500)
+    try {
+      const res = await fetch(`${base}${LIVE_ROUTE}`, {
+        method: 'POST', headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ sessionId: 'session-probe-limit', ledger: 'dsh-hob' }), signal: ctl.signal,
+      })
+      if (res.body === null) return { ctl, text: '' }
+      const reader = res.body.getReader()
+      const first = await reader.read()
+      return { ctl, reader, text: first.done === true ? '' : new TextDecoder().decode(first.value) }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  for (let i = 0; i < 8; i++) opened.push(await openOne())
+  const ninth = await openOne()
+  const accepted = opened.filter((s) => s.text.startsWith('event: hello\n')).length
+  const limited = ninth.text.startsWith('event: error\n') && ninth.text.includes('subscriber-limit')
+  if (accepted === 8 && limited) {
+    ok('H-cat-live3 ✓ 真路由订阅上限：同一账本 8 条 hello 成功，第 9 条返回可读 subscriber-limit 错误帧')
+  } else {
+    bad(`H-cat-live3 · accepted=${accepted} ninth=${JSON.stringify(ninth.text.slice(0, 120))}`)
+  }
+  for (const s of [...opened, ninth]) {
+    s.ctl.abort()
+    await s.reader?.cancel().catch(() => {})
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  const afterRelease = await openOne()
+  if (afterRelease.text.startsWith('event: hello\n')) {
+    ok('H-cat-live4 ✓ 全部断开后槽位已释放：第 10 次连接重新拿到 hello（没有泄漏订阅）')
+  } else {
+    bad(`H-cat-live4 · 断开后仍拿不到 hello：${JSON.stringify(afterRelease.text.slice(0, 120))}`)
+  }
+  afterRelease.ctl.abort()
+  await afterRelease.reader?.cancel().catch(() => {})
   console.log('')
-  console.log('  ⛔ exit 2 —— 没对象（⛔ 不是通过）')
+  console.log(`H 组：通过 ${pass} · 失败 ${fail}`)
+  console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · 跳过 0 处（catalog-only）`)
+  if (fail > 0) process.exit(1)
+  process.exit(0)
+}
+
+/**
+ * A no-session run still proved the realtime security boundary. If that
+ * boundary is correct we can exit 2 only after reporting the noObject result,
+ * never by silently skipping the checks.
+ */
+if (!hasSession) {
+  console.log('  ⚠ **noObject**：本工作区的会话目录里找不到任何 session（拿不到 sessionId）')
+  console.log('       ⇒ 正向快照/流断言未执行；H-0b 的鉴权与白名单边界已真实通过')
+  console.log('')
+  if (fail > 0) {
+    console.log(`H 组：通过 ${pass} · 失败 ${fail}`)
+    console.log('  ⛔ 有对象但不符合预期 ⇒ 真缺陷（exit 1）')
+    process.exit(1)
+  }
+  console.log(`H 组：通过 ${pass} · 失败 0`)
+  console.log(`处级口径：查了 ${pass} 处 · 过了 ${pass} 处 · **跳过 2 处**（noObject）`)
+  console.log('  ⛔ exit 2 —— 正向对象缺失（⛔ 不是通过）')
   process.exit(2)
 }
-console.log(`  读数：sessionId = ${sessionId}（来源：${sessionSource}）`)
 
 /**
  * ⚠ **宿主重启后内存里没有旧会话**：显式 `--session` 只是把 id 塞进请求体，
@@ -428,7 +591,7 @@ if (SESSION_OVERRIDE !== '') {
     if (typeof parsed.message !== 'string' || parsed.message.trim() === '') problems.push('没有给 message（"判不出"必须带一句原因）')
   }
   if (problems.length === 0 && retiredGhost) ok('H-3 ✓ 退役旧接口对不存在会话也先回 route-retired（⛔ 不猜账本、不冒充读坏）')
-  else if (problems.length === 0) ok('H-3 ✓ 不存在的 sessionId ⇒ ok:false · reason **恰好** ledger-unreadable（⛔ 不是"任何 ok:false 都算过"）')
+  else if (problems.length === 0) ok('H-3 ✓ **负向对拍**：不存在的 sessionId ⇒ ok:false · reason **恰好** ledger-unreadable（⛔ 不是"任何 ok:false 都算过"）')
   else for (const p of problems) bad(`H-3 · ${p}`)
 }
 
@@ -562,16 +725,19 @@ if (SESSION_OVERRIDE !== '') {
   else if (parsed.ok !== true) {
     problems.push(`ok 不是 true：${JSON.stringify(parsed.reason ?? parsed.ok)}`)
   } else {
-    const want = [[1, '需求规格'], [2, '实现方案'], [3, '编码任务'], [4, '任务执行'], [5, '验收核对']]
+    const want = [
+      [1, '需求规格'], [2, '实现方案'], [3, '任务图'], [4, '任务执行'],
+      [5, '技术验证'], [6, '产品验收'], [7, '交付收口'],
+    ]
     const got = Array.isArray(parsed.stages) ? parsed.stages.map((s) => [s.step, s.name]) : []
-    if (JSON.stringify(got) !== JSON.stringify(want)) problems.push(`五步顺序/名字不对：${JSON.stringify(got)}`)
+    if (JSON.stringify(got) !== JSON.stringify(want)) problems.push(`七阶段顺序/名字不对：${JSON.stringify(got)}`)
     if (!('attention' in parsed)) problems.push('响应里没有 attention 字段（算不出也应为 undefined，但键必须可被路由层观测）')
     else if (parsed.attention !== undefined && !Array.isArray(parsed.attention)) problems.push('attention 存在但不是数组')
     const bytes = Buffer.byteLength(text, 'utf8')
     if (bytes > 65536) problems.push(`响应体 ${bytes} B > 65536 B`)
     if (typeof parsed.relations !== 'object' || parsed.relations === null) problems.push('响应里没有共享关系标题表 relations')
     const items = Array.isArray(parsed.stages) ? parsed.stages.flatMap((s) => Array.isArray(s.items) ? s.items : []) : []
-    if (items.length === 0) problems.push('五步条目为空 ⇒ 体积/投影断言没有对象')
+    if (items.length === 0) problems.push('七阶段条目为空 ⇒ 体积/投影断言没有对象')
     for (const item of items) {
       if ('title' in item || 'extra' in item) { problems.push(`${item.id} 仍重复返回旧 title/extra`); break }
       const pr = item.presentation
@@ -609,7 +775,7 @@ if (SESSION_OVERRIDE !== '') {
         }
       }
     }
-    if (problems.length === 0) ok(`H-6 ✓ 五步汇总 ⇒ 200 + 五步顺序固定 + attention ${parsed.attention === undefined ? '判不出（字段缺省）' : `${parsed.attention.length} 条`} + ${bytes} B ≤ 65536 B + 条目紧凑投影（${items.length} 条 · 关系标题 ${Object.keys(parsed.relations).length} 个）`)
+    if (problems.length === 0) ok(`H-6 ✓ 七阶段汇总 ⇒ 200 + 阶段顺序固定 + attention ${parsed.attention === undefined ? '判不出（字段缺省）' : `${parsed.attention.length} 条`} + ${bytes} B ≤ 65536 B + 条目紧凑投影（${items.length} 条 · 关系标题 ${Object.keys(parsed.relations).length} 个）`)
   }
   if (problems.length > 0) for (const p of problems) bad(`H-6 · ${p}`)
 }
@@ -795,6 +961,59 @@ if (SESSION_OVERRIDE !== '') {
   }
   if (problems.length === 0) ok(`H-10 ✓ 路径穿越账本名被四路一致拒绝（${seen.join(' · ')}）`)
   else for (const p of problems) bad(`H-10 · ${p}`)
+}
+
+// ── ⑪ 实时失效通道 ⇒ SSE 首帧 + 超时断开清理 ─────────────────────────────
+{
+  const ctl = new AbortController()
+  const timeout = setTimeout(() => ctl.abort(), 1500)
+  const problems = []
+  let status = 0
+  let type = ''
+  let helloText = ''
+  try {
+    const res = await fetch(`${base}${LIVE_ROUTE}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ sessionId, ledger: 'dsh-hob' }),
+      signal: ctl.signal,
+    })
+    status = res.status
+    type = res.headers.get('content-type') ?? ''
+    if (res.body === null) problems.push('响应没有 body')
+    else {
+      const reader = res.body.getReader()
+      const first = await reader.read()
+      helloText = first.done === true ? '' : new TextDecoder().decode(first.value)
+      ctl.abort()
+      await reader.cancel().catch(() => {})
+    }
+  } catch (e) {
+    if (ctl.signal.aborted && helloText !== '') {
+      // Abort after a successful hello is the expected teardown path.
+    } else {
+      problems.push(`请求失败：${String(e?.message ?? e)}`)
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
+  console.log(`  ── POST ${LIVE_ROUTE} ⇒ HTTP ${status} · content-type=${type}`)
+  console.log(`     首帧前 240 字：${JSON.stringify(helloText.slice(0, 240))}`)
+  if (status !== 200) problems.push(`状态码 ${status}（期望 200；404/405 说明实时路由没登记）`)
+  if (!type.includes('text/event-stream')) problems.push(`content-type=${type}（期望 text/event-stream）`)
+  if (!helloText.startsWith('event: hello\n')) problems.push('首帧不是 hello')
+  else {
+    let frame
+    try { frame = JSON.parse(helloText.split('\n').find((l) => l.startsWith('data: '))?.slice(6) ?? '') } catch { frame = undefined }
+    if (frame === undefined || typeof frame !== 'object') problems.push('hello 没有 JSON data')
+    else {
+      if (frame.ledger !== 'dsh-hob') problems.push(`hello.ledger=${JSON.stringify(frame.ledger)}（期望 dsh-hob）`)
+      if (!Number.isSafeInteger(frame.revision)) problems.push(`hello.revision 不是整数：${JSON.stringify(frame.revision)}`)
+      if (frame.heartbeatMs !== 20000) problems.push(`hello.heartbeatMs=${JSON.stringify(frame.heartbeatMs)}（期望 20000）`)
+    }
+  }
+  if (problems.length === 0) ok('H-11 ✓ 实时通道可达：200 + text/event-stream，首帧 hello 带账本名 / 序号 / 心跳；断开后探针关闭连接')
+  else for (const p of problems) bad(`H-11 · ${p}`)
 }
 
 console.log('')

@@ -1,5 +1,5 @@
 /**
- * Hob 项目总负责人预设 id —— **全仓唯一一处字面值**。
+ * Hob 项目总代理预设 id —— **全仓唯一一处字面值**。
  *
  * ── 为什么要排除它（用户裁定 · 2026-10-10 · 第 9 轮）────────────────────
  *   用户原话：
@@ -13,7 +13,7 @@
  *   ⇒ 拿 `Hob` 当**新会话的默认预设**派出去，新会话只能再规划、**不能施工** = **死循环**。
  *
  * ── ⚠ 排除的语义（别读成别的）───────────────────────────────────────────
- *   排除的是**本插件的项目总负责人预设**（现为 {@link HOB_PRESET_ID}），
+ *   排除的是**本插件的项目总代理预设**（现为 {@link HOB_PRESET_ID}），
  *   **不是**"所有非内置预设"，也**不是**"用户自建预设"。
  *   ⇒ 用户自建的其它预设照旧是候选；换个名字/新增项目负责人预设时，**只改这一个常量**。
  *
@@ -35,7 +35,7 @@ export const HOB_PRESET_ID = 'Hob'
 /**
  * @deprecated 使用 {@link HOB_PRESET_ID}。
  *
- * 旧名把 Hob 缩成“规划侧”，与“项目总负责人”的定位不一致。保留为兼容别名，
+ * 旧名把 Hob 缩成“规划侧”，与“项目总代理”的定位不一致。保留为兼容别名，
  * 现有外部消费者可继续工作；仓库内新代码一律使用 `HOB_PRESET_ID`。
  */
 export const PLANNING_PRESET_ID = HOB_PRESET_ID
@@ -62,7 +62,7 @@ export const PLANNING_PRESET_ID = HOB_PRESET_ID
  *   —— 就是本常量。
  *
  * ── ⚠⚠ 它与 {@link HOB_PRESET_ID} **是两种性质的东西，别混**────────
- *   · {@link HOB_PRESET_ID}：**本插件自己的**项目总负责人预设（本仓声明，
+ *   · {@link HOB_PRESET_ID}：**本插件自己的**项目总代理预设（本仓声明，
  *     与 `preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `config.id` **逐字交叉核对**）；
  *   · {@link FACTORY_DEFAULT_PRESET_ID}：**宿主自带的**出厂默认预设（**本仓不声明它**，
  *     它由宿主 `agent-preset-registry` 的 `config.default` 提供；我们只是**知道**这个值）。

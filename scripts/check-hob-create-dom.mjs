@@ -160,7 +160,13 @@ try {
  *   放到工作区内 ⇒ 解析到**同一份** React（⛔ 不装第二份，否则 hooks 会崩）。
  * ⚠ 目录名带前缀 `.check-dom-`，收尾必删；⛔ 不许留在仓库里。
  */
-const work = join(root, '.check-dom-work')
+  /**
+   * ⚠ **路径带 pid**（B4.2 · 2026-11-10）：改前是固定名 ⇒ 两个自检进程并发跑会互相
+   *   `rmSync` 掉对方正在用的目录（实测：`check:stages-panel-dom` / `check:preset-contracts`
+   *   并发跑必红、串行跑必绿）。⚠ 这类「串行绿、并发红」的假失败会让人误判成真缺陷。
+   *   ⇒ 带 `process.pid` 后互不干扰；`.gitignore` 的 `.check-*-work/` 通配仍覆盖它们。
+   */
+const work = join(root, '.check-dom-work-' + process.pid)
 try { rmSync(work, { recursive: true, force: true }) } catch { /* 上轮残留 */ }
 /**
  * ⚠⚠ **建不出临时目录 ⇒ `exit 2`（未执行），⛔ 不许记成"失败"**（2026-10-22 · P0-5）
@@ -1490,6 +1496,69 @@ try {
     }
   }
 
+  // ── D-150 · S-14 / O-20：**弹窗关着时，必须另有**一个能打开它的入口 ──────
+  /**
+   * ⚠⚠ **这条补的是 REVIEW 的 S-14**（O-20 在机检侧的镜像）。
+   *
+   *   S-14 的原话：「门禁入口机检从未断言**关着时应该能打开**」。
+   *   ⚠ 但本文件 **D-1a 已经断言过「弹窗关闭时入口不渲染」** ——
+   *     那证明的是「不常驻」，⛔ **不是**「关着时有别的入口能打开它」。
+   *     两者是**不同的命题**：前者说「这个组件不在」，后者说「另有一条路在」。
+   *
+   *   ⇒ 本条的判据（**只看源码层，⛔ 不挂载组件**）：
+   *     ① create-hob-dialog.tsx 里 state.open() 的调用点**必须**在
+   *        if (!isOpen) return null **之后**（即：它**不是**打开入口）；
+   *     ② 同时必须**另有**一个不依赖 isOpen 的入口 ——
+   *        实测是 hob-unselected-gate.tsx 的横幅（unrecorded 时渲染）。
+   *   ⚠ 只测 ① 会退化成「删掉组件也过」；只测 ② 就是既有断言的盲区。
+   */
+  {
+    const { readFileSync: rf } = await import('node:fs')
+    const { join: pj } = await import('node:path')
+    const dialogSrc = rf(pj(root, 'src', 'client', 'create-hob-dialog.tsx'), 'utf8')
+    const gateSrc = rf(pj(root, 'src', 'client', 'hob-unselected-gate.tsx'), 'utf8')
+    const probs = []
+    /**
+     * ① 锚点组件里 open() 必须在 return null 之后 —— 否则它就成了打开入口（与注释矛盾）。
+     * ⚠⚠ **必须限定在 `HobCreateCommandEntry` 这个函数体内**（实测踩过）：
+     *   本文件有**两个** `if (!isOpen) return null`（锚点 + 弹窗本体），
+     *   裸 `indexOf` 取到的是**第一个**（弹窗本体，:1446 附近）⇒ 判据永远看不出错位。
+     */
+    const entryStart = dialogSrc.indexOf('export function HobCreateCommandEntry')
+    const entryEnd = entryStart < 0 ? -1 : dialogSrc.indexOf('\nexport function ', entryStart + 10)
+    const entryRaw = entryStart < 0 ? '' : dialogSrc.slice(entryStart, entryEnd < 0 ? undefined : entryEnd)
+    /**
+     * ⚠⚠ **必须先剥注释再扫**（实测踩过）：我在 O-20 的说明注释里写了 `state.open()`
+     *   这个字符串，于是裸扫取到的是**注释里的那个**（在 `return null` 之前）⇒ 判据恒红。
+     *   ⚠ 这是本仓反复记的同一类：**判据扫到了它自己的说明文字**。
+     */
+    const entrySrc = entryRaw
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+    const nullIdx = entrySrc.indexOf('if (!isOpen) return null')
+    /**
+     * ⚠ 查**任意** `state.open()` 调用，⛔ 不是特定那个 `onClick:` 串（实测踩过：
+     *   只认 `onClick: () => props.state.open()` 时，把 `open()` 插到 `return null`
+     *   之前（形态 `if (!isOpen) { props.state.open() }`）**判据看不出来**）。
+     */
+    const openCallIdx = entrySrc.indexOf('state.open()')
+    if (nullIdx < 0) probs.push('找不到 if (!isOpen) return null（锚点组件的形态变了）')
+    if (openCallIdx < 0) probs.push('找不到 state.open() 的调用点')
+    if (nullIdx >= 0 && openCallIdx >= 0 && openCallIdx < nullIdx) {
+      probs.push('state.open() 在 return null **之前** ⇒ 锚点变成了打开入口（与 O-20 的注释矛盾）')
+    }
+    /** ② 必须另有不依赖 isOpen 的入口。 */
+    if (!/export function installHobUnselectedGate/.test(gateSrc)) {
+      probs.push('找不到 installHobUnselectedGate ⇒ 弹窗关着时**没有任何**入口（O-20 的另一半）')
+    }
+    /** ③ 该横幅必须在 unrecorded 时渲染（不是只在弹窗内）。 */
+    if (!/unrecorded/.test(gateSrc)) {
+      probs.push('横幅没有 unrecorded 分支 ⇒ 它不会在弹窗关着时出现')
+    }
+    if (probs.length === 0) {
+      ok('D-150 ✓ 弹窗关着时**另有**入口：锚点的 state.open() 在 return null 之后（⛔ 不提供打开能力），真正的兜底是 hob-unselected-gate 的横幅（S-14 / O-20）')
+    } else for (const x of probs) bad('D-150 · ' + x)
+  }
   cleanup()
   console.log('')
   console.log(`  汇总：通过 ${pass} · 失败 ${fail}`)

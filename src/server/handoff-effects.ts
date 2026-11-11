@@ -36,15 +36,31 @@ export function startHandoffEffects(
   ledgerRoot: string,
   deliver: (target: string, message: string, h: PersistedHandoff) => Promise<void>,
   stateFile: string,
+  /**
+   * **失败告警**（T-10 · 2026-11-10）。
+   *
+   * ⚠ 改前 `startHandoffEffects` **不传 `onError`** ⇒ 队列用缺省 noop
+   *   ⇒ **补投失败零日志**。配合「无最大尝试次数」，永久失败就是**彻底静默的空转**。
+   * ⚠ 缺省仍是 noop（向后兼容），但**生产路径必须传**（见 `preset/tools.ts`）。
+   */
+  onError?: (kind: string, error: unknown) => void,
 ): EffectsQueue {
   /**
    * ⚠ 同一账本根**只能有一个 writer**：两个 Hob 会话若各自 new 一个队列，
    *   会在同一份 `runtime/effects.json` 上做两套 read-modify-write ⇒ 丢更新。
    *   同进程按路径复用；跨进程由 EffectsQueue 的独占锁拒绝第二实例。
    */
-  const q = openEffectsQueue(handoffQueuePath(ledgerRoot))
+  const q = openEffectsQueue(handoffQueuePath(ledgerRoot), () => new EffectsQueue(handoffQueuePath(ledgerRoot), { ...(onError === undefined ? {} : { onError }) }))
   q.handle(HANDOFF_EFFECT, {
     retry: [2_000, 60_000],
+    /**
+     * ⚠ **T-10：补投必须有放弃上限**（2026-11-10）。
+     *   改前无上限 ⇒ 退避封顶 60s 后**一直重试**；对「目标已归档」这类永久失败就是
+     *   **永久空转**，而状态面只看到 attempts 在涨。
+     *   ⚠ 20 次 ≈ 2s+4s+…+60s 封顶后约 15 分钟 ⇒ 足够覆盖「临时不可达」，
+     *     又不至于让永久失败永远占着队列。到顶后落 `abandonedAt`（可读，⛔ 不是静默删行）。
+     */
+    maxAttempts: 20,
     ordered: false,
     limit: 2,
     run: async (payload, key) => {

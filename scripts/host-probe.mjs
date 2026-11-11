@@ -299,7 +299,7 @@ await check(`apply：${SWITCH_KEYS.length} 个开关**逐个**单独关 ⇒ 只�
 })
 
 // ── 8) 全部开关全关 ⇒ 不登记任何模块 ─────────────────────────────────────
-await check(`apply：${SWITCH_KEYS.length} 个开关全关 ⇒ 不登记任何子模块（日志「模块：无」）`, async () => {
+await check(`apply：**负向对拍** —— ${SWITCH_KEYS.length} 个开关全关 ⇒ 不登记任何子模块（日志「模块：无」）`, async () => {
   const { ctx, plugins, logs } = fakeCtx()
   const all = {}
   for (const k of SWITCH_KEYS) all[k] = false

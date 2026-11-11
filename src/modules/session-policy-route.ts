@@ -376,16 +376,26 @@ export async function handlePolicyWrite(
    *
    * ── 失败时怎么办 ────────────────────────────────────────────────────
    *   ⚠ **不回滚策略写入**：用户的选择是有效的，只是消息没投出去。
-   *   ⇒ 把 `requeue` 的结果**一并回在响应里**（`replay` 字段），⛔ 不静默
+   *   ⇒ 重投在后台执行，结果只记日志；⛔ 不阻塞确认响应
    *   —— 否则用户以为"选完了、消息该回来了"，实际没回来。
    *   ⚠ 队列**保留**（`requeue` 内部纪律：投完才清）⇒ 用户再选一次仍会投。
    */
   let replay: { ok: boolean; replayed: number; remaining: number; reason: string } | undefined
-  try {
-    replay = await svc.requeue?.(sessionId)
-  } catch (e) {
-    replay = { ok: false, replayed: 0, remaining: -1, reason: `重投抛错：${String((e as Error)?.message ?? e)}` }
-  }
+  /**
+   * 2026-11-05 WSL 真机缺陷：重投不能阻塞写入确认响应。
+   * 策略已落盘并回读确认；重投是后续动作，放到后台执行。
+   * 失败只记日志，队列保留，下一次选择仍可重投。
+   */
+  void (async () => {
+    try {
+      const r = await svc.requeue?.(sessionId)
+      if (r?.ok !== true) {
+        console.warn('[dsh-hob] 选档已成功，但重投未完成：' + String(r?.reason ?? 'unknown'))
+      }
+    } catch (e) {
+      console.warn('[dsh-hob] 选档已成功，但重投抛错：' + String((e as Error)?.message ?? e))
+    }
+  })()
   /**
    * ⚠⚠ **选完档 ⇒ 清掉"被拦过"这条一次性信号**（2026-10-29 · 第 332 轮 · 包 cb）。
    *

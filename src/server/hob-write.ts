@@ -31,7 +31,15 @@ import { renderReadings, renderReadingsNote, type RenderResult } from './hob-ren
 import { isActiveChangeFile, isCurrentRootDoc, isGeneratedLedgerPath } from '../shared/ledger-write-policy.ts'
 import { parseUnitsToml } from '../shared/stages-index.ts'
 import { unitShapeProblems } from '../shared/ledger-validation.ts'
-import { ledgerClosureProblems, stageControlProblems, type StageControlUnit } from '../shared/stage-controls.ts'
+import { pipelineRevisionProblems, pipelineWriteProblems, verificationRevisionProblems } from '../shared/pipeline.ts'
+import { ledgerClosureProblems, stageFieldProblems, type StageControlUnit } from '../shared/stage-controls.ts'
+import { publishLiveChange } from './live-hub.ts'
+import { liveSourcesOfLedgerWrite } from '../shared/live-signal.ts'
+/**
+ * T-24：`ledger.toml` 的格式判据复用这份**现成纯函数**（`ledger-lifecycle.ts:70`）。
+ * ⛔ 不要在本文件另写一套解析 —— 那会造出「同一份格式两份口径」。
+ */
+import { parseLedgerActivation } from '../shared/ledger-lifecycle.ts'
 
 // ── 白名单：骨架只读，运行数据/方案可写（与 UD-05 的切分同一条线）─────────────
 
@@ -151,7 +159,7 @@ export const LEDGER_WRITABLE_DIRS = ['ledger/units', 'ledger/changes'] as const
  * {@link LEDGER_WRITABLE_DIRS} 的 `ledger/units` 覆盖。
  * ⚠ `ledger/gen/**` 与 `CONSTITUTION.md` / `PROJECT.md` 都不在此列。
  */
-export const LEDGER_WRITABLE_FILES = ['ledger/units/index.toml'] as const
+export const LEDGER_WRITABLE_FILES = ['ledger/units/index.toml', 'ledger.toml', 'ledger.templates.toml'] as const
 
 /**
  * 新账本写入面的**路径正则**（`ledger/<dir>/<任意相对路径>`；⚠ 只认登记的那几个 `<dir>`）。
@@ -374,8 +382,23 @@ export type RefuseReason =
   | 'archive-snapshot-failed'
   /** 账本单元格式 / 结构 / 关系 / 字段控制不成立（⚠ 必须在落盘前拒）。 */
   | 'ledger-unit-malformed'
+  /**
+   * **既有账本源文件读得出字节、但解析不出单元**（O-33）。
+   * ⚠ 与下面的「新内容格式不对」不是一回事：那是**本次提交**坏了，这是**账本已在盘上坏了**
+   *   ⇒ 旧实现把它当空数组，于是守卫连同后面所有门禁一起失明。
+   */
+  | 'ledger-unit-unreadable'
   | 'ledger-duplicate-id'
   | 'ledger-structure-invalid'
+  /**
+   * **`ledger/units/` 下出现子目录**（R-19）。
+   *
+   * ⚠ 与 `not-whitelisted` 分成两个值：`ledger/units/sub/x.toml` 这条路径
+   *   **字符集上是合法的、旧白名单会放行**，问题不是「写错地方」，
+   *   而是「写进去**任何读面都看不见**」（读侧只认 `^unit-[^/]+\.toml$`）⇒ 会被静默吞掉。
+   * ⚠ 与 `ledger-unit-malformed` 也不同：那份文件**格式可能完全正确**，只是路径位置读不到。
+   */
+  | 'ledger-units-nested-denied'
   /**
    * **读不出来 ≠ 不存在**（2026-10-24 · 本单必修 1/2/3）。
    *
@@ -494,6 +517,15 @@ export interface WriteHobOptions {
    *   且 `check-ledger-projection` 的落盘断言逐字段核对。
    */
   validateLedgerStructure?: boolean
+  /**
+   * **允许写「批准专用分片」**（S-01(A) · 2026-11-10）。
+   *
+   * ⚠ 只有 `hob_pipeline_approve` 传 `true`。⛔ `write_hob` **永不**传它。
+   * 语义：`ledger/units/unit-pipeline-approval.toml` 是「用户批准」的载体，
+   *   而 `write_hob` 在最低档就有 ⇒ 若不收窄，Hob 可绕过批准工具直接伪造一条
+   *   `decided_by="user"` 的 decision 单元（端到端已实测）。
+   */
+  allowApprovalShard?: boolean
 }
 
 export interface WriteHobInput {
@@ -758,8 +790,54 @@ async function withFileQueue<T>(key: string, fn: () => Promise<T>): Promise<T> {
  */
 import { findSymlinkOnPath } from './doc-read.ts'
 
+/**
+ * **只允许专用工具写的分片**（S-01(A) · 2026-11-10）。
+ *
+ * ── 它治的缺陷 ──────────────────────────────────────────────────────────────
+ *   `hob_pipeline_approve` 是「用户批准」的唯一合法写入者，而它写的是
+ *   `ledger/units/unit-pipeline-approval.toml` —— 一个**普通账本分片**。
+ *   而 `write_hob` 在**最低档 `ledger`** 就有（`preset/tools.ts` 的 `PERMISSION_TIERS.ledger`），
+ *   且 `LEDGER_PATH_RE`（`^ledger/(units|spec|changes)/…`）**放行该路径**。
+ *   ⇒ **Hob 可以完全绕过批准工具，直接写一条 decision 单元**：
+ *     `decided_by="user"` 自己写、`artifact_digest` 自己算（FNV，非密码学）、
+ *     `source="继续"` 自己编 —— 而 `approvalDecisionProblems` 对 `source` 只要求**非空**
+ *     （回执正则只在**工具入口**跑，绕过工具就不跑）。
+ *   ⇒ 端到端实测（`/tmp/lead_probe_e2e4.mjs`）：全程只用档 1 的 `write_hob`，
+ *     最终 `approvalStateOf` 返回 `{state:'approved', reason:'用户已批准当前修订'}`。
+ *
+ * ── 本档做什么（**只收窄，不改任何既有语义**）──────────────────────────────
+ *   `write_hob` 写这些分片 ⇒ **拒**，并指明该用哪个工具。
+ *   ⚠ 专用写入者（`hob_pipeline_approve`）走的是同一个 `writeHobFile`，
+ *     它通过 {@link WriteHobOptions.allowApprovalShard} 显式放行 —— **不是**绕过白名单，
+ *     而是「白名单里有一个只有它能拿到的通行证」。
+ *   ⚠ 这**不能根治** S-01（批准工具本身仍由 Hob 调用、`decided_by` 仍是硬编码常量），
+ *     它只把「可绕过点」从两条收窄成一条。根治要 C 选项（用户本人触发通路）。
+ */
+export const APPROVAL_ONLY_SHARDS = ['ledger/units/unit-pipeline-approval.toml'] as const
+
+/** 该路径是否属于「只允许专用工具写」的分片。 */
+export function isApprovalOnlyPath(file: string): boolean {
+  return (APPROVAL_ONLY_SHARDS as readonly string[]).includes(file)
+}
+
 /** 白名单判定：返回拒绝结果，或 `null` 表示放行。 */
-function checkWhitelist(file: string, mode: 'append' | 'overwrite'): WriteHobResult | null {
+function checkWhitelist(file: string, mode: 'append' | 'overwrite', allowApprovalShard = false): WriteHobResult | null {
+  /**
+   * ⚠ **批准分片只有专用工具能写**（S-01(A)）：
+   *   放在白名单**最前面** —— 否则会先被下面的 `LEDGER_PATH_RE` 放行。
+   *   ⚠ `allowApprovalShard` 只由 `hob_pipeline_approve` 传 true。
+   */
+  if (isApprovalOnlyPath(file) && !allowApprovalShard) {
+    return refuse(
+      file,
+      'not-whitelisted',
+      `拒绝：\`${file}\` 是**用户批准**的专用分片，\`write_hob\` 不能写。`
+        + '\n      ⇒ 批准必须走 `hob_pipeline_approve`（它带用户回执校验）；'
+        + '⛔ 直接写这个分片等于伪造一条「用户已批准」。',
+    )
+  }
+  /** Ledger activation metadata is an explicit stable single-file entry. */
+  if (file === 'ledger.toml' || file === 'ledger.templates.toml') return null
   if (isGeneratedLedgerPath(file)) {
     return refuse(
       file,
@@ -792,6 +870,8 @@ function checkWhitelist(file: string, mode: 'append' | 'overwrite'): WriteHobRes
    *   这样"想写生成物"会得到**点名 gen 的那句**，而不是笼统的"不在白名单内"。
    */
   if (file === 'ledger' || file.startsWith('ledger/')) {
+    /** The activation record is a stable single-file entry, not a generated view. */
+    if (file === 'ledger.toml') return null
     // ⛔ 生成物：显式拒绝（有独立理由，⛔ 不混进笼统话术）
   if (file.startsWith('ledger/gen/') || file === 'ledger/gen' || file.startsWith('ledger/spec/') || file === 'ledger/spec') {
       return refuse(
@@ -809,6 +889,27 @@ function checkWhitelist(file: string, mode: 'append' | 'overwrite'): WriteHobRes
       // ⚠ 路径穿越守卫（`..` / 绝对路径已在正则字符集外，这里再挡一次显式）
       if (file.includes('..') || file.includes('//')) {
         return refuse(file, 'not-whitelisted', `拒绝：路径里不许出现 \`..\` 或空段（你给的是 ${file}）。`)
+      }
+      /**
+       * **R-19：`ledger/units/` 只允许单段 `unit-*.toml` 与 `index.toml`。**
+       *
+       * ⚠ 为什么必须收窄：`LEDGER_PATH_RE` 的字符集含 `/`，于是 `ledger/units/sub/x.toml`
+       * 会被放行、`ok:true` 落盘；但**三个读取面全都只认** `^unit-[^/]+\.toml$`
+       * （`hob-write.ts:1137` / `projection-writer.ts:124,340` / `ledger-lifecycle.ts:241`）
+       * ⇒ 写进去的东西**任何读面都看不见**，连写前合并守卫（只合并 `^unit-.*` 分片）都不参与。
+       * 这是「静默吞错」的另一种形态：**不是吞掉异常，而是吞掉整条数据**。
+       *
+       * ⛔ 不要为了「支持分子目录」而放宽这里 —— 读侧不认，放宽只会重新制造幽灵单元。
+       */
+      const sub = (ln[2] ?? '')
+      if (ln[1] === 'units' && sub.includes('/')) {
+        return refuse(
+          file,
+          'ledger-units-nested-denied',
+          '拒绝：ledger/units/ 下不允许子目录（你给的是 ' + file + '）。'
+            + '\n      ⇒ 单元分片只能是 ledger/units/unit-<名>.toml 或 ledger/units/index.toml；'
+            + '\n      ⇒ 子目录里的文件**任何读取面都看不见**（读侧只认 ^unit-[^/]+\\.toml$）⇒ 会被静默吞掉。',
+        )
       }
       return null
     }
@@ -993,6 +1094,38 @@ function checkFormat(file: string, content: string): WriteHobResult | null {
       return refuse(file, 'bad-format', '拒绝：DECISIONS.md 条目须以 `### CHG-NNN · <日期> · <标题>` 开头。')
     }
   }
+  /**
+   * ── `ledger.toml`：**激活记录**，账本能否使用的总开关（T-24）──────────────
+   *
+   * ⚠ 为什么必须在这里拦：`ledger.toml` 在 {@link checkWhitelist} 是**直通放行**的稳定单文件入口
+   *   （`:835`），而它是**账本能否使用的总开关**（`ledger-lifecycle.ts:113-129`）。
+   *   实测过：`write_hob('ledger.toml', 'this is not a valid activation record')` ⇒ `{ok:true}`，
+   *   随后 `ledgerLifecycleOfRoot` ⇒ `state:'invalid'` —— **写成功、账本随即判废**。
+   *
+   * ⚠ **两条相邻规则一严一宽，没有理由**：`REQUIREMENTS.md` 有形状校验（上面那段），
+   *   同一道写入口的 `ledger.toml` 却什么也不查。本条就是把这条口对齐。
+   *
+   * ⚠ 判据复用**现成纯函数** {@link parseLedgerActivation}（`ledger-lifecycle.ts:70`），
+   *   ⛔ 不在这里另写一套解析 —— 那会造出「同一份格式两份口径」（本项目明令要防的形态）。
+   *   它同时校验：无 `[section]`、每行 `key = "value"`、六个必填键、status 属封闭集、
+   *   generation 为正整数、created_at 可解析。
+   */
+  if (file === 'ledger.toml') {
+    if (parseLedgerActivation(body) === undefined) {
+      return refuse(
+        file,
+        'bad-format',
+        [
+          '拒绝：ledger.toml  是**账本的激活记录**，内容不构成合法激活记录。',
+          '  ⇒ 形状：每行 key = "value"（不许 [section]、不许裸值）；',
+          '  ⇒ 必填六键：ledger_id / schema_version / status / workspace / generation / created_at；',
+          '  ⇒ status 属 LEDGER_INSTANCE_STATUSES；generation 为正整数；created_at 可解析；',
+          '  ⛔ 不合法就落盘 ⇒ 账本**当场判 invalid**（写成功、随即不可用），比不写更糟。',
+          '  ⇒ 需要新建账本请用 hob_ledger_init，它会生成合法的激活记录。',
+        ].join('\n'),
+      )
+    }
+  }
   // CONTEXT.md：自由章节，不做形状校验
   return null
 }
@@ -1031,8 +1164,39 @@ function checkLedgerUnitWrite(
     )
   }
   const unitsDir = join(hobRoot, 'ledger', 'units')
-  const readToml = (name: string): Array<Record<string, unknown>> => {
-    try { return parseUnitsToml(readFileSync(join(unitsDir, name), 'utf8')) as Array<Record<string, unknown>> } catch { return [] }
+  /**
+   * 读一份既有账本源文件的**四态**（O-33；与本文件读盘段的 {@link TargetRead} 同款纪律）。
+   *
+   * ⚠ **「不存在」与「读不出来」不许合并成同一个值**：
+   *   · `missing`     —— 只有 `ENOENT` 才算"首次创建"，可以当空集；
+   *   · `unparseable` —— 字节读到了，但不是现行 `[[unit]]` TOML 子集 ⇒ **拒写**；
+   *   · `unreadable`  —— 其余一切读盘错误（`EACCES` / `EIO` / `EISDIR`…）⇒ **拒写**。
+   * ⚠ 旧实现是 `catch { return [] }`：把后两档都读成"这个分片没有单元" ⇒ 账本已坏时
+   *   本守卫与它后面所有门禁**一起失明**，而写入仍返回 `ok: true`
+   *   （实测：坏分片在场，append 到新分片照样成功）。
+   */
+  type UnitSourceRead =
+    | { kind: 'ok'; units: Array<Record<string, unknown>> }
+    | { kind: 'missing' }
+    | { kind: 'unparseable'; name: string; why: string }
+    | { kind: 'unreadable'; name: string; code: string; why: string }
+  const readUnitSource = (name: string): UnitSourceRead => {
+    let src: string
+    try {
+      src = readFileSync(join(unitsDir, name), 'utf8')
+    } catch (e) {
+      const err = e as { code?: string; message?: string } | null
+      const code = typeof err?.code === 'string' && err.code !== '' ? err.code : 'unknown'
+      // ⚠ 只有 ENOENT 能当"首次创建"（与 readTargetBytes 同一判据）。
+      if (code === 'ENOENT') return { kind: 'missing' }
+      return { kind: 'unreadable', name, code, why: String(err?.message ?? e) }
+    }
+    try {
+      return { kind: 'ok', units: parseUnitsToml(src) as Array<Record<string, unknown>> }
+    } catch (e) {
+      // ⚠ 解析失败不是"这个分片没有单元"：把它当空集会让下面所有门禁一起失明。
+      return { kind: 'unparseable', name, why: String((e as Error)?.message ?? e) }
+    }
   }
   const shardNames = (() => {
     try {
@@ -1042,34 +1206,165 @@ function checkLedgerUnitWrite(
     } catch { return [] }
   })()
   const rel = file.slice('ledger/units/'.length)
-  const merged = [
-    ...readToml('index.toml'),
-    ...shardNames.filter((n) => n !== rel).flatMap(readToml),
-    ...(mode === 'append' ? [...readToml(rel), ...incoming] : incoming),
+  /**
+   * ⚠⚠ 不变量：**每个物理文件在 merged 里最多贡献一次**（T-01）。
+   *
+   * 旧实现让 `index.toml` 贡献两次：合并数组第一项 `readToml('index.toml')`
+   *   ＋ `mode==='append'` 时的第三项 `readToml(rel)`（`rel==='index.toml'`）；
+   *   而 `shardNames` 只匹配 `^unit-*.toml`（**不含** index.toml）⇒ 第二项排不掉它
+   *   ⇒ index 里每条既有单元都命中「合并后的账本出现重复 ID」。
+   *
+   * ⇒ 正确形状是「`rel` 是 index.toml 时**第一项不读**」——
+   *   ⛔ **不是**「第三项去掉旧内容」：后者修得了 append、修不了 overwrite
+   *   （`02-ledger.md` 附录 A-4 实测：overwrite 到 index 仍报重复）。
+   */
+  const relIsIndex = rel === 'index.toml'
+  const selfRead = readUnitSource(rel)
+  /** 关键：`rel` 是 index 时这里**不读**，否则它与 `selfRead` 是同一份物理文件。 */
+  const indexPathRead = relIsIndex ? undefined : readUnitSource('index.toml')
+  const others = shardNames.filter((n) => n !== rel).map(readUnitSource)
+  const unitsOf = (r: UnitSourceRead | undefined): Array<Record<string, unknown>> =>
+    r !== undefined && r.kind === 'ok' ? r.units : []
+  const selfUnits = unitsOf(selfRead)
+  /**
+   * 「写之前」的账本快照（`pipelineWriteProblems` 的 `before`）：**必须含目标分片自己的旧单元**。
+   *
+   * ⚠ **B0.2b / t22 修复点**：旧实现只含 `index.toml` 与**其它**分片，漏了 `rel` 自己的旧内容
+   *   ⇒ 目标分片里每一条既有单元都被 `pipelineWriteProblems` 当成「本次新增」
+   *   ⇒ 对 v2 存量单元触发 C-23「新单元必须登记 pipeline_version=v3」。
+   *   实测：真实账本副本上原样 overwrite `unit-01.toml`（内容逐字节不变）被 81 条 C-23 拒绝。
+   * ⚠ 修这一格很容易顺手把「新单元必须 v3」一起放松 —— 但 `selfUnits` 只是**旧**内容，
+   *   本次 `incoming` 仍不进 `before` ⇒ 真新增的单元照旧被 C-23 拦（负向对拍守住这一点）。
+   */
+  const beforeUnits = [
+    ...(relIsIndex ? [] : unitsOf(indexPathRead)),
+    ...others.flatMap(unitsOf),
+    ...selfUnits,
   ]
-  const idSeen = new Set<string>()
-  const shape = merged.flatMap((u) => unitShapeProblems(u, idSeen))
-  if (shape.some((x) => x.includes('重复 ID'))) {
-    return refuse(file, 'ledger-duplicate-id', `拒绝：${shape.find((x) => x.includes('重复 ID'))} ⇒ 一个 ID 只能有一个单元。`)
+  const merged = [
+    ...(relIsIndex ? [] : unitsOf(indexPathRead)),
+    ...others.flatMap(unitsOf),
+    ...(mode === 'append' ? [...selfUnits, ...incoming] : incoming),
+  ]
+  /**
+   * ── O-33 出口：既有源文件**读不出单元** ⇒ 拒写（在 `unitShapeProblems` 之前）────
+   *
+   * ⚠ 与 T-06（既有行缺口只报不拦）**不冲突**：T-06 说的是「行解析得出来、只是字段值
+   *   不合法」（如 `status="settled"`）；本分支说的是「整份文件根本解析 / 读取不出单元」。
+   *   判据对象不同：前者是**已解析的字段值**，后者是**解析动作本身**。
+   * ⛔ 不把这条并进下面的语义门禁 —— 一并就会退回「整本不健康 ⇒ 一行都写不进」的死锁。
+   */
+  const broken = [indexPathRead, ...others, selfRead]
+    .filter((r): r is Extract<UnitSourceRead, { kind: 'unparseable' | 'unreadable' }> =>
+      r !== undefined && (r.kind === 'unparseable' || r.kind === 'unreadable'))
+  if (broken.length > 0) {
+    const list = broken.map((r) => r.kind === 'unparseable'
+      ? `\`${r.name}\`：不是现行 \`[[unit]]\` TOML 子集（${r.why}）`
+      : `\`${r.name}\`：读不出来（${r.code}）`).join('；')
+    return refuse(
+      file,
+      broken.some((r) => r.kind === 'unparseable') ? 'ledger-unit-unreadable' : 'read-failed',
+      `拒绝：账本里有 ${broken.length} 份既有源文件读不出单元：${list}`
+        + '\n  ⇒ 这不是「这些分片是空的」：内容在，但解析 / 读取不出来。'
+        + '\n  ⇒ 先修好那几份（或从 backups/ 恢复），再提交；⛔ 不按空账本继续写。',
+    )
   }
+  /**
+   * ── **O-43：形态门禁只对「本次新增」开火，⛔ 不对整本账开火** ─────────────
+   *
+   * ⚠⚠ 改前是 `merged.flatMap(unitShapeProblems)` —— **整本账一起判**。后果：
+   *   一本真实账本只要有**一处**历史越界（实测 `prompt-enhancer-release`：
+   *   19 单元里 `R-003.status="proposed"`、`CHG-346.status="draft"` 两处），
+   *   **此后任何一次写入都会被拒**，哪怕新写的那条完全合法。
+   *
+   *   ⇒ 那是**死锁**：坏词要靠写入来修，而写入被坏词拦住。
+   *
+   * ⚠ 上面 O-33 那段注释已经写明了这条纪律：
+   *   「⛔ 不把这条并进下面的语义门禁 —— 一并就会退回『整本不健康 ⇒ 一行都写不进』的死锁」。
+   *   **但下面那道门禁恰恰就是整本判** —— 注释与实现相反。本条把实现拉回注释说的样子。
+   *
+   * ⚠ **判据怎么分**（关键）：
+   *   · `idSeen` 仍按 **merged 全量**查重 —— 重复 ID 是**账本级**问题，必须整本看；
+   *   · 形态问题（status 越界 / 前缀与 kind 不符…）只查 **incoming**（本次写入的单元）。
+   *   ⇒ 既有坏词**照旧被读出来**（`ledgerReadinessOfRoot` 会报），只是**不再阻止写入**。
+   *
+   * ⛔ **不要放宽 `incoming` 的检查** —— 新写的单元必须完全合法，
+   *   那是「不许把新的坏数据写进去」这条纪律的落点。
+   */
+  const idSeen = new Set<string>()
+  /** ① 重复 ID：**整本**判（账本级不变量）。 */
+  const dupShape = merged.flatMap((u) => unitShapeProblems(u, idSeen))
+  if (dupShape.some((x) => x.includes('重复 ID'))) {
+    return refuse(file, 'ledger-duplicate-id', `拒绝：${dupShape.find((x) => x.includes('重复 ID'))} ⇒ 一个 ID 只能有一个单元。`)
+  }
+  /** ② 形态：**只判本次写入的单元**（既有历史坏词只报不拦，见上）。 */
+  const shape = incoming.flatMap((u) => unitShapeProblems(u))
   if (shape.length > 0) {
     return refuse(
       file,
       'ledger-structure-invalid',
-      `拒绝：账本单元结构不合法（${shape.length} 条）：${shape.slice(0, 8).join('；')}`
-        + '\n  ⇒ 先按封闭状态表改正，再提交。',
+      `拒绝：**本次写入**的单元结构不合法（${shape.length} 条）：${shape.slice(0, 8).join('；')}`
+        + '\n  ⇒ 先按封闭状态表改正，再提交。'
+        + '\n  ⚠ 本条只判**这一次写的单元**；账本里既有的历史坏词由健康面单独报告（⛔ 不阻止你修它们）。',
     )
   }
   const problems = [
-    ...stageControlProblems(merged as StageControlUnit[]),
+    /**
+     * Structural writes may persist unapproved drafts. The user gate is checked
+     * when the pipeline attempts to advance or dispatch, otherwise the first
+     * requirement could never be saved for the user to approve.
+     */
+    /**
+     * ── **T-06b：字段门禁只判「本次写入」，⛔ 不对整本账开火** ────────────────
+     *
+     * ⚠ 改前 `stageFieldProblems(merged)` —— 整本一起判。后果与 O-43 同型：
+     *   一本账里只要有**一处**历史欠账（实测：`R-OLD` 缺 `clarify_examples` /
+     *   `acceptance_criteria`），**此后任何一次写入都被拒**，哪怕新写的那条完全合规。
+     *   ⇒ 死锁：欠账要靠写入来补，而写入被欠账拦住。
+     *
+     * ⚠ **为什么 `ledgerClosureProblems` 仍传 `merged`**：它要按 id 查**全账本**的引用
+     *   是否闭合（`parent` 指向的方案在不在）。只传 `incoming` 会把「新单元引用既有父方案」
+     *   误报成「父方案不存在」。**两者的判据对象不同**，⛔ 不能一起收窄。
+     *   ⚠ 但它的报告里**属于既有单元的那部分**也应只报不拦 —— 见下面 `problems` 的过滤。
+     */
+    /**
+     * ⚠⚠ **S-03 暴露的真缺陷**：判「谁的问题」用 `incoming`（⛔ 不对整本账开火，
+     *   那是 T-06b 的死锁），但**查引用用 `merged`** —— C-7 要读父任务的 `built_by`。
+     *   改前只传一个参数 ⇒ 新写 ACC 时找不到父任务 ⇒ 父任务被判"缺 built_by"
+     *   ⇒ 整个写入被拒（S-03 之前是静默放过，所以没暴露）。
+     */
+    ...stageFieldProblems(incoming as StageControlUnit[], merged as StageControlUnit[]),
     ...ledgerClosureProblems(merged as StageControlUnit[]),
+    // ⚠ 复用上面已读好的四态结果：每个物理文件只读一次，且与 merged 同一口径。
+    ...pipelineWriteProblems(beforeUnits, merged),
+    ...pipelineRevisionProblems(merged),
+    ...verificationRevisionProblems(merged),
   ]
-  if (problems.length === 0) return null
-  const first = problems.slice(0, 8).map((p) => `${p.rule} · ${p.unit} · ${p.why}`).join('；')
+  /**
+   * ── **T-06b 第二半：属于「既有单元」的缺口只报不拦** ───────────────────────
+   *
+   * ⚠ `ledgerClosureProblems` 必须吃全账本（否则「新单元引用既有父方案」会误报），
+   *   但它**也会报既有单元自己的欠账**。那部分不该拦住本次写入 —— 理由同 T-06b 上半。
+   *
+   * ⚠ **判据：这条缺口的 `unit` 是不是本次写入的**：
+   *   · 是 `incoming` 里的 ⇒ **拦**（新数据必须合规）；
+   *   · 只在 `merged` 里的既有单元 ⇒ **只报**（由健康面单独呈现）。
+   * ⚠ `pipelineWriteProblems` 已经在内部区分了 before/after，不受影响。
+   */
+  const incomingIds = new Set(incoming.map((u) => String(u.id ?? '')))
+  const blocking = problems.filter((x) => incomingIds.has(String(x.unit ?? '')))
+  /**
+   * ⚠ **本次写入合规、只是账本有历史欠账** ⇒ **放行**（`null` = 通过）。
+   *   历史欠账的**呈现面**是 `ledgerReadinessOfRoot` / 健康面 —— 它本来就会报，
+   *   ⛔ 不在这里重复一遍（那会造出「同一事实两个来源」）。
+   *   ⛔ 也不加新的返回值形状 —— 那会动 `WriteHobResult` 契约。
+   */
+  if (blocking.length === 0) return null
+  const first = blocking.slice(0, 8).map((p) => `${p.rule} · ${p.unit} · ${p.why}`).join('；')
   return refuse(
     file,
     'ledger-structure-invalid',
-    `拒绝：账本结构不合法（${problems.length} 条缺口）：${first}`
+    `拒绝：**本次写入**引入 ${blocking.length} 条缺口：${first}`
       + '\n  ⇒ 先补齐 / 改正这些行；⛔ 不把非法状态写进账本、等到面板才暴露。',
   )
 }
@@ -1484,7 +1779,8 @@ async function writeHobFileInner(
    */
   const isLedgerNext = file === 'ledger' || file.startsWith('ledger/')
   const lower = file.toLowerCase()
-  const extOk = lower.endsWith('.md') || (isLedgerNext && (lower.endsWith('.toml') || lower.endsWith('.json')))
+  const isActivationRecord = file === 'ledger.toml' || file === 'ledger.templates.toml'
+  const extOk = lower.endsWith('.md') || isActivationRecord || (isLedgerNext && (lower.endsWith('.toml') || lower.endsWith('.json')))
   if (!extOk) {
     return refuse(
       file,
@@ -1494,7 +1790,7 @@ async function writeHobFileInner(
         : '拒绝：只允许写 .md 文件。',
     )
   }
-  const wl = checkWhitelist(file, mode)
+  const wl = checkWhitelist(file, mode, opts.allowApprovalShard === true)
   if (wl !== null) return wl
 
   // .hob/ 自身若是软链，写出去就逃逸了 —— 连带检查
@@ -1538,6 +1834,16 @@ async function writeHobFileInner(
   if (file === 'REQUIREMENTS.md') {
     const rootFmt = checkFormat(file, content)
     if (rootFmt !== null) return rootFmt
+  }
+  /**
+   * ⚠ **同款问题的第二例（T-24）**：`ledger.toml` 是**账本能否使用的总开关**，
+   *   而 `checkFormat` 原先只在 `append` 分支被调用 ⇒ `overwrite`（它的常态）完全不受检。
+   *   与上面 `REQUIREMENTS.md` **同一个成因**（判据落在无人走的路径上）。
+   * ⇒ 这里对激活记录单独补一次，`append` / `overwrite` 都走到。
+   */
+  if (file === 'ledger.toml') {
+    const actFmt = checkFormat(file, content)
+    if (actFmt !== null) return actFmt
   }
 
   /**
@@ -1860,6 +2166,21 @@ async function writeHobFileInner(
   //   ⚠ **只报告、不拒绝**：文件已经落盘且回读通过 ⇒ `ok` 仍为 true。
   //     本清单只是把"引用是否真实存在"这件事**从收尾时提前到写入时**。
   const danglingRefs = collectDanglingRefs(hobRoot, body)
+
+  /**
+   * The write is on disk and read back at this point. Publish only after that
+   * success point: a failed or dry-run write must not make viewers refetch.
+   * Handoff notes and archives intentionally emit nothing — they do not change
+   * the project pipeline visible in the progress panel.
+   */
+  publishLiveChange(root, [
+    ...liveSourcesOfLedgerWrite(file),
+    /**
+     * A first write can create the ledger directory itself. The catalog view
+     * then has a new project to list, so announce that as well as the content.
+     */
+    ...(ledgerRootExistedBefore ? [] : ['catalog' as const]),
+  ])
 
   return {
     ok: true,

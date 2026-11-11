@@ -300,6 +300,31 @@ export async function writeSpawnFields(
   }
 }
 
+/**
+ * ⚠⚠ **本文件里 `writePermissionLevel` / `readPermissionLevel` /
+ * `writeWorkMode` / `readWorkMode` 四个函数：UI 零调用方，但**有意保留**。**
+ *
+ * | 事实 | 说明 |
+ * |---|---|
+ * | UI 调用方 | **0**（2026-11-11 实测：`settings-panel.tsx` 里对它们的引用**全是注释**） |
+ * | 配置字段 | **仍活跃** —— `config.permission.level` / `config.workMode.mode` 仍被 `preset/tools.ts` 现读、被 `session-policy-service.ts` 用作实例级全局 |
+ * | 机检 | `check:config` 的 **G-7**（兜底同值）/ **G-8**（子字段路径）钉着它们的**实现纪律** |
+ * | 角色 | **迁移 / 兼容路径的写入口**（旧会话一次性迁移的取值来源） |
+ *
+ * ⚠ **为什么保留而不是删**（⛔ 不要因为"零调用"就删）：
+ *   ① 它们写的是**仍然存在的配置字段** —— 删掉函数不删字段，只会让那条迁移路径**无从执行**；
+ *   ② G-7/G-8 钉的是**写入纪律**（兜底必须同值、必须走子字段路径），
+ *      这两个纪律**对将来任何写这两个字段的新入口都成立** —— 删了就失去护栏；
+ *   ③ 同族对照：`writeSpawnFields` 有 4 处真实调用方，这四个没有 —— 差异是**UI 落点被移除**，
+ *      ⛔ 不是「能力被移除」。
+ *
+ * ⚠ **若要真删**，必须同批回答：旧会话迁移时的 `permission.level` 由谁写？
+ *   G-7/G-8 改钉到哪里？—— 这两个问题有答案之前，**保留是正确选择**。
+ *
+ * ⚠ 这与 `R-24`（`/stages` 的 `pipelines`/`summary` 零读取但保留）是**同一处理口径**：
+ *   **「保留但把状态写清」优于「为了消掉未使用而删」。**
+ */
+
 /** 可读权限控制的三档值（与 `src/config.ts` 的 `PERMISSION_LEVELS` 同源口径；⚠ 内部取值，⛔ 不是显示名）。 */
 export type PermissionLevel = 'ledger' | 'project' | 'workspace'
 

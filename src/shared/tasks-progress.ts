@@ -1,7 +1,7 @@
 /**
  * **LEGACY · 五步主线进度表的解析与归一**（纯函数，无 I/O）。
  *
- * ⚠ 权威五步汇总使用 `POST /api/dsh-hob/stages` 与
+ * ⚠ 权威阶段清单使用 `POST /api/dsh-hob/stages` 与
  *   `ledger/units/`（`index.toml` 导航 + `unit-*.toml` 分片）。本模块只服务旧 `tasks-progress`
  *   兼容路由，⛔ 不新增消费者。
  *

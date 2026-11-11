@@ -134,6 +134,10 @@ export function runRepoRules({ bad, ok, skip }) {
     ['kit/drafts/restructure-plan.md', '骨架 · 重构方案人读版（README §1.2）'],
     // ⚠ 顺带盯住"入库脚本不能依赖不入库文件"这条：这些脚本自己必须在库里
     ['scripts/check-preset-contracts.mjs', '入库脚本（被 package.json 的 check:presets 调用）'],
+    ['scripts/check-pipeline.mjs', '入库脚本（被 package.json 的 check:pipeline 调用 · Pipeline v3 六阶段、用户闸门与修订绑定）'],
+    ['scripts/check-live-route.mjs', '入库脚本（被 package.json 的 check:live-route 调用 · 实时失效通道：路由、序号、合并、隔离、写入信号与清理）'],
+    ['scripts/check-live-client.mjs', '入库脚本（被 package.json 的 check:live-client 调用 · SSE 客户端：解析、去抖、断档、跨账本拒绝与重连）'],
+    ['scripts/check-risk-policy.mjs', '入库脚本（被 package.json 的 check:risk-policy 调用 · 风险硬触发、单维下限、残余风险与 G6 收口档位）'],
     ['scripts/check-hob-skeleton.mjs', '入库脚本（被 package.json 的 check:skeleton 调用 · 通用骨架 ↔ 实例结构漂移机检）'],
     ['scripts/check-archive-consistency.mjs', '入库脚本（被 package.json 的 check:archive 调用 · 归档一致性机检）'],
     ['scripts/check-gitignore.mjs', '本脚本自身也必须入库（否则 clone 后无从核对）'],
@@ -317,6 +321,7 @@ export function runRepoRules({ bad, ok, skip }) {
     ['scripts/check-work-plan-panel.mjs', '入库脚本（被 package.json 的 check:work-plan-panel 调用 · 真 DOM：工作计划面板挂载 / 轨道与执行者 / 单轨原因 / 判不出与空表 / 只读路由真处理体 / 摘挂载负向对拍）'],
     ['scripts/check-stage-controls.mjs', '入库脚本（被 package.json 的 check:stage-controls 调用 · 五阶段内部控制：需求澄清 / 方案路径 / 任务自包含 / 小步验证 / 产品确认 / 回流归因 / 文件引用可追溯 / C-17 新条目标题自包含（含 title=id））'],
     ['scripts/check-ledger-projection.mjs', '入库脚本（被 package.json 的 check:ledger-projection 调用 · 运行态 → 账本投影：派发建 RUN / 回传迁 RUN 且无读数不迁 TSK / 判决建 ACC / 三档可辨 / 幂等）'],
+    ['scripts/check-ledger-lifecycle.mjs', '入库脚本（被 package.json 的 check:ledger-lifecycle 调用 · 账本生命周期、统一准入、dispatchId 与归档重建）'],
     //   它守：POST 带 sessionId ⇒ 200 + 我们的 JSON（三选一 reason 也算「处理体在」）；
     //         同路径 GET ⇒ 404 + 纯文本 not found（宿主「错门回 404 而不是 405」这条边界）。
     ['scripts/probe-tasks-route-http.mjs', '按需档探针（被 package.json 的 check:tasks-route-http 调用 · 要活宿主+token · 任务进度 200 + GET 404 纯文本 / Current 与按 ID 资源 / 五步 attention · 会话优先取活锁 · noObject 走 exit 2）'],

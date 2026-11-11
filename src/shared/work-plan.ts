@@ -4,8 +4,9 @@
  * ── 它管什么 ──────────────────────────────────────────────────────────────
  *   把「工作方式」从一段提示词变成可检查的派单计划：
  *   · 单会话：同一计划只允许一条执行轨；
- *   · 多会话：只有范围互斥、依赖可满足、验收独立的轨道才允许并行；
- *   · 自动：计划必须留下为什么选择一条或多条轨道的依据。
+ *   · 多会话：存在独立候选时必须拆轨；单轨必须给候选证据；
+ *   · 自动：可以少拆，但单轨必须留下封闭原因；
+ *   · 三档的写轨都串行（当前没有 worktree 隔离，⛔ 不承诺并行写）。
  *
  * ⚠ 本文件是**纯函数**：不读文件、不读配置、不建会话、不投递。
  *   持久运行态、唤醒与派生状态仍归 `server/orch-state.ts` 与编排器所有。
@@ -13,7 +14,7 @@
  * ⚠ 本文件**不扩大任何权限**。轨道只描述「派给哪个已存在的执行会话」，
  *   不改变该会话的可读范围、工具面或审批档。
  */
-import type { WorkMode } from './work-mode.ts'
+import { workModePolicy, type WorkMode } from './work-mode.ts'
 
 export const WORK_PLAN_VERSION = 1
 export const WORK_PLAN_STATE_VALUES = ['planned', 'running', 'joining', 'completed', 'failed'] as const
@@ -37,6 +38,11 @@ export const WORK_PLAN_REFUSALS = [
   'invalid-join',
   'invalid-rationale',
   'unverified-single-track-reason',
+  'missing-split-evidence',
+  'invalid-split-candidate',
+  'multi-mode-split-required',
+  'single-target-reason-required',
+  'single-target-split-required',
 ] as const
 
 export type WorkPlanRefusal = (typeof WORK_PLAN_REFUSALS)[number]
@@ -51,6 +57,28 @@ export const MULTI_SINGLE_TRACK_REASONS = [
 ] as const
 
 export type MultiSingleTrackReason = (typeof MULTI_SINGLE_TRACK_REASONS)[number]
+
+/**
+ * 候选工作单元（`WM-30`）。
+ *
+ * ⚠ 多会话档不能只写一句“独立范围不足”就把可拆的工作压成单轨：
+ *   必须列出候选片段，由校验器判断**是否真的存在独立对**。
+ * ⚠ 候选只用于**证据核对**，⛔ 不替代真实轨道，也不改变派发对象。
+ */
+export interface SplitCandidate {
+  /** 候选片段的稳定标识（归一后必须唯一）。 */
+  pieceId: string
+  /** 该候选打算覆盖的路径。 */
+  scopePaths: string[]
+  /** 该候选的独立验收。 */
+  acceptance: string[]
+  /** 该候选依赖的其它候选（可选）。 */
+  dependsOn?: string[]
+  /** 与其它候选共享的契约（`shared-contract` 的证据）。 */
+  sharedContracts?: string[]
+  /** 所属验收单元（`single-acceptance-unit` 的证据）。 */
+  acceptanceUnit?: string
+}
 
 export interface WorkTrack {
   /** 计划内唯一；用于回传对号与状态展示。 */
@@ -86,14 +114,15 @@ export interface SingleTrackEvidence {
   sharedPaths?: string[]
   /** `strict-order` 的有序子步骤（≥2，归一后不同）。 */
   orderedSteps?: string[]
+  /**
+   * 候选工作单元（多会话档单轨时必须给）。
+   *
+   * ⚠ 校验规则：候选之间若存在“路径不重叠、无依赖、各有独立验收”的对，
+   *   就说明本可拆轨 ⇒ 多会话档拒绝单轨；只有不存在独立对时才允许合并。
+   */
+  candidatePieces?: SplitCandidate[]
 }
 
-/**
- * 证据文本归一：全半角折叠（NFKC）、去掉不可见字符与 NUL、去掉首尾空白。
- *
- * ⚠ 为什么要去不可见字符：`"p1"` 与 `"p1\u200B"` 在 `Set` 里是两个键，
- *   于是"同一个片段写两遍"就能凑出"两个片段" —— 那是伪造证据，不是证据。
- */
 /**
  * 不可见/可忽略字符：用 Unicode 的 `Default_Ignorable_Code_Point`，**不手写区间**。
  *
@@ -104,6 +133,16 @@ export interface SingleTrackEvidence {
  */
 const EVIDENCE_INVISIBLE = /[\p{Default_Ignorable_Code_Point}\u0000-\u001F\u007F-\u009F]/gu
 
+/**
+ * 证据文本归一：全半角折叠（NFKC）、去掉不可见字符与 NUL、去掉首尾空白。
+ *
+ * ⚠ 为什么要去不可见字符：`"p1"` 与 `"p1\u200B"` 在 `Set` 里是两个键，
+ *   于是"同一个片段写两遍"就能凑出"两个片段" —— 那是伪造证据，不是证据。
+ *
+ * ⚠ **R-21 顺带修的**：这段注释原来**悬空**在 {@link EVIDENCE_INVISIBLE} 上方，
+ *   而它描述的其实是本函数 —— 于是 `grep 'export function'` 在它下面找不到东西。
+ *   ⇒ 移到它真正描述的函数上。⛔ 不是删信息，是**把注释挂回它的对象**。
+ */
 export function normalizeEvidenceText(raw: unknown): string {
   return String(raw ?? '').normalize('NFKC').replace(EVIDENCE_INVISIBLE, '').trim()
 }
@@ -280,6 +319,125 @@ export function scopePathsOverlap(a: string, b: string): boolean {
     || right.startsWith(left + "/")
 }
 
+/** 归一后的候选列表：坏形状一律返回 `undefined`（调用方据此拒绝，⛔ 不猜）。 */
+function normalizeSplitCandidates(raw: unknown): SplitCandidate[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  /** ⚠ 上限 8：候选表是证据，不是把整张任务图搬进工具参数。 */
+  if (raw.length > 8) return undefined
+  const out: SplitCandidate[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return undefined
+    const row = item as Record<string, unknown>
+    const pieceId = evidenceKey(row.pieceId)
+    if (pieceId === '' || seen.has(pieceId)) return undefined
+    seen.add(pieceId)
+    if (!Array.isArray(row.scopePaths) || row.scopePaths.length === 0
+      || !row.scopePaths.every((x) => typeof x === 'string')) return undefined
+    const scopePaths = [...new Set((row.scopePaths as string[])
+      .map((x) => canonicalScopePath(x))
+      .filter((x) => x !== ''))]
+    if (scopePaths.length === 0) return undefined
+    if (!Array.isArray(row.acceptance) || row.acceptance.length === 0
+      || !row.acceptance.every((x) => typeof x === 'string')) return undefined
+    const acceptance = [...new Set((row.acceptance as string[])
+      .map((x) => normalizeEvidenceText(x))
+      .filter((x) => x !== ''))]
+    if (acceptance.length === 0) return undefined
+    const dependsOn = row.dependsOn === undefined ? [] : row.dependsOn
+    if (!Array.isArray(dependsOn) || !dependsOn.every((x) => typeof x === 'string')) return undefined
+    const deps = [...new Set((dependsOn as string[]).map((x) => evidenceKey(x)).filter((x) => x !== ''))]
+    const sharedContracts = row.sharedContracts === undefined ? [] : row.sharedContracts
+    if (!Array.isArray(sharedContracts) || !sharedContracts.every((x) => typeof x === 'string')) return undefined
+    const contracts = [...new Set((sharedContracts as string[])
+      .map((x) => normalizeEvidenceText(x))
+      .filter((x) => x !== ''))]
+    const acceptanceUnit = row.acceptanceUnit === undefined ? undefined : row.acceptanceUnit
+    if (acceptanceUnit !== undefined && typeof acceptanceUnit !== 'string') return undefined
+    out.push({
+      pieceId,
+      scopePaths,
+      acceptance,
+      ...(deps.length === 0 ? {} : { dependsOn: deps }),
+      ...(contracts.length === 0 ? {} : { sharedContracts: contracts }),
+      ...(typeof acceptanceUnit === 'string' && acceptanceUnit.trim() !== ''
+        ? { acceptanceUnit: normalizeEvidenceText(acceptanceUnit) }
+        : {}),
+    })
+  }
+  return out
+}
+
+/**
+ * 单目标派活的档位校验（`hob_dispatch` 不带 `tracks` 时使用）。
+ *
+ * ⚠ 单目标不是“没有计划所以不受档位约束”：它等价于一条隐式单轨计划。
+ *   · 单会话：设定本身，不接受单轨原因；
+ *   · 自动：必须有封闭原因（判路依据）；
+ *   · 多会话：必须有封闭原因 + 候选证据；候选里存在独立对 ⇒ 必须改用多轨。
+ */
+export function validateSingleTargetDispatch(input: {
+  mode: WorkMode
+  singleTrackReason?: MultiSingleTrackReason
+  singleTrackEvidence?: SingleTrackEvidence
+}): { ok: boolean; problems: WorkPlanProblem[] } {
+  const problems: WorkPlanProblem[] = []
+  const policy = workModePolicy(input.mode)
+  const push = (code: WorkPlanRefusal, message: string): void => {
+    problems.push({ code, message })
+  }
+  if (!policy.acceptsSingleTrackReason) {
+    if (input.singleTrackReason !== undefined) {
+      push('multi-mode-one-track-reason', '单会话档的单轨是设定本身，不接受单轨原因字段')
+    }
+    return { ok: problems.length === 0, problems }
+  }
+  if (input.singleTrackReason === undefined) {
+    push('single-target-reason-required',
+      `${input.mode === 'auto' ? '自动' : '多会话'}档单目标派活必须给 singleTrackReason`
+      + '（单目标等价于一条隐式单轨计划，不能省略判路依据）')
+    return { ok: false, problems }
+  }
+  /** ⚠ 与计划层共用同一份原因/证据校验：单目标不是“免检通道”。 */
+  problems.push(...singleTrackReasonProblems(
+    input.mode,
+    input.singleTrackReason,
+    input.singleTrackEvidence,
+    'single-target',
+  ))
+  return { ok: problems.length === 0, problems }
+}
+
+/**
+ * 两个候选是否**真正独立**（可拆成两条轨）。
+ *
+ * 三条同时成立才算独立：
+ *   ① 范围不重叠；
+ *   ② 没有直接或间接依赖；
+ *   ③ 各自有至少一条**不同的**验收。
+ */
+export function candidatesAreIndependent(a: SplitCandidate, b: SplitCandidate): boolean {
+  if (a.scopePaths.some((x) => b.scopePaths.some((y) => scopePathsOverlap(x, y)))) return false
+  const aDeps = new Set(a.dependsOn ?? [])
+  const bDeps = new Set(b.dependsOn ?? [])
+  if (aDeps.has(b.pieceId) || bDeps.has(a.pieceId)) return false
+  /** 共享契约 ⇒ 两侧要一起改同一份接口，不能算独立。 */
+  if ((a.sharedContracts ?? []).some((x) => (b.sharedContracts ?? []).includes(x))) return false
+  /** 同一个验收单元 ⇒ 结果只能一起判，不能算独立。 */
+  if (a.acceptanceUnit !== undefined && a.acceptanceUnit === b.acceptanceUnit) return false
+  return !a.acceptance.some((x) => b.acceptance.includes(x))
+}
+
+/** 候选表里是否存在至少一对独立候选。 */
+export function hasIndependentCandidatePair(candidates: readonly SplitCandidate[]): boolean {
+  for (let i = 0; i < candidates.length; i++) {
+    for (let j = i + 1; j < candidates.length; j++) {
+      if (candidatesAreIndependent(candidates[i]!, candidates[j]!)) return true
+    }
+  }
+  return false
+}
+
 /** 找依赖环。返回环上的 trackIds；无环返回空数组。 */
 export function dependencyCycles(tracks: readonly WorkTrack[]): string[][] {
   const byId = new Map(tracks.map((t) => [t.trackId, t]))
@@ -325,6 +483,8 @@ export function validateWorkPlan(
   options: ValidateWorkPlanOptions = {},
 ): WorkPlanVerdict {
   const problems: WorkPlanProblem[] = []
+  /** ⚠ 三档语义只从策略表读，⛔ 不在本函数里另写一套档位分支。 */
+  const policy = workModePolicy(input.mode)
   const push = (code: WorkPlanRefusal, message: string, trackId?: string): void => {
     problems.push({ code, message, ...(trackId === undefined ? {} : { trackId }) })
   }
@@ -346,7 +506,7 @@ export function validateWorkPlan(
     return { ok: false, problems }
   }
 
-  if (input.mode === 'single' && input.tracks.length !== 1) {
+  if (policy.maxActiveTracks === 1 && input.tracks.length !== 1) {
     push('single-mode-one-track', `单会话档只允许一条轨道，实际 ${input.tracks.length} 条`)
   }
 
@@ -406,98 +566,39 @@ export function validateWorkPlan(
    * · `auto` 由系统自行判路数，单路同样是判决结果 ⇒ 依据不能只是一句自由文本。
    * ⚠ `single` 档的单轨是**设定本身**，不需要理由（它就是要一路）。
    */
-  const oneTrackNeedsReason = (input.mode === 'multi' || input.mode === 'auto')
-    && input.tracks.length === 1
-  if (oneTrackNeedsReason) {
-    if (input.singleTrackReason === undefined) {
-      push('multi-mode-one-track-reason',
-        `${input.mode === 'auto' ? '自动' : '多会话'}档只有一条轨道时必须给出封闭原因（这是判路依据，不是可选备注）`)
-    } else if (!(MULTI_SINGLE_TRACK_REASONS as readonly string[]).includes(input.singleTrackReason)) {
-      push('multi-mode-one-track-reason', `单轨原因不在封闭集内：${input.singleTrackReason}`)
-    } else if (input.singleTrackReason === 'same-file') {
-      /**
-       * ⚠⚠ `same-file` 的唯一通过依据是 {@link SingleTrackEvidence.piecePaths}：
-       *
-       *   ```ts
-       *   piecePaths: {
-       *     parser: ['src/shared/work-plan.ts'],
-       *     writer: ['src/shared/work-plan.ts', 'src/shared/state.ts'],
-       *   }
-       *   ```
-       *
-       * 判据（三条，缺一不看）：
-       *   ① 归一后 ≥2 个**不同**片段；
-       *   ② 每个片段至少一条非空路径；
-       *   ③ 至少一对片段之间**真的有路径重叠**（同一片段内部的重叠不算）。
-       *
-       * ⚠ 为什么不再接受 `mergedPieces + sharedPaths`：那两个字段只证明"调用方
-       *   写了两个名字、两条路径"，无法证明这两个片段会写同一处 ——
-       *   它只能被伪造（同一路径换写法、空白、不可见字符都能凑）。
-       */
-      const piecePaths = (evidence as { piecePaths?: unknown } | undefined)?.piecePaths
-      const byPiece = new Map<string, string[]>()
-      let shapeProblem = false
-      if (piecePaths !== undefined && piecePaths !== null) {
-        /**
-         * ⚠ 形态必须先判，再取值：`piecePaths` 传成数组或字符串时，直接
-         *   `Object.entries()` 会得到 `['0','a']` 这种伪片段 —— 那会让垃圾输入
-         *   通过（或在内层抛错）。⇒ 非纯对象一律判失败。
-         */
-        if (typeof piecePaths !== 'object' || Array.isArray(piecePaths)) {
-          shapeProblem = true
-        } else {
-          for (const [rawName, rawPaths] of Object.entries(piecePaths as Record<string, unknown>)) {
-            /** ⚠ 用区分键（大小写不敏感）合并，避免 `p` 与 `P` 被当成两个片段。 */
-            const name = evidenceKey(rawName)
-            if (name === '') continue
-            if (!Array.isArray(rawPaths)) { shapeProblem = true; continue }
-            if (!rawPaths.every((x) => typeof x === 'string')) { shapeProblem = true; continue }
-            const paths = [...new Set((rawPaths as string[])
-              .map((x) => canonicalScopePath(x))
-              .filter((x) => x !== ''))]
-            if (paths.length === 0) continue
-            byPiece.set(name, [...(byPiece.get(name) ?? []), ...paths])
-          }
-        }
-      }
-      const names = [...byPiece.keys()]
-      let overlappingPair: [string, string] | undefined
-      for (let i = 0; i < names.length && overlappingPair === undefined; i++) {
-        for (let j = i + 1; j < names.length; j++) {
-          const a = byPiece.get(names[i]!)!
-          const b = byPiece.get(names[j]!)!
-          if (a.some((x) => b.some((y) => scopePathsOverlap(x, y)))) {
-            overlappingPair = [names[i]!, names[j]!]
-            break
-          }
-        }
-      }
-      if (shapeProblem || names.length < 2 || overlappingPair === undefined) {
-        push('unverified-single-track-reason',
-          'same-file 必须用 piecePaths 给出 ≥2 个不同片段，每个带非空路径，且至少一对片段'
-          + '之间真的写着重叠路径（只写 mergedPieces/sharedPaths 不算证据；'
-          + 'piecePaths 必须是对象、每个值必须是字符串数组）')
-      }
-    } else if (input.singleTrackReason === 'strict-order') {
-      /**
-       * ⚠ 非数组（字符串 / 对象 / undefined 混进来）必须**拒绝**，⛔ 不许抛。
-       *   `'a,b'.map(...)` 会直接 TypeError，那会让校验器本身崩掉 ——
-       *   调用方看到的就不是"证据不合格"，而是"工具坏了"。
-       */
-      const rawSteps: unknown = (evidence as { orderedSteps?: unknown } | undefined)?.orderedSteps
-      const shapeOk = rawSteps === undefined
-        || (Array.isArray(rawSteps) && rawSteps.every((x) => typeof x === 'string'))
-      const steps = [...new Set((Array.isArray(rawSteps) ? rawSteps as string[] : [])
-        .map((x) => evidenceKey(x))
-        .filter((x) => x !== ''))]
-      if (!shapeOk || steps.length < 2) {
-        push('unverified-single-track-reason',
-          'strict-order 必须给出 >=2 个非空且互不相同的有序子步骤（必须是字符串数组；空白项不算一步）')
-      }
-    }
+  if (policy.acceptsSingleTrackReason && input.tracks.length === 1) {
+    problems.push(...singleTrackReasonProblems(input.mode, input.singleTrackReason, evidence))
   }
-  if (input.mode === 'single' && input.singleTrackReason !== undefined) {
+  if (!policy.acceptsSingleTrackReason && input.singleTrackReason !== undefined) {
     push('multi-mode-one-track-reason', '单会话档的单轨是设定本身，不接受单轨原因字段')
+  }
+
+  /**
+   * ── 多会话档：存在独立候选就必须拆轨（`WM-30`）────────────────────────
+   *
+   * ⚠ 这是“多会话”与“自动”在运行时最关键的差别：
+   *   自动档可以判成单轨；多会话档若候选表证明存在独立对，单轨就是**少拆**，必须拒绝。
+   * ⚠ 候选表缺失本身由上面的 `missing-split-evidence` 报；这里只判“有证据却仍单轨”。
+   */
+  if (policy.mustSplitIndependentCandidates && input.tracks.length === 1) {
+    const candidates = normalizeSplitCandidates(
+      (evidence as { candidatePieces?: unknown } | undefined)?.candidatePieces,
+    )
+    if (candidates !== undefined && hasIndependentCandidatePair(candidates)) {
+      const pair = (() => {
+        for (let i = 0; i < candidates.length; i++) {
+          for (let j = i + 1; j < candidates.length; j++) {
+            if (candidatesAreIndependent(candidates[i]!, candidates[j]!)) {
+              return [candidates[i]!.pieceId, candidates[j]!.pieceId] as const
+            }
+          }
+        }
+        return undefined
+      })()
+      push('multi-mode-split-required',
+        `多会话档发现独立候选 ${pair?.[0] ?? '?'} / ${pair?.[1] ?? '?'}（范围不重叠、无依赖、验收不同）`
+        + ' ⇒ 必须拆成多轨；⛔ 不许用单轨原因合并')
+    }
   }
 
   /**
@@ -622,6 +723,182 @@ export function validateWorkPlan(
 }
 
 /**
+ * 单轨原因 + 证据的共用校验（计划层与单目标派活层都调用）。
+ *
+ * ⚠ 这是“同一条规则只有一个实现点”：单目标派活不能因为不走 `tracks`
+ *   就跳过 `same-file` / `strict-order` 的证据门。
+ */
+function singleTrackReasonProblems(
+  mode: WorkMode,
+  reason: MultiSingleTrackReason | undefined,
+  evidence: SingleTrackEvidence | undefined,
+  scope: 'plan' | 'single-target' = 'plan',
+): WorkPlanProblem[] {
+  const problems: WorkPlanProblem[] = []
+  const policy = workModePolicy(mode)
+  const push = (code: WorkPlanRefusal, message: string): void => {
+    problems.push({ code, message })
+  }
+  if (!policy.acceptsSingleTrackReason) return problems
+  if (reason === undefined) {
+    push('multi-mode-one-track-reason',
+      `${mode === 'auto' ? '自动' : '多会话'}档只有一条轨道时必须给出封闭原因（这是判路依据，不是可选备注）`)
+    return problems
+  }
+  if (!(MULTI_SINGLE_TRACK_REASONS as readonly string[]).includes(reason)) {
+    push('multi-mode-one-track-reason', `单轨原因不在封闭集内：${reason}`)
+    return problems
+  }
+  /**
+   * ── 多会话档：候选表是**一切单轨原因的共同前提**（`WM-30`）─────────────
+   * ⚠ 不能因为理由写成 `same-file` / `strict-order` 就绕过候选表：
+   *   那两种理由只证明“这两段不能并行”，不证明“没有别的独立候选”。
+   * ⇒ 先要求候选表存在且形态合法，再叠加该原因自己的证据门。
+   */
+  if (policy.singleTrackEvidence === 'candidates') {
+    const rawCandidates = evidence?.candidatePieces
+    if (rawCandidates === undefined) {
+      push('missing-split-evidence',
+        `多会话档${scope === 'single-target' ? '单目标派活' : '单轨计划'}必须给 candidatePieces`
+        + `（用 ${reason} 解释合并时也一样：要证明没有别的独立候选）`)
+      return problems
+    }
+    const candidates = normalizeSplitCandidates(rawCandidates)
+    if (candidates === undefined || candidates.length === 0) {
+      push('invalid-split-candidate',
+        'candidatePieces 形态不合法（最多 8 个；每个需 pieceId / scopePaths / acceptance）')
+      return problems
+    }
+    if (hasIndependentCandidatePair(candidates)) {
+      const pair = (() => {
+        for (let i = 0; i < candidates.length; i++) {
+          for (let j = i + 1; j < candidates.length; j++) {
+            if (candidatesAreIndependent(candidates[i]!, candidates[j]!)) {
+              return [candidates[i]!.pieceId, candidates[j]!.pieceId] as const
+            }
+          }
+        }
+        return undefined
+      })()
+      push(scope === 'single-target' ? 'single-target-split-required' : 'multi-mode-split-required',
+        `多会话档发现独立候选 ${pair?.[0] ?? '?'} / ${pair?.[1] ?? '?'}（范围不重叠、无依赖、验收不同）`
+        + ` ⇒ 必须拆成多轨；⛔ 不许用单轨原因合并`)
+      return problems
+    }
+  }
+  if (reason === 'same-file') {
+      /**
+       * ⚠⚠ `same-file` 的唯一通过依据是 {@link SingleTrackEvidence.piecePaths}：
+       *
+       *   ```ts
+       *   piecePaths: {
+       *     parser: ['src/shared/work-plan.ts'],
+       *     writer: ['src/shared/work-plan.ts', 'src/shared/state.ts'],
+       *   }
+       *   ```
+       *
+       * 判据（三条，缺一不看）：
+       *   ① 归一后 ≥2 个**不同**片段；
+       *   ② 每个片段至少一条非空路径；
+       *   ③ 至少一对片段之间**真的有路径重叠**（同一片段内部的重叠不算）。
+       *
+       * ⚠ 为什么不再接受 `mergedPieces + sharedPaths`：那两个字段只证明"调用方
+       *   写了两个名字、两条路径"，无法证明这两个片段会写同一处 ——
+       *   它只能被伪造（同一路径换写法、空白、不可见字符都能凑）。
+       */
+      const piecePaths = (evidence as { piecePaths?: unknown } | undefined)?.piecePaths
+      const byPiece = new Map<string, string[]>()
+      let shapeProblem = false
+      if (piecePaths !== undefined && piecePaths !== null) {
+        /**
+         * ⚠ 形态必须先判，再取值：`piecePaths` 传成数组或字符串时，直接
+         *   `Object.entries()` 会得到 `['0','a']` 这种伪片段 —— 那会让垃圾输入
+         *   通过（或在内层抛错）。⇒ 非纯对象一律判失败。
+         */
+        if (typeof piecePaths !== 'object' || Array.isArray(piecePaths)) {
+          shapeProblem = true
+        } else {
+          for (const [rawName, rawPaths] of Object.entries(piecePaths as Record<string, unknown>)) {
+            /** ⚠ 用区分键（大小写不敏感）合并，避免 `p` 与 `P` 被当成两个片段。 */
+            const name = evidenceKey(rawName)
+            if (name === '') continue
+            if (!Array.isArray(rawPaths)) { shapeProblem = true; continue }
+            if (!rawPaths.every((x) => typeof x === 'string')) { shapeProblem = true; continue }
+            const paths = [...new Set((rawPaths as string[])
+              .map((x) => canonicalScopePath(x))
+              .filter((x) => x !== ''))]
+            if (paths.length === 0) continue
+            byPiece.set(name, [...(byPiece.get(name) ?? []), ...paths])
+          }
+        }
+      }
+      const names = [...byPiece.keys()]
+      let overlappingPair: [string, string] | undefined
+      for (let i = 0; i < names.length && overlappingPair === undefined; i++) {
+        for (let j = i + 1; j < names.length; j++) {
+          const a = byPiece.get(names[i]!)!
+          const b = byPiece.get(names[j]!)!
+          if (a.some((x) => b.some((y) => scopePathsOverlap(x, y)))) {
+            overlappingPair = [names[i]!, names[j]!]
+            break
+          }
+        }
+      }
+      if (shapeProblem || names.length < 2 || overlappingPair === undefined) {
+        push('unverified-single-track-reason',
+          'same-file 必须用 piecePaths 给出 ≥2 个不同片段，每个带非空路径，且至少一对片段'
+          + '之间真的写着重叠路径（只写 mergedPieces/sharedPaths 不算证据；'
+          + 'piecePaths 必须是对象、每个值必须是字符串数组）')
+      }
+  } else if (reason === 'strict-order') {
+      /**
+       * ⚠ 非数组（字符串 / 对象 / undefined 混进来）必须**拒绝**，⛔ 不许抛。
+       *   `'a,b'.map(...)` 会直接 TypeError，那会让校验器本身崩掉 ——
+       *   调用方看到的就不是"证据不合格"，而是"工具坏了"。
+       */
+      const rawSteps: unknown = (evidence as { orderedSteps?: unknown } | undefined)?.orderedSteps
+      const shapeOk = rawSteps === undefined
+        || (Array.isArray(rawSteps) && rawSteps.every((x) => typeof x === 'string'))
+      const steps = [...new Set((Array.isArray(rawSteps) ? rawSteps as string[] : [])
+        .map((x) => evidenceKey(x))
+        .filter((x) => x !== ''))]
+      if (!shapeOk || steps.length < 2) {
+        push('unverified-single-track-reason',
+          'strict-order 必须给出 >=2 个非空且互不相同的有序子步骤（必须是字符串数组；空白项不算一步）')
+      }
+  } else if (policy.singleTrackEvidence === 'candidates') {
+      /**
+       * ── 多会话档的其余三种单轨原因（`WM-30`）──────────────────────────
+       * ⚠ `shared-contract` / `single-acceptance-unit` / `insufficient-independent-scope`
+       *   以前只检查值在封闭集内 ⇒ 一句自述就能把本可拆的工作压成单轨。
+       * ⇒ 现在必须给候选表，并由**真实路径 / 依赖 / 验收**判断是否可拆。
+       * ⚠ `same-file` / `strict-order` 已有各自的强证据（上面两支），
+       *   不要求重复给候选表；但只要给了候选表，独立对仍会被下面的统一检查拒绝。
+       */
+      const candidates = normalizeSplitCandidates(
+        (evidence as { candidatePieces?: unknown } | undefined)?.candidatePieces,
+      )
+      if (candidates === undefined || candidates.length === 0) return problems
+      if (reason === 'shared-contract') {
+        const sharedPair = candidates.some((a, i) => candidates.some((b, j) => i < j
+          && (a.sharedContracts ?? []).some((x) => (b.sharedContracts ?? []).includes(x))))
+        if (candidates.length < 2 || !sharedPair) {
+          push('unverified-single-track-reason',
+            'shared-contract 必须列出 ≥2 个候选，且至少一对候选共享同一契约（sharedContracts 有交集）')
+        }
+      } else if (reason === 'single-acceptance-unit') {
+        const unit = candidates[0]?.acceptanceUnit
+        if (candidates.length < 2 || unit === undefined
+          || !candidates.every((x) => x.acceptanceUnit === unit)) {
+          push('unverified-single-track-reason',
+            'single-acceptance-unit 必须列出 ≥2 个候选，且每个候选的 acceptanceUnit 相同且非空')
+        }
+      }
+    }
+  return problems
+}
+
+/**
  * 计算首次可立即派发的轨道。
  *
  * `all`：没有前置依赖的可立即运行；
@@ -636,6 +913,38 @@ export function initiallyDispatchable(plan: WorkPlanInput): WorkTrack[] {
 /** 轨道是否已到终态（不再占用执行槽）。 */
 export function isTerminalTrackState(state: WorkTrackState): boolean {
   return state === 'returned' || state === 'failed' || state === 'cancelled'
+}
+
+/**
+ * **收口前判据**（2026-11-06 · Wave 1）。
+ *
+ * `closePlan` 原先只看 `plan.state === 'joining'`；而 `joining` 可以从
+ * 「轨道都返回」派生 —— 返回 ≠ 验收，且失败/取消轨道也不该被当成可收口。
+ * ⇒ 收口前必须同时满足：
+ *   ① 每条轨道都在终态（`returned` / `failed` / `cancelled`）；
+ *   ② 没有 `failed` 轨道（失败计划只允许标记失败，不允许收成 completed）；
+ *   ③ `plan.state === 'joining'`（保持既有入口语义，不绕过推进器）。
+ *
+ * @returns 不允许收口的原因；空数组 = 可以收口。
+ */
+export function closePlanProblems(
+  plan: WorkPlan,
+  states: Record<string, WorkTrackState> = plan.trackStates ?? {},
+): string[] {
+  const out: string[] = []
+  const stateOf = (track: WorkTrack): WorkTrackState => states[track.trackId] ?? 'pending'
+  const unsettled = plan.tracks.filter((track) => !isTerminalTrackState(stateOf(track)))
+  if (unsettled.length > 0) {
+    out.push(`仍有 ${unsettled.length} 条轨道未到终态：${unsettled.map((t) => `${t.trackId}=${stateOf(t)}`).join(' / ')}`)
+  }
+  const failed = plan.tracks.filter((track) => stateOf(track) === 'failed')
+  if (failed.length > 0) {
+    out.push(`有 ${failed.length} 条轨道失败：${failed.map((t) => t.trackId).join(' / ')} ⇒ 失败计划不能收成 completed`)
+  }
+  if (plan.state !== 'joining') {
+    out.push(`计划当前是 ${plan.state}，只有 joining 才能收成 completed`)
+  }
+  return out
 }
 
 /** 计划进度：由轨道状态派生，不另存第二份状态。 */
@@ -689,17 +998,179 @@ export function planModeOf(plan: WorkPlan): WorkMode {
   return plan.modeSnapshot ?? plan.mode
 }
 
-/** 计划是否声明「同一时刻只有一条轨在跑」（单轨，或写轨串行链）。 */
-export function isSerializedPlan(plan: WorkPlan): boolean {
-  return plan.serialized !== undefined
+/**
+ * ⚠⚠ **R-21 更正：这里原有一个「按快照复验计划」的函数，但它从来没有函数体。**
+ *
+ *   改前：这段注释 + `@param` / `@returns` 都在，**下面直接接下一个定义** ——
+ *   也就是说，注释描述了一个**不存在**的函数，而 `grep 'export function'` 找不到它。
+ *
+ *   ⚠ **为什么必须删掉这段注释**（⛔ 不是「补上实现」）：
+ *     它宣称「本计划按创建时的快照**推进**」，而**推进侧根本不读快照**：
+ *     `advanceWorkPlans()` 调 `orch.dispatch(...)` 时**不传 `workMode`**
+ *     （`orchestrator.ts:4534`），于是 `dispatch` 落到 `workModeOf(exec)` **现读当前档位**。
+ *     ⇒ 注释说的是「冻结驱动推进」，实际是「冻结只影响显示与 `modeSnapshot` 字段」。
+ *
+ *   ⚠ **实际的 `modeSnapshot` 语义**（照实说，⛔ 不粉饰）：
+ *     · **写**：计划落盘时记下创建时的档位（`orchestrator.ts:4107` / `:4661` 用 {@link planModeOf}）；
+ *     · **读**：{@link planModeOf} 是唯一读法（`WM-8f` 守着它）；
+ *     · **不驱动**：**推进与派发一律用当前档位**，快照不参与闸门判定。
+ *     ⇒ 用户建计划后改档，旧计划的依赖轨接力**会被新档位拦** —— 这是当前的真实行为。
+ *
+ *   ⛔ **要让它驱动推进，得先回答三个问题**（缺一个都不许动）：
+ *     ① 旧计划用旧档位推进时，**新档位的限制还算不算**（比如从多会话降成单会话）？
+ *     ② 计划跑到一半改档，**已派出的轨怎么办**（按旧档继续？还是按新档收回）？
+ *     ③ 面板该显示哪个档位（当前档？计划档？两个都显示？）
+ *   ⚠ 在这些问题有答案之前，「补一个复验函数」只会造出一个**没人调用的死函数** ——
+ *     那正是本条要修的形态。
+ *
+ * @deprecated **不存在这个函数** —— 这段注释保留只为记录「它曾经宣称过什么」。
+ *   真要用计划档位，用 {@link planModeOf}。
+ */
+
+/**
+ * 看护意图（⚠ 与 `PersistedWatchEntry.state` 的 `waiting|awake` 正交）。
+ *
+ * 只有 {@link GUARD_INTENTS_WAKEABLE} 里的意图允许唤醒；其余一律不叫。
+ * 这是把「会话停了就叫」收窄成「任务未完成、没人等用户、也没人在推进」的唯一判据。
+ */
+export const GUARD_INTENTS = [
+  'working',
+  'expecting-return',
+  'waiting-user',
+  'joining',
+  'completed',
+  'failed',
+  'stopped',
+  'stale',
+  'undecidable',
+] as const
+
+export type GuardIntent = (typeof GUARD_INTENTS)[number]
+
+/** 唯一允许唤醒的意图。⚠ 增删这一行等于改产品语义，必须同时改判据与验收。 */
+export const GUARD_INTENTS_WAKEABLE: readonly GuardIntent[] = ['expecting-return']
+
+/** 计划层面的看护事实（由计划文件派生，⛔ 不从模型自述里取）。 */
+export interface PlanGuardFacts {
+  /** 计划是否仍活动（`planned|running|joining|failed`）。 */
+  active: boolean
+  /** 计划状态原值。 */
+  state: string
+  /** 未结算轨道数（`pending|running`）。 */
+  unsettled: number
+  /** 全部轨道是否已终态。 */
+  terminal: boolean
+  /** 是否有轨道失败。 */
+  failed: boolean
 }
 
 /**
- * 用**计划自己的档位快照**复验计划（`WM-8`）。
+ * 从一份计划派生看护事实。
  *
- * ⚠ 计划落盘后会话再改档位，只影响**下一份**计划；本计划按创建时的快照推进。
- *   这条判据放在纯函数里，是为了让「冻结」可以被单独证明，而不是靠"没改代码"。
- *
- * @param plan - 已落盘的计划（可带规范化后的串行化依据）。
- * @returns 按快照复验的结果；旧计划缺快照时用 `mode`。
+ * ⚠ `joining` 也算「全部返回」：进入汇合后不再需要看护去催执行。
  */
+export function planGuardFactsOf(plan: WorkPlan, states: Record<string, WorkTrackState> = plan.trackStates ?? {}): PlanGuardFacts {
+  const stateOf = (track: WorkTrack): WorkTrackState => states[track.trackId] ?? 'pending'
+  const unsettled = plan.tracks.filter((track) => !isTerminalTrackState(stateOf(track))).length
+  const terminal = plan.tracks.every((track) => isTerminalTrackState(stateOf(track)))
+  const failed = plan.tracks.some((track) => stateOf(track) === 'failed')
+  return {
+    active: plan.state === 'planned' || plan.state === 'running' || plan.state === 'joining' || plan.state === 'failed',
+    state: plan.state,
+    unsettled,
+    terminal,
+    failed,
+  }
+}
+
+/**
+ * 由「计划事实 + 用户是否停止 + 是否有待决问题」派生看护意图。
+ *
+ * ⚠ 顺序即优先级（改顺序 = 改安全语义）：
+ *   ① 用户停止 ⇒ `stopped`（最强，跨重启也生效）；
+ *   ② 无活动计划 ⇒ `stale`；
+ *   ③ 有待决问题 ⇒ `waiting-user`；
+ *   ④ 全部终态 / 汇合 / 完成 ⇒ `joining|completed|failed`；
+ *   ⑤ 仍有未结算轨道 ⇒ `expecting-return`；
+ *   ⑥ 其余 ⇒ `undecidable`（⛔ 不猜成「可以叫」）。
+ */
+export function guardIntentOf(input: {
+  stopped: boolean
+  plan?: PlanGuardFacts | undefined
+  awaitingUser?: boolean
+  working?: boolean
+}): GuardIntent {
+  if (input.stopped) return 'stopped'
+  const plan = input.plan
+  /**
+   * ⚠ 只有**没有计划**才是 `stale`。
+   *   `completed` / `failed` 的计划仍然存在，必须分别落 `completed` / `failed`，
+   *   ⛔ 不能因为"它不再活动"就笼统归成 `stale` —— 那会让读数面说不出真实结局。
+   */
+  if (plan === undefined) return 'stale'
+  if (input.awaitingUser === true) return 'waiting-user'
+  if (input.working === true) return 'working'
+  if (plan.state === 'completed') return 'completed'
+  if (plan.state === 'failed' || plan.failed) return 'failed'
+  if (plan.state === 'joining' || plan.terminal) return 'joining'
+  if (plan.unsettled > 0) return 'expecting-return'
+  return 'undecidable'
+}
+
+/** 意图是否允许唤醒。 */
+export function guardIntentAllowsWake(intent: GuardIntent): boolean {
+  return GUARD_INTENTS_WAKEABLE.includes(intent)
+}
+
+/**
+ * **由计划派生看护意图**（供编排器与读数面共用，⛔ 不各写一份）。
+ *
+ * @param plans - 该 owner 的活动计划（通常只有一份；多份时取「最需要推进」的那份）
+ * @param stopped - 用户是否已 `stop`
+ * @param awaitingUser - 是否正在等用户（active 用户问题 / `clarifyAt`）
+ */
+export function guardIntentForOwner(input: {
+  plans: readonly WorkPlan[]
+  stopped: boolean
+  awaitingUser?: boolean
+  working?: boolean
+}): { intent: GuardIntent; plan?: WorkPlan; facts?: PlanGuardFacts } {
+  if (input.stopped) return { intent: 'stopped' }
+  if (input.plans.length === 0) return { intent: 'stale' }
+  /**
+   * ⚠ 多份计划时的优先级：先看有没有仍在等回传的（最需要推进），
+   *   再看有没有汇合/失败的，最后才是全部完成。
+   *   ⚠ 不按 planId 排序挑：那会让"哪份被催"取决于命名。
+   */
+  const ranked = input.plans.map((plan) => {
+    const facts = planGuardFactsOf(plan)
+    return {
+      plan,
+      facts,
+      intent: guardIntentOf({
+        stopped: false,
+        plan: facts,
+        awaitingUser: input.awaitingUser,
+        working: input.working,
+      }),
+    }
+  })
+  const order: readonly GuardIntent[] = ['working', 'expecting-return', 'joining', 'failed', 'completed', 'undecidable']
+  for (const wanted of order) {
+    const hit = ranked.find((row) => row.intent === wanted)
+    if (hit !== undefined) {
+      return {
+        intent: guardIntentOf({
+          stopped: false,
+          plan: hit.facts,
+          awaitingUser: input.awaitingUser,
+          working: input.working,
+        }),
+        plan: hit.plan,
+        facts: hit.facts,
+      }
+    }
+  }
+  const first = ranked[0]!
+  return { intent: first.intent, plan: first.plan, facts: first.facts }
+}

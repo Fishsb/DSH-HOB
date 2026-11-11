@@ -11,9 +11,12 @@
  * ⚠ 依赖缺失时**不登记**、不报错（与同族只读路由一致）：面板那一块会显示「判不出」。
  */
 import type { Context } from '@deepseek-ai/cordis'
+import { existsSync } from 'node:fs'
 import { ORCH_SERVICE } from './orchestrator.ts'
+import { declaredLedgerHome } from './orchestrator.ts'
 import { SESSION_POLICY_SERVICE } from '../config.ts'
 import { WORK_MODE_VALUES, type WorkMode } from '../shared/work-mode.ts'
+import { resolveLedgerByName } from '../shared/ledger-catalog.ts'
 
 export const name = 'dsh-hob-work-plans-route'
 export const WORK_PLANS_ROUTE_PATH = '/api/dsh-hob/work-plans'
@@ -46,17 +49,18 @@ export function installWorkPlansRoute(ctx: Context): void {
         return
       }
       /** 现读该会话的工作方式；判不出就报 `unknown`（⛔ 不按缺省档猜）。 */
-      const modeOf = (sessionId: string): WorkMode | 'unknown' => {
+      const modeReadingOf = (sessionId: string): { mode: WorkMode | 'unknown'; source: string } => {
         try {
           const svc: any = hostCtx.get?.(SESSION_POLICY_SERVICE) ?? hostCtx[SESSION_POLICY_SERVICE]
           const session = hostCtx.get?.('sessions')?.get?.(sessionId)
-          if (session === undefined || typeof svc?.of !== 'function') return 'unknown'
+          if (session === undefined || typeof svc?.of !== 'function') return { mode: 'unknown', source: 'unknown' }
           const r = svc.of(session)
-          return typeof r?.workMode === 'string'
+          const mode = typeof r?.workMode === 'string'
             && (WORK_MODE_VALUES as readonly string[]).includes(r.workMode)
             ? r.workMode as WorkMode
             : 'unknown'
-        } catch { return 'unknown' }
+          return { mode, source: typeof r?.source === 'string' && r.source !== '' ? r.source : 'unknown' }
+        } catch { return { mode: 'unknown', source: 'unknown' } }
       }
       const disposer = fetch.register({
         path: WORK_PLANS_ROUTE_PATH,
@@ -74,8 +78,48 @@ export function installWorkPlansRoute(ctx: Context): void {
           if (sessionId === '') {
             return json(400, { ok: false, reason: 'no-session', message: '工作计划读数需要 sessionId' })
           }
+          /**
+           * ⚠ **指定账本**（2026-11-07 · `R-020`）：走白名单校验拿绝对路径，
+           *   再以 `ledgerRoot` 直传给编排器（⛔ 不从账本名反推工作区路径）。
+           */
+          const wanted = body?.ledger
+          let ledgerRootDirect: string | undefined
+          if (wanted !== undefined && wanted !== null && wanted !== '') {
+            ledgerRootDirect = resolveLedgerByName(declaredLedgerHome(hostCtx), wanted, existsSync)
+            if (ledgerRootDirect === undefined) {
+              return json(400, {
+                ok: false,
+                reason: 'ledger-not-allowed',
+                message: `账本名不在白名单内或不存在：${JSON.stringify(String(wanted))}（⛔ 不接受路径）`,
+              })
+            }
+          }
           try {
-            const snapshot = orch.status({ self: sessionId })
+            /**
+             * ⚠ **可选 workspaceRoot**（2026-11-06）：没有活会话时（或会话不在本实例）
+             *   `wsRootOfSession(self)` 判不出 ⇒ 读数只能给空，而空会被误读成"没有计划"。
+             *   ⇒ 允许调用方显式给工作区根；⛔ 不给时行为与改前完全一致。
+             */
+            const explicitWs = typeof body?.workspaceRoot === 'string' && body.workspaceRoot.trim() !== ''
+              ? body.workspaceRoot.trim()
+              : undefined
+            /**
+             * ⚠ **会话不在本实例时也要能读**：`wsRootOfSession(self)` 当年会读不到
+             *   （历史会话已归档/已结束）⇒ 读数退化成空数组，而空会被误读成"没有计划"。
+             *   ⇒ 先问显式参数，再问工作区注册表（`sessionPaths`，与 `bus.listWorkspaces` 同源）。
+             */
+            const wsRoot = explicitWs ?? (() => {
+              try {
+                const registry: any = hostCtx.get?.('workspaceRegistry')
+                const p = registry?.sessionPaths?.get?.(sessionId)
+                return typeof p === 'string' && p !== '' ? p : undefined
+              } catch { return undefined }
+            })()
+            const snapshot = orch.status({
+              self: sessionId,
+              ...(wsRoot === undefined ? {} : { wsRoot }),
+              ...(ledgerRootDirect === undefined ? {} : { ledgerRoot: ledgerRootDirect }),
+            })
             const plans = snapshot?.workPlans
             if (plans === undefined) {
               return json(200, {
@@ -84,10 +128,14 @@ export function installWorkPlansRoute(ctx: Context): void {
                 message: '编排器没有返回工作计划读数（⛔ 这不等于「没有计划」）',
               })
             }
+            const modeReading = modeReadingOf(sessionId)
             return json(200, {
               ok: true,
-              mode: modeOf(sessionId),
+              mode: modeReading.mode,
+              modeSource: modeReading.source,
               plans: plans.plans ?? [],
+              /** 过期归档：单独一档，⛔ 不并进 plans（它们不是活动计划）。 */
+              abandoned: plans.abandoned ?? [],
               unreadable: plans.unreadable ?? [],
             })
           } catch (e) {

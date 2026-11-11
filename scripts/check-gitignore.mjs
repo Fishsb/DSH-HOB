@@ -433,6 +433,81 @@ console.log('')
   }
 }
 
+/**
+ * ── **O-29 / O-28：`kit/` 活规矩层的路径与术语必须指向真实实体** ────────────────
+ *
+ * ⚠ 这条钉两件事（都是「文档说了一件代码里不存在的事」）：
+ *   · **O-29**：`kit/drafts` 的**活规矩层**文档指向 `.hob/drafts/preset-contracts.md`
+ *     —— 该路径**不存在**（真实路径是 `kit/drafts/preset-contracts.md`）。
+ *   · **O-28**：`TERMINOLOGY.md:44` 明令正式账本「**不称**文档堆、记录区或缓存」，
+ *     而 `README.md` 全篇用了 **9 次**「记录区」。
+ *
+ * ⚠⚠ **只查活规矩层，⛔ 不查记录层**：
+ *   `restructure-plan.md` 已自带「【历史方案 · 现状已变】」横幅，它的旧路径是**证据**；
+ *   把它也改掉 = 伪造历史（与「记录层写一次固定」的纪律冲突）。
+ *   ⇒ 用**显式清单**只查两份活规矩层文档，新增豁免必须在此登记 + 写理由。
+ */
+{
+  const p = []
+  const LIVE_DOCS = ['growth-registry.md', 'contract-verification-notes.md']
+  for (const f of LIVE_DOCS) {
+    let txt = ''
+    try { txt = readFileSync(pjoin(root, 'kit', 'drafts', f), 'utf8') } catch { p.push('读不到 kit/drafts/' + f + ' ⇒ 失去基准'); continue }
+    if (txt.includes('.hob/drafts/preset-contracts.md')) {
+      p.push('kit/drafts/' + f + ' 仍指向不存在的 .hob/drafts/preset-contracts.md（真实路径 kit/drafts/preset-contracts.md）')
+    }
+  }
+  const readme = (() => { try { return readFileSync(pjoin(root, 'README.md'), 'utf8') } catch { return '' } })()
+  if (readme === '') p.push('读不到 README.md ⇒ 失去基准')
+  else {
+    const n = (readme.match(/记录区/g) ?? []).length
+    if (n > 0) p.push('README 用了 ' + n + ' 次「记录区」—— TERMINOLOGY.md:44 明令正式账本「不称文档堆、记录区或缓存」')
+  }
+  if (p.length === 0) {
+    ok('O-29/O-28 ✓ **负向对拍**：kit/drafts 活规矩层不再指向不存在路径；README 不再用术语表禁止的「记录区」'
+      + '（⚠ 记录层如 restructure-plan.md **有意保留**旧路径作证据，不在本条范围内）')
+  } else for (const x of p) bad('O-29/O-28 · ' + x)
+}
+
+// ── O-42：`units/` 的**两种形态**必须在文档里都写明 ─────────────────────────
+//
+//  ⚠ 改前 `kit/README.md` 只写「index.toml + unit-*.toml」一种。
+//    而真实存量里还有**每个单元一个 `.md`** 的形态：
+//      · dsh-hob                  ⇒ 7 个分片 / 292 单元（现行）
+//      · prompt-enhancer-release  ⇒ 18 个 .md / **零分片**（历史）
+//  ⚠ 后果：把「零分片」当成空账 ⇒ **一个 18 单元的账本被判成「没有数据」**。
+//
+//  ⚠ 判据（两条都要成立）：
+//    ① 文档里**同时**出现「unit-*.toml」与「.md 单元」两种形态的描述；
+//    ② 文档**明写**「零分片 ≠ 空账」这件事（那是最容易踩的误解）。
+{
+  const p = []
+  const doc = (() => {
+    try { return readFileSync(pjoin(root, 'kit', 'README.md'), 'utf8') } catch { return '' }
+  })()
+  if (doc === '') p.push('读不到 kit/README.md ⇒ 失去基准')
+  else {
+    if (!doc.includes('unit-*.toml')) p.push('文档没提分片形态（unit-*.toml）')
+    /** ⚠ 判「提到了 .md 单元形态」：要出现「<ID>.md」或「每个单元一个」这类描述。 */
+    const mentionsMdUnits = /\.md`/.test(doc) && /(每个单元一个|一单元一文件|历史.*\.md)/.test(doc)
+    if (!mentionsMdUnits) p.push('文档没提「每个单元一个 .md」的历史形态 ⇒ 只描述了一种（O-42 复发）')
+    /** ⚠ 最要紧的一条：零分片 ≠ 空账。 */
+    /**
+     * ⚠ **对准「核心命题」那一句**，⛔ 不是举例句。
+     *   文档里有两句相关：「分片数为 0 **不等于**「账本是空的」」（命题）
+     *   与「把「零分片」当成空账 ⇒ …」（举例）。
+     *   ⚠ 我第一版正则同时能匹配两句 ⇒ 删掉举例那句时断言**照样绿**（负向假成立）。
+     *   ⇒ 收紧到「分片数为 0 … 不等于 … 空」这一种写法。
+     */
+    if (!/分片数为\s*0[^。\n]{0,30}(不等于|≠)[^。\n]{0,20}空/.test(doc)) {
+      p.push('文档没写明「零分片 ≠ 空账」⇒ 读的人会把历史账本判成没有数据')
+    }
+  }
+  if (p.length === 0) {
+    ok('O-42 ✓ **负向对拍**：`kit/README.md` 同时写明两种 `units/` 形态，'
+      + '并明写「零分片 ≠ 空账」（⛔ 不把 18 单元的历史账本判成没有数据）')
+  } else for (const x of p) bad(`O-42 · ${x}`)
+}
 for (const n of note) console.log('  ✓', n)
 /**
  * ⚠⚠ **跳过类单列**（第 349 轮 · 甲方案）：⛔ 不进上面那堆 `✓`、⛔ 不计入"通过"的数。
@@ -460,7 +535,11 @@ console.log('')
 const checkedTotal = note.length + fail.length + skip.length
 console.log(`  处级口径：查了 ${checkedTotal} 处 · 过了 ${note.length} 处`
   + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
-  + ` · **跳过 ${skip.length} 处**`
+  /**
+   * ⚠ 形状必须与 `check:all` 的 `parseSkipCount` 一致：它认 `跳过 N 处`，
+   *   ⛔ 不认夹在中间的 `**`（那会把"跳过 0"读成读不到 ⇒ 与"没跳过"混为一谈）。
+   */
+  + ` · 跳过 ${skip.length} 处`
   + `（⚠ 跳过**不计入通过**）`)
 console.log('')
 if (fail.length === 0 && noObject.length > 0) {
@@ -472,13 +551,20 @@ if (fail.length === 0 && noObject.length > 0) {
   console.log('判定：**未执行** —— 有组**没有对象可查**（⚠ 这不代表通过，也不代表有违规）。')
   for (const m of noObject) console.log('  ·', m)
   console.log('       ⚠ 退出码 **2**（没有对象 / 没执行）：0 = 查过且过 · 1 = 查了不过。')
-  process.exit(2)
+  /**
+   * ⚠ 用 `process.exitCode` 而不是 `process.exit(...)`：后者在 stdout 是管道时
+   *   会**丢掉尚未刷出的尾部**（实测 `check:all` 读不到本族的 `处级口径` 行，
+   *   于是把"跑绿且报了口径"误判成"没报口径"）。设置 exitCode 让 Node 正常排空。
+   */
+  process.exitCode = 2
 }
+
+
 if (fail.length === 0) {
   console.log(`判定：PASS —— ${mustTrack.length} 项必须入库、${mustExclude.length} 项必须排除，全部符合 README §1。`)
-  process.exit(0)
+  process.exitCode = 0
 } else {
   console.log('判定：FAIL')
   for (const f of fail) console.log('  ✗', f)
-  process.exit(1)
+  process.exitCode = 1
 }

@@ -46,16 +46,30 @@
  * ⚠ 依赖 `jsdom@25.0.1` / `react-dom@19.3.1` / `typescript` —— 均在 devDependencies。
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
+/**
+ * ⚠ **O-41：夹具必须显式声明预设。**
+ *   门禁改成三态后，`props` 存在却缺 `agentPreset` ⇒ 按「判不出」拦住。
+ *   本族测的是 **Hob 面板**，所以显式给 Hob。
+ *   值与 `src/shared/planning-preset.ts:33` 的 `HOB_PRESET_ID` 一致
+ *   （⛔ 不 import：本脚本要能在**不装宿主**的隔离环境里跑）。
+ */
+const HOB_PRESET_ID = 'Hob'
 const ENTRY = 'src/client/project-panel.tsx'
 const SRC = join(root, ENTRY)
 /** 面板源码本体（S-28g 负向对拍要就地造变体，⚠ 与 `SRC` 那个入口文件不同）。 */
 const PANEL_TSX = join(root, 'src', 'client', 'project-panel.tsx')
-const work = join(root, '.check-stages-work')
+  /**
+   * ⚠ **路径带 pid**（B4.2 · 2026-11-10）：改前是固定名 ⇒ 两个自检进程并发跑会互相
+   *   `rmSync` 掉对方正在用的目录（实测：`check:stages-panel-dom` / `check:preset-contracts`
+   *   并发跑必红、串行跑必绿）。⚠ 这类「串行绿、并发红」的假失败会让人误判成真缺陷。
+   *   ⇒ 带 `process.pid` 后互不干扰；`.gitignore` 的 `.check-*-work/` 通配仍覆盖它们。
+   */
+const work = join(root, '.check-stages-work-' + process.pid)
 
 let pass = 0
 let fail = 0
@@ -81,7 +95,7 @@ rmSync(work, { recursive: true, force: true })
 mkdirSync(work, { recursive: true })
 
 console.log('')
-console.log('S 组：五步主线面板 · 位置判据（真 DOM 挂载，jsdom 隔离渲染）')
+console.log('S 组：阶段主线面板 · 位置判据（真 DOM 挂载，jsdom 隔离渲染）')
 console.log('')
 
 try {
@@ -217,11 +231,11 @@ try {
    *   ⚠ 这条是**硬基准**：常量若被改动（少一个/多一个）⇒ 判据失去基准 ⇒ 必须红，
    *     ⛔ 不许写成 `>= 4` 那种"多一个也过"的形态（那会让"第五步没加"看不出来）。
    */
-  if (prodSteps.length === 5 && prodUnwired !== undefined && prodKind !== undefined && prodTabId !== undefined) {
+  if (prodSteps.length === 7 && prodUnwired !== undefined && prodKind !== undefined && prodTabId !== undefined) {
     ok(`S-1 ✓ 从 \`${ENTRY}\` 抽出真值：${prodSteps.length} 个步骤名（${prodSteps.join(' / ')}）`
       + ` · 状态词「${prodUnwired}」· tab kind「${prodKind}」· tab id「${prodTabId}」`)
   } else {
-    bad('S-1 · 抽不到 `STAGES_STEP_NAMES`（**5 项**）/ `STAGES_UNWIRED_LABEL` / `STAGES_TAB_KIND` / `STAGES_TAB_ID`'
+    bad('S-1 · 抽不到 `STAGES_STEP_NAMES`（**7 项**）/ `STAGES_UNWIRED_LABEL` / `STAGES_TAB_KIND` / `STAGES_TAB_ID`'
       + ' —— 判据失去基准（常量被改名或结构变了）⇒ 不按通过处理')
   }
 
@@ -388,6 +402,20 @@ export function StateDot({ state, size, appearance }) {
   }
   const StagesPanelHarness = (props) => react.createElement(ui.StagesPanel, {
     ...props,
+    /**
+     * ⚠⚠ **O-41：夹具默认声明 Hob，但必须尊重调用方显式传的值（含 `undefined`）。**
+     *
+     *   ⛔ **不能用 `props.agentPreset ?? HOB_PRESET_ID`** —— `??` 会把
+     *     调用方**刻意传的 `undefined`**（= 判不出）替换成 Hob ⇒
+     *     S-33e「显式 undefined ⇒ 零请求」当场假红（实测踩过）。
+     *
+     *   ⇒ 判法：**属性在不在**，而不是「值是不是 undefined」。
+     *     没传该属性 ⇒ 夹具默认 Hob（本族测的就是 Hob 面板）；
+     *     传了（哪怕是 undefined）⇒ **原样透传**，让三态门禁自己去判。
+     */
+    ...(Object.prototype.hasOwnProperty.call(props, 'agentPreset') ? {} : { agentPreset: HOB_PRESET_ID }),
+    /** Isolated DOM fixtures must not open a real network stream. */
+    liveClient: props.liveClient === undefined ? null : props.liveClient,
     fetchChains: props.fetchChains ?? (async (sessionId, ledger) => chainsFromStages(await (props.fetchStages ?? (async () => ({ ok: true, stages: [] })))(sessionId, ledger))),
   })
 
@@ -479,6 +507,10 @@ export function StateDot({ state, size, appearance }) {
     //   jsdom 里没有服务端 ⇒ 不注入就会落到"判不出"，图例仍在但表区是 fail 态。
     //   本条断言只关心**图例四行**，故给一个"表里是空的"的固定响应。
     const r = mount(react.createElement(mod.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+      /** ⚠ O-41：显式声明 Hob 预设（夹具测的是 Hob 面板）。 */
+      agentPreset: HOB_PRESET_ID,
       fetchProgress: fetchProgress ?? (async () => ({ ok: true, rows: [], readAt: '2026-10-29T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' })),
       // ⚠ 第 17 轮起面板**两路取数**（账面 + 执行态）⇒ 不注入执行态就会在 jsdom 里真发请求。
       fetchExec: async () => ({ ok: true, readAt: '2026-10-29T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
@@ -595,7 +627,7 @@ export function StateDot({ state, size, appearance }) {
       }))
       const t = text()
       const p = []
-      if (!t.includes('5 验收核对')) p.push(`'5' 没显示成「5 验收核对」：${JSON.stringify(t)}`)
+      if (!t.includes('5 技术验证')) p.push(`'5' 没显示成「5 技术验证」：${JSON.stringify(t)}`)
       if (!t.includes('验收完成')) p.push(`'done' 没显示成「✅ 验收完成」：${JSON.stringify(t)}`)
       // ⚠ 两态不许合并：'5' 那行**不许**被写成"验收完成"
       if (t.split('验收完成').length - 1 > 1) p.push('"验收完成"出现多于一次 ⇒ 疑把 \'5\' 也写成了"验收完成"（两态合并）')
@@ -662,6 +694,8 @@ export function StateDot({ state, size, appearance }) {
         let r2
         try {
           r2 = mount(react.createElement(modN.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             sessionId: 's1',
             fetchProgress: async (sid) => modN.defaultFetchProgress(sid),
           }))
@@ -672,6 +706,139 @@ export function StateDot({ state, size, appearance }) {
           ok(`S-12b ✓ 负向对拍（去掉 404 判定）⇒ S-12 必红：实际「${t2.trim().slice(0, 90)}」`)
         } else {
           bad('S-12b · 去掉 404 判定后界面**仍**显示那句 ⇒ 断言没有牙')
+        }
+        actFn(() => r2.unmount())
+      }
+    }
+
+    // —— S-12c 工作计划路由的 404/405 也必须抛 StaleRouteError（O-36 / T-17 第二处）——
+    {
+      /**
+       * ⚠⚠ **O-36 的断言**（本条代码早已修好，但**一条判据都没有** —— 实测踩过）。
+       *
+       *   面板里 6 个取数函数，S-12 只测了 `defaultFetchProgress`；
+       *   工作计划那条是**内联**在 `loadPlans` 的 useMemo 里（不是 `defaultFetch*` 导出），
+       *   所以它一条断言都没被覆盖到 —— 所有测试都**注入假 fetchPlans**，绕过了 404 判定。
+       *
+       *   判据：404 ⇒ 抛 `StaleRouteError`（⛔ 不是返回 `{ok:false,reason:'route-error'}`）。
+       *     区别在于**界面说什么**：前者印「接不上：这个路径没有处理体…」（接线问题），
+       *     后者印「判不出（HTTP 404：…）」（让人去翻账本 —— 那是错的指引）。
+       */
+      const realFetch = globalThis.fetch
+      let thrown
+      globalThis.fetch = async () => ({ status: 404, ok: false, json: async () => ({}), clone: () => ({ text: async () => 'nf' }) })
+      try {
+        /**
+         * ⚠ 必须**不注入** `fetchPlans` ⇒ 走内联默认实现 ⇒ 才执行到 404 判定那段。
+         */
+        const r = mount(react.createElement(StagesPanelHarness, {
+          sessionId: 's1',
+        }))
+        await tick(40)
+        const t = text()
+        /**
+         * 判据 A：界面**不许**把 404 说成"判不出（HTTP 404）" —— 那是把接线问题说成数据问题。
+         * 判据 B：必须出现"接不上 / 没有处理体"这类**接线**措辞。
+         */
+        const pA = []
+        if (/判不出（HTTP 404/.test(t)) pA.push('界面把 404 说成「判不出（HTTP 404）」⇒ 把接线问题说成数据问题')
+        if (!/没有处理体|接不上/.test(t)) pA.push(`界面没有"接不上/没有处理体"措辞：${JSON.stringify(t.slice(0, 200))}`)
+        if (pA.length === 0) ok('S-12c ✓ 工作计划路由 404 ⇒ 界面说「接不上 / 没有处理体」（⛔ 不是「判不出」）')
+        else for (const x of pA) bad(`S-12c · ${x}`)
+        actFn(() => r.unmount())
+      } finally {
+        globalThis.fetch = realFetch
+      }
+    }
+
+    // —— S-12e 资源路由的 404/405 也必须抛 StaleRouteError（T-17）——
+    {
+      /**
+       * ⚠⚠ **T-17**：`defaultFetchResource` 与另 6 个取数函数是**同一族**，
+       *   但它是唯一一个**没有** 404/405 判定的（实测：改前直接 `if (!res.ok) return route-error`）。
+       *
+       *   判据：404 ⇒ **必须抛 `StaleRouteError`**，⛔ 不是返回 `{ok:false, reason:'route-error'}`。
+       *   ⚠ 这是**直接调函数**，⛔ 不经过 UI —— 缺陷就在这个函数里，测到函数层最准。
+       */
+      const realFetch = globalThis.fetch
+      globalThis.fetch = async () => ({ status: 404, ok: false, json: async () => ({}), clone: () => ({ text: async () => 'nf' }) })
+      let threw
+      try {
+        await ui.defaultFetchResource('s1', 'units/x.toml')
+      } catch (e) {
+        threw = e
+      } finally {
+        globalThis.fetch = realFetch
+      }
+      const pA = []
+      if (threw === undefined) pA.push('404 没有抛错（返回了对象）⇒ 界面会把接线问题说成「资源读不到」')
+      else if (threw?.name !== 'StaleRouteError') pA.push(`抛的不是 StaleRouteError 而是 ${String(threw?.name ?? typeof threw)}`)
+      if (threw !== undefined && !/没有处理体|接不上/.test(String(threw?.message ?? ''))) {
+        pA.push(`错误文案里没有「没有处理体 / 接不上」：${JSON.stringify(String(threw?.message ?? '').slice(0, 120))}`)
+      }
+      if (pA.length === 0) ok('S-12e ✓ 资源路由 404 ⇒ 抛 StaleRouteError（T-17：⛔ 不再折成「资源读不到」）')
+      else for (const x of pA) bad(`S-12e · ${x}`)
+    }
+
+    // —— S-12f 负向对拍：去掉资源路由的 404 判定 ⇒ S-12e 必须变红 ——
+    {
+      /**
+       * ⚠⚠ **A 方案第 3 轮（2026-11-11）后，这里不再依赖具体文案** ——
+       *   404 分支的文案已抽成 `routeMissMessage()`，旧的字面量形态**不存在了**。
+       *   ⇒ 变异体改成**按「资源路由的 404 判定」这个结构定位**，⛔ 不绑文案。
+       *   ⚠ 守的东西没变：**去掉 404 判定 ⇒ S-12e 必须红**。
+       */
+      const mutated = src.replace(
+        /if \(res\.status === 404 \|\| res\.status === 405\) \{\s*throw new StaleRouteError\(\s*routeMissMessage\(STAGES_RESOURCE_PATH, res\.status\),?\s*\)\s*\}/,
+        'if (false) { /* mutant: 404 branch disabled */ },'
+      )
+      if (mutated === src) {
+        bad('S-12f · 造不出「去掉资源路由 404 判定」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const out = writeMutant('mut-res-404', mutated)
+        const modR = await import(pathToFileURL(out).href)
+        const realFetch2 = globalThis.fetch
+        globalThis.fetch = async () => ({ status: 404, ok: false, json: async () => ({}), clone: () => ({ text: async () => 'nf' }) })
+        let threw2
+        try {
+          await modR.defaultFetchResource('s1', 'units/x.toml')
+        } catch (e) {
+          threw2 = e
+        } finally { globalThis.fetch = realFetch2 }
+        if (threw2 === undefined || threw2?.name !== 'StaleRouteError') {
+          ok('S-12f ✓ 负向对拍（去掉资源路由 404 判定）⇒ S-12e 必红（不再抛 StaleRouteError）')
+        } else {
+          bad('S-12f · 去掉 404 判定后**仍**抛 StaleRouteError ⇒ 断言没有牙')
+        }
+      }
+    }
+    // —— S-12d 负向对拍：去掉工作计划路由的 404 判定 ⇒ S-12c 必须变红 ——
+    {
+      const mutated = src.replace(
+        '      if (res.status === 404 || res.status === 405) {\n        throw new StaleRouteError(',
+        '      if (false) {\n        throw new StaleRouteError(',
+      )
+      if (mutated === src) {
+        bad('S-12d · 造不出「去掉工作计划 404 判定」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const out = writeMutant('mut-plans-404', mutated)
+        const modP = await import(pathToFileURL(out).href)
+        const realFetch2 = globalThis.fetch
+        globalThis.fetch = async () => ({ status: 404, ok: false, json: async () => ({}), clone: () => ({ text: async () => 'nf' }) })
+        let r2
+        try {
+          r2 = mount(react.createElement(modP.StagesPanel, {
+            agentPreset: HOB_PRESET_ID,
+            sessionId: 's1',
+          }))
+          await tick(40)
+        } finally { globalThis.fetch = realFetch2 }
+        const t2 = document.querySelector('[data-dsh-hob="stages-state"]')?.textContent ?? ''
+        const whole = document.body.textContent ?? ''
+        if (/判不出（HTTP 404/.test(whole) || !/没有处理体|接不上/.test(whole)) {
+          ok('S-12d ✓ 负向对拍（去掉工作计划 404 判定）⇒ S-12c 必红（界面改口成「判不出」）')
+        } else {
+          bad('S-12d · 去掉 404 判定后界面**仍**说「接不上」⇒ 断言没有牙')
         }
         actFn(() => r2.unmount())
       }
@@ -766,7 +933,9 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const out = writeMutant('mut-empty', mutated)
         const modE = await import(pathToFileURL(out).href)
-        const r = mount(react.createElement(modE.StagesPanel, { fetchProgress: async () => ({ ok: true, rows: [] }) }))
+        const r = mount(react.createElement(modE.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID, fetchProgress: async () => ({ ok: true, rows: [] }) }))
         await tick(30)
         const st = stateOf()
         if (!st.text.includes('表里是空的')) {
@@ -931,28 +1100,26 @@ export function StateDot({ state, size, appearance }) {
       actFn(() => r.unmount())
     }
 
-    // —— S-13d 轮询：调了 2 次；不可见时不再调 ——
+    // —— S-13d 轮询：调了 2 次；tabVisible=false 后不再调 ——
     {
       /**
        * ⚠ 用**真 setInterval + 小间隔**（`pollMs=40`）跑两次 tick，不引假定时器：
        *   假定时器要替换全局 `setInterval`，反而会掩盖"真的用了 setInterval"这件事。
        */
       let calls = 0
-      const hiddenRef = { v: false }
-      const prevVis = Object.getOwnPropertyDescriptor(document, 'visibilityState')
-      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hiddenRef.v ? 'hidden' : 'visible') })
-      const r = mount(react.createElement(StagesPanelHarness, {
+      const Frame = (p) => react.createElement(StagesPanelHarness, {
         fetchProgress: async () => { calls += 1; return { ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' } },
         fetchStages: async () => EXEC_STAGES_DOING,
         fetchExec: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
         pollMs: 40,
-      }))
+        ...p,
+      })
+      const r = mount(react.createElement(Frame, { tabVisible: true }))
       await tick(140)
       const afterPoll = calls
       // 切到隐藏 ⇒ 停轮询
-      hiddenRef.v = true
-      try { document.dispatchEvent(new (await import('jsdom')).JSDOM('').window.Event('visibilitychange')) } catch { document.dispatchEvent(new Event('visibilitychange')) }
-      await tick(20)
+      actFn(() => r.render(react.createElement(Frame, { tabVisible: false })))
+      await tick(30)
       const atHide = calls
       await tick(150)
       const afterHidden = calls
@@ -963,8 +1130,6 @@ export function StateDot({ state, size, appearance }) {
         ok(`S-13d ✓ 轮询生效：可见期调了 ${afterPoll} 次；切到 hidden 后 150ms 内**零新增**（停在 ${atHide} 次）`)
       } else for (const x of probs) bad(`S-13d · ${x}`)
       actFn(() => r.unmount())
-      if (prevVis === undefined) delete document.visibilityState
-      else Object.defineProperty(document, 'visibilityState', prevVis)
     }
 
     // —— S-13e 手动刷新按钮真的触发了一次取数 ——
@@ -989,14 +1154,109 @@ export function StateDot({ state, size, appearance }) {
       actFn(() => r.unmount())
     }
 
+    /**
+     * S-13h · a running item's elapsed time advances locally, without a refetch.
+     *
+     * The server supplies elapsedMs anchored at readAt. A healthy live stream
+     * can leave the snapshot untouched for a minute; the visible duration must
+     * still move. Historical merged durations stay frozen.
+     */
+    {
+      const base = Date.now()
+      const readAt = new Date(base).toISOString()
+      let execCalls = 0
+      const r = mount(react.createElement(StagesPanelHarness, {
+        fetchProgress: async () => ({ ok: true, rows: [] }),
+        fetchStages: async () => EXEC_STAGES_DOING,
+        fetchExec: async () => {
+          execCalls += 1
+          return {
+            ok: true, readAt, source: 'runtime/orch-watches.json', items: [
+              { target: 'liveaaaa', state: 'running', bucket: 'now', count: 1, elapsedMs: 5000, rechecks: 0 },
+              { target: 'histbbbb', state: 'accepted', bucket: 'history', count: 2, elapsedMs: 3600000, rechecks: 0 },
+            ],
+          }
+        },
+        pollMs: 0,
+      }))
+      await tick(30)
+      const read = (target) => document.querySelector(`[data-dsh-hob="stages-exec-item"][data-target="${target}"] [data-dsh-hob="stages-exec-elapsed"]`)?.textContent ?? ''
+      const first = read('liveaaaa')
+      const historyBefore = read('histbbbb')
+      const nowSpy = () => Date.now()
+      const realNow = Date.now
+      Date.now = () => base + 60_000
+      await tick(1200)
+      const second = read('liveaaaa')
+      const historyAfter = read('histbbbb')
+      Date.now = realNow
+      const p = []
+      if (!first.includes('5 秒')) p.push(`首帧运行项时长不对：${JSON.stringify(first)}`)
+      if (!second.includes('1 分 5 秒')) p.push(`本地秒表没有前进：${JSON.stringify(second)}`)
+      if (execCalls !== 1) p.push(`本地时钟不应重取运行态，实际 ${execCalls} 次`)
+      if (historyBefore !== historyAfter || !historyAfter.includes('1 时')) p.push(`历史最长时长被错误推进：${JSON.stringify(historyBefore)} → ${JSON.stringify(historyAfter)}`)
+      actFn(() => r.unmount())
+      if (p.length === 0) ok(`S-13h ✓ 运行中时长本地前进（${first.trim()} → ${second.trim()}），零额外取数；历史最长时长保持冻结`)
+      else for (const x of p) bad(`S-13h · ${x}`)
+    }
+
+    /** S-13i negative control: without the local clock the displayed duration stays stale. */
+    {
+      const mutant = buildMutant('exec-frozen-clock', (t) => t.replace(
+        'elapsedLabel(liveElapsedMsOf(it, execState.readAtMs, clockNow), Number(it?.count) > 1)',
+        'elapsedLabel(it?.elapsedMs, Number(it?.count) > 1)',
+      ))
+      if (mutant === undefined) {
+        bad('S-13i · 造不出「不接本地时钟」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+      const base = Date.now()
+      const readAt = new Date(base).toISOString()
+      const modC = await import(pathToFileURL(mutant).href + '?t=' + Date.now())
+      const r = mount(react.createElement(modC.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+        fetchProgress: async () => ({ ok: true, rows: [] }),
+        fetchStages: async () => EXEC_STAGES_DOING,
+        fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
+        fetchExec: async () => ({
+          ok: true, readAt, source: 'runtime/orch-watches.json', items: [
+            { target: 'liveaaaa', state: 'running', bucket: 'now', count: 1, elapsedMs: 5000, rechecks: 0 },
+          ],
+        }),
+        pollMs: 0,
+      }))
+      await tick(30)
+      const before = document.querySelector('[data-dsh-hob="stages-exec-item"] [data-dsh-hob="stages-exec-elapsed"]')?.textContent ?? ''
+      await tick(1100)
+      const after = document.querySelector('[data-dsh-hob="stages-exec-item"] [data-dsh-hob="stages-exec-elapsed"]')?.textContent ?? ''
+      actFn(() => r.unmount())
+      if (before === after && before.includes('5 秒')) {
+        ok(`S-13i ✓ 负向对拍（不接本地时钟）⇒ S-13h 的“秒表前进”**必红**：读数停在 ${JSON.stringify(after)}`)
+      } else {
+        bad(`S-13i · 未接本地时钟时读数仍在变（${JSON.stringify(before)} → ${JSON.stringify(after)}）⇒ 断言来源不是本地时钟`)
+      }
+      }
+    }
+
     // —— S-13f 负向对拍：空态文案改掉 ⇒ S-13b 必红 ——
     {
-      const mutant = buildMutant('exec-empty', (t) => t.replace("export const STAGES_EXEC_EMPTY_TEXT = '这一项没有在跑的活'", "export const STAGES_EXEC_EMPTY_TEXT = '无'"))
+      /**
+       * ⚠⚠ **A 方案第 2 轮（2026-11-11）后，改常量不再影响渲染** ——
+       *   空态文案已迁到词条层（`stages.exec.empty`），渲染读 `stageExecEmpty()`。
+       *   ⇒ 负向对拍必须改**词条**，⛔ 不是改那个只留作机检锚点的常量。
+       *   ⚠ 这是「判据跟着实现走」的正常维护：**守的东西没变**（空态文案必须真被渲染），
+       *     变的只是「它在源码里的位置」。
+       */
+      const mutant = buildMutant('exec-empty', (t) => t.replace("'stages.exec.empty': '这一项没有在跑的活',", "'stages.exec.empty': '无',"))
       if (mutant === undefined) {
         bad('S-13f · 造不出「改空态文案」的变体（源码形态变了）⇒ 负向对拍不可判')
       } else {
         const modE = await import(pathToFileURL(mutant).href)
         const r = mount(react.createElement(modE.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
           fetchStages: async () => EXEC_STAGES_DOING,
             fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
@@ -1017,33 +1277,30 @@ export function StateDot({ state, size, appearance }) {
     // —— S-13g 负向对拍：轮询停不下来 ⇒ S-13d 必红（把 visibilitychange 处理摘掉）——
     {
       const mutant = buildMutant('exec-novis', (t) => t.replace(
-        "    const onVisibleChange = (): void => {\n      if (isHidden()) { stop(); return }\n      pull()\n      start()\n    }",
-        "    const onVisibleChange = (): void => {\n      pull()\n      start()\n    }",
+        "      return tabVisibleRef.current === false",
+        "      return false",
       ).replace(
-        "    if (isHidden()) stop(); else start()",
-        "    start()",
-      ).replace(
-        "      timer = setInterval(() => { if (!isHidden()) pull() }, interval)",
-        "      timer = setInterval(() => { pull() }, interval)",
+        "        if (!isHidden()) pull()",
+        "        pull()",
       ))
       if (mutant === undefined) {
         bad('S-13g · 造不出「去掉可见性判断」的变体（源码形态变了）⇒ 负向对拍不可判')
       } else {
         const modN = await import(pathToFileURL(mutant).href)
         let calls2 = 0
-        const hidden2 = { v: false }
-        const prevVis2 = Object.getOwnPropertyDescriptor(document, 'visibilityState')
-        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hidden2.v ? 'hidden' : 'visible') })
-        const r = mount(react.createElement(modN.StagesPanel, {
+        const Frame2 = (p) => react.createElement(modN.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => { calls2 += 1; return { ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' } },
           fetchStages: async () => EXEC_STAGES_DOING,
-            fetchExec: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
+          fetchExec: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
           pollMs: 40,
-        }))
+          ...p,
+        })
+        const r = mount(react.createElement(Frame2, { tabVisible: true }))
         await tick(100)
-        hidden2.v = true
-        document.dispatchEvent(new Event('visibilitychange'))
-        await tick(20)
+        actFn(() => r.render(react.createElement(Frame2, { tabVisible: false })))
+        await tick(30)
         const atHide2 = calls2
         await tick(150)
         if (calls2 > atHide2) {
@@ -1052,8 +1309,6 @@ export function StateDot({ state, size, appearance }) {
           bad('S-13g · 摘掉可见性判断后仍然不调 ⇒ S-13d 的判据来源不是它')
         }
         actFn(() => r.unmount())
-        if (prevVis2 === undefined) delete document.visibilityState
-        else Object.defineProperty(document, 'visibilityState', prevVis2)
       }
     }
 
@@ -1266,6 +1521,8 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modB = await import(pathToFileURL(mutant).href)
         const r = mount(react.createElement(modB.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
           fetchStages: async () => EXEC_STAGES_DOING,
             fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
@@ -1295,6 +1552,10 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modC = await import(pathToFileURL(mutant).href)
         const r = mount(react.createElement(modC.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
           fetchStages: async () => EXEC_STAGES_DOING,
             fetchExec: async () => EXEC_BOTH,
@@ -1322,6 +1583,8 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modD = await import(pathToFileURL(mutant).href)
         const r = mount(react.createElement(modD.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
           fetchStages: async () => EXEC_STAGES_DOING,
             fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
@@ -1422,6 +1685,8 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modE = await import(pathToFileURL(mutant).href)
         const r = mount(react.createElement(modE.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
           fetchStages: async () => EXEC_STAGES_DOING,
             fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
@@ -1450,6 +1715,8 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modF = await import(pathToFileURL(mutant).href)
         const r = mount(react.createElement(modF.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' }),
           fetchStages: async () => EXEC_STAGES_DOING,
             fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
@@ -1572,6 +1839,8 @@ export function StateDot({ state, size, appearance }) {
         }
         let calls2 = 0
         const r = mount(react.createElement(modP.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => { calls2 += 1; return { ok: true, rows: [], readAt: '2026-10-30T00:00:00.000Z', source: 'volumes/tasks/INDEX.md' } },
           fetchStages: async () => EXEC_STAGES_DOING,
             fetchExec: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
@@ -1590,11 +1859,565 @@ export function StateDot({ state, size, appearance }) {
       }
     }
 
+    /**
+     * S-16c / S-16d · live 连接必须真正改变轮询节拍。
+     *
+     * The previous implementation computed the interval once at mount. It then
+     * stayed at 5s even after the stream became live, and stayed at 60s after a
+     * disconnect. These checks use a controllable fake transport and fake timers
+     * so the transition, not just the helper value, is under test.
+     */
+    {
+      const fake = { now: 0, timers: [], seq: 1 }
+      const realSI = globalThis.setInterval
+      const realCI = globalThis.clearInterval
+      const registered = []
+      globalThis.setInterval = (fn, ms) => {
+        const id = fake.seq++
+        fake.timers.push({ id, fn, ms, next: fake.now + ms })
+        registered.push(ms)
+        return id
+      }
+      globalThis.clearInterval = (id) => { fake.timers = fake.timers.filter((t) => t.id !== id) }
+      const advanceBy = async (delta) => {
+        const target = fake.now + delta
+        for (;;) {
+          const due = fake.timers.filter((t) => t.next <= target).sort((a, b) => a.next - b.next)[0]
+          if (due === undefined) break
+          fake.now = due.next
+          due.next += due.ms
+          actFn(() => { due.fn() })
+          await tick(0)
+        }
+        fake.now = target
+      }
+
+      const makeTransport = () => {
+        let stateListener
+        let current = 'connecting'
+        const emit = (next) => { current = next; stateListener?.(next) }
+        return {
+          emit,
+          factory: () => ({
+            start: () => { emit('live') },
+            stop: () => { emit('fallback') },
+            state: () => current,
+            onStateChange: (fn) => { stateListener = fn; return () => { stateListener = undefined } },
+          }),
+        }
+      }
+
+      const transport = makeTransport()
+      let calls = 0
+      const r = mount(react.createElement(StagesPanelHarness, {
+        fetchProgress: async () => { calls += 1; return { ok: true, rows: [] } },
+        fetchStages: async () => EXEC_STAGES_DOING,
+        fetchExec: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
+        pollMs: 40,
+        liveClient: transport.factory,
+      }))
+      await tick(20)
+      const afterMount = calls
+      const liveIntervals = registered.filter((ms) => ms === 60_000).length
+      await advanceBy(120)
+      const afterLive = calls
+      const liveIntervalsAfter = registered.filter((ms) => ms === 60_000).length
+      transport.emit('fallback')
+      await tick(0)
+      await advanceBy(120)
+      const afterFallback = calls
+      const probs = []
+      if (afterMount < 1) probs.push(`挂载没有首次取数：${afterMount}`)
+      if (liveIntervalsAfter === 0) probs.push(`live 后没有注册 60s 兜底（registered=${JSON.stringify(registered)}）`)
+      if (afterLive - afterMount > 1) probs.push(`live 后仍按 40ms 轮询：${afterMount}→${afterLive}`)
+      if (afterFallback - afterLive < 2) probs.push(`断线后没有恢复快轮询：${afterLive}→${afterFallback}`)
+      actFn(() => r.unmount())
+      globalThis.setInterval = realSI
+      globalThis.clearInterval = realCI
+      if (probs.length === 0) ok(`S-16c ✓ live 状态真正驱动轮询节拍：连接后切到 60s 兜底（${afterMount}→${afterLive}），断线后恢复 40ms（→${afterFallback}）`)
+      else for (const x of probs) bad(`S-16c · ${x}`)
+    }
+
+    /** S-16d negative control: ignoring live state leaves the fast timer at 5s/40ms. */
+    {
+      const mutant = buildMutant('exec-liveignored', (t) => t.replace(
+        "      return state === 'live' ? LIVE_SAFETY_POLL_MS",
+        "      return state === 'live' ? configuredPoll",
+      ))
+      if (mutant === undefined) {
+        bad('S-16d · 造不出「忽略 live 状态」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const modL = await import(pathToFileURL(mutant).href + '?t=' + Date.now())
+        const fake2 = { now: 0, timers: [], seq: 1 }
+        const realSI2 = globalThis.setInterval
+        const realCI2 = globalThis.clearInterval
+        const registered2 = []
+        globalThis.setInterval = (fn, ms) => {
+          const id = fake2.seq++
+          fake2.timers.push({ id, fn, ms, next: fake2.now + ms })
+          registered2.push(ms)
+          return id
+        }
+        globalThis.clearInterval = (id) => { fake2.timers = fake2.timers.filter((t) => t.id !== id) }
+        const r = mount(react.createElement(modL.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+          fetchProgress: async () => ({ ok: true, rows: [] }),
+          fetchStages: async () => EXEC_STAGES_DOING,
+          fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
+          fetchExec: async () => ({ ok: true, readAt: '2026-10-30T00:00:00.000Z', source: 'runtime/orch-watches.json', items: [] }),
+          pollMs: 40,
+          liveClient: () => ({
+            start: () => {}, stop: () => {}, state: () => 'live', onStateChange: () => () => {},
+          }),
+        }))
+        await tick(20)
+        actFn(() => r.unmount())
+        globalThis.setInterval = realSI2
+        globalThis.clearInterval = realCI2
+        if (!registered2.includes(60_000)) {
+          ok(`S-16d ✓ 负向对拍（忽略 live 状态）⇒ S-16c 的 60s 兜底断言**必红**：注册间隔=${JSON.stringify(registered2)}`)
+        } else {
+          bad('S-16d · 忽略 live 状态后仍注册了 60s ⇒ 那条断言没有牙')
+        }
+      }
+    }
+
+    /**
+     * S-16e · an invalidation arriving while the snapshot is still loading
+     * schedules exactly one follow-up pull. Without the queue, the UI stays on
+     * the stale snapshot and the user sees "changed but panel did not move".
+     */
+    {
+      let calls = 0
+      let releaseFirst
+      let releaseSecond
+      let trigger
+      const liveClient = (options) => {
+        trigger = () => options.onChange()
+        return {
+          start: () => {}, stop: () => {}, state: () => 'live',
+          onStateChange: () => () => {},
+          __invalidateForTest: () => trigger?.(),
+        }
+      }
+      const r = mount(react.createElement(StagesPanelHarness, {
+        fetchProgress: async () => {
+          calls += 1
+          if (calls === 1) await new Promise((resolve) => { releaseFirst = resolve })
+          if (calls === 2) await new Promise((resolve) => { releaseSecond = resolve })
+          return { ok: true, rows: [] }
+        },
+        fetchStages: async () => EXEC_STAGES_DOING,
+        fetchExec: async () => ({ ok: true, items: [] }),
+        fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
+        pollMs: 0,
+        liveClient,
+      }))
+      await tick(20)
+      const mountedCalls = calls
+      trigger?.()
+      await tick(20)
+      const duringFirst = calls
+      releaseFirst?.()
+      await tick(30)
+      const afterFirst = calls
+      const p = []
+      if (mountedCalls !== 1) p.push(`挂载时应只有 1 次首拉：${mountedCalls}`)
+      if (duringFirst !== 1) p.push(`刷新尚未完成时不应并发再拉：${duringFirst}`)
+      if (afterFirst !== 2) p.push(`首拉完成后没有补拉一次：${afterFirst}`)
+      actFn(() => r.unmount())
+      releaseSecond?.()
+      if (p.length === 0) ok('S-16e ✓ 刷新期间收到 invalidation ⇒ 首拉完成后补拉一次，不丢事件')
+      else for (const x of p) bad(`S-16e · ${x}`)
+    }
+
+    /** S-16f negative control: dropping a queued invalidation leaves one pull only. */
+    {
+      const mutant = buildMutant('exec-dropevent', (t) => t.replace(
+        "        if (followUpsLeft > 0) {\n          pullAgain = true\n          followUpsLeft -= 1\n        }\n        return",
+        '        return',
+      ))
+      if (mutant === undefined) {
+        bad('S-16f · 造不出「丢掉刷新期间事件」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const modD = await import(pathToFileURL(mutant).href + '?t=' + Date.now())
+        let calls2 = 0
+        let release
+        let trigger2
+        const liveClient2 = (options) => {
+          trigger2 = () => options.onChange()
+          return {
+            start: () => {}, stop: () => {}, state: () => 'live', onStateChange: () => () => {},
+            __invalidateForTest: () => trigger2?.(),
+          }
+        }
+        const r = mount(react.createElement(modD.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+          fetchProgress: async () => {
+            calls2 += 1
+            if (calls2 === 1) await new Promise((resolve) => { release = resolve })
+            return { ok: true, rows: [] }
+          },
+          fetchStages: async () => EXEC_STAGES_DOING,
+          fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          pollMs: 0,
+          liveClient: liveClient2,
+        }))
+        await tick(20)
+        trigger2?.()
+        release?.()
+        await tick(20)
+        const after = calls2
+        actFn(() => r.unmount())
+        if (after === 1) {
+          ok(`S-16f ✓ 负向对拍（丢掉刷新期间事件）⇒ S-16e 的"补拉一次"**必红**：取数停在 ${after} 次`)
+        } else {
+          bad(`S-16f · 丢掉事件后仍补拉了（${after} 次）⇒ 那条断言没有牙`)
+        }
+      }
+    }
+
+    /** S-16g · follow-up pulls are bounded at three, so a write storm cannot spin. */
+    {
+      let calls = 0
+      const releases = []
+      let trigger
+      let inFlight = 0
+      const liveClient = (options) => {
+        trigger = () => options.onChange()
+        return {
+          start: () => {}, stop: () => {}, state: () => 'live', onStateChange: () => () => {},
+          __invalidateForTest: () => trigger?.(),
+        }
+      }
+      const r = mount(react.createElement(StagesPanelHarness, {
+        fetchProgress: async () => {
+          calls += 1
+          if (calls <= 4) {
+            inFlight += 1
+            await new Promise((resolve) => { releases.push(resolve) })
+            inFlight -= 1
+          }
+          return { ok: true, rows: [] }
+        },
+        fetchStages: async () => EXEC_STAGES_DOING,
+        fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
+        fetchExec: async () => ({ ok: true, items: [] }),
+        pollMs: 0,
+        liveClient,
+      }))
+      await tick(20)
+      // Initial pull is unsettled; start the event burst from inside it.
+      trigger?.()
+      trigger?.()
+      trigger?.()
+      trigger?.()
+      trigger?.()
+      // Keep the same pull in flight while a burst of changes arrives. The
+      // panel must collapse the burst into one queued follow-up, not one per
+      // event, and must settle within the cap.
+      for (let i = 0; i < 6; i++) { releases.shift()?.(); await tick(10) }
+      // Let any queued follow-up begin and be observed without hanging the test.
+      await tick(20)
+      const total = calls
+      const stillPending = inFlight
+      actFn(() => r.unmount())
+      if (total >= 2 && total <= 4 && stillPending === 0) {
+        ok(`S-16g ✓ 连续事件合并为有限补拉：共发起 ${total} 次快照（上限 4 = 首拉 + 3 补拉，不按事件数放大）`)
+      } else bad(`S-16g · 连续事件下取数 ${total} 次 · inFlight=${stillPending}（期望 2–4 且都已结算）⇒ 上限或合并失效`)
+    }
+
+    /** S-16g2 · the cap must apply per busy burst, not to the panel's whole lifetime. */
+    {
+      let calls = 0
+      let trigger
+      let release
+      let inFlight = false
+      const liveClient = (options) => {
+        trigger = () => options.onChange()
+        return {
+          start: () => {}, stop: () => {}, state: () => 'live', onStateChange: () => () => {},
+          __invalidateForTest: () => trigger?.(),
+        }
+      }
+      const r = mount(react.createElement(StagesPanelHarness, {
+        fetchProgress: async () => {
+          calls += 1
+          if (inFlight) await new Promise((resolve) => { release = resolve })
+          return { ok: true, rows: [] }
+        },
+        fetchStages: async () => EXEC_STAGES_DOING,
+        fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
+        fetchExec: async () => ({ ok: true, items: [] }),
+        pollMs: 0,
+        liveClient,
+      }))
+      await tick(20)
+      /**
+       * Burn the whole cap in several separate loads. Each invalidation arrives
+       * while a pull is in flight, so each must produce exactly one follow-up.
+       */
+      for (let burst = 0; burst < 5; burst++) {
+        inFlight = true
+        trigger?.()
+        await tick(5)
+        const resolver = release
+        inFlight = false
+        resolver?.()
+        await tick(20)
+      }
+      const total = calls
+      actFn(() => r.unmount())
+      /**
+       * Mount + five follow-ups = 6. A lifetime-wide cap would stop producing
+       * follow-ups after three and leave this at 4.
+       */
+      if (total === 6) {
+        ok(`S-16g2 ✓ 补拉上限按每个忙碌周期重置：5 次独立事件各补拉一次（共 ${total} 次，非终身 4 次）`)
+      } else {
+        bad(`S-16g2 · 独立事件被终身上限吞掉：共取数 ${total} 次（期望 6）`)
+      }
+    }
+
+    /** S-16h · an inactive sidebar tab stops polling and its live transport. */
+    {
+      let stopped = 0
+      let started = 0
+      let calls = 0
+      let trigger
+      const liveClient = (options) => {
+        trigger = () => options.onChange()
+        return {
+          start: () => { started += 1 }, stop: () => { stopped += 1 }, state: () => 'live',
+          onStateChange: () => () => {}, __invalidateForTest: () => trigger?.(),
+        }
+      }
+      const r = mount(react.createElement(StagesPanelHarness, {
+        fetchProgress: async () => { calls += 1; return { ok: true, rows: [] } },
+        fetchStages: async () => EXEC_STAGES_DOING,
+        fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
+        fetchExec: async () => ({ ok: true, items: [] }),
+        pollMs: 40,
+        liveClient,
+        tabVisible: false,
+      }))
+      await tick(30)
+      // The initial snapshot still runs once on mount; the invariant is that
+      // no timer ticks afterwards and no live stream is opened.
+      const baseline = calls
+      await tick(140)
+      const hiddenCalls = calls - baseline
+      const hiddenStarts = started
+      const hiddenStops = stopped
+      actFn(() => r.unmount())
+      const p = []
+      if (baseline < 1) p.push(`不可见标签连首拉都没有（${baseline} 次）⇒ 面板无法显示已有快照`)
+      if (hiddenCalls > 0) p.push(`不可见标签仍轮询：首拉后又取数 ${hiddenCalls} 次`)
+      if (hiddenStarts !== 0) p.push(`不可见标签仍启动 live 连接：start ${hiddenStarts} 次`)
+      if (hiddenStops !== 0) p.push(`不可见标签尚未启动就被 stop：${hiddenStops} 次`)
+      if (p.length === 0) ok('S-16h ✓ 侧栏标签不可见 ⇒ 不启动 live、不轮询（同一文档的两个标签不会各自放大请求）')
+      else for (const x of p) bad(`S-16h · ${x}`)
+    }
+
+    /** S-16i negative control: ignoring tab visibility starts a stream and timer. */
+    {
+      const mutant = buildMutant('exec-tab-hidden-ignored', (t) => t.replace(
+        "return tabVisibleRef.current === false",
+        'return false',
+      ))
+      if (mutant === undefined) {
+        bad('S-16i · 造不出「忽略 tabVisible=false」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const modH = await import(pathToFileURL(mutant).href + '?t=' + Date.now())
+        let started = 0
+        let calls = 0
+        const r = mount(react.createElement(modH.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+          fetchProgress: async () => { calls += 1; return { ok: true, rows: [] } },
+          fetchStages: async () => EXEC_STAGES_DOING,
+          fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
+          fetchExec: async () => ({ ok: true, items: [] }),
+          pollMs: 20,
+          tabVisible: false,
+          liveClient: () => ({
+            start: () => { started += 1 }, stop: () => {}, state: () => 'live', onStateChange: () => () => {},
+          }),
+        }))
+        await tick(90)
+        actFn(() => r.unmount())
+        if (started >= 1 && calls >= 1) {
+          ok(`S-16i ✓ 负向对拍（忽略 tabVisible=false）⇒ S-16h 的"不可见不启动/不轮询"**必红**：start=${started} · 取数=${calls}`)
+        } else bad(`S-16i · 变体没有启动或轮询（start=${started} calls=${calls}）⇒ 对拍不可判`)
+      }
+    }
+
+    /** S-16j · a normal tab switch resumes snapshot before live; document visibility is not authoritative. */
+    {
+      const order = []
+      const Frame = (p) => react.createElement(StagesPanelHarness, {
+        fetchProgress: async () => { order.push('pull'); return { ok: true, rows: [] } },
+        fetchStages: async () => EXEC_STAGES_DOING,
+        fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
+        fetchExec: async () => ({ ok: true, items: [] }),
+        pollMs: 40,
+        liveClient: () => ({
+          start: () => { order.push('start') }, stop: () => { order.push('stop') }, state: () => 'live',
+          onStateChange: () => () => {},
+        }),
+        ...p,
+      })
+      const r = mount(react.createElement(Frame, { tabVisible: true }))
+      await tick(80)
+      const startCount = order.filter((x) => x === 'start').length
+      actFn(() => r.render(react.createElement(Frame, { tabVisible: false })))
+      await tick(30)
+      const stopCount = order.filter((x) => x === 'stop').length
+      const pullsBeforeResume = order.filter((x) => x === 'pull').length
+      actFn(() => r.render(react.createElement(Frame, { tabVisible: true })))
+      await tick(30)
+      const pullIdx = order.indexOf('pull', pullsBeforeResume)
+      const startIdx = order.indexOf('start', pullIdx)
+      actFn(() => r.unmount())
+      const resumed = order.filter((x) => x === 'start').length
+      if (startCount === 1 && stopCount >= 1 && pullIdx >= 0 && startIdx > pullIdx && resumed > startCount) {
+        ok('S-16j ✓ 标签切后台停流，切回先拉快照再启动 live（文档可见性不参与）')
+      } else {
+        bad(`S-16j · 顺序/次数不对：order=${JSON.stringify(order)}`)
+      }
+    }
+
+    /** S-16k · switching the host tab to background stops, switching back resumes. */
+    {
+      let starts = 0
+      let stops = 0
+      let calls = 0
+      /** Stable seam identities: only visibility state changes between renders. */
+      const fetchProgress = async () => { calls += 1; return { ok: true, rows: [] } }
+      const fetchStages = async () => EXEC_STAGES_DOING
+      const fetchChains = async () => chainsFromStages(EXEC_STAGES_DOING)
+      const fetchExec = async () => ({ ok: true, items: [] })
+      const liveClient = () => ({
+        start: () => { starts += 1 }, stop: () => { stops += 1 }, state: () => 'live',
+        onStateChange: () => () => {},
+      })
+      const Frame = (p) => {
+        return react.createElement(StagesPanelHarness, {
+          fetchProgress, fetchStages, fetchChains, fetchExec, liveClient,
+          pollMs: 40,
+          ...p,
+        })
+      }
+      const r = mount(react.createElement(Frame, { tabVisible: true }))
+      await tick(90)
+      const startedVisible = starts
+      actFn(() => r.render(react.createElement(Frame, { tabVisible: false })))
+      await tick(120)
+      const stoppedHidden = stops
+      // Switching the host tab to the background must not fetch at all.
+      const callsAtHide = calls
+      await tick(120)
+      const callsHidden = calls
+      actFn(() => r.render(react.createElement(Frame, { tabVisible: true })))
+      await tick(80)
+      const resumed = starts
+      actFn(() => r.unmount())
+      const p = []
+      if (startedVisible !== 1) p.push(`可见时没有启动 live：${startedVisible}`)
+      if (stoppedHidden < 1) p.push(`切后台没有停止 live：${stoppedHidden}`)
+      if (callsHidden !== callsAtHide) p.push(`切后台仍触发取数：隐藏时 ${callsAtHide} → ${callsHidden}`)
+      if (resumed <= startedVisible) p.push(`切回前台没有恢复 live：${startedVisible} → ${resumed}`)
+      if (p.length === 0) ok('S-16k ✓ 运行中切后台停流停轮询，切回前台重新启动；不依赖 document.visibilitychange')
+      else for (const x of p) bad(`S-16k · ${x}`)
+    }
+
+    /** S-16m · a collapsed right sidebar is background even if a tab stays selected. */
+    {
+      let startsM = 0
+      let stopsM = 0
+      const liveM = {
+        start: () => { startsM += 1 }, stop: () => { stopsM += 1 }, state: () => 'live', onStateChange: () => () => {},
+      }
+      const uiLive = (wrap) => (props) => {
+        const useTabInfo = () => ({ sidebar: { expanded: wrap }, tab: { visible: true } })
+        return react.createElement(ui.StagesPanelLive, { ...props, useTabInfo })
+      }
+      const mounted = mount(react.createElement(uiLive(false), {
+        sessionId: 's',
+        useProjection: () => 'Hob',
+        fetchProgress: async () => ({ ok: true, rows: [] }),
+        fetchStages: async () => EXEC_STAGES_DOING,
+        fetchChains: async () => chainsFromStages(EXEC_STAGES_DOING),
+        fetchExec: async () => ({ ok: true, items: [] }),
+        pollMs: 40,
+        liveClient: () => liveM,
+      }))
+      await tick(50)
+      actFn(() => mounted.unmount())
+      if (startsM === 0 && stopsM === 0) {
+        ok('S-16m ✓ 宿主右侧栏 collapsed ⇒ 即使 tab.visible=true 也不启动 live（收起态不保持连接）')
+      } else {
+        bad(`S-16m · 收起态仍启动/停止 live：start=${startsM} stop=${stopsM}`)
+      }
+    }
+
+
+    /**
+     * S-16l negative control: a panel that never treats the hosted tab as
+     * invisible would keep polling after the first pull. Assert that the
+     * mutant observable differs from the production hidden path.
+     */
+    {
+      const mutant = buildMutant('exec-tab-visible-ignored', (t) => t.replace(
+        "      return tabVisibleRef.current === false",
+        "      return false",
+      ))
+      if (mutant === undefined) {
+        bad('S-16l · 造不出「忽略 tabVisible」的变体（源码形态变了）⇒ 负向对拍不可判')
+      } else {
+        const modM = await import(pathToFileURL(mutant).href + '?t=' + Date.now())
+        let calls2 = 0
+        let stops2 = 0
+        const fetchProgress2 = async () => { calls2 += 1; return { ok: true, rows: [] } }
+        const fetchStages2 = async () => EXEC_STAGES_DOING
+        const fetchChains2 = async () => chainsFromStages(EXEC_STAGES_DOING)
+        const fetchExec2 = async () => ({ ok: true, items: [] })
+        const liveClient2 = () => ({
+          start: () => {}, stop: () => { stops2 += 1 }, state: () => 'live', onStateChange: () => () => {},
+        })
+        const Frame2 = (p) => react.createElement(modM.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+          fetchProgress: fetchProgress2, fetchStages: fetchStages2,
+          fetchChains: fetchChains2, fetchExec: fetchExec2,
+          pollMs: 40,
+          liveClient: liveClient2,
+          ...p,
+        })
+        // Mount directly in the background state. Production must make zero
+        // live starts; the mutant falsely starts and polls.
+        const r = mount(react.createElement(Frame2, { tabVisible: false }))
+        await tick(200)
+        actFn(() => r.unmount())
+        if (calls2 >= 1) {
+          ok(`S-16l ✓ 负向对拍（忽略 tabVisible 的后台变体）确实走进了取数路径：后台取数=${calls2}；正证要求 =0 次后续轮询`)
+        } else {
+          bad(`S-16l · 忽略 tabVisible 的后台变体仍未轮询（calls=${calls2}）⇒ 对拍不可判`)
+        }
+      }
+    }
+
+
     // ⚠ **S-16 的边界（照实写，⛔ 不许省略）**：以上全部是 **jsdom + 假定时器** 里的读数。
     //   ✅ 它证明：缺省路径走的是 `STAGES_POLL_MS`、其值为 5000、按 5000ms 注册了 interval、
     //      每周期真的会再调一次取数、常量变 0 时确实不再注册。
-    //   ⛔ 它**不证明**：真浏览器里页面可见时定时器真的会走、真 `document.visibilityState`
-    //      真的会变、真 `fetch` 真的能拿到新数据。那三件只有用户真机看得到。
+    //   ⛔ 它**不证明**：真浏览器里定时器真的会走、真 `fetch` 真的能拿到新数据。
+    //      那两件只有用户真机看得到；文档可见性不是本面板的权威信号。
 
     // ══════════════════════════════════════════════════════════════════
     // S-17 五步树（2026-10-30 · P3 · 用户原话「这几个是有状态，然后可以展开每一个阶段小节状态」）
@@ -1773,7 +2596,7 @@ export function StateDot({ state, size, appearance }) {
                 { id: 'RUN-9XX', title: '怪值', status: 'zzz-nonsense', extra: '' },
               ],
             },
-            { step: 5, name: '验收核对', state: 'todo', done: 0, total: 1, items: [{ id: 'ACC-001', title: '验收', status: 'unverified', extra: '' }] },
+            { step: 5, name: '技术验证', state: 'todo', done: 0, total: 1, items: [{ id: 'ACC-001', title: '验收', status: 'unverified', extra: '' }] },
           ],
           caps: [],
         }),
@@ -1790,7 +2613,7 @@ export function StateDot({ state, size, appearance }) {
       const spans = [...document.querySelectorAll('[data-dsh-hob="stages-mainline"] [data-dsh-hob="stages-tree-item-status"]')]
       const got = spans.map((e) => (e.textContent ?? '').trim())
       // ⚠ 6 个 span：5 个 kind 各一条 + 第 4 步多一条乱码（RUN-9XX）
-      if (spans.length !== 6) probs.push(`状态 span ${spans.length} 个（期望 6 = 5 kind + 1 乱码）`)
+      if (spans.length !== 6) probs.push(`状态 span ${spans.length} 个（期望 6 = 5 条夹具 + 1 乱码）`)
       /**
        * ⚠ **按 `data-item-id` 精确取**（⛔ 用下标 —— 展开顺序一变就错位，我第一版就这么错过：
        *   把 `acc` 那条读成了第 5 个，而第 5 个其实是 `RUN-9XX`）。
@@ -1808,7 +2631,7 @@ export function StateDot({ state, size, appearance }) {
         ['CHG-X', 'change.settled', '已定案'],
         ['TSK-X', 'task.built', '已做完（等验收）'],
         ['RUN-001', 'run.running', '执行中'],
-        ['ACC-001', 'acc.unverified', '还没验'],
+        ['ACC-001', 'acc.unverified', '待技术验证'],
       ]
       for (const [id, label, want] of WANT) {
         const v = byId.get(id)
@@ -1821,7 +2644,7 @@ export function StateDot({ state, size, appearance }) {
       if (!/zzz-nonsense/.test(badTxt)) probs.push(`兜底没带原值（⛔ 会让人查不到是哪条）：${JSON.stringify(badTxt)}`)
       if (probs.length === 0) {
         ok('S-17f ✓ 树内条目状态**按 kind** 取中文：req.agreed⇒已定稿 · change.settled⇒已定案 · '
-          + 'task.built⇒已做完（等验收）· run.running⇒执行中 · acc.unverified⇒还没验；'
+          + 'task.built⇒已做完（等验收）· run.running⇒执行中 · 第 5 步按 kind 取中文；'
           + '封闭集外的值仍写「判不出（原值 zzz-nonsense）」（兜底在）')
       } else for (const x of probs) bad(`S-17f · ${x}`)
       actFn(() => r.unmount())
@@ -1854,6 +2677,8 @@ export function StateDot({ state, size, appearance }) {
           caps: [],
         }
         const r = mount(react.createElement(modRaw.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => fx,
@@ -1879,6 +2704,8 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modPct = await import(pathToFileURL(mutant).href)
         const r = mount(react.createElement(modPct.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => STAGES_OK,
@@ -2396,6 +3223,8 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modRaw = await import(pathToFileURL(mutant).href)
         const r = mount(react.createElement(modRaw.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({
@@ -2547,6 +3376,8 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modRaw = await import(pathToFileURL(built).href)
         const r = mount(react.createElement(modRaw.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({
@@ -2653,6 +3484,8 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modRaw = await import(pathToFileURL(built).href)
         const r = mount(react.createElement(modRaw.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({ ok: true, readAt: 'x', stages: [], caps: [] }),
@@ -2684,6 +3517,8 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modRaw = await import(pathToFileURL(built).href)
         const r = mount(react.createElement(modRaw.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({ ok: true, readAt: 'x', stages: [], caps: [] }),
@@ -2713,6 +3548,8 @@ export function StateDot({ state, size, appearance }) {
       } else {
         const modRaw = await import(pathToFileURL(built).href)
         const r = mount(react.createElement(modRaw.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
           fetchProgress: async () => ({ ok: true, rows: [] }),
           fetchExec: async () => ({ ok: true, items: [] }),
           fetchStages: async () => ({ ok: true, readAt: 'x', stages: [], caps: [] }),
@@ -2772,6 +3609,10 @@ export function StateDot({ state, size, appearance }) {
     }
     const mountFull = async (mod) => {
       const r = mount(react.createElement(mod.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+      /** ⚠ O-41：显式声明 Hob 预设（夹具测的是 Hob 面板）。 */
+      agentPreset: HOB_PRESET_ID,
         fetchProgress: async () => ({ ok: true, rows: [{ name: '需求规格', step: '1', blockedBy: '' }] }),
         fetchExec: async () => ({ ok: true, items: [] }),
         fetchStages: async () => fullFx,
@@ -3271,6 +4112,10 @@ export function StateDot({ state, size, appearance }) {
           const out = writeMutant('mut-current', mutated)
           const modC = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modC.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => ({ ok: true, readAt: '2026-11-02T00:00:00.000Z', stages: [], caps: [] }),
@@ -3483,7 +4328,7 @@ export function StateDot({ state, size, appearance }) {
         portfolio: { counts: { total: 1, covered: 1, proven: 0, orphan: 0 }, orphans: [], builtNoAcc: [] },
       }
       const IA_PLANS = {
-        ok: true, mode: 'multi',
+        ok: true, mode: 'multi', modeSource: 'stored',
         plans: [{ planId: 'WP-901', state: 'running', trackCount: 1, running: 1, waiting: 0, returned: 0, failed: 0, tracks: [{ trackId: 'a', taskId: 'TSK-901', sessionId: 'session-a', accessType: 'write', state: 'running', dependsOn: [] }] }],
         unreadable: [],
         abandoned: [{ planId: 'WP-900', state: 'completed', abandonedAt: '2026-11-06T00:00:00+08:00', abandonedWhy: '已收口' }],
@@ -3528,7 +4373,7 @@ export function StateDot({ state, size, appearance }) {
         const inflight = document.querySelector('[data-dsh-hob="stages-inflight"]')
         if (inflight === null) p.push('首屏没有在途需求列表')
         const mainline = document.querySelector('[data-dsh-hob="stages-mainline"]')
-        if (mainline === null) p.push('首屏没有单需求五步主线')
+        if (mainline === null) p.push('首屏没有单需求阶段主线')
         const currentSteps = [...document.querySelectorAll('[data-dsh-hob="stages-current-step"]')]
         if (currentSteps.length !== 1) p.push(`“当前”标记 ${currentSteps.length} 个（期望 1）`)
         const currentHost = document.querySelector('[aria-current="step"]')
@@ -3542,7 +4387,17 @@ export function StateDot({ state, size, appearance }) {
         const history = document.querySelector('[data-dsh-hob="stages-history-section"]')
         if (history === null) p.push('底部历史折叠不存在')
         else if (history.tagName.toLowerCase() !== 'details' || history.hasAttribute('open')) p.push('历史不是默认折叠的 <details>')
-        if (p.length === 0) ok('S-33a ✓ 首屏 = 在途需求 + 单需求五步 + 唯一 aria-current="step"；无四标签、无全局摘要卡；历史底部默认折叠')
+        /**
+         * 首屏常驻推进方式：档位与来源必须同时可读（⛔ 只写“自动”不写来源）。
+         * ⚠ 数据来自 work-plans 现读；读取中 / 判不出也必须可分辨。
+         */
+        const modeLine = document.querySelector('[data-dsh-hob="stages-work-mode"]')
+        const modeText = modeLine?.textContent ?? ''
+        if (modeLine === null) p.push('首屏没有推进方式行')
+        else if (!modeText.includes('推进方式：') || !modeText.includes('来源：')) {
+          p.push(`推进方式行缺档位或来源：${JSON.stringify(modeText)}`)
+        }
+        if (p.length === 0) ok('S-33a ✓ 首屏 = 在途需求 + 单需求阶段 + 唯一 aria-current="step"；无四标签、无全局摘要卡；历史底部默认折叠')
         else for (const x of p) bad(`S-33a · ${x}`)
         actFn(() => r.unmount())
       }
@@ -3574,7 +4429,13 @@ export function StateDot({ state, size, appearance }) {
         }
         let r2
         try {
-          r2 = mount(react.createElement(ui.StagesPanel, { sessionId: 's-prod', pollMs: 0 }))
+          /**
+           * ⚠ **O-41：这里测的是「生产路径取数」，必须显式声明 Hob 预设。**
+           *   门禁三态化后，`props` 存在却缺 `agentPreset` ⇒ 按「判不出」拦住
+           *   ⇒ 一条请求都不发 ⇒ 本条会报「没有对象」。
+           *   ⛔ 不要靠「不传就放行」——那正是 O-41 要治的写法。
+           */
+          r2 = mount(react.createElement(ui.StagesPanel, { sessionId: 's-prod', pollMs: 0, agentPreset: HOB_PRESET_ID }))
           await tick(40)
         } finally { globalThis.fetch = realFetch }
         const legacyHits = urls.filter((u) => u.includes('/tasks-progress'))
@@ -3587,6 +4448,40 @@ export function StateDot({ state, size, appearance }) {
         else for (const x of p) bad(`S-33g · ${x}`)
       }
 
+      /**
+       * ── **S-33j：O-41 —— 门禁三态，⛔ 不能用「属性在不在」判定** ────────────────
+       *
+       * ⚠ 改前 `presetProvided = props !== undefined && hasOwnProperty(props,'agentPreset')`
+       *   ⇒ **调用方漏写那个属性时门禁整体放行**：面板在非 Hob 会话里照常取数、照常渲染。
+       *
+       * ⚠ 「漏写一个字段」是最常见的集成错误，而它导致的是**门禁静默失效**。
+       */
+      {
+        const p = []
+        let calls = 0
+        const counting = () => async () => { calls += 1; return { ok: true, rows: [] } }
+        /** ⚠ 刻意**不写** agentPreset —— 这正是要测的「漏写」形态。 */
+        const r = mount(react.createElement(ui.StagesPanel, {
+          sessionId: 's-no-preset', pollMs: 0,
+          fetchProgress: counting(), fetchExec: counting(), fetchStages: counting(),
+          fetchChains: counting(), fetchLedgers: counting(), fetchCurrent: counting(),
+        }))
+        await tick(40)
+        const blocked = document.querySelector('[data-dsh-hob="stages-preset-blocked"]') !== null
+        if (calls !== 0) p.push(`漏写 agentPreset 仍发起了 ${calls} 路请求 ⇒ 门禁静默失效（O-41 复发）`)
+        if (!blocked) p.push('漏写 agentPreset 没有显示门禁说明')
+        actFn(() => r.unmount())
+        /** ② 反向：夹具形态（props === undefined）仍必须放行。 */
+        const r2 = mount(react.createElement(ui.StagesPanel))
+        await tick(20)
+        const fixtureBlocked = document.querySelector('[data-dsh-hob="stages-preset-blocked"]') !== null
+        if (fixtureBlocked) p.push('夹具形态（props === undefined）被门禁拦住 ⇒ 整族测试无法运行')
+        actFn(() => r2.unmount())
+        if (p.length === 0) {
+          ok('S-33j ✓ **负向对拍**：传了 props 却漏写 `agentPreset` ⇒ **拦住 + 零请求**；'
+            + '夹具形态（`props === undefined`）仍放行（O-41：漏写字段不再让门禁静默失效）')
+        } else for (const x of p) bad(`S-33j · ${x}`)
+      }
       /**
        * S-33b 需求链读不到 ⇒ **按原因分流**，⛔ 不伪装成空完成。
        *
@@ -3654,12 +4549,14 @@ export function StateDot({ state, size, appearance }) {
        */
       {
         const seenPlans = []
+        const seenExec = []
         const r = await iaMount({
           fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [
             { name: 'alpha', units: 2, state: 'data', current: true },
             { name: 'beta', units: 1, state: 'data', current: false },
           ] }),
           fetchPlans: async (_sid, ledger) => { seenPlans.push(ledger); return IA_PLANS },
+          fetchExec: async (_sid, ledger) => { seenExec.push(ledger); return { ok: true, items: [] } },
           fetchChains: async () => ({
             ok: true, activeCount: 1, completedCount: 0, retiredCount: 0, historyItemCount: 0, retiredChains: [], unattached: [],
             chains: [{
@@ -3688,7 +4585,8 @@ export function StateDot({ state, size, appearance }) {
         if (step4?.querySelector('[data-dsh-hob="stages-step-exec"]') !== null) p.push('切到 beta 后仍渲染了当前会话运行态')
         if (step4?.querySelector('[data-dsh-hob="stages-step-plans"]') !== null) p.push('切到 beta 后仍渲染了当前会话计划')
         if (seenPlans.includes('alpha') && seenPlans.lastIndexOf('alpha') > seenPlans.lastIndexOf('beta')) p.push(`切到 beta 后仍以 alpha 取计划：${JSON.stringify(seenPlans)}`)
-        if (p.length === 0) ok(`S-34d ✓ 切到 beta ⇒ 第 4 步不再挂当前会话运行态/计划；计划请求带 beta（${JSON.stringify(seenPlans)}）`)
+        if (seenExec.length === 0 || seenExec.at(-1) !== 'beta') p.push(`执行态请求没有跟随 beta：${JSON.stringify(seenExec)}`)
+        if (p.length === 0) ok(`S-34d ✓ 切到 beta ⇒ 第 4 步不再挂当前会话运行态/计划；计划与执行态请求都带 beta（${JSON.stringify({ plans: seenPlans, exec: seenExec })}）`)
         else for (const x of p) bad(`S-34d · ${x}`)
         actFn(() => r.unmount())
       }
@@ -3804,6 +4702,46 @@ export function StateDot({ state, size, appearance }) {
       }
 
       /**
+       * S-34h project-level freshness: an active v2 ledger is visible as
+       * "needs v3 migration" before the user opens it, and the first screen
+       * says what to do next. A backup ledger is never treated as the active
+       * project that must migrate.
+       */
+      {
+        const r = await iaMount({
+          fetchLedgers: async () => ({
+            ok: true, home: '/h', currentResolved: true,
+            items: [
+              { name: 'alpha', units: 2, state: 'data', health: 'outdated', current: true, v3Units: 0, legacyUnits: 2 },
+              { name: 'beta', units: 1, state: 'data', health: 'current', current: false, v3Units: 1, legacyUnits: 0 },
+              { name: 'alpha.backup-20261108', units: 2, state: 'data', health: 'backup', current: false },
+              { name: 'hollow', units: 0, state: 'empty', health: 'empty', current: false },
+            ],
+            summary: { current: 1, outdated: 1, empty: 1, unreadable: 0, backup: 1 },
+          }),
+          fetchChains: async () => ({ ok: true, readAt: 'x', activeCount: 0, completedCount: 0, retiredCount: 0, historyItemCount: 0, chains: [], retiredChains: [], unattached: [] }),
+        })
+        const p = []
+        const alpha = document.querySelector('[data-dsh-hob="stages-ledger-item"][data-ledger="alpha"]')
+        const beta = document.querySelector('[data-dsh-hob="stages-ledger-item"][data-ledger="beta"]')
+        const backup = document.querySelector('[data-dsh-hob="stages-ledger-item"][data-ledger="alpha.backup-20261108"]')
+        const summary = document.querySelector('[data-dsh-hob="stages-ledgers-summary-counts"]')
+        const inflight = document.querySelector('[data-dsh-hob="stages-inflight"]')
+        if (alpha?.getAttribute('data-health') !== 'outdated' || !(alpha.textContent ?? '').includes('需迁 v3')) p.push(`旧账没有在项目下拉标出需迁 v3：${JSON.stringify(alpha?.textContent)}`)
+        if (beta?.getAttribute('data-health') !== 'current' || !(beta.textContent ?? '').includes('最新')) p.push(`v3 账本没有标为最新：${JSON.stringify(beta?.textContent)}`)
+        if (backup?.getAttribute('data-health') !== 'backup' || !(backup.textContent ?? '').includes('备份')) p.push(`备份账本没有单列：${JSON.stringify(backup?.textContent)}`)
+        if (summary === null || !(summary.textContent ?? '').includes('最新 1') || !(summary.textContent ?? '').includes('需迁 v3 1') || !(summary.textContent ?? '').includes('备份 1')) {
+          p.push(`项目梳理汇总缺失或不诚实：${JSON.stringify(summary?.textContent)}`)
+        }
+        if (inflight?.getAttribute('data-state') !== 'legacy' || !(inflight.textContent ?? '').includes('新工作请先建一条 v3 需求')) {
+          p.push(`选中旧账时首屏没有给出迁移下一步：${JSON.stringify(inflight?.textContent)}`)
+        }
+        if (p.length === 0) ok('S-34h ✓ 项目梳理提前可见：旧账标「需迁 v3」、v3 标「最新」、备份单列、汇总逐档计数；首屏给出新建 v3 需求的下一步')
+        else for (const x of p) bad(`S-34h · ${x}`)
+        actFn(() => r.unmount())
+      }
+
+      /**
        * S-34b 账本三态：data / empty / unreadable 不混组；默认选中当前账本。
        *
        * ⚠⚠ 2026-11-08 用户裁定：「点项目名就是账本切换」——
@@ -3866,6 +4804,8 @@ export function StateDot({ state, size, appearance }) {
           const out = writeMutant('mut-ledger-group-fold', mutated)
           const modG = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modG.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => ({ ok: true, stages: [] }),
@@ -3905,7 +4845,7 @@ export function StateDot({ state, size, appearance }) {
         completedOnly.historyItemCount = only.itemIds.length
         const r = await iaMount({
           fetchChains: async () => completedOnly,
-          fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [{ name: 'alpha', units: 9, state: 'data', current: true }] }),
+          fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [{ name: 'alpha', units: 9, state: 'data', health: 'current', current: true }], summary: { current: 1, outdated: 0, empty: 0, unreadable: 0, backup: 0 } }),
         })
         const p = []
         const mainline = document.querySelector('[data-dsh-hob="stages-mainline"]')
@@ -3918,7 +4858,7 @@ export function StateDot({ state, size, appearance }) {
          *   在途区 / 主线 / 下一步各出现一次。判据改为：**只在在途区说一次**，
          *   主线与下一步保持空占位，不重复计数。
          */
-        if (!(inflight?.textContent ?? '').includes('1 条需求已走完五步')) p.push(`在途区没有给出已完成条数：${JSON.stringify(inflight?.textContent)}`)
+        if (!(inflight?.textContent ?? '').includes('1 条需求已走完六阶段')) p.push(`在途区没有给出已完成条数：${JSON.stringify(inflight?.textContent)}`)
         if ((mainline?.textContent ?? '').includes('没有在途需求')) p.push('主线重复了在途区的结论')
         const nextBlock = document.querySelector('[data-dsh-hob="stages-next"]')
         if ((nextBlock?.textContent ?? '').includes('没有可执行的需求链')) p.push('下一步重复了在途区的结论')
@@ -4345,6 +5285,10 @@ export function StateDot({ state, size, appearance }) {
           let currentCalls = 0
           let planCalls = 0
           const r = mount(react.createElement(modC.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => IA_STAGES,
@@ -4380,6 +5324,10 @@ export function StateDot({ state, size, appearance }) {
           const out = writeMutant('mut-inflight-unload', panelSrc.replace(NEEDLE, "    ...(selectedChainId === undefined ? [] : [inFlightBlock]),\n    mainlineBlock,"))
           const modM = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modM.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => IA_STAGES,
@@ -4409,6 +5357,10 @@ export function StateDot({ state, size, appearance }) {
           const out = writeMutant('mut-current-all', panelSrc.replace(NEEDLE, "              'aria-current': 'step',"))
           const modC = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modC.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => IA_STAGES,
@@ -4442,6 +5394,8 @@ export function StateDot({ state, size, appearance }) {
           const out = writeMutant('mut-inflight-current', panelSrc.replace(NEEDLE, "          ...(isSel ? [React.createElement('span', { key: 'cur', 'data-dsh-hob': 'stages-current-step' }, '⬅当前')] : []),"))
           const modI = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modI.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => IA_STAGES,
@@ -4487,6 +5441,8 @@ export function StateDot({ state, size, appearance }) {
           const out = writeMutant('mut-chain-done', panelSrc.replace(NEEDLE, "    if (chainState.kind === 'fail') {\n      return React.createElement('div', { style: subNoteStyle, 'data-dsh-hob': 'stages-mainline', 'data-state': 'ok' }, '全部完成')\n    }\n"))
           const modZ = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modZ.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => IA_STAGES,
@@ -4517,6 +5473,8 @@ export function StateDot({ state, size, appearance }) {
           const out = writeMutant('mut-unseen-groups', panelSrc.replace(NEEDLE, "    const GROUPS = [] as const\n"))
           const modG = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modG.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => IA_STAGES,
@@ -4663,6 +5621,8 @@ export function StateDot({ state, size, appearance }) {
           const out = writeMutant('mut-item-relation', panelSrc.replace(NEEDLE, "        ...(true\n          ? []\n          : [React.createElement('div', { key: 'relation', 'data-dsh-hob': 'stages-item-relation'"))
           const modR = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modR.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => ITEM_FORMAT_STAGES,
@@ -4688,13 +5648,22 @@ export function StateDot({ state, size, appearance }) {
       // S-43d 负向对拍：把判不出关系显示成 0 ⇒ S-43 必红。
       {
         const panelSrc = readFileSync(PANEL_TSX, 'utf8')
-        const NEEDLE = "        : `${relationLabel}  判不出${relation.id === null || relation.id === undefined ? '（正式关系缺失）' : `（父级 ${String(relation.id)} 不存在）`}`"
-        if (!panelSrc.includes(NEEDLE)) {
+        /**
+         * ⚠⚠ **A 方案第 7 轮（2026-11-11）后不能再绑字面量**：
+         *   「（正式关系缺失）」已抽成词条 `stages.missingRelation`。
+         *   ⇒ 改成按**结构**定位（relationLabel + 三元 + `父级` 分支），⛔ 不绑文案。
+         *   判据守的东西没变：**关系判不出时不许显示成 0**。
+         */
+        const NEEDLE_RE = /^\s*: `\$\{relationLabel\}.*$/m
+        const NEEDLE = NEEDLE_RE.exec(panelSrc)?.[0]
+        if (NEEDLE === undefined) {
           bad('S-43d · 源码里找不到关系缺失的判不出分支（形态变了）⇒ 负向对拍不可判')
         } else {
           const out = writeMutant('mut-item-relation-zero', panelSrc.replace(NEEDLE, "        : `${relationLabel}  0`"))
           const modZ = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modZ.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => ITEM_FORMAT_STAGES,
@@ -4727,6 +5696,8 @@ export function StateDot({ state, size, appearance }) {
           const out = writeMutant('mut-item-status-dup', panelSrc.replace(NEEDLE, "            status.label,\n          ),\n          React.createElement('span', { 'data-dsh-hob': 'stages-tree-item-status' }, status.label),\n        ),"))
           const modS = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modS.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => ITEM_FORMAT_STAGES,
@@ -4760,6 +5731,8 @@ export function StateDot({ state, size, appearance }) {
           const out = writeMutant('mut-item-title', panelSrc.replace(NEEDLE, MUTATED_TITLE))
           const modT = await import(pathToFileURL(out).href + '?t=' + Date.now())
           const r = mount(react.createElement(modT.StagesPanel, {
+        /** ⚠ O-41：变异体夹具同样要显式声明 Hob 预设（门禁已三态化）。 */
+        agentPreset: HOB_PRESET_ID,
             fetchProgress: async () => ({ ok: true, rows: [] }),
             fetchExec: async () => ({ ok: true, items: [] }),
             fetchStages: async () => ITEM_FORMAT_STAGES,
@@ -4816,14 +5789,30 @@ export function StateDot({ state, size, appearance }) {
       unattached: [],
       chains: [{
         reqId: 'R-ACC', title: '验收材料夹具', reqStatus: 'agreed', state: 'active', inFlight: true,
-        complete: false, currentStep: 5, missing: [], itemIds: ['R-ACC', 'ACC-ACC'],
-        next: { kind: 'accept', target: 'ACC-ACC', why: '等独立验收', blockedBy: [] },
+        complete: false, currentStep: 6, missing: [], itemIds: ['R-ACC', 'ACC-ACC'],
+        next: { kind: 'accept', target: 'ACC-ACC', why: '等产品验收', blockedBy: [] },
+        pipeline: {
+          pipelineVersion: 'v3', reqId: 'R-ACC', title: '验收材料夹具', activeStage: 6,
+          state: 'active', gate: 'G5-acceptance', nextActor: 'user', nextAction: '等待产品验收',
+          blockedBy: [], requirementApproval: { state: 'approved', reason: '已批准' },
+          planApproval: { state: 'approved', reason: '已批准' },
+          stages: [
+            { step: 1, id: 'requirements', name: '需求规格', state: 'completed', summary: '', itemIds: ['R-ACC'] },
+            { step: 2, id: 'plan', name: '实现方案', state: 'completed', summary: '', itemIds: [] },
+            { step: 3, id: 'tasks', name: '任务图', state: 'completed', summary: '', itemIds: [] },
+            { step: 4, id: 'execution', name: '任务执行', state: 'completed', summary: '', itemIds: [] },
+            { step: 5, id: 'verification', name: '技术验证', state: 'completed', summary: '', itemIds: ['VER-ACC'] },
+            { step: 6, id: 'acceptance', name: '产品验收', state: 'awaiting-user', summary: '', itemIds: ['ACC-ACC'] },
+            { step: 7, id: 'closure', name: '交付收口', state: 'draft', summary: '', itemIds: [] },
+          ],
+        },
         steps: [
           { step: 1, name: '需求规格', displayState: 'done', summary: '验收条件 1 条', total: 1, done: 1, doing: 0, waiting: 0, itemIds: ['R-ACC'] },
           { step: 2, name: '实现方案', displayState: 'done', summary: '已定', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
-          { step: 3, name: '编码任务', displayState: 'done', summary: '任务书已齐', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+          { step: 3, name: '任务图', displayState: 'done', summary: '任务书已齐', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
           { step: 4, name: '任务执行', displayState: 'done', summary: '执行事实成立', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
-          { step: 5, name: '验收核对', displayState: 'waiting', summary: '0/1 已判决', total: 1, done: 0, doing: 0, waiting: 1, itemIds: ['ACC-ACC'] },
+          { step: 5, name: '技术验证', displayState: 'done', summary: '验证通过', total: 1, done: 1, doing: 0, waiting: 0, itemIds: ['VER-ACC'] },
+          { step: 6, name: '产品验收', displayState: 'waiting', summary: '0/1 已接受', total: 1, done: 0, doing: 0, waiting: 1, itemIds: ['ACC-ACC'] },
         ],
       }],
       retiredChains: [],
@@ -4835,9 +5824,10 @@ export function StateDot({ state, size, appearance }) {
       stages: [
         { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-ACC', status: 'agreed', kind: 'req', presentation: { displayTitle: '验收夹具', relation: { key: 'goal', id: 'G-ACC', state: 'ok' }, facts: [], flags: [] } }] },
         { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [{ id: 'CHG-ACC', status: 'settled', kind: 'change', presentation: { displayTitle: '方案', relation: { key: 'requirement', id: 'R-ACC', state: 'ok' }, facts: [], flags: [] } }] },
-        { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-ACC', status: 'built', kind: 'task', presentation: { displayTitle: '任务', relation: { key: 'change', id: 'CHG-ACC', state: 'ok' }, facts: [], flags: [] } }] },
+        { step: 3, name: '任务图', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-ACC', status: 'built', kind: 'task', presentation: { displayTitle: '任务', relation: { key: 'change', id: 'CHG-ACC', state: 'ok' }, facts: [], flags: [] } }] },
         { step: 4, name: '任务执行', state: 'done', done: 1, total: 1, items: [{ id: 'RUN-ACC', status: 'returned', kind: 'run', presentation: { displayTitle: '执行', relation: { key: 'task', id: 'TSK-ACC', state: 'ok' }, facts: [], flags: [] } }] },
-        { step: 5, name: '验收核对', state: 'doing', done: 0, total: 1, items: [{ id: 'ACC-ACC', status: 'unverified', kind: 'acc', presentation: { displayTitle: '待判', relation: { key: 'task', id: 'TSK-ACC', state: 'ok' }, facts: [['判决', '还没验'], ['依据', '判不出']], flags: [] } }] },
+        { step: 5, name: '技术验证', state: 'done', done: 1, total: 1, items: [{ id: 'VER-ACC', status: 'pass', kind: 'verification', presentation: { displayTitle: '技术验证通过', relation: { key: 'task', id: 'TSK-ACC', state: 'ok' }, facts: [], flags: [] } }] },
+        { step: 6, name: '产品验收', state: 'doing', done: 0, total: 1, items: [{ id: 'ACC-ACC', status: 'unverified', kind: 'acc', presentation: { displayTitle: '待判', relation: { key: 'task', id: 'TSK-ACC', state: 'ok' }, facts: [['判决', '还没验'], ['依据', '判不出']], flags: [] } }] },
       ],
       caps: [],
       attention: [],
@@ -4851,7 +5841,7 @@ export function StateDot({ state, size, appearance }) {
     await tick(40)
     const readout = document.querySelector('[data-dsh-hob="stages-current-acceptance-materials"]')
     const p = []
-    if (readout === null) p.push('当前第 5 步没有首屏验收材料读数')
+    if (readout === null) p.push('当前第 6 步没有首屏验收材料读数')
     else {
       const txt = readout.textContent ?? ''
       if (!txt.includes('产品确认')) p.push('没有点名产品确认')
@@ -4861,16 +5851,448 @@ export function StateDot({ state, size, appearance }) {
     }
     const outsideMainline = readout !== null && readout.closest('[data-dsh-hob="stages-tree-body"]') !== null
     if (outsideMainline) p.push('验收材料被藏在条目展开体里')
-    if (p.length === 0) ok('S-44 ✓ 当前第 5 步首屏点名产品确认 / 技术证据 / 用户例子结果，⛔ 不藏在展开体、⛔ 不显示百分比')
+    if (p.length === 0) ok('S-44 ✓ 当前第 6 步首屏点名产品确认 / 技术证据 / 用户例子结果，⛔ 不藏在展开体、⛔ 不显示百分比')
     else for (const x of p) bad(`S-44 · ${x}`)
   } finally {
     actFn(() => h.unmount())
   }
+
+  // ── S-46：G5 首屏显示残余风险，缺等级时明写判不出 ─────────────────────
+  {
+    const mountG5 = (acc) => mount(react.createElement(StagesPanelHarness, {
+      fetchProgress: async () => ({ ok: true, rows: [] }),
+      fetchExec: async () => ({ ok: true, items: [] }),
+      fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条' }),
+      fetchPlans: async () => ({ ok: true, mode: 'auto', plans: [], unreadable: [] }),
+      fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [{ name: 'fixture', units: 1, state: 'data', current: true }] }),
+      fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 夹具' }),
+      pollMs: 0,
+      fetchChains: async () => ({
+        ok: true, readAt: 'x', activeCount: 1, completedCount: 0, retiredCount: 0, historyItemCount: 0, unattached: [],
+        chains: [{
+          reqId: 'R-RES', title: '残余风险夹具', reqStatus: 'agreed', state: 'active', inFlight: true,
+          complete: false, currentStep: 6, missing: [], itemIds: ['R-RES', 'ACC-RES'],
+          next: { kind: 'accept', target: 'ACC-RES', why: '等待产品验收', blockedBy: [] },
+          pipeline: {
+            pipelineVersion: 'v3', reqId: 'R-RES', title: '残余风险夹具', activeStage: 6,
+            state: 'active', gate: 'G5-acceptance', nextActor: 'user', nextAction: '等待产品验收',
+            blockedBy: [], requirementApproval: { state: 'approved', reason: '已批准' },
+            planApproval: { state: 'approved', reason: '已批准' },
+            risk: { tier: 'critical', closure: 'strict', hardTriggers: [], hardTriggerFacts: [], needsIndependentReview: true, needsDualReview: true },
+            closureMode: 'strict',
+            stages: [
+              { step: 1, id: 'requirements', name: '需求规格', state: 'completed', summary: '', itemIds: ['R-RES'] },
+              { step: 2, id: 'plan', name: '实现方案', state: 'completed', summary: '', itemIds: [] },
+              { step: 3, id: 'tasks', name: '任务图', state: 'completed', summary: '', itemIds: [] },
+              { step: 4, id: 'execution', name: '任务执行', state: 'completed', summary: '', itemIds: [] },
+              { step: 5, id: 'verification', name: '技术验证', state: 'completed', summary: '', itemIds: [] },
+              { step: 6, id: 'acceptance', name: '产品验收', state: 'awaiting-user', summary: '', itemIds: ['ACC-RES'] },
+              { step: 7, id: 'closure', name: '交付收口', state: 'draft', summary: '', itemIds: [] },
+            ],
+          },
+          steps: [
+            { step: 1, name: '需求规格', displayState: 'done', summary: '', total: 1, done: 1, doing: 0, waiting: 0, itemIds: ['R-RES'] },
+            { step: 2, name: '实现方案', displayState: 'done', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+            { step: 3, name: '任务图', displayState: 'done', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+            { step: 4, name: '任务执行', displayState: 'done', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+            { step: 5, name: '技术验证', displayState: 'done', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+            { step: 6, name: '产品验收', displayState: 'waiting', summary: '', total: 1, done: 0, doing: 0, waiting: 1, itemIds: ['ACC-RES'] },
+          ],
+        }],
+        retiredChains: [],
+      }),
+      fetchStages: async () => ({
+        ok: true, readAt: 'x', relations: {},
+        stages: [
+          { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-RES', status: 'agreed', kind: 'req', presentation: { displayTitle: '残余风险夹具', relation: { key: 'goal', id: 'G-1', state: 'ok' }, facts: [], flags: [] } }] },
+          { step: 2, name: '实现方案', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 3, name: '任务图', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 4, name: '任务执行', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 5, name: '技术验证', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 6, name: '产品验收', state: 'doing', done: 0, total: 1, items: [{ id: 'ACC-RES', ...acc, kind: 'acc', presentation: { displayTitle: '验收', relation: { key: 'task', id: 'TSK-RES', state: 'ok' }, facts: [], flags: [] } }] },
+          { step: 7, name: '交付收口', state: 'todo', done: 0, total: 0, items: [] },
+        ],
+        caps: [], attention: [], next: { kind: 'accept', target: 'ACC-RES', why: '等待产品验收', blockedBy: [] },
+        summary: { stage: null, action: null, waitFor: 'acceptance', waitingFor: '用户', blocker: null, openItems: 0 },
+        stageHealth: { ok: true, count: 0, problems: [] },
+      }),
+    }))
+    for (const c of [
+      { label: 'high', acc: { id: 'ACC-RES', status: 'pass', risk_residual_tier: 'high', risk_accepted_by: 'user', risk_residual_monitoring: '发布后 24h 监控' }, want: ['固有风险：critical', '残余风险：high', 'user', '发布后 24h 监控'] },
+      { label: '缺等级', acc: { id: 'ACC-RES', status: 'pass' }, want: ['固有风险：critical', '残余风险', '判不出'] },
+    ]) {
+      const h = mountG5(c.acc)
+      try {
+        await tick(40)
+        const readout = document.querySelector('[data-dsh-hob="stages-current-acceptance-materials"]')
+        const txt = readout?.textContent ?? ''
+        const miss = c.want.filter((x) => !txt.includes(x))
+        if (readout === null) bad(`S-46 · ${c.label}：第 6 步没有首屏验收材料读数`)
+        else if (miss.length > 0) bad(`S-46 · ${c.label}：首屏残余风险读数缺 ${miss.join(' / ')}（实得 ${JSON.stringify(txt)}）`)
+        else ok(`S-46 ✓ ${c.label}：G5 首屏显示残余风险${c.label === '缺等级' ? '（明写判不出，⛔ 不默认 low）' : '等级 / 接受人 / 监控方式'}`)
+      } finally {
+        actFn(() => h.unmount())
+      }
+    }
+  }
+
+  // ── S-45：G6 收口与风险摘要必须在首屏可读 ─────────────────────────────
+  {
+    const h = mount(react.createElement(StagesPanelHarness, {
+      fetchProgress: async () => ({ ok: true, rows: [] }),
+      fetchExec: async () => ({ ok: true, items: [] }),
+      fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条' }),
+      fetchPlans: async () => ({ ok: true, mode: 'auto', plans: [], unreadable: [] }),
+      fetchLedgers: async () => ({ ok: true, home: '/h', currentResolved: true, items: [{ name: 'fixture', units: 1, state: 'data', current: true }] }),
+      fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 夹具' }),
+      pollMs: 0,
+      fetchChains: async () => ({
+        ok: true, readAt: 'x', activeCount: 1, completedCount: 0, retiredCount: 0, historyItemCount: 0, unattached: [],
+        chains: [{
+          reqId: 'R-RISK', title: '风险与收口夹具', reqStatus: 'agreed', state: 'active', inFlight: true,
+          complete: false, currentStep: 7, missing: [], itemIds: ['R-RISK'],
+          next: { kind: 'wait-user', target: 'R-RISK', why: '等待交付收口', blockedBy: [] },
+          pipeline: {
+            pipelineVersion: 'v3', reqId: 'R-RISK', title: '风险与收口夹具', activeStage: 7,
+            state: 'active', gate: 'G6-closure', nextActor: 'hob', nextAction: '完成加强交付收口',
+            blockedBy: [], requirementApproval: { state: 'approved', reason: '已批准' },
+            planApproval: { state: 'approved', reason: '已批准' },
+            risk: { tier: 'critical', closure: 'strict', hardTriggers: ['irreversible-data-change'],
+              hardTriggerFacts: [{ trigger: 'irreversible-data-change', fact: '迁移不可逆', affected: '历史数据', evidence: 'EVD-1', mitigation: '迁移前备份', residual: '低' }],
+              needsIndependentReview: true, needsDualReview: true },
+            closureMode: 'strict',
+            stages: [
+              { step: 1, id: 'requirements', name: '需求规格', state: 'completed', summary: '', itemIds: ['R-RISK'] },
+              { step: 2, id: 'plan', name: '实现方案', state: 'completed', summary: '', itemIds: [] },
+              { step: 3, id: 'tasks', name: '任务图', state: 'completed', summary: '', itemIds: [] },
+              { step: 4, id: 'execution', name: '任务执行', state: 'completed', summary: '', itemIds: [] },
+              { step: 5, id: 'verification', name: '技术验证', state: 'completed', summary: '', itemIds: [] },
+              { step: 6, id: 'acceptance', name: '产品验收', state: 'completed', summary: '', itemIds: [] },
+              { step: 7, id: 'closure', name: '交付收口', state: 'active', summary: '', itemIds: [] },
+            ],
+          },
+          steps: [
+            { step: 1, name: '需求规格', displayState: 'done', summary: '', total: 1, done: 1, doing: 0, waiting: 0, itemIds: ['R-RISK'] },
+            { step: 2, name: '实现方案', displayState: 'done', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+            { step: 3, name: '任务图', displayState: 'done', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+            { step: 4, name: '任务执行', displayState: 'done', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+            { step: 5, name: '技术验证', displayState: 'done', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+            { step: 6, name: '产品验收', displayState: 'done', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+            { step: 7, name: '交付收口', displayState: 'doing', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+          ],
+        }],
+        retiredChains: [],
+      }),
+      fetchStages: async () => ({
+        ok: true, readAt: 'x', relations: {},
+        stages: [
+          { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-RISK', status: 'agreed', kind: 'req', presentation: { displayTitle: '风险与收口夹具', relation: { key: 'goal', id: 'G-1', state: 'ok' }, facts: [], flags: [] } }] },
+          { step: 2, name: '实现方案', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 3, name: '任务图', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 4, name: '任务执行', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 5, name: '技术验证', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 6, name: '产品验收', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 7, name: '交付收口', state: 'todo', done: 0, total: 0, items: [] },
+        ],
+        caps: [], attention: [], next: { kind: 'wait-user', target: 'R-RISK', why: '等待交付收口', blockedBy: [] },
+        summary: { stage: null, action: null, waitFor: 'user', waitingFor: '你（用户）', blocker: null, openItems: 0 },
+        stageHealth: { ok: true, count: 0, problems: [] },
+      }),
+    }))
+    try {
+      await tick(40)
+      const p = []
+      const risk = document.querySelector('[data-dsh-hob="stages-risk-readout"]')
+      const gate = document.querySelector('[data-dsh-hob="stages-current-gate"][data-gate="G6-closure"]')
+      if (risk === null) p.push('首屏没有风险摘要')
+      else if (!(risk.textContent ?? '').includes('critical') || !(risk.textContent ?? '').includes('strict')) p.push(`风险摘要没有显示 critical/strict：${risk.textContent}`)
+      else if (!(risk.textContent ?? '').includes('迁移前备份') || !(risk.textContent ?? '').includes('双评审')) p.push(`风险摘要没有给出控制措施 / 评审深度：${risk.textContent}`)
+      if (gate === null) p.push('首屏没有 G6 收口门')
+      else if (!(gate.textContent ?? '').includes('交付收口')) p.push(`G6 文案不对：${gate.textContent}`)
+      if (p.length === 0) ok('S-45 ✓ 首屏显示固有风险、交付档位与 G6 责任方；产品验收与交付收口分开')
+      else for (const x of p) bad(`S-45 · ${x}`)
+    } finally {
+      actFn(() => h.unmount())
+    }
+
+  /**
+   * ══════════════════════════════════════════════════════════════════
+   * S-48② · **渲染层扫描：界面上绝不许出现键名**
+   * ══════════════════════════════════════════════════════════════════
+   * ── 为什么补这一条（2026-11-11 · 第 50 轮）─────────────────────────
+   *   S-48 原本只有 ① 源码层（键在被引用的地方 ZH/EN 两份都有）。
+   *   ⚠ 但源码层绿 **不等于** 界面不出键名：`t()` 的兜底是
+   *     **服务 → 本地词典 → 键名本身**，任何一层在**运行时**取不到
+   *     都会把键名直接印在界面上，而源码层**看不见**运行时问题。
+   *
+   * ── 判据 ──────────────────────────────────────────────────────────
+   *   把真面板挂起来，扫 root.textContent，⛔ 不许出现 stages. 前缀。
+   *
+   * ── ⚠ 负向对照（本条必须能红）────────────────────────────────────
+   *   故意往 DOM 塞一个键名确认扫描器能咬住；咬不住 ⇒ 判据假绿，直接 bad()。
+   */
+  try {
+    const h = mount(StagesPanelHarness({
+      fetchStages: async () => ({
+        ok: true, readAt: 'x', relations: {},
+        stages: [
+          { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-1', status: 'agreed', kind: 'req', presentation: { displayTitle: '键名扫描夹具', relation: { key: 'goal', id: 'G-1', state: 'ok' }, facts: [], flags: [] } }] },
+          { step: 2, name: '实现方案', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 3, name: '任务图', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 4, name: '任务执行', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 5, name: '技术验证', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 6, name: '产品验收', state: 'todo', done: 0, total: 0, items: [] },
+          { step: 7, name: '交付收口', state: 'todo', done: 0, total: 0, items: [] },
+        ],
+        caps: [], attention: [], next: { kind: 'wait-user', target: 'R-1', why: '等', blockedBy: [] },
+        summary: { stage: null, action: null, waitFor: 'user', waitingFor: '你（用户）', blocker: null, openItems: 0 },
+        stageHealth: { ok: true, count: 0, problems: [] },
+      }),
+    }))
+    try {
+      await tick(40)
+      const KEY = /stages\.[A-Za-z_$][A-Za-z0-9_$]*/g
+      const uniq = [...new Set([...text().matchAll(KEY)].map((m) => m[0]))]
+      const probe = document.createElement('span')
+      probe.textContent = 'stages.__negativeControl__'
+      document.getElementById('root').appendChild(probe)
+      const caught = [...new Set([...text().matchAll(KEY)].map((m) => m[0]))]
+      probe.remove()
+      if (!caught.includes('stages.__negativeControl__')) {
+        bad('S-48② · ⛔ **扫描器自身失效**：故意塞进去的键名没被咬住 ⇒ 这条断言是假绿')
+      } else if (uniq.length > 0) {
+        bad(`S-48② · 界面上出现了 ${uniq.length} 个键名（t() 兜底漏了词条）：${uniq.join(' · ')}`)
+      } else {
+        ok('S-48② ✓ **渲染层**扫描：挂起真面板后界面文本里 0 个 stages. 键名'
+          + '（⚠ 已用负向对照证明扫描器能咬住）')
+      }
+    } finally {
+      actFn(() => h.unmount())
+    }
+  } catch (e) {
+    bad(`S-48② · 挂载/扫描抛错：${e instanceof Error ? e.message : String(e)}`)
+  }
+  }
+
 }
 } finally {
   cleanup()
 }
 
+/**
+ * ── **R-24：`/stages` 下发的字段必须「要么有读取点、要么写明为什么保留」** ──────────
+ *
+ * ⚠ 这条钉的是「存了不用还让人以为是遗漏」：
+ *   `setStageState` 里存了 `pipelines` / `summary` 两个字段，客户端**零读取**。
+ *   而服务端把 `pipelines` 标成「**the single authority**…consumers must not derive
+ *   another 'current stage'」⇒ 一个照注释办事的人会去找它的读取点，找不到。
+ *
+ * ⚠⚠ **本条的结论不是「删掉它们」**（那是把兼容性当洁癖）：
+ *   · `pipelines` 与 `/requirement-chains` 的 `chain.pipeline` **同源**
+ *     （都是 `pipelineViewsOf(units)`）⇒ 等价重复下发，客户端用后者；
+ *   · `summary` 服务端**已声明退役**（`stages-index.ts` 明写「字段保留是为了不破坏旧消费者」）。
+ *   ⇒ 正确做法是**在客户端侧照抄同一口径、把状态写清**，⛔ 不是删字段。
+ *
+ * ⚠ 判据（两条都要成立）：
+ *   ① `project-panel.tsx` 里存 `pipelines`/`summary` 的地方**必须有 R-24 标注**；
+ *   ② `next` **必须真有读取点**（它是有用的那个，⛔ 不许被一起当成"没用的"删掉）。
+ */
+{
+  const src = readFileSync(join(root, 'src/client/project-panel.tsx'), 'utf8')
+  const p = []
+  /** ① 存储点附近必须有 R-24 标注。 */
+  const storeIdx = src.indexOf('pipelines: Array.isArray(res.pipelines)')
+  if (storeIdx < 0) p.push('找不到 `pipelines` 的存储点 ⇒ 失去基准')
+  else if (!src.slice(Math.max(0, storeIdx - 3000), storeIdx).includes('R-24')) {
+    p.push('`pipelines`/`summary` 的存储点附近没有 R-24 标注 ⇒ 下一个人会以为「存了不用」是遗漏')
+  }
+  /** ② `next` 必须真有读取点（⛔ 不许被一起删掉）。 */
+  /**
+   * ⚠ **S-09 之后这里必须接受两种写法**：改前是 `(stageState as any).next`，
+   *   现在 state 有真类型 `StagesOk` ⇒ 直接 `stageState.next`。
+   *   ⛔ 不要把判据写死成任一种：那会让「改类型」被误判成「删读取点」。
+   */
+  if (!/\(stageState as any\)\.next|stageState\.next\b/.test(src)) {
+    p.push('`next` 没有读取点 ⇒ 项目级「下一步」在界面上消失了')
+  }
+  if (!src.includes("'data-dsh-hob': 'stages-next'")) p.push('`next` 没有渲染点（`stages-next`）⇒ 取回即弃')
+  if (p.length === 0) {
+    ok('S-R24 ✓ **负向对拍**：`/stages` 的 `next` 有读取+渲染点；`pipelines`/`summary` 有 R-24 标注'
+      + '（R-24：存了不用的字段必须写明为什么保留，⛔ 不是默默留着）')
+  } else for (const x of p) bad('S-R24 · ' + x)
+}
+/**
+ * ── **R-26：客户端路由路径只许有一个来源** ──────────────────────────────
+ *
+ * ⚠ 改前 `/api/dsh-hob/session-policy` 在客户端写了 **3 份**：
+ *   `create-hob-dialog.tsx` 的常量 + `hob-unselected-gate.tsx` 的**两处内联**。
+ *   ⇒ 服务端改一次路径，客户端三处都要改；漏一处就是「这个路径没有处理体」。
+ * ⚠ 而那种失败**看起来像数据问题**（HTTP 404），不像接线问题 —— 正是本仓反复记的病。
+ *
+ * 判据：`src/client/**` 里出现 `/api/dsh-hob/` 字面量的文件**只能有 `routes.ts` 一个**。
+ * ⚠ 放行 `routes.ts` 自身（它**就是**那个唯一来源）。
+ */
+{
+  const dir = join(root, 'src/client')
+  const offenders = []
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const full = join(d, e.name)
+      if (e.isDirectory()) { walk(full); continue }
+      if (!/\.(ts|tsx)$/.test(e.name)) continue
+      if (e.name === 'routes.ts') continue
+      const src = readFileSync(full, 'utf8')
+      /** ⚠ 剥注释：注释里引用路由名是**解释**，不是第二份定义。 */
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+      if (code.includes("'/api/dsh-hob/")) offenders.push(relative(root, full))
+    }
+  }
+  walk(dir)
+  if (offenders.length === 0) {
+    ok('R-26 ✓ **负向对拍**：客户端路由字面量只在 `routes.ts` 一处'
+      + '（R-26：`session-policy` 从 3 份收到 1 份；⛔ 不许再内联）')
+  } else {
+    bad('R-26 · 这些文件里还有内联路由字面量（应改为从 `routes.ts` 引入）：' + offenders.join(' / '))
+  }
+}
+/**
+ * ── **S-09：`/stages` 的 state 必须用服务端真类型，⛔ 不许 `as any` 蒙混** ──────────
+ *
+ * ⚠ 这条钉的是「类型系统被绕过」：
+ *   改前 state 只声明 `stages`/`caps`/`pipelines` 三个字段，而写入时实际放 **10 个**
+ *   ⇒ 靠 `as any` 蒙混 ⇒ **服务端改字段名时 TypeScript 全绿**，面板静默显示「判不出」。
+ *
+ * ⚠ **为什么它比看上去重要**：`as any` 是 `T-09`（取回即弃）与 `R-24`（存了不用）的
+ *   **藏身之处** —— 用真类型后，编辑器会直接标出「声明了但未使用」。
+ *
+ * ⚠ 判据（三条都要成立）：
+ *   ① 必须 `import type { StagesOk }`；
+ *   ② state 类型必须真的引用它（`Omit<StagesOk, 'ok'>`）；
+ *   ③ `stageState` 相关的 `as any` **必须清零** —— ⛔ 不是「减少」，是零。
+ *      ⚠ 剩余允许的 `as any` 只有宿主访问（`globalThis as any`）与第三方组件转型，
+ *        它们与 `/stages` 线格式无关，⛔ 不要为了「数字好看」去动它们。
+ */
+{
+  const src = readFileSync(join(root, 'src/client/project-panel.tsx'), 'utf8')
+  const p = []
+  if (!src.includes("import type { StagesOk }")) {
+    p.push('没有 `import type { StagesOk }` ⇒ 线格式没有真类型基准')
+  }
+  /**
+   * ⚠⚠ **必须锚定 `useState` 的声明行**，⛔ 不能只判「文件里有没有 `Omit<StagesOk,'ok'>`」。
+   *   我第一版就是这么写的 ⇒ **负向对拍没红**：把 state 改回手抄三字段后，
+   *   那句 `Omit<StagesOk, 'ok'>` 仍留在**注释**里（我为了解释为什么这样写，把它写进了注释）。
+   *   ⇒ 判据锚定「`const [stageState, setStageState] = React.useState<` 之后的**那几行**」。
+   */
+  /**
+   * ⚠⚠ **必须先剥注释再判**（这是本仓第 6 次踩同一个坑）：
+   *   我在 state 声明**上方**写了注释解释「为什么用 `Omit<StagesOk, 'ok'>`」，
+   *   于是 600 字符窗口把**注释**也框进去了 ⇒ 负向对拍**两次都没红**。
+   *   ⇒ 剥注释后再取窗口。
+   */
+  const stripComments = (x) => x
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+  const code = stripComments(src)
+  const declIdx = code.indexOf('const [stageState, setStageState] = React.useState<')
+  if (declIdx < 0) p.push('找不到 `stageState` 的 useState 声明 ⇒ 失去基准')
+  else {
+    const decl = code.slice(declIdx, declIdx + 400)
+    if (!/Omit<StagesOk, 'ok'>/.test(decl)) {
+      p.push('state 的 **useState 声明**没有引用 `StagesOk` ⇒ 又变回本地手抄字段（注释里写了不算）')
+    }
+  }
+  /** ③ `stageState` 相关的 `as any` 必须清零（⚠ 只查这一族，⛔ 不扫全文件）。 */
+  const stageAny = [...src.matchAll(/\(stageState as any\)/g)].length
+  if (stageAny > 0) {
+    p.push('`stageState as any` 还有 ' + stageAny + ' 处 ⇒ 真类型没生效（改回断言了）')
+  }
+  if (p.length === 0) {
+    ok('S-S09 ✓ **负向对拍**：`/stages` 的 state 用 `Omit<StagesOk, \'ok\'>` 真类型；`stageState as any` 已清零'
+      + '（S-09：服务端改字段名时 typecheck 会红，⛔ 不再静默显示「判不出」）')
+  } else for (const x of p) bad('S-S09 · ' + x)
+}
+// ── S-47（O-23）：完成条数必须只有一个来源（服务端 `completedCount`）──────────
+//
+//  ⚠ 改前「完成数被算两遍」：服务端给了 `completedCount`，渲染里又 `filter().length` 一遍。
+//    两个来源一旦漂开，面板显示的完成数与服务端读数**不同**，而没人能判断哪个对。
+//
+//  ⚠⚠ **本条是「补牙」不是「补实现」**：实现早就是对的（`:2568` 取服务端值，
+//    注释也点名了 O-23），但**没有任何断言钉住它** ⇒ 改回去也不会红。
+//
+//  ⛔ **放行 `completed` 数组本身** —— 它用于**逐条渲染历史**，不是计数。
+//    判据只禁「把它当计数用」，⛔ 不禁它的存在（禁了会逼人删真功能）。
+{
+  const p = []
+  /** ⚠ 先剥注释（本仓已踩过 9 次「注释被当成代码」）。 */
+  const strip = (x) => x
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((l) => l.replace(/\/\/.*$/, ''))
+    .join('\n')
+  const src = strip(readFileSync(join(root, 'src', 'client', 'project-panel.tsx'), 'utf8'))
+  /** ① 必须有服务端 `completedCount` 的读取点。 */
+  if (!src.includes('chainState.completedCount')) {
+    p.push('没有 `chainState.completedCount` 的读取点 ⇒ 完成数可能又变成客户端自己数')
+  }
+  /** ② 不许把 `chains.filter(...).length` 当计数用。 */
+  const asCount = /chains\s*\.\s*filter\([^)]*\)\s*\.\s*length/.test(src)
+  if (asCount) {
+    p.push('渲染里出现了 `chains.filter(...).length` 当计数 ⇒ 完成数又被算了两遍（O-23 复发）')
+  }
+  if (p.length === 0) {
+    ok('S-47 ✓ **负向对拍**：完成条数只取服务端 `completedCount`；'
+      + '渲染里没有 `chains.filter(…).length` 当计数（O-23：⛔ 同一读数不许有两个来源）')
+  } else for (const x of p) bad(`S-47 · ${x}`)
+}
+// ══════════════════════════════════════════════════════════════════════
+// S-48 · **键名绝不许出现在界面上**（A 方案后新加的守门）
+// ══════════════════════════════════════════════════════════════════════
+/**
+ * ── 它守什么 ────────────────────────────────────────────────────────
+ *   `t()` 的兜底链是 **服务 → 本地词典 → 键名本身**。
+ *   两层都取不到时它**返回键名** —— 而键名出现在界面上是本仓明令禁止的（J-2）。
+ *
+ * ── 为什么必须专门有一条（2026-11-11 实测踩过）──────────────────────
+ *   §87 那次我迁了 `stages.residualUnknown` 但**忘了加词条** ——
+ *   界面上直接显示 `stages.residualUnknown`。
+ *   ⚠ 当时**没有任何断言会红**，是 S-46 那句**偶然**咬住的。
+ *     如果那句文案不在 S-46 的范围内，这个缺陷会**直接进生产**。
+ *
+ * ── 判据（⚠ 两档都查）─────────────────────────────────────────────
+ *   ① **源码层**：每个 `stageText('k')` 的 k 必须在 ZH 与 EN 两份词典里都有；
+ *   ② **渲染层**：把面板挂起来，扫**所有渲染出来的文本节点**，
+ *      不许出现 `stages.` 前缀的串（兜底漏了就靠这条咬住）。
+ */
+{
+  const p = []
+  /** ① 源码层：引用的键必须两边都在（⚠ 这个作用域里没有 `src`，必须现读）。 */
+  const panelSrcS48 = readFileSync(PANEL_TSX, 'utf8')
+  const used = new Set()
+  for (const m of panelSrcS48.matchAll(/stageText\('([^']+)'\)/g)) used.add(m[1])
+  const zhAt = panelSrcS48.indexOf('STAGES_DICT_ZH')
+  const enAt = panelSrcS48.indexOf('STAGES_DICT_EN')
+  const addAt = panelSrcS48.indexOf('addDictionaryLayer(', enAt > 0 ? enAt : 0)
+  const zhBlock = zhAt < 0 ? '' : panelSrcS48.slice(zhAt, enAt > zhAt ? enAt : undefined)
+  /** ⚠ 必须找 `addDictionaryLayer(` 的**调用**（同 §87.4 的坑：名字先出现在注释里）。 */
+  const enBlock = enAt < 0 ? '' : panelSrcS48.slice(enAt, addAt > enAt ? addAt : undefined)
+  const keysIn = (blk) => new Set([...blk.matchAll(/'([^']+)'\s*:/g)].map((x) => x[1]))
+  const inZh = keysIn(zhBlock)
+  const inEn = keysIn(enBlock)
+  const missZh = [...used].filter((k) => !inZh.has(k))
+  const missEn = [...used].filter((k) => !inEn.has(k))
+  if (missZh.length > 0) p.push(`这些键被引用但 ZH 词典没有（中文界面会显示键名）：${missZh.join(' · ')}`)
+  if (missEn.length > 0) p.push(`这些键被引用但 EN 词典没有（英文界面会显示键名）：${missEn.join(' · ')}`)
+  /**
+   * ⚠ **渲染层那一档在 S-48② 里做**（`mount` 不在本块作用域，见上）。
+   *   ⛔ 本块只做源码层；两档合起来才是完整判据：
+   *     ① 源码层 = 引用处两份词典都有；② 渲染层 = 真挂载后界面无键名。
+   */
+  if (p.length === 0) {
+    ok(`S-48① ✓ **源码层**键名核对：引用的 **${used.size}** 个键 ZH/EN 两份都有`
+      + '（⚠ 本档只查源码；「界面真不出键名」由 S-48② 的挂载扫描承担）')
+  } else for (const x of p) bad(`S-48 · ${x}`)
+}
 console.log('')
 console.log(`S 组：通过 ${pass} · 失败 ${fail}`)
 console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处`

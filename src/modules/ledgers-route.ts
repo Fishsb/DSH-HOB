@@ -19,6 +19,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import { resolveLedgerRoot } from '../server/doc-read.ts'
 import { declaredLedgerHome } from './orchestrator.ts'
 import { buildLedgerCatalog, isSafeLedgerName, type LedgerEntry } from '../shared/ledger-catalog.ts'
+/**
+ * **R-20**：单元数与 v3 判定必须**逐单元**，⛔ 不能按行数。
+ * `parseUnitsToml` 是读侧唯一解析器；在这里另写行计数 = 造第二份口径。
+ */
+import { parseUnitsToml } from '../shared/stages-index.ts'
+import { isPipelineV3 } from '../shared/pipeline.ts'
+import { assessLedgerReadiness, probeFromDirListing } from '../shared/ledger-readiness.ts'
 
 export const name = 'dsh-hob-ledgers-route'
 export const LEDGERS_ROUTE_PATH = '/api/dsh-hob/ledgers'
@@ -36,7 +43,14 @@ function json(status: number, body: unknown): Response {
  * ⚠ 只数 `[[unit]]` 行 —— ⛔ 不解析 TOML、⛔ 不建索引。
  * ⚠ 读不到 `ledger/units/` ⇒ `readable: false`（⛔ 不是 0 单元）。
  */
-export function countUnitsOf(ledgerDir: string): { units: number; state: 'data' | 'empty' | 'unreadable' } {
+export function countUnitsOf(ledgerDir: string): {
+  units: number
+  state: 'data' | 'empty' | 'unreadable'
+  health?: 'current' | 'outdated' | 'unreadable' | 'empty'
+  v3Units?: number
+  legacyUnits?: number
+  reason?: string
+} {
   const unitsDir = join(ledgerDir, 'ledger', 'units')
   let names: string[]
   try {
@@ -54,31 +68,65 @@ export function countUnitsOf(ledgerDir: string): { units: number; state: 'data' 
      */
     try {
       const idx = readFileSync(join(ledgerDir, 'ledger', 'units', 'index.toml'), 'utf8')
-      if (/^\s*\[(?:meta|units[."])/m.test(idx)) return { units: 0, state: 'unreadable' }
+      if (/^\s*\[(?:meta|units[."])/m.test(idx)) return { units: 0, state: 'unreadable', health: 'unreadable', reason: 'legacy-index-format' }
     } catch { /* 入口也没有 ⇒ 真的是空骨架 */ }
-    return { units: 0, state: 'empty' }
+    return { units: 0, state: 'empty', health: 'empty' }
   }
   /**
    * ⚠ 目录在时同样要辨旧格式（⚠ 别只靠"数到 0 就当空"）。
    */
   try {
     const idx = readFileSync(join(unitsDir, 'index.toml'), 'utf8')
-    if (/^\s*\[(?:meta|units[."])/m.test(idx)) return { units: 0, state: 'unreadable' }
+    if (/^\s*\[(?:meta|units[."])/m.test(idx)) return { units: 0, state: 'unreadable', health: 'unreadable', reason: 'legacy-index-format' }
   } catch { /* 没有 index.toml ⇒ 继续按分片数 */ }
   let units = 0
-  for (const n of names) {
-    if (!/^unit-[^/]+\.toml$/.test(n)) continue
+  /**
+   * The running ledger format keeps units either in the entry index or in
+   * `unit-*.toml` shards. Counting only the shards made a real 16-unit ledger
+   * look empty; count both, deterministically.
+   */
+  const unitFiles = [
+    ...(names.includes('index.toml') ? ['index.toml'] : []),
+    ...names.filter((n) => /^unit-[^/]+\.toml$/.test(n)).sort(),
+  ]
+  /**
+   * ⚠⚠ **R-20：单元数与 v3 数必须来自**同一次逐单元解析**。**
+   *
+   *   改前是两个不同层级的东西：
+   *     · `units`    = 数 `[[unit]]` **行**；
+   *     · `v3Units` = 数**任意位置**的 `pipeline_version = "v3"` **行**（可多于单元头）；
+   *     · `legacyUnits = Math.max(0, units - v3Units)` 再把它**夹到 0**。
+   *   ⇒ 100 条 v2 单元里只要有 1 行 `pipeline_version`（哪怕它属于第 3 个单元），
+   *     `legacyUnits` 就会被夹到 0，`health` 报 `current` —— **把整本 v2 报成 v3**。
+   *
+   *   ⚠ 这条只在「账本健康」这个用户可见面上，但它的读数会被拿来决定
+   *     「这本账要不要迁移」⇒ 报错方向正好是**最危险的那一侧**（该迁移的说不用迁移）。
+   */
+  const parsedUnits: Array<Record<string, string | string[]>> = []
+  for (const n of unitFiles) {
     try {
       const text = readFileSync(join(unitsDir, n), 'utf8')
-      for (const line of text.split('\n')) {
-        if (line.trim() === '[[unit]]') units += 1
-      }
+      parsedUnits.push(...parseUnitsToml(text))
     } catch {
       // ⚠ 单个分片读失败 ⇒ 该账本整体标不可读（⛔ 静默少算）
-      return { units: 0, state: 'unreadable' }
+      return { units: 0, state: 'unreadable', health: 'unreadable' }
     }
   }
-  return { units, state: units > 0 ? 'data' : 'empty' }
+  units = parsedUnits.length
+  const state: 'data' | 'empty' = units > 0 ? 'data' : 'empty'
+  /**
+   * Count pipeline enrollment separately from raw unit count. A structurally
+   * complete ledger can still be entirely v2; that is not "current".
+   */
+  const v3Units = parsedUnits.filter((u) => isPipelineV3(u)).length
+  const legacyUnits = units - v3Units
+  return {
+    units,
+    state,
+    ...(state === 'empty' ? { health: 'empty' as const } : v3Units > 0 ? { health: 'current' as const } : { health: 'outdated' as const }),
+    v3Units,
+    legacyUnits,
+  }
 }
 
 /**
@@ -94,7 +142,15 @@ export function listLedgers(home: string, currentName: string | undefined): Retu
   } catch {
     names = []
   }
-  const raw: Array<{ name: string; units: number; state: 'data' | 'empty' | 'unreadable' }> = []
+  const raw: Array<{
+    name: string
+    units: number
+    state: 'data' | 'empty' | 'unreadable'
+    health?: 'current' | 'outdated' | 'unreadable' | 'empty'
+    v3Units?: number
+    legacyUnits?: number
+    reason?: string
+  }> = []
   for (const n of names) {
     const dir = join(home, n)
     try {

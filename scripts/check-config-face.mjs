@@ -1119,6 +1119,62 @@ function schemaTopGroups(src) {
       } else ok('G-6 schema 的 `.description()` 含两条边界（自动表单里也在场）')
     }
 
+    // ── G-13 弹窗三档说明 ↔ schema 描述同口径（2026-11-09 · 推进方式落地）──
+    /**
+     * 用户会在两处读到三档说明：新建会话弹窗（做选择的那一屏）与插件配置的
+     * `workMode.mode.description()`（自动表单）。两处若各写一套，
+     * 用户会得到“弹窗说写轨串行、设置页却只写能并行”这种互相矛盾的说明。
+     *
+     * ⚠ 只核**共同语义锚点**，⛔ 不要求逐字相同（两处面向的读者不同）；
+     *   但每一档都必须同时出现：拓扑 + 单轨条件/硬限制 + 写轨边界。
+     */
+    {
+      const zhDialog = (() => {
+        const m = /const\s+HOB_DIALOG_ZH\s*:[^=]*=\s*\{([\s\S]*?)\n\}/.exec(dialogSrc)
+        return m === null ? null : m[1]
+      })()
+      const descBlock = (() => {
+        const start = cfgSrc.indexOf('workMode: z.object({')
+        if (start < 0) return ''
+        const at = cfgSrc.indexOf('}).default({})', start)
+        return at < 0 ? '' : cfgSrc.slice(start, at)
+      })()
+      const valueOf = (block, key) => {
+        const at = block.indexOf(`'${key}'`)
+        if (at < 0) return ''
+        const end = block.indexOf('\n', at)
+        return block.slice(at, end < 0 ? block.length : end)
+      }
+      const hints = zhDialog === null ? '' : ['auto', 'single', 'multi']
+        .map((m) => valueOf(zhDialog, `mode.hint.${m}`)).join('\n')
+      const ANCHORS = {
+        auto: ['最少必要轨数', '只开一轨', '原因'],
+        single: ['固定一条执行轨', '第二条活动轨'],
+        multi: ['显式扇出', '独立', '候选证据'],
+      }
+      const missingIn = (text) => Object.entries(ANCHORS)
+        .flatMap(([mode, words]) => words.filter((w) => !text.includes(w)).map((w) => `${mode}:${w}`))
+      const missDialog = missingIn(hints)
+      const missSchema = missingIn(descBlock)
+      if (zhDialog === null) {
+        bad('G-13 抽不出新建会话弹窗的中文词典 ⇒ 三档说明同口径无从核对（不按通过处理）')
+      } else if (missDialog.length > 0 || missSchema.length > 0) {
+        bad(`G-13 弹窗与 schema 的三档说明不同口径（弹窗缺：${missDialog.join(', ') || '无'}；`
+          + `schema 缺：${missSchema.join(', ') || '无'}）`
+          + '\n      ⇒ 两处都必须同时说清：自动=最少必要轨数+单轨要原因；单会话=固定单轨+第二条被拒；'
+          + '\n        多会话=显式扇出+独立单元必须拆+单轨要候选证据')
+      } else {
+        const broken = descBlock.replace('显式扇出', '')
+        const caught = missingIn(broken).includes('multi:显式扇出')
+        if (!caught) {
+          bad('G-13 【负向对拍失败】删掉 schema 的「显式扇出」后判据仍成立 ⇒ 本组没有分辨力')
+        } else {
+          ok('G-13 ✓ 弹窗与 schema 三档说明同口径（自动/单会话/多会话的拓扑、单轨条件与写轨边界都在）；'
+            + '负向对拍：删掉「显式扇出」⇒ 必红')
+        }
+      }
+    }
+
     // ── G-7 兜底同值 ─────────────────────────────────────────────────────
     {
       const mHostFallback = /export function workMode\([\s\S]*?return DEFAULT_WORK_MODE/.test(cfgSrc)
@@ -1478,7 +1534,7 @@ console.log(JSON.stringify({ evaluated, threw, degraded, warns }))
         const { SystemPrompt, renderPrompt, renderContextSections, joinContextSections } = spMod
         const { createScope, scopeOf } = scopeMod
         const { Context } = cordisMod
-        const PERSONA_TEXT = 'You are Hob, the project owner between the user and the developer session.\n'
+        const PERSONA_TEXT = 'You are Hob, the user\'s project agent between the user and the developer session.\n'
         const WANT = {
           mark: 'How work is split',
           red: 'never means more power',
@@ -2057,6 +2113,199 @@ console.log('schema :', CONFIG_TS)
 console.log('patch  :', PATCH)
 console.log('panel  :', PANEL)
 console.log('')
+/**
+ * ── **R-11：体检的账本根判据必须与运行时同口径** ──────────────────────────
+ *
+ * ⚠ 这条钉的是「同一件事三处口径」：
+ *   · `doc-read.ts` 的 `resolveLedgerRoot`：未配 `ledgerHome` ⇒ **`undefined`**（fail-closed，⛔ 不猜）；
+ *   · `preflight.mjs` 改前**仍派生** `<工作区父目录>/.hob-ledgers/<工作区名>/`；
+ *   · 照 README 配的人会得到「账本落点判不出」的拒绝，而体检说「记录区在位」。
+ *
+ * ⚠ **为什么体检必须跟着收严**（⛔ 不是「体检可以宽松点」）：
+ *   体检的作用是**在动手前告诉你缺什么**。它若按一条**运行时不存在的规则**报「在位」，
+ *   那不是宽松，是**给了一个假保证** —— 与「跳过不计入通过」是同一条纪律。
+ *
+ * ⚠ 判据（三条）：
+ *   ① `preflight` 的 `deriveLedgerRoot` **不许**把兄弟目录返回成 `how: 'preset'`；
+ *   ② 它必须**认得**那个历史布局并单独命名（`legacy-sibling`），⛔ 不许静默当 missing；
+ *   ③ 体检行里 `present` 只认 `preset`。
+ */
+{
+  const pre = readFileSync(join(root, 'scripts', 'preflight.mjs'), 'utf8')
+  const p = []
+  /** ① 兄弟目录不许冒充 preset。 */
+  if (/legacySibling[\s\S]{0,120}how:\s*'preset'/.test(pre)) {
+    p.push('`preflight` 把兄弟目录返回成 `how: \'preset\'` ⇒ 体检会说「在位」而运行时判不出')
+  }
+  /** ② 历史布局必须单独命名（⛔ 不许静默当 missing）。 */
+  if (!pre.includes("'legacy-sibling'")) {
+    p.push('`preflight` 不再识别历史兄弟目录布局 ⇒ 存量工作区会被静默报成「缺账本」')
+  }
+  /** ③ `present` 只认 preset。 */
+  if (!/const present = how === 'preset'/.test(pre)) {
+    p.push('`preflight` 的 `present` 不只看 `preset` ⇒ 历史布局会被算成「在位」')
+  }
+  if (p.length === 0) {
+    ok('R-11 ✓ **负向对拍**：`preflight` 的账本根只认预设声明（`preset`），历史兄弟目录单列 `legacy-sibling`'
+      + '（R-11：体检不再按一条运行时不存在的规则报「在位」）')
+  } else for (const x of p) bad('R-11 · ' + x)
+}
+
+  // ── G-14：O-14 —— 注释不许指向**已退役**的代码 ─────────────────────────────
+  //
+  //  ⚠ 实测：`skeletonEnabled` 在 `src/config.ts` 里**零命中**（函数已删），
+  //    而 `src/modules/tools.ts` 有 8 处注释把它当权威读取器描述。
+  //    读那些注释的人会去找那个函数，找不到，然后怀疑自己看错了版本。
+  //  ⚠ **一段指向不存在代码的注释，比没有注释更坏** —— 它消耗的是排查时间。
+  {
+    const p = []
+    const strip = (x) => x.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+    const cfg = readFileSync(join(root, 'src', 'config.ts'), 'utf8')
+    /** ① 前提：该函数确实已退役（⛔ 不是我们误判）。 */
+    const stillExists = /export function skeletonEnabled\b/.test(strip(cfg))
+    if (stillExists) {
+      p.push('`config.ts` 里 `skeletonEnabled` 又出现了 ⇒ 前提变了，本条判据需要重写（⛔ 不按通过处理）')
+    } else {
+      /** ② 那么 `tools.ts` 里提到它的注释**必须**带「已退役」字样，⛔ 不许当权威描述。 */
+      const tools = readFileSync(join(root, 'src', 'modules', 'tools.ts'), 'utf8')
+      const hits = tools.split('\n').filter((l) => l.includes('skeletonEnabled'))
+      /**
+       * ⚠ **判据必须按「段落」而不是「单行」**（我第一版按行判，当场假红）：
+       *   描述退役的那段注释里，具体某一行可能只写 `config.ts 的 skeletonEnabled()`
+       *   （不带「已退役」字样），但**整段**是在讲退役。
+       *   ⇒ 取该行**前 30 行**的窗口，窗口里出现退役标记就算「已标注」。
+       */
+      const lines = tools.split('\n')
+      const stale = []
+      for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].includes('skeletonEnabled')) continue
+        /** ⚠ 前后各 30 行：退役标注**可能写在该行之后**（实测踩到，`:1297` 的标注在 `:1298`）。 */
+        const win = lines.slice(Math.max(0, i - 30), Math.min(lines.length, i + 31)).join('\n')
+        if (!/已退役|退役|O-14|不再由用户配置驱动/.test(win)) stale.push(lines[i])
+      }
+      if (stale.length > 0) {
+        p.push(`\`tools.ts\` 里有 ${stale.length} 处注释仍把已退役的 \`skeletonEnabled\` 当权威描述：` + stale[0].trim().slice(0, 100))
+      }
+    }
+    if (p.length === 0) {
+      ok('G-14 ✓ **负向对拍**：`skeletonEnabled` 已退役（`config.ts` 零命中），'
+        + '`tools.ts` 里提到它的注释全部带「已退役」标注（O-14：⛔ 注释不许指向不存在的代码）')
+    } else for (const x of p) bad(`G-14 · ${x}`)
+  }
+// ── G-15：O-16 —— 四个「零 UI 调用方但有意保留」的函数必须有标注 ─────────────
+//
+//  ⚠ 改前：writePermissionLevel / readPermissionLevel / writeWorkMode / readWorkMode
+//    在 settings-panel.tsx 里的引用**全是注释**（零真实调用），而 check:config 的
+//    G-7/G-8 钉着它们的**实现纪律** ⇒ 读的人分不清「有意保留」与「忘删」。
+//  ⚠ 本条**不要求删**（它们写的是仍活跃的配置字段，删了迁移路径无从执行）；
+//    只要求**把状态写清**。
+{
+  const src = readFileSync(join(root, 'src', 'client', 'settings.ts'), 'utf8')
+  const p = []
+  /** ⚠ 锚定**函数定义**，⛔ 不锚第一次出现的名字（说明块里也有这个名字）。 */
+  const i = src.indexOf('export async function writePermissionLevel(')
+  if (i < 0) p.push('找不到 writePermissionLevel ⇒ 失去基准')
+  else {
+    const head = src.slice(Math.max(0, i - 3000), i)
+    if (!head.includes('UI 零调用方') || !head.includes('有意保留')) {
+      p.push('settings.ts 的四个函数上方没有「UI 零调用方但有意保留」的说明 ⇒ 读的人会以为是忘删')
+    }
+    if (!head.includes('config.permission.level') && !head.includes('config.workMode.mode')) {
+      p.push('说明里没有点名「配置字段仍活跃」这个理由')
+    }
+    if (!head.includes('G-7') && !head.includes('G-8')) {
+      p.push('说明里没有点名「机检 G-7/G-8 钉着实现纪律」这个理由')
+    }
+  }
+  /** ③ 反向：这四个函数**必须还在**（⛔ 不许被「清理未使用」顺手删掉）。 */
+  for (const fn of ['writePermissionLevel', 'readPermissionLevel', 'writeWorkMode', 'readWorkMode']) {
+    if (!new RegExp('export (async )?function ' + fn + '\\(').test(src)) {
+      p.push(fn + ' 被删了 ⇒ 旧会话迁移路径失去写入口（O-16 的处理口径是「保留+标注」，⛔ 不是删）')
+    }
+  }
+  if (p.length === 0) {
+    ok('G-15 ✓ **负向对拍**：四个「零 UI 调用方」函数**仍在**且有「有意保留 + 理由」标注'
+      + '（O-16：⛔ 不为了消掉未使用而删 —— 它们写的是仍活跃的配置字段）')
+  } else for (const x of p) bad('G-15 · ' + x)
+}
+// ── G-16：O-17 —— 导出但**零引用**的符号必须被删（或显式标注保留理由）──────
+//
+// ⚠ 为什么要有这一条：`policyFileExists` / `capabilityRedLine` / 两个 `allowFor`
+//   曾长期「导出着、没人调」—— 读代码的人会以为它们在生效。
+//   这与 O-16 是**相反**的处理：O-16 的函数**有意保留**（写的是活跃字段），
+//   O-17 的是**真死代码**（零调用且没有理由）。
+//
+// ⚠ 判据：扫 `src/**/*.ts` 的 `export function|const NAME`，再看全 `src/` 里除定义处外是否出现过。
+//   ⚠ 白名单：`src/index.ts` / 预设入口 / 类型声明 —— 它们是**宿主消费的**，仓内本来就零引用。
+{
+  const { readdirSync: rds } = await import('node:fs')
+  const SRC = join(root, 'src')
+  const walk = (dir) => {
+    const out = []
+    for (const e of rds(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name)
+      if (e.isDirectory()) { if (e.name !== 'node_modules') out.push(...walk(full)); continue }
+      /** ⚠ 判据要认 `.mjs` —— `scripts/` 里全是 `.mjs`，只认 `.ts` 会一个都扫不到（实测踩过）。 */
+      if (/\.(ts|tsx|mjs)$/.test(e.name)) out.push(full)
+    }
+    return out
+  }
+  /** ⚠ 这几个文件是**宿主入口**，仓内零引用是正常的。 */
+  const ENTRY = new Set(['index.ts', 'client/index.ts', 'preset/index.ts'])
+  /** ⚠ 已知的「有意保留」白名单（每条都要能说出理由）。 */
+  const KEEP = new Set([
+    // O-16：四个配置读写函数 —— 写的是仍活跃的配置字段，删了就没法从 UI 侧恢复。
+    'readHobSettings', 'writeHobSettings', 'readSpawnDefaults', 'writeSpawnDefaults',
+    // O-17 复核：`stageGateOfTask` 只被 `check-stage-controls.mjs` 的 SC-11 断言引用
+    //   （测「作用域门禁入口存在」）⇒ 它是**测试专用导出**，⛔ 不是死代码。
+    'stageGateOfTask',
+    // O-17 复核：`isLegacyPipeline` 与 `isPipelineV3` 是**一对**语义判据
+    //   （旧管线 / 当前管线）。当前没有调用方，但删了 `LEGACY_PIPELINE_VERSIONS`
+    //   这个常量也会跟着变成死代码 —— 那是在**拆语义**，⛔ 不是在清死代码。
+    'isLegacyPipeline',
+  ])
+  const files = walk(SRC)
+  /**
+   * ⚠⚠ **必须把 `scripts/` 也算进「引用方」**（实测踩过）：
+   *   有 5 个符号在 `src/` 里零引用、但被 `check:*.mjs` 的断言 import 着
+   *   （`renderVerdict` 4 处 / `defaultLedgerOf` 5 处 / `isOrphanCompletion` 3 处 …）。
+   *   ⇒ 只扫 `src/` 会把**测试专用导出**全判成死代码，那是误报。
+   */
+  const SCRIPT_FILES = walk(join(root, 'scripts'))
+  /** 先建全量文本索引（⚠ 去掉定义行本身再判）。 */
+  const texts = new Map()
+  for (const f of files) texts.set(f, readFileSync(f, 'utf8'))
+  for (const f of SCRIPT_FILES) texts.set(f, readFileSync(f, 'utf8'))
+  const dead = []
+  for (const f of files) {
+    const base = f.slice(SRC.length + 1)
+    if (ENTRY.has(base)) continue
+    const text = texts.get(f)
+    /**
+     * ⚠⚠ **`export const` 也要扫**（实测踩过）：R-17 的 `STAGE_COMPLETION`
+     *   是个 `export const`，零调用 —— 只扫 `export function` 会**完全漏掉它**。
+     *   ⚠ 但要**排除**两类 const：
+     *     · 全大写常量（`PIPELINE_VERSION` 这类，多被跨文件引用、名字长）；
+     *     · 类型/接口声明（`export const X: SomeType = …` 仍算，`export type` 不算）。
+     */
+    for (const m of text.matchAll(/^export (?:async )?function ([A-Za-z_$][\w$]*)/gm)) {
+      const name = m[1]
+      if (KEEP.has(name)) continue
+      let uses = 0
+      for (const [g, t] of texts) {
+        const re = new RegExp('\\b' + name + '\\b', 'g')
+        const n = (t.match(re) ?? []).length
+        uses += g === f ? Math.max(0, n - 1) : n
+      }
+      if (uses === 0) dead.push(base + ' · ' + name)
+    }
+  }
+  if (dead.length === 0) {
+    note.push('G-16 ✓ 没有「导出但零引用」的符号（O-17：死代码已清，或已进白名单并写明理由）')
+  } else {
+    for (const d of dead.slice(0, 6)) fail.push('G-16 · 导出但零引用：' + d + '（删掉，或加进 KEEP 并写明理由）')
+  }
+}
 for (const n of note) console.log('  ✓', n)
 for (const k of skip) console.log('  ·', k)
 console.log('')

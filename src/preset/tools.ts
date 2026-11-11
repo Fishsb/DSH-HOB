@@ -203,13 +203,41 @@ export function apply(ctx: any, config: Config = {}): void {
       if (typeof start !== 'function') throw new Error('handoff effects 模块缺 startHandoffEffects')
       const q = start(
         ledgerRoot,
-        async (target, message) => {
+        async (target, message, handoff) => {
           const orch = ctx.get?.('hobOrchestrator') as HobOrchestrator | undefined
           if (orch === undefined || typeof orch.dispatch !== 'function') throw new Error('orchestrator unavailable')
-          const r = await orch.dispatch(target, message, { self: undefined })
+          /**
+           * ⚠⚠ **T-10：补投必须带 `self`（= 该条 handoff 的 owner）**（2026-11-10）。
+           *
+           * ── 病（实测）──────────────────────────────────────────────────────────
+           *   改前传 `{ self: undefined }` ⇒ `dispatch` 里 `wsRootOfSession(self)` 判不出
+           *   ⇒ **不预登记 RUN、不做投递后投影、也不做回传投影**（三处整段静默跳过）。
+           *   ⇒ 即使补投**成功**，`owner` / `watcher` 都是空 ⇒ 执行会话跑完时
+           *     `settle()` 落 `no recipient (watcher empty)` ⇒ **回执永不回来**。
+           *   补投只完成了「把指针送到」，**闭环仍然是断的**。
+           *
+           * ── 为什么 `handoff.owner` 是正确来源 ────────────────────────────────
+           *   它是 `hob_spawn` 建会话时**记下的归属**（`I-6`：谁欠的这一投）。
+           *   ⚠ 旧记录可能没有 `owner`（向后兼容）⇒ 仍传 `undefined`，
+           *     但**不静默**：下面的 `maxAttempts` 会把它推到「已放弃」而不是无限重试。
+           */
+          const r = await orch.dispatch(target, message, {
+            self: (typeof handoff?.owner === 'string' && handoff.owner !== '') ? handoff.owner : undefined,
+          })
           if (r?.ok !== true) throw new Error(r?.reason ?? 'delivery failed')
         },
         join(ledgerRoot, 'runtime', 'orch-watches.json'),
+        /**
+         * ⚠ **T-10：补投失败必须可观测**（2026-11-10）。
+         *   改前不传 `onError` ⇒ 队列用缺省 noop ⇒ **补投失败零日志**。
+         *   与「无最大尝试次数」叠加，永久失败就是**彻底静默的空转**。
+         *   ⇒ 这里接到宿主 logger；判据与措辞遵循「不出现内部标识」的既有纪律。
+         */
+        (kind, error) => {
+          try {
+            ctx.logger?.warn?.(`补投失败（${kind}）：${String((error as Error)?.message ?? error)} —— 会按退避重试，到上限后转「已放弃」`)
+          } catch { /* 告警失败不影响投递 */ }
+        },
       )
       handoffQueues.set(ledgerRoot, q)
       return q
@@ -789,6 +817,22 @@ export function apply(ctx: any, config: Config = {}): void {
     registerTools(gatedCtx, config, levelOf, proceedGateFor, log, ORCH_SERVICE, createHobTools, handoffEffectsOf, visibleNamesFor)
   })
 
+  /**
+   * Unified lifecycle resolver shared by every executable entry. This is the
+   * only place that turns the configured ledger root into a lifecycle verdict.
+   */
+  const lifecycleForExec = (exec: any): any => {
+    const fn = (toolsFace as unknown as { ledgerLifecycleOfRoot?: (root: string | undefined) => any }).ledgerLifecycleOfRoot
+    if (typeof fn !== 'function') {
+      return { state: 'invalid', integrity: 'invalid', active: false, activation: 'missing', headline: '账本生命周期入口缺席（旧模块缓存）', nextAction: '重启宿主加载同版本模块。', blockers: [], legacyCompatible: false }
+    }
+    let root: string | undefined
+    try { root = ledgerRootOf(config, exec) } catch { root = undefined }
+    try { return fn(root) } catch (e) {
+      return { state: 'invalid', integrity: 'invalid', active: false, activation: 'missing', headline: `账本生命周期判不出（${String((e as Error)?.message ?? e)}）`, nextAction: '先恢复统一准入。', blockers: [], legacyCompatible: false }
+    }
+  }
+
   // ── M3 · 会话总线工具（UD-77）────────────────────────────────────────
   // ⚠ **与门禁无关**、单独的**反应式**订阅：`hobBus` 由 `modules/bus.ts` 在
   //   `sessions`/`agents` 就绪后 provide。服务不在（模块关掉 / 服务未就绪）⇒
@@ -816,7 +860,7 @@ export function apply(ctx: any, config: Config = {}): void {
         return
       }
       log('会话总线就绪 ⇒ 注册 M3 工具')
-      registerBusTools(busCtx, bus as HobBus, log, config, createHobBusTools, ledgerRootOf, proceedGateFor,
+      registerBusTools(busCtx, bus as HobBus, log, config, createHobBusTools, ledgerRootOf, proceedGateFor, lifecycleForExec,
         /**
          * ⚠⚠ **T2（B5）：每次 `hob_*` 读写顺手对账**（2026-10-20）。
          *   ⚠ 用 `busCtx.get('hobOrchestrator')` **现取**（⛔ 不在这里 inject 它 ——
@@ -865,7 +909,7 @@ export function apply(ctx: any, config: Config = {}): void {
       log('闭环编排就绪 ⇒ 注册 M5 工具')
       registerOrchTools(orchCtx, orch as HobOrchestrator, log, createHobOrchTools, proceedGateFor, workModeForExec, dispatchGateAt,
         // ⚠ 同 `acceptanceGateFor`：传执行上下文本身，⛔ 不传 `exec.agent`。
-        (exec: any) => ledgerRootOf(config, exec), acceptanceGateFor,
+        (exec: any) => ledgerRootOf(config, exec), acceptanceGateFor, lifecycleForExec,
         /**
          * **判决落账器**（2026-11-08 · 管线闭环）。
          * ⚠ 只做 I/O 适配：账本根按执行上下文现读；判据在投影纯函数里。
@@ -1032,12 +1076,18 @@ export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
    */
   'hob_ledger_status',
   'hob_ledger_init',
+  'hob_ledger_rebuild',
   /**
    * ⚠ 旧账本迁移不是“新建账”；但它只接受内置有限映射，默认只预演，真写需显式确认。
    *   若不给这一项，旧格式 / 旧状态词项目只能靠人工改账，Hob 的“先梳理健康再推进”
    *   在真实存量上就会卡住。三档都可见：它只碰本账本索引，仍走同一写入守卫。
    */
   'hob_ledger_migrate',
+  /**
+   * User approval for Pipeline v3 G1/G2. The tool records a decision audit
+   * from an explicit user receipt; it cannot promote status by itself.
+   */
+  'hob_pipeline_approve',
   // ── 检索 5 个（既有）──────────────────────────────────────────────
   'advanced_search',
   'multi_search',
@@ -1283,8 +1333,6 @@ function DEFAULT_DENY_OF(): readonly string[] {
 }
 
 /** ⚠ 仅供机检读取"当前进程看到的 deny 清单"（⛔ 产品路径不用它判任何事）。 */
-export function __denyOf(): readonly string[] { return DEFAULT_DENY_OF() }
-
 /**
  * **当前进程抓到的「待确认工具」名单**（2026-10-31 P28 · `TSK-048` / `R-008`）。
  *
@@ -1588,18 +1636,6 @@ function filterModelToolList(
   //   旧版写 `const allow = new Set(MODEL_TOOL_ALLOWLIST)` —— 那是**装配期快照**，
   //   用户改完档位后**已开的会话仍按旧档**走到重挂载为止。
   //   ⚠ 2026-10-22 起档位**按会话**（`REQ-04`）⇒ 快照的危害升级成"跨会话串线"，更要现读。
-  const allowFor = (subject: any): Set<string> => {
-    const level = levelOf(subject)
-    const names = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
-    /**
-     * ⚠⚠ **2026-10-24：必须过 `visibleNamesFor`**（否则 `modules.tools` 关掉时
-     *   模型面白名单里仍有那 6 个**没注册**的名字 ⇒ 看得见、点一下 `unknown tool`）。
-     *   ⚠ 语义仍由 `modules/tools.ts` 的 `visibleToolsFor` 定义：
-     *     门禁在 ⇒ **原样返回**（本行对正常路径零影响）；门禁不在 ⇒ 只减门禁拥有的 6 个。
-     */
-    return new Set<string>(visibleNamesFor(names))
-  }
-
   // ⚠ 走**反应式** `ctx.inject`（不是本模块的静态 `inject`）：
   //   静态 inject 缺依赖 ⇒ fiber 停 PENDING ⇒ 预设被标 `broken`
   //   ⇒ **在选择器里被静默过滤掉**（同本文件头部 E-21 的教训）。
@@ -1704,19 +1740,15 @@ function enforceToolAllowlist(
   // ⚠ 同上：**⛔ 不许快照**。执行期也要按**当次**档位判 ——
   //   否则"档2 会话调用档3 才有的名字"会被旧快照放行（或反向误拒）。
   //   ⚠ 2026-10-22 起档位**按会话**（`REQ-04`）：主体 = `exec.agent`。
-  const allowFor = (subject: any): Set<string> => {
-    const level = levelOf(subject)
-    const names = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
-    /**
-     * ⚠⚠ **2026-10-24：执行前拦截也过同一层。**
-     *   理由不是"让调用失败得更早"，而是**两个口径必须一致**：
-     *   模型面已经看不见门禁拥有的那批名字了，若这里仍按全量白名单放行，
-     *   一旦有人在别处（subagent / 直调）拿到那些名字，本层就会**放行一个门禁不在时的
-     *   `unknown tool`** —— 那不是安全边界，是**不一致**。
-     *   ⚠ 门禁在的正常路径：`visibleToolsFor` 原样返回 ⇒ 本层行为**一个字节都没变**。
-     */
-    return new Set<string>(visibleNamesFor(names))
-  }
+  /**
+   * ⚠⚠ **O-17（2026-11-11）：这里原本还有一个 `allowFor`，已删（零调用）。**
+   *
+   *   它守的纪律**仍然有效**，只是由下面 `ctx.effect(...'tools/pre-execute'...)` 里的
+   *   `decideToolFace` 实现（与装配期**同一个纯函数**）：
+   *   执行前拦截必须与模型面用**同一份**名字集口径 ——
+   *   否则一旦有人在别处（subagent / 直调）拿到门禁拥有的那批名字，
+   *   本层就会**放行一个门禁不在时的 `unknown tool`** —— 那不是安全边界，是**不一致**。
+   */
 
   ctx.effect(() => ctx.on('tools/pre-execute', async (exec: any, next: any) => {
     // ⚠ 整个判定体包在 try/catch 里：宿主对它自己的 catch 是 **fail-closed**，
@@ -1923,7 +1955,7 @@ function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any)
   const {
     readContracts, writeHob,
     readWorkspaceDoc, globWorkspace: globTool, grepWorkspaceTool, readWorkspaceImage,
-    ledgerStatus, ledgerInit, ledgerMigrate,
+    ledgerStatus, ledgerInit, ledgerMigrate, ledgerApprove, ledgerArchiveRebuild,
   } = createTools(config, {
     // ⚠ **惰性取值**（每次执行时才 `ctx.get`），见上面那段注释的同一个理由。
     orchOf: () => {
@@ -2000,10 +2032,14 @@ function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any)
    */
   ctx.effect(() => ctx.tools.register(ledgerStatus), 'dsh-hob preset: hob_ledger_status tool')
   ctx.effect(() => ctx.tools.register(ledgerInit), 'dsh-hob preset: hob_ledger_init tool')
+  ctx.effect(() => ctx.tools.register(ledgerArchiveRebuild), 'dsh-hob preset: hob_ledger_rebuild tool')
   if (ledgerMigrate !== undefined) {
     ctx.effect(() => ctx.tools.register(ledgerMigrate), 'dsh-hob preset: hob_ledger_migrate tool')
   }
-  log('已注册 hob_ledger_status / hob_ledger_init / hob_ledger_migrate（账本先建后推进）')
+  if (ledgerApprove !== undefined) {
+    ctx.effect(() => ctx.tools.register(ledgerApprove), 'dsh-hob preset: hob_pipeline_approve tool')
+  }
+  log('已注册 hob_ledger_status / hob_ledger_init / hob_ledger_migrate / hob_pipeline_approve（v2 账本与用户门）')
 
   if (writeHob === undefined) {
     log('enableWrite=false ⇒ 不注册 write_hob（该工具根本不出现）')
@@ -2023,9 +2059,11 @@ function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any)
  *   这两个跟 `hobBus`（= `modules.bus`）。⇒ 两个开关各自管自己那一组，互不牵连。
  */
 function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, config: Config,
-  createBusTools: (...a: any[]) => any, rootOf: (...a: any[]) => any,
+  createBusTools: (...a: any[]) => any, ledgerRootResolver: (...a: any[]) => any,
   /** ⚠ 2026-10-22 第 5 轮：`hob_spawn` / `hob_send` 的执行层闸门（§任务书第 12 条）。 */
   proceedGateFor: (sessionOrAgent?: any) => string | undefined,
+  /** Unified ledger lifecycle resolver. */
+  lifecycleForExec: (exec: any) => any,
   /**
    * **T2 的挂点**（2026-10-20 · B5）：每次 `hob_*` 读写路径顺手对账一次。
    * ⚠ 缺省不传 ⇒ 不对账（旧调用形状**照旧可用**，向后兼容）。
@@ -2047,11 +2085,11 @@ function registerBusTools(ctx: any, bus: HobBus, log: (m: string) => void, confi
   //     但工具的**功能照常**（记账是附加可观测，不是前置条件）。
   const { sessions, send, workspaces, spawn } = createBusTools(bus, (exec: any) => {
     try {
-      return rootOf(config, exec)
+      return ledgerRootResolver(config, exec)
     } catch {
       return undefined
     }
-  }, onRead, (exec: any) => proceedGateFor(exec?.agent ?? exec) ?? stageGate(exec),
+  }, onRead, (exec: any) => proceedGateFor(exec?.agent ?? exec) ?? stageGate(exec), lifecycleForExec,
   /**
    * ⚠ 2026-10-22 第 5 轮：`hob_spawn` 显式给了两值 ⇒ **必须真写进去**。
    *   这里把策略服务的 `set` 透下去（⛔ 不让 bus 层自己去摸服务 —— 它拿不到同一份权威）。
@@ -2097,6 +2135,8 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
   dispatchGateAt: (root: string, opts: { taskId?: string; planId?: string }) => string | undefined = () => undefined,
   ledgerRootFor: (exec: any) => string | undefined = () => undefined,
   acceptanceGateFor?: (exec: any, taskId: string) => { ok: boolean; reason?: string },
+  /** Unified ledger lifecycle for the dispatch tool entry. */
+  lifecycleForExec?: (exec: any) => any,
   /**
    * **判决落账器**（2026-11-08 · 管线闭环）：把已发生的判决投影成账本 ACC。
    * ⚠ 只做 I/O 适配；判据在 `server/ledger-projection.ts` 的纯函数里。
@@ -2137,6 +2177,7 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
       proceedGateFor(exec?.agent ?? exec) ?? stageGateFor(exec, scope),
     workModeFor,
     acceptanceGateFor,
+    lifecycleForExec,
     ledgerProjectionOf,
   )
   ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')

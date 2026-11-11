@@ -250,14 +250,3 @@ export function nextAction(
  * @param a - `nextAction` 的结果
  * @returns 一行文本
  */
-export function renderNextActionLine(a: NextAction): string {
-  const label: Readonly<Record<NextAction['kind'], string>> = {
-    'dispatch': '派活',
-    'accept': '验收',
-    'wait-user': '等你裁',
-    'blocked': '卡住了',
-    'converge': '收口',
-    'undecidable': '判不出',
-  }
-  return `下一步（${label[a.kind]}）：${a.why}`
-}

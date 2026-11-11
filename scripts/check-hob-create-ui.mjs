@@ -1072,8 +1072,13 @@ async function main() {
     const gateDefined = /const proceedGateFor = /.test(presetSrc)
     const failClosed = /const mayProceed = r\?\.mayProceed === true/.test(presetSrc)
     const inWriteHob = /const blocked = proceedGate\(exec\)/.test(toolsSrc)
-    const inSpawn = /const blocked = proceedGateOf\?\.\(exec\)/.test(busSrc)
-    const inDispatch = /const blocked = proceedGateOf\?\.\(exec\)/.test(orchSrc)
+    const inSpawn = /const blocked = proceedGateOf\?\.\(exec(?:\s*,|\s*\))/.test(busSrc)
+    /**
+     * ⚠ **断言对象是"有没有闸门"，⛔ 不是某一种调用写法**（2026-11-06 订正）：
+     *   作用域门禁把 `(exec)` 扩成 `(exec, scope?)` 之后，旧正则会把**正确实现**判成"没有闸门"
+     *   —— 那是判据落点过期，不是产品缺陷。命题本身（派活前必须过门禁）一字未改。
+     */
+    const inDispatch = /const blocked = proceedGateOf\?\.\(exec(?:\s*,|\s*\))/.test(orchSrc)
     const problems = []
     if (!gateDefined) problems.push('没有 `proceedGateFor`')
     if (!failClosed) problems.push('`mayProceed` 仍未 fail-closed（缺字段默认 true）')
@@ -2356,6 +2361,73 @@ async function main() {
     }
   }
 
+  // ── CU-44（T-15）`.gitignore` 写不进 ⇒ 策略必须拒写，且 6 处调用已收成 1 处 ──
+  //
+  //  ⚠ 这条钉的是「返回值被丢弃 ⇒ 失败无法观测」：
+  //    改前 ensurePolicyDirIgnored() 全仓 6 处调用（session-policy.ts 3 处 +
+  //    session-policy-service.ts 3 处），没有一处接住返回值，
+  //    而它的注释却写着「返回值有三处调用方拿它决定要不要告警」—— 注释与实现相反。
+  //    后果：runtime/.gitignore 写失败 ⇒ session-policy.json（含 sessionId）
+  //    可能被 git 收进历史，且没有任何告警；注释还宣称这件事已被处理 ⇒ 下一个人不会去查。
+  //
+  //  ⚠ 修法不是「6 处各加一个 if」，而是收进 writePolicyStore 内部：
+  //    6 处 ensurePolicyDirIgnored 与 6 处 writePolicyStore 一一对应且紧邻，
+  //    ⇒ 一处守住 6 条写路径，且复用已有的 ok/reason 通道。
+  {
+    const p = []
+    /** ① 静态：调用点必须只剩一处（在 writePolicyStore 内部），且接住了返回值。 */
+    const src = (() => {
+      try { return readFileSync(join(srcRoot, 'src', 'server', 'session-policy.ts'), 'utf8') } catch { return '' }
+    })()
+    const svc = (() => {
+      try { return readFileSync(join(srcRoot, 'src', 'session-policy-service.ts'), 'utf8') } catch { return '' }
+    })()
+    if (src === '' || svc === '') p.push('读不到 session-policy 源码 ⇒ 失去基准')
+    else {
+      const callSites = [...src.matchAll(/^\s*(?:const\s+\w+\s*=\s*)?ensurePolicyDirIgnored\(/gm)]
+      if (callSites.length !== 1) p.push('session-policy.ts 的 ensurePolicyDirIgnored 调用点应为 1，实际 ' + callSites.length)
+      if (!/const\s+ignored\s*=\s*ensurePolicyDirIgnored\(/.test(src)) {
+        p.push('session-policy.ts 没有接住返回值（应为 const ignored = ensurePolicyDirIgnored(...)）')
+      }
+      const svcCalls = [...svc.matchAll(/^\s*ensurePolicyDirIgnored\(/gm)]
+      if (svcCalls.length !== 0) {
+        p.push('session-policy-service.ts 仍有 ' + svcCalls.length + ' 处裸调用（应已收进 writePolicyStore）')
+      }
+    }
+
+    /** ② 动态：.gitignore 写不进时，writePolicyStore 必须返回 ok:false 并给可读原因。 */
+    const dir = mkdtempSync(join(tmpdir(), 'cu41-'))
+    created.push(dir)
+    /**
+     * ⚠ 造「写不进」的手段：把父路径做成一个同名文件 ⇒ mkdirSync 必失败。
+     *   ⛔ 不用 chmod（root 下无效、且 Windows 语义不同）。
+     */
+    const blockedParent = join(dir, 'blocked')
+    writeFileSync(blockedParent, 'not a directory', 'utf8')
+    const file = join(blockedParent, 'runtime', 'session-policy.json')
+    const r = lib.writePolicyStore(file, { version: 1, migrationEpoch: 1, sessions: {} })
+    if (r.ok !== false) p.push('.gitignore 写不进时 writePolicyStore 仍报 ok:true ⇒ T-15 复发')
+    else if (!String(r.reason).includes('.gitignore')) {
+      p.push('拒绝原因没点名 .gitignore：' + r.reason)
+    }
+
+    /** ③ 对照：正常目录下必须能写成功（证明不是恒拒）。 */
+    const okDir = join(dir, 'normal')
+    const good = lib.writePolicyStore(join(okDir, 'session-policy.json'), { version: 1, migrationEpoch: 1, sessions: {} })
+    if (good.ok !== true) p.push('正常目录下 writePolicyStore 被误拒：' + good.reason)
+    try {
+      const gi = readFileSync(join(okDir, '.gitignore'), 'utf8')
+      if (!/^\*$/m.test(gi)) p.push('.gitignore 内容不含通配 *：' + JSON.stringify(gi))
+    } catch {
+      p.push('正常写入后 .gitignore 不存在')
+    }
+
+    if (p.length === 0) {
+      ok('CU-44 ✓ **负向对拍**：.gitignore 写不进 ⇒ 策略拒写且原因点名 .gitignore；'
+        + '正常目录 ⇒ 落盘且 .gitignore 内容为 *（T-15：返回值不再被丢弃，6 处收成 1 处）')
+    } else for (const x of p) bad('CU-44 · ' + x)
+  }
+
   // ── 收尾 ─────────────────────────────────────────────────────────────
   cleanupAll()
   console.log('')
@@ -2368,6 +2440,39 @@ async function main() {
    *   ⚠ `查了 = 过了 + 没过 + 跳过` 必须成立（`check:all` 会逐族核这条等式）。
    */
   console.log(`  跳过 ${skip.length} 处（⛔ 不计入通过）`)
+  // ── CU-45（O-22）：已定义的双语词条不许被硬编码中文顶替 ──────────────────────
+  //
+  //  ⚠ 改前 `create-hob-dialog.tsx` 两处硬编码中文：
+  //    · 入口按钮的 aria-label 写死了一段中文；
+  //    · createdHint 的整段中文提示。
+  //    而词典里**早就有** entry.aria / created.noNav（中英双语）⇒ 切英文时那两处仍是中文。
+  {
+    const p = []
+    const src = readFileSync(join(root, 'src', 'client', 'create-hob-dialog.tsx'), 'utf8')
+    const D_ENTRY = "'aria-label': d('entry.aria')"
+    const D_NONAV = "d('created.noNav')"
+    if (!src.includes(D_ENTRY)) p.push('入口按钮的 aria-label 没有走 d(entry.aria) ⇒ 可能又硬编码了（O-22 复发）')
+    if (!src.includes(D_NONAV)) p.push('createdHint 没有走 d(created.noNav) ⇒ 可能又硬编码了')
+    const countKey = (k) => (src.match(new RegExp("'" + k.replace('.', '\\.') + "':", 'g')) ?? []).length
+    for (const key of ['entry.aria', 'created.noNav']) {
+      const n = countKey(key)
+      if (n !== 2) p.push('词典里 ' + key + ' 应有 2 份（zh + en），实际 ' + n + ' 份')
+    }
+    const code = src.split('\n').map((l) => l.replace(/^\s*(?:\/\/|\*).*$/, '')).join('\n')
+    if (/'aria-label':\s*'[^']*新建 Hob 会话/.test(code)) p.push('aria-label 仍硬编码中文 ⇒ 切英文时不变（O-22 复发）')
+    /**
+     * ⚠⚠ **必须排除词典条目本身** —— `'created.noNav': '（⚠ 该会话…'` 是**中文词条**，
+     *   它当然含那段中文（那是它的值）。我第一版直接全文搜 ⇒ **判到了词典自己**（实测假红）。
+     *   ⇒ 判据：那段中文**不许出现在 `d(` 之外的代码位置**。
+     */
+    const zhLine = /^\s*'created\.noNav':/.test('') ? null : code.split('\n').filter((l) => l.includes('（⚠ 该会话在收到第一条消息之前'))
+    const zhOutsideDict = zhLine.filter((l) => !/^\s*'created\.noNav':/.test(l))
+    if (zhOutsideDict.length > 0) p.push('createdHint 仍硬编码中文（词典条目之外出现）⇒ 切英文时不变')
+    if (p.length === 0) {
+      ok('CU-45 ✓ **负向对拍**：entry.aria / created.noNav 两处走 d(…)，且词典中英各一份'
+        + '（O-22：⛔ 已定义的双语词条不许被硬编码中文顶替）')
+    } else for (const x of p) bad(`CU-45 · ${x}`)
+  }
   console.log(`  汇总：通过 ${pass} · 失败 ${fail}`)
   console.log(`  处级口径：查了 ${pass + fail + skip.length} 处 · 过了 ${pass} 处`
     + (fail > 0 ? ` · 没过 ${fail} 处` : '')

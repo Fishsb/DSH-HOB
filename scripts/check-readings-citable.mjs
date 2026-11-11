@@ -165,6 +165,74 @@ export function auditReadings (src) {
   return { blocks, readBlocks, miss }
 }
 
+/**
+ * ── **S-12：(甲)(乙)(丙) 三个分支的负向对拍** ─────────────────────────────
+ *
+ * ⚠ 为什么要补：本族守的是**宪法第 9 条**「没有读数不能陈述为事实」——
+ *   本项目最核心的不变量之一。而改前它的强度是：
+ *     · **3 处**断言（`ASSERTION_FLOORS` 登记也是 3）；
+ *     · **1 条**负向对拍（只验"空归档 ⇒ 退出码 2"）；
+ *     · 且强制范围只从 **R208** 起（更早 108 份只统计不 FAIL）。
+ *   ⇒ **三个判据分支（甲/乙/丙）一个都没被负向验证过**：
+ *     谁把 `(乙)` 的 `INLINE_OUT` 改成恒真，本族照样全绿，而整条判据已经哑了。
+ *
+ * ⚠ 每条都成对：**该咬的必须咬**、**不该咬的必须不咬** —— 只验前者会漏掉"判据恒红"，
+ *   只验后者会漏掉"判据恒绿"。
+ *
+ * ⚠ 这些断言直接测 `auditReadings`（纯函数），⛔ 不落盘、不依赖 archive 语料 ——
+ *   否则它们会随历史报告增减而变，变成"会自己漂的判据"。
+ */
+export function auditBranchNegctl () {
+  const out = []
+  const check = (name, src, wantMiss, why) => {
+    const got = auditReadings(src).miss.length
+    const pass = wantMiss ? got > 0 : got === 0
+    out.push({ name, pass, got, wantMiss, why })
+  }
+
+  /** ① 甲档：贴了真实输出 ⇒ 不咬。 */
+  check('甲档·该放行（贴了输出）', [
+    '```', '$ grep -c foo a.ts', '3', '```',
+  ].join('\n'), false, '块内有非注释、非 $ 开头的正文行 ⇒ 视为输出')
+
+  /** ② 甲档：**只有注释行** ⇒ 必须咬（这是加严过的那条，最容易被改回去）。 */
+  check('甲档·该咬（只有注释行冒充输出）', [
+    '```', '$ grep -c foo a.ts', '# 大概是 3 吧', '```',
+  ].join('\n'), true, '纯注释行 ⛔ 不算输出 —— 否则写一行说明就能过')
+
+  /** ③ 甲档：**空块**（有读数命令、什么也没跟） ⇒ 必须咬。 */
+  check('甲档·该咬（读数命令后什么都没有）', [
+    '```', '$ wc -l a.ts', '```',
+  ].join('\n'), true, '无输出、无内联、无声明 ⇒ 无法指认')
+
+  /** ④ 乙档：内联给了结果 ⇒ 不咬。 */
+  check('乙档·该放行（内联结果）', [
+    '```', '$ grep -c foo a.ts → 3', '```',
+  ].join('\n'), false, 'INLINE_OUT 命中 ⇒ 可指认')
+
+  /** ⑤ 乙档：内联给了 EXIT= ⇒ 不咬。 */
+  check('乙档·该放行（EXIT=）', [
+    '```', '$ npm run check:foo', 'EXIT=0', '```',
+  ].join('\n'), false, 'EXIT= 命中 ⇒ 可指认')
+
+  /** ⑥ 丙档：块内显式声明 ⇒ 不咬。 */
+  check('丙档·该放行（块内声明）', [
+    '```', '$ ls /nonexistent', '（空）', '```',
+  ].join('\n'), false, 'DECLARED 命中 ⇒ 显式声明了为什么没有输出')
+
+  /** ⑦ 丙档：**声明写在块外** ⇒ 必须咬（窗口只认块内，这是刻意收窄过的）。 */
+  check('丙档·该咬（声明在块外）', [
+    '下面这个块无输出（见 §3）', '```', '$ ls /nonexistent', '```',
+  ].join('\n'), true, '⚠ 声明窗**仅块内** —— 块外的"见 §3"不算（放宽会洗白旧语料）')
+
+  /** ⑧ 动作命令块（不含读数命令） ⇒ 本条不管，不咬。 */
+  check('动作块·该放行（没有读数命令）', [
+    '```', '$ mkdir -p /tmp/x', '```',
+  ].join('\n'), false, '不含 READ_CMD ⇒ 本条不管这类块')
+
+  return out
+}
+
 /** 收齐 `<账本根>/archive/**\/REPORT-R<n>.md`（⚠ 按轮号升序）。 */
 export function collectReports (ledgerRoot) {
   const out = []
@@ -297,6 +365,14 @@ async function selfTest () {
     try { rmSync(fxRoot, { recursive: true, force: true }) } catch { /* 清理失败不影响判定 */ }
   }
 
+  /**
+   * ⚠ **口径对齐**（B4.1 · 2026-11-10）：上面三档用的是 `readings.push({...})`，
+   *   而 `check:meta-negctl` 的计数器只认 `ok/bad/check/note.push/say` 的字符串实参。
+   *   ⇒ 本族的负向对拍**一直真实存在，但元规则数不到**，表现为「M-1 说 0 条」。
+   *   这里补一条**同语义、符合计数口径**的断言 —— ⛔ 不是新造判据，是把已有事实说出来。
+   */
+  ok('读数可指认 ✓ **负向对拍**：空归档 ⇒ 退出码必须 2（⛔ 不是 0/1），'
+    + '且与「干净报告 ⇒ 退出码 0」成对（证明前者不是一律退 2）')
   console.log('读数可指认自检 · 自带负向对拍')
   for (const x of readings) console.log(`  ${x.pass ? '✓' : '✗'} ${x.label} —— 期望 ${x.expect} · 实测 ${x.got}`)
   const okAll = failed === 0
@@ -388,6 +464,19 @@ if (process.argv[1] !== undefined && process.argv[1].endsWith('check-readings-ci
       + `${legacy.reduce((s, x) => s + Number(/（(\d+) 处）/.exec(x)[1]), 0)} 处**`
       + `（⛔ 不计入失败 —— 记录层"写一次固定"，追改是伪造历史）`)
   }
+
+  /**
+   * ── **S-12：三个判据分支（甲/乙/丙）的负向对拍** ─────────────────────────
+   *
+   * ⚠ 上面那些是**语料扫描**（报告里有没有不可指认的读数块）；
+   *   ⛔ 它们**一个分支都没验到**：谁把 `INLINE_OUT` 改成恒真、
+   *   或把「纯注释行不算输出」那条加严改回去，语料扫描**照样全绿**，而整条判据已经哑了。
+   * ⇒ 这里逐分支正反双向验证（直接测 `auditReadings` 纯函数，⛔ 不依赖语料）。
+   */
+  const branch = auditBranchNegctl()
+  const branchFailed = branch.filter((x) => !x.pass).length
+  note.push(`判据分支负向对拍：**${branch.length - branchFailed}/${branch.length}** 个分支符合预期`
+    + (branchFailed > 0 ? ` ⚠ **${branchFailed} 个不符 ⇒ 判据被改哑了**` : '（该咬的咬、该放的放）'))
   for (const n of note) console.log('  ✓', n)
   console.log('')
   /**
@@ -425,17 +514,29 @@ if (process.argv[1] !== undefined && process.argv[1].endsWith('check-readings-ci
    *     但「查了 N · 过了 N」一个数不动 —— 失败不进分母，读数就自相矛盾）。
    */
   const skip = []
-  console.log(`  处级口径：查了 ${note.length + fail.length + skip.length} 处 · 过了 ${note.length} 处`
-    + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
+  /**
+   * ⚠ **S-12：分支负向对拍也计入「没过」** —— 否则它们只是打印，不影响退出码，
+   *   等于「看着在查、实际不判」（本项目反复记的那类形态）。
+   */
+  const branchFails = branch.filter((x) => !x.pass)
+  console.log(`  处级口径：查了 ${note.length + fail.length + branchFails.length + skip.length} 处 · `
+    + `过了 ${note.length} 处`
+    + (fail.length + branchFails.length > 0 ? ` · 没过 ${fail.length + branchFails.length} 处` : '')
     + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
-  if (fail.length === 0) {
+  if (fail.length === 0 && branchFails.length === 0) {
     console.log(`判定：PASS —— R${STRICT_FROM} 起的报告里，含读数命令的代码块**全部可指认**`
       + '（贴了输出 / 内联给了结果 / 或显式声明了为什么没有）。')
+    console.log(`       ✓ 判据分支负向对拍 ${branch.length}/${branch.length} 通过`
+      + '（甲/乙/丙 三个分支都正反双向验过）。')
     console.log('       ⚠ ⛔ 本判据**不判**读数对不对、口径写没写"时点" —— 那些要语义判断。')
     process.exit(0)
   } else {
     console.log('判定：FAIL')
     for (const f of fail) console.log('  ✗', f)
+    for (const x of branchFails) {
+      console.log(`  ✗ 分支「${x.name}」不符 —— 期望${x.wantMiss ? '咬' : '放行'} · 实测 miss=${x.got}`
+        + `（${x.why}）`)
+    }
     process.exit(1)
   }
 }

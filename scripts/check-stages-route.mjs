@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * **五步汇总路由 · 服务端行为判据**（2026-10-30 · P3 · `TASK-P3.md` §三2）。
+ * **七阶段汇总路由 · 服务端行为判据**（⚠ **O-27**：旧标题写「五步」，而 `want` 是 7 项）（2026-10-30 · P3 · `TASK-P3.md` §三2）。
  *
  * ══ 它守什么 ═══════════════════════════════════════════════════════════════════
  *   R-1 **三类 reason 互不相同**（`index-unreadable` / `index-malformed` / `row-shape-unknown`）
- *   R-2 **五步顺序固定**（①..⑤，且每步的 `name` 逐字）
+ *   R-2 **七阶段顺序固定**（①..⑦，且每步的 `name` 逐字）
  *   R-3 **`cap` 不进分母**（`total` 不含 cap；`caps` 单列）
  *   R-4 **空步给 `todo` 而不报错**（⚠ 与"判不出"是两件事）
  *   R-5 **三态算对**（done / doing / todo 逐条对照）
  *   R-6 **items 顺序原样**（⛔ 不排序、⛔ 不去重）
  *   R-7 **`lastReading` 缺 ⇒ 「判不出」**（⛔ 不填 0、⛔ 不编）
  *   R-8 **负向对拍**：把 `cap` 混进分母 ⇒ R-3 必红
- *   R-9 **与生成器交叉验证**：本文件算出的五步数字 == `gen/stages.md` 那五行（⚠ 两套解析器交叉验证）
+ *   R-9 **与生成器交叉验证**：本文件算出的七阶段数字 == `gen/stages.md` 那七行（⚠ 两套解析器交叉验证）
  *
  * 用法：node scripts/check-stages-route.mjs
  * 退出码：0 = 全通过；1 = 有失败
@@ -78,7 +78,7 @@ rmSync(WORK, { recursive: true, force: true })
 mkdirSync(WORK, { recursive: true })
 
 console.log('')
-console.log('R 组：五步汇总路由 · 服务端行为判据（真处理体 + 真夹具）')
+console.log('R 组：七阶段汇总路由 · 服务端行为判据（真处理体 + 真夹具）')
 console.log('')
 
 try {
@@ -188,17 +188,17 @@ source = "夹具"
     else for (const x of p) bad(`R-1b · ${x}`)
   }
 
-  // ── R-2 五步顺序固定 + 名字逐字 ──────────────────────────────────────
+  // ── R-2 七阶段顺序固定 + 名字逐字（⚠ O-27：旧注释写「五步」，实为 7 项）──
   {
     const res = mod.handleStages(deps({ readText: () => ALL_KINDS }), {})
     const probs = []
     if (res.ok !== true) probs.push(`ok 不是 true：${JSON.stringify(res).slice(0, 120)}`)
     else {
-      const want = [[1, '需求规格'], [2, '实现方案'], [3, '编码任务'], [4, '任务执行'], [5, '验收核对']]
+      const want = [[1, '需求规格'], [2, '实现方案'], [3, '任务图'], [4, '任务执行'], [5, '技术验证'], [6, '产品验收'], [7, '交付收口']]
       const got = res.stages.map((s) => [s.step, s.name])
-      if (JSON.stringify(got) !== JSON.stringify(want)) probs.push(`五步顺序/名字不对：${JSON.stringify(got)}`)
+      if (JSON.stringify(got) !== JSON.stringify(want)) probs.push(`七阶段顺序/名字不对：${JSON.stringify(got)}`)
     }
-    if (probs.length === 0) ok('R-2 ✓ 五步顺序固定：① 需求规格 → ② 实现方案 → ③ 编码任务 → ④ 任务执行 → ⑤ 验收核对')
+    if (probs.length === 0) ok('R-2 ✓ 七阶段顺序固定：① 需求规格 → ② 实现方案 → ③ 任务图 → ④ 任务执行 → ⑤ 技术验证 → ⑥ 产品验收 → ⑦ 交付收口')
     else for (const x of probs) bad(`R-2 · ${x}`)
   }
 
@@ -210,11 +210,11 @@ source = "夹具"
     else {
       const totals = res.stages.reduce((a, s) => a + s.total, 0)
       const nUnits = 8  // 见 ALL_KINDS：2 req + 1 change + 2 task + 1 run + 1 acc + 1 cap
-      if (totals !== nUnits - 1) probs.push(`五步总数 ${totals}（期望 ${nUnits - 1} = 全部 8 条减去 1 条 cap）`)
+      if (totals !== nUnits - 1) probs.push(`七阶段总数 ${totals}（期望 ${nUnits - 1} = 全部 8 条减去 1 条 cap）`)
       if (!Array.isArray(res.caps) || res.caps.length !== 1) probs.push(`caps 不是 1 条：${JSON.stringify(res.caps)}`)
-      if (res.stages.some((s) => s.items.some((it) => String(it.id).startsWith('CAP-')))) probs.push('cap 的条目出现在了五步里')
+      if (res.stages.some((s) => s.items.some((it) => String(it.id).startsWith('CAP-')))) probs.push('cap 的条目出现在了七阶段里')
     }
-    if (probs.length === 0) ok(`R-3 ✓ cap 不进分母：五步 total 合计 ${res.stages.reduce((a, s) => a + s.total, 0)}（8 条 - 1 条 cap）· caps 单列 1 条`)
+    if (probs.length === 0) ok(`R-3 ✓ cap 不进分母：七阶段 total 合计 ${res.stages.reduce((a, s) => a + s.total, 0)}（8 条 - 1 条 cap）· caps 单列 1 条`)
     else for (const x of probs) bad(`R-3 · ${x}`)
   }
 
@@ -225,7 +225,8 @@ source = "夹具"
     const probs = []
     if (res.ok !== true) probs.push(`只有一条 req 时 ok 不是 true：${JSON.stringify(res).slice(0, 120)}`)
     else {
-      if (res.stages.length !== 5) probs.push(`步数 ${res.stages.length}（期望 5 —— 空步也要出现）`)
+      /** ⚠ **O-27**：阶段数是 **7**（v3 七阶段），⛔ 不是 5。 */
+      if (res.stages.length !== 7) probs.push(`步数 ${res.stages.length}（期望 7 —— 空步也要出现）`)
       for (const s of res.stages.slice(1)) {
         if (s.state !== 'todo') probs.push(`第 ${s.step} 步（零条目）state=${JSON.stringify(s.state)}（期望 todo）`)
         if (s.total !== 0 || s.done !== 0) probs.push(`第 ${s.step} 步零条目却 done/total = ${s.done}/${s.total}`)
@@ -275,7 +276,7 @@ source = "夹具"
     else for (const x of probs) bad(`R-6 · ${x}`)
   }
 
-  // ── R-6b 退役/丢弃需求不进入活跃五步分母 ─────────────────────────────
+  // ── R-6b 退役/丢弃需求不进入活跃**七阶段**分母 ─────────────────────────────
   {
     const src = TOML([
       { id: 'R-001', kind: 'req', status: 'agreed' },
@@ -323,7 +324,7 @@ source = "夹具"
     else for (const x of probs) bad(`R-7 · ${x}`)
   }
 
-  // ── R-16 第一屏摘要：由同一次五步读数派生，且与 next / attention 交叉一致 ──
+  // ── R-16 第一屏摘要：由同一次**七阶段**读数派生，且与 next / attention 交叉一致 ──
   {
     const src = TOML([
       { id: 'CHG-16', kind: 'change', status: 'settled' },
@@ -394,14 +395,14 @@ source = "夹具"
   // ── R-8 负向对拍：把 cap 混进分母 ⇒ R-3 必红 ─────────────────────────
   {
     /**
-     * 造一个"把 cap 当成第 6 步塞进 stages"的变体（= 分母被污染）。
+     * 造一个"把 cap 当成第 8 步塞进 stages"的变体（= 分母被污染）。
      * ⚠ 先自证：变体真的多了一步。⛔ 不许"以为改了"。
      */
     const srcFile = join(root, ENTRY)
     const orig = readFileSync(srcFile, 'utf8')
     const mutated = orig.replace(
       '  const stages: StageRow[] = STAGE_DEFS.map((d) => {',
-      '  const capAsStep = { step: 6, name: \'长期能力\', state: \'todo\' as const, done: 0, total: units.filter((u) => u.kind === \'cap\').length, items: [] as StageItem[] }\n  const stages: StageRow[] = [...STAGE_DEFS.map((d) => {',
+      '  const capAsStep = { step: 8, name: \'长期能力\', state: \'todo\' as const, done: 0, total: units.filter((u) => u.kind === \'cap\').length, items: [] as StageItem[] }\n  const stages: StageRow[] = [...STAGE_DEFS.map((d) => {',
     ).replace(
       '    }\n  })\n  const caps: CapRow[] =',
       '    }\n  }), capAsStep]\n  const caps: CapRow[] =',
@@ -423,12 +424,15 @@ source = "夹具"
         const mod2 = await import(pathToFileURL(f2).href)
         const res = mod2.handleStages(deps({ readText: () => ALL_KINDS }), {})
         const probs = []
-        // ⚠ 先自证变体真的"多了一步"
-        if (res.ok !== true || res.stages.length !== 6) {
-          bad(`R-8 · 变体没造出第 6 步（stages=${res.ok === true ? res.stages.length : 'fail'}）⇒ 负向对拍不可判`)
+        /**
+         * ⚠ **O-27**：v3 七阶段 + 混进去的 cap 步 = **8**（⛔ 不是 6）。
+         *   改前这里和变体都按 6 写 ⇒ 变体覆盖了第 6 步「产品验收」而不是"多出一步"。
+         */
+        if (res.ok !== true || res.stages.length !== 8) {
+          bad(`R-8 · 变体没造出第 8 步（stages=${res.ok === true ? res.stages.length : 'fail'}）⇒ 负向对拍不可判`)
         } else {
           const totals = res.stages.reduce((a, s) => a + s.total, 0)
-          if (totals !== 8 - 1) probs.push(`分母被污染：五步（含 cap 步）total 合计 ${totals}（R-3 期望 ${8 - 1}）`)
+          if (totals !== 8 - 1) probs.push(`分母被污染：八步（含 cap 步）total 合计 ${totals}（R-3 期望 ${8 - 1}）`)
           if (probs.length > 0) ok(`R-8 ✓ 负向对拍（把 cap 混进分母）⇒ R-3 的"cap 不进分母"断言**必红**：${probs[0]}`)
           else bad('R-8 · cap 混进分母后 R-3 仍通过 ⇒ 那条断言没有牙')
         }
@@ -707,7 +711,8 @@ actor = "session-pending"
        */
       const totals = new Map(res.stages.map((s) => [s.step, s]))
       if (totals.get(3)?.total !== 700) p.push(`截断后第 3 步 total 被改写：${JSON.stringify(totals.get(3))}`)
-      if (totals.get(5)?.total !== 200) p.push(`截断后第 5 步 total 被改写：${JSON.stringify(totals.get(5))}`)
+      /** ⚠ **O-27：验收是第 6 步**（200 条 ACC 都归它），⛔ 不是第 5 步。 */
+      if (totals.get(6)?.total !== 200) p.push(`截断后第 6 步（产品验收）total 被改写：${JSON.stringify(totals.get(6))}`)
       /**
        * ⚠ 正常规模**不许**触发截断（否则线格式会悄悄变窄）。
        */
@@ -719,11 +724,14 @@ actor = "session-pending"
        *   ⛔ 不能把 `basis_count` 当纯计数删掉 —— 那样用户只看折叠行就少了依据维度。
        */
       /**
-       * ⚠ 极端规模会触发末尾截断（这是 R-18d 的另一条判据），截断后第 5 步可能为空。
+       * ⚠ 极端规模会触发末尾截断（这是 R-18d 的另一条判据），截断后验收那步可能为空。
        *   本断言只针对**实际返回**的验收条目：只要有一条，就必须是「判决 + 依据」。
-       *   ⛔ 不许把“截断到零条”当成通过，也不许因此判红 —— 那是两条不同的事实。
+       *   ⛔ 不许把「截断到零条」当成通过，也不许因此判红 —— 那是两条不同的事实。
+       * ⚠⚠ **O-27：验收是第 6 步，⛔ 不是第 5 步** ——
+       *   七阶段是 ①需求 ②方案 ③任务图 ④执行 ⑤技术验证 ⑥产品验收 ⑦交付收口。
+       *   改前这里写 `step === 5` ⇒ 找到的是**技术验证**行（永远空）⇒ 断言恒假通过。
        */
-      const accRow = res.stages.find((s) => s.step === 5)
+      const accRow = res.stages.find((s) => s.step === 6)
       const accItems = Array.isArray(accRow?.items) ? accRow.items : []
       for (const it of accItems) {
         const facts = it?.presentation?.facts
@@ -854,7 +862,7 @@ actor = "session-pending"
       ]
       for (const [id, title, relationId] of cases) {
         const it = byId.get(id)
-        if (it === undefined) { p.push(`${id} 不在真实五步条目里`); continue }
+        if (it === undefined) { p.push(`${id} 不在真实七阶段条目里`); continue }
         if (it.presentation?.displayTitle !== title) p.push(`${id} 主标题不对：${JSON.stringify(it.presentation?.displayTitle)}`)
         if (it.presentation?.relation?.id !== relationId) p.push(`${id} 关系不对：${JSON.stringify(it.presentation?.relation)}`)
         if (!Array.isArray(it.presentation?.facts) || it.presentation.facts.length < 1 || it.presentation.facts.length > 2) p.push(`${id} 折叠读数不是 1..2 条：${JSON.stringify(it.presentation?.facts)}`)
@@ -875,7 +883,7 @@ actor = "session-pending"
       /**
        * ⚠ **样例必须仍在**（⛔ 不许"为了让判据好维护"就把样例删空）：
        *   上面循环对 `byId.get(id) === undefined` 只 push 一条问题，这里再显式自证
-       *   「五类样例 id 全部真的在真实五步条目里」，防止有人把 cases 表悄悄清空。
+       *   「五类样例 id 全部真的在真实七阶段条目里」，防止有人把 cases 表悄悄清空。
        */
       if (cases.length !== 5) p.push(`样例表只剩 ${cases.length} 条（期望 5 条：真实五类形态各一）`)
       for (const [id] of cases) {
@@ -1034,9 +1042,12 @@ actor = "session-pending"
         try { gen = readFileSync(stagesMdPath, 'utf8') } catch { gen = '' }
         if (gen === '') bad('R-9 · 读不到 gen/stages.md ⇒ 本条失去基准')
         else {
-          // 生成物里那五行：`| ① 需求规格 | ✓ 完成 | 5/5 | R-001 … |`
-          const rows = gen.split('\n').filter((l) => /^\| [①②③④⑤] /.test(l))
-          if (rows.length !== 5) probs.push(`gen/stages.md 里五步行 ${rows.length} 条（期望 5）`)
+          /**
+           * ⚠ **O-27**：生成物是**七行**（v3 七阶段），⛔ 不是五行。
+           *   改前只匹配 `①②③④⑤` ⇒ 第 6/7 步永远取到空行 ⇒ 报「gen 那行是空」。
+           */
+          const rows = gen.split('\n').filter((l) => /^\| [①②③④⑤⑥⑦] /.test(l))
+          if (rows.length !== 7) probs.push(`gen/stages.md 里七阶段行 ${rows.length} 条（期望 7）`)
           else {
             for (const s of res.stages) {
               const row = rows[s.step - 1] ?? ''
@@ -1052,8 +1063,52 @@ actor = "session-pending"
         }
       }
     }
-    if (probs.length === 0) ok('R-9 ✓ 与生成器交叉验证：路由算出的五步（state + 完成数/总数）与 `gen/stages.md` 那五行逐项一致（两套独立解析器）')
+    if (probs.length === 0) ok('R-9 ✓ 与生成器交叉验证：路由算出的**七阶段**（state + 完成数/总数）与 `gen/stages.md` 那**七行**逐项一致（两套独立解析器）')
     else for (const x of probs) bad(`R-9 · ${x}`)
+  }
+  // ══════════════════════════════════════════════════════════════════════
+  // R-32 ⭐ **阶段数只有一个数：want 项数 === gen/stages.md 的阶段行数**（O-27）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ── 它守什么 ────────────────────────────────────────────────
+   *   O-27 的表象是「注释写五步、want 是 7 项」，但**真正的风险不是注释**：
+   *   是**两个地方各数各的** —— `want` 数 7、`gen/stages.md` 画几行、
+   *   面板画几个格子，三处一旦分叉，用户看到的就是「少了一步」或「多了一步」。
+   *
+   * ⚠ 我第一版判据写的是「扫本文件的『N步』字样」—— **实测它是空转的**：
+   *   全文只剩 1 行非豁免命中，而那 1 行是本条判据自己的输出文案。
+   *   ⇒ 改成**数结构**（want 项数 vs 真实 stages.md 的阶段行数），⛔ 不数字样。
+   *
+   * ── 判据 ──────────────────────────────────────────────────
+   *   ① `want` 项数 === 真实 `gen/stages.md` 里 `| ①… |` 形式的阶段行数；
+   *   ② 两边都必须 > 0（⛔ 不许「都读不到 ⇒ 0 === 0 ⇒ 绿」）。
+   */
+  {
+    const { readFileSync: rf } = await import('node:fs')
+    const selfSrc = rf(pathToFileURL(join(root, 'scripts', 'check-stages-route.mjs')).pathname, 'utf8')
+    const wantLine = selfSrc.split('\n').find((l) => l.includes('const want = [[1,'))
+    const wantCount = wantLine === undefined ? -1 : (wantLine.match(/\[\d+, '/g) ?? []).length
+    /** 真实账本的 stages.md（与 R-9 同一份基准）。 */
+    let mdRows = -1
+    /** ⚠ `ledgerDir` 是别的块里的局部变量 ⇒ 这里自己解析一次（与 R-9 同一个函数）。 */
+    const { ledgerHomeOf: lhOf, resolveLedgerRoot: rlr } = await import('./lib/ledger-root.mjs')
+    const mdRoot = rlr(root, undefined, lhOf(root))
+    try {
+      if (mdRoot === undefined) throw new Error('账本根判不出')
+      const md = rf(join(mdRoot, 'ledger', 'gen', 'stages.md'), 'utf8')
+      /** ⚠ 只数「阶段行」：形如 `| ① 需求规格 | … |`，⛔ 不数 cap 表与检查族表。 */
+      mdRows = md.split('\n').filter((l) => /^\|\s*[①②③④⑤⑥⑦⑧⑨⑩]/.test(l)).length
+    } catch { mdRows = -1 }
+    const probs = []
+    if (wantCount <= 0) probs.push('读不出 want 的项数（源码形态变了）⇒ 本条失去基准')
+    if (mdRows <= 0) probs.push('读不到真实 gen/stages.md 的阶段行 ⇒ 本条失去基准（⛔ 不按通过处理）')
+    if (wantCount > 0 && mdRows > 0 && wantCount !== mdRows) {
+      probs.push(`阶段数分叉：R-2 的 want 是 ${wantCount} 项，而 gen/stages.md 画了 ${mdRows} 行`)
+    }
+    if (probs.length === 0) {
+      ok(`R-32 ✓ 阶段数只有一个数：want = ${wantCount} 项 === gen/stages.md 的 ${mdRows} 个阶段行`
+        + '（O-27：三处各数各的 ⇒ 本条当场红）')
+    } else for (const x of probs) bad(`R-32 · ${x}`)
   }
   // ══════════════════════════════════════════════════════════════════════
   // R-10 ⭐ **每个 kind 的每个合法状态都必须有中文标签**（2026-10-30 P21）
@@ -1100,6 +1155,91 @@ actor = "session-pending"
     } else for (const x of problems) bad(`R-10 · ${x}`)
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // R-31 ⭐ **两份状态表必须逐值相同**（`UNIT_STATUSES` ↔ `STAGE_KIND_STATUSES`）
+  // ══════════════════════════════════════════════════════════════════════
+  /**
+   * ── 它守什么 ────────────────────────────────────────────────
+   *   本仓有**两份** kind→status 封闭表：
+   *     · `ledger-validation.ts:14` 的 `UNIT_STATUSES`（结构校验读它）
+   *     · `stages-index.ts:46` 的 `STAGE_KIND_STATUSES`（标签/门禁读它）
+   *   ⚠ 两份**逐值相同**，但**靠人眼维持** —— 加一个 kind 只改一处，另一处就漂。
+   *
+   * ── 真实事故（本仓记过两次，都在这两份表之间）────────────────
+   *   · `goal` 加进 `gen-ledger.mjs` 的 `KIND_SPEC`，**没同步 `STAGE_KIND_STATUSES`**
+   *     ⇒ R-9 报 `G-01: kind="goal" 不在封闭集`。
+   *   · 更值得记的是：**它当时发现不了** —— 账本里一个 `goal` 单元都没有，
+   *     R-9 扫过的行全是旧 kind。等真数据落进来才响。
+   *
+   * ── 判据（⚠ 逐值，⛔ 不数个数）─────────────────────────────
+   *   ① kind 集合**双向相等**（⛔ 单向子集也不行 —— 两边都得有）；
+   *   ② 每个 kind 的 `statuses` **数组逐项相等**（含**顺序** —— 顺序影响 init 推导）；
+   *   ③ ⚠ 负向对拍见 N-R-31：给 `UNIT_STATUSES` 加一个假 kind ⇒ 本条必红。
+   */
+  {
+    const valMod = await import(pathToFileURL(join(root, 'src', 'shared', 'ledger-validation.ts')).href)
+    const idxMod2 = await import(pathToFileURL(join(root, 'src', 'shared', 'stages-index.ts')).href)
+    const A = valMod.UNIT_STATUSES
+    const B = idxMod2.STAGE_KIND_STATUSES
+    const problems = []
+    const kindsA = Object.keys(A).sort()
+    const kindsB = Object.keys(B).sort()
+    const onlyA = kindsA.filter((k) => !kindsB.includes(k))
+    const onlyB = kindsB.filter((k) => !kindsA.includes(k))
+    if (onlyA.length > 0) problems.push(`只在 UNIT_STATUSES 里：${onlyA.join(', ')}`)
+    if (onlyB.length > 0) problems.push(`只在 STAGE_KIND_STATUSES 里：${onlyB.join(', ')}`)
+    let compared = 0
+    for (const k of kindsA) {
+      if (B[k] === undefined) continue
+      compared += 1
+      const a = A[k]
+      const b = B[k].statuses
+      if (a.length !== b.length) {
+        problems.push(`${k}: 条数不同（UNIT=${a.length} · STAGE=${b.length}）⇒ UNIT=[${a.join(',')}] · STAGE=[${b.join(',')}]`)
+      } else if (a.some((x, i) => x !== b[i])) {
+        problems.push(`${k}: 值或顺序不同 ⇒ UNIT=[${a.join(',')}] · STAGE=[${b.join(',')}]`)
+      }
+    }
+    if (problems.length === 0) {
+      ok(`R-31 ✓ 两份 kind→status 封闭表**逐值相同**（${compared} 个 kind · ${kindsA.length} 个键）`
+        + '：加 kind 只改一处 ⇒ 本条当场红（⛔ 不再等真数据到位才暴露）')
+    } else for (const x of problems) bad(`R-31 · ${x}`)
+  }
+
+  // ── N-R-31 ⭐ 负向对拍：给 `UNIT_STATUSES` 加一个假 kind ⇒ R-31 必红 ──────
+  {
+    const { writeFileSync: wf, rmSync: rm } = await import('node:fs')
+    const srcFile = join(root, 'src', 'shared', 'ledger-validation.ts')
+    const orig = (await import('node:fs')).readFileSync(srcFile, 'utf8')
+    /**
+     * ⚠⚠ **变体⛔ 不许落在 `root/src`**（第 57 轮 · 与 §122/§124 同族）：
+     *   落进去会让 `src/` 短暂多一个文件 ⇒ 若恰在此时 build，
+     *   `tsconfig` 的 `include: ["src"]` 会把它编进 `lib/`，
+     *   而 `check:build` 面 ⑤ 会因此报孤儿（**判据自己污染被测对象**）。
+     *   ⇒ 改用 `os.tmpdir()` 沙箱，**保持原相对结构**（`<sandbox>/src/shared/…`）。
+     *   ⚠ `ledger-validation.ts` 实测**零 import** ⇒ 沙箱里可独立加载。
+     */
+    const { mkdtempSync: mkdt, mkdirSync: mkd } = await import('node:fs')
+    const { tmpdir: tdir } = await import('node:os')
+    const box = mkdt(join(tdir(), 'hob-r31-'))
+    mkd(join(box, 'src', 'shared'), { recursive: true })
+    const mutFile = join(box, 'src', 'shared', 'ledger-validation.__mut.ts')
+    try {
+      wf(mutFile, orig.replace('  goal: [', "  zzzFakeKind: ['a'],\n  goal: ["))
+      const mutMod = await import(pathToFileURL(mutFile).href)
+      const A = mutMod.UNIT_STATUSES
+      const idxMod3 = await import(pathToFileURL(join(root, 'src', 'shared', 'stages-index.ts')).href)
+      const B = idxMod3.STAGE_KIND_STATUSES
+      const onlyA = Object.keys(A).filter((k) => B[k] === undefined)
+      if (onlyA.length > 0) {
+        ok(`N-R-31 ✓ 负向对拍（给 UNIT_STATUSES 加假 kind）⇒ R-31 必红（只在 UNIT 里：${onlyA.join(',')}）`)
+      } else {
+        bad('N-R-31 · 加了假 kind 后两边**仍**相等 ⇒ R-31 没有牙')
+      }
+    } finally {
+      try { rm(box, { recursive: true, force: true }) } catch { /* 清不掉不静默：下面那条会报 */ }
+    }
+  }
   // ── N-R-10 ⭐ 负向对拍：临时删掉 `task.built` 映射 ⇒ R-10 必红 ──────────
   /**
    * ⚠ **先自证**：删掉之后 `stageStatusLabel('task','built')` 必须**真的**变成

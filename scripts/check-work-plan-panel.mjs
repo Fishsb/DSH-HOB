@@ -108,12 +108,73 @@ export function StateDot({ state }) {
    * @param entry - 要挂的模块（负向对拍会传变体）
    * @returns React root（调用方负责 unmount）
    */
+  /**
+   * ⚠ R-020 起工作计划挂在**选中需求的第 4 步展开体**里，不再是独立一级视图。
+   *   这里给一条第 4 步为当前步的需求链，让第 4 步默认展开 ⇒ 计划面板真实挂载。
+   *   ⛔ 不给链就会退化成“没有主线”，WP-1 会把夹具缺陷误报成产品缺陷。
+   */
+  const CHAIN_STAGES = {
+    ok: true,
+    readAt: '2026-11-07T00:00:00.000Z',
+    stages: [
+      { step: 1, name: '需求规格', state: 'done', done: 1, total: 1, items: [{ id: 'R-910', status: 'agreed', kind: 'req', presentation: { displayTitle: '计划面板夹具需求', relation: { key: 'goal', id: null, state: 'undecidable' }, facts: [], flags: [] } }] },
+      { step: 2, name: '实现方案', state: 'done', done: 1, total: 1, items: [{ id: 'CHG-910', status: 'settled', kind: 'change', presentation: { displayTitle: '计划面板夹具方案', relation: { key: 'requirement', id: 'R-910', state: 'ok' }, facts: [], flags: [] } }] },
+      { step: 3, name: '编码任务', state: 'done', done: 1, total: 1, items: [{ id: 'TSK-910', status: 'built', kind: 'task', presentation: { displayTitle: '计划面板夹具任务', relation: { key: 'change', id: 'CHG-910', state: 'ok' }, facts: [], flags: [] } }] },
+      { step: 4, name: '任务执行', state: 'doing', done: 0, total: 1, items: [{ id: 'RUN-910', status: 'running', kind: 'run', presentation: { displayTitle: '计划面板夹具执行', relation: { key: 'task', id: 'TSK-910', state: 'ok' }, facts: [], flags: [] } }] },
+      { step: 5, name: '验收核对', state: 'todo', done: 0, total: 0, items: [] },
+    ],
+    caps: [],
+  }
+  const CHAIN = {
+    ok: true,
+    readAt: '2026-11-07T00:00:00.000Z',
+    activeCount: 1,
+    completedCount: 0,
+    retiredCount: 0,
+    historyItemCount: 0,
+    retiredChains: [],
+    unattached: [],
+    chains: [{
+      reqId: 'R-910',
+      title: '计划面板夹具需求',
+      reqStatus: 'agreed',
+      state: 'active',
+      inFlight: true,
+      complete: false,
+      currentStep: 4,
+      missing: ['acc'],
+      itemIds: ['R-910', 'CHG-910', 'TSK-910', 'RUN-910'],
+      next: { kind: 'dispatch', target: 'RUN-910', why: '等待执行回传', blockedBy: [] },
+      summary: {},
+      steps: [
+        { step: 1, name: '需求规格', displayState: 'done', summary: '', total: 1, done: 1, doing: 0, waiting: 0, itemIds: ['R-910'] },
+        { step: 2, name: '实现方案', displayState: 'done', summary: '', total: 1, done: 1, doing: 0, waiting: 0, itemIds: ['CHG-910'] },
+        { step: 3, name: '编码任务', displayState: 'done', summary: '', total: 1, done: 1, doing: 0, waiting: 0, itemIds: ['TSK-910'] },
+        { step: 4, name: '任务执行', displayState: 'doing', summary: '', total: 1, done: 0, doing: 1, waiting: 0, itemIds: ['RUN-910'] },
+        { step: 5, name: '验收核对', displayState: 'todo', summary: '', total: 0, done: 0, doing: 0, waiting: 0, itemIds: [] },
+      ],
+    }],
+  }
   const mount = async (plansResponse, entry = ui) => {
     const rootEl = reactDom.createRoot(container())
+    /**
+     * ⚠⚠ **必须声明 Hob 预设**（2026-11-11 · 复核既有失败时实测发现）。
+     *
+     *   门禁在 O-41 之后是**三态**：`props` 存在却**缺 `agentPreset`** ⇒ 按「判不出」拦住，
+     *   面板只渲染一行「当前会话不是 Hob 或预设判不出，未读取任何账本」。
+     *   ⇒ 本文件的夹具**从来没给过它**，于是整个面板早退，9 条断言全红
+     *     （根因只有 WP-1 一条，其余 8 条是连带）。
+     *
+     *   ⚠ `check-stages-panel-dom.mjs` 早在门禁三态化时就补过这个字段
+     *     （它文件头 :56 明写「缺 agentPreset ⇒ 按判不出拦住」）—— 本文件漏了同步。
+     *   ⚠ 值必须与 `src/shared/planning-preset.ts` 的 `HOB_PRESET_ID` 一致。
+     */
     const props = {
+      agentPreset: 'Hob',
       fetchProgress: async () => ({ ok: true, rows: [] }),
       fetchExec: async () => ({ ok: true, items: [] }),
-      fetchStages: async () => ({ ok: true, stages: [], caps: [] }),
+      fetchStages: async () => CHAIN_STAGES,
+      fetchChains: async () => CHAIN,
       fetchUnseen: async () => ({ ok: true, count: 0, names: [], items: [], summary: '0 条 —— 当前没有待确认的工具' }),
       fetchCurrent: async () => ({ ok: true, text: '# Current\n\n- 夹具' }),
       ...(plansResponse === undefined ? {} : { fetchPlans: async () => plansResponse }),
@@ -127,6 +188,7 @@ export function StateDot({ state }) {
   const fixture = {
     ok: true,
     mode: 'multi',
+    modeSource: 'stored',
     plans: [{
       planId: 'WP-demo-1',
       state: 'running',
@@ -167,6 +229,48 @@ export function StateDot({ state }) {
     if (rows.length === 1 && tracks.length === 2 && missing.length === 0) {
       ok(`WP-2 ✓ 有数据时显示计划、轨道数、两条执行者与等待关系：${tracks.map((t) => t.trim()).join(' | ')}`)
     } else bad(`WP-2 · rows=${rows.length} tracks=${tracks.length} missing=${JSON.stringify(missing)} all=${JSON.stringify(all).slice(0, 300)}`)
+    r.unmount()
+  }
+
+  // WP-2c 当前会话档位与计划创建时档位必须分开显示
+  {
+    const r = await mount(fixture)
+    const row = document.querySelector('[data-dsh-hob="work-plan-row"]')?.textContent ?? ''
+    const note = document.querySelector('[data-dsh-hob="work-plan-mode-note"]')?.textContent ?? ''
+    if (row.includes('计划创建时：多会话') && row.includes('当前会话：多会话') && note === '') {
+      ok('WP-2c ✓ 计划行同时写「计划创建时」与「当前会话」档位；相同时不多出解释行')
+    } else bad(`WP-2c · row=${JSON.stringify(row)} note=${JSON.stringify(note)}`)
+    r.unmount()
+  }
+
+  // WP-2d 计划快照与当前会话档位不同 ⇒ 明写为什么本计划不变
+  {
+    const changed = { ...fixture, mode: 'single', plans: [{ ...fixture.plans[0], modeSnapshot: 'multi' }] }
+    const r = await mount(changed)
+    const row = document.querySelector('[data-dsh-hob="work-plan-row"]')?.textContent ?? ''
+    const note = document.querySelector('[data-dsh-hob="work-plan-mode-note"]')?.textContent ?? ''
+    if (row.includes('计划创建时：多会话') && row.includes('当前会话：单会话')
+      && note.includes('按创建时档位推进') && note.includes('改档只影响下一份计划')) {
+      ok(`WP-2d ✓ 改档后旧计划仍按快照推进，且面板说清原因：${note.trim()}`)
+    } else bad(`WP-2d · row=${JSON.stringify(row)} note=${JSON.stringify(note)}`)
+    r.unmount()
+  }
+
+  // WP-2b 过期计划必须一眼看出"没人管了"（2026-11-06）
+  {
+    const staleFixture = {
+      ...fixture,
+      plans: [{ ...fixture.plans[0], ageHours: 51.5, occupiesSlot: false, stale: true }],
+    }
+    const r = await mount(staleFixture)
+    const health = document.querySelector('[data-dsh-hob="work-plan-health"]')?.textContent ?? ''
+    const warns = health.includes('51.5h') && health.includes('不占执行槽') && health.includes('超过 24h')
+    const fresh = await mount(fixture)
+    const freshHealth = document.querySelector('[data-dsh-hob="work-plan-health"]')?.textContent ?? ''
+    fresh.unmount()
+    if (warns && freshHealth === '') {
+      ok(`WP-2b ✓ 过期计划显示年龄 / 不占槽 / 超时警告（${health.trim()}）；新计划不显示该行（⛔ 不是恒显）`)
+    } else bad(`WP-2b · staleHealth=${JSON.stringify(health)} freshHealth=${JSON.stringify(freshHealth)}`)
     r.unmount()
   }
 
@@ -216,10 +320,16 @@ export function StateDot({ state }) {
   // WP-7 负向对拍：摘掉挂载 ⇒ WP-1 必须红
   {
     const src = readFileSync(ENTRY, 'utf8')
-    const mountRe = /React\.createElement\(WorkPlanPanel, \{[^\n]*\}\),\n/
-    const stripped = src.replace(mountRe, '')
+    /**
+     * ⚠ R-020 起只剩**一处** WorkPlanPanel（第 4 步展开体里的「计划与轨道」）。
+     *   摘掉它 ⇒ WP-1 的挂载断言必须变红。
+     *   ⚠ 仍要求锚点**恰好出现一次**；形态一变就报"不可判"，⛔ 不静默跳过。
+     */
+    const mountRe = /React\.createElement\(WorkPlanPanel, \{\n\s+sessionId: props\?\.sessionId,\n\s+source: plansState,\n[\s\S]*?\n\s+\}\)\),/
+    const hits = src.match(new RegExp(mountRe.source, 'g')) ?? []
+    const stripped = hits.length === 1 ? src.replace(mountRe, '') : src
     if (stripped === src) {
-      bad('WP-7 · 源码里找不到 WorkPlanPanel 的唯一挂载点 ⇒ 负向对拍无法构造')
+      bad(`WP-7 · 源码里找不到活动计划 WorkPlanPanel 的唯一挂载点（命中 ${hits.length} 处）⇒ 负向对拍无法构造`)
     } else {
       /**
        * ⚠ 变体必须**换一份源码根**：`mountTsGraph` 按 `root` 读源码，
@@ -271,7 +381,7 @@ export function StateDot({ state }) {
         logger: { info: () => {}, warn: () => {} },
         get: (n) => {
           if (n === 'hobOrchestrator') return fakeOrch
-          if (n === 'hobSessionPolicy') return { of: () => ({ workMode: 'multi' }) }
+          if (n === 'hobSessionPolicy') return { of: () => ({ workMode: 'multi', source: 'stored' }) }
           if (n === 'sessions') return { get: () => ({ header: { cwd: root } }) }
           return undefined
         },
@@ -304,7 +414,8 @@ export function StateDot({ state }) {
         const badJson = await handler({ text: async () => '{broken' })
         const badJsonBody = await badJson.json()
         if (good.status !== 200 || goodBody.ok !== true
-          || goodBody.plans?.[0]?.planId !== 'WP-route' || goodBody.mode !== 'multi') {
+          || goodBody.plans?.[0]?.planId !== 'WP-route' || goodBody.mode !== 'multi'
+          || goodBody.modeSource !== 'stored') {
           q.push(`正常读数不对：${good.status} ${JSON.stringify(goodBody)}`)
         }
         if (noSession.status !== 400 || noSessionBody.reason !== 'no-session') {
@@ -314,7 +425,7 @@ export function StateDot({ state }) {
           q.push(`坏 JSON 未归 bad-request：${badJson.status} ${JSON.stringify(badJsonBody)}`)
         }
       }
-      if (q.length === 0) ok('WP-8 ✓ 只读路由：注册 POST 路径；正常读数带 plans/mode；缺 sessionId 与坏 JSON 各自可分辨；未调用会写盘的 workPlans()')
+      if (q.length === 0) ok('WP-8 ✓ 只读路由：注册 POST 路径；正常读数带 plans/mode/modeSource；缺 sessionId 与坏 JSON 各自可分辨；未调用会写盘的 workPlans()')
       else for (const x of q) bad(`WP-8 · ${x}`)
     }
   }

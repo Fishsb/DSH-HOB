@@ -6,9 +6,11 @@
  * 目标与 `orchestrator_read` 的 Inline/Spill 一致：列表只回摘要与读取指针。
  */
 
+import { presentationOf, type ItemPresentation } from './item-presentation.ts'
+
 export type LedgerKind =
   | 'goal' | 'req' | 'change' | 'task' | 'run'
-  | 'acc' | 'evidence' | 'risk' | 'decision' | 'cap'
+  | 'acc' | 'verification' | 'closure' | 'evidence' | 'risk' | 'decision' | 'cap'
 
 export interface LedgerUnitLike {
   id: string
@@ -27,6 +29,16 @@ export interface LedgerCard {
   parent?: string
   read: string
   children?: string[]
+  /**
+   * 完整账本单元（仅按 ID 读取时返回）。
+   * ⚠ 列表与资源图只回摘要；只有展开某一条时才需要正文。
+   */
+  unit?: LedgerUnitLike
+  /**
+   * 完整展示投影（仅按 ID 读取时返回）。
+   * ⚠ 与列表投影同源；客户端展开时按中文事实名显示，⛔ 不自行另写一套状态。
+   */
+  presentation?: ItemPresentation
 }
 
 export type ResourceRead =
@@ -40,6 +52,8 @@ const READ_PREFIX: Readonly<Record<LedgerKind, string>> = {
   task: 'task',
   run: 'run',
   acc: 'acceptance',
+  verification: 'verification',
+  closure: 'closure',
   evidence: 'evidence',
   risk: 'risk',
   decision: 'decision',
@@ -58,6 +72,8 @@ export function kindOfId(id: string): LedgerKind | undefined {
   if (/^TSK-\d+$/.test(x)) return 'task'
   if (/^RUN-\d+$/.test(x)) return 'run'
   if (/^ACC-\d+$/.test(x)) return 'acc'
+  if (/^VER-\d+$/.test(x)) return 'verification'
+  if (/^CLS-\d+$/.test(x)) return 'closure'
   if (/^EVD-\d+$/.test(x)) return 'evidence'
   if (/^RSK-\d+$/.test(x)) return 'risk'
   if (/^DEC-\d+$/.test(x)) return 'decision'
@@ -135,6 +151,8 @@ export function readLedgerResource(units: readonly LedgerUnitLike[], resource: s
     tasks: 'task',
     runs: 'run',
     acceptances: 'acc',
+    verifications: 'verification',
+    closures: 'closure',
     evidences: 'evidence',
     risks: 'risk',
     decisions: 'decision',
@@ -151,7 +169,7 @@ export function readLedgerResource(units: readonly LedgerUnitLike[], resource: s
       children: found.map((u) => cardOf(u)),
     }
   }
-  const m = /^(goal|requirement|change|task|run|acceptance|evidence|risk|decision|capability)\/([^/]+)(?:\/(children))?$/.exec(name)
+  const m = /^(goal|requirement|change|task|run|acceptance|verification|closure|evidence|risk|decision|capability)\/([^/]+)(?:\/(children))?$/.exec(name)
   if (m === null) {
     return { ok: false, resource: name, reason: 'unknown-resource', message: `不认识的资源：${name}` }
   }
@@ -179,5 +197,10 @@ export function readLedgerResource(units: readonly LedgerUnitLike[], resource: s
     const direct = childrenOf(units, id)
     return { ok: true, resource: name, card: cardOf(unit, direct), children: direct.map((u) => cardOf(u)) }
   }
-  return { ok: true, resource: name, card: cardOf(unit, children), children: children.map((u) => cardOf(u)) }
+  return {
+    ok: true,
+    resource: name,
+    card: { ...cardOf(unit, children), unit, presentation: presentationOf(unit, units) },
+    children: children.map((u) => cardOf(u)),
+  }
 }

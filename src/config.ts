@@ -62,14 +62,18 @@ export interface ModulesConfig {
 }
 
 /**
- * 「新建会话默认值」（{@link Config.spawn} 的**普通值**形态）。
+ * 派活与新建会话的默认值（{@link Config.spawn} 的**普通值**形态）。
  *
  * ⚠ 与 {@link ModulesConfig} 同一条纪律：schema 上四个子字段**各标 `.volatile()`**，
  *   运行时它们都是 **ref 对象** ⇒ **调用方一律不许直接读 `config.spawn.x`**
  *   （直读恒真/恒为 ref，且不报错）。唯一入口是 {@link spawnDefaults}。
  */
 export interface SpawnDefaults {
-  /** 新会话默认 Agent 预设 id；空串 = **出厂默认 `standard`**（⛔ 不是"用宿主默认预设"）。 */
+  /**
+   * 执行预设 id：**每次派活前**用来核对目标会话的当前预设。
+   * 空串 = 出厂默认 `standard`；`Hob` 永不作为实施预设。
+   * ⚠ 它同时是新建会话时显式传入的预设，但语义不只是"新会话默认"。
+   */
   agentPreset: string
   /** 新会话默认模型 provider；空串 = 用宿主默认模型。 */
   provider: string
@@ -81,8 +85,12 @@ export interface SpawnDefaults {
 
 export interface Config {
   /**
-   * 「新建会话默认值」——只影响**本插件建出的会话**（`hob_spawn`），
-   * 不影响用户在宿主界面里手工新建的会话（后者由宿主自己的设置页管）。
+   * 「执行预设 + 新建会话默认值」。
+   *
+   * `agentPreset` 是**派活前核对的执行预设**：目标一致直接派；不一致先问用户
+   * （继续活跃会话 / 按该预设新建）；目标是 Hob 时只能新建或取消。
+   * `provider` / `model` / `reasoningEffort` 只用于**本插件新建的会话**，
+   * 不影响用户在宿主界面里手工新建的会话。
    *
    * ⚠ **形状与 `modules` 同款**：父对象 `spawn` **不**标 `.volatile()`，
    *   四个子字段**各标** —— 父子同标会抛 `ValidationError`
@@ -315,7 +323,7 @@ export const Config = z.object({
    */
   spawn: z.object({
     agentPreset: z.string().default('')
-      .description('新建会话默认预设（id，如 `standard`）。⚠ 留空 = **出厂默认 `standard`**（标准模式），**不是**「用宿主默认预设」。⚠ 若这里填的是本插件的项目总负责人预设（`Hob`）⇒ 不套用它（它负责组织与验收，不承担具体实施），改走出厂默认并在返回里说明。只影响本插件建出的会话，不影响手工新建的会话。')
+      .description('执行预设（id，如 `standard` 或 `deep-ptc`）。每次派活前核对目标会话的当前预设：一致直接派；不一致会先问用户是继续活跃会话还是按此预设新建。⚠ 留空 = **出厂默认 `standard`**（标准模式）。⚠ `Hob` 是项目总代理预设，永不作为实施预设。模型与思考档位只用于本插件新建的会话。')
       .volatile(),
     provider: z.string().default('')
       .description('新建会话默认模型的 provider 路由（如 `dshapi`）。留空 = 用宿主默认模型。')
@@ -468,10 +476,11 @@ export const Config = z.object({
     mode: z.union(WORK_MODE_VALUES.map((v) => z.const(v))).default(DEFAULT_WORK_MODE)
       .description(
         'Hob 推进项目的工作方式（三选一）：'
-        + `${WORK_MODE_DISPLAY.auto} = Hob 按任务与方案自己判该拆成几路（结果随任务而变），`
-        + '判完**直接派出去**、不再先问用户；派完在回复里说清拆成几路、每路给了谁、哪一路先回来才能定下一步；'
-        + `${WORK_MODE_DISPLAY.single} = 恒定一路推进；`
-        + `${WORK_MODE_DISPLAY.multi} = 拆到最细、尽可能多路（费用与时间不设上限）。`
+        + `${WORK_MODE_DISPLAY.auto} = 在已批准范围内由 Hob 判断最少必要轨数；可以只开一轨，但要说明原因；`
+        + '读轨可并行、写轨串行；已授权工作判完即派，派完在回复里说清拆成几路、每路给了谁、哪一路先回来才能定下一步；'
+        + `${WORK_MODE_DISPLAY.single} = 固定一条执行轨（硬限制，第二条活动轨会被拒绝）；`
+        + `${WORK_MODE_DISPLAY.multi} = 显式扇出：存在多个独立工作单元时必须拆轨；每轨独立范围和验收；`
+        + '只开一轨必须给候选证据；读轨可并行、写轨仍串行（费用与时间不设上限）。'
         + '⚠ 它只改「怎么拆活、拆成几路」，不改权限档位、不改谁能写什么、不改验收口径。'
         + '⚠ 「多会话」的无限制只到"费用与时间不设上限"这一层，不解除任何既有红线：'
         + '不改看板、不碰别人项目的卡、不放宽任何判据、不把"多"理解成"每个会话都能干任意事"。'

@@ -59,6 +59,18 @@ export const STAGE_STATUS_LABELS_ZH: Readonly<Record<string, Readonly<Record<str
     'send-back': '已退回',
     unverified: '还没验',
   },
+  verification: {
+    unverified: '待技术验证',
+    pass: '技术验证通过',
+    'send-back': '技术验证退回',
+    waived: '正式豁免技术验证',
+  },
+  closure: {
+    open: '待交付收口',
+    closed: '已交付收口',
+    skipped: '按风险跳过交付收口',
+    blocked: '交付收口受阻',
+  },
   // — 长期能力：不是进度，是**当下健康度**（见 renderCapState 的说明）
   cap: {
     live: '正常',

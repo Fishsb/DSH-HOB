@@ -19,6 +19,7 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ledgerHomeOf, resolveLedgerRoot } from './lib/ledger-root.mjs'
+import { STAGE_IDS, STAGE_NAMES, gateProblemsAt } from '../src/shared/stage-controls.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 export const ROOT = join(here, '..')
@@ -170,7 +171,9 @@ export const KIND_SPEC = {
   change: { step: 2, statuses: ['proposed', 'settled', 'superseded'], init: 'proposed', finals: ['settled', 'superseded'], prefix: 'CHG-' },
   task: { step: 3, statuses: ['todo', 'doing', 'built'], init: 'todo', finals: ['built'], prefix: 'TSK-' },
   run: { step: 4, statuses: ['registered', 'running', 'returned', 'refused', 'stuck'], init: 'registered', finals: ['returned', 'refused', 'stuck'], prefix: 'RUN-' },
-  acc: { step: 5, statuses: ['pass', 'send-back', 'unverified'], init: 'unverified', finals: ['pass', 'send-back'], prefix: 'ACC-' },
+  acc: { step: 6, statuses: ['pass', 'send-back', 'unverified'], init: 'unverified', finals: ['pass', 'send-back'], prefix: 'ACC-' },
+  verification: { step: 5, statuses: ['unverified', 'pass', 'send-back', 'waived'], init: 'unverified', finals: ['pass', 'send-back', 'waived'], prefix: 'VER-' },
+  closure: { step: 6, statuses: ['open', 'closed', 'skipped', 'blocked'], init: 'open', finals: ['closed', 'skipped'], prefix: 'CLS-' },
   /** ⚠ `cap` **不进任何一步**（`step: null`），且**无终态**。 */
   cap: { step: null, statuses: ['live', 'degraded', 'down'], init: 'live', finals: [], prefix: 'CAP-' },
   /**
@@ -299,6 +302,13 @@ export const SEND_BACK_ACTOR = {
 export const EXTENDED_FIELDS = {
   req: {
     acceptance_ids: '哪几条验收证明这条需求',
+    clarify_examples: '用户确认的关键例子',
+    clarify_questions: '需求澄清中的问题（resolved/closed 前缀表示已解决）',
+    clarify_assumptions: '显式假设及状态（pending/confirmed/rejected）',
+    clarify_sources: '需求澄清使用的外部研究依据',
+    acceptance_criteria: '可观察验收条件',
+    clarify_legacy: '控制上线前的存量标记（只读豁免，新单元禁用）',
+    created_at: '单元创建时刻（历史豁免必须早于控制上线日）',
     risk_ids: '涉及哪几条风险',
     priority: '优先级',
     retired_title: '退役前标题（逐字）',
@@ -308,12 +318,62 @@ export const EXTENDED_FIELDS = {
     replaced_by: '替代需求（若有）',
     carried_by: '哪份文件或哪条判据接手',
   },
-  change: { addresses: '满足哪几条需求', decisions: '依哪几条决策', supersedes: '取代哪条旧方案', risk_ids: '涉及哪几条风险' },
+  change: {
+    addresses: '满足哪几条需求',
+    risk_tier: '风险等级（low / medium / high / critical，决定门禁深度）',
+    risk_rule_version: '风险规则版本',
+    risk_hard_triggers: '命中的硬触发（封闭集）',
+    risk_hard_trigger_facts: '每条硬触发的六段式事实（trigger | fact | affected | evidence | mitigation | residual）',
+    risk_dimensions: '十维风险事实（key=value，逐维完整）',
+    risk_inputs_digest: '风险事实推导摘要；事实变化后必须重评',
+    risk_assessed_at: '风险评定时刻',
+    risk_assessed_by: '风险评定者',
+    delivery_scope: '交付范围（none / internal / external）',
+    closure_mode: 'G6 收口档位（skipped / standard / strict）',
+    risk_binding_digest: '风险评定绑定的方案事实摘要；范围 / 依赖 / 交付目标变化后必须重评',
+    risk_binding_version: '风险评估绑定版本（用于区分旧规则评定与当前评定）',
+    risk_assessment_ref: '完整风险评定记录引用',
+    review_refs: '设计评审记录引用',
+    reviewer: '设计评审者（⛔ 不得等于 built_by）',
+    decision_refs: '依哪几条 decision 单元（⛔ 不重复写决策正文）',
+    test_strategy: '测试策略（单元 / 集成 / 端到端 / 手工）',
+    research_findings: '研究结论，形如 `source | finding | applies_to | accessed_at`',
+    decisions: '依哪几条决策',
+    supersedes: '取代哪条旧方案',
+    risk_ids: '涉及哪几条风险',
+    path_options: '候选实现路径',
+    path_tradeoffs: '路径代价与风险',
+    path_decision: '推荐路径与理由',
+    research_refs: '方案使用的外部研究依据',
+    requirement_coverage: '需求到方案的映射',
+    stage_summary: '阶段摘要文件引用',
+    clarify_legacy: '控制上线前的存量标记（只读豁免，新单元禁用）',
+    created_at: '单元创建时刻（历史豁免必须早于控制上线日）',
+  },
   task: {
     req_ids: '这条任务服务哪几条需求（⚠ 承诺关系；⛔ 不是 `after` 的前置关系）',
     verify_refs: '该由哪几条证据证明',
+    test_plan: '验证计划（单元 / 集成 / 端到端 / 手工，逐层写清）',
+    reviewer: '代码评审者（⛔ 不得等于 built_by）',
+    review_refs: '代码评审记录引用',
+    task_risk: '任务执行风险档位（low / medium / high / critical；与方案固有风险分开）',
+    risk_reasons: '任务风险原因',
+    requires_isolation: 'true / false：任务是否需隔离执行',
+    requires_review: 'true / false：任务是否需独立复核',
+    requires_serial_execution: 'true / false：任务是否必须串行',
+    touched_surfaces: '任务触及的执行面',
+    irreversible_actions: '任务中含有的不可逆动作',
+    rollback_refs: '不可逆动作的恢复 / 回滚方案',
+    ci_refs: 'CI 运行读数引用',
     scope_paths: '允许改的路径',
     budget: '预算（几条调用 / 几轮）',
+    task_brief: '自包含任务书引用',
+    counterexamples: '任务必须仍不成立的反例',
+    stop_conditions: '必须停手回报的条件',
+    return_to: '阻塞时默认回流阶段',
+    research_refs: '任务使用的外部研究依据',
+    clarify_legacy: '控制上线前的存量标记（只读豁免，新单元禁用）',
+    created_at: '单元创建时刻（历史豁免必须早于控制上线日）',
   },
   run: {
     delivered_at: '投递时刻（不变量 1 的落点）',
@@ -321,6 +381,10 @@ export const EXTENDED_FIELDS = {
     evidence_refs: '产出了哪几条证据',
     prompt_version: '本次运行实际使用的模型面版本（如 v1；⛔ 不许从当前文件反推）',
     prompt_hash: '本次运行实际使用的模型面 SHA-256（与 contracts.md 同源）',
+    stage: '本次运行所属阶段',
+    progress_refs: '小步验证读数',
+    clarify_legacy: '控制上线前的存量标记（只读豁免，新单元禁用）',
+    created_at: '单元创建时刻（历史豁免必须早于控制上线日）',
   },
   /**
    * ⚠⚠ **`acc` 没有 `outcome` 字段**（2026-11-01 P40/R5b · `TASK-R5b.md` §一 裁定走 A）。
@@ -331,7 +395,80 @@ export const EXTENDED_FIELDS = {
    *   ⚠ 为什么不是"保留 + 回填"：回填等于把空字段填成它旁边那个字段已有的值，
    *     填完仍然是两个落点，只是两个都非空 —— 下次谁改一个忘另一个，仍然会漂。
    */
-  acc: { basis: '依据哪几条证据（引用 EVD-，⛔ 不是自由文本）', verified_at: '判决时刻', send_back_to: '退回目标（⛔ 只在 `status=send-back` 时必填；封闭三值）' },
+  acc: {
+    basis: '依据哪几条证据（引用 EVD-，⛔ 不是自由文本）',
+    verified_at: '判决时刻',
+    send_back_to: '退回目标（⛔ 只在 `status=send-back` 时必填；封闭三值）',
+    product_confirmation: '产品确认（技术通过之外的接受结论）',
+    acceptance_session: '独立验收会话 id（⛔ 必须 ≠ 被验单元的 built_by）',
+    verification_refs: '技术验证证据（引用 EVD-；⛔ 不是"跑了测试"这类自述）',
+    validation_refs: '产品确认证据（用户例子或产品验收记录）',
+    example_results: '用户例子逐条结果，形如 `EX-1 | pass | EVD-071 | 注`',
+    nonconformance_refs: '非符合项（未满足的判据 / 例子）',
+    residual_risks: '残余风险（未关闭的风险 id 或一句话）',
+    liens: '有条件通过的整改项，形如 `负责人 | 期限 | 影响 | 关闭证据`',
+    release_ready: '发布准备度（yes / no；有条件通过必须 no）',
+    release_refs: '发布证据（构建 / 重启 / 冒烟，逐项可指认）',
+    risk_residual_tier: '残余风险等级（low / medium / high / critical）',
+    risk_accepted_by: '残余风险接受者',
+    risk_accepted_at: '残余风险接受时刻',
+    risk_accept_conditions: '残余风险接受条件 / 整改约束',
+    risk_residual_impact: '残余风险触发时的影响范围',
+    risk_residual_monitoring: '残余风险的监控 / 回退方式',
+    clarify_legacy: '控制上线前的存量标记（只读豁免，新单元禁用）',
+    created_at: '单元创建时刻（历史豁免必须早于控制上线日）',
+  },
+  verification: {
+    basis: '技术验证依据（EVD- 引用）',
+    verified_at: '技术验证结论时刻',
+    verifier: '独立技术验证者',
+    verification_session: '独立技术验证会话',
+    task_revision: '被验证的任务修订',
+    criteria_refs: '逐条对应的验收条件',
+    evidence_refs: '技术证据引用',
+    nonconformance_refs: '未关闭的非符合项',
+    residual_tier: '技术验证后残余风险等级',
+    risk_review_refs: '逐条风险控制验证证据（每条硬触发至少一份）',
+    new_risk_refs: '技术验证发现、但方案未声明的风险引用',
+    new_risk_reason: '发现新风险的事实依据',
+    risk_residual_impact: '残余风险触发时的影响范围',
+    risk_residual_monitoring: '残余风险的监控 / 回退方式',
+    command: '可复跑命令（命令类验证）',
+    exit_code: '命令退出码',
+    artifact_ref: '被验证产物指针',
+    created_at: '单元创建时刻',
+  },
+  risk: {
+    risk_tier: '风险对象等级（low / medium / high / critical）',
+    category: '风险类别（data / permission / security / compatibility / delivery / operational / product）',
+    hard_trigger: '命中的硬触发（封闭值，可空）',
+    affects: '影响的单元（R- / CHG- / TSK-）',
+    likelihood: '发生可能性（rare / unlikely / possible / likely / almost-certain）',
+    impact: '影响程度（minor / moderate / major / critical）',
+    detectability: '可探测性（automatic / monitored / manual / latent）',
+    reversibility: '可逆性（easy / costly / hard / irreversible）',
+    mitigation: '风险控制措施',
+    verification_refs: '控制验证 / 关闭证据引用',
+    residual_tier: '残余风险等级',
+    owner: '风险负责人',
+    acceptance_ref: '残余风险接受 / 授权引用',
+  },
+  closure: {
+    closure_mode: '收口档位 skipped / standard / strict',
+    basis: '收口依据与证据引用',
+    release_refs: '构建 / 部署 / 冒烟证据',
+    rollback_refs: '回滚与恢复证据',
+    monitoring_refs: '发布后监控证据',
+    residual_risks: '残余风险',
+    liens: '未关闭整改项',
+    accepted_by: '交付收口接受者',
+    approval_ref: 'strict 收口的独立发布审批引用',
+    chain_acceptance_ref: 'G5 产品验收接受证据引用',
+    risk_assessment_ref: '本次收口使用的风险评定引用',
+    residual_risk_decision_ref: '残余风险接受决定 / 无需接受证据引用',
+    closed_at: '收口时刻',
+    created_at: '单元创建时刻',
+  },
 }
 
 /**
@@ -381,8 +518,8 @@ export const CHANGE_AGGREGATE = ['converged', 'not-converged', 'undecidable']
  */
 export const BLOCKED_BY_SHAPE = { rule: 'string', unit: 'string', why: 'string' }
 
-/** 五步的名字（渲染顺序）。 */
-export const STEP_NAMES = ['需求规格', '实现方案', '编码任务', '任务执行', '验收核对']
+/** Pipeline v3 stage names (render order). */
+export const STEP_NAMES = ['需求规格', '实现方案', '任务图', '任务执行', '技术验证', '产品验收', '交付收口']
 
 /** 三态图标（照 SDD Dashboard 的 `circle / play / check`；⛔ 无百分比）。 */
 export const STAGE_ICON = { notStarted: '○', doing: '▶', done: '✓' }
@@ -515,27 +652,44 @@ export function summarizeStep(units, spec) {
  */
 export function renderStages(units) {
   const lines = []
-  lines.push('# 五步阶段（**生成物** · ⛔ 手改即红）')
+  lines.push('# Pipeline v3 阶段（**生成物** · ⛔ 手改即红）')
   lines.push('')
   lines.push('> 由 `npm run gen:ledger` 从 `units/` 索引分片算出（依据 `DESIGN-V2.md` §四）。')
   lines.push('> ⚠ ⛔ 不许手改本文件：改索引，再重新生成（`CONSTITUTION` §2 / I5）。')
   lines.push('')
   lines.push('| 步 | 状态 | 完成/总数 | 条目 |')
   lines.push('|---|---|---|---|')
+  const byStep = new Map()
   for (const [kind, spec] of Object.entries(KIND_SPEC)) {
     if (spec.step === null) continue
+    const list = byStep.get(spec.step) ?? []
+    list.push([kind, spec])
+    byStep.set(spec.step, list)
+  }
+  for (const step of Array.from({ length: 7 }, (_, i) => i + 1)) {
+    const parts = byStep.get(step)
+    const kindItems = []
+    const finals = []
+    const totals = []
+    for (const [kind, spec] of parts ?? []) {
     /**
      * ⚠ 退役 / 丢弃需求只留历史，⛔ 不进活跃五步分母。
      * 与 `src/shared/stages-index.ts` 的路由同口径；`check:stages-route` R-9 交叉验证。
      */
     const unitsOfStep = units.filter((u) => u.kind === kind
       && !(kind === 'req' && ['retired', 'dropped'].includes(String(u.status))))
-    const { state, finals, total } = summarizeStep(unitsOfStep, spec)
+      kindItems.push(...unitsOfStep)
+      finals.push(...unitsOfStep.filter((u) => spec.finals.includes(u.status)))
+      totals.push(...unitsOfStep)
+    }
+    const total = totals.length
+    const done = finals.length
+    const state = total === 0 ? 'notStarted' : done === total ? 'done' : 'doing'
     const label = state === 'done' ? `${STAGE_ICON.done} 完成`
       : state === 'doing' ? `${STAGE_ICON.doing} 进行中`
         : `${STAGE_ICON.notStarted} 未开始`
-    const ids = unitsOfStep.map((u) => String(u.id)).join(' ')
-    lines.push(`| ${['①', '②', '③', '④', '⑤'][spec.step - 1]} ${STEP_NAMES[spec.step - 1]} | ${label} | ${finals}/${total} | ${ids === '' ? '—' : ids} |`)
+    const ids = kindItems.map((u) => String(u.id)).join(' ')
+    lines.push(`| ${['①', '②', '③', '④', '⑤', '⑥', '⑦'][step - 1]} ${STEP_NAMES[step - 1]} | ${label} | ${done}/${total} | ${ids === '' ? '—' : ids} |`)
   }
   lines.push('')
   lines.push('## 长期能力（无完成态）')
@@ -1104,6 +1258,20 @@ export function renderCurrent(units, extra = {}) {
   L.push('')
   if (goals.length === 0) L.push('- **0 条** —— 当前没有目标单元。')
   else for (const g of goals) L.push(`- ${id(g)} · 承接 ${arr(g.req_ids).join(' / ') || '无'}`)
+  L.push('')
+  L.push('### 阶段控制')
+  L.push('')
+  for (const stage of STAGE_IDS) {
+    const gaps = gateProblemsAt(stage, units)
+    if (gaps.length === 0) {
+      L.push(`- ${STAGE_NAMES[stage]}：**可推进**（本阶段门禁 0 条缺口）`)
+    } else {
+      const ids = [...new Set(gaps.map((g) => g.unit))].slice(0, 6)
+      L.push(`- ${STAGE_NAMES[stage]}：**${gaps.length} 条缺口** · ${gaps[0].rule} · ${ids.join(' / ')}`
+        + (gaps.length > 6 ? ` …另有 ${gaps.length - 6} 条` : ''))
+    }
+  }
+  L.push('- 口径：阶段控制只回答“能不能进入下一步”；它不改五步分母，也不是第六阶段。')
   L.push('')
   L.push('## 三、最近有效决策')
   L.push('')

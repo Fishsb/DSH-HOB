@@ -80,14 +80,27 @@
  */
 
 import * as React from 'react'
+import { SESSION_POLICY_PATH } from './routes.ts'
 
 /** list 槽里的条目 id（⚠ 自有 id，⛔ 不复用宿主或他插件的 id）。 */
 export const HOB_GATE_SLOT_ID = 'dsh-hob.unselected-gate'
 /** 常驻轮询实例（会话输入区 list 槽；不渲染横幅）。 */
 export const HOB_GATE_POLL_SLOT_ID = 'dsh-hob.unselected-gate-poll'
+/**
+ * 会话头部常驻入口（非空白会话）。
+ *
+ * ⚠ 空白会话的入口在 `conversation.hero.options`（预设右侧）；发出第一条消息后
+ *   宿主会卸载 hero，而会话头部是常驻的 ⇒ 入口必须迁到这里，否则选完档后消失。
+ * ⚠ 宿主在空白态给会话头部传 `hideChrome: true`，头部 actions 不渲染 ⇒
+ *   两个可见入口由宿主生命周期天然互斥，不需要第三态。
+ */
+export const HOB_GATE_HEADER_SLOT_ID = 'dsh-hob.unselected-gate-header'
 
 /** 排序：排在宿主自己的 hero 选项**之后**（不抢先，⛔ 不遮挡）。 */
 export const HOB_GATE_ORDER = 900
+
+/** 会话头部排序：宿主预设标签是 `-10`，这里紧随其后。 */
+export const HOB_GATE_HEADER_ORDER = -5
 
 /** 本模块的样式标签 id（幂等注入，卸载时摘掉）。 */
 const STYLE_TAG_ID = 'dsh-hob/unselected-gate.css'
@@ -141,7 +154,7 @@ export type PolicyRecordReader = (sessionId: string) => Promise<PolicyRecordStat
  */
 export const defaultPolicyRecordReader: PolicyRecordReader = async (sessionId) => {
   try {
-    const res = await fetch('/api/dsh-hob/session-policy', {
+    const res = await fetch(SESSION_POLICY_PATH, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
@@ -190,7 +203,7 @@ export const BLOCK_POLL_INTERVAL_MS = 4000
 
 export const defaultPolicyBlockReader: PolicyBlockReader = async (sessionId) => {
   try {
-    const res = await fetch('/api/dsh-hob/session-policy', {
+    const res = await fetch(SESSION_POLICY_PATH, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
@@ -323,6 +336,7 @@ export const GATE_CLASS = {
   root: 'dsh-hob-gate',
   text: 'dsh-hob-gateText',
   btn: 'dsh-hob-gateBtn',
+  compact: 'dsh-hob-gateCompact',
 } as const
 
 const GATE_CSS = [
@@ -331,6 +345,8 @@ const GATE_CSS = [
   `.${GATE_CLASS.root}{display:flex;align-items:center;gap:8px;min-width:0;`
     + `font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary,inherit)}`,
   `.${GATE_CLASS.text}{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`,
+  `.${GATE_CLASS.root}.${GATE_CLASS.compact}{gap:0}`,
+  `.${GATE_CLASS.compact} .${GATE_CLASS.btn}{padding:2px 8px}`,
   `.${GATE_CLASS.btn}{flex:none;padding:4px 10px;font:inherit;font-size:12px;line-height:1.6;`
     + `color:var(--dsw-alias-label-primary,inherit);`
     + `background:var(--dsw-alias-interactive-bg-hover,transparent);`
@@ -422,6 +438,11 @@ export interface HobUnselectedGateProps {
   autoOpen?: boolean
   /** 是否渲染可见横幅；仅轮询实例传 false（默认 true）。 */
   showBanner?: boolean
+  /**
+   * 入口所在面：`hero` = 空白会话预设右侧（默认）；`header` = 非空白会话头部。
+   * ⚠ header 只画紧凑按钮，完整说明放进 `title` / `aria-label`。
+   */
+  placement?: 'hero' | 'header'
 }
 
 /**
@@ -608,6 +629,22 @@ export function HobUnselectedGate(props: HobUnselectedGateProps): any {
   React.useEffect(() => {
     if (sessionId === undefined || sessionId === '') return undefined
     if (!isHobPreset(props.agentPreset)) return undefined
+    /**
+     * ── **O-19：轮询只由「专职那一份」跑，⛔ 三个槽各跑一遍** ──────────────────
+     *
+     * ⚠ 本组件被注册到**三个槽**（hero.options / session.header.actions / input.right），
+     *   三者**各有一份 `setInterval`** ⇒ 实际频率是注释所写间隔的 **3 倍**。
+     *   而三者的 `recorded` 是同一个值 ⇒ **三个都会启动**。
+     *
+     * ⚠ 修法：**只让 `showBanner === false` 的那份轮询** —— 它注册在
+     *   `conversation.input.right`（**会话常驻**），本来就是为「发送后 hero 卸载、
+     *   轮询不能跟着消失」而加的（见 `installHobUnselectedGate` 里那段注释）。
+     *   ⇒ 它才是**专职轮询者**；两个渲染横幅的实例**只读状态、不轮询**。
+     *
+     * ⚠ 三个实例**共用同一份 `memory`** ⇒ 开窗去重仍然只弹一次（不变）。
+     * ⛔ 不要改成「谁先挂载谁轮询」—— 挂载顺序由宿主决定，那会让频率随机。
+     * ⛔ 也不要三个都轮询再"去重请求"—— 请求已经发出去了，去重来不及。
+     */
     // ⚠ 已选档 / 判不出 ⇒ 不轮询（`unrecorded` 才可能是"被拦了但还没选"）
     if (recorded !== 'unrecorded') return undefined
     /**
@@ -658,27 +695,52 @@ export function HobUnselectedGate(props: HobUnselectedGateProps): any {
 
   const canOpen = typeof props.openForSession === 'function'
   const selected = recorded === 'recorded'
-  return h('div', { className: GATE_CLASS.root, role: 'status', 'aria-live': 'polite' },
+  const compact = props.placement === 'header'
+  const buttonText = canOpen ? gateButtonText(selected) : gateButtonUnavailableText()
+  return h('div', {
+    className: compact ? `${GATE_CLASS.root} ${GATE_CLASS.compact}` : GATE_CLASS.root,
+    ...(compact ? {} : { role: 'status', 'aria-live': 'polite' }),
+    'data-hob-gate-placement': compact ? 'header' : 'hero',
+  },
     // ⚠ 文案经 `t()` **现读**（切语言 ⇒ 订阅触发重渲染 ⇒ 这里拿到新语言的句子）
-    h('span', { className: GATE_CLASS.text }, gateText(selected)),
+    compact ? null : h('span', { className: GATE_CLASS.text }, gateText(selected)),
     h('button', {
       type: 'button',
       className: GATE_CLASS.btn,
+      /**
+       * ── **O-25：`title` 必须随「能不能开」变，⛔ 不再用 `alert`** ────────────
+       *
+       * ⚠ 改前 `title` 恒为 `gateText(selected)`（只有横幅那句），
+       *   而「为什么点不动」要靠 `alert` 才看得到。
+       *
+       * ⚠⚠ **为什么删 `alert` 而不是留它**（三条，都不涉及"样式偏好"）：
+       *   ① 它**不是无障碍通道** —— 屏幕阅读器对 `alert()` 的朗读行为依宿主而定，
+       *      而 `aria-label` / `title` 是标准属性，一定被读；
+       *   ② 它**阻塞** —— 一个「说明为什么不能开」的提示不该抢走焦点；
+       *   ③ 它**可能不存在**（`globalThis.alert` 在 jsdom / 部分宿主里是 undefined），
+       *      改前的 `try/catch` 就是为了兜这个 —— **一个要兜底才能用的通道，不是好通道**。
+       *
+       * ⚠ **替代不是「什么都不说」**：把完整说明（横幅文案 + 按钮文案 + 为什么不可用）
+       *   放进 `title`，并让 `aria-label` 保持按钮语义（`buttonText`）。
+       *   ⇒ **可读性不减，副作用消失。**
+       * ⛔ 不要改回 `disabled`：注释已写明「disabled 的按钮在部分宿主主题下读不出来」。
+       */
+      title: canOpen ? gateText(selected) : `${gateText(selected)}\n${buttonText}：${t('gate.alert.unavailable')}`,
+      'aria-label': buttonText,
       // ⚠ 不能开时**不用 disabled**：disabled 的按钮在部分宿主主题下读不出来，
-      //   且用户不知道"为什么点不动"。改成可点 + 可读说明（见 onClick）。
+      //   且用户不知道"为什么点不动"。改成可点 + 可读说明（见上面的 title）。
       'aria-disabled': canOpen ? undefined : 'true',
       'data-gate-action': canOpen ? 'open' : 'unavailable',
       onClick: () => {
-        if (!canOpen || sessionId === undefined) {
-          try {
-            // ⚠ 如实说明，⛔ 不假装已经打开
-            globalThis.alert?.(`${gateText(selected)}\n${gateButtonUnavailableText()}：${t('gate.alert.unavailable')}`)
-          } catch { /* 无 alert 环境 ⇒ 静默（横幅文案已可见） */ }
-          return
-        }
+        /**
+         * ⚠ **不可用时点击 = 无操作**（⛔ 不再弹 alert）。
+         *   说明已经在 `title` / `aria-label` 里，重复一次只会打断用户。
+         * ⚠ 但仍要 `return` —— ⛔ 不许在不可用时调 `openForSession`。
+         */
+        if (!canOpen || sessionId === undefined) return
         props.openForSession?.(sessionId)
       },
-    }, canOpen ? gateButtonText(selected) : gateButtonUnavailableText()),
+    }, buttonText),
   )
 }
 
@@ -699,6 +761,7 @@ export function HobUnselectedGateLive(props: {
   memory: GateMemory
   autoOpen?: boolean
   showBanner?: boolean
+  placement?: 'hero' | 'header'
 }): any {
   const useProjection = props.useProjection
   const preset = typeof useProjection === 'function'
@@ -712,6 +775,7 @@ export function HobUnselectedGateLive(props: {
     memory: props.memory,
     ...(props.autoOpen === undefined ? {} : { autoOpen: props.autoOpen }),
     ...(props.showBanner === undefined ? {} : { showBanner: props.showBanner }),
+    ...(props.placement === undefined ? {} : { placement: props.placement }),
   })
 }
 
@@ -750,6 +814,26 @@ export function installHobUnselectedGate(ctx: any, deps: {
     ...(deps.openForSession === undefined ? {} : { openForSession: deps.openForSession }),
     memory,
     ...(deps.autoOpen === undefined ? {} : { autoOpen: deps.autoOpen }),
+  })))
+
+  /**
+   * ⚠ 2026-11-05：空白会话的 hero 入口在发出第一条消息后会被宿主卸载。
+   * 会话头部是常驻的，因此把**同一个入口**再注册到
+   * `conversation.session.header.actions`；空白态宿主用 `hideChrome` 不渲染它，
+   * 非空白态才出现 ⇒ 两个面由宿主生命周期互斥，任何时刻只有一个可见入口。
+   */
+  ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
+    name: 'conversation.session.header.actions',
+    id: HOB_GATE_HEADER_SLOT_ID,
+    order: HOB_GATE_HEADER_ORDER,
+  }, (slotProps: any) => React.createElement(HobUnselectedGateLive, {
+    sessionId: typeof slotProps?.sessionId === 'string' ? slotProps.sessionId : undefined,
+    ...(typeof slotProps?.useProjection === 'function' ? { useProjection: slotProps.useProjection } : {}),
+    ...(deps.readRecorded === undefined ? {} : { readRecorded: deps.readRecorded }),
+    ...(deps.openForSession === undefined ? {} : { openForSession: deps.openForSession }),
+    memory,
+    ...(deps.autoOpen === undefined ? {} : { autoOpen: deps.autoOpen }),
+    placement: 'header',
   })))
 
   /**

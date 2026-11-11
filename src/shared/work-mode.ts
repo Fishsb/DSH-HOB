@@ -9,22 +9,22 @@
  * ── 三档（显示名给人看 · 配置值是内部标识，⛔ 不进对话文本）─────────────
  *   | 配置值 | 显示名 | 含义 |
  *   |---|---|---|
- *   | `auto`   | 自动   | Hob 按任务与方案自己判该拆成几路（结果**随任务而变**） |
- *   | `single` | 单会话 | **恒定一路**（判据要能证明：任务本可拆多路也只走一路） |
- *   | `multi`  | 多会话 | 拆到**最细**、**尽可能多路**（⚠ 费用与时间不设上限） |
+ *   | `auto`   | 自动   | 监督者按任务判**最少必要**路数；单轨要给原因 |
+ *   | `single` | 单会话 | **恒定一路**，运行时拒绝第二条活动执行轨 |
+ *   | `multi`  | 多会话 | **显式扇出**；存在独立候选必须拆轨，单轨要给候选证据 |
  *
  * ── ⚠⚠ 一处必须写死的红线（派单方判定，⛔ 不是用户加的）──────────────────
  *   **「多会话」的"无限制"只到"费用与时间不设上限"这一层，⛔ 不解除任何既有红线** ——
  *   ⛔ 不许改看板 · ⛔ 不许碰别人项目的卡 · ⛔ 不许放宽任何判据 ·
  *   ⛔ 不许把"多"理解成"每个会话都能干任意事"。
  *
- *   ⚠ **为什么红线的载体是"给模型看的那段话"而不是别的**（落点判据，见下方
- *   {@link WORK_MODE_SECTIONS}）：本项目「拆几路」这件事**没有任何机制性开关** ——
- *   它不是"注册几个工具"那种可数的东西，而是 Hob **在规划时的判断**。
- *   判断的依据只能是**它读到的口径文本** ⇒ 口径文本就是**唯一的消费者**。
- *   ⚠ 这也正是本项目对「空旋钮」的定义（`PROJECT.md` §5.3）：界面上的值
- *   必须**真的改变行为**。本项的行为改变 = **注入给 Hob 的那段拆分口径变了**，
- *   且那段话**逐档不同、且可机检**（见 {@link workModeInstruction}）。
+ *   ⚠ **档位今天有两类消费者**：
+ *     ① 给模型看的口径（{@link workModeInstruction}，决定它怎么规划）；
+ *     ② 运行时的策略表（{@link workModePolicy}，决定计划校验与派发门禁）。
+ *   ⇒ 只改文案不改策略表 = 模型说要拆、运行时却按同一套规则放行/拒绝，
+ *     那仍是「空旋钮」；两处必须同源、且由机检钉住。
+ *   ⚠ 红线本身仍是**文本约束**（它不改变权限机制），所以红线继续只放在口径与界面里；
+ *     但“拆几路”已经不是纯文本：单会话硬限制、多会话候选必拆都由策略表执行。
  *
  * ── ⚠ 产品口径：用户已裁定「全自动」= (乙)（`UD-149`）────────────────────
  *   「自动」档有多自动，曾有两种读法：(甲) 只自动选路（**动手前仍先跟用户报一句**）；
@@ -89,6 +89,90 @@ export const WORK_MODE_LABEL_EN: Readonly<Record<WorkMode, string>> = {
   auto: 'Automatic',
   single: 'One session',
   multi: 'Many sessions',
+}
+
+/**
+ * 三档的**运行时策略表**（唯一事实源）。
+ *
+ * ⚠ 这张表只描述“怎么拆、允不允许并行、单轨需要什么证据”，
+ *   ⛔ 不改权限、⛔ 不改验收口径、⛔ 不承诺并行写。
+ * ⚠ `validateWorkPlan()` / `dispatchPlan()` / `dispatch()` / 面板文案都必须读它，
+ *   ⛔ 不许在各处再写一套 `if (mode === ...)`。
+ */
+export interface WorkModePolicy {
+  /** 拓扑：固定单轨 / 监督者动态判路 / 显式扇出。 */
+  topology: 'single' | 'adaptive' | 'fanout'
+  /** 同一 owner 同时允许的活动执行轨上限。 */
+  maxActiveTracks: number
+  /** 是否允许只读轨并行。 */
+  allowParallelRead: boolean
+  /** 是否允许写轨并行。⚠ 当前恒为 false：没有 worktree 隔离。 */
+  allowParallelWrite: false
+  /** 是否接受单轨原因字段。 */
+  acceptsSingleTrackReason: boolean
+  /** 单轨证据强度：无 / 基本（same-file、strict-order）/ 候选表。 */
+  singleTrackEvidence: 'none' | 'basic' | 'candidates'
+  /** 存在独立候选时是否必须拆轨。 */
+  mustSplitIndependentCandidates: boolean
+  /** 派完后是否要求报告路数、去向与下一门槛。 */
+  requiresPostDispatchReport: boolean
+}
+
+/**
+ * 读取某档的运行时策略。
+ *
+ * @param mode - 当前档位（调用方须现读，⛔ 不缓存）。
+ */
+export function workModePolicy(mode: WorkMode): WorkModePolicy {
+  if (mode === 'single') {
+    return {
+      topology: 'single',
+      maxActiveTracks: 1,
+      allowParallelRead: false,
+      allowParallelWrite: false,
+      acceptsSingleTrackReason: false,
+      singleTrackEvidence: 'none',
+      mustSplitIndependentCandidates: false,
+      requiresPostDispatchReport: false,
+    }
+  }
+  if (mode === 'multi') {
+    return {
+      topology: 'fanout',
+      maxActiveTracks: Number.POSITIVE_INFINITY,
+      allowParallelRead: true,
+      allowParallelWrite: false,
+      acceptsSingleTrackReason: true,
+      singleTrackEvidence: 'candidates',
+      mustSplitIndependentCandidates: true,
+      requiresPostDispatchReport: false,
+    }
+  }
+  return {
+    topology: 'adaptive',
+    maxActiveTracks: Number.POSITIVE_INFINITY,
+    allowParallelRead: true,
+    allowParallelWrite: false,
+    acceptsSingleTrackReason: true,
+    singleTrackEvidence: 'basic',
+    mustSplitIndependentCandidates: false,
+    requiresPostDispatchReport: true,
+  }
+}
+
+/**
+ * 给人读的**一句策略摘要**（工具返回值用；⚠ 不是第二套语义）。
+ *
+ * ⚠ 只从 {@link workModePolicy} 派生，⛔ 不在这里另写一份档位判断：
+ *   否则“工具说允许并行、校验器却拒绝”这种漂移无法被机检发现。
+ */
+export function workModePolicySummary(mode: WorkMode): string {
+  const policy = workModePolicy(mode)
+  if (policy.topology === 'single') return '单会话 · 单轨硬限制（第二条活动轨会被拒绝）'
+  if (policy.topology === 'fanout') {
+    return '多会话 · 独立候选必须拆轨；读轨可并行，写轨串行；单轨需候选证据'
+  }
+  return '自动 · 判最少必要轨数；单轨需原因；读轨可并行，写轨串行'
 }
 
 /**
@@ -190,8 +274,12 @@ export function workModeInstruction(mode: WorkMode): string {
       'step can be taken. Favour acceptance clarity over track count — a track whose result you',
       'cannot judge on its own is split too finely. If only one track is legitimate, give one of',
       'these reasons: same-file, shared-contract, strict-order, single-acceptance-unit, or',
-      'insufficient-independent-scope. The runtime enforces independent scope: an overlapping',
-      'write scope or a dependency cycle is refused before anything is dispatched.',
+      'insufficient-independent-scope — and supply candidatePieces in singleTrackEvidence:',
+      'the candidate pieces you considered, each with pieceId, scopePaths and acceptance.',
+      'The runtime checks those candidates for a genuinely independent pair (disjoint scope,',
+      'no dependency, different acceptance). If one exists, a single track is refused and you',
+      'must dispatch the pieces as separate tracks. Overlapping write scope or a dependency',
+      'cycle is still refused before anything is dispatched.',
       '',
     ].join('\n')
   }

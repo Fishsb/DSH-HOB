@@ -1819,8 +1819,122 @@ async function main() {
    *   而它明明有 44 处断言。
    *   ⚠ `查了 = 过了 + 没过 + 跳过`（`check:all` 会逐族核这条等式）。
    */
+  // ── SP-16（O-13）：`runLegacyMigration` 已删，⛔ 不许长回来 ──────────────────
+  //
+  //  ⚠ 改前它是个**零调用**的同步迁移函数（约 34 行），而真正跑迁移的是
+  //    `migrateAsync`（两处调用）。两者签名相似、职责重叠 ⇒ 读的人会以为
+  //    「同步那条是主路径、异步是补充」，**而事实相反：同步那条是死的**。
+  //
+  //  ⚠ 判据（两条）：
+  //    ① `runLegacyMigration` 不许再出现（**除注释里的说明**）；
+  //    ② `migrateAsync` 必须仍在（⛔ 别把活的也删了）。
+  {
+    const p = []
+    /** ⚠ 先剥注释（本仓已踩过 10 次「注释被当成代码」）。 */
+    const strip = (x) => x
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((l) => l.replace(/\/\/.*$/, ''))
+      .join('\n')
+    /** ⚠ 本文件的根常量是 `root`（**小写**，`resolve(here, '..')`）—— 与 `check-workflow.mjs` 的 `ROOT` 相反。 */
+    const src = strip(readFileSync(join(root, 'src', 'session-policy-service.ts'), 'utf8'))
+    if (/\brunLegacyMigration\b/.test(src)) {
+      p.push('`runLegacyMigration` 又出现在**代码**里 ⇒ 那个零调用的同步迁移被恢复了（O-13 复发）')
+    }
+    if (!/\bmigrateAsync\b/.test(src)) {
+      p.push('`migrateAsync` 不见了 ⇒ 把**活的**那条也删了（⛔ 本条不是让你删它）')
+    }
+    if (p.length === 0) {
+      ok('SP-16 ✓ **负向对拍**：`runLegacyMigration`（零调用的同步迁移）已删；'
+        + '`migrateAsync`（真正在跑的那条）仍在（O-13：⛔ 死代码与活代码签名相似时，删死的、留活的）')
+    } else for (const x of p) bad(`SP-16 · ${x}`)
+  }
+  // ── SP-17（O-12）：`canReadWorkspace` 必须标「仅供显示」，⛔ 不接进门禁 ────────
+  //
+  //  ⚠ 实测：全仓**零条件消费**（无 `if (x.canReadWorkspace)` / `&&` / `||`），客户端零引用。
+  //    它被计算、被赋值、被带出去，然后**没有人看**。
+  //
+  //  ⚠ 判据（三条）：
+  //    ① 声明处必须写明「仅供显示」（否则下一个人以为是漏接了）；
+  //    ② **代码里**不许出现条件消费（注释里的解释不算）；
+  //    ③ 必须仍被赋值（⛔ 别把它删成悬空字段）。
+  {
+    const p = []
+    const src = readFileSync(join(root, 'src', 'server', 'session-policy.ts'), 'utf8')
+    const code = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((l) => l.replace(/\/\/.*$/, ''))
+      .join('\n')
+    /** ① 声明处附近必须写明「仅供显示」。 */
+    const decl = src.indexOf('canReadWorkspace: boolean')
+    if (decl < 0) p.push('找不到 `canReadWorkspace: boolean` 声明 ⇒ 失去基准')
+    /**
+     * ⚠⚠ **锚定「紧邻的那一段说明」，⛔ 不用大窗口** ——
+     *   我第一版取 `decl - 2500` 到 `decl`，而说明块**自己**也含「仅供显示」两次 ⇒
+     *   删掉其中一次（负向对拍）后**另一次仍在窗口里** ⇒ 断言照绿（实测假绿）。
+     *   ⇒ 改成：取**声明前最近的空行**到声明，只看那一段的**第一句**。
+     */
+    /**
+     * ⚠ 取**声明前 400 字符**（够覆盖整段说明，又不会框到别处）。
+     *   我前两版：2500 字符窗口（太宽，删一处仍绿）→ 只看第一句（太窄，假红）。
+     */
+    const near = src.slice(Math.max(0, decl - 1200), decl)
+    if (!/仅供显示/.test(near)) {
+      p.push('声明处没有写「仅供显示」⇒ 读的人会以为是漏接了门禁（O-12 复发）')
+    }
+    /** ② 代码里不许有条件消费。 */
+    const conditional = /canReadWorkspace\s*(?:[)=!]=|[&|]{2}|\?)/.test(code)
+    if (conditional) p.push('代码里出现了对 `canReadWorkspace` 的条件消费 ⇒ 它接进门禁了（⛔ 会与读工具自己的 level 判定分叉）')
+    /** ③ 必须仍被赋值（⛔ 别删成悬空）。 */
+    const assigned = /canReadWorkspace:\s*[^,\n]+/.test(code)
+    if (!assigned) p.push('`canReadWorkspace` 没有被赋值 ⇒ 字段悬空')
+    if (p.length === 0) {
+      ok('SP-17 ✓ **负向对拍**：`canReadWorkspace` 标了「仅供显示」、代码里零条件消费、且仍被赋值'
+        + '（O-12：⛔ 不为了消掉未使用而删 —— 它是读面唯一的机器可读读数）')
+    } else for (const x of p) bad(`SP-17 · ${x}`)
+  }
   console.log(`  跳过 ${skip.length} 处（⛔ 不计入通过）`)
   console.log(`  汇总：通过 ${pass} · 失败 ${fail}`)
+  // ── SP-15：O-08 —— 六值必须**按轴拆开**，⛔ 不混在一个类型里 ─────────────────
+  //
+  //  ⚠ 改前 `PolicyRecordWireState` 把两条轴的值混在一起：
+  //    读轴 recorded/unrecorded/not-applicable/unknown  ·  写轴 blocked/clear
+  //    ⇒ `classifyPolicyRecord` 的返回类型允许 blocked/clear，但它**永远不会返回**
+  //    ⇒ 调用方要么多写两个不可能分支，要么（更糟）少写两个、以为它们不可能出现。
+  //  ⇒ 拆成 ReadState / WriteState，返回类型收紧成读轴四值。
+  {
+    const p = []
+    const mod = await import(pathToFileURL(join(root, 'src', 'shared', 'policy-record-state.ts')).href)
+    const probes = [
+      undefined,
+      { isHob: false },
+      { isHob: true, source: 'undecidable-x' },
+      { isHob: true, recorded: true },
+      { isHob: true, recorded: false },
+    ]
+    const got = probes.map((x) => mod.classifyPolicyRecord(x))
+    const readAxis = new Set(['recorded', 'unrecorded', 'not-applicable', 'unknown'])
+    const stray = got.filter((x) => !readAxis.has(x))
+    if (stray.length > 0) p.push('`classifyPolicyRecord` 返回了读轴之外的值：' + JSON.stringify(stray))
+    /**
+     * ⚠⚠ **必须剥注释再判**（我第一版没做，负向对拍假绿）：本条的实现注释里**大量出现**
+     *   `PolicyRecordReadState` / `PolicyRecordWriteState` 这两个词来解释「为什么拆」——
+     *   直接 `includes` 会把**解释**当成**声明**。
+     *   ⚠ 这已是本仓第 8 次踩「注释被当成代码」⇒ 纪律：**凡扫源码的断言，先剥注释。**
+     */
+    const strip = (x) => x.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+    const src = strip(readFileSync(join(root, 'src', 'shared', 'policy-record-state.ts'), 'utf8'))
+    if (!/export type PolicyRecordReadState\b/.test(src)) p.push('没有 `export type PolicyRecordReadState` ⇒ 两条轴又混在一起（O-08 复发）')
+    if (!/export type PolicyRecordWriteState\b/.test(src)) p.push('没有 `export type PolicyRecordWriteState` ⇒ 写轴的值没有自己的类型')
+    if (!src.includes("'blocked'") || !src.includes("'clear'")) {
+      p.push('线格式丢了 blocked / clear ⇒ 写轴的值被误删')
+    }
+    if (p.length === 0) {
+      ok('SP-15 ✓ **负向对拍**：`classifyPolicyRecord` 只返回读轴四值；两条轴各有类型；'
+        + '线格式并集仍含 blocked / clear（O-08：类型不再给假的完备性）')
+    } else for (const x of p) bad('SP-15 · ' + x)
+  }
   console.log(`  处级口径：查了 ${pass + fail + skip.length} 处 · 过了 ${pass} 处`
     + (fail > 0 ? ` · 没过 ${fail} 处` : '')
     + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)

@@ -27,6 +27,15 @@ export interface EffectRow {
   attempts: number
   dueAt: number
   lastError?: string
+  /**
+   * **已放弃重试的时刻**（T-10 · 2026-11-10）。
+   *
+   * ⚠ 有值 = 「这条不再重试了」；`dueAt` 同时被推到 `Infinity`。
+   * ⚠ 它与 `delivered` 是**两件事**：放弃 ≠ 投递成功。
+   * ⚠ 本字段**只增不改**：一旦放弃，重试循环不会再碰它（`dueAt` 永假）。
+   *   要重新投递必须**人工**清掉本字段（或删行后重建）—— 这是有意的。
+   */
+  abandonedAt?: number
 }
 
 export interface EffectState {
@@ -39,6 +48,14 @@ export interface EffectHandler {
   run: (payload: unknown, key: string) => Promise<void>
   /** 初始与最大退避毫秒。 */
   retry: readonly [number, number]
+  /**
+   * **放弃重试的最大尝试次数**（T-10 · 2026-11-10）。
+   *
+   * ⚠ 缺省**不放弃**（保持既有语义：某些 handler 依赖「一直重试」）。
+   * 但对**永久失败**（例如「目标会话已归档」）无限重试就是**永久空转** ——
+   * 那种 handler 必须显式给出上限，到顶后落一档「已放弃，需人工」而不是无限重试。
+   */
+  maxAttempts?: number
   /** 同 kind 一次执行多少条。 */
   limit?: number
   /** 是否严格按 seq 顺序执行。 */
@@ -343,6 +360,27 @@ export class EffectsQueue {
         if (current === undefined || current.generation !== gen) return
         current.attempts += 1
         current.lastError = String(error)
+        /**
+         * ⚠ **T-10：到最大尝试次数 ⇒ 落一档「已放弃」，⛔ 不再无限重试**（2026-11-10）。
+         *
+         * ── 病（实测）──────────────────────────────────────────────────────────
+         *   改前只增 `attempts` 且**从不判上限** ⇒ 退避封顶 60s 后**一直重试**。
+         *   对「目标已归档」这类**永久失败** ⇒ **永久空转**，而状态面只看到 `attempts` 在涨。
+         *
+         * ── 修法：把「放弃」做成一条**可读状态**，不是静默消失 ──────────────────
+         *   · 行**保留**（⛔ 不删）⇒ 状态面仍看得到它，`lastError` 与 `attempts` 都在；
+         *   · `dueAt` 推到 `Infinity` ⇒ 调度器不会再选中它（`dueAt <= now` 永假）；
+         *   · 记 `abandonedAt` ⇒ 读的人能区分「还在退避」与「已放弃」。
+         *   ⚠ 它**不是**「投递成功」：`delivered` 从未置位，回执也不会回来。
+         */
+        const maxAttempts = handler.maxAttempts
+        if (maxAttempts !== undefined && current.attempts >= maxAttempts) {
+          current.abandonedAt = this.now()
+          current.dueAt = Number.POSITIVE_INFINITY
+          this.persist()
+          this.onError(kind, new Error('已放弃重试（' + current.attempts + '/' + maxAttempts + ' 次）：' + String(error)))
+          return
+        }
         const [initial, max] = handler.retry
         current.dueAt = this.now() + Math.min(max, initial * 2 ** Math.min(current.attempts - 1, 16))
         this.persist()

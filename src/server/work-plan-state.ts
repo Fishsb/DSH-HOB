@@ -23,6 +23,7 @@ import {
   type WorkPlan,
   type WorkPlanInput,
 } from '../shared/work-plan.ts'
+import { publishLiveChange, publishLiveChangeForFile } from './live-hub.ts'
 
 export const WORK_PLAN_SUBDIR = 'work-plans'
 export const WORK_PLAN_ACTIVE_DIR = 'active'
@@ -64,6 +65,7 @@ export function writeWorkPlan(ledgerRoot: string, plan: WorkPlan): {
     }, null, 2) + '\n'
     writeFileSync(tmp, body, 'utf8')
     renameSync(tmp, file)
+    publishLiveChange(ledgerRoot, ['plans'])
     return { ok: true, file }
   } catch (e) {
     return { ok: false, reason: String((e as Error)?.message ?? e) }
@@ -139,6 +141,7 @@ export function removeWorkPlan(ledgerRoot: string, planId: string): { ok: boolea
   try {
     const file = workPlanFileOf(ledgerRoot, planId)
     rmSync(file, { force: true })
+    publishLiveChangeForFile(file, ['plans'])
     return { ok: true }
   } catch (e) {
     return { ok: false, reason: String((e as Error)?.message ?? e) }
@@ -169,6 +172,49 @@ export function closeWorkPlan(
     renameSync(tmp, file)
     const active = workPlanFileOf(ledgerRoot, plan.planId)
     if (existsSync(active)) rmSync(active, { force: true })
+    publishLiveChangeForFile(file, ['plans'])
+    return { ok: true, file }
+  } catch (e) {
+    return { ok: false, reason: String((e as Error)?.message ?? e) }
+  }
+}
+
+/**
+ * **过期归档**（2026-11-06）：把长期没人管的活动计划移出 `active/`，但**不改它的 state**。
+ *
+ * ── 为什么不用 `closeWorkPlan(..., 'completed'|'failed')` ──────────────────
+ *   那两个是**业务结果**：`completed` 表示"做完了"、`failed` 表示"做失败了"。
+ *   一份 50 小时没动、执行会话早已不在的计划**两者都不是** —— 用它们归档，
+ *   等于替业务编一个结论（本项目最忌的形态）。
+ *
+ * ── 落点 ──────────────────────────────────────────────────────────────────
+ *   `runtime/work-plans/abandoned/<planId>.json`，带 `abandonedAt` / `abandonedWhy`；
+ *   原 `plan` 字段**逐字保留**（含 `state` 与 `trackStates`），审计时可完整还原。
+ *
+ * ⚠ 只移动文件，⛔ 不删除；同 planId 已归档 ⇒ 幂等。
+ */
+export function archiveAbandonedWorkPlan(
+  ledgerRoot: string,
+  plan: WorkPlan,
+  why: string,
+  now = Date.now(),
+): { ok: boolean; file?: string; reason?: string } {
+  try {
+    const dir = join(ledgerRoot, 'runtime', WORK_PLAN_SUBDIR, 'abandoned')
+    ensureDir(dir)
+    const file = join(dir, `${plan.planId}${WORK_PLAN_FILE_SUFFIX}`)
+    const body = JSON.stringify({
+      storeVersion: WORK_PLAN_STORE_VERSION,
+      abandonedAt: new Date(now).toISOString(),
+      abandonedWhy: why,
+      plan,
+    }, null, 2) + '\n'
+    const tmp = `${file}.tmp-${process.pid}-${now}-${Math.random().toString(36).slice(2)}`
+    writeFileSync(tmp, body, 'utf8')
+    renameSync(tmp, file)
+    const active = workPlanFileOf(ledgerRoot, plan.planId)
+    if (existsSync(active)) rmSync(active, { force: true })
+    publishLiveChangeForFile(file, ['plans'])
     return { ok: true, file }
   } catch (e) {
     return { ok: false, reason: String((e as Error)?.message ?? e) }
@@ -265,13 +311,13 @@ export function pruneClosedWorkPlans(
       .sort((a, b) => a.mtimeMs - b.mtimeMs)
     for (const entry of files) {
       if (now - entry.mtimeMs > maxAgeMs) {
-        try { rmSync(entry.file, { force: true }); removed++ } catch { /* 单个文件失败不影响其它 */ }
+        try { rmSync(entry.file, { force: true }); removed++; publishLiveChangeForFile(entry.file, ['plans']) } catch { /* 单个文件失败不影响其它 */ }
       }
     }
     const remaining = files.filter((entry) => existsSync(entry.file))
     const excess = Math.max(0, remaining.length - Math.max(0, maxCount))
     for (const entry of remaining.slice(0, excess)) {
-      try { rmSync(entry.file, { force: true }); removed++ } catch { /* 同上 */ }
+      try { rmSync(entry.file, { force: true }); removed++; publishLiveChangeForFile(entry.file, ['plans']) } catch { /* 同上 */ }
     }
     return { removed, kept: Math.max(0, remaining.length - excess) }
   } catch {

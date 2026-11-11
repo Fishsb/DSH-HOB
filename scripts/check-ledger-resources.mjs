@@ -9,6 +9,7 @@
  *   · 未知资源、未知 ID、错误 kind 三种失败可分辨；
  *   · 资源解析不产生任何写入。
  */
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -34,6 +35,26 @@ const units = [
   { id: 'DEC-001', kind: 'decision', status: 'active', title: '决策一' },
   { id: 'CAP-001', kind: 'cap', status: 'live', title: '能力一' },
 ]
+
+// Pipeline v3 resources must expose verification and closure with their own relation/readout.
+{
+  const gen = await import(pathToFileURL(join(root, 'src', 'shared', 'ledger-resources.ts')).href)
+  const items = [
+    { id: 'R-V3', kind: 'req', title: '需求', status: 'agreed' },
+    { id: 'TSK-V3', kind: 'task', title: '任务', status: 'built', parent: 'R-V3' },
+    { id: 'VER-001', kind: 'verification', title: '技术验证', status: 'pass', parent: 'TSK-V3' },
+  ]
+  const v = gen.readLedgerResource(items, 'verification/VER-001')
+  const p = []
+  if (!v.ok || v.card.presentation?.relation?.key !== 'task' || v.card.presentation?.relation?.label !== '验证对象') {
+    p.push(`技术验证资源关系不对：${JSON.stringify(v)}`)
+  }
+  if (!Array.isArray(v.card.presentation?.facts) || v.card.presentation.facts.length === 0) p.push('技术验证资源没有关键读数')
+  const list = gen.readLedgerResource(items, 'verifications')
+  if (!list.ok || !Array.isArray(list.children) || list.children.length !== 1) p.push('verifications 列表读不到')
+  if (p.length === 0) ok('LR-V3 ✓ 技术验证资源可按 ID / 列表读取，关系为「验证对象」并带关键读数')
+  else for (const x of p) bad(`LR-V3 · ${x}`)
+}
 
 /** R-1 稳定前缀到 kind 的映射。 */
 REQUIRE(kindOfId('R-001') === 'req' && kindOfId('CHG-001') === 'change'
@@ -140,6 +161,47 @@ REQUIRE(kindOfId('R-001') === 'req' && kindOfId('CHG-001') === 'change'
     `R-10 ✓ 需求关联图的每个 read 指针都可继续解析（实测 ${refs.length} 个，未解析 ${unresolved.length} 个）`)
 }
 
+/** R-11 按 ID 读取返回完整展示投影；列表仍只回摘要。 */
+{
+  const detail = readLedgerResource(units, 'acceptance/ACC-001')
+  const list = readLedgerResource(units, 'acceptances')
+  const pres = detail.ok ? detail.card.presentation : undefined
+  const listText = JSON.stringify(list)
+  REQUIRE(detail.ok === true && pres !== undefined
+    && pres.originalTitle === '验收一'
+    && pres.details.some((f) => f.key === 'basis' && f.value === 'EVD-001')
+    && pres.details.some((f) => f.key === 'flags' && f.value === '无')
+    && pres.details.some((f) => f.key === 'verdict' && f.value === '验收通过')
+    && !listText.includes('originalTitle') && !listText.includes('"details"'),
+  'R-11 ✓ 按 ID 读取附带完整展示投影（原句 / 判决 / 依据 / 固定异常），列表仍不含原句与详情')
+}
+
+/** R-12 残余风险随验收详情可读，不能只在首屏摘要里出现。 */
+{
+  const acc = { id: 'ACC-901', kind: 'acc', status: 'pass', title: '残余风险验收', parent: 'TSK-001',
+    risk_residual_tier: 'high', risk_accepted_by: 'user', risk_residual_impact: '发布后权限残留',
+    risk_residual_monitoring: '24h 监控 + 回滚命令' }
+  const r = readLedgerResource([...units, acc], 'acceptance/ACC-901')
+  const d = r.ok ? r.card.presentation.details : []
+  const keys = new Set(d.map((f) => f.key))
+  const p = []
+  for (const k of ['risk_residual_tier', 'risk_accepted_by', 'risk_residual_impact', 'risk_residual_monitoring']) {
+    if (!keys.has(k)) p.push(`详情缺 ${k}`)
+  }
+  if (p.length === 0) ok('R-12 ✓ 验收详情可读残余风险等级 / 接受人 / 影响 / 监控，⛔ 不只在首屏摘要')
+  else for (const x of p) bad(`R-12 · ${x}`)
+}
+
+/** N-R4 负向对拍：完整投影缺失依据 ⇒ R-11 必红。 */
+{
+  const noBasis = units.map((u) => u.id === 'ACC-001' ? { ...u, basis: [] } : u)
+  const r = readLedgerResource(noBasis, 'acceptance/ACC-001')
+  const pres = r.ok ? r.card.presentation : undefined
+  const hasBasis = pres?.details.some((f) => f.key === 'basis') === true
+  if (!hasBasis) ok('N-R4 ✓ 负向对拍（摘掉验收依据）⇒ R-11 的"展开依据"断言**必红**')
+  else bad('N-R4 · 摘掉验收依据后完整投影仍带依据 ⇒ R-11 没有牙')
+}
+
 /** N-R3 负向对拍：新增资源的 kind 前缀也不能混用。 */
 {
   const r = readLedgerResource(units, 'capability/TSK-001')
@@ -148,6 +210,54 @@ REQUIRE(kindOfId('R-001') === 'req' && kindOfId('CHG-001') === 'change'
   } else {
     bad(`N-R3 · capability 前缀读 TSK ID 未被判为 unknown-id：${JSON.stringify(r)}`)
   }
+}
+
+/**
+ * ── T-23：TERMINOLOGY 的 kind 表必须与代码的 kind 封闭集**双向差集为空** ────────
+ *
+ * ⚠ 这条钉的是「术语表自己内部矛盾」：原文 kind 表只有 10 行，缺 `verification` / `closure`，
+ *   而**紧接的下一节**又要求 `req/change/task/run/verification/acc/closure` 带 v3 字段；
+ *   ID 前缀表也缺 `VER-` / `CLS-`，而 `ledger-resources.ts:75-76` 明确支持它们。
+ *   ⇒ 一个人照术语表写单元，会漏掉两个 kind；照下一节写，又会找不到前缀。
+ *
+ * ⚠ 判据用**代码侧的封闭集**做基准（`UNIT_STATUSES` 的键集），⛔ 不在断言里另抄一份清单 ——
+ *   那会变成「同一事实两个来源」，正是本项目明令要防的形态。
+ */
+{
+  const p = []
+  const statuses = await import(pathToFileURL(join(root, 'src/shared/ledger-validation.ts')).href)
+  const codeKinds = new Set(Object.keys(statuses.UNIT_STATUSES))
+
+  const term = (() => {
+    try { return readFileSync(join(root, 'TERMINOLOGY.md'), 'utf8') } catch { return '' }
+  })()
+  if (term === '') p.push('读不到 TERMINOLOGY.md ⇒ 失去基准')
+
+  /**
+   * 抽「三、账本术语」那张表里的 kind（第一列反引号包裹的技术名）。
+   * ⚠ 只认该节内的表格，⛔ 不全文扫 —— 全文里有别的表也用反引号（如状态名）。
+   */
+  const section = term.split(/\n## /).find((s) => s.startsWith('三、账本术语')) ?? ''
+  const docKinds = new Set(
+    [...section.matchAll(/^\|\s*`([a-z]+)`\s*\|/gm)].map((m) => m[1]),
+  )
+  if (docKinds.size === 0) p.push('TERMINOLOGY「三、账本术语」里一个 kind 都没抽到（表格形态变了？）')
+
+  const missingInDoc = [...codeKinds].filter((k) => !docKinds.has(k))
+  const strayInDoc = [...docKinds].filter((k) => !codeKinds.has(k))
+  if (missingInDoc.length > 0) p.push(`TERMINOLOGY 的 kind 表漏了：${missingInDoc.join(' / ')}`)
+  if (strayInDoc.length > 0) p.push(`TERMINOLOGY 的 kind 表多出代码里没有的：${strayInDoc.join(' / ')}`)
+
+  /** 同一张表的 ID 前缀列必须覆盖 `ledger-resources.ts` 认识的每一个前缀。 */
+  const prefixRows = [...section.matchAll(/^\|\s*`[a-z]+`\s*\|[^|]*\|\s*`([A-Z]+)-`/gm)].map((m) => m[1])
+  for (const must of ['VER', 'CLS', 'ACC', 'TSK']) {
+    if (!prefixRows.includes(must)) p.push('TERMINOLOGY 的 ID 前缀表缺 ' + must + '- 前缀')
+  }
+
+  if (p.length === 0) {
+    ok(`T-23 ✓ TERMINOLOGY 的 kind 表与代码封闭集双向差集为空（${codeKinds.size} 种），`
+      + 'ID 前缀齐备（VER- / CLS- 不再缺）')
+  } else for (const x of p) bad(`T-23 · ${x}`)
 }
 
 console.log(`\n处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处`

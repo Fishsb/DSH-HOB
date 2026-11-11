@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /**
- * 把 `prefix:` 正文同步进人读版的全量镜像块（`kit/drafts/preset-contracts.md`）。
+ * 把 `gen/persona.md` 同步进预设的 `prefix:` 与人读版镜像块。
  *
- * ⚠ 只替换**第一个**四反引号以上的 `text` 围栏内部；围栏本身与其余正文一字不动。
- * ⚠ 这个脚本只做机械同步，不是判据：`check:presets` 的 ⑤ 仍会逐字节比对。
+ * 唯一方向：`workflow.toml` + `spec/` → `gen/persona.md` → patch `prefix` → draft 镜像。
+ * ⚠ 人读版只替换**第一个**四反引号以上的 `text` 围栏内部；围栏与其余正文不动。
+ * ⚠ 这个脚本只做机械同步，不是判据：`check:workflow` 的 F10 与
+ *   `check:presets` 的 ⑤ 仍会逐字节比对。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -14,6 +16,9 @@ const root = join(here, '..')
 const ymlPath = join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')
 const draftPath = join(root, 'kit', 'drafts', 'preset-contracts.md')
 
+const personaPath = join(root, 'preset', 'dsh-hob', 'gen', 'persona.md')
+const body = readFileSync(personaPath, 'utf8').replace(/\n+$/, '')
+
 const y = readFileSync(ymlPath, 'utf8').split('\n')
 const start = y.findIndex((line) => /^\s*prefix:\s*\|-/.test(line))
 if (start < 0) throw new Error('找不到 prefix: |-')
@@ -23,7 +28,11 @@ for (let i = start + 1; i < y.length; i++) {
   if (y[i].trim() === '') continue
   if (y[i].match(/^\s*/)[0].length <= indent) { end = i; break }
 }
-const body = y.slice(start + 1, end).map((line) => line.trim()).join('\n').trimEnd()
+const pad = ' '.repeat(indent + 2)
+const ymlBody = body.split('\n').map((line) => (line === '' ? '' : pad + line))
+const nextYml = [...y.slice(0, start + 1), ...ymlBody, ...y.slice(end)]
+writeFileSync(ymlPath, nextYml.join('\n'))
+console.log(`已同步 preset prefix（${ymlBody.length} 行）`)
 
 const lines = readFileSync(draftPath, 'utf8').split('\n')
 const open = lines.findIndex((line) => /^`{4,}text$/.test(line.trim()))

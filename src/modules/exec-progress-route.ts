@@ -19,11 +19,12 @@
  *   ③ **零写操作**：本文件没有任何写入分支（只有 `readFileSync`）。
  */
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { resolveLedgerRoot, ledgerRootWhy } from '../server/doc-read.ts'
 import { declaredLedgerHome } from './orchestrator.ts'
 import { orchStateFileOf } from '../server/orch-state.ts'
+import { resolveLedgerByName } from '../shared/ledger-catalog.ts'
 import {
   handleExecProgress,
   EXEC_PROGRESS_SOURCE,
@@ -88,6 +89,10 @@ export function installExecProgressRoute(ctx: Context): void {
         }
       }
 
+      /** Explicit project selection from the panel; only a real single-segment ledger name is accepted. */
+      const ledgerRootByName = (name: unknown): string | undefined =>
+        resolveLedgerByName(declaredLedgerHome(hostCtx), name, existsSync)
+
       const disposer = fetch.register({
         path: EXEC_PROGRESS_ROUTE_PATH,
         methods: ['POST'],
@@ -101,9 +106,21 @@ export function installExecProgressRoute(ctx: Context): void {
           } catch {
             return json(400, { ok: false, reason: 'bad-request', message: '请求体不是 JSON' })
           }
+          const wanted = body?.ledger
+          let byName: string | undefined
+          if (wanted !== undefined && wanted !== null && wanted !== '') {
+            byName = ledgerRootByName(wanted)
+            if (byName === undefined) {
+              return json(400, {
+                ok: false,
+                reason: 'ledger-not-allowed',
+                message: `账本名不在白名单内或不存在：${JSON.stringify(String(wanted))}（⛔ 不接受路径）`,
+              })
+            }
+          }
           const out: ExecProgressResponse = handleExecProgress(
             {
-              ledgerRootOf,
+              ledgerRootOf: byName === undefined ? ledgerRootOf : () => byName,
               ledgerRootWhyOf,
               // ⚠ 路径**派生**自 `orch-state.ts`（`D1`①：同一条解析入口）
               stateFileOf: (root: string) => orchStateFileOf(root),

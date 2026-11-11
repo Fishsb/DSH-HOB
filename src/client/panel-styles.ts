@@ -111,6 +111,10 @@ const CSS = [
   `.dsh-hob-note{margin:0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}`,
   // 说明里的强调词提一级（secondary），避免"提示里全是灰的、重点看不见"。
   `.dsh-hob-note strong{font-weight:500;color:var(--dsw-alias-label-secondary)}`,
+  // 生效条件默认折叠：summary 与说明同级，展开后保留原有 notes 间距。
+  `details[data-dsh-hob="settings-notes"]{display:flex;flex-direction:column;gap:6px}`,
+  `details[data-dsh-hob="settings-notes"] > summary{list-style:none}`,
+  `details[data-dsh-hob="settings-notes"] > summary::-webkit-details-marker{display:none}`,
 
   // 屏读专用文本（宿主同款写法，见 `ui-settings-general` 的 `.VOzbGW_hiddenLabel`）。
   `.dsh-hob-sr-only{position:absolute;width:1px;height:1px;white-space:nowrap;overflow:hidden;clip:rect(0 0 0 0)}`,
@@ -169,7 +173,7 @@ const CSS = [
    * ══ 项目选择器 = **一行触发 + 浮层菜单**（2026-11-08 第 2 次修正）══════════
    *
    * 病（真机 DOM 核对）：上一版 `<details>` 把菜单留在**正常流**里 ⇒ 展开后把下面
-   *   在途需求 / 五步主线整体往下推，菜单里又是一整列账本（还带“空账本”二级折叠）
+   *   在途需求 / 阶段主线整体往下推，菜单里又是一整列账本（还带“空账本”二级折叠）
    *   ⇒ 用户看到的就是“一行控件里又套了一份旧列表”。
    *
    * 改法（三条都不引新令牌，全部用宿主既有 `--dsw-*`）：

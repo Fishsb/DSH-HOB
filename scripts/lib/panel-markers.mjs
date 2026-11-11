@@ -137,10 +137,20 @@ export const PANEL_MARKERS = Object.freeze({
     who: 'panel',
     why: '同一行里的当前项目名；默认跟随服务端 current（当前工作区账本）',
   }),
+  ledgerSummaryCounts: Object.freeze({
+    literal: 'stages-ledgers-summary-counts',
+    who: 'panel',
+    why: '项目梳理汇总：最新 / 需迁 v3 / 空账 / 备份 / 读不了 各档计数（⛔ 不用单元总数冒充健康）',
+  }),
   ledgerMenu: Object.freeze({
     literal: 'stages-ledgers-menu',
     who: 'panel',
     why: '账本下拉的**浮层菜单**（position:absolute + 限高滚动）；判据 S-34e 量它“⛔ 不推动下面内容、⛔ 不再套一份纵向列表”',
+  }),
+  workMode: Object.freeze({
+    literal: 'stages-work-mode',
+    who: 'panel',
+    why: '首屏常驻「推进方式：<档位> · 来源：<来源>」一行（读取中 / 判不出 各有独立 data-state）',
   }),
   inflight: Object.freeze({
     literal: 'stages-inflight',
@@ -201,6 +211,21 @@ export const PANEL_MARKERS = Object.freeze({
     literal: 'stages-current-step',
     who: 'panel',
     why: '唯一“当前”标记；同一时刻最多一个',
+  }),
+  currentGate: Object.freeze({
+    literal: 'stages-current-gate',
+    who: 'panel',
+    why: '当前用户/阶段门禁卡片（G1/G2/G5/G6）；data-gate 与 data-next-actor 供按门检查',
+  }),
+  pipelineReadout: Object.freeze({
+    literal: 'stages-pipeline-readout',
+    who: 'panel',
+    why: '选中需求的主 Pipeline 读数（当前阶段 / 下一步 / 闸门）；唯一当前阶段出口',
+  }),
+  riskReadout: Object.freeze({
+    literal: 'stages-risk-readout',
+    who: 'panel',
+    why: '首屏风险摘要（固有风险 + 交付档位 + 硬触发）；不在展开体里',
   }),
   currentAcceptanceMaterials: Object.freeze({
     literal: 'stages-current-acceptance-materials',

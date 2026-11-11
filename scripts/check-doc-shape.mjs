@@ -3293,6 +3293,84 @@ export function runLedgerCure({ ok, bad, alarm, skip }) {
     + `**报警** ${alarmHits} 处）· 反引号内白名单①另有 ${inlineHits} 处**未咬**`
     + `；⚠ 报警明细**不进「查了」计数**（存量清掉后这个数必须逐字不变）`)
 
+  // ── STATE：同一事项不得既"待用户拍板"又"已认领"（2026-11-06）────────────
+  //
+  // ⚠ 现场（`queue/doing/2026-10-25-workmode-correction/PENDING.md` 第 4 件）：
+  //   `CONTEXT.md` §2.1 曾出现「**1** | 待用户拍板 | 当前没有需要用户拍板的事项（0 条）」
+  //   与「**2** | 已认领 | 账本生命周期机检正在实施」并存 —— 同一张状态表里，
+  //   一行说"没人拍板"、另一行说"已经认领在做了"，读的人无法判断到底谁在等谁。
+  //   ⇒ 本条只咬**可枚举的自相矛盾**：同一张表里，某个编号既出现在"待拍板"行、
+  //     又出现在"已认领"行。⛔ 不做语义判断（"这句话对不对"读不懂就不判）。
+  {
+    const W_PENDING = /待用户拍板|等用户拍板|待用户决定/g
+    const W_CLAIMED = /已认领|用户已认领|已定/g
+    const SAMPLES = [
+      ['自相矛盾（应咬）', '| **1** | 待用户拍板 | 无事 |\n| **1** | 已认领 | 在做 |', true],
+      ['只有待拍板（不该咬）', '| **1** | 待用户拍板 | 无事 |', false],
+      ['只有已认领（不该咬）', '| **1** | 已认领 | 在做 |', false],
+      ['两个不同编号（不该咬）', '| **1** | 待用户拍板 | 无事 |\n| **2** | 已认领 | 在做 |', false],
+    ]
+    const contradictionsOf = (src) => {
+      /** 逐行取「行首编号 + 状态词」，按编号归集。 */
+      const byId = new Map()
+      for (const line of String(src).split('\n')) {
+        const m = /^\s*\|\s*\*\*(\d+)\*\*\s*\|\s*([^|]+)\|/.exec(line)
+        if (m === null) continue
+        const id = m[1]
+        const cell = m[2]
+        const state = W_PENDING.test(cell) ? 'pending' : (W_CLAIMED.test(cell) ? 'claimed' : 'other')
+        if (state === 'other') continue
+        const prev = byId.get(id) ?? new Set()
+        prev.add(state)
+        byId.set(id, prev)
+      }
+      const out = []
+      for (const [id, states] of byId) {
+        if (states.has('pending') && states.has('claimed')) out.push(id)
+      }
+      return out
+    }
+    let wBad = 0
+    for (const [label, sample, shouldBite] of SAMPLES) {
+      const hit = contradictionsOf(sample).length > 0
+      if (hit !== shouldBite) { wBad += 1; badSink(`STATE0 自带样本判错：${label} ⇒ 期望 ${shouldBite ? '咬' : '放过'}，实得 ${hit ? '咬' : '放过'}`) }
+    }
+    if (wBad === 0) ok(`STATE0 ✓ 判据成对可验：${SAMPLES.length} 组（矛盾 1 / 单态 2 / 不同编号 1）⇒ 该咬的咬、该放过的放过`)
+  }
+  {
+    let scanned = 0
+    let contradictions = 0
+    for (const rel of targets.root) {
+      const abs = join(LEDGER_ROOT, rel)
+      let src = ''
+      try { src = readFileSync(abs, 'utf8') } catch { skipSink(`W【读不到】${rel} —— 该份未扫（⛔ 不代表通过）`); continue }
+      scanned += 1
+      const ids = (() => {
+        const byId = new Map()
+        for (const line of src.split('\n')) {
+          const m = /^\s*\|\s*\*\*(\d+)\*\*\s*\|\s*([^|]+)\|/.exec(line)
+          if (m === null) continue
+          const cell = m[2]
+          const state = /待用户拍板|等用户拍板|待用户决定/.test(cell) ? 'pending'
+            : /已认领|用户已认领|已定/.test(cell) ? 'claimed' : 'other'
+          if (state === 'other') continue
+          const prev = byId.get(m[1]) ?? new Set()
+          prev.add(state)
+          byId.set(m[1], prev)
+        }
+        return [...byId].filter(([, v]) => v.has('pending') && v.has('claimed')).map(([k]) => k)
+      })()
+      for (const id of ids) {
+        contradictions += 1
+        alarmSink(`STATE **状态自相矛盾**：\`${rel}\` 的事项 #${id} 同时写着「待用户拍板」与「已认领/已定」`
+          + '\n      ⇒ 同一张表里两行结论相反 ⇒ 读的人无法判断到底在等谁；'
+          + '先确认归属，再把其中一行改成真实状态（⛔ 不许两行都留着）')
+      }
+    }
+    ok(`STATE ✓ 状态表一致性：扫了 ${scanned} 份正本 ⇒ **${contradictions} 处自相矛盾**`
+      + (contradictions === 0 ? '（这条在 0 处时才是真的干净）' : '（见上面报警行）'))
+  }
+
   // ── Y0：自带样本（预算判据成对）─────────────────────────────────────────
   {
     const yLimit = 100

@@ -1,15 +1,15 @@
 /**
- * **`ledger/units/`（index 导航 + unit-*.toml 分片）→ 五步汇总 + cap 单列**（纯函数，零 I/O）—— 2026-10-30 · P3。
+ * **`ledger/units/`（index 导航 + unit-*.toml 分片）→ 阶段清单 + cap 单列**（纯函数，零 I/O）—— 2026-10-30 · P3。
  *
  * ══ 它是什么 ═══════════════════════════════════════════════════════════════════
  *   面板新数据源的服务端处理体。读的是**机读索引**（⛔ 不再读 `volumes/tasks/INDEX.md` 那份散文账），
- *   按 `DESIGN-V2.md` §四 把五步**算出来**，`cap` 单列（⛔ 不进分母）。
+ *   按 Pipeline v3 把正式阶段**算出来**，`cap` 单列（⛔ 不进分母）。
  *
  * ══ ⚠ 与生成器的一致性（重要）═══════════════════════════════════════════════════
  *   `scripts/gen-ledger.mjs` 也解析同一份索引。两处**都用"受限 TOML 子集"**，
  *   但**实现是两份**（脚本侧要零 `node:*` 之外的依赖、服务端侧要能被 `ts-mount` 转译）。
- *   ⇒ 一致性不靠自觉：`check:stages-route` 的 **R-9** 断言**本文件算出的五步数字与
- *     `gen/stages.md` 里那五行逐字对上**（两套解析器 + 两条渲染路径交叉验证）。
+ *   ⇒ 一致性不靠自觉：`check:stages-route` 的 **R-9** 断言**本文件算出的阶段数字与
+ *     `gen/stages.md` 里的阶段行逐字对上**（两套解析器 + 两条渲染路径交叉验证）。
  *   ⚠ 这是在补 `DESIGN-V2.md` §十·4 自己点出的洞：「I5 只证生成物与生成器一致，不证生成器算对了」。
  */
 
@@ -19,18 +19,27 @@ import { attentionOf, type WorkStateReading } from './work-state.ts'
 import { convergenceOf } from './convergence.ts'
 import { attentionAfterMainAction, panelSummaryOf, type PanelSummary } from './panel-summary.ts'
 import { listPresentationOf, relationTitlesOf, type ItemListPresentation } from './item-presentation.ts'
-import { ledgerClosureProblems, stageControlProblems, type StageControlUnit } from './stage-controls.ts'
+import { STAGE_NAMES, type StageControlUnit } from './stage-controls.ts'
+import { ledgerHealthOf } from './ledger-health.ts'
+import { pipelineViewsOf, type PipelineView } from './pipeline-view.ts'
 export { changeRequirementIds } from './ledger-relations.ts'
 export { UNIT_STATUSES, unitShapeProblems } from './ledger-validation.ts'
 import { unitShapeProblems as shapeProblemsOf } from './ledger-validation.ts'
 
-/** 五步的名字与 kind（⚠ 唯一真源，顺序 = 渲染顺序）。 */
+/**
+ * Pipeline v3 stage inventory. Per-requirement authority remains PipelineView.
+ *
+ * ⚠ **步名从 `STAGE_NAMES` 派生**（R-03，2026-11-10）：⛔ 不再写字面量。
+ * 本表只负责「步号 → 单元 kind」的映射；步名归 `stage-controls.ts` 一处。
+ */
 export const STAGE_DEFS = [
-  { step: 1, kind: 'req', name: '需求规格' },
-  { step: 2, kind: 'change', name: '实现方案' },
-  { step: 3, kind: 'task', name: '编码任务' },
-  { step: 4, kind: 'run', name: '任务执行' },
-  { step: 5, kind: 'acc', name: '验收核对' },
+  { step: 1, kind: 'req', name: STAGE_NAMES.requirements },
+  { step: 2, kind: 'change', name: STAGE_NAMES.plan },
+  { step: 3, kind: 'task', name: STAGE_NAMES.tasks },
+  { step: 4, kind: 'run', name: STAGE_NAMES.execution },
+  { step: 5, kind: 'verification', name: STAGE_NAMES.verification },
+  { step: 6, kind: 'acc', name: STAGE_NAMES.acceptance },
+  { step: 7, kind: 'closure', name: STAGE_NAMES.closure },
 ] as const
 
 /** 封闭状态集（与 `DESIGN-V2.md` §3.3 一致；⚠ 与生成器那份必须同值，由 R-9 交叉验证）。 */
@@ -44,6 +53,8 @@ export const STAGE_KIND_STATUSES: Readonly<Record<string, { statuses: string[]; 
   task: { statuses: ['todo', 'doing', 'built'], init: 'todo', finals: ['built'] },
   run: { statuses: ['registered', 'running', 'returned', 'refused', 'stuck'], init: 'registered', finals: ['returned', 'refused', 'stuck'] },
   acc: { statuses: ['pass', 'send-back', 'unverified'], init: 'unverified', finals: ['pass', 'send-back'] },
+  verification: { statuses: ['unverified', 'pass', 'send-back', 'waived'], init: 'unverified', finals: ['pass', 'send-back', 'waived'] },
+  closure: { statuses: ['open', 'closed', 'skipped', 'blocked'], init: 'open', finals: ['closed', 'skipped'] },
   cap: { statuses: ['live', 'degraded', 'down'], init: 'live', finals: [] },
   /**
    * ⚠⚠ **2026-10-31 P40/R2：三个受控对象**（`TASK-R2.md` §二）——————————————
@@ -140,10 +151,19 @@ export interface StagesOk {
   stages: StageRow[]
   caps: CapRow[]
   /**
+   * Requirement-scoped Pipeline v3 views.
+   *
+   * `stages` remains the whole-ledger inventory for expansion and history.
+   * This list is the single authority for a requirement's active stage, user
+   * gate and next actor; consumers must not derive another "current stage"
+   * from the global `stages` array.
+   */
+  pipelines: PipelineView[]
+  /**
    * **账本健康**（2026-11-08 · 用户报「旧账本梳理不到完全健康」）。
    *
-   * ⚠ 它把"派活为什么被拒"直接搬到面板上：服务端用与门禁**同一个**
-   *   `stageControlProblems` + `ledgerClosureProblems` 算出缺口清单，
+   * ⚠ 它把"派活为什么被拒"直接搬到面板上：服务端用与门禁**同一个**唯一判据
+   *   `ledgerHealthOf`（shape + field + approval + closure）算出缺口清单，
    *   面板只负责展示（⛔ 不在客户端另算一份，那会两处漂开）。
    * ⚠ 缺口为空**不等于**账本可推进：空账本由 `ledger-missing` / `empty` 那几档说。
    */
@@ -155,6 +175,11 @@ export interface StagesOk {
     problems?: Array<{ rule: string; unit: string; why: string }>
     /** 缺口是否被截断（⚠ 为 true 时面板必须写"另有 N 条"）。 */
     truncated?: boolean
+    /**
+     * 四类缺口各自的条数（shape / field / approval / closure）。
+     * ⚠ 新增字段：旧客户端忽略即可（前进兼容）；⛔ 面板不得自己再算一遍分类。
+     */
+    bySource?: { shape: number; field: number; approval: number; closure: number }
   }
   /** 「下一步」一条（⚠ 只读呈现，⛔ 不带任何可交互控件）。 */
   next: NextAction
@@ -178,7 +203,7 @@ export interface StagesOk {
   portfolio?: Portfolio
   /**
    * **注意力视图**：只汇总需要人或验收方行动的事项。
-   * ⚠ 由 `work-state.ts` 从账本派生，⛔ 不是第六步、⛔ 不等于五步完成度。
+   * ⚠ 由 `work-state.ts` 从账本派生，⛔ 不是正式阶段、⛔ 不等于阶段完成度。
    */
   attention?: WorkStateReading[]
   /**
@@ -293,7 +318,7 @@ function extraOf(u: Record<string, unknown>): string {
 }
 
 /**
- * 把单元数组渲染成线格式（⚠ 五步**顺序固定**，空步也要出现且给 `todo`）。
+ * 把单元数组渲染成线格式（⚠ 阶段**顺序固定**，空步也要出现且给 `todo`）。
  *
  * @param units - 单元数组
  * @param readAt - ISO 时刻
@@ -407,7 +432,9 @@ export function buildStages(
     ? undefined
     : attentionAfterMainAction(attention, next, units)
   const out: StagesOk = {
-    ok: true, readAt, stages, caps, next,
+    ok: true, readAt, stages, caps,
+    pipelines: pipelineViewsOf(units),
+    next,
     /**
      * ⚠ `stages: []` ⇒ `summary.stage === null`：项目级摘要不再回答"当前在第几步"。
      *   动作 / 等待 / 主阻断仍从同一个 `next` 派生（与面板一致）。
@@ -428,9 +455,14 @@ export function buildStages(
      */
     ...(() => {
       try {
-        const cast = units as unknown as StageControlUnit[]
-        const all = [...stageControlProblems(cast), ...ledgerClosureProblems(cast)]
-          .map((p) => ({ rule: String(p.rule), unit: String(p.unit), why: String(p.why) }))
+        /**
+         * ⚠ **B1.3（T-02）：唯一判据 = `ledgerHealthOf`**（⛔ 不在这里再拼一份）。
+         *   改前这里是 `stageControlProblems` + `ledgerClosureProblems`（field + approval +
+         *   closure，**无 shape**）⇒ 只有形状缺口时本出口报的是一份**漏了 S-0** 的清单
+         *   （附录 A-8 的 F3：四个出口没有一个报全）。
+         */
+        const health = ledgerHealthOf(units as unknown as StageControlUnit[])
+        const all = health.problems
         /**
          * ⚠ 紧凑模式也带**前 40 条**全文（缺口通常只有几条，代价可忽略）；
          *   超出部分只给计数 —— 实测极端规模下全文塞进主响应会把整包顶到 347 KB。
@@ -439,10 +471,12 @@ export function buildStages(
         const cap = opts.compact === true ? 40 : all.length
         return {
           stageHealth: {
-            ok: all.length === 0,
+            ok: health.canProceed,
             count: all.length,
             ...(all.length > cap ? { truncated: true } : {}),
-            problems: all.slice(0, cap),
+            problems: all.slice(0, cap).map((p) => ({ rule: String(p.rule), unit: String(p.unit), why: String(p.why) })),
+            /** 四类各自的条数（面板按类分组用；⛔ 不让人再各算一遍）。 */
+            bySource: health.bySource,
           },
         }
       } catch { return {} }
@@ -583,6 +617,21 @@ export function buildStages(
       if (Array.isArray(out.attention) && out.attention.length > 0) {
         while (out.attention.length > 1 && bytesOf(out) > LIMIT) out.attention.pop()
       }
+      /** Optional projections are recoverable by ID; drop them before truncating inventory. */
+      if (out.portfolio !== undefined) out.portfolio = undefined
+      if (out.stageHealth !== undefined) {
+        out.stageHealth = {
+          ok: out.stageHealth.ok,
+          count: out.stageHealth.count,
+          ...(out.stageHealth.truncated === true ? { truncated: true } : {}),
+        }
+      }
+      /** The compact inventory must remain within budget even with an extreme ledger. */
+      /**
+       * Pipeline views are also recoverable from `/requirement-chains`. Drop
+       * them from the compact inventory if the inventory alone cannot fit.
+       */
+      if (bytesOf(out) > LIMIT && Array.isArray(out.pipelines)) out.pipelines = []
     }
     if (bytesOf(out) > LIMIT) {
       /**

@@ -31,14 +31,4 @@ export const CAPABILITY_RED_LINE_ZH = '不能写、不能执行命令、不能�
 /** 红线那一句（英文对应句）。 */
 export const CAPABILITY_RED_LINE_EN = 'it cannot write, run a command, or raise a team'
 
-/**
- * 取红线句。
- *
- * @param lang - `'zh'` / `'en'`（其余一律按中文，与本项目默认语言一致）。
- * @returns 红线那一句（⛔ 不含句末标点 —— 由引用方按自己的句子补）。
- */
-export function capabilityRedLine(lang: string | undefined): string {
-  return typeof lang === 'string' && lang.toLowerCase().startsWith('zh')
-    ? CAPABILITY_RED_LINE_ZH
-    : CAPABILITY_RED_LINE_EN
-}
+

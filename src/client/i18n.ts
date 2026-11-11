@@ -340,7 +340,7 @@ function localLookup(key: string): string | undefined {
 }
 
 /**
- * 面板取词入口（**所有面向用户的文案都经它**）。
+ * 面板取词入口。
  *
  * 顺序：① 本插件 ns（语言服务里已注册的当前语言词条）
  *      → ② 本地词典（当前语言 → 英文）
@@ -349,6 +349,38 @@ function localLookup(key: string): string | undefined {
  * @param key    - 词条键。
  * @param params - `{name}` 占位符参数。
  * @returns 面向用户的文本。
+ *
+ * ══ ⚠⚠ 覆盖范围的**准确说法**（2026-11-11 · O-21 / REVIEW 的 D-14 裁定 B）══════
+ *
+ *   **改前**这里写的是「**所有**面向用户的文案都经它」—— 那是**假的**：
+ *   `project-panel.tsx`（全仓最大的一屏，3.9k 行）**一处都没调** `t()`
+ *   （实测 `t(` 计数 = 0，CJK 字符 16842）。
+ *
+ *   ⚠ 这个假承诺的害处不是「少翻译了」，而是**让每一次「i18n 已覆盖」的复核都被这一条推翻**：
+ *     读契约的人会以为面板已接入，于是不会去查它。
+ *
+ *   ⇒ **现状（如实声明，2026-11-11 起）**：
+ *     · **已接入**：设置面板（`settings-panel.tsx`）、建会话弹窗（`create-hob-dialog.tsx`）、
+ *       未选档位横幅（`hob-unselected-gate.tsx`）、以及本文件的词典；
+ *     · ✅ **已接入**：`project-panel.tsx` —— **A 方案已完成**（2026-11-11）：
+ *       取词管线 `stageText()` / `stageFmt()` → `t()` → 中文兜底，词条层名 `stages-panel`。
+ *       ⚠ **实测**：词条 **134** 个 · ZH/EN **键集完全相等** · 占位符 **0 处不一致** · **0 个未引用**。
+ *       ⚠ 未迁的中文文案**只剩 2 处**，均**有意保留**：
+ *         · `routeMissMessage()` 的兜底字面量（词条缺占位符时退回，防止 `{path}` 外泄）
+ *         · `'模式'` 词形后缀（英文语序不同，需逐语言决定，⛔ 不是迁移能解决的）
+ *       ⚠ 实测 `t()` 调用处数 = 1（在 `stageText` 里）—— 它是**唯一入口**，
+ *         进度看的是**词条键数**，⛔ 不是 `t()` 的出现次数。
+ *     · ⚠ **仍未验证的是「英文翻译质量」**：现有译文是**直译**，未经母语者审阅。
+ *       ⇒ ⛔ 不许把本文件读成「英文界面上线就绪」。
+ *
+ *   ⚠ **为什么不做全量迁移**（裁定 B 的理由）：面板文案 ≈ 216 处非注释行 / 16842 字符，
+ *     需新增约 150 个词条，且其中 12 个是**被机检锚定的导出常量**
+ *     （`STAGES_STEP_NAMES` / `STAGES_UNWIRED_LABEL` / `STAGES_EMPTY_TEXT` …）
+ *     —— 直接改成 `t()` 会让那些断言失去真值锚点。
+ *     ⇒ 全量迁移（裁定 A）**另开单**，⛔ 不在「逐条修缺陷」的节奏里做。
+ *
+ *   ⚠ 机检：`check:client` 的 **J-21** 钉住「面板零 `t()` 调用」这个事实 ——
+ *     一旦有人开始迁移，它会红，提醒同步改本节措辞（⛔ 不许只改代码不改契约）。
  */
 export function t(key: string, params?: Params): string {
   const viaService = translateVia(LOCALE_NS, key, params)
@@ -450,15 +482,8 @@ export function bindLocale(ctx: any): () => void {
  *
  * @returns 键 → 中英兜底文案（副本，调用方改不动内部状态）。
  */
-export function presetFallbackWords(): Record<string, { zh: string; en: string }> {
-  return { ...PRESET_FALLBACK }
-}
-
 /**
  * 供机检/探针读取的**内置预设键表**（同上：让断言钉的是数据，不是文本形态）。
  *
  * @returns id → 语言键（副本）。
  */
-export function builtInPresetKeys(): Record<string, string> {
-  return { ...BUILT_IN_PRESET_KEYS }
-}

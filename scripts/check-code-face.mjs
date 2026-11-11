@@ -1321,6 +1321,46 @@ export async function runReadWhitelist({ bad, ok }) {
     }
   }
 
+  const HARD_CAP_BYTES_Y = 65536
+
+  // ── SHARD · 增长余量：分片不得贴到读取上限（⛔ 不允许"刚好能读"）────────────
+  //
+  // ⚠ 现场：2026-11-06 复核时 unit-01.toml 已达 65245 B（上限 65536 的 99.5%），
+  //   再加几条单元就会**静默截断**。Y2 只在超限后才红 —— 那时已经晚了。
+  //   ⇒ 本条在 **75%** 就报警：留出至少四分之一余量给下一批单元。
+  {
+    const WARN_RATIO = 0.75
+    const over = []
+    for (const rel of sourceRels) {
+      const diskBytes = sourceSizes.get(rel)
+      if (diskBytes > HARD_CAP_BYTES_Y * WARN_RATIO) {
+        over.push(`${rel.split('/').at(-1)}=${diskBytes}B（${(diskBytes * 100 / HARD_CAP_BYTES_Y).toFixed(1)}%）`)
+      }
+    }
+    if (over.length === 0) {
+      const largest = Math.max(...sourceSizes.values())
+      ok(`SHARD ✓ 分片增长余量充足：最大单文件 ${largest}B（${(largest * 100 / HARD_CAP_BYTES_Y).toFixed(1)}%），`
+        + `低于 ${(WARN_RATIO * 100).toFixed(0)}% 预警线 ⇒ 下一批单元不会顶到上限`)
+    } else {
+      bad(`SHARD 分片已贴近读取上限（>${(WARN_RATIO * 100).toFixed(0)}%）：${over.join(' · ')}`
+        + '\n      ⇒ 先跑 `node scripts/rebalance-ledger-shards.mjs --apply` 再落新单元；'
+        + '⚠ 超限后读侧会**静默截断**，而 Y2 那时才红已经晚了')
+    }
+    /**
+     * ⚠ **负向对拍**：证明这条断言会真的开火，⛔ 不是恒绿。
+     *   用同一份 `sourceSizes` 把最大值人为抬到 90% ⇒ 同一判定函数必须报出它。
+     *   ⚠ 只判"会不会报"，⛔ 不写盘、⛔ 不影响真实读数。
+     */
+    const biggest = [...sourceSizes.entries()].sort((a, b) => b[1] - a[1])[0]
+    if (biggest !== undefined) {
+      const fake = biggest[1] * 0 + Math.floor(HARD_CAP_BYTES_Y * 0.9)
+      const wouldFire = fake > HARD_CAP_BYTES_Y * WARN_RATIO
+      if (wouldFire) {
+        ok('SHARD-负向 ✓ 把某片抬到 90% ⇒ 同一阈值判定必报（断言不是恒绿）')
+      } else bad('SHARD-负向 阈值判定失效：90% 没有超过 75% 预警线')
+    }
+  }
+
   // ── Y2 正向：默认上限（65536）下，入口与每个分片都必须读全 ──────────────
   {
     const DEFAULT_CAP = 65536

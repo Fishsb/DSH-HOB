@@ -140,7 +140,7 @@
     },
     {
       "cmd": "check:ledger-resources",
-      "what": "**账本按 ID 资源面**：覆盖 10 类单元（goal / req / change / task / run / acc / evidence / risk / decision / cap）；目标、需求、方案、任务、运行、验收、证据、风险、决策、能力均可列表与按稳定 ID 读取，按 ID 读取附带完整展示投影（原句 / 依据 / 固定异常）而列表不含正文，需求关联图的每个读取指针须可继续解析；坏 kind / 不存在 / 未知资源必须拒绝，含正反向与形状对拍"
+      "what": "**账本按 ID 资源面**：覆盖 12 类单元（goal / req / change / task / run / verification / acc / closure / evidence / risk / decision / cap）；技术验证按「验证对象」、交付收口按需求绑定并带独立读数；目标、需求、方案、任务、运行、验收、证据、风险、决策、能力均可列表与按稳定 ID 读取；按 ID 读取附带完整展示投影而列表不含正文；坏 kind / 不存在 / 未知资源必须拒绝，含正反向与形状对拍"
     },
     {
       "cmd": "check:ledger-write-policy",
@@ -183,8 +183,28 @@
       "what": "**五阶段内部控制**：需求澄清（问题 / 假设 / 例子 / 验收条件）· 方案路径比较与需求映射 · 任务自包含 · 小步验证 · 产品确认 · 阻塞回流五类归因 · 阶段摘要与研究引用可追溯；历史存量只读豁免，新数据必过门禁；**C-17 条目标题自包含门禁**（新条目 title=id / 纯编号 / 期次 / 状态词与无关编号必红，历史 title=id 不误伤）"
     },
     {
+      "cmd": "check:live-route",
+      "what": "**进度面板实时失效通道（服务端）**：认证 Fetch 路由 · 首帧 hello · 每账本单调序号 · 合并窗口 · 账本隔离 · 运行态 / 计划真写入触发 · dryRun 与交接文件不触发 · 订阅上限 · 断开与卸载清理"
+    },
+    {
+      "cmd": "check:live-client",
+      "what": "**进度面板实时失效通道（客户端）**：SSE 帧解析 · 去抖合并 · 序号断档补拉 · 跨账本帧拒绝 · 重连与 fallback · 状态可订阅 · stop 后迟到响应不复活"
+    },
+    {
+      "cmd": "check:pipeline",
+      "what": "**Pipeline v3 六阶段与用户闸门**：需求 / 方案内容完成不等于批准 · G1/G2 绑定当前修订与内容摘要 · 内容变化必须递增 revision 并令旧批准 stale · Hob 不能自批 · G4 技术验证与 G5 产品验收分离 · G6 按风险收口 · v2 只读且不能 v3 派发 · RUN/VER/ACC 绑定任务修订"
+    },
+    {
+      "cmd": "check:risk-policy",
+      "what": "**风险策略**：硬触发不能被平均降档 · 单维高风险有最低档 · 固有风险与残余风险分离 · high/critical 需独立评审 · critical 需双评审与残余风险接受 · G6 收口档位由风险推导"
+    },
+    {
       "cmd": "check:ledger-projection",
       "what": "**运行态 → 账本投影**：派发成功建 RUN registered 且任务转 doing · 回传成功迁 RUN returned、**有进度读数才迁任务 built**（回传 ≠ 做完）· 判决建 ACC pass/send-back · implicit / 缺独立验收会话 / 自己验自己三档可辨 · 同一事件幂等 · 真写入器落盘（含进度读数与依据）"
+    },
+    {
+      "cmd": "check:ledger-lifecycle",
+      "what": "**账本生命周期 + 统一工作准入**：无账本/失效账本零执行副作用 · 通知不能承载实质工作 · 派发必须有真实 task 且 only todo · dispatchId 幂等与目标替换可见 · 无匹配完成只算 orphan · 新账本带激活记录且 active-empty 不可派活 · 已激活账本索引与单元源分裂即 invalid · 归档重建保留旧账副本且不继承旧批准"
     }
   ]
 }

@@ -1357,9 +1357,27 @@ export function checkI8(units) {
  * @param {Array<Record<string, any>>} units - 索引单元
  * @returns {string[]} 问题清单（空 = 绿）
  */
-export function checkI9(units) {
+export function checkI9(units, pathExists) {
   const problems = []
   const ids = new Set(units.map((u) => String(u.id)))
+  /**
+   * ⚠⚠ **I9 的字段有两种形态**（2026-11-11 · 复核既有失败时实测发现）：
+   *
+   *   `basis` / `verification_refs` 这类字段**既可能是单元 id，也可能是盘上的文件路径**。
+   *   真账本实测（`unit-06.toml` ACC-063）：
+   *   ```
+   *   basis = ["EVD-072", "archive/2026-11-07-independent-acceptance/ACCEPTANCE-REPORT.md"]
+   *   ```
+   *   —— 前者是 evidence 单元 id，后者是**文件路径**。
+   *
+   *   改前一律当 id 查 ⇒ 路径必然判「不存在」⇒ **3 条 ACC 恒红**，
+   *   而那 3 个文件**在盘上真实存在**（实测目录里就有 ACCEPTANCE-REPORT.md）。
+   *   ⚠ 这不是账本数据问题，是**判据把两种形态混成了一种**。
+   *
+   *   ⇒ 判法：含 `/` 或以 `.md` / `.toml` 结尾的，按**路径**判（给 `pathExists` 才算，
+   *     ⛔ 不给则跳过 —— 那样「判不了」不会被读成「不存在」）。
+   */
+  const looksLikePath = (v) => /[\\/]/.test(v) || /\.(md|toml|json|txt|log)$/i.test(v)
   /** 字段 → 被引用者必须是什么 kind（空数组 = 不限 kind） */
   const REF_FIELDS = {
     risk_ids: ['risk'],
@@ -1380,6 +1398,15 @@ export function checkI9(units) {
       for (const raw of arr) {
         const ref = String(raw).trim()
         if (ref === '') continue
+        /** ⚠ 路径形态：交给 `pathExists` 判；⛔ 不给就说"判不了"，不谎报"不存在"。 */
+        if (looksLikePath(ref)) {
+          if (typeof pathExists !== 'function') {
+            problems.push(`${u.id}：\`${f}\` 里的 \`${ref}\` 是**路径**，但本条没拿到盘面判据 ⇒ **判不了它存不存在**（⛔ 不按通过处理）`)
+          } else if (!pathExists(ref)) {
+            problems.push(`${u.id}：\`${f}\` 里的路径 \`${ref}\` **盘上不存在** ⇒ 悬空引用`)
+          }
+          continue
+        }
         if (!ids.has(ref)) {
           problems.push(`${u.id}：\`${f}\` 里的 \`${ref}\` **不存在** ⇒ 悬空引用（⛔ 那会让"覆盖"看起来成立）`)
           continue
@@ -3309,7 +3336,19 @@ if (IS_MAIN) try {
     if (i8.ok) ok(`I8 ✓ **决策取代双向**：\`supersedes\` ⇔ \`superseded_by\` 双向对上、被取代者 \`status=superseded\`（本索引 ${units.filter((u) => u.kind === 'decision').length} 条决策 · ${i8.msg}）`)
     else for (const p of i8.probs) bad(`I8 · ${p}`)
 
-    const i9 = gate('I9', checkI9)
+    /**
+     * ⚠ I9 必须拿到**盘面判据**：`basis` 可能是文件路径（真账本实测），
+     *   没有它就只能说"判不了"，⛔ 不能谎报"不存在"。
+     */
+    /**
+     * ⚠⚠ **路径必须相对「账本根」，⛔ 不是 `ledger/`**（实测踩过）：
+     *   真账本的布局是 `<账本根>/ledger/` 与 `<账本根>/archive/` **平级**，
+     *   而 `LEDGER` 指向的是前者。拿它拼 `archive/…` 会得到
+     *   `<账本根>/ledger/archive/…` —— 那个目录**不存在**（实测）。
+     *   ⇒ 上跳一级到账本根再拼。
+     */
+    const LEDGER_BASE = dirname(LEDGER)
+    const i9 = gate('I9', (us) => checkI9(us, (rel) => existsSync(join(LEDGER_BASE, rel))))
     if (i9.ok) ok(`I9 ✓ **引用不断链**：\`risk_ids\` / \`addresses\` / \`task.req_ids\` / \`decisions\` / \`affects\` / \`evidence_refs\` / \`acceptance_ids\` / \`basis\` 里的 id 全部真实存在（${i9.msg}）`)
     else for (const p of i9.probs) bad(`I9 · ${p}`)
 
@@ -5190,6 +5229,74 @@ console.log(`L 组：通过 ${pass} · 失败 ${fail}`)
  *   点名的那个病同形：族内明明跳了，汇总行印"跳过 0 处"）。
  *   ⇒ 现在按实际 `skip.length` 印。
  */
+  /**
+   * ── **O-37：迁移必须遍历分片，⛔ 不能只重写 index.toml** ──────────────────
+   *
+   * ⚠ 改前整段迁移逻辑写死在 `index.toml` 上。而现行账本的单元**几乎全在分片里**
+   *   （实测 dsh-hob：index 0 条 / 7 个分片 292 条 / 分片里 13 处旧词）
+   *   ⇒ 在真实存量上它报「没有发现可自动迁移的已知旧词」，**是一条无效的修复通道**。
+   *
+   * ⚠ 本条只查**可静态判定**的两件（⛔ 不试图在这里跑一遍真迁移）：
+   *   ① `hob_ledger_migrate` 的实现**有遍历分片**的动作；
+   *   ② 它**不再**只写死一个文件。
+   */
+  {
+    const p = []
+    /** ⚠ 先剥注释再判（本仓已踩过 7 次「注释被当成代码」）。 */
+    const strip = (x) => x
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((l) => l.replace(/\/\/.*$/, ''))
+      .join('\n')
+    const toolsSrc = strip(readFileSync(join(here, '..', 'src', 'modules', 'tools.ts'), 'utf8'))
+    const i = toolsSrc.indexOf("name: 'hob_ledger_migrate'")
+    if (i < 0) p.push('找不到 hob_ledger_migrate 定义 ⇒ 失去基准')
+    else {
+      const j = toolsSrc.indexOf('defineTool(', i)
+      const body = j < 0 ? toolsSrc.slice(i) : toolsSrc.slice(i, j)
+      if (!/readdirSync\(unitsDir\)/.test(body)) {
+        p.push('迁移实现里没有 readdirSync(unitsDir) ⇒ 它没遍历分片（O-37 复发）')
+      }
+      if (!body.includes('unit-')) p.push('迁移实现里没有分片名过滤 ⇒ 可能把读不见的文件也算了')
+      if (/file: 'ledger\/units\/index\.toml',/.test(body) && !body.includes('ledger/units/${')) {
+        p.push('写盘仍写死 ledger/units/index.toml 一处 ⇒ 分片改了也不落盘（O-37 复发）')
+      }
+    }
+    if (p.length === 0) {
+      ok('O-37 ✓ **负向对拍**：hob_ledger_migrate 遍历 index + 全部分片（同一套过滤式），'
+        + '写盘按文件循环（⛔ 不再只重写 index.toml 一处）')
+    } else for (const x of p) bad(`O-37 · ${x}`)
+  }
+  /**
+   * ── **O-05：A-4 必须对所有有 index 的账本跑，⛔ 不只是已激活的** ──────────────
+   *
+   * ⚠ 改前条件是 `lifecycle.activation === 'active'`。而**现行真实账本没有 ledger.toml**
+   *   （实测 dsh-hob 账本根：`ledger.toml` 不存在）⇒ `activation = 'missing'`
+   *   ⇒ **A-4（索引与单元源一致性）从不执行**。
+   *
+   * ⚠ 后果：`index.toml` 与分片不一致时，**没有任何一处会报**（那是 T-01 的形态）。
+   */
+  {
+    const p = []
+    const strip = (x) => x
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((l) => l.replace(/\/\/.*$/, ''))
+      .join('\n')
+    const toolsSrc = strip(readFileSync(join(here, '..', 'src', 'modules', 'tools.ts'), 'utf8'))
+    /** ① 不许只剩 `activation === 'active'` 一个条件。 */
+    const onlyActive = /if \(lifecycle\.activation === 'active' && probe\.indexText !== undefined\)/.test(toolsSrc)
+    if (onlyActive) p.push('A-4 仍只在 `activation === \'active\'` 时跑 ⇒ 现行真实账本（无 ledger.toml）永远不核（O-05 复发）')
+    /** ② 必须同时认 legacyCompatible 或 missing。 */
+    const widened = toolsSrc.includes("lifecycle.legacyCompatible") && toolsSrc.includes("lifecycle.activation === 'missing'")
+    if (!widened) p.push('A-4 的条件没有放宽到 legacyCompatible / missing ⇒ 仍然漏掉现行账本')
+    /** ③ 反向：`probe.indexText !== undefined` 仍必须在（⛔ 不许无条件跑）。 */
+    if (!toolsSrc.includes('probe.indexText !== undefined')) p.push('A-4 不再检查 `probe.indexText` ⇒ 可能对「还没开账」也跑（会得到 ENOENT）')
+    if (p.length === 0) {
+      ok('O-05 ✓ **负向对拍**：A-4 对所有有 index 的账本跑（active / legacyCompatible / missing），'
+        + '且仍以 `probe.indexText !== undefined` 为前置（⛔ 不对「还没开账」跑）')
+    } else for (const x of p) bad(`O-05 · ${x}`)
+  }
 console.log(`处级口径：查了 ${pass + fail + skip.length} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**；⚠ "查了"含跳过，故 查了 = 过了 + 没过 + 跳过）`)
 console.log('')
 if (fail > 0) {

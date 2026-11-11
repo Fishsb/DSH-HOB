@@ -44,7 +44,18 @@
  * ── ⛔ 它不做什么 ───────────────────────────────────────────────────────
  *   ⛔ 不"放宽"任何一族的判据（它只是调度，判据字节未动）。
  *   ⛔ **不预设某族该是什么结果** —— 每族的期望值仍由那族自己决定。
- *   ⛔ 不写任何文件（各族的临时件仍由各族自己管，且都在系统临时目录里）。
+ *   ⛔ **它自己不写任何文件** —— 但 ⚠ **这不是「整轮检查不写盘」**。
+ *     各族会各自写临时件，而且**不都在系统临时目录里**（S-13 更正）：
+ *       · 仓库根：`.check-*-work-<pid>/`（`check-stages-route` / `check-exec-progress` /
+ *         `check-hob-create-dom` / `check-ledger` / `check-tasks-progress` / `check-work-plan-panel`）
+ *         —— 由 `.gitignore` 的 `.check-*-work/` 兜底；
+ *       · `src/`：`src/<层>/<层>/xxx.__negctl_<pid>.ts`（`check-preset-contracts` 的变异体）
+ *         —— 由 `.gitignore` 的 `*__negctl_*.ts` 兜底（S-13 补的那条）。
+ *      ⚠ **判据进程被 Ctrl-C / OOM 时，这些残留不会被自动删掉**。
+ *      ⇒ 残留若落进 `src/`，`tsconfig` 的 `include: ["src"]` 会让 `npm run build` 把它编进 `lib/`，
+ *        而 `check:build` 的面 ⑤ 会因此报红 —— **判据自己污染被测对象**。
+ *      ⇒ 更彻底的做法是把变异体改写到 `mkdtempSync(tmpdir())` 下的镜像树
+ *        （`check-orch-state.mjs:14518-14522` 已这么做）；⛔ 本条只更正自述，未改各族实现。
  *
  * ── 判据模的传参（2026-10-19 新增 · `TASK-C`；⚠ 2026-10-24 订正**这条注释曾与实现不符**）──
  *   ⚠ `check:build` 的**面 ③**（运行实例 vs 产物）有**两档跑法**：
@@ -67,9 +78,15 @@
 
 /**
  * ⚠ 检查器自身异常的退出码（与上面「第四档」同源）。
- *   ⚠ 它是**约定**，不是本文件造出来的：四个族的 `main().catch` 都 `process.exit(3)`
- *     （`check-hob-create-dom.mjs:1223` / `check-session-policy.mjs:1651` /
- *       `check-hob-create-ui.mjs:2005`）。
+ *   ⚠ 它是**约定**，不是本文件造出来的：**三个族**的 `main().catch` 都 `process.exit(3)`
+ *     （`check-hob-create-dom.mjs` / `check-session-policy.mjs` / `check-hob-create-ui.mjs`）。
+ *
+ *   ⚠⚠ **T-21：这里刻意不写行号。** 原文写的是 `:1223` / `:1651` / `:2005` ——
+ *      **三个全错**（实测应为 `:1523` / `:1859` / `:2459`），而且那时还写着"四个族"却只列三个。
+ *      ⚠ 行号会随任何一次编辑漂移，而**族名不会**。这条契约的价值在于「哪些族会吐 3」，
+ *      不在于「第几行吐」—— 真要行号请自查：
+ *      `grep -rn 'process.exit(3)' scripts/`
+ *      ⛔ 不要在这里补回行号：那是**已知会漂的东西**，写进来就是下一次的 T-21。
  */
 export const CHECKER_CRASH_CODE = 3
 
@@ -100,8 +117,8 @@ const STRICT_FAMILIES = new Map([
   ['check:build', ['--strict-source']],
 ])
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { readFileSync, readdirSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { preflight, printPreflight } from './preflight.mjs'
 
@@ -140,7 +157,20 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *   给一个**显式下界**：族数 `< FAMILY_FLOOR` ⇒ **`exit 1`**（"查了、且有问题"）。
  *   ⚠ 下界**只准升不准降**：真要有意删一族，必须**同一批**改这个常量并写明理由
  *     （那是"有意识的收缩"，与"悄悄少一族"必须可区分）。
- *   ⚠ 为什么是 20：本仓当前实测 = 20 族（`npm run check:all` 的汇总行）。
+ *   ⚠⚠ **S-10：这个下界的「分母」是「聚合入口实际跑的族数」，⛔ 不是 `package.json` 的 `check:*` 总数。**
+ *
+ *   | 量 | 实测 | 说明 |
+ *   |---|---|---|
+ *   | `package.json` 的 `check:*` | **50** | 全部检查族 |
+ *   | 其中**不进聚合**的 | **3** | `check:all`（本入口自身）· `check:preflight`（只体检不判定）· `check:tasks-route-http`（需活宿主，按需跑） |
+ *   | `listFamilies()` 实际 | **47** | = 50 − 3，这才是 `FAMILY_FLOOR` 的分母 |
+ *
+ *   ⚠ **为什么必须写清分母**：改前这里写「为什么是 20」，而常量已是 45 —— **注释与值差了 25**。
+ *     更要紧的是「余量」：改前 `FAMILY_FLOOR = 45`、实测 47 ⇒ **余量 2**
+ *     ⇒ **从 `package.json` 删掉一族（连带脚本），`check:all` 仍全绿 exit 0** ——
+ *     而这正是本段开头说的那个盲区（「派生源自己少了」）**本该被堵住的地方**。
+ *   ⇒ 改成**零余量 47**：再少一族立刻红。
+ *   ⚠ 只准升不准降；有意收缩须同批改本常量并写明理由。
  */
 /**
  * ⚠⚠ **按需档（不在必跑套件里）**——2026-10-29 第 10 轮：
@@ -149,12 +179,17 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *   ⇒ 若放进必跑，结果只能是"永远 exit 2"，那会把"没对象"污染成"判据没跑"（`E-122` 同族）。
  *   ⇒ 手工按需跑 `npm run check:tasks-route-http`；它的无对象档是 **exit 2**（noObject，⛔ 不算通过）。
  */
-export const FAMILY_FLOOR = 41
+export const FAMILY_FLOOR = 47
 //   ⚠ 2026-10-27（包 AP · 用户「全退」）：本条不再含 `check:archive-gate`（该族随归档门禁一起退回）。
-//     实测族数 = 19（`npm run check:all` 汇总行）⇒ 下界 19 = **零余量**，再少一族立刻红。
-//   ⚠ 2026-10-29（四步主线 · 只验位置）：**19 → 20**（同批新增 `check:stages-dom` 一族）。
+//   ⚠ 2026-10-29（四步主线 · 只验位置）：新增 `check:stages-dom` 一族，下界同批抬起。
 //     抬下界是本次改动的**一部分**、不是顺手改：新族若将来被人从 scripts 里删掉，
-//     下界仍停在 19 ⇒ 「少一族」无人发现（E-160 同族）。⚠ 只准升不准降。
+//     下界若停在旧值 ⇒ 「少一族」无人发现（E-160 同族）。⚠ 只准升不准降。
+//   ⚠⚠ **2026-11-10（S-10）：45 → 47，并把「余量 2」清零。**
+//     改前 `FAMILY_FLOOR = 45` 而实测 `listFamilies()` = 47 ⇒ **余量 2**
+//     ⇒ 从 `package.json` 删掉一族（连带脚本文件）后，`check:all` **仍然全绿 exit 0**。
+//     而那正是本段开头点名的盲区（「派生源自己少了」）—— 下界本该堵住它，却因余量而形同虚设。
+//     ⚠ 同批把上方「为什么是 20」的过期注释改成**分母说明**（50 / 3 / 47），
+//       因为「余量」无法由 `package.json` 的族总数做减法得出（要减去 3 个不进聚合的族）。
 
 
 /**
@@ -181,11 +216,24 @@ export const ASSERTION_FLOORS = new Map([
    * ⚠ 运行行为族在复验后补了盘上写回、真实 status、失败归档、重启恢复四条
    *   （9 → 13）；下界必须同步抬起，否则删掉任一断言都不会变红。
    */
-  ['check:work-plan', 45],
+  // ⚠ 2026-11-09（推进方式三档落地）：45 → **55**
+  //   （+10 = 三档策略表 / 多会话单轨候选证据 / 独立候选必拆 / 共享契约与同验收单元 /
+  //    自动档不强制候选 / 独立判定看真实范围依赖 / 单目标档位门禁 /
+  //    单目标复用 same-file、strict-order 证据门 / 多会话任何单轨原因都不能绕过候选表）。
+  ['check:work-plan', 56],
   ['check:work-plan-state', 17],
-  // ⚠ 2026-11-08：13 → **14**（+1 = WPD-6b 缺真实 taskId 必拒）。
-  ['check:work-plan-dispatch', 14],
-  ['check:work-plan-runtime', 40],
+  // ⚠ 2026-11-09：14 → **21**（+7 = 执行预设判定 / 解析 / 一致直派 / 活跃 / 新建 / Hob 禁活跃 / fail-closed）。
+  // ⚠ 2026-11-09（回传实测）：21 → **24**（+3 = 缺 taskId / 账本门禁拒绝都必须明说「没有登记回传」，
+  //   且不许改投单向通知；`hob_send` 返回必须显式 `returnRegistered:false` + 指向 `hob_dispatch`）。
+  //   下界同步抬起，否则删掉任一条不会变红。
+  // ⚠ 2026-11-09（推进方式三档落地）：24 → **29**
+  //   （+5 = 自动档单目标无原因拒绝 / 有原因派发并透传 modePolicy /
+  //    多会话独立候选必须改多轨 / 单目标伪造 same-file 证据必须被拒 /
+  //    多会话单目标 same-file 缺候选表也必须被拒）。
+  ['check:work-plan-dispatch', 31],
+  // ⚠ 2026-11-09（推进方式三档落地）：40 → **42**
+  //   （+2 = 隐式计划记录真实档位；隐式轨只认真实 taskId，不用自由描述顶替）。
+  ['check:work-plan-runtime', 43],  // §79：7 处夹具修好（36→43）
   // ⚠ 2026-11-07：SC-12b 三条（执行上下文能解析 / Agent 形态必拒 / 预设层无恒判不出写法）。
   // ⚠ 2026-11-08：92 → **95**（+3 = SC-21 就绪度五档互不冒充 / SC-22 账本不健康 ⇒ 派活被拒 /
   //   SC-23 不存在的任务号 ⇒ hold 且 implicit 与真实任务照常放行）。
@@ -195,7 +243,18 @@ export const ASSERTION_FLOORS = new Map([
   //    SC-27 孤立任务不放行）。
   // ⚠ 2026-11-08：99 → **100**（+1 = SC-0b 非法 kind/status 在就绪度里被 S-0 点名）。
   // ⚠ 2026-11-08：100 → **101**（+1 = SC-0c 旧词迁移预演 / 落盘 / 映射）。
-  ['check:stage-controls', 101],
+  ['check:stage-controls', 110],
+  // 2026-11-08（Pipeline v2）：14 条零余量 = G1/G2、内容摘要、revision、自批、
+  // 回执、request-changes、写入守卫、clean cut、多需求逐条批准、阶段/面板接线、
+  // RUN/ACC 任务修订绑定、未批准草稿可保存但不可推进、草稿待办不冒充用户闸门。
+  ['check:pipeline', 30],
+  // 2026-11-10（统一准入 + 归档重建）：17 条零余量。
+  ['check:ledger-lifecycle', 21],
+  // 2026-11-08（Pipeline v3 risk policy）：10 条零余量。
+  //   硬触发最低档 / 单维下限 / 声明不可低于推导 / 高风险独立评审 /
+  //   critical 双评审 / 收口不可降档 / 残余风险接受 / 交付档位派生 / 缺评定 /
+  //   残余风险不能替代固有风险。
+  ['check:risk-policy', 28],
   // ⚠ 2026-11-08（运行态 → 账本投影）：LP-1..LP-10 十条，零余量。
   //   ⚠ 这族钉的是本轮补上的管线断点：派发建 RUN、回传迁 RUN、判决建 ACC、三档可辨、幂等，
   //     以及多轨 / 计划推进 / 重启恢复三条路径都必须带真实任务号。
@@ -203,9 +262,11 @@ export const ASSERTION_FLOORS = new Map([
   //   这条是真反证：改前两次并发投影都返回 ok，盘上却出现两条 RUN-001。
   // ⚠ 2026-11-08：11 → **12**（+1 = LP-9b pass ACC 必须通过 C-7/C-12，含负向对拍）。
   // ⚠ 2026-11-08：12 → **13**（+1 = LP-9c send-back 的真实入口可落账，同时守独立性）。
-  ['check:ledger-projection', 13],
+  ['check:ledger-projection', 17],
   // ⚠ 2026-11-04：面板族（真 DOM + 真路由处理体）。10 处零余量。
-  ['check:work-plan-panel', 11],
+  // ⚠ 2026-11-09（推进方式三档落地）：11 → **13**
+  //   （+2 = 计划创建时与当前会话档位分开显示 / 改档后旧计划仍按快照推进的说明）。
+  ['check:work-plan-panel', 13],
   // ⚠ 2026-11-03：骨架 ↔ 实例结构漂移族。
   //   3 条自证（正向对照 + 标题负向 + 表头负向）+ 基准 / 标题 / 表结构各 1 条。
   //   分母固定为 6，不随当前账本增加或删除模板文档而漂移。
@@ -225,8 +286,18 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ 2026-11-02（P41/R23）：5 → **6**（零余量 = 实测）。
   //   来源：拆卷 + 两族计数口径修正（"查了"含跳过）后实测值。
   ['check:archive', 7],
-  ['check:client', 51],   // 2026-11-06：项目总代理在设置页两套文案的存在性与旧称呼负向锚点。
-  ['check:config', 62],   // ⚠ **2026-10-25（本单）：按实测下调 62 → 61，零余量。**
+  /**
+   * ⚠ **54 → 53**（2026-11-11 · A 方案收尾）：
+   *   减的这 1 条是 J-21 的「**未引用词条附注**」—— 它是**条件 push**：
+   *   只有存在「已定义但未被引用」的键时才输出。
+   *   ⇒ 迁移收尾后未引用归零 ⇒ 该附注**不再触发** ⇒ 计数自然少 1。
+   *   ⚠ 这⛔ **不是「断言被摘掉」**：那条断言**仍然在代码里**，只是它守的条件当前不成立。
+   *   ⚠ 反向证据：只要人为制造一个未引用键，它立刻回来（见 §112 的负向对拍）。
+   */
+  ['check:client', 53],
+  // ⚠ 2026-11-09（推进方式三档落地）：62 → **63**
+  //   （+1 = G-13 弹窗三档说明 ↔ schema 描述同口径，含「删掉显式扇出必红」负向对拍）。
+  ['check:config', 67],
   //   ── 为什么下调（⚠ 是「合法地少一条」，不是为变绿）────────────────────
   //   `skeleton.enabled` 配置段按 `UD-159` 退役 ⇒ `config.ts` 的 schema 少了那个子字段,
   //   而本族的"形状 / 一一对应"断言按**字段数**计点 ⇒ **少 1 处是那件东西真没了**,
@@ -284,7 +355,10 @@ export const ASSERTION_FLOORS = new Map([
   //   顺带补齐上一批遗留的 2 条差额（117? → 1187）。只准升不准降。
   // ⚠ 2026-11-08：MUST-TRACK 新增 `check-ledger-projection.mjs` 一行 ⇒ 实测 1187 → **1188**。
   //   这是覆盖面随新增入库脚本同步增长，⛔ 不是放宽判据。
-  ['check:gitignore', 1188],
+  // ⚠ 2026-11-09（实时通道入库）：1190 → **1192**
+  //   （+2 = `check-live-route.mjs` / `check-live-client.mjs` 进入 MUST-TRACK，
+  //   仓库族逐条核到它们“在盘上、规则放行、已入 git index”）。
+  ['check:gitignore', 1195],  // §79：6 处超限修好后（拆卷）去重后实际 1195（原 1200 含那 6 处失败）
   //   ⚠ 理由：本单在 `check-repo-rules.mjs` 新增 **`MV`** 断言「模板根上文档清单 == INIT 的复制清单」
   //     ⇒ 该族多 **1 处**（577 → 578）。⚠ **只升不降**。
   //   ⚠ ⚠ **为什么不是改已有的第 ⑥ 组**：`check-code-face.mjs` 的 ⑥ 组**两个方向都不咬**（本单实测三段）——
@@ -303,11 +377,11 @@ export const ASSERTION_FLOORS = new Map([
   //      「查了」这个数**逐字不变** ⇒ 下界不会被存量牵着漂（`E-117` 同族）。
   //   ⚠ ⛔ 不许把下界抬到 578+N（N = 当前报警条数）：那会让"清存量"这个正常动作**把下界变成恒红**。
   //   ⚠ 负向对拍 = **抬到 579 造红**（⛔ 不删真实断言，两者落在同一个 `实测 < 下界` 边界上）。
-  ['check:hob-create', 53],
-  ['check:hob-create-dom', 31],  // t10 新增 D-18b（真 DOM 两次渲染的开放面对照）
+  ['check:hob-create', 55],
+  ['check:hob-create-dom', 32],  // t10 新增 D-18b（真 DOM 两次渲染的开放面对照）
   ['check:hob-gate', 59],  // 2026-11-05：+G-21d（写入确认不等待重投）
   ['check:host', 9],
-  ['check:modules', 16],  // ⚠ **2026-10-25 上调 11 → 15：新增「路径 C」4 条**（三态日志的两种成因在生产通道上可分）。
+  ['check:modules', 17],  // ⚠ **2026-10-25 上调 11 → 15：新增「路径 C」4 条**（三态日志的两种成因在生产通道上可分）。
   //   ⚠ 抬下界是**本次改动的一部分、不是顺手改**：新加的 4 条断言若将来被人删掉，
   //     下界仍停在 11 ⇒ 删了也无人发现（正是"静默缩水"）。⇒ **加断言必须同批抬下界**。
   // ⚠ **2026-10-26（包 A 读数诚实化）：223 → 239（抬 16）**。
@@ -543,7 +617,7 @@ export const ASSERTION_FLOORS = new Map([
   //     ② 只判"存在且在之后"时，**再插一个提前调用的回等待照样 PASS**（原来那一步还在）；
   //        已加"链内 `setWatchState` **只出现一次**"（加固后负向对拍 ⇒ `次数=2` + FAIL）。
   // ⚠ 2026-11-08：348 → **349**（+1 = DT：单目标派活必须有真实 TSK-*）。
-  ['check:orch', 349],
+  ['check:orch', 356],
   //   ── 为什么抬（⚠ 是"新增了被测行为"，⛔ 不是为好看凑数）────────────────────
   //   本单把"叫过一次就永久安静"修回"**我没动就再叫，最多 3 次**"，新增 **5 条**：
   //     · `WI-c` **改判据**（⚠ 不是新条）：**Hob 没动作 ⇒ 再叫**（包 BL/BM 口径），
@@ -595,7 +669,7 @@ export const ASSERTION_FLOORS = new Map([
   //   差额 **230 − 227 = 3**，与 SS 组 3 条 `ok()` **精确吻合**。
   //   ⛔ **这不是先例**：以后任何下调都要说明**去掉的是哪几条、为什么它们没有测对象**，
   //      ⛔ 不许拿本条当"下界可以随便降"的依据。
-  ['check:policy', 46],  // t10 新增 SP-10b（visibleNamesFor 的 st !== 'absent'）
+  ['check:policy', 49],  // t10 新增 SP-10b（visibleNamesFor 的 st !== 'absent'）
   // ⚠ **2026-10-29 第 12 轮：新增 `⑤v` 五步段位置断言（+1 条）** —— ⚠ 这一行原先写的是「246 → 247」，
   //   理由（用户裁定 A，源自上一轮我自己的待决第 3 条）：`⑤` 是**全文逐字相等**
   //   ⇒ 把整段 `### The five steps` 挪到任何位置、两份一起挪，`⑤` **照样 PASS**
@@ -618,7 +692,9 @@ export const ASSERTION_FLOORS = new Map([
   //     （它只自证"变体 count===0"，假模块当然满足 ⇒ 直接报「已咬住」）。
   //   ⚠ 零余量照旧（249 = 本单实测值）：再少一条立刻红。
   // ⚠ 2026-11-02（P41/R22 · `TASK-R22.md` §一）：249 → **251**（+2 = `⑤o-6` 正向 + `⑤o-7` 负向对拍）。
-  ['check:presets', 279],  // 沿革：… → 253（2026-11-06）→ **279**（2026-11-07 块集化：八个块定义 + 选择规则 + 实施指令四段）；⚠ 只准升。
+  // 沿革：… → 253（2026-11-06）→ 279（2026-11-07 块集化）→ **281**（2026-11-09：+2 =
+  //   实质派活必须登记回传 / 门禁拒绝后不许改投单向通知）；⚠ 只准升。
+  ['check:presets', 282],
   //   本轮理由 = 新增 **⑤p 组**（"**何时才允许拿问题打扰用户**"落进契约两面）：
   //     · ① 契约正文含八组稳定短语（8 组 · 22 条：四条准入 + 六类禁问 + 难度非判据 + 问法五要素）
   //     · ② **人读版**引文块同样含全部短语（⛔ 不许只手改机器读版）
@@ -655,7 +731,7 @@ export const ASSERTION_FLOORS = new Map([
   //   ⚠ 零余量是故意的：再少一条断言 ⇒ `235 < 236` 立刻红（理由同 `check:config` 那一段）。
   //   ⚠ 负向对拍 = **抬到 237 造红**（不删真实断言，两者落在同一个 `实测 < 下界` 边界上）。
   ['check:profile', 3],
-  ['check:readings', 3],
+  ['check:readings', 4],
   ['check:redeliver', 10],
   ['check:rounds', 4],
   ['check:selfwake', 3],
@@ -713,7 +789,28 @@ export const ASSERTION_FLOORS = new Map([
   //   （+1 = S-33b2：「还没开账」与「旧格式」各自说清，⛔ 不冒用「判不出」）。
   // ⚠ 2026-11-08（账本健康可见）：117 → **118**（+1 = S-33h2 面板显示缺口清单，健康时不显示）。
   // ⚠ 2026-11-08：118 → **119**（+1 = S-44 第 5 步验收材料首屏可见）。
-  ['check:stages-dom', 119],
+  // ⚠ 2026-11-09（实时面板）：新增 14 条（S-13h 运行中时长本地前进且零额外取数 /
+  //   S-13i 不接本地时钟必红 / S-16c 连接状态真正切换轮询节拍 / S-16d 忽略状态必红 /
+  //   S-16e 刷新期间事件补拉一次 / S-16f 丢掉补拉必红 / S-16g 连续事件补拉有上限 /
+  //   S-16h 后台标签停流停轮询 / S-16i 忽略 tabVisible=false 必红 / S-16j 恢复顺序先快照后连流 /
+  //   S-16k 运行中切后台停流停轮询并切回恢复 / S-16l 忽略 tabVisible 必红）。
+  // ⚠ 2026-11-09（实时链路复测加固）：**136 → 137**（+1 = S-16g2：
+  //   补拉上限必须按每个忙碌周期重置，⛔ 不是整块面板终身只用 3 次）。
+  //   ⚠ 同批保留 S-16m 的宿主收起态判据（`tab.visible && sidebar.expanded`）；
+  //   临时移除后又恢复，净条目不变（文案与判据同步，不是漏登记）。
+  //   ⚠ S-34d 增加了“执行态也跟随账本”的判定，但它是**同一条断言内的覆盖扩展**，
+  //   不另计新条；下文数字是逐条实测后按规则抬平的结果。
+  // ⚠ 2026-11-09（推进方式三档落地）：仍是 **137**
+  //   （S-33a 增判首屏常驻「推进方式：档位 · 来源」，但它与既有断言同一组
+  //    `ok()/bad()` ⇒ 不另计新条；下界按实测保持 137）。
+  ['check:stages-dom', 148],
+  // 2026-11-09（面板实时推送）：服务端 25 条（路由 / 序号 / 合并 / 隔离 /
+  //   真写入信号 / dryRun 负向 / 清理上限 / 会话补充信号 / 建账 catalog / 引用计数 /
+  //   派发回传验收真实投影）·
+  //   客户端 12 条（解析 / 去抖 / 断档 / 跨账本 / 重连 / 可订阅 / 重连同序号补快照 /
+  //   超限帧 / stop 后不复活）。新增两条为背压注销与负向对拍；两族均零余量。
+  ['check:live-route', 25],
+  ['check:live-client', 12],
   // ⚠ 2026-10-29（第 6 轮）新增本族：四步进度表的**服务端**行为判据
   //   （`scripts/check-tasks-progress.mjs`，`npm run check:tasks-progress`）。
   //   下界 = **本轮实测值 14，零余量**：T-0（转译自证）· T-1（正常两行）· T-2（空表）·
@@ -746,9 +843,9 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ 2026-11-03：分片读数和生命周期的正向断言，以及 N-CURRENT 自指读数负向对拍 ⇒ 实测 127。
   // ⚠ 2026-11-07（检查硬化轮）：128 → **129**（+1 = `N-I9c`：`basis` 路径分支五条读数 ——
   //   ① 真 id ⇒ 绿 ② 真路径 ⇒ 绿 ③ 假路径 ⇒ 必红 ④ 假 id ⇒ 必红 ⑤ 没拿到检查器 ⇒ 按红）。
-  ['check:ledger', 129],
-  // ⚠ 2026-11-08：9 → **11**（+2 = WP-10 非法状态写入前拒绝 / WP-10b 合法链反向对照）。
-  ['check:ledger-write-policy', 11],
+  ['check:ledger', 130],
+  // ⚠ 2026-11-08：9 → **12**（+2 结构写入门禁 / +1 未批准草稿可写 / +G1/G2 正反对照）。
+  ['check:ledger-write-policy', 18],
   // ⚠ **2026-10-31 P41/R3 新增**：收敛检查 K-1..K-6 + K-0 前置 + 12 条负向对拍/正向对照
   //   = **13 条实测**（`K-0` + 每个 change 一条 `K-ALL` + 11 条对拍）。
   //   ⚠ 下界取 **13**（K-0 + 11 条对拍 + 至少一条 K-ALL）；索引里 change 条数变多时本族只会更绿。
@@ -766,7 +863,7 @@ export const ASSERTION_FLOORS = new Map([
   //   账本资源图 11 条正向 + 2 条负向对拍 = 实测 13。
   //   覆盖 10 类稳定 ID、四类新增列表与按 ID 读取、需求关联图可继续解析、
   //   直属子项、三类错误、纯函数、零路径泄漏。
-  ['check:ledger-resources', 15],
+  ['check:ledger-resources', 18],
   // ⚠ 2026-11-02（P3）：持久效果队列 8 条正向 + 2 条负向对拍 = 实测 10。
   // ⚠ 2026-11-02（Project Hub · single-writer）：+ Q-9 同进程复用 + N-Q3 独占锁拒绝 = 实测 12。
   // ⚠ 2026-11-02（crash recovery）：+ Q-10 陈旧锁接管 + N-Q4 三档 fail-closed = 实测 14。
@@ -783,17 +880,17 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ 2026-11-07：R-18d 体积兜底（极端规模 ≤ 64 KB · 如实标注 omitted · 分母不改写）。
   //   2026-11-08：R-18e / R-18e-b（正式依据不算“别的条目”）+ R-18f（空壳标题补父链上下文）⇒ 35 条。
   // ⚠ 2026-11-08：35 → **36**（+1 = R-1b 合法 kind + 非法 status 必须点名该行）。
-  ['check:stages-route', 36],
+  ['check:stages-route', 39],
   // ⚠ 2026-11-07 R-020：需求链投影（单需求五步 / 正式关系 / 当前步骤 / 历史收口 / 待验收点名）= 12 条。
   // ⚠ 2026-11-08：13 处零余量。RC-3b 钉住方案承接需求的
   //   `req_ids` / `addresses` / `requirement_coverage` 三种现行写法。
   // ⚠ 2026-11-08：13 → **14**（+1 = RC-3c RUN registered 也必须显示执行中）。
   // ⚠ 2026-11-08：14 → **15**（+1 = RC-3d built 但零 RUN 必须点名执行缺口）。
-  ['check:requirement-chains', 15],
+  ['check:requirement-chains', 20],
   // ⚠ 2026-11-07：账本目录（列举 / 空≠读不了 / 分片失败 / current 标记 / 安全边界 / Unicode / 默认选中 / 路径回显）= 8 条。
-  ['check:ledgers-route', 8],
+  ['check:ledgers-route', 11],
   // ⚠ **2026-10-30 P6 新增**：元规则机检（2 条：M-1 实测 vs 下限 + N-M1 自指负向对拍）。
-  ['check:meta-negctl', 3],
+  ['check:meta-negctl', 5],
   // ⚠ **2026-10-30 P8 新增**：Hob 工作流（F1-F4 + 4 条负向对拍 = 8 处）。
   // ⚠ 2026-10-31（P39：入口 7→10 · 不变量 3→6 · 判据同步）18 → **28**。
   //   本轮新增/改造六条断言 + 七条负向对拍（F1 改 · F4 改 · F10 新 · F11 新 ·
@@ -802,7 +899,7 @@ export const ASSERTION_FLOORS = new Map([
   //     这条零余量本身由 `check:workflow` 的 **N-F1e** 反过来核 —— 它读的就是这个数）。
   // ⚠ 2026-11-07：F14「回复契约三处互核」+ F1 的回复形态契约校验（恰好 3 种 /
   //   字段齐全 / 长度下限 / 不得照抄 source）⇒ 实测 33，零余量。
-  ['check:workflow', 33],
+  ['check:workflow', 34],
   // ⚠ `check:build` 不在此表：它的"处"是**读数行**、分母不同（`per-reading-line`），
   //   与逐条断言不可比 —— 把它塞进这张表就是本仓明令禁止的"混量纲"。
 ])
@@ -1062,6 +1159,106 @@ export function verdict(results) {
   return { exit: 0, passed, failed, crashed, notRun }
 }
 
+/**
+ * **S-13：扫一遍判据可能留下的残留**（在仓库根与 `src/` 两处）。
+ *
+ * ⚠ 只认**判据自己生成的命名**，⛔ 不扫任意文件 —— 那会把用户正常的未跟踪文件也报出来：
+ *   · `.check-*-work-<pid>/`  —— 各族的工作区（`check-stages-route` / `check-exec-progress` …）
+ *   · `*__negctl_*.ts` / `*__negctl_*.mjs` —— `check-preset-contracts` 的变异体
+ *
+ * ⚠ 两处都扫：`src/` 那处**危害更大**（会被 `tsconfig` 编进 `lib/`），所以排在前面。
+ * ⚠ 深度限制在 4 层：残留只可能出现在 `src/<层>/<层>/`，⛔ 不递归整个仓库（node_modules 会拖死）。
+ */
+export function findNegctlLeftovers() {
+  const out = []
+  const walk = (dir, depth) => {
+    if (depth > 4) return
+    let entries
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const full = join(dir, e.name)
+      const rel = relative(root, full)
+      if (e.isDirectory()) {
+        if (/^\.check-.*-work(-\d+)?$/.test(e.name)) { out.push(rel + '/'); continue }
+        if (e.name === 'node_modules' || e.name === '.git' || e.name === 'lib') continue
+        walk(full, depth + 1)
+      } else if (/__negctl_.*\.(ts|mjs)$/.test(e.name)) {
+        out.push(rel)
+      }
+    }
+  }
+  walk(root, 0)
+  return out
+}
+
+/**
+ * **S-11：`ASSERTION_FLOORS` 里同一族名只许出现一次。**
+ *
+ * ⚠ 为什么必须有这条机检（不是洁癖）：
+ *   `ASSERTION_FLOORS` 是 `new Map([...])` —— **重复 key 时后者静默覆盖前者**，
+ *   运行期**完全等价** ⇒ 不会红。于是「同族名只许出现一次」这条纪律**只能靠人守**。
+ *   ⚠ 历史：本文件**曾经真有两行** `['check:experience', 9]`（值相同），
+ *     是某一轮编辑时多带的；两行同值时没有任何症状，**没人会发现**。
+ *     若两行**值不同**（如 9 和 13），后者的覆盖会让真实下界变成 13 而注释仍写着 9 ⇒
+ *     下一次"删掉一条断言"时，判据比人以为的松。
+ *
+ * ⚠ 实现方式：**解析本文件自己的源码**（`check-all.mjs`），⛔ 不读运行期 Map ——
+ *   读 Map 只能看到"覆盖之后"的样子，**重复已被抹掉**，那正是本条要抓的东西。
+ * ⚠ 只认行首形如 `  ['check:xxx', N],` 的条目；注释里的示例行（以 `//` 开头）不算。
+ */
+export function findDuplicateAssertionFloors() {
+  const src = (() => {
+    try { return readFileSync(fileURLToPath(import.meta.url), 'utf8') } catch { return '' }
+  })()
+  if (src === '') return { ok: false, dups: [], total: 0, reason: '读不到自身源码' }
+  /** 只扫 `ASSERTION_FLOORS = new Map([` 到对应 `])` 之间。 */
+  const startAt = src.indexOf('export const ASSERTION_FLOORS = new Map([')
+  if (startAt < 0) return { ok: false, dups: [], total: 0, reason: '找不到 ASSERTION_FLOORS 定义' }
+  const endAt = src.indexOf('])', startAt)
+  if (endAt < 0) return { ok: false, dups: [], total: 0, reason: '找不到 ASSERTION_FLOORS 结尾' }
+  const body = src.slice(startAt, endAt)
+  /**
+   * ⚠ 只认「行首可选空白 + `['check:…' , 数字]` + 可选行尾注释」；
+   *   `//` 开头的注释行天然不匹配（行首不是 `['`）。
+   *
+   * ⚠⚠ **行尾注释必须容忍**（2026-11-10 实测踩过）：
+   *   第一版正则要求整行以 `],` 结尾 ⇒ **漏掉 5 条带行尾注释的条目**
+   *   （`check:client` / `check:hob-create-dom` / `check:hob-gate` / `check:modules` / `check:policy`），
+   *   解析出 41 条而 `Map.size` 是 46 ⇒ **检测器会漏检这 5 族的重复**。
+   *   ⚠ 发现方式：把「解析条数」与「`Map.size`」对照 —— 两者不等就说明正则漏了。
+   *   ⛔ 不要在断言里把「解析数 ≠ Map.size」当成通过：那是**检测器自己失明**。
+   */
+  const seen = new Map()
+  const dups = []
+  for (const m of body.matchAll(/^\s*\['([^']+)'\s*,\s*(\d+)\]\s*,?\s*(?:\/\/.*)?$/gm)) {
+    const name = m[1]
+    const floor = Number(m[2])
+    if (seen.has(name)) dups.push({ name, first: seen.get(name), second: floor })
+    else seen.set(name, floor)
+  }
+  /**
+   * ⚠⚠ **自校验：解析条数必须等于 `Map.size`**（否则检测器自己失明）。
+   *
+   *   这条是我写第一版时缺的 —— 正则漏了 5 条带行尾注释的条目，
+   *   解析 41 而 `Map.size` 46，**检测器对那 5 族的重复完全看不见**，
+   *   而它自己还报 `ok: true`。**一个会漏检的检测器比没有检测器更坏**：
+   *   它给出的是「已检查且没问题」的假保证。
+   *
+   *   ⚠ 两者不等时**报失败**（⛔ 不当成"格式差异，忽略"）：
+   *     说明正则与真实写法已经分叉，必须先修正则。
+   */
+  if (seen.size !== ASSERTION_FLOORS.size) {
+    return {
+      ok: false,
+      dups,
+      total: seen.size,
+      reason: `解析出 ${seen.size} 条，但 ASSERTION_FLOORS.size = ${ASSERTION_FLOORS.size}`
+        + ' ⇒ 正则与真实写法已分叉，检测器会漏检（⛔ 不按通过处理）',
+    }
+  }
+  return { ok: dups.length === 0, dups, total: seen.size, reason: '' }
+}
+
 export function printSummary(results) {
   const v = verdict(results)
   console.log('')
@@ -1105,6 +1302,30 @@ export function printSummary(results) {
    *   ⚠ 这条错误**不进 `v.failed`**（那是"某族自己报失败"的桶）⇒ 用局部变量带出去，
    *     判定行走**新的一档文案**，⛔ 不许悄悄改 `VERDICT_TEXT` 的既有三句。
    */
+  /**
+   * ── **S-11：`ASSERTION_FLOORS` 同族名只许出现一次** ─────────────────────
+   *
+   * ⚠ 重复 key 在 `new Map([...])` 里**静默覆盖**，运行期等价 ⇒ 不会红。
+   *   ⇒ 这条纪律此前**只能靠人守**（本文件真的出过两行 `['check:experience', 9]`）。
+   * ⚠ 它**参与判定**（计入 exit 1）：重复意味着"下界被悄悄改写"，
+   *   而下界类判据的全部价值就在于"它写的就是它查的"。
+   */
+  const dupFloors = findDuplicateAssertionFloors()
+  if (!dupFloors.ok) {
+    console.log('')
+    if (dupFloors.reason !== '') {
+      console.log(`  ✗ **断言下界清单读不出**：${dupFloors.reason} ⇒ 本条判据失去基准（⛔ 不按通过处理）`)
+    } else {
+      console.log(`  ✗ **断言下界清单里有重复族名**（${dupFloors.dups.length} 组）：`)
+      for (const d of dupFloors.dups) {
+        console.log(`      · ${d.name}：先写 ${d.first}、后写 ${d.second}`
+          + (d.first === d.second ? '（值相同 ⇒ 运行期等价，但纪律已破）' : '（⚠ 值不同 ⇒ 后写的覆盖了先写的，注释可能与实际不符）'))
+      }
+      console.log('      ⇒ `new Map([...])` 对重复 key **后者覆盖前者**，运行期不会红 —— 这正是本条要抓的。')
+      console.log('      ⇒ 删掉重复那一行；⛔ 不要靠"值相同所以无所谓"放过。')
+    }
+    console.log('')
+  }
   const familyFloorBroken = results.length < FAMILY_FLOOR
   if (familyFloorBroken) {
     console.log(`  ✗ **族数下界被突破**：只跑了 **${results.length}** 族，而登记的下界是 **${FAMILY_FLOOR}**`
@@ -1412,6 +1633,19 @@ export function printSummary(results) {
      *     于是**崩溃的族会被报成"exit=1"**（读数造假），修法还被指向 preflight。
      */
     for (const r of v.failed.filter((x) => x.code === 1)) console.log(`       ✗ ${r.name}（exit=1 · 查了且查出违规）`)
+    /**
+     * ⚠⚠ **`check:build` 红了 ⇒ 先 `npm run build`，⛔ 别去改代码**（2026-11-11 新增）。
+     *
+     *   本会话**三次**踩同一处（§78 / §80 / §82 之后各一次）：改完 `src/` 没重新构建
+     *   就跑 `check:all`，于是面 ② 报「源比产物新」，而被误读成「有代码缺陷」。
+     *
+     *   ⚠ 这条提示**写在入口里**而不是写进文档 —— 因为它必须**在那一刻**出现在人眼前。
+     *     §78 之后我把这条记进了文档，下一轮**又踩了**。⇒ 只靠文档记不住。
+     */
+    if (v.failed.some((x) => x.code === 1 && x.name === 'check:build')) {
+      console.log('       ⇒ ⚠ **check:build 红了通常不是代码问题**：先跑 npm run build 再重跑本入口。')
+      console.log('          （面 ② 说的是「源比产物新」—— 那是**没构建**，⛔ 不是缺陷。）')
+    }
     if (v.crashed.length > 0) {
       console.log('       ✗ **检查器自身异常**（exit=3）—— 它们的结论**不可信**，⛔ 不是"查出违规"：')
       for (const r of v.crashed) console.log(`          · ${r.name}（exit=3）`)
@@ -1472,6 +1706,31 @@ if (process.argv[1] !== undefined && (process.argv[1].endsWith('check-all.mjs') 
     process.exit(2)
   }
   const results = runFamilies(names)
+  /**
+   * ── **S-13：判据自己不许污染被测对象** ────────────────────────────────────
+   *
+   * ⚠ 为什么要在**全部族跑完之后**再查一遍：
+   *   各族会在仓库根写 `.check-*-work-<pid>/`，`check-preset-contracts` 还会写
+   *   `src/<层>/<层>/xxx.__negctl_<pid>.ts`。正常路径上它们都会自己删掉，
+   *   但**判据进程被 Ctrl-C / OOM 时不会**。
+   *   ⇒ 残留落进 `src/` 时，`tsconfig` 的 `include: ["src"]` 会让 `npm run build`
+   *     把它编进 `lib/`，`check:build` 的面 ⑤ 因此报红 —— **判据自己制造的失败**。
+   *
+   * ⚠ 本条**只报告、不改判**：它不参与三档判定（`printSummary` 的返回值仍是唯一裁决），
+   *   因为「有残留」不等于「判据不过」—— 但**必须让人看见**，否则下一个人会去查错方向。
+   * ⚠ 也**不自动删**：残留可能正是某族崩溃的现场证据。
+   */
+  const leftovers = findNegctlLeftovers()
+  if (leftovers.length > 0) {
+    console.log('')
+    console.log('⚠⚠ **判据残留**（S-13）：上一轮有族没清干净 —— 这些**不是源码**，是变异体 / 工作区')
+    for (const x of leftovers.slice(0, 20)) console.log('    · ' + x)
+    if (leftovers.length > 20) console.log(`    … 另有 ${leftovers.length - 20} 项`)
+    console.log('    ⇒ 若它们在 `src/` 下：`tsconfig` 的 `include: ["src"]` 会把它们编进 `lib/`，')
+    console.log('      而 `check:build` 的面 ⑤ 会因此报红 —— **判据自己污染被测对象**。')
+    console.log('    ⇒ 清掉它们再跑；⛔ 本条不自动删（残留可能是某族崩溃的现场）。')
+    console.log('')
+  }
   /**
    * ⚠ 不能在 `printSummary()` 后立刻 `process.exit()`：汇总文本可能还在
    *   stdout 的可写缓冲里（大日志 + Windows/WSL 转发时尤其明显）。

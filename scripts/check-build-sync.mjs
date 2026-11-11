@@ -1204,6 +1204,13 @@ const ORPHAN_CHECK = (() => {
      */
     ['client.js', 'tsdown 单体打包产物（entry=src/client/index.ts ⇒ client.js），⛔ 不是逐文件产物'],
     ['client.js.map', '同上（`client.js` 的 source map，从属它）'],
+    /**
+     * ⚠ 2026-11-08：`atoms.tsx` 引入纯展示样式后，tsdown 会额外抽出
+     *   `client.css` 与其 `.map`（从属 `client.js` 的样式产物）。
+     *   ⛔ 它们不对应单个源件；新鲜度随 `client.js` 同一次构建产生。
+     */
+    ['client.css', 'tsdown 单体打包抽出的样式产物（从属 client.js）'],
+    ['client.css.map', '同上（client.css 的 source map）'],
   ])
   /** 源件扩展名（与 `tsconfig.json` 的 include 同口径）。 */
   const SRC_EXTS = ['.ts', '.tsx', '.mts', '.cts']

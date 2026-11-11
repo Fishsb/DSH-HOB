@@ -3,12 +3,14 @@
  * **`check:workflow` · Hob 自己的工作流判据族**（2026-10-30 · P8 · `TASK-P8.md` §三）。
  *
  * ══ 它守什么（四条，各带负向对拍）═══════════════════════════════════════════════
- *   **F1** `workflow.toml` 合法：五步齐（`order` = 1..5 且 4/5 的 `actor_role` 不同）·
+ *   **F1** `workflow.toml` 合法：**七步齐**（`order` = 1..7 且 4/5 的 `actor_role` 不同）·
+ *          ⚠ **O-26 更正**：原文写「五步齐（`order` = 1..5）」，而实现一直要求 `[1,2,3,4,5,6,7]`（`:150`）。
  *          每个 intake 有 `test` + `first_move` + `source` ·
  *          每条规则的 `source` 在 `preset-dsh-hob.patch.yml` 的 `prefix` 正文里**真实存在**
  *   **F2** ⭐ 生成物与源一致（手改 `gen/persona.md` 一个字符 ⇒ 必红）
  *   **F3** `CONSTITUTION.md` ≤ 2 KB 且每条带 `checked_by`
  *   **F4** ⭐ **覆盖度**：`workflow.toml` 的 intake 数 = `prefix` 正文里 `###` 级**输入节**数
+ *          ⚠ **O-26 更正**：F4 实际是**三条 origin 判定**（见 `:508` 起），不只是「数节」——原文只说了一条。
  *          （⚠ 这是"没丢东西"唯一的机检 —— `TASK-P8.md` §九 原话）
  *
  * ══ 为什么 F4 这样数（⚠ 口径写清才能复核）════════════════════════════════════════
@@ -142,12 +144,12 @@ export function f10ProbsOf(prefixText, personaText, wf) {
  * @param {string} userFlat - 上述有效行拼成的一行（空白已归一）
  * @returns {{probs:string[], checked:number, byOrigin:{original:number,new:number}, originCount:{original:number,new:number}}}
  */
-export function f1ProbsOf(mut, pre, userLines, userFlat) {
+export function f1ProbsOf(mut, pre, userLines, userFlat, specFlat = '') {
   const probs = []
   const steps = mut.step ?? []
-  if (steps.length !== 5) probs.push(`五步只有 ${steps.length} 条（期望 5）`)
+  if (steps.length !== 7) probs.push(`v3 阶段只有 ${steps.length} 条（期望 7）`)
   const orders = steps.map((x) => Number(x.order)).sort((a, b) => a - b)
-  if (JSON.stringify(orders) !== JSON.stringify([1, 2, 3, 4, 5])) probs.push(`step.order 不是 1..5：${JSON.stringify(orders)}`)
+  if (JSON.stringify(orders) !== JSON.stringify([1, 2, 3, 4, 5, 6, 7])) probs.push(`step.order 不是 1..7：${JSON.stringify(orders)}`)
   const s4 = steps.find((x) => Number(x.order) === 4)
   const s5 = steps.find((x) => Number(x.order) === 5)
   if (s4 === undefined || s5 === undefined) probs.push('缺第 4 或第 5 步')
@@ -160,7 +162,64 @@ export function f1ProbsOf(mut, pre, userLines, userFlat) {
   for (const it of intakes) for (const k of ['id', 'test', 'first_move', 'source']) {
     if (typeof it[k] !== 'string' || it[k].trim() === '') probs.push(`intake ${it.id ?? '?'} 缺 \`${k}\``)
   }
-  if ((mut.reply ?? []).length === 0) probs.push('reply 一条都没有')
+  /**
+   * ⚠⚠ **回复形态必须是一份可判的契约，不是三个 id**（2026-11-07）。
+   *
+   * 病灶：原状每条只有 `id` / `name` / `when` / `source`，而 `when` 是从提示词正文里
+   *   **随手摘的半句**（"…never used casually" / "…is the third form"）。
+   *   读它的人得不到"什么时候用哪种形态"，机器也没法据此判定一轮回复对不对。
+   *   ⚠ 更糟：本判据只核 `source`，`when` 写得再残也全绿 ⇒ 坏契约能长期存活。
+   *
+   * 判据（三条，缺一即红）：
+   *   ① **恰好四种**形态 —— 多一种/少一种都会让"该用哪种"变得不可判；
+   *   ② 每条都有 **`test`（怎么判）/ `shape`（输出什么）/ `forbidden`（⛔ 不许出现什么）**，
+   *      且都不是空串、不是从提示词里摘的半句（长度下限挡住 "…is the third form" 这类）；
+   *   ③ 三条 `test` **两两不同** —— 两个形态用同一句话判定 = 它们其实没分开。
+   */
+  const replies = mut.reply ?? []
+  if (replies.length === 0) probs.push('reply 一条都没有')
+  if (replies.length > 0 && replies.length !== 4) {
+    probs.push(`reply 应恰好 4 种形态（实 ${replies.length}）⇒ "该用哪种"变得不可判`)
+  }
+  for (const r of replies) {
+    for (const k of ['id', 'name', 'test', 'shape', 'forbidden', 'source']) {
+      if (typeof r[k] !== 'string' || r[k].trim() === '') probs.push(`reply ${r.id ?? '?'} 缺 \`${k}\``)
+    }
+    /**
+     * ⚠ **长度下限**：半句残句（≤ 20 字）必然说不出"什么时候用、输出长什么样"。
+     *   这条专门挡住"从正文摘一句英文放进来算数"的老毛病。
+     */
+    for (const k of ['test', 'shape']) {
+      const v = String(r[k] ?? '').trim()
+      if (v !== '' && v.length < 20) {
+        probs.push(`reply ${r.id ?? '?'} 的 \`${k}\` 只有 ${v.length} 字（< 20）⇒ 像是摘来的半句，不是可判契约：${JSON.stringify(v)}`)
+      }
+    }
+    /**
+     * ⚠⚠ **`test` / `shape` 不能是 `source` 的照抄**（2026-11-07 补）。
+     *
+     * 病灶复现：把 `test` 改回老写法 `"The question turn is the third form"`（36 字符，
+     *   长度下限挡不住）⇒ 全族仍然绿。**那条正是从提示词正文里摘的半句**，
+     *   它只说"这是第三种"，⛔ 没说"什么时候用"。
+     * ⇒ 判据：`source` 是**出处原句**（用来证明"没丢东西"），`test`/`shape` 是
+     *   **派生的可判契约**。两者若相同（或一方包含另一方），说明契约只是把出处抄了一遍，
+     *   没有增加任何机器可用的判定语义 —— 这正是本次要治的病。
+     */
+    for (const k of ['test', 'shape']) {
+      const v = String(r[k] ?? '').trim()
+      const src = String(r.source ?? '').trim()
+      if (v === '' || src === '') continue
+      const nv = v.replace(/\s+/g, ' ').toLowerCase()
+      const ns = src.replace(/\s+/g, ' ').toLowerCase()
+      if (nv === ns || nv.includes(ns) || ns.includes(nv)) {
+        probs.push(`reply ${r.id ?? '?'} 的 \`${k}\` 与 \`source\` 相同/互相包含 ⇒ 只是照抄出处，没有独立判定语义：${JSON.stringify(v)}`)
+      }
+    }
+  }
+  const tests = replies.map((r) => String(r.test ?? '').trim()).filter((x) => x !== '')
+  if (new Set(tests).size !== tests.length) {
+    probs.push(`reply 的 \`test\` 有重复 ⇒ 两个形态用了同一判定法（它们其实没分开）`)
+  }
   /** ⚠⚠ 封闭集 = **恰好 9 条**（新增三条账本清洁不变量，仍不许随手多写）。 */
   if ((mut.invariant ?? []).length !== 9) probs.push(`invariant 应恰好 9 条（实 ${(mut.invariant ?? []).length}）`)
 
@@ -178,11 +237,11 @@ export function f1ProbsOf(mut, pre, userLines, userFlat) {
 
   let checked = 0
   const byOrigin = { original: 0, new: 0 }
-  for (const table of ['step', 'intake', 'reply', 'invariant', 'rule']) {
+  for (const table of ['step', 'intake', 'reply', 'invariant', 'rule', 'stage_control']) {
     for (const e of mut[table] ?? []) {
       if (typeof e.source !== 'string' || e.source.trim() === '') continue
       checked++
-      const o = (table === 'intake' || table === 'invariant') ? originOfX(e) : 'original'
+      const o = originOfX(e)
       const needle = e.source.replace(/\s+/g, ' ').trim()
       if (o === 'new') {
         byOrigin.new += 1
@@ -190,8 +249,10 @@ export function f1ProbsOf(mut, pre, userLines, userFlat) {
         else if (!userFlat.includes(needle)) probs.push(`${table} \`${e.id}\` 的 \`source\` 在**用户原话冻结件**里找不到（\`origin = "new"\` 必须对那份核）：${JSON.stringify(e.source.slice(0, 70))}`)
       } else {
         byOrigin.original += 1
-        if (pre === null) probs.push('读不到 `prefix:` 正文 ⇒ `source` 子串核对**没有基准**（⛔ 不按通过处理）')
-        else if (!pre.flat.includes(needle)) probs.push(`${table} \`${e.id}\` 的 \`source\` 在提示词正文里**找不到**：${JSON.stringify(e.source.slice(0, 70))}`)
+        const inOrigin = pre !== null && pre.flat.includes(needle)
+        const inSpec = specFlat.includes(needle)
+        if (pre === null && !inSpec) probs.push('读不到 `prefix:` 正文且 spec 里也没有该来源 ⇒ `source` 子串核对**没有基准**（⛔ 不按通过处理）')
+        else if (!inOrigin && !inSpec) probs.push(`${table} \`${e.id}\` 的 \`source\` 在提示词正文与 spec 里**都找不到**：${JSON.stringify(e.source.slice(0, 70))}`)
       }
     }
   }
@@ -239,6 +300,10 @@ try {
   const ORIGIN_USER_FILES = [
     join(PRESET_DIR, 'spec', 'origin-user-2026-10-31.txt'),
     join(PRESET_DIR, 'spec', 'origin-user-2026-11-03-ledger-clean.txt'),
+    join(PRESET_DIR, 'spec', 'origin-user-2026-11-06-stage-controls.txt'),
+    join(PRESET_DIR, 'spec', 'origin-user-2026-11-06-project-agent.txt'),
+    join(PRESET_DIR, 'spec', 'origin-user-2026-11-07-item-presentation.txt'),
+    join(PRESET_DIR, 'spec', 'origin-user-2026-11-09-dispatch-return.txt'),
   ]
   const originUserRaw = ORIGIN_USER_FILES
     .map((path) => { try { return readFileSync(path, 'utf8') } catch { return '' } })
@@ -248,6 +313,19 @@ try {
     .map((l) => l.trim())
     .filter((l) => l !== '' && !l.startsWith('#'))
   const originUserFlat = ORIGIN_USER_LINES.join(' ').replace(/\s+/g, ' ').trim()
+  /**
+   * Spec files are also an authored contract face. New runtime rules may cite a
+   * sentence that enters `gen/persona.md` through `spec/reply.md`; checking only
+   * the frozen original would force those rules to pretend to be legacy.
+   */
+  let specCombined = ''
+  try {
+    specCombined = [
+      'intake.md', 'reply.md', 'handover.md',
+      'notes-mechanism.md', 'notes-evidence.md', 'notes-handover.md', 'notes-budget.md',
+    ].map((name) => readFileSync(join(PRESET_DIR, 'spec', name), 'utf8')).join('\n')
+  } catch { specCombined = '' }
+  const specFlat = specCombined.replace(/\s+/g, ' ').trim()
   /**
    * `origin` 的**封闭集**：缺省 = `original`，只许 `original` / `new`（其它值 ⇒ 红）。
    * ⚠ 三个值不能用"非空即算" —— 那样 `legacy` 会被静默当成 original。
@@ -267,9 +345,9 @@ try {
      * ⚠⚠ **判定只有一份**：这里调用顶层 `f1ProbsOf()`，负向对拍 N-F1b/N-F1c/N-F1d
      *   也调**同一个函数** ⇒ 摘掉本组任何一行断言，那三条对拍会跟着失去对象（⛔ 不是抄一份逻辑）。
      */
-    const { probs, checked, byOrigin, originCount } = f1ProbsOf(wf, pre, ORIGIN_USER_LINES, originUserFlat)
+    const { probs, checked, byOrigin, originCount } = f1ProbsOf(wf, pre, ORIGIN_USER_LINES, originUserFlat, specFlat)
     if (probs.length === 0) {
-      ok(`F1 ✓ \`workflow.toml\` 合法：五步（order=1..5 · 第 4/5 步 actor_role 不同）· `
+      ok(`F1 ✓ \`workflow.toml\` 合法：v3 七阶段（order=1..7 · 执行/验证/接受角色分离）· `
         + `${(wf.intake ?? []).length} 个 intake 各有 test/first_move/source · **${(wf.invariant ?? []).length} 条不变量（封闭集）** · `
         + `\`origin\` 封闭集（**继承 ${originCount.original} 条 · 新增 ${originCount.new} 条**）· `
         + `**${checked} 条 source 全部命中**（原 ${byOrigin.original} 条 · 新 ${byOrigin.new} 条；⚠ original 对冻结原文、new 对用户原话）`)
@@ -322,6 +400,48 @@ try {
       const noCb = grouped.filter((g) => !g.join('\n').includes('`checked_by`'))
       if (grouped.length === 0) probs.push('没有可核对的条款组')
       else if (noCb.length > 0) probs.push(`${noCb.length} 条没有 \`checked_by\`：${noCb.map((g) => g[0].slice(0, 30)).join(' / ')}`)
+      /**
+       * ⚠⚠ **S-07：`checked_by` 指向的族必须真实存在**（2026-11-10）
+       *
+       * ── 病（实测）────────────────────────────────────────────────────────
+       *   改前 F3 **只核「条款里有没有 `checked_by` 这几个字」** ——
+       *   一条条款写 `checked_by → check:不存在的族` 也能绿。
+       *   ⚠ 那是**装饰性**判据：它证的是「写了这几个字」，⛔ 不是「它真被某一族核着」。
+       *
+       * ── 本段做什么（**只做可得证的校验**，⛔ 不假装能核到具体断言号）──────
+       *   ① 从每条条款的 `checked_by` 里抽出 `check:xxx` 族名；
+       *   ② 核对它在 `package.json` 的 `scripts` 里**存在**；
+       *   ③ 一条都抽不出 ⇒ 报红（`checked_by` 必须至少点名一个族）。
+       *
+       * ⚠ **为什么不核「`F5` / `I3` / `PIPE-1..23` 这些断言号是否真有」**：
+       *   各族断言号的写法不统一（有的在 `ok('X-1 …')`，有的是 `bad(...)` 分支，
+       *   有的按范围合并 `PIPE-1..PIPE-23`），**没有可靠解析法** ⇒ 硬解析会造出假红。
+       *   ⇒ 只核「族存在」这个**能可靠证**的部分，⛔ 不假装核了更多。
+       *   ⚠ 这条边界写在这里，免得下一个人以为「F3 已核断言号」。
+       */
+      let pkgScripts = {}
+      try {
+        k3: {
+          const pkgSrc = readFileSync(join(ROOT, 'package.json'), 'utf8')
+          pkgScripts = JSON.parse(pkgSrc).scripts ?? {}
+        }
+      } catch { pkgScripts = {} }
+      const missingFamilies = []
+      const clampedNoFamily = []
+      for (const g of grouped) {
+        const textOfClause = g.join('\n')
+        const fams = [...textOfClause.matchAll(/check:([a-z0-9-]+)/g)].map((m) => m[1])
+        if (fams.length === 0) { clampedNoFamily.push(g[0].slice(0, 24)); continue }
+        for (const f of new Set(fams)) {
+          if (pkgScripts['check:' + f] === undefined) missingFamilies.push(`check:${f}（条款「${g[0].slice(0, 18)}…」）`)
+        }
+      }
+      if (missingFamilies.length > 0) {
+        probs.push(`\`checked_by\` 指向 **${missingFamilies.length} 个不存在的族**：${missingFamilies.slice(0, 5).join(' / ')}`)
+      }
+      if (clampedNoFamily.length > 0) {
+        probs.push(`${clampedNoFamily.length} 条条款的 \`checked_by\` **没有点名任何 \`check:xxx\` 族**：${clampedNoFamily.join(' / ')}`)
+      }
       if (probs.length === 0) {
         ok(`F3 ✓ \`preset/dsh-hob/CONSTITUTION.md\`：**${bytes} B ≤ 2048 B** · ${grouped.length} 条条款**逐条带 \`checked_by\``)
       } else for (const p of probs) bad(`F3 · ${p}`)
@@ -358,6 +478,74 @@ try {
       ok(`F13 ✓ **模型面 v${MODEL_FACE_VERSION} 可追溯**：${chars}/${MODEL_FACE_CHAR_BUDGET} 字符（在预算内）`
         + ` · persona SHA-256 \`${hash.slice(0, 16)}…\` · 运行时 prefix 与 contracts 读数同源`)
     } else for (const x of problems) bad(`F13 · ${x}`)
+  }
+
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * **F14 · 回复契约三处互核**（2026-11-07）
+   * ══════════════════════════════════════════════════════════════════════
+   * 回复契约同时存在于三处，此前**没有任何判据把它们对起来**：
+   *   ① `workflow.toml` 的 `[[reply]]`（机读骨架）
+   *   ② `spec/reply.md`（人读入口）
+   *   ③ `preset-dsh-hob.patch.yml` 的 `prefix` 正文（运行时真正读到的措辞）
+   * 病灶实测：`[[reply]]` 的 `when` 是英文半句、`reply.md` 与正文措辞不一致，
+   *   而全族仍然绿 —— 因为没人问"这三处说的是不是同一件事"。
+   *
+   * 判据（缺一即红）：
+   *   ① 三个形态 id 在 ② 与 ③ 里**都出现**（改名只改一处 ⇒ 另一处变成孤儿）；
+   *   ② ② 里每个 id 都带**输出形状**与 **⛔ 禁止项**两列（人读版不能只剩一句"派了/没派"）；
+   *   ③ ③ 里必须有**问句轮的第一句判据**与**四块不出现**这两条硬话（它们是最容易丢的两条）。
+   */
+  {
+    const problems = []
+    const replyIds = (wf?.reply ?? []).map((r) => String(r.id ?? '')).filter((x) => x !== '')
+    if (replyIds.length === 0) {
+      problems.push('`[[reply]]` 没有 id ⇒ 三处互核没有对象')
+    }
+    let specText = ''
+    try { specText = readFileSync(join(PRESET_DIR, 'spec', 'reply.md'), 'utf8') } catch { specText = '' }
+    /**
+     * ⚠ 这里必须读**当前** `prefix` 正文，⛔ 不能用 `pre`：
+     *   `pre` 在 `origin-prefix.txt` 存在时取的是**早期冻结快照**（2026-10-30 那版），
+     *   它天然不含后来新增的措辞 ⇒ 拿它核"三处互核"会得到假红（实测过）。
+     *   ⚠ 冻结快照的用途是"核 source 出处"，与"运行时现在说什么"是两件事。
+     */
+    const livePrefix = prefixBodyOf(yml)
+    const prefixText = livePrefix?.text ?? ''
+    if (specText === '') problems.push('`spec/reply.md` 读不到')
+    if (prefixText === '') problems.push('`prefix` 正文读不到')
+    for (const id of replyIds) {
+      if (specText !== '' && !specText.includes(`\`${id}\``)) problems.push(`\`${id}\` 没出现在 spec/reply.md ⇒ 人读版与机读源脱节`)
+      if (prefixText !== '' && !prefixText.includes(id)) problems.push(`\`${id}\` 没出现在 prefix 正文 ⇒ 运行时措辞与机读源脱节`)
+    }
+    /** ② 人读版必须给出形状与禁止项（⛔ 不只是"派了/没派"一句话）。 */
+    if (specText !== '' && !/\|\s*id\s*\|/.test(specText)) problems.push('spec/reply.md 缺「id / 判定 / 输出形状 / ⛔ 禁止项」对照表')
+    for (const k of ['输出形状', '⛔ 不许出现']) {
+      if (specText !== '' && !specText.includes(k)) problems.push(`spec/reply.md 缺「${k}」这一列`)
+    }
+    /** ③ 运行时正文里两条最容易被删的硬话。 */
+    if (prefixText !== '') {
+      const flatPrefix = prefixText.replace(/\s+/g, ' ')
+      if (!flatPrefix.includes('the first sentence must be the answer')) {
+        problems.push('prefix 正文缺「问句轮第一句必须是答案」这条硬话')
+      }
+      if (!flatPrefix.includes('In a question turn these never appear')) {
+        problems.push('prefix 正文缺「问句轮四块不出现」这条硬话')
+      }
+    }
+    const riskSpec = (() => {
+      try { return readFileSync(join(PRESET_DIR, 'spec', 'risk-policy.md'), 'utf8') } catch { return '' }
+    })()
+    if (riskSpec === '') problems.push('`spec/risk-policy.md` 读不到 ⇒ 风险门禁的完整说明缺失')
+    else {
+      for (const needle of ['trigger | fact | affected | evidence | mitigation | residual', 'G6', 'skipped', 'risk_review_refs', '不得自批']) {
+        if (!riskSpec.includes(needle)) problems.push(`spec/risk-policy.md 缺关键规则「${needle}」`)
+      }
+    }
+    if (problems.length === 0) {
+      ok(`F14 ✓ 回复契约**三处互核**：${replyIds.join(' / ')} 在 机读源 / spec/reply.md / prefix 正文 **都出现**`
+        + ' · 人读版带输出形状与禁止项两列 · 运行时含问句轮两条硬话 · 风险策略文档在位')
+    } else for (const x of problems) bad(`F14 · ${x}`)
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -486,7 +674,7 @@ try {
       const rules = wf.rule ?? []
       const noSrc = rules.filter((r) => typeof r.source !== 'string' || r.source.trim() === '')
       const notHit = rules.filter((r) => typeof r.source === 'string' && r.source.trim() !== ''
-        && !pre.flat.includes(r.source.replace(/\s+/g, ' ').trim()))
+        && !((r.origin === 'new' ? originUserFlat : pre.flat).includes(r.source.replace(/\s+/g, ' ').trim())))
       if (rules.length === 0) bad('N-F8 · `workflow.toml` 里一条 `[[rule]]` 都没有 ⇒ 这条复核失去对象')
       else if (noSrc.length > 0 || notHit.length > 0) {
         bad(`N-F8 · **F1 的 rule 覆盖面破了**：无 source ${noSrc.length} 条 / source 未命中 ${notHit.length} 条`
@@ -605,9 +793,17 @@ try {
         try { src = readFileSync(join(PRESET_DIR, 'spec', f), 'utf8') } catch { src = '' }
         if (src === '') { probs.push(`附注卷 \`${f}\` **读不到**`); continue }
         const marks = [...src.matchAll(/^<!-- source: (.+?) -->$/gm)].map((m) => m[1].trim())
+        /** ⚠ 新增看护段落对用户原话冻结件核；其余段落对冻结旧原文核。 */
+        /** ⚠ 新增看护段落（2026-11-04 用户裁定）对用户原话冻结件核；其余对旧原文核。 */
+        const newMarks = marks.filter((m) => m.includes('看护') || m.includes('hob 预设'))
         if (marks.length === 0) { probs.push(`附注卷 \`${f}\` 里**一条 \`source\` 标记都没有** ⇒ 无对象（⛔ 不报 ✓）`); continue }
         total += marks.length
-        const miss = marks.filter((m) => m !== '' && !pre.flat.includes(m.replace(/\s+/g, ' ').trim()))
+        const miss = marks.filter((m) => {
+          if (m === '') return true
+          const needle = m.replace(/\s+/g, ' ').trim()
+          if (newMarks.includes(m)) return !originUserFlat.includes(needle)
+          return !pre.flat.includes(needle)
+        })
         if (miss.length > 0) {
           probs.push(`附注卷 \`${f}\`：**${miss.length}/${marks.length}** 段的 \`source\` 在原文里**找不到**`
             + `\n        第一条：${JSON.stringify(miss[0].slice(0, 90))}`)
@@ -718,6 +914,8 @@ try {
    */
   {
     const body = prefixBodyOf(yml)
+    /** ⚠ 夹具比较前归一到与 `prefixBodyOf` 同一口径（每行 trim、去首尾空行）。 */
+    const normBody = body === null ? '' : body.text.trim() + '\n'
     let persona = ''
     try { persona = readFileSync(join(GEN, 'persona.md'), 'utf8') } catch { persona = '' }
     if (body === null || persona === '') {
@@ -1064,7 +1262,7 @@ try {
       const mut = JSON.parse(JSON.stringify(wf))
       const removed = mut.invariant.pop()
       const broke = mut.invariant.length === 8 && wf.invariant.length === 9
-      const { probs: lines } = f1ProbsOf(mut, pre, ORIGIN_USER_LINES, originUserFlat)
+      const { probs: lines } = f1ProbsOf(mut, pre, ORIGIN_USER_LINES, originUserFlat, specFlat)
       const hit = lines.find((x) => x.includes('invariant 应恰好 9 条'))
       if (!broke) bad('N-F1b · 夹具没真的摘掉一条不变量 ⇒ 本条不可判')
       else if (hit !== undefined) ok(`N-F1b ✓ 负向对拍（先自证：从 9 条摘掉 \`${removed?.id}\` ⇒ 实 8 条）⇒ F1 的"封闭集 9 条"**必红**，红的原文：\`${hit}\``)
@@ -1082,7 +1280,7 @@ try {
       const tgt = mut.intake.find((x) => x.id === news[0].id)
       tgt.source = '这句原话在 2026-10-31 的冻结件里绝对不存在（夹具）'
       const reallyBroken = tgt.source !== news[0].source
-      const hit = f1ProbsOf(mut, pre, ORIGIN_USER_LINES, originUserFlat).probs.find((x) => x.includes('用户原话冻结件') && x.includes('找不到'))
+      const hit = f1ProbsOf(mut, pre, ORIGIN_USER_LINES, originUserFlat, specFlat).probs.find((x) => x.includes('用户原话冻结件') && x.includes('找不到'))
       if (!reallyBroken) bad('N-F1c · 夹具没真的改掉 source ⇒ 本条不可判')
       else if (hit !== undefined) ok(`N-F1c ✓ 负向对拍（先自证：把 \`${tgt.id}\` 的 \`source\` 换成冻结件里没有的串 ⇒ 子串核对命中 0）⇒ F1 的"new 必须对用户原话核"**必红**，红的原文：\`${hit.slice(0, 60)}\``)
       else bad('N-F1c · 改了 new 的 source 却仍命中 ⇒ 分路核对没在比对（判据哑了）')
@@ -1097,7 +1295,7 @@ try {
       const mut = JSON.parse(JSON.stringify(wf))
       mut.invariant[0].origin = 'legacy'
       const reallyBroken = mut.invariant[0].origin === 'legacy'
-      const hit = f1ProbsOf(mut, pre, ORIGIN_USER_LINES, originUserFlat).probs.find((x) => x.includes('不在封闭集 original/new 里'))
+      const hit = f1ProbsOf(mut, pre, ORIGIN_USER_LINES, originUserFlat, specFlat).probs.find((x) => x.includes('不在封闭集 original/new 里'))
       if (!reallyBroken) bad('N-F1d · 夹具没把 origin 改成 legacy ⇒ 本条不可判')
       else if (hit !== undefined) ok(`N-F1d ✓ 负向对拍（先自证：把 \`${mut.invariant[0].id}\` 的 \`origin\` 改成 \`legacy\`）⇒ F1 的"origin 封闭集"**必红**，红的原文：\`${hit.slice(0, 70)}\``)
       else bad('N-F1d · origin=legacy 却仍绿 ⇒ 封闭集没在比对（判据哑了；⚠ 非空即算就是这种哑法）')
@@ -1170,6 +1368,7 @@ try {
    */
   {
     const body = prefixBodyOf(yml)
+    const normBody = body === null ? '' : body.text.trim() + '\n'
     let persona = ''
     try { persona = readFileSync(join(GEN, 'persona.md'), 'utf8') } catch { persona = '' }
     if (wf === null || body === null || persona === '') {
@@ -1178,8 +1377,8 @@ try {
       const victim = (wf.invariant ?? []).find((v) => String(v.text ?? '') !== '')
       const txt = String(victim?.text ?? '\u0000')
       const stamp = '（夹具：这条不变量的 text 两面同删）'
-      const mutPersona = persona.replace(txt, stamp)
-      const mutPrefix = body.text.replace(txt, stamp)
+      const mutPersona = (persona.trim() + '\n').replace(txt, stamp)
+      const mutPrefix = (body.text.trim() + '\n').replace(txt, stamp)
       const gone = !mutPersona.includes(txt) && !mutPrefix.includes(txt)
       const stillSame = mutPersona === mutPrefix || mutPersona.replace(/\n+$/, '') === mutPrefix.replace(/\n+$/, '')
       const lines = f10ProbsOf(mutPrefix, mutPersona, wf)
@@ -1201,6 +1400,7 @@ try {
    */
   {
     const body = prefixBodyOf(yml)
+    const normBody = body === null ? '' : body.text.trim() + '\n'
     let persona = ''
     try { persona = readFileSync(join(GEN, 'persona.md'), 'utf8') } catch { persona = '' }
     const newIntakes = (wf?.intake ?? []).filter((x) => originOf(x) === 'new')
@@ -1209,8 +1409,8 @@ try {
     } else {
       const victim = newIntakes[0]
       const secName = String(victim.section ?? '').replace(/^###\s+/, '').trim()
-      const mutPrefix = body.text.replace(`### ${secName}`, '### （夹具：这一节被删）')
-      const mutPersona = persona.replace(`### ${secName}`, '### （夹具：这一节被删）')
+      const mutPrefix = (body.text.trim() + '\n').replace(`### ${secName}`, '### （夹具：这一节被删）')
+      const mutPersona = (persona.trim() + '\n').replace(`### ${secName}`, '### （夹具：这一节被删）')
       const gone = !mutPrefix.includes(`### ${secName}`) && !mutPersona.includes(`### ${secName}`)
       const stillSame = mutPrefix.replace(/\n+$/, '') === mutPersona.replace(/\n+$/, '')
       const lines = f10ProbsOf(mutPrefix, mutPersona, wf)
@@ -1285,6 +1485,33 @@ try {
 
 } catch (e) {
   bad(`F 组**自身异常**（⛔ 不算通过）：${String(e?.stack ?? e)}`)
+}
+
+// ── F-15（O-26）：头注释描述必须与实现一致 ─────────────────────────────────
+//
+//  ⚠ 改前头注释写「F1 五步齐（`order` = 1..5）」，而实现要求 `[1,2,3,4,5,6,7]`（`:150`）。
+//  ⚠ F4 也只说「数节」，实际是**三条 origin 判定**。
+//  ⇒ 读头注释的人会以为这里守五步 —— 而它守七步。
+{
+  const p = []
+  /** ⚠ 本文件的根常量是 `ROOT`（大写），⛔ 不是 `root`。 */
+  const src = readFileSync(join(ROOT, 'scripts', 'check-workflow.mjs'), 'utf8')
+  const head = src.split('*/')[0] ?? ''
+  /**
+   * ⚠⚠ **必须先剔除「更正说明」** —— 它在**引用旧文本**来解释这条缺陷（含「五步齐」「1..5」）。
+   *   我第一版直接 `test(head)` ⇒ **判到了自己的更正说明**（实测假红）。
+   *   ⇒ 只判**不含「O-26 更正」**的那些行。
+   */
+  const headLines = head.split('\n').filter((l) => !l.includes('O-26 更正'))
+  const headClean = headLines.join('\n')
+  if (/五步齐/.test(headClean)) p.push('头注释仍写「五步齐」⇒ 与实现（要求 1..7）不符（O-26 复发）')
+  if (/order.{0,6}1\.\.5/.test(headClean)) p.push('头注释仍写 order = 1..5 ⇒ 实现要 1..7')
+  if (!/七步/.test(head)) p.push('头注释没有写「七步」⇒ 读者无法从头部得知真实阶段数')
+  if (!/三条 origin/.test(head)) p.push('头注释没有写明 F4 是三条 origin 判定 ⇒ 描述不完整')
+  if (p.length === 0) {
+    ok('F-15 ✓ **负向对拍**：`check-workflow` 头注释与实现一致（七步齐 / F4 三条 origin）'
+      + '（O-26：⛔ 头注释不许描述一个不存在的口径）')
+  } else for (const x of p) bad(`F-15 · ${x}`)
 }
 
 console.log('')

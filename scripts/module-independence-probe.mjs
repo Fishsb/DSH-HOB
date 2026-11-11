@@ -32,8 +32,8 @@
  *       ⇒ 本条期望**已过期**，第 51 轮按实测订正（⛔ **不是放宽，是订正事实**）。
  */
 
-import { existsSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /** 脚本所在目录 = `<root>/scripts` ⇒ 上跳一级即仓库根。 */
@@ -475,6 +475,38 @@ console.log('\n=== 路径 C：「没起」的两种成因在生产日志通道�
   )
 }
 
+/**
+ * ── **O-40：档位枚举必须从常量派生，⛔ 不手写** ─────────────────────────────
+ *
+ * ⚠ 改前 `bus.ts` 的 `hob_spawn` 入参 `level.enum` 是手写的
+ *   `['ledger','project','workspace']` —— 与 `OPEN_READ_LEVELS`（read-level-policy.ts:61）
+ *   和 `PERMISSION_LEVELS`（permission-levels.ts:10）构成**三份同源字面量**。
+ *
+ * ⚠ 三份同时正确只是**当下巧合**：任何一处增删档位，另外两处不会跟着变，
+ *   而 `enum` 是**建会话的入参契约** ⇒ 漏改一处就是「模型能选、服务端拒」或反之。
+ *
+ * ⚠ 判据：`bus.ts` 里**不许再出现**手写的档位数组字面量；
+ *   且 `level.enum` 必须真的引用 `OPEN_READ_LEVELS`。
+ */
+{
+  /** ⚠ 先剥注释再判（本仓已踩过 6 次「注释被当成代码」）。 */
+  const strip = (x) => x
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((l) => l.replace(/\/\/.*$/, ''))
+    .join('\n')
+  const bus = strip(readFileSync(join(ROOT, 'src', 'modules', 'bus.ts'), 'utf8'))
+  /** ① 不许有手写的三档数组字面量。 */
+  const handwritten = /enum:\s*\[\s*'ledger'\s*,/.test(bus)
+  /** ② `level.enum` 必须引用 `OPEN_READ_LEVELS`。 */
+  const derived = /enum:\s*\[\.\.\.OPEN_READ_LEVELS\]/.test(bus)
+  check(
+    'O-40 **负向对拍**：档位枚举从 OPEN_READ_LEVELS 派生（⛔ 不手写三份同源字面量；'
+      + '改回手写数组 ⇒ 本条必红）',
+    !handwritten && derived,
+    `handwritten=${handwritten} derived=${derived}`,
+  )
+}
 console.log(`\n  处级口径：查了 ${checked} 处 · 过了 ${checked - fail} 处`
   + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
 console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILED`)

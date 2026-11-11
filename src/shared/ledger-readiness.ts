@@ -20,8 +20,9 @@
  *   `missing`     账本目录在，但没有 `ledger/units/`（含：目录整个不存在）
  *   `legacy`      有 `ledger/units/`，但索引是**旧格式**（`[units."ID"]` 表头）
  *   `empty`       格式合规，但**一条单元都没有**
- *   `unhealthy`   有单元，但门禁判出缺口（`stageControlProblems` 非空）
- *   `ready`       有单元、无缺口 ⇒ **可以推进**
+ *   `unhealthy`   有单元，但结构 / 字段 / 闭环存在缺口
+ *   `ready`       有单元、结构 / 字段 / 闭环无缺口 ⇒ 可以进入管线处理；
+ *                 G1/G2 是否已批准属于当前阶段与派发门禁，不在这里冒充结构缺口
  *
  * ⚠ 「空」与「旧格式」与「没开账」**必须分开**：这与 `R-4`（空 ≠ 判不出）同一条纪律。
  * ⚠ 本模块**不做任何 fs 操作**：调用方把"读到什么"传进来，这里只做判定。
@@ -29,8 +30,8 @@
  */
 
 import { parseUnitsToml } from './stages-index.ts'
-import { unitShapeProblems } from './ledger-validation.ts'
-import { ledgerClosureProblems, stageControlProblems, type StageControlUnit } from './stage-controls.ts'
+import { ledgerHealthOf } from './ledger-health.ts'
+import type { StageControlUnit } from './stage-controls.ts'
 
 /** 就绪度五档 + 一档"能建"（`unresolved` 不可建，其余四档都有明确动作）。 */
 export type LedgerReadinessState =
@@ -41,7 +42,7 @@ export type LedgerReadinessState =
   | 'unhealthy'
   | 'ready'
 
-/** 一个缺口（与 `stageControlProblems` 同形，但只在这里暴露"给用户看"的最小面）。 */
+/** 一个缺口（与阶段控制问题同形，但只在这里暴露"给用户看"的最小面）。 */
 export interface ReadinessGap {
   /** 规则号（如 `C-3`）。 */
   rule: string
@@ -57,7 +58,21 @@ export interface LedgerReadiness {
   headline: string
   /** 下一步该做什么（一句祈使句）。⚠ `ready` 时为空串。 */
   nextAction: string
-  /** 该账本能不能用来推进（派活 / 写推进）。 */
+  /**
+   * 该账本**结构上**是否自洽（shape + field + closure 全空）。
+   *
+   * ⚠ 与 {@link canProceed} 的分工（D-T02-1 选项 C）：
+   *   · 本字段 = 「内容自洽、可以读写」；`draft` / `proposed` 是合法草稿，未批准**不是**账本坏了；
+   *   · `canProceed` = 本字段 ∧ 用户批准齐备（G1/G2）。
+   *   ⛔ 不要把 approval 并进本字段：那会让「刚写下的需求」在第一次建账时就判 unhealthy。
+   */
+  structurallyReady: boolean
+  /**
+   * 该账本能不能用来**推进**（派活 / 写推进）。
+   *
+   * ⚠ 与 `state === 'ready'` 的差别：`ready` 只说明结构自洽；
+   *   有单元但**用户尚未批准**时，`ready` 为真而本字段为假（D-T02-1 选项 C）。
+   */
   canProceed: boolean
   /** 能不能**现在**建 / 修（`unresolved` 时为 false —— 连落点都判不出）。 */
   canInitialize: boolean
@@ -153,6 +168,7 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
       headline: '账本落点判不出 ⇒ 不知道该在哪儿建',
       nextAction: '先确认会话的工作区根，再重试。',
       canProceed: false,
+      structurallyReady: false,
       canInitialize: false,
       unitCount: 0,
       gaps: [],
@@ -169,6 +185,7 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
       headline: '这个项目还没有账本',
       nextAction: '先建账本（`hob_ledger_init`），再推进任务。',
       canProceed: false,
+      structurallyReady: false,
       canInitialize: true,
       unitCount: 0,
       gaps: [],
@@ -185,6 +202,7 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
       headline: '账本读不出来',
       nextAction: '先修好读权限或文件，再推进任务。',
       canProceed: false,
+      structurallyReady: false,
       canInitialize: false,
       unitCount: 0,
       gaps: [],
@@ -199,6 +217,7 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
       headline: '账本缺入口索引',
       nextAction: '补 `ledger/units/index.toml`（`hob_ledger_init` 会补齐缺失件）。',
       canProceed: false,
+      structurallyReady: false,
       canInitialize: true,
       unitCount: 0,
       gaps: [],
@@ -215,6 +234,7 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
       headline: '账本是旧格式，现行面板读不进来',
       nextAction: '先迁移成现行 `[[unit]]` 格式（`hob_ledger_init` 会给出迁移清单）。',
       canProceed: false,
+      structurallyReady: false,
       canInitialize: true,
       unitCount: 0,
       gaps: [],
@@ -234,6 +254,7 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
       headline: '账本索引不是合法格式',
       nextAction: '按报错行修索引（`hob_ledger_init` 会指出是哪一行）。',
       canProceed: false,
+      structurallyReady: false,
       canInitialize: true,
       unitCount: 0,
       gaps: [],
@@ -249,6 +270,7 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
       headline: '账本已建，但还没有任何单元',
       nextAction: '先落第一条需求（R-xxx），再推进任务。',
       canProceed: false,
+      structurallyReady: false,
       canInitialize: true,
       unitCount: 0,
       gaps: [],
@@ -259,12 +281,20 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
   }
 
   // ⑥ 有单元 ⇒ 数缺口（⚠ 与派活门禁同一个纯函数，⛔ 不另判一份）
+  /**
+   * 四类缺口的**并集**（shape + field + approval + closure）。
+   * ⚠ 与 `gaps` / `gapCount` 同源：四个出口必须报**同一份**清单（§3.3.3）。
+   */
   let problems: Array<{ rule: string; unit: string; why: string }>
+  /** 推进层是否干净（结构 + 用户批准）；异常分支由下面各自显式给 false。 */
+  let canProceed = true
+  /** 结构层是否干净（shape + field + closure）。 */
+  let structurallyReady = false
   try {
     /**
      * ⚠⚠ **2026-11-08 加第二道：闭环**（用户报「旧账本梳理不到完全健康」）。
      *
-     *   `stageControlProblems` 是**逐条单元的字段门禁**，它回答"这一条填全了没有"。
+     *   `stageFieldProblems` 是**逐条单元的字段门禁**，它回答"这一条填全了没有"。
      *   ⇒ 一本账里**只有一条 `change`**（没有 req / task / run / acc）也判"无缺口"，
      *     于是面板与派活都说"完全健康"。实测：`prompt-enhancer-release` 只有 `CHG-344`
      *     ⇒ `problems = []` ⇒ ready（这是**假的健康**）。
@@ -280,27 +310,45 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
      *   现在先把 `unitShapeProblems` 并进同一份问题集，健康面板、派活门禁、
      *   阶段接口对这本账给出同一个「坏在哪一行」的结论。
      */
-    const shapeProblems = units.flatMap((u) => unitShapeProblems(u)).map((why) => {
-      const m = /^(.+?): kind=.*kind=([^\s（]+)/.exec(why)
-        ?? /^(.+?): status=.*不属于 kind=([^\s（]+)/.exec(why)
-      return {
-        rule: 'S-0',
-        unit: m?.[1] ?? '(unit)',
-        why: `${why} ⇒ 先按封闭状态表改正这一行，再推进`,
-      }
-    })
-    const cast = units as unknown as StageControlUnit[]
-    problems = [
-      ...shapeProblems,
-      ...(stageControlProblems(cast) as unknown as typeof problems),
-      ...(ledgerClosureProblems(cast) as unknown as typeof problems),
-    ]
+    /**
+     * ⚠ **B1.3（T-02）：判据集改由 `ledgerHealthOf` 一处产生**（⛔ 不在这里再拼一份）。
+     *
+     * ── 为什么 readiness 只取 `structuralProblems`（不含 approval）──────────
+     *   Readiness asks whether the ledger can advance. Unapproved content is a
+     *   valid draft, so user approval is checked by the progression gate rather
+     *   than reported as structural corruption here.
+     *   ⚠ 若把 approval 并进来，「刚写下的需求」会立刻把整本账判 unhealthy
+     *     ⇒ **第一次建账就红**，那正是改前这条注释要避免的形态。
+     *
+     * ── 与改前的**唯一差异**（有意，且是修缺陷）────────────────────────────
+     *   shape 问题的 `why` 不再追加「⇒ 先按封闭状态表改正这一行，再推进」那句后缀。
+     *   理由：四个出口共用同一份 `why`（`ledgerHealthOf`），若 readiness 单独加后缀，
+     *   同一条坏行在面板与门禁里就是**两种说法** —— 那正是本批要消灭的形态。
+     *   ⚠ 若将来有断言依赖那句后缀，应改成断言「`rule`=`S-0` 且 `why` 含原文」，
+     *     ⛔ 不要去改回去让四个出口重新分叉。
+     */
+    const health = ledgerHealthOf(units as unknown as StageControlUnit[])
+    /**
+     * ⚠ **取并集，不取结构层**（§3.3.3）：`gaps` / `gapCount` 是四个出口对外的那份清单，
+     *   少报 approval 就会让「只有审批缺口」的账本在 readiness 上显示 0 条
+     *   （附录 A-8 的 F4，改前实测）。
+     */
+    problems = health.problems as unknown as typeof problems
+    /**
+     * ⚠ 两个投影都要给（D-T02-1 选项 C）：
+     *   · `structurallyReady` = 结构层干净 ⇒ 账本内容可用（建账 / 生命周期判有效）；
+     *   · `canProceed` = 推进层干净（结构 **且** 用户批准）⇒ 能派活 / 能推进。
+     *   ⛔ 两者不许合并成一个布尔：那正是 T-02 的形态。
+     */
+    structurallyReady = health.structurallyReady
+    canProceed = health.canProceed
   } catch (e) {
     return {
       state: 'unhealthy',
       headline: '账本单元判不出健康度',
       nextAction: '先修单元格式，再推进任务。',
       canProceed: false,
+      structurallyReady: false,
       canInitialize: true,
       unitCount: units.length,
       gaps: [],
@@ -311,11 +359,21 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
   }
   const { gaps, gapCount } = toGaps(problems)
   if (gapCount > 0) {
+    /**
+     * ⚠ **结构干净、只缺批准**时，文案必须说清"内容没问题、差的是批准"，
+     *   否则用户会以为账本坏了去重建（A-8 的 F4 误读形态）。
+     */
+    const approvalOnly = structurallyReady
     return {
       state: 'unhealthy',
-      headline: `账本有 ${gapCount} 条缺口`,
-      nextAction: '先补齐缺口（逐条见 gaps），再推进任务。',
+      headline: approvalOnly
+        ? `账本内容已就绪，但有 ${gapCount} 条缺口待处理`
+        : `账本有 ${gapCount} 条缺口`,
+      nextAction: approvalOnly
+        ? '内容自洽，缺的是用户对当前修订的批准（G1/G2）⇒ 先取得批准，再派活 / 推进。'
+        : '先补齐缺口（逐条见 gaps），再推进任务。',
       canProceed: false,
+      structurallyReady,
       canInitialize: true,
       unitCount: units.length,
       gaps,
@@ -324,11 +382,24 @@ export function assessLedgerReadiness(probe: LedgerProbe): LedgerReadiness {
       detail: probe.ledgerRoot,
     }
   }
+  /**
+   * ⚠ **结构干净 ≠ 可以推进**（D-T02-1 选项 C）。
+   *
+   * 实测分歧格 F4：一条 v3 需求内容齐全但**用户还没批准**时，
+   *   · 改前 readiness 报 `ready`，而 `stageGateOfLedger` / `stageHealth` / `/stages`
+   *     三处都报 BLOCK（C-18）⇒ `hob_ledger_init` 会说"不需要建账本"，
+   *     用户于是以为这本账能推，一派活就被拒。
+   *   · 现在：`state` / `structurallyReady` 仍说结构自洽（草稿是合法状态），
+   *     但 `canProceed` 按**同一份判据**取推进层（含 approval）⇒ 与另三处同结论。
+   *
+   * ⚠ 这里必须用**同一个** `health`（不是再跑一遍判据）：否则又是两份实现。
+   */
   return {
     state: 'ready',
     headline: `账本就绪（${units.length} 条单元，无缺口）`,
     nextAction: '',
-    canProceed: true,
+    canProceed,
+    structurallyReady,
     canInitialize: false,
     unitCount: units.length,
     gaps: [],

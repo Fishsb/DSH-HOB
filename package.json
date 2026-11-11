@@ -101,7 +101,12 @@
     "check:work-plan-runtime": "node scripts/check-work-plan-runtime.mjs",
     "check:work-plan-panel": "node scripts/check-work-plan-panel.mjs",
     "check:stage-controls": "node scripts/check-stage-controls.mjs",
-    "check:ledger-projection": "node scripts/check-ledger-projection.mjs"
+    "check:live-route": "node scripts/check-live-route.mjs",
+    "check:live-client": "node scripts/check-live-client.mjs",
+    "check:pipeline": "node scripts/check-pipeline.mjs",
+    "check:risk-policy": "node scripts/check-risk-policy.mjs",
+    "check:ledger-projection": "node scripts/check-ledger-projection.mjs",
+    "check:ledger-lifecycle": "node scripts/check-ledger-lifecycle.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0-rc <5",

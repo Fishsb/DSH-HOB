@@ -86,8 +86,9 @@
  * 退出码：0 = 全通过；1 = 有违规（逐条打印）
  * ⚠ 零第三方依赖（本仓纪律）：YAML 只做**行级**解析，不引 js-yaml。
  */
-import { existsSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync, rmSync, mkdtempSync, mkdirSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -614,6 +615,13 @@ const STALE_APPELLATIONS = [
     ['⛔ 禁止：先写回复再投 / 落盘后不投', /Never compose the directive in the reply[\s\S]{0,220}?never write the file and stop there[\s\S]{0,80}?dispatch later/],
     ['判据：同轮给出读数 = 目标 + 登记时刻，给不出视同未派', /the target session, and the moment its\s+delivery was registered[\s\S]{0,320}?read it as not sent/],
     ['为什么这条挡得住（没调用 ⇒ 无内容可写）', /there is no directive to point at, and the reply is\s+简要说明 only/],
+    // ── **2026-11-09 · 用户实测「会话完成之后没有回传」** ──────────────────────
+    //   ⚠ 现场：`hob_dispatch` 被账本门禁拒后，HOB 改投 `hob_send`；后者**不登记回传**
+    //     ⇒ 实施会话正常跑完，HOB 却永远等不到结果。
+    //   ⚠ 运行时规则在 `workflow.toml` 的 `dispatch-requires-return`，经 `## 纪律` 进正文；
+    //     本组钉住它**确实到了人读/机器读两面**（⛔ 不只在机读源里）。
+    ['实质派活必须登记回传（单向通知 ≠ 派活）', /实质派活必须登记回传[\s\S]{0,200}?单向通知不等于派活/],
+    ['门禁拒绝 ⇒ 明说没有回传，⛔ 不许改投冒充', /账本门禁拒绝时[\s\S]{0,160}?不许改投单向通知冒充派活/],
   ]) {
     if (needle.test(hoBody)) ok(`⑤b ${NAME_HO}：v7/v9 条文在位（${label}）`)
     else bad(`⑤b ${NAME_HO}：v7/v9 条文缺失（${label}）—— 期望 /${needle.source}/`)
@@ -1471,16 +1479,18 @@ const STALE_APPELLATIONS = [
        */
       /**
        * ⚠ **2026-11-08**：新增两件「账本先建后推进」（`hob_ledger_status` / `hob_ledger_init`）
-       *   ⇒ 21 → **23**。理由：账本没建时连派活都过不去，建账工具必须三档都可见，
-       *   否则那一档只能等人手工建账（正是改前"建账只是文档规定"的形态）。
+       *   ⇒ 21 → **23**。随后补 `hob_ledger_migrate` 处理真实旧账本的
+       *   `task=settled` / `kind=evd` 等可判定历史词 ⇒ **24**。
+       *   理由：账本没建或没梳理健康时连派活都过不去，建账 / 迁移工具必须三档可见，
+       *   否则那一档只能等人手工改账（正是改前"建账只是文档规定"的形态）。
        */
-      if (allow13.length !== 23) {
+      if (allow13.length !== 26) {
         const extra = known26 === null ? allow13 : allow13.filter((n) => !known26.has(n))
-        bad(`⑤h ${NAME_HO} 白名单应恰好 23 名，实测 ${allow13.length}`
+        bad(`⑤h ${NAME_HO} 白名单应恰好 26 名，实测 ${allow13.length}`
           + `（多出：${extra.join(', ') || '无'}）`
           + `\n      ⇒ ⚠ **批 21 起 ${SHRUNK21_NAMES} 属"已被收缩"项** ——`
           + `\n        它们出现即说明收缩被回退（用户的权限裁定失效），**须查明是谁加回来的**`)
-      } else ok(`⑤h ${NAME_HO}：白名单恰好 23 名（21 + 2[账本先建后推进：hob_ledger_status / hob_ledger_init]）`)
+      } else ok(`⑤h ${NAME_HO}：白名单恰好 26 名（21 + 4 账本工具 + 1 Pipeline 用户批准工具）`)
 
       // ── 正向·批 21 专项：**被收缩的 4 个必须确实不在**（防"收了个寂寞"）──────
       //   ⚠ 只靠总数不够：30 → 26 也可能是"删错 4 个、漏删目标 4 个"恰好凑成 26。
@@ -2146,13 +2156,16 @@ const STALE_APPELLATIONS = [
       //   包含链能抓"档2 被抽走"，名数能抓"档2 被多加"（包含链对后者是哑的）。
       /** ⚠ **第 339 轮 · 丙-6**：删掉 4 个 `schedule_*` ⇒ 26/27/30 → 22/23/26；**P15** 再删 `roundtable_status` ⇒ 21/22/25。 */
       // ⚠ **2026-10-30 P15**：删 `roundtable_status` ⇒ 22/23/26 → **21/22/25**（真数变化，照实改）。
-      /** ⚠ **2026-11-08**：+2 账本工具（三档都可见）⇒ 21/22/25 → **23/24/27**。 */
-      const want = { ledger: 23, project: 24, workspace: 27 }
+      /**
+       * ⚠ **2026-11-08**：+2 账本工具（三档都可见）⇒ 23/24/27；
+       *   再 +1 `hob_ledger_migrate`（旧状态词迁移，默认预演）⇒ **24/25/28**。
+       */
+      const want = { ledger: 26, project: 27, workspace: 30 }
       const wrong = ['ledger', 'project', 'workspace'].filter((k) => full[k].length !== want[k])
       if (wrong.length > 0) {
         bad(`⑤m-3b 三档名数与裁定不符（${wrong.map((k) => `${k}=${full[k].length}（应 ${want[k]}）`).join('；')}）`)
       } else {
-        ok('⑤m-3b 三档名数 = 23 / 24 / 27（含账本先建后推进那两件）')
+        ok('⑤m-3b 三档名数 = 26 / 27 / 30（含账本工具与 Pipeline 用户批准）')
       }
     }
 
@@ -3239,8 +3252,13 @@ const STALE_APPELLATIONS = [
             if (!/\.tsx?$/.test(e.name)) continue
             if (full === sharedPath8) continue
             const stripped = stripCommentsOnlyLocal(readFileSync(full, 'utf8'))
-            if (new RegExp(`=\\s*'${mFactory[1]}'`).test(stripped)
-              || new RegExp(`===\\s*'${mFactory[1]}'`).test(stripped)) {
+            /**
+             * Only flag preset-like assignments/comparisons. Pipeline v3 uses
+             * `standard` as a delivery-closure mode, which is not a preset id.
+             */
+            const factory = mFactory[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            if (new RegExp(`(?:preset|presetId|agentPreset|defaultPreset)\\w*\\s*=\\s*'${factory}'`, 'i').test(stripped)
+              || new RegExp(`(?:preset|presetId|agentPreset|defaultPreset)\\w*\\s*===\\s*'${factory}'`, 'i').test(stripped)) {
               offenders8.push(full.slice(root.length + 1))
             }
           }
@@ -3761,7 +3779,18 @@ console.log('预设（机器读版）:', HO)
         if (!src.includes(NEEDLE)) {
           bad('N-⑤r · 源码里找不到 `const names = [...byName.keys()].sort()` 那一行（形态变了）⇒ 负向对拍不可判')
         } else {
-          const tmp = join(root, 'src', 'shared', `unseen-tools.__negctl_${process.pid}.ts`)
+          /**
+           * ⚠⚠ **变体⛔ 不许落在 `root/src`**（第 57 轮 · 与 §122/§124 同族）：
+           *   落进去会让 `src/` 短暂多一个文件 ⇒ 若恰在此时 build，
+           *   `tsconfig` 的 `include: ["src"]` 会把它编进 `lib/`，
+           *   而 `check:build` 面 ⑤ 会因此报孤儿（**判据自己污染被测对象**）。
+           *   ⇒ 改用 `os.tmpdir()` 沙箱，且**保持原相对结构**（`<sandbox>/src/shared/…`），
+           *     让 ESM 的相对/包解析都照旧成立。
+           *   ⚠ `unseen-tools.ts` 实测**零 import** ⇒ 沙箱里可独立加载。
+           */
+          const box = mkdtempSync(join(tmpdir(), 'hob-uctl-'))
+          mkdirSync(join(box, 'src', 'shared'), { recursive: true })
+          const tmp = join(box, 'src', 'shared', 'unseen-tools.__negctl.ts')
           writeFileSync(tmp, src.replace(NEEDLE, '  const names = []'))
           try {
             const mm = await import(pathToFileURL(tmp).href + '?t=' + Date.now())
@@ -3787,7 +3816,7 @@ console.log('预设（机器读版）:', HO)
                 + '（⚠ 这是**同一个** `unseenContractViolations` 的返回，⛔ 不是另写一份判断）')
             }
           } finally {
-            try { rmSync(tmp, { force: true }) } catch { /* 清不掉不影响判定 */ }
+            try { rmSync(box, { recursive: true, force: true }) } catch { /* 清不掉不影响判定 */ }
           }
         }
 
@@ -4015,6 +4044,54 @@ console.log('预设（机器读版）:', HO)
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════
+// ⑤p-1 · O-15：**档位只管读范围**，编排类工具三档一致（⛔ 不随档位开关）
+// ══════════════════════════════════════════════════════════════════════════
+/**
+ * ── 它守什么 ────────────────────────────────────────────────────────
+ *   REVIEW 的 O-15 说：「`ledger` 档仍可跨项目读看板与全部工作区路径」。
+ *   ⚠ **实测那是用户裁定的有意设计，⛔ 不是缺陷**（`src/preset/tools.ts:1266-1270`）：
+ *     「档位以及工作推进方式权限控制都是通过当前项目的工具去控制的不影响其他工具」
+ *     「档位一直都只是控制 HOB 预设的可读操作权限」
+ *   ⇒ 编排类（`hob_workspaces` / `hob_orch_status` …）**本来就该三档都能用**。
+ *
+ * ── 那这条断言守什么 ────────────────────────────────────────────────
+ *   守**那个裁定本身不漂**：
+ *     ① `READ_SCOPED_TOOLS` 只能是那 4 个读名（⛔ 不许把编排类塞进来）；
+ *     ② 档 2 / 档 3 = 档 1 + 读名增量（⛔ 不许在低档里删掉编排类）；
+ *     ③ ⚠ 反证：`hob_orch_status` / `hob_workspaces` **三档都必须 keep**
+ *        —— 若哪天有人按 O-15 的初读把它们从低档摘掉，本条当场红。
+ */
+{
+  const presetMod15 = await import(pathToFileURL(join(root, 'src', 'preset', 'tools.ts')).href)
+  const T = presetMod15.PERMISSION_TIERS
+  const READ = presetMod15.READ_SCOPED_TOOLS
+  const probs = []
+  /** ① 读范围名单只许是那 4 个。 */
+  const wantRead = ['hob_read_doc', 'hob_glob', 'hob_grep', 'hob_read_image']
+  const gotRead = [...READ].sort()
+  if (JSON.stringify(gotRead) !== JSON.stringify([...wantRead].sort())) {
+    probs.push(`READ_SCOPED_TOOLS = [${gotRead.join(',')}]，应恰为 [${wantRead.join(',')}]`)
+  }
+  /** ② 档 2 = 档 1 + hob_read_doc；档 3 = 档 2 + 三个。 */
+  const only1 = T.ledger.filter((x) => !T.project.includes(x))
+  if (only1.length > 0) probs.push(`档 2 缺了档 1 的：${only1.join(',')}（⛔ 高档不许比低档少）`)
+  const p2Only = T.project.filter((x) => !T.ledger.includes(x))
+  if (JSON.stringify(p2Only) !== JSON.stringify(['hob_read_doc'])) {
+    probs.push(`档 2 相对档 1 的增量是 [${p2Only.join(',')}]，应恰为 [hob_read_doc]`)
+  }
+  /** ③ ⚠ 反证：编排类三档都必须 keep。 */
+  const mustAll = ['hob_orch_status', 'hob_workspaces', 'hob_spawn', 'hob_dispatch']
+  for (const n of mustAll) {
+    for (const tier of ['ledger', 'project', 'workspace']) {
+      if (!T[tier].includes(n)) probs.push(`${n} 在 ${tier} 档被摘掉了（O-15 的初读若被当成缺陷就会这样）`)
+    }
+  }
+  if (probs.length === 0) {
+    ok('⑤p-1 ✓ 档位**只管读范围**：READ_SCOPED_TOOLS 恰 4 个读名；编排类（orch_status / workspaces / spawn / dispatch）'
+      + '三档一致（O-15：⛔ 那是用户裁定的有意设计，不是缺陷）')
+  } else for (const x of probs) bad(`⑤p-1 · ${x}`)
+}
 // ⑤o-7 · ⑤o-6 的**专属**负向对拍
 // ══════════════════════════════════════════════════════════════════════
 /**

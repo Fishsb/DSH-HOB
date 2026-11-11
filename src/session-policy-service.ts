@@ -32,7 +32,7 @@ import {
   createdAtOf,
   ensureLegacyMigrated,
   ensureLegacyMigratedByFile,
-  ensurePolicyDirIgnored,
+
   ensurePolicyStoreEpoch,
   policyStateFileOf,
   readPolicyStore,
@@ -145,9 +145,52 @@ function contentChars(content: readonly unknown[]): number {
 }
 
 /**
+ * **被丢弃的暂存消息计数**（T-14 · 2026-11-10）。
+ *
+ * ── 病（实测）────────────────────────────────────────────────────────────────
+ *   超条数 / 超字符上限时「丢最旧」，改前**只有一条 `loggerWarn`**：
+ *   · 队列在**进程内存**（`pendingBySession` 是 `Map`）⇒ 重启即丢，无痕；
+ *   · 丢弃**永久消失**（宿主已经丢过一次，暂存是唯一副本）；
+ *   · `loggerWarn` 走 `console.warn`，而本仓自己论证过**生产日志通道会滤掉 warn** ⇒ 可能完全不可观测。
+ *   ⇒ **用户输入被丢掉，而没有任何可持久读到的计数。**
+ *
+ * ── 修法：把计数做成**可读、可持久、按会话**的一面 ───────────────────────────
+ *   · 本 `Map` 是**内存计数器**（与队列同寿命，⛔ 不假装它跨重启）；
+ *   · **每次丢弃都 +1**，并在 `pendingDropStatsOf()` 里如实报出；
+ *   · ⚠ 它**不替代** `loggerWarn`（warn 仍保留，便于当场排查），
+ *     而是补上「事后还能不能看见」这一半 —— 那正是改前缺的。
+ * ⚠ 为什么不做成落盘文件：这条计数**与队列同寿命**才有意义（队列本就是内存的），
+ *   落盘会造出「文件里有 5 条、内存里 0 条」的新错配。要做持久化得连队列一起做，属另一件事。
+ */
+const pendingDroppedBySession = new Map<string, { count: number; lastAt: number; lastKey: number }>()
+
+/** 记录一次丢弃（⚠ 只增不减；`lastKey` 是最后一条被丢的稳定键，便于对账）。 */
+function notePendingDropped(sessionId: string, key: number): void {
+  const prev = pendingDroppedBySession.get(sessionId)
+  pendingDroppedBySession.set(sessionId, {
+    count: (prev?.count ?? 0) + 1,
+    lastAt: Date.now(),
+    lastKey: key,
+  })
+}
+
+/**
+ * **读某会话的暂存丢弃读数**（T-14 的可观测面）。
+ *
+ * @returns `count` 累计丢弃条数；`undefined` = 该会话从未丢过。
+ *   ⚠ **不返回 0 冒充「没丢过」**：`count === undefined` 与 `count === 0` 在这里是同一件事，
+ *     但调用方拿到 `undefined` 时**不应**在界面上写「已丢弃 0 条」——
+ *     那是把「没有这件事」说成一个读数（本仓反复记的形态）。
+ */
+export function pendingDropStatsOf(sessionId: string): { count: number; lastAt: number; lastKey: number } | undefined {
+  return pendingDroppedBySession.get(sessionId)
+}
+
+/**
  * 把一条被拦下的消息按到达顺序追加（⚠ 不改动既有队列）。
  *
  * ⚠ **带上限**：超过条数或总字符量 ⇒ **丢最旧**并 warn（见上方常量说明）。
+ * ⚠ **T-14**：每次丢弃同时 `notePendingDropped(...)` —— 让「丢了几条」事后可读。
  */
 export function stagePendingMessage(sessionId: string, content: readonly unknown[]): void {
   if (typeof sessionId !== 'string' || sessionId === '') return
@@ -158,6 +201,8 @@ export function stagePendingMessage(sessionId: string, content: readonly unknown
   // ⚠ 丢最旧：条数超限
   while (next.length > PENDING_MAX_PER_SESSION) {
     const dropped = next.shift()
+    /** ⚠ **T-14**：丢弃必须留下可读计数（改前只有一条 warn，可能被日志通道滤掉）。 */
+    notePendingDropped(sessionId, dropped?.key ?? -1)
     loggerWarn(`⚠ 暂存超条数上限（${PENDING_MAX_PER_SESSION} 条）⇒ 丢弃最旧一条（key=${String(dropped?.key)}）`)
   }
   // ⚠ 丢最旧：总字符量超限（⚠ 至少留一条 —— 否则刚存进来的这条也会被丢）
@@ -165,6 +210,8 @@ export function stagePendingMessage(sessionId: string, content: readonly unknown
   while (total > PENDING_MAX_TOTAL_CHARS && next.length > 1) {
     const dropped = next.shift()
     total -= contentChars(dropped?.content ?? [])
+    /** ⚠ **T-14**：同上（字符量超限这一半）。 */
+    notePendingDropped(sessionId, dropped?.key ?? -1)
     loggerWarn(`⚠ 暂存超总字符上限（${PENDING_MAX_TOTAL_CHARS}）⇒ 丢弃最旧一条（key=${String(dropped?.key)}）`)
   }
   pendingBySession.set(sessionId, next)
@@ -656,40 +703,23 @@ export function installSessionPolicy(
    *   · 任何失败 ⇒ **读档仍然是 `ledger`**（`resolveSessionPolicy` 本来就对无记录旧会话回最低档），
    *     但 `reason` 里会写明"工作方式**未保全**" —— ⛔ 不悄悄给 `auto` 了事。
    */
-  const runLegacyMigration = (): MigrationReport => {
-    const report: MigrationReport = { ran: true, ok: true, migrated: [], perFile: [], failed: [], reason: '' }
-
-    // ── ① 可信枚举（宿主 `sessionQuery`；⚠ 缺它就没有可信的"全部旧会话"来源）──────
-    const query = (() => {
-      try {
-        const q = hostCtx.get?.('sessionQuery') ?? hostCtx.sessionQuery
-        return typeof q?.listSessions === 'function' ? q : undefined
-      } catch { return undefined }
-    })()
-    if (query === undefined) {
-      return {
-        ...report, ok: false,
-        reason: '宿主没有 `sessionQuery` 服务（或它没有 `listSessions`）⇒ 取不到"全部旧会话"的可信枚举，'
-          + '本次**不做迁移**；旧会话的工作方式**未保全**（读档仍按最低档，⛔ 不冒充满意）',
-      }
-    }
-
-    /**
-     * ⚠ `listSessions()` 是**异步**的，而 `resolveFor` 是**同步**的（六个闸门都同步调它）。
-     *   ⇒ 我们不能在这里 `await`。
-     *
-     * ── 那么"先于首次返回"怎么保证？──────────────────────────────────
-     *   迁移在 **`installSessionPolicy` 时刻**启动（见下面 `kickMigration()`），
-     *   而不是等到第一次 `of()`。`installSessionPolicy` 由插件入口 `apply` 调用，
-     *   **早于**任何会话跑起来 —— 所以到第一次 `of()` 时，迁移要么已完成、
-     *   要么正在跑（此时 `migration.ran=false, pending=true`，读数里如实标出来）。
-     *   ⚠ 我们**不阻塞** `of()` 等它（那会把工具调用卡在磁盘 IO 上）；
-     *     但**也不假装**已保全：pending 期间 `reason` 明写"迁移尚未完成"，
-     *     且此时旧会话读到的就是**最低档 + 安全缺省**（`resolveSessionPolicy` 的既有行为），
-     *     而**不是**"先给 auto、稍后偷偷改"。
-     */
-    return report
-  }
+  /**
+   * ── **O-13：这个函数**从来没被调用过**，已删除** ──────────────────────────
+   *
+   * ⚠ 改前这里有一个 `runLegacyMigration(): MigrationReport`（约 34 行），
+   *   而**全仓零调用** —— 真正跑迁移的是 {@link migrateAsync}（两处调用：`:812` / `:1634`）。
+   *
+   * ⚠ **为什么删而不是留**：它和 `migrateAsync` **签名相似、职责重叠**，
+   *   读代码的人会以为「同步那条是主路径、异步那条是补充」，而事实相反 ——
+   *   **同步那条是死的**。一段指向不存在调用链的代码，消耗的是排查时间。
+   *
+   * ⚠ **REVIEW 说它「会假报已迁移」不准确**：那段逻辑在 `migrateAsync` 里，
+   *   而 `migrateAsync` 是活的。本条只是**删死代码**，⛔ 不改迁移行为。
+   *
+   * ⛔ **不要「恢复」它**：真要同步迁移，先回答「`resolveFor` 是同步的，
+   *   而枚举会话是异步的 —— 怎么在不 await 的前提下拿到全量旧会话」。
+   *   那个问题在 `ensureLegacyMigrationOnce` 的注释里已经讨论过，结论是**用异步 + 重试**。
+   */
 
   /** ⚠ 异步迁移的进度（同步读它的只有 `migrationStatus()`）。 */
   let migrationState: 'idle' | 'running' | 'done' | 'failed' = 'idle'
@@ -1287,7 +1317,6 @@ export function installSessionPolicy(
       }
       const file = policyFileFor(hostCtx, session)
       if (file === undefined) return { ok: false, reason: '判不出账本目录 ⇒ 拒绝写入策略（⛔ 不猜落点）' }
-      ensurePolicyDirIgnored(`${file.slice(0, file.lastIndexOf('/'))}`)
       /**
        * ⚠⚠ **写之前先把迁移纪元落盘**（2026-10-24 · 同一件事的**写路径**入口）。
        *
@@ -1475,7 +1504,6 @@ export function installSessionPolicy(
         if (file === undefined) {
           return { ok: false, reason: '判不出账本目录 ⇒ 无法隔离（⛔ 不猜落点）' }
         }
-        ensurePolicyDirIgnored(`${file.slice(0, file.lastIndexOf('/'))}`)
         return quarantineSessionPolicy(file, { sessionId, epochFallback: installEpoch }, OPTIONS)
       }
 
@@ -1526,7 +1554,6 @@ export function installSessionPolicy(
         if (rec === undefined) continue
         hadRecordIn.push(file)
         if (rec.quarantined === true) { quarantinedIn.push(file); continue }
-        ensurePolicyDirIgnored(`${file.slice(0, file.lastIndexOf('/'))}`)
         const r = quarantineSessionPolicy(file, { sessionId, epochFallback: installEpoch }, OPTIONS)
         if (!r.ok) { failures.push(`${file}: ${r.reason}`); continue }
         // ② 回读**这个文件**，确认本会话的记录真的带上了隔离标记

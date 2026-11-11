@@ -931,7 +931,7 @@ if (ARGV.includes('--self-check')) {
     const h = mkProfile(false, true)
     const r = run(h, [])
     say(r.status === 1 && r.stdout.includes('没有') && r.stdout.includes('插件不会被装配'),
-      'P-2 ✓ 反向（**钉事故形态**）：bundles 掉行、dependencies 仍在 ⇒ **FAIL**，'
+      'P-2 ✓ **负向对拍**（钉事故形态）：bundles 掉行、dependencies 仍在 ⇒ **FAIL**，'
       + '且话说"插件不会被装配"（⛔ 不许静默）',
       `exit=${r.status}（应 1）· 输出=${r.stdout.slice(0, 240)}`)
   }
@@ -948,7 +948,7 @@ if (ARGV.includes('--self-check')) {
     const saysNotJudged = r.stdout.includes('不参与判定')
     const saysNotRun = r.stdout.includes('未执行')
     say(r.status === 2 && saysNoAutoFix && saysNotJudged && saysNotRun,
-      'P-3 ✓ 反向（本单 A 改判）：bundles 与 dependencies 都缺 ⇒ **不参与判定**'
+      'P-3 ✓ **负向对拍**（本单 A 改判）：bundles 与 dependencies 都缺 ⇒ **不参与判定**'
       + '⇒ 落 **未执行（exit 2）**，⛔ 不是红、⛔ 也不是 PASS；'
       + '且仍明说"**没法自动修**"+"不参与判定"（⛔ 不给一条修不成的修法、⛔ 不静默）',
       `exit=${r.status}（应 2）· 说"没法自动修"=${saysNoAutoFix}`
@@ -1241,6 +1241,48 @@ if (ARGV.includes('--self-check')) {
       + ` ‖ ② 痕迹不在: exit=${r2.status}（应 2）· 说"不参与判定"=${stillNotJudged}`
       + ` · 无 ✗=${noFalseCross}`)
   }
+  // ══════════════════════════════════════════════════════════════════
+  // ⚠⚠ **P-11 / P-12 · O-31：三条「拒绝写盘」闸必须真的会拒绝**
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // ⚠ 为什么补这一条：`--fix` 写盘前有**三道闸**（`:709` 做不到只动一行 /
+  //   `:720` 插完不是合法 JSON / `:725` 改动不止那一行），但**一条判据都没有** ——
+  //   P-4 只测「顺风时补对了」，⛔ 测不到「逆风时会不会硬写」。
+  //   ⇒ 这三道闸至今**没被证明有牙**；而它们守的正是「写坏用户的 profile」。
+  //
+  // ⚠ 判据：**纯函数**（`planBundleLineInsertion` / `onlyBundleLineChanged`）直接喂坏输入，
+  //   要求它**明确拒绝**（`ok:false` / `false`）。⛔ 不靠"真去写一个坏 profile 看会不会坏"。
+  {
+    /**
+     * ① 形态根本认不出（bundles 不是一行一项的写法）⇒ `plan.ok` 必须 false。
+     *    ⚠ 这是**最容易硬写**的一格：认不出就重排整份 = 把用户的排版全冲掉。
+     */
+    const weird = JSON.stringify({
+      name: 'web',
+      dsh: { profile: { bundles: { notAnArray: true } } },
+      dependencies: { [SELF_NAME]: 'link:' + root },
+    }, null, 2)
+    const p1 = planBundleLineInsertion(weird, SELF_NAME, 'dsh-taskboard')
+    say(p1.ok === false,
+      `P-11 形态认不出（bundles 不是数组）⇒ \`--fix\` **拒绝写盘**（ok=${p1.ok}）`
+        + `${p1.ok ? '' : `，理由「${String(p1.why).slice(0, 60)}」`}`,
+      '认不出却仍返回 ok:true ⇒ 它会重排整份清单，把用户的排版冲掉（⛔ 这正是那三道闸要拦的）')
+
+    /**
+     * ② 语义层：`onlyBundleLineChanged` 对"改了别的字段"必须返回 false。
+     *    ⚠ 反证（正例）：**只多本包这一项**时必须返回 true —— ⛔ 否则这条断言会退化成"恒 false 也算过"。
+     */
+    const before = { name: 'web', dsh: { profile: { bundles: ['a', 'dsh-taskboard', 'b'] } }, dependencies: {} }
+    const onlyAdded = { name: 'web', dsh: { profile: { bundles: ['a', 'dsh-taskboard', SELF_NAME, 'b'] } }, dependencies: {} }
+    const changedOther = { name: 'web', dsh: { profile: { bundles: ['a', 'dsh-taskboard', SELF_NAME, 'b'] } }, dependencies: { extra: 'x' } }
+    const tOnly = onlyBundleLineChanged(before, onlyAdded, SELF_NAME)
+    const tOther = onlyBundleLineChanged(before, changedOther, SELF_NAME)
+    say(tOnly === true && tOther === false,
+      `P-12 语义闸：只多本包这一项 ⇒ 放行（${tOnly}）；改了别的字段 ⇒ **拒绝**（${tOther}）`
+        + ` ‖ ⚠ 反证：若"只多一项"也返回 false，那这条闸会把正常修法一起拦掉`,
+      `期望 (true,false)，实得 (${tOnly},${tOther}) ⇒ 这道语义闸${tOnly === false ? '**恒 false**（正常修法也写不进去）' : '**恒 true**（改了别处也照写）'}`)
+  }
+
   console.log('')
   /** ⚠ **无论如何都清**（失败路径也清 —— `TASK` §1-C 的硬要求）。 */
   cleanupAll()
@@ -1248,7 +1290,7 @@ if (ARGV.includes('--self-check')) {
     + `${cleaned.fail > 0 ? `、**⚠ ${cleaned.fail} 个没清掉**` : '（全部清净）'}`)
   console.log('')
   if (scBad === 0) {
-    console.log('判定：**PASS** —— 装配面判据自检 10 条全过。')
+    console.log('判定：**PASS** —— 装配面判据自检 12 条全过。')
     process.exit(0)
   }
   console.log(`判定：**FAIL**（${scBad} 条）—— 装配面判据自身不成立。`)

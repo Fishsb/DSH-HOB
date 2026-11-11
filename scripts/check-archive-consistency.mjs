@@ -98,6 +98,32 @@ function tryGit(args, cwd) {
   }
 }
 
+/**
+ * git（**带 stdin**）—— 批量查询专用。
+ *
+ * ⚠ **为什么要它**：`cat-file --batch-check` 从 **stdin** 读查询清单，
+ *   一次能回答 N 个 `rev:path`；而 `execFileSync` 要传 `input` 才能喂 stdin。
+ *   ⚠ 这是把「N 次 fork」压成「1 次 fork」的关键（见 ①c 的注释）。
+ *
+ * @param args - git 参数（含 `--git-dir` 前缀，若在归档内层仓）。
+ * @param cwd  - 工作目录。
+ * @param input - 喂给 stdin 的清单（每行一个 `rev:path`）。
+ * @returns stdout 文本；失败返回 `null`（与 `tryGit` 同口径）。
+ */
+function tryGitInput(args, cwd, input) {
+  try {
+    return execFileSync('git', args, {
+      cwd,
+      input,
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      /** ⚠ 同 `tryGit`：**吞掉 stderr**（判据靠返回值判，⛔ 不靠 stderr）。 */
+      stdio: ['pipe', 'pipe', 'ignore'],
+    })
+  } catch {
+    return null
+  }
+}
 /** git（**字节**，无 encoding）—— 形态 S 的逐字节比对专用（⛔ 不经 UTF-8 转码）。 */
 function tryGitBuf(args, cwd) {
   try {
@@ -132,12 +158,38 @@ function resolveRevRepos(ledgerRoot) {
   const out = []
   // ① 工作区仓：`root` 就是本脚本所在工作区根
   out.push({ cwd: root, gitDir: null, label: '工作区仓' })
+  /**
+   * ①b **账本区自身的仓**（2026-11-07 · `archive/2026-11-07-build-closeout/TASK.md` 段 B）。
+   *   ⚠ 治的病（`--self-test` 六档红里的五档，同一个根因）：形态 S 的 README 写的是
+   *     「来源：**账本仓**提交 `X`」，而 2026-10-25 搬家后**账本区自己就是一个 git 仓**；
+   *     `--self-test` 的夹具（`fx.L`）同样是个自建 git 仓。取数根却只有 ① 工作区仓 + ② 归档内层仓
+   *     ⇒ **声明来源的那个仓一个都没被查** ⇒ 夹具里 5 档「期望 0」被 `①[形态 S] … 在声明的源修订里不存在` 污染成 FAIL。
+   *   ⚠ ⛔ **不是放宽**：加入的是**多一个仓去解析修订**，命中后照样**逐字节比对**
+   *     （`buf.equals(srcBuf)`），⛔ 没有任何一条从"比对"退化成"跳过"。
+   *     实测：夹具 4 档「破坏后」仍 EXIT=1 且点名正确；真账本区形态 S 41 处仍全过，
+   *     ①c 辅助读数由 554/904 升到 571/904（更准，且 ①c 本来不参与判定）。
+   *   ⚠ 只在**账本区根确为 git 仓**时追加（`rev-parse --git-dir` 探测，⛔ 不靠目录猜、⛔ 不建仓）。
+   */
+  if (typeof ledgerRoot === 'string' && ledgerRoot !== '' && isGitRepo(ledgerRoot)) {
+    out.push({ cwd: ledgerRoot, gitDir: null, label: '账本区仓' })
+  }
   // ② 归档里的内层 .git —— 只读
   const archived = join(ledgerRoot, 'archive', '2026-10-25-project-migrate', 'inner-git', '.git')
   try {
     if (statSync(archived).isDirectory()) out.push({ cwd: ledgerRoot, gitDir: archived, label: '归档内层仓(只读)' })
   } catch { /* 归档不在 ⇒ 只有 ① */ }
   return out
+}
+
+/** 某目录是不是 git 仓工作树根（⚠ 只读探测：`rev-parse --git-dir`，⛔ 不建仓、⛔ 不改仓）。 */
+function isGitRepo(dir) {
+  try {
+    return execFileSync('git', ['rev-parse', '--git-dir'], {
+      cwd: dir, stdio: ['ignore', 'pipe', 'ignore'],
+    }) !== null
+  } catch {
+    return false
+  }
 }
 
 /** 在若干"修订仓"里依次试 `git show`；命中即返回字节，全不命中返回 null。 */
@@ -511,6 +563,21 @@ function crossCheckAgainstWorkspaceHistory({ ledgerRoot, revRepos, bad: _bad, ok
          *   ⚠ 现在按 `revRepos` 的**同一顺序**（工作区仓 → 归档内层仓只读）取，
          *     与 `checkArchiveBytes`（形态 S）**用同一套取数根** —— 覆盖面只增不减。
          */
+        /**
+         * ⚠⚠ **批量取数（2026-11-11 · 性能修复）**：改前是
+         *   `for repo { log -n 200; for rev { rev-parse rev:path } }`
+         *   ⇒ 每份归档件最多 **2 × 200 = 400 次 git 子进程**；
+         *   910 份实测跑到 **5350 次仍未结束**（`execFileSync` 每次 fork+exec）。
+         *
+         *   ⇒ 改成**两次 git 调用就够**：
+         *     ① `log --all --format=%H -n 200 -- <path>` —— 拿候选提交（本来就有，1 次）；
+         *     ② `cat-file --batch-check`（stdin 喂 N 行 `rev:path`）—— **一次**回答全部 blob。
+         *
+         *   ⚠ 判据**一个字没放宽**：仍然是「`want` 这个 blob sha 能在某个历史修订里找到」。
+         *     变的只是「问 git 的方式」：从 N 次单查 → 1 次批量。
+         *   ⚠ 为什么不能用缓存去重：键里含 `srcPath`，而**每份归档件的路径都不同**
+         *     ⇒ 天然不重复，缓存命中率约为 0（这一条是先读代码确认的，⛔ 不是猜）。
+         */
         let hit = false
         for (const repo of revRepos) {
           const gitIn = (a) => (repo.gitDir === null
@@ -518,11 +585,20 @@ function crossCheckAgainstWorkspaceHistory({ ledgerRoot, revRepos, bad: _bad, ok
             : tryGit(['--git-dir', repo.gitDir, ...a], repo.cwd))
           const revs = gitIn(['log', '--all', '--format=%H', '-n', '200', '--', srcPath])
           if (revs === null || revs.trim() === '') continue
-          for (const r of revs.split('\n').map((x) => x.trim()).filter(Boolean)) {
-            const sha = gitIn(['rev-parse', `${r}:${srcPath}`])
-            if (sha !== null && sha.trim() === want) { hit = true; break }
-          }
-          if (hit) break
+          const shas = revs.split('\n').map((x) => x.trim()).filter(Boolean)
+          if (shas.length === 0) continue
+          /**
+           * ② **一次**批量问：把 N 个 `rev:path` 一起喂给 `cat-file --batch-check`。
+           *   ⚠ 输出与输入**逐行对应**（`<sha> blob <size>` 或 `<spec> missing`）⇒
+           *     只要有任何一行的 sha === want 就算命中。
+           */
+          const spec = shas.map((r) => `${r}:${srcPath}`).join('\n') + '\n'
+          const batchArgs = repo.gitDir === null
+            ? ['cat-file', '--batch-check']
+            : ['--git-dir', repo.gitDir, 'cat-file', '--batch-check']
+          const batch = tryGitInput(batchArgs, repo.cwd, spec)
+          if (batch === null) continue
+          if (batch.split('\n').some((line) => line.split(' ')[0] === want)) { hit = true; break }
         }
         if (hit) matched += 1
         else { notFound += 1; notes.push(`${row.rel}（原路径 ${srcPath}）`) }
@@ -816,6 +892,50 @@ function checkDirRefs({ ledgerRoot, bad, ok, skip }) {
 
 /** 清单件的文件名（⚠ 沿用既有约定，见上方实测；⛔ 别改成 `MANIFEST.md`）。 */
 export const ARCHIVE_MANIFEST_NAME = 'README.md'
+
+/**
+ * ══ **一次性交接目录**（2026-11-07 硬化 · `archive/2026-11-07-check-hardening/TASK.md` §二2）══
+ *
+ * ── 它治什么（⚠ 上一轮实测的红）────────────────────────────────────────
+ *   `archive/<日期-slug>/` 里有一类目录**天生只有两件**：`TASK.md`（派单）+ `REPORT.md`（回报）。
+ *   它是**一次性的交接物**，⛔ 不是"证据包" —— 没有"这一批归档了哪些件"这回事（就那两件）。
+ *   ⇒ 旧 E1 对它照样要 `README.md` ⇒ **每接一单就多一条红**，
+ *     而执行方受"`archive/**` 只读"约束、**补不了** ⇒ 那条红永远消不掉。
+ *   ⚠ 这正是本仓自己那句话：**恒红的判据等于没有判据**。
+ *
+ * ── 口径：单列一档（`⊘`），⛔ 既不判通过、也不判红 ────────────────────────
+ *   ⇒ 走 `skip` 通道，**不计入通过**（与 B/D 轨、`ARCHIVE_NO_DIRS` 同语汇）。
+ *
+ * ── ⚠⚠ 判定必须**窄**（TASK §二2 点名："不要用成员数 ≤ 2 这种会被绕过的判据"）────
+ *   两条**同时**成立才算交接目录：
+ *     ① **每个**成员名都落在白名单里（`TASK.md` / `REPORT.md` / `REPORT-<n>.md` / `DECISIONS.md`）——
+ *        ⛔ 不许有子目录、⛔ 不许有 `sources/`、`EVIDENCE.md`、`ACCEPTANCE-REPORT.md` 等任何别的东西；
+ *        ⚠ `DECISIONS.md` 进白名单的理由：它是**规划侧的处置记录**，与 `TASK.md` 同为这一单的过程件，
+ *          ⛔ 不是「这一批归档了哪些件」的证据清单。实测（2026-11-07）`archive/2026-11-07-check-hardening/`
+ *          就是 `TASK.md` + `DECISIONS.md` 两件。⚠ 白名单仍是**闭合枚举**，加名字必须写理由；
+ *          ⛔ 不许改成「成员数 ≤ N」这种会被绕过的形态。
+ *     ② 至少有一件 `TASK.md` 或 `REPORT*.md`（⛔ 空目录不算）。
+ *   ⚠ 所以"塞一个 `EVIDENCE.md` 进去"就**立刻失去**这一档 ⇒ 走正常判据 ⇒ 缺清单**照样红**。
+ *   ⚠ `README.md` 若存在，本目录**直接走正常路径并判绿**（它有清单，不需要这一档）。
+ */
+export const ARCHIVE_HANDOFF_MEMBER_RE = /^(?:TASK|REPORT)(?:-\d+)?\.md$|^DECISIONS\.md$/
+
+/**
+ * 判定一个目录是否属于「一次性交接目录」（⚠ 纯函数，供正向与负向对拍共用同一份）。
+ *
+ * @param {string[]|undefined} members - 该目录的**直接**成员名（子目录名也在内）
+ * @returns {boolean}
+ */
+export function isHandoffDir(members) {
+  if (!Array.isArray(members) || members.length === 0) return false
+  if (!members.every((n) => ARCHIVE_HANDOFF_MEMBER_RE.test(String(n)))) return false
+  return members.some((n) => /^(?:TASK|REPORT)(?:-\d+)?\.md$/.test(String(n)))
+}
+
+/** `⊘` 那一行（一次性交接目录；⚠ 与 `ARCHIVE_NO_DIRS` 同形：跳过 ≠ 通过）。 */
+export const ARCHIVE_HANDOFF_SKIP = (names) =>
+  `⊘ 一次性交接目录 ${names.length} 个（只含 TASK.md / REPORT.md 这类交接件）⇒ 不是证据包、无需清单件`
+  + ` ⇒ 本条对它们**无法判定**，⛔ 这不是通过：${names.join(' / ')}`
 
 /**
  * 历史归档目录白名单（⚠ **逐个列出**，每个都是"历史不追溯"）。
@@ -1357,17 +1477,28 @@ export const ARCHIVE_NO_DIRS = '⊘ 读不到归档目录 ⇒ 这条判据无法
  * @param {(name: string) => boolean} hasManifest - 该目录下有没有清单件
  * @returns {{ checked:number, historical:number, missing:string[] }}
  */
-export function archiveManifestProblems(dirNames, hasManifest) {
+export function archiveManifestProblems(dirNames, hasManifest, membersOf) {
   const missing = []
   const white = new Set(ARCHIVE_HISTORICAL_NO_MANIFEST)
   let checked = 0
   let historical = 0
+  /** ⚠ 2026-11-07 硬化：一次性交接目录**单列一档**（见 `isHandoffDir` 上方那段）。 */
+  const handoff = []
   for (const name of dirNames) {
     if (white.has(name)) { historical++; continue }
+    /**
+     * ⚠ 顺序很重要：**先判"有清单"** ⇒ 有清单的目录走正常路径（判绿），
+     *   再判"是不是交接目录"。⛔ 不能反过来 —— 否则"交接目录 + 补了 README"会被错记成跳过，
+     *   那等于让"补清单"这个动作**没有回报**。
+     */
+    if (!hasManifest(name)) {
+      const members = typeof membersOf === 'function' ? membersOf(name) : undefined
+      if (isHandoffDir(members)) { handoff.push(name); continue }
+    }
     checked++
     if (!hasManifest(name)) missing.push(name)
   }
-  return { checked, historical, missing }
+  return { checked, historical, missing, handoff }
 }
 
 /**
@@ -1389,15 +1520,35 @@ export function archiveManifestBucket(dirNames) {
  * @param {{bad:Function, ok:Function, skip:Function}} sink
  * @returns {'skip'|'checked'}
  */
-export function reportArchiveManifest({ dirNames, hasManifest }, sink) {
+export function reportArchiveManifest({ dirNames, hasManifest, membersOf }, sink) {
   const bucket = archiveManifestBucket(dirNames)
   if (bucket === 'skip') {
     sink.skip(ARCHIVE_NO_DIRS)
     return bucket
   }
-  const r = archiveManifestProblems(dirNames, hasManifest)
+  const r = archiveManifestProblems(dirNames, hasManifest, membersOf)
+  /**
+   * ⚠ 2026-11-07 硬化：交接目录**单列一档**，走 `skip`（⛔ 不进 ok ⇒ **不计入通过**）。
+   *   ⚠ 它**不阻断**下面的判定：剩下的目录该红还是红（⛔ 不是"有一个交接目录就整族放过"）。
+   */
+  if (r.handoff.length > 0) sink.skip(ARCHIVE_HANDOFF_SKIP(r.handoff))
+  /**
+   * ⚠⚠ **只在"零需核"是交接档造成的时候**才追加这条 `⊘`（2026-11-07 实测边界）。
+   *
+   *   若 `checked === 0` 是**历史白名单**造成的（`historical > 0`、`handoff === 0`），
+   *   ⛔ 不许改口径：那是既有语义（白名单**逐个列出**、明确"不追溯"），
+   *   `N-E3` 正是钉这一条（"白名单历史目录没清单 ⇒ 仍绿"）。
+   *   ⇒ 本轮硬化的范围只有交接目录，⛔ 不顺手改历史档的口径
+   *     （改了会把 `N-E3` 判红 —— 实测踩过）。
+   */
+  if (r.checked === 0 && r.handoff.length > 0) {
+    sink.skip(`⊘ 没有需要清单件的归档目录（历史不追溯 ${r.historical} 个 + 一次性交接 ${r.handoff.length} 个）`
+      + ' ⇒ 本条对它们**无法判定**，⛔ 这不是通过')
+    return bucket
+  }
   if (r.missing.length === 0) {
     sink.ok(`E1 ✓ 归档目录**都带清单件**：实测 ${dirNames.length} 个目录 = 历史不追溯 ${r.historical} 个（白名单逐个列出）`
+      + ` + 一次性交接 ${r.handoff.length} 个（单列 ⊘ 档，不计入通过）`
       + ` + 需核 ${r.checked} 个，需核的那些**逐个都有 \`${ARCHIVE_MANIFEST_NAME}\`**`
       + '（⚠ 本判据只查存在性，内容格式由 ① 形态 M/S 管）')
   } else {
@@ -1432,7 +1583,16 @@ export function checkArchiveManifests({ ledgerRoot, bad, ok, skip, fixtureNoMani
   const fixtureSet = new Set(fixtureNoManifest)
   const names = dirNames.filter((n) => !fixtureSet.has(n))
   const hasManifest = (name) => existsSync(join(archiveDir, name, ARCHIVE_MANIFEST_NAME))
-  const bucket = reportArchiveManifest({ dirNames: names, hasManifest }, { bad, ok, skip })
+  /**
+   * ⚠ 成员名**只取直接成员**（`withFileTypes`）⇒ 有子目录时名字会出现在列表里、
+   *   而 `isHandoffDir` 的白名单只认 `TASK.md` / `REPORT[-n].md` ⇒ **有子目录就一定不是交接目录**。
+   */
+  const membersOf = (name) => {
+    try {
+      return readdirSync(join(archiveDir, name), { withFileTypes: true }).map((e) => e.name)
+    } catch { return undefined }
+  }
+  const bucket = reportArchiveManifest({ dirNames: names, hasManifest, membersOf }, { bad, ok, skip })
   return { executed: bucket === 'checked', dirs: names.length }
 }
 
@@ -1748,6 +1908,85 @@ function selfTest(realLedgerRoot) {
         }
       }
 
+      // ── N-E4：一次性交接目录 ⇒ 单列 ⊘ 档、⛔ 既不判通过也不判红（2026-11-07 硬化）──
+      {
+        /**
+         * ⚠⚠ **这条对拍要证的是"硬化之后仍然咬得住真证据包"**（TASK §二2 的"⛔ 不许整体放宽"）。
+         *   四档一起测，缺一档这条就不算做完：
+         *     ① 只含 `TASK.md` + `REPORT.md` 的交接目录 ⇒ 走 ⊘（ok=0 · bad=0 · skip=1）；
+         *     ② **同一个目录**塞进 `EVIDENCE.md` ⇒ **立刻失去交接档** ⇒ 缺清单**必红**；
+         *     ③ 只含 `TASK.md` + `DECISIONS.md`（本单真实形态）⇒ 仍走 ⊘；
+         *     ④ 交接目录**旁边**放一个真证据包（无清单）⇒ 交接档**不掩护**它，仍必红。
+         */
+        const sh = () => ({ bad: [], ok: [], skip: [] })
+        const run = (names, membersOf, has) => {
+          const s2 = sh()
+          const bucket = reportArchiveManifest({ dirNames: names, hasManifest: has, membersOf }, {
+            bad: (m) => s2.bad.push(m), ok: (m) => s2.ok.push(m), skip: (m) => s2.skip.push(m),
+          })
+          return { s2, bucket }
+        }
+        /** ① 纯交接目录（两件） */
+        const pure = ['TASK.md', 'REPORT.md']
+        const pureHandoff = isHandoffDir(pure)
+        const r1 = run(['2026-11-07-handoff-fixture'], () => pure, () => false)
+        /** ② 塞进证据件后不再是交接目录 */
+        const polluted = ['TASK.md', 'REPORT.md', 'EVIDENCE.md']
+        const pollutedHandoff = isHandoffDir(polluted)
+        const r2 = run(['2026-11-07-handoff-fixture'], () => polluted, () => false)
+        /** ③ 本单真实形态：TASK + DECISIONS */
+        const realShape = ['TASK.md', 'DECISIONS.md']
+        const realHandoff = isHandoffDir(realShape)
+        const r3 = run(['2026-11-07-check-hardening'], () => realShape, () => false)
+        /** ④ 交接目录 + 真证据包并存 */
+        const r4 = run(['2026-11-07-handoff-fixture', '2026-01-11-evidence-no-manifest'],
+          (n) => (n === '2026-11-07-handoff-fixture' ? pure : ['ACCEPTANCE-REPORT.md', 'EVIDENCE.md']), () => false)
+        /** ⑤ 反面：交接目录**补上** README ⇒ 走正常路径判绿（⛔ 不是永远跳过） */
+        const r5 = run(['2026-11-07-handoff-fixture'], () => pure,
+          (n) => n === '2026-11-07-handoff-fixture')
+
+        const p = []
+        /**
+         * ⚠⚠ **`skip` 条数是 2 不是 1**（实测 2026-11-07）：
+         *   目录全是交接件 ⇒ ① `⊘ 一次性交接目录 N 个…`；且此时 `checked === 0`
+         *   ⇒ ② 还会追加一条 `⊘ 没有需要清单件的归档目录…`。
+         *   ⚠ 两条都是 `⊘`、都**不进 ok** ⇒ 语义正确。⛔ 别把断言写成"恰好 1 条"，
+         *   那会把**正确的实现**判成坏（本轮实测踩过：`skip=2` 被判红）。
+         */
+        const pureHandoffSkip = r1.s2.skip.some((x) => x.includes('一次性交接目录') && x.includes('2026-11-07-handoff-fixture'))
+        const pureNoTargetSkip = r1.s2.skip.some((x) => x.includes('没有需要清单件的归档目录'))
+        if (!pureHandoff) p.push('夹具 ① 的两件套没被判成交接目录 ⇒ 判据没生效')
+        else if (!(r1.bucket === 'checked' && r1.s2.ok.length === 0 && r1.s2.bad.length === 0)) {
+          p.push(`① 纯交接目录被洗成通过或错判红（bucket=${r1.bucket} ok=${r1.s2.ok.length} bad=${r1.s2.bad.length}）`)
+        } else if (!pureHandoffSkip) {
+          p.push(`① 没有 \`⊘ 一次性交接目录\` 那一行：${JSON.stringify(r1.s2.skip.map((x) => x.slice(0, 60)))}`)
+        } else if (!pureNoTargetSkip) {
+          p.push(`① checked===0 时没有 \`⊘ 没有需要清单件的归档目录\` 那一行（会把"没判"洗成"判过了"）`)
+        }
+        if (pollutedHandoff) p.push('夹具 ② 塞进 EVIDENCE.md 后**仍**被判成交接目录 ⇒ 白名单太宽，会放过真证据包')
+        else if (r2.s2.bad.length !== 1) p.push(`② 含 EVIDENCE.md 的目录缺清单却没判红（bad=${r2.s2.bad.length}）⇒ 硬化把真缺陷放过了`)
+        if (!realHandoff) p.push('夹具 ③ 的 TASK.md + DECISIONS.md 没被判成交接目录 ⇒ 本单真实形态仍会红')
+        else if (r3.s2.bad.length !== 0 || r3.s2.ok.length !== 0) p.push(`③ 本单真实形态被洗成通过或错判红（ok=${r3.s2.ok.length} bad=${r3.s2.bad.length}）`)
+        else if (!r3.s2.skip.some((x) => x.includes('一次性交接目录') && x.includes('2026-11-07-check-hardening'))) {
+          p.push(`③ 本单真实形态没走 \`⊘ 一次性交接目录\` 档（skip=${r3.s2.skip.length}）`)
+        }
+        if (r4.s2.bad.length !== 1 || !r4.s2.bad[0].includes('2026-01-11-evidence-no-manifest')) {
+          p.push(`④ 交接目录掩护了旁边的真证据包（bad=${r4.s2.bad.length}）⇒ 单列档变成了整体放宽`)
+        }
+        if (r5.s2.ok.length !== 1 || r5.s2.bad.length !== 0) p.push(`⑤ 交接目录补上 ${ARCHIVE_MANIFEST_NAME} 后没转绿（ok=${r5.s2.ok.length} bad=${r5.s2.bad.length}）⇒ "补清单"这个动作没有回报`)
+
+        if (p.length === 0) {
+          ok(`N-E4 ✓ 负向对拍（先自证：\`TASK.md\` + \`REPORT.md\` 被判成交接目录、塞进 \`EVIDENCE.md\` 后**不再**被判成交接目录）`
+            + ' ⇒ ① 纯交接目录走 **⊘ 单列档**（ok +0 · bad +0，⛔ 不计入通过）'
+            + ' · ② 塞进证据件 ⇒ **失去交接档、缺清单必红**（⛔ 没被整体放宽）'
+            + ' · ③ 本单真实形态（`TASK.md` + `DECISIONS.md`）同样走 ⊘'
+            + ' · ④ 交接目录**不掩护**旁边的真证据包（它照样红）'
+            + ` · ⑤ 反面：补上 \`${ARCHIVE_MANIFEST_NAME}\` ⇒ 走正常路径判绿（⛔ 不是恒跳过）`)
+        } else {
+          for (const x of p) bad(`N-E4 · ${x}`)
+        }
+      }
+
       // ── N-E0：0 个目录 ⇒ 走 ⊘ 档、不计入通过 ──
       {
         const sh = { bad: [], ok: [], skip: [] }
@@ -1871,13 +2110,23 @@ function selfTest(realLedgerRoot) {
   // ── 反假绿：把"含 sources/ 的归档目录"整个撤掉 ⇒ 必须走「无对象可查」而不是报 ✓ ──
   rmSync(join(fx.L, 'archive'), { recursive: true, force: true })
   r = runChecks(fx.L, FIXTURE_OPTS)
+  /**
+   * ⚠ **2026-11-07 修（夹具侧）**：`skip` 第三态（2026-10-21 · 第 349 轮）落地后，
+   *   ① 的「无对象可查」已从 `notes`（= ✓ 通过通道）**改走 `skips`**，
+   *   而本档还只在 `notes` 里找 ⇒ 恒找不到 ⇒ **恒红**（实测：`skips.length=4`、`notes` 里那句已不在）。
+   *   ⇒ 现在两个通道都认。⚠ ⛔ **语义一字未改、强度一字未降**：
+   *     仍要求「① 没真跑（`executed === false`）」+「整轮零 bad」+「① **没有**被记成 ✓」+「有一句『无对象可查』」，
+   *     四条全中才算过。⛔ 不是"找到就算过"，也⛔ 没把 `notes` 里任何东西豁免。
+   */
+  const noObjLine = [...r.skips, ...r.notes].find((n) => n.includes('无对象可查'))
   const guardOk = r.a.executed === false && r.bad.length === 0
-    && r.notes.some((n) => n.includes('无对象可查'))
+    && r.notes.every((n) => !n.includes('①'))
+    && noObjLine !== undefined
   readings.push({
     label: '反假绿（撤掉全部归档目录 ⇒ 打「无对象可查」，⛔ 不报 ✓）',
     exit: guardOk ? 0 : 1,
     want: 0,
-    line: r.notes.find((n) => n.includes('无对象可查')) ?? '（未打「无对象可查」—— 判据失效）',
+    line: noObjLine ?? '（未打「无对象可查」—— 判据失效）',
     pass: guardOk,
   })
 

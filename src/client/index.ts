@@ -59,7 +59,7 @@ import { ensurePanelStyles } from './panel-styles.ts'
 import { installHobUnselectedGate, notifySessionSelected } from './hob-unselected-gate.tsx'
 import {
   STAGES_TAB_ID, STAGES_PANEL_TITLE, STAGES_GUIDE_ENTRY_ID, STAGES_GUIDE_ORDER,
-  StagesPanel, StagesTabTitle, bindStagesTabType,
+  StagesPanel, StagesTabTitle, bindStagesTabType, StagesPanelLive, bindStagesGuideEntry,
 } from './project-panel.tsx'
 
 /** 包名：同时作为模块 id、槽位条目来源标识、settings namespace。 */
@@ -292,7 +292,7 @@ export function apply(ctx: any): void {
 
   /**
    * ══════════════════════════════════════════════════════════════════════
-   * **五步主线：右侧栏标签页 + 侧边栏「开始」页胶囊入口**（2026-10-29 · 第 9 轮搬入口）
+   * **阶段主线：右侧栏标签页 + 侧边栏「开始」页胶囊入口**（2026-10-29 · 第 9 轮搬入口）
    * ══════════════════════════════════════════════════════════════════════
    *
    * ── 为什么是这两个槽（**都读过宿主声明**，⛔ 不是猜的）──────────────
@@ -332,13 +332,22 @@ export function apply(ctx: any): void {
     //   ⇒ 路由 200 但面板显示「判不出」。keyed/session 槽的 inject 第一参就是它
     //   （宿主契约：`SidebarRightTabInjected`，`…/dsh-client-ui-sidebar-right/…/slots.d.ts:204-208`）。
     inject: (sessionId: string) => ({ sessionId }),
-  }, StagesPanel))
+  }, StagesPanelLive))
 
   // ②-b 标签页标题（keyed/session，同一 key）
   ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab.title',
     key: STAGES_TAB_ID,
   }, StagesTabTitle))
+
+  /**
+   * **侧边栏胶囊的预设门禁**（2026-11-07 · `R-020`）：
+   *   guide 的 `title()` 是同步函数、拿不到会话投影，所以不能只靠它返回空串。
+   *   这里用 `sidebar.right.tab.guide.entry` 的 keyed 槽覆盖同一 entry：
+   *   Hob ⇒ 正常胶囊；非 Hob / 判不出 ⇒ `null`，⛔ 不出现可点入口。
+   *   ⚠ `bindStagesGuideEntry` 只登记，不改 guide 数组本身。
+   */
+  ctx.effect(() => bindStagesGuideEntry(ctx), `${PACKAGE_NAME}: stages guide preset gate`)
 
   /**
    * ⛔ **不再注册 `sidebar.footer.action`**（2026-10-29 第 9 轮 · 用户裁定）

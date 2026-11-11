@@ -37,7 +37,7 @@ const legacyUnits = units.filter((u) => String(u.clarify_legacy ?? '').trim() ==
 const legacyNoStamp = legacyUnits.filter((u) => String(u.created_at ?? '').trim() === '')
 
 console.log('')
-console.log('SC 组：五阶段内部控制（需求澄清 / 方案路径 / 任务自包含 / 回流）')
+console.log('SC 组：阶段内部控制（需求澄清 / 方案路径 / 任务自包含 / 技术验证 / 产品验收 / 交付收口 / 回流）')
 console.log('')
 
 {
@@ -245,6 +245,37 @@ console.log('')
   else bad('SC-5 缺技术验证证据仍被放行')
   if (accNoExamples.some((p) => p.rule === 'C-7' && p.why.includes('example_results'))) ok('SC-5 ✓ 验收门禁：缺用户例子结果 ⇒ C-7 红')
   else bad('SC-5 缺用户例子结果仍被放行')
+  // ── SC-34 · S-03：`built_by` 缺失必须 **fail-closed**（⛔ 不是静默放行）──────
+  /**
+   * ⚠⚠ **它守什么**：改前写的是 `builder !== '' && acceptor === builder` ⇒
+   *   **父任务没有 `built_by` 时这条根本不检查**，于是「自己验自己」被静默放过。
+   *   缺失反而让检查更容易通过 = **fail-open**。
+   *
+   * ⚠ **为什么必须对齐 K-6**：`convergence.ts:380` 对同一语义是 fail-closed
+   *   （`built_by` 缺 ⇒ 直接报「没法判」）。同一语义、两个模块、两种方向 ⇒
+   *   **判定会随走哪条路而变** —— 那本身就是缺陷。
+   *
+   * ⚠ 判据：**父任务无 `built_by` + 验收者 = 实现者** ⇒ `acceptanceProblems` **必须非空**。
+   *   ⚠ 反证（正例）：父任务**有** `built_by` 且验收者不同 ⇒ 必须**空**（⛔ 否则判据恒红）。
+   */
+  {
+    const noBuiltBy = [{ id: 'TSK-SC', kind: 'task' }, accFixture]
+    const p1 = mod.acceptanceProblems({ ...accFixture, actor: 'session-x' }, noBuiltBy)
+    const hasBuiltBy = mod.acceptanceProblems(accFixture, accUnits)
+    const probs = []
+    if (!p1.some((x) => x.rule === 'C-7')) {
+      probs.push('父任务缺 built_by ⇒ 没有报 C-7（fail-open：缺失反而放行）')
+    } else if (!p1.some((x) => String(x.why).includes('built_by') || String(x.why).includes('没法判'))) {
+      probs.push(`报是报了，但没说清是「缺 built_by」：${JSON.stringify(p1.find((x) => x.rule === 'C-7')?.why)}`)
+    }
+    if (hasBuiltBy.length !== 0) {
+      probs.push(`正例（有 built_by + 验收者不同）**仍被阻塞** ${hasBuiltBy.length} 条 ⇒ 判据会恒红`)
+    }
+    if (probs.length === 0) {
+      ok('SC-34 ✓ 父任务缺 `built_by` ⇒ C-7 红且明说「没法判」（S-03：与 K-6 同为 fail-closed）'
+        + '；⚠ 反证：有 `built_by` 且验收者不同 ⇒ 放行')
+    } else for (const x of probs) bad(`SC-34 · ${x}`)
+  }
   if (sendBack.some((p) => p.rule === 'C-8')) ok('SC-5 ✓ 验收门禁：退回但无目标阶段 ⇒ C-8 红')
   else bad('SC-5 退回但无目标阶段没有触发 C-8')
   if (freeBack.some((p) => p.rule === 'C-8' && p.why.includes('封闭集'))) ok('SC-5 ✓ 验收门禁：退回目标用自由文本 ⇒ C-8 红')
@@ -253,13 +284,16 @@ console.log('')
 
 // ── SC-6：回流归因五类互斥 ─────────────────────────────────────────────
 {
-  const want = { requirement: 'requirements', plan: 'plan', task: 'tasks', implementation: 'execution', environment: null }
+  const want = {
+    requirement: 'requirements', plan: 'plan', task: 'tasks', implementation: 'execution',
+    verification: 'verification', acceptance: 'acceptance', closure: 'closure', environment: null,
+  }
   const got = Object.fromEntries(mod.BLOCK_CAUSES.map((c) => [c, mod.returnStageOf(c)]))
-  if (JSON.stringify(got) === JSON.stringify(want)) ok('SC-6 ✓ 回流归因：需求→1 / 方案→2 / 任务→3 / 实现→4 / 环境→单独记录')
+  if (JSON.stringify(got) === JSON.stringify(want)) ok('SC-6 ✓ 回流归因：需求 / 方案 / 任务 / 实现 / 验证 / 验收 / 收口各回本阶段，环境单独记录')
   else bad(`SC-6 回流归因不符：${JSON.stringify(got)}`)
   const onlyFive = mod.BLOCK_CAUSES.every((c) => mod.STAGE_IDS.includes(mod.BLOCK_CAUSE_TO_STAGE[c] ?? '') || mod.BLOCK_CAUSE_TO_STAGE[c] === null)
-  if (onlyFive) ok('SC-6 ✓ 回流目标只落在五阶段或环境单列档，没有第六阶段')
-  else bad('SC-6 回流目标出现了五阶段之外的值')
+  if (onlyFive) ok('SC-6 ✓ 回流目标只落在已登记阶段或环境单列档')
+  else bad('SC-6 回流目标出现了未登记阶段')
 }
 
 // ── SC-7：负向对拍（自证夹具真的坏）────────────────────────────────────
@@ -496,10 +530,15 @@ console.log('')
   } else {
     bad(`SC-13 真实账本被派单门禁拦下：${realDispatch.blocked}`)
   }
+  /**
+   * V2 is a clean cut: field completeness on a legacy task is not enough to
+   * dispatch it. Keep the scope-gate entry point covered while requiring the
+   * explicit legacy refusal at the Pipeline boundary.
+   */
   const taskGate = toolsMod.dispatchGateAtLedger(join(ledgerRoot, '..'), { taskId: 'TSK-076' })
-  if (taskGate.blocked === undefined) {
-    ok('SC-13 ✓ 真实账本 TSK-076 链干净 ⇒ 派单放行')
-  } else bad(`SC-13 TSK-076 链被拦：${taskGate.blocked}`)
+  if (taskGate.blocked !== undefined && String(taskGate.blocked).includes('旧管线条目只读')) {
+    ok('SC-13 ✓ 旧任务 TSK-076 即使字段完整也不能进入 v2 派单；拒绝原因明确')
+  } else bad(`SC-13 旧任务 TSK-076 没有在 v2 边界被明确拒绝：${taskGate.blocked}`)
   const presetSrc = readFileSync(join(root, 'src', 'preset', 'tools.ts'), 'utf8')
   if (presetSrc.includes('dispatchGateAt(root, {})')) {
     ok('SC-13 ✓ hob_send / hob_spawn 走作用域门禁（不是 stageGateOfLedger 全局）')
@@ -578,7 +617,7 @@ console.log('')
   const chgBase = {
     id: 'CHG-SC17', kind: 'change', status: 'settled',
     path_options: ['A', 'B'], path_tradeoffs: ['A 快', 'B 稳'], path_decision: '选 A',
-    requirement_coverage: ['R-1'], built_by: 'session-author',
+    requirement_coverage: ['R-1'], built_by: 'session-author', pipeline_version: 'v3', revision: '1',
   }
   const chgHighBad = mod.planProblems({ ...chgBase, risk_tier: 'high' })
   if (chgHighBad.some((p) => p.rule === 'C-15')) ok('SC-17 ✓ 高风险变更无独立评审 ⇒ C-15 红')
@@ -586,10 +625,18 @@ console.log('')
   const chgHighSelf = mod.planProblems({ ...chgBase, risk_tier: 'high', reviewer: 'session-author', review_refs: ['archive/x/REVIEW.md'] })
   if (chgHighSelf.some((p) => p.rule === 'C-15' && p.why.includes('作者本人'))) ok('SC-17 ✓ 高风险变更自己评审自己 ⇒ C-15 红')
   else bad('SC-17 高风险变更自评仍被放行')
-  const chgHighGood = mod.planProblems({ ...chgBase, risk_tier: 'high', reviewer: 'session-reviewer', review_refs: ['archive/x/REVIEW.md'] })
+  /**
+   * The positive control is about the C-15 review gate only. A complete v3
+   * risk assessment is exercised in the risk-policy family; here the fixture
+   * stays legacy so unrelated RP-3/RP-9 completeness checks cannot mask C-15.
+   */
+  const legacyChgBase = { ...chgBase }
+  delete legacyChgBase.pipeline_version
+  delete legacyChgBase.revision
+  const chgHighGood = mod.planProblems({ ...legacyChgBase, risk_tier: 'high', reviewer: 'session-reviewer', review_refs: ['archive/x/REVIEW.md'] })
   if (chgHighGood.length === 0) ok('N-SC17 ✓ 负向对拍：高风险 + 独立评审 + 评审记录 ⇒ 放行')
   else bad(`N-SC17 高风险带独立评审仍被阻塞：${chgHighGood.map((p) => p.rule).join('/')}`)
-  const chgBadTier = mod.planProblems({ ...chgBase, risk_tier: 'critical' })
+  const chgBadTier = mod.planProblems({ ...chgBase, risk_tier: 'urgent' })
   if (chgBadTier.some((p) => p.rule === 'C-15' && p.why.includes('封闭集'))) ok('SC-17 ✓ 风险等级不在封闭集 ⇒ C-15 红')
   else bad('SC-17 任意风险等级都被接受')
   const cmdEvidence = { id: 'EVD-SC17', kind: 'evidence', evidence_kind: 'command', reading: '42 tests pass' }
@@ -680,9 +727,15 @@ console.log('')
      */
     const implicit = toolsMod.dispatchGateAtLedger(realRoot, { taskId: 'implicit' })
     if (implicit.blocked !== undefined) p.push(`占位号 implicit 被误拦：${implicit.blocked}`)
-    const realTask = toolsMod.dispatchGateAtLedger(realRoot, { taskId: 'TSK-076' })
-    if (realTask.blocked !== undefined) p.push(`真实任务 TSK-076 被误拦：${realTask.blocked}`)
-    if (p.length === 0) ok('SC-23 ✓ 不存在的任务号 ⇒ hold（⛔ 不许 go）；占位号 implicit 与真实任务照常放行')
+    /**
+     * V2 is a clean cut: legacy tasks stay readable but are not dispatchable.
+     * The assertion therefore requires an explicit v2 refusal, not a free pass.
+     */
+    const legacyTask = toolsMod.dispatchGateAtLedger(realRoot, { taskId: 'TSK-076' })
+    if (legacyTask.blocked === undefined || !String(legacyTask.blocked).includes('旧管线条目只读')) {
+      p.push(`旧管线条目 TSK-076 没有被 v2 明确拒绝：${legacyTask.blocked}`)
+    }
+    if (p.length === 0) ok('SC-23 ✓ 不存在的任务号 ⇒ hold；implicit 不比真实任务更宽；旧任务只读且 v2 派发被拒')
     else for (const x of p) bad(`SC-23 · ${x}`)
   }
 }
@@ -734,9 +787,11 @@ console.log('')
       if (r.blocked === undefined) p.push(`拿 ${want} 号 ${id} 派活仍被放行（这就是"新任务没走阶段流程"）`)
       else if (!String(r.blocked).includes('不是 task')) p.push(`${id} 被拒了，但没说清"不是任务"：${String(r.blocked).slice(0, 60)}`)
     }
-    const realTask = toolsMod.dispatchGateAtLedger(realRoot, { taskId: 'TSK-080' })
-    if (realTask.blocked !== undefined) p.push(`真实任务 TSK-080 被误拦：${realTask.blocked}`)
-    if (p.length === 0) ok('SC-25 ✓ 派活只认 task：需求 / 方案 / 执行 / 验收号一律拒且说清原因；真实任务照常放行')
+    const legacyTask = toolsMod.dispatchGateAtLedger(realRoot, { taskId: 'TSK-080' })
+    if (legacyTask.blocked === undefined || !String(legacyTask.blocked).includes('旧管线条目只读')) {
+      p.push(`旧任务 TSK-080 没有被 v2 明确拒绝：${legacyTask.blocked}`)
+    }
+    if (p.length === 0) ok('SC-25 ✓ 派活只认 task；需求 / 方案 / 执行 / 验收号全拒；旧任务只读且不能进入 v2 派发')
     else for (const x of p) bad(`SC-25 · ${x}`)
   }
 
@@ -768,8 +823,357 @@ console.log('')
     if (p.length === 0) ok('SC-27 ✓ 孤立任务（父方案在账本里不存在）⇒ L-2 缺口且不放行')
     else for (const x of p) bad(`SC-27 · ${x}`)
   }
+
+  // ── SC-28：技术验证独立性与 strict 收口证据 ────────────────────────────
+  {
+    const p = []
+    const units = [
+      { id: 'TSK-V', kind: 'task', status: 'built', parent: 'CHG-V', built_by: 'session-builder', task_brief: 'x/T.md', counterexamples: ['e'], stop_conditions: ['s'], return_to: 'back-to-plan' },
+    ]
+    const baseVer = {
+      id: 'VER-SC', kind: 'verification', status: 'pass', parent: 'TSK-V', verifier: 'session-verifier',
+      verification_session: 'session-verifier', verified_at: '2026-11-08T00:00:00Z',
+      basis: ['EVD-1'], evidence_refs: ['EVD-1'], criteria_refs: ['AC-1'],
+    }
+    const good = mod.verificationProblems(baseVer, units)
+    const self = mod.verificationProblems({ ...baseVer, verifier: 'session-builder', verification_session: 'session-builder' }, units)
+    if (good.length !== 0) p.push(`合法技术验证被拒：${JSON.stringify(good)}`)
+    if (!self.some((x) => x.rule === 'C-25' && x.why.includes('实现者'))) p.push('技术验证者等于实现者却未红')
+    const closure = {
+      id: 'CLS-SC', kind: 'closure', status: 'closed', parent: 'R-V', closure_mode: 'strict',
+      basis: ['EVD-1'], release_refs: ['build EVD-2', 'smoke ok', 'post-release check ok'], rollback_refs: ['EVD-3'], monitoring_refs: ['EVD-4'], accepted_by: 'user',
+      chain_acceptance_ref: 'ACC-1', risk_assessment_ref: 'RSK-ASSESS-1', residual_risk_decision_ref: 'DEC-RISK-1',
+      approval_ref: 'DEC-RELEASE-1',
+    }
+    /**
+     * ⚠⚠ **S-05：三个绑定引用必须有真实目标单元。**
+     *   改前这里只有 `{ ...closure }` 与 `{ id: 'R-V', kind: 'req' }` ——
+     *   `ACC-1` / `RSK-ASSESS-1` / `DEC-RISK-1` **一个都不在**，
+     *   而当时 C-29 只查非空 ⇒ 照样通过 ⇒ **这条断言从未真正验过引用**。
+     *   ⇒ 现在补上三个真实单元；缺它们 SC-28 会当场红（已实测）。
+     */
+    const closureTargets = [
+      { ...closure },
+      { id: 'R-V', kind: 'req' },
+      { id: 'ACC-1', kind: 'acc', status: 'pass' },
+      { id: 'RSK-ASSESS-1', kind: 'risk', status: 'open' },
+      { id: 'DEC-RISK-1', kind: 'decision', status: 'active' },
+    ]
+    const goodClosure = mod.closureProblems(closure, closureTargets)
+    const noRollback = mod.closureProblems({ ...closure, rollback_refs: [] }, closureTargets)
+    const standard = { ...closure, closure_mode: 'standard', monitoring_refs: [], approval_ref: '',
+      release_refs: ['build ok', 'smoke ok', 'post-release check ok'] }
+    const standardTargets = [{ ...standard }, ...closureTargets.slice(1)]
+    const goodStandard = mod.closureProblems(standard, standardTargets)
+    const noSmoke = mod.closureProblems({ ...standard, release_refs: ['build ok'] }, standardTargets)
+    if (goodClosure.length !== 0) p.push(`合法 strict 收口被拒：${JSON.stringify(goodClosure)}`)
+    if (goodStandard.length !== 0) p.push(`合法 standard 收口被拒：${JSON.stringify(goodStandard)}`)
+    if (!noSmoke.some((x) => x.rule === 'C-27' && x.why.includes('冒烟'))) p.push('standard 缺冒烟证据未红')
+    if (!noRollback.some((x) => x.rule === 'C-28' && x.why.includes('回滚'))) p.push('strict 收口缺回滚证据却未红')
+    const noApproval = mod.closureProblems({ ...closure, approval_ref: '' }, closureTargets)
+    if (!noApproval.some((x) => x.why.includes('发布审批'))) p.push('strict 收口缺独立发布审批未红')
+    if (p.length === 0) ok('SC-28 ✓ 负向对拍：技术验证者不能是实现者；standard / strict 缺构建、冒烟、回滚、监控或发布审批不得通过')
+    else for (const x of p) bad(`SC-28 · ${x}`)
+  }
+
+  // ── SC-29：任务级执行风险与并行写范围 ────────────────────────────────
+  {
+    const p = []
+    const risk = await import(pathToFileURL(join(root, 'src', 'shared', 'risk-policy.ts')).href)
+    const base = { id: 'TSK-RISK', kind: 'task', status: 'todo', title: '风险任务', parent: 'CHG-RISK',
+      pipeline_version: 'v3', revision: '1',
+      task_brief: 'archive/x/TASK.md', counterexamples: ['c'], stop_conditions: ['s'], return_to: 'back-to-plan' }
+    const missing = mod.taskProblems(base)
+    const high = mod.taskFullProblems({ ...base, task_risk: 'high', risk_reasons: ['跨权限边界'], touched_surfaces: ['src/auth'],
+      requires_isolation: 'false', requires_serial_execution: 'false', reviewer: 'reviewer-A', review_refs: [] })
+    const good = mod.taskFullProblems({ ...base, task_risk: 'high', risk_reasons: ['跨权限边界'], touched_surfaces: ['src/auth'],
+      requires_isolation: 'true', requires_review: 'true', requires_serial_execution: 'true',
+      reviewer: 'reviewer-A', review_refs: ['archive/review.md'], irreversible_actions: [], rollback_refs: [] })
+    if (missing.some((x) => x.rule === 'RP-4')) p.push('缺 task_risk 没有触发 RP-4')
+    if (high.length === 0) p.push('high 任务缺隔离 / 串行 / 独立复核却放行')
+    if (good.length !== 0) p.push(`任务控制齐全仍被拒：${JSON.stringify(good)}`)
+    const overlapping = [
+      { ...base, id: 'TSK-A', scope_paths: ['src/auth'] },
+      { ...base, id: 'TSK-B', scope_paths: ['src/auth/session.ts'] },
+    ]
+    const graph = mod.taskGraphRiskProblems(overlapping)
+    if (!graph.some((x) => x.rule === 'RP-5')) p.push('同路径并行任务没有报 RP-5')
+    const serial = mod.taskGraphRiskProblems([
+      { ...overlapping[0], depends_on: ['TSK-B'] },
+      overlapping[1],
+    ])
+    if (serial.some((x) => x.rule === 'RP-5')) p.push('已声明串行的同路径任务仍被报冲突')
+    if (p.length === 0) ok('SC-29 ✓ 负向对拍：任务缺 risk / high 缺独立复核证据 ⇒ 红；同路径未串行 ⇒ RP-5；串行后放行')
+    else for (const x of p) bad(`SC-29 · ${x}`)
+    void risk
+  }
+
+  // ── SC-30：任务作用域必须带上批准事实，且风险摘要按全链重算 ─────────────
+  {
+    const p = []
+    const pipeline = await import(pathToFileURL(join(root, 'src', 'shared', 'pipeline.ts')).href)
+    const riskPolicy = await import(pathToFileURL(join(root, 'src', 'shared', 'risk-policy.ts')).href)
+    const at = '2026-11-10T00:00:00Z'
+    const req = {
+      id: 'R-SC30', kind: 'req', status: 'agreed', title: '保存后显示成功提示', pipeline_version: 'v3', revision: '1',
+      clarify_examples: ['点击保存出现成功提示'], acceptance_criteria: ['点击保存出现成功提示'],
+      clarify_questions: [], clarify_assumptions: ['confirmed: 复用现有提示组件'],
+    }
+    const plan = {
+      id: 'CHG-SC30', kind: 'change', status: 'settled', title: '复用现有提示组件', pipeline_version: 'v3', revision: '1',
+      parent: 'R-SC30', req_ids: ['R-SC30'], addresses: ['R-SC30'], proposal: '复用现有提示组件',
+      path_options: ['A'], path_tradeoffs: ['A 改动最小'], path_decision: '选 A', requirement_coverage: ['R-SC30 → 提示组件'],
+      risk_tier: 'low', risk_rule_version: 'v1', risk_hard_triggers: [],
+      risk_dimensions: ['scope=local', 'severity=minor', 'reversibility=easy', 'detectability=automatic', 'uncertainty=known', 'changeSurface=few-files', 'dependencies=internal-deps', 'verificationMaturity=proven', 'recoveryTime=minutes', 'exposure=internal'],
+      risk_assessed_at: at, risk_assessed_by: 'Hob', delivery_scope: 'none', risk_assessment_ref: 'CHG-SC30#1', risk_binding_version: 'v1',
+    }
+    plan.risk_inputs_digest = riskPolicy.riskAssessmentOf(riskPolicy.riskFactsOf(plan)).inputsDigest
+    plan.risk_binding_digest = pipeline.riskBindingDigestOf(plan, [req])
+    const task = {
+      id: 'TSK-SC30', kind: 'task', status: 'todo', title: '实现保存成功提示', pipeline_version: 'v3', revision: '1',
+      parent: 'CHG-SC30', task_brief: 'archive/x/TASK.md', counterexamples: ['重复点击不叠加'], stop_conditions: ['现有组件无法承载时停手'],
+      return_to: 'back-to-plan', task_risk: 'low', risk_reasons: [], requires_isolation: 'false', requires_review: 'false',
+      requires_serial_execution: 'false', touched_surfaces: [], irreversible_actions: [],
+    }
+    const decision = (artifact, extra = {}) => ({
+      id: `DEC-${artifact.id}`, kind: 'decision', status: 'active', title: `用户批准 ${artifact.id}`,
+      decision_kind: 'stage-approval', approval_stage: artifact.kind === 'req' ? 'requirements' : 'plan',
+      artifact_id: artifact.id, artifact_revision: '1', artifact_digest: pipeline.artifactDigestOf(artifact),
+      decision: 'approve', selected_option: artifact.kind === 'change' ? 'A' : '', decided_by: 'user', decided_at: at,
+      source: `确认${artifact.kind === 'req' ? '需求' : '方案'} ${artifact.id} 第 1 版`, ...extra,
+    })
+    const rDec = decision(req)
+    const pDec = decision(plan)
+    const full = [req, plan, task, rDec, pDec]
+    const scope = mod.gateScopeUnits(full, { kind: 'task', id: 'TSK-SC30' }).map((u) => u.id)
+    if (!scope.includes(rDec.id) || !scope.includes(pDec.id)) p.push(`任务作用域漏掉批准单元：${JSON.stringify(scope)}`)
+    if (scope.some((id) => id === 'DEC-UNRELATED')) p.push('任务作用域带入了无关批准')
+    const good = mod.evaluateGate({ action: 'dispatch', scope: { kind: 'task', id: 'TSK-SC30' }, units: full })
+    if (good.decision !== 'go') p.push(`完整 v3 链仍被拒：${good.blockers.map((x) => `${x.rule}·${x.unit}·${x.why}`).join('；')}`)
+    const noReqApproval = mod.evaluateGate({
+      action: 'dispatch', scope: { kind: 'task', id: 'TSK-SC30' }, units: [req, plan, task, pDec],
+    })
+    if (!noReqApproval.blockers.some((x) => x.rule === 'C-18' && x.unit === 'R-SC30')) p.push('缺需求批准仍被放行')
+    const noPlanApproval = mod.evaluateGate({
+      action: 'dispatch', scope: { kind: 'task', id: 'TSK-SC30' }, units: [req, plan, task, rDec],
+    })
+    if (!noPlanApproval.blockers.some((x) => x.rule === 'C-19' && x.unit === 'CHG-SC30')) p.push('缺方案批准仍被放行')
+    const changedReq = { ...req, acceptance_criteria: ['点击保存后成功提示必须保留 3 秒'] }
+    const stale = mod.evaluateGate({
+      action: 'dispatch', scope: { kind: 'task', id: 'TSK-SC30' }, units: [changedReq, plan, task, rDec, pDec],
+    })
+    if (!stale.blockers.some((x) => x.unit === 'R-SC30')) p.push('批准后改需求内容仍被放行')
+    if (!stale.blockers.some((x) => x.rule === 'RP-3' && x.unit === 'CHG-SC30')) p.push('验收对象变化后旧风险评定仍被当成有效')
+    if (p.length === 0) {
+      ok('SC-30 ✓ 任务作用域带入 R/CHG 的批准事实；完整 v3 链放行；缺任一批准 / 批准后改需求内容 ⇒ 仍被拦')
+    } else for (const x of p) bad(`SC-30 · ${x}`)
+  }
 }
 
+// ── SC-31：S-04 —— 作用域根不存在必须 hold，⛔ 不是 go ──────────────────────
+//
+//  ⚠ 这条钉的是 **fail-open 的纯函数**：
+//    `evaluateGate` 对"账本里没有这个 id"的作用域，改前走的是
+//    「gateScopeUnits 找不到 root ⇒ 空集 ⇒ stageControlProblems([]) = [] ⇒ blockers=[] ⇒ go」。
+//    ⚠ 当时**已被调用方补掉**（`tools.ts` 先做存在性核对），所以不构成可利用漏洞；
+//      但任何**新调用方**会直接踩中，而且踩中时看到的是「通过」，不会去怀疑参数写错。
+{
+  const p = []
+  const sc = mod
+
+  /** ① 不存在的 id ⇒ 必须 hold（改前是 go）。 */
+  const ghost = sc.evaluateGate({ action: 'dispatch', scope: { kind: 'task', id: 'TSK-NOT-EXIST' }, units: [] })
+  if (ghost.decision !== 'hold') p.push('不存在的作用域根 ⇒ 判成 ' + ghost.decision + '（应为 hold）')
+  if (!ghost.blockers.some((b) => b.rule === 'S-04')) p.push('hold 时没有点名 S-04 规则')
+
+  /** ② ⚠ 占位号 implicit 必须**豁免** —— 它是编排器的占位，不是真实 TSK。 */
+  const implicit = sc.evaluateGate({ action: 'dispatch', scope: { kind: 'task', id: 'implicit' }, units: [] })
+  if (implicit.decision === 'hold' && implicit.blockers.some((b) => b.rule === 'S-04')) {
+    p.push('占位号 implicit 被 S-04 拦下 ⇒ 会把所有"没写 task 的老计划"一起判死（真机踩过）')
+  }
+
+  /** ③ 反向对照：根**存在**时不许被 S-04 误拦（证明不是恒 hold）。 */
+  const real = { id: 'TSK-SC31', kind: 'task', status: 'todo', pipeline_version: 'v3', revision: '1' }
+  const hit = sc.evaluateGate({ action: 'dispatch', scope: { kind: 'task', id: 'TSK-SC31' }, units: [real] })
+  if (hit.blockers.some((b) => b.rule === 'S-04')) p.push('真实存在的根被 S-04 误拦 ⇒ 判据恒 hold')
+
+  if (p.length === 0) {
+    ok('SC-31 ✓ **负向对拍**：作用域根不存在 ⇒ hold（S-04 点名）；占位号 implicit 豁免；真实根不误拦'
+      + '（S-04：fail-open 的纯函数不再对新调用方静默放行）')
+  } else for (const x of p) bad('SC-31 · ' + x)
+}
+
+// ── SC-32：S-05 —— C-29 的三个绑定引用必须**解析到真实单元** ──────────────
+//
+//  ⚠ 这条钉的是「填一个 id 不等于绑定了事实」：
+//    改前 C-29 只判 `txt(ref) === ''` ⇒ 填 `ACC-NOT-EXIST` 也能通过
+//    ⇒ 上面那条注释「G6 may not silently rewrite G5」退化成「三个字符串非空」。
+//  ⚠ 与 `convergence.ts` 的 K-2/K-3/K-5（悬空引用即红）口径不一致 —— 本条把两边拉齐。
+{
+  const p = []
+  const closure = {
+    id: 'CLS-SC32', kind: 'closure', status: 'closed', parent: 'R-SC32', closure_mode: 'standard',
+    basis: ['EVD-1'], release_refs: ['build ok', 'smoke ok', 'post-release check ok'],
+    chain_acceptance_ref: 'ACC-SC32', risk_assessment_ref: 'RSK-SC32', residual_risk_decision_ref: 'DEC-SC32',
+  }
+  const targets = [
+    { id: 'R-SC32', kind: 'req' },
+    { id: 'ACC-SC32', kind: 'acc', status: 'pass' },
+    { id: 'RSK-SC32', kind: 'risk', status: 'open' },
+    { id: 'DEC-SC32', kind: 'decision', status: 'active' },
+  ]
+  /** ① 三个引用都指向真实且 kind 正确的单元 ⇒ 不许报 C-29。 */
+  const okAll = mod.closureProblems(closure, [...targets, { ...closure }])
+  if (okAll.some((x) => x.rule === 'C-29')) {
+    p.push('引用全部合法却仍报 C-29：' + JSON.stringify(okAll.filter((x) => x.rule === 'C-29')))
+  }
+  /** ② 悬空引用 ⇒ 必须红（改前是绿的）。 */
+  for (const [field, ghost] of [
+    ['chain_acceptance_ref', 'ACC-NOT-EXIST'],
+    ['risk_assessment_ref', 'RSK-NOT-EXIST'],
+    ['residual_risk_decision_ref', 'DEC-NOT-EXIST'],
+  ]) {
+    const r = mod.closureProblems({ ...closure, [field]: ghost }, [...targets, { ...closure }])
+    if (!r.some((x) => x.rule === 'C-29' && x.why.includes('不存在'))) {
+      p.push(field + ' 指向不存在的 ' + ghost + ' 却未红 ⇒ 填个 id 就能过 C-29')
+    }
+  }
+  /** ③ kind 不对 ⇒ 也必须红（指向一个 task 证明不了 G5 已接受）。 */
+  const wrongKind = mod.closureProblems(closure, [
+    ...targets.filter((x) => x.id !== 'ACC-SC32'),
+    { id: 'ACC-SC32', kind: 'task' },
+    { ...closure },
+  ])
+  if (!wrongKind.some((x) => x.rule === 'C-29' && x.why.includes('kind'))) {
+    p.push('chain_acceptance_ref 指向 task 却未红 ⇒ 只查存在、不查 kind')
+  }
+  if (p.length === 0) {
+    ok('SC-32 ✓ **负向对拍**：C-29 三个绑定引用悬空 ⇒ 红；kind 不对 ⇒ 红；全部合法 ⇒ 不误报'
+      + '（S-05：填一个 id 不等于绑定了事实）')
+  } else for (const x of p) bad('SC-32 · ' + x)
+}
+
+// ── SC-33：O-01 —— `write-repair` 不过门禁，但必须**显式说出来** ─────────────
+//
+//  ⚠ 改前它直接 `return { decision: 'go', blockers: [] }` —— **不计算任何问题**就报「可以」。
+//    调用方看到 `go` 会以为「过了门禁」，而实际是「**根本没判**」。
+//  ⇒ 行为保持放行（修复写必须能在账本不健康时进行），但返回里带 `bypass: 'repair'`。
+{
+  const p = []
+  const r = mod.evaluateGate({ action: 'write-repair', scope: { kind: 'task', id: 'TSK-NOPE' }, units: [] })
+  /** ① 仍必须放行（⛔ 改成 hold 会把修复通道一起堵死）。 */
+  if (r.decision !== 'go') p.push(`write-repair 判成 ${r.decision} ⇒ 修复通道被堵死`)
+  /** ② 但必须带显式标记，让「未判」可见。 */
+  if (r.bypass !== 'repair') p.push('write-repair 没有带 `bypass: \'repair\'` ⇒ 「没判」与「判过」在返回值上长得一样')
+  /** ③ 反向：其它动作**不许**带这个标记（⛔ 不是所有 go 都算未判）。 */
+  const real = { id: 'TSK-SC33', kind: 'task', status: 'todo', pipeline_version: 'v3', revision: '1' }
+  const normal = mod.evaluateGate({ action: 'dispatch', scope: { kind: 'task', id: 'TSK-SC33' }, units: [real] })
+  if (normal.bypass !== undefined) p.push('普通 dispatch 也带了 bypass 标记 ⇒ 标记失去区分力')
+  if (p.length === 0) {
+    ok('SC-33 ✓ **负向对拍**：`write-repair` 放行但带 `bypass:\'repair\'`（「未判」可见）；'
+      + '普通 dispatch 不带（⛔ 标记不是所有 go 都有）—— O-01')
+  } else for (const x of p) bad(`SC-33 · ${x}`)
+}
+// ══════════════════════════════════════════════════════════════════════
+// SC-35 · R-17：`gateProblemsAt('tasks')` 与 `stageFieldProblems` 必须**同一判据**
+// ══════════════════════════════════════════════════════════════════════
+/**
+ * ⚠⚠ 守什么：同一份账本，走两条路**不能得到不同结论**。
+ *
+ *   改前：`gateProblemsAt('tasks')` 用 `taskProblems`（弱），
+ *        而 `stageFieldProblems`（`:1064`）用 `taskFullProblems`（含风险）。
+ *   ⇒ 一条带「风险未评定」的任务：
+ *      · 走 `stageFieldProblems` ⇒ **红**；
+ *      · 走 `gateProblemsAt('tasks')` ⇒ **绿**。
+ *
+ * ⚠ 判据：造一条 `taskRiskProblems` 会命中的任务，两处**都必须**报出它。
+ *   ⚠ 反证：造一条两处都该放行的任务 ⇒ 两处都**空**（⛔ 防「恒红也算过」）。
+ */
+{
+  /** ① 造一条「任务本体齐全、但风险未评定」的任务 —— 只有 `taskFullProblems` 会抓。 */
+  /** ⚠ 任务本体**必须齐全**（C-5 那四项），否则夹具本身就是红的、测不到风险那一条。 */
+  const taskOk = {
+    id: 'TSK-SC35', kind: 'task', status: 'todo', pipeline_version: 'v3', revision: '1',
+    task_brief: 'archive/x/TASK.md', counterexamples: ['空输入不崩溃'],
+    stop_conditions: ['与方案冲突即停'], return_to: 'back-to-plan',
+  }
+  /** ⚠ 刻意给高风险档但**不填**风险评定字段 ⇒ `taskRiskProblems` 必命中。 */
+  const risky = { ...taskOk, risk_tier: 'high' }
+  const gateP = mod.gateProblemsAt('tasks', [risky])
+  const fieldP = mod.stageFieldProblems([risky])
+  const p = []
+  const gateHasRisk = gateP.some((x) => String(x.rule).startsWith('RP-') || /风险/.test(String(x.why)))
+  const fieldHasRisk = fieldP.some((x) => String(x.rule).startsWith('RP-') || /风险/.test(String(x.why)))
+  if (!fieldHasRisk) p.push('夹具不成立：`stageFieldProblems` 都没报风险 ⇒ 这条断言测不到东西')
+  else if (!gateHasRisk) {
+    p.push('`gateProblemsAt(\'tasks\')` **没有**报出风险缺口 ⇒ 与 `stageFieldProblems` 结论不一致（R-17 复发）')
+  }
+  /** ② 反证：干净任务 ⇒ 两处都空。 */
+  /** ⚠ 干净任务必须**带 `task_risk`** —— 否则 `taskFullProblems` 会报 RP-4（v3 任务缺 task_risk）。 */
+  const clean = { ...taskOk, id: 'TSK-SC35b', task_risk: 'low' }
+  const gateClean = mod.gateProblemsAt('tasks', [clean])
+  const fieldClean = mod.stageFieldProblems([clean])
+  if (gateClean.length !== 0) p.push(`干净任务在 gateProblemsAt 里仍有 ${gateClean.length} 条：${JSON.stringify(gateClean)} ⇒ 判据恒红，没有区分力`)
+  if (fieldClean.length !== 0) p.push(`干净任务在 stageFieldProblems 里仍有 ${fieldClean.length} 条 ⇒ 夹具不干净`)
+  if (p.length === 0) {
+    ok('SC-35 ✓ `gateProblemsAt(\'tasks\')` 与 `stageFieldProblems` **同一判据**：风险缺口两处都报、干净任务两处都空（R-17：⛔ 不许一个弱一个强）')
+  } else for (const x of p) bad(`SC-35 · ${x}`)
+}
+// ══════════════════════════════════════════════════════════════════════
+// SC-36 · R-17（后半）：`STAGE_COMPLETION` 的 `judgedBy` 必须指向**真存在的**规则
+// ══════════════════════════════════════════════════════════════════════
+/**
+ * ⚠⚠ 守什么：`STAGE_COMPLETION` 是本仓唯一一份「每阶段完成口径」的**自描述**，
+ *   每个阶段写着 `judgedBy: 'R.status=agreed + C-1/C-2 + G1 stage-approval'`。
+ *
+ *   改前它**零调用**（REVIEW 的 R-17 前半）—— 一份没人读的自描述，
+ *   写着什么都不重要，于是必然漂。
+ *
+ *   ⇒ 本轮**不删它**（那是把口径文档一起删掉），改成**让机检读它**：
+ *     ① 每个 StageId 都必须有条目（⛔ 不许漏一个阶段）；
+ *     ② `judgedBy` 里点到的每个 `C-NN` / `RP-N` 规则号，
+ *        必须**真的**在该模块的产出里出现过（⛔ 不许写一个不存在的规则）。
+ *   ⚠ 这样它从「零调用的文档」变成「**被判据钉住的口径表**」。
+ */
+{
+  const p = []
+  const STAGES = ['requirements', 'plan', 'tasks', 'execution', 'verification', 'acceptance', 'closure']
+  const missing = STAGES.filter((s2) => mod.STAGE_COMPLETION[s2] === undefined)
+  if (missing.length > 0) p.push(`STAGE_COMPLETION 缺阶段：${missing.join(', ')}`)
+  /**
+   * ② 收集本模块**实际会产出**的规则号（扫源码里的 `rule: 'X-NN'` 字面量）。
+   *   ⚠ 用源码文本而不是运行时：有些规则只有特定夹具才触发。
+   */
+  const { readFileSync: rf } = await import('node:fs')
+  const { join: pj } = await import('node:path')
+  const { fileURLToPath: f2u } = await import('node:url')
+  const here2 = pj(f2u(import.meta.url), '..')
+  const srcText = rf(pj(here2, '..', 'src', 'shared', 'stage-controls.ts'), 'utf8')
+  const realRules = new Set()
+  for (const m of srcText.matchAll(/rule: '([A-Z]+-\d+)'/g)) realRules.add(m[1])
+  for (const m of srcText.matchAll(/'(C-\d+)'/g)) realRules.add(m[1])
+  /** ⚠ 也收其它模块里出现过的（有些规则在 pipeline-view / convergence 里判）。 */
+  const extraText = rf(pj(here2, '..', 'src', 'shared', 'pipeline-view.ts'), 'utf8')
+  for (const m of extraText.matchAll(/rule: '([A-Z]+-\d+)'/g)) realRules.add(m[1])
+  if (realRules.size === 0) p.push('扫不到任何规则号 ⇒ 本条失去基准（⛔ 不按通过处理）')
+  else {
+    let checked = 0
+    for (const st of STAGES) {
+      const jb = mod.STAGE_COMPLETION[st]?.judgedBy
+      if (typeof jb !== 'string') continue
+      for (const m of jb.matchAll(/\b([A-Z]+-\d+)\b/g)) {
+        checked += 1
+        if (!realRules.has(m[1])) {
+          p.push(`${st}.judgedBy 点到的规则 \`${m[1]}\` **在代码里不存在** ⇒ 自描述已经漂了`)
+        }
+      }
+    }
+    if (checked === 0) p.push('`judgedBy` 里一个规则号都没点到 ⇒ 自描述没有可核内容')
+    if (p.length === 0) {
+      ok(`SC-36 ✓ \`STAGE_COMPLETION\` 七个阶段齐全，且 \`judgedBy\` 点到的 **${checked}** 个规则号**全部真实存在**（R-17：⛔ 不许写一个不存在的规则）`)
+    } else for (const x of p) bad(`SC-36 · ${x}`)
+  }
+}
 console.log('')
 console.log(`SC 组：通过 ${pass} · 失败 ${fail}`)
 console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 0 处**`)

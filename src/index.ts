@@ -31,16 +31,20 @@ import { installCreateChannel } from './modules/session-create-channel.ts'
 //   ⚠ 它自己用反应式 `ctx.inject(['connection'])`：缺 ⇒ 不登记、不报错。
 //   ⛔ 只读：不建会话、不写策略、不改任何状态。
 import { installPolicyRoute } from './modules/session-policy-route.ts'
-// ⚠ 2026-10-29（第 6 轮 · 四步主线数据接线 → 同日晚裁定改为五步）：**另一条只读路由** —— 五步进度表。
+// ⚠ 2026-10-29（第 6 轮 · 旧四步主线数据接线 → 同日晚裁定改为旧五步）：**另一条只读兼容路由** —— 旧进度表。
 //   与上面那条**同族同形态**（`connection.fetch.register` + `ctx.inject(['connection'])` + 真 `Response`），
 //   ⛔ 零写操作；账本根复用 `resolveLedgerRoot` + `declaredLedgerHome`（⛔ 不新开解析路径）。
 import { installTasksProgressRoute } from './modules/tasks-progress-route.ts'
 import { installExecProgressRoute } from './modules/exec-progress-route.ts'
 import { installStagesRoute } from './modules/stages-route.ts'
+import { installLedgersRoute } from './modules/ledgers-route.ts'
+import { installRequirementChainsRoute } from './modules/requirement-chains-route.ts'
 import { installLedgerResourceRoute } from './modules/ledger-resource-route.ts'
 // 工作计划（WorkPlan）只读出口：面板显示计划、轨道、执行者与等待关系（⛔ 零写、零派单）。
 import { installWorkPlansRoute } from './modules/work-plans-route.ts'
 import { installUnseenToolsRoute } from './modules/unseen-tools-route.ts'
+import { installLiveRoute } from './modules/live-route.ts'
+import { LiveHub } from './server/live-hub.ts'
 
 export { Config }
 
@@ -199,7 +203,7 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
   //   ⚠ 与创建通道**分开两条路由**：本单禁改那个文件（见 import 处的说明）。
   installPolicyRoute(ctx)
 
-  // ⚠ 2026-10-29（第 6 轮）：五步进度**只读路由**。
+  // ⚠ 2026-10-29（第 6 轮）：旧进度表**只读兼容路由**。
   //   与本文件其它路由**无顺序依赖**（它只读文件，不碰任何服务），
   //   但放在同族旁边便于"路由都在这几条"一眼看到。
   //   ⚠ 它自己 `ctx.inject(['connection'])`：宿主 `connection` 缺席 ⇒ 不登记、不报错。
@@ -211,10 +215,21 @@ export async function apply(ctx: Context, config: ConfigShape): Promise<void> {
   //   ⚠ 同样自己 `ctx.inject(['connection'])`：宿主 `connection` 缺席 ⇒ 不登记、不报错。
   installExecProgressRoute(ctx)
 
-  // ⚠ 2026-10-30（P3）：五步汇总**只读路由**（面板新数据源 = `ledger/units/` 索引分片）。
+  // ⚠ 2026-10-30（P3）：阶段清单**只读路由**（面板新数据源 = `ledger/units/` 索引分片）。
   installStagesRoute(ctx)
+  installLedgersRoute(ctx)
+  installRequirementChainsRoute(ctx)
   installLedgerResourceRoute(ctx)
   installWorkPlansRoute(ctx)
+
+  /**
+   * Progress panel invalidation stream. It is a process-lifetime hub, so the
+   * teardown closes every stream and timer with the plugin itself. The route
+   * still registers reactively because `connection` may arrive later.
+   */
+  const liveHub = new LiveHub()
+  ctx.effect(() => () => { liveHub.dispose() }, 'dsh-hob: live hub')
+  installLiveRoute(ctx, liveHub)
 
   // ⚠ 2026-10-31（P28 · `TSK-048` / `R-008`）：**「待确认工具」只读路由**。
   //   病：没见过的工具只进内存 + 宿主 warn，`debugLog` 默认关 ⇒ **重启即丢、用户永远看不到**。

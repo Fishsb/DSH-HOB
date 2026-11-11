@@ -981,6 +981,30 @@ function balancedBlock(src, startIndex) {
         if (offenders.length > 0) {
           bad(`J-6 · 词典的用户可见字符串含 **markdown 标记**（会被字面渲染成字符）：${offenders.join(' ; ')}`)
         } else ok('J-6 ✓ 词典用户可见字符串零 markdown 标记（`**` / 反引号 / `__`）')
+
+        // ── J-7（2026-11-06）：**Hob 的角色定位必须是“项目总代理”** ──────────
+        //   只改 README / 术语而不改设置页，用户在选择器旁看到的仍是旧定位；
+        //   `PANEL_EN` 与 `PANEL_ZH` 各钉一次，避免只改其中一种语言。
+        const enBlock = new RegExp(`const\\s+PANEL_EN\\s*:\\s*Record<string,\\s*string>\\s*=\\s*\\{([\\s\\S]*?)\\n\\}`).exec(panelRawJ)?.[1] ?? ''
+        const zhBlock = new RegExp(`const\\s+PANEL_ZH\\s*:\\s*Record<string,\\s*string>\\s*=\\s*\\{([\\s\\S]*?)\\n\\}`).exec(panelRawJ)?.[1] ?? ''
+        const rolePins = [
+          ['PANEL_EN 标题 = project agent', enBlock, "sectionTitle: 'Hob project agent'"],
+          ['PANEL_EN 说明 = project agent preset', enBlock, 'Hob is the project agent preset'],
+          ['PANEL_ZH 标题 = 项目总代理', zhBlock, "sectionTitle: 'Hob 项目总代理'"],
+          ['PANEL_ZH 说明 = 项目总代理预设', zhBlock, '「Hob」是项目总代理预设'],
+        ]
+        const roleMiss = rolePins.filter(([, block, s]) => !block.includes(s))
+        const roleStale = [
+          ['PANEL_EN 旧标题 project owner', enBlock, 'Hob project owner'],
+          ['PANEL_EN 旧说明 project owner preset', enBlock, 'project owner preset'],
+          ['PANEL_ZH 旧标题 项目总负责人', zhBlock, 'Hob 项目总负责人'],
+          ['PANEL_ZH 旧说明 项目总负责人预设', zhBlock, '项目总负责人预设'],
+        ].filter(([, block, s]) => block.includes(s))
+        if (roleMiss.length > 0) {
+          bad(`J-7 · 设置页角色定位未跟上“项目总代理”（${roleMiss.map(([l]) => l).join(' / ')}）`)
+        } else if (roleStale.length > 0) {
+          bad(`J-7 · 设置页仍残留旧“项目总负责人”定位（${roleStale.map(([l]) => l).join(' / ')}）`)
+        } else ok('J-7 ✓ 设置页中英文两套文案均为“项目总代理”，旧定位零残留')
       }
     }
   }
@@ -1171,6 +1195,202 @@ function balancedBlock(src, startIndex) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// J-21 · O-21（REVIEW D-14 裁定 B）：**契约措辞必须与面板现状一致**
+// ══════════════════════════════════════════════════════════════════════════
+/**
+ * ── 它守什么 ────────────────────────────────────────────────────────
+ *   `i18n.ts` 的 `t()` 契约原写「**所有**面向用户的文案都经它」—— 那是**假的**：
+ *   `project-panel.tsx` 一处都没调（实测 `t(` = 0）。
+ *   ⚠ 害处不是「少翻译了」，是**让每一次「i18n 已覆盖」的复核都被这一条推翻**：
+ *     读契约的人会以为面板已接入，于是不会去查它。
+ *
+ * ── 裁定 B（主控拍板 · `§7.4 D-14`）────────────────────────────────
+ *   > **B 先落地、A 另开单**：当前的问题不是「没翻译」而是「文档说全都走 t()、
+ *   > 实际最大一屏零接入」—— 先把契约说准。
+ *
+ * ── 判据（**两个方向**，⛔ 只测一边会退化成「恒绿」）───────────────
+ *   ① 契约里**必须**有「仅中文 / 未接入」这句如实声明；
+ *   ② 契约里**必须不**再出现「所有面向用户的文案都经它」这种假承诺；
+ *   ③ ⚠ 事实核对：`project-panel.tsx` 的 `t(` 计数**必须**与契约声明一致 ——
+ *      现在契约说「零接入」⇒ 实测必须真的是 0；
+ *      哪天有人开始迁移，本条**会红**，提醒同步改措辞（⛔ 不许只改代码不改契约）。
+ */
+{
+  const { readFileSync: rf } = await import('node:fs')
+  const { join: pj } = await import('node:path')
+  const i18nSrc = rf(pj(root, 'src', 'client', 'i18n.ts'), 'utf8')
+  const panelSrc = rf(pj(root, 'src', 'client', 'project-panel.tsx'), 'utf8')
+  const p = []
+  /**
+   * ① 如实声明在位。
+   * ⚠ 两个合法状态都算：**未开始**（「仅中文（未接入）」）或**已开始**（「部分接入」）。
+   *   ⛔ 不许只认一种 —— 那会在迁移进行中恒红，逼人把判据删掉。
+   */
+  /**
+   * ⚠ 三个合法状态：**未开始** / **进行中** / **已完成**（2026-11-11 A 方案收尾后新增第三个）。
+   *   ⛔ 只认前两个会在「已完成」时恒红 —— 那会逼人把判据删掉。
+   */
+  if (!/仅中文（未接入）|部分接入|A 方案已完成/.test(i18nSrc)) {
+    p.push('契约里既没有「仅中文（未接入）」也没有「部分接入」⇒ 读的人不知道面板到底接没接 i18n')
+  }
+  /** ② 假承诺必须消失 */
+  if (/所有面向用户的文案都经它/.test(i18nSrc)) {
+    p.push('契约里仍有「所有面向用户的文案都经它」这个假承诺（O-21 复发）')
+  }
+  /**
+   * ③ 事实核对：契约声明必须与**真实调用**一致。
+   *
+   * ⚠⚠ **必须先剥注释再数**（2026-11-11 实测踩过）：裸数 `\bt\(` 会把
+   *   文件头注释里的 `t()` / `t( 计数 = 0` 也算进去 ——
+   *   实测：渲染代码里只有 **1 处**，裸数却得 **5**。
+   *   ⚠ 这与 §73.4（D-150 扫到自己注释）、§70.2（扫到自己输出行）是**同一类**。
+   */
+  const panelCode = panelSrc
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  const tCalls = (panelCode.match(/\bt\(/g) ?? []).length
+  /**
+   * ⚠ 契约声明的是「**仅中文（未接入）**」= 全量未迁。
+   *   现在开始迁了 ⇒ 契约必须改成「**部分接入**」并把已迁范围说清。
+   *   判据：契约里必须出现 `部分接入` 这个词，且给出 `t()` 的真实处数。
+   */
+  if (tCalls !== 0) {
+    if (!/部分接入|A 方案已完成/.test(i18nSrc)) {
+      p.push(`\`project-panel.tsx\` 已有 ${tCalls} 处 \`t()\` 调用，但契约仍写「仅中文（未接入）」`
+        + ' ⇒ 请同步改契约措辞为「部分接入」并写明范围（⛔ 不许只改代码不改契约）')
+    } else if (!/t\(\)`? 调用处数 = \d+|t\(\)`? 处/.test(i18nSrc)) {
+      p.push('契约里没有写出 `t()` 的实测处数 ⇒ 读的人无法核对进度')
+    }
+  }
+  /**
+   * ⚠⚠ **④ 每个被引用的词条键都必须在词典里**（2026-11-11 · A 方案第 6 轮实测踩到）。
+   *
+   *   病：我把 11 处渲染改成 `stageText('stages.xxx')`，但**词典里没加对应键**
+   *   ⇒ `t()` 取不到 ⇒ 退回键名 ⇒ **界面上直接显示 `stages.residualUnknown`**。
+   *   而当时**没有任何断言会红** —— 是 S-46（残余风险那句）偶然咬住的。
+   *
+   *   ⚠ 这是本仓明令禁止的形态（J-2「任何取词入口都不许把键名当文案」）。
+   *   ⇒ 判据：**源码里出现的每个 `stageText('k')` / `t('k')`，`k` 必须在 ZH 与 EN 两份词典里都存在**。
+   *   ⚠ 双向：只有 ZH 没有 EN ⇒ 英文界面漏；只有 EN 没有 ZH ⇒ 中文界面漏。
+   */
+  {
+    /** ⚠ 同 `iEn`：**用声明定位**，⛔ 不用 `indexOf('STAGES_DICT_ZH')`。 */
+    const iZh = panelCode.indexOf('const STAGES_DICT_ZH')
+    const zhBlock = panelCode.slice(iZh, panelCode.indexOf('const STAGES_DICT_EN', iZh > 0 ? iZh : 0))
+    /**
+     * ⚠⚠ **必须找 `addDictionaryLayer(` 的调用，⛔ 不是第一次出现这个名字**（实测踩过）：
+     *   它第一次出现在**注释**里（`见 addDictionaryLayer 的说明`），早于词典 ⇒ 切片长度 0。
+     *   那会让 `keysEn` 恒空 ⇒ 判据报「全部键英文缺失」的**假红**（33 条）。
+     */
+    /**
+     * ⚠⚠ **必须用「声明」定位，⛔ 不能用 `indexOf('STAGES_DICT_EN')`**（2026-11-11 实测踩过）：
+     *   那个名字**先出现在注释里**（`@link STAGES_DICT_EN` 之类），
+     *   `indexOf` 取到注释位置 ⇒ `enBlock` **从注释中间开始** ⇒
+     *   词典条目被截掉一部分 ⇒ `keysEn` 少几条 ⇒ **本该红的漏报成绿**。
+     *   ⚠ 实测后果：`gate1` / `gate2` / `gate6` 只有 ZH 没有 EN，而 J-21 **报「全部存在」**。
+     *   ⚠ 这与 §70.2/§73.4/§82.3/§87.4/§98.2/§108.1 同一类的**第 7 次**，
+     *     但这次是「**定位基准取错**」而不是「匹配模式过窄」。
+     */
+    const iEn = panelCode.indexOf('const STAGES_DICT_EN')
+    const iAdd = panelCode.indexOf('addDictionaryLayer(', iEn > 0 ? iEn : 0)
+    const enBlock = panelCode.slice(iEn, iAdd > iEn ? iAdd : panelCode.length)
+    const keysZh = new Set([...zhBlock.matchAll(/'(stages\.[A-Za-z.0-9]+)':/g)].map((m) => m[1]))
+    const keysEn = new Set([...enBlock.matchAll(/'(stages\.[A-Za-z.0-9]+)':/g)].map((m) => m[1]))
+    /** 源码里真正被引用的键（⚠ 只在 ZH/EN 两个块**之外**找，否则会把定义当成引用）。 */
+    const codeOutsideDict = panelCode.slice(0, panelCode.indexOf('STAGES_DICT_ZH'))
+      + panelCode.slice(panelCode.indexOf('addDictionaryLayer'))
+    /**
+     * ⚠⚠ **必须同时认 `stageFmt`**（2026-11-11 实测踩过）：
+     *   改前只匹配 `stageText('…')` ⇒ 凡经 `stageFmt('…', {...})` 用的词条
+     *   **全部被误判成「未引用」** —— 实测报了 32 个，而真实只有 **0** 个。
+     *   ⚠ 这与 §70.2 / §73.4 / §82.3 / §87.4 / §98.2 是**同一类**的第 6 次：
+     *     **判据的匹配模式没有跟上实现的新形态**。
+     *   ⇒ 现在用一条正则同时接受两种调用形态。
+     */
+    const used = new Set(
+      [...codeOutsideDict.matchAll(/stage(?:Text|Fmt)\('(stages\.[A-Za-z.0-9]+)'/g)].map((m) => m[1]),
+    )
+    const missingZh = [...used].filter((k) => !keysZh.has(k))
+    const missingEn = [...used].filter((k) => !keysEn.has(k))
+    /** ⚠ 反向：词典里有但没人用的键 = T-候选死词条（只报不拦，避免误伤刚加待用的）。 */
+    const unused = [...keysZh].filter((k) => !used.has(k))
+    if (missingZh.length > 0) {
+      p.push(`这些键**被引用但 ZH 词典里没有** ⇒ 中文界面会直接显示键名：${missingZh.join(' · ')}`)
+    }
+    if (missingEn.length > 0) {
+      p.push(`这些键**被引用但 EN 词典里没有** ⇒ 英文界面会直接显示键名：${missingEn.join(' · ')}`)
+    }
+    if (unused.length > 0) {
+      /**
+       * ⚠⚠ **本轮改成全量点名**（2026-11-11 · §107 的教训）：
+       *   改前只列前 5 个 + 省略号 ⇒ 第 6 个之后的**没人知道是哪个** ⇒
+       *   「加了词条忘了迁代码」这种状态**实际不可操作**。
+       *   ⚠ 实测：§106 我留了 8 个未引用，其中 3 个（currentStage / riskAndClosure / acceptorNote）
+       *     **藏在省略号后面**，下一轮我自己都找不到。
+       *   ⇒ 现在**逐个点名**（数量通常很少，不会刷屏）。
+       */
+      note.push(`J-21 附注：${unused.length} 个词条键**已定义但未被引用**：${unused.join(' · ')}`
+        + '（⚠ 这不是错误 —— 可能是「刚加待用」；但**必须能看见是哪些**，否则清不掉）')
+    }
+    /**
+     * ⚠⚠ **占位符必须两边一致**（2026-11-11 新增 · §110 的教训）。
+     *
+     *   查「键存在」只保证**有那条词条**，⛔ 不保证**它的占位符对得上**。
+     *   实测漏掉的形态：ZH 写 `{req}`、EN 写成 `{id}` ⇒ `stageFmt` 填不上 ⇒
+     *   **英文界面直接把 `{id}` 显示给用户**，而所有检查都是绿的。
+     *
+     *   ⇒ 判据：同一个键在两份词典里的 `{xxx}` 集合**必须完全相同**（顺序不论）。
+     */
+    const phOf = (t) => [...t.matchAll(/\{(\w+)\}/g)].map((x) => x[1]).sort().join(',')
+    /** 从块里建 `键 → 值` 映射（⚠ 值必须**去掉引号**再比）。 */
+    const entryMap = (blk) => {
+      const m = new Map()
+      for (const x of blk.matchAll(/'(stages\.[A-Za-z.0-9]+)':\s*'([^']*)'/g)) m.set(x[1], x[2])
+      return m
+    }
+    const zhEntries = entryMap(zhBlock)
+    const enEntries = entryMap(enBlock)
+    const phMismatch = []
+    for (const [k, v] of zhEntries) {
+      const e = enEntries.get(k)
+      if (typeof e !== 'string') continue   // 缺失已由 missingEn 报过
+      if (phOf(v) !== phOf(e)) phMismatch.push(`${k}: ZH(${phOf(v) || '无'}) ≠ EN(${phOf(e) || '无'})`)
+    }
+    /**
+     * ⚠⚠ **两份词典的键集必须相等**（2026-11-11 新增 · §111 的教训）。
+     *
+     *   前两条只查「**被引用**的键在两边都有」，⛔ 漏掉两种形态：
+     *     · ZH 有、EN 没有、**但没人引用** ⇒ 死词条（不致命，但会误导）
+     *     · **EN 有、ZH 没有** ⇒ 中文界面取不到（退回键名）
+     *   ⚠ 实测：`stages.gate5` 只在 EN 里（ZH 用的是 `gate5WaitAccept`），
+     *     而 J-21 **报全过** —— 那是我误加的冗余键，靠人工比对才发现。
+     *
+     *   ⇒ 判据：**两侧键集逐键相等**。
+     */
+    const onlyZh = [...keysZh].filter((k) => !keysEn.has(k))
+    const onlyEn = [...keysEn].filter((k) => !keysZh.has(k))
+    if (onlyZh.length > 0) {
+      p.push(`这些键**只在 ZH 词典里**（EN 会退回键名或中文）：${onlyZh.join(' · ')}`)
+    }
+    if (onlyEn.length > 0) {
+      p.push(`这些键**只在 EN 词典里**（ZH 会退回键名）：${onlyEn.join(' · ')}`)
+    }
+    if (phMismatch.length > 0) {
+      p.push('这些键的**占位符两份不一致** ⇒ `stageFmt` 会填不上，界面漏出 `{xxx}`：'
+        + phMismatch.join(' · '))
+    }
+    if (missingZh.length === 0 && missingEn.length === 0) {
+      note.push(`J-21 ✓ 词条完整性：源码引用的 **${used.size}** 个 \`stages.*\` 键在 **ZH 与 EN 两份**词典里都存在`)
+    }
+  }
+
+  if (p.length === 0) {
+    note.push('J-21 ✓ i18n 契约与面板现状**一致**：契约声明了接入状态，'
+      + `且实测 \`t()\` = ${tCalls} 处（O-21：⛔ 不许写「所有文案都经 t()」的假承诺；`
+      + '⚠ 迁移进度看**词条键数**，不看 t() 出现次数')
+  } else for (const x of p) fail.push(`J-21 · ${x}`)
+}
 // ══════════════════════════════════════════════════════════════════════════
 // 输出
 // ══════════════════════════════════════════════════════════════════════════

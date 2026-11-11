@@ -1,25 +1,60 @@
 /**
- * 五阶段内部控制 —— 需求澄清、方案路径、任务自包含、阻塞回流。
+ * 阶段内部控制 —— 需求澄清、方案路径、任务自包含、技术验证、产品验收、交付收口与阻塞回流。
  *
  * 纯函数、零 I/O：账本检查、生成视图和运行态共用同一套判定。
- * 不新增第六阶段；五步仍是唯一生命周期。
+ * 正式六阶段由 `pipeline-view.ts` 统一投影；G6 交付收口按风险启用。
  */
 
 import { changeRequirementIds } from './ledger-relations.ts'
+import { approvalStateOf, isPipelineV3 } from './pipeline.ts'
+import {
+  RISK_TIERS, riskAssessmentProblems, riskFactsOf, riskAssessmentOf, riskGateRequirements,
+  taskRiskProblems, taskRiskOf, taskScopeConflict, riskObjectProblems,
+} from './risk-policy.ts'
+import { riskBindingDigestOf } from './pipeline.ts'
 
-export const STAGE_IDS = ['requirements', 'plan', 'tasks', 'execution', 'acceptance'] as const
+export const STAGE_IDS = ['requirements', 'plan', 'tasks', 'execution', 'verification', 'acceptance', 'closure'] as const
 export type StageId = (typeof STAGE_IDS)[number]
 
+/**
+ * **阶段步名的唯一权威**（R-03，2026-11-10）。
+ *
+ * ── 病（实测）──────────────────────────────────────────────────────────────
+ *   改前「第 3 步叫什么」有 **8 份独立字面量**，且**已经漂了**：
+ *
+ *   | 位置 | 第 3 步 |
+ *   |---|---|
+ *   | `stage-controls.ts:22`（**本表**） | `编码任务` ← 唯一的旧词 |
+ *   | `pipeline-view.ts:36` | `任务图` |
+ *   | `stages-index.ts:33` | `任务图` |
+ *   | `requirement-chain.ts:123` | `任务图` |
+ *   | `project-panel.tsx:139` | `任务图` |
+ *   | `gen-ledger.mjs:522` | `任务图` |
+ *
+ *   ⇒ 7 份写「任务图」、1 份写「编码任务」。
+ *   ⚠ 而 `STAGE_NAMES` 的唯一消费方是 `gen-ledger.mjs:1267`（写进账本 `CONTEXT.md`）
+ *   ⇒ **跑一次 `gen:ledger` 就会把错的步名印进账本**，而面板显示「任务图」。
+ *
+ * ── 为什么改这一份而不是其余 7 份 ─────────────────────────────────────────
+ *   7:1 ⇒ 少数派是遗留。且「任务图」与 G3 的判据语义一致（那一步的产出物就是**任务图**，
+ *   不是「编码」这个动作）。
+ *
+ * ── ⚠ 这张表是**唯一权威**：其余位置必须 import 或派生，⛔ 不许再写字面量。
+ *   机检见 `check:workflow` 的 F15（比对 `spec/reply.md` 与 prefix 正文的步名清单
+ *   必须与 `STAGE_NAMES` 一致）。
+ */
 export const STAGE_NAMES: Readonly<Record<StageId, string>> = {
   requirements: '需求规格',
   plan: '实现方案',
-  tasks: '编码任务',
+  tasks: '任务图',
   execution: '任务执行',
-  acceptance: '验收核对',
+  verification: '技术验证',
+  acceptance: '产品验收',
+  closure: '交付收口',
 }
 
 /** 阻塞归因；环境问题单独一档，不误判成需求错误。 */
-export const BLOCK_CAUSES = ['requirement', 'plan', 'task', 'implementation', 'environment'] as const
+export const BLOCK_CAUSES = ['requirement', 'plan', 'task', 'implementation', 'verification', 'acceptance', 'closure', 'environment'] as const
 export type BlockCause = (typeof BLOCK_CAUSES)[number]
 
 export const BLOCK_CAUSE_TO_STAGE: Readonly<Record<BlockCause, StageId | null>> = {
@@ -27,6 +62,9 @@ export const BLOCK_CAUSE_TO_STAGE: Readonly<Record<BlockCause, StageId | null>> 
   plan: 'plan',
   task: 'tasks',
   implementation: 'execution',
+  verification: 'verification',
+  acceptance: 'acceptance',
+  closure: 'closure',
   environment: null,
 }
 
@@ -38,12 +76,12 @@ export const STAGE_RETURN_TARGETS = ['back-to-requirement', 'back-to-plan', 'bac
 export type StageReturnTarget = (typeof STAGE_RETURN_TARGETS)[number]
 
 /**
- * **五步的完成语义（唯一真源）** —— 2026-11-08 · 用户裁定「阶段语义收口」。
+ * **阶段完成语义（唯一真源）** —— 2026-11-08 · 用户裁定「阶段语义收口」。
  *
  * ⚠⚠ 这不是又一张状态表；它是**每一步"什么算完成"的口径**。改前第 3 步与
  *   第 4 步都拿 `task.status = built` 当完成信号，于是：
  *     · 任务书刚建好、还没执行时，第 3 步仍是 `todo`；
- *     · 真正执行期间，当前步仍显示「编码任务」；
+ *     · 真正执行期间，当前步仍显示「任务图」（当时的旧称是「编码任务」，R-03 已统一）；
  *     · 回传后第 3 步完成，第 4 步通常也同时完成。
  *   ⇒ 「任务执行」很难成为独立的当前阶段。根因是**完成定义重叠**，不是面板文案。
  *
@@ -61,12 +99,12 @@ export const STAGE_COMPLETION: Readonly<Record<StageId, {
   judgedBy: string
 }>> = {
   requirements: {
-    definition: '需求已定稿，且澄清问题、假设、关键例子、可观察验收条件齐全',
-    judgedBy: 'R.status=agreed + C-1/C-2',
+    definition: '需求内容齐全，且用户批准当前修订；status=agreed 本身不算批准',
+    judgedBy: 'R.status=agreed + C-1/C-2 + G1 stage-approval',
   },
   plan: {
-    definition: '方案已定，且候选路径、取舍、推荐、需求映射齐全；高风险有独立评审',
-    judgedBy: 'CHG.status=settled + C-3/C-4/C-15',
+    definition: '方案内容齐全，且用户批准当前修订并选定路径；settled 本身不算批准',
+    judgedBy: 'CHG.status=settled + C-3/C-4/C-15 + G2 stage-approval',
   },
   tasks: {
     definition: '任务已拆清：至少一条任务，且任务书、反例、停手条件、回流阶段齐全',
@@ -77,8 +115,16 @@ export const STAGE_COMPLETION: Readonly<Record<StageId, {
     judgedBy: 'RUN.status=returned + TSK.status=built + C-6',
   },
   acceptance: {
-    definition: '独立验收已判决：有有效 ACC，且独立会话、产品确认、技术证据、例子结果齐全',
-    judgedBy: 'ACC.status=pass/send-back + C-7/C-12/C-13/C-14',
+    definition: '技术验证通过，且用户接受产品结果',
+    judgedBy: 'VER.status=pass/waived + ACC.status=pass/send-back + C-7/C-12/C-13/C-14',
+  },
+  verification: {
+    definition: '独立技术验证者按当前修订逐条核对证据，且非符合项已关闭',
+    judgedBy: 'VER.status=pass/waived + C-25/C-26',
+  },
+  closure: {
+    definition: '交付收口已按风险档位完成，或按证据正式跳过',
+    judgedBy: 'CLS.status=closed/skipped + C-27/C-28',
   },
 }
 
@@ -88,6 +134,8 @@ export interface StageControlUnit {
   status?: string
   parent?: string
   title?: string
+  /** Approval decision target; decisions have no `parent` hierarchy edge. */
+  artifact_id?: string
   built_by?: string
   actor?: string
   acceptance_ids?: string[]
@@ -130,13 +178,61 @@ export interface StageControlUnit {
   release_ready?: string
   release_refs?: string[]
   risk_tier?: string
+  risk_rule_version?: string
+  risk_hard_triggers?: string[]
+  risk_hard_trigger_facts?: string[]
+  risk_dimensions?: string[]
+  risk_inputs_digest?: string
+  risk_assessed_at?: string
+  risk_assessed_by?: string
+  delivery_scope?: string
+  closure_mode?: string
+  risk_residual_tier?: string
+  risk_accepted_by?: string
+  risk_accepted_at?: string
+  risk_accept_conditions?: string[]
+  risk_residual_impact?: string
+  risk_residual_monitoring?: string
+  verifier?: string
+  verification_session?: string
+  criteria_refs?: string[]
+  waiver_source?: string
+  waived_by?: string
+  skip_reason?: string
+  rollback_refs?: string[]
+  monitoring_refs?: string[]
+  accepted_by?: string
+  approval_ref?: string
+  closed_at?: string
   reviewer?: string
   review_refs?: string[]
+  task_risk?: string
+  risk_reasons?: string[]
+  requires_isolation?: string
+  requires_review?: string
+  requires_serial_execution?: string
+  touched_surfaces?: string[]
+  irreversible_actions?: string[]
+  risk_binding_digest?: string
+  risk_review_refs?: string[]
+  new_risk_refs?: string[]
+  new_risk_reason?: string
+  chain_acceptance_ref?: string
+  risk_assessment_ref?: string
+  residual_risk_decision_ref?: string
+  risk_ids?: string[]
+  risk_owner?: string
+  risk_residual_reason?: string
+  risk_assessment?: string
+  risk_binding_version?: string
+  test_strategy?: string
   evidence_kind?: string
   command?: string
   exit_code?: string
   artifact_ref?: string
   covers?: string[]
+  depends_on?: string[]
+  scope_paths?: string[]
 }
 
 export interface StageControlProblem {
@@ -174,6 +270,24 @@ export interface GateDecision {
    * ⚠ 缺省仍按旧话术渲染（`gateMessageOf`），⛔ 不破坏既有调用方。
    */
   reason?: string
+  /**
+   * ── **O-01：本次判定**没有真正过门禁**的显式标记** ──────────────────────────
+   *
+   * ⚠ 改前 `write-repair` 直接 `return { decision: 'go', blockers: [] }` ——
+   *   **不计算任何问题**就报「可以」。调用方看到 `go` 会以为「过了门禁」，
+   *   而实际是「**根本没判**」。
+   *
+   * ⚠ 这与本仓反复记的形态完全一致：**「没判」与「判过且通过」在返回值上长得一样**。
+   *   唯一的区别只有读源码才知道 —— 而调用方不会去读。
+   *
+   * ⚠ 为什么仍保留 `go`（⛔ 不改判成 `hold`）：修复写**本来就要能在账本不健康时进行**，
+   *   否则「修坏账」这个动作永远做不了（死锁，与 O-43/T-06b 同族）。
+   *   ⇒ **行为不变，但让「未判」可见**。
+   *
+   * ⚠ 消费者可以据此决定「要不要提示用户这次没走门禁」。
+   *   ⛔ 不要把它当成"通过了"的同义词。
+   */
+  bypass?: 'repair'
 }
 
 const arr = (v: unknown): string[] =>
@@ -198,20 +312,110 @@ export function isBlockingQuestion(raw: string): boolean {
 
 const UNVERIFIABLE = /(?:快|稳定|好用|智能|自动|尽量|适当|合理|友好|快速|高效|灵活|充分|足够|良好|easy|fast|stable|user-friendly|appropriate|sufficient|robust)/i
 
-/** 历史需求豁免：只用于控制上线前的存量，⛔ 不是新需求的放行开关。 */
-const legacy = (u: StageControlUnit): boolean => txt(u.clarify_legacy) === 'pre-control'
+/**
+ * 历史豁免的**外部凭据**（S-02 地基 · 2026-11-10）。
+ *
+ * ── 为什么不能再只读单元自己填的字段 ─────────────────────────────────────
+ *   改前 `legacy()` 只读 `clarify_legacy`，而它由写入方自己填；唯一的反制
+ *   `legacyMisuse` 读的 `created_at` 同样自填。实测：一条正常 v3 需求报 4 条
+ *   违规，补上 `clarify_legacy=pre-control` + 一个很早的 `created_at` 后报 0 条。
+ *
+ * ── 判据怎么变成他证 ─────────────────────────────────────────────────────
+ *   `legacy()` 现在要求三层同时成立：
+ *     ① 单元自报 `clarify_legacy=pre-control`（这只是“申请”，⛔ 不是“批准”）；
+ *     ② `pipeline_version` 不是 v3（v3 条目**结构上**不豁免）；
+ *     ③ 写入方注入的 provenance 判定为 `legacy-migrated`，且 `created_at`
+ *        早于 {@link CONTROL_CUTOFF}（provenance 由 I/O 侧按分片给出，⛔ 不是
+ *        单元自己声明的字段）。
+ *
+ * ⚠ **未注入 / 判不出 ⇒ 按存量字段走老逻辑**（本批 B0.1 的兼容默认）：
+ *   缺省解析器返回 `unknown`，此时非 v3 单元沿用改前的“只看自报字段”，
+ *   存量 177 行行为**零变化**。⚠ 这是分批上线的第一档 —— 等所有出口都注入、
+ *   且存量历史分片冻结后，`unknown` 才会收紧成“不豁免”。
+ */
+export type UnitProvenance = 'legacy-migrated' | 'current' | 'unknown'
+
+/** 写入方注入的 provenance 解析器：只读单元身份，⛔ 不做 I/O、⛔ 不读别的字段。 */
+export type UnitProvenanceResolver = (u: StageControlUnit) => UnitProvenance
+
+/** 当前注入的解析器；缺省（未注入）= `undefined` ⇒ {@link provenanceOf} 返回 `unknown`。 */
+let provenanceResolver: UnitProvenanceResolver | undefined
+
+/**
+ * **注入点**：设置 provenance 解析器。
+ * 传 `undefined` = 撤销注入（回退到“按存量字段走老逻辑”）。
+ *
+ * ⚠ 这是纯函数层唯一的外部事实入口，与 `stageFileProblems(units, exists)`
+ *   的 `exists` 回调同构；缺省值必须比“历史”**更严格**（`unknown` 不新增豁免）。
+ */
+export function setProvenanceResolver(fn: UnitProvenanceResolver | undefined): void {
+  provenanceResolver = fn
+}
+
+/**
+ * 在指定解析器下执行一次**同步**判定，结束后恢复原来的注入。
+ *
+ * ⚠ I/O 侧按账本注入时走本函数（而不是裸 `setProvenanceResolver`）：
+ *   长驻进程里连续判多本账时，不让上一本的分片结论污染下一本。
+ */
+export function withProvenanceResolver<T>(fn: UnitProvenanceResolver | undefined, run: () => T): T {
+  const prev = provenanceResolver
+  provenanceResolver = fn
+  try { return run() } finally { provenanceResolver = prev }
+}
+
+/** 该单元的历史性；未注入 / 判不出 ⇒ `unknown`（= 老逻辑兼容档）。 */
+export function provenanceOf(u: StageControlUnit): UnitProvenance {
+  if (provenanceResolver === undefined) return 'unknown'
+  try { return provenanceResolver(u) } catch { return 'unknown' }
+}
 
 /** 新单元不得借用历史豁免；`created_at` 缺省时按“不可证明是历史”处理。 */
 const CONTROL_CUTOFF = '2026-11-06'
+
+/** 创建时间是否可证明早于控制上线日（只比较日期部分）。 */
+const createdBeforeControl = (u: StageControlUnit): boolean => {
+  const created = txt(u.created_at)
+  return created !== '' && created.slice(0, 10) < CONTROL_CUTOFF
+}
+
+/** 历史需求豁免：只用于控制上线前的存量，⛔ 不是新需求的放行开关。 */
+const legacy = (u: StageControlUnit): boolean => {
+  /** ① 自报标记只是“申请”；没有它，后面两层都不用看。 */
+  if (txt(u.clarify_legacy) !== 'pre-control') return false
+  /** ② v3 条目一律不豁免 —— 与 REVIEW §7.2 D-2(A) 的口径一致。 */
+  if (isPipelineV3(u as any)) return false
+  const provenance = provenanceOf(u)
+  /**
+   * ③ 未注入 / 判不出 ⇒ 本批按存量字段走老逻辑（⛔ 不改变存量结果）。
+   *    ⚠ 收紧这一行（true → false）属于后续批次，必须与存量迁移同批。
+   */
+  if (provenance === 'unknown') return true
+  /** ④ 只有“写入方证明是历史迁移 + 创建时间早于控制上线”才豁免。 */
+  return provenance === 'legacy-migrated' && createdBeforeControl(u)
+}
+
 export function legacyMisuse(u: StageControlUnit): StageControlProblem[] {
   if (txt(u.clarify_legacy) !== 'pre-control') return []
+  const id = txt(u.id) || '(unit)'
+  /** v3 条目**结构上**不能拿历史豁免：报 C-11，且所有字段门禁照常开火。 */
+  if (isPipelineV3(u as any)) {
+    return [{ rule: 'C-11', unit: id, why: 'v3 条目不得使用历史豁免（clarify_legacy = pre-control 只对控制上线前的存量生效）' }]
+  }
   const created = txt(u.created_at)
   // 历史豁免必须能证明创建时间早于控制上线日；没有创建时间同样不放行。
   if (created === '') {
-    return [{ rule: 'C-11', unit: txt(u.id) || '(unit)', why: '历史豁免必须有 created_at 证明创建于控制上线之前；缺创建时间不得放行' }]
+    return [{ rule: 'C-11', unit: id, why: '历史豁免必须有 created_at 证明创建于控制上线之前；缺创建时间不得放行' }]
   }
   if (created.slice(0, 10) >= CONTROL_CUTOFF) {
-    return [{ rule: 'C-11', unit: txt(u.id) || '(unit)', why: '历史豁免只能用于控制上线前的存量；新单元不得写 clarify_legacy = pre-control' }]
+    return [{ rule: 'C-11', unit: id, why: '历史豁免只能用于控制上线前的存量；新单元不得写 clarify_legacy = pre-control' }]
+  }
+  /**
+   * 写入方注入的 provenance 说这条**不是**历史迁移 ⇒ 自报字段不生效。
+   * ⚠ `unknown`（未注入 / 判不出）仍走老逻辑：本批只做地基，不改变存量结果。
+   */
+  if (provenanceOf(u) === 'current') {
+    return [{ rule: 'C-11', unit: id, why: '历史豁免缺写入方 provenance（该单元归属 current）⇒ 不得靠自填字段获得豁免' }]
   }
   return []
 }
@@ -240,8 +444,23 @@ export function requirementProblems(u: StageControlUnit): StageControlProblem[] 
   return out
 }
 
+/** V2 user gate on the requirement artifact. */
+export function requirementApprovalProblems(
+  u: StageControlUnit,
+  units: readonly StageControlUnit[],
+): StageControlProblem[] {
+  if (u.kind !== 'req' || !isPipelineV3(u as any)) return []
+  const approval = approvalStateOf(u as any, units as any)
+  if (['legacy', 'approved'].includes(approval.state)) return []
+  return [{
+    rule: 'C-18',
+    unit: txt(u.id) || '(req)',
+    why: `需求未获得用户对当前修订的批准：${approval.reason}`,
+  }]
+}
+
 /** 方案门禁：settled 前必须给出路径比较、取舍、推荐、需求覆盖。 */
-export function planProblems(u: StageControlUnit): StageControlProblem[] {
+export function planProblems(u: StageControlUnit, units: readonly StageControlUnit[] = [u]): StageControlProblem[] {
   if (u.kind !== 'change' || txt(u.status) !== 'settled' || legacy(u)) return []
   const out: StageControlProblem[] = []
   const id = txt(u.id) || '(change)'
@@ -255,16 +474,87 @@ export function planProblems(u: StageControlUnit): StageControlProblem[] {
    *   ⚠ 风险等级只认封闭三值；写别的值 ⇒ 红（不猜它想表达什么）。
    */
   const tier = txt(u.risk_tier).toLowerCase()
-  if (tier !== '' && !['low', 'medium', 'high'].includes(tier)) {
-    out.push({ rule: 'C-15', unit: id, why: `risk_tier 不在封闭集内：${tier}（只收 low / medium / high）` })
+  if (tier !== '' && !(RISK_TIERS as readonly string[]).includes(tier)) {
+    out.push({ rule: 'C-15', unit: id, why: `risk_tier 不在封闭集内：${tier}（只收 ${RISK_TIERS.join(' / ')}）` })
   }
-  if (tier === 'high') {
+  /**
+   * Legacy plans keep their old tier readable. Requiring a current four-value
+   * assessment from them would silently rewrite history; the v3 branch below
+   * applies the current rules only to artifacts enrolled in v3.
+   */
+  if (isPipelineV3(u as any) && tier === '') {
+    out.push({ rule: 'RP-9', unit: id, why: 'v3 方案缺 risk_tier（不能把缺评定读成 low）' })
+  }
+  if (isPipelineV3(u as any) && ['high', 'critical'].includes(tier)) {
     const reviewer = txt(u.reviewer)
     if (reviewer === '') out.push({ rule: 'C-15', unit: id, why: '高风险变更缺独立设计评审者（reviewer）' })
     else if (reviewer === txt(u.built_by)) out.push({ rule: 'C-15', unit: id, why: '设计评审者就是作者本人（reviewer == built_by）' })
     if (arr(u.review_refs).length === 0) out.push({ rule: 'C-15', unit: id, why: '高风险变更缺评审记录（review_refs 为空）' })
+    if (tier === 'critical' && arr(u.review_refs).length < 2) out.push({ rule: 'C-15', unit: id, why: 'critical 变更至少需要两份独立评审证据' })
+  }
+  if (isPipelineV3(u as any)) {
+    out.push(...riskAssessmentProblems(u as any))
+    /**
+     * The risk assessment is bound to the plan facts that existed when it was
+     * made. A scope, dependency, delivery or acceptance change must invalidate
+     * the old assessment instead of silently reusing it.
+     */
+    const bound = txt(u.risk_binding_digest)
+    if (bound === '') {
+      out.push({ rule: 'RP-3', unit: id, why: 'v3 方案缺 risk_binding_digest（无法判断风险评定是否仍对应当前方案事实）' })
+    } else if (bound !== riskBindingDigestOf(u as Record<string, unknown>, units as unknown as readonly Record<string, unknown>[])) {
+      out.push({ rule: 'RP-3', unit: id, why: '方案范围 / 依赖 / 交付目标或验收对象已变化 ⇒ 旧风险评定 stale，必须重评并更新绑定摘要' })
+    }
+    if (txt(u.risk_assessment_ref) === '') {
+      out.push({ rule: 'RP-3', unit: id, why: 'v3 方案缺 risk_assessment_ref（完整评定记录引用）' })
+    }
+    if (txt(u.risk_binding_version) === '') {
+      out.push({ rule: 'RP-3', unit: id, why: 'v3 方案缺 risk_binding_version（无法识别旧评定与新规则）' })
+    }
+    /**
+     * G2 gate depth is tiered. Medium and above require a real path comparison
+     * and a verification strategy; high and critical require independent
+     * review, and critical requires dual evidence or explicit authorization.
+     * Low still needs at least one reasonable path, but not two fabricated
+     * alternatives.
+     */
+    const requirements = riskGateRequirements(txt(u.risk_tier) as any)
+    const options = arr(u.path_options)
+    /**
+     * ⚠ **O-03：判据只有一个来源** —— `requirements.minPaths`。
+     *   ⛔ 不要在这里再写 `tier === 'low' ? 1 : 2` —— 那正是改前的形态
+     *     （字段说一套、调用方另算一套，两处迟早分叉）。
+     */
+    if (options.length < requirements.minPaths) {
+      out.push({ rule: 'C-4', unit: id, why: `${tier || '未声明'} 风险至少需要 ${requirements.minPaths} 个可行路径或说明唯一可行原因` })
+    }
+    if (requirements.verificationStrategy) {
+      const hasStrategy = txt(u.test_strategy) !== '' || arr(u.research_refs).length > 0 || arr(u.review_refs).length > 0
+      if (!hasStrategy) out.push({ rule: 'RP-8', unit: id, why: `${tier} 风险必须给出验证策略（test_strategy / research_refs / review_refs 至少一项）` })
+    }
+    if (tier === 'critical') {
+      const reviewRefs = arr(u.review_refs)
+      if (reviewRefs.length < 2 && txt(u.accepted_by) === '') {
+        out.push({ rule: 'RP-5', unit: id, why: 'critical 风险必须有双评审证据或用户明确授权（accepted_by）' })
+      }
+    }
   }
   return out
+}
+
+/** V2 user gate on the implementation plan. */
+export function planApprovalProblems(
+  u: StageControlUnit,
+  units: readonly StageControlUnit[],
+): StageControlProblem[] {
+  if (u.kind !== 'change' || !isPipelineV3(u as any)) return []
+  const approval = approvalStateOf(u as any, units as any)
+  if (['legacy', 'approved'].includes(approval.state)) return []
+  return [{
+    rule: 'C-19',
+    unit: txt(u.id) || '(change)',
+    why: `方案未获得用户对当前修订的批准：${approval.reason}`,
+  }]
 }
 
 /** 任务门禁：可开工任务必须有自包含任务书、反例、停手条件和回流阶段。 */
@@ -280,7 +570,84 @@ export function taskProblems(u: StageControlUnit): StageControlProblem[] {
   else if (!(STAGE_RETURN_TARGETS as readonly string[]).includes(ret)) {
     out.push({ rule: 'C-5', unit: id, why: `回流目标不在封闭集内：${ret}（只收 back-to-requirement / back-to-plan / back-to-task）` })
   }
+  /**
+   * Pipeline task risk rules live in `risk-policy.ts`; this function owns C-5.
+   * The status gate above only covers runnable/built tasks, but a v3 task must
+   * declare execution risk even while it is still a draft so G3 can judge it.
+   */
   return out
+}
+
+/** C-5 plus the separate execution-risk layer for one v3 task. */
+export function taskFullProblems(u: StageControlUnit): StageControlProblem[] {
+  if (u.kind !== 'task' || legacy(u)) return taskProblems(u)
+  return [...taskProblems(u), ...taskRiskProblems(u as Record<string, unknown>)]
+}
+
+/**
+ * Task-graph execution-risk gate.
+ *
+ * A per-task declaration is not enough: two tasks that write the same path
+ * cannot run concurrently merely because each is individually well formed.
+ * The graph must serialize them, or the plan must split the contract.
+ */
+export function taskGraphRiskProblems(units: readonly StageControlUnit[]): StageControlProblem[] {
+  const out: StageControlProblem[] = []
+  const tasks = units.filter((u) => u.kind === 'task' && isPipelineV3(u as any)
+    && ['todo', 'doing', 'built'].includes(txt(u.status)))
+  for (let i = 0; i < tasks.length; i++) {
+    for (let j = i + 1; j < tasks.length; j++) {
+      const a = tasks[i]!
+      const b = tasks[j]!
+      if (txt(a.parent) !== txt(b.parent)) continue
+      const overlap = taskScopeConflict(a as any, b as any)
+      if (overlap === undefined) continue
+      const aDeps = arr(a.depends_on)
+      const bDeps = arr(b.depends_on)
+      const serial = aDeps.includes(txt(b.id)) || bDeps.includes(txt(a.id))
+        || taskRiskOf(a as any).requirements.serialRequired
+        || taskRiskOf(b as any).requirements.serialRequired
+      if (!serial) {
+        out.push({
+          rule: 'RP-5', unit: `${txt(a.id)} / ${txt(b.id)}`,
+          why: `同一方案下的两个任务写同一路径（${overlap}）但没有串行依赖 ⇒ 要么加 depends_on，要么拆清写范围`,
+        })
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * A parent plan's closure decision must agree with the task-level risk that
+ * actually ran underneath it. A task cannot silently exceed the approved plan
+ * risk tier and still be treated as ordinary delivery.
+ */
+export function taskRiskAgainstPlanProblems(units: readonly StageControlUnit[]): StageControlProblem[] {
+  const out: StageControlProblem[] = []
+  const byId = new Map(units.map((u) => [txt(u.id), u]))
+  for (const task of units) {
+    if (task.kind !== 'task' || !isPipelineV3(task as any)) continue
+    const risk = taskRiskOf(task as any)
+    const plan = byId.get(txt(task.parent))
+    if (plan === undefined || plan.kind !== 'change' || !isPipelineV3(plan as any)) continue
+    const planTier = riskAssessmentOf(riskFactsOf(plan as any)).tier
+    if (tierAbove(risk.tier, planTier) && txt(plan.risk_assessment_ref) === '') {
+      out.push({
+        rule: 'RP-8', unit: txt(task.id) || '(task)',
+        why: `任务风险 ${risk.tier} 高于方案风险 ${planTier}，但方案没有记录升级后的 risk_assessment_ref ⇒ 回 G2 重评`,
+      })
+    }
+    if (risk.tier === 'critical' && txt(plan.reviewer) === '') {
+      out.push({ rule: 'RP-8', unit: txt(task.id) || '(task)', why: 'critical 任务所在方案缺用户授权 / 独立评审者' })
+    }
+  }
+  return out
+}
+
+function tierAbove(a: string, b: string): boolean {
+  const rank: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 }
+  return (rank[a] ?? 0) > (rank[b] ?? 0)
 }
 
 /**
@@ -304,7 +671,21 @@ export function acceptanceProblems(u: StageControlUnit, units: readonly StageCon
     const acceptor = txt(u.actor)
     const session = txt(u.acceptance_session)
     if (acceptor === '') out.push({ rule: 'C-7', unit: id, why: '验收通过但缺验收者（actor）' })
-    if (builder !== '' && acceptor === builder) out.push({ rule: 'C-7', unit: id, why: '验收者与实现者是同一个会话（自己验自己）' })
+    /**
+     * ⚠⚠ **S-03：与 `convergence.ts:380` 的 K-6 对齐 —— 缺失时 fail-closed，⛔ 不是放行。**
+     *
+     *   改前写的是 `builder !== '' && acceptor === builder` ⇒ **父任务没有 `built_by` 时**
+     *   这一条**根本不检查**，于是「自己验自己」被静默放过。
+     *   ⚠ 缺失反而让检查更容易通过 = **fail-open**，而同一语义在 K-6 里是 fail-closed
+     *   （`built_by` 缺 ⇒ 直接报「没法判是不是自己验自己」）。
+     *   同一语义、两个模块、两种方向 —— 那本身就是缺陷（判定会随走哪条路而变）。
+     *   ⇒ 改成：缺 `built_by` ⇒ 报「无法判定独立性」（⛔ 不按通过处理）。
+     */
+    if (builder === '') {
+      out.push({ rule: 'C-7', unit: id, why: '父任务缺 built_by ⇒ **没法判**是不是自己验自己（⛔ 不按通过处理）' })
+    } else if (acceptor === builder) {
+      out.push({ rule: 'C-7', unit: id, why: '验收者与实现者是同一个会话（自己验自己）' })
+    }
     if (session === '') out.push({ rule: 'C-7', unit: id, why: '验收通过但缺独立验收会话（acceptance_session）' })
     else if (session === builder) out.push({ rule: 'C-7', unit: id, why: '独立验收会话与实现者相同（acceptance_session == built_by）' })
     if (arr(u.verification_refs).length === 0) out.push({ rule: 'C-7', unit: id, why: '验收通过但缺技术验证证据（verification_refs 为空）' })
@@ -358,6 +739,20 @@ export function acceptanceProblems(u: StageControlUnit, units: readonly StageCon
         out.push({ rule: 'C-14', unit: id, why: `release_ready=yes 但缺发布证据：${missing.join(' / ')}` })
       }
     }
+    /**
+     * Residual risk is part of the product decision, not a G6 afterthought.
+     * High / critical residuals need an explicit user acceptance, impact and a
+     * monitoring or rollback path even when the result itself is accepted.
+     */
+    const residualTier = txt(u.risk_residual_tier).toLowerCase()
+    if (!['', 'low', 'medium', 'high', 'critical'].includes(residualTier)) {
+      out.push({ rule: 'RP-10', unit: id, why: `risk_residual_tier 不在封闭集：${residualTier}` })
+    } else if (['high', 'critical'].includes(residualTier)) {
+      if (txt(u.risk_accepted_by) === '') out.push({ rule: 'RP-10', unit: id, why: `${residualTier} 残余风险必须由用户或授权人接受（risk_accepted_by）` })
+      if (txt(u.risk_residual_impact) === '') out.push({ rule: 'RP-10', unit: id, why: `${residualTier} 残余风险必须记录影响范围（risk_residual_impact）` })
+      if (txt(u.risk_residual_monitoring) === '') out.push({ rule: 'RP-10', unit: id, why: `${residualTier} 残余风险必须记录监控 / 回退方式（risk_residual_monitoring）` })
+      if (arr(u.risk_accept_conditions).length === 0) out.push({ rule: 'RP-10', unit: id, why: `${residualTier} 残余风险必须登记接受条件（risk_accept_conditions）` })
+    }
   }
   const back = txt(u.send_back_to)
   if (txt(u.status) === 'send-back' && back === '') out.push({ rule: 'C-8', unit: id, why: '退回但缺目标阶段（send_back_to）' })
@@ -373,6 +768,193 @@ export function runProblems(u: StageControlUnit): StageControlProblem[] {
   return arr(u.progress_refs).length === 0
     ? [{ rule: 'C-6', unit: txt(u.id) || '(run)', why: '运行已回传但无小步验证读数（progress_refs 为空）' }]
     : []
+}
+
+/**
+ * Independent technical verification gate.
+ *
+ * Verification is deliberately separate from product acceptance: it answers
+ * whether the approved requirements and controls were implemented correctly,
+ * not whether the user accepts the result.
+ */
+export function verificationProblems(
+  u: StageControlUnit,
+  units: readonly StageControlUnit[] = [u],
+): StageControlProblem[] {
+  if (u.kind !== 'verification' || legacy(u)) return []
+  const out: StageControlProblem[] = []
+  const id = txt(u.id) || '(verification)'
+  const status = txt(u.status)
+  if (!['pass', 'send-back', 'waived'].includes(status)) return out
+  if (arr(u.basis).length === 0 && arr(u.evidence_refs).length === 0) {
+    out.push({ rule: 'C-25', unit: id, why: '技术验证结论缺依据（basis / evidence_refs 均为空）' })
+  }
+  if (txt(u.verified_at) === '' || !Number.isFinite(Date.parse(txt(u.verified_at)))) {
+    out.push({ rule: 'C-25', unit: id, why: '技术验证缺可解析的 verified_at' })
+  }
+  if (txt(u.verifier) === '') out.push({ rule: 'C-25', unit: id, why: '技术验证缺 verifier' })
+  if (txt(u.verification_session) === '') out.push({ rule: 'C-25', unit: id, why: '技术验证缺独立会话 verification_session' })
+  const parent = units.find((x) => txt(x.id) === txt(u.parent))
+  const builder = txt(parent?.built_by)
+  /**
+   * ⚠ **S-03（第二处）**：同上 —— 缺 `built_by` ⇒ fail-closed，⛔ 不是跳过。
+   *   （C-25 守技术验证的独立性，与 C-7 守验收独立性是同一件事的两个环节。）
+   */
+  if (builder === '') {
+    out.push({ rule: 'C-25', unit: id, why: '父任务缺 built_by ⇒ **没法判**技术验证是否独立（⛔ 不按通过处理）' })
+  } else if (txt(u.verifier) === builder || txt(u.verification_session) === builder) {
+    out.push({ rule: 'C-25', unit: id, why: '技术验证者是实现者本人（违反独立性）' })
+  }
+  if (arr(u.criteria_refs).length === 0) out.push({ rule: 'C-25', unit: id, why: '技术验证没有对应的验收条件（criteria_refs 为空）' })
+  if (arr(u.nonconformance_refs).length > 0 && status === 'pass') {
+    out.push({ rule: 'C-25', unit: id, why: '技术验证已通过但仍挂着未关闭非符合项' })
+  }
+  if (status === 'send-back' && txt(u.send_back_to) === '') {
+    out.push({ rule: 'C-26', unit: id, why: '技术验证退回但缺 send_back_to' })
+  }
+  if (status === 'waived' && (txt(u.waiver_source) === '' || txt(u.waived_by) === '')) {
+    out.push({ rule: 'C-26', unit: id, why: '技术验证豁免必须记录 waiver_source 与 waived_by' })
+  }
+  /**
+   * Risk-control verification. When the parent plan declares hard triggers or
+   * a high/critical tier, a generic "tests pass" conclusion is not enough:
+   * each control needs its own verification evidence.
+   */
+  const task = units.find((x) => txt(x.id) === txt(u.parent))
+  const plan = task === undefined ? undefined
+    : units.find((x) => txt(x.id) === txt(task.parent) && txt(x.kind) === 'change')
+  if (plan !== undefined && status === 'pass' && isPipelineV3(plan as any)) {
+    const assessment = riskAssessmentOf(riskFactsOf(plan as any))
+    const needsControls = assessment.hardTriggers.length > 0 || ['high', 'critical'].includes(assessment.tier)
+    if (needsControls) {
+      const reviewRefs = arr(u.risk_review_refs)
+      if (reviewRefs.length === 0) {
+        out.push({ rule: 'RP-6', unit: id, why: `${assessment.tier} 方案含 ${assessment.hardTriggers.length} 条硬触发 ⇒ 技术验证必须逐项记录风险控制证据 risk_review_refs` })
+      } else if (assessment.hardTriggers.length > reviewRefs.length) {
+        out.push({ rule: 'RP-6', unit: id, why: `硬触发 ${assessment.hardTriggers.length} 条，但风险控制证据只有 ${reviewRefs.length} 条 ⇒ 不能证明每条控制都验过` })
+      }
+    }
+    /**
+     * If technical verification discovers a risk the approved plan did not
+     * declare, a PASS is not valid: it must return to the plan stage so the
+     * risk can be assessed and the plan revision re-approved.
+     */
+    const newRiskRefs = arr(u.new_risk_refs)
+    if (newRiskRefs.length > 0) {
+      const planRiskIds = new Set(arr((plan as any).risk_ids))
+      const undeclared = newRiskRefs.filter((x) => !planRiskIds.has(x))
+      if (undeclared.length > 0 && status === 'pass') {
+        out.push({ rule: 'RP-6', unit: id, why: `技术验证发现方案未声明的新风险：${undeclared.join(' / ')} ⇒ 不能 PASS，必须回 G2 重评` })
+      }
+      if (txt(u.new_risk_reason) === '') {
+        out.push({ rule: 'RP-6', unit: id, why: '技术验证记录新风险但缺 new_risk_reason（无法复核发现依据）' })
+      }
+    }
+  }
+  return out
+}
+
+/** Delivery closure gate, derived from the change risk assessment. */
+export function closureProblems(
+  u: StageControlUnit,
+  units: readonly StageControlUnit[] = [u],
+): StageControlProblem[] {
+  if (u.kind !== 'closure' || legacy(u)) return []
+  const out: StageControlProblem[] = []
+  const id = txt(u.id) || '(closure)'
+  const status = txt(u.status)
+  if (!['closed', 'skipped', 'blocked'].includes(status)) return out
+  const mode = txt(u.closure_mode)
+  if (!['skipped', 'standard', 'strict'].includes(mode)) {
+    out.push({ rule: 'C-27', unit: id, why: `closure_mode 不在封闭集：${mode || '(空)'}` })
+  }
+  const req = units.find((x) => txt(x.id) === txt(u.parent))
+  const plans = units.filter((x) => txt(x.kind) === 'change' && (Array.isArray(x.req_ids) ? x.req_ids.map(String) : []).includes(txt(req?.id)))
+  const plan = plans.at(-1)
+  const assessed = plan === undefined ? undefined : riskAssessmentOf(riskFactsOf(plan as any))
+  if (status === 'skipped') {
+    if (txt(u.skip_reason) === '') out.push({ rule: 'C-27', unit: id, why: '跳过交付收口必须写 skip_reason' })
+    if (txt(u.accepted_by) === '') out.push({ rule: 'C-27', unit: id, why: '跳过交付收口必须记录决定者 accepted_by' })
+    if (assessed !== undefined && assessed.closure === 'strict') {
+      out.push({ rule: 'C-27', unit: id, why: '风险要求 strict 收口，不能标记 skipped' })
+    }
+  }
+  if (status === 'closed') {
+    if (assessed !== undefined && mode !== assessed.closure) {
+      out.push({ rule: 'C-27', unit: id, why: `closure_mode ${mode} 与风险推导 ${assessed.closure} 不一致` })
+    }
+    if (arr(u.release_refs).length === 0) out.push({ rule: 'C-27', unit: id, why: '交付收口缺发布 / 构建证据' })
+    /**
+     * Standard is not just "some release evidence". It needs a build, a smoke
+     * reading, a rollback path and a post-release check; otherwise a deploy can
+     * be called closed with only a commit hash. Strict adds independent release
+     * authorization, monitoring and residual-risk acceptance.
+     */
+    if (mode === 'standard' || mode === 'strict') {
+      const refs = arr(u.release_refs).join('\n').toLowerCase()
+      const missing = [
+        ['构建', /build|构建/],
+        ['冒烟', /smoke|冒烟|route|路由|http\s*20\d/],
+        ['发布后检查', /post[- ]?release|发布后|after release|monitor|监控/],
+      ].filter(([, re]) => !(re as RegExp).test(refs)).map(([name]) => name)
+      if (missing.length > 0) out.push({ rule: 'C-27', unit: id, why: `交付收口缺发布证据：${missing.join(' / ')}` })
+      if (arr(u.rollback_refs).length === 0) out.push({ rule: 'C-28', unit: id, why: `${mode} 收口缺回滚 / 恢复证据` })
+    }
+    if (mode === 'strict') {
+      if (arr(u.monitoring_refs).length === 0) out.push({ rule: 'C-28', unit: id, why: 'strict 收口缺发布后监控证据' })
+      if (txt(u.accepted_by) === '') out.push({ rule: 'C-28', unit: id, why: 'strict 收口缺接受者 accepted_by' })
+      if (txt(u.approval_ref) === '') out.push({ rule: 'C-28', unit: id, why: 'strict 收口缺独立发布审批 approval_ref' })
+    }
+    if (arr(u.liens).length > 0) out.push({ rule: 'C-28', unit: id, why: '仍有未关闭整改项，不能宣布交付收口' })
+  }
+  /**
+   * G6 may not silently rewrite G5. A closure that claims to be finished must
+   * point at the accepted chain, the risk assessment it used, and the current
+   * residual-risk decision. Without those bindings, "closed" is only a label.
+   */
+  /**
+   * ⚠⚠ **S-05：三个绑定引用必须**解析到真实单元**，⛔ 不是只查非空。**
+   *
+   *   改前只判 `txt(ref) === ''` ⇒ 填一个**不存在的 id** 即可满足 C-29
+   *   ⇒ 上面那条注释「G6 may not silently rewrite G5」退化成「三个字符串非空」。
+   *
+   *   ⚠ 这与 `convergence.ts` 里 K-2/K-3/K-5 的口径**不一致**：那边是「悬空引用即红」。
+   *     同一套体系里两套口径 ⇒ 用户学到的规则取决于他碰巧在看哪条判据。
+   *
+   *   ⚠ 每条引用还要**核对 kind**：`chain_acceptance_ref` 必须指向 `acc`，
+   *     `risk_assessment_ref` 指向 `risk`，`residual_risk_decision_ref` 指向 `decision`。
+   *     ⛔ 只查「存在」不够：指向一个 `task` 也能通过，那同样证明不了 G5 已接受。
+   */
+  if (status === 'closed' || status === 'skipped') {
+    const bound: Array<{ field: string; expectKind: string; why: string }> = [
+      { field: 'chain_acceptance_ref', expectKind: 'acc', why: '无法证明 G5 已接受' },
+      { field: 'risk_assessment_ref', expectKind: 'risk', why: '无法证明用的是哪次风险评定' },
+      { field: 'residual_risk_decision_ref', expectKind: 'decision', why: '无法证明残余风险已被接受 / 无需接受' },
+    ]
+    for (const b of bound) {
+      const ref = txt((u as unknown as Record<string, unknown>)[b.field])
+      if (ref === '') {
+        out.push({ rule: 'C-29', unit: id, why: `交付收口缺 ${b.field}（${b.why}）` })
+        continue
+      }
+      const target = units.find((x) => txt(x.id) === ref)
+      if (target === undefined) {
+        out.push({
+          rule: 'C-29',
+          unit: id,
+          why: `${b.field} 指向不存在的单元 ${ref}（悬空引用 ⇒ ${b.why}；⛔ 填一个 id 不等于绑定了事实）`,
+        })
+      } else if (txt(target.kind) !== b.expectKind) {
+        out.push({
+          rule: 'C-29',
+          unit: id,
+          why: `${b.field} 指向 ${ref}，但它的 kind 是 ${txt(target.kind) || '(空)'}（应为 ${b.expectKind}）`
+            + ` ⇒ ${b.why}`,
+        })
+      }
+    }
+  }
+  return out
 }
 
 /**
@@ -459,25 +1041,78 @@ export function evidenceProblems(u: StageControlUnit): StageControlProblem[] {
   return out
 }
 
-/** 全部阶段控制问题。 */
+/**
+ * Stage field and relationship problems.
+ *
+ * Missing user approval is intentionally NOT part of this function. An
+ * unapproved requirement/plan is still a valid draft that must be writable so
+ * the user has something concrete to approve. Approval is a progression and
+ * dispatch gate, represented by `stageApprovalProblems`.
+ */
+export function stageFieldProblems(
+  units: readonly StageControlUnit[],
+  /**
+   * ⚠⚠ **S-03 暴露的真缺陷（2026-11-11）**：判「一条单元有没有问题」时，
+   *   有些规则要**看别的单元**才能判 —— 例如 C-7 要读**父任务**的 `built_by`
+   *   才知道「验收者是不是实现者」。
+   *
+   *   改前这里只有 `units` 一个参数，调用方传「本次写入的单元」⇒
+   *   `acceptanceProblems(acc, [acc])` **找不到父任务** ⇒ 父任务被判成"缺 built_by"。
+   *
+   *   ⚠ 而 S-03 把这条判据改成 fail-closed 之后，那个误判从「静默放过」变成
+   *     **拒绝写入** —— 于是暴露出来：**不是 S-03 引入的缺陷，是它照出了既有缺陷。**
+   *
+   *   ⇒ 现在分两个参数：
+   *     · `units`   —— **判谁**（只报这些单元自己的问题）；
+   *     · `context` —— **查引用用**（默认同 `units`，向后兼容既有调用方）。
+   *   ⚠ 两个参数分开是必须的：只传 context 会把既有单元的欠账也算进来（T-06b 死锁）。
+   */
+  context: readonly StageControlUnit[] = units,
+): StageControlProblem[] {
+  return [
+    ...units.flatMap((u) => [
+      ...requirementProblems(u),
+      /**
+       * A v3 plan's risk binding digest is computed against the requirements it
+       * addresses. Passing the default `[u]` here made every correctly bound
+       * plan look stale whenever the ledger also contained its requirement.
+       * The full unit set is the same one `planProblems` uses on the dispatch
+       * path, so both gates now reach the same verdict for the same ledger.
+       */
+      ...planProblems(u, context),
+      ...taskFullProblems(u),
+      ...runProblems(u),
+      ...evidenceProblems(u),
+      ...acceptanceProblems(u, context),
+      ...verificationProblems(u, context),
+      ...closureProblems(u, context),
+      ...titleProblems(u, context),
+      ...legacyMisuse(u),
+    ]),
+    ...taskGraphRiskProblems(context),
+    ...taskRiskAgainstPlanProblems(context),
+    ...riskObjectProblems(context as unknown as Array<Record<string, unknown>>),
+  ]
+}
+
+/** User gates that must be satisfied before the pipeline may move forward. */
+export function stageApprovalProblems(units: readonly StageControlUnit[]): StageControlProblem[] {
+  return [
+    ...units.map((u) => requirementApprovalProblems(u, units)),
+    ...units.map((u) => planApprovalProblems(u, units)),
+  ].flat()
+}
+
+/** Complete progression health: fields + user gates. */
 export function stageControlProblems(units: readonly StageControlUnit[]): StageControlProblem[] {
-  return units.flatMap((u) => [
-    ...requirementProblems(u),
-    ...planProblems(u),
-    ...taskProblems(u),
-    ...runProblems(u),
-    ...evidenceProblems(u),
-    ...acceptanceProblems(u, units),
-    ...titleProblems(u, units),
-    ...legacyMisuse(u),
-  ])
+  return [...stageFieldProblems(units), ...stageApprovalProblems(units)]
 }
 
 /**
  * **账本闭环缺口**（2026-11-08 · 用户报「没有账本或旧账本梳理不到完全健康」）。
  *
  * ══ 它治的病（实测）══════════════════════════════════════════════════════════
- *   `stageControlProblems` 是**逐条单元**的字段门禁：它只问"这一条填全了没有"。
+ *   `stageFieldProblems` 是**逐条单元**的字段门禁：它只问"这一条填全了没有"。
  *   ⇒ 一本账里**只有一条 `change`**（没有任何 req / task / run / acc）也能判成"无缺口"，
  *     于是面板与派活都说"完全健康"。实测：
  *       `prompt-enhancer-release` 只有 `CHG-344`（change）⇒ `problems = []` ⇒ ready。
@@ -625,6 +1260,40 @@ export function gateScopeUnits(units: readonly StageControlUnit[], scope: GateSc
       if (linked && !ids.has(uid)) { ids.add(uid); changed = true }
     }
   }
+  /**
+   * Approval decisions are facts about an artifact, not children of it. They
+   * have `artifact_id` rather than `parent`, so the relation closure above
+   * cannot discover them. Without this pass a correctly approved R/CHG pair
+   * is present in the ledger but absent from the task-scoped subset; the gate
+   * then reports "no user approval" and blocks every legitimate v3 dispatch.
+   *
+   * Pull in decisions for every artifact already in scope, then close once
+   * more in case a decision's presence links another unit. Do not pull every
+   * decision in the ledger: unrelated approvals must stay out of this chain.
+   */
+  let decisionsChanged = true
+  while (decisionsChanged) {
+    decisionsChanged = false
+    for (const u of units) {
+      const uid = txt(u.id)
+      if (uid === '' || ids.has(uid) || txt(u.kind) !== 'decision') continue
+      if (!ids.has(txt(u.artifact_id))) continue
+      ids.add(uid)
+      decisionsChanged = true
+    }
+    if (!decisionsChanged) break
+    for (const u of units) {
+      const uid = txt(u.id)
+      if (uid === '' || ids.has(uid)) continue
+      const linked = ids.has(txt(u.parent))
+        || arr(u.req_ids).some((x) => ids.has(x))
+        || arr(u.addresses).some((x) => ids.has(x))
+        || (u.kind === 'change' && changeRequirementIds(u).some((x) => ids.has(x)))
+        || arr(u.acceptance_ids).some((x) => ids.has(x))
+        || arr(u.verify_refs).some((x) => ids.has(x))
+      if (linked) { ids.add(uid); decisionsChanged = true }
+    }
+  }
   return units.filter((u) => ids.has(txt(u.id)))
 }
 
@@ -635,8 +1304,19 @@ export function evaluateGate(input: {
   units: readonly StageControlUnit[]
 }): GateDecision {
   const scopeText = input.scope.kind === 'project' ? 'project' : input.scope.kind + ':' + (txt(input.scope.id) || '(missing)')
+  /**
+   * ── **O-01：`write-repair` 不过门禁，但必须**显式说出来** ──────────────────
+   *
+   * ⚠ 修复写**必须能在账本不健康时进行** —— 否则「修坏账」永远做不了
+   *   （死锁，与 O-43 / T-06b 同族：坏数据要靠写入来修，而写入被坏数据拦住）。
+   *   ⇒ 行为保持「放行」，但**不再假装它过了门禁**：
+   *     返回里带 `bypass: 'repair'`，调用方/日志能一眼看出「本次未判」。
+   *
+   * ⛔ 不要改成 `hold`：那会把修复通道一起堵死。
+   * ⛔ 也不要删掉 `bypass`：删了就退回「没判」与「判过」长得一样。
+   */
   if (input.action === 'write-repair') {
-    return { decision: 'go', scope: scopeText, blockers: [], allowedRepairs: [] }
+    return { decision: 'go', scope: scopeText, blockers: [], allowedRepairs: [], bypass: 'repair' }
   }
   if (input.scope.kind === 'project') {
     return { decision: 'go', scope: scopeText, blockers: stageControlProblems(input.units), allowedRepairs: [] }
@@ -653,6 +1333,44 @@ export function evaluateGate(input: {
    *     按 id 查全账本，故这里传**全账本**、再用作用域 id 过滤），
    *     ⛔ 不把"别的需求缺字段"算到这一条头上（那正是 Wave 1 修掉的误伤）。
    */
+  /**
+   * ⚠⚠ **S-04：作用域根不存在 ⇒ hold，⛔ 不是 go。**
+   *
+   *   改前：`gateScopeUnits` 找不到 root ⇒ 返回空集 ⇒ `stageControlProblems([])` = []
+   *   ⇒ `blockers=[]` ⇒ **`go`**。实测：
+   *   `evaluateGate({scope:{kind:'task',id:'NOPE'}, units:[]})` ⇒ `{decision:'go'}`。
+   *
+   *   ⚠ 当时**已被调用方补掉**（`tools.ts` 的 `stageGateAtLedger` 先做存在性核对），
+   *     所以不构成可利用漏洞；但 `evaluateGate` 本身仍是 **fail-open 的纯函数** ——
+   *     **任何新调用方会直接踩中**，而且踩中时看到的是「通过」，不会去怀疑参数写错。
+   *
+   *   ⚠ 为什么用 `hold` 而不是 `return`：`return` 的语义是「有**可修**的阻塞」，
+   *     其 `allowedRepairs` 会被拿去当可修单元；而「根不存在」**没有可修单元**，
+   *     它是**调用方参数错**或**账本还没这条**，两者都不该被当成"修一修就能过"。
+   *
+   *   ⚠⚠ **占位号必须豁免**（2026-11-10 · 我第一版没做，真机当场 3 条红）：
+   *     `hob_dispatch` 不给 `task` 时，编排器用 `taskId: 'implicit'` 占位
+   *     （`orchestrator.ts` 的 `WP-implicit-…`）。它**不是真实 TSK** ——
+   *     按"账本里没有 ⇒ hold"处理会把**所有没写 task 的老计划一起判死**。
+   *     ⚠ 这与 `tools.ts:753-763` 记录的**是同一个坑**（那次也是真机当场红 `task:implicit`）。
+   *     ⛔ 不要用"放宽成只要非空就放行"来绕 —— 那会把"说个东西直接就派活"也放过去。
+   */
+  const scopeIdText = txt(input.scope.id)
+  const isPlaceholderScope = scopeIdText === 'implicit'
+  const rootExists = isPlaceholderScope || input.units.some((u) => txt(u.id) === scopeIdText)
+  if (!rootExists) {
+    return {
+      decision: 'hold',
+      scope: scopeText,
+      blockers: [{
+        rule: 'S-04',
+        unit: scopeIdText || '(missing)',
+        why: `作用域根 ${scopeIdText || '(missing)'} 不在账本里 ⇒ 判不出可放行`
+          + '（⛔ 不按"没有阻塞"放行：那是 fail-open）',
+      }],
+      allowedRepairs: [],
+    }
+  }
   const scopeUnits = gateScopeUnits(input.units, input.scope)
   const scopeIds = new Set(scopeUnits.map((u) => txt(u.id)))
   const blockers = [
@@ -671,10 +1389,20 @@ export function returnStageOf(cause: BlockCause): StageId | null {
 export function gateProblemsAt(stage: StageId, units: readonly StageControlUnit[]): StageControlProblem[] {
   switch (stage) {
     case 'requirements': return units.flatMap(requirementProblems)
-    case 'plan': return units.flatMap(planProblems)
-    case 'tasks': return units.flatMap(taskProblems)
+    case 'plan': return units.flatMap((u) => planProblems(u, units))
+    /**
+     * ⚠⚠ **R-17（2026-11-11）：这里原来用 `taskProblems`（弱判据），
+     *   而 `:1064` 的 `stageFieldProblems` 用的是 `taskFullProblems`（含风险）。
+     *   ⇒ **同一个账本，走两条路会得到不同结论** —— 那正是 T 组要治的「出口分裂」。
+     *
+     *   `taskFullProblems` = `taskProblems` + `taskRiskProblems`（见 `:582-584`），
+     *   是**严格超集** ⇒ 改过来只会**多拦**、不会少拦（⛔ 不是放宽）。
+     */
+    case 'tasks': return units.flatMap(taskFullProblems)
     case 'execution': return units.flatMap(runProblems)
     case 'acceptance': return units.flatMap((u) => acceptanceProblems(u, units))
+    case 'verification': return units.flatMap((u) => verificationProblems(u, units))
+    case 'closure': return units.flatMap((u) => closureProblems(u, units))
   }
 }
 

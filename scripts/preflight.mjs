@@ -29,7 +29,26 @@ import { workspaceName } from './workspace-name.mjs'
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 
-/** 判据里"记录区"的派生口径与 `src/server/doc-read.ts` 同源（此处只读预设行，不引代码）。 */
+/**
+ * 账本根判据 —— **与 `src/server/doc-read.ts` 同口径：未配 `ledgerHome` ⇒ 判不出**。
+ *
+ * ⚠⚠ **R-11：删掉了「兄弟目录派生」那一档**（`<工作区父目录>/.hob-ledgers/<工作区名>/`）。
+ *
+ *   ── 改前是什么（同一件事三处口径）──────────────────────────────────────
+ *     · `doc-read.ts:139-146`：空串 ⇒ `undefined`（**fail-closed**，⛔ 不猜）
+ *     · `tools.ts` 的注释 + 本脚本的 ② 档：**仍派生兄弟目录**
+ *     · `README.md`（已更正）：空串 = 判不出
+ *   ⇒ **照 README 配的人会得到「账本落点判不出」的拒绝，而体检说「记录区在位」。**
+ *
+ *   ── 为什么体检必须跟着收严（⛔ 不是"体检可以宽松点"）──────────────
+ *     体检的作用是**在动手前告诉你缺什么**。它若按一条**运行时不存在的规则**报「在位」，
+ *     那不是"宽松"，是**给了一个假保证** —— 与「跳过不计入通过」是同一条纪律。
+ *
+ *   ⚠ 代价（照实记）：本仓历史上确实用过兄弟目录，**存量工作区可能真在那儿**。
+ *     ⇒ 不静默删掉那一档，而是**把它降为"提示"**：`how: 'legacy-sibling'`，
+ *       在体检行里**明说「这是历史布局，运行时不认，请显式配 ledgerHome」**。
+ *       ⛔ 不许把它当 `present: true` 的正规在位。
+ */
 export function deriveLedgerRoot() {
   // ① 预设行声明的 `ledgerHome`（唯一权威；⛔ 不硬编码本机路径）
   const candidates = []
@@ -45,10 +64,19 @@ export function deriveLedgerRoot() {
     const dir = join(home, wsName)
     if (existsSync(dir)) return { dir, how: 'preset' }
   }
-  // ② 缺省派生态：`<工作区父目录>/.hob-ledgers/<工作区名>/`
-  const fallback = join(dirname(resolve(root)), '.hob-ledgers', wsName)
-  if (existsSync(fallback)) return { dir: fallback, how: 'derived' }
-  return { dir: fallback, how: 'missing' }
+  /**
+   * ② ⚠ **历史布局（运行时已不认）**：`<工作区父目录>/.hob-ledgers/<工作区名>/`
+   *
+   * ⚠ 单独一个 `how`，⛔ 不与 `preset` 混。调用方据此把它当**提示**而不是"在位"。
+   */
+  const legacySibling = join(dirname(resolve(root)), '.hob-ledgers', wsName)
+  if (existsSync(legacySibling)) return { dir: legacySibling, how: 'legacy-sibling' }
+  /**
+   * ③ **判不出** —— 与运行时同口径。
+   *   `dir` 给一个"本该在哪"的示意（预设父目录 + 工作区名），但 `how` 明说是 missing。
+   */
+  const expected = candidates.length > 0 ? join(candidates[0], wsName) : undefined
+  return { dir: expected, how: 'missing' }
 }
 
 /**
@@ -147,14 +175,23 @@ export function preflight() {
   // ── ③ 记录区（账本区）────────────────────────────────────────────────
   {
     const { dir, how } = deriveLedgerRoot()
-    const present = how !== 'missing'
+    /**
+     * ⚠⚠ **R-11：`legacy-sibling` ⛔ 不算「在位」。**
+     *   它是**历史布局**，运行时的 `resolveLedgerRoot` 已经**不再派生**它
+     *   ⇒ 若体检把它报成在位，用户会去配一个运行时不认的路径，然后在第一次写账本时被拒。
+     */
+    const present = how === 'preset'
+    const legacy = how === 'legacy-sibling'
     items.push({
       key: 'ledger',
       present,
       line: present
-        ? `记录区在位（${how === 'preset' ? '取自预设行声明' : '按缺省规则派生'}）：\`${dir}\``
-        : `缺记录区：\`${dir}\` 不在 ⇒ **首次使用这是正常状态**（插件第一次在某工作区干活时会把它建出来）；`
-          + '⚠ 在那之前，凡是要读记录区的判据都会打「未执行 / 不代表通过」—— 那不是"通过"',
+        ? `账本父目录在位（取自预设行声明）：\`${dir}\``
+        : legacy
+          ? ('⚠ **历史布局**：`' + dir + '` 存在，但**运行时不认这一档**（resolveLedgerRoot 已删除兄弟目录派生）'
+            + '\n      ⇒ 要么在预设里显式写 ledgerHome，要么把账本搬过去；⛔ 别指望工具自己找到它')
+          : `缺账本父目录：\`${dir ?? '(预设未声明 ledgerHome)'}\` ⇒ **首次使用这是正常状态**（插件第一次在某工作区干活时会把它建出来）；`
+            + '⚠ 在那之前，凡是要读账本区的判据都会打「未执行 / 不代表通过」—— 那不是"通过"',
       affects: present ? [] : ['check:archive', 'check:rounds', 'check:readings', 'check:gitignore（账本区那几组）'],
     })
   }

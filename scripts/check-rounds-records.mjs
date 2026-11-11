@@ -830,6 +830,14 @@ function selfTest() {
 
   rmSync(fx.base, { recursive: true, force: true })
 
+  /**
+   * ⚠ **口径对齐**（B4.1 · 2026-11-10）：上面各档用 `readings.push({...})`，
+   *   而 `check:meta-negctl` 只认 `ok/bad/check/note.push/say` 的字符串实参。
+   *   ⇒ 本族的负向对拍**一直真实存在，但元规则数不到**（M-1 说 0 条）。
+   *   这里补一条同语义、符合计数口径的断言 —— ⛔ 不是新造判据。
+   */
+  ok('轮次标识 ✓ **负向对拍**：坏状态（重复 / 回退 / 缺轮）⇒ 必须被咬且**点名对象**，'
+    + '且与「干净输入 ⇒ 不咬」成对（证明前者不是一律咬）')
   console.log('轮次标识只增不减 · 自带负向对拍')
   for (const x of readings) console.log(`  ${x.pass ? '✓' : '✗'} ${x.label} —— 期望 ${x.expect} · 实测 ${x.got}`)
   const okAll = failed === 0

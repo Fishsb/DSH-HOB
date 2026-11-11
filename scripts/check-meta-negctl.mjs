@@ -11,6 +11,9 @@
  *   ① **数的是"打出来的标签"**，不是注释里的字：
  *      只扫 `ok(...)` / `bad(...)` 的第一个字符串字面量里含 `负向对拍` 的那些 ——
  *      ⚠ 注释里写"要有负向对拍"**不算**（那正是假的来源）。
+ *      ⚠ 2026-11-10 · S-16：本模块此前**没做到**这一条（注释 / 字符串里的"假调用"照样被数）。
+ *        现在先做**词法安全的剥注释**（行注释 / 块注释 / JSDoc / 正则 / 引号串 / 模板串），
+ *        并且只数"代码位置"的调用 ⇒ 字符串字面量里的假调用计 **0**（判据见 N-M1c / N-M1d）。
  *   ② **沿 import 闭包数**（`from './x.mjs'` 递归）：
  *      一个族可能把判据拆在多个文件里（`check:gitignore` 就 import 了 4 个模块）。
  *   ③ 与**登记表**（`scripts/meta-negative-floor.json`）比：
@@ -36,28 +39,189 @@ export const SELFPROOF_PATH = join(here, 'meta-selfproof-floor.json')
 /**
  * 匹配**一条断言调用**的第一个字符串字面量（模板串或普通串）。
  *
- * ⚠ 覆盖四种既有写法（2026-10-30 P7 从 2 种扩到 4 种，原因见下）：
+ * ⚠ 覆盖五种既有写法（2026-10-30 P7 从 2 种扩到 4 种 · 2026-11-10 B4.1 扩到 5 种）：
  *   `ok(` / `bad(` —— 主流两族（`check:gitignore` 等）；
  *   `note.push(` —— `check:experience` 的"查过且过"通道；
- *   `check(` —— `module-independence-probe` / `check-orch-state` 的通道。
+ *   `check(` —— `module-independence-probe` / `check-orch-state` 的通道；
+ *   **`say(` —— `check:build-sync` / `check-profile-assembly` / `probe-selfwake-e2e` 的通道**。
  * ⚠ **为什么要扩**：P7 给 `check:experience` 与 `check:modules` 各补了一条负向对拍，
  *   但它们用的不是 `ok(...)` ⇒ 旧口径**数不到**，表现为"补了但 M-1 还说 0 条"。
  *   ⚠ 那是**口径漏了写法**，不是"补的对拍不存在"—— 扩口径（⛔ 不是把对拍改写成 `ok()` 去迎合）。
  *   ⚠ 代价：历史上这几族的读数会一起变高（口径更宽）⇒ 登记表同批抬，符合"只准升"。
+ *
+ * ⚠⚠ **`say(` 的形参位置不同**（2026-11-10 B4.1 实测）：
+ *   三族的 `say` 签名都是 `say(pass, line, why)` ⇒ **标签在第二个实参**，
+ *   而 `ok/bad/note.push/check` 的标签在**第一个**。
+ *   ⚠ 若只把 `say` 加进上面的备选分支，会数到**第一个实参**（通常是布尔变量 `ok`）⇒ 仍然 0 条。
+ *   ⇒ 单独一条正则：`say(` 后跳过第一个实参（到逗号为止），再取第二个字符串字面量。
  */
 const CALL_LIT_RE = /(?:ok|bad|note\.push|check)\(\s*(?:`([^`]*)`|'([^']*)')/gs
 
 /**
- * 从一个源文本里数「负向对拍」标签数（⚠ 只数 `ok`/`bad` 的第一个字面量）。
+ * `say(pass, line, why)` 通道：标签在**第二个**实参。
+ *
+ * ⚠ 第一个实参可能是 `ok` / `stillUndecidable && positive.verdict === 'lagging'` 这类表达式，
+ *   里面**可能含逗号**（如 `f(a, b)`）⇒ 简单 `[^,]*` 会截断。
+ *   本仓实测三族的第一个实参**都没有嵌套逗号**（只有 `&&` / `===` / 标识符），
+ *   但为稳妥仍允许一层括号：先尝试"到第一个顶层逗号"，匹配不到再退回宽松写法。
+ */
+const SAY_LIT_RE = /\bsay\(\s*[^,()]*(?:\([^()]*\))?[^,()]*,\s*(?:`([^`]*)`|'([^']*)')/gs
+
+// ── 词法安全的注释剥离（S-16 · 2026-11-10）──────────────────────────────────────
+// 旧实现直接对**原文**跑 CALL_LIT_RE ⇒ 下面五种写法全被数成 1 条：
+//   ① 真标签                 bad('负向对拍：改坏实现 ⇒ 必须红')            → 应为 1
+//   ② 行注释                 // bad('负向对拍：…')                          → 应为 0
+//   ③ 块注释 / JSDoc         /* ok('负向对拍：…') */                        → 应为 0
+//   ④ 字符串字面量里的假调用 const s = "bad('负向对拍：…')"                 → 应为 0
+//   ⑤ 模板串里的假调用       const t = `x bad('负向对拍：…')`         → 应为 0
+// ⇒ 于是"把一条会红的对拍注释掉（加两个斜杠）"照旧全绿：M-1 可以被绕过（S-16）。
+//
+// 修法：先做一遍**只标记、不改语义**的词法扫描，再只在"代码位置"认调用：
+//   · 注释整段换成**等量空格**（换行原样保留 ⇒ 行号 / 偏移不变），mask = 0；
+//   · 单引号串 / 双引号串 / 模板串（含 ${} 插值里的注释，递归处理）/ 正则字面量整段 mask = 0；
+//   · 其余位置 mask = 1。
+// 三条边界（缺一不可）：
+//   (a) 字符串里的 `//`、`/*` 不能被当注释（含 URL 'https://e.com//x'、正则 /[/*]/）；
+//   (b) 模板串必须**整段**跳过：多行模板里的 `//` 不是注释；不能"遇换行就 break"；
+//   (c) JSDoc 与块注释同语法，整块剥离。
+// ⚠ 正则识别是**启发式**（看 `/` 前一个有效字符 / 关键字）；本仓实测：
+//   "加正则识别"与"不加"逐族读数完全一致 ⇒ 不会吃掉真标签；唯一差异族是本族自身（4 → 3）。
+const BACKTICK = '\u0060'
+/** `/` 的前一个有效字符属于这些 ⇒ 它是正则字面量（而不是除号）。 */
+const REGEX_PREV_CHARS = new Set(['(', '[', '{', ',', ';', '=', ':', '!', '&', '|', '?', '+', '-', '*', '%', '<', '>', '~', '^'])
+/** 同上，但前一个 token 是关键字（`return /re/` / `typeof /re/` …）。 */
+const REGEX_PREV_WORDS = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'case', 'yield', 'await', 'do', 'else'])
+
+/**
+ * 剥注释（**保留行号与偏移**），并给出"该位置是不是代码"的掩码。
+ *
+ * @param {string} src - 源文本
+ * @returns {{code: string, mask: Uint8Array}} `code` 与入参**等长**（注释换成空格、换行保留）；`mask[k] === 1` ⇒ 原文第 k 个字符在代码位置（不在注释 / 字符串 / 模板串 / 正则里）
+ */
+export function stripCommentsKeepLines(src) {
+  const text = String(src ?? '')
+  const n = text.length
+  const out = Array.from(text)
+  const mask = new Uint8Array(n)
+  mask.fill(1)
+  const blankRange = (a, b) => { for (let k = a; k < b && k < n; k++) { if (out[k] !== '\n') out[k] = ' '; mask[k] = 0 } }
+  const hideRange = (a, b) => { for (let k = a; k < b && k < n; k++) mask[k] = 0 }
+  const prevSignificant = (i) => { let b = i - 1; while (b >= 0 && /\s/.test(out[b])) b--; return b }
+  const regexAllowed = (i) => {
+    const b = prevSignificant(i)
+    if (b < 0) return true
+    const ch = out[b]
+    if (REGEX_PREV_CHARS.has(ch)) return true
+    if (!/[A-Za-z0-9_$]/.test(ch)) return false
+    let s = b
+    while (s >= 0 && /[A-Za-z0-9_$]/.test(out[s])) s--
+    return REGEX_PREV_WORDS.has(out.slice(s + 1, b + 1).join(''))
+  }
+  const scanQuoted = (start) => {
+    const q = out[start]
+    let j = start + 1
+    while (j < n) {
+      const c = out[j]
+      if (c === '\\') { j += 2; continue }
+      if (c === q) { j++; break }
+      if (c === '\n') break
+      j++
+    }
+    hideRange(start, j)
+    return j
+  }
+  const scanTemplate = (start) => {
+    mask[start] = 0
+    let j = start + 1
+    while (j < n) {
+      const c = out[j]
+      if (c === '\\') { mask[j] = 0; if (j + 1 < n) mask[j + 1] = 0; j += 2; continue }
+      if (c === BACKTICK) { mask[j] = 0; return j + 1 }
+      if (c === '$' && out[j + 1] === '{') { mask[j] = 0; mask[j + 1] = 0; j = scanBraced(j + 2); continue }
+      mask[j] = 0
+      j++
+    }
+    return n
+  }
+  const scanRegex = (start) => {
+    let j = start + 1
+    let inClass = false
+    while (j < n) {
+      const c = out[j]
+      if (c === '\\') { j += 2; continue }
+      if (c === '\n') break
+      if (c === '[') { inClass = true; j++; continue }
+      if (c === ']') { inClass = false; j++; continue }
+      if (!inClass && c === '/') { j++; break }
+      j++
+    }
+    while (j < n && /[a-z]/i.test(out[j])) j++
+    hideRange(start, j)
+    return j
+  }
+  /** 扫描 ${...} 里的代码，直到与开头配对的 }（返回其后的位置）。 */
+  function scanBraced(start) {
+    let depth = 1
+    let j = start
+    while (j < n) {
+      const c = out[j]
+      if (c === '/' && out[j + 1] === '/') { let e = j + 2; while (e < n && out[e] !== '\n') e++; blankRange(j, e); j = e; continue }
+      if (c === '/' && out[j + 1] === '*') { let e = j + 2; while (e < n && !(out[e] === '*' && out[e + 1] === '/')) e++; e = Math.min(e + 2, n); blankRange(j, e); j = e; continue }
+      if (c === '"' || c === "'") { j = scanQuoted(j); continue }
+      if (c === BACKTICK) { j = scanTemplate(j); continue }
+      if (c === '/' && regexAllowed(j)) { j = scanRegex(j); continue }
+      if (c === '{') { depth++; j++; continue }
+      if (c === '}') { depth--; j++; if (depth === 0) return j; continue }
+      j++
+    }
+    return n
+  }
+  let i = 0
+  while (i < n) {
+    const c = out[i]
+    if (c === '/' && out[i + 1] === '/') { let e = i + 2; while (e < n && out[e] !== '\n') e++; blankRange(i, e); i = e; continue }
+    if (c === '/' && out[i + 1] === '*') { let e = i + 2; while (e < n && !(out[e] === '*' && out[e + 1] === '/')) e++; e = Math.min(e + 2, n); blankRange(i, e); i = e; continue }
+    if (c === '"' || c === "'") { i = scanQuoted(i); continue }
+    if (c === BACKTICK) { i = scanTemplate(i); continue }
+    if (c === '/' && regexAllowed(i)) { i = scanRegex(i); continue }
+    i++
+  }
+  return { code: out.join(''), mask }
+}
+
+/**
+ * 从一个源文本里数「负向对拍」标签数（⚠ 只数 `ok` / `bad` / `note.push` / `check` 的**第一个实参**）。
  *
  * @param {string} src - 源文本
  * @returns {number} 命中数
  */
 export function countLabels(src) {
+  const { code, mask } = stripCommentsKeepLines(String(src ?? ''))
+  return countLabelsOnCode(code, mask)
+}
+
+/**
+ * 在**已剥注释**的文本上数标签：只认"代码位置"的调用。
+ * ⚠ 字符串字面量里的假调用（`const s = "bad('负向对拍…')"`）**不算**：
+ *   它的 `bad(` 落在 mask = 0 的位置 ⇒ 那只是字符串内容，不是调用。
+ *
+ * @param {string} code - `stripCommentsKeepLines` 产出的代码文本
+ * @param {Uint8Array} [mask] - 同一套扫描产出的掩码（缺省 ⇒ 视作全是代码，仅供单测）
+ * @returns {number} 命中数
+ */
+export function countLabelsOnCode(code, mask) {
   let n = 0
-  for (const m of src.matchAll(CALL_LIT_RE)) {
-    const s = m[1] ?? m[2] ?? ''
-    if (s.includes('负向对拍')) n += 1
+  /**
+   * ⚠ **两条正则都跑**（2026-11-10 B4.1）：`say(` 的标签在第二个实参，
+   * 与 `ok/bad/note.push/check`（第一个实参）不能共用一条正则。
+   * ⚠ 不去重：一条调用只可能命中其中一条（`say(` 与那四个名字不重叠）。
+   */
+  for (const re of [CALL_LIT_RE, SAY_LIT_RE]) {
+    for (const m of code.matchAll(re)) {
+      if (mask !== undefined && (m.index === undefined || mask[m.index] !== 1)) continue
+      const s = m[1] ?? m[2] ?? ''
+      if (s.includes('负向对拍')) n += 1
+    }
   }
   return n
 }
@@ -264,6 +428,104 @@ if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.
       if (!reallyZero) bad(`N-M1 · 夹具没把计数压到 0（实测 ${m2[target]?.count}）⇒ 自指对拍不可判`)
       else if (probs0.length > 0) ok(`N-M1 ✓ 负向对拍（清空 ${target} 的对拍标签 ⇒ 0 < 下限 ${floor[target]}）⇒ M-1 必红`)
       else bad('N-M1 · 清空后仍通过 ⇒ 数的是登记表不是实测')
+    }
+  }
+
+  /**
+   * **N-M1c · 剥注释自证**（S-16）：十三个用例逐个对齐口径。
+   * ⚠ `stringLiteral` / `templateBody` / `callInsideStringArg` 期望 **0**：
+   *   它们是字符串内容，不是调用（A 方案：先定位**代码位置**的调用，再取第一个实参）。
+   *   旧口径会把它们数成 1 ⇒ "把标签塞进任意字符串"仍能凑数（同一个漏洞换个壳）。
+   * ⚠ 额外钉住三条真实边界：多行模板串里的 `//`、模板插值里的 `//`、正则里的斜杠星号。
+   */
+  {
+    const TAG = '负向对拍'
+    const NL = '\n'
+    const CASES = [
+      ['plain', 'ok(\'' + TAG + '\')', 1],
+      ['lineComment', '// bad(\'' + TAG + '\')' + NL + 'const x = 1', 0],
+      ['blockComment', '/* ok(\'' + TAG + '\') */' + NL + 'const y = 2', 0],
+      ['jsdoc', '/**' + NL + ' * bad(\'' + TAG + '\')' + NL + ' */' + NL + 'const z = 3', 0],
+      ['stringLiteral', 'const s = "bad(\'' + TAG + '\')"', 0],
+      ['templateBody', 'const t = ' + BACKTICK + 'x bad(\'' + TAG + '\') y' + BACKTICK, 0],
+      ['urlInString', 'const u = "https://e.com//x"; ok(\'' + TAG + '\')', 1],
+      ['regexClass', 'const r = /[/*]/; ok(\'' + TAG + '\')', 1],
+      ['multilineTemplate', 'const t = ' + BACKTICK + 'a' + NL + '// b bad(\'' + TAG + '\')' + NL + 'c' + BACKTICK + '; ok(\'' + TAG + '\')', 1],
+      ['templateInterpolation', 'ok(' + BACKTICK + '$' + '{x + "//"} ' + TAG + BACKTICK + ')', 1],
+      ['divisionNotRegex', 'const q = a / b; ok(\'' + TAG + '\')', 1],
+      ['regexWithSlashes', 'const r2 = /https?:\\/\\//; ok(\'' + TAG + '\')', 1],
+      ['callInsideStringArg', 'bad("ok(\'' + TAG + '\')")', 0],
+    ]
+    const wrong = CASES
+      .map(([label, src, want]) => ({ label, want, got: countLabels(src) }))
+      .filter((x) => x.got !== x.want)
+    if (wrong.length === 0) {
+      ok('N-M1c 剥注释自证：' + CASES.length + ' 个用例逐个符合（行/块/JSDoc 注释 · 字符串里的双斜杠 · 多行模板串 · 正则里的斜杠星号 都覆盖）')
+    } else {
+      for (const w of wrong) bad('N-M1c · ' + w.label + ' 实 ' + w.got + ' 期望 ' + w.want + ' ⇒ 计数器仍被非代码文本干扰')
+    }
+  }
+
+  /**
+   * **N-M1d · 注释掉一条真对拍 ⇒ 计数必降 / M-1 必红**（S-16 的核心负向对拍，纯内存、不落盘）。
+   *   选一个**零余量**的族（实测 == 下限 > 0），在它的入口或闭包里定位一条
+   *   **代码位置**的真对拍，把那一处注释掉 ⇒ 计数必须下降，且 compareFloors 必须报红。
+   * ⚠ 旧实现下本条会失败：被注释的标签仍在原文里 ⇒ 计数不变（M-1 照旧绿），
+   *   那正是 S-16 的病灶（"加两个斜杠就能绕过 M-1"）。
+   */
+  {
+    const famsAll = familiesFromPkg()
+    const zeroMargin = Object.keys(measured)
+      .filter((f) => floor[f] !== undefined && measured[f].count === floor[f] && measured[f].count > 0)
+      .sort()
+    const candidates = zeroMargin.length > 0
+      ? zeroMargin
+      : Object.keys(measured).filter((f) => measured[f].count > 0).sort()
+    let demo = null
+    for (const fam of candidates) {
+      const entry = famsAll[fam].replace(/^scripts\//, '')
+      for (const file of importClosure(entry)) {
+        let src = ''
+        try { src = readFileSync(join(here, file), 'utf8') } catch { src = '' }
+        if (src === '') continue
+        const scan = stripCommentsKeepLines(src)
+        const hits = []
+        /** ⚠ 两条正则都跑（`say(` 的标签在第二个实参，见 `SAY_LIT_RE` 的注释）。 */
+        for (const re of [CALL_LIT_RE, SAY_LIT_RE]) for (const m of scan.code.matchAll(re)) {
+          if (m.index === undefined || scan.mask[m.index] !== 1) continue
+          const s = m[1] ?? m[2] ?? ''
+          if (s.includes('负向对拍')) hits.push(m.index)
+        }
+        if (hits.length > 0) {
+          const at = hits[0]
+          demo = { fam, file, at, line: scan.code.slice(0, at).split('\n').length, src }
+          break
+        }
+      }
+      if (demo !== null) break
+    }
+    if (demo === null) {
+      bad('N-M1d · 找不到可注释的真实对拍处 ⇒ 本条不可判（不按通过处理）')
+    } else {
+      const beforeFile = countLabels(demo.src)
+      const commented = demo.src.slice(0, demo.at) + '// ' + demo.src.slice(demo.at)
+      const afterFile = countLabels(commented)
+      const m2 = measureFamilies({ [demo.fam]: famsAll[demo.fam] }, { [demo.file]: commented })
+      const beforeFam = measured[demo.fam].count
+      const afterFam = m2[demo.fam] !== undefined ? m2[demo.fam].count : 0
+      const probs = compareFloors({ [demo.fam]: m2[demo.fam] }, floor)
+      const canProveRed = floor[demo.fam] !== undefined && beforeFam === floor[demo.fam]
+      if (afterFile >= beforeFile) {
+        bad('N-M1d · 注释掉一条真对拍后计数 ' + beforeFile + ' -> ' + afterFile + '（没下降）⇒ 计数器仍在读注释')
+      } else if (afterFam !== beforeFam - (beforeFile - afterFile)) {
+        bad('N-M1d · 族读数没跟着降（' + beforeFam + ' -> ' + afterFam + '，本文件降了 ' + (beforeFile - afterFile) + '）⇒ 计数口径不一致')
+      } else if (canProveRed && probs.length === 0) {
+        bad('N-M1d · 注释掉一条真对拍后 M-1 仍通过 ⇒ 它数的是登记表、不是实测')
+      } else if (canProveRed) {
+        ok('N-M1d 注释掉真对拍 ⇒ 计数必降：把 ' + demo.fam + ' 的 ' + demo.file + ':' + demo.line + ' 那条真对拍注释掉，计数 ' + beforeFam + ' -> ' + afterFam + '（实测 ' + afterFam + ' < 下限 ' + floor[demo.fam] + '）⇒ **M-1 必红**')
+      } else {
+        ok('N-M1d 注释掉真对拍 ⇒ 计数 ' + beforeFam + ' -> ' + afterFam + '（下降；⚠ 当前无零余量族，本条只证计数下降，未演示 M-1 红）')
+      }
     }
   }
 

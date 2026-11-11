@@ -42,7 +42,31 @@
  *   新增字段会把那条既有判据顶红；而复用同一字段**不改变** `action:'read'` 的取值集。
  * ⚠ 为什么**共用** `unknown` 而不另造一个：两轴的"判不出"行为必须一样（不打扰）。
  */
-export type PolicyRecordWireState = 'recorded' | 'unrecorded' | 'not-applicable' | 'unknown' | 'blocked' | 'clear'
+/**
+ * ── **O-08：六值必须**按轴拆开**，⛔ 不混在一个类型里** ──────────────────────
+ *
+ * ⚠ 改前是**一个** `PolicyRecordWireState = 'recorded' | 'unrecorded' | 'not-applicable'
+ *   | 'unknown' | 'blocked' | 'clear'` —— **两条轴的值混在一起**：
+ *
+ * | 轴 | 值 | 由谁产生 |
+ * |---|---|---|
+ * | **读轴**（`action:'read'`） | `recorded` / `unrecorded` / `not-applicable` / `unknown` | `classifyPolicyRecord` |
+ * | **写轴**（`action:'write'`） | `blocked` / `clear` | 写入路径 |
+ *
+ * ⚠ 后果：`classifyPolicyRecord` 的**返回类型**允许 `blocked` / `clear`，
+ *   但它**永远不会**返回它们 ⇒ 调用方 `switch` 时要多写两个不可能分支，
+ *   或者（更糟）**少写**两个、以为它们不可能出现。
+ *   ⇒ 类型系统在这里**没有帮上忙**，反而给了假的完备性。
+ *
+ * ⚠ 拆开后：
+ *   · `PolicyRecordReadState` —— 读轴四值（`classifyPolicyRecord` 的返回域）；
+ *   · `PolicyRecordWriteState` —— 写轴两值；
+ *   · `PolicyRecordWireState` —— 线格式的**并集**（线上确实两种都可能出现，保留）。
+ * ⇒ **线格式不变**（⛔ 不动 G-16「只有一个语义字段」那条判据），只是把类型收紧。
+ */
+export type PolicyRecordReadState = 'recorded' | 'unrecorded' | 'not-applicable' | 'unknown'
+export type PolicyRecordWriteState = 'blocked' | 'clear'
+export type PolicyRecordWireState = PolicyRecordReadState | PolicyRecordWriteState
 
 /** 客户端用的三态（⚠ 与 `hob-unselected-gate.tsx` 的 `PolicyRecordState` 同义）。 */
 export type PolicyRecordClientState = 'recorded' | 'unrecorded' | 'unknown'
@@ -115,7 +139,11 @@ export interface PolicyRecordProbe {
  * @param probe - host 侧读到的视图（可缺席）。
  * @returns 线格式四态。
  */
-export function classifyPolicyRecord(probe: PolicyRecordProbe | undefined): PolicyRecordWireState {
+/**
+ * ⚠ **返回类型收紧成读轴四值**（O-08）：它从不返回 `blocked` / `clear`，
+ *   类型就该这么说 —— ⛔ 不要让调用方为一个不可能的返回值写分支。
+ */
+export function classifyPolicyRecord(probe: PolicyRecordProbe | undefined): PolicyRecordReadState {
   if (probe === undefined) return 'unknown'
   if (probe.isHob !== true) return 'not-applicable'
   if (UNDECIDABLE_SOURCES.includes(String(probe.source))) return 'unknown'
