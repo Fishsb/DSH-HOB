@@ -65,7 +65,7 @@
 | O-42 | 已修 | `scripts/check-gitignore.mjs:472` |
 | O-43 | 已修 | `src/server/hob-write.ts:1273` |
 | R-01 | 部分修 | ⚠ 只做了第 1/3 段 |
-| R-02 | 核心已修 | ⚠ 验收规格本身过宽，需修订 |
+| R-02 | 核心已修 | ⚠ **验收规格过宽**：`REVIEW-VOL2-1.md:211` 要求「`summarizeStage` / `pipelineViewOf` / `displayState` **三者对每一步一致**」，但 `buildStages` 的 docstring 明写职责是「渲染单元数组」，**不需要** `activeStage`。按字面实现会破坏职责边界。实测：前两者已同源派生（`requirement-chain.ts:348/:381`），第三者按设计不感知主线 |
 | R-03 | 已修 | `src/shared/stages-index.ts:32` |
 | R-04 | 已修 | `spec/notes-handover.md:244` + `patch.yml:434` 已改七步（§107） |
 | R-05 | 已修 | `src/shared/pipeline-view.ts:742` |
