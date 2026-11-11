@@ -836,3 +836,73 @@ O-04  十维风险里 4 个维度不参与任何推导
 ```
 
 ---
+
+---
+
+## §181 S-12 与 O-04 两条已修（O-04 走的是「或」的第二分支）
+
+### 181.1 S-12：负控从 **0 → 12**
+
+```bash
+grep -c '负向对拍|负控' scripts/check-readings-citable.mjs   →  12
+npm run check:readings                                      →  查了 4 处 · 过了 4 处
+grep "'check:readings'" scripts/check-all.mjs                →  ['check:readings', 4]
+```
+
+⚠ REVIEW 说「3 条断言、**0 条负控**」⇒ 负控已从 0 增到 12，断言 4 条与下界一致。
+
+**「强制范围只从 R208 起」保留了** —— 但那是有意的设计：
+
+```
+⚠ 本判据对 R208 及以后的报告强制执行；对更早的只统计并报告（⛔ 不 FAIL）。
+  （⚠ 实测：R120–R207 共 12 处，⚠ 而 R208 起全绿）
+```
+
+⇒ 与 `check-experience.mjs` 的**先例一致**（强制起始轮），
+   ⛔ 不是「覆盖不全」，而是「历史快照不追责、新报告必守」。
+
+### 181.2 O-04：十维里四维只计分 —— **走「或」的第二分支**
+
+REVIEW 的修法原文给了两条路：
+
+```
+要么给这四维补 floor 规则（uncertainty=unknown ⇒ 至少 medium），
+要么在注释里写明「四维只计分」
+```
+
+`risk-policy.ts:213-241` 走的是**第二条**，且写得比要求更完整：
+
+```
+| 维度 | 显式 floor 规则 |
+|---|---|
+| severity | ✅ 4 ⇒ high |
+| reversibility | ✅ irreversible ⇒ high |
+| scope | ✅ external ⇒ high |
+| exposure | ✅ public ⇒ high |
+| detectability | ✅ latent 且 severity≥3 ⇒ high |
+| recoveryTime | ✅ unknown 且 severity≥3 ⇒ high |
+| **uncertainty / changeSurface / dependencies / verificationMaturity** | ❌ 零命中 |
+
+⚠ 这不是缺陷（四维通过 score 参与总分，总分再经 tierOfScore 换算）——
+  但必须写明：读的人看到「十维风险评定」，会以为每一维都能单独抬高档位。
+  而实际只有六维能。
+
+⛔ 不要为了「对称」给这四维补 floor 规则 —— 那会改变所有既有账本的风险档位，
+  是一次**语义变更**，不是修 bug。真要补，先回答：experimental 应该抬到哪一档？
+  （本仓没有这个答案，⛔ 不猜。）
+```
+
+⇒ ✅ **已修**（按规格允许的第二条路），并额外说明了为什么**不该**走第一条。
+
+### 181.3 进度
+
+| 状态 | 条数 |
+|---|---|
+| 全量已修 | **57**（+S-12 +O-04） |
+| 部分修 | 2（R-01 · T-13） |
+| 核心已修 + 规格需修订 | 1（R-02） |
+| 按设计处理 | 1（T-07） |
+| 未修 | 1（S-01） |
+| 未核 | **50** |
+
+---
