@@ -218,10 +218,32 @@ try {
     const m = new RegExp(`${name}\\s*=\\s*'([^']*)'`).exec(src) ?? new RegExp(`${name}\\s*=\\s*"([^"]*)"`).exec(src)
     return m === null ? undefined : (m[1] ?? m[2])
   }
+  /**
+   * ⚠ **R-03（2026-11-11）：两种写法都要认** ────────────────────────────
+   *   ① 字面量： STAGES_STEP_NAMES = ['需求规格', …] as const
+   *   ② 派生：   STAGES_STEP_NAMES = [STAGE_NAMES.requirements, …] as const
+   *   ⚠ 派生是**正确形态**（stage-controls.ts 的 STAGE_NAMES 是唯一权威）；
+   *     旧断言只认字面量 ⇒ 一改派生就报「判据失去基准」，那是**判据挡住了正解**。
+   *   ⇒ 派生分支：从 stage-controls.ts 读 STAGE_NAMES 真值，按同序取 7 项。
+   *   ⚠ 这不放松：它比字面量分支**更严** —— 顺带能发现 STAGE_NAMES 本身漂移。
+   */
   const stepNamesMatch = /STAGES_STEP_NAMES\s*=\s*\[([\s\S]*?)\]\s*as const/.exec(src)
-  const prodSteps = stepNamesMatch === null
-    ? []
-    : [...stepNamesMatch[1].matchAll(/'([^']*)'|"([^"]*)"/g)].map((x) => x[1] ?? x[2])
+  const rawSteps = stepNamesMatch === null ? '' : stepNamesMatch[1]
+  const prodSteps = (() => {
+    if (rawSteps === '') return []
+    /** ① 字面量分支 */
+    const lits = [...rawSteps.matchAll(/'([^']*)'|"([^"]*)"/g)].map((x) => x[1] ?? x[2])
+    if (lits.length > 0) return lits
+    /** ② 派生分支：读 stage-controls.ts 的 STAGE_NAMES 真值 */
+    let ctrl = ''
+    try { ctrl = readFileSync(join(root, 'src', 'shared', 'stage-controls.ts'), 'utf8') } catch { return [] }
+    const namesBlock = /export const STAGE_NAMES[^=]*=\s*\{([\s\S]*?)\n\}/.exec(ctrl)
+    if (namesBlock === null) return []
+    const byKey = {}
+    for (const m of namesBlock[1].matchAll(/(\w+)\s*:\s*'([^']*)'/g)) byKey[m[1]] = m[2]
+    /** 按 STAGES_STEP_NAMES 里出现的 STAGE_NAMES.<key> 顺序取 */
+    return [...rawSteps.matchAll(/STAGE_NAMES\.(\w+)/g)].map((m) => byKey[m[1]]).filter((x) => typeof x === 'string')
+  })()
   const prodUnwired = pickStr('STAGES_UNWIRED_LABEL')
   const prodKind = pickStr('STAGES_TAB_KIND')
   const prodTabId = pickStr('STAGES_TAB_ID')
@@ -2724,7 +2746,19 @@ export function StateDot({ state, size, appearance }) {
     }
 
     // ① 改一个步骤名 ⇒ 面板判据必须红    // ① 改一个步骤名 ⇒ 面板判据必须红    // ① 改一个步骤名 ⇒ 面板判据必须红    // ① 改一个步骤名 ⇒ 面板判据必须红    // ① 改一个步骤名 ⇒ 面板判据必须红
-    const mutantA = buildMutant('steps', (s) => s.replace(`'${prodSteps[0]}'`, `'被改坏的步骤'`))
+    /**
+     * ⚠ **R-03：两种形态都要能造出变体** ────────────────────────────────
+     *   ① 字面量：把 '需求规格' 换掉
+     *   ② 派生：  把 STAGE_NAMES.requirements 换成一个不存在的键 ⇒ 抽出的名字变了
+     *   ⚠ 派生形态下源码里**没有**步骤名字面量，旧的 replace 必然返回原串 ⇒
+     *     buildMutant 返回 undefined ⇒ 报「不可判」。那不是判据失效，是变体造法没跟上。
+     */
+    const mutantA = buildMutant('steps', (s) => {
+      const byLit = s.replace(`'${prodSteps[0]}'`, `'被改坏的步骤'`)
+      if (byLit !== s) return byLit
+      /** 派生形态：把第一个 STAGE_NAMES.<key> 引用换成一个不存在的键 */
+      return s.replace(/STAGE_NAMES\.\w+/, 'STAGE_NAMES.__mutatedStep__')
+    })
     if (mutantA === undefined) {
       bad('S-7 · 造不出「改步骤名」的变体（源码里找不到该字面量）⇒ 负向对拍不可判')
     } else {

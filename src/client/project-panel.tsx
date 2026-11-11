@@ -47,6 +47,7 @@ import {
  *   却因为九态表里没有而印成「判不出（原值 X）」—— 那句话在骗人。
  */
 import { stageStatusLabel } from '../shared/stage-status-labels.ts'
+import { STAGE_NAMES } from '../shared/stage-controls.ts'
 import { UNSEEN_TOOLS_ROUTE_PATH } from '../shared/unseen-tools.ts'
 import { readPathOf } from '../shared/ledger-resources.ts'
 import { ITEM_FLAG_MESSAGES, relationLabelOf, type ItemFlagCode, type ItemPresentation } from '../shared/item-presentation.ts'
@@ -161,7 +162,11 @@ export const STAGES_GUIDE_ORDER = 50
  *
  * ⚠ Verification and product acceptance are separate. Delivery closure is risk-gated.
  */
-export const STAGES_STEP_NAMES = ['需求规格', '实现方案', '任务图', '任务执行', '技术验证', '产品验收', '交付收口'] as const
+export const STAGES_STEP_NAMES = [
+  STAGE_NAMES.requirements, STAGE_NAMES.plan, STAGE_NAMES.tasks,
+  STAGE_NAMES.execution, STAGE_NAMES.verification, STAGE_NAMES.acceptance,
+  STAGE_NAMES.closure,
+] as const
 
 /**
  * **步号 → kind**（`1..5`）。
