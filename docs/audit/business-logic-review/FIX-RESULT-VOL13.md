@@ -316,3 +316,66 @@ if (ownerWsRoot !== undefined && typeof w.taskId === 'string' && w.taskId !== ''
 | ⬜ 未核 | **63** |
 
 ---
+
+---
+
+## §173 ✅ T-03 已修（提交）+ T-06 已修（实测只剩必要的 1 处）
+
+### 173.1 T-03 的修复（本轮提交 `1c0d2e6`）
+
+```ts
+const cannotProject = ownerWsRoot === undefined
+  ? '判不出派活方工作区根 ⇒ 未预登记 RUN'
+  : (typeof w.taskId !== 'string' || w.taskId === '')
+    ? '这条 watch 没有真实 taskId（implicit / 缺省）⇒ 不创建 RUN'
+    : undefined
+if (cannotProject !== undefined) {
+  w.ledgerProjection = { ...(w.ledgerProjection ?? {}), dispatch: { ok: false, applied: 0, reason: cannotProject } }
+}
+```
+
+验证：
+
+```
+check:orch  357 处（原 356，+1）· 下界同步
+✓ TP-r ✓ T-03：判不出 ownerWsRoot / 无真实 taskId ⇒ dispatch = { ok:false, applied:0, reason }
+
+负向对拍（删掉显式读数）：
+✗ TP-r · cannotProject 分支没有写成 { ok:false, applied:0, reason }
+         ⇒ 读数面仍分不清「失败」与「没发生」
+```
+
+### 173.2 ✅ T-06：4 处 `validateLedgerStructure:false` → **只剩 1 处，且是必要的那处**
+
+```bash
+grep -rn 'validateLedgerStructure: *false' src/ scripts/
+→  实际传 false 的只有 1 处：
+   tools.ts:2173（hob_ledger_migrate）
+
+其余命中全是：类型定义（hob-write.ts:519）、判断语句（:1856）、
+              以及**记录「不再传」的注释**（projection-writer.ts:240、tools.ts:2378）
+```
+
+REVIEW 原文：「4 处 `validateLedgerStructure:false`，其中 **3 处不必要**」
+
+⇒ ✅ **那 3 处已删除，剩下的正是 REVIEW 承认必要的一处**，且注释写明理由：
+
+```
+⚠ 迁移前这本账按定义还不合法，必须允许「把坏行改成合法行」；
+  写入后由 ledgerReadinessOfRoot(root) 重新核全账，若仍坏就如实回报。
+```
+
+⚠ 这个理由本身是**可验证的**：迁移完会重核全账（`ledgerReadinessOfRoot`），
+   ⛔ 不是「开放豁免然后不管」。
+
+### 173.3 进度
+
+| 状态 | 条数 |
+|---|---|
+| ✅ 全量已修 | **48**（+T-03 +T-06） |
+| ⚠ 部分修 | 1（R-01） |
+| ⚠ 核心已修 + 规格需修订 | 1（R-02） |
+| ⛔ 未修 | **1**（S-01） |
+| ⬜ 未核 | **61** |
+
+---
