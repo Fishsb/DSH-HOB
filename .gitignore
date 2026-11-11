@@ -133,6 +133,25 @@ runtime/
 .check-dom-work/
 .check-gate-work/
 .check-*-work/
+# ⚠⚠ **上面那条匹配不到「带 pid 后缀」的形态**（2026-11-11 实测）：
+#   `check-stages-panel-dom.mjs` 的临时根是 `.check-stages-work-<pid>` ——
+#   以**数字**结尾，而 `.check-*-work/` 要求以 `work` 结尾 ⇒ **不匹配**。
+#   ⇒ 实测 `git check-ignore .check-stages-work-117324/` 返回**未忽略**，
+#     而它正是某次崩溃后没清掉的残留（`git status` 里躺着一条 `??`）。
+# 
+#   ⚠ 本条与上面几条**同一个目的**：正常路径自己删，异常退出也不污染 `git status`。
+#     区别只是**名字里多了 pid**，所以要多一条模式。
+
+.check-*-work-*/
+# ⚠ **负控对拍的临时转译件**（2026-11-10 · B4.2）。
+#   `check-preset-contracts.mjs` / `check-stages-route.mjs` 等为了让一条负向对拍真的变红，
+#   会把一个"被改坏的副本"写到 `src/**/xxx.__negctl_<pid>.ts`，跑完再删。
+#   ⚠ 正常路径会删；但被 SIGKILL / 断电打断就留成未跟踪残留 ——
+#   而它在 **`src/` 里**，下一次 `npm run build` 会把它**编进 `lib/`**，
+#   再让 `check:build` 的面⑤（孤儿产物）报红 ⇒ **判据污染被测对象**。
+#   ⇒ 显式忽略（⛔ 不靠"它会被删"这个假设）。
+*__negctl_*.ts
+*__negctl_*.mjs
 # ⚠ `check:readings` 的 `--self-test` 也**在仓根**建一次性夹具
 #   （`check-readings-citable.mjs` 的 `mkdtempSync(join(root, '.tmp-readings-selftest-'))`）——
 #   它**不在** `.check-*-work/` 的命名族里 ⇒ 此前**没有任何条款兜底**；
