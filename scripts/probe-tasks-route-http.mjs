@@ -1016,6 +1016,71 @@ if (SESSION_OVERRIDE !== '') {
   else for (const p of problems) bad(`H-11 · ${p}`)
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// H-12 / H-13 / H-14 · 三条**只读**路由的可达性（2026-11-12 补）
+//
+// ⚠ **为什么补这三条**：`src/modules/` 注册了 10 条路由，本探针此前只覆盖 7 条（+live）。
+//   漏掉的 4 条里有 3 条是**纯只读**，它们同样是面板的数据源：
+//     · exec-progress   —— 面板「执行态」读它
+//     · unseen-tools    —— 面板「未读工具」读它
+//     · session-policy  —— 面板按会话读策略（**读分支**；写分支要票据，本探针不碰）
+//   ⇒ 「注册了但没人验过」= 坏了只在界面上表现为空白，**不会有任何判据响**。
+//   ⚠ `session-create` **故意不补**：它是**写入口**（必须带一次性票据、会真建会话），
+//     探针对它做任何非空断言都可能改状态 ⇒ ⛔ 不纳入只读探针。
+//
+// ⚠ **实测教训（写这条时踩的）**：`exec-progress` 传 `{}` 会得到 **400 `ledger-unreadable`**
+//   —— 那**是正确语义**（判不出账本根 ⇒ ⛔ 不猜哪本账），⛔ 不是缺陷。
+//   探针必须传白名单内的账本名，否则验到的是错误分支而不是处理体。
+// ══════════════════════════════════════════════════════════════════════════
+{
+  const READONLY_ROUTES = [
+    { route: '/api/dsh-hob/exec-progress', body: { ledger: 'dsh-hob' }, label: 'H-12', what: '执行态' },
+    { route: '/api/dsh-hob/unseen-tools', body: { sessionId }, label: 'H-13', what: '未读工具' },
+    { route: '/api/dsh-hob/session-policy', body: { sessionId }, label: 'H-14', what: '会话策略（读分支）' },
+  ]
+  for (const spec of READONLY_ROUTES) {
+    let status = 0
+    let text = ''
+    let parsed
+    try {
+      const res = await fetch(`${base}${spec.route}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify(spec.body),
+      })
+      status = res.status
+      text = await res.text()
+      try { parsed = JSON.parse(text) } catch { parsed = undefined }
+    } catch (e) {
+      bad(`${spec.label} · 请求失败：${String(e?.message ?? e)}`)
+      continue
+    }
+    console.log(`  ── POST ${spec.route} ⇒ HTTP ${status}`)
+    console.log(`     响应体前 240 字：${text.slice(0, 240)}`)
+    const problems = []
+    /**
+     * ⚠ **只断言「路由活着、响应可解析、形状可判」**，⛔ 不断言业务结论：
+     *   这三条的内容随会话/账本变化（执行态可能 0 条、未读工具可能 0 个），
+     *   把「非空」写成断言会在干净环境里假红。
+     */
+    if (status !== 200) problems.push(`状态码 ${status}（期望 200；404/405 说明路由没登记）`)
+    if (parsed === undefined || typeof parsed !== 'object' || parsed === null) problems.push('响应体不是 JSON 对象')
+    else if (typeof parsed.ok !== 'boolean') problems.push(`ok 不是布尔：${JSON.stringify(parsed.ok)}`)
+    if (/\/home\/|\\\\wsl/.test(text)) problems.push('响应泄露了本机绝对路径')
+    if (problems.length === 0) {
+      const extra = []
+      if (spec.label === 'H-12' && parsed.ok === true && !Array.isArray(parsed.items)) {
+        extra.push('ok:true 时 items 不是数组（⛔ 空表也必须是 []）')
+      }
+      if (spec.label === 'H-13' && parsed.ok === true && typeof parsed.count !== 'number') {
+        extra.push('ok:true 时 count 不是数字')
+      }
+      if (extra.length > 0) { for (const x of extra) bad(`${spec.label} · ${x}`); continue }
+      ok(`${spec.label} ✓ ${spec.what}只读路由可达（HTTP ${status} · ok=${parsed.ok}）`)
+    } else for (const p of problems) bad(`${spec.label} · ${p}`)
+  }
+}
 console.log('')
 console.log(`H 组：通过 ${pass} · 失败 ${fail}`)
 console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处`
