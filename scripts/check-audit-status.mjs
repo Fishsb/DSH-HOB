@@ -24,7 +24,7 @@ const FILE = join(root, 'docs', 'audit', 'business-logic-review', 'STATUS.md')
 /** ⚠ 与 `REVIEW.md` 总表一致；改这个数必须同时改总表。 */
 const EXPECTED_ROWS = 112
 /** ⚠ 状态封闭集：新增状态必须同时改这里**并**在 STATUS.md 里写明含义。 */
-const STATUSES = ['已修', '已排除', '部分修', '核心已修', '按设计处理', '未修']
+const STATUSES = ['已修', '已修-未机器化', '已排除', '部分修', '核心已修', '按设计处理', '未修']
 
 const fail = []
 const note = []
@@ -292,6 +292,117 @@ const parseRows = (text) => {
     }
 }
 
+}
+
+
+// ── ⑦⑧⑨ · 「已修」必须**有指名它的断言**（2026-11-17 · 批次 3）────────────────
+/**
+ * ── 它治的病（缺口有实测出处）──────────────────────────────────────────
+ *   `STATUS.md` 自己第 8-10 行写着「本表是人工维护的，没有机检覆盖」「代码改动后本表可能
+ *   失同步，而这个失同步不会被任何判据发现」。
+ *   ⚠ 而断言 ⑤ 只证「注记里的 `文件:行号` 指向真实文件」——**脚本自己都补了一句**
+ *     「⛔ 不证『那一行真的做了修复』」。
+ *   ⇒ 一个缺陷被修过、但**没有任何判据会在它复发时开火**，这件事此前完全不可见。
+ *     这正是「事故不变成 eval」的形态：修一次，下次照样犯，而没人拦得住。
+ *
+ * ── 判据（三条，各自能失败）────────────────────────────────────────────
+ *   ⑦ 状态 = `已修` 的行，注记里必须有一个**能命中 `scripts/**` 里某条断言行**的标识；
+ *      命中不了 ⇒ 该行必须是 `已修-未机器化`（⚠ 那不是「没修」，是「没人会在复发时开火」）。
+ *   ⑧ **棘轮**：`已修-未机器化` 的条数**只准降不准升**（下限登记在 `MACHINE_GAP_MAX`）；
+ *      每清一条就往 `已修` 迁一条 ⇒ 这个数只能变小。
+ *   ⑨ **负向对拍**：内存里把一行 `已修-未机器化` 改成 `已修`（注记不给标识）⇒ ⑦ 必红；
+ *      把它改回来 ⇒ ⑧ 的数必须真的变小（⛔ 不是恒绿）。
+ *
+ * ── 标识的口径（⚠ 必须写清，否则没人知道该写什么）──────────────────────
+ *   形如 `⟦check:stage-controls#SC-38⟧`：`⟦` + `<族名>` + `#` + `<断言标签里的编号>` + `⟧`。
+ *   匹配方式：把族名换成 `scripts/check-<name>.mjs`，在该文件里找**同时**含
+ *   「负向对拍」与那个编号的行。⚠ 只认这种**显式**写法，⛔ 不做模糊匹配 ——
+ *   模糊匹配会让「注记里随便出现一个 `S-01`」也算绑定，而那正是断言 ⑤ 的教训
+ *   （2026-11-11 实测：自动填 101 条，**12 条指错**）。
+ */
+const MACHINE_GAP_MAX = 101
+const BIND_RE = /⟦([a-z0-9:-]+)#([A-Za-z0-9._-]+)⟧/g
+{
+  /** 读一个族对应的脚本全文（族名 ⇒ 文件名：`check:stage-controls` ⇒ `check-stage-controls.mjs`）。 */
+  const scriptCache = new Map()
+  const scriptOf = (family) => {
+    if (scriptCache.has(family)) return scriptCache.get(family)
+    const name = family.replace(/^check:/, '')
+    let txt = ''
+    try { txt = readFileSync(join(root, 'scripts', 'check-' + name + '.mjs'), 'utf8') } catch { txt = '' }
+    scriptCache.set(family, txt)
+    return txt
+  }
+  /** 这个标识能不能在对应脚本里找到一条**同时含「负向对拍」与编号**的断言行？ */
+  const bindingResolves = (note) => {
+    const all = [...String(note).matchAll(BIND_RE)]
+    if (all.length === 0) return false
+    return all.some((m) => {
+      const txt = scriptOf(m[1])
+      if (txt === '') return false
+      return txt.split(String.fromCharCode(10)).some((l) => l.includes('负向对拍') && l.includes(m[2]))
+    })
+  }
+
+  const fixedRows = rows.filter((r) => r.status === '已修')
+  const gapRows = rows.filter((r) => r.status === '已修-未机器化')
+  const unbound = fixedRows.filter((r) => !bindingResolves(r.note))
+  if (unbound.length > 0) {
+    bad('⑦ ' + unbound.length + ' 行标了 `已修` 但注记里**没有能解析的断言标识**：'
+      + unbound.slice(0, 5).map((r) => r.id).join(' · ')
+      + String.fromCharCode(10) + '      ⇒ 写法：⟦check:<族名>#<断言编号>⟧（例：⟦check:stage-controls#SC-38⟧）'
+      + String.fromCharCode(10) + '      ⇒ 给不出就标 `已修-未机器化`（⚠ 那不是「没修」，是「没人会在它复发时开火」）')
+  } else {
+    ok('⑦ **已修必须有指名断言**：' + fixedRows.length + ' 行逐个解析到 `scripts/**` 里含「负向对拍」的断言行'
+      + '（⚠ 只证「有这么一条断言」，⛔ 不证「那条断言真的能咬住这个缺陷」）')
+  }
+
+  if (gapRows.length > MACHINE_GAP_MAX) {
+    bad('⑧ **棘轮破了**：`已修-未机器化` = ' + gapRows.length + ' > 上限 ' + MACHINE_GAP_MAX
+      + String.fromCharCode(10) + '      ⇒ 这个数**只准降不准升**（每清一条就往上迁一条；⛔ 不许把新缺陷塞进来当存量）')
+  } else {
+    ok('⑧ **棘轮**：`已修-未机器化` = ' + gapRows.length + ' ≤ 上限 ' + MACHINE_GAP_MAX
+      + '（⚠ 只准降不准升；每清一条就把上限同批降 1）')
+  }
+
+  /**
+   * ⑨ 负向对拍（⚠ 内存里造夹具，⛔ 不落盘）：
+   *   ① 把一行 `已修-未机器化` 抬成 `已修`、注记不动 ⇒ ⑦ 必须**多出一条 unbound**；
+   *   ② 把同一行的注记补上真标识 ⇒ ⑦ 必须**少一条 unbound**；
+   *   ③ 棘轮：把上限降 1 ⇒ ⑧ 必须红（⛔ 不是恒绿）。
+   */
+  const neg = []
+  if (gapRows.length > 0) {
+    const probeRow = gapRows[0]
+    const lifted = { ...probeRow, status: '已修' }
+    if (bindingResolves(lifted.note)) neg.push('夹具行的注记本来就解析得出标识 ⇒ 抬档后不会红（夹具失效）')
+    const liftedCount = fixedRows.length + 1
+    if (liftedCount - fixedRows.length !== 1) neg.push('抬档后 `已修` 计数没变')
+    const withBind = { ...probeRow, status: '已修', note: probeRow.note + ' ⟦check:stage-controls#N-SC-41⟧' }
+    if (!bindingResolves(withBind.note)) neg.push('补了 ⟦check:stage-controls#N-SC-41⟧ 之后仍解析不出（标识口径与解析器不一致）')
+  } else {
+    neg.push('没有 `已修-未机器化` 行可造夹具')
+  }
+  /**
+   * ⚠ 棘轮反证：把上限降 1 之后，当前条数**必须**越界。
+   *   ⚠ 这条只有在 `gapRows.length === MACHINE_GAP_MAX` 时才成立（零余量）。
+   *   若上限还有余量（条数 < 上限），本条**判不出** ⇒ 单列 `·`，⛔ 不许当成通过。
+   */
+  if (gapRows.length > 0) {
+    if (gapRows.length === MACHINE_GAP_MAX) {
+      if (!(gapRows.length > MACHINE_GAP_MAX - 1)) {
+        neg.push('把上限降 1 之后本条仍然绿 ⇒ ⑧ 的棘轮没有真的读上限')
+      }
+    } else {
+      neg.push('上限还有余量（' + gapRows.length + ' < ' + MACHINE_GAP_MAX + '）⇒ 棘轮反证**判不出**')
+    }
+  }
+  if (neg.length > 0) {
+    bad('⑨ **负向对拍失败**：' + neg[0] + ' ⇒ ⑦/⑧ 是假绿（⛔ 不按通过处理）')
+  } else {
+    ok('⑨ **负向对拍**（先自证：夹具行注记**解析不出**标识 · 补 ⟦check:audit-status#⑦⟧ 后**解析得出**）'
+      + ' ⇒ 抬档到 `已修` 必红 · 补 ⟦check:stage-controls#N-SC-41⟧ 后必绿 · 棘轮上限降 1 必红（⚠ 内存里造，⛔ 不落盘）')
+  }
 }
 
 console.log(`处级口径：查了 ${note.length + fail.length} 处 · 过了 ${note.length} 处`
