@@ -1359,6 +1359,59 @@ console.log('')
       + '（⚠ 只证「写了提前返回」，⛔ 不证「历史单元真被判成 legacy」）')
   } else for (const x of p) bad('SC-40 · ' + x)
 }
+
+/**
+ * ── SC-41 / N-SC-41 · **回炉轮数上限**（2026-11-16 · 批次 2）──────────────────
+ *
+ * ── 它治的病 ──────────────────────────────────────────────────────────
+ *   `kit/templates/GATES.md:150` 写着「验证/审查失败**最多回炉 2 轮**，仍不过则上报
+ *   用户决策」，`kit/roles/methods/quality-gates.md:103` 又重复一遍 ——
+ *   而 `grep '回炉' scripts/*.mjs` 只命中 `check-repo-rules` 的**登记行**
+ *   （只证明文件在，⛔ 不读内容）。⇒ 那条上限此前**零执行力**。
+ *
+ * ⚠ 口径与边界全在 `src/shared/stage-controls.ts` 的 `sendBackRoundProblems()` 头注释里
+ *   （⛔ 不在两处各写一份）。这里只做：调它 · 打印 · 负向对拍。
+ */
+{
+  const t = { id: 'TSK-SC41', kind: 'task', status: 'built', revision: '3' }
+  const mk = (n, rev) => Array.from({ length: n }, (_, i) => ({
+    id: 'ACC-SC41-' + i, kind: 'acc', parent: 'TSK-SC41', status: 'send-back',
+    send_back_to: 'back-to-task', task_revision: rev,
+  }))
+  const two = mod.sendBackRoundProblems([t, ...mk(2, '3')])
+  const three = mod.sendBackRoundProblems([t, ...mk(3, '3')])
+  /** ⚠ 反证：历史修订上的 3 条退回**不算**（否则老账一上线就爆红）。 */
+  const stale = mod.sendBackRoundProblems([t, ...mk(3, '2')])
+  /** ⚠ 判不出：父任务没有 `revision` ⇒ 单列，⛔ 不当作 0 轮。 */
+  const noRev = mod.sendBackRoundProblems([{ ...t, revision: '' }, ...mk(1, '')])
+  /** ⚠ 技术验证的退回**也要算**（不只是 acc）。 */
+  const ver = mod.sendBackRoundProblems([t, ...mk(2, '3'),
+    { id: 'VER-SC41', kind: 'verification', parent: 'TSK-SC41', status: 'send-back', send_back_to: 'back-to-task', task_revision: '3' }])
+
+  const p = []
+  if (two.problems.length !== 0) p.push('2 轮就报越界（上限是 2 轮 + 第 3 次）')
+  if (three.problems.length !== 1) p.push('3 轮没有报越界（实测 ' + three.problems.length + ' 条）')
+  else if (three.problems[0].rule !== 'C-30') p.push('越界项的 rule 不是 C-30（实测 ' + three.problems[0].rule + '）')
+  if (stale.problems.length !== 0) p.push('**历史修订**上的 3 条退回被算成越界（老账会一上线就爆红）')
+  if (noRev.undecidable.length !== 1 || noRev.problems.length !== 0) {
+    p.push('父任务缺 revision 时没有单列判不出（undecidable=' + noRev.undecidable.length + ' · problems=' + noRev.problems.length + '）')
+  }
+  if (ver.problems.length !== 1) p.push('技术验证的退回没有计入回炉轮数（实测 ' + ver.problems.length + ' 条）')
+
+  if (p.length === 0) {
+    ok('SC-41 ✓ **回炉轮数上限有判据**：当前修订 2 轮放行 · **3 轮报 C-30** · 历史修订不计 ·'
+      + ' 技术验证退回也计入 · 父任务缺 revision ⇒ 单列判不出（⛔ 不当作 0 轮）')
+    ok('N-SC-41 ✓ **负向对拍**（先自证：夹具真造出了 2 轮 / 3 轮 / 历史修订 3 轮 / 无 revision 四种形态）'
+      + ' ⇒ 把阈值改成 4 ⇒ 3 轮那条**必不报**（⛔ 不是恒绿）')
+  } else for (const x of p) bad('SC-41 · ' + x)
+
+  /** ⚠ 阈值可注入 ⇒ 用它做真正的负向对拍（改阈值必须改变结论）。 */
+  const lifted = mod.sendBackRoundProblems([t, ...mk(3, '3')], { limit: 4 })
+  if (p.length === 0 && lifted.problems.length !== 0) {
+    bad('N-SC-41 · 把 limit 抬到 4 之后 3 轮**仍然报越界** ⇒ 阈值没有真的参与判定')
+  }
+}
+
 console.log(`处级口径：查了 ${pass + fail} 处 · 过了 ${pass} 处${fail > 0 ? ` · 没过 ${fail} 处` : ''} · **跳过 0 处**`)
 console.log('')
 console.log(`SC 组：通过 ${pass} · 失败 ${fail}`)

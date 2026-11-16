@@ -233,6 +233,19 @@ export interface StageControlUnit {
   covers?: string[]
   depends_on?: string[]
   scope_paths?: string[]
+  /**
+   * ⚠⚠ **2026-11-16（批次 2）：两处修订字段，此前**只有 `pipeline.ts` 侧声明**。**
+   *
+   * ── 为什么要在这里也声明（⛔ 不是重复定义）──────────────────────────
+   *   `pipeline.ts` 的 `ARTIFACT_FIELDS` 早就把 `task_revision` 列为 `acc` 的绑定字段，
+   *   但 `StageControlUnit`（本模块的输入形状）**一直没有它** ⇒ 任何按修订判的
+   *   判据都写不出来（TS 直接报 Property task_revision does not exist）。
+   *   ⚠ 这正是「判据想判、但输入形状里没有那个字段」的形态 ——
+   *     字段在账本里有、在类型里没有 ⇒ 判据只能靠 any 绕，而 any 会让它永不红。
+   *   ⇒ 只**声明**，⛔ 不改变任何既有判定（新增字段是可选，既有单元一律仍是合法输入）。
+   */
+  revision?: string
+  task_revision?: string
 }
 
 export interface StageControlProblem {
@@ -1443,3 +1456,74 @@ export function stageFileProblems(
   }
   return out
 }
+
+/**
+ * ── ⚠⚠ **2026-11-16（批次 2）：回炉轮数上限 —— 让 GATES.md 那条上限第一次有判据** ──
+ *
+ * ── 它治的病（缺口有实测出处）────────────────────────────────────────────
+ *   kit/templates/GATES.md:150 写着「验证/审查失败**最多回炉 2 轮**，仍不过则上报用户决策」，
+ *   kit/roles/methods/quality-gates.md:103 又重复一遍。
+ *   ⚠ 而 grep '回炉' scripts/*.mjs 只命中 check-repo-rules 的**登记行**
+ *     （那条只证明「GATES.md 这个文件在」，⛔ 不读它的内容）。
+ *   ⇒ 那条上限目前是**零执行力的散文**：一个任务可以无限退回、无限返工，
+ *     所有判据都「如实报红」，而没人看得出它在原地打转。
+ *   ⚠ 这正是「review 必须收敛」缺失的那一半：有判据判「收没收口」（K-1..K-7），
+ *     却没有判据判「**返工了几轮**」。
+ *
+ * ── 口径（⚠ 必须写清，否则数字没法复核）────────────────────────────────
+ *   · 粒度 = **task 当前 revision**（`task_revision` 与父任务当前 revision 相等）；
+ *     ⚠ 历史 revision 的判决**不计**：否则老账会一上线就爆红，而那不是在说真话。
+ *   · 计什么 = 该 task 下 `acc` 与 `verification` 里 `status=send-back` 的**条数**
+ *     （两类都算：技术验证退回与产品验收退回都是「回炉」）。
+ *   · 阈值 = **3**（= GATES.md 的「最多 2 轮」+ 第 3 次即越界）。
+ *   · ⚠ 判不出（父任务没有 `revision`、或 acc/ver 没写 `task_revision`）⇒ **不猜**，
+ *     按「历史豁免」处理并**单列计数**（⛔ 不静默放行，也 ⛔ 不误判成 0）。
+ *
+ * @param units - 全账本
+ * @param opts - `limit` 缺省 3（便于对拍）
+ * @returns {{problems: StageControlProblem[], undecidable: string[]}} 越界项 + 判不出的 task
+ */
+export function sendBackRoundProblems(
+  units: readonly StageControlUnit[],
+  opts: { limit?: number } = {},
+): { problems: StageControlProblem[]; undecidable: string[] } {
+  const limit = Number.isSafeInteger(opts.limit) && (opts.limit as number) > 0 ? (opts.limit as number) : 3
+  const problems: StageControlProblem[] = []
+  const undecidable: string[] = []
+  const tasks = units.filter((u) => u.kind === 'task' && !legacy(u))
+  const byParent = new Map<string, StageControlUnit[]>()
+  for (const u of units) {
+    if (u.kind !== 'acc' && u.kind !== 'verification') continue
+    const pid = txt(u.parent)
+    if (pid === '') continue
+    if (!byParent.has(pid)) byParent.set(pid, [])
+    byParent.get(pid)!.push(u)
+  }
+  for (const t of tasks) {
+    const id = txt(t.id)
+    const rev = txt(t.revision)
+    const kids = byParent.get(id) ?? []
+    if (kids.length === 0) continue
+    if (rev === '') {
+      /** ⚠ 父任务没有 revision ⇒ 无法把判决归到「当前这一版」⇒ 判不出（⛔ 不当作 0 轮）。 */
+      undecidable.push(id)
+      continue
+    }
+    const current = kids.filter((k) => {
+      const kr = txt(k.task_revision)
+      return kr === '' || kr === rev
+    })
+    const rounds = current.filter((k) => txt(k.status) === 'send-back').length
+    if (rounds >= limit) {
+      problems.push({
+        rule: 'C-30',
+        unit: id,
+        why: '当前修订已回炉 **' + rounds + '** 轮（上限 ' + (limit - 1) + ' 轮 + 第 ' + limit + ' 次即越界）'
+          + ' ⇒ 按 kit/templates/GATES.md 的「最多回炉 2 轮，仍不过则上报用户决策」，'
+          + '现在该**回头改方案**，⛔ 不是再修一轮',
+      })
+    }
+  }
+  return { problems, undecidable }
+}
+
