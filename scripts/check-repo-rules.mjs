@@ -186,6 +186,10 @@ export function runRepoRules({ bad, ok, skip }) {
     ['kit/templates/ACCEPTANCE-REPORT.md', '骨架 · 独立验收报告模板（逐条例子结果与退回目标）'],
     ['kit/roles/methods/qa.md', '骨架 · 角色方法论（README §1.3 · 代表项）'],
     ['kit/roles/methods/quality-gates.md', '骨架 · 门禁方法论源（README §1.3 · 代表项）'],
+    // ⚠ 2026-11-17（批次 5）：审查简报目录的**代表件**（不是整目录一刀切 —— 照本清单的既有口径）。
+    //   它守的是「审这块时该看什么」这一级，与 judgement-index（函数级）/ check-family-catalog（族级）不同层。
+    ['kit/drafts/review-briefs/README.md', '骨架 · 审查简报索引（README §1.2 · 批次 5）'],
+    ['kit/drafts/review-briefs/_TEMPLATE.md', '骨架 · 审查简报模板（四节：失败形态 / 跳过路径 / 上限 / 证据要求）'],
     ['kit/drafts/preset-contracts.md', '骨架 · 被 check:presets 读取的规范源（README §1.2）'],
     ['kit/drafts/restructure-plan.md', '骨架 · 重构方案人读版（README §1.2）'],
     // ⚠ 顺带盯住"入库脚本不能依赖不入库文件"这条：这些脚本自己必须在库里

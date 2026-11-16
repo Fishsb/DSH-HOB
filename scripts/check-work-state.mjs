@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url'
 const root = new URL('..', import.meta.url).pathname
 const { WORK_STATES, workStateOf, attentionOf } = await import(pathToFileURL(join(root, 'src', 'shared', 'work-state.ts')).href)
 const { effectiveAcceptanceOf } = await import(pathToFileURL(join(root, 'src', 'shared', 'acceptance-verdict.ts')).href)
+/** ⚠ 2026-11-17（批次 4）：人工时间读数（`src/shared/human-time.ts`）。 */
+const { humanTimeOf, humanTimeLine, humanTimeSelfTest } = await import(pathToFileURL(join(root, 'src', 'shared', 'human-time.ts')).href)
 let pass = 0
 let fail = 0
 const ok = (m) => { pass++; console.log(`  ✓ ${m}`) }
@@ -316,6 +318,46 @@ if (eq(WORK_STATES, ['awaiting-user', 'awaiting-acceptance', 'delivery-failed', 
   if (brokenBlocked) {
     ok('N-W5 ✓ 负向对拍（同 parent 逐条独立判决）⇒ 旧 SEND-BACK 会压住新 PASS，证明 W-20 的分组不是摆设')
   } else bad(`N-W5 · broken=${JSON.stringify(broken)}`)
+}
+
+
+/**
+ * ── W-21 / N-W21 · **人工时间读数**（2026-11-17 · 批次 4）──────────────────────
+ *
+ * ── 它治的病 ──────────────────────────────────────────────────────────
+ *   账本早就有 `decided_by` / `decided_at`，面板也有「在等谁」，但那是**当前状态**、
+ *   不是**累计量** ⇒ 无法回答「这个项目上一批活，人一共被打断了几次、每次等多久」。
+ *   ⚠ 省时间与挪时间是两件事：只量「审了多久」而不量「被叫了几次 + 等了多久」，
+ *     会把**挪走的时间**当成**省下的时间**。
+ *
+ * ⚠ 口径与边界（含「本模块不做什么」）全在 `src/shared/human-time.ts` 的头注释里，
+ *   ⛔ 不在两处各写一份。这里只做：调它 · 打印 · 负向对拍。
+ */
+{
+  const probs = humanTimeSelfTest()
+  if (probs.length > 0) {
+    bad('W-21 · ' + probs[0])
+    for (const x of probs.slice(1)) bad('W-21 · ' + x)
+  } else {
+    ok('W-21 ✓ **人工时间读数**：只数 `decided_by=user` 的 stage-approval · 缺时刻进 `undecidable`（⛔ 不当作 0）·'
+      + ' 间隔按**时刻升序**算（⛔ 不按输入顺序）· 中位与 P95 口径固定')
+  }
+
+  /**
+   * N-W21 负向对拍：⚠ 必须证明「这条判据真的在判读数」，⛔ 不是恒绿。
+   *   造一个**介入次数为 0** 的 change ⇒ 文案必须说「没有 stage-approval 记录」，
+   *   ⛔ 不许说「没叫人」（那是把「没记录」说成「没事发生」）。
+   */
+  const empty = humanTimeOf('CHG-EMPTY', [{ id: 'CHG-EMPTY', kind: 'change' }])
+  const line = humanTimeLine(empty)
+  if (empty.touches !== 0) {
+    bad('N-W21 · 空 change 的介入次数不是 0（实测 ' + empty.touches + '）')
+  } else if (!line.includes('不一定是')) {
+    bad('N-W21 · 介入 0 次的文案把「没有记录」说成了「没事发生」：' + line)
+  } else {
+    ok('N-W21 ✓ **负向对拍**（先自证：空 change 实测介入 0 次）⇒ 文案必须写「不一定是没叫人」；'
+      + ' 若把缺记录说成没事发生，本条必红')
+  }
 }
 
 console.log(`\nWork State：通过 ${pass} · 失败 ${fail}`)

@@ -12,6 +12,7 @@ import type { NextAction } from './next-action.ts'
  */
 import type { StageRow } from './panel-row-types.ts'
 import type { WorkStateReading } from './work-state.ts'
+import type { HumanTimeReading } from './human-time.ts'
 
 export type PanelWaitFor = 'user' | 'acceptance' | 'execution' | 'upstream' | 'undecidable'
 
@@ -43,6 +44,14 @@ export interface PanelSummary {
   waitingFor: string
   blocker: string | null
   openItems: number
+  /**
+   * ⚠ 2026-11-17（批次 4）：**人工时间读数**（介入次数 + 间隔中位/P95）。
+   *
+   * 为什么它在第一屏：省时间与**挪时间**是两件事 —— 只看「还差什么」会把
+   * 「人被打断了几次」藏起来，而后者才是这类流程真正的成本。
+   * ⚠ 判不出时 `reading` 缺省、`line` 明说判不出，⛔ 不填 0（照 `human-time.ts` 的口径）。
+   */
+  humanTime?: { reading: HumanTimeReading; line: string }
 }
 
 const WAIT_LABEL: Readonly<Record<PanelWaitFor, string>> = {
@@ -108,6 +117,14 @@ export function panelSummaryOf(input: {
   stages: readonly StageRow[]
   next?: NextAction | undefined
   attention?: readonly WorkStateReading[] | undefined
+  /**
+   * ⚠ 2026-11-17（批次 4）：**人工时间读数由调用方算好传进来**（⛔ 本文件不自己算）。
+   *
+   * 为什么不在本文件算：算它要读全账本单元（`decision` 的 `decided_at`），
+   * 而本文件的定位是「从**既有派生读数**折叠，零 I/O、不新增状态」。
+   * ⇒ 口径留在 `human-time.ts`（唯一实现），这里只做**折叠与呈现**。
+   */
+  humanTime?: { reading: HumanTimeReading; line: string } | undefined
 }): PanelSummary {
   const action = input.next === undefined
     ? null
@@ -124,6 +141,7 @@ export function panelSummaryOf(input: {
     waitingFor: WAIT_LABEL[waitFor],
     blocker: input.next?.blockedBy?.[0] ?? null,
     openItems: input.attention?.length ?? 0,
+    ...(input.humanTime === undefined ? {} : { humanTime: input.humanTime }),
   }
 }
 

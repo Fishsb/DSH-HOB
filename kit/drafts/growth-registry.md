@@ -33,6 +33,7 @@
 | 骨架 | `kit/drafts/preset-contracts.md` | 全文 | 每加一条契约 +1 段 | 65421 | 8782 | **另起一册**：按契约族分册（`preset-contracts-*.md`）；⚠ 消费方路径须同批改 | `check:presets`（⑤k 等逐条断言） |
 | 骨架 | `.hob/drafts/check-gitignore-guide.md` | 全文 | 每加一条机检口径 +1 段 | 19714 | 45822 | **另起一册**（同 preset-contracts 手法）；⚠ 到顶时须留指针回 `README §1.4` | `未机器化` |
 | 骨架 | `.hob/drafts/archive-index.md` | 归档去向表 | 每次归档 +1 行 | 7967 | 57569 | **另起一册**：按年份 / 批次段分册（⚠ 本件自身即 §3 的到顶产物） | `check:archive`（形态 M/S 比对） |
+| 骨架 | `kit/drafts/review-briefs/README.md` | 索引表 | 每写一页模块简报 +1 行 | 约 2000 | 63500 | **分区**：按层（scripts / shared / server / modules / preset）拆成子索引；⚠ 到顶动作在设计期就写 —— 本件是**索引**，实体在 `<模块>.md` | `check:gitignore`（M 读上限） |
 | 骨架 | `.hob/templates/ROLES.md` | 角色表 | 每加一个角色 +1 行 | 14476 | 51060 | **分区**：按角色族拆分（⚠ 该件是**模板**，到顶时先看是否该只留格式、把实体移出） | `check:presets`（角色面断言） |
 
 ⚠ **上限从哪读**：⚠ 上述"余量"一栏按 **65536 字节**算（⚠ 该值**从预设行读**：`preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `maxFileBytes`，⛔ 本册不硬编码为判据）。

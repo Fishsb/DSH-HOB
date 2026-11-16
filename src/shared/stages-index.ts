@@ -18,6 +18,7 @@ import { portfolioOf, type Portfolio, type PortfolioUnit } from './portfolio.ts'
 import { attentionOf, type WorkStateReading } from './work-state.ts'
 import { convergenceOf } from './convergence.ts'
 import { attentionAfterMainAction, panelSummaryOf, type PanelSummary } from './panel-summary.ts'
+import { humanTimeOf, humanTimeLine } from './human-time.ts'
 import { listPresentationOf, relationTitlesOf, type ItemListPresentation } from './item-presentation.ts'
 import { STAGE_NAMES, type StageControlUnit } from './stage-controls.ts'
 import { ledgerHealthOf } from './ledger-health.ts'
@@ -407,6 +408,17 @@ export function buildStages(
   const visibleAttention = attention === undefined
     ? undefined
     : attentionAfterMainAction(attention, next, units)
+  /**
+   * ⚠ **人工时间读数**（2026-11-17 · 批次 4）：只算「当前这条 change」的介入次数与间隔。
+   * ⚠ 判不出（没有当前 change / 没有 units）⇒ **缺字段**，⛔ 不产出 `0 次` ——
+   *   那会把「没算」说成「没事发生」（本仓 `E-122` 同族）。
+   */
+  const humanTime = (() => {
+    const cid = String(next?.target ?? '')
+    if (cid === '' || !/^CHG-/.test(cid)) return undefined
+    const reading = humanTimeOf(cid, units as readonly Record<string, unknown>[])
+    return { reading, line: humanTimeLine(reading) }
+  })()
   const out: StagesOk = {
     ok: true, readAt, stages, caps,
     pipelines: pipelineViewsOf(units),
@@ -415,7 +427,12 @@ export function buildStages(
      * ⚠ `stages: []` ⇒ `summary.stage === null`：项目级摘要不再回答"当前在第几步"。
      *   动作 / 等待 / 主阻断仍从同一个 `next` 派生（与面板一致）。
      */
-    summary: panelSummaryOf({ stages: [], next, attention: visibleAttention }),
+    /**
+     * ⚠ 2026-11-17（批次 4）：**人工时间读数**在这里算（本文件本来就持有全账本 `units`）。
+     *   口径唯一实现 = `human-time.ts`；缺 change ⇒ 不产出该读数（⛔ 不填 0）。
+     *   ⚠ 只在**有当前 change** 时算：没有它就没有「这一次的介入次数」可言。
+     */
+    summary: panelSummaryOf({ stages: [], next, attention: visibleAttention, humanTime }),
     relations: relationTitlesOf(units as any),
     portfolio,
     ...(visibleAttention === undefined ? {} : { attention: visibleAttention }),
