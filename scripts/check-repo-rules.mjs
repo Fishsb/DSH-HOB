@@ -73,6 +73,54 @@ function ignoreExitCode(target) {
   }
 }
 
+
+/**
+ * ── ⚠⚠ **2026-11-16（批次 0）：`verify` 入口判据 —— 纯函数，导出以便**内存负向对拍** ─────
+ *
+ * ── 它治的病（缺口有实测出处）────────────────────────────────────────────
+ *   本仓有 **50 族判据**、有 `FAMILY_FLOOR` 与 `ASSERTION_FLOORS` 两条下界，
+ *   但 `build` 只做 `tsc && build:client && write-build-stamp`，
+ *   `.git/hooks/` 里全是 `*.sample`、无 `.github/` ⇒ **没有任何东西要求判据跑**。
+ *   ⇒ 判据再好，不跑就等于不存在（`E-122` 同族：「机制建好，却没人往里送东西」）。
+ *
+ * ── 判据（两条，各自能失败）──────────────────────────────────────────────
+ *   ① `scripts.verify` **存在**且非空；
+ *   ② 它的命令串里**同时**含 `check` 与 `build` —— ⚠ 只含 check 不够
+ *      （旧产物 + 新源码时 `check:build` 的 `--strict-source` 面会红在
+ *       "改了 src 却没 build"上，而那一步本就该由 verify 先跑掉）；只含 build 更不够。
+ *
+ * ⚠ **为什么不断言 `pre-push` hook 本身**：
+ *   hook 在 `.git/hooks/`、**不进版本库**（clone 后必然不存在）⇒ 拿它当判据会让
+ *   干净 clone 恒红。它能被装出来的**唯一条件**是 `install-hooks` 这条 script 在，
+ *   而那条已由"脚本落点"正向断言 + MUST-TRACK 双重盯住 ⇒ 不重复判。
+ *
+ * @param {Record<string, unknown>|undefined} scripts - `package.json` 的 `scripts` 段
+ * @returns {{ok: boolean, why?: string}} 判定
+ */
+export function verifyEntryProblem(scripts) {
+  if (scripts === undefined || typeof scripts !== 'object' || scripts === null) {
+    return { ok: false, why: '读不到 package.json 的 scripts 段 ⇒ verify 入口判据失去基准（**不按通过处理**）' }
+  }
+  const v = scripts.verify
+  if (typeof v !== 'string' || v.trim() === '') {
+    return {
+      ok: false,
+      why: '**缺 `scripts.verify`** ⇒ 判据仍没有"一条命令跑完"的对外入口'
+        + '\n      ⇒ 后果：50 族判据 + 两条下界**全部只能靠人记得手动跑**（E-122 形态）'
+        + '\n      ⇒ 修法：加 `"verify": "npm run build && npm run check"`，并跑 `npm run install-hooks`',
+    }
+  }
+  if (!/\bcheck\b/.test(v) || !/\bbuild\b/.test(v)) {
+    return {
+      ok: false,
+      why: '`scripts.verify = ' + JSON.stringify(v) + '` **不同时含 build 与 check**'
+        + '\n      ⇒ ⚠ 只含 check 不够：旧产物 + 新源码时 `check:build` 的 `--strict-source`'
+        + ' 面会红在"改了 src 却没 build"上，而那一步本就该由 verify 先跑掉'
+        + '\n      ⇒ 只含 build 更不够：那等于**没有判据**',
+    }
+  }
+  return { ok: true }
+}
 /** 由入口调用；返回入口打印判定行所需的两个清单与几处共享读数。 */
 export function runRepoRules({ bad, ok, skip }) {
   /**
@@ -346,6 +394,10 @@ export function runRepoRules({ bad, ok, skip }) {
     //     否则"缺依赖"与"判据失败"在 CI 里就分不开了）。
     ['scripts/check-all.mjs', '入库脚本（被 package.json 的 check / check:all 调用 · 一条命令跑完全部判据族并汇总退出码）'],
     ['scripts/preflight.mjs', '入库脚本（被 package.json 的 check:preflight 调用 · 判据前置条件体检，恒 exit 0）'],
+    // ⚠ 2026-11-16（批次 0）：**装 hook 的入口**。
+    //   它把 `npm run verify` 挂到 `.git/hooks/pre-push` ⇒ 50 族判据第一次**有了一条必跑的路**。
+    //   ⚠ 加完 script 未登记时，本脚本的"反向自检"会当场 FAIL（同族第 N 次）⇒ 本条即修正结果。
+    ['scripts/install-hooks.mjs', '入库脚本（被 package.json 的 install-hooks 调用 · 把 npm run verify 装成 pre-push hook；拒绝覆盖非本脚本写的 hook）'],
     // ⚠ 2026-10-18 补（本卡 · 修「检查脚本靠猜目录名定位账本区」）：**工作区名配置的载体**。
     //   ⚠ 它是 `scripts/workspace-name.mjs` 读的**唯一**配置源（工作区根、被 git 跟踪）——
     //     随分支走 ⇒ 同一份代码放进任何目录名都派得对（隔离 worktree 目录名 = 卡 id 也不影响）。
@@ -1569,6 +1621,42 @@ export function runRepoRules({ bad, ok, skip }) {
             + '（⚠ 参照件/卷母本，去处不是根 —— 由**首行自述标题**判定，与 INIT 无关）')
         }
       }
+    }
+  }
+
+  /**
+   * ── ⚠⚠ **2026-11-16（批次 0）：`verify` 入口必须存在，且必须真的包含 `check`** ──────
+   *   判据实现收在**纯函数 `verifyEntryProblem()`** 里（上面模块作用域）——
+   *   这样负向对拍可以在内存里造夹具，⛔ 不必落盘改 `package.json`。
+   *   ⚠ 口径、理由与边界全在**那个函数**的头注释里（⛔ 不在两处各写一份）。
+   */
+  {
+    let pkgScr = undefined
+    try { pkgScr = JSON.parse(readFileSync(PKG, 'utf8')).scripts } catch { pkgScr = undefined }
+    const vp = verifyEntryProblem(pkgScr)
+    if (!vp.ok) bad('V ' + vp.why)
+    else ok('V ✓ `scripts.verify` 存在且同时含 build 与 check（' + JSON.stringify(pkgScr.verify) + '）')
+
+    /**
+     * ⚠ **负向对拍（内存里造夹具，⛔ 不落盘）**：三种必错形态**逐个必须被咬住**，
+     *   且**正面形态必须放行** —— 缺后者的话"恒红"也能通过本条。
+     *   ⚠ 这是本族唯一一条"纯函数 + 内存夹具"的对拍；它同时证明了
+     *     "判据真的在判 `scripts.verify`"，而不是在判一个常量。
+     */
+    const negCases = [
+      { name: '缺 verify', scripts: {}, hit: true },
+      { name: 'verify 空串', scripts: { verify: '   ' }, hit: true },
+      { name: 'verify 只含 check', scripts: { verify: 'npm run check' }, hit: true },
+      { name: 'verify 只含 build', scripts: { verify: 'npm run build' }, hit: true },
+      { name: 'scripts 段缺失', scripts: undefined, hit: true },
+      { name: '正面：build + check', scripts: { verify: 'npm run build && npm run check' }, hit: false },
+    ]
+    const missed = negCases.filter((c) => verifyEntryProblem(c.scripts).ok === c.hit).map((c) => c.name)
+    if (missed.length > 0) {
+      bad('V **负向对拍失败**：' + missed[0] + ' 的夹具**没有被咬住** ⇒ 本条是假绿（⛔ 不按通过处理）')
+    } else {
+      ok('V ✓ **负向对拍**：缺 verify / 空串 / 只含 check / 只含 build / scripts 缺失'
+        + ' 五种必错形态**逐个被咬住**，正面形态（build + check）放行（⚠ 内存里造，⛔ 不落盘）')
     }
   }
 

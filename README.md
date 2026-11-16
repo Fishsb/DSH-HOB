@@ -212,7 +212,23 @@ dsh plugin --profile <profile> remove dsh-hob
 
 ```bash
 npm run check          # 一条命令跑完全部判据，汇总退出码
+npm run verify         # = npm run build && npm run check（⚠ 推荐用这一条）
 ```
+
+⚠ **为什么推荐 `verify` 而不是 `check`**：`check:build` 的面 ①②（产物 vs 源码）在聚合入口里
+带 `--strict-source` ⇒ 改了 `src` 却没 build 时会红。先 build 再 check 就不会把
+"忘了构建"误读成"判据失败"。
+
+### 6.1 让判据在推之前必跑（一次性）
+
+```bash
+npm run install-hooks  # 装 .git/hooks/pre-push ⇒ 每次 git push 前跑 npm run verify
+```
+
+⚠ **这是本仓唯一"判据必须跑"的机制**：本仓没有 CI 配置，`build` 也不含判据。
+不装这个 hook ⇒ 50 族判据**全靠人记得手动跑**（`E-122` 形态：机制建好、没人往里送东西）。
+⚠ 它**拒绝覆盖**已存在的、不是它写的 hook（`.git/hooks/` 是本地资产，覆盖属不可逆动作）。
+⚠ 临时绕过：`git push --no-verify`（但那样这次推送就没人替你检查了）。
 
 退出码：`0` = 全部通过 · `1` = 至少一族有实际失败 · `2` = 至少一族**没能执行**（基准缺失）。
 ⚠ **`2` 不代表通过** —— 它表示"这条判据这次没跑起来"，可能缺 `node_modules` / 缺 `lib/` / 缺项目账本。

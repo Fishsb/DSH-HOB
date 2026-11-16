@@ -91,6 +91,15 @@
 export const CHECKER_CRASH_CODE = 3
 
 /**
+ * 耗时读数的**滚动窗口**（`recordTimings()` 用）。
+ *
+ * ⚠ **为什么是 20**：够看出「这一族最近是不是一直 20 秒」，又不至于让文件无限长。
+ * ⚠ 这是**会增长的表** ⇒ 到顶动作 = 超出即丢最旧一轮（已实现），
+ *   ⛔ 不是「以后再说」（`kit/drafts/growth-registry.md` 的立册理由：到顶动作设计期就写）。
+ */
+export const KEEP_RUNS = 20
+
+/**
  * **判据模**才传的族 → 额外参数。
  *
  * ⚠ 只有 `check:build`：它的面 ③ 需要「运行实例」这个**外部**读数，而在日常开发中间态
@@ -117,10 +126,11 @@ const STRICT_FAMILIES = new Map([
   ['check:build', ['--strict-source']],
 ])
 import { spawnSync } from 'node:child_process'
-import { readFileSync, readdirSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { preflight, printPreflight } from './preflight.mjs'
+import { resolveLedgerRoot } from './lib/ledger-root.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
@@ -394,7 +404,11 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ 2026-11-09（实时通道入库）：1190 → **1192**
   //   （+2 = `check-live-route.mjs` / `check-live-client.mjs` 进入 MUST-TRACK，
   //   仓库族逐条核到它们“在盘上、规则放行、已入 git index”）。
-  ['check:gitignore', 1198],  // §79：拆卷后 1195；2026-11-11 加 check-audit-status ⇒ 1196；同日加 check-architecture ⇒ 1197；加 check-judgement-index ⇒ 1198
+  // §79：拆卷后 1195；2026-11-11 加 check-audit-status ⇒ 1196；同日加 check-architecture ⇒ 1197；加 check-judgement-index ⇒ 1198
+  // ⚠ 2026-11-16（批次 0）：1198 → **1201**（+3）
+  //   +1 = `scripts/install-hooks.mjs` 进 MUST-TRACK（脚本落点正向断言逐条 ✓）
+  //   +2 = 新增 V 组两条（`verify` 入口存在且含 build+check · 它的内存负向对拍）
+  ['check:gitignore', 1201],
   //   ⚠ 理由：本单在 `check-repo-rules.mjs` 新增 **`MV`** 断言「模板根上文档清单 == INIT 的复制清单」
   //     ⇒ 该族多 **1 处**（577 → 578）。⚠ **只升不降**。
   //   ⚠ ⚠ **为什么不是改已有的第 ⑥ 组**：`check-code-face.mjs` 的 ⑥ 组**两个方向都不咬**（本单实测三段）——
@@ -1201,6 +1215,62 @@ export function verdict(results) {
   return { exit: 0, passed, failed, crashed, notRun }
 }
 
+
+/**
+ * ── ⚠⚠ **2026-11-16（批次 0.5）：把逐族耗时落盘，让"成本体检"有数据面** ──────────
+ *
+ * ── 它治的病 ──────────────────────────────────────────────────────────
+ *   本文件**早就在逐族计时**（`runFamilies()` 的 `ms`、汇总行打印 `X.Xs`），
+ *   但那个数**只在终端上一闪而过**：跑完就没了，没人能回答
+ *   「这一族是不是每次都跑 20 秒」「哪一族的耗时在涨」。
+ *   ⇒ 50 族判据的**机器时间**从来没有被记录过 —— 而"值不值得跑"只能靠感觉。
+ *
+ * ── 口径（⚠ 写清才能复核）──────────────────────────────────────────────
+ *   · 落点 **`<账本根>/runtime/check-timings.json`**（`runtime/` 已被 git 忽略、
+ *     且是运行态的唯一去处 ⇒ ⛔ 不写仓库根，否则就是"判据污染被测对象"）；
+ *   · **滚动窗口 20 次**（`KEEP_RUNS`）：只留最近 20 轮，⛔ 不无限增长
+ *     （⚠ 会增长的表必须**设计期就写到顶动作** —— 见 `kit/drafts/growth-registry.md`）；
+ *   · 每轮记 `{ at, families: { <name>: ms } }`，**只记耗时**，⛔ 不记退出码/输出
+ *     （那些有各自的落点，混进来就是第二个真相）；
+ *   · ⚠ **写失败不许影响判定**：耗时是**附加读数**，它写不下去不该让判据变红
+ *     （与 `write-build-stamp` 的 `commit=unknown` 同一条纪律）。
+ *
+ * ⚠ **本函数不改任何判定**：它在 `printSummary()` **之后**调用，返回值被忽略。
+ *
+ * @param {Array<{name: string, ms: number}>} results - `runFamilies()` 的返回值
+ * @param {{now?: number, keep?: number}} [opts] - 便于对拍注入
+ * @returns {{ok: boolean, path?: string, runs?: number, why?: string}}
+ */
+export function recordTimings(results, opts = {}) {
+  const keep = Number.isSafeInteger(opts.keep) && opts.keep > 0 ? opts.keep : KEEP_RUNS
+  const now = typeof opts.now === 'number' ? opts.now : Date.now()
+  let ledger = undefined
+  try { ledger = resolveLedgerRoot(root) } catch { ledger = undefined }
+  if (ledger === undefined || ledger === '') {
+    return { ok: false, why: '账本根判不出（未配 ledgerHome）⇒ 耗时读数没有落点' }
+  }
+  const file = join(ledger, 'runtime', 'check-timings.json')
+  const families = {}
+  for (const r of results) {
+    if (typeof r?.name === 'string' && Number.isFinite(r?.ms)) families[r.name] = Math.round(r.ms)
+  }
+  let prev = { runs: [] }
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'))
+    if (parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.runs)) prev = parsed
+  } catch { /* 首次 / 坏件 ⇒ 从空开始（⛔ 不因此判红） */ }
+  const runs = [...prev.runs, { at: new Date(now).toISOString(), families }].slice(-keep)
+  try {
+    mkdirSync(join(ledger, 'runtime'), { recursive: true })
+    /** ⚠ 原子写：先写临时件再改名（同目录 ⇒ 同一文件系统 ⇒ rename 是原子的）。 */
+    const tmp = `${file}.tmp-${process.pid}`
+    writeFileSync(tmp, JSON.stringify({ keep, runs }, null, 2) + '\n', 'utf8')
+    renameSync(tmp, file)
+    return { ok: true, path: file, runs: runs.length }
+  } catch (e) {
+    return { ok: false, path: file, why: String(e?.message ?? e) }
+  }
+}
 /**
  * **S-13：扫一遍判据可能留下的残留**（在仓库根与 `src/` 两处）。
  *
@@ -1780,5 +1850,18 @@ if (process.argv[1] !== undefined && (process.argv[1].endsWith('check-all.mjs') 
    *   ⇒ 只设 `exitCode`，让 Node 等 stdout/stderr 排空后自然退出。
    *   ⚠ 不改三档判定的任何一位：返回值仍由 `printSummary()` 唯一决定。
    */
-  process.exitCode = printSummary(results)
+  const exitCode = printSummary(results)
+  /**
+   * ⚠⚠ **耗时落盘（批次 0.5）**：在 `printSummary()` **之后**调用，返回值被忽略。
+   *   ⚠ 写失败**不许影响判定**（耗时是附加读数，它写不下去不该让判据变红）；
+   *     但**必须让人看见**——否则「读数一直在丢」没人发现（`E-122` 同族）。
+   *   ⛔ 不动 `exitCode` 的任何一位。
+   */
+  const timing = recordTimings(results)
+  if (!timing.ok) {
+    console.log('')
+    console.log(`⚠ 耗时读数**没有落盘**：${timing.why ?? '未知原因'}`)
+    console.log('    ⇒ 这不是判据失败（⚠ 不影响退出码），但「哪一族慢」这件事这一轮没被记下来。')
+  }
+  process.exitCode = exitCode
 }
