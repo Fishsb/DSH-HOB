@@ -908,7 +908,9 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ 2026-11-03：27 → **29**（零余量 = 实测）。
   //   + 新 change 的 K-ALL 读数；+ N-K7（built task 无直属验收必红、复验 PASS 转绿、新退回再红）。
   // ⚠ 2026-11-07：实测 35（新增 change 的 K-ALL 读数 + 多条对拍）⇒ 下界同步抬到 35，零余量。
-  ['check:convergence', 36],
+  // ⚠ 2026-11-16（批次 1）：36 → **40**（+4）
+  //   +4 = K-8a 差分恒等式 · K-8b 滚动窗口 · K-8c 结构性阻断 · K-8d 内存负向对拍
+  ['check:convergence', 41],
   // ⚠ 2026-11-03：补齐 goal / risk / decision / cap 后，
   //   账本资源图 11 条正向 + 2 条负向对拍 = 实测 13。
   //   覆盖 10 类稳定 ID、四类新增列表与按 ID 读取、需求关联图可继续解析、

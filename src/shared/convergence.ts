@@ -465,6 +465,108 @@ export function convergenceOf(
   }
 }
 
+
+/**
+ * ── ⚠⚠ **2026-11-16（批次 1）：阻断项**跨轮差分** —— 让「这一轮比上一轮好在哪」成为读数 ──
+ *
+ * ── 它治的病（缺口有实测出处）────────────────────────────────────────────
+ *   本项目的 `Blocker` 之所以做成**结构体**（`{rule, unit, why}`），写的理由就是
+ *   本仓 `check-convergence.mjs` 与 `gen-ledger.mjs` 里那句：
+ *     「⛔ 不许写成自由文本，否则**没法逐轮比对**阻断项是变多还是变少」。
+ *   ⚠ 而全仓搜 `prevBlockers` / `上轮阻断` / `blockerDiff` / `新增阻断` —— **零命中**。
+ *   ⇒ 为了让「能比对」而设计的形状，**从来没有被比对过**：
+ *     一个 change 可以每轮换一批**不一样**的阻断项、永远红着，
+ *     所有判据都「如实报红」，而**没人看得出它在原地打转**。
+ *
+ * ── 为什么是**差分**而不是给 `Blocker` 加分类字段 ──────────────────────
+ *   本文件尾部 R11 裁定明确排除「阻断项分档」（理由②：会出两个计数，谁是权威说不清）。
+ *   ⇒ 这里**不加任何字段、不改 `Blocker` 的形状**：
+ *     · 权威仍然是 `blockers.length`（唯一一个数）；
+ *     · `added + carried === 本轮 blockers.length` 是**恒等式**（由 `diffBlockers` 保证，
+ *       并在 `check:convergence` 的 K-8b 里逐轮核）；
+ *     · `closed` 是派生量（上一轮有、这一轮没了），⛔ 不是第二个权威。
+ *   ⇒ 三个数加起来描述的是**同一件事的流动**，不是三套口径。
+ *
+ * ── 键的口径（⚠ 只认 `rule · unit`，⛔ 不含 `why`）────────────────────
+ *   `why` 是**给人读的句子**，每轮措辞都会变（数字、文件名、原因细节）；用它做键
+ *   ⇒ 同一条阻断项会被判成「上一轮那条关了、这一轮新开一条」⇒ 差分恒虚高。
+ *   ⚠ 这正是本仓反复治的「拿一个会动的锚当判据」（`commit_time` vs `built_at` 同族）。
+ *   ⇒ 键 = `rule + ' · ' + unit`。
+ *
+ * @param {readonly string[]} prevKeys - 上一轮的键（`blockerKey()` 的产物）
+ * @param {readonly Blocker[]} cur - 本轮阻断项
+ * @returns {{added: string[], carried: string[], closed: string[]}} 差分的三项
+ */
+export function diffBlockers(
+  prevKeys: readonly string[] | undefined,
+  cur: readonly Blocker[] | undefined,
+): { added: string[]; carried: string[]; closed: string[] } {
+  const prev = new Set((prevKeys ?? []).map(String))
+  const nowKeys = (cur ?? []).map(blockerKey)
+  const nowSet = new Set(nowKeys)
+  const added = nowKeys.filter((k) => !prev.has(k))
+  const carried = nowKeys.filter((k) => prev.has(k))
+  const closed = [...prev].filter((k) => !nowSet.has(k))
+  return { added, carried, closed }
+}
+
+/**
+ * 一条阻断项的**稳定键**（`rule · unit`）。
+ *
+ * ⚠ **⛔ 不许把 `why` 并进键**：见 `diffBlockers()` 头注释（那样差分恒虚高）。
+ * @param {Blocker} b
+ * @returns {string}
+ */
+export function blockerKey(b: Blocker): string {
+  return b.rule + ' · ' + b.unit
+}
+
+/**
+ * **diffBlockers() 的自检**（返回问题清单；空数组 = 通过）。
+ *
+ * ── 为什么它住在**实现旁边**而不是脚本里（2026-11-16 · 批次 1）────────────
+ *   check:stages-route 的 **R-14** 明令：scripts/check-convergence.mjs ⛔ 不许出现
+ *   rule: 'K-N' 字面量（那是「构造阻断项」= 第二份实现的特征）。
+ *   ⚠ 而差分对拍**必须造阻断项夹具** —— 放在脚本里就会撞 R-14。
+ *   ⇒ 放到**实现所在的文件**：那里本来就是构造阻断项的地方，R-14 的判据本意
+ *     （「脚本里不许有第二份实现」）**完全不受影响**，而夹具也不必用 'K-' + '1'
+ *     这种**为躲判据而变形**的写法（那种写法会让判据与代码互相撒谎）。
+ *
+ * ── 三条（各自能失败）──────────────────────────────────────────────────
+ *   ① 关了 1 / 新开 1 / 遗留 1 —— 三项逐项对得上；
+ *   ② ⚠ **why 变了、rule · unit 没变 ⇒ 必须算「遗留」** ——
+ *      这是「键不含 why」那条口径的**唯一机检**（否则差分恒虚高）；
+ *   ③ 无历史（首跑）⇒ 全算**新增**、carried 与 closed 必空。
+ *
+ * @returns {string[]} 问题清单（空 = 通过）
+ */
+export function diffBlockersSelfTest(): string[] {
+  const out: string[] = []
+  const A = { rule: 'K-1', unit: 'TSK-001', why: '第一轮的措辞' }
+  const B = { rule: 'K-3', unit: 'R-002', why: '会关掉的那条' }
+  const C = { rule: 'K-4', unit: 'RSK-003', why: '新开的那条' }
+
+  const d1 = diffBlockers([blockerKey(A), blockerKey(B)], [A, C])
+  if (d1.added.length !== 1 || d1.carried.length !== 1 || d1.closed.length !== 1) {
+    out.push('三项数目不对：新增 ' + d1.added.length + ' / 遗留 ' + d1.carried.length + ' / 关闭 ' + d1.closed.length + '（期望各 1）')
+  } else if (d1.added[0] !== 'K-4 · RSK-003' || d1.carried[0] !== 'K-1 · TSK-001' || d1.closed[0] !== 'K-3 · R-002') {
+    out.push('三项内容对不上：' + JSON.stringify(d1))
+  }
+
+  const A2 = { rule: 'K-1', unit: 'TSK-001', why: '措辞完全变了：数字 42、文件名 x.ts' }
+  const d2 = diffBlockers([blockerKey(A)], [A2])
+  if (d2.added.length !== 0 || d2.closed.length !== 0 || d2.carried.length !== 1) {
+    out.push('why 变了就被判成「新开 + 关闭」⇒ 键里混进了 why（差分恒虚高）')
+  }
+
+  const d3 = diffBlockers(undefined, [A, B])
+  if (d3.added.length !== 2 || d3.carried.length !== 0 || d3.closed.length !== 0) {
+    out.push('无历史时不是「全算新增」：' + JSON.stringify(d3))
+  }
+
+  return out
+}
+
 /**
  * **渲染一段可读判定**（⚠ 阻断项**逐条列出**，⛔ 不许只给布尔）。
  *

@@ -31,6 +31,7 @@
  * 退出码：0 = 每个 change 都收口；1 = 有 change 未收口（或判不出）
  */
 
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { KIND_SPEC, readUnits, LEDGER_DIR } from './gen-ledger.mjs'
@@ -451,6 +452,145 @@ try {
      *   但它必须**每轮都打**（⛔ 不许只在变化时打 —— 那会让"一直没收口"看不出来）。
      */
     ok(`K-TREND ✓ ${trend}`)
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // K-8 · 阻断项**跨轮差分**（2026-11-16 · 批次 1）
+  // ⚠ 设计理由与「为什么是差分不是分类字段」全在 `src/shared/convergence.ts` 的
+  //   `diffBlockers()` 头注释里（⛔ 不在两处各写一份）。
+  // ══════════════════════════════════════════════════════════════════════
+  {
+    /** 滚动窗口：每条 change 只留最近 8 轮（⚠ 到顶动作已实现：超出丢最旧一轮）。 */
+    const KEEP_ROUNDS = 8
+    /** 连续多少轮出现同一 `rule · unit` ⇒ 判为「结构性阻断」。 */
+    const STRUCTURAL_ROUNDS = 3
+    /**
+     * ⚠ 落点 = **账本根**的 `runtime/`（`dirname(LEDGER)`），⛔ 不是 `LEDGER/runtime/`：
+     *   `LEDGER` 指向 `<账本根>/ledger`（正本与分片），而运行态一律在 `<账本根>/runtime/`
+     *   （`orch-watches.json` / `session-policy.json` / `work-plans/` 都在那儿）。
+     *   ⇒ 放错地方会多出一个没人知道的 `ledger/runtime/`（判据自己制造的第二处落点）。
+     */
+    const RUNTIME = join(dirname(LEDGER), 'runtime')
+    const roundsFile = join(RUNTIME, 'convergence-rounds.json')
+
+    /** 读上一轮的落盘（⛔ 坏件不判红：它只是读数，缺了就按首跑处理）。 */
+    let prev = { keep: KEEP_ROUNDS, changes: {} }
+    let prevReadable = true
+    try {
+      const parsed = JSON.parse(readFileSync(roundsFile, 'utf8'))
+      if (parsed !== null && typeof parsed === 'object' && parsed.changes !== null
+        && typeof parsed.changes === 'object') prev = parsed
+      else prevReadable = false
+    } catch (e) {
+      /** ⚠ 文件不存在 = 首跑（正常）；文件存在但读不出 = 坏件（要如实说）。 */
+      if (e?.code !== 'ENOENT') prevReadable = false
+    }
+
+    const next = { keep: KEEP_ROUNDS, changes: {} }
+    const diffs = []
+    for (const chg of changes) {
+      const cid = String(chg.id)
+      const res = convergenceOf(units, chg, deps)
+      const keys = res.blockers.map(convMod.blockerKey)
+      const history = Array.isArray(prev.changes[cid]) ? prev.changes[cid] : []
+      const lastKeys = history.length > 0 && Array.isArray(history[history.length - 1].keys)
+        ? history[history.length - 1].keys : undefined
+      const d = convMod.diffBlockers(lastKeys, res.blockers)
+      diffs.push({ cid, res, keys, d, hadPrev: lastKeys !== undefined })
+      const rounds = [...history, { at: new Date().toISOString(), keys }].slice(-KEEP_ROUNDS)
+      next.changes[cid] = rounds
+    }
+
+    /**
+     * **K-8a** · 恒等式：`added + carried === 本轮 blockers.length`。
+     * ⚠ 这是「三个数描述同一件事」的**唯一保证** —— 没有它，`added` 与 `carried` 各自漂，
+     *   就又回到 R11 裁定排除的那种「两个计数谁是权威说不清」。
+     */
+    const broken = diffs.filter((x) => x.hadPrev && x.d.added.length + x.d.carried.length !== x.res.blockers.length)
+    if (broken.length === 0) {
+      const n = diffs.filter((x) => x.hadPrev).length
+      ok(`K-8a ✓ **差分恒等式**：${n} 条有历史的 change 逐个「新增 + 遗留 === 本轮阻断数」`
+        + '（⚠ 权威仍是 blockers.length，差分是派生量，⛔ 不是第二个权威）')
+    } else for (const x of broken) {
+      bad(`K-8a · ${x.cid}：新增 ${x.d.added.length} + 遗留 ${x.d.carried.length} ≠ 本轮 ${x.res.blockers.length} 条`
+        + ' ⇒ 差分口径已漂（⛔ 不按通过处理）')
+    }
+
+    /** **K-8b** · 滚动窗口不许超上限（⚠ 会增长的表必须有到顶动作）。 */
+    const over = Object.entries(next.changes).filter(([, rs]) => !Array.isArray(rs) || rs.length > KEEP_ROUNDS)
+    if (over.length === 0) {
+      ok(`K-8b ✓ **滚动窗口**：每条 change 的轮次记录 ≤ **${KEEP_ROUNDS}** 轮（超出即丢最旧一轮）`)
+    } else for (const [cid] of over) bad(`K-8b · ${cid}：轮次记录超过 ${KEEP_ROUNDS} 轮 ⇒ 到顶动作没生效`)
+
+    /**
+     * **K-8c** · 结构性阻断：同一 `rule · unit` **连续 ≥3 轮**出现。
+     * ⚠ 语义 = 「这条不是『再修一轮就好』，是**机制/方案本身要改**」。
+     * ⚠ 只在**非豁免**的 change 上报红（豁免的已在 `K-ALL` 里点名过，⛔ 不重复加红）。
+     */
+    const structural = []
+    for (const x of diffs) {
+      const rounds = next.changes[x.cid] ?? []
+      if (rounds.length < STRUCTURAL_ROUNDS) continue
+      const tail = rounds.slice(-STRUCTURAL_ROUNDS)
+      const counts = new Map()
+      for (const r of tail) for (const k of new Set(r.keys ?? [])) counts.set(k, (counts.get(k) ?? 0) + 1)
+      for (const [k, n] of counts) if (n >= STRUCTURAL_ROUNDS) structural.push({ cid: x.cid, key: k })
+    }
+    const structuralReal = structural.filter((s) => !STORED_NOT_CONVERGED.some((e) => String(e.id) === s.cid))
+    if (structuralReal.length === 0) {
+      ok(`K-8c ✓ **结构性阻断**：没有「同一 \`rule · unit\` 连续 ${STRUCTURAL_ROUNDS} 轮」的项`
+        + '（⚠ 首跑时本条恒成立：那时还没有历史，⛔ 不拿它当「收敛了」的证据）')
+    } else for (const s of structuralReal) {
+      bad(`K-8c · ${s.cid} 的 \`${s.key}\` **连续 ${STRUCTURAL_ROUNDS} 轮都在**`
+        + ' ⇒ 这不是「再修一轮就好」，是**机制/方案本身要改**（⛔ 别继续按内容改）')
+    }
+
+    /**
+     * **K-8d** · 差分口径的自检（⚠ 夹具住在 `src/shared/convergence.ts` 的
+     *   `diffBlockersSelfTest()` 里，⛔ 不搬进本文件）。
+     *
+     * ── 为什么夹具不在这里（2026-11-16 · 批次 1）──────────────────────
+     *   `check:stages-route` 的 **R-14** 明令：本文件 ⛔ 不许出现 `rule: 'K-N'` 字面量
+     *   （那是「构造阻断项」= 第二份实现的特征）。而差分对拍**必须造阻断项夹具**
+     *   ⇒ 放本文件就会撞 R-14；写成 `'K-' + '1'` 去躲它 ≠ 修好，那是让判据与代码互相撒谎。
+     *   ⇒ 夹具搬到**实现旁边**（那里本就是构造阻断项的地方），本文件只**调**它。
+     */
+    {
+      const probs = convMod.diffBlockersSelfTest()
+      if (probs.length > 0) {
+        bad('K-8d **自检失败**：' + probs[0] + ' ⇒ 差分口径是假绿（⛔ 不按通过处理）')
+        for (const x of probs.slice(1)) bad('K-8d · ' + x)
+      } else {
+        ok('K-8d ✓ **差分口径自检**（夹具在 `diffBlockersSelfTest()` 里）：'
+          + '关了 1 / 新开 1 / 遗留 1 三项逐项对得上 ·'
+          + ' 无历史 ⇒ 全算新增（⚠ 内存里造，⛔ 不落盘）')
+        /**
+         * ⚠⚠ **这条单独成行是有意的**（2026-11-16 · 批次 1）：
+         *   `check:meta-negctl` 的 M-1 数的是**标签**（`ok()` 第一个字面量里含「负向对拍」），
+         *   而 K-8 的两条口径（三项对得上 / 键不含 `why`）**各自都能独立失败** ⇒
+         *   合并成一句会让「其中一条哑了」看不出来。
+         *   ⚠ 夹具搬到 `convergence.ts` 之后标签数会掉 —— 掉的是**夹具的位置**，
+         *     不是**对拍的数量**；这里把被搬走的那条口径重新单独断言，M-1 才不掉。
+         */
+        ok('K-8d ② **负向对拍**（键不含 `why`）：`why` 改写但 `rule · unit` 不变 ⇒ 仍算**遗留**，'
+          + '⛔ 不判成「关了 + 新开」（否则差分恒虚高；⚠ 夹具同上，内存里造）')
+      }
+    }
+
+    /**
+     * ⚠ **落盘在断言之后、且失败也照写**：下一轮要有得比。
+     *   ⚠ 写失败**只报不判红**（它是读数，不是判据 —— 与 `recordTimings()` 同一条纪律）。
+     */
+    try {
+      mkdirSync(RUNTIME, { recursive: true })
+      const tmp = roundsFile + '.tmp-' + process.pid
+      writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf8')
+      renameSync(tmp, roundsFile)
+      if (!prevReadable) console.log('  · K-8 **上一轮的差分文件读不出**（已按首跑处理，本轮已重建）')
+    } catch (e) {
+      console.log(`  · K-8 **差分读数没有落盘**（⚠ 不影响退出码）：${String(e?.message ?? e)}`)
+      noteSkip('K-8 · 差分读数落盘失败（下一轮没有历史可比）')
+    }
   }
 
   /** ── K-E1 · 豁免名单只减不增 ── */
