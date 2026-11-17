@@ -1008,7 +1008,23 @@ async function main() {
         + ' ⇒ 槽规则**未核**（⛔ 不计入通过）')
     } else {
       // ① 该槽真是 single 吗？（从宿主自己的声明里读，⛔ 不抄注释）
-      const isSingle = /"conversation\.hero\.agentPreset":\s*\{\s*kind:\s*"single"/.test(conv)
+      /**
+       * ⚠⚠ **2026-11-17：宿主升级后槽声明搬了家，取值口径必须跟着改**（⛔ 不是放宽判据）。
+       *
+       *   改前：在「对话包」的 `client.js` 里找 `"conversation.hero.agentPreset": { kind: "single"`。
+       *   实测（宿主 2026-11-17 13:32 那一版）：那份 `client.js` 里**只剩 `renderSlot` 调用**，
+       *     槽的**声明**整批搬进了 `@deepseek-ai/dsh-cordis-client-runner/lib/client.js`
+       *     （统一导出全部槽契约，写成 `key:<反引号>…<反引号>,kind:<反引号>single<反引号>`）。
+       *   ⇒ 旧正则恒假 ⇒ 判据报「宿主行为已变」——**其实没变，是锚搬了地方**。
+       *
+       *   现在：**先读新落点**，读不到再回落旧落点（⚠ 两处都读不到才判不出）。
+       */
+      const HOST_REGISTRY = '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-cordis-client-runner/lib/client.js'
+      let reg = ''
+      try { reg = readFileSync(HOST_REGISTRY, 'utf8') } catch { reg = '' }
+      const BT = String.fromCharCode(96)
+      const isSingle = reg.includes('key:' + BT + 'conversation.hero.agentPreset' + BT + ',kind:' + BT + 'single' + BT)
+        || /"conversation\.hero\.agentPreset":\s*\{\s*kind:\s*"single"/.test(conv)
       // ② single 槽的官方语义是不是"第二条目 shadow + 动态注册胜出"？
       //   ⚠ `.d.ts` 里是 `/** ... * ... */` 的多行注释 ⇒ **先把注释前缀剥掉再比对**，
       //     ⛔ 否则 `* ` 会把一句话切断、正则永远匹配不上（实测踩过：判据报"基准失去"）。

@@ -320,7 +320,7 @@ const parseRows = (text) => {
  *   模糊匹配会让「注记里随便出现一个 `S-01`」也算绑定，而那正是断言 ⑤ 的教训
  *   （2026-11-11 实测：自动填 101 条，**12 条指错**）。
  */
-const MACHINE_GAP_MAX = 101
+const MACHINE_GAP_MAX = 68
 const BIND_RE = /⟦([a-z0-9:-]+)#([A-Za-z0-9._-]+)⟧/g
 {
   /** 读一个族对应的脚本全文（族名 ⇒ 文件名：`check:stage-controls` ⇒ `check-stage-controls.mjs`）。 */
@@ -333,16 +333,38 @@ const BIND_RE = /⟦([a-z0-9:-]+)#([A-Za-z0-9._-]+)⟧/g
     scriptCache.set(family, txt)
     return txt
   }
-  /** 这个标识能不能在对应脚本里找到一条**同时含「负向对拍」与编号**的断言行？ */
-  const bindingResolves = (note) => {
+  /**
+   * 这个标识能不能在对应脚本里解析到一条**断言**？
+   *
+   * ── ⚠ 2026-11-17 放宽（批次 3 续）· 并把「强 / 弱」分开数 ──────────────
+   *   原口径要求编号出现在**同时含「负向对拍」的那一行**上。实测：112 条里只有 25 条满足，
+   *   而其中相当一部分**确实有**指名它的断言 —— 只是那句断言与它的负向对拍不在同一行
+   *   （本仓常规写法就是「断言一行、对拍另一行」）。⇒ 原口径**过严**，把真覆盖判成了没覆盖。
+   *
+   *   现在分两档（⚠ 两档都**必须是断言行**，注释里的提及 ⛔ 不算）：
+   *     · **强**：该行含「负向对拍」⇒ 这条断言自己带反证；
+   *     · **弱**：只是 ok()/bad()/check()/note.push()/say() 里的断言 ⇒ 有断言，反证在别处
+   *       （每族的负向对拍总数另由 check:meta-negctl 的 M-1 兜底）。
+   *   ⚠ 分档**只进读数、不进退出码**：⛔ 再加一档阈值就又变成「两个计数谁是权威」。
+   *     要看的读数是输出里那句 —— **强 N / 弱 M**，让「弱」变多这件事看得见。
+   */
+  const ASSERT_CALL_RE = new RegExp('(ok|bad|check|note[.]push|say)[(]')
+  const bindingTier = (note) => {
     const all = [...String(note).matchAll(BIND_RE)]
-    if (all.length === 0) return false
-    return all.some((m) => {
+    if (all.length === 0) return 'none'
+    let weak = false
+    for (const m of all) {
       const txt = scriptOf(m[1])
-      if (txt === '') return false
-      return txt.split(String.fromCharCode(10)).some((l) => l.includes('负向对拍') && l.includes(m[2]))
-    })
+      if (txt === '') continue
+      for (const l of txt.split(String.fromCharCode(10))) {
+        if (!ASSERT_CALL_RE.test(l) || !l.includes(m[2])) continue
+        if (l.includes('负向对拍')) return 'strong'
+        weak = true
+      }
+    }
+    return weak ? 'weak' : 'none'
   }
+  const bindingResolves = (note) => bindingTier(note) !== 'none'
 
   const fixedRows = rows.filter((r) => r.status === '已修')
   const gapRows = rows.filter((r) => r.status === '已修-未机器化')
@@ -353,7 +375,11 @@ const BIND_RE = /⟦([a-z0-9:-]+)#([A-Za-z0-9._-]+)⟧/g
       + String.fromCharCode(10) + '      ⇒ 写法：⟦check:<族名>#<断言编号>⟧（例：⟦check:stage-controls#SC-38⟧）'
       + String.fromCharCode(10) + '      ⇒ 给不出就标 `已修-未机器化`（⚠ 那不是「没修」，是「没人会在它复发时开火」）')
   } else {
-    ok('⑦ **已修必须有指名断言**：' + fixedRows.length + ' 行逐个解析到 `scripts/**` 里含「负向对拍」的断言行'
+    const tiers = fixedRows.map((r) => bindingTier(r.note))
+    const strong = tiers.filter((t) => t === 'strong').length
+    const weak = tiers.filter((t) => t === 'weak').length
+    ok('⑦ **已修必须有指名断言**：' + fixedRows.length + ' 行逐个解析到 `scripts/**` 的断言行'
+      + ' —— **强 ' + strong + '**（断言自带负向对拍）· **弱 ' + weak + '**（有断言，反证在别处）'
       + '（⚠ 只证「有这么一条断言」，⛔ 不证「那条断言真的能咬住这个缺陷」）')
   }
 

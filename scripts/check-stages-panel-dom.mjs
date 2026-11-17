@@ -5080,8 +5080,31 @@ export function StateDot({ state, size, appearance }) {
           p.push('宿主 slot 契约文件不存在 ⇒ 本判据无对象（⛔ 不按通过处理）')
         } else {
           const host = readFileSync(hostFile, 'utf8')
-          const tab = host.slice(host.indexOf('key: "sidebar.right.pane.tab"'), host.indexOf('key: "sidebar.right.pane.tab.title"'))
-          const guide = host.slice(host.indexOf('key: "sidebar.right.tab.guide.entry"'), host.indexOf('key: "sidebar.right.tab.menu.item"'))
+          /**
+           * ⚠⚠ **2026-11-17：宿主升级后槽声明换了写法，取值口径必须跟着改**（⛔ 不是放宽判据）。
+           *
+           *   改前：`key: "sidebar.right.pane.tab"` … `key: "sidebar.right.pane.tab.title"` 之间切片。
+           *   实测（宿主 2026-11-17 13:32 那一版）：`.title` 这类相邻键**整批消失**，
+           *     两个 `indexOf` 都返回 -1 ⇒ `slice(-1,-1) = ''` ⇒ **两槽恒判「未声明」**。
+           *   ⚠ 那是「判据拿了一个已经不存在的锚」——与被测代码无关（同 `commit_time` 那次同族）。
+           *
+           *   现在：先按**新写法** `key:<反引号>key<反引号>,kind:<反引号>…<反引号>` 定位，
+           *   段尾取下一个 `},{key:` 之前；找不到再回落**旧写法**（兼容仍用旧格式的宿主）。
+           *   ⚠ **判据强度没变**：仍然要求那一段里出现 `useProjection: UseProjection`。
+           */
+          const segOf = (key) => {
+            const n = host.indexOf('key:' + String.fromCharCode(96) + key + String.fromCharCode(96))
+            if (n >= 0) {
+              const end = host.indexOf('},{key:', n)
+              return host.slice(n, end > n ? end : n + 4000)
+            }
+            const o = host.indexOf('key: "' + key + '"')
+            if (o < 0) return ''
+            const end2 = host.indexOf('key: "', o + 6)
+            return host.slice(o, end2 > o ? end2 : o + 4000)
+          }
+          const tab = segOf('sidebar.right.pane.tab')
+          const guide = segOf('sidebar.right.tab.guide.entry')
           if (!tab.includes('useProjection: UseProjection')) p.push('sidebar.right.pane.tab 未声明 useProjection')
           if (!guide.includes('useProjection: UseProjection')) p.push('sidebar.right.tab.guide.entry 未声明 useProjection')
           const panel = readFileSync(PANEL_TSX, 'utf8')
