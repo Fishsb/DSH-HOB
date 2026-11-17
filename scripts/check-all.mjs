@@ -217,7 +217,7 @@ const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
  *   结果 `check:ledger` 与 `check:meta-negctl` 双双变红，原因就是漏了 ④⑤⑥。
  *   ⇒ 把它写成这份清单，⛔ 不要靠记忆。
  */
-export const FAMILY_FLOOR = 50
+export const FAMILY_FLOOR = 51
 //   ⚠ 2026-10-27（包 AP · 用户「全退」）：本条不再含 `check:archive-gate`（该族随归档门禁一起退回）。
 //   ⚠ 2026-10-29（四步主线 · 只验位置）：新增 `check:stages-dom` 一族，下界同批抬起。
 //     抬下界是本次改动的**一部分**、不是顺手改：新族若将来被人从 scripts 里删掉，
@@ -327,6 +327,8 @@ export const ASSERTION_FLOORS = new Map([
   // ⚠ 2026-11-11：6 → 8（+2 = ⑥ 主卷与 STATUS 同口径 + 它自己的负向对拍）
   // ⚠ 2026-11-17（批次 3）：8 → **11**（+3 = ⑦ 已修必须有指名断言 · ⑧ 棘轮 · ⑨ 它的负向对拍）
   ['check:audit-status', 11],
+  // ⚠ 2026-11-17（批次 6 · 缺陷回归点）：新增一族。4 处 = R-1 目标存在 + R-2/R-3 逐点判定 + R-4 幽灵点 + N-R 负向对拍
+  ['check:regression', 4],
   // ⚠ 2026-11-11（架构健康化）：新增一族。8 处断言 = A 分层 + A 负向 + B 无环 + B 负向
   //   + C 规模 + C 负向 + D 单源 + D 负向（实测 8 处，零余量）。
   // ⚠ 同日追加 E 组（架构文档里的「文件:行号 符号」引用必须可核）⇒ 8 → 10。
@@ -411,7 +413,7 @@ export const ASSERTION_FLOORS = new Map([
   //   +1 = `scripts/install-hooks.mjs` 进 MUST-TRACK（脚本落点正向断言逐条 ✓）
   //   +2 = 新增 V 组两条（`verify` 入口存在且含 build+check · 它的内存负向对拍）
   // ⚠ 2026-11-17（批次 5）：1201 → **1203**（+2 = review-briefs 的索引件与模板件进 MUST-TRACK）
-  ['check:gitignore', 1203],
+  ['check:gitignore', 1205],
   //   ⚠ 理由：本单在 `check-repo-rules.mjs` 新增 **`MV`** 断言「模板根上文档清单 == INIT 的复制清单」
   //     ⇒ 该族多 **1 处**（577 → 578）。⚠ **只升不降**。
   //   ⚠ ⚠ **为什么不是改已有的第 ⑥ 组**：`check-code-face.mjs` 的 ⑥ 组**两个方向都不咬**（本单实测三段）——

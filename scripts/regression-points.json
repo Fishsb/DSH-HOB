@@ -1,0 +1,29 @@
+{
+  "note": "⚠ 缺陷回归点：每条历史缺陷「怎么才算它真的不会再犯」的可复核断言。⚠ 两类：contains（该段修复还在）· count-max（某形态出现次数不许超过上限）。⛔ 每条都必须写 guards（消失/变多时坏在哪），否则它只是「有字在」。⚠ 本册不是「已修」的替代品：已修 仍由 check:audit-status 的 ⑦ 绑到具体断言上；本册只是那些断言的落点之一。",
+  "points": [
+    {
+      "defect": "T-01",
+      "kind": "contains",
+      "file": "src/server/hob-write.ts",
+      "needle": "const indexPathRead = relIsIndex ? undefined : readUnitSource('index.toml')",
+      "guards": "index.toml 若被合并数组计入两次 ⇒ 账本里每条既有单元都命中「合并后重复 ID」⇒ 第二条单元永远写不进，且错误原因说谎（说是重复 ID，其实守卫自己算重了）"
+    },
+    {
+      "defect": "O-33",
+      "kind": "contains",
+      "file": "src/server/hob-write.ts",
+      "needle": ".filter((r): r is Extract<UnitSourceRead, { kind: 'unparseable' | 'unreadable' }> =>",
+      "guards": "既有分片「解析/读取不出来」若被当成空集 ⇒ 账本已坏时写前守卫变静音：坏账被当作空账本继续写，问题被埋深"
+    },
+    {
+      "defect": "T-06",
+      "kind": "count-max",
+      "dirs": [
+        "src"
+      ],
+      "needle": "validateLedgerStructure: false",
+      "max": 1,
+      "guards": "该豁免只应留给「迁移前那本账按定义还不合法」的那一处（tools.ts 的 migrate）；多长出一处 ⇒ 某个写入路径绕过结构校验，坏账被静默写进去"
+    }
+  ]
+}

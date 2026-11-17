@@ -402,6 +402,9 @@ export function runRepoRules({ bad, ok, skip }) {
     //   它把 `npm run verify` 挂到 `.git/hooks/pre-push` ⇒ 50 族判据第一次**有了一条必跑的路**。
     //   ⚠ 加完 script 未登记时，本脚本的"反向自检"会当场 FAIL（同族第 N 次）⇒ 本条即修正结果。
     ['scripts/install-hooks.mjs', '入库脚本（被 package.json 的 install-hooks 调用 · 把 npm run verify 装成 pre-push hook；拒绝覆盖非本脚本写的 hook）'],
+    // ⚠ 2026-11-17（批次 6）：缺陷回归点族。它把「这条缺陷再犯时谁拦得住」变成可复核断言。
+    ['scripts/check-regression.mjs', '入库脚本（被 package.json 的 check:regression 调用 · 缺陷回归点：contains / count-max 逐条带 guards 与内存负向对拍）'],
+    ['scripts/regression-points.json', '入库数据（缺陷回归点清单：defect / kind / file / needle / guards；⛔ 每条都必须写清「消失时坏在哪」）'],
     // ⚠ 2026-10-18 补（本卡 · 修「检查脚本靠猜目录名定位账本区」）：**工作区名配置的载体**。
     //   ⚠ 它是 `scripts/workspace-name.mjs` 读的**唯一**配置源（工作区根、被 git 跟踪）——
     //     随分支走 ⇒ 同一份代码放进任何目录名都派得对（隔离 worktree 目录名 = 卡 id 也不影响）。

@@ -217,6 +217,10 @@
     {
       "cmd": "check:ledger-lifecycle",
       "what": "**账本生命周期 + 统一工作准入**：无账本/失效账本零执行副作用 · 通知不能承载实质工作 · 派发必须有真实 task 且 only todo · dispatchId 幂等与目标替换可见 · 无匹配完成只算 orphan · 新账本带激活记录且 active-empty 不可派活 · 已激活账本索引与单元源分裂即 invalid · 归档重建保留旧账副本且不继承旧批准"
+    },
+    {
+      "cmd": "check:regression",
+      "what": "**缺陷回归点**：每条历史缺陷「那段修复的形态还在吗」（contains / count-max 两档，逐条带 guards；⚠ 只证形态，⛔ 不证行为）"
     }
   ]
 }

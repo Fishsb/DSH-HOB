@@ -35,12 +35,12 @@
 
 | 状态 | 条数 |
 |---|---|
-| ✅ 已修（**有指名它的断言**） | **44** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
-| ⚠ 已修-未机器化 | **62** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
+| ✅ 已修（**有指名它的断言**） | **47** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
+| ⚠ 已修-未机器化 | **59** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
 | ⛔ 已排除（复核证伪） | **3** | S-08 · O-24 · O-15 |
 | ⚠ 按设计处理 | **2** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
 | ⛔ 未修 | **1** | S-01（需宿主改档或 API） |
-| **合计** | **112** | ✅ 闭合（44 + 62 + 3 + 2 + 1） |
+| **合计** | **112** | ✅ 闭合（47 + 59 + 3 + 2 + 1） |
 
 > ⚠⚠ **2026-11-17（批次 3）：`已修` 这一档的含义收紧了。**
 > 旧含义 = 「代码改过了」；新含义 = 「**有指名它的断言**」——注记里要有一个
@@ -171,7 +171,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-30 | 已修 | `scripts/check-hob-unselected-gate.mjs:1892` · **指名断言**：⟦check:hob-unselected-gate#G-315⟧ |
 | O-31 | 已修-未机器化 | `scripts/check-profile-assembly.mjs:1245` |
 | O-32 | 已修-未机器化 | ⚠ **实测推断**（代码无编号）：`src/shared/pipeline-view.ts` 的 blockedBy 两来源分别处理 plan 与 task，集合不重叠；造夹具实测重复 0（§161） |
-| O-33 | 已修-未机器化 | `src/server/hob-write.ts:386` |
+| O-33 | 已修 | `src/server/hob-write.ts:386` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-34 | 已修-未机器化 | `src/shared/pipeline-view.ts:834`（任务图只认当前方案） |
 | O-35 | 已修-未机器化 | `src/modules/orchestrator.ts:10954` |
 | O-36 | 已修-未机器化 | `src/client/project-panel.tsx:265` |
@@ -227,12 +227,12 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | S-14 | 已修 | `src/client/create-hob-dialog.tsx:1200` · **指名断言**：⟦check:hob-create-dom#D-150⟧ |
 | S-15 | 已修-未机器化 | `src/server/orch-state.ts:2852` |
 | S-16 | 已修-未机器化 | ⚠ **实测**：负控计数已做词法安全的注释剥离（`check-meta-negctl.mjs` 的 `stripComments`），「注释掉的负控」不再被算作一条 |
-| T-01 | 已修-未机器化 | `src/server/hob-write.ts:1210` |
+| T-01 | 已修 | `src/server/hob-write.ts:1210` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-02 | 已修-未机器化 | `src/modules/tools.ts:124` |
 | T-03 | 已修-未机器化 | `src/modules/orchestrator.ts:5611` |
 | T-04 | 已修-未机器化 | `src/client/project-panel.tsx:1499` |
 | T-05 | 已修-未机器化 | `src/modules/tools.ts:124` |
-| T-06 | 已修-未机器化 | `src/server/hob-write.ts:1252` |
+| T-06 | 已修 | `src/server/hob-write.ts:1252` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-07 | 按设计处理 | ⚠ `projection-writer.ts:89` 明写「保证不并发、**不保证原子**」；半完成已可见（`partial{created,failed}`），不做回滚是设计取舍 |
 | T-08 | 已修 | `src/shared/requirement-chain.ts:636` · **指名断言**：⟦check:requirement-chains#RC-14⟧ |
 | T-09 | 已修-未机器化 | `src/client/project-panel.tsx:63` |
