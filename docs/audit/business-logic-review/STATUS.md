@@ -172,7 +172,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-31 | 已修-未机器化 | `scripts/check-profile-assembly.mjs:1245` |
 | O-32 | 已排除 | ⚠ **实测推断**（代码无编号）：`src/shared/pipeline-view.ts` 的 blockedBy 两来源分别处理 plan 与 task，集合不重叠；造夹具实测重复 0（§161） · ⚠ **复核证伪**：blockedBy 两来源分别处理 plan 与 task、集合不重叠；造夹具实测重复 **0** ⇒ 被指称的重复并未发生 |
 | O-33 | 已修 | `src/server/hob-write.ts:386` · **指名断言**：⟦check:regression#R-2⟧ |
-| O-34 | 已修-未机器化 | `src/shared/pipeline-view.ts:834`（任务图只认当前方案） |
+| O-34 | 已修 | `src/shared/pipeline-view.ts:834`（任务图只认当前方案） · **指名断言**：⟦check:pipeline#PIPE-30⟧ |
 | O-35 | 已修-未机器化 | `src/modules/orchestrator.ts:10954` |
 | O-36 | 已修-未机器化 | `src/client/project-panel.tsx:265` |
 | O-37 | 已修 | `src/modules/tools.ts:2051` · **指名断言**：⟦check:ledger#O-37⟧ |

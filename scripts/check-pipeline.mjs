@@ -269,6 +269,40 @@ console.log('')
       + '数组头部插入一条后，既有条件的缺口 id **逐字不变**（O-38：不再按下标偏移）')
   } else for (const x of p) bad(`PIPE-24 · ${x}`)
 }
+
+// PIPE-30 · O-34：任务图只认「当前方案」，⛔ 不把 superseded 的任务算进来。
+//
+// ⚠ 病（§O-34）：改前 `plans` 不筛 status ⇒ 旧方案（superseded）的 built 任务也被算进本需求的图
+//   ⇒ 新方案零任务时，第 3 步却显示 completed，而同一屏的 summary 说「还没有任务图」。
+// ⇒ 两条一起测：① 旧方案的任务**不许**消掉缺口；② 当前方案的任务**必须**能消掉缺口
+//   （⚠ 缺 ② 时「把整张图清空」也能过 —— 那正是「改哑了也算通过」）。
+{
+  const p = []
+  const reqO34 = {
+    id: 'R-O34', kind: 'req', status: 'agreed', pipeline_version: 'v3', revision: '1',
+    title: 't', acceptance_criteria: ['条件甲'], acceptance_ids: [],
+  }
+  /** 条件 id 由内容哈希派生 ⇒ 先空跑一次拿到它（与判据同一实现，⛔ 不自己拼）。 */
+  const acId = view.taskGraphOf(reqO34, [reqO34]).coverageGaps[0]
+  if (typeof acId !== 'string' || acId === '') {
+    p.push('拿不到验收条件的 id ⇒ 夹具不成立（后面两条都不可判）')
+  } else {
+    const oldPlan = { id: 'CHG-O34-OLD', kind: 'change', status: 'superseded', pipeline_version: 'v3', revision: '1', title: '旧方案', req_ids: ['R-O34'], addresses: ['R-O34'] }
+    const oldTask = { id: 'TSK-O34-OLD', kind: 'task', status: 'built', pipeline_version: 'v3', revision: '1', parent: 'CHG-O34-OLD', title: '旧任务', acceptance_criteria_refs: [acId] }
+    const curPlan = { id: 'CHG-O34-CUR', kind: 'change', status: 'settled', pipeline_version: 'v3', revision: '1', title: '当前方案', req_ids: ['R-O34'], addresses: ['R-O34'] }
+    const curTask = { ...oldTask, id: 'TSK-O34-CUR', parent: 'CHG-O34-CUR', status: 'todo' }
+    /** ① 只有旧方案的任务 ⇒ 缺口**必须还在**（旧任务不算覆盖）。 */
+    const withOld = view.taskGraphOf(reqO34, [reqO34, oldPlan, oldTask]).coverageGaps
+    if (withOld.length !== 1) p.push(`旧方案（superseded）的任务把缺口消掉了（缺口 ${withOld.length} 条，期望 1）⇒ O-34 复发`)
+    /** ② 当前方案的任务 ⇒ 缺口**必须消失**（反向：证明判据不是「一律不算」）。 */
+    const withCur = view.taskGraphOf(reqO34, [reqO34, oldPlan, oldTask, curPlan, curTask]).coverageGaps
+    if (withCur.length !== 0) p.push(`当前方案的任务没有消掉缺口（缺口 ${withCur.length} 条）⇒ 判据改哑了`)
+  }
+  if (p.length === 0) {
+    ok('PIPE-30 ✓ **O-34：任务图只认当前方案** —— 旧方案（superseded）的 built 任务**不算覆盖**；'
+      + '当前方案的任务**能**消掉缺口（⚠ 两向都测：只测前者时「一律不算」也能过）')
+  } else for (const x of p) bad('PIPE-30 · ' + x)
+}
 // PIPE-6: Hob cannot approve itself.
 {
   const self = approval(req, 3, pipeline.artifactDigestOf(req), 'approve', { decided_by: 'Hob' })
