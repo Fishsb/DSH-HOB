@@ -270,6 +270,20 @@
       "needle": "replace(/\\n{3,}/g, '\\n\\n')",
       "max": 0,
       "guards": "删一整块时若再做全局空行压缩 ⇒ 会改写**未涉及单元**的布局（O-07 原病灶：删一条、动一片）"
+    },
+    {
+      "defect": "T-09",
+      "kind": "contains",
+      "file": "src/client/project-panel.tsx",
+      "needle": "truncated: res.truncated,",
+      "guards": "服务端在极端规模下会按阶段末尾截断；客户端若不存 truncated ⇒ 账本健康假报「0 条」或少报 N 条，而人以为看全了"
+    },
+    {
+      "defect": "O-18",
+      "kind": "contains",
+      "file": "src/client/project-panel.tsx",
+      "needle": "export const STAGES_POLL_MS = 5000",
+      "guards": "轮询间隔若退回 1000ms ⇒ 运行态下面板每秒打一次 /ledger-resource（O-18 原病灶）；改这个常量要重新核对面板取数成本"
     }
   ]
 }

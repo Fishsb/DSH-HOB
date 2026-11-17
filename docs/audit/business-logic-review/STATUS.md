@@ -156,7 +156,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-15 | 已排除 | ⚠ 复核证伪（§150） |
 | O-16 | 已修 | ⚠ 保留 + 标注（不是删掉） · **指名断言**：⟦check:config-face#G-15⟧ |
 | O-17 | 已修 | `src/preset/tools.ts:1744` · **指名断言**：⟦check:config-face#G-16⟧ |
-| O-18 | 已修-未机器化 | `src/client/project-panel.tsx:1560` |
+| O-18 | 已修 | `src/client/project-panel.tsx:1560` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-19 | 已修-未机器化 | `src/client/hob-unselected-gate.tsx:633` |
 | O-20 | 已修 | `src/client/create-hob-dialog.tsx:1188` · **指名断言**：⟦check:hob-create-dom#D-150⟧ |
 | O-21 | 按设计处理 | ⚠ 按裁定 B 关闭（面板仅中文） · ⚠ 不是可回归的缺陷：这一条是**裁定/规格结论**（裁定 B：面板仅中文；规格第①条与设计相反，不应实现）⇒ 落「按设计处理」，⛔ 不是待清的债 |
@@ -235,7 +235,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | T-06 | 已修 | `src/server/hob-write.ts:1252` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-07 | 按设计处理 | ⚠ `projection-writer.ts:89` 明写「保证不并发、**不保证原子**」；半完成已可见（`partial{created,failed}`），不做回滚是设计取舍 |
 | T-08 | 已修 | `src/shared/requirement-chain.ts:636` · **指名断言**：⟦check:requirement-chains#RC-14⟧ |
-| T-09 | 已修-未机器化 | `src/client/project-panel.tsx:63` |
+| T-09 | 已修 | `src/client/project-panel.tsx:63` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-10 | 已修 | `src/server/handoff-effects.ts:40` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-11 | 已修 | `src/modules/orchestrator.ts:5087` · **指名断言**：⟦check:work-plan-dispatch#WPD-19⟧ |
 | T-12 | 已修-未机器化 | `src/modules/orchestrator.ts:1023` |
