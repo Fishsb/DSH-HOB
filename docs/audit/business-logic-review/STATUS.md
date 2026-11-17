@@ -35,12 +35,12 @@
 
 | 状态 | 条数 |
 |---|---|
-| ✅ 已修（**有指名它的断言**） | **38** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
-| ⚠ 已修-未机器化 | **68** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
+| ✅ 已修（**有指名它的断言**） | **44** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
+| ⚠ 已修-未机器化 | **62** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
 | ⛔ 已排除（复核证伪） | **3** | S-08 · O-24 · O-15 |
 | ⚠ 按设计处理 | **2** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
 | ⛔ 未修 | **1** | S-01（需宿主改档或 API） |
-| **合计** | **112** | ✅ 闭合（38 + 68 + 3 + 2 + 1） |
+| **合计** | **112** | ✅ 闭合（44 + 62 + 3 + 2 + 1） |
 
 > ⚠⚠ **2026-11-17（批次 3）：`已修` 这一档的含义收紧了。**
 > 旧含义 = 「代码改过了」；新含义 = 「**有指名它的断言**」——注记里要有一个
@@ -140,7 +140,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | 编号 | 状态 | 注记 |
 |---|---|---|
 | O-01 | 已修 | `src/shared/stage-controls.ts:274` · **指名断言**：⟦check:stage-controls#SC-33⟧ |
-| O-02 | 已修-未机器化 | `scripts/check-pipeline.mjs:601` |
+| O-02 | 已修 | `scripts/check-pipeline.mjs:601` · **指名断言**：⟦check:pipeline#PIPE-25⟧ |
 | O-03 | 已修 | `src/shared/risk-policy.ts:740` · **指名断言**：⟦check:risk-policy#RP-25⟧ |
 | O-04 | 已修 | `src/shared/risk-policy.ts:215` · **指名断言**：⟦check:risk-policy#RP-26⟧ |
 | O-05 | 已修 | `src/modules/tools.ts:954` · **指名断言**：⟦check:ledger#O-05⟧ |
@@ -166,8 +166,8 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-25 | 已修 | `src/client/hob-unselected-gate.tsx:725` · **指名断言**：⟦check:hob-unselected-gate#G-314⟧ |
 | O-26 | 已修 | `scripts/check-workflow.mjs:7` · **指名断言**：⟦check:workflow#F-15⟧ |
 | O-27 | 已修-未机器化 | `scripts/check-stages-route.mjs:3` |
-| O-28 | 已修-未机器化 | `scripts/check-gitignore.mjs:437` |
-| O-29 | 已修-未机器化 | `scripts/check-gitignore.mjs:437` |
+| O-28 | 已修 | `scripts/check-gitignore.mjs:437` · **指名断言**：⟦check:gitignore#O-28⟧ |
+| O-29 | 已修 | `scripts/check-gitignore.mjs:437` · **指名断言**：⟦check:gitignore#O-29⟧ |
 | O-30 | 已修 | `scripts/check-hob-unselected-gate.mjs:1892` · **指名断言**：⟦check:hob-unselected-gate#G-315⟧ |
 | O-31 | 已修-未机器化 | `scripts/check-profile-assembly.mjs:1245` |
 | O-32 | 已修-未机器化 | ⚠ **实测推断**（代码无编号）：`src/shared/pipeline-view.ts` 的 blockedBy 两来源分别处理 plan 与 task，集合不重叠；造夹具实测重复 0（§161） |
@@ -192,7 +192,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | R-08 | 已修 | `src/client/project-panel.tsx:190` · **指名断言**：⟦check:requirement-chains#RC-15⟧ |
 | R-09 | 已修-未机器化 | `src/client/project-panel.tsx:3377` |
 | R-10 | 已修-未机器化 | `src/client/project-panel.tsx:176` |
-| R-11 | 已修-未机器化 | `scripts/check-work-plan-runtime.mjs:559` |
+| R-11 | 已修 | `scripts/check-work-plan-runtime.mjs:559` · **指名断言**：⟦check:work-plan-runtime#WPR-11⟧ |
 | R-12 | 已修-未机器化 | `src/shared/pipeline.ts:672` |
 | R-13 | 已修 | `src/shared/pipeline.ts:114` · **指名断言**：⟦check:stage-controls#SC-37⟧ |
 | R-14 | 已修 | `src/shared/convergence.ts:19` · **指名断言**：⟦check:requirement-chains#RC-16⟧ |
@@ -208,9 +208,9 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | R-24 | 已修-未机器化 | `src/client/project-panel.tsx:63` |
 | R-25 | 已修-未机器化 | `src/modules/orchestrator.ts:5896` |
 | R-26 | 已修-未机器化 | `src/client/project-panel.tsx:82` |
-| R-27 | 已修-未机器化 | `scripts/check-work-plan-runtime.mjs:976` |
+| R-27 | 已修 | `scripts/check-work-plan-runtime.mjs:976` · **指名断言**：⟦check:work-plan-runtime#WPR-27⟧ |
 | R-28 | 已修-未机器化 | `src/modules/orchestrator.ts:4834` |
-| R-29 | 已修-未机器化 | `scripts/check-work-plan-runtime.mjs:1012` |
+| R-29 | 已修 | `scripts/check-work-plan-runtime.mjs:1012` · **指名断言**：⟦check:work-plan-runtime#WPR-29⟧ |
 | S-01 | 未修 | ⚠ A 方案已落地（攻击面收窄）；C1/C2 两条根治路径依赖的宿主 API **类型里都不存在**（`ToolRunContext` 只有 `deferContext`/`concludeTurn`），需宿主扩展 |
 | S-02 | 已修-未机器化 | `src/modules/tools.ts:260` |
 | S-03 | 已修 | `src/server/hob-write.ts:1331` · **指名断言**：⟦check:stage-controls#SC-34⟧ |
