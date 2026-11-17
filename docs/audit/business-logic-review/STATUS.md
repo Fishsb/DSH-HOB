@@ -35,12 +35,12 @@
 
 | 状态 | 条数 |
 |---|---|
-| ✅ 已修（**有指名它的断言**） | **65** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
-| ⚠ 已修-未机器化 | **38** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
+| ✅ 已修（**有指名它的断言**） | **70** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
+| ⚠ 已修-未机器化 | **33** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
 | ⛔ 已排除（复核证伪） | **4** | S-08 · O-24 · O-15 · O-32 |
 | ⚠ 按设计处理 | **4** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
 | ⛔ 未修 | **1** | S-01（需宿主改档或 API） |
-| **合计** | **112** | ✅ 闭合（65 + 38 + 4 + 4 + 1） |
+| **合计** | **112** | ✅ 闭合（70 + 33 + 4 + 4 + 1） |
 
 > ⚠⚠ **2026-11-17（批次 3）：`已修` 这一档的含义收紧了。**
 > 旧含义 = 「代码改过了」；新含义 = 「**有指名它的断言**」——注记里要有一个
@@ -193,17 +193,17 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | R-09 | 已修-未机器化 | `src/client/project-panel.tsx:3377` |
 | R-10 | 已修-未机器化 | `src/client/project-panel.tsx:176` |
 | R-11 | 已修 | `scripts/check-work-plan-runtime.mjs:559` · **指名断言**：⟦check:work-plan-runtime#WPR-11⟧ |
-| R-12 | 已修-未机器化 | `src/shared/pipeline.ts:672` |
+| R-12 | 已修 | `src/shared/pipeline.ts:672` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-13 | 已修 | `src/shared/pipeline.ts:114` · **指名断言**：⟦check:stage-controls#SC-37⟧ |
 | R-14 | 已修 | `src/shared/convergence.ts:19` · **指名断言**：⟦check:requirement-chains#RC-16⟧ |
 | R-15 | 已修 | `src/modules/tools.ts:2296` · **指名断言**：⟦check:regression#R-2⟧ |
-| R-16 | 已修-未机器化 | `src/server/hob-write.ts:103` |
+| R-16 | 已修 | `src/server/hob-write.ts:103` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-17 | 已修 | `src/server/hob-write.ts:196` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-18 | 已修 | `src/server/orch-state.ts:599` · **指名断言**：⟦check:ledger-projection#LP-14⟧ |
 | R-19 | 已修 | `src/server/hob-write.ts:394` · **指名断言**：⟦check:ledger-write-policy#WP-12⟧ |
 | R-20 | 已修 | `src/modules/ledgers-route.ts:23` · **指名断言**：⟦check:ledgers-route#L8⟧ |
 | R-21 | 已修 | `src/shared/work-plan.ts:142` · **指名断言**：⟦check:work-plan#WM-34⟧ |
-| R-22 | 已修-未机器化 | `src/modules/bus.ts:2056` |
+| R-22 | 已修 | `src/modules/bus.ts:2056` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-23 | 已修 | `src/shared/risk-policy.ts:469` · **指名断言**：⟦check:risk-policy#RP-24⟧ |
 | R-24 | 已修-未机器化 | `src/client/project-panel.tsx:63` |
 | R-25 | 已修 | `src/modules/orchestrator.ts:5896` · **指名断言**：⟦check:regression#R-2⟧ |
@@ -229,8 +229,8 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | S-16 | 已修 | ⚠ **实测**：负控计数已做词法安全的注释剥离（`check-meta-negctl.mjs` 的 `stripComments`），「注释掉的负控」不再被算作一条 · **指名断言**：⟦check:regression#R-2⟧ |
 | T-01 | 已修 | `src/server/hob-write.ts:1210` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-02 | 已修 | `src/modules/tools.ts:124` · **指名断言**：⟦check:regression#R-2⟧ |
-| T-03 | 已修-未机器化 | `src/modules/orchestrator.ts:5611` |
-| T-04 | 已修-未机器化 | `src/client/project-panel.tsx:1499` |
+| T-03 | 已修 | `src/modules/orchestrator.ts:5611` · **指名断言**：⟦check:orch#SB-1b⟧ |
+| T-04 | 已修 | `src/client/project-panel.tsx:1499` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-05 | 已修 | `src/modules/tools.ts:124` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-06 | 已修 | `src/server/hob-write.ts:1252` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-07 | 按设计处理 | ⚠ `projection-writer.ts:89` 明写「保证不并发、**不保证原子**」；半完成已可见（`partial{created,failed}`），不做回滚是设计取舍 |

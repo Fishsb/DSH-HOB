@@ -152,6 +152,34 @@
       "file": "scripts/check-meta-negctl.mjs",
       "needle": "export function stripCommentsKeepLines(src)",
       "guards": "负控计数若不做注释剥离 ⇒ 「注释掉的负控」被算成一条，M-1 的下限被虚高的数字满足（判据自己骗自己）"
+    },
+    {
+      "defect": "R-22",
+      "kind": "contains",
+      "file": "src/modules/bus.ts",
+      "needle": "enum: [...OPEN_READ_LEVELS],",
+      "guards": "工具描述若写死「只有 ledger 开放」⇒ 模型读到后主动放弃 project/workspace，而服务端其实放行（文档比实现落后的反向漂移）"
+    },
+    {
+      "defect": "T-04",
+      "kind": "contains",
+      "file": "src/client/project-panel.tsx",
+      "needle": "return (signal?: AbortSignal) => fn(props?.sessionId, signal)",
+      "guards": "取数闭包若不透传 signal ⇒ 一次挂起的 HTTP 会让面板永久停刷，而徽标仍说在刷新（只包外层 ≠ 真取消）"
+    },
+    {
+      "defect": "R-16",
+      "kind": "contains",
+      "file": "src/server/hob-write.ts",
+      "needle": "const VOLUME_DIR_RE = /^[a-z0-9-]+$/",
+      "guards": "卷 slug 若放宽字符集 ⇒ 写侧守卫（窄）与判据侧（宽）两档混在一起，判据认得出但写不进去（或反过来）"
+    },
+    {
+      "defect": "R-12",
+      "kind": "contains",
+      "file": "src/shared/pipeline.ts",
+      "needle": "首次批准前也不许原地改内容",
+      "guards": "若把强制递增限定回「已经有过批准」⇒ 首次批准前的每一次改写都不用递增，digest 漂移而账本无法证明用户批的是哪版"
     }
   ]
 }

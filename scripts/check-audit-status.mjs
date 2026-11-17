@@ -320,16 +320,42 @@ const parseRows = (text) => {
  *   模糊匹配会让「注记里随便出现一个 `S-01`」也算绑定，而那正是断言 ⑤ 的教训
  *   （2026-11-11 实测：自动填 101 条，**12 条指错**）。
  */
-const MACHINE_GAP_MAX = 38
+const MACHINE_GAP_MAX = 33
 const BIND_RE = /⟦([a-z0-9:-]+)#([A-Za-z0-9._-]+)⟧/g
 {
   /** 读一个族对应的脚本全文（族名 ⇒ 文件名：`check:stage-controls` ⇒ `check-stage-controls.mjs`）。 */
   const scriptCache = new Map()
+  /**
+   * 族名 ⇒ 脚本全文。
+   *
+   * ⚠⚠ **2026-11-17：不再靠「族名 = 文件名」猜**（实测踩过）：
+   *   `check:orch` 的实现文件是 `scripts/check-orch-state.mjs`（文件名不是 `check-orch.mjs`），
+   *   `check:work-plan-runtime` 同理。猜错 ⇒ 该族永远解析不出 ⇒ 真覆盖被判成没覆盖。
+   *   ⇒ 改为**读 `package.json` 的 scripts**（族 → `node scripts/<file>.mjs` 的映射是权威），
+   *     猜不到再回落旧猜法（兼容）。⛔ 不维护第二张手写映射表（会漂）。
+   */
+  const familyScript = (() => {
+    try {
+      const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+      const map = new Map()
+      for (const [k, v] of Object.entries(pkg.scripts ?? {})) {
+        if (typeof v !== 'string') continue
+        const m = /node\s+(scripts\/[A-Za-z0-9._-]+\.mjs)/.exec(v)
+        if (m !== null) map.set(k, m[1])
+      }
+      return map
+    } catch { return new Map() }
+  })()
   const scriptOf = (family) => {
     if (scriptCache.has(family)) return scriptCache.get(family)
-    const name = family.replace(/^check:/, '')
+    const rel = familyScript.get(family)
     let txt = ''
-    try { txt = readFileSync(join(root, 'scripts', 'check-' + name + '.mjs'), 'utf8') } catch { txt = '' }
+    if (rel !== undefined) {
+      try { txt = readFileSync(join(root, rel), 'utf8') } catch { txt = '' }
+    } else {
+      const name = family.replace(/^check:/, '')
+      try { txt = readFileSync(join(root, 'scripts', 'check-' + name + '.mjs'), 'utf8') } catch { txt = '' }
+    }
     scriptCache.set(family, txt)
     return txt
   }
