@@ -96,6 +96,55 @@
       "file": "src/server/handoff-effects.ts",
       "needle": "clearHandoffs(stateFile, (h) => handoffEffectKey(h) === key)",
       "guards": "同一个 handoff 若出现第二套清账判据 ⇒ 一边认为已清、另一边认为还在，补投会重复或永不发生"
+    },
+    {
+      "defect": "R-06",
+      "kind": "contains",
+      "file": "src/server/hob-write.ts",
+      "needle": "import { parseUnitsToml } from '../shared/stages-index.ts'",
+      "guards": "写盘侧若再出现第二份 TOML 解析器 ⇒ 严格的做门禁、宽松的做读取，同一份文件两边结论不同（R-06 的原病灶）"
+    },
+    {
+      "defect": "S-02",
+      "kind": "contains",
+      "file": "src/shared/item-presentation.ts",
+      "needle": "if (text(u.clarify_legacy) === 'pre-control' && out.length > 0) {",
+      "guards": "历史豁免若放宽到任意 clarify_legacy 值 ⇒ 两个自填字段（clarify_legacy + created_at）就能跳过 11 类门禁"
+    },
+    {
+      "defect": "T-02",
+      "kind": "contains",
+      "file": "src/modules/tools.ts",
+      "needle": "withLedgerProvenance(ledgerRoot, () => ledgerHealthOf(units))",
+      "guards": "账本健康若再出现第二套判据 ⇒ 同一本账在不同入口给出不同结论（T-02 的原病灶：四套判据、四种结论）"
+    },
+    {
+      "defect": "T-05",
+      "kind": "contains",
+      "file": "src/server/hob-write.ts",
+      "needle": "const dupShape = merged.flatMap((u) => unitShapeProblems(u, idSeen))",
+      "guards": "形态问题若改回「整本判」⇒ 既有坏词既写不进去、又只能靠写入来修（T-05 的死锁）；正确形状是重复 ID 整本判、形态只判 incoming"
+    },
+    {
+      "defect": "R-15",
+      "kind": "contains",
+      "file": "src/shared/pipeline.ts",
+      "needle": "export function receiptPatternOf(",
+      "guards": "回执判据只许这一处实现；调用点若再内联一份 ⇒ 两份不等价（宽松版接受无空格写法），同一句回执两处结论不同"
+    },
+    {
+      "defect": "R-26",
+      "kind": "contains",
+      "file": "src/client/routes.ts",
+      "needle": "export const WORK_PLANS_PATH = '/api/dsh-hob/work-plans'",
+      "guards": "同一条路由字符串若在第二个地方再写一份 ⇒ 改一处忘一处，面板打到不存在的路径（R-26 的原病灶）"
+    },
+    {
+      "defect": "T-17",
+      "kind": "contains",
+      "file": "src/client/project-panel.tsx",
+      "needle": "throw new StaleRouteError(",
+      "guards": "404/405 若被吞成业务失败 ⇒ 面板把「打错门」显示成「账本坏了」，人按看到的去修错东西"
     }
   ]
 }

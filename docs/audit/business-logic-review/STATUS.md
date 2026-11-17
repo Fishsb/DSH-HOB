@@ -35,7 +35,7 @@
 
 | 状态 | 条数 |
 |---|---|
-| ✅ 已修（**有指名它的断言**） | **56** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
+| ✅ 已修（**有指名它的断言**） | **63** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
 | ⚠ 已修-未机器化 | **54** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
 | ⛔ 已排除（复核证伪） | **3** | S-08 · O-24 · O-15 |
 | ⚠ 按设计处理 | **4** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
@@ -187,7 +187,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | R-03 | 已修 | `src/shared/stages-index.ts:32` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-04 | 已修-未机器化 | `preset/dsh-hob/spec/notes-handover.md:244` + `preset-dsh-hob.patch.yml:434`（已改七步，§107） + `patch.yml:434` 已改七步（§107） |
 | R-05 | 已修 | `src/shared/pipeline-view.ts:760`（G3 无环/无悬空/覆盖缺口已进 pipelineDispatchProblems） · **指名断言**：⟦check:regression#R-2⟧ |
-| R-06 | 已修-未机器化 | `src/modules/tools.ts:97` |
+| R-06 | 已修 | `src/modules/tools.ts:97` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-07 | 已修-未机器化 | 读盘实现已收敛（§146 分类） |
 | R-08 | 已修 | `src/client/project-panel.tsx:190` · **指名断言**：⟦check:requirement-chains#RC-15⟧ |
 | R-09 | 已修-未机器化 | `src/client/project-panel.tsx:3377` |
@@ -196,7 +196,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | R-12 | 已修-未机器化 | `src/shared/pipeline.ts:672` |
 | R-13 | 已修 | `src/shared/pipeline.ts:114` · **指名断言**：⟦check:stage-controls#SC-37⟧ |
 | R-14 | 已修 | `src/shared/convergence.ts:19` · **指名断言**：⟦check:requirement-chains#RC-16⟧ |
-| R-15 | 已修-未机器化 | `src/modules/tools.ts:2296` |
+| R-15 | 已修 | `src/modules/tools.ts:2296` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-16 | 已修-未机器化 | `src/server/hob-write.ts:103` |
 | R-17 | 已修 | `src/server/hob-write.ts:196` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-18 | 已修 | `src/server/orch-state.ts:599` · **指名断言**：⟦check:ledger-projection#LP-14⟧ |
@@ -207,12 +207,12 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | R-23 | 已修 | `src/shared/risk-policy.ts:469` · **指名断言**：⟦check:risk-policy#RP-24⟧ |
 | R-24 | 已修-未机器化 | `src/client/project-panel.tsx:63` |
 | R-25 | 已修 | `src/modules/orchestrator.ts:5896` · **指名断言**：⟦check:regression#R-2⟧ |
-| R-26 | 已修-未机器化 | `src/client/project-panel.tsx:82` |
+| R-26 | 已修 | `src/client/project-panel.tsx:82` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-27 | 已修 | `scripts/check-work-plan-runtime.mjs:976` · **指名断言**：⟦check:work-plan-runtime#WPR-27⟧ |
 | R-28 | 已修-未机器化 | `src/modules/orchestrator.ts:4834` |
 | R-29 | 已修 | `scripts/check-work-plan-runtime.mjs:1012` · **指名断言**：⟦check:work-plan-runtime#WPR-29⟧ |
 | S-01 | 未修 | ⚠ A 方案已落地（攻击面收窄）；C1/C2 两条根治路径依赖的宿主 API **类型里都不存在**（`ToolRunContext` 只有 `deferContext`/`concludeTurn`），需宿主扩展 |
-| S-02 | 已修-未机器化 | `src/modules/tools.ts:260` |
+| S-02 | 已修 | `src/modules/tools.ts:260` · **指名断言**：⟦check:regression#R-2⟧ |
 | S-03 | 已修 | `src/server/hob-write.ts:1331` · **指名断言**：⟦check:stage-controls#SC-34⟧ |
 | S-04 | 已修 | `src/shared/stage-controls.ts:1343` · **指名断言**：⟦check:stage-controls#SC-31⟧ |
 | S-05 | 已修 | `src/shared/stage-controls.ts:922` · **指名断言**：⟦check:stage-controls#SC-32⟧ |
@@ -228,10 +228,10 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | S-15 | 已修-未机器化 | `src/server/orch-state.ts:2852` |
 | S-16 | 已修-未机器化 | ⚠ **实测**：负控计数已做词法安全的注释剥离（`check-meta-negctl.mjs` 的 `stripComments`），「注释掉的负控」不再被算作一条 |
 | T-01 | 已修 | `src/server/hob-write.ts:1210` · **指名断言**：⟦check:regression#R-2⟧ |
-| T-02 | 已修-未机器化 | `src/modules/tools.ts:124` |
+| T-02 | 已修 | `src/modules/tools.ts:124` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-03 | 已修-未机器化 | `src/modules/orchestrator.ts:5611` |
 | T-04 | 已修-未机器化 | `src/client/project-panel.tsx:1499` |
-| T-05 | 已修-未机器化 | `src/modules/tools.ts:124` |
+| T-05 | 已修 | `src/modules/tools.ts:124` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-06 | 已修 | `src/server/hob-write.ts:1252` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-07 | 按设计处理 | ⚠ `projection-writer.ts:89` 明写「保证不并发、**不保证原子**」；半完成已可见（`partial{created,failed}`），不做回滚是设计取舍 |
 | T-08 | 已修 | `src/shared/requirement-chain.ts:636` · **指名断言**：⟦check:requirement-chains#RC-14⟧ |
@@ -243,7 +243,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | T-14 | 已修-未机器化 | `src/session-policy-service.ts:148` |
 | T-15 | 已修 | `src/server/session-policy.ts:417` · **指名断言**：⟦check:hob-create-ui#CU-44⟧ |
 | T-16 | 已修-未机器化 | `src/client/project-panel.tsx:3043` |
-| T-17 | 已修-未机器化 | `src/client/project-panel.tsx:265` |
+| T-17 | 已修 | `src/client/project-panel.tsx:265` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-18 | 已修 | `kit/README.md` 中「跨实例」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
 | T-19 | 已修 | `kit/README.md` 中「三个面」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
 | T-20 | 已修 | `kit/README.md` 中「6 类」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
