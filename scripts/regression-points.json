@@ -145,6 +145,13 @@
       "file": "src/client/project-panel.tsx",
       "needle": "throw new StaleRouteError(",
       "guards": "404/405 若被吞成业务失败 ⇒ 面板把「打错门」显示成「账本坏了」，人按看到的去修错东西"
+    },
+    {
+      "defect": "S-16",
+      "kind": "contains",
+      "file": "scripts/check-meta-negctl.mjs",
+      "needle": "export function stripCommentsKeepLines(src)",
+      "guards": "负控计数若不做注释剥离 ⇒ 「注释掉的负控」被算成一条，M-1 的下限被虚高的数字满足（判据自己骗自己）"
     }
   ]
 }
