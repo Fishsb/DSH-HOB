@@ -24,6 +24,20 @@
       "needle": "validateLedgerStructure: false",
       "max": 1,
       "guards": "该豁免只应留给「迁移前那本账按定义还不合法」的那一处（tools.ts 的 migrate）；多长出一处 ⇒ 某个写入路径绕过结构校验，坏账被静默写进去"
+    },
+    {
+      "defect": "R-03",
+      "kind": "contains",
+      "file": "src/shared/stages-index.ts",
+      "needle": "name: STAGE_NAMES.requirements",
+      "guards": "步名若再写回字面量 ⇒ 八份阶段名会各自漂（R-03 的原病灶：同一批步名散在多处、已漂）"
+    },
+    {
+      "defect": "R-17",
+      "kind": "contains",
+      "file": "src/shared/stage-controls.ts",
+      "needle": "case 'tasks': return units.flatMap(taskFullProblems)",
+      "guards": "若退回 taskProblems（弱判据）⇒ 闸门看不到任务风险，同一任务在两处判定不同结论（R-17 的原病灶）"
     }
   ]
 }
