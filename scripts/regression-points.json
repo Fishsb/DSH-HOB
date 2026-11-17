@@ -38,6 +38,64 @@
       "file": "src/shared/stage-controls.ts",
       "needle": "case 'tasks': return units.flatMap(taskFullProblems)",
       "guards": "若退回 taskProblems（弱判据）⇒ 闸门看不到任务风险，同一任务在两处判定不同结论（R-17 的原病灶）"
+    },
+    {
+      "defect": "T-18",
+      "kind": "count-max",
+      "dirs": [
+        "kit"
+      ],
+      "needle": "跨实例",
+      "max": 0,
+      "guards": "kit/README.md 若再出现「跨实例」⇒ 它会把一个 2026-10-24 已整族退场的能力说成还在（假承诺，装机的人会去配一个不存在的开关）"
+    },
+    {
+      "defect": "T-19",
+      "kind": "count-max",
+      "dirs": [
+        "kit"
+      ],
+      "needle": "三个面",
+      "max": 0,
+      "guards": "kit/README.md 若再写「三个面」⇒ 与 check:build 实测的五个面不符，读者会漏掉面 ④/⑤（产物可加载 · 孤儿产物）"
+    },
+    {
+      "defect": "T-20",
+      "kind": "count-max",
+      "dirs": [
+        "kit"
+      ],
+      "needle": "6 类",
+      "max": 0,
+      "guards": "kit/README.md 若再写「6 类」残余 ⇒ 与该表实际的 5 行不符，读者会去找第六类"
+    },
+    {
+      "defect": "R-05",
+      "kind": "contains",
+      "file": "src/modules/orchestrator.ts",
+      "needle": "import { pipelineDispatchProblems } from '../shared/pipeline-view.ts'",
+      "guards": "G3（依赖环 / 悬空依赖 / 覆盖缺口）若不再进派活闸门 ⇒ 有环/有悬空依赖的任务图照样能派出去，跑一半才发现"
+    },
+    {
+      "defect": "O-41",
+      "kind": "contains",
+      "file": "src/client/project-panel.tsx",
+      "needle": "typeof slotProps?.useProjection === 'function'",
+      "guards": "面板预设门禁若退回「属性在不在」判定 ⇒ 宿主不注入该 prop 时门禁整体失效（判据应当看它是不是函数，而不是有没有这个键）"
+    },
+    {
+      "defect": "O-40",
+      "kind": "contains",
+      "file": "src/modules/bus.ts",
+      "needle": "import { isOpenReadLevel, OPEN_READ_LEVELS, readLevelNotOpenReason } from '../shared/read-level-policy.ts'",
+      "guards": "档位枚举若在 bus.ts 再写一份字面量 ⇒ 同一条规则三处载体，改一处忘两处（O-40 的原病灶：入参 enum 是第三份）"
+    },
+    {
+      "defect": "R-25",
+      "kind": "contains",
+      "file": "src/server/handoff-effects.ts",
+      "needle": "clearHandoffs(stateFile, (h) => handoffEffectKey(h) === key)",
+      "guards": "同一个 handoff 若出现第二套清账判据 ⇒ 一边认为已清、另一边认为还在，补投会重复或永不发生"
     }
   ]
 }

@@ -35,12 +35,12 @@
 
 | 状态 | 条数 |
 |---|---|
-| ✅ 已修（**有指名它的断言**） | **49** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
-| ⚠ 已修-未机器化 | **57** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
+| ✅ 已修（**有指名它的断言**） | **56** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
+| ⚠ 已修-未机器化 | **54** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
 | ⛔ 已排除（复核证伪） | **3** | S-08 · O-24 · O-15 |
-| ⚠ 按设计处理 | **2** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
+| ⚠ 按设计处理 | **4** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
 | ⛔ 未修 | **1** | S-01（需宿主改档或 API） |
-| **合计** | **112** | ✅ 闭合（49 + 57 + 3 + 2 + 1） |
+| **合计** | **112** | ✅ 闭合（52 + 54 + 3 + 4 + 1） |
 
 > ⚠⚠ **2026-11-17（批次 3）：`已修` 这一档的含义收紧了。**
 > 旧含义 = 「代码改过了」；新含义 = 「**有指名它的断言**」——注记里要有一个
@@ -159,7 +159,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-18 | 已修-未机器化 | `src/client/project-panel.tsx:1560` |
 | O-19 | 已修-未机器化 | `src/client/hob-unselected-gate.tsx:633` |
 | O-20 | 已修 | `src/client/create-hob-dialog.tsx:1188` · **指名断言**：⟦check:hob-create-dom#D-150⟧ |
-| O-21 | 已修-未机器化 | ⚠ 按裁定 B 关闭（面板仅中文） |
+| O-21 | 按设计处理 | ⚠ 按裁定 B 关闭（面板仅中文） · ⚠ 不是可回归的缺陷：这一条是**裁定/规格结论**（裁定 B：面板仅中文；规格第①条与设计相反，不应实现）⇒ 落「按设计处理」，⛔ 不是待清的债 |
 | O-22 | 已修 | `src/client/create-hob-dialog.tsx:1215` · **指名断言**：⟦check:hob-create-ui#CU-45⟧ |
 | O-23 | 已修 | `src/client/project-panel.tsx:1677` · **指名断言**：⟦check:stages-panel-dom#S-47⟧ |
 | O-24 | 已排除 | ⚠ 复核证伪；`t()` 兜底行为是有意设计（§150） |
@@ -178,15 +178,15 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-37 | 已修 | `src/modules/tools.ts:2051` · **指名断言**：⟦check:ledger#O-37⟧ |
 | O-38 | 已修 | `src/shared/pipeline.ts:261` · **指名断言**：⟦check:pipeline#PIPE-24⟧ |
 | O-39 | 已修-未机器化 | `src/modules/orchestrator.ts:4929` |
-| O-40 | 已修-未机器化 | `src/modules/bus.ts:2040` |
-| O-41 | 已修-未机器化 | `src/client/project-panel.tsx:1434` |
+| O-40 | 已修 | `src/modules/bus.ts:2040` · **指名断言**：⟦check:regression#R-2⟧ |
+| O-41 | 已修 | `src/client/project-panel.tsx:1434` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-42 | 已修 | `scripts/check-gitignore.mjs:472` · **指名断言**：⟦check:gitignore#O-42⟧ |
 | O-43 | 已修 | `src/server/hob-write.ts:1273` · **指名断言**：⟦check:ledger-write-policy#WP-14⟧ |
 | R-01 | 已修-未机器化 | ✅ **段 1/2/3 全部完成，且宽限豁免已有判据**。段 3：`allTasksVerified`→`verificationProblems`、`allTasksAccepted`→`acceptanceProblems`；**宽限分支在判据函数内部**（`stage-controls.ts` 两处 `legacy(u)) return []` 提前返回）。判据：SC-38（运行时分辨力）+ SC-39（源码层调用）+ **SC-40（宽限豁免位置）**，三者负向对拍均成立。⚠ 原先误判为「删宽限分支未做」，实为豁免就在 `verificationProblems`/`acceptanceProblems` 第一行（§204） |
-| R-02 | 已修-未机器化 | ⚠ **规格第①条经双向量证与设计相反，不应实现**（§198）：① `buildStages` 职责是「渲染单元数组」，让它感知主线会破坏分层；② `check:stages-route` 39 条断言 **0 处** `activeStage`，现有判据也不要求。缺陷本身已修：`requirement-chain` 派生自 `pipeline-view`（`:348/:381`），客户端 4 处全用 `displayState` |
+| R-02 | 按设计处理 | ⚠ **规格第①条经双向量证与设计相反，不应实现**（§198）：① `buildStages` 职责是「渲染单元数组」，让它感知主线会破坏分层；② `check:stages-route` 39 条断言 **0 处** `activeStage`，现有判据也不要求。缺陷本身已修：`requirement-chain` 派生自 `pipeline-view`（`:348/:381`），客户端 4 处全用 `displayState` · ⚠ 不是可回归的缺陷：规格第①条经双向量证**与设计相反、不应实现**；缺陷本身已修（`requirement-chain` 派生自 `pipeline-view`）⇒ 落「按设计处理」 |
 | R-03 | 已修 | `src/shared/stages-index.ts:32` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-04 | 已修-未机器化 | `preset/dsh-hob/spec/notes-handover.md:244` + `preset-dsh-hob.patch.yml:434`（已改七步，§107） + `patch.yml:434` 已改七步（§107） |
-| R-05 | 已修-未机器化 | `src/shared/pipeline-view.ts:760`（G3 无环/无悬空/覆盖缺口已进 pipelineDispatchProblems） |
+| R-05 | 已修 | `src/shared/pipeline-view.ts:760`（G3 无环/无悬空/覆盖缺口已进 pipelineDispatchProblems） · **指名断言**：⟦check:regression#R-2⟧ |
 | R-06 | 已修-未机器化 | `src/modules/tools.ts:97` |
 | R-07 | 已修-未机器化 | 读盘实现已收敛（§146 分类） |
 | R-08 | 已修 | `src/client/project-panel.tsx:190` · **指名断言**：⟦check:requirement-chains#RC-15⟧ |
@@ -206,7 +206,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | R-22 | 已修-未机器化 | `src/modules/bus.ts:2056` |
 | R-23 | 已修 | `src/shared/risk-policy.ts:469` · **指名断言**：⟦check:risk-policy#RP-24⟧ |
 | R-24 | 已修-未机器化 | `src/client/project-panel.tsx:63` |
-| R-25 | 已修-未机器化 | `src/modules/orchestrator.ts:5896` |
+| R-25 | 已修 | `src/modules/orchestrator.ts:5896` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-26 | 已修-未机器化 | `src/client/project-panel.tsx:82` |
 | R-27 | 已修 | `scripts/check-work-plan-runtime.mjs:976` · **指名断言**：⟦check:work-plan-runtime#WPR-27⟧ |
 | R-28 | 已修-未机器化 | `src/modules/orchestrator.ts:4834` |
@@ -244,9 +244,9 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | T-15 | 已修 | `src/server/session-policy.ts:417` · **指名断言**：⟦check:hob-create-ui#CU-44⟧ |
 | T-16 | 已修-未机器化 | `src/client/project-panel.tsx:3043` |
 | T-17 | 已修-未机器化 | `src/client/project-panel.tsx:265` |
-| T-18 | 已修-未机器化 | `kit/README.md` 中「跨实例」0 命中（§163） |
-| T-19 | 已修-未机器化 | `kit/README.md` 中「三个面」0 命中（§163） |
-| T-20 | 已修-未机器化 | `kit/README.md` 中「6 类」0 命中（§163） |
+| T-18 | 已修 | `kit/README.md` 中「跨实例」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
+| T-19 | 已修 | `kit/README.md` 中「三个面」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
+| T-20 | 已修 | `kit/README.md` 中「6 类」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
 | T-21 | 已修-未机器化 | `scripts/check-all.mjs:84` |
 | T-22 | 已修-未机器化 | `scripts/gen-preset-contract.mjs:230` |
 | T-23 | 已修-未机器化 | `scripts/check-ledger-resources.mjs:216` |
