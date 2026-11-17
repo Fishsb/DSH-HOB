@@ -219,7 +219,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | S-06 | 已修 | `scripts/meta-negative-floor.json`（现只剩 2 族为 0 且合理，§133） 只剩 2 族为 0 且合理（§131） · **指名断言**：⟦check:meta-negctl#M-1⟧ |
 | S-07 | 已修 | `scripts/check-workflow.mjs:404` · **指名断言**：⟦check:workflow#F3⟧ |
 | S-08 | 已排除 | ⚠ 复核证伪：CU-5 正则指向的常量已改名（§150） |
-| S-09 | 已修-未机器化 | `src/client/project-panel.tsx:56` |
+| S-09 | 已修 | `src/client/project-panel.tsx:56` · **指名断言**：⟦check:regression#R-2⟧ |
 | S-10 | 按设计处理 | `src/client/project-panel.tsx:20` · ⚠ 属**口径说明**（FAMILY_FLOOR 的分母）：零余量已由「族数下界」机制保证，无独立行为可回归 |
 | S-11 | 已修 | `scripts/check-all.mjs:785`（同批新增 S-11 纪律） · **指名断言**：⟦check:regression#R-2⟧ |
 | S-12 | 已修 | `scripts/check-all.mjs:787`（14 → 16） · **指名断言**：⟦check:regression#R-2⟧ |
@@ -236,11 +236,11 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | T-07 | 按设计处理 | ⚠ `projection-writer.ts:89` 明写「保证不并发、**不保证原子**」；半完成已可见（`partial{created,failed}`），不做回滚是设计取舍 |
 | T-08 | 已修 | `src/shared/requirement-chain.ts:636` · **指名断言**：⟦check:requirement-chains#RC-14⟧ |
 | T-09 | 已修-未机器化 | `src/client/project-panel.tsx:63` |
-| T-10 | 已修-未机器化 | `src/server/handoff-effects.ts:40` |
+| T-10 | 已修 | `src/server/handoff-effects.ts:40` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-11 | 已修 | `src/modules/orchestrator.ts:5087` · **指名断言**：⟦check:work-plan-dispatch#WPD-19⟧ |
 | T-12 | 已修-未机器化 | `src/modules/orchestrator.ts:1023` |
 | T-13 | 按设计处理 | ✅ **已完整**：4 个写工具里 `approve` 是**唯一该加闸门**的（已加）；`init`（开张）· `migrate`（修复通道）· `rebuild`（归档重建）**都不该拦** —— 它们正是「账本坏了」时要用的（§197 查实 `proceedGate` 判定面含 `store-unreadable`/`unknown-legacy`） |
-| T-14 | 已修-未机器化 | `src/session-policy-service.ts:148` |
+| T-14 | 已修 | `src/session-policy-service.ts:148` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-15 | 已修 | `src/server/session-policy.ts:417` · **指名断言**：⟦check:hob-create-ui#CU-44⟧ |
 | T-16 | 已修-未机器化 | `src/client/project-panel.tsx:3043` |
 | T-17 | 已修 | `src/client/project-panel.tsx:265` · **指名断言**：⟦check:regression#R-2⟧ |

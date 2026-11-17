@@ -236,6 +236,30 @@
       "file": "scripts/check-all.mjs",
       "needle": "export function findDuplicateAssertionFloors()",
       "guards": "ASSERTION_FLOORS 若不再查重名 ⇒ 同一族写两行时后一行静默覆盖前一行，下界等于形同虚设"
+    },
+    {
+      "defect": "T-10",
+      "kind": "contains",
+      "file": "src/server/handoff-effects.ts",
+      "needle": "maxAttempts: 20,",
+      "guards": "补投若再没有放弃上限 ⇒ 对「目标已归档」这类永久失败就是退避封顶后的永久空转，状态面只看到 attempts 在涨"
+    },
+    {
+      "defect": "T-14",
+      "kind": "contains",
+      "file": "src/session-policy-service.ts",
+      "needle": "export function pendingDropStatsOf(sessionId: string)",
+      "guards": "被丢弃的暂存消息若只有一条 console.warn ⇒ 生产日志会滤掉 warn，用户输入丢了却没有任何可读计数"
+    },
+    {
+      "defect": "S-09",
+      "kind": "count-max",
+      "dirs": [
+        "src/client"
+      ],
+      "needle": "as any",
+      "max": 31,
+      "guards": "as any 每多一处，/stages 线格式的契约漂移就多一个藏身处（原病灶：17 处 as any 把契约漂移藏起来）⚠ 上限 = 2026-11-18 实测值，只准降不准升"
     }
   ]
 }
