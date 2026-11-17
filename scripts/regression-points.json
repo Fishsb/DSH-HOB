@@ -201,6 +201,20 @@
       "file": "preset/dsh-hob/workflow.toml",
       "needle": "name = \"交付收口\"",
       "guards": "第七步若从预设里消失 ⇒ Pipeline v3 的 G6 收口在模型看到的规则里不存在，交付可以不收口"
+    },
+    {
+      "defect": "T-22",
+      "kind": "contains",
+      "file": "scripts/gen-preset-contract.mjs",
+      "needle": "一为 `executor`、一为 `verifier`",
+      "guards": "这句话原样进模型上下文；若退回「一为 executor、一为 acceptor」⇒ 模型会把第 5 步技术验证当成第 6 步产品验收（宪法第 8 条的反面）"
+    },
+    {
+      "defect": "S-12",
+      "kind": "contains",
+      "file": "scripts/check-all.mjs",
+      "needle": "处 > 登记下界 **${floor}** 处",
+      "guards": "下界若只判「少于」不判「多于」⇒ 加了断言却不抬下界可以静默通过，「下界只准升」变成空话（S-12 的原病灶）"
     }
   ]
 }

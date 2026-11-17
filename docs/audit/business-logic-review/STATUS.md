@@ -222,7 +222,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | S-09 | 已修-未机器化 | `src/client/project-panel.tsx:56` |
 | S-10 | 已修-未机器化 | `src/client/project-panel.tsx:20` |
 | S-11 | 已修-未机器化 | `scripts/check-all.mjs:785`（同批新增 S-11 纪律） |
-| S-12 | 已修-未机器化 | `scripts/check-all.mjs:787`（14 → 16） |
+| S-12 | 已修 | `scripts/check-all.mjs:787`（14 → 16） · **指名断言**：⟦check:regression#R-2⟧ |
 | S-13 | 已修 | `scripts/check-all.mjs:48` · **指名断言**：⟦check:regression#R-2⟧ |
 | S-14 | 已修 | `src/client/create-hob-dialog.tsx:1200` · **指名断言**：⟦check:hob-create-dom#D-150⟧ |
 | S-15 | 已修-未机器化 | `src/server/orch-state.ts:2852` |
@@ -248,8 +248,8 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | T-19 | 已修 | `kit/README.md` 中「三个面」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
 | T-20 | 已修 | `kit/README.md` 中「6 类」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
 | T-21 | 已修-未机器化 | `scripts/check-all.mjs:84` |
-| T-22 | 已修-未机器化 | `scripts/gen-preset-contract.mjs:230` |
-| T-23 | 已修-未机器化 | `scripts/check-ledger-resources.mjs:216` |
+| T-22 | 已修 | `scripts/gen-preset-contract.mjs:230` · **指名断言**：⟦check:regression#R-2⟧ |
+| T-23 | 已修 | `scripts/check-ledger-resources.mjs:216` · **指名断言**：⟦check:ledger-resources#T-23⟧ |
 | T-24 | 已修 | `src/server/hob-write.ts:39` · **指名断言**：⟦check:ledger-write-policy#WP-13⟧ |
 
 ## 怎么复核本表
