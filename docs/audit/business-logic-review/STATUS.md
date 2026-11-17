@@ -35,12 +35,12 @@
 
 | 状态 | 条数 |
 |---|---|
-| ✅ 已修（**有指名它的断言**） | **70** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
-| ⚠ 已修-未机器化 | **33** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
+| ✅ 已修（**有指名它的断言**） | **73** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
+| ⚠ 已修-未机器化 | **30** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
 | ⛔ 已排除（复核证伪） | **4** | S-08 · O-24 · O-15 · O-32 |
 | ⚠ 按设计处理 | **4** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
 | ⛔ 未修 | **1** | S-01（需宿主改档或 API） |
-| **合计** | **112** | ✅ 闭合（70 + 33 + 4 + 4 + 1） |
+| **合计** | **112** | ✅ 闭合（73 + 30 + 4 + 4 + 1） |
 
 > ⚠⚠ **2026-11-17（批次 3）：`已修` 这一档的含义收紧了。**
 > 旧含义 = 「代码改过了」；新含义 = 「**有指名它的断言**」——注记里要有一个
@@ -165,7 +165,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-24 | 已排除 | ⚠ 复核证伪；`t()` 兜底行为是有意设计（§150） |
 | O-25 | 已修 | `src/client/hob-unselected-gate.tsx:725` · **指名断言**：⟦check:hob-unselected-gate#G-314⟧ |
 | O-26 | 已修 | `scripts/check-workflow.mjs:7` · **指名断言**：⟦check:workflow#F-15⟧ |
-| O-27 | 已修-未机器化 | `scripts/check-stages-route.mjs:3` |
+| O-27 | 已修 | `scripts/check-stages-route.mjs:3` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-28 | 已修 | `scripts/check-gitignore.mjs:437` · **指名断言**：⟦check:gitignore#O-28⟧ |
 | O-29 | 已修 | `scripts/check-gitignore.mjs:437` · **指名断言**：⟦check:gitignore#O-29⟧ |
 | O-30 | 已修 | `scripts/check-hob-unselected-gate.mjs:1892` · **指名断言**：⟦check:hob-unselected-gate#G-315⟧ |
@@ -185,7 +185,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | R-01 | 已修 | ✅ **段 1/2/3 全部完成，且宽限豁免已有判据**。段 3：`allTasksVerified`→`verificationProblems`、`allTasksAccepted`→`acceptanceProblems`；**宽限分支在判据函数内部**（`stage-controls.ts` 两处 `legacy(u)) return []` 提前返回）。判据：SC-38（运行时分辨力）+ SC-39（源码层调用）+ **SC-40（宽限豁免位置）**，三者负向对拍均成立。⚠ 原先误判为「删宽限分支未做」，实为豁免就在 `verificationProblems`/`acceptanceProblems` 第一行（§204） · **指名断言**：⟦check:stage-controls#SC-38⟧ |
 | R-02 | 按设计处理 | ⚠ **规格第①条经双向量证与设计相反，不应实现**（§198）：① `buildStages` 职责是「渲染单元数组」，让它感知主线会破坏分层；② `check:stages-route` 39 条断言 **0 处** `activeStage`，现有判据也不要求。缺陷本身已修：`requirement-chain` 派生自 `pipeline-view`（`:348/:381`），客户端 4 处全用 `displayState` · ⚠ 不是可回归的缺陷：规格第①条经双向量证**与设计相反、不应实现**；缺陷本身已修（`requirement-chain` 派生自 `pipeline-view`）⇒ 落「按设计处理」 |
 | R-03 | 已修 | `src/shared/stages-index.ts:32` · **指名断言**：⟦check:regression#R-2⟧ |
-| R-04 | 已修-未机器化 | `preset/dsh-hob/spec/notes-handover.md:244` + `preset-dsh-hob.patch.yml:434`（已改七步，§107） + `patch.yml:434` 已改七步（§107） |
+| R-04 | 已修 | `preset/dsh-hob/spec/notes-handover.md:244` + `preset-dsh-hob.patch.yml:434`（已改七步，§107） + `patch.yml:434` 已改七步（§107） · **指名断言**：⟦check:regression#R-2⟧ |
 | R-05 | 已修 | `src/shared/pipeline-view.ts:760`（G3 无环/无悬空/覆盖缺口已进 pipelineDispatchProblems） · **指名断言**：⟦check:regression#R-2⟧ |
 | R-06 | 已修 | `src/modules/tools.ts:97` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-07 | 已修-未机器化 | 读盘实现已收敛（§146 分类） |
@@ -223,7 +223,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | S-10 | 已修-未机器化 | `src/client/project-panel.tsx:20` |
 | S-11 | 已修-未机器化 | `scripts/check-all.mjs:785`（同批新增 S-11 纪律） |
 | S-12 | 已修-未机器化 | `scripts/check-all.mjs:787`（14 → 16） |
-| S-13 | 已修-未机器化 | `scripts/check-all.mjs:48` |
+| S-13 | 已修 | `scripts/check-all.mjs:48` · **指名断言**：⟦check:regression#R-2⟧ |
 | S-14 | 已修 | `src/client/create-hob-dialog.tsx:1200` · **指名断言**：⟦check:hob-create-dom#D-150⟧ |
 | S-15 | 已修-未机器化 | `src/server/orch-state.ts:2852` |
 | S-16 | 已修 | ⚠ **实测**：负控计数已做词法安全的注释剥离（`check-meta-negctl.mjs` 的 `stripComments`），「注释掉的负控」不再被算作一条 · **指名断言**：⟦check:regression#R-2⟧ |

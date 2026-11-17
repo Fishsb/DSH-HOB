@@ -180,6 +180,27 @@
       "file": "src/shared/pipeline.ts",
       "needle": "首次批准前也不许原地改内容",
       "guards": "若把强制递增限定回「已经有过批准」⇒ 首次批准前的每一次改写都不用递增，digest 漂移而账本无法证明用户批的是哪版"
+    },
+    {
+      "defect": "S-13",
+      "kind": "contains",
+      "file": "scripts/check-all.mjs",
+      "needle": "export function findNegctlLeftovers()",
+      "guards": "判据若不再扫自己留下的残留 ⇒ 某族崩溃后的 .check-*-work / 变异体留在 src/，被 tsc 编进 lib/，check:build 反而报孤儿（判据自己制造失败）"
+    },
+    {
+      "defect": "O-27",
+      "kind": "contains",
+      "file": "scripts/check-workflow.mjs",
+      "needle": "if (JSON.stringify(orders) !== JSON.stringify([1, 2, 3, 4, 5, 6, 7]))",
+      "guards": "七步约束若退回五步 ⇒ 合并时与交付收口两步不被检查，文档与实现各说各的（O-27 的原病灶：注释写五步、实现是七步）"
+    },
+    {
+      "defect": "R-04",
+      "kind": "contains",
+      "file": "preset/dsh-hob/workflow.toml",
+      "needle": "name = \"交付收口\"",
+      "guards": "第七步若从预设里消失 ⇒ Pipeline v3 的 G6 收口在模型看到的规则里不存在，交付可以不收口"
     }
   ]
 }
