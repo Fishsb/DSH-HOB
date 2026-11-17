@@ -145,7 +145,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-04 | 已修 | `src/shared/risk-policy.ts:215` · **指名断言**：⟦check:risk-policy#RP-26⟧ |
 | O-05 | 已修 | `src/modules/tools.ts:954` · **指名断言**：⟦check:ledger#O-05⟧ |
 | O-06 | 已修 | `src/server/hob-render.ts:382` · **指名断言**：⟦check:ledger-projection#LP-15⟧ |
-| O-07 | 已修-未机器化 | `src/server/projection-writer.ts:194` |
+| O-07 | 已修 | `src/server/projection-writer.ts:194` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-08 | 已修 | `src/shared/policy-record-state.ts:46` · **指名断言**：⟦check:session-policy#SP-15⟧ |
 | O-09 | 已修 | `src/server/projection-writer.ts:124` · **指名断言**：⟦check:ledger-projection#LP-16⟧ |
 | O-10 | 已修-未机器化 | `src/modules/orchestrator.ts:4467` |

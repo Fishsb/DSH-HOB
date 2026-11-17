@@ -260,6 +260,16 @@
       "needle": "as any",
       "max": 31,
       "guards": "as any 每多一处，/stages 线格式的契约漂移就多一个藏身处（原病灶：17 处 as any 把契约漂移藏起来）⚠ 上限 = 2026-11-18 实测值，只准降不准升"
+    },
+    {
+      "defect": "O-07",
+      "kind": "count-max",
+      "dirs": [
+        "src/server"
+      ],
+      "needle": "replace(/\\n{3,}/g, '\\n\\n')",
+      "max": 0,
+      "guards": "删一整块时若再做全局空行压缩 ⇒ 会改写**未涉及单元**的布局（O-07 原病灶：删一条、动一片）"
     }
   ]
 }
