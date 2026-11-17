@@ -215,6 +215,27 @@
       "file": "scripts/check-all.mjs",
       "needle": "处 > 登记下界 **${floor}** 处",
       "guards": "下界若只判「少于」不判「多于」⇒ 加了断言却不抬下界可以静默通过，「下界只准升」变成空话（S-12 的原病灶）"
+    },
+    {
+      "defect": "R-10",
+      "kind": "contains",
+      "file": "src/shared/pipeline-view.ts",
+      "needle": "const canonical = listOf(t.acceptance_criteria_refs)",
+      "guards": "覆盖校验若读回 criteria_refs（旧字段名）⇒ 按文档写 acceptance_criteria_refs 的任务永远报缺口，人只能照旧名写"
+    },
+    {
+      "defect": "O-31",
+      "kind": "contains",
+      "file": "scripts/check-profile-assembly.mjs",
+      "needle": "const IN_AGGREGATE = process.env.CHECK_ALL === '1'",
+      "guards": "聚合入口里若还允许 --fix 写盘 ⇒ 一次 check:all 会改仓库文件，而判据本来只该报告"
+    },
+    {
+      "defect": "S-11",
+      "kind": "contains",
+      "file": "scripts/check-all.mjs",
+      "needle": "export function findDuplicateAssertionFloors()",
+      "guards": "ASSERTION_FLOORS 若不再查重名 ⇒ 同一族写两行时后一行静默覆盖前一行，下界等于形同虚设"
     }
   ]
 }

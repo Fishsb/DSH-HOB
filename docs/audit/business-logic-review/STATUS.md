@@ -35,12 +35,12 @@
 
 | 状态 | 条数 |
 |---|---|
-| ✅ 已修（**有指名它的断言**） | **73** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
-| ⚠ 已修-未机器化 | **30** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
-| ⛔ 已排除（复核证伪） | **4** | S-08 · O-24 · O-15 · O-32 |
-| ⚠ 按设计处理 | **4** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
+| ✅ 已修（**有指名它的断言**） | **82** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
+| ⚠ 已修-未机器化 | **18** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
+| ⛔ 已排除（复核证伪） | **5** | S-08 · O-24 · O-15 · O-32 · O-11 |
+| ⚠ 按设计处理 | **6** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
 | ⛔ 未修 | **1** | S-01（需宿主改档或 API） |
-| **合计** | **112** | ✅ 闭合（73 + 30 + 4 + 4 + 1） |
+| **合计** | **112** | ✅ 闭合（82 + 18 + 5 + 6 + 1） |
 
 > ⚠⚠ **2026-11-17（批次 3）：`已修` 这一档的含义收紧了。**
 > 旧含义 = 「代码改过了」；新含义 = 「**有指名它的断言**」——注记里要有一个
@@ -149,7 +149,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-08 | 已修 | `src/shared/policy-record-state.ts:46` · **指名断言**：⟦check:session-policy#SP-15⟧ |
 | O-09 | 已修 | `src/server/projection-writer.ts:124` · **指名断言**：⟦check:ledger-projection#LP-16⟧ |
 | O-10 | 已修-未机器化 | `src/modules/orchestrator.ts:4467` |
-| O-11 | 已修-未机器化 | ⚠ **逻辑推断**（代码无编号）：`src/modules/orchestrator.ts:3998` 明写「轨道状态只从 trackStates 派生」⇒ 旧形态不可表达（§160） |
+| O-11 | 已排除 | ⚠ **逻辑推断**（代码无编号）：`src/modules/orchestrator.ts:3998` 明写「轨道状态只从 trackStates 派生」⇒ 旧形态不可表达（§160） · ⚠ **复核证伪**：代码明写「轨道状态只从 trackStates 派生」⇒ 旧形态**不可表达**，被指称的问题无法发生 |
 | O-12 | 已修 | `src/server/session-policy.ts:197` · **指名断言**：⟦check:session-policy#SP-17⟧ |
 | O-13 | 已修 | `src/session-policy-service.ts:707` · **指名断言**：⟦check:session-policy#SP-16⟧ |
 | O-14 | 已修 | `src/modules/tools.ts:146` · **指名断言**：⟦check:config-face#G-14⟧ |
@@ -169,7 +169,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-28 | 已修 | `scripts/check-gitignore.mjs:437` · **指名断言**：⟦check:gitignore#O-28⟧ |
 | O-29 | 已修 | `scripts/check-gitignore.mjs:437` · **指名断言**：⟦check:gitignore#O-29⟧ |
 | O-30 | 已修 | `scripts/check-hob-unselected-gate.mjs:1892` · **指名断言**：⟦check:hob-unselected-gate#G-315⟧ |
-| O-31 | 已修-未机器化 | `scripts/check-profile-assembly.mjs:1245` |
+| O-31 | 已修 | `scripts/check-profile-assembly.mjs:1245` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-32 | 已排除 | ⚠ **实测推断**（代码无编号）：`src/shared/pipeline-view.ts` 的 blockedBy 两来源分别处理 plan 与 task，集合不重叠；造夹具实测重复 0（§161） · ⚠ **复核证伪**：blockedBy 两来源分别处理 plan 与 task、集合不重叠；造夹具实测重复 **0** ⇒ 被指称的重复并未发生 |
 | O-33 | 已修 | `src/server/hob-write.ts:386` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-34 | 已修 | `src/shared/pipeline-view.ts:834`（任务图只认当前方案） · **指名断言**：⟦check:pipeline#PIPE-30⟧ |
@@ -191,7 +191,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | R-07 | 已修-未机器化 | 读盘实现已收敛（§146 分类） |
 | R-08 | 已修 | `src/client/project-panel.tsx:190` · **指名断言**：⟦check:requirement-chains#RC-15⟧ |
 | R-09 | 已修-未机器化 | `src/client/project-panel.tsx:3377` |
-| R-10 | 已修-未机器化 | `src/client/project-panel.tsx:176` |
+| R-10 | 已修 | `src/client/project-panel.tsx:176` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-11 | 已修 | `scripts/check-work-plan-runtime.mjs:559` · **指名断言**：⟦check:work-plan-runtime#WPR-11⟧ |
 | R-12 | 已修 | `src/shared/pipeline.ts:672` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-13 | 已修 | `src/shared/pipeline.ts:114` · **指名断言**：⟦check:stage-controls#SC-37⟧ |
@@ -216,12 +216,12 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | S-03 | 已修 | `src/server/hob-write.ts:1331` · **指名断言**：⟦check:stage-controls#SC-34⟧ |
 | S-04 | 已修 | `src/shared/stage-controls.ts:1343` · **指名断言**：⟦check:stage-controls#SC-31⟧ |
 | S-05 | 已修 | `src/shared/stage-controls.ts:922` · **指名断言**：⟦check:stage-controls#SC-32⟧ |
-| S-06 | 已修-未机器化 | `scripts/meta-negative-floor.json`（现只剩 2 族为 0 且合理，§133） 只剩 2 族为 0 且合理（§131） |
-| S-07 | 已修-未机器化 | `scripts/check-workflow.mjs:404` |
+| S-06 | 已修 | `scripts/meta-negative-floor.json`（现只剩 2 族为 0 且合理，§133） 只剩 2 族为 0 且合理（§131） · **指名断言**：⟦check:meta-negctl#M-1⟧ |
+| S-07 | 已修 | `scripts/check-workflow.mjs:404` · **指名断言**：⟦check:workflow#F3⟧ |
 | S-08 | 已排除 | ⚠ 复核证伪：CU-5 正则指向的常量已改名（§150） |
 | S-09 | 已修-未机器化 | `src/client/project-panel.tsx:56` |
-| S-10 | 已修-未机器化 | `src/client/project-panel.tsx:20` |
-| S-11 | 已修-未机器化 | `scripts/check-all.mjs:785`（同批新增 S-11 纪律） |
+| S-10 | 按设计处理 | `src/client/project-panel.tsx:20` · ⚠ 属**口径说明**（FAMILY_FLOOR 的分母）：零余量已由「族数下界」机制保证，无独立行为可回归 |
+| S-11 | 已修 | `scripts/check-all.mjs:785`（同批新增 S-11 纪律） · **指名断言**：⟦check:regression#R-2⟧ |
 | S-12 | 已修 | `scripts/check-all.mjs:787`（14 → 16） · **指名断言**：⟦check:regression#R-2⟧ |
 | S-13 | 已修 | `scripts/check-all.mjs:48` · **指名断言**：⟦check:regression#R-2⟧ |
 | S-14 | 已修 | `src/client/create-hob-dialog.tsx:1200` · **指名断言**：⟦check:hob-create-dom#D-150⟧ |
@@ -247,7 +247,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | T-18 | 已修 | `kit/README.md` 中「跨实例」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
 | T-19 | 已修 | `kit/README.md` 中「三个面」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
 | T-20 | 已修 | `kit/README.md` 中「6 类」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
-| T-21 | 已修-未机器化 | `scripts/check-all.mjs:84` |
+| T-21 | 按设计处理 | `scripts/check-all.mjs:84` · ⚠ 属**文档表述**（exit 3 的族数与行号自相矛盾）：已按「⛔ 不写行号」处理，无行为可回归；行号再漂只是维护负担，不是功能缺陷 |
 | T-22 | 已修 | `scripts/gen-preset-contract.mjs:230` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-23 | 已修 | `scripts/check-ledger-resources.mjs:216` · **指名断言**：⟦check:ledger-resources#T-23⟧ |
 | T-24 | 已修 | `src/server/hob-write.ts:39` · **指名断言**：⟦check:ledger-write-policy#WP-13⟧ |
