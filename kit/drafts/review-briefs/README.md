@@ -15,14 +15,15 @@
 | 模块 | 覆盖的路径 | 简报 | 现状 |
 |---|---|---|---|
 | 判据族（`scripts/`） | `scripts/check-*.mjs` | [`scripts.md`](./scripts.md) | ✅ 已写 |
-| 共享纯函数（`src/shared/`） | `src/shared/*.ts` | 待写 | ⚠ 未机器化 |
-| 服务端（`src/server/`） | `src/server/*.ts` | 待写 | ⚠ 未机器化 |
-| 编排模块（`src/modules/`） | `src/modules/*.ts` | 待写 | ⚠ 未机器化 |
-| 预设契约（`preset/dsh-hob/`） | `workflow.toml` · `spec/` · `gen/` | 待写 | ⚠ 未机器化 |
+| 共享纯函数（`src/shared/`） | `src/shared/*.ts` | [`shared.md`](./shared.md) | ✅ 已写 |
+| 服务端（`src/server/`） | `src/server/*.ts` | [`server.md`](./server.md) | ✅ 已写 |
+| 编排模块（`src/modules/`） | `src/modules/*.ts` | [`modules.md`](./modules.md) | ✅ 已写 |
+| 预设契约（`preset/dsh-hob/`） | `workflow.toml` · `spec/` · `gen/` | [`preset.md`](./preset.md) | ✅ 已写 |
 
-> ⚠ **「未机器化」这一列不是在说「不用写」** —— 它说的是「这一页还没有，所以审这块时
->   没有一张一页纸可看」。⚠ 按 `docs/audit/business-logic-review/STATUS.md` 的同一口径：
->   **缺就标出来，⛔ 不许留空让人以为"不需要"**。
+> ⚠ **五页全部写完（2026-11-18）**：本索引不再有「未机器化」行。
+>   ⚠ 但那**不等于**「这五个模块都被判据守住了」—— 简报是**给人看的审查入口**，不是机检。
+>   按 `docs/audit/business-logic-review/STATUS.md` 的同一口径：档位只在有判据时才叫「已绑定」；
+>   本页的 `✅ 已写` 只表示「指过来有一页纸可看」。
 
 ---
 
