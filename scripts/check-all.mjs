@@ -271,7 +271,7 @@ export const ASSERTION_FLOORS = new Map([
   ['check:work-plan-dispatch', 31],
   // ⚠ 2026-11-09（推进方式三档落地）：40 → **42**
   //   （+2 = 隐式计划记录真实档位；隐式轨只认真实 taskId，不用自由描述顶替）。
-  ['check:work-plan-runtime', 43],  // §79：7 处夹具修好（36→43）
+  ['check:work-plan-runtime', 44],  // §79：7 处夹具修好（36→43）
   // ⚠ 2026-11-07：SC-12b 三条（执行上下文能解析 / Agent 形态必拒 / 预设层无恒判不出写法）。
   // ⚠ 2026-11-08：92 → **95**（+3 = SC-21 就绪度五档互不冒充 / SC-22 账本不健康 ⇒ 派活被拒 /
   //   SC-23 不存在的任务号 ⇒ hold 且 implicit 与真实任务照常放行）。

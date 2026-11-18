@@ -81,7 +81,7 @@ const waitFor = async (fn, rounds = 2000) => {
   return fn()
 }
 
-function makeHost(mode = 'multi') {
+function makeHost(mode = 'multi', opts = {}) {
   const sessions = new Map()
   const agents = new Map()
   const pending = []
@@ -219,7 +219,13 @@ function makeHost(mode = 'multi') {
   const parsedUnit = (toml) => stagesMod.parseUnitsToml(toml)[0]
   const reqObj = parsedUnit(reqUnit)
   const planObj = parsedUnit(planUnit)
-  const approvalUnits = approvalUnit(reqObj, 1, 'requirements') + approvalUnit(planObj, 1, 'plan')
+  /**
+   * ⚠ **R-28 的负向夹具**（2026-11-18）：`noApproval` 时**不写任何 stage-approval** ⇒
+   *   首次多轨派发必须被 G1/G2 拦下（这正是「门禁真的跑了」的证据）。
+   */
+  const approvalUnits = opts.noApproval === true
+    ? ''
+    : approvalUnit(reqObj, 1, 'requirements') + approvalUnit(planObj, 1, 'plan')
   const fixtureUnits = reqUnit + planUnit + approvalUnits
     + ['a', 'b', 'c', 'r', 'legacy', 'legacy-single'].map(taskUnit).join('')
   writeFileSync(join(caseLedger, 'ledger', 'units', 'index.toml'), fixtureUnits)
@@ -319,6 +325,23 @@ try {
       && h.delivered.length === 2) {
       ok('WPR-1 ✓ 多会话首波真派两条执行轨，未回传前 join=waiting')
     } else bad(`WPR-1 · ${JSON.stringify(r)} delivered=${JSON.stringify(h.delivered.map((x) => [x.target, x.receipt === true]))}`)
+  }
+
+
+  // WPR-40 · R-28：**多轨首次派发要过 G1/G2 批准门**
+  //
+  // ⚠ 病（§R-28）：改前多轨门禁从盘上找计划，首次派发时找不到 ⇒ 落到「只报健康」⇒ 一路放行。
+  // ⚠ 两向都测：① 没有批准单元 ⇒ 必须拒派（零投递）；② 有批准（WPR-1 的夹具）⇒ 照常派 2 条。
+  //   ⛔ 只测 ① 时「一律拒派」也能过。
+  {
+    const h = makeHost('multi', { noApproval: true })
+    const r = await h.orch.dispatchPlan(planInput(), { self: 'session-hob', wsRoot, mode: 'multi' })
+    const blocked = r.ok !== true && (r.problems ?? []).some((x) => x.code === 'pipeline-gate' || x.code === 'gate-blocked' || /G1|G2/.test(String(x.message ?? '')) || /G1|G2/.test(String(x.code ?? '')))
+    if (blocked && h.delivered.length === 0) {
+      ok('WPR-40 ✓ **R-28：多轨首次派发要过 G1/G2** —— 没有批准单元 ⇒ 拒派且**零投递**（⛔ 不落到「只报健康」）')
+    } else {
+      bad('WPR-40 · 没有批准仍可派发或仍有投递：' + JSON.stringify({ ok: r.ok, problems: r.problems, delivered: h.delivered.length }))
+    }
   }
 
   // WPR-2 单会话第二轨被工具层纯函数拒绝
