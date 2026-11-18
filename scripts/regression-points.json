@@ -308,6 +308,20 @@
       "needle": "第 7 步 · 交付收口",
       "max": 0,
       "guards": "用户可见面若再把「门」印成「第 7 步」⇒ 六阶段之外凭空多一步，人以为流程有七步（R-09 原病灶）"
+    },
+    {
+      "defect": "T-12",
+      "kind": "contains",
+      "file": "src/modules/orchestrator.ts",
+      "needle": "return: { ok: projection.ok, applied: projection.applied,",
+      "guards": "回传时若只 logger.warn 不把投影结果写进 watch 记录 ⇒ 正文看不出「投影未落」，状态面也读不到（T-12 原病灶）"
+    },
+    {
+      "defect": "R-07",
+      "kind": "contains",
+      "file": "src/modules/requirement-chains-route.ts",
+      "needle": "STAGES_REASON_LEDGER_MISSING",
+      "guards": "读盘若各写一套失败语义 ⇒ 同一本账在面板显示「还没开账」、在派活侧显示「读不出来」，两处指不同方向（R-07 原病灶）"
     }
   ]
 }

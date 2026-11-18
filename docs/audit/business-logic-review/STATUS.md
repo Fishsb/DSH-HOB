@@ -35,12 +35,12 @@
 
 | 状态 | 条数 |
 |---|---|
-| ✅ 已修（**有指名它的断言**） | **91** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
-| ⚠ 已修-未机器化 | **9** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
+| ✅ 已修（**有指名它的断言**） | **93** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
+| ⚠ 已修-未机器化 | **7** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
 | ⛔ 已排除（复核证伪） | **5** | S-08 · O-24 · O-15 · O-32 · O-11 |
 | ⚠ 按设计处理 | **6** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
 | ⛔ 未修 | **1** | S-01（需宿主改档或 API） |
-| **合计** | **112** | ✅ 闭合（91 + 9 + 5 + 6 + 1） |
+| **合计** | **112** | ✅ 闭合（93 + 7 + 5 + 6 + 1） |
 
 > ⚠⚠ **2026-11-17（批次 3）：`已修` 这一档的含义收紧了。**
 > 旧含义 = 「代码改过了」；新含义 = 「**有指名它的断言**」——注记里要有一个
@@ -188,7 +188,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | R-04 | 已修 | `preset/dsh-hob/spec/notes-handover.md:244` + `preset-dsh-hob.patch.yml:434`（已改七步，§107） + `patch.yml:434` 已改七步（§107） · **指名断言**：⟦check:regression#R-2⟧ |
 | R-05 | 已修 | `src/shared/pipeline-view.ts:760`（G3 无环/无悬空/覆盖缺口已进 pipelineDispatchProblems） · **指名断言**：⟦check:regression#R-2⟧ |
 | R-06 | 已修 | `src/modules/tools.ts:97` · **指名断言**：⟦check:regression#R-2⟧ |
-| R-07 | 已修-未机器化 | 读盘实现已收敛（§146 分类） |
+| R-07 | 已修 | 读盘实现已收敛（§146 分类） · **指名断言**：⟦check:regression#R-2⟧ |
 | R-08 | 已修 | `src/client/project-panel.tsx:190` · **指名断言**：⟦check:requirement-chains#RC-15⟧ |
 | R-09 | 已修 | `src/client/project-panel.tsx:3377` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-10 | 已修 | `src/client/project-panel.tsx:176` · **指名断言**：⟦check:regression#R-2⟧ |
@@ -238,7 +238,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | T-09 | 已修 | `src/client/project-panel.tsx:63` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-10 | 已修 | `src/server/handoff-effects.ts:40` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-11 | 已修 | `src/modules/orchestrator.ts:5087` · **指名断言**：⟦check:work-plan-dispatch#WPD-19⟧ |
-| T-12 | 已修-未机器化 | `src/modules/orchestrator.ts:1023` |
+| T-12 | 已修 | `src/modules/orchestrator.ts:1023` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-13 | 按设计处理 | ✅ **已完整**：4 个写工具里 `approve` 是**唯一该加闸门**的（已加）；`init`（开张）· `migrate`（修复通道）· `rebuild`（归档重建）**都不该拦** —— 它们正是「账本坏了」时要用的（§197 查实 `proceedGate` 判定面含 `store-unreadable`/`unknown-legacy`） |
 | T-14 | 已修 | `src/session-policy-service.ts:148` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-15 | 已修 | `src/server/session-policy.ts:417` · **指名断言**：⟦check:hob-create-ui#CU-44⟧ |
