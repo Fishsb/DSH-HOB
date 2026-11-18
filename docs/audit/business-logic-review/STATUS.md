@@ -35,12 +35,12 @@
 
 | 状态 | 条数 |
 |---|---|
-| ✅ 已修（**有指名它的断言**） | **94** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
-| ⚠ 已修-未机器化 | **6** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
+| ✅ 已修（**有指名它的断言**） | **97** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
+| ⚠ 已修-未机器化 | **3** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
 | ⛔ 已排除（复核证伪） | **5** | S-08 · O-24 · O-15 · O-32 · O-11 |
 | ⚠ 按设计处理 | **6** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
 | ⛔ 未修 | **1** | S-01（需宿主改档或 API） |
-| **合计** | **112** | ✅ 闭合（94 + 6 + 5 + 6 + 1） |
+| **合计** | **112** | ✅ 闭合（97 + 3 + 5 + 6 + 1） |
 
 > ⚠⚠ **2026-11-17（批次 3）：`已修` 这一档的含义收紧了。**
 > 旧含义 = 「代码改过了」；新含义 = 「**有指名它的断言**」——注记里要有一个
@@ -148,7 +148,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-07 | 已修 | `src/server/projection-writer.ts:194` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-08 | 已修 | `src/shared/policy-record-state.ts:46` · **指名断言**：⟦check:session-policy#SP-15⟧ |
 | O-09 | 已修 | `src/server/projection-writer.ts:124` · **指名断言**：⟦check:ledger-projection#LP-16⟧ |
-| O-10 | 已修-未机器化 | `src/modules/orchestrator.ts:4467` |
+| O-10 | 已修 | `src/modules/orchestrator.ts:4467` · **指名断言**：⟦check:orch#WI-q⟧ |
 | O-11 | 已排除 | ⚠ **逻辑推断**（代码无编号）：`src/modules/orchestrator.ts:3998` 明写「轨道状态只从 trackStates 派生」⇒ 旧形态不可表达（§160） · ⚠ **复核证伪**：代码明写「轨道状态只从 trackStates 派生」⇒ 旧形态**不可表达**，被指称的问题无法发生 |
 | O-12 | 已修 | `src/server/session-policy.ts:197` · **指名断言**：⟦check:session-policy#SP-17⟧ |
 | O-13 | 已修 | `src/session-policy-service.ts:707` · **指名断言**：⟦check:session-policy#SP-16⟧ |
@@ -157,7 +157,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-16 | 已修 | ⚠ 保留 + 标注（不是删掉） · **指名断言**：⟦check:config-face#G-15⟧ |
 | O-17 | 已修 | `src/preset/tools.ts:1744` · **指名断言**：⟦check:config-face#G-16⟧ |
 | O-18 | 已修 | `src/client/project-panel.tsx:1560` · **指名断言**：⟦check:regression#R-2⟧ |
-| O-19 | 已修-未机器化 | `src/client/hob-unselected-gate.tsx:633` |
+| O-19 | 已修 | `src/client/hob-unselected-gate.tsx:633` · **指名断言**：⟦check:hob-unselected-gate#G-24⟧ |
 | O-20 | 已修 | `src/client/create-hob-dialog.tsx:1188` · **指名断言**：⟦check:hob-create-dom#D-150⟧ |
 | O-21 | 按设计处理 | ⚠ 按裁定 B 关闭（面板仅中文） · ⚠ 不是可回归的缺陷：这一条是**裁定/规格结论**（裁定 B：面板仅中文；规格第①条与设计相反，不应实现）⇒ 落「按设计处理」，⛔ 不是待清的债 |
 | O-22 | 已修 | `src/client/create-hob-dialog.tsx:1215` · **指名断言**：⟦check:hob-create-ui#CU-45⟧ |
@@ -177,7 +177,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-36 | 已修 | `src/client/project-panel.tsx:265` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-37 | 已修 | `src/modules/tools.ts:2051` · **指名断言**：⟦check:ledger#O-37⟧ |
 | O-38 | 已修 | `src/shared/pipeline.ts:261` · **指名断言**：⟦check:pipeline#PIPE-24⟧ |
-| O-39 | 已修-未机器化 | `src/modules/orchestrator.ts:4929` |
+| O-39 | 已修 | `src/modules/orchestrator.ts:4929` · **指名断言**：⟦check:work-plan-runtime#WPR-38⟧ |
 | O-40 | 已修 | `src/modules/bus.ts:2040` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-41 | 已修 | `src/client/project-panel.tsx:1434` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-42 | 已修 | `scripts/check-gitignore.mjs:472` · **指名断言**：⟦check:gitignore#O-42⟧ |
