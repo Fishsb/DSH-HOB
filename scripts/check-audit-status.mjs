@@ -320,7 +320,7 @@ const parseRows = (text) => {
  *   模糊匹配会让「注记里随便出现一个 `S-01`」也算绑定，而那正是断言 ⑤ 的教训
  *   （2026-11-11 实测：自动填 101 条，**12 条指错**）。
  */
-const MACHINE_GAP_MAX = 12
+const MACHINE_GAP_MAX = 9
 const BIND_RE = /⟦([a-z0-9:-]+)#([A-Za-z0-9._-]+)⟧/g
 {
   /** 读一个族对应的脚本全文（族名 ⇒ 文件名：`check:stage-controls` ⇒ `check-stage-controls.mjs`）。 */

@@ -284,6 +284,30 @@
       "file": "src/client/project-panel.tsx",
       "needle": "export const STAGES_POLL_MS = 5000",
       "guards": "轮询间隔若退回 1000ms ⇒ 运行态下面板每秒打一次 /ledger-resource（O-18 原病灶）；改这个常量要重新核对面板取数成本"
+    },
+    {
+      "defect": "T-16",
+      "kind": "contains",
+      "file": "src/client/project-panel.tsx",
+      "needle": "setItemDetails({})\n  }, [selectedLedger])",
+      "guards": "切换账本若不清展开详情缓存 ⇒ 键是裸 ID（每本账都从 001 起）⇒ 显示上一本账的正文，且早退后永不自愈"
+    },
+    {
+      "defect": "O-36",
+      "kind": "contains",
+      "file": "src/client/work-plan-panel.tsx",
+      "needle": "reason: 'route-error', message",
+      "guards": "工作计划路由若把「打错门」吞成业务失败 ⇒ 面板把路径/方法不对显示成计划有问题，人按看到的去修错东西"
+    },
+    {
+      "defect": "R-09",
+      "kind": "count-max",
+      "dirs": [
+        "src/client"
+      ],
+      "needle": "第 7 步 · 交付收口",
+      "max": 0,
+      "guards": "用户可见面若再把「门」印成「第 7 步」⇒ 六阶段之外凭空多一步，人以为流程有七步（R-09 原病灶）"
     }
   ]
 }

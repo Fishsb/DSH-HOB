@@ -35,12 +35,12 @@
 
 | 状态 | 条数 |
 |---|---|
-| ✅ 已修（**有指名它的断言**） | **88** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
-| ⚠ 已修-未机器化 | **12** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
+| ✅ 已修（**有指名它的断言**） | **91** | ⚠ 2026-11-17 起这一档要求「注记里有能命中 `scripts/**` 的断言标识」——存量 106 条**一次全部核完不现实**，先整批迁到下一档，再逐卷清 |
+| ⚠ 已修-未机器化 | **9** | 代码确实改过（证据位置可核），但**没有任何判据会在它复发时开火**；这一档**只准降不准升**（棘轮）⇒ 每清一条就往上迁一条 |
 | ⛔ 已排除（复核证伪） | **5** | S-08 · O-24 · O-15 · O-32 · O-11 |
 | ⚠ 按设计处理 | **6** | T-07（不保证原子，但半完成可见）· T-13（给 `migrate` 加门会堵死修复通道） |
 | ⛔ 未修 | **1** | S-01（需宿主改档或 API） |
-| **合计** | **112** | ✅ 闭合（88 + 12 + 5 + 6 + 1） |
+| **合计** | **112** | ✅ 闭合（91 + 9 + 5 + 6 + 1） |
 
 > ⚠⚠ **2026-11-17（批次 3）：`已修` 这一档的含义收紧了。**
 > 旧含义 = 「代码改过了」；新含义 = 「**有指名它的断言**」——注记里要有一个
@@ -174,7 +174,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | O-33 | 已修 | `src/server/hob-write.ts:386` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-34 | 已修 | `src/shared/pipeline-view.ts:834`（任务图只认当前方案） · **指名断言**：⟦check:pipeline#PIPE-30⟧ |
 | O-35 | 已修-未机器化 | `src/modules/orchestrator.ts:10954` |
-| O-36 | 已修-未机器化 | `src/client/project-panel.tsx:265` |
+| O-36 | 已修 | `src/client/project-panel.tsx:265` · **指名断言**：⟦check:regression#R-2⟧ |
 | O-37 | 已修 | `src/modules/tools.ts:2051` · **指名断言**：⟦check:ledger#O-37⟧ |
 | O-38 | 已修 | `src/shared/pipeline.ts:261` · **指名断言**：⟦check:pipeline#PIPE-24⟧ |
 | O-39 | 已修-未机器化 | `src/modules/orchestrator.ts:4929` |
@@ -190,7 +190,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | R-06 | 已修 | `src/modules/tools.ts:97` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-07 | 已修-未机器化 | 读盘实现已收敛（§146 分类） |
 | R-08 | 已修 | `src/client/project-panel.tsx:190` · **指名断言**：⟦check:requirement-chains#RC-15⟧ |
-| R-09 | 已修-未机器化 | `src/client/project-panel.tsx:3377` |
+| R-09 | 已修 | `src/client/project-panel.tsx:3377` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-10 | 已修 | `src/client/project-panel.tsx:176` · **指名断言**：⟦check:regression#R-2⟧ |
 | R-11 | 已修 | `scripts/check-work-plan-runtime.mjs:559` · **指名断言**：⟦check:work-plan-runtime#WPR-11⟧ |
 | R-12 | 已修 | `src/shared/pipeline.ts:672` · **指名断言**：⟦check:regression#R-2⟧ |
@@ -242,7 +242,7 @@ D-22 --fix 保险   ✅ 本轮修：check-profile-assembly 加 CHECK_ALL 门禁
 | T-13 | 按设计处理 | ✅ **已完整**：4 个写工具里 `approve` 是**唯一该加闸门**的（已加）；`init`（开张）· `migrate`（修复通道）· `rebuild`（归档重建）**都不该拦** —— 它们正是「账本坏了」时要用的（§197 查实 `proceedGate` 判定面含 `store-unreadable`/`unknown-legacy`） |
 | T-14 | 已修 | `src/session-policy-service.ts:148` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-15 | 已修 | `src/server/session-policy.ts:417` · **指名断言**：⟦check:hob-create-ui#CU-44⟧ |
-| T-16 | 已修-未机器化 | `src/client/project-panel.tsx:3043` |
+| T-16 | 已修 | `src/client/project-panel.tsx:3043` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-17 | 已修 | `src/client/project-panel.tsx:265` · **指名断言**：⟦check:regression#R-2⟧ |
 | T-18 | 已修 | `kit/README.md` 中「跨实例」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
 | T-19 | 已修 | `kit/README.md` 中「三个面」0 命中（§163） · **指名断言**：⟦check:regression#R-2⟧ |
