@@ -320,7 +320,7 @@ const parseRows = (text) => {
  *   模糊匹配会让「注记里随便出现一个 `S-01`」也算绑定，而那正是断言 ⑤ 的教训
  *   （2026-11-11 实测：自动填 101 条，**12 条指错**）。
  */
-const MACHINE_GAP_MAX = 3
+const MACHINE_GAP_MAX = 0
 const BIND_RE = /⟦([a-z0-9:-]+)#([A-Za-z0-9._-]+)⟧/g
 {
   /** 读一个族对应的脚本全文（族名 ⇒ 文件名：`check:stage-controls` ⇒ `check-stage-controls.mjs`）。 */
@@ -424,8 +424,15 @@ const BIND_RE = /⟦([a-z0-9:-]+)#([A-Za-z0-9._-]+)⟧/g
    *   ③ 棘轮：把上限降 1 ⇒ ⑧ 必须红（⛔ 不是恒绿）。
    */
   const neg = []
-  if (gapRows.length > 0) {
-    const probeRow = gapRows[0]
+  if (gapRows.length > 0 || fixedRows.length > 0) {
+    /**
+     * ⚠ **债清到 0 时也要能对拍**（2026-11-18）：那时没有 `已修-未机器化` 行可当夹具 ⇒
+     *   用**内存里合成的一行**造夹具（⛔ 不落盘、⛔ 不改真实表）。
+     *   ⚠ 不许因为「没有债」就跳过 ⑨ —— 那会让 ⑦/⑧ 在债清完之后变成永远绿。
+     */
+    const probeRow = gapRows.length > 0
+      ? gapRows[0]
+      : { id: 'X-99', status: '已修-未机器化', note: '内存夹具：注记里没有任何断言标识' }
     const lifted = { ...probeRow, status: '已修' }
     if (bindingResolves(lifted.note)) neg.push('夹具行的注记本来就解析得出标识 ⇒ 抬档后不会红（夹具失效）')
     const liftedCount = fixedRows.length + 1

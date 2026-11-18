@@ -322,6 +322,27 @@
       "file": "src/modules/requirement-chains-route.ts",
       "needle": "STAGES_REASON_LEDGER_MISSING",
       "guards": "读盘若各写一套失败语义 ⇒ 同一本账在面板显示「还没开账」、在派活侧显示「读不出来」，两处指不同方向（R-07 原病灶）"
+    },
+    {
+      "defect": "O-35",
+      "kind": "contains",
+      "file": "src/modules/orchestrator.ts",
+      "needle": "const LEDGER_WRITING_ACTIONS = ['verify', 'accept', 'send-back', 'close-delivery'] as const",
+      "guards": "hob_orch_control 的四个**写业务判决**的动作若不过 proceedGate ⇒ 被隔离/归档的会话仍能写验证判决与验收结论（S-01 的下游）"
+    },
+    {
+      "defect": "R-24",
+      "kind": "contains",
+      "file": "src/client/project-panel.tsx",
+      "needle": "next: res.next,",
+      "guards": "/stages 的权威字段若取回即弃 ⇒ 面板自己另算一套「下一步」，与服务端门禁各说各的"
+    },
+    {
+      "defect": "S-15",
+      "kind": "contains",
+      "file": "src/server/orch-state.ts",
+      "needle": "wakeAttempts?: number",
+      "guards": "唤醒兜底若不再记「这批活叫过几次」⇒ 回 waiting 后只能靠下一次派发再叫，而「我还没动」时派发不会发生 ⇒ 兜底在我睡着那一刻失效"
     }
   ]
 }
