@@ -151,7 +151,8 @@ const root = resolve(here, '..')
  *   ⇒ 放进必跑只会"永远 exit 2"，把"没对象"污染成"判据没跑"（`E-122` 同族）。
  *   ⚠ 手工跑：`npm run check:tasks-route-http`；无对象档 = **exit 2（noObject，⛔ 不算通过）**。
  */
-const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http'])
+// ⚠ `check:quick`（2026-11-20）：它**不是一族**（是 check:all 的少跑档，见 `parseSkipArg` 上方），
+const SELF = new Set(['check:all', 'check:preflight', 'check:tasks-route-http', 'check:quick'])
 
 /**
  * ── ⚠⚠ **族数下界（2026-10-24 · B 席 · 治"删一族也不红"）**──────────────────────
@@ -1225,6 +1226,58 @@ export function verdict(results) {
 
 
 /**
+ * ── ⚠⚠ **2026-11-20（计划第 5 项 · 增量判据的落地形态）：`--skip=<族名,…>`** ─────────
+ *
+ * ── 先给数据（为什么是这三个族）────────────────────────────────────
+ *   `check-timings.json`（滚动 20 轮）实测：`check:archive` 中位 **27.0s**、
+ *   `check:orch` **18.1s**、`check:stages-dom` **16.5s** —— 三族合计 **61.6s**，
+ *   占全部族中位合计（110.2s）的 **56%**；且中位≈最大值 ⇒ **稳定慢**，不是偶发。
+ *   ⇒ 值得给一个"日常迭代少跑这三族"的档。
+ *
+ * ── 口径（⛔ 两条铁律）────────────────────────────────────────────────
+ *   ① **跳过 ≠ 通过**：跳过任何一族 ⇒ 退出码**至少是 2**（"有族未执行"档），
+ *     ⛔ 不许是 0 —— `check:quick` 只用于开发期快速迭代，全量判定仍是不带
+ *     `--skip` 的 `check:all`（pre-push 的 `verify` 即是）。
+ *   ② **拼写错误不许静默吞掉**：`--skip=check:arhive` 这类笔误若被当成
+ *     "没点跳过"，人会以为跳过了而其实全量跑了一遍 —— 判不出 ⇒ 报错（exit 3）。
+ *
+ * ── 为什么**不做** `git diff` 增量判定（方案定稿时写明的取舍）──────────
+ *   "只跑改动涉及的族"需要一张"路径 → 族"映射，而映射本身会漂；
+ *   "没跑"与"跑过"混进同一个退出码就是新的假绿形态。
+ *   ⇒ 先落地最笨的"按族名跳过"，增量判定留待真有需要再立项。
+ *
+ * @param {string|undefined} raw - 形如 `--skip=check:a,check:b` 的原始 argv 项
+ * @param {string[]|Set<string>} knownFamilies - `listFamilies()` 的结果（权威族表）
+ * @returns {{skipped: string[], error: string|null}} 排序去重后的跳过清单；error 非空时**必须**中止
+ */
+export function parseSkipArg(raw, knownFamilies) {
+  const known = new Set(knownFamilies)
+  if (raw === undefined || raw === null || raw === '') return { skipped: [], error: null }
+  const list = String(raw).replace(/^--skip=/, '').split(',').map((x) => x.trim()).filter((x) => x !== '')
+  if (list.length === 0) return { skipped: [], error: null }
+  const uniq = [...new Set(list)]
+  const unknown = uniq.filter((n) => !known.has(n))
+  if (unknown.length > 0) {
+    return { skipped: [], error: '--skip 点了 **' + unknown.length + ' 个不存在的族**：' + unknown.join(' / ')
+      + '（现有 ' + known.size + ' 族）⇒ 拼写错误不许静默吞掉（跳了个寂寞还以为跳了）' }
+  }
+  return { skipped: uniq.sort(), error: null }
+}
+
+/**
+ * **跳过对退出码的唯一影响**：`skip>0` 且全绿 ⇒ 把 0 抬到 2（"未执行"档）。
+ *   ⚠ **失败优先**：已有失败（1）时不许降级也不许掩盖；已是 2 时保持 2。
+ *   ⚠ 纯函数（可注入对拍）：`printSummary` 的**唯一**出口走它，⛔ 不许另有第二处改码。
+ *
+ * @param {number} vExit - `verdict(results)` 的退出码（只看**实跑**的那些族）
+ * @param {number} skippedCount - 有意跳过的族数
+ */
+export function liftForSkip(vExit, skippedCount) {
+  return skippedCount > 0 && vExit === 0 ? 2 : vExit
+}
+
+
+/**
  * ── ⚠⚠ **2026-11-16（批次 0.5）：把逐族耗时落盘，让"成本体检"有数据面** ──────────
  *
  * ── 它治的病 ──────────────────────────────────────────────────────────
@@ -1379,7 +1432,7 @@ export function findDuplicateAssertionFloors() {
   return { ok: dups.length === 0, dups, total: seen.size, reason: '' }
 }
 
-export function printSummary(results) {
+export function printSummary(results, skipped = []) {
   const v = verdict(results)
   console.log('')
   console.log('═'.repeat(72))
@@ -1446,7 +1499,14 @@ export function printSummary(results) {
     }
     console.log('')
   }
-  const familyFloorBroken = results.length < FAMILY_FLOOR
+  /**
+   * ⚠ **`--skip` 的族不计入「下界被突破」**（2026-11-20 · 计划第 5 项）──────
+   *   族数下界守的是**族表**（派生自 `package.json` 的 `check:*`）有没有被悄悄删掉/改名 ——
+   *   `--skip` **不改族表**，只少跑 ⇒ 覆盖面缩水由**退出码 2** 表达（"跳过 ≠ 通过"），
+   *   ⛔ 不由下界表达（否则 `check:quick` 永远红，等于没有这个档）。
+   *   ⚠ 反过来：**没有** `--skip` 而族数变少 ⇒ 照旧红（那才是"族被悄悄删掉"）。
+   */
+  const familyFloorBroken = results.length + skipped.length < FAMILY_FLOOR
   if (familyFloorBroken) {
     console.log(`  ✗ **族数下界被突破**：只跑了 **${results.length}** 族，而登记的下界是 **${FAMILY_FLOOR}**`
       + '（⚠ 族表是**派生**自 `package.json` 的 `check:*` ⇒ 删一族不会留下任何痕迹）'
@@ -1454,8 +1514,15 @@ export function printSummary(results) {
       + '否则就是"某族被悄悄删掉 / 改名成非 `check:*`"—— 那正是本下界要抓的'
       + '（实测改前：把 `check:redeliver` 改名成 `gen:redeliver` ⇒ 族数 20→19，`check:gitignore` 仍 PASS）')
   } else {
-    console.log(`  ✓ 族数下界：**${results.length}** 族 ≥ 下界 **${FAMILY_FLOOR}**`
+    const covered = results.length + skipped.length
+    console.log(`  ✓ 族数下界：**${covered}** 族（实跑 ${results.length}${skipped.length > 0 ? ' + 有意跳过 ' + skipped.length : ''}） ≥ 下界 **${FAMILY_FLOOR}**`
       + '（⚠ 下界只准升不准降：有意收缩须同批改常量并写明理由）')
+  }
+  if (skipped.length > 0) {
+    console.log(`  ⏭ **有意跳过 ${skipped.length} 族**：${skipped.join(' / ')}`
+      + '\n      ⇒ ⛔ 跳过**不计入通过**：本轮退出码至少是 2（"跳过 ≠ 通过"的落点）；'
+      + '\n      ⇒ 全量判定跑**不带** `--skip` 的 `npm run check:all`（pre-push 的 verify 即是）。')
+    console.log('')
   }
   /**
    * ── ⚠⚠ **汇总行必须回答三件事**（第 349 轮 · TASK §二 硬要求 3）──────────────
@@ -1713,7 +1780,12 @@ export function printSummary(results) {
     return null
   }
   const verdictLine = VERDICT_TEXT[v.exit]
-  const srcMismatch = checkVerdictSource(v.exit, verdictLine)
+  /**
+   * ⚠ **有意跳过（skip>0 且全绿）时豁免这条对拍**：那时印的是**专用的第四句**，
+   *   ⛔ 不借用 VERDICT_TEXT 三档文案 —— 与下面「下界被突破」分支同一先例（各带因果）。
+   */
+  const skipLifts = skipped.length > 0 && v.exit === 0
+  const srcMismatch = skipLifts ? null : checkVerdictSource(v.exit, verdictLine)
   if (srcMismatch !== null) {
     /**
      * ⚠ 这一支**几乎不可能**走到（`verdictLine` 就是从 `VERDICT_TEXT[v.exit]` 取的），
@@ -1741,6 +1813,10 @@ export function printSummary(results) {
     console.log('判定：**有失败** —— ⚠ 各族本身都通过，但**覆盖面下界被突破**'
       + '（族数 / 断言数缩水，见上面那几条 ✗）⇒ **这不代表通过**。')
     console.log('       ⇒ 退出码按 1 记（⚠ 与上面那几条 ✗ 同源，⛔ 不是"未执行"）。')
+  } else if (skipLifts) {
+    console.log(`判定：**未执行（有意跳过 ${skipped.length} 族）** —— 没有失败，但本轮**没有全覆盖**；⚠ exit 2 **不代表通过**。`)
+    console.log('       ⇒ 跳过的族：' + skipped.join(' / '))
+    console.log('       ⇒ 全量判定跑**不带** `--skip` 的 `npm run check:all`（pre-push 的 verify 即是）。')
   } else {
     console.log(verdictLine)
   }
@@ -1809,7 +1885,11 @@ export function printSummary(results) {
       return 1
     }
   }
-  return v.exit
+  /**
+   * ⚠ **出口唯一走 `liftForSkip`**（2026-11-20）：skip>0 且全绿 ⇒ 0 → 2。
+   *   ⛔ 失败（1）不被掩盖、已是 2 不再变 —— 见 `liftForSkip` 的对拍。
+   */
+  return liftForSkip(v.exit, skipped.length)
 }
 
 if (process.argv[1] !== undefined && (process.argv[1].endsWith('check-all.mjs') || process.argv[1].endsWith('npm'))) {
@@ -1825,7 +1905,54 @@ if (process.argv[1] !== undefined && (process.argv[1].endsWith('check-all.mjs') 
     console.error('✗ 从 package.json 的 scripts 里一个 `check:*` 都没解析到（基准缺失 ⇒ 不按通过处理）')
     process.exit(2)
   }
-  const results = runFamilies(names)
+
+  // ── N-SKIP 负向对拍（内存里造，⛔ 不落盘；2026-11-20 · 计划第 5 项）──────────
+  //   ⚠ 放在**解析 --skip 之前**：解析器坏了 ⇒ 当场 exit 3，⛔ 不许带着坏解析器跑完一轮。
+  {
+    const neg = []
+    const known = ['check:a', 'check:b', 'check:c']
+    const good = parseSkipArg('--skip=check:b,check:a', known)
+    if (good.error !== null || good.skipped.join(',') !== 'check:a,check:b') neg.push('正常解析/排序不成立')
+    const dup = parseSkipArg('--skip=check:a,check:a', known)
+    if (dup.error !== null || dup.skipped.length !== 1) neg.push('重复项没有去重')
+    const typo = parseSkipArg('--skip=check:nope', known)
+    if (typo.error === null) neg.push('未知族名没有报错 ⇒ 拼写错误会被静默吞掉（跳了个寂寞还以为跳了）')
+    const none = parseSkipArg(undefined, known)
+    if (none.error !== null || none.skipped.length !== 0) neg.push('没有 --skip 时不该有跳过/报错')
+    if (liftForSkip(0, 2) !== 2) neg.push('skip>0 且全绿时没有把 0 抬到 2 ⇒ 跳过被洗成通过')
+    if (liftForSkip(1, 2) !== 1) neg.push('有失败时被 skip 改了级别 ⇒ 失败优先被破坏')
+    if (liftForSkip(0, 0) !== 0) neg.push('没有 skip 时退出码被改 ⇒ 全量路径被污染')
+    if (neg.length > 0) {
+      console.error('✗ N-SKIP **负向对拍失败**：' + neg[0] + ' ⇒ 解析器/抬码器是坏的（⛔ 不按通过处理）')
+      process.exit(3)
+    }
+    console.log('  ✓ N-SKIP ✓ **负向对拍**（内存里造，⛔ 不落盘）：正常解析+排序 · 去重 · 未知族名必报错 ·'
+      + '无 --skip 不报错 · 0→2 抬码 · 失败优先不被掩盖 · 无 skip 不改码')
+    console.log('')
+  }
+
+  /**
+   * ── **`--skip=<族名,…>`**（2026-11-20 · 计划第 5 项）────────────────────────
+   *   日常迭代少跑**实测最慢且稳定**的三族（archive 27.0s / orch 18.1s / stages-dom 16.5s，
+   *   合计 61.6s ≈ 全量中位 110.2s 的 56%；`npm run check:quick` 就是这三个名字）。
+   *   ⚠ **跳过 ≠ 通过**：跳过 ⇒ 退出码至少 2；全量判定仍是不带 --skip 的 check:all。
+   *   ⚠ 解析器坏了（未知族名 / 自测不过）⇒ exit 3，⛔ 不静默全量跑。
+   */
+  const skipRawArg = process.argv.find((a) => typeof a === 'string' && a.startsWith('--skip='))
+  const parsedSkip = parseSkipArg(skipRawArg, names)
+  if (parsedSkip.error !== null) {
+    console.error('✗ ' + parsedSkip.error)
+    console.error('   ⇒ ⛔ 用法错误按 exit 3 记（⛔ 不静默改成全量跑 —— 那会把"想跳过"变成"没跳过"）')
+    process.exit(3)
+  }
+  const skippedNames = parsedSkip.skipped
+  const toRun = names.filter((n) => !skippedNames.includes(n))
+  if (skippedNames.length > 0) {
+    console.log(`⏭ **有意跳过 ${skippedNames.length} 族**：${skippedNames.join(' / ')}`)
+    console.log('   ⇒ ⛔ 跳过不计入通过：本轮退出码至少是 2；全量判定跑不带 --skip 的 `npm run check:all`。')
+    console.log('')
+  }
+  const results = runFamilies(toRun)
   /**
    * ── **S-13：判据自己不许污染被测对象** ────────────────────────────────────
    *
@@ -1858,7 +1985,7 @@ if (process.argv[1] !== undefined && (process.argv[1].endsWith('check-all.mjs') 
    *   ⇒ 只设 `exitCode`，让 Node 等 stdout/stderr 排空后自然退出。
    *   ⚠ 不改三档判定的任何一位：返回值仍由 `printSummary()` 唯一决定。
    */
-  const exitCode = printSummary(results)
+  const exitCode = printSummary(results, skippedNames)
   /**
    * ⚠⚠ **耗时落盘（批次 0.5）**：在 `printSummary()` **之后**调用，返回值被忽略。
    *   ⚠ 写失败**不许影响判定**（耗时是附加读数，它写不下去不该让判据变红）；

@@ -2,9 +2,10 @@
   "note": "⚠ §4.1「收尾必跑」生成块的**唯一手写源**（2026-10-30 P7）。⚠ 族清单本身派生自 package.json：生成器逐族核对，**少一族 / 多一族 / 次序不符都当场抛错**（这接替了旧断言 V 的保护）。⚠ 本文件只提供「守什么」那一列的人类文字。",
   "self": [
     "check:all",
-    "check:preflight"
+    "check:preflight",
+    "check:quick"
   ],
-  "selfNote": "⚠ `self` 里的两族**不进本块**（`check:all` 是调度器、`check:preflight` 是体检，二者与 V 组的 `SELF` 同口径），但生成器仍要求它们**出现在 `package.json` 里**。",
+  "selfNote": "⚠ `self` 里的族**不进本块**（`check:all` 是调度器、`check:preflight` 是体检、`check:quick` 是 check:all 的少跑档 —— 三者与 V 组的 `SELF` 同口径），但生成器仍要求它们**出现在 `package.json` 里**。",
   "rows": [
     {
       "cmd": "build",
