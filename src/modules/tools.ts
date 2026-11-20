@@ -1121,10 +1121,27 @@ export function ledgerLifecycleOfRoot(ledgerRoot: string | undefined): LedgerLif
   return lifecycle
 }
 
+/**
+ * **自举解锁轨的固定简报**（2026-11-20 · A′·UD）。
+ * ⚠ **内容由本插件固定生成**：派活方只能选择「发不发」，⛔ 不能改写一个字
+ *   （调用方的 message 在解锁轨里被整体替换 —— 这是防注入的根：简报文本
+ *   不经过任何模型自由发挥，目标会话读到的是这份常量）。
+ * ⚠ 只许做「合并索引 + 如实回传」；其余一切动作在简报里明文禁止。
+ */
+export const BOOTSTRAP_UNLOCK_BRIEF = [
+  '【自举解锁轨 · 本消息由插件固定生成，不接受派活方自定义内容】',
+  '账本入口索引当前读不出来（门禁判不出），常规任务链无法核对。本轨只做一件事：',
+  '1. 在本项目仓库根目录找账本索引生成器：优先 npm run gen:ledger，其次 node scripts/gen-ledger.mjs；找不到就如实回传「生成器不存在」并停止，不做任何替代发挥。',
+  '2. 运行它，记录退出码。',
+  '3. 回传：退出码、ledger/units/ 下的单元文件数、输出末尾几行原话；失败时把报错原样带回。',
+  '⛔ 本轨禁止：改业务文件；读写需求/方案/任务单元的内容；自行认定任何闸门已过；把本消息改写后转发。',
+  '跑完后由派活方重新走常规派活 —— 常规门禁会自行复核，本轨不是任何闸的「已通过」凭证。',
+].join('\n')
+
 export function dispatchGateAtLedger(
   ledgerRoot: string,
-  opts: { taskId?: string; planId?: string } = {},
-): { blocked: string | undefined; health: { ok: boolean; blockers: GateDecision['blockers'] } } {
+  opts: { taskId?: string; planId?: string; unlock?: 'bootstrap' } = {},
+): { blocked: string | undefined; unlockBrief?: string; health: { ok: boolean; blockers: GateDecision['blockers'] } } {
   /**
    * ⚠⚠ **第一道：账本先得能推进**（2026-11-08 · 用户裁定）。
    *
@@ -1145,6 +1162,20 @@ export function dispatchGateAtLedger(
   /** Empty ledgers may accept the first requirement but never a dispatch. */
   const emptyLedger = lifecycle.integrity === 'empty' && lifecycle.state === 'active'
   if (!lifecycle.active) {
+    /**
+     * ⚠⚠ **自举解锁窗**（2026-11-20 · A′·UD）—— 全仓唯一放行点。
+     *   开窗条件**三条缺一不可**：
+     *     ① 调用方显式带 opts.unlock='bootstrap'（默认 undefined ⇒ 行为与改前逐字相同）；
+     *     ② lifecycle 判定 unlockEligible=true（判据在 ledger-lifecycle.ts 单点：
+     *        「读不出来」或「缺入口索引」两个分支 —— 合并索引真的能治的形态）；
+     *     ③ 本窗只**换简报**：解锁轨不登记 RUN、不视为常规派活、不构成任何闸的通过凭证。
+     *   ⛔ 其余一切不 active 形态（空账没需求 / legacy / 归档 / 失效 / 落点判不出）照旧拒 ——
+     *     unlockEligible 没打标，这里读不到就是拒；⛔ 不在本文件另判一份资格。
+     *   ⛔ 「真缺口」（结构/批准缺，problems 非空）在任何情况下都不进本窗。
+     */
+    if (opts.unlock === 'bootstrap' && lifecycle.unlockEligible === true) {
+      return { blocked: undefined, unlockBrief: BOOTSTRAP_UNLOCK_BRIEF, health: { ok: false, blockers: [] } }
+    }
     return {
       blocked: `账本不能作为当前账本推进：${lifecycle.headline} ⇒ ${lifecycle.nextAction}`
         + (lifecycle.blockers.length === 0 ? '' : `（${lifecycle.blockers.slice(0, 3).map((b) => `${b.rule} · ${b.unit}`).join('；')}）`),
@@ -1180,6 +1211,15 @@ export function dispatchGateAtLedger(
         }
       }
     } catch (e) {
+      /**
+       * ⚠ A′ 解锁窗（taskId 分支 · belt）：lifecycle 已过（unlockEligible 未打标的形态
+       *   走不到这）但单元读取瞬态炸了 —— 同样只换简报，⛔ 真缺口不适用
+       *   （真缺口走的是上面 problems>0 的 return，不进 catch）。
+       *   ⚠ 多轨（plan 分支）的 catch **不开窗**：解锁轨只支持单目标，多轨缺资格链时照旧拒。
+       */
+      if (opts.unlock === 'bootstrap') {
+        return { blocked: undefined, unlockBrief: BOOTSTRAP_UNLOCK_BRIEF, health: { ok: false, blockers: d.blockers } }
+      }
       return {
         blocked: `Pipeline v3 门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不派单。`,
         health: { ok: false, blockers: d.blockers },

@@ -2162,18 +2162,50 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
    *   `tracks` 时逐轨 `taskId` 由 `dispatchGateAtLedger` 的计划分支覆盖，
    *   这里只传计划号；单目标派活传 `task`。
    */
-  const stageGateFor = (exec: any, scope: { taskId?: string; planId?: string } = {}): string | undefined => {
+  /**
+   * ⚠ A′（2026-11-20）：全量判决取口 —— 与 dispatchGateAt 同一个注入、同一个回落口径，
+   *   只是不折叠 unlockBrief。⛔ 判据零副本：回落（导出缺席）时按旧全局口径，
+   *   **永不**在回落里开解锁窗（legacy 全局门禁没有 unlock 语义，宁可拒）。
+   */
+  const dispatchGateFullAt = (root: string, opts: { taskId?: string; planId?: string; unlock?: 'bootstrap' }): { blocked: string | undefined; unlockBrief?: string } => {
+    const stageGateOfLedger = (r: string): string | undefined => {
+      const fn = (toolsFace as unknown as { stageGateOfLedger?: (r: string) => string | undefined }).stageGateOfLedger
+      if (typeof fn !== 'function') return undefined
+      return fn(r)
+    }
+    const fn = (toolsFace as unknown as {
+      dispatchGateAtLedger?: (
+        r: string,
+        o: { taskId?: string; planId?: string; unlock?: 'bootstrap' },
+      ) => { blocked: string | undefined; unlockBrief?: string }
+    }).dispatchGateAtLedger
+    if (typeof fn !== 'function') {
+      const legacy = stageGateOfLedger(root)
+      return { blocked: legacy === undefined ? undefined : `${legacy}（⚠ 作用域门禁导出缺席，按旧全局口径判定）` }
+    }
+    return fn(root, opts)
+  }
+  const stageGateFor = (exec: any, scope: { taskId?: string; planId?: string; unlock?: 'bootstrap' } = {}): string | { unlockBrief: string } | undefined => {
     try {
       const root = ledgerRootFor(exec)
       if (root === undefined) return '阶段门禁判不出：无法确定本会话的账本目录 ⇒ 本次不派单。'
-      return dispatchGateAt(root, scope)
+      /**
+       * ⚠ A′（2026-11-20）：用**全量判决**而不是只取 blocked —— 解锁窗的 unlockBrief
+       *   要透传给 orchestrator（它据此替换消息、跳过 RUN）。资格判据仍在
+       *   ledger-lifecycle.ts 单点；这里只做形状透传，⛔ 不判第二遍资格。
+       */
+      const full = dispatchGateFullAt(root, scope)
+      if (full !== null && typeof full === 'object' && full.blocked === undefined && typeof full.unlockBrief === 'string') {
+        return { unlockBrief: full.unlockBrief }
+      }
+      return full?.blocked
     } catch (e) {
       return `阶段门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不派单。`
     }
   }
   const { dispatch, status, control } = createOrchTools(
     orch,
-    (exec: any, scope?: { taskId?: string; planId?: string }) =>
+    (exec: any, scope?: { taskId?: string; planId?: string; unlock?: 'bootstrap' }) =>
       proceedGateFor(exec?.agent ?? exec) ?? stageGateFor(exec, scope),
     workModeFor,
     acceptanceGateFor,

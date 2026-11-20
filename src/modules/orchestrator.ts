@@ -8770,7 +8770,7 @@ export function createHobOrchTools(
    * 带下来，门禁才能按任务链或计划链判定，⛔ 而不是扫全账本。
    * 其他调用方不传 ⇒ 按项目健康口径（不硬拦）。
    */
-  proceedGateOf?: (exec: any, scope?: { taskId?: string; planId?: string }) => string | undefined,
+  proceedGateOf?: (exec: any, scope?: { taskId?: string; planId?: string; unlock?: 'bootstrap' }) => string | { unlockBrief: string } | undefined,
   workModeOf?: (exec: any) => WorkMode | undefined,
   /**
    * **验收门禁**（2026-11-06 · Wave 1）：按账本真实单元校验 `accept`。
@@ -8875,6 +8875,11 @@ export function createHobOrchTools(
         description: '**账本里的真实任务号**（如 TSK-080）。⚠ 派活对象就是它：门禁按它判链，派发成功后在账本建 RUN、任务转 doing。'
           + ' ⚠ 不要在这里填需求号 / 方案号；`implicit` 占位不落账。',
       },
+      unlock: {
+        type: 'string',
+        enum: ['bootstrap'],
+        description: '自举解锁窗（2026-11-20 · A′）：仅当门禁因「账本读不出来/缺入口索引」被拒时放行 —— 派出的消息是**插件固定简报**（合并账本索引 + 如实回传），调用方的 message 被整体忽略，不登记 RUN、不视为常规派活。真缺口（结构/批准缺）不适用，照旧拒。',
+      },
       changeId: { type: 'string', description: '多轨派活必填：本计划对应的现有 CHG 编号。' },
       planId: { type: 'string', description: '多轨派活可选：稳定计划编号；省略时自动生成。' },
       rationale: { type: 'string', description: '多轨派活必填：为什么这样拆分。' },
@@ -8927,7 +8932,11 @@ export function createHobOrchTools(
       singleTrackEvidence?: unknown
       tracks?: unknown
       taskId?: string
+      /** A′（2026-11-20）：自举解锁窗；只认 'bootstrap'，不给 ⇒ 行为与常规派活完全一致。 */
+      unlock?: 'bootstrap'
     }, exec: any): Promise<string> {
+      /** A′（2026-11-20）：解锁窗产物（插件固定简报）—— try 内捕获、发送段消费。 */
+      let unlockBrief: string | undefined
       /**
        * ⚠⚠ **派活前先过执行层闸门**（2026-10-22 第 5 轮 · 任务书第 12 条）。
        *   ⚠ `hob_dispatch` 是"真实派活"的主路径 ⇒ 必须在这里挡，
@@ -8962,9 +8971,17 @@ export function createHobOrchTools(
            * cannot drift or be mistaken for one another.
            */
           if (life.state !== 'active' || life.active !== true) {
-            return JSON.stringify({ ok: false, reason: 'ledger-invalid', returnRegistered: false,
-              message: `账本不是当前可用账本：${life.headline} ⇒ ${life.nextAction}`,
-              blockers: life.blockers })
+            /**
+             * ⚠ A′（2026-11-20）解锁窗前置豁免：lifecycle 判定 unlockEligible
+             *   （「读出错」/「缺入口索引」，判据在 ledger-lifecycle.ts 单点）且调用方
+             *   显式 unlock=bootstrap ⇒ 不在这里先拒，放行到组合闸，由
+             *   dispatchGateAtLedger 的解锁窗产出固定简报。⛔ 其余形态照旧拒。
+             */
+            if (!(args.unlock === 'bootstrap' && life.unlockEligible === true)) {
+              return JSON.stringify({ ok: false, reason: 'ledger-invalid', returnRegistered: false,
+                message: `账本不是当前可用账本：${life.headline} ⇒ ${life.nextAction}`,
+                blockers: life.blockers })
+            }
           }
           if (taskId === '' || taskId === 'implicit') {
             return JSON.stringify({ ok: false, reason: 'task-id-required', returnRegistered: false,
@@ -8983,10 +9000,23 @@ export function createHobOrchTools(
               + ' ⛔ **本次没有登记回传**：不要改投 hob_send；那只是单向通知，对方跑完不会回来。',
           })
         }
-        const blocked = proceedGateOf?.(exec, {
+        if (args.unlock !== undefined && args.unlock !== 'bootstrap') {
+          return JSON.stringify({ ok: false, reason: 'unlock-unsupported', returnRegistered: false,
+            message: '拒绝：unlock 只认 bootstrap（其他值一律不认，⛔ 不猜）；不给 unlock ⇒ 行为与常规派活完全一致。' })
+        }
+        if (args.unlock === 'bootstrap' && Array.isArray(args.tracks)) {
+          return JSON.stringify({ ok: false, reason: 'unlock-single-target-only', returnRegistered: false,
+            message: '拒绝：自举解锁窗只支持单目标派活（tracks 多轨不开窗）；解锁简报只喂一个会话。' })
+        }
+        const gateResult = proceedGateOf?.(exec, {
           ...(taskId !== '' ? { taskId } : {}),
           ...(typeof args.planId === 'string' && args.planId.trim() !== '' ? { planId: args.planId.trim() } : {}),
+          ...(args.unlock === 'bootstrap' ? { unlock: 'bootstrap' as const } : {}),
         })
+        if (gateResult !== null && typeof gateResult === 'object' && typeof (gateResult as { unlockBrief?: unknown }).unlockBrief === 'string') {
+          unlockBrief = (gateResult as { unlockBrief: string }).unlockBrief
+        }
+        const blocked = typeof gateResult === 'string' ? gateResult : undefined
         if (blocked !== undefined) {
           return JSON.stringify({
             ok: false,
@@ -9111,6 +9141,33 @@ export function createHobOrchTools(
           mode,
           problems: targetVerdict.problems,
           message: targetVerdict.problems.map((p) => p.message).join('；'),
+        })
+      }
+      if (unlockBrief !== undefined) {
+        /**
+         * ⚠⚠ **自举解锁轨**（2026-11-20 · A′·UD）：消息 = 插件固定简报（⛔ 调用方 message
+         *   被整体忽略），不带 taskId/task ⇒ 不预登记 RUN（账本不可读时也不该写账）。
+         *   WM-30 档位校验已在上面的常规路径走过（解锁轨不豁免工作方式约束）。
+         *   返回明示 unlockTrack，⛔ 不出现 runId —— 它不是常规派活，也不是任何闸的通过凭证。
+         */
+        const ru = await orch.dispatch(args.sessionId, unlockBrief, { self, workMode: mode })
+        if (!ru.ok) {
+          return JSON.stringify({
+            ok: false, reason: ru.reason, returnRegistered: false,
+            ...(ru.message === undefined ? {} : { message: ru.message }),
+            ...(ru.needsUser === true ? { needsUser: true } : {}),
+            ...(ru.configuredPreset === undefined ? {} : { configuredPreset: ru.configuredPreset }),
+            ...(ru.targetPreset === undefined ? {} : { targetPreset: ru.targetPreset }),
+          })
+        }
+        return JSON.stringify({
+          ok: true, dispatched: true, unlockTrack: 'bootstrap',
+          sessionId: ru.sessionId,
+          ...(ru.messageId === undefined ? {} : { messageId: ru.messageId }),
+          watching: ru.watching,
+          mode, trackCount: 1,
+          note2: 'Bootstrap unlock track: the fixed brief was delivered, no RUN registered, and this is NOT a regular dispatch. '
+            + 'Once the target merges the index and reports back, re-dispatch through the normal gate.',
         })
       }
       const r = await orch.dispatch(args.sessionId, args.message, {

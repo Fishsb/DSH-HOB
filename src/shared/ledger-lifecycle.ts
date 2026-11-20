@@ -53,6 +53,15 @@ export interface LedgerLifecycle {
   integrity: 'valid' | 'invalid' | 'empty' | 'undecidable'
   /** Whether the ledger can be used as the current ledger for work. */
   active: boolean
+  /**
+   * ⚠ **自举解锁资格**（2026-11-20 · A′·UD）：仅两个分支为 true ——
+   *   ①「账本读不出来」（probe.readError）②「账本目录在，但缺入口索引」（index-missing）。
+   *   ⛔ 判据只在这里产生（单一真相）；调用方（dispatchGateAtLedger / hob_dispatch）
+   *   只读这个字段决定解锁窗开不开，⛔ 不许各自再判一份。
+   *   其余一切不 active 的形态（空账没需求 / legacy / 归档 / 失效 / 落点判不出）
+   *   都**没有资格**：那些要么等人（G1），要么是身份/结构问题，合并索引救不了。
+   */
+  unlockEligible?: boolean
   /** New-format ledgers carry an activation record; legacy ones do not. */
   activation: 'active' | 'provisioning' | 'missing' | 'invalid' | 'archived'
   headline: string
@@ -164,6 +173,8 @@ export function assessLedgerLifecycle(
       state: 'invalid', integrity: 'undecidable', active: false, activation: activation?.status ?? 'missing',
       headline: '账本读不出来', nextAction: '先修复读取权限或损坏文件；不要用绕过门禁的方式继续派活。',
       blockers: [{ rule: 'A-3', unit: 'ledger', why: probe.readError }],
+      /** A′：读错误常是瞬态（锁竞争 / 分片半写）；解锁轨（重跑索引合并 + 如实回传）可自愈。 */
+      unlockEligible: true,
       legacyCompatible: false, ...(activation === undefined ? {} : { ledgerId: activation.ledger_id, generation: activation.generation }),
     }
   }
@@ -183,6 +194,8 @@ export function assessLedgerLifecycle(
       state: 'missing', integrity: 'empty', active: false,
       activation: activation === undefined ? 'missing' : 'active',
       headline: '账本目录在，但缺入口索引', nextAction: '按模板补齐入口索引与 PROJECT.md，再落第一条需求。',
+      /** A′：正是 2026-11-20 会话 fe77d315 死锁的形态 —— 单元在、索引没合并；解锁轨（重跑 gen:ledger）直治。 */
+      unlockEligible: true,
       blockers: [], legacyCompatible: activation === undefined,
       ...(activation === undefined ? {} : { ledgerId: activation.ledger_id, generation: activation.generation }),
     }
