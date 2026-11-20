@@ -125,6 +125,18 @@ import { pipelineDispatchProblems } from '../shared/pipeline-view.ts'
 //   ⚠ 四个出口（readiness / stageGateOfLedger / stageHealthOfLedger / /stages.stageHealth）
 //     必须共用它；⛔ 任何出口都不得自己再拼一份判据集（那正是 T-02 的病）。
 import { describeLedgerHealth, ledgerHealthOf, type LedgerHealthProblem } from '../shared/ledger-health.ts'
+import {
+  riskAssessmentOf,
+  RISK_DIMENSIONS,
+  RISK_HARD_TRIGGERS,
+  RISK_HARD_TRIGGER_FACT_FIELDS,
+  DELIVERY_SCOPES,
+  RISK_TIERS,
+  RISK_POLICY_VERSION,
+  type RiskDimensions,
+  type RiskHardTrigger,
+  type DeliveryScope,
+} from '../shared/risk-policy.ts'
 // ── 首次铺骨架（2026-10-16 第 224 轮 · `UD-118`「C」）──────────────────────
 //   ⚠ 它是**插件的初始化行为**，⛔ 不是工具：⚠ 本模块的参数表**一个字段都没加**。
 // ── 待投递中间态记账（2026-10-10 · 用户报障修复）──────────────────────────
@@ -158,7 +170,8 @@ import * as configFace from '../config.ts'
 import { CAPABILITY_RED_LINE_ZH } from '../shared/capability-red-line.ts'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /**
  * 资源路径与文件路径的**判别点**。
@@ -674,6 +687,116 @@ export function ledgerRootOf(cfg: HobToolsConfig, exec: ToolRunContext): string 
     cfg.ledgerHome ?? DEFAULTS.ledgerHome,
     rootOf(cfg, exec),
   )
+}
+
+/**
+ * **治理规范目录**（2026-11-20 · B·UD 后续）：随插件包分发的只读规范（`preset/dsh-hob/spec/`）。
+ *
+ * ⚠ 解析锚是**本编译文件自身**（`lib/modules/` → 包根）：开发仓与安装包同构
+ *   （package.json `files` 含 `preset/`，实测已核）。不在任何配置里写死仓路径 ——
+ *   配置可漂移，编译产物位置不会。
+ * ⛔ **只读**：这个根只喂给 `readMarkdownCapped`（既有只读边界：inside-root / 拒软链 / 仅 .md），
+ *   永不参与任何写面；⛔ 不扩大到 spec 之外的 preset 路径。
+ */
+export function governanceSpecRootOf(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'preset', 'dsh-hob', 'spec')
+}
+
+/** `riskHardTriggers` 一类列表入参的宽松解析：JSON 数组优先，逗号分隔兜底。 */
+function parseStringList(raw: string | undefined): { ok: true; list: string[] } | { ok: false; why: string } {
+  const s = String(raw ?? '').trim()
+  if (s === '') return { ok: true, list: [] }
+  if (s.startsWith('[')) {
+    try {
+      const v: unknown = JSON.parse(s)
+      if (!Array.isArray(v) || v.some((x) => typeof x !== 'string')) return { ok: false, why: '不是字符串数组' }
+      return { ok: true, list: v.map((x) => String(x).trim()).filter((x) => x !== '') }
+    } catch {
+      return { ok: false, why: 'JSON 解析失败' }
+    }
+  }
+  return { ok: true, list: s.split(',').map((x) => x.trim()).filter((x) => x !== '') }
+}
+
+/**
+ * **风险校验和的服务端出口**（2026-11-20 · C·UD 后续）：`path=risk/digest` 的实现。
+ *
+ * ⚠ **纯计算，零副作用**：不落账、不改文件 —— 只是把 `riskAssessmentOf` 从
+ *   「必须有人能跑 node 脚本」变成「工具面内人人可得」。digest 仍由**同一份**
+ *   `src/shared/risk-policy.ts` 算出，⛔ 不在工具侧另写第二套算法（两处真相必漂移）。
+ * ⚠ **fail-closed**：词表外的维度/触发/交付/档位一律拒绝并回填合法值，
+ *   ⛔ 不静默丢弃（底层 `riskAssessmentOf` 会静默过滤未知触发 —— 静默丢会把
+ *   「算出的 digest」变成「没算对的 digest」，那比算不出更糟）。
+ * ⚠ 回包自带**合法词表**（维度键值 / 硬触发 / 交付域 / 档位），规划侧据此构造
+ *   下一次合法入参 —— 这是对「读不到规范词表」死结的另一半解。
+ */
+type RiskDigestArgs = { riskDimensions?: string; riskHardTriggers?: string; riskDelivery?: string; riskDeclaredTier?: string }
+function riskDigestOfArgs(args: RiskDigestArgs): JsonValue {
+  let dims: Record<string, string> = {}
+  const rawDims = String(args.riskDimensions ?? '').trim()
+  if (rawDims !== '') {
+    try {
+      const v: unknown = JSON.parse(rawDims)
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+        return { ok: false, reason: 'risk-dimensions-invalid', message: '拒绝：riskDimensions 必须是 JSON 对象（维度名 → 值），如 {"operational-scale":"project"}。' }
+      }
+      dims = v as Record<string, string>
+    } catch {
+      return { ok: false, reason: 'risk-dimensions-invalid', message: '拒绝：riskDimensions 不是合法 JSON。' }
+    }
+  }
+  const hard = parseStringList(args.riskHardTriggers)
+  if (!hard.ok) return { ok: false, reason: 'risk-hard-triggers-invalid', message: '拒绝：riskHardTriggers ' + hard.why + '（给 JSON 字符串数组或逗号分隔）。' }
+  const delivery = String(args.riskDelivery ?? '').trim()
+  if (delivery !== '' && !(DELIVERY_SCOPES as readonly string[]).includes(delivery)) {
+    return { ok: false, reason: 'risk-delivery-invalid', message: '拒绝：riskDelivery 必须是 ' + DELIVERY_SCOPES.join(' / ') + ' 之一。' }
+  }
+  const declaredTier = String(args.riskDeclaredTier ?? '').trim()
+  if (declaredTier !== '' && !(RISK_TIERS as readonly string[]).includes(declaredTier)) {
+    return { ok: false, reason: 'risk-declared-tier-invalid', message: '拒绝：riskDeclaredTier 必须是 ' + RISK_TIERS.join(' / ') + ' 之一。' }
+  }
+  for (const [k, v] of Object.entries(dims)) {
+    const legal = (RISK_DIMENSIONS as unknown as Record<string, readonly string[]>)[k]
+    if (!Array.isArray(legal)) {
+      return { ok: false, reason: 'risk-dimension-key-invalid', message: '拒绝：维度「' + k + '」不在词表；合法维度：' + Object.keys(RISK_DIMENSIONS).join(' / ') + '。' }
+    }
+    if (!legal.includes(String(v))) {
+      return { ok: false, reason: 'risk-dimension-value-invalid', message: '拒绝：维度「' + k + '」的值必须是 ' + legal.join(' / ') + ' 之一。' }
+    }
+  }
+  for (const t of hard.list) {
+    if (!(RISK_HARD_TRIGGERS as readonly string[]).includes(t)) {
+      return { ok: false, reason: 'risk-hard-trigger-invalid', message: '拒绝：硬触发「' + t + '」不在词表；合法值：' + RISK_HARD_TRIGGERS.join(' / ') + '。' }
+    }
+  }
+  const a = riskAssessmentOf({
+    dimensions: dims as RiskDimensions,
+    hardTriggers: hard.list as RiskHardTrigger[],
+    delivery: (delivery === '' ? undefined : delivery) as DeliveryScope | undefined,
+    declaredTier: declaredTier === '' ? undefined : declaredTier,
+  })
+  return {
+    ok: true,
+    text: JSON.stringify({
+      ok: true,
+      path: 'risk/digest',
+      policyVersion: RISK_POLICY_VERSION,
+      digest: a.inputsDigest,
+      tier: a.tier,
+      closure: a.closure,
+      delivery: a.delivery,
+      assessment: a,
+      vocabulary: {
+        dimensions: RISK_DIMENSIONS,
+        hardTriggers: RISK_HARD_TRIGGERS,
+        hardTriggerFactFields: RISK_HARD_TRIGGER_FACT_FIELDS,
+        deliveryScopes: DELIVERY_SCOPES,
+        tiers: RISK_TIERS,
+      },
+    }, null, 2),
+    truncated: false,
+    bytes: 0,
+  }
 }
 
 /**
@@ -1336,7 +1459,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
-    description: '只读本工作区账本内的 .md / .toml（项目方案/决策记录/工作上下文/账本索引），或按稳定 ID 读取全部账本资源（goal/G-…、requirement/R-…、change/CHG-…、task/TSK-…、run/RUN-…、acceptance/ACC-…、evidence/EVD-…、risk/RSK-…、decision/DEC-…、capability/CAP-…）。',
+    description: '只读本工作区账本内的 .md / .toml（项目方案/决策记录/工作上下文/账本索引），或按稳定 ID 读取全部账本资源（goal/G-…、requirement/R-…、change/CHG-…、task/TSK-…、run/RUN-…、acceptance/ACC-…、evidence/EVD-…、risk/RSK-…、decision/DEC-…、capability/CAP-…）。另有两个不依赖账本的只读出口：path=risk/digest（服务端算风险评定与校验和，回包含合法词表）；path=spec 或 spec/<文件>.md（读本插件自带的治理规范，spec 列目录）。',
     parameters: {
       path: {
         type: 'string',
@@ -1344,7 +1467,24 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         // ⚠ 2026-10-10（UD-88 / CHG-025）：原文写「相对**工作区根目录**…如 README.md、PROJECT.md」
         //    ——**两处都不实**：解析根**一直是账本区**（v4 / D7），工作区根本读不到（D6）；
         //    而 `PROJECT.md` 也**已于本批移入账本区**。⇒ 改准：根 = 账本区，示例换成账本区里真实存在的文件。
-        description: '相对**账本区根目录**的 .md / .toml 路径（如 PROJECT.md、ledger/spec/current.md），或资源读取路径（如 requirements/、goal/G-01、risk/RSK-001、decision/DEC-001、capability/CAP-01、task/TSK-061/children）。',
+        description: '相对**账本区根目录**的 .md / .toml 路径（如 PROJECT.md、ledger/spec/current.md），或资源读取路径（如 requirements/、goal/G-01、risk/RSK-001、decision/DEC-001、capability/CAP-01、task/TSK-061/children）。特殊值：risk/digest = 服务端风险评定；spec = 治理规范目录列表；spec/<文件>.md = 读治理规范单文件。',
+      },
+      /** 2026-11-20 · C：以下四个仅在 path=risk/digest 时消费；其余路径忽略。 */
+      riskDimensions: {
+        type: 'string',
+        description: 'JSON 对象字符串：维度名 → 值（词表见返回的 vocabulary.dimensions），如 {"operational-scale":"project"}。',
+      },
+      riskHardTriggers: {
+        type: 'string',
+        description: '硬触发列表：JSON 字符串数组或逗号分隔（词表见返回的 vocabulary.hardTriggers）。',
+      },
+      riskDelivery: {
+        type: 'string',
+        description: '交付域：none / internal / external。',
+      },
+      riskDeclaredTier: {
+        type: 'string',
+        description: '声明档位（可选，只被校验不被抬低）：low / medium / high / critical。',
       },
     },
     output: {
@@ -1360,7 +1500,35 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         return [{ type: 'text', text: v.ok === true ? String(v.text ?? '') : String(v.message ?? '') }]
       },
     },
-    async execute(args: { path: string }, exec: ToolRunContext): Promise<JsonValue> {
+    async execute(args: { path: string; riskDimensions?: string; riskHardTriggers?: string; riskDelivery?: string; riskDeclaredTier?: string }, exec: ToolRunContext): Promise<JsonValue> {
+      /**
+       * ⚠ 2026-11-20 · B/C：两个**不依赖账本**的只读出口先于账本根解析 ——
+       *   digest 与规范读取不需要账本存在，也绝不能因账本判不出而被挡
+       *   （那正是「账本读不到 ⇒ 规范也读不到 ⇒ 谁都解不了」自举死结的入口）。
+       *   ⛔ 两者仍是纯只读，不触碰任何写面与账本文件。
+       */
+      if (String(args.path ?? '').trim() === 'risk/digest') {
+        return riskDigestOfArgs(args)
+      }
+      const specRoot = governanceSpecRootOf()
+      const specRel = String(args.path ?? '').trim().replace(/^\/+/, '')
+      if (specRel === 'spec' || specRel === 'spec/') {
+        try {
+          const names = readdirSync(specRoot).filter((n) => n.endsWith('.md')).sort()
+          return { ok: true, text: JSON.stringify({ ok: true, path: 'spec', files: names }, null, 2), truncated: false, bytes: 0 }
+        } catch (e) {
+          return { ok: false, reason: 'spec-dir-unreadable', message: '拒绝：治理规范目录读不到（' + String((e as Error)?.message ?? e) + '）。' }
+        }
+      }
+      if (specRel.startsWith('spec/')) {
+        const file = specRel.slice('spec/'.length)
+        if (file === '' || file.includes('/') || file.includes('..') || !file.endsWith('.md')) {
+          return { ok: false, reason: 'spec-path-invalid', message: '拒绝：spec/ 只放行本目录内的一层 .md 文件名（如 spec/risk-policy.md），不许子目录、不许 ..、不放行 .txt。' }
+        }
+        const r = await readMarkdownCapped(specRoot, file, cfg.maxFileBytes ?? DEFAULTS.maxFileBytes)
+        if (r.ok) return { ok: true, text: r.text, truncated: r.truncated, bytes: r.bytes }
+        return { ok: false, reason: r.reason ?? 'spec-read-error', message: r.text }
+      }
       // v4：边界改为**账本目录**（D7）—— 只读自己的账本，不读工作区内的项目文档（D6）。
       const root = ledgerRootOf(cfg, exec)
       if (root === undefined) {
