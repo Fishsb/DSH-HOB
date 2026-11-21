@@ -842,7 +842,7 @@ function checkWhitelist(file: string, mode: 'append' | 'overwrite', allowApprova
     return refuse(
       file,
       'generated-write-denied',
-      `拒绝：\`${file}\` 是生成物；HOB 只能写源数据，再运行 \`npm run gen:ledger\` 重建视图。`,
+      `拒绝：\`${file}\` 是生成物；HOB 只能写源数据（ledger/units/）。视图由面板实时提供（渲染层同源重算），磁盘生成物由执行会话按需 npm run gen:ledger 重建。`,
     )
   }
   if (file.startsWith('ledger/changes/') && !isActiveChangeFile(file)) {
@@ -878,7 +878,7 @@ function checkWhitelist(file: string, mode: 'append' | 'overwrite', allowApprova
         file,
         'generated-write-denied',
         `拒绝：\`ledger/gen/\` 与 \`ledger/spec/\` 都是**生成物**（\`npm run gen:ledger\` 产出），手改即红（\`CONSTITUTION\` §2 / I5）。`
-          + `\n      ⇒ 要改内容 ⇒ 改 \`ledger/units/\` 的索引分片，再跑 \`npm run gen:ledger\`。`,
+          + `\n      ⇒ 要改内容 ⇒ 改 \`ledger/units/\` 的索引分片（write_hob）；视图由面板实时提供，磁盘生成物由执行会话按需 npm run gen:ledger 重建。`,
       )
     }
     // 单文件白名单（units 的稳定导航入口；分片走下面的目录白名单）

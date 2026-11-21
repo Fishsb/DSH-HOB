@@ -10,6 +10,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { resolveLedgerRoot, ledgerRootWhy } from '../server/doc-read.ts'
+import { readUnits, collectInputs, renderSpecArtifacts } from '../shared/ledger-gen.ts'
+import { convergenceOf } from '../shared/convergence.ts'
 import { declaredLedgerHome } from './orchestrator.ts'
 import { readLedgerResource } from '../shared/ledger-resources.ts'
 import { LedgerUnitsReadError, readLedgerUnits } from './tools.ts'
@@ -103,7 +105,22 @@ export function installLedgerResourceRoute(ctx: Context): void {
               const text = readFileSync(join(root, 'ledger', 'spec', 'current.md'), 'utf8')
               return json(200, { ok: true, resource: 'current', text, bytes: Buffer.byteLength(text, 'utf8') })
             } catch {
-              return json(400, { ok: false, resource: 'current', reason: 'not-found', message: 'Current 页不存在；先运行 npm run gen:ledger' })
+              /**
+               * ⚠ 批3（2026-11-21 · 方案1）：缺页/不可读不再叫用户跑终端 ——
+               *   改服务**实时计算的只读视图**（与 gen:ledger 同一渲染实现
+               *   shared/ledger-gen.ts，逐字节同源）。纯只读：不落盘、不改 gen/spec 写面纪律。
+               *   ⚠ convergence 直接注入（服务端可静态载入）⇒ 实时视图比缺页态更完整。
+               */
+              try {
+                const units = readUnits(join(root, 'ledger', 'units', 'index.toml'))
+                const inputs = collectInputs(root, join(root, 'ledger'))
+                const spec = renderSpecArtifacts(units, { ...inputs, convergence: (chg: any) => convergenceOf(chg, units) })
+                const text = spec['current.md'] ?? ''
+                if (text === '') throw new Error('render-empty')
+                return json(200, { ok: true, resource: 'current', text, bytes: Buffer.byteLength(text, 'utf8'), generated: 'on-the-fly' })
+              } catch (e2) {
+                return json(400, { ok: false, resource: 'current', reason: 'render-unavailable', message: 'Current 页不可用且实时渲染失败：' + String((e2 as Error)?.message ?? e2) + '（机器出口：npm run gen:ledger）' })
+              }
             }
           }
           try {

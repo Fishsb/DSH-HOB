@@ -23,7 +23,8 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statS
 import { createHash } from 'node:crypto'
 import { dirname, join, posix, resolve as resolvePath, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { KIND_SPEC, renderStages, parseTomlSubset, readUnits, summarizeStep, LEDGER_DIR, SEND_BACK_TARGETS, renderSpecArtifacts, REQ_PRIORITIES, BUDGET_KEYS, PARENT_VS_AFTER, EVIDENCE_PARENT_KINDS } from './gen-ledger.mjs'
+import { KIND_SPEC, renderStages, parseTomlSubset, readUnits, summarizeStep, LEDGER_DIR, SEND_BACK_TARGETS, renderSpecArtifacts, REQ_PRIORITIES, BUDGET_KEYS, PARENT_VS_AFTER, EVIDENCE_PARENT_KINDS, renderCurrent } from './gen-ledger.mjs'
+import { convergenceOf } from '../src/shared/convergence.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 /**
@@ -874,6 +875,18 @@ export function checkI5c(ledgerDir, renderSpec, extra = {}) {
     }
   }
   return problems
+}
+
+// ── I6：Current 页 = 渲染层实时视图（2026-11-21 · 批3 · 方案1 对拍锚）────────
+{
+  const units = readUnits(join(LEDGER_DIR, 'units', 'index.toml'))
+  const rendered = renderSpecArtifacts(units, { convergence: (chg) => convergenceOf(chg, units) })['current.md'] ?? ''
+  const diskPath = join(LEDGER_DIR, 'spec', 'current.md')
+  if (existsSync(diskPath)) {
+    const disk = readFileSync(diskPath, 'utf8')
+    if (disk === rendered) ok('I6 ✓ Current 页与渲染层实时视图逐字节一致（批3 对拍锚）')
+    else bad(`I6 Current 页与实时视图不一致（磁盘 ${Buffer.byteLength(disk)}B vs 实时 ${Buffer.byteLength(rendered)}B）⇒ 面板实时视图与磁盘生成物漂移`)
+  } else ok('I6 ✓ 磁盘缺页 ⇒ 面板走实时视图（对拍锚仅对已有页生效）')
 }
 
 /**
@@ -2710,7 +2723,8 @@ if (IS_MAIN) try {
    */
   const { renderAll: renderAllRef, collectInputs } = await import(pathToFileURL(join(here, 'gen-ledger.mjs')).href)
   const extraInputs = collectInputs(ROOT, LEDGER)
-  const renderAll = (u) => renderAllRef(u, extraInputs)
+  /** ⚠ 批3（2026-11-21）：renderStages 需要 repoRoot（wraparound 读 package.json）—— 透传，缺省 ROOT（同旧路径）。 */
+  const renderAll = (u, e, repoRoot) => renderAllRef(u, e ?? extraInputs, repoRoot ?? ROOT)
 
   // ══════════════════════════════════════════════════════════════════════
   // I5b · **两处 §4.1 生成块必须与生成器输出逐字节一致**（2026-10-30 P7）
@@ -2962,7 +2976,7 @@ if (IS_MAIN) try {
   // I2 · 阶段是算出来的
   // ══════════════════════════════════════════════════════════════════════
   {
-    const probs = checkI2(units, renderStages)
+    const probs = checkI2(units, (u) => renderStages(u, dirname(here)))
     if (probs.length === 0) ok('I2 ✓ 阶段是算出来的：改一条 status ⇒ 只有对应那一步的行变，其它步一字不动')
     else for (const p of probs) bad(`I2 · ${p}`)
   }
@@ -2971,7 +2985,7 @@ if (IS_MAIN) try {
   // I5 · gen/ 与生成器一致
   // ══════════════════════════════════════════════════════════════════════
   {
-    const probs = checkI5(LEDGER, renderAll)
+    const probs = checkI5(LEDGER, (u, e) => renderAll(u, e, dirname(here)))
     if (probs.length === 0) ok(`I5 ✓ gen/ 与生成器逐字节一致（${Object.keys(renderAll(units)).length} 份生成物：${Object.keys(renderAll(units)).join(' / ')}）`)
     else for (const p of probs) bad(`I5 · ${p}`)
   }
@@ -3442,15 +3456,15 @@ if (IS_MAIN) try {
      * ⚠ 这正是任务书 §二④ 那条负向对拍要的形状：阶段状态写死进产物 ⇒ 改 status 不再影响它。
      * ⚠ 这样 `rowsOf` 永远拿到同一批行 ⇒ I2 的探针搜不到"任何变化" ⇒ 报"失去基准" = **红**。
      */
-    const baseRows = renderStages(units).split('\n').filter((l) => /^\| [①②③④⑤] /.test(l))
+    const baseRows = renderStages(units, dirname(here)).split('\n').filter((l) => /^\| [①②③④⑤] /.test(l))
     const frozen = (u) => {
-      const t = renderStages(u)
+      const t = renderStages(u, dirname(here))
       let k = 0
       return t.split('\n').map((l) => (/^\| [①②③④⑤] /.test(l) ? baseRows[k++] : l)).join('\n')
     }
     // 先自证"冻结确实冻住了"（否则下面的红可能是别的原因）
     const oneChange = units.map((x, i) => (i === 0 ? { ...x, status: KIND_SPEC[x.kind].statuses.slice(-1)[0] } : x))
-    const stillSame = renderStages(units).split('\n').filter((l) => /^\| [①②③④⑤] /.test(l)).join('|')
+    const stillSame = renderStages(units, dirname(here)).split('\n').filter((l) => /^\| [①②③④⑤] /.test(l)).join('|')
       === frozen(units) === undefined ? '' : (frozen(oneChange).split('\n').filter((l) => /^\| [①②③④⑤] /.test(l)).join('|')
         === baseRows.join('|'))
     const probsFrozen = checkI2(units, frozen)
@@ -3474,7 +3488,7 @@ if (IS_MAIN) try {
       bad(`N-I5 · 造不出"手改 ${genName} 一个字符"的夹具 ⇒ 该份的负向对拍不可判`)
     } else {
       writeFileSync(p2, mutated)
-      const probs = checkI5(tmp, renderAll)
+      const probs = checkI5(tmp, (u, e) => renderAll(u, e, dirname(here)))
       const hit = probs.find((x) => x.includes(genName) && x.includes('不一致'))
       if (hit !== undefined) ok(`N-I5 ✓ 负向对拍（手改 gen/${genName} 一个字符）⇒ I5 对**该份**的"逐字节一致"断言**变红**`)
       else bad(`N-I5 · 手改 ${genName} 后 I5 没报它（实报：${JSON.stringify(probs.slice(0, 2))}）`)
@@ -3779,7 +3793,7 @@ if (IS_MAIN) try {
       bad('N-I5 · 造不出"手改一个字符"的夹具（gen/stages.md 里没有 #？）⇒ 负向对拍不可判')
     } else {
       writeFileSync(p, mutated)
-      const probs = checkI5(tmp, renderAll)
+      const probs = checkI5(tmp, (u, e) => renderAll(u, e, dirname(here)))
       if (probs.some((x) => x.includes('不一致'))) {
         ok('N-I5 ✓ 负向对拍（手改 gen/stages.md 一个字符）⇒ I5 的"逐字节一致"断言**变红**')
       } else {
