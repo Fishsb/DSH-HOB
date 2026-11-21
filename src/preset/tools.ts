@@ -2190,15 +2190,19 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
       const root = ledgerRootFor(exec)
       if (root === undefined) return '阶段门禁判不出：无法确定本会话的账本目录 ⇒ 本次不派单。'
       /**
-       * ⚠ A′（2026-11-20）：用**全量判决**而不是只取 blocked —— 解锁窗的 unlockBrief
-       *   要透传给 orchestrator（它据此替换消息、跳过 RUN）。资格判据仍在
-       *   ledger-lifecycle.ts 单点；这里只做形状透传，⛔ 不判第二遍资格。
+       * ⚠ A′（2026-11-20）：常规路径保持原字面接线 `dispatchGateAt(root, scope)`
+       *   （SC-10 接线断言咬它）；只有调用方显式带 unlock 时才走全量判决 ——
+       *   解锁窗的 unlockBrief 要透传给 orchestrator（它据此替换消息、跳过 RUN）。
+       *   资格判据仍在 ledger-lifecycle.ts 单点；这里只做形状透传，⛔ 不判第二遍资格。
        */
-      const full = dispatchGateFullAt(root, scope)
-      if (full !== null && typeof full === 'object' && full.blocked === undefined && typeof full.unlockBrief === 'string') {
-        return { unlockBrief: full.unlockBrief }
+      if (scope.unlock === 'bootstrap') {
+        const full = dispatchGateFullAt(root, scope)
+        if (full !== null && typeof full === 'object' && full.blocked === undefined && typeof full.unlockBrief === 'string') {
+          return { unlockBrief: full.unlockBrief }
+        }
+        return full?.blocked
       }
-      return full?.blocked
+      return dispatchGateAt(root, scope)
     } catch (e) {
       return `阶段门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不派单。`
     }

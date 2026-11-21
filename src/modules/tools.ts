@@ -120,7 +120,8 @@ import {
   receiptPatternOf,
   revisionOf,
 } from '../shared/pipeline.ts'
-import { pipelineDispatchProblems } from '../shared/pipeline-view.ts'
+import { pipelineDispatchProblems, acceptanceCriteriaIdsOf } from '../shared/pipeline-view.ts'
+import { riskBindingDigestOf } from '../shared/pipeline.ts'
 // ── 账本健康的**唯一判据**（B1.3 / T-02 / T-05）────────────────────────────
 //   ⚠ 四个出口（readiness / stageGateOfLedger / stageHealthOfLedger / /stages.stageHealth）
 //     必须共用它；⛔ 任何出口都不得自己再拼一份判据集（那正是 T-02 的病）。
@@ -1499,7 +1500,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
-    description: '只读本工作区账本内的 .md / .toml（项目方案/决策记录/工作上下文/账本索引），或按稳定 ID 读取全部账本资源（goal/G-…、requirement/R-…、change/CHG-…、task/TSK-…、run/RUN-…、acceptance/ACC-…、evidence/EVD-…、risk/RSK-…、decision/DEC-…、capability/CAP-…）。另有两个不依赖账本的只读出口：path=risk/digest（服务端算风险评定与校验和，回包含合法词表）；path=spec 或 spec/<文件>.md（读本插件自带的治理规范，spec 列目录）。',
+    description: '只读本工作区账本内的 .md / .toml（项目方案/决策记录/工作上下文/账本索引），或按稳定 ID 读取全部账本资源（goal/G-…、requirement/R-…、change/CHG-…、task/TSK-…、run/RUN-…、acceptance/ACC-…、evidence/EVD-…、risk/RSK-…、decision/DEC-…、capability/CAP-…）。另有三个只读出口：path=risk/digest（服务端算风险评定与校验和，回包含合法词表，不依赖账本）；path=risk/binding-digest（服务端按账本盘面实算绑定摘要 + 验收条件机器 id，可选 riskBindingPlanId 定位方案）；path=spec 或 spec/<文件>.md（读本插件自带的治理规范，spec 列目录，不依赖账本）。',
     parameters: {
       path: {
         type: 'string',
@@ -1526,6 +1527,10 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         type: 'string',
         description: '声明档位（可选，只被校验不被抬低）：low / medium / high / critical。',
       },
+      riskBindingPlanId: {
+        type: 'string',
+        description: '仅 path=risk/binding-digest 时消费：目标方案/计划单元 id（如 CHG-01）；省略 = 对盘上全部方案单元计算。',
+      },
     },
     output: {
       // ⚠ **结构化输出**（照 `write_hob` 的模式）：成功给 `{ok:true, ...}`，
@@ -1540,7 +1545,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         return [{ type: 'text', text: v.ok === true ? String(v.text ?? '') : String(v.message ?? '') }]
       },
     },
-    async execute(args: { path: string; riskDimensions?: string; riskHardTriggers?: string; riskDelivery?: string; riskDeclaredTier?: string }, exec: ToolRunContext): Promise<JsonValue> {
+    async execute(args: { path: string; riskDimensions?: string; riskHardTriggers?: string; riskDelivery?: string; riskDeclaredTier?: string; riskBindingPlanId?: string }, exec: ToolRunContext): Promise<JsonValue> {
       /**
        * ⚠ 2026-11-20 · B/C：两个**不依赖账本**的只读出口先于账本根解析 ——
        *   digest 与规范读取不需要账本存在，也绝不能因账本判不出而被挡
@@ -1573,6 +1578,45 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       const root = ledgerRootOf(cfg, exec)
       if (root === undefined) {
         return { ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' }
+      }
+      if (String(args.path ?? '').trim() === 'risk/binding-digest') {
+        /**
+         * ⚠ 2026-11-21 · C 扩展：绑定摘要的服务端出口（riskBindingDigestOf）。
+         *   从**账本盘面**取单元实算 —— ⛔ 不接受调用方传方案事实（防注入、防两处真相）：
+         *   digest 绑定的是盘上方案字段与需求验收事实；算出的值由会话经自己的写面落账。
+         *   顺带给出每条需求验收条件的机器 id（acceptanceCriteriaIdsOf，G3 覆盖用）。
+         *   纯只读：不落账、不改文件。
+         */
+        const wanted = String(args.riskBindingPlanId ?? '').trim()
+        let units: Array<Record<string, unknown>>
+        try {
+          units = readLedgerUnits(root) as Array<Record<string, unknown>>
+        } catch (e) {
+          return { ok: false, reason: 'ledger-unreadable', message: '拒绝：账本读不到（' + String((e as Error)?.message ?? e) + '）。' }
+        }
+        const plans = units.filter((u) => String(u.kind ?? '') === 'change' || String(u.kind ?? '') === 'plan')
+        if (wanted !== '') {
+          const hit = plans.find((p) => String(p.id ?? '') === wanted)
+          if (hit === undefined) {
+            return { ok: false, reason: 'binding-plan-not-found', message: '拒绝：找不到方案单元 ' + wanted + '；盘上的方案/计划单元：' + (plans.map((p) => String(p.id ?? '')).join(', ') || '(无)') + '。' }
+          }
+        }
+        const selected = wanted === '' ? plans : plans.filter((p) => String(p.id ?? '') === wanted)
+        const bindings = selected.map((p) => ({
+          id: String(p.id ?? ''),
+          kind: String(p.kind ?? ''),
+          digest: riskBindingDigestOf(p, units),
+          current: p.risk_binding_digest === undefined ? undefined : String(p.risk_binding_digest),
+        }))
+        const requirementCriteria = units
+          .filter((u) => String(u.kind ?? '') === 'req')
+          .map((r) => ({ id: String(r.id ?? ''), revision: String(r.revision ?? ''), criteria: acceptanceCriteriaIdsOf(r) }))
+        return {
+          ok: true,
+          text: JSON.stringify({ ok: true, path: 'risk/binding-digest', bindings, requirement_criteria: requirementCriteria }, null, 2),
+          truncated: false,
+          bytes: 0,
+        }
       }
       /**
        * ⚠ **资源语法先于文件路径**：`requirements/`、`task/TSK-…` 等不是文件路径，

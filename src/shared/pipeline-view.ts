@@ -879,6 +879,44 @@ export interface TaskGraphView {
 }
 
 /** Deterministic requirement task graph. `depends_on` is a task DAG edge. */
+/**
+ * ── **O-38：无显式 id 的验收条件，身份必须来自内容，⛔ 不是数组下标** ──────
+ *
+ * ⚠ 改前是 `?? \`AC-${i + 1}\`` —— 用**下标**当身份。后果：
+ *
+ *   ```
+ *   原有：["必须支持导出"]              ⇒ 缺口 id = AC-1
+ *   头部插入一条：["必须支持导入", "必须支持导出"]
+ *                ⇒ 原那条的下标变成 2 ⇒ 缺口 id = AC-2（**凭空多出一个缺口**）
+ *   ```
+ *
+ *   ⇒ **在数组头部插一条，就让 G3 报出一条不存在的缺口**，而真实的覆盖关系没变。
+ *   这属于「改了 A 却说 B 有问题」——比漏报更坏，因为它会让人去修一个不存在的问题。
+ *
+ * ⚠ 改成**内容哈希**：同一条内容无论插在哪，id 都不变。
+ *   ⛔ 不要改回下标；也⛔ 不要用「数组里第几个出现」——那仍然依赖顺序。
+ */
+const idOfCriteria = (c: string, i: number): string => {
+  const explicit = /^([A-Za-z]+-[A-Za-z0-9-]+)\s*[:：|]/.exec(c)?.[1]
+  /** 显式前缀优先（人写的编号最权威）。 */
+  if (explicit !== undefined) return explicit
+  /**
+   * ⚠ 无前缀 ⇒ 用内容哈希。**保留 `AC-` 前缀**，因为下游按这个形状认 id
+   *   （`covered.has(id)` 与面板展示都按 `AC-…` 匹配）。
+   * ⚠ 哈希取前 8 位即可：验收条件在**同一个方案内**，8 位十六进制足够区分。
+   *   ⛔ 不要为了"更安全"取全长 —— 那会让缺口 id 在面板上长得没法读。
+   */
+  return `AC-h${digestPair(c).slice(0, 8)}`
+}
+
+/**
+ * **G3 覆盖 id 的纯出口**（2026-11-21 · A′ 后续）：给定需求单元，返回每条验收条件及其机器 id。
+ * ⚠ 纯函数、零副作用 —— 与 taskGraphOf 的覆盖判定共用同一 id 实现，
+ *   保证「出口给的 id」与「门禁认的 id」永不漂移。
+ */
+export function acceptanceCriteriaIdsOf(req: Record<string, unknown>): Array<{ id: string; criterion: string }> {
+  return listOf(req.acceptance_criteria).map((c, i) => ({ id: idOfCriteria(c, i), criterion: c }))
+}
 export function taskGraphOf(req: Record<string, unknown>, units: readonly Record<string, unknown>[]): TaskGraphView {
   const reqId = text(req.id)
   /**
@@ -947,35 +985,6 @@ export function taskGraphOf(req: Record<string, unknown>, units: readonly Record
     return canonical.length > 0 ? canonical : listOf(t.criteria_refs)
   }
   const covered = new Set(tasks.flatMap((t) => refsOf(t)))
-  /**
-   * ── **O-38：无显式 id 的验收条件，身份必须来自内容，⛔ 不是数组下标** ──────
-   *
-   * ⚠ 改前是 `?? \`AC-${i + 1}\`` —— 用**下标**当身份。后果：
-   *
-   *   ```
-   *   原有：["必须支持导出"]              ⇒ 缺口 id = AC-1
-   *   头部插入一条：["必须支持导入", "必须支持导出"]
-   *                ⇒ 原那条的下标变成 2 ⇒ 缺口 id = AC-2（**凭空多出一个缺口**）
-   *   ```
-   *
-   *   ⇒ **在数组头部插一条，就让 G3 报出一条不存在的缺口**，而真实的覆盖关系没变。
-   *   这属于「改了 A 却说 B 有问题」——比漏报更坏，因为它会让人去修一个不存在的问题。
-   *
-   * ⚠ 改成**内容哈希**：同一条内容无论插在哪，id 都不变。
-   *   ⛔ 不要改回下标；也⛔ 不要用「数组里第几个出现」——那仍然依赖顺序。
-   */
-  const idOfCriteria = (c: string, i: number): string => {
-    const explicit = /^([A-Za-z]+-[A-Za-z0-9-]+)\s*[:：|]/.exec(c)?.[1]
-    /** 显式前缀优先（人写的编号最权威）。 */
-    if (explicit !== undefined) return explicit
-    /**
-     * ⚠ 无前缀 ⇒ 用内容哈希。**保留 `AC-` 前缀**，因为下游按这个形状认 id
-     *   （`covered.has(id)` 与面板展示都按 `AC-…` 匹配）。
-     * ⚠ 哈希取前 8 位即可：验收条件在**同一个方案内**，8 位十六进制足够区分。
-     *   ⛔ 不要为了"更安全"取全长 —— 那会让缺口 id 在面板上长得没法读。
-     */
-    return `AC-h${digestPair(c).slice(0, 8)}`
-  }
   const coverageGaps = criteria
     .map((c, i) => {
       const id = idOfCriteria(c, i)
