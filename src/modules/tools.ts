@@ -121,7 +121,7 @@ import {
   revisionOf,
 } from '../shared/pipeline.ts'
 import { pipelineDispatchProblems, acceptanceCriteriaIdsOf } from '../shared/pipeline-view.ts'
-import { riskBindingDigestOf } from '../shared/pipeline.ts'
+import { riskBindingDigestOf, selectedOptionValid } from '../shared/pipeline.ts'
 // ── 账本健康的**唯一判据**（B1.3 / T-02 / T-05）────────────────────────────
 //   ⚠ 四个出口（readiness / stageGateOfLedger / stageHealthOfLedger / /stages.stageHealth）
 //     必须共用它；⛔ 任何出口都不得自己再拼一份判据集（那正是 T-02 的病）。
@@ -1500,7 +1500,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
-    description: '只读本工作区账本内的 .md / .toml（项目方案/决策记录/工作上下文/账本索引），或按稳定 ID 读取全部账本资源（goal/G-…、requirement/R-…、change/CHG-…、task/TSK-…、run/RUN-…、acceptance/ACC-…、evidence/EVD-…、risk/RSK-…、decision/DEC-…、capability/CAP-…）。另有三个只读出口：path=risk/digest（服务端算风险评定与校验和，回包含合法词表，不依赖账本）；path=risk/binding-digest（服务端按账本盘面实算绑定摘要 + 验收条件机器 id，可选 riskBindingPlanId 定位方案）；path=spec 或 spec/<文件>.md（读本插件自带的治理规范，spec 列目录，不依赖账本）。',
+    description: '只读本工作区账本内的 .md / .toml（项目方案/决策记录/工作上下文/账本索引），或按稳定 ID 读取全部账本资源（goal/G-…、requirement/R-…、change/CHG-…、task/TSK-…、run/RUN-…、acceptance/ACC-…、evidence/EVD-…、risk/RSK-…、decision/DEC-…、capability/CAP-…）。另有四个只读出口：path=risk/digest（服务端算风险评定与校验和，回包含合法词表，不依赖账本）；path=risk/binding-digest（服务端按账本盘面实算绑定摘要 + 验收条件机器 id，可选 riskBindingPlanId 定位方案）；path=approval-form（服务端按盘面实算批准记录的完整形态，含 artifact_digest 与修订绑定，可选 approvalArtifactId / approvalDecision / approvalSelectedOption）；path=spec 或 spec/<文件>.md（读本插件自带的治理规范，spec 列目录，不依赖账本）。',
     parameters: {
       path: {
         type: 'string',
@@ -1531,6 +1531,18 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         type: 'string',
         description: '仅 path=risk/binding-digest 时消费：目标方案/计划单元 id（如 CHG-01）；省略 = 对盘上全部方案单元计算。',
       },
+      approvalArtifactId: {
+        type: 'string',
+        description: '仅 path=approval-form 时消费：被批准的稳定 id（R-… / CHG-…）。',
+      },
+      approvalDecision: {
+        type: 'string',
+        description: '仅 path=approval-form 时消费：approve / request-changes，缺省 approve。',
+      },
+      approvalSelectedOption: {
+        type: 'string',
+        description: '仅 path=approval-form 且对象为方案、决定为 approve 时必填：当前 path_options 中选中的路径。',
+      },
     },
     output: {
       // ⚠ **结构化输出**（照 `write_hob` 的模式）：成功给 `{ok:true, ...}`，
@@ -1545,7 +1557,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         return [{ type: 'text', text: v.ok === true ? String(v.text ?? '') : String(v.message ?? '') }]
       },
     },
-    async execute(args: { path: string; riskDimensions?: string; riskHardTriggers?: string; riskDelivery?: string; riskDeclaredTier?: string; riskBindingPlanId?: string }, exec: ToolRunContext): Promise<JsonValue> {
+    async execute(args: { path: string; riskDimensions?: string; riskHardTriggers?: string; riskDelivery?: string; riskDeclaredTier?: string; riskBindingPlanId?: string; approvalArtifactId?: string; approvalDecision?: string; approvalSelectedOption?: string }, exec: ToolRunContext): Promise<JsonValue> {
       /**
        * ⚠ 2026-11-20 · B/C：两个**不依赖账本**的只读出口先于账本根解析 ——
        *   digest 与规范读取不需要账本存在，也绝不能因账本判不出而被挡
@@ -1614,6 +1626,70 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         return {
           ok: true,
           text: JSON.stringify({ ok: true, path: 'risk/binding-digest', bindings, requirement_criteria: requirementCriteria }, null, 2),
+          truncated: false,
+          bytes: 0,
+        }
+      }
+      if (String(args.path ?? '').trim() === 'approval-form') {
+        /**
+         * ⚠ 2026-11-21 · A′ 后续：用户批准记录的**形态出口**（只读）。
+         *   门禁认的形态 = decision 单元（decision_kind=stage-approval）绑定
+         *   artifact_id / artifact_revision / artifact_digest / selected_option。
+         *   其中 artifact_digest 是实现内哈希（artifactDigestOf）—— 会话侧算不出，
+         *   这里按盘面现值实算并给出完整单元模板；校验（修订一致 / 路径在列 /
+         *   决定在封闭集）在此预检，权威判定仍在门禁。落账走会话自己的写面，
+         *   ⛔ 本出口不写任何文件。
+         */
+        const aid = String(args.approvalArtifactId ?? '').trim()
+        if (aid === '') {
+          return { ok: false, reason: 'approval-artifact-required', message: '拒绝：approval-form 必须给 approvalArtifactId（R-… 或 CHG-…）。' }
+        }
+        const decision = String(args.approvalDecision ?? 'approve').trim() || 'approve'
+        if (decision !== 'approve' && decision !== 'request-changes') {
+          return { ok: false, reason: 'decision-invalid', message: '拒绝：approvalDecision 只收 approve / request-changes。' }
+        }
+        let units: Array<Record<string, unknown>>
+        try {
+          units = readLedgerUnits(root) as Array<Record<string, unknown>>
+        } catch (e) {
+          return { ok: false, reason: 'ledger-unreadable', message: '拒绝：账本读不到（' + String((e as Error)?.message ?? e) + '）。' }
+        }
+        const artifact = units.find((u) => String(u.id ?? '') === aid)
+        if (artifact === undefined) {
+          return { ok: false, reason: 'approval-artifact-not-found', message: '拒绝：账本里没有 ' + aid + '。' }
+        }
+        const kind = String(artifact.kind ?? '')
+        if (kind !== 'req' && kind !== 'change') {
+          return { ok: false, reason: 'approval-artifact-not-approvable', message: '拒绝：' + aid + ' 是 ' + kind + '，只有需求和方案需要用户阶段批准。' }
+        }
+        const revision = Number(artifact.revision)
+        if (!Number.isSafeInteger(revision) || revision <= 0) {
+          return { ok: false, reason: 'revision-missing', message: '拒绝：' + aid + ' 缺正整数 revision，无法绑定批准版本。' }
+        }
+        const selected = String(args.approvalSelectedOption ?? '').trim()
+        if (kind === 'change' && decision === 'approve' && !selectedOptionValid(artifact, selected)) {
+          const options = Array.isArray(artifact.path_options) ? (artifact.path_options as unknown[]).map(String) : []
+          return { ok: false, reason: 'selected-option-invalid', message: '拒绝：方案批准必须给 selected_option 且在当前 path_options 中（当前：' + (options.join(' / ') || '(无可选路径)') + '）。' }
+        }
+        const form = {
+          kind: 'decision',
+          decision_kind: 'stage-approval',
+          status: 'active',
+          artifact_id: aid,
+          artifact_revision: revision,
+          artifact_digest: artifactDigestOf(artifact),
+          decision,
+          ...(selected === '' ? {} : { selected_option: selected }),
+          decided_by: 'user',
+        }
+        return {
+          ok: true,
+          text: JSON.stringify({
+            ok: true,
+            path: 'approval-form',
+            note: 'id 与 decided_at 由写入方按账本编号规则与真实回执时间补齐；source 建议附用户回执原文。以下字段为门禁认的形态，写入后由阶段门禁复核。',
+            unit_fields: form,
+          }, null, 2),
           truncated: false,
           bytes: 0,
         }
