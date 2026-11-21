@@ -2481,6 +2481,13 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
             + '\n  ⚠ 未落盘。确认后传 `dryRun:false`。',
         } as unknown as JsonValue
       }
+      // SC-31：真写过推进闸（与 write_hob / hob_pipeline_approve / rebuild 同一条接线；预演放行）。
+      {
+        const proceedBlocked = proceedGate(exec)
+        if (proceedBlocked !== undefined) {
+          return { ok: false, reason: 'proceed-not-confirmed', message: proceedBlocked } as unknown as JsonValue
+        }
+      }
       /** ⚠ 只重写**真有变更**的文件（⛔ 不把没变的文件也覆写一遍 —— 那会无谓地产生备份与 mtime 抖动）。 */
       const dirty = perFile.filter((x) => x.changes.length > 0)
       for (const f of dirty) {
@@ -2882,12 +2889,25 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         plan.push({ file: 'ledger.templates.toml', content: initialTemplateManifest({ createdAt: nowIso, workspace: workspaceName }), mode: 'append' })
       }
       if (plan.length === 0) {
+        /** SC-31 配套（2026-11-21 · 方案4）：死端改机器可读自诊断 —— 不猜、不写，只报盘面与下一步出口。 */
+        const unitsDir = join(root, 'ledger', 'units')
+        const present = (() => {
+          try { return readdirSync(unitsDir) } catch { return [] as string[] }
+        })()
         return {
           ok: false,
           reason: 'nothing-to-create',
           state: before.state,
-          message: `判不出该建什么：就绪度=${before.state}，但清单里的文件都在。`
-            + '⚠ 这通常意味着账本格式或单元内容需要人确认 ⇒ 先用 `hob_ledger_status` 看明细。',
+          message: `判不出该建什么：就绪度=${before.state}，但清单里的文件都在 ⇒ 账本不需要建；格式/内容状态见 diagnosis（⛔ 仍不猜、不代改）。`,
+          diagnosis: {
+            units_dir_files: present,
+            readiness: { state: before.state, headline: before.headline, next_action: before.nextAction, can_proceed: before.canProceed, unit_count: before.unitCount },
+            next_outlets: [
+              'hob_ledger_status —— 单元/健康明细（机器可读）',
+              ...(before.state === 'ready' ? ['账本就绪：直接走需求流程（read_contracts / write_hob），无需建账'] : []),
+              ...(before.state !== 'ready' ? ['账本未就绪：按 readiness.next_action 处理；生成物陈旧属 gen:ledger 侧出口，不属于本工具'] : []),
+            ],
+          },
           ledgerRoot: root,
         } as unknown as JsonValue
       }
@@ -2971,6 +2991,13 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       const dryRun = args?.dryRun !== false
       if (dryRun) {
         return { ok: true, dryRun: true, state: before.state, message: `[演练] 将归档 ${root} 到 archive/<date>-ledger-rebuild/source，并从模板新建空账。`, lifecycle: before } as unknown as JsonValue
+      }
+      // SC-31：真写过推进闸（与 write_hob / hob_pipeline_approve / migrate 同一条接线；预演放行）。
+      {
+        const proceedBlocked = proceedGate(exec)
+        if (proceedBlocked !== undefined) {
+          return { ok: false, reason: 'proceed-not-confirmed', message: proceedBlocked } as unknown as JsonValue
+        }
       }
       const workspaceName = root.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? 'project'
       const now = new Date()

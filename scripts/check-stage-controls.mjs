@@ -404,6 +404,16 @@ console.log('')
     else bad(`SC-10 运行时接线缺失：${file} 没有调用阶段门禁（判据只停在报表）`)
   }
 
+  // ── SC-31：proceedGate 真写接线集合（2026-11-21 · 方案10）──────────────
+  {
+    const toolsText = readFileSync(join(root, 'src', 'modules', 'tools.ts'), 'utf8')
+    const calls = (toolsText.match(/proceedGate\(exec\)/g) || []).length
+    if (calls === 4) ok('SC-31 ✓ proceedGate 真写接线 = 4 处（write_hob / hob_pipeline_approve / rebuild / migrate）')
+    else bad(`SC-31 proceedGate 调用点=${calls}，应为 4（多一处=豁免被收紧，少一处=真写漏闸）`)
+    if (/nothing-to-create[\s\S]{0,900}?proceedGate\(/.test(toolsText)) bad('SC-31 init 误挂推进闸 ⇒ 开张豁免被破坏')
+    else ok('SC-31 ✓ init 开张豁免保留（nothing-to-create 附近无推进闸）')
+  }
+
   // ── SC-11：作用域门禁（无关缺口不阻塞当前任务；修复写可区分）────────────
   if (typeof toolsMod.stageGateAtLedger === 'function'
     && typeof toolsMod.stageGateOfTask === 'function'
