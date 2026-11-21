@@ -419,6 +419,15 @@ console.log('')
     const orchText = readFileSync(join(root, 'src', 'modules', 'orchestrator.ts'), 'utf8')
     if (orchText.includes("'retry-abandoned'")) ok('SC-31b ✓ hob_orch_control 动作封闭集含 retry-abandoned')
     else bad('SC-31b retry-abandoned 未进 hob_orch_control 动作封闭集')
+    // ── SC-31c：批5 两针（宪法出口 + mismatch 自动档，unknown 弹问保留）──
+    const toolsTextC = readFileSync(join(root, 'src', 'modules', 'tools.ts'), 'utf8')
+    if (toolsTextC.includes("path: 'constitution'")) ok('SC-31c ✓ 插件宪法只读出口在位（双层宪法上层）')
+    else bad('SC-31c 插件宪法出口缺失 ⇒ 宪法仍只能人工读')
+    const busText = readFileSync(join(root, 'src', 'modules', 'bus.ts'), 'utf8')
+    if (busText.includes('autoResolved: true')) ok('SC-31c ✓ 派活 mismatch 自动档在位（落痕 autoResolved）')
+    else bad('SC-31c mismatch 自动档缺失 ⇒ 框架派单仍弹问用户')
+    if (busText.includes('askDispatchPresetChoice')) ok('SC-31c ✓ unknown/target-hob 弹问路径保留（fail-closed 不放松）')
+    else bad('SC-31c askDispatchPresetChoice 被整删 ⇒ unknown 档 fail-closed 被放松')
   }
 
   // ── SC-11：作用域门禁（无关缺口不阻塞当前任务；修复写可区分）────────────

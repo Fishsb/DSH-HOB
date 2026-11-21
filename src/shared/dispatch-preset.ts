@@ -93,6 +93,8 @@ export type PresetTargetResolution =
     targetPreset?: string
     /** 用户明确选择继续用活跃会话时出现。 */
     choice?: PresetChoice
+    /** ⚠ 批5（2026-11-21 · 方案7）：mismatch 档自动按设置新建时出现（落痕审计；非弹问）。 */
+    autoResolved?: true
   }
   | {
     ok: false

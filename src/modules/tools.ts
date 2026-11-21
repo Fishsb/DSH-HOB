@@ -1586,6 +1586,35 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         if (r.ok) return { ok: true, text: r.text, truncated: r.truncated, bytes: r.bytes }
         return { ok: false, reason: r.reason ?? 'spec-read-error', message: r.text }
       }
+      if (String(args.path ?? '').trim() === 'constitution') {
+        /**
+         * ⚠ 批5（2026-11-21 · 方案5-A 用户拍板 A）：**双层宪法**的上层出口 ——
+         *   插件版宪法随包只读分发（sha256 入回包防两处真相）；项目增量走提案
+         *   单元落账（既有 decision 写面）。⛔ 项目内 ledger/CONSTITUTION.md 的
+         *   写面红线（人工编辑+commit）原样保留——本出口纯只读、不依赖账本存在。
+         */
+        const cPath = join(dirname(governanceSpecRootOf()), 'CONSTITUTION.md')
+        let text: string
+        try {
+          text = readFileSync(cPath, 'utf8')
+        } catch (e) {
+          return { ok: false, reason: 'constitution-unreadable', message: '拒绝：插件宪法读不到（' + String((e as Error)?.message ?? e) + '）。' }
+        }
+        const digest = 'sha256:' + createHash('sha256').update(text, 'utf8').digest('hex')
+        return {
+          ok: true,
+          text: JSON.stringify({
+            ok: true,
+            path: 'constitution',
+            digest,
+            bytes: Buffer.byteLength(text, 'utf8'),
+            note: '以上为**插件版宪法**（随包分发，本摘要即其指纹）。项目级宪法增量走提案单元落账；ledger/CONSTITUTION.md 的写面红线（人工编辑+commit）不变。',
+            text,
+          }, null, 2),
+          truncated: false,
+          bytes: 0,
+        }
+      }
       // v4：边界改为**账本目录**（D7）—— 只读自己的账本，不读工作区内的项目文档（D6）。
       const root = ledgerRootOf(cfg, exec)
       if (root === undefined) {

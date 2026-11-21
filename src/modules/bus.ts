@@ -1150,6 +1150,38 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
           }
         }
 
+        /**
+         * ⚠⚠ **批5（2026-11-21 · 方案7 · 用户拍板 A）**：mismatch 档机器可判
+         *   （目标预设读得到、与设置不同）⇒ **自动按执行预设新建**，不再弹问。
+         *   依据 = 用户原则「框架自身卡点自解，用户只管 Hob 所管项目的决策」——
+         *   派单目标解析是框架机器事务，不是产品决策。
+         *   ⚠ 两档**保持弹问**：`unknown`（预设读数判不出 ⇒ fail-closed）；
+         *   `target-hob`（Hob 不能施工，只给新建/取消）。
+         *   ⚠ 本档实质改 2026-11-09 的「mismatch 弹问」安全口径（拍板变更，落痕于此）。
+         *   自动档落痕迹：返回值带 `autoResolved: true` + 目标预设，审计可追。
+         */
+        if (verdict.kind === 'mismatch') {
+          const created = await this.spawn(undefined, verdict.configuredPreset, selfSessionId)
+          if (created.ok !== true || typeof created.sessionId !== 'string' || created.sessionId === '') {
+            return {
+              ok: false,
+              reason: 'preset-spawn-failed',
+              message: `预设不一致（目标 ${target} 是「${verdict.targetPreset}」）⇒ 自动按执行预设「${verdict.configuredPreset}」新建会话失败：${created.reason ?? '宿主未返回会话 id'} ⇒ 本次未派活。`,
+              configuredPreset: verdict.configuredPreset,
+              targetPreset: verdict.targetPreset,
+            }
+          }
+          return {
+            ok: true,
+            sessionId: created.sessionId,
+            created: true,
+            configuredPreset: verdict.configuredPreset,
+            targetPreset: verdict.targetPreset,
+            choice: 'new' as const,
+            autoResolved: true,
+          }
+        }
+
         const options = verdict.kind === 'target-hob'
           ? [
             { label: PRESET_CHOICE_LABELS.new, description: `用当前执行预设「${verdict.configuredPreset}」建一个可施工的会话。` },
