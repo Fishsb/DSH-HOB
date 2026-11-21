@@ -8843,6 +8843,15 @@ export function createHobOrchTools(
       }
     ) => Promise<{ ok: boolean; applied: number; reason?: string }>
   } | undefined,
+  /**
+   * ⚠ 批4（2026-11-21 · 方案2）：handoff effects 的**受限自愈面** ——
+   *   按执行上下文取队列并暴露 retryAbandoned（reason 必填、行内审计）。
+   *   缺席 ⇒ control 的 retry-abandoned 动作如实报不可用（⛔ 不猜路径）。
+   */
+  effectsRetryOf?: (exec: any) => {
+    retryAbandoned: (reason: string, actor?: string) => { retried: number; seqs: number[] }
+    abandonedCount: () => number
+  } | undefined,
 ): {
   dispatch: ReturnType<typeof defineTool>
   status: ReturnType<typeof defineTool>
@@ -10681,7 +10690,7 @@ export function createHobOrchTools(
       action: {
         type: 'string',
         required: true,
-        enum: ['stop', 'resume', 'redeliver', 'verify', 'accept', 'send-back', 'close-delivery', 'watch-wait', 'plan-complete', 'archive-stale-plan'],
+        enum: ['stop', 'resume', 'redeliver', 'retry-abandoned', 'verify', 'accept', 'send-back', 'close-delivery', 'watch-wait', 'plan-complete', 'archive-stale-plan'],
         description: 'stop=停；resume=恢复；redeliver=**显式补投**一条投错人的回执（需 executionId + taskId）；'
           + 'accept=**验收**（需 taskId + basis + productConfirmation + verificationRefs + exampleResults）；'
           + 'verify=**独立技术验证**（需 taskId + verdict + basis + verifier + criteriaRefs）；'
@@ -10708,6 +10717,10 @@ export function createHobOrchTools(
       executionId: {
         type: 'string',
         description: 'redeliver 专用：那次执行的 id（错投的那条回执）。',
+      },
+      reason: {
+        type: 'string',
+        description: 'retry-abandoned 专用：为什么现在重试这些放弃行（审计要求，⛔ 不许静默清）。',
       },
       taskId: {
         type: 'string',
@@ -10794,8 +10807,10 @@ export function createHobOrchTools(
     },
     async execute(
       args: {
-        action: 'stop' | 'resume' | 'redeliver' | 'verify' | 'accept' | 'send-back' | 'close-delivery' | 'watch-wait' | 'plan-complete' | 'archive-stale-plan'
+        action: 'stop' | 'resume' | 'redeliver' | 'retry-abandoned' | 'verify' | 'accept' | 'send-back' | 'close-delivery' | 'watch-wait' | 'plan-complete' | 'archive-stale-plan'
         executionId?: string
+        /** ⚠ 批4：retry-abandoned 专用（审计要求）。 */
+        reason?: string
         taskId?: string
         /** ⚠ 包 H：判决依据（`accept` / `send-back` 专用；⛔ 空数组一律被拒）。 */
         basis?: string[]
@@ -10837,10 +10852,11 @@ export function createHobOrchTools(
        *   ⚠ 只在文案里把新增的 `redeliver` 也列进去（否则报错话会把合法值说漏一个）。
        */
       if (args?.action !== 'stop' && args?.action !== 'resume' && args?.action !== 'redeliver'
+        && args?.action !== 'retry-abandoned'
         && args?.action !== 'verify' && args?.action !== 'close-delivery'
         && args?.action !== 'accept' && args?.action !== 'send-back' && args?.action !== 'watch-wait'
         && args?.action !== 'plan-complete' && args?.action !== 'archive-stale-plan') {
-        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume' or 'redeliver' or 'verify' or 'accept' or 'send-back' or 'close-delivery' or 'watch-wait' or 'plan-complete' or 'archive-stale-plan'" })
+        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume' or 'redeliver' or 'retry-abandoned' or 'verify' or 'accept' or 'send-back' or 'close-delivery' or 'watch-wait' or 'plan-complete' or 'archive-stale-plan'" })
       }
       /**
        * ══════════════════════════════════════════════════════════════════════
@@ -10891,6 +10907,29 @@ export function createHobOrchTools(
        * ⚠ 这是不可逆动作（会改变"还有哪些活在跑"）⇒ 必须显式 planId + 原因；
        *   ⛔ 不改 plan.state、⛔ 不删除原件（移进 `abandoned/`，可完整还原）。
        */
+      if (args.action === 'retry-abandoned') {
+        /**
+         * ⚠⚠ **批4（2026-11-21 · 方案2）：失败兜底的受限自愈** —— 清 handoff effects
+         *   的 abandoned 标记并重新入队。护栏：reason 必填（审计随行落盘）；
+         *   只动 abandonedAt/dueAt/attempts；⛔ 不是自动重试、⛔ 不构成任何闸的通过凭证。
+         */
+        const face = effectsRetryOf?.(exec)
+        if (face === undefined) {
+          return JSON.stringify({ ok: false, action: 'retry-abandoned', reason: 'effects-unavailable',
+            message: '拒绝：本会话的 handoff effects 队列判不出（工作区/账本根缺席或未启用）⇒ 本次不清理。' })
+        }
+        const retryReason = typeof args.reason === 'string' ? args.reason.trim() : ''
+        if (retryReason === '') {
+          return JSON.stringify({ ok: false, action: 'retry-abandoned', reason: 'reason-required',
+            message: '拒绝：retry-abandoned 必须给 reason（审计要求，⛔ 不许静默清）。' })
+        }
+        const actor = selfSessionIdOf(exec)
+        const r = face.retryAbandoned(retryReason, actor === undefined ? undefined : String(actor))
+        return JSON.stringify({ ok: true, action: 'retry-abandoned', retried: r.retried, seqs: r.seqs,
+          message: r.retried === 0
+            ? '没有 abandoned 行 —— 无事可做（这不是失败）。'
+            : `已重置 ${r.retried} 条 abandoned 行并重新入队（审计行随行落盘）。` })
+      }
       if (args.action === 'archive-stale-plan') {
         if (typeof args.planId !== 'string' || args.planId.trim() === '') {
           return JSON.stringify({ ok: false, reason: 'archive-stale-plan 需要 `planId`（⛔ 不支持"全部清理"）' })

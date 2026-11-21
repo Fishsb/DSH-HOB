@@ -412,6 +412,13 @@ console.log('')
     else bad(`SC-31 proceedGate 调用点=${calls}，应为 4（多一处=豁免被收紧，少一处=真写漏闸）`)
     if (/nothing-to-create[\s\S]{0,900}?proceedGate\(/.test(toolsText)) bad('SC-31 init 误挂推进闸 ⇒ 开张豁免被破坏')
     else ok('SC-31 ✓ init 开张豁免保留（nothing-to-create 附近无推进闸）')
+    // ── SC-31b：批4 失败兜底自愈面的封闭集断言 ──
+    const { EffectsQueue } = await import(pathToFileURL(join(root, 'src', 'server', 'effects-queue.ts')).href)
+    if (typeof EffectsQueue?.prototype?.retryAbandoned === 'function') ok('SC-31b ✓ EffectsQueue.retryAbandoned 在位（受限自愈出口）')
+    else bad('SC-31b EffectsQueue.retryAbandoned 缺失 ⇒ 失败兜底自愈面没落地')
+    const orchText = readFileSync(join(root, 'src', 'modules', 'orchestrator.ts'), 'utf8')
+    if (orchText.includes("'retry-abandoned'")) ok('SC-31b ✓ hob_orch_control 动作封闭集含 retry-abandoned')
+    else bad('SC-31b retry-abandoned 未进 hob_orch_control 动作封闭集')
   }
 
   // ── SC-11：作用域门禁（无关缺口不阻塞当前任务；修复写可区分）────────────

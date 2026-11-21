@@ -34,8 +34,12 @@ export interface EffectRow {
    * ⚠ 它与 `delivered` 是**两件事**：放弃 ≠ 投递成功。
    * ⚠ 本字段**只增不改**：一旦放弃，重试循环不会再碰它（`dueAt` 永假）。
    *   要重新投递必须**人工**清掉本字段（或删行后重建）—— 这是有意的。
+   *   ⚠ 2026-11-21（批4 · 用户拍板「框架自身卡点自解」）：人工清改为**受限自愈**
+   *     `retryAbandoned(reason)` —— 「只增不改」的精神保留为行内审计字段 retryAudit。
    */
   abandonedAt?: number
+  /** **重试审计**（批4 · 追加字段）：谁 / 何时 / 为什么把本行从 abandoned 拉回来。 */
+  retryAudit?: { at: number; reason: string; by?: string }
 }
 
 export interface EffectState {
@@ -274,6 +278,35 @@ export class EffectsQueue {
     this.persist()
     this.kick()
     return true
+  }
+
+  /** **放弃行的只读读数**（批4 · 控制面用）。 */
+  abandoned(): EffectRow[] {
+    return this.state.rows.filter((r) => r.abandonedAt !== undefined)
+  }
+
+  /**
+   * **受限自愈**（2026-11-21 · 批4 · 方案2 · 用户拍板）：清放弃标记并重新入队。
+   * ⚠ 护栏：① reason 必填（审计行随行落盘，⛔ 不许静默清）；
+   *   ② 只动 abandonedAt / dueAt / attempts 三个字段，payload 与历史原样；
+   *   ③ 每行落 retryAudit（谁/何时/为什么）—— 证据与历史只增不改；
+   *   ④ ⛔ 这不是自动重试：只有控制面显式触发才走这里。
+   */
+  retryAbandoned(reason: string, actor?: string): { retried: number; seqs: number[] } {
+    const trimmed = String(reason ?? '').trim()
+    if (trimmed === '') throw new Error('retryAbandoned 必须给 reason（审计要求）')
+    const now = this.now()
+    const seqs: number[] = []
+    for (const r of this.state.rows) {
+      if (r.abandonedAt === undefined) continue
+      r.abandonedAt = undefined
+      r.dueAt = now + (this.handlers.get(r.kind)?.retry[0] ?? 1_000)
+      r.attempts = 0
+      r.retryAudit = { at: now, reason: trimmed, ...(actor === undefined ? {} : { by: actor }) }
+      seqs.push(r.seq)
+    }
+    if (seqs.length > 0) this.persist()
+    return { retried: seqs.length, seqs }
   }
 
   start(): void {

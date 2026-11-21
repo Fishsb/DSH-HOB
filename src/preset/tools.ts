@@ -928,7 +928,19 @@ export function apply(ctx: any, config: Config = {}): void {
             const r = await applyFn(root, fact)
             return { ok: r.ok, applied: r.applied, ...(r.reason === undefined ? {} : { reason: r.reason }) }
           },
-        }))
+        })),
+        (exec: any) => {
+          /** ⚠ 批4（2026-11-21 · 方案2）：handoff effects 受限自愈面 —— 按会话账本根现取队列。 */
+          const root = ledgerRootOf(config, exec)
+          if (root === undefined) return undefined
+          const q = handoffEffectsOf(root)
+          if (q === undefined || typeof (q as unknown as { retryAbandoned?: unknown }).retryAbandoned !== 'function') return undefined
+          const fq = q as unknown as { retryAbandoned: (reason: string, actor?: string) => { retried: number; seqs: number[] }; abandoned?: () => unknown[] }
+          return {
+            retryAbandoned: (reason: string, actor?: string) => fq.retryAbandoned(reason, actor),
+            abandonedCount: () => (typeof fq.abandoned === 'function' ? fq.abandoned().length : 0),
+          }
+        }
     })
   }
 }
@@ -2156,7 +2168,13 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
       exampleResults?: string[]
       sendBackTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
     }) => Promise<{ ok: boolean; applied: number; reason?: string }>
-  } | undefined): void {
+  } | undefined,
+  /** ⚠ 批4（2026-11-21 · 方案2）：handoff effects 受限自愈面（retryAbandoned）。缺席 ⇒ 动作如实报不可用。 */
+  effectsRetryOf?: (exec: any) => {
+    retryAbandoned: (reason: string, actor?: string) => { retried: number; seqs: number[] }
+    abandonedCount: () => number
+  } | undefined
+): void {
   /**
    * ⚠ 作用域参数从**本次执行参数**里取（`hob_dispatch { task, planId, tracks }`）：
    *   `tracks` 时逐轨 `taskId` 由 `dispatchGateAtLedger` 的计划分支覆盖，
@@ -2215,6 +2233,7 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
     acceptanceGateFor,
     lifecycleForExec,
     ledgerProjectionOf,
+    effectsRetryOf,
   )
   ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')
   ctx.effect(() => ctx.tools.register(status), 'dsh-hob preset: hob_orch_status tool')
