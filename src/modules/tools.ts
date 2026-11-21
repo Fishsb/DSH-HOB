@@ -2821,6 +2821,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
           state: before.state,
           message: `不自动改写：${before.headline}。`
             + '\n  旧账本只能只读保存为历史证据；要作为当前账本继续，必须显式迁移或归档后按模板重建。'
+            + '\n  ⇒ 机器出口：`hob_ledger_migrate`（本会话工具面即有；先缺省预演，确认后 dryRun:false；只做内置有限映射，不做任意值替换）。'
             + '\n  ⚠ 迁移前后都要逐字节留副本（规则：证据与历史只增不改）。',
           ledgerRoot: root,
         } as unknown as JsonValue
