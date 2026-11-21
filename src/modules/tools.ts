@@ -86,6 +86,7 @@ import {
   type LedgerLifecycle,
 } from '../shared/ledger-lifecycle.ts'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
+import { procProcessAlive } from '../server/effects-queue.ts'
 import { readMarkdownCapped, resolveLedgerRoot, resolveWorkspaceRoot } from '../server/doc-read.ts'
 import {
   grepWorkspace as grepWorkspaceText,
@@ -1500,7 +1501,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
 } {
   const readContracts = defineTool({
     name: 'read_contracts',
-    description: '只读本工作区账本内的 .md / .toml（项目方案/决策记录/工作上下文/账本索引），或按稳定 ID 读取全部账本资源（goal/G-…、requirement/R-…、change/CHG-…、task/TSK-…、run/RUN-…、acceptance/ACC-…、evidence/EVD-…、risk/RSK-…、decision/DEC-…、capability/CAP-…）。另有四个只读出口：path=risk/digest（服务端算风险评定与校验和，回包含合法词表，不依赖账本）；path=risk/binding-digest（服务端按账本盘面实算绑定摘要 + 验收条件机器 id，可选 riskBindingPlanId 定位方案）；path=approval-form（服务端按盘面实算批准记录的完整形态，含 artifact_digest 与修订绑定，可选 approvalArtifactId / approvalDecision / approvalSelectedOption）；path=spec 或 spec/<文件>.md（读本插件自带的治理规范，spec 列目录，不依赖账本）。',
+    description: '只读本工作区账本内的 .md / .toml（项目方案/决策记录/工作上下文/账本索引），或按稳定 ID 读取全部账本资源（goal/G-…、requirement/R-…、change/CHG-…、task/TSK-…、run/RUN-…、acceptance/ACC-…、evidence/EVD-…、risk/RSK-…、decision/DEC-…、capability/CAP-…）。另有六个只读出口：path=risk/digest（服务端算风险评定与校验和，回包含合法词表，不依赖账本）；path=risk/binding-digest（服务端按账本盘面实算绑定摘要 + 验收条件机器 id，可选 riskBindingPlanId 定位方案）；path=approval-form（服务端按盘面实算批准记录的完整形态，含 artifact_digest 与修订绑定，可选 approvalArtifactId / approvalDecision / approvalSelectedOption）；path=constitution（插件版宪法 + sha256 指纹，不依赖账本）；path=diagnostics（写入异常时的只读盘面清点：units/生成物/runtime/effects 计数/归档/锁判读，需账本根）；path=spec 或 spec/<文件>.md（读本插件自带的治理规范，spec 列目录，不依赖账本）。',
     parameters: {
       path: {
         type: 'string',
@@ -1619,6 +1620,67 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       const root = ledgerRootOf(cfg, exec)
       if (root === undefined) {
         return { ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' }
+      }
+      if (String(args.path ?? '').trim() === 'diagnostics') {
+        /**
+         * ⚠ 批6（2026-11-21 · 方案6）：写入异常的**只读诊断出口** ——
+         *   fail-closed 拒绝本身不动（账本约束），把「请人工检查」降为「人只看结论」：
+         *   盘面清点（units / 生成物在场性 / runtime 文件 / effects 摘要（只计数不带内容）/
+         *   归档副本 / 锁判读）一次给全。纯只读：不开队列锁、不写任何文件。
+         */
+        const diag: Record<string, unknown> = { ledgerRoot: root }
+        try {
+          const files = readdirSync(join(root, 'ledger', 'units'))
+          diag.units = { toml: files.filter((f) => f.endsWith('.toml')).length, files: files.slice(0, 60) }
+        } catch (e) {
+          diag.units = { error: String((e as Error)?.message ?? e) }
+        }
+        const pages: Record<string, boolean> = {}
+        for (const rel of ['ledger/gen/stages.md', 'ledger/gen/index.md', 'ledger/spec/current.md', 'ledger/spec/checkpoint.md']) {
+          pages[rel] = existsSync(join(root, rel))
+        }
+        diag.generated_pages = pages
+        try {
+          const rt = join(root, 'runtime')
+          const files = existsSync(rt) ? readdirSync(rt) : []
+          diag.runtime = files.map((f) => {
+            let bytes = -1
+            try { bytes = statSync(join(rt, f)).size } catch { /* 判不出就算了 */ }
+            return { file: f, bytes }
+          })
+        } catch (e) {
+          diag.runtime = { error: String((e as Error)?.message ?? e) }
+        }
+        try {
+          const fx = join(root, 'runtime', 'effects.json')
+          if (existsSync(fx)) {
+            const st = JSON.parse(readFileSync(fx, 'utf8')) as { rows?: Array<{ abandonedAt?: number }> }
+            const rows = Array.isArray(st.rows) ? st.rows : []
+            diag.effects = { rows: rows.length, abandoned: rows.filter((r) => r.abandonedAt !== undefined).length, active: rows.filter((r) => r.abandonedAt === undefined).length }
+            const lockPath = fx + '.lock'
+            if (existsSync(lockPath)) {
+              let pid: number | undefined
+              try { pid = (JSON.parse(readFileSync(lockPath, 'utf8')) as { pid?: number }).pid } catch { pid = undefined }
+              diag.effects_lock = { exists: true, pid, alive: pid === undefined ? undefined : procProcessAlive(pid) }
+            } else diag.effects_lock = { exists: false }
+          } else diag.effects = { rows: 0, note: '无 effects 文件（尚无补投负载）' }
+        } catch (e) {
+          diag.effects = { error: String((e as Error)?.message ?? e) }
+        }
+        try {
+          const ar = join(root, 'archive')
+          diag.archive = existsSync(ar)
+            ? readdirSync(ar, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort()
+            : []
+        } catch (e) {
+          diag.archive = { error: String((e as Error)?.message ?? e) }
+        }
+        return {
+          ok: true,
+          text: JSON.stringify({ ok: true, path: 'diagnostics', diagnosis: diag, note: '只读盘面清点；处置动作各有其出口（hob_ledger_rebuild / hob_orch_control retry-abandoned / hob_ledger_status）。' }, null, 2),
+          truncated: false,
+          bytes: 0,
+        }
       }
       if (String(args.path ?? '').trim() === 'risk/binding-digest') {
         /**
