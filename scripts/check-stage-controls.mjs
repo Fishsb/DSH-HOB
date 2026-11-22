@@ -428,7 +428,7 @@ console.log('')
     else bad('SC-31c mismatch 自动档缺失 ⇒ 框架派单仍弹问用户')
     if (busText.includes('askDispatchPresetChoice')) ok('SC-31c ✓ unknown/target-hob 弹问路径保留（fail-closed 不放松）')
     else bad('SC-31c askDispatchPresetChoice 被整删 ⇒ unknown 档 fail-closed 被放松')
-    // ── SC-32：批准作用域摘要**咬得住**产品事实（T1 实测的 fail-open 负向对拍）──
+    // ── SC-33：批准作用域摘要**咬得住**产品事实（T1 实测的 fail-open 负向对拍）──
     {
       const pl = await import(pathToFileURL(join(root, 'src', 'shared', 'pipeline.ts')).href)
       const base = {
@@ -456,8 +456,8 @@ console.log('')
         const st = pl.approvalStateOf(changed, [{ ...decision }, changed])
         if (st.state === 'approved') badCase = label
       }
-      if (badCase === '') ok('SC-32 ✓ 负向对拍：改正文/取舍/需求映射/风险档位/硬触发 ⇒ 批准失效（作用域摘要咬得住）')
-      else bad(`SC-32 作用域摘要漏字段：改「${badCase}」后批准仍判 approved ⇒ C-22 被绕过（fail-open）`)
+      if (badCase === '') ok('SC-33 ✓ 负向对拍：改正文/取舍/需求映射/风险档位/硬触发 ⇒ 批准失效（作用域摘要咬得住）')
+      else bad(`SC-33 作用域摘要漏字段：改「${badCase}」后批准仍判 approved ⇒ C-22 被绕过（fail-open）`)
       // 需求类：spec 与验收条件同样必须咬住
       const req = { id: 'R-S32', kind: 'req', status: 'agreed', pipeline_version: 'v3', revision: '2', title: '需求', spec: '规格', acceptance_criteria: ['AC 一'] }
       const reqDec = { id: 'DEC-S32R', kind: 'decision', status: 'active', decision_kind: 'stage-approval', artifact_id: 'R-S32', artifact_revision: '2', artifact_digest: pl.artifactDigestOf(req), approval_scope_digest: pl.approvalScopeDigestOf(req), decision: 'approve', decided_by: 'user', decided_at: decidedAt, source: '批准 R-S32 第 2 版' }
@@ -467,12 +467,19 @@ console.log('')
         const st = pl.approvalStateOf({ ...req, ...patch }, [reqDec])
         if (st.state === 'approved') reqFail = label
       }
-      if (reqFail === '') ok('SC-32 ✓ 负向对拍：改需求规格/验收条件 ⇒ 批准失效')
-      else bad(`SC-32 需求类作用域漏字段：改「${reqFail}」后批准仍 approved ⇒ G1 被绕过（fail-open）`)
+      if (reqFail === '') ok('SC-33 ✓ 负向对拍：改需求规格/验收条件 ⇒ 批准失效')
+      else bad(`SC-33 需求类作用域漏字段：改「${reqFail}」后批准仍 approved ⇒ G1 被绕过（fail-open）`)
       // 正例：产品事实不变 ⇒ 作用域继续有效（治审批疲劳的本意）
       const same = pl.approvalStateOf({ ...base, revision: '3', risk_assessed_at: '2026-11-23T01:00:00Z' }, [decision])
-      if (same.state === 'approved' && same.scopeBound === true) ok('SC-32 ✓ 正例：仅修订号/机器细节变化 ⇒ 批准继续有效（scopeBound）')
-      else bad('SC-32 正例未成立：产品事实未变却被判失效 ⇒ 审批疲劳回归')
+      if (same.state === 'approved' && same.scopeBound === true) ok('SC-33 ✓ 正例：仅修订号/机器细节变化 ⇒ 批准继续有效（scopeBound）')
+      else bad('SC-33 正例未成立：产品事实未变却被判失效 ⇒ 审批疲劳回归')
+      // 重绑拒因**接线在位**（T3 P1③：运行期唯一零对拍路径 ⇒ 先钉住拒因不被静默删）
+      const rebindCodes = ['rebind-source-not-found', 'rebind-target-mismatch', 'rebind-not-approval', 'rebind-not-approve', 'rebind-unverifiable', 'rebind-scope-changed', 'rebind-option-invalid']
+      const missingCodes = rebindCodes.filter((c) => !toolsTextC.includes(c))
+      if (missingCodes.length === 0) ok('SC-33 ✓ 重绑七条拒因全部在位（未知来源/目标不符/非批准/非 approve/不可验证/作用域变化/路径失效）')
+      else bad(`SC-33 重绑拒因缺失：${missingCodes.join(' / ')} ⇒ 拒因被静默删，失败将不可观测`)
+      if (toolsTextC.includes('approvalScopeFromSnapshot')) ok('SC-33 ✓ 重绑验证依据是账本快照（⛔ 不用调用方自述代替验证）')
+      else bad('SC-33 重绑缺少快照验证入口 ⇒ 重绑可能退化为自述')
     }
   }
 
