@@ -428,6 +428,52 @@ console.log('')
     else bad('SC-31c mismatch 自动档缺失 ⇒ 框架派单仍弹问用户')
     if (busText.includes('askDispatchPresetChoice')) ok('SC-31c ✓ unknown/target-hob 弹问路径保留（fail-closed 不放松）')
     else bad('SC-31c askDispatchPresetChoice 被整删 ⇒ unknown 档 fail-closed 被放松')
+    // ── SC-32：批准作用域摘要**咬得住**产品事实（T1 实测的 fail-open 负向对拍）──
+    {
+      const pl = await import(pathToFileURL(join(root, 'src', 'shared', 'pipeline.ts')).href)
+      const base = {
+        id: 'CHG-S32', kind: 'change', status: 'settled', pipeline_version: 'v3', revision: '2',
+        title: '方案', proposal: '正文', path_options: ['A · 一', 'B · 二'], path_decision: 'A · 一',
+        requirement_coverage: ['R-S32：覆盖'], risk_tier: 'medium',
+      }
+      const decidedAt = '2026-11-23T00:00:00Z'
+      const decision = {
+        id: 'DEC-S32', kind: 'decision', status: 'active', decision_kind: 'stage-approval',
+        artifact_id: 'CHG-S32', artifact_revision: '2', artifact_digest: pl.artifactDigestOf(base),
+        approval_scope_digest: pl.approvalScopeDigestOf(base), decision: 'approve', decided_by: 'user',
+        decided_at: decidedAt, selected_option: 'A · 一', source: '批准 CHG-S32 第 2 版',
+      }
+      const cases = [
+        ['正文', { proposal: '正文（改）' }],
+        ['路径取舍', { path_tradeoffs: ['新增取舍'] }],
+        ['需求映射', { requirement_coverage: ['R-S32：另一条'] }],
+        ['风险档位升级', { risk_tier: 'critical' }],
+        ['硬触发新增', { risk_hard_triggers: ['irreversible-data-change'] }],
+      ]
+      let badCase = ''
+      for (const [label, patch] of cases) {
+        const changed = { ...base, ...patch }
+        const st = pl.approvalStateOf(changed, [{ ...decision }, changed])
+        if (st.state === 'approved') badCase = label
+      }
+      if (badCase === '') ok('SC-32 ✓ 负向对拍：改正文/取舍/需求映射/风险档位/硬触发 ⇒ 批准失效（作用域摘要咬得住）')
+      else bad(`SC-32 作用域摘要漏字段：改「${badCase}」后批准仍判 approved ⇒ C-22 被绕过（fail-open）`)
+      // 需求类：spec 与验收条件同样必须咬住
+      const req = { id: 'R-S32', kind: 'req', status: 'agreed', pipeline_version: 'v3', revision: '2', title: '需求', spec: '规格', acceptance_criteria: ['AC 一'] }
+      const reqDec = { id: 'DEC-S32R', kind: 'decision', status: 'active', decision_kind: 'stage-approval', artifact_id: 'R-S32', artifact_revision: '2', artifact_digest: pl.artifactDigestOf(req), approval_scope_digest: pl.approvalScopeDigestOf(req), decision: 'approve', decided_by: 'user', decided_at: decidedAt, source: '批准 R-S32 第 2 版' }
+      const reqBad = [['规格', { spec: '规格（改）' }], ['验收条件', { acceptance_criteria: ['AC 二'] }]]
+      let reqFail = ''
+      for (const [label, patch] of reqBad) {
+        const st = pl.approvalStateOf({ ...req, ...patch }, [reqDec])
+        if (st.state === 'approved') reqFail = label
+      }
+      if (reqFail === '') ok('SC-32 ✓ 负向对拍：改需求规格/验收条件 ⇒ 批准失效')
+      else bad(`SC-32 需求类作用域漏字段：改「${reqFail}」后批准仍 approved ⇒ G1 被绕过（fail-open）`)
+      // 正例：产品事实不变 ⇒ 作用域继续有效（治审批疲劳的本意）
+      const same = pl.approvalStateOf({ ...base, revision: '3', risk_assessed_at: '2026-11-23T01:00:00Z' }, [decision])
+      if (same.state === 'approved' && same.scopeBound === true) ok('SC-32 ✓ 正例：仅修订号/机器细节变化 ⇒ 批准继续有效（scopeBound）')
+      else bad('SC-32 正例未成立：产品事实未变却被判失效 ⇒ 审批疲劳回归')
+    }
   }
 
   // ── SC-11：作用域门禁（无关缺口不阻塞当前任务；修复写可区分）────────────

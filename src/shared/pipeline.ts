@@ -339,8 +339,20 @@ export function riskBindingDigestOf(
  * ⇒ 批准绑**产品事实**；产品事实不变则批准继续有效（机器细节变化另记）。
  */
 export const APPROVAL_SCOPE_FIELDS = [
+  /** 方案类产品事实 */
   'title', 'proposal', 'path_options', 'path_tradeoffs', 'path_decision',
   'requirement_coverage', 'req_ids', 'addresses', 'delivery_scope',
+  /**
+   * ⚠ 2026-11-23（T1 实测揪出的 fail-open）：**需求类内容**也在作用域里。
+   *   改前只列方案字段 ⇒ 只改需求的 `spec` / 验收条件，批准仍判 approved/scopeBound，
+   *   把 C-22「内容变化必须重新确认」绕过去了。
+   */
+  'spec', 'acceptance_criteria', 'acceptance_ids', 'clarify_examples',
+  /**
+   * ⚠ 风险事实也必须绑：档位或硬触发升级属于「更高风险」，
+   *   AWS 明确说高风险不能继承持久授权。改前实测 low → critical + 硬触发后批准仍有效。
+   */
+  'risk_tier', 'risk_hard_triggers', 'risk_hard_trigger_facts', 'risk_assessment_ref',
 ] as const
 
 export function approvalScopeDigestOf(unit: Record<string, unknown>): string {
