@@ -39,7 +39,7 @@
 | 函数 | 位置 | 判什么 |
 |---|---|---|
 | `unitShapeProblems` | `ledger-validation.ts:36` | 单个单元的 `kind/status` 是否在**封闭集**内、必填字段是否齐 |
-| `indexIntegrityProblems` | `ledger-lifecycle.ts:269` | `index.toml` 与分片是否一致（缺条目 / 多条 / 悬空） |
+| `indexIntegrityProblems` | `ledger-lifecycle.ts:282` | `index.toml` 与分片是否一致（缺条目 / 多条 / 悬空） |
 | `ledgerHealthOf` | `ledger-health.ts:102` | **账本健康唯一判据**（4 个出口都调它） |
 | `describeLedgerHealth` | `ledger-health.ts:163` | 把健康问题翻成**人读一句话**（只描述，不判定） |
 | `stageFileProblems` | `stage-controls.ts:1436` | 账本**文件级**问题（缺失 / 不可读 / 形态不认识） |
@@ -89,11 +89,11 @@
 | 函数 | 位置 | 判什么 |
 |---|---|---|
 | `pipelineDispatchProblems` | `pipeline-view.ts:738` | 派活门禁：任务图无环 / 无悬空 / 覆盖无缺口（G3） |
-| `pipelineRevisionProblems` | `pipeline.ts:567` | 内容变了但 `revision` 没递增 |
-| `pipelineWriteProblems` | `pipeline.ts:636` | 写入前的管线形态校验 |
-| `approvalDecisionProblems` | `pipeline.ts:528` | 批准单元本身是否合法（`decided_by` / 回执 / 修订绑定） |
-| `verificationRevisionProblems` | `pipeline.ts:598` | 技术验证绑定的修订是否仍有效 |
-| `selectedOptionValid` | `pipeline.ts:356` | 选中的路径是不是方案里真实存在的选项 |
+| `pipelineRevisionProblems` | `pipeline.ts:629` | 内容变了但 `revision` 没递增 |
+| `pipelineWriteProblems` | `pipeline.ts:698` | 写入前的管线形态校验 |
+| `approvalDecisionProblems` | `pipeline.ts:590` | 批准单元本身是否合法（`decided_by` / 回执 / 修订绑定） |
+| `verificationRevisionProblems` | `pipeline.ts:660` | 技术验证绑定的修订是否仍有效 |
+| `selectedOptionValid` | `pipeline.ts:397` | 选中的路径是不是方案里真实存在的选项 |
 | `verifyRefsProblems` | `convergence.ts:117` | 验证引用能否解析（I7 唯一实现） |
 | `decisionChainProblems` | `convergence.ts:151` | 决策链是否完整（I8 唯一实现） |
 

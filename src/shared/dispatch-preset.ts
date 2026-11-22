@@ -95,6 +95,8 @@ export type PresetTargetResolution =
     choice?: PresetChoice
     /** ⚠ 批5（2026-11-21 · 方案7）：mismatch 档自动按设置新建时出现（落痕审计；非弹问）。 */
     autoResolved?: true
+    /** 自动新建时被替换掉的原目标预设（审计用；正常路径不出现）。 */
+    previousTargetPreset?: string
   }
   | {
     ok: false

@@ -1176,7 +1176,9 @@ export function apply(ctx: any, config: HobBusConfig = {}): void {
             sessionId: created.sessionId,
             created: true,
             configuredPreset: verdict.configuredPreset,
-            targetPreset: verdict.targetPreset,
+            /** ⚠ 与「用户选新建」同口径：targetPreset = **新会话的**预设（旧目标预设另记 previous）。 */
+            targetPreset: created.agentPreset ?? verdict.configuredPreset,
+            previousTargetPreset: verdict.targetPreset,
             choice: 'new' as const,
             autoResolved: true,
           }

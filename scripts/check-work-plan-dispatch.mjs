@@ -587,16 +587,14 @@ const exec = {
     } else bad(`WPD-14 · ${JSON.stringify(r)} questions=${h.questions.length}`)
   }
 
-  // 不一致 + 用户选活跃 ⇒ 投原会话，并记下用户选择
+  // 不一致 ⇒ **机器自动按执行预设新建**（2026-11-23 用户拍板：mismatch 档不再打扰用户）
   {
     const h = makeBusHost({ targetPreset: 'standard', answer: PRESET_CHOICE_LABELS.active })
     const r = await h.bus.resolveDispatchTarget('session-active', 'session-hob')
-    const asked = h.questions.length === 1
-      && JSON.stringify(h.questions[0]?.questions?.[0]?.options?.map((o) => o.label))
-        .includes(PRESET_CHOICE_LABELS.active)
-    if (r.ok === true && r.sessionId === 'session-active' && r.created === false && r.choice === 'active' && asked) {
-      ok('WPD-15 ✓ 预设不一致 ⇒ 先提问；选“继续使用活跃会话”后投原会话')
-    } else bad(`WPD-15 · ${JSON.stringify(r)} asked=${asked}`)
+    if (r.ok === true && r.created === true && r.sessionId !== 'session-active'
+      && r.autoResolved === true && r.choice === 'new' && h.questions.length === 0) {
+      ok('WPD-15 ✓ 预设不一致 ⇒ 自动按执行预设新建（不提问，落痕 autoResolved）')
+    } else bad(`WPD-15 · ${JSON.stringify(r)} asked=${h.questions.length}`)
   }
 
   // 不一致 + 用户选新建 ⇒ 用执行预设建新会话，投新会话
@@ -620,12 +618,12 @@ const exec = {
     } else bad(`WPD-17 · ${JSON.stringify(r)} labels=${JSON.stringify(labels)}`)
   }
 
-  // 提问服务缺席 ⇒ fail-closed，零投递
+  // 提问服务缺席：mismatch 档**不依赖它**（自动路径），仍应新建并投新会话
   {
     const h = makeBusHost({ targetPreset: 'standard', noQuestions: true })
     const r = await h.bus.resolveDispatchTarget('session-active', 'session-hob')
-    if (r.ok === false && r.reason === 'preset-confirmation-unavailable' && r.needsUser === true && h.delivered.length === 0) {
-      ok('WPD-18 ✓ 预设不一致且提问服务缺席 ⇒ 明确拒绝、零投递（⛔ 不默认继续）')
+    if (r.ok === true && r.created === true && r.autoResolved === true && h.questions.length === 0) {
+      ok('WPD-18 ✓ mismatch 档不依赖提问服务：缺席也能自动新建（⛔ 不静默投原会话）')
     } else bad(`WPD-18 · ${JSON.stringify(r)} delivered=${h.delivered.length}`)
   }
 }
