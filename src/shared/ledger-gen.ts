@@ -889,6 +889,14 @@ export function unitSourceFiles(indexPath) {
 }
 
 export function readUnits(indexPath) {
+  /**
+   * ⚠ 2026-11-23：搬移时丢掉脚本侧的默认参数，导致无参调用抛 `dirname(undefined)` ——
+   *   那会让机检在跑断言前崩、看起来像「断言失败」。⇒ 无参时**显式报错**（含修法），
+   *   ⛔ 不回落到猜测路径（账本落点必须由调用方显式给出）。
+   */
+  if (typeof indexPath !== 'string' || indexPath === '') {
+    throw new Error('readUnits 必须给 indexPath（如 gen.INDEX_PATH）；本模块不猜账本落点。')
+  }
   return unitSourceFiles(indexPath).flatMap((file) => {
     const src = readFileSync(file, 'utf8')
     return parseTomlSubset(src).unit

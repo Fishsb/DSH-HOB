@@ -29,7 +29,7 @@ const risk = await import(pathToFileURL(join(root, 'src', 'shared', 'risk-policy
 const pipelineMod = await import(pathToFileURL(join(root, 'src', 'shared', 'pipeline.ts')).href)
 const riskBindingDigestOf = pipelineMod.riskBindingDigestOf
 
-const units = gen.readUnits()
+const units = gen.readUnits(gen.INDEX_PATH)
 const tasks = units.filter((u) => u.kind === 'task')
 const T = tasks.find((u) => String(u.status) === 'built')
 /**

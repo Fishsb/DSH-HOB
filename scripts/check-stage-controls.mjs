@@ -29,7 +29,7 @@ const bad = (m) => { fail += 1; console.log(`  ✗ ${m}`) }
 const mod = await import(pathToFileURL(join(root, 'src', 'shared', 'stage-controls.ts')).href)
 const gen = await import(pathToFileURL(join(here, 'gen-ledger.mjs')).href)
 
-const units = gen.readUnits()
+const units = gen.readUnits(gen.INDEX_PATH)
 const problems = mod.stageControlProblems(units)
 const ledgerRoot = gen.LEDGER_DIR
 const fileProblems = mod.stageFileProblems(units, (rel) => existsSync(join(ledgerRoot, '..', rel)))
