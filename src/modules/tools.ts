@@ -129,6 +129,7 @@ import { riskBindingDigestOf, selectedOptionValid } from '../shared/pipeline.ts'
 import { describeLedgerHealth, ledgerHealthOf, type LedgerHealthProblem } from '../shared/ledger-health.ts'
 import {
   riskAssessmentOf,
+  riskFactsOf,
   RISK_DIMENSIONS,
   RISK_HARD_TRIGGERS,
   RISK_HARD_TRIGGER_FACT_FIELDS,
@@ -1532,6 +1533,10 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         type: 'string',
         description: '仅 path=risk/binding-digest 时消费：目标方案/计划单元 id（如 CHG-01）；省略 = 对盘上全部方案单元计算。',
       },
+      riskDigestUnitId: {
+        type: 'string',
+        description: '仅 path=risk/digest 时消费：按**账本单元实算**（服务端用单元自身的风险字段推导，含 delivery_scope 等；返回应写入的字段与剩余缺口）。给了它就不再采信调用方复述的维度/触发/交付域。',
+      },
       approvalArtifactId: {
         type: 'string',
         description: '仅 path=approval-form 时消费：被批准的稳定 id（R-… / CHG-…）。',
@@ -1558,14 +1563,14 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         return [{ type: 'text', text: v.ok === true ? String(v.text ?? '') : String(v.message ?? '') }]
       },
     },
-    async execute(args: { path: string; riskDimensions?: string; riskHardTriggers?: string; riskDelivery?: string; riskDeclaredTier?: string; riskBindingPlanId?: string; approvalArtifactId?: string; approvalDecision?: string; approvalSelectedOption?: string }, exec: ToolRunContext): Promise<JsonValue> {
+    async execute(args: { path: string; riskDimensions?: string; riskHardTriggers?: string; riskDelivery?: string; riskDeclaredTier?: string; riskBindingPlanId?: string; riskDigestUnitId?: string; approvalArtifactId?: string; approvalDecision?: string; approvalSelectedOption?: string }, exec: ToolRunContext): Promise<JsonValue> {
       /**
        * ⚠ 2026-11-20 · B/C：两个**不依赖账本**的只读出口先于账本根解析 ——
        *   digest 与规范读取不需要账本存在，也绝不能因账本判不出而被挡
        *   （那正是「账本读不到 ⇒ 规范也读不到 ⇒ 谁都解不了」自举死结的入口）。
        *   ⛔ 两者仍是纯只读，不触碰任何写面与账本文件。
        */
-      if (String(args.path ?? '').trim() === 'risk/digest') {
+      if (String(args.path ?? '').trim() === 'risk/digest' && String(args.riskDigestUnitId ?? '').trim() === '') {
         return riskDigestOfArgs(args)
       }
       const specRoot = governanceSpecRootOf()
@@ -1717,6 +1722,73 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         return {
           ok: true,
           text: JSON.stringify({ ok: true, path: 'risk/binding-digest', bindings, requirement_criteria: requirementCriteria }, null, 2),
+          truncated: false,
+          bytes: 0,
+        }
+      }
+      if (String(args.path ?? '').trim() === 'risk/digest' && String(args.riskDigestUnitId ?? '').trim() !== '') {
+        /**
+         * ⚠ 2026-11-22 · 单元实算模式：**从账本单元自身的风险字段**推导（riskFactsOf，
+         *   与门禁同一份纯函数），⛔ 不采信调用方复述的维度/触发/交付域 ——
+         *   那正是 2026-11-22 实测的死结形态：调用方传 delivery=internal，而单元里
+         *   没有 delivery_scope 字段 ⇒ 门禁按 none 重算 ⇒ 永远配不平。
+         *   回包给出**应写入的字段**与**剩余缺口**，会话据此一次配平、⛔ 不再盲试。
+         */
+        const uid = String(args.riskDigestUnitId ?? '').trim()
+        let units: Array<Record<string, unknown>>
+        try {
+          units = readLedgerUnits(root) as Array<Record<string, unknown>>
+        } catch (e) {
+          return { ok: false, reason: 'ledger-unreadable', message: '拒绝：账本读不到（' + String((e as Error)?.message ?? e) + '）。' }
+        }
+        const unit = units.find((u) => String(u.id ?? '') === uid)
+        if (unit === undefined) {
+          return { ok: false, reason: 'risk-unit-not-found', message: '拒绝：账本里没有 ' + uid + '。' }
+        }
+        const facts = riskFactsOf(unit)
+        const derived = riskAssessmentOf({ ...facts, declaredTier: undefined })
+        const onDisk = String(unit.risk_inputs_digest ?? '')
+        const tier = String(unit.risk_tier ?? '')
+        const ruleVersion = String(unit.risk_rule_version ?? '')
+        const dims = Object.entries(facts.dimensions ?? {}).map(([k, v]) => k + '=' + String(v))
+        const hasStrategy = String(unit.test_strategy ?? '').trim() !== ''
+          || (Array.isArray(unit.research_refs) && (unit.research_refs as unknown[]).length > 0)
+          || (Array.isArray(unit.review_refs) && (unit.review_refs as unknown[]).length > 0)
+        const tierRank = (t: string): number => ({ low: 0, medium: 1, high: 2, critical: 3 } as Record<string, number>)[t] ?? -1
+        const needsStrategy = tierRank(derived.tier) >= 1 || tierRank(tier) >= 1
+        const problems: string[] = []
+        if (onDisk !== derived.inputsDigest) problems.push('RP-3 · risk_inputs_digest 与单元事实不一致（应为 ' + derived.inputsDigest + '，盘上是 ' + (onDisk || '(空)') + '）')
+        if (ruleVersion !== RISK_POLICY_VERSION) problems.push('RP-3 · risk_rule_version 应为 ' + RISK_POLICY_VERSION)
+        if (tierRank(tier) < tierRank(derived.tier) || tierRank(tier) < 0) problems.push('RP-2 · risk_tier 必须不低于事实推导 ' + derived.tier + (tier === '' ? '（盘上为空）' : '（盘上 ' + tier + '）'))
+        if (needsStrategy && !hasStrategy) problems.push('RP-8 · ' + (tier || derived.tier) + ' 档必须有验证策略：test_strategy **必须是字符串**（写成数组会被判空）或 research_refs / review_refs 为非空数组')
+        if (String(unit.risk_assessed_at ?? '').trim() === '') problems.push('RP-3 · 缺 risk_assessed_at（可解析的 ISO 时刻）')
+        if (String(unit.risk_assessed_by ?? '').trim() === '') problems.push('RP-3 · 缺 risk_assessed_by')
+        return {
+          ok: true,
+          text: JSON.stringify({
+            ok: true,
+            path: 'risk/digest',
+            mode: 'unit',
+            unit: { id: uid, kind: String(unit.kind ?? ''), revision: unit.revision, status: String(unit.status ?? '') },
+            digest: derived.inputsDigest,
+            digest_on_disk: onDisk,
+            matches: onDisk === derived.inputsDigest,
+            tier_derived: derived.tier,
+            closure: derived.closure,
+            delivery_used: derived.delivery,
+            unit_facts: { dimensions: dims, hardTriggers: facts.hardTriggers ?? [], hardTriggerFacts: facts.hardTriggerFacts ?? [], delivery_scope: (unit.delivery_scope === undefined ? undefined : String(unit.delivery_scope)) },
+            write_fields: {
+              risk_inputs_digest: derived.inputsDigest,
+              risk_rule_version: RISK_POLICY_VERSION,
+              risk_dimensions: dims,
+              risk_tier: (tierRank(tier) > tierRank(derived.tier) ? tier : derived.tier),
+              closure_mode: derived.closure,
+              ...(unit.delivery_scope === undefined ? {} : { delivery_scope: String(unit.delivery_scope) }),
+              ...(needsStrategy && !hasStrategy ? { test_strategy: '<字符串：写清验证方式（单元/集成/端到端/手工 + 判据）>' } : {}),
+            },
+            problems,
+            note: 'digest 与门禁同一份纯函数（riskFactsOf + riskAssessmentOf）按**单元现值**算；写回 write_fields 后门禁重算即一致。⚠ 若你要改 delivery_scope / 维度 / 硬触发，先改它们再重新取一次本接口——digest 会随之变化。',
+          }, null, 2),
           truncated: false,
           bytes: 0,
         }
