@@ -84,6 +84,8 @@ export interface ApprovalReadout {
   revision?: number
   selectedOption?: string
   decidedAt?: string
+  /** 2026-11-23：批准按**产品事实摘要**继续有效（机器细节变化不算内容变更）。 */
+  scopeBound?: boolean
   reason: string
 }
 
@@ -325,6 +327,33 @@ export function riskBindingDigestOf(
   return `fnv64:${digestPair(JSON.stringify(body))}`
 }
 
+
+/**
+ * **批准作用域摘要**（2026-11-23 · 治「审批疲劳」）：只覆盖**产品事实** ——
+ * 标题 / 方案正文 / 路径候选与取舍 / 路径决定 / 需求映射 / 交付域。
+ *
+ * ⚠ 为什么要有它：批准原先绑**全量内容摘要 + 修订号**，于是机器细节
+ *   （验证策略文本、评定时刻、状态词）任何一次调整都会让批准失效，
+ *   而修订号只增不减 ⇒ 用户被迫为「同一份产品决定」反复点头。
+ *   这与 AWS Agentic AI Lens 的反模式「uniform oversight ⇒ rubber-stamp approvals」同形。
+ * ⇒ 批准绑**产品事实**；产品事实不变则批准继续有效（机器细节变化另记）。
+ */
+export const APPROVAL_SCOPE_FIELDS = [
+  'title', 'proposal', 'path_options', 'path_tradeoffs', 'path_decision',
+  'requirement_coverage', 'req_ids', 'addresses', 'delivery_scope',
+] as const
+
+export function approvalScopeDigestOf(unit: Record<string, unknown>): string {
+  const body: Record<string, unknown> = { id: text(unit.id), kind: text(unit.kind) }
+  for (const key of APPROVAL_SCOPE_FIELDS) {
+    const value = canonicalValue(unit[key])
+    if (value === undefined) continue
+    if (Array.isArray(value) && value.length === 0) continue
+    if (typeof value === 'string' && value === '') continue
+    body[key] = value
+  }
+  return `scope:${digestPair(JSON.stringify(body))}`
+}
 /** Approval decisions that name one artifact, oldest first. */
 export function approvalDecisionsOf(
   units: readonly Record<string, unknown>[],
@@ -410,17 +439,38 @@ export function approvalStateOf(
     return { state: 'invalid', approvalId, revision, reason: '批准者不是 user，禁止 Hob 自批' }
   }
   const approvedRevision = Number(text(latest.artifact_revision))
-  if (!Number.isSafeInteger(approvedRevision) || approvedRevision !== revision) {
-    return {
-      state: 'stale',
-      approvalId,
-      revision,
-      decidedAt: text(latest.decided_at) || undefined,
-      reason: `批准绑定第 ${text(latest.artifact_revision) || '?'} 版，当前是第 ${revision} 版`,
-    }
-  }
+  const revisionOk = Number.isSafeInteger(approvedRevision) && approvedRevision === revision
   const digest = artifactDigestOf(artifact)
-  if (text(latest.artifact_digest) !== digest) {
+  const fullDigestOk = text(latest.artifact_digest) === digest
+  /**
+   * ⚠ 2026-11-23：**作用域绑定**（治审批疲劳）—— 产品事实未变即可继续有效。
+   *   · `approval_scope_digest` 在场且等于当前产品事实摘要 ⇒ 批准有效（机器细节变化另记）；
+   *   · 旧批准没有该字段（历史形态）⇒ 仍按全量摘要 + 修订严格判（⛔ 不静默放宽）。
+   * ⚠ 产品事实一变（标题/正文/路径/需求映射）⇒ 摘要变 ⇒ 立刻退回 stale，
+   *   这是 C-22「内容变化必须重新确认」的本意，逐字保留。
+   */
+  const scopeDigest = text(latest.approval_scope_digest)
+  const scopeOk = scopeDigest !== '' && scopeDigest === approvalScopeDigestOf(artifact)
+  if (!revisionOk || !fullDigestOk) {
+    if (scopeOk) {
+      return {
+        state: 'approved',
+        approvalId,
+        revision,
+        scopeBound: true,
+        ...(text(latest.decided_at) === '' ? {} : { decidedAt: text(latest.decided_at) }),
+        reason: '批准按产品事实继续有效（绑定产品事实摘要；机器细节变化不失效）',
+      }
+    }
+    if (!revisionOk) {
+      return {
+        state: 'stale',
+        approvalId,
+        revision,
+        decidedAt: text(latest.decided_at) || undefined,
+        reason: `批准绑定第 ${text(latest.artifact_revision) || '?'} 版，当前是第 ${revision} 版`,
+      }
+    }
     return {
       state: 'stale',
       approvalId,

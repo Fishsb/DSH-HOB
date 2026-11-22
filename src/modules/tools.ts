@@ -122,7 +122,7 @@ import {
   revisionOf,
 } from '../shared/pipeline.ts'
 import { pipelineDispatchProblems, acceptanceCriteriaIdsOf } from '../shared/pipeline-view.ts'
-import { riskBindingDigestOf, selectedOptionValid } from '../shared/pipeline.ts'
+import { riskBindingDigestOf, selectedOptionValid, approvalScopeDigestOf } from '../shared/pipeline.ts'
 // ── 账本健康的**唯一判据**（B1.3 / T-02 / T-05）────────────────────────────
 //   ⚠ 四个出口（readiness / stageGateOfLedger / stageHealthOfLedger / /stages.stageHealth）
 //     必须共用它；⛔ 任何出口都不得自己再拼一份判据集（那正是 T-02 的病）。
@@ -1141,6 +1141,24 @@ export const BOOTSTRAP_UNLOCK_BRIEF = [
   '跑完后由派活方重新走常规派活 —— 常规门禁会自行复核，本轨不是任何闸的「已通过」凭证。',
 ].join('\n')
 
+/**
+ * **从账本快照复原某一修订的产品事实摘要**（2026-11-23 · 机器重绑的验证依据）。
+ * ⚠ 只读 `backups/(root)/index.toml.*.bak`（写盘前的自动备份）；⛔ 不猜、⛔ 不取当前态冒充历史。
+ * 找不到 ⇒ 返回空，调用方必须拒绝重绑（⛔ 不用「调用方自述」代替验证）。
+ */
+function approvalScopeFromSnapshot(root: string, artifactId: string, revision: number): { scope?: string; snapshot?: string } {
+  const dir = join(root, 'backups', '(root)')
+  let files: string[]
+  try { files = readdirSync(dir).filter((f) => /^index\.toml\..*\.bak$/.test(f)).sort() } catch { return {} }
+  for (const f of files) {
+    try {
+      const units = parseUnitsToml(readFileSync(join(dir, f), 'utf8')) as Array<Record<string, unknown>>
+      const u = units.find((x) => String(x.id ?? '') === artifactId && Number(x.revision) === revision)
+      if (u !== undefined) return { scope: approvalScopeDigestOf(u), snapshot: f }
+    } catch { /* 单个快照坏了就跳过，⛔ 不让它污染判断 */ }
+  }
+  return {}
+}
 export function dispatchGateAtLedger(
   ledgerRoot: string,
   opts: { taskId?: string; planId?: string; unlock?: 'bootstrap' } = {},
@@ -2729,6 +2747,11 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         type: 'boolean',
         description: '（可选）缺省 true = 只预演。',
       },
+      rebindFrom: {
+        type: 'string',
+        description: '（可选）把一条既有批准记录**机器重绑到当前修订**：需给出原决策 id（如 DEC-005）。'
+          + '⚠ 仅在**产品事实未变**（标题/正文/路径/需求映射逐字相同）时成立 —— 服务端用账本快照复算原修订的产品事实摘要比对，不等则拒。⛔ 不代替用户重新确认新品决策。',
+      },
     },
     output: {
       schema: { type: 'json' },
@@ -2741,6 +2764,7 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       source: string
       selectedOption?: string
       dryRun?: boolean
+      rebindFrom?: string
     }, exec: ToolRunContext): Promise<JsonValue> {
       const root = ledgerRootOf(cfg, exec)
       if (root === undefined || root.trim() === '') {
@@ -2769,16 +2793,18 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
           message: `拒绝：${id} 当前第 ${actualRevision ?? '?'} 版，用户回执写的是第 ${String(args.revision)} 版。`,
         } as unknown as JsonValue
       }
-      const source = String(args.source ?? '').trim()
+      let source = String(args.source ?? '').trim()
       if (source === '') {
         return { ok: false, reason: 'source-required', message: '拒绝：批准必须附用户回执原文 source。' } as unknown as JsonValue
       }
-      const selectedOption = String(args.selectedOption ?? '').trim()
-      const decision = args.decision
+      /** ⚠ 2026-11-23：重绑时路径选择取自原决策，故先取标记、再校验候选。 */
+      const rebindFromRaw = String(args.rebindFrom ?? '').trim()
+      let selectedOption = String(args.selectedOption ?? '').trim()
+      let decision = args.decision
       if (decision !== 'approve' && decision !== 'request-changes') {
         return { ok: false, reason: 'decision-invalid', message: '拒绝：decision 只收 approve / request-changes。' } as unknown as JsonValue
       }
-      if (decision === 'approve' && kind === 'change') {
+      if (decision === 'approve' && kind === 'change' && rebindFromRaw === '') {
         const options = Array.isArray(artifact.path_options) ? artifact.path_options.map(String) : []
         if (selectedOption === '' || !options.includes(selectedOption)) {
           return {
@@ -2796,11 +2822,48 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
        * 分叉的成因就是"在调用点重写一遍"。现在两处共用一份实现。
        * `acceptRevisionRequest: true` —— 本工具在同一入口既处理批准也处理退回。
        */
+      let reboundMeta: { from: string; basis: string } | undefined
+      const rebindFrom = rebindFromRaw
+      if (rebindFrom !== '') {
+        /**
+         * ⚠ 2026-11-23 · **机器重绑**：用户已批准过同一份产品事实，只是修订号/机器细节变了。
+         *   验证依据**不是**调用方自述，而是账本快照里原修订的产品事实摘要。
+         *   ⛔ 产品事实任何一处不同 ⇒ 拒（那才是需要用户重新确认的变化）。
+         */
+        const old = units.find((u) => String(u.id ?? '') === rebindFrom && String(u.kind ?? '') === 'decision')
+        if (old === undefined) return { ok: false, reason: 'rebind-source-not-found', message: `拒绝：账本里没有决策 ${rebindFrom}。` } as unknown as JsonValue
+        if (String(old.artifact_id ?? '') !== id) return { ok: false, reason: 'rebind-target-mismatch', message: `拒绝：${rebindFrom} 批准的是 ${String(old.artifact_id ?? '?')}，不是 ${id}。` } as unknown as JsonValue
+        if (String(old.decision_kind ?? '') !== APPROVAL_DECISION_KIND) return { ok: false, reason: 'rebind-not-approval', message: '拒绝：只有 stage-approval 决策可重绑。' } as unknown as JsonValue
+        if (String(old.decision ?? '') !== 'approve') return { ok: false, reason: 'rebind-not-approve', message: '拒绝：只有 approve 决策可重绑（request-changes 需要新的用户回执）。' } as unknown as JsonValue
+        const currentScope = approvalScopeDigestOf(artifact)
+        let oldScope = String(old.approval_scope_digest ?? '').trim()
+        let basis = 'recorded-scope-digest'
+        if (oldScope === '') {
+          const snap = approvalScopeFromSnapshot(root, id, Number(old.artifact_revision))
+          if (snap.scope === undefined) {
+            return { ok: false, reason: 'rebind-unverifiable', message: `拒绝：${rebindFrom} 没有作用域摘要，且找不到第 ${String(old.artifact_revision ?? '?')} 版的账本快照 ⇒ 无法机器验证「产品事实未变」，⛔ 不代你确认。` } as unknown as JsonValue
+          }
+          oldScope = snap.scope
+          basis = 'snapshot:' + String(snap.snapshot ?? '')
+        }
+        if (oldScope !== currentScope) {
+          return { ok: false, reason: 'rebind-scope-changed', message: `拒绝：${id} 的产品事实（标题/正文/路径/需求映射）在第 ${String(old.artifact_revision ?? '?')} 版之后发生了变化（原摘要 ${oldScope}，当前 ${currentScope}）⇒ 需用户重新确认，不能机器重绑。` } as unknown as JsonValue
+        }
+        selectedOption = String(old.selected_option ?? '').trim()
+        if (kind === 'change' && !selectedOptionValid(artifact, selectedOption)) {
+          const options = Array.isArray(artifact.path_options) ? (artifact.path_options as unknown[]).map(String) : []
+          return { ok: false, reason: 'rebind-option-invalid', message: `拒绝：原批准选中的路径「${selectedOption || '(空)'}」已不在当前候选中（当前：${options.join(' / ') || '(无)'}）⇒ 需用户重新选择。` } as unknown as JsonValue
+        }
+        reboundMeta = { from: rebindFrom, basis }
+        source = String(old.source ?? '').trim()
+        decision = 'approve'
+      }
+
       const receipt = receiptPatternOf(
         { id, kind: String(artifact.kind ?? ''), revision: actualRevision },
         { acceptRevisionRequest: true },
       )
-      if (!receipt.test(source)) {
+      if (reboundMeta === undefined && !receipt.test(source)) {
         return {
           ok: false, reason: 'receipt-mismatch',
           message: `拒绝：用户回执没有同时点名 ${id} 与第 ${actualRevision} 版；只写“继续 / 可以”不算批准。`,
@@ -2826,6 +2889,8 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
         `artifact_id = ${JSON.stringify(id)}`,
         `artifact_revision = ${JSON.stringify(String(actualRevision))}`,
         `artifact_digest = ${JSON.stringify(artifactDigestOf(artifact))}`,
+        `approval_scope_digest = ${JSON.stringify(approvalScopeDigestOf(artifact))}`,
+        ...(reboundMeta === undefined ? [] : [`rebound_from = ${JSON.stringify(reboundMeta.from)}`, `rebound_basis = ${JSON.stringify(reboundMeta.basis)}`]),
         `decision = ${JSON.stringify(decision)}`,
         ...(selectedOption === '' ? [] : [`selected_option = ${JSON.stringify(selectedOption)}`]),
         'decided_by = "user"',
@@ -2837,7 +2902,9 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
       if (args.dryRun !== false) {
         return {
           ok: true, dryRun: true, decisionId,
-          message: `[演练] 将记录 ${decisionId}：${source}\n  ⚠ 未落盘。确认后传 dryRun:false。`,
+          message: `[演练] 将记录 ${decisionId}：${source}`
+            + (reboundMeta === undefined ? '' : `\n  ↳ 机器重绑自 ${reboundMeta.from}（依据 ${reboundMeta.basis}）：产品事实与原批准逐字相同，仅修订号/机器细节变化。`)
+            + '\n  ⚠ 未落盘。确认后传 dryRun:false。',
         } as unknown as JsonValue
       }
       /**
