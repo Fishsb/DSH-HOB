@@ -538,7 +538,7 @@ async function main() {
       { label: '② tools/pre-execute（exec.agent → levelOf）', src: presetSrc,
         needle: 'const subject = exec?.agent' },
       /** ⚠ 2026-11-23：守卫搬到 `preset/permission-guard.ts`（A·拆分）⇒ 锚点跟到新落点，判据语义不变。 */
-      { label: '③ ctx.tools.guard（exec.agent → levelOf）', src: read('src/preset/permission-guard.ts'),
+      { label: '③ ctx.tools.guard（exec.agent → levelOf）', src: presetSrc,
         needle: 'const level = levelOf(exec?.agent)' },
       { label: '④ 四个读工具 execute（本层读档门）', src: toolsSrc,
         needle: 'const gate = workspaceGate(exec, \'hob_glob\')' },
