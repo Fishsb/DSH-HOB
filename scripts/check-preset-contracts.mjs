@@ -3671,7 +3671,9 @@ console.log('预设（机器读版）:', HO)
     } catch { DENY = [] }
     if (DENY.length === 0) bad('⑤o 抽不出 DEFAULT_DENY（基准缺失 ⇒ 不按通过处理）')
     const KNOWN = [...m.MODEL_TOOL_ALLOWLIST, ...DENY]
-    const decide = (n, lv) => m.decideToolFace(n, lv, DENY, KNOWN)
+    /** ⚠ 2026-11-23：`decideToolFace` 仍在 preset/tools.ts（名单在 permission-tiers.ts）⇒ 两处各取所需。 */
+    const pt = await import(pathToFileURL(join(root, 'src', 'preset', 'tools.ts')).href + '?p14o=' + Date.now())
+    const decide = (n, lv) => pt.decideToolFace(n, lv, DENY, KNOWN)
 
     // ── ⑤o-2 档位只管读范围 / 其余默认放开 ────────────────────────────
     {

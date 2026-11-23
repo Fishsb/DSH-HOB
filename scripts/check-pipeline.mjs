@@ -207,8 +207,13 @@ console.log('')
   if (loose.test('确认需求 R-P5B 第 2 版')) p.push('错误版本号被接受（宽松版）')
 
   // ⑤ ⚠ 本条的核心：工具侧**不得**再内联回执正则
+  /**
+   * ⚠ 2026-11-23（A·拆分）：批准工具搬到 approval-tool.ts ⇒ 判据覆盖**两个落点**，
+   *   否则搬家后"工具侧不再内联正则"这条会因读错文件而空转。
+   */
   const toolsSrc = (() => {
-    try { return readFileSync(join(root, 'src', 'modules', 'tools.ts'), 'utf8') } catch { return '' }
+    const read = (rel) => { try { return readFileSync(join(root, rel), 'utf8') } catch { return '' } }
+    return read('src/modules/tools.ts') + read('src/modules/approval-tool.ts')
   })()
   if (toolsSrc === '') p.push('读不到 tools.ts ⇒ 失去基准')
   else if (toolsSrc.includes('new RegExp(`(?:确认|要求修改|退回修改)')) {
