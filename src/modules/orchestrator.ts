@@ -51,6 +51,7 @@
  *   `sessions` / `agents` 是**必需**（写进 `inject`）；其余一律 `ctx.get` 可选读。
  *   缺席 ⇒ 相关能力**明确拒绝**，绝不静默降级成"看起来在工作"的状态。
  */
+import { recordNotify } from '../server/notify-ledger.ts'
 import { lastAssistantText, lastAssistantEntry, changedFiles, receiptProgressRefsOf, buildReceipt, toPersisted } from './receipt-helpers.ts'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, sep } from 'node:path'
@@ -4816,6 +4817,8 @@ export function apply(ctx: any): void {
          * ⚠ 用户选择“新建”后，下面所有逻辑都用 `resolvedTarget`；⛔ 不再使用原 target。
          */
         let resolvedTarget = target
+        /** ⚠ notify 档：本次派单是否走了「预设不一致 ⇒ 自动新建」（由总线回报）。 */
+        let presetAutoResolved = false
         if (typeof target === 'string' && target !== '') {
           const presetBus = (() => { try { return svcCtx.get?.('hobBus') } catch { return undefined } })()
           if (presetBus === undefined || typeof presetBus.resolveDispatchTarget !== 'function') {
@@ -4838,6 +4841,20 @@ export function apply(ctx: any): void {
             }
           }
           resolvedTarget = resolved.sessionId
+          if ((resolved as { autoResolved?: unknown }).autoResolved === true) {
+            presetAutoResolved = true
+            /** ⚠ notify 档（2026-11-24）：预设不一致 ⇒ 自动新建属中风险自动动作，放行 + 留痕（失败不阻断派活）。 */
+            try {
+              const ownerRoot = typeof self === 'string' && self !== '' ? wsRootOfSession(self) : undefined
+              const nrRoot = ownerRoot === undefined ? undefined : resolveLedgerRoot('', declaredLedgerHome(svcCtx), ownerRoot)
+              if (nrRoot !== undefined) recordNotify(nrRoot, { kind: 'dispatch-preset-mismatch',
+                key: 'mismatch:' + String(target) + '->' + String(resolved.sessionId), subject: '预设不一致 ⇒ 自动新建会话',
+                detail: '目标 ' + String(target) + '（预设 ' + String((resolved as { targetPreset?: unknown }).targetPreset ?? '?') + '）与执行预设 ' + String(resolved.configuredPreset ?? '?') + ' 不一致 ⇒ 按设置新建后派活',
+                ...(typeof self === 'string' && self !== '' ? { actor: self } : {}) })
+            } catch { /* 旁路观测 */ }
+          }
+            } catch { /* notify 是旁路观测：⛔ 不许因它失败而阻断派活 */ }
+          }
         }
         /**
          * ⚠ **闸门按调用方自己的 owner 判**（`I-4`）：
