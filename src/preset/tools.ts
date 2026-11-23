@@ -147,7 +147,7 @@ export const DEGRADED_CAPABILITIES: { key: string; why: string }[] = []
  *     这也正是 ⑤m-4 要盯的那件事。
  */
 
-const SHARED_FORBIDDEN_TOOLS: readonly string[] = [
+export const SHARED_FORBIDDEN_TOOLS: readonly string[] = [
   'write',
   'edit',
   'bash',
@@ -162,7 +162,7 @@ const SHARED_FORBIDDEN_TOOLS: readonly string[] = [
  *   **一律不罩** —— 哨兵自己出问题时，账本与编排**必须照常**（实测反例：
  *   裸哨兵抛异常会把 `read_contracts` 一起弄瘫，见 `REPORT-R147.md` §c-3）。
  */
-const GUARDED_TOOLS: readonly string[] = [
+export const GUARDED_TOOLS: readonly string[] = [
   ...SHARED_FORBIDDEN_TOOLS,
   'hob_read_doc',
   'hob_glob',
@@ -185,7 +185,7 @@ function readPathArg(exec: any): string | undefined {
   }
 }
 
-function installPermissionGuard(
+export function installPermissionGuard(
   ctx: any,
   levelOf: (sessionOrAgent?: any) => string,
   log: (m: string) => void,
