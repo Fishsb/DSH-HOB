@@ -32,10 +32,14 @@
  *
  * ⚠ 本模块**不注册** DSH 原生 read/bash/write —— 与 `PROJECT.md` §5.2 同款纪律。
  */
-import { installPermissionGuard, GUARDED_TOOLS, SHARED_FORBIDDEN_TOOLS } from './permission-guard.ts'
-export { GUARDED_TOOLS, SHARED_FORBIDDEN_TOOLS }
-import { PERMISSION_TIERS, MODEL_TOOL_ALLOWLIST } from './permission-tiers.ts'
-export { PERMISSION_TIERS, MODEL_TOOL_ALLOWLIST }
+import * as permissionGuard from './permission-guard.ts'
+import * as permissionTiers from './permission-tiers.ts'
+
+/** ⚠ 具名再导出用 `const` 绑定（G-11 ①：本文件零具名值导入，避免链接期缺名字拖垮整块）。 */
+export const GUARDED_TOOLS = permissionGuard.GUARDED_TOOLS
+export const SHARED_FORBIDDEN_TOOLS = permissionGuard.SHARED_FORBIDDEN_TOOLS
+export const PERMISSION_TIERS = permissionTiers.PERMISSION_TIERS
+export const MODEL_TOOL_ALLOWLIST = permissionTiers.MODEL_TOOL_ALLOWLIST
 import { appendFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HobToolsConfig } from '../modules/tools.ts'
@@ -744,7 +748,7 @@ export function apply(ctx: any, config: Config = {}): void {
   //   ⚠ 2026-10-24：三处都多收一个 `visibleNamesFor`（= 名字集口径的唯一收口点）。
   filterModelToolList(ctx, levelOf, log, visibleNamesFor)
   enforceToolAllowlist(ctx, levelOf, log, visibleNamesFor)
-  installPermissionGuard(ctx, levelOf, log, visibleNamesFor)
+  permissionGuard.installPermissionGuard(ctx, levelOf, log, visibleNamesFor)
 
   // ⚠ 「工作方式」口径的挂载点**同上**：外层 ctx（本预设作用域）、不随门禁消失。
   //   理由与收敛机制同一条：关掉 `modules.tools` 不该让"拆几路"的口径**消失**

@@ -9,8 +9,10 @@
  *
  * @module receipt-helpers
  */
-import type { Watch } from './orchestrator.ts'
 import type { PersistedWatch } from '../server/orch-state.ts'
+
+/** 看护记录的结构面（⛔ 不回引 orchestrator —— 那会成循环依赖）。 */
+type Watch = Record<string, any>
 
 export function lastAssistantEntry(session: any): { text: string; at?: number } | undefined {
   try {

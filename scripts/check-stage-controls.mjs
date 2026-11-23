@@ -421,6 +421,8 @@ console.log('')
     else bad('SC-31b retry-abandoned 未进 hob_orch_control 动作封闭集')
     // ── SC-31c：批5 两针（宪法出口 + mismatch 自动档，unknown 弹问保留）──
     const toolsTextC = readFileSync(join(root, 'src', 'modules', 'tools.ts'), 'utf8')
+      + readFileSync(join(root, 'src', 'modules', 'read-contract-endpoints.ts'), 'utf8')
+      + readFileSync(join(root, 'src', 'modules', 'approval-tool.ts'), 'utf8')
     if (toolsTextC.includes("path: 'constitution'")) ok('SC-31c ✓ 插件宪法只读出口在位（双层宪法上层）')
     else bad('SC-31c 插件宪法出口缺失 ⇒ 宪法仍只能人工读')
     const busText = readFileSync(join(root, 'src', 'modules', 'bus.ts'), 'utf8')

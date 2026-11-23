@@ -96,7 +96,7 @@ const root = join(here, '..')
 const HO = join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')
 const DRAFT = join(root, 'kit', 'drafts', 'preset-contracts.md')
 /** 权限三档表的落点（⑤m 组的唯一来源）。 */
-const TOOLS_TS = join(root, 'src', 'preset', 'tools.ts')
+const TOOLS_TS = join(root, 'src', 'preset', 'permission-tiers.ts')
 /**
  * 宿主包的 `node_modules` 根（⑤m-6 读宿主平面 patch 用）。
  *
@@ -1116,7 +1116,7 @@ const STALE_APPELLATIONS = [
 //
 // 为什么需要：批 9（范围 S1+S2+S3）给 Hob 加了 9 类只读能力，机制落点是
 //   **声明面 与 白名单 的「与门」**（见 EXPERIENCE E-86）：
-//   · 白名单 = `src/preset/tools.ts` 的 `MODEL_TOOL_ALLOWLIST`（模型面 + 执行前拦截共用那一份）；
+//   · 白名单 = `src/preset/permission-tiers.ts` 的 `MODEL_TOOL_ALLOWLIST`（模型面 + 执行前拦截共用那一份）；
 //   · 声明面 = `preset/dsh-hob/preset-dsh-hob.patch.yml` 的 `plugins` 行。
 // ⑤/⑤b/⑤c/⑤d/⑤e 都只管**契约正文**（人读/机器读一致、格式、职责句、交接、编排），
 // **一条都不覆盖"白名单里到底有哪几个名字"** —— 有人把新增的 9 名删掉，上面全组照样 PASS。
@@ -1132,11 +1132,11 @@ const STALE_APPELLATIONS = [
 
   // 从源码读白名单：只做**行级**抽取（本仓零第三方依赖纪律），不 eval 那个 TS 文件。
   const toolsSrc = (() => {
-    try { return readFileSync(join(root, 'src', 'preset', 'tools.ts'), 'utf8') } catch { return undefined }
+    try { return readFileSync(join(root, 'src', 'preset', 'permission-tiers.ts'), 'utf8') } catch { return undefined }
   })()
 
   if (toolsSrc === undefined) {
-    bad('⑤f 读不到 src/preset/tools.ts（白名单的唯一来源）')
+    bad('⑤f 读不到 src/preset/permission-tiers.ts（白名单的唯一来源）')
   } else {
     // 抽取 `export const MODEL_TOOL_ALLOWLIST: readonly string[] = [ ... ]` 间的字符串字面量。
     const m = /export const MODEL_TOOL_ALLOWLIST[^=]*=\s*\[([\s\S]*?)\n\]/.exec(toolsSrc)
@@ -1416,10 +1416,10 @@ const STALE_APPELLATIONS = [
 //     它们**只**由下面的声明面断言覆盖；白名单那两条与此无关（免得后来人"补名字"）。
 {
   const toolsSrc13 = (() => {
-    try { return readFileSync(join(root, 'src', 'preset', 'tools.ts'), 'utf8') } catch { return undefined }
+    try { return readFileSync(join(root, 'src', 'preset', 'permission-tiers.ts'), 'utf8') } catch { return undefined }
   })()
   if (toolsSrc13 === undefined) {
-    bad('⑤h 读不到 src/preset/tools.ts（白名单的唯一来源）')
+    bad('⑤h 读不到 src/preset/permission-tiers.ts（白名单的唯一来源）')
   } else {
     const m13 = /export const MODEL_TOOL_ALLOWLIST[^=]*=\s*\[([\s\S]*?)\n\]/.exec(toolsSrc13)
     if (m13 === null) {
@@ -2072,7 +2072,7 @@ const STALE_APPELLATIONS = [
 //      回到注册面，而三档白名单照样 PASS** ⇒ ⑤m-6 专门盯这一条。
 //
 // ── 判据口径（不许放宽）────────────────────────────────────────────────
-//   · 名字集**一律从 `src/preset/tools.ts` 的 `PERMISSION_TIERS` 实测抽取**，
+//   · 名字集**一律从 `src/preset/permission-tiers.ts` 的 `PERMISSION_TIERS` 实测抽取**，
 //     ⛔ **不许在脚本里内联第二份清单**（P-2 判据管的就是这件事）；
 //   · 档1 必须与 `MODEL_TOOL_ALLOWLIST` **双向差集都为空**（逐名，不是数条数）。
 {
@@ -3455,7 +3455,7 @@ console.log('预设（机器读版）:', HO)
  *     才真能用。本组钉的是**后一半**。
  *
  * ── 判据（**不硬编码名字**，全部从源码实测）──────────────────────────────
- *   ① 取 `src/preset/tools.ts` 的 `MODEL_TOOL_ALLOWLIST`（实测字面量）；
+ *   ① 取 `src/preset/permission-tiers.ts` 的 `MODEL_TOOL_ALLOWLIST`（实测字面量）；
  *   ② 取本预设声明面 `preset/dsh-hob/preset-dsh-hob.patch.yml` 的**全文**；
  *   ③ 取**宿主内置**那几份预设（`dsh-web-app/presets/*.patch.yml`）里声明过的工具 id；
  *   ④ ⚠ 本预设地基 = `minimal.patch.yml`（宿主**不支持 `extends`**，
@@ -3481,7 +3481,7 @@ console.log('预设（机器读版）:', HO)
   const readOr = (p) => { try { return readFileSync(p, 'utf8') } catch { return null } }
 
   /** ① 白名单实测 */
-  const allowSrc = readOr(join(root, 'src', 'preset', 'tools.ts'))
+  const allowSrc = readOr(join(root, 'src', 'preset', 'permission-tiers.ts'))
   const allow = (() => {
     if (allowSrc === null) return null
     const m = /export const MODEL_TOOL_ALLOWLIST[^=]*=\s*\[([\s\S]*?)\n\]/.exec(allowSrc)
@@ -3637,7 +3637,7 @@ console.log('预设（机器读版）:', HO)
  *   ⚠ 负向对拍（⑤o-4）把 deny 分支改成恒假 ⇒ ②必须变红，用来证明这三条有牙。
  */
 {
-  const MOD_TS = join(root, 'src', 'preset', 'tools.ts')
+  const MOD_TS = join(root, 'src', 'preset', 'permission-tiers.ts')
   let m = null
   try { m = await import(pathToFileURL(MOD_TS).href + '?p14=' + Date.now()) } catch (e) {
     bad(`⑤o 无法直载 src/preset/tools.ts（${String(e?.message ?? e)}）⇒ 基准缺失，不按通过处理`)
@@ -3892,7 +3892,7 @@ console.log('预设（机器读版）:', HO)
  * ⇒ ⑤o-3 必红。⚠ 先自证源码里**确实**有那句（否则"改不动"与"改了没用"分不开）。
  */
 {
-  const MOD_TS = join(root, 'src', 'preset', 'tools.ts')
+  const MOD_TS = join(root, 'src', 'preset', 'permission-tiers.ts')
   let src = null
   try { src = readFileSync(MOD_TS, 'utf8') } catch { src = null }
   const NEEDLE = "return { keep: true, unseen: !known.includes(name), why: 'default-open' }"
@@ -3949,7 +3949,7 @@ console.log('预设（机器读版）:', HO)
  *   手抄的名单会和源码漂，漂了之后本组验的就不是源码了。
  */
 {
-  const MOD_TS = join(root, 'src', 'preset', 'tools.ts')
+  const MOD_TS = join(root, 'src', 'preset', 'permission-tiers.ts')
   let m = null
   try { m = await import(pathToFileURL(MOD_TS).href + '?t=' + Date.now()) } catch { m = null }
   let dm = null
@@ -4063,7 +4063,7 @@ console.log('预设（机器读版）:', HO)
  *        —— 若哪天有人按 O-15 的初读把它们从低档摘掉，本条当场红。
  */
 {
-  const presetMod15 = await import(pathToFileURL(join(root, 'src', 'preset', 'tools.ts')).href)
+  const presetMod15 = await import(pathToFileURL(join(root, 'src', 'preset', 'permission-tiers.ts')).href)
   const T = presetMod15.PERMISSION_TIERS
   const READ = presetMod15.READ_SCOPED_TOOLS
   const probs = []
@@ -4101,7 +4101,7 @@ console.log('预设（机器读版）:', HO)
  * ⚠ 先自证源码里**确实**有那句（否则"改不动"与"改了没用"分不开）。
  */
 {
-  const MOD_TS = join(root, 'src', 'preset', 'tools.ts')
+  const MOD_TS = join(root, 'src', 'preset', 'permission-tiers.ts')
   let src = null
   try { src = readFileSync(MOD_TS, 'utf8') } catch { src = null }
   const NEEDLE = "return { keep: true, unseen: !known.includes(name), why: 'default-open' }"
