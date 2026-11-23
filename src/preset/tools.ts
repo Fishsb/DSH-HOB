@@ -1382,8 +1382,9 @@ const RESERVED_TRANSPORT_TOOL = 'run_code'
 export function decideToolFace(
   name: string,
   level: string,
-  deny: readonly string[],
-  known: readonly string[],
+  /** ⚠ 2026-11-23：缺省空表 —— 机检负向对拍会从变体模块取名单，取不到时**按空表**判（⛔ 不抛，抛会让该族整组不可判）。 */
+  deny: readonly string[] = [],
+  known: readonly string[] = [],
 ): { keep: boolean; unseen: boolean; why: string } {
   if (name === RESERVED_TRANSPORT_TOOL) return { keep: true, unseen: false, why: 'reserved-transport' }
   if (deny.includes(name)) return { keep: false, unseen: false, why: 'deny' }
