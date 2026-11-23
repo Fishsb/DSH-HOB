@@ -27,6 +27,7 @@ import {
   selectedOptionValid,
 } from '../shared/pipeline.ts'
 import { parseUnitsToml } from '../shared/stages-index.ts'
+import { recordNotify } from '../server/notify-ledger.ts'
 
 /** 由 `tools.ts` 注入的 I/O 面（⛔ 本模块不自己拼账本落点、不自己拿写盘锁）。 */
 export interface ApprovalToolDeps {
@@ -298,8 +299,17 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
       if (!w.ok) {
         return { ok: false, reason: w.reason, message: `批准记录写盘失败：${w.message}` } as unknown as JsonValue
       }
+      /** ⚠ notify 档：批准/重绑是**中风险**动作 —— 放行 + 留痕（⛔ 不替代用户批准，那仍是 G1/G2 本身）。 */
+      const notified = recordNotify(root, {
+        kind: reboundMeta === undefined ? 'approval-recorded' : 'approval-rebind',
+        key: (reboundMeta === undefined ? 'approval:' : 'rebind:') + id + '@v' + String(actualRevision),
+        subject: id + ' 第 ' + String(actualRevision) + ' 版' + (reboundMeta === undefined ? '批准记录' : '机器重绑'),
+        detail: reboundMeta === undefined ? undefined : ('自 ' + reboundMeta.from + '，依据 ' + reboundMeta.basis),
+        actor: 'Hob',
+      })
       return {
         ok: true, decisionId, artifactId: id, revision: actualRevision, decision,
+        ...(notified.ok ? {} : { notify: { ok: false, reason: notified.reason } }),
         ...(selectedOption === '' ? {} : { selectedOption }),
         message: `已记录 ${decisionId}：用户${decision === 'approve' ? '批准' : '要求修改'} ${id} 第 ${actualRevision} 版。`,
       } as unknown as JsonValue

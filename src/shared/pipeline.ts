@@ -86,6 +86,10 @@ export interface ApprovalReadout {
   decidedAt?: string
   /** 2026-11-23：批准按**产品事实摘要**继续有效（机器细节变化不算内容变更）。 */
   scopeBound?: boolean
+  /** 2026-11-23：**等待时长**（小时，仅当有历史批准可算时出现；⛔ 无根据时不给数）。 */
+  waitedHours?: number
+  /** 2026-11-23：是否**超过催办阈值**（AWS 反模式③：审批无超时/升级 ⇒ 无限期阻塞）。 */
+  escalated?: boolean
   reason: string
 }
 
@@ -338,6 +342,25 @@ export function riskBindingDigestOf(
  *   这与 AWS Agentic AI Lens 的反模式「uniform oversight ⇒ rubber-stamp approvals」同形。
  * ⇒ 批准绑**产品事实**；产品事实不变则批准继续有效（机器细节变化另记）。
  */
+/** 历史批准到现在的等待时长读数（⛔ 无 decided_at 就不给数，宁可判不出）。 */
+function waitedOf(decision: Record<string, unknown>): { waitedHours?: number; escalated?: boolean } {
+  const at = Date.parse(text(decision.decided_at))
+  if (!Number.isFinite(at)) return {}
+  const hours = Math.max(0, (Date.now() - at) / 3_600_000)
+  return { waitedHours: Math.round(hours * 10) / 10, escalated: hours >= APPROVAL_ESCALATE_HOURS }
+}
+
+/** 把等待时长写进可读原因（⚠ 只在能算出时追加，⛔ 不编造等待时长）。 */
+function waitedSuffix(decision: Record<string, unknown>): string {
+  const w = waitedOf(decision)
+  if (w.waitedHours === undefined) return ''
+  const base = '（距上次批准已 ' + w.waitedHours + ' 小时）'
+  return w.escalated === true ? base + ' ⚠ 已超过 ' + APPROVAL_ESCALATE_HOURS + ' 小时催办阈值 ⇒ 建议催办、或明确延期；⛔ 系统不会因超时自动放行' : base
+}
+export const APPROVAL_ESCALATE_HOURS = 24
+
+/** 超过该时长仍未（重新）批准 ⇒ 读数里升级为「建议催办/延期」，⛔ 不自动放行。 */
+
 export const APPROVAL_SCOPE_FIELDS = [
   /** 方案类产品事实 */
   'title', 'proposal', 'path_options', 'path_tradeoffs', 'path_decision',
@@ -480,7 +503,8 @@ export function approvalStateOf(
         approvalId,
         revision,
         decidedAt: text(latest.decided_at) || undefined,
-        reason: `批准绑定第 ${text(latest.artifact_revision) || '?'} 版，当前是第 ${revision} 版`,
+        ...waitedOf(latest),
+        reason: `批准绑定第 ${text(latest.artifact_revision) || '?'} 版，当前是第 ${revision} 版` + waitedSuffix(latest),
       }
     }
     return {
@@ -488,7 +512,8 @@ export function approvalStateOf(
       approvalId,
       revision,
       decidedAt: text(latest.decided_at) || undefined,
-      reason: '批准后内容发生了变化，旧批准已失效',
+      ...waitedOf(latest),
+      reason: '批准后内容发生了变化，旧批准已失效' + waitedSuffix(latest),
     }
   }
   const selected = text(latest.selected_option)

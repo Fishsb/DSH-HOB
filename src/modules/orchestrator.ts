@@ -8703,6 +8703,14 @@ export function createHobOrchTools(
     retryAbandoned: (reason: string, actor?: string) => { retried: number; seqs: number[] }
     abandonedCount: () => number
   } | undefined,
+  /**
+   * ⚠ 批 notify（2026-11-23）：**中风险动作的通知面**（AWS 三档的中间档）。
+   *   放行 + 留痕；⛔ 不参与任何门禁判定、⛔ 不是批准凭证。缺席 ⇒ 只少读数，不阻断动作。
+   */
+  notifyOf?: (exec: any) => {
+    record: (entry: { kind: string; key: string; subject: string; detail?: string; actor?: string }) => void
+    read: (limit?: number) => { readable: boolean; rows: Array<{ at: string; kind: string; subject: string; detail?: string; count?: number }>; total: number; reason?: string }
+  } | undefined,
 ): {
   dispatch: ReturnType<typeof defineTool>
   status: ReturnType<typeof defineTool>
@@ -9020,6 +9028,7 @@ export function createHobOrchTools(
             ...(ru.targetPreset === undefined ? {} : { targetPreset: ru.targetPreset }),
           })
         }
+        notifyOf?.(exec)?.record({ kind: 'unlock-bootstrap', key: 'unlock:' + String(ru.sessionId ?? ''), subject: '自举解锁轨已派发', detail: '账本读不出/缺索引 ⇒ 固定简报（不登记 RUN，⛔ 不是任何闸的凭证）' })
         return JSON.stringify({
           ok: true, dispatched: true, unlockTrack: 'bootstrap',
           sessionId: ru.sessionId,
@@ -9112,6 +9121,30 @@ export function createHobOrchTools(
        *   判不出自己的工作区 ⇒ **不传过滤**（看全部），并在话里说清这一点 ——
        *   ⛔ 不许拿一个猜出来的 workspaceId 去过滤（那会**少报**）。
        */
+      /**
+       * ⚠ notify 档读数（2026-11-23）：中风险动作的留痕 —— 放行不代表没人知道。
+       *   ⛔ 只报不判：这些条目不是批准凭证，也不改任何门禁。
+       */
+      const notifyLines: string[] = (() => {
+        const face = notifyOf?.(exec)
+        if (face === undefined) return []
+        try {
+          const r = face.read(8)
+          if (r.readable !== true) return ['通知（notify 档）：⚠ 读不到（' + String(r.reason ?? '原因未知') + '）—— ⛔ 不等于没有中风险动作']
+          if (r.total === 0) return ['通知（notify 档）：暂无（⛔ 这档是「确实没有」，不是「没去读」）']
+          const lines = ['通知（notify 档）：' + String(r.total) + ' 条（新的在前，最多列 8 条）']
+          for (const row of r.rows) {
+            lines.push('  · ' + row.at + ' · ' + row.kind + ' · ' + row.subject
+              + (row.count !== undefined && row.count > 1 ? '（触发 ' + String(row.count) + ' 次）' : '')
+              + (row.detail === undefined ? '' : ' ↳ ' + row.detail))
+          }
+          lines.push('  ↳ ⚠ 这一档是知情，不是批准；需要拍板的事仍走 G1/G2/G5')
+          return lines
+        } catch (e) {
+          return ['通知（notify 档）：⚠ 读数抛错（' + String((e as Error)?.message ?? e) + '）—— ⛔ 不等于没有条目']
+        }
+      })()
+
       const cardLines = await (async (): Promise<string[]> => {
         try {
           const snap = await orch.cardsOf({ selfSessionId: selfSessionIdOf(exec) })
@@ -10418,6 +10451,8 @@ export function createHobOrchTools(
         //   ⚠ ⚠ **读不到必须说出来**：`unavailable` / `unreadable` ⇒ 可读标记 + 原话
         //     （⛔ 不许静默当成"没有卡" —— 那正是本轮要修的失败模式）。
         ...cardLines,
+        /** ⚠ notify 档读数（2026-11-23）：中风险动作留痕 —— 在卡状态之后、回传读数之前。 */
+        ...notifyLines,
         // ── ⚠⚠ 以下是**主信号源**的读数（2026-10-19 · `TASK-2` 改判）────────────
         //   ⚠ 它**必须常态出现**（不像下面那条旁证通道只在异常时出）——
         //     因为"读不到会话状态"与"没有会话在跑"外表一样，只能靠这行分开。
@@ -10776,6 +10811,8 @@ export function createHobOrchTools(
         }
         const actor = selfSessionIdOf(exec)
         const r = face.retryAbandoned(retryReason, actor === undefined ? undefined : String(actor))
+        /** ⚠ notify 档：自愈动作放行 + 留痕（⛔ 不是批准；失败不影响动作本身）。 */
+        notifyOf?.(exec)?.record({ kind: 'retry-abandoned', key: 'retry-abandoned:' + String(retryReason).slice(0, 40), subject: `重置 ${r.retried} 条放弃行`, detail: retryReason, ...(actor === undefined ? {} : { actor: String(actor) }) })
         return JSON.stringify({ ok: true, action: 'retry-abandoned', retried: r.retried, seqs: r.seqs,
           message: r.retried === 0
             ? '没有 abandoned 行 —— 无事可做（这不是失败）。'

@@ -24,6 +24,7 @@ import {
 } from '../shared/risk-policy.ts'
 import { riskBindingDigestOf, artifactDigestOf, selectedOptionValid } from '../shared/pipeline.ts'
 import { acceptanceCriteriaIdsOf } from '../shared/pipeline-view.ts'
+import { readNotifications } from '../server/notify-ledger.ts'
 
 /** 出口需要的注入面（由 `tools.ts` 提供；⛔ 不在本模块自己拼账本落点）。 */
 export interface ReadContractDeps {
@@ -187,6 +188,23 @@ export async function runReadContractEndpoint(
       const root = deps.resolveRoot()
       if (root === undefined) {
         return { ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' }
+      }
+      if (String(args.path ?? '').trim() === 'notifications') {
+        /**
+         * ⚠ 2026-11-23 · notify 档读数（只读）：中等风险动作**放行 + 留痕**，这里把它们端出来。
+         *   ⛔ 不是批准凭证、⛔ 不改任何门禁；文件不存在 = 空（不是读不到）。
+         */
+        const root = deps.resolveRoot()
+        if (root === undefined) return { ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' }
+        const limit = Number(args.notifyLimit ?? 20)
+        const r = readNotifications(root, Number.isFinite(limit) && limit > 0 ? limit : 20)
+        if (r.readable !== true) return { ok: false, reason: 'notify-unreadable', message: '通知账本读不到：' + r.reason }
+        return {
+          ok: true,
+          text: JSON.stringify({ ok: true, path: 'notifications', readonly: true, total: r.total, rows: r.rows }, null, 2),
+          truncated: false,
+          bytes: 0,
+        } as unknown as JsonValue
       }
       if (String(args.path ?? '').trim() === 'diagnostics') {
         /**

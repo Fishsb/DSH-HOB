@@ -34,6 +34,8 @@
  */
 
 /** ⚠ 具名再导出用 `const` 绑定（G-11 ①：本文件零具名值导入，避免链接期缺名字拖垮整块）。 */
+import * as notifyLedger from '../server/notify-ledger.ts'
+import * as diagMod from './diag.ts'
 import { appendFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HobToolsConfig } from '../modules/tools.ts'
@@ -481,33 +483,6 @@ export const READ_SCOPED_TOOLS: readonly string[] = [
   'hob_read_image',
 ]
 
-function makeDiag(config: Config): (msg: string) => void {
-  if (config.debugLog !== true) return (): void => { /* 开关关闭：不做任何 IO */ }
-
-  const path = config.debugLogPath ?? '/tmp/dsh-hob-preset-tools.log'
-  // ⚠ `DEFAULTS` 也是"可能在旧缓存里缺席"的具名导出（`TASK-D`①）⇒ **运行时**取，
-  //   且缺席时退到**同一个数**（`modules/tools.ts` 的 `debugLogMaxBytes` 缺省值）。
-  //   ⚠ 诊断器本身**不是能力**（默认关着），它缺席不该让任何东西失败。
-  const defaults = (toolsFace as unknown as Record<string, unknown>).DEFAULTS as
-    { debugLogMaxBytes?: number } | undefined
-  const maxBytes = config.debugLogMaxBytes ?? defaults?.debugLogMaxBytes ?? 262144
-
-  return (msg: string): void => {
-    try {
-      // ⚠ 先按**磁盘现值**判（不是内存计数器）：跨 fiber reload 依然有效，
-      //   外部轮转/删除日志后也能自愈。
-      let size = 0
-      try { size = statSync(path).size } catch { /* 文件还不存在 ⇒ size=0 */ }
-      // ⚠ 判据必须把**本行自身字节数**算进去：只判 `size >= max` 会让单行把文件顶过上限
-      //   （实测：上限 600 B 时写成 796 B —— 末行 200 B 被整行追加）。
-      //   真正的硬上限是"写入后 ≤ maxBytes"，超了就整行丢弃。
-      const line = new Date().toISOString() + ' ' + msg + '\n'
-      const bytes = Buffer.byteLength(line)
-      if (size + bytes > maxBytes) return
-      appendFileSync(path, line)
-    } catch { /* 诊断写不进去不该影响功能 */ }
-  }
-}
 
 /**
  * 挂载：**先立权限边界**（屏蔽越界工具）与**收敛机制**（模型面白名单 + 执行前拦截），
@@ -534,7 +509,7 @@ function makeDiag(config: Config): (msg: string) => void {
 export function apply(ctx: any, config: Config = {}): void {
   // ⚠ 诊断器**每挂载构造一次**（不是模块级单例）：上限要按"这次挂载"读磁盘现值，
   //   模块级可变状态在 fiber reload 后既不可靠、也让本模块带上跨实例状态。
-  const diag = makeDiag(config)
+  const diag = diagMod.makeDiag(config, toolsFace as unknown as Record<string, unknown>)
   /** 按账本根复用后台补投队列；dispose 时 drain，未完成行留盘。 */
   const handoffQueues = new Map<string, EffectsQueue>()
   const handoffEffectsOf = (ledgerRoot: string): EffectsQueue | undefined => {
@@ -1277,6 +1252,8 @@ export function apply(ctx: any, config: Config = {}): void {
             return { ok: r.ok, applied: r.applied, ...(r.reason === undefined ? {} : { reason: r.reason }) }
           },
         })),
+        /** ⚠ notify 档（2026-11-23）：按会话账本根现取通知面；判不出根 ⇒ undefined（只少读数）。 */
+        (exec: any) => { const root = ledgerRootOf(config, exec); return root === undefined ? undefined : notifyLedger.notifyFaceOf(root) },
         (exec: any) => {
           /** ⚠ 批4（2026-11-21 · 方案2）：handoff effects 受限自愈面 —— 按会话账本根现取队列。 */
           const root = ledgerRootOf(config, exec)
@@ -2111,6 +2088,11 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
       sendBackTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
     }) => Promise<{ ok: boolean; applied: number; reason?: string }>
   } | undefined,
+  /** ⚠ notify 档（2026-11-23）：按会话账本根现取通知面。 */
+  notifyOf?: (exec: any) => {
+    record: (entry: { kind: string; key: string; subject: string; detail?: string; actor?: string }) => void
+    read: (limit?: number) => { readable: boolean; rows: Array<{ at: string; kind: string; subject: string; detail?: string; count?: number }>; total: number; reason?: string }
+  } | undefined,
   /** ⚠ 批4（2026-11-21 · 方案2）：handoff effects 受限自愈面（retryAbandoned）。缺席 ⇒ 动作如实报不可用。 */
   effectsRetryOf?: (exec: any) => {
     retryAbandoned: (reason: string, actor?: string) => { retried: number; seqs: number[] }
@@ -2176,6 +2158,7 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
     lifecycleForExec,
     ledgerProjectionOf,
     effectsRetryOf,
+    notifyOf,
   )
   ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')
   ctx.effect(() => ctx.tools.register(status), 'dsh-hob preset: hob_orch_status tool')
