@@ -53,6 +53,8 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
+import { runReadContractEndpoint } from './read-contract-endpoints.ts'
+import { createLedgerApprove } from './approval-tool.ts'
 import {
   acceptanceProblems,
   evaluateGate,
@@ -701,25 +703,8 @@ export function ledgerRootOf(cfg: HobToolsConfig, exec: ToolRunContext): string 
  * ⛔ **只读**：这个根只喂给 `readMarkdownCapped`（既有只读边界：inside-root / 拒软链 / 仅 .md），
  *   永不参与任何写面；⛔ 不扩大到 spec 之外的 preset 路径。
  */
-export function governanceSpecRootOf(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'preset', 'dsh-hob', 'spec')
-}
 
 /** `riskHardTriggers` 一类列表入参的宽松解析：JSON 数组优先，逗号分隔兜底。 */
-function parseStringList(raw: string | undefined): { ok: true; list: string[] } | { ok: false; why: string } {
-  const s = String(raw ?? '').trim()
-  if (s === '') return { ok: true, list: [] }
-  if (s.startsWith('[')) {
-    try {
-      const v: unknown = JSON.parse(s)
-      if (!Array.isArray(v) || v.some((x) => typeof x !== 'string')) return { ok: false, why: '不是字符串数组' }
-      return { ok: true, list: v.map((x) => String(x).trim()).filter((x) => x !== '') }
-    } catch {
-      return { ok: false, why: 'JSON 解析失败' }
-    }
-  }
-  return { ok: true, list: s.split(',').map((x) => x.trim()).filter((x) => x !== '') }
-}
 
 /**
  * **风险校验和的服务端出口**（2026-11-20 · C·UD 后续）：`path=risk/digest` 的实现。
@@ -733,74 +718,6 @@ function parseStringList(raw: string | undefined): { ok: true; list: string[] } 
  * ⚠ 回包自带**合法词表**（维度键值 / 硬触发 / 交付域 / 档位），规划侧据此构造
  *   下一次合法入参 —— 这是对「读不到规范词表」死结的另一半解。
  */
-type RiskDigestArgs = { riskDimensions?: string; riskHardTriggers?: string; riskDelivery?: string; riskDeclaredTier?: string }
-function riskDigestOfArgs(args: RiskDigestArgs): JsonValue {
-  let dims: Record<string, string> = {}
-  const rawDims = String(args.riskDimensions ?? '').trim()
-  if (rawDims !== '') {
-    try {
-      const v: unknown = JSON.parse(rawDims)
-      if (v === null || typeof v !== 'object' || Array.isArray(v)) {
-        return { ok: false, reason: 'risk-dimensions-invalid', message: '拒绝：riskDimensions 必须是 JSON 对象（维度名 → 值），如 {"operational-scale":"project"}。' }
-      }
-      dims = v as Record<string, string>
-    } catch {
-      return { ok: false, reason: 'risk-dimensions-invalid', message: '拒绝：riskDimensions 不是合法 JSON。' }
-    }
-  }
-  const hard = parseStringList(args.riskHardTriggers)
-  if (!hard.ok) return { ok: false, reason: 'risk-hard-triggers-invalid', message: '拒绝：riskHardTriggers ' + hard.why + '（给 JSON 字符串数组或逗号分隔）。' }
-  const delivery = String(args.riskDelivery ?? '').trim()
-  if (delivery !== '' && !(DELIVERY_SCOPES as readonly string[]).includes(delivery)) {
-    return { ok: false, reason: 'risk-delivery-invalid', message: '拒绝：riskDelivery 必须是 ' + DELIVERY_SCOPES.join(' / ') + ' 之一。' }
-  }
-  const declaredTier = String(args.riskDeclaredTier ?? '').trim()
-  if (declaredTier !== '' && !(RISK_TIERS as readonly string[]).includes(declaredTier)) {
-    return { ok: false, reason: 'risk-declared-tier-invalid', message: '拒绝：riskDeclaredTier 必须是 ' + RISK_TIERS.join(' / ') + ' 之一。' }
-  }
-  for (const [k, v] of Object.entries(dims)) {
-    const legal = (RISK_DIMENSIONS as unknown as Record<string, readonly string[]>)[k]
-    if (!Array.isArray(legal)) {
-      return { ok: false, reason: 'risk-dimension-key-invalid', message: '拒绝：维度「' + k + '」不在词表；合法维度：' + Object.keys(RISK_DIMENSIONS).join(' / ') + '。' }
-    }
-    if (!legal.includes(String(v))) {
-      return { ok: false, reason: 'risk-dimension-value-invalid', message: '拒绝：维度「' + k + '」的值必须是 ' + legal.join(' / ') + ' 之一。' }
-    }
-  }
-  for (const t of hard.list) {
-    if (!(RISK_HARD_TRIGGERS as readonly string[]).includes(t)) {
-      return { ok: false, reason: 'risk-hard-trigger-invalid', message: '拒绝：硬触发「' + t + '」不在词表；合法值：' + RISK_HARD_TRIGGERS.join(' / ') + '。' }
-    }
-  }
-  const a = riskAssessmentOf({
-    dimensions: dims as RiskDimensions,
-    hardTriggers: hard.list as RiskHardTrigger[],
-    delivery: (delivery === '' ? undefined : delivery) as DeliveryScope | undefined,
-    declaredTier: declaredTier === '' ? undefined : declaredTier,
-  })
-  return {
-    ok: true,
-    text: JSON.stringify({
-      ok: true,
-      path: 'risk/digest',
-      policyVersion: RISK_POLICY_VERSION,
-      digest: a.inputsDigest,
-      tier: a.tier,
-      closure: a.closure,
-      delivery: a.delivery,
-      assessment: a,
-      vocabulary: {
-        dimensions: RISK_DIMENSIONS,
-        hardTriggers: RISK_HARD_TRIGGERS,
-        hardTriggerFactFields: RISK_HARD_TRIGGER_FACT_FIELDS,
-        deliveryScopes: DELIVERY_SCOPES,
-        tiers: RISK_TIERS,
-      },
-    }, null, 2),
-    truncated: false,
-    bytes: 0,
-  }
-}
 
 /**
  * 派单 / 写入前的阶段门禁：从**真实账本**读单元，再用与检查族同一套纯函数判定。
@@ -1146,19 +1063,6 @@ export const BOOTSTRAP_UNLOCK_BRIEF = [
  * ⚠ 只读 `backups/(root)/index.toml.*.bak`（写盘前的自动备份）；⛔ 不猜、⛔ 不取当前态冒充历史。
  * 找不到 ⇒ 返回空，调用方必须拒绝重绑（⛔ 不用「调用方自述」代替验证）。
  */
-function approvalScopeFromSnapshot(root: string, artifactId: string, revision: number): { scope?: string; snapshot?: string } {
-  const dir = join(root, 'backups', '(root)')
-  let files: string[]
-  try { files = readdirSync(dir).filter((f) => /^index\.toml\..*\.bak$/.test(f)).sort() } catch { return {} }
-  for (const f of files) {
-    try {
-      const units = parseUnitsToml(readFileSync(join(dir, f), 'utf8')) as Array<Record<string, unknown>>
-      const u = units.find((x) => String(x.id ?? '') === artifactId && Number(x.revision) === revision)
-      if (u !== undefined) return { scope: approvalScopeDigestOf(u), snapshot: f }
-    } catch { /* 单个快照坏了就跳过，⛔ 不让它污染判断 */ }
-  }
-  return {}
-}
 export function dispatchGateAtLedger(
   ledgerRoot: string,
   opts: { taskId?: string; planId?: string; unlock?: 'bootstrap' } = {},
@@ -1583,298 +1487,23 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
     },
     async execute(args: { path: string; riskDimensions?: string; riskHardTriggers?: string; riskDelivery?: string; riskDeclaredTier?: string; riskBindingPlanId?: string; riskDigestUnitId?: string; approvalArtifactId?: string; approvalDecision?: string; approvalSelectedOption?: string }, exec: ToolRunContext): Promise<JsonValue> {
       /**
-       * ⚠ 2026-11-20 · B/C：两个**不依赖账本**的只读出口先于账本根解析 ——
-       *   digest 与规范读取不需要账本存在，也绝不能因账本判不出而被挡
-       *   （那正是「账本读不到 ⇒ 规范也读不到 ⇒ 谁都解不了」自举死结的入口）。
-       *   ⛔ 两者仍是纯只读，不触碰任何写面与账本文件。
+       * ⚠ 2026-11-23（A·拆分）：七类只读出口已移到 `read-contract-endpoints.ts` ——
+       *   本函数只保留「普通账本资源 / 文件路径」这一条主路径；出口判定与实现同源一份，
+       *   ⛔ 不在两处各写一遍（那正是 R-02 口径分叉的形态）。
        */
-      if (String(args.path ?? '').trim() === 'risk/digest' && String(args.riskDigestUnitId ?? '').trim() === '') {
-        return riskDigestOfArgs(args)
-      }
-      const specRoot = governanceSpecRootOf()
-      const specRel = String(args.path ?? '').trim().replace(/^\/+/, '')
-      if (specRel === 'spec' || specRel === 'spec/') {
-        try {
-          const names = readdirSync(specRoot).filter((n) => n.endsWith('.md')).sort()
-          return { ok: true, text: JSON.stringify({ ok: true, path: 'spec', files: names }, null, 2), truncated: false, bytes: 0 }
-        } catch (e) {
-          return { ok: false, reason: 'spec-dir-unreadable', message: '拒绝：治理规范目录读不到（' + String((e as Error)?.message ?? e) + '）。' }
-        }
-      }
-      if (specRel.startsWith('spec/')) {
-        const file = specRel.slice('spec/'.length)
-        if (file === '' || file.includes('/') || file.includes('..') || !file.endsWith('.md')) {
-          return { ok: false, reason: 'spec-path-invalid', message: '拒绝：spec/ 只放行本目录内的一层 .md 文件名（如 spec/risk-policy.md），不许子目录、不许 ..、不放行 .txt。' }
-        }
-        const r = await readMarkdownCapped(specRoot, file, cfg.maxFileBytes ?? DEFAULTS.maxFileBytes)
-        if (r.ok) return { ok: true, text: r.text, truncated: r.truncated, bytes: r.bytes }
-        return { ok: false, reason: r.reason ?? 'spec-read-error', message: r.text }
-      }
-      if (String(args.path ?? '').trim() === 'constitution') {
-        /**
-         * ⚠ 批5（2026-11-21 · 方案5-A 用户拍板 A）：**双层宪法**的上层出口 ——
-         *   插件版宪法随包只读分发（sha256 入回包防两处真相）；项目增量走提案
-         *   单元落账（既有 decision 写面）。⛔ 项目内 ledger/CONSTITUTION.md 的
-         *   写面红线（人工编辑+commit）原样保留——本出口纯只读、不依赖账本存在。
-         */
-        const cPath = join(dirname(governanceSpecRootOf()), 'CONSTITUTION.md')
-        let text: string
-        try {
-          text = readFileSync(cPath, 'utf8')
-        } catch (e) {
-          return { ok: false, reason: 'constitution-unreadable', message: '拒绝：插件宪法读不到（' + String((e as Error)?.message ?? e) + '）。' }
-        }
-        const digest = 'sha256:' + createHash('sha256').update(text, 'utf8').digest('hex')
-        return {
-          ok: true,
-          text: JSON.stringify({
-            ok: true,
-            path: 'constitution',
-            digest,
-            bytes: Buffer.byteLength(text, 'utf8'),
-            note: '以上为**插件版宪法**（随包分发，本摘要即其指纹）。项目级宪法增量走提案单元落账；ledger/CONSTITUTION.md 的写面红线（人工编辑+commit）不变。',
-            text,
-          }, null, 2),
-          truncated: false,
-          bytes: 0,
-        }
-      }
       // v4：边界改为**账本目录**（D7）—— 只读自己的账本，不读工作区内的项目文档（D6）。
       const root = ledgerRootOf(cfg, exec)
       if (root === undefined) {
         return { ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' }
       }
-      if (String(args.path ?? '').trim() === 'diagnostics') {
-        /**
-         * ⚠ 批6（2026-11-21 · 方案6）：写入异常的**只读诊断出口** ——
-         *   fail-closed 拒绝本身不动（账本约束），把「请人工检查」降为「人只看结论」：
-         *   盘面清点（units / 生成物在场性 / runtime 文件 / effects 摘要（只计数不带内容）/
-         *   归档副本 / 锁判读）一次给全。纯只读：不开队列锁、不写任何文件。
-         */
-        const diag: Record<string, unknown> = { ledgerRoot: root }
-        try {
-          const files = readdirSync(join(root, 'ledger', 'units'))
-          diag.units = { toml: files.filter((f) => f.endsWith('.toml')).length, files: files.slice(0, 60) }
-        } catch (e) {
-          diag.units = { error: String((e as Error)?.message ?? e) }
-        }
-        const pages: Record<string, boolean> = {}
-        for (const rel of ['ledger/gen/stages.md', 'ledger/gen/index.md', 'ledger/spec/current.md', 'ledger/spec/checkpoint.md']) {
-          pages[rel] = existsSync(join(root, rel))
-        }
-        diag.generated_pages = pages
-        try {
-          const rt = join(root, 'runtime')
-          const files = existsSync(rt) ? readdirSync(rt) : []
-          diag.runtime = files.map((f) => {
-            let bytes = -1
-            try { bytes = statSync(join(rt, f)).size } catch { /* 判不出就算了 */ }
-            return { file: f, bytes }
-          })
-        } catch (e) {
-          diag.runtime = { error: String((e as Error)?.message ?? e) }
-        }
-        try {
-          const fx = join(root, 'runtime', 'effects.json')
-          if (existsSync(fx)) {
-            const st = JSON.parse(readFileSync(fx, 'utf8')) as { rows?: Array<{ abandonedAt?: number }> }
-            const rows = Array.isArray(st.rows) ? st.rows : []
-            diag.effects = { rows: rows.length, abandoned: rows.filter((r) => r.abandonedAt !== undefined).length, active: rows.filter((r) => r.abandonedAt === undefined).length }
-            const lockPath = fx + '.lock'
-            if (existsSync(lockPath)) {
-              let pid: number | undefined
-              try { pid = (JSON.parse(readFileSync(lockPath, 'utf8')) as { pid?: number }).pid } catch { pid = undefined }
-              diag.effects_lock = { exists: true, pid, alive: pid === undefined ? undefined : procProcessAlive(pid) }
-            } else diag.effects_lock = { exists: false }
-          } else diag.effects = { rows: 0, note: '无 effects 文件（尚无补投负载）' }
-        } catch (e) {
-          diag.effects = { error: String((e as Error)?.message ?? e) }
-        }
-        try {
-          const ar = join(root, 'archive')
-          diag.archive = existsSync(ar)
-            ? readdirSync(ar, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort()
-            : []
-        } catch (e) {
-          diag.archive = { error: String((e as Error)?.message ?? e) }
-        }
-        return {
-          ok: true,
-          text: JSON.stringify({ ok: true, path: 'diagnostics', diagnosis: diag, note: '只读盘面清点；处置动作各有其出口（hob_ledger_rebuild / hob_orch_control retry-abandoned / hob_ledger_status）。' }, null, 2),
-          truncated: false,
-          bytes: 0,
-        }
-      }
-      if (String(args.path ?? '').trim() === 'risk/binding-digest') {
-        /**
-         * ⚠ 2026-11-21 · C 扩展：绑定摘要的服务端出口（riskBindingDigestOf）。
-         *   从**账本盘面**取单元实算 —— ⛔ 不接受调用方传方案事实（防注入、防两处真相）：
-         *   digest 绑定的是盘上方案字段与需求验收事实；算出的值由会话经自己的写面落账。
-         *   顺带给出每条需求验收条件的机器 id（acceptanceCriteriaIdsOf，G3 覆盖用）。
-         *   纯只读：不落账、不改文件。
-         */
-        const wanted = String(args.riskBindingPlanId ?? '').trim()
-        let units: Array<Record<string, unknown>>
-        try {
-          units = readLedgerUnits(root) as Array<Record<string, unknown>>
-        } catch (e) {
-          return { ok: false, reason: 'ledger-unreadable', message: '拒绝：账本读不到（' + String((e as Error)?.message ?? e) + '）。' }
-        }
-        const plans = units.filter((u) => String(u.kind ?? '') === 'change' || String(u.kind ?? '') === 'plan')
-        if (wanted !== '') {
-          const hit = plans.find((p) => String(p.id ?? '') === wanted)
-          if (hit === undefined) {
-            return { ok: false, reason: 'binding-plan-not-found', message: '拒绝：找不到方案单元 ' + wanted + '；盘上的方案/计划单元：' + (plans.map((p) => String(p.id ?? '')).join(', ') || '(无)') + '。' }
-          }
-        }
-        const selected = wanted === '' ? plans : plans.filter((p) => String(p.id ?? '') === wanted)
-        const bindings = selected.map((p) => ({
-          id: String(p.id ?? ''),
-          kind: String(p.kind ?? ''),
-          digest: riskBindingDigestOf(p, units),
-          current: p.risk_binding_digest === undefined ? undefined : String(p.risk_binding_digest),
-        }))
-        const requirementCriteria = units
-          .filter((u) => String(u.kind ?? '') === 'req')
-          .map((r) => ({ id: String(r.id ?? ''), revision: String(r.revision ?? ''), criteria: acceptanceCriteriaIdsOf(r) }))
-        return {
-          ok: true,
-          text: JSON.stringify({ ok: true, path: 'risk/binding-digest', bindings, requirement_criteria: requirementCriteria }, null, 2),
-          truncated: false,
-          bytes: 0,
-        }
-      }
-      if (String(args.path ?? '').trim() === 'risk/digest' && String(args.riskDigestUnitId ?? '').trim() !== '') {
-        /**
-         * ⚠ 2026-11-22 · 单元实算模式：**从账本单元自身的风险字段**推导（riskFactsOf，
-         *   与门禁同一份纯函数），⛔ 不采信调用方复述的维度/触发/交付域 ——
-         *   那正是 2026-11-22 实测的死结形态：调用方传 delivery=internal，而单元里
-         *   没有 delivery_scope 字段 ⇒ 门禁按 none 重算 ⇒ 永远配不平。
-         *   回包给出**应写入的字段**与**剩余缺口**，会话据此一次配平、⛔ 不再盲试。
-         */
-        const uid = String(args.riskDigestUnitId ?? '').trim()
-        let units: Array<Record<string, unknown>>
-        try {
-          units = readLedgerUnits(root) as Array<Record<string, unknown>>
-        } catch (e) {
-          return { ok: false, reason: 'ledger-unreadable', message: '拒绝：账本读不到（' + String((e as Error)?.message ?? e) + '）。' }
-        }
-        const unit = units.find((u) => String(u.id ?? '') === uid)
-        if (unit === undefined) {
-          return { ok: false, reason: 'risk-unit-not-found', message: '拒绝：账本里没有 ' + uid + '。' }
-        }
-        const facts = riskFactsOf(unit)
-        const derived = riskAssessmentOf({ ...facts, declaredTier: undefined })
-        const onDisk = String(unit.risk_inputs_digest ?? '')
-        const tier = String(unit.risk_tier ?? '')
-        const ruleVersion = String(unit.risk_rule_version ?? '')
-        const dims = Object.entries(facts.dimensions ?? {}).map(([k, v]) => k + '=' + String(v))
-        const hasStrategy = String(unit.test_strategy ?? '').trim() !== ''
-          || (Array.isArray(unit.research_refs) && (unit.research_refs as unknown[]).length > 0)
-          || (Array.isArray(unit.review_refs) && (unit.review_refs as unknown[]).length > 0)
-        const tierRank = (t: string): number => ({ low: 0, medium: 1, high: 2, critical: 3 } as Record<string, number>)[t] ?? -1
-        const needsStrategy = tierRank(derived.tier) >= 1 || tierRank(tier) >= 1
-        const problems: string[] = []
-        if (onDisk !== derived.inputsDigest) problems.push('RP-3 · risk_inputs_digest 与单元事实不一致（应为 ' + derived.inputsDigest + '，盘上是 ' + (onDisk || '(空)') + '）')
-        if (ruleVersion !== RISK_POLICY_VERSION) problems.push('RP-3 · risk_rule_version 应为 ' + RISK_POLICY_VERSION)
-        if (tierRank(tier) < tierRank(derived.tier) || tierRank(tier) < 0) problems.push('RP-2 · risk_tier 必须不低于事实推导 ' + derived.tier + (tier === '' ? '（盘上为空）' : '（盘上 ' + tier + '）'))
-        if (needsStrategy && !hasStrategy) problems.push('RP-8 · ' + (tier || derived.tier) + ' 档必须有验证策略：test_strategy **必须是字符串**（写成数组会被判空）或 research_refs / review_refs 为非空数组')
-        if (String(unit.risk_assessed_at ?? '').trim() === '') problems.push('RP-3 · 缺 risk_assessed_at（可解析的 ISO 时刻）')
-        if (String(unit.risk_assessed_by ?? '').trim() === '') problems.push('RP-3 · 缺 risk_assessed_by')
-        return {
-          ok: true,
-          text: JSON.stringify({
-            ok: true,
-            path: 'risk/digest',
-            mode: 'unit',
-            unit: { id: uid, kind: String(unit.kind ?? ''), revision: unit.revision, status: String(unit.status ?? '') },
-            digest: derived.inputsDigest,
-            digest_on_disk: onDisk,
-            matches: onDisk === derived.inputsDigest,
-            tier_derived: derived.tier,
-            closure: derived.closure,
-            delivery_used: derived.delivery,
-            unit_facts: { dimensions: dims, hardTriggers: facts.hardTriggers ?? [], hardTriggerFacts: facts.hardTriggerFacts ?? [], delivery_scope: (unit.delivery_scope === undefined ? undefined : String(unit.delivery_scope)) },
-            write_fields: {
-              risk_inputs_digest: derived.inputsDigest,
-              risk_rule_version: RISK_POLICY_VERSION,
-              risk_dimensions: dims,
-              risk_tier: (tierRank(tier) > tierRank(derived.tier) ? tier : derived.tier),
-              closure_mode: derived.closure,
-              ...(unit.delivery_scope === undefined ? {} : { delivery_scope: String(unit.delivery_scope) }),
-              ...(needsStrategy && !hasStrategy ? { test_strategy: '<字符串：写清验证方式（单元/集成/端到端/手工 + 判据）>' } : {}),
-            },
-            problems,
-            note: 'digest 与门禁同一份纯函数（riskFactsOf + riskAssessmentOf）按**单元现值**算；写回 write_fields 后门禁重算即一致。⚠ 若你要改 delivery_scope / 维度 / 硬触发，先改它们再重新取一次本接口——digest 会随之变化。',
-          }, null, 2),
-          truncated: false,
-          bytes: 0,
-        }
-      }
-      if (String(args.path ?? '').trim() === 'approval-form') {
-        /**
-         * ⚠ 2026-11-21 · A′ 后续：用户批准记录的**形态出口**（只读）。
-         *   门禁认的形态 = decision 单元（decision_kind=stage-approval）绑定
-         *   artifact_id / artifact_revision / artifact_digest / selected_option。
-         *   其中 artifact_digest 是实现内哈希（artifactDigestOf）—— 会话侧算不出，
-         *   这里按盘面现值实算并给出完整单元模板；校验（修订一致 / 路径在列 /
-         *   决定在封闭集）在此预检，权威判定仍在门禁。落账走会话自己的写面，
-         *   ⛔ 本出口不写任何文件。
-         */
-        const aid = String(args.approvalArtifactId ?? '').trim()
-        if (aid === '') {
-          return { ok: false, reason: 'approval-artifact-required', message: '拒绝：approval-form 必须给 approvalArtifactId（R-… 或 CHG-…）。' }
-        }
-        const decision = String(args.approvalDecision ?? 'approve').trim() || 'approve'
-        if (decision !== 'approve' && decision !== 'request-changes') {
-          return { ok: false, reason: 'decision-invalid', message: '拒绝：approvalDecision 只收 approve / request-changes。' }
-        }
-        let units: Array<Record<string, unknown>>
-        try {
-          units = readLedgerUnits(root) as Array<Record<string, unknown>>
-        } catch (e) {
-          return { ok: false, reason: 'ledger-unreadable', message: '拒绝：账本读不到（' + String((e as Error)?.message ?? e) + '）。' }
-        }
-        const artifact = units.find((u) => String(u.id ?? '') === aid)
-        if (artifact === undefined) {
-          return { ok: false, reason: 'approval-artifact-not-found', message: '拒绝：账本里没有 ' + aid + '。' }
-        }
-        const kind = String(artifact.kind ?? '')
-        if (kind !== 'req' && kind !== 'change') {
-          return { ok: false, reason: 'approval-artifact-not-approvable', message: '拒绝：' + aid + ' 是 ' + kind + '，只有需求和方案需要用户阶段批准。' }
-        }
-        const revision = Number(artifact.revision)
-        if (!Number.isSafeInteger(revision) || revision <= 0) {
-          return { ok: false, reason: 'revision-missing', message: '拒绝：' + aid + ' 缺正整数 revision，无法绑定批准版本。' }
-        }
-        const selected = String(args.approvalSelectedOption ?? '').trim()
-        if (kind === 'change' && decision === 'approve' && !selectedOptionValid(artifact, selected)) {
-          const options = Array.isArray(artifact.path_options) ? (artifact.path_options as unknown[]).map(String) : []
-          return { ok: false, reason: 'selected-option-invalid', message: '拒绝：方案批准必须给 selected_option 且在当前 path_options 中（当前：' + (options.join(' / ') || '(无可选路径)') + '）。' }
-        }
-        const form = {
-          kind: 'decision',
-          decision_kind: 'stage-approval',
-          status: 'active',
-          artifact_id: aid,
-          artifact_revision: revision,
-          artifact_digest: artifactDigestOf(artifact),
-          decision,
-          ...(selected === '' ? {} : { selected_option: selected }),
-          decided_by: 'user',
-        }
-        return {
-          ok: true,
-          text: JSON.stringify({
-            ok: true,
-            path: 'approval-form',
-            note: 'id 与 decided_at 由写入方按账本编号规则与真实回执时间补齐；source 建议附用户回执原文。以下字段为门禁认的形态，写入后由阶段门禁复核。',
-            unit_fields: form,
-          }, null, 2),
-          truncated: false,
-          bytes: 0,
-        }
-      }
+      const special = await runReadContractEndpoint(args, {
+        resolveRoot: () => ledgerRootOf(cfg, exec),
+        readUnits: (r) => readLedgerUnits(r) as Array<Record<string, unknown>>,
+        readMd: (r, rel, max) => readMarkdownCapped(r, rel, max),
+        maxFileBytes: cfg.maxFileBytes ?? DEFAULTS.maxFileBytes,
+      })
+      if (special !== undefined) return special
+
       /**
        * ⚠ **资源语法先于文件路径**：`requirements/`、`task/TSK-…` 等不是文件路径，
        * 它们必须在同一个只读边界内解析为账本资源图。
@@ -2531,6 +2160,17 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
    * 这些不是“自由文本”，而是语义可判的旧词。本工具只接受**声明式映射**，
    * 默认只预演；真写必须 `dryRun:false`，并且先备份。⛔ 不凭空猜任意未知状态。
    */
+  /** ⚠ 2026-11-23（A·拆分）：批准工具搬出本文件（`approval-tool.ts`），此处只装配依赖。 */
+  const ledgerApprove = createLedgerApprove({
+    resolveRoot: (exec) => ledgerRootOf(cfg, exec),
+    readUnits: (root) => readLedgerUnits(root) as Array<Record<string, unknown>>,
+    proceedGate: (exec) => proceedGate(exec),
+    writeFile: (root, input, opts) => writeHobFile(root, input as never, opts as never) as Promise<{ ok: boolean; reason?: string; message?: string }>,
+    maxWriteBytes: cfg.maxWriteBytes ?? DEFAULTS.maxWriteBytes,
+    keepBackups: DEFAULTS.keepBackups,
+    shrinkGuard: DEFAULTS.shrinkGuard,
+  })
+
   const ledgerMigrate = defineTool({
     name: 'hob_ledger_migrate',
     description: '把旧账本里可判定的旧 kind/status 词迁移到现行封闭集。默认只预演；'
@@ -2712,257 +2352,6 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
    * `change.status`; approval is a separate fact and cannot be manufactured by
    * the project agent. The user receipt must be supplied verbatim.
    */
-  const ledgerApprove = defineTool({
-    name: 'hob_pipeline_approve',
-    description: '记录用户对 Pipeline v3 需求或方案的明确批准 / 修改要求。'
-      + '⚠ 必须给用户回执原文 `source`；默认只预演，真写要 `dryRun:false`。'
-      + '⚠ 它只写批准审计，不替用户选路径，也不自动推进阶段。',
-    parameters: {
-      artifactId: {
-        type: 'string',
-        required: true,
-        description: '被批准的稳定 ID（R-... 或 CHG-...）。',
-      },
-      revision: {
-        type: 'integer',
-        required: true,
-        description: '用户批准的具体修订号；必须与账本中的 revision 完全一致。',
-      },
-      decision: {
-        type: 'string',
-        required: true,
-        enum: ['approve', 'request-changes'],
-        description: 'approve=确认当前版本；request-changes=要求修改。',
-      },
-      source: {
-        type: 'string',
-        required: true,
-        description: '用户回执原文，必须能证明用户明确说出了对象和版本。',
-      },
-      selectedOption: {
-        type: 'string',
-        description: '方案批准时必填：从当前 path_options 中选中的路径（如 A / B / C）。',
-      },
-      dryRun: {
-        type: 'boolean',
-        description: '（可选）缺省 true = 只预演。',
-      },
-      rebindFrom: {
-        type: 'string',
-        description: '（可选）把一条既有批准记录**机器重绑到当前修订**：需给出原决策 id（如 DEC-005）。'
-          + '⚠ 仅在**产品事实未变**（标题/正文/路径/需求映射逐字相同）时成立 —— 服务端用账本快照复算原修订的产品事实摘要比对，不等则拒。⛔ 不代替用户重新确认新品决策。',
-      },
-    },
-    output: {
-      schema: { type: 'json' },
-      render: (_args: unknown, value: unknown) => [{ type: 'text', text: String((value as { message?: string })?.message ?? '') }],
-    },
-    async execute(args: {
-      artifactId: string
-      revision: number
-      decision: 'approve' | 'request-changes'
-      source: string
-      selectedOption?: string
-      dryRun?: boolean
-      rebindFrom?: string
-    }, exec: ToolRunContext): Promise<JsonValue> {
-      const root = ledgerRootOf(cfg, exec)
-      if (root === undefined || root.trim() === '') {
-        return { ok: false, reason: 'no-ledger-root', message: '拒绝：账本落点判不出。' } as unknown as JsonValue
-      }
-      let units: Array<Record<string, unknown>>
-      try { units = readLedgerUnits(root) as Array<Record<string, unknown>> } catch (e) {
-        return { ok: false, reason: 'ledger-unreadable', message: `账本读不到：${String((e as Error)?.message ?? e)}` } as unknown as JsonValue
-      }
-      const id = String(args.artifactId ?? '').trim()
-      const artifact = units.find((u) => String(u.id ?? '') === id)
-      if (artifact === undefined) {
-        return { ok: false, reason: 'artifact-not-found', message: `拒绝：账本里没有 ${id}` } as unknown as JsonValue
-      }
-      const kind = String(artifact.kind ?? '')
-      if (kind !== 'req' && kind !== 'change') {
-        return { ok: false, reason: 'artifact-not-approvable', message: `拒绝：${id} 是 ${kind}，只有需求和方案需要用户阶段批准。` } as unknown as JsonValue
-      }
-      if (!isPipelineV2(artifact)) {
-        return { ok: false, reason: 'legacy-artifact', message: `拒绝：${id} 属于旧管线，不能后补成 v3 批准；请新建 v3 需求。` } as unknown as JsonValue
-      }
-      const actualRevision = revisionOf(artifact)
-      if (actualRevision === undefined || actualRevision !== Number(args.revision)) {
-        return {
-          ok: false, reason: 'revision-mismatch',
-          message: `拒绝：${id} 当前第 ${actualRevision ?? '?'} 版，用户回执写的是第 ${String(args.revision)} 版。`,
-        } as unknown as JsonValue
-      }
-      let source = String(args.source ?? '').trim()
-      if (source === '') {
-        return { ok: false, reason: 'source-required', message: '拒绝：批准必须附用户回执原文 source。' } as unknown as JsonValue
-      }
-      /** ⚠ 2026-11-23：重绑时路径选择取自原决策，故先取标记、再校验候选。 */
-      const rebindFromRaw = String(args.rebindFrom ?? '').trim()
-      let selectedOption = String(args.selectedOption ?? '').trim()
-      let decision = args.decision
-      if (decision !== 'approve' && decision !== 'request-changes') {
-        return { ok: false, reason: 'decision-invalid', message: '拒绝：decision 只收 approve / request-changes。' } as unknown as JsonValue
-      }
-      if (decision === 'approve' && kind === 'change' && rebindFromRaw === '') {
-        const options = Array.isArray(artifact.path_options) ? artifact.path_options.map(String) : []
-        if (selectedOption === '' || !options.includes(selectedOption)) {
-          return {
-            ok: false, reason: 'option-invalid',
-            message: `拒绝：方案批准必须从当前 path_options 中选择路径（当前：${options.join(' / ') || '(无可选路径)'}）。`,
-          } as unknown as JsonValue
-        }
-      }
-      /**
-       * The user receipt must name the object and revision. A bare "continue"
-       * or "OK" is not approval.
-       *
-       * ⚠ **R-15：判据来自 {@link receiptPatternOf}，⛔ 不在这里内联正则。**
-       * 本仓曾有两份不等价的回执正则（纯函数版 `\s+` / 本处 `\s*`），
-       * 分叉的成因就是"在调用点重写一遍"。现在两处共用一份实现。
-       * `acceptRevisionRequest: true` —— 本工具在同一入口既处理批准也处理退回。
-       */
-      let reboundMeta: { from: string; basis: string } | undefined
-      const rebindFrom = rebindFromRaw
-      if (rebindFrom !== '') {
-        /**
-         * ⚠ 2026-11-23 · **机器重绑**：用户已批准过同一份产品事实，只是修订号/机器细节变了。
-         *   验证依据**不是**调用方自述，而是账本快照里原修订的产品事实摘要。
-         *   ⛔ 产品事实任何一处不同 ⇒ 拒（那才是需要用户重新确认的变化）。
-         */
-        const old = units.find((u) => String(u.id ?? '') === rebindFrom && String(u.kind ?? '') === 'decision')
-        if (old === undefined) return { ok: false, reason: 'rebind-source-not-found', message: `拒绝：账本里没有决策 ${rebindFrom}。` } as unknown as JsonValue
-        if (String(old.artifact_id ?? '') !== id) return { ok: false, reason: 'rebind-target-mismatch', message: `拒绝：${rebindFrom} 批准的是 ${String(old.artifact_id ?? '?')}，不是 ${id}。` } as unknown as JsonValue
-        if (String(old.decision_kind ?? '') !== APPROVAL_DECISION_KIND) return { ok: false, reason: 'rebind-not-approval', message: '拒绝：只有 stage-approval 决策可重绑。' } as unknown as JsonValue
-        if (String(old.decision ?? '') !== 'approve') return { ok: false, reason: 'rebind-not-approve', message: '拒绝：只有 approve 决策可重绑（request-changes 需要新的用户回执）。' } as unknown as JsonValue
-        const currentScope = approvalScopeDigestOf(artifact)
-        let oldScope = String(old.approval_scope_digest ?? '').trim()
-        let basis = 'recorded-scope-digest'
-        if (oldScope === '') {
-          const snap = approvalScopeFromSnapshot(root, id, Number(old.artifact_revision))
-          if (snap.scope === undefined) {
-            return { ok: false, reason: 'rebind-unverifiable', message: `拒绝：${rebindFrom} 没有作用域摘要，且找不到第 ${String(old.artifact_revision ?? '?')} 版的账本快照 ⇒ 无法机器验证「产品事实未变」，⛔ 不代你确认。` } as unknown as JsonValue
-          }
-          oldScope = snap.scope
-          basis = 'snapshot:' + String(snap.snapshot ?? '')
-        }
-        if (oldScope !== currentScope) {
-          return { ok: false, reason: 'rebind-scope-changed', message: `拒绝：${id} 的产品事实（标题/正文/路径/需求映射）在第 ${String(old.artifact_revision ?? '?')} 版之后发生了变化（原摘要 ${oldScope}，当前 ${currentScope}）⇒ 需用户重新确认，不能机器重绑。` } as unknown as JsonValue
-        }
-        selectedOption = String(old.selected_option ?? '').trim()
-        if (kind === 'change' && !selectedOptionValid(artifact, selectedOption)) {
-          const options = Array.isArray(artifact.path_options) ? (artifact.path_options as unknown[]).map(String) : []
-          return { ok: false, reason: 'rebind-option-invalid', message: `拒绝：原批准选中的路径「${selectedOption || '(空)'}」已不在当前候选中（当前：${options.join(' / ') || '(无)'}）⇒ 需用户重新选择。` } as unknown as JsonValue
-        }
-        reboundMeta = { from: rebindFrom, basis }
-        source = String(old.source ?? '').trim()
-        decision = 'approve'
-      }
-
-      const receipt = receiptPatternOf(
-        { id, kind: String(artifact.kind ?? ''), revision: actualRevision },
-        { acceptRevisionRequest: true },
-      )
-      if (reboundMeta === undefined && !receipt.test(source)) {
-        return {
-          ok: false, reason: 'receipt-mismatch',
-          message: `拒绝：用户回执没有同时点名 ${id} 与第 ${actualRevision} 版；只写“继续 / 可以”不算批准。`,
-        } as unknown as JsonValue
-      }
-      const approval = approvalStateOf(artifact, units)
-      if (approval.state === 'legacy') {
-        return { ok: false, reason: 'legacy-artifact', message: '拒绝：旧管线条目不能后补批准。' } as unknown as JsonValue
-      }
-      const maxSeq = Math.max(0, ...units
-        .filter((u) => String(u.kind) === 'decision')
-        .map((u) => Number(/^DEC-(\d+)$/.exec(String(u.id ?? ''))?.[1] ?? 0)))
-      const decisionId = `DEC-${String(maxSeq + 1).padStart(3, '0')}`
-      const decidedAt = new Date().toISOString()
-      const lines = [
-        '[[unit]]',
-        `id = ${JSON.stringify(decisionId)}`,
-        'kind = "decision"',
-        'status = "active"',
-        `title = "用户${decision === 'approve' ? '批准' : '要求修改'} ${id} 第 ${actualRevision} 版"`,
-        `decision_kind = ${JSON.stringify(APPROVAL_DECISION_KIND)}`,
-        `approval_stage = ${JSON.stringify(kind === 'req' ? 'requirements' : 'plan')}`,
-        `artifact_id = ${JSON.stringify(id)}`,
-        `artifact_revision = ${JSON.stringify(String(actualRevision))}`,
-        `artifact_digest = ${JSON.stringify(artifactDigestOf(artifact))}`,
-        `approval_scope_digest = ${JSON.stringify(approvalScopeDigestOf(artifact))}`,
-        ...(reboundMeta === undefined ? [] : [`rebound_from = ${JSON.stringify(reboundMeta.from)}`, `rebound_basis = ${JSON.stringify(reboundMeta.basis)}`]),
-        `decision = ${JSON.stringify(decision)}`,
-        ...(selectedOption === '' ? [] : [`selected_option = ${JSON.stringify(selectedOption)}`]),
-        'decided_by = "user"',
-        `decided_at = ${JSON.stringify(decidedAt)}`,
-        `source = ${JSON.stringify(source)}`,
-        '',
-      ]
-      const content = lines.join('\n')
-      if (args.dryRun !== false) {
-        return {
-          ok: true, dryRun: true, decisionId,
-          message: `[演练] 将记录 ${decisionId}：${source}`
-            + (reboundMeta === undefined ? '' : `\n  ↳ 机器重绑自 ${reboundMeta.from}（依据 ${reboundMeta.basis}）：产品事实与原批准逐字相同，仅修订号/机器细节变化。`)
-            + '\n  ⚠ 未落盘。确认后传 dryRun:false。',
-        } as unknown as JsonValue
-      }
-      /**
-       * ══════════════════════════════════════════════════════════════════════
-       * **T-13：真写之前先过「能不能推进」闸门**（2026-11-10）
-       * ══════════════════════════════════════════════════════════════════════
-       *
-       * ── 病（实测）────────────────────────────────────────────────────────
-       *   `hob_pipeline_approve` / `hob_ledger_init` / `hob_ledger_migrate` /
-       *   `hob_ledger_rebuild` 四个写工具**都不过 `proceedGate`**（`grep` 只命中
-       *   `:1306` 定义与 `:1582` 的 `write_hob`）。
-       *   ⇒ `archived` / `quarantined` / `pending-activation` / `unknown-legacy`
-       *     的会话（`mayProceed=false`）**仍能写「用户批准」落账** ——
-       *     「被隔离的会话不能推进」这条不变量在**写路径**上有一个旁路。
-       *
-       * ⚠ `dryRun` 保持放行（纯预演不改变任何东西，与 `write_hob` 一致）。
-       * ⚠ `hob_ledger_init` 不过闸门是**有理由的**（它是开张而不是推进），
-       *   本批不动它；`approve` 没有这个理由。
-       */
-      if (args.dryRun === false) {
-        const blocked = proceedGate(exec)
-        if (blocked !== undefined) {
-          return { ok: false, reason: 'proceed-not-confirmed', message: blocked } as unknown as JsonValue
-        }
-      }
-      const w = await writeHobFile(root, {
-        file: 'ledger/units/unit-pipeline-approval.toml',
-        content,
-        mode: 'append',
-      }, {
-        hobDir: '',
-        keepBackups: DEFAULTS.keepBackups,
-        shrinkGuard: DEFAULTS.shrinkGuard,
-        maxFileBytes: cfg.maxWriteBytes ?? DEFAULTS.maxWriteBytes,
-        /**
-         * ⚠ **T-06：不再传 `validateLedgerStructure: false`**（2026-11-10）。
-         *
-         * 原注释的理由是「approval units are valid v2 decisions even when other
-         * legacy rows are not migrated」——**这个理由不成立**：
-         *   · `decision` 与封闭契约**完全兼容**（`UNIT_STATUSES.decision = ['active','superseded']`，
-         *     本工具写的正是 `status="active"`）；
-         *   · 实测在健康账本上走统一校验 ⇒ `ok:true`；
-         *   · 而豁免的**实际后果**是「连 C-22 字段校验都跳过」——
-         *     即这个工具自己写出非法 decision 也能落盘。
-         * ⇒ 去掉豁免，与其余三个写入口同一道校验。
-         */
-        allowApprovalShard: true,
-      })
-      if (!w.ok) {
-        return { ok: false, reason: w.reason, message: `批准记录写盘失败：${w.message}` } as unknown as JsonValue
-      }
-      return {
-        ok: true, decisionId, artifactId: id, revision: actualRevision, decision,
-        ...(selectedOption === '' ? {} : { selectedOption }),
-        message: `已记录 ${decisionId}：用户${decision === 'approve' ? '批准' : '要求修改'} ${id} 第 ${actualRevision} 版。`,
-      } as unknown as JsonValue
-    },
-  })
 
   /**
    * ══ **建账本 / 补齐**（2026-11-08 · 用户裁定「Hob 预设本身要具备这个能力」）══
