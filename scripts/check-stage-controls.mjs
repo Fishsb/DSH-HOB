@@ -483,6 +483,35 @@ console.log('')
       if (toolsTextC.includes('approvalScopeFromSnapshot')) ok('SC-33 ✓ 重绑验证依据是账本快照（⛔ 不用调用方自述代替验证）')
       else bad('SC-33 重绑缺少快照验证入口 ⇒ 重绑可能退化为自述')
     }
+    // ── SC-35：notify 档 + 审批超时升级（2026-11-23 · 业界三档补齐）──
+    {
+      const nl = await import(pathToFileURL(join(root, 'src', 'server', 'notify-ledger.ts')).href)
+      const fsMod = await import('node:fs')
+      const tmpRoot = fsMod.mkdtempSync(join('/tmp', 'hob-notify-'))
+      const r1 = nl.recordNotify(tmpRoot, { kind: 'k', key: 'same-key', subject: 'a' })
+      const r2 = nl.recordNotify(tmpRoot, { kind: 'k', key: 'same-key', subject: 'a' })
+      const read = nl.readNotifications(tmpRoot, 10)
+      if (r1.ok && r2.ok && read.readable === true && read.total === 1 && read.rows[0].count === 2) {
+        ok('SC-35 ✓ notify 账本：幂等键去重（同键只一条、count=2）且可按时间倒序读')
+      } else bad('SC-35 notify 账本幂等/读数不符：' + JSON.stringify({ r1, r2, total: read.total }))
+      const epSrc = readFileSync(join(root, 'src', 'modules', 'read-contract-endpoints.ts'), 'utf8')
+      if (epSrc.includes("path: 'notifications'")) ok('SC-35 ✓ 只读出口 notifications 在位（中风险动作可被看见）')
+      else bad('SC-35 notify 只读出口缺失 ⇒ 中风险动作仍不可观测')
+      if (orchText.includes('notifyLines') && orchText.includes('...notifyLines')) ok('SC-35 ✓ hob_orch_status 常态输出 notify 读数行')
+      else bad('SC-35 状态工具没有 notify 读数行 ⇒ notify 档只剩记账、看不见')
+      const plMod = await import(pathToFileURL(join(root, 'src', 'shared', 'pipeline.ts')).href)
+      const art = { id: 'R-S35', kind: 'req', status: 'agreed', pipeline_version: 'v3', revision: '2', title: 't', spec: 's', acceptance_criteria: ['AC'] }
+      const mkDec = (at) => ({ id: 'DEC-S35', kind: 'decision', status: 'active', decision_kind: 'stage-approval', artifact_id: 'R-S35', artifact_revision: '1', artifact_digest: 'fnv64:old', decision: 'approve', decided_by: 'user', ...(at === null ? {} : { decided_at: at }), source: 'x' })
+      const old = plMod.approvalStateOf(art, [mkDec(new Date(Date.now() - 48 * 3600_000).toISOString())])
+      const recent = plMod.approvalStateOf(art, [mkDec(new Date(Date.now() - 1 * 3600_000).toISOString())])
+      const noAt = plMod.approvalStateOf(art, [mkDec(null)])
+      if (old.escalated === true && String(old.reason).includes('阈值')) ok('SC-35 ✓ 审批超时：超过 24 小时 ⇒ 读数升级为「建议催办/延期」（⛔ 不自动放行）')
+      else bad('SC-35 超时升级缺失：48 小时前批准的 stale 读数未标 escalated')
+      if (recent.escalated === false && recent.waitedHours !== undefined) ok('SC-35 ✓ 未超阈值 ⇒ 只报等待时长、不升级')
+      else bad('SC-35 近期 stale 被误升级（或没给等待时长）')
+      if (noAt.waitedHours === undefined) ok('SC-35 ✓ 无 decided_at ⇒ 不给等待时长（⛔ 不编造）')
+      else bad('SC-35 无时刻却给出了等待时长 ⇒ 编造读数')
+    }
   }
 
   // ── SC-11：作用域门禁（无关缺口不阻塞当前任务；修复写可区分）────────────
