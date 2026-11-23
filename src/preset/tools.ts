@@ -32,15 +32,8 @@
  *
  * ⚠ 本模块**不注册** DSH 原生 read/bash/write —— 与 `PROJECT.md` §5.2 同款纪律。
  */
-import * as permissionGuard from './permission-guard.ts'
-import * as permissionTiers from './permission-tiers.ts'
 
 /** ⚠ 具名再导出用 `const` 绑定（G-11 ①：本文件零具名值导入，避免链接期缺名字拖垮整块）。 */
-export const GUARDED_TOOLS = permissionGuard.GUARDED_TOOLS
-export const SHARED_FORBIDDEN_TOOLS = permissionGuard.SHARED_FORBIDDEN_TOOLS
-export const PERMISSION_TIERS = permissionTiers.PERMISSION_TIERS
-export const MODEL_TOOL_ALLOWLIST = permissionTiers.MODEL_TOOL_ALLOWLIST
-export const READ_SCOPED_TOOLS = permissionTiers.READ_SCOPED_TOOLS
 import { appendFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HobToolsConfig } from '../modules/tools.ts'
@@ -142,6 +135,352 @@ export const DEGRADED_CAPABILITIES: { key: string; why: string }[] = []
  * ⚠ 上限判据是**文件现有字节数**（`statSync`），**不是内存计数器** ——
  *   宿主 fiber 会重载/重挂，内存计数随 reload 归零，上限形同虚设（旧项目实测踩坑）。
  */
+
+/**
+ * 三档里**一律不许出现**的名字（共享禁项）。
+ *
+ * ⚠ 这份清单的**来源是实测**（第 144 轮全机扫描，见 `REPORT-R148.md`）：
+ *   全机只有这 5 个写类 / 命令类工具名，出自 5 个包
+ *   （`dsh-tool-fs` → `write`/`edit`；`dsh-tool-bash`/`-persistent` → `bash`；
+ *    `dsh-tool-pwsh`/`-persistent` → `pwsh`；`dsh-tool-str-replace-editor` → `str_replace_editor`）。
+ *   ⛔ **不许凭记忆**增减 —— 将来新装插件带进新的写类名字时，**应当把它加进来**，
+ *     这也正是 ⑤m-4 要盯的那件事。
+ */
+
+const SHARED_FORBIDDEN_TOOLS: readonly string[] = [
+  'write',
+  'edit',
+  'bash',
+  'pwsh',
+  'str_replace_editor',
+]
+
+/**
+ * 哨兵**要罩**的名字（写类 / 命令类 + 两个范围可变的读工具）。
+ *
+ * ⚠ 罩的范围**刻意最小**：账本两件（`read_contracts` / `write_hob`）与编排七件
+ *   **一律不罩** —— 哨兵自己出问题时，账本与编排**必须照常**（实测反例：
+ *   裸哨兵抛异常会把 `read_contracts` 一起弄瘫，见 `REPORT-R147.md` §c-3）。
+ */
+const GUARDED_TOOLS: readonly string[] = [
+  ...SHARED_FORBIDDEN_TOOLS,
+  'hob_read_doc',
+  'hob_glob',
+  'hob_grep',
+  'hob_read_image',
+]
+
+/** 从 exec 里取「被请求的路径」参数（档 2 只许 .md 的哨兵用；判不出 ⇒ undefined）。 */
+function readPathArg(exec: any): string | undefined {
+  try {
+    const args = exec?.arguments ?? exec?.args
+    if (args === null || typeof args !== 'object') return undefined
+    for (const key of ['path', 'file_path', 'file']) {
+      const v = (args as Record<string, unknown>)[key]
+      if (typeof v === 'string') return v
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
+function installPermissionGuard(
+  ctx: any,
+  levelOf: (sessionOrAgent?: any) => string,
+  log: (m: string) => void,
+  /** ⚠ 2026-10-24：同 `filterModelToolList` 的 `visibleNamesFor`（唯一收口点）。 */
+  visibleNamesFor: (names: readonly string[]) => readonly string[] = (n) => n,
+): void {
+  const guarded = new Set<string>(GUARDED_TOOLS)
+  const forbidden = new Set<string>(SHARED_FORBIDDEN_TOOLS)
+
+  ctx.effect(() => ctx.tools.guard((exec: any): string | undefined => {
+    // ── 硬性①：**先判名短路**（名单外一律放行；先于一切可能抛的代码）──────
+    const name = exec?.name
+    if (typeof name !== 'string' || name === '') return undefined
+    if (!guarded.has(name)) return undefined
+
+    // ── 名单内：判定体包 try/catch（硬性②），异常收敛到"拒"（硬性③：不 throw）
+    try {
+      // 写类 / 命令类：**任何一档**都不许执行。
+      // ⚠ 它们本不该到达这里（注册面不存在 ⇒ 大概率是 `unknown tool`）——
+      //   但"到达不了"这个判断**依赖声明面**（别人改 profile 就失效，见 ⑤m-6）
+      //   ⇒ 本层作为**第二道**，宁拒不放。
+      if (forbidden.has(name)) {
+        return `"${name}" cannot change anything in this session: this preset has no write-capable tools.`
+      }
+
+      // 读工具：名字本身没问题（白名单已筛过），此处只兜住"参数越界"。
+      // ⚠ 参数检查交给工具自己的 `execute`（它返回可读的拒绝文本）；
+      //   本哨兵在这里**只确认"这个档位看得见它"** —— 因为 guard 是按**调用名**
+      //   生效的，而档位可能在会话中途**变窄**（workspace ⇒ ledger）：
+      //   变窄后**已发出的调用**不该还能落地。
+      //
+      // ⚠⚠ **2026-10-22 · `REQ-04`：主体改为 `exec.agent`（按会话判）。**
+      //   ⚠ 没有 agent ⇒ `levelOf(undefined)` ⇒ **最低档**（fail-closed）。
+      //   ⚠ 但**这一层不是唯一防线**：宿主在 `exec.agent === undefined` 时**根本不遍历
+      //     scope 链**（`dsh-tools/lib/index.js:3024-3032`，`:3027` 是那句提前返回）
+      //     ⇒ 那种调用路径下本哨兵**压根不会被调**。⇒ 四个读工具的 `execute`
+      //     自己必须再核一次档位（见 `src/modules/tools.ts`；这是本轮 G-5 的落点）。
+      const level = levelOf(exec?.agent)
+      const tier = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
+      /**
+       * ⚠⚠ **2026-10-24：哨兵也过 `visibleNamesFor`**（三处口径必须同一份）。
+       *   ⚠ 门禁在 ⇒ 原样返回 ⇒ 哨兵行为零变化；门禁不在 ⇒ 门禁拥有的那批名字由门禁负责的
+       *     注册面本来就不存在，哨兵不该把它们算作"这一档可读"。
+       */
+      const names = visibleNamesFor(tier)
+      if (!names.includes(name)) {
+        return `"${name}" is not available at the current readable-permission level (${level}).`
+      }
+
+      // ── **类型规则：只在档2**（2026-10-14 第 145 轮 · 用户裁定「档3的都加」）──
+      //   · **档2 `project`**：只许 `.md` —— 用户原话「档2不给」「不可以读代码」；
+      //   · **档3 `workspace`**：**不设类型规则**（任意文件都可读可看）
+      //     ⇒ 这一档只剩**包含性 + 软链**，它们由工具自己的 `execute` 守
+      //       （`workspace-read.ts` 的 `resolveGuarded`，复用 `doc-read.ts` 的同一份实现）。
+      //   ⚠ 哨兵**只看扩展名**（可判、不猜内容）：内容层面的"文本 / 二进制 / 图片"
+      //     三态由 `hob_read_doc` 的 `execute` 决定怎么回（短提示 / 提示改用图片工具）。
+      //     哨兵在这里的职责是**权限**（档2 不许读非 `.md`），不是**呈现**。
+      if (level === 'project') {
+        const requested = readPathArg(exec)
+        if (typeof requested === 'string' && requested.trim() !== '') {
+          const lower = requested.trim().toLowerCase()
+          if (!lower.endsWith('.md')) {
+            return `"${requested}" is not available at the document-permission level: this level reads only .md documents.`
+          }
+        }
+      }
+      return undefined
+    } catch (e) {
+      // 硬性②③：哨兵自身出问题 ⇒ 收敛到**拒**（安全的一侧），且**不往外抛**。
+      // ⚠ 实测：抛异常会让宿主 fail-closed ⇒ **连账本工具一起拒**（Hob 瘫）。
+      log('权限哨兵异常（收敛为拒）：' + String((e as Error)?.message ?? e))
+      return 'the permission guard failed internally; this call was refused rather than allowed.'
+    }
+  }), 'dsh-hob preset: monotonic permission guard')
+
+  log('已挂单调权限哨兵（名册 ' + GUARDED_TOOLS.length + ' 个；名单外一律放行）')
+}
+
+export const MODEL_TOOL_ALLOWLIST: readonly string[] = [
+  // ── 本插件的两个工具 ──────────────────────────────────────────────
+  'read_contracts',
+  'write_hob',
+  /**
+   * ── **账本先建后推进**（2026-11-08 · 用户裁定）──────────────────────────
+   *   `hob_ledger_status` 只读诊断；`hob_ledger_init` 建账 / 补齐（默认演练）。
+   *
+   *   ⚠ 为什么**三档都要有**：账本没建时**连派活都过不去**（`dispatchGateAtLedger`
+   *     的第一道闸门），若建账工具在某档看不见，那一档的会话就**只能等着人手工建** ——
+   *     这正是改前"建账只是文档里的规定"的形态。
+   *   ⚠ 它们只碰**本账本区**，不扩大任何读 / 写面（落盘仍走 `writeHobFile` 同一道守卫）。
+   */
+  'hob_ledger_status',
+  'hob_ledger_init',
+  'hob_ledger_rebuild',
+  /**
+   * ⚠ 旧账本迁移不是“新建账”；但它只接受内置有限映射，默认只预演，真写需显式确认。
+   *   若不给这一项，旧格式 / 旧状态词项目只能靠人工改账，Hob 的“先梳理健康再推进”
+   *   在真实存量上就会卡住。三档都可见：它只碰本账本索引，仍走同一写入守卫。
+   */
+  'hob_ledger_migrate',
+  /**
+   * User approval for Pipeline v3 G1/G2. The tool records a decision audit
+   * from an explicit user receipt; it cannot promote status by itself.
+   */
+  'hob_pipeline_approve',
+  // ── 检索 5 个（既有）──────────────────────────────────────────────
+  'advanced_search',
+  'multi_search',
+  'platform_search',
+  'video_search',
+  'free_search_test',
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * ⚠⚠ **丙-6（2026-10-21 · 第 339 轮）：这 4 个定时工具**已从白名单删除**
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ── 定性（**实测**，不是推断）──────────────────────────────────────────
+   *   ① 白名单曾列 `schedule_create` / `schedule_list` / `schedule_update` / `schedule_delete` 这四个；
+   *   ② **本预设的声明面零命中** —— `preset/dsh-hob/preset-dsh-hob.patch.yml` 里
+   *      `grep schedule` = **0**；
+   *   ③ 本预设地基 = `dsh-web-app/presets/minimal.patch.yml`，而那份里
+   *      只有 `tool-fs` **一行**工具面，**没有 `tool-schedule`**（`grep` = 0）；
+   *   ④ 宿主 preset **不支持 `extends`**（`PROJECT.md` §4.3 / F-C3）⇒ 本预设
+   *      **不会**从 standard / full 那类预设里继承到 `tool-schedule`；
+   *   ⑤ 提供方是 `@deepseek-ai/dsh-tool-schedule`（dsh 主包直接依赖，
+   *      `package.json:80`；装配 id = `tool-schedule`，见
+   *      `dsh-web-app/presets/cordis.patch.yml:38-39`）—— **它不在本预设的装配面上**。
+   *
+   *   ⇒ **定性 = 模型面多余**：这几个名字被放行，但作用域里**根本没有注册**，
+   *     调用只会得到 `unknown tool`（`E-86` 的"与门"缺一半）。
+   *     ⚠ 这是白名单**比实际能力宽**，与"声明面漏行"方向相反 ——
+   *     两种定性修法相反，本批按实测的那一种做：**删名字**。
+   *
+   * ── 代价（如实）─────────────────────────────────────────────────────
+   *   ⚠ 名数按实测（**P15 删 `roundtable_status` 后**）：`ledger` **21** · `project` **22** · `workspace` **25**（**以 `check:presets` 的判定为准**）。
+   *   ⚠ 受影响的断言（本批已全部跑过）：`P-1`（名数口径）、`⑤h`、`⑤m-3b`、`⑦`、`⑧`。
+   *   ⚠ **能力面没有缩水** —— 那几个工具**本来就用不了**；删掉的只是"看起来能用"的假象。
+   */
+  // ── 批 9 / S1：编排**只读查询** 4 个（声明面零增量，已在继承面）─────
+  'taskboard_list',
+  'taskboard_get',
+  'taskboard_comments',
+  // ⚠⚠ **2026-10-30 P15：`roundtable_status` 已删** —— 它在本机**没有提供方**
+  //   （`dsh-plugin-roundtable` 包在磁盘上，但**不在 profile 的 bundles / dependencies 里**
+  //   ⇒ 宿主不加载它 ⇒ 该名字在模型面里根本不存在，调用即 `unknown tool`）。
+  //   ⚠ 这正是 `Q8` 咬过的"白名单比实际能力宽"那类。⚠ 本轮顺手核过"有没有别的同类"：
+  //   **只剩它一个**（其余 21 名要么是宿主 100 名里真实存在的，要么是本插件自注册的）。
+  // ── 批 9 / S2：打开网页取正文 1 个（需 `tool-web` 指名增行）─────────
+  'web_fetch',
+  // ── 批 21 / 权限收缩（**2026-10-14 · 用户裁定**）：~~批 9 / S3 只读看工作区文件 4 个~~ ──
+  // ⛔ **已收缩**：`read` / `glob` / `grep` / `read_image` **从本清单移除**。
+  //   用户原话：「hob 预设……**只能看账本和网络访问权限**，其他的收缩」，
+  //   并**明确裁定范围 A** = 只收「工作区文件读取」这一族（编排全家与问用户等**保留**）。
+  // ⚠ **同批连带**（否则会红/会漂）：
+  //   · 声明面删掉 `tool-fs` + `tool-fs-search` 两行（见 `preset-dsh-hob.patch.yml`）；
+  //   · 机检 ⑤h 的"恰好 N 名"断言同步 30 → 26；
+  //   · 预设契约（人读版 + 机器读版）里描述"看工作区文件"的段落同步改。
+  // ⚠ **副作用（是好事，如实记录）**：`tool-fs` 的 `apply` **同时注册 `write` / `edit`**，
+  //   而宿主**没有"只给 read 系"的开关**（见 preset 里「S3 的取捨」那段）——
+  //   ⇒ 删该声明行后，`write` / `edit` **连注册面都不再存在**，
+  //   原先"拦截器 fail-open ⇒ write/edit 理论上可达"那条**已知残余风险**随之收窄。
+  // ── 批 11 / D2：向用户提问 1 个（需 `tool-ask-user` 指名增行）──────────
+  // ⚠ 用户裁定 UD-68 / CHG-015：「允许 Hob 提问，但**尽量不问** —— 按项目方案主线
+  //   决策推进，除非只能由用户决策才可以提问」。契约里已就地追加「决策自主」条文
+  //   （见 `preset-dsh-hob.patch.yml` 的 `Decide on your own.` 一段），
+  //   本条只是把"能问"这个**手段**接上；它不是"要多问"的授权。
+  // ⚠ **v4 起本插件只剩 `Hob` 一个预设**：原句「只限本预设（Hob）——`Hob-Execute` 侧的
+  //   `WORK_MODEL_DENY` 仍禁该工具、一个字未动」是 **v4 之前的现状断言，现已失实**：
+  //   实施侧预设 `Hob-Execute` 与 `WORK_MODEL_DENY`（`src/modules/work-deny.ts`）**均已整段删除**
+  //   ⇒ 该禁项**随预设一并移除**，现无"另一侧"可言（UD-64 的禁弹窗纪律只在实施侧预设存在时成立）。
+  'ask_user_question',
+  // ── 批 13 / O3：按需加载技能指引 1 个（需 `tool-skill` + `skill-filesystem`）─
+  // ⚠ 与 E-86 的「与门」同款：光放行名字不够，声明面必须同时有那两行
+  //   （本批已落，见 `preset-dsh-hob.patch.yml` 的「批 13」一节）。
+  // ⚠ **目录可能为空是正常的**：用户裁定要求**收窄技能发现范围**（UD-72②），
+  //   本预设把 `skill-filesystem` 配成 `includeDefaultRoots: false` + 空清单
+  //   ⇒ 生效技能 **0 个**。此时 `skill` 工具**仍在**（可调用），
+  //   只是调用会得到"技能未知或不再可用" ⇒ 这是**有意的收窄态**，不是故障。
+  'skill',
+  // ── 批 13 / O5：把产出挂成交付卡 1 个（需 `present` 指名增行）──────────
+  // ⚠ `present` **不写工作区**：它只声明"这些已存在的文件是交付物"，
+  //   让界面给出可预览/可打开的文件卡（`dsh-tool-present`）。⇒ 不撞 UD-13。
+  'present',
+  // ── 批 14 / M3：会话总线投递 2 个（UD-77）─────────────────────────────
+  // ⚠ **这是本项目第一条"能指挥别的会话"的能力** —— 它改的是 PROJECT.md §6.1
+  //   那行「派活 / 委派 ❌」。用户 2026-10-08 决策 UD-77 明确要它（方案 B），
+  //   并把口径从"绝对没有"改成"**投递 ≠ 完成**：交付是 agent 干的，不是它干的"。
+  //   落点仍是**与门**（E-86）：工具定义在 `modules/bus.ts`，注册在下面
+  //   `registerBusTools`（预设作用域）；只加名字不加注册 ⇒ `unknown tool`。
+  // ⚠ **不收 `inject` 语义**（第三种投递语义"只写上下文不唤醒"）：对派活无意义，
+  //   且它的失败是静默的（会话可能一直不读）⇒ 不在枚举里，工具层也拒。
+  'hob_sessions',
+  'hob_send',
+  // ── 批 16：建会话能力 2 个（UD-79）────────────────────────────────────
+  // ⚠ 用户 2026-10-09 决策：Hob 派活/编排时**如需新建会话，新建的会话必须注意
+  //   工作区归属**。落法是 `hob_workspaces`（看可选工作区）+ `hob_spawn`
+  //   （建会话，**强制带 `workspaceId`**）。
+  // ⚠ 为什么必须强制：宿主 `sessionController.create` 的 `workspaceId` 是**可选**字段，
+  //   不传就建出"不属于任何工作区"的孤儿会话（2026-10-09 实测：只传 cwd 建出的
+  //   会话在 workspace.json 里查无归属）。⇒ 本工具**不接受"不指定"**：
+  //   要么显式给，要么落到调用方自己的工作区，解析不出就**拒**，绝不造孤儿。
+  // ⚠ 与门（E-86）同前：定义在 `modules/bus.ts`，注册在 `registerBusTools`。
+  'hob_workspaces',
+  'hob_spawn',
+  // ── 批 17：闭环编排 3 个（UD-80）──────────────────────────────────────
+  // ⚠ 用户 2026-10-09 要求：会话任务完成后**自动回传**给对应的 Hob 会话，Hob 分析后
+  //   继续推进并下发下一步；**续用还是新建由 Hob 自己判断**。
+  // ⚠ 这条能力**会自己在无人看管时往下转**（用户明确选了"不设上限、只能手动停"）
+  //   ⇒ `modules.orch` **缺省关**；开了才有这三个工具。
+  // ⚠ 与门（E-86）同前：定义在 `modules/orchestrator.ts`，注册在 `registerOrchTools`。
+  'hob_dispatch',
+  'hob_orch_status',
+  'hob_orch_control',
+]
+
+/**
+ * **三档「模型面」工具名集**（2026-11-23 · A·拆分，自 `preset/tools.ts` 原样搬出）。
+ * ⚠ 逐档名数以 `check:presets` 判定为准；⛔ 与注册面无关（那张表不知道谁真注册了）。
+ *
+ * @module preset/permission-tiers
+ */
+
+/**
+ * **权限三档的名字集**（2026-10-14 第 144 轮 · 用户裁定「档3 要真硬机制」+「档2不给，档3的都给」）。
+ *
+ * ── 三档是什么（包含链）────────────────────────────────────────────────
+ *   · `ledger`（账本，**默认**）= **只读自己的账本 + 网络** —— 看不到项目工作区的文件。
+ *     ⚠ **与批 21 收缩后的现状逐名一致**（机检 ⑤m-2 用双向差集钉这条）。
+ *   · `project`（项目）= 档1 **+** `hob_read_doc`（**只 `.md`** 模式）。
+ *   · `workspace`（工作区）= 档2 **+** `hob_glob` + `hob_grep` + `hob_read_image`
+ *     （且 `hob_read_doc` 在档3 **不设类型白名单** —— 工作区里的文件都可读取查看）。
+ *
+ * ── ⛔ 写类 / 命令类名字在三档里**一个都没有** ───────────────────────────
+ *   `write` / `edit` / `bash` / `pwsh` / `str_replace_editor` **不在任何一档**
+ *   （机检 ⑤m-4 逐个点验）。
+ *   ⚠ **这不只是"没放行"** —— 它们**根本不注册**（`tool-fs` / `tool-bash` /
+ *     `tool-pwsh` / `str-replace-editor` 在声明面一行都没有）⇒ 结构性不可达。
+ *     机检 ⑤m-6 另有一条盯**宿主平面**：那 4 个包必须仍处 `disabled: true`，
+ *     否则写类工具会**静默回到注册面**而三档白名单照样 PASS。
+ *
+ * ── ⚠ 这份表是**唯一**的名字集来源（E-110）──────────────────────────────
+ *   `MODEL_TOOL_ALLOWLIST`（档1 的历史常量）与各档必须是**同一份事实**：
+ *   ⛔ 不许在别处再抄一份名字清单（机检 ⑤m-2 拿它与那份常量做**双向差集**）。
+ *
+ * ── 为什么档1 不直接用 `MODEL_TOOL_ALLOWLIST` ────────────────────────────
+ *   留那个常量是为了**兼容既有断言与既有语义**（批 21 收缩后的那一档），
+ *   而两档之上的档是**同一张表的切片**。二者由机检钉成"逐名相等"而不是"看起来差不多"。
+ */
+
+export const PERMISSION_TIERS: Readonly<Record<'ledger' | 'project' | 'workspace', readonly string[]>> = {
+  /** 档1 账本 = 批 21 收缩后的现状（只读账本 + 网络 + 编排全家）。 */
+  ledger: MODEL_TOOL_ALLOWLIST,
+  /** 档2 项目 = 档1 + 只读 `.md`（自注册工具，**不声明 `tool-fs`**）。 */
+  project: [
+    ...MODEL_TOOL_ALLOWLIST,
+    'hob_read_doc',
+  ],
+  /** 档3 工作区 = 档2 + 目录列举 + 文本搜索 + 图片（全部自注册只读）。 */
+  workspace: [
+    ...MODEL_TOOL_ALLOWLIST,
+    'hob_read_doc',
+    'hob_glob',
+    'hob_grep',
+    'hob_read_image',
+  ],
+}
+
+/**
+ * **档位只管「可读范围」的那批名字**（2026-10-30 P14 · 用户裁定）。
+ *
+ * ── 用户原话（⛔ 不许改语义）────────────────────────────────────────
+ *   「把当前项目自己的工具和其他工具做区分，**档位以及工作推进方式权限控制都是通过当前项目的
+ *     工具去控制的不影响其他工具**」
+ *   「**档位一直都只是控制 HOB 预设的可读操作权限啊**」
+ *
+ * ── 结论（这条常量就是那句话的机械形态）────────────────────────────
+ *   `PERMISSION_TIERS` 从今往后**只**描述"这一档能读到哪里"：
+ *     · `hob_read_doc`（项目内 `.md`）—— 档 2 起；
+ *     · `hob_glob` / `hob_grep` / `hob_read_image`（目录/文本/图片）—— 档 3 才有。
+ *   ⚠ 其余工具（编排七件、台账两件、检索、网络、`ask_user_question`…）**与档位无关**：
+ *     它们的可达性由 deny 清单决定，⛔ 不再由档位开关。
+ *
+ * ── 为什么单列这张表而不是"档3 − 档1"───────────────────────────────
+ *   "档3 − 档1" 在**将来**某档多加一个非读名字时会**静默把那个名字也算成读范围**
+ *   （于是被判成"低档看不见"）。⇒ 读范围必须**指名**，⛔ 不许派生。
+ *   机检 ⑤n-1 拿它与"档3 − 档1"做**双向点验**，两边一旦漂开就红。
+ */
+
+export const READ_SCOPED_TOOLS: readonly string[] = [
+  'hob_read_doc',
+  'hob_glob',
+  'hob_grep',
+  'hob_read_image',
+]
+
 function makeDiag(config: Config): (msg: string) => void {
   if (config.debugLog !== true) return (): void => { /* 开关关闭：不做任何 IO */ }
 
@@ -749,7 +1088,7 @@ export function apply(ctx: any, config: Config = {}): void {
   //   ⚠ 2026-10-24：三处都多收一个 `visibleNamesFor`（= 名字集口径的唯一收口点）。
   filterModelToolList(ctx, levelOf, log, visibleNamesFor)
   enforceToolAllowlist(ctx, levelOf, log, visibleNamesFor)
-  permissionGuard.installPermissionGuard(ctx, levelOf, log, visibleNamesFor)
+  installPermissionGuard(ctx, levelOf, log, visibleNamesFor)
 
   // ⚠ 「工作方式」口径的挂载点**同上**：外层 ctx（本预设作用域）、不随门禁消失。
   //   理由与收敛机制同一条：关掉 `modules.tools` 不该让"拆几路"的口径**消失**
@@ -1008,7 +1347,6 @@ function denyInheritedTools(ctx: any, log: (m: string) => void, defaultDeny: rea
   }, 'dsh-hob preset: deny retry on tools/change')
 }
 
-
 /**
  * 保留的传输名（PTC 模式的 `run_code`）。
  * ⚠ **必须显式放行**：ptc 模式下 `wireSchemas()` 只返回 `run_code` 一个
@@ -1020,8 +1358,6 @@ function denyInheritedTools(ctx: any, log: (m: string) => void, defaultDeny: rea
  *     「文档里的名数会静默变旧」的实例）⇒ 一律引用 **`check:presets` 的 ⑤m 组实测**。
  */
 const RESERVED_TRANSPORT_TOOL = 'run_code'
-
-
 
 /**
  * 一个工具名在**某一档**的模型面判决（**纯函数**，⛔ 不读任何全局状态）。
@@ -1052,7 +1388,7 @@ export function decideToolFace(
   if (name === RESERVED_TRANSPORT_TOOL) return { keep: true, unseen: false, why: 'reserved-transport' }
   if (deny.includes(name)) return { keep: false, unseen: false, why: 'deny' }
   const tier = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
-  if (permissionTiers.READ_SCOPED_TOOLS.includes(name)) {
+  if (READ_SCOPED_TOOLS.includes(name)) {
     return tier.includes(name)
       ? { keep: true, unseen: false, why: 'read-scope:in-tier' }
       : { keep: false, unseen: false, why: 'read-scope:out-of-tier' }
@@ -1105,8 +1441,6 @@ function reportUnseen(names: readonly string[]): void {
     + ' ⛔ 但这不是"我确认过它安全" —— 是**待确认**。'
     + ' ↳ 处置：属命令/写/组队/改共享状态类 ⇒ 加进 `DEFAULT_DENY`；确认放行 ⇒ 加进 `MODEL_TOOL_ALLOWLIST`。' })
 }
-
-
 
 /**
  * **「Hob 推进项目的工作方式」口径注入**（2026-10-19 · `UD-97`）—— 本项的**唯一真实消费者**。
@@ -1549,7 +1883,6 @@ function enforceToolAllowlist(
  * @param exec - 宿主给的执行上下文。
  * @returns 路径字符串；取不到时为 undefined。
  */
-
 
 /** 注册两个工具（工具**定义**来自 `modules/tools.ts`，此处不重写实现）。 */
 function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any) => string,

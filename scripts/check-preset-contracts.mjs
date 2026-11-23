@@ -96,7 +96,7 @@ const root = join(here, '..')
 const HO = join(root, 'preset', 'dsh-hob', 'preset-dsh-hob.patch.yml')
 const DRAFT = join(root, 'kit', 'drafts', 'preset-contracts.md')
 /** 权限三档表的落点（⑤m 组的唯一来源）。 */
-const TOOLS_TS = join(root, 'src', 'preset', 'permission-tiers.ts')
+const TOOLS_TS = join(root, 'src', 'preset', 'tools.ts')
 /**
  * 宿主包的 `node_modules` 根（⑤m-6 读宿主平面 patch 用）。
  *
@@ -3637,11 +3637,13 @@ console.log('预设（机器读版）:', HO)
  *   ⚠ 负向对拍（⑤o-4）把 deny 分支改成恒假 ⇒ ②必须变红，用来证明这三条有牙。
  */
 {
-  const MOD_TS = join(root, 'src', 'preset', 'permission-tiers.ts')
+  const MOD_TS = join(root, 'src', 'preset', 'tools.ts')
   let m = null
   try { m = await import(pathToFileURL(MOD_TS).href + '?p14=' + Date.now()) } catch (e) {
     bad(`⑤o 无法直载 src/preset/tools.ts（${String(e?.message ?? e)}）⇒ 基准缺失，不按通过处理`)
   }
+  /** ⚠ 2026-11-23（A·拆分）：负向对拍与结构证据用的判定实现别名（= 同一模块）。 */
+  const mpt6 = m
   if (m !== null) {
     // ── ⑤o-1 读范围表 ≡ 档3 − 档1（双向）────────────────────────────
     {
