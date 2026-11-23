@@ -3871,7 +3871,7 @@ console.log('预设（机器读版）:', HO)
         writeFileSync(tmp, mutated)
         try {
           const mm = await import(pathToFileURL(tmp).href + '?t=' + Date.now())
-          const leak = mm.decideToolFace('bash', 'workspace', mm.DEFAULT_DENY, KNOWN)
+          const leak = mpt6.decideToolFace('bash', 'workspace', mm.DEFAULT_DENY, KNOWN)
           if (leak.keep === true) {
             ok(`⑤o-4 ✓ 负向对拍（deny 分支改成恒假）⇒ ⑤o-2 **必红**：\`bash\`@workspace 变成 keep=${leak.keep}`)
           } else {
@@ -3907,7 +3907,7 @@ console.log('预设（机器读版）:', HO)
     writeFileSync(tmp, mutated)
     try {
       const mm = await import(pathToFileURL(tmp).href + '?t=' + Date.now())
-      const v = mm.decideToolFace('brand_new_plugin_tool', 'ledger', [], [])
+      const v = mpt6.decideToolFace('brand_new_plugin_tool', 'ledger', [], [])
       if (v.keep === true && v.unseen === false) {
         ok('⑤o-5 ✓ 负向对拍（`unseen` 改成恒假 = 静默放行）⇒ ⑤o-3 **必红**：'
           + '没见过的工具变成 `keep=true, unseen=false`（正是"不吭声"那种形态）')
@@ -3959,7 +3959,10 @@ console.log('预设（机器读版）:', HO)
     dm = await import(pathToFileURL(join(root, 'src', 'modules', 'tools.ts')).href + '?t=' + Date.now())
   } catch { dm = null }
   const DENY2 = Array.isArray(dm?.DEFAULT_DENY) ? dm.DEFAULT_DENY : []
-  if (m === null || typeof m.decideToolFace !== 'function' || typeof m.PERMISSION_TIERS !== 'object') {
+  /** ⚠ 2026-11-23：`decideToolFace` 仍在 preset/tools.ts（名单在 permission-tiers.ts）⇒ 两处各取。 */
+  let pt6 = null
+  try { pt6 = await import(pathToFileURL(join(root, 'src', 'preset', 'tools.ts')).href + '?p6=' + Date.now()) } catch { pt6 = null }
+  if (m === null || typeof pt6?.decideToolFace !== 'function' || typeof m.PERMISSION_TIERS !== 'object') {
     bad('⑤o-6 读不到 `decideToolFace` / `PERMISSION_TIERS` ⇒ 本组失去对象（⛔ 不按通过处理）')
   } else if (DENY2.length === 0) {
     bad('⑤o-6 抽不出 `DEFAULT_DENY`（基准缺失 ⇒ 不按通过处理）')
@@ -3977,7 +3980,7 @@ console.log('预设（机器读版）:', HO)
     }
     const NAMES = [...allNames].sort()
     const KNOWN2 = [...NAMES].filter((n) => !n.startsWith('brand_new'))
-    const keepAt = (lv) => new Set(NAMES.filter((n) => m.decideToolFace(n, lv, DENY2, KNOWN2).keep === true))
+    const keepAt = (lv) => new Set(NAMES.filter((n) => pt6.decideToolFace(n, lv, DENY2, KNOWN2).keep === true))
     const sets = Object.fromEntries(TIERS3.map((lv) => [lv, keepAt(lv)]))
     /**
      * ⚠ `READ_SCOPED` 读不到 ⇒ **判不可判**（⛔ 不许退化成"把全部名字都当非读范围"）：
@@ -4127,8 +4130,8 @@ console.log('预设（机器读版）:', HO)
       /**
        * ⚠ 先自证变体**真的越界了**：同一个非读名，档1 被摘、档3 保留。
        */
-      const k1 = mm.decideToolFace(probe, 'ledger', DENY3, []).keep
-      const k3 = mm.decideToolFace(probe, 'workspace', DENY3, []).keep
+      const k1 = mpt6.decideToolFace(probe, 'ledger', DENY3, []).keep
+      const k3 = mpt6.decideToolFace(probe, 'workspace', DENY3, []).keep
       if (!(k1 === false && k3 === true)) {
         bad(`⑤o-7 变体没造出"档位越界"（\`${probe}\`：档1 keep=${k1} · 档3 keep=${k3}）⇒ 负向对拍不可判`)
       } else {

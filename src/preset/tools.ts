@@ -40,6 +40,7 @@ export const GUARDED_TOOLS = permissionGuard.GUARDED_TOOLS
 export const SHARED_FORBIDDEN_TOOLS = permissionGuard.SHARED_FORBIDDEN_TOOLS
 export const PERMISSION_TIERS = permissionTiers.PERMISSION_TIERS
 export const MODEL_TOOL_ALLOWLIST = permissionTiers.MODEL_TOOL_ALLOWLIST
+export const READ_SCOPED_TOOLS = permissionTiers.READ_SCOPED_TOOLS
 import { appendFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HobToolsConfig } from '../modules/tools.ts'
@@ -1021,32 +1022,6 @@ function denyInheritedTools(ctx: any, log: (m: string) => void, defaultDeny: rea
 const RESERVED_TRANSPORT_TOOL = 'run_code'
 
 
-/**
- * **档位只管「可读范围」的那批名字**（2026-10-30 P14 · 用户裁定）。
- *
- * ── 用户原话（⛔ 不许改语义）────────────────────────────────────────
- *   「把当前项目自己的工具和其他工具做区分，**档位以及工作推进方式权限控制都是通过当前项目的
- *     工具去控制的不影响其他工具**」
- *   「**档位一直都只是控制 HOB 预设的可读操作权限啊**」
- *
- * ── 结论（这条常量就是那句话的机械形态）────────────────────────────
- *   `PERMISSION_TIERS` 从今往后**只**描述"这一档能读到哪里"：
- *     · `hob_read_doc`（项目内 `.md`）—— 档 2 起；
- *     · `hob_glob` / `hob_grep` / `hob_read_image`（目录/文本/图片）—— 档 3 才有。
- *   ⚠ 其余工具（编排七件、台账两件、检索、网络、`ask_user_question`…）**与档位无关**：
- *     它们的可达性由 deny 清单决定，⛔ 不再由档位开关。
- *
- * ── 为什么单列这张表而不是"档3 − 档1"───────────────────────────────
- *   "档3 − 档1" 在**将来**某档多加一个非读名字时会**静默把那个名字也算成读范围**
- *   （于是被判成"低档看不见"）。⇒ 读范围必须**指名**，⛔ 不许派生。
- *   机检 ⑤n-1 拿它与"档3 − 档1"做**双向点验**，两边一旦漂开就红。
- */
-export const READ_SCOPED_TOOLS: readonly string[] = [
-  'hob_read_doc',
-  'hob_glob',
-  'hob_grep',
-  'hob_read_image',
-]
 
 /**
  * 一个工具名在**某一档**的模型面判决（**纯函数**，⛔ 不读任何全局状态）。
@@ -1077,7 +1052,7 @@ export function decideToolFace(
   if (name === RESERVED_TRANSPORT_TOOL) return { keep: true, unseen: false, why: 'reserved-transport' }
   if (deny.includes(name)) return { keep: false, unseen: false, why: 'deny' }
   const tier = PERMISSION_TIERS[level as 'ledger' | 'project' | 'workspace'] ?? PERMISSION_TIERS.ledger
-  if (READ_SCOPED_TOOLS.includes(name)) {
+  if (permissionTiers.READ_SCOPED_TOOLS.includes(name)) {
     return tier.includes(name)
       ? { keep: true, unseen: false, why: 'read-scope:in-tier' }
       : { keep: false, unseen: false, why: 'read-scope:out-of-tier' }
