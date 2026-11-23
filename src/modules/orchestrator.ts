@@ -4853,8 +4853,6 @@ export function apply(ctx: any): void {
                 ...(typeof self === 'string' && self !== '' ? { actor: self } : {}) })
             } catch { /* 旁路观测 */ }
           }
-            } catch { /* notify 是旁路观测：⛔ 不许因它失败而阻断派活 */ }
-          }
         }
         /**
          * ⚠ **闸门按调用方自己的 owner 判**（`I-4`）：
