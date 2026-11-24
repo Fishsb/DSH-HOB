@@ -5,11 +5,12 @@
  * ⚠ 本文件只负责队列状态与执行；具体派发、投递、唤醒由调用方注册 handler。
  * ⚠ 生产落点仍在账本区 `runtime/`（不进 git）；本模块不自行选择账本根。
  */
+import { quarantineCorrupt } from './corrupt-quarantine.ts'
 import {
   closeSync,
   mkdirSync,
   openSync,
-  readFileSync,
+  existsSync, readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -111,14 +112,29 @@ export function procProcessAlive(pid: number): boolean | undefined {
   }
 }
 
-function load(path: string): EffectState {
+/**
+ * 读效果队列。⚠ 2026-11-25（P0）：**坏档不许读成空再被原子覆盖**（那会让 pending 永久消失）。
+ *   坏 JSON / 结构不符 ⇒ 先隔离（原字节保留到 `<file>.corrupt-<ts>`）再以空队继续；
+ *   隔离事实带回 `recovered`，由上层暴露。隔离失败 ⇒ 抛出（fail-closed，⛔ 不静默覆盖）。
+ */
+function load(path: string): { state: EffectState; recovered?: string } {
+  if (!existsSync(path)) return { state: { ...EMPTY, rows: [] } }
+  let reason = ''
   try {
-    const text = readFileSync(path, 'utf8')
-    const parsed = JSON.parse(text) as Partial<EffectState>
-    if (parsed.version !== 1 || !Array.isArray(parsed.rows) || typeof parsed.nextSeq !== 'number') return { ...EMPTY, rows: [] }
-    return { version: 1, nextSeq: parsed.nextSeq, rows: parsed.rows as EffectRow[] }
-  } catch {
-    return { ...EMPTY, rows: [] }
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<EffectState>
+    if (parsed.version !== 1 || !Array.isArray(parsed.rows) || typeof parsed.nextSeq !== 'number') {
+      reason = '效果队列结构不符（version/rows/nextSeq 缺失或不合法）'
+    } else {
+      return { state: { version: 1, nextSeq: parsed.nextSeq, rows: parsed.rows as EffectRow[] } }
+    }
+  } catch (e) {
+    reason = '效果队列不是合法 JSON：' + String((e as Error)?.message ?? e)
+  }
+  try {
+    const q = quarantineCorrupt(path, reason)
+    return { state: { ...EMPTY, rows: [] }, recovered: '已隔离坏档 → ' + q.path + '（' + reason + '）' }
+  } catch (e) {
+    throw new Error('effects-state-corrupt-and-quarantine-failed: ' + reason + ' / ' + String((e as Error)?.message ?? e))
   }
 }
 
@@ -137,6 +153,8 @@ export class EffectsQueue {
   private readonly onError: (kind: string, error: unknown) => void
   private readonly isProcessAlive: (pid: number) => boolean | undefined
   private readonly replaced = new Set<string>()
+  /** ⚠ 构造时隔离过坏档 ⇒ 这里保留可读事实（供状态/诊断读数）。 */
+  readonly recovered: string | undefined
   private started = false
   private stopped = false
   private readonly lockPath: string | undefined
@@ -149,7 +167,9 @@ export class EffectsQueue {
     this.lockPath = opts.exclusive === false ? undefined : (opts.lockPath ?? `${path}.lock`)
     this.isProcessAlive = opts.isProcessAlive ?? procProcessAlive
     if (this.lockPath !== undefined) this.acquireLock()
-    this.state = load(path)
+    const loaded = load(path)
+    this.state = loaded.state
+    this.recovered = loaded.recovered
     this.now = opts.now ?? (() => Date.now())
     this.onError = opts.onError ?? (() => {})
   }

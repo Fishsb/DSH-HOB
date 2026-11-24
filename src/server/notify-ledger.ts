@@ -16,6 +16,7 @@
  * @module notify-ledger
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { quarantineCorrupt } from './corrupt-quarantine.ts'
 import { dirname, join } from 'node:path'
 
 export const NOTIFY_LEDGER_VERSION = 1 as const
@@ -43,12 +44,33 @@ export function notifyLedgerPath(ledgerRoot: string): string {
   return join(ledgerRoot, 'runtime', 'notifications.json')
 }
 
-function load(file: string): NotifyState {
+/**
+ * 读通知账本。⚠ 2026-11-25（P0）：**坏档不许读成空再被覆盖**。
+ *   坏 JSON / 结构不符 ⇒ 先隔离（原字节保留），再以空档继续；
+ *   隔离事实通过 `recovered` 带回，由读数面如实展示。
+ */
+export interface NotifyLoad { state: NotifyState; recovered?: string }
+
+function load(file: string): NotifyLoad {
+  if (!existsSync(file)) return { state: { ...EMPTY } }
+  let reason = ''
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<NotifyState>
-    if (parsed.version !== 1 || !Array.isArray(parsed.rows) || typeof parsed.nextId !== 'number') return { ...EMPTY }
-    return { version: 1, nextId: parsed.nextId, rows: parsed.rows as NotifyRow[] }
-  } catch { return { ...EMPTY } }
+    if (parsed.version !== 1 || !Array.isArray(parsed.rows) || typeof parsed.nextId !== 'number') {
+      reason = '通知账本结构不符（version/rows/nextId 缺失或不合法）'
+    } else {
+      return { state: { version: 1, nextId: parsed.nextId, rows: parsed.rows as NotifyRow[] } }
+    }
+  } catch (e) {
+    reason = '通知账本不是合法 JSON：' + String((e as Error)?.message ?? e)
+  }
+  try {
+    const q = quarantineCorrupt(file, reason)
+    return { state: { ...EMPTY }, recovered: '已隔离坏档 → ' + q.path + '（' + reason + '）' }
+  } catch (e) {
+    /** ⚠ 隔离失败 ⇒ **fail-closed**：不写、不覆盖，把失败如实抛出由调用方报。 */
+    throw new Error('notify-state-corrupt-and-quarantine-failed: ' + reason + ' / ' + String((e as Error)?.message ?? e))
+  }
 }
 
 /**
@@ -62,7 +84,8 @@ export function recordNotify(
 ): { ok: boolean; id?: number; deduped?: boolean; reason?: string } {
   try {
     const file = notifyLedgerPath(ledgerRoot)
-    const state = load(file)
+    const loaded = load(file)
+    const state = loaded.state
     const at = (entry.now ?? new Date()).toISOString()
     const found = state.rows.find((r) => r.key === entry.key)
     if (found !== undefined) {
@@ -87,7 +110,7 @@ export function recordNotify(
     const tmp = file + '.tmp'
     writeFileSync(tmp, JSON.stringify(state, null, 2))
     renameSync(tmp, file)
-    return { ok: true, id: found === undefined ? state.rows[state.rows.length - 1]?.id : found.id, deduped: found !== undefined }
+    return { ok: true, id: found === undefined ? state.rows[state.rows.length - 1]?.id : found.id, deduped: found !== undefined, ...(loaded.recovered === undefined ? {} : { recovered: loaded.recovered }) }
   } catch (e) {
     return { ok: false, reason: String((e as Error)?.message ?? e) }
   }
@@ -115,9 +138,10 @@ export function readNotifications(
   try {
     const file = notifyLedgerPath(ledgerRoot)
     if (!existsSync(file)) return { readonly: true, readable: true, rows: [], total: 0 }
-    const state = load(file)
+    const loaded = load(file)
+    const state = loaded.state
     const rows = [...state.rows].reverse().slice(0, Math.max(0, limit))
-    return { readonly: true, readable: true, rows, total: state.rows.length }
+    return { readonly: true, readable: true, rows, total: state.rows.length, ...(loaded.recovered === undefined ? {} : { recovered: loaded.recovered }) }
   } catch (e) {
     return { readonly: true, readable: false, reason: String((e as Error)?.message ?? e) }
   }

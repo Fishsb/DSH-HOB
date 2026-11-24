@@ -587,6 +587,31 @@ console.log('')
       if (emptyId.ok === false && emptyId.kind === 'no-identity') ok('SC-42 ✓ 空会话身份 ⇒ 不领租约（⛔ 不用空身份占需求）')
       else bad('SC-42 空身份仍领到了租约')
     }
+    // ── SC-43：坏档隔离 —— 不许读成空再被覆盖（2026-11-25 · 第 1 波 P0）──
+    {
+      const nl3 = await import(pathToFileURL(join(root, 'src', 'server', 'notify-ledger.ts')).href)
+      const eq3 = await import(pathToFileURL(join(root, 'src', 'server', 'effects-queue.ts')).href)
+      const fs3 = await import('node:fs')
+      const tmp3 = fs3.mkdtempSync(join('/tmp', 'hob-corrupt-'))
+      fs3.mkdirSync(join(tmp3, 'runtime'), { recursive: true })
+      const nf3 = nl3.notifyLedgerPath(tmp3)
+      const rawNotify = '{ not json'
+      fs3.writeFileSync(nf3, rawNotify)
+      const w3 = nl3.recordNotify(tmp3, { kind: 'k', key: 'x', subject: 's' })
+      const quar3 = fs3.readdirSync(join(tmp3, 'runtime')).filter((f) => f.includes('.corrupt-'))
+      const kept3 = quar3.length > 0 ? fs3.readFileSync(join(tmp3, 'runtime', quar3[0]), 'utf8') : ''
+      if (w3.ok === true && String(w3.recovered ?? '').includes('已隔离') && quar3.length === 1 && kept3 === rawNotify) {
+        ok('SC-43 ✓ 通知坏档：先隔离（原字节逐字保留）再继续，写入不再覆盖历史，隔离事实随返回带回')
+      } else bad('SC-43 通知坏档被读成空/被覆盖，或隔离事实没带回')
+      const ef3 = join(tmp3, 'runtime', 'effects.json')
+      fs3.writeFileSync(ef3, '{ bad')
+      const q3 = new eq3.EffectsQueue(ef3, { handlers: new Map() })
+      const qf3 = fs3.readdirSync(join(tmp3, 'runtime')).filter((f) => f.startsWith('effects.json.corrupt-'))
+      const keptE3 = qf3.length > 0 ? fs3.readFileSync(join(tmp3, 'runtime', qf3[0]), 'utf8') : ''
+      if (String(q3.recovered ?? '').includes('已隔离') && qf3.length === 1 && keptE3 === '{ bad') {
+        ok('SC-43 ✓ 效果队列坏档：同样先隔离再继续（⛔ 不把 pending 静默清空）')
+      } else bad('SC-43 效果队列坏档被静默清空，或原件丢失')
+    }
   }
 
   // ── SC-11：作用域门禁（无关缺口不阻塞当前任务；修复写可区分）────────────
