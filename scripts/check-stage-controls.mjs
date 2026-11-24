@@ -657,6 +657,12 @@ console.log('')
       const after = pd.readPending(tmp47)[0]
       if (closed.ok === true && after?.status === 'closed' && String(after?.answer ?? '') !== '') ok('SC-47 ✓ 带答案关闭后状态与答案都落盘（可追溯）')
       else bad('SC-47 关闭未落盘')
+      /** ⚠ 出口必须接上：只登记不出口 = 又一处「看不见」。 */
+      const tools48 = (await import(pathToFileURL(join(root, 'src', 'modules', 'tools.ts')).href)).createHobTools({ ledgerRoot: tmp47 })
+      const read48 = await tools48.readContracts.execute({ path: 'pending-decisions' }, {})
+      const v48 = typeof read48.text === 'string' ? JSON.parse(read48.text) : read48
+      if (v48.ok === true && v48.readonly === true && v48.total === 1 && v48.open === 0) ok('SC-48 ✓ read_contracts path=pending-decisions 接上只读出口（open/total 与盘上一致）')
+      else bad('SC-48 待决清单只读出口未接上或读数不符：' + JSON.stringify(v48).slice(0, 120))
     }
     // ── SC-44：实现者判定（task.built_by 缺失时从 returned RUN 回退；都没有 ⇒ fail-closed）──
     {

@@ -25,6 +25,7 @@ import {
 import { riskBindingDigestOf, artifactDigestOf, selectedOptionValid } from '../shared/pipeline.ts'
 import { acceptanceCriteriaIdsOf } from '../shared/pipeline-view.ts'
 import { readNotifications } from '../server/notify-ledger.ts'
+import { readPending } from '../server/pending-decisions.ts'
 
 /** 出口需要的注入面（由 `tools.ts` 提供；⛔ 不在本模块自己拼账本落点）。 */
 export interface ReadContractDeps {
@@ -188,6 +189,22 @@ export async function runReadContractEndpoint(
       const root = deps.resolveRoot()
       if (root === undefined) {
         return { ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' }
+      }
+      /**
+       * ⚠ P1（2026-11-25）：**待决清单**只读出口 —— 把「要用户拍板的事」集中端出来。
+       *   ⛔ 不参与门禁判定；open 在前，closed 保留可追溯。
+       */
+      if (String(args.path ?? '').trim() === 'pending-decisions') {
+        const root = deps.resolveRoot()
+        if (root === undefined) return { ok: false, reason: 'no-ledger-root', message: '拒绝：无法确定账本目录。' } as unknown as JsonValue
+        const rows = readPending(root)
+        const open = rows.filter((r: { status: string }) => r.status === 'open')
+        return {
+          ok: true,
+          text: JSON.stringify({ ok: true, path: 'pending-decisions', readonly: true, open: open.length, total: rows.length, rows }, null, 2),
+          truncated: false,
+          bytes: 0,
+        } as unknown as JsonValue
       }
       if (String(args.path ?? '').trim() === 'notifications') {
         /**
