@@ -76,8 +76,12 @@ export function dispatchFocusGuard(input: {
   const rawReq = task.requirement ?? task.req_ids ?? ''
   const reqId = typeof rawReq === 'string' ? rawReq.trim() : (Array.isArray(rawReq) ? String(rawReq[0] ?? '').trim() : '')
   if (reqId === '') return { ok: false, message: '拒绝：任务 ' + input.taskId + ' 没有可归属的需求号 ⇒ 无法判定推进焦点。' }
-  const acquired = acquireFocus(input.ledgerRoot, { session: input.session, reqId, nowMs: now })
-  if (acquired.ok !== true) {
+  /** ⚠ 2026-11-25（P0）：身份判不出 ⇒ **不领租约**（WIP 无从归属），但仍做 C 的冲突检测。 */
+  const hasIdentity = String(input.session ?? '').trim() !== ''
+  const acquired = hasIdentity ? acquireFocus(input.ledgerRoot, { session: input.session, reqId, nowMs: now }) : undefined
+  if (acquired !== undefined && acquired.ok !== true) {
+    if (acquired.kind === 'no-identity') return { ok: false, message: '拒绝：会话身份判不出 ⇒ 无法登记推进焦点（⛔ 不许用空身份占租约）。' }
+    if (acquired.kind === 'undecided') return { ok: false, message: '拒绝：该需求的推进焦点由 ' + acquired.session + ' 持有，但其租约到期时刻**判不出** ⇒ ⛔ 不自动接管（先修复/清理那条焦点行，或让它显式释放）。' }
     /** ⚠ 两种 busy 必须分开说：本会话已有别的 active（WIP=1）/ 该需求已被另一会话占着（租约）。 */
     const mine = acquired.activeSession === input.session
     const head = mine
@@ -116,7 +120,8 @@ export function dispatchFocusGuard(input: {
         + ' ⇒ 已把本需求登记为 paused-conflict。要并行，需要任务声明不同的写范围，或显式加串行依赖。',
     }
   }
-  return acquired.kind === 'reclaimed'
+  if (!hasIdentity) return { ok: true, note: '会话身份判不出 ⇒ 未领取推进焦点（WIP=1 未生效），仅做冲突检测。' }
+  return acquired !== undefined && acquired.kind === 'reclaimed'
     ? { ok: true, note: '接管了 ' + acquired.fromSession + ' 的过期焦点（租约到期）。' }
     : { ok: true }
 }

@@ -574,6 +574,18 @@ console.log('')
       const r5 = g2('s5', 'TSK-C1', t0 + 35 * 60 * 1000)
       if (r5.ok === true && String(r5.note ?? '').includes('接管')) ok('SC-42 ✓ 租约过期 ⇒ 允许接管并说明接管事实')
       else bad('SC-42 过期租约没能接管（或没说接管事实）')
+      /** ⚠ 2026-11-25（P0 修复的回归）：坏到期时刻 / 空身份 —— 两处都必须 fail-closed 且可读。 */
+      const badLease = fs2.mkdtempSync(join('/tmp', 'hob-focus-bad-'))
+      const lp = fl2.focusFilePath(badLease)
+      fs2.mkdirSync(join(badLease, 'runtime'), { recursive: true })
+      fs2.writeFileSync(lp, JSON.stringify({ version: 1, rows: [{ session: 'sB', reqId: 'R-BAD', state: 'active', acquiredAt: 'x', heartbeatAt: 'x', expiresAt: 'not-a-date' }] }))
+      const rd = fl2.readFocus(badLease, t0)[0]
+      const badAcq = fl2.acquireFocus(badLease, { session: 'sC', reqId: 'R-BAD', nowMs: t0 })
+      if (rd?.expiryUndecided === true && badAcq.ok === false && badAcq.kind === 'undecided') ok('SC-42 ✓ 到期时刻判不出：读数标 undecided 且**不自动接管**（两处同一结论，fail-closed）')
+      else bad('SC-42 坏到期时刻仍出现“显示判不出/实际可接管”的分叉')
+      const emptyId = fl2.acquireFocus(badLease, { session: '', reqId: 'R-BAD', nowMs: t0 })
+      if (emptyId.ok === false && emptyId.kind === 'no-identity') ok('SC-42 ✓ 空会话身份 ⇒ 不领租约（⛔ 不用空身份占需求）')
+      else bad('SC-42 空身份仍领到了租约')
     }
   }
 

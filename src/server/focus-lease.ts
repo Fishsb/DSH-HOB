@@ -34,6 +34,8 @@ export const FOCUS_STATES = ['active', 'queued', 'paused-user', 'paused-conflict
 export type FocusState = (typeof FOCUS_STATES)[number]
 
 export interface FocusRow {
+  /** ⚠ 仅读数侧出现：到期时刻判不出（⛔ 不等于未过期）。 */
+  expiryUndecided?: boolean
   session: string
   reqId: string
   state: FocusState
@@ -69,10 +71,31 @@ function save(file: string, state: FocusStateFile): void {
 
 const iso = (ms: number): string => new Date(ms).toISOString()
 
+/**
+ * ⚠ 2026-11-25（第 1 波 · P0）：**到期时刻只解析一次、只有一种结论**。
+ *   改前 readFocus 用 `<=` 判 expired（坏值 ⇒ NaN ⇒ false ⇒ 显示未过期），
+ *   acquireFocus 用 `>` 判可接管（坏值 ⇒ false ⇒ 认为不 live ⇒ **可接管**）——
+ *   同一个坏 time 给出相反结论。现在：**解析不出 ⇒ undecided**（⛔ 不当过期、⛔ 不当可接管）。
+ */
+export type ExpiryReading = { kind: 'ok'; at: number } | { kind: 'undecided' }
+export function parseExpiry(raw: string | undefined): ExpiryReading {
+  const at = Date.parse(String(raw ?? ''))
+  return Number.isFinite(at) ? { kind: 'ok', at } : { kind: 'undecided' }
+}
+/** 过期判定（唯一入口）：只有**能解析且已到期**才算过期；判不出 ⇒ 不算过期。 */
+export function isExpired(raw: string | undefined, nowMs: number): boolean {
+  const e = parseExpiry(raw)
+  return e.kind === 'ok' && e.at <= nowMs
+}
+/** 可接管判定（唯一入口）：只有**能解析且已过期**才可接管；判不出 ⇒ ⛔ 不许接管。 */
+export function isReclaimable(raw: string | undefined, nowMs: number): boolean {
+  return isExpired(raw, nowMs)
+}
+
 /** 纯函数：某会话当前的 active 焦点（只有未过期的算数）。 */
 export function activeOf(state: FocusStateFile, session: string, nowMs: number): FocusRow | undefined {
   return state.rows.find((r) => r.session === session && r.state === 'active'
-    && Date.parse(r.expiresAt) > nowMs)
+    && !isExpired(r.expiresAt, nowMs) && parseExpiry(r.expiresAt).kind === 'ok')
 }
 
 /**
@@ -85,12 +108,16 @@ export type AcquireResult =
   | { ok: true; kind: 'acquired' | 'renewed' }
   | { ok: true; kind: 'reclaimed'; fromSession: string }
   | { ok: false; kind: 'busy'; activeReqId: string; activeSession: string }
+  | { ok: false; kind: 'no-identity' }
+  | { ok: false; kind: 'undecided'; session: string }
 
 export function acquireFocus(
   ledgerRoot: string,
   input: { session: string; reqId: string; nowMs?: number; leaseMs?: number },
 ): AcquireResult {
   const now = input.nowMs ?? Date.now()
+  /** ⚠ 2026-11-25（P0）：**会话身份为空 ⇒ 不领租约**（否则空串会话会占住需求，把别的无身份会话挡在外面）。 */
+  if (String(input.session ?? '').trim() === '') return { ok: false, kind: 'no-identity' } as unknown as AcquireResult
   const lease = input.leaseMs ?? FOCUS_LEASE_MS
   const file = focusFilePath(ledgerRoot)
   const state = load(file)
@@ -106,10 +133,18 @@ export function acquireFocus(
     return { ok: false, kind: 'busy', activeReqId: current.reqId, activeSession: input.session }
   }
   const others = state.rows.filter((r) => r.reqId === input.reqId && r.session !== input.session && r.state === 'active')
-  const live = others.find((r) => Date.parse(r.expiresAt) > now)
+  /** ⚠ 只有**能解析且未到期**才算 live；判不出 ⇒ 不算 live ⇒ 允许接管（坏档不能永久锁死）。 */
+  const live = others.find((r) => { const e = parseExpiry(r.expiresAt); return e.kind === 'ok' && e.at > now })
   if (live !== undefined) {
     return { ok: false, kind: 'busy', activeReqId: live.reqId, activeSession: live.session }
   }
+  /**
+   * ⚠ 2026-11-25（P0）：**到期时刻判不出的焦点行不自动接管**（fail-closed）。
+   *   理由：坏值既不等于过期也不等于未过期；自动接管等于「靠一个损坏的读数把别人的工作抢走」。
+   *   ⇒ 明确返回 undecided + 可读处理办法（修复/清理该行），由人/工具显式处理。
+   */
+  const undecided = others.find((r) => parseExpiry(r.expiresAt).kind === 'undecided')
+  if (undecided !== undefined) return { ok: false, kind: 'undecided', session: undecided.session }
   const reclaimedFrom = others.length > 0 ? others[0]!.session : undefined
   for (const r of others) r.state = 'queued'
   const row: FocusRow = {
@@ -156,5 +191,8 @@ export function resumeFocus(ledgerRoot: string, input: { session: string; reqId:
 export function readFocus(ledgerRoot: string, nowMs = Date.now()): Array<FocusRow & { expired: boolean }> {
   const file = focusFilePath(ledgerRoot)
   if (!existsSync(file)) return []
-  return load(file).rows.map((r) => ({ ...r, expired: Date.parse(r.expiresAt) <= nowMs }))
+  return load(file).rows.map((r) => parseExpiry(r.expiresAt).kind === 'ok'
+    ? { ...r, expired: isExpired(r.expiresAt, nowMs) }
+    /** ⚠ 坏时刻：显示为**判不出**（expired:false 但带 expiryUndecided），⛔ 不假装未过期。 */
+    : { ...r, expired: false, expiryUndecided: true })
 }
