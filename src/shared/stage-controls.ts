@@ -999,6 +999,10 @@ export function closureProblems(
           unit: id,
           why: `${b.field} 指向不存在的单元 ${ref}（悬空引用 ⇒ ${b.why}；⛔ 填一个 id 不等于绑定了事实）`,
         })
+      } else if (b.field === 'chain_acceptance_ref' && txt(target.status) !== 'pass') {
+        out.push({ rule: 'C-29', unit: id, why: `${b.field} 指向 ${ref}（kind 对，但 status=${txt(target.status) || '(空)'}）⇒ 无法证明 G5 已接受（⛔ 填一个 send-back 的 ACC 不等于接受）` })
+      } else if (b.field === 'residual_risk_decision_ref' && !['active', 'settled'].includes(txt(target.status))) {
+        out.push({ rule: 'C-29', unit: id, why: `${b.field} 指向 ${ref}（status=${txt(target.status) || '(空)'}）⇒ 该决定不是有效态` })
       } else if (txt(target.kind) !== b.expectKind) {
         out.push({
           rule: 'C-29',

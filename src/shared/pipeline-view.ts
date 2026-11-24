@@ -282,6 +282,16 @@ function allTasksVerified(tasks: readonly Unit[], verifications: readonly Unit[]
  *
  *   ⚠ 本账本 20 条需求全 legacy/retired ⇒ 走不到这里 ⇒ 对现有数据零影响。
  */
+/**
+ * **旧修订 ACC 判定**（2026-11-25 · P0 收紧）：ACC 登记的 `task_revision` 与任务当前修订不一致 ⇒ 不算通过。
+ * ⚠ 两侧任一缺失（历史存量）⇒ 不判 stale：那是写入门禁的活，视图侧只拦「写了但不等于当前」。
+ */
+export function staleAcceptanceOf(taskRevision: unknown, accs: readonly Record<string, unknown>[]): boolean {
+  const taskRev = text(taskRevision)
+  if (taskRev === '') return false
+  return accs.some((a) => { const ar = text(a.task_revision); return ar !== '' && ar !== taskRev })
+}
+
 function allTasksAccepted(
   tasks: readonly Unit[],
   groups: ReadonlyArray<{ parent: string; units?: readonly Unit[]; verdict: { verdict: string } }>,
@@ -291,6 +301,12 @@ function allTasksAccepted(
   return tasks.every((task) => {
     const hit = groups.find((g) => g.parent === text(task.id))
     if (hit === undefined || hit.verdict.verdict !== 'accepted') return false
+    /**
+     * ⚠ 2026-11-25（P0 收紧）：**旧修订的 ACC 不算通过**。
+     *   改前只判 accepted，不比对 `task_revision` ⇒ 任务改到 rev2、ACC 还绑 rev1 也能收口。
+     *   ⚠ 缺 `task_revision`（历史存量）不在这里拦：那是写入门禁的活，视图侧只拦「写了但不等于当前」。
+     */
+    if (staleAcceptanceOf(task.revision, (hit.units ?? []) as unknown as Array<Record<string, unknown>>)) return false
     /** ⚠ R-01 段 3：**强判据**也必须干净（独立性 / example_results…）。 */
     const accs = hit.units ?? []
     return accs.every((a) => acceptanceProblems(a as any, units as any).length === 0)

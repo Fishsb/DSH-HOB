@@ -612,6 +612,32 @@ console.log('')
         ok('SC-43 ✓ 效果队列坏档：同样先隔离再继续（⛔ 不把 pending 静默清空）')
       } else bad('SC-43 效果队列坏档被静默清空，或原件丢失')
     }
+    // ── SC-45：C-29 不只看引用存在，还要看**判决**（send-back 的 ACC 不能当作收口依据）──
+    {
+      const base45 = { id: 'CLS-W', kind: 'closure', status: 'closed', closure_mode: 'standard', basis: ['b'], closed_at: '2026-11-25T00:00:00Z', chain_acceptance_ref: 'ACC-W', risk_assessment_ref: 'RISK-W', residual_risk_decision_ref: 'DEC-W' }
+      const ctx45 = [
+        { id: 'ACC-W', kind: 'acc', status: 'send-back', pipeline_version: 'v3', revision: '1', parent: 'TSK-W' },
+        { id: 'RISK-W', kind: 'risk', status: 'active' },
+        { id: 'DEC-W', kind: 'decision', status: 'active', decision_kind: 'stage-approval' },
+      ]
+      const p45 = mod.closureProblems(base45, ctx45)
+      const caught = p45.some((p) => String(p.why).includes('无法证明 G5 已接受'))
+      if (caught) ok('SC-45 ✓ C-29 核判决：chain_acceptance_ref 指向 send-back 的 ACC ⇒ 点名「不等于接受」')
+      else bad('SC-45 send-back 的 ACC 仍被当作收口依据（C-29 只看 kind）')
+      const p45b = mod.closureProblems(base45, [{ ...ctx45[0], status: 'pass' }, ctx45[1], ctx45[2]])
+      if (!p45b.some((p) => String(p.why).includes('无法证明 G5 已接受'))) ok('SC-45 ✓ pass 的 ACC 不被误伤')
+      else bad('SC-45 pass 的 ACC 被误判')
+    }
+    // ── SC-46：旧修订 ACC 不算通过（task rev2 + ACC 绑 rev1 ⇒ 视图侧拒绝）──
+    {
+      const pv = await import(pathToFileURL(join(root, 'src', 'shared', 'pipeline-view.ts')).href)
+      const stale = pv.staleAcceptanceOf('2', [{ task_revision: '1' }])
+      const fresh = pv.staleAcceptanceOf('2', [{ task_revision: '2' }])
+      const legacy = pv.staleAcceptanceOf('2', [{ status: 'pass' }])
+      if (stale === true && fresh === false && legacy === false) {
+        ok('SC-46 ✓ 旧修订 ACC 不算通过（rev 不一致 ⇒ stale；一致 ⇒ 通过；历史缺字段 ⇒ 不在这里拦）')
+      } else bad('SC-46 旧修订判定不符：' + JSON.stringify({ stale, fresh, legacy }))
+    }
     // ── SC-44：实现者判定（task.built_by 缺失时从 returned RUN 回退；都没有 ⇒ fail-closed）──
     {
       const t44 = { id: 'TSK-W', kind: 'task', status: 'built' }
