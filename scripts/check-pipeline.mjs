@@ -206,6 +206,17 @@ console.log('')
   if (strict.test('确认需求 R-P5B 第 2 版')) p.push('错误版本号被接受（严格版）')
   if (loose.test('确认需求 R-P5B 第 2 版')) p.push('错误版本号被接受（宽松版）')
 
+  // ④b ⚠ 2026-11-24：**用户自然措辞也必须被认**（实测踩中：只认「确认方案 X 第 N 版」固定句式 ⇒ 用户怎么说都被拒）
+  const artC = { id: 'CHG-P5B', kind: 'change', revision: 5 }
+  const nat = pipeline.receiptPatternOf(artC)
+  for (const s of ['批准 CHG-P5B 第5版，路径 A', '批准 CHG-P5B 第 5 版', '同意 CHG-P5B 第5版', 'CHG-P5B 第 5 版 通过']) {
+    if (!nat.test(s)) p.push(`自然措辞被拒：${s}`)
+  }
+  // ④c 但三要素缺一不可：无版本号 / 错对象 / 空泛语 一律拒
+  for (const s of ['批准 CHG-P5B', '批准 CHG-P5C 第5版', '继续', '可以', 'OK']) {
+    if (nat.test(s)) p.push(`不该接受的被接受了：${s}`)
+  }
+
   // ⑤ ⚠ 本条的核心：工具侧**不得**再内联回执正则
   /**
    * ⚠ 2026-11-23（A·拆分）：批准工具搬到 approval-tool.ts ⇒ 判据覆盖**两个落点**，

@@ -538,12 +538,31 @@ export function approvalStateOf(
   }
 }
 
+/**
+ * **回执三要素约束**（唯一实现）：① 批准/退回**动词**（封闭集）② 对象 id ③ 第 N 版。
+ * ⚠ 顺序、标点、空格都不限 —— 用户怎么写都认，但**缺任一要素即不认**（空泛回执仍被拒）。
+ */
+function receiptConstraint(idEscaped: string, revision: number, allowRequest: boolean): RegExp {
+  const approve = '(?:批准|确认|同意|通过|认可|approve)'
+  const request = '(?:要求修改|退回修改|退回|拒绝|reject)'
+  const verbs = allowRequest ? `(?:${approve}|${request})` : approve
+  return new RegExp(
+    `(?=[\\s\\S]*${verbs})`
+    + `(?=[\\s\\S]*${idEscaped}(?![A-Za-z0-9-]))`
+    + `(?=[\\s\\S]*第\\s*${revision}\\s*版)`, 'i',
+  )
+}
+
 /** Expected user receipt for approving one artifact revision. */
 export function approvalReceiptPattern(artifact: Record<string, unknown>): RegExp {
   const id = text(artifact.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const revision = revisionOf(artifact) ?? 0
-  const label = text(artifact.kind) === 'req' ? '需求' : '方案'
-  return new RegExp(`确认${label}\\s+${id}\\s+第\\s*${revision}\\s*版`)
+  /**
+   * ⚠ 2026-11-24（用户实测踩中）：原实现要求「确认需求/方案 <id> 第 N 版」这种**固定措辞**，
+   *   而用户真实说的是「批准 CHG-02 第 5 版」⇒ 工具一律拒、会话被迫反复求用户改口。
+   *   ⇒ 改为「**批准动词封闭集 + 对象 id + 版本号**」三要素，顺序与标点不限（仍拒绝空泛回执）。
+   */
+  return receiptConstraint(id, revision, false)
 }
 
 /** Expected user receipt for requesting a revision. */
@@ -572,41 +591,12 @@ export function receiptPatternOf(
   opts: { acceptRevisionRequest?: boolean } = {},
 ): RegExp {
   const id = text(artifact.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  /**
-   * ⚠ 不用 `revisionOf(artifact)`：那个函数只认 **字符串** `revision`（账本 TOML 的原始形态），
-   * 传数字会静默返回 `undefined` ⇒ `?? 0` ⇒ 回执正则要求「第 0 版」⇒ **永远匹配不到**。
-   * 这里显式接受 string | number，⛔ 不要改回 `revisionOf`。
-   */
   const rawRevision = typeof artifact.revision === 'number'
     ? artifact.revision
     : Number(text(artifact.revision))
   const revision = Number.isSafeInteger(rawRevision) && rawRevision > 0 ? rawRevision : 0
-  /**
-   * ⚠ 宽松模式（`acceptRevisionRequest`）的 label 用 `(?:需求|方案)?`，
-   * 但浏览器正则的回溯会**优先匹配空串**，于是「要求修改需求 R-P5B」里的「需求」留在原地、`\s*` 匹配不到
-   * ⇒ 必须让 label **优先匹配非空**：`(?:(?:需求|方案)\s*)?`。⛔ 不要把 `\s*` 挪到外边。
-   */
-  /**
-   * ⚠ 宽松模式下 label 必须**优先非空**：写成 `(?:需求|方案)?` 时，
-   * 正则回溯会先试空串，于是「要求修改需求 R-P5B」中的「需求」留在原地、后面的 `\s*` 也匹配不到
-   * ⇒ **永远不匹配**。这里用两条并列分支（带 label / 不带 label）替代一个可选分组。
-   */
-  const verb = opts.acceptRevisionRequest === true
-    ? '(?:确认|要求修改|退回修改)'
-    : '确认'
-  if (opts.acceptRevisionRequest === true) {
-    return new RegExp(
-      `${verb}\\s*(?:需求|方案)\\s*${id}\\s*第\\s*${revision}\\s*版`
-      + `|${verb}\\s*${id}\\s*第\\s*${revision}\\s*版`,
-    )
-  }
-  const label = text(artifact.kind) === 'req' ? '需求' : '方案'
-  /**
-   * ⚠ 这里用 `\s*` 而非纯函数版的 `\s+`：**是为了保持现网行为不变**。
-   * 收严会让已经能通过的回执突然被拒——那是行为回归，不是本条的修复目标。
-   * 若将来要收严，**必须先量**：`grep -c '确认需求' <真实账本>` 看有多少存量回执依赖宽松匹配。
-   */
-  return new RegExp(`${verb}\\s*${label}\\s*${id}\\s*第\\s*${revision}\\s*版`)
+  /** ⚠ 2026-11-24：统一到 receiptConstraint（旧实现要求固定措辞，用户自然说法全被拒）。 */
+  return receiptConstraint(id, revision, opts.acceptRevisionRequest === true)
 }
 
 /**
