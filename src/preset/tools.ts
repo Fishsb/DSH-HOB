@@ -1255,19 +1255,6 @@ export function apply(ctx: any, config: Config = {}): void {
         })),
         /** ⚠ notify 档（2026-11-23）：按会话账本根现取通知面；判不出根 ⇒ undefined（只少读数）。 */
         (exec: any) => { const root = ledgerRootOf(config, exec); return root === undefined ? undefined : notifyLedger.notifyFaceOf(root) },
-        /** ⚠ B（2026-11-24）：推进焦点控制面（list/acquire/pause/resume）；判不出根 ⇒ undefined。 */
-        (exec: any, args: any): Record<string, unknown> | undefined => {
-          const root = ledgerRootOf(config, exec)
-          if (root === undefined) return undefined
-          const sid = String(exec?.agent?.session?.header?.id ?? exec?.agent?.id ?? '')
-          const reqId = String(args?.focusReqId ?? '').trim()
-          if (String(args?.focusAction ?? 'list') === 'list') return { ok: true, rows: focusLease.readFocus(root) }
-          if (reqId === '') return { ok: false, reason: 'focus-req-required', message: '拒绝：focus 需要 focusReqId（R-…）。' }
-          if (args.focusAction === 'acquire') return { ok: true, result: focusLease.acquireFocus(root, { session: sid, reqId }) }
-          if (args.focusAction === 'pause') { const why = String(args?.focusReason ?? '').trim(); if (why === '') return { ok: false, reason: 'focus-reason-required', message: '拒绝：暂停必须给 focusReason（人读）。' }; const done = focusLease.pauseFocus(root, { session: sid, reqId, kind: 'paused-user', reason: why }); return done ? { ok: true, state: 'paused-user' } : { ok: false, reason: 'focus-not-found', message: '拒绝：本会话没有这条焦点。' } }
-          if (args.focusAction === 'resume') { const st = focusLease.resumeFocus(root, { session: sid, reqId }); return st === undefined ? { ok: false, reason: 'focus-not-found', message: '拒绝：本会话没有这条焦点。' } : { ok: true, state: st } }
-          return { ok: false, reason: 'focus-action-invalid', message: '拒绝：focusAction 只收 list / acquire / pause / resume。' }
-        },
         (exec: any) => {
           /** ⚠ 批4（2026-11-21 · 方案2）：handoff effects 受限自愈面 —— 按会话账本根现取队列。 */
           const root = ledgerRootOf(config, exec)
@@ -2165,6 +2152,20 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
       return `阶段门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不派单。`
     }
   }
+  /** ⚠ B（2026-11-24）：推进焦点控制面（list/acquire/pause/resume）；判不出账本根 ⇒ 返回 undefined。 */
+  const focusOf = (exec: any, args: any): Record<string, unknown> | undefined => {
+        const root = ledgerRootFor(exec)
+        if (root === undefined) return undefined
+        const sid = String(exec?.agent?.session?.header?.id ?? exec?.agent?.id ?? '')
+        const reqId = String(args?.focusReqId ?? '').trim()
+        if (String(args?.focusAction ?? 'list') === 'list') return { ok: true, rows: focusLease.readFocus(root) }
+        if (reqId === '') return { ok: false, reason: 'focus-req-required', message: '拒绝：focus 需要 focusReqId（R-…）。' }
+        if (args.focusAction === 'acquire') return { ok: true, result: focusLease.acquireFocus(root, { session: sid, reqId }) }
+        if (args.focusAction === 'pause') { const why = String(args?.focusReason ?? '').trim(); if (why === '') return { ok: false, reason: 'focus-reason-required', message: '拒绝：暂停必须给 focusReason（人读）。' }; const done = focusLease.pauseFocus(root, { session: sid, reqId, kind: 'paused-user', reason: why }); return done ? { ok: true, state: 'paused-user' } : { ok: false, reason: 'focus-not-found', message: '拒绝：本会话没有这条焦点。' } }
+        if (args.focusAction === 'resume') { const st = focusLease.resumeFocus(root, { session: sid, reqId }); return st === undefined ? { ok: false, reason: 'focus-not-found', message: '拒绝：本会话没有这条焦点。' } : { ok: true, state: st } }
+        return { ok: false, reason: 'focus-action-invalid', message: '拒绝：focusAction 只收 list / acquire / pause / resume。' }
+  }
+
   const { dispatch, status, control } = createOrchTools(
     orch,
     (exec: any, scope?: { taskId?: string; planId?: string; unlock?: 'bootstrap' }) =>
