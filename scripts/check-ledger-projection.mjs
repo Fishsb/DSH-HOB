@@ -430,6 +430,37 @@ console.log('')
   } finally { cleanup(tmp) }
 }
 
+// ── LP-21（2026-11-25 · 独立验收建议）：建 VER 前先把实现者写回任务字段（不再依赖 RUN 存在）──
+{
+  const { mkdtempSync: mk21 } = await import('node:fs')
+  const { tmpdir: tmp21 } = await import('node:os')
+  const tmp = mk21(join(tmp21(), 'dsh-hob-lp21-'))
+  try {
+    const target = join(tmp, 'ledger', 'units')
+    const { mkdirSync, writeFileSync } = await import('node:fs')
+    mkdirSync(target, { recursive: true })
+    const units = [
+      ...chainFor({ 'TSK-PROJ': { status: 'built' } }),
+      { id: 'RUN-P', kind: 'run', status: 'returned', parent: 'TSK-PROJ', built_by: 'session-dev', task_revision: '1', progress_refs: ['p1'], created_at: '2026-11-25T00:00:00Z' },
+    ]
+    writeFileSync(join(target, 'index.toml'), renderShard(units), 'utf8')
+    const r = await writer.applyProjection(tmp, {
+      kind: 'verify', taskId: 'TSK-PROJ', verdict: 'pass', verifiedAt: '2026-11-25T02:00:00+08:00',
+      basis: ['check'], verifier: 'session-v', verificationSession: 'session-v',
+      criteriaRefs: ['AC-PROJ'], evidenceItems: [{ command: 'npm run check', exitCode: 0 }],
+    })
+    const after = writer.readProjectionUnits(tmp)
+    const task = after.find((u) => u.id === 'TSK-PROJ')
+    const ver = after.find((u) => u.kind === 'verification')
+    const p = []
+    if (!r.ok) p.push(`投影失败：${r.reason}`)
+    if (String(task?.built_by ?? '') !== 'session-dev') p.push(`任务 built_by=${JSON.stringify(task?.built_by)}（期望从 returned RUN 回填）`)
+    if (ver === undefined) p.push('VER 未创建')
+    if (p.length === 0) ok('LP-21 ✓ 建 VER 前回填任务 built_by（取自 returned RUN）⇒ 账本自足，⛔ 不再依赖运行态记录')
+    else for (const x of p) bad(`LP-21 · ${x}`)
+  } finally { cleanup(tmp) }
+}
+
 console.log('')
 // ── LP-9b：ACC 投影字段必须通过同一份验收门禁 ─────────────────────────────
 //

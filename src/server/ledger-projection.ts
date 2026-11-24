@@ -598,6 +598,15 @@ function verifyOps(units: readonly ProjectionUnitLike[], fact: VerifyFact): Proj
    *   改前 VER.evidence_refs 取的是 basis 字符串 ⇒ 指向不存在的单元 ⇒ verificationReady 判「缺可复核证据」，
    *   于是「写进去也不计数」。现在每条证据都建真实 EVD 单元。
    */
+  /**
+   * ⚠ 2026-11-25（独立验收方的改进建议）：**先把实现者写回任务字段**，再建 VER。
+   *   改前 TSK 缺 `built_by` ⇒ C-25 只能靠 returned RUN 回退判独立性；回填后账本自足，
+   *   ⛔ 不再依赖运行态记录是否存在（RUN 被归档时判据仍成立）。
+   */
+  const impl = implementerOf(task as unknown as Parameters<typeof implementerOf>[0], units as unknown as Parameters<typeof implementerOf>[1])
+  const backfill: ProjectionOp[] = (text((task as unknown as Record<string, unknown>).built_by) === '' && impl !== '')
+    ? [{ op: 'transition-unit', id: text(task.id), from: text(task.status), to: text(task.status), fields: { built_by: impl } }]
+    : []
   const evdOps: ProjectionOp[] = []
   const evdIds: string[] = []
   let evdSeq = maxSeqOf(units, 'EVD')
@@ -638,7 +647,7 @@ function verifyOps(units: readonly ProjectionUnitLike[], fact: VerifyFact): Proj
   const verId = nextIdOf(units, 'VER')
   return {
     key,
-    ops: [...evdOps, {
+    ops: [...backfill, ...evdOps, {
       op: 'create-unit', id: verId, kind: 'verification',
       fields: {
         title: `技术验证 ${task.id} ${fact.verdict}`,
@@ -767,4 +776,5 @@ export function describeProjection(r: ProjectionResult): string {
   if (r.skipped !== undefined) return `未落账：${r.skipped}`
   if (r.ops.length === 0) return '未落账：没有可执行的账本操作'
   return `将执行 ${r.ops.length} 条账本操作（${r.ops.map((o) => o.op).join(' / ')}）`
-}
+}import { implementerOf } from '../shared/stage-controls.ts'
+
