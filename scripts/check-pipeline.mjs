@@ -199,6 +199,24 @@ console.log('')
   else for (const x of p) bad(`PIPE-32 · ${x}`)
 }
 
+// PIPE-33（2026-11-25 复核 T1 的 G3 假绿）：验收条件**按需求作用域**算，跨需求同名条件不得互相顶替。
+{
+  const p = []
+  const units = [
+    { id: 'R-G1', kind: 'req', status: 'agreed', pipeline_version: 'v3', revision: '1', acceptance_criteria: ['AC-1'] },
+    { id: 'CHG-G1', kind: 'change', status: 'settled', pipeline_version: 'v3', revision: '2', addresses: ['R-G1'], requirement_coverage: ['R-G1 → TSK-G1'] },
+    { id: 'TSK-G1', kind: 'task', status: 'todo', pipeline_version: 'v3', revision: '1', parent: 'CHG-G1', req_ids: ['R-G1'], acceptance_criteria_refs: ['AC-1'] },
+    { id: 'R-G2', kind: 'req', status: 'agreed', pipeline_version: 'v3', revision: '1', acceptance_criteria: ['AC-1'] },
+    { id: 'CHG-G2', kind: 'change', status: 'settled', pipeline_version: 'v3', revision: '2', addresses: ['R-G2'], requirement_coverage: ['R-G2 → 未拆任务'] },
+  ]
+  const g1 = view.taskGraphOf(units[0], units)
+  const g2 = view.taskGraphOf(units[3], units)
+  if ((g1.coverageGaps ?? []).length !== 0) p.push('R-G1 明明有任务覆盖，却报了缺口')
+  if ((g2.coverageGaps ?? []).length === 0) p.push('R-G2 没有任务却判「已覆盖」⇒ 跨需求同号条件互相顶替（T1 说的假绿）')
+  if (p.length === 0) ok('PIPE-33 ✓ 跨需求同名验收条件不互相顶替：有任务的一侧 0 缺口、无任务的一侧必报缺口')
+  else for (const x of p) bad(`PIPE-33 · ${x}`)
+}
+
 // PIPE-5b（R-15）: 回执判据只有一个实现；工具侧不得再内联正则。
 {
   const p = []
