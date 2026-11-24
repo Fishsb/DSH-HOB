@@ -87,10 +87,7 @@ export function isExpired(raw: string | undefined, nowMs: number): boolean {
   const e = parseExpiry(raw)
   return e.kind === 'ok' && e.at <= nowMs
 }
-/** 可接管判定（唯一入口）：只有**能解析且已过期**才可接管；判不出 ⇒ ⛔ 不许接管。 */
-export function isReclaimable(raw: string | undefined, nowMs: number): boolean {
-  return isExpired(raw, nowMs)
-}
+/** ⚠ 可接管 = 可解析且已过期（由 isExpired + parseExpiry 组合判定，⛔ 不再另开一个导出）。 */
 
 /** 纯函数：某会话当前的 active 焦点（只有未过期的算数）。 */
 export function activeOf(state: FocusStateFile, session: string, nowMs: number): FocusRow | undefined {
