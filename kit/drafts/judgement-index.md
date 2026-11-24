@@ -89,10 +89,10 @@
 | 函数 | 位置 | 判什么 |
 |---|---|---|
 | `pipelineDispatchProblems` | `pipeline-view.ts:738` | 派活门禁：任务图无环 / 无悬空 / 覆盖无缺口（G3） |
-| `pipelineRevisionProblems` | `pipeline.ts:654` | 内容变了但 `revision` 没递增 |
-| `pipelineWriteProblems` | `pipeline.ts:723` | 写入前的管线形态校验 |
-| `approvalDecisionProblems` | `pipeline.ts:615` | 批准单元本身是否合法（`decided_by` / 回执 / 修订绑定） |
-| `verificationRevisionProblems` | `pipeline.ts:685` | 技术验证绑定的修订是否仍有效 |
+| `pipelineRevisionProblems` | `pipeline.ts:644` | 内容变了但 `revision` 没递增 |
+| `pipelineWriteProblems` | `pipeline.ts:713` | 写入前的管线形态校验 |
+| `approvalDecisionProblems` | `pipeline.ts:605` | 批准单元本身是否合法（`decided_by` / 回执 / 修订绑定） |
+| `verificationRevisionProblems` | `pipeline.ts:675` | 技术验证绑定的修订是否仍有效 |
 | `selectedOptionValid` | `pipeline.ts:420` | 选中的路径是不是方案里真实存在的选项 |
 | `verifyRefsProblems` | `convergence.ts:117` | 验证引用能否解析（I7 唯一实现） |
 | `decisionChainProblems` | `convergence.ts:151` | 决策链是否完整（I8 唯一实现） |
