@@ -180,6 +180,25 @@ console.log('')
   else for (const x of p) bad(`PIPE-5 · ${x}`)
 }
 
+// PIPE-32（2026-11-24 实测）：需求→方案的关系口径必须三源统一（req_ids / addresses / requirement_coverage）
+{
+  const p = []
+  const units = [
+    { id: 'R-P32', kind: 'req', status: 'agreed', pipeline_version: 'v3', revision: '1', title: 'r' },
+    { id: 'CHG-P32', kind: 'change', status: 'settled', pipeline_version: 'v3', revision: '2', title: 'c', requirement_coverage: ['R-P32 覆盖一行'] },
+  ]
+  const plan = pipeline.currentPlanOfStrict('R-P32', units)
+  if (plan === undefined || String(plan.id) !== 'CHG-P32') p.push('只靠 requirement_coverage 挂接的方案没被认（面板会停在第二步）')
+  const units2 = [units[0], { ...units[1], requirement_coverage: [], req_ids: ['R-P32'] }]
+  const plan2 = pipeline.currentPlanOfStrict('R-P32', units2)
+  if (plan2 === undefined || String(plan2.id) !== 'CHG-P32') p.push('req_ids 这条既有路径被丢了')
+  const units3 = [units[0], { ...units[1], requirement_coverage: [], addresses: ['R-P32'] }]
+  const plan3 = pipeline.currentPlanOfStrict('R-P32', units3)
+  if (plan3 === undefined || String(plan3.id) !== 'CHG-P32') p.push('addresses 这条路径被丢了')
+  if (p.length === 0) ok('PIPE-32 ✓ 需求→方案三源口径统一：requirement_coverage / req_ids / addresses 三种写法都能选到当前方案')
+  else for (const x of p) bad(`PIPE-32 · ${x}`)
+}
+
 // PIPE-5b（R-15）: 回执判据只有一个实现；工具侧不得再内联正则。
 {
   const p = []

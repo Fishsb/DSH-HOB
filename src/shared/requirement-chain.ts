@@ -665,8 +665,9 @@ export function buildRequirementChain(req: ChainUnit, units: readonly ChainUnit[
           : v.state === 'awaiting-user' ? 'waiting'
             : v.state === 'active' ? 'doing' : 'todo',
       summary: v.summary || s.summary,
+      /** ⚠ 2026-11-24：total 必须与**显示出来的 itemIds 同一集合**（改前取空视图 ⇒ 面板出现「1/0 条」）。 */
       itemIds: v.itemIds.length > 0 ? v.itemIds : s.itemIds,
-      total: v.step === 1 ? 1 : v.itemIds.length,
+      total: v.step === 1 ? 1 : (v.itemIds.length > 0 ? v.itemIds.length : s.itemIds.length),
     }
   })
   partial.summary = panelSummaryOf({ stages: stageRowsForChain(partial), next })

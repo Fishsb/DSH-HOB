@@ -142,8 +142,13 @@ export function currentPlanOfStrict(
 ): Record<string, unknown> | undefined {
   const rid = text(reqId)
   if (rid === '') return undefined
+  /**
+   * ⚠ 2026-11-24（实测）：改前只认 `req_ids` ⇒ 只用 `requirement_coverage` 挂接的方案
+   *   （本仓 R-01 的 CHG-01 就是这样）在面板看来「根本不存在」，需求永远停在第二步。
+   *   ⇒ 统一走 {@link changeRequirementIds}（req_ids / addresses / requirement_coverage 三源）。
+   */
   const candidates = units.filter((u) => text(u.kind) === 'change'
-    && (Array.isArray(u.req_ids) ? u.req_ids.map(String) : []).includes(rid))
+    && changeRequirementIds(u as Record<string, unknown>).includes(rid))
   if (candidates.length === 0) return undefined
   /**
    * ① 已定的优先；若一个都没有 ⇒ 退到「未定但仍是当前候选」的状态。
@@ -806,3 +811,4 @@ export function pipelineWriteProblems(
   }
   return out
 }
+import { changeRequirementIds } from './ledger-relations.ts'
