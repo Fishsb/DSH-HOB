@@ -51,6 +51,7 @@
  *   `sessions` / `agents` 是**必需**（写进 `inject`）；其余一律 `ctx.get` 可选读。
  *   缺席 ⇒ 相关能力**明确拒绝**，绝不静默降级成"看起来在工作"的状态。
  */
+import { runVerify, type VerifyArgs, type VerifyDeps } from './verify-action.ts'
 import { notifyLinesOf, focusLinesOf } from '../server/status-lines.ts'
 import { recordNotify } from '../server/notify-ledger.ts'
 import { lastAssistantText, lastAssistantEntry, changedFiles, receiptProgressRefsOf, buildReceipt, toPersisted } from './receipt-helpers.ts'
@@ -10886,45 +10887,10 @@ export function createHobOrchTools(
         })
       }
       if (args.action === 'verify') {
-        if (typeof args.taskId !== 'string' || args.taskId.trim() === '') {
-          return JSON.stringify({ ok: false, reason: 'verify 需要 taskId' })
-        }
-        const verdict = args.verdict
-        if (verdict !== 'pass' && verdict !== 'send-back' && verdict !== 'waived') {
-          return JSON.stringify({ ok: false, reason: 'verify 需要 verdict: pass / send-back / waived' })
-        }
-        const at = typeof args.verifiedAt === 'string' ? args.verifiedAt.trim() : new Date().toISOString()
-        if (!Number.isFinite(Date.parse(at))) {
-          return JSON.stringify({ ok: false, reason: `verifiedAt 不是可解析时刻：${JSON.stringify(at)}` })
-        }
-        const verifier = String(args.verifier ?? '').trim() || selfSessionIdOf(exec) || ''
-        if (verifier === '') return JSON.stringify({ ok: false, reason: 'verify 判不出 verifier' })
-        const projector = ledgerProjectionOf?.(exec)
-        if (projector === undefined) return JSON.stringify({ ok: false, reason: '账本投影器未接入 ⇒ 技术验证不落账' })
-        const list = (v: unknown): string[] => Array.isArray(v)
-          ? v.map(String).map((x) => x.trim()).filter((x) => x !== '')
-          : []
-        const projection = await projector.apply({
-          kind: 'verify', taskId: args.taskId, verdict, verifiedAt: at,
-          basis: list(args.basis), verifier,
-          ...(typeof args.verificationSession === 'string' ? { verificationSession: args.verificationSession } : {}),
-          criteriaRefs: list(args.criteriaRefs), evidenceRefs: list(args.verificationRefs),
-          evidenceItems: Array.isArray(args.evidence) ? args.evidence as unknown as ReadonlyArray<Record<string, unknown>> : [],
-          nonconformanceRefs: list(args.nonconformanceRefs),
-          riskReviewRefs: list(args.riskReviewRefs),
-          ...(args.returnTo === undefined ? {} : { sendBackTo: args.returnTo }),
-        })
-        const evdMade = Array.isArray(args.evidence) ? args.evidence.length : 0
-        return JSON.stringify({
-          ok: projection.ok, target: args.taskId, verdict,
-          ...(evdMade > 0 ? { evidenceCreated: evdMade } : {}),
-          ...(projection.ok === true && evdMade === 0 && list(args.verificationRefs).length === 0
-            ? { warn: '本次没有证据条目（evidence）也没有 verificationRefs ⇒ VER 不会被技术验证计数（verificationReady 要求指向真实证据）。' }
-            : {}),
-          ...(projection.reason === undefined ? {} : { reason: projection.reason }),
-          ledgerProjection: projection,
-        })
+        /** ⚠ 2026-11-25：分支实现搬到 `verify-action.ts`（本文件行数已到上限附近，且这段是纯编排）。 */
+        return await runVerify(args as unknown as VerifyArgs, { sessionId: selfSessionIdOf(exec) ?? '', projector: ledgerProjectionOf?.(exec) as VerifyDeps['projector'] })
       }
+
       if (args.action === 'close-delivery') {
         if (typeof args.reqId !== 'string' || args.reqId.trim() === '') {
           return JSON.stringify({ ok: false, reason: 'close-delivery 需要 reqId' })
