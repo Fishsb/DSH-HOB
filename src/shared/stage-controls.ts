@@ -676,6 +676,22 @@ function tierAbove(a: string, b: string): boolean {
  * ⚠ 为什么读 RUN 不算放宽：RUN 是执行侧写的**运行事实**，比人工补字段更可信；
  *   改前 TSK 缺 built_by ⇒ 一律「没法判」，而数据其实就在同一条链的 RUN 上。
  */
+/**
+ * **首条验收的资格判据**（2026-11-25 · P0 死锁修复的判据半边，⛔ 不在工具层重写）。
+ * 返回 `undefined` = 允许首次落 ACC；返回字符串 = 拒绝原因。
+ * ⚠ 前置不降：任务必须 `built`，且已有一条 `pass` 的技术验证（VER）。
+ */
+export function firstAcceptanceReason(units: readonly StageControlUnit[], taskId: string): string | undefined {
+  const id = String(taskId ?? '').trim()
+  const task = units.find((u) => String(u.id ?? '').trim() === id && u.kind === 'task')
+  if (task === undefined) return `拒绝：账本里没有任务 ${id} ⇒ 不能验收。`
+  if (txt(task.status) !== 'built') return `拒绝：${id} 当前状态是「${txt(task.status) || '(空)'}」，首次验收要求先到 built。`
+  const passed = units.some((u) => u.kind === 'verification'
+    && String(u.parent ?? '').trim() === id && txt(u.status) === 'pass')
+  if (!passed) return `拒绝：${id} 还没有通过的技术验证（VER pass）⇒ 首次验收不能跳过技术验证。`
+  return undefined
+}
+
 export function implementerOf(unit: StageControlUnit | undefined, units: readonly StageControlUnit[]): string {
   if (unit === undefined) return ''
   const direct = txt(unit.built_by)
