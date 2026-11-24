@@ -34,6 +34,7 @@
  */
 
 /** ⚠ 具名再导出用 `const` 绑定（G-11 ①：本文件零具名值导入，避免链接期缺名字拖垮整块）。 */
+import * as pendingDecisions from '../server/pending-decisions.ts'
 import * as focusLease from '../server/focus-lease.ts'
 import * as notifyLedger from '../server/notify-ledger.ts'
 import * as diagMod from './diag.ts'
@@ -2154,16 +2155,13 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
   }
   /** ⚠ B（2026-11-24）：推进焦点控制面（list/acquire/pause/resume）；判不出账本根 ⇒ 返回 undefined。 */
   const focusOf = (exec: any, args: any): Record<string, unknown> | undefined => {
-        const root = ledgerRootFor(exec)
-        if (root === undefined) return undefined
-        const sid = String(exec?.agent?.session?.header?.id ?? exec?.agent?.id ?? '')
-        const reqId = String(args?.focusReqId ?? '').trim()
-        if (String(args?.focusAction ?? 'list') === 'list') return { ok: true, rows: focusLease.readFocus(root) }
-        if (reqId === '') return { ok: false, reason: 'focus-req-required', message: '拒绝：focus 需要 focusReqId（R-…）。' }
-        if (args.focusAction === 'acquire') return { ok: true, result: focusLease.acquireFocus(root, { session: sid, reqId }) }
-        if (args.focusAction === 'pause') { const why = String(args?.focusReason ?? '').trim(); if (why === '') return { ok: false, reason: 'focus-reason-required', message: '拒绝：暂停必须给 focusReason（人读）。' }; const done = focusLease.pauseFocus(root, { session: sid, reqId, kind: 'paused-user', reason: why }); return done ? { ok: true, state: 'paused-user' } : { ok: false, reason: 'focus-not-found', message: '拒绝：本会话没有这条焦点。' } }
-        if (args.focusAction === 'resume') { const st = focusLease.resumeFocus(root, { session: sid, reqId }); return st === undefined ? { ok: false, reason: 'focus-not-found', message: '拒绝：本会话没有这条焦点。' } : { ok: true, state: st } }
-        return { ok: false, reason: 'focus-action-invalid', message: '拒绝：focusAction 只收 list / acquire / pause / resume。' }
+    const root = ledgerRootFor(exec)
+    return root === undefined ? undefined : focusLease.focusControlOf(root, String(exec?.agent?.session?.header?.id ?? exec?.agent?.id ?? ''), args ?? {})
+  }
+  /** ⚠ P1（2026-11-25）：待决清单控制面（list / record / close）。 */
+  const pendingOf = (exec: any, args: any): Record<string, unknown> | undefined => {
+    const root = ledgerRootFor(exec)
+    return root === undefined ? undefined : pendingDecisions.pendingControlOf(root, String(exec?.agent?.session?.header?.id ?? exec?.agent?.id ?? ''), args ?? {})
   }
 
   const { dispatch, status, control } = createOrchTools(
@@ -2177,6 +2175,7 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
     effectsRetryOf,
     notifyOf,
     focusOf,
+    pendingOf,
   )
   ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')
   ctx.effect(() => ctx.tools.register(status), 'dsh-hob preset: hob_orch_status tool')

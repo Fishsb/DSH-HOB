@@ -8727,6 +8727,7 @@ export function createHobOrchTools(
    */
   /** ⚠ 2026-11-24（B）：推进焦点的控制面（list/acquire/pause/resume）；缺席 ⇒ 动作如实报不可用。 */
   focusOf?: (exec: any, args: any) => Record<string, unknown> | undefined,
+  pendingOf?: (exec: any, args: any) => Record<string, unknown> | undefined,
   notifyOf?: (exec: any) => {
     record: (entry: { kind: string; key: string; subject: string; detail?: string; actor?: string }) => void
     read: (limit?: number) => { readable: boolean; rows: Array<{ at: string; kind: string; subject: string; detail?: string; count?: number }>; total: number; reason?: string }
@@ -10581,7 +10582,7 @@ export function createHobOrchTools(
       action: {
         type: 'string',
         required: true,
-        enum: ['stop', 'resume', 'redeliver', 'retry-abandoned', 'focus', 'verify', 'accept', 'send-back', 'close-delivery', 'watch-wait', 'plan-complete', 'archive-stale-plan'],
+        enum: ['stop', 'resume', 'redeliver', 'retry-abandoned', 'focus', 'verify', 'accept', 'send-back', 'close-delivery', 'watch-wait', 'plan-complete', 'archive-stale-plan', 'pending'],
         description: 'stop=停；resume=恢复；redeliver=**显式补投**一条投错人的回执（需 executionId + taskId）；'
           + 'accept=**验收**（需 taskId + basis + productConfirmation + verificationRefs + exampleResults）；'
           + 'verify=**独立技术验证**（需 taskId + verdict + basis + verifier + criteriaRefs）；'
@@ -10620,6 +10621,13 @@ export function createHobOrchTools(
       },
       focusReqId: { type: 'string', description: 'focus 专用：目标需求号（R-…）。' },
       focusReason: { type: 'string', description: 'focus pause 专用：为什么暂停（人读）。' },
+      pendingAction: { type: 'string', enum: ['list', 'record', 'close'], description: 'pending 专用：list=看待决清单；record=登记一条；close=带答案关闭。' },
+      pendingQuestion: { type: 'string', description: 'pending record 专用：要用户拍板的问题（一句话）。' },
+      pendingKey: { type: 'string', description: 'pending record 专用：幂等键（同一件事只登记一次；缺省取问题前 40 字）。' },
+      pendingOptions: { type: 'array', description: 'pending record 专用：选项列表（A/B/C 各一条）。' },
+      pendingRecommended: { type: 'string', description: 'pending record 专用：推荐项（可缺省）。' },
+      pendingId: { type: 'string', description: 'pending close 专用：待决条目 id（PEND-N）。' },
+      pendingAnswer: { type: 'string', description: 'pending close 专用：用户的答案（⛔ 不许无答案关闭）。' },
       taskId: {
         type: 'string',
         description: 'redeliver 专用：卡 id（用来现读这张卡的 `createdBy.sessionId` 作为收件人）。',
@@ -10709,7 +10717,7 @@ export function createHobOrchTools(
     },
     async execute(
       args: {
-        action: 'stop' | 'resume' | 'redeliver' | 'retry-abandoned' | 'focus' | 'verify' | 'accept' | 'send-back' | 'close-delivery' | 'watch-wait' | 'plan-complete' | 'archive-stale-plan'
+        action: 'stop' | 'resume' | 'redeliver' | 'retry-abandoned' | 'focus' | 'verify' | 'accept' | 'send-back' | 'close-delivery' | 'watch-wait' | 'plan-complete' | 'archive-stale-plan' | 'pending'
         executionId?: string
         /** ⚠ 批4：retry-abandoned 专用（审计要求）。 */
         reason?: string
@@ -10717,6 +10725,13 @@ export function createHobOrchTools(
         focusAction?: string
         focusReqId?: string
         focusReason?: string
+        pendingAction?: string
+        pendingQuestion?: string
+        pendingKey?: string
+        pendingOptions?: JsonValue
+        pendingRecommended?: string
+        pendingId?: string
+        pendingAnswer?: string
         /** ⚠ 包 H：判决依据（`accept` / `send-back` 专用；⛔ 空数组一律被拒）。 */
         basis?: JsonValue
         /** ⚠ 判决时刻（ISO8601）；省略则现取。 */
@@ -10758,7 +10773,7 @@ export function createHobOrchTools(
        *   ⚠ 只在文案里把新增的 `redeliver` 也列进去（否则报错话会把合法值说漏一个）。
        */
       if (args?.action !== 'stop' && args?.action !== 'resume' && args?.action !== 'redeliver'
-        && args?.action !== 'retry-abandoned' && args?.action !== 'focus'
+        && args?.action !== 'retry-abandoned' && args?.action !== 'focus' && args?.action !== 'pending'
         && args?.action !== 'verify' && args?.action !== 'close-delivery'
         && args?.action !== 'accept' && args?.action !== 'send-back' && args?.action !== 'watch-wait'
         && args?.action !== 'plan-complete' && args?.action !== 'archive-stale-plan') {
@@ -10813,6 +10828,10 @@ export function createHobOrchTools(
        * ⚠ 这是不可逆动作（会改变"还有哪些活在跑"）⇒ 必须显式 planId + 原因；
        *   ⛔ 不改 plan.state、⛔ 不删除原件（移进 `abandoned/`，可完整还原）。
        */
+      if (args.action === 'pending') {
+        const r = pendingOf?.(exec, args)
+        return JSON.stringify(r ?? { ok: false, reason: 'pending-unavailable', message: '拒绝：本会话的账本根判不出 ⇒ 无法读写待决清单。' })
+      }
       if (args.action === 'focus') {
         /** ⚠ B（2026-11-24）：推进焦点的显式状态操作（list/acquire/pause/resume）。 */
         const r = focusOf?.(exec, args)

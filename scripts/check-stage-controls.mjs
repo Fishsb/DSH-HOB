@@ -638,6 +638,26 @@ console.log('')
         ok('SC-46 ✓ 旧修订 ACC 不算通过（rev 不一致 ⇒ stale；一致 ⇒ 通过；历史缺字段 ⇒ 不在这里拦）')
       } else bad('SC-46 旧修订判定不符：' + JSON.stringify({ stale, fresh, legacy }))
     }
+    // ── SC-47：待决清单载体（登记幂等 / 关闭必须有答案 / 只读出口可见）──
+    {
+      const pd = await import(pathToFileURL(join(root, 'src', 'server', 'pending-decisions.ts')).href)
+      const fs47 = await import('node:fs')
+      const tmp47 = fs47.mkdtempSync(join('/tmp', 'hob-pending-'))
+      const a = pd.pendingControlOf(tmp47, 'sess-1', { pendingAction: 'record', pendingQuestion: '门禁最后一环怎么办', pendingKey: 'gate-ring', pendingOptions: ['A 恢复备份', 'B 重装', 'C 接受留档'] })
+      const b = pd.pendingControlOf(tmp47, 'sess-1', { pendingAction: 'record', pendingQuestion: '门禁最后一环怎么办', pendingKey: 'gate-ring' })
+      const rows = pd.readPending(tmp47)
+      const dedup = a.ok === true && b.ok === true && rows.length === 1 && b.result?.deduped === true
+      if (dedup) ok('SC-47 ✓ 待决登记幂等：同 key 只一条（⛔ 不重复堆同一件事）')
+      else bad('SC-47 待决登记未幂等：' + JSON.stringify({ a, b, n: rows.length }))
+      const id = rows[0]?.id ?? ''
+      const empty = pd.pendingControlOf(tmp47, 'sess-1', { pendingAction: 'close', pendingId: id, pendingAnswer: '' })
+      if (empty.ok === false && empty.reason === 'answer-required') ok('SC-47 ✓ 关闭待决必须有答案（⛔ 不许无答案关闭）')
+      else bad('SC-47 空答案关闭未被拒')
+      const closed = pd.pendingControlOf(tmp47, 'sess-1', { pendingAction: 'close', pendingId: id, pendingAnswer: '选 C：接受留档' })
+      const after = pd.readPending(tmp47)[0]
+      if (closed.ok === true && after?.status === 'closed' && String(after?.answer ?? '') !== '') ok('SC-47 ✓ 带答案关闭后状态与答案都落盘（可追溯）')
+      else bad('SC-47 关闭未落盘')
+    }
     // ── SC-44：实现者判定（task.built_by 缺失时从 returned RUN 回退；都没有 ⇒ fail-closed）──
     {
       const t44 = { id: 'TSK-W', kind: 'task', status: 'built' }

@@ -193,3 +193,23 @@ export function readFocus(ledgerRoot: string, nowMs = Date.now()): Array<FocusRo
     /** ⚠ 坏时刻：显示为**判不出**（expired:false 但带 expiryUndecided），⛔ 不假装未过期。 */
     : { ...r, expired: false, expiryUndecided: true })
 }
+
+/** **焦点控制面**（control 的 focus 动作）：list / acquire / pause / resume。⛔ 不做切换（切换是产品决定）。 */
+export function focusControlOf(root: string, session: string, args: Record<string, unknown>): Record<string, unknown> {
+  const action = String(args.focusAction ?? 'list')
+  if (action === 'list') return { ok: true, rows: readFocus(root) }
+  const reqId = String(args.focusReqId ?? '').trim()
+  if (reqId === '') return { ok: false, reason: 'focus-req-required', message: '拒绝：focus 需要 focusReqId（R-…）。' }
+  if (action === 'acquire') return { ok: true, result: acquireFocus(root, { session, reqId }) }
+  if (action === 'pause') {
+    const why = String(args.focusReason ?? '').trim()
+    if (why === '') return { ok: false, reason: 'focus-reason-required', message: '拒绝：暂停必须给 focusReason（人读）。' }
+    const done = pauseFocus(root, { session, reqId, kind: 'paused-user', reason: why })
+    return done ? { ok: true, state: 'paused-user' } : { ok: false, reason: 'focus-not-found', message: '拒绝：本会话没有这条焦点。' }
+  }
+  if (action === 'resume') {
+    const st = resumeFocus(root, { session, reqId })
+    return st === undefined ? { ok: false, reason: 'focus-not-found', message: '拒绝：本会话没有这条焦点。' } : { ok: true, state: st }
+  }
+  return { ok: false, reason: 'focus-action-invalid', message: '拒绝：focusAction 只收 list / acquire / pause / resume。' }
+}
