@@ -58,7 +58,8 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
   const ledgerApprove = defineTool({
     name: 'hob_pipeline_approve',
     description: '记录用户对 Pipeline v3 需求或方案的明确批准 / 修改要求。'
-      + '⚠ 必须给用户回执原文 `source`；默认只预演，真写要 `dryRun:false`。'
+      + '⚠ **推荐结构化确认**：先用选择项 UI 让用户点选，再传 `confirmationChoice` + `confirmationVia=ask-user-question` —— 措辞不参与判定。'
+      + '（文本回执 `source` 仍可用作兼容路径：须含批准动词 + 对象 id + 第 N 版。）默认只预演，真写要 `dryRun:false`。'
       + '⚠ 它只写批准审计，不替用户选路径，也不自动推进阶段。',
     parameters: {
       artifactId: {
@@ -90,6 +91,20 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
         type: 'boolean',
         description: '（可选）缺省 true = 只预演。',
       },
+      /**
+       * ⚠ 结构化确认（2026-11-24 · 优先路径）：用户在**选择项**里点的那一个。
+       *   给了它 ⇒ 不再解析自然语言（措辞不参与判定）；⛔ 不给 ⇒ 回落到文本回执三要素。
+       */
+      confirmationChoice: {
+        type: 'string',
+        enum: ['approve', 'request-changes', 'cancel'],
+        description: '结构化确认：用户点选的选项。approve=批准 / request-changes=要求修改 / cancel=暂不处理（取消）。',
+      },
+      confirmationVia: {
+        type: 'string',
+        enum: ['ask-user-question'],
+        description: '结构化确认的通道（当前只认 ask-user-question ◇ 即宿主的选择项 UI）。',
+      },
       rebindFrom: {
         type: 'string',
         description: '（可选）把一条既有批准记录**机器重绑到当前修订**：需给出原决策 id（如 DEC-005）。'
@@ -108,6 +123,8 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
       selectedOption?: string
       dryRun?: boolean
       rebindFrom?: string
+      confirmationChoice?: 'approve' | 'request-changes' | 'cancel'
+      confirmationVia?: 'ask-user-question'
     }, exec: ToolRunContext): Promise<JsonValue> {
       const root = deps.resolveRoot(exec)
       if (root === undefined || root.trim() === '') {
@@ -137,7 +154,8 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
         } as unknown as JsonValue
       }
       let source = String(args.source ?? '').trim()
-      if (source === '') {
+      /** ⚠ 2026-11-24：结构化确认 / 机器重绑两条路径的 source 由工具生成 ⇒ 不要求调用方给文本。 */
+      if (source === '' && args.confirmationChoice === undefined && String(args.rebindFrom ?? '').trim() === '') {
         return { ok: false, reason: 'source-required', message: '拒绝：批准必须附用户回执原文 source。' } as unknown as JsonValue
       }
       /** ⚠ 2026-11-23：重绑时路径选择取自原决策，故先取标记、再校验候选。 */
@@ -202,11 +220,34 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
         decision = 'approve'
       }
 
+      /**
+       * ⚠ 2026-11-24 · **结构化确认优先**：用户在宿主的选择项 UI 里点的是哪个 —— 那就是权威。
+       *   给了它 ⇒ 措辞不参与判定（⛔ 不再解析自然语言）；source 记为「用户点选」而不是模型转述。
+       *   ⛔ cancel 一律拒（没批准就不落账，也不写 request-changes）；通道只认封闭集。
+       */
+      const viaChoice = args.confirmationChoice
+      if (viaChoice !== undefined) {
+        if (String(args.confirmationVia ?? '') !== 'ask-user-question') {
+          return { ok: false, reason: 'confirmation-via-invalid', message: '拒绝：结构化确认必须给 confirmationVia=ask-user-question（当前只认这一条通道）。' } as unknown as JsonValue
+        }
+        if (viaChoice === 'cancel') {
+          return { ok: false, reason: 'confirmation-cancelled', message: '已取消：用户在选择项里选了「暂不处理」⇒ 本次不落批准记录（也不改任何状态）。' } as unknown as JsonValue
+        }
+        if (viaChoice !== 'approve' && viaChoice !== 'request-changes') {
+          return { ok: false, reason: 'confirmation-choice-invalid', message: '拒绝：confirmationChoice 只收 approve / request-changes / cancel。' } as unknown as JsonValue
+        }
+        if (viaChoice === decision) {
+          source = '用户在选择项中点选：' + (viaChoice === 'approve' ? '批准' : '要求修改') + ' ' + id + ' 第 ' + String(actualRevision) + ' 版'
+        } else {
+          return { ok: false, reason: 'confirmation-decision-mismatch', message: '拒绝：用户点选的是「' + viaChoice + '」，与本次 decision=「' + decision + '」不一致。' } as unknown as JsonValue
+        }
+      }
+
       const receipt = receiptPatternOf(
         { id, kind: String(artifact.kind ?? ''), revision: actualRevision },
         { acceptRevisionRequest: true },
       )
-      if (reboundMeta === undefined && !receipt.test(source)) {
+      if (reboundMeta === undefined && viaChoice === undefined && !receipt.test(source)) {
         return {
           ok: false, reason: 'receipt-mismatch',
           message: `拒绝：用户回执没有同时点名 ${id} 与第 ${actualRevision} 版；只写“继续 / 可以”不算批准。`,
@@ -237,6 +278,7 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
         `decision = ${JSON.stringify(decision)}`,
         ...(selectedOption === '' ? [] : [`selected_option = ${JSON.stringify(selectedOption)}`]),
         'decided_by = "user"',
+        ...(viaChoice === undefined ? [] : ['confirmation_via = "ask-user-question"']),
         `decided_at = ${JSON.stringify(decidedAt)}`,
         `source = ${JSON.stringify(source)}`,
         '',

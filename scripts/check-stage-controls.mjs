@@ -512,6 +512,22 @@ console.log('')
       if (noAt.waitedHours === undefined) ok('SC-35 ✓ 无 decided_at ⇒ 不给等待时长（⛔ 不编造）')
       else bad('SC-35 无时刻却给出了等待时长 ⇒ 编造读数')
     }
+    // ── SC-37：结构化确认通道（2026-11-24 · 措辞不参与判定）──
+    {
+      const pl2 = await import(pathToFileURL(join(root, 'src', 'shared', 'pipeline.ts')).href)
+      const base = { id: 'DEC-S37', kind: 'decision', status: 'active', decision_kind: 'stage-approval', artifact_id: 'CHG-S37', artifact_revision: '2', artifact_digest: 'fnv64:x', decision: 'approve', decided_by: 'user', decided_at: new Date().toISOString(), source: '用户点选：批准' }
+      const bad1 = pl2.approvalDecisionProblems({ ...base, confirmation_via: 'model-said-so' })
+      if (bad1.some((p) => String(p.why).includes('确认通道不在封闭集'))) ok('SC-37 ✓ 自造确认通道被拒（封闭集只认 ask-user-question）')
+      else bad('SC-37 自造确认通道未被拒 ⇒ 存在伪称用户点过的入口')
+      const good1 = pl2.approvalDecisionProblems({ ...base, confirmation_via: 'ask-user-question' })
+      if (!good1.some((p) => String(p.why).includes('确认通道'))) ok('SC-37 ✓ 合法结构化确认不被误伤')
+      else bad('SC-37 合法通道被误判')
+      const atSrc = readFileSync(join(root, 'src', 'modules', 'approval-tool.ts'), 'utf8')
+      if (atSrc.includes('confirmation-cancelled') && atSrc.includes('confirmation-decision-mismatch')) ok('SC-37 ✓ 结构化拒绝原因在位（取消 / 点选与决定不一致）')
+      else bad('SC-37 结构化拒绝原因缺失 ⇒ 失败将不可观测')
+      if (atSrc.includes('confirmationChoice === undefined') && atSrc.includes('rebindFrom')) ok('SC-37 ✓ 文本 source 必填只对文本路径生效（结构化/重绑由工具生成）')
+      else bad('SC-37 source 必填范围不对 ⇒ 结构化路径被文本校验挡住')
+    }
   }
 
   // ── SC-11：作用域门禁（无关缺口不阻塞当前任务；修复写可区分）────────────

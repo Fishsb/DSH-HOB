@@ -357,6 +357,8 @@ function waitedSuffix(decision: Record<string, unknown>): string {
   const base = '（距上次批准已 ' + w.waitedHours + ' 小时）'
   return w.escalated === true ? base + ' ⚠ 已超过 ' + APPROVAL_ESCALATE_HOURS + ' 小时催办阈值 ⇒ 建议催办、或明确延期；⛔ 系统不会因超时自动放行' : base
 }
+export const APPROVAL_CONFIRMATION_VIAS = ['ask-user-question'] as const
+
 export const APPROVAL_ESCALATE_HOURS = 24
 
 /** 超过该时长仍未（重新）批准 ⇒ 读数里升级为「建议催办/延期」，⛔ 不自动放行。 */
@@ -612,6 +614,11 @@ export function approvalDecisionProblems(unit: Record<string, unknown>): Array<{
   const decision = text(unit.decision)
   const by = text(unit.decided_by)
   const at = text(unit.decided_at)
+  /** ⚠ 2026-11-24：结构化确认通道只认封闭集（⛔ 不许自造通道名冒充「用户点过」）。 */
+  const confVia = text(unit.confirmation_via)
+  if (confVia !== '' && !(APPROVAL_CONFIRMATION_VIAS as readonly string[]).includes(confVia)) {
+    out.push({ rule: 'C-22', unit: id, why: `确认通道不在封闭集：${confVia}` })
+  }
   if (artifact === '') out.push({ rule: 'C-22', unit: id, why: '阶段批准缺 artifact_id' })
   if (!(APPROVAL_STAGES as readonly string[]).includes(stage)) {
     out.push({ rule: 'C-22', unit: id, why: `approval_stage 不在封闭集：${stage || '(空)'}` })
