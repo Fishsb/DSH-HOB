@@ -42,7 +42,7 @@
 | `indexIntegrityProblems` | `ledger-lifecycle.ts:282` | `index.toml` 与分片是否一致（缺条目 / 多条 / 悬空） |
 | `ledgerHealthOf` | `ledger-health.ts:102` | **账本健康唯一判据**（4 个出口都调它） |
 | `describeLedgerHealth` | `ledger-health.ts:163` | 把健康问题翻成**人读一句话**（只描述，不判定） |
-| `stageFileProblems` | `stage-controls.ts:1472` | 账本**文件级**问题（缺失 / 不可读 / 形态不认识） |
+| `stageFileProblems` | `stage-controls.ts:1476` | 账本**文件级**问题（缺失 / 不可读 / 形态不认识） |
 
 ### 第 2 层 · 单元判定（每类单元一个入口）
 
@@ -53,11 +53,11 @@
 | `taskProblems` | `stage-controls.ts:574` | 任务**弱判据**：必填字段。⚠ 派活路径要用 `taskFullProblems` |
 | `taskFullProblems` | `stage-controls.ts:595` | 任务**强判据** = 基础字段 + 风险 |
 | `runProblems` | `stage-controls.ts:815` | 运行记录是否成立（`returned` + 时间 + 归属） |
-| `evidenceProblems` | `stage-controls.ts:1076` | 证据是否可追溯（引用能否解析到真实单元） |
+| `evidenceProblems` | `stage-controls.ts:1080` | 证据是否可追溯（引用能否解析到真实单元） |
 | `acceptanceProblems` | `stage-controls.ts:708` | **C-7**：`pass` 必须有产品确认 · 验收者 ≠ 实现者（⚠ **`built_by` 缺 ⇒ fail-closed**，S-03 对齐 K-6）· 独立验收会话 ≠ 实现者 · 有技术证据 · 例子结果**逐条三段式** |
 | `verificationProblems` | `stage-controls.ts:829` | **C-6/C-8**：技术验证独立性 + `criteria_refs` + 例子结果 |
 | `closureProblems` | `stage-controls.ts:907` | **C-27**：`closure_mode` 封闭集 · `skipped` 须写理由与决定者 · `closed` 须绑定风险推导档位 + 发布证据（R-13：**不按物理顺序取方案**） |
-| `titleProblems` | `stage-controls.ts:1024` | 标题是否说明**实际对象**（不只是编号 / 状态词） |
+| `titleProblems` | `stage-controls.ts:1028` | 标题是否说明**实际对象**（不只是编号 / 状态词） |
 
 ### 第 3 层 · 聚合
 
@@ -65,22 +65,22 @@
 |---|---|---|
 | `requirementApprovalProblems` | `stage-controls.ts:461` | G1：需求是否被**当前修订**的用户批准覆盖 |
 | `planApprovalProblems` | `stage-controls.ts:559` | G2：方案是否被批准 + 是否选中合法路径 |
-| `stageApprovalProblems` | `stage-controls.ts:1154` | G1 + G2 的合并（用户闸门） |
-| `stageFieldProblems` | `stage-controls.ts:1107` | 全部单元的字段层判定（⚠ 两个参数：`units` 判谁 / `context` 查引用） |
-| `stageControlProblems` | `stage-controls.ts:1162` | **字段 + 审批**的完整推进健康 |
-| `ledgerClosureProblems` | `stage-controls.ts:1188` | 账本闭环缺口（任务图 / 覆盖 / 风险对象） |
+| `stageApprovalProblems` | `stage-controls.ts:1158` | G1 + G2 的合并（用户闸门） |
+| `stageFieldProblems` | `stage-controls.ts:1111` | 全部单元的字段层判定（⚠ 两个参数：`units` 判谁 / `context` 查引用） |
+| `stageControlProblems` | `stage-controls.ts:1166` | **字段 + 审批**的完整推进健康 |
+| `ledgerClosureProblems` | `stage-controls.ts:1192` | 账本闭环缺口（任务图 / 覆盖 / 风险对象） |
 | `taskGraphRiskProblems` | `stage-controls.ts:607` | 任务图整体风险（同路径并行 / 串行依赖） |
 | `taskRiskAgainstPlanProblems` | `stage-controls.ts:639` | 任务风险是否与方案的风险评定矛盾 |
-| `sendBackRoundProblems` | `stage-controls.ts:1522` | **C-30**：回炉轮数上限 —— 当前 task 修订上 `acc`/`verification` 的 `send-back` 条数 ≥3 ⇒ 越界（⇒ 回头改方案，⛔ 不是再修一轮）；⚠ 历史修订不计 · 父任务缺 revision ⇒ 单列「判不出」，⛔ 不当作 0 轮 |
+| `sendBackRoundProblems` | `stage-controls.ts:1526` | **C-30**：回炉轮数上限 —— 当前 task 修订上 `acc`/`verification` 的 `send-back` 条数 ≥3 ⇒ 越界（⇒ 回头改方案，⛔ 不是再修一轮）；⚠ 历史修订不计 · 父任务缺 revision ⇒ 单列「判不出」，⛔ 不当作 0 轮 |
 
 ### 第 4 层 · 闸门
 
 | 函数 | 位置 | 判什么 |
 |---|---|---|
-| `evaluateGate` | `stage-controls.ts:1356` | **唯一闸门入口**：`action` + `scope` ⇒ `GateDecision` |
-| `gateScopeUnits` | `stage-controls.ts:1254` | 把 `scope` 解析成要判的单元集合 |
-| `gateProblemsAt` | `stage-controls.ts:1444` | 某一阶段的闸门问题（⚠ R-17：必须与字段层用**同一强度**的判据） |
-| `returnStageOf` | `stage-controls.ts:1439` | 阻断原因 ⇒ 该退回到哪一步 |
+| `evaluateGate` | `stage-controls.ts:1360` | **唯一闸门入口**：`action` + `scope` ⇒ `GateDecision` |
+| `gateScopeUnits` | `stage-controls.ts:1258` | 把 `scope` 解析成要判的单元集合 |
+| `gateProblemsAt` | `stage-controls.ts:1448` | 某一阶段的闸门问题（⚠ R-17：必须与字段层用**同一强度**的判据） |
+| `returnStageOf` | `stage-controls.ts:1443` | 阻断原因 ⇒ 该退回到哪一步 |
 
 ---
 
@@ -88,7 +88,7 @@
 
 | 函数 | 位置 | 判什么 |
 |---|---|---|
-| `pipelineDispatchProblems` | `pipeline-view.ts:738` | 派活门禁：任务图无环 / 无悬空 / 覆盖无缺口（G3） |
+| `pipelineDispatchProblems` | `pipeline-view.ts:754` | 派活门禁：任务图无环 / 无悬空 / 覆盖无缺口（G3） |
 | `pipelineRevisionProblems` | `pipeline.ts:656` | 内容变了但 `revision` 没递增 |
 | `pipelineWriteProblems` | `pipeline.ts:725` | 写入前的管线形态校验 |
 | `approvalDecisionProblems` | `pipeline.ts:612` | 批准单元本身是否合法（`decided_by` / 回执 / 修订绑定） |
