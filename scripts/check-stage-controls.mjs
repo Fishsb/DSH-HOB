@@ -612,6 +612,25 @@ console.log('')
         ok('SC-43 ✓ 效果队列坏档：同样先隔离再继续（⛔ 不把 pending 静默清空）')
       } else bad('SC-43 效果队列坏档被静默清空，或原件丢失')
     }
+    // ── SC-44：实现者判定（task.built_by 缺失时从 returned RUN 回退；都没有 ⇒ fail-closed）──
+    {
+      const t44 = { id: 'TSK-W', kind: 'task', status: 'built' }
+      const run44 = { id: 'RUN-W', kind: 'run', parent: 'TSK-W', status: 'returned', built_by: 'session-dev', created_at: '2026-11-25T00:00:00Z' }
+      const a44 = mod.implementerOf(t44, [t44, run44])
+      const b44 = mod.implementerOf(t44, [t44])
+      const c44 = mod.implementerOf({ ...t44, built_by: 'session-own' }, [t44, run44])
+      if (a44 === 'session-dev' && b44 === '' && c44 === 'session-own') {
+        ok('SC-44 ✓ 实现者判定：built_by 优先 → 缺失时取 returned RUN.built_by → 都没有则空串（调用方 fail-closed）')
+      } else bad('SC-44 实现者回退判定不符：' + JSON.stringify({ a44, b44, c44 }))
+      const ver44 = mod.verificationProblems({ id: 'VER-W', kind: 'verification', parent: 'TSK-W', status: 'pass', verifier: 'session-dev', verification_session: 'session-dev', verified_at: '2026-11-25T00:00:00Z', basis: ['x'], criteria_refs: ['AC-1'] }, [t44, run44])
+      const self = ver44.some((p) => String(p.why).includes('实现者本人'))
+      const cant = ver44.some((p) => String(p.why).includes('没法判'))
+      if (self && !cant) ok('SC-44 ✓ 回退出的实现者仍参与独立性判定：verifier == 回退实现者 ⇒ C-25 点名自验')
+      else bad('SC-44 回退实现者未参与独立性判定')
+      const ver44b = mod.verificationProblems({ id: 'VER-W2', kind: 'verification', parent: 'TSK-W', status: 'pass', verifier: 'session-v', verification_session: 'session-v', verified_at: '2026-11-25T00:00:00Z', basis: ['x'], criteria_refs: ['AC-1'] }, [t44, run44])
+      if (!ver44b.some((p) => String(p.why).includes('没法判'))) ok('SC-44 ✓ 有 returned RUN ⇒ 不再报「没法判」（数据在链上，闸读对位置）')
+      else bad('SC-44 有 RUN 仍报没法判')
+    }
   }
 
   // ── SC-11：作用域门禁（无关缺口不阻塞当前任务；修复写可区分）────────────
@@ -698,8 +717,9 @@ console.log('')
   if (realGate.ok) ok('SC-12 ✓ 真实账本 TSK-076 的 ACC-062 通过验收门禁（证据齐全）')
   else bad(`SC-12 真实 ACC-062 未通过验收门禁：${realGate.reason}`)
   const missing = toolsMod.acceptanceGateOfLedger(join(ledgerRoot, '..'), 'TSK-NOT-EXIST')
-  if (!missing.ok && String(missing.reason ?? '').includes('没有挂在')) {
-    ok('SC-12 ✓ 无验收单元的 task ⇒ 拒绝（回传 ≠ 验收）')
+  /** ⚠ 2026-11-25：首条验收的拒因文案变了（先判任务存在 / built / 有 pass VER）——断言拒**事实**，⛔ 不钉死一句文案。 */
+  if (!missing.ok && /没有任务|没有挂在|首次验收/.test(String(missing.reason ?? ''))) {
+    ok('SC-12 ✓ 无验收单元的 task ⇒ 仍被拒（回传 ≠ 验收；首条验收路径要求任务存在且已有 pass VER）')
   } else bad('SC-12 无验收单元的 task 仍被放行')
 
   // ── SC-12b：预设层必须把**执行上下文**交给 ledgerRootOf ──────────────

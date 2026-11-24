@@ -1255,8 +1255,25 @@ export function acceptanceGateOfLedger(
   try {
     const units = readLedgerUnits(ledgerRoot) as StageControlUnit[]
     const accs = units.filter((u) => u.kind === 'acc' && String(u.parent ?? '').trim() === taskId)
+    /**
+     * ⚠ 2026-11-25（P0 修复 · 首条 ACC 死锁）：
+     *   改前要求「已存在 status=pass 的 ACC」，而 ACC 的唯一自动写入者就是 accept 自己
+     *   ⇒ **第一个 ACC 永远写不进去**（实测：两本真账本 0 ACC）。
+     *   现在：无 ACC 时允许「首次验收」，但前置条件不降 —— 任务必须 `built`，且已有 `pass` 的技术验证。
+     *   ⚠ 这不是放宽，是把顺序从「先有结论再接受」改成「先验技术、再收产品接受」。
+     */
     if (accs.length === 0) {
-      return { ok: false, reason: `拒绝：账本里没有挂在 ${taskId} 下的验收单元 ⇒ 回传不等于验收。` }
+      const task = units.find((u) => String(u.id ?? '').trim() === taskId && u.kind === 'task')
+      if (task === undefined) return { ok: false, reason: `拒绝：账本里没有任务 ${taskId} ⇒ 不能验收。` }
+      if (String(task.status ?? '').trim() !== 'built') {
+        return { ok: false, reason: `拒绝：${taskId} 当前状态是「${String(task.status ?? '(空)')}」，首次验收要求先到 built。` }
+      }
+      const passedVer = units.some((u) => u.kind === 'verification'
+        && String(u.parent ?? '').trim() === taskId && String(u.status ?? '').trim() === 'pass')
+      if (!passedVer) {
+        return { ok: false, reason: `拒绝：${taskId} 还没有通过的技术验证（VER pass）⇒ 首次验收不能跳过技术验证。` }
+      }
+      return { ok: true }
     }
     const passed = accs.filter((u) => String(u.status ?? '').trim() === 'pass')
     if (passed.length === 0) {

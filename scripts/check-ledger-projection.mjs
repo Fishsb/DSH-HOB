@@ -406,6 +406,30 @@ console.log('')
     else for (const x of p) bad(`LP-18 · ${x}`)
   } finally { cleanup(tmp) }
 }
+// ── LP-19（2026-11-25 P0）：首条验收不再死锁（无 ACC ⇒ 允许首次，但必须先有 pass VER）──
+{
+  const { mkdtempSync: mk19 } = await import('node:fs')
+  const { tmpdir: tmp19 } = await import('node:os')
+  const tmp = mk19(join(tmp19(), 'dsh-hob-lp19-'))
+  try {
+    const target = join(tmp, 'ledger', 'units')
+    const { mkdirSync, writeFileSync } = await import('node:fs')
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(target, 'index.toml'), renderShard(
+      chainFor({ 'TSK-PROJ': { status: 'built', built_by: 'session-dev' } }),
+    ), 'utf8')
+    const gate = await import(pathToFileURL(join(root, 'src', 'modules', 'tools.ts')).href)
+    const p = []
+    const g1 = gate.acceptanceGateOfLedger(tmp, 'TSK-PROJ')
+    if (g1.ok === true) p.push('无 VER 时首条验收被放行（应先要求技术验证）')
+    await writer.applyProjection(tmp, { kind: 'verify', taskId: 'TSK-PROJ', verdict: 'pass', verifiedAt: new Date().toISOString(), basis: ['check'], verifier: 'session-v', verificationSession: 'session-v', criteriaRefs: ['AC-PROJ'], evidenceItems: [{ command: 'npm run check', exitCode: 0 }] })
+    const g2 = gate.acceptanceGateOfLedger(tmp, 'TSK-PROJ')
+    if (g2.ok !== true) p.push('有 pass VER 后首条验收仍被拒：' + String(g2.reason ?? '').slice(0, 80))
+    if (p.length === 0) ok('LP-19 ✓ 首条验收：无 VER ⇒ 拒（不跳技术验证）；有 pass VER ⇒ 允许首次落 ACC（死锁解除，前置条件不降）')
+    else for (const x of p) bad(`LP-19 · ${x}`)
+  } finally { cleanup(tmp) }
+}
+
 console.log('')
 // ── LP-9b：ACC 投影字段必须通过同一份验收门禁 ─────────────────────────────
 //

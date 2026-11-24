@@ -623,7 +623,8 @@ function verifyOps(units: readonly ProjectionUnitLike[], fact: VerifyFact): Proj
         pipeline_version: 'v3',
         revision: '1',
         evidence_kind: evidenceKind,
-        ...(reading === '' ? {} : { reading }),
+        /** ⚠ C-16 要求**每条证据都有读数**（哪怕是命令类）；缺省用命令/产物生成可读读数。 */
+        reading: reading !== '' ? reading : (command !== '' ? command + ' → exit ' + (exitCode || '?') : artifact),
         ...(command === '' ? {} : { command }),
         ...(exitCode === '' ? {} : { exit_code: exitCode }),
         ...(artifact === '' ? {} : { artifact_ref: artifact }),

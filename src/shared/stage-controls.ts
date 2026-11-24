@@ -669,6 +669,26 @@ function tierAbove(a: string, b: string): boolean {
  *
  * @param units - 全账本（用于按 parent / task 反查实现者与需求例子）
  */
+/**
+ * **实现者判定**（2026-11-25 · P0）：
+ *   `task.built_by` 缺失时，从**最近一条 returned RUN**（同 parent）取实现者；
+ *   两者都没有 ⇒ 返回空串（调用方必须 fail-closed：⛔ 不按通过处理）。
+ * ⚠ 为什么读 RUN 不算放宽：RUN 是执行侧写的**运行事实**，比人工补字段更可信；
+ *   改前 TSK 缺 built_by ⇒ 一律「没法判」，而数据其实就在同一条链的 RUN 上。
+ */
+export function implementerOf(unit: StageControlUnit | undefined, units: readonly StageControlUnit[]): string {
+  if (unit === undefined) return ''
+  const direct = txt(unit.built_by)
+  if (direct !== '') return direct
+  const id = txt(unit.id)
+  if (id === '') return ''
+  const runs = units.filter((x) => txt(x.kind) === 'run' && txt(x.parent) === id && txt(x.status) === 'returned')
+  if (runs.length === 0) return ''
+  const atOf = (x: StageControlUnit): string => txt((x as Record<string, unknown>).returned_at) || txt(x.created_at)
+  const latest = [...runs].sort((a, b) => atOf(a).localeCompare(atOf(b))).pop()
+  return txt(latest?.built_by) || txt(latest?.actor) || ''
+}
+
 export function acceptanceProblems(u: StageControlUnit, units: readonly StageControlUnit[] = [u]): StageControlProblem[] {
   if (u.kind !== 'acc') return []
   if (legacy(u)) return []
@@ -680,7 +700,7 @@ export function acceptanceProblems(u: StageControlUnit, units: readonly StageCon
   if (txt(u.status) === 'pass') {
     const byId = new Map(units.map((x) => [txt(x.id), x]))
     const parent = byId.get(txt(u.parent))
-    const builder = txt(parent?.built_by)
+    const builder = implementerOf(parent as StageControlUnit | undefined, units)
     const acceptor = txt(u.actor)
     const session = txt(u.acceptance_session)
     if (acceptor === '') out.push({ rule: 'C-7', unit: id, why: '验收通过但缺验收者（actor）' })
@@ -695,7 +715,7 @@ export function acceptanceProblems(u: StageControlUnit, units: readonly StageCon
      *   ⇒ 改成：缺 `built_by` ⇒ 报「无法判定独立性」（⛔ 不按通过处理）。
      */
     if (builder === '') {
-      out.push({ rule: 'C-7', unit: id, why: '父任务缺 built_by ⇒ **没法判**是不是自己验自己（⛔ 不按通过处理）' })
+      out.push({ rule: 'C-7', unit: id, why: '父任务缺 built_by 且没有 returned RUN ⇒ **没法判**是不是自己验自己（⛔ 不按通过处理）' })
     } else if (acceptor === builder) {
       out.push({ rule: 'C-7', unit: id, why: '验收者与实现者是同一个会话（自己验自己）' })
     }
@@ -808,13 +828,13 @@ export function verificationProblems(
   if (txt(u.verifier) === '') out.push({ rule: 'C-25', unit: id, why: '技术验证缺 verifier' })
   if (txt(u.verification_session) === '') out.push({ rule: 'C-25', unit: id, why: '技术验证缺独立会话 verification_session' })
   const parent = units.find((x) => txt(x.id) === txt(u.parent))
-  const builder = txt(parent?.built_by)
+  const builder = implementerOf(parent as StageControlUnit | undefined, units)
   /**
    * ⚠ **S-03（第二处）**：同上 —— 缺 `built_by` ⇒ fail-closed，⛔ 不是跳过。
    *   （C-25 守技术验证的独立性，与 C-7 守验收独立性是同一件事的两个环节。）
    */
   if (builder === '') {
-    out.push({ rule: 'C-25', unit: id, why: '父任务缺 built_by ⇒ **没法判**技术验证是否独立（⛔ 不按通过处理）' })
+    out.push({ rule: 'C-25', unit: id, why: '父任务缺 built_by 且没有 returned RUN ⇒ **没法判**技术验证是否独立（⛔ 不按通过处理）' })
   } else if (txt(u.verifier) === builder || txt(u.verification_session) === builder) {
     out.push({ rule: 'C-25', unit: id, why: '技术验证者是实现者本人（违反独立性）' })
   }
