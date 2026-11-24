@@ -545,6 +545,33 @@ console.log('')
 console.log(`  处级口径：查了 ${note.length + fail.length + skip.length} 处 · 过了 ${note.length} 处`
     + (fail.length > 0 ? ` · 没过 ${fail.length} 处` : '')
   + ` · **跳过 ${skip.length} 处**（⚠ 跳过**不计入通过**）`)
+/**
+ * ── **D 断言编号唯一**（2026-11-25 · P2）────────────────────────────────────
+ *   ⚠ 实测踩过三次：新断言用了已被占用的编号（SC-34 / SC-38 / PIPE-24），插入被同名守卫**静默跳过**，
+ *     看起来像「已加断言」，实际一条都没跑。⇒ 编号冲突必须能自己响。
+ *   只扫检查脚本里的编号**定义点**（ok(...'SC-12 ✓ ...'）这种），按 (族, 编号) 去重计数。
+ */
+{
+  const { readdirSync: rd, readFileSync: rf } = await import('node:fs')
+  const dir = join(root, 'scripts')
+  const dupes = []
+  for (const f of rd(dir).filter((x) => x.startsWith('check-') && x.endsWith('.mjs'))) {
+    const src = rf(join(dir, f), 'utf8')
+    /** ⚠ 只数**正向断言标签**（ok('X-N ✓ ...')）；正负对拍写在 if/else 两行，不会重复计。 */
+    /** ⚠ 口径：**小节标题**（`// ── SC-12：…`）的编号唯一。组内多条 ok 共用同一编号是既有惯例，⛔ 不算重号。 */
+    const labels = [...src.matchAll(/\/\/ ── ((?:SC|PIPE|LP)-\d+)[:：]/g)].map((m) => m[1])
+    const count = new Map()
+    for (const id of labels) count.set(id, (count.get(id) ?? 0) + 1)
+    for (const [id, n] of count) if (n > 1) dupes.push(f + ' · ' + id + ' · ' + String(n) + ' 个同名小节')
+  }
+  /** ⚠ 存量：SC-31 / SC-33 各有两个同名小节（历史分段），登记上限 2；**第三个同名小节就是新重号**。 */
+  const KNOWN_DUP_HEADERS = 2
+  if (dupes.length === 0) ok('D ✓ 断言编号唯一：没有编号被两个小节共用（⚠ 重号会让新断言被静默跳过）')
+  else if (dupes.length <= KNOWN_DUP_HEADERS) {
+    ok('D ✓ 断言编号唯一（存量 ' + String(dupes.length) + ' 处 ≤ 登记 ' + String(KNOWN_DUP_HEADERS) + '）：' + dupes.join(' / '))
+  } else for (const d of dupes.slice(0, 6)) bad('D 断言编号重复（新增重号） · ' + d)
+}
+
 if (fail.length === 0) {
   console.log('判定：PASS —— 分层方向、依赖成环、文件规模、单源权威、文档引用可核，五件事都由断言守着。')
   process.exit(0)
