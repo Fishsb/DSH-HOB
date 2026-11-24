@@ -5350,7 +5350,7 @@ export function apply(ctx: any): void {
               })
               w.ledgerProjection = {
                 ...(w.ledgerProjection ?? {}),
-                dispatch: { ok: projection.ok, applied: projection.applied, ...(projection.reason === undefined ? {} : { reason: projection.reason }) },
+                dispatch: { ok: projection.ok, applied: projection.applied, ...(projection.status === undefined ? {} : { status: projection.status }), ...(projection.reason === undefined ? {} : { reason: projection.reason }) },
               }
               if (!projection.ok) {
                 svcCtx.logger?.warn?.(`[${name}] 派发已成功，但账本投影未落：${projection.reason ?? 'unknown'}`)

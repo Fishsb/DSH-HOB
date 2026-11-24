@@ -98,6 +98,12 @@ export interface ProjectionPartial {
 /** 一次投影落盘的结果（⚠ 三档：applied / skipped / undecidable / failed）。 */
 export interface ProjectionApplyResult {
   ok: boolean
+  /**
+   * ⚠ 2026-11-25（P0）：**四态**，⛔ 不许压成布尔。
+   *   applied=真写 / skipped=幂等跳过（没有该写的） / undecidable=判不出 / failed=写失败。
+   *   改前 `ops.length===0` 一律 ok:false ⇒ 每一条正常派活的第二次投影都被读成「没落账」假警。
+   */
+  status?: 'applied' | 'skipped' | 'undecidable' | 'failed'
   key: string
   /** 实际写成功的操作数。 */
   applied: number
@@ -333,13 +339,18 @@ async function applyProjectionLocked(
     return { ok: false, key: '', applied: 0, ops: [], reason: `投影纯函数抛错：${String((e as Error)?.message ?? e)}`, files: [] }
   }
   if (result.ops.length === 0) {
+    /** ⚠ 幂等跳过不是失败；判不出也不是失败 —— 三档分开（P0 修复）。 */
+    const status: 'skipped' | 'undecidable' | 'failed' = result.skipped !== undefined
+      ? 'skipped'
+      : result.undecidable !== undefined ? 'undecidable' : 'failed'
     return {
-      ok: false,
+      ok: status === 'skipped',
+      status,
       key: result.key,
       applied: 0,
       ops: [],
       ...(result.createdRunId === undefined ? {} : { createdRunId: result.createdRunId }),
-      reason: describeProjection(result),
+      reason: result.skipped ?? result.undecidable ?? describeProjection(result),
       files: [],
     }
   }
@@ -416,5 +427,5 @@ async function applyProjectionLocked(
    * therefore produced no ledger write.
    */
   publishLiveChange(ledgerRoot, ['runtime'])
-  return { ok: true, key: result.key, applied, ops: result.ops, files, ...(result.createdRunId === undefined ? {} : { createdRunId: result.createdRunId }) }
+  return { ok: true, status: 'applied', key: result.key, applied, ops: result.ops, files, ...(result.createdRunId === undefined ? {} : { createdRunId: result.createdRunId }) }
 }

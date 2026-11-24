@@ -362,8 +362,9 @@ console.log('')
     const second = await writer.applyProjection(tmp, fact)
     const after = writer.readProjectionUnits(tmp)
     const p = []
-    if (!first.ok) p.push(`首次落盘失败：${first.reason}`)
-    if (second.ok) p.push('同一判决第二次仍报成功（应幂等 skipped）')
+    if (!first.ok || first.status !== 'applied') p.push(`首次落盘失败/未标 applied：${first.reason}`)
+    /** ⚠ 2026-11-25（P0）：幂等跳过是**成功**（status=skipped），⛔ 不再是 ok:false 的假失败。 */
+    if (second.ok !== true || second.status !== 'skipped') p.push(`同一判决第二次应 ok:true + status:skipped，实际 ok=${second.ok} status=${second.status}`)
     if (!String(second.reason ?? '').includes('已投影') && !String(second.reason ?? '').includes('不重复')) p.push(`第二次原因不可读：${second.reason}`)
     const accs = after.filter((u) => u.kind === 'acc')
     if (accs.length !== 1) p.push(`盘上 ACC 数量=${accs.length}（期望 1，幂等）`)
