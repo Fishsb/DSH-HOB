@@ -51,6 +51,7 @@
  *   `sessions` / `agents` 是**必需**（写进 `inject`）；其余一律 `ctx.get` 可选读。
  *   缺席 ⇒ 相关能力**明确拒绝**，绝不静默降级成"看起来在工作"的状态。
  */
+import { notifyLinesOf, focusLinesOf } from '../server/status-lines.ts'
 import { recordNotify } from '../server/notify-ledger.ts'
 import { lastAssistantText, lastAssistantEntry, changedFiles, receiptProgressRefsOf, buildReceipt, toPersisted } from './receipt-helpers.ts'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
@@ -8722,6 +8723,8 @@ export function createHobOrchTools(
    * ⚠ 批 notify（2026-11-23）：**中风险动作的通知面**（AWS 三档的中间档）。
    *   放行 + 留痕；⛔ 不参与任何门禁判定、⛔ 不是批准凭证。缺席 ⇒ 只少读数，不阻断动作。
    */
+  /** ⚠ 2026-11-24（B）：推进焦点的控制面（list/acquire/pause/resume）；缺席 ⇒ 动作如实报不可用。 */
+  focusOf?: (exec: any, args: any) => Record<string, unknown> | undefined,
   notifyOf?: (exec: any) => {
     record: (entry: { kind: string; key: string; subject: string; detail?: string; actor?: string }) => void
     read: (limit?: number) => { readable: boolean; rows: Array<{ at: string; kind: string; subject: string; detail?: string; count?: number }>; total: number; reason?: string }
@@ -9140,25 +9143,8 @@ export function createHobOrchTools(
        * ⚠ notify 档读数（2026-11-23）：中风险动作的留痕 —— 放行不代表没人知道。
        *   ⛔ 只报不判：这些条目不是批准凭证，也不改任何门禁。
        */
-      const notifyLines: string[] = (() => {
-        const face = notifyOf?.(exec)
-        if (face === undefined) return []
-        try {
-          const r = face.read(8)
-          if (r.readable !== true) return ['通知（notify 档）：⚠ 读不到（' + String(r.reason ?? '原因未知') + '）—— ⛔ 不等于没有中风险动作']
-          if (r.total === 0) return ['通知（notify 档）：暂无（⛔ 这档是「确实没有」，不是「没去读」）']
-          const lines = ['通知（notify 档）：' + String(r.total) + ' 条（新的在前，最多列 8 条）']
-          for (const row of r.rows) {
-            lines.push('  · ' + row.at + ' · ' + row.kind + ' · ' + row.subject
-              + (row.count !== undefined && row.count > 1 ? '（触发 ' + String(row.count) + ' 次）' : '')
-              + (row.detail === undefined ? '' : ' ↳ ' + row.detail))
-          }
-          lines.push('  ↳ ⚠ 这一档是知情，不是批准；需要拍板的事仍走 G1/G2/G5')
-          return lines
-        } catch (e) {
-          return ['通知（notify 档）：⚠ 读数抛错（' + String((e as Error)?.message ?? e) + '）—— ⛔ 不等于没有条目']
-        }
-      })()
+      const focusLines: string[] = focusLinesOf(focusOf?.(exec, { focusAction: 'list' }))
+      const notifyLines: string[] = notifyLinesOf(notifyOf?.(exec))
 
       const cardLines = await (async (): Promise<string[]> => {
         try {
@@ -10466,6 +10452,8 @@ export function createHobOrchTools(
         //   ⚠ ⚠ **读不到必须说出来**：`unavailable` / `unreadable` ⇒ 可读标记 + 原话
         //     （⛔ 不许静默当成"没有卡" —— 那正是本轮要修的失败模式）。
         ...cardLines,
+        /** ⚠ B（2026-11-24）：推进焦点读数（哪个会话在推哪条需求、其余是 queued/paused）。 */
+        ...focusLines,
         /** ⚠ notify 档读数（2026-11-23）：中风险动作留痕 —— 在卡状态之后、回传读数之前。 */
         ...notifyLines,
         // ── ⚠⚠ 以下是**主信号源**的读数（2026-10-19 · `TASK-2` 改判）────────────
@@ -10591,7 +10579,7 @@ export function createHobOrchTools(
       action: {
         type: 'string',
         required: true,
-        enum: ['stop', 'resume', 'redeliver', 'retry-abandoned', 'verify', 'accept', 'send-back', 'close-delivery', 'watch-wait', 'plan-complete', 'archive-stale-plan'],
+        enum: ['stop', 'resume', 'redeliver', 'retry-abandoned', 'focus', 'verify', 'accept', 'send-back', 'close-delivery', 'watch-wait', 'plan-complete', 'archive-stale-plan'],
         description: 'stop=停；resume=恢复；redeliver=**显式补投**一条投错人的回执（需 executionId + taskId）；'
           + 'accept=**验收**（需 taskId + basis + productConfirmation + verificationRefs + exampleResults）；'
           + 'verify=**独立技术验证**（需 taskId + verdict + basis + verifier + criteriaRefs）；'
@@ -10623,6 +10611,13 @@ export function createHobOrchTools(
         type: 'string',
         description: 'retry-abandoned 专用：为什么现在重试这些放弃行（审计要求，⛔ 不许静默清）。',
       },
+      focusAction: {
+        type: 'string',
+        enum: ['list', 'acquire', 'pause', 'resume'],
+        description: 'focus 专用：list=看本会话与全部焦点；acquire=领取某需求；pause=暂停（paused-user）；resume=恢复。',
+      },
+      focusReqId: { type: 'string', description: 'focus 专用：目标需求号（R-…）。' },
+      focusReason: { type: 'string', description: 'focus pause 专用：为什么暂停（人读）。' },
       taskId: {
         type: 'string',
         description: 'redeliver 专用：卡 id（用来现读这张卡的 `createdBy.sessionId` 作为收件人）。',
@@ -10708,7 +10703,7 @@ export function createHobOrchTools(
     },
     async execute(
       args: {
-        action: 'stop' | 'resume' | 'redeliver' | 'retry-abandoned' | 'verify' | 'accept' | 'send-back' | 'close-delivery' | 'watch-wait' | 'plan-complete' | 'archive-stale-plan'
+        action: 'stop' | 'resume' | 'redeliver' | 'retry-abandoned' | 'focus' | 'verify' | 'accept' | 'send-back' | 'close-delivery' | 'watch-wait' | 'plan-complete' | 'archive-stale-plan'
         executionId?: string
         /** ⚠ 批4：retry-abandoned 专用（审计要求）。 */
         reason?: string
@@ -10753,11 +10748,11 @@ export function createHobOrchTools(
        *   ⚠ 只在文案里把新增的 `redeliver` 也列进去（否则报错话会把合法值说漏一个）。
        */
       if (args?.action !== 'stop' && args?.action !== 'resume' && args?.action !== 'redeliver'
-        && args?.action !== 'retry-abandoned'
+        && args?.action !== 'retry-abandoned' && args?.action !== 'focus'
         && args?.action !== 'verify' && args?.action !== 'close-delivery'
         && args?.action !== 'accept' && args?.action !== 'send-back' && args?.action !== 'watch-wait'
         && args?.action !== 'plan-complete' && args?.action !== 'archive-stale-plan') {
-        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume' or 'redeliver' or 'retry-abandoned' or 'verify' or 'accept' or 'send-back' or 'close-delivery' or 'watch-wait' or 'plan-complete' or 'archive-stale-plan'" })
+        return JSON.stringify({ ok: false, reason: "action must be 'stop' or 'resume' or 'redeliver' or 'retry-abandoned' or 'focus' or 'verify' or 'accept' or 'send-back' or 'close-delivery' or 'watch-wait' or 'plan-complete' or 'archive-stale-plan'" })
       }
       /**
        * ══════════════════════════════════════════════════════════════════════
@@ -10808,6 +10803,11 @@ export function createHobOrchTools(
        * ⚠ 这是不可逆动作（会改变"还有哪些活在跑"）⇒ 必须显式 planId + 原因；
        *   ⛔ 不改 plan.state、⛔ 不删除原件（移进 `abandoned/`，可完整还原）。
        */
+      if (args.action === 'focus') {
+        /** ⚠ B（2026-11-24）：推进焦点的显式状态操作（list/acquire/pause/resume）。 */
+        const r = focusOf?.(exec, args)
+        return JSON.stringify(r ?? { ok: false, reason: 'focus-unavailable', message: '拒绝：本会话的账本根判不出 ⇒ 无法操作推进焦点。' })
+      }
       if (args.action === 'retry-abandoned') {
         /**
          * ⚠⚠ **批4（2026-11-21 · 方案2）：失败兜底的受限自愈** —— 清 handoff effects

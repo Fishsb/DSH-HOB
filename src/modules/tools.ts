@@ -51,6 +51,7 @@
  *
  * ⚠ 本模块**不注册** DSH 原生 `read` / `bash` / `write` —— 与 `PROJECT.md` §5.2 同款纪律。
  */
+import { dispatchFocusGuard } from '../server/parallel-conflict.ts'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { runReadContractEndpoint } from './read-contract-endpoints.ts'
@@ -1065,7 +1066,7 @@ export const BOOTSTRAP_UNLOCK_BRIEF = [
  */
 export function dispatchGateAtLedger(
   ledgerRoot: string,
-  opts: { taskId?: string; planId?: string; unlock?: 'bootstrap' } = {},
+  opts: { taskId?: string; planId?: string; unlock?: 'bootstrap'; session?: string } = {},
 ): { blocked: string | undefined; unlockBrief?: string; health: { ok: boolean; blockers: GateDecision['blockers'] } } {
   /**
    * ⚠⚠ **第一道：账本先得能推进**（2026-11-08 · 用户裁定）。
@@ -1123,8 +1124,11 @@ export function dispatchGateAtLedger(
      * prove that the user approved the requirement or the plan. Read the whole
      * ledger once and check the task's actual upstream chain here.
      */
+    /** ⚠ 2026-11-24：焦点/冲突闸要在 try 外使用单元 ⇒ try 内顺带记一份（⛔ 不重复读盘）。 */
+    let unitsForFocus: Array<Record<string, unknown>> = []
     try {
       const units = readLedgerUnits(ledgerRoot) as StageControlUnit[]
+      unitsForFocus = units as unknown as Array<Record<string, unknown>>
       const task = units.find((u) => String(u.id ?? '').trim() === taskId)
       if (task !== undefined) {
         const p = withLedgerProvenance(ledgerRoot, () => pipelineDispatchProblems(units as any, task as any))
@@ -1148,6 +1152,26 @@ export function dispatchGateAtLedger(
       return {
         blocked: `Pipeline v3 门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不派单。`,
         health: { ok: false, blockers: d.blockers },
+      }
+    }
+    /**
+     * ⚠ 2026-11-24（B+C）：**推进焦点 + 跨会话并行冲突**。
+     *   · B：一个会话一次只推进一条在途需求（WIP=1，租约 30 分钟）；
+     *   · C：两条链同时进执行步且**写范围相交** ⇒ 拒绝并把本需求登记 paused-conflict。
+     *   ⚠ 判不出会话身份 ⇒ **跳过 B**（无从归属），但仍做 C（C 只依赖账本与焦点表）。
+     */
+    /** ⚠ 只在**门禁确已放行**时才领取焦点 —— 否则被拒的派活也会占住 WIP 名额（实测踩过）。 */
+    const preGate = gateMessageOf(d)
+    /** ⚠ 占位号 implicit / 账本里不存在的任务不参与焦点闸（它们走既有作用域门禁，⛔ 别在这里多拦一次）。 */
+    const focusTarget = taskId !== 'implicit' && unitsForFocus.some((u) => String(u.id ?? '') === taskId)
+    if (preGate === undefined && focusTarget) {
+      const focus = dispatchFocusGuard({
+        ledgerRoot, taskId,
+        session: String(opts.session ?? '').trim(),
+        units: unitsForFocus,
+      })
+      if (focus.ok !== true) {
+        return { blocked: focus.message, health: { ok: false, blockers: d.blockers } }
       }
     }
     return {

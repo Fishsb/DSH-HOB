@@ -528,6 +528,42 @@ console.log('')
       if (atSrc.includes('confirmationChoice === undefined') && atSrc.includes('rebindFrom')) ok('SC-37 ✓ 文本 source 必填只对文本路径生效（结构化/重绑由工具生成）')
       else bad('SC-37 source 必填范围不对 ⇒ 结构化路径被文本校验挡住')
     }
+    // ── SC-42：B+C —— 一个会话只推一条在途需求 + 跨会话路径冲突（2026-11-24）──
+    {
+      const pc = await import(pathToFileURL(join(root, 'src', 'server', 'parallel-conflict.ts')).href)
+      const fl2 = await import(pathToFileURL(join(root, 'src', 'server', 'focus-lease.ts')).href)
+      const fs2 = await import('node:fs')
+      const tmp = fs2.mkdtempSync(join('/tmp', 'hob-focus-'))
+      const u = [
+        { id: 'R-A', kind: 'req', status: 'agreed' },
+        { id: 'R-B', kind: 'req', status: 'agreed' },
+        { id: 'TSK-A1', kind: 'task', status: 'doing', requirement: 'R-A', scope_paths: ['a/**'] },
+        { id: 'TSK-A2', kind: 'task', status: 'doing', requirement: 'R-A', scope_paths: ['b/x.ts'] },
+        { id: 'TSK-B1', kind: 'task', status: 'doing', requirement: 'R-B', scope_paths: ['a/x.ts'] },
+      ]
+      const t0 = Date.now()
+      const g = (s, id, ms) => pc.dispatchFocusGuard({ ledgerRoot: tmp, session: s, taskId: id, units: u, nowMs: ms })
+      const r1 = g('s1', 'TSK-A1', t0)
+      if (r1.ok === true) ok('SC-42 ✓ 首个会话领取焦点 ⇒ 放行（WIP=1 的第一条）')
+      else bad('SC-42 首个领取被拒：' + String(r1.message).slice(0, 80))
+      const r2 = g('s2', 'TSK-B1', t0 + 1000)
+      const paused = fl2.readFocus(tmp, t0 + 1000).some((x) => x.session === 's2' && x.state === 'paused-conflict')
+      if (r2.ok === false && String(r2.message).includes('并行冲突') && paused) ok('SC-42 ✓ 跨会话路径相交 ⇒ 拒绝并登记 paused-conflict（可观测）')
+      else bad('SC-42 路径冲突未拦或未登记 paused-conflict')
+      const r3 = g('s1', 'TSK-A2', t0 + 2000)
+      if (r3.ok === true) ok('SC-42 ✓ 同会话同需求再派一任务 ⇒ 续租放行（WIP 锁需求、不锁任务）')
+      else bad('SC-42 同需求第二任务被误拒')
+      const r4 = g('s1', 'TSK-B1', t0 + 3000)
+      if (r4.ok === false && String(r4.message).includes('一个会话一次只推进一条')) ok('SC-42 ✓ 同会话改推另一需求 ⇒ 拒绝并给出切换办法')
+      else bad('SC-42 同会话跨需求未被拦（或没给切换办法）')
+      /** 过期接管：换一条**路径不相交**的需求，先让 s4 拿到 active，再过 31 分钟让 s5 接管。 */
+      const u2 = [...u, { id: 'R-C', kind: 'req', status: 'agreed' }, { id: 'TSK-C1', kind: 'task', status: 'doing', requirement: 'R-C', scope_paths: ['c/**'] }]
+      const g2 = (s, id, ms) => pc.dispatchFocusGuard({ ledgerRoot: tmp, session: s, taskId: id, units: u2, nowMs: ms })
+      g2('s4', 'TSK-C1', t0 + 4000)
+      const r5 = g2('s5', 'TSK-C1', t0 + 35 * 60 * 1000)
+      if (r5.ok === true && String(r5.note ?? '').includes('接管')) ok('SC-42 ✓ 租约过期 ⇒ 允许接管并说明接管事实')
+      else bad('SC-42 过期租约没能接管（或没说接管事实）')
+    }
   }
 
   // ── SC-11：作用域门禁（无关缺口不阻塞当前任务；修复写可区分）────────────

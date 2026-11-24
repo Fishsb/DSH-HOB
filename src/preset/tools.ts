@@ -34,6 +34,7 @@
  */
 
 /** ⚠ 具名再导出用 `const` 绑定（G-11 ①：本文件零具名值导入，避免链接期缺名字拖垮整块）。 */
+import * as focusLease from '../server/focus-lease.ts'
 import * as notifyLedger from '../server/notify-ledger.ts'
 import * as diagMod from './diag.ts'
 import { appendFileSync, statSync } from 'node:fs'
@@ -1254,6 +1255,19 @@ export function apply(ctx: any, config: Config = {}): void {
         })),
         /** ⚠ notify 档（2026-11-23）：按会话账本根现取通知面；判不出根 ⇒ undefined（只少读数）。 */
         (exec: any) => { const root = ledgerRootOf(config, exec); return root === undefined ? undefined : notifyLedger.notifyFaceOf(root) },
+        /** ⚠ B（2026-11-24）：推进焦点控制面（list/acquire/pause/resume）；判不出根 ⇒ undefined。 */
+        (exec: any, args: any): Record<string, unknown> | undefined => {
+          const root = ledgerRootOf(config, exec)
+          if (root === undefined) return undefined
+          const sid = String(exec?.agent?.session?.header?.id ?? exec?.agent?.id ?? '')
+          const reqId = String(args?.focusReqId ?? '').trim()
+          if (String(args?.focusAction ?? 'list') === 'list') return { ok: true, rows: focusLease.readFocus(root) }
+          if (reqId === '') return { ok: false, reason: 'focus-req-required', message: '拒绝：focus 需要 focusReqId（R-…）。' }
+          if (args.focusAction === 'acquire') return { ok: true, result: focusLease.acquireFocus(root, { session: sid, reqId }) }
+          if (args.focusAction === 'pause') { const why = String(args?.focusReason ?? '').trim(); if (why === '') return { ok: false, reason: 'focus-reason-required', message: '拒绝：暂停必须给 focusReason（人读）。' }; const done = focusLease.pauseFocus(root, { session: sid, reqId, kind: 'paused-user', reason: why }); return done ? { ok: true, state: 'paused-user' } : { ok: false, reason: 'focus-not-found', message: '拒绝：本会话没有这条焦点。' } }
+          if (args.focusAction === 'resume') { const st = focusLease.resumeFocus(root, { session: sid, reqId }); return st === undefined ? { ok: false, reason: 'focus-not-found', message: '拒绝：本会话没有这条焦点。' } : { ok: true, state: st } }
+          return { ok: false, reason: 'focus-action-invalid', message: '拒绝：focusAction 只收 list / acquire / pause / resume。' }
+        },
         (exec: any) => {
           /** ⚠ 批4（2026-11-21 · 方案2）：handoff effects 受限自愈面 —— 按会话账本根现取队列。 */
           const root = ledgerRootOf(config, exec)
@@ -2063,7 +2077,7 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
    * **作用域门禁**（2026-11-06 · Wave 1）：按任务 / 计划判定，⛔ 不扫全账本。
    *  `opts.taskId` / `opts.planId` 由派单参数带下来；都没有时只报健康。
    */
-  dispatchGateAt: (root: string, opts: { taskId?: string; planId?: string }) => string | undefined = () => undefined,
+  dispatchGateAt: (root: string, opts: { taskId?: string; planId?: string; unlock?: 'bootstrap'; session?: string }) => string | undefined = () => undefined,
   ledgerRootFor: (exec: any) => string | undefined = () => undefined,
   acceptanceGateFor?: (exec: any, taskId: string) => { ok: boolean; reason?: string },
   /** Unified ledger lifecycle for the dispatch tool entry. */
@@ -2109,7 +2123,7 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
    *   只是不折叠 unlockBrief。⛔ 判据零副本：回落（导出缺席）时按旧全局口径，
    *   **永不**在回落里开解锁窗（legacy 全局门禁没有 unlock 语义，宁可拒）。
    */
-  const dispatchGateFullAt = (root: string, opts: { taskId?: string; planId?: string; unlock?: 'bootstrap' }): { blocked: string | undefined; unlockBrief?: string } => {
+  const dispatchGateFullAt = (root: string, opts: { taskId?: string; planId?: string; unlock?: 'bootstrap'; session?: string }): { blocked: string | undefined; unlockBrief?: string } => {
     const stageGateOfLedger = (r: string): string | undefined => {
       const fn = (toolsFace as unknown as { stageGateOfLedger?: (r: string) => string | undefined }).stageGateOfLedger
       if (typeof fn !== 'function') return undefined
@@ -2118,7 +2132,7 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
     const fn = (toolsFace as unknown as {
       dispatchGateAtLedger?: (
         r: string,
-        o: { taskId?: string; planId?: string; unlock?: 'bootstrap' },
+        o: { taskId?: string; planId?: string; unlock?: 'bootstrap'; session?: string },
       ) => { blocked: string | undefined; unlockBrief?: string }
     }).dispatchGateAtLedger
     if (typeof fn !== 'function') {
@@ -2127,6 +2141,8 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
     }
     return fn(root, opts)
   }
+  /** 会话身份（焦点归属用；判不出 ⇒ 空串，闸会跳过 WIP 归因但仍做冲突检测）。 */
+  const sessionOf = (exec: any): string => String(exec?.agent?.session?.header?.id ?? exec?.agent?.id ?? '')
   const stageGateFor = (exec: any, scope: { taskId?: string; planId?: string; unlock?: 'bootstrap' } = {}): string | { unlockBrief: string } | undefined => {
     try {
       const root = ledgerRootFor(exec)
@@ -2138,13 +2154,13 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
        *   资格判据仍在 ledger-lifecycle.ts 单点；这里只做形状透传，⛔ 不判第二遍资格。
        */
       if (scope.unlock === 'bootstrap') {
-        const full = dispatchGateFullAt(root, scope)
+        const full = dispatchGateFullAt(root, { ...scope, session: sessionOf(exec) })
         if (full !== null && typeof full === 'object' && full.blocked === undefined && typeof full.unlockBrief === 'string') {
           return { unlockBrief: full.unlockBrief }
         }
         return full?.blocked
       }
-      return dispatchGateAt(root, scope)
+      return dispatchGateAt(root, { ...scope, session: sessionOf(exec) })
     } catch (e) {
       return `阶段门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不派单。`
     }
@@ -2159,6 +2175,7 @@ function registerOrchTools(ctx: any, orch: HobOrchestrator, log: (m: string) => 
     ledgerProjectionOf,
     effectsRetryOf,
     notifyOf,
+    focusOf,
   )
   ctx.effect(() => ctx.tools.register(dispatch), 'dsh-hob preset: hob_dispatch tool')
   ctx.effect(() => ctx.tools.register(status), 'dsh-hob preset: hob_orch_status tool')
