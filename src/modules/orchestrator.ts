@@ -8683,6 +8683,7 @@ export function createHobOrchTools(
         verifier: string
         verificationSession?: string
         criteriaRefs?: string[]
+        evidenceItems?: ReadonlyArray<Record<string, unknown>>
         evidenceRefs?: string[]
         nonconformanceRefs?: string[]
         sendBackTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
@@ -10637,6 +10638,10 @@ export function createHobOrchTools(
         type: 'string',
         description: 'accept 专用：产品确认（用户接受结果符合目标）。⚠ 不接受技术测试结论代替产品确认。',
       },
+      evidence: {
+        type: 'array',
+        description: 'verify 专用：证据条目（evidence_kind 判据）：{ command, exitCode } / { artifact } / { reading }；投影时会落成 EVD 单元并挂到 VER。不给 ⇒ VER 不计入技术验证（返回体会警告）。',
+      },
       verificationRefs: {
         type: 'json',
         description: 'accept 专用：技术验证证据数组（优先 EVD-*）；缺 ⇒ 投影判不出，不落 ACC。',
@@ -10708,8 +10713,11 @@ export function createHobOrchTools(
         /** ⚠ 批4：retry-abandoned 专用（审计要求）。 */
         reason?: string
         taskId?: string
+        focusAction?: string
+        focusReqId?: string
+        focusReason?: string
         /** ⚠ 包 H：判决依据（`accept` / `send-back` 专用；⛔ 空数组一律被拒）。 */
-        basis?: string[]
+        basis?: JsonValue
         /** ⚠ 判决时刻（ISO8601）；省略则现取。 */
         verifiedAt?: string
         /** ⚠ 包 AB：`watch-wait` 的**可选**说明（⛔ 不是原因码、⛔ 不是必填）。 */
@@ -10717,6 +10725,7 @@ export function createHobOrchTools(
         planId?: string
         returnTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
         productConfirmation?: string
+        evidence?: JsonValue[]
         verificationRefs?: JsonValue
         exampleResults?: JsonValue
         verdict?: 'pass' | 'send-back' | 'waived'
@@ -10900,12 +10909,18 @@ export function createHobOrchTools(
           basis: list(args.basis), verifier,
           ...(typeof args.verificationSession === 'string' ? { verificationSession: args.verificationSession } : {}),
           criteriaRefs: list(args.criteriaRefs), evidenceRefs: list(args.verificationRefs),
+          evidenceItems: Array.isArray(args.evidence) ? args.evidence as unknown as ReadonlyArray<Record<string, unknown>> : [],
           nonconformanceRefs: list(args.nonconformanceRefs),
           riskReviewRefs: list(args.riskReviewRefs),
           ...(args.returnTo === undefined ? {} : { sendBackTo: args.returnTo }),
         })
+        const evdMade = Array.isArray(args.evidence) ? args.evidence.length : 0
         return JSON.stringify({
           ok: projection.ok, target: args.taskId, verdict,
+          ...(evdMade > 0 ? { evidenceCreated: evdMade } : {}),
+          ...(projection.ok === true && evdMade === 0 && list(args.verificationRefs).length === 0
+            ? { warn: '本次没有证据条目（evidence）也没有 verificationRefs ⇒ VER 不会被技术验证计数（verificationReady 要求指向真实证据）。' }
+            : {}),
           ...(projection.reason === undefined ? {} : { reason: projection.reason }),
           ledgerProjection: projection,
         })
@@ -11024,7 +11039,7 @@ export function createHobOrchTools(
           self: selfSessionIdOf(exec),
           target: args.taskId,
           verdict: args.action === 'accept' ? 'accepted' : 'sent-back',
-          basis: Array.isArray(args.basis) ? args.basis : [],
+          basis: Array.isArray(args.basis) ? args.basis.map(String) : [],
           verifiedAt,
           ...(args.returnTo === undefined ? {} : { returnTo: args.returnTo }),
         })

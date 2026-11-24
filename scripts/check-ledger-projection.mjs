@@ -375,6 +375,37 @@ console.log('')
   } finally { cleanup(tmp) }
 }
 
+// ── LP-18（2026-11-25 P0）：技术验证证据必须落成真实 EVD 单元（全库此前无写入口）──
+{
+  const { mkdtempSync: mk18 } = await import('node:fs')
+  const { tmpdir: tmp18 } = await import('node:os')
+  const tmp = mk18(join(tmp18(), 'dsh-hob-lp18-'))
+  try {
+    const target = join(tmp, 'ledger', 'units')
+    const { mkdirSync, writeFileSync } = await import('node:fs')
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(target, 'unit-01.toml'), renderShard(
+      chainFor({ 'TSK-PROJ': { status: 'built', built_by: 'session-dev' } }),
+    ), 'utf8')
+    const r = await writer.applyProjection(tmp, {
+      kind: 'verify', taskId: 'TSK-PROJ', verdict: 'pass', verifiedAt: '2026-11-25T01:00:00+08:00',
+      basis: ['check:pipeline 全绿'], verifier: 'session-verifier', verificationSession: 'session-verifier',
+      criteriaRefs: ['AC-PROJ'], evidenceItems: [{ command: 'npm run check', exitCode: 0, reading: '全绿' }],
+    })
+    const units = writer.readProjectionUnits(tmp)
+    const evd = units.filter((u) => u.kind === 'evidence')
+    const ver = units.find((u) => u.kind === 'verification')
+    const p = []
+    if (!r.ok) p.push(`投影失败：${r.reason}`)
+    if (evd.length !== 1) p.push(`EVD 数量=${evd.length}（期望 1）`)
+    if (evd[0]?.evidence_kind !== 'command' || evd[0]?.command !== 'npm run check' || String(evd[0]?.exit_code) !== '0') p.push('EVD 字段不对（command/exit_code/evidence_kind）')
+    if (evd[0]?.taken_at === undefined || evd[0]?.code_state === undefined) p.push('EVD 缺 taken_at / code_state')
+    if (ver === undefined) p.push('VER 未创建')
+    else if (!Array.isArray(ver.evidence_refs) || !ver.evidence_refs.includes(evd[0]?.id)) p.push('VER.evidence_refs 没有指向新建 EVD')
+    if (p.length === 0) ok('LP-18 ✓ 技术验证证据落成 EVD：command/exit_code/reading 齐全，VER.evidence_refs 指向它（数字 0 不再被读成空）')
+    else for (const x of p) bad(`LP-18 · ${x}`)
+  } finally { cleanup(tmp) }
+}
 console.log('')
 // ── LP-9b：ACC 投影字段必须通过同一份验收门禁 ─────────────────────────────
 //

@@ -153,6 +153,11 @@ export interface VerifyFact {
   sendBackTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
   waiverSource?: string
   waivedBy?: string
+  /**
+   * ⚠ 2026-11-25（P0）：**技术验证的证据条目** —— 投影时落成 EVD 单元（全仓此前没有写入口）。
+   *   形状照 `verificationReady` 的判据：command+exitCode / artifact / reading 三者取其一。
+   */
+  evidenceItems?: ReadonlyArray<{ reading?: string; command?: string; exitCode?: number | string; artifact?: string; codeState?: string; takenAt?: string }>
   /** Per-control evidence: at least one entry for every declared hard trigger. */
   riskReviewRefs?: string[]
   /** Risks discovered during verification that the approved plan did not declare. */
@@ -190,7 +195,7 @@ export type ProjectionOp =
     op: 'create-unit'
     /** 新单元 id（由调用方给的稳定序列，本模块不自己编全局号）。 */
     id: string
-    kind: 'run' | 'acc' | 'verification' | 'closure'
+    kind: 'run' | 'acc' | 'verification' | 'closure' | 'evidence'
     /** 字段（⚠ 只放稳定事实，⛔ 不放推断）。 */
     fields: Record<string, string | string[]>
   }
@@ -228,7 +233,7 @@ const arr = (v: unknown): string[] =>
   Array.isArray(v) ? v.map(String).map((x) => x.trim()).filter((x) => x !== '') : []
 
 /** 该 kind 的现有最大数字序号；没有 ⇒ 0。 */
-function maxSeqOf(units: readonly ProjectionUnitLike[], prefix: 'RUN' | 'ACC' | 'VER' | 'CLS'): number {
+function maxSeqOf(units: readonly ProjectionUnitLike[], prefix: 'RUN' | 'ACC' | 'VER' | 'CLS' | 'EVD'): number {
   const re = new RegExp(`^${prefix}-(\\d+)$`)
   let max = 0
   for (const u of units) {
@@ -239,7 +244,7 @@ function maxSeqOf(units: readonly ProjectionUnitLike[], prefix: 'RUN' | 'ACC' | 
 }
 
 /** 分配下一个账本编号（⚠ 只在纯函数内部用；同一输入同输出）。 */
-function nextIdOf(units: readonly ProjectionUnitLike[], prefix: 'RUN' | 'ACC' | 'VER' | 'CLS'): string {
+function nextIdOf(units: readonly ProjectionUnitLike[], prefix: 'RUN' | 'ACC' | 'VER' | 'CLS' | 'EVD'): string {
   return `${prefix}-${String(maxSeqOf(units, prefix) + 1).padStart(3, '0')}`
 }
 
@@ -588,10 +593,51 @@ function verifyOps(units: readonly ProjectionUnitLike[], fact: VerifyFact): Proj
       return { key, ops: [], undecidable: `硬触发 ${triggers.length} 条，但风险控制证据只有 ${refs.length} 条 ⇒ 不落账` }
     }
   }
+  /**
+   * ⚠ 2026-11-25（P0）：**先落 EVD，再建 VER 并指向它们**。
+   *   改前 VER.evidence_refs 取的是 basis 字符串 ⇒ 指向不存在的单元 ⇒ verificationReady 判「缺可复核证据」，
+   *   于是「写进去也不计数」。现在每条证据都建真实 EVD 单元。
+   */
+  const evdOps: ProjectionOp[] = []
+  const evdIds: string[] = []
+  let evdSeq = maxSeqOf(units, 'EVD')
+  for (const item of (fact.evidenceItems ?? [])) {
+    const command = text(item.command)
+    /** ⚠ 退出码可能是数字（0）—— `text()` 只收字符串，会把 0 读成空。 */
+    const exitCode = item.exitCode === undefined || item.exitCode === null ? '' : String(item.exitCode).trim()
+    const artifact = text(item.artifact)
+    const reading = text(item.reading)
+    const hasAny = command !== '' || artifact !== '' || reading !== ''
+    /** ⚠ 全空的条目**不落账**（也不报错）：它不是证据，是空行。 */
+    if (!hasAny) continue
+    /** ⚠ evidence_kind 封闭集：command / artifact / report / url / review（⛔ 没有 'reading'）。 */
+    const evidenceKind = command !== '' && /^-?\d+$/.test(exitCode) ? 'command' : artifact !== '' ? 'artifact' : 'review'
+    const id = `EVD-${String(++evdSeq).padStart(3, '0')}`
+    evdIds.push(id)
+    evdOps.push({
+      op: 'create-unit', id, kind: 'evidence',
+      fields: {
+        title: `技术验证证据 ${task.id} · ${evidenceKind}`,
+        parent: text(task.id),
+        status: 'recorded',
+        pipeline_version: 'v3',
+        revision: '1',
+        evidence_kind: evidenceKind,
+        ...(reading === '' ? {} : { reading }),
+        ...(command === '' ? {} : { command }),
+        ...(exitCode === '' ? {} : { exit_code: exitCode }),
+        ...(artifact === '' ? {} : { artifact_ref: artifact }),
+        taken_at: text(item.takenAt) || String(fact.verifiedAt),
+        code_state: text(item.codeState) || 'unspecified',
+        source: '运行态投影：技术验证证据',
+        projection_key: key + ':evd:' + String(evdSeq),
+      },
+    })
+  }
   const verId = nextIdOf(units, 'VER')
   return {
     key,
-    ops: [{
+    ops: [...evdOps, {
       op: 'create-unit', id: verId, kind: 'verification',
       fields: {
         title: `技术验证 ${task.id} ${fact.verdict}`,
@@ -605,7 +651,9 @@ function verifyOps(units: readonly ProjectionUnitLike[], fact: VerifyFact): Proj
         verified_at: fact.verifiedAt,
         basis: arr(fact.basis),
         criteria_refs: arr(fact.criteriaRefs ?? []),
-        evidence_refs: arr(fact.evidenceRefs ?? fact.basis),
+        evidence_refs: [...new Set([...arr(fact.evidenceRefs ?? []), ...evdIds])].length === 0
+          ? arr(fact.basis)
+          : [...new Set([...arr(fact.evidenceRefs ?? []), ...evdIds])],
         ...(arr(fact.nonconformanceRefs ?? []).length === 0 ? {} : { nonconformance_refs: arr(fact.nonconformanceRefs ?? []) }),
         ...(arr(fact.riskReviewRefs ?? []).length === 0 ? {} : { risk_review_refs: arr(fact.riskReviewRefs ?? []) }),
         ...(arr(fact.newRiskRefs ?? []).length === 0 ? {} : { new_risk_refs: arr(fact.newRiskRefs ?? []) }),
