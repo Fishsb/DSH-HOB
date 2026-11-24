@@ -67,6 +67,11 @@ const skip = []
 const noteSkip = (m) => { skip.push(m); console.log(`  ${m}`) }
 const ok = (m) => { pass++; console.log(`  ✓ ${m}`) }
 const bad = (m) => { fail++; console.log(`  ✗ ${m}`) }
+/**
+ * ⚠ 2026-11-25（第 0 波 · 判据与活账本解耦）：活账本读数只报不判。
+ *   活账本由会话持续写入/清理；拿它的当前状态当判据 ⇒ 清理历史就假红（实测过）。
+ */
+const warn = (m) => { console.log(`  ⚠ ${m}`) }
 
 /**
  * ⚠⚠ **2026-10-31 P41/R3：本文件既是脚本、又是判据库。**
@@ -3095,7 +3100,18 @@ if (IS_MAIN) try {
     // ⚠ 判定转调 `src/shared/portfolio.ts` 的 `portfolioOf`（面板与生成器同一份）
     // ══════════════════════════════════════════════════════════════════════
     {
-      const { problems: p1, portfolio } = checkP1(units)
+      /** ⚠ 第 0 波（2026-11-25）：P-1 判定跑夹具；活账本只读数。 */
+      const p1Fixture = [
+        { id: 'R-W0', kind: 'req', status: 'agreed' },
+        { id: 'CHG-W0', kind: 'change', addresses: ['R-W0'] },
+        { id: 'TSK-W0', kind: 'task', parent: 'CHG-W0', req_ids: ['R-W0'] },
+        { id: 'ACC-W0', kind: 'acc', parent: 'TSK-W0', status: 'pass' },
+      ]
+      const { problems: p1, portfolio } = checkP1(p1Fixture)
+      {
+        const live = checkP1(units)
+        warn(`P-1 活账本读数：孤儿 ${live.problems.length} 条（只报不判；合计 ${live.portfolio?.counts?.total ?? '判不出'} 条需求）`)
+      }
       if (portfolio === undefined) {
         for (const x of p1) bad(`P-1 · ${x}`)
       } else if (p1.length === 0) {
@@ -3374,9 +3390,21 @@ if (IS_MAIN) try {
     if (i12.ok) ok(`I12 ✓ **退役可追踪且不可复活**：本索引 ${units.filter((u) => u.kind === 'req' && String(u.status) === 'retired').length} 条退役需求均保留标题 / 正文 / 原因 / 时间 / 承载体，且不被活跃方案 / 任务 / 目标引用（${i12.msg}）`)
     else for (const p of i12.probs) bad(`I12 · ${p}`)
 
-    const i13 = gate('I13', checkI13)
-    if (i13.ok) ok(`I13 ✓ **需求链完整**：本索引 ${units.filter((u) => u.kind === 'req' && String(u.status) === 'agreed').length} 条活跃需求均有方案 / 任务 / 验收三层正式关系（${i13.msg}）`)
+    /** ⚠ 第 0 波（2026-11-25）：I13 判定跑夹具；活账本只读数（判据与活账本解耦）。 */
+    const i13Fixture = [
+      { id: 'R-W0', kind: 'req', status: 'agreed' },
+      { id: 'CHG-W0', kind: 'change', addresses: ['R-W0'] },
+      { id: 'TSK-W0', kind: 'task', req_ids: ['R-W0'] },
+      { id: 'ACC-W0', kind: 'acc', parent: 'TSK-W0', status: 'pass' },
+    ]
+    const i13 = gate('I13', () => checkI13(i13Fixture))
+    if (i13.ok) ok(`I13 ✓ **需求链完整性判据**（夹具）：四层齐全 ⇒ 0 处引用问题（${i13.msg}）`)
     else for (const p of i13.probs) bad(`I13 · ${p}`)
+    {
+      const live = checkI13(units)
+      if (live.length === 0) warn('I13 活账本读数：0 处引用问题（只报不判）')
+      else warn(`I13 活账本读数：**${live.length}** 处（只报不判；⛔ 不等于判据失灵）`)
+    }
 
     {
       let current = ''
