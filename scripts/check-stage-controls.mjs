@@ -664,6 +664,27 @@ console.log('')
       if (v48.ok === true && v48.readonly === true && v48.total === 1 && v48.open === 0) ok('SC-48 ✓ read_contracts path=pending-decisions 接上只读出口（open/total 与盘上一致）')
       else bad('SC-48 待决清单只读出口未接上或读数不符：' + JSON.stringify(v48).slice(0, 120))
     }
+    // ── SC-49：D1 工具内点选确认（ask）—— 问不到 / 点选不符 / 无凭证 都不落账 ──
+    {
+      const at = await import(pathToFileURL(join(root, 'src', 'modules', 'approval-tool.ts')).href)
+      const units49 = [{ id: 'R-A49', kind: 'req', status: 'agreed', pipeline_version: 'v3', revision: '1', title: 'r', clarification: 'x', clarify_examples: ['e'], acceptance_criteria: ['点保存出现提示'], addresses: [], depends_on: [] }]
+      const make49 = (askUser) => at.createLedgerApprove({
+        resolveRoot: () => '/tmp/sc49', readUnits: () => units49, proceedGate: () => undefined,
+        writeFile: async () => ({ ok: true }), maxWriteBytes: 1 << 20, keepBackups: 1, shrinkGuard: 0.5, askUser,
+      })
+      const base49 = { artifactId: 'R-A49', revision: 1, decision: 'approve', source: '', confirmationMode: 'ask', dryRun: true }
+      const r1 = await make49(async () => ({ ok: false, reason: 'cancelled' })).execute(base49, {})
+      const r2 = await make49(async () => ({ ok: true, selected: ['暂不处理'], answerId: 'ans-9' })).execute(base49, {})
+      const r3 = await make49(async () => ({ ok: true, selected: ['批准'] })).execute(base49, {})
+      const r4 = await make49(async () => ({ ok: true, selected: ['批准'], answerId: 'ans-1' })).execute(base49, {})
+      const p = []
+      if (r1.ok !== false || String(r1.reason) !== 'ask-failed') p.push('问不到时未 fail-closed')
+      if (r2.ok !== false || String(r2.reason) !== 'ask-decision-mismatch') p.push('点选与决定不一致未被拒')
+      if (r3.ok !== false || String(r3.reason) !== 'ask-no-answer-id') p.push('无 answerId 仍落账')
+      if (r4.ok !== true) p.push('合法点选被误拒：' + String(r4.reason))
+      if (p.length === 0) ok('SC-49 ✓ D1 点选确认：问不到/点选不符/无凭证 全部不落账；带 answerId 的合法点选放行')
+      else for (const x of p) bad(`SC-49 · ${x}`)
+    }
     // ── SC-44：实现者判定（task.built_by 缺失时从 returned RUN 回退；都没有 ⇒ fail-closed）──
     {
       const t44 = { id: 'TSK-W', kind: 'task', status: 'built' }

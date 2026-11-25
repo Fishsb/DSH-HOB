@@ -352,13 +352,13 @@ const FILE_CEILINGS = new Map([
   // ⚠ 2026-11-11：11347 → 11298（6 个无状态读数搬到 orchestrator-phase-readings.ts）
   // ⚠ 2026-11-12：11298 → 11252（再搬 stateFileForOwner / messageTextOf / userReplyAfter / awaitingUserOf）
   // ⚠ 2026-11-12 续：11252 → 11183（summarizePlan 搬出；WorkPlanTrackStatus/WorkPlanSummary 下沉到 shared/work-plan.ts）
-  ['modules/orchestrator.ts', 11183],
+  ['modules/orchestrator.ts', 11182],
   ['client/project-panel.tsx', 4307],
   // ⚠ 2026-11-11：3334 → 3122（派发读数下沉到 shared/dispatch-reading.ts，−212 行）
   ['server/orch-state.ts', 3122],
   ['server/card-wake.ts', 2929],
   ['modules/tools.ts', 2805],
-  ['modules/bus.ts', 2298],
+  ['modules/bus.ts', 2271],
   ['server/hob-write.ts', 2268],
   ['preset/tools.ts', 2187],
 ])

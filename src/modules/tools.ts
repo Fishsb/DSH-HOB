@@ -1305,6 +1305,7 @@ export interface HobToolsDeps {
    * 缺席 / 抛异常 / 返回值不是三档之一 ⇒ 按**最保守**的 `ledger` 处理（fail-closed）。
    */
   levelOf?: (exec?: ToolRunContext) => string
+  askUserOf?: (exec: any, payload: any) => Promise<unknown> /* ⚠ D1：宿主提问服务（缺省 ⇒ ask 路径 fail-closed）。 */
   /**
    * ⚠ **该档允许的工具名集合**（2026-10-22 · `REQ-04`）。
    *
@@ -2186,12 +2187,11 @@ export function createHobTools(cfg: HobToolsConfig = {}, deps: HobToolsDeps = {}
    * 这些不是“自由文本”，而是语义可判的旧词。本工具只接受**声明式映射**，
    * 默认只预演；真写必须 `dryRun:false`，并且先备份。⛔ 不凭空猜任意未知状态。
    */
-  /** ⚠ 2026-11-23（A·拆分）：批准工具搬出本文件（`approval-tool.ts`），此处只装配依赖。 */
-  const ledgerApprove = createLedgerApprove({
+  const ledgerApprove = createLedgerApprove({ /** ⚠ A·拆分 + 2026-11-25 D1：批准工具定义在 `approval-tool.ts`，此处只装配依赖（含 askUser）。 */
     resolveRoot: (exec) => ledgerRootOf(cfg, exec),
     readUnits: (root) => readLedgerUnits(root) as Array<Record<string, unknown>>,
     proceedGate: (exec) => proceedGate(exec),
-    writeFile: (root, input, opts) => writeHobFile(root, input as never, opts as never) as Promise<{ ok: boolean; reason?: string; message?: string }>,
+    ...(deps.askUserOf === undefined ? {} : { askUser: deps.askUserOf as never }), writeFile: (root, input, opts) => writeHobFile(root, input as never, opts as never) as Promise<{ ok: boolean; reason?: string; message?: string }>,
     maxWriteBytes: cfg.maxWriteBytes ?? DEFAULTS.maxWriteBytes,
     keepBackups: DEFAULTS.keepBackups,
     shrinkGuard: DEFAULTS.shrinkGuard,

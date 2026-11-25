@@ -34,6 +34,7 @@
  */
 
 /** ⚠ 具名再导出用 `const` 绑定（G-11 ①：本文件零具名值导入，避免链接期缺名字拖垮整块）。 */
+import * as askUser from '../server/ask-user.ts'
 import * as pendingDecisions from '../server/pending-decisions.ts'
 import * as focusLease from '../server/focus-lease.ts'
 import * as notifyLedger from '../server/notify-ledger.ts'
@@ -1898,6 +1899,7 @@ function registerTools(ctx: any, config: Config, levelOf: (sessionOrAgent?: any)
     //   ⚠⚠ **2026-10-22 · `REQ-04`：入参换成 `exec`** —— 档位现在**按会话**解析，
     //     而会话身份只存在于 `exec.agent` 里。`levelOf(exec?.agent)` 走**同一个**
     //     解析源（⛔ 不在这里另写一份判定）。拿不到 `exec` / `agent` ⇒ 最低档。
+    askUserOf: askUser.makeAskUserOf(ctx), /* ⚠ D1：工具内点选确认（实现在 server/ask-user.ts，⛔ preset 不重写判据）。 */
     levelOf: (exec?: any) => levelOf(exec?.agent ?? exec),
     /**
      * ⚠⚠ **执行层"能不能推进"闸门**（2026-10-22 第 5 轮 · 任务书第 12 条）。

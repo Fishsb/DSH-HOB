@@ -34,6 +34,8 @@ export interface ApprovalToolDeps {
   resolveRoot: (exec: ToolRunContext) => string | undefined
   readUnits: (root: string) => Array<Record<string, unknown>>
   proceedGate: (exec: ToolRunContext) => string | undefined
+  /** ⚠ D1（2026-11-25）：宿主提问服务（缺省 ⇒ confirmationMode:'ask' 直接 fail-closed）。 */
+  askUser?: (exec: any, payload: { header?: string; question: string; options: Array<{ label: string; description?: string }> }) => Promise<{ ok: true; selected: string[]; answerId?: string } | { ok: false; reason: string }>
   writeFile: (root: string, input: Record<string, unknown>, opts: Record<string, unknown>) => Promise<{ ok: boolean; reason?: string; message?: string }>
   maxWriteBytes: number
   keepBackups: number
@@ -95,6 +97,11 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
        * ⚠ 结构化确认（2026-11-24 · 优先路径）：用户在**选择项**里点的那一个。
        *   给了它 ⇒ 不再解析自然语言（措辞不参与判定）；⛔ 不给 ⇒ 回落到文本回执三要素。
        */
+      confirmationMode: {
+        type: 'string',
+        enum: ['ask', 'echo'],
+        description: "D1：ask=由工具直接向用户弹选项（用户点选即回执，凭证=宿主 answerId）；echo=由调用方先问、只传 confirmationChoice（兼容）。",
+      },
       confirmationChoice: {
         type: 'string',
         enum: ['approve', 'request-changes', 'cancel'],
@@ -123,6 +130,7 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
       selectedOption?: string
       dryRun?: boolean
       rebindFrom?: string
+      confirmationMode?: 'ask' | 'echo'
       confirmationChoice?: 'approve' | 'request-changes' | 'cancel'
       confirmationVia?: 'ask-user-question'
     }, exec: ToolRunContext): Promise<JsonValue> {
@@ -155,7 +163,7 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
       }
       let source = String(args.source ?? '').trim()
       /** ⚠ 2026-11-24：结构化确认 / 机器重绑两条路径的 source 由工具生成 ⇒ 不要求调用方给文本。 */
-      if (source === '' && args.confirmationChoice === undefined && String(args.rebindFrom ?? '').trim() === '') {
+      if (source === '' && args.confirmationChoice === undefined && String(args.confirmationMode ?? '') !== 'ask' && String(args.rebindFrom ?? '').trim() === '') {
         return { ok: false, reason: 'source-required', message: '拒绝：批准必须附用户回执原文 source。' } as unknown as JsonValue
       }
       /** ⚠ 2026-11-23：重绑时路径选择取自原决策，故先取标记、再校验候选。 */
@@ -225,9 +233,47 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
        *   给了它 ⇒ 措辞不参与判定（⛔ 不再解析自然语言）；source 记为「用户点选」而不是模型转述。
        *   ⛔ cancel 一律拒（没批准就不落账，也不写 request-changes）；通道只认封闭集。
        */
-      const viaChoice = args.confirmationChoice
+      /**
+       * ⚠ D1（2026-11-25）：**工具自己向用户点选**。给了 confirmationMode:'ask' 就先问；
+       *   问不到（无服务 / 取消 / 超时）⇒ 直接拒，⛔ 绝不把「没问成」当同意。
+       *   ⚠ 与 echo 路径一样走封闭集与一致性校验，只是 choice/via/ref 由宿主回答生成。
+       */
+      let askChoice: 'approve' | 'request-changes' | 'cancel' | undefined
+      let askRef: string | undefined
+      if (String(args.confirmationMode ?? '') === 'ask') {
+        if (typeof deps.askUser !== 'function') {
+          return { ok: false, reason: 'ask-unavailable', message: '拒绝：本环境没有用户提问服务 ⇒ 本次不落批准（⛔ 不把没问成当同意）。' } as unknown as JsonValue
+        }
+        const asked = await deps.askUser(exec, {
+          header: decision === 'approve' ? '批准确认' : '修改要求确认',
+          question: (decision === 'approve' ? '是否批准 ' : '是否要求修改 ') + id + ' 第 ' + String(actualRevision) + ' 版？',
+          options: [
+            { label: decision === 'approve' ? '批准' : '要求修改' },
+            { label: decision === 'approve' ? '要求修改' : '批准' },
+            { label: '暂不处理' },
+          ],
+        })
+        if (asked.ok !== true) {
+          return { ok: false, reason: 'ask-failed', message: '拒绝：用户确认未取得（' + asked.reason + '）⇒ 本次不落批准。' } as unknown as JsonValue
+        }
+        const picked = String(asked.selected?.[0] ?? '')
+        const mapped = picked === '批准' ? 'approve' : picked === '要求修改' ? 'request-changes' : picked === '暂不处理' ? 'cancel' : undefined
+        if (mapped === undefined) {
+          return { ok: false, reason: 'ask-choice-unknown', message: '拒绝：用户点选了未知选项（' + picked + '）⇒ 不落账。' } as unknown as JsonValue
+        }
+        if (mapped !== decision) {
+          return { ok: false, reason: 'ask-decision-mismatch', message: '拒绝：用户点选「' + picked + '」与本次 decision=「' + decision + '」不一致。' } as unknown as JsonValue
+        }
+        if (String(asked.answerId ?? '').trim() === '') {
+          return { ok: false, reason: 'ask-no-answer-id', message: '拒绝：宿主没有返回 answerId ⇒ 没有可核对凭证，不落账。' } as unknown as JsonValue
+        }
+        askChoice = mapped
+        askRef = String(asked.answerId).trim()
+      }
+
+      const viaChoice = askChoice ?? args.confirmationChoice
       if (viaChoice !== undefined) {
-        if (String(args.confirmationVia ?? '') !== 'ask-user-question') {
+        if (askChoice === undefined && String(args.confirmationVia ?? '') !== 'ask-user-question') {
           return { ok: false, reason: 'confirmation-via-invalid', message: '拒绝：结构化确认必须给 confirmationVia=ask-user-question（当前只认这一条通道）。' } as unknown as JsonValue
         }
         if (viaChoice === 'cancel') {
@@ -279,6 +325,7 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
         ...(selectedOption === '' ? [] : [`selected_option = ${JSON.stringify(selectedOption)}`]),
         'decided_by = "user"',
         ...(viaChoice === undefined ? [] : ['confirmation_via = "ask-user-question"']),
+        ...(askRef === undefined ? [] : ['confirmation_ref = "' + askRef + '"']),
         `decided_at = ${JSON.stringify(decidedAt)}`,
         `source = ${JSON.stringify(source)}`,
         '',
