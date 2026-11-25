@@ -677,11 +677,15 @@ console.log('')
       const r2 = await make49(async () => ({ ok: true, selected: ['暂不处理'], answerId: 'ans-9' })).execute(base49, {})
       const r3 = await make49(async () => ({ ok: true, selected: ['批准'] })).execute(base49, {})
       const r4 = await make49(async () => ({ ok: true, selected: ['批准'], answerId: 'ans-1' })).execute(base49, {})
+      /** ⚠ 真机实测（session-1cbf359d）：echo 路径声明确认通道却没 ref ⇒ 必须由**工具**早拒，不是写盘时才红。 */
+      const r5 = await make49(async () => ({ ok: false, reason: 'x' })).execute({ ...base49, confirmationMode: 'echo', confirmationVia: 'ask-user-question', confirmationChoice: 'approve' }, {})
+      const r6 = await make49(async () => ({ ok: false, reason: 'x' })).execute({ ...base49, confirmationMode: 'echo', confirmationVia: 'ask-user-question', confirmationChoice: 'approve', confirmationRef: 'ask/r-smoke-g1' }, {})
       const p = []
       if (r1.ok !== false || String(r1.reason) !== 'ask-failed') p.push('问不到时未 fail-closed')
       if (r2.ok !== false || String(r2.reason) !== 'ask-decision-mismatch') p.push('点选与决定不一致未被拒')
       if (r3.ok !== false || String(r3.reason) !== 'ask-no-answer-id') p.push('无 answerId 仍落账')
       if (r4.ok !== true) p.push('合法点选被误拒：' + String(r4.reason))
+      if (r5.ok !== false || String(r5.reason) !== 'confirmation-ref-required') p.push('echo 缺 ref 未早拒')
       if (p.length === 0) ok('SC-49 ✓ D1 点选确认：问不到/点选不符/无凭证 全部不落账；带 answerId 的合法点选放行')
       else for (const x of p) bad(`SC-49 · ${x}`)
     }

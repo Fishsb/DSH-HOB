@@ -107,6 +107,10 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
         enum: ['approve', 'request-changes', 'cancel'],
         description: '结构化确认：用户点选的选项。approve=批准 / request-changes=要求修改 / cancel=暂不处理（取消）。',
       },
+      confirmationRef: {
+        type: 'string',
+        description: 'echo 路径专用：宿主返回的 answer/ask id（⛔ 不许自造；缺它但声明确认通道 ⇒ 工具直接拒）。',
+      },
       confirmationVia: {
         type: 'string',
         enum: ['ask-user-question'],
@@ -132,6 +136,7 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
       rebindFrom?: string
       confirmationMode?: 'ask' | 'echo'
       confirmationChoice?: 'approve' | 'request-changes' | 'cancel'
+      confirmationRef?: string
       confirmationVia?: 'ask-user-question'
     }, exec: ToolRunContext): Promise<JsonValue> {
       const root = deps.resolveRoot(exec)
@@ -272,6 +277,8 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
       }
 
       const viaChoice = askChoice ?? args.confirmationChoice
+      /** ⚠ D1：凭证可来自 ask 回答，也可由调用方回填宿主 id（echo 路径）；两者都没有 ⇒ 下面必拒。 */
+      const refValue = askRef ?? (String(args.confirmationRef ?? '').trim() || undefined)
       if (viaChoice !== undefined) {
         if (askChoice === undefined && String(args.confirmationVia ?? '') !== 'ask-user-question') {
           return { ok: false, reason: 'confirmation-via-invalid', message: '拒绝：结构化确认必须给 confirmationVia=ask-user-question（当前只认这一条通道）。' } as unknown as JsonValue
@@ -281,6 +288,9 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
         }
         if (viaChoice !== 'approve' && viaChoice !== 'request-changes') {
           return { ok: false, reason: 'confirmation-choice-invalid', message: '拒绝：confirmationChoice 只收 approve / request-changes / cancel。' } as unknown as JsonValue
+        }
+        if (refValue === undefined) {
+          return { ok: false, reason: 'confirmation-ref-required', message: '拒绝：声明确认通道但没有 confirmation_ref（宿主 answer/ask id）⇒ 无法证明用户点过。' } as unknown as JsonValue
         }
         if (viaChoice === decision) {
           source = '用户在选择项中点选：' + (viaChoice === 'approve' ? '批准' : '要求修改') + ' ' + id + ' 第 ' + String(actualRevision) + ' 版'
@@ -325,7 +335,7 @@ export function createLedgerApprove(deps: ApprovalToolDeps) {
         ...(selectedOption === '' ? [] : [`selected_option = ${JSON.stringify(selectedOption)}`]),
         'decided_by = "user"',
         ...(viaChoice === undefined ? [] : ['confirmation_via = "ask-user-question"']),
-        ...(askRef === undefined ? [] : ['confirmation_ref = "' + askRef + '"']),
+        ...(refValue === undefined ? [] : ['confirmation_ref = "' + refValue + '"']),
         `decided_at = ${JSON.stringify(decidedAt)}`,
         `source = ${JSON.stringify(source)}`,
         '',
