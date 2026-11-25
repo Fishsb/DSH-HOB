@@ -23,7 +23,7 @@ export function makeAskUserOf(ctx: any): (exec: any, payload: AskPayload) => Pro
       const answer = await service.ask({
         ...(agent === undefined ? {} : { agent }),
         questions: [{
-          id: 'd1-confirm',
+          id: 'd1-confirm-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
           ...(payload.header === undefined ? {} : { header: payload.header }),
           question: payload.question,
           options: payload.options.map((o) => ({ label: o.label, ...(o.description === undefined ? {} : { description: o.description }) })),
