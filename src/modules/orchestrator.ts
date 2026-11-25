@@ -51,6 +51,7 @@
  *   `sessions` / `agents` 是**必需**（写进 `inject`）；其余一律 `ctx.get` 可选读。
  *   缺席 ⇒ 相关能力**明确拒绝**，绝不静默降级成"看起来在工作"的状态。
  */
+import { runAcceptGate, runAcceptConfirm } from './accept-action.ts'
 import { runVerify, type VerifyArgs, type VerifyDeps } from './verify-action.ts'
 import { notifyLinesOf, focusLinesOf } from '../server/status-lines.ts'
 import { recordNotify } from '../server/notify-ledger.ts'
@@ -8671,6 +8672,8 @@ export function createHobOrchTools(
         acceptanceSession?: string
         existingAcceptanceSession?: string
         productConfirmation?: string
+        confirmationVia?: string
+        confirmationRef?: string
         verificationRefs?: string[]
         exampleResults?: string[]
         sendBackTo?: 'back-to-requirement' | 'back-to-plan' | 'back-to-task'
@@ -8727,6 +8730,8 @@ export function createHobOrchTools(
    */
   /** ⚠ 2026-11-24（B）：推进焦点的控制面（list/acquire/pause/resume）；缺席 ⇒ 动作如实报不可用。 */
   focusOf?: (exec: any, args: any) => Record<string, unknown> | undefined,
+  /** ⚠ D1-4：宿主提问服务（accept 的点选确认用；缺席 ⇒ ask 模式 fail-closed）。 */
+  askUserOf?: (exec: any, payload: any) => Promise<unknown>,
   pendingOf?: (exec: any, args: any) => Record<string, unknown> | undefined,
   notifyOf?: (exec: any) => {
     record: (entry: { kind: string; key: string; subject: string; detail?: string; actor?: string }) => void
@@ -10621,6 +10626,8 @@ export function createHobOrchTools(
       },
       focusReqId: { type: 'string', description: 'focus 专用：目标需求号（R-…）。' },
       focusReason: { type: 'string', description: 'focus pause 专用：为什么暂停（人读）。' },
+      confirmationMode: { type: 'string', enum: ['ask', 'echo'], description: 'accept 专用：ask=工具直接弹选项确认；echo=调用方已问过、只传 confirmationRef。' },
+      confirmationRef: { type: 'string', description: 'accept 专用：宿主返回的 answer/ask id（echo 路径必填；ask 路径由工具生成）。' },
       pendingAction: { type: 'string', enum: ['list', 'record', 'close'], description: 'pending 专用：list=看待决清单；record=登记一条；close=带答案关闭。' },
       pendingQuestion: { type: 'string', description: 'pending record 专用：要用户拍板的问题（一句话）。' },
       pendingKey: { type: 'string', description: 'pending record 专用：幂等键（同一件事只登记一次；缺省取问题前 40 字）。' },
@@ -10725,6 +10732,8 @@ export function createHobOrchTools(
         focusAction?: string
         focusReqId?: string
         focusReason?: string
+        confirmationMode?: string
+        confirmationRef?: string
         pendingAction?: string
         pendingQuestion?: string
         pendingKey?: string
@@ -10767,6 +10776,8 @@ export function createHobOrchTools(
       },
       exec: any,
     ): Promise<string> {
+      /** ⚠ D1-4：本次 accept 的确认凭证（ask 回答或调用方回填的宿主 id）。 */
+      let acceptConfirm: { via?: string; ref?: string } = {}
       /**
        * ⚠ ⚠ **这一支原样保留、一个字没改**（`TASK-R2` §一-③ 明令）：
        *   它是"`action` 取值不合法"的既有报错分支，`TASK-R2` 只许**在它后面加一支**。
@@ -10992,32 +11003,18 @@ export function createHobOrchTools(
          * ⚠ 未注入 `acceptanceGateOf` ⇒ fail-closed（⛔ 不退回旧行为）。
          */
         if (args.action === 'accept') {
-          if (acceptanceGateOf === undefined) {
-            return JSON.stringify({
-              ok: false,
-              requestedVerdict: 'accepted',
-              target: args.taskId,
-              reason: '验收门禁未接入（acceptanceGateOf 缺席）⇒ 本次不落账',
-            })
-          }
-          let verdict: { ok: boolean; reason?: string }
-          try {
-            verdict = acceptanceGateOf(exec, args.taskId)
-          } catch (e) {
-            return JSON.stringify({
-              ok: false,
-              requestedVerdict: 'accepted',
-              target: args.taskId,
-              reason: `验收门禁判不出（${String((e as Error)?.message ?? e)}）⇒ 本次不落账`,
-            })
-          }
-          if (!verdict.ok) {
-            return JSON.stringify({
-              ok: false,
-              requestedVerdict: 'accepted',
-              target: args.taskId,
-              reason: verdict.reason ?? '验收门禁未通过',
-            })
+          /** ⚠ D1-4：门禁执行抽到 `accept-action.ts`（本文件零余量，且这段是纯拒绝话术）。 */
+          const blocked = runAcceptGate({ taskId: args.taskId, gate: acceptanceGateOf, exec })
+          if (blocked !== undefined) return blocked
+          /** ⚠ D1-4（2026-11-25）：确认字段先写到账（缺 ref ⇒ 不落账）。 */
+          acceptConfirm = { }
+          if (String((args as { confirmationMode?: unknown }).confirmationMode ?? '') === 'ask') {
+            const asked = await runAcceptConfirm({ askUser: askUserOf as never, exec, taskId: args.taskId })
+            if ('blocked' in asked) return asked.blocked
+            acceptConfirm = { ref: asked.ref }
+          } else {
+            const ref = String((args as { confirmationRef?: unknown }).confirmationRef ?? '').trim()
+            if (ref !== '') acceptConfirm = { ref }
           }
         }
         const r = orch.judge({
@@ -11088,6 +11085,7 @@ export function createHobOrchTools(
             const exampleResults = stringList(args.exampleResults)
             ledgerProjection = await projector.apply({
               kind: 'verdict',
+              ...(acceptConfirm.ref === undefined ? {} : { confirmationVia: 'ask-user-question', confirmationRef: acceptConfirm.ref }),
               taskId: args.taskId,
               verdict: args.action === 'accept' ? 'pass' : 'send-back',
               verifiedAt,

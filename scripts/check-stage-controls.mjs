@@ -707,6 +707,23 @@ console.log('')
       if (p.length === 0) ok('SC-50 ✓ ask 包装：agent 在请求体内、multiSelect=false、回答(answers/id/selected)解析正确、无服务 fail-closed')
       else for (const x of p) bad(`SC-50 · ${x}`)
     }
+    // ── SC-51：D1-4 —— G5 验收的点选确认（接受/退回/暂不处理；问不到或无凭证不落账）──
+    {
+      const ac = await import(pathToFileURL(join(root, 'src', 'modules', 'accept-action.ts')).href)
+      const q = []
+      const r1 = await ac.runAcceptConfirm({ askUser: undefined, exec: {}, taskId: 'TSK-A' })
+      const r2 = await ac.runAcceptConfirm({ askUser: async () => ({ ok: false, reason: 'cancelled' }), exec: {}, taskId: 'TSK-A' })
+      const r3 = await ac.runAcceptConfirm({ askUser: async () => ({ ok: true, selected: ['退回'], answerId: 'ans-1' }), exec: {}, taskId: 'TSK-A' })
+      const r4 = await ac.runAcceptConfirm({ askUser: async () => ({ ok: true, selected: ['接受'] }), exec: {}, taskId: 'TSK-A' })
+      const r5 = await ac.runAcceptConfirm({ askUser: async () => ({ ok: true, selected: ['接受'], answerId: 'ask/acc-1' }), exec: {}, taskId: 'TSK-A' })
+      if (!('blocked' in r1)) q.push('无提问服务仍放行')
+      if (!('blocked' in r2)) q.push('问不到仍放行')
+      if (!('blocked' in r3)) q.push('用户点「退回」仍落成接受')
+      if (!('blocked' in r4)) q.push('无 answerId 仍放行')
+      if (!('ref' in r5) || r5.ref !== 'ask/acc-1') q.push('合法接受未取到凭证')
+      if (q.length === 0) ok('SC-51 ✓ G5 点选确认：无服务/问不到/点「退回」/无凭证 全部不落账；点「接受」带凭证才放行')
+      else for (const x of q) bad(`SC-51 · ${x}`)
+    }
     // ── SC-44：实现者判定（task.built_by 缺失时从 returned RUN 回退；都没有 ⇒ fail-closed）──
     {
       const t44 = { id: 'TSK-W', kind: 'task', status: 'built' }
@@ -802,10 +819,12 @@ console.log('')
   if (typeof toolsMod.acceptanceGateOfLedger === 'function') {
     ok('SC-12 ✓ 验收门禁入口存在（acceptanceGateOfLedger）')
   } else bad('SC-12 验收门禁入口缺失 ⇒ accept 仍只看参数')
-  if (srcOrch.includes('acceptanceGateOf') && srcOrch.includes("args.action === 'accept'")) {
+  if ((srcOrch.includes('acceptanceGateOf') && srcOrch.includes("args.action === 'accept'")) || (srcAccept.includes('gate === undefined'))) {
     ok('SC-12 ✓ accept 分支调用验收门禁（send-back 不受影响）')
   } else bad('SC-12 accept 没有接验收门禁')
-  if (srcOrch.includes('验收门禁未接入（acceptanceGateOf 缺席）')) {
+  /** ⚠ D1-4：门禁执行已搬到 accept-action.ts ⇒ 两个文件都要看（⛔ 断言不能只钉旧位置）。 */
+  const srcAccept = readFileSync(join(root, 'src', 'modules', 'accept-action.ts'), 'utf8')
+  if (srcOrch.includes('验收门禁未接入（acceptanceGateOf 缺席）') || srcAccept.includes('验收门禁未接入（acceptanceGateOf 缺席）')) {
     ok('SC-12 ✓ 门禁缺席时 fail-closed（⛔ 不退回只看参数）')
   } else bad('SC-12 accept 在门禁缺席时会静默放行')
   const realGate = toolsMod.acceptanceGateOfLedger(join(ledgerRoot, '..'), 'TSK-076')

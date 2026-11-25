@@ -126,6 +126,9 @@ export interface VerdictFact {
   acceptanceSession?: string
   /** 产品确认（`pass` 时必填）。 */
   productConfirmation?: string
+  /** ⚠ D1-4（2026-11-25）：G5 的结构化确认（用户点选的凭证；⛔ 缺 ref 时写入层会拒）。 */
+  confirmationVia?: string
+  confirmationRef?: string
   /** 技术验证证据（`pass` 时必填）。 */
   verificationRefs?: string[]
   /** 用户例子逐条结果（`pass` 时必填）。 */
@@ -544,6 +547,7 @@ function verdictOps(units: readonly ProjectionUnitLike[], fact: VerdictFact): Pr
         ...(fact.verdict === 'pass'
           ? {
             product_confirmation: text(fact.productConfirmation),
+        ...(text(fact.confirmationVia) === '' ? {} : { confirmation_via: text(fact.confirmationVia), ...(text(fact.confirmationRef) === '' ? {} : { confirmation_ref: text(fact.confirmationRef) }) }),
             verification_refs: arr(fact.verificationRefs),
             example_results: arr(fact.exampleResults),
           }
