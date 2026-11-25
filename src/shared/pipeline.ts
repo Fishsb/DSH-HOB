@@ -624,6 +624,10 @@ export function approvalDecisionProblems(unit: Record<string, unknown>): Array<{
   if (confVia !== '' && !(APPROVAL_CONFIRMATION_VIAS as readonly string[]).includes(confVia)) {
     out.push({ rule: 'C-22', unit: id, why: `确认通道不在封闭集：${confVia}` })
   }
+  /** ⚠ 2026-11-25（D1）：**声明了通道就必须有宿主给的 ref** —— 否则「用户点过」没有凭证。 */
+  if (confVia !== '' && text(unit.confirmation_ref) === '') {
+    out.push({ rule: 'C-22', unit: id, why: `声明确认通道 ${confVia} 但缺 confirmation_ref（宿主 answer/ask id）` })
+  }
   if (artifact === '') out.push({ rule: 'C-22', unit: id, why: '阶段批准缺 artifact_id' })
   if (!(APPROVAL_STAGES as readonly string[]).includes(stage)) {
     out.push({ rule: 'C-22', unit: id, why: `approval_stage 不在封闭集：${stage || '(空)'}` })

@@ -217,6 +217,18 @@ console.log('')
   else for (const x of p) bad(`PIPE-33 · ${x}`)
 }
 
+// PIPE-34（2026-11-25 · D1 第一步）：声明了确认通道 ⇒ 必须有宿主给的 confirmation_ref。
+{
+  const base = { id: 'DEC-D1', kind: 'decision', status: 'active', decision_kind: 'stage-approval', artifact_id: 'CHG-D1', artifact_revision: '5', artifact_digest: 'fnv64:x', decision: 'approve', decided_by: 'user', decided_at: new Date().toISOString(), source: '用户点选：批准' }
+  const noRef = pipeline.approvalDecisionProblems({ ...base, confirmation_via: 'user-questions' })
+  const withRef = pipeline.approvalDecisionProblems({ ...base, confirmation_via: 'user-questions', confirmation_ref: 'ans-123' })
+  const p = []
+  if (!noRef.some((x) => String(x.why).includes('缺 confirmation_ref'))) p.push('声明通道但无 ref ⇒ 未报缺口')
+  if (withRef.some((x) => String(x.why).includes('缺 confirmation_ref'))) p.push('有 ref 仍被误判')
+  if (p.length === 0) ok('PIPE-34 ✓ 确认凭证：声明确认通道必须带 confirmation_ref（宿主 answer/ask id），有 ref 不误伤')
+  else for (const x of p) bad(`PIPE-34 · ${x}`)
+}
+
 // PIPE-5b（R-15）: 回执判据只有一个实现；工具侧不得再内联正则。
 {
   const p = []

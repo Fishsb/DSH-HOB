@@ -231,7 +231,7 @@ order = 4
 name = "用户闸门（只等明确回执）"
 test = "需求或方案内容已经备齐，Pipeline 当前停在 G1-requirement 或 G2-plan，尚未收到用户点名对象与修订的明确回执。"
 shape = "使用 gate 块集：这轮结论 / G 闸门 / 要你确认的 / 还没验证。G 闸门写当前编号、修订和方案候选路径；要你确认的只给可逐字回复的固定回执。"
-forbidden = "把内容完成写成用户已批准 · 把继续/可以/好的当批准 · 在无回执时创建任务或派活 · 确认按钮/勾选框/百分比/进度条"
+forbidden = "把内容完成写成用户已批准 · 把继续/可以/好的当批准 · 在无回执时创建任务或派活 · 替用户决定 · 百分比/进度条（⚠ 2026-11-25 D1：允许工具发起选择项确认，用户点选即回执）"
 blocks = "这轮结论 · G 闸门 · 要你确认的 · 还没验证"
 # Source text is rendered into the runtime persona via spec/reply.md; F1 checks
 # both the frozen origin and authored specs.
