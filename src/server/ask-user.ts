@@ -21,14 +21,15 @@ export function makeAskUserOf(ctx: any): (exec: any, payload: AskPayload) => Pro
     if (agent === undefined) return { ok: false, reason: 'no-live-agent' }
     try {
       const answer = await service.ask({
+        ...(agent === undefined ? {} : { agent }),
         questions: [{
           id: 'd1-confirm',
           ...(payload.header === undefined ? {} : { header: payload.header }),
           question: payload.question,
           options: payload.options.map((o) => ({ label: o.label, ...(o.description === undefined ? {} : { description: o.description }) })),
-          multiple: false,
+          multiSelect: false,
         }],
-      }, agent)
+      })
       const item = Array.isArray(answer?.answers) ? answer.answers[0] : answer
       const selected = Array.isArray(item?.selected) ? item.selected.map(String) : []
       const answerId = String(item?.questionId ?? item?.id ?? '') || undefined

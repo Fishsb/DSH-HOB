@@ -685,6 +685,24 @@ console.log('')
       if (p.length === 0) ok('SC-49 ✓ D1 点选确认：问不到/点选不符/无凭证 全部不落账；带 answerId 的合法点选放行')
       else for (const x of p) bad(`SC-49 · ${x}`)
     }
+    // ── SC-50：ask 包装的**请求形态**（真机实测：agent 必须在请求体里，不在第二参数）──
+    {
+      const au = await import(pathToFileURL(join(root, 'src', 'server', 'ask-user.ts')).href)
+      const seen = []
+      const svc = { ask: async (req) => { seen.push(req); return { answers: [{ id: 'ask/r-smoke-g1', selected: ['批准'] }] } } }
+      const ctx = { get: () => svc, agents: { get: () => ({ ok: true }) } }
+      const exec = { agent: { session: { header: { id: 'sess-x' } } } }
+      const out = await au.makeAskUserOf(ctx)(exec, { question: '是否批准？', options: [{ label: '批准' }, { label: '暂不处理' }] })
+      const req = seen[0] ?? {}
+      const p = []
+      if (req.agent === undefined) p.push('请求体没有 agent（真机 NO_PROVIDER 的根因）')
+      if (!Array.isArray(req.questions) || req.questions[0]?.multiSelect !== false) p.push('问题形态不对（缺 multiSelect:false）')
+      if (out.ok !== true || out.answerId !== 'ask/r-smoke-g1' || out.selected?.[0] !== '批准') p.push('回答解析不对: ' + JSON.stringify(out))
+      const noSvc = await au.makeAskUserOf({ get: () => undefined })(exec, { question: 'q', options: [] })
+      if (noSvc.ok !== false || noSvc.reason !== 'no-questions-service') p.push('无服务时未 fail-closed')
+      if (p.length === 0) ok('SC-50 ✓ ask 包装：agent 在请求体内、multiSelect=false、回答(answers/id/selected)解析正确、无服务 fail-closed')
+      else for (const x of p) bad(`SC-50 · ${x}`)
+    }
     // ── SC-44：实现者判定（task.built_by 缺失时从 returned RUN 回退；都没有 ⇒ fail-closed）──
     {
       const t44 = { id: 'TSK-W', kind: 'task', status: 'built' }
